@@ -24,6 +24,21 @@ verification, route identity, prefix reuse, replay determinism, and regression
 review. Merging these rows into one unlabeled table would make the evidence
 unauditable.
 
+A third tool handles cross-engine MTP comparison on real prompt suites:
+
+```
+bench_qwen36_mtp_fair.py               ←  cross-engine MTP comparison
+  Produces: ax.qwen36_mtp_fair.v1 artifacts (tok/s + accept rates per engine per suite)
+  Answers:  "How does AX Engine MTP compare against MTPLX / Lightning MLX?"
+```
+
+This tool runs MTPLX, Lightning MLX (optionally with layered MTP+n-gram), and AX
+Engine against the same real prompt suites with matched warmup, repetitions, cooldown,
+and sampling. Its artifacts record per-engine decode throughput and MTP (and n-gram)
+accept rates, but they are cross-engine comparison evidence, not repo-owned MLX
+throughput claims. Do not cite `bench_qwen36_mtp_fair.py` rows as `mlx_lm.benchmark`
+baseline comparisons; the two evidence types are separate.
+
 ---
 
 ## ax-engine-bench CLI

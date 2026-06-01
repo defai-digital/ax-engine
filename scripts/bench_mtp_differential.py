@@ -349,6 +349,7 @@ def rapid_mlx_cases(artifact: dict[str, Any]) -> dict[str, dict[str, Any]]:
             "prompt_text_sha256": case.get("prompt_sha256"),
             "decode_tok_s": float(decode_tok_s) if decode_tok_s is not None else None,
             "accept_rate": summary.get("accept_rate"),
+            "ngram_accept_rate": summary.get("ngram_accept_rate"),
         }
     return cases
 

@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::ffi::{CString, c_void};
+use std::ffi::CString;
 use std::path::Path;
 use std::ptr;
 use std::sync::Arc;
@@ -80,10 +80,9 @@ pub fn load_safetensors(
 /// (zero-copy on the file → array path). Returns `name → MlxArray`.
 ///
 /// Unlike `load_safetensors`, no bytes are copied into a CPU buffer up
-/// front. Each tensor's `MlxArray` borrows a slice of the `Mmap`; an
-/// `Arc<Mmap>` is keyed into the array's managed-payload destructor so
-/// the file mapping stays alive exactly as long as the longest-lived
-/// array referencing it.
+/// front. Each tensor is created from a slice of the `Mmap`; MLX copies
+/// that slice into its own array storage before this function drops the
+/// mapping.
 ///
 /// MLX may still pull pages into its own working set on the first read
 /// (e.g. when the array is dispatched to the GPU). On Apple Silicon's
@@ -220,19 +219,4 @@ fn parse_safetensors_dtype(s: &str) -> Option<MlxDtype> {
         "BOOL" => MlxDtype::Bool,
         _ => return None,
     })
-}
-
-/// Destructor compatible with `MlxArray::from_managed_data` payloads —
-/// recovers a `Box<Arc<Mmap>>` and drops it. Kept available for future
-/// callers (`from_managed_data` is exported) even though
-/// `load_safetensors_mmap` currently uses the copy-on-create path. Mark
-/// dead-code to silence the unused warning until a managed caller lands.
-#[allow(dead_code)]
-unsafe extern "C" fn mmap_payload_drop(payload: *mut c_void) {
-    if payload.is_null() {
-        return;
-    }
-    unsafe {
-        let _ = Box::from_raw(payload as *mut Arc<Mmap>);
-    }
 }

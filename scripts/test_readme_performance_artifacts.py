@@ -386,6 +386,7 @@ class ReadmePerformanceArtifactTests(unittest.TestCase):
             }
             if engine == "mlx_lm":
                 payload["method"] = "mlx_lm.benchmark"
+                payload["ttft_ms"] = metric(40.0)
                 payload["baseline"] = {
                     "engine": "mlx_lm",
                     "method": "mlx_lm.benchmark",

@@ -10,6 +10,7 @@ import tempfile
 import unittest
 from argparse import Namespace
 from pathlib import Path
+from unittest.mock import patch
 
 SCRIPT_PATH = Path(__file__).with_name("bench_qwen36_mtp_fair.py")
 MODULE_SPEC = importlib.util.spec_from_file_location(
@@ -99,7 +100,10 @@ class Qwen36MtpFairTests(unittest.TestCase):
             summary = fair.build_summary(args, artifacts)
 
         self.assertEqual(summary["schema"], "ax.qwen36_mtp_fair.v1")
-        self.assertFalse(summary["contract"]["ax_pure_mtp"])
+        self.assertTrue(summary["contract"]["ax_pure_mtp"])
+        self.assertEqual(
+            summary["contract"]["ax_engine_modes"], {"ax_engine": "pure_mtp"}
+        )
         row = summary["rows"][0]
         self.assertEqual(row["depth"], 3)
         self.assertAlmostEqual(row["engines"]["ax_engine"]["decode_tok_s"], 10.0)
@@ -138,6 +142,9 @@ class Qwen36MtpFairTests(unittest.TestCase):
             summary = fair.build_summary(args, artifacts)
 
         self.assertTrue(summary["contract"]["ax_pure_mtp"])
+        self.assertEqual(
+            summary["contract"]["ax_engine_modes"], {"ax_engine": "pure_mtp"}
+        )
 
     def test_build_summary_rejects_pure_mtp_with_ngram_hits(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -173,6 +180,73 @@ class Qwen36MtpFairTests(unittest.TestCase):
 
             with self.assertRaisesRegex(RuntimeError, "pure-MTP"):
                 fair.build_summary(args, artifacts)
+
+    def test_build_summary_records_stacked_ax_engine_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            hf_cache = root / "hf"
+            make_sidecar_manifest(hf_cache)
+            artifacts = {
+                ("27b-4bit", "flappy", "ax_engine_ngram"): write_json(
+                    root / "ax-ngram.json", fake_ax_artifact()
+                ),
+            }
+            args = Namespace(
+                models=["27b-4bit"],
+                engines=["ax_engine_ngram"],
+                suites=["flappy"],
+                depth_policy="native",
+                depth=None,
+                mode="sampled",
+                temperature=0.6,
+                top_p=0.95,
+                top_k=20,
+                max_tokens=128,
+                repetitions=1,
+                warmup_repetitions=1,
+                cooldown=0.0,
+                hf_cache=hf_cache,
+                pure_mtp=False,
+            )
+
+            summary = fair.build_summary(args, artifacts)
+
+        self.assertFalse(summary["contract"]["ax_pure_mtp"])
+        self.assertEqual(
+            summary["contract"]["ax_engine_modes"],
+            {"ax_engine_ngram": "mtp_ngram_stacked"},
+        )
+
+    def test_run_rapid_mlx_suite_forwards_mtp_tuning_flags(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            output = root / "lightning.json"
+            config = fair.diff.RunConfig(
+                mode="sampled",
+                depth=3,
+                max_tokens=64,
+                repetitions=1,
+                warmup_repetitions=1,
+                cooldown_s=0.0,
+                sampling={"temperature": 0.6, "top_p": 0.95, "top_k": 20},
+                enable_thinking=False,
+            )
+            with patch.object(fair, "run_subprocess") as run_subprocess:
+                fair.run_rapid_mlx_suite(
+                    python=Path("python"),
+                    lightning_source=Path("lightning"),
+                    suite="flappy",
+                    suite_file=root / "suite.jsonl",
+                    output_path=output,
+                    model_dir=root / "model",
+                    config=config,
+                    mtp_optimistic=True,
+                    mtp_draft_temperature=0.5,
+                )
+
+        cmd = run_subprocess.call_args.args[0]
+        self.assertIn("--mtp-optimistic", cmd)
+        self.assertEqual(cmd[cmd.index("--mtp-draft-temperature") + 1], "0.5")
 
     def test_error_artifact_keeps_table_row(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

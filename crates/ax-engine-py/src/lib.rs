@@ -3,7 +3,6 @@
 mod dicts;
 mod embedding;
 mod errors;
-mod json_to_py;
 mod request;
 mod session;
 mod stream;

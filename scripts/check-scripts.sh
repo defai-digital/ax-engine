@@ -32,8 +32,12 @@ bash -n scripts/*.sh scripts/lib/common.sh
   scripts/bench_mtp_differential.py \
   scripts/check_mtp_sidecar_provenance.py \
   scripts/prepare_qwen36_mtp_sidecar.py \
+  scripts/bench_qwen36_mtp_fair.py \
+  scripts/bench_rapid_mlx_prompt_suites.py \
   scripts/test_bench_mtp_differential.py \
   scripts/test_check_mtp_sidecar_provenance.py \
+  scripts/test_bench_qwen36_mtp_fair.py \
+  scripts/test_bench_rapid_mlx_prompt_suites.py \
   scripts/bench_ax_only_sweep.py \
   scripts/test_bench_ax_only_sweep.py \
   scripts/bench_llama_cpp_metal_sweep.py \
@@ -141,6 +145,8 @@ bash -n scripts/*.sh scripts/lib/common.sh
   scripts/test_bench_llama_cpp_metal_sweep.py \
   scripts/test_bench_mtp_differential.py \
   scripts/test_check_mtp_sidecar_provenance.py \
+  scripts/test_bench_qwen36_mtp_fair.py \
+  scripts/test_bench_rapid_mlx_prompt_suites.py \
   scripts/test_offline_policy_search_artifact.py \
   scripts/test_build_offline_policy_search_artifact.py \
   scripts/test_search_turboquant_kv_policy.py \

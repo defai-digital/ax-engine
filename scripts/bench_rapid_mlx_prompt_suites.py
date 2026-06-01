@@ -257,6 +257,9 @@ def start_server(
     startup_timeout: float,
     output_dir: Path,
     lightning_mode: bool = False,
+    enable_ngram: bool = False,
+    mtp_optimistic: bool = False,
+    mtp_draft_temperature: float | None = None,
 ) -> ServerHandle:
     output_dir.mkdir(parents=True, exist_ok=True)
     log_path = output_dir / f"rapid-mlx-server-{port}.log"
@@ -283,6 +286,29 @@ def start_server(
             "--log-level",
             "WARNING",
         ]
+        if mtp_draft_temperature is not None:
+            cmd += ["--mtp-draft-temperature", str(mtp_draft_temperature)]
+        if mtp_optimistic:
+            cmd.append("--mtp-optimistic")
+        if enable_ngram:
+            # Layer n-gram prompt-lookup before MTP.  These params mirror the
+            # lightning-mlx production preset's "winning combination" for
+            # MTP+ngram as documented in cli.py:
+            #   K=6 wide, min_occ=2, greedy accept, hybrid MTP tail,
+            #   draft everywhere (not just in <think>) since --no-thinking
+            #   suppresses <think> blocks entirely, self-tune on,
+            #   auto-disable off (threshold=0) for clean benchmark coverage.
+            cmd += [
+                "--enable-ngram",
+                "--ngram-num-draft-tokens", "6",
+                "--ngram-min-occurrences", "2",
+                "--ngram-acceptance-mode", "greedy",
+                "--ngram-hybrid-verify",
+                "--ngram-everywhere",
+                "--ngram-self-tune",
+                "--ngram-self-tune-disable-threshold", "0.30",
+                "--ngram-auto-disable-mtp-threshold", "0.0",
+            ]
     else:
         cmd = [
             str(rapid_python),
@@ -456,6 +482,25 @@ def fetch_last_mtp_accept_ratio(base_url: str) -> float | None:
     return None
 
 
+def fetch_last_ngram_accept_ratio(base_url: str) -> float | None:
+    """Fetch the n-gram acceptance ratio for the most recent request.
+
+    Reads from the same /v1/requests?limit=1 endpoint as MTP accept ratio.
+    The ngram_acceptance_ratio field is populated by lightning-mlx's
+    request_metrics recorder when --enable-ngram is active.
+    """
+    try:
+        with urllib.request.urlopen(f"{base_url}/requests?limit=1", timeout=3) as resp:  # noqa: S310
+            data = json.loads(resp.read())
+            entries = data.get("entries") or []
+            if entries:
+                val = entries[-1].get("ngram_acceptance_ratio")
+                return float(val) if val is not None else None
+    except Exception:
+        pass
+    return None
+
+
 def summarize_runs(runs: list[dict[str, Any]]) -> dict[str, Any]:
     valid_decode = [
         float(run["decode_tok_s"])
@@ -472,6 +517,11 @@ def summarize_runs(runs: list[dict[str, Any]]) -> dict[str, Any]:
         float(run["mtp_acceptance_ratio"])
         for run in runs
         if run.get("mtp_acceptance_ratio") is not None
+    ]
+    ngram_accept_values = [
+        float(run["ngram_acceptance_ratio"])
+        for run in runs
+        if run.get("ngram_acceptance_ratio") is not None
     ]
     return {
         "runs": len(runs),
@@ -492,6 +542,7 @@ def summarize_runs(runs: list[dict[str, Any]]) -> dict[str, Any]:
         "accepted_drafts": None,
         "drafted_tokens": None,
         "accept_rate": median(accept_values) if accept_values else None,
+        "ngram_accept_rate": median(ngram_accept_values) if ngram_accept_values else None,
     }
 
 
@@ -506,6 +557,9 @@ def run_suite(args: argparse.Namespace) -> dict[str, Any]:
         "top_k": args.top_k,
     }
     server_dir = args.output.parent / "rapid-server"
+    lightning_mode = bool(getattr(args, "lightning_mode", False))
+    enable_ngram = bool(getattr(args, "enable_ngram", False))
+    mtp_optimistic = bool(getattr(args, "mtp_optimistic", False))
     handle = start_server(
         model=args.model,
         rapid_python=args.rapid_python,
@@ -516,7 +570,10 @@ def run_suite(args: argparse.Namespace) -> dict[str, Any]:
         depth=args.depth,
         startup_timeout=args.startup_timeout,
         output_dir=server_dir,
-        lightning_mode=bool(getattr(args, "lightning_mode", False)),
+        lightning_mode=lightning_mode,
+        enable_ngram=enable_ngram,
+        mtp_optimistic=mtp_optimistic,
+        mtp_draft_temperature=getattr(args, "mtp_draft_temperature", None),
     )
     try:
         if cases:
@@ -556,6 +613,10 @@ def run_suite(args: argparse.Namespace) -> dict[str, Any]:
                     accept_ratio = fetch_last_mtp_accept_ratio(handle.base_url)
                     if accept_ratio is not None:
                         run["mtp_acceptance_ratio"] = accept_ratio
+                    if enable_ngram:
+                        ngram_ratio = fetch_last_ngram_accept_ratio(handle.base_url)
+                        if ngram_ratio is not None:
+                            run["ngram_acceptance_ratio"] = ngram_ratio
                     runs.append(run)
                 if args.cooldown > 0 and rep < all_runs - 1:
                     time.sleep(args.cooldown)
@@ -655,6 +716,36 @@ def main() -> int:
             "Run lightning-mlx directly via its vllm_mlx.cli (source at --rapid-source). "
             "Skips Rapid-MLX-only flags (--no-telemetry, --force-spec-decode, --no-mllm) "
             "and fetches per-run MTP accept rate from /v1/requests."
+        ),
+    )
+    parser.add_argument(
+        "--enable-ngram",
+        action="store_true",
+        default=False,
+        help=(
+            "Layer n-gram (prompt-lookup) speculative decoding before MTP in lightning mode. "
+            "Uses the documented production preset: K=6, min_occ=2, greedy acceptance, "
+            "hybrid MTP tail (--ngram-hybrid-verify), everywhere (not only in <think>), "
+            "self-tune on, auto-disable disabled (threshold=0 so n-gram is always active). "
+            "Only effective with --lightning-mode; ignored for Rapid-MLX."
+        ),
+    )
+    parser.add_argument(
+        "--mtp-optimistic",
+        action="store_true",
+        default=False,
+        help=(
+            "Pass --mtp-optimistic to lightning-mlx serve in --lightning-mode. "
+            "Only effective with --lightning-mode; ignored for Rapid-MLX."
+        ),
+    )
+    parser.add_argument(
+        "--mtp-draft-temperature",
+        type=float,
+        default=None,
+        help=(
+            "Pass --mtp-draft-temperature to lightning-mlx serve in --lightning-mode. "
+            "Only effective with --lightning-mode; ignored for Rapid-MLX."
         ),
     )
     args = parser.parse_args()

@@ -30,6 +30,7 @@ studying Lightning MLX's `_mtp_step` source:
 - dFlash block-diffusion drafting (separate architecture).
 - N-gram + MTP stacking optimisation (separate path, already active with `--enable-ngram`).
 - Adaptive depth tuning for python_modules_long (separate optimisation).
+- Changing MTPLX or Lightning MLX source code (can only tune our benchmark scripts).
 
 ## Current Evidence
 
@@ -68,7 +69,23 @@ Commits `105b147c`, `167b1053`. Sample primary + draft from skip-state, write in
 `pending`, run existing verify/accept. Bug fixes for wrong vocab, dropped drafts,
 fake telemetry.
 
-### Phase 4: Re-benchmark
+### Phase 4: Script-level competitor optimisation
+
+The fair benchmark script was not configuring MTPLX and Lightning MLX at their best:
+
+**MTPLX:** Script used `--profile stable` (conservative, long_response_exact_staged).
+The `sustained` profile enables `MTPLX_SKIP_VERIFY_SNAPSHOT=1`,
+`MTPLX_LAZY_VERIFY_LOGITS=1`, `MTPLX_DEFER_VERIFY_HIDDEN_EVAL=1`,
+`MTPLX_BATCH_TARGET_ARRAYS=1`, and paged attention — the same flags MTPLX
+uses for its own published benchmarks.
+
+**Lightning MLX:** Script did not pass `--mtp-optimistic` or
+`--mtp-draft-temperature`. Lightning's own Qwen3.6 serve preset defaults
+`mtp_optimistic=True` and `mtp_draft_temperature=0.5` (line 128, 167 in
+`cli.py`). Without optimistic, Lightning runs verified rejection sampling
+which is ~10-15% slower. These flags are CLI arguments, not source changes.
+
+### Phase 5: Re-benchmark
 
 Run fair benchmark with release build to confirm targets:
 ```

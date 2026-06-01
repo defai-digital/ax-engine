@@ -230,7 +230,7 @@ def run_mtplx_suite(
     output_path: Path,
     model_dir: Path,
     config: diff.RunConfig,
-    mtplx_profile: str = "sustained",
+    mtplx_profile: str = "stable",
     allow_unverified_model: bool = False,
 ) -> Path:
     cmd = [
@@ -819,14 +819,18 @@ def write_decode_model_svg(
         }
         for row in rows
     ]
-    max_value = y_max if y_max is not None else max(
-        [
-            float(value)
-            for group in groups
-            for value in group["values"].values()
-            if value is not None
-        ]
-        or [1.0]
+    max_value = (
+        y_max
+        if y_max is not None
+        else max(
+            [
+                float(value)
+                for group in groups
+                for value in group["values"].values()
+                if value is not None
+            ]
+            or [1.0]
+        )
     )
     width = 760
     height = 430
@@ -1105,7 +1109,9 @@ def main() -> int:
     model_chart_paths: list[Path] = []
     for model_key in args.models:
         model_chart = args.output_dir / f"decode-tok-s-{model_key}.svg"
-        write_decode_model_svg(model_chart, summary, model_key, y_max=decode_y_max.get(model_key))
+        write_decode_model_svg(
+            model_chart, summary, model_key, y_max=decode_y_max.get(model_key)
+        )
         model_chart_paths.append(model_chart)
         accept_chart = args.output_dir / f"accept-rate-{model_key}.svg"
         write_accept_model_svg(accept_chart, summary, model_key)

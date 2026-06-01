@@ -1,0 +1,1 @@
+mx.metal.clear_cache is deprecated and will be removed in a future version. Use mx.clear_cache instead.

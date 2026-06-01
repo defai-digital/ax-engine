@@ -30,6 +30,8 @@ host, model, sampling policy, and artifact schema are explicit.
 | Does the non-MLX delegated route still behave correctly? | llama.cpp manifests through `ax-engine-bench` | Delegated route-contract evidence only |
 | Does upstream `mlx-lm` delegated text compatibility still behave correctly? | Explicit `mlx_lm_delegated` checks through SDK/server/CLI surfaces | Delegated route-contract evidence only |
 | Which AX runtime path is best for a product endpoint on this host? | `scripts/bench_ax_engine_three_modes.py` against already-running AX servers | End-to-end AX API latency by mode; not raw model throughput |
+| How does AX Engine MTP compare against MTPLX and Lightning MLX on real prompt suites? | `scripts/bench_qwen36_mtp_fair.py` | `ax.qwen36_mtp_fair.v1` artifact with per-engine decode tok/s and MTP accept rate |
+| Does layering n-gram prompt-lookup before MTP help Lightning MLX? | `scripts/bench_qwen36_mtp_fair.py --lightning-ngram` | Same artifact; adds `lightning_mtp_ngram` engine with both MTP and n-gram accept rates |
 
 Do not merge these rows into one unlabeled throughput table. Repo-owned
 model-inference claims come from the MLX inference stack, and every such claim
@@ -70,6 +72,46 @@ The checked-in smoke corpus at `benchmarks/corpora/serving/smoke.jsonl` is a
 harness validation corpus, not a production claim. Public serving claims should
 use a larger corpus with a published prompt-mix table. See
 `docs/SERVING-BENCHMARKS.md` for the full contract and rollout plan.
+
+## Cross-Engine MTP Fair Comparison
+
+Use the fair benchmark when the question is how AX Engine MTP throughput and acceptance
+compares against MTPLX and Lightning MLX on the same real prompt suites:
+
+```text
+python3 scripts/bench_qwen36_mtp_fair.py \
+  --models 27b-4bit 35b-a3b-4bit \
+  --suites flappy long_code \
+  --output-dir benchmarks/results/mtp-fair/$(date +%F)-qwen36-fair
+```
+
+To add Lightning MLX with layered MTP+n-gram as a fourth engine:
+
+```text
+python3 scripts/bench_qwen36_mtp_fair.py \
+  --lightning-ngram \
+  --output-dir benchmarks/results/mtp-fair/$(date +%F)-qwen36-fair-ngram
+```
+
+The `--lightning-ngram` flag adds `lightning_mtp_ngram` to the engine list. It runs
+lightning-mlx with n-gram prompt-lookup drafting layered before the MTP head using the
+production preset: K=6 drafts, min-occurrences=2, greedy accept mode, hybrid MTP tail
+(one MTP head draft appended when n-gram hits), `--ngram-everywhere` (required since
+`--no-thinking` suppresses `<think>` blocks, which would otherwise gate n-gram to
+zero drafts), self-tune enabled with a 0.30 threshold, and auto-disable off
+(`--ngram-auto-disable-mtp-threshold 0.0`) for clean benchmark coverage.
+
+The output artifact uses schema `ax.qwen36_mtp_fair.v1`. It records per-engine
+decode tok/s and MTP accept rate for all engines. For `lightning_mtp_ngram`
+("Lightning ngram+MTP") it additionally records the n-gram accept rate as a
+separate column. Saved under `benchmarks/results/mtp-fair/`. Use `--skip-existing`
+to resume a partial run after adding a new engine.
+
+Do not merge these rows with `bench_mlx_inference_stack.py` MLX throughput tables.
+The fair benchmark uses real prompt suites, not the `mlx_lm.benchmark` random-token
+contract, and its engines each use their own MTP infrastructure rather than
+AX-owned repo MLX. It is cross-engine comparison evidence, not a repo-owned
+MLX throughput claim.
 
 ## AX Runtime-Mode Comparison
 

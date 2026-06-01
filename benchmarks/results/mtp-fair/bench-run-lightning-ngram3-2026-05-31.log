@@ -1,0 +1,603 @@
+
+/opt/homebrew/var/mtplx/venv-0.3.7/bin/python /Users/akiralam/code/ax-engine_v5/scripts/bench_rapid_mlx_prompt_suites.py --model /Users/akiralam/.cache/huggingface/hub/models--ax-local--Qwen3.6-27B-MTP/snapshots/v1 --suite flappy --prompts /Users/akiralam/code/ax-engine_v5/benchmarks/prompts/mtp-suites/flappy.jsonl --output benchmarks/results/mtp-fair/2026-05-31-qwen36-fair-lightning-ngram3/27b-4bit/flappy/lightning_mtp_ngram.json --rapid-source /Users/akiralam/code/ax-engine_v5/.internal/reference/lightning-mlx --rapid-mtp-patch none --lightning-mode --depth 3 --temperature 0.6 --top-p 0.95 --top-k 20 --max-tokens 1000 --repetitions 5 --warmup-repetitions 1 --cooldown 15.0 --port 18766 --enable-ngram
+flappy_pipes rep 1/6: decode=52.22709260020269 out=1000 reject=None
+flappy_pipes rep 2/6: decode=52.79142095065619 out=1000 reject=None
+flappy_pipes rep 3/6: decode=54.81747204677233 out=1000 reject=None
+flappy_pipes rep 4/6: decode=56.263682844147986 out=1000 reject=None
+flappy_pipes rep 5/6: decode=56.19029359878229 out=1000 reject=None
+flappy_pipes rep 6/6: decode=56.00504373852018 out=1000 reject=None
+flappy_score_gates rep 1/6: decode=47.00837245603091 out=688 reject=None
+flappy_score_gates rep 2/6: decode=47.85248521539516 out=690 reject=None
+flappy_score_gates rep 3/6: decode=49.259684378862396 out=689 reject=None
+flappy_score_gates rep 4/6: decode=48.12631320284877 out=689 reject=None
+flappy_score_gates rep 5/6: decode=47.794098038441795 out=690 reject=None
+flappy_score_gates rep 6/6: decode=48.66127097342812 out=687 reject=None
+flappy_collision_checks rep 1/6: decode=47.920308909648625 out=1000 reject=None
+flappy_collision_checks rep 2/6: decode=49.38002565244876 out=1000 reject=None
+flappy_collision_checks rep 3/6: decode=49.15601598992304 out=1000 reject=None
+flappy_collision_checks rep 4/6: decode=49.39351391790124 out=1000 reject=None
+flappy_collision_checks rep 5/6: decode=50.12036405427159 out=1000 reject=None
+flappy_collision_checks rep 6/6: decode=50.173491257777826 out=1000 reject=None
+flappy_sound_channels rep 1/6: decode=53.22012797031015 out=1000 reject=None
+flappy_sound_channels rep 2/6: decode=55.166435781590714 out=1000 reject=None
+flappy_sound_channels rep 3/6: decode=55.07892333612666 out=1000 reject=None
+flappy_sound_channels rep 4/6: decode=55.37171505383503 out=1000 reject=None
+flappy_sound_channels rep 5/6: decode=55.50614776031288 out=1000 reject=None
+flappy_sound_channels rep 6/6: decode=55.39016590531829 out=1000 reject=None
+Saved to benchmarks/results/mtp-fair/2026-05-31-qwen36-fair-lightning-ngram3/27b-4bit/flappy/lightning_mtp_ngram.json
+{
+  "accept_rate": 0.8596037006351837,
+  "accepted_drafts": null,
+  "case_count": 4,
+  "decode_tok_s": {
+    "median": 51.48245610421701,
+    "p10": 48.12631320284877,
+    "p90": 56.00504373852018,
+    "values": [
+      52.79142095065619,
+      54.81747204677233,
+      56.263682844147986,
+      56.19029359878229,
+      56.00504373852018,
+      47.85248521539516,
+      49.259684378862396,
+      48.12631320284877,
+      47.794098038441795,
+      48.66127097342812,
+      49.38002565244876,
+      49.15601598992304,
+      49.39351391790124,
+      50.12036405427159,
+      50.173491257777826,
+      55.166435781590714,
+      55.07892333612666,
+      55.37171505383503,
+      55.50614776031288,
+      55.39016590531829
+    ]
+  },
+  "drafted_tokens": null,
+  "end_to_end_tok_s": {
+    "median": 49.50346207516407,
+    "p10": 45.52753039583641,
+    "p90": 53.897087404691746,
+    "values": [
+      50.90572904847435,
+      52.80058679217604,
+      54.128822292842194,
+      54.059233513058764,
+      53.897087404691746,
+      45.3296154070318,
+      46.52817118693444,
+      45.52753039583641,
+      45.30449632106184,
+      45.98845840310836,
+      47.38515206473578,
+      47.17302507654262,
+      47.38118467022456,
+      48.05376659057774,
+      48.1011951018538,
+      53.12954093023042,
+      53.04031330211254,
+      53.32271654441944,
+      53.4477791615306,
+      53.33647496833314
+    ]
+  },
+  "generated_tokens": 18445,
+  "ngram_accept_rate": 0.8696407004830917,
+  "runs": 20,
+  "valid_runs": 20
+}
+
+/opt/homebrew/var/mtplx/venv-0.3.7/bin/python /Users/akiralam/code/ax-engine_v5/scripts/bench_rapid_mlx_prompt_suites.py --model /Users/akiralam/.cache/huggingface/hub/models--ax-local--Qwen3.6-27B-MTP/snapshots/v1 --suite long_code --prompts /Users/akiralam/code/ax-engine_v5/benchmarks/prompts/mtp-suites/long_code.jsonl --output benchmarks/results/mtp-fair/2026-05-31-qwen36-fair-lightning-ngram3/27b-4bit/long_code/lightning_mtp_ngram.json --rapid-source /Users/akiralam/code/ax-engine_v5/.internal/reference/lightning-mlx --rapid-mtp-patch none --lightning-mode --depth 3 --temperature 0.6 --top-p 0.95 --top-k 20 --max-tokens 1000 --repetitions 5 --warmup-repetitions 1 --cooldown 15.0 --port 18766 --enable-ngram
+long_code_c_audit rep 1/6: decode=56.607621433498686 out=1000 reject=None
+long_code_c_audit rep 2/6: decode=58.85752136144978 out=1000 reject=None
+long_code_c_audit rep 3/6: decode=58.957524838499396 out=1000 reject=None
+long_code_c_audit rep 4/6: decode=58.96781932978831 out=1000 reject=None
+long_code_c_audit rep 5/6: decode=58.709935043065656 out=1000 reject=None
+long_code_c_audit rep 6/6: decode=59.33550127854202 out=1000 reject=None
+long_code_api_audit rep 1/6: decode=53.52874226803521 out=1000 reject=None
+long_code_api_audit rep 2/6: decode=54.3909850143233 out=1000 reject=None
+long_code_api_audit rep 3/6: decode=56.346163577310904 out=1000 reject=None
+long_code_api_audit rep 4/6: decode=55.73461176786679 out=1000 reject=None
+long_code_api_audit rep 5/6: decode=54.97374575202262 out=1000 reject=None
+long_code_api_audit rep 6/6: decode=54.133622678298885 out=1000 reject=None
+long_code_test_stubs rep 1/6: decode=55.92641604846937 out=1000 reject=None
+long_code_test_stubs rep 2/6: decode=58.471776104901345 out=1000 reject=None
+long_code_test_stubs rep 3/6: decode=54.84795923922002 out=1000 reject=None
+long_code_test_stubs rep 4/6: decode=59.28048372046026 out=1000 reject=None
+long_code_test_stubs rep 5/6: decode=54.53666311240481 out=1000 reject=None
+long_code_test_stubs rep 6/6: decode=54.71972368389825 out=1000 reject=None
+long_code_sql_schema rep 1/6: decode=52.33401279944166 out=1000 reject=None
+long_code_sql_schema rep 2/6: decode=54.25869058240525 out=1000 reject=None
+long_code_sql_schema rep 3/6: decode=54.05748171332538 out=1000 reject=None
+long_code_sql_schema rep 4/6: decode=54.59897531409714 out=1000 reject=None
+long_code_sql_schema rep 5/6: decode=54.7737669177337 out=1000 reject=None
+long_code_sql_schema rep 6/6: decode=54.36833991757078 out=1000 reject=None
+Saved to benchmarks/results/mtp-fair/2026-05-31-qwen36-fair-lightning-ngram3/27b-4bit/long_code/lightning_mtp_ngram.json
+{
+  "accept_rate": 0.878747795414462,
+  "accepted_drafts": null,
+  "case_count": 4,
+  "decode_tok_s": {
+    "median": 54.91085249562132,
+    "p10": 54.25869058240525,
+    "p90": 58.96781932978831,
+    "values": [
+      58.85752136144978,
+      58.957524838499396,
+      58.96781932978831,
+      58.709935043065656,
+      59.33550127854202,
+      54.3909850143233,
+      56.346163577310904,
+      55.73461176786679,
+      54.97374575202262,
+      54.133622678298885,
+      58.471776104901345,
+      54.84795923922002,
+      59.28048372046026,
+      54.53666311240481,
+      54.71972368389825,
+      54.25869058240525,
+      54.05748171332538,
+      54.59897531409714,
+      54.7737669177337,
+      54.36833991757078
+    ]
+  },
+  "drafted_tokens": null,
+  "end_to_end_tok_s": {
+    "median": 52.03586911472628,
+    "p10": 51.2913017998472,
+    "p90": 55.10070333312256,
+    "values": [
+      55.0145291756842,
+      55.10070333312256,
+      55.255278037688264,
+      54.87473413107036,
+      55.437411631047034,
+      50.87759656676682,
+      52.57769879658212,
+      52.04441206343858,
+      51.383760276055696,
+      50.64908490695739,
+      54.35386803338351,
+      51.576543538181944,
+      55.065101656109675,
+      51.2913017998472,
+      51.455263883466344,
+      51.72419132734835,
+      51.53132747211098,
+      52.02732616601398,
+      52.19753969336225,
+      51.825877041293175
+    ]
+  },
+  "generated_tokens": 20000,
+  "ngram_accept_rate": 0.9973148869709252,
+  "runs": 20,
+  "valid_runs": 20
+}
+
+/opt/homebrew/var/mtplx/venv-0.3.7/bin/python /Users/akiralam/code/ax-engine_v5/scripts/bench_rapid_mlx_prompt_suites.py --model /Users/akiralam/.cache/huggingface/hub/models--ax-local--Qwen3.6-27B-MTP/snapshots/v1 --suite python_modules_long --prompts /Users/akiralam/code/ax-engine_v5/benchmarks/prompts/mtp-suites/python_modules_long.jsonl --output benchmarks/results/mtp-fair/2026-05-31-qwen36-fair-lightning-ngram3/27b-4bit/python_modules_long/lightning_mtp_ngram.json --rapid-source /Users/akiralam/code/ax-engine_v5/.internal/reference/lightning-mlx --rapid-mtp-patch none --lightning-mode --depth 3 --temperature 0.6 --top-p 0.95 --top-k 20 --max-tokens 1000 --repetitions 5 --warmup-repetitions 1 --cooldown 15.0 --port 18766 --enable-ngram
+pymod_http_client rep 1/6: decode=42.58467273782038 out=1000 reject=None
+pymod_http_client rep 2/6: decode=44.01011279774794 out=1000 reject=None
+pymod_http_client rep 3/6: decode=43.44975318613488 out=1000 reject=None
+pymod_http_client rep 4/6: decode=45.96806348416697 out=1000 reject=None
+pymod_http_client rep 5/6: decode=44.773552273270376 out=1000 reject=None
+pymod_http_client rep 6/6: decode=43.32603132648737 out=1000 reject=None
+pymod_config_loader rep 1/6: decode=43.965628544238406 out=1000 reject=None
+pymod_config_loader rep 2/6: decode=45.04954484318389 out=1000 reject=None
+pymod_config_loader rep 3/6: decode=46.279824107049194 out=1000 reject=None
+pymod_config_loader rep 4/6: decode=44.31500360216942 out=1000 reject=None
+pymod_config_loader rep 5/6: decode=44.58602994076764 out=1000 reject=None
+pymod_config_loader rep 6/6: decode=46.517955880820004 out=1000 reject=None
+pymod_event_bus rep 1/6: decode=46.780446757251774 out=1000 reject=None
+pymod_event_bus rep 2/6: decode=45.87326550195076 out=1000 reject=None
+pymod_event_bus rep 3/6: decode=47.55796837221908 out=1000 reject=None
+pymod_event_bus rep 4/6: decode=47.495808999498344 out=1000 reject=None
+pymod_event_bus rep 5/6: decode=47.19092935513058 out=1000 reject=None
+pymod_event_bus rep 6/6: decode=44.90328340722545 out=1000 reject=None
+Saved to benchmarks/results/mtp-fair/2026-05-31-qwen36-fair-lightning-ngram3/27b-4bit/python_modules_long/lightning_mtp_ngram.json
+{
+  "accept_rate": 0.7222222222222222,
+  "accepted_drafts": null,
+  "case_count": 3,
+  "decode_tok_s": {
+    "median": 45.04954484318389,
+    "p10": 43.44975318613488,
+    "p90": 47.495808999498344,
+    "values": [
+      44.01011279774794,
+      43.44975318613488,
+      45.96806348416697,
+      44.773552273270376,
+      43.32603132648737,
+      45.04954484318389,
+      46.279824107049194,
+      44.31500360216942,
+      44.58602994076764,
+      46.517955880820004,
+      45.87326550195076,
+      47.55796837221908,
+      47.495808999498344,
+      47.19092935513058,
+      44.90328340722545
+    ]
+  },
+  "drafted_tokens": null,
+  "end_to_end_tok_s": {
+    "median": 43.505191135201166,
+    "p10": 42.12679756265783,
+    "p90": 45.77918088523013,
+    "values": [
+      42.72906629722818,
+      42.12679756265783,
+      44.4904318963277,
+      43.358000228340465,
+      42.09181725917194,
+      43.505191135201166,
+      44.6471124053258,
+      42.81192352741852,
+      43.08284905653162,
+      44.86785290016004,
+      44.366409026206995,
+      45.835404766665015,
+      45.77918088523013,
+      45.49604543134084,
+      43.36370660383964
+    ]
+  },
+  "generated_tokens": 15000,
+  "ngram_accept_rate": 0.484744469870328,
+  "runs": 15,
+  "valid_runs": 15
+}
+
+/opt/homebrew/var/mtplx/venv-0.3.7/bin/python /Users/akiralam/code/ax-engine_v5/scripts/bench_rapid_mlx_prompt_suites.py --model /Users/akiralam/.cache/huggingface/hub/models--ax-local--Qwen3.6-35B-MTP/snapshots/v1 --suite flappy --prompts /Users/akiralam/code/ax-engine_v5/benchmarks/prompts/mtp-suites/flappy.jsonl --output benchmarks/results/mtp-fair/2026-05-31-qwen36-fair-lightning-ngram3/35b-a3b-4bit/flappy/lightning_mtp_ngram.json --rapid-source /Users/akiralam/code/ax-engine_v5/.internal/reference/lightning-mlx --rapid-mtp-patch none --lightning-mode --depth 1 --temperature 0.6 --top-p 0.95 --top-k 20 --max-tokens 1000 --repetitions 5 --warmup-repetitions 1 --cooldown 15.0 --port 18766 --enable-ngram
+Traceback (most recent call last):
+  File "/Users/akiralam/code/ax-engine_v5/scripts/bench_rapid_mlx_prompt_suites.py", line 735, in <module>
+    raise SystemExit(main())
+                     ~~~~^^
+  File "/Users/akiralam/code/ax-engine_v5/scripts/bench_rapid_mlx_prompt_suites.py", line 726, in main
+    result = run_suite(args)
+  File "/Users/akiralam/code/ax-engine_v5/scripts/bench_rapid_mlx_prompt_suites.py", line 571, in run_suite
+    run_case(
+    ~~~~~~~~^
+        handle=handle,
+        ^^^^^^^^^^^^^^
+    ...<5 lines>...
+        repetition=-1,
+        ^^^^^^^^^^^^^^
+    )
+    ^
+  File "/Users/akiralam/code/ax-engine_v5/scripts/bench_rapid_mlx_prompt_suites.py", line 416, in run_case
+    response.raise_for_status()
+    ~~~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "/opt/homebrew/var/mtplx/venv-0.3.7/lib/python3.13/site-packages/httpx/_models.py", line 829, in raise_for_status
+    raise HTTPStatusError(message, request=request, response=self)
+httpx.HTTPStatusError: Client error '404 Not Found' for url 'http://127.0.0.1:18766/v1/chat/completions'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/404
+
+/opt/homebrew/var/mtplx/venv-0.3.7/bin/python /Users/akiralam/code/ax-engine_v5/scripts/bench_rapid_mlx_prompt_suites.py --model /Users/akiralam/.cache/huggingface/hub/models--ax-local--Qwen3.6-35B-MTP/snapshots/v1 --suite long_code --prompts /Users/akiralam/code/ax-engine_v5/benchmarks/prompts/mtp-suites/long_code.jsonl --output benchmarks/results/mtp-fair/2026-05-31-qwen36-fair-lightning-ngram3/35b-a3b-4bit/long_code/lightning_mtp_ngram.json --rapid-source /Users/akiralam/code/ax-engine_v5/.internal/reference/lightning-mlx --rapid-mtp-patch none --lightning-mode --depth 1 --temperature 0.6 --top-p 0.95 --top-k 20 --max-tokens 1000 --repetitions 5 --warmup-repetitions 1 --cooldown 15.0 --port 18766 --enable-ngram
+Traceback (most recent call last):
+  File "/Users/akiralam/code/ax-engine_v5/scripts/bench_rapid_mlx_prompt_suites.py", line 735, in <module>
+    raise SystemExit(main())
+                     ~~~~^^
+  File "/Users/akiralam/code/ax-engine_v5/scripts/bench_rapid_mlx_prompt_suites.py", line 726, in main
+    result = run_suite(args)
+  File "/Users/akiralam/code/ax-engine_v5/scripts/bench_rapid_mlx_prompt_suites.py", line 571, in run_suite
+    run_case(
+    ~~~~~~~~^
+        handle=handle,
+        ^^^^^^^^^^^^^^
+    ...<5 lines>...
+        repetition=-1,
+        ^^^^^^^^^^^^^^
+    )
+    ^
+  File "/Users/akiralam/code/ax-engine_v5/scripts/bench_rapid_mlx_prompt_suites.py", line 416, in run_case
+    response.raise_for_status()
+    ~~~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "/opt/homebrew/var/mtplx/venv-0.3.7/lib/python3.13/site-packages/httpx/_models.py", line 829, in raise_for_status
+    raise HTTPStatusError(message, request=request, response=self)
+httpx.HTTPStatusError: Client error '404 Not Found' for url 'http://127.0.0.1:18766/v1/chat/completions'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/404
+
+/opt/homebrew/var/mtplx/venv-0.3.7/bin/python /Users/akiralam/code/ax-engine_v5/scripts/bench_rapid_mlx_prompt_suites.py --model /Users/akiralam/.cache/huggingface/hub/models--ax-local--Qwen3.6-35B-MTP/snapshots/v1 --suite python_modules_long --prompts /Users/akiralam/code/ax-engine_v5/benchmarks/prompts/mtp-suites/python_modules_long.jsonl --output benchmarks/results/mtp-fair/2026-05-31-qwen36-fair-lightning-ngram3/35b-a3b-4bit/python_modules_long/lightning_mtp_ngram.json --rapid-source /Users/akiralam/code/ax-engine_v5/.internal/reference/lightning-mlx --rapid-mtp-patch none --lightning-mode --depth 1 --temperature 0.6 --top-p 0.95 --top-k 20 --max-tokens 1000 --repetitions 5 --warmup-repetitions 1 --cooldown 15.0 --port 18766 --enable-ngram
+Traceback (most recent call last):
+  File "/Users/akiralam/code/ax-engine_v5/scripts/bench_rapid_mlx_prompt_suites.py", line 735, in <module>
+    raise SystemExit(main())
+                     ~~~~^^
+  File "/Users/akiralam/code/ax-engine_v5/scripts/bench_rapid_mlx_prompt_suites.py", line 726, in main
+    result = run_suite(args)
+  File "/Users/akiralam/code/ax-engine_v5/scripts/bench_rapid_mlx_prompt_suites.py", line 571, in run_suite
+    run_case(
+    ~~~~~~~~^
+        handle=handle,
+        ^^^^^^^^^^^^^^
+    ...<5 lines>...
+        repetition=-1,
+        ^^^^^^^^^^^^^^
+    )
+    ^
+  File "/Users/akiralam/code/ax-engine_v5/scripts/bench_rapid_mlx_prompt_suites.py", line 416, in run_case
+    response.raise_for_status()
+    ~~~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "/opt/homebrew/var/mtplx/venv-0.3.7/lib/python3.13/site-packages/httpx/_models.py", line 829, in raise_for_status
+    raise HTTPStatusError(message, request=request, response=self)
+httpx.HTTPStatusError: Client error '404 Not Found' for url 'http://127.0.0.1:18766/v1/chat/completions'
+For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/404
+Saved summary: benchmarks/results/mtp-fair/2026-05-31-qwen36-fair-lightning-ngram3/summary.json
+Saved markdown: benchmarks/results/mtp-fair/2026-05-31-qwen36-fair-lightning-ngram3/summary.md
+Saved chart: benchmarks/results/mtp-fair/2026-05-31-qwen36-fair-lightning-ngram3/decode-tok-s.svg
+Saved chart: benchmarks/results/mtp-fair/2026-05-31-qwen36-fair-lightning-ngram3/decode-tok-s-27b-4bit.svg
+Saved chart: benchmarks/results/mtp-fair/2026-05-31-qwen36-fair-lightning-ngram3/accept-rate-27b-4bit.svg
+Saved chart: benchmarks/results/mtp-fair/2026-05-31-qwen36-fair-lightning-ngram3/decode-tok-s-35b-a3b-4bit.svg
+Saved chart: benchmarks/results/mtp-fair/2026-05-31-qwen36-fair-lightning-ngram3/accept-rate-35b-a3b-4bit.svg
+
+/opt/homebrew/var/mtplx/venv-0.3.7/bin/python /Users/akiralam/code/ax-engine_v5/scripts/bench_rapid_mlx_prompt_suites.py --model /Users/akiralam/.cache/huggingface/hub/models--ax-local--Qwen3.6-35B-MTP/snapshots/v1 --suite flappy --prompts /Users/akiralam/code/ax-engine_v5/benchmarks/prompts/mtp-suites/flappy.jsonl --output benchmarks/results/mtp-fair/2026-05-31-qwen36-fair-lightning-ngram3/35b-a3b-4bit/flappy/lightning_mtp_ngram.json --rapid-source /Users/akiralam/code/ax-engine_v5/.internal/reference/lightning-mlx --rapid-mtp-patch none --lightning-mode --depth 1 --temperature 0.6 --top-p 0.95 --top-k 20 --max-tokens 1000 --repetitions 5 --warmup-repetitions 1 --cooldown 15.0 --port 18766 --enable-ngram
+flappy_pipes rep 1/6: decode=184.94695467048265 out=1000 reject=None
+flappy_pipes rep 2/6: decode=187.56808870502056 out=1000 reject=None
+flappy_pipes rep 3/6: decode=188.0786371277946 out=1000 reject=None
+flappy_pipes rep 4/6: decode=187.83397026652352 out=1000 reject=None
+flappy_pipes rep 5/6: decode=187.85219791018278 out=1000 reject=None
+flappy_pipes rep 6/6: decode=186.3756452266563 out=1000 reject=None
+flappy_score_gates rep 1/6: decode=157.41178222126345 out=690 reject=None
+flappy_score_gates rep 2/6: decode=157.5049436436368 out=690 reject=None
+flappy_score_gates rep 3/6: decode=156.69522399343683 out=694 reject=None
+flappy_score_gates rep 4/6: decode=156.82636245005395 out=691 reject=None
+flappy_score_gates rep 5/6: decode=157.03220975052392 out=689 reject=None
+flappy_score_gates rep 6/6: decode=156.3078133910716 out=691 reject=None
+flappy_collision_checks rep 1/6: decode=170.19242736857035 out=1000 reject=None
+flappy_collision_checks rep 2/6: decode=169.57714751225834 out=1000 reject=None
+flappy_collision_checks rep 3/6: decode=171.42014124073455 out=1000 reject=None
+flappy_collision_checks rep 4/6: decode=167.18939011865208 out=1000 reject=None
+flappy_collision_checks rep 5/6: decode=169.56826704925123 out=1000 reject=None
+flappy_collision_checks rep 6/6: decode=169.9425440352386 out=1000 reject=None
+flappy_sound_channels rep 1/6: decode=175.7443737262032 out=1000 reject=None
+flappy_sound_channels rep 2/6: decode=178.2628998029456 out=1000 reject=None
+flappy_sound_channels rep 3/6: decode=178.04784733647168 out=1000 reject=None
+flappy_sound_channels rep 4/6: decode=178.4345106096299 out=1000 reject=None
+flappy_sound_channels rep 5/6: decode=178.76304685196948 out=1000 reject=None
+flappy_sound_channels rep 6/6: decode=177.9604812142977 out=1000 reject=None
+Saved to benchmarks/results/mtp-fair/2026-05-31-qwen36-fair-lightning-ngram3/35b-a3b-4bit/flappy/lightning_mtp_ngram.json
+{
+  "accept_rate": 0.9120501893939394,
+  "accepted_drafts": null,
+  "case_count": 4,
+  "decode_tok_s": {
+    "median": 174.69031122751613,
+    "p10": 156.82636245005395,
+    "p90": 187.83397026652352,
+    "values": [
+      187.56808870502056,
+      188.0786371277946,
+      187.83397026652352,
+      187.85219791018278,
+      186.3756452266563,
+      157.5049436436368,
+      156.69522399343683,
+      156.82636245005395,
+      157.03220975052392,
+      156.3078133910716,
+      169.57714751225834,
+      171.42014124073455,
+      167.18939011865208,
+      169.56826704925123,
+      169.9425440352386,
+      178.2628998029456,
+      178.04784733647168,
+      178.4345106096299,
+      178.76304685196948,
+      177.9604812142977
+    ]
+  },
+  "drafted_tokens": null,
+  "end_to_end_tok_s": {
+    "median": 163.93178817566576,
+    "p10": 144.44802341774235,
+    "p90": 175.93230265742707,
+    "values": [
+      175.62661710953563,
+      176.2384886043352,
+      175.98146974818474,
+      175.93230265742707,
+      174.4726493293891,
+      144.98709230659844,
+      144.4310413316486,
+      144.44802341774235,
+      144.6884076939385,
+      144.15960615232657,
+      158.91748165224016,
+      160.75450233695295,
+      157.22544570419143,
+      159.2036812464155,
+      159.61981219360544,
+      167.42577280444067,
+      167.11355035938604,
+      167.43629106677594,
+      167.781719506325,
+      167.10907401437856
+    ]
+  },
+  "generated_tokens": 18455,
+  "ngram_accept_rate": 0.8860844017094017,
+  "runs": 20,
+  "valid_runs": 20
+}
+
+/opt/homebrew/var/mtplx/venv-0.3.7/bin/python /Users/akiralam/code/ax-engine_v5/scripts/bench_rapid_mlx_prompt_suites.py --model /Users/akiralam/.cache/huggingface/hub/models--ax-local--Qwen3.6-35B-MTP/snapshots/v1 --suite long_code --prompts /Users/akiralam/code/ax-engine_v5/benchmarks/prompts/mtp-suites/long_code.jsonl --output benchmarks/results/mtp-fair/2026-05-31-qwen36-fair-lightning-ngram3/35b-a3b-4bit/long_code/lightning_mtp_ngram.json --rapid-source /Users/akiralam/code/ax-engine_v5/.internal/reference/lightning-mlx --rapid-mtp-patch none --lightning-mode --depth 1 --temperature 0.6 --top-p 0.95 --top-k 20 --max-tokens 1000 --repetitions 5 --warmup-repetitions 1 --cooldown 15.0 --port 18766 --enable-ngram
+long_code_c_audit rep 1/6: decode=197.8805035881931 out=1000 reject=None
+long_code_c_audit rep 2/6: decode=198.36199279740308 out=1000 reject=None
+long_code_c_audit rep 3/6: decode=197.7144815683072 out=1000 reject=None
+long_code_c_audit rep 4/6: decode=198.48521707400013 out=1000 reject=None
+long_code_c_audit rep 5/6: decode=198.7464778218815 out=1000 reject=None
+long_code_c_audit rep 6/6: decode=198.60234919449616 out=1000 reject=None
+long_code_api_audit rep 1/6: decode=192.4983952852763 out=1000 reject=None
+long_code_api_audit rep 2/6: decode=188.00523470425554 out=1000 reject=None
+long_code_api_audit rep 3/6: decode=191.23264306795522 out=1000 reject=None
+long_code_api_audit rep 4/6: decode=191.49872069274824 out=1000 reject=None
+long_code_api_audit rep 5/6: decode=195.65715466373146 out=1000 reject=None
+long_code_api_audit rep 6/6: decode=189.49237914174637 out=1000 reject=None
+long_code_test_stubs rep 1/6: decode=210.85195812814442 out=1000 reject=None
+long_code_test_stubs rep 2/6: decode=199.41935727806526 out=1000 reject=None
+long_code_test_stubs rep 3/6: decode=211.52487274534664 out=1000 reject=None
+long_code_test_stubs rep 4/6: decode=210.9265007333324 out=1000 reject=None
+long_code_test_stubs rep 5/6: decode=211.82483359244424 out=1000 reject=None
+long_code_test_stubs rep 6/6: decode=211.94366113598437 out=1000 reject=None
+long_code_sql_schema rep 1/6: decode=184.29302351160354 out=1000 reject=None
+long_code_sql_schema rep 2/6: decode=184.9652093158547 out=1000 reject=None
+long_code_sql_schema rep 3/6: decode=183.9007646566964 out=1000 reject=None
+long_code_sql_schema rep 4/6: decode=184.71422804046014 out=1000 reject=None
+long_code_sql_schema rep 5/6: decode=185.1757963950506 out=1000 reject=None
+long_code_sql_schema rep 6/6: decode=181.54003222113866 out=1000 reject=None
+Saved to benchmarks/results/mtp-fair/2026-05-31-qwen36-fair-lightning-ngram3/35b-a3b-4bit/long_code/lightning_mtp_ngram.json
+{
+  "accept_rate": 0.9203600378987262,
+  "accepted_drafts": null,
+  "case_count": 4,
+  "decode_tok_s": {
+    "median": 196.68581811601933,
+    "p10": 184.71422804046014,
+    "p90": 211.52487274534664,
+    "values": [
+      198.36199279740308,
+      197.7144815683072,
+      198.48521707400013,
+      198.7464778218815,
+      198.60234919449616,
+      188.00523470425554,
+      191.23264306795522,
+      191.49872069274824,
+      195.65715466373146,
+      189.49237914174637,
+      199.41935727806526,
+      211.52487274534664,
+      210.9265007333324,
+      211.82483359244424,
+      211.94366113598437,
+      184.9652093158547,
+      183.9007646566964,
+      184.71422804046014,
+      185.1757963950506,
+      181.54003222113866
+    ]
+  },
+  "drafted_tokens": null,
+  "end_to_end_tok_s": {
+    "median": 180.33377497410248,
+    "p10": 172.02652701540177,
+    "p90": 193.37876271921084,
+    "values": [
+      182.1152794534156,
+      181.58705039191784,
+      182.25358148214923,
+      182.39167789446807,
+      182.31299170808853,
+      172.81968722394558,
+      175.59086765953273,
+      175.59930321746796,
+      179.0804995562871,
+      173.9871784164617,
+      183.19344971877376,
+      193.37876271921084,
+      192.9899054254215,
+      193.69425291519204,
+      193.74142700486732,
+      172.20123220746672,
+      171.30820418573012,
+      172.02652701540177,
+      172.45562599171566,
+      169.234471885787
+    ]
+  },
+  "generated_tokens": 20000,
+  "ngram_accept_rate": 0.9974874371859297,
+  "runs": 20,
+  "valid_runs": 20
+}
+
+/opt/homebrew/var/mtplx/venv-0.3.7/bin/python /Users/akiralam/code/ax-engine_v5/scripts/bench_rapid_mlx_prompt_suites.py --model /Users/akiralam/.cache/huggingface/hub/models--ax-local--Qwen3.6-35B-MTP/snapshots/v1 --suite python_modules_long --prompts /Users/akiralam/code/ax-engine_v5/benchmarks/prompts/mtp-suites/python_modules_long.jsonl --output benchmarks/results/mtp-fair/2026-05-31-qwen36-fair-lightning-ngram3/35b-a3b-4bit/python_modules_long/lightning_mtp_ngram.json --rapid-source /Users/akiralam/code/ax-engine_v5/.internal/reference/lightning-mlx --rapid-mtp-patch none --lightning-mode --depth 1 --temperature 0.6 --top-p 0.95 --top-k 20 --max-tokens 1000 --repetitions 5 --warmup-repetitions 1 --cooldown 15.0 --port 18766 --enable-ngram
+pymod_http_client rep 1/6: decode=137.22676465671205 out=1000 reject=None
+pymod_http_client rep 2/6: decode=136.0676660029025 out=1000 reject=None
+pymod_http_client rep 3/6: decode=135.8160630443201 out=1000 reject=None
+pymod_http_client rep 4/6: decode=137.0577693363258 out=1000 reject=None
+pymod_http_client rep 5/6: decode=137.03892056086988 out=1000 reject=None
+pymod_http_client rep 6/6: decode=135.87752525884508 out=1000 reject=None
+pymod_config_loader rep 1/6: decode=137.86787357777905 out=1000 reject=None
+pymod_config_loader rep 2/6: decode=139.08490201399385 out=1000 reject=None
+pymod_config_loader rep 3/6: decode=140.74670053153923 out=1000 reject=None
+pymod_config_loader rep 4/6: decode=137.88131083056638 out=1000 reject=None
+pymod_config_loader rep 5/6: decode=140.025623042363 out=1000 reject=None
+pymod_config_loader rep 6/6: decode=136.21276293438694 out=1000 reject=None
+pymod_event_bus rep 1/6: decode=132.7327875173438 out=1000 reject=None
+pymod_event_bus rep 2/6: decode=133.74550876216608 out=1000 reject=None
+pymod_event_bus rep 3/6: decode=134.58521735442946 out=1000 reject=None
+pymod_event_bus rep 4/6: decode=131.30928533311945 out=1000 reject=None
+pymod_event_bus rep 5/6: decode=137.73963338802557 out=1000 reject=None
+pymod_event_bus rep 6/6: decode=132.18253164525512 out=1000 reject=None
+Saved to benchmarks/results/mtp-fair/2026-05-31-qwen36-fair-lightning-ngram3/35b-a3b-4bit/python_modules_long/lightning_mtp_ngram.json
+{
+  "accept_rate": 0.9178356713426854,
+  "accepted_drafts": null,
+  "case_count": 3,
+  "decode_tok_s": {
+    "median": 136.21276293438694,
+    "p10": 132.18253164525512,
+    "p90": 140.025623042363,
+    "values": [
+      136.0676660029025,
+      135.8160630443201,
+      137.0577693363258,
+      137.03892056086988,
+      135.87752525884508,
+      139.08490201399385,
+      140.74670053153923,
+      137.88131083056638,
+      140.025623042363,
+      136.21276293438694,
+      133.74550876216608,
+      134.58521735442946,
+      131.30928533311945,
+      137.73963338802557,
+      132.18253164525512
+    ]
+  },
+  "drafted_tokens": null,
+  "end_to_end_tok_s": {
+    "median": 130.18185976729848,
+    "p10": 126.117819008979,
+    "p90": 133.27204891021634,
+    "values": [
+      129.8251294453562,
+      129.5836427345231,
+      130.82524264382357,
+      130.8083242738324,
+      129.74936186025417,
+      132.42138403933467,
+      133.95157491461205,
+      131.4314249497315,
+      133.27204891021634,
+      130.18185976729848,
+      127.53557596382872,
+      128.34795644383308,
+      125.38098711850351,
+      131.16662105654507,
+      126.117819008979
+    ]
+  },
+  "generated_tokens": 15000,
+  "ngram_accept_rate": 0.2727272727272727,
+  "runs": 15,
+  "valid_runs": 15
+}
+Saved summary: benchmarks/results/mtp-fair/2026-05-31-qwen36-fair-lightning-ngram3/summary.json
+Saved markdown: benchmarks/results/mtp-fair/2026-05-31-qwen36-fair-lightning-ngram3/summary.md
+Saved chart: benchmarks/results/mtp-fair/2026-05-31-qwen36-fair-lightning-ngram3/decode-tok-s.svg
+Saved chart: benchmarks/results/mtp-fair/2026-05-31-qwen36-fair-lightning-ngram3/decode-tok-s-27b-4bit.svg
+Saved chart: benchmarks/results/mtp-fair/2026-05-31-qwen36-fair-lightning-ngram3/accept-rate-27b-4bit.svg
+Saved chart: benchmarks/results/mtp-fair/2026-05-31-qwen36-fair-lightning-ngram3/decode-tok-s-35b-a3b-4bit.svg
+Saved chart: benchmarks/results/mtp-fair/2026-05-31-qwen36-fair-lightning-ngram3/accept-rate-35b-a3b-4bit.svg

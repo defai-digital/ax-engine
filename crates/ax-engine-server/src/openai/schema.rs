@@ -40,8 +40,8 @@ pub(crate) struct OpenAiEmbeddingRequest {
     pub(crate) input: EmbeddingInput,
     /// Ignored — always returns float32. Present for OpenAI API compatibility.
     #[serde(default)]
-    #[allow(dead_code)]
-    pub(crate) encoding_format: Option<String>,
+    #[serde(rename = "encoding_format")]
+    pub(crate) _encoding_format: Option<String>,
     /// Pooling strategy: "last" (default), "mean", or "cls".
     ///
     /// "last" takes the final token's hidden state, which is the standard for
