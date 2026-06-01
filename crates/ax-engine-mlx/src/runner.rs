@@ -5576,7 +5576,7 @@ impl MlxRunner {
         use crate::ngram_accel::sample_logit_row;
         use mlx_sys::{argmax, eval};
 
-        let pending = state.mtp_pending_draft.clone();
+        let mut pending = state.mtp_pending_draft.clone();
         let token_offset = state.cache.seq_len;
         let has_linear_attention = self.cfg.linear_attention.is_some();
         let vocab = self.cfg.vocab_size as i32;
@@ -5598,24 +5598,25 @@ impl MlxRunner {
             && pending.is_empty()
             && self.mtp_skip_state;
 
-        // Skip-state fast path: use logits/hidden from the previous verify
-        // to produce primary token + new draft WITHOUT a model forward.
-        // Then verify the new draft normally.
-        let (primary_tok_from_skip, new_draft_from_skip) = if can_skip {
+        // When skip-state is usable, sample primary + draft new MTP tokens from
+        // the saved logits/hidden.  The new drafts are written into `pending`,
+        // `mtp_pending_draft_log_probs`, and `mtp_pending_draft_sources` so the
+        // existing verify/accept pipeline operates on them unchanged.
+        let primary_tok_from_skip: Option<u32> = if can_skip {
             let sl = skip_logits.unwrap();
             let sh = skip_hidden.unwrap();
-            // Sample primary token from skip logits.
+            // Sample primary token from skip logits (shape [1, vocab]).
             let primary_tok = sample_logit_row(
                 &sl,
                 0,
                 0,
-                1,
+                vocab,
                 sampling,
                 &mut state.rng,
             );
             // Draft new MTP tokens from skip hidden.
             let cache = state.mtp_cache.get_or_insert_with(|| MlxKVCache::new(1));
-            let (draft, _lp, _dist, added, _m) = mtp_draft_tokens(
+            let (draft, log_probs, _dist, added, _m) = mtp_draft_tokens(
                 &self.weights,
                 &self.cfg,
                 &sh,
@@ -5625,16 +5626,20 @@ impl MlxRunner {
                 &mut state.rng,
             );
             state.mtp_decode_count += added;
-            state.mtp_telemetry.record_step(0, 0, &[]);
-            (Some(primary_tok), Some(draft))
+            state.mtp_pending_draft_log_probs = log_probs;
+            state.mtp_pending_draft_distributions.clear();
+            state.mtp_pending_draft_sources = vec![MtpDraftSource::Mtp; draft.len()];
+            // Override pending so the verify/accept pipeline sees the new drafts.
+            pending = draft;
+            Some(primary_tok)
         } else {
             // Discard skip-state if not usable.
             drop(skip_logits);
             drop(skip_hidden);
-            (None, None)
+            None
         };
 
-        // Build verify sequence: [last_token] ++ pending_draft.
+        // Build verify sequence: [primary_token] ++ pending_draft.
         let mut verify_input: Vec<u32> = Vec::with_capacity(1 + pending.len());
         if let Some(pt) = primary_tok_from_skip {
             verify_input.push(pt);
@@ -5642,9 +5647,6 @@ impl MlxRunner {
             verify_input.push(last_token);
         }
         verify_input.extend_from_slice(&pending);
-        if let Some(ref nd) = new_draft_from_skip {
-            verify_input.extend_from_slice(nd);
-        }
         let verify_len = verify_input.len();
 
         // Returns (logits_all, draft_hidden, accept_count, all_accepted, correction_argmax_tok).
@@ -5926,23 +5928,10 @@ impl MlxRunner {
                 }
             };
 
-        // Compute effective accept count: subtract 1 for skip-primary if present.
-        let skip_primary_offset = if primary_tok_from_skip.is_some() {
-            1
-        } else {
-            0
-        };
-        let effective_accept = accept_count.saturating_sub(skip_primary_offset);
-
         // For linear attention with rejection, trim MTP cache too.
-        // Account for skip-state: rejected_count includes new-draft-from-skip tokens.
         if has_linear_attention && !all_accepted {
             let rollback_started = Instant::now();
-            let skip_new_len = new_draft_from_skip
-                .as_ref()
-                .map(|nd| nd.len())
-                .unwrap_or(0);
-            let rejected_count = (pending.len() + skip_new_len).saturating_sub(effective_accept);
+            let rejected_count = pending.len() - accept_count;
             if rejected_count > 0 {
                 let new_mtp_len = state.mtp_decode_count.saturating_sub(rejected_count);
                 if let Some(ref mut c) = state.mtp_cache {
@@ -5955,20 +5944,14 @@ impl MlxRunner {
                 .saturating_add(elapsed_us(rollback_started));
         }
 
-        // Collect output tokens.
-        // When skip-state was used, verify_input = [skip_primary, nd0, nd1, nd2]
-        // and accept_count counts accepted new-draft tokens (nd0..nd{ac-1}).
-        // Prepend the skip-primary token to the result.
-        // When no skip-state, verify_input = [last_token, p0, p1, p2]
-        // and accept_count counts accepted pending tokens.
+        // Collect output tokens: accepted draft tokens followed by correction/bonus.
+        // When skip-state was used, prepend the skip-primary token.
         let mut result: Vec<u32> = if let Some(pt) = primary_tok_from_skip {
             let mut r = vec![pt];
-            if let Some(ref nd) = new_draft_from_skip {
-                r.extend_from_slice(&nd[..effective_accept.min(nd.len())]);
-            }
+            r.extend_from_slice(&pending[..accept_count]);
             r
         } else {
-            pending[..effective_accept].to_vec()
+            pending[..accept_count].to_vec()
         };
         let tail_sample_started = Instant::now();
         let tail_tok = sample_logit_row(
@@ -5986,7 +5969,7 @@ impl MlxRunner {
         if !pending.is_empty() {
             state.mtp_telemetry.record_step(
                 pending.len(),
-                effective_accept,
+                accept_count,
                 &state.mtp_pending_draft_sources,
             );
             let ngram_prefix_len = state
