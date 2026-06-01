@@ -1529,6 +1529,126 @@ impl TurboQuantCompressedBlockBuffer {
         Ok(())
     }
 
+    pub fn write_token_with_encoded_k8_keys(
+        &mut self,
+        token_index: usize,
+        heads: &[FullPrecisionKvTokenVectors],
+        packed_key_bytes: &[u8],
+        key_norms: &[f32],
+    ) -> Result<(), TurboQuantCodecError> {
+        if self.layout.config.preset != TurboQuantPreset::K8V4
+            || self.key_codec != TurboQuantKeyCodecConfig::rht_lloyd_max()
+        {
+            return Err(TurboQuantCodecError::FusedDecodeLaunchRejected {
+                status: TurboQuantFusedDecodeCandidateStatus::UnsupportedPreset,
+            });
+        }
+        if heads.len() != self.layout.config.n_kv_heads {
+            return Err(TurboQuantCodecError::MismatchedKvHeadCount {
+                expected: self.layout.config.n_kv_heads,
+                actual: heads.len(),
+            });
+        }
+        if key_norms.len() != self.layout.config.n_kv_heads {
+            return Err(TurboQuantCodecError::MismatchedKvHeadCount {
+                expected: self.layout.config.n_kv_heads,
+                actual: key_norms.len(),
+            });
+        }
+        let expected_key_bytes = checked_mul(
+            self.layout.config.n_kv_heads,
+            self.layout.key_payload_bytes_per_head,
+        )?;
+        if packed_key_bytes.len() != expected_key_bytes {
+            return Err(TurboQuantCodecError::InvalidCompressedBufferState {
+                message: format!(
+                    "expected {expected_key_bytes} encoded K8 key bytes, got {}",
+                    packed_key_bytes.len()
+                ),
+            });
+        }
+
+        let compressed_heads = heads
+            .iter()
+            .enumerate()
+            .map(|(head_index, (key, value))| {
+                self.validate_slot_vectors(key, value)?;
+                let key_start = checked_mul(head_index, self.layout.key_payload_bytes_per_head)?;
+                let key_end =
+                    checked_add_many(&[key_start, self.layout.key_payload_bytes_per_head])?;
+                Ok(TurboQuantCompressedHeadSlot {
+                    key: QuantizedKeyVector {
+                        dim: self.layout.config.head_dim,
+                        bit_width: 8,
+                        l2_norm: key_norms[head_index],
+                        packed_indices: packed_key_bytes[key_start..key_end].to_vec(),
+                        codec_version: self.key_codec.version,
+                        centroid_kind: self.key_codec.centroid_kind,
+                        rotation_seed: turboquant_rotation_seed(
+                            self.layout.config.head_dim,
+                            head_index,
+                            TurboQuantVectorRole::Key,
+                        ),
+                        head_index,
+                    },
+                    value: encode_value_groups_for_preset(
+                        value,
+                        self.layout.config.value_group_size,
+                        self.layout.config.preset,
+                    )?,
+                })
+            })
+            .collect::<Result<Vec<_>, TurboQuantCodecError>>()?;
+
+        self.ensure_capacity_for_tokens(token_index.saturating_add(1))?;
+        for (head_index, slot) in compressed_heads.iter().enumerate() {
+            let address = self.layout.address_for_token(token_index, head_index)?;
+            self.zero_slot(&address)?;
+            self.write_compressed_slot_at(&address, &slot.key, &slot.value)?;
+            let slot_index = self.slot_index(token_index, head_index)?;
+            if !self.written_slots[slot_index] {
+                self.written_slot_count = self.written_slot_count.saturating_add(1);
+            }
+            self.written_slots[slot_index] = true;
+        }
+        self.token_count = self.token_count.max(token_index.saturating_add(1));
+        self.update_dequant_buffers_after_token_write(token_index, heads)?;
+        Ok(())
+    }
+
+    pub fn truncate_token_count(&mut self, token_count: usize) -> Result<(), TurboQuantCodecError> {
+        if token_count >= self.token_count {
+            return Ok(());
+        }
+
+        let old_token_count = self.token_count;
+        for token_index in token_count..old_token_count {
+            for head_index in 0..self.layout.config.n_kv_heads {
+                let address = self.layout.address_for_token(token_index, head_index)?;
+                self.zero_slot(&address)?;
+                let slot_index = self.slot_index(token_index, head_index)?;
+                if self.written_slots.get(slot_index).copied().unwrap_or(false) {
+                    self.written_slot_count = self.written_slot_count.saturating_sub(1);
+                    self.written_slots[slot_index] = false;
+                }
+            }
+        }
+
+        self.token_count = token_count;
+        let buffer_bytes = self.layout.buffer_bytes_for_tokens(token_count)?;
+        self.bytes.truncate(buffer_bytes);
+        let slot_count = checked_mul(
+            checked_mul(
+                self.layout.block_count_for_tokens(token_count),
+                self.layout.config.block_tokens,
+            )?,
+            self.layout.config.n_kv_heads,
+        )?;
+        self.written_slots.truncate(slot_count);
+        self.invalidate_dequant_buffers();
+        Ok(())
+    }
+
     pub fn read_compressed_slot(
         &self,
         token_index: usize,
@@ -6345,6 +6465,59 @@ mod tests {
     }
 
     #[test]
+    fn write_token_with_encoded_k8_keys_matches_cpu_token_write() {
+        let layout = TurboQuantBlockLayout::new(TurboQuantBlockLayoutConfig {
+            preset: TurboQuantPreset::K8V4,
+            block_tokens: 4,
+            n_kv_heads: 2,
+            head_dim: 8,
+            value_group_size: 4,
+        })
+        .expect("layout");
+        let heads = vec![
+            (
+                vec![0.5, -0.5, 0.25, -0.25, 0.1, -0.1, 0.75, -0.75],
+                vec![0.1, 0.2, 0.3, 0.4, -0.1, -0.2, -0.3, -0.4],
+            ),
+            (
+                vec![-0.5, 0.5, -0.25, 0.25, -0.1, 0.1, -0.75, 0.75],
+                vec![-0.1, -0.2, -0.3, -0.4, 0.1, 0.2, 0.3, 0.4],
+            ),
+        ];
+        let encoded_keys = heads
+            .iter()
+            .enumerate()
+            .map(|(head_index, (key, _))| {
+                encode_key_vector_for_head(key, TurboQuantPreset::K8V4, head_index)
+                    .expect("CPU key encode")
+            })
+            .collect::<Vec<_>>();
+        let packed_key_bytes = encoded_keys
+            .iter()
+            .flat_map(|key| key.packed_indices.iter().copied())
+            .collect::<Vec<_>>();
+        let key_norms = encoded_keys
+            .iter()
+            .map(|key| key.l2_norm)
+            .collect::<Vec<_>>();
+
+        let mut cpu_buffer = TurboQuantCompressedBlockBuffer::new(layout);
+        let mut preencoded_buffer = TurboQuantCompressedBlockBuffer::new(layout);
+        cpu_buffer.write_token(0, &heads).expect("CPU write");
+        preencoded_buffer
+            .write_token_with_encoded_k8_keys(0, &heads, &packed_key_bytes, &key_norms)
+            .expect("preencoded write");
+
+        assert_eq!(preencoded_buffer.as_bytes(), cpu_buffer.as_bytes());
+        assert_eq!(
+            preencoded_buffer
+                .read_compressed_token(0)
+                .expect("preencoded token"),
+            cpu_buffer.read_compressed_token(0).expect("CPU token")
+        );
+    }
+
+    #[test]
     fn compressed_block_buffer_state_round_trips_codec_metadata() {
         let layout = TurboQuantBlockLayout::new(TurboQuantBlockLayoutConfig {
             preset: TurboQuantPreset::K8V4,
@@ -6423,5 +6596,45 @@ mod tests {
             .expect("overwrite slot");
         assert_eq!(buffer.dequant_buffer_token_count(), 0);
         assert_eq!(buffer.dequant_buffer_alloc_tokens(), 0);
+    }
+
+    #[test]
+    fn compressed_block_buffer_truncate_invalidates_tail_and_dequant_cache() {
+        let layout = TurboQuantBlockLayout::new(TurboQuantBlockLayoutConfig {
+            preset: TurboQuantPreset::K8V4,
+            block_tokens: 4,
+            n_kv_heads: 1,
+            head_dim: 8,
+            value_group_size: 4,
+        })
+        .expect("layout");
+        let mut buffer = TurboQuantCompressedBlockBuffer::new(layout);
+        for token_index in 0..3 {
+            let token = (
+                (0..8)
+                    .map(|idx| token_index as f32 * 0.1 + idx as f32 * 0.01)
+                    .collect::<Vec<_>>(),
+                (0..8)
+                    .map(|idx| token_index as f32 * -0.1 + idx as f32 * 0.02)
+                    .collect::<Vec<_>>(),
+            );
+            buffer
+                .write_token(token_index, std::slice::from_ref(&token))
+                .expect("write sequential token");
+        }
+        assert_eq!(buffer.token_count(), 3);
+        assert_eq!(buffer.written_slot_count(), 3);
+        assert_eq!(buffer.dequant_buffer_token_count(), 3);
+
+        buffer.truncate_token_count(1).expect("truncate buffer");
+
+        assert_eq!(buffer.token_count(), 1);
+        assert_eq!(buffer.written_slot_count(), 1);
+        assert_eq!(buffer.dequant_buffer_token_count(), 0);
+        assert_eq!(buffer.dequant_buffer_alloc_tokens(), 0);
+        assert!(matches!(
+            buffer.read_compressed_slot(1, 0),
+            Err(TurboQuantCodecError::CompressedSlotUnwritten { .. })
+        ));
     }
 }

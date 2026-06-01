@@ -375,11 +375,11 @@ pub fn turboquant_fused_cold_decode_metal(
             },
         ],
         (
-            descriptor.head_dim as i32,
+            descriptor.head_dim as i32 * 32,
             descriptor.n_query_heads as i32,
             1,
         ),
-        (1, 1, 1),
+        (32, 1, 1),
         None,
     );
 
@@ -624,11 +624,28 @@ pub fn turboquant_fused_cold_decode_metal_two_stage_partition_stats_batch_with_c
     query_values: &[f32],
     n_query_heads: usize,
 ) -> Result<TurboQuantAttentionPartitionStatsBatch, TurboQuantCodecError> {
+    turboquant_fused_cold_decode_metal_two_stage_partition_stats_batch_with_compressed_array_flat_sparse_threshold(
+        descriptor,
+        compressed,
+        query_values,
+        n_query_heads,
+        0.0,
+    )
+}
+
+pub fn turboquant_fused_cold_decode_metal_two_stage_partition_stats_batch_with_compressed_array_flat_sparse_threshold(
+    descriptor: TurboQuantFusedDecodeLaunchDescriptor,
+    compressed: &MlxArray,
+    query_values: &[f32],
+    n_query_heads: usize,
+    sparse_value_threshold: f32,
+) -> Result<TurboQuantAttentionPartitionStatsBatch, TurboQuantCodecError> {
     let rotated_queries = rotated_query_values_from_flat(descriptor, query_values, n_query_heads)?;
-    turboquant_fused_cold_decode_metal_two_stage_stats_batch_with_rotated_queries(
+    turboquant_fused_cold_decode_metal_two_stage_stats_batch_with_rotated_queries_and_sparse_threshold(
         descriptor,
         compressed,
         &rotated_queries,
+        sparse_value_threshold,
     )
 }
 
@@ -1020,7 +1037,8 @@ const TURBOQUANT_FUSED_COLD_DECODE_KERNEL_HEADER: &str = r#"
 "#;
 
 const TURBOQUANT_FUSED_COLD_DECODE_KERNEL_SOURCE: &str = r#"
-    const int dim = thread_position_in_grid.x;
+    const int lane = (int)thread_position_in_threadgroup.x;
+    const int dim = (int)thread_position_in_grid.x / 32;
     const int head = thread_position_in_grid.y;
     if (dim >= HEAD_DIM || head >= HEADS) {
       return;
@@ -1039,12 +1057,12 @@ const TURBOQUANT_FUSED_COLD_DECODE_KERNEL_SOURCE: &str = r#"
       const int key_payload = slot + KEY_PAYLOAD_OFFSET;
       const float key_norm = tq_read_f32(compressed, slot + KEY_NORM_OFFSET);
 
-      float score = 0.0f;
-      for (int kdim = 0; kdim < HEAD_DIM; ++kdim) {
+      float partial = 0.0f;
+      for (int kdim = lane; kdim < HEAD_DIM; kdim += 32) {
         const float centroid = tq_centroid_k8(compressed[key_payload + kdim]);
-        score += rotated_query[head * HEAD_DIM + kdim] * centroid;
+        partial += rotated_query[head * HEAD_DIM + kdim] * centroid;
       }
-      score *= key_norm * inv_sqrt_dim;
+      const float score = simd_sum(partial) * key_norm * inv_sqrt_dim;
       max_score = max(max_score, score);
     }
 
@@ -1059,25 +1077,29 @@ const TURBOQUANT_FUSED_COLD_DECODE_KERNEL_SOURCE: &str = r#"
       const int key_payload = slot + KEY_PAYLOAD_OFFSET;
       const float key_norm = tq_read_f32(compressed, slot + KEY_NORM_OFFSET);
 
-      float score = 0.0f;
-      for (int kdim = 0; kdim < HEAD_DIM; ++kdim) {
+      float partial = 0.0f;
+      for (int kdim = lane; kdim < HEAD_DIM; kdim += 32) {
         const float centroid = tq_centroid_k8(compressed[key_payload + kdim]);
-        score += rotated_query[head * HEAD_DIM + kdim] * centroid;
+        partial += rotated_query[head * HEAD_DIM + kdim] * centroid;
       }
-      score *= key_norm * inv_sqrt_dim;
+      const float score = simd_sum(partial) * key_norm * inv_sqrt_dim;
 
       const float weight = exp(score - max_score);
-      const int group = dim / VALUE_GROUP_SIZE;
-      const int value_payload = slot + VALUE_PAYLOAD_OFFSET;
-      const float value_min = tq_read_f32(compressed, slot + VALUE_MINS_OFFSET + group * 4);
-      const float value_scale = tq_read_f32(compressed, slot + VALUE_SCALES_OFFSET + group * 4);
-      const float value = value_min + value_scale * (float)tq_unpack_v4(compressed, value_payload, dim);
+      if (lane == 0) {
+        const int group = dim / VALUE_GROUP_SIZE;
+        const int value_payload = slot + VALUE_PAYLOAD_OFFSET;
+        const float value_min = tq_read_f32(compressed, slot + VALUE_MINS_OFFSET + group * 4);
+        const float value_scale = tq_read_f32(compressed, slot + VALUE_SCALES_OFFSET + group * 4);
+        const float value = value_min + value_scale * (float)tq_unpack_v4(compressed, value_payload, dim);
 
-      denom += weight;
-      weighted += weight * value;
+        denom += weight;
+        weighted += weight * value;
+      }
     }
 
-    output[head * HEAD_DIM + dim] = weighted / max(denom, 1.17549435e-38f);
+    if (lane == 0) {
+      output[head * HEAD_DIM + dim] = weighted / max(denom, 1.17549435e-38f);
+    }
 "#;
 
 const TURBOQUANT_FUSED_COLD_DECODE_HEAD_SERIAL_KERNEL_SOURCE: &str = r#"
@@ -1249,6 +1271,15 @@ mod tests {
         TurboQuantBlockLayout, TurboQuantBlockLayoutConfig, TurboQuantCompressedDecodePlan,
         encode_key_vector_for_head,
     };
+
+    #[test]
+    fn turboquant_dim_parallel_decode_kernel_uses_simd_sum_for_qk_scores() {
+        assert!(TURBOQUANT_FUSED_COLD_DECODE_KERNEL_SOURCE.contains("simd_sum(partial)"));
+        assert!(
+            !TURBOQUANT_FUSED_COLD_DECODE_KERNEL_SOURCE
+                .contains("for (int kdim = 0; kdim < HEAD_DIM; ++kdim)")
+        );
+    }
 
     #[test]
     fn turboquant_fused_key_encode_metal_matches_cpu_k8v4() {

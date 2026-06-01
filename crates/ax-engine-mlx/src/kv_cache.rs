@@ -3,6 +3,7 @@ use std::time::Instant;
 use ax_engine_core::{KvCompressionConfig, KvCompressionMode, TurboQuantPreset};
 use mlx_sys::{MlxArray, MlxDtype, astype, contiguous, eval, slice, slice_update, zeros};
 
+use crate::fastpath;
 use crate::turboquant::{
     FullPrecisionKvTokenVectors, TurboQuantAttentionPartitionStats,
     TurboQuantAttentionPartitionStatsBatch, TurboQuantBlockLayout, TurboQuantBlockLayoutConfig,
@@ -13,8 +14,10 @@ use crate::turboquant::{
     packed_kv_bytes_per_token, packed_value_bytes_for_preset, turboquant_query_head_to_kv_head,
 };
 use crate::turboquant_metal::{
-    turboquant_fused_cold_decode_metal_two_stage_partition_stats_batch_with_compressed_array_flat,
+    turboquant_fused_cold_decode_metal_two_stage_partition_stats_batch_with_compressed_array_flat_sparse_threshold,
     turboquant_fused_cold_decode_metal_two_stage_partition_stats_flat,
+    turboquant_fused_cold_decode_metal_two_stage_sparse_partition_stats_flat,
+    turboquant_fused_key_encode_metal_k8,
 };
 
 /// Pre-allocated chunk size (tokens).  The buffer grows by this amount each time
@@ -882,6 +885,8 @@ pub struct GlmMlaLayerStateView<'a> {
 /// `trim_to(prefix_len)` only updates `seq_len`.  The "trimmed" positions remain in
 /// the backing buffer but are beyond the logical boundary, so SDPA never sees them.
 /// The next `append` overwrites from `prefix_len`, restoring correctness.
+/// TurboQuant shadow storage is truncated separately because it serializes its
+/// compressed runtime buffer.
 pub struct MlxKVCache {
     layers: Vec<Option<LayerKV>>,
     glm_mla_layers: Vec<Option<GlmMlaLayerCache>>,
@@ -1962,7 +1967,15 @@ impl MlxKVCache {
         let valid = prefix_len <= self.seq_len;
         self.seq_len = prefix_len.min(self.seq_len);
         for storage in self.turboquant_shadow_layers.iter_mut().flatten() {
-            storage.compressed_tokens = storage.compressed_tokens.min(self.seq_len);
+            let compressed_tokens = storage.compressed_tokens.min(self.seq_len);
+            if compressed_tokens < storage.compressed_tokens {
+                storage
+                    .buffer
+                    .truncate_token_count(compressed_tokens)
+                    .expect("TurboQuant shadow trim uses valid compressed token prefix");
+                storage.metal_buffer = None;
+            }
+            storage.compressed_tokens = compressed_tokens;
         }
         valid
     }
@@ -2047,6 +2060,16 @@ impl MlxKVCache {
             let storage = self.turboquant_shadow_layers[source.layer_idx]
                 .as_mut()
                 .expect("storage was just initialized");
+            let preencoded_k8_keys = if storage.layout.config.preset == TurboQuantPreset::K8V4 {
+                turboquant_fused_key_encode_metal_k8(
+                    &source.k,
+                    source.compressed_tokens,
+                    cold_tokens.saturating_sub(source.compressed_tokens),
+                )
+                .ok()
+            } else {
+                None
+            };
             let k_values = source.k.data_f32();
             let v_values = source.v.data_f32();
             for token_index in source.compressed_tokens..cold_tokens {
@@ -2056,6 +2079,33 @@ impl MlxKVCache {
                     source.shape,
                     token_index,
                 );
+                if let Some(encoded_keys) = preencoded_k8_keys.as_ref() {
+                    let relative_token_index = token_index.saturating_sub(source.compressed_tokens);
+                    let key_bytes_per_token = storage
+                        .layout
+                        .key_payload_bytes_per_head
+                        .saturating_mul(storage.layout.config.n_kv_heads);
+                    let key_start = relative_token_index.saturating_mul(key_bytes_per_token);
+                    let key_end = key_start.saturating_add(key_bytes_per_token);
+                    let norm_start =
+                        relative_token_index.saturating_mul(storage.layout.config.n_kv_heads);
+                    let norm_end = norm_start.saturating_add(storage.layout.config.n_kv_heads);
+                    if let (Some(packed_key_bytes), Some(key_norms)) = (
+                        encoded_keys.packed_key_bytes.get(key_start..key_end),
+                        encoded_keys.key_norms.get(norm_start..norm_end),
+                    ) && storage
+                        .buffer
+                        .write_token_with_encoded_k8_keys(
+                            token_index,
+                            &heads,
+                            packed_key_bytes,
+                            key_norms,
+                        )
+                        .is_ok()
+                    {
+                        continue;
+                    }
+                }
                 storage
                     .buffer
                     .write_token(token_index, &heads)
@@ -2101,7 +2151,10 @@ impl MlxKVCache {
             if storage.layout != layout || storage.compressed_tokens > cold_tokens {
                 return true;
             }
-            if cold_tokens.saturating_sub(storage.compressed_tokens) >= KV_CHUNK_TOKENS {
+            let cold_delta = cold_tokens.saturating_sub(storage.compressed_tokens);
+            if (fastpath::turboquant_incremental_decode_enabled() && (1..=4).contains(&cold_delta))
+                || cold_delta >= KV_CHUNK_TOKENS
+            {
                 return true;
             }
         }
@@ -2406,20 +2459,33 @@ impl MlxKVCache {
         )?;
         let descriptor =
             plan.fused_decode_launch_descriptor_for_query_count(&storage.buffer, n_query_heads)?;
+        let sparse_value_threshold =
+            fastpath::turboquant_sparse_v_threshold_for_context(total_tokens);
         if let Some(metal_buffer) = storage.metal_buffer.as_ref() {
-            turboquant_fused_cold_decode_metal_two_stage_partition_stats_batch_with_compressed_array_flat(
+            turboquant_fused_cold_decode_metal_two_stage_partition_stats_batch_with_compressed_array_flat_sparse_threshold(
                 descriptor,
                 metal_buffer,
                 query_values,
                 n_query_heads,
+                sparse_value_threshold,
             )
         } else {
-            let stats = turboquant_fused_cold_decode_metal_two_stage_partition_stats_flat(
-                descriptor,
-                &storage.buffer,
-                query_values,
-                n_query_heads,
-            )?;
+            let stats = if sparse_value_threshold > 0.0 {
+                turboquant_fused_cold_decode_metal_two_stage_sparse_partition_stats_flat(
+                    descriptor,
+                    &storage.buffer,
+                    query_values,
+                    n_query_heads,
+                    sparse_value_threshold,
+                )?
+            } else {
+                turboquant_fused_cold_decode_metal_two_stage_partition_stats_flat(
+                    descriptor,
+                    &storage.buffer,
+                    query_values,
+                    n_query_heads,
+                )?
+            };
             Ok(TurboQuantAttentionPartitionStatsBatch {
                 token_count: cold_tokens,
                 value_dim: head_dim,
@@ -3322,6 +3388,53 @@ mod tests {
     }
 
     #[test]
+    fn turboquant_shadow_trim_truncates_runtime_storage() {
+        let mut cache = MlxKVCache::new(1);
+        let k_data: Vec<f32> = (0..48).map(|idx| idx as f32 / 16.0).collect();
+        let v_data: Vec<f32> = (0..48).map(|idx| 1.0 - (idx as f32 / 64.0)).collect();
+        let k = MlxArray::from_raw_data(
+            k_data.as_ptr().cast(),
+            k_data.len() * std::mem::size_of::<f32>(),
+            &[1, 2, 6, 4],
+            MlxDtype::Float32,
+        );
+        let v = MlxArray::from_raw_data(
+            v_data.as_ptr().cast(),
+            v_data.len() * std::mem::size_of::<f32>(),
+            &[1, 2, 6, 4],
+            MlxDtype::Float32,
+        );
+        let compression = KvCompressionConfig {
+            hot_window_tokens: 2,
+            min_context_tokens: 4,
+            ..KvCompressionConfig::turboquant_shadow()
+        };
+
+        cache.append(0, k, v);
+        cache.seq_len = 6;
+        cache.sync_turboquant_shadow_storage(&[None], compression, Some(&[true]));
+        assert_eq!(cache.turboquant_shadow_storage_cold_tokens(0), Some(4));
+        assert!(
+            cache.turboquant_shadow_layers[0]
+                .as_ref()
+                .expect("shadow storage")
+                .metal_buffer
+                .is_some()
+        );
+
+        assert!(cache.trim_to(3));
+
+        let storage = cache.turboquant_shadow_layers[0]
+            .as_ref()
+            .expect("shadow storage");
+        assert_eq!(storage.compressed_tokens, 3);
+        assert_eq!(storage.buffer.token_count(), 3);
+        assert_eq!(storage.buffer.written_slot_count(), 6);
+        assert!(storage.metal_buffer.is_none());
+        assert_eq!(cache.turboquant_shadow_storage_usage().token_layers, 3);
+    }
+
+    #[test]
     fn turboquant_shadow_decode_merges_runtime_cold_storage_with_hot_tail() {
         let mut cache = MlxKVCache::new(1);
         let k_data: Vec<f32> = (0..48).map(|idx| ((idx % 13) as f32 - 6.0) / 8.0).collect();
@@ -3575,6 +3688,12 @@ mod tests {
         assert!(cache.turboquant_shadow_storage_sync_due(&[None], compression, Some(&[true])));
         cache.sync_turboquant_shadow_storage(&[None], compression, Some(&[true]));
         assert!(!cache.turboquant_shadow_storage_sync_due(&[None], compression, Some(&[true])));
+
+        cache.seq_len = 10;
+        assert!(
+            cache.turboquant_shadow_storage_sync_due(&[None], compression, Some(&[true])),
+            "short cold advances should use the incremental sync path"
+        );
 
         cache.seq_len = 6 + KV_CHUNK_TOKENS - 1;
         assert!(!cache.turboquant_shadow_storage_sync_due(&[None], compression, Some(&[true])));

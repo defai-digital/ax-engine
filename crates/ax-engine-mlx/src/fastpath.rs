@@ -57,6 +57,16 @@ fn parse_positive_usize_env(var: &str) -> Option<usize> {
     (n > 0).then_some(n)
 }
 
+fn parse_nonnegative_f32_env(var: &str) -> Option<f32> {
+    let raw = std::env::var(var).ok()?;
+    parse_nonnegative_f32(&raw)
+}
+
+fn parse_nonnegative_f32(raw: &str) -> Option<f32> {
+    let value: f32 = raw.trim().parse().ok()?;
+    (value.is_finite() && value >= 0.0).then_some(value)
+}
+
 macro_rules! env_flag {
     ($(#[$meta:meta])* $fn_name:ident, $env_var:literal) => {
         $(#[$meta])*
@@ -90,6 +100,43 @@ env_flag!(
     turboquant_fused_decode_disabled,
     "AX_DISABLE_TURBOQUANT_FUSED_DECODE"
 );
+
+env_flag_default_on!(
+    /// `AX_TURBOQUANT_INCREMENTAL_DECODE` — maintain the TurboQuant shadow
+    /// compressed runtime buffer on short decode advances (1-4 new cold tokens)
+    /// instead of waiting for the next 256-token block boundary.
+    ///
+    /// **Default: ON** (kill-switch via `AX_TURBOQUANT_INCREMENTAL_DECODE=0`).
+    turboquant_incremental_decode_enabled,
+    "AX_TURBOQUANT_INCREMENTAL_DECODE"
+);
+
+/// Sparse-V minimum normalized attention weight for the TurboQuant two-stage
+/// value-sum kernel. Defaults to the PRD value (`1e-5`) and treats invalid or
+/// negative input as the default.
+pub fn turboquant_sparse_v_threshold() -> f32 {
+    static CACHED: OnceLock<f32> = OnceLock::new();
+    *CACHED.get_or_init(|| {
+        parse_nonnegative_f32_env("AX_TURBOQUANT_SPARSE_V_THRESHOLD").unwrap_or(1.0e-5)
+    })
+}
+
+/// Minimum total context length before sparse-V thresholding engages. Shorter
+/// contexts use threshold 0 so the two-stage path remains dense.
+pub fn turboquant_sparse_v_min_context_tokens() -> usize {
+    static CACHED: OnceLock<usize> = OnceLock::new();
+    *CACHED.get_or_init(|| {
+        parse_positive_usize_env("AX_TURBOQUANT_SPARSE_V_MIN_CONTEXT").unwrap_or(4096)
+    })
+}
+
+pub fn turboquant_sparse_v_threshold_for_context(total_context_tokens: usize) -> f32 {
+    if total_context_tokens >= turboquant_sparse_v_min_context_tokens() {
+        turboquant_sparse_v_threshold()
+    } else {
+        0.0
+    }
+}
 
 env_flag!(
     /// Engaged by `AX_NO_SPEC` (the CLAUDE.md-documented convention for
@@ -837,6 +884,39 @@ mod tests {
                 probe_usize(&name, value),
                 None,
                 "expected None for {value:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn turboquant_incremental_decode_uses_default_on_kill_switch_contract() {
+        assert!(parse_bool_env_default_on(
+            "AX_FASTPATH_TEST_TURBOQUANT_INCREMENTAL_UNSET"
+        ));
+        assert!(!probe_default_on(
+            "AX_FASTPATH_TEST_TURBOQUANT_INCREMENTAL_DISABLED",
+            "0"
+        ));
+        assert!(probe_default_on(
+            "AX_FASTPATH_TEST_TURBOQUANT_INCREMENTAL_ENABLED",
+            "1"
+        ));
+    }
+
+    #[test]
+    fn parse_nonnegative_f32_accepts_finite_zero_and_positive_values() {
+        assert_eq!(parse_nonnegative_f32("0"), Some(0.0));
+        assert_eq!(parse_nonnegative_f32("1e-5"), Some(1.0e-5));
+        assert_eq!(parse_nonnegative_f32(" 0.25 "), Some(0.25));
+    }
+
+    #[test]
+    fn parse_nonnegative_f32_rejects_negative_invalid_and_nonfinite_values() {
+        for value in ["-0.1", "NaN", "inf", "-inf", "", "no"] {
+            assert_eq!(
+                parse_nonnegative_f32(value),
+                None,
+                "expected invalid sparse threshold for {value:?}"
             );
         }
     }
