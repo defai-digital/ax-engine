@@ -6099,8 +6099,19 @@ impl MlxRunner {
         // streaks even at 87% accept, causing 27% false gating on 35B-A3B.
         // For depth=1 n-gram is also the primary multi-token source, so
         // gating it costs disproportionately more than depth=3.
+        // Adaptive n-gram saturation gate: when MTP acceptance is very high,
+        // n-gram drafts are typically lower quality than MTP drafts (lower
+        // acceptance rate, more wasted verify compute).  Gate n-gram off once
+        // the EWMA acceptance rate exceeds the threshold.
+        // The gate requires a minimum number of EWMA samples before it can
+        // activate, to avoid false gating on early-generation noise.
+        // Override with `AX_MLX_MTP_NGRAM_GATE_SAMPLES` (default 8).
+        let ngram_gate_min_samples = std::env::var("AX_MLX_MTP_NGRAM_GATE_SAMPLES")
+            .ok()
+            .and_then(|v| v.parse::<u32>().ok())
+            .unwrap_or(8);
         let ngram_saturated = ngram_max > 0
-            && state.mtp_telemetry.accept_rate_ewma_samples >= 16
+            && state.mtp_telemetry.accept_rate_ewma_samples >= ngram_gate_min_samples
             && state.mtp_telemetry.accept_rate_ewma
                 >= adaptive_ngram_saturation_threshold(mtp_max_depth);
         let ngram_max = if ngram_saturated { 0 } else { ngram_max };
@@ -7124,36 +7135,42 @@ fn mtp_optimistic_from_env() -> bool {
     })
 }
 
-/// When set to `1`, the MTP decode path captures verify logits and hidden state
-/// as "skip state" and reuses them on the next iteration to avoid recomputing
-/// the main model forward for the first token position.  The skip_logits
-/// provides the next primary sample; the skip_hidden provides the MTP head
-/// input.  This eliminates one full-model forward pass per accepted cycle.
+/// When enabled (the default), the MTP decode path captures verify logits and
+/// hidden state as "skip state" and reuses them on the next iteration to avoid
+/// recomputing the main model forward for the first token position.  The
+/// skip_logits provides the next primary sample; the skip_hidden provides the
+/// MTP head input.  This eliminates one full-model forward pass per accepted
+/// cycle.  Disable with `AX_MLX_MTP_SKIP_STATE=0`.
 fn mtp_skip_state_from_env() -> bool {
     static CACHED: OnceLock<bool> = OnceLock::new();
     *CACHED.get_or_init(|| {
-        matches!(
+        !matches!(
             std::env::var("AX_MLX_MTP_SKIP_STATE")
                 .unwrap_or_default()
                 .as_str(),
-            "1" | "true" | "TRUE"
+            "0" | "false" | "FALSE"
         )
     })
 }
 
+/// Target softmax mode for MTP rejection-sampling acceptance.
+/// Defaults to `topk-128` (softmax over top-128 logits per position).
+/// Override with `AX_MLX_MTP_TARGET_SOFTMAX_MODE=full` for full-vocab softmax,
+/// or `topk-256`, `topk-64`, `topk-32` for custom k.
 fn mtp_target_softmax_topk_from_env() -> Option<u32> {
     static CACHED: OnceLock<Option<u32>> = OnceLock::new();
     *CACHED.get_or_init(|| {
         let val = std::env::var("AX_MLX_MTP_TARGET_SOFTMAX_MODE")
-            .unwrap_or_default()
+            .unwrap_or_else(|_| "topk-128".to_string())
             .to_ascii_lowercase()
             .replace('_', "-");
         match val.as_str() {
+            "full" => None,
             "topk-256" => Some(256),
             "topk-128" => Some(128),
             "topk-64" => Some(64),
             "topk-32" => Some(32),
-            _ => None,
+            _ => Some(128),
         }
     })
 }
