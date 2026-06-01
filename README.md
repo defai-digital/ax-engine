@@ -1,5 +1,16 @@
 # AX Engine
 
+AX Engine is a Mac-first LLM inference runtime, local server, SDK layer, and
+benchmark toolkit for Apple Silicon.
+
+AX Engine runs direct-support MLX model families on Apple Silicon, and keeps
+other MLX text models or non-MLX models reachable through explicit `mlx-lm` and
+`llama.cpp` compatibility routes. Users get one AX server, SDK, and benchmark
+surface while repo-owned model coverage grows.
+
+> Requires **macOS 14 (Sonoma) or later** on **Apple Silicon M2 Max or newer** with **32 GB RAM minimum**.
+> Rust 1.85+ for source builds.
+
 ### Qwen3.6 Fair MTP
 
 Five-engine MTP comparison (MTPLX 0.3.7, Lightning MLX, Lightning ngram+MTP, AX Engine MTP, AX Engine MTP+n-gram) using
@@ -36,9 +47,9 @@ warmup repetition.
 | Qwen3.6 27B 4-bit | flappy | 3 | 51.5 | 100.0% | 49.5 | 96.5% | 52.4 | 85.4% | 65.9 | 99.5% | 62.4 | 80.2% |
 | Qwen3.6 27B 4-bit | long_code | 3 | 53.5 | 99.7% | 51.7 | 93.3% | 54.9 | 87.6% | 65.6 | 98.4% | 70.8 | 90.0% |
 | Qwen3.6 27B 4-bit | python_modules_long | 3 | 51.6 | 87.6% | 46.9 | 76.5% | 45.0 | 72.2% | 53.8 | 74.8% | 60.9 | 77.7% |
-| Qwen3.6 35B-A3B 4-bit | flappy | 1 | 107.3 | 50.8% | 147.9 | 99.0% | 173.9 | 91.0% | 182.5 | 99.9% | 241.2 | 87.9% |
-| Qwen3.6 35B-A3B 4-bit | long_code | 1 | 106.4 | 50.5% | 149.0 | 98.5% | 194.9 | 92.1% | 180.7 | 99.8% | 270.3 | 91.8% |
-| Qwen3.6 35B-A3B 4-bit | python_modules_long | 1 | 102.7 | 42.6% | 148.8 | 97.2% | 136.1 | 91.8% | 178.1 | 92.8% | 197.6 | 83.0% |
+| Qwen3.6 35B-A3B 4-bit | flappy | 1 | 107.3 | 50.8% | 147.9 | 99.0% | 173.9 | 91.0% | 182.5 | 99.9% | 259.4 | 88.8% |
+| Qwen3.6 35B-A3B 4-bit | long_code | 1 | 106.4 | 50.5% | 149.0 | 98.5% | 194.9 | 92.1% | 180.7 | 99.8% | 270.3 | 92.0% |
+| Qwen3.6 35B-A3B 4-bit | python_modules_long | 1 | 102.7 | 42.6% | 148.8 | 97.2% | 136.1 | 91.8% | 178.1 | 92.8% | 195.0 | 83.5% |
 
 AX MTP uses pure MTP (n-gram stacking disabled); AX MTP+n-gram stacks n-gram speculative drafting on top of MTP; Lightning ngram+MTP uses `--enable-ngram` with MTP. Sampler: temperature=0.6,
 top_p=0.95, top_k=20. 1000 gen tokens, 5 repetitions, 30 s cooldown, 10 s inter-case cooldown.
@@ -99,17 +110,6 @@ Full artifacts: [`2026-06-01` (five-engine: MTPLX, Lightning MLX, Lightning ngra
 <td><img src="docs/assets/perf-qwen-ttft-box-whisker.svg" alt="Grouped box-and-whisker plot comparing llama.cpp Metal, mlx_lm, and ax_engine TTFT for Qwen 3.6 models at 128/512/2048 prompt tokens with a red lowest-median reference line"></td>
 </tr>
 </table>
-
-AX Engine is a Mac-first LLM inference runtime, local server, SDK layer, and
-benchmark toolkit for Apple Silicon.
-
-AX Engine runs direct-support MLX model families on Apple Silicon, and keeps
-other MLX text models or non-MLX models reachable through explicit `mlx-lm` and
-`llama.cpp` compatibility routes. Users get one AX server, SDK, and benchmark
-surface while repo-owned model coverage grows.
-
-> Requires **macOS 14 (Sonoma) or later** on **Apple Silicon M2 Max or newer** with **32 GB RAM minimum**.
-> Rust 1.85+ for source builds.
 
 ## 30-Second Setup
 
@@ -310,26 +310,24 @@ the MLX rows.
 
 ### MTP speculative decoding
 
-AX Engine's fair Qwen3.6 MTP benchmark no longer uses
-`Youssofal/*MTPLX*` bundles. It prepares local, provenance-recorded sidecars
+AX Engine's fair Qwen3.6 MTP benchmark uses local, provenance-recorded sidecars
 from standard `Qwen/Qwen3.6-*` MTP shards plus the matching
-`mlx-community/*-4bit` MLX base, then runs MTPLX and AX Engine on
-the same prompt suites, token caps, sampler, warmup, repetition count, and
-cooldown.
+`mlx-community/*-4bit` MLX base, excluding `Youssofal/*MTPLX*` bundles.
+All five engines run on the same prompt suites, token caps, sampler, warmup,
+repetition count, and cooldown.
 
-Use the dual-engine harness for a native-depth comparison:
+Use the five-engine harness to reproduce the comparison:
 
 ```bash
 python3 scripts/prepare_qwen36_mtp_sidecar.py --model 27b
 python3 scripts/prepare_qwen36_mtp_sidecar.py --model 35b
 python3 scripts/bench_qwen36_mtp_fair.py \
   --models 27b-4bit 35b-a3b-4bit \
-  --engines mtplx ax_engine \
-  --suites flappy long_code \
-  --depth-policy native \
+  --lightning-ngram \
+  --suites flappy long_code python_modules_long \
   --max-tokens 1000 \
   --repetitions 5 \
-  --cooldown 15
+  --cooldown 30
 ```
 
 The generated `summary.md`, `summary.json`, and `decode-tok-s.svg` live under
@@ -952,7 +950,7 @@ Public documentation is in `docs/`. Canonical benchmark manifests are in
 
 ## Limitations
 
-- **GatedDelta prefill (Qwen3.5)**: Qwen3.5 prefill can trail upstream MLX
+- **Qwen3.5 long-prompt prefill**: Qwen3.5 prefill can trail upstream MLX
   references on longer prompts; decode and Qwen3-Next are not affected in the
   same way.
 - **Raw HuggingFace weights**: use pre-sanitized MLX community weights or

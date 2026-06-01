@@ -5601,8 +5601,8 @@ fn project_batched_decode_logits_with_optional_native_path(
                 saturating_usize_to_u32(serialized_hidden_stride),
             );
             if projection_kernel_name.contains("_sg_") {
-                let sg_tg_count = (token_count as u64)
-                    .saturating_mul(sg_projection_tg_count(vocab_rows.max(1)));
+                let sg_tg_count =
+                    (token_count as u64).saturating_mul(sg_projection_tg_count(vocab_rows.max(1)));
                 encoder.dispatch_thread_groups(
                     MTLSize::new(sg_tg_count, 1, 1),
                     MTLSize::new(PROJECTION_SIMD_WIDTH, 1, 1),
@@ -5777,8 +5777,8 @@ fn project_batched_decode_tokens_with_optional_native_path(
                 saturating_usize_to_u32(serialized_hidden_stride),
             );
             if projection_kernel_name.contains("_sg_") {
-                let sg_tg_count = (token_count as u64)
-                    .saturating_mul(sg_projection_tg_count(vocab_rows.max(1)));
+                let sg_tg_count =
+                    (token_count as u64).saturating_mul(sg_projection_tg_count(vocab_rows.max(1)));
                 encoder.dispatch_thread_groups(
                     MTLSize::new(sg_tg_count, 1, 1),
                     MTLSize::new(PROJECTION_SIMD_WIDTH, 1, 1),
