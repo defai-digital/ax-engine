@@ -5591,7 +5591,6 @@ impl MlxRunner {
         let has_linear_attention = self.cfg.linear_attention.is_some();
         let vocab = self.cfg.vocab_size as i32;
         let mut mtp_timings = MtpStepTimings::default();
-        let optimistic = self.mtp_optimistic && !pending.is_empty();
 
         // Skip-state consumption (Lightning-MLX always-advance pattern):
         // When the previous step's verify forward captured logits at the last
@@ -5641,6 +5640,9 @@ impl MlxRunner {
             drop(skip_hidden);
             None
         };
+
+        // Compute optimistic AFTER skip-state may have populated pending.
+        let optimistic = self.mtp_optimistic && !pending.is_empty();
 
         // Build verify sequence: [primary_token] ++ pending_draft.
         let mut verify_input: Vec<u32> = Vec::with_capacity(1 + pending.len());
