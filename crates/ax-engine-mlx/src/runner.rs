@@ -4510,6 +4510,13 @@ impl MlxRunner {
                     ),
                 );
                 let prefill_prefix_cache_wall_us = elapsed_us(prefix_cache_started);
+                // Record pure prefill wall time before initialize_generation_state.
+                // MTP warmup and generation-state init are decode preparation, not
+                // prefill — including them in the prefill rate artificially lowers
+                // the reported throughput by 5–12 % on MTP workloads.
+                state
+                    .decode_telemetry
+                    .record_prefill(elapsed_us(prefill_started));
                 let mut prefill_generation_state_wall_us = 0;
                 if prefill_completes_prompt {
                     let generation_state_started = Instant::now();
@@ -4531,9 +4538,6 @@ impl MlxRunner {
                     .decode_telemetry
                     .record_prefill_drain_async_evals(drain_count);
                 state.decode_telemetry.record_prefill_eval_barrier();
-                state
-                    .decode_telemetry
-                    .record_prefill(elapsed_us(prefill_started));
                 state.decode_telemetry.record_prefill_breakdown(
                     prefill_forward_wall_us,
                     prefill_prefix_cache_wall_us,
