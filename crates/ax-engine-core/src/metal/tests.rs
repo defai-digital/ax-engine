@@ -7203,6 +7203,36 @@ fn metal_kernel_builder_skips_when_toolchain_is_unavailable() {
 }
 
 #[test]
+fn metal_kernel_builder_preserves_existing_binaries_when_toolchain_is_unavailable() {
+    let fixture = write_phase1_fixture(MetalBuildStatus::Compiled, None);
+    let air_path = fixture.build_dir.join("ax_phase1_dense_path.air");
+    let metalar_path = fixture.build_dir.join("ax_phase1_dense_path.metalar");
+    let metallib_path = fixture.build_dir.join("ax_phase1_dense_path.metallib");
+    let request = MetalKernelBuildRequest {
+        manifest_path: fixture.root.join("metal/phase1-kernels.json"),
+        output_dir: fixture.build_dir.clone(),
+        doctor: sample_build_doctor(false, false),
+        toolchain_path_override: None,
+    };
+
+    let artifacts =
+        build_phase1_kernel_artifacts(&request).expect("builder should emit skipped report");
+
+    assert_eq!(
+        artifacts.build_status(),
+        MetalBuildStatus::SkippedToolchainUnavailable
+    );
+    assert!(artifacts.build_report.outputs.air.is_none());
+    assert!(artifacts.build_report.outputs.metalar.is_none());
+    assert!(artifacts.build_report.outputs.metallib.is_none());
+    assert!(air_path.is_file());
+    assert!(metalar_path.is_file());
+    assert!(metallib_path.is_file());
+
+    fixture.cleanup();
+}
+
+#[test]
 fn metal_kernel_builder_fails_closed_on_source_manifest_drift() {
     let fixture = write_phase1_fixture(MetalBuildStatus::SkippedToolchainUnavailable, None);
     let source_path = fixture.root.join("metal/kernels/phase1_dense_path.metal");

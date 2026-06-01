@@ -243,12 +243,6 @@ pub fn build_phase1_kernel_artifacts(
         }
     }
 
-    cleanup_partial_build_outputs([
-        air_path.as_path(),
-        metalar_path.as_path(),
-        metallib_path.as_path(),
-    ]);
-
     let mut build_report = MetalBuildReport {
         schema_version: PHASE1_METAL_BUILD_REPORT_SCHEMA_VERSION.to_string(),
         manifest_path: request.manifest_path.clone(),
@@ -276,6 +270,11 @@ pub fn build_phase1_kernel_artifacts(
     };
 
     if !missing_source_kernels.is_empty() || !extra_source_kernels.is_empty() {
+        cleanup_partial_build_outputs([
+            air_path.as_path(),
+            metalar_path.as_path(),
+            metallib_path.as_path(),
+        ]);
         build_report.status = MetalBuildStatus::FailedCompile;
         build_report.reason = Some(format!(
             "source kernel declarations do not match manifest; missing={missing_source_kernels:?}; extra={extra_source_kernels:?}"
@@ -297,6 +296,12 @@ pub fn build_phase1_kernel_artifacts(
         build_report
             .compile_commands
             .push(compile_metallib_cmd.clone());
+
+        cleanup_partial_build_outputs([
+            air_path.as_path(),
+            metalar_path.as_path(),
+            metallib_path.as_path(),
+        ]);
 
         let developer_dir_candidates = xcrun_developer_dir_candidates("xcrun");
         let compile_result = run_toolchain_command(

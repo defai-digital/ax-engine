@@ -26,6 +26,9 @@ This directory contains active product and execution plans for the current
 - `PRD-2026-06-01-mtp-ttft-optimization.md` - MTP TTFT optimization: warmup
   cap (256 tokens), sliding-window post-norm, MTP shader warmup, deferred
   warmup. Targets 27B TTFT within 3% of MTPLX.
+- `PRD-2026-06-01-mtp-decode-optimization.md` - MTP decode rate optimization:
+  enable skip-state, top-k=128 softmax, and faster n-gram gating by default.
+  Targets 10–20% decode throughput improvement.
 
 ## Policy
 

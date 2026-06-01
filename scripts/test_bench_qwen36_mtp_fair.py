@@ -21,6 +21,15 @@ fair = importlib.util.module_from_spec(MODULE_SPEC)
 sys.modules["bench_qwen36_mtp_fair"] = fair
 MODULE_SPEC.loader.exec_module(fair)
 
+PREFILL_SCRIPT_PATH = Path(__file__).with_name("bench_mtp_prefill_ttft_report.py")
+PREFILL_MODULE_SPEC = importlib.util.spec_from_file_location(
+    "bench_mtp_prefill_ttft_report", PREFILL_SCRIPT_PATH
+)
+assert PREFILL_MODULE_SPEC and PREFILL_MODULE_SPEC.loader
+prefill = importlib.util.module_from_spec(PREFILL_MODULE_SPEC)
+sys.modules["bench_mtp_prefill_ttft_report"] = prefill
+PREFILL_MODULE_SPEC.loader.exec_module(prefill)
+
 
 def write_json(path: Path, payload: dict) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -289,6 +298,71 @@ class Qwen36MtpFairTests(unittest.TestCase):
         self.assertEqual(summary["validations_passed"], 1)
         self.assertEqual(summary["validations_total"], 2)
 
+    def test_summarize_engine_records_box_plot_samples(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            artifact = fake_mtplx_artifact()
+            artifact["summary"] = {
+                "decode_tok_s": {"median": 9.0, "values": [8.0, 9.0, 10.0]}
+            }
+            artifact["results"][0]["runs"] = [
+                {"accepted_by_depth": [2], "drafted_by_depth": [4]},
+                {"accepted_by_depth": [3], "drafted_by_depth": [4]},
+            ]
+            path = write_json(Path(tmp) / "mtplx.json", artifact)
+            summary = fair.summarize_engine_artifact("mtplx", path)
+
+        self.assertEqual(summary["decode_tok_s_samples"], [8.0, 9.0, 10.0])
+        self.assertEqual(summary["accept_rate_samples"], [0.5, 0.75])
+
+    def test_mtp_decode_svg_is_grouped_box_whisker(self) -> None:
+        summary = fake_chart_summary()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "decode.svg"
+            fair.write_decode_model_svg(path, summary, "27b-4bit")
+            text = path.read_text()
+
+        self.assertIn("Grouped box-and-whisker plot", text)
+        self.assertIn("stroke-dasharray", text)
+        self.assertIn("<circle", text)
+        self.assertIn("#f8fafc", text)
+        self.assertIn("highest median", text)
+        self.assertIn('paint-order="stroke"', text)
+        self.assertIn(">all suites</text>", text)
+        self.assertNotIn(">flappy</text>", text)
+        self.assertNotIn(">long_code</text>", text)
+
+    def test_mtp_combined_suite_chart_group_merges_rows(self) -> None:
+        summary = fake_chart_summary()
+        groups = fair.combined_suite_chart_group(
+            summary["rows"], ["mtplx", "ax_engine"], "decode_tok_s"
+        )
+
+        self.assertEqual([group["label"] for group in groups], ["all suites"])
+        self.assertEqual(
+            groups[0]["values"]["mtplx"],
+            [7.5, 8.0, 8.5, 8.8, 9.0, 9.2],
+        )
+        self.assertEqual(
+            groups[0]["values"]["ax_engine"],
+            [9.5, 10.0, 10.5, 10.8, 11.0, 11.2],
+        )
+
+    def test_prefill_svg_is_grouped_box_whisker(self) -> None:
+        report = fake_prefill_report()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "prefill.svg"
+            prefill.write_prefill_model_svg(path, report, "27b-4bit")
+            text = path.read_text()
+
+        self.assertIn("Grouped box-and-whisker plot", text)
+        self.assertIn("<circle", text)
+        self.assertIn("#f8fafc", text)
+        self.assertIn("highest median", text)
+        self.assertIn('paint-order="stroke"', text)
+        self.assertIn(">all suites</text>", text)
+        self.assertNotIn(">flappy</text>", text)
+        self.assertNotIn(">long_code</text>", text)
+
 
 def sidecar_record(path: Path, content: str) -> dict:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -398,6 +472,116 @@ def fake_mtplx_artifact() -> dict:
                         "drafted_by_depth": [4],
                     }
                 ],
+            }
+        ],
+    }
+
+
+def fake_chart_summary() -> dict:
+    return {
+        "schema": "ax.qwen36_mtp_fair.v1",
+        "contract": {"engines": ["mtplx", "ax_engine"], "suites": ["flappy", "long_code"]},
+        "rows": [
+            {
+                "model": "27b-4bit",
+                "model_label": "Qwen3.6 27B 4-bit",
+                "suite": "flappy",
+                "depth": 3,
+                "engines": {
+                    "mtplx": {
+                        "decode_tok_s": 8.0,
+                        "decode_tok_s_samples": [7.5, 8.0, 8.5],
+                        "accept_rate": 0.50,
+                        "accept_rate_samples": [0.45, 0.50, 0.55],
+                    },
+                    "ax_engine": {
+                        "decode_tok_s": 10.0,
+                        "decode_tok_s_samples": [9.5, 10.0, 10.5],
+                        "accept_rate": 0.70,
+                        "accept_rate_samples": [0.65, 0.70, 0.75],
+                    },
+                },
+            },
+            {
+                "model": "27b-4bit",
+                "model_label": "Qwen3.6 27B 4-bit",
+                "suite": "long_code",
+                "depth": 3,
+                "engines": {
+                    "mtplx": {
+                        "decode_tok_s": 9.0,
+                        "decode_tok_s_samples": [8.8, 9.0, 9.2],
+                        "accept_rate": 0.60,
+                        "accept_rate_samples": [0.58, 0.60, 0.62],
+                    },
+                    "ax_engine": {
+                        "decode_tok_s": 11.0,
+                        "decode_tok_s_samples": [10.8, 11.0, 11.2],
+                        "accept_rate": 0.80,
+                        "accept_rate_samples": [0.78, 0.80, 0.82],
+                    },
+                },
+            }
+        ],
+    }
+
+
+def fake_prefill_report() -> dict:
+    return {
+        "schema": "ax.mtp_prefill_ttft_report.v1",
+        "contract": {"engines": ["mtplx", "lightning_mlx", "ax_engine"]},
+        "rows": [
+            {
+                "model": "27b-4bit",
+                "model_label": "Qwen3.6 27B 4-bit",
+                "suite": "flappy",
+                "engines": {
+                    "mtplx": {
+                        "prefill_tok_s": 100.0,
+                        "prefill_tok_s_samples": [95.0, 100.0, 105.0],
+                        "ttft_ms": 30.0,
+                        "ttft_ms_samples": [28.0, 30.0, 32.0],
+                    },
+                    "lightning_mlx": {
+                        "prefill_tok_s": 90.0,
+                        "prefill_tok_s_samples": [88.0, 90.0, 92.0],
+                        "ttft_ms": 34.0,
+                        "ttft_ms_samples": [32.0, 34.0, 36.0],
+                        "prefill_note": "approx_via_ttft",
+                    },
+                    "ax_engine": {
+                        "prefill_tok_s": 110.0,
+                        "prefill_tok_s_samples": [108.0, 110.0, 112.0],
+                        "ttft_ms": 26.0,
+                        "ttft_ms_samples": [24.0, 26.0, 28.0],
+                    },
+                },
+            },
+            {
+                "model": "27b-4bit",
+                "model_label": "Qwen3.6 27B 4-bit",
+                "suite": "long_code",
+                "engines": {
+                    "mtplx": {
+                        "prefill_tok_s": 120.0,
+                        "prefill_tok_s_samples": [118.0, 120.0, 122.0],
+                        "ttft_ms": 40.0,
+                        "ttft_ms_samples": [38.0, 40.0, 42.0],
+                    },
+                    "lightning_mlx": {
+                        "prefill_tok_s": 96.0,
+                        "prefill_tok_s_samples": [94.0, 96.0, 98.0],
+                        "ttft_ms": 44.0,
+                        "ttft_ms_samples": [42.0, 44.0, 46.0],
+                        "prefill_note": "approx_via_ttft",
+                    },
+                    "ax_engine": {
+                        "prefill_tok_s": 130.0,
+                        "prefill_tok_s_samples": [128.0, 130.0, 132.0],
+                        "ttft_ms": 36.0,
+                        "ttft_ms_samples": [34.0, 36.0, 38.0],
+                    },
+                },
             }
         ],
     }

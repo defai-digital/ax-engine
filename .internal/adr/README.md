@@ -34,6 +34,8 @@ This directory contains active architecture decisions for the current
 - `ADR-014-mtp-ttft-optimization.md` - MTP TTFT optimization: warmup cap
   (256 tokens), sliding-window post-norm capture, MTP shader warmup at
   startup, deferred warmup (env-gated alternative).
+- `ADR-015-mtp-decode-optimization.md` - MTP decode rate optimization: enable
+  skip-state, top-k=128 softmax, and faster n-gram gating by default.
 
 ## Policy
 
