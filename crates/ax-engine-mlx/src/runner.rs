@@ -6,9 +6,9 @@ use std::thread::{self, ThreadId};
 use std::time::Instant;
 
 use mlx_sys::{
-    MlxArray, MlxDtype, MlxStream, add, astype, clear_cache, divide, enable_compile, eval,
-    max_recommended_working_set_size, multiply, power, set_wired_limit, slice, softmax, sum_axis,
-    take,
+    MlxArray, MlxDtype, MlxStream, add, argpartition_axis, astype, clear_cache, divide,
+    enable_compile, eval, max_recommended_working_set_size, multiply, power, set_wired_limit,
+    slice, slice_last_dim, softmax, sum_axis, take, take_along_axis,
 };
 
 use ax_engine_core::runner::RunnerRequestContext;
@@ -3306,6 +3306,7 @@ pub struct MlxRunner {
     /// When true, MTP decode captures verify logits/hidden as skip state for the
     /// next iteration, avoiding a redundant main-model forward for the first token.
     mtp_skip_state: bool,
+    mtp_target_softmax_topk: Option<u32>,
     ngram_policy_variant: NgramPolicyVariant,
     /// Optional KV compression policy. Disabled by default and never changes logits in shadow mode.
     kv_compression: KvCompressionConfig,
@@ -3621,6 +3622,7 @@ impl MlxRunner {
             disable_mtp_ngram_stacking,
             mtp_optimistic: mtp_optimistic_from_env(),
             mtp_skip_state: mtp_skip_state_from_env(),
+            mtp_target_softmax_topk: mtp_target_softmax_topk_from_env(),
             ngram_policy_variant,
             kv_compression,
             kv_compression_layer_eligible,
@@ -6058,13 +6060,18 @@ impl MlxRunner {
             adaptive_ngram_draft_len(has_linear_attention, state.ngram_posterior_mean())
         };
         // Adaptive n-gram saturation gate (ADR-013 Phase 1): when the MTP
-        // accept-rate EWMA exceeds the threshold (default 0.90), skip the
-        // n-gram probe entirely.  On 27B depth=3 where MTP already achieves
-        // 98-99% accept, n-gram stacking adds CPU overhead and MTP cache
-        // resets that *reduce* decode throughput (65.9 → 62.1 tok/s).
+        // accept-rate EWMA exceeds the threshold, skip the n-gram probe.
+        // On depth=3 where MTP already achieves 98-99% accept, n-gram stacking
+        // adds CPU overhead and MTP cache resets that *reduce* throughput.
+        // Threshold is depth-aware: depth=1 uses ∞ (gate disabled) because
+        // per-step rate is binary (0 or 1), so EWMA reaches 0.98 on random
+        // streaks even at 87% accept, causing 27% false gating on 35B-A3B.
+        // For depth=1 n-gram is also the primary multi-token source, so
+        // gating it costs disproportionately more than depth=3.
         let ngram_saturated = ngram_max > 0
             && state.mtp_telemetry.accept_rate_ewma_samples >= 16
-            && state.mtp_telemetry.accept_rate_ewma >= adaptive_ngram_saturation_threshold();
+            && state.mtp_telemetry.accept_rate_ewma
+                >= adaptive_ngram_saturation_threshold(mtp_max_depth);
         let ngram_max = if ngram_saturated { 0 } else { ngram_max };
         if ngram_saturated {
             state.mtp_telemetry.ngram_saturated_gated_steps = state
@@ -6547,20 +6554,77 @@ fn mtp_next_adaptive_depth(
     accept_count.clamp(floor, max_depth)
 }
 
-/// Build a lazy MLX array holding p_target(draft_token_i) for each draft position.
+/// Lazy target probability container for MTP rejection sampling.
+///
+/// `Full` uses the existing full-vocab softmax path (default).
+/// `TopK` computes softmax over only the top-k logits per position, then does a
+/// CPU-side lookup to extract the probability for each draft token.  This avoids
+/// materializing a `[verify_len, 151936]` softmax tensor, saving ~100× softmax compute.
+enum LazyTargetProbs {
+    Full(MlxArray),
+    TopK {
+        indices: MlxArray,
+        probs: MlxArray,
+        k: u32,
+    },
+}
+
+impl LazyTargetProbs {
+    fn push_eval_targets<'a>(&'a self, targets: &mut Vec<&'a MlxArray>) {
+        match self {
+            LazyTargetProbs::Full(arr) => targets.push(arr),
+            LazyTargetProbs::TopK { indices, probs, .. } => {
+                targets.push(indices);
+                targets.push(probs);
+            }
+        }
+    }
+
+    fn extract_cpu(&self, pending: &[u32]) -> Option<Vec<f32>> {
+        match self {
+            LazyTargetProbs::Full(arr) => Some(arr.data_f32().to_vec()),
+            LazyTargetProbs::TopK { indices, probs, k } => {
+                let n = pending.len();
+                let k_val = *k as usize;
+                let indices_data = indices.data_i32();
+                let probs_data = probs.data_f32();
+                let mut result = Vec::with_capacity(n);
+                for i in 0..n {
+                    let row_start = i * k_val;
+                    let row_end = row_start + k_val;
+                    let needle = pending[i] as i32;
+                    let mut found = false;
+                    for j in row_start..row_end {
+                        if indices_data.get(j) == Some(&needle) {
+                            let p = probs_data.get(j).copied().unwrap_or(0.0_f32);
+                            result.push(p.max(0.0_f32));
+                            found = true;
+                            break;
+                        }
+                    }
+                    if !found {
+                        result.push(0.0_f32);
+                    }
+                }
+                Some(result)
+            }
+        }
+    }
+}
+
+/// Build lazy target probabilities for MTP rejection sampling.
 ///
 /// Returns `None` when rejection sampling is not applicable (no log_probs, temperature == 0,
-/// or pending is empty). The returned array is unevaluated — callers MUST include it in the
-/// same eval batch as the verify-pass outputs to avoid a second GPU sync point.
-///
-/// Shape of returned array: `[n]` float32 where `n = pending.len()`.
-fn compute_mtp_target_probs_lazy(
+/// or pending is empty). Callers MUST include the result in the same eval batch as the
+/// verify-pass outputs to avoid a second GPU sync point.
+fn compute_mtp_target_probs(
     logits_all: &MlxArray,
     pending: &[u32],
     pending_log_probs: &[f32],
     vocab: i32,
     target_sampling: MlxSamplingParams,
-) -> Option<MlxArray> {
+    topk: Option<u32>,
+) -> Option<LazyTargetProbs> {
     if pending.is_empty()
         || pending_log_probs.len() != pending.len()
         || target_sampling.temperature <= 0.0
@@ -6569,27 +6633,50 @@ fn compute_mtp_target_probs_lazy(
     }
 
     let n = pending.len();
-    // Scale logits by 1/T and softmax on GPU — lazy, not yet evaluated.
     let inv_temp = mlx_scalar_f32(1.0 / target_sampling.temperature);
     let scaled = multiply(logits_all, &inv_temp, None);
-    let probs = softmax(&scaled, -1, None); // [verify_len, vocab] lazy
 
-    // Flatten probs and gather the single probability for each draft token.
-    // logits_all[i] is conditioned on verify_input[0..=i] and predicts the token at
-    // position i+1 (= pending[i]).  So the target probability for pending[i] comes
-    // from row i, consistent with the greedy argmax comparison predicted[i].
-    let flat_indices: Vec<i32> = (0..n)
-        .map(|i| i as i32 * vocab + pending[i] as i32)
-        .collect();
-    let flat_idx_arr = MlxArray::from_raw_data(
-        flat_indices.as_ptr() as *const u8,
-        flat_indices.len() * 4,
-        &[n as i32],
-        MlxDtype::Int32,
-    );
-    use mlx_sys::reshape as mlx_reshape;
-    let probs_flat = mlx_reshape(&probs, &[-1_i32], None);
-    Some(take(&probs_flat, &flat_idx_arr, 0, None)) // [n] lazy
+    if let Some(k) = topk {
+        let k_i32 = (k as i32).min(vocab);
+        if k_i32 <= 0 {
+            return None;
+        }
+
+        let last_axis = scaled.ndim() as i32 - 1;
+        let part_indices =
+            argpartition_axis(&scaled, -k_i32, last_axis, None);
+        let top_indices =
+            slice_last_dim(&part_indices, vocab - k_i32, vocab, None);
+        let top_logits =
+            take_along_axis(&scaled, &top_indices, last_axis, None);
+        let top_probs = softmax(&top_logits, last_axis, None);
+
+        Some(LazyTargetProbs::TopK {
+            indices: top_indices,
+            probs: top_probs,
+            k,
+        })
+    } else {
+        let probs = softmax(&scaled, -1, None);
+
+        let flat_indices: Vec<i32> = (0..n)
+            .map(|i| i as i32 * vocab + pending[i] as i32)
+            .collect();
+        let flat_idx_arr = MlxArray::from_raw_data(
+            flat_indices.as_ptr() as *const u8,
+            flat_indices.len() * 4,
+            &[n as i32],
+            MlxDtype::Int32,
+        );
+        use mlx_sys::reshape as mlx_reshape;
+        let probs_flat = mlx_reshape(&probs, &[-1_i32], None);
+        Some(LazyTargetProbs::Full(take(
+            &probs_flat,
+            &flat_idx_arr,
+            0,
+            None,
+        )))
+    }
 }
 
 /// Perform rejection-sampling acceptance using pre-evaluated target probabilities.
@@ -6982,6 +7069,23 @@ fn mtp_skip_state_from_env() -> bool {
     })
 }
 
+fn mtp_target_softmax_topk_from_env() -> Option<u32> {
+    static CACHED: OnceLock<Option<u32>> = OnceLock::new();
+    *CACHED.get_or_init(|| {
+        let val = std::env::var("AX_MLX_MTP_TARGET_SOFTMAX_MODE")
+            .unwrap_or_default()
+            .to_ascii_lowercase()
+            .replace('_', "-");
+        match val.as_str() {
+            "topk-256" => Some(256),
+            "topk-128" => Some(128),
+            "topk-64" => Some(64),
+            "topk-32" => Some(32),
+            _ => None,
+        }
+    })
+}
+
 fn ngram_policy_variant_from_env() -> NgramPolicyVariant {
     match std::env::var("AX_MLX_NGRAM_POLICY")
         .unwrap_or_default()
@@ -7063,11 +7167,18 @@ fn adaptive_ngram_draft_len(has_linear_attention: bool, posterior_mean: f32) -> 
     }
 }
 
-fn adaptive_ngram_saturation_threshold() -> f32 {
+fn adaptive_ngram_saturation_threshold(mtp_depth: usize) -> f32 {
+    if mtp_depth <= 1 {
+        // depth=1: per-step rate is binary (0 or 1); EWMA reaches 0.98 on
+        // random streaks at normal acceptance rates, causing false gating.
+        // n-gram is also the primary multi-token source at depth=1, so
+        // disable the gate entirely.
+        return 2.0;
+    }
     std::env::var("AX_MLX_MTP_NGRAM_GATE_THRESHOLD")
         .ok()
         .and_then(|v| v.parse::<f32>().ok())
-        .unwrap_or(0.90)
+        .unwrap_or(0.98)
 }
 
 #[derive(Debug, thiserror::Error)]

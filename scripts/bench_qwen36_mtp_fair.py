@@ -186,6 +186,7 @@ def run_ax_suite(
     config: diff.RunConfig,
     no_build: bool,
     pure_mtp: bool = False,
+    inter_case_cooldown_s: float = 0.0,
 ) -> Path:
     cmd = [
         str(python),
@@ -202,6 +203,8 @@ def run_ax_suite(
         str(config.repetitions),
         "--cooldown",
         str(config.cooldown_s),
+        "--inter-case-cooldown",
+        str(inter_case_cooldown_s),
         "--ax-ngram-accel",
         "--ax-sampling",
         json.dumps(config.sampling, sort_keys=True),
@@ -232,6 +235,7 @@ def run_mtplx_suite(
     config: diff.RunConfig,
     mtplx_profile: str = "stable",
     allow_unverified_model: bool = False,
+    inter_case_cooldown_s: float = 0.0,
 ) -> Path:
     cmd = [
         str(python),
@@ -260,6 +264,8 @@ def run_mtplx_suite(
         str(config.warmup_repetitions),
         "--cooldown",
         str(config.cooldown_s),
+        "--inter-case-cooldown",
+        str(inter_case_cooldown_s),
         "--profile",
         mtplx_profile,
     ]
@@ -284,6 +290,7 @@ def run_rapid_mlx_suite(
     enable_ngram: bool = False,
     mtp_optimistic: bool = True,
     mtp_draft_temperature: float = 0.5,
+    inter_case_cooldown_s: float = 0.0,
 ) -> Path:
     cmd = [
         str(python),
@@ -317,6 +324,8 @@ def run_rapid_mlx_suite(
         str(config.warmup_repetitions),
         "--cooldown",
         str(config.cooldown_s),
+        "--inter-case-cooldown",
+        str(inter_case_cooldown_s),
         "--port",
         str(port),
         "--mtp-draft-temperature",
@@ -368,6 +377,7 @@ def run_engine_suite(
                 config=config,
                 no_build=args.no_build_ax_engine,
                 pure_mtp=True,
+                inter_case_cooldown_s=args.inter_case_cooldown,
             )
         if engine == "ax_engine_ngram":
             return run_ax_suite(
@@ -379,6 +389,7 @@ def run_engine_suite(
                 config=config,
                 no_build=args.no_build_ax_engine,
                 pure_mtp=False,
+                inter_case_cooldown_s=args.inter_case_cooldown,
             )
         if engine == "mtplx":
             return run_mtplx_suite(
@@ -390,6 +401,7 @@ def run_engine_suite(
                 config=config,
                 mtplx_profile=args.mtplx_profile,
                 allow_unverified_model=profile.is_moe,
+                inter_case_cooldown_s=args.inter_case_cooldown,
             )
         if engine == "lightning_mlx":
             return run_rapid_mlx_suite(
@@ -401,6 +413,7 @@ def run_engine_suite(
                 model_dir=model_dir,
                 config=config,
                 port=args.base_port + 1,
+                inter_case_cooldown_s=args.inter_case_cooldown,
             )
         if engine == "lightning_mtp_ngram":
             return run_rapid_mlx_suite(
@@ -413,6 +426,7 @@ def run_engine_suite(
                 config=config,
                 port=args.base_port + 1,
                 enable_ngram=True,
+                inter_case_cooldown_s=args.inter_case_cooldown,
             )
         raise ValueError(f"unknown engine: {engine}")
     except Exception as exc:
@@ -1016,7 +1030,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-tokens", type=int, default=1000)
     parser.add_argument("--repetitions", type=int, default=5)
     parser.add_argument("--warmup-repetitions", type=int, default=1)
-    parser.add_argument("--cooldown", type=float, default=15.0)
+    parser.add_argument("--cooldown", type=float, default=30.0)
+    parser.add_argument(
+        "--inter-case-cooldown",
+        type=float,
+        default=10.0,
+        help=(
+            "Extra sleep between prompt cases within a suite (seconds). "
+            "Prevents GPU thermal throttling across cases. Default 10s."
+        ),
+    )
     parser.add_argument(
         "--temperature", type=float, default=diff.DEFAULT_SAMPLING["temperature"]
     )

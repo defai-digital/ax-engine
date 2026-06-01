@@ -3906,6 +3906,16 @@ def main() -> None:
     parser.add_argument("--generation-tokens", type=int, default=DEFAULT_GENERATION_TOKENS)
     parser.add_argument("--repetitions", type=int, default=DEFAULT_REPETITIONS)
     parser.add_argument("--cooldown", type=float, default=DEFAULT_COOLDOWN)
+    parser.add_argument(
+        "--inter-case-cooldown",
+        type=float,
+        default=0.0,
+        help=(
+            "Extra sleep (seconds) between prompt cases within a suite, "
+            "applied after each case except the last. Helps prevent GPU "
+            "thermal throttling when running multiple cases back-to-back."
+        ),
+    )
     parser.add_argument("--prefill-step-size", type=int, default=2048)
     parser.add_argument("--output", type=Path)
     parser.add_argument(
@@ -4763,6 +4773,15 @@ def main() -> None:
                     results[-1]["ax_direct_gemma4_post_attn_ffn_route"] = bool(
                         direct_gemma4_post_attn_ffn_route
                     )
+                    if (
+                        args.inter_case_cooldown > 0
+                        and prompt_doc is not prompts[-1]
+                    ):
+                        print(
+                            f"  [ax-engine] inter-case cooldown {args.inter_case_cooldown:.0f}s",
+                            file=sys.stderr,
+                        )
+                        time.sleep(args.inter_case_cooldown)
                 kill_proc(proc)
                 procs.remove(proc)
                 if (direct_mode and args.ax_compare_policies) or (

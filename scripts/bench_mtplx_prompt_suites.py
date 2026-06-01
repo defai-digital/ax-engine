@@ -270,6 +270,9 @@ def run_suite(args: argparse.Namespace) -> dict[str, Any]:
                 "validations": validations,
             }
         )
+        if args.inter_case_cooldown > 0 and case_index < len(encoded) - 1:
+            print(f"  [mtplx] inter-case cooldown {args.inter_case_cooldown:.0f}s", flush=True)
+            time.sleep(args.inter_case_cooldown)
 
     measured_runs = [run for case in case_results for run in case["runs"]]
     validations = [v for case in case_results for v in case["validations"]]
@@ -325,6 +328,12 @@ def main() -> int:
     parser.add_argument("--repetitions", type=int, default=5)
     parser.add_argument("--warmup-repetitions", type=int, default=1)
     parser.add_argument("--cooldown", type=float, default=15.0)
+    parser.add_argument(
+        "--inter-case-cooldown",
+        type=float,
+        default=0.0,
+        help="Extra sleep between prompt cases (seconds). Prevents GPU thermal throttling.",
+    )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--limit", type=int)
     parser.add_argument("--disable-thinking", action="store_true")

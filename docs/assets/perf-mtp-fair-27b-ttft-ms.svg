@@ -1,7 +1,7 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="760" height="430" viewBox="0 0 760 430" role="img">
 <rect width="100%" height="100%" fill="#ffffff"/>
 <text x="24" y="30" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="18" font-weight="700" fill="#111827">Qwen3.6 27B 4-bit MTP TTFT</text>
-<text x="732" y="30" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#4b5563"><tspan>ms — </tspan><tspan fill="#dc2626" font-weight="700">lower is better</tspan><tspan>  (~ = client-side via ttft_s, includes HTTP overhead)</tspan></text>
+<text x="732" y="30" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#4b5563">ms — lower is better  (~ = client-side via ttft_s, includes HTTP overhead)</text>
 <line x1="60" y1="358.0" x2="732" y2="358.0" stroke="#e5e7eb" stroke-width="1"/>
 <text x="52" y="361.0" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">0</text>
 <line x1="60" y1="261.3" x2="732" y2="261.3" stroke="#e5e7eb" stroke-width="1"/>

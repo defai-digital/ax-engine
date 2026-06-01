@@ -5,8 +5,8 @@
       "ax_engine_ngram": "mtp_ngram_stacked"
     },
     "ax_pure_mtp": true,
-    "cooldown_s": 15.0,
-    "depth_policy": "native",
+    "cooldown_s": 30.0,
+    "depth_policy": "fair-shared",
     "engines": [
       "mtplx",
       "lightning_mlx",
@@ -61,10 +61,10 @@
           "accept_rate": 0.8015747957933328,
           "artifact": "benchmarks/results/mtp-fair/2026-06-01-qwen36-fair-ax-ngram3/27b-4bit/flappy/ax_engine_ngram.json",
           "case_count": 4,
-          "decode_tok_s": 62.086114280300734,
+          "decode_tok_s": 62.368750703007024,
           "engine": "ax_engine_ngram",
           "ngram_accept_rate": null,
-          "ngram_hit_steps": 3737,
+          "ngram_hit_steps": 3733,
           "status": "ok",
           "valid_case_count": 4,
           "validations_passed": null,
@@ -143,9 +143,9 @@
         "transform_norm_policy": "shift_mtp_norm_weights_by_1"
       },
       "ratios": {
-        "ax_engine_ngram_vs_ax_engine": 0.9418023438928983,
-        "ax_engine_ngram_vs_lightning_mlx": 1.253108709656109,
-        "ax_engine_ngram_vs_mtplx": 1.205234870116626,
+        "ax_engine_ngram_vs_ax_engine": 0.9460897380785375,
+        "ax_engine_ngram_vs_lightning_mlx": 1.2588132728594092,
+        "ax_engine_ngram_vs_mtplx": 1.2107214958486334,
         "ax_engine_vs_lightning_mlx": 1.3305432055694824,
         "ax_engine_vs_mtplx": 1.2797110539509182,
         "lightning_mlx_vs_mtplx": 0.961795940631024
@@ -174,10 +174,10 @@
           "accept_rate": 0.9003627626934905,
           "artifact": "benchmarks/results/mtp-fair/2026-06-01-qwen36-fair-ax-ngram3/27b-4bit/long_code/ax_engine_ngram.json",
           "case_count": 4,
-          "decode_tok_s": 62.241338622568776,
+          "decode_tok_s": 70.79668796345719,
           "engine": "ax_engine_ngram",
           "ngram_accept_rate": null,
-          "ngram_hit_steps": 3403,
+          "ngram_hit_steps": 3395,
           "status": "ok",
           "valid_case_count": 4,
           "validations_passed": null,
@@ -256,9 +256,9 @@
         "transform_norm_policy": "shift_mtp_norm_weights_by_1"
       },
       "ratios": {
-        "ax_engine_ngram_vs_ax_engine": 0.9482053381373278,
-        "ax_engine_ngram_vs_lightning_mlx": 1.2046887215667896,
-        "ax_engine_ngram_vs_mtplx": 1.1638283973802919,
+        "ax_engine_ngram_vs_ax_engine": 1.0785403870644175,
+        "ax_engine_ngram_vs_lightning_mlx": 1.3702785544354383,
+        "ax_engine_ngram_vs_mtplx": 1.3238017966160256,
         "ax_engine_vs_lightning_mlx": 1.2704935029508508,
         "ax_engine_vs_mtplx": 1.2274012290065124,
         "lightning_mlx_vs_mtplx": 0.9660822555611247
@@ -284,13 +284,13 @@
           "validations_total": null
         },
         "ax_engine_ngram": {
-          "accept_rate": 0.7824239713774598,
+          "accept_rate": 0.7771326485037964,
           "artifact": "benchmarks/results/mtp-fair/2026-06-01-qwen36-fair-ax-ngram3/27b-4bit/python_modules_long/ax_engine_ngram.json",
           "case_count": 3,
-          "decode_tok_s": 53.495045288905345,
+          "decode_tok_s": 60.87210490747257,
           "engine": "ax_engine_ngram",
           "ngram_accept_rate": null,
-          "ngram_hit_steps": 1840,
+          "ngram_hit_steps": 1770,
           "status": "ok",
           "valid_case_count": 3,
           "validations_passed": null,
@@ -369,9 +369,9 @@
         "transform_norm_policy": "shift_mtp_norm_weights_by_1"
       },
       "ratios": {
-        "ax_engine_ngram_vs_ax_engine": 0.9935855696045433,
-        "ax_engine_ngram_vs_lightning_mlx": 1.1411054924967754,
-        "ax_engine_ngram_vs_mtplx": 1.0359406082493778,
+        "ax_engine_ngram_vs_ax_engine": 1.1306027446258147,
+        "ax_engine_ngram_vs_lightning_mlx": 1.2984659209955447,
+        "ax_engine_ngram_vs_mtplx": 1.1787986166327338,
         "ax_engine_vs_lightning_mlx": 1.1484722880495803,
         "ax_engine_vs_mtplx": 1.0426284760372397,
         "lightning_mlx_vs_mtplx": 0.9078394723898021
@@ -397,13 +397,13 @@
           "validations_total": null
         },
         "ax_engine_ngram": {
-          "accept_rate": 0.8878693642264609,
+          "accept_rate": 0.8789740619671185,
           "artifact": "benchmarks/results/mtp-fair/2026-06-01-qwen36-fair-ax-ngram3/35b-a3b-4bit/flappy/ax_engine_ngram.json",
           "case_count": 4,
-          "decode_tok_s": 261.7014146487396,
+          "decode_tok_s": 241.1593068105342,
           "engine": "ax_engine_ngram",
           "ngram_accept_rate": null,
-          "ngram_hit_steps": 4128,
+          "ngram_hit_steps": 3606,
           "status": "ok",
           "valid_case_count": 4,
           "validations_passed": null,
@@ -482,9 +482,9 @@
         "transform_norm_policy": "shift_mtp_norm_weights_by_1"
       },
       "ratios": {
-        "ax_engine_ngram_vs_ax_engine": 1.4342120638451619,
-        "ax_engine_ngram_vs_lightning_mlx": 1.7696433946292667,
-        "ax_engine_ngram_vs_mtplx": 2.4395976331129376,
+        "ax_engine_ngram_vs_ax_engine": 1.3216343809239344,
+        "ax_engine_ngram_vs_lightning_mlx": 1.630736214870858,
+        "ax_engine_ngram_vs_mtplx": 2.248102765847886,
         "ax_engine_vs_lightning_mlx": 1.2338784753244958,
         "ax_engine_vs_mtplx": 1.7010020307403562,
         "lightning_mlx_vs_mtplx": 1.37858149303805
@@ -510,13 +510,13 @@
           "validations_total": null
         },
         "ax_engine_ngram": {
-          "accept_rate": 0.9197225491164337,
+          "accept_rate": 0.9182863655609584,
           "artifact": "benchmarks/results/mtp-fair/2026-06-01-qwen36-fair-ax-ngram3/35b-a3b-4bit/long_code/ax_engine_ngram.json",
           "case_count": 4,
-          "decode_tok_s": 277.3119023155248,
+          "decode_tok_s": 270.2503989081297,
           "engine": "ax_engine_ngram",
           "ngram_accept_rate": null,
-          "ngram_hit_steps": 3963,
+          "ngram_hit_steps": 3703,
           "status": "ok",
           "valid_case_count": 4,
           "validations_passed": null,
@@ -595,9 +595,9 @@
         "transform_norm_policy": "shift_mtp_norm_weights_by_1"
       },
       "ratios": {
-        "ax_engine_ngram_vs_ax_engine": 1.5348630445110731,
-        "ax_engine_ngram_vs_lightning_mlx": 1.8614380740968437,
-        "ax_engine_ngram_vs_mtplx": 2.6071080275608347,
+        "ax_engine_ngram_vs_ax_engine": 1.4957791085955934,
+        "ax_engine_ngram_vs_lightning_mlx": 1.8140381926163367,
+        "ax_engine_ngram_vs_mtplx": 2.5407203173098662,
         "ax_engine_vs_lightning_mlx": 1.212771446125866,
         "ax_engine_vs_mtplx": 1.6985932633431295,
         "lightning_mlx_vs_mtplx": 1.4005881064970613
@@ -623,13 +623,13 @@
           "validations_total": null
         },
         "ax_engine_ngram": {
-          "accept_rate": 0.8347964884277733,
+          "accept_rate": 0.8304046858359957,
           "artifact": "benchmarks/results/mtp-fair/2026-06-01-qwen36-fair-ax-ngram3/35b-a3b-4bit/python_modules_long/ax_engine_ngram.json",
           "case_count": 3,
-          "decode_tok_s": 196.26684754619336,
+          "decode_tok_s": 197.5986234489496,
           "engine": "ax_engine_ngram",
           "ngram_accept_rate": null,
-          "ngram_hit_steps": 2421,
+          "ngram_hit_steps": 2407,
           "status": "ok",
           "valid_case_count": 3,
           "validations_passed": null,
@@ -708,9 +708,9 @@
         "transform_norm_policy": "shift_mtp_norm_weights_by_1"
       },
       "ratios": {
-        "ax_engine_ngram_vs_ax_engine": 1.1018909525693685,
-        "ax_engine_ngram_vs_lightning_mlx": 1.3192072397344399,
-        "ax_engine_ngram_vs_mtplx": 1.9114831283130682,
+        "ax_engine_ngram_vs_ax_engine": 1.1093678740996418,
+        "ax_engine_ngram_vs_lightning_mlx": 1.3281587689131333,
+        "ax_engine_ngram_vs_mtplx": 1.9244535672875533,
         "ax_engine_vs_lightning_mlx": 1.1972212283423669,
         "ax_engine_vs_mtplx": 1.7347298513123355,
         "lightning_mlx_vs_mtplx": 1.448963491663262
