@@ -2,16 +2,15 @@
 
 ## Background
 
-AX Engine's decode path already implements several optimizations: double-buffer direct pipeline (`async_eval`/`eval` overlap), n-gram speculative decoding, MTP speculative decoding, TurboQuant KV compression, and 50+ Metal/C++ fast-path kernels. However, the non-greedy sampling path (temperature > 0 with top-k/top-p) carries per-step CPU overhead that scales with vocabulary size, and speculative decode parameters are static rather than adaptive.
+AX Engine's decode path already implements several optimizations: double-buffer direct pipeline (`async_eval`/`eval` overlap), n-gram speculative decoding, MTP speculative decoding, TurboQuant KV compression, and 50+ Metal/C++ fast-path kernels. However, the non-greedy sampling path (temperature > 0 with top-k/top-p) carries per-step CPU overhead that scales with vocabulary size, and the MTP target-probability path still has avoidable small allocation/extraction overhead.
 
 The `PERFORMANCE-DECODE-GAP.md` investigation established that the residual 1-6% gap to `mlx_lm.benchmark` on dense models is dominated by per-MLX-op FFI overhead (~800-1300 op dispatches per step). Single-op fusion has a low ceiling. This PRD targets the **CPU-side decode hot path** — the work that happens between GPU forward completion and the next step's graph build — where we have direct control and proven leverage.
 
 ## Goals
 
-- **G1**: Reduce per-step CPU overhead in the non-greedy sampling path (temperature + top-k/top-p) by replacing O(V log V) full-vocab sort with GPU-side `argpartition_axis` + CPU-side small-k sort.
-- **G2**: Eliminate per-step heap allocations in the sampling path (probs `Vec<f32>`, repetition penalty logits copy) by pre-allocating reusable buffers in `RequestState`.
-- **G3**: Improve n-gram speculative decode throughput by making draft length adaptive based on recent acceptance rate, rather than static `MAX_DRAFT_LEN = 6`.
-- **G4**: Cache `full_vocab_token_logprob` normalization constants (max-logit, exp-sum) to avoid recomputing O(V) scans during MTP rejection sampling.
+- **G1**: Reduce per-step CPU overhead in exact non-greedy `top_k` sampling by replacing CPU full-vocab `sort_by` with GPU-side `argpartition_axis` + CPU-side small-k sampling while preserving the current probability semantics.
+- **G2**: Eliminate per-step heap allocations in the CPU sampling path (probabilities, candidate tuples, repetition-penalty logits copy) by reusing request-local buffers or an equivalent decode-local workspace.
+- **G3**: Reduce MTP rejection-sampling overhead by optimizing the existing lazy GPU target-probability path in `runner.rs` without materializing full-vocabulary logits on CPU.
 
 ## Non-goals
 
@@ -19,6 +18,7 @@ The `PERFORMANCE-DECODE-GAP.md` investigation established that the residual 1-6%
 - `mx.compile`-analog for per-layer forward (listed as out-of-scope future work in `PERFORMANCE-DECODE-GAP.md`).
 - Changes to the double-buffer pipeline contract (already optimal for greedy decode).
 - KV cache memory layout changes (separate roadmap track).
+- Adaptive n-gram draft length. It is deferred because it can regress linear-attention branch/recompute cost, MTP+n-gram hybrid source accounting, and workload-dependent acceptance behavior.
 
 ## User Impact
 
@@ -27,7 +27,6 @@ The `PERFORMANCE-DECODE-GAP.md` investigation established that the residual 1-6%
 | Greedy decode users (default) | No change — already uses optimal double-buffer pipeline |
 | Temperature + top-k/top-p users | Lower per-step latency, especially for large-vocab models (Qwen 150K+) |
 | Repetition penalty users | Lower per-step allocation pressure |
-| N-gram speculative decode users | Higher tokens-per-forward when patterns are stable |
 | MTP speculative decode users | Lower rejection-sampling overhead |
 
 ## Metrics
@@ -36,28 +35,33 @@ The `PERFORMANCE-DECODE-GAP.md` investigation established that the residual 1-6%
 |---|---|---|---|
 | Non-greedy decode step latency (Qwen 3.6 27B, top-k=50, top-p=0.9) | TBD | -10% CPU time | `decode-trace` with `AX_MLX_DIRECT_PIPELINE_STAGE_PROFILE=1` |
 | Per-step heap allocations (non-greedy, repetition penalty) | 2 allocs/step | 0 allocs/step | `cargo bench` with allocation tracking |
-| N-gram acceptance rate (repeating prompts) | TBD | +15% tokens/forward | `ax_ngram_accept_at_depth_*` route decisions |
-| MTP rejection sampling overhead | TBD | -20% | MTP telemetry counters |
+| MTP rejection sampling overhead | TBD | -20% target-prob extraction/acceptance CPU time | MTP telemetry counters and decode-stage profile |
 
 ## Phases
 
 ### Phase 1 — Sampling Path Optimization (P0)
 
-Replace the CPU-side `sort_by` in `apply_top_k_top_p` with GPU-side `argpartition_axis` to get top-k candidates, then transfer only k logits to CPU for top-p filtering. Pre-allocate sampling buffers in `RequestState` to eliminate per-step heap allocations.
+Replace the CPU-side `sort_by` in exact `top_k` sampling with GPU-side `argpartition_axis` to get top-k candidates, then transfer only k logits/indices to CPU for sampling. Pre-allocate or reuse sampling buffers in the decode workspace to eliminate avoidable per-step heap allocations.
+
+`top_p` has a stricter correctness constraint: the current implementation computes nucleus filtering against full-vocabulary probability mass. Phase 1 must either preserve that full-domain cutoff exactly or fall back to the existing CPU path. In particular, `top_p < 1.0` with `top_k == 0` must not be approximated with a fixed candidate count.
 
 **Files**: `crates/ax-engine-mlx/src/sampling.rs`, `crates/ax-engine-mlx/src/runner.rs`
 
-### Phase 2 — Adaptive N-gram Draft Length (P1)
+### Phase 2 — MTP Target-Probability Workspace (P1)
 
-Make `MAX_DRAFT_LEN` dynamic based on a rolling window of acceptance rates. When acceptance rate > 80% over the last 32 steps, increase draft ceiling to 8. When < 30%, decrease to 3.
+Optimize the current `compute_mtp_target_probs` path in `runner.rs`. The current implementation already computes target probabilities lazily on GPU and gathers only the pending draft-token probabilities before `mtp_accept_count`. Phase 3 should reduce allocation, indexing, and extraction overhead in that path without introducing CPU full-logits readback.
 
-**Files**: `crates/ax-engine-mlx/src/ngram_accel.rs`, `crates/ax-engine-mlx/src/runner.rs`
+**Files**: `crates/ax-engine-mlx/src/runner.rs`, `crates/ax-engine-mlx/src/mtp.rs`, `crates/ax-engine-mlx/src/sampling.rs`
 
-### Phase 3 — MTP Logprob Caching (P1)
+## Deferred High-Risk Items
 
-Cache the max-logit and exp-sum from the forward pass so `full_vocab_token_logprob` can compute log-prob in O(1) instead of O(V).
+### Adaptive N-gram Draft Length
 
-**Files**: `crates/ax-engine-mlx/src/sampling.rs`, `crates/ax-engine-mlx/src/mtp.rs`
+The adaptive n-gram draft-length proposal is intentionally disabled for this PRD. It may be revisited only after a separate benchmark plan proves:
+- dense-model verifier batches win when the draft ceiling grows beyond the current `MAX_DRAFT_LEN = 6`;
+- linear-attention requests do not regress from partial-reject branch/recompute cost;
+- MTP+n-gram hybrid source-aware acceptance and telemetry remain unchanged;
+- real workload suites improve, not only synthetic repeating prompts.
 
 ## Evidence Gates
 
