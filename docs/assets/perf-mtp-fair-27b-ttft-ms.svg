@@ -1,9 +1,10 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="900" height="460" viewBox="0 0 900 460" role="img" aria-labelledby="title desc">
 <title>Qwen3.6 27B 4-bit MTP TTFT</title>
-<desc>Grouped box-and-whisker plot comparing MTPLX 0.3.7, Light. MTP, Light. ngram+MTP, AX MTP, AX MTP+n-gram.</desc>
+<desc>Grouped box-and-whisker plot comparing MTPLX 0.3.7, Lightning v0.6.10, Lightning+ng v0.6.10, AX Engine v5.1.0, AX+ngram v5.1.0.</desc>
 <rect width="100%" height="100%" fill="#f8fafc"/>
 <text x="24" y="24" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="16" font-weight="700" fill="#111827">Qwen3.6 27B 4-bit MTP TTFT</text>
 <text x="24" y="46" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#4b5563"><tspan>All suites combined | </tspan><tspan fill="#dc2626" font-weight="700">lower is better</tspan><tspan> | box=IQR | dots=runs</tspan></text>
+<text x="24" y="62" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">MTPLX 0.3.7 · Lightning-MLX 0.6.10 · AX Engine v5.1.0</text>
 <rect x="818" y="13" width="48" height="22" rx="11" fill="#eef2ff" stroke="#c7d2fe"/>
 <text x="842.0" y="28" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#3730a3">ms</text>
 <text x="866" y="52" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#dc2626">Lower is better</text>
@@ -241,11 +242,11 @@
 <rect x="64" y="433" width="10" height="10" rx="2" fill="#14532d" fill-opacity="0.86"/>
 <text x="78" y="442" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#374151">MTPLX 0.3.7</text>
 <rect x="199.2" y="433" width="10" height="10" rx="2" fill="#7c3aed" fill-opacity="0.60"/>
-<text x="213.2" y="442" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#374151">Light. MTP</text>
+<text x="213.2" y="442" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#374151">Lightning v0.6.10</text>
 <rect x="334.4" y="433" width="10" height="10" rx="2" fill="#1e3a8a" fill-opacity="0.60"/>
-<text x="348.4" y="442" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#374151">Light. ngram+MTP</text>
+<text x="348.4" y="442" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#374151">Lightning+ng v0.6.10</text>
 <rect x="469.59999999999997" y="433" width="10" height="10" rx="2" fill="#f97316" fill-opacity="0.86"/>
-<text x="483.59999999999997" y="442" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#374151">AX MTP</text>
+<text x="483.59999999999997" y="442" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#374151">AX Engine v5.1.0</text>
 <rect x="604.8" y="433" width="10" height="10" rx="2" fill="#eab308" fill-opacity="0.86"/>
-<text x="618.8" y="442" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#374151">AX MTP+n-gram</text>
+<text x="618.8" y="442" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#374151">AX+ngram v5.1.0</text>
 </svg>

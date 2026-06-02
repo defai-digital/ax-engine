@@ -31,11 +31,12 @@ from typing import Any
 
 ENGINE_LABELS = {
     "mtplx": "MTPLX 0.3.7",
-    "lightning_mlx": "Light. MTP",
-    "lightning_mtp_ngram": "Light. ngram+MTP",
-    "ax_engine": "AX MTP",
-    "ax_engine_ngram": "AX MTP+n-gram",
+    "lightning_mlx": "Lightning v0.6.10",
+    "lightning_mtp_ngram": "Lightning+ng v0.6.10",
+    "ax_engine": "AX Engine v5.1.0",
+    "ax_engine_ngram": "AX+ngram v5.1.0",
 }
+VERSIONS_FOOTNOTE = "MTPLX 0.3.7 · Lightning-MLX 0.6.10 · AX Engine v5.1.0"
 ENGINE_COLORS = {
     "mtplx": "#14532d",
     "lightning_mlx": "#7c3aed",
@@ -490,6 +491,7 @@ def _box_whisker_chart(
     max_value: float | None = None,
     width: int = 900,
     lower_is_better: bool = False,
+    footnote: str = "",
 ) -> None:
     height = 460
     left = 64
@@ -567,6 +569,14 @@ def _box_whisker_chart(
         f'<text x="24" y="24" font-family="Inter,Segoe UI,Arial,sans-serif" '
         f'font-size="16" font-weight="700" fill="#111827">{html.escape(title)}</text>',
         _render_subtitle(subtitle, 24, 46),
+        *(
+            [
+                f'<text x="24" y="62" font-family="Inter,Segoe UI,Arial,sans-serif" '
+                f'font-size="10" fill="#6b7280">{html.escape(footnote)}</text>'
+            ]
+            if footnote
+            else []
+        ),
         f'<rect x="{width - header_right - unit_w}" y="13" width="{unit_w}" height="22" '
         f'rx="11" fill="#eef2ff" stroke="#c7d2fe"/>',
         f'<text x="{width - header_right - unit_w / 2:.1f}" y="28" text-anchor="middle" '
@@ -696,6 +706,7 @@ def write_prefill_svg(path: Path, report: dict[str, Any]) -> None:
         groups=groups,
         active_engines=active_engines,
         width=max(900, len(groups) * 260),
+        footnote=VERSIONS_FOOTNOTE,
     )
 
 
@@ -711,6 +722,7 @@ def write_ttft_svg(path: Path, report: dict[str, Any]) -> None:
         active_engines=active_engines,
         width=max(900, len(groups) * 260),
         lower_is_better=True,
+        footnote=VERSIONS_FOOTNOTE,
     )
 
 
@@ -727,6 +739,7 @@ def write_prefill_model_svg(path: Path, report: dict[str, Any], model_key: str) 
         unit="tok/s",
         groups=_combined_suite_chart_group(rows, active_engines, "prefill_tok_s"),
         active_engines=active_engines,
+        footnote=VERSIONS_FOOTNOTE,
     )
 
 
@@ -744,6 +757,7 @@ def write_ttft_model_svg(path: Path, report: dict[str, Any], model_key: str) -> 
         groups=_combined_suite_chart_group(rows, active_engines, "ttft_ms"),
         active_engines=active_engines,
         lower_is_better=True,
+        footnote=VERSIONS_FOOTNOTE,
     )
 
 
