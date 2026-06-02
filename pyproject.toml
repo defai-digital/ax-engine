@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "ax-engine"
-version = "5.1.5"
+version = "5.1.6"
 description = "Python bindings for AX Engine"
 requires-python = ">=3.10"
 readme = "crates/ax-engine-py/README.md"
@@ -26,6 +26,14 @@ module-name = "ax_engine._ax_engine"
 features = ["python-extension"]
 # strip debug symbols from the release wheel to keep size down
 strip = true
+# Bundle pre-compiled Metal kernel assets so pip-installed ax-engine works out of the box.
+# Maturin collects .py files automatically; binary and data files need explicit inclusion.
+include = [
+    { path = "python/ax_engine/_metal/build/ax_phase1_dense_path.metallib", format = ["wheel"] },
+    { path = "python/ax_engine/_metal/build/ax_phase1_dense_path.air", format = ["wheel"] },
+    { path = "python/ax_engine/_metal/metal/phase1-kernels.json", format = ["wheel"] },
+    { path = "python/ax_engine/_metal/metal/kernels/phase1_dense_path.metal", format = ["wheel"] },
+]
 # Explicitly exclude internal and developer-only paths from both wheel and sdist.
 # .internal/ is also in .gitignore; this is belt-and-suspenders for maturin sdist.
 exclude = [

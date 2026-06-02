@@ -5,6 +5,97 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterator
 
+# Pre-embedded SHA256 of bundled metal artifacts (updated each release).
+_BUNDLED_METALLIB_SHA256 = "51ea9ded8a3944f02e9869dd4e6fcbe45a2fc62e0dec261d7f481c74c82f23ea"
+_BUNDLED_AIR_SHA256 = "08bc5a48123de39c9b35036698ea8cd0c95e65e2083420ad31e932235972b000"
+_BUNDLED_SOURCE_SHA256 = "178e69d60a8707d76dbfc65cb9e3ec8b5cfc2793dd77ee4343403d892a2733cf"
+
+
+def _setup_bundled_metal() -> None:
+    """Point AX_ENGINE_METAL_BUILD_DIR at the bundled metallib for pip installs.
+
+    Generates a build_report.json with absolute paths in ~/.cache/ax-engine/metal-build/
+    so the Rust engine can locate the pre-compiled metallib without a source checkout.
+    No-ops if AX_ENGINE_METAL_BUILD_DIR is already set or the bundled assets are absent.
+    """
+    import hashlib
+    import json
+
+    if "AX_ENGINE_METAL_BUILD_DIR" in os.environ:
+        return
+
+    _pkg = Path(__file__).parent
+    _bundled = _pkg / "_metal"
+    _manifest_path = _bundled / "metal" / "phase1-kernels.json"
+    _source_path = _bundled / "metal" / "kernels" / "phase1_dense_path.metal"
+    _metallib_path = _bundled / "build" / "ax_phase1_dense_path.metallib"
+    _air_path = _bundled / "build" / "ax_phase1_dense_path.air"
+
+    if not all(p.is_file() for p in [_manifest_path, _source_path, _metallib_path, _air_path]):
+        return
+
+    _cache_dir = Path.home() / ".cache" / "ax-engine" / "metal-build"
+    _report_path = _cache_dir / "build_report.json"
+
+    # Reuse cached report when paths and this release's SHA256 still match.
+    if _report_path.is_file():
+        try:
+            _cached = json.loads(_report_path.read_bytes())
+            if (
+                _cached.get("manifest_path") == str(_manifest_path)
+                and _cached.get("outputs", {}).get("metallib") == str(_metallib_path)
+                and _cached.get("outputs", {}).get("metallib_sha256") == _BUNDLED_METALLIB_SHA256
+            ):
+                os.environ["AX_ENGINE_METAL_BUILD_DIR"] = str(_cache_dir)
+                return
+        except Exception:
+            pass
+
+    _manifest = json.loads(_manifest_path.read_bytes())
+
+    _report: dict[str, Any] = {
+        "schema_version": "ax.metal.build_report.v1",
+        "manifest_path": str(_manifest_path),
+        "source_file": str(_source_path),
+        "mlx_target": _manifest["mlx_target"],
+        "metal_language_standard": _manifest["metal_language_standard"],
+        "library_name": _manifest["library_name"],
+        "default_block_size_tokens": _manifest["default_block_size_tokens"],
+        "supported_block_size_tokens": _manifest["supported_block_size_tokens"],
+        "toolchain_requirements": _manifest["toolchain_requirements"],
+        "doctor": {
+            "status": "ready",
+            "bringup_allowed": True,
+            "mlx_runtime_ready": True,
+            "metal_toolchain_fully_available": False,
+            "host": {"os": "macos", "arch": "aarch64"},
+            "metal_toolchain": {},
+        },
+        "kernels": _manifest["kernels"],
+        "source_sha256": _BUNDLED_SOURCE_SHA256,
+        "outputs": {
+            "air": str(_air_path),
+            "metalar": None,
+            "metallib": str(_metallib_path),
+            "air_sha256": _BUNDLED_AIR_SHA256,
+            "metalar_sha256": None,
+            "metallib_sha256": _BUNDLED_METALLIB_SHA256,
+        },
+        "compile_commands": [],
+        "status": "compiled",
+        "reason": None,
+    }
+
+    try:
+        _cache_dir.mkdir(parents=True, exist_ok=True)
+        _report_path.write_text(json.dumps(_report, indent=2))
+        os.environ["AX_ENGINE_METAL_BUILD_DIR"] = str(_cache_dir)
+    except Exception:
+        pass
+
+
+_setup_bundled_metal()
+
 from ._ax_engine import (
     EngineBackendError,
     EngineError,
