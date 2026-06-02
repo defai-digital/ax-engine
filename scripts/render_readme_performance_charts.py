@@ -21,11 +21,12 @@ LABEL_TO_SLUG = {
 PROMPT_TOKENS = (128, 512, 2048)
 
 SERIES = [
-    ("llama_cpp_metal", "llama.cpp", "#f97316", "#c2410c"),
-    ("mlx_lm", "mlx_lm", "#f2b705", "#9a6a00"),
-    ("ax_engine_mlx", "ax_engine", "#2eaf5f", "#176c37"),
-    ("ax_engine_mlx_ngram_accel", "ax+n-gram", "#137a3d", "#0b4f28"),
+    ("llama_cpp_metal", "llama.cpp b9430", "#f97316", "#c2410c"),
+    ("mlx_lm", "mlx-lm 0.31.3", "#f2b705", "#9a6a00"),
+    ("ax_engine_mlx", "AX Engine v5.1.1", "#2eaf5f", "#176c37"),
+    ("ax_engine_mlx_ngram_accel", "AX+ngram v5.1.1", "#137a3d", "#0b4f28"),
 ]
+DIRECT_VERSIONS_FOOTNOTE = "llama.cpp b9430 · mlx-lm 0.31.3 · AX Engine v5.1.1"
 
 FAMILY_SLUGS: dict[str, list[str]] = {
     "gemma4": [
@@ -670,6 +671,11 @@ def render_family_chart(spec: ChartSpec, engine_groups: list[EngineGroupStats]) 
             f' font-size="9" font-weight="700" fill="#111827">{escape(eg.label)}</text>'
         )
 
+    lines.append(
+        f'<text x="{FAMILY_LEFT}" y="{FAMILY_CHART_HEIGHT - 8}"'
+        f' font-family="{FONT}" font-size="8" fill="#6b7280">'
+        f"{escape(DIRECT_VERSIONS_FOOTNOTE)}</text>"
+    )
     lines.append("</svg>")
     return "".join(lines) + "\n"
 
