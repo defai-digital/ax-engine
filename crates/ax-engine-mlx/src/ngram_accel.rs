@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use mlx_sys::{MlxArray, MlxDtype, argmax, eval, multiply, reshape, slice, softmax, take};
 
 use crate::sampling::{
-    MlxSamplingParams, MlxSamplingRequest, Xorshift64, sample_categorical, sample_categorical_gpu,
+    MlxSamplingParams, MlxSamplingRequest, Xorshift64, sample_categorical_gpu,
     sample_categorical_into, sample_categorical_with_topk_gpu,
 };
 
@@ -997,21 +997,70 @@ pub fn ngram_accel_decode_step(
     repetition_tokens: &[u32],
     rng: &mut Xorshift64,
 ) -> Vec<u32> {
+    let mut sampling_probs_buf = Vec::new();
+    let mut sampling_logits_buf = Vec::new();
+    let mut sampling_candidates_buf = Vec::new();
+    ngram_accel_decode_step_with_sampling_buffers(
+        cfg,
+        weights,
+        cache,
+        ngram,
+        last_token,
+        draft,
+        sampling,
+        repetition_tokens,
+        rng,
+        &mut sampling_probs_buf,
+        &mut sampling_logits_buf,
+        &mut sampling_candidates_buf,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn ngram_accel_decode_step_with_sampling_buffers(
+    cfg: &ModelConfig,
+    weights: &ModelWeights,
+    cache: &mut MlxKVCache,
+    ngram: &mut NgramTable,
+    last_token: u32,
+    draft: &[u32],
+    sampling: MlxSamplingParams,
+    repetition_tokens: &[u32],
+    rng: &mut Xorshift64,
+    sampling_probs_buf: &mut Vec<f32>,
+    sampling_logits_buf: &mut Vec<f32>,
+    sampling_candidates_buf: &mut Vec<(usize, f32)>,
+) -> Vec<u32> {
     if draft.is_empty() || sampling.uses_repetition_penalty() {
-        return single_decode(
+        return single_decode_with_turboquant_context(
             cfg,
             weights,
             cache,
             ngram,
             last_token,
-            MlxSamplingRequest::new(sampling, repetition_tokens),
+            sampling,
+            repetition_tokens,
             rng,
+            None,
+            sampling_probs_buf,
+            sampling_logits_buf,
+            sampling_candidates_buf,
         );
     }
 
     if cfg.linear_attention.is_some() {
         return ngram_accel_decode_step_linear_safe(
-            cfg, weights, cache, ngram, last_token, draft, sampling, rng,
+            cfg,
+            weights,
+            cache,
+            ngram,
+            last_token,
+            draft,
+            sampling,
+            rng,
+            sampling_probs_buf,
+            sampling_logits_buf,
+            sampling_candidates_buf,
         );
     }
 
@@ -1026,6 +1075,9 @@ pub fn ngram_accel_decode_step(
         sampling,
         effective_speculative_accept_threshold(),
         rng,
+        sampling_probs_buf,
+        sampling_logits_buf,
+        sampling_candidates_buf,
     );
 
     // Trim KV cache: keep only [last_token + accepted_drafts].
@@ -1061,6 +1113,9 @@ fn ngram_accel_decode_step_linear_safe(
     draft: &[u32],
     sampling: MlxSamplingParams,
     rng: &mut Xorshift64,
+    sampling_probs_buf: &mut Vec<f32>,
+    sampling_logits_buf: &mut Vec<f32>,
+    sampling_candidates_buf: &mut Vec<(usize, f32)>,
 ) -> Vec<u32> {
     let token_offset = cache.seq_len;
     let mut verify_cache = cache.clone();
@@ -1074,6 +1129,9 @@ fn ngram_accel_decode_step_linear_safe(
         sampling,
         effective_speculative_accept_threshold(),
         rng,
+        sampling_probs_buf,
+        sampling_logits_buf,
+        sampling_candidates_buf,
     );
 
     if verification.accept_count == draft.len() {
@@ -1170,6 +1228,9 @@ fn verify_draft(
     sampling: MlxSamplingParams,
     accept_threshold: f32,
     rng: &mut Xorshift64,
+    sampling_probs_buf: &mut Vec<f32>,
+    sampling_logits_buf: &mut Vec<f32>,
+    sampling_candidates_buf: &mut Vec<(usize, f32)>,
 ) -> DraftVerification {
     // Verification sequence: [last_token, D0, D1, ... D_{n-1}].
     let mut verify_input = Vec::with_capacity(1 + draft.len());
@@ -1239,7 +1300,17 @@ fn verify_draft(
         } else {
             // Correction token: sample at position i.  Slice one logit row to
             // avoid copying the full (1+draft_len)×vocab tensor to CPU.
-            let tok = sample_logit_row(&logits_all, predicted[i], i, vocab, sampling, rng);
+            let tok = sample_logit_row(
+                &logits_all,
+                predicted[i],
+                i,
+                vocab,
+                sampling,
+                rng,
+                sampling_probs_buf,
+                sampling_logits_buf,
+                sampling_candidates_buf,
+            );
             result.push(tok);
             break;
         }
@@ -1248,7 +1319,17 @@ fn verify_draft(
     // Bonus: if ALL draft tokens were accepted, sample the next token for free.
     if accept_count == draft.len() {
         let pos = draft.len();
-        let tok = sample_logit_row(&logits_all, predicted[pos], pos, vocab, sampling, rng);
+        let tok = sample_logit_row(
+            &logits_all,
+            predicted[pos],
+            pos,
+            vocab,
+            sampling,
+            rng,
+            sampling_probs_buf,
+            sampling_logits_buf,
+            sampling_candidates_buf,
+        );
         result.push(tok);
     }
 
@@ -1284,6 +1365,7 @@ pub(crate) fn recompute_committed_prefix(
 /// `logits_all` has shape `[verify_len, vocab]` and is already materialised.
 /// Slices one `[1, vocab]` row — avoids copying the full multi-position
 /// tensor to CPU when temperature > 0.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn sample_logit_row(
     logits_all: &MlxArray,
     argmax_tok: u32,
@@ -1291,6 +1373,9 @@ pub(crate) fn sample_logit_row(
     vocab: i32,
     sampling: MlxSamplingParams,
     rng: &mut Xorshift64,
+    sampling_probs_buf: &mut Vec<f32>,
+    sampling_logits_buf: &mut Vec<f32>,
+    sampling_candidates_buf: &mut Vec<(usize, f32)>,
 ) -> u32 {
     if sampling.temperature <= 0.0 {
         return argmax_tok;
@@ -1301,7 +1386,15 @@ pub(crate) fn sample_logit_row(
         return tok;
     }
     eval(&[&row]);
-    sample_categorical(row.data_f32(), sampling, &[], rng)
+    sample_categorical_into(
+        row.data_f32(),
+        sampling,
+        &[],
+        rng,
+        sampling_probs_buf,
+        sampling_logits_buf,
+        sampling_candidates_buf,
+    )
 }
 
 /// Single-token decode fallback (used when n-gram table has no prediction).

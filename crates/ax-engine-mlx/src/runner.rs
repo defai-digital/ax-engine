@@ -88,8 +88,8 @@ use crate::mtp::{mtp_draft_tokens, mtp_draft_tokens_after_forced_prefix};
 use crate::ngram_accel::{
     DEFAULT_DRAFT_LEN, LINEAR_MIN_NGRAM_SUPPORT, MAX_DRAFT_LEN, NgramDraftOutcome,
     NgramDraftPolicy, NgramDraftRejection, NgramPolicyVariant, NgramTable, classify_prompt_class,
-    effective_draft_confidence_threshold, ngram_accel_decode_step, ngram_feedback_policy,
-    single_decode_with_turboquant_context,
+    effective_draft_confidence_threshold, ngram_accel_decode_step_with_sampling_buffers,
+    ngram_feedback_policy, single_decode_with_turboquant_context,
 };
 use crate::sampling::{
     MlxSamplingParams, MlxSamplingRequest, TokenDistribution, Xorshift64,
@@ -5762,7 +5762,17 @@ impl MlxRunner {
             let sl = skip_logits.unwrap();
             let sh = skip_hidden.unwrap();
             // Sample primary token from skip logits (shape [1, vocab]).
-            let primary_tok = sample_logit_row(&sl, 0, 0, vocab, sampling, &mut state.rng);
+            let primary_tok = sample_logit_row(
+                &sl,
+                0,
+                0,
+                vocab,
+                sampling,
+                &mut state.rng,
+                &mut state.sampling_probs_buf,
+                &mut state.sampling_logits_buf,
+                &mut state.sampling_candidates_buf,
+            );
             // Draft new MTP tokens from skip hidden.
             let cache = state.mtp_cache.get_or_insert_with(|| MlxKVCache::new(1));
             let (draft, log_probs, _dist, added, _m) = mtp_draft_tokens(
@@ -6144,6 +6154,9 @@ impl MlxRunner {
             vocab,
             sampling,
             &mut state.rng,
+            &mut state.sampling_probs_buf,
+            &mut state.sampling_logits_buf,
+            &mut state.sampling_candidates_buf,
         );
         mtp_timings.tail_sample_wall_us = elapsed_us(tail_sample_started);
         result.push(tail_tok);
@@ -6657,7 +6670,7 @@ impl MlxRunner {
         let draft_len = draft.len();
         let branch_started = Instant::now();
         let repetition_history = state.repetition_history(&[], sampling);
-        let result = ngram_accel_decode_step(
+        let result = ngram_accel_decode_step_with_sampling_buffers(
             &self.cfg,
             &self.weights,
             &mut state.cache,
@@ -6667,6 +6680,9 @@ impl MlxRunner {
             sampling,
             &repetition_history,
             &mut state.rng,
+            &mut state.sampling_probs_buf,
+            &mut state.sampling_logits_buf,
+            &mut state.sampling_candidates_buf,
         );
         state
             .decode_telemetry
