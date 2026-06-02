@@ -33,7 +33,8 @@ MAX_TOKENS="${AX_MTP_E2E_MAX_TOKENS:-96}"
 TIMEOUT_SECS="${AX_MTP_E2E_TIMEOUT_SECS:-120}"
 MTP_DEPTH="${AX_MTP_E2E_MTP_DEPTH:-3}"
 NGRAM="${AX_MTP_E2E_NGRAM:-1}"
-MODEL_ID="${AX_MTP_E2E_MODEL_ID:-ax-mtp-e2e}"
+# Leave MODEL_ID empty to auto-detect from /v1/models after server starts
+MODEL_ID="${AX_MTP_E2E_MODEL_ID:-}"
 REPORT="${AX_MTP_E2E_REPORT:-$(ax_tmp_file ax-mtp-e2e .json)}"
 
 AX_PORT="$(ax_allocate_port)"
@@ -73,7 +74,36 @@ AX_MLX_MTP_MAX_DEPTH="$MTP_DEPTH" \
     >"$AX_LOG" 2>&1 &
 AX_PID="$!"
 
-echo "[ax-mtp-e2e] probe url=${AX_BASE_URL} prompt=${PROMPT@Q}"
+# Auto-detect model-id if not set: wait for server then read first model from /v1/models
+if [[ -z "$MODEL_ID" ]]; then
+    echo "[ax-mtp-e2e] waiting for server to detect model-id..."
+    for _ in $(seq 1 60); do
+        DETECTED="$("$PYTHON_BIN" - <<'PY'
+import sys, urllib.request, json, os
+try:
+    url = os.environ["AX_BASE_URL"] + "/v1/models"
+    with urllib.request.urlopen(url, timeout=3) as r:
+        d = json.loads(r.read())
+    ids = [m["id"] for m in d.get("data", []) if isinstance(m.get("id"), str)]
+    print(ids[0] if ids else "")
+except Exception:
+    print("")
+PY
+        )" 2>/dev/null || true
+        if [[ -n "$DETECTED" ]]; then
+            MODEL_ID="$DETECTED"
+            break
+        fi
+        sleep 1
+    done
+    if [[ -z "$MODEL_ID" ]]; then
+        echo "[ax-mtp-e2e] failed: could not detect model-id from server" >&2
+        exit 1
+    fi
+    echo "[ax-mtp-e2e] detected model-id: ${MODEL_ID}"
+fi
+
+echo "[ax-mtp-e2e] probe url=${AX_BASE_URL} model=${MODEL_ID} prompt=${PROMPT}"
 "$PYTHON_BIN" "$SCRIPT_DIR/openwebui_e2e.py" \
     --ax-direct \
     --openwebui-base-url "$AX_BASE_URL" \

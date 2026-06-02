@@ -77,7 +77,7 @@ DOCKER_AX_BASE_URL="$("$PYTHON_BIN" "$SCRIPT_DIR/openwebui_e2e.py" \
 
 echo "[openwebui-e2e] starting OpenWebUI image=${OPENWEBUI_IMAGE} url=${OPENWEBUI_URL}"
 docker rm -f "$OPENWEBUI_CONTAINER" >/dev/null 2>&1 || true
-docker run -d --rm \
+docker run -d \
     --name "$OPENWEBUI_CONTAINER" \
     -p "${OPENWEBUI_HOST}:${OPENWEBUI_PORT}:8080" \
     -e WEBUI_AUTH=False \

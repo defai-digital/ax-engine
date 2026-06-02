@@ -74,8 +74,9 @@ class OpenWebUIE2ETests(unittest.TestCase):
             payload: dict[str, Any] | None = None,
             *,
             timeout: float,
+            bearer_token: str | None = None,
         ) -> dict[str, Any]:
-            del method, url, timeout
+            del method, url, timeout, bearer_token
             assert payload is not None
             return {
                 "id": "chatcmpl-test",
@@ -93,6 +94,7 @@ class OpenWebUIE2ETests(unittest.TestCase):
         with (
             patch.object(openwebui_e2e, "wait_for_openwebui", return_value=None),
             patch.object(openwebui_e2e, "list_openwebui_models", return_value=[MODEL_ID]),
+            patch.object(openwebui_e2e, "signin_openwebui", return_value=None),
             patch.object(openwebui_e2e, "request_json", side_effect=fake_request_json),
         ):
             result = openwebui_e2e.run_probe(
@@ -134,8 +136,9 @@ class OpenWebUIE2ETests(unittest.TestCase):
             payload: dict[str, Any] | None = None,
             *,
             timeout: float,
+            bearer_token: str | None = None,
         ) -> dict[str, Any]:
-            del method, timeout
+            del method, timeout, bearer_token
             if url.endswith("/v1/models"):
                 return {"data": [{"id": MODEL_ID}]}
             assert payload is not None
@@ -178,8 +181,9 @@ class OpenWebUIE2ETests(unittest.TestCase):
             payload: dict[str, Any] | None = None,
             *,
             timeout: float,
+            bearer_token: str | None = None,
         ) -> dict[str, Any]:
-            del method, timeout
+            del method, timeout, bearer_token
             if url.endswith("/v1/models"):
                 return {"data": [{"id": MODEL_ID}]}
             assert payload is not None

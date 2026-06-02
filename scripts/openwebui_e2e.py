@@ -24,8 +24,9 @@ from typing import Any
 DEFAULT_PROMPT = "what is agi ?"
 DEFAULT_MAX_TOKENS = 96
 DEFAULT_TIMEOUT_SECS = 120.0
-OPENWEBUI_PROXY_MODELS_PATH = "/openai/v1/models"
-OPENWEBUI_PROXY_CHAT_PATH = "/openai/v1/chat/completions"
+OPENWEBUI_PROXY_MODELS_PATH = "/openai/models"
+OPENWEBUI_PROXY_CHAT_PATH = "/openai/chat/completions"
+OPENWEBUI_SIGNIN_PATH = "/api/v1/auths/signin"
 AX_DIRECT_MODELS_PATH = "/v1/models"
 AX_DIRECT_CHAT_PATH = "/v1/chat/completions"
 BACKEND_ERROR_PATTERNS = (
@@ -88,18 +89,41 @@ def request_json(
     payload: dict[str, Any] | None = None,
     *,
     timeout: float,
+    bearer_token: str | None = None,
 ) -> dict[str, Any]:
     headers = {"accept": "application/json"}
     data = None
     if payload is not None:
         data = json.dumps(payload).encode("utf-8")
         headers["content-type"] = "application/json"
+    if bearer_token:
+        headers["authorization"] = f"Bearer {bearer_token}"
     request = urllib.request.Request(url, data=data, headers=headers, method=method)
     with urllib.request.urlopen(request, timeout=timeout) as response:
         raw = response.read().decode("utf-8")
     if not raw:
         return {}
     return json.loads(raw)
+
+
+def signin_openwebui(base_url: str, timeout: float) -> str | None:
+    """Obtain a JWT bearer token from OpenWebUI by signing in as the default admin.
+
+    Returns the token string on success, or None if sign-in fails (e.g. auth disabled).
+    """
+    try:
+        payload = request_json(
+            "POST",
+            openwebui_url(base_url, OPENWEBUI_SIGNIN_PATH),
+            {"email": "user@example.com", "password": "password"},
+            timeout=timeout,
+        )
+        token = payload.get("token")
+        if isinstance(token, str) and token:
+            return token
+    except Exception:
+        pass
+    return None
 
 
 def wait_for_openwebui(base_url: str, timeout_secs: float) -> None:
@@ -119,11 +143,12 @@ def wait_for_openwebui(base_url: str, timeout_secs: float) -> None:
     raise RuntimeError(f"OpenWebUI did not become ready: {last_error or 'timeout'}")
 
 
-def list_openwebui_models(base_url: str, timeout: float) -> list[str]:
+def list_openwebui_models(base_url: str, timeout: float, bearer_token: str | None = None) -> list[str]:
     payload = request_json(
         "GET",
         openwebui_url(base_url, OPENWEBUI_PROXY_MODELS_PATH),
         timeout=timeout,
+        bearer_token=bearer_token,
     )
     models = payload.get("data")
     if not isinstance(models, list):
@@ -229,17 +254,16 @@ def run_probe(
     timeout_secs: float,
     ax_direct: bool = False,
 ) -> ProbeResult:
-    models_path = AX_DIRECT_MODELS_PATH if ax_direct else OPENWEBUI_PROXY_MODELS_PATH
     chat_path = AX_DIRECT_CHAT_PATH if ax_direct else OPENWEBUI_PROXY_CHAT_PATH
 
+    bearer_token: str | None = None
     if ax_direct:
         wait_for_ax_direct(openwebui_base_url, timeout_secs)
         models = list_ax_direct_models(openwebui_base_url, timeout_secs)
     else:
         wait_for_openwebui(openwebui_base_url, timeout_secs)
-        models = list_openwebui_models(openwebui_base_url, timeout_secs)
-
-    del models_path  # used only for path selection above
+        bearer_token = signin_openwebui(openwebui_base_url, timeout_secs)
+        models = list_openwebui_models(openwebui_base_url, timeout_secs, bearer_token=bearer_token)
 
     model_visible = model_id in models
     if not model_visible:
@@ -260,6 +284,7 @@ def run_probe(
         openwebui_url(openwebui_base_url, chat_path),
         chat_completion_payload(model_id, prompt, max_tokens),
         timeout=timeout_secs,
+        bearer_token=bearer_token,
     )
     assistant_text = extract_assistant_text(response)
     corruption_reasons = detect_corruption(assistant_text, prompt)
