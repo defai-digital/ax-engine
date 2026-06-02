@@ -1217,6 +1217,47 @@ enum MtpDraftSource {
     HybridMtp,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+enum MtpNgramAcceptanceMode {
+    #[default]
+    Confidence,
+    Delta,
+    Greedy,
+}
+
+impl MtpNgramAcceptanceMode {
+    fn route_code(self) -> u32 {
+        match self {
+            Self::Confidence => 0,
+            Self::Delta => 1,
+            Self::Greedy => 2,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct NgramSelfTuneState {
+    drafted: u32,
+    accepted: u32,
+    disabled: bool,
+}
+
+impl NgramSelfTuneState {
+    fn record_submitted(&mut self, drafted: usize) {
+        self.drafted = self.drafted.saturating_add(saturating_u32(drafted));
+    }
+
+    fn record_verified(&mut self, accepted: usize, threshold: f32, warmup: u32) {
+        self.accepted = self.accepted.saturating_add(saturating_u32(accepted));
+        if !self.disabled && warmup > 0 && self.drafted >= warmup {
+            let rate = self.accepted as f32 / self.drafted.max(1) as f32;
+            if rate < threshold {
+                self.disabled = true;
+            }
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default)]
 struct MtpTelemetry {
     draft_tokens: u32,
@@ -1270,6 +1311,10 @@ struct MtpTelemetry {
     /// below the MTP-only rate, indicating n-gram is actively hurting (cascade
     /// rejections of MTP tokens when n-gram fails at early positions).
     ngram_hurt_gated_steps: u32,
+    ngram_auto_disabled_steps: u32,
+    ngram_self_tune_disabled_steps: u32,
+    ngram_submitted_tokens: u32,
+    ngram_submitted_accepted_tokens: u32,
     /// Steps where auto-optimistic activated (EWMA ≥ 0.99 without env override).
     auto_optimistic_steps: u32,
 }
@@ -1441,6 +1486,18 @@ impl MtpTelemetry {
             .saturating_add(saturating_u32(tail_len));
     }
 
+    fn record_ngram_submitted(&mut self, draft_len: usize) {
+        self.ngram_submitted_tokens = self
+            .ngram_submitted_tokens
+            .saturating_add(saturating_u32(draft_len));
+    }
+
+    fn record_ngram_verified(&mut self, accepted: usize) {
+        self.ngram_submitted_accepted_tokens = self
+            .ngram_submitted_accepted_tokens
+            .saturating_add(saturating_u32(accepted));
+    }
+
     fn record_timings(&mut self, timings: MtpStepTimings) {
         self.cache_clone_wall_us = self
             .cache_clone_wall_us
@@ -1573,6 +1630,18 @@ impl MtpTelemetry {
         self.ngram_hurt_gated_steps = self
             .ngram_hurt_gated_steps
             .saturating_add(other.ngram_hurt_gated_steps);
+        self.ngram_auto_disabled_steps = self
+            .ngram_auto_disabled_steps
+            .saturating_add(other.ngram_auto_disabled_steps);
+        self.ngram_self_tune_disabled_steps = self
+            .ngram_self_tune_disabled_steps
+            .saturating_add(other.ngram_self_tune_disabled_steps);
+        self.ngram_submitted_tokens = self
+            .ngram_submitted_tokens
+            .saturating_add(other.ngram_submitted_tokens);
+        self.ngram_submitted_accepted_tokens = self
+            .ngram_submitted_accepted_tokens
+            .saturating_add(other.ngram_submitted_accepted_tokens);
         self.auto_optimistic_steps = self
             .auto_optimistic_steps
             .saturating_add(other.auto_optimistic_steps);
@@ -1663,9 +1732,23 @@ impl MtpTelemetry {
                 "ax_mtp_ngram_saturated_gated_steps",
                 self.ngram_saturated_gated_steps,
             ),
+            ("ax_mtp_ngram_hurt_gated_steps", self.ngram_hurt_gated_steps),
             (
-                "ax_mtp_ngram_hurt_gated_steps",
-                self.ngram_hurt_gated_steps,
+                "ax_mtp_ngram_auto_disabled_steps",
+                self.ngram_auto_disabled_steps,
+            ),
+            (
+                "ax_mtp_ngram_self_tune_disabled_steps",
+                self.ngram_self_tune_disabled_steps,
+            ),
+            ("ax_mtp_ngram_submitted_tokens", self.ngram_submitted_tokens),
+            (
+                "ax_mtp_ngram_submitted_accepted_tokens",
+                self.ngram_submitted_accepted_tokens,
+            ),
+            (
+                "ax_mtp_ngram_acceptance_mode",
+                mtp_ngram_acceptance_mode_from_env().route_code(),
             ),
             ("ax_mtp_auto_optimistic_steps", self.auto_optimistic_steps),
         ];
@@ -3266,9 +3349,7 @@ struct RequestState {
     /// for this request.  After warmup, if acceptance rate falls below the
     /// threshold, n-gram is disabled for the rest of the request (mirrors
     /// lightning-mlx 0.7.0 `NgramRequestState._self_tune_disabled`).
-    ngram_self_tune_drafted: u32,
-    ngram_self_tune_accepted: u32,
-    ngram_self_tune_disabled: bool,
+    ngram_self_tune: NgramSelfTuneState,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -3323,9 +3404,7 @@ impl RequestState {
             mtp_prefill_hidden: None,
             mtp_prefill_history_tokens: Vec::new(),
             ngram_in_think: false,
-            ngram_self_tune_drafted: 0,
-            ngram_self_tune_accepted: 0,
-            ngram_self_tune_disabled: false,
+            ngram_self_tune: NgramSelfTuneState::default(),
         }
     }
 
@@ -6050,6 +6129,7 @@ impl MlxRunner {
                     &mut state.rng,
                     draft_log_prob_temperature,
                     sampling.temperature,
+                    mtp_ngram_acceptance_mode_from_env(),
                 );
                 let ac = accept.accept_count;
                 let all_accepted = accept.all_accepted;
@@ -6176,6 +6256,7 @@ impl MlxRunner {
                     &mut state.rng,
                     draft_log_prob_temperature,
                     sampling.temperature,
+                    mtp_ngram_acceptance_mode_from_env(),
                 );
                 let ac = accept.accept_count;
                 let all_accepted = accept.all_accepted;
@@ -6306,23 +6387,14 @@ impl MlxRunner {
                     feedback_confidence,
                 );
                 record_ngram_beta_feedback(state, ngram_prefix_len, ngram_accept_count);
-                // Per-request self-tune: update accepted count and check
-                // disable threshold after warmup (matches lightning-mlx 0.7.0
-                // NgramRequestState.record_outcome).
-                if !state.ngram_self_tune_disabled {
-                    state.ngram_self_tune_accepted = state
-                        .ngram_self_tune_accepted
-                        .saturating_add(ngram_accept_count as u32);
-                    const NGRAM_SELF_TUNE_WARMUP: u32 = 32;
-                    const NGRAM_SELF_TUNE_DISABLE_THRESHOLD: f32 = 0.30;
-                    if state.ngram_self_tune_drafted >= NGRAM_SELF_TUNE_WARMUP {
-                        let rate = state.ngram_self_tune_accepted as f32
-                            / state.ngram_self_tune_drafted as f32;
-                        if rate < NGRAM_SELF_TUNE_DISABLE_THRESHOLD {
-                            state.ngram_self_tune_disabled = true;
-                        }
-                    }
-                }
+                state
+                    .mtp_telemetry
+                    .record_ngram_verified(ngram_accept_count);
+                state.ngram_self_tune.record_verified(
+                    ngram_accept_count,
+                    mtp_ngram_self_tune_threshold(),
+                    mtp_ngram_self_tune_warmup(),
+                );
             }
         }
 
@@ -6369,94 +6441,49 @@ impl MlxRunner {
         } else {
             adaptive_ngram_draft_len(has_linear_attention, state.ngram_posterior_mean())
         };
-        // Adaptive n-gram saturation gate (ADR-013 Phase 1): when the MTP
-        // accept-rate EWMA exceeds the threshold, skip the n-gram probe.
-        // On depth=3 where MTP already achieves 98-99% accept, n-gram stacking
-        // adds CPU overhead and MTP cache resets that *reduce* throughput.
-        // Threshold is depth-aware: depth=1 uses ∞ (gate disabled) because
-        // per-step rate is binary (0 or 1), so EWMA reaches 0.98 on random
-        // streaks even at 87% accept, causing 27% false gating on 35B-A3B.
-        // For depth=1 n-gram is also the primary multi-token source, so
-        // gating it costs disproportionately more than depth=3.
-        // Adaptive n-gram saturation gate: when MTP acceptance is very high,
-        // n-gram drafts are typically lower quality than MTP drafts (lower
-        // acceptance rate, more wasted verify compute).  Gate n-gram off once
-        // the EWMA acceptance rate exceeds the threshold.
-        // The gate requires a minimum number of EWMA samples before it can
-        // activate, to avoid false gating on early-generation noise.
-        // Override with `AX_MLX_MTP_NGRAM_GATE_SAMPLES` (default 4).
-        let ngram_gate_min_samples = mtp_ngram_gate_min_samples();
-        // Gate uses the MTP-only EWMA (excluding n-gram sources) so that n-gram
-        // rejections cannot suppress gating when the model itself accepts ≥99%.
-        let ngram_saturation_threshold = adaptive_ngram_saturation_threshold(mtp_max_depth);
-        let ngram_saturated = ngram_max > 0
-            && state.mtp_telemetry.mtp_only_accept_rate_ewma_samples >= ngram_gate_min_samples
-            && state.mtp_telemetry.mtp_only_accept_rate_ewma >= ngram_saturation_threshold;
-        // N-gram hurt gate: disable n-gram when the combined accept rate is
-        // significantly below the MTP-only rate.  In hybrid mode, n-gram tokens
-        // are placed first in the draft; when they are rejected, all subsequent
-        // MTP tokens are cascade-rejected without independent evaluation.  This
-        // drags down the combined accept rate below what MTP achieves alone.
-        // The gate compares the combined EWMA (all sources) against the MTP-only
-        // EWMA (cascade-corrected, excluding n-gram).  When combined < MTP-only
-        // by a margin, n-gram is actively hurting and should be gated off.
-        // Margin defaults to 0.02 (2 percentage points) to avoid false gating
-        // from EWMA noise.  Override with `AX_MLX_MTP_NGRAM_HURT_MARGIN`.
-        let ngram_hurt_margin = std::env::var("AX_MLX_MTP_NGRAM_HURT_MARGIN")
-            .ok()
-            .and_then(|v| v.parse::<f32>().ok())
-            .unwrap_or(0.02);
-        let ngram_hurt = ngram_max > 0
-            && state.mtp_telemetry.mtp_only_accept_rate_ewma_samples >= ngram_gate_min_samples
-            && state.mtp_telemetry.accept_rate_ewma_samples >= ngram_gate_min_samples
-            && state.mtp_telemetry.accept_rate_ewma
-                < state.mtp_telemetry.mtp_only_accept_rate_ewma - ngram_hurt_margin;
-        // Dual-condition auto-disable (mirrors lightning-mlx 0.7.0
-        // `_ngram_auto_disable_active`): when MTP is strong AND n-gram
-        // acceptance is poor, suppress n-gram to avoid wasted verify cycles.
-        // This is a running-rate check (cumulative counters) rather than EWMA,
-        // matching lightning-mlx's `_mtp_stats["accepted"] / total_mtp` approach.
-        // MTP warmup: 64 tokens (matches lightning-mlx _AUTO_DISABLE_MTP_WARMUP).
-        const NGRAM_AUTO_DISABLE_MTP_WARMUP: u32 = 64;
-        // N-gram warmup: 32 tokens (matches lightning-mlx _AUTO_DISABLE_NGRAM_WARMUP).
-        const NGRAM_AUTO_DISABLE_NGRAM_WARMUP: u32 = 32;
-        // MTP rate threshold: default 0.85 (matches lightning-mlx default).
-        let mtp_auto_disable_threshold = std::env::var("AX_MLX_MTP_NGRAM_AUTO_DISABLE_MTP_THRESHOLD")
-            .ok()
-            .and_then(|v| v.parse::<f32>().ok())
-            .unwrap_or(0.85);
-        // N-gram rate floor: default 0.50 (matches lightning-mlx default).
-        let ngram_auto_disable_min_ngram = std::env::var("AX_MLX_MTP_NGRAM_AUTO_DISABLE_MIN_NGRAM")
-            .ok()
-            .and_then(|v| v.parse::<f32>().ok())
-            .unwrap_or(0.50);
-        let ngram_auto_disabled = mtp_auto_disable_threshold > 0.0
-            && ngram_max > 0
-            && state.mtp_telemetry.draft_tokens >= NGRAM_AUTO_DISABLE_MTP_WARMUP
-            && {
-                let mtp_rate = state.mtp_telemetry.accepted_tokens as f32
-                    / state.mtp_telemetry.draft_tokens as f32;
-                mtp_rate >= mtp_auto_disable_threshold
-            }
-            && state.ngram_acceleration.draft_tokens >= NGRAM_AUTO_DISABLE_NGRAM_WARMUP
-            && {
-                let ngram_rate = state.ngram_acceleration.accepted_tokens as f32
-                    / state.ngram_acceleration.draft_tokens as f32;
-                ngram_rate < ngram_auto_disable_min_ngram
-            };
-        let ngram_gated = ngram_saturated || ngram_hurt || ngram_auto_disabled
-            || state.ngram_self_tune_disabled;
-        let ngram_max = if ngram_gated { 0 } else { ngram_max };
-        if ngram_saturated {
+        let ngram_gate = mtp_ngram_gate_decision(
+            ngram_max,
+            mtp_max_depth,
+            state.mtp_telemetry.accept_rate_ewma,
+            state.mtp_telemetry.accept_rate_ewma_samples,
+            state.mtp_telemetry.mtp_only_accept_rate_ewma,
+            state.mtp_telemetry.mtp_only_accept_rate_ewma_samples,
+            state
+                .mtp_telemetry
+                .draft_source_mtp_tokens
+                .saturating_add(state.mtp_telemetry.draft_source_hybrid_mtp_tokens),
+            state
+                .mtp_telemetry
+                .accepted_source_mtp_tokens
+                .saturating_add(state.mtp_telemetry.accepted_source_hybrid_mtp_tokens),
+            state.mtp_telemetry.draft_source_ngram_tokens,
+            state.mtp_telemetry.accepted_source_ngram_tokens,
+            state.ngram_self_tune.disabled,
+            mtp_ngram_gate_min_samples(),
+            mtp_ngram_hurt_margin(),
+            MtpNgramAutoDisableConfig::from_env(),
+        );
+        let ngram_max = if ngram_gate.gated { 0 } else { ngram_max };
+        if ngram_gate.saturated {
             state.mtp_telemetry.ngram_saturated_gated_steps = state
                 .mtp_telemetry
                 .ngram_saturated_gated_steps
                 .saturating_add(1);
         }
-        if ngram_hurt {
-            state.mtp_telemetry.ngram_hurt_gated_steps = state
+        if ngram_gate.hurt {
+            state.mtp_telemetry.ngram_hurt_gated_steps =
+                state.mtp_telemetry.ngram_hurt_gated_steps.saturating_add(1);
+        }
+        if ngram_gate.auto_disabled {
+            state.mtp_telemetry.ngram_auto_disabled_steps = state
                 .mtp_telemetry
-                .ngram_hurt_gated_steps
+                .ngram_auto_disabled_steps
+                .saturating_add(1);
+        }
+        if ngram_gate.self_tune_disabled {
+            state.mtp_telemetry.ngram_self_tune_disabled_steps = state
+                .mtp_telemetry
+                .ngram_self_tune_disabled_steps
                 .saturating_add(1);
         }
         let ngram_outcome = if ngram_max > 0 {
@@ -6485,21 +6512,6 @@ impl MlxRunner {
                 .mtp_telemetry
                 .record_ngram_attempt(ngram_outcome.rejection);
         }
-        // Per-request n-gram self-tune (mirrors lightning-mlx 0.7.0
-        // `NgramRequestState.record_outcome`): track draft/accept counts
-        // for this request.  After warmup, disable n-gram if acceptance
-        // rate is below threshold.
-        if !ngram_outcome.draft.is_empty() && !state.ngram_self_tune_disabled {
-            let drafted = ngram_outcome.draft.len();
-            state.ngram_self_tune_drafted =
-                state.ngram_self_tune_drafted.saturating_add(drafted as u32);
-            // Accepted count will be updated after verification in the
-            // feedback path below.  For self-tune disable check, we use
-            // the draft outcome's own confidence as a proxy here — the
-            // true accept count is only known after verify.  Instead,
-            // defer the disable check to the feedback path where
-            // accept_count is known.
-        }
         let recent = &result[result.len().saturating_sub(8)..];
         let ngram_cycle_guarded =
             !ngram_outcome.draft.is_empty() && ngram_draft_is_cycle(&ngram_outcome.draft, recent);
@@ -6510,11 +6522,16 @@ impl MlxRunner {
             if !ngram_outcome.draft.is_empty() && !ngram_cycle_guarded {
                 let mut draft = ngram_outcome.draft;
                 let ngram_len = draft.len();
+                state.ngram_self_tune.record_submitted(ngram_len);
+                state.mtp_telemetry.record_ngram_submitted(ngram_len);
                 let mtp_tail_cap = state.mtp_adaptive_max_depth.saturating_sub(ngram_len);
                 let mut sources = vec![MtpDraftSource::Ngram; ngram_len];
 
-                let mut aligned_log_probs =
-                    mtp_ngram_pseudo_log_probs(&ngram_outcome.confidence, ngram_len);
+                let mut aligned_log_probs = mtp_ngram_pseudo_log_probs(
+                    &ngram_outcome.confidence,
+                    ngram_len,
+                    mtp_ngram_acceptance_mode_from_env(),
+                );
 
                 if mtp_tail_cap > 0 {
                     let cache = state.mtp_cache.get_or_insert_with(|| MlxKVCache::new(1));
@@ -6672,6 +6689,7 @@ impl MlxRunner {
         state.mtp_skip_logits = None;
         state.mtp_skip_hidden = None;
         state.mtp_decode_count = 0;
+        state.ngram_self_tune = NgramSelfTuneState::default();
         if let Some(ref mut c) = state.mtp_cache {
             c.reset();
         }
@@ -7015,30 +7033,145 @@ fn mtp_next_adaptive_depth(
     accept_count.clamp(floor, max_depth)
 }
 
-fn mtp_ngram_pseudo_log_prob(confidence: f32) -> f32 {
-    // Delta distribution: p_draft(draft_token) = 1.0, so log_prob = 0.0.
-    // This matches lightning-mlx 0.7.0's approach where n-gram depths
-    // synthesize a delta distribution (all logits = -1e30 except draft
-    // token = 0).  In rejection sampling: accept_prob = min(1, p_target / 1.0)
-    // = p_target — the n-gram token is accepted iff the target model also
-    // assigns it significant probability.
-    //
-    // Non-finite confidence returns NAN, which triggers the greedy argmax
-    // fallback in mtp_accept_count (no rejection sampling without a valid
-    // draft distribution).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct MtpNgramAutoDisableConfig {
+    mtp_warmup: u32,
+    ngram_warmup: u32,
+    mtp_threshold: u32,
+    ngram_floor: u32,
+}
+
+impl MtpNgramAutoDisableConfig {
+    fn from_env() -> Self {
+        Self {
+            mtp_warmup: mtp_ngram_auto_disable_mtp_warmup(),
+            ngram_warmup: mtp_ngram_auto_disable_ngram_warmup(),
+            mtp_threshold: (mtp_ngram_auto_disable_mtp_threshold() * 1000.0) as u32,
+            ngram_floor: (mtp_ngram_auto_disable_min_ngram() * 1000.0) as u32,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct MtpNgramGateDecision {
+    gated: bool,
+    saturated: bool,
+    hurt: bool,
+    auto_disabled: bool,
+    self_tune_disabled: bool,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn mtp_ngram_gate_decision(
+    ngram_max: usize,
+    mtp_depth: usize,
+    combined_ewma: f32,
+    combined_samples: u32,
+    mtp_only_ewma: f32,
+    mtp_only_samples: u32,
+    mtp_drafted: u32,
+    mtp_accepted: u32,
+    ngram_drafted: u32,
+    ngram_accepted: u32,
+    self_tune_disabled: bool,
+    min_samples: u32,
+    hurt_margin: f32,
+    auto_cfg: MtpNgramAutoDisableConfig,
+) -> MtpNgramGateDecision {
+    let saturated = mtp_ngram_saturated_gate(ngram_max, mtp_depth, mtp_only_ewma, mtp_only_samples);
+    let hurt = mtp_ngram_hurt_gate(
+        ngram_max,
+        combined_ewma,
+        combined_samples,
+        mtp_only_ewma,
+        mtp_only_samples,
+        min_samples,
+        hurt_margin,
+    );
+    let auto_disabled = mtp_ngram_auto_disable_gate(
+        ngram_max,
+        mtp_drafted,
+        mtp_accepted,
+        ngram_drafted,
+        ngram_accepted,
+        auto_cfg,
+    );
+    let self_tune_disabled = ngram_max > 0 && self_tune_disabled;
+    MtpNgramGateDecision {
+        gated: saturated || hurt || auto_disabled || self_tune_disabled,
+        saturated,
+        hurt,
+        auto_disabled,
+        self_tune_disabled,
+    }
+}
+
+fn mtp_ngram_saturated_gate(
+    ngram_max: usize,
+    mtp_depth: usize,
+    mtp_only_ewma: f32,
+    mtp_only_samples: u32,
+) -> bool {
+    ngram_max > 0
+        && mtp_only_samples >= mtp_ngram_gate_min_samples()
+        && mtp_only_ewma >= adaptive_ngram_saturation_threshold(mtp_depth)
+}
+
+fn mtp_ngram_hurt_gate(
+    ngram_max: usize,
+    combined_ewma: f32,
+    combined_samples: u32,
+    mtp_only_ewma: f32,
+    mtp_only_samples: u32,
+    min_samples: u32,
+    margin: f32,
+) -> bool {
+    ngram_max > 0
+        && mtp_only_samples >= min_samples
+        && combined_samples >= min_samples
+        && combined_ewma < mtp_only_ewma - margin
+}
+
+fn mtp_ngram_auto_disable_gate(
+    ngram_max: usize,
+    mtp_drafted: u32,
+    mtp_accepted: u32,
+    ngram_drafted: u32,
+    ngram_accepted: u32,
+    cfg: MtpNgramAutoDisableConfig,
+) -> bool {
+    if cfg.mtp_threshold == 0 || ngram_max == 0 {
+        return false;
+    }
+    if mtp_drafted < cfg.mtp_warmup || ngram_drafted < cfg.ngram_warmup {
+        return false;
+    }
+    let mtp_rate_x1000 = mtp_accepted.saturating_mul(1000) / mtp_drafted.max(1);
+    let ngram_rate_x1000 = ngram_accepted.saturating_mul(1000) / ngram_drafted.max(1);
+    mtp_rate_x1000 >= cfg.mtp_threshold && ngram_rate_x1000 < cfg.ngram_floor
+}
+
+fn mtp_ngram_pseudo_log_prob(confidence: f32, mode: MtpNgramAcceptanceMode) -> f32 {
     if !confidence.is_finite() {
         return f32::NAN;
     }
-    0.0_f32
+    match mode {
+        MtpNgramAcceptanceMode::Confidence => confidence.clamp(1e-37, 1.0).ln().max(-30.0),
+        MtpNgramAcceptanceMode::Delta | MtpNgramAcceptanceMode::Greedy => 0.0_f32,
+    }
 }
 
-fn mtp_ngram_pseudo_log_probs(confidence: &[f32], draft_len: usize) -> Vec<f32> {
+fn mtp_ngram_pseudo_log_probs(
+    confidence: &[f32],
+    draft_len: usize,
+    mode: MtpNgramAcceptanceMode,
+) -> Vec<f32> {
     (0..draft_len)
         .map(|index| {
             confidence
                 .get(index)
                 .copied()
-                .map(mtp_ngram_pseudo_log_prob)
+                .map(|confidence| mtp_ngram_pseudo_log_prob(confidence, mode))
                 .unwrap_or(f32::NAN)
         })
         .collect()
@@ -7209,6 +7342,7 @@ fn mtp_accept_count(
     rng: &mut Xorshift64,
     draft_temperature: f32,
     target_temperature: f32,
+    ngram_acceptance_mode: MtpNgramAcceptanceMode,
 ) -> MtpAcceptOutcome {
     let mut ac = 0usize;
     let mut distribution_index = 0usize;
@@ -7220,6 +7354,19 @@ fn mtp_accept_count(
             .unwrap_or(MtpDraftSource::Mtp);
         let has_draft_distribution =
             matches!(source, MtpDraftSource::Mtp | MtpDraftSource::HybridMtp);
+        if source == MtpDraftSource::Ngram
+            && ngram_acceptance_mode == MtpNgramAcceptanceMode::Greedy
+        {
+            if predicted[i] == pending[i] {
+                ac += 1;
+                continue;
+            }
+            return MtpAcceptOutcome {
+                accept_count: ac,
+                all_accepted: false,
+                rejection_correction: predicted.get(i).copied(),
+            };
+        }
         let can_rejection_sample = pending_log_probs
             .get(i)
             .is_some_and(|log_prob| log_prob.is_finite())
@@ -7583,6 +7730,81 @@ fn mtp_ngram_gate_min_samples() -> u32 {
     })
 }
 
+fn cached_env_f32(name: &str, default: f32, min: f32, max: f32) -> f32 {
+    std::env::var(name)
+        .ok()
+        .and_then(|v| v.parse::<f32>().ok())
+        .filter(|v| v.is_finite())
+        .map(|v| v.clamp(min, max))
+        .unwrap_or(default)
+}
+
+fn cached_env_u32(name: &str, default: u32) -> u32 {
+    std::env::var(name)
+        .ok()
+        .and_then(|v| v.parse::<u32>().ok())
+        .unwrap_or(default)
+}
+
+fn mtp_ngram_hurt_margin() -> f32 {
+    static CACHED: OnceLock<f32> = OnceLock::new();
+    *CACHED.get_or_init(|| cached_env_f32("AX_MLX_MTP_NGRAM_HURT_MARGIN", 0.02, 0.0, 1.0))
+}
+
+fn mtp_ngram_auto_disable_mtp_threshold() -> f32 {
+    static CACHED: OnceLock<f32> = OnceLock::new();
+    *CACHED.get_or_init(|| {
+        cached_env_f32(
+            "AX_MLX_MTP_NGRAM_AUTO_DISABLE_MTP_THRESHOLD",
+            0.85,
+            0.0,
+            1.0,
+        )
+    })
+}
+
+fn mtp_ngram_auto_disable_min_ngram() -> f32 {
+    static CACHED: OnceLock<f32> = OnceLock::new();
+    *CACHED
+        .get_or_init(|| cached_env_f32("AX_MLX_MTP_NGRAM_AUTO_DISABLE_MIN_NGRAM", 0.50, 0.0, 1.0))
+}
+
+fn mtp_ngram_self_tune_threshold() -> f32 {
+    static CACHED: OnceLock<f32> = OnceLock::new();
+    *CACHED.get_or_init(|| cached_env_f32("AX_MLX_MTP_NGRAM_SELF_TUNE_THRESHOLD", 0.30, 0.0, 1.0))
+}
+
+fn mtp_ngram_self_tune_warmup() -> u32 {
+    static CACHED: OnceLock<u32> = OnceLock::new();
+    *CACHED.get_or_init(|| cached_env_u32("AX_MLX_MTP_NGRAM_SELF_TUNE_WARMUP", 32))
+}
+
+fn mtp_ngram_auto_disable_mtp_warmup() -> u32 {
+    static CACHED: OnceLock<u32> = OnceLock::new();
+    *CACHED.get_or_init(|| cached_env_u32("AX_MLX_MTP_NGRAM_AUTO_DISABLE_MTP_WARMUP", 64))
+}
+
+fn mtp_ngram_auto_disable_ngram_warmup() -> u32 {
+    static CACHED: OnceLock<u32> = OnceLock::new();
+    *CACHED.get_or_init(|| cached_env_u32("AX_MLX_MTP_NGRAM_AUTO_DISABLE_NGRAM_WARMUP", 32))
+}
+
+fn mtp_ngram_acceptance_mode_from_env() -> MtpNgramAcceptanceMode {
+    static CACHED: OnceLock<MtpNgramAcceptanceMode> = OnceLock::new();
+    *CACHED.get_or_init(|| {
+        match std::env::var("AX_MLX_MTP_NGRAM_ACCEPTANCE_MODE")
+            .unwrap_or_default()
+            .to_ascii_lowercase()
+            .replace('_', "-")
+            .as_str()
+        {
+            "delta" => MtpNgramAcceptanceMode::Delta,
+            "greedy" => MtpNgramAcceptanceMode::Greedy,
+            _ => MtpNgramAcceptanceMode::Confidence,
+        }
+    })
+}
+
 fn mtp_disable_ngram_stacking_from_env() -> bool {
     static CACHED: OnceLock<bool> = OnceLock::new();
     *CACHED.get_or_init(|| {
@@ -7744,12 +7966,15 @@ fn adaptive_ngram_saturation_threshold(mtp_depth: usize) -> f32 {
         // disable the gate entirely.
         return 2.0;
     }
-    std::env::var("AX_MLX_MTP_NGRAM_GATE_THRESHOLD")
-        .ok()
-        .and_then(|v| v.parse::<f32>().ok())
-        // depth≥3: 0.97 disables n-gram when MTP-only EWMA ≥ 0.97; at this
-        // level MTP already saturates the draft window and n-gram stacking
-        // hurts throughput.  depth=2: slightly higher at 0.98.
+    static CACHED: OnceLock<Option<f32>> = OnceLock::new();
+    CACHED
+        .get_or_init(|| {
+            std::env::var("AX_MLX_MTP_NGRAM_GATE_THRESHOLD")
+                .ok()
+                .and_then(|v| v.parse::<f32>().ok())
+                .filter(|v| v.is_finite())
+                .map(|v| v.clamp(0.0, 2.0))
+        })
         .unwrap_or(if mtp_depth >= 3 { 0.97 } else { 0.98 })
 }
 
@@ -8421,6 +8646,11 @@ mod tests {
         assert!(decisions.contains(&("ax_mtp_accepted_source_ngram_tokens".into(), 0)));
         assert!(decisions.contains(&("ax_mtp_ngram_hit_steps".into(), 0)));
         assert!(decisions.contains(&("ax_mtp_ngram_think_gated_steps".into(), 0)));
+        assert!(decisions.contains(&("ax_mtp_ngram_auto_disabled_steps".into(), 0)));
+        assert!(decisions.contains(&("ax_mtp_ngram_self_tune_disabled_steps".into(), 0)));
+        assert!(decisions.contains(&("ax_mtp_ngram_submitted_tokens".into(), 0)));
+        assert!(decisions.contains(&("ax_mtp_ngram_submitted_accepted_tokens".into(), 0)));
+        assert!(decisions.contains(&("ax_mtp_ngram_acceptance_mode".into(), 0)));
     }
 
     #[test]
@@ -8576,6 +8806,77 @@ mod tests {
     }
 
     #[test]
+    fn mtp_ngram_hurt_gate_fires_when_combined_trails_mtp_only_by_margin() {
+        assert!(mtp_ngram_hurt_gate(4, 0.80, 4, 0.90, 4, 4, 0.02));
+    }
+
+    #[test]
+    fn mtp_ngram_hurt_gate_does_not_fire_before_min_samples() {
+        assert!(!mtp_ngram_hurt_gate(4, 0.80, 3, 0.90, 4, 4, 0.02));
+        assert!(!mtp_ngram_hurt_gate(4, 0.80, 4, 0.90, 3, 4, 0.02));
+    }
+
+    #[test]
+    fn mtp_ngram_hurt_gate_does_not_fire_inside_margin() {
+        assert!(!mtp_ngram_hurt_gate(4, 0.885, 4, 0.90, 4, 4, 0.02));
+    }
+
+    #[test]
+    fn mtp_ngram_auto_disable_requires_both_mtp_strong_and_ngram_weak() {
+        let cfg = MtpNgramAutoDisableConfig {
+            mtp_warmup: 64,
+            ngram_warmup: 32,
+            mtp_threshold: 850,
+            ngram_floor: 500,
+        };
+        assert!(mtp_ngram_auto_disable_gate(4, 100, 90, 40, 10, cfg));
+        assert!(!mtp_ngram_auto_disable_gate(4, 100, 84, 40, 10, cfg));
+        assert!(!mtp_ngram_auto_disable_gate(4, 100, 90, 40, 25, cfg));
+        assert!(!mtp_ngram_auto_disable_gate(4, 63, 60, 40, 10, cfg));
+        assert!(!mtp_ngram_auto_disable_gate(4, 100, 90, 31, 10, cfg));
+    }
+
+    #[test]
+    fn mtp_ngram_gate_decision_reports_each_reason() {
+        let cfg = MtpNgramAutoDisableConfig {
+            mtp_warmup: 64,
+            ngram_warmup: 32,
+            mtp_threshold: 850,
+            ngram_floor: 500,
+        };
+        let decision =
+            mtp_ngram_gate_decision(4, 3, 0.80, 4, 0.99, 4, 100, 90, 40, 10, true, 4, 0.02, cfg);
+        assert!(decision.gated);
+        assert!(decision.saturated);
+        assert!(decision.hurt);
+        assert!(decision.auto_disabled);
+        assert!(decision.self_tune_disabled);
+    }
+
+    #[test]
+    fn ngram_self_tune_counts_only_submitted_drafts() {
+        let mut state = NgramSelfTuneState::default();
+        state.record_verified(0, 0.30, 32);
+        assert_eq!(state.drafted, 0);
+        assert_eq!(state.accepted, 0);
+        assert!(!state.disabled);
+
+        state.record_submitted(16);
+        state.record_verified(4, 0.30, 32);
+        assert_eq!(state.drafted, 16);
+        assert_eq!(state.accepted, 4);
+        assert!(!state.disabled);
+    }
+
+    #[test]
+    fn ngram_self_tune_disables_after_warmup_when_acceptance_low() {
+        let mut state = NgramSelfTuneState::default();
+        state.record_submitted(32);
+        state.record_verified(5, 0.30, 32);
+        assert!(state.disabled);
+    }
+
+    #[test]
     fn mtp_accept_count_ngram_pseudo_logprob_rejection_samples() {
         // N-gram position with delta distribution: log_prob = 0.0 → p_draft = 1.0.
         // target_prob = 1.0 → accept_prob = 1.0/1.0 = 1.0 → always accept.
@@ -8592,6 +8893,7 @@ mod tests {
             &mut rng,
             1.0,
             0.8,
+            MtpNgramAcceptanceMode::Delta,
         );
         assert_eq!(accept.accept_count, 1);
         assert!(accept.all_accepted);
@@ -8611,6 +8913,7 @@ mod tests {
             &mut rng2,
             1.0,
             0.8,
+            MtpNgramAcceptanceMode::Delta,
         );
         assert_eq!(accept2.accept_count, 0);
         assert!(!accept2.all_accepted);
@@ -8618,13 +8921,12 @@ mod tests {
 
     #[test]
     fn mtp_ngram_pseudo_log_probs_cover_ngram_only_draft_windows() {
-        // Delta distribution: all valid confidences → log_prob = 0.0 (p_draft = 1.0).
-        // Non-finite confidence → NaN (greedy fallback).
-        let log_probs = mtp_ngram_pseudo_log_probs(&[0.9, 0.0, 1.2], 4);
+        let log_probs =
+            mtp_ngram_pseudo_log_probs(&[0.9, 0.0, 1.2], 4, MtpNgramAcceptanceMode::Confidence);
 
-        assert_eq!(log_probs[0], 0.0, "valid confidence → delta distribution");
-        assert_eq!(log_probs[1], 0.0, "zero confidence → still delta (p_draft=1.0)");
-        assert_eq!(log_probs[2], 0.0, "confidence above 1.0 → delta distribution");
+        assert!((log_probs[0] - 0.9_f32.ln()).abs() < 1e-6);
+        assert_eq!(log_probs[1], -30.0, "zero confidence is clamped");
+        assert_eq!(log_probs[2], 0.0, "confidence above 1.0 is clamped");
         assert!(
             log_probs[3].is_nan(),
             "missing confidence falls back to greedy comparison for that position"
@@ -8645,9 +8947,59 @@ mod tests {
             &mut rng,
             1.0,
             0.8,
+            MtpNgramAcceptanceMode::Confidence,
         );
         assert_eq!(accept.accept_count, 1);
         assert!(accept.all_accepted);
+    }
+
+    #[test]
+    fn mtp_ngram_pseudo_logprob_delta_mode_returns_zero() {
+        let log_probs =
+            mtp_ngram_pseudo_log_probs(&[0.9, 0.0, 1.2], 4, MtpNgramAcceptanceMode::Delta);
+
+        assert_eq!(log_probs[0], 0.0);
+        assert_eq!(log_probs[1], 0.0);
+        assert_eq!(log_probs[2], 0.0);
+        assert!(log_probs[3].is_nan());
+    }
+
+    #[test]
+    fn mtp_accept_count_ngram_greedy_mode_uses_argmax_match() {
+        let mut rng = Xorshift64::new(42);
+        let accept = mtp_accept_count(
+            &[17],
+            &[0.0],
+            &[],
+            &[MtpDraftSource::Ngram],
+            Some(&[0.0]),
+            None,
+            &[17],
+            &mut rng,
+            1.0,
+            0.8,
+            MtpNgramAcceptanceMode::Greedy,
+        );
+        assert_eq!(accept.accept_count, 1);
+        assert!(accept.all_accepted);
+
+        let mut rng2 = Xorshift64::new(42);
+        let reject = mtp_accept_count(
+            &[17],
+            &[0.0],
+            &[],
+            &[MtpDraftSource::Ngram],
+            Some(&[1.0]),
+            None,
+            &[99],
+            &mut rng2,
+            1.0,
+            0.8,
+            MtpNgramAcceptanceMode::Greedy,
+        );
+        assert_eq!(reject.accept_count, 0);
+        assert!(!reject.all_accepted);
+        assert_eq!(reject.rejection_correction, Some(99));
     }
 
     #[test]
@@ -8666,6 +9018,7 @@ mod tests {
             &mut rng,
             1.0,
             0.8,
+            MtpNgramAcceptanceMode::Confidence,
         );
         assert_eq!(accept.accept_count, 1);
         assert!(accept.all_accepted);
@@ -8689,6 +9042,7 @@ mod tests {
             &mut rng,
             1.0,
             0.8,
+            MtpNgramAcceptanceMode::Confidence,
         );
 
         assert_eq!(accept.accept_count, 0);
@@ -8719,6 +9073,7 @@ mod tests {
             &mut rng,
             1.0,
             0.8,
+            MtpNgramAcceptanceMode::Confidence,
         );
 
         assert_eq!(accept.accept_count, 1);
@@ -8743,6 +9098,7 @@ mod tests {
             &mut rng,
             0.7,
             0.6,
+            MtpNgramAcceptanceMode::Confidence,
         );
         assert_eq!(accept.accept_count, 1);
 
@@ -8759,6 +9115,7 @@ mod tests {
             &mut rng2,
             0.7,
             0.7,
+            MtpNgramAcceptanceMode::Confidence,
         );
         assert_eq!(accept2.accept_count, 1);
 
@@ -8787,6 +9144,7 @@ mod tests {
                 &mut rng_probe,
                 0.7, // draft_temperature
                 2.0, // target_temperature (ratio=0.35 would boost p if wrongly applied)
+                MtpNgramAcceptanceMode::Confidence,
             );
             // With correct (no-rescaling) behavior: accept_prob = 1.0 → always accept.
             // With wrong rescaling: accept_prob ≈ 0.011 → reject for all typical rng values.
