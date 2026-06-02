@@ -6358,6 +6358,9 @@ impl MlxRunner {
                 let mtp_tail_cap = state.mtp_adaptive_max_depth.saturating_sub(ngram_len);
                 let mut sources = vec![MtpDraftSource::Ngram; ngram_len];
 
+                let mut aligned_log_probs =
+                    mtp_ngram_pseudo_log_probs(&ngram_outcome.confidence, ngram_len);
+
                 if mtp_tail_cap > 0 {
                     let cache = state.mtp_cache.get_or_insert_with(|| MlxKVCache::new(1));
                     let (tail, log_probs, distributions, added, _top2_margins) =
@@ -6375,16 +6378,6 @@ impl MlxRunner {
                     state.mtp_pending_draft_distributions = distributions;
                     state.mtp_telemetry.record_ngram_stack_hit(ngram_len, false);
                     state.mtp_telemetry.record_ngram_hybrid_tail(tail.len());
-                    // Build pseudo log-probs for n-gram prefix positions from
-                    // effective_confidence scores: ln(conf), clamped to [-30, 0].
-                    // High-confidence n-gram tokens (conf ≈ 1.0) get log_prob ≈ 0,
-                    // making accept_prob = p_target; low-confidence tokens get a
-                    // lower p_draft so the target model is more likely to accept.
-                    let mut aligned_log_probs: Vec<f32> = ngram_outcome
-                        .confidence
-                        .iter()
-                        .map(|&c| c.max(1e-37_f32).ln().max(-30.0_f32))
-                        .collect();
                     aligned_log_probs.extend(log_probs);
                     sources.extend(std::iter::repeat_n(MtpDraftSource::HybridMtp, tail.len()));
                     draft.extend(tail);
@@ -6417,7 +6410,7 @@ impl MlxRunner {
                     state.mtp_skip_logits = None;
                     state.mtp_skip_hidden = None;
                     state.mtp_telemetry.record_ngram_stack_hit(ngram_len, true);
-                    (draft, vec![], sources)
+                    (draft, aligned_log_probs, sources)
                 }
             } else {
                 // MTP head forward path (RoPE managed internally via cache.seq_len).
@@ -6864,6 +6857,25 @@ fn mtp_next_adaptive_depth(
 
     let floor = 2.min(max_depth);
     accept_count.clamp(floor, max_depth)
+}
+
+fn mtp_ngram_pseudo_log_prob(confidence: f32) -> f32 {
+    if !confidence.is_finite() {
+        return f32::NAN;
+    }
+    confidence.clamp(1e-37_f32, 1.0_f32).ln().max(-30.0_f32)
+}
+
+fn mtp_ngram_pseudo_log_probs(confidence: &[f32], draft_len: usize) -> Vec<f32> {
+    (0..draft_len)
+        .map(|index| {
+            confidence
+                .get(index)
+                .copied()
+                .map(mtp_ngram_pseudo_log_prob)
+                .unwrap_or(f32::NAN)
+        })
+        .collect()
 }
 
 /// Lazy target probability container for MTP rejection sampling.
@@ -8432,6 +8444,38 @@ mod tests {
         );
         assert_eq!(accept2.accept_count, 0);
         assert!(!accept2.all_accepted);
+    }
+
+    #[test]
+    fn mtp_ngram_pseudo_log_probs_cover_ngram_only_draft_windows() {
+        let log_probs = mtp_ngram_pseudo_log_probs(&[0.9, 0.0, 1.2], 4);
+
+        assert!((log_probs[0] - 0.9_f32.ln()).abs() < 1e-6);
+        assert_eq!(log_probs[1], -30.0);
+        assert_eq!(log_probs[2], 0.0, "confidence above 1.0 must clamp to p=1");
+        assert!(
+            log_probs[3].is_nan(),
+            "missing confidence falls back to greedy comparison for that position"
+        );
+
+        // N-gram-only MTP draft windows must still enter rejection sampling when
+        // pseudo log-probs are present.  The target argmax intentionally differs
+        // from the pending token; the old empty-log-prob path would reject here.
+        let mut rng = Xorshift64::new(42);
+        let accept = mtp_accept_count(
+            &[17],
+            &log_probs[..1],
+            &[],
+            &[MtpDraftSource::Ngram],
+            Some(&[1.0]),
+            None,
+            &[99],
+            &mut rng,
+            1.0,
+            0.8,
+        );
+        assert_eq!(accept.accept_count, 1);
+        assert!(accept.all_accepted);
     }
 
     #[test]
