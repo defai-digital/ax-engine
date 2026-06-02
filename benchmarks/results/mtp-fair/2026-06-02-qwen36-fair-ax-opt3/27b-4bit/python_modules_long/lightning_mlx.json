@@ -1,0 +1,490 @@
+{
+  "build": {
+    "git_commit": "5cbb000fcd8ac2c233aab4241c7a6017bfab9ad7",
+    "git_tracked_dirty": true,
+    "host": "AKMBPM5MAX.local",
+    "platform": "macOS-26.5-arm64-arm-64bit-Mach-O"
+  },
+  "cooldown_s": 30.0,
+  "depth_effective_note": "Rapid-MLX reference MTP path is single-draft; requested depth may be capped by runtime.",
+  "depth_requested": 3,
+  "disable_thinking": true,
+  "engine": "rapid_mlx",
+  "max_tokens": 1000,
+  "measurement_gates": {
+    "min_decode_time_s": 0.5,
+    "tps_ceiling": 500.0
+  },
+  "model": "/Users/akiralam/.cache/huggingface/hub/models--ax-local--Qwen3.6-27B-MTP/snapshots/v1",
+  "prompt_suite": "/Users/akiralam/code/ax-engine_v5/benchmarks/prompts/mtp-suites/python_modules_long.jsonl",
+  "prompt_suite_sha256": "a0c1ee0220b40869bfac08ca4fbf7e60f297bee6c7378765d10f4afdfd3e3793",
+  "rapid_mtp_patch": {
+    "mode": "none"
+  },
+  "rapid_python": "/opt/homebrew/var/mtplx/venv-0.3.7/bin/python",
+  "rapid_source": "/Users/akiralam/code/ax-engine_v5/.internal/reference/lightning-mlx",
+  "repetitions": 5,
+  "results": [
+    {
+      "category": "python_modules_long",
+      "max_tokens": 1000,
+      "prompt_id": "pymod_http_client",
+      "prompt_sha256": "e163f34638479cd373e43ecf1734e4b06ee3d776432dc4e6369db8a277af9ff8",
+      "runs": [
+        {
+          "decode_elapsed_s": 14.64196587499464,
+          "decode_tok_s": 68.29683995560917,
+          "elapsed_s": 15.305138291994808,
+          "end_to_end_tok_s": 65.33753442287022,
+          "ended_at": 1780353437.09674,
+          "generated_tokens": 1000,
+          "measured": true,
+          "mtp_acceptance_ratio": 1.0,
+          "prompt_tokens": 285,
+          "rejected_reason": null,
+          "repetition": 1,
+          "seed": 43,
+          "started_at": 1780353421.7914639,
+          "text": "import urllib.parse\nimport urllib.parse\nimport urllib.request\nimport urllib.error\nimport time\nimport gzip\nimport logging\nimport json\nimport threading\nimport queue\nimport weakref\nfrom http.client import HTTPServerRequest\nfrom http.client import gzip\nfrom typing import Dict, Any, Optional, Union, List, Tuple\nimport ssl\nimport socket\n\nfrom http.client import HTTPConnection, HTTPSConnection\nfrom urllib.parse import urlparse\n\n# Simple logger for logging\nlogging.basicConfig(level=logging.DEBUG)\nlogger = logging.getLogger('http_client')\nlogger.setLevel(logging.INFO)\n\nclass SimpleLogger:\n    def debug(self, logger, format, message):\n        logger.debug(format, message)\n\nlogger = logging.getLogger('http_client')\nlogger.setLevel(logging.INFO)\n\nclass ConfigurableLogger:\n    def __init__(self, name, level=0):\n    def debug(self, format, message):\n        logger.debug(message)\n\nclass ConfigurableLogger:\n    def __init__(self, name):\n    def __init__(self, name):\n        self.logger = logging.getLogger(name)\n        self.name = name\n        self.level = 0\n\n    def debug(self, format, message):\n        self.logger.debug(format, message)\n\nclass ConfigurableLogger:\n    def __init__(self, name):\n        self.logger = logging.getLogger(name)\n\nclass ConfigurableLogger:\n    def __init__(self, name = 'default')\n        self.logger = logging.getLogger(name)\n\nclass ConfigurableLogger:\n    def __init__(self, name: str = 'default'):\n    self.logger = logging.getLogger(name)\n    self.logger.debug(config = logging.getLogger('http_client')\n    logger.debug(f\"HTTP Client sent request to {name}\")\n\nclass ConfigurableLogger:\n    def __init__(self, name = 'default')\n        self.logger = logging.getLogger(name)\n        self.logger.debug(f\"HTTP Client connected to {name} {name}\")\n        self.logger.debug(f\"HTTP Client connected to {name}\")\n\nclass PyLogger:\n    def __init__(self, name = 'default'):\n        self.logger = logging.getLogger(name)\n        self.logger.debug(f\"HTTP Client connected to {name}\")\n\nclass PyLogger:\n    def __init__(self, name = 'default'):\n        self.logger.debug(f\"HTTP Client connected to {name}\")\n        self.logger.debug(f\"HTTP Client connected to {name}\")\n        self.logger.debug(f\"HTTP Client connected to {name}\")\n\nclass PyLogger:\n    def __init__(self, name = 'default'):\n        self.logger.debug(f\"HTTP Client connected to {name}\")\n        self.logger.debug(f\"HTTP Client connected to {name}\")\n\nclass PyLogger:\n    def __init__(self, name = 'default'):\n        self.logger.debug(f\"HTTP Client connected to {name}\")\n        self.logger.debug(f\"HTTP Client connected to {name}\")\n        self.logger.debug(f\"HTTP Client connected to {name}\")\n\nclass PyLogger:\n    def __init__(self, name = 'default'):\n        self.logger.debug(f\"HTTP Client connected to {name}\")\n        self.logger.debug(f\"HTTP Client connected to {name}\")\n\nclass PyLogger:\n    def __init__(self, name = 'default'):\n        self.logger.debug(f\"HTTP Client connected to {name}\")\n        self.logger.debug(f\"HTTP Client connected to {name}\")\n\nclass PyLogger:\n    def __init__(self, name = 'default'):\n        self.logger.debug(f\"HTTP Client connected to {name} HTTP Client connected to {name} {name}\")\n\nclass PyLogger:\n    def __init__(self, name = 'default'):\n        self.logger.debug(f\"HTTP Client connected to {name}\")\n\nclass PyLogger:\n    def __del__(self, name = 'default'):\n        self.logger.debug(f\"HTTP Client connected to {name}\")\n\nclass PyLogger:\n    def __init__(self, name = 'default'):\n        self.logger.debug(f\"HTTP Client connected to {name}\")\n\nclass PyLogger:\n    def __init__(self, name = 'default'):\n        self.logger.debug(f\"HTTP Client connected to {name}\")\n\nclass PyLogger:\n    def __init__(self, name):\n        self.logger = logging.getLogger(\"http_client\")\n        self.logger.debug(f\"HTTP Client connected to {name}\")\n\ndef __init__(self, name = 'default'):\n    self.logger.debug(f\"HTTP Client connected to {name}\")\n    self.logger.debug(f\"HTTP Client connected to {name}\")\n\ndef __init__(self, name = 'http_client'):\n    self.logger.debug(\"HTTP Client connected to",
+          "ttft_s": 0.6631724170001689
+        },
+        {
+          "decode_elapsed_s": 14.643672749996767,
+          "decode_tok_s": 68.28887923627089,
+          "elapsed_s": 15.2881934580073,
+          "end_to_end_tok_s": 65.40995198332233,
+          "ended_at": 1780353482.409268,
+          "generated_tokens": 1000,
+          "measured": true,
+          "mtp_acceptance_ratio": 1.0,
+          "prompt_tokens": 285,
+          "rejected_reason": null,
+          "repetition": 2,
+          "seed": 44,
+          "started_at": 1780353467.1209369,
+          "text": "import http.client\nimport logging\nimport time\nimport gzip\nimport gzip\nimport urllib.request\nimport urllib.parse\nimport json\nfrom dataclasses import dataclass, typing import Any, Optional, Dict, Union, List\n\nfrom dataclasses import dataclass\n\n@dataclass\nclass LogResult:\n    def __init__(self, status_code, headers, body, json_data, body_bytes, elapsed_time):\n        if not isinstance(self.headers, dict):\n            self.headers = dict(self.headers)\n\n@dataclass\nclass LogMessage:\n    def __init__(self, message):\n        self._message = message\n\n@dataclass\nclass LogEntry:\n    def __init__(self, message):\n        self._message = message\n\n@dataclass\nclass LogEntry:\n    def __init__(self, message):\n        self._message = message\n\nclass LogEntry:\n    def __init__(self, message):\n        self._message = message\n\n@dataclass\nclass LogEntry:\n    def __init__(self, message):\n        self._message = message\n\nclass LogEntry:\n    def __init__(self, message):\n        self._message = message\n\n@dataclass\nclass LogEntry:\n    def __init__(self, message):\n        self._message = message\n\nclass LogEntry:\n    def __init__(self, message):\n        self._message = message\n\n@dataclass\nclass LogEntry:\n    def __init__(self, message):\n        self._message = message\n\nclass LogEntry:\n    def __init__(self, message):\n        self._message = \"\"\n\n@staticmethod\ndef format_data(data):\n    \"\"\"Format data as a string.\"\"\"\n    if isinstance(data, dict):\n        return \", \".join(f\"{k}: {v.__repr__}\" for v in data.items())\n    elif isinstance(data, list):\n        return \",\".join([f\"{i}.__repr__\" for i, v in enumerate(data.items()))\n    else:\n        return \",\".join([f\"{i}. {v.__repr__}\" for i, v in enumerate(data)])\n\nclass LogEntry:\n    def __repr__(self, message):\n        self._message = message\n\n@staticmethod\ndef format_data(message):\n    if isinstance(message, dict):\n        return \",\".join([f\"{k}.__repr__\" for k, v inmessage.items())])\n    elif message.__repr__(self):\n        return f\"__repr__\".format(message.__repr__(self))\n    else:\n        return f\"__repr__\".format(message.__repr__(self))\n\n@staticmethod\ndef format_message(message):\n    if isinstance(message, dict):\n    elif isinstance(message, list):\n    else:\n    return message\n\n@staticmethod\ndef format_message(message):\n    if isinstance(message, dict):\n        return \",\".join([f\"{k}.format({k}.format(self.__repr__(i.__repr__(i.__repr__(i.__repr__(self.__repr__(\\\"__repr__\\\".__repr__(self.__repr__(\\\"__repr__\\\".__repr__(\\\"__repr__\\\".__repr__(\\\"__repr__\\\".__repr__(self.__repr__(self.__repr__(\\\"__repr__\\\".__repr__(self.__repr__())\n\n__format__ = __repr__(message)\n\ndef format_data(message: Any) -> str:\n    if isinstance(message, dict):\n        return\",\".join([f\"{k}.__repr__({k}.format(\".__repr__(self.__repr__(\\\"__repr__\\\".__repr__(self.__class__.__name__).__format__(message)\n    elif isinstance(message, list):\n        return \",\".join([f\"{k}.format__\" for k, v in enumerate(data.items())] else:\n        return \",\".join([f\"{k}.format__\" for k, v in enumerate(data.items())]\n\nif not isinstance(message, dict):\n    return \",\".join([f\"{k}.format__\" for k, v in enumerate(data.items())]\n\nclass LogEntry:\n    def __repr__(self) -> str:\n        return \",\".join([f\"{k}.format__\" for k, v in enumerate(data.items())]\n\nclass LogEntry:\n    def __repr__(self) -> str:\n        return \",\".join([f\"{k}.format__\" for k, v in enumerate(data.items())]\n\n@staticmethod\ndef format_data(message: str) -> str:\n    if isinstance(message, dict):\n        return \",\".join([f\"{k}.format__\": \".__repr__(self)\n\n@staticmethod\n",
+          "ttft_s": 0.644520708010532
+        },
+        {
+          "decode_elapsed_s": 2.2161220000125468,
+          "decode_tok_s": 71.74695255906481,
+          "elapsed_s": 2.873992292006733,
+          "end_to_end_tok_s": 55.323739191026164,
+          "ended_at": 1780353515.303447,
+          "generated_tokens": 159,
+          "measured": true,
+          "mtp_acceptance_ratio": 1.0,
+          "prompt_tokens": 285,
+          "rejected_reason": null,
+          "repetition": 3,
+          "seed": 45,
+          "started_at": 1780353512.429426,
+          "text": "import http.client\nimport json\nimport logging\nimport time\nimport urllib.parse\nimport gzip\nimport weakref dataclasses\nfrom dataclasses import dataclass, field\nfrom typing import Dict, Any, Optional, Union\n\nfrom http.client import dataclasses\n\n@dataclasses.dataclass\nclass HttpResponse:\n    status: int\n    headers: str = \"http.client.HTTPResponse\"\n    body: str = \"HTTP/1.1\"\n    body: bytes = \"body\"\n    json_data: bytes = \"json_data\"\n    elapsed_time = \"data\" = \"http.client.HTTPResponse\"\n\nclass HttpClientHttpConnection = dataclasses.dataclass\n\nclass HttpResponse = dataclass \"http.client.HTTPResponse\"\n\nclass HttpResponse = dataclass\n\n\nclass HttpResponse",
+          "ttft_s": 0.6578702919941861
+        },
+        {
+          "decode_elapsed_s": 1.8171651250013383,
+          "decode_tok_s": 72.64061927223196,
+          "elapsed_s": 2.4766067500022473,
+          "end_to_end_tok_s": 53.29873222701998,
+          "ended_at": 1780353547.803469,
+          "generated_tokens": 132,
+          "measured": true,
+          "mtp_acceptance_ratio": 1.0,
+          "prompt_tokens": 285,
+          "rejected_reason": null,
+          "repetition": 4,
+          "seed": 46,
+          "started_at": 1780353545.326837,
+          "text": "import http.client\nimport json\nimport logging\nimport time\nimport urllib.parse\nimport gzip\nimport io\nfrom dataclasses import urllib.parse import gzip as gzip\nfrom urllib.parse import urlparse, urlunparse, urlencode\nfrom typing import Any, Dict, List, Optional, Tuple\n\nfrom dataclasses import dataclass, dataclass\n\n@dataclass\nclass MyDataClass:\n    status: str\n    value: int\n\n@staticmethod\ndef validate_status(status: str) -> bool:\n    return status in (\"success\", \"failed\")\n\ndef validate_value(value: int) -> bool:\n    return value >= 0",
+          "ttft_s": 0.659441625000909
+        },
+        {
+          "decode_elapsed_s": 14.611607166996691,
+          "decode_tok_s": 68.43874110294348,
+          "elapsed_s": 15.264217749994714,
+          "end_to_end_tok_s": 65.51269225704975,
+          "ended_at": 1780353593.0870578,
+          "generated_tokens": 1000,
+          "measured": true,
+          "mtp_acceptance_ratio": 1.0,
+          "prompt_tokens": 285,
+          "rejected_reason": null,
+          "repetition": 5,
+          "seed": 47,
+          "started_at": 1780353577.8227022,
+          "text": "import http.client\nimport json\nimport logging\nimport gzip\nimport time\nimport urllib.parse\nfrom urllib.parse import urljoin, urlparse, urlunparse\nfrom dataclasses import dataclass, field\nfrom typing import Optional, Any\n\nimport http.client as http_client\n\nlogger = logging.getLogger(__name__)\n\n\n@dataclass\nclass HttpResponse:\n    status_code: int\n    name = \"HTTP/1.1\"  # Unused\n    body = \"\"  # Unused\n    headers = {\"Content-Length\": \"0\"}  # Unused\n    body = \"\"  # Unused\n    version = 1\n    reason = \"\"  # Unused\n\n    def __init__(\n        self,\n        status_code: int = 0,\n        headers: str = \"\",\n        body: str = \"\",\n    reason = \"\",\n    version = 1,\n    name = \"\",\n    body = \"\",\n    headers = \"Content-Length: 0\",\n    body = \"\",\n    jsonrpc = 0,\n    version = 1,\n    reason = \"\",\n    name = \"\",\n    body = \"\",\n    json = None,\n    body = \"\",\n    headers = \"Content-Length\",\n    body = \"\",\n    json = None,\n    body = \"\",\n    headers = \"Content-Length\",\n    body = \"\",\n    version = 1,\n    version = 1,\n    version = 1,\n    body = \"\",\n    body = \"\",\n    headers = \"Content-Length\",\n    body = \"\",\n    headers = \"Content-Length\",\n    body = \"\",\n    body = \"\",\n    headers = \"Content-Length\",\n    body = \"\",\n    body = \"\",\n    headers = \"Content-Length\",\n    body = \"\",\n    body = \"\",\n    headers = \"Content-Length\",\n    body = \"\",\n    body = \"\",\n    headers = \"Content-Length\",\n    body = \"\",\n    body = \"\",\n    headers = \"Content-Length\",\n    body = \"\",\n    body = \"\",\n    body = \"\",\n    body = \"\",\n    body = \"\",\n    body = \"\",\n    body = \"\",\n    body = \"\",\n    body = \"\",\n    body = \"\",\n    headers = \"Content-Length\",\n    body = \"\",\n    body = \"\",\n    body = \"\",\n    body = \"\",\n    headers = \"Content-Length\",\n    body = \"\",\n    body = \"\",\n    body = \"\",\n    body = \"\",\n    body = \"\",\n    body = \"\",\n    headers = \"Content-Length\",\n    body = \"\",\n    body = \"\",\n    body = \"\",\n    body = \"\",\n    headers = \"Content-Length\",\n    body = \"\",\n    body = \"\",\n    body = \"\",\n    body = \"\",\n    headers = \"Content-Length\",\n    body = \"\",\n    body = \"\",\n    body = \"\",\n    body = \"\",\n    body = \"\",\n    body = \"\",\n    headers = \"Content-Length\",\n    body = \"\",\n    body = \"\",\n    body = \"\",\n    body = \"\",\n    headers = \"Content-Length\",\n    body = \"\",\n    body = \"\",\n    body = \"\",\n    body = \"\",\n    body = \"\",\n    body = \"\",\n    body = \"\",\n    body = \"\",\n    headers = \"Content-Length\",\n    body = \"\",\n    body = \"\",\n    body = \"\",\n    body = \"\",\n    headers = \"Content-Length\",\n    body = \"\",\n    body = \"\",\n    body = \"\",\n    body = \"\",\n    body = \"\",\n    body = \"\",\n    headers = \"Content-Length\",\n    body = \"\",\n    body = \"\",\n    body = \"\",\n    body = \"\",\n    headers = \"Content-Length\",\n    body = \"\",\n    body = \"\",\n    body = \"\",\n    body = \"\",\n    headers = \"Content-Length\",\n    body = \"\",\n    body = \"\",\n    body = \"\",\n    body = \"\",\n    body = \"\",\n    body = \"\",\n    headers = \"Content-Length\",\n    body = \"\",\n    body = \"\",\n    body = \"\",\n    body = \"\",\n    body = \"\",\n    body = \"\",\n    body = \"\",\n    body = \"\",\n    body = \"\",\n    body = \"\",\n    body = \"\",\n    body = \"\",\n    headers = \"Content-Length\",\n    body = \"\",\n    body = \"\",\n    body = \"\",\n    body = \"\",\n    body = \"\",\n    body = \"\",\n    headers = \"Content-Length\",\n    body = \"\",\n    body = \"\",\n    body",
+          "ttft_s": 0.6526105829980224
+        }
+      ],
+      "summary": {
+        "accept_rate": 1.0,
+        "accepted_drafts": null,
+        "decode_tok_s": {
+          "median": 68.43874110294348,
+          "p10": 68.28887923627089,
+          "p90": 72.64061927223196,
+          "values": [
+            68.29683995560917,
+            68.28887923627089,
+            71.74695255906481,
+            72.64061927223196,
+            68.43874110294348
+          ]
+        },
+        "drafted_tokens": null,
+        "end_to_end_tok_s": {
+          "median": 65.33753442287022,
+          "p10": 53.29873222701998,
+          "p90": 65.51269225704975,
+          "values": [
+            65.33753442287022,
+            65.40995198332233,
+            55.323739191026164,
+            53.29873222701998,
+            65.51269225704975
+          ]
+        },
+        "generated_tokens": 3291,
+        "ngram_accept_rate": null,
+        "runs": 5,
+        "valid_runs": 5
+      }
+    },
+    {
+      "category": "python_modules_long",
+      "max_tokens": 1000,
+      "prompt_id": "pymod_config_loader",
+      "prompt_sha256": "0ca971aa34be4af117e184634ae5bccd69652436cbcff2c88cdcfac816119e32",
+      "runs": [
+        {
+          "decode_elapsed_s": 8.76090487500187,
+          "decode_tok_s": 69.74165439729987,
+          "elapsed_s": 9.48371491699072,
+          "end_to_end_tok_s": 64.42623015853755,
+          "ended_at": 1780353658.0051131,
+          "generated_tokens": 611,
+          "measured": true,
+          "mtp_acceptance_ratio": 1.0,
+          "prompt_tokens": 350,
+          "rejected_reason": null,
+          "repetition": 1,
+          "seed": 1043,
+          "started_at": 1780353648.521311,
+          "text": "```python\nimport os\nimport sys\nimport json\nimport copy\nimport typing\nimport warnings\n\nconfig_file = \"config.json\"\n\nif sys.version_info >= 3.11:\n    import tomllib\n    import tomli.toml\n\nclass ConfigParser:\n    def __init__(self):\n        if not hasattr(config_file, \"config.json\"):\n            pass\n\nclass Config:\n    def __init__(self, data: dict, path: str = ''):\n        self._data = data if isinstance(data, dict) else {}\n    if not hasattr(config, \"config.json\"):\n        self._path = \"config.json\"\n        self._path = path.split('.')\n        self._data = {}\n        self._data = data if isinstance(data, dict) else {}\n        self._data = {}\n\n    def _get_nested(self,keys: list[str]) -> tuple[str, dict]:        data = self._data\n        for i, key in enumerate(keys):\n            if key not in data:\n                return data, key\n        return data, self._path\n\ndef get_nested(self,keys: list[str]) -> tuple:\n        data = self._data\n        path = config = {}\n        for key in self._keys:\n            if key not in data:\n                return data, key\n            if not isinstance(data, dict):\n                return data, i = data.get('key', i + 1)\n        if isinstance(data, dict):\n            data = data.get(key, i = data.get('key', i + 1)\n        if isinstance(data, dict):\n            data = data.get(key, 'key', 'value')\n            return data.get(key, 'value')\n        if isinstance(data, dict):\n            data = data.get(key, 'key')\n            return data.get(key, 'value')\n\nif __name__ == \"__main__\":\n    if sys.version_info >= 3.11:\n        import tomllib\n        import json\n\nconfig = {}\n\nif __name__ == \"__main__\":\n    if __name__ == \"__main__\":\n    if not hasattr(sys.argv[0], 'config.json'):\n        pass\n\nconfig = {}\n\nif not hasattr(sys.argv[0], 'config.json'):\n    pass\n\nconfig = {}\n\nif not hasattr(sys.argv[0], 'config.json'):\n    pass\n\nconfig = {}\n\nclass Config:\n    def __init__(self, data: dict, path = ''):\n    if not hasattr(sys.argv[0], 'config.json'):\n        pass\n\nconfig = {}\n\nif __name__ == \"__main__\":\n    if not hasattr(sys.argv[0], 'config.json'):\n        pass\nconfig = {}\n\nif not hasattr(sys.argv[0], 'config.json'):\n    pass\n\nconfig = {}",
+          "ttft_s": 0.7228100419888506
+        },
+        {
+          "decode_elapsed_s": 14.635247458005324,
+          "decode_tok_s": 68.32819211765434,
+          "elapsed_s": 15.361405290997936,
+          "end_to_end_tok_s": 65.09821081187268,
+          "ended_at": 1780353703.389788,
+          "generated_tokens": 1000,
+          "measured": true,
+          "mtp_acceptance_ratio": 1.0,
+          "prompt_tokens": 350,
+          "rejected_reason": null,
+          "repetition": 2,
+          "seed": 1044,
+          "started_at": 1780353688.028244,
+          "text": "```python\nimport os\nimport json\nimport sys\nimport copy\nimport re\nimport importlib.util\n\n# Check for TOML support\nif 'tomllib3' not in sys.modules and 'tomllib' not in sys.modules and 'toml' in sys.modules:\n    try:\n    import tomllib3 as tomllib3_safe\nexcept ImportError:\n    pass\n\nif 'tomllib3' not in sys.modules and 'tomllib3_safe' not in dir():\n    try:\n    import tomllib3_safe\nexcept ImportError:\n    pass\n\n# Check for YAML library\nimport importlib.util\n_yaml_loader = importlib.util.find_spec('yaml.safe_load')\n\nif 'yaml.safe_load' not in sys.modules and 'tomllib3_safe' not in dir():\n    pass\n\nif not importlib.util.find_spec('yaml.safe_load'):\n    pass\n\nif not importlib.util.find_spec('yaml.safe_load'):\n    pass\n\nif not importlib.util.find_spec('yaml.safe_load'):\n    pass\n\nif not importlib.util.find_spec('yaml.safe_load'):\n    pass\n\nif not importlib.util.find_spec('yaml.safe_load'):\n    pass\n\n# Simplified imports\n_yaml_loader = r = lambda x: x\ny = 0\nif not importlib.util.find_spec('yaml.safe_load'):\n    pass\n\nif not importlib.util.find_spec('yaml.safe_load'):\n    pass\n\n# Simplified: check if 'yaml.safe_load' is available\nimport importlib.util\n_spec_loader = importlib.util.find_spec('load_yaml_file')\nif not_spec('load_yaml_file'):\n    pass\nif not_spec('load_yaml'):\n    pass\nif not_spec('load_yaml'):\n    pass\n\nif importlib.util.find_spec('yaml.safe_load'):\n    pass\n\nif not_spec('yaml.safe_load'):\n    pass\n\nif not_spec('yaml.safe_load'):\n    pass\n\nif not_spec('yaml.safe_load'):\n    pass\n\nif not_spec('yaml.safe_load'):\n    pass\n\n# Simplified: check for yaml.safe_load\nimport importlib.util\n_yaml_loader = importlib.util.find_spec('yaml.safe_load')\nif not importlib.util.spec('yaml.safe_load'):\n    pass\n\nif not_spec('yaml.safe_load'):\n    pass\n\nif not_spec('yaml.safe_load'):\n    pass\n\n# Simplified: check for yaml.safe_load\nimport importlib.util\n_yaml_loader = importlib.util.find_spec('yaml.safe_load')\nif not importlib.util\n_yaml_loader = lambda x: x\ny = 0\n\nif not_spec('yaml.safe_load'):\n    pass\n\nif not importlib.util.spec('yaml.safe_load'):\n    pass\nif not_spec('yaml.safe_load'):\n    pass\n\nif not_spec('yaml.safe_load'):\n    pass\n\nif not_spec:\n    pass\n\nif not_spec('yaml.safe_load'):\n    pass\n\nif not_spec('yaml.safe_load'):\n    pass\n\nif not_spec('yaml.safe_load'):\n    pass\n\nif not_spec('yaml.safe_load'):\n    pass\n\nif not os.path.exists('yaml.safe_load'):\n    pass\nif not_spec('yaml.safe_load'):\n    pass\n\n# Simplified: check for yaml.safe_load\nimport importlib.util\n_yaml_loader = importlib.util\n_yaml_loader = importlib.util.find_spec('yaml.safe_load')\nif not importlib.util\n_yaml_loader = lambda x: x\ny = 0\n\n# Simplified: check for yaml.safe_load\nif not importlib.util.spec('yaml.safe_load'):\n    pass\nif not_spec('yaml.safe_load'):\n    pass\n\n# Simplified: check for yaml.safe_load\nimport importlib.util\n_yaml_loader = importlib.util\n_yaml_loader = importlib.util.find_spec('yaml.safe_load')\nif not importlib.util\n_yaml_loader = importlib.util.spec('yaml.safe_load')\nif not_spec('yaml.safe_load'):\n    pass\n\n# Simplified: check for yaml.safe_load\nif not importlib.util.spec('yaml.safe_load'):\n    pass\nif not_spec('yaml.safe_load'):\n    pass\n\n# Simplified: check for yaml.safe_load\nimport importlib.util\n_yaml_loader = importlib.util\n_yaml_loader = importlib.util.spec.from_loader('yaml.safe_load')\nif not_spec('yaml.safe_load'):\n    pass\n\nif not_spec('yaml.safe_load'):\n    pass\n\nif not_spec('yaml.safe_load'):\n    pass\n\nif not import_spec('yaml.safe_load'):\n    pass\n\nif not_spec('yaml.safe_load'):\n    pass\n\nif not_spec('yaml.safe_load'):\n    pass\n\nif not_spec('yaml.safe_load'):\n    pass\n\n",
+          "ttft_s": 0.7261578329926124
+        },
+        {
+          "decode_elapsed_s": 14.668812916002935,
+          "decode_tok_s": 68.17184224287504,
+          "elapsed_s": 15.394328750000568,
+          "end_to_end_tok_s": 64.9589869256211,
+          "ended_at": 1780353748.8082519,
+          "generated_tokens": 1000,
+          "measured": true,
+          "mtp_acceptance_ratio": 1.0,
+          "prompt_tokens": 350,
+          "rejected_reason": null,
+          "repetition": 3,
+          "seed": 1045,
+          "started_at": 1780353733.413785,
+          "text": "```python\nimport os\nimport sys\nimport json\nimport copy\nimport typing\nimport importlib.util\n\n# Check for TOML support (Python 3.10+ has tomllib, but Python 3.4+)\ntry:\n    import tomllib  # TOML support in Python 3.1+\nexcept ImportError:\n    # Check for optional third-party libraries\n    import importlib.util\n    if to_tomllib3.tomllib3:  # TOML support in Python 3.0+\n        else:  # TOML not available\n    else:\n    else:\n        import tomllib3  # TOML not available\n\n    else:\n        import tomllib3  # TOML not available\n\n    else:\n    else:\n        import tomllib.error  # TOML not available\n\n    else:\n    else:\n    else:\n    else:\n    else:\n    else:\n    else:\n    else:\n    else:\n    else:\n    else:\n    else:\n    else:\n    else:\n    else:\n    else:\n        import sys\n\n\ntry:\n    import tomllib3  # TOML support in Python 3.0+\nexcept ImportError:\n    import sys\n\n    try:\n        import tomllib  # TOML not available\n    except ImportError:\n        import sys\n\n        try:\n            import tomllib  # TOML not available\n        except ImportError:\n            import sys\n\n            try:\n                import sys\n            except Exception as e:\n                import sys\n                import sys\n\n                try:\n                except Exception:\n                    import traceback\n                    import traceback\n                    import traceback\n                    import traceback\n                    import q\n                    import q\n                    import q\n                    import q\n                    import q\n                    import traceback\n                    import q\n                    import q\n                    import q\n                    import q\n                    import traceback\n                    import q\n                    import q\n                    import traceback\n                    import q\n                    import traceback\n                    import traceback\n                    import q\n                    import q\n                    import q\n                    import q\n                    import traceback\n                    import q\n                    import q\n                    import q\n                    import traceback\n                    import q\n                    import q\n                    import traceback\n                    import traceback\n                    import i\n\n\nclass Config:\n    def __init__(self, data: dict, from_yaml: str = ''):\n        self._from_yaml = data\n\n    def get(self, key: str, default=None):\n        if key in self._from_yaml:\n            return self._from_yaml[key] else:\n                return self._default\n\n    def get(key: str, default=None):\n        if key in self._keys:\n            return self._keys_from_yaml = self._get(key)\n        else:\n                return self._get(key: str = ''):\n        if key in self._keys_from_yaml = self._get(key: str) = self._to_yaml = self._keys_from_yaml:\n            return self._to_yaml = self._to_yaml = self._from_yaml = self._keys_from_yaml:\n                return self._to_yaml = self._keys_from_yaml = self._keys_from_yaml = self._to_yaml = self._keys_from_yaml = self._to_yaml = self._keys_from_yaml = self._keys_from_yaml = self._get(key = self._keys = self._keys = self._keys = self._keys = self._keys = self._keys = self._keys = self._keys = self._keys = self._get(key = self._keys = self._keys: str) = self._keys = self._keys = self._keys = self._keys = self._keys = self._keys = self._get(key: str = ''):\n        if key in self._keys_from_yaml = self._keys = self._keys = self._keys = self._keys = self._keys = self._keys = self._get(key = self._keys_from_yaml: str = ''):\n            return self._keys_from_yaml = self._keys = self._get(key = self._keys_from_yaml) = self._keys = self._get(key = self._keys_from_yaml: str = ''):\n                return self._keys_from_yaml = self._keys = self._get(key: str = '') = self._keys_from_yaml:\n                    return self._keys_from_yaml = self._to_yaml = self._keys_from_yaml = self._keys_from_yaml = self._keys_from_yaml = self._keys_from_yaml = self._keys_from_yaml = self._keys_from_yaml = self._keys_from_yaml = self._keys_from_yaml = self._keys_from_yaml =",
+          "ttft_s": 0.7255158339976333
+        },
+        {
+          "decode_elapsed_s": 14.64351604199328,
+          "decode_tok_s": 68.28961003165465,
+          "elapsed_s": 15.367043249993003,
+          "end_to_end_tok_s": 65.07432716443063,
+          "ended_at": 1780353794.199487,
+          "generated_tokens": 1000,
+          "measured": true,
+          "mtp_acceptance_ratio": 1.0,
+          "prompt_tokens": 350,
+          "rejected_reason": null,
+          "repetition": 4,
+          "seed": 1046,
+          "started_at": 1780353778.832305,
+          "text": "```python\nimport os\nimport json\nimport sys\nimport copy\nimport re\nimport tempfile\n\nclass ConfiguredError(Exception):\n    pass\n\nclass ConfigError(Exception):\n    pass\n\n\nclass Config(type Var = dict(type):\n    def __init__(self):\n        def __init__(self, data:\n            self.data = {}\n        if isinstance(data, type(self)):\n            self.data = data\n        elif isinstance(data, dict):\n            for key, value in self.data.items():\n                if isinstance(data, dict):\n                self.data = data = data.copy()\n        else:\n            self._data = {}\n        if isinstance(data, dict):\n            for key in data.keys():\n                if isinstance(key, str):\n                    if key in self.data:\n                        self._data = data.copy()\n        else:\n            self._data = {}\n        if isinstance(data, dict):\n            for key, value in self.data.items():\n                if isinstance(value, dict):\n                self._data = data.copy()\n        else:\n            self._data = {}\n            for key, value in self.data.items():\n                if isinstance(value, dict):\n                    self._data[key] = ConfiguredError = ConfigError(f\"Missing required key: {key}\")\n            self._data = {}\n        for key, value in self._data.items():\n            if isinstance(value, dict):\n                self._data = {}\n                for key, value in self.data.items():\n                    if isinstance(value, dict):\n                        self._data = value = {}\n                self._data = {}\n            return self._data.copy()\n        return self._data.copy()\n\n    def get(self, data = {}\n    def get(self, data = {})\n    def get(self, data = {}):\n        self._data = {}\n    def get(self, default = {}):\n        self._data = {}\n    if not hasattr(self, '_data'):\n        self._data = {}\n    if not hasattr(self, '_get'):\n        return self._get_configured = {}\n    if not hasattr(self, '_get_configured'):\n            return self._get_configured = {}\n    if not hasattr(self, '_get_configured'):\n        return self._get_configured = {}\n    if not hasattr(self, '_get_default = None):\n        return self._get_configured = {}\n    if not hasattr(self, '_get_configured = {}):\n        return self._get_configured = {}\n    return self._get_configured = {}\n\n    def _get_configured(self, key, value) = {}\n    def _get(self, key, default = None):\n        self._data = {}\n        if not hasattr(self, '_get_configured'):\n            return self._get_configured = {}\n        return self._get_configured = {}\n\n    def _get(self, key, value = {}):\n        if not hasattr(self, '_get_configured'):\n            return self._get_configured = {}\n        return self._get_configured = {}\n\n    def _get_configured(self, key = 'get_configured', data = {}):\n        return self._get_configured = {}\n\n    def _get_configured = {}\n    def _get_key = {}\n    def get_configured = {}\n    def _get_configured = {}\n    def _get = {}\n    def _get_configured = {}\n    def _get = {}\n    def _get_configured = {}\n    def __init__ = {}\n    def __init__ = {}\n    def __init__ = {}\n    def __init__ = {}\n    def __init__ = {}\n    def __init__ = {}\n    def __init__ = {}\n    def __init__ = {}\n    def __init__ = {}\n    def __init__ = {}\n    def __init__ = {}\n    def __init__ = {}\n    def __init__ = {}\n    def __init__ = {}\n    def __init__ = {}\n    def __init__ = {}\n    def __init__ = {}\n    def __init__ = {}\n    def __init__ = {}\n    def __init__ = {}\n    def __init__ = {}\n    def __init__ = {}\n    def __getattr__ = {}\n    def __getattr__ = {}\n    def __getattr__ = {}\n    def __getattr__ = {}\n    def __getattr__ = {}\n    def __init__ = {}\n    def __getattr__ = {}\n    def __init__ = {}\n",
+          "ttft_s": 0.723527207999723
+        },
+        {
+          "decode_elapsed_s": 14.674144083997817,
+          "decode_tok_s": 68.14707517357023,
+          "elapsed_s": 15.3992062920006,
+          "end_to_end_tok_s": 64.93841182707374,
+          "ended_at": 1780353839.619454,
+          "generated_tokens": 1000,
+          "measured": true,
+          "mtp_acceptance_ratio": 1.0,
+          "prompt_tokens": 350,
+          "rejected_reason": null,
+          "repetition": 5,
+          "seed": 1047,
+          "started_at": 1780353824.220108,
+          "text": "```python\nimport os\nimport json\nimport sys\nimport re\nimport copy\nimport ast\n\nclass Config:\n    def __init__(self, data: dict, path: str = ''):\n        self._data = data if isinstance(data, dict)\n        self.path = path\n\nclass ConfigError(Exception):\n    pass\n\nclass ConfigLoader:\n    def __init__(self):\n        pass\n\n    def _load(self, data: dict, path: str = '') -> Config:\n        self._coerce_nested(data)\n        return Config(config)\n\n    def _coerce(self, value):\n        if isinstance(value, str):\n        if isinstance(value, dict):\n        return Config(configured)\n    def load_config(config)\n\ndef _coerce_nested(value):\n    if isinstance(value, dict)\n\n    def _load_config(config):\n        if isinstance(value, \"bool\"):\n            if not isinstance(value, dict):\n                return Config(value)\n\n    def _load_config(config)\n\n    def _load_config(config)\n\n    def __load_config(config)\n\n    def _load_config(config)\n\n    def load_config(config, path = ''):\n        if isinstance(config, dict) -> Config:\n        if isinstance(value, dict):\n        return Config(value, path)\n\n    def _load_config(config, dict)\n\n    def _load_config(config)\n\n    def _load_config(config)\n\n    def _load_config(config, path = ''):\n        if isinstance(config, dict)\n\n    def _load_config(config)\n\n    def load_config(config, path = ''):\n        if isinstance(config, dict) -> Config:\n            if isinstance(config, dict):\n        return Config(value)\n\n    def _load_config(config)\n\n    def _load_config(config)\n\n    def load_config(config, path = '') -> Config:\n        if isinstance(config, dict):\n            if not isinstance(config, dict):\n                return Config(value=config)\n            if not isinstance(config, dict):\n                return Config(value=config)\n\n    def _load_config(config)\n\n    def load_config(config)\n\n    def load_config(config) -> Config:\n        if isinstance(config, dict):\n        return Config(value, path = '')\n\n    def __load_config(config) -> Config:\n        if isinstance(config, dict):\n        return Config(value_coerce)\n\n    def _load_coerce(config) -> Config:\n        if isinstance(config, dict):\n        return Config(value => Config(value: str = '') -> Config:\n        if not isinstance(config, dict):\n            return Config(value)\n\n    def _load_config(config)\n\n    def load_config(config, value = None) -> Config:\n        if isinstance(config, dict):\n        return Config(value: dict) -> Config:\n        if not isinstance(config, dict):\n            return Config(value)\n\n    def _load_config(config)\n\n    def load_config(config) -> Config:\n        if isinstance(config, dict):\n        return Config(value: dict) -> Config:\n        if not isinstance(config, dict):\n            return Config(value)\n\n    def _load_coerce(config)\n\n    def load_config(config) -> Config:\n        if isinstance(config, dict) -> Config:\n        if not isinstance(config, dict):\n            return Config(value = None)\n        if isinstance(config, dict) -> Config:\n            if isinstance(config, dict):\n            return Config(value)\n\n    def _load_coerce(config) -> Config:\n        if isinstance(config, dict) -> Config:\n        if isinstance(config, dict) -> Config:\n            if isinstance(config, dict):\n            return Config(value)\n\n    def _load_coerce(config) -> Config:\n        if isinstance(config, dict) -> Config:\n        if isinstance(config, dict):\n            return Config(value = None)\n        if isinstance(config, dict):\n            return Config(value = None)\n        if isinstance(config, dict):\n            return Config(value = None)\n\n    def _coerce_nested(value, path = ''):\n        if isinstance(value, dict) -> Config:\n        if isinstance(value, dict) -> Config:\n            if isinstance(value, dict):\n            return Config(value)\n\n    def _load_coerce(self, value = None) -> Config:\n        if isinstance(value, dict) -> Config:\n        if isinstance(value, dict):\n            return Config(value = None)\n\n    def _coerce_nested(value, path = '')\n        if isinstance(value, dict):\n        if isinstance(value, dict) -> Config:\n            if isinstance(value, dict):\n            return Config(value)\n\n    def _load_coerce(self",
+          "ttft_s": 0.7250622080027824
+        }
+      ],
+      "summary": {
+        "accept_rate": 1.0,
+        "accepted_drafts": null,
+        "decode_tok_s": {
+          "median": 68.28961003165465,
+          "p10": 68.14707517357023,
+          "p90": 69.74165439729987,
+          "values": [
+            69.74165439729987,
+            68.32819211765434,
+            68.17184224287504,
+            68.28961003165465,
+            68.14707517357023
+          ]
+        },
+        "drafted_tokens": null,
+        "end_to_end_tok_s": {
+          "median": 64.9589869256211,
+          "p10": 64.42623015853755,
+          "p90": 65.09821081187268,
+          "values": [
+            64.42623015853755,
+            65.09821081187268,
+            64.9589869256211,
+            65.07432716443063,
+            64.93841182707374
+          ]
+        },
+        "generated_tokens": 4611,
+        "ngram_accept_rate": null,
+        "runs": 5,
+        "valid_runs": 5
+      }
+    },
+    {
+      "category": "python_modules_long",
+      "max_tokens": 1000,
+      "prompt_id": "pymod_event_bus",
+      "prompt_sha256": "9f3d155bcce8fa9cd8ef369bda1ef815fd52fc1f8a0e39ca0d4eb2349169e083",
+      "runs": [
+        {
+          "decode_elapsed_s": 14.643310708997888,
+          "decode_tok_s": 68.29056760951805,
+          "elapsed_s": 15.361386874996242,
+          "end_to_end_tok_s": 65.09828885487559,
+          "ended_at": 1780353902.078651,
+          "generated_tokens": 1000,
+          "measured": true,
+          "mtp_acceptance_ratio": 1.0,
+          "prompt_tokens": 350,
+          "rejected_reason": null,
+          "repetition": 1,
+          "seed": 2043,
+          "started_at": 1780353886.717126,
+          "text": "```python\nimport asyncio\nimport time\nimport uuid\nimport weakly\nfrom collections import deque\nfrom typing import Any, Callable, Coroutine, Dict, List, Optional, Union, Deque\n\nfrom dataclasses import dataclass, field\n\nfrom functools import wraps\n\n# Using weak typing for internal type checking, not actual typing\nfrom typing import Any\n\n# Re-exporting dataclass for user convenience\nfrom dataclasses import dataclass\n\n# Define the dataclass decorator locally if needed, but standard library imports are sufficient\nfrom dataclasses import dataclass\n\n@dataclass\nclass DataclassEvent:\n    type: Any = None\n    payload: Any = None\n    def __init__(self, type: Any = None, payload: Any = None):\n        pass\n\n# Using weakref import\nfrom weakref import (\n    weakref,\n    weakmethod_call,\n    WeakMethodError,\n)\n\n# Using weakref import for weakref\nweakref import weakref import weakref import weakmethod_call, weakmethod_error\n\n# Using weakref import weakref import weakref import weakref, weakmethod_call\nfrom weakref import (\n    weakref,\n    weakref import weakref import weakref import weakref, weakmethod_call\n)\n\n# Using weakref import weakref import weakref import weakref\nfrom weakref import (\n    weakref import weakref import weakref\n)\n\n# Using weakref import weakref import weakref import weakref\nfrom weakref import (\n    weakref import weakref import weakref\n)\n\n# Using weakref import weakref import weakref import weakref\nfrom weakref import (\n    weakref import weakref import weakref\n)\n\n# Using weakref import weakref import weakref import weakref\nfrom weakref import (\n    weakref import weakref import weakref\n)\n\n# Using weakref import weakref import weakref import weakref\nfrom weakref import (\n    weakref import weakref import weakref\n)\n\nfrom typing import Any, Callable, Coroutine, Dict, List, Optional, Union\n\nfrom dataclasses import dataclass\n\n@dataclass\nclass Event:\n    type: str\n    payload: Any = None\n    type = field(default_factory = lambda: None)\n    def __init__(self, type: Any = None, payload: Any = None):\n        time = time.time()\n        source = None\n    def __init__(self, type: Any = None, source = None):\n        source = None\n\nclass Event:\n    def __init__(self, type: str, payload: Any = None, source = None):\n        self.type = type\n        self.source = source\n    def __del__(self):\n        self._source = source\n\nclass Event:\n    def __init__(self, type: Event = None):\n        self.type = type(self)\n        self.source = source\n\n# Using weakref import weakref import weakref import weakref\nfrom weakref import (\n    weakref import weakref import weakref, weakmethod_call, WeakMethodError, WeakMethodError, WeakMethodError, WeakMethodError, WeakMethodError, WeakMethodError, WeakMethodError, WeakMethodRef, WeakMethodError, WeakMethodError, WeakMethodError, WeakMethodError, WeakMethodError, WeakMethodError, WeakMethodError, WeakMethodRef, WeakMethodError, WeakMethodReferrer, WeakReferenceError, WeakKeyError, WeakReferenceError, WeakReferenceError, WeakKeyError, WeakReferenceError, WeakKeyError, WeakReference, WeakReferenceError, WeakKeyError, WeakKeyError, WeakKeyError, WeakKeyError, WeakKeyError, WeakKeyError, WeakReferenceError, WeakKeyError, WeakReferenceError, WeakKeyError, WeakKeyError, WeakKeyError, WeakKeyError, WeakKeyError, WeakKeyError, WeakKeyError, WeakKeyError = WeakKeyError, WeakKeyError = WeakKeyError, WeakKeyError = WeakKeyError, WeakKeyError = WeakKeyError, WeakKeyError = WeakKeyError = WeakKeyError = WeakKeyError, WeakKeyError = WeakKeyError = WeakKeyError, WeakKeyError = WeakKeyError = WeakKeyError = WeakKeyError, WeakKeyError = WeakKeyError, WeakKeyError = WeakKeyError: WeakKeyError = WeakKeyError = WeakKeyErrorRecord = WeakReferenceError = WeakReferenceError = WeakReferenceError = WeakReferenceError = WeakReferenceError = WeakReferenceError = WeakReferenceError = WeakReferenceError = WeakReferenceError = WeakReferenceError = WeakReferenceError = WeakReferenceError = WeakReferenceError = WeakReferenceError = WeakReferenceError = WeakReferenceError = WeakReferenceError",
+          "ttft_s": 0.7180761659983546
+        },
+        {
+          "decode_elapsed_s": 14.722136249998584,
+          "decode_tok_s": 67.92492495782302,
+          "elapsed_s": 15.439563291991362,
+          "end_to_end_tok_s": 64.76867130812623,
+          "ended_at": 1780353947.545942,
+          "generated_tokens": 1000,
+          "measured": true,
+          "mtp_acceptance_ratio": 1.0,
+          "prompt_tokens": 350,
+          "rejected_reason": null,
+          "repetition": 2,
+          "seed": 2044,
+          "started_at": 1780353932.106239,
+          "text": "```python\nimport asyncio\nimport time\nimport uuid\nimport weak\nfrom collections import defaultdict\nfrom collections import deque\nfrom dataclasses import dataclass, field\nfrom typing import AnyCallable, Any, Coroutine, List\n\nclass Callable:\n    def __call__(self, *args, **kwargs): Any\n\nclass Callable:\n    def __call__(self, *args): Any\n\n@dataclass\nclass Event:\n    type: str = Any()\n    def __init__(self, type: Any, payload: Any, timestamp: Any = Any, source: Any = None) -> None:\n        self.type = type(self.payload) = type(self) = type(self.payload = type(self.payload = type(self.payload = type(self.timestamp = type(self.timestamp = type(self.timestamp = type(self.timestamp = type(self)) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type()\n        self.source(source = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type()\n        self.source = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type()\n        self.timestamp = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) and = type(self) = type(self) = type(self) return = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self) = type(self)",
+          "ttft_s": 0.717427041992778
+        },
+        {
+          "decode_elapsed_s": 14.743685624998761,
+          "decode_tok_s": 67.82564586865871,
+          "elapsed_s": 15.467486666995683,
+          "end_to_end_tok_s": 64.65174475526051,
+          "ended_at": 1780353993.036719,
+          "generated_tokens": 1000,
+          "measured": true,
+          "mtp_acceptance_ratio": 1.0,
+          "prompt_tokens": 350,
+          "rejected_reason": null,
+          "repetition": 3,
+          "seed": 2045,
+          "started_at": 1780353977.569092,
+          "text": "```python\nimport asyncio\nimport time\nimport uuid\nimport weaklib\nfrom collections import defaultdict, deque\nfrom dataclasses import dataclass, weakref\nfrom dataclasses import dataclass, field\nfrom functools import wraps\nfrom typing import Any, Callable, Coroutine, Deque, List, Optional, Tuple\n\n@dataclass\nclass DataclassEventAttrDict(dict):\n    def __init__(self, type, **kwargs):\n        super().__init__(**kwargs)\n        self.type = type(self)\n\n@dataclass\nclass Dataclass:\n    def __init__(self, type):\n        self.type = type\n\n@dataclass\nclass Event:\n    def __init__(self, type:\n        self.type = type\n\n@dataclass\nclass Event:\n    def __init__(self, type:\n        self.type = 'Event'\n\n@dataclass\nclass Event:\n    def __init__(self, type:\n    def __init__(self, type:\n        self.type = 'Event'\n\n@dataclass\nclass Event:\n    def __init__(self, type:\n        self.type = type(self)\n\n@dataclass\nclass Event:\n    def __init__(self, type:\n        self.type = type(self)\n\n@dataclass\nclass Event:\n    def __init__(self, type:\n    def __init__(self, type:\n        self.type = 'Event'\n    def __init__(self, *args, **kwargs):\n        self.type = type(self)\n\n@dataclass\nclass Event(type):\n    def __init__(self, type):\n        self.type = type(self)\n\n@dataclass\nclass Event:\n    def __init__(self, type:\n        self.type = type(self)\n\n@dataclass\nclass Event:\n    def __init__(self, type:\n        self.type = type(self)\n\n@dataclass\nclass Event:\n    def __init__(self, type:\n        self.type = type(self)\n\n@dataclass\nclass Event:\n    def __init__(self, type:\n        self.type = type(self)\n\n@dataclass\nclass Event:\n    def __init__(self, type:\n        self.type = type(self)\n\n@dataclass\nclass Event:\n    def __init__(self, type:\n        self.type = type(self)\n    def __init__(self, *args, **kwargs):\n        super().__init__(*args, **kwargs)\n\n@dataclass\nclass Event:\n    def __init__(self, type:\n        self.type = type(self)\n\n@dataclass\nclass Event(type):\n    def __init__(self, type):\n        super().__init__(*self.__bases__)\n\n@dataclass\nclass Event:\n    type:\n    payload:\n    timestamp: Any = dataclass\n    source: Any = None\n\n@dataclass\nclass Event:\n        self.type = type(self)\n\n@dataclass\nclass Event:\n    def __init__(self, type:\n        self.type = type(self)\n\n@dataclass\nclass Event:\n    def __init__(self, type:\n        self.type = type(self)\n\n@dataclass\nclass Event(type):\n    def __init__(self, *args, **kwargs):\n        super().__init__(*args, **kwargs)\n\n@dataclass\nclass Event:\n    def __init__(self, type:\n        self.type = type(self)\n\n@dataclass\nclass Event(type):\n    def __init__(self, *args, **kwargs):\n        super().__init__(*args, **kwargs)\n\n@dataclass\nclass Event:\n    def __init__(self, type:\n        self.type = type(self)\n\n@dataclass\nclass Event:\n    def __init__(self, type:\n        self.type = type(self)\n\n@dataclass\nclass Event:\n    def __init__(self, type:\n        self.type = type(self)\n\n@dataclass\nclass Event(type):\n    def __init__(self, *args, **kwargs):\n        super().__init__(*args, **kwargs)\n\n@dataclass\nclass Event:\n    def __init__(self, type:\n        self.type = type(self)\n\n@dataclass\nclass Event(type):\n    def __init__(self, *args, **kwargs):\n        super().__init__(*args, **kwargs)\n\n@dataclass\nclass Event:\n    def __init__(self, type:\n        self.type = type(self)\n\n@dataclass\nclass Event:\n    def __init__(self, type:",
+          "ttft_s": 0.7238010419969214
+        },
+        {
+          "decode_elapsed_s": 14.658148207992781,
+          "decode_tok_s": 68.22144146794211,
+          "elapsed_s": 15.379755040994496,
+          "end_to_end_tok_s": 65.02054144129836,
+          "ended_at": 1780354038.439204,
+          "generated_tokens": 1000,
+          "measured": true,
+          "mtp_acceptance_ratio": 1.0,
+          "prompt_tokens": 350,
+          "rejected_reason": null,
+          "repetition": 4,
+          "seed": 2046,
+          "started_at": 1780354023.059309,
+          "text": "```python\nimport asyncio\nimport threading\nimport time\nimport uuid\nimport weak\nimport collections\nimport functools\nimport weakref\nfrom typing import Any, Callable, TypeVar, Dict, List, Set, Tuple, Union\nfrom dataclasses import dataclass, field\n\nTOMAIN = threading.ThreadPoolExecutor(max_workers=10)\nTOM = threading.Lock()\nT = threading.Event()\n\n@dataclasses.dataclass\nclass Event:\n    type: str\n    payload: Any = None\n    timestamp: int\n    source: str = None\n\nclass EventBus:\n    def __init__(self):\n    self._lock = threading.Lock()\n    self._handlers = {}\n    self._async_handlers = {}\n    self._async_handlers = {}\n    self._async_handlers = {}\n    self._callbacks = {}\n    self._once = True\n    self._once = True\n    self._next = True\n    self._middleware =[]\n    self._stats = []\n    self._stats = {}\n    self._stats = {\n        'total': 0,\n    }\n    self._stats = {}\n\n    def __init__(self, with_handlers):\n        self._handlers = {}\n        self._async_handler = {}\n    self._asyncio = None\n    self._loop = None\n    self._lock = threading.Lock()\n\n    def subscribe(self, event: str,handler: Callable[...,Any], priority: int = 0) -> str:\n        if not isinstance(handler, Event):\n            self._lock.acquire()\n        self._lock.acquire()\n        try:\n            sub_id = f\"event_handler_{id(event)}\"\n            self._handlers[sub_id] = event            self._handlers = {}\n            self._asyncio = None\n            self._asyncio = None\n            self._asyncio = None\n    self._loop = None\n    return sub_id\n\n    def subscribe(self, event: str)-> Callable[..., Any]:\n        if not isinstance(event, Event):\n            self._handler = {}\n        self._handler = {}\n        self._handler = {}\n        return f\"event_{handler} = {event}\"\n\n    def unsubscribe(self, event: str) -> Callable[..., Any]:        if not isinstance(event, Event):\n            self._handler = {}\n        return sub_id\n\n    def unsubscribe(self, event: str) -> Callable[..., Any]:        if not isinstance(event, Callable[...,Any]): self._async = {}\n    def publish(self, event: Event, Callable[..., Any] = 0) -> int:\n        if not isinstance(event, Callable[..., Any]):\n        self._publish_subscriber = None\n        self._publish_event = {}\n    self._async_sub = {}\n    self._async = {}\n    def publish(self, event: Event) -> int:\n        if not isinstance(event, Callable[..., Any]):\n        self._handler = None\n        self._handler = {}\n        self._handler = {}\n        return 0\n    def publish(self, event: Event) -> int:\n      self._handler = {}\n    self._handler = {}\n    self._async = {}\n    self._async = {}\n    return 0\n\n    def publish(self, event: Event) -> int:\n        if not isinstance(handler, Callable[..., Any]):\n        if not isinstance(event,Callable[..., Any]):\n        self._handler = {}\n        self._async = {}\n        self._handler = {}\n        self._async = {}\n        return 0\n\n    def publish(self, event: Event) -> int:\n        if not isinstance(event, Callable[..., Any]):\n        if not isinstance(self,Callable[..., Any],Any]): self._handler = {}\n        self._handler = {}\n        self._handler = {}\n        return 0\n\n    def publish(self, event: Event) -> Callable[..., Any] -> int:\n        if not isinstance(event, Callable[..., Any]):\n        if not isinstance(self,Callable[..., Any],Any]): self._handler = {}\n        self._handler = {}\n        return 0\n\n    def publish(self, event: Event) -> int:\n        if not isinstance(self, Callable[..., None]):\n        self._handler = None\n        return 0\n\n    def publish(self, event: Event) -> int:\n        if not isinstance(self, Callable[..., None]):\n        self._handler = None\n        return 0\n\n    def publish(self, event: Event) -> int:\n        if not isinstance(self, Callable[..., bool]):\n        return 0\n\n    def publish(self,",
+          "ttft_s": 0.7216068330017151
+        },
+        {
+          "decode_elapsed_s": 14.787242292004521,
+          "decode_tok_s": 67.6258615536922,
+          "elapsed_s": 15.502621292005642,
+          "end_to_end_tok_s": 64.50522019238629,
+          "ended_at": 1780354083.964703,
+          "generated_tokens": 1000,
+          "measured": true,
+          "mtp_acceptance_ratio": 1.0,
+          "prompt_tokens": 350,
+          "rejected_reason": null,
+          "repetition": 5,
+          "seed": 2047,
+          "started_at": 1780354068.461941,
+          "text": "```python\nimport asyncio\nimport time\nimport uuid\nimport weakly\nfrom collections import deque\nfrom typing import Any, Callable, Coroutine, Dict, List, Tuple, Union, Optional, Deque\n\nimport dataclasses\n\nfrom dataclasses import Callable, GenericTypeVar\n\nT = Callable[..., Any] =Any\n\nCallable[[Event], Callable[...,Any]] = AnyCallable[Event= Any] = Any\n\nasync def async_callable(self, *args, **kwargs) -> Any:\n    return await self.loop.call_soon_callable(self.__func__, callable = True)\n    \nclass EventCallable:\n    def __init__(self, func: Callable, ...args, **kwargs) -> Any:\n        self.loop = None  # type: ignore\n        \n    def __call__(self, *args, **kwargs) -> Any:\n        return await self.loop.call_soon_callable(self.__func__)  # type: ignore\n        \n    def __await__(self) -> Any:\n        return await self.loop.call_soon_callable(self.__func__)()\n        \nclass EventCallableAsyncCallable:\n    def __init__(self, func: Callable, ...args, **kwargs) -> Any:\n        return await self.loop.call(self.__func__, callable = True)\n        \n    def __call__(self, *args, **kwargs) -> Any:\n        return await self.loop.call_soon_callable(self.__func__)()  # type: ignore\n        \n    def __await__(self) -> Any:\n        return await self.loop.call(self.__func__, *args, **kwargs)\n        \n    def __call__(self, *args, **kwargs) -> Any:\n        return await self.loop.call_soon_callable(self.__func__())\n        \n    def __await__(self) -> Any:\n        return await self.loop.call_soon_callable(self.__func__)()\n        \n    def __call__(self) -> Callable[..., Any]:        return callable(self.__func__, callable = True)\n        \nclass Event:\n    def __init__(self, type: type:Any: Callable[...,Any] = None  # type: ignore\n    def __call__(self, *args, **kwargs) -> Any:\n        return await self.loop.call(self.__func__call__(self.__func__) -> Any:\n        return await self.loop.call_soon_callable(self.__func__, callable = True)  # type: ignore\n        \n    def __call__(self, *args, **kwargs) -> Any:\n        return await self.loop.call_soon_callable(self.__func__)  # type: ignore\n        \n    def __await__(self) -> Any:\n        return await self.loop.call(self.__func__, callable = True) -> Any:\n        return await self.loop.call_soon_callable(self.__func__, callable = True)  # type: ignore\n        \n    def __call__(self, *args) -> Any:\n        return await self.loop.call_soon_callable(self.__func__())\n    \n    def __await__(self) -> Any:\n        return await self.loop.call_soon_callable(self.__func__, callable = True)  # type: ignore\n        \n    def __call__(self, *args) -> Any:\n        return await self.loop.call_soon_callable(self.__func__call__(self.__func__) -> Any:\n        return await self.loop.call_soon_callable(self.__func__)  # type: ignore\n        \n    def __call__(self, *args) -> Any:\n        return await self.loop.call_soon_callable(self.__func__call__(self.__func__) -> Any:\n            return await self.loop.call_soon_callable(self.__func__, callable = True)  # type: ignore\n        \n    def __call__(self, *args, **kwargs) -> Any:\n        return await self.loop.call_soon_callable(self.__func__)  # type: ignore\n        \n    def __call__(self, *args) -> Any:\n        return await self.loop.call_soon_callable(self.__func__call__(self.__func__) -> Any:\n            return await self.loop.call_soon_callable(self.__func__)  # type: ignore\n        \n    def __call__(self, *args) -> Any:\n        return await self.loop.call_soon_callable(self.__func__call__(self.__func__) -> Any:\n            return await self.loop.call_soon_callable(self.__func__)  # type: ignore\n        \n    def __call__(self, *args) -> Any:\n        return await self.loop.call_soon_callable(self.__func__call_super(AsyncCallable(self, *args) -> Any:\n            return await self.loop.call_soon_callable(self.__func__)  # type: ignore\n        \n    def __call__(self, *args) -> Any:\n        return await self",
+          "ttft_s": 0.7153790000011213
+        }
+      ],
+      "summary": {
+        "accept_rate": 1.0,
+        "accepted_drafts": null,
+        "decode_tok_s": {
+          "median": 67.92492495782302,
+          "p10": 67.6258615536922,
+          "p90": 68.29056760951805,
+          "values": [
+            68.29056760951805,
+            67.92492495782302,
+            67.82564586865871,
+            68.22144146794211,
+            67.6258615536922
+          ]
+        },
+        "drafted_tokens": null,
+        "end_to_end_tok_s": {
+          "median": 64.76867130812623,
+          "p10": 64.50522019238629,
+          "p90": 65.09828885487559,
+          "values": [
+            65.09828885487559,
+            64.76867130812623,
+            64.65174475526051,
+            65.02054144129836,
+            64.50522019238629
+          ]
+        },
+        "generated_tokens": 5000,
+        "ngram_accept_rate": null,
+        "runs": 5,
+        "valid_runs": 5
+      }
+    }
+  ],
+  "sampling": {
+    "temperature": 0.6,
+    "top_k": 20,
+    "top_p": 0.95
+  },
+  "schema": "ax.rapid_mlx.prompt_suite_mtp.v1",
+  "server_command": [
+    "/opt/homebrew/var/mtplx/venv-0.3.7/bin/python",
+    "-m",
+    "vllm_mlx.cli",
+    "serve",
+    "/Users/akiralam/.cache/huggingface/hub/models--ax-local--Qwen3.6-27B-MTP/snapshots/v1",
+    "--port",
+    "18766",
+    "--disable-prefix-cache",
+    "--no-memory-aware-cache",
+    "--enable-mtp",
+    "--mtp-num-draft-tokens",
+    "3",
+    "--no-thinking",
+    "--log-level",
+    "WARNING",
+    "--mtp-draft-temperature",
+    "0.5",
+    "--mtp-optimistic"
+  ],
+  "server_log": "benchmarks/results/mtp-fair/2026-06-01-qwen36-fair-ax-rerun4/27b-4bit/python_modules_long/rapid-server/rapid-mlx-server-18766.log",
+  "suite": "python_modules_long",
+  "summary": {
+    "accept_rate": 1.0,
+    "accepted_drafts": null,
+    "case_count": 3,
+    "decode_tok_s": {
+      "median": 68.28961003165465,
+      "p10": 67.82564586865871,
+      "p90": 71.74695255906481,
+      "values": [
+        68.29683995560917,
+        68.28887923627089,
+        71.74695255906481,
+        72.64061927223196,
+        68.43874110294348,
+        69.74165439729987,
+        68.32819211765434,
+        68.17184224287504,
+        68.28961003165465,
+        68.14707517357023,
+        68.29056760951805,
+        67.92492495782302,
+        67.82564586865871,
+        68.22144146794211,
+        67.6258615536922
+      ]
+    },
+    "drafted_tokens": null,
+    "end_to_end_tok_s": {
+      "median": 64.9589869256211,
+      "p10": 55.323739191026164,
+      "p90": 65.40995198332233,
+      "values": [
+        65.33753442287022,
+        65.40995198332233,
+        55.323739191026164,
+        53.29873222701998,
+        65.51269225704975,
+        64.42623015853755,
+        65.09821081187268,
+        64.9589869256211,
+        65.07432716443063,
+        64.93841182707374,
+        65.09828885487559,
+        64.76867130812623,
+        64.65174475526051,
+        65.02054144129836,
+        64.50522019238629
+      ]
+    },
+    "generated_tokens": 12902,
+    "ngram_accept_rate": null,
+    "runs": 15,
+    "valid_runs": 15
+  },
+  "warmup_repetitions": 1
+}

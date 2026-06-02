@@ -1,0 +1,611 @@
+{
+  "build": {
+    "git_commit": "59624f0a767136840cf0af8b33bf7c1b4ab04fbf",
+    "git_tracked_dirty": true,
+    "host": "AKMBPM5MAX.local",
+    "platform": "macOS-26.5-arm64-arm-64bit-Mach-O"
+  },
+  "cooldown_s": 30.0,
+  "depth_effective_note": "Rapid-MLX reference MTP path is single-draft; requested depth may be capped by runtime.",
+  "depth_requested": 3,
+  "disable_thinking": true,
+  "engine": "rapid_mlx",
+  "max_tokens": 1000,
+  "measurement_gates": {
+    "min_decode_time_s": 0.5,
+    "tps_ceiling": 500.0
+  },
+  "model": "/Users/akiralam/.cache/huggingface/hub/models--ax-local--Qwen3.6-27B-MTP/snapshots/v1",
+  "prompt_suite": "/Users/akiralam/code/ax-engine_v5/benchmarks/prompts/mtp-suites/flappy.jsonl",
+  "prompt_suite_sha256": "97e53df42f0b2b456d38164264a674bb2c657e59d68833e42d2c60312d7fd669",
+  "rapid_mtp_patch": {
+    "mode": "none"
+  },
+  "rapid_python": "/opt/homebrew/var/mtplx/venv-0.3.7/bin/python",
+  "rapid_source": "/Users/akiralam/code/ax-engine_v5/.internal/reference/lightning-mlx",
+  "repetitions": 5,
+  "results": [
+    {
+      "category": "game_code",
+      "max_tokens": 1000,
+      "prompt_id": "flappy_pipes",
+      "prompt_sha256": "88a801ae372338af36ba5effaf538f6158d0e95fa72ad929dd9673bc5c286325",
+      "runs": [
+        {
+          "decode_elapsed_s": 15.12986687499506,
+          "decode_tok_s": 66.09443481969345,
+          "elapsed_s": 15.784471041988581,
+          "end_to_end_tok_s": 63.35340584678956,
+          "ended_at": 1780351176.459688,
+          "generated_tokens": 1000,
+          "measured": true,
+          "mtp_acceptance_ratio": 1.0,
+          "ngram_acceptance_ratio": 1.0,
+          "prompt_tokens": 273,
+          "rejected_reason": null,
+          "repetition": 1,
+          "seed": 43,
+          "started_at": 1780351160.6750531,
+          "text": "def\n    def spawn(self, spawn_pipe(self, spawn_pipe(self, pipes[pipe(self,pipes[pipe(self, pipes[pipe(self, pipes[pipe(self, pipes[pipe(self, pipes[pipe(self,pipes[pipe(self, pipes[pipe(self, pipes[pipe(self, pipes[pipe(self,pipes[pipe(self, pipes[pipe(self, pipes[pipe(self, pipes[pipe(self,pipes[pipe(self, pipes[pipe(self, pipes[pipe(self, pipes[pipe(self,pipes[pipe(self, pipes[pipe(self, pipes[pipe(self, pipes[pipe(self,pipes[pipe(self, pipes[pipe(self, pipes[pipe(self, pipes[pipe(self,pipes[pipe(self, pipes[pipe(self, pipes[pipe(self, pipes[pipe(self,pipes[pipe(self, pipes[pipe(self, pipes[pipe(self, pipes[pipe(self,pipes[pipe(self, pipes[pipe(self, pipes[pipe(self, pipes[pipe(self,pipes[pipe(self, pipes[pipe(self, pipes[pipe(self, pipes[pipe(self,pipes[pipe(self, pipes[pipe(self, pipes[pipe(self, pipes[pipe(self,pipes[pipe(self, pipes[pipe(self, pipes[pipe(self, pipes[pipe(self,pipes[pipe(self, pipes[pipe(self, pipes[pipe(self, pipes[pipe(self,pipes[pipe(self, pipes[pipe(self, pipes[pipe(self, pipes[pipe(self,pipes[pipe(self, pipes[pipe(self, pipes[self, pipes[0] = self,pipes[0,pipes[pipe(self, pipes[pipe(self, pipes[pipe(self, pipe(self, pipes[pipe(self, pipes[pipe(self,pipes[pipe(self, pipes[pipe(self, pipes[pipe(self, pipes[pipe(self,pipes[pipe(self, pipes[pipe(self, pipes[pipe(self, pipes[pipe(self,pipes[pipe(self, pipes[pipe(self, pipes[pipe(self, pipes[pipe(self,pipes[pipe(self, pipes[pipe(self, pipes[pipe(self, pipes[pipe(self,pipes[pipe(self, pipes[pipe(self, pipes[pipe(self, pipes[pipe(self,pipes[pipe(self, pipes[0] = self.pipes[0] = self, pipes[pipe(self, pipes[pipe(self, pipes[pipe(self, pipes[pipe(self, pipes[pipe(self,pipes[pipe(self, pipes[pipe(self, pipes[pipe(self, pipes[pipe(self,pipes[pipe(self, pipes[pipe(self, pipes[pipe(self, pipes[pipe(self,pipes[pipe(self, pipes[pipe(self, pipes[pipe(self, pipes[pipe(self,pipes[pipe(self, pipes[pipe(self, pipes[pipe(self, pipes[pipe(self,pipes[pipe(self, pipes[pipe(self, pipe(self, pipes[pipe(self, pipes[pipe(self, pipes[pipe(self,pipes[pipe(self, pipes[pipe(self, pipe(self, pipes[pipe(self, pipes[pipe(self, pipes[pipe(self, pipes[pipe(self,pipes[pipe(self, pipes[pipe(self, pipe(self, pipes[pipe(self,pipes[pipe(self, pipes[pipe(self, pipes[pipe(self, pipes[pipe(self,pipes[pipe(self, pipe(self,pipes[pipe(self, pipes[4] = self,pipes[pipe(self, pipes[pipe(self, pipes[pipe(self, pipes[pipe(self,pipes[pipe(self, pipes[pipe(self, pipes[pipe(self, pipes[pipe(self,pipes[pipe(self, pipes[pipe(self, pipe(self, pipes[pipe(self, pipes[pipe(self, pipe(self, pipes[pipe(self, pipe(self, pipes[pipe(self, pipes[pipe(self,pipes[pipe(self, pipes[pipe(self, pipes[pipe(self, pipe(self, pipes[pipe(self, frame(self, pipes[pipe(self, pipes[pipe(self,pipes[pipe(self, pipe(self,pipes[pipe(self, pipes[0] = self,pipes[pipe(self,pipes[pipe(self, pipes[pipe(self, pipes[pipe(self, pipes[pipe(self,pipes[pipe(self, pipes[pipe(self, pipe(self, pipes[pipe(self, pipes[pipe(self, frame(self, pipe(self, pipes[pipe(self, pipes[pipe(self, frame(self, pipes[pipe(self, pipes[pipe(self,pipes[pipe(self, pipes[pipe(self, pipe(self, pipes[pipe(self, pipes[pipe(self, frame(self, pipes[pipe(self, pipes[pipe(self, frame(self, pipes[pipe(self, pipes[pipe(self, pipe(self, pipes[pipe(self, pipes[pipe(self, frame(self, pipes[pipe(self,pipes[pipe(self, frame(self,pipes[pipe(self,",
+          "ttft_s": 0.6546041669935221
+        },
+        {
+          "decode_elapsed_s": 0.2563710840040585,
+          "decode_tok_s": null,
+          "elapsed_s": 0.9087116670125397,
+          "end_to_end_tok_s": 19.8082633396536,
+          "ended_at": 1780351207.3975801,
+          "generated_tokens": 18,
+          "measured": true,
+          "mtp_acceptance_ratio": 1.0,
+          "prompt_tokens": 273,
+          "rejected_reason": "decode_time<0.5s",
+          "repetition": 2,
+          "seed": 44,
+          "started_at": 1780351206.488854,
+          "text": "def\n    def spawn(self, spawn_pipe):\n        self.spawn_pipe(pipe_",
+          "ttft_s": 0.6523405830084812
+        },
+        {
+          "decode_elapsed_s": 5.668222959007835,
+          "decode_tok_s": 66.51114515544569,
+          "elapsed_s": 6.318158209003741,
+          "end_to_end_tok_s": 59.66928771469401,
+          "ended_at": 1780351243.734912,
+          "generated_tokens": 377,
+          "measured": true,
+          "mtp_acceptance_ratio": 1.0,
+          "prompt_tokens": 273,
+          "rejected_reason": null,
+          "repetition": 3,
+          "seed": 45,
+          "started_at": 1780351237.416686,
+          "text": "def\n    def spawn(self, spawn_pipe(self, x=0, self, self.spawn_pipe_0:0, self, self, self, self, self, self, self.\n    def\n        self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, spawn_pipe_0:0, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, self, :",
+          "ttft_s": 0.6499352499959059
+        },
+        {
+          "decode_elapsed_s": 1.9668369999999413,
+          "decode_tok_s": 74.73928952933282,
+          "elapsed_s": 2.622157583013177,
+          "end_to_end_tok_s": 56.06070396085013,
+          "ended_at": 1780351276.3850722,
+          "generated_tokens": 147,
+          "measured": true,
+          "mtp_acceptance_ratio": 1.0,
+          "ngram_acceptance_ratio": 1.0,
+          "prompt_tokens": 273,
+          "rejected_reason": null,
+          "repetition": 4,
+          "seed": 46,
+          "started_at": 1780351273.762885,
+          "text": "def\n    def spawn(self, spawn_pipe,\n    def\n        def\n        self.spawn_pipe,\n        def\n        self.spawn_pipe,\n        def\n        self.spawn_pipe,\n        def\n        self.spawn_pipe,\n        def\n        self.spawn_pipe,\n        def\n        self.spawn_pipe,\n        def\n        self.spawn_pipe,\n        def\n        self.spawn_pipe,\n        def\n        self.spawn_pipe,\n        def\n        self.spawn_pipe,\n        def\n        self.spawn_pipe,\n        def\n        self.spawn_pipe,\n        def\n        self.spawn_pipe,\n        def\n        self.spawn_pipe,\n        def\n        self.connect",
+          "ttft_s": 0.6553205830132356
+        },
+        {
+          "decode_elapsed_s": 0.07694412500131875,
+          "decode_tok_s": null,
+          "elapsed_s": 0.7243264580029063,
+          "end_to_end_tok_s": 6.902964740216542,
+          "ended_at": 1780351307.132318,
+          "generated_tokens": 5,
+          "measured": true,
+          "mtp_acceptance_ratio": 1.0,
+          "prompt_tokens": 273,
+          "rejected_reason": "decode_time<0.5s",
+          "repetition": 5,
+          "seed": 47,
+          "started_at": 1780351306.407979,
+          "text": "def    def\n",
+          "ttft_s": 0.6473823330015875
+        }
+      ],
+      "summary": {
+        "accept_rate": 1.0,
+        "accepted_drafts": null,
+        "decode_tok_s": {
+          "median": 66.51114515544569,
+          "p10": 66.09443481969345,
+          "p90": 74.73928952933282,
+          "values": [
+            66.09443481969345,
+            66.51114515544569,
+            74.73928952933282
+          ]
+        },
+        "drafted_tokens": null,
+        "end_to_end_tok_s": {
+          "median": 59.66928771469401,
+          "p10": 56.06070396085013,
+          "p90": 63.35340584678956,
+          "values": [
+            63.35340584678956,
+            59.66928771469401,
+            56.06070396085013
+          ]
+        },
+        "generated_tokens": 1547,
+        "ngram_accept_rate": 1.0,
+        "runs": 5,
+        "valid_runs": 3
+      }
+    },
+    {
+      "category": "game_code",
+      "max_tokens": 1000,
+      "prompt_id": "flappy_score_gates",
+      "prompt_sha256": "d30afc995170ca11cb9891f5006aae5aae46e5eb0bcdc192fb0abae884e9777a",
+      "runs": [
+        {
+          "decode_elapsed_s": 2.9624290419887984,
+          "decode_tok_s": 69.199969718895,
+          "elapsed_s": 3.6918220419902354,
+          "end_to_end_tok_s": 55.52813696553096,
+          "ended_at": 1780351364.7862668,
+          "generated_tokens": 205,
+          "measured": true,
+          "mtp_acceptance_ratio": 1.0,
+          "ngram_acceptance_ratio": 1.0,
+          "prompt_tokens": 374,
+          "rejected_reason": null,
+          "repetition": 1,
+          "seed": 1043,
+          "started_at": 1780351361.094398,
+          "text": "deflecting: The user wants the remaining gate functions.\nThe user provided examples for 3 gates (300, 900, etc? No, the examples are 300, 900, 1500? No, the example is 300, 900, \"passed\": 100, 250, 500.\nSo I need to generate the remaining gates.\nThe thresholds are: 750, 1000, 150, 1000, \"passed\": The user wants the remaining gates.\nThe thresholds are:\nThe user wants the remaining gates.\nThe user wants the remaining gates.\nThe user wants the remaining gates.\nThe thresholds are: 750, 1000, \"passed\": The user wants the remaining gates.\nThe thresholds are: 750, 1000",
+          "ttft_s": 0.729393000001437
+        },
+        {
+          "decode_elapsed_s": 1.7554253749985946,
+          "decode_tok_s": 67.78983697902582,
+          "elapsed_s": 2.480800834004185,
+          "end_to_end_tok_s": 47.96838116501506,
+          "ended_at": 1780351397.29558,
+          "generated_tokens": 119,
+          "measured": true,
+          "mtp_acceptance_ratio": 1.0,
+          "prompt_tokens": 374,
+          "rejected_reason": null,
+          "repetition": 2,
+          "seed": 1044,
+          "started_at": 1780351394.81475,
+          "text": "deflect\ndef validate_validate_validate_validate_validate_validate_validate_validate_validate_validate_validate_validate_validate_validate_validate_validate_validate_validate_validate_validate_validate_validate_validate_validate_validate_validate_validate_validate_validate_validate_validate_validate_validate_validate_validate_validate_validate_validate_validate_validate_validate_validate_validate_validate_validate_validate_validate_validate_validate_validate_validate_validate_validate_validate_validate_validate_validate_validate_validate_validate_validate_validate_validate_validate_validate_validate_validate_validate_validate_validate_validate_validate_validate_validate_validate_validate_validate_validate_validate_validate_validate_validate_validate_validate_validate_validate_validate_validate_validate_validate_validate_validate_validate_validate_validate_validate_validate_validate_validate_validate_validate_validate_validate_validate_validate_validate_validate_validate_validate_validate_validate_code\n```",
+          "ttft_s": 0.7253754590055905
+        },
+        {
+          "decode_elapsed_s": 14.60661658400204,
+          "decode_tok_s": 66.13441206213461,
+          "elapsed_s": 15.33442508400185,
+          "end_to_end_tok_s": 62.99551464813713,
+          "ended_at": 1780351442.658816,
+          "generated_tokens": 966,
+          "measured": true,
+          "mtp_acceptance_ratio": 1.0,
+          "ngram_acceptance_ratio": 1.0,
+          "prompt_tokens": 374,
+          "rejected_reason": null,
+          "repetition": 3,
+          "seed": 1045,
+          "started_at": 1780351427.32423,
+          "text": "def\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\n  (score)\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\n\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\n\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\n  if\n    return def\ndef\ndef\ndef\ndef\ndef\n  return\ndef\ndef\ndef\ndef\ndef\ndef\n  return\ndef\n  return\ndef\ndef\ndef\ndef\ndef\ndef\n  return\ndef\ndef\ndef\n  return\ndef\ndef\n  return\ndef\ndef\ndef\n  return\ndef\ndef\ndef\ndef\n  return\ndef\ndef\ndef\n  return\ndef\ndef\ndef\ndef\n  return\ndef\ndef\ndef\n  return\ndef\ndef\ndef\ndef\n  return\ndef\ndef\ndef\n  return\ndef\ndef\ndef\ndef\n  return\ndef\ndef\ndef\n  return\ndef\ndef\ndef\ndef\n  if\n    return\ndef\ndef\ndef\ndefendere",
+          "ttft_s": 0.72780849999981
+        },
+        {
+          "decode_elapsed_s": 0.0785212080081692,
+          "decode_tok_s": null,
+          "elapsed_s": 0.8064694170025177,
+          "end_to_end_tok_s": 7.43983575012773,
+          "ended_at": 1780351473.4902642,
+          "generated_tokens": 6,
+          "measured": true,
+          "mtp_acceptance_ratio": 1.0,
+          "prompt_tokens": 374,
+          "rejected_reason": "decode_time<0.5s",
+          "repetition": 4,
+          "seed": 1046,
+          "started_at": 1780351472.6837811,
+          "text": "def continue def single function",
+          "ttft_s": 0.7279482089943485
+        },
+        {
+          "decode_elapsed_s": 0.1376185830013128,
+          "decode_tok_s": null,
+          "elapsed_s": 0.860441416996764,
+          "end_to_end_tok_s": 11.621941717895721,
+          "ended_at": 1780351504.374617,
+          "generated_tokens": 10,
+          "measured": true,
+          "mtp_acceptance_ratio": 1.0,
+          "prompt_tokens": 374,
+          "rejected_reason": "decode_time<0.5s",
+          "repetition": 5,
+          "seed": 1047,
+          "started_at": 1780351503.5141609,
+          "text": "defence\ndef validate validate_validate_validate_",
+          "ttft_s": 0.7228228339954512
+        }
+      ],
+      "summary": {
+        "accept_rate": 1.0,
+        "accepted_drafts": null,
+        "decode_tok_s": {
+          "median": 67.78983697902582,
+          "p10": 66.13441206213461,
+          "p90": 69.199969718895,
+          "values": [
+            69.199969718895,
+            67.78983697902582,
+            66.13441206213461
+          ]
+        },
+        "drafted_tokens": null,
+        "end_to_end_tok_s": {
+          "median": 55.52813696553096,
+          "p10": 47.96838116501506,
+          "p90": 62.99551464813713,
+          "values": [
+            55.52813696553096,
+            47.96838116501506,
+            62.99551464813713
+          ]
+        },
+        "generated_tokens": 1306,
+        "ngram_accept_rate": 1.0,
+        "runs": 5,
+        "valid_runs": 3
+      }
+    },
+    {
+      "category": "game_code",
+      "max_tokens": 1000,
+      "prompt_id": "flappy_collision_checks",
+      "prompt_sha256": "dc95f55539735dcc41f9b07a7ccb764207a474ec0e3876a88203cbf79232ae0e",
+      "runs": [
+        {
+          "decode_elapsed_s": 11.045214874990052,
+          "decode_tok_s": 68.53646656653946,
+          "elapsed_s": 11.829877582989866,
+          "end_to_end_tok_s": 63.99051847235404,
+          "ended_at": 1780351557.16,
+          "generated_tokens": 757,
+          "measured": true,
+          "mtp_acceptance_ratio": 1.0,
+          "ngram_acceptance_ratio": 1.0,
+          "prompt_tokens": 432,
+          "rejected_reason": null,
+          "repetition": 1,
+          "seed": 2043,
+          "started_at": 1780351545.329997,
+          "text": "def    def    def    def    def    def    def    def      def    def(self, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, water, water, bird, bird, bird, bird, water, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, water, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, water, bird, bird, bird, bird, bird, bird, water, bird, bird, bird, water, bird, bird, bird, water, bird, bird, bird, water, bird, bird, bird, water, bird, bird, bird, water, bird, bird, bird, water, bird, bird, bird, water, bird, bird, bird, water, bird, bird, bird, water, bird, bird, bird, water, bird, bird, bird, but, bird, but, bird, but, bird, water, bird, bird, bird, water, bird, bird, bird, water, bird, bird, bird, water, bird, bird, bird, but, bird, water, bird, bird, bird, water, bird, bird, bird, water, bird, bird, bird, but, bird, water, bird, bird, bird, water, bird, bird, bird, water, bird, bird, bird, water, bird, bird, bird, but, bird, water, etc., bird, water, bird, bird, bird, etc., bird, water, bird, bird, bird, b",
+          "ttft_s": 0.7846627079998143
+        },
+        {
+          "decode_elapsed_s": 0.7367957499955082,
+          "decode_tok_s": 67.86141206746214,
+          "elapsed_s": 1.5234227500041015,
+          "end_to_end_tok_s": 32.82083059338938,
+          "ended_at": 1780351588.712491,
+          "generated_tokens": 50,
+          "measured": true,
+          "mtp_acceptance_ratio": 1.0,
+          "prompt_tokens": 432,
+          "rejected_reason": null,
+          "repetition": 2,
+          "seed": 2044,
+          "started_at": 1780351587.189049,
+          "text": "def    def    def    def    def    def    def    def    def    def    def    def    def    def    def    def    def    def    def    def    def    def        def    def    def",
+          "ttft_s": 0.7866270000085933
+        },
+        {
+          "decode_elapsed_s": 3.5085861250117887,
+          "decode_tok_s": 74.95896940512365,
+          "elapsed_s": 4.289470458010328,
+          "end_to_end_tok_s": 61.312929550281275,
+          "ended_at": 1780351623.025509,
+          "generated_tokens": 263,
+          "measured": true,
+          "mtp_acceptance_ratio": 1.0,
+          "ngram_acceptance_ratio": 1.0,
+          "prompt_tokens": 432,
+          "rejected_reason": null,
+          "repetition": 3,
+          "seed": 2045,
+          "started_at": 1780351618.735992,
+          "text": "def    def _collision_check_collision_check_collision_check_collision_check_collision_check_collision_check_collision_check_collision_check_collision_check_collision_check_collision_check_collision_with_2_collision_check_collision_check_collision_check_collision_check_collision_check_collision_check)\n        bot_rect = pygame.Rect(self.pipes[0].x, self.pipes[0].gap = self.pipes[0].gap = self.pipes[0].gap= self.pipes[0].gap = self.pipes[0].gap = self.pipes[0].gap =self.pipes[0].gap =self.pipes[0].gap =self.pipes[0].gap =self.pipes[0].gap =self.pipes[0].gap =self.pipes[0].gap =self.pipes[0].gap =self.pipes[0].gap=self.pipes[0].gap = self.pipes[0].gap = self.pipes[0].gap = self.pipes[0].gap = self.pipes[0].gap = self.pipes[0].gap = self.pipes[0].gap = self.pipes[0].gap = self.pipes[0].gap = self.pipes[0].gap = self.pipes[0].gap = self.pipes()",
+          "ttft_s": 0.7808843329985393
+        },
+        {
+          "decode_elapsed_s": 0.13757941700168885,
+          "decode_tok_s": null,
+          "elapsed_s": 0.9010830000042915,
+          "end_to_end_tok_s": 9.98798112932675,
+          "ended_at": 1780351653.9465559,
+          "generated_tokens": 9,
+          "measured": true,
+          "mtp_acceptance_ratio": 1.0,
+          "prompt_tokens": 432,
+          "rejected_reason": "decode_time<0.5s",
+          "repetition": 4,
+          "seed": 2046,
+          "started_at": 1780351653.045459,
+          "text": "def    def\n    def    _",
+          "ttft_s": 0.7635035830026027
+        },
+        {
+          "decode_elapsed_s": 0.13749487500172108,
+          "decode_tok_s": null,
+          "elapsed_s": 0.9260975829965901,
+          "end_to_end_tok_s": 9.718198346742838,
+          "ended_at": 1780351684.898602,
+          "generated_tokens": 9,
+          "measured": true,
+          "mtp_acceptance_ratio": 1.0,
+          "prompt_tokens": 432,
+          "rejected_reason": "decode_time<0.5s",
+          "repetition": 5,
+          "seed": 2047,
+          "started_at": 1780351683.9724889,
+          "text": "def    def\n    def    def",
+          "ttft_s": 0.788602707994869
+        }
+      ],
+      "summary": {
+        "accept_rate": 1.0,
+        "accepted_drafts": null,
+        "decode_tok_s": {
+          "median": 68.53646656653946,
+          "p10": 67.86141206746214,
+          "p90": 74.95896940512365,
+          "values": [
+            68.53646656653946,
+            67.86141206746214,
+            74.95896940512365
+          ]
+        },
+        "drafted_tokens": null,
+        "end_to_end_tok_s": {
+          "median": 61.312929550281275,
+          "p10": 32.82083059338938,
+          "p90": 63.99051847235404,
+          "values": [
+            63.99051847235404,
+            32.82083059338938,
+            61.312929550281275
+          ]
+        },
+        "generated_tokens": 1088,
+        "ngram_accept_rate": 1.0,
+        "runs": 5,
+        "valid_runs": 3
+      }
+    },
+    {
+      "category": "game_code",
+      "max_tokens": 1000,
+      "prompt_id": "flappy_sound_channels",
+      "prompt_sha256": "3510857fe86b1075ac5ef71629c9f75a407e891faf4911c91cfc69c73e6cccfa",
+      "runs": [
+        {
+          "decode_elapsed_s": 0.07771066599525511,
+          "decode_tok_s": null,
+          "elapsed_s": 0.7130130409932462,
+          "end_to_end_tok_s": 7.012494460178268,
+          "ended_at": 1780351726.366648,
+          "generated_tokens": 5,
+          "measured": true,
+          "mtp_acceptance_ratio": 1.0,
+          "prompt_tokens": 264,
+          "rejected_reason": "decode_time<0.5s",
+          "repetition": 1,
+          "seed": 3043,
+          "started_at": 1780351725.653623,
+          "text": "def    def\n",
+          "ttft_s": 0.6353023749979911
+        },
+        {
+          "decode_elapsed_s": 0.07716541600530036,
+          "decode_tok_s": null,
+          "elapsed_s": 0.716463290998945,
+          "end_to_end_tok_s": 6.978724608526193,
+          "ended_at": 1780351757.103931,
+          "generated_tokens": 5,
+          "measured": true,
+          "mtp_acceptance_ratio": 1.0,
+          "prompt_tokens": 264,
+          "rejected_reason": "decode_time<0.5s",
+          "repetition": 2,
+          "seed": 3044,
+          "started_at": 1780351756.387456,
+          "text": "def    def\n",
+          "ttft_s": 0.6392978749936447
+        },
+        {
+          "decode_elapsed_s": 0.9737292080098996,
+          "decode_tok_s": 66.75367182714639,
+          "elapsed_s": 1.6238345000019763,
+          "end_to_end_tok_s": 40.02870982228848,
+          "ended_at": 1780351788.746382,
+          "generated_tokens": 65,
+          "measured": true,
+          "mtp_acceptance_ratio": 1.0,
+          "prompt_tokens": 264,
+          "rejected_reason": null,
+          "repetition": 3,
+          "seed": 3045,
+          "started_at": 1780351787.122528,
+          "text": "defl\n    def self:\n        self:\n            def self:\n                self:\n                    self:\n                        self:\n                            self:\n                                return def setup_method_method(self:\n                self:\n                    self:\n                        self:\n                            self:\n                                self:\n                            return",
+          "ttft_s": 0.6501052919920767
+        },
+        {
+          "decode_elapsed_s": 0.07764133399177808,
+          "decode_tok_s": null,
+          "elapsed_s": 0.7256965419946937,
+          "end_to_end_tok_s": 6.889932238421166,
+          "ended_at": 1780351819.494612,
+          "generated_tokens": 5,
+          "measured": true,
+          "mtp_acceptance_ratio": 1.0,
+          "prompt_tokens": 264,
+          "rejected_reason": "decode_time<0.5s",
+          "repetition": 4,
+          "seed": 3046,
+          "started_at": 1780351818.768903,
+          "text": "def    def\n",
+          "ttft_s": 0.6480552080029156
+        },
+        {
+          "decode_elapsed_s": 15.15936508300365,
+          "decode_tok_s": 65.96582340517534,
+          "elapsed_s": 15.813995542004704,
+          "end_to_end_tok_s": 63.23512595813166,
+          "ended_at": 1780351865.328065,
+          "generated_tokens": 1000,
+          "measured": true,
+          "mtp_acceptance_ratio": 1.0,
+          "ngram_acceptance_ratio": 1.0,
+          "prompt_tokens": 264,
+          "rejected_reason": null,
+          "repetition": 5,
+          "seed": 3047,
+          "started_at": 1780351849.513904,
+          "text": "def\n    def setup(self, setup_channel, setup_method_name, setup_channel_1, setup_channel_2, setup_channel_3, setup_channel_4, setup_channel_5, setup_channel_6, setup_channel_7, setup_channel_8, setup_channel_9, setup_channel_10, setup_channel_11, setup_channel_10, setup_channel_11, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_11, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_1, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_1, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel 10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup_channel_10, setup",
+          "ttft_s": 0.654630459001055
+        }
+      ],
+      "summary": {
+        "accept_rate": 1.0,
+        "accepted_drafts": null,
+        "decode_tok_s": {
+          "median": 66.35974761616086,
+          "p10": 65.96582340517534,
+          "p90": 66.75367182714639,
+          "values": [
+            66.75367182714639,
+            65.96582340517534
+          ]
+        },
+        "drafted_tokens": null,
+        "end_to_end_tok_s": {
+          "median": 51.63191789021007,
+          "p10": 40.02870982228848,
+          "p90": 63.23512595813166,
+          "values": [
+            40.02870982228848,
+            63.23512595813166
+          ]
+        },
+        "generated_tokens": 1080,
+        "ngram_accept_rate": 1.0,
+        "runs": 5,
+        "valid_runs": 2
+      }
+    }
+  ],
+  "sampling": {
+    "temperature": 0.6,
+    "top_k": 20,
+    "top_p": 0.95
+  },
+  "schema": "ax.rapid_mlx.prompt_suite_mtp.v1",
+  "server_command": [
+    "/opt/homebrew/var/mtplx/venv-0.3.7/bin/python",
+    "-m",
+    "vllm_mlx.cli",
+    "serve",
+    "/Users/akiralam/.cache/huggingface/hub/models--ax-local--Qwen3.6-27B-MTP/snapshots/v1",
+    "--port",
+    "18766",
+    "--disable-prefix-cache",
+    "--no-memory-aware-cache",
+    "--enable-mtp",
+    "--mtp-num-draft-tokens",
+    "3",
+    "--no-thinking",
+    "--log-level",
+    "WARNING",
+    "--mtp-draft-temperature",
+    "0.5",
+    "--mtp-optimistic",
+    "--enable-ngram",
+    "--ngram-num-draft-tokens",
+    "6",
+    "--ngram-min-occurrences",
+    "2",
+    "--ngram-acceptance-mode",
+    "greedy",
+    "--ngram-hybrid-verify",
+    "--ngram-everywhere",
+    "--ngram-self-tune",
+    "--ngram-self-tune-disable-threshold",
+    "0.30",
+    "--ngram-auto-disable-mtp-threshold",
+    "0.0"
+  ],
+  "server_log": "benchmarks/results/mtp-fair/2026-06-01-qwen36-fair-ax-rerun4/27b-4bit/flappy/rapid-server/rapid-mlx-server-18766.log",
+  "suite": "flappy",
+  "summary": {
+    "accept_rate": 1.0,
+    "accepted_drafts": null,
+    "case_count": 4,
+    "decode_tok_s": {
+      "median": 67.78983697902582,
+      "p10": 66.09443481969345,
+      "p90": 74.73928952933282,
+      "values": [
+        66.09443481969345,
+        66.51114515544569,
+        74.73928952933282,
+        69.199969718895,
+        67.78983697902582,
+        66.13441206213461,
+        68.53646656653946,
+        67.86141206746214,
+        74.95896940512365,
+        66.75367182714639,
+        65.96582340517534
+      ]
+    },
+    "drafted_tokens": null,
+    "end_to_end_tok_s": {
+      "median": 59.66928771469401,
+      "p10": 40.02870982228848,
+      "p90": 63.35340584678956,
+      "values": [
+        63.35340584678956,
+        59.66928771469401,
+        56.06070396085013,
+        55.52813696553096,
+        47.96838116501506,
+        62.99551464813713,
+        63.99051847235404,
+        32.82083059338938,
+        61.312929550281275,
+        40.02870982228848,
+        63.23512595813166
+      ]
+    },
+    "generated_tokens": 5021,
+    "ngram_accept_rate": 1.0,
+    "runs": 20,
+    "valid_runs": 11
+  },
+  "warmup_repetitions": 1
+}

@@ -44,9 +44,9 @@ warmup repetition.
 
 | Model | Suite | Depth | MTPLX tok/s | MTPLX accept | Lightning tok/s | Lightning accept | Light.+ngram tok/s | Light.+ngram accept | AX tok/s | AX accept | AX+ngram tok/s | AX+ngram accept |
 |---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| Qwen3.6 27B 4-bit | flappy | 3 | 58.8 | 100.0% | 70.2 | 100.0% | 67.2 | 100.0% | 65.4 | 98.2% | 67.2 | 90.6% |
-| Qwen3.6 27B 4-bit | long_code | 3 | 58.4 | 99.7% | 70.4 | 100.0% | 72.7 | 100.0% | 63.5 | 95.3% | 75.1 | 94.5% |
-| Qwen3.6 27B 4-bit | python_modules_long | 3 | 54.6 | 87.6% | 68.3 | 100.0% | 69.5 | 100.0% | 54.0 | 77.5% | 63.5 | 85.4% |
+| Qwen3.6 27B 4-bit | flappy | 3 | 58.8 | 100.0% | 70.2 | 100.0% | 67.2 | 100.0% | 64.7 | 98.2% | 65.2 | 95.9% |
+| Qwen3.6 27B 4-bit | long_code | 3 | 58.4 | 99.7% | 70.4 | 100.0% | 72.7 | 100.0% | 62.9 | 95.3% | 66.6 | 91.8% |
+| Qwen3.6 27B 4-bit | python_modules_long | 3 | 54.6 | 87.6% | 68.3 | 100.0% | 69.5 | 100.0% | 54.0 | 77.5% | 52.2 | 73.5% |
 | Qwen3.6 35B-A3B 4-bit | flappy | 1 | 105.0 | 49.1% | 188.1 | 100.0% | 203.5 | 100.0% | 178.7 | 100.0% | 308.1 | 97.1% |
 | Qwen3.6 35B-A3B 4-bit | long_code | 1 | 103.8 | 51.3% | 92.0 | 100.0% | 159.8 | 100.0% | 167.6 | 99.6% | 279.6 | 95.0% |
 | Qwen3.6 35B-A3B 4-bit | python_modules_long | 1 | 100.0 | 42.8% | 187.4 | 100.0% | 207.8 | 100.0% | 173.0 | 93.6% | 186.3 | 80.4% |
@@ -63,9 +63,9 @@ Values marked `~` carry this caveat.
 
 | Model | Suite | Depth | MTPLX tok/s | Light. MTP tok/s | Light.+ngram tok/s | AX MTP tok/s | AX MTP+ngram tok/s |
 |---|---|---:|---:|---:|---:|---:|---:|
-| Qwen3.6 27B 4-bit | flappy | 3 | 693 | 473 ~ | 466 ~ | 686 | 685 |
-| Qwen3.6 27B 4-bit | long_code | 3 | 795 | 659 ~ | 657 ~ | 790 | 790 |
-| Qwen3.6 27B 4-bit | python_modules_long | 3 | 690 | 483 ~ | 477 ~ | 692 | 691 |
+| Qwen3.6 27B 4-bit | flappy | 3 | 693 | 473 ~ | 466 ~ | 679 | 684 |
+| Qwen3.6 27B 4-bit | long_code | 3 | 795 | 659 ~ | 657 ~ | 789 | 788 |
+| Qwen3.6 27B 4-bit | python_modules_long | 3 | 690 | 483 ~ | 477 ~ | 692 | 689 |
 | Qwen3.6 35B-A3B 4-bit | flappy | 1 | 1,530 | 886 ~ | 877 ~ | 1,809 | 1,818 |
 | Qwen3.6 35B-A3B 4-bit | long_code | 1 | 2,448 | 1,375 ~ | 1,502 ~ | 2,699 | 2,697 |
 | Qwen3.6 35B-A3B 4-bit | python_modules_long | 1 | 1,679 | 964 ~ | 970 ~ | 1,969 | 1,978 |
@@ -77,14 +77,14 @@ client-side and includes local HTTP socket overhead; values marked `~` carry thi
 
 | Model | Suite | Depth | MTPLX ms | Light. MTP ms | Light.+ngram ms | AX MTP ms | AX MTP+ngram ms |
 |---|---|---:|---:|---:|---:|---:|---:|
-| Qwen3.6 27B 4-bit | flappy | 3 | 471 | 680 ~ | 690 ~ | 469 | 469 |
-| Qwen3.6 27B 4-bit | long_code | 3 | 902 | 1,089 ~ | 1,092 ~ | 908 | 908 |
-| Qwen3.6 27B 4-bit | python_modules_long | 3 | 506 | 718 ~ | 727 ~ | 506 | 506 |
+| Qwen3.6 27B 4-bit | flappy | 3 | 471 | 680 ~ | 690 ~ | 474 | 470 |
+| Qwen3.6 27B 4-bit | long_code | 3 | 902 | 1,089 ~ | 1,092 ~ | 909 | 910 |
+| Qwen3.6 27B 4-bit | python_modules_long | 3 | 506 | 718 ~ | 727 ~ | 505 | 506 |
 | Qwen3.6 35B-A3B 4-bit | flappy | 1 | 210 | 367 ~ | 368 ~ | 178 | 177 |
 | Qwen3.6 35B-A3B 4-bit | long_code | 1 | 293 | 479 ~ | 479 ~ | 266 | 266 |
 | Qwen3.6 35B-A3B 4-bit | python_modules_long | 1 | 199 | 360 ~ | 356 ~ | 174 | 172 |
 
-Full artifacts: [`2026-06-01` (AX MTP+n-gram rerun)](benchmarks/results/mtp-fair/2026-06-01-qwen36-fair-ax-rerun4/summary.json) · [prior five-engine run](benchmarks/results/mtp-fair/2026-06-01-qwen36-fair-ax-ngram3/summary.json).
+Full artifacts: [`2026-06-02` (AX MTP+n-gram rerun, 27B)](benchmarks/results/mtp-fair/2026-06-02-qwen36-fair-ax-opt3/summary.json) · [prior full-run](benchmarks/results/mtp-fair/2026-06-01-qwen36-fair-ax-rerun4/summary.json).
 
 ### llama.cpp metal vs mlx-lm vs AX-Engine
 
