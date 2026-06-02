@@ -1,15 +1,17 @@
 {
   "contract": {
     "ax_engine_modes": {
+      "ax_engine": "pure_mtp",
       "ax_engine_ngram": "mtp_ngram_stacked"
     },
-    "ax_pure_mtp": false,
+    "ax_pure_mtp": true,
     "cooldown_s": 30.0,
     "depth_policy": "fair-shared",
     "engines": [
       "mtplx",
       "lightning_mlx",
       "lightning_mtp_ngram",
+      "ax_engine",
       "ax_engine_ngram"
     ],
     "fairness_rules": [
@@ -42,6 +44,47 @@
       "base_model_id": "mlx-community/Qwen3.6-27B-4bit",
       "depth": 3,
       "engines": {
+        "ax_engine": {
+          "accept_rate": 0.9949468085106383,
+          "accept_rate_samples": [
+            0.9946808510638298,
+            0.9946808510638298,
+            0.9946808510638298,
+            0.9946808510638298,
+            0.9946808510638298,
+            0.9544863459037711,
+            0.9496124031007752,
+            0.75,
+            0.9711664482306684,
+            0.9520103761348897,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            0.9973368841544608,
+            0.9973368841544608,
+            0.9946879150066401,
+            0.9893899204244032,
+            0.9973368841544608
+          ],
+          "artifact": "benchmarks/results/mtp-fair/2026-06-01-qwen36-fair-ax-rerun4/27b-4bit/flappy/ax_engine.json",
+          "case_count": 4,
+          "decode_tok_s": 65.92265848869151,
+          "decode_tok_s_samples": [
+            65.44099607478361,
+            59.34990723016,
+            66.45994522238395,
+            66.40432090259941
+          ],
+          "engine": "ax_engine",
+          "ngram_accept_rate": null,
+          "ngram_hit_steps": 0,
+          "status": "ok",
+          "valid_case_count": 4,
+          "validations_passed": null,
+          "validations_total": null
+        },
         "ax_engine_ngram": {
           "accept_rate": 0.8015747957933328,
           "accept_rate_samples": [
@@ -273,11 +316,11 @@
         "transform_norm_policy": "shift_mtp_norm_weights_by_1"
       },
       "ratios": {
-        "ax_engine_ngram_vs_ax_engine": null,
+        "ax_engine_ngram_vs_ax_engine": 0.9479136248706904,
         "ax_engine_ngram_vs_lightning_mlx": 0.8902292008847303,
         "ax_engine_ngram_vs_mtplx": 1.0624809154167396,
-        "ax_engine_vs_lightning_mlx": null,
-        "ax_engine_vs_mtplx": null,
+        "ax_engine_vs_lightning_mlx": 0.9391459068922772,
+        "ax_engine_vs_mtplx": 1.1208625844592937,
         "lightning_mlx_vs_mtplx": 1.1934914226143352
       },
       "source_model_id": "Qwen/Qwen3.6-27B",
@@ -287,6 +330,47 @@
       "base_model_id": "mlx-community/Qwen3.6-27B-4bit",
       "depth": 3,
       "engines": {
+        "ax_engine": {
+          "accept_rate": 0.9843017761177895,
+          "accept_rate_samples": [
+            0.9907161803713528,
+            0.9973368841544608,
+            0.9946879150066401,
+            0.9973368841544608,
+            0.9973368841544608,
+            0.9557867360208062,
+            0.9711664482306684,
+            0.9634464751958225,
+            0.9559014267185474,
+            0.9660574412532638,
+            0.9802631578947368,
+            0.9802110817941952,
+            0.9880952380952381,
+            0.9647979139504563,
+            0.9828269484808454,
+            0.9894039735099338,
+            0.9894039735099338,
+            0.9894039735099338,
+            0.9894039735099338,
+            0.9894039735099338
+          ],
+          "artifact": "benchmarks/results/mtp-fair/2026-06-01-qwen36-fair-ax-rerun4/27b-4bit/long_code/ax_engine.json",
+          "case_count": 4,
+          "decode_tok_s": 65.64120251087894,
+          "decode_tok_s_samples": [
+            66.04040986263331,
+            64.03480624700516,
+            65.31227299903117,
+            65.97013202272672
+          ],
+          "engine": "ax_engine",
+          "ngram_accept_rate": null,
+          "ngram_hit_steps": 0,
+          "status": "ok",
+          "valid_case_count": 4,
+          "validations_passed": null,
+          "validations_total": null
+        },
         "ax_engine_ngram": {
           "accept_rate": 0.9003627626934905,
           "accept_rate_samples": [
@@ -525,11 +609,11 @@
         "transform_norm_policy": "shift_mtp_norm_weights_by_1"
       },
       "ratios": {
-        "ax_engine_ngram_vs_ax_engine": null,
+        "ax_engine_ngram_vs_ax_engine": 1.0759141052325298,
         "ax_engine_ngram_vs_lightning_mlx": 1.0025526666731839,
         "ax_engine_ngram_vs_mtplx": 1.208937676439294,
-        "ax_engine_vs_lightning_mlx": null,
-        "ax_engine_vs_mtplx": null,
+        "ax_engine_vs_lightning_mlx": 0.9318147813077599,
+        "ax_engine_vs_mtplx": 1.1236377240151665,
         "lightning_mlx_vs_mtplx": 1.2058595190325183
       },
       "source_model_id": "Qwen/Qwen3.6-27B",
@@ -539,6 +623,41 @@
       "base_model_id": "mlx-community/Qwen3.6-27B-4bit",
       "depth": 3,
       "engines": {
+        "ax_engine": {
+          "accept_rate": 0.7483008608971454,
+          "accept_rate_samples": [
+            0.748868778280543,
+            0.5444976076555024,
+            0.7092511013215859,
+            0.7307262569832402,
+            0.7039473684210527,
+            0.8475609756097561,
+            0.9595827900912647,
+            0.9458064516129032,
+            0.7839721254355401,
+            0.9127686472819216,
+            0.735658042744657,
+            0.7643020594965675,
+            0.6588983050847458,
+            0.8032979976442874,
+            0.789044289044289
+          ],
+          "artifact": "benchmarks/results/mtp-fair/2026-06-01-qwen36-fair-ax-rerun4/27b-4bit/python_modules_long/ax_engine.json",
+          "case_count": 3,
+          "decode_tok_s": 53.84040079225073,
+          "decode_tok_s_samples": [
+            50.93098790022334,
+            61.92039415055373,
+            53.84040079225073
+          ],
+          "engine": "ax_engine",
+          "ngram_accept_rate": null,
+          "ngram_hit_steps": 0,
+          "status": "ok",
+          "valid_case_count": 3,
+          "validations_passed": null,
+          "validations_total": null
+        },
         "ax_engine_ngram": {
           "accept_rate": 0.7771326485037964,
           "accept_rate_samples": [
@@ -749,11 +868,11 @@
         "transform_norm_policy": "shift_mtp_norm_weights_by_1"
       },
       "ratios": {
-        "ax_engine_ngram_vs_ax_engine": null,
+        "ax_engine_ngram_vs_ax_engine": 1.123941150919677,
         "ax_engine_ngram_vs_lightning_mlx": 0.8861295591579578,
         "ax_engine_ngram_vs_mtplx": 1.1085448369513367,
-        "ax_engine_vs_lightning_mlx": null,
-        "ax_engine_vs_mtplx": null,
+        "ax_engine_vs_lightning_mlx": 0.7884127727086713,
+        "ax_engine_vs_mtplx": 0.986301494561577,
         "lightning_mlx_vs_mtplx": 1.2509963418946641
       },
       "source_model_id": "Qwen/Qwen3.6-27B",
@@ -763,6 +882,47 @@
       "base_model_id": "mlx-community/Qwen3.6-35B-A3B-4bit",
       "depth": 1,
       "engines": {
+        "ax_engine": {
+          "accept_rate": 0.999,
+          "accept_rate_samples": [
+            0.998,
+            0.998,
+            0.998,
+            0.998,
+            0.998,
+            0.9840954274353877,
+            0.9801587301587301,
+            0.9801587301587301,
+            0.9821428571428571,
+            0.9801587301587301,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ],
+          "artifact": "benchmarks/results/mtp-fair/2026-06-01-qwen36-fair-ax-rerun4/35b-a3b-4bit/flappy/ax_engine.json",
+          "case_count": 4,
+          "decode_tok_s": 182.47051551575362,
+          "decode_tok_s_samples": [
+            182.56750524790291,
+            181.3859226748184,
+            182.37352578360432,
+            183.4714598218602
+          ],
+          "engine": "ax_engine",
+          "ngram_accept_rate": null,
+          "ngram_hit_steps": 0,
+          "status": "ok",
+          "valid_case_count": 4,
+          "validations_passed": null,
+          "validations_total": null
+        },
         "ax_engine_ngram": {
           "accept_rate": 0.8878693642264609,
           "accept_rate_samples": [
@@ -1007,11 +1167,11 @@
         "transform_norm_policy": "shift_mtp_norm_weights_by_1"
       },
       "ratios": {
-        "ax_engine_ngram_vs_ax_engine": null,
+        "ax_engine_ngram_vs_ax_engine": 1.4131201578902217,
         "ax_engine_ngram_vs_lightning_mlx": 1.370727399892348,
         "ax_engine_ngram_vs_mtplx": 2.4555230162090034,
-        "ax_engine_vs_lightning_mlx": null,
-        "ax_engine_vs_mtplx": null,
+        "ax_engine_vs_lightning_mlx": 0.9700005991980428,
+        "ax_engine_vs_mtplx": 1.7376604547734154,
         "lightning_mlx_vs_mtplx": 1.7914014240919465
       },
       "source_model_id": "Qwen/Qwen3.6-35B-A3B",
@@ -1021,6 +1181,47 @@
       "base_model_id": "mlx-community/Qwen3.6-35B-A3B-4bit",
       "depth": 1,
       "engines": {
+        "ax_engine": {
+          "accept_rate": 0.9978002396480383,
+          "accept_rate_samples": [
+            0.998,
+            0.998,
+            0.9940119760479041,
+            0.998,
+            0.998,
+            0.996,
+            0.9900398406374502,
+            0.9940119760479041,
+            0.996,
+            1.0,
+            1.0,
+            0.998,
+            0.998,
+            0.998,
+            0.998,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ],
+          "artifact": "benchmarks/results/mtp-fair/2026-06-01-qwen36-fair-ax-rerun4/35b-a3b-4bit/long_code/ax_engine.json",
+          "case_count": 4,
+          "decode_tok_s": 180.67533993162354,
+          "decode_tok_s_samples": [
+            180.27174523420092,
+            180.32882962081356,
+            181.02185024243352,
+            182.78057137572173
+          ],
+          "engine": "ax_engine",
+          "ngram_accept_rate": null,
+          "ngram_hit_steps": 0,
+          "status": "ok",
+          "valid_case_count": 4,
+          "validations_passed": null,
+          "validations_total": null
+        },
         "ax_engine_ngram": {
           "accept_rate": 0.9197225491164337,
           "accept_rate_samples": [
@@ -1267,11 +1468,11 @@
         "transform_norm_policy": "shift_mtp_norm_weights_by_1"
       },
       "ratios": {
-        "ax_engine_ngram_vs_ax_engine": null,
+        "ax_engine_ngram_vs_ax_engine": 1.5052340073293065,
         "ax_engine_ngram_vs_lightning_mlx": 2.9563332554233694,
         "ax_engine_ngram_vs_mtplx": 2.620129558817178,
-        "ax_engine_vs_lightning_mlx": null,
-        "ax_engine_vs_mtplx": null,
+        "ax_engine_vs_lightning_mlx": 1.9640356522828677,
+        "ax_engine_vs_mtplx": 1.7406792206787822,
         "lightning_mlx_vs_mtplx": 0.8862767937310759
       },
       "source_model_id": "Qwen/Qwen3.6-35B-A3B",
@@ -1281,6 +1482,41 @@
       "base_model_id": "mlx-community/Qwen3.6-35B-A3B-4bit",
       "depth": 1,
       "engines": {
+        "ax_engine": {
+          "accept_rate": 0.9281575898030128,
+          "accept_rate_samples": [
+            0.9174664107485605,
+            0.900952380952381,
+            0.9064885496183206,
+            0.9303675048355899,
+            0.936046511627907,
+            0.9192307692307692,
+            0.9211538461538461,
+            0.9285714285714286,
+            0.9341085271317829,
+            0.9378640776699029,
+            0.9530332681017613,
+            0.9323017408123792,
+            0.9285714285714286,
+            0.9285714285714286,
+            0.9568627450980393
+          ],
+          "artifact": "benchmarks/results/mtp-fair/2026-06-01-qwen36-fair-ax-rerun4/35b-a3b-4bit/python_modules_long/ax_engine.json",
+          "case_count": 3,
+          "decode_tok_s": 178.11821313945998,
+          "decode_tok_s_samples": [
+            176.29912178355477,
+            178.11821313945998,
+            178.17594161530747
+          ],
+          "engine": "ax_engine",
+          "ngram_accept_rate": null,
+          "ngram_hit_steps": 0,
+          "status": "ok",
+          "valid_case_count": 3,
+          "validations_passed": null,
+          "validations_total": null
+        },
         "ax_engine_ngram": {
           "accept_rate": 0.8347964884277733,
           "accept_rate_samples": [
@@ -1491,11 +1727,11 @@
         "transform_norm_policy": "shift_mtp_norm_weights_by_1"
       },
       "ratios": {
-        "ax_engine_ngram_vs_ax_engine": null,
+        "ax_engine_ngram_vs_ax_engine": 1.075775994052261,
         "ax_engine_ngram_vs_lightning_mlx": 1.0223638046370376,
         "ax_engine_ngram_vs_mtplx": 1.9169756064185226,
-        "ax_engine_vs_lightning_mlx": null,
-        "ax_engine_vs_mtplx": null,
+        "ax_engine_vs_lightning_mlx": 0.9503500824423223,
+        "ax_engine_vs_mtplx": 1.7819468151521107,
         "lightning_mlx_vs_mtplx": 1.8750425217753994
       },
       "source_model_id": "Qwen/Qwen3.6-35B-A3B",
