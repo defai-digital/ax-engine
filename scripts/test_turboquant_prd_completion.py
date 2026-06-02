@@ -173,6 +173,54 @@ class TurboQuantPrdCompletionTests(unittest.TestCase):
             "D3 evidence must include dim_parallel comparison variant",
         )
 
+    def test_completion_report_validates_selected_d3_row_not_largest_row(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            models_root = root / "models"
+            results_root = root / "results"
+            results_root.mkdir()
+            write_eligible_manifest(models_root)
+
+            quality_path = results_root / "quality-gate.json"
+            quality_path.write_text(json.dumps(quality_fixtures.valid_artifact(root)))
+            microbench = deepcopy(microbench_fixtures.microbench_artifact())
+            microbench["rows"][1]["kernel_variants"] = [
+                microbench_fixtures.variant("dim_parallel", median_us=1200),
+                microbench_fixtures.variant("two_stage_scores", median_us=1000),
+            ]
+            larger_non_d3_row = deepcopy(microbench["rows"][1])
+            larger_non_d3_row["cold_tokens"] = 16384
+            larger_non_d3_row["head_dim"] = 512
+            larger_non_d3_row["kernel_variants"] = [
+                microbench_fixtures.variant("dim_parallel", median_us=3000),
+                microbench_fixtures.variant("two_stage_scores", median_us=1000),
+            ]
+            microbench["rows"].append(larger_non_d3_row)
+            microbench_path = results_root / "microbench.json"
+            microbench_path.write_text(json.dumps(microbench))
+            short_decode_path = results_root / "short-decode.json"
+            write_short_decode_artifact(short_decode_path)
+
+            report = checker.build_report(
+                models_root=models_root,
+                results_root=results_root,
+                quality_artifacts=[quality_path],
+                microbench_artifacts=[microbench_path],
+                short_decode_artifacts=[short_decode_path],
+                required_model_families=["qwen3"],
+                require_artifact_files=False,
+                min_microbench_cold_tokens=8192,
+                d3_head_dim=128,
+                min_d3_speedup_vs_dim=1.5,
+                min_d4_speedup=2.0,
+            )
+
+        self.assertFalse(report["decision"]["prd_complete"])
+        self.assertEqual(
+            report["evidence"]["microbench_artifacts"][0]["blocker"],
+            "two_stage_scores speedup versus dim_parallel is below 1.5",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -101,8 +101,9 @@ def inspect_microbench_artifact(
         variants = microbench_checker._variant_by_name(d3_row)
         if "dim_parallel" not in variants:
             raise ValueError("D3 evidence must include dim_parallel comparison variant")
-        microbench_checker.validate_artifact(
+        microbench_checker.validate_row_evidence(
             doc,
+            d3_row,
             min_cold_tokens=min_cold_tokens,
             min_speedup_vs_dim_parallel=min_speedup_vs_dim,
         )

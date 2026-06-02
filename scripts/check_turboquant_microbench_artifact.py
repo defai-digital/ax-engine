@@ -257,6 +257,29 @@ def validate_artifact(
     )
 
 
+def validate_row_evidence(
+    doc: dict[str, Any],
+    row: dict[str, Any],
+    *,
+    min_cold_tokens: int = DEFAULT_MIN_COLD_TOKENS,
+    min_speedup_vs_cpu: float = DEFAULT_MIN_SPEEDUP_VS_CPU,
+    min_speedup_vs_dim_parallel: float = DEFAULT_MIN_SPEEDUP_VS_DIM_PARALLEL,
+    max_abs_diff: float = DEFAULT_MAX_ABS_DIFF,
+    min_cosine_similarity: float = DEFAULT_MIN_COSINE_SIMILARITY,
+) -> None:
+    """Validate a caller-selected microbench row as fused-kernel evidence."""
+    _validate_top_level(doc)
+    _validate_row(
+        doc,
+        _mapping(row, "row"),
+        min_cold_tokens=min_cold_tokens,
+        min_speedup_vs_cpu=min_speedup_vs_cpu,
+        min_speedup_vs_dim_parallel=min_speedup_vs_dim_parallel,
+        max_abs_diff=max_abs_diff,
+        min_cosine_similarity=min_cosine_similarity,
+    )
+
+
 def load_and_validate(
     path: Path,
     *,
