@@ -6190,26 +6190,39 @@ impl MlxRunner {
         // Pass the actual accept_count for counters (accepted_tokens, cycles, etc.)
         // and ewma_accept_count separately for EWMA tracking only.
         if !pending.is_empty() {
-            // Compute MTP argmax matches: among accepted MTP tokens, how many
-            // match the target model's argmax?  This is the EWMA numerator for
-            // the MTP-only acceptance rate.
-            let mtp_argmax_matches = state
-                .mtp_pending_draft_sources
-                .iter()
-                .zip(pending.iter())
-                .zip(predicted.iter())
-                .take(accept_count)
-                .filter(|((s, _d), _p)| {
-                    matches!(s, MtpDraftSource::Mtp | MtpDraftSource::HybridMtp)
-                })
-                .filter(|((_s, d), p)| d == p)
-                .count();
+            // EWMA numerator for mtp_only_accept_rate_ewma:
+            // - Optimistic: verifier skipped, accept_count inflated to pending.len().
+            //   Use argmax matches as a quality proxy so the EWMA can deactivate
+            //   auto-optimistic if draft quality drops.
+            // - Rejection-sampling: accept_count reflects actual decisions; count all
+            //   accepted MTP tokens for the true acceptance rate that drives the
+            //   n-gram saturation gate and auto-optimistic activation.
+            let mtp_ewma_numerator = if optimistic {
+                state
+                    .mtp_pending_draft_sources
+                    .iter()
+                    .zip(pending.iter())
+                    .zip(predicted.iter())
+                    .take(accept_count)
+                    .filter(|((s, _d), _p)| {
+                        matches!(s, MtpDraftSource::Mtp | MtpDraftSource::HybridMtp)
+                    })
+                    .filter(|((_s, d), p)| d == p)
+                    .count()
+            } else {
+                state
+                    .mtp_pending_draft_sources
+                    .iter()
+                    .take(accept_count)
+                    .filter(|s| matches!(s, MtpDraftSource::Mtp | MtpDraftSource::HybridMtp))
+                    .count()
+            };
             state.mtp_telemetry.record_step(
                 pending.len(),
                 accept_count,
                 &state.mtp_pending_draft_sources,
                 ewma_accept_count,
-                mtp_argmax_matches,
+                mtp_ewma_numerator,
             );
             let ngram_prefix_len = state
                 .mtp_pending_draft_sources
@@ -8348,6 +8361,35 @@ mod tests {
         assert!(
             (tel2.mtp_only_accept_rate_ewma - expected_rate).abs() < 1e-5,
             "pure-MTP partial rejection: rate should be accepted/meaningful = 1/2"
+        );
+    }
+
+    #[test]
+    fn mtp_ewma_numerator_uses_accepted_count_not_argmax_matches() {
+        // In rejection-sampling mode, the EWMA numerator is the actual number of
+        // accepted MTP tokens, not just those matching the target argmax.
+        // This ensures the n-gram saturation gate and auto-optimistic activation
+        // converge on the true acceptance rate rather than the argmax-match rate.
+        //
+        // Scenario: 2 MTP tokens drafted, both accepted; only 1 matches target argmax.
+        // Old code: mtp_argmax_matches = 1 → EWMA = 1/2 = 0.5 (wrong)
+        // New code: mtp_ewma_numerator = 2  → EWMA = 2/2 = 1.0 (correct)
+        let mut tel = MtpTelemetry::default();
+        // mtp_ewma_numerator=2: caller computed actual accepted MTP count (both accepted).
+        tel.record_step(2, 2, &[MtpDraftSource::Mtp; 2], None, 2);
+        assert_eq!(tel.mtp_only_accept_rate_ewma_samples, 1);
+        assert!(
+            (tel.mtp_only_accept_rate_ewma - 1.0).abs() < 1e-5,
+            "all MTP accepted → EWMA = 1.0; got {}",
+            tel.mtp_only_accept_rate_ewma
+        );
+
+        // Verify that passing the old argmax-match count (1 of 2) would have given 0.5.
+        let mut tel_old = MtpTelemetry::default();
+        tel_old.record_step(2, 2, &[MtpDraftSource::Mtp; 2], None, 1);
+        assert!(
+            (tel_old.mtp_only_accept_rate_ewma - 0.5).abs() < 1e-5,
+            "only argmax matches counted → EWMA = 0.5 (old wrong behaviour)"
         );
     }
 
