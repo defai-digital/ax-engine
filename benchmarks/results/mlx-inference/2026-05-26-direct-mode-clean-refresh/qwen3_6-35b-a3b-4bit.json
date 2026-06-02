@@ -406,7 +406,7 @@
           "generation_tokens": 128,
           "vocab_size": 248320,
           "random_seed": 0,
-          "token_ids_path": "/Users/akiralam/code/ax-engine_v5/benchmarks/results/mlx-inference/2026-05-26-direct-mode-clean-refresh/qwen3_6-35b-a3b-4bit-prompts/prompt-128-gen-128-a03e5d1e2a75.json",
+          "token_ids_path": "benchmarks/results/mlx-inference/2026-05-26-direct-mode-clean-refresh/qwen3_6-35b-a3b-4bit-prompts/prompt-128-gen-128-a03e5d1e2a75.json",
           "token_ids_sha256": "a03e5d1e2a750d9bb8888ffa1103ee793d0abc0f79273eb0c20fbe2f36552761",
           "token_count": 128,
           "prompt_source": "random"
@@ -416,7 +416,7 @@
           "generation_tokens": 128,
           "vocab_size": 248320,
           "random_seed": 0,
-          "token_ids_path": "/Users/akiralam/code/ax-engine_v5/benchmarks/results/mlx-inference/2026-05-26-direct-mode-clean-refresh/qwen3_6-35b-a3b-4bit-prompts/prompt-512-gen-128-b1c0bcb994aa.json",
+          "token_ids_path": "benchmarks/results/mlx-inference/2026-05-26-direct-mode-clean-refresh/qwen3_6-35b-a3b-4bit-prompts/prompt-512-gen-128-b1c0bcb994aa.json",
           "token_ids_sha256": "b1c0bcb994aaa83a68e87517b0e55a448c20e80a521e63ee7ab63d7dcb42d59b",
           "token_count": 512,
           "prompt_source": "random"
@@ -426,7 +426,7 @@
           "generation_tokens": 128,
           "vocab_size": 248320,
           "random_seed": 0,
-          "token_ids_path": "/Users/akiralam/code/ax-engine_v5/benchmarks/results/mlx-inference/2026-05-26-direct-mode-clean-refresh/qwen3_6-35b-a3b-4bit-prompts/prompt-2048-gen-128-a7c9e08d17d2.json",
+          "token_ids_path": "benchmarks/results/mlx-inference/2026-05-26-direct-mode-clean-refresh/qwen3_6-35b-a3b-4bit-prompts/prompt-2048-gen-128-a7c9e08d17d2.json",
           "token_ids_sha256": "a7c9e08d17d246007442c4c03d0125f6b2c8d9b4171de481804a9561147f4bfe",
           "token_count": 2048,
           "prompt_source": "random"
@@ -438,7 +438,7 @@
     "reused_reference_artifact_build": {
       "commit": "fe517e8a6d42106a0327b124da5846ff989db82e",
       "build_profile": "release",
-      "server_binary": "/Users/akiralam/code/ax-engine_v5/target/release/ax-engine-server"
+      "server_binary": "target/release/ax-engine-server"
     }
   },
   "prompt_tokens": [
@@ -1412,7 +1412,7 @@
       },
       "memory_source": "server_process_rss_after_stream",
       "prefill_step_size": 2048,
-      "prompt_token_ids_path": "/Users/akiralam/code/ax-engine_v5/benchmarks/results/mlx-inference/2026-05-26-direct-mode-clean-refresh/qwen3_6-35b-a3b-4bit-prompts/prompt-128-gen-128-a03e5d1e2a75.json",
+      "prompt_token_ids_path": "benchmarks/results/mlx-inference/2026-05-26-direct-mode-clean-refresh/qwen3_6-35b-a3b-4bit-prompts/prompt-128-gen-128-a03e5d1e2a75.json",
       "prompt_token_ids_sha256": "a03e5d1e2a750d9bb8888ffa1103ee793d0abc0f79273eb0c20fbe2f36552761",
       "prompt_source": "random",
       "ax_linear_attention_projection_pack": false,
@@ -2096,7 +2096,7 @@
       },
       "memory_source": "server_process_rss_after_stream",
       "prefill_step_size": 2048,
-      "prompt_token_ids_path": "/Users/akiralam/code/ax-engine_v5/benchmarks/results/mlx-inference/2026-05-26-direct-mode-clean-refresh/qwen3_6-35b-a3b-4bit-prompts/prompt-512-gen-128-b1c0bcb994aa.json",
+      "prompt_token_ids_path": "benchmarks/results/mlx-inference/2026-05-26-direct-mode-clean-refresh/qwen3_6-35b-a3b-4bit-prompts/prompt-512-gen-128-b1c0bcb994aa.json",
       "prompt_token_ids_sha256": "b1c0bcb994aaa83a68e87517b0e55a448c20e80a521e63ee7ab63d7dcb42d59b",
       "prompt_source": "random",
       "ax_linear_attention_projection_pack": false,
@@ -2780,7 +2780,7 @@
       },
       "memory_source": "server_process_rss_after_stream",
       "prefill_step_size": 2048,
-      "prompt_token_ids_path": "/Users/akiralam/code/ax-engine_v5/benchmarks/results/mlx-inference/2026-05-26-direct-mode-clean-refresh/qwen3_6-35b-a3b-4bit-prompts/prompt-2048-gen-128-a7c9e08d17d2.json",
+      "prompt_token_ids_path": "benchmarks/results/mlx-inference/2026-05-26-direct-mode-clean-refresh/qwen3_6-35b-a3b-4bit-prompts/prompt-2048-gen-128-a7c9e08d17d2.json",
       "prompt_token_ids_sha256": "a7c9e08d17d246007442c4c03d0125f6b2c8d9b4171de481804a9561147f4bfe",
       "prompt_source": "random",
       "ax_linear_attention_projection_pack": false,

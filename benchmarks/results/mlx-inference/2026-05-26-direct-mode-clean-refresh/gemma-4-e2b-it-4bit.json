@@ -65,7 +65,7 @@
           "generation_tokens": 128,
           "vocab_size": 262144,
           "random_seed": 0,
-          "token_ids_path": "/Users/akiralam/code/ax-engine_v5/benchmarks/results/mlx-inference/2026-05-26-direct-mode-clean-refresh/gemma-4-e2b-it-4bit-prompts/prompt-128-gen-128-4ebdfdf02961.json",
+          "token_ids_path": "benchmarks/results/mlx-inference/2026-05-26-direct-mode-clean-refresh/gemma-4-e2b-it-4bit-prompts/prompt-128-gen-128-4ebdfdf02961.json",
           "token_ids_sha256": "4ebdfdf02961b6ceebc2d3c9006dfa92d50d99bf8e5ee9617bfe668e5a868ee7",
           "token_count": 128,
           "prompt_source": "random"
@@ -75,7 +75,7 @@
           "generation_tokens": 128,
           "vocab_size": 262144,
           "random_seed": 0,
-          "token_ids_path": "/Users/akiralam/code/ax-engine_v5/benchmarks/results/mlx-inference/2026-05-26-direct-mode-clean-refresh/gemma-4-e2b-it-4bit-prompts/prompt-512-gen-128-846109be82df.json",
+          "token_ids_path": "benchmarks/results/mlx-inference/2026-05-26-direct-mode-clean-refresh/gemma-4-e2b-it-4bit-prompts/prompt-512-gen-128-846109be82df.json",
           "token_ids_sha256": "846109be82dfecc447667199274cfcf9a20a1ea82c7a96da547d3e65de2af648",
           "token_count": 512,
           "prompt_source": "random"
@@ -85,7 +85,7 @@
           "generation_tokens": 128,
           "vocab_size": 262144,
           "random_seed": 0,
-          "token_ids_path": "/Users/akiralam/code/ax-engine_v5/benchmarks/results/mlx-inference/2026-05-26-direct-mode-clean-refresh/gemma-4-e2b-it-4bit-prompts/prompt-2048-gen-128-a7760438e4a5.json",
+          "token_ids_path": "benchmarks/results/mlx-inference/2026-05-26-direct-mode-clean-refresh/gemma-4-e2b-it-4bit-prompts/prompt-2048-gen-128-a7760438e4a5.json",
           "token_ids_sha256": "a7760438e4a53f539ab0ec8f21583186bbad6a1973c58422b1bc373778924cb2",
           "token_count": 2048,
           "prompt_source": "random"
@@ -97,7 +97,7 @@
     "reused_reference_artifact_build": {
       "commit": "fe517e8a6d42106a0327b124da5846ff989db82e",
       "build_profile": "release",
-      "server_binary": "/Users/akiralam/code/ax-engine_v5/target/release/ax-engine-server"
+      "server_binary": "target/release/ax-engine-server"
     }
   },
   "prompt_tokens": [
@@ -1053,7 +1053,7 @@
       },
       "memory_source": "server_process_rss_after_stream",
       "prefill_step_size": 2048,
-      "prompt_token_ids_path": "/Users/akiralam/code/ax-engine_v5/benchmarks/results/mlx-inference/2026-05-26-direct-mode-clean-refresh/gemma-4-e2b-it-4bit-prompts/prompt-128-gen-128-4ebdfdf02961.json",
+      "prompt_token_ids_path": "benchmarks/results/mlx-inference/2026-05-26-direct-mode-clean-refresh/gemma-4-e2b-it-4bit-prompts/prompt-128-gen-128-4ebdfdf02961.json",
       "prompt_token_ids_sha256": "4ebdfdf02961b6ceebc2d3c9006dfa92d50d99bf8e5ee9617bfe668e5a868ee7",
       "prompt_source": "random",
       "ax_linear_attention_projection_pack": false,
@@ -1719,7 +1719,7 @@
       },
       "memory_source": "server_process_rss_after_stream",
       "prefill_step_size": 2048,
-      "prompt_token_ids_path": "/Users/akiralam/code/ax-engine_v5/benchmarks/results/mlx-inference/2026-05-26-direct-mode-clean-refresh/gemma-4-e2b-it-4bit-prompts/prompt-512-gen-128-846109be82df.json",
+      "prompt_token_ids_path": "benchmarks/results/mlx-inference/2026-05-26-direct-mode-clean-refresh/gemma-4-e2b-it-4bit-prompts/prompt-512-gen-128-846109be82df.json",
       "prompt_token_ids_sha256": "846109be82dfecc447667199274cfcf9a20a1ea82c7a96da547d3e65de2af648",
       "prompt_source": "random",
       "ax_linear_attention_projection_pack": false,
@@ -2385,7 +2385,7 @@
       },
       "memory_source": "server_process_rss_after_stream",
       "prefill_step_size": 2048,
-      "prompt_token_ids_path": "/Users/akiralam/code/ax-engine_v5/benchmarks/results/mlx-inference/2026-05-26-direct-mode-clean-refresh/gemma-4-e2b-it-4bit-prompts/prompt-2048-gen-128-a7760438e4a5.json",
+      "prompt_token_ids_path": "benchmarks/results/mlx-inference/2026-05-26-direct-mode-clean-refresh/gemma-4-e2b-it-4bit-prompts/prompt-2048-gen-128-a7760438e4a5.json",
       "prompt_token_ids_sha256": "a7760438e4a53f539ab0ec8f21583186bbad6a1973c58422b1bc373778924cb2",
       "prompt_source": "random",
       "ax_linear_attention_projection_pack": false,
