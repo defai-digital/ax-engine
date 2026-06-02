@@ -1289,12 +1289,9 @@ impl MtpTelemetry {
             .accepted_tokens
             .saturating_add(saturating_u32(accepted));
         self.decode_steps = self.decode_steps.saturating_add(1);
-        // Use the true argmax-based acceptance for EWMA when auto-optimistic is
-        // active (ewma_accepted = Some(truth)).  Otherwise use the actual
-        // accept_count (rejection-sampling or manual optimistic).
-        let _ewma_ac = ewma_accepted.unwrap_or(accepted);
         const ALPHA: f32 = 0.05;
         if drafted > 0 {
+            let ewma_ac = ewma_accepted.unwrap_or(accepted);
             let step_rate = ewma_ac as f32 / drafted as f32;
             if self.accept_rate_ewma_samples == 0 {
                 self.accept_rate_ewma = step_rate;
@@ -1314,9 +1311,9 @@ impl MtpTelemetry {
         // Tokens at positions accepted+1..drafted are cascade rejections and are
         // excluded regardless of source.
         //
-        // The EWMA numerator counts MTP tokens that match the argmax (argmax truth
-        // when auto-optimistic).  The denominator is all MTP positions that were
-        // meaningfully evaluated (accepted positions + first rejection if MTP).
+        // The EWMA numerator uses mtp_argmax_matches (MTP tokens matching argmax)
+        // so the hysteresis gate tracks the real rejection-sampling-equivalent rate.
+        // The denominator is all MTP positions that were meaningfully evaluated.
         let mtp_only_accepted_count = sources
             .iter()
             .take(accepted)
@@ -1327,19 +1324,9 @@ impl MtpTelemetry {
                 .get(accepted)
                 .map(|s| matches!(s, MtpDraftSource::Mtp | MtpDraftSource::HybridMtp))
                 .unwrap_or(true);
-        // EWMA numerator: among accepted MTP tokens, how many match the argmax?
-        // These are the tokens that would have passed rejection sampling.
-        let mtp_only_accepted_ewma = sources
-            .iter()
-            .zip(pending.iter())
-            .zip(predicted.iter())
-            .take(accepted)
-            .filter(|((s, _d), _p)| matches!(s, MtpDraftSource::Mtp | MtpDraftSource::HybridMtp))
-            .filter(|((_s, d), p)| d == p)
-            .count();
         let mtp_only_drafted = mtp_only_accepted_count + usize::from(first_rejection_is_mtp);
         if mtp_only_drafted > 0 {
-            let mtp_step_rate = mtp_only_accepted_ewma as f32 / mtp_only_drafted as f32;
+            let mtp_step_rate = mtp_argmax_matches as f32 / mtp_only_drafted as f32;
             if self.mtp_only_accept_rate_ewma_samples == 0 {
                 self.mtp_only_accept_rate_ewma = mtp_step_rate;
             } else {
@@ -5829,9 +5816,10 @@ impl MlxRunner {
         verify_input.extend_from_slice(&pending);
         let verify_len = verify_input.len();
 
-        // Returns (logits_all, draft_hidden, accept_count, all_accepted, correction_argmax_tok).
+        // Returns (logits_all, draft_hidden, accept_count, all_accepted, correction_argmax_tok, predicted).
         // correction_argmax_tok is only evaluated when greedy fallback needs it.
-        let (logits_all, draft_hidden, accept_count, all_accepted, correction_argmax_tok) =
+        // predicted is the target model's argmax tokens for EWMA tracking.
+        let (logits_all, draft_hidden, accept_count, all_accepted, correction_argmax_tok, predicted) =
             if has_linear_attention {
                 // Skip-snapshot path (matches MTPLX SKIP_VERIFY_SNAPSHOT=1):
                 // Run the verify forward directly on state.cache without cloning.
@@ -5877,7 +5865,7 @@ impl MlxRunner {
                             pending.iter().zip(predicted.iter()).take_while(|(d, p)| d == p).count()
                         );
                     }
-                    (logits_all, draft_hidden, ac, true, correction_argmax_tok)
+                    (logits_all, draft_hidden, ac, true, correction_argmax_tok, predicted)
                 } else {
                     // Target probabilities for rejection-sampling acceptance.
                     // Full-vocab softmax by default; top-k approximation when
@@ -5947,6 +5935,7 @@ impl MlxRunner {
                         ac,
                         all_accepted,
                         accept.rejection_correction.unwrap_or(correction_argmax_tok),
+                        predicted,
                     )
                 }
             } else {
@@ -5990,7 +5979,7 @@ impl MlxRunner {
                             pending.iter().zip(predicted.iter()).take_while(|(d, p)| d == p).count()
                         );
                     }
-                    (logits_all, draft_hidden, ac, true, correction_argmax_tok)
+                    (logits_all, draft_hidden, ac, true, correction_argmax_tok, predicted)
                 } else {
                     // Target probabilities for rejection-sampling acceptance.
                     let lazy_target_probs = compute_mtp_target_probs(
@@ -6067,6 +6056,7 @@ impl MlxRunner {
                         ac,
                         all_accepted,
                         accept.rejection_correction.unwrap_or(correction_argmax_tok),
+                        predicted,
                     )
                 }
             };
@@ -6112,11 +6102,23 @@ impl MlxRunner {
         // Pass the actual accept_count for counters (accepted_tokens, cycles, etc.)
         // and ewma_accept_count separately for EWMA tracking only.
         if !pending.is_empty() {
+            // Compute MTP argmax matches: among accepted MTP tokens, how many
+            // match the target model's argmax?  This is the EWMA numerator for
+            // the MTP-only acceptance rate.
+            let mtp_argmax_matches = state.mtp_pending_draft_sources
+                .iter()
+                .zip(pending.iter())
+                .zip(predicted.iter())
+                .take(accept_count)
+                .filter(|((s, _d), _p)| matches!(s, MtpDraftSource::Mtp | MtpDraftSource::HybridMtp))
+                .filter(|((_s, d), p)| d == p)
+                .count();
             state.mtp_telemetry.record_step(
                 pending.len(),
                 accept_count,
                 &state.mtp_pending_draft_sources,
                 ewma_accept_count,
+                mtp_argmax_matches,
             );
             let ngram_prefix_len = state
                 .mtp_pending_draft_sources
@@ -8030,9 +8032,9 @@ mod tests {
         let mut telemetry = MtpTelemetry::default();
 
         let mtp_sources = [MtpDraftSource::Mtp; 3];
-        telemetry.record_step(3, 3, &mtp_sources, None);
-        telemetry.record_step(3, 1, &mtp_sources, None);
-        telemetry.record_step(3, 0, &mtp_sources, None);
+        telemetry.record_step(3, 3, &mtp_sources, None, 3);
+        telemetry.record_step(3, 1, &mtp_sources, None, 1);
+        telemetry.record_step(3, 0, &mtp_sources, None, 0);
         telemetry.record_timings(MtpStepTimings {
             cache_clone_wall_us: 10,
             verify_forward_wall_us: 20,
@@ -8095,6 +8097,7 @@ mod tests {
                 MtpDraftSource::HybridMtp,
             ],
             None,
+            0,
         );
 
         let mut decisions = Vec::new();
@@ -8136,6 +8139,7 @@ mod tests {
                 MtpDraftSource::Mtp,
             ],
             None,
+            0,
         );
         assert_eq!(
             tel.mtp_only_accept_rate_ewma_samples, 0,
@@ -8152,6 +8156,7 @@ mod tests {
                 MtpDraftSource::Mtp,
             ],
             None,
+            1,
         );
         assert_eq!(tel.mtp_only_accept_rate_ewma_samples, 1);
         assert!(
@@ -8170,6 +8175,7 @@ mod tests {
                 MtpDraftSource::Mtp,
             ],
             None,
+            0,
         );
         assert_eq!(tel.mtp_only_accept_rate_ewma_samples, 2);
         // After step 3: EWMA nudged down from 1.0 toward 0.0 (mtp rejected).
@@ -8184,7 +8190,7 @@ mod tests {
         // evaluated" positions count — position 0 (accepted) and position 1 (the
         // first and only genuine rejection that caused the cascade).
         let mut tel2 = MtpTelemetry::default();
-        tel2.record_step(3, 1, &[MtpDraftSource::Mtp; 3], None);
+        tel2.record_step(3, 1, &[MtpDraftSource::Mtp; 3], None, 1);
         // drafted=3, accepted=1, first rejection at pos 1 (Mtp) → first_rejection_is_mtp=true.
         // pos 2 is cascade-excluded.  mtp_only_drafted = 1 (accepted) + 1 (first rejection) = 2.
         assert_eq!(tel2.mtp_only_accept_rate_ewma_samples, 1);
