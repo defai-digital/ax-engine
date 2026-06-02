@@ -1,0 +1,602 @@
+{
+  "build": {
+    "git_commit": "d7d4e3c815eb69c7e45db22e3016600d70949e63",
+    "git_tracked_dirty": true,
+    "host": "AKMBPM5MAX.local",
+    "platform": "macOS-26.5-arm64-arm-64bit-Mach-O"
+  },
+  "cooldown_s": 30.0,
+  "depth_effective_note": "Rapid-MLX reference MTP path is single-draft; requested depth may be capped by runtime.",
+  "depth_requested": 3,
+  "disable_thinking": true,
+  "engine": "rapid_mlx",
+  "max_tokens": 1000,
+  "measurement_gates": {
+    "min_decode_time_s": 0.5,
+    "tps_ceiling": 500.0
+  },
+  "model": "/Users/akiralam/.cache/huggingface/hub/models--ax-local--Qwen3.6-27B-MTP/snapshots/v1",
+  "prompt_suite": "/Users/akiralam/code/ax-engine_v5/benchmarks/prompts/mtp-suites/flappy.jsonl",
+  "prompt_suite_sha256": "97e53df42f0b2b456d38164264a674bb2c657e59d68833e42d2c60312d7fd669",
+  "rapid_mtp_patch": {
+    "mode": "none"
+  },
+  "rapid_python": "/opt/homebrew/var/mtplx/venv-0.3.7/bin/python",
+  "rapid_source": "/Users/akiralam/code/ax-engine_v5/.internal/reference/lightning-mlx",
+  "repetitions": 5,
+  "results": [
+    {
+      "category": "game_code",
+      "max_tokens": 1000,
+      "prompt_id": "flappy_pipes",
+      "prompt_sha256": "88a801ae372338af36ba5effaf538f6158d0e95fa72ad929dd9673bc5c286325",
+      "runs": [
+        {
+          "decode_elapsed_s": 5.425896332992124,
+          "decode_tok_s": 69.48160762078224,
+          "elapsed_s": 6.086847250000574,
+          "end_to_end_tok_s": 61.936826162339536,
+          "ended_at": 1780350410.948318,
+          "generated_tokens": 377,
+          "measured": true,
+          "mtp_acceptance_ratio": 1.0,
+          "prompt_tokens": 273,
+          "rejected_reason": null,
+          "repetition": 1,
+          "seed": 43,
+          "started_at": 1780350404.8614058,
+          "text": "    def    def spawn(self, spawn_pipe(self, spawn_pipe(self, x=self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, pipe=self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, gap, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self), spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self), spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self), spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, gap, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self), spawn_pipe(self,bot",
+          "ttft_s": 0.6609509170084493
+        },
+        {
+          "decode_elapsed_s": 0.2983739999908721,
+          "decode_tok_s": null,
+          "elapsed_s": 0.9440011249971576,
+          "end_to_end_tok_s": 22.245736200858058,
+          "ended_at": 1780350441.9148219,
+          "generated_tokens": 21,
+          "measured": true,
+          "mtp_acceptance_ratio": 1.0,
+          "prompt_tokens": 273,
+          "rejected_reason": "decode_time<0.5s",
+          "repetition": 2,
+          "seed": 44,
+          "started_at": 1780350440.970805,
+          "text": "    def\n        self\n    def\n    def\n    def\n    def\n        def",
+          "ttft_s": 0.6456271250062855
+        },
+        {
+          "decode_elapsed_s": 14.650529415986966,
+          "decode_tok_s": 68.25691902360737,
+          "elapsed_s": 15.29943041599472,
+          "end_to_end_tok_s": 65.36191039860898,
+          "ended_at": 1780350487.2382479,
+          "generated_tokens": 1000,
+          "measured": true,
+          "mtp_acceptance_ratio": 1.0,
+          "prompt_tokens": 273,
+          "rejected_reason": null,
+          "repetition": 3,
+          "seed": 45,
+          "started_at": 1780350471.938658,
+          "text": "    def    def spawn(self, spawn_pipe(self, spawn_pipe(self,spy(1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,2,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,2,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,2,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,2,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,2,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,2,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1",
+          "ttft_s": 0.6489010000077542
+        },
+        {
+          "decode_elapsed_s": 0.5798506249993807,
+          "decode_tok_s": 70.70786549560724,
+          "elapsed_s": 1.2083146670047427,
+          "end_to_end_tok_s": 33.93155865734358,
+          "ended_at": 1780350518.468365,
+          "generated_tokens": 41,
+          "measured": true,
+          "mtp_acceptance_ratio": 1.0,
+          "prompt_tokens": 273,
+          "rejected_reason": null,
+          "repetition": 4,
+          "seed": 46,
+          "started_at": 1780350517.260034,
+          "text": "    def    def spawn(self, spawn_pipe = (\n    def\n        self.spawn_pipe\n    def _spawn_pipe\n    def    def _spawn_pipe\n        def    _spawn_pipe",
+          "ttft_s": 0.628464042005362
+        },
+        {
+          "decode_elapsed_s": 8.880874958005734,
+          "decode_tok_s": 70.15074561300875,
+          "elapsed_s": 9.526099624999915,
+          "end_to_end_tok_s": 65.39927404968805,
+          "ended_at": 1780350558.014316,
+          "generated_tokens": 623,
+          "measured": true,
+          "mtp_acceptance_ratio": 1.0,
+          "prompt_tokens": 273,
+          "rejected_reason": null,
+          "repetition": 5,
+          "seed": 47,
+          "started_at": 1780350548.488116,
+          "text": "    def    def spawn(self, spawn_pipe(self, spawn_pipe(self,bot(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, bot(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(spawn(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self.bot, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawnPipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawn_pipe(self, spawnPipe(self, spawn_pipe(self, spawnPipe(self, spawnPipe(self, spawnPipe(self, spawnPipe(self, spawnPipe(self, spawnPipe(self, spawnPipe(self, spawnPipe(self, spawnPipe(self, spawnPipe(self, spawnPipe(self, spawnPipe(self, spawnPipe(self, spawnPipe(self, spawnPipe(self, spawnPipe(self, spawnPipe(self, spawnPipe(self, spawnPipe(self, spawnPipe",
+          "ttft_s": 0.6452246669941815
+        }
+      ],
+      "summary": {
+        "accept_rate": 1.0,
+        "accepted_drafts": null,
+        "decode_tok_s": {
+          "median": 69.81617661689549,
+          "p10": 68.25691902360737,
+          "p90": 70.70786549560724,
+          "values": [
+            69.48160762078224,
+            68.25691902360737,
+            70.70786549560724,
+            70.15074561300875
+          ]
+        },
+        "drafted_tokens": null,
+        "end_to_end_tok_s": {
+          "median": 63.64936828047426,
+          "p10": 33.93155865734358,
+          "p90": 65.39927404968805,
+          "values": [
+            61.936826162339536,
+            65.36191039860898,
+            33.93155865734358,
+            65.39927404968805
+          ]
+        },
+        "generated_tokens": 2062,
+        "ngram_accept_rate": null,
+        "runs": 5,
+        "valid_runs": 4
+      }
+    },
+    {
+      "category": "game_code",
+      "max_tokens": 1000,
+      "prompt_id": "flappy_score_gates",
+      "prompt_sha256": "d30afc995170ca11cb9891f5006aae5aae46e5eb0bcdc192fb0abae884e9777a",
+      "runs": [
+        {
+          "decode_elapsed_s": 0.5246518750063842,
+          "decode_tok_s": 70.52295391024718,
+          "elapsed_s": 1.2412240000121528,
+          "end_to_end_tok_s": 29.809285028035013,
+          "ended_at": 1780350613.7880058,
+          "generated_tokens": 37,
+          "measured": true,
+          "mtp_acceptance_ratio": 1.0,
+          "prompt_tokens": 374,
+          "rejected_reason": null,
+          "repetition": 1,
+          "seed": 1043,
+          "started_at": 1780350612.546766,
+          "text": "def\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\ndef\n    return {\"def\": \"validate\", \"validate\": \"validate\"}",
+          "ttft_s": 0.7165721250057686
+        },
+        {
+          "decode_elapsed_s": 0.46607883300748654,
+          "decode_tok_s": null,
+          "elapsed_s": 1.18174541600456,
+          "end_to_end_tok_s": 27.924796282749163,
+          "ended_at": 1780350644.9885151,
+          "generated_tokens": 33,
+          "measured": true,
+          "mtp_acceptance_ratio": 1.0,
+          "prompt_tokens": 374,
+          "rejected_reason": "decode_time<0.5s",
+          "repetition": 2,
+          "seed": 1044,
+          "started_at": 1780350643.806753,
+          "text": "def continue\ndef validate\ndef validate_gate\n  def validate\n  def validate\n  def validate\n  def validate\n  def validate\n  return",
+          "ttft_s": 0.7156665829970734
+        },
+        {
+          "decode_elapsed_s": 0.13014520800788887,
+          "decode_tok_s": null,
+          "elapsed_s": 0.8451383750070818,
+          "end_to_end_tok_s": 10.649143697828874,
+          "ended_at": 1780350675.852323,
+          "generated_tokens": 9,
+          "measured": true,
+          "mtp_acceptance_ratio": 1.0,
+          "prompt_tokens": 374,
+          "rejected_reason": "decode_time<0.5s",
+          "repetition": 3,
+          "seed": 1045,
+          "started_at": 1780350675.0071712,
+          "text": "def\n```\ndef validate_validate_style",
+          "ttft_s": 0.7149931669991929
+        },
+        {
+          "decode_elapsed_s": 0.8621105419879314,
+          "decode_tok_s": 70.7565875013438,
+          "elapsed_s": 1.5728153749951161,
+          "end_to_end_tok_s": 38.78395453769608,
+          "ended_at": 1780350707.447834,
+          "generated_tokens": 61,
+          "measured": true,
+          "mtp_acceptance_ratio": 1.0,
+          "prompt_tokens": 374,
+          "rejected_reason": null,
+          "repetition": 4,
+          "seed": 1046,
+          "started_at": 1780350705.874998,
+          "text": "deflect\n```python\ndef generate_gate_gate():\n    def gate(gate, score):\n        return (score, gate)\n\n    # of gate 1\n    gate = 100\n    if gate > gate:\n        return gate.100\n```",
+          "ttft_s": 0.7107048330071848
+        },
+        {
+          "decode_elapsed_s": 1.4890686660073698,
+          "decode_tok_s": 72.5285559124548,
+          "elapsed_s": 2.1896699580101995,
+          "end_to_end_tok_s": 49.3225015966068,
+          "ended_at": 1780350739.660428,
+          "generated_tokens": 108,
+          "measured": true,
+          "mtp_acceptance_ratio": 1.0,
+          "prompt_tokens": 374,
+          "rejected_reason": null,
+          "repetition": 5,
+          "seed": 1047,
+          "started_at": 1780350737.4707341,
+          "text": "def\n```\ndef validate_api_call(validator=validator, validate_score):\n    validator = validator\n    if validator:\n        return validate_score(validator=validator, validate_score=True)\n    return validate_score(validator)\n\ndef validate_score(validator=validator, validate_score=True):\n    validator = validator(validator=validator)\n    return validate_score(validator=validator, validate_score=True)\n\nif validate_score(validator=validator, validate_score=True):\n    return 100\n```",
+          "ttft_s": 0.7006012920028297
+        }
+      ],
+      "summary": {
+        "accept_rate": 1.0,
+        "accepted_drafts": null,
+        "decode_tok_s": {
+          "median": 70.7565875013438,
+          "p10": 70.52295391024718,
+          "p90": 72.5285559124548,
+          "values": [
+            70.52295391024718,
+            70.7565875013438,
+            72.5285559124548
+          ]
+        },
+        "drafted_tokens": null,
+        "end_to_end_tok_s": {
+          "median": 38.78395453769608,
+          "p10": 29.809285028035013,
+          "p90": 49.3225015966068,
+          "values": [
+            29.809285028035013,
+            38.78395453769608,
+            49.3225015966068
+          ]
+        },
+        "generated_tokens": 248,
+        "ngram_accept_rate": null,
+        "runs": 5,
+        "valid_runs": 3
+      }
+    },
+    {
+      "category": "game_code",
+      "max_tokens": 1000,
+      "prompt_id": "flappy_collision_checks",
+      "prompt_sha256": "dc95f55539735dcc41f9b07a7ccb764207a474ec0e3876a88203cbf79232ae0e",
+      "runs": [
+        {
+          "decode_elapsed_s": 1.9979494160070317,
+          "decode_tok_s": 70.57235727308512,
+          "elapsed_s": 2.768380125009571,
+          "end_to_end_tok_s": 50.93231190550919,
+          "ended_at": 1780350785.672451,
+          "generated_tokens": 141,
+          "measured": true,
+          "mtp_acceptance_ratio": 1.0,
+          "prompt_tokens": 432,
+          "rejected_reason": null,
+          "repetition": 1,
+          "seed": 2043,
+          "started_at": 1780350782.9040399,
+          "text": "def    def    def    def    def    def    def    def    def    def    def (self)    def: def    def: def    def: def    def: def    def: def    def: def    def: def    def:\n    def: def    def: def    def: def    def: def    def: def    def:\n    def:\n    def: def    def: def    def: def    def: self    def: def    def: (    def: def    def: def    def: return    def: def    def: def    def:    def: return    def: return:",
+          "ttft_s": 0.7704307090025395
+        },
+        {
+          "decode_elapsed_s": 14.54301433400542,
+          "decode_tok_s": 68.7615357472168,
+          "elapsed_s": 15.320854334000614,
+          "end_to_end_tok_s": 65.2705115654525,
+          "ended_at": 1780350831.015949,
+          "generated_tokens": 1000,
+          "measured": true,
+          "mtp_acceptance_ratio": 1.0,
+          "prompt_tokens": 432,
+          "rejected_reason": null,
+          "repetition": 2,
+          "seed": 2044,
+          "started_at": 1780350815.694935,
+          "text": "def    def    def    def    def    def    def    def(self, bird, bird, bird, bird, bird, bird, bird, bird    def    def    def    def    def    def    def    def    def    def    def(self, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird, bird_rect: pygame, bird_rect: pygame, bird_rect: pygame, bird_rect: pygame, bird, bird_rect: pygame, bird_rect: pygame, bird_rect: pygame, bird_rect: pygame, bird_rect: pygame, bird_rect: pygame, bird, bird_rect: pygame, bird_rect: pygame, bird, bird_rect: pygame, bird_rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect(x, bird_rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect:\n    def\n        def    def    def(self, bird_rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect:\n    def    def    def(self, bird_rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect) -> pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect:\ndef\n\ndef    def    def    def    def    def    def    def    def    def    def    def    def    def    def    def    def    def    def    def    def    def    def(self, bird_rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect: pygame.Rect:\n    def    def    def    def",
+          "ttft_s": 0.7778399999951944
+        },
+        {
+          "decode_elapsed_s": 0.7504400420002639,
+          "decode_tok_s": 70.62522924380595,
+          "elapsed_s": 1.5312941250012955,
+          "end_to_end_tok_s": 34.61124752891948,
+          "ended_at": 1780350862.570461,
+          "generated_tokens": 53,
+          "measured": true,
+          "mtp_acceptance_ratio": 1.0,
+          "prompt_tokens": 432,
+          "rejected_reason": null,
+          "repetition": 3,
+          "seed": 2045,
+          "started_at": 1780350861.039148,
+          "text": "def    def\n    def    def    def    def    def    def    def    def    def    def    def    def    def    def    def    def    def    def    def    def    def    def    def    def",
+          "ttft_s": 0.7808540830010315
+        },
+        {
+          "decode_elapsed_s": 0.4105308750004042,
+          "decode_tok_s": null,
+          "elapsed_s": 1.1892044589912985,
+          "end_to_end_tok_s": 24.38605050690631,
+          "ended_at": 1780350893.783921,
+          "generated_tokens": 29,
+          "measured": true,
+          "mtp_acceptance_ratio": 1.0,
+          "prompt_tokens": 432,
+          "rejected_reason": "decode_time<0.5s",
+          "repetition": 4,
+          "seed": 2046,
+          "started_at": 1780350892.5947,
+          "text": "def\n    def check(self, check_collision_collision_collision_check_collision_collision_check_collision_collision_collision_check_collision_collision_check_collision_check_collision_collision_check):",
+          "ttft_s": 0.7786735839908943
+        },
+        {
+          "decode_elapsed_s": 0.4742807919974439,
+          "decode_tok_s": null,
+          "elapsed_s": 1.24491029199271,
+          "end_to_end_tok_s": 26.50793411561999,
+          "ended_at": 1780350925.051059,
+          "generated_tokens": 33,
+          "measured": true,
+          "mtp_acceptance_ratio": 1.0,
+          "prompt_tokens": 432,
+          "rejected_reason": "decode_time<0.5s",
+          "repetition": 5,
+          "seed": 2047,
+          "started_at": 1780350923.806131,
+          "text": "def    def    def    def    def    def    def    def\n    def    def    def    def    def    def    def    def",
+          "ttft_s": 0.7706294999952661
+        }
+      ],
+      "summary": {
+        "accept_rate": 1.0,
+        "accepted_drafts": null,
+        "decode_tok_s": {
+          "median": 70.57235727308512,
+          "p10": 68.7615357472168,
+          "p90": 70.62522924380595,
+          "values": [
+            70.57235727308512,
+            68.7615357472168,
+            70.62522924380595
+          ]
+        },
+        "drafted_tokens": null,
+        "end_to_end_tok_s": {
+          "median": 50.93231190550919,
+          "p10": 34.61124752891948,
+          "p90": 65.2705115654525,
+          "values": [
+            50.93231190550919,
+            65.2705115654525,
+            34.61124752891948
+          ]
+        },
+        "generated_tokens": 1256,
+        "ngram_accept_rate": null,
+        "runs": 5,
+        "valid_runs": 3
+      }
+    },
+    {
+      "category": "game_code",
+      "max_tokens": 1000,
+      "prompt_id": "flappy_sound_channels",
+      "prompt_sha256": "3510857fe86b1075ac5ef71629c9f75a407e891faf4911c91cfc69c73e6cccfa",
+      "runs": [
+        {
+          "decode_elapsed_s": 0.297630000000936,
+          "decode_tok_s": null,
+          "elapsed_s": 0.9423085419985,
+          "end_to_end_tok_s": 22.28569419042094,
+          "ended_at": 1780350967.4708018,
+          "generated_tokens": 21,
+          "measured": true,
+          "mtp_acceptance_ratio": 1.0,
+          "prompt_tokens": 264,
+          "rejected_reason": "decode_time<0.5s",
+          "repetition": 1,
+          "seed": 3043,
+          "started_at": 1780350966.528478,
+          "text": "def\n    def setup(self, setup_channel, setup_method):\n        setup_channel = setup_method",
+          "ttft_s": 0.644678541997564
+        },
+        {
+          "decode_elapsed_s": 0.8602134999964619,
+          "decode_tok_s": 70.91262808622615,
+          "elapsed_s": 1.5018506250053179,
+          "end_to_end_tok_s": 40.61655599056931,
+          "ended_at": 1780350998.9912572,
+          "generated_tokens": 61,
+          "measured": true,
+          "mtp_acceptance_ratio": 1.0,
+          "prompt_tokens": 264,
+          "rejected_reason": null,
+          "repetition": 2,
+          "seed": 3044,
+          "started_at": 1780350997.489388,
+          "text": "def    def    def    def\n    def    def    def    def    def    defdef\n\ndef    def    def    def    def    def    def\n    def    def    def\n    def    def    def    def    def    def    def",
+          "ttft_s": 0.641637125008856
+        },
+        {
+          "decode_elapsed_s": 14.740618499999982,
+          "decode_tok_s": 67.83975855558579,
+          "elapsed_s": 15.383161791003658,
+          "end_to_end_tok_s": 65.00614201332898,
+          "ended_at": 1780351044.393412,
+          "generated_tokens": 1000,
+          "measured": true,
+          "mtp_acceptance_ratio": 1.0,
+          "prompt_tokens": 264,
+          "rejected_reason": null,
+          "repetition": 3,
+          "seed": 3045,
+          "started_at": 1780351029.0100899,
+          "text": "def    def\n    def    _channel    def    def\n        def    def\n        def    def    def    def\n    def    def    def    _channel\n    def    def    def    def\n    def    def    def\n    def    def\n    def    def    def\n        def    def\n    def    def    def    def    def    def    def\n    def    def    _channel    def    def\n    def    def    def    def    def    def    def    def    def    def    def    def    def    def    def    def    def    def    def    def    def    def    _channel    def    def    def    def    def    def    def    def    def    def    def    def    def    def    def    def    def    def    def    def    def    def    def\n    def    def    def    def    def    self    def    def    def    def    def    def    def    def    def    def    def    def    def    def    def    def    def    def    def    def    def\n    def    def    def    def    def    def    def    def    def    def        def    def    def    def    def    def    def    def    def    def    def    def    def    def    def    def(def    def(self,    def\n    def    def(def    def(self,    def\n        def    def(self    def        def    def    def    def(self,    def\n        def    def(self    def    def    def(self)    def    def    def(self,    def(self,    def(self)    def(self)    def(self)    def(self)    def\n    def    def(self    def(self)    def(self)    def(self,    def(self)    def(self)    def(con)    def(con)    def(con)    def(con)    def(con)    def(self,    def(self,    self    def    def(self,    def(self,    self    def    def(con)    def(con)    def(self,    def(con)    def(self,    def(self,    def(self,    self    def    def(self,    def(self,    self)    def(self, def    def(self,    def(self,    self)    def\n    def    def    def    def(self,    def(self,    def(self,    def(self,    self)    def\n    def    def(self,    def(self,    self)    def    def(self,    def(self,    self)    def(con,    self)    def(self,    def(def)    def(con,    self)\n    def    def(self,    def(self,    self)    def(con,    self)    def(self,    def(def)    def(con, self    def)\n    def(self,    def(self,    self)\n    def    def    def(self,    def(self,    def(self,    self)    def(self,    def(self,    self)\n    def(self,    def(self,    self)\n    def(self,    def(self,    self)\n    def(self,    def(self,    self)\n    def(self,    def(self,    self)\n    def(self,    def(self,    self)\n    def(self,    def(self,\n    def(self,    def(self,    self)\n    def(self,    def(self,    def(self)    def(self,    def(self,    self)\n    def(self,    def(self,    self)\n    def(self,    def(self,    def(self)    def(self,    def(self,    self)\n    def(self,    def(self,    def(def)    def(self,    def(self)    def(self,    def(self,    self)\n    def(self,    def(self,    self)\n    def(self,    def(self,    self)\n    def(self,    def(self)    def(self,    def(self,    self)\n    def(self,    def(self,    self)\n    def(self,    def(self)    def(self)    def(self,    def(self,    self)\n    def(self,    def(self,    self)\n    def(self,    def(self,    self)    def    def(self,    def(self,    self)    def(self)    def(self,    def(self,    self)\n    def(self,    def(self,    self)    def(self,    def(self, self    def(self,",
+          "ttft_s": 0.6425432910036761
+        },
+        {
+          "decode_elapsed_s": 0.5785700830019778,
+          "decode_tok_s": 70.86436233838216,
+          "elapsed_s": 1.2249197920027655,
+          "end_to_end_tok_s": 33.4715793374228,
+          "ended_at": 1780351075.639285,
+          "generated_tokens": 41,
+          "measured": true,
+          "mtp_acceptance_ratio": 1.0,
+          "prompt_tokens": 264,
+          "rejected_reason": null,
+          "repetition": 4,
+          "seed": 3046,
+          "started_at": 1780351074.414349,
+          "text": "def\n    def setup(self, channel: int) -> None:\n    self.setup(self, channel: int) -> None:\n    self.channel: int = channel: int = channel)",
+          "ttft_s": 0.6463497090007877
+        },
+        {
+          "decode_elapsed_s": 14.545256125013111,
+          "decode_tok_s": 68.75093785941144,
+          "elapsed_s": 15.185278417004156,
+          "end_to_end_tok_s": 65.85325422023352,
+          "ended_at": 1780351120.844099,
+          "generated_tokens": 1000,
+          "measured": true,
+          "mtp_acceptance_ratio": 1.0,
+          "prompt_tokens": 264,
+          "rejected_reason": null,
+          "repetition": 5,
+          "seed": 3047,
+          "started_at": 1780351105.6586628,
+          "text": "def\n    def setup(self, setup_channel, setup_channel_1(self, setup_channel_3(self, setup_channel_4(self, setup_channel_5(self, setup_channel_6(self, setup_channel_19(self, setup_channel_3(self, setup_channel_3(self, setup_channel_3(self, setup_channel_3(self, setup_channel_4(self, setup_channel_5(self, setup_channel_5(self, setup_channel_6(self, setup_channel_7(self, setup_channel_8(self, setup_channel_9(self, setup_channel_10(self, setup_channel_11(self, setup_channel_12(self, setup_channel_13(self, setup_channel_14(self, setup_channel_15(self, setup_channel_16(self, setup_channel_17(self, setup_channel_18(self, setup_channel_9(self, setup_channel_19(self, setup_channel_19(self, setup_channel_20(self, setup_channel_20(self, setup_channel_21(self, setup_channel_22(self, setup_channel_23(self, setup_channel_20(self, setup_channel_20(self, setup_channel_20(self, setup_channel_19(self, setup_channel_19(self, setup_channel_19(self, setup_channel_19(self, setup_channel_20(self, setup_channel_20(self, setup_channel_20(self, setup_channel_20(self, setup_channel_19(self, setup_channel_19(self, setup_channel_19(self, setup_channel_19(self, setup_channel_19(self, setup_channel_19(self, setup_channel_19(self, setup_channel_19(self, setup_channel_19(self, setup_channel_1(self, setup_channel_1(self, setup_channel_2(self, setup_channel_3(self, setup_channel_4(self, setup_channel_5(self, setup_channel_6(self, setup_channel_7(self, setup_channel_8(self, setup_channel_9(self, setup_channel_10(self, setup_channel_11(self, setup_channel_12(self, setup_channel_13(self, setup_channel_14(self, setup_channel_15(self, setup_channel_16(self, setup_channel_2(self, setup_channel_2(self, setup_channel_19(self, setup_channel_19(self, setup_channel_19(self, setup_channel_19(self, setup_channel_20(self, setup_channel_1(self, setup_channel_1(self, setup_channel_2(self, setup_channel_3(self, setup_channel_1(self, setup_channel_1(self, setup_channel_2(self, setup_channel_3(self, setup_channel_4(self, setup_channel_5(self, setup_channel_1(self, setup_channel_1(self, setup_channel_2(self, setup_channel_3(self, setup_channel_1(self, setup_channel_1(self, setup_channel_2(self, setup_channel_3(self, setup_channel_1(self, setup_channel_1(self, setup_channel_2(self, setup_channel_3(self, setup_channel_1(self, setup_channel_1(self, setup_channel_3(self, setup_channel_1(self, setup_channel_2(self, setup_channel_3(self, setup_channel_2(self, setup_channel_3(self, setup_channel_3(self, setup_channel_3(self, setup_channel_2(self, setup_channel_3(self, setup_channel_3(self, setup_channel_3(self, setup_channel_3(self, setup_channel_3(self, setup_channel_0(self, setup_channel_1(self, setup_channel_2(self, setup_channel_3(self, setup_channel_0(self, setup_channel_1(self, setup_channel_2(self, setup_channel_3(self, setup_channel_0(self, setup_channel_1(self, setup_channel_3(self, setup_channel_3(self, setup_channel_3(self, setup_channel_3(self, setup_channel_3(self, setup_channel_3(self, setup_channel_0(self, setup_channel_1(self, setup_channel_2(self, setup_channel_3(self, setup_channel_0(self, setup_channel_1(self, setup_channel_2(self, setup_channel_3(self, setup_channel_0(self, setup_channel_1(self, setup_channel_1(self, setup_channel_1(self, setup_channel_1(self, setup_channel_1(self, setup_channel_0(self, setup_channel_1(self, setup_channel_0(self, setup_channel_1(self, setup_channel_0(self, setup_channel_1(self, setup_channel_0(self, setup_channel_1(self, setup_channel_0(self, setup_channel_1(self, setup_channel_0(self",
+          "ttft_s": 0.6400222919910448
+        }
+      ],
+      "summary": {
+        "accept_rate": 1.0,
+        "accepted_drafts": null,
+        "decode_tok_s": {
+          "median": 69.8076500988968,
+          "p10": 67.83975855558579,
+          "p90": 70.91262808622615,
+          "values": [
+            70.91262808622615,
+            67.83975855558579,
+            70.86436233838216,
+            68.75093785941144
+          ]
+        },
+        "drafted_tokens": null,
+        "end_to_end_tok_s": {
+          "median": 52.81134900194915,
+          "p10": 33.4715793374228,
+          "p90": 65.85325422023352,
+          "values": [
+            40.61655599056931,
+            65.00614201332898,
+            33.4715793374228,
+            65.85325422023352
+          ]
+        },
+        "generated_tokens": 2123,
+        "ngram_accept_rate": null,
+        "runs": 5,
+        "valid_runs": 4
+      }
+    }
+  ],
+  "sampling": {
+    "temperature": 0.6,
+    "top_k": 20,
+    "top_p": 0.95
+  },
+  "schema": "ax.rapid_mlx.prompt_suite_mtp.v1",
+  "server_command": [
+    "/opt/homebrew/var/mtplx/venv-0.3.7/bin/python",
+    "-m",
+    "vllm_mlx.cli",
+    "serve",
+    "/Users/akiralam/.cache/huggingface/hub/models--ax-local--Qwen3.6-27B-MTP/snapshots/v1",
+    "--port",
+    "18766",
+    "--disable-prefix-cache",
+    "--no-memory-aware-cache",
+    "--enable-mtp",
+    "--mtp-num-draft-tokens",
+    "3",
+    "--no-thinking",
+    "--log-level",
+    "WARNING",
+    "--mtp-draft-temperature",
+    "0.5",
+    "--mtp-optimistic"
+  ],
+  "server_log": "benchmarks/results/mtp-fair/2026-06-01-qwen36-fair-ax-rerun4/27b-4bit/flappy/rapid-server/rapid-mlx-server-18766.log",
+  "suite": "flappy",
+  "summary": {
+    "accept_rate": 1.0,
+    "accepted_drafts": null,
+    "case_count": 4,
+    "decode_tok_s": {
+      "median": 70.54765559166614,
+      "p10": 68.25691902360737,
+      "p90": 70.91262808622615,
+      "values": [
+        69.48160762078224,
+        68.25691902360737,
+        70.70786549560724,
+        70.15074561300875,
+        70.52295391024718,
+        70.7565875013438,
+        72.5285559124548,
+        70.57235727308512,
+        68.7615357472168,
+        70.62522924380595,
+        70.91262808622615,
+        67.83975855558579,
+        70.86436233838216,
+        68.75093785941144
+      ]
+    },
+    "drafted_tokens": null,
+    "end_to_end_tok_s": {
+      "median": 50.12740675105799,
+      "p10": 33.4715793374228,
+      "p90": 65.39927404968805,
+      "values": [
+        61.936826162339536,
+        65.36191039860898,
+        33.93155865734358,
+        65.39927404968805,
+        29.809285028035013,
+        38.78395453769608,
+        49.3225015966068,
+        50.93231190550919,
+        65.2705115654525,
+        34.61124752891948,
+        40.61655599056931,
+        65.00614201332898,
+        33.4715793374228,
+        65.85325422023352
+      ]
+    },
+    "generated_tokens": 5689,
+    "ngram_accept_rate": null,
+    "runs": 20,
+    "valid_runs": 14
+  },
+  "warmup_repetitions": 1
+}

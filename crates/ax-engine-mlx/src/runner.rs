@@ -1287,7 +1287,7 @@ impl MtpTelemetry {
         accepted: usize,
         sources: &[MtpDraftSource],
         ewma_accepted: Option<usize>,
-        mtp_argmax_matches: usize,
+        mtp_ewma_numerator: usize,
     ) {
         self.draft_tokens = self.draft_tokens.saturating_add(saturating_u32(drafted));
         self.accepted_tokens = self
@@ -1316,9 +1316,10 @@ impl MtpTelemetry {
         // Tokens at positions accepted+1..drafted are cascade rejections and are
         // excluded regardless of source.
         //
-        // The EWMA numerator uses mtp_argmax_matches (MTP tokens matching argmax)
-        // so the hysteresis gate tracks the real rejection-sampling-equivalent rate.
-        // The denominator is all MTP positions that were meaningfully evaluated.
+        // The EWMA numerator is the actual accepted MTP count in rejection-sampling
+        // mode, or the argmax-match count in optimistic mode (quality proxy when the
+        // verifier is skipped).  The denominator is all MTP positions meaningfully
+        // evaluated (accepted + first rejection).
         let mtp_only_accepted_count = sources
             .iter()
             .take(accepted)
@@ -1331,7 +1332,7 @@ impl MtpTelemetry {
                 .unwrap_or(true);
         let mtp_only_drafted = mtp_only_accepted_count + usize::from(first_rejection_is_mtp);
         if mtp_only_drafted > 0 {
-            let mtp_step_rate = mtp_argmax_matches as f32 / mtp_only_drafted as f32;
+            let mtp_step_rate = mtp_ewma_numerator as f32 / mtp_only_drafted as f32;
             if self.mtp_only_accept_rate_ewma_samples == 0 {
                 self.mtp_only_accept_rate_ewma = mtp_step_rate;
             } else {
