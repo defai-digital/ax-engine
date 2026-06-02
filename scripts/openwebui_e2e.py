@@ -44,6 +44,7 @@ class ProbeResult:
     ok: bool
     model_visible: bool
     model_id: str
+    observed_models: list[str]
     assistant_text: str
     corruption_reasons: list[str]
     openwebui_base_url: str
@@ -201,6 +202,7 @@ def run_probe(
             ok=False,
             model_visible=False,
             model_id=model_id,
+            observed_models=models,
             assistant_text="",
             corruption_reasons=[f"model not visible through OpenWebUI proxy: {model_id}"],
             openwebui_base_url=openwebui_base_url,
@@ -219,6 +221,7 @@ def run_probe(
         ok=not corruption_reasons,
         model_visible=model_visible,
         model_id=model_id,
+        observed_models=models,
         assistant_text=assistant_text,
         corruption_reasons=corruption_reasons,
         openwebui_base_url=openwebui_base_url,
@@ -235,6 +238,7 @@ def write_report(path: Path, result: ProbeResult) -> None:
                 "ok": result.ok,
                 "model_visible": result.model_visible,
                 "model_id": result.model_id,
+                "observed_models": result.observed_models,
                 "openwebui_base_url": result.openwebui_base_url,
                 "chat_path": result.chat_path,
                 "corruption_reasons": result.corruption_reasons,
@@ -251,7 +255,7 @@ def write_report(path: Path, result: ProbeResult) -> None:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--openwebui-base-url", default="http://127.0.0.1:8080")
-    parser.add_argument("--model-id", required=True)
+    parser.add_argument("--model-id")
     parser.add_argument("--prompt", default=DEFAULT_PROMPT)
     parser.add_argument("--max-tokens", type=int, default=DEFAULT_MAX_TOKENS)
     parser.add_argument("--timeout-secs", type=float, default=DEFAULT_TIMEOUT_SECS)
@@ -270,6 +274,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.print_docker_openai_base_url:
         print(docker_openai_base_url(args.print_docker_openai_base_url))
         return 0
+    if not args.model_id:
+        parser.error("--model-id is required unless --print-docker-openai-base-url is used")
 
     result = run_probe(
         openwebui_base_url=args.openwebui_base_url,
@@ -287,6 +293,12 @@ def main(argv: list[str] | None = None) -> int:
         "[openwebui-e2e] failed: " + "; ".join(result.corruption_reasons),
         file=sys.stderr,
     )
+    if not result.model_visible:
+        print(
+            "[openwebui-e2e] observed models: "
+            + (", ".join(result.observed_models) if result.observed_models else "<none>"),
+            file=sys.stderr,
+        )
     if result.assistant_text:
         print(result.assistant_text, file=sys.stderr)
     return 1

@@ -46,7 +46,8 @@ throughput baselines.
   endpoint, verifies model discovery through OpenWebUI's OpenAI proxy, sends a
   chat completion, and fails on backend disconnect text or obvious corruption
   patterns. It is intentionally outside the default script gate because it
-  requires Docker and usually local MLX artifacts.
+  requires Docker and usually local MLX artifacts; after `AX_OPENWEBUI_E2E=1`
+  is set, Docker unavailability is treated as a failure rather than a skip.
 - `check-mlx-telemetry.sh`: targeted Gemma/AX MLX telemetry gate. It runs the
   MLX crate clippy/tests plus the MLX inference-stack and script gates. Use
   `--full-workspace` only when a change may affect shared Rust contracts; that

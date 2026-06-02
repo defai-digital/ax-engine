@@ -4,9 +4,11 @@
 from __future__ import annotations
 
 import importlib.util
+import io
 import json
 import sys
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
@@ -38,6 +40,16 @@ class OpenWebUIE2ETests(unittest.TestCase):
             openwebui_e2e.docker_openai_base_url("http://10.0.0.2:9000/v1"),
             "http://10.0.0.2:9000/v1",
         )
+
+    def test_print_docker_openai_base_url_does_not_require_model_id(self) -> None:
+        output = io.StringIO()
+        with redirect_stdout(output):
+            status = openwebui_e2e.main(
+                ["--print-docker-openai-base-url", "http://127.0.0.1:9000/v1"]
+            )
+
+        self.assertEqual(status, 0)
+        self.assertEqual(output.getvalue().strip(), "http://host.docker.internal:9000/v1")
 
     def test_detect_corruption_catches_report_failure_shape(self) -> None:
         reasons = openwebui_e2e.detect_corruption(
@@ -93,10 +105,11 @@ class OpenWebUIE2ETests(unittest.TestCase):
 
         self.assertTrue(result.ok)
         self.assertTrue(result.model_visible)
+        self.assertEqual(result.observed_models, [MODEL_ID])
         self.assertEqual(result.corruption_reasons, [])
         self.assertIn("artificial general intelligence", result.assistant_text.lower())
 
-    def test_run_probe_fails_when_model_is_missing(self) -> None:
+    def test_run_probe_reports_observed_models_when_model_is_missing(self) -> None:
         with (
             patch.object(openwebui_e2e, "wait_for_openwebui", return_value=None),
             patch.object(openwebui_e2e, "list_openwebui_models", return_value=[MODEL_ID]),
@@ -111,7 +124,28 @@ class OpenWebUIE2ETests(unittest.TestCase):
 
         self.assertFalse(result.ok)
         self.assertFalse(result.model_visible)
+        self.assertEqual(result.observed_models, [MODEL_ID])
         self.assertIn("model not visible", result.corruption_reasons[0])
+
+    def test_write_report_includes_observed_models(self) -> None:
+        result = openwebui_e2e.ProbeResult(
+            ok=False,
+            model_visible=False,
+            model_id="missing",
+            observed_models=[MODEL_ID],
+            assistant_text="",
+            corruption_reasons=["model not visible through OpenWebUI proxy: missing"],
+            openwebui_base_url="http://127.0.0.1:8080",
+            chat_path=openwebui_e2e.OPENWEBUI_PROXY_CHAT_PATH,
+        )
+        report_path = Path(self._testMethodName).with_suffix(".json")
+        try:
+            openwebui_e2e.write_report(report_path, result)
+            payload = json.loads(report_path.read_text(encoding="utf-8"))
+        finally:
+            report_path.unlink(missing_ok=True)
+
+        self.assertEqual(payload["observed_models"], [MODEL_ID])
 
 
 if __name__ == "__main__":

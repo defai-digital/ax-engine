@@ -264,8 +264,9 @@ configures it to proxy to AX, verifies the model is visible through
 `/openai/v1/models`, sends a chat completion through
 `/openai/v1/chat/completions`, and fails on backend disconnect text or obvious
 corruption patterns such as repeated punctuation-only lines. It is skipped
-unless `AX_OPENWEBUI_E2E=1` is set because it requires Docker and, for real MLX
-coverage, local model artifacts.
+unless `AX_OPENWEBUI_E2E=1` is set; once opted in, missing Docker is a failure
+because otherwise the integration gate would silently pass without running. Real
+MLX coverage also requires local model artifacts.
 
 For a fully self-contained local run through the Python MLX OpenAI shim:
 

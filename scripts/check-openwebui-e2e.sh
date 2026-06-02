@@ -15,8 +15,8 @@ if [[ "${AX_OPENWEBUI_E2E:-0}" != "1" ]]; then
 fi
 
 command -v docker >/dev/null 2>&1 || {
-    echo "[openwebui-e2e] skipped: docker is not available"
-    exit 0
+    echo "[openwebui-e2e] failed: AX_OPENWEBUI_E2E=1 requires docker" >&2
+    exit 1
 }
 
 OPENWEBUI_IMAGE="${AX_OPENWEBUI_IMAGE:-ghcr.io/open-webui/open-webui:main}"
@@ -73,7 +73,6 @@ if [[ "${AX_OPENWEBUI_START_AX_SHIM:-0}" == "1" ]]; then
 fi
 
 DOCKER_AX_BASE_URL="$("$PYTHON_BIN" "$SCRIPT_DIR/openwebui_e2e.py" \
-    --model-id "$MODEL_ID" \
     --print-docker-openai-base-url "$AX_BASE_URL")"
 
 echo "[openwebui-e2e] starting OpenWebUI image=${OPENWEBUI_IMAGE} url=${OPENWEBUI_URL}"
@@ -86,6 +85,7 @@ docker run -d --rm \
     -e OPENAI_API_BASE_URL="$DOCKER_AX_BASE_URL" \
     -e OPENAI_API_BASE_URLS="$DOCKER_AX_BASE_URL" \
     -e OPENAI_API_KEY="${AX_OPENWEBUI_OPENAI_API_KEY:-ax-engine-local}" \
+    -e OPENAI_API_KEYS="${AX_OPENWEBUI_OPENAI_API_KEY:-ax-engine-local}" \
     -v "${OPENWEBUI_DATA_DIR}:/app/backend/data" \
     "$OPENWEBUI_IMAGE" >/dev/null
 
