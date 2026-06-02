@@ -1282,6 +1282,7 @@ impl MtpTelemetry {
         accepted: usize,
         sources: &[MtpDraftSource],
         ewma_accepted: Option<usize>,
+        mtp_argmax_matches: usize,
     ) {
         self.draft_tokens = self.draft_tokens.saturating_add(saturating_u32(drafted));
         self.accepted_tokens = self
@@ -1291,7 +1292,7 @@ impl MtpTelemetry {
         // Use the true argmax-based acceptance for EWMA when auto-optimistic is
         // active (ewma_accepted = Some(truth)).  Otherwise use the actual
         // accept_count (rejection-sampling or manual optimistic).
-        let ewma_ac = ewma_accepted.unwrap_or(accepted);
+        let _ewma_ac = ewma_accepted.unwrap_or(accepted);
         const ALPHA: f32 = 0.05;
         if drafted > 0 {
             let step_rate = ewma_ac as f32 / drafted as f32;
@@ -1326,13 +1327,15 @@ impl MtpTelemetry {
                 .get(accepted)
                 .map(|s| matches!(s, MtpDraftSource::Mtp | MtpDraftSource::HybridMtp))
                 .unwrap_or(true);
-        // EWMA numerator: MTP tokens that match argmax (would pass rejection sampling).
+        // EWMA numerator: among accepted MTP tokens, how many match the argmax?
+        // These are the tokens that would have passed rejection sampling.
         let mtp_only_accepted_ewma = sources
             .iter()
+            .zip(pending.iter())
             .zip(predicted.iter())
-            .take(accepted.min(sources.len()).min(predicted.len()))
-            .filter(|(s, _p)| matches!(s, MtpDraftSource::Mtp | MtpDraftSource::HybridMtp))
-            .filter(|(_s, p)| pending.get(sources.iter().position(|x| x == *_s).unwrap_or(usize::MAX)) == Some(p))
+            .take(accepted)
+            .filter(|((s, _d), _p)| matches!(s, MtpDraftSource::Mtp | MtpDraftSource::HybridMtp))
+            .filter(|((_s, d), p)| d == p)
             .count();
         let mtp_only_drafted = mtp_only_accepted_count + usize::from(first_rejection_is_mtp);
         if mtp_only_drafted > 0 {
