@@ -72,7 +72,8 @@ use ax_engine_core::{
 
 use crate::generate::{
     DirectPipelineTimings, advance_direct_pipeline_with_timings_and_turboquant_context,
-    chunked_prefill, chunked_prefill_with_mtp_history, decode_step,
+    chunked_prefill, chunked_prefill_with_mtp_history_and_sampling_buffers,
+    chunked_prefill_with_sampling_buffers, decode_step,
     start_direct_pipeline_with_turboquant_context,
 };
 use crate::kv_cache::{MlxKVCache, MlxKVCacheUsage};
@@ -1538,6 +1539,30 @@ impl MtpTelemetry {
         self.ngram_think_gated_steps = self
             .ngram_think_gated_steps
             .saturating_add(other.ngram_think_gated_steps);
+        // EWMA fields: sample-weighted average so the batch-level aggregate
+        // reported in append_route_decisions reflects all finished requests
+        // rather than staying at 0.0 (the default).  Per-request gating
+        // (auto-optimistic, n-gram saturation) uses state.mtp_telemetry
+        // directly and is unaffected by this merge.
+        let ar_samples = self
+            .accept_rate_ewma_samples
+            .saturating_add(other.accept_rate_ewma_samples);
+        if ar_samples > 0 {
+            self.accept_rate_ewma = (self.accept_rate_ewma * self.accept_rate_ewma_samples as f32
+                + other.accept_rate_ewma * other.accept_rate_ewma_samples as f32)
+                / ar_samples as f32;
+        }
+        self.accept_rate_ewma_samples = ar_samples;
+        let mtp_ar_samples = self
+            .mtp_only_accept_rate_ewma_samples
+            .saturating_add(other.mtp_only_accept_rate_ewma_samples);
+        if mtp_ar_samples > 0 {
+            self.mtp_only_accept_rate_ewma = (self.mtp_only_accept_rate_ewma
+                * self.mtp_only_accept_rate_ewma_samples as f32
+                + other.mtp_only_accept_rate_ewma * other.mtp_only_accept_rate_ewma_samples as f32)
+                / mtp_ar_samples as f32;
+        }
+        self.mtp_only_accept_rate_ewma_samples = mtp_ar_samples;
         self.ngram_saturated_gated_steps = self
             .ngram_saturated_gated_steps
             .saturating_add(other.ngram_saturated_gated_steps);
@@ -4540,20 +4565,24 @@ impl MlxRunner {
                         effective_prefill_token_count = token_ids.len();
                         let recompute_history = state.repetition_history(token_ids, sampling);
                         if self.weights.mtp.is_some() && prefill_completes_prompt {
-                            let (tok, hidden, history_tokens) = chunked_prefill_with_mtp_history(
-                                &self.cfg,
-                                &self.weights,
-                                token_ids,
-                                &mut state.cache,
-                                self.cold_prefill_chunk,
-                                MlxSamplingRequest::new(sampling, &recompute_history),
-                                &mut state.rng,
-                            );
+                            let (tok, hidden, history_tokens) =
+                                chunked_prefill_with_mtp_history_and_sampling_buffers(
+                                    &self.cfg,
+                                    &self.weights,
+                                    token_ids,
+                                    &mut state.cache,
+                                    self.cold_prefill_chunk,
+                                    MlxSamplingRequest::new(sampling, &recompute_history),
+                                    &mut state.rng,
+                                    &mut state.sampling_probs_buf,
+                                    &mut state.sampling_logits_buf,
+                                    &mut state.sampling_candidates_buf,
+                                );
                             state.mtp_prefill_hidden = Some(hidden);
                             state.mtp_prefill_history_tokens = history_tokens;
                             tok
                         } else {
-                            chunked_prefill(
+                            chunked_prefill_with_sampling_buffers(
                                 &self.cfg,
                                 &self.weights,
                                 token_ids,
@@ -4561,24 +4590,31 @@ impl MlxRunner {
                                 self.cold_prefill_chunk,
                                 MlxSamplingRequest::new(sampling, &recompute_history),
                                 &mut state.rng,
+                                &mut state.sampling_probs_buf,
+                                &mut state.sampling_logits_buf,
+                                &mut state.sampling_candidates_buf,
                             )
                         }
                     }
                 } else if self.weights.mtp.is_some() && prefill_completes_prompt {
-                    let (tok, hidden, history_tokens) = chunked_prefill_with_mtp_history(
-                        &self.cfg,
-                        &self.weights,
-                        prefill_tokens,
-                        &mut state.cache,
-                        prefill_chunk_for_request,
-                        MlxSamplingRequest::new(sampling, &repetition_history),
-                        &mut state.rng,
-                    );
+                    let (tok, hidden, history_tokens) =
+                        chunked_prefill_with_mtp_history_and_sampling_buffers(
+                            &self.cfg,
+                            &self.weights,
+                            prefill_tokens,
+                            &mut state.cache,
+                            prefill_chunk_for_request,
+                            MlxSamplingRequest::new(sampling, &repetition_history),
+                            &mut state.rng,
+                            &mut state.sampling_probs_buf,
+                            &mut state.sampling_logits_buf,
+                            &mut state.sampling_candidates_buf,
+                        );
                     state.mtp_prefill_hidden = Some(hidden);
                     state.mtp_prefill_history_tokens = history_tokens;
                     tok
                 } else {
-                    chunked_prefill(
+                    chunked_prefill_with_sampling_buffers(
                         &self.cfg,
                         &self.weights,
                         prefill_tokens,
@@ -4586,6 +4622,9 @@ impl MlxRunner {
                         prefill_chunk_for_request,
                         MlxSamplingRequest::new(sampling, &repetition_history),
                         &mut state.rng,
+                        &mut state.sampling_probs_buf,
+                        &mut state.sampling_logits_buf,
+                        &mut state.sampling_candidates_buf,
                     )
                 };
                 let prefill_forward_wall_us = elapsed_us(prefill_forward_started);
@@ -5123,7 +5162,7 @@ impl MlxRunner {
         } else {
             Vec::new()
         };
-        let prefill_output_token = chunked_prefill(
+        let prefill_output_token = chunked_prefill_with_sampling_buffers(
             &self.cfg,
             &self.weights,
             tokens,
@@ -5138,6 +5177,9 @@ impl MlxRunner {
                 &repetition_history,
             ),
             &mut warmup_rng,
+            &mut state.sampling_probs_buf,
+            &mut state.sampling_logits_buf,
+            &mut state.sampling_candidates_buf,
         );
         if capture_prefill_output {
             state.rng = warmup_rng;
@@ -7577,9 +7619,9 @@ fn adaptive_ngram_saturation_threshold(mtp_depth: usize) -> f32 {
     std::env::var("AX_MLX_MTP_NGRAM_GATE_THRESHOLD")
         .ok()
         .and_then(|v| v.parse::<f32>().ok())
-        // depth≥3: 0.99 splits flappy (99.5% MTP accept → gate fires) from
-        // long_code (98.4% → gate stays open, n-gram keeps helping).
-        // depth=2: lower bound 0.98 since we lack benchmark data.
+        // depth≥3: 0.97 keeps n-gram active in the 97-99% range where it still
+        // adds value, while gating it off when MTP is truly saturated (≥99%).
+        // depth=2: slightly higher at 0.98 since depth-2 EWMA is less noisy.
         .unwrap_or(if mtp_depth >= 3 { 0.97 } else { 0.98 })
 }
 
@@ -12282,5 +12324,59 @@ mod tests {
             topk_probs[0], 0.0,
             "token 99 is outside top-3, should return 0"
         );
+    }
+
+    #[test]
+    fn mtp_telemetry_merge_from_combines_ewma_fields() {
+        // merge_from must not silently drop EWMA values from the other side.
+        // Both accept_rate_ewma and mtp_only_accept_rate_ewma should be merged
+        // as sample-weighted averages so that batch-level route decisions report
+        // the correct aggregate rather than always reporting 0.
+
+        let mut a = MtpTelemetry::default();
+        // Request A: 4 steps, EWMA converges near 1.0
+        for _ in 0..4 {
+            a.record_step(3, 3, &[MtpDraftSource::Mtp; 3], None, 3);
+        }
+        assert_eq!(a.accept_rate_ewma_samples, 4);
+        assert_eq!(a.mtp_only_accept_rate_ewma_samples, 4);
+        assert!((a.accept_rate_ewma - 1.0).abs() < 1e-5);
+        assert!((a.mtp_only_accept_rate_ewma - 1.0).abs() < 1e-5);
+
+        let mut b = MtpTelemetry::default();
+        // Request B: 4 steps, EWMA converges near 0.0
+        for _ in 0..4 {
+            b.record_step(3, 0, &[MtpDraftSource::Mtp; 3], None, 0);
+        }
+        assert_eq!(b.accept_rate_ewma_samples, 4);
+        assert_eq!(b.mtp_only_accept_rate_ewma_samples, 4);
+        assert!((b.accept_rate_ewma - 0.0).abs() < 1e-5);
+        assert!((b.mtp_only_accept_rate_ewma - 0.0).abs() < 1e-5);
+
+        a.merge_from(b);
+
+        // After merge: 8 total samples (4+4), weighted average of 1.0 and 0.0 = 0.5.
+        assert_eq!(a.accept_rate_ewma_samples, 8);
+        assert_eq!(a.mtp_only_accept_rate_ewma_samples, 8);
+        assert!(
+            (a.accept_rate_ewma - 0.5).abs() < 1e-5,
+            "merged accept_rate_ewma should be 0.5, got {}",
+            a.accept_rate_ewma
+        );
+        assert!(
+            (a.mtp_only_accept_rate_ewma - 0.5).abs() < 1e-5,
+            "merged mtp_only_accept_rate_ewma should be 0.5, got {}",
+            a.mtp_only_accept_rate_ewma
+        );
+
+        // Merging with a zero-sample side must not produce NaN.
+        let empty = MtpTelemetry::default();
+        let ewma_before = a.accept_rate_ewma;
+        let samples_before = a.accept_rate_ewma_samples;
+        a.merge_from(empty);
+        assert_eq!(a.accept_rate_ewma_samples, samples_before);
+        assert!((a.accept_rate_ewma - ewma_before).abs() < 1e-6);
+        assert!(a.accept_rate_ewma.is_finite());
+        assert!(a.mtp_only_accept_rate_ewma.is_finite());
     }
 }

@@ -120,7 +120,7 @@ checksum = "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
 
 [[package]]
 name = "ax-engine-bench"
-version = "5.0.4"
+version = "5.1.0"
 dependencies = [
  "ax-engine-core",
  "ax-engine-mlx",
@@ -134,7 +134,7 @@ dependencies = [
 
 [[package]]
 name = "ax-engine-core"
-version = "5.0.4"
+version = "5.1.0"
 dependencies = [
  "metal",
  "objc",
@@ -147,7 +147,7 @@ dependencies = [
 
 [[package]]
 name = "ax-engine-microbench"
-version = "5.0.4"
+version = "5.1.0"
 dependencies = [
  "ax-engine-core",
  "ax-engine-mlx",
@@ -157,7 +157,7 @@ dependencies = [
 
 [[package]]
 name = "ax-engine-mlx"
-version = "5.0.4"
+version = "5.1.0"
 dependencies = [
  "ax-engine-core",
  "fs2",
@@ -170,7 +170,7 @@ dependencies = [
 
 [[package]]
 name = "ax-engine-py"
-version = "5.0.4"
+version = "5.1.0"
 dependencies = [
  "ax-engine-sdk",
  "pyo3",
@@ -181,7 +181,7 @@ dependencies = [
 
 [[package]]
 name = "ax-engine-sdk"
-version = "5.0.4"
+version = "5.1.0"
 dependencies = [
  "ax-engine-core",
  "ax-engine-mlx",
@@ -197,7 +197,7 @@ dependencies = [
 
 [[package]]
 name = "ax-engine-server"
-version = "5.0.4"
+version = "5.1.0"
 dependencies = [
  "ax-engine-sdk",
  "axum",
@@ -1264,7 +1264,7 @@ dependencies = [
 
 [[package]]
 name = "mlx-sys"
-version = "5.0.4"
+version = "5.1.0"
 dependencies = [
  "bindgen",
  "cc",

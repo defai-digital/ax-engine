@@ -190,12 +190,39 @@ pub fn chunked_prefill(
     sampling_request: MlxSamplingRequest<'_>,
     rng: &mut Xorshift64,
 ) -> u32 {
-    let sampling = sampling_request.params;
-    let chunk_size = chunk_size.max(1);
-    let total = prompt_tokens.len();
     let mut sampling_probs_buf = Vec::new();
     let mut sampling_logits_buf = Vec::new();
     let mut sampling_candidates_buf = Vec::new();
+    chunked_prefill_with_sampling_buffers(
+        cfg,
+        weights,
+        prompt_tokens,
+        cache,
+        chunk_size,
+        sampling_request,
+        rng,
+        &mut sampling_probs_buf,
+        &mut sampling_logits_buf,
+        &mut sampling_candidates_buf,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn chunked_prefill_with_sampling_buffers(
+    cfg: &ModelConfig,
+    weights: &ModelWeights,
+    prompt_tokens: &[u32],
+    cache: &mut MlxKVCache,
+    chunk_size: usize,
+    sampling_request: MlxSamplingRequest<'_>,
+    rng: &mut Xorshift64,
+    sampling_probs_buf: &mut Vec<f32>,
+    sampling_logits_buf: &mut Vec<f32>,
+    sampling_candidates_buf: &mut Vec<(usize, f32)>,
+) -> u32 {
+    let sampling = sampling_request.params;
+    let chunk_size = chunk_size.max(1);
+    let total = prompt_tokens.len();
 
     let cache_only_prefix_len = mlx_lm_style_cache_only_prefix_len(total, sampling);
     if cache_only_prefix_len > 0 {
@@ -217,13 +244,16 @@ pub fn chunked_prefill(
             offset = end;
         }
 
-        let tok = decode_step(
+        let tok = decode_step_with_sampling_buffers(
             cfg,
             weights,
             prompt_tokens[cache_only_prefix_len],
             cache,
             sampling_request,
             rng,
+            sampling_probs_buf,
+            sampling_logits_buf,
+            sampling_candidates_buf,
         );
         clear_cache();
         return tok;
@@ -261,9 +291,9 @@ pub fn chunked_prefill(
                         sampling,
                         sampling_request.repetition_tokens,
                         rng,
-                        &mut sampling_probs_buf,
-                        &mut sampling_logits_buf,
-                        &mut sampling_candidates_buf,
+                        sampling_probs_buf,
+                        sampling_logits_buf,
+                        sampling_candidates_buf,
                     )
                 }
             } else {
@@ -327,13 +357,40 @@ pub fn chunked_prefill_with_mtp_history(
     sampling_request: MlxSamplingRequest<'_>,
     rng: &mut Xorshift64,
 ) -> (u32, MlxArray, Vec<u32>) {
+    let mut sampling_probs_buf = Vec::new();
+    let mut sampling_logits_buf = Vec::new();
+    let mut sampling_candidates_buf = Vec::new();
+    chunked_prefill_with_mtp_history_and_sampling_buffers(
+        cfg,
+        weights,
+        prompt_tokens,
+        cache,
+        chunk_size,
+        sampling_request,
+        rng,
+        &mut sampling_probs_buf,
+        &mut sampling_logits_buf,
+        &mut sampling_candidates_buf,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn chunked_prefill_with_mtp_history_and_sampling_buffers(
+    cfg: &ModelConfig,
+    weights: &ModelWeights,
+    prompt_tokens: &[u32],
+    cache: &mut MlxKVCache,
+    chunk_size: usize,
+    sampling_request: MlxSamplingRequest<'_>,
+    rng: &mut Xorshift64,
+    sampling_probs_buf: &mut Vec<f32>,
+    sampling_logits_buf: &mut Vec<f32>,
+    sampling_candidates_buf: &mut Vec<(usize, f32)>,
+) -> (u32, MlxArray, Vec<u32>) {
     use mlx_sys::MlxDtype;
     let sampling = sampling_request.params;
     let chunk_size = chunk_size.max(1);
     let total = prompt_tokens.len();
-    let mut sampling_probs_buf = Vec::new();
-    let mut sampling_logits_buf = Vec::new();
-    let mut sampling_candidates_buf = Vec::new();
 
     // cache_only_prefix_len fast path: no final-hidden support (short path).
     // Fall back to the normal chunked_prefill for this case and return a
@@ -432,9 +489,9 @@ pub fn chunked_prefill_with_mtp_history(
                         sampling,
                         sampling_request.repetition_tokens,
                         rng,
-                        &mut sampling_probs_buf,
-                        &mut sampling_logits_buf,
-                        &mut sampling_candidates_buf,
+                        sampling_probs_buf,
+                        sampling_logits_buf,
+                        sampling_candidates_buf,
                     )
                 }
             } else {
@@ -668,7 +725,10 @@ pub fn decode_step(
     sampling_request: MlxSamplingRequest<'_>,
     rng: &mut Xorshift64,
 ) -> u32 {
-    decode_step_with_turboquant_context(
+    let mut sampling_probs_buf = Vec::new();
+    let mut sampling_logits_buf = Vec::new();
+    let mut sampling_candidates_buf = Vec::new();
+    decode_step_with_sampling_buffers_and_turboquant_context(
         cfg,
         weights,
         last_token,
@@ -676,6 +736,35 @@ pub fn decode_step(
         sampling_request,
         rng,
         None,
+        &mut sampling_probs_buf,
+        &mut sampling_logits_buf,
+        &mut sampling_candidates_buf,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn decode_step_with_sampling_buffers(
+    cfg: &ModelConfig,
+    weights: &ModelWeights,
+    last_token: u32,
+    cache: &mut MlxKVCache,
+    sampling_request: MlxSamplingRequest<'_>,
+    rng: &mut Xorshift64,
+    sampling_probs_buf: &mut Vec<f32>,
+    sampling_logits_buf: &mut Vec<f32>,
+    sampling_candidates_buf: &mut Vec<(usize, f32)>,
+) -> u32 {
+    decode_step_with_sampling_buffers_and_turboquant_context(
+        cfg,
+        weights,
+        last_token,
+        cache,
+        sampling_request,
+        rng,
+        None,
+        sampling_probs_buf,
+        sampling_logits_buf,
+        sampling_candidates_buf,
     )
 }
 
@@ -687,6 +776,36 @@ pub fn decode_step_with_turboquant_context(
     sampling_request: MlxSamplingRequest<'_>,
     rng: &mut Xorshift64,
     turboquant_context: Option<&TurboQuantModelDecodeContext<'_>>,
+) -> u32 {
+    let mut sampling_probs_buf = Vec::new();
+    let mut sampling_logits_buf = Vec::new();
+    let mut sampling_candidates_buf = Vec::new();
+    decode_step_with_sampling_buffers_and_turboquant_context(
+        cfg,
+        weights,
+        last_token,
+        cache,
+        sampling_request,
+        rng,
+        turboquant_context,
+        &mut sampling_probs_buf,
+        &mut sampling_logits_buf,
+        &mut sampling_candidates_buf,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn decode_step_with_sampling_buffers_and_turboquant_context(
+    cfg: &ModelConfig,
+    weights: &ModelWeights,
+    last_token: u32,
+    cache: &mut MlxKVCache,
+    sampling_request: MlxSamplingRequest<'_>,
+    rng: &mut Xorshift64,
+    turboquant_context: Option<&TurboQuantModelDecodeContext<'_>>,
+    sampling_probs_buf: &mut Vec<f32>,
+    sampling_logits_buf: &mut Vec<f32>,
+    sampling_candidates_buf: &mut Vec<(usize, f32)>,
 ) -> u32 {
     let sampling = sampling_request.params;
     let token_offset = cache.seq_len;
@@ -711,9 +830,6 @@ pub fn decode_step_with_turboquant_context(
         )
     };
     cache.seq_len += 1;
-    let mut sampling_probs_buf = Vec::new();
-    let mut sampling_logits_buf = Vec::new();
-    let mut sampling_candidates_buf = Vec::new();
 
     if sampling.temperature > 0.0
         && !sampling.uses_repetition_penalty()
@@ -738,9 +854,9 @@ pub fn decode_step_with_turboquant_context(
                 sampling,
                 sampling_request.repetition_tokens,
                 rng,
-                &mut sampling_probs_buf,
-                &mut sampling_logits_buf,
-                &mut sampling_candidates_buf,
+                sampling_probs_buf,
+                sampling_logits_buf,
+                sampling_candidates_buf,
             )
         }
     } else {
