@@ -5763,6 +5763,15 @@ impl MlxRunner {
             state.mtp_telemetry.auto_optimistic_steps =
                 state.mtp_telemetry.auto_optimistic_steps.saturating_add(1);
         }
+        // When auto-optimistic is active, we accept all drafts for output but
+        // must track the TRUE acceptance rate for EWMA so the gate can
+        // deactivate if draft quality drops. Without this, record_step sees
+        // accept_count == pending.len() every time, pushing EWMA to 1.0 and
+        // creating a positive feedback loop that makes auto-optimistic
+        // permanent even if the underlying acceptance rate falls.
+        // `ewma_accept_count` is set after verify, once `predicted` is
+        // available for the argmax comparison.
+        let mut ewma_accept_count: Option<usize> = None;
 
         // Build verify sequence: [primary_token] ++ pending_draft.
         let mut verify_input: Vec<u32> = Vec::with_capacity(1 + pending.len());
@@ -5815,6 +5824,13 @@ impl MlxRunner {
                         slice_post_norm_hidden(&post_norm_all, ac, self.cfg.hidden_size);
                     let predicted: Vec<u32> = predicted_arr.data_u32().to_vec();
                     let correction_argmax_tok = predicted.get(ac).copied().unwrap_or(0);
+                    // Track true acceptance for EWMA so auto-optimistic can
+                    // deactivate if draft quality drops.
+                    if auto_optimistic && !self.mtp_optimistic {
+                        ewma_accept_count = Some(
+                            pending.iter().zip(predicted.iter()).take_while(|(d, p)| d == p).count()
+                        );
+                    }
                     (logits_all, draft_hidden, ac, true, correction_argmax_tok)
                 } else {
                     // Target probabilities for rejection-sampling acceptance.
@@ -5921,6 +5937,13 @@ impl MlxRunner {
                         slice_post_norm_hidden(&post_norm_all, ac, self.cfg.hidden_size);
                     let predicted: Vec<u32> = predicted_arr.data_u32().to_vec();
                     let correction_argmax_tok = predicted.get(ac).copied().unwrap_or(0);
+                    // Track true acceptance for EWMA so auto-optimistic can
+                    // deactivate if draft quality drops.
+                    if auto_optimistic && !self.mtp_optimistic {
+                        ewma_accept_count = Some(
+                            pending.iter().zip(predicted.iter()).take_while(|(d, p)| d == p).count()
+                        );
+                    }
                     (logits_all, draft_hidden, ac, true, correction_argmax_tok)
                 } else {
                     // Target probabilities for rejection-sampling acceptance.
@@ -6040,10 +6063,13 @@ impl MlxRunner {
         result.push(tail_tok);
 
         // Record MTP draft/accept telemetry.
+        // Use the true acceptance rate for EWMA when auto-optimistic is active
+        // (output accept_count is inflated to pending.len() by optimistic).
         if !pending.is_empty() {
+            let ewma_ac = ewma_accept_count.unwrap_or(accept_count);
             state.mtp_telemetry.record_step(
                 pending.len(),
-                accept_count,
+                ewma_ac,
                 &state.mtp_pending_draft_sources,
             );
             let ngram_prefix_len = state
