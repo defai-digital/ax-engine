@@ -63,12 +63,12 @@ Values marked `~` carry this caveat.
 
 | Model | Suite | Depth | MTPLX tok/s | Light. MTP tok/s | Light.+ngram tok/s | AX MTP tok/s | AX MTP+ngram tok/s |
 |---|---|---:|---:|---:|---:|---:|---:|
-| Qwen3.6 27B 4-bit | flappy | 3 | 685 | 440 ~ | 424 ~ | 641 | 648 |
-| Qwen3.6 27B 4-bit | long_code | 3 | 786 | 633 ~ | 612 ~ | 692 | 694 |
-| Qwen3.6 27B 4-bit | python_modules_long | 3 | 683 | 452 ~ | 443 ~ | 651 | 648 |
-| Qwen3.6 35B-A3B 4-bit | flappy | 1 | 1,598 | 918 ~ | 876 ~ | 1,664 | 1,655 |
-| Qwen3.6 35B-A3B 4-bit | long_code | 1 | 2,520 | 1,665 ~ | 1,607 ~ | 2,307 | 2,282 |
-| Qwen3.6 35B-A3B 4-bit | python_modules_long | 1 | 1,705 | 995 ~ | 962 ~ | 1,816 | 1,806 |
+| Qwen3.6 27B 4-bit | flappy | 3 | 693 | 473 ~ | 466 ~ | 668 | 667 |
+| Qwen3.6 27B 4-bit | long_code | 3 | 795 | 659 ~ | 657 ~ | 776 | 780 |
+| Qwen3.6 27B 4-bit | python_modules_long | 3 | 690 | 483 ~ | 477 ~ | 678 | 678 |
+| Qwen3.6 35B-A3B 4-bit | flappy | 1 | 1,530 | 886 ~ | 877 ~ | 1,728 | 1,726 |
+| Qwen3.6 35B-A3B 4-bit | long_code | 1 | 2,448 | 1,375 ~ | 1,502 ~ | 2,620 | 2,619 |
+| Qwen3.6 35B-A3B 4-bit | python_modules_long | 1 | 1,679 | 964 ~ | 970 ~ | 1,897 | 1,891 |
 
 #### Time to first token (ms) — same run
 
@@ -77,12 +77,12 @@ client-side and includes local HTTP socket overhead; values marked `~` carry thi
 
 | Model | Suite | Depth | MTPLX ms | Light. MTP ms | Light.+ngram ms | AX MTP ms | AX MTP+ngram ms |
 |---|---|---:|---:|---:|---:|---:|---:|
-| Qwen3.6 27B 4-bit | flappy | 3 | 476 | 732 ~ | 759 ~ | 502 | 496 |
-| Qwen3.6 27B 4-bit | long_code | 3 | 901 | 1,135 ~ | 1,174 ~ | 1,037 | 1,034 |
-| Qwen3.6 27B 4-bit | python_modules_long | 3 | 511 | 729 ~ | 790 ~ | 537 | 539 |
-| Qwen3.6 35B-A3B 4-bit | flappy | 1 | 202 | 352 ~ | 371 ~ | 193 | 194 |
-| Qwen3.6 35B-A3B 4-bit | long_code | 1 | 285 | 431 ~ | 447 ~ | 311 | 314 |
-| Qwen3.6 35B-A3B 4-bit | python_modules_long | 1 | 202 | 349 ~ | 360 ~ | 191 | 190 |
+| Qwen3.6 27B 4-bit | flappy | 3 | 471 | 680 ~ | 690 ~ | 481 | 482 |
+| Qwen3.6 27B 4-bit | long_code | 3 | 902 | 1,089 ~ | 1,092 ~ | 925 | 920 |
+| Qwen3.6 27B 4-bit | python_modules_long | 3 | 506 | 718 ~ | 727 ~ | 517 | 516 |
+| Qwen3.6 35B-A3B 4-bit | flappy | 1 | 210 | 367 ~ | 368 ~ | 186 | 186 |
+| Qwen3.6 35B-A3B 4-bit | long_code | 1 | 293 | 479 ~ | 479 ~ | 274 | 274 |
+| Qwen3.6 35B-A3B 4-bit | python_modules_long | 1 | 199 | 360 ~ | 356 ~ | 182 | 182 |
 
 Full artifacts: [`2026-06-01` (AX MTP+n-gram rerun)](benchmarks/results/mtp-fair/2026-06-01-qwen36-fair-ax-rerun4/summary.json) · [prior five-engine run](benchmarks/results/mtp-fair/2026-06-01-qwen36-fair-ax-ngram3/summary.json).
 
