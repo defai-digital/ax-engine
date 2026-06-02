@@ -174,6 +174,7 @@ def _validate_row(
     min_speedup_vs_dim_parallel: float,
     max_abs_diff: float,
     min_cosine_similarity: float,
+    require_dim_parallel: bool = False,
 ) -> None:
     cold_tokens = _integer(row.get("cold_tokens"), "row.cold_tokens")
     _require(cold_tokens >= min_cold_tokens, f"row.cold_tokens must be >= {min_cold_tokens}")
@@ -194,6 +195,10 @@ def _validate_row(
 
     variants = _variant_by_name(row)
     _require(REQUIRED_VARIANT in variants, f"row missing required variant {REQUIRED_VARIANT}")
+    _require(
+        not require_dim_parallel or "dim_parallel" in variants,
+        "D3 evidence must include dim_parallel comparison variant",
+    )
 
     candidate = variants[REQUIRED_VARIANT]
     _validate_quality(
@@ -254,6 +259,7 @@ def validate_artifact(
         min_speedup_vs_dim_parallel=min_speedup_vs_dim_parallel,
         max_abs_diff=max_abs_diff,
         min_cosine_similarity=min_cosine_similarity,
+        require_dim_parallel=False,
     )
 
 
@@ -266,6 +272,7 @@ def validate_row_evidence(
     min_speedup_vs_dim_parallel: float = DEFAULT_MIN_SPEEDUP_VS_DIM_PARALLEL,
     max_abs_diff: float = DEFAULT_MAX_ABS_DIFF,
     min_cosine_similarity: float = DEFAULT_MIN_COSINE_SIMILARITY,
+    require_dim_parallel: bool = False,
 ) -> None:
     """Validate a caller-selected microbench row as fused-kernel evidence."""
     _validate_top_level(doc)
@@ -277,6 +284,7 @@ def validate_row_evidence(
         min_speedup_vs_dim_parallel=min_speedup_vs_dim_parallel,
         max_abs_diff=max_abs_diff,
         min_cosine_similarity=min_cosine_similarity,
+        require_dim_parallel=require_dim_parallel,
     )
 
 

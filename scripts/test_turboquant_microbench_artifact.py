@@ -125,6 +125,17 @@ class TurboQuantMicrobenchArtifactTests(unittest.TestCase):
         ):
             checker.validate_artifact(artifact)
 
+    def test_row_evidence_can_require_dim_parallel_comparison(self) -> None:
+        artifact = microbench_artifact()
+        row = artifact["rows"][1]
+        row["kernel_variants"] = [variant("two_stage_scores", median_us=1041)]
+
+        with self.assertRaisesRegex(
+            checker.MicrobenchArtifactValidationError,
+            "dim_parallel comparison",
+        ):
+            checker.validate_row_evidence(artifact, row, require_dim_parallel=True)
+
     def test_quality_regression_fails_closed(self) -> None:
         artifact = microbench_artifact()
         artifact["rows"][1]["kernel_variants"][1] = variant(
