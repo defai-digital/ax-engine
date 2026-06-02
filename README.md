@@ -44,12 +44,12 @@ warmup repetition.
 
 | Model | Suite | Depth | MTPLX tok/s | MTPLX accept | Lightning tok/s | Lightning accept | Light.+ngram tok/s | Light.+ngram accept | AX tok/s | AX accept | AX+ngram tok/s | AX+ngram accept |
 |---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| Qwen3.6 27B 4-bit | flappy | 3 | 58.8 | 100.0% | 70.2 | 100.0% | 67.2 | 100.0% | 65.0 | 98.2% | 65.0 | 86.5% |
-| Qwen3.6 27B 4-bit | long_code | 3 | 58.4 | 99.7% | 70.4 | 100.0% | 72.7 | 100.0% | 63.1 | 94.7% | 76.5 | 96.8% |
-| Qwen3.6 27B 4-bit | python_modules_long | 3 | 54.6 | 87.6% | 68.3 | 100.0% | 69.5 | 100.0% | 54.9 | 80.4% | 70.3 | 89.5% |
-| Qwen3.6 35B-A3B 4-bit | flappy | 1 | 105.0 | 49.1% | 188.1 | 100.0% | 203.5 | 100.0% | 183.9 | 100.0% | 318.7 | 96.2% |
-| Qwen3.6 35B-A3B 4-bit | long_code | 1 | 103.8 | 51.3% | 92.0 | 100.0% | 159.8 | 100.0% | 182.6 | 99.7% | 292.7 | 95.5% |
-| Qwen3.6 35B-A3B 4-bit | python_modules_long | 1 | 100.0 | 42.8% | 187.4 | 100.0% | 207.8 | 100.0% | 179.9 | 94.0% | 184.7 | 75.8% |
+| Qwen3.6 27B 4-bit | flappy | 3 | 58.8 | 100.0% | 70.2 | 100.0% | 67.2 | 100.0% | 65.4 | 98.2% | 67.2 | 90.6% |
+| Qwen3.6 27B 4-bit | long_code | 3 | 58.4 | 99.7% | 70.4 | 100.0% | 72.7 | 100.0% | 63.5 | 95.3% | 75.1 | 94.5% |
+| Qwen3.6 27B 4-bit | python_modules_long | 3 | 54.6 | 87.6% | 68.3 | 100.0% | 69.5 | 100.0% | 54.0 | 77.5% | 63.5 | 85.4% |
+| Qwen3.6 35B-A3B 4-bit | flappy | 1 | 105.0 | 49.1% | 188.1 | 100.0% | 203.5 | 100.0% | 178.7 | 100.0% | 308.1 | 97.1% |
+| Qwen3.6 35B-A3B 4-bit | long_code | 1 | 103.8 | 51.3% | 92.0 | 100.0% | 159.8 | 100.0% | 167.6 | 99.6% | 279.6 | 95.0% |
+| Qwen3.6 35B-A3B 4-bit | python_modules_long | 1 | 100.0 | 42.8% | 187.4 | 100.0% | 207.8 | 100.0% | 173.0 | 93.6% | 186.3 | 80.4% |
 
 AX MTP uses pure MTP (n-gram stacking disabled); AX MTP+n-gram stacks n-gram speculative drafting on top of MTP; Lightning ngram+MTP uses `--enable-ngram` with MTP. Sampler: temperature=0.6,
 top_p=0.95, top_k=20. 1000 gen tokens, 5 repetitions, 30 s cooldown, 10 s inter-case cooldown.
@@ -63,12 +63,12 @@ Values marked `~` carry this caveat.
 
 | Model | Suite | Depth | MTPLX tok/s | Light. MTP tok/s | Light.+ngram tok/s | AX MTP tok/s | AX MTP+ngram tok/s |
 |---|---|---:|---:|---:|---:|---:|---:|
-| Qwen3.6 27B 4-bit | flappy | 3 | 693 | 473 ~ | 466 ~ | 668 | 667 |
-| Qwen3.6 27B 4-bit | long_code | 3 | 795 | 659 ~ | 657 ~ | 776 | 780 |
-| Qwen3.6 27B 4-bit | python_modules_long | 3 | 690 | 483 ~ | 477 ~ | 678 | 678 |
-| Qwen3.6 35B-A3B 4-bit | flappy | 1 | 1,530 | 886 ~ | 877 ~ | 1,728 | 1,726 |
-| Qwen3.6 35B-A3B 4-bit | long_code | 1 | 2,448 | 1,375 ~ | 1,502 ~ | 2,620 | 2,619 |
-| Qwen3.6 35B-A3B 4-bit | python_modules_long | 1 | 1,679 | 964 ~ | 970 ~ | 1,897 | 1,891 |
+| Qwen3.6 27B 4-bit | flappy | 3 | 693 | 473 ~ | 466 ~ | 686 | 685 |
+| Qwen3.6 27B 4-bit | long_code | 3 | 795 | 659 ~ | 657 ~ | 790 | 790 |
+| Qwen3.6 27B 4-bit | python_modules_long | 3 | 690 | 483 ~ | 477 ~ | 692 | 691 |
+| Qwen3.6 35B-A3B 4-bit | flappy | 1 | 1,530 | 886 ~ | 877 ~ | 1,809 | 1,818 |
+| Qwen3.6 35B-A3B 4-bit | long_code | 1 | 2,448 | 1,375 ~ | 1,502 ~ | 2,699 | 2,697 |
+| Qwen3.6 35B-A3B 4-bit | python_modules_long | 1 | 1,679 | 964 ~ | 970 ~ | 1,969 | 1,978 |
 
 #### Time to first token (ms) — same run
 
@@ -77,12 +77,12 @@ client-side and includes local HTTP socket overhead; values marked `~` carry thi
 
 | Model | Suite | Depth | MTPLX ms | Light. MTP ms | Light.+ngram ms | AX MTP ms | AX MTP+ngram ms |
 |---|---|---:|---:|---:|---:|---:|---:|
-| Qwen3.6 27B 4-bit | flappy | 3 | 471 | 680 ~ | 690 ~ | 481 | 482 |
-| Qwen3.6 27B 4-bit | long_code | 3 | 902 | 1,089 ~ | 1,092 ~ | 925 | 920 |
-| Qwen3.6 27B 4-bit | python_modules_long | 3 | 506 | 718 ~ | 727 ~ | 517 | 516 |
-| Qwen3.6 35B-A3B 4-bit | flappy | 1 | 210 | 367 ~ | 368 ~ | 186 | 186 |
-| Qwen3.6 35B-A3B 4-bit | long_code | 1 | 293 | 479 ~ | 479 ~ | 274 | 274 |
-| Qwen3.6 35B-A3B 4-bit | python_modules_long | 1 | 199 | 360 ~ | 356 ~ | 182 | 182 |
+| Qwen3.6 27B 4-bit | flappy | 3 | 471 | 680 ~ | 690 ~ | 469 | 469 |
+| Qwen3.6 27B 4-bit | long_code | 3 | 902 | 1,089 ~ | 1,092 ~ | 908 | 908 |
+| Qwen3.6 27B 4-bit | python_modules_long | 3 | 506 | 718 ~ | 727 ~ | 506 | 506 |
+| Qwen3.6 35B-A3B 4-bit | flappy | 1 | 210 | 367 ~ | 368 ~ | 178 | 177 |
+| Qwen3.6 35B-A3B 4-bit | long_code | 1 | 293 | 479 ~ | 479 ~ | 266 | 266 |
+| Qwen3.6 35B-A3B 4-bit | python_modules_long | 1 | 199 | 360 ~ | 356 ~ | 174 | 172 |
 
 Full artifacts: [`2026-06-01` (AX MTP+n-gram rerun)](benchmarks/results/mtp-fair/2026-06-01-qwen36-fair-ax-rerun4/summary.json) · [prior five-engine run](benchmarks/results/mtp-fair/2026-06-01-qwen36-fair-ax-ngram3/summary.json).
 
