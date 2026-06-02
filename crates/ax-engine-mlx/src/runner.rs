@@ -1307,26 +1307,36 @@ impl MtpTelemetry {
         // rejected by cascade rather than by their own quality.  Counting those
         // cascaded rejections against MTP deflates the EWMA when n-gram is running.
         // Only count tokens that were "meaningfully evaluated":
-        //   - accepted tokens (positions 0..ewma_ac) passed the verifier, and
-        //   - the first-rejected token (position `ewma_ac`) was the one that
+        //   - accepted tokens (positions 0..accepted) passed the verifier, and
+        //   - the first-rejected token (position `accepted`) was the one that
         //     actually failed — but only if that token is MTP-sourced.
-        // Tokens at positions ewma_ac+1..drafted are cascade rejections and are
+        // Tokens at positions accepted+1..drafted are cascade rejections and are
         // excluded regardless of source.
-        // Uses ewma_ac (argmax truth when auto-optimistic) so that the EWMA
-        // tracks the real rejection-sampling-equivalent rate.
+        //
+        // The EWMA numerator counts MTP tokens that match the argmax (argmax truth
+        // when auto-optimistic).  The denominator is all MTP positions that were
+        // meaningfully evaluated (accepted positions + first rejection if MTP).
         let mtp_only_accepted_count = sources
             .iter()
-            .take(ewma_ac)
+            .take(accepted)
             .filter(|s| matches!(s, MtpDraftSource::Mtp | MtpDraftSource::HybridMtp))
             .count();
-        let first_rejection_is_mtp = ewma_ac < drafted
+        let first_rejection_is_mtp = accepted < drafted
             && sources
-                .get(ewma_ac)
+                .get(accepted)
                 .map(|s| matches!(s, MtpDraftSource::Mtp | MtpDraftSource::HybridMtp))
                 .unwrap_or(true);
+        // EWMA numerator: MTP tokens that match argmax (would pass rejection sampling).
+        let mtp_only_accepted_ewma = sources
+            .iter()
+            .zip(predicted.iter())
+            .take(accepted.min(sources.len()).min(predicted.len()))
+            .filter(|(s, _p)| matches!(s, MtpDraftSource::Mtp | MtpDraftSource::HybridMtp))
+            .filter(|(_s, p)| pending.get(sources.iter().position(|x| x == *_s).unwrap_or(usize::MAX)) == Some(p))
+            .count();
         let mtp_only_drafted = mtp_only_accepted_count + usize::from(first_rejection_is_mtp);
         if mtp_only_drafted > 0 {
-            let mtp_step_rate = mtp_only_accepted_count as f32 / mtp_only_drafted as f32;
+            let mtp_step_rate = mtp_only_accepted_ewma as f32 / mtp_only_drafted as f32;
             if self.mtp_only_accept_rate_ewma_samples == 0 {
                 self.mtp_only_accept_rate_ewma = mtp_step_rate;
             } else {
