@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from copy import deepcopy
 from pathlib import Path
 
 SCRIPT_PATH = Path(__file__).with_name("check_turboquant_microbench_artifact.py")
@@ -135,6 +136,16 @@ class TurboQuantMicrobenchArtifactTests(unittest.TestCase):
             "dim_parallel comparison",
         ):
             checker.validate_row_evidence(artifact, row, require_dim_parallel=True)
+
+    def test_row_evidence_must_be_selected_from_artifact_rows(self) -> None:
+        artifact = microbench_artifact()
+        external_row = deepcopy(artifact["rows"][1])
+
+        with self.assertRaisesRegex(
+            checker.MicrobenchArtifactValidationError,
+            "selected from doc.rows",
+        ):
+            checker.validate_row_evidence(artifact, external_row)
 
     def test_quality_regression_fails_closed(self) -> None:
         artifact = microbench_artifact()

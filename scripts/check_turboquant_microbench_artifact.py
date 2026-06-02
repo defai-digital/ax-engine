@@ -276,9 +276,16 @@ def validate_row_evidence(
 ) -> None:
     """Validate a caller-selected microbench row as fused-kernel evidence."""
     _validate_top_level(doc)
+    rows = doc.get("rows")
+    _require(isinstance(rows, list) and rows, "rows must be a non-empty array")
+    selected_row = _mapping(row, "row")
+    _require(
+        any(candidate is selected_row for candidate in rows),
+        "row must be selected from doc.rows",
+    )
     _validate_row(
         doc,
-        _mapping(row, "row"),
+        selected_row,
         min_cold_tokens=min_cold_tokens,
         min_speedup_vs_cpu=min_speedup_vs_cpu,
         min_speedup_vs_dim_parallel=min_speedup_vs_dim_parallel,
