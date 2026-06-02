@@ -24,6 +24,7 @@ SCHEMA_VERSION = "ax.turboquant_prd_completion.v1"
 DEFAULT_RESULTS_ROOT = REPO_ROOT / "benchmarks/results/turboquant"
 DEFAULT_MODELS_ROOT = REPO_ROOT / ".internal/models"
 DEFAULT_MIN_MICROBENCH_COLD_TOKENS = 8192
+DEFAULT_D3_HEAD_DIM = 128
 DEFAULT_MIN_D3_SPEEDUP_VS_DIM = 1.5
 DEFAULT_MIN_D4_SPEEDUP = 2.0
 
@@ -86,11 +87,20 @@ def inspect_microbench_artifact(
     path: Path,
     *,
     min_cold_tokens: int,
+    d3_head_dim: int,
     min_speedup_vs_dim: float,
 ) -> dict[str, Any]:
     doc: dict[str, Any] | None = None
     try:
         doc = _load_json(path)
+        d3_row = d3_microbench_row(
+            doc,
+            min_cold_tokens=min_cold_tokens,
+            head_dim=d3_head_dim,
+        )
+        variants = microbench_checker._variant_by_name(d3_row)
+        if "dim_parallel" not in variants:
+            raise ValueError("D3 evidence must include dim_parallel comparison variant")
         microbench_checker.validate_artifact(
             doc,
             min_cold_tokens=min_cold_tokens,
@@ -111,6 +121,31 @@ def inspect_microbench_artifact(
         "largest_cold_tokens": largest_cold_tokens(doc),
         "head_dims": row_head_dims(doc),
     }
+
+
+def d3_microbench_row(
+    doc: dict[str, Any],
+    *,
+    min_cold_tokens: int,
+    head_dim: int,
+) -> dict[str, Any]:
+    rows = doc.get("rows")
+    if not isinstance(rows, list):
+        raise ValueError("rows must be a non-empty array")
+    eligible = [
+        row
+        for row in rows
+        if isinstance(row, dict)
+        and isinstance(row.get("cold_tokens"), int)
+        and row.get("head_dim") == head_dim
+        and row["cold_tokens"] >= min_cold_tokens
+    ]
+    if not eligible:
+        raise ValueError(
+            f"D3 evidence must include head_dim={head_dim} row "
+            f"with cold_tokens >= {min_cold_tokens}"
+        )
+    return max(eligible, key=lambda row: row["cold_tokens"])
 
 
 def largest_cold_tokens(doc: dict[str, Any] | None) -> int | None:
@@ -198,6 +233,7 @@ def build_report(
     required_model_families: list[str],
     require_artifact_files: bool,
     min_microbench_cold_tokens: int,
+    d3_head_dim: int,
     min_d3_speedup_vs_dim: float,
     min_d4_speedup: float,
 ) -> dict[str, Any]:
@@ -213,6 +249,7 @@ def build_report(
         inspect_microbench_artifact(
             path,
             min_cold_tokens=min_microbench_cold_tokens,
+            d3_head_dim=d3_head_dim,
             min_speedup_vs_dim=min_d3_speedup_vs_dim,
         )
         for path in discovered_microbench
@@ -236,7 +273,8 @@ def build_report(
     if not any(item.get("passes_gate") is True for item in microbench):
         blockers.append(
             "missing D3 fused decode microbench evidence "
-            f"(cold_tokens >= {min_microbench_cold_tokens}, speedup_vs_dim >= {min_d3_speedup_vs_dim})"
+            f"(head_dim={d3_head_dim}, cold_tokens >= {min_microbench_cold_tokens}, "
+            f"speedup_vs_dim >= {min_d3_speedup_vs_dim})"
         )
     if not any(item.get("passes_gate") is True for item in short_decode):
         blockers.append(
@@ -257,6 +295,7 @@ def build_report(
         "requirements": {
             "required_model_families": required_model_families,
             "min_microbench_cold_tokens": min_microbench_cold_tokens,
+            "d3_head_dim": d3_head_dim,
             "min_d3_speedup_vs_dim_parallel": min_d3_speedup_vs_dim,
             "min_d4_short_decode_speedup": min_d4_speedup,
         },
@@ -290,6 +329,7 @@ def main(argv: list[str] | None = None) -> int:
         type=int,
         default=DEFAULT_MIN_MICROBENCH_COLD_TOKENS,
     )
+    parser.add_argument("--d3-head-dim", type=int, default=DEFAULT_D3_HEAD_DIM)
     parser.add_argument(
         "--min-d3-speedup-vs-dim",
         type=float,
@@ -311,6 +351,7 @@ def main(argv: list[str] | None = None) -> int:
             required_model_families=parse_csv(args.required_model_families),
             require_artifact_files=not args.no_require_artifact_files,
             min_microbench_cold_tokens=args.min_microbench_cold_tokens,
+            d3_head_dim=args.d3_head_dim,
             min_d3_speedup_vs_dim=args.min_d3_speedup_vs_dim,
             min_d4_speedup=args.min_d4_speedup,
         )

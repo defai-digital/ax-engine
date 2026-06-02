@@ -6,6 +6,7 @@ import importlib.util
 import json
 import tempfile
 import unittest
+from copy import deepcopy
 from pathlib import Path
 
 SCRIPT_PATH = Path(__file__).with_name("check_turboquant_prd_completion.py")
@@ -87,6 +88,7 @@ class TurboQuantPrdCompletionTests(unittest.TestCase):
                 required_model_families=["qwen3"],
                 require_artifact_files=False,
                 min_microbench_cold_tokens=8192,
+                d3_head_dim=128,
                 min_d3_speedup_vs_dim=1.5,
                 min_d4_speedup=2.0,
             )
@@ -116,12 +118,60 @@ class TurboQuantPrdCompletionTests(unittest.TestCase):
                 required_model_families=["qwen3"],
                 require_artifact_files=False,
                 min_microbench_cold_tokens=8192,
+                d3_head_dim=128,
                 min_d3_speedup_vs_dim=1.5,
                 min_d4_speedup=2.0,
             )
 
         self.assertFalse(report["decision"]["prd_complete"])
         self.assertIn("missing D4 short decode speedup evidence", report["decision"]["blockers"][0])
+
+    def test_completion_report_requires_dim_parallel_for_d3_speedup(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            models_root = root / "models"
+            results_root = root / "results"
+            results_root.mkdir()
+            write_eligible_manifest(models_root)
+
+            quality_path = results_root / "quality-gate.json"
+            quality_path.write_text(json.dumps(quality_fixtures.valid_artifact(root)))
+            microbench = deepcopy(microbench_fixtures.microbench_artifact())
+            microbench["rows"][1]["kernel_variants"] = [
+                variant
+                for variant in microbench["rows"][1]["kernel_variants"]
+                if variant["name"] != "dim_parallel"
+            ]
+            microbench_path = results_root / "microbench.json"
+            microbench_path.write_text(json.dumps(microbench))
+            short_decode_path = results_root / "short-decode.json"
+            write_short_decode_artifact(short_decode_path)
+
+            report = checker.build_report(
+                models_root=models_root,
+                results_root=results_root,
+                quality_artifacts=[quality_path],
+                microbench_artifacts=[microbench_path],
+                short_decode_artifacts=[short_decode_path],
+                required_model_families=["qwen3"],
+                require_artifact_files=False,
+                min_microbench_cold_tokens=8192,
+                d3_head_dim=128,
+                min_d3_speedup_vs_dim=1.5,
+                min_d4_speedup=2.0,
+            )
+
+        self.assertFalse(report["decision"]["prd_complete"])
+        self.assertTrue(
+            any(
+                "missing D3 fused decode microbench evidence" in blocker
+                for blocker in report["decision"]["blockers"]
+            )
+        )
+        self.assertEqual(
+            report["evidence"]["microbench_artifacts"][0]["blocker"],
+            "D3 evidence must include dim_parallel comparison variant",
+        )
 
 
 if __name__ == "__main__":
