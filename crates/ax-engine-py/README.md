@@ -1,62 +1,67 @@
-# ax-engine-py
+# AX Engine
 
-Python bindings for AX Engine.
+High-performance local inference engine for Apple Silicon — Python bindings.
 
-This crate exposes the `ax_engine._ax_engine` extension module and stays aligned
-with the AX Engine SDK contract rather than inventing a separate Python-only runtime
-surface.
+## Installation
 
-Current preview scope:
-
-- SDK-backed `Session`
-- fail-closed host validation (requires M2 Max or newer, macOS 14+, 32 GB RAM)
-- runtime metadata reporting
-- `mlx=True` selects the repo-owned MLX runtime
-- `support_tier="mlx_lm_delegated"` selects explicit upstream `mlx-lm` text
-  compatibility through `mlx_lm_server_url`
-- non-MLX inference routes to `llama.cpp`
-- text/chat convenience helpers over the same SDK-backed request contract
-- stepwise request control via `submit(...)`, `step()`, `snapshot(...)`, and
-  `cancel(...)`
-- SDK-backed in-process `stream_generate(...)` lifecycle events emitted through
-  a native incremental iterator
-- mlx-lm compatibility via `mlx_lm_server_url`
-- llama.cpp compatibility via `llama_model_path`, `llama_cli_path`, or
-  `llama_server_url`
-- `native_mode=True` is retired and returns an error
-
-Current non-goals:
-
-- text tokenization and decoding
-- automatic model-aware chat templating
-- transport-level remote streaming
-- broad compatibility lifecycle parity across multiple delegated adapters
-
-For Phase 1, stepwise request-control methods support MLX preview plus the
-server-backed `llama.cpp` compatibility path. The `mlx_lm_delegated` path is
-text-only blocking generation through `mlx_lm.server`; token prompts,
-streaming, and lifecycle calls fail closed. One llama.cpp compatibility session
-can now hold multiple active delegated requests while `step()` aggregates
-progress across them.
-
-Build from the repository root with `maturin`:
+### Python (pip)
 
 ```bash
-maturin develop
+pip install ax-engine
 ```
 
-For a repo-owned integration smoke check that bootstraps a temporary virtual
-environment, installs `maturin`, builds the extension, runs the checked-in
-Python examples, and then runs both the installed-package preview tests and the
-wrapper tests, use:
+Requires macOS 14+, Apple Silicon (M2 Max or newer), Python 3.10+.
+
+### Command-line tools (Homebrew)
+
+To install the `ax-engine-server` HTTP adapter and `ax-engine-bench` CLI:
 
 ```bash
-bash scripts/check-python-preview.sh
+brew install defai-digital/ax-engine/ax-engine
 ```
 
-To verify the extension-module packaging path without installing it, build from
-the repository root with:
+Then verify:
 
 ```bash
-cargo build -p ax-engine-py --no-default-features --features python-extension
+ax-engine-server --help
+ax-engine-bench doctor
 ```
+
+## Quick start
+
+```python
+import ax_engine
+
+session = ax_engine.Session(mlx=True, mlx_model_artifacts_dir="/path/to/model")
+result = session.generate([token_id, ...], max_output_tokens=128)
+print(result.output_tokens)
+```
+
+Or use the OpenAI-compatible shim:
+
+```bash
+python -m ax_engine.openai_server \
+    --model-id my-model \
+    --mlx-model-artifacts-dir /path/to/model \
+    --tokenizer /path/to/tokenizer.json \
+    --port 8080
+```
+
+Then point any OpenAI client at `http://127.0.0.1:8080`.
+
+## Optional dependencies
+
+```bash
+pip install "ax-engine[openai]"   # FastAPI + uvicorn for the OpenAI shim
+pip install "ax-engine[download]" # mlx-lm for model downloading helpers
+```
+
+## Requirements
+
+- macOS 14 (Sonoma) or later
+- Apple Silicon — M2 Max / M2 Ultra / M3 / M4 family (32 GB RAM minimum)
+- Python 3.10+
+
+## Source
+
+[github.com/defai-digital/ax-engine](https://github.com/defai-digital/ax-engine)

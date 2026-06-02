@@ -518,10 +518,18 @@ and cold-start measurements.
 
 ## Installation
 
+### Python
+
+```bash
+pip install ax-engine
+```
+
+Requires macOS 14+, Apple Silicon (M2 Max or newer), Python 3.10+.
+
 ### Homebrew
 
-For tagged macOS arm64 releases, install the command-line tools from
-the AutomatosX tap:
+For the `ax-engine-server` HTTP adapter and `ax-engine-bench` CLI:
+
 
 ```bash
 brew install defai-digital/ax-engine/ax-engine
