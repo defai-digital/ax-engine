@@ -8,7 +8,6 @@ other MLX text models or non-MLX models reachable through explicit `mlx-lm` and
 `llama.cpp` compatibility routes. Users get one AX server, SDK, and benchmark
 surface while repo-owned model coverage grows.
 
-> Requires **macOS 14 (Sonoma) or later** on **Apple Silicon M2 Max or newer** with **32 GB RAM minimum**.
 > Rust 1.85+ for source builds.
 
 ### Qwen3.6 Fair MTP
@@ -111,38 +110,59 @@ Full artifacts: [`2026-06-02` (AX MTP+n-gram rerun, 27B)](benchmarks/results/mtp
 </tr>
 </table>
 
-## 30-Second Setup
+## Quick Install
 
-Install the released command-line tools and verify the runtime:
+**Python (recommended):**
+
+```bash
+pip install ax-engine
+```
+
+**Homebrew** (for `ax-engine-server` and `ax-engine-bench` CLI tools):
 
 ```bash
 brew install defai-digital/ax-engine/ax-engine
-ax-engine-bench doctor
 ```
 
-Then download a model and start `ax-engine-server` from the CLI:
+> Requires **macOS 14 (Sonoma) or later** on **Apple Silicon M2 Max or newer** with **32 GB RAM minimum**.
 
-```bash
-# Download an mlx-community model and generate its manifest in one step
-MODEL_DIR="$(python3 scripts/download_model.py mlx-community/Qwen3-4B-4bit --json | python3 -c 'import json,sys; print(json.load(sys.stdin)["dest"])')"
+## 30-Second Setup
 
-# Start the local HTTP server. Keep this process running.
-ax-engine-server \
-  --mlx \
-  --mlx-model-artifacts-dir "$MODEL_DIR" \
-  --port 8080
-
-# In another terminal, inspect the running server.
-curl http://127.0.0.1:8080/v1/runtime
-```
-
-Or from Python (after `maturin develop` or `pip install ax-engine`):
+Download a model and run it from Python:
 
 ```python
 from ax_engine import download_model, Session
+
 path = download_model("mlx-community/Qwen3-4B-4bit")
 with Session(mlx=True, mlx_model_artifacts_dir=str(path)) as s:
     print(s.generate([1, 2, 3], max_output_tokens=8).output_tokens)
+```
+
+Or start the OpenAI-compatible server:
+
+```bash
+# Download a model
+MODEL_DIR="$(python3 scripts/download_model.py mlx-community/Qwen3-4B-4bit --json | python3 -c 'import json,sys; print(json.load(sys.stdin)["dest"])')"
+
+# Start the server
+python -m ax_engine.openai_server \
+  --model-id my-model \
+  --mlx-model-artifacts-dir "$MODEL_DIR" \
+  --tokenizer "$MODEL_DIR/tokenizer.json" \
+  --port 8080
+```
+
+Then call it from any OpenAI client:
+
+```python
+from openai import OpenAI
+client = OpenAI(base_url="http://127.0.0.1:8080/v1", api_key="local")
+resp = client.chat.completions.create(
+    model="my-model",
+    messages=[{"role": "user", "content": "What is AGI?"}],
+    max_tokens=128,
+)
+print(resp.choices[0].message.content)
 ```
 
 `download_model()` downloads weights and auto-runs `ax-engine-bench generate-manifest`.
@@ -526,54 +546,31 @@ pip install ax-engine
 
 Requires macOS 14+, Apple Silicon (M2 Max or newer), Python 3.10+.
 
-### Homebrew
+Optional extras:
 
-For the `ax-engine-server` HTTP adapter and `ax-engine-bench` CLI:
+```bash
+pip install "ax-engine[openai]"   # FastAPI + uvicorn for the OpenAI-compatible server
+pip install "ax-engine[download]" # mlx-lm for model download helpers
+```
 
+### Homebrew (CLI tools)
+
+For `ax-engine-server` (native binary HTTP adapter) and `ax-engine-bench`:
 
 ```bash
 brew install defai-digital/ax-engine/ax-engine
-```
-
-This installs:
-
-- `ax-engine-server`: local HTTP adapter over the SDK runtime
-- `ax-engine-bench`: workload-contract, readiness, direct-generate, and
-  benchmark-support CLI
-- the Homebrew `mlx-c` runtime dependency required by the released binaries
-
-Check the installed tools:
-
-```bash
-ax-engine-server --help
 ax-engine-bench doctor
 ```
 
-Homebrew is the quickest path for the released server and benchmark binaries.
-If `ax-engine-bench doctor` fails with `Library not loaded:
-/opt/homebrew/opt/mlx-c/lib/libmlxc.dylib`, install or repair the runtime with
-`brew install mlx-c` and `brew reinstall defai-digital/ax-engine/ax-engine`.
-Use the source build when you need the full Rust workspace, Python extension,
-local examples, or changes that have not been tagged yet.
-
-The release archive attached to GitHub is the Homebrew formula payload. It is
-not a standalone installer with bundled dynamic libraries. Use Homebrew unless
-you are prepared to provide `mlx-c` and its dynamic library path yourself.
+If `doctor` fails with `Library not loaded: libmlxc.dylib`, run:
+`brew install mlx-c && brew reinstall defai-digital/ax-engine/ax-engine`.
 
 ### Source
-
-Development builds require Rust and the MLX C runtime on Apple Silicon:
 
 ```bash
 brew install mlx-c
 cargo build --workspace --release
-```
-
-Python bindings are built from source:
-
-```bash
-maturin develop
-python -m unittest discover -s python/tests -v
+maturin develop  # Python bindings
 ```
 
 ## Quick Start
