@@ -137,6 +137,16 @@ class TurboQuantMicrobenchArtifactTests(unittest.TestCase):
         ):
             checker.validate_row_evidence(artifact, row, require_dim_parallel=True)
 
+    def test_artifact_can_require_dim_parallel_comparison(self) -> None:
+        artifact = microbench_artifact()
+        artifact["rows"][1]["kernel_variants"] = [variant("two_stage_scores", median_us=1041)]
+
+        with self.assertRaisesRegex(
+            checker.MicrobenchArtifactValidationError,
+            "dim_parallel comparison",
+        ):
+            checker.validate_artifact(artifact, require_dim_parallel=True)
+
     def test_row_evidence_must_be_selected_from_artifact_rows(self) -> None:
         artifact = microbench_artifact()
         external_row = deepcopy(artifact["rows"][1])
@@ -232,6 +242,28 @@ class TurboQuantMicrobenchArtifactTests(unittest.TestCase):
 
         self.assertEqual(completed.returncode, 0, completed.stderr)
         self.assertIn("ok:", completed.stdout)
+
+    def test_cli_can_require_dim_parallel_comparison(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            artifact = microbench_artifact()
+            artifact["rows"][1]["kernel_variants"] = [variant("two_stage_scores", median_us=1041)]
+            artifact_path = Path(tmp_dir) / "microbench.json"
+            artifact_path.write_text(json.dumps(artifact))
+
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT_PATH),
+                    "--require-dim-parallel",
+                    str(artifact_path),
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn("dim_parallel comparison", completed.stderr)
 
 
 if __name__ == "__main__":

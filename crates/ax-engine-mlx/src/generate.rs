@@ -603,9 +603,6 @@ pub fn advance_direct_pipeline_with_timings_and_turboquant_context(
         ForwardStageTimings::default()
     };
     cache.seq_len += 1;
-    let mut sampling_probs_buf = Vec::new();
-    let mut sampling_logits_buf = Vec::new();
-    let mut sampling_candidates_buf = Vec::new();
     let argmax_started = Instant::now();
     let next_token_arr = argmax(&logits, None);
     let argmax_wall_us = elapsed_us(argmax_started);
@@ -714,6 +711,9 @@ pub fn decode_step_with_turboquant_context(
         )
     };
     cache.seq_len += 1;
+    let mut sampling_probs_buf = Vec::new();
+    let mut sampling_logits_buf = Vec::new();
+    let mut sampling_candidates_buf = Vec::new();
 
     if sampling.temperature > 0.0
         && !sampling.uses_repetition_penalty()

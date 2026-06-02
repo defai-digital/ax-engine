@@ -194,7 +194,8 @@ throughput baselines.
   standalone fused cold-decode microbenchmark artifacts. It checks K8/V4
   metadata, long-cold-context coverage, `two_stage_scores` quality, memory
   savings, and speedup against the CPU reference plus `dim_parallel` when
-  present.
+  present. Use `--require-dim-parallel` for D3 evidence checks where that
+  comparison is mandatory.
 - `check_turboquant_prd_completion.py`: fail-closed TurboQuant PRD completion
   report. It joins quality/promotion readiness, fused microbench evidence, and
   short-decode speedup artifacts so the PRD is not marked complete from code

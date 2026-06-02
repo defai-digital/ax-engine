@@ -83,7 +83,9 @@ cat > "$TMP_DIR/microbench.json" <<'JSON'
 }
 JSON
 
-"$PYTHON_BIN" scripts/check_turboquant_microbench_artifact.py "$TMP_DIR/microbench.json"
+"$PYTHON_BIN" scripts/check_turboquant_microbench_artifact.py \
+  --require-dim-parallel \
+  "$TMP_DIR/microbench.json"
 
 cat > "$TMP_DIR/regressed-microbench.json" <<'JSON'
 {

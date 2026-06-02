@@ -770,6 +770,7 @@ reference speedup margin explicitly:
 python3 scripts/check_turboquant_microbench_artifact.py \
   --min-cold-tokens 8192 \
   --min-speedup-vs-dim 1.5 \
+  --require-dim-parallel \
   benchmarks/results/turboquant/<date>/microbench.json
 ```
 

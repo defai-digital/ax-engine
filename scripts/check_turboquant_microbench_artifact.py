@@ -236,6 +236,7 @@ def validate_artifact(
     min_speedup_vs_dim_parallel: float = DEFAULT_MIN_SPEEDUP_VS_DIM_PARALLEL,
     max_abs_diff: float = DEFAULT_MAX_ABS_DIFF,
     min_cosine_similarity: float = DEFAULT_MIN_COSINE_SIMILARITY,
+    require_dim_parallel: bool = False,
 ) -> None:
     _validate_top_level(doc)
 
@@ -259,7 +260,7 @@ def validate_artifact(
             min_speedup_vs_dim_parallel=min_speedup_vs_dim_parallel,
             max_abs_diff=max_abs_diff,
             min_cosine_similarity=min_cosine_similarity,
-            require_dim_parallel=False,
+            require_dim_parallel=require_dim_parallel,
         )
 
 
@@ -303,6 +304,7 @@ def load_and_validate(
     min_speedup_vs_dim_parallel: float = DEFAULT_MIN_SPEEDUP_VS_DIM_PARALLEL,
     max_abs_diff: float = DEFAULT_MAX_ABS_DIFF,
     min_cosine_similarity: float = DEFAULT_MIN_COSINE_SIMILARITY,
+    require_dim_parallel: bool = False,
 ) -> None:
     try:
         doc = json.loads(path.read_text())
@@ -316,6 +318,7 @@ def load_and_validate(
         min_speedup_vs_dim_parallel=min_speedup_vs_dim_parallel,
         max_abs_diff=max_abs_diff,
         min_cosine_similarity=min_cosine_similarity,
+        require_dim_parallel=require_dim_parallel,
     )
 
 
@@ -329,6 +332,11 @@ def main(argv: list[str] | None = None) -> int:
         type=float,
         default=DEFAULT_MIN_SPEEDUP_VS_DIM_PARALLEL,
         help="minimum speedup versus dim_parallel when that variant is present",
+    )
+    parser.add_argument(
+        "--require-dim-parallel",
+        action="store_true",
+        help="require dim_parallel comparison rows instead of treating them as optional",
     )
     parser.add_argument("--max-abs-diff", type=float, default=DEFAULT_MAX_ABS_DIFF)
     parser.add_argument(
@@ -347,6 +355,7 @@ def main(argv: list[str] | None = None) -> int:
                 min_speedup_vs_dim_parallel=args.min_speedup_vs_dim,
                 max_abs_diff=args.max_abs_diff,
                 min_cosine_similarity=args.min_cosine_similarity,
+                require_dim_parallel=args.require_dim_parallel,
             )
         except MicrobenchArtifactValidationError as exc:
             print(f"error: {exc}", file=sys.stderr)
