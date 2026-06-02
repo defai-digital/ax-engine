@@ -37,10 +37,10 @@ HF_CACHE = Path(
 )
 ENGINE_LABELS = {
     "mtplx": "MTPLX 0.3.7",
-    "lightning_mlx": "Light. MTP (v0.6.10)",
-    "lightning_mtp_ngram": "Light. ngram+MTP (v0.6.10)",
-    "ax_engine": "AX MTP (v5.1.0)",
-    "ax_engine_ngram": "AX MTP+n-gram (v5.1.0)",
+    "lightning_mlx": "Lightning v0.6.10",
+    "lightning_mtp_ngram": "Lightning+ng v0.6.10",
+    "ax_engine": "AX Engine v5.1.0",
+    "ax_engine_ngram": "AX+ngram v5.1.0",
 }
 VERSIONS_FOOTNOTE = "MTPLX 0.3.7 · Lightning-MLX 0.6.10 · AX Engine v5.1.0"
 ENGINE_COLORS = {
@@ -1072,7 +1072,7 @@ def write_mtp_box_whisker_svg(
         *(
             [
                 f'<text x="24" y="62" font-family="Inter,Segoe UI,Arial,sans-serif" '
-                f'font-size="9" fill="#9ca3af">{html.escape(footnote)}</text>'
+                f'font-size="10" fill="#6b7280">{html.escape(footnote)}</text>'
             ]
             if footnote
             else []
