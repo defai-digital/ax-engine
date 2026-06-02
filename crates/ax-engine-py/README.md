@@ -1,9 +1,9 @@
 # ax-engine-py
 
-Preview Python bindings for AX Engine v4.
+Python bindings for AX Engine.
 
 This crate exposes the `ax_engine._ax_engine` extension module and stays aligned
-with the v4 SDK contract rather than inventing a separate Python-only runtime
+with the AX Engine SDK contract rather than inventing a separate Python-only runtime
 surface.
 
 Current preview scope:
