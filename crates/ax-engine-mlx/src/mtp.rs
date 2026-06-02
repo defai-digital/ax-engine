@@ -457,9 +457,10 @@ fn mtp_draft_tokens_greedy(
     first_token: u32,
     cache: &mut MlxKVCache,
     max_depth: usize,
-    _vocab: i32,
+    vocab: i32,
 ) -> (Vec<u32>, Vec<f32>, Vec<TokenDistribution>, usize, [f32; 3]) {
     let mut lazy_tokens: Vec<MlxArray> = Vec::with_capacity(max_depth);
+    let mut lazy_log_probs: Vec<MlxArray> = Vec::with_capacity(max_depth);
     let mut prev_hidden = first_hidden.clone();
     let first_token_data = [first_token];
     let mut prev_token_arr = MlxArray::from_raw_data(
@@ -485,22 +486,28 @@ fn mtp_draft_tokens_greedy(
 
         // Lazy argmax — NOT evaluated yet.
         let lazy_tok = lazy_argmax_logits(&logits);
+        // Compute draft log-prob at T=1.0 (model's own confidence in its argmax
+        // choice), staying in the lazy graph alongside the token selection.
+        let lazy_lp = gpu_draft_log_prob_lazy(&logits, &lazy_tok, 1.0, vocab);
         lazy_tokens.push(lazy_tok.clone());
+        lazy_log_probs.push(lazy_lp);
 
         prev_hidden = post_norm_hidden;
         prev_token_arr = lazy_tok;
     }
 
-    // Single batch eval for all depth levels at once.
-    let refs: Vec<&MlxArray> = lazy_tokens.iter().collect();
-    eval(&refs);
+    // Single batch eval for all depth levels at once — tokens and log-probs together.
+    let mut all_refs: Vec<&MlxArray> = Vec::with_capacity(max_depth * 2);
+    for t in &lazy_tokens {
+        all_refs.push(t);
+    }
+    for lp in &lazy_log_probs {
+        all_refs.push(lp);
+    }
+    eval(&all_refs);
 
-    // Read back materialised tokens.
     let draft_tokens: Vec<u32> = lazy_tokens.iter().map(|a| a.data_u32()[0]).collect();
-    // Return empty log probs — greedy draft has no per-token probabilities.
-    // Returning zeros would mislead mtp_accept_count into treating them as
-    // valid log probs (0.0f32.exp() = 1.0), corrupting rejection sampling.
-    let draft_log_probs: Vec<f32> = vec![];
+    let draft_log_probs: Vec<f32> = lazy_log_probs.iter().map(|a| a.data_f32()[0]).collect();
 
     let added = draft_tokens.len();
     (

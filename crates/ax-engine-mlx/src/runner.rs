@@ -3203,6 +3203,9 @@ struct RequestState {
     mtp_skip_hidden: Option<MlxArray>,
     /// Cumulative MTP draft/accept counters for benchmark telemetry.
     mtp_telemetry: MtpTelemetry,
+    /// Number of consecutive decode steps where accept_count == 0.
+    /// Used by `mtp_next_adaptive_depth` to progressively lower the depth floor.
+    mtp_consecutive_misses: u32,
     /// Per-request latch: once auto-optimistic activates (stochastic EWMA ≥ 0.99),
     /// it stays latched until the argmax-based EWMA drops below 0.95.  This
     /// prevents oscillation because argmax acceptance is strictly stricter than
@@ -3269,6 +3272,7 @@ impl RequestState {
             mtp_skip_logits: None,
             mtp_skip_hidden: None,
             mtp_telemetry: MtpTelemetry::default(),
+            mtp_consecutive_misses: 0,
             auto_optimistic_active: false,
             mtp_prefill_hidden: None,
             mtp_prefill_history_tokens: Vec::new(),
@@ -5738,6 +5742,20 @@ impl MlxRunner {
         let has_linear_attention = self.cfg.linear_attention.is_some();
         let vocab = self.cfg.vocab_size as i32;
         let mut mtp_timings = MtpStepTimings::default();
+        // Draft log-probs are computed at T=1.0 (greedy path) or
+        // head.draft_sampling.temperature (sampled path).
+        let draft_log_prob_temperature = self
+            .weights
+            .mtp
+            .as_ref()
+            .map(|h| {
+                if h.draft_sampling.temperature > 0.0 {
+                    h.draft_sampling.temperature
+                } else {
+                    1.0
+                }
+            })
+            .unwrap_or(1.0);
 
         // Skip-state consumption (Lightning-MLX always-advance pattern):
         // When the previous step's verify forward captured logits at the last
@@ -5964,6 +5982,8 @@ impl MlxRunner {
                     target_distributions_cpu,
                     &predicted,
                     &mut state.rng,
+                    draft_log_prob_temperature,
+                    sampling.temperature,
                 );
                 let ac = accept.accept_count;
                 let all_accepted = accept.all_accepted;
@@ -6088,6 +6108,8 @@ impl MlxRunner {
                     target_distributions_cpu,
                     &predicted,
                     &mut state.rng,
+                    draft_log_prob_temperature,
+                    sampling.temperature,
                 );
                 let ac = accept.accept_count;
                 let all_accepted = accept.all_accepted;
@@ -6219,7 +6241,13 @@ impl MlxRunner {
             mtp_max_depth,
             pending.len(),
             adaptive_depth_accept,
+            state.mtp_consecutive_misses,
         );
+        if adaptive_depth_accept == 0 && !pending.is_empty() {
+            state.mtp_consecutive_misses = state.mtp_consecutive_misses.saturating_add(1);
+        } else if adaptive_depth_accept > 0 {
+            state.mtp_consecutive_misses = 0;
+        }
 
         // Generate new draft tokens: attempt n-gram first, then let MTP fill
         // remaining depth slots when the n-gram prefix is shorter than the MTP
@@ -6291,6 +6319,7 @@ impl MlxRunner {
         } else {
             NgramDraftOutcome {
                 draft: vec![],
+                confidence: vec![],
                 rejection: None,
                 requested_max_len: 0,
             }
@@ -6330,7 +6359,16 @@ impl MlxRunner {
                     state.mtp_pending_draft_distributions = distributions;
                     state.mtp_telemetry.record_ngram_stack_hit(ngram_len, false);
                     state.mtp_telemetry.record_ngram_hybrid_tail(tail.len());
-                    let mut aligned_log_probs = vec![f32::NAN; ngram_len];
+                    // Build pseudo log-probs for n-gram prefix positions from
+                    // effective_confidence scores: ln(conf), clamped to [-30, 0].
+                    // High-confidence n-gram tokens (conf ≈ 1.0) get log_prob ≈ 0,
+                    // making accept_prob = p_target; low-confidence tokens get a
+                    // lower p_draft so the target model is more likely to accept.
+                    let mut aligned_log_probs: Vec<f32> = ngram_outcome
+                        .confidence
+                        .iter()
+                        .map(|&c| c.max(1e-37_f32).ln().max(-30.0_f32))
+                        .collect();
                     aligned_log_probs.extend(log_probs);
                     sources.extend(std::iter::repeat_n(MtpDraftSource::HybridMtp, tail.len()));
                     draft.extend(tail);
@@ -6777,6 +6815,7 @@ fn mtp_next_adaptive_depth(
     max_depth: usize,
     pending_len: usize,
     accept_count: usize,
+    consecutive_misses: u32,
 ) -> usize {
     if max_depth == 0 {
         return 0;
@@ -6794,6 +6833,17 @@ fn mtp_next_adaptive_depth(
 
     if accept_count >= pending_len {
         return current_depth.saturating_add(1).min(max_depth);
+    }
+
+    if accept_count == 0 {
+        // Progressive floor on consecutive complete misses: first miss keeps
+        // floor at 2 (status quo); second drops to 1; third+ drops to 0.
+        let floor = match consecutive_misses {
+            0 => 2.min(max_depth),
+            1 => 1.min(max_depth),
+            _ => 0,
+        };
+        return floor;
     }
 
     let floor = 2.min(max_depth);
@@ -6963,6 +7013,8 @@ fn mtp_accept_count(
     target_distributions: Option<&[TokenDistribution]>,
     predicted: &[u32],
     rng: &mut Xorshift64,
+    draft_temperature: f32,
+    target_temperature: f32,
 ) -> MtpAcceptOutcome {
     let mut ac = 0usize;
     let mut distribution_index = 0usize;
@@ -6974,15 +7026,27 @@ fn mtp_accept_count(
             .unwrap_or(MtpDraftSource::Mtp);
         let has_draft_distribution =
             matches!(source, MtpDraftSource::Mtp | MtpDraftSource::HybridMtp);
-        let can_rejection_sample = !matches!(source, MtpDraftSource::Ngram)
-            && pending_log_probs
-                .get(i)
-                .is_some_and(|log_prob| log_prob.is_finite())
+        let can_rejection_sample = pending_log_probs
+            .get(i)
+            .is_some_and(|log_prob| log_prob.is_finite())
             && target_probs_cpu.is_some();
 
         if let (true, Some(tprobs)) = (can_rejection_sample, target_probs_cpu) {
             let p_target_d = tprobs[i].max(0.0_f32);
-            let p_draft = pending_log_probs[i].exp().max(1e-37_f32);
+            // Rescale draft log-prob when draft and target temperatures differ.
+            // log(p_scaled) = log(p_draft) * (T_draft / T_target) is the correct
+            // temperature adjustment for softmax probabilities.  Skipped when
+            // temperatures match or when target is greedy (handled upstream).
+            let log_p_draft = pending_log_probs[i];
+            let log_p_scaled = if draft_temperature > 0.0
+                && target_temperature > 0.0
+                && (draft_temperature - target_temperature).abs() > 1e-6
+            {
+                log_p_draft * (draft_temperature / target_temperature)
+            } else {
+                log_p_draft
+            };
+            let p_draft = log_p_scaled.exp().max(1e-37_f32);
             let accept_prob = (p_target_d / p_draft).min(1.0_f32);
             if rng.next_f32() < accept_prob {
                 ac += 1;
@@ -7484,7 +7548,7 @@ fn adaptive_ngram_saturation_threshold(mtp_depth: usize) -> f32 {
         // depth≥3: 0.99 splits flappy (99.5% MTP accept → gate fires) from
         // long_code (98.4% → gate stays open, n-gram keeps helping).
         // depth=2: lower bound 0.98 since we lack benchmark data.
-        .unwrap_or(if mtp_depth >= 3 { 0.99 } else { 0.98 })
+        .unwrap_or(if mtp_depth >= 3 { 0.97 } else { 0.98 })
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -8281,19 +8345,63 @@ mod tests {
     }
 
     #[test]
-    fn mtp_accept_count_verifies_ngram_prefix_greedily() {
+    fn mtp_accept_count_ngram_pseudo_logprob_rejection_samples() {
+        // N-gram position with finite pseudo log-prob now enters rejection sampling.
+        // log_prob = ln(0.9) ≈ -0.105 → p_draft ≈ 0.9.
+        // target_prob = 1.0 → accept_prob = 1.0/0.9 capped at 1.0 → always accept.
+        let pseudo_lp = 0.9_f32.ln();
         let mut rng = Xorshift64::new(42);
         let accept = mtp_accept_count(
             &[17],
-            &[0.0],
+            &[pseudo_lp],
+            &[],
+            &[MtpDraftSource::Ngram],
+            Some(&[1.0]),
+            None,
+            &[17],
+            &mut rng,
+            1.0,
+            0.8,
+        );
+        assert_eq!(accept.accept_count, 1);
+        assert!(accept.all_accepted);
+        assert_eq!(accept.rejection_correction, None);
+
+        // Low target probability → reject even though tokens match.
+        let mut rng2 = Xorshift64::new(99);
+        let accept2 = mtp_accept_count(
+            &[17],
+            &[pseudo_lp],
+            &[],
+            &[MtpDraftSource::Ngram],
+            Some(&[0.0]),
+            None,
+            &[17],
+            &mut rng2,
+            1.0,
+            0.8,
+        );
+        assert_eq!(accept2.accept_count, 0);
+        assert!(!accept2.all_accepted);
+    }
+
+    #[test]
+    fn mtp_accept_count_ngram_nan_logprob_falls_back_to_greedy() {
+        // NaN log-prob is not finite → greedy argmax fallback still applies
+        // (backward compatibility with paths that don't carry pseudo log-probs).
+        let mut rng = Xorshift64::new(42);
+        let accept = mtp_accept_count(
+            &[17],
+            &[f32::NAN],
             &[],
             &[MtpDraftSource::Ngram],
             Some(&[0.0]),
             None,
             &[17],
             &mut rng,
+            1.0,
+            0.8,
         );
-
         assert_eq!(accept.accept_count, 1);
         assert!(accept.all_accepted);
         assert_eq!(accept.rejection_correction, None);
@@ -8306,6 +8414,8 @@ mod tests {
         let target_tail = TokenDistribution::new(vec![(99, 1.0)]).unwrap();
         let draft_tail = TokenDistribution::new(vec![(20, 1.0)]).unwrap();
 
+        // N-gram position uses NAN → greedy fallback (tokens match → accept).
+        // HybridMtp position has log_prob=0.0, target_prob=0.0 → reject, correction=99.
         let accept = mtp_accept_count(
             &[10, 20],
             &[f32::NAN, 0.0],
@@ -8315,6 +8425,8 @@ mod tests {
             Some(&[target_prefix, target_tail]),
             &[10, 20],
             &mut rng,
+            1.0,
+            0.8,
         );
 
         assert_eq!(accept.accept_count, 1);
@@ -8323,14 +8435,64 @@ mod tests {
     }
 
     #[test]
+    fn mtp_accept_count_temperature_rescaling() {
+        // Draft at T=0.7, target at T=0.6 → ratio=7/6≈1.167.
+        // log_p_draft = ln(0.8) ≈ -0.223; scaled = -0.223*1.167 ≈ -0.260 → p_scaled ≈ 0.771.
+        // target_prob = 1.0 → accept_prob = 1.0/0.771 capped at 1.0 → always accept.
+        let mut rng = Xorshift64::new(1);
+        let accept = mtp_accept_count(
+            &[5],
+            &[0.8_f32.ln()],
+            &[],
+            &[MtpDraftSource::Mtp],
+            Some(&[1.0]),
+            None,
+            &[5],
+            &mut rng,
+            0.7,
+            0.6,
+        );
+        assert_eq!(accept.accept_count, 1);
+
+        // When temperatures match, no rescaling occurs.
+        let mut rng2 = Xorshift64::new(1);
+        let accept2 = mtp_accept_count(
+            &[5],
+            &[0.8_f32.ln()],
+            &[],
+            &[MtpDraftSource::Mtp],
+            Some(&[1.0]),
+            None,
+            &[5],
+            &mut rng2,
+            0.7,
+            0.7,
+        );
+        assert_eq!(accept2.accept_count, 1);
+    }
+
+    #[test]
     fn mtp_adaptive_depth_shrinks_on_partial_reject_and_recovers_on_full_accept() {
-        assert_eq!(mtp_next_adaptive_depth(0, 3, 0, 0), 3);
-        assert_eq!(mtp_next_adaptive_depth(3, 3, 3, 2), 2);
-        assert_eq!(mtp_next_adaptive_depth(2, 3, 2, 1), 2);
-        assert_eq!(mtp_next_adaptive_depth(1, 3, 1, 1), 2);
-        assert_eq!(mtp_next_adaptive_depth(2, 3, 2, 2), 3);
-        assert_eq!(mtp_next_adaptive_depth(3, 3, 3, 0), 2);
-        assert_eq!(mtp_next_adaptive_depth(3, 0, 3, 3), 0);
+        // consecutive_misses=0 for all non-complete-miss cases.
+        assert_eq!(mtp_next_adaptive_depth(0, 3, 0, 0, 0), 3);
+        assert_eq!(mtp_next_adaptive_depth(3, 3, 3, 2, 0), 2);
+        assert_eq!(mtp_next_adaptive_depth(2, 3, 2, 1, 0), 2);
+        assert_eq!(mtp_next_adaptive_depth(1, 3, 1, 1, 0), 2);
+        assert_eq!(mtp_next_adaptive_depth(2, 3, 2, 2, 0), 3);
+        assert_eq!(mtp_next_adaptive_depth(3, 0, 3, 3, 0), 0);
+    }
+
+    #[test]
+    fn mtp_adaptive_depth_progressive_floor_on_consecutive_misses() {
+        // First complete miss (consecutive_misses=0): floor = 2.
+        assert_eq!(mtp_next_adaptive_depth(3, 3, 3, 0, 0), 2);
+        // Second consecutive miss (consecutive_misses=1): floor = 1.
+        assert_eq!(mtp_next_adaptive_depth(2, 3, 2, 0, 1), 1);
+        // Third+ consecutive miss (consecutive_misses=2): floor = 0.
+        assert_eq!(mtp_next_adaptive_depth(1, 3, 1, 0, 2), 0);
+        assert_eq!(mtp_next_adaptive_depth(1, 3, 1, 0, 5), 0);
+        // Partial accept resets to normal floor logic (not complete miss path).
+        assert_eq!(mtp_next_adaptive_depth(3, 3, 3, 1, 3), 2);
     }
 
     fn test_prefix_key(token: u32) -> MlxPrefixCacheKey {

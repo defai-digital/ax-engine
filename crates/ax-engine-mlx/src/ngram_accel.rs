@@ -348,6 +348,7 @@ enum NgramContextKey {
 struct DraftStep {
     token: u32,
     support: u32,
+    confidence: f32,
     source: NgramContextKey,
 }
 
@@ -374,11 +375,15 @@ pub enum NgramDraftRejection {
     ConfidenceFiltered,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct NgramDraftOutcome {
     pub draft: Vec<u32>,
     pub rejection: Option<NgramDraftRejection>,
     pub requested_max_len: usize,
+    /// Per-token effective confidence scores from the n-gram table (`effective_confidence()`),
+    /// parallel to `draft`. Used by the MTP hybrid path to derive pseudo log-probs for
+    /// rejection sampling on n-gram-sourced positions.
+    pub confidence: Vec<f32>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -596,6 +601,7 @@ impl NgramTable {
 
     pub fn predict_with_policy(&self, policy: NgramDraftPolicy) -> NgramDraftOutcome {
         let mut draft = Vec::with_capacity(policy.max_len);
+        let mut confidence = Vec::with_capacity(policy.max_len);
         // Fixed-size ring; self.tail has at most 4 elements.
         let mut buf = [0u32; 4];
         let mut len = self.tail.len().min(4);
@@ -623,6 +629,7 @@ impl NgramTable {
                         }
                     }
                     draft.push(step.token);
+                    confidence.push(step.confidence);
                     push_prediction_context_token(&mut buf, &mut len, step.token);
                 }
                 DraftStepSelection::Rejected(reason) => {
@@ -633,6 +640,7 @@ impl NgramTable {
         }
         NgramDraftOutcome {
             draft,
+            confidence,
             rejection,
             requested_max_len: policy.max_len,
         }
@@ -696,6 +704,7 @@ impl NgramTable {
                         return DraftStepSelection::Selected(DraftStep {
                             token: candidate.token,
                             support: candidate.support,
+                            confidence: candidate.confidence,
                             source: NgramContextKey::Fourgram(key),
                         });
                     }
@@ -709,6 +718,7 @@ impl NgramTable {
                         return DraftStepSelection::Selected(DraftStep {
                             token: candidate.token,
                             support: candidate.support,
+                            confidence: candidate.confidence,
                             source: NgramContextKey::Trigram(key),
                         });
                     }
@@ -722,6 +732,7 @@ impl NgramTable {
                         return DraftStepSelection::Selected(DraftStep {
                             token: candidate.token,
                             support: candidate.support,
+                            confidence: candidate.confidence,
                             source: NgramContextKey::Bigram(key),
                         });
                     }
@@ -736,6 +747,7 @@ impl NgramTable {
                         return DraftStepSelection::Selected(DraftStep {
                             token: candidate.token,
                             support: candidate.support,
+                            confidence: candidate.confidence,
                             source: NgramContextKey::Trigram(key),
                         });
                     }
@@ -749,6 +761,7 @@ impl NgramTable {
                         return DraftStepSelection::Selected(DraftStep {
                             token: candidate.token,
                             support: candidate.support,
+                            confidence: candidate.confidence,
                             source: NgramContextKey::Bigram(key),
                         });
                     }
@@ -763,6 +776,7 @@ impl NgramTable {
                         return DraftStepSelection::Selected(DraftStep {
                             token: candidate.token,
                             support: candidate.support,
+                            confidence: candidate.confidence,
                             source: NgramContextKey::Bigram(key),
                         });
                     }
@@ -822,15 +836,17 @@ fn draft_step_from_prediction(
         };
     match policy.variant {
         NgramPolicyVariant::MajorityRecency | NgramPolicyVariant::SharedPoolMajority => {
+            let conf = prediction.effective_confidence();
             prediction_passes(
                 prediction.support,
-                prediction.effective_confidence(),
+                conf,
                 effective_min_support,
                 policy.confidence_threshold,
             )
             .then_some(DraftCandidate {
                 token: prediction.token,
                 support: prediction.support,
+                confidence: conf,
             })
         }
         NgramPolicyVariant::LlamaMapLatest => {
@@ -845,6 +861,7 @@ fn draft_step_from_prediction(
             .then_some(DraftCandidate {
                 token: latest.token,
                 support: latest.count,
+                confidence,
             })
         }
     }
@@ -854,6 +871,7 @@ fn draft_step_from_prediction(
 struct DraftCandidate {
     token: u32,
     support: u32,
+    confidence: f32,
 }
 
 fn prediction_passes(support: u32, confidence: f32, min_support: u32, conf_threshold: f32) -> bool {
