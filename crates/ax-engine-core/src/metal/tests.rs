@@ -1156,27 +1156,6 @@ fn projection_feedback_keys_disable_only_the_failing_shape() {
 
 #[cfg(target_os = "macos")]
 #[test]
-fn sampler_feedback_keys_disable_only_the_failing_shape() {
-    let mut feedback = MetalOptionalKernelFeedbackState::default();
-    let failing_shape = sampler_feedback_key("sample_argmax_logprob_f32", 256_000);
-    let different_logits_width = sampler_feedback_key("sample_argmax_logprob_f32", 32_000);
-
-    for _ in 0..PHASE1_OPTIONAL_KERNEL_DISABLE_FAILURE_THRESHOLD {
-        record_optional_kernel_feedback_state(&mut feedback, &failing_shape, false);
-    }
-
-    assert!(!optional_kernel_allowed_in_feedback_state(
-        &feedback,
-        &failing_shape
-    ));
-    assert!(optional_kernel_allowed_in_feedback_state(
-        &feedback,
-        &different_logits_width
-    ));
-}
-
-#[cfg(target_os = "macos")]
-#[test]
 fn batched_sampler_feedback_keys_disable_only_the_failing_shape() {
     let mut feedback = MetalOptionalKernelFeedbackState::default();
     let failing_shape =

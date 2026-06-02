@@ -35,10 +35,6 @@ pub(super) enum MetalOptionalKernelFeedbackKey {
         input_width: usize,
         matrix_cols: usize,
     },
-    Sampler {
-        kernel_name: &'static str,
-        logits_width: usize,
-    },
     BatchedLogitsArgmax {
         kernel_name: &'static str,
         row_count: usize,
@@ -192,16 +188,6 @@ pub(super) fn projection_feedback_key(
         output_dim,
         input_width,
         matrix_cols,
-    }
-}
-
-pub(super) fn sampler_feedback_key(
-    kernel_name: &'static str,
-    logits_width: usize,
-) -> MetalOptionalKernelFeedbackKey {
-    MetalOptionalKernelFeedbackKey::Sampler {
-        kernel_name,
-        logits_width,
     }
 }
 

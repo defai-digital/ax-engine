@@ -1625,10 +1625,7 @@ impl MtpTelemetry {
                 "ax_mtp_ngram_saturated_gated_steps",
                 self.ngram_saturated_gated_steps,
             ),
-            (
-                "ax_mtp_auto_optimistic_steps",
-                self.auto_optimistic_steps,
-            ),
+            ("ax_mtp_auto_optimistic_steps", self.auto_optimistic_steps),
         ];
         decisions.upsert_route_decision(
             "ax_mtp_accept_rate_ewma_x1000",
@@ -5782,7 +5779,8 @@ impl MlxRunner {
         // Without hysteresis, the EWMA oscillates: stochastic ≥0.99 activates,
         // argmax tracking shows ~0.96, deactivates, stochastic ≥0.99, repeat.
         let can_auto_optimistic = !pending.is_empty()
-            && state.mtp_telemetry.mtp_only_accept_rate_ewma_samples >= mtp_ngram_gate_min_samples();
+            && state.mtp_telemetry.mtp_only_accept_rate_ewma_samples
+                >= mtp_ngram_gate_min_samples();
         let ewma = state.mtp_telemetry.mtp_only_accept_rate_ewma;
         if can_auto_optimistic && !state.auto_optimistic_active && ewma >= 0.99 {
             state.auto_optimistic_active = true;
@@ -5819,247 +5817,271 @@ impl MlxRunner {
         // Returns (logits_all, draft_hidden, accept_count, all_accepted, correction_argmax_tok, predicted).
         // correction_argmax_tok is only evaluated when greedy fallback needs it.
         // predicted is the target model's argmax tokens for EWMA tracking.
-        let (logits_all, draft_hidden, accept_count, all_accepted, correction_argmax_tok, predicted) =
-            if has_linear_attention {
-                // Skip-snapshot path (matches MTPLX SKIP_VERIFY_SNAPSHOT=1):
-                // Run the verify forward directly on state.cache without cloning.
-                // On rejection, trim the full-attention KV layers via trim_to but leave the
-                // linear-attention recurrent state "ahead" by up to (pending.len()-ac) positions.
-                // This minor contamination (0-3 tokens) is negligible given accumulated context
-                // and eliminates the expensive recompute_committed_prefix pass entirely.
-                let verify_forward_started = Instant::now();
-                let (logits_all, post_norm_all) = forward_all_positions_with_post_norm(
-                    &self.cfg,
-                    &self.weights,
-                    &verify_input,
-                    &mut state.cache,
-                    token_offset,
-                );
-                mtp_timings.verify_forward_wall_us = elapsed_us(verify_forward_started);
-                state.cache.seq_len += verify_len;
+        let (
+            logits_all,
+            draft_hidden,
+            accept_count,
+            all_accepted,
+            correction_argmax_tok,
+            predicted,
+        ) = if has_linear_attention {
+            // Skip-snapshot path (matches MTPLX SKIP_VERIFY_SNAPSHOT=1):
+            // Run the verify forward directly on state.cache without cloning.
+            // On rejection, trim the full-attention KV layers via trim_to but leave the
+            // linear-attention recurrent state "ahead" by up to (pending.len()-ac) positions.
+            // This minor contamination (0-3 tokens) is negligible given accumulated context
+            // and eliminates the expensive recompute_committed_prefix pass entirely.
+            let verify_forward_started = Instant::now();
+            let (logits_all, post_norm_all) = forward_all_positions_with_post_norm(
+                &self.cfg,
+                &self.weights,
+                &verify_input,
+                &mut state.cache,
+                token_offset,
+            );
+            mtp_timings.verify_forward_wall_us = elapsed_us(verify_forward_started);
+            state.cache.seq_len += verify_len;
 
-                if optimistic {
-                    // ── Optimistic shortcut (AX_MLX_MTP_OPTIMISTIC=1) ──
-                    // Accept all drafts without rejection sampling.
-                    let ac = pending.len();
-                    let predicted_arr = argmax(&logits_all, None);
-                    let kv_refs = state.cache.collect_eval_refs();
-                    let mut targets: Vec<&MlxArray> = Vec::with_capacity(2 + kv_refs.len());
-                    targets.push(&predicted_arr);
-                    targets.push(&post_norm_all);
-                    targets.extend(kv_refs);
-                    let verify_eval_started = Instant::now();
-                    eval(&targets);
-                    mtp_timings.verify_eval_wall_us = elapsed_us(verify_eval_started);
-                    let rollback_started = Instant::now();
-                    let _ = state.cache.trim_to(token_offset + 1 + ac);
-                    mtp_timings.rollback_wall_us = elapsed_us(rollback_started);
-                    let draft_hidden =
-                        slice_post_norm_hidden(&post_norm_all, ac, self.cfg.hidden_size);
-                    let predicted: Vec<u32> = predicted_arr.data_u32().to_vec();
-                    let correction_argmax_tok = predicted.get(ac).copied().unwrap_or(0);
-                    // Track true acceptance for EWMA so auto-optimistic can
-                    // deactivate if draft quality drops.
-                    if auto_optimistic && !self.mtp_optimistic {
-                        ewma_accept_count = Some(
-                            pending.iter().zip(predicted.iter()).take_while(|(d, p)| d == p).count()
-                        );
-                    }
-                    (logits_all, draft_hidden, ac, true, correction_argmax_tok, predicted)
-                } else {
-                    // Target probabilities for rejection-sampling acceptance.
-                    // Full-vocab softmax by default; top-k approximation when
-                    // AX_MLX_MTP_TARGET_SOFTMAX_MODE is set (e.g. topk_128).
-                    let lazy_target_probs = compute_mtp_target_probs(
-                        &logits_all,
-                        &pending,
-                        &state.mtp_pending_draft_log_probs,
-                        vocab,
-                        sampling,
-                        self.mtp_target_softmax_topk,
+            if optimistic {
+                // ── Optimistic shortcut (AX_MLX_MTP_OPTIMISTIC=1) ──
+                // Accept all drafts without rejection sampling.
+                let ac = pending.len();
+                let predicted_arr = argmax(&logits_all, None);
+                let kv_refs = state.cache.collect_eval_refs();
+                let mut targets: Vec<&MlxArray> = Vec::with_capacity(2 + kv_refs.len());
+                targets.push(&predicted_arr);
+                targets.push(&post_norm_all);
+                targets.extend(kv_refs);
+                let verify_eval_started = Instant::now();
+                eval(&targets);
+                mtp_timings.verify_eval_wall_us = elapsed_us(verify_eval_started);
+                let rollback_started = Instant::now();
+                let _ = state.cache.trim_to(token_offset + 1 + ac);
+                mtp_timings.rollback_wall_us = elapsed_us(rollback_started);
+                let draft_hidden = slice_post_norm_hidden(&post_norm_all, ac, self.cfg.hidden_size);
+                let predicted: Vec<u32> = predicted_arr.data_u32().to_vec();
+                let correction_argmax_tok = predicted.get(ac).copied().unwrap_or(0);
+                // Track true acceptance for EWMA so auto-optimistic can
+                // deactivate if draft quality drops.
+                if auto_optimistic && !self.mtp_optimistic {
+                    ewma_accept_count = Some(
+                        pending
+                            .iter()
+                            .zip(predicted.iter())
+                            .take_while(|(d, p)| d == p)
+                            .count(),
                     );
-                    // Always compute argmax for the correction/bonus fallback.
-                    let predicted_arr = Some(argmax(&logits_all, None));
-                    let kv_refs = state.cache.collect_eval_refs();
-                    let mut targets: Vec<&MlxArray> = Vec::with_capacity(4 + kv_refs.len());
-                    targets.push(predicted_arr.as_ref().unwrap());
-                    targets.push(&post_norm_all);
-                    if let Some(ref ltp) = lazy_target_probs {
-                        ltp.push_eval_targets(&mut targets);
-                    }
-                    targets.extend(kv_refs);
-                    let verify_eval_started = Instant::now();
-                    eval(&targets);
-                    mtp_timings.verify_eval_wall_us = elapsed_us(verify_eval_started);
-                    let accept_started = Instant::now();
-                    let predicted: Vec<u32> = predicted_arr
-                        .as_ref()
-                        .map(|arr| arr.data_u32().to_vec())
-                        .unwrap_or_default();
-                    let (target_probs_cpu, target_distributions_cpu): (
-                        Option<Vec<f32>>,
-                        Option<Vec<TokenDistribution>>,
-                    ) = (
-                        lazy_target_probs
-                            .as_ref()
-                            .and_then(|ltp| ltp.extract_cpu(&pending)),
-                        None,
-                    );
-
-                    let accept = mtp_accept_count(
-                        &pending,
-                        &state.mtp_pending_draft_log_probs,
-                        &state.mtp_pending_draft_distributions,
-                        &state.mtp_pending_draft_sources,
-                        target_probs_cpu.as_deref(),
-                        target_distributions_cpu.as_deref(),
-                        &predicted,
-                        &mut state.rng,
-                    );
-                    let ac = accept.accept_count;
-                    let all_accepted = accept.all_accepted;
-                    mtp_timings.accept_wall_us = elapsed_us(accept_started);
-
-                    // Trim FA KV to the committed prefix length. For accepted steps this removes
-                    // the excess verify entries; for rejected steps the linear-attention state
-                    // remains slightly ahead (skip-snapshot semantics).
-                    let rollback_started = Instant::now();
-                    let _ = state.cache.trim_to(token_offset + 1 + ac);
-                    mtp_timings.rollback_wall_us = elapsed_us(rollback_started);
-                    let draft_hidden =
-                        slice_post_norm_hidden(&post_norm_all, ac, self.cfg.hidden_size);
-                    let correction_argmax_tok = predicted.get(ac).copied().unwrap_or(0);
-                    (
-                        logits_all,
-                        draft_hidden,
-                        ac,
-                        all_accepted,
-                        accept.rejection_correction.unwrap_or(correction_argmax_tok),
-                        predicted,
-                    )
                 }
+                (
+                    logits_all,
+                    draft_hidden,
+                    ac,
+                    true,
+                    correction_argmax_tok,
+                    predicted,
+                )
             } else {
-                // Non-linear-attention: run directly, trim on rejection.
-                let verify_forward_started = Instant::now();
-                let (logits_all, post_norm_all) = forward_all_positions_with_post_norm(
-                    &self.cfg,
-                    &self.weights,
-                    &verify_input,
-                    &mut state.cache,
-                    token_offset,
+                // Target probabilities for rejection-sampling acceptance.
+                // Full-vocab softmax by default; top-k approximation when
+                // AX_MLX_MTP_TARGET_SOFTMAX_MODE is set (e.g. topk_128).
+                let lazy_target_probs = compute_mtp_target_probs(
+                    &logits_all,
+                    &pending,
+                    &state.mtp_pending_draft_log_probs,
+                    vocab,
+                    sampling,
+                    self.mtp_target_softmax_topk,
                 );
-                mtp_timings.verify_forward_wall_us = elapsed_us(verify_forward_started);
-                state.cache.seq_len += verify_len;
-
-                if optimistic {
-                    // ── Optimistic shortcut (AX_MLX_MTP_OPTIMISTIC=1) ──
-                    let ac = pending.len();
-                    let predicted_arr = argmax(&logits_all, None);
-                    let kv_refs = state.cache.collect_eval_refs();
-                    let mut targets: Vec<&MlxArray> = Vec::with_capacity(2 + kv_refs.len());
-                    targets.push(&predicted_arr);
-                    targets.push(&post_norm_all);
-                    targets.extend(kv_refs);
-                    let verify_eval_started = Instant::now();
-                    eval(&targets);
-                    mtp_timings.verify_eval_wall_us = elapsed_us(verify_eval_started);
-                    let rollback_started = Instant::now();
-                    let committed_len = token_offset + 1 + ac;
-                    let trimmed = state.cache.trim_to(committed_len);
-                    debug_assert!(trimmed, "MTP committed_len must not exceed cache seq_len");
-                    mtp_timings.rollback_wall_us = elapsed_us(rollback_started);
-                    let draft_hidden =
-                        slice_post_norm_hidden(&post_norm_all, ac, self.cfg.hidden_size);
-                    let predicted: Vec<u32> = predicted_arr.data_u32().to_vec();
-                    let correction_argmax_tok = predicted.get(ac).copied().unwrap_or(0);
-                    // Track true acceptance for EWMA so auto-optimistic can
-                    // deactivate if draft quality drops.
-                    if auto_optimistic && !self.mtp_optimistic {
-                        ewma_accept_count = Some(
-                            pending.iter().zip(predicted.iter()).take_while(|(d, p)| d == p).count()
-                        );
-                    }
-                    (logits_all, draft_hidden, ac, true, correction_argmax_tok, predicted)
-                } else {
-                    // Target probabilities for rejection-sampling acceptance.
-                    let lazy_target_probs = compute_mtp_target_probs(
-                        &logits_all,
-                        &pending,
-                        &state.mtp_pending_draft_log_probs,
-                        vocab,
-                        sampling,
-                        self.mtp_target_softmax_topk,
-                    );
-                    // Always compute argmax for the correction/bonus fallback.
-                    let predicted_arr = Some(argmax(&logits_all, None));
-                    let kv_refs = state.cache.collect_eval_refs();
-                    let mut targets: Vec<&MlxArray> = Vec::with_capacity(4 + kv_refs.len());
-                    targets.push(predicted_arr.as_ref().unwrap());
-                    targets.push(&post_norm_all);
-                    if let Some(ref ltp) = lazy_target_probs {
-                        ltp.push_eval_targets(&mut targets);
-                    }
-                    targets.extend(kv_refs);
-                    let verify_eval_started = Instant::now();
-                    eval(&targets);
-                    mtp_timings.verify_eval_wall_us = elapsed_us(verify_eval_started);
-                    let accept_started = Instant::now();
-                    let predicted: Vec<u32> = predicted_arr
-                        .as_ref()
-                        .map(|arr| arr.data_u32().to_vec())
-                        .unwrap_or_default();
-                    let (target_probs_cpu, target_distributions_cpu): (
-                        Option<Vec<f32>>,
-                        Option<Vec<TokenDistribution>>,
-                    ) = (
-                        lazy_target_probs
-                            .as_ref()
-                            .and_then(|ltp| ltp.extract_cpu(&pending)),
-                        None,
-                    );
-
-                    let accept = mtp_accept_count(
-                        &pending,
-                        &state.mtp_pending_draft_log_probs,
-                        &state.mtp_pending_draft_distributions,
-                        &state.mtp_pending_draft_sources,
-                        target_probs_cpu.as_deref(),
-                        target_distributions_cpu.as_deref(),
-                        &predicted,
-                        &mut state.rng,
-                    );
-                    let ac = accept.accept_count;
-                    let all_accepted = accept.all_accepted;
-                    mtp_timings.accept_wall_us = elapsed_us(accept_started);
-
-                    let rollback_started = Instant::now();
-                    let committed_len = token_offset + 1 + ac;
-                    let trimmed = state.cache.trim_to(committed_len);
-                    debug_assert!(trimmed, "MTP committed_len must not exceed cache seq_len");
-
-                    // Trim MTP KV cache: remove rejected draft entries.
-                    let rejected_count = pending.len() - ac;
-                    if rejected_count > 0 {
-                        let new_mtp_len = state.mtp_decode_count.saturating_sub(rejected_count);
-                        if let Some(ref mut c) = state.mtp_cache {
-                            let _ = c.trim_to(new_mtp_len);
-                        }
-                        state.mtp_decode_count = new_mtp_len;
-                    }
-                    mtp_timings.rollback_wall_us = elapsed_us(rollback_started);
-                    let draft_hidden =
-                        slice_post_norm_hidden(&post_norm_all, ac, self.cfg.hidden_size);
-                    let correction_argmax_tok = predicted.get(ac).copied().unwrap_or(0);
-                    (
-                        logits_all,
-                        draft_hidden,
-                        ac,
-                        all_accepted,
-                        accept.rejection_correction.unwrap_or(correction_argmax_tok),
-                        predicted,
-                    )
+                // Always compute argmax for the correction/bonus fallback.
+                let predicted_arr = Some(argmax(&logits_all, None));
+                let kv_refs = state.cache.collect_eval_refs();
+                let mut targets: Vec<&MlxArray> = Vec::with_capacity(4 + kv_refs.len());
+                targets.push(predicted_arr.as_ref().unwrap());
+                targets.push(&post_norm_all);
+                if let Some(ref ltp) = lazy_target_probs {
+                    ltp.push_eval_targets(&mut targets);
                 }
-            };
+                targets.extend(kv_refs);
+                let verify_eval_started = Instant::now();
+                eval(&targets);
+                mtp_timings.verify_eval_wall_us = elapsed_us(verify_eval_started);
+                let accept_started = Instant::now();
+                let predicted: Vec<u32> = predicted_arr
+                    .as_ref()
+                    .map(|arr| arr.data_u32().to_vec())
+                    .unwrap_or_default();
+                let (target_probs_cpu, target_distributions_cpu): (
+                    Option<Vec<f32>>,
+                    Option<Vec<TokenDistribution>>,
+                ) = (
+                    lazy_target_probs
+                        .as_ref()
+                        .and_then(|ltp| ltp.extract_cpu(&pending)),
+                    None,
+                );
+
+                let accept = mtp_accept_count(
+                    &pending,
+                    &state.mtp_pending_draft_log_probs,
+                    &state.mtp_pending_draft_distributions,
+                    &state.mtp_pending_draft_sources,
+                    target_probs_cpu.as_deref(),
+                    target_distributions_cpu.as_deref(),
+                    &predicted,
+                    &mut state.rng,
+                );
+                let ac = accept.accept_count;
+                let all_accepted = accept.all_accepted;
+                mtp_timings.accept_wall_us = elapsed_us(accept_started);
+
+                // Trim FA KV to the committed prefix length. For accepted steps this removes
+                // the excess verify entries; for rejected steps the linear-attention state
+                // remains slightly ahead (skip-snapshot semantics).
+                let rollback_started = Instant::now();
+                let _ = state.cache.trim_to(token_offset + 1 + ac);
+                mtp_timings.rollback_wall_us = elapsed_us(rollback_started);
+                let draft_hidden = slice_post_norm_hidden(&post_norm_all, ac, self.cfg.hidden_size);
+                let correction_argmax_tok = predicted.get(ac).copied().unwrap_or(0);
+                (
+                    logits_all,
+                    draft_hidden,
+                    ac,
+                    all_accepted,
+                    accept.rejection_correction.unwrap_or(correction_argmax_tok),
+                    predicted,
+                )
+            }
+        } else {
+            // Non-linear-attention: run directly, trim on rejection.
+            let verify_forward_started = Instant::now();
+            let (logits_all, post_norm_all) = forward_all_positions_with_post_norm(
+                &self.cfg,
+                &self.weights,
+                &verify_input,
+                &mut state.cache,
+                token_offset,
+            );
+            mtp_timings.verify_forward_wall_us = elapsed_us(verify_forward_started);
+            state.cache.seq_len += verify_len;
+
+            if optimistic {
+                // ── Optimistic shortcut (AX_MLX_MTP_OPTIMISTIC=1) ──
+                let ac = pending.len();
+                let predicted_arr = argmax(&logits_all, None);
+                let kv_refs = state.cache.collect_eval_refs();
+                let mut targets: Vec<&MlxArray> = Vec::with_capacity(2 + kv_refs.len());
+                targets.push(&predicted_arr);
+                targets.push(&post_norm_all);
+                targets.extend(kv_refs);
+                let verify_eval_started = Instant::now();
+                eval(&targets);
+                mtp_timings.verify_eval_wall_us = elapsed_us(verify_eval_started);
+                let rollback_started = Instant::now();
+                let committed_len = token_offset + 1 + ac;
+                let trimmed = state.cache.trim_to(committed_len);
+                debug_assert!(trimmed, "MTP committed_len must not exceed cache seq_len");
+                mtp_timings.rollback_wall_us = elapsed_us(rollback_started);
+                let draft_hidden = slice_post_norm_hidden(&post_norm_all, ac, self.cfg.hidden_size);
+                let predicted: Vec<u32> = predicted_arr.data_u32().to_vec();
+                let correction_argmax_tok = predicted.get(ac).copied().unwrap_or(0);
+                // Track true acceptance for EWMA so auto-optimistic can
+                // deactivate if draft quality drops.
+                if auto_optimistic && !self.mtp_optimistic {
+                    ewma_accept_count = Some(
+                        pending
+                            .iter()
+                            .zip(predicted.iter())
+                            .take_while(|(d, p)| d == p)
+                            .count(),
+                    );
+                }
+                (
+                    logits_all,
+                    draft_hidden,
+                    ac,
+                    true,
+                    correction_argmax_tok,
+                    predicted,
+                )
+            } else {
+                // Target probabilities for rejection-sampling acceptance.
+                let lazy_target_probs = compute_mtp_target_probs(
+                    &logits_all,
+                    &pending,
+                    &state.mtp_pending_draft_log_probs,
+                    vocab,
+                    sampling,
+                    self.mtp_target_softmax_topk,
+                );
+                // Always compute argmax for the correction/bonus fallback.
+                let predicted_arr = Some(argmax(&logits_all, None));
+                let kv_refs = state.cache.collect_eval_refs();
+                let mut targets: Vec<&MlxArray> = Vec::with_capacity(4 + kv_refs.len());
+                targets.push(predicted_arr.as_ref().unwrap());
+                targets.push(&post_norm_all);
+                if let Some(ref ltp) = lazy_target_probs {
+                    ltp.push_eval_targets(&mut targets);
+                }
+                targets.extend(kv_refs);
+                let verify_eval_started = Instant::now();
+                eval(&targets);
+                mtp_timings.verify_eval_wall_us = elapsed_us(verify_eval_started);
+                let accept_started = Instant::now();
+                let predicted: Vec<u32> = predicted_arr
+                    .as_ref()
+                    .map(|arr| arr.data_u32().to_vec())
+                    .unwrap_or_default();
+                let (target_probs_cpu, target_distributions_cpu): (
+                    Option<Vec<f32>>,
+                    Option<Vec<TokenDistribution>>,
+                ) = (
+                    lazy_target_probs
+                        .as_ref()
+                        .and_then(|ltp| ltp.extract_cpu(&pending)),
+                    None,
+                );
+
+                let accept = mtp_accept_count(
+                    &pending,
+                    &state.mtp_pending_draft_log_probs,
+                    &state.mtp_pending_draft_distributions,
+                    &state.mtp_pending_draft_sources,
+                    target_probs_cpu.as_deref(),
+                    target_distributions_cpu.as_deref(),
+                    &predicted,
+                    &mut state.rng,
+                );
+                let ac = accept.accept_count;
+                let all_accepted = accept.all_accepted;
+                mtp_timings.accept_wall_us = elapsed_us(accept_started);
+
+                let rollback_started = Instant::now();
+                let committed_len = token_offset + 1 + ac;
+                let trimmed = state.cache.trim_to(committed_len);
+                debug_assert!(trimmed, "MTP committed_len must not exceed cache seq_len");
+
+                // Trim MTP KV cache: remove rejected draft entries.
+                let rejected_count = pending.len() - ac;
+                if rejected_count > 0 {
+                    let new_mtp_len = state.mtp_decode_count.saturating_sub(rejected_count);
+                    if let Some(ref mut c) = state.mtp_cache {
+                        let _ = c.trim_to(new_mtp_len);
+                    }
+                    state.mtp_decode_count = new_mtp_len;
+                }
+                mtp_timings.rollback_wall_us = elapsed_us(rollback_started);
+                let draft_hidden = slice_post_norm_hidden(&post_norm_all, ac, self.cfg.hidden_size);
+                let correction_argmax_tok = predicted.get(ac).copied().unwrap_or(0);
+                (
+                    logits_all,
+                    draft_hidden,
+                    ac,
+                    all_accepted,
+                    accept.rejection_correction.unwrap_or(correction_argmax_tok),
+                    predicted,
+                )
+            }
+        };
 
         // For linear attention with rejection, trim MTP cache too.
         if has_linear_attention && !all_accepted {
@@ -6105,12 +6127,15 @@ impl MlxRunner {
             // Compute MTP argmax matches: among accepted MTP tokens, how many
             // match the target model's argmax?  This is the EWMA numerator for
             // the MTP-only acceptance rate.
-            let mtp_argmax_matches = state.mtp_pending_draft_sources
+            let mtp_argmax_matches = state
+                .mtp_pending_draft_sources
                 .iter()
                 .zip(pending.iter())
                 .zip(predicted.iter())
                 .take(accept_count)
-                .filter(|((s, _d), _p)| matches!(s, MtpDraftSource::Mtp | MtpDraftSource::HybridMtp))
+                .filter(|((s, _d), _p)| {
+                    matches!(s, MtpDraftSource::Mtp | MtpDraftSource::HybridMtp)
+                })
                 .filter(|((_s, d), p)| d == p)
                 .count();
             state.mtp_telemetry.record_step(

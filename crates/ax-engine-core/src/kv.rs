@@ -610,7 +610,7 @@ impl KvManager {
     pub fn memory_pressure(&self) -> Option<String> {
         let free_blocks = self.available_block_count();
         if free_blocks == 0 {
-            if self.select_cached_block_eviction_candidate().is_some() {
+            if !self.cached_blocks.is_empty() {
                 Some("kv_exhausted_reclaimable_cache".into())
             } else {
                 Some("kv_exhausted".into())
@@ -731,53 +731,37 @@ impl KvManager {
         &mut self,
         required_free_blocks: u32,
     ) -> Result<(), KvManagerError> {
-        while self.available_block_count() < required_free_blocks {
-            let Some(cache_key) = self.select_cached_block_eviction_candidate() else {
+        if self.available_block_count() >= required_free_blocks {
+            return Ok(());
+        }
+
+        // Collect and sort all candidates once — O(n log n) instead of O(k·n).
+        // Entries evicted as descendants of earlier selections are skipped via
+        // the `cached_blocks.contains_key` guard in evict_cached_block.
+        let mut candidates: Vec<(u8, u64, CachedBlockKey)> = self
+            .cached_blocks
+            .iter()
+            .map(|(key, entry)| {
+                let is_leaf = self
+                    .cached_children_by_parent
+                    .get(key)
+                    .is_none_or(|ch| ch.is_empty());
+                let releases = self.cached_entry_releases_block(entry);
+                let priority = eviction_priority(is_leaf, releases);
+                (priority, entry.last_touch_tick, *key)
+            })
+            .collect();
+        candidates.sort_unstable();
+
+        for (_, _, cache_key) in candidates {
+            if self.available_block_count() >= required_free_blocks {
                 break;
-            };
-            self.evict_cached_block(&cache_key)?;
+            }
+            if self.cached_blocks.contains_key(&cache_key) {
+                self.evict_cached_block(&cache_key)?;
+            }
         }
         Ok(())
-    }
-
-    fn select_cached_block_eviction_candidate(&self) -> Option<CachedBlockKey> {
-        let mut oldest_leaf_releasable = None;
-        let mut oldest_releasable = None;
-        let mut oldest_leaf = None;
-        let mut oldest_any = None;
-
-        for (cache_key, entry) in &self.cached_blocks {
-            let has_cached_descendant = self
-                .cached_children_by_parent
-                .get(cache_key)
-                .is_some_and(|children| !children.is_empty());
-            let releases_block = self.cached_entry_releases_block(entry);
-
-            remember_oldest_cached_block(&mut oldest_any, *cache_key, entry.last_touch_tick);
-            if !has_cached_descendant {
-                remember_oldest_cached_block(&mut oldest_leaf, *cache_key, entry.last_touch_tick);
-            }
-            if releases_block {
-                remember_oldest_cached_block(
-                    &mut oldest_releasable,
-                    *cache_key,
-                    entry.last_touch_tick,
-                );
-            }
-            if !has_cached_descendant && releases_block {
-                remember_oldest_cached_block(
-                    &mut oldest_leaf_releasable,
-                    *cache_key,
-                    entry.last_touch_tick,
-                );
-            }
-        }
-
-        oldest_leaf_releasable
-            .or(oldest_releasable)
-            .or(oldest_leaf)
-            .or(oldest_any)
-            .map(|(cache_key, _)| cache_key)
     }
 
     fn cached_entry_releases_block(&self, entry: &CachedBlockEntry) -> bool {
@@ -1034,13 +1018,13 @@ fn parent_cache_key(
     })
 }
 
-fn remember_oldest_cached_block(
-    oldest: &mut Option<(CachedBlockKey, u64)>,
-    cache_key: CachedBlockKey,
-    last_touch_tick: u64,
-) {
-    if oldest.is_none_or(|(_, oldest_tick)| last_touch_tick < oldest_tick) {
-        *oldest = Some((cache_key, last_touch_tick));
+// Eviction priority: 0 (evict first) → leaf+releasable, 1 → releasable, 2 → leaf, 3 → any.
+fn eviction_priority(is_leaf: bool, releases_block: bool) -> u8 {
+    match (is_leaf, releases_block) {
+        (true, true) => 0,
+        (false, true) => 1,
+        (true, false) => 2,
+        (false, false) => 3,
     }
 }
 

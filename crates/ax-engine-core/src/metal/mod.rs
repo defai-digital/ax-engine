@@ -739,33 +739,48 @@ impl fmt::Debug for MetalRuntimeBringup {
 #[derive(Debug)]
 pub struct MetalBringupSampler {
     bringup: MetalRuntimeBringup,
+    // Pre-allocated fixed-size output buffers reused across sample calls (buffer(1) and buffer(2)
+    // in sample_argmax_logprob_f32: argmax output u32, logprob output f32).
+    #[cfg(target_os = "macos")]
+    argmax_out: Mutex<Buffer>,
+    #[cfg(target_os = "macos")]
+    logprob_out: Mutex<Buffer>,
 }
 
 impl MetalBringupSampler {
     pub fn from_build_dir(path: impl AsRef<Path>) -> Result<Self, MetalRuntimeError> {
-        Ok(Self {
-            bringup: MetalRuntimeBringup::from_build_dir(path)?,
-        })
+        Self::from_bringup(MetalRuntimeBringup::from_build_dir(path)?)
     }
 
     pub fn from_assets(assets: MetalKernelAssets) -> Result<Self, MetalRuntimeError> {
+        Self::from_bringup(MetalRuntimeBringup::from_assets(assets)?)
+    }
+
+    fn from_bringup(bringup: MetalRuntimeBringup) -> Result<Self, MetalRuntimeError> {
+        #[cfg(target_os = "macos")]
+        let (argmax_out, logprob_out) = {
+            let device = &bringup.state.device;
+            (
+                Mutex::new(new_zeroed_shared_buffer::<u32>(device, 1)),
+                Mutex::new(new_zeroed_shared_buffer::<f32>(device, 1)),
+            )
+        };
         Ok(Self {
-            bringup: MetalRuntimeBringup::from_assets(assets)?,
+            bringup,
+            #[cfg(target_os = "macos")]
+            argmax_out,
+            #[cfg(target_os = "macos")]
+            logprob_out,
         })
     }
 
     #[cfg(target_os = "macos")]
-    fn sample_argmax_logprob_native_retry_worthwhile(&self, logits_width: usize) -> bool {
+    fn sample_argmax_logprob_native_available(&self) -> bool {
         self.bringup
             .state
             .optional_kernel_dispatch_plan
             .sample_argmax_logprob_f32
-            .is_some_and(|_| {
-                optional_kernel_allowed(
-                    &self.bringup,
-                    &sampler_feedback_key("sample_argmax_logprob_f32", logits_width),
-                )
-            })
+            .is_some()
     }
 
     #[cfg(target_os = "macos")]
@@ -782,10 +797,10 @@ impl MetalBringupSampler {
             .state
             .optional_kernel_dispatch_plan
             .sample_argmax_logprob_f32?;
-        let feedback_key = sampler_feedback_key(kernel_name, logits.len());
-        if !optional_kernel_allowed(&self.bringup, &feedback_key) {
-            return None;
-        }
+
+        let feedback_key = logits_argmax_feedback_key(kernel_name, logits.len());
+        let argmax_guard = self.argmax_out.lock().expect("argmax_out mutex poisoned");
+        let logprob_guard = self.logprob_out.lock().expect("logprob_out mutex poisoned");
 
         let output = find_optional_pipeline_handle_by_index(
             &self.bringup.state,
@@ -797,8 +812,6 @@ impl MetalBringupSampler {
         .and_then(|pipeline| {
             autoreleasepool(|| {
                 let logits_buffer = new_shared_buffer_with_data(&self.bringup.state.device, logits);
-                let argmax_buffer = new_zeroed_shared_buffer::<u32>(&self.bringup.state.device, 1);
-                let logprob_buffer = new_zeroed_shared_buffer::<f32>(&self.bringup.state.device, 1);
 
                 let command_buffer = self.bringup.state.command_queue.new_command_buffer();
                 command_buffer.set_label("ax.phase1.sample_argmax_logprob");
@@ -807,8 +820,8 @@ impl MetalBringupSampler {
 
                 encoder.set_compute_pipeline_state(&pipeline.pipeline);
                 encoder.set_buffer(0, Some(&logits_buffer), 0);
-                encoder.set_buffer(1, Some(&argmax_buffer), 0);
-                encoder.set_buffer(2, Some(&logprob_buffer), 0);
+                encoder.set_buffer(1, Some(&*argmax_guard), 0);
+                encoder.set_buffer(2, Some(&*logprob_guard), 0);
                 set_logits_argmax_dispatch_params(
                     encoder,
                     3,
@@ -828,10 +841,10 @@ impl MetalBringupSampler {
                     return None;
                 }
 
-                let token_id = read_shared_u32_buffer_prefix(&argmax_buffer, 1)
+                let token_id = read_shared_u32_buffer_prefix(&argmax_guard, 1)
                     .into_iter()
                     .next()?;
-                let logprob = read_shared_buffer_prefix(&logprob_buffer, 1)
+                let logprob = read_shared_buffer_prefix(&logprob_guard, 1)
                     .into_iter()
                     .next()?;
                 logprob.is_finite().then_some((token_id, logprob))
@@ -958,8 +971,7 @@ impl TokenSampler for MetalBringupSampler {
             for (logits_width, indices) in
                 grouped_sampler_request_indices_by_logits_width(&requests)
             {
-                let allow_single_native =
-                    self.sample_argmax_logprob_native_retry_worthwhile(logits_width);
+                let allow_single_native = self.sample_argmax_logprob_native_available();
                 if let Some(group_results) = collect_grouped_sampler_results_with_item_fallback(
                     &indices,
                     &mut |group_indices| {
@@ -1015,11 +1027,7 @@ impl TokenSampler for MetalBringupSampler {
                     request.logits.as_ref().and_then(|logits| {
                         #[cfg(target_os = "macos")]
                         {
-                            self.sample_argmax_logprob_native_retry_worthwhile(logits.len())
-                                .then(|| {
-                                    self.sample_argmax_logprob_with_optional_native_path(logits)
-                                })
-                                .flatten()
+                            self.sample_argmax_logprob_with_optional_native_path(logits)
                                 .or_else(|| sample_argmax_with_logprob(logits))
                         }
                         #[cfg(not(target_os = "macos"))]
@@ -3324,11 +3332,13 @@ impl ExecutionRunner for MetalBringupRunner {
                     execution_tally,
                     direct_decode_result.native_dense_tally,
                 );
-                *self
-                    .last_dispatch
-                    .lock()
-                    .expect("metal bring-up runner dispatch mutex should not be poisoned") =
-                    Some(trace.clone());
+                if metal_dispatch_trace_capture_enabled() {
+                    *self
+                        .last_dispatch
+                        .lock()
+                        .expect("metal bring-up runner dispatch mutex should not be poisoned") =
+                        Some(trace.clone());
+                }
                 annotate_successful_dispatch(&mut output.route_metadata, &trace);
                 annotate_bringup_execution_flags(
                     &mut output.route_metadata,
@@ -3348,10 +3358,13 @@ impl ExecutionRunner for MetalBringupRunner {
                 output
             }
             Err(error) => {
-                *self
-                    .last_dispatch
-                    .lock()
-                    .expect("metal bring-up runner dispatch mutex should not be poisoned") = None;
+                if metal_dispatch_trace_capture_enabled() {
+                    *self
+                        .last_dispatch
+                        .lock()
+                        .expect("metal bring-up runner dispatch mutex should not be poisoned") =
+                        None;
+                }
                 let runtime = self.dispatch_runtime_info_for_source(staged_inputs.source);
                 failed_runner_output_from_input(
                     &input,
@@ -5242,6 +5255,26 @@ fn project_decode_token_cpu(
     }
 
     best_token
+}
+
+// Expand cumulative sequence lengths into a per-token batch-ID mapping.
+// The Metal kernels use this to replace per-thread binary search with O(1) lookup.
+fn compute_token_batch_ids(cu_seq_lens: &[u32]) -> Vec<u32> {
+    let total = cu_seq_lens.last().copied().unwrap_or(0) as usize;
+    let mut ids = vec![0u32; total.max(1)];
+    for (batch_id, window) in cu_seq_lens.windows(2).enumerate() {
+        let (start, end) = (window[0] as usize, window[1] as usize);
+        ids[start..end].fill(batch_id as u32);
+    }
+    ids
+}
+
+fn metal_dispatch_trace_capture_enabled() -> bool {
+    if cfg!(test) {
+        return true;
+    }
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var("AX_ENGINE_DISPATCH_TRACE").is_ok())
 }
 
 #[cfg(target_os = "macos")]
@@ -8795,6 +8828,8 @@ struct MetalDispatchArena {
     copy_block_mapping: Buffer,
     copy_key_target: Buffer,
     copy_value_target: Buffer,
+    context_token_batch_ids: Buffer,
+    scheduled_token_batch_ids: Buffer,
 }
 
 #[cfg(target_os = "macos")]
@@ -8887,6 +8922,14 @@ impl MetalDispatchArena {
                     .slot_capacity
                     .saturating_mul(requirements.head_size),
             ),
+            context_token_batch_ids: new_zeroed_shared_buffer::<u32>(
+                device,
+                requirements.gather_output_capacity.max(1),
+            ),
+            scheduled_token_batch_ids: new_zeroed_shared_buffer::<u32>(
+                device,
+                requirements.token_capacity,
+            ),
         }
     }
 
@@ -8932,6 +8975,14 @@ impl MetalDispatchArena {
         self.cu_seq_lens = new_shared_buffer_with_data(device, &workload.kv_metadata.cu_seq_lens);
         self.scheduled_cu_seq_lens =
             new_shared_buffer_with_data(device, &workload.kv_metadata.scheduled_cu_seq_lens);
+        self.context_token_batch_ids = new_shared_buffer_with_data(
+            device,
+            &compute_token_batch_ids(&workload.kv_metadata.cu_seq_lens),
+        );
+        self.scheduled_token_batch_ids = new_shared_buffer_with_data(
+            device,
+            &compute_token_batch_ids(&workload.kv_metadata.scheduled_cu_seq_lens),
+        );
         self.copy_block_mapping =
             new_shared_buffer_with_data(device, &workload.kv_metadata.copy_block_mapping);
         self.copy_key_target = new_zeroed_shared_buffer::<f32>(
@@ -18218,6 +18269,7 @@ fn encode_numeric_kernel(
                 workload.numeric_layout.head_count,
                 workload.numeric_layout.head_dim,
             );
+            encoder.set_buffer(7, Some(&arena.scheduled_token_batch_ids), 0);
         }
         "gather_kv_cache" => {
             encoder.set_buffer(0, Some(&arena.key_cache), 0);
@@ -18235,6 +18287,7 @@ fn encode_numeric_kernel(
                 workload.kv_metadata.gather_block_table_stride,
                 workload.numeric_layout.head_size(),
             );
+            encoder.set_buffer(7, Some(&arena.context_token_batch_ids), 0);
         }
         "copy_blocks" => {
             encoder.set_buffer(0, Some(&arena.key_cache), 0);

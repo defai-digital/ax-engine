@@ -278,14 +278,14 @@
       "purpose": "single-step recurrent linear-attention update over AX-native dense states"
     }
   ],
-  "source_sha256": "e56d5b6ed6f9e4634250866319430e303c81f32813fce4fa62e35a03946cea46",
+  "source_sha256": "178e69d60a8707d76dbfc65cb9e3ec8b5cfc2793dd77ee4343403d892a2733cf",
   "outputs": {
     "air": "/Users/akiralam/code/ax-engine_v5/build/metal/ax_phase1_dense_path.air",
     "metalar": "/Users/akiralam/code/ax-engine_v5/build/metal/ax_phase1_dense_path.metalar",
     "metallib": "/Users/akiralam/code/ax-engine_v5/build/metal/ax_phase1_dense_path.metallib",
-    "air_sha256": "79604480e1f63fe79660de77fa170a44e360eacd2626ae945c8daadc32312ccf",
-    "metalar_sha256": "78d1cbf51bc8bb396ef223f0cac63372792bcfd50b8f0b533f70eddb02be59db",
-    "metallib_sha256": "c08d6de60a913e9facb46dda8a6edf0b3e43d951f8d578367b1b1b916de36024"
+    "air_sha256": "08bc5a48123de39c9b35036698ea8cd0c95e65e2083420ad31e932235972b000",
+    "metalar_sha256": "89a81c60f536ca87e05bb94e3a488a05d2c1f966dea6ecff84d9a3f5fe4f4660",
+    "metallib_sha256": "51ea9ded8a3944f02e9869dd4e6fcbe45a2fc62e0dec261d7f481c74c82f23ea"
   },
   "compile_commands": [
     [

@@ -179,6 +179,7 @@ kernel void paged_decode_attention(
     device const uint*  scheduled_cu_seq_lens [[buffer(4)]],
     device float* output               [[buffer(5)]],
     constant AttentionDispatchParams& params [[buffer(6)]],
+    device const uint*  token_batch_ids [[buffer(7)]],
     uint tg_pos [[threadgroup_position_in_grid]],   // token_id * head_count + head_id
     uint lid    [[thread_index_in_threadgroup]],     // 0 .. head_dim-1
     uint lane   [[thread_index_in_simdgroup]],
@@ -195,13 +196,7 @@ kernel void paged_decode_attention(
 
     threadgroup float smem[32];  // per-SIMD partial sums (max 32 SIMD groups = 1024-thread TG)
 
-    // Binary search: find which request this token belongs to
-    uint batch_lo = 0, batch_hi = params.num_seqs;
-    while (batch_lo < batch_hi) {
-        uint mid = (batch_lo + batch_hi + 1) / 2;
-        if (scheduled_cu_seq_lens[mid] <= token_id) batch_lo = mid;
-        else batch_hi = mid - 1;
-    }
+    uint batch_lo      = token_batch_ids[token_id];
     uint context_begin = cu_seq_lens[batch_lo];
     uint context_end   = cu_seq_lens[batch_lo + 1];
 
@@ -256,6 +251,7 @@ kernel void gather_kv_cache(
     device float* key_gathered [[buffer(4)]],
     device float* value_gathered [[buffer(5)]],
     constant GatherDispatchParams& params [[buffer(6)]],
+    device const uint* token_batch_ids [[buffer(7)]],
     uint gid [[thread_position_in_grid]]
 ) {
     if (gid >= params.element_count) {
@@ -265,18 +261,7 @@ kernel void gather_kv_cache(
     uint token_id = gid / params.head_size;
     uint lane_id = gid % params.head_size;
 
-    uint batch_lo = 0;
-    uint batch_hi = params.num_seqs;
-    while (batch_lo < batch_hi) {
-        uint batch_mid = (batch_lo + batch_hi + 1) / 2;
-        if (cu_seq_lens[batch_mid] <= token_id) {
-            batch_lo = batch_mid;
-        } else {
-            batch_hi = batch_mid - 1;
-        }
-    }
-
-    uint batch_id = batch_lo;
+    uint batch_id = token_batch_ids[token_id];
     uint batch_offset = token_id - cu_seq_lens[batch_id];
     uint block_index = batch_offset / params.block_size_tokens;
     uint block_offset = batch_offset % params.block_size_tokens;
