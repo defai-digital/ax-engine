@@ -1067,7 +1067,12 @@ impl WeightLayoutTelemetry {
                 if layer.gate_up_packed.is_some() {
                     telemetry.dense_ffn_gate_up_packed_layers =
                         telemetry.dense_ffn_gate_up_packed_layers.saturating_add(1);
-                } else if layer.gate_proj.is_some() && layer.up_proj.is_some() {
+                } else if let Some(gate) = layer.gate_proj.as_ref()
+                    && layer.up_proj.is_some()
+                    && gate.bits != 5
+                {
+                    // 5-bit gate/up weights intentionally skip packing (not yet validated);
+                    // only count bits≠5 split layers as unexpected hotpath fallbacks.
                     telemetry.dense_ffn_split_gate_up_layers =
                         telemetry.dense_ffn_split_gate_up_layers.saturating_add(1);
                 }
@@ -9014,6 +9019,46 @@ mod tests {
         );
         assert_eq!(
             decisions.get("ax_mlx_linear_attention_split_qkvba_layers"),
+            Some(&0)
+        );
+    }
+
+    #[test]
+    fn weight_layout_telemetry_excludes_5bit_split_from_fallback_counter() {
+        use crate::weights::QuantizedWeight;
+        use ax_engine_core::model::NativeTensorQuantization;
+        let quant5 = NativeTensorQuantization {
+            mode: "affine".to_string(),
+            group_size: 64,
+            bits: 5,
+        };
+        let w5 = || {
+            QuantizedWeight::with_quantization(
+                mlx_sys::zeros(&[1, 1], mlx_sys::MlxDtype::Float32, None),
+                None,
+                None,
+                Some(&quant5),
+            )
+        };
+        let mut split5 = runner_test_layer();
+        split5.gate_proj = Some(w5());
+        split5.up_proj = Some(w5());
+        split5.down_proj = Some(unit_weight());
+
+        let telemetry = WeightLayoutTelemetry::from_weights(&runner_test_weights(vec![split5]));
+        let mut decisions = Vec::new();
+        telemetry.append_route_decisions(&mut decisions);
+        let decisions = decisions
+            .into_iter()
+            .collect::<std::collections::BTreeMap<_, _>>();
+
+        // 5-bit split is intentional; must not appear as a hotpath fallback.
+        assert_eq!(
+            decisions.get("ax_mlx_dense_ffn_split_gate_up_layers"),
+            Some(&0)
+        );
+        assert_eq!(
+            decisions.get("ax_mlx_dense_ffn_gate_up_packed_layers"),
             Some(&0)
         );
     }

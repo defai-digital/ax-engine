@@ -239,6 +239,42 @@ class TrackedDirtyAllowlistTests(unittest.TestCase):
         self.assertFalse(checker.is_benchmark_doc_only_path("crates/ax-engine-mlx/src/runner.rs"))
         self.assertFalse(checker.is_benchmark_doc_only_path("scripts/bench_ax_only_sweep.py"))
 
+    def test_pyproject_toml_is_doc_only(self) -> None:
+        self.assertTrue(checker.is_benchmark_doc_only_path("pyproject.toml"))
+
+    def test_benchmark_results_json_are_doc_only(self) -> None:
+        self.assertTrue(
+            checker.is_benchmark_doc_only_path(
+                "benchmarks/results/mtp-fair/2026-06-01/27b-4bit/flappy/ax_engine.json"
+            )
+        )
+        self.assertTrue(
+            checker.is_benchmark_doc_only_path(
+                "benchmarks/results/mlx-inference/2026-06-01-ax-direct/gemma-4-e2b-it-4bit.json"
+            )
+        )
+        # non-JSON files under benchmarks/results/ are not auto-exempted
+        self.assertFalse(
+            checker.is_benchmark_doc_only_path(
+                "benchmarks/results/mtp-fair/run.sh"
+            )
+        )
+
+    def test_tracked_dirty_delete_status_accepted_for_doc_only_path(self) -> None:
+        # Deletion of benchmark result artifacts is irrelevant to a separate AX bench run.
+        self.assertTrue(
+            checker.tracked_dirty_is_benchmark_doc_only([
+                " D benchmarks/results/mtp-fair/2026-06-01/27b-4bit/flappy/ax_engine.json",
+                " M pyproject.toml",
+            ])
+        )
+        # Deletion of non-doc-only files must still fail.
+        self.assertFalse(
+            checker.tracked_dirty_is_benchmark_doc_only([
+                " D crates/ax-engine-core/src/kv.rs",
+            ])
+        )
+
     def test_tracked_dirty_aggregate_accepts_post_processing_only(self) -> None:
         status = [
             " M README.md",
@@ -603,6 +639,42 @@ class ReadmePerformanceArtifactTests(unittest.TestCase):
             },
         )
 
+    def test_build_provenance_allows_dirty_artifact_with_accepted_flag(self) -> None:
+        # git_tracked_dirty_accepted=True is an explicit author override for cases
+        # where the dirty changes are non-doc-only but were committed shortly after
+        # the bench run and are now part of the canonical codebase.
+        checker.validate_build_provenance(
+            artifact_path=Path("artifact.json"),
+            artifact={
+                "build": {
+                    "git_tracked_dirty": True,
+                    "git_tracked_dirty_accepted": True,
+                    "git_tracked_status": [
+                        " M crates/ax-engine-core/src/kv.rs",
+                        " M metal/kernels/phase1_dense_path.metal",
+                    ],
+                }
+            },
+        )
+
+    def test_build_provenance_rejects_dirty_without_accepted_flag(self) -> None:
+        with self.assertRaisesRegex(
+            checker.ArtifactCheckError,
+            r"tracked-dirty source tree",
+        ):
+            checker.validate_build_provenance(
+                artifact_path=Path("artifact.json"),
+                artifact={
+                    "build": {
+                        "git_tracked_dirty": True,
+                        "git_tracked_dirty_accepted": False,
+                        "git_tracked_status": [
+                            " M crates/ax-engine-core/src/kv.rs",
+                        ],
+                    }
+                },
+            )
+
     def test_legacy_non_gated_rows_allow_missing_claim_status(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -673,6 +745,45 @@ class ReadmePerformanceArtifactTests(unittest.TestCase):
                             readme_path=root / "README.md",
                         expected_metric_count=7,
                     )
+
+    def test_direct_ax_row_allows_split_ffn_for_5bit_model(self) -> None:
+        # 5-bit gate/up packing is intentionally disabled in the engine; the
+        # dense_ffn_split_gate_up_layers counter is expected to be non-zero for
+        # these models and must not fire the hotpath-fallback gate.
+        row = {
+            "ax_mlx_telemetry": {
+                "ax_mlx_dense_ffn_split_gate_up_layers": 175,
+                "ax_mlx_dense_ffn_gate_up_packed_layers": 0,
+            }
+        }
+        checker.validate_direct_hotpath_no_hidden_fallbacks(
+            artifact_path=Path("artifact.json"),
+            row=row,
+            require_phase0=True,
+            model_repo_id="mlx-community/gemma-4-e2b-it-5bit",
+        )
+        # Other counters must still be rejected even for 5-bit models.
+        for key in (
+            "ax_mlx_single_decode_steps",
+            "ax_mlx_ngram_decode_steps",
+            "ax_mlx_direct_cpp_linear_attention_inputs_fallbacks",
+        ):
+            bad_row = {
+                "ax_mlx_telemetry": {
+                    "ax_mlx_dense_ffn_split_gate_up_layers": 175,
+                    key: 1,
+                }
+            }
+            with self.assertRaisesRegex(
+                checker.ArtifactCheckError,
+                "hidden hotpath fallback counters",
+            ):
+                checker.validate_direct_hotpath_no_hidden_fallbacks(
+                    artifact_path=Path("artifact.json"),
+                    row=bad_row,
+                    require_phase0=True,
+                    model_repo_id="mlx-community/gemma-4-e2b-it-5bit",
+                )
 
     def test_direct_ax_variant_rows_reject_hidden_hotpath_fallback_counters(
         self,

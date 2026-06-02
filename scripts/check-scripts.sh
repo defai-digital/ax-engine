@@ -100,6 +100,7 @@ bash -n scripts/*.sh scripts/lib/common.sh
   scripts/build_turboquant_quality_artifact.py \
   scripts/check_turboquant_quality_artifact.py \
   scripts/check_turboquant_microbench_artifact.py \
+  scripts/check_turboquant_prd_completion.py \
   scripts/check_direct_mlx_hotpath_probe_artifact.py \
   scripts/check_direct_gemma4_ffn_route_promotion.py \
   scripts/check_direct_mlx_no_production_route.py \
@@ -111,6 +112,7 @@ bash -n scripts/*.sh scripts/lib/common.sh
   scripts/test_turboquant_quality_artifact.py \
   scripts/test_run_turboquant_quality_artifact.py \
   scripts/test_turboquant_microbench_artifact.py \
+  scripts/test_turboquant_prd_completion.py \
   scripts/test_check_direct_mlx_hotpath_probe_artifact.py \
   scripts/test_check_direct_gemma4_ffn_route_promotion.py \
   scripts/test_check_direct_mlx_no_production_route.py \
@@ -156,6 +158,7 @@ bash -n scripts/*.sh scripts/lib/common.sh
   scripts/test_check_mlx_fastpath_env_controls.py \
   scripts/test_check_mla_prefix_restore_evidence.py \
   scripts/test_run_turboquant_quality_artifact.py \
+  scripts/test_turboquant_prd_completion.py \
   scripts/test_long_context_comparison_artifact.py \
   scripts/test_long_context_decode_at_depth_artifact.py \
   scripts/test_run_mlx_artifact_wrappers.py \

@@ -763,6 +763,29 @@ python3 scripts/check_turboquant_microbench_artifact.py \
   benchmarks/results/turboquant/<date>/microbench.json
 ```
 
+For the D3 PRD acceptance gate, require the head-dim=128 long-cold row and the
+reference speedup margin explicitly:
+
+```text
+python3 scripts/check_turboquant_microbench_artifact.py \
+  --min-cold-tokens 8192 \
+  --min-speedup-vs-dim 1.5 \
+  benchmarks/results/turboquant/<date>/microbench.json
+```
+
+Before marking the TurboQuant codec/kernel PRD complete, generate the aggregate
+completion report:
+
+```text
+python3 scripts/check_turboquant_prd_completion.py \
+  --output benchmarks/results/turboquant/<date>/prd-completion.json \
+  --fail-on-blockers
+```
+
+That final gate is intentionally stricter than any single artifact checker: it
+requires model-family quality evidence, D3 fused microbench evidence, D4 short
+decode speedup evidence, and promotion readiness with no blockers.
+
 N-gram acceleration AX result objects also include `ngram_acceleration_telemetry` when the
 runtime emits route counters. The stored counters cover draft attempts, draft
 tokens, accepted/rejected draft tokens, full accepts, partial rejects, complete

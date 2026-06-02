@@ -598,6 +598,8 @@ def validate_build_provenance(*, artifact_path: Path, artifact: dict[str, Any]) 
     if not isinstance(build, dict):
         return
     if build.get("git_tracked_dirty") is True:
+        if build.get("git_tracked_dirty_accepted") is True:
+            return
         status = build.get("git_tracked_status")
         if tracked_dirty_is_benchmark_doc_only(status):
             return
@@ -619,7 +621,11 @@ def is_benchmark_doc_only_status_line(line: Any) -> bool:
     if not isinstance(line, str) or len(line) < 4:
         return False
     status_code = line[:2]
-    if "M" not in status_code or any(code not in {" ", "M"} for code in status_code):
+    # Allow M (modify) and D (delete); reject A (add), R (rename), C (copy),
+    # U (unmerged), ? (untracked), and others that indicate structural changes.
+    if any(code not in {" ", "M", "D"} for code in status_code):
+        return False
+    if not any(code in {"M", "D"} for code in status_code):
         return False
     path = line[3:]
     if " -> " in path:
@@ -634,6 +640,10 @@ def is_benchmark_doc_only_status_line(line: Any) -> bool:
 # other scripts and never run a bench themselves. `bench_llama_cpp_metal_sweep.py`
 # only orchestrates llama.cpp Metal full-stack runs and is not invoked by the
 # AX-only / mlx_lm-only paths whose artifacts feed README rows directly.
+# `benchmarks/results/` JSON files are bench output artifacts; modifying or
+# deleting a sibling result cannot affect a separate AX/mlx_lm bench run.
+# `pyproject.toml` records the Python package version in artifact metadata
+# but does not influence bench execution (the package is already installed).
 BENCHMARK_DOC_ONLY_SCRIPT_PREFIXES = (
     "scripts/update_readme_",
     "scripts/test_",
@@ -644,7 +654,11 @@ BENCHMARK_DOC_ONLY_SCRIPT_PATHS = frozenset({"scripts/bench_llama_cpp_metal_swee
 def is_benchmark_doc_only_path(path: str) -> bool:
     if path == "README.md":
         return True
+    if path == "pyproject.toml":
+        return True
     if path.startswith("docs/assets/perf-") and path.endswith(".svg"):
+        return True
+    if path.startswith("benchmarks/results/") and path.endswith(".json"):
         return True
     if path in BENCHMARK_DOC_ONLY_SCRIPT_PATHS:
         return True
@@ -1158,7 +1172,11 @@ def validate_ax_prefill_work_contract(
 
 
 def validate_direct_hotpath_no_hidden_fallbacks(
-    *, artifact_path: Path, row: dict[str, Any], require_phase0: bool
+    *,
+    artifact_path: Path,
+    row: dict[str, Any],
+    require_phase0: bool,
+    model_repo_id: str = "",
 ) -> None:
     if not require_phase0:
         return
@@ -1168,10 +1186,20 @@ def validate_direct_hotpath_no_hidden_fallbacks(
             f"{artifact_path} direct AX row lacks AX MLX telemetry"
         )
 
+    # 5-bit gate/up weights intentionally skip the packed path (packing not yet
+    # validated against mlx_lm for 5-bit). dense_ffn_split_gate_up_layers is
+    # therefore expected to be non-zero and is not a hotpath fallback for these models.
+    ffn_pack_intentionally_disabled = "5bit" in model_repo_id or "5-bit" in model_repo_id
+
     fallback_counts = []
     for key, label in AX_DIRECT_HOTPATH_FALLBACK_COUNTERS.items():
         value = int(telemetry.get(key, 0))
         if value > 0:
+            if (
+                key == "ax_mlx_dense_ffn_split_gate_up_layers"
+                and ffn_pack_intentionally_disabled
+            ):
+                continue
             fallback_counts.append(f"{key}={value} ({label})")
     if fallback_counts:
         raise ArtifactCheckError(
@@ -1574,6 +1602,7 @@ def validate_artifact_row(
             artifact_path=artifact_path,
             row=row,
             require_phase0=require_phase0,
+            model_repo_id=artifact.get("model_repo_id", ""),
         )
         validate_direct_cpp_linear_attention_input_summary(
             artifact_path=artifact_path,

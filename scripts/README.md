@@ -195,6 +195,10 @@ throughput baselines.
   metadata, long-cold-context coverage, `two_stage_scores` quality, memory
   savings, and speedup against the CPU reference plus `dim_parallel` when
   present.
+- `check_turboquant_prd_completion.py`: fail-closed TurboQuant PRD completion
+  report. It joins quality/promotion readiness, fused microbench evidence, and
+  short-decode speedup artifacts so the PRD is not marked complete from code
+  presence alone.
 - `build_turboquant_quality_artifact.py`: compiles a TurboQuant quality artifact
   from MLX inference-stack benchmark output and a quality-metrics JSON file,
   then validates it through the same fail-closed gate. Full-precision shadow
@@ -332,6 +336,10 @@ throughput baselines.
   quality-gate artifacts, then reports whether public docs must remain
   experimental. Passing quality/path evidence alone is not enough for public
   promotion when the decode-throughput performance gate is still blocked.
+- `check_turboquant_prd_completion.py --fail-on-blockers`: final TurboQuant PRD
+  closeout gate. Use this only after recording model-family quality evidence,
+  D3 fused microbench evidence, D4 short-decode speedup evidence, and a passing
+  promotion-readiness report.
 - `cargo run -p ax-engine-microbench --release --bin turboquant-microbench -- ...`:
   TurboQuant fused cold-decode microbenchmark. It compares the K8/V4 MLX/Metal
   kernels against the CPU reference oracle and writes

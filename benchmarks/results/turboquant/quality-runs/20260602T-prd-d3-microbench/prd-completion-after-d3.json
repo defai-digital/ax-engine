@@ -1,0 +1,198 @@
+{
+  "schema_version": "ax.turboquant_prd_completion.v1",
+  "decision": {
+    "prd_complete": false,
+    "blockers": [
+      "missing D1+D2 model quality evidence for families: qwen3, qwen3_5",
+      "missing D4 short decode speedup evidence (1 new token, 1024 cold, speedup >= 2.0)",
+      "no local model manifest can exercise the current fused K8/V4 promotion gate",
+      "no passing long-context fused-path performance promotion artifact was found"
+    ],
+    "public_docs_should_remain_experimental": true
+  },
+  "requirements": {
+    "required_model_families": [
+      "gemma4",
+      "qwen3",
+      "qwen3_5"
+    ],
+    "min_microbench_cold_tokens": 8192,
+    "min_d3_speedup_vs_dim_parallel": 1.5,
+    "min_d4_short_decode_speedup": 2.0
+  },
+  "evidence": {
+    "quality_families": [
+      "gemma4"
+    ],
+    "microbench_artifacts": [
+      {
+        "path": "benchmarks/results/turboquant/quality-runs/20260514T202156Z-gemma-4-e2b-it-4bit-fused-r3/microbench-gemma-e2b-shape.json",
+        "passes_gate": false,
+        "blocker": "artifact must include a row with cold_tokens >= 8192",
+        "largest_cold_tokens": 7936,
+        "head_dims": [
+          512
+        ]
+      },
+      {
+        "path": "benchmarks/results/turboquant/quality-runs/20260515T080910Z-gemma-4-e2b-it-4bit-runtime-slices-s6/microbench-gemma-e2b-shape-post-s6.json",
+        "passes_gate": false,
+        "blocker": "artifact must include a row with cold_tokens >= 8192",
+        "largest_cold_tokens": 7936,
+        "head_dims": [
+          512
+        ]
+      },
+      {
+        "path": "benchmarks/results/turboquant/quality-runs/20260515T082716Z-gemma-4-e2b-it-4bit-runtime-slices-s7/microbench-gemma-e2b-shape-post-s7.json",
+        "passes_gate": false,
+        "blocker": "artifact must include a row with cold_tokens >= 8192",
+        "largest_cold_tokens": 7936,
+        "head_dims": [
+          512
+        ]
+      },
+      {
+        "path": "benchmarks/results/turboquant/quality-runs/20260602T-prd-d3-microbench/microbench-head128-cold8192.json",
+        "passes_gate": true,
+        "blocker": null,
+        "largest_cold_tokens": 8192,
+        "head_dims": [
+          128
+        ]
+      }
+    ],
+    "short_decode_artifacts": [],
+    "promotion_readiness": {
+      "schema_version": "ax.turboquant_promotion_readiness.v1",
+      "decision": {
+        "can_make_public_support_claim": false,
+        "public_docs_should_remain_experimental": true,
+        "blockers": [
+          "no local model manifest can exercise the current fused K8/V4 promotion gate",
+          "no passing long-context fused-path performance promotion artifact was found"
+        ],
+        "performance_blocker_summary": [
+          {
+            "path": "benchmarks/results/turboquant/quality-runs/20260514T202156Z-gemma-4-e2b-it-4bit-fused-r3/quality-gate.json",
+            "passes_quality_gate": true,
+            "performance_blockers": [
+              "metrics.decode_tok_s_ratio_to_baseline must be >= 0.85"
+            ],
+            "next_action": "rerun or improve fused compressed decode until performance blockers clear",
+            "runtime_truth": {
+              "decode_path_code": 2,
+              "decode_path_label": "fused_compressed_decode",
+              "fused_decode_attempts": 9,
+              "fused_decode_successes": 9,
+              "fused_decode_metal_successes": 9,
+              "fused_decode_fallbacks": 0,
+              "fused_decode_fallback_reason_code": 0,
+              "fused_decode_fallback_reason_label": "none",
+              "fused_decode_blocked_counters": {
+                "prefill_only": 0,
+                "attention_kind": 96,
+                "ineligible_layer": 0,
+                "unsupported_preset": 0,
+                "unsupported_head_dim": 0,
+                "gqa": 0,
+                "missing_storage": 0
+              },
+              "fused_decode_blocked_total": 96,
+              "fused_decode_blocked_reasons": [
+                "attention_kind"
+              ],
+              "fused_decode_blocked_attention_kind_counters": {
+                "linear_attention": 0,
+                "glm_mla": 0,
+                "sliding_window": 84,
+                "kv_shared": 12
+              },
+              "fused_decode_blocked_attention_kind_reasons": [
+                "sliding_window",
+                "kv_shared"
+              ],
+              "fused_path_selected": true,
+              "fused_success_observed": true,
+              "zero_fallbacks": true,
+              "promotion_path_ready": true
+            }
+          }
+        ]
+      },
+      "required_current_gate": {
+        "candidate_mode": "turboquant-fused-experimental",
+        "preset": "k8v4",
+        "head_dim": [
+          128,
+          256,
+          512
+        ],
+        "decode_path": "fused_compressed_decode",
+        "fused_decode_successes": "> 0",
+        "fused_decode_metal_successes": "> 0",
+        "fused_decode_fallbacks": 0,
+        "minimum_context_tokens": 8192,
+        "minimum_generation_tokens": 128
+      },
+      "models": [],
+      "quality_artifacts": [
+        {
+          "path": "benchmarks/results/turboquant/quality-runs/20260514T202156Z-gemma-4-e2b-it-4bit-fused-r3/quality-gate.json",
+          "passes_quality_gate": true,
+          "passes_performance_gate": false,
+          "quality_blocker": null,
+          "performance_blockers": [
+            "metrics.decode_tok_s_ratio_to_baseline must be >= 0.85"
+          ],
+          "runtime_truth": {
+            "decode_path_code": 2,
+            "decode_path_label": "fused_compressed_decode",
+            "fused_decode_attempts": 9,
+            "fused_decode_successes": 9,
+            "fused_decode_metal_successes": 9,
+            "fused_decode_fallbacks": 0,
+            "fused_decode_fallback_reason_code": 0,
+            "fused_decode_fallback_reason_label": "none",
+            "fused_decode_blocked_counters": {
+              "prefill_only": 0,
+              "attention_kind": 96,
+              "ineligible_layer": 0,
+              "unsupported_preset": 0,
+              "unsupported_head_dim": 0,
+              "gqa": 0,
+              "missing_storage": 0
+            },
+            "fused_decode_blocked_total": 96,
+            "fused_decode_blocked_reasons": [
+              "attention_kind"
+            ],
+            "fused_decode_blocked_attention_kind_counters": {
+              "linear_attention": 0,
+              "glm_mla": 0,
+              "sliding_window": 84,
+              "kv_shared": 12
+            },
+            "fused_decode_blocked_attention_kind_reasons": [
+              "sliding_window",
+              "kv_shared"
+            ],
+            "fused_path_selected": true,
+            "fused_success_observed": true,
+            "zero_fallbacks": true,
+            "promotion_path_ready": true
+          },
+          "promotion_gap": {
+            "observed_decode_tok_s_ratio_to_baseline": 0.2588178599839585,
+            "required_min_decode_tok_s_ratio_to_baseline": 0.85,
+            "repetitions": 3,
+            "cooldown_seconds": 20.0,
+            "repeated_measurement_ready": true,
+            "performance_promotion_ready": false,
+            "next_action": "rerun or improve fused compressed decode until performance blockers clear"
+          }
+        }
+      ]
+    }
+  }
+}
