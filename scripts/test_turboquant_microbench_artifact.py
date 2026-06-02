@@ -116,6 +116,26 @@ class TurboQuantMicrobenchArtifactTests(unittest.TestCase):
         ):
             checker.validate_artifact(artifact)
 
+    def test_non_object_row_fails_closed(self) -> None:
+        artifact = microbench_artifact()
+        artifact["rows"].append("not a row")
+
+        with self.assertRaisesRegex(
+            checker.MicrobenchArtifactValidationError,
+            r"rows\[2\] must be an object",
+        ):
+            checker.validate_artifact(artifact)
+
+    def test_non_integer_cold_tokens_row_fails_closed(self) -> None:
+        artifact = microbench_artifact()
+        artifact["rows"][1]["cold_tokens"] = "8192"
+
+        with self.assertRaisesRegex(
+            checker.MicrobenchArtifactValidationError,
+            r"rows\[1\]\.cold_tokens must be an integer",
+        ):
+            checker.validate_artifact(artifact)
+
     def test_missing_two_stage_scores_variant_fails_closed(self) -> None:
         artifact = microbench_artifact()
         artifact["rows"][1]["kernel_variants"] = [variant("dim_parallel", median_us=78363)]

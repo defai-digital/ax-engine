@@ -228,6 +228,18 @@ def _validate_row(
         )
 
 
+def _artifact_rows(doc: dict[str, Any]) -> list[dict[str, Any]]:
+    rows = doc.get("rows")
+    _require(isinstance(rows, list) and rows, "rows must be a non-empty array")
+
+    checked_rows: list[dict[str, Any]] = []
+    for index, row in enumerate(rows):
+        entry = _mapping(row, f"rows[{index}]")
+        _integer(entry.get("cold_tokens"), f"rows[{index}].cold_tokens")
+        checked_rows.append(entry)
+    return checked_rows
+
+
 def validate_artifact(
     doc: dict[str, Any],
     *,
@@ -240,15 +252,8 @@ def validate_artifact(
 ) -> None:
     _validate_top_level(doc)
 
-    rows = doc.get("rows")
-    _require(isinstance(rows, list) and rows, "rows must be a non-empty array")
-
-    eligible_rows = [
-        _mapping(row, f"rows[{index}]")
-        for index, row in enumerate(rows)
-        if isinstance(row, dict) and isinstance(row.get("cold_tokens"), int)
-        and row.get("cold_tokens") >= min_cold_tokens
-    ]
+    rows = _artifact_rows(doc)
+    eligible_rows = [row for row in rows if row["cold_tokens"] >= min_cold_tokens]
     _require(eligible_rows, f"artifact must include a row with cold_tokens >= {min_cold_tokens}")
 
     for row in sorted(eligible_rows, key=lambda item: item["cold_tokens"], reverse=True):
@@ -277,8 +282,7 @@ def validate_row_evidence(
 ) -> None:
     """Validate a caller-selected microbench row as fused-kernel evidence."""
     _validate_top_level(doc)
-    rows = doc.get("rows")
-    _require(isinstance(rows, list) and rows, "rows must be a non-empty array")
+    rows = _artifact_rows(doc)
     selected_row = _mapping(row, "row")
     _require(
         any(candidate is selected_row for candidate in rows),
