@@ -25,6 +25,8 @@ bash -n scripts/*.sh scripts/lib/common.sh
   scripts/test_embedding_server_ports.py \
   scripts/check_ax_serving_benchmark_artifact.py \
   scripts/test_ax_serving_benchmark_artifact.py \
+  scripts/openwebui_e2e.py \
+  scripts/test_openwebui_e2e.py \
   scripts/render_ax_serving_benchmark_report.py \
   scripts/test_render_ax_serving_benchmark_report.py \
   scripts/bench_mlx_inference_stack.py \
@@ -139,6 +141,7 @@ bash -n scripts/*.sh scripts/lib/common.sh
   scripts/test_bench_ax_serving.py \
   scripts/test_embedding_server_ports.py \
   scripts/test_ax_serving_benchmark_artifact.py \
+  scripts/test_openwebui_e2e.py \
   scripts/test_render_ax_serving_benchmark_report.py \
   scripts/test_update_readme_from_bench.py \
   scripts/test_update_readme_from_results.py \

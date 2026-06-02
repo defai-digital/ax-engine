@@ -248,6 +248,36 @@ real HTTP:
 bash scripts/check-server-preview.sh
 ```
 
+To run the optional OpenWebUI integration smoke, start or provide an
+OpenAI-compatible AX endpoint, then opt in explicitly:
+
+```text
+AX_OPENWEBUI_E2E=1 \
+AX_OPENWEBUI_AX_BASE_URL=http://127.0.0.1:8080/v1 \
+AX_OPENWEBUI_MODEL_ID=qwen3_dense \
+bash scripts/check-openwebui-e2e.sh
+```
+
+The check starts OpenWebUI from
+`ghcr.io/open-webui/open-webui:main` in Docker with an ephemeral data directory,
+configures it to proxy to AX, verifies the model is visible through
+`/openai/v1/models`, sends a chat completion through
+`/openai/v1/chat/completions`, and fails on backend disconnect text or obvious
+corruption patterns such as repeated punctuation-only lines. It is skipped
+unless `AX_OPENWEBUI_E2E=1` is set because it requires Docker and, for real MLX
+coverage, local model artifacts.
+
+For a fully self-contained local run through the Python MLX OpenAI shim:
+
+```text
+AX_OPENWEBUI_E2E=1 \
+AX_OPENWEBUI_START_AX_SHIM=1 \
+AX_ENGINE_MLX_MODEL_ARTIFACTS_DIR=/absolute/path/to/mlx-model-artifacts \
+AX_OPENWEBUI_TOKENIZER=/absolute/path/to/tokenizer.json \
+AX_OPENWEBUI_MODEL_ID=qwen3_dense \
+bash scripts/check-openwebui-e2e.sh
+```
+
 ## Tracing
 
 `ax-engine-server` supports `tracing`, but it keeps it opt-in so normal runs do

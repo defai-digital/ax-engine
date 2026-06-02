@@ -40,6 +40,13 @@ throughput baselines.
   selection, temporary paths, free-port allocation, and PID cleanup.
 - `check-scripts.sh`: fast script hygiene gate. It syntax-checks shell scripts,
   compiles Python scripts, and runs the MLX inference-stack contract tests.
+- `check-openwebui-e2e.sh` and `openwebui_e2e.py`: optional OpenWebUI
+  integration smoke. Set `AX_OPENWEBUI_E2E=1` to run it. The wrapper starts an
+  ephemeral OpenWebUI Docker container, points it at an AX OpenAI-compatible
+  endpoint, verifies model discovery through OpenWebUI's OpenAI proxy, sends a
+  chat completion, and fails on backend disconnect text or obvious corruption
+  patterns. It is intentionally outside the default script gate because it
+  requires Docker and usually local MLX artifacts.
 - `check-mlx-telemetry.sh`: targeted Gemma/AX MLX telemetry gate. It runs the
   MLX crate clippy/tests plus the MLX inference-stack and script gates. Use
   `--full-workspace` only when a change may affect shared Rust contracts; that
