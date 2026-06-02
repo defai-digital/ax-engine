@@ -82,6 +82,9 @@ jobs:
       - name: Install native build dependencies
         run: brew install mlx-c protobuf
 
+      - name: Install Python script dependencies
+        run: pip install httpx
+
       - name: Prepare CI log directory
         run: mkdir -p "$AX_CI_LOG_DIR"
 

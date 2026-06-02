@@ -12,24 +12,33 @@ struct SSEEvent: Sendable {
 /// Stops when the `[DONE]` sentinel is encountered or the byte stream ends.
 struct SSEParser: AsyncSequence {
     typealias Element = SSEEvent
-    typealias LinesIterator = AsyncLineSequence<URLSession.AsyncBytes>.AsyncIterator
 
     let bytes: URLSession.AsyncBytes
 
     func makeAsyncIterator() -> AsyncIterator {
-        AsyncIterator(lines: bytes.lines.makeAsyncIterator())
+        AsyncIterator(bytes: bytes.makeAsyncIterator())
     }
 
     struct AsyncIterator: AsyncIteratorProtocol {
-        var lines: LinesIterator
+        var bytes: URLSession.AsyncBytes.AsyncIterator
         var eventName = "message"
         var dataLines: [String] = []
         var done = false
+        var lineBuffer = [UInt8]()
 
         mutating func next() async throws -> SSEEvent? {
             guard !done else { return nil }
 
-            while let line = try await lines.next() {
+            while let byte = try await bytes.next() {
+                if byte == UInt8(ascii: "\r") { continue }
+                if byte != UInt8(ascii: "\n") {
+                    lineBuffer.append(byte)
+                    continue
+                }
+                // Newline: process the accumulated line
+                let line = String(bytes: lineBuffer, encoding: .utf8) ?? ""
+                lineBuffer.removeAll(keepingCapacity: true)
+
                 if line.isEmpty {
                     guard !dataLines.isEmpty else { continue }
                     let data = dataLines.joined(separator: "\n")
@@ -43,7 +52,7 @@ struct SSEParser: AsyncSequence {
                 if line.hasPrefix(":") { continue }
 
                 if let rest = line.stripPrefix("event:") {
-                    eventName = rest.trimmingCharacters(in: CharacterSet.whitespaces)
+                    eventName = rest.trimmingCharacters(in: .whitespaces)
                 } else if let rest = line.stripPrefix("data:") {
                     dataLines.append(rest.hasPrefix(" ") ? String(rest.dropFirst()) : rest)
                 }
