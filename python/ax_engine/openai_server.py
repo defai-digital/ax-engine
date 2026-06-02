@@ -12,6 +12,7 @@ ALLOWED_CHAT_ROLES = {"system", "user", "assistant", "tool", "function"}
 QWEN_CHATML_ASSISTANT_GENERATION_PROMPT = (
     "<|im_start|>assistant\n<think>\n\n</think>\n\n"
 )
+MODEL_OWNER = "ax-engine"
 
 
 class OpenAiShimError(ValueError):
@@ -152,7 +153,7 @@ def create_app(
     def models() -> dict[str, Any]:
         return {
             "object": "list",
-            "data": [{"id": model_id, "object": "model", "owned_by": "ax-engine-v4"}],
+            "data": [{"id": model_id, "object": "model", "owned_by": MODEL_OWNER}],
         }
 
     @app.post("/v1/completions")

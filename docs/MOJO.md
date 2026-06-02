@@ -34,7 +34,7 @@ To reference the Mojo SDK from your project, add the repo root to your Mojo
 source path:
 
 ```bash
-magic run mojo -I /path/to/ax-engine-v4 your_script.mojo
+magic run mojo -I /path/to/ax-engine_v5 your_script.mojo
 ```
 
 ## Example

@@ -810,6 +810,8 @@ class WrapperContractTests(unittest.TestCase):
     def test_openai_mlx_shim_helpers_tokenize_and_render_chat_prompt(self) -> None:
         openai_server = importlib.import_module("ax_engine.openai_server")
 
+        self.assertEqual(openai_server.MODEL_OWNER, "ax-engine")
+
         class FakeTokenizer:
             def encode(self, text: str) -> object:
                 return types.SimpleNamespace(ids=[ord(ch) for ch in text])

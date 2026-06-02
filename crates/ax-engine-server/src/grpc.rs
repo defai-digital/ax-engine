@@ -12,6 +12,7 @@ use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status};
 
 use super::app_state::AppState;
+use super::metadata::MODEL_OWNER;
 
 mod conversions;
 mod requests;
@@ -92,7 +93,7 @@ impl AxEngine for AxEngineGrpcService {
             data: vec![proto::ModelCard {
                 id: self.state.model_id.to_string(),
                 object: "model".to_string(),
-                owned_by: "ax-engine-v4".to_string(),
+                owned_by: MODEL_OWNER.to_string(),
             }],
         }))
     }

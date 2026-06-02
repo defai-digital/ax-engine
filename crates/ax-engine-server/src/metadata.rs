@@ -8,6 +8,8 @@ use serde_json::json;
 use crate::app_state::AppState;
 use crate::errors::{ErrorResponse, error_response};
 
+pub(crate) const MODEL_OWNER: &str = "ax-engine";
+
 #[derive(Debug, Serialize)]
 pub(crate) struct ServerInfoResponse {
     service: &'static str,
@@ -115,7 +117,7 @@ pub(crate) async fn models(State(state): State<AppState>) -> Json<ModelsResponse
         data: vec![ModelCard {
             id: state.model_id.to_string(),
             object: "model",
-            owned_by: "ax-engine-v4",
+            owned_by: MODEL_OWNER,
             capabilities: model_capabilities(openai_text),
             limit: ModelLimit {
                 context: context_length,

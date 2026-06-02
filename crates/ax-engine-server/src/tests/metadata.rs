@@ -26,6 +26,7 @@ async fn models_reports_ax_code_safe_capabilities() {
     );
 
     assert_eq!(model["capabilities"]["toolcall"], json!(false));
+    assert_eq!(model["owned_by"], json!("ax-engine"));
     assert_eq!(model["capabilities"]["input"]["text"], json!(true));
     assert_eq!(
         model["ax_engine"]["openai_tool_calling_supported"],

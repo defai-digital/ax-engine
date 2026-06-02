@@ -30,3 +30,19 @@ async fn grpc_health_reports_unavailable_when_session_is_busy() {
     assert_eq!(response.status, "ok");
     assert_eq!(response.service, "ax-engine-server");
 }
+
+#[tokio::test]
+async fn grpc_models_reports_stable_ax_engine_owner() {
+    let state = llama_cpp_server_state("http://127.0.0.1:1".to_string());
+    let service = AxEngineGrpcService::new(state);
+
+    let response = service
+        .models(tonic::Request::new(proto::ModelsRequest {}))
+        .await
+        .expect("models should respond")
+        .into_inner();
+
+    assert_eq!(response.object, "list");
+    let model = response.data.first().expect("model card");
+    assert_eq!(model.owned_by, "ax-engine");
+}

@@ -52,7 +52,7 @@ test("models fetches ax-code-safe capability metadata", async () => {
           {
             id: "qwen3",
             object: "model",
-            owned_by: "ax-engine-v4",
+            owned_by: "ax-engine",
             capabilities: {
               temperature: true,
               reasoning: false,

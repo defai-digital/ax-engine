@@ -1,6 +1,6 @@
 # ax-engine-server
 
-`ax-engine-server` is the first SDK-backed thin access layer for AX Engine v4.
+`ax-engine-server` is the SDK-backed thin access layer for AX Engine.
 
 Current scope:
 
