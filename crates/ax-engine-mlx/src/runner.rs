@@ -7624,9 +7624,9 @@ fn adaptive_ngram_saturation_threshold(mtp_depth: usize) -> f32 {
     std::env::var("AX_MLX_MTP_NGRAM_GATE_THRESHOLD")
         .ok()
         .and_then(|v| v.parse::<f32>().ok())
-        // depth≥3: 0.97 keeps n-gram active in the 97-99% range where it still
-        // adds value, while gating it off when MTP is truly saturated (≥99%).
-        // depth=2: slightly higher at 0.98 since depth-2 EWMA is less noisy.
+        // depth≥3: 0.97 disables n-gram when MTP-only EWMA ≥ 0.97; at this
+        // level MTP already saturates the draft window and n-gram stacking
+        // hurts throughput.  depth=2: slightly higher at 0.98.
         .unwrap_or(if mtp_depth >= 3 { 0.97 } else { 0.98 })
 }
 
