@@ -6105,16 +6105,17 @@ impl MlxRunner {
                 &state.mtp_pending_draft_sources,
                 ewma_accept_count,
             );
-            let ewma_ac = ewma_accept_count.unwrap_or(accept_count);
             let ngram_prefix_len = state
                 .mtp_pending_draft_sources
                 .iter()
                 .take_while(|source| **source == MtpDraftSource::Ngram)
                 .count();
             if ngram_prefix_len > 0 {
-                // Use true acceptance for n-gram feedback so auto-optimistic's
-                // inflated accept_count doesn't corrupt n-gram quality tracking.
-                let ngram_accept_count = ewma_ac.min(ngram_prefix_len);
+                // Use actual accept_count for n-gram feedback.  When
+                // auto-optimistic is active, all drafts are genuinely accepted
+                // in the output, so n-gram should see 100% acceptance.  The
+                // argmax-based ewma_ac is only for EWMA tracking.
+                let ngram_accept_count = accept_count.min(ngram_prefix_len);
                 let (feedback_min_support, feedback_confidence) = ngram_feedback_policy(&self.cfg);
                 state.ngram.record_draft_feedback(
                     &pending[..ngram_prefix_len],
