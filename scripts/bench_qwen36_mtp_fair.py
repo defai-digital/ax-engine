@@ -1361,6 +1361,44 @@ def main() -> int:
                     port=args.base_port,
                 )
 
+    # When --skip-existing is set, auto-include any engine from ENGINE_ORDER
+    # that has complete artifacts on disk but was not in --engines. This prevents
+    # partial re-runs (e.g. --engines lightning_mlx) from silently dropping other
+    # engines from the summary and charts.
+    if args.skip_existing:
+        promoted: list[str] = []
+        for engine in ENGINE_ORDER:
+            if engine in args.engines:
+                continue
+            all_present = all(
+                (
+                    args.output_dir
+                    / QWEN36_PROFILES[model_key].key
+                    / suite
+                    / f"{engine}.json"
+                ).is_file()
+                for model_key in args.models
+                for suite in args.suites
+            )
+            if not all_present:
+                continue
+            for model_key in args.models:
+                profile = QWEN36_PROFILES[model_key]
+                for suite in args.suites:
+                    artifact_paths[(profile.key, suite, engine)] = (
+                        args.output_dir / profile.key / suite / f"{engine}.json"
+                    )
+            promoted.append(engine)
+        if promoted:
+            print(
+                f"[skip-existing] auto-including engines with complete artifacts: "
+                + ", ".join(promoted),
+                file=sys.stderr,
+            )
+            args.engines = [
+                e for e in ENGINE_ORDER if e in args.engines or e in promoted
+            ]
+
     summary = build_summary(args, artifact_paths)
     args.output_dir.mkdir(parents=True, exist_ok=True)
     summary_json = args.output_dir / "summary.json"
