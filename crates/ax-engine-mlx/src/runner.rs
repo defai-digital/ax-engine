@@ -3105,6 +3105,12 @@ impl KvCacheTelemetry {
     }
 }
 
+#[derive(Default)]
+struct MtpTargetProbWorkspace {
+    flat_indices: Vec<i32>,
+    target_probs: Vec<f32>,
+}
+
 /// Per-request mutable state persisted across prefill → decode steps.
 struct RequestState {
     cache: MlxKVCache,
@@ -3115,6 +3121,9 @@ struct RequestState {
     /// Per-request PRNG for temperature sampling.  Seeded from request_id so
     /// deterministic seeds produce reproducible outputs.
     rng: Xorshift64,
+    sampling_probs_buf: Vec<f32>,
+    sampling_logits_buf: Vec<f32>,
+    sampling_candidates_buf: Vec<(usize, f32)>,
     /// Beta-Bernoulli posterior α for the n-gram acceleration accept-rate gate.
     /// Incremented by accepted draft tokens each n-gram acceleration step.
     ngram_beta_alpha: f32,
@@ -3180,6 +3189,7 @@ struct RequestState {
     /// Source for each pending draft token. N-gram prefix tokens and MTP tail
     /// tokens need separate counters and feedback in the hybrid path.
     mtp_pending_draft_sources: Vec<MtpDraftSource>,
+    mtp_target_prob_workspace: MtpTargetProbWorkspace,
     /// Request-local MTP draft depth cap.  Adapted from the last accept/reject
     /// outcome so low-acceptance prompts stop paying for deeper draft chains.
     mtp_adaptive_max_depth: usize,
@@ -3230,6 +3240,9 @@ impl RequestState {
             cached_prefill_output_token: None,
             ngram: NgramTable::new(),
             rng: Xorshift64::new(request_id.0),
+            sampling_probs_buf: Vec::new(),
+            sampling_logits_buf: Vec::new(),
+            sampling_candidates_buf: Vec::new(),
             ngram_beta_alpha: NGRAM_BETA_PRIOR_ALPHA,
             ngram_beta_beta: NGRAM_BETA_PRIOR_BETA,
             ngram_disabled_steps: 0,
@@ -3251,6 +3264,7 @@ impl RequestState {
             mtp_pending_draft_log_probs: Vec::new(),
             mtp_pending_draft_distributions: Vec::new(),
             mtp_pending_draft_sources: Vec::new(),
+            mtp_target_prob_workspace: MtpTargetProbWorkspace::default(),
             mtp_adaptive_max_depth: 0,
             mtp_skip_logits: None,
             mtp_skip_hidden: None,
@@ -5683,6 +5697,9 @@ impl MlxRunner {
             &repetition_history,
             &mut state.rng,
             turboquant_context.as_ref(),
+            &mut state.sampling_probs_buf,
+            &mut state.sampling_logits_buf,
+            &mut state.sampling_candidates_buf,
         );
         state
             .decode_telemetry
@@ -5889,6 +5906,13 @@ impl MlxRunner {
                 // Target probabilities for rejection-sampling acceptance.
                 // Full-vocab softmax by default; top-k approximation when
                 // AX_MLX_MTP_TARGET_SOFTMAX_MODE is set (e.g. topk_128).
+                let mut local_target_prob_workspace = MtpTargetProbWorkspace::default();
+                let target_prob_workspace =
+                    if crate::fastpath::decode_mtp_target_prob_workspace_enabled() {
+                        &mut state.mtp_target_prob_workspace
+                    } else {
+                        &mut local_target_prob_workspace
+                    };
                 let lazy_target_probs = compute_mtp_target_probs(
                     &logits_all,
                     &pending,
@@ -5896,6 +5920,7 @@ impl MlxRunner {
                     vocab,
                     sampling,
                     self.mtp_target_softmax_topk,
+                    target_prob_workspace,
                 );
                 // Always compute argmax for the correction/bonus fallback.
                 let predicted_arr = Some(argmax(&logits_all, None));
@@ -5915,15 +5940,10 @@ impl MlxRunner {
                     .as_ref()
                     .map(|arr| arr.data_u32().to_vec())
                     .unwrap_or_default();
-                let (target_probs_cpu, target_distributions_cpu): (
-                    Option<Vec<f32>>,
-                    Option<Vec<TokenDistribution>>,
-                ) = (
-                    lazy_target_probs
-                        .as_ref()
-                        .and_then(|ltp| ltp.extract_cpu(&pending)),
-                    None,
-                );
+                let target_probs_cpu = lazy_target_probs
+                    .as_ref()
+                    .and_then(|ltp| ltp.extract_cpu_into(&pending, target_prob_workspace));
+                let target_distributions_cpu: Option<&[TokenDistribution]> = None;
 
                 let accept = mtp_accept_count(
                     &pending,
@@ -5931,7 +5951,7 @@ impl MlxRunner {
                     &state.mtp_pending_draft_distributions,
                     &state.mtp_pending_draft_sources,
                     target_probs_cpu.as_deref(),
-                    target_distributions_cpu.as_deref(),
+                    target_distributions_cpu,
                     &predicted,
                     &mut state.rng,
                 );
@@ -6010,6 +6030,13 @@ impl MlxRunner {
                 )
             } else {
                 // Target probabilities for rejection-sampling acceptance.
+                let mut local_target_prob_workspace = MtpTargetProbWorkspace::default();
+                let target_prob_workspace =
+                    if crate::fastpath::decode_mtp_target_prob_workspace_enabled() {
+                        &mut state.mtp_target_prob_workspace
+                    } else {
+                        &mut local_target_prob_workspace
+                    };
                 let lazy_target_probs = compute_mtp_target_probs(
                     &logits_all,
                     &pending,
@@ -6017,6 +6044,7 @@ impl MlxRunner {
                     vocab,
                     sampling,
                     self.mtp_target_softmax_topk,
+                    target_prob_workspace,
                 );
                 // Always compute argmax for the correction/bonus fallback.
                 let predicted_arr = Some(argmax(&logits_all, None));
@@ -6036,15 +6064,10 @@ impl MlxRunner {
                     .as_ref()
                     .map(|arr| arr.data_u32().to_vec())
                     .unwrap_or_default();
-                let (target_probs_cpu, target_distributions_cpu): (
-                    Option<Vec<f32>>,
-                    Option<Vec<TokenDistribution>>,
-                ) = (
-                    lazy_target_probs
-                        .as_ref()
-                        .and_then(|ltp| ltp.extract_cpu(&pending)),
-                    None,
-                );
+                let target_probs_cpu = lazy_target_probs
+                    .as_ref()
+                    .and_then(|ltp| ltp.extract_cpu_into(&pending, target_prob_workspace));
+                let target_distributions_cpu: Option<&[TokenDistribution]> = None;
 
                 let accept = mtp_accept_count(
                     &pending,
@@ -6052,7 +6075,7 @@ impl MlxRunner {
                     &state.mtp_pending_draft_distributions,
                     &state.mtp_pending_draft_sources,
                     target_probs_cpu.as_deref(),
-                    target_distributions_cpu.as_deref(),
+                    target_distributions_cpu,
                     &predicted,
                     &mut state.rng,
                 );
@@ -6787,14 +6810,22 @@ impl LazyTargetProbs {
         }
     }
 
-    fn extract_cpu(&self, pending: &[u32]) -> Option<Vec<f32>> {
+    fn extract_cpu_into<'a>(
+        &self,
+        pending: &[u32],
+        workspace: &'a mut MtpTargetProbWorkspace,
+    ) -> Option<&'a [f32]> {
+        workspace.target_probs.clear();
         match self {
-            LazyTargetProbs::Full(arr) => Some(arr.data_f32().to_vec()),
+            LazyTargetProbs::Full(arr) => {
+                workspace.target_probs.extend_from_slice(arr.data_f32());
+                Some(workspace.target_probs.as_slice())
+            }
             LazyTargetProbs::TopK { indices, probs, k } => {
                 let k_val = *k as usize;
                 let indices_data = indices.data_u32();
                 let probs_data = probs.data_f32();
-                let mut result = Vec::with_capacity(pending.len());
+                workspace.target_probs.reserve(pending.len());
                 for (i, &needle) in pending.iter().enumerate() {
                     let row_start = i * k_val;
                     let row_end = row_start + k_val;
@@ -6802,16 +6833,16 @@ impl LazyTargetProbs {
                     for j in row_start..row_end {
                         if indices_data.get(j) == Some(&needle) {
                             let p = probs_data.get(j).copied().unwrap_or(0.0_f32);
-                            result.push(p.max(0.0_f32));
+                            workspace.target_probs.push(p.max(0.0_f32));
                             found = true;
                             break;
                         }
                     }
                     if !found {
-                        result.push(0.0_f32);
+                        workspace.target_probs.push(0.0_f32);
                     }
                 }
-                Some(result)
+                Some(workspace.target_probs.as_slice())
             }
         }
     }
@@ -6829,6 +6860,7 @@ fn compute_mtp_target_probs(
     vocab: i32,
     target_sampling: MlxSamplingParams,
     topk: Option<u32>,
+    workspace: &mut MtpTargetProbWorkspace,
 ) -> Option<LazyTargetProbs> {
     if pending.is_empty()
         || pending_log_probs.len() != pending.len()
@@ -6873,12 +6905,13 @@ fn compute_mtp_target_probs(
     } else {
         let probs = softmax(&scaled, -1, None);
 
-        let flat_indices: Vec<i32> = (0..n)
-            .map(|i| i as i32 * vocab + pending[i] as i32)
-            .collect();
+        workspace.flat_indices.clear();
+        workspace
+            .flat_indices
+            .extend((0..n).map(|i| i as i32 * vocab + pending[i] as i32));
         let flat_idx_arr = MlxArray::from_raw_data(
-            flat_indices.as_ptr() as *const u8,
-            flat_indices.len() * 4,
+            workspace.flat_indices.as_ptr() as *const u8,
+            workspace.flat_indices.len() * 4,
             &[n as i32],
             MlxDtype::Int32,
         );
@@ -11832,6 +11865,8 @@ mod tests {
             temperature,
             ..Default::default()
         };
+        let mut full_workspace = MtpTargetProbWorkspace::default();
+        let mut topk_workspace = MtpTargetProbWorkspace::default();
 
         let full_result = compute_mtp_target_probs(
             &logits_all,
@@ -11840,12 +11875,15 @@ mod tests {
             vocab,
             sampling,
             None,
+            &mut full_workspace,
         )
         .expect("full should return Some");
         if let LazyTargetProbs::Full(arr) = &full_result {
             eval(&[arr]);
         }
-        let full_probs = full_result.extract_cpu(&pending).unwrap();
+        let full_probs = full_result
+            .extract_cpu_into(&pending, &mut full_workspace)
+            .unwrap();
 
         let topk_result = compute_mtp_target_probs(
             &logits_all,
@@ -11854,12 +11892,15 @@ mod tests {
             vocab,
             sampling,
             Some(32),
+            &mut topk_workspace,
         )
         .expect("topk should return Some");
         if let LazyTargetProbs::TopK { indices, probs, .. } = &topk_result {
             eval(&[indices, probs]);
         }
-        let topk_probs = topk_result.extract_cpu(&pending).unwrap();
+        let topk_probs = topk_result
+            .extract_cpu_into(&pending, &mut topk_workspace)
+            .unwrap();
 
         assert_eq!(full_probs.len(), 3);
         assert_eq!(topk_probs.len(), 3);
@@ -11911,6 +11952,7 @@ mod tests {
             temperature,
             ..Default::default()
         };
+        let mut workspace = MtpTargetProbWorkspace::default();
 
         let topk_result = compute_mtp_target_probs(
             &logits_all,
@@ -11919,6 +11961,7 @@ mod tests {
             vocab,
             sampling,
             Some(3),
+            &mut workspace,
         )
         .expect("topk should return Some");
 
@@ -11926,7 +11969,9 @@ mod tests {
             eval(&[indices, probs]);
         }
 
-        let topk_probs = topk_result.extract_cpu(&pending).unwrap();
+        let topk_probs = topk_result
+            .extract_cpu_into(&pending, &mut workspace)
+            .unwrap();
         assert_eq!(topk_probs.len(), 1);
         assert_eq!(
             topk_probs[0], 0.0,

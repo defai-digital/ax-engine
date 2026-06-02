@@ -49,7 +49,7 @@ Replace the CPU-side `sort_by` in exact `top_k` sampling with GPU-side `argparti
 
 ### Phase 2 — MTP Target-Probability Workspace (P1)
 
-Optimize the current `compute_mtp_target_probs` path in `runner.rs`. The current implementation already computes target probabilities lazily on GPU and gathers only the pending draft-token probabilities before `mtp_accept_count`. Phase 3 should reduce allocation, indexing, and extraction overhead in that path without introducing CPU full-logits readback.
+Optimize the current `compute_mtp_target_probs` path in `runner.rs`. The current implementation already computes target probabilities lazily on GPU and gathers only the pending draft-token probabilities before `mtp_accept_count`. Phase 2 should reduce allocation, indexing, and extraction overhead in that path without introducing CPU full-logits readback.
 
 **Files**: `crates/ax-engine-mlx/src/runner.rs`, `crates/ax-engine-mlx/src/mtp.rs`, `crates/ax-engine-mlx/src/sampling.rs`
 

@@ -12,7 +12,8 @@ use crate::model::{
     forward_lazy_single_argmax_with_turboquant_context, forward_with_turboquant_context,
 };
 use crate::sampling::{
-    MlxSamplingParams, MlxSamplingRequest, Xorshift64, sample_categorical, sample_categorical_gpu,
+    MlxSamplingParams, MlxSamplingRequest, Xorshift64, sample_categorical_gpu,
+    sample_categorical_into, sample_categorical_with_topk_gpu,
 };
 use crate::weights::ModelWeights;
 
@@ -192,6 +193,9 @@ pub fn chunked_prefill(
     let sampling = sampling_request.params;
     let chunk_size = chunk_size.max(1);
     let total = prompt_tokens.len();
+    let mut sampling_probs_buf = Vec::new();
+    let mut sampling_logits_buf = Vec::new();
+    let mut sampling_candidates_buf = Vec::new();
 
     let cache_only_prefix_len = mlx_lm_style_cache_only_prefix_len(total, sampling);
     if cache_only_prefix_len > 0 {
@@ -242,14 +246,26 @@ pub fn chunked_prefill(
 
         if offset == total {
             let tok = if sampling.temperature > 0.0 || sampling.uses_repetition_penalty() {
-                eval_with_kv_refs(&logits, cache);
-                let logits_data = logits.data_f32();
-                sample_categorical(
-                    logits_data,
+                if let Some(tok) = sample_categorical_with_topk_gpu(
+                    &logits,
                     sampling,
                     sampling_request.repetition_tokens,
                     rng,
-                )
+                ) {
+                    tok
+                } else {
+                    eval_with_kv_refs(&logits, cache);
+                    let logits_data = logits.data_f32();
+                    sample_categorical_into(
+                        logits_data,
+                        sampling,
+                        sampling_request.repetition_tokens,
+                        rng,
+                        &mut sampling_probs_buf,
+                        &mut sampling_logits_buf,
+                        &mut sampling_candidates_buf,
+                    )
+                }
             } else {
                 // GPU argmax over [vocab] logits -> token ID.
                 let token_arr = argmax(&logits, None);
@@ -315,6 +331,9 @@ pub fn chunked_prefill_with_mtp_history(
     let sampling = sampling_request.params;
     let chunk_size = chunk_size.max(1);
     let total = prompt_tokens.len();
+    let mut sampling_probs_buf = Vec::new();
+    let mut sampling_logits_buf = Vec::new();
+    let mut sampling_candidates_buf = Vec::new();
 
     // cache_only_prefix_len fast path: no final-hidden support (short path).
     // Fall back to the normal chunked_prefill for this case and return a
@@ -398,14 +417,26 @@ pub fn chunked_prefill_with_mtp_history(
                     use mlx_sys::astype;
                     astype(&last_logits, MlxDtype::Float32, None)
                 };
-                eval(&[&last_logits_f32]);
-                let logits_data = last_logits_f32.data_f32();
-                sample_categorical(
-                    logits_data,
+                if let Some(tok) = sample_categorical_with_topk_gpu(
+                    &last_logits_f32,
                     sampling,
                     sampling_request.repetition_tokens,
                     rng,
-                )
+                ) {
+                    tok
+                } else {
+                    eval(&[&last_logits_f32]);
+                    let logits_data = last_logits_f32.data_f32();
+                    sample_categorical_into(
+                        logits_data,
+                        sampling,
+                        sampling_request.repetition_tokens,
+                        rng,
+                        &mut sampling_probs_buf,
+                        &mut sampling_logits_buf,
+                        &mut sampling_candidates_buf,
+                    )
+                }
             } else {
                 let token_arr = argmax(&logits_all, None);
                 eval_with_kv_refs(&token_arr, cache);
@@ -572,6 +603,9 @@ pub fn advance_direct_pipeline_with_timings_and_turboquant_context(
         ForwardStageTimings::default()
     };
     cache.seq_len += 1;
+    let mut sampling_probs_buf = Vec::new();
+    let mut sampling_logits_buf = Vec::new();
+    let mut sampling_candidates_buf = Vec::new();
     let argmax_started = Instant::now();
     let next_token_arr = argmax(&logits, None);
     let argmax_wall_us = elapsed_us(argmax_started);
@@ -689,14 +723,26 @@ pub fn decode_step_with_turboquant_context(
         // GPU-side sampling: no logits transfer to CPU.
         sample_categorical_gpu(&logits, sampling.temperature)
     } else if sampling.temperature > 0.0 || sampling.uses_repetition_penalty() {
-        eval_with_kv_refs(&logits, cache);
-        let logits_data = logits.data_f32();
-        sample_categorical(
-            logits_data,
+        if let Some(tok) = sample_categorical_with_topk_gpu(
+            &logits,
             sampling,
             sampling_request.repetition_tokens,
             rng,
-        )
+        ) {
+            tok
+        } else {
+            eval_with_kv_refs(&logits, cache);
+            let logits_data = logits.data_f32();
+            sample_categorical_into(
+                logits_data,
+                sampling,
+                sampling_request.repetition_tokens,
+                rng,
+                &mut sampling_probs_buf,
+                &mut sampling_logits_buf,
+                &mut sampling_candidates_buf,
+            )
+        }
     } else {
         // Deterministic argmax path: GPU argmax, no CPU data movement.
         let token_arr = argmax(&logits, None);

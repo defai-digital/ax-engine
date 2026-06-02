@@ -104,7 +104,7 @@ The rolling-window adaptive policy is deferred to a separate research item. It m
 
 ### Decision
 
-**D1 is chosen.** The hot MTP path already uses `compute_mtp_target_probs` in `runner.rs`, which builds target probabilities lazily on GPU and extracts only the pending draft-token probabilities before `mtp_accept_count`. Phase 3 keeps that contract and adds reusable request-local workspace for gather indices and extracted target probabilities.
+**D1 is chosen.** The hot MTP path already uses `compute_mtp_target_probs` in `runner.rs`, which builds target probabilities lazily on GPU and extracts only the pending draft-token probabilities before `mtp_accept_count`. The active MTP workspace phase keeps that contract and adds reusable request-local workspace for gather indices and extracted target probabilities.
 
 `full_vocab_token_logprob` remains a cold CPU helper/fallback. It is not the current MTP rejection-sampling hot path and should not become one unless benchmarks prove CPU materialization is faster for a specific configuration.
 

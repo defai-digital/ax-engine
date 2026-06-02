@@ -1,16 +1,12 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
-use mlx_sys::{
-    MlxArray, MlxDtype, argmax, argpartition_axis, astype, eval, eval_first_u32, multiply,
-    random_categorical, reshape, slice, softmax, take, take_along_axis,
-};
+use mlx_sys::{MlxArray, MlxDtype, argmax, eval, multiply, reshape, slice, softmax, take};
 
 use crate::sampling::{
     MlxSamplingParams, MlxSamplingRequest, Xorshift64, sample_categorical, sample_categorical_gpu,
-    sample_indexed_categorical,
+    sample_categorical_into, sample_categorical_with_topk_gpu,
 };
 
-use crate::fastpath::mtp_fast_tail_topk_sampling_enabled;
 use crate::kv_cache::MlxKVCache;
 use crate::model::{
     ModelConfig, TurboQuantModelDecodeContext, forward_all_positions,
@@ -1299,70 +1295,13 @@ pub(crate) fn sample_logit_row(
     if sampling.temperature <= 0.0 {
         return argmax_tok;
     }
-    if let Some(tok) = sample_logit_row_topk_candidate_cpu(logits_all, pos, vocab, sampling, rng) {
+    let p = pos as i32;
+    let row = slice(logits_all, &[p, 0], &[p + 1, vocab], &[1, 1], None);
+    if let Some(tok) = sample_categorical_with_topk_gpu(&row, sampling, &[], rng) {
         return tok;
     }
-    let p = pos as i32;
-    let row = slice(logits_all, &[p, 0], &[p + 1, vocab], &[1, 1], None);
     eval(&[&row]);
     sample_categorical(row.data_f32(), sampling, &[], rng)
-}
-
-fn sample_logit_row_topk_gpu(
-    logits_all: &MlxArray,
-    pos: usize,
-    vocab: i32,
-    sampling: MlxSamplingParams,
-) -> Option<u32> {
-    if !mtp_fast_tail_topk_sampling_enabled() || sampling.top_k == 0 || sampling.temperature <= 0.0
-    {
-        return None;
-    }
-    let k = (sampling.top_k as i32).min(vocab);
-    if k <= 0 {
-        return None;
-    }
-    let p = pos as i32;
-    let row = slice(logits_all, &[p, 0], &[p + 1, vocab], &[1, 1], None);
-    let inv_temp = MlxArray::from_f32(1.0 / sampling.temperature);
-    let scaled = multiply(&row, &inv_temp, None);
-    let part_indices = argpartition_axis(&scaled, -k, -1, None);
-    let top_indices = slice(&part_indices, &[0, vocab - k], &[1, vocab], &[1, 1], None);
-    let top_logits = take_along_axis(&scaled, &top_indices, -1, None);
-    let sampled_local = random_categorical(&top_logits, None);
-    let local = eval_first_u32(&sampled_local) as usize;
-    let top_indices = astype(&top_indices, MlxDtype::Uint32, None);
-    eval(&[&top_indices]);
-    top_indices.data_u32().get(local).copied()
-}
-
-fn sample_logit_row_topk_candidate_cpu(
-    logits_all: &MlxArray,
-    pos: usize,
-    vocab: i32,
-    sampling: MlxSamplingParams,
-    rng: &mut Xorshift64,
-) -> Option<u32> {
-    if sampling.top_k == 0 || sampling.uses_repetition_penalty() || sampling.temperature <= 0.0 {
-        return None;
-    }
-    if mtp_fast_tail_topk_sampling_enabled() {
-        return sample_logit_row_topk_gpu(logits_all, pos, vocab, sampling);
-    }
-
-    let k = (sampling.top_k as i32).min(vocab);
-    if k <= 0 {
-        return None;
-    }
-    let p = pos as i32;
-    let row = slice(logits_all, &[p, 0], &[p + 1, vocab], &[1, 1], None);
-    let part_indices = argpartition_axis(&row, -k, -1, None);
-    let top_indices = slice(&part_indices, &[0, vocab - k], &[1, vocab], &[1, 1], None);
-    let top_logits = take_along_axis(&row, &top_indices, -1, None);
-    let top_indices = astype(&top_indices, MlxDtype::Uint32, None);
-    eval(&[&top_logits, &top_indices]);
-
-    sample_indexed_categorical(top_logits.data_f32(), top_indices.data_u32(), sampling, rng)
 }
 
 /// Single-token decode fallback (used when n-gram table has no prediction).
@@ -1377,6 +1316,9 @@ pub fn single_decode(
     sampling_request: MlxSamplingRequest<'_>,
     rng: &mut Xorshift64,
 ) -> Vec<u32> {
+    let mut probs_buf = Vec::new();
+    let mut logits_buf = Vec::new();
+    let mut candidates_buf = Vec::new();
     single_decode_with_turboquant_context(
         cfg,
         weights,
@@ -1387,6 +1329,9 @@ pub fn single_decode(
         sampling_request.repetition_tokens,
         rng,
         None,
+        &mut probs_buf,
+        &mut logits_buf,
+        &mut candidates_buf,
     )
 }
 
@@ -1401,6 +1346,9 @@ pub fn single_decode_with_turboquant_context(
     repetition_tokens: &[u32],
     rng: &mut Xorshift64,
     turboquant_context: Option<&TurboQuantModelDecodeContext<'_>>,
+    sampling_probs_buf: &mut Vec<f32>,
+    sampling_logits_buf: &mut Vec<f32>,
+    sampling_candidates_buf: &mut Vec<(usize, f32)>,
 ) -> Vec<u32> {
     let token_offset = cache.seq_len;
     let logits = forward_with_turboquant_context(
@@ -1428,7 +1376,15 @@ pub fn single_decode_with_turboquant_context(
         targets.push(&logits);
         targets.extend(kv_refs);
         eval(&targets);
-        sample_categorical(logits.data_f32(), sampling, repetition_tokens, rng)
+        sample_categorical_into(
+            logits.data_f32(),
+            sampling,
+            repetition_tokens,
+            rng,
+            sampling_probs_buf,
+            sampling_logits_buf,
+            sampling_candidates_buf,
+        )
     } else {
         let token_arr = argmax(&logits, None);
         let kv_refs = cache.collect_eval_refs();

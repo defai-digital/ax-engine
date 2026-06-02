@@ -1,6 +1,11 @@
 use std::collections::{BTreeMap, HashSet};
 
-use mlx_sys::{MlxArray, eval_first_u32, multiply, random_categorical};
+use mlx_sys::{
+    MlxArray, MlxDtype, argpartition_axis, astype, eval, eval_first_u32, multiply,
+    random_categorical, reshape, slice, softmax, take_along_axis,
+};
+
+use crate::fastpath;
 
 /// Minimal xorshift64 PRNG — no external dependency.
 ///
@@ -149,18 +154,41 @@ pub fn sample_categorical(
     repetition_tokens: &[u32],
     rng: &mut Xorshift64,
 ) -> u32 {
+    let mut probs_buf = Vec::new();
+    let mut logits_buf = Vec::new();
+    let mut candidates_buf = Vec::new();
+    sample_categorical_into(
+        logits,
+        sampling,
+        repetition_tokens,
+        rng,
+        &mut probs_buf,
+        &mut logits_buf,
+        &mut candidates_buf,
+    )
+}
+
+pub fn sample_categorical_into(
+    logits: &[f32],
+    sampling: MlxSamplingParams,
+    repetition_tokens: &[u32],
+    rng: &mut Xorshift64,
+    probs_buf: &mut Vec<f32>,
+    logits_buf: &mut Vec<f32>,
+    candidates_buf: &mut Vec<(usize, f32)>,
+) -> u32 {
     if logits.is_empty() {
         return 0;
     }
-    let mut adjusted_logits_buf: Vec<f32>;
     let logits = if sampling.uses_repetition_penalty() && !repetition_tokens.is_empty() {
-        adjusted_logits_buf = logits.to_vec();
+        logits_buf.clear();
+        logits_buf.extend_from_slice(logits);
         logits_with_repetition_penalty_in_place(
-            &mut adjusted_logits_buf,
+            logits_buf,
             sampling.repetition_penalty,
             recent_repetition_tokens(repetition_tokens, sampling.repetition_context_size),
         );
-        adjusted_logits_buf.as_slice()
+        logits_buf.as_slice()
     } else {
         logits
     };
@@ -175,26 +203,24 @@ pub fn sample_categorical(
     // and the extra O(vocab) filtered_sum pass — the common case for plain
     // temperature sampling.
     if sampling.top_k == 0 && sampling.top_p >= 1.0 {
-        let probs: Vec<f32> = logits
-            .iter()
-            .map(|&l| {
-                let p = ((l - max_l) * inv_temp).exp();
-                if p.is_finite() { p } else { 0.0 }
-            })
-            .collect();
-        let sum: f32 = probs.iter().sum();
+        probs_buf.clear();
+        probs_buf.extend(logits.iter().map(|&l| {
+            let p = ((l - max_l) * inv_temp).exp();
+            if p.is_finite() { p } else { 0.0 }
+        }));
+        let sum: f32 = probs_buf.iter().sum();
         if sum == 0.0 || !sum.is_finite() {
             return argmax_f32(logits);
         }
         let threshold = rng.next_f32() * sum;
         let mut cumsum = 0.0f32;
-        for (i, p) in probs.iter().enumerate() {
+        for (i, p) in probs_buf.iter().enumerate() {
             cumsum += p;
             if cumsum >= threshold {
                 return i as u32;
             }
         }
-        return probs
+        return probs_buf
             .iter()
             .enumerate()
             .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
@@ -203,39 +229,81 @@ pub fn sample_categorical(
     }
 
     // Filtered path: top-k or top-p active — track indices for truncation.
-    let mut candidates: Vec<(usize, f32)> = logits
-        .iter()
-        .enumerate()
-        .map(|(idx, &logit)| {
-            let prob = ((logit - max_l) * inv_temp).exp();
-            (idx, if prob.is_finite() { prob } else { 0.0 })
-        })
-        .collect();
-    let sum: f32 = candidates.iter().map(|(_, p)| *p).sum();
+    candidates_buf.clear();
+    candidates_buf.extend(logits.iter().enumerate().map(|(idx, &logit)| {
+        let prob = ((logit - max_l) * inv_temp).exp();
+        (idx, if prob.is_finite() { prob } else { 0.0 })
+    }));
+    let sum: f32 = candidates_buf.iter().map(|(_, p)| *p).sum();
     if sum == 0.0 || !sum.is_finite() {
         return argmax_f32(logits);
     }
 
-    apply_top_k_top_p(&mut candidates, sampling.top_k, sampling.top_p);
-    let filtered_sum: f32 = candidates.iter().map(|(_, p)| *p).sum();
+    apply_top_k_top_p(candidates_buf, sampling.top_k, sampling.top_p);
+    let filtered_sum: f32 = candidates_buf.iter().map(|(_, p)| *p).sum();
     if filtered_sum == 0.0 || !filtered_sum.is_finite() {
         return argmax_f32(logits);
     }
 
     let threshold = rng.next_f32() * filtered_sum;
     let mut cumsum = 0.0f32;
-    for (i, p) in candidates.iter() {
+    for (i, p) in candidates_buf.iter() {
         cumsum += p;
         if cumsum >= threshold {
             return *i as u32;
         }
     }
-    candidates
+    candidates_buf
         .iter()
         .copied()
         .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
         .map(|(i, _)| i as u32)
         .unwrap_or(0)
+}
+
+pub fn sample_categorical_with_topk_gpu(
+    logits: &MlxArray,
+    sampling: MlxSamplingParams,
+    repetition_tokens: &[u32],
+    rng: &mut Xorshift64,
+) -> Option<u32> {
+    if !fastpath::decode_sampling_gpu_topk_enabled()
+        || sampling.temperature <= 0.0
+        || sampling.top_k == 0
+        || (sampling.uses_repetition_penalty() && !repetition_tokens.is_empty())
+    {
+        return None;
+    }
+
+    let shape = logits.shape();
+    let vocab = shape.last().copied()?;
+    if vocab <= 0 {
+        return None;
+    }
+    let k = (sampling.top_k as i32).min(vocab);
+    if k <= 0 {
+        return None;
+    }
+
+    let logits_2d = if shape.len() == 1 {
+        reshape(logits, &[1_i32, vocab], None)
+    } else {
+        logits.clone()
+    };
+    let inv_temp = MlxArray::from_f32(1.0 / sampling.temperature);
+    let scaled = multiply(&logits_2d, &inv_temp, None);
+    let part_indices = argpartition_axis(&scaled, -k, -1, None);
+    let top_indices = slice(&part_indices, &[0, vocab - k], &[1, vocab], &[1, 1], None);
+    let top_probs = take_along_axis(&softmax(&scaled, -1, None), &top_indices, -1, None);
+    let top_indices = astype(&top_indices, MlxDtype::Uint32, None);
+    eval(&[&top_indices, &top_probs]);
+
+    sample_indexed_full_probability_categorical(
+        top_indices.data_u32(),
+        top_probs.data_f32(),
+        sampling,
+        rng,
+    )
 }
 
 /// Sample from a pre-filtered set of `(token_id, logit)` candidates.
@@ -614,6 +682,65 @@ fn recent_repetition_tokens(tokens: &[u32], context_size: Option<u32>) -> &[u32]
     &tokens[tokens.len() - keep_len..]
 }
 
+fn sample_indexed_full_probability_categorical(
+    indices: &[u32],
+    full_probs: &[f32],
+    sampling: MlxSamplingParams,
+    rng: &mut Xorshift64,
+) -> Option<u32> {
+    if indices.is_empty() || indices.len() != full_probs.len() {
+        return None;
+    }
+
+    let mut candidates: Vec<(u32, f32)> = indices
+        .iter()
+        .copied()
+        .zip(full_probs.iter().copied())
+        .filter(|(_, prob)| *prob > 0.0 && prob.is_finite())
+        .collect();
+    if candidates.is_empty() {
+        return None;
+    }
+
+    candidates.sort_by(|(left_idx, left_prob), (right_idx, right_prob)| {
+        right_prob
+            .partial_cmp(left_prob)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| left_idx.cmp(right_idx))
+    });
+
+    if sampling.top_p.is_finite() && sampling.top_p > 0.0 && sampling.top_p < 1.0 {
+        let mut cumulative = 0.0f32;
+        let mut keep = 0usize;
+        for (_, prob) in candidates.iter() {
+            cumulative += *prob;
+            keep += 1;
+            if cumulative >= sampling.top_p {
+                break;
+            }
+        }
+        candidates.truncate(keep.max(1));
+    }
+
+    let filtered_sum: f32 = candidates.iter().map(|(_, prob)| *prob).sum();
+    if filtered_sum <= 0.0 || !filtered_sum.is_finite() {
+        return candidates.first().map(|(token, _)| *token);
+    }
+
+    let threshold = rng.next_f32() * filtered_sum;
+    let mut cumsum = 0.0f32;
+    for (token, prob) in candidates.iter().copied() {
+        cumsum += prob;
+        if cumsum >= threshold {
+            return Some(token);
+        }
+    }
+    candidates
+        .into_iter()
+        .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+        .map(|(token, _)| token)
+}
+
 fn logits_with_repetition_penalty_in_place(
     logits: &mut [f32],
     repetition_penalty: f32,
@@ -783,6 +910,32 @@ mod tests {
                 "top_p=0.5 should keep first half of equal-prob candidates, got {tok}"
             );
         }
+    }
+
+    #[test]
+    fn indexed_full_probability_sampler_uses_full_domain_top_p_cutoff() {
+        let indices = vec![10_u32, 11];
+        let full_probs = vec![0.40_f32, 0.20_f32];
+        let sampling = MlxSamplingParams::new(1.0, 0.5, 2);
+        let mut rng = Xorshift64::new(31);
+        let mut saw_second = false;
+
+        for _ in 0..100 {
+            let tok = sample_indexed_full_probability_categorical(
+                &indices,
+                &full_probs,
+                sampling,
+                &mut rng,
+            )
+            .expect("top-k full-prob sampler should produce a token");
+            assert!(tok == 10 || tok == 11);
+            saw_second |= tok == 11;
+        }
+
+        assert!(
+            saw_second,
+            "full-domain top_p=0.5 should keep both candidates because 0.40 < 0.5"
+        );
     }
 
     #[test]

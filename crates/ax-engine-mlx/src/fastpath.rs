@@ -160,6 +160,27 @@ env_flag!(
 );
 
 env_flag_default_on!(
+    /// `AX_MLX_DECODE_SAMPLING_GPU_TOPK` — route exact top-k sampling through
+    /// MLX `argpartition_axis` and gather only the top-k full-domain
+    /// probabilities back to CPU.
+    ///
+    /// **Default: ON** (kill-switch via
+    /// `AX_MLX_DECODE_SAMPLING_GPU_TOPK=0`).
+    decode_sampling_gpu_topk_enabled,
+    "AX_MLX_DECODE_SAMPLING_GPU_TOPK"
+);
+
+env_flag_default_on!(
+    /// `AX_MLX_DECODE_MTP_TARGET_PROB_WORKSPACE` — reuse request-local CPU
+    /// buffers while building/extracting MTP target probabilities.
+    ///
+    /// **Default: ON** (kill-switch via
+    /// `AX_MLX_DECODE_MTP_TARGET_PROB_WORKSPACE=0`).
+    decode_mtp_target_prob_workspace_enabled,
+    "AX_MLX_DECODE_MTP_TARGET_PROB_WORKSPACE"
+);
+
+env_flag_default_on!(
     /// `AX_MLX_PREFILL_FFN_COMPILE_SWIGLU` — Qwen3 / GLM / shared-expert
     /// SwiGLU compile fusion (W1 spike K of fusion PRD).
     ///
