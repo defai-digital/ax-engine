@@ -21,11 +21,12 @@ LABEL_TO_SLUG = {
 PROMPT_TOKENS = (128, 512, 2048)
 
 SERIES = [
-    ("llama_cpp_metal", "llama.cpp", "#f97316", "#c2410c"),
-    ("mlx_lm", "mlx_lm", "#f2b705", "#9a6a00"),
-    ("ax_engine_mlx", "ax_engine", "#2eaf5f", "#176c37"),
-    ("ax_engine_mlx_ngram_accel", "ax+n-gram", "#137a3d", "#0b4f28"),
+    ("llama_cpp_metal", "llama.cpp b9430", "#f97316", "#c2410c"),
+    ("mlx_lm", "mlx-lm 0.31.3", "#f2b705", "#9a6a00"),
+    ("ax_engine_mlx", "AX Engine v5.1.1", "#2eaf5f", "#176c37"),
+    ("ax_engine_mlx_ngram_accel", "AX+ngram v5.1.1", "#137a3d", "#0b4f28"),
 ]
+DIRECT_VERSIONS_FOOTNOTE = "llama.cpp b9430 · mlx-lm 0.31.3 · AX Engine v5.1.1"
 
 FAMILY_SLUGS: dict[str, list[str]] = {
     "gemma4": [
@@ -51,12 +52,12 @@ FAMILY_LABELS: dict[str, str] = {
     "qwen": "Qwen 3.6",
 }
 
-FAMILY_CHART_WIDTH = 700
-FAMILY_CHART_HEIGHT = 340
-FAMILY_LEFT = 52
-FAMILY_RIGHT = 684
-FAMILY_TOP = 46
-FAMILY_BOTTOM = 276
+FAMILY_CHART_WIDTH = 800
+FAMILY_CHART_HEIGHT = 430
+FAMILY_LEFT = 64
+FAMILY_RIGHT = 640
+FAMILY_TOP = 86
+FAMILY_BOTTOM = 316
 
 # fill-opacity and stroke-opacity per context length (lighter = shorter prompt)
 CTX_FILL_OPACITY = {128: 0.08, 512: 0.17, 2048: 0.30}
@@ -547,11 +548,14 @@ def render_family_chart(spec: ChartSpec, engine_groups: list[EngineGroupStats]) 
     axis_max = nice_axis_ceiling(max(all_maxima) * 1.05)
 
     all_medians = [cs.stats.median for eg in engine_groups for cs in eg.context_stats]
-    best_med = min(all_medians) if spec.metric == "ttft" else max(all_medians)
-    best_label = "lowest median" if spec.metric == "ttft" else "highest median"
+    lower_is_better = spec.metric == "ttft"
+    best_med = min(all_medians) if lower_is_better else max(all_medians)
+    best_line_label = "lowest median" if lower_is_better else "highest median"
+    best_side = "lowest" if lower_is_better else "highest"
 
     n_engines = len(engine_groups)
     plot_width = FAMILY_RIGHT - FAMILY_LEFT
+    plot_height = FAMILY_BOTTOM - FAMILY_TOP
     group_step = plot_width / n_engines
     sub_spacing = 30.0
     sub_bar_w = 16.0
@@ -559,11 +563,15 @@ def render_family_chart(spec: ChartSpec, engine_groups: list[EngineGroupStats]) 
 
     def fy(v: float) -> float:
         clamped = max(0.0, min(v, axis_max))
-        return FAMILY_BOTTOM - (clamped / axis_max) * (FAMILY_BOTTOM - FAMILY_TOP)
+        return FAMILY_BOTTOM - (clamped / axis_max) * plot_height
 
     engine_desc = ", ".join(eg.label for eg in engine_groups)
     ctx_desc = "/".join(str(pt) for pt in PROMPT_TOKENS)
     family_label = FAMILY_LABELS.get(spec.family, spec.family)
+    direction_fill = RED if lower_is_better else "#374151"
+
+    header_right = FAMILY_CHART_WIDTH - 34
+    unit_w = max(48, len(spec.unit) * 7 + 24)
 
     lines = [
         f'<svg xmlns="http://www.w3.org/2000/svg"'
@@ -573,42 +581,63 @@ def render_family_chart(spec: ChartSpec, engine_groups: list[EngineGroupStats]) 
         f"<title>{escape(spec.title)}</title>",
         f"<desc>Grouped box-and-whisker plot comparing {escape(engine_desc)}"
         f" at {escape(ctx_desc)} prompt tokens for {escape(family_label)} models."
-        f" A red dotted line marks the {best_label}.</desc>",
-        f'<rect width="{FAMILY_CHART_WIDTH}" height="{FAMILY_CHART_HEIGHT}" fill="#ffffff"/>',
-        f'<text x="{FAMILY_LEFT}" y="22" font-family="{FONT}"'
+        f" A red dotted line marks the {best_line_label}.</desc>",
+        # Background
+        f'<rect width="{FAMILY_CHART_WIDTH}" height="{FAMILY_CHART_HEIGHT}" fill="#f8fafc"/>',
+        # Title
+        f'<text x="{FAMILY_LEFT}" y="24" font-family="{FONT}"'
         f' font-size="16" font-weight="700" fill="#111827">{escape(spec.title)}</text>',
+        # Subtitle
+        f'<text x="{FAMILY_LEFT}" y="46" font-family="{FONT}"'
+        f' font-size="11" fill="#4b5563">'
+        f'{escape(spec.subtitle) if spec.subtitle else "box=IQR | whiskers=min/max | dots=runs | opacity: 128/512/2048 tok"}'
+        f"</text>",
+        # Footnote (versions)
+        f'<text x="{FAMILY_LEFT}" y="62" font-family="{FONT}"'
+        f' font-size="10" fill="#6b7280">{escape(DIRECT_VERSIONS_FOOTNOTE)}</text>',
+        # Unit pill badge (top-right)
+        f'<rect x="{header_right - unit_w}" y="13" width="{unit_w}" height="22"'
+        f' rx="11" fill="#eef2ff" stroke="#c7d2fe"/>',
+        f'<text x="{header_right - unit_w / 2:.1f}" y="28" text-anchor="middle"'
+        f' font-family="{FONT}" font-size="10" font-weight="700"'
+        f' fill="#3730a3">{escape(spec.unit)}</text>',
+        # Direction label
+        f'<text x="{header_right}" y="52" text-anchor="end" font-family="{FONT}"'
+        f' font-size="10" font-weight="700" fill="{direction_fill}">'
+        f"{escape(spec.direction_label)}</text>",
+        # Plot area (white rect with border)
+        f'<rect x="{FAMILY_LEFT}" y="{FAMILY_TOP}" width="{plot_width}" height="{plot_height}"'
+        f' rx="6" fill="#ffffff" stroke="#dbe3ef"/>',
     ]
-    if spec.subtitle:
-        lines.append(
-            f'<text x="{FAMILY_LEFT}" y="40" font-family="{FONT}"'
-            f' font-size="10" fill="#6b7280">{escape(spec.subtitle)}</text>'
-        )
-    direction_fill = "#dc2626" if "lower" in spec.direction_label.lower() else "#374151"
-    lines.extend(
-        [
-            f'<text x="{FAMILY_RIGHT}" y="22" text-anchor="end" font-family="{FONT}"'
-            f' font-size="10" fill="#6b7280">{escape(spec.unit)}</text>',
-            f'<text x="{FAMILY_RIGHT}" y="40" text-anchor="end" font-family="{FONT}"'
-            f' font-size="10" font-weight="700" fill="{direction_fill}">{escape(spec.direction_label)}</text>',
-        ]
-    )
 
-    for grid_val in (0.0, axis_max / 2, axis_max):
+    # 5 grid lines (0%, 25%, 50%, 75%, 100%)
+    for i in range(5):
+        grid_val = axis_max * i / 4
         gy = fy(grid_val)
         lines.append(
             f'<line x1="{FAMILY_LEFT}" y1="{gy:.1f}"'
             f' x2="{FAMILY_RIGHT}" y2="{gy:.1f}" stroke="#e5e7eb" stroke-width="1"/>'
         )
         lines.append(
-            f'<text x="44" y="{gy + 3:.1f}" text-anchor="end" font-family="{FONT}"'
-            f' font-size="10" fill="#6b7280">{short_number(grid_val)}</text>'
+            f'<text x="{FAMILY_LEFT - 8}" y="{gy + 3:.1f}" text-anchor="end"'
+            f' font-family="{FONT}" font-size="11" fill="#6b7280">'
+            f"{short_number(grid_val)}</text>"
         )
 
+    # Best median reference line + right-side label
     best_y = fy(best_med)
+    best_label_str = f"{best_side}: {short_number(best_med)}"
     lines.append(
         f'<line x1="{FAMILY_LEFT}" y1="{best_y:.1f}"'
         f' x2="{FAMILY_RIGHT}" y2="{best_y:.1f}"'
         f' stroke="{RED}" stroke-width="1.2" stroke-dasharray="1 4" stroke-linecap="round"/>'
+    )
+    lines.append(
+        f'<text x="{FAMILY_RIGHT + 8}" y="{max(FAMILY_TOP + 11, best_y - 5):.1f}"'
+        f' text-anchor="start" font-family="{FONT}"'
+        f' font-size="11" font-weight="700" fill="{RED}"'
+        f' data-label="{escape(best_line_label)}">'
+        f"{escape(best_label_str)}</text>"
     )
 
     dot_jitter = (-3.0, -1.5, 0.0, 1.5, 3.0)
@@ -651,7 +680,7 @@ def render_family_chart(spec: ChartSpec, engine_groups: list[EngineGroupStats]) 
                     f' x2="{box_left + sub_bar_w:g}" y2="{y_med:.1f}" {sa} stroke-width="2.4"/>',
                     f'<text x="{sub_x:g}" y="{y_ctx}"'
                     f' text-anchor="middle" font-family="{FONT}"'
-                    f' font-size="8" fill="#6b7280">{cs.prompt_tokens}</text>',
+                    f' font-size="9" fill="#6b7280">{cs.prompt_tokens}</text>',
                 ]
             )
 
@@ -667,8 +696,26 @@ def render_family_chart(spec: ChartSpec, engine_groups: list[EngineGroupStats]) 
         lines.append(
             f'<text x="{group_center:g}" y="{y_eng}"'
             f' text-anchor="middle" font-family="{FONT}"'
-            f' font-size="9" font-weight="700" fill="#111827">{escape(eg.label)}</text>'
+            f' font-size="10" font-weight="700" fill="#111827">{escape(eg.label)}</text>'
         )
+
+    # Context-length legend (opacity shading guide)
+    legend_y = FAMILY_BOTTOM + 56
+    legend_x = FAMILY_LEFT
+    legend_step = 120
+    for pt, label in ((128, "128 tok"), (512, "512 tok"), (2048, "2048 tok")):
+        fill_op = CTX_FILL_OPACITY[pt]
+        stroke_op = CTX_STROKE_OPACITY[pt]
+        lines.extend(
+            [
+                f'<rect x="{legend_x}" y="{legend_y - 9}" width="10" height="10" rx="2"'
+                f' fill="#6b7280" fill-opacity="{fill_op}"'
+                f' stroke="#6b7280" stroke-opacity="{stroke_op}" stroke-width="1.4"/>',
+                f'<text x="{legend_x + 14}" y="{legend_y}"'
+                f' font-family="{FONT}" font-size="10" fill="#374151">{escape(label)}</text>',
+            ]
+        )
+        legend_x += legend_step
 
     lines.append("</svg>")
     return "".join(lines) + "\n"
