@@ -3181,7 +3181,9 @@ struct RequestState {
     /// Log-probabilities of `mtp_pending_draft` under the draft distribution.
     /// Used for rejection-sampling acceptance: accept draft[i] with probability
     /// min(1, p_target(draft[i]) / exp(mtp_pending_draft_log_probs[i])).
-    /// Empty when draft_sampling.temperature == 0 (greedy acceptance fallback).
+    /// MTP positions: softmax log-probs at draft_sampling.temperature (or T=1.0 for
+    /// greedy-mode drafts after Phase 1).  N-gram hybrid positions: ln(confidence)
+    /// pseudo log-probs.  Empty for pure n-gram drafts (no MTP tail).
     mtp_pending_draft_log_probs: Vec<f32>,
     /// Sparse draft distributions aligned with `mtp_pending_draft`.
     /// Used to sample the exact residual correction after sampled-MTP rejection.
@@ -7035,10 +7037,13 @@ fn mtp_accept_count(
             let p_target_d = tprobs[i].max(0.0_f32);
             // Rescale draft log-prob when draft and target temperatures differ.
             // log(p_scaled) = log(p_draft) * (T_draft / T_target) is the correct
-            // temperature adjustment for softmax probabilities.  Skipped when
-            // temperatures match or when target is greedy (handled upstream).
+            // temperature adjustment for softmax probabilities.  Skipped for
+            // n-gram pseudo log-probs (ln(confidence)) because they are not
+            // derived from softmax(logits/T_draft) and must be used as-is.
             let log_p_draft = pending_log_probs[i];
-            let log_p_scaled = if draft_temperature > 0.0
+            let is_mtp_source = !matches!(source, MtpDraftSource::Ngram);
+            let log_p_scaled = if is_mtp_source
+                && draft_temperature > 0.0
                 && target_temperature > 0.0
                 && (draft_temperature - target_temperature).abs() > 1e-6
             {
@@ -7067,7 +7072,8 @@ fn mtp_accept_count(
                 };
             }
         } else {
-            // Greedy acceptance fallback for n-gram tokens and for greedy MTP.
+            // Greedy acceptance fallback: target_probs absent (greedy target
+            // temperature) or log-prob not finite (pure n-gram without hybrid tail).
             if predicted[i] == pending[i] {
                 ac += 1;
                 if has_draft_distribution {
@@ -8469,6 +8475,40 @@ mod tests {
             0.7,
         );
         assert_eq!(accept2.accept_count, 1);
+
+        // N-gram pseudo log-probs must NOT be temperature-rescaled.
+        // Strategy: T_target=2.0 > T_draft=0.7; ratio=0.35 would BOOST the
+        // draft probability (make log_p less negative) if rescaling were applied.
+        // Use pseudo_lp = ln(0.001) ≈ -6.9:
+        //   - Without rescaling: p_draft = 0.001; accept_prob = 1.0/0.001 = 1000 → 1.0.
+        //   - With wrong rescaling (ratio=0.35): log_p_scaled = -6.9 * 0.35 = -2.42
+        //     → p_scaled ≈ 0.089; accept_prob = 1.0/0.089 ≈ 11.2 → 1.0.
+        // Both paths accept here. The key probe uses target_prob ≈ p_draft:
+        //   - Without rescaling: accept_prob = 0.001/0.001 = 1.0 → accept.
+        //   - With wrong rescaling: p_scaled ≈ 0.089; accept_prob = 0.001/0.089 ≈ 0.011 → often reject.
+        // rng seeds 0..10 all produce next_f32() > 0.011, so the wrongly-rescaled path rejects.
+        let ultra_low_lp = 0.001_f32.ln(); // ≈ -6.908; confidence=0.001
+        for seed in 0u64..10 {
+            let mut rng_probe = Xorshift64::new(seed);
+            let a = mtp_accept_count(
+                &[7],
+                &[ultra_low_lp],
+                &[],
+                &[MtpDraftSource::Ngram],
+                Some(&[0.001]), // target_prob == p_draft_unscaled → accept_prob = 1.0
+                None,
+                &[7],
+                &mut rng_probe,
+                0.7, // draft_temperature
+                2.0, // target_temperature (ratio=0.35 would boost p if wrongly applied)
+            );
+            // With correct (no-rescaling) behavior: accept_prob = 1.0 → always accept.
+            // With wrong rescaling: accept_prob ≈ 0.011 → reject for all typical rng values.
+            assert_eq!(
+                a.accept_count, 1,
+                "n-gram pseudo log-prob must not be rescaled (seed={seed})"
+            );
+        }
     }
 
     #[test]
