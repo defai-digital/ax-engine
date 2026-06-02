@@ -1260,6 +1260,8 @@ struct MtpTelemetry {
     mtp_only_accept_rate_ewma: f32,
     mtp_only_accept_rate_ewma_samples: u32,
     ngram_saturated_gated_steps: u32,
+    /// Steps where auto-optimistic activated (EWMA ≥ 0.99 without env override).
+    auto_optimistic_steps: u32,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -1521,6 +1523,9 @@ impl MtpTelemetry {
         self.ngram_saturated_gated_steps = self
             .ngram_saturated_gated_steps
             .saturating_add(other.ngram_saturated_gated_steps);
+        self.auto_optimistic_steps = self
+            .auto_optimistic_steps
+            .saturating_add(other.auto_optimistic_steps);
     }
 
     fn append_route_decisions(&self, decisions: &mut impl RouteDecisionSink) {
@@ -1607,6 +1612,10 @@ impl MtpTelemetry {
             (
                 "ax_mtp_ngram_saturated_gated_steps",
                 self.ngram_saturated_gated_steps,
+            ),
+            (
+                "ax_mtp_auto_optimistic_steps",
+                self.auto_optimistic_steps,
             ),
         ];
         decisions.upsert_route_decision(
@@ -5742,7 +5751,18 @@ impl MlxRunner {
         };
 
         // Compute optimistic AFTER skip-state may have populated pending.
-        let optimistic = self.mtp_optimistic && !pending.is_empty();
+        // Auto-activate optimistic when MTP-only EWMA acceptance is sustained ≥99%
+        // and we have enough samples to trust it.  This avoids full-vocab softmax
+        // + rejection sampling + rollback overhead when the model is clearly
+        // producing highly accurate drafts (e.g. 27B flappy at 99.5% accept).
+        let auto_optimistic = !pending.is_empty()
+            && state.mtp_telemetry.mtp_only_accept_rate_ewma_samples >= mtp_ngram_gate_min_samples()
+            && state.mtp_telemetry.mtp_only_accept_rate_ewma >= 0.99;
+        let optimistic = (self.mtp_optimistic || auto_optimistic) && !pending.is_empty();
+        if auto_optimistic && !self.mtp_optimistic {
+            state.mtp_telemetry.auto_optimistic_steps =
+                state.mtp_telemetry.auto_optimistic_steps.saturating_add(1);
+        }
 
         // Build verify sequence: [primary_token] ++ pending_draft.
         let mut verify_input: Vec<u32> = Vec::with_capacity(1 + pending.len());
@@ -7122,15 +7142,18 @@ fn mtp_warmup_cap() -> usize {
 }
 
 /// Minimum EWMA samples before n-gram saturation gating can activate.
-/// 8 samples is sufficient for EWMA to stabilize at high acceptance rates.
-/// Override with `AX_MLX_MTP_NGRAM_GATE_SAMPLES` (default 8).
+/// 4 samples allows the gate to fire within the first ~12 generated tokens
+/// (4 steps × depth-3 drafts), preventing early n-gram overhead when MTP
+/// acceptance is already high from the start.  With ALPHA=0.05, 4 samples
+/// is enough to confirm ≥99% EWMA (all-accept × 4 → EWMA = 1.0).
+/// Override with `AX_MLX_MTP_NGRAM_GATE_SAMPLES` (default 4).
 fn mtp_ngram_gate_min_samples() -> u32 {
     static CACHED: OnceLock<u32> = OnceLock::new();
     *CACHED.get_or_init(|| {
         std::env::var("AX_MLX_MTP_NGRAM_GATE_SAMPLES")
             .ok()
             .and_then(|v| v.parse::<u32>().ok())
-            .unwrap_or(8)
+            .unwrap_or(4)
     })
 }
 
@@ -7181,14 +7204,18 @@ fn mtp_skip_state_from_env() -> bool {
 }
 
 /// Target softmax mode for MTP rejection-sampling acceptance.
-/// Defaults to `topk-128` (softmax over top-128 logits per position).
-/// Override with `AX_MLX_MTP_TARGET_SOFTMAX_MODE=full` for full-vocab softmax,
-/// or `topk-256`, `topk-64`, `topk-32` for custom k.
+/// Defaults to `full` (full-vocab softmax) to avoid false rejections on
+/// diverse output where draft tokens may fall outside the target model's
+/// top-k. The previous `topk-128` default caused guaranteed rejection
+/// (`p_target = 0`) for any draft token ranked outside the target's top-128,
+/// which dropped acceptance from ~100% to ~75% on diverse code suites.
+/// Override with `AX_MLX_MTP_TARGET_SOFTMAX_MODE=topk-128` (or topk-256,
+/// topk-64, topk-32) for custom k, or keep `full` for the default.
 fn mtp_target_softmax_topk_from_env() -> Option<u32> {
     static CACHED: OnceLock<Option<u32>> = OnceLock::new();
     *CACHED.get_or_init(|| {
         let val = std::env::var("AX_MLX_MTP_TARGET_SOFTMAX_MODE")
-            .unwrap_or_else(|_| "topk-128".to_string())
+            .unwrap_or_else(|_| "full".to_string())
             .to_ascii_lowercase()
             .replace('_', "-");
         match val.as_str() {
@@ -7197,7 +7224,7 @@ fn mtp_target_softmax_topk_from_env() -> Option<u32> {
             "topk-128" => Some(128),
             "topk-64" => Some(64),
             "topk-32" => Some(32),
-            _ => Some(128),
+            _ => None,
         }
     })
 }
