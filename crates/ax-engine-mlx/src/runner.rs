@@ -6078,7 +6078,9 @@ impl MlxRunner {
                 .take_while(|source| **source == MtpDraftSource::Ngram)
                 .count();
             if ngram_prefix_len > 0 {
-                let ngram_accept_count = accept_count.min(ngram_prefix_len);
+                // Use true acceptance for n-gram feedback so auto-optimistic's
+                // inflated accept_count doesn't corrupt n-gram quality tracking.
+                let ngram_accept_count = ewma_ac.min(ngram_prefix_len);
                 let (feedback_min_support, feedback_confidence) = ngram_feedback_policy(&self.cfg);
                 state.ngram.record_draft_feedback(
                     &pending[..ngram_prefix_len],
@@ -6093,11 +6095,14 @@ impl MlxRunner {
         state.ngram.feed(&result);
 
         let mtp_max_depth = self.weights.mtp.as_ref().map_or(0, |head| head.max_depth);
+        // Use true acceptance for adaptive depth so auto-optimistic's inflated
+        // accept_count doesn't create a permanent depth-increase feedback loop.
+        let adaptive_depth_accept = ewma_accept_count.unwrap_or(accept_count);
         state.mtp_adaptive_max_depth = mtp_next_adaptive_depth(
             state.mtp_adaptive_max_depth,
             mtp_max_depth,
             pending.len(),
-            accept_count,
+            adaptive_depth_accept,
         );
 
         // Generate new draft tokens: attempt n-gram first, then let MTP fill
