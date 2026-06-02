@@ -57,11 +57,6 @@ ENGINE_ORDER = [
     "ax_engine",
     "ax_engine_ngram",
 ]
-SUITE_SHORT: dict[str, str] = {
-    "flappy": "F",
-    "long_code": "L",
-    "python_modules_long": "P",
-}
 
 
 @dataclass(frozen=True)
@@ -945,31 +940,6 @@ def model_short_label(label: str) -> str:
     return label.removeprefix("Qwen3.6 ").removesuffix(" 4-bit")
 
 
-def suite_chart_groups(
-    rows: list[dict[str, Any]],
-    engines: list[str],
-    metric: str,
-    *,
-    scale: float = 1.0,
-) -> list[dict[str, Any]]:
-    """One group per suite using short labels (F/L/P), preserving row order."""
-    seen: list[str] = []
-    result: list[dict[str, Any]] = []
-    for row in rows:
-        suite = row["suite"]
-        if suite in seen:
-            continue
-        seen.append(suite)
-        result.append({
-            "label": SUITE_SHORT.get(suite, suite),
-            "values": {
-                engine: chart_samples(row["engines"].get(engine, {}), metric, scale)
-                for engine in engines
-            },
-        })
-    return result
-
-
 def combined_suite_chart_group(
     rows: list[dict[str, Any]],
     engines: list[str],
@@ -1250,10 +1220,10 @@ def write_decode_model_svg(
     write_mtp_box_whisker_svg(
         path,
         title=f"{rows[0]['model_label']} MTP decode throughput",
-        subtitle="F=flappy · L=long_code · P=python_modules | box=IQR | whiskers=min/max | dots=runs",
+        subtitle="All suites combined | box=IQR | whiskers=min/max | dots=runs",
         unit="tok/s",
         direction_label="Higher is better",
-        groups=suite_chart_groups(rows, engines, "decode_tok_s"),
+        groups=combined_suite_chart_group(rows, engines, "decode_tok_s"),
         engines=engines,
         axis_max=y_max,
         footnote=VERSIONS_FOOTNOTE,
@@ -1268,10 +1238,12 @@ def write_accept_model_svg(path: Path, summary: dict[str, Any], model_key: str) 
     write_mtp_box_whisker_svg(
         path,
         title=f"{rows[0]['model_label']} MTP accept rate",
-        subtitle="F=flappy · L=long_code · P=python_modules | accepted/drafted | box=IQR | dots=runs",
+        subtitle="All suites combined | accepted/drafted | box=IQR | dots=runs",
         unit="%",
         direction_label="Higher is better",
-        groups=suite_chart_groups(rows, engines, "accept_rate", scale=100.0),
+        groups=combined_suite_chart_group(
+            rows, engines, "accept_rate", scale=100.0
+        ),
         engines=engines,
         axis_max=100.0,
         footnote=VERSIONS_FOOTNOTE,

@@ -53,11 +53,6 @@ ENGINE_ORDER = [
 ]
 LIGHTNING_ENGINES = {"lightning_mlx", "lightning_mtp_ngram"}
 AX_ENGINES = {"ax_engine", "ax_engine_ngram"}
-SUITE_SHORT: dict[str, str] = {
-    "flappy": "F",
-    "long_code": "L",
-    "python_modules_long": "P",
-}
 
 
 @dataclass(frozen=True)
@@ -445,29 +440,6 @@ def _model_short_label(label: str) -> str:
     return label.removeprefix("Qwen3.6 ").removesuffix(" 4-bit")
 
 
-def _suite_chart_groups(
-    rows: list[dict[str, Any]],
-    active_engines: list[str],
-    metric: str,
-) -> list[dict[str, Any]]:
-    """One group per suite using short labels (F/L/P), preserving row order."""
-    seen: list[str] = []
-    result: list[dict[str, Any]] = []
-    for row in rows:
-        suite = row["suite"]
-        if suite in seen:
-            continue
-        seen.append(suite)
-        result.append({
-            "label": SUITE_SHORT.get(suite, suite),
-            "values": {
-                engine: _chart_samples(row["engines"].get(engine) or {}, metric)
-                for engine in active_engines
-            },
-        })
-    return result
-
-
 def _combined_suite_chart_group(
     rows: list[dict[str, Any]],
     active_engines: list[str],
@@ -763,9 +735,9 @@ def write_prefill_model_svg(path: Path, report: dict[str, Any], model_key: str) 
     _box_whisker_chart(
         path,
         title=f"{model_label} MTP prefill throughput",
-        subtitle="F=flappy · L=long_code · P=python_modules | box=IQR | dots=runs | Lightning ~= TTFT-derived",
+        subtitle="All suites combined | box=IQR | dots=runs | Lightning ~= TTFT-derived",
         unit="tok/s",
-        groups=_suite_chart_groups(rows, active_engines, "prefill_tok_s"),
+        groups=_combined_suite_chart_group(rows, active_engines, "prefill_tok_s"),
         active_engines=active_engines,
         footnote=VERSIONS_FOOTNOTE,
     )
@@ -780,9 +752,9 @@ def write_ttft_model_svg(path: Path, report: dict[str, Any], model_key: str) -> 
     _box_whisker_chart(
         path,
         title=f"{model_label} MTP TTFT",
-        subtitle="F=flappy · L=long_code · P=python_modules | lower is better | box=IQR | dots=runs",
+        subtitle="All suites combined | lower is better | box=IQR | dots=runs",
         unit="ms",
-        groups=_suite_chart_groups(rows, active_engines, "ttft_ms"),
+        groups=_combined_suite_chart_group(rows, active_engines, "ttft_ms"),
         active_engines=active_engines,
         lower_is_better=True,
         footnote=VERSIONS_FOOTNOTE,
