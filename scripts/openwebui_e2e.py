@@ -26,6 +26,8 @@ DEFAULT_MAX_TOKENS = 96
 DEFAULT_TIMEOUT_SECS = 120.0
 OPENWEBUI_PROXY_MODELS_PATH = "/openai/v1/models"
 OPENWEBUI_PROXY_CHAT_PATH = "/openai/v1/chat/completions"
+AX_DIRECT_MODELS_PATH = "/v1/models"
+AX_DIRECT_CHAT_PATH = "/v1/chat/completions"
 BACKEND_ERROR_PATTERNS = (
     "upstream unavailable",
     "child is not reachable",
@@ -186,6 +188,38 @@ def detect_corruption(text: str, prompt: str) -> list[str]:
     return reasons
 
 
+def wait_for_ax_direct(base_url: str, timeout_secs: float) -> None:
+    deadline = time.monotonic() + timeout_secs
+    last_error: str | None = None
+    while time.monotonic() < deadline:
+        try:
+            url = openwebui_url(base_url, AX_DIRECT_MODELS_PATH)
+            request = urllib.request.Request(url, method="GET")
+            with urllib.request.urlopen(request, timeout=5) as response:
+                if 200 <= response.status < 500:
+                    return
+        except (urllib.error.URLError, TimeoutError, OSError) as error:
+            last_error = str(error)
+        time.sleep(0.5)
+    raise RuntimeError(f"AX Engine did not become ready: {last_error or 'timeout'}")
+
+
+def list_ax_direct_models(base_url: str, timeout: float) -> list[str]:
+    payload = request_json(
+        "GET",
+        openwebui_url(base_url, AX_DIRECT_MODELS_PATH),
+        timeout=timeout,
+    )
+    models = payload.get("data")
+    if not isinstance(models, list):
+        return []
+    result: list[str] = []
+    for item in models:
+        if isinstance(item, dict) and isinstance(item.get("id"), str):
+            result.append(item["id"])
+    return result
+
+
 def run_probe(
     *,
     openwebui_base_url: str,
@@ -193,25 +227,37 @@ def run_probe(
     prompt: str,
     max_tokens: int,
     timeout_secs: float,
+    ax_direct: bool = False,
 ) -> ProbeResult:
-    wait_for_openwebui(openwebui_base_url, timeout_secs)
-    models = list_openwebui_models(openwebui_base_url, timeout_secs)
+    models_path = AX_DIRECT_MODELS_PATH if ax_direct else OPENWEBUI_PROXY_MODELS_PATH
+    chat_path = AX_DIRECT_CHAT_PATH if ax_direct else OPENWEBUI_PROXY_CHAT_PATH
+
+    if ax_direct:
+        wait_for_ax_direct(openwebui_base_url, timeout_secs)
+        models = list_ax_direct_models(openwebui_base_url, timeout_secs)
+    else:
+        wait_for_openwebui(openwebui_base_url, timeout_secs)
+        models = list_openwebui_models(openwebui_base_url, timeout_secs)
+
+    del models_path  # used only for path selection above
+
     model_visible = model_id in models
     if not model_visible:
+        label = "AX Engine" if ax_direct else "OpenWebUI proxy"
         return ProbeResult(
             ok=False,
             model_visible=False,
             model_id=model_id,
             observed_models=models,
             assistant_text="",
-            corruption_reasons=[f"model not visible through OpenWebUI proxy: {model_id}"],
+            corruption_reasons=[f"model not visible through {label}: {model_id}"],
             openwebui_base_url=openwebui_base_url,
-            chat_path=OPENWEBUI_PROXY_CHAT_PATH,
+            chat_path=chat_path,
         )
 
     response = request_json(
         "POST",
-        openwebui_url(openwebui_base_url, OPENWEBUI_PROXY_CHAT_PATH),
+        openwebui_url(openwebui_base_url, chat_path),
         chat_completion_payload(model_id, prompt, max_tokens),
         timeout=timeout_secs,
     )
@@ -225,7 +271,7 @@ def run_probe(
         assistant_text=assistant_text,
         corruption_reasons=corruption_reasons,
         openwebui_base_url=openwebui_base_url,
-        chat_path=OPENWEBUI_PROXY_CHAT_PATH,
+        chat_path=chat_path,
     )
 
 
@@ -261,6 +307,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--timeout-secs", type=float, default=DEFAULT_TIMEOUT_SECS)
     parser.add_argument("--report", type=Path)
     parser.add_argument(
+        "--ax-direct",
+        action="store_true",
+        help=(
+            "probe AX Engine directly at --openwebui-base-url/v1 instead of routing "
+            "through an OpenWebUI Docker proxy; no Docker required"
+        ),
+    )
+    parser.add_argument(
         "--print-docker-openai-base-url",
         metavar="AX_BASE_URL",
         help="print the AX base URL rewritten for an OpenWebUI Docker container",
@@ -283,19 +337,21 @@ def main(argv: list[str] | None = None) -> int:
         prompt=args.prompt,
         max_tokens=args.max_tokens,
         timeout_secs=args.timeout_secs,
+        ax_direct=args.ax_direct,
     )
     if args.report is not None:
         write_report(args.report, result)
+    mode_label = "ax-direct" if args.ax_direct else "openwebui-e2e"
     if result.ok:
-        print(f"[openwebui-e2e] ok model={result.model_id}")
+        print(f"[{mode_label}] ok model={result.model_id}")
         return 0
     print(
-        "[openwebui-e2e] failed: " + "; ".join(result.corruption_reasons),
+        f"[{mode_label}] failed: " + "; ".join(result.corruption_reasons),
         file=sys.stderr,
     )
     if not result.model_visible:
         print(
-            "[openwebui-e2e] observed models: "
+            f"[{mode_label}] observed models: "
             + (", ".join(result.observed_models) if result.observed_models else "<none>"),
             file=sys.stderr,
         )

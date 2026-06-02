@@ -127,6 +127,91 @@ class OpenWebUIE2ETests(unittest.TestCase):
         self.assertEqual(result.observed_models, [MODEL_ID])
         self.assertIn("model not visible", result.corruption_reasons[0])
 
+    def test_run_probe_ax_direct_accepts_clean_response(self) -> None:
+        def fake_request_json(
+            method: str,
+            url: str,
+            payload: dict[str, Any] | None = None,
+            *,
+            timeout: float,
+        ) -> dict[str, Any]:
+            del method, timeout
+            if url.endswith("/v1/models"):
+                return {"data": [{"id": MODEL_ID}]}
+            assert payload is not None
+            return {
+                "id": "chatcmpl-test",
+                "object": "chat.completion",
+                "model": payload["model"],
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {"role": "assistant", "content": ASSISTANT_TEXT},
+                        "finish_reason": "stop",
+                    }
+                ],
+            }
+
+        with (
+            patch.object(openwebui_e2e, "wait_for_ax_direct", return_value=None),
+            patch.object(openwebui_e2e, "request_json", side_effect=fake_request_json),
+        ):
+            result = openwebui_e2e.run_probe(
+                openwebui_base_url="http://127.0.0.1:8765",
+                model_id=MODEL_ID,
+                prompt="what is agi ?",
+                max_tokens=16,
+                timeout_secs=5,
+                ax_direct=True,
+            )
+
+        self.assertTrue(result.ok)
+        self.assertEqual(result.chat_path, openwebui_e2e.AX_DIRECT_CHAT_PATH)
+        self.assertIn("artificial general intelligence", result.assistant_text.lower())
+
+    def test_run_probe_ax_direct_catches_ngram_corruption(self) -> None:
+        corrupted = "AGI stands for Artificial General Intelligence.\n\n!\n!\n!\n!\n!"
+
+        def fake_request_json(
+            method: str,
+            url: str,
+            payload: dict[str, Any] | None = None,
+            *,
+            timeout: float,
+        ) -> dict[str, Any]:
+            del method, timeout
+            if url.endswith("/v1/models"):
+                return {"data": [{"id": MODEL_ID}]}
+            assert payload is not None
+            return {
+                "id": "chatcmpl-test",
+                "object": "chat.completion",
+                "model": payload["model"],
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {"role": "assistant", "content": corrupted},
+                        "finish_reason": "stop",
+                    }
+                ],
+            }
+
+        with (
+            patch.object(openwebui_e2e, "wait_for_ax_direct", return_value=None),
+            patch.object(openwebui_e2e, "request_json", side_effect=fake_request_json),
+        ):
+            result = openwebui_e2e.run_probe(
+                openwebui_base_url="http://127.0.0.1:8765",
+                model_id=MODEL_ID,
+                prompt="what is agi ?",
+                max_tokens=96,
+                timeout_secs=5,
+                ax_direct=True,
+            )
+
+        self.assertFalse(result.ok)
+        self.assertTrue(any("punctuation" in r for r in result.corruption_reasons))
+
     def test_write_report_includes_observed_models(self) -> None:
         result = openwebui_e2e.ProbeResult(
             ok=False,
