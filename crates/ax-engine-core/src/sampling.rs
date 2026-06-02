@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::HashSet;
 use std::fmt;
 
 use crate::ids::RequestId;
@@ -133,10 +133,15 @@ fn sample_argmax_with_logprob_and_repetition_penalty(
     repetition_penalty: f32,
     recent_tokens: &[u32],
 ) -> Option<(u32, f32)> {
-    let adjusted_logits;
+    let mut adjusted_logits_buf: Vec<f32>;
     let logits = if repetition_penalty_applies(repetition_penalty, recent_tokens) {
-        adjusted_logits = logits_with_repetition_penalty(logits, repetition_penalty, recent_tokens);
-        adjusted_logits.as_slice()
+        adjusted_logits_buf = logits.to_vec();
+        apply_repetition_penalty_in_place(
+            &mut adjusted_logits_buf,
+            repetition_penalty,
+            recent_tokens,
+        );
+        adjusted_logits_buf.as_slice()
     } else {
         logits
     };
@@ -194,18 +199,17 @@ fn repetition_penalty_applies(repetition_penalty: f32, recent_tokens: &[u32]) ->
         && !recent_tokens.is_empty()
 }
 
-fn logits_with_repetition_penalty(
-    logits: &[f32],
+pub(crate) fn apply_repetition_penalty_in_place(
+    logits: &mut [f32],
     repetition_penalty: f32,
     recent_tokens: &[u32],
-) -> Vec<f32> {
-    let mut adjusted = logits.to_vec();
-    let mut seen_tokens = BTreeSet::new();
-    for token in recent_tokens {
-        if !seen_tokens.insert(*token) {
+) {
+    let mut seen_tokens = HashSet::with_capacity(recent_tokens.len());
+    for &token in recent_tokens {
+        if !seen_tokens.insert(token) {
             continue;
         }
-        let Some(logit) = adjusted.get_mut(*token as usize) else {
+        let Some(logit) = logits.get_mut(token as usize) else {
             continue;
         };
         if *logit < 0.0 {
@@ -214,7 +218,6 @@ fn logits_with_repetition_penalty(
             *logit /= repetition_penalty;
         }
     }
-    adjusted
 }
 
 #[cfg(test)]

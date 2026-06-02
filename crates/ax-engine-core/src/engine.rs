@@ -1,5 +1,6 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::Path;
+use std::sync::OnceLock;
 use std::time::Instant;
 
 use crate::execution_plan::{DeterministicExecutionPlanResolver, ExecutionPlanResolver};
@@ -26,6 +27,15 @@ use crate::scheduler::{
 };
 use thiserror::Error;
 use tracing::{debug, debug_span, field, trace};
+
+fn validation_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        std::env::var("AX_ENGINE_VALIDATION")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false)
+    })
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum EngineEvent {
@@ -74,6 +84,12 @@ pub struct EngineCore {
     runner: Box<dyn ExecutionRunner>,
     sampler: Box<dyn TokenSampler>,
     next_step_id: u64,
+    // Per-step scratch buffers — cleared and reused each step to avoid heap churn.
+    scratch_seen_request_ids: HashSet<RequestId>,
+    scratch_update_index: HashMap<RequestId, usize>,
+    scratch_logits_index: HashMap<RequestId, usize>,
+    scratch_logits_handles: HashSet<RequestId>,
+    scratch_item_index: HashMap<RequestId, usize>,
 }
 
 impl EngineCore {
@@ -140,6 +156,11 @@ impl EngineCore {
             runner: Box::new(runner),
             sampler: Box::new(sampler),
             next_step_id: 0,
+            scratch_seen_request_ids: HashSet::with_capacity(32),
+            scratch_update_index: HashMap::with_capacity(32),
+            scratch_logits_index: HashMap::with_capacity(32),
+            scratch_logits_handles: HashSet::with_capacity(32),
+            scratch_item_index: HashMap::with_capacity(32),
         }
     }
 
@@ -505,7 +526,7 @@ impl EngineCore {
     /// Ranking among eligible candidates is by arrival sequence (newest first),
     /// with request id as a deterministic tiebreaker.
     fn find_preemption_candidate(
-        &self,
+        &mut self,
         requester: RequestId,
         already_preempted: &BTreeSet<RequestId>,
     ) -> Option<RequestId> {
@@ -642,7 +663,7 @@ impl EngineCore {
         ),
         EngineCoreError,
     > {
-        let Some(execution_batch) = schedule_plan.execution_batch.clone() else {
+        let Some(mut execution_batch) = schedule_plan.execution_batch.take() else {
             return Ok((None, Vec::new(), RunnerApplySummary::default(), 0));
         };
 
@@ -652,12 +673,14 @@ impl EngineCore {
             scheduled_tokens = execution_batch.total_scheduled_tokens,
             "dispatching runner"
         );
-        let runner_input = self.build_runner_input(execution_batch)?;
+        let runner_input = self.build_runner_input(&execution_batch)?;
         let runner_started = Instant::now();
         let runner_output = self.runner.run(runner_input);
         let runner_time_us = runner_started.elapsed().as_micros() as u64;
-        self.validate_runner_output(schedule_plan, &runner_output)?;
-        let sampled_tokens = self.sample_runner_output(schedule_plan, &runner_output)?;
+        if cfg!(debug_assertions) || validation_enabled() {
+            self.validate_runner_output(&execution_batch, &runner_output)?;
+        }
+        let sampled_tokens = self.sample_runner_output(&execution_batch, &runner_output)?;
         let sampled_request_ids = sampled_tokens
             .iter()
             .map(|sampled| sampled.request_id)
@@ -668,9 +691,8 @@ impl EngineCore {
             &sampled_request_ids,
         )?;
 
-        if let Some(batch) = schedule_plan.execution_batch.as_mut() {
-            batch.route_metadata = runner_output.route_metadata.clone();
-        }
+        execution_batch.route_metadata = runner_output.route_metadata.clone();
+        schedule_plan.execution_batch = Some(execution_batch);
 
         debug!(
             step_id = runner_output.step_id.0,
@@ -689,11 +711,11 @@ impl EngineCore {
     }
 
     fn build_runner_input(
-        &self,
-        execution_batch: ExecutionBatch,
+        &mut self,
+        execution_batch: &ExecutionBatch,
     ) -> Result<RunnerInput, EngineCoreError> {
         let mut block_tables = Vec::with_capacity(execution_batch.items.len());
-        let mut seen_request_ids = BTreeSet::new();
+        self.scratch_seen_request_ids.clear();
         let mut request_contexts = Vec::with_capacity(execution_batch.items.len());
 
         for item in &execution_batch.items {
@@ -701,7 +723,7 @@ impl EngineCore {
                 request_id: item.request_id,
                 block_table: self.kv_manager.block_table(item.request_id)?,
             });
-            if seen_request_ids.insert(item.request_id) {
+            if self.scratch_seen_request_ids.insert(item.request_id) {
                 let record = self
                     .request_manager
                     .record(item.request_id)
@@ -728,52 +750,46 @@ impl EngineCore {
 
         Ok(RunnerInput {
             block_size_tokens: self.kv_manager.config().block_size_tokens,
-            execution_batch,
+            execution_batch: execution_batch.clone(),
             block_tables,
             request_contexts,
         })
     }
 
     fn sample_runner_output(
-        &self,
-        schedule_plan: &SchedulePlan,
+        &mut self,
+        execution_batch: &ExecutionBatch,
         runner_output: &RunnerOutput,
     ) -> Result<Vec<SampledToken>, EngineCoreError> {
-        let Some(execution_batch) = &schedule_plan.execution_batch else {
-            return Ok(Vec::new());
-        };
         let sample_request_ids = self.sample_request_ids(execution_batch)?;
 
         let mut runner_tokens = Vec::new();
         let mut requests = Vec::new();
-        let update_by_request = runner_output
-            .request_updates
-            .iter()
-            .map(|update| (update.request_id, update))
-            .collect::<BTreeMap<_, _>>();
-        let logits_output_by_request = runner_output
-            .logits_outputs
-            .iter()
-            .map(|output| (output.request_id, &output.logits))
-            .collect::<BTreeMap<_, _>>();
-        let logits_handles = runner_output
-            .logits_handles
-            .iter()
-            .copied()
-            .collect::<BTreeSet<_>>();
-        let item_by_request = execution_batch
-            .items
-            .iter()
-            .map(|item| (item.request_id, item))
-            .collect::<BTreeMap<_, _>>();
+
+        self.scratch_update_index.clear();
+        for (i, update) in runner_output.request_updates.iter().enumerate() {
+            self.scratch_update_index.insert(update.request_id, i);
+        }
+        self.scratch_logits_index.clear();
+        for (i, output) in runner_output.logits_outputs.iter().enumerate() {
+            self.scratch_logits_index.insert(output.request_id, i);
+        }
+        self.scratch_logits_handles.clear();
+        self.scratch_logits_handles
+            .extend(runner_output.logits_handles.iter().copied());
+        self.scratch_item_index.clear();
+        for (i, item) in execution_batch.items.iter().enumerate() {
+            self.scratch_item_index.insert(item.request_id, i);
+        }
 
         for request_id in sample_request_ids {
-            let update = update_by_request.get(&request_id).ok_or(
+            let update_idx = self.scratch_update_index.get(&request_id).copied().ok_or(
                 EngineCoreError::RunnerContractViolation {
                     step_id: runner_output.step_id,
                     message: "runner omitted update for sampleable request",
                 },
             )?;
+            let update = &runner_output.request_updates[update_idx];
             if update.error.is_some()
                 || matches!(update.stop_reason, Some(crate::sampling::StopReason::Error))
             {
@@ -790,17 +806,19 @@ impl EngineCore {
                 continue;
             }
 
-            let logits = logits_output_by_request
+            let logits = self
+                .scratch_logits_index
                 .get(&request_id)
-                .map(|values| (*values).clone());
-            let item = item_by_request.get(&request_id).copied().ok_or(
+                .map(|&i| runner_output.logits_outputs[i].logits.clone());
+            let item_idx = self.scratch_item_index.get(&request_id).copied().ok_or(
                 EngineCoreError::RunnerContractViolation {
                     step_id: runner_output.step_id,
                     message: "runner logits handle missing from execution batch",
                 },
             )?;
+            let item = &execution_batch.items[item_idx];
             let decode_request = item.mode == ExecutionMode::Decode;
-            if logits.is_none() && !logits_handles.contains(&request_id) {
+            if logits.is_none() && !self.scratch_logits_handles.contains(&request_id) {
                 if !decode_request {
                     continue;
                 }
@@ -851,16 +869,9 @@ impl EngineCore {
 
     fn validate_runner_output(
         &self,
-        schedule_plan: &SchedulePlan,
+        execution_batch: &ExecutionBatch,
         runner_output: &RunnerOutput,
     ) -> Result<(), EngineCoreError> {
-        let Some(execution_batch) = &schedule_plan.execution_batch else {
-            return Err(EngineCoreError::RunnerContractViolation {
-                step_id: runner_output.step_id,
-                message: "runner output produced without an execution batch",
-            });
-        };
-
         if runner_output.step_id != execution_batch.step_id {
             return Err(EngineCoreError::RunnerContractViolation {
                 step_id: execution_batch.step_id,
@@ -874,19 +885,19 @@ impl EngineCore {
             .items
             .iter()
             .map(|item| item.request_id)
-            .collect::<BTreeSet<_>>();
+            .collect::<HashSet<_>>();
         let item_by_request = execution_batch
             .items
             .iter()
             .map(|item| (item.request_id, item))
-            .collect::<BTreeMap<_, _>>();
+            .collect::<HashMap<_, _>>();
         let decode_request_ids = execution_batch
             .items
             .iter()
             .filter(|item| item.mode == ExecutionMode::Decode)
             .map(|item| item.request_id)
-            .collect::<BTreeSet<_>>();
-        let mut seen_updates = BTreeSet::new();
+            .collect::<HashSet<_>>();
+        let mut seen_updates = HashSet::new();
         for update in &runner_output.request_updates {
             if !batch_request_ids.contains(&update.request_id) {
                 return Err(EngineCoreError::RunnerContractViolation {
@@ -937,9 +948,9 @@ impl EngineCore {
             .request_updates
             .iter()
             .map(|update| (update.request_id, update))
-            .collect::<BTreeMap<_, _>>();
+            .collect::<HashMap<_, _>>();
 
-        let mut seen_logits = BTreeSet::new();
+        let mut seen_logits = HashSet::new();
         for request_id in &runner_output.logits_handles {
             if !decode_request_ids.contains(request_id) {
                 return Err(EngineCoreError::RunnerContractViolation {
@@ -954,7 +965,7 @@ impl EngineCore {
                 });
             }
         }
-        let mut seen_logits_outputs = BTreeSet::new();
+        let mut seen_logits_outputs = HashSet::new();
         for output in &runner_output.logits_outputs {
             if !decode_request_ids.contains(&output.request_id)
                 && !prefill_completion_request_ids.contains(&output.request_id)

@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, HashSet};
 
 use mlx_sys::{MlxArray, eval_first_u32, multiply, random_categorical};
 
@@ -152,14 +152,15 @@ pub fn sample_categorical(
     if logits.is_empty() {
         return 0;
     }
-    let adjusted_logits;
+    let mut adjusted_logits_buf: Vec<f32>;
     let logits = if sampling.uses_repetition_penalty() && !repetition_tokens.is_empty() {
-        adjusted_logits = logits_with_repetition_penalty(
-            logits,
+        adjusted_logits_buf = logits.to_vec();
+        logits_with_repetition_penalty_in_place(
+            &mut adjusted_logits_buf,
             sampling.repetition_penalty,
             recent_repetition_tokens(repetition_tokens, sampling.repetition_context_size),
         );
-        adjusted_logits.as_slice()
+        adjusted_logits_buf.as_slice()
     } else {
         logits
     };
@@ -613,18 +614,17 @@ fn recent_repetition_tokens(tokens: &[u32], context_size: Option<u32>) -> &[u32]
     &tokens[tokens.len() - keep_len..]
 }
 
-fn logits_with_repetition_penalty(
-    logits: &[f32],
+fn logits_with_repetition_penalty_in_place(
+    logits: &mut [f32],
     repetition_penalty: f32,
     repetition_tokens: &[u32],
-) -> Vec<f32> {
-    let mut adjusted = logits.to_vec();
-    let mut seen_tokens = BTreeSet::new();
-    for token in repetition_tokens {
-        if !seen_tokens.insert(*token) {
+) {
+    let mut seen_tokens = HashSet::with_capacity(repetition_tokens.len());
+    for &token in repetition_tokens {
+        if !seen_tokens.insert(token) {
             continue;
         }
-        let Some(logit) = adjusted.get_mut(*token as usize) else {
+        let Some(logit) = logits.get_mut(token as usize) else {
             continue;
         };
         if *logit < 0.0 {
@@ -633,7 +633,6 @@ fn logits_with_repetition_penalty(
             *logit /= repetition_penalty;
         }
     }
-    adjusted
 }
 
 fn apply_top_k_top_p(candidates: &mut Vec<(usize, f32)>, top_k: u32, top_p: f32) {

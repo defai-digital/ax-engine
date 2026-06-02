@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeSet, HashMap};
 
 use crate::ids::{BlockId, CacheGroupId, RequestId};
 use thiserror::Error;
@@ -73,7 +73,7 @@ impl PrefixLookupResult {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 struct CachedBlockKey {
     cache_group_id: CacheGroupId,
     block_hash: u64,
@@ -153,12 +153,12 @@ impl KvManagerConfig {
 pub struct KvManager {
     config: KvManagerConfig,
     free_block_ids: Vec<BlockId>,
-    block_tables: BTreeMap<RequestId, BlockTable>,
-    prompt_tokens: BTreeMap<RequestId, Vec<u32>>,
-    block_ref_counts: BTreeMap<BlockId, u32>,
-    live_prefix_requests_by_first_block: BTreeMap<CachedBlockKey, BTreeSet<RequestId>>,
-    cached_blocks: BTreeMap<CachedBlockKey, CachedBlockEntry>,
-    cached_children_by_parent: BTreeMap<CachedBlockKey, BTreeSet<CachedBlockKey>>,
+    block_tables: HashMap<RequestId, BlockTable>,
+    prompt_tokens: HashMap<RequestId, Vec<u32>>,
+    block_ref_counts: HashMap<BlockId, u32>,
+    live_prefix_requests_by_first_block: HashMap<CachedBlockKey, BTreeSet<RequestId>>,
+    cached_blocks: HashMap<CachedBlockKey, CachedBlockEntry>,
+    cached_children_by_parent: HashMap<CachedBlockKey, BTreeSet<CachedBlockKey>>,
     next_cache_tick: u64,
     recent_evictions: u32,
 }
@@ -169,12 +169,12 @@ impl KvManager {
         Self {
             config,
             free_block_ids,
-            block_tables: BTreeMap::new(),
-            prompt_tokens: BTreeMap::new(),
-            block_ref_counts: BTreeMap::new(),
-            live_prefix_requests_by_first_block: BTreeMap::new(),
-            cached_blocks: BTreeMap::new(),
-            cached_children_by_parent: BTreeMap::new(),
+            block_tables: HashMap::new(),
+            prompt_tokens: HashMap::new(),
+            block_ref_counts: HashMap::new(),
+            live_prefix_requests_by_first_block: HashMap::new(),
+            cached_blocks: HashMap::new(),
+            cached_children_by_parent: HashMap::new(),
             next_cache_tick: 0,
             recent_evictions: 0,
         }

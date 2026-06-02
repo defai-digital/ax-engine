@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use thiserror::Error;
 
 use crate::execution_plan::ExecutionPlanBinding;
-use crate::ids::{CacheGroupId, RequestId};
+use crate::ids::{CacheGroupId, RequestId, SequenceNo};
 use crate::kv::BlockTable;
 use crate::request::{
     RequestRecord, RequestSnapshot, RequestState, RequestSubmission, StateTransitionError,
@@ -20,6 +20,11 @@ pub struct RequestManager {
     records: BTreeMap<RequestId, RequestRecord>,
     terminal_snapshots: BTreeMap<RequestId, RequestSnapshot>,
     terminal_snapshot_order: VecDeque<RequestId>,
+    /// Cached sorted request IDs, valid when `snapshot_order_dirty == false`.
+    cached_snapshot_ids: Vec<RequestId>,
+    /// Set to true whenever records are added or removed.  The sort is O(n log n)
+    /// and is only re-run when the set of active requests changes, not every step.
+    snapshot_order_dirty: bool,
 }
 
 impl RequestManager {
@@ -29,6 +34,8 @@ impl RequestManager {
             records: BTreeMap::new(),
             terminal_snapshots: BTreeMap::new(),
             terminal_snapshot_order: VecDeque::new(),
+            cached_snapshot_ids: Vec::new(),
+            snapshot_order_dirty: true,
         }
     }
 
@@ -50,6 +57,7 @@ impl RequestManager {
 
         let record = RequestRecord::new(submission, BlockTable::empty(self.cache_group_id));
         self.records.insert(request_id, record);
+        self.snapshot_order_dirty = true;
         Ok(request_id)
     }
 
@@ -207,14 +215,23 @@ impl RequestManager {
         Ok(())
     }
 
-    pub fn snapshots(&self) -> Vec<RequestSnapshot> {
-        let mut snapshots = self
-            .records
-            .values()
-            .map(RequestRecord::snapshot)
-            .collect::<Vec<_>>();
-        snapshots.sort_by_key(|snapshot| (snapshot.arrival_sequence, snapshot.request_id));
-        snapshots
+    pub fn snapshots(&mut self) -> Vec<RequestSnapshot> {
+        if self.snapshot_order_dirty {
+            self.cached_snapshot_ids.clear();
+            self.cached_snapshot_ids
+                .extend(self.records.keys().copied());
+            self.cached_snapshot_ids.sort_by_key(|id| {
+                self.records
+                    .get(id)
+                    .map(|r| (r.arrival_sequence, *id))
+                    .unwrap_or((SequenceNo(0), *id))
+            });
+            self.snapshot_order_dirty = false;
+        }
+        self.cached_snapshot_ids
+            .iter()
+            .filter_map(|id| self.records.get(id).map(RequestRecord::snapshot))
+            .collect()
     }
 
     pub fn apply_schedule_plan(
@@ -266,6 +283,7 @@ impl RequestManager {
             .records
             .remove(&request_id)
             .ok_or(RequestManagerError::UnknownRequest(request_id))?;
+        self.snapshot_order_dirty = true;
         self.terminal_snapshots
             .insert(request_id, record.snapshot());
         self.terminal_snapshot_order.push_back(request_id);
