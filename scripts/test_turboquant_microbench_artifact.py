@@ -147,6 +147,19 @@ class TurboQuantMicrobenchArtifactTests(unittest.TestCase):
         ):
             checker.validate_row_evidence(artifact, external_row)
 
+    def test_artifact_accepts_any_passing_eligible_row(self) -> None:
+        artifact = microbench_artifact()
+        larger_failing_row = deepcopy(artifact["rows"][1])
+        larger_failing_row["cold_tokens"] = 16384
+        larger_failing_row["kernel_variants"][1] = variant(
+            "two_stage_scores",
+            median_us=1041,
+            max_abs_diff=0.01,
+        )
+        artifact["rows"].append(larger_failing_row)
+
+        checker.validate_artifact(artifact)
+
     def test_quality_regression_fails_closed(self) -> None:
         artifact = microbench_artifact()
         artifact["rows"][1]["kernel_variants"][1] = variant(
