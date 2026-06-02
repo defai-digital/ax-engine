@@ -3179,6 +3179,12 @@ struct RequestState {
     mtp_skip_hidden: Option<MlxArray>,
     /// Cumulative MTP draft/accept counters for benchmark telemetry.
     mtp_telemetry: MtpTelemetry,
+    /// Per-request latch: once auto-optimistic activates (stochastic EWMA ≥ 0.99),
+    /// it stays latched until the argmax-based EWMA drops below 0.95.  This
+    /// prevents oscillation because argmax acceptance is strictly stricter than
+    /// stochastic acceptance (draft tokens that pass p_target/p_draft rejection
+    /// may not be the argmax token), so the EWMA shifts metric upon activation.
+    auto_optimistic_active: bool,
     /// Post-norm hidden rows from the final prefill chunk.
     /// Set by `chunked_prefill_with_mtp_history` and consumed by
     /// `initialize_generation_state` to prime the MTP head's KV cache with
@@ -3235,6 +3241,7 @@ impl RequestState {
             mtp_skip_logits: None,
             mtp_skip_hidden: None,
             mtp_telemetry: MtpTelemetry::default(),
+            auto_optimistic_active: false,
             mtp_prefill_hidden: None,
             mtp_prefill_history_tokens: Vec::new(),
             ngram_in_think: false,
@@ -5755,9 +5762,23 @@ impl MlxRunner {
         // and we have enough samples to trust it.  This avoids full-vocab softmax
         // + rejection sampling + rollback overhead when the model is clearly
         // producing highly accurate drafts (e.g. 27B flappy at 99.5% accept).
-        let auto_optimistic = !pending.is_empty()
-            && state.mtp_telemetry.mtp_only_accept_rate_ewma_samples >= mtp_ngram_gate_min_samples()
-            && state.mtp_telemetry.mtp_only_accept_rate_ewma >= 0.99;
+        //
+        // Hysteresis: activate at ≥0.99 (stochastic acceptance), deactivate at
+        // <0.95.  Once active, the EWMA tracks argmax-based truth which is
+        // strictly stricter than stochastic acceptance (a draft token can pass
+        // p_target/p_draft rejection sampling but not be the argmax token).
+        // Without hysteresis, the EWMA oscillates: stochastic ≥0.99 activates,
+        // argmax tracking shows ~0.96, deactivates, stochastic ≥0.99, repeat.
+        let can_auto_optimistic = !pending.is_empty()
+            && state.mtp_telemetry.mtp_only_accept_rate_ewma_samples >= mtp_ngram_gate_min_samples();
+        let ewma = state.mtp_telemetry.mtp_only_accept_rate_ewma;
+        if can_auto_optimistic && !state.auto_optimistic_active && ewma >= 0.99 {
+            state.auto_optimistic_active = true;
+        }
+        if state.auto_optimistic_active && ewma < 0.95 {
+            state.auto_optimistic_active = false;
+        }
+        let auto_optimistic = can_auto_optimistic && state.auto_optimistic_active;
         let optimistic = (self.mtp_optimistic || auto_optimistic) && !pending.is_empty();
         if auto_optimistic && !self.mtp_optimistic {
             state.mtp_telemetry.auto_optimistic_steps =
@@ -6144,7 +6165,7 @@ impl MlxRunner {
         // the EWMA acceptance rate exceeds the threshold.
         // The gate requires a minimum number of EWMA samples before it can
         // activate, to avoid false gating on early-generation noise.
-        // Override with `AX_MLX_MTP_NGRAM_GATE_SAMPLES` (default 8).
+        // Override with `AX_MLX_MTP_NGRAM_GATE_SAMPLES` (default 4).
         let ngram_gate_min_samples = mtp_ngram_gate_min_samples();
         // Gate uses the MTP-only EWMA (excluding n-gram sources) so that n-gram
         // rejections cannot suppress gating when the model itself accepts ≥99%.
