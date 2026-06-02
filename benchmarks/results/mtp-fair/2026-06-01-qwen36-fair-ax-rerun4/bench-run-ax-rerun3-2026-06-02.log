@@ -1,0 +1,22 @@
+
+/opt/homebrew/opt/python@3.14/bin/python3.14 /Users/akiralam/code/ax-engine_v5/scripts/bench_mlx_inference_stack.py --model-dir /Users/akiralam/.cache/huggingface/hub/models--ax-local--Qwen3.6-27B-MTP/snapshots/v1 --prompt-source real --real-prompt-suite /Users/akiralam/code/ax-engine_v5/benchmarks/prompts/mtp-suites/long_code.jsonl --generation-tokens 1000 --repetitions 5 --cooldown 30.0 --inter-case-cooldown 10.0 --ax-ngram-accel --ax-sampling {"temperature": 0.6, "top_k": 20, "top_p": 0.95} --skip-mlx-lm --capture-output-token-ids --ax-mtp-max-depth 3 --output benchmarks/results/mtp-fair/2026-06-01-qwen36-fair-ax-rerun4/27b-4bit/long_code/ax_engine.json --no-thinking --no-build-ax-engine --ax-mtp-disable-ngram-stacking
+
+=== AX Engine MLX inference stack ===
+  model: /Users/akiralam/.cache/huggingface/hub/models--ax-local--Qwen3.6-27B-MTP/snapshots/v1
+  model_repo_id: ax-local/Qwen3.6-27B-MTP
+  model_dir: /Users/akiralam/.cache/huggingface/hub/models--ax-local--Qwen3.6-27B-MTP/snapshots/v1
+  prompt_tokens: [128, 512, 2048]
+  generation_tokens: 1000
+  repetitions: 5 + 1 warmup for AX
+  ax_prefix_cache: disabled_for_cold_prefill_benchmark
+  prompt_artifact_root: benchmarks/results/mtp-fair/2026-06-01-qwen36-fair-ax-rerun4/27b-4bit/long_code/ax_engine-prompts
+  [prompt] real suite=long_code case=long_code_c_audit tokens=721 text_sha256=5ffae1f63827 path=benchmarks/results/mtp-fair/2026-06-01-qwen36-fair-ax-rerun4/27b-4bit/long_code/ax_engine-prompts/real-long_code-long_code_c_audit-gen-1000-be6c30699699.json
+  [prompt] real suite=long_code case=long_code_api_audit tokens=852 text_sha256=062e3300154f path=benchmarks/results/mtp-fair/2026-06-01-qwen36-fair-ax-rerun4/27b-4bit/long_code/ax_engine-prompts/real-long_code-long_code_api_audit-gen-1000-3cd352119f3d.json
+  [prompt] real suite=long_code case=long_code_test_stubs tokens=714 text_sha256=3b400dabcce9 path=benchmarks/results/mtp-fair/2026-06-01-qwen36-fair-ax-rerun4/27b-4bit/long_code/ax_engine-prompts/real-long_code-long_code_test_stubs-gen-1000-a9ba17ecb869.json
+  [prompt] real suite=long_code case=long_code_sql_schema tokens=451 text_sha256=3c6cb4d67cc3 path=benchmarks/results/mtp-fair/2026-06-01-qwen36-fair-ax-rerun4/27b-4bit/long_code/ax_engine-prompts/real-long_code-long_code_sql_schema-gen-1000-e6224a6d73ee.json
+  [ax-engine] /Users/akiralam/code/ax-engine_v5/target/release/ax-engine-server --mlx --mlx-model-artifacts-dir /Users/akiralam/.cache/huggingface/hub/models--ax-local--Qwen3.6-27B-MTP/snapshots/v1 --port 52326 --mlx-mtp-disable-ngram-stacking --prefill-chunk 2048 --max-batch-tokens 2048
+  [ax-engine] AX_MLX_MTP_MAX_DEPTH=3
+  [ax-engine] MTP n-gram stacking disabled
+  [ax-engine] prefix cache disabled for cold prefill/TTFT measurement
+  [ax-engine/ax_engine_mlx_pure_mtp] prompt=721 generation=1000 policy=mtp_head_only_no_ngram_stacking kv_compression=disabled
+    rep 1: prefill=771.4 tok/s decode=60.5 tok/s out=1000
