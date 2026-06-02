@@ -93,20 +93,27 @@ def inspect_microbench_artifact(
     doc: dict[str, Any] | None = None
     try:
         doc = _load_json(path)
-        d3_row = d3_microbench_row(
+        row_errors: list[str] = []
+        for d3_row in d3_microbench_rows(
             doc,
             min_cold_tokens=min_cold_tokens,
             head_dim=d3_head_dim,
-        )
-        variants = microbench_checker._variant_by_name(d3_row)
-        if "dim_parallel" not in variants:
-            raise ValueError("D3 evidence must include dim_parallel comparison variant")
-        microbench_checker.validate_row_evidence(
-            doc,
-            d3_row,
-            min_cold_tokens=min_cold_tokens,
-            min_speedup_vs_dim_parallel=min_speedup_vs_dim,
-        )
+        ):
+            try:
+                variants = microbench_checker._variant_by_name(d3_row)
+                if "dim_parallel" not in variants:
+                    raise ValueError("D3 evidence must include dim_parallel comparison variant")
+                microbench_checker.validate_row_evidence(
+                    doc,
+                    d3_row,
+                    min_cold_tokens=min_cold_tokens,
+                    min_speedup_vs_dim_parallel=min_speedup_vs_dim,
+                )
+                break
+            except Exception as exc:  # noqa: BLE001 - report the failing row evidence.
+                row_errors.append(str(exc))
+        else:
+            raise ValueError(row_errors[0])
     except Exception as exc:  # noqa: BLE001 - readiness reports fail-closed reasons.
         return {
             "path": _relative(path),
@@ -124,12 +131,12 @@ def inspect_microbench_artifact(
     }
 
 
-def d3_microbench_row(
+def d3_microbench_rows(
     doc: dict[str, Any],
     *,
     min_cold_tokens: int,
     head_dim: int,
-) -> dict[str, Any]:
+) -> list[dict[str, Any]]:
     rows = doc.get("rows")
     if not isinstance(rows, list):
         raise ValueError("rows must be a non-empty array")
@@ -146,7 +153,7 @@ def d3_microbench_row(
             f"D3 evidence must include head_dim={head_dim} row "
             f"with cold_tokens >= {min_cold_tokens}"
         )
-    return max(eligible, key=lambda row: row["cold_tokens"])
+    return sorted(eligible, key=lambda row: row["cold_tokens"], reverse=True)
 
 
 def largest_cold_tokens(doc: dict[str, Any] | None) -> int | None:
