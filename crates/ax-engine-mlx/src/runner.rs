@@ -1276,15 +1276,25 @@ struct MtpStepTimings {
 }
 
 impl MtpTelemetry {
-    fn record_step(&mut self, drafted: usize, accepted: usize, sources: &[MtpDraftSource]) {
+    fn record_step(
+        &mut self,
+        drafted: usize,
+        accepted: usize,
+        sources: &[MtpDraftSource],
+        ewma_accepted: Option<usize>,
+    ) {
         self.draft_tokens = self.draft_tokens.saturating_add(saturating_u32(drafted));
         self.accepted_tokens = self
             .accepted_tokens
             .saturating_add(saturating_u32(accepted));
         self.decode_steps = self.decode_steps.saturating_add(1);
+        // Use the true argmax-based acceptance for EWMA when auto-optimistic is
+        // active (ewma_accepted = Some(truth)).  Otherwise use the actual
+        // accept_count (rejection-sampling or manual optimistic).
+        let ewma_ac = ewma_accepted.unwrap_or(accepted);
         const ALPHA: f32 = 0.05;
         if drafted > 0 {
-            let step_rate = accepted as f32 / drafted as f32;
+            let step_rate = ewma_ac as f32 / drafted as f32;
             if self.accept_rate_ewma_samples == 0 {
                 self.accept_rate_ewma = step_rate;
             } else {
@@ -1297,19 +1307,21 @@ impl MtpTelemetry {
         // rejected by cascade rather than by their own quality.  Counting those
         // cascaded rejections against MTP deflates the EWMA when n-gram is running.
         // Only count tokens that were "meaningfully evaluated":
-        //   - accepted tokens (positions 0..accepted) passed the verifier, and
-        //   - the first-rejected token (position `accepted`) was the one that
+        //   - accepted tokens (positions 0..ewma_ac) passed the verifier, and
+        //   - the first-rejected token (position `ewma_ac`) was the one that
         //     actually failed — but only if that token is MTP-sourced.
-        // Tokens at positions accepted+1..drafted are cascade rejections and are
+        // Tokens at positions ewma_ac+1..drafted are cascade rejections and are
         // excluded regardless of source.
+        // Uses ewma_ac (argmax truth when auto-optimistic) so that the EWMA
+        // tracks the real rejection-sampling-equivalent rate.
         let mtp_only_accepted_count = sources
             .iter()
-            .take(accepted)
+            .take(ewma_ac)
             .filter(|s| matches!(s, MtpDraftSource::Mtp | MtpDraftSource::HybridMtp))
             .count();
-        let first_rejection_is_mtp = accepted < drafted
+        let first_rejection_is_mtp = ewma_ac < drafted
             && sources
-                .get(accepted)
+                .get(ewma_ac)
                 .map(|s| matches!(s, MtpDraftSource::Mtp | MtpDraftSource::HybridMtp))
                 .unwrap_or(true);
         let mtp_only_drafted = mtp_only_accepted_count + usize::from(first_rejection_is_mtp);
@@ -6084,15 +6096,16 @@ impl MlxRunner {
         result.push(tail_tok);
 
         // Record MTP draft/accept telemetry.
-        // Use the true acceptance rate for EWMA when auto-optimistic is active
-        // (output accept_count is inflated to pending.len() by optimistic).
+        // Pass the actual accept_count for counters (accepted_tokens, cycles, etc.)
+        // and ewma_accept_count separately for EWMA tracking only.
         if !pending.is_empty() {
-            let ewma_ac = ewma_accept_count.unwrap_or(accept_count);
             state.mtp_telemetry.record_step(
                 pending.len(),
-                ewma_ac,
+                accept_count,
                 &state.mtp_pending_draft_sources,
+                ewma_accept_count,
             );
+            let ewma_ac = ewma_accept_count.unwrap_or(accept_count);
             let ngram_prefix_len = state
                 .mtp_pending_draft_sources
                 .iter()
@@ -8003,9 +8016,9 @@ mod tests {
         let mut telemetry = MtpTelemetry::default();
 
         let mtp_sources = [MtpDraftSource::Mtp; 3];
-        telemetry.record_step(3, 3, &mtp_sources);
-        telemetry.record_step(3, 1, &mtp_sources);
-        telemetry.record_step(3, 0, &mtp_sources);
+        telemetry.record_step(3, 3, &mtp_sources, None);
+        telemetry.record_step(3, 1, &mtp_sources, None);
+        telemetry.record_step(3, 0, &mtp_sources, None);
         telemetry.record_timings(MtpStepTimings {
             cache_clone_wall_us: 10,
             verify_forward_wall_us: 20,
@@ -8067,6 +8080,7 @@ mod tests {
                 MtpDraftSource::Ngram,
                 MtpDraftSource::HybridMtp,
             ],
+            None,
         );
 
         let mut decisions = Vec::new();
@@ -8107,6 +8121,7 @@ mod tests {
                 MtpDraftSource::Ngram,
                 MtpDraftSource::Mtp,
             ],
+            None,
         );
         assert_eq!(
             tel.mtp_only_accept_rate_ewma_samples, 0,
@@ -8122,6 +8137,7 @@ mod tests {
                 MtpDraftSource::Ngram,
                 MtpDraftSource::Mtp,
             ],
+            None,
         );
         assert_eq!(tel.mtp_only_accept_rate_ewma_samples, 1);
         assert!(
@@ -8139,6 +8155,7 @@ mod tests {
                 MtpDraftSource::Ngram,
                 MtpDraftSource::Mtp,
             ],
+            None,
         );
         assert_eq!(tel.mtp_only_accept_rate_ewma_samples, 2);
         // After step 3: EWMA nudged down from 1.0 toward 0.0 (mtp rejected).
@@ -8153,7 +8170,7 @@ mod tests {
         // evaluated" positions count — position 0 (accepted) and position 1 (the
         // first and only genuine rejection that caused the cascade).
         let mut tel2 = MtpTelemetry::default();
-        tel2.record_step(3, 1, &[MtpDraftSource::Mtp; 3]);
+        tel2.record_step(3, 1, &[MtpDraftSource::Mtp; 3], None);
         // drafted=3, accepted=1, first rejection at pos 1 (Mtp) → first_rejection_is_mtp=true.
         // pos 2 is cascade-excluded.  mtp_only_drafted = 1 (accepted) + 1 (first rejection) = 2.
         assert_eq!(tel2.mtp_only_accept_rate_ewma_samples, 1);
