@@ -250,24 +250,17 @@ def validate_artifact(
     ]
     _require(eligible_rows, f"artifact must include a row with cold_tokens >= {min_cold_tokens}")
 
-    row_errors: list[str] = []
     for row in sorted(eligible_rows, key=lambda item: item["cold_tokens"], reverse=True):
-        try:
-            _validate_row(
-                doc,
-                row,
-                min_cold_tokens=min_cold_tokens,
-                min_speedup_vs_cpu=min_speedup_vs_cpu,
-                min_speedup_vs_dim_parallel=min_speedup_vs_dim_parallel,
-                max_abs_diff=max_abs_diff,
-                min_cosine_similarity=min_cosine_similarity,
-                require_dim_parallel=False,
-            )
-            break
-        except MicrobenchArtifactValidationError as exc:
-            row_errors.append(str(exc))
-    else:
-        raise MicrobenchArtifactValidationError(row_errors[0])
+        _validate_row(
+            doc,
+            row,
+            min_cold_tokens=min_cold_tokens,
+            min_speedup_vs_cpu=min_speedup_vs_cpu,
+            min_speedup_vs_dim_parallel=min_speedup_vs_dim_parallel,
+            max_abs_diff=max_abs_diff,
+            min_cosine_similarity=min_cosine_similarity,
+            require_dim_parallel=False,
+        )
 
 
 def validate_row_evidence(

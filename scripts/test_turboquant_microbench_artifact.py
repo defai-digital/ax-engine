@@ -147,7 +147,7 @@ class TurboQuantMicrobenchArtifactTests(unittest.TestCase):
         ):
             checker.validate_row_evidence(artifact, external_row)
 
-    def test_artifact_accepts_any_passing_eligible_row(self) -> None:
+    def test_artifact_rejects_failing_eligible_row_even_when_another_row_passes(self) -> None:
         artifact = microbench_artifact()
         larger_failing_row = deepcopy(artifact["rows"][1])
         larger_failing_row["cold_tokens"] = 16384
@@ -158,7 +158,11 @@ class TurboQuantMicrobenchArtifactTests(unittest.TestCase):
         )
         artifact["rows"].append(larger_failing_row)
 
-        checker.validate_artifact(artifact)
+        with self.assertRaisesRegex(
+            checker.MicrobenchArtifactValidationError,
+            "max_abs_diff",
+        ):
+            checker.validate_artifact(artifact)
 
     def test_quality_regression_fails_closed(self) -> None:
         artifact = microbench_artifact()
