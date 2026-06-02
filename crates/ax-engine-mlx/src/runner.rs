@@ -6451,6 +6451,7 @@ impl MlxRunner {
                     }
                     state.mtp_skip_logits = None;
                     state.mtp_skip_hidden = None;
+                    state.mtp_pending_draft_distributions.clear();
                     state.mtp_telemetry.record_ngram_stack_hit(ngram_len, true);
                     (draft, aligned_log_probs, sources)
                 }
@@ -7127,12 +7128,16 @@ fn mtp_accept_count(
                     distribution_index = distribution_index.saturating_add(1);
                 }
             } else {
-                let correction = target_distributions
-                    .and_then(|targets| targets.get(i))
-                    .zip(draft_distributions.get(distribution_index))
-                    .and_then(|(target, draft)| {
-                        sample_residual_token_distribution(target, draft, rng)
-                    });
+                let correction = if has_draft_distribution {
+                    target_distributions
+                        .and_then(|targets| targets.get(i))
+                        .zip(draft_distributions.get(distribution_index))
+                        .and_then(|(target, draft)| {
+                            sample_residual_token_distribution(target, draft, rng)
+                        })
+                } else {
+                    None
+                };
                 return MtpAcceptOutcome {
                     accept_count: ac,
                     all_accepted: false,
@@ -8540,6 +8545,33 @@ mod tests {
         assert_eq!(accept.accept_count, 1);
         assert!(accept.all_accepted);
         assert_eq!(accept.rejection_correction, None);
+    }
+
+    #[test]
+    fn mtp_accept_count_ngram_rejection_ignores_draft_distribution() {
+        let target_distribution = TokenDistribution::new(vec![(99, 1.0)]).unwrap();
+        let stale_mtp_distribution = TokenDistribution::new(vec![(17, 1.0)]).unwrap();
+        let mut rng = Xorshift64::new(42);
+
+        let accept = mtp_accept_count(
+            &[17],
+            &[0.9_f32.ln()],
+            &[stale_mtp_distribution],
+            &[MtpDraftSource::Ngram],
+            Some(&[0.0]),
+            Some(&[target_distribution]),
+            &[17],
+            &mut rng,
+            1.0,
+            0.8,
+        );
+
+        assert_eq!(accept.accept_count, 0);
+        assert!(!accept.all_accepted);
+        assert_eq!(
+            accept.rejection_correction, None,
+            "n-gram pseudo log-probs do not have a true draft distribution"
+        );
     }
 
     #[test]
