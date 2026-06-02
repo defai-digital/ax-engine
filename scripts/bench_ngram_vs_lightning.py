@@ -535,7 +535,9 @@ def _run_lightning_speculative_prompt(
             adaptive_k=True,
         )
         drafter.feed_many(prompt_ids)
-        drafter.feed(curr_token)
+        # Invariant: curr_token is NOT yet in drafter history at the top of each
+        # loop iteration, so predict_next(curr_token) sees it as the pending token
+        # (query = history[-n+1:] + [curr_token]) without duplication.
 
         rep_drafted = 0
         rep_accepted = 0
@@ -547,11 +549,12 @@ def _run_lightning_speculative_prompt(
             drafts = drafter.predict_next(curr_token) if trimmable else []
 
             if not drafts:
+                pending = curr_token
                 logits = model(mx.array([curr_token], mx.uint32)[None], cache=kv)
                 logits = logits[:, -1, :]
                 mx.eval(logits)
                 curr_token = _sample_token(logits.squeeze(0))
-                drafter.feed(curr_token)
+                drafter.feed(pending)
                 output_ids.append(curr_token)
             else:
                 k = len(drafts)
@@ -576,10 +579,11 @@ def _run_lightning_speculative_prompt(
                 rep_drafted += k
                 rep_accepted += n_accept
 
+                drafter.feed(curr_token)
                 for i in range(n_accept):
                     drafter.feed(drafts[i])
                     output_ids.append(drafts[i])
-                drafter.feed(next_token)
+                # next_token becomes the new curr_token; feed deferred to next iteration
                 output_ids.append(next_token)
                 curr_token = next_token
 
