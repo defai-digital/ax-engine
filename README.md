@@ -18,10 +18,22 @@ bases. No `Youssofal/*MTPLX*` bundles are used. Latest local rerun: native
 depth, sampled decode, max tokens `1000`, five measured repetitions, one
 warmup repetition.
 
-> **Lightning-MLX version note:** v0.7.0 exhibited severe decode instability
-> (0.2–45 tok/s variance within a single suite run) and was not usable for
-> benchmarking. v0.6.32 showed the same instability on 27B+depth=3. Lightning
-> is excluded from this run; investigation is ongoing.
+> **Lightning-MLX methodology note:** Lightning rows below are measured
+> separately with the upstream `lightning-mlx bench` raw-decode command and the
+> upstream optimized aliases (`Youssofal/*` / `samuelfaj/*`). They are not mixed
+> into the fair sidecar comparison, which intentionally uses only standard
+> `Qwen/Qwen3.6-*` MTP shards plus `mlx-community/*-4bit` bases.
+
+#### Lightning-MLX source raw decode
+
+<p><img src="docs/assets/perf-lightning-raw-qwen36.svg" alt="Bar chart comparing Lightning-MLX raw bench completion token throughput for Qwen3.6 27B and 35B-A3B in MTP and MTP+n-gram modes"></p>
+
+| Model | Source model | MTP tok/s | MTP+n-gram tok/s | Best mode | OpenWebUI direct |
+|---|---|---:|---:|---|---|
+| Qwen3.6 27B | `Youssofal/Qwen3.6-27B-MTPLX-Optimized-Speed` | 50.2 | 58.2 | MTP+n-gram | pass |
+| Qwen3.6 35B-A3B | `samuelfaj/Qwen3.6-35B-A3B-4bit-MTPLX-Optimized-Speed` | 167.6 | 135.0 | MTP | pass |
+
+Run command source: `lightning-mlx bench qwen3.6-{27b,35b} --num-prompts 3 --max-tokens 512 --disable-prefix-cache --max-num-seqs 1 --prefill-batch-size 1 --completion-batch-size 1 --prefill-step-size 8192 --mtp-num-draft-tokens 3 --mtp-optimistic`; MTP+n-gram adds Lightning's source 35B-A3B opt-in n-gram preset flags (`K=6`, `min_occ=2`, greedy, hybrid verify, everywhere, skip tool calls, self-tune, auto-disable `0.85/0.50`) to both models for comparison. OpenWebUI correctness was verified with `scripts/openwebui_e2e.py --ax-direct` against `lightning-mlx serve` using each model's best mode. All four raw bench runs emitted Lightning's warning that requested MTP draft depth `3` was capped to `1` because the runtime observed only one MTP layer.
 
 <table>
 <tr>
@@ -57,7 +69,7 @@ warmup repetition.
 
 AX MTP uses pure MTP (n-gram stacking disabled); AX MTP+n-gram stacks n-gram speculative drafting on top of MTP. Sampler: temperature=0.6,
 top_p=0.95, top_k=20. 1000 gen tokens, 5 repetitions, 30 s cooldown, 10 s inter-case cooldown.
-MTPLX 0.3.7 · AX Engine v5.1.6 · Lightning-MLX 0.6.32 (excluded — see note above).
+MTPLX 0.3.7 · AX Engine v5.1.6 · Lightning-MLX raw rows reported separately above.
 
 #### Prefill throughput (tok/s) — same run
 
@@ -86,7 +98,7 @@ MTPLX TTFT is derived from `prompt_eval_time_s` (runner-level). AX TTFT is a run
 | Qwen3.6 35B-A3B 4-bit | long_code | 1 | 335 | 279 | 279 |
 | Qwen3.6 35B-A3B 4-bit | python_modules_long | 1 | 292 | 175 | 174 |
 
-Full artifacts: [`2026-06-02-qwen36-fair-v0632`](benchmarks/results/mtp-fair/2026-06-02-qwen36-fair-v0632/summary.json) · [prior full-run with Lightning](benchmarks/results/mtp-fair/2026-06-01-qwen36-fair-ax-rerun4/summary.json).
+Full artifacts: [`2026-06-02-qwen36-fair-v0632`](benchmarks/results/mtp-fair/2026-06-02-qwen36-fair-v0632/summary.json) · [`2026-06-03-qwen36-lightning-raw-source`](benchmarks/results/mtp-fair/2026-06-03-qwen36-lightning-raw-source/summary.json) · [prior full-run with Lightning](benchmarks/results/mtp-fair/2026-06-01-qwen36-fair-ax-rerun4/summary.json).
 
 ### llama.cpp metal vs mlx-lm vs AX-Engine
 

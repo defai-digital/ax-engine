@@ -256,6 +256,35 @@ class Qwen36MtpFairTests(unittest.TestCase):
         cmd = run_subprocess.call_args.args[0]
         self.assertNotIn("--mtp-optimistic", cmd)
         self.assertEqual(cmd[cmd.index("--mtp-draft-temperature") + 1], "0.5")
+        self.assertIn("--disable-thinking", cmd)
+
+    def test_run_rapid_mlx_suite_defaults_to_source_serve_non_optimistic(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = fair.diff.RunConfig(
+                mode="sampled",
+                depth=3,
+                max_tokens=64,
+                repetitions=1,
+                warmup_repetitions=1,
+                cooldown_s=0.0,
+                sampling={"temperature": 0.6, "top_p": 0.95, "top_k": 20},
+                enable_thinking=False,
+            )
+            with patch.object(fair, "run_subprocess") as run_subprocess:
+                fair.run_rapid_mlx_suite(
+                    python=Path("python"),
+                    lightning_source=Path("lightning"),
+                    suite="flappy",
+                    suite_file=root / "suite.jsonl",
+                    output_path=root / "lightning.json",
+                    model_dir=root / "model",
+                    config=config,
+                )
+
+        cmd = run_subprocess.call_args.args[0]
+        self.assertNotIn("--mtp-optimistic", cmd)
+        self.assertIn("--disable-thinking", cmd)
 
     def test_error_artifact_keeps_table_row(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

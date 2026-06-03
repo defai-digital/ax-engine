@@ -53,7 +53,7 @@ class RapidMlxPromptSuiteTests(unittest.TestCase):
 
         self.assertEqual(compat, {"mode": "none"})
 
-    def test_lightning_mode_forwards_mtp_tuning_and_ngram_flags(self) -> None:
+    def test_lightning_mode_uses_source_serve_preset_and_ngram_flags(self) -> None:
         class FakeProcess:
             def poll(self) -> None:
                 return None
@@ -89,9 +89,25 @@ class RapidMlxPromptSuiteTests(unittest.TestCase):
                 )
 
         cmd = popen.call_args.args[0]
+        self.assertEqual(cmd[cmd.index("--served-model-name") + 1], "local")
+        self.assertNotIn("--disable-prefix-cache", cmd)
+        self.assertNotIn("--no-memory-aware-cache", cmd)
+        self.assertNotIn("--prefill-step-size", cmd)
+        self.assertNotIn("--no-thinking", cmd)
         self.assertNotIn("--mtp-optimistic", cmd)
         self.assertEqual(cmd[cmd.index("--mtp-draft-temperature") + 1], "0.5")
+        self.assertEqual(cmd[cmd.index("--max-num-seqs") + 1], "1")
+        self.assertEqual(cmd[cmd.index("--prefill-batch-size") + 1], "1")
+        self.assertEqual(cmd[cmd.index("--completion-batch-size") + 1], "1")
+        self.assertEqual(cmd[cmd.index("--stream-interval") + 1], "1")
         self.assertIn("--enable-ngram", cmd)
+        self.assertIn("--ngram-skip-tool-calls", cmd)
+        self.assertEqual(
+            cmd[cmd.index("--ngram-auto-disable-mtp-threshold") + 1], "0.85"
+        )
+        self.assertEqual(
+            cmd[cmd.index("--ngram-auto-disable-min-ngram") + 1], "0.5"
+        )
 
 
 if __name__ == "__main__":

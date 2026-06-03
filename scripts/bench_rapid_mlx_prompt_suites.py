@@ -260,6 +260,9 @@ def start_server(
     enable_ngram: bool = False,
     mtp_optimistic: bool = False,
     mtp_draft_temperature: float | None = None,
+    enable_thinking: bool = True,
+    ngram_auto_disable_mtp_threshold: float = 0.85,
+    ngram_auto_disable_min_ngram: float = 0.50,
 ) -> ServerHandle:
     output_dir.mkdir(parents=True, exist_ok=True)
     log_path = output_dir / f"rapid-mlx-server-{port}.log"
@@ -275,17 +278,30 @@ def start_server(
             "vllm_mlx.cli",
             "serve",
             model,
+            "--served-model-name",
+            "local",
             "--port",
             str(port),
-            "--disable-prefix-cache",
-            "--no-memory-aware-cache",
+            "--max-num-seqs",
+            "1",
+            "--prefill-batch-size",
+            "1",
+            "--completion-batch-size",
+            "1",
+            "--default-temperature",
+            "0.6",
+            "--default-top-p",
+            "0.95",
+            "--stream-interval",
+            "1",
             "--enable-mtp",
             "--mtp-num-draft-tokens",
             str(depth),
-            "--no-thinking",
             "--log-level",
             "WARNING",
         ]
+        if not enable_thinking:
+            cmd.append("--no-thinking")
         if mtp_draft_temperature is not None:
             cmd += ["--mtp-draft-temperature", str(mtp_draft_temperature)]
         if mtp_optimistic:
@@ -296,8 +312,8 @@ def start_server(
             # MTP+ngram as documented in cli.py:
             #   K=6 wide, min_occ=2, greedy accept, hybrid MTP tail,
             #   draft everywhere (not just in <think>) since --no-thinking
-            #   suppresses <think> blocks entirely, self-tune on,
-            #   auto-disable off (threshold=0) for clean benchmark coverage.
+            #   suppresses <think> blocks entirely, skip tool calls,
+            #   self-tune on, auto-disable at the preset's MTP/ngram thresholds.
             cmd += [
                 "--enable-ngram",
                 "--ngram-num-draft-tokens", "6",
@@ -305,9 +321,13 @@ def start_server(
                 "--ngram-acceptance-mode", "greedy",
                 "--ngram-hybrid-verify",
                 "--ngram-everywhere",
+                "--ngram-skip-tool-calls",
                 "--ngram-self-tune",
                 "--ngram-self-tune-disable-threshold", "0.30",
-                "--ngram-auto-disable-mtp-threshold", "0.0",
+                "--ngram-auto-disable-mtp-threshold",
+                str(ngram_auto_disable_mtp_threshold),
+                "--ngram-auto-disable-min-ngram",
+                str(ngram_auto_disable_min_ngram),
             ]
     else:
         cmd = [
@@ -355,7 +375,7 @@ def start_server(
         handle = ServerHandle(
             proc=proc,
             base_url=f"http://127.0.0.1:{port}/v1",
-            model=model,
+            model="local" if lightning_mode else model,
             log_path=log_path,
             command=cmd,
             compat_patch=compat_patch,
@@ -394,6 +414,7 @@ def run_case(
     seed: int,
     measured: bool,
     repetition: int,
+    enable_thinking: bool = False,
 ) -> dict[str, Any]:
     payload = {
         "model": handle.model,
@@ -405,7 +426,7 @@ def run_case(
         "top_p": sampling["top_p"],
         "top_k": sampling["top_k"],
         "seed": seed,
-        "enable_thinking": False,
+        "enable_thinking": enable_thinking,
     }
     started = time.time()
     t0 = time.perf_counter()
@@ -560,6 +581,7 @@ def run_suite(args: argparse.Namespace) -> dict[str, Any]:
     lightning_mode = bool(getattr(args, "lightning_mode", False))
     enable_ngram = bool(getattr(args, "enable_ngram", False))
     mtp_optimistic = bool(getattr(args, "mtp_optimistic", False))
+    enable_thinking = bool(getattr(args, "enable_thinking", True)) if lightning_mode else False
     handle = start_server(
         model=args.model,
         rapid_python=args.rapid_python,
@@ -574,6 +596,9 @@ def run_suite(args: argparse.Namespace) -> dict[str, Any]:
         enable_ngram=enable_ngram,
         mtp_optimistic=mtp_optimistic,
         mtp_draft_temperature=getattr(args, "mtp_draft_temperature", None),
+        enable_thinking=enable_thinking,
+        ngram_auto_disable_mtp_threshold=args.ngram_auto_disable_mtp_threshold,
+        ngram_auto_disable_min_ngram=args.ngram_auto_disable_min_ngram,
     )
     try:
         if cases:
@@ -585,6 +610,7 @@ def run_suite(args: argparse.Namespace) -> dict[str, Any]:
                 seed=args.seed - 1,
                 measured=False,
                 repetition=-1,
+                enable_thinking=enable_thinking,
             )
 
         case_results = []
@@ -601,6 +627,7 @@ def run_suite(args: argparse.Namespace) -> dict[str, Any]:
                     seed=args.seed + case_index * 1000 + rep,
                     measured=measured,
                     repetition=rep,
+                    enable_thinking=enable_thinking,
                 )
                 print(
                     f"{case.id} rep {rep + 1}/{all_runs}: "
@@ -650,6 +677,7 @@ def run_suite(args: argparse.Namespace) -> dict[str, Any]:
         "rapid_mtp_patch": handle.compat_patch,
         "server_command": handle.command,
         "server_log": str(handle.log_path),
+        "server_profile": "lightning_serve_preset" if lightning_mode else "rapid_mlx",
         "prompt_suite": str(prompt_suite),
         "prompt_suite_sha256": file_sha256(prompt_suite),
         "suite": args.suite,
@@ -660,7 +688,28 @@ def run_suite(args: argparse.Namespace) -> dict[str, Any]:
         "repetitions": args.repetitions,
         "warmup_repetitions": args.warmup_repetitions,
         "cooldown_s": args.cooldown,
-        "disable_thinking": True,
+        "disable_thinking": not enable_thinking,
+        "lightning_settings": {
+            "source_profile": "lightning-mlx serve qwen3.6 MTPLX preset",
+            "prefix_cache": "enabled",
+            "max_num_seqs": 1,
+            "prefill_batch_size": 1,
+            "completion_batch_size": 1,
+            "stream_interval": 1,
+            "mtp_optimistic": mtp_optimistic,
+            "mtp_draft_temperature": args.mtp_draft_temperature,
+            "enable_thinking": enable_thinking,
+            "ngram_enabled": enable_ngram,
+            "ngram_num_draft_tokens": 6 if enable_ngram else None,
+            "ngram_min_occurrences": 2 if enable_ngram else None,
+            "ngram_acceptance_mode": "greedy" if enable_ngram else None,
+            "ngram_hybrid_verify": True if enable_ngram else None,
+            "ngram_only_in_think": False if enable_ngram else None,
+            "ngram_skip_tool_calls": True if enable_ngram else None,
+            "ngram_self_tune": True if enable_ngram else None,
+            "ngram_auto_disable_mtp_threshold": args.ngram_auto_disable_mtp_threshold,
+            "ngram_auto_disable_min_ngram": args.ngram_auto_disable_min_ngram,
+        },
         "measurement_gates": {
             "min_decode_time_s": MIN_DECODE_TIME,
             "tps_ceiling": TPS_CEILING,
@@ -739,7 +788,7 @@ def main() -> int:
             "Layer n-gram (prompt-lookup) speculative decoding before MTP in lightning mode. "
             "Uses the documented production preset: K=6, min_occ=2, greedy acceptance, "
             "hybrid MTP tail (--ngram-hybrid-verify), everywhere (not only in <think>), "
-            "self-tune on, auto-disable disabled (threshold=0 so n-gram is always active). "
+            "skip tool calls, self-tune on, and preset auto-disable thresholds. "
             "Only effective with --lightning-mode; ignored for Rapid-MLX."
         ),
     )
@@ -760,6 +809,35 @@ def main() -> int:
             "Pass --mtp-draft-temperature to lightning-mlx serve in --lightning-mode. "
             "Only effective with --lightning-mode; ignored for Rapid-MLX."
         ),
+    )
+    parser.add_argument(
+        "--enable-thinking",
+        dest="enable_thinking",
+        action="store_true",
+        default=True,
+        help=(
+            "Keep thinking enabled for lightning-mlx serve and send "
+            "enable_thinking=true in chat requests. This is the source-derived "
+            "Qwen3.6 serve preset default."
+        ),
+    )
+    parser.add_argument(
+        "--disable-thinking",
+        dest="enable_thinking",
+        action="store_false",
+        help="Pass --no-thinking to lightning-mlx serve and send enable_thinking=false.",
+    )
+    parser.add_argument(
+        "--ngram-auto-disable-mtp-threshold",
+        type=float,
+        default=0.85,
+        help="Pass --ngram-auto-disable-mtp-threshold in lightning n-gram mode.",
+    )
+    parser.add_argument(
+        "--ngram-auto-disable-min-ngram",
+        type=float,
+        default=0.50,
+        help="Pass --ngram-auto-disable-min-ngram in lightning n-gram mode.",
     )
     args = parser.parse_args()
 

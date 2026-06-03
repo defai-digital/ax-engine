@@ -1,0 +1,29 @@
+{
+  "artifacts": [
+    "benchmarks/results/mtp-fair/2026-06-03-qwen36-lightning-raw-source/27b-mtp.json",
+    "benchmarks/results/mtp-fair/2026-06-03-qwen36-lightning-raw-source/27b-mtp-ngram.json",
+    "benchmarks/results/mtp-fair/2026-06-03-qwen36-lightning-raw-source/35b-mtp.json",
+    "benchmarks/results/mtp-fair/2026-06-03-qwen36-lightning-raw-source/35b-mtp-ngram.json"
+  ],
+  "best": {
+    "27b": {
+      "completion_tokens_per_second": 58.18,
+      "mode": "mtp-ngram",
+      "openwebui_report": "benchmarks/results/mtp-fair/2026-06-03-qwen36-lightning-raw-source/openwebui-27b-mtp-ngram.json"
+    },
+    "35b": {
+      "completion_tokens_per_second": 167.59,
+      "mode": "mtp",
+      "openwebui_report": "benchmarks/results/mtp-fair/2026-06-03-qwen36-lightning-raw-source/openwebui-35b-mtp.json"
+    }
+  },
+  "caveats": [
+    "Benchmarks use the real lightning-mlx bench command and optimized aliases, not ax-local sidecars.",
+    "All four raw-bench runs emitted the lightning-mlx warning that requested MTP draft depth 3 was capped because the runtime observed only 1 MTP layer."
+  ],
+  "openwebui_reports": [
+    "benchmarks/results/mtp-fair/2026-06-03-qwen36-lightning-raw-source/openwebui-27b-mtp-ngram.json",
+    "benchmarks/results/mtp-fair/2026-06-03-qwen36-lightning-raw-source/openwebui-35b-mtp.json"
+  ],
+  "schema": "ax.lightning_mlx_raw_bench_summary.v1"
+}

@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="380" viewBox="0 0 760 380" role="img" aria-labelledby="title desc">
+  <title id="title">Lightning-MLX Qwen3.6 raw decode</title>
+  <desc id="desc">Bar chart comparing Lightning-MLX raw bench completion tokens per second for Qwen3.6 27B and 35B-A3B in MTP and MTP+n-gram modes.</desc>
+  <rect width="760" height="380" fill="#f8fafc"/>
+  <text x="32" y="30" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="18" font-weight="700" fill="#111827">Lightning-MLX Qwen3.6 raw decode</text>
+  <text x="32" y="52" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#4b5563">completion tok/s, source raw bench settings, optimized Lightning aliases</text>
+  <text x="728" y="52" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#374151">Higher is better</text>
+
+  <rect x="64" y="78" width="536" height="216" rx="6" fill="#ffffff" stroke="#dbe3ef"/>
+  <line x1="64" y1="294" x2="600" y2="294" stroke="#e5e7eb"/>
+  <line x1="64" y1="240" x2="600" y2="240" stroke="#e5e7eb"/>
+  <line x1="64" y1="186" x2="600" y2="186" stroke="#e5e7eb"/>
+  <line x1="64" y1="132" x2="600" y2="132" stroke="#e5e7eb"/>
+  <line x1="64" y1="78" x2="600" y2="78" stroke="#e5e7eb"/>
+  <text x="54" y="298" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">0</text>
+  <text x="54" y="244" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">50</text>
+  <text x="54" y="190" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">100</text>
+  <text x="54" y="136" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">150</text>
+  <text x="54" y="82" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">200</text>
+
+  <rect x="150" y="239.8" width="44" height="54.2" rx="3" fill="#7c3aed" fill-opacity="0.74"/>
+  <rect x="204" y="231.2" width="44" height="62.8" rx="3" fill="#1e3a8a" fill-opacity="0.80"/>
+  <text x="172" y="232" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">50.2</text>
+  <text x="226" y="223" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">58.2</text>
+  <text x="199" y="322" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" font-weight="700" fill="#111827">Qwen3.6 27B</text>
+  <text x="199" y="338" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#166534">best: MTP+n-gram</text>
+
+  <rect x="372" y="113.0" width="44" height="181.0" rx="3" fill="#7c3aed" fill-opacity="0.74"/>
+  <rect x="426" y="148.2" width="44" height="145.8" rx="3" fill="#1e3a8a" fill-opacity="0.80"/>
+  <text x="394" y="105" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">167.6</text>
+  <text x="448" y="140" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">135.0</text>
+  <text x="421" y="322" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" font-weight="700" fill="#111827">Qwen3.6 35B-A3B</text>
+  <text x="421" y="338" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#166534">best: MTP</text>
+
+  <rect x="624" y="96" width="16" height="16" rx="2" fill="#7c3aed" fill-opacity="0.74"/>
+  <text x="648" y="108" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#111827">MTP</text>
+  <rect x="624" y="122" width="16" height="16" rx="2" fill="#1e3a8a" fill-opacity="0.80"/>
+  <text x="648" y="134" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#111827">MTP+n-gram</text>
+  <text x="624" y="168" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#4b5563">OpenWebUI direct</text>
+  <text x="624" y="182" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#4b5563">correctness passed</text>
+  <text x="64" y="362" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">Note: lightning-mlx reported requested MTP draft depth 3 was capped to 1 by observed runtime MTP layers.</text>
+</svg>

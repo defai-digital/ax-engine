@@ -360,8 +360,10 @@ def run_rapid_mlx_suite(
     config: diff.RunConfig,
     port: int = 18765,
     enable_ngram: bool = False,
-    mtp_optimistic: bool = True,
+    mtp_optimistic: bool = False,
     mtp_draft_temperature: float = 0.5,
+    ngram_auto_disable_mtp_threshold: float = 0.85,
+    ngram_auto_disable_min_ngram: float = 0.50,
     inter_case_cooldown_s: float = 0.0,
 ) -> Path:
     cmd = [
@@ -403,10 +405,20 @@ def run_rapid_mlx_suite(
         "--mtp-draft-temperature",
         str(mtp_draft_temperature),
     ]
+    if config.enable_thinking:
+        cmd.append("--enable-thinking")
+    else:
+        cmd.append("--disable-thinking")
     if mtp_optimistic:
         cmd.append("--mtp-optimistic")
     if enable_ngram:
         cmd.append("--enable-ngram")
+        cmd += [
+            "--ngram-auto-disable-mtp-threshold",
+            str(ngram_auto_disable_mtp_threshold),
+            "--ngram-auto-disable-min-ngram",
+            str(ngram_auto_disable_min_ngram),
+        ]
     run_subprocess(cmd)
     return output_path
 
@@ -423,6 +435,11 @@ def run_engine_suite(
     model_dir = sidecar_dir(profile, args.hf_cache)
     suite_file = suite_path_for(suite, args.suites_dir)
     output_path = args.output_dir / profile.key / suite / f"{engine}.json"
+    config_enable_thinking = (
+        bool(getattr(args, "lightning_enable_thinking", True))
+        if engine in ("lightning_mlx", "lightning_mtp_ngram")
+        else bool(args.enable_thinking)
+    )
     config = diff.RunConfig(
         mode=args.mode,
         depth=depth,
@@ -434,7 +451,7 @@ def run_engine_suite(
             args.mode,
             {"temperature": args.temperature, "top_p": args.top_p, "top_k": args.top_k},
         ),
-        enable_thinking=bool(args.enable_thinking),
+        enable_thinking=config_enable_thinking,
     )
     if args.skip_existing and output_path.is_file():
         return output_path
@@ -485,7 +502,10 @@ def run_engine_suite(
                 model_dir=model_dir,
                 config=config,
                 port=args.base_port + 1,
-                mtp_optimistic=False,
+                mtp_optimistic=args.lightning_mtp_optimistic,
+                mtp_draft_temperature=args.lightning_mtp_draft_temperature,
+                ngram_auto_disable_mtp_threshold=args.lightning_ngram_auto_disable_mtp_threshold,
+                ngram_auto_disable_min_ngram=args.lightning_ngram_auto_disable_min_ngram,
                 inter_case_cooldown_s=args.inter_case_cooldown,
             )
         if engine == "lightning_mtp_ngram":
@@ -499,7 +519,10 @@ def run_engine_suite(
                 config=config,
                 port=args.base_port + 1,
                 enable_ngram=True,
-                mtp_optimistic=False,
+                mtp_optimistic=args.lightning_mtp_optimistic,
+                mtp_draft_temperature=args.lightning_mtp_draft_temperature,
+                ngram_auto_disable_mtp_threshold=args.lightning_ngram_auto_disable_mtp_threshold,
+                ngram_auto_disable_min_ngram=args.lightning_ngram_auto_disable_min_ngram,
                 inter_case_cooldown_s=args.inter_case_cooldown,
             )
         raise ValueError(f"unknown engine: {engine}")
@@ -793,6 +816,33 @@ def build_summary(
             "repetitions": args.repetitions,
             "warmup_repetitions": args.warmup_repetitions,
             "cooldown_s": args.cooldown,
+            "lightning_settings": {
+                "source_profile": "lightning-mlx serve qwen3.6 MTPLX preset",
+                "prefix_cache": "enabled",
+                "max_num_seqs": 1,
+                "prefill_batch_size": 1,
+                "completion_batch_size": 1,
+                "stream_interval": 1,
+                "mtp_optimistic": getattr(args, "lightning_mtp_optimistic", False),
+                "mtp_draft_temperature": getattr(
+                    args, "lightning_mtp_draft_temperature", 0.5
+                ),
+                "enable_thinking": bool(getattr(args, "lightning_enable_thinking", True)),
+                "ngram_num_draft_tokens": 6,
+                "ngram_min_occurrences": 2,
+                "ngram_acceptance_mode": "greedy",
+                "ngram_hybrid_verify": True,
+                "ngram_only_in_think": False,
+                "ngram_skip_tool_calls": True,
+                "ngram_self_tune": True,
+                "ngram_self_tune_disable_threshold": 0.30,
+                "ngram_auto_disable_mtp_threshold": getattr(
+                    args, "lightning_ngram_auto_disable_mtp_threshold", 0.85
+                ),
+                "ngram_auto_disable_min_ngram": getattr(
+                    args, "lightning_ngram_auto_disable_min_ngram", 0.50
+                ),
+            },
             "ax_pure_mtp": "ax_engine" in args.engines,
             "ax_engine_modes": ax_engine_modes,
             "fairness_rules": [
@@ -1359,6 +1409,54 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--top-p", type=float, default=diff.DEFAULT_SAMPLING["top_p"])
     parser.add_argument("--top-k", type=int, default=diff.DEFAULT_SAMPLING["top_k"])
     parser.add_argument("--enable-thinking", action="store_true")
+    parser.add_argument(
+        "--lightning-mtp-optimistic",
+        dest="lightning_mtp_optimistic",
+        action="store_true",
+        default=False,
+        help=(
+            "Run Lightning-MLX serve with --mtp-optimistic. Default: disabled, "
+            "matching the source qwen3.6 serve preset; raw lightning-mlx bench "
+            "uses optimistic explicitly."
+        ),
+    )
+    parser.add_argument(
+        "--no-lightning-mtp-optimistic",
+        dest="lightning_mtp_optimistic",
+        action="store_false",
+        help="Run Lightning-MLX without --mtp-optimistic.",
+    )
+    parser.add_argument(
+        "--lightning-enable-thinking",
+        dest="lightning_enable_thinking",
+        action="store_true",
+        default=True,
+        help="Keep thinking enabled for Lightning-MLX serve. Default follows its Qwen3.6 preset.",
+    )
+    parser.add_argument(
+        "--lightning-disable-thinking",
+        dest="lightning_enable_thinking",
+        action="store_false",
+        help="Pass --disable-thinking to the Lightning-MLX prompt-suite adapter.",
+    )
+    parser.add_argument(
+        "--lightning-mtp-draft-temperature",
+        type=float,
+        default=0.5,
+        help="Lightning-MLX --mtp-draft-temperature. Default follows its Qwen3.6 preset.",
+    )
+    parser.add_argument(
+        "--lightning-ngram-auto-disable-mtp-threshold",
+        type=float,
+        default=0.85,
+        help="Lightning-MLX n-gram auto-disable MTP threshold.",
+    )
+    parser.add_argument(
+        "--lightning-ngram-auto-disable-min-ngram",
+        type=float,
+        default=0.50,
+        help="Lightning-MLX n-gram auto-disable minimum n-gram threshold.",
+    )
     parser.add_argument("--ax-python", type=Path, default=Path(sys.executable))
     parser.add_argument(
         "--mtplx-python",

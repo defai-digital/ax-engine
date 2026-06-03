@@ -1,0 +1,14 @@
+{
+  "assistant_text": "**AGI** stands for **Artificial General Intelligence**. It refers to a hypothetical class of AI systems that can understand, learn, reason, and apply knowledge across a wide range of tasks at a level comparable to (or exceeding) human cognitive abilities.\n\n### \ud83d\udd11 Key Differences from Today's AI\n- **Narrow AI (ANI)**: What we have today. Highly capable but limited to specific tasks (e.g., image recognition, language translation, playing chess, or generating text). It doesn't truly \"understand\" context or transfer learning across domains.\n- **AGI**: Would possess **generalization**, **autonomy**, and **human-like reasoning**. It could learn new skills rapidly, adapt to unfamiliar situations, use common sense, and transfer knowledge between completely unrelated fields.\n\n### \ud83e\udde0 Core Characteristics AGI Would Need\n- **Cross-domain learning**: Apply insights from one area to solve problems in another.\n- **Goal setting & planning**: Formulate strategies and adjust them dynamically without human prompting.\n- **Contextual & common-sense reasoning**: Handle ambiguity, nuance, and real-world constraints.\n- **Continuous self-improvement**: Learn from experience and refine its own capabilities over time.\n\n### \ud83d\udccd Current Status\nAGI **does not yet exist**. All current AI systems, including large language models like me, are advanced forms of narrow AI. They excel at pattern recognition and statistical prediction within their training domains but lack true understanding, reasoning, or autonomous goal-directed behavior.\n\nThe timeline for achieving AGI is highly debated. Some researchers believe it could emerge in the next few decades; others argue it may require breakthroughs in neuroscience, reasoning, or system architecture that are still theoretical.\n\n### \u2696\ufe0f Why It Matters\n- **Potential benefits**: Accelerate scientific discovery, solve complex global challenges (climate, disease, energy), and automate complex cognitive labor.\n- **Major challenges**: The **alignment problem** (ensuring AGI's goals match human values), safety/control, economic disruption, and ethical governance.\n\nIf you're curious about how close we are, the technical hurdles, or the debate around AGI safety vs. capability, just let me know!",
+  "chat_path": "/v1/chat/completions",
+  "corruption_reasons": [],
+  "model_id": "local",
+  "model_visible": true,
+  "observed_models": [
+    "local",
+    "qwen3.6-27b"
+  ],
+  "ok": true,
+  "openwebui_base_url": "http://127.0.0.1:19128",
+  "schema": "ax.openwebui_e2e.v1"
+}
