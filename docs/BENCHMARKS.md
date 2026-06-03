@@ -30,8 +30,7 @@ host, model, sampling policy, and artifact schema are explicit.
 | Does the non-MLX delegated route still behave correctly? | llama.cpp manifests through `ax-engine-bench` | Delegated route-contract evidence only |
 | Does upstream `mlx-lm` delegated text compatibility still behave correctly? | Explicit `mlx_lm_delegated` checks through SDK/server/CLI surfaces | Delegated route-contract evidence only |
 | Which AX runtime path is best for a product endpoint on this host? | `scripts/bench_ax_engine_three_modes.py` against already-running AX servers | End-to-end AX API latency by mode; not raw model throughput |
-| How does AX Engine MTP compare against MTPLX and Lightning MLX on real prompt suites? | `scripts/bench_qwen36_mtp_fair.py` | `ax.qwen36_mtp_fair.v1` artifact with per-engine decode tok/s and MTP accept rate |
-| Does layering n-gram prompt-lookup before MTP help Lightning MLX? | `scripts/bench_qwen36_mtp_fair.py --lightning-ngram` | Same artifact; adds `lightning_mtp_ngram` engine with both MTP and n-gram accept rates |
+| How do all five MTP engines compare (MTPLX, Lightning MTP, Lightning MTP+n-gram, AX MTP, AX MTP+n-gram)? | `scripts/bench_qwen36_mtp_fair.py` | `ax.qwen36_mtp_fair.v1` artifact with per-engine decode tok/s, MTP accept rate, and n-gram accept rate |
 | What are the prefill rates and TTFT across MTP engines? | `scripts/bench_mtp_prefill_ttft_report.py --result-dir <fair-output-dir>` | `ax.mtp_prefill_ttft_report.v1` artifact with per-engine prefill tok/s and TTFT ms; generates `prefill-tok-s.svg`, `ttft-ms.svg`, and `prefill-ttft-report.md` |
 
 Do not merge these rows into one unlabeled throughput table. Repo-owned
@@ -77,30 +76,41 @@ use a larger corpus with a published prompt-mix table. See
 ## Cross-Engine MTP Fair Comparison
 
 Use the fair benchmark when the question is how AX Engine MTP throughput and acceptance
-compares against MTPLX and Lightning MLX on the same real prompt suites:
+compares against MTPLX and Lightning MLX on the same real prompt suites.
+
+> **Lightning-MLX version:** v0.7.0 exhibited severe decode instability (0.2–45 tok/s
+> variance within a single suite run) and is not suitable for benchmarking. Use v0.6.32
+> (`git -C .internal/reference/lightning-mlx checkout v0.6.32`), which is the default in
+> this repo. The `--lightning-source` flag points to `.internal/reference/lightning-mlx`.
+
+Pass `--engines` (vendor names: `mtplx`, `lightning`, `ax`) and `--modes` (`mtp`, `mtp-ngram`)
+to select what to run. The script resolves the combination against an internal support matrix and
+skips any vendor/mode pair not yet implemented (e.g. MTPLX does not support mtp-ngram yet).
+By default all vendors and all modes are included.
 
 ```text
+# Full five-engine comparison (default)
 python3 scripts/bench_qwen36_mtp_fair.py \
   --models 27b-4bit 35b-a3b-4bit \
   --suites flappy long_code \
   --output-dir benchmarks/results/mtp-fair/$(date +%F)-qwen36-fair
-```
 
-To add Lightning MLX with layered MTP+n-gram as a fourth engine:
-
-```text
+# Lightning and AX only, both modes
 python3 scripts/bench_qwen36_mtp_fair.py \
-  --lightning-ngram \
-  --output-dir benchmarks/results/mtp-fair/$(date +%F)-qwen36-fair-ngram
+  --engines lightning ax \
+  --models 27b-4bit \
+  --suites flappy long_code \
+  --output-dir benchmarks/results/mtp-fair/$(date +%F)-qwen36-fair-no-mtplx
+
+# MTP-only across all vendors (no n-gram)
+python3 scripts/bench_qwen36_mtp_fair.py \
+  --modes mtp \
+  --output-dir benchmarks/results/mtp-fair/$(date +%F)-qwen36-fair-mtp-only
 ```
 
-The `--lightning-ngram` flag adds `lightning_mtp_ngram` to the engine list. It runs
-lightning-mlx with n-gram prompt-lookup drafting layered before the MTP head using the
-production preset: K=6 drafts, min-occurrences=2, greedy accept mode, hybrid MTP tail
-(one MTP head draft appended when n-gram hits), `--ngram-everywhere` (required since
-`--no-thinking` suppresses `<think>` blocks, which would otherwise gate n-gram to
-zero drafts), self-tune enabled with a 0.30 threshold, and auto-disable off
-(`--ngram-auto-disable-mtp-threshold 0.0`) for clean benchmark coverage.
+`mtp-ngram` for lightning runs lightning-mlx with n-gram prompt-lookup drafting layered before
+the MTP head: K=6 drafts, min-occurrences=2, greedy accept mode, hybrid MTP tail,
+`--ngram-everywhere`, self-tune threshold 0.30, auto-disable off.
 
 The output artifact uses schema `ax.qwen36_mtp_fair.v1`. It records per-engine
 decode tok/s and MTP accept rate for all engines. For `lightning_mtp_ngram`

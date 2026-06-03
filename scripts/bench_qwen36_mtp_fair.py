@@ -37,12 +37,12 @@ HF_CACHE = Path(
 )
 ENGINE_LABELS = {
     "mtplx": "MTPLX 0.3.7",
-    "lightning_mlx": "Lightning v0.7.0",
-    "lightning_mtp_ngram": "Lightning+ng v0.7.0",
+    "lightning_mlx": "Lightning v0.6.32",
+    "lightning_mtp_ngram": "Lightning+ng v0.6.32",
     "ax_engine": "AX Engine v5.1.6",
     "ax_engine_ngram": "AX+ngram v5.1.6",
 }
-VERSIONS_FOOTNOTE = "MTPLX 0.3.7 · Lightning-MLX 0.7.0 · AX Engine v5.1.6"
+VERSIONS_FOOTNOTE = "MTPLX 0.3.7 · Lightning-MLX 0.6.32 · AX Engine v5.1.6"
 ENGINE_COLORS = {
     "mtplx": "#14532d",
     "lightning_mlx": "#7c3aed",
@@ -57,6 +57,42 @@ ENGINE_ORDER = [
     "ax_engine",
     "ax_engine_ngram",
 ]
+
+# User-facing engine vendor names for --engines
+ENGINE_VENDORS = ["mtplx", "lightning", "ax"]
+# User-facing decode mode names for --modes
+ENGINE_MODES = ["mtp", "mtp-ngram"]
+# Maps (vendor, mode) -> internal engine key, or None if not yet supported.
+# None entries are skipped at runtime with a warning; update this matrix
+# when a vendor adds support for a new mode.
+SUPPORT_MATRIX: dict[tuple[str, str], str | None] = {
+    ("mtplx",     "mtp"):      "mtplx",
+    ("mtplx",     "mtp-ngram"): None,           # not supported yet
+    ("lightning", "mtp"):      "lightning_mlx",
+    ("lightning", "mtp-ngram"): "lightning_mtp_ngram",
+    ("ax",        "mtp"):      "ax_engine",
+    ("ax",        "mtp-ngram"): "ax_engine_ngram",
+}
+
+
+def resolve_engines(vendors: list[str], modes: list[str]) -> list[str]:
+    """Return ordered internal engine keys for the requested vendor × mode combos.
+
+    Unsupported combinations (None in SUPPORT_MATRIX) are skipped with a warning.
+    """
+    keys: list[str] = []
+    for vendor in vendors:
+        for mode in modes:
+            key = SUPPORT_MATRIX.get((vendor, mode))
+            if key is None:
+                print(
+                    f"[skip] {vendor} does not support {mode} mode yet — "
+                    "update SUPPORT_MATRIX when it does",
+                    file=sys.stderr,
+                )
+            elif key not in keys:
+                keys.append(key)
+    return sorted(keys, key=lambda k: ENGINE_ORDER.index(k))
 
 
 @dataclass(frozen=True)
@@ -1258,20 +1294,19 @@ def parse_args() -> argparse.Namespace:
         choices=sorted(QWEN36_PROFILES),
         default=sorted(QWEN36_PROFILES),
     )
-    _default_engines = [e for e in ENGINE_ORDER if e != "lightning_mtp_ngram"]
     parser.add_argument(
-        "--engines", nargs="+", choices=ENGINE_ORDER, default=_default_engines
+        "--engines",
+        nargs="+",
+        choices=ENGINE_VENDORS,
+        default=list(ENGINE_VENDORS),
+        help="Engine vendors to include. Default: all (mtplx lightning ax).",
     )
     parser.add_argument(
-        "--lightning-ngram",
-        action="store_true",
-        default=False,
-        help=(
-            "Add lightning_mtp_ngram to the engine list. Runs lightning-mlx with "
-            "MTP + n-gram (prompt-lookup) layered before MTP, using the production "
-            "preset: K=6, min_occ=2, greedy accept, hybrid MTP tail, everywhere gate. "
-            "Equivalent to --engines ... lightning_mtp_ngram."
-        ),
+        "--modes",
+        nargs="+",
+        choices=ENGINE_MODES,
+        default=list(ENGINE_MODES),
+        help="Decode modes to include. Default: all (mtp mtp-ngram).",
     )
     parser.add_argument("--suites", nargs="+", default=["flappy", "long_code"])
     parser.add_argument("--suites-dir", type=Path, default=DEFAULT_SUITES_DIR)
@@ -1340,12 +1375,15 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
-    if args.lightning_ngram and "lightning_mtp_ngram" not in args.engines:
-        args.engines = list(args.engines) + ["lightning_mtp_ngram"]
     args.output_dir = (
         args.output_dir
         or DEFAULT_OUTPUT_BASE / f"{date.today().isoformat()}-qwen36-fair"
     )
+    # Resolve vendor × mode combinations into ordered internal engine keys.
+    args.engines = resolve_engines(args.engines, args.modes)
+    if not args.engines:
+        print("No supported engine/mode combinations selected — nothing to run.", file=sys.stderr)
+        return 1
     if args.warmup_repetitions != 1 and any(
         e in args.engines for e in ("ax_engine", "ax_engine_ngram")
     ):

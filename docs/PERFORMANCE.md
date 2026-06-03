@@ -325,12 +325,13 @@ python3 scripts/prepare_qwen36_mtp_sidecar.py --model 27b
 python3 scripts/prepare_qwen36_mtp_sidecar.py --model 35b
 ```
 
-Run the three-engine fair comparison at native depth:
+Run the full five-engine fair comparison at native depth:
 
 ```bash
 python3 scripts/bench_qwen36_mtp_fair.py \
+  --engines mtplx lightning ax \
+  --modes mtp mtp-ngram \
   --models 27b-4bit 35b-a3b-4bit \
-  --engines mtplx ax_engine lightning_mlx \
   --suites flappy long_code python_modules_long \
   --depth-policy native \
   --max-tokens 1000 \

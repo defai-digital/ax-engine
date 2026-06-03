@@ -32,12 +32,15 @@ bench_qwen36_mtp_fair.py               ←  cross-engine MTP comparison
   Answers:  "How does AX Engine MTP compare against MTPLX / Lightning MLX?"
 ```
 
-This tool runs MTPLX, Lightning MLX (optionally with layered MTP+n-gram), and AX
-Engine against the same real prompt suites with matched warmup, repetitions, cooldown,
-and sampling. Its artifacts record per-engine decode throughput and MTP (and n-gram)
-accept rates, but they are cross-engine comparison evidence, not repo-owned MLX
-throughput claims. Do not cite `bench_qwen36_mtp_fair.py` rows as `mlx_lm.benchmark`
-baseline comparisons; the two evidence types are separate.
+This tool runs MTPLX, Lightning MLX, and AX Engine against the same real prompt suites
+with matched warmup, repetitions, cooldown, and sampling. Pass `--engines` (vendor names:
+`mtplx`, `lightning`, `ax`) and `--modes` (`mtp`, `mtp-ngram`) to select combinations;
+the script resolves each pair against an internal support matrix and skips unsupported
+ones with a warning (e.g. MTPLX does not yet support mtp-ngram). Its artifacts record
+per-engine decode throughput and MTP (and n-gram) accept rates, but they are cross-engine
+comparison evidence, not repo-owned MLX throughput claims. Do not cite
+`bench_qwen36_mtp_fair.py` rows as `mlx_lm.benchmark` baseline comparisons; the two
+evidence types are separate.
 
 ---
 
