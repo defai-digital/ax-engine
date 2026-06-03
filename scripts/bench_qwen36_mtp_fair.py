@@ -37,12 +37,12 @@ HF_CACHE = Path(
 )
 ENGINE_LABELS = {
     "mtplx": "MTPLX 0.3.7",
-    "lightning_mlx": "Lightning v0.6.10",
-    "lightning_mtp_ngram": "Lightning+ng v0.6.10",
-    "ax_engine": "AX Engine v5.1.1",
-    "ax_engine_ngram": "AX+ngram v5.1.1",
+    "lightning_mlx": "Lightning v0.7.0",
+    "lightning_mtp_ngram": "Lightning+ng v0.7.0",
+    "ax_engine": "AX Engine v5.1.6",
+    "ax_engine_ngram": "AX+ngram v5.1.6",
 }
-VERSIONS_FOOTNOTE = "MTPLX 0.3.7 · Lightning-MLX 0.6.10 · AX Engine v5.1.1"
+VERSIONS_FOOTNOTE = "MTPLX 0.3.7 · Lightning-MLX 0.7.0 · AX Engine v5.1.6"
 ENGINE_COLORS = {
     "mtplx": "#14532d",
     "lightning_mlx": "#7c3aed",
