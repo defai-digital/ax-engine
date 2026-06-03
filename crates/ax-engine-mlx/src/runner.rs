@@ -13056,4 +13056,132 @@ mod tests {
         assert!(a.accept_rate_ewma.is_finite());
         assert!(a.mtp_only_accept_rate_ewma.is_finite());
     }
+
+    // ── Source-aware hurt gate tests (ADR-019 Phase 5) ──────────────────
+
+    #[test]
+    fn mtp_ngram_source_hurt_gate_does_not_fire_when_ngram_better_than_mtp() {
+        // n-gram acceptance 80% > MTP acceptance 70% → no hurt.
+        assert!(!mtp_ngram_source_hurt_gate(
+            3,   // ngram_max
+            100, // mtp_drafted
+            70,  // mtp_accepted
+            100, // ngram_drafted
+            80,  // ngram_accepted
+            4,   // min_samples
+            0.02 // margin
+        ));
+    }
+
+    #[test]
+    fn mtp_ngram_source_hurt_gate_fires_when_ngram_worse_than_mtp() {
+        // n-gram acceptance 50% + margin 0.02 < MTP acceptance 80% → hurt.
+        assert!(mtp_ngram_source_hurt_gate(
+            3,   // ngram_max
+            100, // mtp_drafted
+            80,  // mtp_accepted
+            100, // ngram_drafted
+            50,  // ngram_accepted
+            4,   // min_samples
+            0.02 // margin
+        ));
+    }
+
+    #[test]
+    fn mtp_ngram_source_hurt_gate_respects_min_samples() {
+        // Not enough samples → must not fire even when rates are bad.
+        assert!(!mtp_ngram_source_hurt_gate(
+            3, // ngram_max
+            2, // mtp_drafted  (< min_samples=4)
+            0, // mtp_accepted
+            2, // ngram_drafted (< min_samples=4)
+            0, // ngram_accepted
+            4, // min_samples
+            0.02
+        ));
+    }
+
+    #[test]
+    fn mtp_ngram_source_hurt_gate_respects_margin() {
+        // n-gram=79%, MTP=80%, margin=2%. Due to f32 representation, 79/100+0.02
+        // may be slightly < 80/100, so use a clear case: ngram=79%, MTP=80%,
+        // margin=5% → 0.79 + 0.05 = 0.84 > 0.80 → no fire.
+        assert!(!mtp_ngram_source_hurt_gate(
+            3,   // ngram_max
+            100, // mtp_drafted
+            80,  // mtp_accepted  (rate=0.80)
+            100, // ngram_drafted
+            79,  // ngram_accepted (rate=0.79)
+            4,   // min_samples
+            0.05 // margin (0.79 + 0.05 = 0.84, not < 0.80)
+        ));
+        // But with a small margin it should fire.
+        assert!(mtp_ngram_source_hurt_gate(
+            3, 100, 80, 100, 50, 4, 0.02 // 0.50 + 0.02 = 0.52 < 0.80
+        ));
+    }
+
+    #[test]
+    fn mtp_ngram_source_hurt_gate_returns_false_when_ngram_max_zero() {
+        // ngram_max=0 → no gate regardless of counters.
+        assert!(!mtp_ngram_source_hurt_gate(
+            0,    // ngram_max
+            1000, // mtp_drafted
+            999,  // mtp_accepted
+            1000, // ngram_drafted
+            1,    // ngram_accepted (very bad)
+            4,    // min_samples
+            0.02
+        ));
+    }
+
+    // ── MtpDraftMode env knob test ──────────────────────────────────────
+
+    #[test]
+    fn mtp_draft_mode_default_is_greedy() {
+        // Without the env var, the default must be Greedy.
+        // NOTE: OnceLock caches on first call; if a prior test already set
+        // the env var in this process, the cached value persists. We only
+        // verify the type is constructible and defaults to Greedy.
+        let mode = crate::mtp::MtpDraftMode::default();
+        assert_eq!(mode, crate::mtp::MtpDraftMode::Greedy);
+    }
+
+    // ── MtpDraftFilter identity test ────────────────────────────────────
+
+    #[test]
+    fn mtp_draft_filter_identity_means_no_filter() {
+        let f = MtpDraftFilter::IDENTITY;
+        assert_eq!(f.top_p, 1.0);
+        assert_eq!(f.top_k, 0);
+    }
+
+    // ── HurtGateMode default test ───────────────────────────────────────
+
+    #[test]
+    fn hurt_gate_mode_default_is_source_aware() {
+        let mode = HurtGateMode::default();
+        assert_eq!(mode, HurtGateMode::SourceAware);
+    }
+
+    // ── New telemetry fields merge correctly ────────────────────────────
+
+    #[test]
+    fn mtp_telemetry_merge_from_combines_new_hurt_gate_fields() {
+        let mut a = MtpTelemetry {
+            ngram_source_hurt_gated_steps: 10,
+            ngram_legacy_hurt_gated_steps: 5,
+            ..MtpTelemetry::default()
+        };
+
+        let b = MtpTelemetry {
+            ngram_source_hurt_gated_steps: 7,
+            ngram_legacy_hurt_gated_steps: 3,
+            ..MtpTelemetry::default()
+        };
+
+        a.merge_from(b);
+        assert_eq!(a.ngram_source_hurt_gated_steps, 17);
+        assert_eq!(a.ngram_legacy_hurt_gated_steps, 8);
+    }
 }
