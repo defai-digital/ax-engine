@@ -24,3 +24,4 @@ benchmarks/results/mlx-inference/*-rerun/
 benchmarks/results/**/*.pid
 benchmarks/results/**/rust_sustained.txt.err
 benchmarks/results/**/logs/*.log
+python/ax_engine.dylibs/mlx.metallib
