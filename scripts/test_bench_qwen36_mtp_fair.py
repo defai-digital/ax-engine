@@ -249,12 +249,12 @@ class Qwen36MtpFairTests(unittest.TestCase):
                     output_path=output,
                     model_dir=root / "model",
                     config=config,
-                    mtp_optimistic=True,
+                    mtp_optimistic=False,
                     mtp_draft_temperature=0.5,
                 )
 
         cmd = run_subprocess.call_args.args[0]
-        self.assertIn("--mtp-optimistic", cmd)
+        self.assertNotIn("--mtp-optimistic", cmd)
         self.assertEqual(cmd[cmd.index("--mtp-draft-temperature") + 1], "0.5")
 
     def test_error_artifact_keeps_table_row(self) -> None:
@@ -480,7 +480,10 @@ def fake_mtplx_artifact() -> dict:
 def fake_chart_summary() -> dict:
     return {
         "schema": "ax.qwen36_mtp_fair.v1",
-        "contract": {"engines": ["mtplx", "ax_engine"], "suites": ["flappy", "long_code"]},
+        "contract": {
+            "engines": ["mtplx", "ax_engine"],
+            "suites": ["flappy", "long_code"],
+        },
         "rows": [
             {
                 "model": "27b-4bit",
@@ -521,7 +524,7 @@ def fake_chart_summary() -> dict:
                         "accept_rate_samples": [0.78, 0.80, 0.82],
                     },
                 },
-            }
+            },
         ],
     }
 
@@ -582,7 +585,7 @@ def fake_prefill_report() -> dict:
                         "ttft_ms_samples": [34.0, 36.0, 38.0],
                     },
                 },
-            }
+            },
         ],
     }
 

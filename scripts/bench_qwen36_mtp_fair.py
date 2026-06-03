@@ -37,12 +37,12 @@ HF_CACHE = Path(
 )
 ENGINE_LABELS = {
     "mtplx": "MTPLX 0.3.7",
-    "lightning_mlx": "Lightning v0.6.32",
-    "lightning_mtp_ngram": "Lightning+ng v0.6.32",
+    "lightning_mlx": "Lightning v0.7.0",
+    "lightning_mtp_ngram": "Lightning+ng v0.7.0",
     "ax_engine": "AX Engine v5.1.6",
     "ax_engine_ngram": "AX+ngram v5.1.6",
 }
-VERSIONS_FOOTNOTE = "MTPLX 0.3.7 · Lightning-MLX 0.6.32 · AX Engine v5.1.6"
+VERSIONS_FOOTNOTE = "MTPLX 0.3.7 · Lightning-MLX 0.7.0 · AX Engine v5.1.6"
 ENGINE_COLORS = {
     "mtplx": "#14532d",
     "lightning_mlx": "#7c3aed",
@@ -66,12 +66,12 @@ ENGINE_MODES = ["mtp", "mtp-ngram"]
 # None entries are skipped at runtime with a warning; update this matrix
 # when a vendor adds support for a new mode.
 SUPPORT_MATRIX: dict[tuple[str, str], str | None] = {
-    ("mtplx",     "mtp"):      "mtplx",
-    ("mtplx",     "mtp-ngram"): None,           # not supported yet
-    ("lightning", "mtp"):      "lightning_mlx",
+    ("mtplx", "mtp"): "mtplx",
+    ("mtplx", "mtp-ngram"): None,  # not supported yet
+    ("lightning", "mtp"): "lightning_mlx",
     ("lightning", "mtp-ngram"): "lightning_mtp_ngram",
-    ("ax",        "mtp"):      "ax_engine",
-    ("ax",        "mtp-ngram"): "ax_engine_ngram",
+    ("ax", "mtp"): "ax_engine",
+    ("ax", "mtp-ngram"): "ax_engine_ngram",
 }
 
 
@@ -485,6 +485,7 @@ def run_engine_suite(
                 model_dir=model_dir,
                 config=config,
                 port=args.base_port + 1,
+                mtp_optimistic=False,
                 inter_case_cooldown_s=args.inter_case_cooldown,
             )
         if engine == "lightning_mtp_ngram":
@@ -498,6 +499,7 @@ def run_engine_suite(
                 config=config,
                 port=args.base_port + 1,
                 enable_ngram=True,
+                mtp_optimistic=False,
                 inter_case_cooldown_s=args.inter_case_cooldown,
             )
         raise ValueError(f"unknown engine: {engine}")
@@ -532,7 +534,9 @@ def numeric_samples(value: Any) -> list[float]:
 
 
 def metric_samples_from_summary(artifact: dict[str, Any], metric: str) -> list[float]:
-    summary = artifact.get("summary") if isinstance(artifact.get("summary"), dict) else {}
+    summary = (
+        artifact.get("summary") if isinstance(artifact.get("summary"), dict) else {}
+    )
     values = numeric_samples(summary.get(metric))
     if values:
         return values
@@ -559,7 +563,9 @@ def depth_accept_rate(run: dict[str, Any]) -> float | None:
     return accepted / drafted if drafted else None
 
 
-def accept_rate_samples_for_engine(engine: str, artifact: dict[str, Any]) -> list[float]:
+def accept_rate_samples_for_engine(
+    engine: str, artifact: dict[str, Any]
+) -> list[float]:
     samples: list[float] = []
     if engine in ("ax_engine", "ax_engine_ngram"):
         for row in artifact.get("results", []):
@@ -569,7 +575,9 @@ def accept_rate_samples_for_engine(engine: str, artifact: dict[str, Any]) -> lis
                 rate
                 for trial in row.get("trials", [])
                 if isinstance(trial.get("ngram_acceleration_telemetry"), dict)
-                for rate in [telemetry_accept_rate(trial["ngram_acceleration_telemetry"])]
+                for rate in [
+                    telemetry_accept_rate(trial["ngram_acceleration_telemetry"])
+                ]
                 if rate is not None
             ]
             if row_samples:
@@ -590,7 +598,9 @@ def accept_rate_samples_for_engine(engine: str, artifact: dict[str, Any]) -> lis
             if case_samples:
                 samples.extend(case_samples)
             else:
-                samples.extend(numeric_samples((case.get("summary") or {}).get("accept_rate")))
+                samples.extend(
+                    numeric_samples((case.get("summary") or {}).get("accept_rate"))
+                )
     elif engine in ("lightning_mlx", "lightning_mtp_ngram"):
         for case in artifact.get("results", []):
             case_samples = [
@@ -601,7 +611,9 @@ def accept_rate_samples_for_engine(engine: str, artifact: dict[str, Any]) -> lis
             if case_samples:
                 samples.extend(case_samples)
             else:
-                samples.extend(numeric_samples((case.get("summary") or {}).get("accept_rate")))
+                samples.extend(
+                    numeric_samples((case.get("summary") or {}).get("accept_rate"))
+                )
     return samples
 
 
@@ -659,7 +671,9 @@ def summarize_engine_artifact(engine: str, artifact_path: Path) -> dict[str, Any
     ngram_hit_steps = sum(
         int(case.get("ngram_hit_steps", 0) or 0) for case in cases.values()
     )
-    decode_samples = metric_samples_from_summary(artifact, "decode_tok_s") or decode_values
+    decode_samples = (
+        metric_samples_from_summary(artifact, "decode_tok_s") or decode_values
+    )
     accept_samples = accept_rate_samples_for_engine(engine, artifact) or accept_values
     status = "ok" if decode_values else "no_valid_runs"
     if (
@@ -1058,7 +1072,9 @@ def write_mtp_box_whisker_svg(
     all_medians: list[float] = []
     for group_index, group in enumerate(groups):
         for engine in engines:
-            values = [float(v) for v in group["values"].get(engine, []) if v is not None]
+            values = [
+                float(v) for v in group["values"].get(engine, []) if v is not None
+            ]
             if not values:
                 continue
             stats = box_stats(values)
@@ -1066,9 +1082,15 @@ def write_mtp_box_whisker_svg(
             all_values.extend(values)
             all_medians.append(stats.median)
 
-    max_value = axis_max if axis_max is not None else nice_axis_ceiling(max(all_values or [1.0]) * 1.08)
+    max_value = (
+        axis_max
+        if axis_max is not None
+        else nice_axis_ceiling(max(all_values or [1.0]) * 1.08)
+    )
     best_value = (
-        min(all_medians) if lower_is_better and all_medians else max(all_medians or [0.0])
+        min(all_medians)
+        if lower_is_better and all_medians
+        else max(all_medians or [0.0])
     )
 
     def fy(value: float) -> float:
@@ -1135,7 +1157,7 @@ def write_mtp_box_whisker_svg(
         parts.append(
             f'<text x="{left - 8}" y="{y + 3:.1f}" text-anchor="end" '
             f'font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#6b7280">'
-            f'{axis_label(value, unit)}</text>'
+            f"{axis_label(value, unit)}</text>"
         )
 
     if best_value > 0:
@@ -1149,7 +1171,7 @@ def write_mtp_box_whisker_svg(
             f'text-anchor="start" font-family="Inter,Segoe UI,Arial,sans-serif" '
             f'font-size="11" font-weight="700" fill="#dc2626" '
             f'data-label="{html.escape(best_line_label)}">'
-            f'{html.escape(best_label)}</text>'
+            f"{html.escape(best_label)}</text>"
         )
 
     dot_slots = 9
@@ -1203,7 +1225,7 @@ def write_mtp_box_whisker_svg(
                     f'text-anchor="start" font-family="Inter,Segoe UI,Arial,sans-serif" '
                     f'font-size="11" font-weight="700" fill="#111827" '
                     f'stroke="#ffffff" stroke-width="3" paint-order="stroke">'
-                    f'{html.escape(point_label(stats.median, unit))}</text>',
+                    f"{html.escape(point_label(stats.median, unit))}</text>",
                 ]
             )
 
@@ -1220,7 +1242,7 @@ def write_mtp_box_whisker_svg(
         parts.append(
             f'<text x="{legend_x + 14:.1f}" y="{legend_y}" '
             f'font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#374151">'
-            f'{html.escape(label)}</text>'
+            f"{html.escape(label)}</text>"
         )
         legend_x += legend_step
 
@@ -1229,10 +1251,10 @@ def write_mtp_box_whisker_svg(
 
 
 def write_decode_svg(path: Path, summary: dict[str, Any]) -> None:
-    engines = [engine for engine in ENGINE_ORDER if engine in summary["contract"]["engines"]]
-    groups = model_combined_suite_chart_groups(
-        summary["rows"], engines, "decode_tok_s"
-    )
+    engines = [
+        engine for engine in ENGINE_ORDER if engine in summary["contract"]["engines"]
+    ]
+    groups = model_combined_suite_chart_groups(summary["rows"], engines, "decode_tok_s")
     write_mtp_box_whisker_svg(
         path,
         title="Qwen3.6 MTP fair decode throughput",
@@ -1252,7 +1274,9 @@ def write_decode_model_svg(
     rows = [row for row in summary["rows"] if row["model"] == model_key]
     if not rows:
         return
-    engines = [engine for engine in ENGINE_ORDER if engine in summary["contract"]["engines"]]
+    engines = [
+        engine for engine in ENGINE_ORDER if engine in summary["contract"]["engines"]
+    ]
     write_mtp_box_whisker_svg(
         path,
         title=f"{rows[0]['model_label']} MTP decode throughput",
@@ -1270,16 +1294,16 @@ def write_accept_model_svg(path: Path, summary: dict[str, Any], model_key: str) 
     rows = [row for row in summary["rows"] if row["model"] == model_key]
     if not rows:
         return
-    engines = [engine for engine in ENGINE_ORDER if engine in summary["contract"]["engines"]]
+    engines = [
+        engine for engine in ENGINE_ORDER if engine in summary["contract"]["engines"]
+    ]
     write_mtp_box_whisker_svg(
         path,
         title=f"{rows[0]['model_label']} MTP accept rate",
         subtitle="All suites combined | accepted/drafted | box=IQR | dots=runs",
         unit="%",
         direction_label="Higher is better",
-        groups=combined_suite_chart_group(
-            rows, engines, "accept_rate", scale=100.0
-        ),
+        groups=combined_suite_chart_group(rows, engines, "accept_rate", scale=100.0),
         engines=engines,
         axis_max=100.0,
         footnote=VERSIONS_FOOTNOTE,
@@ -1382,7 +1406,10 @@ def main() -> int:
     # Resolve vendor × mode combinations into ordered internal engine keys.
     args.engines = resolve_engines(args.engines, args.modes)
     if not args.engines:
-        print("No supported engine/mode combinations selected — nothing to run.", file=sys.stderr)
+        print(
+            "No supported engine/mode combinations selected — nothing to run.",
+            file=sys.stderr,
+        )
         return 1
     if args.warmup_repetitions != 1 and any(
         e in args.engines for e in ("ax_engine", "ax_engine_ngram")

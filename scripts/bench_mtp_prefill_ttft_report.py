@@ -31,12 +31,12 @@ from typing import Any
 
 ENGINE_LABELS = {
     "mtplx": "MTPLX 0.3.7",
-    "lightning_mlx": "Lightning v0.6.32",
-    "lightning_mtp_ngram": "Lightning+ng v0.6.32",
+    "lightning_mlx": "Lightning v0.7.0",
+    "lightning_mtp_ngram": "Lightning+ng v0.7.0",
     "ax_engine": "AX Engine v5.1.6",
     "ax_engine_ngram": "AX+ngram v5.1.6",
 }
-VERSIONS_FOOTNOTE = "MTPLX 0.3.7 · Lightning-MLX 0.6.32 · AX Engine v5.1.6"
+VERSIONS_FOOTNOTE = "MTPLX 0.3.7 · Lightning-MLX 0.7.0 · AX Engine v5.1.6"
 ENGINE_COLORS = {
     "mtplx": "#14532d",
     "lightning_mlx": "#7c3aed",
@@ -110,8 +110,12 @@ def numeric_samples(value: Any) -> list[float]:
 # ---------------------------------------------------------------------------
 
 
-def _ax_case_prefill_ttft_samples(row: dict[str, Any]) -> tuple[list[float], list[float]]:
-    return numeric_samples(row.get("prefill_tok_s")), numeric_samples(row.get("ttft_ms"))
+def _ax_case_prefill_ttft_samples(
+    row: dict[str, Any],
+) -> tuple[list[float], list[float]]:
+    return numeric_samples(row.get("prefill_tok_s")), numeric_samples(
+        row.get("ttft_ms")
+    )
 
 
 def _ax_case_prefill_ttft(row: dict[str, Any]) -> tuple[float | None, float | None]:
@@ -133,7 +137,9 @@ def _mtplx_case_prefill_ttft_samples(
     ]
     if not prefill_times:
         return [], []
-    return [float(prompt_tokens) / t for t in prefill_times], [t * 1000 for t in prefill_times]
+    return [float(prompt_tokens) / t for t in prefill_times], [
+        t * 1000 for t in prefill_times
+    ]
 
 
 def _mtplx_case_prefill_ttft(case: dict[str, Any]) -> tuple[float | None, float | None]:
@@ -165,7 +171,9 @@ def _lightning_case_prefill_ttft_samples(
     return prefill_values, [t * 1000 for t in ttft_values]
 
 
-def _lightning_case_prefill_ttft(case: dict[str, Any]) -> tuple[float | None, float | None]:
+def _lightning_case_prefill_ttft(
+    case: dict[str, Any],
+) -> tuple[float | None, float | None]:
     prefill_values, ttft_values = _lightning_case_prefill_ttft_samples(case)
     return median_or_none(prefill_values), median_or_none(ttft_values)
 
@@ -254,7 +262,9 @@ def engine_prefill_ttft(engine: str, artifact_path: Path) -> dict[str, Any]:
         "prefill_tok_s_samples": prefill_samples or prefill_values,
         "ttft_ms_samples": ttft_samples or ttft_values,
         "case_count": len(rows),
-        "prefill_note": "approx_via_ttft" if engine in LIGHTNING_ENGINES else "measured",
+        "prefill_note": "approx_via_ttft"
+        if engine in LIGHTNING_ENGINES
+        else "measured",
     }
 
 
@@ -534,7 +544,9 @@ def _box_whisker_chart(
         else _nice_axis_ceiling(max(all_values or [1.0]) * 1.08)
     )
     best_value = (
-        min(all_medians) if lower_is_better and all_medians else max(all_medians or [0.0])
+        min(all_medians)
+        if lower_is_better and all_medians
+        else max(all_medians or [0.0])
     )
 
     def fy(value: float) -> float:
@@ -598,7 +610,7 @@ def _box_whisker_chart(
         parts.append(
             f'<text x="{left - 8}" y="{y + 3:.1f}" text-anchor="end" '
             f'font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#6b7280">'
-            f'{_axis_label(value, unit)}</text>'
+            f"{_axis_label(value, unit)}</text>"
         )
     if best_value > 0:
         best_y = fy(best_value)
@@ -612,7 +624,7 @@ def _box_whisker_chart(
             f'text-anchor="start" font-family="Inter,Segoe UI,Arial,sans-serif" '
             f'font-size="11" font-weight="700" fill="#dc2626" '
             f'data-label="{html.escape(best_line_label)}">'
-            f'{html.escape(best_label)}</text>'
+            f"{html.escape(best_label)}</text>"
         )
     dot_slots = 9
     dot_jitter = [
@@ -669,7 +681,7 @@ def _box_whisker_chart(
                     f'text-anchor="start" font-family="Inter,Segoe UI,Arial,sans-serif" '
                     f'font-size="11" font-weight="700" fill="#111827" '
                     f'stroke="#ffffff" stroke-width="3" paint-order="stroke">'
-                    f'{html.escape(_point_label(stats.median, unit))}</text>',
+                    f"{html.escape(_point_label(stats.median, unit))}</text>",
                 ]
             )
     legend_y = height - 18
@@ -686,7 +698,7 @@ def _box_whisker_chart(
         parts.append(
             f'<text x="{legend_x + 14}" y="{legend_y}" '
             f'font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#374151">'
-            f'{html.escape(label)}</text>'
+            f"{html.escape(label)}</text>"
         )
         legend_x += legend_step
     parts.append("</svg>")
@@ -712,7 +724,9 @@ def write_prefill_svg(path: Path, report: dict[str, Any]) -> None:
 
 def write_ttft_svg(path: Path, report: dict[str, Any]) -> None:
     active_engines = [e for e in ENGINE_ORDER if e in report["contract"]["engines"]]
-    groups = _model_combined_suite_chart_groups(report["rows"], active_engines, "ttft_ms")
+    groups = _model_combined_suite_chart_groups(
+        report["rows"], active_engines, "ttft_ms"
+    )
     _box_whisker_chart(
         path,
         title="MTP time-to-first-token (TTFT)",
@@ -856,5 +870,6 @@ if __name__ == "__main__":
         raise SystemExit(main())
     except (FileNotFoundError, ValueError) as exc:
         import sys
+
         print(f"ERROR: {exc}", file=sys.stderr)
         raise SystemExit(1)

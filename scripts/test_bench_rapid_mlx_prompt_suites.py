@@ -11,7 +11,9 @@ from pathlib import Path
 from unittest.mock import patch
 
 SCRIPT_PATH = Path(__file__).with_name("bench_rapid_mlx_prompt_suites.py")
-MODULE_SPEC = importlib.util.spec_from_file_location("bench_rapid_mlx_prompt_suites", SCRIPT_PATH)
+MODULE_SPEC = importlib.util.spec_from_file_location(
+    "bench_rapid_mlx_prompt_suites", SCRIPT_PATH
+)
 assert MODULE_SPEC and MODULE_SPEC.loader
 rapid = importlib.util.module_from_spec(MODULE_SPEC)
 sys.modules["bench_rapid_mlx_prompt_suites"] = rapid
@@ -64,9 +66,12 @@ class RapidMlxPromptSuiteTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            with patch.object(rapid, "wait_until_ready"), patch.object(
-                rapid.subprocess, "Popen", return_value=FakeProcess()
-            ) as popen:
+            with (
+                patch.object(rapid, "wait_until_ready"),
+                patch.object(
+                    rapid.subprocess, "Popen", return_value=FakeProcess()
+                ) as popen,
+            ):
                 rapid.start_server(
                     model="/model",
                     rapid_python=Path("python"),
@@ -79,12 +84,12 @@ class RapidMlxPromptSuiteTests(unittest.TestCase):
                     output_dir=root / "out",
                     lightning_mode=True,
                     enable_ngram=True,
-                    mtp_optimistic=True,
+                    mtp_optimistic=False,
                     mtp_draft_temperature=0.5,
                 )
 
         cmd = popen.call_args.args[0]
-        self.assertIn("--mtp-optimistic", cmd)
+        self.assertNotIn("--mtp-optimistic", cmd)
         self.assertEqual(cmd[cmd.index("--mtp-draft-temperature") + 1], "0.5")
         self.assertIn("--enable-ngram", cmd)
 
