@@ -1311,6 +1311,11 @@ struct MtpTelemetry {
     /// below the MTP-only rate, indicating n-gram is actively hurting (cascade
     /// rejections of MTP tokens when n-gram fails at early positions).
     ngram_hurt_gated_steps: u32,
+    /// Steps gated by the new source-aware hurt gate (ADR-019 D3).
+    ngram_source_hurt_gated_steps: u32,
+    /// Steps gated by the legacy EWMA hurt gate (ADR-018 D3), tracked separately
+    /// for A/B comparison during the transition.
+    ngram_legacy_hurt_gated_steps: u32,
     ngram_auto_disabled_steps: u32,
     ngram_self_tune_disabled_steps: u32,
     ngram_submitted_tokens: u32,
@@ -1630,6 +1635,12 @@ impl MtpTelemetry {
         self.ngram_hurt_gated_steps = self
             .ngram_hurt_gated_steps
             .saturating_add(other.ngram_hurt_gated_steps);
+        self.ngram_source_hurt_gated_steps = self
+            .ngram_source_hurt_gated_steps
+            .saturating_add(other.ngram_source_hurt_gated_steps);
+        self.ngram_legacy_hurt_gated_steps = self
+            .ngram_legacy_hurt_gated_steps
+            .saturating_add(other.ngram_legacy_hurt_gated_steps);
         self.ngram_auto_disabled_steps = self
             .ngram_auto_disabled_steps
             .saturating_add(other.ngram_auto_disabled_steps);
@@ -1734,6 +1745,14 @@ impl MtpTelemetry {
             ),
             ("ax_mtp_ngram_hurt_gated_steps", self.ngram_hurt_gated_steps),
             (
+                "ax_mtp_ngram_source_hurt_gated_steps",
+                self.ngram_source_hurt_gated_steps,
+            ),
+            (
+                "ax_mtp_ngram_legacy_hurt_gated_steps",
+                self.ngram_legacy_hurt_gated_steps,
+            ),
+            (
                 "ax_mtp_ngram_auto_disabled_steps",
                 self.ngram_auto_disabled_steps,
             ),
@@ -1768,6 +1787,24 @@ impl MtpTelemetry {
             "ax_mtp_mtp_only_accept_rate_ewma_samples",
             self.mtp_only_accept_rate_ewma_samples,
         );
+        // ADR-019: emit draft mode and hurt gate mode for A/B audit.
+        decisions.upsert_route_decision(
+            "ax_mtp_draft_mode",
+            match crate::mtp::mtp_draft_mode_from_env() {
+                crate::mtp::MtpDraftMode::Greedy => 0u32,
+                crate::mtp::MtpDraftMode::Stochastic => 1u32,
+            },
+        );
+        decisions.upsert_route_decision(
+            "ax_mtp_hurt_gate_mode",
+            match mtp_ngram_hurt_gate_mode() {
+                HurtGateMode::SourceAware => 0u32,
+                HurtGateMode::LegacyEwma => 1u32,
+            },
+        );
+        // TODO(2026-06-03): observed values exceed 1000 in v0632 artifacts.
+        // See PRD-2026-06-03 F4. accept_rate_ewma is asserted 0..=1 in tests;
+        // emission scale or aggregation path has drifted.
         for (key, value) in entries {
             decisions.upsert_route_decision(key, value);
         }
@@ -6093,6 +6130,7 @@ impl MlxRunner {
                     vocab,
                     sampling,
                     self.mtp_target_softmax_topk,
+                    MtpDraftFilter::IDENTITY,
                     target_prob_workspace,
                 );
                 // Always compute argmax for the correction/bonus fallback.
@@ -6220,18 +6258,19 @@ impl MlxRunner {
                     vocab,
                     sampling,
                     self.mtp_target_softmax_topk,
+                    MtpDraftFilter::IDENTITY,
                     target_prob_workspace,
                 );
                 // Always compute argmax for the correction/bonus fallback.
                 let predicted_arr = Some(argmax(&logits_all, None));
-                let kv_refs = state.cache.collect_eval_refs();
-                let mut targets: Vec<&MlxArray> = Vec::with_capacity(4 + kv_refs.len());
+                let kv_refs2 = state.cache.collect_eval_refs();
+                let mut targets: Vec<&MlxArray> = Vec::with_capacity(4 + kv_refs2.len());
                 targets.push(predicted_arr.as_ref().unwrap());
                 targets.push(&post_norm_all);
                 if let Some(ref ltp) = lazy_target_probs {
                     ltp.push_eval_targets(&mut targets);
                 }
-                targets.extend(kv_refs);
+                targets.extend(kv_refs2);
                 let verify_eval_started = Instant::now();
                 eval(&targets);
                 mtp_timings.verify_eval_wall_us = elapsed_us(verify_eval_started);
@@ -6473,6 +6512,16 @@ impl MlxRunner {
         if ngram_gate.hurt {
             state.mtp_telemetry.ngram_hurt_gated_steps =
                 state.mtp_telemetry.ngram_hurt_gated_steps.saturating_add(1);
+            match mtp_ngram_hurt_gate_mode() {
+                HurtGateMode::SourceAware => {
+                    state.mtp_telemetry.ngram_source_hurt_gated_steps =
+                        state.mtp_telemetry.ngram_source_hurt_gated_steps.saturating_add(1);
+                }
+                HurtGateMode::LegacyEwma => {
+                    state.mtp_telemetry.ngram_legacy_hurt_gated_steps =
+                        state.mtp_telemetry.ngram_legacy_hurt_gated_steps.saturating_add(1);
+                }
+            }
         }
         if ngram_gate.auto_disabled {
             state.mtp_telemetry.ngram_auto_disabled_steps = state
@@ -7079,15 +7128,26 @@ fn mtp_ngram_gate_decision(
     auto_cfg: MtpNgramAutoDisableConfig,
 ) -> MtpNgramGateDecision {
     let saturated = mtp_ngram_saturated_gate(ngram_max, mtp_depth, mtp_only_ewma, mtp_only_samples);
-    let hurt = mtp_ngram_hurt_gate(
-        ngram_max,
-        combined_ewma,
-        combined_samples,
-        mtp_only_ewma,
-        mtp_only_samples,
-        min_samples,
-        hurt_margin,
-    );
+    let hurt = match mtp_ngram_hurt_gate_mode() {
+        HurtGateMode::SourceAware => mtp_ngram_source_hurt_gate(
+            ngram_max,
+            mtp_drafted,
+            mtp_accepted,
+            ngram_drafted,
+            ngram_accepted,
+            min_samples,
+            hurt_margin,
+        ),
+        HurtGateMode::LegacyEwma => mtp_ngram_hurt_gate(
+            ngram_max,
+            combined_ewma,
+            combined_samples,
+            mtp_only_ewma,
+            mtp_only_samples,
+            min_samples,
+            hurt_margin,
+        ),
+    };
     let auto_disabled = mtp_ngram_auto_disable_gate(
         ngram_max,
         mtp_drafted,
@@ -7149,6 +7209,52 @@ fn mtp_ngram_auto_disable_gate(
     let mtp_rate_x1000 = mtp_accepted.saturating_mul(1000) / mtp_drafted.max(1);
     let ngram_rate_x1000 = ngram_accepted.saturating_mul(1000) / ngram_drafted.max(1);
     mtp_rate_x1000 >= cfg.mtp_threshold && ngram_rate_x1000 < cfg.ngram_floor
+}
+
+/// Hurt gate mode selector: legacy EWMA-based or source-aware counters.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+enum HurtGateMode {
+    #[default]
+    SourceAware,
+    LegacyEwma,
+}
+
+fn mtp_ngram_hurt_gate_mode() -> HurtGateMode {
+    static CACHED: std::sync::OnceLock<HurtGateMode> = std::sync::OnceLock::new();
+    *CACHED.get_or_init(|| {
+        match std::env::var("AX_MLX_MTP_NGRAM_HURT_GATE")
+            .unwrap_or_default()
+            .to_ascii_lowercase()
+            .replace('_', "-")
+            .as_str()
+        {
+            "legacy" => HurtGateMode::LegacyEwma,
+            _ => HurtGateMode::SourceAware,
+        }
+    })
+}
+
+/// Source-aware hurt gate: compares per-source n-gram vs MTP acceptance rates
+/// using raw draft/accepted counters rather than EWMA values.
+///
+/// Fires when n-gram per-token acceptance is worse than MTP per-token acceptance
+/// by more than the margin — the exact condition where n-gram is genuinely hurting.
+/// This avoids the selection bias in the legacy EWMA-based gate (see ADR-019).
+fn mtp_ngram_source_hurt_gate(
+    ngram_max: usize,
+    mtp_drafted: u32,
+    mtp_accepted: u32,
+    ngram_drafted: u32,
+    ngram_accepted: u32,
+    min_samples: u32,
+    margin: f32,
+) -> bool {
+    if ngram_max == 0 || ngram_drafted < min_samples || mtp_drafted < min_samples {
+        return false;
+    }
+    let ngram_rate = ngram_accepted as f32 / ngram_drafted.max(1) as f32;
+    let mtp_rate = mtp_accepted as f32 / mtp_drafted.max(1) as f32;
+    ngram_rate + margin < mtp_rate
 }
 
 fn mtp_ngram_pseudo_log_prob(confidence: f32, mode: MtpNgramAcceptanceMode) -> f32 {
@@ -7241,11 +7347,25 @@ impl LazyTargetProbs {
     }
 }
 
+/// Filter parameters passed from the draft path to the target probability
+/// computation so that rejection sampling uses the same distribution on both
+/// sides.  When the draft is greedy, pass `IDENTITY` to keep full-vocab target.
+#[derive(Clone, Copy, Debug)]
+struct MtpDraftFilter {
+    top_p: f32,
+    top_k: u32,
+}
+
+impl MtpDraftFilter {
+    const IDENTITY: Self = Self { top_p: 1.0, top_k: 0 };
+}
+
 /// Build lazy target probabilities for MTP rejection sampling.
 ///
 /// Returns `None` when rejection sampling is not applicable (no log_probs, temperature == 0,
 /// or pending is empty). Callers MUST include the result in the same eval batch as the
 /// verify-pass outputs to avoid a second GPU sync point.
+#[allow(clippy::too_many_arguments)]
 fn compute_mtp_target_probs(
     logits_all: &MlxArray,
     pending: &[u32],
@@ -7253,6 +7373,7 @@ fn compute_mtp_target_probs(
     vocab: i32,
     target_sampling: MlxSamplingParams,
     topk: Option<u32>,
+    draft_filter: MtpDraftFilter,
     workspace: &mut MtpTargetProbWorkspace,
 ) -> Option<LazyTargetProbs> {
     if pending.is_empty()
@@ -7294,6 +7415,44 @@ fn compute_mtp_target_probs(
             indices: astype(&stacked_indices, MlxDtype::Uint32, None),
             probs: stacked_probs,
             k,
+        })
+    } else if draft_filter.top_k > 0 || draft_filter.top_p < 1.0 {
+        // Draft-path filter applied to target probs for rejection-sampling parity.
+        let dk = draft_filter.top_k.min(vocab as u32);
+        let dk_i32 = if dk > 0 { (dk as i32).min(vocab) } else { vocab };
+        let verify_len = pending.len() as i32;
+        let mut all_top_indices = Vec::with_capacity(pending.len());
+        let mut all_top_probs = Vec::with_capacity(pending.len());
+        for row in 0..verify_len {
+            let row_logits = slice(&scaled, &[row, 0], &[row + 1, vocab], &[1, 1], None);
+            let (row_idx, row_probs) = if dk_i32 < vocab {
+                let part = argpartition_axis(&row_logits, -dk_i32, -1, None);
+                let top_idx = slice(&part, &[0, vocab - dk_i32], &[1, vocab], &[1, 1], None);
+                let top_vals = take_along_axis(&row_logits, &top_idx, -1, None);
+                let top_p = softmax(&top_vals, -1, None);
+                (top_idx, top_p)
+            } else {
+                let top_p = softmax(&row_logits, -1, None);
+                let idx = MlxArray::from_raw_data(
+                    (0..vocab).map(|i| i as u32).collect::<Vec<u32>>().as_ptr() as *const u8,
+                    vocab as usize * 4,
+                    &[1, vocab],
+                    MlxDtype::Uint32,
+                );
+                (idx, top_p)
+            };
+            all_top_indices.push(row_idx);
+            all_top_probs.push(row_probs);
+        }
+        let idx_refs: Vec<&MlxArray> = all_top_indices.iter().collect();
+        let prob_refs: Vec<&MlxArray> = all_top_probs.iter().collect();
+        let stacked_indices = stack(&idx_refs, 0, None);
+        let stacked_probs = stack(&prob_refs, 0, None);
+
+        Some(LazyTargetProbs::TopK {
+            indices: astype(&stacked_indices, MlxDtype::Uint32, None),
+            probs: stacked_probs,
+            k: dk.max(1),
         })
     } else {
         let probs = softmax(&scaled, -1, None);
@@ -12737,6 +12896,7 @@ mod tests {
             vocab,
             sampling,
             None,
+            MtpDraftFilter::IDENTITY,
             &mut full_workspace,
         )
         .expect("full should return Some");
@@ -12754,6 +12914,7 @@ mod tests {
             vocab,
             sampling,
             Some(32),
+            MtpDraftFilter::IDENTITY,
             &mut topk_workspace,
         )
         .expect("topk should return Some");
@@ -12823,6 +12984,7 @@ mod tests {
             vocab,
             sampling,
             Some(3),
+            MtpDraftFilter::IDENTITY,
             &mut workspace,
         )
         .expect("topk should return Some");
