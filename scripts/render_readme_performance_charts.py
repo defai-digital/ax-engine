@@ -23,10 +23,10 @@ PROMPT_TOKENS = (128, 512, 2048)
 SERIES = [
     ("llama_cpp_metal", "llama.cpp b9430", "#f97316", "#c2410c"),
     ("mlx_lm", "mlx-lm 0.31.3", "#f2b705", "#9a6a00"),
-    ("ax_engine_mlx", "AX Engine v5.1.6", "#2eaf5f", "#176c37"),
-    ("ax_engine_mlx_ngram_accel", "AX+ngram v5.1.6", "#137a3d", "#0b4f28"),
+    ("ax_engine_mlx", "AX Engine v5.1.8", "#2eaf5f", "#176c37"),
+    ("ax_engine_mlx_ngram_accel", "AX+ngram v5.1.8", "#137a3d", "#0b4f28"),
 ]
-DIRECT_VERSIONS_FOOTNOTE = "llama.cpp b9430 · mlx-lm 0.31.3 · AX Engine v5.1.6"
+DIRECT_VERSIONS_FOOTNOTE = "llama.cpp b9430 · mlx-lm 0.31.3 · AX Engine v5.1.8"
 
 FAMILY_SLUGS: dict[str, list[str]] = {
     "gemma4": [

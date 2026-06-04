@@ -21,6 +21,7 @@ ax-code.json
 benchmarks/results/mlx-inference/*-investigate/
 benchmarks/results/mlx-inference/*-rerun/
 !benchmarks/results/mlx-inference/2026-06-01-ax-direct-ngram-readme-rerun/
+!benchmarks/results/mlx-inference/2026-06-04-ax-direct-ngram-readme-rerun/
 benchmarks/results/**/*.pid
 benchmarks/results/**/rust_sustained.txt.err
 benchmarks/results/**/logs/*.log
