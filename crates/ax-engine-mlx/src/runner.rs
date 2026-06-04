@@ -7421,13 +7421,7 @@ fn compute_mtp_target_probs(
         // logits_all[i] = prediction after position i = target for pending[i].
         // Row 0 is the target for pending[0]; rows 0..n are the draft targets.
         for row in 0..pending.len() as i32 {
-            let row_logits = slice(
-                &scaled_topk,
-                &[row, 0],
-                &[row + 1, vocab],
-                &[1, 1],
-                None,
-            );
+            let row_logits = slice(&scaled_topk, &[row, 0], &[row + 1, vocab], &[1, 1], None);
             let part = argpartition_axis(&row_logits, -k_i32, -1, None);
             let top_idx = slice(&part, &[0, vocab - k_i32], &[1, vocab], &[1, 1], None);
             let top_vals = take_along_axis(&row_logits, &top_idx, -1, None);

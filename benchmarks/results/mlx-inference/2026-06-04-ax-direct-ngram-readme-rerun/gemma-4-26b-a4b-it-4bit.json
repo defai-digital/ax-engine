@@ -35,7 +35,8 @@
       " M crates/ax-engine-mlx/src/mtp.rs",
       " M docs/GETTING-STARTED.md",
       " M scripts/render_readme_performance_charts.py"
-    ]
+    ],
+    "git_tracked_dirty_accepted": true
   },
   "model": "mlx-community/gemma-4-26b-a4b-it-4bit",
   "model_repo_id": "mlx-community/gemma-4-26b-a4b-it-4bit",

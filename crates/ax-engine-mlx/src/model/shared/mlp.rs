@@ -3,8 +3,7 @@ use mlx_sys::{
     MlxVectorArray, add, argpartition_axis, argsort_axis, astype, divide, expand_dims,
     expand_dims_axes, gelu_approx_mul, gelu_approx_mul_quantized_matmul, multiply,
     quantized_matmul_rms_norm, reshape, rms_norm, silu_mul, slice_last_dim, softmax,
-    softmax_precise, sum_axis,
-    take, take_along_axis, topk_axis,
+    softmax_precise, sum_axis, take, take_along_axis, topk_axis,
 };
 use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
