@@ -285,24 +285,6 @@ The bench script enforces presence of `ax_decode_claim_status` and
 `ax_decode_claim_mode` on every emitted row; the same-policy gate
 enforces presence of the rest at promotion time.
 
-## Cross-engine context: Lightning MLX MTP+n-gram layering
-
-Lightning MLX (≥ 0.6.10) supports layering n-gram prompt-lookup drafting before the
-MTP head in a single verify pass. The architecture (`scheduler.py::_install_mtp()`):
-
-1. At each decode step, n-gram looks up the current history for candidate continuations
-   (up to K=6 tokens, min-occurrences=2).
-2. If n-gram finds a hit and `ngram_hybrid_verify=True`, one MTP head draft is appended
-   as the tail of the n-gram candidates.
-3. A single forward pass verifies all candidates: n-gram positions accept on greedy
-   argmax; the hybrid MTP tail uses probability-ratio acceptance.
-4. If n-gram misses, the step falls through to pure MTP.
-
-This is architecturally different from AX Engine's n-gram stacking (ADR-008), which
-uses a cost-gated n-gram-first path with KV trim on rejection. AX Engine n-gram
-verification is argmax-exact (distribution-exact under greedy), while Lightning MLX
-n-gram uses argmax accept for its positions and probability-ratio for the MTP tail.
-
 ## Reproducing the gate locally
 
 ```bash

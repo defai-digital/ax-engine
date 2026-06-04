@@ -53,7 +53,7 @@ class RapidMlxPromptSuiteTests(unittest.TestCase):
 
         self.assertEqual(compat, {"mode": "none"})
 
-    def test_lightning_mode_uses_source_serve_preset_and_ngram_flags(self) -> None:
+    def test_lightning_mode_uses_benchmark_serve_preset_and_ngram_flags(self) -> None:
         class FakeProcess:
             def poll(self) -> None:
                 return None
@@ -93,7 +93,7 @@ class RapidMlxPromptSuiteTests(unittest.TestCase):
         self.assertNotIn("--disable-prefix-cache", cmd)
         self.assertNotIn("--no-memory-aware-cache", cmd)
         self.assertNotIn("--prefill-step-size", cmd)
-        self.assertNotIn("--no-thinking", cmd)
+        self.assertIn("--no-thinking", cmd)
         self.assertNotIn("--mtp-optimistic", cmd)
         self.assertEqual(cmd[cmd.index("--mtp-draft-temperature") + 1], "0.5")
         self.assertEqual(cmd[cmd.index("--max-num-seqs") + 1], "1")
@@ -108,6 +108,193 @@ class RapidMlxPromptSuiteTests(unittest.TestCase):
         self.assertEqual(
             cmd[cmd.index("--ngram-auto-disable-min-ngram") + 1], "0.5"
         )
+
+
+class RunCaseStreamHandlingTests(unittest.TestCase):
+    """Verify run_case correctly separates content vs reasoning_content
+    streams and surfaces the silent-thinking signal in the result dict."""
+
+    def _make_handle(self) -> "rapid.ServerHandle":
+        class _FakeProc:
+            def poll(self) -> None:
+                return None
+
+            def send_signal(self, _sig) -> None:
+                return None
+
+            def wait(self, timeout: float | None = None) -> int:
+                return 0
+
+        return rapid.ServerHandle(
+            proc=_FakeProc(),  # type: ignore[arg-type]
+            base_url="http://test/v1",
+            model="local",
+            log_path=Path("/tmp/unused.log"),
+            command=["fake"],
+            compat_patch={"mode": "none"},
+        )
+
+    def _patch_stream(self, sse_lines: list[str]):
+        """Patch httpx.stream to return our scripted SSE lines."""
+
+        class _FakeResponse:
+            def raise_for_status(self) -> None:
+                return None
+
+            def iter_lines(self):
+                yield from sse_lines
+
+        class _FakeStreamCtx:
+            def __enter__(self_inner):
+                return _FakeResponse()
+
+            def __exit__(self_inner, *args):
+                return False
+
+        return patch.object(rapid.httpx, "stream", return_value=_FakeStreamCtx())
+
+    def _make_chunk(
+        self,
+        *,
+        content: str | None = None,
+        reasoning: str | None = None,
+        usage: dict | None = None,
+    ) -> str:
+        import json as _json
+
+        delta: dict = {}
+        if content is not None:
+            delta["content"] = content
+        if reasoning is not None:
+            delta["reasoning_content"] = reasoning
+        payload = {"choices": [{"delta": delta}]}
+        if usage is not None:
+            payload["usage"] = usage
+        return f"data: {_json.dumps(payload)}"
+
+    def test_separates_content_and_reasoning_streams(self) -> None:
+        sse = [
+            self._make_chunk(reasoning="thinking part 1 "),
+            self._make_chunk(reasoning="thinking part 2"),
+            self._make_chunk(content="visible response "),
+            self._make_chunk(content="end."),
+            self._make_chunk(usage={"completion_tokens": 50, "prompt_tokens": 10}),
+            "data: [DONE]",
+        ]
+        case = rapid.PromptCase(
+            id="t", category="c", prompt="hi", max_tokens=100
+        )
+        with self._patch_stream(sse):
+            run = rapid.run_case(
+                handle=self._make_handle(),
+                case=case,
+                max_tokens=50,
+                sampling={"temperature": 0.6, "top_p": 0.95, "top_k": 20},
+                seed=0,
+                measured=True,
+                repetition=0,
+            )
+        self.assertEqual(run["visible_text_chars"], len("visible response end."))
+        self.assertEqual(run["reasoning_text_chars"], len("thinking part 1 thinking part 2"))
+        self.assertEqual(run["text"], "visible response end.")
+        self.assertEqual(run["content_head"], "visible response end.")
+        self.assertEqual(run["reasoning_head"], "thinking part 1 thinking part 2")
+        self.assertEqual(run["stream_chunk_stats"]["with_content"], 2)
+        self.assertEqual(run["stream_chunk_stats"]["with_reasoning_content"], 2)
+        self.assertFalse(run["silent_thinking_suspected"])
+
+    def test_silent_thinking_flag_when_no_visible_output(self) -> None:
+        # Server claims 500 completion_tokens but never streams any content
+        # or reasoning chunks — classic silent-thinking pattern.
+        sse = [
+            self._make_chunk(usage={"completion_tokens": 500, "prompt_tokens": 10}),
+            "data: [DONE]",
+        ]
+        case = rapid.PromptCase(
+            id="t", category="c", prompt="hi", max_tokens=500
+        )
+        with self._patch_stream(sse):
+            run = rapid.run_case(
+                handle=self._make_handle(),
+                case=case,
+                max_tokens=500,
+                sampling={"temperature": 0.6, "top_p": 0.95, "top_k": 20},
+                seed=0,
+                measured=True,
+                repetition=0,
+            )
+        self.assertTrue(run["silent_thinking_suspected"])
+        self.assertEqual(run["visible_text_chars"], 0)
+        self.assertEqual(run["reasoning_text_chars"], 0)
+        self.assertEqual(run["generated_tokens"], 500)
+
+
+class CaptureLightningIdentityTests(unittest.TestCase):
+    def test_captures_git_state_and_pyproject(self) -> None:
+        # Smoke against the real lightning source — this is read-only.
+        source = Path(
+            "/Users/akiralam/code/ax-engine_v5/.internal/reference/lightning-mlx"
+        )
+        if not source.is_dir():
+            self.skipTest("lightning source not available")
+        ident = rapid.capture_lightning_source_identity(source)
+        self.assertEqual(ident["source_path"], str(source))
+        # commit hash should be 40 hex chars
+        self.assertIsNotNone(ident["git_commit"])
+        self.assertEqual(len(ident["git_commit"] or ""), 40)
+        # git_describe should resolve to v0.6.32 or similar tag-prefixed
+        self.assertIsNotNone(ident["git_describe"])
+        # modified_files should be a list (may be empty)
+        self.assertIsInstance(ident["modified_files"], list)
+
+    def test_handles_non_git_dir(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            ident = rapid.capture_lightning_source_identity(Path(tmp))
+            self.assertIsNone(ident["git_commit"])
+            self.assertIsNone(ident["git_describe"])
+            self.assertFalse(ident["is_dirty"])
+            self.assertEqual(ident["modified_files"], [])
+
+
+class ParseServerHeaderTests(unittest.TestCase):
+    def test_extracts_banner_lines(self) -> None:
+        log = [
+            "  Alias: qwen3.6-27b -> Youssofal/Qwen3.6-27B-MTPLX-Optimized-Speed",
+            "  Model: Youssofal/Qwen3.6-27B-MTPLX-Optimized-Speed",
+            "  Features: tools: qwen3_coder_xml, reasoning: qwen3",
+            "MTP: enabled, draft_tokens=3, draft_temp=0.5",
+            "N-gram: enabled, K=6, n=3, min_matches=2, accept=greedy",
+            "WARNING:vllm_mlx.scheduler:[MTP] mtp_num_draft_tokens=3 requested "
+            "but model has only 1 MTP layer(s). depth will be capped to 1 per verify cycle.",
+        ]
+        info = rapid.parse_server_header(log)
+        self.assertIn("qwen3.6-27b", info["alias_line"])
+        self.assertIn("Youssofal/Qwen3.6-27B-MTPLX", info["model_line"])
+        self.assertIn("draft_tokens=3", info["mtp_line"])
+        self.assertIn("K=6", info["ngram_line"])
+        self.assertEqual(info["mtp_depth_cap_warnings"], 1)
+        self.assertEqual(info["effective_mtp_depth"], 1)
+
+    def test_handles_empty_log(self) -> None:
+        info = rapid.parse_server_header([])
+        self.assertIsNone(info["alias_line"])
+        self.assertEqual(info["mtp_depth_cap_warnings"], 0)
+        self.assertIsNone(info["effective_mtp_depth"])
+
+
+class ReadLogTailTests(unittest.TestCase):
+    def test_returns_last_lines(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            log = Path(tmp) / "x.log"
+            log.write_text("\n".join(f"line {i}" for i in range(50)))
+            tail = rapid.read_log_tail(log, max_lines=5, max_bytes=10_000)
+            self.assertEqual(len(tail), 5)
+            self.assertEqual(tail[-1], "line 49")
+
+    def test_missing_file_returns_empty_list(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tail = rapid.read_log_tail(Path(tmp) / "does-not-exist.log")
+            self.assertEqual(tail, [])
 
 
 if __name__ == "__main__":

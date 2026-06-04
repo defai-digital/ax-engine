@@ -18,23 +18,6 @@ bases. No `Youssofal/*MTPLX*` bundles are used. Latest local rerun: native
 depth, sampled decode, max tokens `1000`, five measured repetitions, one
 warmup repetition.
 
-> **Lightning-MLX methodology note:** Lightning rows below are measured
-> separately with the upstream `lightning-mlx bench` raw-decode command and the
-> upstream optimized aliases (`Youssofal/*` / `samuelfaj/*`). They are not mixed
-> into the fair sidecar comparison, which intentionally uses only standard
-> `Qwen/Qwen3.6-*` MTP shards plus `mlx-community/*-4bit` bases.
-
-#### Lightning-MLX source raw decode
-
-<p><img src="docs/assets/perf-lightning-raw-qwen36.svg" alt="Bar chart comparing Lightning-MLX raw bench completion token throughput for Qwen3.6 27B and 35B-A3B in MTP and MTP+n-gram modes"></p>
-
-| Model | Source model | MTP tok/s | MTP+n-gram tok/s | Best mode | OpenWebUI direct |
-|---|---|---:|---:|---|---|
-| Qwen3.6 27B | `Youssofal/Qwen3.6-27B-MTPLX-Optimized-Speed` | 50.2 | 58.2 | MTP+n-gram | pass |
-| Qwen3.6 35B-A3B | `samuelfaj/Qwen3.6-35B-A3B-4bit-MTPLX-Optimized-Speed` | 167.6 | 135.0 | MTP | pass |
-
-Run command source: `lightning-mlx bench qwen3.6-{27b,35b} --num-prompts 3 --max-tokens 512 --disable-prefix-cache --max-num-seqs 1 --prefill-batch-size 1 --completion-batch-size 1 --prefill-step-size 8192 --mtp-num-draft-tokens 3 --mtp-optimistic`; MTP+n-gram adds Lightning's source 35B-A3B opt-in n-gram preset flags (`K=6`, `min_occ=2`, greedy, hybrid verify, everywhere, skip tool calls, self-tune, auto-disable `0.85/0.50`) to both models for comparison. OpenWebUI correctness was verified with `scripts/openwebui_e2e.py --ax-direct` against `lightning-mlx serve` using each model's best mode. All four raw bench runs emitted Lightning's warning that requested MTP draft depth `3` was capped to `1` because the runtime observed only one MTP layer.
-
 <table>
 <tr>
 <td align="center"><strong>Qwen3.6 27B 4-bit</strong></td>
@@ -60,16 +43,16 @@ Run command source: `lightning-mlx bench qwen3.6-{27b,35b} --num-prompts 3 --max
 
 | Model | Suite | Depth | MTPLX tok/s | MTPLX accept | AX tok/s | AX accept | AX+ngram tok/s | AX+ngram accept |
 |---|---|---:|---:|---:|---:|---:|---:|---:|
-| Qwen3.6 27B 4-bit | flappy | 3 | 59.0 | 99.5% | 65.2 | 97.7% | 65.0 | 94.5% |
-| Qwen3.6 27B 4-bit | long_code | 3 | 59.0 | 99.6% | 63.4 | 95.4% | 67.4 | 92.8% |
-| Qwen3.6 27B 4-bit | python_modules_long | 3 | 54.4 | 87.4% | 54.0 | 75.5% | 52.1 | 75.6% |
-| Qwen3.6 35B-A3B 4-bit | flappy | 1 | 102.3 | 48.0% | 179.6 | 99.8% | 213.3 | 95.3% |
-| Qwen3.6 35B-A3B 4-bit | long_code | 1 | 104.4 | 52.5% | 178.6 | 99.7% | 268.5 | 96.4% |
-| Qwen3.6 35B-A3B 4-bit | python_modules_long | 1 | 96.3 | 41.4% | 170.9 | 93.9% | 167.5 | 90.2% |
+| Qwen3.6 27B 4-bit | flappy | 3 | 59.6 | 100.0% | 65.4 | 98.2% | 65.2 | 95.9% |
+| Qwen3.6 27B 4-bit | long_code | 3 | 59.3 | 99.7% | 63.4 | 95.3% | 67.3 | 91.8% |
+| Qwen3.6 27B 4-bit | python_modules_long | 3 | 54.4 | 87.6% | 54.0 | 77.5% | 52.0 | 73.5% |
+| Qwen3.6 35B-A3B 4-bit | flappy | 1 | 105.3 | 48.5% | 180.7 | 100.0% | 215.1 | 95.9% |
+| Qwen3.6 35B-A3B 4-bit | long_code | 1 | 106.0 | 51.7% | 176.6 | 99.6% | 267.9 | 97.3% |
+| Qwen3.6 35B-A3B 4-bit | python_modules_long | 1 | 102.1 | 43.4% | 173.9 | 93.6% | 176.4 | 90.7% |
 
 AX MTP uses pure MTP (n-gram stacking disabled); AX MTP+n-gram stacks n-gram speculative drafting on top of MTP. Sampler: temperature=0.6,
 top_p=0.95, top_k=20. 1000 gen tokens, 5 repetitions, 30 s cooldown, 10 s inter-case cooldown.
-MTPLX 0.3.7 · AX Engine v5.1.6 · Lightning-MLX raw rows reported separately above.
+MTPLX 0.3.7 · AX Engine v5.1.6.
 
 #### Prefill throughput (tok/s) — same run
 
@@ -78,12 +61,12 @@ AX prefill is measured at runner level. Both are pure GPU compute measurements.
 
 | Model | Suite | Depth | MTPLX tok/s | AX MTP tok/s | AX MTP+ngram tok/s |
 |---|---|---:|---:|---:|---:|
-| Qwen3.6 27B 4-bit | flappy | 3 | 673 | 683 | 685 |
-| Qwen3.6 27B 4-bit | long_code | 3 | 785 | 790 | 789 |
-| Qwen3.6 27B 4-bit | python_modules_long | 3 | 666 | 692 | 693 |
-| Qwen3.6 35B-A3B 4-bit | flappy | 1 | 1,544 | 1,806 | 1,814 |
-| Qwen3.6 35B-A3B 4-bit | long_code | 1 | 2,124 | 2,572 | 2,571 |
-| Qwen3.6 35B-A3B 4-bit | python_modules_long | 1 | 976 | 1,970 | 1,997 |
+| Qwen3.6 27B 4-bit | flappy | 3 | 683 | 684 | 685 |
+| Qwen3.6 27B 4-bit | long_code | 3 | 798 | 790 | 790 |
+| Qwen3.6 27B 4-bit | python_modules_long | 3 | 691 | 692 | 693 |
+| Qwen3.6 35B-A3B 4-bit | flappy | 1 | 1,545 | 1,818 | 1,824 |
+| Qwen3.6 35B-A3B 4-bit | long_code | 1 | 2,287 | 2,713 | 2,714 |
+| Qwen3.6 35B-A3B 4-bit | python_modules_long | 1 | 1,431 | 2,002 | 2,005 |
 
 #### Time to first token (ms) — same run
 
@@ -91,14 +74,14 @@ MTPLX TTFT is derived from `prompt_eval_time_s` (runner-level). AX TTFT is a run
 
 | Model | Suite | Depth | MTPLX ms | AX MTP ms | AX MTP+ngram ms |
 |---|---|---:|---:|---:|---:|
-| Qwen3.6 27B 4-bit | flappy | 3 | 477 | 471 | 469 |
-| Qwen3.6 27B 4-bit | long_code | 3 | 914 | 908 | 909 |
-| Qwen3.6 27B 4-bit | python_modules_long | 3 | 518 | 505 | 505 |
-| Qwen3.6 35B-A3B 4-bit | flappy | 1 | 207 | 178 | 177 |
-| Qwen3.6 35B-A3B 4-bit | long_code | 1 | 335 | 279 | 279 |
-| Qwen3.6 35B-A3B 4-bit | python_modules_long | 1 | 292 | 175 | 174 |
+| Qwen3.6 27B 4-bit | flappy | 3 | 471 | 470 | 470 |
+| Qwen3.6 27B 4-bit | long_code | 3 | 900 | 908 | 908 |
+| Qwen3.6 27B 4-bit | python_modules_long | 3 | 503 | 505 | 505 |
+| Qwen3.6 35B-A3B 4-bit | flappy | 1 | 208 | 177 | 176 |
+| Qwen3.6 35B-A3B 4-bit | long_code | 1 | 314 | 265 | 264 |
+| Qwen3.6 35B-A3B 4-bit | python_modules_long | 1 | 229 | 173 | 172 |
 
-Full artifacts: [`2026-06-02-qwen36-fair-v0632`](benchmarks/results/mtp-fair/2026-06-02-qwen36-fair-v0632/summary.json) · [`2026-06-03-qwen36-lightning-raw-source`](benchmarks/results/mtp-fair/2026-06-03-qwen36-lightning-raw-source/summary.json) · [prior full-run with Lightning](benchmarks/results/mtp-fair/2026-06-01-qwen36-fair-ax-rerun4/summary.json).
+Full artifacts: [`2026-06-03-mtplx-ax-fresh`](benchmarks/results/mtp-fair/2026-06-03-mtplx-ax-fresh/summary.json) (fresh MTPLX + AX-only run, 2026-06-03).
 
 ### llama.cpp metal vs mlx-lm vs AX-Engine
 
@@ -345,16 +328,16 @@ the MLX rows.
 AX Engine's fair Qwen3.6 MTP benchmark uses local, provenance-recorded sidecars
 from standard `Qwen/Qwen3.6-*` MTP shards plus the matching
 `mlx-community/*-4bit` MLX base, excluding `Youssofal/*MTPLX*` bundles.
-All five engines run on the same prompt suites, token caps, sampler, warmup,
-repetition count, and cooldown.
+All three engines (MTPLX, AX MTP, AX MTP+n-gram) run on the same prompt
+suites, token caps, sampler, warmup, repetition count, and cooldown.
 
-Use the five-engine harness to reproduce the comparison:
+Use the three-engine harness to reproduce the comparison:
 
 ```bash
 python3 scripts/prepare_qwen36_mtp_sidecar.py --model 27b
 python3 scripts/prepare_qwen36_mtp_sidecar.py --model 35b
 python3 scripts/bench_qwen36_mtp_fair.py \
-  --engines mtplx lightning ax \
+  --engines mtplx ax \
   --modes mtp mtp-ngram \
   --models 27b-4bit 35b-a3b-4bit \
   --suites flappy long_code python_modules_long \

@@ -35,31 +35,35 @@ HF_CACHE = Path(
     os.environ.get("HF_HUB_CACHE")
     or (Path(os.environ.get("HF_HOME", Path.home() / ".cache" / "huggingface")) / "hub")
 )
+# Vendor-default labeling: each row is run with the vendor's recommended
+# config for this model. Labels say "default" so reviewers don't expect
+# strict apples-to-apples knob alignment.
+#
+# Lightning-MLX was removed from the active framework on 2026-06-03. The
+# Lightning runner code (`run_rapid_mlx_suite`, `--lightning-*` CLI args)
+# and reference source under `.internal/reference/lightning-mlx` are kept
+# for ad-hoc probes but Lightning rows no longer appear in the matrix.
 ENGINE_LABELS = {
-    "mtplx": "MTPLX 0.3.7",
-    "lightning_mlx": "Lightning v0.7.0",
-    "lightning_mtp_ngram": "Lightning+ng v0.7.0",
-    "ax_engine": "AX Engine v5.1.6",
-    "ax_engine_ngram": "AX+ngram v5.1.6",
+    "mtplx": "MTPLX 0.3.7 (default)",
+    "ax_engine": "AX Engine v5.1.6 (MTP-only)",
+    "ax_engine_ngram": "AX Engine v5.1.6 (MTP + n-gram stacking)",
 }
-VERSIONS_FOOTNOTE = "MTPLX 0.3.7 · Lightning-MLX 0.7.0 · AX Engine v5.1.6"
+VERSIONS_FOOTNOTE = (
+    "Vendor-default config per row · MTPLX 0.3.7 · AX Engine v5.1.6"
+)
 ENGINE_COLORS = {
     "mtplx": "#14532d",
-    "lightning_mlx": "#7c3aed",
-    "lightning_mtp_ngram": "#1e3a8a",
     "ax_engine": "#f97316",
     "ax_engine_ngram": "#eab308",
 }
 ENGINE_ORDER = [
     "mtplx",
-    "lightning_mlx",
-    "lightning_mtp_ngram",
     "ax_engine",
     "ax_engine_ngram",
 ]
 
 # User-facing engine vendor names for --engines
-ENGINE_VENDORS = ["mtplx", "lightning", "ax"]
+ENGINE_VENDORS = ["mtplx", "ax"]
 # User-facing decode mode names for --modes
 ENGINE_MODES = ["mtp", "mtp-ngram"]
 # Maps (vendor, mode) -> internal engine key, or None if not yet supported.
@@ -68,8 +72,6 @@ ENGINE_MODES = ["mtp", "mtp-ngram"]
 SUPPORT_MATRIX: dict[tuple[str, str], str | None] = {
     ("mtplx", "mtp"): "mtplx",
     ("mtplx", "mtp-ngram"): None,  # not supported yet
-    ("lightning", "mtp"): "lightning_mlx",
-    ("lightning", "mtp-ngram"): "lightning_mtp_ngram",
     ("ax", "mtp"): "ax_engine",
     ("ax", "mtp-ngram"): "ax_engine_ngram",
 }
@@ -103,6 +105,7 @@ class QwenProfile:
     base_model_id: str
     source_model_id: str
     ax_local_slug: str
+    lightning_alias: str
     native_depth: int
     is_moe: bool = False
 
@@ -125,6 +128,7 @@ QWEN36_PROFILES = {
         base_model_id="mlx-community/Qwen3.6-27B-4bit",
         source_model_id="Qwen/Qwen3.6-27B",
         ax_local_slug="models--ax-local--Qwen3.6-27B-MTP",
+        lightning_alias="qwen3.6-27b",
         native_depth=3,
     ),
     "35b-a3b-4bit": QwenProfile(
@@ -134,6 +138,7 @@ QWEN36_PROFILES = {
         base_model_id="mlx-community/Qwen3.6-35B-A3B-4bit",
         source_model_id="Qwen/Qwen3.6-35B-A3B",
         ax_local_slug="models--ax-local--Qwen3.6-35B-MTP",
+        lightning_alias="qwen3.6-35b",
         native_depth=1,
         is_moe=True,
     ),
@@ -433,10 +438,15 @@ def run_engine_suite(
     port: int,
 ) -> Path:
     model_dir = sidecar_dir(profile, args.hf_cache)
+    lightning_model = (
+        profile.lightning_alias
+        if getattr(args, "lightning_model_source", "sidecar") == "optimized-alias"
+        else str(model_dir)
+    )
     suite_file = suite_path_for(suite, args.suites_dir)
     output_path = args.output_dir / profile.key / suite / f"{engine}.json"
     config_enable_thinking = (
-        bool(getattr(args, "lightning_enable_thinking", True))
+        bool(getattr(args, "lightning_enable_thinking", False))
         if engine in ("lightning_mlx", "lightning_mtp_ngram")
         else bool(args.enable_thinking)
     )
@@ -499,7 +509,7 @@ def run_engine_suite(
                 suite=suite,
                 suite_file=suite_file,
                 output_path=output_path,
-                model_dir=model_dir,
+                model_dir=Path(lightning_model),
                 config=config,
                 port=args.base_port + 1,
                 mtp_optimistic=args.lightning_mtp_optimistic,
@@ -515,7 +525,7 @@ def run_engine_suite(
                 suite=suite,
                 suite_file=suite_file,
                 output_path=output_path,
-                model_dir=model_dir,
+                model_dir=Path(lightning_model),
                 config=config,
                 port=args.base_port + 1,
                 enable_ngram=True,
@@ -818,6 +828,12 @@ def build_summary(
             "cooldown_s": args.cooldown,
             "lightning_settings": {
                 "source_profile": "lightning-mlx serve qwen3.6 MTPLX preset",
+                "model_source": getattr(args, "lightning_model_source", "sidecar"),
+                "optimized_aliases": {
+                    profile.key: profile.lightning_alias for profile in profiles
+                }
+                if getattr(args, "lightning_model_source", "sidecar") == "optimized-alias"
+                else None,
                 "prefix_cache": "enabled",
                 "max_num_seqs": 1,
                 "prefill_batch_size": 1,
@@ -827,7 +843,7 @@ def build_summary(
                 "mtp_draft_temperature": getattr(
                     args, "lightning_mtp_draft_temperature", 0.5
                 ),
-                "enable_thinking": bool(getattr(args, "lightning_enable_thinking", True)),
+                "enable_thinking": bool(getattr(args, "lightning_enable_thinking", False)),
                 "ngram_num_draft_tokens": 6,
                 "ngram_min_occurrences": 2,
                 "ngram_acceptance_mode": "greedy",
@@ -846,8 +862,12 @@ def build_summary(
             "ax_pure_mtp": "ax_engine" in args.engines,
             "ax_engine_modes": ax_engine_modes,
             "fairness_rules": [
-                "standard Qwen source MTP shards plus mlx-community 4-bit base only",
-                "Youssofal MTPLX bundles are excluded",
+                "standard Qwen source MTP shards plus mlx-community 4-bit base only"
+                if getattr(args, "lightning_model_source", "sidecar") == "sidecar"
+                else "Lightning rows use upstream optimized qwen3.6 aliases and are not sidecar-fair rows",
+                "Youssofal/samuelfaj optimized bundles are excluded"
+                if getattr(args, "lightning_model_source", "sidecar") == "sidecar"
+                else "Youssofal/samuelfaj optimized bundles are included for Lightning source-methodology rows",
                 "same prompt suite, max token cap, sampler, warmup, repetitions, and cooldown",
             ],
         },
@@ -1430,8 +1450,8 @@ def parse_args() -> argparse.Namespace:
         "--lightning-enable-thinking",
         dest="lightning_enable_thinking",
         action="store_true",
-        default=True,
-        help="Keep thinking enabled for Lightning-MLX serve. Default follows its Qwen3.6 preset.",
+        default=False,
+        help="Keep thinking enabled for Lightning-MLX serve. Default is disabled for benchmark comparability.",
     )
     parser.add_argument(
         "--lightning-disable-thinking",
@@ -1476,6 +1496,16 @@ def parse_args() -> argparse.Namespace:
         "--lightning-source",
         type=Path,
         default=DEFAULT_LIGHTNING_SOURCE,
+    )
+    parser.add_argument(
+        "--lightning-model-source",
+        choices=["sidecar", "optimized-alias"],
+        default="sidecar",
+        help=(
+            "Model identifier used for Lightning-MLX rows. 'sidecar' keeps the fair "
+            "standard Qwen/mlx-community sidecar path; 'optimized-alias' uses the "
+            "upstream lightning-mlx qwen3.6 aliases and matches their published setup."
+        ),
     )
     parser.add_argument("--base-port", type=int, default=18765)
     parser.add_argument("--limit", type=int)

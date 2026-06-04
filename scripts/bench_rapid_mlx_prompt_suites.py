@@ -260,12 +260,18 @@ def start_server(
     enable_ngram: bool = False,
     mtp_optimistic: bool = False,
     mtp_draft_temperature: float | None = None,
-    enable_thinking: bool = True,
+    enable_thinking: bool = False,
     ngram_auto_disable_mtp_threshold: float = 0.85,
     ngram_auto_disable_min_ngram: float = 0.50,
+    log_tag: str | None = None,
 ) -> ServerHandle:
     output_dir.mkdir(parents=True, exist_ok=True)
-    log_path = output_dir / f"rapid-mlx-server-{port}.log"
+    # log_tag identifies the run variant (e.g. "lightning_mlx", "lightning_mtp_ngram")
+    # so that multiple invocations sharing the same output_dir and port do not
+    # clobber each other's server log. Without this the second run overwrites
+    # the first, and post-hoc audits can't tell which preset the first run used.
+    log_suffix = f"-{log_tag}" if log_tag else ""
+    log_path = output_dir / f"rapid-mlx-server{log_suffix}-{port}.log"
     compat_patch = prepare_rapid_mtp_compat_site(
         output_dir=output_dir,
         lightning_source=lightning_source,
@@ -430,10 +436,17 @@ def run_case(
     }
     started = time.time()
     t0 = time.perf_counter()
-    ttft: float | None = None
+    ttft_content: float | None = None
+    ttft_reasoning: float | None = None
     completion_tokens = 0
     prompt_tokens = 0
-    text_parts: list[str] = []
+    content_parts: list[str] = []
+    reasoning_parts: list[str] = []
+    chunks_total = 0
+    chunks_with_content = 0
+    chunks_with_reasoning = 0
+    chunks_with_tool_calls = 0
+    chunks_empty_delta = 0
     with httpx.stream(
         "POST",
         f"{handle.base_url}/chat/completions",
@@ -454,11 +467,24 @@ def run_case(
             choices = chunk.get("choices") or []
             if choices:
                 delta = choices[0].get("delta") or {}
-                content = delta.get("content") or delta.get("reasoning_content")
+                content = delta.get("content")
+                reasoning = delta.get("reasoning_content")
+                tool_calls = delta.get("tool_calls")
+                chunks_total += 1
                 if content:
-                    text_parts.append(str(content))
-                if ttft is None and (content or delta.get("tool_calls")):
-                    ttft = time.perf_counter() - t0
+                    content_parts.append(str(content))
+                    chunks_with_content += 1
+                    if ttft_content is None:
+                        ttft_content = time.perf_counter() - t0
+                if reasoning:
+                    reasoning_parts.append(str(reasoning))
+                    chunks_with_reasoning += 1
+                    if ttft_reasoning is None:
+                        ttft_reasoning = time.perf_counter() - t0
+                if tool_calls:
+                    chunks_with_tool_calls += 1
+                if not content and not reasoning and not tool_calls:
+                    chunks_empty_delta += 1
             usage = chunk.get("usage")
             if isinstance(usage, dict):
                 completion_tokens = int(
@@ -467,9 +493,28 @@ def run_case(
                 prompt_tokens = int(usage.get("prompt_tokens") or prompt_tokens)
 
     total = time.perf_counter() - t0
+    # TTFT is the earliest of either content or reasoning_content arriving.
+    # This is the time-to-first-visible-byte. If only reasoning arrived
+    # (thinking streamed) ttft tracks that; if only content arrived
+    # (thinking buffered or off) ttft tracks content.
+    ttft_candidates = [t for t in (ttft_content, ttft_reasoning) if t is not None]
+    ttft: float | None = min(ttft_candidates) if ttft_candidates else None
     decode_time = max(total - (ttft or 0.0), 0.0)
     gate = classify_run(completion_tokens, decode_time)
     decode_tok_s = gate["decode_tok_s"]
+    full_content = "".join(content_parts)
+    full_reasoning = "".join(reasoning_parts)
+    # Heuristic for the silent-thinking pathology: server reports many
+    # completion_tokens but client received almost no visible content.
+    # When suspected, downstream analysis can flag the run as "thinking
+    # consumed the token budget even though --no-thinking was set".
+    visible_chars = len(full_content) + len(full_reasoning)
+    silent_thinking_suspected = (
+        completion_tokens >= 200
+        and visible_chars < completion_tokens  # <1 char/token average
+        and chunks_with_content == 0
+        and chunks_with_reasoning == 0
+    )
     return {
         "measured": measured,
         "repetition": repetition,
@@ -481,12 +526,31 @@ def run_case(
         "elapsed_s": total,
         "decode_elapsed_s": decode_time,
         "ttft_s": ttft,
+        "ttft_content_s": ttft_content,
+        "ttft_reasoning_s": ttft_reasoning,
         "decode_tok_s": decode_tok_s,
         "end_to_end_tok_s": completion_tokens / total
         if total > 0 and completion_tokens
         else None,
         "rejected_reason": gate["rejected_reason"],
-        "text": "".join(text_parts),
+        "stream_chunk_stats": {
+            "total": chunks_total,
+            "with_content": chunks_with_content,
+            "with_reasoning_content": chunks_with_reasoning,
+            "with_tool_calls": chunks_with_tool_calls,
+            "empty_delta": chunks_empty_delta,
+        },
+        "visible_text_chars": len(full_content),
+        "reasoning_text_chars": len(full_reasoning),
+        "silent_thinking_suspected": silent_thinking_suspected,
+        "content_head": full_content[:500],
+        "content_tail": full_content[-500:] if len(full_content) > 500 else "",
+        "reasoning_head": full_reasoning[:500],
+        "reasoning_tail": full_reasoning[-500:] if len(full_reasoning) > 500 else "",
+        # Backward-compat: prior schema used a single "text" field that was
+        # content || reasoning_content. Keep it as the visible content stream
+        # so older analysis scripts continue to work.
+        "text": full_content,
     }
 
 
@@ -567,6 +631,124 @@ def summarize_runs(runs: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def capture_lightning_source_identity(source: Path) -> dict[str, Any]:
+    """Record the exact state of the lightning-mlx source tree.
+
+    Captures git commit, tag, dirty flag, list of modified files, and a
+    SHA-256 of the working-tree diff. Lets the artifact reproduce or audit
+    any row without having to keep the source dir untouched.
+    """
+
+    def _git(*args: str) -> str | None:
+        try:
+            return subprocess.check_output(
+                ["git", *args],
+                cwd=str(source),
+                text=True,
+                stderr=subprocess.DEVNULL,
+            ).strip()
+        except (subprocess.CalledProcessError, FileNotFoundError, OSError):
+            return None
+
+    commit = _git("rev-parse", "HEAD")
+    describe = _git("describe", "--tags", "--always")
+    status = _git("status", "--porcelain")
+    diff = _git("diff", "HEAD")
+    pyproject_version: str | None = None
+    pyproject = source / "pyproject.toml"
+    if pyproject.is_file():
+        for line in pyproject.read_text().splitlines():
+            stripped = line.strip()
+            if stripped.startswith("version") and "=" in stripped:
+                # naive parse: version = "0.6.10"
+                parts = stripped.split("=", 1)[1].strip().strip('"').strip("'")
+                pyproject_version = parts
+                break
+    modified_files: list[str] = []
+    if status:
+        for line in status.splitlines():
+            # git status --porcelain: " M path/to/file" or "?? untracked"
+            if len(line) >= 3:
+                modified_files.append(line[3:].strip())
+    diff_sha256 = (
+        hashlib.sha256(diff.encode("utf-8")).hexdigest() if diff else None
+    )
+    return {
+        "source_path": str(source),
+        "git_commit": commit,
+        "git_describe": describe,
+        "is_dirty": bool(status),
+        "modified_files": modified_files,
+        "diff_sha256": diff_sha256,
+        "pyproject_version": pyproject_version,
+    }
+
+
+def read_log_tail(
+    path: Path, *, max_lines: int = 200, max_bytes: int = 32 * 1024
+) -> list[str]:
+    """Best-effort read of a log file's last lines for inclusion in the artifact.
+
+    Bounded so a runaway log doesn't blow up the JSON output.
+    """
+    try:
+        with path.open("rb") as f:
+            f.seek(0, os.SEEK_END)
+            size = f.tell()
+            f.seek(max(0, size - max_bytes))
+            data = f.read()
+    except OSError:
+        return []
+    text = data.decode("utf-8", errors="replace")
+    lines = text.splitlines()
+    return lines[-max_lines:]
+
+
+def parse_server_header(lines: list[str]) -> dict[str, Any]:
+    """Extract structured facts from the lightning-mlx server's banner.
+
+    The banner is fairly stable across versions: ``Alias: ...``, ``Model: ...``,
+    ``MTP: enabled, ...``, ``N-gram: enabled, ...``. We pull these out so the
+    artifact records what the server actually loaded, independent of what the
+    benchmark thought it requested.
+    """
+    info: dict[str, Any] = {
+        "alias_line": None,
+        "model_line": None,
+        "mtp_line": None,
+        "ngram_line": None,
+        "features_line": None,
+        "mtp_depth_cap_warnings": 0,
+        "effective_mtp_depth": None,
+    }
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("Alias:") and info["alias_line"] is None:
+            info["alias_line"] = stripped
+        elif stripped.startswith("Model:") and info["model_line"] is None:
+            info["model_line"] = stripped
+        elif stripped.startswith("MTP:") and info["mtp_line"] is None:
+            info["mtp_line"] = stripped
+        elif stripped.startswith("N-gram:") and info["ngram_line"] is None:
+            info["ngram_line"] = stripped
+        elif stripped.startswith("Features:") and info["features_line"] is None:
+            info["features_line"] = stripped
+        if "depth will be capped to" in line:
+            info["mtp_depth_cap_warnings"] += 1
+            # Parse "depth will be capped to N per verify cycle."
+            try:
+                tail = line.split("capped to", 1)[1].strip()
+                effective = int(tail.split()[0])
+                # Take the smallest (most restrictive) cap seen.
+                prev = info["effective_mtp_depth"]
+                info["effective_mtp_depth"] = (
+                    effective if prev is None else min(prev, effective)
+                )
+            except (IndexError, ValueError):
+                pass
+    return info
+
+
 def run_suite(args: argparse.Namespace) -> dict[str, Any]:
     prompt_suite = args.prompts.resolve()
     cases = load_prompt_suite(prompt_suite)
@@ -581,7 +763,10 @@ def run_suite(args: argparse.Namespace) -> dict[str, Any]:
     lightning_mode = bool(getattr(args, "lightning_mode", False))
     enable_ngram = bool(getattr(args, "enable_ngram", False))
     mtp_optimistic = bool(getattr(args, "mtp_optimistic", False))
-    enable_thinking = bool(getattr(args, "enable_thinking", True)) if lightning_mode else False
+    enable_thinking = bool(getattr(args, "enable_thinking", False)) if lightning_mode else False
+    # Tag the server log file with the output stem so concurrent or
+    # sequential runs that share server_dir + port don't clobber each other.
+    log_tag = args.output.stem
     handle = start_server(
         model=args.model,
         rapid_python=args.rapid_python,
@@ -599,6 +784,7 @@ def run_suite(args: argparse.Namespace) -> dict[str, Any]:
         enable_thinking=enable_thinking,
         ngram_auto_disable_mtp_threshold=args.ngram_auto_disable_mtp_threshold,
         ngram_auto_disable_min_ngram=args.ngram_auto_disable_min_ngram,
+        log_tag=log_tag,
     )
     try:
         if cases:
@@ -667,9 +853,33 @@ def run_suite(args: argparse.Namespace) -> dict[str, Any]:
     finally:
         handle.stop()
 
+    # Snapshot the server log after shutdown. The banner (alias/model/MTP/N-gram
+    # lines) tells us what the server actually loaded — independent of what the
+    # benchmark CLI intended. The tail captures the depth-cap warnings and any
+    # late errors. Both go into the artifact so the log file can be deleted
+    # later without losing audit data.
+    server_log_lines = read_log_tail(handle.log_path, max_lines=400, max_bytes=64 * 1024)
+    server_header_info = parse_server_header(server_log_lines)
+    server_log_head: list[str] = []
+    try:
+        with handle.log_path.open("r", errors="replace") as f:
+            for _ in range(80):
+                line = f.readline()
+                if not line:
+                    break
+                server_log_head.append(line.rstrip("\n"))
+    except OSError:
+        pass
+
+    lightning_identity = (
+        capture_lightning_source_identity(args.lightning_source)
+        if lightning_mode
+        else None
+    )
+
     measured_runs = [run for case in case_results for run in case["runs"]]
     return {
-        "schema": "ax.rapid_mlx.prompt_suite_mtp.v1",
+        "schema": "ax.rapid_mlx.prompt_suite_mtp.v2",
         "engine": "rapid_mlx",
         "model": args.model,
         "rapid_source": str(args.rapid_source),
@@ -677,6 +887,10 @@ def run_suite(args: argparse.Namespace) -> dict[str, Any]:
         "rapid_mtp_patch": handle.compat_patch,
         "server_command": handle.command,
         "server_log": str(handle.log_path),
+        "server_log_head": server_log_head,
+        "server_log_tail": server_log_lines,
+        "server_header_info": server_header_info,
+        "lightning_source_identity": lightning_identity,
         "server_profile": "lightning_serve_preset" if lightning_mode else "rapid_mlx",
         "prompt_suite": str(prompt_suite),
         "prompt_suite_sha256": file_sha256(prompt_suite),
@@ -814,11 +1028,11 @@ def main() -> int:
         "--enable-thinking",
         dest="enable_thinking",
         action="store_true",
-        default=True,
+        default=False,
         help=(
             "Keep thinking enabled for lightning-mlx serve and send "
-            "enable_thinking=true in chat requests. This is the source-derived "
-            "Qwen3.6 serve preset default."
+            "enable_thinking=true in chat requests. Benchmark default is disabled "
+            "to match AX/MTPLX fair rows."
         ),
     )
     parser.add_argument(

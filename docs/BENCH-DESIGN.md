@@ -29,18 +29,21 @@ A third tool handles cross-engine MTP comparison on real prompt suites:
 ```
 bench_qwen36_mtp_fair.py               ←  cross-engine MTP comparison
   Produces: ax.qwen36_mtp_fair.v1 artifacts (tok/s + accept rates per engine per suite)
-  Answers:  "How does AX Engine MTP compare against MTPLX / Lightning MLX?"
+  Answers:  "How does AX Engine MTP compare against MTPLX?"
 ```
 
-This tool runs MTPLX, Lightning MLX, and AX Engine against the same real prompt suites
-with matched warmup, repetitions, cooldown, and sampling. Pass `--engines` (vendor names:
-`mtplx`, `lightning`, `ax`) and `--modes` (`mtp`, `mtp-ngram`) to select combinations;
-the script resolves each pair against an internal support matrix and skips unsupported
-ones with a warning (e.g. MTPLX does not yet support mtp-ngram). Its artifacts record
-per-engine decode throughput and MTP (and n-gram) accept rates, but they are cross-engine
-comparison evidence, not repo-owned MLX throughput claims. Do not cite
-`bench_qwen36_mtp_fair.py` rows as `mlx_lm.benchmark` baseline comparisons; the two
-evidence types are separate.
+This tool runs MTPLX and AX Engine against the same real prompt suites with matched
+warmup, repetitions, cooldown, and sampling. Pass `--engines` (vendor names: `mtplx`,
+`ax`) and `--modes` (`mtp`, `mtp-ngram`) to select combinations; the script resolves
+each pair against an internal support matrix and skips unsupported ones with a warning
+(e.g. MTPLX does not yet support mtp-ngram). Its artifacts record per-engine decode
+throughput and MTP (and n-gram) accept rates, but they are cross-engine comparison
+evidence, not repo-owned MLX throughput claims. Do not cite `bench_qwen36_mtp_fair.py`
+rows as `mlx_lm.benchmark` baseline comparisons; the two evidence types are separate.
+
+> Lightning-MLX rows were removed from this matrix on 2026-06-03. The runner
+> (`scripts/bench_rapid_mlx_prompt_suites.py`) and reference source
+> (`.internal/reference/lightning-mlx`) are preserved for ad-hoc probes.
 
 ---
 

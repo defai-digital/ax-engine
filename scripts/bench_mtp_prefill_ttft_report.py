@@ -29,25 +29,22 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+# Lightning-MLX was removed from the active framework on 2026-06-03; the
+# helper functions and LIGHTNING_ENGINES set below remain dormant so the
+# script still parses any historical Lightning artifacts encountered on disk.
 ENGINE_LABELS = {
     "mtplx": "MTPLX 0.3.7",
-    "lightning_mlx": "Lightning v0.7.0",
-    "lightning_mtp_ngram": "Lightning+ng v0.7.0",
     "ax_engine": "AX Engine v5.1.6",
     "ax_engine_ngram": "AX+ngram v5.1.6",
 }
-VERSIONS_FOOTNOTE = "MTPLX 0.3.7 · Lightning-MLX 0.7.0 · AX Engine v5.1.6"
+VERSIONS_FOOTNOTE = "MTPLX 0.3.7 · AX Engine v5.1.6"
 ENGINE_COLORS = {
     "mtplx": "#14532d",
-    "lightning_mlx": "#7c3aed",
-    "lightning_mtp_ngram": "#1e3a8a",
     "ax_engine": "#f97316",
     "ax_engine_ngram": "#eab308",
 }
 ENGINE_ORDER = [
     "mtplx",
-    "lightning_mlx",
-    "lightning_mtp_ngram",
     "ax_engine",
     "ax_engine_ngram",
 ]
@@ -713,7 +710,7 @@ def write_prefill_svg(path: Path, report: dict[str, Any]) -> None:
     _box_whisker_chart(
         path,
         title="MTP prefill throughput",
-        subtitle="All suites combined per model | box=IQR | dots=runs | Lightning ~= TTFT-derived",
+        subtitle="All suites combined per model | box=IQR | dots=runs",
         unit="tok/s",
         groups=groups,
         active_engines=active_engines,
@@ -749,7 +746,7 @@ def write_prefill_model_svg(path: Path, report: dict[str, Any], model_key: str) 
     _box_whisker_chart(
         path,
         title=f"{model_label} MTP prefill throughput",
-        subtitle="All suites combined | box=IQR | dots=runs | Lightning ~= TTFT-derived",
+        subtitle="All suites combined | box=IQR | dots=runs",
         unit="tok/s",
         groups=_combined_suite_chart_group(rows, active_engines, "prefill_tok_s"),
         active_engines=active_engines,

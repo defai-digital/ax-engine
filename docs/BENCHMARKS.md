@@ -30,7 +30,7 @@ host, model, sampling policy, and artifact schema are explicit.
 | Does the non-MLX delegated route still behave correctly? | llama.cpp manifests through `ax-engine-bench` | Delegated route-contract evidence only |
 | Does upstream `mlx-lm` delegated text compatibility still behave correctly? | Explicit `mlx_lm_delegated` checks through SDK/server/CLI surfaces | Delegated route-contract evidence only |
 | Which AX runtime path is best for a product endpoint on this host? | `scripts/bench_ax_engine_three_modes.py` against already-running AX servers | End-to-end AX API latency by mode; not raw model throughput |
-| How do all five MTP engines compare (MTPLX, Lightning MTP, Lightning MTP+n-gram, AX MTP, AX MTP+n-gram)? | `scripts/bench_qwen36_mtp_fair.py` | `ax.qwen36_mtp_fair.v1` artifact with per-engine decode tok/s, MTP accept rate, and n-gram accept rate |
+| How do the three MTP engines compare (MTPLX, AX MTP, AX MTP+n-gram)? | `scripts/bench_qwen36_mtp_fair.py` | `ax.qwen36_mtp_fair.v1` artifact with per-engine decode tok/s, MTP accept rate, and n-gram accept rate |
 | What are the prefill rates and TTFT across MTP engines? | `scripts/bench_mtp_prefill_ttft_report.py --result-dir <fair-output-dir>` | `ax.mtp_prefill_ttft_report.v1` artifact with per-engine prefill tok/s and TTFT ms; generates `prefill-tok-s.svg`, `ttft-ms.svg`, and `prefill-ttft-report.md` |
 
 Do not merge these rows into one unlabeled throughput table. Repo-owned
@@ -76,31 +76,26 @@ use a larger corpus with a published prompt-mix table. See
 ## Cross-Engine MTP Fair Comparison
 
 Use the fair benchmark when the question is how AX Engine MTP throughput and acceptance
-compares against MTPLX and Lightning MLX on the same real prompt suites.
+compares against MTPLX on the same real prompt suites.
 
-> **Lightning-MLX version:** v0.7.0 exhibited severe decode instability (0.2–45 tok/s
-> variance within a single suite run) and is not suitable for benchmarking. Use v0.6.32
-> (`git -C .internal/reference/lightning-mlx checkout v0.6.32`), which is the default in
-> this repo. The `--lightning-source` flag points to `.internal/reference/lightning-mlx`.
-
-Pass `--engines` (vendor names: `mtplx`, `lightning`, `ax`) and `--modes` (`mtp`, `mtp-ngram`)
+Pass `--engines` (vendor names: `mtplx`, `ax`) and `--modes` (`mtp`, `mtp-ngram`)
 to select what to run. The script resolves the combination against an internal support matrix and
 skips any vendor/mode pair not yet implemented (e.g. MTPLX does not support mtp-ngram yet).
 By default all vendors and all modes are included.
 
 ```text
-# Full five-engine comparison (default)
+# Full three-engine comparison (default)
 python3 scripts/bench_qwen36_mtp_fair.py \
   --models 27b-4bit 35b-a3b-4bit \
   --suites flappy long_code \
   --output-dir benchmarks/results/mtp-fair/$(date +%F)-qwen36-fair
 
-# Lightning and AX only, both modes
+# AX only, both modes
 python3 scripts/bench_qwen36_mtp_fair.py \
-  --engines lightning ax \
+  --engines ax \
   --models 27b-4bit \
   --suites flappy long_code \
-  --output-dir benchmarks/results/mtp-fair/$(date +%F)-qwen36-fair-no-mtplx
+  --output-dir benchmarks/results/mtp-fair/$(date +%F)-qwen36-fair-ax-only
 
 # MTP-only across all vendors (no n-gram)
 python3 scripts/bench_qwen36_mtp_fair.py \
@@ -108,15 +103,17 @@ python3 scripts/bench_qwen36_mtp_fair.py \
   --output-dir benchmarks/results/mtp-fair/$(date +%F)-qwen36-fair-mtp-only
 ```
 
-`mtp-ngram` for lightning runs lightning-mlx with n-gram prompt-lookup drafting layered before
-the MTP head: K=6 drafts, min-occurrences=2, greedy accept mode, hybrid MTP tail,
-`--ngram-everywhere`, self-tune threshold 0.30, auto-disable off.
-
 The output artifact uses schema `ax.qwen36_mtp_fair.v1`. It records per-engine
-decode tok/s and MTP accept rate for all engines. For `lightning_mtp_ngram`
-("Lightning ngram+MTP") it additionally records the n-gram accept rate as a
-separate column. Saved under `benchmarks/results/mtp-fair/`. Use `--skip-existing`
-to resume a partial run after adding a new engine.
+decode tok/s, MTP accept rate, and (for AX MTP+n-gram) n-gram accept rate.
+Saved under `benchmarks/results/mtp-fair/`. Use `--skip-existing` to resume a
+partial run after adding a new engine.
+
+> **Note on Lightning-MLX**: Lightning rows were removed from this matrix on
+> 2026-06-03 after discovery of a silent-thinking pathology that produced
+> inflated `completion_tokens` (and hence inflated decode rates) while emitting
+> only a few characters of visible text per 1000 generated tokens. Reference
+> source remains under `.internal/reference/lightning-mlx` and the
+> `bench_rapid_mlx_prompt_suites.py` runner is preserved for ad-hoc probes.
 
 To generate prefill rate and TTFT tables and charts from an existing fair benchmark
 output directory:
@@ -132,10 +129,7 @@ into the same directory, using schema `ax.mtp_prefill_ttft_report.v1`.
 
 **Measurement provenance**: MTPLX and AX Engine prefill rates and TTFT values are
 runner-level measurements of pure GPU compute time (`prompt_eval_time_s` for MTPLX,
-`ttft_source: ax_engine_runner_prefill_time` for AX). Lightning-MLX prefill and TTFT
-are client-side measurements (`ttft_s`) that include local HTTP socket overhead; they
-overstate latency slightly and understate prefill rate. Charts mark Lightning values
-with `~` to indicate this caveat.
+`ttft_source: ax_engine_runner_prefill_time` for AX).
 
 Do not merge these rows with `bench_mlx_inference_stack.py` MLX throughput tables.
 The fair benchmark uses real prompt suites, not the `mlx_lm.benchmark` random-token

@@ -286,6 +286,123 @@ class Qwen36MtpFairTests(unittest.TestCase):
         self.assertNotIn("--mtp-optimistic", cmd)
         self.assertIn("--disable-thinking", cmd)
 
+    def test_lightning_optimized_alias_source_passes_alias_to_adapter(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            args = Namespace(
+                hf_cache=root / "hf",
+                suites_dir=root / "suites",
+                output_dir=root / "out",
+                mode="sampled",
+                max_tokens=64,
+                repetitions=1,
+                warmup_repetitions=0,
+                cooldown=0.0,
+                temperature=0.6,
+                top_p=0.95,
+                top_k=20,
+                enable_thinking=False,
+                lightning_enable_thinking=True,
+                skip_existing=False,
+                rapid_python=Path("python"),
+                lightning_source=Path("lightning"),
+                base_port=18765,
+                lightning_mtp_optimistic=False,
+                lightning_mtp_draft_temperature=0.5,
+                lightning_ngram_auto_disable_mtp_threshold=0.85,
+                lightning_ngram_auto_disable_min_ngram=0.50,
+                inter_case_cooldown=0.0,
+                lightning_model_source="optimized-alias",
+            )
+            with patch.object(fair, "run_rapid_mlx_suite", return_value=root / "out.json") as run:
+                fair.run_engine_suite(
+                    args,
+                    engine="lightning_mlx",
+                    profile=fair.QWEN36_PROFILES["27b-4bit"],
+                    suite="flappy",
+                    depth=3,
+                    port=18765,
+                )
+
+        self.assertEqual(run.call_args.kwargs["model_dir"], Path("qwen3.6-27b"))
+
+    def test_lightning_ngram_optimized_alias_source_passes_alias_to_adapter(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            args = Namespace(
+                hf_cache=root / "hf",
+                suites_dir=root / "suites",
+                output_dir=root / "out",
+                mode="sampled",
+                max_tokens=64,
+                repetitions=1,
+                warmup_repetitions=0,
+                cooldown=0.0,
+                temperature=0.6,
+                top_p=0.95,
+                top_k=20,
+                enable_thinking=False,
+                lightning_enable_thinking=False,
+                skip_existing=False,
+                rapid_python=Path("python"),
+                lightning_source=Path("lightning"),
+                base_port=18765,
+                lightning_mtp_optimistic=False,
+                lightning_mtp_draft_temperature=0.5,
+                lightning_ngram_auto_disable_mtp_threshold=0.85,
+                lightning_ngram_auto_disable_min_ngram=0.50,
+                inter_case_cooldown=0.0,
+                lightning_model_source="optimized-alias",
+            )
+            with patch.object(fair, "run_rapid_mlx_suite", return_value=root / "out.json") as run:
+                fair.run_engine_suite(
+                    args,
+                    engine="lightning_mtp_ngram",
+                    profile=fair.QWEN36_PROFILES["35b-a3b-4bit"],
+                    suite="flappy",
+                    depth=1,
+                    port=18765,
+                )
+
+        self.assertEqual(run.call_args.kwargs["model_dir"], Path("qwen3.6-35b"))
+        self.assertTrue(run.call_args.kwargs["enable_ngram"])
+
+    def test_mtplx_ignores_lightning_optimized_alias_source(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            hf_cache = root / "hf"
+            sidecar = hf_cache / "models--ax-local--Qwen3.6-27B-MTP" / "snapshots" / "v1"
+            args = Namespace(
+                hf_cache=hf_cache,
+                suites_dir=root / "suites",
+                output_dir=root / "out",
+                mode="sampled",
+                max_tokens=64,
+                repetitions=1,
+                warmup_repetitions=0,
+                cooldown=0.0,
+                temperature=0.6,
+                top_p=0.95,
+                top_k=20,
+                enable_thinking=False,
+                skip_existing=False,
+                mtplx_python=Path("python"),
+                mtplx_profile="stable",
+                inter_case_cooldown=0.0,
+                lightning_model_source="optimized-alias",
+            )
+            with patch.object(fair, "run_mtplx_suite", return_value=root / "out.json") as run:
+                fair.run_engine_suite(
+                    args,
+                    engine="mtplx",
+                    profile=fair.QWEN36_PROFILES["27b-4bit"],
+                    suite="flappy",
+                    depth=3,
+                    port=18765,
+                )
+
+        self.assertEqual(run.call_args.kwargs["model_dir"], sidecar)
+
     def test_error_artifact_keeps_table_row(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

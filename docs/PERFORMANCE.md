@@ -217,8 +217,8 @@ because it uses its own loader. Always keep the MTP sidecar file named `mtp.safe
 
 The fair harness is `scripts/bench_qwen36_mtp_fair.py`. It runs the same
 prompt suite files, max-token cap, sampler, warmup count, measured repetitions,
-and cooldown across MTPLX, Lightning MLX, and AX Engine. The comparison uses
-native depth: 27B at depth 3, 35B-A3B at depth 1.
+and cooldown across MTPLX and AX Engine. The comparison uses native depth: 27B
+at depth 3, 35B-A3B at depth 1.
 
 ### Corrected 2026-05-30 run
 
@@ -257,10 +257,6 @@ Three rounds of fixes improved AX Engine's MTP accept rate:
 
 | Engine | flappy | long_code | python_modules_long |
 |---|---:|---:|---:|
-| Lightning MLX (tok/s) | 147.9 | 149.0 | 148.8 |
-| Lightning MLX (accept) | 99.0% | 98.5% | 97.2% |
-| Light. ngram+MTP (tok/s) | 173.9 | 194.9 | 136.1 |
-| Light. ngram+MTP (accept) | 91.0% | 92.1% | 91.8% |
 | MTPLX 0.3.7 (tok/s) | 107.3 | 106.4 | 102.7 |
 | MTPLX 0.3.7 (accept) | 50.8% | 50.5% | 42.6% |
 | AX MTP (tok/s) | 182.5 | 180.7 | 178.1 |
@@ -268,17 +264,12 @@ Three rounds of fixes improved AX Engine's MTP accept rate:
 | AX MTP+n-gram (tok/s) | 261.7 | 277.3 | 196.3 |
 | AX MTP+n-gram (accept) | 88.8% | 92.0% | 83.5% |
 | AX+ngram/MTPLX ratio | 2.439 | 2.605 | 1.912 |
-| AX+ngram/Lightning ratio | 1.769 | 1.861 | 1.319 |
 | AX+ngram/AX ratio | 1.434 | 1.534 | 1.103 |
 
 27B results (native depth=3, 1000 gen tokens):
 
 | Engine | flappy | long_code | python_modules_long |
 |---|---:|---:|---:|
-| Lightning MLX (tok/s) | 49.5 | 51.7 | 46.9 |
-| Lightning MLX (accept) | 96.5% | 93.3% | 76.5% |
-| Light. ngram+MTP (tok/s) | 52.4 | 54.9 | 45.0 |
-| Light. ngram+MTP (accept) | 85.4% | 87.6% | 72.2% |
 | MTPLX 0.3.7 (tok/s) | 51.5 | 53.5 | 51.6 |
 | MTPLX 0.3.7 (accept) | 100.0% | 99.7% | 87.6% |
 | AX MTP (tok/s) | 65.9 | 65.6 | 53.8 |
@@ -286,14 +277,14 @@ Three rounds of fixes improved AX Engine's MTP accept rate:
 | AX MTP+n-gram (tok/s) | 62.1 | 62.2 | 53.5 |
 | AX MTP+n-gram (accept) | 80.2% | 90.0% | 78.2% |
 | AX+ngram/MTPLX ratio | 1.206 | 1.163 | 1.037 |
-| AX+ngram/Lightning ratio | 1.254 | 1.203 | 1.140 |
 
 Note: For 27B (depth=3), pure MTP already achieves 98–99% accept on flappy/long_code, leaving
 little room for n-gram to improve throughput. For 35B-A3B (depth=1), n-gram stacking provides
 substantial speedup (+43–54%) by drafting additional tokens cheaply beyond the single MTP step.
 
-Artifacts: `benchmarks/results/mtp-fair/2026-06-01-qwen36-fair-ax-ngram3/` (five-engine:
-MTPLX, Lightning MLX, Lightning ngram+MTP, AX MTP, AX MTP+n-gram; fresh full rerun 2026-06-01).
+Artifacts: `benchmarks/results/mtp-fair/2026-06-01-qwen36-fair-ax-ngram3/`
+(historical three-engine snapshot: MTPLX, AX MTP, AX MTP+n-gram; pending
+replacement by a fresh full run).
 
 #### Chart data table
 
@@ -325,11 +316,11 @@ python3 scripts/prepare_qwen36_mtp_sidecar.py --model 27b
 python3 scripts/prepare_qwen36_mtp_sidecar.py --model 35b
 ```
 
-Run the full five-engine fair comparison at native depth:
+Run the full three-engine fair comparison at native depth:
 
 ```bash
 python3 scripts/bench_qwen36_mtp_fair.py \
-  --engines mtplx lightning ax \
+  --engines mtplx ax \
   --modes mtp mtp-ngram \
   --models 27b-4bit 35b-a3b-4bit \
   --suites flappy long_code python_modules_long \
