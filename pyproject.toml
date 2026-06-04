@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "ax-engine"
-version = "5.1.11"
+version = "5.1.12"
 description = "Python bindings for AX Engine"
 requires-python = ">=3.10"
 readme = "crates/ax-engine-py/README.md"
@@ -36,6 +36,9 @@ include = [
     { path = "python/ax_engine/_metal/metal/phase1-kernels.json", format = ["wheel"] },
     { path = "python/ax_engine/_metal/metal/kernels/phase1_dense_path.metal", format = ["wheel"] },
     { path = "python/ax_engine.dylibs/mlx.metallib", format = ["wheel"] },
+    # ax-engine-server binary — staged by scripts/build-pypi-wheel.sh before maturin runs.
+    # pip installs files in *.data/scripts/ to the user's bin directory.
+    { path = "python/ax_engine.data/scripts/ax-engine-server", format = ["wheel"] },
 ]
 # Explicitly exclude internal and developer-only paths from both wheel and sdist.
 # .internal/ is also in .gitignore; this is belt-and-suspenders for maturin sdist.

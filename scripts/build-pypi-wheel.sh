@@ -42,7 +42,23 @@ rm -f "${WHEEL_OUT}"/ax_engine-*.whl
 rm -f "${DELOCATED_OUT}"/ax_engine-*.whl
 mkdir -p "$WHEEL_OUT" "$DELOCATED_OUT"
 
-# ── 3. Build the wheel ─────────────────────────────────────────────────────
+# ── 3. Build ax-engine-server binary and stage it into the wheel data dir ─
+echo "==> Building ax-engine-server binary..."
+cargo build --release -p ax-engine-server
+
+SERVER_BIN="$REPO_ROOT/target/release/ax-engine-server"
+if [[ ! -f "$SERVER_BIN" ]]; then
+    echo "error: expected binary at $SERVER_BIN after cargo build"
+    exit 1
+fi
+
+SCRIPTS_DIR="$REPO_ROOT/python/ax_engine.data/scripts"
+mkdir -p "$SCRIPTS_DIR"
+cp "$SERVER_BIN" "$SCRIPTS_DIR/ax-engine-server"
+chmod +x "$SCRIPTS_DIR/ax-engine-server"
+echo "    staged: $SCRIPTS_DIR/ax-engine-server"
+
+# ── 4. Build the wheel ─────────────────────────────────────────────────────
 echo "==> Building wheel (release, stripped)..."
 maturin build --release --strip --out "$WHEEL_OUT"
 
@@ -56,7 +72,7 @@ fi
 WHEEL="${wheels[0]}"
 echo "    built: $WHEEL"
 
-# ── 4. Delocalize — bundle libmlxc + libmlx into the wheel ────────────────
+# ── 5. Delocalize — bundle libmlxc + libmlx into the wheel ────────────────
 echo "==> Delocalizing wheel (bundling dylibs)..."
 # --require-archs ensures we only accept arm64 (Apple Silicon only)
 delocate-wheel --require-archs arm64 -w "$DELOCATED_OUT" "$WHEEL"
@@ -72,7 +88,7 @@ echo "    delocated: $DELOCATED"
 echo "==> Bundled dependencies:"
 delocate-listdeps "$DELOCATED"
 
-# ── 5. Optionally publish ──────────────────────────────────────────────────
+# ── 6. Optionally publish ──────────────────────────────────────────────────
 if [[ "${1:-}" == "--publish" ]]; then
     echo "==> Publishing to PyPI..."
     maturin upload "$DELOCATED"
