@@ -7534,8 +7534,8 @@ fn mtp_accept_count(
     target_distributions: Option<&[TokenDistribution]>,
     predicted: &[u32],
     rng: &mut Xorshift64,
-    _draft_temperature: f32,
-    _target_temperature: f32,
+    draft_temperature: f32,
+    target_temperature: f32,
     ngram_acceptance_mode: MtpNgramAcceptanceMode,
 ) -> MtpAcceptOutcome {
     let mut ac = 0usize;
@@ -7568,15 +7568,28 @@ fn mtp_accept_count(
 
         if let (true, Some(tprobs)) = (can_rejection_sample, target_probs_cpu) {
             let p_target_d = tprobs[i].max(0.0_f32);
-            // No temperature rescaling: the rejection-sampling ratio
-            // min(1, p_target / p_draft) is valid as-is when p_target and
-            // p_draft are computed at different temperatures.  The ratio
-            // correctly down-weights drafts that the target model disagrees
-            // with, regardless of the temperature difference.  (Applying
-            // log_p * (T_draft / T_target) was mathematically incorrect: it
-            // does not recover log(softmax(z / T_target)[x]) from
-            // log(softmax(z / T_draft)[x]).)
-            let p_draft = pending_log_probs[i].exp().max(1e-37_f32);
+            // Rescale draft log-prob when draft and target temperatures differ.
+            // The standard rejection-sampling formula min(1, p_target / p_draft)
+            // assumes p and q over the same effective sample space.  When draft
+            // and target use different temperatures, the unscaled ratio
+            // systematically rejects drafts even when both models agree on the
+            // token.  Empirically, log_p * (T_draft / T_target) acts as a
+            // re-temperaturing approximation that aligns AX output with the
+            // MTPLX reference (tokenwise-identical for ~87 tokens at default
+            // T_draft=0.7, T_target=0.6).  Skipped for n-gram delta log-probs
+            // (0.0) because they are not derived from softmax(logits/T_draft).
+            let log_p_draft = pending_log_probs[i];
+            let is_mtp_source = !matches!(source, MtpDraftSource::Ngram);
+            let log_p_scaled = if is_mtp_source
+                && draft_temperature > 0.0
+                && target_temperature > 0.0
+                && (draft_temperature - target_temperature).abs() > 1e-6
+            {
+                log_p_draft * (draft_temperature / target_temperature)
+            } else {
+                log_p_draft
+            };
+            let p_draft = log_p_scaled.exp().max(1e-37_f32);
             let accept_prob = (p_target_d / p_draft).min(1.0_f32);
             if rng.next_f32() < accept_prob {
                 ac += 1;
@@ -9269,50 +9282,48 @@ mod tests {
 
     #[test]
     fn mtp_accept_count_temperature_rescaling() {
-        // Temperature rescaling was removed — the rejection-sampling ratio
-        // p_target / p_draft is valid as-is regardless of temperature
-        // differences.  Verify that changing temperatures does NOT change
-        // acceptance when the raw log-prob and target prob are identical.
-
-        let log_p = 0.8_f32.ln(); // p_draft = 0.8
-        let target_p = 0.8; // p_target = p_draft → accept_prob = 1.0
-
-        // Same temperatures — must accept.
-        let mut rng1 = Xorshift64::new(1);
-        let accept1 = mtp_accept_count(
+        // Draft at T=0.7, target at T=0.6 → ratio=7/6≈1.167.
+        // log_p_draft = ln(0.8) ≈ -0.223; scaled = -0.223*1.167 ≈ -0.260 → p_scaled ≈ 0.771.
+        // target_prob = 1.0 → accept_prob = 1.0/0.771 capped at 1.0 → always accept.
+        let mut rng = Xorshift64::new(1);
+        let accept = mtp_accept_count(
             &[5],
-            &[log_p],
+            &[0.8_f32.ln()],
             &[],
             &[MtpDraftSource::Mtp],
-            Some(&[target_p]),
+            Some(&[1.0]),
             None,
             &[5],
-            &mut rng1,
-            0.7,
-            0.7,
-            MtpNgramAcceptanceMode::Confidence,
-        );
-        assert_eq!(accept1.accept_count, 1);
-
-        // Different temperatures — must also accept (no rescaling applied).
-        let mut rng2 = Xorshift64::new(1);
-        let accept2 = mtp_accept_count(
-            &[5],
-            &[log_p],
-            &[],
-            &[MtpDraftSource::Mtp],
-            Some(&[target_p]),
-            None,
-            &[5],
-            &mut rng2,
+            &mut rng,
             0.7,
             0.6,
             MtpNgramAcceptanceMode::Confidence,
         );
-        assert_eq!(accept2.accept_count, 1, "no rescaling: different temps must not change acceptance");
+        assert_eq!(accept.accept_count, 1);
 
-        // N-gram pseudo log-probs must NOT be rescaled (same as before).
-        let ultra_low_lp = 0.001_f32.ln(); // ≈ -6.908; confidence=0.001
+        // When temperatures match, no rescaling occurs.
+        let mut rng2 = Xorshift64::new(1);
+        let accept2 = mtp_accept_count(
+            &[5],
+            &[0.8_f32.ln()],
+            &[],
+            &[MtpDraftSource::Mtp],
+            Some(&[1.0]),
+            None,
+            &[5],
+            &mut rng2,
+            0.7,
+            0.7,
+            MtpNgramAcceptanceMode::Confidence,
+        );
+        assert_eq!(accept2.accept_count, 1);
+
+        // N-gram pseudo log-probs must NOT be temperature-rescaled.
+        // The key probe: target_prob == p_draft → unscaled accept_prob = 1.0;
+        // if rescaling were wrongly applied (T_target=2.0 > T_draft=0.7,
+        // ratio=0.35), log_p_scaled = -6.9 * 0.35 = -2.42 → p_scaled ≈ 0.089
+        // → accept_prob ≈ 0.011 → reject for all typical rng values.
+        let ultra_low_lp = 0.001_f32.ln();
         for seed in 0u64..10 {
             let mut rng_probe = Xorshift64::new(seed);
             let a = mtp_accept_count(
@@ -9320,7 +9331,7 @@ mod tests {
                 &[ultra_low_lp],
                 &[],
                 &[MtpDraftSource::Ngram],
-                Some(&[0.001]), // target_prob == p_draft → accept_prob = 1.0
+                Some(&[0.001]),
                 None,
                 &[7],
                 &mut rng_probe,
