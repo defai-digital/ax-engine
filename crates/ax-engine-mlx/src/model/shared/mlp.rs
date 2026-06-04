@@ -2,7 +2,8 @@ use mlx_sys::{
     KernelOutputSpec, KernelTemplateArg, MlxArray, MlxClosure, MlxDtype, MlxMetalKernel,
     MlxVectorArray, add, argpartition_axis, argsort_axis, astype, divide, expand_dims,
     expand_dims_axes, gelu_approx_mul, gelu_approx_mul_quantized_matmul, multiply,
-    quantized_matmul_rms_norm, reshape, rms_norm, silu_mul, slice_last_dim, softmax, sum_axis,
+    quantized_matmul_rms_norm, reshape, rms_norm, silu_mul, slice_last_dim, softmax,
+    softmax_precise, sum_axis,
     take, take_along_axis, topk_axis,
 };
 use std::sync::{Mutex, OnceLock};
@@ -1033,7 +1034,9 @@ pub(crate) fn moe_router_qwen3(
         .expect("Qwen3 MoE layer must have router_proj");
     let logits = qw(normed, router_proj);
     let last_axis = logits.ndim() as i32 - 1;
-    let weights_all = softmax(&logits, last_axis, None);
+    // mlx-lm uses mx.softmax(..., precise=True) for all MoE routers; with bf16 logits and
+    // many experts (e.g. 256) the tiny round-off can flip top-k rankings and corrupt output.
+    let weights_all = softmax_precise(&logits, last_axis, None);
     let (top_k_indices, top_k_weights) = top_k_by_argpartition(
         &weights_all,
         cfg.moe_expert_count,
