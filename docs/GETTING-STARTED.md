@@ -46,15 +46,16 @@ paths validate compatibility and route behavior.
 
 For tagged macOS arm64 releases:
 
-```text
-brew install defai-digital/ax-engine/ax-engine
+```bash
+brew tap defai-digital/ax-engine
+brew install ax-engine
 ```
 
 This installs `ax-engine-server` and `ax-engine-bench`.
 The Homebrew formula also installs the `mlx-c` runtime dependency used by the
 released binaries.
 
-```text
+```bash
 ax-engine-server --help
 ax-engine-bench doctor
 ```
@@ -63,9 +64,9 @@ If `ax-engine-bench doctor` exits before printing a report with
 `Library not loaded: /opt/homebrew/opt/mlx-c/lib/libmlxc.dylib`, repair the
 runtime dependency with:
 
-```text
+```bash
 brew install mlx-c
-brew reinstall defai-digital/ax-engine/ax-engine
+brew reinstall ax-engine
 ```
 
 The GitHub release archive is the Homebrew formula payload, not a standalone

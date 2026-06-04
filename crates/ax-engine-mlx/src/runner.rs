@@ -6012,26 +6012,25 @@ impl MlxRunner {
         };
 
         // Compute optimistic AFTER skip-state may have populated pending.
-        // Auto-activate optimistic when MTP-only EWMA acceptance is sustained ≥98%
+        // Auto-activate optimistic when MTP-only EWMA acceptance is sustained ≥99%
         // and we have enough samples to trust it.  This avoids full-vocab softmax
         // + rejection sampling + rollback overhead when the model is clearly
         // producing highly accurate drafts (e.g. 27B flappy at 99.5% accept).
         //
-        // Hysteresis: activate at ≥0.98 (stochastic acceptance), deactivate at
-        // <0.96.  Once active, the EWMA tracks argmax-based truth which is
+        // Hysteresis: activate at ≥0.99 (stochastic acceptance), deactivate at
+        // <0.95.  Once active, the EWMA tracks argmax-based truth which is
         // strictly stricter than stochastic acceptance (a draft token can pass
         // p_target/p_draft rejection sampling but not be the argmax token).
-        // The 2-point hysteresis band balances responsiveness against oscillation:
-        // stochastic ≥0.98 activates, argmax tracking typically shows ~0.96–0.97,
-        // so the 0.96 deactivate floor prevents rapid on/off cycling.
+        // Without hysteresis, the EWMA oscillates: stochastic ≥0.99 activates,
+        // argmax tracking shows ~0.96, deactivates, stochastic ≥0.99, repeat.
         let can_auto_optimistic = !pending.is_empty()
             && state.mtp_telemetry.mtp_only_accept_rate_ewma_samples
                 >= mtp_ngram_gate_min_samples();
         let ewma = state.mtp_telemetry.mtp_only_accept_rate_ewma;
-        if can_auto_optimistic && !state.auto_optimistic_active && ewma >= 0.98 {
+        if can_auto_optimistic && !state.auto_optimistic_active && ewma >= 0.99 {
             state.auto_optimistic_active = true;
         }
-        if state.auto_optimistic_active && ewma < 0.96 {
+        if state.auto_optimistic_active && ewma < 0.95 {
             state.auto_optimistic_active = false;
         }
         let auto_optimistic = can_auto_optimistic && state.auto_optimistic_active;

@@ -45,11 +45,11 @@ HF_CACHE = Path(
 # for ad-hoc probes but Lightning rows no longer appear in the matrix.
 ENGINE_LABELS = {
     "mtplx": "MTPLX 0.3.7 (default)",
-    "ax_engine": "AX Engine v5.1.6 (MTP-only)",
-    "ax_engine_ngram": "AX Engine v5.1.6 (MTP + n-gram stacking)",
+    "ax_engine": "AX Engine v5.1.8 (MTP-only)",
+    "ax_engine_ngram": "AX Engine v5.1.8 (MTP + n-gram stacking)",
 }
 VERSIONS_FOOTNOTE = (
-    "Vendor-default config per row · MTPLX 0.3.7 · AX Engine v5.1.6"
+    "Vendor-default config per row · MTPLX 0.3.7 · AX Engine v5.1.8"
 )
 ENGINE_COLORS = {
     "mtplx": "#14532d",

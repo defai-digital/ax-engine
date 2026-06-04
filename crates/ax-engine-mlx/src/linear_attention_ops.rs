@@ -736,6 +736,7 @@ const RMS_NORM_GATE_KERNEL_SOURCE: &str = r#"
 
     float gate_v = static_cast<float>(gate[idx]);
     float normed_v = static_cast<float>(normed[idx]);
+    // gate_v / (1 + exp(-gate_v)) = gate_v * sigmoid(gate_v) = silu(gate_v)
     float activated = gate_v / (1.0f + exp(-gate_v));
     out[idx] = static_cast<T>(activated * normed_v);
 "#;
@@ -766,6 +767,7 @@ const RMS_NORM_FULL_GATE_KERNEL_SOURCE: &str = r#"
         float inv_rms = rsqrt(squares[0] / static_cast<float>(HeadDim) + eps[0]);
         float normed = x * inv_rms * static_cast<float>(weight[lane]);
         float gate_v = static_cast<float>(gate[base + lane]);
+        // gate_v / (1 + exp(-gate_v)) = gate_v * sigmoid(gate_v) = silu(gate_v)
         float activated = gate_v / (1.0f + exp(-gate_v));
         out[base + lane] = static_cast<T>(activated * normed);
     }
