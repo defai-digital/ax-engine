@@ -5,6 +5,21 @@
 **/.DS_Store
 __pycache__/
 *.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+node_modules/
+npm-debug.log*
+
+# Local environment and credential files
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
 
 # Internal design and planning materials — not for publication
 .internal/
@@ -25,5 +40,6 @@ benchmarks/results/mlx-inference/*-rerun/
 benchmarks/results/**/*.pid
 benchmarks/results/**/rust_sustained.txt.err
 benchmarks/results/**/logs/*.log
+python/ax_engine/_ax_engine*.so
 python/ax_engine.dylibs/mlx.metallib
 python/ax_engine.data/scripts/ax-engine-server
