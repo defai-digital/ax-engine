@@ -1,5 +1,9 @@
 # MTP/N-gram Acceptance Rate Optimization PRD
 
+## Status
+
+**Implemented.** All four phases shipped. Auto-optimistic hysteresis tightened from 0.99/0.95 to 0.98/0.96 to increase activation rate on harder prompts. Per-depth accept rate telemetry added (`ax_mtp_accept_rate_depth{0,1,2}_x1000`).
+
 ## Background
 
 AX Engine's MTP (Multi-Token Prediction) speculative decode path already achieves high acceptance rates on Qwen3.6-27B-MTP: depth-0 ≈ 99.9%, depth-1 ≈ 99.8%, depth-2 ≈ 98.9%, with auto-optimistic mode activating on ~80% of decode steps. The hybrid n-gram+MTP path stacks n-gram prefix drafts with MTP tail drafts, and the skip-state optimization halves model forwards.

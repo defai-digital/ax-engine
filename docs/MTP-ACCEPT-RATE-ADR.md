@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed
+**Implemented.** All five decisions shipped (2026-06-02). Auto-optimistic hysteresis tightened from 0.99/0.95 to 0.98/0.96 post-implementation to increase activation rate on harder prompts (python_modules_long: 10.4% → expected ≥80%). Per-depth accept rate telemetry added.
 
 ## Context
 

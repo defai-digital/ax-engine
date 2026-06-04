@@ -1802,6 +1802,19 @@ impl MtpTelemetry {
                 HurtGateMode::LegacyEwma => 1u32,
             },
         );
+        // Per-depth accept rates (scaled ×1000) for A/B comparison without
+        // computing ratios from drafted/accepted counters.
+        for d in 0..3 {
+            let drafted = self.drafted_by_depth[d];
+            let accepted = self.accepted_by_depth[d];
+            let rate_x1000 = if drafted > 0 {
+                (accepted as f32 / drafted as f32 * 1000.0) as u32
+            } else {
+                0u32
+            };
+            decisions
+                .upsert_route_decision(&format!("ax_mtp_accept_rate_depth{d}_x1000"), rate_x1000);
+        }
         // TODO(2026-06-03): observed values exceed 1000 in v0632 artifacts.
         // See PRD-2026-06-03 F4. accept_rate_ewma is asserted 0..=1 in tests;
         // emission scale or aggregation path has drifted.
@@ -5999,25 +6012,26 @@ impl MlxRunner {
         };
 
         // Compute optimistic AFTER skip-state may have populated pending.
-        // Auto-activate optimistic when MTP-only EWMA acceptance is sustained ≥99%
+        // Auto-activate optimistic when MTP-only EWMA acceptance is sustained ≥98%
         // and we have enough samples to trust it.  This avoids full-vocab softmax
         // + rejection sampling + rollback overhead when the model is clearly
         // producing highly accurate drafts (e.g. 27B flappy at 99.5% accept).
         //
-        // Hysteresis: activate at ≥0.99 (stochastic acceptance), deactivate at
-        // <0.95.  Once active, the EWMA tracks argmax-based truth which is
+        // Hysteresis: activate at ≥0.98 (stochastic acceptance), deactivate at
+        // <0.96.  Once active, the EWMA tracks argmax-based truth which is
         // strictly stricter than stochastic acceptance (a draft token can pass
         // p_target/p_draft rejection sampling but not be the argmax token).
-        // Without hysteresis, the EWMA oscillates: stochastic ≥0.99 activates,
-        // argmax tracking shows ~0.96, deactivates, stochastic ≥0.99, repeat.
+        // The 2-point hysteresis band balances responsiveness against oscillation:
+        // stochastic ≥0.98 activates, argmax tracking typically shows ~0.96–0.97,
+        // so the 0.96 deactivate floor prevents rapid on/off cycling.
         let can_auto_optimistic = !pending.is_empty()
             && state.mtp_telemetry.mtp_only_accept_rate_ewma_samples
                 >= mtp_ngram_gate_min_samples();
         let ewma = state.mtp_telemetry.mtp_only_accept_rate_ewma;
-        if can_auto_optimistic && !state.auto_optimistic_active && ewma >= 0.99 {
+        if can_auto_optimistic && !state.auto_optimistic_active && ewma >= 0.98 {
             state.auto_optimistic_active = true;
         }
-        if state.auto_optimistic_active && ewma < 0.95 {
+        if state.auto_optimistic_active && ewma < 0.96 {
             state.auto_optimistic_active = false;
         }
         let auto_optimistic = can_auto_optimistic && state.auto_optimistic_active;
@@ -6514,12 +6528,16 @@ impl MlxRunner {
                 state.mtp_telemetry.ngram_hurt_gated_steps.saturating_add(1);
             match mtp_ngram_hurt_gate_mode() {
                 HurtGateMode::SourceAware => {
-                    state.mtp_telemetry.ngram_source_hurt_gated_steps =
-                        state.mtp_telemetry.ngram_source_hurt_gated_steps.saturating_add(1);
+                    state.mtp_telemetry.ngram_source_hurt_gated_steps = state
+                        .mtp_telemetry
+                        .ngram_source_hurt_gated_steps
+                        .saturating_add(1);
                 }
                 HurtGateMode::LegacyEwma => {
-                    state.mtp_telemetry.ngram_legacy_hurt_gated_steps =
-                        state.mtp_telemetry.ngram_legacy_hurt_gated_steps.saturating_add(1);
+                    state.mtp_telemetry.ngram_legacy_hurt_gated_steps = state
+                        .mtp_telemetry
+                        .ngram_legacy_hurt_gated_steps
+                        .saturating_add(1);
                 }
             }
         }
@@ -7357,7 +7375,10 @@ struct MtpDraftFilter {
 }
 
 impl MtpDraftFilter {
-    const IDENTITY: Self = Self { top_p: 1.0, top_k: 0 };
+    const IDENTITY: Self = Self {
+        top_p: 1.0,
+        top_k: 0,
+    };
 }
 
 /// Build lazy target probabilities for MTP rejection sampling.
@@ -7394,11 +7415,18 @@ fn compute_mtp_target_probs(
         }
 
         let scaled_topk = multiply(logits_all, &inv_temp, None);
-        let verify_len = pending.len() as i32;
         let mut all_top_indices = Vec::with_capacity(pending.len());
         let mut all_top_probs = Vec::with_capacity(pending.len());
-        for row in 0..verify_len {
-            let row_logits = slice(&scaled_topk, &[row, 0], &[row + 1, vocab], &[1, 1], None);
+        // logits_all has shape [1 + pending.len(), vocab] where row 0 is the
+        // prediction after last_token. Draft positions start at row 1.
+        for row in 0..pending.len() as i32 {
+            let row_logits = slice(
+                &scaled_topk,
+                &[row + 1, 0],
+                &[row + 2, vocab],
+                &[1, 1],
+                None,
+            );
             let part = argpartition_axis(&row_logits, -k_i32, -1, None);
             let top_idx = slice(&part, &[0, vocab - k_i32], &[1, vocab], &[1, 1], None);
             let top_vals = take_along_axis(&row_logits, &top_idx, -1, None);
@@ -7419,12 +7447,17 @@ fn compute_mtp_target_probs(
     } else if draft_filter.top_k > 0 || draft_filter.top_p < 1.0 {
         // Draft-path filter applied to target probs for rejection-sampling parity.
         let dk = draft_filter.top_k.min(vocab as u32);
-        let dk_i32 = if dk > 0 { (dk as i32).min(vocab) } else { vocab };
-        let verify_len = pending.len() as i32;
+        let dk_i32 = if dk > 0 {
+            (dk as i32).min(vocab)
+        } else {
+            vocab
+        };
         let mut all_top_indices = Vec::with_capacity(pending.len());
         let mut all_top_probs = Vec::with_capacity(pending.len());
-        for row in 0..verify_len {
-            let row_logits = slice(&scaled, &[row, 0], &[row + 1, vocab], &[1, 1], None);
+        // logits_all has shape [1 + pending.len(), vocab] where row 0 is the
+        // prediction after last_token. Draft positions start at row 1.
+        for row in 0..pending.len() as i32 {
+            let row_logits = slice(&scaled, &[row + 1, 0], &[row + 2, vocab], &[1, 1], None);
             let (row_idx, row_probs) = if dk_i32 < vocab {
                 let part = argpartition_axis(&row_logits, -dk_i32, -1, None);
                 let top_idx = slice(&part, &[0, vocab - dk_i32], &[1, vocab], &[1, 1], None);
@@ -7460,7 +7493,7 @@ fn compute_mtp_target_probs(
         workspace.flat_indices.clear();
         workspace
             .flat_indices
-            .extend((0..n).map(|i| i as i32 * vocab + pending[i] as i32));
+            .extend((0..n).map(|i| (i + 1) as i32 * vocab + pending[i] as i32));
         let flat_idx_arr = MlxArray::from_raw_data(
             workspace.flat_indices.as_ptr() as *const u8,
             workspace.flat_indices.len() * 4,
@@ -12865,15 +12898,17 @@ mod tests {
         let pending: Vec<u32> = vec![10, 25, 55];
         let pending_log_probs: Vec<f32> = vec![-2.0, -3.0, -1.5];
         let temperature: f32 = 0.8;
-        let verify_len = pending.len() as i32;
+        // verify_len includes the last_token + pending drafts, matching the actual code path.
+        let verify_len = (pending.len() + 1) as i32;
 
         let mut logits_data = vec![0.0f32; verify_len as usize * vocab as usize];
-        logits_data[10] = 5.0;
-        logits_data[20] = 4.0;
-        logits_data[vocab as usize + 25] = 6.0;
-        logits_data[vocab as usize + 30] = 3.0;
-        logits_data[2 * vocab as usize + 55] = 7.0;
-        logits_data[2 * vocab as usize + 60] = 2.0;
+        // Row 0 is last_token (unused by extract_cpu_into), rows 1.. are for pending tokens.
+        logits_data[vocab as usize + 10] = 5.0;
+        logits_data[vocab as usize + 20] = 4.0;
+        logits_data[2 * vocab as usize + 25] = 6.0;
+        logits_data[2 * vocab as usize + 30] = 3.0;
+        logits_data[3 * vocab as usize + 55] = 7.0;
+        logits_data[3 * vocab as usize + 60] = 2.0;
 
         let logits_all = MlxArray::from_raw_data(
             logits_data.as_ptr() as *const u8,
@@ -13063,13 +13098,13 @@ mod tests {
     fn mtp_ngram_source_hurt_gate_does_not_fire_when_ngram_better_than_mtp() {
         // n-gram acceptance 80% > MTP acceptance 70% → no hurt.
         assert!(!mtp_ngram_source_hurt_gate(
-            3,   // ngram_max
-            100, // mtp_drafted
-            70,  // mtp_accepted
-            100, // ngram_drafted
-            80,  // ngram_accepted
-            4,   // min_samples
-            0.02 // margin
+            3,    // ngram_max
+            100,  // mtp_drafted
+            70,   // mtp_accepted
+            100,  // ngram_drafted
+            80,   // ngram_accepted
+            4,    // min_samples
+            0.02  // margin
         ));
     }
 
@@ -13077,13 +13112,13 @@ mod tests {
     fn mtp_ngram_source_hurt_gate_fires_when_ngram_worse_than_mtp() {
         // n-gram acceptance 50% + margin 0.02 < MTP acceptance 80% → hurt.
         assert!(mtp_ngram_source_hurt_gate(
-            3,   // ngram_max
-            100, // mtp_drafted
-            80,  // mtp_accepted
-            100, // ngram_drafted
-            50,  // ngram_accepted
-            4,   // min_samples
-            0.02 // margin
+            3,    // ngram_max
+            100,  // mtp_drafted
+            80,   // mtp_accepted
+            100,  // ngram_drafted
+            50,   // ngram_accepted
+            4,    // min_samples
+            0.02  // margin
         ));
     }
 
@@ -13107,13 +13142,13 @@ mod tests {
         // may be slightly < 80/100, so use a clear case: ngram=79%, MTP=80%,
         // margin=5% → 0.79 + 0.05 = 0.84 > 0.80 → no fire.
         assert!(!mtp_ngram_source_hurt_gate(
-            3,   // ngram_max
-            100, // mtp_drafted
-            80,  // mtp_accepted  (rate=0.80)
-            100, // ngram_drafted
-            79,  // ngram_accepted (rate=0.79)
-            4,   // min_samples
-            0.05 // margin (0.79 + 0.05 = 0.84, not < 0.80)
+            3,    // ngram_max
+            100,  // mtp_drafted
+            80,   // mtp_accepted  (rate=0.80)
+            100,  // ngram_drafted
+            79,   // ngram_accepted (rate=0.79)
+            4,    // min_samples
+            0.05  // margin (0.79 + 0.05 = 0.84, not < 0.80)
         ));
         // But with a small margin it should fire.
         assert!(mtp_ngram_source_hurt_gate(
