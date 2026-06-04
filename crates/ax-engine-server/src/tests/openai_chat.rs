@@ -33,11 +33,11 @@ fn openai_chat_prompt_renderer_uses_model_family_templates() {
     );
     assert_eq!(
         render_openai_chat_prompt("gemma4-e2b", &messages).expect("gemma4 prompt"),
-        "<bos><|turn>system\nBe concise.<turn|>\n<|turn>user\nHello<turn|>\n<|turn>model\n"
+        "<bos><|turn>system\nBe concise.<turn|>\n<|turn>user\nHello<turn|>\n<|turn>model\n<|channel>thought\n<channel|>"
     );
     assert_eq!(
         render_openai_chat_prompt("glm4_moe_lite", &messages).expect("glm prompt"),
-        "[gMASK]<sop><|system|>Be concise.<|user|>Hello<|assistant|></think>"
+        "[gMASK]<sop><|system|>Be concise.<|user|>Hello<|assistant|><think>\n\n</think>\n\n"
     );
     assert_eq!(
         render_openai_chat_prompt("unknown-local-model", &messages).expect("plain prompt"),
@@ -196,7 +196,7 @@ fn openai_glm_prompt_renderer_preserves_tool_observation_shape() {
     assert_eq!(
         render_openai_chat_prompt("mlx-community/GLM-4.7-Flash-4bit", &messages)
             .expect("glm prompt"),
-        "[gMASK]<sop><|user|>call tool<|assistant|></think><tool_call>x</tool_call><|observation|><tool_response>tool result</tool_response><|user|>continue<|assistant|></think>"
+        "[gMASK]<sop><|user|>call tool<|assistant|><think>\n\n</think>\n\n<tool_call>x</tool_call><|observation|><tool_response>tool result</tool_response><|user|>continue<|assistant|><think>\n\n</think>\n\n"
     );
 }
 

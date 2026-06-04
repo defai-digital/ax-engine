@@ -220,7 +220,7 @@ pub(crate) fn render_prompt_with_template(
                     };
                     prompt.push_str(tag);
                     if role == "assistant" {
-                        prompt.push_str("</think>");
+                        prompt.push_str("<think>\n\n</think>\n\n");
                         prompt.push_str(content.trim());
                     } else {
                         prompt.push_str(content);
@@ -249,8 +249,8 @@ pub(crate) fn render_prompt_with_template(
         ChatPromptTemplate::Llama3 => {
             prompt.push_str("<|start_header_id|>assistant<|end_header_id|>\n\n");
         }
-        ChatPromptTemplate::Gemma4 => prompt.push_str("<|turn>model\n"),
-        ChatPromptTemplate::Glm47 => prompt.push_str("<|assistant|></think>"),
+        ChatPromptTemplate::Gemma4 => prompt.push_str("<|turn>model\n<|channel>thought\n<channel|>"),
+        ChatPromptTemplate::Glm47 => prompt.push_str("<|assistant|><think>\n\n</think>\n\n"),
         ChatPromptTemplate::PlainRolePrefix => prompt.push_str("assistant:"),
         ChatPromptTemplate::Unsupported(_) => {
             unreachable!("unsupported templates are rejected before rendering")

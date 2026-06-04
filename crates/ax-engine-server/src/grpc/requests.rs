@@ -167,7 +167,7 @@ mod tests {
              <|turn>user\nhello<turn|>\n\
              <|turn>model\nhi<turn|>\n\
              <|turn>user\nagain<turn|>\n\
-             <|turn>model\n",
+             <|turn>model\n<|channel>thought\n<channel|>",
         );
     }
 
@@ -175,7 +175,7 @@ mod tests {
     fn grpc_chat_prompt_preserves_glm47_tool_observation_shape() {
         // Mirror of `openai_glm_prompt_renderer_preserves_tool_observation_shape`.
         // GLM4.7 needs tool/function roles routed to observation/tool_response tags
-        // and assistant turns to include `</think>` after the tag.
+        // and assistant turns to include an empty <think> block before content.
         let messages = vec![
             ("user".to_string(), "call tool".to_string()),
             (
@@ -191,10 +191,10 @@ mod tests {
             prompt,
             "[gMASK]<sop>\
              <|user|>call tool\
-             <|assistant|></think><tool_call>x</tool_call>\
+             <|assistant|><think>\n\n</think>\n\n<tool_call>x</tool_call>\
              <|observation|><tool_response>tool result</tool_response>\
              <|user|>continue\
-             <|assistant|></think>",
+             <|assistant|><think>\n\n</think>\n\n",
         );
     }
 }
