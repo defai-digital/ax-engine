@@ -43,16 +43,16 @@ warmup repetition.
 
 | Model | Suite | Depth | MTPLX tok/s | MTPLX accept | AX tok/s | AX accept | AX+ngram tok/s | AX+ngram accept |
 |---|---|---:|---:|---:|---:|---:|---:|---:|
-| Qwen3.6 27B 4-bit | flappy | 3 | 59.6 | 100.0% | 65.4 | 98.2% | 65.2 | 95.9% |
-| Qwen3.6 27B 4-bit | long_code | 3 | 59.3 | 99.7% | 63.4 | 95.3% | 67.3 | 91.8% |
-| Qwen3.6 27B 4-bit | python_modules_long | 3 | 54.4 | 87.6% | 54.0 | 77.5% | 52.0 | 73.5% |
-| Qwen3.6 35B-A3B 4-bit | flappy | 1 | 105.3 | 48.5% | 180.7 | 100.0% | 215.1 | 95.9% |
-| Qwen3.6 35B-A3B 4-bit | long_code | 1 | 106.0 | 51.7% | 176.6 | 99.6% | 267.9 | 97.3% |
-| Qwen3.6 35B-A3B 4-bit | python_modules_long | 1 | 102.1 | 43.4% | 173.9 | 93.6% | 176.4 | 90.7% |
+| Qwen3.6 27B 4-bit | flappy | 3 | 59.6 | 100.0% | 64.9 | 98.2% | 65.0 | 97.1% |
+| Qwen3.6 27B 4-bit | long_code | 3 | 59.3 | 99.7% | 63.3 | 95.3% | 64.5 | 92.3% |
+| Qwen3.6 27B 4-bit | python_modules_long | 3 | 54.4 | 87.6% | 53.6 | 77.5% | 52.3 | 76.1% |
+| Qwen3.6 35B-A3B 4-bit | flappy | 1 | 105.3 | 48.5% | 179.3 | 100.0% | 181.7 | 97.3% |
+| Qwen3.6 35B-A3B 4-bit | long_code | 1 | 106.0 | 51.7% | 180.2 | 99.7% | 182.9 | 98.0% |
+| Qwen3.6 35B-A3B 4-bit | python_modules_long | 1 | 102.1 | 43.4% | 175.4 | 93.5% | 174.0 | 93.0% |
 
 AX MTP uses pure MTP (n-gram stacking disabled); AX MTP+n-gram stacks n-gram speculative drafting on top of MTP. Sampler: temperature=0.6,
 top_p=0.95, top_k=20. 1000 gen tokens, 5 repetitions, 30 s cooldown, 10 s inter-case cooldown.
-MTPLX 0.3.7 · AX Engine v5.1.10.
+MTPLX 0.3.7 · AX Engine v5.1.12.
 
 #### Prefill throughput (tok/s) — same run
 
@@ -62,11 +62,11 @@ AX prefill is measured at runner level. Both are pure GPU compute measurements.
 | Model | Suite | Depth | MTPLX tok/s | AX MTP tok/s | AX MTP+ngram tok/s |
 |---|---|---:|---:|---:|---:|
 | Qwen3.6 27B 4-bit | flappy | 3 | 683 | 684 | 685 |
-| Qwen3.6 27B 4-bit | long_code | 3 | 798 | 790 | 790 |
-| Qwen3.6 27B 4-bit | python_modules_long | 3 | 691 | 692 | 693 |
-| Qwen3.6 35B-A3B 4-bit | flappy | 1 | 1,545 | 1,818 | 1,824 |
-| Qwen3.6 35B-A3B 4-bit | long_code | 1 | 2,287 | 2,713 | 2,714 |
-| Qwen3.6 35B-A3B 4-bit | python_modules_long | 1 | 1,431 | 2,002 | 2,005 |
+| Qwen3.6 27B 4-bit | long_code | 3 | 798 | 788 | 790 |
+| Qwen3.6 27B 4-bit | python_modules_long | 3 | 691 | 688 | 690 |
+| Qwen3.6 35B-A3B 4-bit | flappy | 1 | 1,545 | 1,813 | 1,818 |
+| Qwen3.6 35B-A3B 4-bit | long_code | 1 | 2,287 | 2,730 | 2,706 |
+| Qwen3.6 35B-A3B 4-bit | python_modules_long | 1 | 1,431 | 2,006 | 2,001 |
 
 #### Time to first token (ms) — same run
 
@@ -74,14 +74,14 @@ MTPLX TTFT is derived from `prompt_eval_time_s` (runner-level). AX TTFT is a run
 
 | Model | Suite | Depth | MTPLX ms | AX MTP ms | AX MTP+ngram ms |
 |---|---|---:|---:|---:|---:|
-| Qwen3.6 27B 4-bit | flappy | 3 | 471 | 470 | 470 |
-| Qwen3.6 27B 4-bit | long_code | 3 | 900 | 908 | 908 |
-| Qwen3.6 27B 4-bit | python_modules_long | 3 | 503 | 505 | 505 |
-| Qwen3.6 35B-A3B 4-bit | flappy | 1 | 208 | 177 | 176 |
-| Qwen3.6 35B-A3B 4-bit | long_code | 1 | 314 | 265 | 264 |
+| Qwen3.6 27B 4-bit | flappy | 3 | 471 | 471 | 474 |
+| Qwen3.6 27B 4-bit | long_code | 3 | 900 | 911 | 908 |
+| Qwen3.6 27B 4-bit | python_modules_long | 3 | 503 | 505 | 507 |
+| Qwen3.6 35B-A3B 4-bit | flappy | 1 | 208 | 178 | 177 |
+| Qwen3.6 35B-A3B 4-bit | long_code | 1 | 314 | 263 | 265 |
 | Qwen3.6 35B-A3B 4-bit | python_modules_long | 1 | 229 | 173 | 172 |
 
-Full artifacts: [`2026-06-03-mtplx-ax-fresh`](benchmarks/results/mtp-fair/2026-06-03-mtplx-ax-fresh/summary.json) (fresh MTPLX + AX-only run, 2026-06-03).
+Full artifacts: [`2026-06-04-ax-only-mtp-fresh`](benchmarks/results/mtp-fair/2026-06-04-ax-only-mtp-fresh/summary.json) (fresh AX MTP + n-gram run, 2026-06-04; MTPLX rows from 2026-06-04 same-day sidecar run).
 
 ### llama.cpp metal vs mlx-lm vs AX-Engine
 
@@ -116,7 +116,10 @@ Full artifacts: [`2026-06-03-mtplx-ax-fresh`](benchmarks/results/mtp-fair/2026-0
 pip install ax-engine
 ```
 
-**Homebrew** (for `ax-engine-server` and `ax-engine-bench` CLI tools):
+`pip install ax-engine` includes the `ax-engine-server` binary. After install,
+`ax-engine-server` is available on your `PATH`.
+
+**Homebrew** (for `ax-engine-bench` and an alternative `ax-engine-server` install):
 
 ```bash
 brew tap defai-digital/ax-engine
@@ -143,11 +146,10 @@ Or start the OpenAI-compatible server:
 # Download a model
 MODEL_DIR="$(python3 scripts/download_model.py mlx-community/Qwen3-4B-4bit --json | python3 -c 'import json,sys; print(json.load(sys.stdin)["dest"])')"
 
-# Start the server
-python -m ax_engine.openai_server \
-  --model-id my-model \
+# Start the server (ax-engine-server is on PATH after pip install ax-engine)
+ax-engine-server \
+  --mlx \
   --mlx-model-artifacts-dir "$MODEL_DIR" \
-  --tokenizer "$MODEL_DIR/tokenizer.json" \
   --port 8080
 ```
 
@@ -546,16 +548,23 @@ pip install ax-engine
 
 Requires macOS 14+, Apple Silicon (M2 Max or newer), Python 3.10+.
 
+The pip wheel includes the `ax-engine-server` binary. After install it is on
+your `PATH`:
+
+```bash
+ax-engine-server --mlx --mlx-model-artifacts-dir "$MODEL_DIR" --port 8080
+```
+
 Optional extras:
 
 ```bash
-pip install "ax-engine[openai]"   # FastAPI + uvicorn for the OpenAI-compatible server
 pip install "ax-engine[download]" # mlx-lm for model download helpers
 ```
 
 ### Homebrew (CLI tools)
 
-For `ax-engine-server` (native binary HTTP adapter) and `ax-engine-bench`:
+For `ax-engine-bench` (workload-contract CLI), or as an alternative way to
+install `ax-engine-server`:
 
 ```bash
 brew tap defai-digital/ax-engine
@@ -583,8 +592,8 @@ The fastest local workflow is:
 3. check model readiness;
 4. start the local server and call its HTTP endpoints.
 
-The commands below use source-build paths. If you installed with Homebrew, use
-`ax-engine-server` and `ax-engine-bench` directly instead of
+The commands below use source-build paths. If you installed via pip or Homebrew,
+use `ax-engine-server` and `ax-engine-bench` directly instead of
 `./target/release/...`.
 
 ### Start `ax-engine-server` from the CLI
@@ -685,7 +694,7 @@ architecture (Qwen3.5, Qwen3-Next) raises a hard error at load time.
 the required `model-manifest.json` in one step:
 
 ```bash
-# Script (works with Homebrew install or source build)
+# Script (works with pip, Homebrew, or source build)
 python scripts/download_model.py mlx-community/Qwen3-4B-4bit
 
 # For automation, emit a parseable summary
@@ -723,7 +732,7 @@ Both paths above require `model-manifest.json`. The download helpers generate it
 automatically. To run it directly:
 
 ```bash
-ax-engine-bench generate-manifest /path/to/model      # Homebrew or built binary
+ax-engine-bench generate-manifest /path/to/model      # pip, Homebrew, or built binary
 cargo run -p ax-engine-core --bin generate-manifest -- /path/to/model  # source
 ```
 
