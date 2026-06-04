@@ -7532,8 +7532,8 @@ fn mtp_accept_count(
     target_distributions: Option<&[TokenDistribution]>,
     predicted: &[u32],
     rng: &mut Xorshift64,
-    draft_temperature: f32,
-    target_temperature: f32,
+    _draft_temperature: f32,
+    _target_temperature: f32,
     ngram_acceptance_mode: MtpNgramAcceptanceMode,
 ) -> MtpAcceptOutcome {
     let mut ac = 0usize;
@@ -7566,23 +7566,15 @@ fn mtp_accept_count(
 
         if let (true, Some(tprobs)) = (can_rejection_sample, target_probs_cpu) {
             let p_target_d = tprobs[i].max(0.0_f32);
-            // Rescale draft log-prob when draft and target temperatures differ.
-            // log(p_scaled) = log(p_draft) * (T_draft / T_target) is the correct
-            // temperature adjustment for softmax probabilities.  Skipped for
-            // n-gram delta log-probs (0.0) because they are not derived from
-            // softmax(logits/T_draft) and must be used as-is.
-            let log_p_draft = pending_log_probs[i];
-            let is_mtp_source = !matches!(source, MtpDraftSource::Ngram);
-            let log_p_scaled = if is_mtp_source
-                && draft_temperature > 0.0
-                && target_temperature > 0.0
-                && (draft_temperature - target_temperature).abs() > 1e-6
-            {
-                log_p_draft * (draft_temperature / target_temperature)
-            } else {
-                log_p_draft
-            };
-            let p_draft = log_p_scaled.exp().max(1e-37_f32);
+            // No temperature rescaling: the rejection-sampling ratio
+            // min(1, p_target / p_draft) is valid as-is when p_target and
+            // p_draft are computed at different temperatures.  The ratio
+            // correctly down-weights drafts that the target model disagrees
+            // with, regardless of the temperature difference.  (Applying
+            // log_p * (T_draft / T_target) was mathematically incorrect: it
+            // does not recover log(softmax(z / T_target)[x]) from
+            // log(softmax(z / T_draft)[x]).)
+            let p_draft = pending_log_probs[i].exp().max(1e-37_f32);
             let accept_prob = (p_target_d / p_draft).min(1.0_f32);
             if rng.next_f32() < accept_prob {
                 ac += 1;
@@ -9275,53 +9267,49 @@ mod tests {
 
     #[test]
     fn mtp_accept_count_temperature_rescaling() {
-        // Draft at T=0.7, target at T=0.6 → ratio=7/6≈1.167.
-        // log_p_draft = ln(0.8) ≈ -0.223; scaled = -0.223*1.167 ≈ -0.260 → p_scaled ≈ 0.771.
-        // target_prob = 1.0 → accept_prob = 1.0/0.771 capped at 1.0 → always accept.
-        let mut rng = Xorshift64::new(1);
-        let accept = mtp_accept_count(
+        // Temperature rescaling was removed — the rejection-sampling ratio
+        // p_target / p_draft is valid as-is regardless of temperature
+        // differences.  Verify that changing temperatures does NOT change
+        // acceptance when the raw log-prob and target prob are identical.
+
+        let log_p = 0.8_f32.ln(); // p_draft = 0.8
+        let target_p = 0.8; // p_target = p_draft → accept_prob = 1.0
+
+        // Same temperatures — must accept.
+        let mut rng1 = Xorshift64::new(1);
+        let accept1 = mtp_accept_count(
             &[5],
-            &[0.8_f32.ln()],
+            &[log_p],
             &[],
             &[MtpDraftSource::Mtp],
-            Some(&[1.0]),
+            Some(&[target_p]),
             None,
             &[5],
-            &mut rng,
+            &mut rng1,
             0.7,
-            0.6,
+            0.7,
             MtpNgramAcceptanceMode::Confidence,
         );
-        assert_eq!(accept.accept_count, 1);
+        assert_eq!(accept1.accept_count, 1);
 
-        // When temperatures match, no rescaling occurs.
+        // Different temperatures — must also accept (no rescaling applied).
         let mut rng2 = Xorshift64::new(1);
         let accept2 = mtp_accept_count(
             &[5],
-            &[0.8_f32.ln()],
+            &[log_p],
             &[],
             &[MtpDraftSource::Mtp],
-            Some(&[1.0]),
+            Some(&[target_p]),
             None,
             &[5],
             &mut rng2,
             0.7,
-            0.7,
+            0.6,
             MtpNgramAcceptanceMode::Confidence,
         );
-        assert_eq!(accept2.accept_count, 1);
+        assert_eq!(accept2.accept_count, 1, "no rescaling: different temps must not change acceptance");
 
-        // N-gram pseudo log-probs must NOT be temperature-rescaled.
-        // Strategy: T_target=2.0 > T_draft=0.7; ratio=0.35 would BOOST the
-        // draft probability (make log_p less negative) if rescaling were applied.
-        // Use pseudo_lp = ln(0.001) ≈ -6.9:
-        //   - Without rescaling: p_draft = 0.001; accept_prob = 1.0/0.001 = 1000 → 1.0.
-        //   - With wrong rescaling (ratio=0.35): log_p_scaled = -6.9 * 0.35 = -2.42
-        //     → p_scaled ≈ 0.089; accept_prob = 1.0/0.089 ≈ 11.2 → 1.0.
-        // Both paths accept here. The key probe uses target_prob ≈ p_draft:
-        //   - Without rescaling: accept_prob = 0.001/0.001 = 1.0 → accept.
-        //   - With wrong rescaling: p_scaled ≈ 0.089; accept_prob = 0.001/0.089 ≈ 0.011 → often reject.
-        // rng seeds 0..10 all produce next_f32() > 0.011, so the wrongly-rescaled path rejects.
+        // N-gram pseudo log-probs must NOT be rescaled (same as before).
         let ultra_low_lp = 0.001_f32.ln(); // ≈ -6.908; confidence=0.001
         for seed in 0u64..10 {
             let mut rng_probe = Xorshift64::new(seed);
@@ -9330,16 +9318,14 @@ mod tests {
                 &[ultra_low_lp],
                 &[],
                 &[MtpDraftSource::Ngram],
-                Some(&[0.001]), // target_prob == p_draft_unscaled → accept_prob = 1.0
+                Some(&[0.001]), // target_prob == p_draft → accept_prob = 1.0
                 None,
                 &[7],
                 &mut rng_probe,
-                0.7, // draft_temperature
-                2.0, // target_temperature (ratio=0.35 would boost p if wrongly applied)
+                0.7,
+                2.0,
                 MtpNgramAcceptanceMode::Confidence,
             );
-            // With correct (no-rescaling) behavior: accept_prob = 1.0 → always accept.
-            // With wrong rescaling: accept_prob ≈ 0.011 → reject for all typical rng values.
             assert_eq!(
                 a.accept_count, 1,
                 "n-gram pseudo log-prob must not be rescaled (seed={seed})"
