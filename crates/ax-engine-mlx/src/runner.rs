@@ -7417,13 +7417,15 @@ fn compute_mtp_target_probs(
         let scaled_topk = multiply(logits_all, &inv_temp, None);
         let mut all_top_indices = Vec::with_capacity(pending.len());
         let mut all_top_probs = Vec::with_capacity(pending.len());
-        // logits_all has shape [1 + pending.len(), vocab] where row 0 is the
-        // prediction after last_token. Draft positions start at row 1.
+        // logits_all shape: [1 + pending.len(), vocab].
+        // verify_input = [last_token, pending[0], ..., pending[n-1]], so
+        // logits_all[i] = prediction after position i = target for pending[i].
+        // Row 0 is the target for pending[0]; rows 0..n are the draft targets.
         for row in 0..pending.len() as i32 {
             let row_logits = slice(
                 &scaled_topk,
-                &[row + 1, 0],
-                &[row + 2, vocab],
+                &[row, 0],
+                &[row + 1, vocab],
                 &[1, 1],
                 None,
             );
@@ -7454,10 +7456,11 @@ fn compute_mtp_target_probs(
         };
         let mut all_top_indices = Vec::with_capacity(pending.len());
         let mut all_top_probs = Vec::with_capacity(pending.len());
-        // logits_all has shape [1 + pending.len(), vocab] where row 0 is the
-        // prediction after last_token. Draft positions start at row 1.
+        // logits_all shape: [1 + pending.len(), vocab].
+        // verify_input = [last_token, pending[0], ..., pending[n-1]], so
+        // logits_all[i] = prediction after position i = target for pending[i].
         for row in 0..pending.len() as i32 {
-            let row_logits = slice(&scaled, &[row + 1, 0], &[row + 2, vocab], &[1, 1], None);
+            let row_logits = slice(&scaled, &[row, 0], &[row + 1, vocab], &[1, 1], None);
             let (row_idx, row_probs) = if dk_i32 < vocab {
                 let part = argpartition_axis(&row_logits, -dk_i32, -1, None);
                 let top_idx = slice(&part, &[0, vocab - dk_i32], &[1, vocab], &[1, 1], None);
@@ -7493,7 +7496,7 @@ fn compute_mtp_target_probs(
         workspace.flat_indices.clear();
         workspace
             .flat_indices
-            .extend((0..n).map(|i| (i + 1) as i32 * vocab + pending[i] as i32));
+            .extend((0..n).map(|i| i as i32 * vocab + pending[i] as i32));
         let flat_idx_arr = MlxArray::from_raw_data(
             workspace.flat_indices.as_ptr() as *const u8,
             workspace.flat_indices.len() * 4,
@@ -12884,17 +12887,18 @@ mod tests {
         let pending: Vec<u32> = vec![10, 25, 55];
         let pending_log_probs: Vec<f32> = vec![-2.0, -3.0, -1.5];
         let temperature: f32 = 0.8;
-        // verify_len includes the last_token + pending drafts, matching the actual code path.
+        // verify_len = 1 (last_token) + pending.len(); logits_all shape [verify_len, vocab].
+        // logits_all[i] = prediction after position i = target for pending[i].
         let verify_len = (pending.len() + 1) as i32;
 
         let mut logits_data = vec![0.0f32; verify_len as usize * vocab as usize];
-        // Row 0 is last_token (unused by extract_cpu_into), rows 1.. are for pending tokens.
-        logits_data[vocab as usize + 10] = 5.0;
-        logits_data[vocab as usize + 20] = 4.0;
-        logits_data[2 * vocab as usize + 25] = 6.0;
-        logits_data[2 * vocab as usize + 30] = 3.0;
-        logits_data[3 * vocab as usize + 55] = 7.0;
-        logits_data[3 * vocab as usize + 60] = 2.0;
+        // Row 0 is the target for pending[0], row 1 for pending[1], etc.
+        logits_data[10] = 5.0;
+        logits_data[20] = 4.0;
+        logits_data[vocab as usize + 25] = 6.0;
+        logits_data[vocab as usize + 30] = 3.0;
+        logits_data[2 * vocab as usize + 55] = 7.0;
+        logits_data[2 * vocab as usize + 60] = 2.0;
 
         let logits_all = MlxArray::from_raw_data(
             logits_data.as_ptr() as *const u8,
