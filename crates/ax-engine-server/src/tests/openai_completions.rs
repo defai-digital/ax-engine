@@ -81,7 +81,7 @@ async fn openai_completions_endpoint_translates_mlx_lm_delegated_response() {
                 );
                 assert_eq!(payload.get("stream"), Some(&Value::Bool(false)));
                 assert_eq!(payload.get("top_k"), Some(&json!(0)));
-                assert_eq!(payload.get("repetition_penalty"), Some(&json!(1.0)));
+                assert_eq!(payload.get("repetition_penalty"), Some(&json!(1.1)));
             },
         );
     let app = build_router(mlx_lm_delegated_state(mlx_lm_server_url));

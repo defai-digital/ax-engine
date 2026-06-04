@@ -37,12 +37,13 @@ pub(super) fn build_chat_generate_request(
     } else {
         req.max_tokens
     };
+    let default_repetition_penalty = if req.temperature <= 0.0 { 1.1 } else { 1.0 };
     let sampling = GenerateSampling {
         temperature: req.temperature,
         top_p: 1.0,
         top_k: 0,
         min_p: None,
-        repetition_penalty: 1.0,
+        repetition_penalty: default_repetition_penalty,
         repetition_context_size: None,
         seed: req.seed,
         deterministic: None,
@@ -70,12 +71,13 @@ pub(super) fn build_completion_generate_request(
     } else {
         req.max_tokens
     };
+    let default_repetition_penalty = if req.temperature <= 0.0 { 1.1 } else { 1.0 };
     let sampling = GenerateSampling {
         temperature: req.temperature,
         top_p: 1.0,
         top_k: 0,
         min_p: None,
-        repetition_penalty: 1.0,
+        repetition_penalty: default_repetition_penalty,
         repetition_context_size: None,
         seed: req.seed,
         deterministic: None,

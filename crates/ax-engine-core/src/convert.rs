@@ -62,7 +62,7 @@ pub enum ConvertError {
 pub fn convert_hf_model_dir(model_dir: &Path) -> Result<NativeModelManifest, ConvertError> {
     let config = load_hf_config(model_dir)?;
     let model_type = resolve_model_type(&config)?;
-    let family = model_family_for_type(&model_type)?;
+    let family = model_family_for_type(&model_type, &config)?;
     let arch = resolve_architecture(&config, &model_type)?;
     let safetensors_files = find_safetensors_files(model_dir)?;
     let all_tensors = parse_all_safetensors_headers(model_dir, &safetensors_files)?;
@@ -774,7 +774,17 @@ const LANGUAGE_MODEL_PREFIX_TENSOR_MAP: &[(&str, TensorMapping)] = &[
     ),
 ];
 
-fn model_family_for_type(model_type: &str) -> Result<ModelFamily, ConvertError> {
+fn config_has_moe_experts(config: &serde_json::Value, model_type: &str) -> bool {
+    arch_u64(config, model_type, "num_experts")
+        .or_else(|| arch_u64(config, model_type, "num_local_experts"))
+        .or_else(|| arch_u64(config, model_type, "n_routed_experts"))
+        .is_some_and(|n| n > 0)
+}
+
+fn model_family_for_type(
+    model_type: &str,
+    config: &serde_json::Value,
+) -> Result<ModelFamily, ConvertError> {
     match model_type {
         "qwen3" => Ok(ModelFamily {
             family_name: "qwen3",
@@ -785,7 +795,9 @@ fn model_family_for_type(model_type: &str) -> Result<ModelFamily, ConvertError> 
         "qwen3_5" | "qwen3.5" | "qwen3_5_moe" | "qwen3_5_text" => Ok(ModelFamily {
             family_name: "qwen3_5",
             tensor_map: HF_STANDARD_TENSOR_MAP,
-            extra_tensor_map: if matches!(model_type, "qwen3_5_moe" | "qwen3_5_text") {
+            extra_tensor_map: if matches!(model_type, "qwen3_5_moe" | "qwen3_5_text")
+                || config_has_moe_experts(config, model_type)
+            {
                 Some(QWEN3_MOE_EXTRA_TENSOR_MAP)
             } else {
                 None
@@ -1044,7 +1056,8 @@ fn glm_router_config(config: &serde_json::Value, model_type: &str) -> NativeGlmR
 
 fn moe_config(config: &serde_json::Value, model_type: &str) -> NativeMoeConfig {
     let is_gemma4_moe = arch_bool(config, model_type, "enable_moe_block").unwrap_or(false);
-    let is_qwen3_moe = matches!(model_type, "qwen3_moe" | "qwen3_5_moe" | "qwen3_5_text");
+    let is_qwen3_moe = matches!(model_type, "qwen3_moe" | "qwen3_5_moe" | "qwen3_5_text")
+        || (is_qwen3_5_family(model_type) && config_has_moe_experts(config, model_type));
     let is_qwen3_next_moe = matches!(model_type, "qwen3_next" | "qwen3_6" | "qwen3.6");
     let is_glm_moe = is_glm4_moe_lite(model_type);
     let is_mixtral = model_type == "mixtral";
@@ -2365,7 +2378,9 @@ mod tests {
 
     #[test]
     fn gemma4_moe_expert_names_map_to_unambiguous_roles() {
-        let family = model_family_for_type("gemma4").expect("gemma4 should be supported");
+        let empty_config = serde_json::json!({});
+        let family =
+            model_family_for_type("gemma4", &empty_config).expect("gemma4 should be supported");
 
         assert_eq!(
             match_tensor(
@@ -3345,7 +3360,9 @@ mod tests {
 
     #[test]
     fn maps_qwen3_moe_switch_mlp_tensors() {
-        let family = model_family_for_type("qwen3_moe").expect("qwen3_moe should be supported");
+        let empty_config = serde_json::json!({});
+        let family = model_family_for_type("qwen3_moe", &empty_config)
+            .expect("qwen3_moe should be supported");
 
         assert_eq!(
             match_tensor("model.layers.2.mlp.gate.weight", &family),
@@ -3363,6 +3380,71 @@ mod tests {
             match_tensor("model.layers.2.mlp.switch_mlp.down_proj.weight", &family),
             Some((NativeTensorRole::FfnDownExps, Some(2)))
         );
+    }
+
+    #[test]
+    fn qwen3_5_model_type_activates_moe_tensor_map_when_config_has_experts() {
+        let moe_config = serde_json::json!({
+            "text_config": {
+                "num_experts": 128,
+                "num_experts_per_tok": 8
+            }
+        });
+        let family =
+            model_family_for_type("qwen3_5", &moe_config).expect("qwen3_5 should be supported");
+        assert_eq!(family.family_name, "qwen3_5");
+        assert_eq!(
+            match_tensor("model.layers.2.mlp.gate.weight", &family),
+            Some((NativeTensorRole::FfnGateInp, Some(2)))
+        );
+        assert_eq!(
+            match_tensor("model.layers.2.mlp.switch_mlp.gate_proj.weight", &family),
+            Some((NativeTensorRole::FfnGateExps, Some(2)))
+        );
+        assert_eq!(
+            match_tensor("model.layers.2.mlp.switch_mlp.up_proj.weight", &family),
+            Some((NativeTensorRole::FfnUpExps, Some(2)))
+        );
+        assert_eq!(
+            match_tensor("model.layers.2.mlp.switch_mlp.down_proj.weight", &family),
+            Some((NativeTensorRole::FfnDownExps, Some(2)))
+        );
+    }
+
+    #[test]
+    fn qwen3_5_model_type_without_moe_config_has_no_moe_tensors() {
+        let dense_config = serde_json::json!({
+            "text_config": {
+                "hidden_size": 64
+            }
+        });
+        let family =
+            model_family_for_type("qwen3_5", &dense_config).expect("qwen3_5 should be supported");
+        assert_eq!(family.family_name, "qwen3_5");
+        assert_eq!(
+            match_tensor("model.layers.2.mlp.gate.weight", &family),
+            None
+        );
+        assert_eq!(
+            match_tensor("model.layers.2.mlp.switch_mlp.gate_proj.weight", &family),
+            None
+        );
+    }
+
+    #[test]
+    fn qwen3_5_moe_config_detected_from_num_experts_in_text_config() {
+        let config = serde_json::json!({
+            "model_type": "qwen3_5",
+            "text_config": {
+                "num_experts": 128,
+                "num_experts_per_tok": 8,
+                "moe_intermediate_size": 256
+            }
+        });
+        let moe = moe_config(&config, "qwen3_5");
+        assert_eq!(moe.expert_count, Some(128));
+        assert_eq!(moe.experts_per_token, Some(8));
+        assert_eq!(moe.expert_intermediate_size, Some(256));
     }
 
     #[test]

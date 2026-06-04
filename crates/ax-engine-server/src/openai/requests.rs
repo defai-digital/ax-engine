@@ -233,12 +233,13 @@ fn build_openai_sampling(
     seed: Option<u64>,
 ) -> GenerateSampling {
     let temperature = temperature.unwrap_or(0.0);
+    let default_repetition_penalty = if temperature <= 0.0 { 1.1 } else { 1.0 };
     GenerateSampling {
         temperature,
         top_p: top_p.unwrap_or(1.0),
         top_k: top_k.unwrap_or(0),
         min_p,
-        repetition_penalty: repetition_penalty.unwrap_or(1.0),
+        repetition_penalty: repetition_penalty.unwrap_or(default_repetition_penalty),
         repetition_context_size,
         seed: seed.unwrap_or_else(|| default_openai_seed(temperature)),
         deterministic: None,

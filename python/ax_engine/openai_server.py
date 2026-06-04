@@ -162,7 +162,9 @@ def create_app(
             return openai_error(*error)
 
         try:
-            input_tokens, _prompt_text = prompt_to_tokens(payload.get("prompt"), tokenizer)
+            input_tokens, _prompt_text = prompt_to_tokens(
+                payload.get("prompt"), tokenizer
+            )
         except OpenAiShimError as error:
             return openai_error(400, str(error))
 
@@ -179,14 +181,16 @@ def create_app(
             )
             return StreamingResponse(events, media_type="text/event-stream")
 
+        temperature = float(payload.get("temperature", 0.0))
+        default_rp = 1.1 if temperature <= 0.0 else 1.0
         with lock:
             result = session.generate(
                 input_tokens,
                 max_output_tokens=int(payload["max_tokens"]),
-                temperature=float(payload.get("temperature", 0.0)),
+                temperature=temperature,
                 top_p=float(payload.get("top_p", 1.0)),
                 top_k=int(payload.get("top_k", 0)),
-                repetition_penalty=float(payload.get("repetition_penalty", 1.0)),
+                repetition_penalty=float(payload.get("repetition_penalty", default_rp)),
                 seed=int(payload.get("seed", 0)),
                 metadata=payload.get("metadata"),
             )
@@ -197,7 +201,11 @@ def create_app(
             "created": int(time.time()),
             "model": model_id,
             "choices": [
-                {"index": 0, "text": text, "finish_reason": finish_reason(result.finish_reason)}
+                {
+                    "index": 0,
+                    "text": text,
+                    "finish_reason": finish_reason(result.finish_reason),
+                }
             ],
             "usage": usage(input_tokens, list(result.output_tokens)),
         }
@@ -228,14 +236,16 @@ def create_app(
             )
             return StreamingResponse(events, media_type="text/event-stream")
 
+        temperature = float(payload.get("temperature", 0.0))
+        default_rp = 1.1 if temperature <= 0.0 else 1.0
         with lock:
             result = session.generate(
                 input_tokens,
                 max_output_tokens=int(payload["max_tokens"]),
-                temperature=float(payload.get("temperature", 0.0)),
+                temperature=temperature,
                 top_p=float(payload.get("top_p", 1.0)),
                 top_k=int(payload.get("top_k", 0)),
-                repetition_penalty=float(payload.get("repetition_penalty", 1.0)),
+                repetition_penalty=float(payload.get("repetition_penalty", default_rp)),
                 seed=int(payload.get("seed", 0)),
                 metadata=payload.get("metadata"),
             )
@@ -285,13 +295,20 @@ def build_session(
 def validate_model(payload: dict[str, Any], model_id: str) -> tuple[int, str] | None:
     requested = payload.get("model")
     if requested is not None and requested != model_id:
-        return 400, f"requested model {requested} does not match configured model {model_id}"
+        return (
+            400,
+            f"requested model {requested} does not match configured model {model_id}",
+        )
     return None
 
 
 def require_max_tokens(payload: dict[str, Any]) -> tuple[int, str] | None:
     max_tokens = payload.get("max_tokens")
-    if isinstance(max_tokens, bool) or not isinstance(max_tokens, int) or max_tokens <= 0:
+    if (
+        isinstance(max_tokens, bool)
+        or not isinstance(max_tokens, int)
+        or max_tokens <= 0
+    ):
         return 400, "OpenAI-compatible MLX shim requires max_tokens > 0"
     return None
 
@@ -308,21 +325,37 @@ def stream_completion_chunks(
 ) -> Iterator[str]:
     stream_id = f"{'chatcmpl' if kind == 'chat' else 'cmpl'}-{int(time.time() * 1000)}"
     created = int(time.time())
+    temperature = float(payload.get("temperature", 0.0))
+    default_rp = 1.1 if temperature <= 0.0 else 1.0
+    accumulated_tokens: list[int] = []
+    prev_text_len = 0
     with lock:
         for event in session.stream_generate(
             input_tokens,
             max_output_tokens=max_tokens,
-            temperature=float(payload.get("temperature", 0.0)),
+            temperature=temperature,
             top_p=float(payload.get("top_p", 1.0)),
             top_k=int(payload.get("top_k", 0)),
-            repetition_penalty=float(payload.get("repetition_penalty", 1.0)),
+            repetition_penalty=float(payload.get("repetition_penalty", default_rp)),
             seed=int(payload.get("seed", 0)),
             metadata=payload.get("metadata"),
         ):
             if event.event == "step" and event.delta_tokens:
-                text = tokenizer.decode(list(event.delta_tokens))
-                yield sse_chunk(stream_id, created, model_id, text, None, kind)
+                accumulated_tokens.extend(event.delta_tokens)
+                full_text = tokenizer.decode(accumulated_tokens)
+                new_text = full_text[prev_text_len:]
+                prev_text_len = len(full_text)
+                if new_text:
+                    yield sse_chunk(stream_id, created, model_id, new_text, None, kind)
             elif event.event == "response" and event.response is not None:
+                # Flush any remaining text from incomplete UTF-8 sequences
+                if accumulated_tokens:
+                    final_text = tokenizer.decode(accumulated_tokens)
+                    remaining = final_text[prev_text_len:]
+                    if remaining:
+                        yield sse_chunk(
+                            stream_id, created, model_id, remaining, None, kind
+                        )
                 yield sse_chunk(
                     stream_id,
                     created,
