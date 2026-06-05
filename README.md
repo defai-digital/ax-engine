@@ -55,7 +55,7 @@ draft confidence gate (`AX_MLX_MTP_DRAFT_MIN_CONFIDENCE=0.98`), which only propo
 pure-MTP accept to ≥99% on every row (set the variable to `0` to restore ungated drafting). The gate is scoped to pure MTP, so the
 n-gram-stacked column pools lower-confidence n-gram drafts and sits slightly below it. Sampler: temperature=0.6,
 top_p=0.95, top_k=20. 1000 gen tokens, 5 repetitions, 30 s cooldown, 10 s inter-case cooldown.
-MTPLX 0.3.7 · AX Engine v5.2.2.
+MTPLX 0.3.7 · AX Engine v5.2.3.
 
 #### Prefill throughput (tok/s) — same run
 
