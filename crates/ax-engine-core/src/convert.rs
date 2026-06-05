@@ -197,7 +197,8 @@ pub fn convert_hf_model_dir(model_dir: &Path) -> Result<NativeModelManifest, Con
             .and_then(u64_to_u32)
             .unwrap_or(0),
         vocab_size_per_layer_input: arch_u64(&config, &model_type, "vocab_size_per_layer_input")
-            .and_then(u64_to_u32),
+            .and_then(u64_to_u32)
+            .filter(|v| *v > 0),
         linear_attention,
         mla_attention,
         moe: moe_config(&config, &model_type),
