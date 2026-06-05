@@ -64,6 +64,22 @@ throughput baselines.
   available. It rejects embedding repo IDs; embedding artifacts are manual.
   Use `--dest` only when you want a custom local directory. Use `--json` for
   automation.
+- `prepare_mtp_sidecar.py`: generic "download + convert to MTP mode" tool.
+  Given `--hf-repo <source>` (a model that ships `mtp.*` tensors) and `--base`
+  (a local dir or cached repo id of the serving model), it auto-discovers which
+  source shards hold the MTP head from `model.safetensors.index.json`, downloads
+  only those, normalizes the tensor layout through a per-architecture registry
+  (Qwen3.6 dense + packed-MoE today), and writes the sidecar contract the
+  runtime loads: `mtp.safetensors`, `mtplx_runtime.json`, a patched
+  `config.json`, and an `ax.mtp_sidecar_provenance.v1` manifest (validated by
+  `check_mtp_sidecar_provenance.py`). Optional `--quantize {4,8}` produces a
+  mixed sidecar (2-D projections quantized, experts/norms bf16). Output defaults
+  to a synthetic `models--ax-local--<base>-MTP/snapshots/v1/` cache entry usable
+  by `ax-engine-bench --model-dir` directly.
+- `prepare_qwen36_mtp_sidecar.py`: the Qwen3.6-specific predecessor used to
+  build the published fair-benchmark sidecars (fixed `--model {27b,35b}` table).
+  Kept for provenance reproducibility; prefer `prepare_mtp_sidecar.py` for new
+  models.
 - `ax-engine-bench generate-manifest <model-dir> --json`: stable
   `ax.generate_manifest.v1` summary for automation callers that need to
   distinguish newly written manifests from already-ready model directories.
@@ -90,6 +106,12 @@ throughput baselines.
   Gemma per-layer-input, QKV projection, SDPA, post-attention/FFN, and lm-head
   diagnosis; those profile rows insert eval barriers and are not headline
   throughput evidence.
+- `bench_qwen36_mtp_fair.py`: Qwen3.6 MTP prompt-suite harness for MTPLX and AX
+  Engine. The default `--modes mtp mtp-ngram` path is a fixed-depth comparison.
+  Add `--modes tuned` only for tuned best-of rows: MTPLX runs its public
+  `mtplx tune --retune` path, while AX sweeps direct, n-gram, MTP, and
+  MTP+n-gram policies before running the selected policy as the final row. Keep
+  fixed-depth and tuned-best-of summaries separate for headline comparisons.
 - `bench_llama_cpp_metal_sweep.py`: resolves GGUF candidates from
   `benchmarks/manifests/llama_cpp_metal/inventory.json` and runs
   `bench_mlx_inference_stack.py` for the matching README rows. By default it

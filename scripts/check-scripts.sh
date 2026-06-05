@@ -34,6 +34,9 @@ bash -n scripts/*.sh scripts/lib/common.sh
   scripts/bench_mtp_differential.py \
   scripts/check_mtp_sidecar_provenance.py \
   scripts/prepare_qwen36_mtp_sidecar.py \
+  scripts/test_prepare_qwen36_mtp_sidecar.py \
+  scripts/prepare_mtp_sidecar.py \
+  scripts/test_prepare_mtp_sidecar.py \
   scripts/bench_lightning_mlx_raw.py \
   scripts/bench_qwen36_mtp_fair.py \
   scripts/bench_rapid_mlx_prompt_suites.py \
@@ -152,6 +155,8 @@ bash -n scripts/*.sh scripts/lib/common.sh
   scripts/test_bench_llama_cpp_metal_sweep.py \
   scripts/test_bench_mtp_differential.py \
   scripts/test_check_mtp_sidecar_provenance.py \
+  scripts/test_prepare_qwen36_mtp_sidecar.py \
+  scripts/test_prepare_mtp_sidecar.py \
   scripts/test_bench_lightning_mlx_raw.py \
   scripts/test_bench_qwen36_mtp_fair.py \
   scripts/test_bench_rapid_mlx_prompt_suites.py \
