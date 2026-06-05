@@ -439,22 +439,52 @@ pub fn mtp_draft_tokens(
     let gate_forces_greedy = min_confidence > 0.0 && draft_mode != MtpDraftMode::Stochastic;
     let result = if gate_forces_greedy {
         mtp_draft_tokens_greedy(
-            head, weights, cfg, first_hidden, first_token, cache, max_depth, vocab,
+            head,
+            weights,
+            cfg,
+            first_hidden,
+            first_token,
+            cache,
+            max_depth,
+            vocab,
         )
     } else {
         match draft_mode {
             MtpDraftMode::Stochastic => mtp_draft_tokens_stochastic(
-                head, weights, cfg, first_hidden, first_token, cache, max_depth, vocab, rng,
+                head,
+                weights,
+                cfg,
+                first_hidden,
+                first_token,
+                cache,
+                max_depth,
+                vocab,
+                rng,
             ),
             MtpDraftMode::Greedy => {
                 let use_temperature = head.draft_sampling.temperature > 0.0;
                 if use_temperature {
                     mtp_draft_tokens_sampled(
-                        head, weights, cfg, first_hidden, first_token, cache, max_depth, vocab, rng,
+                        head,
+                        weights,
+                        cfg,
+                        first_hidden,
+                        first_token,
+                        cache,
+                        max_depth,
+                        vocab,
+                        rng,
                     )
                 } else {
                     mtp_draft_tokens_greedy(
-                        head, weights, cfg, first_hidden, first_token, cache, max_depth, vocab,
+                        head,
+                        weights,
+                        cfg,
+                        first_hidden,
+                        first_token,
+                        cache,
+                        max_depth,
+                        vocab,
                     )
                 }
             }
