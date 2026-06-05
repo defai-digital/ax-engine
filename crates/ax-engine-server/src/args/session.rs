@@ -66,7 +66,20 @@ impl ServerArgs {
 
     pub fn session_config(&self) -> Result<EngineSessionConfig, String> {
         let preset = self.preset.map(ServerPreset::definition);
-        let effective_mlx = self.mlx || preset.is_some();
+        // A preset fully specifies its backend tier (it conflicts with
+        // --model-id and --support-tier), so the preset's tier — not the --mlx
+        // flag — decides whether the native MLX path runs. A delegated preset
+        // (e.g. GLM 4.7 Flash -> mlx-lm passby) therefore routes to the
+        // delegated backend even when --mlx is also passed, instead of silently
+        // falling back to native. Without a preset, --mlx selects native as
+        // before.
+        let effective_mlx = match preset {
+            Some(definition) => matches!(
+                definition.support_tier,
+                PreviewSupportTier::MlxPreview | PreviewSupportTier::MlxCertified
+            ),
+            None => self.mlx,
+        };
         let effective_support_tier = self.effective_support_tier();
         let effective_max_batch_tokens = preset
             .map(|definition| definition.max_batch_tokens)

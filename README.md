@@ -277,7 +277,12 @@ delegated rows are not AX-owned throughput claims.
 | Qwen 3 | `Qwen3-4B-4bit` and manifest-backed Qwen 3 dense checkpoints | Repo-owned MLX runtime | SwiGLU dense FFN; per-head QK norm; optional MoE variants require manifest evidence |
 | Qwen 3.5 | `Qwen3.5-9B-MLX-4bit` | Repo-owned MLX runtime | Linear attention + MoE FFN; `attn_output_gate` per-head interleaving |
 | Qwen 3.6 / Coder Next | `Qwen3.6-35B-A3B` 4-bit MLX, `Qwen3.6-27B` 4/5/6/8-bit MLX, `Qwen3-Coder-Next-4bit` | Repo-owned MLX runtime | `qwen3_next`: GatedDelta linear attention, full attention with per-head sigmoid gate, sparse top-k MoE with shared expert |
-| GLM 4.7 Flash | `mlx-community/GLM-4.7-Flash-4bit` | Repo-owned MLX runtime for the promoted community artifact | MLA attention, sigmoid router, latent-KV cache support |
+
+> GLM 4.7 Flash (`glm4_moe_lite`) was demoted from direct support to the
+> `mlx_lm_delegated` passby route: native decode only reaches `mlx_lm` parity and
+> the 4-bit export has no MTP head for AX speculation to exploit. The
+> `glm4.7-flash-4bit` preset now selects the delegated tier and requires
+> `--mlx-lm-server-url`. See [`docs/SUPPORTED-MODELS.md`](docs/SUPPORTED-MODELS.md).
 
 Direct-support models use MLX safetensors format with the AX
 `model-manifest.json` descriptor. Each supported architecture has a hand-written
