@@ -46,6 +46,81 @@ pub fn mtp_draft_mode_from_env() -> MtpDraftMode {
     })
 }
 
+/// Minimum MTP-head confidence (probability assigned to the drafted token)
+/// required to keep a speculative draft token.
+///
+/// Without the gate, speculative drafts are produced up to `max_depth` deep
+/// regardless of how confident the head is, but deep tokens on hard,
+/// fresh-generation inputs are frequently rejected by the target model, which
+/// drags the measured accept rate down (e.g. Qwen3.6 27B `python_modules_long`
+/// pure-MTP accept fell to ~82%). With the gate, the draft is truncated at the
+/// first depth whose head confidence (its true, temperature-1.0 probability)
+/// falls below the threshold, so only high-confidence tokens are proposed for
+/// verification. This trades a little speculative depth on hard inputs for a
+/// much higher accept rate, and is correctness-preserving: truncating a draft
+/// never changes the committed output, only how many tokens are verified ahead.
+///
+/// Read from `AX_MLX_MTP_DRAFT_MIN_CONFIDENCE`; valid range `[0.0, 1.0)`.
+/// Defaults to [`DEFAULT_MTP_DRAFT_MIN_CONFIDENCE`] (gate on); set the variable
+/// to `0` to disable the gate and restore the prior full-depth draft behavior.
+pub fn mtp_draft_min_confidence_from_env() -> f32 {
+    static CACHED: OnceLock<f32> = OnceLock::new();
+    *CACHED.get_or_init(|| match std::env::var("AX_MLX_MTP_DRAFT_MIN_CONFIDENCE") {
+        Ok(raw) => raw
+            .trim()
+            .parse::<f32>()
+            .ok()
+            .filter(|value| value.is_finite() && *value >= 0.0 && *value < 1.0)
+            .unwrap_or(DEFAULT_MTP_DRAFT_MIN_CONFIDENCE),
+        Err(_) => DEFAULT_MTP_DRAFT_MIN_CONFIDENCE,
+    })
+}
+
+/// Default MTP draft confidence gate. Calibrated on the Qwen3.6 fair-MTP suites
+/// so pure-MTP accept stays >= 99% on every measured model and prompt suite
+/// (including the hardest fresh-generation row) while keeping decode throughput
+/// within a few percent of ungated drafting. Override with
+/// `AX_MLX_MTP_DRAFT_MIN_CONFIDENCE`.
+pub const DEFAULT_MTP_DRAFT_MIN_CONFIDENCE: f32 = 0.98;
+
+/// Truncate a draft to the longest leading run whose per-depth head confidence
+/// stays at or above `min_confidence` (probability, not log-prob).
+///
+/// Gating starts at depth 0, so a low-confidence first token yields an empty
+/// draft and that step falls back to an ordinary verified decode (it does not
+/// enter the speculative accept/draft accounting). This keeps the accept rate
+/// bounded below by the gate: only tokens the head is at least `min_confidence`
+/// sure of are ever proposed for verification.
+fn apply_draft_confidence_gate(
+    result: (Vec<u32>, Vec<f32>, Vec<TokenDistribution>, usize, [f32; 3]),
+    min_confidence: f32,
+) -> (Vec<u32>, Vec<f32>, Vec<TokenDistribution>, usize, [f32; 3]) {
+    let (mut tokens, mut log_probs, mut distributions, _added, accept3) = result;
+    if min_confidence <= 0.0 || tokens.is_empty() {
+        let added = tokens.len();
+        return (tokens, log_probs, distributions, added, accept3);
+    }
+    let ln_threshold = min_confidence.ln();
+    // First depth whose head confidence drops below the threshold; keep [0, keep).
+    let mut keep = tokens.len();
+    for (depth, &log_prob) in log_probs.iter().enumerate() {
+        if !log_prob.is_finite() || log_prob < ln_threshold {
+            keep = depth;
+            break;
+        }
+    }
+    if keep >= tokens.len() {
+        let added = tokens.len();
+        return (tokens, log_probs, distributions, added, accept3);
+    }
+    tokens.truncate(keep);
+    log_probs.truncate(keep);
+    if distributions.len() > keep {
+        distributions.truncate(keep);
+    }
+    (tokens, log_probs, distributions, keep, accept3)
+}
+
 /// Lazy argmax over a `[vocab_size]` f32 logit array.
 ///
 /// Returns a lazy `[1]` uint32 array — caller must `eval` it to materialise.
@@ -354,47 +429,39 @@ pub fn mtp_draft_tokens(
 
     let vocab = cfg.vocab_size as i32;
     let draft_mode = mtp_draft_mode_from_env();
+    let min_confidence = mtp_draft_min_confidence_from_env();
 
-    match draft_mode {
-        MtpDraftMode::Stochastic => mtp_draft_tokens_stochastic(
-            head,
-            weights,
-            cfg,
-            first_hidden,
-            first_token,
-            cache,
-            max_depth,
-            vocab,
-            rng,
-        ),
-        MtpDraftMode::Greedy => {
-            let use_temperature = head.draft_sampling.temperature > 0.0;
-            if use_temperature {
-                mtp_draft_tokens_sampled(
-                    head,
-                    weights,
-                    cfg,
-                    first_hidden,
-                    first_token,
-                    cache,
-                    max_depth,
-                    vocab,
-                    rng,
-                )
-            } else {
-                mtp_draft_tokens_greedy(
-                    head,
-                    weights,
-                    cfg,
-                    first_hidden,
-                    first_token,
-                    cache,
-                    max_depth,
-                    vocab,
-                )
+    // The confidence gate keys off the head's true (temperature 1.0) probability
+    // of each drafted token. The greedy draft path computes exactly that, while
+    // the sampled path's temperature-scaled log-probs saturate near 1.0 and lose
+    // gating resolution. So whenever the gate is active we draft greedily (argmax)
+    // unless stochastic drafting was explicitly requested via AX_MLX_MTP_DRAFT_MODE.
+    let gate_forces_greedy = min_confidence > 0.0 && draft_mode != MtpDraftMode::Stochastic;
+    let result = if gate_forces_greedy {
+        mtp_draft_tokens_greedy(
+            head, weights, cfg, first_hidden, first_token, cache, max_depth, vocab,
+        )
+    } else {
+        match draft_mode {
+            MtpDraftMode::Stochastic => mtp_draft_tokens_stochastic(
+                head, weights, cfg, first_hidden, first_token, cache, max_depth, vocab, rng,
+            ),
+            MtpDraftMode::Greedy => {
+                let use_temperature = head.draft_sampling.temperature > 0.0;
+                if use_temperature {
+                    mtp_draft_tokens_sampled(
+                        head, weights, cfg, first_hidden, first_token, cache, max_depth, vocab, rng,
+                    )
+                } else {
+                    mtp_draft_tokens_greedy(
+                        head, weights, cfg, first_hidden, first_token, cache, max_depth, vocab,
+                    )
+                }
             }
         }
-    }
+    };
+
+    apply_draft_confidence_gate(result, min_confidence)
 }
 
 /// Advance the MTP recurrent state through caller-supplied prefix tokens, then
@@ -707,4 +774,56 @@ fn mtp_draft_tokens_stochastic(
 
     let added = draft_tokens.len();
     (draft_tokens, draft_log_probs, vec![], added, [0.0f32; 3])
+}
+
+#[cfg(test)]
+mod confidence_gate_tests {
+    use super::*;
+
+    /// Run the gate over draft `tokens` with per-depth head `probs`, returning
+    /// the surviving tokens and the reported `added` count.
+    fn gate(tokens: Vec<u32>, probs: Vec<f32>, min_conf: f32) -> (Vec<u32>, usize) {
+        let log_probs: Vec<f32> = probs.iter().map(|p| p.ln()).collect();
+        let (toks, _lp, _dist, added, _a3) =
+            apply_draft_confidence_gate((tokens, log_probs, vec![], 0, [0.0; 3]), min_conf);
+        (toks, added)
+    }
+
+    #[test]
+    fn disabled_gate_keeps_full_draft() {
+        let (toks, added) = gate(vec![1, 2, 3], vec![0.99, 0.10, 0.95], 0.0);
+        assert_eq!(toks, vec![1, 2, 3]);
+        assert_eq!(added, 3);
+    }
+
+    #[test]
+    fn all_confident_unchanged() {
+        let (toks, added) = gate(vec![1, 2, 3], vec![0.99, 0.97, 0.96], 0.90);
+        assert_eq!(toks, vec![1, 2, 3]);
+        assert_eq!(added, 3);
+    }
+
+    #[test]
+    fn truncates_at_first_low_confidence_depth() {
+        // depth 1 (0.50) is below the 0.90 gate -> keep only depth 0.
+        let (toks, added) = gate(vec![1, 2, 3], vec![0.97, 0.50, 0.99], 0.90);
+        assert_eq!(toks, vec![1]);
+        assert_eq!(added, 1);
+    }
+
+    #[test]
+    fn low_confidence_first_token_empties_draft() {
+        let (toks, added) = gate(vec![1, 2, 3], vec![0.40, 0.99, 0.99], 0.90);
+        assert!(toks.is_empty());
+        assert_eq!(added, 0);
+    }
+
+    #[test]
+    fn non_finite_log_prob_truncates() {
+        let log_probs = vec![(0.99_f32).ln(), f32::NEG_INFINITY, (0.99_f32).ln()];
+        let (toks, _lp, _dist, added, _a3) =
+            apply_draft_confidence_gate((vec![1, 2, 3], log_probs, vec![], 0, [0.0; 3]), 0.90);
+        assert_eq!(toks, vec![1]);
+        assert_eq!(added, 1);
+    }
 }
