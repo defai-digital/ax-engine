@@ -90,7 +90,7 @@ use crate::ngram_accel::{
     DEFAULT_DRAFT_LEN, LINEAR_MIN_NGRAM_SUPPORT, MAX_DRAFT_LEN, NgramDraftOutcome,
     NgramDraftPolicy, NgramDraftRejection, NgramPolicyVariant, NgramTable, classify_prompt_class,
     effective_draft_confidence_threshold, ngram_accel_decode_step_with_sampling_buffers,
-    ngram_feedback_policy, single_decode_with_turboquant_context,
+    ngram_feedback_policy, recompute_committed_prefix, single_decode_with_turboquant_context,
 };
 use crate::sampling::{
     MlxSamplingParams, MlxSamplingRequest, TokenDistribution, Xorshift64,
@@ -1233,6 +1233,13 @@ impl MtpNgramAcceptanceMode {
             Self::Greedy => 2,
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+enum MtpModelAcceptanceMode {
+    #[default]
+    Greedy,
+    RejectionSampling,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -5951,6 +5958,7 @@ impl MlxRunner {
                 }
             })
             .unwrap_or(1.0);
+        let model_acceptance_mode = mtp_model_acceptance_mode_from_env();
 
         // Skip-state consumption (Lightning-MLX always-advance pattern):
         // When the previous step's verify forward captured logits at the last
@@ -6023,7 +6031,9 @@ impl MlxRunner {
         // p_target/p_draft rejection sampling but not be the argmax token).
         // Without hysteresis, the EWMA oscillates: stochastic ≥0.99 activates,
         // argmax tracking shows ~0.96, deactivates, stochastic ≥0.99, repeat.
-        let can_auto_optimistic = !pending.is_empty()
+        let can_auto_optimistic = model_acceptance_mode
+            == MtpModelAcceptanceMode::RejectionSampling
+            && !pending.is_empty()
             && state.mtp_telemetry.mtp_only_accept_rate_ewma_samples
                 >= mtp_ngram_gate_min_samples();
         let ewma = state.mtp_telemetry.mtp_only_accept_rate_ewma;
@@ -6070,29 +6080,28 @@ impl MlxRunner {
             correction_argmax_tok,
             predicted,
         ) = if has_linear_attention {
-            // Skip-snapshot path (matches MTPLX SKIP_VERIFY_SNAPSHOT=1):
-            // Run the verify forward directly on state.cache without cloning.
-            // On rejection, trim the full-attention KV layers via trim_to but leave the
-            // linear-attention recurrent state "ahead" by up to (pending.len()-ac) positions.
-            // This minor contamination (0-3 tokens) is negligible given accumulated context
-            // and eliminates the expensive recompute_committed_prefix pass entirely.
+            // Linear-attention recurrent state cannot be trimmed after a rejected
+            // speculative token. Verify on a clone; adopt it only when the full
+            // draft is accepted, otherwise recompute the committed prefix on the
+            // original cache.
+            let mut verify_cache = state.cache.clone();
             let verify_forward_started = Instant::now();
             let (logits_all, post_norm_all) = forward_all_positions_with_post_norm(
                 &self.cfg,
                 &self.weights,
                 &verify_input,
-                &mut state.cache,
+                &mut verify_cache,
                 token_offset,
             );
             mtp_timings.verify_forward_wall_us = elapsed_us(verify_forward_started);
-            state.cache.seq_len += verify_len;
+            verify_cache.seq_len += verify_len;
 
             if optimistic {
                 // ── Optimistic shortcut (AX_MLX_MTP_OPTIMISTIC=1) ──
                 // Accept all drafts without rejection sampling.
                 let ac = pending.len();
                 let predicted_arr = argmax(&logits_all, None);
-                let kv_refs = state.cache.collect_eval_refs();
+                let kv_refs = verify_cache.collect_eval_refs();
                 let mut targets: Vec<&MlxArray> = Vec::with_capacity(2 + kv_refs.len());
                 targets.push(&predicted_arr);
                 targets.push(&post_norm_all);
@@ -6101,7 +6110,8 @@ impl MlxRunner {
                 eval(&targets);
                 mtp_timings.verify_eval_wall_us = elapsed_us(verify_eval_started);
                 let rollback_started = Instant::now();
-                let _ = state.cache.trim_to(token_offset + 1 + ac);
+                let _ = verify_cache.trim_to(token_offset + 1 + ac);
+                state.cache = verify_cache;
                 mtp_timings.rollback_wall_us = elapsed_us(rollback_started);
                 let draft_hidden = slice_post_norm_hidden(&post_norm_all, ac, self.cfg.hidden_size);
                 let predicted: Vec<u32> = predicted_arr.data_u32().to_vec();
@@ -6148,7 +6158,7 @@ impl MlxRunner {
                 );
                 // Always compute argmax for the correction/bonus fallback.
                 let predicted_arr = Some(argmax(&logits_all, None));
-                let kv_refs = state.cache.collect_eval_refs();
+                let kv_refs = verify_cache.collect_eval_refs();
                 let mut targets: Vec<&MlxArray> = Vec::with_capacity(4 + kv_refs.len());
                 targets.push(predicted_arr.as_ref().unwrap());
                 targets.push(&post_norm_all);
@@ -6180,17 +6190,27 @@ impl MlxRunner {
                     &mut state.rng,
                     draft_log_prob_temperature,
                     sampling.temperature,
+                    model_acceptance_mode,
                     mtp_ngram_acceptance_mode_from_env(),
                 );
                 let ac = accept.accept_count;
                 let all_accepted = accept.all_accepted;
                 mtp_timings.accept_wall_us = elapsed_us(accept_started);
 
-                // Trim FA KV to the committed prefix length. For accepted steps this removes
-                // the excess verify entries; for rejected steps the linear-attention state
-                // remains slightly ahead (skip-snapshot semantics).
                 let rollback_started = Instant::now();
-                let _ = state.cache.trim_to(token_offset + 1 + ac);
+                if all_accepted {
+                    let _ = verify_cache.trim_to(token_offset + 1 + ac);
+                    state.cache = verify_cache;
+                } else {
+                    recompute_committed_prefix(
+                        &self.cfg,
+                        &self.weights,
+                        &mut state.cache,
+                        verify_input[0],
+                        &pending[..ac],
+                        token_offset,
+                    );
+                }
                 mtp_timings.rollback_wall_us = elapsed_us(rollback_started);
                 let draft_hidden = slice_post_norm_hidden(&post_norm_all, ac, self.cfg.hidden_size);
                 let correction_argmax_tok = predicted.get(ac).copied().unwrap_or(0);
@@ -6308,6 +6328,7 @@ impl MlxRunner {
                     &mut state.rng,
                     draft_log_prob_temperature,
                     sampling.temperature,
+                    model_acceptance_mode,
                     mtp_ngram_acceptance_mode_from_env(),
                 );
                 let ac = accept.accept_count;
@@ -7530,6 +7551,7 @@ fn mtp_accept_count(
     rng: &mut Xorshift64,
     draft_temperature: f32,
     target_temperature: f32,
+    model_acceptance_mode: MtpModelAcceptanceMode,
     ngram_acceptance_mode: MtpNgramAcceptanceMode,
 ) -> MtpAcceptOutcome {
     let mut ac = 0usize;
@@ -7547,6 +7569,18 @@ fn mtp_accept_count(
         {
             if predicted[i] == pending[i] {
                 ac += 1;
+                continue;
+            }
+            return MtpAcceptOutcome {
+                accept_count: ac,
+                all_accepted: false,
+                rejection_correction: predicted.get(i).copied(),
+            };
+        }
+        if has_draft_distribution && model_acceptance_mode == MtpModelAcceptanceMode::Greedy {
+            if predicted[i] == pending[i] {
+                ac += 1;
+                distribution_index = distribution_index.saturating_add(1);
                 continue;
             }
             return MtpAcceptOutcome {
@@ -7994,6 +8028,23 @@ fn mtp_ngram_acceptance_mode_from_env() -> MtpNgramAcceptanceMode {
             "delta" => MtpNgramAcceptanceMode::Delta,
             "greedy" => MtpNgramAcceptanceMode::Greedy,
             _ => MtpNgramAcceptanceMode::Confidence,
+        }
+    })
+}
+
+fn mtp_model_acceptance_mode_from_env() -> MtpModelAcceptanceMode {
+    static CACHED: OnceLock<MtpModelAcceptanceMode> = OnceLock::new();
+    *CACHED.get_or_init(|| {
+        match std::env::var("AX_MLX_MTP_MODEL_ACCEPTANCE_MODE")
+            .unwrap_or_default()
+            .to_ascii_lowercase()
+            .replace('_', "-")
+            .as_str()
+        {
+            "rejection" | "rejection-sampling" | "sampling" => {
+                MtpModelAcceptanceMode::RejectionSampling
+            }
+            _ => MtpModelAcceptanceMode::Greedy,
         }
     })
 }
@@ -9086,6 +9137,7 @@ mod tests {
             &mut rng,
             1.0,
             0.8,
+            MtpModelAcceptanceMode::Greedy,
             MtpNgramAcceptanceMode::Delta,
         );
         assert_eq!(accept.accept_count, 1);
@@ -9106,6 +9158,7 @@ mod tests {
             &mut rng2,
             1.0,
             0.8,
+            MtpModelAcceptanceMode::Greedy,
             MtpNgramAcceptanceMode::Delta,
         );
         assert_eq!(accept2.accept_count, 0);
@@ -9140,6 +9193,7 @@ mod tests {
             &mut rng,
             1.0,
             0.8,
+            MtpModelAcceptanceMode::Greedy,
             MtpNgramAcceptanceMode::Confidence,
         );
         assert_eq!(accept.accept_count, 1);
@@ -9171,6 +9225,7 @@ mod tests {
             &mut rng,
             1.0,
             0.8,
+            MtpModelAcceptanceMode::Greedy,
             MtpNgramAcceptanceMode::Greedy,
         );
         assert_eq!(accept.accept_count, 1);
@@ -9188,6 +9243,7 @@ mod tests {
             &mut rng2,
             1.0,
             0.8,
+            MtpModelAcceptanceMode::Greedy,
             MtpNgramAcceptanceMode::Greedy,
         );
         assert_eq!(reject.accept_count, 0);
@@ -9211,6 +9267,7 @@ mod tests {
             &mut rng,
             1.0,
             0.8,
+            MtpModelAcceptanceMode::Greedy,
             MtpNgramAcceptanceMode::Confidence,
         );
         assert_eq!(accept.accept_count, 1);
@@ -9235,6 +9292,7 @@ mod tests {
             &mut rng,
             1.0,
             0.8,
+            MtpModelAcceptanceMode::Greedy,
             MtpNgramAcceptanceMode::Confidence,
         );
 
@@ -9244,6 +9302,29 @@ mod tests {
             accept.rejection_correction, None,
             "n-gram pseudo log-probs do not have a true draft distribution"
         );
+    }
+
+    #[test]
+    fn mtp_model_accept_count_defaults_to_argmax_verification() {
+        let mut rng = Xorshift64::new(42);
+        let reject = mtp_accept_count(
+            &[17],
+            &[0.01_f32.ln()],
+            &[],
+            &[MtpDraftSource::Mtp],
+            Some(&[1.0]),
+            None,
+            &[99],
+            &mut rng,
+            1.0,
+            0.8,
+            MtpModelAcceptanceMode::Greedy,
+            MtpNgramAcceptanceMode::Confidence,
+        );
+
+        assert_eq!(reject.accept_count, 0);
+        assert!(!reject.all_accepted);
+        assert_eq!(reject.rejection_correction, Some(99));
     }
 
     #[test]
@@ -9266,6 +9347,7 @@ mod tests {
             &mut rng,
             1.0,
             0.8,
+            MtpModelAcceptanceMode::RejectionSampling,
             MtpNgramAcceptanceMode::Confidence,
         );
 
@@ -9291,6 +9373,7 @@ mod tests {
             &mut rng,
             0.7,
             0.6,
+            MtpModelAcceptanceMode::RejectionSampling,
             MtpNgramAcceptanceMode::Confidence,
         );
         assert_eq!(accept.accept_count, 1);
@@ -9308,6 +9391,7 @@ mod tests {
             &mut rng2,
             0.7,
             0.7,
+            MtpModelAcceptanceMode::RejectionSampling,
             MtpNgramAcceptanceMode::Confidence,
         );
         assert_eq!(accept2.accept_count, 1);
@@ -9331,6 +9415,7 @@ mod tests {
                 &mut rng_probe,
                 0.7,
                 2.0,
+                MtpModelAcceptanceMode::Greedy,
                 MtpNgramAcceptanceMode::Confidence,
             );
             assert_eq!(

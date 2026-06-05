@@ -18,12 +18,12 @@ pub(crate) fn validate_openai_text_backend(
 ) -> Result<(), (StatusCode, Json<ErrorResponse>)> {
     if !matches!(
         state.runtime_report.selected_backend,
-        SelectedBackend::LlamaCpp | SelectedBackend::MlxLmDelegated
+        SelectedBackend::LlamaCpp | SelectedBackend::MlxLmDelegated | SelectedBackend::Mlx
     ) {
         return Err(error_response(
             StatusCode::BAD_REQUEST,
             "invalid_request",
-            "OpenAI-compatible text endpoints require a llama.cpp or mlx_lm_delegated backend; use /v1/generate for repo-owned MLX preview".to_string(),
+            "OpenAI-compatible text endpoints require a text-capable backend".to_string(),
         ));
     }
     Ok(())

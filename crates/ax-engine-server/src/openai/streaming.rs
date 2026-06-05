@@ -1,7 +1,7 @@
 use ax_engine_sdk::{
-    EngineSessionError, GenerateRequest, GenerateStreamEvent, GenerateStreamState,
+    EngineSessionError, EngineTokenizer, GenerateRequest, GenerateStreamEvent, GenerateStreamState,
     LlamaCppChatGenerateRequest, LlamaCppStreamHandle, MlxLmChatGenerateRequest, MlxLmStreamHandle,
-    finish_reason_from_mlx_lm,
+    SelectedBackend, finish_reason_from_mlx_lm,
 };
 use axum::Json;
 use axum::http::StatusCode;
@@ -11,7 +11,7 @@ use tokio::sync::mpsc;
 
 use crate::app_state::AppState;
 use crate::backends::{llama_cpp, mlx_lm};
-use crate::errors::{ErrorResponse, map_session_error};
+use crate::errors::{ErrorResponse, error_response, map_session_error};
 use crate::generation::streaming::{
     StreamEventSender, StreamStateSource, build_keep_alive_stream, build_stream_state,
     drive_stream_events, send_stream_error, spawn_sse_blocking_stream_task, spawn_stream_task,
@@ -33,6 +33,7 @@ pub(crate) async fn stream_openai_request(
     stream_kind: OpenAiStreamKind,
 ) -> Result<axum::response::Response, (StatusCode, Json<ErrorResponse>)> {
     let (stream_state, stream_context) = build_stream_state(&state, request).await?;
+    let tokenizer = native_mlx_openai_stream_tokenizer(&state)?;
 
     let (tx, rx) = mpsc::channel(STREAM_CHANNEL_CAPACITY);
     spawn_stream_task(
@@ -40,14 +41,22 @@ pub(crate) async fn stream_openai_request(
         stream_state,
         move |stream_state, tx| match stream_context {
             StreamStateSource::Stateless(context) => {
-                drive_openai_stream_state(stream_state, tx, stream_kind, |state| {
-                    context.next_stream_event(state)
-                });
+                drive_openai_stream_state(
+                    stream_state,
+                    tx,
+                    stream_kind,
+                    |state| context.next_stream_event(state),
+                    tokenizer,
+                );
             }
             StreamStateSource::Stateful(mut session) => {
-                drive_openai_stream_state(stream_state, tx, stream_kind, |state| {
-                    session.next_stream_event(state)
-                });
+                drive_openai_stream_state(
+                    stream_state,
+                    tx,
+                    stream_kind,
+                    |state| session.next_stream_event(state),
+                    tokenizer,
+                );
             }
         },
     );
@@ -102,6 +111,7 @@ fn drive_openai_stream_state<N>(
     tx: StreamEventSender,
     stream_kind: OpenAiStreamKind,
     next_event: N,
+    tokenizer: Option<EngineTokenizer>,
 ) where
     N: FnMut(&mut GenerateStreamState) -> Result<Option<GenerateStreamEvent>, EngineSessionError>,
 {
@@ -111,7 +121,15 @@ fn drive_openai_stream_state<N>(
         state,
         &tx,
         next_event,
-        |event| send_openai_stream_event(&tx, event, stream_kind, &mut chat_role_emitted),
+        |event| {
+            send_openai_stream_event(
+                &tx,
+                event,
+                stream_kind,
+                &mut chat_role_emitted,
+                tokenizer.as_ref(),
+            )
+        },
         || {
             let _ = tx.blocking_send(Ok(Event::default().data("[DONE]")));
         },
@@ -123,12 +141,15 @@ fn send_openai_stream_event(
     event: GenerateStreamEvent,
     stream_kind: OpenAiStreamKind,
     chat_role_emitted: &mut bool,
+    tokenizer: Option<&EngineTokenizer>,
 ) -> bool {
     match event {
         GenerateStreamEvent::Request(_) => true,
         GenerateStreamEvent::Step(payload) => match stream_kind {
             OpenAiStreamKind::Completion => {
-                let Some(delta_text) = payload.delta_text else {
+                let Some(delta_text) =
+                    stream_delta_text(&payload.delta_text, &payload.delta_tokens, tokenizer, tx)
+                else {
                     return true;
                 };
                 if delta_text.is_empty() {
@@ -142,7 +163,9 @@ fn send_openai_stream_event(
                 send_openai_stream_chunk(tx, &chunk)
             }
             OpenAiStreamKind::ChatCompletion => {
-                let Some(delta_text) = payload.delta_text else {
+                let Some(delta_text) =
+                    stream_delta_text(&payload.delta_text, &payload.delta_tokens, tokenizer, tx)
+                else {
                     return true;
                 };
                 if delta_text.is_empty() {
@@ -176,6 +199,60 @@ fn send_openai_stream_event(
                 send_openai_stream_chunk(tx, &chunk)
             }
         },
+    }
+}
+
+fn native_mlx_openai_stream_tokenizer(
+    state: &AppState,
+) -> Result<Option<EngineTokenizer>, (StatusCode, Json<ErrorResponse>)> {
+    if state.runtime_report.selected_backend != SelectedBackend::Mlx {
+        return Ok(None);
+    }
+    let Some(model_dir) = state.session_config.mlx_model_artifacts_dir() else {
+        return Err(error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "server_error",
+            "native MLX OpenAI streaming requires mlx_model_artifacts_dir with tokenizer.json"
+                .to_string(),
+        ));
+    };
+    EngineTokenizer::from_model_dir(model_dir)
+        .map(Some)
+        .map_err(|error| {
+            error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "server_error",
+                format!("failed to load tokenizer for native MLX OpenAI stream decode: {error}"),
+            )
+        })
+}
+
+fn stream_delta_text(
+    delta_text: &Option<String>,
+    delta_tokens: &[u32],
+    tokenizer: Option<&EngineTokenizer>,
+    tx: &StreamEventSender,
+) -> Option<String> {
+    if let Some(delta_text) = delta_text {
+        return Some(delta_text.clone());
+    }
+    if delta_tokens.is_empty() {
+        return None;
+    }
+    let Some(tokenizer) = tokenizer else {
+        return None;
+    };
+    match tokenizer.decode(delta_tokens, true) {
+        Ok(text) => Some(text),
+        Err(error) => {
+            send_stream_error(
+                tx,
+                ErrorResponse::server_error(format!(
+                    "failed to decode native MLX OpenAI stream tokens: {error}"
+                )),
+            );
+            None
+        }
     }
 }
 

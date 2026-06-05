@@ -1,4 +1,6 @@
-use crate::openai::requests::DEFAULT_OPENAI_MAX_TOKENS;
+use crate::openai::requests::{DEFAULT_OPENAI_MAX_TOKENS, build_openai_completion_request};
+use crate::openai::schema::OpenAiCompletionHttpRequest;
+use crate::openai::validation::validate_openai_request;
 use crate::routes::build_router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -6,8 +8,9 @@ use serde_json::{Value, json};
 
 use super::fixtures::{
     assert_invalid_request_response, json_request_body, json_response, llama_cpp_server_state,
-    mlx_lm_delegated_state, openai_first_choice, sample_openai_completion_request,
-    sample_openai_request_base, spawn_llama_cpp_completion_server,
+    minimal_tokenizer_artifact, mlx_lm_delegated_state, native_mlx_openai_builder_state,
+    openai_first_choice, sample_openai_completion_request, sample_openai_request_base,
+    spawn_llama_cpp_completion_server,
 };
 
 #[tokio::test]
@@ -81,7 +84,7 @@ async fn openai_completions_endpoint_translates_mlx_lm_delegated_response() {
                 );
                 assert_eq!(payload.get("stream"), Some(&Value::Bool(false)));
                 assert_eq!(payload.get("top_k"), Some(&json!(0)));
-                assert_eq!(payload.get("repetition_penalty"), Some(&json!(1.1)));
+                assert_eq!(payload.get("repetition_penalty"), Some(&json!(1.0)));
             },
         );
     let app = build_router(mlx_lm_delegated_state(mlx_lm_server_url));
@@ -119,6 +122,33 @@ async fn openai_completions_endpoint_translates_mlx_lm_delegated_response() {
             .and_then(Value::as_str),
         Some("stop")
     );
+}
+
+#[tokio::test]
+async fn openai_completion_request_tokenizes_text_for_native_mlx_backend() {
+    let artifact_dir = minimal_tokenizer_artifact("native-openai-completion-tokenizer");
+    let state = native_mlx_openai_builder_state("qwen3", &artifact_dir);
+    let request: OpenAiCompletionHttpRequest = serde_json::from_value(json!({
+        "model": "qwen3",
+        "prompt": "hello openai completion",
+        "max_tokens": 8
+    }))
+    .expect("sample completion request should deserialize");
+
+    validate_openai_request(&state, request.model.as_deref())
+        .expect("native MLX OpenAI completion should pass validation");
+    let built =
+        build_openai_completion_request(&state, request).expect("completion request should build");
+
+    assert!(
+        !built.generate_request.input_tokens.is_empty(),
+        "native MLX OpenAI completion prompt should be tokenized"
+    );
+    assert_eq!(built.generate_request.input_text, None);
+    assert_eq!(built.generate_request.max_output_tokens, 8);
+    assert!(!built.stream);
+
+    std::fs::remove_dir_all(artifact_dir).expect("artifact dir should clean up");
 }
 
 #[tokio::test]

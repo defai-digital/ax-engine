@@ -4,6 +4,7 @@ use crate::openai::requests::{
     openai_chat_stop_sequences, render_openai_chat_prompt,
 };
 use crate::openai::schema::{OpenAiChatCompletionHttpRequest, OpenAiChatMessage, OpenAiStopInput};
+use crate::openai::validation::validate_openai_request;
 use crate::routes::build_router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -13,8 +14,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::fixtures::{
     assert_invalid_request_response, json_request_body, json_response, llama_cpp_server_state,
-    mlx_lm_delegated_state, openai_first_choice, sample_openai_chat_request,
-    sample_openai_chat_request_with_role, spawn_llama_cpp_completion_server, test_app_state,
+    minimal_tokenizer_artifact, mlx_lm_delegated_state, native_mlx_openai_builder_state,
+    openai_first_choice, sample_openai_chat_request, sample_openai_chat_request_with_role,
+    spawn_llama_cpp_completion_server, test_app_state,
 };
 
 #[test]
@@ -131,30 +133,13 @@ fn openai_chat_template_kwargs_disable_thinking_for_qwen_and_glm() {
 }
 
 #[test]
-fn native_chat_renderer_keeps_thinking_open_for_qwen_reasoning_models() {
-    // Companion to the kwargs test below: the native MLX path doesn't go
-    // through mlx_lm's chat template; it builds the prompt locally. Qwen3.6
-    // / Qwen3-Next / Qwen3-Coder-Next must end with `<think>\n` (thinking
-    // allowed), NOT `<think>\n\n</think>\n\n` (thinking skipped), otherwise
-    // the same #13 failure mode (premature stop / repetition loop on
-    // reasoning prompts) reproduces on the native path even though the
-    // delegated path is fixed.
+fn native_chat_renderer_disables_thinking_for_qwen_reasoning_models() {
+    // The native MLX path does not go through mlx_lm's chat template; it builds
+    // the prompt locally. Match Qwen templates rendered with
+    // enable_thinking=false so OpenAI-compatible short responses do not spend
+    // the output budget on visible reasoning text.
     let messages = vec![("user".to_string(), "hi".to_string())];
-    let thinking =
-        chat::render_prompt_with_template(chat::ChatPromptTemplate::QwenChatMl, &messages, true)
-            .expect("render");
-    assert!(
-        thinking.ends_with("<|im_start|>assistant\n<think>\n"),
-        "thinking-enabled suffix should end with `<think>\\n` only: {thinking}"
-    );
-    assert!(
-        !thinking.contains("</think>"),
-        "thinking-enabled suffix must not pre-close the think block: {thinking}"
-    );
-
-    let no_thinking =
-        chat::render_prompt_with_template(chat::ChatPromptTemplate::QwenChatMl, &messages, false)
-            .expect("render");
+    let no_thinking = chat::render_prompt("Qwen3.6-35B-A3B-4bit", &messages).expect("render");
     assert!(
         no_thinking.ends_with("<|im_start|>assistant\n<think>\n\n</think>\n\n"),
         "thinking-disabled suffix should pre-close the think block: {no_thinking}"
@@ -162,26 +147,22 @@ fn native_chat_renderer_keeps_thinking_open_for_qwen_reasoning_models() {
 }
 
 #[test]
-fn openai_chat_template_kwargs_omitted_for_qwen_reasoning_models() {
-    // Issue #13: Qwen3.6 / Qwen3-Next / Qwen3-Coder-Next must NOT receive
-    // enable_thinking=false — their chat templates inject an empty
-    // <think></think> block that breaks reasoning-required prompts (math,
-    // multi-step) by causing premature <|im_end|> emission.
+fn openai_chat_template_kwargs_disable_thinking_for_qwen_reasoning_models() {
     assert_eq!(
         chat_template_kwargs_for_model_id("Qwen3.6-35B-A3B-4bit"),
-        None
+        Some(json!({"enable_thinking": false}))
     );
     assert_eq!(
         chat_template_kwargs_for_model_id("qwen3_6-35b-a3b-4bit"),
-        None
+        Some(json!({"enable_thinking": false}))
     );
     assert_eq!(
         chat_template_kwargs_for_model_id("mlx-community/Qwen3.6-35B-A3B-4bit"),
-        None
+        Some(json!({"enable_thinking": false}))
     );
     assert_eq!(
         chat_template_kwargs_for_model_id("Qwen3-Coder-Next-4bit"),
-        None
+        Some(json!({"enable_thinking": false}))
     );
 }
 
@@ -240,6 +221,36 @@ async fn openai_chat_request_rejects_unsupported_ax_rendered_family() {
     };
     assert_eq!(error.0, StatusCode::BAD_REQUEST);
     assert!(error.1.error.message.contains("deepseek"));
+}
+
+#[tokio::test]
+async fn openai_chat_request_tokenizes_text_for_native_mlx_backend() {
+    let artifact_dir = minimal_tokenizer_artifact("native-openai-chat-tokenizer");
+    let state = native_mlx_openai_builder_state("qwen3", &artifact_dir);
+    let request: OpenAiChatCompletionHttpRequest = serde_json::from_value(json!({
+        "model": "qwen3",
+        "messages": [{"role": "user", "content": "hello openai chat"}],
+        "max_tokens": 8
+    }))
+    .expect("sample chat request should deserialize");
+
+    validate_openai_request(&state, request.model.as_deref())
+        .expect("native MLX OpenAI chat should pass validation");
+    let built = build_openai_chat_request(&state, request).expect("chat request should build");
+
+    assert!(
+        !built.generate_request.input_tokens.is_empty(),
+        "native MLX OpenAI chat prompt should be tokenized"
+    );
+    assert_eq!(built.generate_request.input_text, None);
+    assert_eq!(built.generate_request.max_output_tokens, 8);
+    assert_eq!(
+        built.generate_request.stop_sequences,
+        vec!["<|im_end|>".to_string()]
+    );
+    assert!(!built.stream);
+
+    fs::remove_dir_all(artifact_dir).expect("artifact dir should clean up");
 }
 
 #[tokio::test]

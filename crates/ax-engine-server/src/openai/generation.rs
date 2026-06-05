@@ -1,9 +1,10 @@
+use ax_engine_sdk::{EngineTokenizer, GenerateResponse, SelectedBackend};
 use axum::Json;
 use axum::http::StatusCode;
 
 use crate::app_state::AppState;
 use crate::backends::{llama_cpp, mlx_lm};
-use crate::errors::{ErrorResponse, map_session_error};
+use crate::errors::{ErrorResponse, error_response, map_session_error};
 use crate::generation::native::run_stateless_generate_request;
 use crate::openai::requests::{
     OpenAiBuiltRequest, build_openai_llama_cpp_chat_request, build_openai_mlx_lm_chat_request,
@@ -63,8 +64,49 @@ pub(crate) async fn run_openai_text_generation(
         return stream_openai_request(state, request.generate_request, kind).await;
     }
 
-    let (request_id, response) =
+    let (request_id, mut response) =
         run_stateless_generate_request(&state, request.generate_request).await?;
+    populate_native_mlx_output_text(&state, &mut response)?;
 
     Ok(kind.build_non_stream_response(&response, request_id))
+}
+
+fn populate_native_mlx_output_text(
+    state: &AppState,
+    response: &mut GenerateResponse,
+) -> Result<(), (StatusCode, Json<ErrorResponse>)> {
+    if state.runtime_report.selected_backend != SelectedBackend::Mlx
+        || response.output_text.is_some()
+        || response.output_tokens.is_empty()
+    {
+        return Ok(());
+    }
+
+    let Some(model_dir) = state.session_config.mlx_model_artifacts_dir() else {
+        return Err(error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "server_error",
+            "native MLX OpenAI response decode requires mlx_model_artifacts_dir with tokenizer.json"
+                .to_string(),
+        ));
+    };
+    let tokenizer = EngineTokenizer::from_model_dir(model_dir).map_err(|error| {
+        error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "server_error",
+            format!("failed to load tokenizer for native MLX OpenAI response decode: {error}"),
+        )
+    })?;
+    let output_text = tokenizer
+        .decode(&response.output_tokens, true)
+        .map_err(|error| {
+            error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "server_error",
+                format!("failed to decode native MLX OpenAI response tokens: {error}"),
+            )
+        })?;
+    response.output_text = Some(output_text);
+
+    Ok(())
 }

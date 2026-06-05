@@ -1,6 +1,8 @@
 use crate::app_state::{AppState, build_app_state};
 use crate::args::{self, ServerArgs};
-use ax_engine_sdk::{EngineSession, GenerateRequest, GenerateSampling, GenerateStreamEvent};
+use ax_engine_sdk::{
+    EngineSession, GenerateRequest, GenerateSampling, GenerateStreamEvent, SelectedBackend,
+};
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
@@ -8,6 +10,8 @@ use serde_json::{Value, json};
 use std::fs;
 use std::io::{Read, Write};
 use std::net::TcpListener;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tower::ServiceExt;
@@ -331,6 +335,59 @@ pub(super) fn mlx_lm_delegated_state(server_url: String) -> AppState {
         args.support_tier = args::PreviewSupportTier::MlxLmDelegated;
         args.mlx_lm_server_url = Some(server_url);
     })
+}
+
+pub(super) fn native_mlx_openai_builder_state(model_id: &str, artifacts_dir: &Path) -> AppState {
+    let mut state = llama_cpp_server_state("http://127.0.0.1:1".to_string());
+    state.model_id = Arc::new(model_id.to_string());
+    state.session_config = Arc::new(
+        state
+            .session_config
+            .as_ref()
+            .clone()
+            .with_mlx_model_artifacts_dir(artifacts_dir),
+    );
+    state.runtime_report.selected_backend = SelectedBackend::Mlx;
+    state
+}
+
+pub(super) fn minimal_tokenizer_artifact(label: &str) -> PathBuf {
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system time should be valid")
+        .as_nanos();
+    let dir = std::env::temp_dir().join(format!("ax-engine-server-{label}-{unique}"));
+    fs::create_dir_all(&dir).expect("tokenizer artifact dir should create");
+    fs::write(dir.join("config.json"), r#"{"eos_token_id":2}"#).expect("config should write");
+    fs::write(
+        dir.join("tokenizer.json"),
+        r#"{
+  "version": "1.0",
+  "truncation": null,
+  "padding": null,
+  "added_tokens": [],
+  "normalizer": null,
+  "pre_tokenizer": {"type": "Whitespace"},
+  "post_processor": null,
+  "decoder": null,
+  "model": {
+    "type": "WordLevel",
+    "vocab": {
+      "[UNK]": 0,
+      "hello": 1,
+      "<|im_start|>": 2,
+      "user": 3,
+      "assistant": 4,
+      "openai": 5,
+      "chat": 6,
+      "completion": 7
+    },
+    "unk_token": "[UNK]"
+  }
+}"#,
+    )
+    .expect("tokenizer should write");
+    dir
 }
 
 pub(super) fn spawn_llama_cpp_completion_server(

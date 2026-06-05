@@ -1,5 +1,6 @@
 use ax_engine_sdk::{
-    GenerateRequest, GenerateSampling, LlamaCppChatGenerateRequest, MlxLmChatGenerateRequest,
+    EngineTokenizer, GenerateRequest, GenerateSampling, LlamaCppChatGenerateRequest,
+    MlxLmChatGenerateRequest, SelectedBackend,
 };
 use axum::Json;
 use axum::http::StatusCode;
@@ -82,13 +83,7 @@ pub(crate) fn build_openai_completion_request(
         metadata: request.metadata,
     };
 
-    Ok(build_openai_generate_request(
-        state,
-        input_tokens,
-        input_text,
-        max_output_tokens,
-        payload,
-    ))
+    build_openai_generate_request(state, input_tokens, input_text, max_output_tokens, payload)
 }
 
 pub(crate) fn build_openai_chat_request(
@@ -114,13 +109,13 @@ pub(crate) fn build_openai_chat_request(
         metadata: request.metadata,
     };
 
-    Ok(build_openai_generate_request(
+    build_openai_generate_request(
         state,
         Vec::new(),
         Some(input_text),
         max_output_tokens,
         payload,
-    ))
+    )
 }
 
 fn validate_native_chat_artifacts(
@@ -200,8 +195,11 @@ fn build_openai_generate_request(
     input_text: Option<String>,
     max_output_tokens: u32,
     payload: OpenAiBuiltPayload,
-) -> OpenAiBuiltRequest {
-    OpenAiBuiltRequest {
+) -> Result<OpenAiBuiltRequest, (StatusCode, Json<ErrorResponse>)> {
+    let (input_tokens, input_text) =
+        tokenize_native_mlx_text_input(state, input_tokens, input_text)?;
+
+    Ok(OpenAiBuiltRequest {
         generate_request: build_generate_request_internal(
             state,
             input_tokens,
@@ -212,7 +210,45 @@ fn build_openai_generate_request(
             payload.metadata,
         ),
         stream: payload.stream,
+    })
+}
+
+fn tokenize_native_mlx_text_input(
+    state: &AppState,
+    input_tokens: Vec<u32>,
+    input_text: Option<String>,
+) -> Result<(Vec<u32>, Option<String>), (StatusCode, Json<ErrorResponse>)> {
+    if state.runtime_report.selected_backend != SelectedBackend::Mlx {
+        return Ok((input_tokens, input_text));
     }
+    if !input_tokens.is_empty() || input_text.is_none() {
+        return Ok((input_tokens, input_text));
+    }
+
+    let input_text = input_text.expect("checked above");
+    let Some(model_dir) = state.session_config.mlx_model_artifacts_dir() else {
+        return Err(error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "OpenAI-compatible text endpoints on native MLX require mlx_model_artifacts_dir with tokenizer.json".to_string(),
+        ));
+    };
+    let tokenizer = EngineTokenizer::from_model_dir(model_dir).map_err(|error| {
+        error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            format!("failed to load tokenizer for native MLX OpenAI text endpoint: {error}"),
+        )
+    })?;
+    let input_tokens = tokenizer.encode(&input_text, false).map_err(|error| {
+        error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            format!("failed to tokenize OpenAI text prompt for native MLX backend: {error}"),
+        )
+    })?;
+
+    Ok((input_tokens, None))
 }
 
 pub(crate) fn build_generate_request_internal(
@@ -245,13 +281,12 @@ fn build_openai_sampling(
     seed: Option<u64>,
 ) -> GenerateSampling {
     let temperature = temperature.unwrap_or(0.0);
-    let default_repetition_penalty = if temperature <= 0.0 { 1.1 } else { 1.0 };
     GenerateSampling {
         temperature,
         top_p: top_p.unwrap_or(1.0),
         top_k: top_k.unwrap_or(0),
         min_p,
-        repetition_penalty: repetition_penalty.unwrap_or(default_repetition_penalty),
+        repetition_penalty: repetition_penalty.unwrap_or(1.0),
         repetition_context_size,
         seed: seed.unwrap_or_else(|| default_openai_seed(temperature)),
         deterministic: None,

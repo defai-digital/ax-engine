@@ -133,26 +133,20 @@ mod tests {
     }
 
     #[test]
-    fn grpc_chat_prompt_keeps_thinking_open_for_qwen_reasoning_models() {
-        // Mirror of `native_chat_renderer_keeps_thinking_open_for_qwen_reasoning_models`.
-        // Without this branch the gRPC path would reproduce #13: enable_thinking=false
-        // pre-closes the `<think>` block, which causes Qwen3.6 / Qwen3-Next /
-        // Qwen3-Coder-Next to truncate or loop on reasoning prompts.
-        let thinking =
+    fn grpc_chat_prompt_disables_thinking_for_qwen_reasoning_models() {
+        // Mirror of the native OpenAI chat renderer: short chat responses should
+        // not spend their output budget on visible Qwen thinking text.
+        let no_thinking =
             render_grpc_chat_prompt("Qwen3.6-35B-A3B-4bit", &user("hi")).expect("render");
         assert!(
-            thinking.ends_with("<|im_start|>assistant\n<think>\n"),
-            "thinking-enabled suffix should be `<think>\\n` only: {thinking}"
-        );
-        assert!(
-            !thinking.contains("</think>"),
-            "thinking-enabled suffix must not pre-close the think block: {thinking}"
+            no_thinking.ends_with("<|im_start|>assistant\n<think>\n\n</think>\n\n"),
+            "thinking-disabled suffix should pre-close the think block: {no_thinking}"
         );
 
         let coder = render_grpc_chat_prompt("Qwen3-Coder-Next-4bit", &user("hi")).expect("render");
         assert!(
-            coder.ends_with("<|im_start|>assistant\n<think>\n"),
-            "Coder-Next must also leave thinking open: {coder}"
+            coder.ends_with("<|im_start|>assistant\n<think>\n\n</think>\n\n"),
+            "Coder-Next must also pre-close the think block: {coder}"
         );
     }
 

@@ -2,11 +2,10 @@ use std::path::Path;
 
 use serde_json::{Value, json};
 
-// Pre-fills `<think>\n\n</think>\n\n` to signal the model to skip reasoning;
-// applied to Qwen models whose chat templates default to this when
-// `enable_thinking=false`. For reasoning-trained Qwen3.6 / Qwen3-Next /
-// Qwen3-Coder-Next this is the wrong prefix (see #13), so those models use
-// `QWEN_CHATML_ASSISTANT_GENERATION_PROMPT_THINKING` instead.
+// Pre-fills `<think>\n\n</think>\n\n` to signal the model to skip reasoning.
+// This matches Qwen chat templates rendered with `enable_thinking=false` and
+// keeps OpenAI-compatible short responses from spending the output budget on
+// visible reasoning text.
 pub(crate) const QWEN_CHATML_ASSISTANT_GENERATION_PROMPT: &str =
     "<|im_start|>assistant\n<think>\n\n</think>\n\n";
 pub(crate) const QWEN_CHATML_ASSISTANT_GENERATION_PROMPT_THINKING: &str =
@@ -91,16 +90,6 @@ pub(crate) fn normalize_role(role: &str) -> Result<&'static str, String> {
 }
 
 pub(crate) fn template_kwargs_for_model_id(model_id: &str) -> Option<Value> {
-    // Qwen3.6 / Qwen3-Next / Qwen3-Coder-Next are reasoning models: their chat
-    // templates inject `<think>\n\n</think>\n\n` when `enable_thinking=false`,
-    // forcing the model to skip the reasoning step it was trained to produce.
-    // On prompts that require reasoning (e.g. math), the model emits a short
-    // preamble followed by `<|im_end|>` (in the stop sequence list) and the
-    // response truncates after a handful of tokens. Leave the kwarg unset so
-    // the template's default (thinking enabled) applies.
-    if is_qwen_thinking_model(model_id) {
-        return None;
-    }
     matches!(
         ChatPromptTemplate::for_model_id(model_id),
         ChatPromptTemplate::QwenChatMl | ChatPromptTemplate::Glm47
@@ -137,6 +126,7 @@ pub(crate) fn validate_native_chat_artifact(
     ))
 }
 
+#[cfg(test)]
 pub(crate) fn is_qwen_thinking_model(model_id: &str) -> bool {
     let m = model_id.to_ascii_lowercase();
     if !m.contains("qwen") {
@@ -192,7 +182,7 @@ pub(crate) fn render_prompt(
         ));
     }
 
-    render_prompt_with_template(template, messages, is_qwen_thinking_model(model_id))
+    render_prompt_with_template(template, messages, false)
 }
 
 pub(crate) fn render_prompt_with_template(
@@ -353,8 +343,11 @@ mod tests {
     }
 
     #[test]
-    fn qwen_thinking_suffix_is_explicit() {
+    fn qwen_no_thinking_suffix_is_default() {
         let messages = vec![("user".to_string(), "hi".to_string())];
+        let default_prompt = render_prompt("Qwen3.6-35B-A3B-4bit", &messages).expect("render");
+        assert!(default_prompt.ends_with(QWEN_CHATML_ASSISTANT_GENERATION_PROMPT));
+
         let thinking = render_prompt_with_template(ChatPromptTemplate::QwenChatMl, &messages, true)
             .expect("render");
         assert!(thinking.ends_with(QWEN_CHATML_ASSISTANT_GENERATION_PROMPT_THINKING));

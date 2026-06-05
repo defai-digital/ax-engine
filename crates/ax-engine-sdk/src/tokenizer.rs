@@ -23,6 +23,8 @@ pub enum EngineTokenizerError {
     Load(String),
     #[error("tokenization failed: {0}")]
     Encode(String),
+    #[error("token decode failed: {0}")]
+    Decode(String),
 }
 
 /// Thin wrapper over `tokenizers::Tokenizer`. Cloned cheaply (the
@@ -116,5 +118,17 @@ impl EngineTokenizer {
             out.push(ids);
         }
         Ok(out)
+    }
+
+    /// Decode token ids back to text. When `skip_special_tokens` is true,
+    /// tokenizer-defined special tokens are omitted from the decoded string.
+    pub fn decode(
+        &self,
+        token_ids: &[u32],
+        skip_special_tokens: bool,
+    ) -> Result<String, EngineTokenizerError> {
+        self.inner
+            .decode(token_ids, skip_special_tokens)
+            .map_err(|e| EngineTokenizerError::Decode(e.to_string()))
     }
 }
