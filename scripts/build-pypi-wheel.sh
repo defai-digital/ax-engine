@@ -29,6 +29,25 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 cd "$REPO_ROOT"
 
+verify_wheel_member() {
+    local wheel="$1"
+    local member="$2"
+    python3 - "$wheel" "$member" <<'PY'
+import sys
+import zipfile
+
+wheel, member = sys.argv[1], sys.argv[2]
+with zipfile.ZipFile(wheel) as zf:
+    try:
+        info = zf.getinfo(member)
+    except KeyError:
+        raise SystemExit(f"error: wheel missing required member: {member}")
+    if info.file_size == 0:
+        raise SystemExit(f"error: wheel member is empty: {member}")
+    print(f"    verified: {member} ({info.file_size} bytes)")
+PY
+}
+
 # ── 1. Verify prerequisites ────────────────────────────────────────────────
 for tool in maturin delocate-wheel delocate-listdeps; do
     if ! command -v "$tool" &>/dev/null; then
@@ -87,6 +106,11 @@ echo "    delocated: $DELOCATED"
 
 echo "==> Bundled dependencies:"
 delocate-listdeps "$DELOCATED"
+
+# MLX resolves mlx.metallib relative to libmlx.dylib's current binary dir.
+# Keep this guard after delocate so a release cannot silently regress native pip inference.
+echo "==> Verifying bundled MLX runtime assets..."
+verify_wheel_member "$DELOCATED" "ax_engine.dylibs/mlx.metallib"
 
 # ── 6. Optionally publish ──────────────────────────────────────────────────
 if [[ "${1:-}" == "--publish" ]]; then
