@@ -213,11 +213,15 @@ fn build_openai_generate_request(
     })
 }
 
+/// `(tokens, optional decoded text)` on success, or an HTTP error response.
+type NativeMlxTokenizeResult =
+    Result<(Vec<u32>, Option<String>), (StatusCode, Json<ErrorResponse>)>;
+
 fn tokenize_native_mlx_text_input(
     state: &AppState,
     input_tokens: Vec<u32>,
     input_text: Option<String>,
-) -> Result<(Vec<u32>, Option<String>), (StatusCode, Json<ErrorResponse>)> {
+) -> NativeMlxTokenizeResult {
     if state.runtime_report.selected_backend != SelectedBackend::Mlx {
         return Ok((input_tokens, input_text));
     }

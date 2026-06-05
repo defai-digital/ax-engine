@@ -239,9 +239,7 @@ fn stream_delta_text(
     if delta_tokens.is_empty() {
         return None;
     }
-    let Some(tokenizer) = tokenizer else {
-        return None;
-    };
+    let tokenizer = tokenizer?;
     match tokenizer.decode(delta_tokens, true) {
         Ok(text) => Some(text),
         Err(error) => {
