@@ -171,11 +171,12 @@ fn parse_and_validate_contract(
     let assistant_path_raw = required_str(contract, "assistant_path")?;
     let exact_pair_required = contract
         .get("pairing")
-        .and_then(Value::as_str)
-        .map(|s| s == "exact")
+        .map(parse_pairing_exact_required)
+        .transpose()?
         .unwrap_or_else(gemma4_assistant_mtp_require_exact_pair);
 
-    if !is_known_gemma4_assistant_pair(&assistant_model_id, &target_model_id) {
+    if exact_pair_required && !is_known_gemma4_assistant_pair(&assistant_model_id, &target_model_id)
+    {
         return Err(Gemma4AssistantMtpDisableReason::PairMismatch);
     }
 
@@ -236,6 +237,14 @@ fn required_str<'a>(
         .and_then(Value::as_str)
         .filter(|s| !s.trim().is_empty())
         .ok_or(Gemma4AssistantMtpDisableReason::InvalidConfig)
+}
+
+fn parse_pairing_exact_required(value: &Value) -> Result<bool, Gemma4AssistantMtpDisableReason> {
+    match value.as_str() {
+        Some("exact") => Ok(true),
+        Some("compatible") => Ok(false),
+        _ => Err(Gemma4AssistantMtpDisableReason::InvalidConfig),
+    }
 }
 
 fn read_json_file(path: &Path) -> Result<Value, Gemma4AssistantMtpDisableReason> {
@@ -621,6 +630,62 @@ mod tests {
         assert_eq!(
             status.disable_reason,
             Gemma4AssistantMtpDisableReason::PairMismatch
+        );
+        assert!(status.attach_failed);
+    }
+
+    #[test]
+    fn compatible_pairing_allows_unknown_pair_after_contract_checks() {
+        let root = temp_root("compatible_pair");
+        write_valid_fixture(&root);
+        fs::write(
+            root.join(GEMMA4_ASSISTANT_MTP_CONTRACT_FILE),
+            br#"{
+              "schema_version": "ax.gemma4_assistant_mtp.v1",
+              "backend": "gemma4_assistant",
+              "target_model_id": "gemma-4-community-target",
+              "assistant_model_id": "gemma-4-community-assistant",
+              "assistant_path": "assistant",
+              "max_depth": 1,
+              "pairing": "compatible"
+            }"#,
+        )
+        .expect("contract should overwrite");
+
+        let status = load_gemma4_assistant_mtp_status(&root, &manifest("gemma4"));
+
+        assert!(status.configured);
+        assert!(status.validated);
+        assert_eq!(status.disable_reason, Gemma4AssistantMtpDisableReason::None);
+        let config = status.config.expect("validated config should be present");
+        assert!(!config.exact_pair_required);
+        assert_eq!(config.target_model_id, "gemma-4-community-target");
+        assert_eq!(config.assistant_model_id, "gemma-4-community-assistant");
+    }
+
+    #[test]
+    fn invalid_pairing_mode_fails_closed() {
+        let root = temp_root("bad_pairing_mode");
+        write_valid_fixture(&root);
+        fs::write(
+            root.join(GEMMA4_ASSISTANT_MTP_CONTRACT_FILE),
+            br#"{
+              "schema_version": "ax.gemma4_assistant_mtp.v1",
+              "backend": "gemma4_assistant",
+              "target_model_id": "gemma-4-e2b-it",
+              "assistant_model_id": "gemma-4-e2b-it-assistant",
+              "assistant_path": "assistant",
+              "max_depth": 1,
+              "pairing": "relaxed"
+            }"#,
+        )
+        .expect("contract should overwrite");
+
+        let status = load_gemma4_assistant_mtp_status(&root, &manifest("gemma4"));
+
+        assert_eq!(
+            status.disable_reason,
+            Gemma4AssistantMtpDisableReason::InvalidConfig
         );
         assert!(status.attach_failed);
     }

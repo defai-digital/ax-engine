@@ -115,6 +115,10 @@ assistant/
 This keeps model packaging explicit and avoids accidentally treating a target
 checkpoint as an assistant.
 
+`pairing` accepts `"exact"` or `"compatible"`. `"exact"` requires a canonical
+target/assistant model-id pair. `"compatible"` allows noncanonical model ids
+after tokenizer, vocabulary, and architecture checks still pass.
+
 ## Loading
 
 ### Phase 1: Config detection
@@ -137,7 +141,7 @@ It should:
 5. Require `model_type = "gemma4_assistant"` or a separately implemented
    successor.
 6. Validate tokenizer/vocab compatibility.
-7. Validate target/assistant pair.
+7. Validate target/assistant pair when `pairing` requires an exact pair.
 8. Load assistant tensors.
 
 ### Phase 2: Fail-closed validation
