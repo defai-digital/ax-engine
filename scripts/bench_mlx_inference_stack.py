@@ -73,6 +73,7 @@ AX_ENGINE_PURE_MTP_KEY = "ax_engine_mlx_pure_mtp"
 AX_ENGINE_LINEAR_ATTENTION_PACK_KEY = "ax_engine_mlx_linear_pack"
 AX_ENGINE_DENSE_FFN_PACK_KEY = "ax_engine_mlx_dense_ffn_pack"
 AX_ENGINE_DIRECT_GEMMA4_FFN_ROUTE_KEY = "ax_engine_mlx_direct_gemma4_ffn"
+AX_ENGINE_GEMMA4_ASSISTANT_MTP_KEY = "ax_engine_gemma4_assistant_mtp"
 AX_ENGINE_DIRECT_LINEAR_ATTENTION_INPUTS_KEY = (
     "ax_engine_mlx_direct_linear_attention_inputs"
 )
@@ -429,6 +430,23 @@ AX_MLX_GEMMA4_MOE_PROFILE_KEYS = [
     "ax_mlx_gemma4_moe_profile_router_wall_us",
     "ax_mlx_gemma4_moe_profile_expert_wall_us",
     "ax_mlx_gemma4_moe_profile_post_wall_us",
+]
+
+AX_MLX_GEMMA4_ASSISTANT_MTP_KEYS = [
+    "ax_mlx_gemma4_assistant_mtp_configured",
+    "ax_mlx_gemma4_assistant_mtp_validated",
+    "ax_mlx_gemma4_assistant_mtp_enabled",
+    "ax_mlx_gemma4_assistant_mtp_attach_failed",
+    "ax_mlx_gemma4_assistant_mtp_disable_reason",
+    "ax_mlx_gemma4_assistant_mtp_depth",
+    "ax_mlx_gemma4_assistant_mtp_draft_tokens",
+    "ax_mlx_gemma4_assistant_mtp_accepted_tokens",
+    "ax_mlx_gemma4_assistant_mtp_rejected_tokens",
+    "ax_mlx_gemma4_assistant_mtp_corrections",
+    "ax_mlx_gemma4_assistant_mtp_accept_rate_x1000",
+    "ax_mlx_gemma4_assistant_mtp_verify_forward_wall_us",
+    "ax_mlx_gemma4_assistant_mtp_verify_eval_wall_us",
+    "ax_mlx_gemma4_assistant_mtp_draft_forward_wall_us",
 ]
 
 AX_MLX_LINEAR_ATTENTION_PROFILE_KEYS = [
@@ -1798,6 +1816,7 @@ def start_axengine(
     direct_linear_attention_inputs_route: bool = False,
     direct_linear_attention_post_input_route: bool = False,
     direct_gemma4_post_attn_ffn_route: bool = False,
+    gemma4_assistant_mtp: bool = False,
     mtp_max_depth: int | None = None,
     mtp_disable_ngram_stacking: bool = False,
     mtp_fast_tail_topk_sampling: bool = False,
@@ -1859,8 +1878,12 @@ def start_axengine(
         env["AX_MLX_DIRECT_CPP_LINEAR_ATTENTION_POST_INPUT"] = "1"
     if direct_gemma4_post_attn_ffn_route:
         env["AX_MLX_DIRECT_CPP_GEMMA4_POST_ATTN_FFN"] = "1"
+    if gemma4_assistant_mtp:
+        env["AX_MLX_GEMMA4_ASSISTANT_MTP"] = "1"
     if mtp_max_depth is not None:
         env["AX_MLX_MTP_MAX_DEPTH"] = str(mtp_max_depth)
+        if gemma4_assistant_mtp:
+            env["AX_MLX_GEMMA4_ASSISTANT_MTP_MAX_DEPTH"] = str(mtp_max_depth)
     if mtp_fast_tail_topk_sampling:
         env["AX_MLX_MTP_FAST_TAIL_TOPK_SAMPLING"] = "1"
     print(f"  [ax-engine] {' '.join(cmd)}", file=sys.stderr)
@@ -1870,6 +1893,8 @@ def start_axengine(
         print("  [ax-engine] MTP n-gram stacking disabled", file=sys.stderr)
     if mtp_fast_tail_topk_sampling:
         print("  [ax-engine] AX_MLX_MTP_FAST_TAIL_TOPK_SAMPLING=1", file=sys.stderr)
+    if gemma4_assistant_mtp:
+        print("  [ax-engine] AX_MLX_GEMMA4_ASSISTANT_MTP=1", file=sys.stderr)
     if not prefix_cache_enabled:
         print(
             "  [ax-engine] prefix cache disabled for cold prefill/TTFT measurement",
@@ -2039,6 +2064,20 @@ def extract_ax_mlx_gemma4_moe_profile(
     }
 
 
+def extract_ax_mlx_gemma4_assistant_mtp(
+    route: dict[str, Any] | None,
+) -> dict[str, int]:
+    if not route:
+        return {}
+    decisions = route.get("crossover_decisions") or {}
+    if "ax_mlx_gemma4_assistant_mtp_configured" not in decisions:
+        return {}
+    return {
+        key: int(decisions.get(key, 0))
+        for key in AX_MLX_GEMMA4_ASSISTANT_MTP_KEYS
+    }
+
+
 def extract_ax_mlx_linear_attention_profile(
     route: dict[str, Any] | None,
 ) -> dict[str, int]:
@@ -2107,6 +2146,7 @@ def route_with_more_decisions(
     current_decisions = current.get("crossover_decisions") or {}
     static_priority_keys = {
         *AX_MLX_TELEMETRY_KEYS,
+        *AX_MLX_GEMMA4_ASSISTANT_MTP_KEYS,
         *AX_MLX_PREFILL_PROFILE_KEYS,
         *AX_MLX_DECODE_PROFILE_KEYS,
     }
@@ -2619,6 +2659,32 @@ def summarize_ax_mlx_gemma4_moe_profile(runs: list[dict[str, Any]]) -> dict[str,
     return totals
 
 
+def summarize_ax_mlx_gemma4_assistant_mtp(runs: list[dict[str, Any]]) -> dict[str, int]:
+    totals: dict[str, int] = {}
+    max_keys = {
+        "ax_mlx_gemma4_assistant_mtp_configured",
+        "ax_mlx_gemma4_assistant_mtp_validated",
+        "ax_mlx_gemma4_assistant_mtp_enabled",
+        "ax_mlx_gemma4_assistant_mtp_attach_failed",
+        "ax_mlx_gemma4_assistant_mtp_disable_reason",
+        "ax_mlx_gemma4_assistant_mtp_depth",
+    }
+    for run in runs:
+        for key, value in (run.get("ax_mlx_gemma4_assistant_mtp") or {}).items():
+            if key == "ax_mlx_gemma4_assistant_mtp_accept_rate_x1000":
+                continue
+            if key in max_keys:
+                totals[key] = max(totals.get(key, 0), int(value))
+            else:
+                totals[key] = totals.get(key, 0) + int(value)
+    drafted = totals.get("ax_mlx_gemma4_assistant_mtp_draft_tokens", 0)
+    if drafted > 0:
+        totals["ax_mlx_gemma4_assistant_mtp_accept_rate_x1000"] = int(
+            totals.get("ax_mlx_gemma4_assistant_mtp_accepted_tokens", 0) * 1000 / drafted
+        )
+    return totals
+
+
 def summarize_ax_mlx_linear_attention_profile(
     runs: list[dict[str, Any]],
 ) -> dict[str, int]:
@@ -2935,6 +3001,9 @@ def axengine_one_run(
     gemma4_moe_profile = extract_ax_mlx_gemma4_moe_profile(final_route)
     if gemma4_moe_profile:
         run["ax_mlx_gemma4_moe_profile"] = gemma4_moe_profile
+    gemma4_assistant_mtp = extract_ax_mlx_gemma4_assistant_mtp(final_route)
+    if gemma4_assistant_mtp:
+        run["ax_mlx_gemma4_assistant_mtp"] = gemma4_assistant_mtp
     linear_attention_profile = extract_ax_mlx_linear_attention_profile(
         route_for_linear_attention_profile(prefill_route, final_route)
     )
@@ -3172,6 +3241,7 @@ def bench_axengine(
         "ax_mlx_decode_route": summarize_ax_mlx_decode_route(ax_mlx_telemetry),
         "scheduler_telemetry": summarize_scheduler_telemetry(runs),
         "ax_mlx_gemma4_moe_profile": summarize_ax_mlx_gemma4_moe_profile(runs),
+        "ax_mlx_gemma4_assistant_mtp": summarize_ax_mlx_gemma4_assistant_mtp(runs),
         "ax_mlx_linear_attention_profile": summarize_ax_mlx_linear_attention_profile(runs),
         "ax_mlx_prefill_profile": summarize_ax_mlx_prefill_profile(runs),
         "ax_mlx_decode_profile": summarize_ax_mlx_decode_profile(runs),
@@ -4045,6 +4115,15 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--ax-gemma4-assistant-mtp",
+        action="store_true",
+        help=(
+            "Run the AX row with Gemma4 Assistant MTP enabled. Emits "
+            f"{AX_ENGINE_GEMMA4_ASSISTANT_MTP_KEY} and records "
+            "ax_mlx_gemma4_assistant_mtp route metadata."
+        ),
+    )
+    parser.add_argument(
         "--ax-gemma4-moe-profile",
         action="store_true",
         help=(
@@ -4269,6 +4348,19 @@ def main() -> None:
         parser.error("--ax-mtp-disable-ngram-stacking requires an MTP/speculative AX row")
     if args.ax_mtp_disable_ngram_stacking and args.skip_ax_engine:
         parser.error("--ax-mtp-disable-ngram-stacking requires AX rows")
+    if args.ax_gemma4_assistant_mtp and args.skip_ax_engine:
+        parser.error("--ax-gemma4-assistant-mtp requires AX rows")
+    if args.ax_gemma4_assistant_mtp and (
+        args.ax_ngram_accel
+        or args.ax_compare_policies
+        or args.ax_compare_linear_attention_projection_pack
+        or args.ax_compare_dense_ffn_gate_up_pack
+        or args.ax_compare_direct_gemma4_ffn_route
+        or args.ax_compare_direct_linear_attention_post_input_route
+    ):
+        parser.error(
+            "--ax-gemma4-assistant-mtp cannot be combined with other AX row-selection flags"
+        )
     if args.ax_compare_linear_attention_projection_pack and args.skip_ax_engine:
         parser.error("--ax-compare-linear-attention-projection-pack requires AX rows")
     if args.ax_compare_linear_attention_projection_pack and (
@@ -4650,6 +4742,18 @@ def main() -> None:
                         else AX_ENGINE_NGRAM_ACCEL_KEY,
                     )
                 ]
+            elif args.ax_gemma4_assistant_mtp:
+                ax_run_configs = [
+                    (
+                        False,
+                        args.ax_pack_linear_attention_projections,
+                        args.ax_pack_dense_ffn_gate_up,
+                        False,
+                        False,
+                        False,
+                        AX_ENGINE_GEMMA4_ASSISTANT_MTP_KEY,
+                    )
+                ]
             else:
                 ax_run_configs = [
                     (
@@ -4672,6 +4776,9 @@ def main() -> None:
                 direct_gemma4_post_attn_ffn_route,
                 engine_key,
             ) in ax_run_configs:
+                gemma4_assistant_mtp = (
+                    engine_key == AX_ENGINE_GEMMA4_ASSISTANT_MTP_KEY
+                )
                 mtp_disable_ngram_stacking = (
                     bool(args.ax_mtp_disable_ngram_stacking) and not direct_mode
                 )
@@ -4700,6 +4807,7 @@ def main() -> None:
                         direct_linear_attention_post_input_route
                     ),
                     direct_gemma4_post_attn_ffn_route=direct_gemma4_post_attn_ffn_route,
+                    gemma4_assistant_mtp=gemma4_assistant_mtp,
                     mtp_max_depth=args.ax_mtp_max_depth,
                     mtp_disable_ngram_stacking=mtp_disable_ngram_stacking,
                     mtp_fast_tail_topk_sampling=args.ax_mtp_fast_tail_topk_sampling,

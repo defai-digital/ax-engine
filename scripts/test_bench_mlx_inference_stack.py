@@ -783,6 +783,55 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         self.assertEqual(row["ax_decode_effective_route"], "mtp_head_only_verify_loop")
         self.assertEqual(row["ax_mtp_draft_source"], "mtp_head_only")
 
+    def test_axengine_gemma4_assistant_mtp_row_summarizes_route_metadata(self) -> None:
+        run = {
+            "prefill_s": 0.2,
+            "decode_s": 0.1,
+            "ttft_ms": 200.0,
+            "prefill_tok_s": 15.0,
+            "decode_tok_s": 20.0,
+            "output_tokens": 3.0,
+            "ngram_acceleration_telemetry": {
+                "ax_mtp_draft_tokens": 2,
+                "ax_mtp_accepted_tokens": 1,
+            },
+            "ax_mlx_gemma4_assistant_mtp": {
+                "ax_mlx_gemma4_assistant_mtp_configured": 1,
+                "ax_mlx_gemma4_assistant_mtp_validated": 1,
+                "ax_mlx_gemma4_assistant_mtp_enabled": 1,
+                "ax_mlx_gemma4_assistant_mtp_attach_failed": 0,
+                "ax_mlx_gemma4_assistant_mtp_disable_reason": 0,
+                "ax_mlx_gemma4_assistant_mtp_depth": 1,
+                "ax_mlx_gemma4_assistant_mtp_draft_tokens": 2,
+                "ax_mlx_gemma4_assistant_mtp_accepted_tokens": 1,
+                "ax_mlx_gemma4_assistant_mtp_rejected_tokens": 1,
+                "ax_mlx_gemma4_assistant_mtp_corrections": 1,
+                "ax_mlx_gemma4_assistant_mtp_accept_rate_x1000": 500,
+                "ax_mlx_gemma4_assistant_mtp_verify_forward_wall_us": 40,
+                "ax_mlx_gemma4_assistant_mtp_verify_eval_wall_us": 10,
+                "ax_mlx_gemma4_assistant_mtp_draft_forward_wall_us": 30,
+            },
+        }
+        with patch.object(bench, "axengine_one_run", side_effect=[run, run]):
+            row = bench.bench_axengine(
+                19091,
+                [1, 2, 3],
+                3,
+                1,
+                0.0,
+                model_metadata={},
+                direct_mode=False,
+                engine_key_override=bench.AX_ENGINE_GEMMA4_ASSISTANT_MTP_KEY,
+            )
+
+        self.assertEqual(row["engine"], bench.AX_ENGINE_GEMMA4_ASSISTANT_MTP_KEY)
+        assistant = row["ax_mlx_gemma4_assistant_mtp"]
+        self.assertEqual(assistant["ax_mlx_gemma4_assistant_mtp_enabled"], 1)
+        self.assertEqual(assistant["ax_mlx_gemma4_assistant_mtp_draft_tokens"], 2)
+        self.assertEqual(assistant["ax_mlx_gemma4_assistant_mtp_accepted_tokens"], 1)
+        self.assertEqual(assistant["ax_mlx_gemma4_assistant_mtp_rejected_tokens"], 1)
+        self.assertEqual(assistant["ax_mlx_gemma4_assistant_mtp_accept_rate_x1000"], 500)
+
     def test_ax_decode_claim_status_reports_throughput_policy_only(self) -> None:
         ngram_telemetry = {
             "ax_ngram_draft_attempts": 10,
@@ -2491,6 +2540,59 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         self.assertEqual(summary["ax_mlx_gemma4_moe_profile_topk_selections"], 40)
         self.assertEqual(summary["ax_mlx_gemma4_moe_profile_attention_wall_us"], 250)
 
+    def test_ax_mlx_gemma4_assistant_mtp_is_extracted_and_summarized(self) -> None:
+        telemetry = bench.extract_ax_mlx_gemma4_assistant_mtp(
+            {
+                "crossover_decisions": {
+                    "ax_mlx_gemma4_assistant_mtp_configured": 1,
+                    "ax_mlx_gemma4_assistant_mtp_validated": 1,
+                    "ax_mlx_gemma4_assistant_mtp_enabled": 1,
+                    "ax_mlx_gemma4_assistant_mtp_attach_failed": 0,
+                    "ax_mlx_gemma4_assistant_mtp_disable_reason": 0,
+                    "ax_mlx_gemma4_assistant_mtp_depth": 1,
+                    "ax_mlx_gemma4_assistant_mtp_draft_tokens": 4,
+                    "ax_mlx_gemma4_assistant_mtp_accepted_tokens": 3,
+                    "ax_mlx_gemma4_assistant_mtp_rejected_tokens": 1,
+                    "ax_mlx_gemma4_assistant_mtp_corrections": 1,
+                    "ax_mlx_gemma4_assistant_mtp_accept_rate_x1000": 750,
+                    "ax_mlx_gemma4_assistant_mtp_verify_forward_wall_us": 100,
+                    "ax_mlx_gemma4_assistant_mtp_verify_eval_wall_us": 40,
+                    "ax_mlx_gemma4_assistant_mtp_draft_forward_wall_us": 80,
+                    "unrelated": 99,
+                }
+            }
+        )
+
+        self.assertEqual(telemetry["ax_mlx_gemma4_assistant_mtp_enabled"], 1)
+        self.assertEqual(telemetry["ax_mlx_gemma4_assistant_mtp_draft_tokens"], 4)
+        self.assertNotIn("unrelated", telemetry)
+
+        summary = bench.summarize_ax_mlx_gemma4_assistant_mtp(
+            [
+                {"ax_mlx_gemma4_assistant_mtp": telemetry},
+                {
+                    "ax_mlx_gemma4_assistant_mtp": {
+                        "ax_mlx_gemma4_assistant_mtp_enabled": 1,
+                        "ax_mlx_gemma4_assistant_mtp_depth": 1,
+                        "ax_mlx_gemma4_assistant_mtp_draft_tokens": 2,
+                        "ax_mlx_gemma4_assistant_mtp_accepted_tokens": 1,
+                        "ax_mlx_gemma4_assistant_mtp_rejected_tokens": 1,
+                        "ax_mlx_gemma4_assistant_mtp_corrections": 1,
+                        "ax_mlx_gemma4_assistant_mtp_verify_forward_wall_us": 50,
+                        "ax_mlx_gemma4_assistant_mtp_verify_eval_wall_us": 20,
+                        "ax_mlx_gemma4_assistant_mtp_draft_forward_wall_us": 60,
+                    }
+                },
+            ]
+        )
+        self.assertEqual(summary["ax_mlx_gemma4_assistant_mtp_enabled"], 1)
+        self.assertEqual(summary["ax_mlx_gemma4_assistant_mtp_depth"], 1)
+        self.assertEqual(summary["ax_mlx_gemma4_assistant_mtp_draft_tokens"], 6)
+        self.assertEqual(summary["ax_mlx_gemma4_assistant_mtp_accepted_tokens"], 4)
+        self.assertEqual(summary["ax_mlx_gemma4_assistant_mtp_rejected_tokens"], 2)
+        self.assertEqual(summary["ax_mlx_gemma4_assistant_mtp_corrections"], 2)
+        self.assertEqual(summary["ax_mlx_gemma4_assistant_mtp_accept_rate_x1000"], 666)
+
     def test_ax_mlx_linear_attention_profile_is_extracted_and_summarized(self) -> None:
         profile = bench.extract_ax_mlx_linear_attention_profile(
             {
@@ -2805,6 +2907,14 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
             {},
         )
 
+    def test_absent_ax_mlx_gemma4_assistant_mtp_stays_silent(self) -> None:
+        self.assertEqual(
+            bench.extract_ax_mlx_gemma4_assistant_mtp(
+                {"crossover_decisions": {"ax_mlx_decode_steps": 2}}
+            ),
+            {},
+        )
+
     def test_absent_ax_mlx_linear_attention_profile_stays_silent(self) -> None:
         self.assertEqual(
             bench.extract_ax_mlx_linear_attention_profile(
@@ -3006,6 +3116,24 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
 
         env = popen.call_args.kwargs["env"]
         self.assertEqual(env["AX_MLX_DIRECT_CPP_GEMMA4_POST_ATTN_FFN"], "1")
+
+    def test_axengine_command_can_enable_gemma4_assistant_mtp(self) -> None:
+        with (
+            patch.object(bench, "ensure_port_available"),
+            patch.object(bench.subprocess, "Popen") as popen,
+        ):
+            bench.start_axengine(
+                Path("/tmp/ax-engine-server"),
+                Path("/tmp/model"),
+                19091,
+                direct_mode=False,
+                gemma4_assistant_mtp=True,
+                mtp_max_depth=1,
+            )
+
+        env = popen.call_args.kwargs["env"]
+        self.assertEqual(env["AX_MLX_GEMMA4_ASSISTANT_MTP"], "1")
+        self.assertEqual(env["AX_MLX_GEMMA4_ASSISTANT_MTP_MAX_DEPTH"], "1")
 
     def test_axengine_command_can_enable_direct_linear_attention_routes(self) -> None:
         with (

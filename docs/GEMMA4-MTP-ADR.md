@@ -2,7 +2,8 @@
 
 ## Status
 
-**Proposed.**
+**Accepted and implemented for opt-in depth-1 runtime support.** Default-route
+promotion remains benchmark-gated.
 
 ## Context
 
@@ -94,20 +95,26 @@ tokens.
 
 ## Validation
 
-Implementation is not complete until:
+The opt-in depth-1 runtime implementation is complete when:
 
 - loader and pair-validation unit tests pass;
 - route telemetry tests pass;
-- a local Gemma 4 E2B plus assistant smoke test produces valid text;
-- benchmark artifacts show assistant-MTP rows with nonzero draft and accepted
-  tokens;
+- core and MLX crate tests pass;
 - no baseline Gemma 4 target regression is introduced.
+
+Default-route promotion and public performance claims are not complete until:
+
+- a local Gemma 4 E2B plus assistant smoke test produces valid text when
+  artifacts are available;
+- benchmark artifacts show assistant-MTP rows with nonzero draft and accepted
+  tokens.
 
 ## Follow-ups
 
 - Decide whether exact-pair mode should be the default for community artifacts.
-- Add benchmark harness support for `ax_engine_gemma4_assistant_mtp`.
-- Evaluate n-gram plus Gemma 4 Assistant stacking after pure assistant MTP is
-  stable.
+- Run benchmark artifacts for `ax_engine_gemma4_assistant_mtp` once local
+  assistant artifacts are available.
+- Evaluate n-gram plus Gemma 4 Assistant stacking after pure assistant MTP has
+  smoke and benchmark evidence.
 - Document supported assistant artifact layouts in `docs/SUPPORTED-MODELS.md`
   only after implementation and smoke validation.

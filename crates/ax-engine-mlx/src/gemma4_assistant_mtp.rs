@@ -395,6 +395,15 @@ fn gemma4_assistant_mtp_require_exact_pair() -> bool {
     })
 }
 
+pub fn gemma4_assistant_mtp_debug_enabled() -> bool {
+    static CACHED: OnceLock<bool> = OnceLock::new();
+    *CACHED.get_or_init(|| {
+        std::env::var("AX_MLX_GEMMA4_ASSISTANT_MTP_DEBUG")
+            .map(|v| v == "1")
+            .unwrap_or(false)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;

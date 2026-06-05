@@ -2,8 +2,10 @@
 
 ## Status
 
-**Proposed.** This document defines product requirements for supporting Gemma 4
-Assistant speculative decoding in AX Engine's MLX runtime.
+**Implemented for opt-in depth-1 runtime support.** This document defines
+product requirements for supporting Gemma 4 Assistant speculative decoding in
+AX Engine's MLX runtime. Default-route promotion and README performance claims
+remain benchmark-gated.
 
 ## Background
 

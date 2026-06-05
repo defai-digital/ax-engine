@@ -72,6 +72,7 @@ use ax_engine_core::{
 
 use crate::gemma4_assistant_mtp::{
     Gemma4AssistantMtpConfig, Gemma4AssistantMtpDisableReason, Gemma4AssistantMtpStatus,
+    gemma4_assistant_mtp_debug_enabled,
 };
 use crate::generate::{
     DirectPipelineTimings, advance_direct_pipeline_with_timings_and_turboquant_context,
@@ -1132,7 +1133,10 @@ struct Gemma4AssistantMtpRuntime {
 struct Gemma4AssistantMtpTelemetry {
     draft_tokens: u32,
     accepted_tokens: u32,
+    rejected_tokens: u32,
+    corrections: u32,
     verify_forward_wall_us: u32,
+    verify_eval_wall_us: u32,
     draft_forward_wall_us: u32,
 }
 
@@ -1147,21 +1151,40 @@ impl Gemma4AssistantMtpTelemetry {
             .saturating_add(draft_forward_wall_us);
     }
 
-    fn record_verified(&mut self, accepted: usize, verify_forward_wall_us: u32) {
+    fn record_verified(
+        &mut self,
+        drafted: usize,
+        accepted: usize,
+        verify_forward_wall_us: u32,
+        verify_eval_wall_us: u32,
+    ) {
         self.accepted_tokens = self
             .accepted_tokens
             .saturating_add(saturating_u32(accepted));
+        let rejected = drafted.saturating_sub(accepted);
+        self.rejected_tokens = self
+            .rejected_tokens
+            .saturating_add(saturating_u32(rejected));
+        if rejected > 0 {
+            self.corrections = self.corrections.saturating_add(1);
+        }
         self.verify_forward_wall_us = self
             .verify_forward_wall_us
             .saturating_add(verify_forward_wall_us);
+        self.verify_eval_wall_us = self.verify_eval_wall_us.saturating_add(verify_eval_wall_us);
     }
 
     fn merge_from(&mut self, other: Self) {
         self.draft_tokens = self.draft_tokens.saturating_add(other.draft_tokens);
         self.accepted_tokens = self.accepted_tokens.saturating_add(other.accepted_tokens);
+        self.rejected_tokens = self.rejected_tokens.saturating_add(other.rejected_tokens);
+        self.corrections = self.corrections.saturating_add(other.corrections);
         self.verify_forward_wall_us = self
             .verify_forward_wall_us
             .saturating_add(other.verify_forward_wall_us);
+        self.verify_eval_wall_us = self
+            .verify_eval_wall_us
+            .saturating_add(other.verify_eval_wall_us);
         self.draft_forward_wall_us = self
             .draft_forward_wall_us
             .saturating_add(other.draft_forward_wall_us);
@@ -1214,12 +1237,24 @@ impl Gemma4AssistantMtpStatus {
             telemetry.accepted_tokens,
         );
         decisions.upsert_route_decision(
+            "ax_mlx_gemma4_assistant_mtp_rejected_tokens",
+            telemetry.rejected_tokens,
+        );
+        decisions.upsert_route_decision(
+            "ax_mlx_gemma4_assistant_mtp_corrections",
+            telemetry.corrections,
+        );
+        decisions.upsert_route_decision(
             "ax_mlx_gemma4_assistant_mtp_accept_rate_x1000",
             telemetry.accept_rate_x1000(),
         );
         decisions.upsert_route_decision(
             "ax_mlx_gemma4_assistant_mtp_verify_forward_wall_us",
             telemetry.verify_forward_wall_us,
+        );
+        decisions.upsert_route_decision(
+            "ax_mlx_gemma4_assistant_mtp_verify_eval_wall_us",
+            telemetry.verify_eval_wall_us,
         );
         decisions.upsert_route_decision(
             "ax_mlx_gemma4_assistant_mtp_draft_forward_wall_us",
@@ -3805,27 +3840,38 @@ fn load_gemma4_assistant_mtp_runtime(
     };
     config.max_depth = config.max_depth.min(1);
 
-    let disabled = |config: Gemma4AssistantMtpConfig| Gemma4AssistantMtpStatus {
-        configured: true,
-        validated: false,
-        enabled: false,
-        attach_failed: true,
-        disable_reason: Gemma4AssistantMtpDisableReason::WeightLoadFailed,
-        max_depth: config.max_depth,
-        config: Some(config),
+    let disabled = |config: Gemma4AssistantMtpConfig, message: &str| {
+        if gemma4_assistant_mtp_debug_enabled() {
+            eprintln!("Gemma4 Assistant MTP attach failed: {message}");
+        }
+        Gemma4AssistantMtpStatus {
+            configured: true,
+            validated: false,
+            enabled: false,
+            attach_failed: true,
+            disable_reason: Gemma4AssistantMtpDisableReason::WeightLoadFailed,
+            max_depth: config.max_depth,
+            config: Some(config),
+        }
     };
 
     let assistant_artifacts = match NativeModelArtifacts::from_dir(&config.assistant_path) {
         Ok(artifacts) => artifacts,
-        Err(_) => return (disabled(config), None),
+        Err(error) => return (disabled(config, &error.to_string()), None),
     };
     let assistant_cfg = ModelConfig::from_manifest(assistant_artifacts.manifest());
     if assistant_cfg.model_family != "gemma4_assistant" {
-        return (disabled(config), None);
+        return (
+            disabled(
+                config,
+                "assistant artifact manifest is not gemma4_assistant",
+            ),
+            None,
+        );
     }
     let assistant_weights = match load_weights(&assistant_artifacts) {
         Ok(weights) => weights,
-        Err(_) => return (disabled(config), None),
+        Err(error) => return (disabled(config, &error.to_string()), None),
     };
     let status = Gemma4AssistantMtpStatus {
         configured: true,
@@ -6707,8 +6753,10 @@ impl MlxRunner {
                 .count();
             if gemma4_assistant_drafted > 0 {
                 state.gemma4_assistant_mtp_telemetry.record_verified(
+                    gemma4_assistant_drafted,
                     gemma4_assistant_accepted,
                     mtp_timings.verify_forward_wall_us,
+                    mtp_timings.verify_eval_wall_us,
                 );
             }
             let ngram_prefix_len = state
@@ -10560,11 +10608,23 @@ mod tests {
             Some(&0)
         );
         assert_eq!(
+            decisions.get("ax_mlx_gemma4_assistant_mtp_rejected_tokens"),
+            Some(&0)
+        );
+        assert_eq!(
+            decisions.get("ax_mlx_gemma4_assistant_mtp_corrections"),
+            Some(&0)
+        );
+        assert_eq!(
             decisions.get("ax_mlx_gemma4_assistant_mtp_accept_rate_x1000"),
             Some(&0)
         );
         assert_eq!(
             decisions.get("ax_mlx_gemma4_assistant_mtp_verify_forward_wall_us"),
+            Some(&0)
+        );
+        assert_eq!(
+            decisions.get("ax_mlx_gemma4_assistant_mtp_verify_eval_wall_us"),
             Some(&0)
         );
         assert_eq!(
@@ -10586,7 +10646,7 @@ mod tests {
         };
         let mut telemetry = Gemma4AssistantMtpTelemetry::default();
         telemetry.record_submitted(4, 120);
-        telemetry.record_verified(3, 240);
+        telemetry.record_verified(4, 3, 240, 80);
 
         let mut decisions = Vec::new();
         status.append_route_decisions(telemetry, &mut decisions);
@@ -10607,12 +10667,24 @@ mod tests {
             Some(&3)
         );
         assert_eq!(
+            decisions.get("ax_mlx_gemma4_assistant_mtp_rejected_tokens"),
+            Some(&1)
+        );
+        assert_eq!(
+            decisions.get("ax_mlx_gemma4_assistant_mtp_corrections"),
+            Some(&1)
+        );
+        assert_eq!(
             decisions.get("ax_mlx_gemma4_assistant_mtp_accept_rate_x1000"),
             Some(&750)
         );
         assert_eq!(
             decisions.get("ax_mlx_gemma4_assistant_mtp_verify_forward_wall_us"),
             Some(&240)
+        );
+        assert_eq!(
+            decisions.get("ax_mlx_gemma4_assistant_mtp_verify_eval_wall_us"),
+            Some(&80)
         );
         assert_eq!(
             decisions.get("ax_mlx_gemma4_assistant_mtp_draft_forward_wall_us"),

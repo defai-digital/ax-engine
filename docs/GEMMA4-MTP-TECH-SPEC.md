@@ -6,6 +6,9 @@ This spec describes how to add Gemma 4 Assistant speculative decoding to
 `ax-engine-mlx` without conflating it with the existing Qwen3-Next MTP sidecar
 path.
 
+Status: the opt-in depth-1 runtime path is implemented. Larger depths, default
+route promotion, and performance publication remain benchmark-gated.
+
 The existing MTP implementation loads a single recurrent MTP layer from
 `mtp.safetensors` and applies it through `mtp_head_forward`. Gemma 4 Assistant
 uses a separate assistant model architecture with target KV sharing, constant
@@ -320,16 +323,17 @@ Benchmark gate:
 
 ```bash
 python3 scripts/bench_mlx_inference_stack.py \
-  --models gemma-4-e2b-it-4bit \
-  --engines ax_engine ax_engine_gemma4_assistant_mtp \
+  --model gemma-4-e2b-it-4bit \
+  --ax-gemma4-assistant-mtp \
   --prompt-tokens 128 512 2048 \
   --generation-tokens 128 \
   --repetitions 5 \
   --cooldown 15
 ```
 
-The exact script may need extension to understand
-`ax_engine_gemma4_assistant_mtp`.
+The produced AX row is labeled `ax_engine_gemma4_assistant_mtp` and must carry
+nonzero `ax_mlx_gemma4_assistant_mtp_draft_tokens` before it can be used as
+assistant-MTP evidence.
 
 ## Rollout Plan
 
