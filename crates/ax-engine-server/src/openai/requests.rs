@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::app_state::AppState;
+use crate::chat;
 use crate::errors::{ErrorResponse, error_response};
 use crate::openai::chat_requests::{build_llama_cpp_chat_messages, build_mlx_lm_chat_messages};
 use crate::openai::schema::{
@@ -95,6 +96,7 @@ pub(crate) fn build_openai_chat_request(
     request: OpenAiChatCompletionHttpRequest,
 ) -> Result<OpenAiBuiltRequest, (StatusCode, Json<ErrorResponse>)> {
     let max_output_tokens = openai_max_tokens(request.max_tokens);
+    validate_native_chat_artifacts(state)?;
     let input_text = render_openai_chat_prompt(state.model_id.as_ref(), &request.messages)?;
 
     let payload = OpenAiBuiltPayload {
@@ -119,6 +121,16 @@ pub(crate) fn build_openai_chat_request(
         max_output_tokens,
         payload,
     ))
+}
+
+fn validate_native_chat_artifacts(
+    state: &AppState,
+) -> Result<(), (StatusCode, Json<ErrorResponse>)> {
+    chat::validate_native_chat_artifact(
+        state.model_id.as_ref(),
+        state.session_config.mlx_model_artifacts_dir.as_deref(),
+    )
+    .map_err(|message| error_response(StatusCode::BAD_REQUEST, "invalid_request", message))
 }
 
 pub(crate) fn build_openai_mlx_lm_chat_request(

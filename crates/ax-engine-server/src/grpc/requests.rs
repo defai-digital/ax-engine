@@ -25,6 +25,11 @@ pub(super) fn build_chat_generate_request(
     state: &AppState,
     req: &proto::ChatCompletionRequest,
 ) -> Result<GenerateRequest, Status> {
+    chat::validate_native_chat_artifact(
+        state.model_id.as_ref(),
+        state.session_config.mlx_model_artifacts_dir.as_deref(),
+    )
+    .map_err(Status::invalid_argument)?;
     let pairs: Vec<(String, String)> = req
         .messages
         .iter()
@@ -101,9 +106,30 @@ pub(super) fn grpc_embedding_prompt_tokens(input: &[u32]) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app_state::build_app_state;
+    use crate::args::ServerArgs;
+    use ax_engine_sdk::EngineSession;
+    use clap::Parser;
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     fn user(msg: &str) -> Vec<(String, String)> {
         vec![("user".to_string(), msg.to_string())]
+    }
+
+    fn test_app_state(model_id: &str, artifact_dir: &std::path::Path) -> AppState {
+        let args = ServerArgs::parse_from([
+            "ax-engine-server",
+            "--model-id",
+            model_id,
+            "--llama-server-url",
+            "http://127.0.0.1:1",
+            "--mlx-model-artifacts-dir",
+            artifact_dir.to_str().expect("artifact dir should be UTF-8"),
+        ]);
+        let session_config = args.session_config().expect("session config should build");
+        let session = EngineSession::new(session_config).expect("session should build");
+        build_app_state(args.model_id.clone(), session).expect("app state should build")
     }
 
     #[test]
@@ -145,6 +171,36 @@ mod tests {
         assert!(err.contains("at least one message"));
     }
 
+    #[tokio::test]
+    async fn grpc_chat_request_rejects_gemma4_artifact_without_chat_template() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time should be valid")
+            .as_nanos();
+        let artifact_dir =
+            std::env::temp_dir().join(format!("ax-engine-grpc-gemma4-base-artifact-{unique}"));
+        fs::create_dir_all(&artifact_dir).expect("artifact dir should create");
+        let state = test_app_state("gemma4", &artifact_dir);
+        let req = proto::ChatCompletionRequest {
+            model: "gemma4".to_string(),
+            messages: vec![proto::ChatMessage {
+                role: "user".to_string(),
+                content: "Hello".to_string(),
+            }],
+            max_tokens: 8,
+            temperature: 0.0,
+            seed: 0,
+            stop: Vec::new(),
+        };
+
+        let error = build_chat_generate_request(&state, &req)
+            .expect_err("Gemma4 base artifact should fail closed for gRPC chat");
+        assert_eq!(error.code(), tonic::Code::InvalidArgument);
+        assert!(error.message().contains("chat_template.jinja"));
+
+        fs::remove_dir_all(artifact_dir).expect("artifact dir should clean up");
+    }
+
     #[test]
     fn grpc_embedding_usage_counts_input_tokens() {
         let input_tokens = [101, 102, 103];
@@ -177,7 +233,7 @@ mod tests {
     fn grpc_chat_prompt_preserves_glm47_tool_observation_shape() {
         // Mirror of `openai_glm_prompt_renderer_preserves_tool_observation_shape`.
         // GLM4.7 needs tool/function roles routed to observation/tool_response tags
-        // and assistant turns to include an empty <think> block before content.
+        // and assistant turns to close thinking with the tokenizer-template suffix.
         let messages = vec![
             ("user".to_string(), "call tool".to_string()),
             (
@@ -193,10 +249,10 @@ mod tests {
             prompt,
             "[gMASK]<sop>\
              <|user|>call tool\
-             <|assistant|><think>\n\n</think>\n\n<tool_call>x</tool_call>\
+             <|assistant|></think><tool_call>x</tool_call>\
              <|observation|><tool_response>tool result</tool_response>\
              <|user|>continue\
-             <|assistant|><think>\n\n</think>\n\n",
+             <|assistant|></think>",
         );
     }
 }

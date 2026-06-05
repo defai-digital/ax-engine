@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use serde_json::{Value, json};
 
 // Pre-fills `<think>\n\n</think>\n\n` to signal the model to skip reasoning;
@@ -104,6 +106,35 @@ pub(crate) fn template_kwargs_for_model_id(model_id: &str) -> Option<Value> {
         ChatPromptTemplate::QwenChatMl | ChatPromptTemplate::Glm47
     )
     .then(|| json!({"enable_thinking": false}))
+}
+
+pub(crate) fn requires_chat_template_artifact(model_id: &str) -> bool {
+    matches!(
+        ChatPromptTemplate::for_model_id(model_id),
+        ChatPromptTemplate::Gemma4
+    )
+}
+
+pub(crate) fn validate_native_chat_artifact(
+    model_id: &str,
+    artifacts_dir: Option<&Path>,
+) -> Result<(), String> {
+    if !requires_chat_template_artifact(model_id) {
+        return Ok(());
+    }
+
+    let Some(artifacts_dir) = artifacts_dir else {
+        return Ok(());
+    };
+    if artifacts_dir.join("chat_template.jinja").is_file() {
+        return Ok(());
+    }
+
+    Err(format!(
+        "Gemma4 chat requires an instruction-tuned MLX artifact with chat_template.jinja; \
+         {} does not provide one. Use a gemma-4-*-it artifact or route raw base-model prompts through /v1/completions.",
+        artifacts_dir.display()
+    ))
 }
 
 pub(crate) fn is_qwen_thinking_model(model_id: &str) -> bool {
@@ -220,7 +251,7 @@ pub(crate) fn render_prompt_with_template(
                     };
                     prompt.push_str(tag);
                     if role == "assistant" {
-                        prompt.push_str("<think>\n\n</think>\n\n");
+                        prompt.push_str("</think>");
                         prompt.push_str(content.trim());
                     } else {
                         prompt.push_str(content);
@@ -252,7 +283,7 @@ pub(crate) fn render_prompt_with_template(
         ChatPromptTemplate::Gemma4 => {
             prompt.push_str("<|turn>model\n<|channel>thought\n<channel|>")
         }
-        ChatPromptTemplate::Glm47 => prompt.push_str("<|assistant|><think>\n\n</think>\n\n"),
+        ChatPromptTemplate::Glm47 => prompt.push_str("<|assistant|></think>"),
         ChatPromptTemplate::PlainRolePrefix => prompt.push_str("assistant:"),
         ChatPromptTemplate::Unsupported(_) => {
             unreachable!("unsupported templates are rejected before rendering")
@@ -264,6 +295,8 @@ pub(crate) fn render_prompt_with_template(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn stop_sequences_merge_user_and_native_stops() {
@@ -293,6 +326,30 @@ mod tests {
                 "unexpected error for {model_id}: {error}"
             );
         }
+    }
+
+    #[test]
+    fn native_chat_artifact_validation_rejects_gemma4_without_chat_template() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time should be valid")
+            .as_nanos();
+        let artifact_dir =
+            std::env::temp_dir().join(format!("ax-engine-chat-gemma4-artifact-{unique}"));
+        fs::create_dir_all(&artifact_dir).expect("artifact dir should create");
+
+        let error = validate_native_chat_artifact("gemma4", Some(&artifact_dir))
+            .expect_err("Gemma4 chat artifact must include chat_template.jinja");
+        assert!(error.contains("chat_template.jinja"));
+
+        fs::write(artifact_dir.join("chat_template.jinja"), "{# template #}")
+            .expect("template marker should write");
+        validate_native_chat_artifact("gemma4", Some(&artifact_dir))
+            .expect("Gemma4 chat artifact with template should pass");
+        validate_native_chat_artifact("glm4_moe_lite", Some(&artifact_dir))
+            .expect("non-Gemma families do not require Gemma4 template");
+
+        fs::remove_dir_all(artifact_dir).expect("artifact dir should clean up");
     }
 
     #[test]

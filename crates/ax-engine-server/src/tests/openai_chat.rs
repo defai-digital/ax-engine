@@ -8,6 +8,8 @@ use crate::routes::build_router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use serde_json::{Value, json};
+use std::fs;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::fixtures::{
     assert_invalid_request_response, json_request_body, json_response, llama_cpp_server_state,
@@ -37,7 +39,7 @@ fn openai_chat_prompt_renderer_uses_model_family_templates() {
     );
     assert_eq!(
         render_openai_chat_prompt("glm4_moe_lite", &messages).expect("glm prompt"),
-        "[gMASK]<sop><|system|>Be concise.<|user|>Hello<|assistant|><think>\n\n</think>\n\n"
+        "[gMASK]<sop><|system|>Be concise.<|user|>Hello<|assistant|></think>"
     );
     assert_eq!(
         render_openai_chat_prompt("unknown-local-model", &messages).expect("plain prompt"),
@@ -196,7 +198,7 @@ fn openai_glm_prompt_renderer_preserves_tool_observation_shape() {
     assert_eq!(
         render_openai_chat_prompt("mlx-community/GLM-4.7-Flash-4bit", &messages)
             .expect("glm prompt"),
-        "[gMASK]<sop><|user|>call tool<|assistant|><think>\n\n</think>\n\n<tool_call>x</tool_call><|observation|><tool_response>tool result</tool_response><|user|>continue<|assistant|><think>\n\n</think>\n\n"
+        "[gMASK]<sop><|user|>call tool<|assistant|></think><tool_call>x</tool_call><|observation|><tool_response>tool result</tool_response><|user|>continue<|assistant|></think>"
     );
 }
 
@@ -238,6 +240,42 @@ async fn openai_chat_request_rejects_unsupported_ax_rendered_family() {
     };
     assert_eq!(error.0, StatusCode::BAD_REQUEST);
     assert!(error.1.error.message.contains("deepseek"));
+}
+
+#[tokio::test]
+async fn openai_chat_request_rejects_gemma4_artifact_without_chat_template() {
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system time should be valid")
+        .as_nanos();
+    let artifact_dir =
+        std::env::temp_dir().join(format!("ax-engine-server-gemma4-base-artifact-{unique}"));
+    fs::create_dir_all(&artifact_dir).expect("artifact dir should create");
+
+    let state = test_app_state(|args| {
+        args.model_id = "gemma4".to_string();
+        args.llama_server_url = Some("http://127.0.0.1:1".to_string());
+        args.mlx_model_artifacts_dir = Some(artifact_dir.clone());
+    });
+    let request: OpenAiChatCompletionHttpRequest = serde_json::from_value(json!({
+        "messages": [{"role": "user", "content": "Hello"}],
+        "max_tokens": 8
+    }))
+    .expect("sample chat request should deserialize");
+
+    let error = match build_openai_chat_request(&state, request) {
+        Ok(_) => panic!("Gemma4 base artifact should fail closed for OpenAI chat"),
+        Err(error) => error,
+    };
+
+    assert_eq!(error.0, StatusCode::BAD_REQUEST);
+    assert!(
+        error.1.error.message.contains("chat_template.jinja"),
+        "unexpected error: {}",
+        error.1.error.message
+    );
+
+    fs::remove_dir_all(artifact_dir).expect("artifact dir should clean up");
 }
 
 #[tokio::test]
