@@ -46,12 +46,12 @@ HF_CACHE = Path(
 ENGINE_LABELS = {
     "mtplx": "MTPLX 0.3.7 (default)",
     "mtplx_tuned": "MTPLX 0.3.7 (tuned)",
-    "ax_engine": "AX Engine v5.2.0 (MTP-only)",
-    "ax_engine_ngram": "AX Engine v5.2.0 (MTP + n-gram stacking)",
-    "ax_engine_tuned": "AX Engine v5.2.0 (tuned best-of)",
+    "ax_engine": "AX Engine v5.2.1 (MTP-only)",
+    "ax_engine_ngram": "AX Engine v5.2.1 (MTP + n-gram stacking)",
+    "ax_engine_tuned": "AX Engine v5.2.1 (tuned best-of)",
 }
 VERSIONS_FOOTNOTE = (
-    "Vendor-default config per row · MTPLX 0.3.7 · AX Engine v5.2.0"
+    "Vendor-default config per row · MTPLX 0.3.7 · AX Engine v5.2.1"
 )
 ENGINE_COLORS = {
     "mtplx": "#14532d",

@@ -9,7 +9,7 @@
 
 ## Prefill Rate (tok/s, higher is better)
 
-| Model | Suite | MTPLX 0.3.7 | AX Engine v5.1.12 | AX+ngram v5.1.12 |
+| Model | Suite | MTPLX 0.3.7 | AX Engine v5.2.1 | AX+ngram v5.2.1 |
 | --- | --- | ---: | ---: | ---: |
 | Qwen3.6 27B 4-bit | flappy | 682.6 | 686.6 | 679.0 |
 | Qwen3.6 27B 4-bit | long_code | 797.7 | 790.4 | 790.6 |
@@ -22,7 +22,7 @@
 
 ## TTFT (ms, lower is better)
 
-| Model | Suite | MTPLX 0.3.7 | AX Engine v5.1.12 | AX+ngram v5.1.12 |
+| Model | Suite | MTPLX 0.3.7 | AX Engine v5.2.1 | AX+ngram v5.2.1 |
 | --- | --- | ---: | ---: | ---: |
 | Qwen3.6 27B 4-bit | flappy | 471.0 | 468.3 | 477.0 |
 | Qwen3.6 27B 4-bit | long_code | 899.5 | 907.7 | 907.5 |

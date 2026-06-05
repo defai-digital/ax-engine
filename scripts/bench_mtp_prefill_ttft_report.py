@@ -34,10 +34,10 @@ from typing import Any
 # script still parses any historical Lightning artifacts encountered on disk.
 ENGINE_LABELS = {
     "mtplx": "MTPLX 0.3.7",
-    "ax_engine": "AX Engine v5.1.12",
-    "ax_engine_ngram": "AX+ngram v5.1.12",
+    "ax_engine": "AX Engine v5.2.1",
+    "ax_engine_ngram": "AX+ngram v5.2.1",
 }
-VERSIONS_FOOTNOTE = "MTPLX 0.3.7 · AX Engine v5.1.12"
+VERSIONS_FOOTNOTE = "MTPLX 0.3.7 · AX Engine v5.2.1"
 ENGINE_COLORS = {
     "mtplx": "#14532d",
     "ax_engine": "#f97316",
