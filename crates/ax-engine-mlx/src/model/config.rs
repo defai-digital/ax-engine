@@ -17,6 +17,12 @@ pub struct LayerConfig {
     pub v_norm_no_scale: bool,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Gemma4AssistantSharedKvLayers {
+    pub full_attention_layer: Option<usize>,
+    pub sliding_attention_layer: Option<usize>,
+}
+
 /// Hyperparameters for Qwen3.5 gated-delta linear-attention layers.
 #[derive(Clone, Debug, PartialEq)]
 pub struct LinearAttentionConfig {
@@ -277,8 +283,11 @@ impl ModelConfig {
         };
         let rope_theta = m.rope_theta.map(|t| t as f32).unwrap_or(10000.0);
         let layer_configs = build_layer_configs(m, head_dim, rope_theta, rope_dims);
-        let is_gemma4 = m.model_family == "gemma4";
-        let uses_geglu = matches!(m.model_family.as_str(), "gemma4" | "gemma3");
+        let is_gemma4 = matches!(m.model_family.as_str(), "gemma4" | "gemma4_assistant");
+        let uses_geglu = matches!(
+            m.model_family.as_str(),
+            "gemma4" | "gemma4_assistant" | "gemma3"
+        );
         let query_scale = if is_gemma4 {
             1.0
         } else {
@@ -386,6 +395,23 @@ impl ModelConfig {
         self.glm_router
             .as_ref()
             .is_some_and(|router| router.is_moe_layer(layer_idx))
+    }
+
+    pub fn gemma4_assistant_shared_kv_layers(&self) -> Gemma4AssistantSharedKvLayers {
+        let mut full_attention_layer = None;
+        let mut sliding_attention_layer = None;
+        for (idx, layer) in self.layer_configs.iter().enumerate() {
+            let source = layer.kv_source_layer.unwrap_or(idx);
+            if layer.sliding_window.is_some() {
+                sliding_attention_layer = Some(source);
+            } else {
+                full_attention_layer = Some(source);
+            }
+        }
+        Gemma4AssistantSharedKvLayers {
+            full_attention_layer,
+            sliding_attention_layer,
+        }
     }
 }
 

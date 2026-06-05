@@ -3017,6 +3017,37 @@ impl MlxKVCache {
         (k_view, v_view)
     }
 
+    /// Read K/V already stored for `layer` without mutating cache state.
+    ///
+    /// Gemma4 Assistant uses this to attend against target full/sliding K/V states
+    /// from a separate assistant forward pass. Unlike `peek_source_kv`, this does
+    /// not assert that the layer was written during the current forward call.
+    pub fn peek_layer_kv(&self, layer: usize) -> Option<(MlxArray, MlxArray)> {
+        let lkv = self.layers.get(layer)?.as_ref()?;
+        let (k_view, v_view) = match (&lkv.last_k_view, &lkv.last_v_view) {
+            (Some(k), Some(v)) => (k.clone(), v.clone()),
+            _ => {
+                let end = self.seq_len as i32;
+                let k = slice(
+                    &lkv.k,
+                    &[0, 0, 0, 0],
+                    &[1, lkv.n_kv_heads, end, lkv.head_dim],
+                    &[1, 1, 1, 1],
+                    None,
+                );
+                let v = slice(
+                    &lkv.v,
+                    &[0, 0, 0, 0],
+                    &[1, lkv.n_kv_heads, end, lkv.head_dim],
+                    &[1, 1, 1, 1],
+                    None,
+                );
+                (k, v)
+            }
+        };
+        Some((k_view, v_view))
+    }
+
     /// Reset cache entirely (e.g., between requests).
     pub fn reset(&mut self) {
         for entry in &mut self.layers {

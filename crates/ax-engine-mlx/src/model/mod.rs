@@ -1,6 +1,6 @@
 use mlx_sys::{
-    MlxArray, MlxClosure, MlxDtype, MlxVectorArray, add, astype, broadcast_to, dequantize, reshape,
-    rms_norm, slice, split, take, take_along_axis, transpose,
+    MlxArray, MlxClosure, MlxDtype, MlxVectorArray, add, astype, broadcast_to, concatenate,
+    dequantize, reshape, rms_norm, slice, split, take, take_along_axis, transpose,
 };
 use std::sync::Arc;
 use std::time::Instant;
@@ -30,7 +30,8 @@ pub use turboquant_context::{
 mod config;
 use config::layer_params;
 pub use config::{
-    GlmRouterConfig, LayerConfig, LinearAttentionConfig, MlaAttentionConfig, ModelConfig,
+    Gemma4AssistantSharedKvLayers, GlmRouterConfig, LayerConfig, LinearAttentionConfig,
+    MlaAttentionConfig, ModelConfig,
 };
 
 pub(crate) mod shared;
@@ -678,6 +679,138 @@ pub fn forward_all_positions_with_final_hidden(
         None,
     );
     (logits, last_post_norm)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn gemma4_assistant_forward_one(
+    assistant_cfg: &ModelConfig,
+    assistant_weights: &ModelWeights,
+    target_cfg: &ModelConfig,
+    target_weights: &ModelWeights,
+    target_cache: &MlxKVCache,
+    target_shared_layers: Gemma4AssistantSharedKvLayers,
+    last_token: u32,
+    last_backbone_hidden: &MlxArray,
+    constant_position: usize,
+) -> Result<(MlxArray, MlxArray), &'static str> {
+    if assistant_cfg.model_family != "gemma4_assistant" || target_cfg.model_family != "gemma4" {
+        return Err("Gemma4 Assistant MTP requires gemma4_assistant draft and gemma4 target");
+    }
+    let pre_projection = assistant_weights
+        .assistant_pre_projection
+        .as_ref()
+        .ok_or("Gemma4 assistant missing pre_projection")?;
+    let post_projection = assistant_weights
+        .assistant_post_projection
+        .as_ref()
+        .ok_or("Gemma4 assistant missing post_projection")?;
+
+    let mut token_embedding = embed_tokens(
+        &[last_token],
+        &target_weights.token_embedding,
+        target_cfg.hidden_size,
+    );
+    token_embedding = astype(&token_embedding, MlxDtype::Bfloat16, None);
+    if let Some(scale) = target_cfg.hidden_states_scale {
+        token_embedding = scale_hidden(&token_embedding, scale);
+    }
+    let assistant_input = concatenate(&[&token_embedding, last_backbone_hidden], -1, None);
+    let mut hidden = qw(&assistant_input, pre_projection);
+
+    for (layer_idx, layer_weights) in assistant_weights.layers.iter().enumerate() {
+        hidden = gemma4_assistant_layer_forward(
+            assistant_cfg,
+            layer_weights,
+            &hidden,
+            target_cache,
+            target_shared_layers,
+            layer_idx,
+            constant_position,
+        )?;
+    }
+
+    let normed = rms_norm(
+        &hidden,
+        Some(&assistant_weights.final_norm),
+        assistant_cfg.rms_norm_eps,
+        None,
+    );
+    let logits = qw(&normed, &assistant_weights.lm_head);
+    let logits =
+        apply_final_logit_softcap(assistant_cfg, &astype(&logits, MlxDtype::Float32, None));
+    let logits = reshape(&logits, &[assistant_cfg.vocab_size as i32], None);
+    let projected_hidden = qw(&normed, post_projection);
+    Ok((logits, projected_hidden))
+}
+
+fn gemma4_assistant_layer_forward(
+    cfg: &ModelConfig,
+    w: &LayerWeights,
+    hidden: &MlxArray,
+    target_cache: &MlxKVCache,
+    target_shared_layers: Gemma4AssistantSharedKvLayers,
+    layer_idx: usize,
+    constant_position: usize,
+) -> Result<MlxArray, &'static str> {
+    let (head_dim, rope_theta, rope_dims, layer_rope_freqs, sliding_window, _, _) =
+        layer_params(cfg, layer_idx);
+    let shared_layer = if sliding_window.is_some() {
+        target_shared_layers.sliding_attention_layer
+    } else {
+        target_shared_layers.full_attention_layer
+    }
+    .ok_or("Gemma4 assistant missing target shared KV layer")?;
+    let (cached_k, cached_v) = target_cache
+        .peek_layer_kv(shared_layer)
+        .ok_or("Gemma4 assistant target shared KV layer has no cache")?;
+
+    let normed = rms_norm(hidden, Some(&w.attn_norm), cfg.rms_norm_eps, None);
+    let q_raw = qw(
+        &normed,
+        w.q_proj
+            .as_ref()
+            .ok_or("Gemma4 assistant layer missing q_proj")?,
+    );
+    let rope_freqs = layer_rope_freqs.or(cfg.rope_freqs.as_ref());
+    let (rope_base, rope_freqs_ref) = rope_freqs
+        .map(|f| (None, Some(f)))
+        .unwrap_or((Some(rope_theta), None));
+    let q_rope = qk_norm_rope_bhsd_from_proj(
+        &q_raw,
+        w.q_norm.as_ref(),
+        cfg.n_heads,
+        head_dim,
+        hidden.shape()[1] as usize,
+        cfg.rms_norm_eps,
+        rope_dims,
+        rope_base,
+        constant_position,
+        rope_freqs_ref,
+    );
+
+    let seq = hidden.shape()[1] as usize;
+    let key_len = cached_k.shape()[2] as usize;
+    let mask = attention_mask_array(seq, key_len, sliding_window);
+    let attn_sdpa =
+        full_precision_attention(&q_rope, &cached_k, &cached_v, cfg.query_scale, seq, &mask);
+    let attn_flat = flatten_attention_output_bhsd(&attn_sdpa, seq, cfg.n_heads, head_dim);
+    let attn_proj = attention_output_projection(
+        &attn_flat,
+        None,
+        w.o_proj
+            .as_ref()
+            .ok_or("Gemma4 assistant layer missing o_proj")?,
+    );
+    let attn_proj = if let Some(post_norm) = &w.attn_post_norm {
+        rms_norm(&attn_proj, Some(post_norm), cfg.rms_norm_eps, None)
+    } else {
+        attn_proj
+    };
+    let hidden = add(hidden, &attn_proj, None);
+
+    let normed2 = rms_norm(&hidden, Some(&w.ffn_norm), cfg.rms_norm_eps, None);
+    let ffn = ffn_swiglu(cfg, w, &normed2, None);
+    Ok(add(&hidden, &ffn, None))
 }
 
 /// Cache-free single transformer layer for dense embedding models.
@@ -1977,6 +2110,9 @@ mod tests {
             per_layer_model_proj: Some(dense_weight(&[4, 2])),
             per_layer_proj_norm: Some(zeros(&[2], MlxDtype::Float32, None)),
             mtp: None,
+            gemma4_assistant_mtp: Default::default(),
+            assistant_pre_projection: None,
+            assistant_post_projection: None,
         };
 
         let per_layer = compute_per_layer_inputs_arr(&cfg, &weights, &ids_scalar, &hidden)
@@ -2182,6 +2318,26 @@ mod tests {
         manifest.final_logit_softcapping = None;
         manifest.hidden_states_scale = None;
         ModelConfig::from_manifest(&manifest)
+    }
+
+    #[test]
+    fn gemma4_assistant_shared_kv_layers_resolve_source_layers() {
+        let mut manifest = gemma4_interleaved_manifest();
+        manifest.layer_count = 4;
+        manifest.layer_types = vec![
+            "sliding_attention".to_string(),
+            "full_attention".to_string(),
+            "sliding_attention".to_string(),
+            "full_attention".to_string(),
+        ];
+        manifest.kv_shared_source_layers.insert(2, 0);
+        manifest.kv_shared_source_layers.insert(3, 1);
+
+        let cfg = ModelConfig::from_manifest(&manifest);
+        let shared = cfg.gemma4_assistant_shared_kv_layers();
+
+        assert_eq!(shared.sliding_attention_layer, Some(0));
+        assert_eq!(shared.full_attention_layer, Some(1));
     }
 
     fn attach_glm_moe_ffn(weights: &mut LayerWeights, cfg: &ModelConfig) {
@@ -3210,6 +3366,9 @@ mod tests {
             per_layer_model_proj: None,
             per_layer_proj_norm: None,
             mtp: None,
+            gemma4_assistant_mtp: Default::default(),
+            assistant_pre_projection: None,
+            assistant_post_projection: None,
         };
         let mut cache = MlxKVCache::new(cfg.layer_count);
 

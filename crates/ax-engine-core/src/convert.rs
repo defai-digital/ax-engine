@@ -39,7 +39,7 @@ pub enum ConvertError {
         source: serde_json::Error,
     },
     #[error(
-        "unsupported model type {model_type}; supported: qwen3, qwen3_5, qwen3_next, gemma4, glm4_moe_lite, llama3, mistral3, mixtral, deepseek_v3, llama4 draft manifests"
+        "unsupported model type {model_type}; supported: qwen3, qwen3_5, qwen3_next, gemma4, gemma4_assistant, glm4_moe_lite, llama3, mistral3, mixtral, deepseek_v3, llama4 draft manifests"
     )]
     UnsupportedModelType { model_type: String },
     #[error("missing config field: {field}")]
@@ -742,6 +742,17 @@ const QWEN35_LINEAR_TENSOR_MAP: &[(&str, TensorMapping)] = &[
     ),
 ];
 
+const GEMMA4_ASSISTANT_EXTRA_TENSOR_MAP: &[(&str, TensorMapping)] = &[
+    (
+        "pre_projection.weight",
+        TensorMapping::Global(NativeTensorRole::AssistantPreProjection),
+    ),
+    (
+        "post_projection.weight",
+        TensorMapping::Global(NativeTensorRole::AssistantPostProjection),
+    ),
+];
+
 /// Gemma4 and Qwen3.5+ wrap the text model under `language_model.model.`, so
 /// tensor names in safetensors appear as
 /// `language_model.model.layers.0.self_attn.q_proj.weight`.
@@ -821,6 +832,12 @@ fn model_family_for_type(
             tensor_map: HF_STANDARD_TENSOR_MAP,
             extra_tensor_map: None,
             uses_language_model_prefix: true,
+        }),
+        "gemma4_assistant" => Ok(ModelFamily {
+            family_name: "gemma4_assistant",
+            tensor_map: HF_STANDARD_TENSOR_MAP,
+            extra_tensor_map: Some(GEMMA4_ASSISTANT_EXTRA_TENSOR_MAP),
+            uses_language_model_prefix: false,
         }),
         "glm4_moe_lite" => Ok(ModelFamily {
             family_name: "glm4_moe_lite",
@@ -905,6 +922,7 @@ fn uses_text_config(model_type: &str) -> bool {
     matches!(
         model_type,
         "gemma4"
+            | "gemma4_assistant"
             | "llama4"
             | "qwen3_5"
             | "qwen3_5_moe"
@@ -1248,7 +1266,7 @@ fn parse_layer_types(
     model_type: &str,
     layer_count: u32,
 ) -> Vec<String> {
-    if model_type != "gemma4" {
+    if !matches!(model_type, "gemma4" | "gemma4_assistant") {
         return Vec::new();
     }
     if let Some(layer_types) = config
@@ -1655,6 +1673,9 @@ fn match_tensor(name: &str, family: &ModelFamily) -> Option<(NativeTensorRole, O
 
     // Try extra per-family map (e.g. Qwen3 MoE switch-expert tensors).
     if let Some(extra) = family.extra_tensor_map {
+        if let Some(result) = match_tensor_in_map(name, extra) {
+            return Some(result);
+        }
         if let Some(result) = match_prefixed_per_layer(name, "model.layers.", extra) {
             return Some(result);
         }
@@ -1803,6 +1824,9 @@ fn validate_converted_model_contract(
     if model_type == "gemma4" {
         return validate_gemma4_contract(manifest);
     }
+    if model_type == "gemma4_assistant" {
+        return validate_gemma4_assistant_contract(manifest);
+    }
     if is_glm4_moe_lite(model_type) {
         return validate_glm4_moe_lite_contract(config, manifest);
     }
@@ -1906,6 +1930,66 @@ fn validate_gemma4_contract(manifest: &NativeModelManifest) -> Result<(), Conver
         }
     }
 
+    Ok(())
+}
+
+fn validate_gemma4_assistant_contract(manifest: &NativeModelManifest) -> Result<(), ConvertError> {
+    if manifest.layer_types.len() != manifest.layer_count as usize {
+        return invalid_model_contract(
+            "gemma4_assistant",
+            format!(
+                "layer_types must contain one entry per layer, got {} for layer_count {}",
+                manifest.layer_types.len(),
+                manifest.layer_count
+            ),
+        );
+    }
+    for (idx, layer_type) in manifest.layer_types.iter().enumerate() {
+        if layer_type != "sliding_attention" && layer_type != "full_attention" {
+            return invalid_model_contract(
+                "gemma4_assistant",
+                format!(
+                    "layer_types[{idx}] must be sliding_attention or full_attention, got {layer_type:?}"
+                ),
+            );
+        }
+    }
+    if manifest.hidden_size_per_layer_input != 0 || manifest.vocab_size_per_layer_input.is_some() {
+        return invalid_model_contract(
+            "gemma4_assistant",
+            "per-layer input embeddings are target-only and must be disabled",
+        );
+    }
+    if manifest.moe.expert_count.is_some() {
+        return invalid_model_contract(
+            "gemma4_assistant",
+            "Gemma4 assistant dense backend does not support target MoE tensors",
+        );
+    }
+    require_model_global_role(
+        "gemma4_assistant",
+        manifest,
+        NativeTensorRole::AssistantPreProjection,
+    )?;
+    require_model_global_role(
+        "gemma4_assistant",
+        manifest,
+        NativeTensorRole::AssistantPostProjection,
+    )?;
+    for layer_index in 0..manifest.layer_count {
+        require_model_role(
+            "gemma4_assistant",
+            manifest,
+            layer_index,
+            NativeTensorRole::AttentionQ,
+        )?;
+        require_model_role(
+            "gemma4_assistant",
+            manifest,
+            layer_index,
+            NativeTensorRole::AttentionO,
+        )?;
+    }
     Ok(())
 }
 
@@ -2274,6 +2358,25 @@ fn require_model_role(
     )
 }
 
+fn require_model_global_role(
+    model_type: &str,
+    manifest: &NativeModelManifest,
+    role: NativeTensorRole,
+) -> Result<(), ConvertError> {
+    if manifest
+        .tensors
+        .iter()
+        .any(|tensor| tensor.layer_index.is_none() && tensor.role == role)
+    {
+        return Ok(());
+    }
+
+    invalid_model_contract(
+        model_type,
+        format!("missing required global tensor role {role:?}"),
+    )
+}
+
 fn has_model_role(
     manifest: &NativeModelManifest,
     layer_index: u32,
@@ -2374,6 +2477,95 @@ mod tests {
             std::env::temp_dir().join(format!("ax-convert-{label}-{}-{nanos}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn converts_gemma4_assistant_q_only_external_kv_contract() {
+        let dir = unique_test_dir("gemma4_assistant");
+        write_config(
+            &dir,
+            serde_json::json!({
+                "model_type": "gemma4_assistant",
+                "backbone_hidden_size": 16,
+                "text_config": {
+                    "model_type": "gemma4_assistant",
+                    "hidden_size": 8,
+                    "num_attention_heads": 2,
+                    "num_key_value_heads": 1,
+                    "head_dim": 4,
+                    "num_hidden_layers": 2,
+                    "num_kv_shared_layers": 2,
+                    "vocab_size": 64,
+                    "intermediate_size": 32,
+                    "sliding_window_pattern": 2
+                }
+            }),
+        );
+        write_fake_safetensors(
+            &dir,
+            "model.safetensors",
+            &[
+                ("model.embed_tokens.weight", "BF16", &[64, 8]),
+                ("model.norm.weight", "BF16", &[8]),
+                ("lm_head.weight", "BF16", &[64, 8]),
+                ("pre_projection.weight", "BF16", &[8, 32]),
+                ("post_projection.weight", "BF16", &[16, 8]),
+                ("model.layers.0.input_layernorm.weight", "BF16", &[8]),
+                ("model.layers.0.self_attn.q_proj.weight", "BF16", &[8, 8]),
+                ("model.layers.0.self_attn.o_proj.weight", "BF16", &[8, 8]),
+                ("model.layers.0.self_attn.q_norm.weight", "BF16", &[4]),
+                (
+                    "model.layers.0.post_attention_layernorm.weight",
+                    "BF16",
+                    &[8],
+                ),
+                ("model.layers.0.mlp.gate_proj.weight", "BF16", &[32, 8]),
+                ("model.layers.0.mlp.up_proj.weight", "BF16", &[32, 8]),
+                ("model.layers.0.mlp.down_proj.weight", "BF16", &[8, 32]),
+                ("model.layers.1.input_layernorm.weight", "BF16", &[8]),
+                ("model.layers.1.self_attn.q_proj.weight", "BF16", &[8, 8]),
+                ("model.layers.1.self_attn.o_proj.weight", "BF16", &[8, 8]),
+                ("model.layers.1.self_attn.q_norm.weight", "BF16", &[4]),
+                (
+                    "model.layers.1.post_attention_layernorm.weight",
+                    "BF16",
+                    &[8],
+                ),
+                ("model.layers.1.mlp.gate_proj.weight", "BF16", &[32, 8]),
+                ("model.layers.1.mlp.up_proj.weight", "BF16", &[32, 8]),
+                ("model.layers.1.mlp.down_proj.weight", "BF16", &[8, 32]),
+            ],
+        );
+
+        let manifest =
+            convert_hf_model_dir(&dir).expect("Gemma4 assistant conversion should succeed");
+        assert_eq!(manifest.model_family, "gemma4_assistant");
+        assert_eq!(
+            manifest.layer_types,
+            vec![
+                "sliding_attention".to_string(),
+                "full_attention".to_string()
+            ]
+        );
+        assert!(manifest.kv_shared_source_layers.is_empty());
+        assert!(
+            manifest
+                .tensors
+                .iter()
+                .any(|tensor| tensor.role == NativeTensorRole::AssistantPreProjection)
+        );
+        assert!(
+            manifest
+                .tensors
+                .iter()
+                .any(|tensor| tensor.role == NativeTensorRole::AssistantPostProjection)
+        );
+        assert!(!manifest.tensors.iter().any(|tensor| matches!(
+            tensor.role,
+            NativeTensorRole::AttentionK | NativeTensorRole::AttentionV
+        )));
+        crate::model::NativeModelArtifacts::from_manifest_and_root(dir, manifest)
+            .expect("Gemma4 assistant manifest should validate");
     }
 
     #[test]

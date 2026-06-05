@@ -70,6 +70,9 @@ use ax_engine_core::{
     RunnerOutput, StopReason, upsert_route_decision,
 };
 
+use crate::gemma4_assistant_mtp::{
+    Gemma4AssistantMtpConfig, Gemma4AssistantMtpDisableReason, Gemma4AssistantMtpStatus,
+};
 use crate::generate::{
     DirectPipelineTimings, advance_direct_pipeline_with_timings_and_turboquant_context,
     chunked_prefill, chunked_prefill_with_mtp_history_and_sampling_buffers,
@@ -94,7 +97,7 @@ use crate::ngram_accel::{
 };
 use crate::sampling::{
     MlxSamplingParams, MlxSamplingRequest, TokenDistribution, Xorshift64,
-    sample_residual_token_distribution,
+    sample_categorical_with_logprob_and_distribution, sample_residual_token_distribution,
 };
 use crate::turboquant::{
     TURBOQUANT_ROUTE_METADATA_SCHEMA_VERSION, TurboQuantProductionRequirements,
@@ -1117,6 +1120,114 @@ impl WeightLayoutTelemetry {
     }
 }
 
+#[derive(Clone)]
+struct Gemma4AssistantMtpRuntime {
+    status: Gemma4AssistantMtpStatus,
+    cfg: Arc<ModelConfig>,
+    weights: Arc<ModelWeights>,
+    target_shared_layers: crate::model::Gemma4AssistantSharedKvLayers,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct Gemma4AssistantMtpTelemetry {
+    draft_tokens: u32,
+    accepted_tokens: u32,
+    verify_forward_wall_us: u32,
+    draft_forward_wall_us: u32,
+}
+
+impl Gemma4AssistantMtpTelemetry {
+    fn record_submitted(&mut self, drafted: usize, draft_forward_wall_us: u32) {
+        if drafted == 0 {
+            return;
+        }
+        self.draft_tokens = self.draft_tokens.saturating_add(saturating_u32(drafted));
+        self.draft_forward_wall_us = self
+            .draft_forward_wall_us
+            .saturating_add(draft_forward_wall_us);
+    }
+
+    fn record_verified(&mut self, accepted: usize, verify_forward_wall_us: u32) {
+        self.accepted_tokens = self
+            .accepted_tokens
+            .saturating_add(saturating_u32(accepted));
+        self.verify_forward_wall_us = self
+            .verify_forward_wall_us
+            .saturating_add(verify_forward_wall_us);
+    }
+
+    fn merge_from(&mut self, other: Self) {
+        self.draft_tokens = self.draft_tokens.saturating_add(other.draft_tokens);
+        self.accepted_tokens = self.accepted_tokens.saturating_add(other.accepted_tokens);
+        self.verify_forward_wall_us = self
+            .verify_forward_wall_us
+            .saturating_add(other.verify_forward_wall_us);
+        self.draft_forward_wall_us = self
+            .draft_forward_wall_us
+            .saturating_add(other.draft_forward_wall_us);
+    }
+
+    fn accept_rate_x1000(&self) -> u32 {
+        self.accepted_tokens
+            .saturating_mul(1000)
+            .checked_div(self.draft_tokens)
+            .unwrap_or(0)
+    }
+}
+
+impl Gemma4AssistantMtpStatus {
+    fn append_route_decisions(
+        &self,
+        telemetry: Gemma4AssistantMtpTelemetry,
+        decisions: &mut impl RouteDecisionSink,
+    ) {
+        decisions.upsert_route_decision(
+            "ax_mlx_gemma4_assistant_mtp_configured",
+            u32::from(self.configured),
+        );
+        decisions.upsert_route_decision(
+            "ax_mlx_gemma4_assistant_mtp_validated",
+            u32::from(self.validated),
+        );
+        decisions.upsert_route_decision(
+            "ax_mlx_gemma4_assistant_mtp_enabled",
+            u32::from(self.enabled),
+        );
+        decisions.upsert_route_decision(
+            "ax_mlx_gemma4_assistant_mtp_attach_failed",
+            u32::from(self.attach_failed),
+        );
+        decisions.upsert_route_decision(
+            "ax_mlx_gemma4_assistant_mtp_disable_reason",
+            self.disable_reason.route_code(),
+        );
+        decisions.upsert_route_decision(
+            "ax_mlx_gemma4_assistant_mtp_depth",
+            saturating_u32(self.max_depth),
+        );
+        decisions.upsert_route_decision(
+            "ax_mlx_gemma4_assistant_mtp_draft_tokens",
+            telemetry.draft_tokens,
+        );
+        decisions.upsert_route_decision(
+            "ax_mlx_gemma4_assistant_mtp_accepted_tokens",
+            telemetry.accepted_tokens,
+        );
+        decisions.upsert_route_decision(
+            "ax_mlx_gemma4_assistant_mtp_accept_rate_x1000",
+            telemetry.accept_rate_x1000(),
+        );
+        decisions.upsert_route_decision(
+            "ax_mlx_gemma4_assistant_mtp_verify_forward_wall_us",
+            telemetry.verify_forward_wall_us,
+        );
+        decisions.upsert_route_decision(
+            "ax_mlx_gemma4_assistant_mtp_draft_forward_wall_us",
+            telemetry.draft_forward_wall_us,
+        );
+    }
+}
+
 /// Affine quantization bit-width summary computed once at `MlxRunner` construction.
 ///
 /// Tracks per-bit tensor counts and the min/max bit width across all affine-quantized
@@ -1213,8 +1324,18 @@ enum MtpDraftSource {
     #[default]
     None,
     Mtp,
+    Gemma4Assistant,
     Ngram,
     HybridMtp,
+}
+
+impl MtpDraftSource {
+    fn is_model_draft(self) -> bool {
+        matches!(
+            self,
+            MtpDraftSource::Mtp | MtpDraftSource::Gemma4Assistant | MtpDraftSource::HybridMtp
+        )
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -1385,12 +1506,12 @@ impl MtpTelemetry {
         let mtp_only_accepted_count = sources
             .iter()
             .take(accepted)
-            .filter(|s| matches!(s, MtpDraftSource::Mtp | MtpDraftSource::HybridMtp))
+            .filter(|s| s.is_model_draft())
             .count();
         let first_rejection_is_mtp = accepted < drafted
             && sources
                 .get(accepted)
-                .map(|s| matches!(s, MtpDraftSource::Mtp | MtpDraftSource::HybridMtp))
+                .map(|s| s.is_model_draft())
                 .unwrap_or(true);
         let mtp_only_drafted = mtp_only_accepted_count + usize::from(first_rejection_is_mtp);
         if mtp_only_drafted > 0 {
@@ -1433,6 +1554,13 @@ impl MtpTelemetry {
             let accepted_token = index < accepted;
             match source {
                 MtpDraftSource::Mtp => {
+                    self.draft_source_mtp_tokens = self.draft_source_mtp_tokens.saturating_add(1);
+                    if accepted_token {
+                        self.accepted_source_mtp_tokens =
+                            self.accepted_source_mtp_tokens.saturating_add(1);
+                    }
+                }
+                MtpDraftSource::Gemma4Assistant => {
                     self.draft_source_mtp_tokens = self.draft_source_mtp_tokens.saturating_add(1);
                     if accepted_token {
                         self.accepted_source_mtp_tokens =
@@ -3382,6 +3510,8 @@ struct RequestState {
     mtp_skip_hidden: Option<MlxArray>,
     /// Cumulative MTP draft/accept counters for benchmark telemetry.
     mtp_telemetry: MtpTelemetry,
+    /// Cumulative Gemma4 assistant-MTP counters for route metadata.
+    gemma4_assistant_mtp_telemetry: Gemma4AssistantMtpTelemetry,
     /// Number of consecutive decode steps where accept_count == 0.
     /// Used by `mtp_next_adaptive_depth` to progressively lower the depth floor.
     mtp_consecutive_misses: u32,
@@ -3456,6 +3586,7 @@ impl RequestState {
             mtp_skip_logits: None,
             mtp_skip_hidden: None,
             mtp_telemetry: MtpTelemetry::default(),
+            gemma4_assistant_mtp_telemetry: Gemma4AssistantMtpTelemetry::default(),
             mtp_consecutive_misses: 0,
             auto_optimistic_active: false,
             mtp_prefill_hidden: None,
@@ -3586,6 +3717,8 @@ pub struct MlxRunner {
     /// next iteration, avoiding a redundant main-model forward for the first token.
     mtp_skip_state: bool,
     mtp_target_softmax_topk: Option<u32>,
+    gemma4_assistant_mtp_status: Gemma4AssistantMtpStatus,
+    gemma4_assistant_mtp: Option<Gemma4AssistantMtpRuntime>,
     ngram_policy_variant: NgramPolicyVariant,
     /// Optional KV compression policy. Disabled by default and never changes logits in shadow mode.
     kv_compression: KvCompressionConfig,
@@ -3663,7 +3796,75 @@ impl fmt::Debug for MlxRunner {
     }
 }
 
+fn load_gemma4_assistant_mtp_runtime(
+    target_cfg: &ModelConfig,
+    status: &Gemma4AssistantMtpStatus,
+) -> (Gemma4AssistantMtpStatus, Option<Gemma4AssistantMtpRuntime>) {
+    let Some(mut config) = status.config.clone().filter(|_| status.validated) else {
+        return (status.clone(), None);
+    };
+    config.max_depth = config.max_depth.min(1);
+
+    let disabled = |config: Gemma4AssistantMtpConfig| Gemma4AssistantMtpStatus {
+        configured: true,
+        validated: false,
+        enabled: false,
+        attach_failed: true,
+        disable_reason: Gemma4AssistantMtpDisableReason::WeightLoadFailed,
+        max_depth: config.max_depth,
+        config: Some(config),
+    };
+
+    let assistant_artifacts = match NativeModelArtifacts::from_dir(&config.assistant_path) {
+        Ok(artifacts) => artifacts,
+        Err(_) => return (disabled(config), None),
+    };
+    let assistant_cfg = ModelConfig::from_manifest(assistant_artifacts.manifest());
+    if assistant_cfg.model_family != "gemma4_assistant" {
+        return (disabled(config), None);
+    }
+    let assistant_weights = match load_weights(&assistant_artifacts) {
+        Ok(weights) => weights,
+        Err(_) => return (disabled(config), None),
+    };
+    let status = Gemma4AssistantMtpStatus {
+        configured: true,
+        validated: true,
+        enabled: true,
+        attach_failed: false,
+        disable_reason: Gemma4AssistantMtpDisableReason::None,
+        max_depth: config.max_depth,
+        config: Some(config),
+    };
+    let runtime = Gemma4AssistantMtpRuntime {
+        status: status.clone(),
+        cfg: Arc::new(assistant_cfg),
+        weights: Arc::new(assistant_weights),
+        target_shared_layers: target_cfg.gemma4_assistant_shared_kv_layers(),
+    };
+    (status, Some(runtime))
+}
+
 impl MlxRunner {
+    fn has_mtp(&self) -> bool {
+        self.weights.mtp.is_some() || self.gemma4_assistant_mtp.is_some()
+    }
+
+    fn mtp_max_depth(&self) -> usize {
+        self.weights.mtp.as_ref().map_or_else(
+            || {
+                self.gemma4_assistant_mtp
+                    .as_ref()
+                    .map_or(0, |runtime| runtime.status.max_depth)
+            },
+            |head| head.max_depth,
+        )
+    }
+
+    fn gemma4_assistant_mtp_status(&self) -> &Gemma4AssistantMtpStatus {
+        &self.gemma4_assistant_mtp_status
+    }
+
     pub fn from_artifacts(
         artifacts: &NativeModelArtifacts,
         prefill_chunk: usize,
@@ -3796,6 +3997,8 @@ impl MlxRunner {
             Vec::new()
         };
         let weights = load_weights(artifacts).map_err(MlxRunnerError::Weights)?;
+        let (gemma4_assistant_mtp_status, gemma4_assistant_mtp) =
+            load_gemma4_assistant_mtp_runtime(&cfg, &weights.gemma4_assistant_mtp);
 
         let binding_summary = binding_summary_from_specs(artifacts.tensor_specs());
         let affine_quant_telemetry = AffineQuantBitsTelemetry::from_specs(artifacts.tensor_specs());
@@ -3922,6 +4125,8 @@ impl MlxRunner {
             mtp_optimistic: mtp_optimistic_from_env(),
             mtp_skip_state: mtp_skip_state_from_env(),
             mtp_target_softmax_topk: mtp_target_softmax_topk_from_env(),
+            gemma4_assistant_mtp_status,
+            gemma4_assistant_mtp,
             ngram_policy_variant,
             kv_compression,
             kv_compression_layer_eligible,
@@ -3988,6 +4193,7 @@ impl ExecutionRunner for MlxRunner {
         let mut route_metadata = input.execution_batch.route_metadata.clone();
         let mut ngram_acceleration = NgramAccelerationTelemetry::default();
         let mut mtp_telemetry = MtpTelemetry::default();
+        let mut gemma4_assistant_mtp_telemetry = Gemma4AssistantMtpTelemetry::default();
         let mut decode_telemetry = DecodeTelemetry::default();
         let mut gemma4_moe_profile = Gemma4MoeProfileSnapshot::default();
         let mut linear_attention_profile = LinearAttentionProfileSnapshot::default();
@@ -4011,6 +4217,7 @@ impl ExecutionRunner for MlxRunner {
             );
             ngram_acceleration.merge_from(result.ngram_acceleration);
             mtp_telemetry.merge_from(result.mtp_telemetry);
+            gemma4_assistant_mtp_telemetry.merge_from(result.gemma4_assistant_mtp_telemetry);
             decode_telemetry.merge_from(result.decode_telemetry);
             gemma4_moe_profile.merge_from(result.gemma4_moe_profile);
             linear_attention_profile.merge_from(result.linear_attention_profile);
@@ -4037,6 +4244,8 @@ impl ExecutionRunner for MlxRunner {
             decode_profile.append_route_decisions(&mut route_decisions);
             self.weight_layout_telemetry
                 .append_route_decisions(&mut route_decisions);
+            self.gemma4_assistant_mtp_status()
+                .append_route_decisions(gemma4_assistant_mtp_telemetry, &mut route_decisions);
             self.affine_quant_telemetry
                 .append_route_decisions(&mut route_decisions);
             kv_cache.append_route_decisions(&mut route_decisions);
@@ -4582,6 +4791,7 @@ impl MlxRunner {
                 },
                 ngram_acceleration: NgramAccelerationTelemetry::default(),
                 mtp_telemetry: MtpTelemetry::default(),
+                gemma4_assistant_mtp_telemetry: Gemma4AssistantMtpTelemetry::default(),
                 decode_telemetry: DecodeTelemetry::default(),
                 gemma4_moe_profile: Gemma4MoeProfileSnapshot::default(),
                 linear_attention_profile: LinearAttentionProfileSnapshot::default(),
@@ -4894,6 +5104,7 @@ impl MlxRunner {
         // Re-insert state only if the request continues — lock held briefly.
         let ngram_acceleration = state.ngram_acceleration;
         let mtp_telemetry = state.mtp_telemetry;
+        let gemma4_assistant_mtp_telemetry = state.gemma4_assistant_mtp_telemetry;
         let decode_telemetry = state.decode_telemetry;
         let gemma4_moe_profile = take_gemma4_moe_profile_snapshot();
         let linear_attention_profile = take_linear_attention_profile_snapshot();
@@ -4950,6 +5161,7 @@ impl MlxRunner {
             },
             ngram_acceleration,
             mtp_telemetry,
+            gemma4_assistant_mtp_telemetry,
             decode_telemetry,
             gemma4_moe_profile,
             linear_attention_profile,
@@ -5538,7 +5750,7 @@ impl MlxRunner {
         if ngram_request_disabled_direct_fast_path(
             is_greedy,
             sampling.uses_repetition_penalty(),
-            self.weights.mtp.is_some(),
+            self.has_mtp(),
             state.ngram_acceleration_disabled_for_request,
             state.ngram_request_disable_reason,
         ) {
@@ -5914,6 +6126,42 @@ impl MlxRunner {
         result
     }
 
+    fn gemma4_assistant_draft_token(
+        &self,
+        state: &mut RequestState,
+        last_token: u32,
+        last_backbone_hidden: &MlxArray,
+        sampling: MlxSamplingParams,
+    ) -> (Vec<u32>, Vec<f32>, Vec<TokenDistribution>) {
+        let Some(runtime) = self.gemma4_assistant_mtp.as_ref() else {
+            return (vec![], vec![], vec![]);
+        };
+        if state.mtp_adaptive_max_depth == 0 || runtime.status.max_depth == 0 {
+            return (vec![], vec![], vec![]);
+        }
+
+        let Ok((logits, _projected_hidden)) = crate::model::gemma4_assistant_forward_one(
+            &runtime.cfg,
+            &runtime.weights,
+            &self.cfg,
+            &self.weights,
+            &state.cache,
+            runtime.target_shared_layers,
+            last_token,
+            last_backbone_hidden,
+            state.cache.seq_len,
+        ) else {
+            return (vec![], vec![], vec![]);
+        };
+
+        eval(&[&logits]);
+        let logits_cpu = logits.data_f32().to_vec();
+        let (token, log_prob, distribution) =
+            sample_categorical_with_logprob_and_distribution(&logits_cpu, sampling, &mut state.rng);
+        let distributions = distribution.into_iter().collect();
+        (vec![token], vec![log_prob], distributions)
+    }
+
     /// MTP model-based speculative decode step.
     ///
     /// Runs a verify forward on `[last_token] ++ pending_draft`, accepts/rejects
@@ -5957,7 +6205,13 @@ impl MlxRunner {
                     1.0
                 }
             })
-            .unwrap_or(1.0);
+            .unwrap_or_else(|| {
+                if sampling.temperature > 0.0 {
+                    sampling.temperature
+                } else {
+                    1.0
+                }
+            });
         let model_acceptance_mode = mtp_model_acceptance_mode_from_env();
 
         // Skip-state consumption (Lightning-MLX always-advance pattern):
@@ -5973,6 +6227,7 @@ impl MlxRunner {
         let can_skip = skip_logits.is_some()
             && skip_hidden.is_some()
             && pending.is_empty()
+            && self.weights.mtp.is_some()
             && self.mtp_skip_state;
 
         // When skip-state is usable, sample primary + draft new MTP tokens from
@@ -6421,9 +6676,7 @@ impl MlxRunner {
                     .zip(pending.iter())
                     .zip(predicted.iter())
                     .take(accept_count)
-                    .filter(|((s, _d), _p)| {
-                        matches!(s, MtpDraftSource::Mtp | MtpDraftSource::HybridMtp)
-                    })
+                    .filter(|((s, _d), _p)| s.is_model_draft())
                     .filter(|((_s, d), p)| d == p)
                     .count()
             } else {
@@ -6431,7 +6684,7 @@ impl MlxRunner {
                     .mtp_pending_draft_sources
                     .iter()
                     .take(accept_count)
-                    .filter(|s| matches!(s, MtpDraftSource::Mtp | MtpDraftSource::HybridMtp))
+                    .filter(|s| s.is_model_draft())
                     .count()
             };
             state.mtp_telemetry.record_step(
@@ -6441,6 +6694,23 @@ impl MlxRunner {
                 ewma_accept_count,
                 mtp_ewma_numerator,
             );
+            let gemma4_assistant_drafted = state
+                .mtp_pending_draft_sources
+                .iter()
+                .filter(|source| **source == MtpDraftSource::Gemma4Assistant)
+                .count();
+            let gemma4_assistant_accepted = state
+                .mtp_pending_draft_sources
+                .iter()
+                .take(accept_count)
+                .filter(|source| **source == MtpDraftSource::Gemma4Assistant)
+                .count();
+            if gemma4_assistant_drafted > 0 {
+                state.gemma4_assistant_mtp_telemetry.record_verified(
+                    gemma4_assistant_accepted,
+                    mtp_timings.verify_forward_wall_us,
+                );
+            }
             let ngram_prefix_len = state
                 .mtp_pending_draft_sources
                 .iter()
@@ -6473,7 +6743,7 @@ impl MlxRunner {
 
         state.ngram.feed(&result);
 
-        let mtp_max_depth = self.weights.mtp.as_ref().map_or(0, |head| head.max_depth);
+        let mtp_max_depth = self.mtp_max_depth();
         // Use true acceptance for adaptive depth so auto-optimistic's inflated
         // accept_count doesn't create a permanent depth-increase feedback loop.
         let adaptive_depth_accept = ewma_accept_count.unwrap_or(accept_count);
@@ -6620,7 +6890,7 @@ impl MlxRunner {
                     mtp_ngram_acceptance_mode_from_env(),
                 );
 
-                if mtp_tail_cap > 0 {
+                if mtp_tail_cap > 0 && self.weights.mtp.is_some() {
                     let cache = state.mtp_cache.get_or_insert_with(|| MlxKVCache::new(1));
                     let (tail, log_probs, distributions, added, _top2_margins) =
                         mtp_draft_tokens_after_forced_prefix(
@@ -6673,21 +6943,29 @@ impl MlxRunner {
                     (draft, aligned_log_probs, sources)
                 }
             } else {
-                // MTP head forward path (RoPE managed internally via cache.seq_len).
-                let cache = state.mtp_cache.get_or_insert_with(|| MlxKVCache::new(1));
-                let (draft, log_probs, distributions, added, _top2_margins) = mtp_draft_tokens(
-                    &self.weights,
-                    &self.cfg,
-                    &draft_hidden,
-                    tail_tok,
-                    cache,
-                    Some(state.mtp_adaptive_max_depth),
-                    &mut state.rng,
-                );
-                state.mtp_decode_count += added;
-                state.mtp_pending_draft_distributions = distributions;
-                let sources = vec![MtpDraftSource::Mtp; draft.len()];
-                (draft, log_probs, sources)
+                if self.weights.mtp.is_some() {
+                    // MTP head forward path (RoPE managed internally via cache.seq_len).
+                    let cache = state.mtp_cache.get_or_insert_with(|| MlxKVCache::new(1));
+                    let (draft, log_probs, distributions, added, _top2_margins) = mtp_draft_tokens(
+                        &self.weights,
+                        &self.cfg,
+                        &draft_hidden,
+                        tail_tok,
+                        cache,
+                        Some(state.mtp_adaptive_max_depth),
+                        &mut state.rng,
+                    );
+                    state.mtp_decode_count += added;
+                    state.mtp_pending_draft_distributions = distributions;
+                    let sources = vec![MtpDraftSource::Mtp; draft.len()];
+                    (draft, log_probs, sources)
+                } else {
+                    let (draft, log_probs, distributions) =
+                        self.gemma4_assistant_draft_token(state, tail_tok, &draft_hidden, sampling);
+                    state.mtp_pending_draft_distributions = distributions;
+                    let sources = vec![MtpDraftSource::Gemma4Assistant; draft.len()];
+                    (draft, log_probs, sources)
+                }
             };
         state.mtp_pending_draft = new_draft;
         state.mtp_pending_draft_log_probs = new_log_probs;
@@ -6701,7 +6979,7 @@ impl MlxRunner {
         // Capture skip-state only when the next step will have no pending draft,
         // making `can_skip` true.  When pending is non-empty (the common case)
         // async_eval + slice work here is never consumed — so skip it entirely.
-        if self.mtp_skip_state && state.mtp_pending_draft.is_empty() {
+        if self.mtp_skip_state && self.weights.mtp.is_some() && state.mtp_pending_draft.is_empty() {
             let sl = slice(
                 &logits_all,
                 &[accept_count as i32, 0],
@@ -6714,6 +6992,16 @@ impl MlxRunner {
             state.mtp_skip_hidden = Some(draft_hidden);
         }
         mtp_timings.draft_wall_us = elapsed_us(draft_started);
+        let gemma4_assistant_submitted = state
+            .mtp_pending_draft_sources
+            .iter()
+            .filter(|source| **source == MtpDraftSource::Gemma4Assistant)
+            .count();
+        if gemma4_assistant_submitted > 0 {
+            state
+                .gemma4_assistant_mtp_telemetry
+                .record_submitted(gemma4_assistant_submitted, mtp_timings.draft_wall_us);
+        }
         state.mtp_telemetry.record_timings(mtp_timings);
 
         result
@@ -6731,7 +7019,7 @@ impl MlxRunner {
         // so real-code bigrams are seeded before the first decode step. Without
         // MTP, keep the conservative 64-token guard to avoid random-token false
         // positives that would disable n-gram for the first 16 decode steps.
-        let has_mtp = self.weights.mtp.is_some();
+        let has_mtp = self.has_mtp();
         seed_generation_ngram_from_prompt(state, has_mtp);
         seed_generation_ngram_from_prefill_output(state, prefill_output_token);
 
@@ -6772,7 +7060,7 @@ impl MlxRunner {
         state.mtp_pending_draft_log_probs.clear();
         state.mtp_pending_draft_distributions.clear();
         state.mtp_pending_draft_sources.clear();
-        state.mtp_adaptive_max_depth = self.weights.mtp.as_ref().map_or(0, |head| head.max_depth);
+        state.mtp_adaptive_max_depth = self.mtp_max_depth();
         state.mtp_skip_logits = None;
         state.mtp_skip_hidden = None;
         state.mtp_decode_count = 0;
@@ -6922,9 +7210,7 @@ impl MlxRunner {
         // is incompatible with speculative decode and is excluded.
         // Acceptance uses rejection sampling when draft log-probs are available;
         // correction/bonus tokens are sampled with the request's temperature.
-        if self.weights.mtp.is_some()
-            && !self.disable_ngram_acceleration
-            && !sampling.uses_repetition_penalty()
+        if self.has_mtp() && !self.disable_ngram_acceleration && !sampling.uses_repetition_penalty()
         {
             return self.run_mtp_decode(state, last_token, sampling);
         }
@@ -7562,8 +7848,7 @@ fn mtp_accept_count(
             .copied()
             .filter(|source| *source != MtpDraftSource::None)
             .unwrap_or(MtpDraftSource::Mtp);
-        let has_draft_distribution =
-            matches!(source, MtpDraftSource::Mtp | MtpDraftSource::HybridMtp);
+        let has_draft_distribution = source.is_model_draft();
         if source == MtpDraftSource::Ngram
             && ngram_acceptance_mode == MtpNgramAcceptanceMode::Greedy
         {
@@ -7779,6 +8064,7 @@ struct MlxItemRun {
     update: RequestExecutionUpdate,
     ngram_acceleration: NgramAccelerationTelemetry,
     mtp_telemetry: MtpTelemetry,
+    gemma4_assistant_mtp_telemetry: Gemma4AssistantMtpTelemetry,
     decode_telemetry: DecodeTelemetry,
     gemma4_moe_profile: Gemma4MoeProfileSnapshot,
     linear_attention_profile: LinearAttentionProfileSnapshot,
@@ -10144,6 +10430,9 @@ mod tests {
             per_layer_model_proj: None,
             per_layer_proj_norm: None,
             mtp: None,
+            gemma4_assistant_mtp: Default::default(),
+            assistant_pre_projection: None,
+            assistant_post_projection: None,
         }
     }
 
@@ -10226,6 +10515,129 @@ mod tests {
             decisions.get("ax_mlx_dense_ffn_gate_up_packed_layers"),
             Some(&0)
         );
+    }
+
+    #[test]
+    fn gemma4_assistant_mtp_status_emits_prd_route_metadata() {
+        let status = Gemma4AssistantMtpStatus {
+            configured: true,
+            validated: true,
+            enabled: false,
+            attach_failed: false,
+            disable_reason: crate::gemma4_assistant_mtp::Gemma4AssistantMtpDisableReason::None,
+            max_depth: 1,
+            config: None,
+        };
+        let mut decisions = Vec::new();
+        status.append_route_decisions(Gemma4AssistantMtpTelemetry::default(), &mut decisions);
+        let decisions = decisions
+            .into_iter()
+            .collect::<std::collections::BTreeMap<_, _>>();
+
+        assert_eq!(
+            decisions.get("ax_mlx_gemma4_assistant_mtp_configured"),
+            Some(&1)
+        );
+        assert_eq!(
+            decisions.get("ax_mlx_gemma4_assistant_mtp_validated"),
+            Some(&1)
+        );
+        assert_eq!(
+            decisions.get("ax_mlx_gemma4_assistant_mtp_enabled"),
+            Some(&0)
+        );
+        assert_eq!(
+            decisions.get("ax_mlx_gemma4_assistant_mtp_disable_reason"),
+            Some(&0)
+        );
+        assert_eq!(decisions.get("ax_mlx_gemma4_assistant_mtp_depth"), Some(&1));
+        assert_eq!(
+            decisions.get("ax_mlx_gemma4_assistant_mtp_draft_tokens"),
+            Some(&0)
+        );
+        assert_eq!(
+            decisions.get("ax_mlx_gemma4_assistant_mtp_accepted_tokens"),
+            Some(&0)
+        );
+        assert_eq!(
+            decisions.get("ax_mlx_gemma4_assistant_mtp_accept_rate_x1000"),
+            Some(&0)
+        );
+        assert_eq!(
+            decisions.get("ax_mlx_gemma4_assistant_mtp_verify_forward_wall_us"),
+            Some(&0)
+        );
+        assert_eq!(
+            decisions.get("ax_mlx_gemma4_assistant_mtp_draft_forward_wall_us"),
+            Some(&0)
+        );
+    }
+
+    #[test]
+    fn gemma4_assistant_mtp_route_metadata_reports_runtime_telemetry() {
+        let status = Gemma4AssistantMtpStatus {
+            configured: true,
+            validated: true,
+            enabled: true,
+            attach_failed: false,
+            disable_reason: crate::gemma4_assistant_mtp::Gemma4AssistantMtpDisableReason::None,
+            max_depth: 1,
+            config: None,
+        };
+        let mut telemetry = Gemma4AssistantMtpTelemetry::default();
+        telemetry.record_submitted(4, 120);
+        telemetry.record_verified(3, 240);
+
+        let mut decisions = Vec::new();
+        status.append_route_decisions(telemetry, &mut decisions);
+        let decisions = decisions
+            .into_iter()
+            .collect::<std::collections::BTreeMap<_, _>>();
+
+        assert_eq!(
+            decisions.get("ax_mlx_gemma4_assistant_mtp_enabled"),
+            Some(&1)
+        );
+        assert_eq!(
+            decisions.get("ax_mlx_gemma4_assistant_mtp_draft_tokens"),
+            Some(&4)
+        );
+        assert_eq!(
+            decisions.get("ax_mlx_gemma4_assistant_mtp_accepted_tokens"),
+            Some(&3)
+        );
+        assert_eq!(
+            decisions.get("ax_mlx_gemma4_assistant_mtp_accept_rate_x1000"),
+            Some(&750)
+        );
+        assert_eq!(
+            decisions.get("ax_mlx_gemma4_assistant_mtp_verify_forward_wall_us"),
+            Some(&240)
+        );
+        assert_eq!(
+            decisions.get("ax_mlx_gemma4_assistant_mtp_draft_forward_wall_us"),
+            Some(&120)
+        );
+    }
+
+    #[test]
+    fn mtp_telemetry_counts_gemma4_assistant_as_model_draft_source() {
+        let mut telemetry = MtpTelemetry::default();
+        telemetry.record_step(
+            2,
+            1,
+            &[
+                MtpDraftSource::Gemma4Assistant,
+                MtpDraftSource::Gemma4Assistant,
+            ],
+            None,
+            1,
+        );
+
+        assert_eq!(telemetry.draft_source_mtp_tokens, 2);
+        assert_eq!(telemetry.accepted_source_mtp_tokens, 1);
+        assert_eq!(telemetry.mtp_only_accept_rate_ewma_samples, 1);
+        assert_eq!(telemetry.mtp_only_accept_rate_ewma, 0.5);
     }
 
     fn linear_attn_split_weights() -> crate::weights::LinearAttentionWeights {

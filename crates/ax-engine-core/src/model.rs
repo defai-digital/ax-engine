@@ -113,6 +113,10 @@ pub enum NativeTensorRole {
     PerLayerInputProjection,
     /// Per-layer post-gating RMSNorm weight (Gemma4 2B/4B).
     PerLayerInputPostNorm,
+    /// Gemma4 Assistant projection from target embedding+hidden into assistant hidden space.
+    AssistantPreProjection,
+    /// Gemma4 Assistant projection from assistant hidden back into target hidden space.
+    AssistantPostProjection,
     FinalNorm,
     LmHead,
     RopeFreqs,
@@ -1102,6 +1106,18 @@ fn validate_native_model_manifest(
     if !manifest.tie_word_embeddings {
         require_global_role(&global_roles, NativeTensorRole::LmHead, "lm_head")?;
     }
+    if manifest.model_family == "gemma4_assistant" {
+        require_global_role(
+            &global_roles,
+            NativeTensorRole::AssistantPreProjection,
+            "assistant_pre_projection",
+        )?;
+        require_global_role(
+            &global_roles,
+            NativeTensorRole::AssistantPostProjection,
+            "assistant_post_projection",
+        )?;
+    }
 
     for layer_index in 0..manifest.layer_count {
         let roles =
@@ -1271,7 +1287,9 @@ fn validate_native_model_manifest(
                     });
                 }
             } else {
-                let uses_shared_kv = manifest.kv_shared_source_layers.contains_key(&layer_index);
+                let uses_external_shared_kv = manifest.model_family == "gemma4_assistant";
+                let uses_shared_kv = uses_external_shared_kv
+                    || manifest.kv_shared_source_layers.contains_key(&layer_index);
                 if uses_shared_kv {
                     require_layer_role(
                         roles,
@@ -1505,6 +1523,42 @@ fn validate_native_model_tensor_shapes(
         let lm_head = required_global_tensor_spec(manifest, NativeTensorRole::LmHead, "lm_head")?;
         expect_matrix_shape(lm_head, vocab_size, hidden_size, "lm_head")?;
     }
+    if manifest.model_family == "gemma4_assistant" {
+        let pre_projection = required_global_tensor_spec(
+            manifest,
+            NativeTensorRole::AssistantPreProjection,
+            "assistant_pre_projection",
+        )?;
+        let (pre_rows, pre_cols) =
+            matrix_shape(pre_projection).ok_or_else(|| NativeModelError::InvalidManifest {
+                message: "assistant_pre_projection must be a rank-2 matrix".to_string(),
+            })?;
+        if pre_rows != hidden_size || pre_cols == 0 || pre_cols % 2 != 0 {
+            return Err(NativeModelError::InvalidManifest {
+                message: format!(
+                    "assistant_pre_projection must have shape [{hidden_size}, 2 * backbone_hidden_size], got {:?}",
+                    pre_projection.shape
+                ),
+            });
+        }
+        let post_projection = required_global_tensor_spec(
+            manifest,
+            NativeTensorRole::AssistantPostProjection,
+            "assistant_post_projection",
+        )?;
+        let (post_rows, post_cols) =
+            matrix_shape(post_projection).ok_or_else(|| NativeModelError::InvalidManifest {
+                message: "assistant_post_projection must be a rank-2 matrix".to_string(),
+            })?;
+        if post_rows == 0 || post_cols != hidden_size {
+            return Err(NativeModelError::InvalidManifest {
+                message: format!(
+                    "assistant_post_projection must have shape [backbone_hidden_size, {hidden_size}], got {:?}",
+                    post_projection.shape
+                ),
+            });
+        }
+    }
     validate_per_layer_input_tensor_shapes(manifest, hidden_size, vocab_size)?;
 
     for layer_index in 0..manifest.layer_count {
@@ -1639,7 +1693,9 @@ fn validate_native_model_tensor_shapes(
                 NativeTensorRole::AttentionQ,
                 "attention_q",
             )?;
-            if manifest.kv_shared_source_layers.contains_key(&layer_index) {
+            if manifest.model_family == "gemma4_assistant"
+                || manifest.kv_shared_source_layers.contains_key(&layer_index)
+            {
                 validate_q_only_attention_tensor(manifest, layer_index, attention_q)?;
             } else {
                 let attention_k = required_layer_tensor_spec(

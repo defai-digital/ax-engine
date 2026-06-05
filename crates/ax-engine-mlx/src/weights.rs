@@ -16,6 +16,7 @@ use crate::fastpath::{
     dense_attention_qkv_packing_enabled, dense_ffn_gate_up_packing_enabled,
     linear_attention_projection_packing_enabled,
 };
+use crate::gemma4_assistant_mtp::{Gemma4AssistantMtpStatus, load_gemma4_assistant_mtp_status};
 use crate::sampling::MlxSamplingParams;
 
 /// All weight arrays for one model.
@@ -33,6 +34,13 @@ pub struct ModelWeights {
     /// MTP (Multi-Token Prediction) weights loaded from a `mtp.safetensors` sidecar.
     /// `None` when the checkpoint has no MTP sidecar.
     pub mtp: Option<MtpWeights>,
+    /// Gemma 4 Assistant MTP contract/validation status. The assistant forward
+    /// path is intentionally separate from the Qwen3-Next `MtpWeights` path.
+    pub gemma4_assistant_mtp: Gemma4AssistantMtpStatus,
+    /// Gemma4 Assistant pre-projection from target embedding+hidden to assistant hidden.
+    pub assistant_pre_projection: Option<QuantizedWeight>,
+    /// Gemma4 Assistant post-projection from assistant hidden back to target hidden.
+    pub assistant_post_projection: Option<QuantizedWeight>,
 }
 
 /// Weights for a recurrent MTP (Multi-Token Prediction) draft head.
@@ -357,14 +365,39 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
     } else {
         None
     };
+    let assistant_pre_projection =
+        if has_role(specs, NativeTensorRole::AssistantPreProjection, None) {
+            Some(take_weight(
+                specs,
+                &mut name_map,
+                NativeTensorRole::AssistantPreProjection,
+                None,
+                "assistant_pre_projection",
+            )?)
+        } else {
+            None
+        };
+    let assistant_post_projection =
+        if has_role(specs, NativeTensorRole::AssistantPostProjection, None) {
+            Some(take_weight(
+                specs,
+                &mut name_map,
+                NativeTensorRole::AssistantPostProjection,
+                None,
+                "assistant_post_projection",
+            )?)
+        } else {
+            None
+        };
 
     let mut layers = Vec::with_capacity(layer_count);
     for li in 0..layer_count {
         let idx = Some(li as u32);
-        let uses_shared_kv = artifacts
-            .manifest()
-            .kv_shared_source_layers
-            .contains_key(&(li as u32));
+        let uses_shared_kv = artifacts.manifest().model_family == "gemma4_assistant"
+            || artifacts
+                .manifest()
+                .kv_shared_source_layers
+                .contains_key(&(li as u32));
         let uses_value_from_key = artifacts
             .manifest()
             .attention_value_from_key_layers
@@ -788,6 +821,7 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
         mtp_draft_sampling,
         mtp_sidecar_bits,
     );
+    let gemma4_assistant_mtp = load_gemma4_assistant_mtp_status(&root, artifacts.manifest());
 
     let mut model = ModelWeights {
         token_embedding,
@@ -798,6 +832,9 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
         per_layer_model_proj,
         per_layer_proj_norm,
         mtp,
+        gemma4_assistant_mtp,
+        assistant_pre_projection,
+        assistant_post_projection,
     };
 
     apply_rotated_checkpoint(&mut model, artifacts)?;

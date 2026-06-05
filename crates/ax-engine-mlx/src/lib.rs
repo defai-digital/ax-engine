@@ -1,6 +1,7 @@
 pub(crate) mod attention_mask;
 pub mod disk_prefix_cache;
 pub mod fastpath;
+pub mod gemma4_assistant_mtp;
 pub mod generate;
 pub mod kv_cache;
 pub(crate) mod linear_attention_ops;
