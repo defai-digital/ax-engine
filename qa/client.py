@@ -441,6 +441,8 @@ def send_generate_request(
     endpoint = "generate/stream" if stream else "generate"
     url = f"{base_url.rstrip('/')}/v1/{endpoint}"
     sampling: dict[str, Any] = {"temperature": temperature}
+    if repetition_penalty is None and temperature <= 0.0:
+        repetition_penalty = 1.1
     if repetition_penalty is not None:
         sampling["repetition_penalty"] = repetition_penalty
 
