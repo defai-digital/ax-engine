@@ -76,6 +76,18 @@ throughput baselines.
   mixed sidecar (2-D projections quantized, experts/norms bf16). Output defaults
   to a synthetic `models--ax-local--<base>-MTP/snapshots/v1/` cache entry usable
   by `ax-engine-bench --model-dir` directly.
+- `prepare_gemma4_assistant_mtp.py`: packages a Gemma 4 target + assistant pair
+  for assistant-MTP speculative decoding. Gemma 4's MTP is a separate small
+  "assistant" drafter model (not a fused `mtp.*` sidecar), so this is a distinct
+  tool from `prepare_mtp_sidecar.py`. Given `--target` and `--assistant` (local
+  dirs or cached repo ids), it assembles a self-contained model dir (target +
+  `assistant/` subtree, hardlinked), patches the ax-engine packaging markers on
+  the assistant config (`model_type: gemma4_assistant`, `backbone_hidden_size`),
+  copies the target tokenizer into the assistant dir for the byte-identity
+  check, writes the `ax_gemma4_assistant_mtp.json` contract, and pre-validates
+  every rule the runtime (`crates/ax-engine-mlx/src/gemma4_assistant_mtp.rs`)
+  enforces — known pair, vocab/hidden match, full KV-sharing, no
+  per-layer-input/MoE/double-wide MLP — so failures surface at prep time.
 - `prepare_qwen36_mtp_sidecar.py`: the Qwen3.6-specific predecessor used to
   build the published fair-benchmark sidecars (fixed `--model {27b,35b}` table).
   Kept for provenance reproducibility; prefer `prepare_mtp_sidecar.py` for new
