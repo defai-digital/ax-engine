@@ -49,7 +49,11 @@ def run_qa_suite(
     repetition_penalty,
     prompt_ids,
     timeout,
+    tokenizer=None,
+    tokenizer_path=None,
 ):
+    from client import send_generate_request
+
     results = []
     prompts_to_run = (
         PROMPTS if not prompt_ids else [get_prompt_by_id(pid) for pid in prompt_ids]
@@ -67,20 +71,33 @@ def run_qa_suite(
                 print(f"  {label}...", end=" ", flush=True)
 
                 rp = repetition_penalty
-                if mode == "ngram":
-                    pass  # ngram mode is set server-side via --mtp-optimistic or similar
 
-                resp = send_request(
-                    base_url=base_url,
-                    model=model_id,
-                    system=prompt.system,
-                    user=prompt.user,
-                    max_tokens=max_tokens,
-                    temperature=temperature,
-                    stream=stream,
-                    repetition_penalty=rp,
-                    timeout=timeout,
-                )
+                if tokenizer is not None:
+                    resp = send_generate_request(
+                        base_url=base_url,
+                        model=model_id,
+                        system=prompt.system,
+                        user=prompt.user,
+                        tokenizer=tokenizer,
+                        tokenizer_path=tokenizer_path,
+                        max_tokens=max_tokens,
+                        temperature=temperature,
+                        stream=stream,
+                        repetition_penalty=rp,
+                        timeout=timeout,
+                    )
+                else:
+                    resp = send_request(
+                        base_url=base_url,
+                        model=model_id,
+                        system=prompt.system,
+                        user=prompt.user,
+                        max_tokens=max_tokens,
+                        temperature=temperature,
+                        stream=stream,
+                        repetition_penalty=rp,
+                        timeout=timeout,
+                    )
 
                 if resp.error:
                     print(f"ERROR: {resp.error}")
@@ -121,8 +138,8 @@ def main():
         "--modes",
         nargs="+",
         default=["direct"],
-        choices=["direct", "ngram"],
-        help="Generation modes to test (default: direct)",
+        choices=["direct", "ngram", "mtp", "mtp-ngram"],
+        help="Generation modes to label in the report (default: direct)",
     )
     parser.add_argument(
         "--streams",
@@ -164,6 +181,11 @@ def main():
         help="Request timeout in seconds (default: 120)",
     )
     parser.add_argument(
+        "--tokenizer",
+        default=None,
+        help="Path to tokenizer.json for client-side tokenization (uses /v1/generate endpoint)",
+    )
+    parser.add_argument(
         "--list-prompts", action="store_true", help="List available prompts and exit"
     )
     args = parser.parse_args()
@@ -182,6 +204,20 @@ def main():
 
     model_id = args.model or "auto"
     commit, tag = get_git_info()
+
+    tokenizer = None
+    if args.tokenizer:
+        try:
+            from tokenizers import Tokenizer
+
+            tokenizer = Tokenizer.from_file(args.tokenizer)
+            print(f"  Tokenizer: {args.tokenizer}")
+        except ImportError:
+            print(
+                "  WARNING: tokenizers library not installed, falling back to /v1/chat/completions"
+            )
+        except Exception as e:
+            print(f"  WARNING: Failed to load tokenizer: {e}")
 
     print(f"AX Engine QA Suite")
     print(f"  Server:   {args.base_url}")
@@ -202,6 +238,8 @@ def main():
         repetition_penalty=args.repetition_penalty,
         prompt_ids=args.prompts,
         timeout=args.timeout,
+        tokenizer=tokenizer,
+        tokenizer_path=args.tokenizer if tokenizer is not None else None,
     )
 
     passed = sum(1 for r in results if r["report"].auto_pass)
