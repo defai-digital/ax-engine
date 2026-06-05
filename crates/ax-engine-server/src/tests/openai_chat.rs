@@ -254,6 +254,45 @@ async fn openai_chat_request_tokenizes_text_for_native_mlx_backend() {
 }
 
 #[tokio::test]
+async fn openai_glm_chat_keeps_standard_repetition_penalty_default() {
+    let artifact_dir = minimal_tokenizer_artifact("native-openai-glm-tokenizer");
+    let state = native_mlx_openai_builder_state("glm4_moe_lite", &artifact_dir);
+    let request: OpenAiChatCompletionHttpRequest = serde_json::from_value(json!({
+        "model": "glm4_moe_lite",
+        "messages": [{"role": "user", "content": "hello openai chat"}],
+        "max_tokens": 8,
+        "temperature": 0.0
+    }))
+    .expect("sample chat request should deserialize");
+
+    let built = build_openai_chat_request(&state, request).expect("chat request should build");
+
+    assert_eq!(built.generate_request.sampling.repetition_penalty, 1.0);
+
+    fs::remove_dir_all(artifact_dir).expect("artifact dir should clean up");
+}
+
+#[tokio::test]
+async fn openai_glm_chat_preserves_explicit_repetition_penalty() {
+    let artifact_dir = minimal_tokenizer_artifact("native-openai-glm-rp-tokenizer");
+    let state = native_mlx_openai_builder_state("glm4_moe_lite", &artifact_dir);
+    let request: OpenAiChatCompletionHttpRequest = serde_json::from_value(json!({
+        "model": "glm4_moe_lite",
+        "messages": [{"role": "user", "content": "hello openai chat"}],
+        "max_tokens": 8,
+        "temperature": 0.0,
+        "repetition_penalty": 1.03
+    }))
+    .expect("sample chat request should deserialize");
+
+    let built = build_openai_chat_request(&state, request).expect("chat request should build");
+
+    assert_eq!(built.generate_request.sampling.repetition_penalty, 1.03);
+
+    fs::remove_dir_all(artifact_dir).expect("artifact dir should clean up");
+}
+
+#[tokio::test]
 async fn openai_chat_request_rejects_gemma4_artifact_without_chat_template() {
     let unique = SystemTime::now()
         .duration_since(UNIX_EPOCH)
