@@ -43,14 +43,17 @@ warmup repetition.
 
 | Model | Suite | Depth | MTPLX tok/s | MTPLX accept | AX tok/s | AX accept | AX+ngram tok/s | AX+ngram accept |
 |---|---|---:|---:|---:|---:|---:|---:|---:|
-| Qwen3.6 27B 4-bit | flappy | 3 | 59.6 | 100.0% | 62.9 | 97.8% | 61.3 | 96.5% |
-| Qwen3.6 27B 4-bit | long_code | 3 | 59.3 | 99.7% | 61.5 | 96.7% | 67.0 | 95.3% |
-| Qwen3.6 27B 4-bit | python_modules_long | 3 | 54.4 | 87.6% | 47.4 | 82.2% | 47.0 | 81.0% |
-| Qwen3.6 35B-A3B 4-bit | flappy | 1 | 105.3 | 48.5% | 180.4 | 99.9% | 181.8 | 99.1% |
-| Qwen3.6 35B-A3B 4-bit | long_code | 1 | 106.0 | 51.7% | 177.9 | 99.4% | 183.8 | 98.1% |
-| Qwen3.6 35B-A3B 4-bit | python_modules_long | 1 | 102.1 | 43.4% | 170.3 | 94.2% | 170.7 | 94.2% |
+| Qwen3.6 27B 4-bit | flappy | 3 | 59.6 | 100.0% | 61.4 | 99.9% | 61.7 | 99.4% |
+| Qwen3.6 27B 4-bit | long_code | 3 | 59.3 | 99.7% | 55.9 | 99.9% | 53.4 | 99.4% |
+| Qwen3.6 27B 4-bit | python_modules_long | 3 | 54.4 | 87.6% | 47.5 | 99.3% | 47.1 | 98.9% |
+| Qwen3.6 35B-A3B 4-bit | flappy | 1 | 105.3 | 48.5% | 181.0 | 100.0% | 182.1 | 99.2% |
+| Qwen3.6 35B-A3B 4-bit | long_code | 1 | 106.0 | 51.7% | 178.9 | 100.0% | 185.3 | 98.3% |
+| Qwen3.6 35B-A3B 4-bit | python_modules_long | 1 | 102.1 | 43.4% | 183.2 | 99.6% | 183.2 | 98.7% |
 
-AX MTP uses pure MTP (n-gram stacking disabled); AX MTP+n-gram stacks n-gram speculative drafting on top of MTP. Sampler: temperature=0.6,
+AX MTP uses pure MTP (n-gram stacking disabled); AX MTP+n-gram stacks n-gram speculative drafting on top of MTP. AX MTP runs the default
+draft confidence gate (`AX_MLX_MTP_DRAFT_MIN_CONFIDENCE=0.98`), which only proposes draft tokens the MTP head is near-certain of and lifts
+pure-MTP accept to ≥99% on every row (set the variable to `0` to restore ungated drafting). The gate is scoped to pure MTP, so the
+n-gram-stacked column pools lower-confidence n-gram drafts and sits slightly below it. Sampler: temperature=0.6,
 top_p=0.95, top_k=20. 1000 gen tokens, 5 repetitions, 30 s cooldown, 10 s inter-case cooldown.
 MTPLX 0.3.7 · AX Engine v5.2.2.
 
@@ -61,12 +64,12 @@ AX prefill is measured at runner level. Both are pure GPU compute measurements.
 
 | Model | Suite | Depth | MTPLX tok/s | AX MTP tok/s | AX MTP+ngram tok/s |
 |---|---|---:|---:|---:|---:|
-| Qwen3.6 27B 4-bit | flappy | 3 | 683 | 687 | 679 |
-| Qwen3.6 27B 4-bit | long_code | 3 | 798 | 790 | 791 |
-| Qwen3.6 27B 4-bit | python_modules_long | 3 | 691 | 694 | 692 |
-| Qwen3.6 35B-A3B 4-bit | flappy | 1 | 1,545 | 1,838 | 1,833 |
-| Qwen3.6 35B-A3B 4-bit | long_code | 1 | 2,287 | 2,736 | 2,740 |
-| Qwen3.6 35B-A3B 4-bit | python_modules_long | 1 | 1,431 | 2,015 | 2,014 |
+| Qwen3.6 27B 4-bit | flappy | 3 | 683 | 686 | 686 |
+| Qwen3.6 27B 4-bit | long_code | 3 | 798 | 791 | 766 |
+| Qwen3.6 27B 4-bit | python_modules_long | 3 | 691 | 695 | 694 |
+| Qwen3.6 35B-A3B 4-bit | flappy | 1 | 1,545 | 1,821 | 1,839 |
+| Qwen3.6 35B-A3B 4-bit | long_code | 1 | 2,287 | 2,730 | 2,725 |
+| Qwen3.6 35B-A3B 4-bit | python_modules_long | 1 | 1,431 | 2,013 | 2,009 |
 
 #### Time to first token (ms) — same run
 
@@ -74,14 +77,14 @@ MTPLX TTFT is derived from `prompt_eval_time_s` (runner-level). AX TTFT is a run
 
 | Model | Suite | Depth | MTPLX ms | AX MTP ms | AX MTP+ngram ms |
 |---|---|---:|---:|---:|---:|
-| Qwen3.6 27B 4-bit | flappy | 3 | 471 | 468 | 477 |
-| Qwen3.6 27B 4-bit | long_code | 3 | 900 | 908 | 908 |
-| Qwen3.6 27B 4-bit | python_modules_long | 3 | 503 | 504 | 505 |
-| Qwen3.6 35B-A3B 4-bit | flappy | 1 | 208 | 175 | 175 |
-| Qwen3.6 35B-A3B 4-bit | long_code | 1 | 314 | 262 | 262 |
-| Qwen3.6 35B-A3B 4-bit | python_modules_long | 1 | 229 | 171 | 171 |
+| Qwen3.6 27B 4-bit | flappy | 3 | 471 | 469 | 469 |
+| Qwen3.6 27B 4-bit | long_code | 3 | 900 | 907 | 938 |
+| Qwen3.6 27B 4-bit | python_modules_long | 3 | 503 | 504 | 504 |
+| Qwen3.6 35B-A3B 4-bit | flappy | 1 | 208 | 177 | 175 |
+| Qwen3.6 35B-A3B 4-bit | long_code | 1 | 314 | 263 | 263 |
+| Qwen3.6 35B-A3B 4-bit | python_modules_long | 1 | 229 | 172 | 172 |
 
-Full artifacts: [`2026-06-05-ax-mtp-refresh`](benchmarks/results/mtp-fair/2026-06-05-ax-mtp-refresh/summary.json) (fresh AX MTP + n-gram run, 2026-06-05; MTPLX rows reused from the 2026-06-04 same-day sidecar run).
+Full artifacts: [`2026-06-05-ax-mtp-gate-fresh`](benchmarks/results/mtp-fair/2026-06-05-ax-mtp-gate-fresh/summary.json) (fresh AX MTP + n-gram run with the default draft confidence gate, 2026-06-05; MTPLX rows reused from the 2026-06-04 same-day sidecar run).
 
 ### llama.cpp metal vs mlx-lm vs AX-Engine
 
