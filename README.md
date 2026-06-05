@@ -52,7 +52,7 @@ warmup repetition.
 
 AX MTP uses pure MTP (n-gram stacking disabled); AX MTP+n-gram stacks n-gram speculative drafting on top of MTP. Sampler: temperature=0.6,
 top_p=0.95, top_k=20. 1000 gen tokens, 5 repetitions, 30 s cooldown, 10 s inter-case cooldown.
-MTPLX 0.3.7 · AX Engine v5.2.1.
+MTPLX 0.3.7 · AX Engine v5.2.2.
 
 #### Prefill throughput (tok/s) — same run
 
