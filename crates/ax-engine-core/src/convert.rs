@@ -2488,6 +2488,11 @@ mod tests {
             serde_json::json!({
                 "model_type": "gemma4_assistant",
                 "backbone_hidden_size": 16,
+                "quantization": {
+                    "group_size": 64,
+                    "bits": 4,
+                    "mode": "affine"
+                },
                 "text_config": {
                     "model_type": "gemma4_assistant",
                     "hidden_size": 8,
@@ -2498,6 +2503,8 @@ mod tests {
                     "num_kv_shared_layers": 2,
                     "vocab_size": 64,
                     "intermediate_size": 32,
+                    "hidden_size_per_layer_input": 0,
+                    "vocab_size_per_layer_input": 0,
                     "sliding_window_pattern": 2
                 }
             }),
@@ -2509,8 +2516,8 @@ mod tests {
                 ("model.embed_tokens.weight", "BF16", &[64, 8]),
                 ("model.norm.weight", "BF16", &[8]),
                 ("lm_head.weight", "BF16", &[64, 8]),
-                ("pre_projection.weight", "BF16", &[8, 32]),
-                ("post_projection.weight", "BF16", &[16, 8]),
+                ("pre_projection.weight", "U32", &[8, 4]),
+                ("post_projection.weight", "U32", &[16, 1]),
                 ("model.layers.0.input_layernorm.weight", "BF16", &[8]),
                 ("model.layers.0.self_attn.q_proj.weight", "BF16", &[8, 8]),
                 ("model.layers.0.self_attn.o_proj.weight", "BF16", &[8, 8]),
@@ -2541,6 +2548,8 @@ mod tests {
         let manifest =
             convert_hf_model_dir(&dir).expect("Gemma4 assistant conversion should succeed");
         assert_eq!(manifest.model_family, "gemma4_assistant");
+        assert_eq!(manifest.hidden_size_per_layer_input, 0);
+        assert_eq!(manifest.vocab_size_per_layer_input, None);
         assert_eq!(
             manifest.layer_types,
             vec![

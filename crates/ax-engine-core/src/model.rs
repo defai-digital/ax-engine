@@ -1546,11 +1546,11 @@ fn validate_native_model_tensor_shapes(
             NativeTensorRole::AssistantPostProjection,
             "assistant_post_projection",
         )?;
-        let (post_rows, post_cols) =
+        let (post_rows, _post_cols) =
             matrix_shape(post_projection).ok_or_else(|| NativeModelError::InvalidManifest {
                 message: "assistant_post_projection must be a rank-2 matrix".to_string(),
             })?;
-        if post_rows == 0 || post_cols != hidden_size {
+        if post_rows == 0 {
             return Err(NativeModelError::InvalidManifest {
                 message: format!(
                     "assistant_post_projection must have shape [backbone_hidden_size, {hidden_size}], got {:?}",
@@ -1558,6 +1558,12 @@ fn validate_native_model_tensor_shapes(
                 ),
             });
         }
+        expect_matrix_shape(
+            post_projection,
+            post_rows,
+            hidden_size,
+            "assistant_post_projection",
+        )?;
     }
     validate_per_layer_input_tensor_shapes(manifest, hidden_size, vocab_size)?;
 
