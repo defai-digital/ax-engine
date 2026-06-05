@@ -1,0 +1,39 @@
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "/Users/akiralam/code/ax-engine_v5/.internal/reference/lightning-mlx/vllm_mlx/cli.py", line 2720, in <module>
+    main()
+    ~~~~^^
+  File "/Users/akiralam/code/ax-engine_v5/.internal/reference/lightning-mlx/vllm_mlx/cli.py", line 2688, in main
+    serve_command(args)
+    ~~~~~~~~~~~~~^^^^^^
+  File "/Users/akiralam/code/ax-engine_v5/.internal/reference/lightning-mlx/vllm_mlx/cli.py", line 436, in serve_command
+    from . import server
+  File "/Users/akiralam/code/ax-engine_v5/.internal/reference/lightning-mlx/vllm_mlx/server.py", line 100, in <module>
+    from .config import get_config
+  File "/Users/akiralam/code/ax-engine_v5/.internal/reference/lightning-mlx/vllm_mlx/config/__init__.py", line 4, in <module>
+    from .server_config import ServerConfig, get_config, reset_config
+  File "/Users/akiralam/code/ax-engine_v5/.internal/reference/lightning-mlx/vllm_mlx/config/server_config.py", line 15, in <module>
+    from ..engine.base import BaseEngine
+  File "/Users/akiralam/code/ax-engine_v5/.internal/reference/lightning-mlx/vllm_mlx/engine/__init__.py", line 8, in <module>
+    from ..engine_core import AsyncEngineCore, EngineConfig, EngineCore
+  File "/Users/akiralam/code/ax-engine_v5/.internal/reference/lightning-mlx/vllm_mlx/engine_core.py", line 29, in <module>
+    from .scheduler import Scheduler, SchedulerConfig
+  File "/Users/akiralam/code/ax-engine_v5/.internal/reference/lightning-mlx/vllm_mlx/scheduler.py", line 22, in <module>
+    from mlx_lm.generate import BatchGenerator
+  File "/opt/homebrew/var/mtplx/venv-0.3.7/lib/python3.13/site-packages/mlx_lm/__init__.py", line 9, in <module>
+    from .convert import convert
+  File "/opt/homebrew/var/mtplx/venv-0.3.7/lib/python3.13/site-packages/mlx_lm/convert.py", line 8, in <module>
+    import mlx.nn as nn
+  File "/opt/homebrew/var/mtplx/venv-0.3.7/lib/python3.13/site-packages/mlx/nn/__init__.py", line 4, in <module>
+    from mlx.nn.layers import *
+  File "/opt/homebrew/var/mtplx/venv-0.3.7/lib/python3.13/site-packages/mlx/nn/layers/__init__.py", line 3, in <module>
+    from mlx.nn.layers.activations import (
+    ...<52 lines>...
+    )
+  File "/opt/homebrew/var/mtplx/venv-0.3.7/lib/python3.13/site-packages/mlx/nn/layers/activations.py", line 19, in <module>
+    @partial(mx.compile, shapeless=True)
+     ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+RuntimeError: [metal::load_device] No Metal device available. This typically occurs in headless, sandboxed, or virtualized macOS sessions where the GPU is not accessible.
+Exception ignored in atexit callback <nanobind.nb_func object at 0x10b5b7de0>:
+RuntimeError: [metal::load_device] No Metal device available. This typically occurs in headless, sandboxed, or virtualized macOS sessions where the GPU is not accessible.

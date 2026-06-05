@@ -1,0 +1,13 @@
+
+  lightning-mlx
+  ─────────
+  Features: tools: qwen3_coder_xml, reasoning: qwen3, max-concurrent: 1, gc-control, idle-unload: 60s
+  Model: /Users/akiralam/.cache/huggingface/hub/models--ax-local--Qwen3.6-35B-MTP/snapshots/v1
+Mode: Continuous batching (for multiple concurrent users)
+MTP: enabled, draft_tokens=1, draft_temp=0.5
+N-gram: enabled, K=6, n=3, min_matches=2, min_occ=2, accept=greedy, adaptive-K, everywhere, skip-tool-calls, self-tune=on, auto-disable@MTP>=0.85 hybrid
+Stream interval: 1 tokens
+
+  Ready: http://localhost:18906/v1
+  Docs:  http://localhost:18906/docs
+

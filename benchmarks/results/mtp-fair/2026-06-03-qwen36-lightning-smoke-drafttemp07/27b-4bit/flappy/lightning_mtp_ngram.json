@@ -1,0 +1,326 @@
+{
+  "build": {
+    "git_commit": "4c2ae71caee16699615d15257a902c6f528c6450",
+    "git_tracked_dirty": true,
+    "host": "AKMBPM5MAX.local",
+    "platform": "macOS-26.5-arm64-arm-64bit-Mach-O"
+  },
+  "cooldown_s": 0.0,
+  "depth_effective_note": "Rapid-MLX reference MTP path is single-draft; requested depth may be capped by runtime.",
+  "depth_requested": 3,
+  "disable_thinking": true,
+  "engine": "rapid_mlx",
+  "lightning_settings": {
+    "enable_thinking": false,
+    "mtp_draft_temperature": 0.7,
+    "mtp_optimistic": true,
+    "ngram_auto_disable_min_ngram": 0.5,
+    "ngram_auto_disable_mtp_threshold": 0.85
+  },
+  "max_tokens": 512,
+  "measurement_gates": {
+    "min_decode_time_s": 0.5,
+    "tps_ceiling": 500.0
+  },
+  "model": "/Users/akiralam/.cache/huggingface/hub/models--ax-local--Qwen3.6-27B-MTP/snapshots/v1",
+  "prompt_suite": "/Users/akiralam/code/ax-engine_v5/benchmarks/prompts/mtp-suites/flappy.jsonl",
+  "prompt_suite_sha256": "97e53df42f0b2b456d38164264a674bb2c657e59d68833e42d2c60312d7fd669",
+  "rapid_mtp_patch": {
+    "mode": "none"
+  },
+  "rapid_python": "/opt/homebrew/var/mtplx/venv-0.3.7/bin/python",
+  "rapid_source": "/Users/akiralam/code/ax-engine_v5/.internal/reference/lightning-mlx",
+  "repetitions": 1,
+  "results": [
+    {
+      "category": "game_code",
+      "max_tokens": 512,
+      "prompt_id": "flappy_pipes",
+      "prompt_sha256": "88a801ae372338af36ba5effaf538f6158d0e95fa72ad929dd9673bc5c286325",
+      "runs": [
+        {
+          "decode_elapsed_s": 60.68117358299787,
+          "decode_tok_s": 1.1865294579631125,
+          "elapsed_s": 60.68117358299787,
+          "end_to_end_tok_s": 1.1865294579631125,
+          "ended_at": 1780491446.9321752,
+          "generated_tokens": 72,
+          "measured": true,
+          "mtp_acceptance_ratio": 1.0,
+          "ngram_acceptance_ratio": 1.0,
+          "prompt_tokens": 273,
+          "rejected_reason": null,
+          "repetition": 0,
+          "seed": 42,
+          "started_at": 1780491386.251041,
+          "text": "",
+          "ttft_s": null
+        }
+      ],
+      "summary": {
+        "accept_rate": 1.0,
+        "accepted_drafts": null,
+        "decode_tok_s": {
+          "median": 1.1865294579631125,
+          "p10": 1.1865294579631125,
+          "p90": 1.1865294579631125,
+          "values": [
+            1.1865294579631125
+          ]
+        },
+        "drafted_tokens": null,
+        "end_to_end_tok_s": {
+          "median": 1.1865294579631125,
+          "p10": 1.1865294579631125,
+          "p90": 1.1865294579631125,
+          "values": [
+            1.1865294579631125
+          ]
+        },
+        "generated_tokens": 72,
+        "ngram_accept_rate": 1.0,
+        "runs": 1,
+        "valid_runs": 1
+      }
+    },
+    {
+      "category": "game_code",
+      "max_tokens": 512,
+      "prompt_id": "flappy_score_gates",
+      "prompt_sha256": "d30afc995170ca11cb9891f5006aae5aae46e5eb0bcdc192fb0abae884e9777a",
+      "runs": [
+        {
+          "decode_elapsed_s": 53.35706970799947,
+          "decode_tok_s": 7.178055356038027,
+          "elapsed_s": 53.35706970799947,
+          "end_to_end_tok_s": 7.178055356038027,
+          "ended_at": 1780491500.309852,
+          "generated_tokens": 383,
+          "measured": true,
+          "mtp_acceptance_ratio": 1.0,
+          "ngram_acceptance_ratio": 1.0,
+          "prompt_tokens": 374,
+          "rejected_reason": null,
+          "repetition": 0,
+          "seed": 1042,
+          "started_at": 1780491446.952817,
+          "text": "",
+          "ttft_s": null
+        }
+      ],
+      "summary": {
+        "accept_rate": 1.0,
+        "accepted_drafts": null,
+        "decode_tok_s": {
+          "median": 7.178055356038027,
+          "p10": 7.178055356038027,
+          "p90": 7.178055356038027,
+          "values": [
+            7.178055356038027
+          ]
+        },
+        "drafted_tokens": null,
+        "end_to_end_tok_s": {
+          "median": 7.178055356038027,
+          "p10": 7.178055356038027,
+          "p90": 7.178055356038027,
+          "values": [
+            7.178055356038027
+          ]
+        },
+        "generated_tokens": 383,
+        "ngram_accept_rate": 1.0,
+        "runs": 1,
+        "valid_runs": 1
+      }
+    },
+    {
+      "category": "game_code",
+      "max_tokens": 512,
+      "prompt_id": "flappy_collision_checks",
+      "prompt_sha256": "dc95f55539735dcc41f9b07a7ccb764207a474ec0e3876a88203cbf79232ae0e",
+      "runs": [
+        {
+          "decode_elapsed_s": 59.024084167002,
+          "decode_tok_s": 6.3702809676157,
+          "elapsed_s": 59.024084167002,
+          "end_to_end_tok_s": 6.3702809676157,
+          "ended_at": 1780491559.382373,
+          "generated_tokens": 376,
+          "measured": true,
+          "mtp_acceptance_ratio": 1.0,
+          "ngram_acceptance_ratio": 1.0,
+          "prompt_tokens": 432,
+          "rejected_reason": null,
+          "repetition": 0,
+          "seed": 2042,
+          "started_at": 1780491500.3306181,
+          "text": "",
+          "ttft_s": null
+        }
+      ],
+      "summary": {
+        "accept_rate": 1.0,
+        "accepted_drafts": null,
+        "decode_tok_s": {
+          "median": 6.3702809676157,
+          "p10": 6.3702809676157,
+          "p90": 6.3702809676157,
+          "values": [
+            6.3702809676157
+          ]
+        },
+        "drafted_tokens": null,
+        "end_to_end_tok_s": {
+          "median": 6.3702809676157,
+          "p10": 6.3702809676157,
+          "p90": 6.3702809676157,
+          "values": [
+            6.3702809676157
+          ]
+        },
+        "generated_tokens": 376,
+        "ngram_accept_rate": 1.0,
+        "runs": 1,
+        "valid_runs": 1
+      }
+    },
+    {
+      "category": "game_code",
+      "max_tokens": 512,
+      "prompt_id": "flappy_sound_channels",
+      "prompt_sha256": "3510857fe86b1075ac5ef71629c9f75a407e891faf4911c91cfc69c73e6cccfa",
+      "runs": [
+        {
+          "decode_elapsed_s": 41.59123800002271,
+          "decode_tok_s": 0.31256583417865325,
+          "elapsed_s": 41.59123800002271,
+          "end_to_end_tok_s": 0.31256583417865325,
+          "ended_at": 1780491600.996795,
+          "generated_tokens": 13,
+          "measured": true,
+          "mtp_acceptance_ratio": 1.0,
+          "ngram_acceptance_ratio": 1.0,
+          "prompt_tokens": 264,
+          "rejected_reason": null,
+          "repetition": 0,
+          "seed": 3042,
+          "started_at": 1780491559.402364,
+          "text": "",
+          "ttft_s": null
+        }
+      ],
+      "summary": {
+        "accept_rate": 1.0,
+        "accepted_drafts": null,
+        "decode_tok_s": {
+          "median": 0.31256583417865325,
+          "p10": 0.31256583417865325,
+          "p90": 0.31256583417865325,
+          "values": [
+            0.31256583417865325
+          ]
+        },
+        "drafted_tokens": null,
+        "end_to_end_tok_s": {
+          "median": 0.31256583417865325,
+          "p10": 0.31256583417865325,
+          "p90": 0.31256583417865325,
+          "values": [
+            0.31256583417865325
+          ]
+        },
+        "generated_tokens": 13,
+        "ngram_accept_rate": 1.0,
+        "runs": 1,
+        "valid_runs": 1
+      }
+    }
+  ],
+  "sampling": {
+    "temperature": 0.6,
+    "top_k": 20,
+    "top_p": 0.95
+  },
+  "schema": "ax.rapid_mlx.prompt_suite_mtp.v1",
+  "server_command": [
+    "/opt/homebrew/var/mtplx/venv-0.3.7/bin/python",
+    "-m",
+    "vllm_mlx.cli",
+    "serve",
+    "/Users/akiralam/.cache/huggingface/hub/models--ax-local--Qwen3.6-27B-MTP/snapshots/v1",
+    "--port",
+    "18926",
+    "--disable-prefix-cache",
+    "--no-memory-aware-cache",
+    "--max-num-seqs",
+    "1",
+    "--prefill-batch-size",
+    "1",
+    "--completion-batch-size",
+    "1",
+    "--prefill-step-size",
+    "8192",
+    "--enable-mtp",
+    "--mtp-num-draft-tokens",
+    "3",
+    "--log-level",
+    "WARNING",
+    "--no-thinking",
+    "--mtp-draft-temperature",
+    "0.7",
+    "--mtp-optimistic",
+    "--enable-ngram",
+    "--ngram-num-draft-tokens",
+    "6",
+    "--ngram-min-occurrences",
+    "2",
+    "--ngram-acceptance-mode",
+    "greedy",
+    "--ngram-hybrid-verify",
+    "--ngram-everywhere",
+    "--ngram-skip-tool-calls",
+    "--ngram-self-tune",
+    "--ngram-self-tune-disable-threshold",
+    "0.30",
+    "--ngram-auto-disable-mtp-threshold",
+    "0.85",
+    "--ngram-auto-disable-min-ngram",
+    "0.5"
+  ],
+  "server_log": "benchmarks/results/mtp-fair/2026-06-03-qwen36-lightning-smoke-drafttemp07/27b-4bit/flappy/rapid-server/rapid-mlx-server-18926.log",
+  "suite": "flappy",
+  "summary": {
+    "accept_rate": 1.0,
+    "accepted_drafts": null,
+    "case_count": 4,
+    "decode_tok_s": {
+      "median": 3.778405212789406,
+      "p10": 0.31256583417865325,
+      "p90": 7.178055356038027,
+      "values": [
+        1.1865294579631125,
+        7.178055356038027,
+        6.3702809676157,
+        0.31256583417865325
+      ]
+    },
+    "drafted_tokens": null,
+    "end_to_end_tok_s": {
+      "median": 3.778405212789406,
+      "p10": 0.31256583417865325,
+      "p90": 7.178055356038027,
+      "values": [
+        1.1865294579631125,
+        7.178055356038027,
+        6.3702809676157,
+        0.31256583417865325
+      ]
+    },
+    "generated_tokens": 844,
+    "ngram_accept_rate": 1.0,
+    "runs": 4,
+    "valid_runs": 4
+  },
+  "warmup_repetitions": 0
+}

@@ -1,0 +1,490 @@
+{
+  "build": {
+    "git_commit": "8d0511ffb200464e50a63b6022abdee8a59c4699",
+    "git_tracked_dirty": true,
+    "host": "AKMBPM5MAX.local",
+    "platform": "macOS-26.5-arm64-arm-64bit-Mach-O"
+  },
+  "cooldown_s": 30.0,
+  "depth_effective_note": "Rapid-MLX reference MTP path is single-draft; requested depth may be capped by runtime.",
+  "depth_requested": 1,
+  "disable_thinking": true,
+  "engine": "rapid_mlx",
+  "max_tokens": 1000,
+  "measurement_gates": {
+    "min_decode_time_s": 0.5,
+    "tps_ceiling": 500.0
+  },
+  "model": "/Users/akiralam/.cache/huggingface/hub/models--ax-local--Qwen3.6-27B-MTP/snapshots/v1",
+  "prompt_suite": "/Users/akiralam/code/ax-engine_v5/benchmarks/prompts/mtp-suites/python_modules_long.jsonl",
+  "prompt_suite_sha256": "a0c1ee0220b40869bfac08ca4fbf7e60f297bee6c7378765d10f4afdfd3e3793",
+  "rapid_mtp_patch": {
+    "mode": "none"
+  },
+  "rapid_python": "/opt/homebrew/var/mtplx/venv-0.3.7/bin/python",
+  "rapid_source": "/Users/akiralam/code/ax-engine_v5/.internal/reference/lightning-mlx",
+  "repetitions": 5,
+  "results": [
+    {
+      "category": "python_modules_long",
+      "max_tokens": 1000,
+      "prompt_id": "pymod_http_client",
+      "prompt_sha256": "e163f34638479cd373e43ecf1734e4b06ee3d776432dc4e6369db8a277af9ff8",
+      "runs": [
+        {
+          "decode_elapsed_s": 123.94149595897761,
+          "decode_tok_s": 8.068322818460912,
+          "elapsed_s": 143.0547694590059,
+          "end_to_end_tok_s": 6.990329674303954,
+          "ended_at": 1780478100.016012,
+          "generated_tokens": 1000,
+          "measured": true,
+          "mtp_acceptance_ratio": 1.0,
+          "prompt_tokens": 285,
+          "rejected_reason": null,
+          "repetition": 1,
+          "seed": 43,
+          "started_at": 1780477956.959635,
+          "text": "\n               ",
+          "ttft_s": 19.1132735000283
+        },
+        {
+          "decode_elapsed_s": 124.00768345899996,
+          "decode_tok_s": 8.064016455324117,
+          "elapsed_s": 142.91568229199038,
+          "end_to_end_tok_s": 6.997132742625855,
+          "ended_at": 1780478272.96157,
+          "generated_tokens": 1000,
+          "measured": true,
+          "mtp_acceptance_ratio": 1.0,
+          "prompt_tokens": 285,
+          "rejected_reason": null,
+          "repetition": 2,
+          "seed": 44,
+          "started_at": 1780478130.0441852,
+          "text": "\nfrom",
+          "ttft_s": 18.907998832990415
+        },
+        {
+          "decode_elapsed_s": 123.9832313330262,
+          "decode_tok_s": 8.065606850606608,
+          "elapsed_s": 142.7685051250155,
+          "end_to_end_tok_s": 7.004345945377436,
+          "ended_at": 1780478445.759087,
+          "generated_tokens": 1000,
+          "measured": true,
+          "mtp_acceptance_ratio": 1.0,
+          "prompt_tokens": 285,
+          "rejected_reason": null,
+          "repetition": 3,
+          "seed": 45,
+          "started_at": 1780478302.9888809,
+          "text": "header('",
+          "ttft_s": 18.78527379198931
+        },
+        {
+          "decode_elapsed_s": 124.09199983300641,
+          "decode_tok_s": 8.058537225169424,
+          "elapsed_s": 142.88086900001508,
+          "end_to_end_tok_s": 6.998837612052139,
+          "ended_at": 1780478618.6663911,
+          "generated_tokens": 1000,
+          "measured": true,
+          "mtp_acceptance_ratio": 1.0,
+          "prompt_tokens": 285,
+          "rejected_reason": null,
+          "repetition": 4,
+          "seed": 46,
+          "started_at": 1780478475.783821,
+          "text": " not None",
+          "ttft_s": 18.78886916700867
+        },
+        {
+          "decode_elapsed_s": 123.99024054201436,
+          "decode_tok_s": 8.065150899204424,
+          "elapsed_s": 142.7579445420124,
+          "end_to_end_tok_s": 7.004864095011601,
+          "ended_at": 1780478791.453542,
+          "generated_tokens": 1000,
+          "measured": true,
+          "mtp_acceptance_ratio": 1.0,
+          "prompt_tokens": 285,
+          "rejected_reason": null,
+          "repetition": 5,
+          "seed": 47,
+          "started_at": 1780478648.693897,
+          "text": ", Dict",
+          "ttft_s": 18.767703999998048
+        }
+      ],
+      "summary": {
+        "accept_rate": 1.0,
+        "accepted_drafts": null,
+        "decode_tok_s": {
+          "median": 8.065150899204424,
+          "p10": 8.058537225169424,
+          "p90": 8.068322818460912,
+          "values": [
+            8.068322818460912,
+            8.064016455324117,
+            8.065606850606608,
+            8.058537225169424,
+            8.065150899204424
+          ]
+        },
+        "drafted_tokens": null,
+        "end_to_end_tok_s": {
+          "median": 6.998837612052139,
+          "p10": 6.990329674303954,
+          "p90": 7.004864095011601,
+          "values": [
+            6.990329674303954,
+            6.997132742625855,
+            7.004345945377436,
+            6.998837612052139,
+            7.004864095011601
+          ]
+        },
+        "generated_tokens": 5000,
+        "ngram_accept_rate": null,
+        "runs": 5,
+        "valid_runs": 5
+      }
+    },
+    {
+      "category": "python_modules_long",
+      "max_tokens": 1000,
+      "prompt_id": "pymod_config_loader",
+      "prompt_sha256": "0ca971aa34be4af117e184634ae5bccd69652436cbcff2c88cdcfac816119e32",
+      "runs": [
+        {
+          "decode_elapsed_s": 111.48090450000018,
+          "decode_tok_s": 8.970146093495307,
+          "elapsed_s": 130.64843433300848,
+          "end_to_end_tok_s": 7.6541292293722405,
+          "ended_at": 1780479100.706342,
+          "generated_tokens": 1000,
+          "measured": true,
+          "mtp_acceptance_ratio": 1.0,
+          "prompt_tokens": 350,
+          "rejected_reason": null,
+          "repetition": 1,
+          "seed": 1043,
+          "started_at": 1780478970.056351,
+          "text": "Error(\"",
+          "ttft_s": 19.167529833008302
+        },
+        {
+          "decode_elapsed_s": 41.436381459003314,
+          "decode_tok_s": 24.13338145825761,
+          "elapsed_s": 60.3853475000069,
+          "end_to_end_tok_s": 16.560308773579315,
+          "ended_at": 1780479191.1144671,
+          "generated_tokens": 1000,
+          "measured": true,
+          "mtp_acceptance_ratio": 1.0,
+          "prompt_tokens": 350,
+          "rejected_reason": null,
+          "repetition": 2,
+          "seed": 1044,
+          "started_at": 1780479130.728399,
+          "text": "[key]",
+          "ttft_s": 18.948966041003587
+        },
+        {
+          "decode_elapsed_s": 100.11703091699746,
+          "decode_tok_s": 9.988310588525694,
+          "elapsed_s": 118.96441924999817,
+          "end_to_end_tok_s": 8.405874683408882,
+          "ended_at": 1780479340.090455,
+          "generated_tokens": 1000,
+          "measured": true,
+          "mtp_acceptance_ratio": 1.0,
+          "prompt_tokens": 350,
+          "rejected_reason": null,
+          "repetition": 3,
+          "seed": 1045,
+          "started_at": 1780479221.124618,
+          "text": " val =",
+          "ttft_s": 18.84738833300071
+        },
+        {
+          "decode_elapsed_s": 124.82429991700337,
+          "decode_tok_s": 8.011260633265378,
+          "elapsed_s": 143.7257656250149,
+          "end_to_end_tok_s": 6.957694715706242,
+          "ended_at": 1780479513.815163,
+          "generated_tokens": 1000,
+          "measured": true,
+          "mtp_acceptance_ratio": 1.0,
+          "prompt_tokens": 350,
+          "rejected_reason": null,
+          "repetition": 4,
+          "seed": 1046,
+          "started_at": 1780479370.112845,
+          "text": "            return",
+          "ttft_s": 18.90146570801153
+        },
+        {
+          "decode_elapsed_s": 99.23264012497384,
+          "decode_tok_s": 10.077329382152863,
+          "elapsed_s": 118.45232887499151,
+          "end_to_end_tok_s": 8.442214766881861,
+          "ended_at": 1780479662.296491,
+          "generated_tokens": 1000,
+          "measured": true,
+          "mtp_acceptance_ratio": 1.0,
+          "prompt_tokens": 350,
+          "rejected_reason": null,
+          "repetition": 5,
+          "seed": 1047,
+          "started_at": 1780479543.843643,
+          "text": "ConfigError",
+          "ttft_s": 19.219688750017667
+        }
+      ],
+      "summary": {
+        "accept_rate": 1.0,
+        "accepted_drafts": null,
+        "decode_tok_s": {
+          "median": 9.988310588525694,
+          "p10": 8.011260633265378,
+          "p90": 24.13338145825761,
+          "values": [
+            8.970146093495307,
+            24.13338145825761,
+            9.988310588525694,
+            8.011260633265378,
+            10.077329382152863
+          ]
+        },
+        "drafted_tokens": null,
+        "end_to_end_tok_s": {
+          "median": 8.405874683408882,
+          "p10": 6.957694715706242,
+          "p90": 16.560308773579315,
+          "values": [
+            7.6541292293722405,
+            16.560308773579315,
+            8.405874683408882,
+            6.957694715706242,
+            8.442214766881861
+          ]
+        },
+        "generated_tokens": 5000,
+        "ngram_accept_rate": null,
+        "runs": 5,
+        "valid_runs": 5
+      }
+    },
+    {
+      "category": "python_modules_long",
+      "max_tokens": 1000,
+      "prompt_id": "pymod_event_bus",
+      "prompt_sha256": "9f3d155bcce8fa9cd8ef369bda1ef815fd52fc1f8a0e39ca0d4eb2349169e083",
+      "runs": [
+        {
+          "decode_elapsed_s": 85.85046316697844,
+          "decode_tok_s": 11.64816080322139,
+          "elapsed_s": 104.99332266699639,
+          "end_to_end_tok_s": 9.524415216114882,
+          "ended_at": 1780479933.4295301,
+          "generated_tokens": 1000,
+          "measured": true,
+          "mtp_acceptance_ratio": 1.0,
+          "prompt_tokens": 350,
+          "rejected_reason": null,
+          "repetition": 1,
+          "seed": 2043,
+          "started_at": 1780479828.435679,
+          "text": "0)",
+          "ttft_s": 19.14285950001795
+        },
+        {
+          "decode_elapsed_s": 124.58974370898795,
+          "decode_tok_s": 8.026342861221085,
+          "elapsed_s": 143.3147036669834,
+          "end_to_end_tok_s": 6.977651102176324,
+          "ended_at": 1780480106.772816,
+          "generated_tokens": 1000,
+          "measured": true,
+          "mtp_acceptance_ratio": 1.0,
+          "prompt_tokens": 350,
+          "rejected_reason": null,
+          "repetition": 2,
+          "seed": 2044,
+          "started_at": 1780479963.4573922,
+          "text": " def decorator",
+          "ttft_s": 18.724959957995452
+        },
+        {
+          "decode_elapsed_s": 107.58936574999825,
+          "decode_tok_s": 9.294598894872808,
+          "elapsed_s": 126.44339179099188,
+          "end_to_end_tok_s": 7.90867743925264,
+          "ended_at": 1780480263.244433,
+          "generated_tokens": 1000,
+          "measured": true,
+          "mtp_acceptance_ratio": 1.0,
+          "prompt_tokens": 350,
+          "rejected_reason": null,
+          "repetition": 3,
+          "seed": 2045,
+          "started_at": 1780480136.800405,
+          "text": ": str",
+          "ttft_s": 18.85402604099363
+        },
+        {
+          "decode_elapsed_s": 80.22427391598467,
+          "decode_tok_s": 12.46505516581248,
+          "elapsed_s": 99.09500154099078,
+          "end_to_end_tok_s": 10.09132634794247,
+          "ended_at": 1780480392.367429,
+          "generated_tokens": 1000,
+          "measured": true,
+          "mtp_acceptance_ratio": 1.0,
+          "prompt_tokens": 350,
+          "rejected_reason": null,
+          "repetition": 4,
+          "seed": 2046,
+          "started_at": 1780480293.271928,
+          "text": "\n   ",
+          "ttft_s": 18.87072762500611
+        },
+        {
+          "decode_elapsed_s": 87.64847775001545,
+          "decode_tok_s": 11.409211268359122,
+          "elapsed_s": 106.50329308302025,
+          "end_to_end_tok_s": 9.38938103275822,
+          "ended_at": 1780480528.900115,
+          "generated_tokens": 1000,
+          "measured": true,
+          "mtp_acceptance_ratio": 1.0,
+          "prompt_tokens": 350,
+          "rejected_reason": null,
+          "repetition": 5,
+          "seed": 2047,
+          "started_at": 1780480422.396287,
+          "text": "_dropped",
+          "ttft_s": 18.854815333004808
+        }
+      ],
+      "summary": {
+        "accept_rate": 1.0,
+        "accepted_drafts": null,
+        "decode_tok_s": {
+          "median": 11.409211268359122,
+          "p10": 8.026342861221085,
+          "p90": 12.46505516581248,
+          "values": [
+            11.64816080322139,
+            8.026342861221085,
+            9.294598894872808,
+            12.46505516581248,
+            11.409211268359122
+          ]
+        },
+        "drafted_tokens": null,
+        "end_to_end_tok_s": {
+          "median": 9.38938103275822,
+          "p10": 6.977651102176324,
+          "p90": 10.09132634794247,
+          "values": [
+            9.524415216114882,
+            6.977651102176324,
+            7.90867743925264,
+            10.09132634794247,
+            9.38938103275822
+          ]
+        },
+        "generated_tokens": 5000,
+        "ngram_accept_rate": null,
+        "runs": 5,
+        "valid_runs": 5
+      }
+    }
+  ],
+  "sampling": {
+    "temperature": 0.6,
+    "top_k": 20,
+    "top_p": 0.95
+  },
+  "schema": "ax.rapid_mlx.prompt_suite_mtp.v1",
+  "server_command": [
+    "/opt/homebrew/var/mtplx/venv-0.3.7/bin/python",
+    "-m",
+    "vllm_mlx.cli",
+    "serve",
+    "/Users/akiralam/.cache/huggingface/hub/models--ax-local--Qwen3.6-27B-MTP/snapshots/v1",
+    "--port",
+    "18766",
+    "--disable-prefix-cache",
+    "--no-memory-aware-cache",
+    "--enable-mtp",
+    "--mtp-num-draft-tokens",
+    "1",
+    "--no-thinking",
+    "--log-level",
+    "WARNING",
+    "--mtp-draft-temperature",
+    "0.5",
+    "--mtp-optimistic"
+  ],
+  "server_log": "benchmarks/results/mtp-fair/2026-06-02-qwen36-fair-v0632/27b-4bit/python_modules_long/rapid-server/rapid-mlx-server-18766.log",
+  "suite": "python_modules_long",
+  "summary": {
+    "accept_rate": 1.0,
+    "accepted_drafts": null,
+    "case_count": 3,
+    "decode_tok_s": {
+      "median": 8.970146093495307,
+      "p10": 8.026342861221085,
+      "p90": 12.46505516581248,
+      "values": [
+        8.068322818460912,
+        8.064016455324117,
+        8.065606850606608,
+        8.058537225169424,
+        8.065150899204424,
+        8.970146093495307,
+        24.13338145825761,
+        9.988310588525694,
+        8.011260633265378,
+        10.077329382152863,
+        11.64816080322139,
+        8.026342861221085,
+        9.294598894872808,
+        12.46505516581248,
+        11.409211268359122
+      ]
+    },
+    "drafted_tokens": null,
+    "end_to_end_tok_s": {
+      "median": 7.6541292293722405,
+      "p10": 6.977651102176324,
+      "p90": 10.09132634794247,
+      "values": [
+        6.990329674303954,
+        6.997132742625855,
+        7.004345945377436,
+        6.998837612052139,
+        7.004864095011601,
+        7.6541292293722405,
+        16.560308773579315,
+        8.405874683408882,
+        6.957694715706242,
+        8.442214766881861,
+        9.524415216114882,
+        6.977651102176324,
+        7.90867743925264,
+        10.09132634794247,
+        9.38938103275822
+      ]
+    },
+    "generated_tokens": 15000,
+    "ngram_accept_rate": null,
+    "runs": 15,
+    "valid_runs": 15
+  },
+  "warmup_repetitions": 1
+}

@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>AX Engine QA Report — v5.1.12</title>
+<style>
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; margin: 20px; background: #f8f9fa; }
+h1 { color: #1a1a2e; }
+.summary { display: flex; gap: 20px; margin: 20px 0; }
+.card { background: #fff; border-radius: 8px; padding: 16px 24px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+.card h3 { margin: 0 0 8px; color: #666; font-size: 14px; }
+.card .value { font-size: 28px; font-weight: 700; }
+.pass { color: #16a34a; }
+.fail { color: #dc2626; }
+table { border-collapse: collapse; width: 100%; background: #fff; border-radius: 8px; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+th { background: #1a1a2e; color: #fff; padding: 10px 12px; text-align: left; font-size: 13px; }
+td { padding: 8px 12px; border-bottom: 1px solid #eee; font-size: 13px; vertical-align: top; }
+tr:hover { background: #f0f4ff; }
+pre { margin: 0; }
+details summary { cursor: pointer; color: #2563eb; }
+.meta { color: #666; font-size: 13px; margin-bottom: 20px; }
+</style>
+</head>
+<body>
+<h1>AX Engine QA Report — v5.1.12</h1>
+<div class="meta">Generated: 2026-06-04 20:45:01 | Version: v5.1.12 | Commit: 84071afe</div>
+<div class="summary">
+<div class="card"><h3>Total Tests</h3><div class="value">8</div></div>
+<div class="card"><h3>Passed</h3><div class="value pass">8</div></div>
+<div class="card"><h3>Failed</h3><div class="value fail">0</div></div>
+<div class="card"><h3>Pass Rate</h3><div class="value pass">100.0%</div></div>
+</div>
+<table>
+<thead><tr>
+<th>Prompt</th><th>Mode</th><th>Stream</th><th>Result</th><th>Checks</th><th>Latency</th><th>Finish</th><th>Output</th><th>Details</th>
+</tr></thead>
+<tbody>
+<tr>
+<td>code_python</td>
+<td>mtp</td>
+<td>Yes</td>
+<td><span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span></td>
+<td>6/6 passed</td>
+<td>11543ms</td>
+<td>stop</td>
+<td><details><summary>Preview</summary><pre style="max-width:600px;white-space:pre-wrap;font-size:11px">```python
+import re
+
+
+def is_valid_email(email: str) -&gt; bool:
+    &quot;&quot;&quot;
+    Check if a given string is a valid email address.
+
+    This function uses a regular expression to validate the format of an em</pre></details></td>
+<td style="font-size:11px"><span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> length: 1284 chars (min 80) | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> repetition: max line repeat ratio 0.12 (threshold 0.3) | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> keywords: found 4/4 | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> regex: matched 1/1 patterns | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> coherence: alpha=0.62, unique=0.62 | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> garbage: scripts: Latin</td>
+</tr>
+<tr>
+<td>code_python</td>
+<td>mtp</td>
+<td>No</td>
+<td><span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span></td>
+<td>6/6 passed</td>
+<td>11293ms</td>
+<td>stop</td>
+<td><details><summary>Preview</summary><pre style="max-width:600px;white-space:pre-wrap;font-size:11px">```python
+import re
+
+
+def is_valid_email(email: str) -&gt; bool:
+    &quot;&quot;&quot;
+    Check if a given string is a valid email address.
+
+    This function uses a regular expression to validate the format of an em</pre></details></td>
+<td style="font-size:11px"><span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> length: 1284 chars (min 80) | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> repetition: max line repeat ratio 0.12 (threshold 0.3) | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> keywords: found 4/4 | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> regex: matched 1/1 patterns | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> coherence: alpha=0.62, unique=0.62 | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> garbage: scripts: Latin</td>
+</tr>
+<tr>
+<td>creative_story</td>
+<td>mtp</td>
+<td>Yes</td>
+<td><span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span></td>
+<td>6/6 passed</td>
+<td>4130ms</td>
+<td>stop</td>
+<td><details><summary>Preview</summary><pre style="max-width:600px;white-space:pre-wrap;font-size:11px">Unit 7’s optical sensors widened as it intercepted an unexpected frequency from the abandoned radio, a chaotic stream of data that defied its logical algorithms. Instead of processing the sound as mer</pre></details></td>
+<td style="font-size:11px"><span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> length: 541 chars (min 80) | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> repetition: 1 non-empty lines | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> keywords: found 3/3 | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> regex: no patterns required | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> coherence: alpha=0.82, unique=0.33 | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> garbage: scripts: Latin</td>
+</tr>
+<tr>
+<td>creative_story</td>
+<td>mtp</td>
+<td>No</td>
+<td><span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span></td>
+<td>6/6 passed</td>
+<td>4155ms</td>
+<td>stop</td>
+<td><details><summary>Preview</summary><pre style="max-width:600px;white-space:pre-wrap;font-size:11px">Unit 7’s optical sensors widened as it intercepted an unexpected frequency from the abandoned radio, a chaotic stream of data that defied its logical algorithms. Instead of processing the sound as mer</pre></details></td>
+<td style="font-size:11px"><span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> length: 541 chars (min 80) | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> repetition: 1 non-empty lines | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> keywords: found 3/3 | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> regex: no patterns required | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> coherence: alpha=0.82, unique=0.33 | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> garbage: scripts: Latin</td>
+</tr>
+<tr>
+<td>math_arithmetic</td>
+<td>mtp</td>
+<td>Yes</td>
+<td><span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span></td>
+<td>6/6 passed</td>
+<td>5630ms</td>
+<td>stop</td>
+<td><details><summary>Preview</summary><pre style="max-width:600px;white-space:pre-wrap;font-size:11px">Here is the step-by-step calculation to determine the final number of apples:
+
+**1. Start with the initial amount:**
+The store begins with 47 apples.
+
+**2. Subtract the apples sold in the morning:**
+$</pre></details></td>
+<td style="font-size:11px"><span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> length: 494 chars (min 30) | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> repetition: max line repeat ratio 0.08 (threshold 0.3) | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> keywords: found 4/4 | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> regex: no patterns required | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> coherence: alpha=0.64, unique=0.43 | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> garbage: scripts: Latin</td>
+</tr>
+<tr>
+<td>math_arithmetic</td>
+<td>mtp</td>
+<td>No</td>
+<td><span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span></td>
+<td>6/6 passed</td>
+<td>5641ms</td>
+<td>stop</td>
+<td><details><summary>Preview</summary><pre style="max-width:600px;white-space:pre-wrap;font-size:11px">Here is the step-by-step calculation to determine the final number of apples:
+
+**1. Start with the initial amount:**
+The store begins with 47 apples.
+
+**2. Subtract the apples sold in the morning:**
+$</pre></details></td>
+<td style="font-size:11px"><span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> length: 494 chars (min 30) | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> repetition: max line repeat ratio 0.08 (threshold 0.3) | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> keywords: found 4/4 | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> regex: no patterns required | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> coherence: alpha=0.64, unique=0.43 | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> garbage: scripts: Latin</td>
+</tr>
+<tr>
+<td>code_sql</td>
+<td>mtp</td>
+<td>Yes</td>
+<td><span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span></td>
+<td>6/6 passed</td>
+<td>3307ms</td>
+<td>stop</td>
+<td><details><summary>Preview</summary><pre style="max-width:600px;white-space:pre-wrap;font-size:11px">```sql
+SELECT 
+    c.id AS customer_id,
+    c.name AS customer_name,
+    SUM(o.amount) AS total_order_amount
+FROM 
+    customers c
+JOIN 
+    orders o ON c.id = o.customer_id
+GROUP BY 
+    c.id, c.name</pre></details></td>
+<td style="font-size:11px"><span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> length: 251 chars (min 50) | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> repetition: max line repeat ratio 0.07 (threshold 0.3) | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> keywords: found 5/5 | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> regex: matched 3/3 patterns | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> coherence: alpha=0.63, unique=0.44 | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> garbage: scripts: Latin</td>
+</tr>
+<tr>
+<td>code_sql</td>
+<td>mtp</td>
+<td>No</td>
+<td><span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span></td>
+<td>6/6 passed</td>
+<td>3312ms</td>
+<td>stop</td>
+<td><details><summary>Preview</summary><pre style="max-width:600px;white-space:pre-wrap;font-size:11px">```sql
+SELECT 
+    c.id AS customer_id,
+    c.name AS customer_name,
+    SUM(o.amount) AS total_order_amount
+FROM 
+    customers c
+JOIN 
+    orders o ON c.id = o.customer_id
+GROUP BY 
+    c.id, c.name</pre></details></td>
+<td style="font-size:11px"><span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> length: 251 chars (min 50) | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> repetition: max line repeat ratio 0.07 (threshold 0.3) | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> keywords: found 5/5 | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> regex: matched 3/3 patterns | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> coherence: alpha=0.63, unique=0.44 | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> garbage: scripts: Latin</td>
+</tr>
+</tbody>
+</table>
+</body>
+</html>

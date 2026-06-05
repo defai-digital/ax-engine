@@ -1,0 +1,355 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>AX Engine QA Report — v5.1.12</title>
+<style>
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; margin: 20px; background: #f8f9fa; }
+h1 { color: #1a1a2e; }
+.summary { display: flex; gap: 20px; margin: 20px 0; }
+.card { background: #fff; border-radius: 8px; padding: 16px 24px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+.card h3 { margin: 0 0 8px; color: #666; font-size: 14px; }
+.card .value { font-size: 28px; font-weight: 700; }
+.pass { color: #16a34a; }
+.fail { color: #dc2626; }
+table { border-collapse: collapse; width: 100%; background: #fff; border-radius: 8px; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+th { background: #1a1a2e; color: #fff; padding: 10px 12px; text-align: left; font-size: 13px; }
+td { padding: 8px 12px; border-bottom: 1px solid #eee; font-size: 13px; vertical-align: top; }
+tr:hover { background: #f0f4ff; }
+pre { margin: 0; }
+details summary { cursor: pointer; color: #2563eb; }
+.meta { color: #666; font-size: 13px; margin-bottom: 20px; }
+</style>
+</head>
+<body>
+<h1>AX Engine QA Report — v5.1.12</h1>
+<div class="meta">Generated: 2026-06-04 20:06:40 | Version: v5.1.12 | Commit: 7962181d</div>
+<div class="summary">
+<div class="card"><h3>Total Tests</h3><div class="value">20</div></div>
+<div class="card"><h3>Passed</h3><div class="value pass">20</div></div>
+<div class="card"><h3>Failed</h3><div class="value fail">0</div></div>
+<div class="card"><h3>Pass Rate</h3><div class="value pass">100.0%</div></div>
+</div>
+<table>
+<thead><tr>
+<th>Prompt</th><th>Mode</th><th>Stream</th><th>Result</th><th>Checks</th><th>Latency</th><th>Finish</th><th>Output</th><th>Details</th>
+</tr></thead>
+<tbody>
+<tr>
+<td>reasoning_logic</td>
+<td>direct</td>
+<td>Yes</td>
+<td><span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span></td>
+<td>6/6 passed</td>
+<td>4244ms</td>
+<td>max_output_tokens</td>
+<td><details><summary>Preview</summary><pre style="max-width:600px;white-space:pre-wrap;font-size:11px">**No, we cannot conclude that some roses fade quickly.**
+
+Here is the step-by-step logical reasoning:
+
+### 1. Break Down the Premises
+Let&#x27;s define the sets involved:
+*   $R$: The set of all roses.
+*  </pre></details></td>
+<td style="font-size:11px"><span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> length: 1956 chars (min 50) | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> repetition: max line repeat ratio 0.04 (threshold 0.3) | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> keywords: found 5/5 | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> regex: no patterns required | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> coherence: alpha=0.72, unique=0.61 | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> garbage: scripts: Latin</td>
+</tr>
+<tr>
+<td>reasoning_logic</td>
+<td>direct</td>
+<td>No</td>
+<td><span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span></td>
+<td>6/6 passed</td>
+<td>3976ms</td>
+<td>max_output_tokens</td>
+<td><details><summary>Preview</summary><pre style="max-width:600px;white-space:pre-wrap;font-size:11px">**No, we cannot conclude that some roses fade quickly.**
+
+Here is the step-by-step logical reasoning:
+
+### 1. Break Down the Premises
+Let&#x27;s define the sets involved:
+*   $R$: The set of all roses.
+*  </pre></details></td>
+<td style="font-size:11px"><span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> length: 1956 chars (min 50) | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> repetition: max line repeat ratio 0.04 (threshold 0.3) | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> keywords: found 5/5 | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> regex: no patterns required | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> coherence: alpha=0.72, unique=0.61 | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> garbage: scripts: Latin</td>
+</tr>
+<tr>
+<td>code_python</td>
+<td>direct</td>
+<td>Yes</td>
+<td><span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span></td>
+<td>6/6 passed</td>
+<td>2527ms</td>
+<td>stop</td>
+<td><details><summary>Preview</summary><pre style="max-width:600px;white-space:pre-wrap;font-size:11px">```python
+import re
+
+
+def is_valid_email(email: str) -&gt; bool:
+    &quot;&quot;&quot;
+    Check if a string is a valid email address.
+
+    This function uses a regular expression to validate the basic structure
+    o</pre></details></td>
+<td style="font-size:11px"><span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> length: 1148 chars (min 80) | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> repetition: max line repeat ratio 0.10 (threshold 0.3) | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> keywords: found 4/4 | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> regex: matched 1/1 patterns | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> coherence: alpha=0.62, unique=0.60 | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> garbage: scripts: Latin</td>
+</tr>
+<tr>
+<td>code_python</td>
+<td>direct</td>
+<td>No</td>
+<td><span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span></td>
+<td>6/6 passed</td>
+<td>2538ms</td>
+<td>stop</td>
+<td><details><summary>Preview</summary><pre style="max-width:600px;white-space:pre-wrap;font-size:11px">```python
+import re
+
+
+def is_valid_email(email: str) -&gt; bool:
+    &quot;&quot;&quot;
+    Check if a string is a valid email address.
+
+    This function uses a regular expression to validate the basic structure
+    o</pre></details></td>
+<td style="font-size:11px"><span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> length: 1148 chars (min 80) | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> repetition: max line repeat ratio 0.10 (threshold 0.3) | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> keywords: found 4/4 | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> regex: matched 1/1 patterns | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> coherence: alpha=0.62, unique=0.60 | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> garbage: scripts: Latin</td>
+</tr>
+<tr>
+<td>code_javascript</td>
+<td>direct</td>
+<td>Yes</td>
+<td><span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span></td>
+<td>6/6 passed</td>
+<td>976ms</td>
+<td>stop</td>
+<td><details><summary>Preview</summary><pre style="max-width:600px;white-space:pre-wrap;font-size:11px">```javascript
+/**
+ * Flattens a nested array to any depth.
+ * @param {Array} arr - The nested array to flatten.
+ * @returns {Array} - The flattened array.
+ */
+function flattenArray(arr) {
+  return arr</pre></details></td>
+<td style="font-size:11px"><span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> length: 222 chars (min 60) | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> repetition: max line repeat ratio 0.10 (threshold 0.3) | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> keywords: found 4/4 | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> regex: matched 1/1 patterns | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> coherence: alpha=0.67, unique=0.36 | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> garbage: scripts: Latin</td>
+</tr>
+<tr>
+<td>code_javascript</td>
+<td>direct</td>
+<td>No</td>
+<td><span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span></td>
+<td>6/6 passed</td>
+<td>973ms</td>
+<td>stop</td>
+<td><details><summary>Preview</summary><pre style="max-width:600px;white-space:pre-wrap;font-size:11px">```javascript
+/**
+ * Flattens a nested array to any depth.
+ * @param {Array} arr - The nested array to flatten.
+ * @returns {Array} - The flattened array.
+ */
+function flattenArray(arr) {
+  return arr</pre></details></td>
+<td style="font-size:11px"><span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> length: 222 chars (min 60) | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> repetition: max line repeat ratio 0.10 (threshold 0.3) | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> keywords: found 4/4 | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> regex: matched 1/1 patterns | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> coherence: alpha=0.67, unique=0.36 | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> garbage: scripts: Latin</td>
+</tr>
+<tr>
+<td>creative_story</td>
+<td>direct</td>
+<td>Yes</td>
+<td><span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span></td>
+<td>6/6 passed</td>
+<td>1207ms</td>
+<td>stop</td>
+<td><details><summary>Preview</summary><pre style="max-width:600px;white-space:pre-wrap;font-size:11px">Unit 734’s audio sensors initially registered the sound as chaotic data, but as the melody unfolded, its processing algorithms began to detect a complex, non-random pattern. The rhythmic pulses synchr</pre></details></td>
+<td style="font-size:11px"><span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> length: 523 chars (min 80) | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> repetition: 1 non-empty lines | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> keywords: found 3/3 | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> regex: no patterns required | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> coherence: alpha=0.82, unique=0.37 | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> garbage: scripts: Latin</td>
+</tr>
+<tr>
+<td>creative_story</td>
+<td>direct</td>
+<td>No</td>
+<td><span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span></td>
+<td>6/6 passed</td>
+<td>1174ms</td>
+<td>stop</td>
+<td><details><summary>Preview</summary><pre style="max-width:600px;white-space:pre-wrap;font-size:11px">Unit 734’s audio sensors initially registered the sound as chaotic data, but as the melody unfolded, its processing algorithms began to detect a complex, non-random pattern. The rhythmic pulses synchr</pre></details></td>
+<td style="font-size:11px"><span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> length: 523 chars (min 80) | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> repetition: 1 non-empty lines | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> keywords: found 3/3 | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> regex: no patterns required | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> coherence: alpha=0.82, unique=0.37 | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> garbage: scripts: Latin</td>
+</tr>
+<tr>
+<td>instruction_format</td>
+<td>direct</td>
+<td>Yes</td>
+<td><span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span></td>
+<td>6/6 passed</td>
+<td>664ms</td>
+<td>stop</td>
+<td><details><summary>Preview</summary><pre style="max-width:600px;white-space:pre-wrap;font-size:11px">1. Brazil
+2. Argentina
+3. Colombia
+4. Peru
+5. Venezuela</pre></details></td>
+<td style="font-size:11px"><span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> length: 55 chars (min 30) | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> repetition: max line repeat ratio 0.20 (threshold 0.3) | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> keywords: found 5/5 | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> regex: matched 2/2 patterns | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> coherence: alpha=0.65, unique=0.47 | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> garbage: scripts: Latin</td>
+</tr>
+<tr>
+<td>instruction_format</td>
+<td>direct</td>
+<td>No</td>
+<td><span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span></td>
+<td>6/6 passed</td>
+<td>669ms</td>
+<td>stop</td>
+<td><details><summary>Preview</summary><pre style="max-width:600px;white-space:pre-wrap;font-size:11px">1. Brazil
+2. Argentina
+3. Colombia
+4. Peru
+5. Venezuela</pre></details></td>
+<td style="font-size:11px"><span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> length: 55 chars (min 30) | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> repetition: max line repeat ratio 0.20 (threshold 0.3) | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> keywords: found 5/5 | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> regex: matched 2/2 patterns | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> coherence: alpha=0.65, unique=0.47 | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> garbage: scripts: Latin</td>
+</tr>
+<tr>
+<td>math_arithmetic</td>
+<td>direct</td>
+<td>Yes</td>
+<td><span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span></td>
+<td>6/6 passed</td>
+<td>1557ms</td>
+<td>stop</td>
+<td><details><summary>Preview</summary><pre style="max-width:600px;white-space:pre-wrap;font-size:11px">Here is the step-by-step calculation to determine the final number of apples:
+
+**1. Start with the initial amount:**
+The store begins with 47 apples.
+
+**2. Subtract the apples sold in the morning:**
+$</pre></details></td>
+<td style="font-size:11px"><span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> length: 492 chars (min 30) | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> repetition: max line repeat ratio 0.08 (threshold 0.3) | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> keywords: found 4/4 | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> regex: no patterns required | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> coherence: alpha=0.64, unique=0.43 | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> garbage: scripts: Latin</td>
+</tr>
+<tr>
+<td>math_arithmetic</td>
+<td>direct</td>
+<td>No</td>
+<td><span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span></td>
+<td>6/6 passed</td>
+<td>1544ms</td>
+<td>stop</td>
+<td><details><summary>Preview</summary><pre style="max-width:600px;white-space:pre-wrap;font-size:11px">Here is the step-by-step calculation to determine the final number of apples:
+
+**1. Start with the initial amount:**
+The store begins with 47 apples.
+
+**2. Subtract the apples sold in the morning:**
+$</pre></details></td>
+<td style="font-size:11px"><span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> length: 492 chars (min 30) | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> repetition: max line repeat ratio 0.08 (threshold 0.3) | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> keywords: found 4/4 | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> regex: no patterns required | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> coherence: alpha=0.64, unique=0.43 | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> garbage: scripts: Latin</td>
+</tr>
+<tr>
+<td>summarization</td>
+<td>direct</td>
+<td>Yes</td>
+<td><span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span></td>
+<td>6/6 passed</td>
+<td>848ms</td>
+<td>stop</td>
+<td><details><summary>Preview</summary><pre style="max-width:600px;white-space:pre-wrap;font-size:11px">Machine learning is a subset of artificial intelligence that enables systems to learn and improve from experience without being explicitly programmed for every specific task. By identifying patterns i</pre></details></td>
+<td style="font-size:11px"><span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> length: 304 chars (min 40) | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> repetition: 1 non-empty lines | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> keywords: found 3/4 (missing: model) | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> regex: no patterns required | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> coherence: alpha=0.85, unique=0.28 | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> garbage: scripts: Latin</td>
+</tr>
+<tr>
+<td>summarization</td>
+<td>direct</td>
+<td>No</td>
+<td><span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span></td>
+<td>6/6 passed</td>
+<td>841ms</td>
+<td>stop</td>
+<td><details><summary>Preview</summary><pre style="max-width:600px;white-space:pre-wrap;font-size:11px">Machine learning is a subset of artificial intelligence that enables systems to learn and improve from experience without being explicitly programmed for every specific task. By identifying patterns i</pre></details></td>
+<td style="font-size:11px"><span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> length: 304 chars (min 40) | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> repetition: 1 non-empty lines | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> keywords: found 3/4 (missing: model) | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> regex: no patterns required | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> coherence: alpha=0.85, unique=0.28 | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> garbage: scripts: Latin</td>
+</tr>
+<tr>
+<td>translation</td>
+<td>direct</td>
+<td>Yes</td>
+<td><span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span></td>
+<td>6/6 passed</td>
+<td>658ms</td>
+<td>stop</td>
+<td><details><summary>Preview</summary><pre style="max-width:600px;white-space:pre-wrap;font-size:11px">Il fait beau aujourd’hui et j’aimerais aller me promener au parc.</pre></details></td>
+<td style="font-size:11px"><span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> length: 65 chars (min 20) | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> repetition: 1 non-empty lines | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> keywords: found 2/4 (missing: la, est) | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> regex: no patterns required | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> coherence: alpha=0.80, unique=0.34 | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> garbage: scripts: Latin</td>
+</tr>
+<tr>
+<td>translation</td>
+<td>direct</td>
+<td>No</td>
+<td><span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span></td>
+<td>6/6 passed</td>
+<td>657ms</td>
+<td>stop</td>
+<td><details><summary>Preview</summary><pre style="max-width:600px;white-space:pre-wrap;font-size:11px">Il fait beau aujourd’hui et j’aimerais aller me promener au parc.</pre></details></td>
+<td style="font-size:11px"><span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> length: 65 chars (min 20) | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> repetition: 1 non-empty lines | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> keywords: found 2/4 (missing: la, est) | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> regex: no patterns required | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> coherence: alpha=0.80, unique=0.34 | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> garbage: scripts: Latin</td>
+</tr>
+<tr>
+<td>code_sql</td>
+<td>direct</td>
+<td>Yes</td>
+<td><span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span></td>
+<td>6/6 passed</td>
+<td>937ms</td>
+<td>stop</td>
+<td><details><summary>Preview</summary><pre style="max-width:600px;white-space:pre-wrap;font-size:11px">```sql
+SELECT c.id, c.name, SUM(o.amount) AS total_order_amount
+FROM customers c
+JOIN orders o ON c.id = o.customer_id
+GROUP BY c.id, c.name
+ORDER BY total_order_amount DESC
+LIMIT 3;
+```</pre></details></td>
+<td style="font-size:11px"><span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> length: 186 chars (min 50) | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> repetition: max line repeat ratio 0.12 (threshold 0.3) | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> keywords: found 5/5 | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> regex: matched 3/3 patterns | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> coherence: alpha=0.72, unique=0.44 | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> garbage: scripts: Latin</td>
+</tr>
+<tr>
+<td>code_sql</td>
+<td>direct</td>
+<td>No</td>
+<td><span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span></td>
+<td>6/6 passed</td>
+<td>945ms</td>
+<td>stop</td>
+<td><details><summary>Preview</summary><pre style="max-width:600px;white-space:pre-wrap;font-size:11px">```sql
+SELECT c.id, c.name, SUM(o.amount) AS total_order_amount
+FROM customers c
+JOIN orders o ON c.id = o.customer_id
+GROUP BY c.id, c.name
+ORDER BY total_order_amount DESC
+LIMIT 3;
+```</pre></details></td>
+<td style="font-size:11px"><span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> length: 186 chars (min 50) | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> repetition: max line repeat ratio 0.12 (threshold 0.3) | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> keywords: found 5/5 | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> regex: matched 3/3 patterns | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> coherence: alpha=0.72, unique=0.44 | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> garbage: scripts: Latin</td>
+</tr>
+<tr>
+<td>reasoning_analogy</td>
+<td>direct</td>
+<td>Yes</td>
+<td><span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span></td>
+<td>6/6 passed</td>
+<td>1095ms</td>
+<td>stop</td>
+<td><details><summary>Preview</summary><pre style="max-width:600px;white-space:pre-wrap;font-size:11px">The completed analogy is: **School**.
+
+### Explanation:
+
+This is a **profession-to-workplace** analogy.
+
+1.  **Doctor** is a professional whose primary place of work is a **Hospital**.
+2.  **Teacher**</pre></details></td>
+<td style="font-size:11px"><span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> length: 342 chars (min 30) | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> repetition: max line repeat ratio 0.17 (threshold 0.3) | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> keywords: found 4/4 | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> regex: no patterns required | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> coherence: alpha=0.71, unique=0.37 | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> garbage: scripts: Latin</td>
+</tr>
+<tr>
+<td>reasoning_analogy</td>
+<td>direct</td>
+<td>No</td>
+<td><span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span></td>
+<td>6/6 passed</td>
+<td>1098ms</td>
+<td>stop</td>
+<td><details><summary>Preview</summary><pre style="max-width:600px;white-space:pre-wrap;font-size:11px">The completed analogy is: **School**.
+
+### Explanation:
+
+This is a **profession-to-workplace** analogy.
+
+1.  **Doctor** is a professional whose primary place of work is a **Hospital**.
+2.  **Teacher**</pre></details></td>
+<td style="font-size:11px"><span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> length: 342 chars (min 30) | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> repetition: max line repeat ratio 0.17 (threshold 0.3) | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> keywords: found 4/4 | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> regex: no patterns required | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> coherence: alpha=0.71, unique=0.37 | <span style="background:#16a34a;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px">PASS</span> garbage: scripts: Latin</td>
+</tr>
+</tbody>
+</table>
+</body>
+</html>

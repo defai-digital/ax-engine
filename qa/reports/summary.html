@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>AX Engine QA Summary</title>
+<style>
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; margin: 20px; background: #f8f9fa; }
+h1 { color: #1a1a2e; }
+.summary { display: flex; gap: 20px; margin: 20px 0; }
+.card { background: #fff; border-radius: 8px; padding: 16px 24px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+.card h3 { margin: 0 0 8px; color: #666; font-size: 14px; }
+.card .value { font-size: 28px; font-weight: 700; }
+.pass { color: #16a34a; }
+.fail { color: #dc2626; }
+table { border-collapse: collapse; width: 100%; background: #fff; border-radius: 8px; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+th { background: #1a1a2e; color: #fff; padding: 12px 16px; text-align: left; font-size: 14px; }
+td { padding: 12px 16px; border-bottom: 1px solid #eee; font-size: 14px; }
+tr:hover { background: #f0f4ff; }
+a { color: #2563eb; text-decoration: none; font-weight: 600; }
+a:hover { text-decoration: underline; }
+.meta { color: #666; font-size: 13px; margin-bottom: 20px; }
+.note { background: #fef3c7; border-left: 4px solid #f59e0b; padding: 12px 16px; margin: 20px 0; border-radius: 4px; }
+</style>
+</head>
+<body>
+<h1>AX Engine QA Summary</h1>
+<div class="meta">Generated: 2026-06-04 20:29:52 | Reports: 8 | Models: 4</div>
+
+<div class="summary">
+<div class="card"><h3>Total Tests</h3><div class="value">160</div></div>
+<div class="card"><h3>Total Passed</h3><div class="value pass">160</div></div>
+<div class="card"><h3>Total Failed</h3><div class="value fail">0</div></div>
+<div class="card"><h3>Overall Pass Rate</h3><div class="value pass">100.0%</div></div>
+</div>
+
+<table>
+<thead>
+<tr>
+<th>Model</th>
+<th>Direct Pass Rate</th>
+<th>Direct Detail</th>
+<th>N-gram Pass Rate</th>
+<th>N-gram Detail</th>
+<th>Direct vs N-gram</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>gemma4-e2b</strong></td>
+<td><a href="qa-gemma4-e2b-direct-20260604-202411.html">100.0%</a></td>
+<td>20/20</td>
+<td><a href="qa-gemma4-e2b-ngram-20260604-202446.html">100.0%</a></td>
+<td>20/20</td>
+<td>✅ Identical</td>
+</tr>
+<tr>
+<td><strong>glm4_moe_lite</strong></td>
+<td><a href="qa-glm4_moe_lite-direct-20260604-202229.html">100.0%</a></td>
+<td>20/20</td>
+<td><a href="qa-glm4_moe_lite-ngram-20260604-202319.html">100.0%</a></td>
+<td>20/20</td>
+<td>✅ Identical</td>
+</tr>
+<tr>
+<td><strong>qwen3.5-27b</strong></td>
+<td><a href="qa-qwen3.5-27b-direct-20260604-202521.html">100.0%</a></td>
+<td>20/20</td>
+<td><a href="qa-qwen3.5-27b-ngram-20260604-202706.html">100.0%</a></td>
+<td>20/20</td>
+<td>✅ Identical</td>
+</tr>
+<tr>
+<td><strong>qwen3.6-35b</strong></td>
+<td><a href="qa-qwen3.6-35b-direct-20260604-202850.html">100.0%</a></td>
+<td>20/20</td>
+<td><a href="qa-qwen3.6-35b-ngram-20260604-202922.html">100.0%</a></td>
+<td>20/20</td>
+<td>✅ Identical</td>
+</tr>
+</tbody>
+</table>
+
+<h2 style="margin-top: 40px;">All Reports</h2>
+<ul>
+<li><a href="qa-gemma4-e2b-direct-20260604-202411.html">qa-gemma4-e2b-direct-20260604-202411.html</a> — gemma4-e2b (direct) — 100.0%</li><li><a href="qa-gemma4-e2b-ngram-20260604-202446.html">qa-gemma4-e2b-ngram-20260604-202446.html</a> — gemma4-e2b (ngram) — 100.0%</li><li><a href="qa-glm4_moe_lite-direct-20260604-202229.html">qa-glm4_moe_lite-direct-20260604-202229.html</a> — glm4_moe_lite (direct) — 100.0%</li><li><a href="qa-glm4_moe_lite-ngram-20260604-202319.html">qa-glm4_moe_lite-ngram-20260604-202319.html</a> — glm4_moe_lite (ngram) — 100.0%</li><li><a href="qa-qwen3.5-27b-direct-20260604-202521.html">qa-qwen3.5-27b-direct-20260604-202521.html</a> — qwen3.5-27b (direct) — 100.0%</li><li><a href="qa-qwen3.5-27b-ngram-20260604-202706.html">qa-qwen3.5-27b-ngram-20260604-202706.html</a> — qwen3.5-27b (ngram) — 100.0%</li><li><a href="qa-qwen3.6-35b-direct-20260604-202850.html">qa-qwen3.6-35b-direct-20260604-202850.html</a> — qwen3.6-35b (direct) — 100.0%</li><li><a href="qa-qwen3.6-35b-ngram-20260604-202922.html">qa-qwen3.6-35b-ngram-20260604-202922.html</a> — qwen3.6-35b (ngram) — 100.0%</li>
+</ul>
+
+</body>
+</html>

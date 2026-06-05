@@ -1,0 +1,69 @@
+  Alias: qwen3.6-27b → Youssofal/Qwen3.6-27B-MTPLX-Optimized-Speed
+
+  lightning-mlx
+  ─────────
+  Features: tools: qwen3_coder_xml, reasoning: qwen3, max-concurrent: 1, gc-control, idle-unload: 60s
+  Model: Youssofal/Qwen3.6-27B-MTPLX-Optimized-Speed
+Mode: Continuous batching (for multiple concurrent users)
+MTP: enabled, draft_tokens=3, draft_temp=0.5
+N-gram: enabled, K=6, n=3, min_matches=2, min_occ=2, accept=greedy, adaptive-K, everywhere, skip-tool-calls, self-tune=on, auto-disable@MTP>=0.85 hybrid
+Stream interval: 1 tokens
+Memory-aware cache: 20% of RAM
+
+  Ready: http://localhost:19401/v1
+  Docs:  http://localhost:19401/docs
+
+Fetching 21 files:   0%|          | 0/21 [00:00<?, ?it/s]Fetching 21 files: 100%|██████████| 21/21 [00:00<00:00, 17935.33it/s]
+Fetching 16 files:   0%|          | 0/16 [00:00<?, ?it/s]Fetching 16 files: 100%|██████████| 16/16 [00:00<00:00, 13805.57it/s]
+Fetching 16 files:   0%|          | 0/16 [00:00<?, ?it/s]Fetching 16 files: 100%|██████████| 16/16 [00:00<00:00, 38746.46it/s]
+WARNING:vllm_mlx.scheduler:[MTP] mtp_num_draft_tokens=3 requested but model has only 1 MTP layer(s). Iterative reuse beyond layer count produces degraded drafts — depth will be capped to 1 per verify cycle.
+WARNING:vllm_mlx.scheduler:[MTP] mtp_num_draft_tokens=3 requested but model has only 1 MTP layer(s). Iterative reuse beyond layer count produces degraded drafts — depth will be capped to 1 per verify cycle.
+WARNING:vllm_mlx.scheduler:[MTP] mtp_num_draft_tokens=3 requested but model has only 1 MTP layer(s). Iterative reuse beyond layer count produces degraded drafts — depth will be capped to 1 per verify cycle.
+WARNING:vllm_mlx.scheduler:[MTP] mtp_num_draft_tokens=3 requested but model has only 1 MTP layer(s). Iterative reuse beyond layer count produces degraded drafts — depth will be capped to 1 per verify cycle.
+WARNING:vllm_mlx.scheduler:[MTP] mtp_num_draft_tokens=3 requested but model has only 1 MTP layer(s). Iterative reuse beyond layer count produces degraded drafts — depth will be capped to 1 per verify cycle.
+WARNING:vllm_mlx.scheduler:[MTP] mtp_num_draft_tokens=3 requested but model has only 1 MTP layer(s). Iterative reuse beyond layer count produces degraded drafts — depth will be capped to 1 per verify cycle.
+WARNING:vllm_mlx.scheduler:[MTP] mtp_num_draft_tokens=3 requested but model has only 1 MTP layer(s). Iterative reuse beyond layer count produces degraded drafts — depth will be capped to 1 per verify cycle.
+WARNING:vllm_mlx.scheduler:[MTP] mtp_num_draft_tokens=3 requested but model has only 1 MTP layer(s). Iterative reuse beyond layer count produces degraded drafts — depth will be capped to 1 per verify cycle.
+WARNING:vllm_mlx.scheduler:[MTP] mtp_num_draft_tokens=3 requested but model has only 1 MTP layer(s). Iterative reuse beyond layer count produces degraded drafts — depth will be capped to 1 per verify cycle.
+WARNING:vllm_mlx.scheduler:[MTP] mtp_num_draft_tokens=3 requested but model has only 1 MTP layer(s). Iterative reuse beyond layer count produces degraded drafts — depth will be capped to 1 per verify cycle.
+WARNING:vllm_mlx.scheduler:[MTP] mtp_num_draft_tokens=3 requested but model has only 1 MTP layer(s). Iterative reuse beyond layer count produces degraded drafts — depth will be capped to 1 per verify cycle.
+WARNING:vllm_mlx.scheduler:[MTP] mtp_num_draft_tokens=3 requested but model has only 1 MTP layer(s). Iterative reuse beyond layer count produces degraded drafts — depth will be capped to 1 per verify cycle.
+WARNING:vllm_mlx.scheduler:[MTP] mtp_num_draft_tokens=3 requested but model has only 1 MTP layer(s). Iterative reuse beyond layer count produces degraded drafts — depth will be capped to 1 per verify cycle.
+WARNING:vllm_mlx.scheduler:[MTP] mtp_num_draft_tokens=3 requested but model has only 1 MTP layer(s). Iterative reuse beyond layer count produces degraded drafts — depth will be capped to 1 per verify cycle.
+WARNING:vllm_mlx.scheduler:[MTP] mtp_num_draft_tokens=3 requested but model has only 1 MTP layer(s). Iterative reuse beyond layer count produces degraded drafts — depth will be capped to 1 per verify cycle.
+WARNING:vllm_mlx.scheduler:[MTP] mtp_num_draft_tokens=3 requested but model has only 1 MTP layer(s). Iterative reuse beyond layer count produces degraded drafts — depth will be capped to 1 per verify cycle.
+WARNING:vllm_mlx.scheduler:[MTP] mtp_num_draft_tokens=3 requested but model has only 1 MTP layer(s). Iterative reuse beyond layer count produces degraded drafts — depth will be capped to 1 per verify cycle.
+WARNING:vllm_mlx.scheduler:[MTP] mtp_num_draft_tokens=3 requested but model has only 1 MTP layer(s). Iterative reuse beyond layer count produces degraded drafts — depth will be capped to 1 per verify cycle.
+WARNING:vllm_mlx.scheduler:[MTP] mtp_num_draft_tokens=3 requested but model has only 1 MTP layer(s). Iterative reuse beyond layer count produces degraded drafts — depth will be capped to 1 per verify cycle.
+WARNING:vllm_mlx.scheduler:[MTP] mtp_num_draft_tokens=3 requested but model has only 1 MTP layer(s). Iterative reuse beyond layer count produces degraded drafts — depth will be capped to 1 per verify cycle.
+WARNING:vllm_mlx.scheduler:[MTP] mtp_num_draft_tokens=3 requested but model has only 1 MTP layer(s). Iterative reuse beyond layer count produces degraded drafts — depth will be capped to 1 per verify cycle.
+WARNING:vllm_mlx.scheduler:[MTP] mtp_num_draft_tokens=3 requested but model has only 1 MTP layer(s). Iterative reuse beyond layer count produces degraded drafts — depth will be capped to 1 per verify cycle.
+WARNING:vllm_mlx.scheduler:[MTP] mtp_num_draft_tokens=3 requested but model has only 1 MTP layer(s). Iterative reuse beyond layer count produces degraded drafts — depth will be capped to 1 per verify cycle.
+WARNING:vllm_mlx.scheduler:[MTP] mtp_num_draft_tokens=3 requested but model has only 1 MTP layer(s). Iterative reuse beyond layer count produces degraded drafts — depth will be capped to 1 per verify cycle.
+WARNING:vllm_mlx.scheduler:[MTP] mtp_num_draft_tokens=3 requested but model has only 1 MTP layer(s). Iterative reuse beyond layer count produces degraded drafts — depth will be capped to 1 per verify cycle.
+WARNING:vllm_mlx.scheduler:[MTP] mtp_num_draft_tokens=3 requested but model has only 1 MTP layer(s). Iterative reuse beyond layer count produces degraded drafts — depth will be capped to 1 per verify cycle.
+WARNING:vllm_mlx.scheduler:[MTP] mtp_num_draft_tokens=3 requested but model has only 1 MTP layer(s). Iterative reuse beyond layer count produces degraded drafts — depth will be capped to 1 per verify cycle.
+WARNING:vllm_mlx.scheduler:[MTP] mtp_num_draft_tokens=3 requested but model has only 1 MTP layer(s). Iterative reuse beyond layer count produces degraded drafts — depth will be capped to 1 per verify cycle.
+WARNING:vllm_mlx.scheduler:[MTP] mtp_num_draft_tokens=3 requested but model has only 1 MTP layer(s). Iterative reuse beyond layer count produces degraded drafts — depth will be capped to 1 per verify cycle.
+WARNING:vllm_mlx.scheduler:[MTP] mtp_num_draft_tokens=3 requested but model has only 1 MTP layer(s). Iterative reuse beyond layer count produces degraded drafts — depth will be capped to 1 per verify cycle.
+WARNING:vllm_mlx.scheduler:[MTP] mtp_num_draft_tokens=3 requested but model has only 1 MTP layer(s). Iterative reuse beyond layer count produces degraded drafts — depth will be capped to 1 per verify cycle.
+WARNING:vllm_mlx.scheduler:[MTP] mtp_num_draft_tokens=3 requested but model has only 1 MTP layer(s). Iterative reuse beyond layer count produces degraded drafts — depth will be capped to 1 per verify cycle.
+WARNING:vllm_mlx.scheduler:[MTP] mtp_num_draft_tokens=3 requested but model has only 1 MTP layer(s). Iterative reuse beyond layer count produces degraded drafts — depth will be capped to 1 per verify cycle.
+WARNING:vllm_mlx.scheduler:[MTP] mtp_num_draft_tokens=3 requested but model has only 1 MTP layer(s). Iterative reuse beyond layer count produces degraded drafts — depth will be capped to 1 per verify cycle.
+WARNING:vllm_mlx.scheduler:[MTP] mtp_num_draft_tokens=3 requested but model has only 1 MTP layer(s). Iterative reuse beyond layer count produces degraded drafts — depth will be capped to 1 per verify cycle.
+WARNING:vllm_mlx.scheduler:[MTP] mtp_num_draft_tokens=3 requested but model has only 1 MTP layer(s). Iterative reuse beyond layer count produces degraded drafts — depth will be capped to 1 per verify cycle.
+WARNING:vllm_mlx.scheduler:[MTP] mtp_num_draft_tokens=3 requested but model has only 1 MTP layer(s). Iterative reuse beyond layer count produces degraded drafts — depth will be capped to 1 per verify cycle.
+WARNING:vllm_mlx.scheduler:[MTP] mtp_num_draft_tokens=3 requested but model has only 1 MTP layer(s). Iterative reuse beyond layer count produces degraded drafts — depth will be capped to 1 per verify cycle.
+WARNING:vllm_mlx.scheduler:[MTP] mtp_num_draft_tokens=3 requested but model has only 1 MTP layer(s). Iterative reuse beyond layer count produces degraded drafts — depth will be capped to 1 per verify cycle.
+WARNING:vllm_mlx.scheduler:[MTP] mtp_num_draft_tokens=3 requested but model has only 1 MTP layer(s). Iterative reuse beyond layer count produces degraded drafts — depth will be capped to 1 per verify cycle.
+WARNING:vllm_mlx.scheduler:[MTP] mtp_num_draft_tokens=3 requested but model has only 1 MTP layer(s). Iterative reuse beyond layer count produces degraded drafts — depth will be capped to 1 per verify cycle.
+WARNING:vllm_mlx.scheduler:[MTP] mtp_num_draft_tokens=3 requested but model has only 1 MTP layer(s). Iterative reuse beyond layer count produces degraded drafts — depth will be capped to 1 per verify cycle.
+WARNING:vllm_mlx.scheduler:[MTP] mtp_num_draft_tokens=3 requested but model has only 1 MTP layer(s). Iterative reuse beyond layer count produces degraded drafts — depth will be capped to 1 per verify cycle.
+WARNING:vllm_mlx.scheduler:[MTP] mtp_num_draft_tokens=3 requested but model has only 1 MTP layer(s). Iterative reuse beyond layer count produces degraded drafts — depth will be capped to 1 per verify cycle.
+WARNING:vllm_mlx.scheduler:[MTP] mtp_num_draft_tokens=3 requested but model has only 1 MTP layer(s). Iterative reuse beyond layer count produces degraded drafts — depth will be capped to 1 per verify cycle.
+WARNING:vllm_mlx.scheduler:[MTP] mtp_num_draft_tokens=3 requested but model has only 1 MTP layer(s). Iterative reuse beyond layer count produces degraded drafts — depth will be capped to 1 per verify cycle.
+WARNING:vllm_mlx.scheduler:[MTP] mtp_num_draft_tokens=3 requested but model has only 1 MTP layer(s). Iterative reuse beyond layer count produces degraded drafts — depth will be capped to 1 per verify cycle.
+WARNING:vllm_mlx.scheduler:[MTP] mtp_num_draft_tokens=3 requested but model has only 1 MTP layer(s). Iterative reuse beyond layer count produces degraded drafts — depth will be capped to 1 per verify cycle.
+WARNING:vllm_mlx.scheduler:[MTP] mtp_num_draft_tokens=3 requested but model has only 1 MTP layer(s). Iterative reuse beyond layer count produces degraded drafts — depth will be capped to 1 per verify cycle.
+WARNING:vllm_mlx.scheduler:[MTP] mtp_num_draft_tokens=3 requested but model has only 1 MTP layer(s). Iterative reuse beyond layer count produces degraded drafts — depth will be capped to 1 per verify cycle.
+WARNING:vllm_mlx.scheduler:[MTP] mtp_num_draft_tokens=3 requested but model has only 1 MTP layer(s). Iterative reuse beyond layer count produces degraded drafts — depth will be capped to 1 per verify cycle.

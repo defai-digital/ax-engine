@@ -1,0 +1,135 @@
+<html><body>
+<h1>Qwen3.6 27B MTP only</h1>
+<p>Pass: 10/10</p>
+<table border=1 cellspacing=0 cellpadding=4><tr><th>Prompt</th><th>Status</th><th>Issues</th><th>Finish</th><th>Output</th></tr>
+<tr><td>python_clamp</td><td>PASS</td><td></td><td>stop</td><td><pre>```python
+def clamp(x, lo, hi):
+    &quot;&quot;&quot;Return x limited to the inclusive range [lo, hi].&quot;&quot;&quot;
+    if x &lt; lo:
+        return lo
+    elif x &gt; hi:
+        return hi
+    else:
+        return x
+```</pre></td></tr>
+<tr><td>python_bugfix</td><td>PASS</td><td></td><td>stop</td><td><pre>The bug is in the `range(len(nums) + 1)` line. This causes an `IndexError` because it tries to access an index that is out of bounds.
+
+**Explanation:**
+- `len(nums)` returns the number of elements in the list.
+- `range(len(nums) + 1)` generates indices from `0` to `len(nums)` (inclusive), which means the last index accessed is `len(nums)`.
+- However, valid indices for a list of length `n` are `0` to `n-1`. So accessing `nums[len(nums)]` raises an `IndexError`.
+
+**Fix:**
+Change `range(len(nums) + 1)` to `range(len(nums))` so that the loop only iterates over valid indices.
+
+```python
+def sum_list(nums):
+    total = 0
+    for i in range(len(nums)):
+        total += nums[i]
+    return total
+```
+
+Alternatively, a more Pythonic approach would be to use `sum()` or iterate directly over the elements:
+
+```python
+def sum_list(nums):
+    total = 0
+    for num in nums:
+        total += num
+    return total
+```</pre></td></tr>
+<tr><td>javascript_email</td><td>PASS</td><td></td><td>stop</td><td><pre>```javascript
+function isValidEmail(email) {
+  if (typeof email !== &#x27;string&#x27;) return false;
+  
+  const atIndex = email.indexOf(&#x27;@&#x27;);
+  if (atIndex === -1) return false;
+  
+  // Check that there is exactly one @
+  if (email.indexOf(&#x27;@&#x27;, atIndex + 1) !== -1) return false;
+  
+  // Check that there is at least one dot after @
+  const afterAt = email.substring(atIndex + 1);
+  if (afterAt.indexOf(&#x27;.&#x27;) === -1) return false;
+  
+  // Ensure the dot is not the last character (domain must have something after the dot)
+  if (afterAt.endsWith(&#x27;.&#x27;)) return false;
+  
+  // Ensure there is something before @
+  if (atIndex === 0) return false;
+  
+  return true;
+}
+```</pre></td></tr>
+<tr><td>sql_top_customers</td><td>PASS</td><td></td><td>stop</td><td><pre>```sql
+SELECT c.id, c.name, SUM(o.amount) AS total_order_amount
+FROM customers c
+JOIN orders o ON c.id = o.customer_id
+GROUP BY c.id, c.name
+ORDER BY total_order_amount DESC
+LIMIT 5;
+```</pre></td></tr>
+<tr><td>json_eiffel</td><td>PASS</td><td></td><td>stop</td><td><pre>```json
+{
+  &quot;name&quot;: &quot;Eiffel Tower&quot;,
+  &quot;year&quot;: 1889,
+  &quot;location&quot;: &quot;Paris, France&quot;,
+  &quot;height_meters&quot;: 330
+}
+```</pre></td></tr>
+<tr><td>math_train_speed</td><td>PASS</td><td></td><td>stop</td><td><pre>To find the average speed, we use the standard formula relating distance, time, and speed.
+
+### 1. The Formula
+The formula for average speed is:
+
+$$ \text{Average Speed} = \frac{\text{Total Distance}}{\text{Total Time}} $$
+
+### 2. Given Values
+*   **Total Distance ($d$):** $120 \text{ km}$
+*   **Total Time ($t$):** $2.5 \text{ hours}$
+
+### 3. Calculation
+Substitute the given values into the formula:
+
+$$ \text{Average Speed} = \frac{120 \text{ km}}{2.5 \text{ h}} $$
+
+To perform the division:
+$$ 120 \div 2.5 = 48 $$
+
+### 4. Final Conclusion
+The average speed of the train is **48 km/h**.</pre></td></tr>
+<tr><td>csv_transform</td><td>PASS</td><td></td><td>stop</td><td><pre>name,age,city
+Alice,31,Toronto
+Bob,28,Austin</pre></td></tr>
+<tr><td>http_status</td><td>PASS</td><td></td><td>stop</td><td><pre>| Status Code | Name | Meaning | Key Distinction |
+| :--- | :--- | :--- | :--- |
+| **400** | Bad Request | The server cannot process the request due to client error (e.g., malformed syntax). | **Invalid input** or format. |
+| **401** | Unauthorized | Authentication is required or has failed (e.g., missing/invalid credentials). | **&quot;Who are you?&quot;** – Identity not verified. |
+| **403** | Forbidden | The server understands the request but refuses to authorize it (e.g., insufficient permissions). | **&quot;I know who you are, but you can&#x27;t do this.&quot;** – Identity verified, but access denied. |
+| **500** | Internal Server Error | The server encountered an unexpected condition that prevented it from fulfilling the request. | **Server-side failure** – Not the client&#x27;s fault. |</pre></td></tr>
+<tr><td>unit_test</td><td>PASS</td><td></td><td>stop</td><td><pre>```python
+import pytest
+
+
+def is_even(n):
+    &quot;&quot;&quot;Return True if n is even, False otherwise.&quot;&quot;&quot;
+    return n % 2 == 0
+
+
+def test_is_even_with_positive_even():
+    assert is_even(4) is True
+
+
+def test_is_even_with_negative_even():
+    assert is_even(-2) is True
+
+
+def test_is_even_with_odd():
+    assert is_even(3) is False
+```</pre></td></tr>
+<tr><td>sorting_algorithm</td><td>PASS</td><td></td><td>stop</td><td><pre>- **Prerequisite and Setup**: Binary search operates exclusively on **sorted** arrays or lists, requiring the data to be ordered (ascending or descending) so that comparisons can effectively eliminate half of the remaining search space.
+- **Divide and Conquer Strategy**: The algorithm compares the target value to the **middle element** of the current search range; if they match, the index is returned, otherwise, the search continues in the left half (if the target is smaller) or the right half (if the target is larger).
+- **Iterative Reduction**: By repeatedly discarding the half of the array that cannot contain the target, the search space is reduced by 50% with each step, continuing until the target is found or the search range becomes empty (indicating the target is not present).
+- **Time Complexity**: It achieves a highly efficient **O(log n)** time complexity, where *n* is the number of elements, making it significantly faster than linear search for large datasets, while requiring **O(1)** auxiliary space in its iterative implementation.</pre></td></tr>
+</table></body></html>

@@ -1,0 +1,97 @@
+[skip] mtplx does not support mtp-ngram mode yet — update SUPPORT_MATRIX when it does
+
+/opt/homebrew/var/mtplx/venv-0.3.7/bin/python /Users/akiralam/code/ax-engine_v5/scripts/bench_mtplx_prompt_suites.py --model /Users/akiralam/.cache/huggingface/hub/models--ax-local--Qwen3.6-27B-MTP/snapshots/v1 --suite flappy --prompts /Users/akiralam/code/ax-engine_v5/benchmarks/prompts/mtp-suites/flappy.jsonl --output benchmarks/results/mtp-fair/2026-06-03-sanity-vendor-default-v2/27b-4bit/flappy/mtplx.json --depth 3 --temperature 0.6 --top-p 0.95 --top-k 20 --max-tokens 1000 --repetitions 5 --warmup-repetitions 1 --cooldown 30.0 --inter-case-cooldown 10.0 --profile stable --disable-thinking
+flappy_pipes rep 1/6: decode=59.7 tok/s out=1000 accept=750/750
+flappy_pipes rep 2/6: decode=60.0 tok/s out=1000 accept=750/750
+flappy_pipes rep 3/6: decode=59.8 tok/s out=1000 accept=750/750
+flappy_pipes rep 4/6: decode=59.6 tok/s out=1000 accept=750/750
+flappy_pipes rep 5/6: decode=59.4 tok/s out=1000 accept=750/750
+flappy_pipes rep 6/6: decode=59.3 tok/s out=1000 accept=750/750
+  [mtplx] inter-case cooldown 10s
+flappy_score_gates rep 1/6: decode=59.6 tok/s out=687 accept=514/516
+flappy_score_gates rep 2/6: decode=59.8 tok/s out=687 accept=513/519
+flappy_score_gates rep 3/6: decode=58.5 tok/s out=688 accept=512/525
+flappy_score_gates rep 4/6: decode=60.0 tok/s out=686 accept=513/519
+flappy_score_gates rep 5/6: decode=59.0 tok/s out=686 accept=509/528
+flappy_score_gates rep 6/6: decode=58.8 tok/s out=688 accept=510/531
+  [mtplx] inter-case cooldown 10s
+flappy_collision_checks rep 1/6: decode=59.2 tok/s out=1000 accept=750/750
+flappy_collision_checks rep 2/6: decode=59.3 tok/s out=1000 accept=750/750
+flappy_collision_checks rep 3/6: decode=59.4 tok/s out=1000 accept=750/750
+flappy_collision_checks rep 4/6: decode=59.5 tok/s out=1000 accept=750/750
+flappy_collision_checks rep 5/6: decode=59.6 tok/s out=1000 accept=750/750
+flappy_collision_checks rep 6/6: decode=59.6 tok/s out=1000 accept=750/750
+  [mtplx] inter-case cooldown 10s
+flappy_sound_channels rep 1/6: decode=59.2 tok/s out=1000 accept=750/750
+flappy_sound_channels rep 2/6: decode=59.8 tok/s out=1000 accept=750/750
+flappy_sound_channels rep 3/6: decode=59.9 tok/s out=1000 accept=750/750
+flappy_sound_channels rep 4/6: decode=59.9 tok/s out=1000 accept=750/750
+flappy_sound_channels rep 5/6: decode=59.1 tok/s out=1000 accept=750/750
+flappy_sound_channels rep 6/6: decode=59.3 tok/s out=1000 accept=750/750
+Saved to benchmarks/results/mtp-fair/2026-06-03-sanity-vendor-default-v2/27b-4bit/flappy/mtplx.json
+{
+  "accept_rate": 0.9953143021914648,
+  "accepted_drafts": 13807,
+  "case_count": 4,
+  "decode_tok_s": {
+    "median": 59.529507957100975,
+    "p10": 59.011121983733304,
+    "p90": 59.94031637919179,
+    "values": [
+      59.970828988136525,
+      59.7563918655377,
+      59.63414837742488,
+      59.37507246161975,
+      59.31743487108505,
+      59.80296489979721,
+      58.496142809705354,
+      60.01021857826229,
+      59.011121983733304,
+      58.7885345009612,
+      59.32653907030557,
+      59.39372254332434,
+      59.47223800634688,
+      59.64655657024385,
+      59.58677790785507,
+      59.84098559388206,
+      59.93386103290746,
+      59.94031637919179,
+      59.07217534145511,
+      59.30143195298116
+    ]
+  },
+  "drafted_tokens": 13872,
+  "end_to_end_tok_s": {
+    "median": 57.654866984120915,
+    "p10": 56.5231154723704,
+    "p90": 58.42087612149976,
+    "values": [
+      58.42713637522055,
+      58.23375563438378,
+      58.10065178265,
+      57.88683682381361,
+      57.82222268889262,
+      57.27793990229012,
+      56.06426458360667,
+      57.43632723142909,
+      56.5231154723704,
+      56.345992678705485,
+      57.39147468922191,
+      57.460934473774934,
+      57.52721674736622,
+      57.685723197581886,
+      57.62281582081216,
+      58.317692324546265,
+      58.42087612149976,
+      58.43530543696816,
+      57.62401077065995,
+      57.815619794751676
+    ]
+  },
+  "generated_tokens": 18435,
+  "runs": 20,
+  "validations_passed": 4,
+  "validations_total": 4
+}
+
+/opt/homebrew/var/mtplx/venv-0.3.7/bin/python /Users/akiralam/code/ax-engine_v5/scripts/bench_rapid_mlx_prompt_suites.py --model /Users/akiralam/.cache/huggingface/hub/models--ax-local--Qwen3.6-27B-MTP/snapshots/v1 --suite flappy --prompts /Users/akiralam/code/ax-engine_v5/benchmarks/prompts/mtp-suites/flappy.jsonl --output benchmarks/results/mtp-fair/2026-06-03-sanity-vendor-default-v2/27b-4bit/flappy/lightning_mlx.json --rapid-source /Users/akiralam/code/ax-engine_v5/.internal/reference/lightning-mlx --rapid-mtp-patch none --lightning-mode --depth 3 --temperature 0.6 --top-p 0.95 --top-k 20 --max-tokens 1000 --repetitions 5 --warmup-repetitions 1 --cooldown 30.0 --inter-case-cooldown 10.0 --port 18801 --mtp-draft-temperature 0.5 --disable-thinking
