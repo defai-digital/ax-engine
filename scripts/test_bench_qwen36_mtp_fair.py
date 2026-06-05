@@ -38,6 +38,12 @@ def write_json(path: Path, payload: dict) -> Path:
 
 
 class Qwen36MtpFairTests(unittest.TestCase):
+    def test_resolve_engines_supports_tuned_mode(self) -> None:
+        self.assertEqual(
+            fair.resolve_engines(["mtplx", "ax"], ["tuned"]),
+            ["mtplx_tuned", "ax_engine_tuned"],
+        )
+
     def test_depth_policy_native_uses_profile_depth(self) -> None:
         profile = fair.QWEN36_PROFILES["27b-4bit"]
         self.assertEqual(
@@ -110,6 +116,7 @@ class Qwen36MtpFairTests(unittest.TestCase):
 
         self.assertEqual(summary["schema"], "ax.qwen36_mtp_fair.v1")
         self.assertTrue(summary["contract"]["ax_pure_mtp"])
+        self.assertEqual(summary["contract"]["benchmark_contract"], "fixed-depth")
         self.assertEqual(
             summary["contract"]["ax_engine_modes"], {"ax_engine": "pure_mtp"}
         )
@@ -225,6 +232,174 @@ class Qwen36MtpFairTests(unittest.TestCase):
             summary["contract"]["ax_engine_modes"],
             {"ax_engine_ngram": "mtp_ngram_stacked"},
         )
+
+    def test_build_summary_records_tuned_contract(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            hf_cache = root / "hf"
+            make_sidecar_manifest(hf_cache)
+            ax_artifact = fake_ax_artifact()
+            ax_artifact["tuning"] = {
+                "schema": "ax.qwen36_mtp_fair.tune.ax.v1",
+                "selected": {"key": "ngram", "policy": "ngram", "depth": 0},
+            }
+            mtplx_artifact = fake_mtplx_artifact()
+            mtplx_artifact["tuning"] = {
+                "schema": "ax.qwen36_mtp_fair.tune.mtplx.v1",
+                "selected_depth": 2,
+            }
+            artifacts = {
+                ("27b-4bit", "flappy", "ax_engine_tuned"): write_json(
+                    root / "ax-tuned.json", ax_artifact
+                ),
+                ("27b-4bit", "flappy", "mtplx_tuned"): write_json(
+                    root / "mtplx-tuned.json", mtplx_artifact
+                ),
+            }
+            args = Namespace(
+                models=["27b-4bit"],
+                engines=["mtplx_tuned", "ax_engine_tuned"],
+                suites=["flappy"],
+                depth_policy="native",
+                depth=None,
+                mode="sampled",
+                temperature=0.6,
+                top_p=0.95,
+                top_k=20,
+                max_tokens=128,
+                repetitions=1,
+                warmup_repetitions=1,
+                cooldown=0.0,
+                hf_cache=hf_cache,
+                retune=True,
+                ax_tune_policies=["direct", "ngram", "mtp", "mtp-ngram"],
+                tune_max_tokens=192,
+                tune_repetitions=1,
+                tune_warmup_repetitions=0,
+                tune_cooldown=0.0,
+                tune_limit=1,
+            )
+
+            summary = fair.build_summary(args, artifacts)
+
+        self.assertEqual(summary["contract"]["benchmark_contract"], "tuned-best-of")
+        self.assertTrue(summary["contract"]["tuning"]["enabled"])
+        self.assertEqual(
+            summary["contract"]["ax_engine_modes"],
+            {"ax_engine_tuned": "tuned_best_of"},
+        )
+        row = summary["rows"][0]
+        self.assertEqual(
+            row["engines"]["ax_engine_tuned"]["tuning"]["selected"]["policy"],
+            "ngram",
+        )
+        self.assertAlmostEqual(
+            row["ratios"]["ax_engine_tuned_vs_mtplx_tuned"], 1.25
+        )
+
+    def test_run_ax_suite_maps_policy_flags(self) -> None:
+        config = fair.diff.RunConfig(
+            mode="sampled",
+            depth=3,
+            max_tokens=64,
+            repetitions=1,
+            warmup_repetitions=1,
+            cooldown_s=0.0,
+            sampling={"temperature": 0.6, "top_p": 0.95, "top_k": 20},
+            enable_thinking=False,
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with patch.object(fair, "run_subprocess") as run_subprocess:
+                fair.run_ax_suite(
+                    python=Path("python"),
+                    suite="flappy",
+                    suite_file=root / "suite.jsonl",
+                    output_path=root / "direct.json",
+                    model_dir=root / "model",
+                    config=config,
+                    no_build=True,
+                    ax_policy="direct",
+                )
+                fair.run_ax_suite(
+                    python=Path("python"),
+                    suite="flappy",
+                    suite_file=root / "suite.jsonl",
+                    output_path=root / "ngram.json",
+                    model_dir=root / "model",
+                    config=config,
+                    no_build=True,
+                    ax_policy="ngram",
+                )
+                fair.run_ax_suite(
+                    python=Path("python"),
+                    suite="flappy",
+                    suite_file=root / "suite.jsonl",
+                    output_path=root / "mtp.json",
+                    model_dir=root / "model",
+                    config=config,
+                    no_build=True,
+                    ax_policy="mtp",
+                )
+
+        direct_cmd = run_subprocess.call_args_list[0].args[0]
+        ngram_cmd = run_subprocess.call_args_list[1].args[0]
+        mtp_cmd = run_subprocess.call_args_list[2].args[0]
+        self.assertIn("--ax-direct", direct_cmd)
+        self.assertNotIn("--ax-ngram-accel", direct_cmd)
+        self.assertIn("--ax-ngram-accel", ngram_cmd)
+        self.assertEqual(ngram_cmd[ngram_cmd.index("--ax-mtp-max-depth") + 1], "0")
+        self.assertIn("--ax-mtp-disable-ngram-stacking", mtp_cmd)
+        self.assertEqual(mtp_cmd[mtp_cmd.index("--ax-mtp-max-depth") + 1], "3")
+
+    def test_mtplx_tune_selects_best_depth_or_fallback(self) -> None:
+        self.assertEqual(
+            fair.mtplx_best_depth_from_tune({"best": {"depth": 2}}, 3),
+            2,
+        )
+        self.assertEqual(fair.mtplx_best_depth_from_tune({"best": None}, 3), 3)
+
+    def test_selected_ax_tune_candidate_chooses_fastest_valid_row(self) -> None:
+        selected = fair.selected_ax_tune_candidate(
+            [
+                {"key": "direct", "status": "ok", "decode_tok_s": 10.0},
+                {"key": "mtp_d1", "status": "ok", "decode_tok_s": 12.0},
+                {"key": "mtp_d2", "status": "error", "decode_tok_s": 99.0},
+            ]
+        )
+
+        self.assertEqual(selected["key"], "mtp_d1")
+
+    def test_run_mtplx_tune_uses_official_cli_and_state_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            args = Namespace(
+                tune_max_tokens=192,
+                tune_limit=1,
+                tune_seed=0,
+                retune=True,
+            )
+
+            def fake_run(cmd: list[str], *, env: dict[str, str] | None = None) -> None:
+                output = Path(cmd[cmd.index("--output") + 1])
+                write_json(output, {"best": {"depth": 2}, "saved": True})
+                self.assertIn("MTPLX_TUNE_STATE", env or {})
+
+            with patch.object(fair, "run_subprocess", side_effect=fake_run) as run:
+                depth, tuning = fair.run_mtplx_tune(
+                    python=Path("python"),
+                    output_path=root / "mtplx_tuned.json",
+                    model_dir=root / "model",
+                    profile=fair.QWEN36_PROFILES["27b-4bit"],
+                    args=args,
+                )
+
+        cmd = run.call_args.args[0]
+        self.assertEqual(cmd[:4], ["python", "-m", "mtplx.cli", "tune"])
+        self.assertIn("--retune", cmd)
+        self.assertEqual(cmd[cmd.index("--depths") + 1], "1,2,3")
+        self.assertEqual(depth, 2)
+        self.assertEqual(tuning["selected_depth"], 2)
 
     def test_run_rapid_mlx_suite_forwards_mtp_tuning_flags(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -330,6 +330,28 @@ python3 scripts/bench_qwen36_mtp_fair.py \
   --cooldown 15
 ```
 
+Run tuned best-of rows separately when comparing user-default performance. This
+calls the MTPLX public tune command before the MTPLX row and sweeps AX direct,
+n-gram, MTP d=1..native depth, and MTP+n-gram d=1..native depth before the AX
+row:
+
+```bash
+python3 scripts/bench_qwen36_mtp_fair.py \
+  --engines mtplx ax \
+  --modes tuned \
+  --models 27b-4bit 35b-a3b-4bit \
+  --suites flappy long_code python_modules_long \
+  --depth-policy native \
+  --max-tokens 1000 \
+  --repetitions 5 \
+  --cooldown 15
+```
+
+Do not mix a tuned MTPLX row with a fixed-depth AX row as a headline comparison.
+The harness labels the summary contract as `fixed-depth`, `tuned-best-of`, or
+`mixed-fixed-and-tuned`; only rows with the same contract should be compared as
+the primary result.
+
 The harness writes `summary.json`, `summary.md`, and `decode-tok-s.svg` under
 `benchmarks/results/mtp-fair/<date>-qwen36-fair/`. A row with `status=error` is
 kept in the summary instead of silently dropping a backend; that is deliberate

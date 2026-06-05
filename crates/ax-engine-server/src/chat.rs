@@ -2,6 +2,11 @@ use std::path::Path;
 
 use serde_json::{Value, json};
 
+// Gemma 4 closes every conversational turn with this token. Instruction-tuned
+// artifacts list it in `generation_config.json`'s `eos_token_id`; base
+// (pretrained) artifacts do not, which is how we tell them apart below.
+const GEMMA4_TURN_TERMINATOR: &str = "<turn|>";
+
 // Pre-fills `<think>\n\n</think>\n\n` to signal the model to skip reasoning.
 // This matches Qwen chat templates rendered with `enable_thinking=false` and
 // keeps OpenAI-compatible short responses from spending the output budget on
@@ -115,15 +120,75 @@ pub(crate) fn validate_native_chat_artifact(
     let Some(artifacts_dir) = artifacts_dir else {
         return Ok(());
     };
-    if artifacts_dir.join("chat_template.jinja").is_file() {
-        return Ok(());
+    if !artifacts_dir.join("chat_template.jinja").is_file() {
+        return Err(format!(
+            "Gemma4 chat requires an instruction-tuned MLX artifact with chat_template.jinja; \
+             {} does not provide one. Use a gemma-4-*-it artifact or route raw base-model prompts through /v1/completions.",
+            artifacts_dir.display()
+        ));
     }
 
-    Err(format!(
-        "Gemma4 chat requires an instruction-tuned MLX artifact with chat_template.jinja; \
-         {} does not provide one. Use a gemma-4-*-it artifact or route raw base-model prompts through /v1/completions.",
-        artifacts_dir.display()
-    ))
+    // A `chat_template.jinja` can be copied into a base (pretrained) artifact,
+    // which would let a non-instruction-tuned model through the check above and
+    // emit garbage that never stops (it never produces `<turn|>`, so requests
+    // run to max_tokens). Confirm the artifact is genuinely instruction-tuned by
+    // requiring its `generation_config.json` to stop on the turn terminator.
+    validate_gemma4_instruct_eos(artifacts_dir)
+}
+
+// Returns Ok only when `generation_config.json` lists the Gemma 4 turn
+// terminator (`<turn|>`) as an end-of-sequence token, which every instruction-
+// tuned Gemma 4 artifact does and base artifacts do not.
+fn validate_gemma4_instruct_eos(artifacts_dir: &Path) -> Result<(), String> {
+    let not_instruct = |detail: &str| {
+        format!(
+            "Gemma4 chat requires an instruction-tuned MLX artifact; {} looks like a base \
+             (pretrained) model ({detail}). Use a gemma-4-*-it artifact or route raw base-model \
+             prompts through /v1/completions.",
+            artifacts_dir.display()
+        )
+    };
+
+    let turn_terminator_id = gemma4_turn_terminator_id(artifacts_dir)
+        .ok_or_else(|| not_instruct("tokenizer does not define the <turn|> chat token"))?;
+
+    let gen_config_path = artifacts_dir.join("generation_config.json");
+    let gen_config_text = std::fs::read_to_string(&gen_config_path)
+        .map_err(|err| not_instruct(&format!("cannot read generation_config.json: {err}")))?;
+    let gen_config: Value = serde_json::from_str(&gen_config_text)
+        .map_err(|err| not_instruct(&format!("generation_config.json is not valid JSON: {err}")))?;
+
+    let eos = gen_config.get("eos_token_id");
+    if eos.is_some_and(|value| json_contains_u64(value, turn_terminator_id)) {
+        Ok(())
+    } else {
+        Err(not_instruct(
+            "generation_config.json eos_token_id does not stop on <turn|>",
+        ))
+    }
+}
+
+// Resolves the token id of `<turn|>` from the artifact's `tokenizer.json`
+// added-token table, so the eos check does not hardcode a vocabulary id.
+fn gemma4_turn_terminator_id(artifacts_dir: &Path) -> Option<u64> {
+    let tokenizer_text = std::fs::read_to_string(artifacts_dir.join("tokenizer.json")).ok()?;
+    let tokenizer: Value = serde_json::from_str(&tokenizer_text).ok()?;
+    tokenizer
+        .get("added_tokens")?
+        .as_array()?
+        .iter()
+        .find(|token| token.get("content").and_then(Value::as_str) == Some(GEMMA4_TURN_TERMINATOR))
+        .and_then(|token| token.get("id"))
+        .and_then(Value::as_u64)
+}
+
+// `eos_token_id` may be a single integer or an array of integers.
+fn json_contains_u64(value: &Value, target: u64) -> bool {
+    match value {
+        Value::Number(_) => value.as_u64() == Some(target),
+        Value::Array(items) => items.iter().any(|item| item.as_u64() == Some(target)),
+        _ => false,
+    }
 }
 
 #[cfg(test)]
@@ -155,7 +220,7 @@ pub(crate) fn default_stop_sequences(template: ChatPromptTemplate) -> Vec<String
     match template {
         ChatPromptTemplate::QwenChatMl => vec!["<|im_end|>".to_string()],
         ChatPromptTemplate::Llama3 => vec!["<|eot_id|>".to_string()],
-        ChatPromptTemplate::Gemma4 => vec!["<turn|>".to_string()],
+        ChatPromptTemplate::Gemma4 => vec![GEMMA4_TURN_TERMINATOR.to_string()],
         ChatPromptTemplate::Glm47 => vec![
             "<|endoftext|>".to_string(),
             "<|user|>".to_string(),
@@ -318,6 +383,16 @@ mod tests {
         }
     }
 
+    fn write_gemma4_tokenizer(artifact_dir: &Path) {
+        // Minimal tokenizer.json that defines the `<turn|>` chat token at the
+        // real Gemma 4 vocabulary id.
+        fs::write(
+            artifact_dir.join("tokenizer.json"),
+            r#"{"added_tokens":[{"id":1,"content":"<eos>"},{"id":106,"content":"<turn|>"}]}"#,
+        )
+        .expect("tokenizer.json should write");
+    }
+
     #[test]
     fn native_chat_artifact_validation_rejects_gemma4_without_chat_template() {
         let unique = SystemTime::now()
@@ -334,10 +409,48 @@ mod tests {
 
         fs::write(artifact_dir.join("chat_template.jinja"), "{# template #}")
             .expect("template marker should write");
+        write_gemma4_tokenizer(&artifact_dir);
+        fs::write(
+            artifact_dir.join("generation_config.json"),
+            r#"{"eos_token_id":[1,106,50]}"#,
+        )
+        .expect("generation_config.json should write");
         validate_native_chat_artifact("gemma4", Some(&artifact_dir))
-            .expect("Gemma4 chat artifact with template should pass");
+            .expect("instruction-tuned Gemma4 artifact should pass");
         validate_native_chat_artifact("glm4_moe_lite", Some(&artifact_dir))
             .expect("non-Gemma families do not require Gemma4 template");
+
+        fs::remove_dir_all(artifact_dir).expect("artifact dir should clean up");
+    }
+
+    #[test]
+    fn native_chat_artifact_validation_rejects_base_gemma4_even_with_copied_template() {
+        // Regression: a base (pretrained) Gemma 4 artifact cannot follow the
+        // chat turn format and emits non-stopping garbage. Copying a
+        // chat_template.jinja into it must not be enough to pass the guard;
+        // the base `generation_config.json` does not stop on `<turn|>`.
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time should be valid")
+            .as_nanos();
+        let artifact_dir =
+            std::env::temp_dir().join(format!("ax-engine-chat-gemma4-base-{unique}"));
+        fs::create_dir_all(&artifact_dir).expect("artifact dir should create");
+        fs::write(artifact_dir.join("chat_template.jinja"), "{# copied #}")
+            .expect("template marker should write");
+        write_gemma4_tokenizer(&artifact_dir);
+        fs::write(
+            artifact_dir.join("generation_config.json"),
+            r#"{"eos_token_id":1}"#,
+        )
+        .expect("generation_config.json should write");
+
+        let error = validate_native_chat_artifact("gemma4", Some(&artifact_dir))
+            .expect_err("base Gemma4 artifact must be rejected for chat");
+        assert!(
+            error.contains("instruction-tuned") && error.contains("<turn|>"),
+            "unexpected error: {error}"
+        );
 
         fs::remove_dir_all(artifact_dir).expect("artifact dir should clean up");
     }

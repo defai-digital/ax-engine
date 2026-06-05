@@ -45,35 +45,47 @@ HF_CACHE = Path(
 # for ad-hoc probes but Lightning rows no longer appear in the matrix.
 ENGINE_LABELS = {
     "mtplx": "MTPLX 0.3.7 (default)",
-    "ax_engine": "AX Engine v5.1.12 (MTP-only)",
-    "ax_engine_ngram": "AX Engine v5.1.12 (MTP + n-gram stacking)",
+    "mtplx_tuned": "MTPLX 0.3.7 (tuned)",
+    "ax_engine": "AX Engine v5.2.0 (MTP-only)",
+    "ax_engine_ngram": "AX Engine v5.2.0 (MTP + n-gram stacking)",
+    "ax_engine_tuned": "AX Engine v5.2.0 (tuned best-of)",
 }
 VERSIONS_FOOTNOTE = (
-    "Vendor-default config per row · MTPLX 0.3.7 · AX Engine v5.1.12"
+    "Vendor-default config per row · MTPLX 0.3.7 · AX Engine v5.2.0"
 )
 ENGINE_COLORS = {
     "mtplx": "#14532d",
+    "mtplx_tuned": "#0f766e",
     "ax_engine": "#f97316",
     "ax_engine_ngram": "#eab308",
+    "ax_engine_tuned": "#2563eb",
 }
 ENGINE_ORDER = [
     "mtplx",
+    "mtplx_tuned",
     "ax_engine",
     "ax_engine_ngram",
+    "ax_engine_tuned",
 ]
+AX_DIRECT_ENGINE_KEY = "ax_engine_mlx"
+AX_FAIR_ENGINES = {"ax_engine", "ax_engine_ngram", "ax_engine_tuned"}
+MTPLX_FAIR_ENGINES = {"mtplx", "mtplx_tuned"}
+AX_RESULT_ENGINES = {AX_DIRECT_ENGINE_KEY, *diff.AX_MTP_ENGINES}
 
 # User-facing engine vendor names for --engines
 ENGINE_VENDORS = ["mtplx", "ax"]
 # User-facing decode mode names for --modes
-ENGINE_MODES = ["mtp", "mtp-ngram"]
+ENGINE_MODES = ["mtp", "mtp-ngram", "tuned"]
 # Maps (vendor, mode) -> internal engine key, or None if not yet supported.
 # None entries are skipped at runtime with a warning; update this matrix
 # when a vendor adds support for a new mode.
 SUPPORT_MATRIX: dict[tuple[str, str], str | None] = {
     ("mtplx", "mtp"): "mtplx",
     ("mtplx", "mtp-ngram"): None,  # not supported yet
+    ("mtplx", "tuned"): "mtplx_tuned",
     ("ax", "mtp"): "ax_engine",
     ("ax", "mtp-ngram"): "ax_engine_ngram",
+    ("ax", "tuned"): "ax_engine_tuned",
 }
 
 
@@ -118,6 +130,13 @@ class BoxStats:
     median: float
     q3: float
     maximum: float
+
+
+@dataclass(frozen=True)
+class AxTuneCandidate:
+    key: str
+    policy: str
+    depth: int | None
 
 
 QWEN36_PROFILES = {
@@ -209,6 +228,43 @@ def effective_depth(
     return profile.native_depth
 
 
+def tunable_depths_for_profile(profile: QwenProfile) -> list[int]:
+    return list(range(1, min(profile.native_depth, 3) + 1))
+
+
+def ax_tune_candidates(profile: QwenProfile, policies: list[str]) -> list[AxTuneCandidate]:
+    depths = tunable_depths_for_profile(profile)
+    candidates: list[AxTuneCandidate] = []
+    if "direct" in policies:
+        candidates.append(AxTuneCandidate("direct", "direct", None))
+    if "ngram" in policies:
+        candidates.append(AxTuneCandidate("ngram", "ngram", 0))
+    for depth in depths:
+        if "mtp" in policies:
+            candidates.append(AxTuneCandidate(f"mtp_d{depth}", "mtp", depth))
+        if "mtp-ngram" in policies:
+            candidates.append(AxTuneCandidate(f"mtp_ngram_d{depth}", "mtp-ngram", depth))
+    return candidates
+
+
+def tune_config_from_args(
+    args: argparse.Namespace, *, depth: int, enable_thinking: bool
+) -> diff.RunConfig:
+    return diff.RunConfig(
+        mode=args.mode,
+        depth=depth,
+        max_tokens=args.tune_max_tokens,
+        repetitions=args.tune_repetitions,
+        warmup_repetitions=args.tune_warmup_repetitions,
+        cooldown_s=args.tune_cooldown,
+        sampling=diff.sampling_for_mode(
+            args.mode,
+            {"temperature": args.temperature, "top_p": args.top_p, "top_k": args.top_k},
+        ),
+        enable_thinking=enable_thinking,
+    )
+
+
 def run_subprocess(cmd: list[str], *, env: dict[str, str] | None = None) -> None:
     print("\n" + " ".join(cmd), flush=True)
     subprocess.run(cmd, check=True, cwd=REPO_ROOT, env=env)
@@ -262,7 +318,7 @@ def run_ax_suite(
     model_dir: Path,
     config: diff.RunConfig,
     no_build: bool,
-    pure_mtp: bool = False,
+    ax_policy: str = "mtp-ngram",
     inter_case_cooldown_s: float = 0.0,
 ) -> Path:
     cmd = [
@@ -282,22 +338,28 @@ def run_ax_suite(
         str(config.cooldown_s),
         "--inter-case-cooldown",
         str(inter_case_cooldown_s),
-        "--ax-ngram-accel",
         "--ax-sampling",
         json.dumps(config.sampling, sort_keys=True),
         "--skip-mlx-lm",
         "--capture-output-token-ids",
-        "--ax-mtp-max-depth",
-        str(config.depth),
         "--output",
         str(output_path),
     ]
+    if ax_policy == "direct":
+        cmd.append("--ax-direct")
+    else:
+        mtp_depth = 0 if ax_policy == "ngram" else config.depth
+        cmd += [
+            "--ax-ngram-accel",
+            "--ax-mtp-max-depth",
+            str(mtp_depth),
+        ]
+    if ax_policy == "mtp":
+        cmd.append("--ax-mtp-disable-ngram-stacking")
     if not config.enable_thinking:
         cmd.append("--no-thinking")
     if no_build:
         cmd.append("--no-build-ax-engine")
-    if pure_mtp:
-        cmd.append("--ax-mtp-disable-ngram-stacking")
     run_subprocess(cmd)
     return output_path
 
@@ -352,6 +414,121 @@ def run_mtplx_suite(
         cmd.append("--allow-unverified-model")
     run_subprocess(cmd)
     return output_path
+
+
+def mtplx_best_depth_from_tune(payload: dict[str, Any], fallback_depth: int) -> int:
+    best = payload.get("best") if isinstance(payload.get("best"), dict) else {}
+    depth = best.get("depth")
+    if isinstance(depth, int) and depth > 0:
+        return depth
+    return fallback_depth
+
+
+def annotate_artifact(path: Path, key: str, value: dict[str, Any]) -> None:
+    artifact = json.loads(path.read_text())
+    artifact[key] = value
+    path.write_text(json.dumps(artifact, indent=2, sort_keys=True) + "\n")
+
+
+def run_mtplx_tune(
+    *,
+    python: Path,
+    output_path: Path,
+    model_dir: Path,
+    profile: QwenProfile,
+    args: argparse.Namespace,
+) -> tuple[int, dict[str, Any]]:
+    tune_dir = output_path.parent / "tune" / "mtplx"
+    tune_dir.mkdir(parents=True, exist_ok=True)
+    tune_output = tune_dir / "tune.json"
+    state_path = tune_dir / "tuning-state.json"
+    depths = tunable_depths_for_profile(profile)
+    cmd = [
+        str(python),
+        "-m",
+        "mtplx.cli",
+        "tune",
+        "--model",
+        str(model_dir),
+        "--depths",
+        ",".join(str(depth) for depth in depths),
+        "--max-tokens",
+        str(args.tune_max_tokens),
+        "--limit",
+        str(args.tune_limit),
+        "--seed",
+        str(args.tune_seed),
+        "--output-dir",
+        str(tune_dir),
+        "--output",
+        str(tune_output),
+        "--json",
+        "--yes",
+    ]
+    if args.retune:
+        cmd.append("--retune")
+    env = {**os.environ, "MTPLX_TUNE_STATE": str(state_path)}
+    run_subprocess(cmd, env=env)
+    payload = json.loads(tune_output.read_text())
+    selected_depth = mtplx_best_depth_from_tune(payload, profile.native_depth)
+    return selected_depth, {
+        "schema": "ax.qwen36_mtp_fair.tune.mtplx.v1",
+        "strategy": "mtplx_cli_tune",
+        "artifact": str(tune_output),
+        "state_path": str(state_path),
+        "retune": bool(args.retune),
+        "candidate_depths": depths,
+        "selected_depth": selected_depth,
+        "best": payload.get("best"),
+        "saved": payload.get("saved"),
+        "save_skipped_reason": payload.get("save_skipped_reason"),
+    }
+
+
+def run_mtplx_tuned_suite(
+    *,
+    python: Path,
+    suite: str,
+    suite_file: Path,
+    output_path: Path,
+    model_dir: Path,
+    config: diff.RunConfig,
+    profile: QwenProfile,
+    args: argparse.Namespace,
+    mtplx_profile: str = "stable",
+    allow_unverified_model: bool = False,
+    inter_case_cooldown_s: float = 0.0,
+) -> Path:
+    selected_depth, tuning = run_mtplx_tune(
+        python=python,
+        output_path=output_path,
+        model_dir=model_dir,
+        profile=profile,
+        args=args,
+    )
+    tuned_config = diff.RunConfig(
+        mode=config.mode,
+        depth=selected_depth,
+        max_tokens=config.max_tokens,
+        repetitions=config.repetitions,
+        warmup_repetitions=config.warmup_repetitions,
+        cooldown_s=config.cooldown_s,
+        sampling=config.sampling,
+        enable_thinking=config.enable_thinking,
+    )
+    result = run_mtplx_suite(
+        python=python,
+        suite=suite,
+        suite_file=suite_file,
+        output_path=output_path,
+        model_dir=model_dir,
+        config=tuned_config,
+        mtplx_profile=mtplx_profile,
+        allow_unverified_model=allow_unverified_model,
+        inter_case_cooldown_s=inter_case_cooldown_s,
+    )
+    annotate_artifact(result, "tuning", tuning)
+    return result
 
 
 def run_rapid_mlx_suite(
@@ -428,6 +605,160 @@ def run_rapid_mlx_suite(
     return output_path
 
 
+def run_ax_tune_candidate(
+    *,
+    args: argparse.Namespace,
+    suite: str,
+    suite_file: Path,
+    output_path: Path,
+    model_dir: Path,
+    candidate: AxTuneCandidate,
+    enable_thinking: bool,
+    inter_case_cooldown_s: float,
+) -> Path:
+    config = tune_config_from_args(
+        args,
+        depth=int(candidate.depth or 0),
+        enable_thinking=enable_thinking,
+    )
+    return run_ax_suite(
+        python=args.ax_python,
+        suite=suite,
+        suite_file=suite_file,
+        output_path=output_path,
+        model_dir=model_dir,
+        config=config,
+        no_build=args.no_build_ax_engine,
+        ax_policy=candidate.policy,
+        inter_case_cooldown_s=inter_case_cooldown_s,
+    )
+
+
+def selected_ax_tune_candidate(
+    candidate_rows: list[dict[str, Any]],
+) -> dict[str, Any]:
+    valid_rows = [
+        row
+        for row in candidate_rows
+        if isinstance(row.get("decode_tok_s"), int | float)
+        and str(row.get("status")) != "error"
+    ]
+    if not valid_rows:
+        raise RuntimeError("AX tune did not produce any valid candidate rows")
+    return max(valid_rows, key=lambda row: float(row["decode_tok_s"]))
+
+
+def write_ax_tune_summary(
+    path: Path,
+    *,
+    profile: QwenProfile,
+    suite: str,
+    candidates: list[AxTuneCandidate],
+    rows: list[dict[str, Any]],
+    selected: dict[str, Any],
+    args: argparse.Namespace,
+) -> dict[str, Any]:
+    payload = {
+        "schema": "ax.qwen36_mtp_fair.tune.ax.v1",
+        "strategy": "best_decode_tok_s",
+        "model": profile.key,
+        "suite": suite,
+        "candidate_policies": args.ax_tune_policies,
+        "candidate_depths": tunable_depths_for_profile(profile),
+        "tune_max_tokens": args.tune_max_tokens,
+        "tune_repetitions": args.tune_repetitions,
+        "tune_warmup_repetitions": args.tune_warmup_repetitions,
+        "tune_cooldown_s": args.tune_cooldown,
+        "candidates": rows,
+        "selected": selected,
+        "candidate_keys": [candidate.key for candidate in candidates],
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+    return payload
+
+
+def run_ax_tuned_suite(
+    *,
+    args: argparse.Namespace,
+    suite: str,
+    suite_file: Path,
+    output_path: Path,
+    model_dir: Path,
+    config: diff.RunConfig,
+    profile: QwenProfile,
+    inter_case_cooldown_s: float = 0.0,
+) -> Path:
+    candidates = ax_tune_candidates(profile, args.ax_tune_policies)
+    if not candidates:
+        raise RuntimeError("AX tune has no candidate policies")
+    tune_dir = output_path.parent / "tune" / "ax_engine"
+    tune_dir.mkdir(parents=True, exist_ok=True)
+    candidate_rows: list[dict[str, Any]] = []
+    for candidate in candidates:
+        candidate_path = tune_dir / f"{candidate.key}.json"
+        if args.skip_existing and candidate_path.is_file():
+            artifact_path = candidate_path
+        else:
+            artifact_path = run_ax_tune_candidate(
+                args=args,
+                suite=suite,
+                suite_file=suite_file,
+                output_path=candidate_path,
+                model_dir=model_dir,
+                candidate=candidate,
+                enable_thinking=config.enable_thinking,
+                inter_case_cooldown_s=0.0,
+            )
+        summary = summarize_engine_artifact("ax_engine_tuned", artifact_path)
+        candidate_rows.append(
+            {
+                "key": candidate.key,
+                "policy": candidate.policy,
+                "depth": candidate.depth,
+                "artifact": str(artifact_path),
+                "status": summary.get("status"),
+                "decode_tok_s": summary.get("decode_tok_s"),
+                "accept_rate": summary.get("accept_rate"),
+                "ngram_accept_rate": summary.get("ngram_accept_rate"),
+                "ngram_hit_steps": summary.get("ngram_hit_steps"),
+            }
+        )
+    selected = selected_ax_tune_candidate(candidate_rows)
+    tune_summary = write_ax_tune_summary(
+        tune_dir / "summary.json",
+        profile=profile,
+        suite=suite,
+        candidates=candidates,
+        rows=candidate_rows,
+        selected=selected,
+        args=args,
+    )
+    selected_config = diff.RunConfig(
+        mode=config.mode,
+        depth=int(selected.get("depth") or 0),
+        max_tokens=config.max_tokens,
+        repetitions=config.repetitions,
+        warmup_repetitions=config.warmup_repetitions,
+        cooldown_s=config.cooldown_s,
+        sampling=config.sampling,
+        enable_thinking=config.enable_thinking,
+    )
+    result = run_ax_suite(
+        python=args.ax_python,
+        suite=suite,
+        suite_file=suite_file,
+        output_path=output_path,
+        model_dir=model_dir,
+        config=selected_config,
+        no_build=args.no_build_ax_engine,
+        ax_policy=str(selected["policy"]),
+        inter_case_cooldown_s=inter_case_cooldown_s,
+    )
+    annotate_artifact(result, "tuning", tune_summary)
+    return result
+
+
 def run_engine_suite(
     args: argparse.Namespace,
     *,
@@ -475,7 +806,7 @@ def run_engine_suite(
                 model_dir=model_dir,
                 config=config,
                 no_build=args.no_build_ax_engine,
-                pure_mtp=True,
+                ax_policy="mtp",
                 inter_case_cooldown_s=args.inter_case_cooldown,
             )
         if engine == "ax_engine_ngram":
@@ -487,7 +818,18 @@ def run_engine_suite(
                 model_dir=model_dir,
                 config=config,
                 no_build=args.no_build_ax_engine,
-                pure_mtp=False,
+                ax_policy="mtp-ngram",
+                inter_case_cooldown_s=args.inter_case_cooldown,
+            )
+        if engine == "ax_engine_tuned":
+            return run_ax_tuned_suite(
+                args=args,
+                suite=suite,
+                suite_file=suite_file,
+                output_path=output_path,
+                model_dir=model_dir,
+                config=config,
+                profile=profile,
                 inter_case_cooldown_s=args.inter_case_cooldown,
             )
         if engine == "mtplx":
@@ -498,6 +840,20 @@ def run_engine_suite(
                 output_path=output_path,
                 model_dir=model_dir,
                 config=config,
+                mtplx_profile=args.mtplx_profile,
+                allow_unverified_model=profile.is_moe,
+                inter_case_cooldown_s=args.inter_case_cooldown,
+            )
+        if engine == "mtplx_tuned":
+            return run_mtplx_tuned_suite(
+                python=args.mtplx_python,
+                suite=suite,
+                suite_file=suite_file,
+                output_path=output_path,
+                model_dir=model_dir,
+                config=config,
+                profile=profile,
+                args=args,
                 mtplx_profile=args.mtplx_profile,
                 allow_unverified_model=profile.is_moe,
                 inter_case_cooldown_s=args.inter_case_cooldown,
@@ -596,11 +952,38 @@ def depth_accept_rate(run: dict[str, Any]) -> float | None:
     return accepted / drafted if drafted else None
 
 
+def ax_cases_for_fair(artifact: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    cases: dict[str, dict[str, Any]] = {}
+    for row in artifact.get("results", []):
+        if row.get("engine") not in AX_RESULT_ENGINES:
+            continue
+        prompt_id = row.get("prompt_case_id")
+        if not prompt_id:
+            continue
+        telemetry = row.get("ngram_acceleration_telemetry") or {}
+        draft_tokens = int(telemetry.get("ax_mtp_draft_tokens", 0) or 0)
+        accepted_tokens = int(telemetry.get("ax_mtp_accepted_tokens", 0) or 0)
+        ngram_draft_tokens = int(telemetry.get("ax_ngram_draft_tokens", 0) or 0)
+        ngram_accepted_tokens = int(telemetry.get("ax_ngram_accepted_tokens", 0) or 0)
+        cases[str(prompt_id)] = {
+            "prompt_id": str(prompt_id),
+            "decode_tok_s": summary_median(row.get("decode_tok_s")),
+            "accepted_tokens": accepted_tokens,
+            "draft_tokens": draft_tokens,
+            "accept_rate": accepted_tokens / draft_tokens if draft_tokens else None,
+            "ngram_accept_rate": ngram_accepted_tokens / ngram_draft_tokens
+            if ngram_draft_tokens
+            else None,
+            "ngram_hit_steps": int(telemetry.get("ax_mtp_ngram_hit_steps", 0) or 0),
+        }
+    return cases
+
+
 def accept_rate_samples_for_engine(
     engine: str, artifact: dict[str, Any]
 ) -> list[float]:
     samples: list[float] = []
-    if engine in ("ax_engine", "ax_engine_ngram"):
+    if engine in AX_FAIR_ENGINES:
         for row in artifact.get("results", []):
             if row.get("engine") not in diff.AX_MTP_ENGINES:
                 continue
@@ -620,7 +1003,7 @@ def accept_rate_samples_for_engine(
             rate = telemetry_accept_rate(telemetry)
             if rate is not None:
                 samples.append(rate)
-    elif engine == "mtplx":
+    elif engine in MTPLX_FAIR_ENGINES:
         for case in artifact.get("results", []):
             case_samples = [
                 rate
@@ -655,9 +1038,9 @@ def cases_for_engine(
 ) -> dict[str, dict[str, Any]]:
     if artifact.get("schema") == "ax.mtp_engine_error.v1":
         return {}
-    if engine in ("ax_engine", "ax_engine_ngram"):
-        return diff.ax_cases(artifact)
-    if engine == "mtplx":
+    if engine in AX_FAIR_ENGINES:
+        return ax_cases_for_fair(artifact)
+    if engine in MTPLX_FAIR_ENGINES:
         return diff.mtplx_cases(artifact)
     if engine in ("lightning_mlx", "lightning_mtp_ngram"):
         return diff.rapid_mlx_cases(artifact)
@@ -728,11 +1111,12 @@ def summarize_engine_artifact(engine: str, artifact_path: Path) -> dict[str, Any
         "accept_rate": median(accept_values),
         "decode_tok_s_samples": decode_samples,
         "accept_rate_samples": accept_samples,
+        "tuning": artifact.get("tuning") if isinstance(artifact.get("tuning"), dict) else None,
         "ngram_accept_rate": median(ngram_accept_values)
         if ngram_accept_values
         else None,
         "ngram_hit_steps": ngram_hit_steps
-        if engine in ("ax_engine", "ax_engine_ngram")
+        if engine in AX_FAIR_ENGINES
         else None,
     }
 
@@ -753,9 +1137,11 @@ def build_summary(
         for engine, mode in (
             ("ax_engine", "pure_mtp"),
             ("ax_engine_ngram", "mtp_ngram_stacked"),
+            ("ax_engine_tuned", "tuned_best_of"),
         )
         if engine in args.engines
     }
+    has_tuned_engines = any(engine.endswith("_tuned") for engine in args.engines)
     for profile in profiles:
         depth = effective_depth(profile, args.engines, args.depth_policy, args.depth)
         provenance = diff.model_provenance_for(sidecar_dir(profile, args.hf_cache))
@@ -780,6 +1166,12 @@ def build_summary(
                 "decode_tok_s"
             )
             mtplx_tok_s = (engine_summaries.get("mtplx") or {}).get("decode_tok_s")
+            mtplx_tuned_tok_s = (engine_summaries.get("mtplx_tuned") or {}).get(
+                "decode_tok_s"
+            )
+            ax_tuned_tok_s = (engine_summaries.get("ax_engine_tuned") or {}).get(
+                "decode_tok_s"
+            )
             lightning_tok_s = (engine_summaries.get("lightning_mlx") or {}).get(
                 "decode_tok_s"
             )
@@ -797,6 +1189,17 @@ def build_summary(
                         "ax_engine_vs_mtplx": ratio(ax_tok_s, mtplx_tok_s),
                         "ax_engine_vs_lightning_mlx": ratio(ax_tok_s, lightning_tok_s),
                         "ax_engine_ngram_vs_mtplx": ratio(ax_ngram_tok_s, mtplx_tok_s),
+                        "ax_engine_tuned_vs_mtplx_tuned": ratio(
+                            ax_tuned_tok_s, mtplx_tuned_tok_s
+                        ),
+                        "ax_engine_tuned_vs_mtplx": ratio(ax_tuned_tok_s, mtplx_tok_s),
+                        "mtplx_tuned_vs_mtplx": ratio(mtplx_tuned_tok_s, mtplx_tok_s),
+                        "ax_engine_tuned_vs_ax_engine": ratio(
+                            ax_tuned_tok_s, ax_tok_s
+                        ),
+                        "ax_engine_tuned_vs_ax_engine_ngram": ratio(
+                            ax_tuned_tok_s, ax_ngram_tok_s
+                        ),
                         "ax_engine_ngram_vs_lightning_mlx": ratio(
                             ax_ngram_tok_s, lightning_tok_s
                         ),
@@ -826,6 +1229,27 @@ def build_summary(
             "repetitions": args.repetitions,
             "warmup_repetitions": args.warmup_repetitions,
             "cooldown_s": args.cooldown,
+            "benchmark_contract": "tuned-best-of"
+            if has_tuned_engines and all(engine.endswith("_tuned") for engine in args.engines)
+            else ("mixed-fixed-and-tuned" if has_tuned_engines else "fixed-depth"),
+            "tuning": {
+                "enabled": has_tuned_engines,
+                "mtplx_retune": bool(getattr(args, "retune", True)),
+                "mtplx_candidate_depth_cap": 3,
+                "ax_candidate_policies": getattr(
+                    args,
+                    "ax_tune_policies",
+                    ["direct", "ngram", "mtp", "mtp-ngram"],
+                ),
+                "tune_max_tokens": getattr(args, "tune_max_tokens", None),
+                "tune_repetitions": getattr(args, "tune_repetitions", None),
+                "tune_warmup_repetitions": getattr(
+                    args, "tune_warmup_repetitions", None
+                ),
+                "tune_cooldown_s": getattr(args, "tune_cooldown", None),
+                "tune_limit": getattr(args, "tune_limit", None),
+                "scope": "per model and prompt suite row",
+            },
             "lightning_settings": {
                 "source_profile": "lightning-mlx serve qwen3.6 MTPLX preset",
                 "model_source": getattr(args, "lightning_model_source", "sidecar"),
@@ -869,6 +1293,7 @@ def build_summary(
                 if getattr(args, "lightning_model_source", "sidecar") == "sidecar"
                 else "Youssofal/samuelfaj optimized bundles are included for Lightning source-methodology rows",
                 "same prompt suite, max token cap, sampler, warmup, repetitions, and cooldown",
+                "fixed-depth rows and tuned-best-of rows are separate benchmark contracts",
             ],
         },
         "rows": rows,
@@ -893,6 +1318,18 @@ def fmt_validation(engine_summary: dict[str, Any]) -> str:
     if total is None or passed is None:
         return "-"
     return f"{passed}/{total}"
+
+
+def markdown_engine_label(engine: str) -> str:
+    return {
+        "mtplx": "MTPLX",
+        "mtplx_tuned": "MTPLX tuned",
+        "lightning_mlx": "Light. MTP",
+        "lightning_mtp_ngram": "Light. ngram+MTP",
+        "ax_engine": "AX MTP",
+        "ax_engine_ngram": "AX MTP+n-gram",
+        "ax_engine_tuned": "AX tuned",
+    }.get(engine, engine)
 
 
 def write_markdown(path: Path, summary: dict[str, Any]) -> None:
@@ -920,52 +1357,23 @@ def write_markdown(path: Path, summary: dict[str, Any]) -> None:
         lines.append(f"- {rule}")
     lines.append("")
     contract_engines = summary.get("contract", {}).get("engines") or []
-    has_lightning = "lightning_mlx" in contract_engines
-    has_lightning_ngram = "lightning_mtp_ngram" in contract_engines
-    has_ax = "ax_engine" in contract_engines
-    has_ax_ngram = "ax_engine_ngram" in contract_engines
-    header_cols = ["Model", "Suite", "Depth", "MTPLX tok/s", "MTPLX accept"]
-    if has_lightning:
-        header_cols += ["Light. MTP tok/s", "Light. MTP accept"]
-    if has_lightning_ngram:
-        header_cols += ["Light. ngram+MTP tok/s", "Light. ngram+MTP accept"]
-    if has_ax:
-        header_cols += ["AX MTP tok/s", "AX MTP accept"]
-    if has_ax_ngram:
-        header_cols += ["AX MTP+n-gram tok/s", "AX MTP+n-gram accept"]
+    table_engines = [engine for engine in ENGINE_ORDER if engine in contract_engines]
+    header_cols = ["Model", "Suite", "Depth"]
+    for engine in table_engines:
+        label = markdown_engine_label(engine)
+        header_cols += [f"{label} tok/s", f"{label} accept"]
     lines.append("| " + " | ".join(header_cols) + " |")
     align = ["---", "---", "---:"] + ["---:"] * (len(header_cols) - 3)
     lines.append("| " + " | ".join(align) + " |")
     for row in summary["rows"]:
         engines = row["engines"]
-        mtplx = engines.get("mtplx", {})
         cells = [
             row["model_label"],
             row["suite"],
             str(row["depth"]),
-            fmt_number(mtplx.get("decode_tok_s")),
-            fmt_percent(mtplx.get("accept_rate")),
         ]
-        if has_lightning:
-            e = engines.get("lightning_mlx", {})
-            cells += [
-                fmt_number(e.get("decode_tok_s")),
-                fmt_percent(e.get("accept_rate")),
-            ]
-        if has_lightning_ngram:
-            e = engines.get("lightning_mtp_ngram", {})
-            cells += [
-                fmt_number(e.get("decode_tok_s")),
-                fmt_percent(e.get("accept_rate")),
-            ]
-        if has_ax:
-            e = engines.get("ax_engine", {})
-            cells += [
-                fmt_number(e.get("decode_tok_s")),
-                fmt_percent(e.get("accept_rate")),
-            ]
-        if has_ax_ngram:
-            e = engines.get("ax_engine_ngram", {})
+        for engine in table_engines:
+            e = engines.get(engine, {})
             cells += [
                 fmt_number(e.get("decode_tok_s")),
                 fmt_percent(e.get("accept_rate")),
@@ -1399,8 +1807,11 @@ def parse_args() -> argparse.Namespace:
         "--modes",
         nargs="+",
         choices=ENGINE_MODES,
-        default=list(ENGINE_MODES),
-        help="Decode modes to include. Default: all (mtp mtp-ngram).",
+        default=["mtp", "mtp-ngram"],
+        help=(
+            "Decode modes to include. Default: fixed-depth mtp and mtp-ngram. "
+            "Add 'tuned' to run MTPLX tune and AX best-of policy sweep rows."
+        ),
     )
     parser.add_argument("--suites", nargs="+", default=["flappy", "long_code"])
     parser.add_argument("--suites-dir", type=Path, default=DEFAULT_SUITES_DIR)
@@ -1414,6 +1825,25 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--repetitions", type=int, default=5)
     parser.add_argument("--warmup-repetitions", type=int, default=1)
     parser.add_argument("--cooldown", type=float, default=30.0)
+    parser.add_argument("--tune-max-tokens", type=int, default=192)
+    parser.add_argument("--tune-repetitions", type=int, default=1)
+    parser.add_argument("--tune-warmup-repetitions", type=int, default=0)
+    parser.add_argument("--tune-cooldown", type=float, default=0.0)
+    parser.add_argument("--tune-limit", type=int, default=1)
+    parser.add_argument("--tune-seed", type=int, default=0)
+    parser.add_argument(
+        "--retune",
+        dest="retune",
+        action="store_true",
+        default=True,
+        help="Force MTPLX tune to measure again before tuned MTPLX benchmark rows.",
+    )
+    parser.add_argument(
+        "--no-retune",
+        dest="retune",
+        action="store_false",
+        help="Allow MTPLX tune to reuse its saved recommendation for tuned rows.",
+    )
     parser.add_argument(
         "--inter-case-cooldown",
         type=float,
@@ -1479,6 +1909,16 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--ax-python", type=Path, default=Path(sys.executable))
     parser.add_argument(
+        "--ax-tune-policies",
+        nargs="+",
+        choices=["direct", "ngram", "mtp", "mtp-ngram"],
+        default=["direct", "ngram", "mtp", "mtp-ngram"],
+        help=(
+            "AX policies swept for the tuned-best-of row. Depth-bearing policies "
+            "sweep d=1..native depth; ngram uses d=0."
+        ),
+    )
+    parser.add_argument(
         "--mtplx-python",
         type=Path,
         default=DEFAULT_MTPLX_PYTHON
@@ -1540,7 +1980,7 @@ def main() -> int:
         )
         return 1
     if args.warmup_repetitions != 1 and any(
-        e in args.engines for e in ("ax_engine", "ax_engine_ngram")
+        e in args.engines for e in ("ax_engine", "ax_engine_ngram", "ax_engine_tuned")
     ):
         raise ValueError(
             "AX prompt-suite benchmark has an implicit 1 warmup repetition"
