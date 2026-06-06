@@ -7664,13 +7664,14 @@ fn mtp_ngram_confidence_threshold() -> f32 {
     })
 }
 
-/// Minimum n-gram context length (tokens) for the MTP-stacked draft path. `4`
-/// requires a full fourgram context — short bigram/trigram matches are the main
-/// source of low-accept drafts (the same suffix maps to many different true
-/// continuations), so requiring the longest context is what lifts the n-gram
-/// accept rate past the confidence/support plateau. Override with
-/// `AX_MLX_MTP_NGRAM_MIN_CONTEXT_LEN` (clamped to 2..=4).
-pub const DEFAULT_MTP_NGRAM_MIN_CONTEXT_LEN: usize = 4;
+/// Minimum n-gram context length (tokens) for the MTP-stacked draft path. `3`
+/// forbids 2-token bigram matches — the main source of low-accept drafts (the
+/// same short suffix maps to many different true continuations), which is what
+/// lifts the n-gram accept rate past the confidence/support plateau. A 26B
+/// sweep (all suites) measured n-gram accept 71% @ctx2, 80% @ctx3, ~78% @ctx4;
+/// ctx3 is the best accept *and* fires the most (ctx4 over-filters for no gain).
+/// Override with `AX_MLX_MTP_NGRAM_MIN_CONTEXT_LEN` (clamped to 2..=4).
+pub const DEFAULT_MTP_NGRAM_MIN_CONTEXT_LEN: usize = 3;
 
 fn mtp_ngram_min_context_len() -> usize {
     static CACHED: OnceLock<usize> = OnceLock::new();

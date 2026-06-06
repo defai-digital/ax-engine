@@ -1894,6 +1894,41 @@ mod tests {
     }
 
     #[test]
+    fn min_context_len_forbids_bigram_only_match() {
+        // Same setup as the bypass test: prompt [1,2,3] seeds bigram (1,2)→3 and
+        // output [9,1,2] positions the tail so only a 2-token (bigram) context
+        // matches. min_context_len=2 (default) drafts it; min_context_len=3
+        // forbids the ambiguous bigram fallback, so no draft is produced — this
+        // is the lever the MTP-stacked path uses to lift n-gram accept.
+        let mut t = NgramTable::new();
+        t.feed_from_prompt(&[1, 2, 3]);
+        t.feed(&[9, 1, 2]);
+        let allow_bigram = NgramDraftPolicy {
+            variant: NgramPolicyVariant::MajorityRecency,
+            max_len: 1,
+            min_support: 2,
+            confidence_threshold: 0.0,
+            adaptive_match_len: false,
+            bypass_prompt_min_support: true,
+            min_context_len: 2,
+        };
+        assert_eq!(
+            t.predict_with_policy(allow_bigram).draft,
+            vec![3],
+            "bigram match drafts when min_context_len allows a 2-token context"
+        );
+        let forbid_bigram = NgramDraftPolicy {
+            min_context_len: 3,
+            ..allow_bigram
+        };
+        assert_eq!(
+            t.predict_with_policy(forbid_bigram).draft,
+            Vec::<u32>::new(),
+            "min_context_len=3 must forbid the ambiguous bigram-only match"
+        );
+    }
+
+    #[test]
     fn predict_deterministic_across_calls() {
         // predict() must not mutate the table; two calls return identical drafts.
         let tokens: Vec<u32> = (1u32..=5).cycle().take(20).collect();
