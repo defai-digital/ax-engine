@@ -74,6 +74,7 @@ AX_ENGINE_LINEAR_ATTENTION_PACK_KEY = "ax_engine_mlx_linear_pack"
 AX_ENGINE_DENSE_FFN_PACK_KEY = "ax_engine_mlx_dense_ffn_pack"
 AX_ENGINE_DIRECT_GEMMA4_FFN_ROUTE_KEY = "ax_engine_mlx_direct_gemma4_ffn"
 AX_ENGINE_GEMMA4_ASSISTANT_MTP_KEY = "ax_engine_gemma4_assistant_mtp"
+AX_ENGINE_GEMMA4_ASSISTANT_MTP_NGRAM_KEY = "ax_engine_gemma4_assistant_mtp_ngram"
 AX_ENGINE_DIRECT_LINEAR_ATTENTION_INPUTS_KEY = (
     "ax_engine_mlx_direct_linear_attention_inputs"
 )
@@ -847,9 +848,14 @@ def ax_decode_policy(
     *,
     direct_mode: bool,
     mtp_disable_ngram_stacking: bool = False,
+    gemma4_assistant_mtp: bool = False,
 ) -> str:
     if direct_mode:
         return "direct_no_ngram_acceleration"
+    if gemma4_assistant_mtp:
+        if mtp_disable_ngram_stacking:
+            return "gemma4_assistant_mtp_no_ngram_stacking"
+        return "gemma4_assistant_mtp_ngram_stacking"
     if mtp_disable_ngram_stacking:
         return "mtp_head_only_no_ngram_stacking"
     if model_metadata.get("linear_attention_enabled"):
@@ -3098,6 +3104,7 @@ def bench_axengine(
     prefix_cache_enabled: bool = False,
     sampler: dict[str, Any] | None = None,
     mtp_disable_ngram_stacking: bool = False,
+    gemma4_assistant_mtp: bool = False,
 ) -> dict[str, Any]:
     engine_key = engine_key_override or (
         AX_ENGINE_DIRECT_KEY if direct_mode else AX_ENGINE_NGRAM_ACCEL_KEY
@@ -3106,6 +3113,7 @@ def bench_axengine(
         model_metadata,
         direct_mode=direct_mode,
         mtp_disable_ngram_stacking=mtp_disable_ngram_stacking,
+        gemma4_assistant_mtp=gemma4_assistant_mtp,
     )
     print(
         f"  [ax-engine/{engine_key}] prompt={len(tokens)} "
@@ -3191,9 +3199,19 @@ def bench_axengine(
             sampler=sampler,
             mtp_disable_ngram_stacking=mtp_disable_ngram_stacking,
         ),
-        "ax_mtp_draft_source": "mtp_head_only"
-        if mtp_disable_ngram_stacking
-        else "mtp_head_or_ngram_stacked",
+        "ax_mtp_draft_source": (
+            "gemma4_assistant_head_only"
+            if gemma4_assistant_mtp and mtp_disable_ngram_stacking
+            else (
+                "gemma4_assistant_head_or_ngram_stacked"
+                if gemma4_assistant_mtp
+                else (
+                    "mtp_head_only"
+                    if mtp_disable_ngram_stacking
+                    else "mtp_head_or_ngram_stacked"
+                )
+            )
+        ),
         "prompt_contract": "mlx_lm_random_tokens_seed_0",
         "random_seed": MLX_LM_RANDOM_SEED,
         "batch_size": 1,
@@ -4751,7 +4769,9 @@ def main() -> None:
                         False,
                         False,
                         False,
-                        AX_ENGINE_GEMMA4_ASSISTANT_MTP_KEY,
+                        AX_ENGINE_GEMMA4_ASSISTANT_MTP_KEY
+                        if args.ax_mtp_disable_ngram_stacking
+                        else AX_ENGINE_GEMMA4_ASSISTANT_MTP_NGRAM_KEY,
                     )
                 ]
             else:
@@ -4777,7 +4797,11 @@ def main() -> None:
                 engine_key,
             ) in ax_run_configs:
                 gemma4_assistant_mtp = (
-                    engine_key == AX_ENGINE_GEMMA4_ASSISTANT_MTP_KEY
+                    engine_key
+                    in (
+                        AX_ENGINE_GEMMA4_ASSISTANT_MTP_KEY,
+                        AX_ENGINE_GEMMA4_ASSISTANT_MTP_NGRAM_KEY,
+                    )
                 )
                 mtp_disable_ngram_stacking = (
                     bool(args.ax_mtp_disable_ngram_stacking) and not direct_mode
@@ -4848,6 +4872,7 @@ def main() -> None:
                             prefix_cache_enabled=args.ax_enable_prefix_cache,
                             sampler=args.ax_sampling,
                             mtp_disable_ngram_stacking=mtp_disable_ngram_stacking,
+                            gemma4_assistant_mtp=gemma4_assistant_mtp,
                         )
                     )
                     results[-1]["prefill_step_size"] = args.prefill_step_size

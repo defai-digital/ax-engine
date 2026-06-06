@@ -822,15 +822,64 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
                 model_metadata={},
                 direct_mode=False,
                 engine_key_override=bench.AX_ENGINE_GEMMA4_ASSISTANT_MTP_KEY,
+                mtp_disable_ngram_stacking=True,
+                gemma4_assistant_mtp=True,
             )
 
         self.assertEqual(row["engine"], bench.AX_ENGINE_GEMMA4_ASSISTANT_MTP_KEY)
+        self.assertEqual(row["ax_decode_policy"], "gemma4_assistant_mtp_no_ngram_stacking")
+        self.assertEqual(row["ax_mtp_draft_source"], "gemma4_assistant_head_only")
         assistant = row["ax_mlx_gemma4_assistant_mtp"]
         self.assertEqual(assistant["ax_mlx_gemma4_assistant_mtp_enabled"], 1)
         self.assertEqual(assistant["ax_mlx_gemma4_assistant_mtp_draft_tokens"], 2)
         self.assertEqual(assistant["ax_mlx_gemma4_assistant_mtp_accepted_tokens"], 1)
         self.assertEqual(assistant["ax_mlx_gemma4_assistant_mtp_rejected_tokens"], 1)
         self.assertEqual(assistant["ax_mlx_gemma4_assistant_mtp_accept_rate_x1000"], 500)
+
+    def test_axengine_gemma4_assistant_mtp_ngram_row_has_distinct_identity(self) -> None:
+        run = {
+            "prefill_s": 0.2,
+            "decode_s": 0.1,
+            "ttft_ms": 200.0,
+            "prefill_tok_s": 15.0,
+            "decode_tok_s": 20.0,
+            "output_tokens": 3.0,
+            "ngram_acceleration_telemetry": {
+                "ax_ngram_draft_attempts": 2,
+                "ax_ngram_draft_tokens": 2,
+                "ax_ngram_accepted_tokens": 1,
+                "ax_mtp_draft_tokens": 2,
+                "ax_mtp_accepted_tokens": 1,
+                "ax_mtp_ngram_hit_steps": 1,
+            },
+            "ax_mlx_gemma4_assistant_mtp": {
+                "ax_mlx_gemma4_assistant_mtp_configured": 1,
+                "ax_mlx_gemma4_assistant_mtp_validated": 1,
+                "ax_mlx_gemma4_assistant_mtp_enabled": 1,
+                "ax_mlx_gemma4_assistant_mtp_draft_tokens": 2,
+                "ax_mlx_gemma4_assistant_mtp_accepted_tokens": 1,
+            },
+            "ax_mlx_telemetry": {
+                "ax_mlx_ngram_decode_steps": 1,
+                "ax_mlx_ngram_decode_wall_us": 10,
+            },
+        }
+        with patch.object(bench, "axengine_one_run", side_effect=[run, run]):
+            row = bench.bench_axengine(
+                19091,
+                [1, 2, 3],
+                3,
+                1,
+                0.0,
+                model_metadata={},
+                direct_mode=False,
+                engine_key_override=bench.AX_ENGINE_GEMMA4_ASSISTANT_MTP_NGRAM_KEY,
+                gemma4_assistant_mtp=True,
+            )
+
+        self.assertEqual(row["engine"], bench.AX_ENGINE_GEMMA4_ASSISTANT_MTP_NGRAM_KEY)
+        self.assertEqual(row["ax_decode_policy"], "gemma4_assistant_mtp_ngram_stacking")
+        self.assertEqual(row["ax_mtp_draft_source"], "gemma4_assistant_head_or_ngram_stacked")
 
     def test_ax_decode_claim_status_reports_throughput_policy_only(self) -> None:
         ngram_telemetry = {

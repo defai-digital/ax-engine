@@ -248,9 +248,15 @@ Draft flow:
 
 ### Phase 2: N-gram stacking
 
-Defer n-gram stacking until pure assistant MTP has benchmark evidence. If later
-enabled, n-gram should be attempted first, then assistant fills the remaining
-tail, matching the existing AX hybrid policy.
+Assistant MTP can now be benchmarked in two explicit modes:
+
+- `ax_engine_gemma4_assistant_mtp`: assistant-MTP-only, with n-gram stacking
+  disabled.
+- `ax_engine_gemma4_assistant_mtp_ngram`: assistant MTP plus the existing AX
+  n-gram stacking policy.
+
+The stacked mode attempts n-gram first, then lets the assistant fill the
+remaining tail, matching the existing AX hybrid policy.
 
 ## Sampling and Acceptance
 
@@ -335,9 +341,12 @@ python3 scripts/bench_mlx_inference_stack.py \
   --cooldown 15
 ```
 
-The produced AX row is labeled `ax_engine_gemma4_assistant_mtp` and must carry
-nonzero `ax_mlx_gemma4_assistant_mtp_draft_tokens` before it can be used as
-assistant-MTP evidence.
+The assistant-MTP-only AX row is labeled `ax_engine_gemma4_assistant_mtp`;
+the stacked row is labeled `ax_engine_gemma4_assistant_mtp_ngram`. Both must
+carry nonzero `ax_mlx_gemma4_assistant_mtp_draft_tokens` before they can be
+used as assistant-MTP evidence. Stacked rows should additionally report
+`ax_mtp_ngram_hit_steps` or `ax_mtp_ngram_submitted_tokens` when n-gram
+actually participated.
 
 ## Rollout Plan
 
@@ -368,8 +377,8 @@ assistant-MTP evidence.
 
 ### Phase 4: Benchmark and default evaluation
 
-- Run E2B/E4B and one larger Gemma 4 target.
-- Compare baseline, n-gram, assistant MTP, and any hybrid variants.
+- Run E2B/E4B and larger Gemma 4 targets.
+- Compare baseline, n-gram, assistant MTP, and assistant MTP+n-gram variants.
 - Promote only if artifacts show reliable speedup without correctness risk.
 
 ## Risks
