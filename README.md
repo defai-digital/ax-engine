@@ -88,22 +88,25 @@ Full artifacts: [`2026-06-05-ax-mtp-gate-fresh`](benchmarks/results/mtp-fair/202
 
 ### Gemma 4 Assistant MTP
 
-Gemma 4's multi-token prediction is a separate small **assistant drafter** model
-(not a fused `mtp.*` sidecar like Qwen) that shares the target's tokenizer and
-embedding table and drafts one token per step off the target's last-layer hidden
-state, attending to the target's own KV cache. AX Engine runs it in
-assistant-MTP-only (`mtp`) and assistant MTP + n-gram (`mtp-ngram`) modes. Native
-depth 1, sampled decode, max tokens `1000`, five measured repetitions.
+**Gemma 4 speculative decoding holds draft accept ≥98% on every cell below**
+(98.4–99.4% across 26B / 31B × {MTP, MTP+n-gram} × {flappy, long_code,
+python_modules_long}).
 
-The assistant uses a draft confidence gate (`AX_MLX_GEMMA4_ASSISTANT_MTP_DRAFT_MIN_CONFIDENCE`,
-default `0.999`) that mirrors the Qwen MTP head: it drafts the assistant's top
-token and only proposes it when the drafter's own probability in that token clears
-the threshold, so only high-confidence tokens are verified. Suppressing a
-low-confidence draft is correctness-preserving — it never changes the committed
-token, only whether a step speculates — so the gate is an accept-rate / throughput
-knob. Acceptance uses the default greedy (argmax-match) mode, identical to the Qwen
-MTP head. Lower the gate toward `0` for more speculation on less predictable
-content; the hardest suite (`python_modules_long`) is what holds the default high.
+Unlike Qwen's fused `mtp.*` sidecar, Gemma 4's multi-token prediction is a small,
+separate **assistant drafter** that shares the target's tokenizer and embedding
+table, drafts one token per step from the target's last-layer hidden state, and
+attends to the target's own KV cache. AX runs it assistant-MTP-only (`mtp`) and
+with n-gram stacked on top (`mtp-ngram`) at native depth 1.
+
+A **draft confidence gate** (`AX_MLX_GEMMA4_ASSISTANT_MTP_DRAFT_MIN_CONFIDENCE`,
+default `0.999`) keeps accept high: each step drafts the assistant's top token but
+proposes it only when the drafter's probability in that token clears the
+threshold, so only high-confidence tokens are verified (default greedy
+argmax-match acceptance, like the Qwen MTP head). Suppressing a low-confidence
+draft is correctness-preserving — it changes only whether a step speculates, never
+the committed token — so the gate trades speculation depth for accept rate. The
+hardest suite, `python_modules_long`, sets the default; lower the gate toward `0`
+for more speculation on less predictable content.
 
 <table>
 <tr>
@@ -148,13 +151,11 @@ content; the hardest suite (`python_modules_long`) is what holds the default hig
 | Gemma 4 31B 4-bit | long_code | 782 | 783 | 1,019 | 1,017 |
 | Gemma 4 31B 4-bit | python_modules_long | 742 | 744 | 473 | 472 |
 
-Assistant accept is the share of proposed drafts the target accepts; it stays
-≥98% on every model / suite / mode at the default gate. The `mtp-ngram` column
-stacks n-gram speculative drafting on top of the assistant; n-gram contributes
-little here because the gated assistant already captures the speculation, so the
-two modes track closely. Sampler: temperature=0.6, top_p=0.95, top_k=20. 1000 gen
-tokens, 5 repetitions, 10 s cooldown, 5 s inter-case cooldown. Apple M5 Max · AX
-Engine v5.2.4.
+Assistant accept is the share of proposed drafts the target accepts. The
+`mtp-ngram` column stacks n-gram drafting on top of the assistant but contributes
+little here — the gated assistant already captures the speculation, so the two
+modes track closely. Sampler temperature=0.6, top_p=0.95, top_k=20; 1000 generated
+tokens, 5 repetitions, 10 s / 5 s cooldowns. Apple M5 Max · AX Engine v5.2.4.
 
 Full artifacts: [`2026-06-06-gemma4-26b-31b-assistant-mtp`](benchmarks/results/gemma4-assistant-mtp/2026-06-06-gemma4-26b-31b-assistant-mtp/summary.json).
 
@@ -432,6 +433,26 @@ python3 scripts/bench_qwen36_mtp_fair.py \
 The generated `summary.md`, `summary.json`, and `decode-tok-s.svg` live under
 `benchmarks/results/mtp-fair/`. Full methodology and caveats live in
 [`docs/PERFORMANCE.md#mtp-mode`](docs/PERFORMANCE.md#mtp-mode).
+
+Gemma 4 uses an assistant **drafter** instead of a fused sidecar and has no MTPLX
+reference, so it has its own harness. With the target and `*-assistant` checkpoints
+in the HF cache, the benchmark prepares the pair automatically, then renders the
+box-and-whisker charts:
+
+```bash
+python3 scripts/bench_gemma4_assistant_mtp.py \
+  --models 26b-a4b-4bit,31b-4bit \
+  --modes mtp,mtp-ngram \
+  --suites flappy,long_code,python_modules_long \
+  --max-tokens 1000 --repetitions 5
+python3 scripts/render_gemma4_assistant_mtp_charts.py \
+  --results-dir benchmarks/results/gemma4-assistant-mtp/<run-dir>
+```
+
+Artifacts land under `benchmarks/results/gemma4-assistant-mtp/`; the SVGs render
+into `docs/assets/`. Tune the accept/throughput trade-off with
+`AX_MLX_GEMMA4_ASSISTANT_MTP_DRAFT_MIN_CONFIDENCE` (default `0.999`; `0` disables
+the gate).
 
 <!-- llama-cpp-column-disclaimer -->
 **`llama.cpp Metal*` column** — Shape-compatible reference produced by Metal-enabled `llama-bench`. `llama-bench` generates its own internal synthetic prompt tokens and does not consume the harness prompt JSON, so these numbers are NOT prompt-hash parity with the other columns. The intent is rough side-by-side context against a well-known third-party Metal runtime, not head-to-head comparison. MLX bit-widths are mapped to the nearest standard bartowski GGUF K-quant (4→Q4_K_M, 5→Q5_K_M, 6→Q6_K, 8→Q8_0). No percentage delta is shown for this column because the prompt is not shared. Source: `benchmarks/manifests/llama_cpp_metal/inventory.json`, `scripts/bench_llama_cpp_metal_sweep.py`.
