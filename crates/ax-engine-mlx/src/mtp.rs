@@ -76,12 +76,27 @@ pub fn mtp_draft_min_confidence_from_env() -> f32 {
     })
 }
 
-/// Default MTP draft confidence gate. Calibrated on the Qwen3.6 fair-MTP suites
-/// so pure-MTP accept stays >= 99% on every measured model and prompt suite
-/// (including the hardest fresh-generation row) while keeping decode throughput
-/// within a few percent of ungated drafting. Override with
-/// `AX_MLX_MTP_DRAFT_MIN_CONFIDENCE`.
-pub const DEFAULT_MTP_DRAFT_MIN_CONFIDENCE: f32 = 0.98;
+/// Default MTP draft confidence gate, tuned for **throughput** (not for the
+/// maximum accept rate).
+///
+/// The prior value (0.98) was calibrated to hold the pure-MTP *accept rate* at
+/// 99%+, but that over-truncates: it only proposes near-certain tokens, so the
+/// draft is shorter than it needs to be and decode leaves speed on the table. A
+/// Qwen3.6 27B (MTP) depth-throughput sweep on the fair-MTP suites
+/// (`docs/MTP-DRAFT-GATE-THROUGHPUT.md`) shows 0.90 is the throughput optimum:
+/// it proposes slightly longer drafts that are still almost always accepted,
+/// while the rare extra rejection costs only one cheap recompute forward (the
+/// `fwds/step` count stays near 1.03 even on the hardest suite). Measured
+/// wall-clock gains over the 0.98 default: flappy +5%, python_modules_long
+/// +4-14%, long_code +13%, with tokens-per-forward up 7-16%.
+///
+/// Lowering the gate is **correctness-preserving** — truncating fewer draft
+/// tokens never changes the committed output (greedy) or its distribution
+/// (sampled, via rejection sampling), only how far ahead each step verifies. It
+/// does lower the reported *accept rate* (more drafts proposed); that is a speed
+/// knob, not a quality change. Override with `AX_MLX_MTP_DRAFT_MIN_CONFIDENCE`;
+/// set 0.98 to restore the accept-rate-maximizing behavior, or 0 to disable.
+pub const DEFAULT_MTP_DRAFT_MIN_CONFIDENCE: f32 = 0.90;
 
 /// Truncate a draft to the longest leading run whose per-depth head confidence
 /// stays at or above `min_confidence` (probability, not log-prob).
@@ -386,6 +401,43 @@ fn mtp_post_norm_to_logits(
     mlx_reshape(&logits_f32, &[cfg.vocab_size as i32], None)
 }
 
+/// Prototype primitive: run one MTP head step and return both the post-norm
+/// hidden (to chain into the next depth) and the full draft logits `[vocab]`.
+///
+/// `mtp_draft_tokens` only ever follows the argmax chain, so it cannot expose
+/// the per-depth logits a tree drafter needs to branch on (top-k alternatives).
+/// This helper drives a single recurrent step explicitly so a caller can pick
+/// any token(s) from `logits` and feed a chosen token back as `prev_token` for
+/// the next depth, using `post_norm_hidden` as that step's `main_hidden`.
+///
+/// Appends one entry to `cache` (the head's 1-layer recurrent KV). Clone the
+/// cache before stepping a sibling branch so each tree path keeps its own KV.
+/// Returns `None` when the model has no MTP head.
+pub fn mtp_head_step(
+    weights: &ModelWeights,
+    cfg: &ModelConfig,
+    main_hidden: &MlxArray,
+    prev_token: u32,
+    cache: &mut MlxKVCache,
+) -> Option<(MlxArray, MlxArray)> {
+    let head = weights.mtp.as_ref()?;
+    let tok = [prev_token];
+    let prev_token_arr =
+        MlxArray::from_raw_data(tok.as_ptr() as *const u8, 4, &[1_i32], MlxDtype::Uint32);
+    let new_hidden = mtp_head_forward(
+        head,
+        main_hidden,
+        &prev_token_arr,
+        weights,
+        cache,
+        cfg,
+        None,
+    );
+    let post_norm_hidden = mtp_hidden_post_norm(&new_hidden, head, cfg);
+    let logits = mtp_post_norm_to_logits(&post_norm_hidden, weights, cfg);
+    Some((post_norm_hidden, logits))
+}
+
 /// Draft up to `head.max_depth` tokens by applying the MTP head recurrently.
 ///
 /// Returns `(draft_tokens, draft_log_probs, draft_distributions, added, top2_margins)`.
@@ -439,22 +491,52 @@ pub fn mtp_draft_tokens(
     let gate_forces_greedy = min_confidence > 0.0 && draft_mode != MtpDraftMode::Stochastic;
     let result = if gate_forces_greedy {
         mtp_draft_tokens_greedy(
-            head, weights, cfg, first_hidden, first_token, cache, max_depth, vocab,
+            head,
+            weights,
+            cfg,
+            first_hidden,
+            first_token,
+            cache,
+            max_depth,
+            vocab,
         )
     } else {
         match draft_mode {
             MtpDraftMode::Stochastic => mtp_draft_tokens_stochastic(
-                head, weights, cfg, first_hidden, first_token, cache, max_depth, vocab, rng,
+                head,
+                weights,
+                cfg,
+                first_hidden,
+                first_token,
+                cache,
+                max_depth,
+                vocab,
+                rng,
             ),
             MtpDraftMode::Greedy => {
                 let use_temperature = head.draft_sampling.temperature > 0.0;
                 if use_temperature {
                     mtp_draft_tokens_sampled(
-                        head, weights, cfg, first_hidden, first_token, cache, max_depth, vocab, rng,
+                        head,
+                        weights,
+                        cfg,
+                        first_hidden,
+                        first_token,
+                        cache,
+                        max_depth,
+                        vocab,
+                        rng,
                     )
                 } else {
                     mtp_draft_tokens_greedy(
-                        head, weights, cfg, first_hidden, first_token, cache, max_depth, vocab,
+                        head,
+                        weights,
+                        cfg,
+                        first_hidden,
+                        first_token,
+                        cache,
+                        max_depth,
+                        vocab,
                     )
                 }
             }
