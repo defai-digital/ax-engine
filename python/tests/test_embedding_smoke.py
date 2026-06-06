@@ -13,14 +13,20 @@ Re-run after every `maturin develop` to catch a stale extension; a
 clean build should pass this in <100 ms.
 """
 import inspect
+import os
 import sys
 import unittest
 from pathlib import Path
 
 
-SOURCE_ROOT = Path(__file__).resolve().parents[1]
-if str(SOURCE_ROOT) not in sys.path:
-    sys.path.insert(0, str(SOURCE_ROOT))
+# Default to importing ax_engine from the source tree (for `maturin develop`
+# runs). When validating an installed wheel (AX_ENGINE_RUN_INSTALLED_TESTS=1),
+# keep the source off sys.path so the installed package — with its compiled
+# _ax_engine extension — is imported instead of the un-built source.
+if os.environ.get("AX_ENGINE_RUN_INSTALLED_TESTS") != "1":
+    SOURCE_ROOT = Path(__file__).resolve().parents[1]
+    if str(SOURCE_ROOT) not in sys.path:
+        sys.path.insert(0, str(SOURCE_ROOT))
 
 
 class EmbeddingApiSurfaceTests(unittest.TestCase):
