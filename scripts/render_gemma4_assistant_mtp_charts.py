@@ -353,7 +353,7 @@ def build_groups(results_dir: Path, model_key: str, metric: str) -> list[dict[st
 
 METRICS = [
     ("decode", "decode-tok-s", "Decode throughput", "tok/s", "Higher is better", False, 0.0, None),
-    ("accept", "accept-rate", "Assistant accept rate", "%", "Higher is better", False, 98.0, 100.0),
+    ("accept", "accept-rate", "Assistant accept rate", "%", "Higher is better", False, 95.0, 100.0),
     ("prefill", "prefill-tok-s", "Prefill throughput", "tok/s", "Higher is better", False, 0.0, None),
     ("ttft", "ttft-ms", "Time to first token", "ms", "Lower is better", True, 0.0, None),
 ]
