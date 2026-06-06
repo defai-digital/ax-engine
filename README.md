@@ -55,7 +55,7 @@ which trades ~1–2 points of accept on the hardest row for +5–13% decode thro
 variable to `0.98` to restore the accept-maximizing behavior, or `0` to disable. The gate is scoped to pure MTP, so the
 n-gram-stacked column pools lower-confidence n-gram drafts and sits slightly below it. Sampler: temperature=0.6,
 top_p=0.95, top_k=20. 1000 gen tokens, 5 repetitions, 30 s cooldown, 10 s inter-case cooldown.
-MTPLX 0.3.7 · AX Engine v5.2.3.
+MTPLX 0.3.7 · AX Engine v5.2.4.
 
 #### Prefill throughput (tok/s) — same run
 
