@@ -72,7 +72,7 @@ use ax_engine_core::{
 
 use crate::gemma4_assistant_mtp::{
     Gemma4AssistantMtpConfig, Gemma4AssistantMtpDisableReason, Gemma4AssistantMtpStatus,
-    gemma4_assistant_mtp_debug_enabled,
+    gemma4_assistant_mtp_debug_enabled, gemma4_assistant_mtp_draft_min_confidence,
 };
 use crate::generate::{
     DirectPipelineTimings, advance_direct_pipeline_with_timings_and_turboquant_context,
@@ -6202,6 +6202,25 @@ impl MlxRunner {
 
         eval(&[&logits]);
         let logits_cpu = logits.data_f32().to_vec();
+        // Draft confidence gate (mirrors the Qwen MTP head's gate_forces_greedy).
+        // When enabled, draft the assistant's top token (greedy) and only propose
+        // it when the drafter's own top-token probability (at T=1.0) is at least
+        // the threshold; a low-confidence step suppresses its draft and falls back
+        // to an ordinary verified decode. Greedy drafting maximizes the accept
+        // rate under the default greedy (argmax-match) acceptance mode without
+        // changing the committed output — accepted positions commit the target's
+        // argmax either way, so this is purely an accept-rate / throughput knob.
+        let min_confidence = gemma4_assistant_mtp_draft_min_confidence();
+        if min_confidence > 0.0 {
+            let (token, confidence) = argmax_with_softmax_confidence(&logits_cpu);
+            if confidence < min_confidence {
+                return (vec![], vec![], vec![]);
+            }
+            // Greedy draft: no log-prob / distribution — acceptance uses the
+            // argmax match (and rejection mode falls back to it for empty
+            // log-probs), so only the drafted argmax token is carried.
+            return (vec![token], vec![], vec![]);
+        }
         let (token, log_prob, distribution) =
             sample_categorical_with_logprob_and_distribution(&logits_cpu, sampling, &mut state.rng);
         let distributions = distribution.into_iter().collect();
@@ -7996,6 +8015,32 @@ fn mtp_accept_count(
         all_accepted: ac == pending.len(),
         rejection_correction: None,
     }
+}
+
+/// Top token of a logit row plus its `softmax` probability at temperature 1.0 —
+/// the drafter's most likely next token and its confidence. Used to gate Gemma 4
+/// assistant drafts: the argmax is the greedy draft, the probability is the gate
+/// signal. Returns `(0, 0.0)` for an empty or degenerate logit row so such steps
+/// are always suppressed.
+fn argmax_with_softmax_confidence(logits: &[f32]) -> (u32, f32) {
+    let mut max_l = f32::NEG_INFINITY;
+    let mut argmax = 0u32;
+    for (idx, &l) in logits.iter().enumerate() {
+        if l > max_l {
+            max_l = l;
+            argmax = idx as u32;
+        }
+    }
+    if !max_l.is_finite() {
+        return (0, 0.0);
+    }
+    let sum: f32 = logits.iter().map(|&l| (l - max_l).exp()).sum();
+    let confidence = if sum > 0.0 && sum.is_finite() {
+        1.0 / sum
+    } else {
+        0.0
+    };
+    (argmax, confidence)
 }
 
 fn apply_decode_result(

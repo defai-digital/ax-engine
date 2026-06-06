@@ -809,8 +809,19 @@ fn gemma4_assistant_layer_forward(
     let hidden = add(hidden, &attn_proj, None);
 
     let normed2 = rms_norm(&hidden, Some(&w.ffn_norm), cfg.rms_norm_eps, None);
-    let ffn = ffn_swiglu(cfg, w, &normed2, None);
-    Ok(add(&hidden, &ffn, None))
+    // Gemma4 "sandwich norm": post_feedforward_layernorm is applied to the FFN
+    // output (inside ffn_swiglu) before the residual add, and the learned
+    // per-layer scalar scales the residual output. The assistant layers carry
+    // both weights (post_feedforward_layernorm + layer_scalar) exactly like the
+    // target's dense layers, so mirror families::standard::layer_forward here.
+    // Dropping either drifts the hidden state across the 4 assistant layers and
+    // tanks the draft accept rate.
+    let ffn = ffn_swiglu(cfg, w, &normed2, w.ffn_post_norm.as_ref());
+    Ok(if let Some(scalar) = &w.layer_scalar {
+        add_then_multiply_scalar(&hidden, &ffn, scalar)
+    } else {
+        add(&hidden, &ffn, None)
+    })
 }
 
 /// Cache-free single transformer layer for dense embedding models.

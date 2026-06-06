@@ -413,6 +413,50 @@ pub fn gemma4_assistant_mtp_debug_enabled() -> bool {
     })
 }
 
+/// Default draft confidence gate for the Gemma 4 assistant drafter.
+///
+/// The assistant proposes one token per decode step; without a gate every step
+/// is verified regardless of how unsure the drafter is, so its rejections drag
+/// the measured accept rate down (~94% on real code). Gating mirrors the Qwen
+/// MTP head's [`crate::mtp::DEFAULT_MTP_DRAFT_MIN_CONFIDENCE`]: a step only
+/// proposes its draft when the drafter's own (temperature-1.0) probability in
+/// its top token is at least this threshold, otherwise the draft is suppressed
+/// and the step falls back to an ordinary verified decode. Suppression is
+/// correctness-preserving — it never changes the committed token, only whether a
+/// step speculates — so this is an accept-rate / throughput knob, not a quality
+/// change. The default holds assistant accept above 98% on the fair-MTP suites
+/// for both 26B and 31B; lower it toward `0` for more speculation (more drafts,
+/// lower accept on less predictable content) via the env override.
+///
+/// On code, the drafter is extremely peaked, so even a 0.999 gate still passes
+/// ~95% of its drafts (decode cost is ~1-2% vs a looser gate) while filtering
+/// the uncertain tail that causes most rejections. The hard suite is long code:
+/// a 26B `long_code` sweep (~1.4k drafts/point) measured accept 97.5% @0.98,
+/// 97.4% @0.99, 98.3% @0.995, 98.7% @0.999 — flappy already clears 98% by ~0.97,
+/// but long code only crosses it near 0.995, so the default is set for the
+/// hardest suite. The residual rejections are genuine drafter-vs-target argmax
+/// disagreements that no gate can filter.
+pub const DEFAULT_GEMMA4_ASSISTANT_MTP_DRAFT_MIN_CONFIDENCE: f32 = 0.999;
+
+/// Read the assistant draft confidence gate from
+/// `AX_MLX_GEMMA4_ASSISTANT_MTP_DRAFT_MIN_CONFIDENCE`; valid range `[0.0, 1.0)`.
+/// Defaults to [`DEFAULT_GEMMA4_ASSISTANT_MTP_DRAFT_MIN_CONFIDENCE`]; set `0` to
+/// disable the gate and verify every proposed draft.
+pub fn gemma4_assistant_mtp_draft_min_confidence() -> f32 {
+    static CACHED: OnceLock<f32> = OnceLock::new();
+    *CACHED.get_or_init(|| {
+        match std::env::var("AX_MLX_GEMMA4_ASSISTANT_MTP_DRAFT_MIN_CONFIDENCE") {
+            Ok(raw) => raw
+                .trim()
+                .parse::<f32>()
+                .ok()
+                .filter(|value| value.is_finite() && *value >= 0.0 && *value < 1.0)
+                .unwrap_or(DEFAULT_GEMMA4_ASSISTANT_MTP_DRAFT_MIN_CONFIDENCE),
+            Err(_) => DEFAULT_GEMMA4_ASSISTANT_MTP_DRAFT_MIN_CONFIDENCE,
+        }
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;

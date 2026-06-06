@@ -1,0 +1,579 @@
+{
+  "schema": "ax.gemma4_assistant_mtp_benchmark.v1",
+  "models": [
+    "26b-a4b-4bit",
+    "31b-4bit"
+  ],
+  "modes": [
+    "mtp",
+    "mtp-ngram"
+  ],
+  "suites": [
+    "flappy",
+    "long_code",
+    "python_modules_long"
+  ],
+  "sampling": {
+    "temperature": 0.6,
+    "top_p": 0.95,
+    "top_k": 20
+  },
+  "max_tokens": 1000,
+  "repetitions": 5,
+  "cooldown": 10.0,
+  "inter_case_cooldown": 5.0,
+  "rows": [
+    {
+      "artifact": "benchmarks/results/gemma4-assistant-mtp/2026-06-06-gemma4-26b-31b-assistant-mtp/26b-a4b-4bit/flappy/mtp.json",
+      "engine": "ax_engine_gemma4_assistant_mtp",
+      "case_count": 4,
+      "decode_tok_s_median": 123.349663596417,
+      "prefill_tok_s_median": 2692.8768029160883,
+      "ttft_ms_median": 130.7785,
+      "assistant_draft_tokens": 9053,
+      "assistant_accepted_tokens": 8993,
+      "assistant_accept_rate": 0.9933723627526787,
+      "mtp_draft_tokens": 9035,
+      "mtp_accepted_tokens": 8993,
+      "mtp_accept_rate": 0.9953514111787493,
+      "ngram_draft_tokens": 0,
+      "ngram_accepted_tokens": 0,
+      "ngram_accept_rate": null,
+      "ngram_hit_steps": 0,
+      "claim_statuses": [
+        "mtp_head_only_effective"
+      ],
+      "effective_routes": [
+        "mtp_head_only_verify_loop"
+      ],
+      "build": {
+        "commit": "024c0031be07021806996dac122a8d0abf46ef98",
+        "build_profile": "release",
+        "server_binary": "/Users/akiralam/code/ax-engine_v5/target/release/ax-engine-server",
+        "git_tracked_dirty": true,
+        "git_tracked_status": [
+          " M crates/ax-engine-core/src/convert.rs",
+          " M crates/ax-engine-mlx/src/gemma4_assistant_mtp.rs",
+          " M crates/ax-engine-mlx/src/model/config.rs",
+          " M crates/ax-engine-mlx/src/model/mod.rs",
+          " M crates/ax-engine-mlx/src/runner.rs",
+          " M crates/ax-engine-server/src/openai/requests.rs",
+          " M crates/ax-engine-server/src/tests/openai_chat.rs",
+          " M crates/ax-engine-server/src/tests/openai_completions.rs"
+        ]
+      },
+      "model": "26b-a4b-4bit",
+      "model_label": "Gemma 4 26B A4B 4-bit",
+      "suite": "flappy",
+      "mode": "mtp",
+      "depth": 1,
+      "model_dir": "/Users/akiralam/.cache/huggingface/hub/models--ax-local--gemma-4-26b-a4b-it-assistant-mtp/snapshots/v1"
+    },
+    {
+      "artifact": "benchmarks/results/gemma4-assistant-mtp/2026-06-06-gemma4-26b-31b-assistant-mtp/26b-a4b-4bit/flappy/mtp-ngram.json",
+      "engine": "ax_engine_gemma4_assistant_mtp_ngram",
+      "case_count": 4,
+      "decode_tok_s_median": 122.88309094616051,
+      "prefill_tok_s_median": 2671.5352647366017,
+      "ttft_ms_median": 131.583,
+      "assistant_draft_tokens": 9091,
+      "assistant_accepted_tokens": 9038,
+      "assistant_accept_rate": 0.994170058299417,
+      "mtp_draft_tokens": 9184,
+      "mtp_accepted_tokens": 9075,
+      "mtp_accept_rate": 0.9881315331010453,
+      "ngram_draft_tokens": 111,
+      "ngram_accepted_tokens": 37,
+      "ngram_accept_rate": 0.3333333333333333,
+      "ngram_hit_steps": 40,
+      "claim_statuses": [
+        "ngram_no_observed_draft_path"
+      ],
+      "effective_routes": [
+        "ngram_route_not_observed"
+      ],
+      "build": {
+        "commit": "024c0031be07021806996dac122a8d0abf46ef98",
+        "build_profile": "release",
+        "server_binary": "/Users/akiralam/code/ax-engine_v5/target/release/ax-engine-server",
+        "git_tracked_dirty": true,
+        "git_tracked_status": [
+          " M crates/ax-engine-core/src/convert.rs",
+          " M crates/ax-engine-mlx/src/gemma4_assistant_mtp.rs",
+          " M crates/ax-engine-mlx/src/model/config.rs",
+          " M crates/ax-engine-mlx/src/model/mod.rs",
+          " M crates/ax-engine-mlx/src/runner.rs",
+          " M crates/ax-engine-server/src/openai/requests.rs",
+          " M crates/ax-engine-server/src/tests/openai_chat.rs",
+          " M crates/ax-engine-server/src/tests/openai_completions.rs"
+        ]
+      },
+      "model": "26b-a4b-4bit",
+      "model_label": "Gemma 4 26B A4B 4-bit",
+      "suite": "flappy",
+      "mode": "mtp-ngram",
+      "depth": 1,
+      "model_dir": "/Users/akiralam/.cache/huggingface/hub/models--ax-local--gemma-4-26b-a4b-it-assistant-mtp/snapshots/v1"
+    },
+    {
+      "artifact": "benchmarks/results/gemma4-assistant-mtp/2026-06-06-gemma4-26b-31b-assistant-mtp/26b-a4b-4bit/long_code/mtp.json",
+      "engine": "ax_engine_gemma4_assistant_mtp",
+      "case_count": 4,
+      "decode_tok_s_median": 119.25697061469364,
+      "prefill_tok_s_median": 3904.6354933994357,
+      "ttft_ms_median": 210.244,
+      "assistant_draft_tokens": 8728,
+      "assistant_accepted_tokens": 8647,
+      "assistant_accept_rate": 0.9907195233730522,
+      "mtp_draft_tokens": 8710,
+      "mtp_accepted_tokens": 8647,
+      "mtp_accept_rate": 0.9927669345579794,
+      "ngram_draft_tokens": 0,
+      "ngram_accepted_tokens": 0,
+      "ngram_accept_rate": null,
+      "ngram_hit_steps": 0,
+      "claim_statuses": [
+        "mtp_head_only_effective"
+      ],
+      "effective_routes": [
+        "mtp_head_only_verify_loop"
+      ],
+      "build": {
+        "commit": "024c0031be07021806996dac122a8d0abf46ef98",
+        "build_profile": "release",
+        "server_binary": "/Users/akiralam/code/ax-engine_v5/target/release/ax-engine-server",
+        "git_tracked_dirty": true,
+        "git_tracked_status": [
+          " M crates/ax-engine-core/src/convert.rs",
+          " M crates/ax-engine-mlx/src/gemma4_assistant_mtp.rs",
+          " M crates/ax-engine-mlx/src/model/config.rs",
+          " M crates/ax-engine-mlx/src/model/mod.rs",
+          " M crates/ax-engine-mlx/src/runner.rs",
+          " M crates/ax-engine-server/src/openai/requests.rs",
+          " M crates/ax-engine-server/src/tests/openai_chat.rs",
+          " M crates/ax-engine-server/src/tests/openai_completions.rs"
+        ]
+      },
+      "model": "26b-a4b-4bit",
+      "model_label": "Gemma 4 26B A4B 4-bit",
+      "suite": "long_code",
+      "mode": "mtp",
+      "depth": 1,
+      "model_dir": "/Users/akiralam/.cache/huggingface/hub/models--ax-local--gemma-4-26b-a4b-it-assistant-mtp/snapshots/v1"
+    },
+    {
+      "artifact": "benchmarks/results/gemma4-assistant-mtp/2026-06-06-gemma4-26b-31b-assistant-mtp/26b-a4b-4bit/long_code/mtp-ngram.json",
+      "engine": "ax_engine_gemma4_assistant_mtp_ngram",
+      "case_count": 4,
+      "decode_tok_s_median": 117.58293674014723,
+      "prefill_tok_s_median": 3892.7576557611073,
+      "ttft_ms_median": 209.835,
+      "assistant_draft_tokens": 8717,
+      "assistant_accepted_tokens": 8638,
+      "assistant_accept_rate": 0.9909372490535735,
+      "mtp_draft_tokens": 8809,
+      "mtp_accepted_tokens": 8655,
+      "mtp_accept_rate": 0.9825178794414803,
+      "ngram_draft_tokens": 106,
+      "ngram_accepted_tokens": 17,
+      "ngram_accept_rate": 0.16037735849056603,
+      "ngram_hit_steps": 44,
+      "claim_statuses": [
+        "ngram_no_observed_draft_path"
+      ],
+      "effective_routes": [
+        "ngram_route_not_observed"
+      ],
+      "build": {
+        "commit": "024c0031be07021806996dac122a8d0abf46ef98",
+        "build_profile": "release",
+        "server_binary": "/Users/akiralam/code/ax-engine_v5/target/release/ax-engine-server",
+        "git_tracked_dirty": true,
+        "git_tracked_status": [
+          " M crates/ax-engine-core/src/convert.rs",
+          " M crates/ax-engine-mlx/src/gemma4_assistant_mtp.rs",
+          " M crates/ax-engine-mlx/src/model/config.rs",
+          " M crates/ax-engine-mlx/src/model/mod.rs",
+          " M crates/ax-engine-mlx/src/runner.rs",
+          " M crates/ax-engine-server/src/openai/requests.rs",
+          " M crates/ax-engine-server/src/tests/openai_chat.rs",
+          " M crates/ax-engine-server/src/tests/openai_completions.rs"
+        ]
+      },
+      "model": "26b-a4b-4bit",
+      "model_label": "Gemma 4 26B A4B 4-bit",
+      "suite": "long_code",
+      "mode": "mtp-ngram",
+      "depth": 1,
+      "model_dir": "/Users/akiralam/.cache/huggingface/hub/models--ax-local--gemma-4-26b-a4b-it-assistant-mtp/snapshots/v1"
+    },
+    {
+      "artifact": "benchmarks/results/gemma4-assistant-mtp/2026-06-06-gemma4-26b-31b-assistant-mtp/26b-a4b-4bit/python_modules_long/mtp.json",
+      "engine": "ax_engine_gemma4_assistant_mtp",
+      "case_count": 3,
+      "decode_tok_s_median": 120.00180482714458,
+      "prefill_tok_s_median": 2916.9920529192887,
+      "ttft_ms_median": 130.614,
+      "assistant_draft_tokens": 5980,
+      "assistant_accepted_tokens": 5888,
+      "assistant_accept_rate": 0.9846153846153847,
+      "mtp_draft_tokens": 5969,
+      "mtp_accepted_tokens": 5888,
+      "mtp_accept_rate": 0.9864298877533926,
+      "ngram_draft_tokens": 0,
+      "ngram_accepted_tokens": 0,
+      "ngram_accept_rate": null,
+      "ngram_hit_steps": 0,
+      "claim_statuses": [
+        "mtp_head_only_effective"
+      ],
+      "effective_routes": [
+        "mtp_head_only_verify_loop"
+      ],
+      "build": {
+        "commit": "024c0031be07021806996dac122a8d0abf46ef98",
+        "build_profile": "release",
+        "server_binary": "/Users/akiralam/code/ax-engine_v5/target/release/ax-engine-server",
+        "git_tracked_dirty": true,
+        "git_tracked_status": [
+          " M crates/ax-engine-core/src/convert.rs",
+          " M crates/ax-engine-mlx/src/gemma4_assistant_mtp.rs",
+          " M crates/ax-engine-mlx/src/model/config.rs",
+          " M crates/ax-engine-mlx/src/model/mod.rs",
+          " M crates/ax-engine-mlx/src/runner.rs",
+          " M crates/ax-engine-server/src/openai/requests.rs",
+          " M crates/ax-engine-server/src/tests/openai_chat.rs",
+          " M crates/ax-engine-server/src/tests/openai_completions.rs"
+        ]
+      },
+      "model": "26b-a4b-4bit",
+      "model_label": "Gemma 4 26B A4B 4-bit",
+      "suite": "python_modules_long",
+      "mode": "mtp",
+      "depth": 1,
+      "model_dir": "/Users/akiralam/.cache/huggingface/hub/models--ax-local--gemma-4-26b-a4b-it-assistant-mtp/snapshots/v1"
+    },
+    {
+      "artifact": "benchmarks/results/gemma4-assistant-mtp/2026-06-06-gemma4-26b-31b-assistant-mtp/26b-a4b-4bit/python_modules_long/mtp-ngram.json",
+      "engine": "ax_engine_gemma4_assistant_mtp_ngram",
+      "case_count": 3,
+      "decode_tok_s_median": 120.51285450362563,
+      "prefill_tok_s_median": 2916.4115125535823,
+      "ttft_ms_median": 130.64000000000001,
+      "assistant_draft_tokens": 5935,
+      "assistant_accepted_tokens": 5859,
+      "assistant_accept_rate": 0.9871946082561078,
+      "mtp_draft_tokens": 6000,
+      "mtp_accepted_tokens": 5869,
+      "mtp_accept_rate": 0.9781666666666666,
+      "ngram_draft_tokens": 72,
+      "ngram_accepted_tokens": 10,
+      "ngram_accept_rate": 0.1388888888888889,
+      "ngram_hit_steps": 26,
+      "claim_statuses": [
+        "ngram_no_observed_draft_path"
+      ],
+      "effective_routes": [
+        "ngram_route_not_observed"
+      ],
+      "build": {
+        "commit": "024c0031be07021806996dac122a8d0abf46ef98",
+        "build_profile": "release",
+        "server_binary": "/Users/akiralam/code/ax-engine_v5/target/release/ax-engine-server",
+        "git_tracked_dirty": true,
+        "git_tracked_status": [
+          " M crates/ax-engine-core/src/convert.rs",
+          " M crates/ax-engine-mlx/src/gemma4_assistant_mtp.rs",
+          " M crates/ax-engine-mlx/src/model/config.rs",
+          " M crates/ax-engine-mlx/src/model/mod.rs",
+          " M crates/ax-engine-mlx/src/runner.rs",
+          " M crates/ax-engine-server/src/openai/requests.rs",
+          " M crates/ax-engine-server/src/tests/openai_chat.rs",
+          " M crates/ax-engine-server/src/tests/openai_completions.rs"
+        ]
+      },
+      "model": "26b-a4b-4bit",
+      "model_label": "Gemma 4 26B A4B 4-bit",
+      "suite": "python_modules_long",
+      "mode": "mtp-ngram",
+      "depth": 1,
+      "model_dir": "/Users/akiralam/.cache/huggingface/hub/models--ax-local--gemma-4-26b-a4b-it-assistant-mtp/snapshots/v1"
+    },
+    {
+      "artifact": "benchmarks/results/gemma4-assistant-mtp/2026-06-06-gemma4-26b-31b-assistant-mtp/31b-4bit/flappy/mtp.json",
+      "engine": "ax_engine_gemma4_assistant_mtp",
+      "case_count": 4,
+      "decode_tok_s_median": 37.28205492938109,
+      "prefill_tok_s_median": 734.3619299904326,
+      "ttft_ms_median": 489.71,
+      "assistant_draft_tokens": 9513,
+      "assistant_accepted_tokens": 9449,
+      "assistant_accept_rate": 0.9932723641332912,
+      "mtp_draft_tokens": 9493,
+      "mtp_accepted_tokens": 9449,
+      "mtp_accept_rate": 0.9953650057937428,
+      "ngram_draft_tokens": 0,
+      "ngram_accepted_tokens": 0,
+      "ngram_accept_rate": null,
+      "ngram_hit_steps": 0,
+      "claim_statuses": [
+        "mtp_head_only_effective"
+      ],
+      "effective_routes": [
+        "mtp_head_only_verify_loop"
+      ],
+      "build": {
+        "commit": "024c0031be07021806996dac122a8d0abf46ef98",
+        "build_profile": "release",
+        "server_binary": "/Users/akiralam/code/ax-engine_v5/target/release/ax-engine-server",
+        "git_tracked_dirty": true,
+        "git_tracked_status": [
+          " M crates/ax-engine-core/src/convert.rs",
+          " M crates/ax-engine-mlx/src/gemma4_assistant_mtp.rs",
+          " M crates/ax-engine-mlx/src/model/config.rs",
+          " M crates/ax-engine-mlx/src/model/mod.rs",
+          " M crates/ax-engine-mlx/src/runner.rs",
+          " M crates/ax-engine-server/src/openai/requests.rs",
+          " M crates/ax-engine-server/src/tests/openai_chat.rs",
+          " M crates/ax-engine-server/src/tests/openai_completions.rs"
+        ]
+      },
+      "model": "31b-4bit",
+      "model_label": "Gemma 4 31B 4-bit",
+      "suite": "flappy",
+      "mode": "mtp",
+      "depth": 1,
+      "model_dir": "/Users/akiralam/.cache/huggingface/hub/models--ax-local--gemma-4-31b-it-assistant-mtp/snapshots/v1"
+    },
+    {
+      "artifact": "benchmarks/results/gemma4-assistant-mtp/2026-06-06-gemma4-26b-31b-assistant-mtp/31b-4bit/flappy/mtp-ngram.json",
+      "engine": "ax_engine_gemma4_assistant_mtp_ngram",
+      "case_count": 4,
+      "decode_tok_s_median": 37.02516378525631,
+      "prefill_tok_s_median": 733.9336669178515,
+      "ttft_ms_median": 490.278,
+      "assistant_draft_tokens": 9406,
+      "assistant_accepted_tokens": 9338,
+      "assistant_accept_rate": 0.9927705719753349,
+      "mtp_draft_tokens": 9494,
+      "mtp_accepted_tokens": 9379,
+      "mtp_accept_rate": 0.9878870865809986,
+      "ngram_draft_tokens": 107,
+      "ngram_accepted_tokens": 41,
+      "ngram_accept_rate": 0.38317757009345793,
+      "ngram_hit_steps": 40,
+      "claim_statuses": [
+        "ngram_no_observed_draft_path"
+      ],
+      "effective_routes": [
+        "ngram_route_not_observed"
+      ],
+      "build": {
+        "commit": "024c0031be07021806996dac122a8d0abf46ef98",
+        "build_profile": "release",
+        "server_binary": "/Users/akiralam/code/ax-engine_v5/target/release/ax-engine-server",
+        "git_tracked_dirty": true,
+        "git_tracked_status": [
+          " M crates/ax-engine-core/src/convert.rs",
+          " M crates/ax-engine-mlx/src/gemma4_assistant_mtp.rs",
+          " M crates/ax-engine-mlx/src/model/config.rs",
+          " M crates/ax-engine-mlx/src/model/mod.rs",
+          " M crates/ax-engine-mlx/src/runner.rs",
+          " M crates/ax-engine-server/src/openai/requests.rs",
+          " M crates/ax-engine-server/src/tests/openai_chat.rs",
+          " M crates/ax-engine-server/src/tests/openai_completions.rs"
+        ]
+      },
+      "model": "31b-4bit",
+      "model_label": "Gemma 4 31B 4-bit",
+      "suite": "flappy",
+      "mode": "mtp-ngram",
+      "depth": 1,
+      "model_dir": "/Users/akiralam/.cache/huggingface/hub/models--ax-local--gemma-4-31b-it-assistant-mtp/snapshots/v1"
+    },
+    {
+      "artifact": "benchmarks/results/gemma4-assistant-mtp/2026-06-06-gemma4-26b-31b-assistant-mtp/31b-4bit/long_code/mtp.json",
+      "engine": "ax_engine_gemma4_assistant_mtp",
+      "case_count": 4,
+      "decode_tok_s_median": 35.9336358243351,
+      "prefill_tok_s_median": 782.3225866281618,
+      "ttft_ms_median": 1018.6690000000001,
+      "assistant_draft_tokens": 9328,
+      "assistant_accepted_tokens": 9257,
+      "assistant_accept_rate": 0.9923885077186964,
+      "mtp_draft_tokens": 9309,
+      "mtp_accepted_tokens": 9257,
+      "mtp_accept_rate": 0.9944140079492964,
+      "ngram_draft_tokens": 0,
+      "ngram_accepted_tokens": 0,
+      "ngram_accept_rate": null,
+      "ngram_hit_steps": 0,
+      "claim_statuses": [
+        "mtp_head_only_effective"
+      ],
+      "effective_routes": [
+        "mtp_head_only_verify_loop"
+      ],
+      "build": {
+        "commit": "024c0031be07021806996dac122a8d0abf46ef98",
+        "build_profile": "release",
+        "server_binary": "/Users/akiralam/code/ax-engine_v5/target/release/ax-engine-server",
+        "git_tracked_dirty": true,
+        "git_tracked_status": [
+          " M crates/ax-engine-core/src/convert.rs",
+          " M crates/ax-engine-mlx/src/gemma4_assistant_mtp.rs",
+          " M crates/ax-engine-mlx/src/model/config.rs",
+          " M crates/ax-engine-mlx/src/model/mod.rs",
+          " M crates/ax-engine-mlx/src/runner.rs",
+          " M crates/ax-engine-server/src/openai/requests.rs",
+          " M crates/ax-engine-server/src/tests/openai_chat.rs",
+          " M crates/ax-engine-server/src/tests/openai_completions.rs"
+        ]
+      },
+      "model": "31b-4bit",
+      "model_label": "Gemma 4 31B 4-bit",
+      "suite": "long_code",
+      "mode": "mtp",
+      "depth": 1,
+      "model_dir": "/Users/akiralam/.cache/huggingface/hub/models--ax-local--gemma-4-31b-it-assistant-mtp/snapshots/v1"
+    },
+    {
+      "artifact": "benchmarks/results/gemma4-assistant-mtp/2026-06-06-gemma4-26b-31b-assistant-mtp/31b-4bit/long_code/mtp-ngram.json",
+      "engine": "ax_engine_gemma4_assistant_mtp_ngram",
+      "case_count": 4,
+      "decode_tok_s_median": 35.2493753050767,
+      "prefill_tok_s_median": 783.3890737447534,
+      "ttft_ms_median": 1016.7259999999999,
+      "assistant_draft_tokens": 9322,
+      "assistant_accepted_tokens": 9263,
+      "assistant_accept_rate": 0.9936708860759493,
+      "mtp_draft_tokens": 9415,
+      "mtp_accepted_tokens": 9279,
+      "mtp_accept_rate": 0.985554965480616,
+      "ngram_draft_tokens": 111,
+      "ngram_accepted_tokens": 16,
+      "ngram_accept_rate": 0.14414414414414414,
+      "ngram_hit_steps": 43,
+      "claim_statuses": [
+        "ngram_no_observed_draft_path"
+      ],
+      "effective_routes": [
+        "ngram_route_not_observed"
+      ],
+      "build": {
+        "commit": "024c0031be07021806996dac122a8d0abf46ef98",
+        "build_profile": "release",
+        "server_binary": "/Users/akiralam/code/ax-engine_v5/target/release/ax-engine-server",
+        "git_tracked_dirty": true,
+        "git_tracked_status": [
+          " M crates/ax-engine-core/src/convert.rs",
+          " M crates/ax-engine-mlx/src/gemma4_assistant_mtp.rs",
+          " M crates/ax-engine-mlx/src/model/config.rs",
+          " M crates/ax-engine-mlx/src/model/mod.rs",
+          " M crates/ax-engine-mlx/src/runner.rs",
+          " M crates/ax-engine-server/src/openai/requests.rs",
+          " M crates/ax-engine-server/src/tests/openai_chat.rs",
+          " M crates/ax-engine-server/src/tests/openai_completions.rs"
+        ]
+      },
+      "model": "31b-4bit",
+      "model_label": "Gemma 4 31B 4-bit",
+      "suite": "long_code",
+      "mode": "mtp-ngram",
+      "depth": 1,
+      "model_dir": "/Users/akiralam/.cache/huggingface/hub/models--ax-local--gemma-4-31b-it-assistant-mtp/snapshots/v1"
+    },
+    {
+      "artifact": "benchmarks/results/gemma4-assistant-mtp/2026-06-06-gemma4-26b-31b-assistant-mtp/31b-4bit/python_modules_long/mtp.json",
+      "engine": "ax_engine_gemma4_assistant_mtp",
+      "case_count": 3,
+      "decode_tok_s_median": 35.949138870732575,
+      "prefill_tok_s_median": 741.7568081347239,
+      "ttft_ms_median": 473.25899999999996,
+      "assistant_draft_tokens": 6409,
+      "assistant_accepted_tokens": 6309,
+      "assistant_accept_rate": 0.9843969418005929,
+      "mtp_draft_tokens": 6397,
+      "mtp_accepted_tokens": 6309,
+      "mtp_accept_rate": 0.9862435516648429,
+      "ngram_draft_tokens": 0,
+      "ngram_accepted_tokens": 0,
+      "ngram_accept_rate": null,
+      "ngram_hit_steps": 0,
+      "claim_statuses": [
+        "mtp_head_only_effective"
+      ],
+      "effective_routes": [
+        "mtp_head_only_verify_loop"
+      ],
+      "build": {
+        "commit": "024c0031be07021806996dac122a8d0abf46ef98",
+        "build_profile": "release",
+        "server_binary": "/Users/akiralam/code/ax-engine_v5/target/release/ax-engine-server",
+        "git_tracked_dirty": true,
+        "git_tracked_status": [
+          " M crates/ax-engine-core/src/convert.rs",
+          " M crates/ax-engine-mlx/src/gemma4_assistant_mtp.rs",
+          " M crates/ax-engine-mlx/src/model/config.rs",
+          " M crates/ax-engine-mlx/src/model/mod.rs",
+          " M crates/ax-engine-mlx/src/runner.rs",
+          " M crates/ax-engine-server/src/openai/requests.rs",
+          " M crates/ax-engine-server/src/tests/openai_chat.rs",
+          " M crates/ax-engine-server/src/tests/openai_completions.rs"
+        ]
+      },
+      "model": "31b-4bit",
+      "model_label": "Gemma 4 31B 4-bit",
+      "suite": "python_modules_long",
+      "mode": "mtp",
+      "depth": 1,
+      "model_dir": "/Users/akiralam/.cache/huggingface/hub/models--ax-local--gemma-4-31b-it-assistant-mtp/snapshots/v1"
+    },
+    {
+      "artifact": "benchmarks/results/gemma4-assistant-mtp/2026-06-06-gemma4-26b-31b-assistant-mtp/31b-4bit/python_modules_long/mtp-ngram.json",
+      "engine": "ax_engine_gemma4_assistant_mtp_ngram",
+      "case_count": 3,
+      "decode_tok_s_median": 35.80721695173807,
+      "prefill_tok_s_median": 743.5249809448372,
+      "ttft_ms_median": 471.56,
+      "assistant_draft_tokens": 6375,
+      "assistant_accepted_tokens": 6276,
+      "assistant_accept_rate": 0.9844705882352941,
+      "mtp_draft_tokens": 6436,
+      "mtp_accepted_tokens": 6276,
+      "mtp_accept_rate": 0.9751398384089497,
+      "ngram_draft_tokens": 72,
+      "ngram_accepted_tokens": 0,
+      "ngram_accept_rate": 0.0,
+      "ngram_hit_steps": 25,
+      "claim_statuses": [
+        "ngram_no_observed_draft_path"
+      ],
+      "effective_routes": [
+        "ngram_route_not_observed"
+      ],
+      "build": {
+        "commit": "024c0031be07021806996dac122a8d0abf46ef98",
+        "build_profile": "release",
+        "server_binary": "/Users/akiralam/code/ax-engine_v5/target/release/ax-engine-server",
+        "git_tracked_dirty": true,
+        "git_tracked_status": [
+          " M crates/ax-engine-core/src/convert.rs",
+          " M crates/ax-engine-mlx/src/gemma4_assistant_mtp.rs",
+          " M crates/ax-engine-mlx/src/model/config.rs",
+          " M crates/ax-engine-mlx/src/model/mod.rs",
+          " M crates/ax-engine-mlx/src/runner.rs",
+          " M crates/ax-engine-server/src/openai/requests.rs",
+          " M crates/ax-engine-server/src/tests/openai_chat.rs",
+          " M crates/ax-engine-server/src/tests/openai_completions.rs"
+        ]
+      },
+      "model": "31b-4bit",
+      "model_label": "Gemma 4 31B 4-bit",
+      "suite": "python_modules_long",
+      "mode": "mtp-ngram",
+      "depth": 1,
+      "model_dir": "/Users/akiralam/.cache/huggingface/hub/models--ax-local--gemma-4-31b-it-assistant-mtp/snapshots/v1"
+    }
+  ]
+}

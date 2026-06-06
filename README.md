@@ -86,6 +86,55 @@ MTPLX TTFT is derived from `prompt_eval_time_s` (runner-level). AX TTFT is a run
 
 Full artifacts: [`2026-06-05-ax-mtp-gate-fresh`](benchmarks/results/mtp-fair/2026-06-05-ax-mtp-gate-fresh/summary.json) (fresh AX MTP + n-gram run with the default draft confidence gate, 2026-06-05; MTPLX rows reused from the 2026-06-04 same-day sidecar run).
 
+### Gemma 4 Assistant MTP
+
+Gemma 4's multi-token prediction is a separate small **assistant drafter** model
+(not a fused `mtp.*` sidecar like Qwen) that shares the target's tokenizer and
+embedding table and drafts one token per step off the target's last-layer hidden
+state, attending to the target's own KV cache. AX Engine runs it in
+assistant-MTP-only (`mtp`) and assistant MTP + n-gram (`mtp-ngram`) modes. Native
+depth 1, sampled decode, max tokens `1000`, five measured repetitions.
+
+The assistant uses a draft confidence gate (`AX_MLX_GEMMA4_ASSISTANT_MTP_DRAFT_MIN_CONFIDENCE`,
+default `0.999`) that mirrors the Qwen MTP head: it drafts the assistant's top
+token and only proposes it when the drafter's own probability in that token clears
+the threshold, so only high-confidence tokens are verified. Suppressing a
+low-confidence draft is correctness-preserving — it never changes the committed
+token, only whether a step speculates — so the gate is an accept-rate / throughput
+knob. Acceptance uses the default greedy (argmax-match) mode, identical to the Qwen
+MTP head. Lower the gate toward `0` for more speculation on less predictable
+content; the hardest suite (`python_modules_long`) is what holds the default high.
+
+| Model | Suite | Depth | AX MTP tok/s | AX MTP accept | AX MTP+ngram tok/s | AX MTP+ngram accept |
+|---|---|---:|---:|---:|---:|---:|
+| Gemma 4 26B A4B 4-bit | flappy | 1 | 123.3 | 99.3% | 122.9 | 99.4% |
+| Gemma 4 26B A4B 4-bit | long_code | 1 | 119.3 | 99.1% | 117.6 | 99.1% |
+| Gemma 4 26B A4B 4-bit | python_modules_long | 1 | 120.0 | 98.5% | 120.5 | 98.7% |
+| Gemma 4 31B 4-bit | flappy | 1 | 37.3 | 99.3% | 37.0 | 99.3% |
+| Gemma 4 31B 4-bit | long_code | 1 | 35.9 | 99.2% | 35.2 | 99.4% |
+| Gemma 4 31B 4-bit | python_modules_long | 1 | 35.9 | 98.4% | 35.8 | 98.4% |
+
+#### Prefill throughput (tok/s) and time to first token (ms) — same run
+
+| Model | Suite | AX MTP prefill | AX MTP+ngram prefill | AX MTP ttft ms | AX MTP+ngram ttft ms |
+|---|---|---:|---:|---:|---:|
+| Gemma 4 26B A4B 4-bit | flappy | 2,693 | 2,672 | 131 | 132 |
+| Gemma 4 26B A4B 4-bit | long_code | 3,905 | 3,893 | 210 | 210 |
+| Gemma 4 26B A4B 4-bit | python_modules_long | 2,917 | 2,916 | 131 | 131 |
+| Gemma 4 31B 4-bit | flappy | 734 | 734 | 490 | 490 |
+| Gemma 4 31B 4-bit | long_code | 782 | 783 | 1,019 | 1,017 |
+| Gemma 4 31B 4-bit | python_modules_long | 742 | 744 | 473 | 472 |
+
+Assistant accept is the share of proposed drafts the target accepts; it stays
+≥98% on every model / suite / mode at the default gate. The `mtp-ngram` column
+stacks n-gram speculative drafting on top of the assistant; n-gram contributes
+little here because the gated assistant already captures the speculation, so the
+two modes track closely. Sampler: temperature=0.6, top_p=0.95, top_k=20. 1000 gen
+tokens, 5 repetitions, 10 s cooldown, 5 s inter-case cooldown. Apple M5 Max · AX
+Engine v5.2.4.
+
+Full artifacts: [`2026-06-06-gemma4-26b-31b-assistant-mtp`](benchmarks/results/gemma4-assistant-mtp/2026-06-06-gemma4-26b-31b-assistant-mtp/summary.json).
+
 ### llama.cpp metal vs mlx-lm vs AX-Engine
 
 <table>

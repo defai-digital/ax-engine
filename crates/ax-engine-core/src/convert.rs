@@ -1156,11 +1156,17 @@ fn moe_config(config: &serde_json::Value, model_type: &str) -> NativeMoeConfig {
 /// Returns `(rope_theta, rope_theta_swa, partial_rotary_factor)`.
 /// Gemma4 stores these nested under `text_config.rope_parameters.{full,sliding}_attention`.
 /// Qwen3.5/Next stores them flat inside `text_config.rope_parameters`.
+///
+/// The gemma4 assistant drafter (`gemma4_assistant`) carries the identical
+/// nested `rope_parameters` layout and must share the target's RoPE geometry,
+/// so it takes the same parsing branch — otherwise `rope_theta` / `rope_theta_swa`
+/// / `partial_rotary_factor` fall through to None and the drafter's Q rotation
+/// stops matching the target's cached K.
 fn parse_rope_params(
     config: &serde_json::Value,
     model_type: &str,
 ) -> (Option<u32>, Option<u32>, Option<f32>) {
-    if model_type == "gemma4" {
+    if matches!(model_type, "gemma4" | "gemma4_assistant") {
         let rp = config
             .get("text_config")
             .and_then(|tc| tc.get("rope_parameters"));
@@ -2708,6 +2714,35 @@ mod tests {
         assert_eq!(full_theta, Some(1000000));
         assert_eq!(sliding_theta, Some(1000000));
         assert_eq!(partial_rotary, None);
+    }
+
+    #[test]
+    fn parses_gemma4_assistant_nested_rope_like_gemma4() {
+        // The assistant drafter carries the identical nested rope_parameters
+        // layout and must take the gemma4 branch — otherwise its Q rotation
+        // stops matching the target's cached K and the draft accept rate
+        // collapses (~20%). Mirrors the real assistant config.json shape.
+        let config = serde_json::json!({
+            "model_type": "gemma4_assistant",
+            "text_config": {
+                "rope_parameters": {
+                    "full_attention": {
+                        "rope_theta": 1000000,
+                        "partial_rotary_factor": 0.25,
+                    },
+                    "sliding_attention": {
+                        "rope_theta": 10000,
+                    },
+                }
+            }
+        });
+
+        let (full_theta, sliding_theta, partial_rotary) =
+            parse_rope_params(&config, "gemma4_assistant");
+
+        assert_eq!(full_theta, Some(1000000));
+        assert_eq!(sliding_theta, Some(10000));
+        assert_eq!(partial_rotary, Some(0.25));
     }
 
     #[test]

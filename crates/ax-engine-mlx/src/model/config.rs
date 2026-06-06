@@ -450,12 +450,17 @@ pub(super) fn build_layer_configs(
         return Vec::new();
     }
     let swa_theta = m.rope_theta_swa.map(|t| t as f32).unwrap_or(10000.0);
+    // The Gemma4 assistant drafter reuses gemma4's RoPE geometry (proportional
+    // full-attention RoPE + full-width sliding RoPE). It attends to the target's
+    // cached K, so its Q rotation must match the target's exactly — gate the
+    // gemma4-specific RoPE on the whole family, not just the dense target.
+    let is_gemma4_family = matches!(m.model_family.as_str(), "gemma4" | "gemma4_assistant");
     let full_head_dim = m.global_head_dim.unwrap_or(m.attention_head_dim) as usize;
     let full_rope_dims = m
         .partial_rotary_factor
         .map(|f| ((full_head_dim as f32 * f) as usize).next_multiple_of(2))
         .unwrap_or(full_head_dim);
-    let full_rope_freqs = if m.model_family == "gemma4" && full_rope_dims < full_head_dim {
+    let full_rope_freqs = if is_gemma4_family && full_rope_dims < full_head_dim {
         Some(build_gemma4_proportional_rope_freqs(
             full_head_dim,
             full_rope_dims,
@@ -465,7 +470,7 @@ pub(super) fn build_layer_configs(
     } else {
         None
     };
-    let sliding_rope_dims = if m.model_family == "gemma4" {
+    let sliding_rope_dims = if is_gemma4_family {
         // Gemma4's partial_rotary_factor belongs to full_attention's
         // proportional RoPE. sliding_attention uses default RoPE over the full
         // sliding head_dim.
