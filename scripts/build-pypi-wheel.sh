@@ -77,6 +77,22 @@ cp "$SERVER_BIN" "$SCRIPTS_DIR/ax-engine-server"
 chmod +x "$SCRIPTS_DIR/ax-engine-server"
 echo "    staged: $SCRIPTS_DIR/ax-engine-server"
 
+# ── 3b. Stage mlx.metallib so the wheel ships MLX's Metal shader library. ──
+# pyproject.toml includes python/ax_engine.dylibs/mlx.metallib in the wheel and
+# the guard below verifies it post-delocate. Copy it from the MLX install so the
+# build is self-contained on CI runners as well as local machines.
+echo "==> Staging mlx.metallib into the wheel data dir..."
+MLX_METALLIB="${MLX_METALLIB:-$(brew --prefix mlx 2>/dev/null)/lib/mlx.metallib}"
+if [[ ! -f "$MLX_METALLIB" ]]; then
+    echo "error: mlx.metallib not found at '$MLX_METALLIB'"
+    echo "       install MLX (e.g. 'brew install mlx') or set MLX_METALLIB to its path"
+    exit 1
+fi
+METALLIB_DIR="$REPO_ROOT/python/ax_engine.dylibs"
+mkdir -p "$METALLIB_DIR"
+cp -f "$MLX_METALLIB" "$METALLIB_DIR/mlx.metallib"
+echo "    staged: $METALLIB_DIR/mlx.metallib ($(wc -c < "$METALLIB_DIR/mlx.metallib" | tr -d ' ') bytes)"
+
 # ── 4. Build the wheel ─────────────────────────────────────────────────────
 echo "==> Building wheel (release, stripped)..."
 maturin build --release --strip --out "$WHEEL_OUT"
