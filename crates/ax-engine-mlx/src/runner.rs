@@ -6914,14 +6914,15 @@ impl MlxRunner {
             state.ngram.predict_with_policy(NgramDraftPolicy {
                 variant: NgramPolicyVariant::MajorityRecency,
                 max_len: ngram_max,
-                min_support: if mtp_post_think_guarded {
+                min_support: mtp_ngram_min_support().max(if mtp_post_think_guarded {
                     POST_THINK_MIN_NGRAM_SUPPORT
                 } else {
                     1
-                },
-                confidence_threshold: effective_draft_confidence_threshold(),
+                }),
+                confidence_threshold: mtp_ngram_confidence_threshold(),
                 adaptive_match_len: true,
                 bypass_prompt_min_support: true,
+                min_context_len: mtp_ngram_min_context_len(),
             })
         } else {
             NgramDraftOutcome {
@@ -7622,6 +7623,63 @@ fn mtp_ngram_hurt_gate_mode() -> HurtGateMode {
             "legacy" => HurtGateMode::LegacyEwma,
             _ => HurtGateMode::SourceAware,
         }
+    })
+}
+
+/// Minimum n-gram support (times the matched context+continuation was observed)
+/// required to propose an n-gram draft on the MTP-stacked path. The default `3`
+/// keeps single-observation patterns — which dominate the rejections that make
+/// the n-gram accept rate look bad — out of the draft. Override with
+/// `AX_MLX_MTP_NGRAM_MIN_SUPPORT`.
+pub const DEFAULT_MTP_NGRAM_MIN_SUPPORT: u32 = 3;
+
+fn mtp_ngram_min_support() -> u32 {
+    static CACHED: OnceLock<u32> = OnceLock::new();
+    *CACHED.get_or_init(|| {
+        std::env::var("AX_MLX_MTP_NGRAM_MIN_SUPPORT")
+            .ok()
+            .and_then(|v| v.parse::<u32>().ok())
+            .filter(|v| *v >= 1)
+            .unwrap_or(DEFAULT_MTP_NGRAM_MIN_SUPPORT)
+    })
+}
+
+/// Minimum n-gram continuation confidence (`support/total`) required to propose
+/// an n-gram draft on the MTP-stacked path. Higher than the standalone n-gram
+/// default ([`crate::ngram_accel::DRAFT_CONFIDENCE_THRESHOLD`] = 0.4) because the
+/// MTP head already captures the high-probability next token, so n-gram should
+/// only stack when it is near-certain — otherwise its low-accept drafts add
+/// verify cost and get hurt-gated. Override with
+/// `AX_MLX_MTP_NGRAM_CONFIDENCE_THRESHOLD`.
+pub const DEFAULT_MTP_NGRAM_CONFIDENCE_THRESHOLD: f32 = 0.85;
+
+fn mtp_ngram_confidence_threshold() -> f32 {
+    static CACHED: OnceLock<f32> = OnceLock::new();
+    *CACHED.get_or_init(|| {
+        std::env::var("AX_MLX_MTP_NGRAM_CONFIDENCE_THRESHOLD")
+            .ok()
+            .and_then(|v| v.parse::<f32>().ok())
+            .filter(|v| v.is_finite() && (0.0..=1.0).contains(v))
+            .unwrap_or(DEFAULT_MTP_NGRAM_CONFIDENCE_THRESHOLD)
+    })
+}
+
+/// Minimum n-gram context length (tokens) for the MTP-stacked draft path. `4`
+/// requires a full fourgram context — short bigram/trigram matches are the main
+/// source of low-accept drafts (the same suffix maps to many different true
+/// continuations), so requiring the longest context is what lifts the n-gram
+/// accept rate past the confidence/support plateau. Override with
+/// `AX_MLX_MTP_NGRAM_MIN_CONTEXT_LEN` (clamped to 2..=4).
+pub const DEFAULT_MTP_NGRAM_MIN_CONTEXT_LEN: usize = 4;
+
+fn mtp_ngram_min_context_len() -> usize {
+    static CACHED: OnceLock<usize> = OnceLock::new();
+    *CACHED.get_or_init(|| {
+        std::env::var("AX_MLX_MTP_NGRAM_MIN_CONTEXT_LEN")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .filter(|v| (2..=4).contains(v))
+            .unwrap_or(DEFAULT_MTP_NGRAM_MIN_CONTEXT_LEN)
     })
 }
 
@@ -8538,6 +8596,7 @@ fn ngram_acceleration_draft(
             confidence_threshold,
             adaptive_match_len: true,
             bypass_prompt_min_support: true,
+            min_context_len: 2,
         }
     } else if post_think_guarded {
         // Outside `<think>` on reasoning models: require POST_THINK_MIN_NGRAM_SUPPORT
@@ -8552,6 +8611,7 @@ fn ngram_acceleration_draft(
             confidence_threshold,
             adaptive_match_len: true,
             bypass_prompt_min_support: true,
+            min_context_len: 2,
         }
     } else {
         // Dense models inside `<think>` (or non-thinking models): standard policy.
@@ -8564,6 +8624,7 @@ fn ngram_acceleration_draft(
             confidence_threshold,
             adaptive_match_len: true,
             bypass_prompt_min_support: false,
+            min_context_len: 2,
         }
     };
     ngram.predict_with_policy(policy)

@@ -405,6 +405,13 @@ pub struct NgramDraftPolicy {
     /// (see `linear_ngram_initial_prompt_should_disable_request`) so that
     /// non-repeating random-token prompts remain correctly classified.
     pub bypass_prompt_min_support: bool,
+    /// Minimum context length (in tokens) a match may use: `2` allows the full
+    /// bigram→trigram→fourgram fallback (default), `3` forbids bigram matches,
+    /// `4` requires a full fourgram context. Longer contexts are far less
+    /// ambiguous, so raising this raises the accept rate of the drafts that do
+    /// fire — at the cost of firing less often. Used by the MTP-stacked path to
+    /// keep n-gram accept high next to a strong MTP/assistant drafter.
+    pub min_context_len: usize,
 }
 
 impl NgramDraftPolicy {
@@ -416,6 +423,7 @@ impl NgramDraftPolicy {
             confidence_threshold,
             adaptive_match_len: false,
             bypass_prompt_min_support: false,
+            min_context_len: 2,
         }
     }
 }
@@ -696,6 +704,8 @@ impl NgramTable {
         policy: NgramDraftPolicy,
     ) -> DraftStepSelection {
         let mut filtered = false;
+        let allow_trigram = policy.min_context_len <= 3;
+        let allow_bigram = policy.min_context_len <= 2;
         if len >= 4 {
             let key = (buf[0], buf[1], buf[2], buf[3]);
             if let Some(prediction) = self.fourgrams.get(&key) {
@@ -712,7 +722,7 @@ impl NgramTable {
                 }
             }
             let key = (buf[1], buf[2], buf[3]);
-            if let Some(prediction) = self.trigrams.get(&key) {
+            if let Some(prediction) = allow_trigram.then(|| self.trigrams.get(&key)).flatten() {
                 match draft_step_from_prediction(prediction, policy) {
                     Some(candidate) => {
                         return DraftStepSelection::Selected(DraftStep {
@@ -726,7 +736,7 @@ impl NgramTable {
                 }
             }
             let key = (buf[2], buf[3]);
-            if let Some(prediction) = self.bigrams.get(&key) {
+            if let Some(prediction) = allow_bigram.then(|| self.bigrams.get(&key)).flatten() {
                 match draft_step_from_prediction(prediction, policy) {
                     Some(candidate) => {
                         return DraftStepSelection::Selected(DraftStep {
@@ -741,7 +751,7 @@ impl NgramTable {
             }
         } else if len == 3 {
             let key = (buf[0], buf[1], buf[2]);
-            if let Some(prediction) = self.trigrams.get(&key) {
+            if let Some(prediction) = allow_trigram.then(|| self.trigrams.get(&key)).flatten() {
                 match draft_step_from_prediction(prediction, policy) {
                     Some(candidate) => {
                         return DraftStepSelection::Selected(DraftStep {
@@ -755,7 +765,7 @@ impl NgramTable {
                 }
             }
             let key = (buf[1], buf[2]);
-            if let Some(prediction) = self.bigrams.get(&key) {
+            if let Some(prediction) = allow_bigram.then(|| self.bigrams.get(&key)).flatten() {
                 match draft_step_from_prediction(prediction, policy) {
                     Some(candidate) => {
                         return DraftStepSelection::Selected(DraftStep {
@@ -770,7 +780,7 @@ impl NgramTable {
             }
         } else if len == 2 {
             let key = (buf[0], buf[1]);
-            if let Some(prediction) = self.bigrams.get(&key) {
+            if let Some(prediction) = allow_bigram.then(|| self.bigrams.get(&key)).flatten() {
                 match draft_step_from_prediction(prediction, policy) {
                     Some(candidate) => {
                         return DraftStepSelection::Selected(DraftStep {
@@ -1725,6 +1735,7 @@ mod tests {
             confidence_threshold: 0.0,
             adaptive_match_len: false,
             bypass_prompt_min_support: false,
+            min_context_len: 2,
         });
         let latest = t.predict_with_policy(NgramDraftPolicy {
             variant: NgramPolicyVariant::LlamaMapLatest,
@@ -1733,6 +1744,7 @@ mod tests {
             confidence_threshold: 0.0,
             adaptive_match_len: false,
             bypass_prompt_min_support: false,
+            min_context_len: 2,
         });
 
         assert_eq!(default.draft, vec![3]);
@@ -1752,6 +1764,7 @@ mod tests {
             confidence_threshold: 0.0,
             adaptive_match_len: true,
             bypass_prompt_min_support: false,
+            min_context_len: 2,
         };
 
         let mut one_off = table_from_sequence(&[1, 2, 3, 4]);
@@ -1784,6 +1797,7 @@ mod tests {
             confidence_threshold: 0.0,
             adaptive_match_len: true,
             bypass_prompt_min_support: false,
+            min_context_len: 2,
         };
         let mut t = NgramTable::new();
         t.feed(&[1, 2, 3, 4, 9, 1, 2, 3, 7, 8]);
@@ -1845,6 +1859,7 @@ mod tests {
             confidence_threshold: 0.0,
             adaptive_match_len: false,
             bypass_prompt_min_support: true,
+            min_context_len: 2,
         };
         let draft = t.predict_with_policy(bypass_policy);
         assert_eq!(
