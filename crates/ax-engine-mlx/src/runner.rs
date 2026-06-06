@@ -6912,7 +6912,7 @@ impl MlxRunner {
         }
         let ngram_outcome = if ngram_max > 0 {
             state.ngram.predict_with_policy(NgramDraftPolicy {
-                variant: NgramPolicyVariant::MajorityRecency,
+                variant: mtp_ngram_policy_variant(),
                 max_len: ngram_max,
                 min_support: mtp_ngram_min_support().max(if mtp_post_think_guarded {
                     POST_THINK_MIN_NGRAM_SUPPORT
@@ -7682,6 +7682,15 @@ fn mtp_ngram_min_context_len() -> usize {
             .filter(|v| (2..=4).contains(v))
             .unwrap_or(DEFAULT_MTP_NGRAM_MIN_CONTEXT_LEN)
     })
+}
+
+/// n-gram prediction variant for the MTP-stacked path, cached from
+/// `AX_MLX_NGRAM_POLICY` (default `MajorityRecency`). `latest` selects
+/// recency/exact-copy continuation lookup, which can track tight repeats more
+/// accurately than the frequency-based majority pick.
+fn mtp_ngram_policy_variant() -> NgramPolicyVariant {
+    static CACHED: OnceLock<NgramPolicyVariant> = OnceLock::new();
+    *CACHED.get_or_init(ngram_policy_variant_from_env)
 }
 
 /// Source-aware hurt gate: compares per-source n-gram vs MTP acceptance rates
