@@ -133,18 +133,13 @@ CHARTS = [
     ),
     ChartSpec(
         title="Gemma 4 — Decode rate",
-        subtitle="AX n-gram is the default policy",
+        subtitle="AX direct baseline, no speculative drafting",
         unit="tok/s",
         direction_label="Higher is better",
         output_slug="gemma4-decode",
         metric="decode",
         family="gemma4",
-        series_engines=(
-            "llama_cpp_metal",
-            "mlx_lm",
-            "ax_engine_mlx",
-            "ax_engine_mlx_ngram_accel",
-        ),
+        series_engines=("llama_cpp_metal", "mlx_lm", "ax_engine_mlx"),
     ),
     ChartSpec(
         title="Gemma 4 — TTFT",
@@ -168,18 +163,13 @@ CHARTS = [
     ),
     ChartSpec(
         title="Qwen 3.6 — Decode rate",
-        subtitle="AX n-gram is the default policy",
+        subtitle="AX direct baseline, no speculative drafting",
         unit="tok/s",
         direction_label="Higher is better",
         output_slug="qwen-decode",
         metric="decode",
         family="qwen",
-        series_engines=(
-            "llama_cpp_metal",
-            "mlx_lm",
-            "ax_engine_mlx",
-            "ax_engine_mlx_ngram_accel",
-        ),
+        series_engines=("llama_cpp_metal", "mlx_lm", "ax_engine_mlx"),
     ),
     ChartSpec(
         title="Qwen 3.6 — TTFT",

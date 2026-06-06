@@ -43,7 +43,6 @@ ARTIFACT_LABELS = {
 DECODE_TABLE_COLUMNS = {
     "mlx_lm": "mlx_lm",
     "ax direct baseline": "ax_engine_mlx",
-    "ax default n-gram": "ax_engine_mlx_ngram_accel",
 }
 
 PREFILL_TABLE_COLUMNS = {
@@ -1833,7 +1832,7 @@ def check_readme_performance(
     repo_root: Path,
     readme_path: Path,
     artifact_dir: Path | None = None,
-    expected_metric_count: int | None = 252,
+    expected_metric_count: int | None = 216,
 ) -> list[str]:
     return check_readme_performance_summary(
         repo_root=repo_root,
@@ -1848,7 +1847,7 @@ def check_readme_performance_summary(
     repo_root: Path,
     readme_path: Path,
     artifact_dir: Path | None = None,
-    expected_metric_count: int | None = 252,
+    expected_metric_count: int | None = 216,
 ) -> ReadmeCheckResult:
     resolved_readme = readme_path.resolve()
     artifact_sources = (

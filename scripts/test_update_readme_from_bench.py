@@ -131,14 +131,14 @@ class UpdateReadmeFromBenchTests(unittest.TestCase):
             lines,
         )
 
-    def test_decode_direct_only_update_preserves_missing_ngram_column(self) -> None:
+    def test_decode_direct_only_update_updates_direct_column(self) -> None:
         lines = [
             "### Decode throughput (tok/s) — generation=128 tokens, temp=0",
             "",
-            "| Model | MLX quantization | Prompt tok | llama.cpp Metal* | mlx_lm | ax direct baseline | ax default n-gram |",
-            "|---|---|---:| ---: |---:|---:|---:|",
-            "| Gemma 4 E2B | 4-bit | 128 | 157.5 | 211.2 | 183.1 (-13.3%) | **580.1 (+174.6%)** |",
-            "|         |         | 512 | 154.5 | 206.0 | 178.3 (-13.5%) | **576.1 (+179.7%)** |",
+            "| Model | MLX quantization | Prompt tok | llama.cpp Metal* | mlx_lm | ax direct baseline |",
+            "|---|---|---:| ---: |---:|---:|",
+            "| Gemma 4 E2B | 4-bit | 128 | 157.5 | 211.2 | 183.1 (-13.3%) |",
+            "|         |         | 512 | 154.5 | 206.0 | 178.3 (-13.5%) |",
             "",
             "### Time to first token",
         ]
@@ -153,11 +153,11 @@ class UpdateReadmeFromBenchTests(unittest.TestCase):
 
         self.assertEqual(changed, 2)
         self.assertIn(
-            "| Gemma 4 E2B | 4-bit | 128 | 157.5 | 200.0 | 180.0 (-10.0%) | **580.1 (+174.6%)** |",
+            "| Gemma 4 E2B | 4-bit | 128 | 157.5 | 200.0 | 180.0 (-10.0%) |",
             lines,
         )
         self.assertIn(
-            "|  |  | 512 | 154.5 | 190.0 | **195.0 (+2.6%)** | **576.1 (+179.7%)** |",
+            "|  |  | 512 | 154.5 | 190.0 | **195.0 (+2.6%)** |",
             lines,
         )
 
@@ -165,9 +165,9 @@ class UpdateReadmeFromBenchTests(unittest.TestCase):
         lines = [
             "### Decode throughput (tok/s) — generation=128 tokens, temp=0",
             "",
-            "| Model | MLX quantization | Prompt tok | llama.cpp Metal* | mlx_lm | ax direct baseline | ax default n-gram |",
-            "|---|---|---:| ---: |---:|---:|---:|",
-            "| Gemma 4 E2B | 4-bit | 128 | 157.5 | 211.2 | 183.1 (-13.3%) | **580.1 (+174.6%)** |",
+            "| Model | MLX quantization | Prompt tok | llama.cpp Metal* | mlx_lm | ax direct baseline |",
+            "|---|---|---:| ---: |---:|---:|",
+            "| Gemma 4 E2B | 4-bit | 128 | 157.5 | 211.2 | 183.1 (-13.3%) |",
             "",
             "### Time to first token",
         ]
@@ -179,15 +179,15 @@ class UpdateReadmeFromBenchTests(unittest.TestCase):
         changed = updater.update_decode_rows(lines, "Gemma 4 E2B", "4-bit", vals)
 
         self.assertEqual(changed, 0)
-        self.assertIn("| Gemma 4 E2B | 4-bit | 128 | 157.5 | 211.2 | 183.1 (-13.3%) | **580.1 (+174.6%)** |", lines)
+        self.assertIn("| Gemma 4 E2B | 4-bit | 128 | 157.5 | 211.2 | 183.1 (-13.3%) |", lines)
 
     def test_decode_null_reference_metric_clears_all_comparison_cells(self) -> None:
         lines = [
             "### Decode throughput (tok/s) — generation=128 tokens, temp=0",
             "",
-            "| Model | MLX quantization | Prompt tok | llama.cpp Metal* | mlx_lm | ax direct baseline | ax default n-gram |",
-            "|---|---|---:| ---: |---:|---:|---:|",
-            "| Gemma 4 E2B | 4-bit | 128 | 157.5 | 211.2 | 183.1 (-13.3%) | **580.1 (+174.6%)** |",
+            "| Model | MLX quantization | Prompt tok | llama.cpp Metal* | mlx_lm | ax direct baseline |",
+            "|---|---|---:| ---: |---:|---:|",
+            "| Gemma 4 E2B | 4-bit | 128 | 157.5 | 211.2 | 183.1 (-13.3%) |",
             "",
             "### Time to first token",
         ]
@@ -200,17 +200,17 @@ class UpdateReadmeFromBenchTests(unittest.TestCase):
         changed = updater.update_decode_rows(lines, "Gemma 4 E2B", "4-bit", vals)
 
         self.assertEqual(changed, 1)
-        self.assertIn("| Gemma 4 E2B | 4-bit | 128 | 157.5 | — | — | — |", lines)
+        self.assertIn("| Gemma 4 E2B | 4-bit | 128 | 157.5 | — | — |", lines)
 
     def test_prompt_specific_overlay_leaves_unmentioned_prompt_rows_unchanged(self) -> None:
         lines = [
             "### Decode throughput (tok/s) — generation=128 tokens, temp=0",
             "",
-            "| Model | MLX quantization | Prompt tok | llama.cpp Metal* | mlx_lm | ax direct baseline | ax default n-gram |",
-            "|---|---|---:| ---: |---:|---:|---:|",
-            "| Qwen 3.6 27B | 4-bit | 128 | 26.0 | 34.0 | 33.0 (-2.9%) | 32.7 (-3.9%) |",
-            "|  |  | 512 | 26.0 | 33.9 | 33.0 (-2.6%) | 32.6 (-3.9%) |",
-            "|  |  | 2048 | 18.8 | 50.0 | 20.0 (-60.0%) | 20.0 (-60.0%) |",
+            "| Model | MLX quantization | Prompt tok | llama.cpp Metal* | mlx_lm | ax direct baseline |",
+            "|---|---|---:| ---: |---:|---:|",
+            "| Qwen 3.6 27B | 4-bit | 128 | 26.0 | 34.0 | 33.0 (-2.9%) |",
+            "|  |  | 512 | 26.0 | 33.9 | 33.0 (-2.6%) |",
+            "|  |  | 2048 | 18.8 | 50.0 | 20.0 (-60.0%) |",
             "",
             "### Time to first token",
         ]
@@ -223,9 +223,9 @@ class UpdateReadmeFromBenchTests(unittest.TestCase):
         changed = updater.update_decode_rows(lines, "Qwen 3.6 27B", "4-bit", vals)
 
         self.assertEqual(changed, 1)
-        self.assertIn("| Qwen 3.6 27B | 4-bit | 128 | 26.0 | 34.0 | 33.0 (-2.9%) | 32.7 (-3.9%) |", lines)
-        self.assertIn("|  |  | 512 | 26.0 | 33.9 | 33.0 (-2.6%) | 32.6 (-3.9%) |", lines)
-        self.assertIn("|  |  | 2048 | 18.8 | 33.4 | 31.6 (-5.4%) | 31.1 (-6.9%) |", lines)
+        self.assertIn("| Qwen 3.6 27B | 4-bit | 128 | 26.0 | 34.0 | 33.0 (-2.9%) |", lines)
+        self.assertIn("|  |  | 512 | 26.0 | 33.9 | 33.0 (-2.6%) |", lines)
+        self.assertIn("|  |  | 2048 | 18.8 | 33.4 | 31.6 (-5.4%) |", lines)
 
 
 if __name__ == "__main__":

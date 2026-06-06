@@ -71,10 +71,10 @@ SAMPLE_README = """\
 
 ### Decode throughput (tok/s) — generation=128 tokens, temp=0
 
-| Model | MLX quantization | Prompt tok | mlx_lm | ax direct baseline | ax default n-gram |
-|---|---|---:|---:|---:|---:|
-| Gemma 4 E2B | 4-bit | 128 | 196.6 | 191.3 (-12.5%) | **591.1 (+170.5%)** |
-|        |        | 512 | 189.6 | 184.1 (-12.4%) | **581.5 (+176.6%)** |
+| Model | MLX quantization | Prompt tok | mlx_lm | ax direct baseline |
+|---|---|---:|---:|---:|
+| Gemma 4 E2B | 4-bit | 128 | 196.6 | 191.3 (-12.5%) |
+|        |        | 512 | 189.6 | 184.1 (-12.4%) |
 
 ### Time to first token (ms) — generation=128 tokens, temp=0
 

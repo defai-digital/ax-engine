@@ -131,8 +131,8 @@ def main():
     print("=" * 90)
     print("DECODE TABLE")
     print("=" * 90)
-    print("| Model | MLX quantization | Prompt tok | mlx_lm | ax direct baseline | ax default n-gram |")
-    print("|---|---|---:|---:|---:|---:|")
+    print("| Model | MLX quantization | Prompt tok | mlx_lm | ax direct baseline |")
+    print("|---|---|---:|---:|---:|")
 
     for label, slug, quant, _ in README_MODELS:
         d = load_result(rdir / f"{slug}.json")
@@ -144,29 +144,24 @@ def main():
         for pt in PROMPT_TOKENS:
             lm    = rows.get(("mlx_lm", pt))
             ax    = rows.get(("ax_engine_mlx", pt))
-            ax_ng = rows.get(("ax_engine_mlx_ngram_accel", pt))
 
             if lm is None:
                 continue
 
             lm_d   = get_decode_median(lm)
             ax_d   = get_decode_median(ax)    if ax    else None
-            axng_d = get_decode_median(ax_ng) if ax_ng else None
 
             lm_s   = fmt(lm_d)  if lm_d  else "—"
             ax_s   = f"{fmt(ax_d)} ({pct(ax_d, lm_d)})"    if ax_d   and lm_d else "—"
-            axng_s = f"{fmt(axng_d)} ({pct(axng_d, lm_d)})" if axng_d and lm_d else "—"
 
             if ax_d and lm_d:
                 ax_s = bold_if_better(ax_s, ax_d > lm_d)
-            if axng_d and lm_d and axng_d > lm_d:
-                axng_s = f"**{axng_s}**"
 
             if first:
-                print(f"| {label} | {quant} | {pt} | {lm_s} | {ax_s} | {axng_s} |")
+                print(f"| {label} | {quant} | {pt} | {lm_s} | {ax_s} |")
                 first = False
             else:
-                print(f"|        |        | {pt} | {lm_s} | {ax_s} | {axng_s} |")
+                print(f"|        |        | {pt} | {lm_s} | {ax_s} |")
 
     print()
     print("=" * 90)
