@@ -8,8 +8,6 @@ other MLX text models or non-MLX models reachable through explicit `mlx-lm` and
 `llama.cpp` compatibility routes. Users get one AX server, SDK, and benchmark
 surface while repo-owned model coverage grows.
 
-> Rust 1.85+ for source builds.
-
 ### Qwen3.6 Fair MTP
 
 Three-engine MTP comparison (MTPLX 0.3.7, AX Engine MTP, AX Engine MTP+n-gram) using
