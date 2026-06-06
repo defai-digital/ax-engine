@@ -97,6 +97,8 @@ resolution and server startup.
 - Alias output must include the resolved repo/path and selected backend.
 - Runtime metadata remains authoritative for backend and support tier.
 - `convert-mtplx` must write and validate `ax_mtp_sidecar_manifest.json`.
+- Local `--mtp-source` paths must use real local shard discovery or fail closed;
+  they must not be forwarded to the helper's `--hf-repo` argument as repo ids.
 - README performance claims must not be updated from conversion output alone.
 - `serve --dry-run --json` must exist before foreground launch is promoted.
 - Daemon mode must start as non-persistent; boot persistence requires a follow-up

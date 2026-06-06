@@ -96,7 +96,7 @@ by alias or id once the foreground command is stable.
 The first release adds:
 
 ```text
-ax-engine serve <alias-or-model-dir> [--port <port>] [--host <host>] [--json]
+ax-engine serve <alias-or-model-dir> [--port <port>] [--host <host>] [--dry-run] [--json]
 ```
 
 The command must:
@@ -108,6 +108,8 @@ The command must:
 4. Print the exact `ax-engine-server` command before launching.
 5. Launch `ax-engine-server` in the foreground.
 6. Preserve `Ctrl-C` shutdown semantics.
+7. Support `--dry-run` before foreground launch ships so users can inspect the
+   resolved server command without starting a process.
 
 The command must fail with remediation text when:
 
@@ -151,6 +153,10 @@ The command wraps the existing `prepare_mtp_sidecar.py` behavior and must:
    `ax_mtp_sidecar_manifest.json`.
 4. Run sidecar provenance validation before reporting success.
 5. Return the output directory in JSON mode.
+
+The current helper accepts source checkpoints through `--hf-repo`; local
+`--mtp-source` paths require wrapper-owned local shard discovery or an explicit
+helper extension before the command can claim local-source support.
 
 ### P1: `status` and `kill`
 
@@ -198,8 +204,8 @@ mechanisms, log retention, upgrade behavior, and cleanup semantics.
   the exact server argv without starting a process.
 - `ax-engine serve /tmp/model --dry-run --json` preserves the explicit path and
   selected backend metadata.
-- `ax-engine convert-mtplx ... --json` writes a sidecar directory and reports
-  the output path.
+- `ax-engine convert-mtplx ... --json` writes a sidecar directory, passes
+  `scripts/check_mtp_sidecar_provenance.py`, and reports the output path.
 - `bash scripts/check-scripts.sh` remains green after wrapper changes.
 - `bash scripts/check-bench-doctor.sh` remains green after CLI workflow changes.
 - README and `docs/CLI.md` document the new commands without changing

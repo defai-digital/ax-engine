@@ -8,8 +8,6 @@ existing AX Engine components into a local-serving workflow:
 ```text
 ax-engine serve <alias-or-model-dir>
 ax-engine convert-mtplx <base-model> --mtp-source <source-model>
-ax-engine status
-ax-engine kill <id-or-alias>
 ```
 
 The first implementation should focus on foreground `serve`, `serve --dry-run`,
@@ -79,6 +77,10 @@ enum Command {
 }
 ```
 
+P0 implements `serve` and `convert-mtplx`. `status` and `kill` are P1 commands;
+they should either be omitted from the shipped parser or return a clear
+not-implemented error until the process registry exists.
+
 ### `serve`
 
 ```text
@@ -124,6 +126,23 @@ Rust wrapper may call a library implementation, spawn the Python script in
 source-checkout mode, or initially delegate to an installed helper. The
 automation contract is the `ax-engine convert-mtplx --json` output, not the
 intermediate script text.
+
+Argument mapping to the current helper:
+
+| `ax-engine convert-mtplx` | `scripts/prepare_mtp_sidecar.py` |
+|---|---|
+| `<base-model>` | `--base <base-model>` |
+| `--mtp-source <repo-id>` | `--hf-repo <repo-id>` |
+| `--output <dir>` | `--output <dir>` |
+| `--mtp-depth-max <n>` | `--mtp-depth-max <n>` |
+| `--quantize 4|8` | `--quantize 4|8` |
+| `--quantization-group-size <n>` | `--group-size <n>` |
+
+The current helper's `--hf-repo` path supports Hugging Face repo ids. If
+`--mtp-source` is a local directory, the wrapper must extend the helper or use a
+library path that discovers local `mtp.*` shards from the source
+`model.safetensors.index.json`. It must not pass a filesystem path to
+`--hf-repo` and report success as if local-source support were implemented.
 
 ## Alias Registry
 
@@ -313,12 +332,16 @@ Unit tests:
 - conflict detection for managed server flags;
 - missing model remediation text;
 - `convert-mtplx` argument mapping.
+- local `--mtp-source` behavior: implemented local shard discovery or a
+  fail-closed error that states local source support is not available yet.
 
 Integration checks:
 
 - `ax-engine serve qwen3.6-35b --dry-run --json`;
 - `ax-engine serve /tmp/fake-model --dry-run --json` with a fixture manifest;
 - `ax-engine convert-mtplx --help`;
+- `ax-engine convert-mtplx ... --json` runs the provenance checker before
+  returning success;
 - existing `bash scripts/check-bench-doctor.sh`;
 - existing `bash scripts/check-server-preview.sh`;
 - existing `bash scripts/check-scripts.sh`.
