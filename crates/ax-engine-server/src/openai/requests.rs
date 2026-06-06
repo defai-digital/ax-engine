@@ -45,11 +45,49 @@ pub(crate) struct OpenAiBuiltLlamaCppChatRequest {
     pub(crate) stream: bool,
 }
 
+#[derive(Clone, Copy)]
+struct OpenAiSamplingParams {
+    temperature: Option<f32>,
+    top_p: Option<f32>,
+    top_k: Option<u32>,
+    min_p: Option<f32>,
+    repetition_penalty: Option<f32>,
+    repetition_context_size: Option<u32>,
+    seed: Option<u64>,
+}
+
+impl OpenAiSamplingParams {
+    fn from_completion_request(request: &OpenAiCompletionHttpRequest) -> Self {
+        Self {
+            temperature: request.temperature,
+            top_p: request.top_p,
+            top_k: request.top_k,
+            min_p: request.min_p,
+            repetition_penalty: request.repetition_penalty,
+            repetition_context_size: request.repetition_context_size,
+            seed: request.seed,
+        }
+    }
+
+    fn from_chat_request(request: &OpenAiChatCompletionHttpRequest) -> Self {
+        Self {
+            temperature: request.temperature,
+            top_p: request.top_p,
+            top_k: request.top_k,
+            min_p: request.min_p,
+            repetition_penalty: request.repetition_penalty,
+            repetition_context_size: request.repetition_context_size,
+            seed: request.seed,
+        }
+    }
+}
+
 pub(crate) fn build_openai_completion_request(
     state: &AppState,
     request: OpenAiCompletionHttpRequest,
 ) -> Result<OpenAiBuiltRequest, (StatusCode, Json<ErrorResponse>)> {
     let max_output_tokens = openai_max_tokens(request.max_tokens);
+    let sampling_params = OpenAiSamplingParams::from_completion_request(&request);
     let (input_tokens, input_text) = match request.prompt {
         OpenAiPromptInput::Text(text) => (Vec::new(), Some(text)),
         OpenAiPromptInput::TextBatch(prompts) => {
@@ -66,15 +104,7 @@ pub(crate) fn build_openai_completion_request(
     };
 
     let payload = OpenAiBuiltPayload {
-        sampling: build_openai_sampling(
-            request.temperature,
-            request.top_p,
-            request.top_k,
-            request.min_p,
-            request.repetition_penalty,
-            request.repetition_context_size,
-            request.seed,
-        ),
+        sampling: build_openai_sampling(state, sampling_params),
         stop_sequences: request
             .stop
             .map(OpenAiStopInput::into_vec)
@@ -91,19 +121,12 @@ pub(crate) fn build_openai_chat_request(
     request: OpenAiChatCompletionHttpRequest,
 ) -> Result<OpenAiBuiltRequest, (StatusCode, Json<ErrorResponse>)> {
     let max_output_tokens = openai_max_tokens(request.max_tokens);
+    let sampling_params = OpenAiSamplingParams::from_chat_request(&request);
     validate_native_chat_artifacts(state)?;
     let input_text = render_openai_chat_prompt(state.model_id.as_ref(), &request.messages)?;
 
     let payload = OpenAiBuiltPayload {
-        sampling: build_openai_sampling(
-            request.temperature,
-            request.top_p,
-            request.top_k,
-            request.min_p,
-            request.repetition_penalty,
-            request.repetition_context_size,
-            request.seed,
-        ),
+        sampling: build_openai_sampling(state, sampling_params),
         stop_sequences: openai_chat_stop_sequences(state.model_id.as_ref(), request.stop),
         stream: request.stream,
         metadata: request.metadata,
@@ -133,16 +156,9 @@ pub(crate) fn build_openai_mlx_lm_chat_request(
     request: OpenAiChatCompletionHttpRequest,
 ) -> Result<OpenAiBuiltMlxLmChatRequest, (StatusCode, Json<ErrorResponse>)> {
     let max_output_tokens = openai_max_tokens(request.max_tokens);
+    let sampling_params = OpenAiSamplingParams::from_chat_request(&request);
     let messages = build_mlx_lm_chat_messages(&request.messages)?;
-    let sampling = build_openai_sampling(
-        request.temperature,
-        request.top_p,
-        request.top_k,
-        request.min_p,
-        request.repetition_penalty,
-        request.repetition_context_size,
-        request.seed,
-    );
+    let sampling = build_openai_sampling_with_default_repetition_penalty(sampling_params, 1.0);
     let stop_sequences = openai_chat_stop_sequences(state.model_id.as_ref(), request.stop);
 
     Ok(OpenAiBuiltMlxLmChatRequest {
@@ -164,16 +180,9 @@ pub(crate) fn build_openai_llama_cpp_chat_request(
     request: OpenAiChatCompletionHttpRequest,
 ) -> Result<OpenAiBuiltLlamaCppChatRequest, (StatusCode, Json<ErrorResponse>)> {
     let max_output_tokens = openai_max_tokens(request.max_tokens);
+    let sampling_params = OpenAiSamplingParams::from_chat_request(&request);
     let messages = build_llama_cpp_chat_messages(&request.messages)?;
-    let sampling = build_openai_sampling(
-        request.temperature,
-        request.top_p,
-        request.top_k,
-        request.min_p,
-        request.repetition_penalty,
-        request.repetition_context_size,
-        request.seed,
-    );
+    let sampling = build_openai_sampling_with_default_repetition_penalty(sampling_params, 1.0);
     let stop_sequences = openai_chat_stop_sequences(state.model_id.as_ref(), request.stop);
 
     Ok(OpenAiBuiltLlamaCppChatRequest {
@@ -275,27 +284,54 @@ pub(crate) fn build_generate_request_internal(
     }
 }
 
-fn build_openai_sampling(
-    temperature: Option<f32>,
-    top_p: Option<f32>,
-    top_k: Option<u32>,
-    min_p: Option<f32>,
-    repetition_penalty: Option<f32>,
-    repetition_context_size: Option<u32>,
-    seed: Option<u64>,
+fn build_openai_sampling(state: &AppState, params: OpenAiSamplingParams) -> GenerateSampling {
+    let temperature = params.temperature.unwrap_or(0.0);
+    let default_repetition_penalty =
+        default_native_mlx_openai_repetition_penalty(state, temperature);
+    build_openai_sampling_with_default_repetition_penalty(
+        OpenAiSamplingParams {
+            temperature: Some(temperature),
+            ..params
+        },
+        default_repetition_penalty,
+    )
+}
+
+fn build_openai_sampling_with_default_repetition_penalty(
+    params: OpenAiSamplingParams,
+    default_repetition_penalty: f32,
 ) -> GenerateSampling {
-    let temperature = temperature.unwrap_or(0.0);
+    let temperature = params.temperature.unwrap_or(0.0);
     GenerateSampling {
         temperature,
-        top_p: top_p.unwrap_or(1.0),
-        top_k: top_k.unwrap_or(0),
-        min_p,
-        repetition_penalty: repetition_penalty.unwrap_or(1.0),
-        repetition_context_size,
-        seed: seed.unwrap_or_else(|| default_openai_seed(temperature)),
+        top_p: params.top_p.unwrap_or(1.0),
+        top_k: params.top_k.unwrap_or(0),
+        min_p: params.min_p,
+        repetition_penalty: params
+            .repetition_penalty
+            .unwrap_or(default_repetition_penalty),
+        repetition_context_size: params.repetition_context_size,
+        seed: params
+            .seed
+            .unwrap_or_else(|| default_openai_seed(temperature)),
         deterministic: None,
         ignore_eos: false,
     }
+}
+
+fn default_native_mlx_openai_repetition_penalty(state: &AppState, temperature: f32) -> f32 {
+    if state.runtime_report.selected_backend != SelectedBackend::Mlx || temperature > 0.0 {
+        return 1.0;
+    }
+
+    let model_id = state.model_id.to_ascii_lowercase();
+    if model_id.contains("glm") {
+        return 1.0;
+    }
+    if model_id.contains("qwen") || model_id.contains("gemma") {
+        return 1.1;
+    }
+    1.0
 }
 
 fn default_openai_seed(temperature: f32) -> u64 {

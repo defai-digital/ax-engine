@@ -152,6 +152,26 @@ async fn openai_completion_request_tokenizes_text_for_native_mlx_backend() {
 }
 
 #[tokio::test]
+async fn openai_qwen_completion_uses_greedy_repetition_penalty_default() {
+    let artifact_dir = minimal_tokenizer_artifact("native-openai-completion-qwen-rp-tokenizer");
+    let state = native_mlx_openai_builder_state("Qwen3.6-27B-4bit", &artifact_dir);
+    let request: OpenAiCompletionHttpRequest = serde_json::from_value(json!({
+        "model": "Qwen3.6-27B-4bit",
+        "prompt": "hello openai completion",
+        "max_tokens": 384,
+        "temperature": 0.0
+    }))
+    .expect("sample completion request should deserialize");
+
+    let built =
+        build_openai_completion_request(&state, request).expect("completion request should build");
+
+    assert_eq!(built.generate_request.sampling.repetition_penalty, 1.1);
+
+    std::fs::remove_dir_all(artifact_dir).expect("artifact dir should clean up");
+}
+
+#[tokio::test]
 async fn openai_completions_endpoint_defaults_max_tokens() {
     let (llama_server_url, llama_cpp_server_handle) = spawn_llama_cpp_completion_server(
         serde_json::json!({
