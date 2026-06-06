@@ -105,6 +105,29 @@ knob. Acceptance uses the default greedy (argmax-match) mode, identical to the Q
 MTP head. Lower the gate toward `0` for more speculation on less predictable
 content; the hardest suite (`python_modules_long`) is what holds the default high.
 
+<table>
+<tr>
+<td align="center"><strong>Gemma 4 26B A4B 4-bit</strong></td>
+<td align="center"><strong>Gemma 4 31B 4-bit</strong></td>
+</tr>
+<tr>
+<td><img width="100%" src="docs/assets/perf-gemma4-assistant-mtp-26b-decode-tok-s.svg" alt="Grouped box-and-whisker plot comparing Gemma 4 26B A4B 4-bit assistant-MTP and assistant MTP+n-gram decode throughput across flappy, long_code, and python_modules_long prompt suites"></td>
+<td><img width="100%" src="docs/assets/perf-gemma4-assistant-mtp-31b-decode-tok-s.svg" alt="Grouped box-and-whisker plot comparing Gemma 4 31B 4-bit assistant-MTP and assistant MTP+n-gram decode throughput across flappy, long_code, and python_modules_long prompt suites"></td>
+</tr>
+<tr>
+<td><img width="100%" src="docs/assets/perf-gemma4-assistant-mtp-26b-accept-rate.svg" alt="Grouped box-and-whisker plot comparing Gemma 4 26B A4B 4-bit assistant-MTP and assistant MTP+n-gram accept rate across flappy, long_code, and python_modules_long prompt suites"></td>
+<td><img width="100%" src="docs/assets/perf-gemma4-assistant-mtp-31b-accept-rate.svg" alt="Grouped box-and-whisker plot comparing Gemma 4 31B 4-bit assistant-MTP and assistant MTP+n-gram accept rate across flappy, long_code, and python_modules_long prompt suites"></td>
+</tr>
+<tr>
+<td><img width="100%" src="docs/assets/perf-gemma4-assistant-mtp-26b-prefill-tok-s.svg" alt="Grouped box-and-whisker plot comparing Gemma 4 26B A4B 4-bit assistant-MTP and assistant MTP+n-gram prefill throughput across flappy, long_code, and python_modules_long prompt suites"></td>
+<td><img width="100%" src="docs/assets/perf-gemma4-assistant-mtp-31b-prefill-tok-s.svg" alt="Grouped box-and-whisker plot comparing Gemma 4 31B 4-bit assistant-MTP and assistant MTP+n-gram prefill throughput across flappy, long_code, and python_modules_long prompt suites"></td>
+</tr>
+<tr>
+<td><img width="100%" src="docs/assets/perf-gemma4-assistant-mtp-26b-ttft-ms.svg" alt="Grouped box-and-whisker plot comparing Gemma 4 26B A4B 4-bit assistant-MTP and assistant MTP+n-gram time-to-first-token across flappy, long_code, and python_modules_long prompt suites"></td>
+<td><img width="100%" src="docs/assets/perf-gemma4-assistant-mtp-31b-ttft-ms.svg" alt="Grouped box-and-whisker plot comparing Gemma 4 31B 4-bit assistant-MTP and assistant MTP+n-gram time-to-first-token across flappy, long_code, and python_modules_long prompt suites"></td>
+</tr>
+</table>
+
 | Model | Suite | Depth | AX MTP tok/s | AX MTP accept | AX MTP+ngram tok/s | AX MTP+ngram accept |
 |---|---|---:|---:|---:|---:|---:|
 | Gemma 4 26B A4B 4-bit | flappy | 1 | 123.3 | 99.3% | 122.9 | 99.4% |
