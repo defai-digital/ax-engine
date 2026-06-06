@@ -40,7 +40,13 @@ Current direct-support LLM families:
 | Qwen 3 | `Qwen3-4B-4bit` and manifest-backed Qwen 3 dense checkpoints | Repo-owned MLX runtime | SwiGLU dense FFN; per-head QK norm; optional MoE variants require manifest evidence |
 | Qwen 3.5 | `Qwen3.5-9B-MLX-4bit` | Repo-owned MLX runtime | Linear attention + MoE FFN; `attn_output_gate` per-head interleaving |
 | Qwen 3.6 / Coder Next | `Qwen3.6-35B-A3B` 4-bit MLX, `Qwen3.6-27B` 4/5/6/8-bit MLX, `Qwen3-Coder-Next-4bit` | Repo-owned MLX runtime | `qwen3_next`: GatedDelta linear attention, full attention with per-head sigmoid gate, sparse top-k MoE with shared expert |
-| GLM 4.7 Flash | `mlx-community/GLM-4.7-Flash-4bit` | Repo-owned MLX runtime for the promoted community artifact | MLA attention; sigmoid router; latent-KV cache support |
+
+> GLM 4.7 Flash (`glm4_moe_lite`) was demoted from direct support to
+> [`mlx_lm_delegated`](#mlx_lm_delegated). The repo-owned MLA graph remains
+> in-tree but is no longer a promoted route: native decode only reaches parity
+> with `mlx_lm` (see [`PERFORMANCE-DECODE-GAP.md`](PERFORMANCE-DECODE-GAP.md)),
+> and the 4-bit export ships no MTP head, so AX's speculative decode cannot
+> accelerate it. Serve GLM through mlx-lm passby.
 
 All direct-support models use MLX safetensors format with the AX
 `model-manifest.json` descriptor. Adding a new direct-support architecture
@@ -75,6 +81,22 @@ ax-engine-server \
   --support-tier mlx_lm_delegated \
   --mlx-lm-server-url http://127.0.0.1:8090
 ```
+
+GLM 4.7 Flash (`glm4_moe_lite`) is the canonical delegated model. Its
+`glm4.7-flash-4bit` preset now selects this tier, so serve it via mlx-lm passby:
+
+```text
+mlx_lm.server --model mlx-community/GLM-4.7-Flash-4bit --host 127.0.0.1 --port 8090
+
+ax-engine-server \
+  --preset glm4.7-flash-4bit \
+  --mlx-lm-server-url http://127.0.0.1:8090
+```
+
+The preset fails closed when `--mlx-lm-server-url` is omitted; it does not fall
+back to the native MLX graph. GLM was demoted because AX's native decode only
+matches `mlx_lm` throughput and the 4-bit export has no MTP head for AX
+speculation to exploit (see [`PERFORMANCE-DECODE-GAP.md`](PERFORMANCE-DECODE-GAP.md)).
 
 Supported delegated surfaces:
 

@@ -1,0 +1,150 @@
+name: Publish Python Package
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish the built wheel to PyPI. Only works from a v* tag ref.
+        required: false
+        default: false
+        type: boolean
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  AX_ALLOW_UNSUPPORTED_HOST: "1"
+
+jobs:
+  build-wheel:
+    name: Build Python Wheel
+    runs-on: macos-14
+    timeout-minutes: 35
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Ensure stable Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      - name: Install native build dependencies
+        run: brew install mlx-c protobuf
+
+      - name: Install Python build dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install "maturin>=1.7,<2" delocate twine
+
+      - name: Verify Apple Silicon runner
+        run: |
+          arch="$(uname -m)"
+          if [ "$arch" != "arm64" ]; then
+            echo "PyPI wheels are macOS arm64 only; got runner architecture: $arch"
+            exit 1
+          fi
+
+      - name: Verify tag matches package version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          python - <<'PY'
+          import os
+          import pathlib
+          import sys
+          import tomllib
+
+          root = pathlib.Path.cwd()
+          tag_version = os.environ["GITHUB_REF_NAME"].removeprefix("v")
+          pyproject = tomllib.loads((root / "pyproject.toml").read_text())
+          cargo = tomllib.loads((root / "Cargo.toml").read_text())
+          pyproject_version = pyproject["project"]["version"]
+          cargo_version = cargo["workspace"]["package"]["version"]
+
+          if len({tag_version, pyproject_version, cargo_version}) != 1:
+              print(
+                  "Version mismatch: "
+                  f"tag={tag_version}, "
+                  f"pyproject={pyproject_version}, "
+                  f"workspace={cargo_version}",
+                  file=sys.stderr,
+              )
+              raise SystemExit(1)
+          print(f"Version verified: {tag_version}")
+          PY
+
+      - name: Build delocated wheel
+        run: bash scripts/build-pypi-wheel.sh
+
+      - name: Check wheel metadata
+        run: python -m twine check target/wheels/delocated/ax_engine-*.whl
+
+      - name: Smoke-test built wheel
+        run: |
+          python -m venv target/pypi-wheel-smoke
+          source target/pypi-wheel-smoke/bin/activate
+          python -m pip install --upgrade pip
+          python -m pip install target/wheels/delocated/ax_engine-*.whl
+          python examples/python/basic.py
+          python examples/python/stepwise.py
+          python examples/python/streaming.py
+          AX_ENGINE_RUN_INSTALLED_TESTS=1 python -m unittest discover -s python/tests -v
+
+      - name: Upload wheel artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ax-engine-pypi-wheel
+          path: target/wheels/delocated/ax_engine-*.whl
+          if-no-files-found: error
+
+      - name: Report skipped manual publish
+        if: github.event_name == 'workflow_dispatch' && inputs.publish && !startsWith(github.ref, 'refs/tags/v')
+        run: |
+          {
+            echo "## PyPI publish skipped"
+            echo
+            echo "Publish was requested, but this workflow must run from a v* tag ref to upload to PyPI."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  publish:
+    name: Publish to PyPI
+    runs-on: ubuntu-latest
+    needs: build-wheel
+    if: startsWith(github.ref, 'refs/tags/v') && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.publish))
+    environment:
+      name: pypi
+      url: https://pypi.org/p/ax-engine
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Download wheel artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ax-engine-pypi-wheel
+          path: dist
+
+      - name: Publish wheel to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist

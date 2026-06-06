@@ -50,6 +50,12 @@ impl ServerPreset {
                 support_tier: PreviewSupportTier::MlxPreview,
                 max_batch_tokens: 2048,
             },
+            // GLM 4.7 Flash is served through mlx-lm passby rather than the
+            // repo-owned native graph: the native decode path is only at parity
+            // with `mlx_lm` (see docs/PERFORMANCE-DECODE-GAP.md) and the 4-bit
+            // export ships no MTP head, so AX speculation cannot accelerate it.
+            // The preset therefore selects the delegated tier and requires
+            // `--mlx-lm-server-url`. See docs/SUPPORTED-MODELS.md.
             Self::Glm47Flash4bit => PresetDefinition {
                 preset: self,
                 label: "glm4.7-flash-4bit",
@@ -63,7 +69,7 @@ impl ServerPreset {
                     "glm-4-7-flash-4bit",
                 ],
                 model_types: &["glm4_moe_lite"],
-                support_tier: PreviewSupportTier::MlxPreview,
+                support_tier: PreviewSupportTier::MlxLmDelegated,
                 max_batch_tokens: 2048,
             },
             Self::Qwen36_35b => PresetDefinition {
@@ -95,9 +101,13 @@ pub fn render_presets() -> String {
     .into_iter()
     .map(|preset| {
         let definition = preset.definition();
+        let requirement = match definition.support_tier {
+            PreviewSupportTier::MlxLmDelegated => "requires --mlx-lm-server-url (mlx-lm passby)",
+            _ => "requires --mlx-model-artifacts-dir or explicit resolver",
+        };
         format!(
-            "{}\tmodel_id={}\tsupport_tier={:?}\trequires --mlx-model-artifacts-dir or explicit resolver",
-            definition.label, definition.model_id, definition.support_tier
+            "{}\tmodel_id={}\tsupport_tier={:?}\t{}",
+            definition.label, definition.model_id, definition.support_tier, requirement
         )
     })
     .collect::<Vec<_>>()

@@ -393,11 +393,12 @@ fn preset_selects_mlx_preview_defaults() {
 }
 
 #[test]
-fn glm_preset_selects_mlx_preview_defaults() {
-    let mlx_model_artifacts_dir = PathBuf::from("/tmp/GLM-4.7-Flash-4bit");
+fn glm_preset_selects_mlx_lm_delegated_defaults() {
+    // GLM 4.7 Flash is a passby model: the preset selects the delegated tier
+    // and routes to an external mlx-lm server rather than the native MLX graph.
     let args = ServerArgs {
         preset: Some(ServerPreset::Glm47Flash4bit),
-        mlx_model_artifacts_dir: Some(mlx_model_artifacts_dir.clone()),
+        mlx_lm_server_url: Some("http://127.0.0.1:8090".to_string()),
         ..base_args()
     };
 
@@ -406,16 +407,43 @@ fn glm_preset_selects_mlx_preview_defaults() {
     assert_eq!(args.effective_model_id(), "glm4_moe_lite");
     assert_eq!(
         args.effective_support_tier(),
-        PreviewSupportTier::MlxPreview
+        PreviewSupportTier::MlxLmDelegated
     );
     assert_eq!(
         actual.resolved_backend.selected_backend,
-        SelectedBackend::Mlx
+        SelectedBackend::MlxLmDelegated
     );
     assert_eq!(actual.max_batch_tokens, 2048);
+}
+
+#[test]
+fn glm_preset_requires_mlx_lm_server_url() {
+    // Without an mlx-lm server URL the delegated GLM preset must fail closed
+    // rather than silently falling back to a native MLX route.
+    let args = ServerArgs {
+        preset: Some(ServerPreset::Glm47Flash4bit),
+        ..base_args()
+    };
+
+    assert!(args.session_config().is_err());
+}
+
+#[test]
+fn delegated_preset_is_not_forced_native_by_mlx_flag() {
+    // The preset's tier is authoritative: passing --mlx must not silently
+    // override the GLM passby preset back onto the native MLX path.
+    let args = ServerArgs {
+        preset: Some(ServerPreset::Glm47Flash4bit),
+        mlx: true,
+        mlx_lm_server_url: Some("http://127.0.0.1:8090".to_string()),
+        ..base_args()
+    };
+
+    let actual = args.session_config().expect("session config should build");
+
     assert_eq!(
-        actual.mlx_model_artifacts_dir.as_deref(),
-        Some(mlx_model_artifacts_dir.as_path())
+        actual.resolved_backend.selected_backend,
+        SelectedBackend::MlxLmDelegated
     );
 }
 
@@ -437,31 +465,6 @@ fn preset_hf_cache_resolution_finds_single_valid_snapshot() {
     );
     let args = ServerArgs {
         preset: Some(ServerPreset::Gemma4E2b),
-        resolve_model_artifacts: ModelArtifactResolution::HfCache,
-        hf_cache_root: Some(root.clone()),
-        ..base_args()
-    };
-
-    let actual = args.session_config().expect("session config should build");
-
-    assert_eq!(
-        actual.mlx_model_artifacts_dir.as_deref(),
-        Some(expected.as_path())
-    );
-    fs::remove_dir_all(root).expect("test dir should clean up");
-}
-
-#[test]
-fn glm_preset_hf_cache_resolution_finds_single_valid_snapshot() {
-    let root = unique_test_dir("hf-cache-glm");
-    let expected = write_hf_snapshot(
-        &root,
-        "models--mlx-community--GLM-4.7-Flash-4bit",
-        "abc123",
-        "glm4_moe_lite",
-    );
-    let args = ServerArgs {
-        preset: Some(ServerPreset::Glm47Flash4bit),
         resolve_model_artifacts: ModelArtifactResolution::HfCache,
         hf_cache_root: Some(root.clone()),
         ..base_args()

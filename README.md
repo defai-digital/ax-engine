@@ -49,8 +49,10 @@ warmup repetition.
 | Qwen3.6 35B-A3B 4-bit | python_modules_long | 1 | 102.1 | 43.4% | 183.2 | 99.6% | 183.2 | 98.7% |
 
 AX MTP uses pure MTP (n-gram stacking disabled); AX MTP+n-gram stacks n-gram speculative drafting on top of MTP. AX MTP runs the default
-draft confidence gate (`AX_MLX_MTP_DRAFT_MIN_CONFIDENCE=0.98`), which only proposes draft tokens the MTP head is near-certain of and lifts
-pure-MTP accept to ≥99% on every row (set the variable to `0` to restore ungated drafting). The gate is scoped to pure MTP, so the
+draft confidence gate (`AX_MLX_MTP_DRAFT_MIN_CONFIDENCE`) that only proposes draft tokens the MTP head is confident in. The accept
+columns below are the accept-maximizing `0.98` setting, which holds pure-MTP accept ≥99% on every row; the shipped default is `0.90`,
+which trades ~1–2 points of accept on the hardest row for +5–13% decode throughput (see `docs/MTP-DRAFT-GATE-THROUGHPUT.md`). Set the
+variable to `0.98` to restore the accept-maximizing behavior, or `0` to disable. The gate is scoped to pure MTP, so the
 n-gram-stacked column pools lower-confidence n-gram drafts and sits slightly below it. Sampler: temperature=0.6,
 top_p=0.95, top_k=20. 1000 gen tokens, 5 repetitions, 30 s cooldown, 10 s inter-case cooldown.
 MTPLX 0.3.7 · AX Engine v5.2.3.
@@ -278,7 +280,12 @@ delegated rows are not AX-owned throughput claims.
 | Qwen 3 | `Qwen3-4B-4bit` and manifest-backed Qwen 3 dense checkpoints | Repo-owned MLX runtime | SwiGLU dense FFN; per-head QK norm; optional MoE variants require manifest evidence |
 | Qwen 3.5 | `Qwen3.5-9B-MLX-4bit` | Repo-owned MLX runtime | Linear attention + MoE FFN; `attn_output_gate` per-head interleaving |
 | Qwen 3.6 / Coder Next | `Qwen3.6-35B-A3B` 4-bit MLX, `Qwen3.6-27B` 4/5/6/8-bit MLX, `Qwen3-Coder-Next-4bit` | Repo-owned MLX runtime | `qwen3_next`: GatedDelta linear attention, full attention with per-head sigmoid gate, sparse top-k MoE with shared expert |
-| GLM 4.7 Flash | `mlx-community/GLM-4.7-Flash-4bit` | Repo-owned MLX runtime for the promoted community artifact | MLA attention, sigmoid router, latent-KV cache support |
+
+> GLM 4.7 Flash (`glm4_moe_lite`) was demoted from direct support to the
+> `mlx_lm_delegated` passby route: native decode only reaches `mlx_lm` parity and
+> the 4-bit export has no MTP head for AX speculation to exploit. The
+> `glm4.7-flash-4bit` preset now selects the delegated tier and requires
+> `--mlx-lm-server-url`. See [`docs/SUPPORTED-MODELS.md`](docs/SUPPORTED-MODELS.md).
 
 Direct-support models use MLX safetensors format with the AX
 `model-manifest.json` descriptor. Each supported architecture has a hand-written
