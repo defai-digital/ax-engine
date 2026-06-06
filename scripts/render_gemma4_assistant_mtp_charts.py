@@ -125,6 +125,7 @@ def write_box_whisker_svg(
     direction_label: str,
     groups: list[dict[str, Any]],
     width: int = 760,
+    axis_min: float = 0.0,
     axis_max: float | None = None,
     lower_is_better: bool = False,
     footnote: str = "",
@@ -156,11 +157,13 @@ def write_box_whisker_svg(
             all_medians.append(stats.median)
 
     max_value = axis_max if axis_max is not None else nice_axis_ceiling(max(all_values or [1.0]) * 1.08)
+    if max_value <= axis_min:
+        max_value = axis_min + 1.0
     best_value = min(all_medians) if lower_is_better and all_medians else max(all_medians or [0.0])
 
     def fy(value: float) -> float:
-        clamped = max(0.0, min(value, max_value))
-        return top + plot_h - (clamped / max_value) * plot_h
+        clamped = max(axis_min, min(value, max_value))
+        return top + plot_h - ((clamped - axis_min) / (max_value - axis_min)) * plot_h
 
     def engine_centers(group_x: float, count: int) -> list[float]:
         if count <= 1:
@@ -213,7 +216,7 @@ def write_box_whisker_svg(
     ]
 
     for i in range(5):
-        value = max_value * i / 4
+        value = axis_min + (max_value - axis_min) * i / 4
         y = fy(value)
         parts.append(
             f'<line x1="{left}" y1="{y:.1f}" x2="{plot_right}" y2="{y:.1f}" '
@@ -349,10 +352,10 @@ def build_groups(results_dir: Path, model_key: str, metric: str) -> list[dict[st
 
 
 METRICS = [
-    ("decode", "decode-tok-s", "Decode throughput", "tok/s", "Higher is better", False, None),
-    ("accept", "accept-rate", "Assistant accept rate", "%", "Higher is better", False, 100.0),
-    ("prefill", "prefill-tok-s", "Prefill throughput", "tok/s", "Higher is better", False, None),
-    ("ttft", "ttft-ms", "Time to first token", "ms", "Lower is better", True, None),
+    ("decode", "decode-tok-s", "Decode throughput", "tok/s", "Higher is better", False, 0.0, None),
+    ("accept", "accept-rate", "Assistant accept rate", "%", "Higher is better", False, 98.0, 100.0),
+    ("prefill", "prefill-tok-s", "Prefill throughput", "tok/s", "Higher is better", False, 0.0, None),
+    ("ttft", "ttft-ms", "Time to first token", "ms", "Lower is better", True, 0.0, None),
 ]
 
 
@@ -365,7 +368,7 @@ def main() -> None:
     args.assets_dir.mkdir(parents=True, exist_ok=True)
     written: list[str] = []
     for model_key, model_label in MODELS:
-        for metric, slug, title_metric, unit, direction, lower_is_better, axis_max in METRICS:
+        for metric, slug, title_metric, unit, direction, lower_is_better, axis_min, axis_max in METRICS:
             groups = build_groups(args.results_dir, model_key, metric)
             short = "26b" if model_key.startswith("26b") else "31b"
             out = args.assets_dir / f"perf-gemma4-assistant-mtp-{short}-{slug}.svg"
@@ -376,6 +379,7 @@ def main() -> None:
                 unit=unit,
                 direction_label=direction,
                 groups=groups,
+                axis_min=axis_min,
                 axis_max=axis_max,
                 lower_is_better=lower_is_better,
                 footnote=FOOTNOTE,
