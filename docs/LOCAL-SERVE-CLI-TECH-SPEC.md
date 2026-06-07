@@ -35,7 +35,10 @@ surfaces and keep `ax-engine-server` as the process that owns HTTP serving.
 
 ## Package Shape
 
-Add a new Rust binary crate or a new binary target in an existing CLI crate:
+The PyPI first implementation lives in `python/ax_engine/_cli.py` as the
+`ax-engine` console script, because the wheel already ships `ax-engine-server`.
+Homebrew/Rust parity can either keep wrapping that script or add a Rust binary
+crate later:
 
 ```text
 crates/ax-engine-cli/
@@ -54,12 +57,13 @@ Binary name:
 ax-engine
 ```
 
-The binary should be shipped by the same Homebrew and Python wheel paths that
-ship `ax-engine-server` and `ax-engine-bench`.
+The command should be shipped by the same Homebrew and Python wheel paths that
+ship `ax-engine-server` and `ax-engine-bench`. The PyPI path is already a
+console script; Homebrew parity is a follow-up packaging slice.
 
 ## Command Model
 
-Use `clap` subcommands:
+Use subcommands:
 
 ```rust
 #[derive(Parser)]
@@ -351,8 +355,7 @@ or explicit fixture paths.
 
 ## Rollout Plan
 
-1. Add `ax-engine` binary with `serve --dry-run`, alias registry, and JSON plan
-   output.
+1. Add `ax-engine` with `serve --dry-run`, alias registry, and JSON plan output.
 2. Add foreground `serve` process execution.
 3. Add `convert-mtplx` wrapper and JSON output.
 4. Document commands in `docs/CLI.md`, README quick-start, and release notes.

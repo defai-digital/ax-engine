@@ -10,6 +10,7 @@ requires-python = ">=3.10"
 readme = "crates/ax-engine-py/README.md"
 
 [project.scripts]
+ax-engine = "ax_engine._cli:main"
 ax-engine-server = "ax_engine._cli:server"
 
 [project.optional-dependencies]
@@ -43,6 +44,9 @@ include = [
     # Placed inside ax_engine/_bin/ so delocate's @loader_path rewrite (../.dylibs/)
     # stays valid after pip installation. Exposed to the user's PATH via console_scripts.
     { path = "python/ax_engine/_bin/ax-engine-server", format = ["wheel"] },
+    # Top-level orchestration CLI wraps the source-compatible MTP sidecar tools.
+    { path = "scripts/prepare_mtp_sidecar.py", format = ["wheel"] },
+    { path = "scripts/check_mtp_sidecar_provenance.py", format = ["wheel"] },
 ]
 # Explicitly exclude internal and developer-only paths from both wheel and sdist.
 # .internal/ is also in .gitignore; this is belt-and-suspenders for maturin sdist.

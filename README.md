@@ -217,8 +217,8 @@ Full artifacts: [`2026-06-05-ax-mtp-gate-fresh`](benchmarks/results/mtp-fair/202
 pip install ax-engine
 ```
 
-`pip install ax-engine` includes the `ax-engine-server` binary. After install,
-`ax-engine-server` is available on your `PATH`.
+`pip install ax-engine` includes the `ax-engine` orchestration CLI and the
+`ax-engine-server` binary. After install, both are available on your `PATH`.
 
 **Homebrew** (for `ax-engine-bench` and an alternative `ax-engine-server` install):
 
@@ -247,11 +247,8 @@ Or start the OpenAI-compatible server:
 # Download a model
 MODEL_DIR="$(python3 scripts/download_model.py mlx-community/Qwen3-4B-4bit --json | python3 -c 'import json,sys; print(json.load(sys.stdin)["dest"])')"
 
-# Start the server (ax-engine-server is on PATH after pip install ax-engine)
-ax-engine-server \
-  --mlx \
-  --mlx-model-artifacts-dir "$MODEL_DIR" \
-  --port 8080
+# Start the server (wraps ax-engine-server and prints the resolved command)
+ax-engine serve "$MODEL_DIR" --port 8080
 ```
 
 Then call it from any OpenAI client:
