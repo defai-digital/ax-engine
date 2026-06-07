@@ -18,9 +18,9 @@
 #   --skip-test              Skip the local brew install + test after updating the formula
 #   --minisign               Sign the release archive with minisign before upload
 #   --minisign-key <path>    Secret key path for --minisign
-#                            (default: ~/signkey/ax-engine.minisign.key)
+#                            (default: ~/signkey/ax-code.sec)
 #   --minisign-pubkey <path> Public key path for --minisign verification
-#                            (default: ~/signkey/ax-engine.minisign.pub)
+#                            (default: ~/signkey/ax-code.pub)
 #   --minisign-public-key <key>
 #                            Public key string for --minisign verification
 #   --sign-identity <id>     Codesign and notarize binaries with this Developer ID Application
@@ -36,7 +36,8 @@
 #
 # Additional prerequisites for --minisign:
 #   minisign  Minisign signing tool
-#   ~/signkey/ax-engine.minisign.key and ~/signkey/ax-engine.minisign.pub
+#   ~/signkey/ax-code.sec and ~/signkey/ax-code.pub (shared ax-code signing key)
+#   Passphrase stored in macOS Keychain: security add-generic-password -U -a ax-code-release -s ax-code-minisign -w
 #
 # Additional prerequisites for --sign-identity:
 #   codesign  Xcode Command Line Tools
@@ -63,8 +64,8 @@ SKIP_UPLOAD=false
 SKIP_TAP=false
 SKIP_TEST=false
 MINISIGN=false
-MINISIGN_SECRET_KEY="${AX_MINISIGN_SECRET_KEY:-$HOME/signkey/ax-engine.minisign.key}"
-MINISIGN_PUBLIC_KEY="${AX_MINISIGN_PUBLIC_KEY:-$HOME/signkey/ax-engine.minisign.pub}"
+MINISIGN_SECRET_KEY="${AX_MINISIGN_SECRET_KEY:-$HOME/signkey/ax-code.sec}"
+MINISIGN_PUBLIC_KEY="${AX_MINISIGN_PUBLIC_KEY:-$HOME/signkey/ax-code.pub}"
 MINISIGN_PUBLIC_KEY_STRING="${AX_MINISIGN_PUBLIC_KEY_STRING:-}"
 SIGN_IDENTITY=""
 

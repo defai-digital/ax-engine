@@ -63,17 +63,12 @@ throughput baselines.
   beside the archive. Without `--sign-identity`, binaries are intentionally
   left unsigned.
 - `minisign-artifact.sh`: signs one or more release artifacts with minisign.
-  The default key location is `~/signkey/ax-engine.minisign.key` and
-  `~/signkey/ax-engine.minisign.pub`; create the key pair once with
-  `minisign -G -p ~/signkey/ax-engine.minisign.pub -s ~/signkey/ax-engine.minisign.key`.
-  The script refuses to overwrite an existing `.minisig` unless `--force` is
-  passed, verifies signatures by default, and can verify with either a public
-  key file or `--public-key-string`. On macOS, the key passphrase is read
-  automatically from Keychain (service `ax-engine-minisign`, account
-  `ax-engine-release`) so the release path never prompts for a password.
-  Store the passphrase once with:
-  `security add-generic-password -U -a ax-engine-release -s ax-engine-minisign -w`
-  Override via `AX_MINISIGN_PASSWORD` or `--keychain-service`/`--keychain-account`.
+  The default key is the shared ax-code signing key at `~/signkey/ax-code.sec`
+  / `~/signkey/ax-code.pub` (Keychain service `ax-code-minisign`, account
+  `ax-code-release`). If the passphrase is already stored in the ax-code
+  Keychain entry, the release path needs no password prompt. Override key
+  paths via `AX_MINISIGN_SECRET_KEY` / `AX_MINISIGN_PUBLIC_KEY` or Keychain
+  lookup via `--keychain-service` / `--keychain-account`.
 - `publish-github-release.sh`: full local GitHub Release publisher for the
   macOS arm64 CLI assets. It verifies tag/version consistency, requires a clean
   tree by default, runs release gates, builds `ax-engine-server` and
