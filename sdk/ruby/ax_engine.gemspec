@@ -3,7 +3,7 @@ require_relative "lib/ax_engine/version"
 Gem::Specification.new do |spec|
   spec.name        = "ax-engine-sdk"
   spec.version     = AxEngine::VERSION
-  spec.summary     = "Ruby SDK for AX Engine v4 — local HTTP inference server"
+  spec.summary     = "Ruby SDK for AX Engine v6 — local HTTP inference server"
   spec.description = "Zero-dependency Ruby client for ax-engine-server. " \
                      "Supports native generate, OpenAI-compatible completions, " \
                      "chat, embeddings, and SSE streaming."

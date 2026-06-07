@@ -12166,7 +12166,7 @@ mod tests {
 
         let text = render_doctor_report(&report);
 
-        assert!(text.contains("AX Engine v4 doctor"));
+        assert!(text.contains("AX Engine v6 doctor"));
         assert!(text.contains("status=not_ready"));
         assert!(text.contains("workflow.mode=unknown"));
         assert!(text.contains("host.detected_soc=Apple M3 Max"));

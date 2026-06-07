@@ -624,7 +624,7 @@ fn tool_version_text(tool: &ToolStatusReport) -> &str {
 
 pub(crate) fn render_doctor_report(report: &DoctorReport) -> String {
     let mut lines = vec![
-        "AX Engine v4 doctor".to_string(),
+        "AX Engine v6 doctor".to_string(),
         format!("schema_version={}", report.schema_version),
         format!("target={}", report.mlx_target),
         format!("status={}", report.status.as_str()),

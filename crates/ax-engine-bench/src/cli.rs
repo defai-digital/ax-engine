@@ -1,5 +1,5 @@
 pub(crate) fn usage() -> String {
-    let text = r#"AX Engine v4 benchmark CLI
+    let text = r#"AX Engine v6 benchmark CLI
 
 Usage:
   ax-engine-bench generate [--model-id <id>] (--prompt <text> | --tokens <ids>) [--max-output-tokens <n>] [--mlx] [--support-tier <tier>] [--llama-cli-path <path>] [--llama-model-path <path>] [--llama-server-url <url>] [--mlx-lm-server-url <url>] [--mlx-model-artifacts-dir <path>] [--json]

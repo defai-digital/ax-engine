@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Release tag to publish (e.g. v5.3.0). Must already be pushed."
+        description: "Release tag to publish (e.g. v6.0.0). Must already be pushed."
         required: true
         type: string
       dry_run:

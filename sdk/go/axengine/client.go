@@ -1,4 +1,4 @@
-// Package axengine provides an HTTP client for the AX Engine v4 inference server.
+// Package axengine provides an HTTP client for the AX Engine v6 inference server.
 //
 // Connect to a running ax-engine-server instance:
 //

@@ -1371,6 +1371,24 @@ impl MtpDraftSource {
             MtpDraftSource::Mtp | MtpDraftSource::Gemma4Assistant | MtpDraftSource::HybridMtp
         )
     }
+
+    fn utility_family(self) -> DraftSourceFamily {
+        match self {
+            MtpDraftSource::Gemma4Assistant => DraftSourceFamily::Assistant,
+            MtpDraftSource::Ngram => DraftSourceFamily::Ngram,
+            MtpDraftSource::Mtp | MtpDraftSource::HybridMtp | MtpDraftSource::None => {
+                DraftSourceFamily::Mtp
+            }
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+enum DraftSourceFamily {
+    #[default]
+    Mtp,
+    Assistant,
+    Ngram,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -1442,6 +1460,23 @@ struct MtpTelemetry {
     rollback_wall_us: u32,
     tail_sample_wall_us: u32,
     draft_wall_us: u32,
+    target_softmax_wall_us: u32,
+    verify_tokens: u32,
+    emitted_tokens: u32,
+    source_mtp_submitted_tokens: u32,
+    source_mtp_accepted_tokens: u32,
+    source_mtp_rejected_tokens: u32,
+    source_mtp_cascade_rejected_tokens: u32,
+    source_mtp_proposer_wall_us: u32,
+    source_assistant_submitted_tokens: u32,
+    source_assistant_accepted_tokens: u32,
+    source_assistant_rejected_tokens: u32,
+    source_assistant_cascade_rejected_tokens: u32,
+    source_assistant_proposer_wall_us: u32,
+    source_ngram_proposed_tokens: u32,
+    source_ngram_rejected_tokens: u32,
+    source_ngram_cascade_rejected_tokens: u32,
+    ngram_lookup_wall_us: u32,
     accepted_by_depth: [u32; 3],
     drafted_by_depth: [u32; 3],
     draft_source_mtp_tokens: u32,
@@ -1481,6 +1516,11 @@ struct MtpTelemetry {
     ngram_legacy_hurt_gated_steps: u32,
     ngram_auto_disabled_steps: u32,
     ngram_self_tune_disabled_steps: u32,
+    ngram_utility_gated_steps: u32,
+    ngram_utility_insufficient_sample_steps: u32,
+    ngram_safety_disabled_steps: u32,
+    ngram_safety_tightened_steps: u32,
+    ngram_safety_reason: u32,
     ngram_submitted_tokens: u32,
     ngram_submitted_accepted_tokens: u32,
     /// Steps where auto-optimistic activated (EWMA ≥ 0.99 without env override).
@@ -1492,10 +1532,16 @@ struct MtpStepTimings {
     cache_clone_wall_us: u32,
     verify_forward_wall_us: u32,
     verify_eval_wall_us: u32,
+    target_softmax_wall_us: u32,
     accept_wall_us: u32,
     rollback_wall_us: u32,
     tail_sample_wall_us: u32,
     draft_wall_us: u32,
+    mtp_draft_wall_us: u32,
+    assistant_draft_wall_us: u32,
+    ngram_lookup_wall_us: u32,
+    verify_tokens: u32,
+    emitted_tokens: u32,
 }
 
 impl MtpTelemetry {
@@ -1587,6 +1633,48 @@ impl MtpTelemetry {
                 .filter(|source| *source != MtpDraftSource::None)
                 .unwrap_or(MtpDraftSource::Mtp);
             let accepted_token = index < accepted;
+            let rejected_token = index == accepted && accepted < drafted;
+            let cascade_rejected_token = index > accepted && accepted < drafted;
+            match source.utility_family() {
+                DraftSourceFamily::Mtp => {
+                    self.source_mtp_submitted_tokens =
+                        self.source_mtp_submitted_tokens.saturating_add(1);
+                    if accepted_token {
+                        self.source_mtp_accepted_tokens =
+                            self.source_mtp_accepted_tokens.saturating_add(1);
+                    } else if rejected_token {
+                        self.source_mtp_rejected_tokens =
+                            self.source_mtp_rejected_tokens.saturating_add(1);
+                    } else if cascade_rejected_token {
+                        self.source_mtp_cascade_rejected_tokens =
+                            self.source_mtp_cascade_rejected_tokens.saturating_add(1);
+                    }
+                }
+                DraftSourceFamily::Assistant => {
+                    self.source_assistant_submitted_tokens =
+                        self.source_assistant_submitted_tokens.saturating_add(1);
+                    if accepted_token {
+                        self.source_assistant_accepted_tokens =
+                            self.source_assistant_accepted_tokens.saturating_add(1);
+                    } else if rejected_token {
+                        self.source_assistant_rejected_tokens =
+                            self.source_assistant_rejected_tokens.saturating_add(1);
+                    } else if cascade_rejected_token {
+                        self.source_assistant_cascade_rejected_tokens = self
+                            .source_assistant_cascade_rejected_tokens
+                            .saturating_add(1);
+                    }
+                }
+                DraftSourceFamily::Ngram => {
+                    if rejected_token {
+                        self.source_ngram_rejected_tokens =
+                            self.source_ngram_rejected_tokens.saturating_add(1);
+                    } else if cascade_rejected_token {
+                        self.source_ngram_cascade_rejected_tokens =
+                            self.source_ngram_cascade_rejected_tokens.saturating_add(1);
+                    }
+                }
+            }
             match source {
                 MtpDraftSource::Mtp => {
                     self.draft_source_mtp_tokens = self.draft_source_mtp_tokens.saturating_add(1);
@@ -1661,6 +1749,12 @@ impl MtpTelemetry {
             .saturating_add(saturating_u32(tail_len));
     }
 
+    fn record_ngram_proposed(&mut self, draft_len: usize) {
+        self.source_ngram_proposed_tokens = self
+            .source_ngram_proposed_tokens
+            .saturating_add(saturating_u32(draft_len));
+    }
+
     fn record_ngram_submitted(&mut self, draft_len: usize) {
         self.ngram_submitted_tokens = self
             .ngram_submitted_tokens
@@ -1683,6 +1777,9 @@ impl MtpTelemetry {
         self.verify_eval_wall_us = self
             .verify_eval_wall_us
             .saturating_add(timings.verify_eval_wall_us);
+        self.target_softmax_wall_us = self
+            .target_softmax_wall_us
+            .saturating_add(timings.target_softmax_wall_us);
         self.accept_wall_us = self.accept_wall_us.saturating_add(timings.accept_wall_us);
         self.rollback_wall_us = self
             .rollback_wall_us
@@ -1691,6 +1788,17 @@ impl MtpTelemetry {
             .tail_sample_wall_us
             .saturating_add(timings.tail_sample_wall_us);
         self.draft_wall_us = self.draft_wall_us.saturating_add(timings.draft_wall_us);
+        self.source_mtp_proposer_wall_us = self
+            .source_mtp_proposer_wall_us
+            .saturating_add(timings.mtp_draft_wall_us);
+        self.source_assistant_proposer_wall_us = self
+            .source_assistant_proposer_wall_us
+            .saturating_add(timings.assistant_draft_wall_us);
+        self.ngram_lookup_wall_us = self
+            .ngram_lookup_wall_us
+            .saturating_add(timings.ngram_lookup_wall_us);
+        self.verify_tokens = self.verify_tokens.saturating_add(timings.verify_tokens);
+        self.emitted_tokens = self.emitted_tokens.saturating_add(timings.emitted_tokens);
     }
 
     fn merge_from(&mut self, other: Self) {
@@ -1723,6 +1831,53 @@ impl MtpTelemetry {
             .tail_sample_wall_us
             .saturating_add(other.tail_sample_wall_us);
         self.draft_wall_us = self.draft_wall_us.saturating_add(other.draft_wall_us);
+        self.target_softmax_wall_us = self
+            .target_softmax_wall_us
+            .saturating_add(other.target_softmax_wall_us);
+        self.verify_tokens = self.verify_tokens.saturating_add(other.verify_tokens);
+        self.emitted_tokens = self.emitted_tokens.saturating_add(other.emitted_tokens);
+        self.source_mtp_submitted_tokens = self
+            .source_mtp_submitted_tokens
+            .saturating_add(other.source_mtp_submitted_tokens);
+        self.source_mtp_accepted_tokens = self
+            .source_mtp_accepted_tokens
+            .saturating_add(other.source_mtp_accepted_tokens);
+        self.source_mtp_rejected_tokens = self
+            .source_mtp_rejected_tokens
+            .saturating_add(other.source_mtp_rejected_tokens);
+        self.source_mtp_cascade_rejected_tokens = self
+            .source_mtp_cascade_rejected_tokens
+            .saturating_add(other.source_mtp_cascade_rejected_tokens);
+        self.source_mtp_proposer_wall_us = self
+            .source_mtp_proposer_wall_us
+            .saturating_add(other.source_mtp_proposer_wall_us);
+        self.source_assistant_submitted_tokens = self
+            .source_assistant_submitted_tokens
+            .saturating_add(other.source_assistant_submitted_tokens);
+        self.source_assistant_accepted_tokens = self
+            .source_assistant_accepted_tokens
+            .saturating_add(other.source_assistant_accepted_tokens);
+        self.source_assistant_rejected_tokens = self
+            .source_assistant_rejected_tokens
+            .saturating_add(other.source_assistant_rejected_tokens);
+        self.source_assistant_cascade_rejected_tokens = self
+            .source_assistant_cascade_rejected_tokens
+            .saturating_add(other.source_assistant_cascade_rejected_tokens);
+        self.source_assistant_proposer_wall_us = self
+            .source_assistant_proposer_wall_us
+            .saturating_add(other.source_assistant_proposer_wall_us);
+        self.source_ngram_proposed_tokens = self
+            .source_ngram_proposed_tokens
+            .saturating_add(other.source_ngram_proposed_tokens);
+        self.source_ngram_rejected_tokens = self
+            .source_ngram_rejected_tokens
+            .saturating_add(other.source_ngram_rejected_tokens);
+        self.source_ngram_cascade_rejected_tokens = self
+            .source_ngram_cascade_rejected_tokens
+            .saturating_add(other.source_ngram_cascade_rejected_tokens);
+        self.ngram_lookup_wall_us = self
+            .ngram_lookup_wall_us
+            .saturating_add(other.ngram_lookup_wall_us);
         for d in 0..3 {
             self.accepted_by_depth[d] =
                 self.accepted_by_depth[d].saturating_add(other.accepted_by_depth[d]);
@@ -1817,6 +1972,19 @@ impl MtpTelemetry {
         self.ngram_self_tune_disabled_steps = self
             .ngram_self_tune_disabled_steps
             .saturating_add(other.ngram_self_tune_disabled_steps);
+        self.ngram_utility_gated_steps = self
+            .ngram_utility_gated_steps
+            .saturating_add(other.ngram_utility_gated_steps);
+        self.ngram_utility_insufficient_sample_steps = self
+            .ngram_utility_insufficient_sample_steps
+            .saturating_add(other.ngram_utility_insufficient_sample_steps);
+        self.ngram_safety_disabled_steps = self
+            .ngram_safety_disabled_steps
+            .saturating_add(other.ngram_safety_disabled_steps);
+        self.ngram_safety_tightened_steps = self
+            .ngram_safety_tightened_steps
+            .saturating_add(other.ngram_safety_tightened_steps);
+        self.ngram_safety_reason = self.ngram_safety_reason.max(other.ngram_safety_reason);
         self.ngram_submitted_tokens = self
             .ngram_submitted_tokens
             .saturating_add(other.ngram_submitted_tokens);
@@ -1826,6 +1994,37 @@ impl MtpTelemetry {
         self.auto_optimistic_steps = self
             .auto_optimistic_steps
             .saturating_add(other.auto_optimistic_steps);
+    }
+
+    fn baseline_utility(&self) -> DraftSourceUtility {
+        let submitted_tokens = self
+            .source_mtp_submitted_tokens
+            .saturating_add(self.source_assistant_submitted_tokens);
+        DraftSourceUtility {
+            submitted_tokens,
+            proposer_wall_us: self
+                .source_mtp_proposer_wall_us
+                .saturating_add(self.source_assistant_proposer_wall_us),
+            verify_wall_us: self
+                .verify_forward_wall_us
+                .saturating_add(self.verify_eval_wall_us)
+                .saturating_add(self.target_softmax_wall_us),
+            emitted_tokens: self
+                .source_mtp_accepted_tokens
+                .saturating_add(self.source_assistant_accepted_tokens),
+        }
+    }
+
+    fn stacked_utility(&self) -> DraftSourceUtility {
+        DraftSourceUtility {
+            submitted_tokens: self.ngram_submitted_tokens,
+            proposer_wall_us: self.draft_wall_us,
+            verify_wall_us: self
+                .verify_forward_wall_us
+                .saturating_add(self.verify_eval_wall_us)
+                .saturating_add(self.target_softmax_wall_us),
+            emitted_tokens: self.emitted_tokens,
+        }
     }
 
     fn append_route_decisions(&self, decisions: &mut impl RouteDecisionSink) {
@@ -1845,6 +2044,70 @@ impl MtpTelemetry {
             ("ax_mtp_rollback_wall_us", self.rollback_wall_us),
             ("ax_mtp_tail_sample_wall_us", self.tail_sample_wall_us),
             ("ax_mtp_draft_wall_us", self.draft_wall_us),
+            ("ax_mtp_target_softmax_wall_us", self.target_softmax_wall_us),
+            ("ax_mtp_verify_tokens", self.verify_tokens),
+            ("ax_mtp_emitted_tokens", self.emitted_tokens),
+            (
+                "ax_mtp_source_mtp_proposed_tokens",
+                self.source_mtp_submitted_tokens,
+            ),
+            (
+                "ax_mtp_source_mtp_submitted_tokens",
+                self.source_mtp_submitted_tokens,
+            ),
+            (
+                "ax_mtp_source_mtp_accepted_tokens",
+                self.source_mtp_accepted_tokens,
+            ),
+            (
+                "ax_mtp_source_mtp_rejected_tokens",
+                self.source_mtp_rejected_tokens,
+            ),
+            (
+                "ax_mtp_source_mtp_cascade_rejected_tokens",
+                self.source_mtp_cascade_rejected_tokens,
+            ),
+            (
+                "ax_mtp_source_mtp_proposer_wall_us",
+                self.source_mtp_proposer_wall_us,
+            ),
+            (
+                "ax_mtp_source_assistant_proposed_tokens",
+                self.source_assistant_submitted_tokens,
+            ),
+            (
+                "ax_mtp_source_assistant_submitted_tokens",
+                self.source_assistant_submitted_tokens,
+            ),
+            (
+                "ax_mtp_source_assistant_accepted_tokens",
+                self.source_assistant_accepted_tokens,
+            ),
+            (
+                "ax_mtp_source_assistant_rejected_tokens",
+                self.source_assistant_rejected_tokens,
+            ),
+            (
+                "ax_mtp_source_assistant_cascade_rejected_tokens",
+                self.source_assistant_cascade_rejected_tokens,
+            ),
+            (
+                "ax_mtp_source_assistant_proposer_wall_us",
+                self.source_assistant_proposer_wall_us,
+            ),
+            (
+                "ax_mtp_ngram_proposed_tokens",
+                self.source_ngram_proposed_tokens,
+            ),
+            (
+                "ax_mtp_ngram_rejected_tokens",
+                self.source_ngram_rejected_tokens,
+            ),
+            (
+                "ax_mtp_ngram_cascade_rejected_tokens",
+                self.source_ngram_cascade_rejected_tokens,
+            ),
+            ("ax_mtp_ngram_lookup_wall_us", self.ngram_lookup_wall_us),
             ("ax_mtp_accepted_depth0", self.accepted_by_depth[0]),
             ("ax_mtp_accepted_depth1", self.accepted_by_depth[1]),
             ("ax_mtp_accepted_depth2", self.accepted_by_depth[2]),
@@ -1930,6 +2193,23 @@ impl MtpTelemetry {
                 "ax_mtp_ngram_self_tune_disabled_steps",
                 self.ngram_self_tune_disabled_steps,
             ),
+            (
+                "ax_mtp_ngram_utility_gated_steps",
+                self.ngram_utility_gated_steps,
+            ),
+            (
+                "ax_mtp_ngram_utility_insufficient_sample_steps",
+                self.ngram_utility_insufficient_sample_steps,
+            ),
+            (
+                "ax_mtp_ngram_safety_disabled_steps",
+                self.ngram_safety_disabled_steps,
+            ),
+            (
+                "ax_mtp_ngram_safety_tightened_steps",
+                self.ngram_safety_tightened_steps,
+            ),
+            ("ax_mtp_ngram_safety_reason", self.ngram_safety_reason),
             ("ax_mtp_ngram_submitted_tokens", self.ngram_submitted_tokens),
             (
                 "ax_mtp_ngram_submitted_accepted_tokens",
@@ -1971,6 +2251,26 @@ impl MtpTelemetry {
                 HurtGateMode::SourceAware => 0u32,
                 HurtGateMode::LegacyEwma => 1u32,
             },
+        );
+        decisions.upsert_route_decision(
+            "ax_mtp_ngram_gate_policy",
+            mtp_ngram_gate_policy_from_env().route_code(),
+        );
+        decisions.upsert_route_decision(
+            "ax_mtp_ngram_utility_baseline_cost_per_emitted_token_us",
+            route_cost_us(self.baseline_utility().cost_per_emitted_token_us()),
+        );
+        decisions.upsert_route_decision(
+            "ax_mtp_ngram_utility_stacked_cost_per_emitted_token_us",
+            route_cost_us(self.stacked_utility().cost_per_emitted_token_us()),
+        );
+        decisions.upsert_route_decision(
+            "ax_mtp_ngram_utility_min_emitted_tokens",
+            mtp_ngram_utility_min_emitted_tokens(),
+        );
+        decisions.upsert_route_decision(
+            "ax_mtp_ngram_utility_min_ngram_tokens",
+            mtp_ngram_utility_min_ngram_tokens(),
         );
         // Per-depth accept rates (scaled ×1000) for A/B comparison without
         // computing ratios from drafted/accepted counters.
@@ -3572,6 +3872,8 @@ struct RequestState {
     /// threshold, n-gram is disabled for the rest of the request (mirrors
     /// lightning-mlx 0.7.0 `NgramRequestState._self_tune_disabled`).
     ngram_self_tune: NgramSelfTuneState,
+    /// Remaining steps to keep n-gram gated after a utility hurt decision.
+    mtp_ngram_utility_hysteresis_remaining: u32,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -3628,6 +3930,7 @@ impl RequestState {
             mtp_prefill_history_tokens: Vec::new(),
             ngram_in_think: false,
             ngram_self_tune: NgramSelfTuneState::default(),
+            mtp_ngram_utility_hysteresis_remaining: 0,
         }
     }
 
@@ -6325,6 +6628,7 @@ impl MlxRunner {
             );
             // Draft new MTP tokens from skip hidden.
             let cache = state.mtp_cache.get_or_insert_with(|| MlxKVCache::new(1));
+            let mtp_draft_started = Instant::now();
             let (draft, log_probs, _dist, added, _m) = mtp_draft_tokens(
                 &self.weights,
                 &self.cfg,
@@ -6334,6 +6638,9 @@ impl MlxRunner {
                 Some(state.mtp_adaptive_max_depth),
                 &mut state.rng,
             );
+            mtp_timings.mtp_draft_wall_us = mtp_timings
+                .mtp_draft_wall_us
+                .saturating_add(elapsed_us(mtp_draft_started));
             state.mtp_decode_count += added;
             state.mtp_pending_draft_log_probs = log_probs;
             state.mtp_pending_draft_distributions.clear();
@@ -6397,6 +6704,7 @@ impl MlxRunner {
         }
         verify_input.extend_from_slice(&pending);
         let verify_len = verify_input.len();
+        mtp_timings.verify_tokens = saturating_u32(verify_len);
 
         // Returns (logits_all, draft_hidden, accept_count, all_accepted, correction_argmax_tok, predicted).
         // correction_argmax_tok is only evaluated when greedy fallback needs it.
@@ -6475,6 +6783,7 @@ impl MlxRunner {
                     } else {
                         &mut local_target_prob_workspace
                     };
+                let target_softmax_started = Instant::now();
                 let lazy_target_probs = compute_mtp_target_probs(
                     &logits_all,
                     &pending,
@@ -6485,6 +6794,9 @@ impl MlxRunner {
                     MtpDraftFilter::IDENTITY,
                     target_prob_workspace,
                 );
+                mtp_timings.target_softmax_wall_us = mtp_timings
+                    .target_softmax_wall_us
+                    .saturating_add(elapsed_us(target_softmax_started));
                 // Always compute argmax for the correction/bonus fallback.
                 let predicted_arr = Some(argmax(&logits_all, None));
                 let kv_refs = verify_cache.collect_eval_refs();
@@ -6503,9 +6815,13 @@ impl MlxRunner {
                     .as_ref()
                     .map(|arr| arr.data_u32().to_vec())
                     .unwrap_or_default();
+                let target_softmax_extract_started = Instant::now();
                 let target_probs_cpu = lazy_target_probs
                     .as_ref()
                     .and_then(|ltp| ltp.extract_cpu_into(&pending, target_prob_workspace));
+                mtp_timings.target_softmax_wall_us = mtp_timings
+                    .target_softmax_wall_us
+                    .saturating_add(elapsed_us(target_softmax_extract_started));
                 let target_distributions_cpu: Option<&[TokenDistribution]> = None;
 
                 let accept = mtp_accept_count(
@@ -6613,6 +6929,7 @@ impl MlxRunner {
                     } else {
                         &mut local_target_prob_workspace
                     };
+                let target_softmax_started = Instant::now();
                 let lazy_target_probs = compute_mtp_target_probs(
                     &logits_all,
                     &pending,
@@ -6623,6 +6940,9 @@ impl MlxRunner {
                     MtpDraftFilter::IDENTITY,
                     target_prob_workspace,
                 );
+                mtp_timings.target_softmax_wall_us = mtp_timings
+                    .target_softmax_wall_us
+                    .saturating_add(elapsed_us(target_softmax_started));
                 // Always compute argmax for the correction/bonus fallback.
                 let predicted_arr = Some(argmax(&logits_all, None));
                 let kv_refs2 = state.cache.collect_eval_refs();
@@ -6641,9 +6961,13 @@ impl MlxRunner {
                     .as_ref()
                     .map(|arr| arr.data_u32().to_vec())
                     .unwrap_or_default();
+                let target_softmax_extract_started = Instant::now();
                 let target_probs_cpu = lazy_target_probs
                     .as_ref()
                     .and_then(|ltp| ltp.extract_cpu_into(&pending, target_prob_workspace));
+                mtp_timings.target_softmax_wall_us = mtp_timings
+                    .target_softmax_wall_us
+                    .saturating_add(elapsed_us(target_softmax_extract_started));
                 let target_distributions_cpu: Option<&[TokenDistribution]> = None;
 
                 let accept = mtp_accept_count(
@@ -6731,6 +7055,7 @@ impl MlxRunner {
         );
         mtp_timings.tail_sample_wall_us = elapsed_us(tail_sample_started);
         result.push(tail_tok);
+        mtp_timings.emitted_tokens = saturating_u32(result.len());
 
         // Record MTP draft/accept telemetry.
         // Pass the actual accept_count for counters (accepted_tokens, cycles, etc.)
@@ -6855,11 +7180,43 @@ impl MlxRunner {
         // ADR-008 n-gram-first draft branch entirely so the benchmark measures
         // MTP acceptance in isolation.  The MTP verify loop, head forward, and
         // telemetry are unchanged; only this draft-source branch is gated.
-        let ngram_max = if self.disable_mtp_ngram_stacking {
+        let mut ngram_max = if self.disable_mtp_ngram_stacking {
             0
         } else {
             adaptive_ngram_draft_len(has_linear_attention, state.ngram_posterior_mean())
         };
+        let safety_decision = if ngram_max > 0 {
+            mtp_ngram_speculative_safety_decision(mtp_post_think_guarded)
+        } else {
+            SpeculativeSafetyDecision::default()
+        };
+        if safety_decision.tighten_ngram {
+            state.mtp_telemetry.ngram_safety_tightened_steps = state
+                .mtp_telemetry
+                .ngram_safety_tightened_steps
+                .saturating_add(1);
+            state.mtp_telemetry.ngram_safety_reason = state
+                .mtp_telemetry
+                .ngram_safety_reason
+                .max(safety_decision.reason.route_code());
+            if safety_decision.reason == SpeculativeSafetyReason::ReasoningTrace {
+                state.mtp_telemetry.ngram_think_gated_steps = state
+                    .mtp_telemetry
+                    .ngram_think_gated_steps
+                    .saturating_add(1);
+            }
+        }
+        if safety_decision.disable_ngram {
+            state.mtp_telemetry.ngram_safety_disabled_steps = state
+                .mtp_telemetry
+                .ngram_safety_disabled_steps
+                .saturating_add(1);
+            state.mtp_telemetry.ngram_safety_reason = state
+                .mtp_telemetry
+                .ngram_safety_reason
+                .max(safety_decision.reason.route_code());
+            ngram_max = 0;
+        }
         let ngram_gate = mtp_ngram_gate_decision(
             ngram_max,
             mtp_max_depth,
@@ -6882,7 +7239,40 @@ impl MlxRunner {
             mtp_ngram_hurt_margin(),
             MtpNgramAutoDisableConfig::from_env(),
         );
-        let ngram_max = if ngram_gate.gated { 0 } else { ngram_max };
+        let utility_cfg = MtpNgramUtilityGateConfig::from_env();
+        let utility_decision = if mtp_ngram_gate_policy_from_env() == MtpNgramGatePolicy::Utility {
+            mtp_ngram_utility_gate(
+                ngram_max,
+                state.mtp_telemetry.baseline_utility(),
+                state.mtp_telemetry.stacked_utility(),
+                utility_cfg,
+                state.mtp_ngram_utility_hysteresis_remaining,
+            )
+        } else {
+            MtpNgramUtilityDecision::default()
+        };
+        if utility_decision.utility_hurt {
+            state.mtp_ngram_utility_hysteresis_remaining = utility_cfg.hysteresis_steps;
+        } else if state.mtp_ngram_utility_hysteresis_remaining > 0 {
+            state.mtp_ngram_utility_hysteresis_remaining -= 1;
+        }
+        if utility_decision.insufficient_samples {
+            state.mtp_telemetry.ngram_utility_insufficient_sample_steps = state
+                .mtp_telemetry
+                .ngram_utility_insufficient_sample_steps
+                .saturating_add(1);
+        }
+        if utility_decision.gated {
+            state.mtp_telemetry.ngram_utility_gated_steps = state
+                .mtp_telemetry
+                .ngram_utility_gated_steps
+                .saturating_add(1);
+        }
+        let ngram_max = if ngram_gate.gated || utility_decision.gated {
+            0
+        } else {
+            ngram_max
+        };
         if ngram_gate.saturated {
             state.mtp_telemetry.ngram_saturated_gated_steps = state
                 .mtp_telemetry
@@ -6920,7 +7310,8 @@ impl MlxRunner {
                 .saturating_add(1);
         }
         let ngram_outcome = if ngram_max > 0 {
-            state.ngram.predict_with_policy(NgramDraftPolicy {
+            let ngram_lookup_started = Instant::now();
+            let outcome = state.ngram.predict_with_policy(NgramDraftPolicy {
                 variant: mtp_ngram_policy_variant(),
                 max_len: ngram_max,
                 min_support: mtp_ngram_min_support().max(if mtp_post_think_guarded {
@@ -6932,7 +7323,11 @@ impl MlxRunner {
                 adaptive_match_len: true,
                 bypass_prompt_min_support: true,
                 min_context_len: mtp_ngram_min_context_len(),
-            })
+            });
+            mtp_timings.ngram_lookup_wall_us = mtp_timings
+                .ngram_lookup_wall_us
+                .saturating_add(elapsed_us(ngram_lookup_started));
+            outcome
         } else {
             NgramDraftOutcome {
                 draft: vec![],
@@ -6945,6 +7340,9 @@ impl MlxRunner {
             state
                 .mtp_telemetry
                 .record_ngram_attempt(ngram_outcome.rejection);
+            state
+                .mtp_telemetry
+                .record_ngram_proposed(ngram_outcome.draft.len());
         }
         let recent = &result[result.len().saturating_sub(8)..];
         let ngram_cycle_guarded =
@@ -6969,6 +7367,7 @@ impl MlxRunner {
 
                 if mtp_tail_cap > 0 && self.weights.mtp.is_some() {
                     let cache = state.mtp_cache.get_or_insert_with(|| MlxKVCache::new(1));
+                    let mtp_draft_started = Instant::now();
                     let (tail, log_probs, distributions, added, _top2_margins) =
                         mtp_draft_tokens_after_forced_prefix(
                             &self.weights,
@@ -6980,6 +7379,9 @@ impl MlxRunner {
                             mtp_tail_cap,
                             &mut state.rng,
                         );
+                    mtp_timings.mtp_draft_wall_us = mtp_timings
+                        .mtp_draft_wall_us
+                        .saturating_add(elapsed_us(mtp_draft_started));
                     state.mtp_decode_count += added;
                     state.mtp_pending_draft_distributions = distributions;
                     state.mtp_telemetry.record_ngram_stack_hit(ngram_len, false);
@@ -7023,6 +7425,7 @@ impl MlxRunner {
                 if self.weights.mtp.is_some() {
                     // MTP head forward path (RoPE managed internally via cache.seq_len).
                     let cache = state.mtp_cache.get_or_insert_with(|| MlxKVCache::new(1));
+                    let mtp_draft_started = Instant::now();
                     let (draft, log_probs, distributions, added, _top2_margins) = mtp_draft_tokens(
                         &self.weights,
                         &self.cfg,
@@ -7032,13 +7435,20 @@ impl MlxRunner {
                         Some(state.mtp_adaptive_max_depth),
                         &mut state.rng,
                     );
+                    mtp_timings.mtp_draft_wall_us = mtp_timings
+                        .mtp_draft_wall_us
+                        .saturating_add(elapsed_us(mtp_draft_started));
                     state.mtp_decode_count += added;
                     state.mtp_pending_draft_distributions = distributions;
                     let sources = vec![MtpDraftSource::Mtp; draft.len()];
                     (draft, log_probs, sources)
                 } else {
+                    let assistant_draft_started = Instant::now();
                     let (draft, log_probs, distributions) =
                         self.gemma4_assistant_draft_token(state, tail_tok, &draft_hidden, sampling);
+                    mtp_timings.assistant_draft_wall_us = mtp_timings
+                        .assistant_draft_wall_us
+                        .saturating_add(elapsed_us(assistant_draft_started));
                     state.mtp_pending_draft_distributions = distributions;
                     let sources = vec![MtpDraftSource::Gemma4Assistant; draft.len()];
                     (draft, log_probs, sources)
@@ -7142,6 +7552,7 @@ impl MlxRunner {
         state.mtp_skip_hidden = None;
         state.mtp_decode_count = 0;
         state.ngram_self_tune = NgramSelfTuneState::default();
+        state.mtp_ngram_utility_hysteresis_remaining = 0;
         if let Some(ref mut c) = state.mtp_cache {
             c.reset();
         }
@@ -7500,6 +7911,182 @@ impl MtpNgramAutoDisableConfig {
             ngram_floor: (mtp_ngram_auto_disable_min_ngram() * 1000.0) as u32,
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+enum MtpNgramGatePolicy {
+    #[default]
+    Rate,
+    Utility,
+}
+
+impl MtpNgramGatePolicy {
+    fn route_code(self) -> u32 {
+        match self {
+            Self::Rate => 0,
+            Self::Utility => 1,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct DraftSourceUtility {
+    submitted_tokens: u32,
+    proposer_wall_us: u32,
+    verify_wall_us: u32,
+    emitted_tokens: u32,
+}
+
+impl DraftSourceUtility {
+    fn cost_per_emitted_token_us(self) -> Option<f64> {
+        if self.emitted_tokens == 0 {
+            return None;
+        }
+        let total = u64::from(self.proposer_wall_us).saturating_add(u64::from(self.verify_wall_us));
+        Some(total as f64 / f64::from(self.emitted_tokens))
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct MtpNgramUtilityGateConfig {
+    min_emitted_tokens: u32,
+    min_ngram_submitted_tokens: u32,
+    margin_ratio: f64,
+    hysteresis_steps: u32,
+}
+
+impl MtpNgramUtilityGateConfig {
+    fn from_env() -> Self {
+        Self {
+            min_emitted_tokens: mtp_ngram_utility_min_emitted_tokens(),
+            min_ngram_submitted_tokens: mtp_ngram_utility_min_ngram_tokens(),
+            margin_ratio: mtp_ngram_utility_margin_ratio(),
+            hysteresis_steps: mtp_ngram_utility_hysteresis_steps(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct MtpNgramUtilityDecision {
+    gated: bool,
+    insufficient_samples: bool,
+    utility_hurt: bool,
+    hysteresis_active: bool,
+}
+
+fn mtp_ngram_utility_gate(
+    ngram_max: usize,
+    baseline: DraftSourceUtility,
+    stacked: DraftSourceUtility,
+    cfg: MtpNgramUtilityGateConfig,
+    hysteresis_remaining: u32,
+) -> MtpNgramUtilityDecision {
+    if ngram_max == 0 {
+        return MtpNgramUtilityDecision::default();
+    }
+    if hysteresis_remaining > 0 {
+        return MtpNgramUtilityDecision {
+            gated: true,
+            hysteresis_active: true,
+            ..MtpNgramUtilityDecision::default()
+        };
+    }
+    if baseline.emitted_tokens < cfg.min_emitted_tokens
+        || stacked.emitted_tokens < cfg.min_emitted_tokens
+        || stacked.submitted_tokens < cfg.min_ngram_submitted_tokens
+    {
+        return MtpNgramUtilityDecision {
+            insufficient_samples: true,
+            ..MtpNgramUtilityDecision::default()
+        };
+    }
+    let Some(baseline_cost) = baseline.cost_per_emitted_token_us() else {
+        return MtpNgramUtilityDecision {
+            insufficient_samples: true,
+            ..MtpNgramUtilityDecision::default()
+        };
+    };
+    let Some(stacked_cost) = stacked.cost_per_emitted_token_us() else {
+        return MtpNgramUtilityDecision {
+            insufficient_samples: true,
+            ..MtpNgramUtilityDecision::default()
+        };
+    };
+    let utility_hurt = stacked_cost > baseline_cost * (1.0 + cfg.margin_ratio.max(0.0));
+    MtpNgramUtilityDecision {
+        gated: utility_hurt,
+        insufficient_samples: false,
+        utility_hurt,
+        hysteresis_active: false,
+    }
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+enum SpeculativeSafetyReason {
+    #[default]
+    None,
+    ToolCall,
+    StructuredOutput,
+    ReasoningTrace,
+    ExperimentalOverride,
+}
+
+impl SpeculativeSafetyReason {
+    fn route_code(self) -> u32 {
+        match self {
+            Self::None => 0,
+            Self::ToolCall => 1,
+            Self::StructuredOutput => 2,
+            Self::ReasoningTrace => 3,
+            Self::ExperimentalOverride => 4,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct SpeculativeSafetyDecision {
+    disable_ngram: bool,
+    tighten_ngram: bool,
+    reason: SpeculativeSafetyReason,
+}
+
+fn mtp_ngram_speculative_safety_decision(post_think_guarded: bool) -> SpeculativeSafetyDecision {
+    mtp_ngram_speculative_safety_decision_for_mode(mtp_ngram_safety_mode(), post_think_guarded)
+}
+
+fn mtp_ngram_speculative_safety_decision_for_mode(
+    mode: MtpNgramSafetyMode,
+    post_think_guarded: bool,
+) -> SpeculativeSafetyDecision {
+    match mode {
+        MtpNgramSafetyMode::Off => SpeculativeSafetyDecision::default(),
+        MtpNgramSafetyMode::DisableAll => SpeculativeSafetyDecision {
+            disable_ngram: true,
+            reason: SpeculativeSafetyReason::ExperimentalOverride,
+            ..SpeculativeSafetyDecision::default()
+        },
+        MtpNgramSafetyMode::DisableReasoning if post_think_guarded => SpeculativeSafetyDecision {
+            disable_ngram: true,
+            reason: SpeculativeSafetyReason::ReasoningTrace,
+            ..SpeculativeSafetyDecision::default()
+        },
+        MtpNgramSafetyMode::TightenReasoning if post_think_guarded => SpeculativeSafetyDecision {
+            tighten_ngram: true,
+            reason: SpeculativeSafetyReason::ReasoningTrace,
+            ..SpeculativeSafetyDecision::default()
+        },
+        _ => SpeculativeSafetyDecision::default(),
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+enum MtpNgramSafetyMode {
+    Off,
+    DisableAll,
+    DisableReasoning,
+    #[default]
+    TightenReasoning,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -8450,9 +9037,77 @@ fn cached_env_u32(name: &str, default: u32) -> u32 {
         .unwrap_or(default)
 }
 
+fn cached_env_f64(name: &str, default: f64, min: f64, max: f64) -> f64 {
+    std::env::var(name)
+        .ok()
+        .and_then(|v| v.parse::<f64>().ok())
+        .filter(|v| v.is_finite())
+        .map(|v| v.clamp(min, max))
+        .unwrap_or(default)
+}
+
+fn route_cost_us(value: Option<f64>) -> u32 {
+    value
+        .filter(|v| v.is_finite() && *v > 0.0)
+        .map(|v| v.round().min(u32::MAX as f64) as u32)
+        .unwrap_or(0)
+}
+
 fn mtp_ngram_hurt_margin() -> f32 {
     static CACHED: OnceLock<f32> = OnceLock::new();
     *CACHED.get_or_init(|| cached_env_f32("AX_MLX_MTP_NGRAM_HURT_MARGIN", 0.02, 0.0, 1.0))
+}
+
+fn mtp_ngram_gate_policy_from_env() -> MtpNgramGatePolicy {
+    static CACHED: OnceLock<MtpNgramGatePolicy> = OnceLock::new();
+    *CACHED.get_or_init(|| {
+        match std::env::var("AX_MLX_MTP_NGRAM_GATE_POLICY")
+            .unwrap_or_default()
+            .to_ascii_lowercase()
+            .replace('_', "-")
+            .as_str()
+        {
+            "utility" => MtpNgramGatePolicy::Utility,
+            _ => MtpNgramGatePolicy::Rate,
+        }
+    })
+}
+
+fn mtp_ngram_utility_min_emitted_tokens() -> u32 {
+    static CACHED: OnceLock<u32> = OnceLock::new();
+    *CACHED.get_or_init(|| cached_env_u32("AX_MLX_MTP_NGRAM_UTILITY_MIN_EMITTED_TOKENS", 128))
+}
+
+fn mtp_ngram_utility_min_ngram_tokens() -> u32 {
+    static CACHED: OnceLock<u32> = OnceLock::new();
+    *CACHED.get_or_init(|| cached_env_u32("AX_MLX_MTP_NGRAM_UTILITY_MIN_NGRAM_TOKENS", 32))
+}
+
+fn mtp_ngram_utility_margin_ratio() -> f64 {
+    static CACHED: OnceLock<f64> = OnceLock::new();
+    *CACHED.get_or_init(|| cached_env_f64("AX_MLX_MTP_NGRAM_UTILITY_MARGIN_RATIO", 0.02, 0.0, 10.0))
+}
+
+fn mtp_ngram_utility_hysteresis_steps() -> u32 {
+    static CACHED: OnceLock<u32> = OnceLock::new();
+    *CACHED.get_or_init(|| cached_env_u32("AX_MLX_MTP_NGRAM_UTILITY_HYSTERESIS_STEPS", 16))
+}
+
+fn mtp_ngram_safety_mode() -> MtpNgramSafetyMode {
+    static CACHED: OnceLock<MtpNgramSafetyMode> = OnceLock::new();
+    *CACHED.get_or_init(|| {
+        match std::env::var("AX_MLX_MTP_NGRAM_SAFETY_MODE")
+            .unwrap_or_default()
+            .to_ascii_lowercase()
+            .replace('_', "-")
+            .as_str()
+        {
+            "off" | "none" => MtpNgramSafetyMode::Off,
+            "disable-all" | "all" => MtpNgramSafetyMode::DisableAll,
+            "disable-reasoning" | "disable-think" => MtpNgramSafetyMode::DisableReasoning,
+            _ => MtpNgramSafetyMode::TightenReasoning,
+        }
+    })
 }
 
 fn mtp_ngram_auto_disable_mtp_threshold() -> f32 {
@@ -9378,10 +10033,16 @@ mod tests {
             cache_clone_wall_us: 10,
             verify_forward_wall_us: 20,
             verify_eval_wall_us: 30,
+            target_softmax_wall_us: 35,
             accept_wall_us: 40,
             rollback_wall_us: 50,
             tail_sample_wall_us: 60,
             draft_wall_us: 70,
+            mtp_draft_wall_us: 71,
+            assistant_draft_wall_us: 72,
+            ngram_lookup_wall_us: 73,
+            verify_tokens: 8,
+            emitted_tokens: 4,
         });
 
         let mut decisions = Vec::new();
@@ -9400,6 +10061,17 @@ mod tests {
         assert!(decisions.contains(&("ax_mtp_rollback_wall_us".into(), 50)));
         assert!(decisions.contains(&("ax_mtp_tail_sample_wall_us".into(), 60)));
         assert!(decisions.contains(&("ax_mtp_draft_wall_us".into(), 70)));
+        assert!(decisions.contains(&("ax_mtp_target_softmax_wall_us".into(), 35)));
+        assert!(decisions.contains(&("ax_mtp_verify_tokens".into(), 8)));
+        assert!(decisions.contains(&("ax_mtp_emitted_tokens".into(), 4)));
+        assert!(decisions.contains(&("ax_mtp_source_mtp_submitted_tokens".into(), 9)));
+        assert!(decisions.contains(&("ax_mtp_source_mtp_accepted_tokens".into(), 4)));
+        assert!(decisions.contains(&("ax_mtp_source_mtp_rejected_tokens".into(), 2)));
+        assert!(decisions.contains(&("ax_mtp_source_mtp_cascade_rejected_tokens".into(), 3)));
+        assert!(decisions.contains(&("ax_mtp_source_mtp_proposer_wall_us".into(), 71)));
+        assert!(decisions.contains(&("ax_mtp_source_assistant_submitted_tokens".into(), 0)));
+        assert!(decisions.contains(&("ax_mtp_source_assistant_proposer_wall_us".into(), 72)));
+        assert!(decisions.contains(&("ax_mtp_ngram_lookup_wall_us".into(), 73)));
         // Per-depth counters: record_step(3,3) + record_step(3,1) + record_step(3,0)
         // drafted_by_depth: all 3 steps attempted all 3 depths → [3, 3, 3]
         // accepted_by_depth: depth0 accepted in steps 0,1; depth1+2 only in step 0
@@ -9432,6 +10104,9 @@ mod tests {
         telemetry.record_ngram_cycle_guard();
         telemetry.record_ngram_stack_hit(2, false);
         telemetry.record_ngram_hybrid_tail(1);
+        telemetry.record_ngram_proposed(2);
+        telemetry.record_ngram_submitted(2);
+        telemetry.record_ngram_verified(2);
         telemetry.record_step(
             3,
             2,
@@ -9460,6 +10135,14 @@ mod tests {
         assert!(decisions.contains(&("ax_mtp_accepted_source_ngram_tokens".into(), 2)));
         assert!(decisions.contains(&("ax_mtp_draft_source_hybrid_mtp_tokens".into(), 1)));
         assert!(decisions.contains(&("ax_mtp_accepted_source_hybrid_mtp_tokens".into(), 0)));
+        assert!(decisions.contains(&("ax_mtp_ngram_proposed_tokens".into(), 2)));
+        assert!(decisions.contains(&("ax_mtp_ngram_submitted_tokens".into(), 2)));
+        assert!(decisions.contains(&("ax_mtp_ngram_submitted_accepted_tokens".into(), 2)));
+        assert!(decisions.contains(&("ax_mtp_ngram_rejected_tokens".into(), 0)));
+        assert!(decisions.contains(&("ax_mtp_ngram_cascade_rejected_tokens".into(), 0)));
+        assert!(decisions.contains(&("ax_mtp_source_mtp_submitted_tokens".into(), 1)));
+        assert!(decisions.contains(&("ax_mtp_source_mtp_rejected_tokens".into(), 1)));
+        assert!(decisions.contains(&("ax_mtp_source_mtp_cascade_rejected_tokens".into(), 0)));
     }
 
     #[test]
@@ -9620,6 +10303,166 @@ mod tests {
         assert!(decision.hurt);
         assert!(decision.auto_disabled);
         assert!(decision.self_tune_disabled);
+    }
+
+    fn utility_cfg_for_tests() -> MtpNgramUtilityGateConfig {
+        MtpNgramUtilityGateConfig {
+            min_emitted_tokens: 128,
+            min_ngram_submitted_tokens: 32,
+            margin_ratio: 0.02,
+            hysteresis_steps: 16,
+        }
+    }
+
+    #[test]
+    fn mtp_ngram_utility_gate_waits_for_enough_samples() {
+        let cfg = utility_cfg_for_tests();
+        let baseline = DraftSourceUtility {
+            proposer_wall_us: 1_000,
+            verify_wall_us: 1_000,
+            emitted_tokens: 127,
+            ..DraftSourceUtility::default()
+        };
+        let stacked = DraftSourceUtility {
+            submitted_tokens: 64,
+            proposer_wall_us: 2_000,
+            verify_wall_us: 2_000,
+            emitted_tokens: 128,
+        };
+
+        let decision = mtp_ngram_utility_gate(4, baseline, stacked, cfg, 0);
+
+        assert!(!decision.gated);
+        assert!(decision.insufficient_samples);
+        assert!(!decision.utility_hurt);
+    }
+
+    #[test]
+    fn mtp_ngram_utility_gate_waits_for_enough_ngram_tokens() {
+        let cfg = utility_cfg_for_tests();
+        let baseline = DraftSourceUtility {
+            proposer_wall_us: 1_000,
+            verify_wall_us: 1_000,
+            emitted_tokens: 128,
+            ..DraftSourceUtility::default()
+        };
+        let stacked = DraftSourceUtility {
+            submitted_tokens: 31,
+            proposer_wall_us: 2_000,
+            verify_wall_us: 2_000,
+            emitted_tokens: 128,
+        };
+
+        let decision = mtp_ngram_utility_gate(4, baseline, stacked, cfg, 0);
+
+        assert!(!decision.gated);
+        assert!(decision.insufficient_samples);
+    }
+
+    #[test]
+    fn mtp_ngram_utility_gate_fires_when_stacked_cost_is_worse() {
+        let cfg = utility_cfg_for_tests();
+        let baseline = DraftSourceUtility {
+            proposer_wall_us: 5_000,
+            verify_wall_us: 5_000,
+            emitted_tokens: 200,
+            ..DraftSourceUtility::default()
+        };
+        let stacked = DraftSourceUtility {
+            submitted_tokens: 64,
+            proposer_wall_us: 7_500,
+            verify_wall_us: 7_500,
+            emitted_tokens: 200,
+        };
+
+        let decision = mtp_ngram_utility_gate(4, baseline, stacked, cfg, 0);
+
+        assert!(decision.gated);
+        assert!(decision.utility_hurt);
+        assert!(!decision.insufficient_samples);
+    }
+
+    #[test]
+    fn mtp_ngram_utility_gate_does_not_fire_inside_margin() {
+        let cfg = utility_cfg_for_tests();
+        let baseline = DraftSourceUtility {
+            proposer_wall_us: 10_000,
+            emitted_tokens: 200,
+            ..DraftSourceUtility::default()
+        };
+        let stacked = DraftSourceUtility {
+            submitted_tokens: 64,
+            proposer_wall_us: 10_100,
+            emitted_tokens: 200,
+            ..DraftSourceUtility::default()
+        };
+
+        let decision = mtp_ngram_utility_gate(4, baseline, stacked, cfg, 0);
+
+        assert!(!decision.gated);
+        assert!(!decision.utility_hurt);
+        assert!(!decision.insufficient_samples);
+    }
+
+    #[test]
+    fn mtp_ngram_utility_gate_hysteresis_gates_without_recomputing_cost() {
+        let decision = mtp_ngram_utility_gate(
+            4,
+            DraftSourceUtility::default(),
+            DraftSourceUtility::default(),
+            utility_cfg_for_tests(),
+            3,
+        );
+
+        assert!(decision.gated);
+        assert!(decision.hysteresis_active);
+        assert!(!decision.insufficient_samples);
+    }
+
+    #[test]
+    fn mtp_ngram_utility_gate_zero_tokens_do_not_panic() {
+        let decision = mtp_ngram_utility_gate(
+            4,
+            DraftSourceUtility::default(),
+            DraftSourceUtility::default(),
+            utility_cfg_for_tests(),
+            0,
+        );
+
+        assert!(!decision.gated);
+        assert!(decision.insufficient_samples);
+    }
+
+    #[test]
+    fn mtp_ngram_safety_defaults_to_reasoning_tighten_mode() {
+        assert_eq!(
+            MtpNgramSafetyMode::default(),
+            MtpNgramSafetyMode::TightenReasoning
+        );
+        let decision =
+            mtp_ngram_speculative_safety_decision_for_mode(MtpNgramSafetyMode::default(), true);
+
+        assert!(decision.tighten_ngram);
+        assert!(!decision.disable_ngram);
+        assert_eq!(decision.reason.route_code(), 3);
+    }
+
+    #[test]
+    fn mtp_ngram_safety_disable_modes_are_explicit() {
+        let all =
+            mtp_ngram_speculative_safety_decision_for_mode(MtpNgramSafetyMode::DisableAll, false);
+        assert!(all.disable_ngram);
+        assert_eq!(all.reason, SpeculativeSafetyReason::ExperimentalOverride);
+
+        let reasoning = mtp_ngram_speculative_safety_decision_for_mode(
+            MtpNgramSafetyMode::DisableReasoning,
+            true,
+        );
+        assert!(reasoning.disable_ngram);
+        assert_eq!(reasoning.reason, SpeculativeSafetyReason::ReasoningTrace);
+
+        let off = mtp_ngram_speculative_safety_decision_for_mode(MtpNgramSafetyMode::Off, true);
+        assert_eq!(off, SpeculativeSafetyDecision::default());
     }
 
     #[test]

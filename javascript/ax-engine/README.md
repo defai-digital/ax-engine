@@ -1,6 +1,6 @@
 # @ax-engine/sdk
 
-JavaScript and TypeScript SDK for AX Engine v4 — local HTTP inference server.
+JavaScript and TypeScript SDK for AX Engine v6 — local HTTP inference server.
 
 - zero runtime dependencies
 - built on standard `fetch` (Node.js 20+, browser, Deno, Bun)
