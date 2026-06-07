@@ -357,6 +357,17 @@ The harness writes `summary.json`, `summary.md`, and `decode-tok-s.svg` under
 kept in the summary instead of silently dropping a backend; that is deliberate
 so MTPLX loader incompatibilities (e.g. 35B-A3B MoE) stay visible.
 
+### Draft confidence gate (throughput knob)
+
+The MTP draft confidence gate (`AX_MLX_MTP_DRAFT_MIN_CONFIDENCE`, default 0.90)
+is a throughput lever, not just an accept-rate guard: a looser gate proposes
+slightly longer drafts that are still almost always accepted. Measured +8-18%
+tokens/forward on Qwen3.6 27B (looser is better on harder workloads). Per-workload
+best-practice values and the full sweep are in
+[`docs/MTP-DRAFT-GATE-THROUGHPUT.md`](MTP-DRAFT-GATE-THROUGHPUT.md). Tree
+speculative decoding is not an option on the linear-attention models — see
+[`docs/TREE-DRAFT-PHASE-A.md`](TREE-DRAFT-PHASE-A.md).
+
 ## Additional Testing Plan
 
 More testing is needed before making production-serving or long-context claims.

@@ -61,6 +61,65 @@ depth 2 on flappy it rises 1.633 → 1.749 (0.98 → 0.90), +7%. Headline candid
 repeat (thermal noise ~3%). The feared recompute storm never appears —
 `fwds/step` ≤ 1.03 on all three suites, including the hard ones.
 
+## Per-workload gate sweep
+
+Gate × depth sweep on all three fair-MTP suites (256 committed tokens). Because
+the run is fully deterministic (greedy, fixed seed/prompt), `tok/fwd` and
+`accept/st` are *exactly* reproducible — so the cross-gate variation is a real
+step-boundary effect, not noise. `tok/fwd` counts ALL target forwards (verify +
+recompute), so at a fixed depth it is the clean, thermal-free efficiency metric
+for the gate (it omits only head-compute, which is what makes depth 2 win on
+wall-clock — see below). Depth 2 is the throughput optimum on every suite.
+
+Best `tok/fwd` at depth 2, gate 0.98 vs each suite's optimal gate:
+
+| suite                | gate 0.98 | optimal gate | tok/fwd @opt | Δ tok/fwd |
+|----------------------|----------:|:------------:|-------------:|----------:|
+| flappy               |     1.647 |   **0.90**   |        1.779 |     +8.0% |
+| python_modules_long  |     1.571 |   **0.85**   |        1.785 |    +13.6% |
+| long_code            |     1.369 |   **0.80**   |        1.610 |    +17.6% |
+
+**Trend: the harder / more diverse the workload, the looser the optimal gate.**
+On repetitive content (flappy) the head is confident, so even a tightish gate
+keeps long drafts and 0.90 is best; on diverse code (long_code) a tight gate
+truncates nearly everything, so a looser 0.80 recovers far more speculation. The
+old 0.98 is worst everywhere, and worst by the largest margin on the hardest
+suite (where speculation matters most). Looser still (<0.80) was not better —
+extra rejections start costing recompute forwards faster than they add accepted
+tokens.
+
+Depth: deeper drafts raise `tok/fwd` slightly but cost one extra head forward per
+step; past the gate's effective truncation depth (~2-3) that head-compute exceeds
+the marginal acceptance, so wall-clock tok/s peaks at depth 2 in this probe.
+Production's adaptive-depth controller already picks depth per request, so the
+shippable knob is the gate, not a fixed depth.
+
+> NOTE: raw tok/s from a *sequential* sweep (one config after another) is
+> thermally confounded on a fanless/heat-soaked box — later runs throttle. Use
+> `tok/fwd` (deterministic) for cross-config ranking, or interleave configs
+> round-robin when a wall-clock number is needed (as in the headline table above).
+
+## Best practices
+
+- **Default (shipped): `AX_MLX_MTP_DRAFT_MIN_CONFIDENCE = 0.90`.** Best on
+  repetitive workloads, strong everywhere, cleanly validated (+~8% vs 0.98 on
+  flappy, interleaved). Use this when the workload mix is unknown.
+- **Per-workload override** (`AX_MLX_MTP_DRAFT_MIN_CONFIDENCE`), looser for harder
+  content:
+  - Repetitive / templated generation (boilerplate, structured code): **0.90**.
+  - General code / mixed prose+code: **0.85**.
+  - Long, diverse code generation (the hardest, lowest-base-acceptance case):
+    **0.80** — this is where the gate change pays the most (+17% tok/fwd).
+- **Do not exceed ~0.95** for throughput — that regime is the accept-rate-tuned
+  setting and leaves the most speed on the table. **Restore 0.98** only if a
+  consumer SLO-gates on "MTP accept ≥99%" (the accept rate is intentionally lower
+  now; output is unchanged).
+- **Do not chase a fixed deep draft depth** to go faster — depth is already
+  adaptive in the runner, and past depth ~3 extra head forwards cost more than
+  they return. The gate, not the depth, is the throughput lever.
+- **Linear-attention models only get the gate lever**, not tree speculation — see
+  `docs/TREE-DRAFT-PHASE-A.md`.
+
 ## Why it's safe
 
 - **Correctness-preserving.** The gate only controls how many speculative tokens
