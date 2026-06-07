@@ -56,8 +56,32 @@ throughput baselines.
   does not leave orphaned compiler processes.
 - `brew-release.sh`: local Homebrew release publisher. It packages
   `ax-engine-server` and `ax-engine-bench`; with `--sign-identity`, it
-  codesigns and notarizes all packaged binaries before upload. Without
-  `--sign-identity`, binaries are intentionally left unsigned.
+  codesigns and notarizes all packaged binaries before upload. With
+  `--minisign`, it signs the release tarball with
+  `~/signkey/ax-engine.minisign.key`, verifies it with
+  `~/signkey/ax-engine.minisign.pub`, and uploads the matching `.minisig`
+  beside the archive. Without `--sign-identity`, binaries are intentionally
+  left unsigned.
+- `minisign-artifact.sh`: signs one or more release artifacts with minisign.
+  The default key location is `~/signkey/ax-engine.minisign.key` and
+  `~/signkey/ax-engine.minisign.pub`; create the key pair once with
+  `minisign -G -p ~/signkey/ax-engine.minisign.pub -s ~/signkey/ax-engine.minisign.key`.
+  The script refuses to overwrite an existing `.minisig` unless `--force` is
+  passed, verifies signatures by default, and can verify with either a public
+  key file or `--public-key-string`. On macOS, the key passphrase is read
+  automatically from Keychain (service `ax-engine-minisign`, account
+  `ax-engine-release`) so the release path never prompts for a password.
+  Store the passphrase once with:
+  `security add-generic-password -U -a ax-engine-release -s ax-engine-minisign -w`
+  Override via `AX_MINISIGN_PASSWORD` or `--keychain-service`/`--keychain-account`.
+- `publish-github-release.sh`: full local GitHub Release publisher for the
+  macOS arm64 CLI assets. It verifies tag/version consistency, requires a clean
+  tree by default, runs release gates, builds `ax-engine-server` and
+  `ax-engine-bench`, writes a tarball, SHA256 file, and manifest under
+  `target/release-artifacts/<tag>/`, signs those artifacts with minisign by
+  default, pushes the tag, creates the GitHub release, uploads the assets, and
+  verifies the uploaded asset names. Use `--dry-run` to exercise local steps
+  without pushing or uploading.
 - `download_model.py`: MLX LLM download helper. It delegates acquisition to
   `mlx-lm`, resolves the resulting cache snapshot, validates local model files,
   and generates the AX model manifest when `ax-engine-bench` or Cargo is
