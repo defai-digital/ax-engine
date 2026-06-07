@@ -71,7 +71,7 @@ if [[ ! -f "$SERVER_BIN" ]]; then
     exit 1
 fi
 
-SCRIPTS_DIR="$REPO_ROOT/python/ax_engine.data/scripts"
+SCRIPTS_DIR="$REPO_ROOT/python/ax_engine/_bin"
 mkdir -p "$SCRIPTS_DIR"
 cp "$SERVER_BIN" "$SCRIPTS_DIR/ax-engine-server"
 chmod +x "$SCRIPTS_DIR/ax-engine-server"
@@ -127,6 +127,7 @@ delocate-listdeps "$DELOCATED"
 # Keep this guard after delocate so a release cannot silently regress native pip inference.
 echo "==> Verifying bundled MLX runtime assets..."
 verify_wheel_member "$DELOCATED" "ax_engine.dylibs/mlx.metallib"
+verify_wheel_member "$DELOCATED" "ax_engine/_bin/ax-engine-server"
 
 # ── 6. Optionally publish ──────────────────────────────────────────────────
 if [[ "${1:-}" == "--publish" ]]; then

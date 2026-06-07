@@ -43,3 +43,4 @@ benchmarks/results/**/logs/*.log
 python/ax_engine/_ax_engine*.so
 python/ax_engine.dylibs/mlx.metallib
 python/ax_engine.data/scripts/ax-engine-server
+python/ax_engine/_bin/
