@@ -106,13 +106,17 @@ def _stream_sse(url: str, payload: dict, timeout: int) -> Iterator[dict]:
                         break
                 else:
                     break
-                raw_data = None
+                # Per the SSE spec, an event may carry multiple `data:` lines
+                # that are concatenated with a newline; keeping only the last
+                # one would drop content from spec-compliant servers.
+                data_lines = []
                 for line in block.splitlines():
                     line = line.decode()
                     if line.startswith("data:"):
-                        raw_data = line[len("data:"):].lstrip()
-                if raw_data is None:
+                        data_lines.append(line[len("data:"):].lstrip())
+                if not data_lines:
                     continue
+                raw_data = "\n".join(data_lines)
                 if raw_data == "[DONE]":
                     return
                 try:

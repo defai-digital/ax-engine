@@ -5055,7 +5055,7 @@ impl MlxRunner {
                         &state,
                         prefill_completes_prompt
                             .then_some(tok)
-                            .filter(|_| is_greedy),
+                            .filter(|_| prefill_output_token_cacheable(ctx, sampling)),
                     ),
                 );
                 let prefill_prefix_cache_wall_us = elapsed_us(prefix_cache_started);
@@ -5462,7 +5462,12 @@ impl MlxRunner {
                 Ok(restored_cache) => {
                     state.cache = restored_cache;
                     state.prompt_prefix_tokens = reused_tokens.to_vec();
-                    state.cached_prefill_output_token = snapshot.greedy_prefill_output_token;
+                    // Only inherit the producer's greedy token when this request
+                    // would compute it too; otherwise leave it unset so the
+                    // consume site resamples with the request's own sampling.
+                    state.cached_prefill_output_token = snapshot
+                        .greedy_prefill_output_token
+                        .filter(|_| prefill_output_token_cacheable(ctx, sampling));
                     telemetry.hits = telemetry.hits.saturating_add(1);
                     telemetry.reused_tokens = telemetry
                         .reused_tokens
@@ -5512,8 +5517,12 @@ impl MlxRunner {
                         // (which diverged for single-block prefixes
                         // in the pre-fix run). When the slot is None
                         // (older partial-prefix snapshot), decode_one
-                        // still runs as a fallback.
-                        state.cached_prefill_output_token = entry.prefill_output_token;
+                        // still runs as a fallback. Only a greedy,
+                        // no-repetition-penalty consumer may inherit the
+                        // stored greedy token; others resample.
+                        state.cached_prefill_output_token = entry
+                            .prefill_output_token
+                            .filter(|_| prefill_output_token_cacheable(ctx, sampling));
                         telemetry.record_disk_hit();
                         telemetry.reused_tokens = telemetry
                             .reused_tokens
@@ -8174,6 +8183,27 @@ fn prefill_item_completes_prompt(
     .unwrap_or(true)
 }
 
+/// Whether the prefill output token may be reused as a request's first generated
+/// token across a prefix-cache hit.
+///
+/// The cached token is the greedy argmax of the prompt logits with no repetition
+/// penalty, so it is only a correct substitute when the consumer would compute
+/// exactly that token: a deterministic (greedy) request with no repetition
+/// penalty. Temperature / top-p / repetition-penalty requests must resample —
+/// otherwise a warm cache would silently force a greedy first token and change
+/// the output distribution. The prefix-cache key does not encode sampling, so
+/// this gate is applied symmetrically at the store and the reuse sites so the
+/// two can never disagree.
+fn prefill_output_token_cacheable(
+    ctx: Option<&RunnerRequestContext>,
+    sampling: MlxSamplingParams,
+) -> bool {
+    let is_greedy = ctx
+        .map(|c| c.deterministic_argmax_sampling)
+        .unwrap_or(sampling == MlxSamplingParams::greedy());
+    is_greedy && !sampling.uses_repetition_penalty()
+}
+
 fn hash_prefix_tokens(tokens: &[u32]) -> u64 {
     let mut hash = 0xcbf2_9ce4_8422_2325u64;
     for token in tokens {
@@ -9250,6 +9280,51 @@ mod tests {
     };
     use std::fs;
     use std::path::{Path, PathBuf};
+
+    fn ctx_with_argmax(deterministic_argmax_sampling: bool) -> RunnerRequestContext {
+        RunnerRequestContext {
+            request_id: RequestId(1),
+            prompt_len: 8,
+            processed_prompt_tokens: 0,
+            generated_len: 0,
+            max_output_tokens: 16,
+            deterministic_argmax_sampling,
+            temperature: 0.0,
+            top_p: 1.0,
+            top_k: 0,
+            repetition_penalty: 1.0,
+            repetition_context_size: None,
+            ignore_eos: false,
+        }
+    }
+
+    // A prefix-cache hit may only hand a request the producer's greedy prefill
+    // token when the request would itself compute that token. Temperature,
+    // top-p, and repetition-penalty requests must resample.
+    #[test]
+    fn prefill_output_token_cacheable_only_for_greedy_no_rep_penalty() {
+        let greedy = MlxSamplingParams::greedy();
+        let temperature = MlxSamplingParams::new(0.8, 1.0, 0);
+        let greedy_rep = MlxSamplingParams::greedy().with_repetition_penalty(1.3, None);
+
+        // No context: greedy-ness is inferred from the params themselves.
+        assert!(prefill_output_token_cacheable(None, greedy));
+        assert!(!prefill_output_token_cacheable(None, temperature));
+        assert!(!prefill_output_token_cacheable(None, greedy_rep));
+
+        // Deterministic-argmax context with no repetition penalty -> cacheable.
+        let det = ctx_with_argmax(true);
+        assert!(prefill_output_token_cacheable(Some(&det), greedy));
+        // Deterministic argmax but a repetition penalty is active: the stored
+        // greedy token ignored the penalty, so it must not be reused.
+        assert!(!prefill_output_token_cacheable(Some(&det), greedy_rep));
+
+        // A sampling request (deterministic_argmax_sampling == false) never
+        // reuses the token, even if its other params look greedy.
+        let sampled = ctx_with_argmax(false);
+        assert!(!prefill_output_token_cacheable(Some(&sampled), temperature));
+        assert!(!prefill_output_token_cacheable(Some(&sampled), greedy));
+    }
 
     // Verify that the extract-work-reinsert mutex pattern correctly isolates
     // per-request state without GPU execution required.

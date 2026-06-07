@@ -573,7 +573,27 @@ pub fn mtp_draft_tokens_gated(
         }
     };
 
-    apply_draft_confidence_gate(result, min_confidence)
+    // `result.3` is the number of MTP KV entries the draft path physically
+    // appended to `cache` (one per head forward). The confidence gate can drop
+    // the low-confidence tail of the draft; those tail forwards already wrote
+    // their entries, so dropping them without trimming leaves stale rows that
+    // inflate `cache.seq_len` above the returned `added`. That breaks the
+    // invariant the decode loop relies on (MTP `cache.seq_len` == the running
+    // `mtp_decode_count`): a fully-accepted gated draft (post-verify
+    // `rejected_count == 0`, so the rollback trims nothing) would leave those
+    // rows for the next step's MTP head to attend over at an inflated RoPE
+    // offset, silently degrading draft acceptance. Trim the gated-out tail so
+    // the cache always matches `added`. Output is unaffected either way (every
+    // draft is verified against the target model); this preserves the
+    // speculative acceptance rate.
+    let appended = result.3;
+    let gated = apply_draft_confidence_gate(result, min_confidence);
+    let dropped = appended.saturating_sub(gated.3);
+    if dropped > 0 {
+        let target = cache.seq_len.saturating_sub(dropped);
+        let _ = cache.trim_to(target);
+    }
+    gated
 }
 
 /// Advance the MTP recurrent state through caller-supplied prefix tokens, then

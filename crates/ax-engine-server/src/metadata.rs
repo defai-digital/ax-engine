@@ -181,9 +181,11 @@ fn ax_engine_model_metadata(openai_text: bool) -> AxEngineModelMetadata {
 }
 
 fn openai_text_supported(state: &AppState) -> bool {
+    // Keep this in sync with `validate_openai_text_backend` in `openai::validation`:
+    // every backend that serves the OpenAI text endpoints must advertise them here.
     matches!(
         state.runtime_report.selected_backend,
-        SelectedBackend::LlamaCpp | SelectedBackend::MlxLmDelegated
+        SelectedBackend::LlamaCpp | SelectedBackend::MlxLmDelegated | SelectedBackend::Mlx
     )
 }
 

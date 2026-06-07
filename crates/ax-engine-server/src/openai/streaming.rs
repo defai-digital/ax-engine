@@ -1,7 +1,7 @@
 use ax_engine_sdk::{
-    EngineSessionError, EngineTokenizer, GenerateRequest, GenerateStreamEvent, GenerateStreamState,
-    LlamaCppChatGenerateRequest, LlamaCppStreamHandle, MlxLmChatGenerateRequest, MlxLmStreamHandle,
-    SelectedBackend, finish_reason_from_mlx_lm,
+    EngineSessionError, EngineTokenizer, EngineTokenizerError, GenerateRequest,
+    GenerateStreamEvent, GenerateStreamState, LlamaCppChatGenerateRequest, LlamaCppStreamHandle,
+    MlxLmChatGenerateRequest, MlxLmStreamHandle, SelectedBackend, finish_reason_from_mlx_lm,
 };
 use axum::Json;
 use axum::http::StatusCode;
@@ -116,6 +116,7 @@ fn drive_openai_stream_state<N>(
     N: FnMut(&mut GenerateStreamState) -> Result<Option<GenerateStreamEvent>, EngineSessionError>,
 {
     let mut chat_role_emitted = false;
+    let mut decoder = tokenizer.map(IncrementalDecoder::new);
 
     drive_stream_events(
         state,
@@ -127,7 +128,7 @@ fn drive_openai_stream_state<N>(
                 event,
                 stream_kind,
                 &mut chat_role_emitted,
-                tokenizer.as_ref(),
+                decoder.as_mut(),
             )
         },
         || {
@@ -141,14 +142,14 @@ fn send_openai_stream_event(
     event: GenerateStreamEvent,
     stream_kind: OpenAiStreamKind,
     chat_role_emitted: &mut bool,
-    tokenizer: Option<&EngineTokenizer>,
+    decoder: Option<&mut IncrementalDecoder>,
 ) -> bool {
     match event {
         GenerateStreamEvent::Request(_) => true,
         GenerateStreamEvent::Step(payload) => match stream_kind {
             OpenAiStreamKind::Completion => {
                 let Some(delta_text) =
-                    stream_delta_text(&payload.delta_text, &payload.delta_tokens, tokenizer, tx)
+                    stream_delta_text(&payload.delta_text, &payload.delta_tokens, decoder, tx)
                 else {
                     return true;
                 };
@@ -164,7 +165,7 @@ fn send_openai_stream_event(
             }
             OpenAiStreamKind::ChatCompletion => {
                 let Some(delta_text) =
-                    stream_delta_text(&payload.delta_text, &payload.delta_tokens, tokenizer, tx)
+                    stream_delta_text(&payload.delta_text, &payload.delta_tokens, decoder, tx)
                 else {
                     return true;
                 };
@@ -230,7 +231,7 @@ fn native_mlx_openai_stream_tokenizer(
 fn stream_delta_text(
     delta_text: &Option<String>,
     delta_tokens: &[u32],
-    tokenizer: Option<&EngineTokenizer>,
+    decoder: Option<&mut IncrementalDecoder>,
     tx: &StreamEventSender,
 ) -> Option<String> {
     if let Some(delta_text) = delta_text {
@@ -239,8 +240,8 @@ fn stream_delta_text(
     if delta_tokens.is_empty() {
         return None;
     }
-    let tokenizer = tokenizer?;
-    match tokenizer.decode(delta_tokens, true) {
+    let decoder = decoder?;
+    match decoder.push(delta_tokens) {
         Ok(text) => Some(text),
         Err(error) => {
             send_stream_error(
@@ -252,6 +253,77 @@ fn stream_delta_text(
             None
         }
     }
+}
+
+/// Incremental detokenizer for native MLX token streams.
+///
+/// Byte-level BPE tokenizers (Qwen, GLM, Gemma) split a single non-ASCII
+/// codepoint across several tokens, so decoding each step's `delta_tokens` in
+/// isolation renders the incomplete byte sequence as U+FFFD (`�`) and corrupts
+/// CJK/emoji output. This decodes a small trailing token window each step
+/// (O(1) amortized — the same prefix-offset/read-offset scheme production
+/// inference servers use) and emits only the newly completed text, holding back
+/// a partial trailing codepoint until later tokens finish it.
+struct IncrementalDecoder {
+    tokenizer: EngineTokenizer,
+    tokens: Vec<u32>,
+    /// Start of the decode window; everything before it is already emitted.
+    prefix_offset: usize,
+    /// Boundary inside the window that ends on a complete codepoint — the text
+    /// of `tokens[prefix_offset..read_offset]` has already been emitted.
+    read_offset: usize,
+}
+
+impl IncrementalDecoder {
+    fn new(tokenizer: EngineTokenizer) -> Self {
+        Self {
+            tokenizer,
+            tokens: Vec::new(),
+            prefix_offset: 0,
+            read_offset: 0,
+        }
+    }
+
+    fn push(&mut self, delta_tokens: &[u32]) -> Result<String, EngineTokenizerError> {
+        self.tokens.extend_from_slice(delta_tokens);
+        // `prefix` is the already-emitted, codepoint-complete head of the window;
+        // `whole` extends it with the newly appended tokens.
+        let prefix = self
+            .tokenizer
+            .decode(&self.tokens[self.prefix_offset..self.read_offset], true)?;
+        let whole = self
+            .tokenizer
+            .decode(&self.tokens[self.prefix_offset..], true)?;
+        match incremental_delta(&prefix, &whole) {
+            Some(delta) => {
+                self.prefix_offset = self.read_offset;
+                self.read_offset = self.tokens.len();
+                Ok(delta)
+            }
+            // Trailing codepoint still incomplete: keep the window and wait for
+            // the tokens that complete it (offsets unchanged).
+            None => Ok(String::new()),
+        }
+    }
+}
+
+/// Diff the decoded window prefix against the full window decode.
+///
+/// `prefix` is always a complete (non-`�`-terminated) decode of the
+/// already-emitted tokens, so `whole` extends it byte-for-byte. Returns the
+/// newly completed suffix to emit, or `None` when the trailing codepoint is
+/// still incomplete (decoded as U+FFFD) and must be held back.
+fn incremental_delta(prefix: &str, whole: &str) -> Option<String> {
+    if whole.len() <= prefix.len() || whole.ends_with('\u{FFFD}') {
+        return None;
+    }
+    // `prefix` is complete, so `whole` starts with it and `prefix.len()` lands on
+    // a char boundary. The boundary check keeps the slice panic-free even if a
+    // tokenizer ever violated that assumption.
+    if !whole.is_char_boundary(prefix.len()) {
+        return None;
+    }
+    Some(whole[prefix.len()..].to_string())
 }
 
 fn drive_openai_mlx_lm_chat_stream(
@@ -366,4 +438,55 @@ fn send_openai_llama_cpp_chat_final_chunk(
         finish_reason_from_llama_cpp_chat(finish_reason),
     );
     send_openai_stream_chunk(tx, &chunk)
+}
+
+#[cfg(test)]
+mod incremental_decode_tests {
+    use super::incremental_delta;
+
+    #[test]
+    fn emits_full_text_for_ascii() {
+        assert_eq!(incremental_delta("", "hello"), Some("hello".to_string()));
+    }
+
+    #[test]
+    fn emits_only_new_suffix() {
+        assert_eq!(incremental_delta("ab", "abc"), Some("c".to_string()));
+        assert_eq!(
+            incremental_delta("hello", "hello world"),
+            Some(" world".to_string())
+        );
+    }
+
+    #[test]
+    fn waits_when_no_new_visible_text() {
+        // The new tokens added nothing decodable yet (e.g. a skipped special
+        // token): there is no progress to emit.
+        assert_eq!(incremental_delta("ab", "ab"), None);
+    }
+
+    #[test]
+    fn holds_back_incomplete_trailing_codepoint() {
+        // A multi-byte codepoint split across step boundaries decodes with a
+        // trailing replacement char; it must be held back, not emitted.
+        assert_eq!(incremental_delta("", "ab\u{FFFD}"), None);
+        assert_eq!(incremental_delta("ab", "ab\u{FFFD}"), None);
+    }
+
+    #[test]
+    fn emits_multibyte_codepoint_once_complete() {
+        // '你' (U+4F60) arrives complete after the held-back step.
+        assert_eq!(incremental_delta("ab", "ab你"), Some("你".to_string()));
+        assert_eq!(incremental_delta("", "你好"), Some("你好".to_string()));
+        // Emoji (4-byte UTF-8) likewise.
+        assert_eq!(incremental_delta("", "🚀"), Some("🚀".to_string()));
+    }
+
+    #[test]
+    fn full_window_stays_on_char_boundary() {
+        // Mixed content with a complete leading codepoint and an incomplete tail
+        // is held back entirely until the tail completes.
+        assert_eq!(incremental_delta("你", "你好\u{FFFD}"), None);
+        assert_eq!(incremental_delta("你", "你好世"), Some("好世".to_string()));
+    }
 }
