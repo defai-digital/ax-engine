@@ -119,6 +119,33 @@ shippable knob is the gate, not a fixed depth.
   they return. The gate, not the depth, is the throughput lever.
 - **Linear-attention models only get the gate lever**, not tree speculation — see
   `docs/TREE-DRAFT-PHASE-A.md`.
+- **Per-request tuning** is available in code via `mtp::mtp_draft_tokens_gated`
+  (an explicit-gate variant of `mtp_draft_tokens`); the runner still defaults to
+  the env value. Wire it through the request/session API if a single deployment
+  must serve mixed workloads at different gates.
+
+## Adaptive gate (evaluated, NOT adopted)
+
+An auto-tuning controller was prototyped and validated before deciding the gate
+must be set, not learned online. The controller hill-climbs the gate per request
+on a deterministic throughput proxy `committed / (target_forwards + steps*depth*r)`
+(r≈0.10), bounded [0.80, 0.95] (`tree_draft_probe` `AX_ADAPTIVE_GATE=1`).
+
+Result (proxy; deterministic, so thermal-noise-free):
+
+| suite                | best fixed | ADAPTIVE | verdict        |
+|----------------------|-----------:|---------:|----------------|
+| flappy               | 1.453 (0.90) | 1.453  | matched        |
+| python_modules_long  | 1.383 (0.80) | 1.328  | −4%, mis-tuned |
+| long_code            | 1.337 (0.85) | 1.282  | −4%            |
+
+It matched the optimum on easy/repetitive content but **mis-tuned on the harder
+suites** — short hill-climb windows have enough per-region variance that the
+search wanders to the tight end exactly where loose is optimal. A fixed gate (or
+per-deployment override) beats the controller where it matters most, so the
+adaptive path is not worth the hot-path complexity. Revisit only with a
+much-longer-window or feed-forward (head-confidence) signal, and only after
+sampled-mode validation.
 
 ## Why it's safe
 

@@ -471,6 +471,37 @@ pub fn mtp_draft_tokens(
     max_depth_cap: Option<usize>,
     rng: &mut Xorshift64,
 ) -> (Vec<u32>, Vec<f32>, Vec<TokenDistribution>, usize, [f32; 3]) {
+    mtp_draft_tokens_gated(
+        weights,
+        cfg,
+        first_hidden,
+        first_token,
+        cache,
+        max_depth_cap,
+        rng,
+        mtp_draft_min_confidence_from_env(),
+    )
+}
+
+/// Like [`mtp_draft_tokens`] but with an explicit draft-confidence gate instead
+/// of the process-global `AX_MLX_MTP_DRAFT_MIN_CONFIDENCE` env value.
+///
+/// This lets a caller vary the gate per request/step (e.g. an adaptive
+/// throughput controller that loosens the gate on hard content and tightens it
+/// on easy content — see `docs/MTP-DRAFT-GATE-THROUGHPUT.md`). The gate is always
+/// correctness-preserving: it only changes how many speculative tokens are
+/// proposed for verification, never the committed output.
+#[allow(clippy::too_many_arguments)]
+pub fn mtp_draft_tokens_gated(
+    weights: &ModelWeights,
+    cfg: &ModelConfig,
+    first_hidden: &MlxArray,
+    first_token: u32,
+    cache: &mut MlxKVCache,
+    max_depth_cap: Option<usize>,
+    rng: &mut Xorshift64,
+    min_confidence: f32,
+) -> (Vec<u32>, Vec<f32>, Vec<TokenDistribution>, usize, [f32; 3]) {
     let Some(head) = weights.mtp.as_ref() else {
         return (vec![], vec![], vec![], 0, [0.0; 3]);
     };
@@ -481,7 +512,6 @@ pub fn mtp_draft_tokens(
 
     let vocab = cfg.vocab_size as i32;
     let draft_mode = mtp_draft_mode_from_env();
-    let min_confidence = mtp_draft_min_confidence_from_env();
 
     // The confidence gate keys off the head's true (temperature 1.0) probability
     // of each drafted token. The greedy draft path computes exactly that, while

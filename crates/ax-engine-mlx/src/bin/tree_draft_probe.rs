@@ -56,7 +56,7 @@ use ax_engine_mlx::{
         ModelConfig, forward_all_positions, forward_all_positions_update_cache,
         forward_all_positions_with_post_norm,
     },
-    mtp::{mtp_draft_tokens, mtp_head_step},
+    mtp::{mtp_draft_tokens, mtp_draft_tokens_gated, mtp_head_step},
     sampling::{MlxSamplingParams, MlxSamplingRequest, Xorshift64},
     weights::{ModelWeights, load_weights},
 };
@@ -373,6 +373,28 @@ fn run_linear_realistic(
     target_tokens: usize,
     max_depth: usize,
 ) -> DepthStats {
+    // Uses the process-global env gate (default 0.90) via the real drafter.
+    run_fixed_gate(
+        cfg,
+        weights,
+        prompt,
+        target_tokens,
+        max_depth,
+        f32::NAN, // sentinel: use env default
+    )
+}
+
+/// Like `run_linear_realistic` but with an explicit fixed gate (`gate.is_nan()`
+/// falls back to the env default), so multiple gate values can be compared in one
+/// process without the env `OnceLock` pinning a single value.
+fn run_fixed_gate(
+    cfg: &ModelConfig,
+    weights: &ModelWeights,
+    prompt: &[u32],
+    target_tokens: usize,
+    max_depth: usize,
+    gate: f32,
+) -> DepthStats {
     let mut cache = MlxKVCache::new(cfg.layer_count);
     let mut rng = Xorshift64::new(0);
     let (mut primary, mut hidden) = chunked_prefill_with_final_hidden(
@@ -394,15 +416,28 @@ fn run_linear_realistic(
     while committed < target_tokens {
         // Draft via the real production drafter (fresh head cache each step).
         let mut head_cache = MlxKVCache::new(1);
-        let (draft, _lp, _dist, _added, _m) = mtp_draft_tokens(
-            weights,
-            cfg,
-            &hidden,
-            primary,
-            &mut head_cache,
-            Some(max_depth),
-            &mut rng,
-        );
+        let (draft, _lp, _dist, _added, _m) = if gate.is_nan() {
+            mtp_draft_tokens(
+                weights,
+                cfg,
+                &hidden,
+                primary,
+                &mut head_cache,
+                Some(max_depth),
+                &mut rng,
+            )
+        } else {
+            mtp_draft_tokens_gated(
+                weights,
+                cfg,
+                &hidden,
+                primary,
+                &mut head_cache,
+                Some(max_depth),
+                &mut rng,
+                gate,
+            )
+        };
 
         let token_offset = cache.seq_len;
         let mut verify_input: Vec<u32> = Vec::with_capacity(1 + draft.len());
@@ -468,6 +503,158 @@ fn run_linear_realistic(
         accepted,
         target_forwards,
         wall_s,
+    }
+}
+
+/// Result of an adaptive-gate run.
+struct AdaptiveStats {
+    stats: DepthStats,
+    final_gate: f32,
+    min_gate_seen: f32,
+    max_gate_seen: f32,
+}
+
+/// Adaptive draft-confidence-gate controller (the candidate "best practice").
+///
+/// Auto-tunes the gate per workload by hill-climbing on a deterministic,
+/// thermal-noise-free throughput proxy `committed / (target_forwards + steps*depth*r)`
+/// (r = head/target forward cost ratio ≈ 0.10), bounded to [0.80, 0.95]. The
+/// proxy uses only step counts, so the controller is reproducible and not fooled
+/// by thermal drift. Correctness is never at risk — the gate only changes how far
+/// ahead each step verifies.
+fn run_linear_adaptive(
+    cfg: &ModelConfig,
+    weights: &ModelWeights,
+    prompt: &[u32],
+    target_tokens: usize,
+    max_depth: usize,
+) -> AdaptiveStats {
+    const GATE_MIN: f32 = 0.80;
+    const GATE_MAX: f32 = 0.95;
+    const STEP: f32 = 0.02;
+    const WINDOW: usize = 24; // steps per hill-climb decision
+    const R: f64 = 0.10; // head-forward cost relative to a target forward
+
+    let mut cache = MlxKVCache::new(cfg.layer_count);
+    let mut rng = Xorshift64::new(0);
+    let (mut primary, mut hidden) = chunked_prefill_with_final_hidden(
+        cfg,
+        weights,
+        prompt,
+        &mut cache,
+        DEFAULT_PREFILL_CHUNK,
+        MlxSamplingRequest::new(MlxSamplingParams::greedy(), prompt),
+        &mut rng,
+    );
+
+    let mut committed = 0usize;
+    let mut steps = 0usize;
+    let mut accepted = 0usize;
+    let mut target_forwards = 0usize;
+
+    let mut gate = 0.90f32;
+    let mut dir = -STEP; // start by loosening
+    let mut prev_score = -1.0f64;
+    let (mut win_committed, mut win_forwards, mut win_steps) = (0usize, 0usize, 0usize);
+    let (mut min_gate, mut max_gate) = (gate, gate);
+
+    let t0 = Instant::now();
+    while committed < target_tokens {
+        let mut head_cache = MlxKVCache::new(1);
+        let (draft, _lp, _dist, _added, _m) = mtp_draft_tokens_gated(
+            weights,
+            cfg,
+            &hidden,
+            primary,
+            &mut head_cache,
+            Some(max_depth),
+            &mut rng,
+            gate,
+        );
+
+        let token_offset = cache.seq_len;
+        let mut verify_input: Vec<u32> = Vec::with_capacity(1 + draft.len());
+        verify_input.push(primary);
+        verify_input.extend_from_slice(&draft);
+
+        let mut vclone = cache.clone();
+        let (logits_all, post_norm_all) = forward_all_positions_with_post_norm(
+            cfg,
+            weights,
+            &verify_input,
+            &mut vclone,
+            token_offset,
+        );
+        vclone.seq_len += verify_input.len();
+        let predicted_arr = argmax(&logits_all, None);
+        eval(&[&predicted_arr, &post_norm_all]);
+        target_forwards += 1;
+        win_forwards += 1;
+        let predicted = predicted_arr.data_u32();
+
+        let mut a = 0usize;
+        while a < draft.len() && predicted[a] == draft[a] {
+            a += 1;
+        }
+
+        committed += 1 + a;
+        accepted += a;
+        steps += 1;
+        win_committed += 1 + a;
+        win_steps += 1;
+
+        if a == draft.len() {
+            cache = vclone;
+        } else {
+            let committed_step: Vec<u32> = verify_input[..1 + a].to_vec();
+            forward_all_positions_update_cache(
+                cfg,
+                weights,
+                &committed_step,
+                &mut cache,
+                token_offset,
+            );
+            cache.seq_len += committed_step.len();
+            target_forwards += 1;
+            win_forwards += 1;
+        }
+
+        let next_hidden = slice_hidden_row(&post_norm_all, a, cfg.hidden_size);
+        eval(&[&next_hidden]);
+        primary = predicted[a];
+        hidden = next_hidden;
+
+        // Hill-climb the gate once per window on the deterministic throughput proxy.
+        if win_steps >= WINDOW {
+            let denom = win_forwards as f64 + win_steps as f64 * max_depth as f64 * R;
+            let score = win_committed as f64 / denom;
+            if prev_score > 0.0 && score < prev_score {
+                dir = -dir; // window worsened → reverse search direction
+            }
+            prev_score = score;
+            gate = (gate + dir).clamp(GATE_MIN, GATE_MAX);
+            min_gate = min_gate.min(gate);
+            max_gate = max_gate.max(gate);
+            win_committed = 0;
+            win_forwards = 0;
+            win_steps = 0;
+        }
+    }
+    let wall_s = t0.elapsed().as_secs_f64();
+    clear_cache();
+
+    AdaptiveStats {
+        stats: DepthStats {
+            depth: max_depth,
+            committed,
+            steps,
+            accepted,
+            target_forwards,
+            wall_s,
+        },
+        final_gate: gate,
+        min_gate_seen: min_gate,
+        max_gate_seen: max_gate,
     }
 }
 
@@ -540,6 +727,50 @@ fn main() {
         "prompt_tokens={}  target_committed={target_tokens}",
         prompt.len()
     );
+
+    // ── Adaptive-gate validation (candidate best practice) ──────────────────
+    // AX_ADAPTIVE_GATE=1 compares the adaptive-gate controller against fixed
+    // gates {0.80, 0.85, 0.90, 0.98} at the same depth, to check the controller
+    // auto-lands at/above the per-suite fixed optimum.
+    if env::var("AX_ADAPTIVE_GATE").is_ok() {
+        let depth: usize = env::var("AX_DEPTH_SWEEP")
+            .ok()
+            .and_then(|s| s.split(',').next().and_then(|x| x.trim().parse().ok()))
+            .unwrap_or(2);
+        println!("\n=== Adaptive-gate vs fixed gates (depth {depth}) ===");
+        let _ = run_linear_realistic(&cfg, &weights, &prompt, 8, depth); // warmup
+        let proxy = |s: &DepthStats| {
+            s.committed as f64 / (s.target_forwards as f64 + s.steps as f64 * depth as f64 * 0.10)
+        };
+        println!(
+            "  {:>12} {:>10} {:>10} {:>10}",
+            "config", "tok/fwd", "proxy", "accept/st"
+        );
+        for g in [0.80f32, 0.85, 0.90, 0.98] {
+            // Per-process OnceLock would pin the env gate; instead drive the gate
+            // explicitly through the adaptive runner pinned to a constant.
+            let s = run_fixed_gate(&cfg, &weights, &prompt, target_tokens, depth, g);
+            println!(
+                "  {:>12} {:>10.3} {:>10.4} {:>10.3}",
+                format!("fixed {g:.2}"),
+                s.committed as f64 / s.target_forwards.max(1) as f64,
+                proxy(&s),
+                s.accepted as f64 / s.steps.max(1) as f64,
+            );
+        }
+        let a = run_linear_adaptive(&cfg, &weights, &prompt, target_tokens, depth);
+        println!(
+            "  {:>12} {:>10.3} {:>10.4} {:>10.3}   final_gate={:.2} range=[{:.2},{:.2}]",
+            "ADAPTIVE",
+            a.stats.committed as f64 / a.stats.target_forwards.max(1) as f64,
+            proxy(&a.stats),
+            a.stats.accepted as f64 / a.stats.steps.max(1) as f64,
+            a.final_gate,
+            a.min_gate_seen,
+            a.max_gate_seen,
+        );
+        return;
+    }
 
     // ── Depth-throughput sweep (the workable solution) ──────────────────────
     // AX_DEPTH_SWEEP="2,3,4,5,6" measures real tok/s for the production-faithful
