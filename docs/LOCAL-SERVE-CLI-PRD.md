@@ -2,7 +2,12 @@
 
 ## Status
 
-Proposed.
+P0 partially implemented.
+
+The PyPI CLI now ships `ax-engine serve` and `ax-engine convert-mtplx`.
+`ax-engine-server` remains the backward-compatible low-level server binary.
+Daemon/status/kill, automatic download, and automatic manifest generation remain
+follow-up work.
 
 ## Background
 
@@ -15,6 +20,8 @@ AX Engine already has the core pieces needed for local model serving:
   repo-owned MLX runtime.
 - `scripts/prepare_mtp_sidecar.py` packages quantized Qwen3.6 serving models
   with MTP sidecars from source checkpoints.
+- `ax-engine` now provides the common product entrypoint for foreground serving
+  and Qwen3.6 MTP sidecar packaging.
 
 The current user experience is still fragmented. A user must know which helper
 script to run, which model artifact directory to pass, how to map a friendly
@@ -65,7 +72,7 @@ boundaries.
 without manually discovering the HF cache path.
 
 ```text
-ax-engine serve qwen3.5-9b
+ax-engine serve qwen36-35b
 ```
 
 **US-2** As a power user with a local model directory, I can serve it directly
@@ -101,15 +108,17 @@ ax-engine serve <alias-or-model-dir> [--port <port>] [--host <host>] [--dry-run]
 
 The command must:
 
-1. Resolve a known alias to a model profile.
+1. Resolve a known alias to a model profile or server preset.
 2. Resolve a local path directly when `<alias-or-model-dir>` points to a model
    directory.
-3. Validate or generate `model-manifest.json` when possible.
-4. Print the exact `ax-engine-server` command before launching.
-5. Launch `ax-engine-server` in the foreground.
-6. Preserve `Ctrl-C` shutdown semantics.
-7. Support `--dry-run` before foreground launch ships so users can inspect the
-   resolved server command without starting a process.
+3. Preserve manifest validation in the server/runtime path.
+4. Apply model-specific defaults when the model identity is known and the user
+   has not supplied an explicit override.
+5. Print the exact `ax-engine-server` command before launching.
+6. Launch `ax-engine-server` in the foreground.
+7. Preserve `Ctrl-C` shutdown semantics.
+8. Support `--dry-run` so users can inspect the resolved server command without
+   starting a process.
 
 The command must fail with remediation text when:
 
@@ -120,15 +129,15 @@ The command must fail with remediation text when:
 
 ### P0: Alias Registry
 
-Initial alias support should be small and evidence-backed:
+Initial shipped alias support should be small and evidence-backed, and should
+mirror server presets until a data-backed alias registry lands:
 
 | Alias | Model source | Route |
 |---|---|---|
-| `qwen3.5-9b` | `mlx-community/Qwen3.5-9B-MLX-4bit` | repo-owned MLX if manifest validates |
-| `qwen3.6-27b-4bit` | `mlx-community/Qwen3.6-27B-4bit` | repo-owned MLX |
-| `qwen3.6-27b-8bit` | `mlx-community/Qwen3.6-27B-8bit` | repo-owned MLX |
-| `qwen3.6-35b` | `mlx-community/Qwen3.6-35B-A3B-4bit` | repo-owned MLX |
-| `glm4.7-flash-4bit` | `mlx-community/GLM-4.7-Flash-4bit` | repo-owned MLX |
+| `qwen3.6-35b` / `qwen36-35b` | HF cache preset resolution | repo-owned MLX |
+| `gemma4-e2b` | HF cache preset resolution | repo-owned MLX |
+| `gemma4-31b` | HF cache preset resolution | repo-owned MLX |
+| `glm4.7-flash-4bit` | delegated preset | requires `--mlx-lm-server-url` pass-through |
 
 Requested aliases that are not yet covered by repo support docs or model I/O
 checks, such as `qwen3.5-4b`, should remain candidate entries until direct
@@ -142,17 +151,19 @@ the source of truth for selected backend, support tier, and acceleration route.
 The first release adds:
 
 ```text
-ax-engine convert-mtplx <base-model> --mtp-source <source-model> [--output <dir>] [--quantize 4|8] [--mtp-depth-max <n>] [--json]
+ax-engine convert-mtplx <base-model> --mtp-source <source-repo> [--output <dir>] [--quantize 4|8] [--mtp-depth-max <n>] [--group-size <n>] [--fair-base-only] [--json]
 ```
 
 The command wraps the existing `prepare_mtp_sidecar.py` behavior and must:
 
 1. Accept a local directory or repo id for the serving base.
-2. Accept a local directory or repo id for the MTP source.
+2. Accept an HF repo id for the MTP source.
 3. Write `mtp.safetensors`, `mtplx_runtime.json`, patched `config.json`, and
    `ax_mtp_sidecar_manifest.json`.
-4. Run sidecar provenance validation before reporting success.
-5. Return the output directory in JSON mode.
+4. Apply model-specific defaults for omitted knobs: Qwen3.6 27B uses MTP depth
+   3; Qwen3.6 35B-A3B uses depth 1.
+5. Run sidecar provenance validation before reporting success.
+6. Return the output directory in JSON mode.
 
 The current helper accepts source checkpoints through `--hf-repo`; local
 `--mtp-source` paths require wrapper-owned local shard discovery or an explicit
@@ -182,6 +193,8 @@ mechanisms, log retention, upgrade behavior, and cleanup semantics.
 
 - Every failure must include a concrete next command.
 - Every command that starts a server must print the URL and model label.
+- Optional parameters should have model-specific defaults where the model
+  identity is known; explicit user flags always override those defaults.
 - JSON output must be stable and documented before automation depends on it.
 - Alias resolution must be explicit in output; users should see both alias and
   resolved repo/path.

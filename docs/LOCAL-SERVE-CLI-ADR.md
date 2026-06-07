@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed.
+Accepted; P0 partially implemented.
 
 ## Context
 
@@ -14,9 +14,9 @@ commands. That is precise but too expensive for day-to-day local use.
 The desired workflow is a small command vocabulary:
 
 ```text
-ax-engine serve qwen3.5-9b
+ax-engine serve qwen36-35b
 ax-engine status
-ax-engine convert-mtplx /path/to/Qwen3.6-35B-A3B-4bit --mtp-source /path/to/Qwen3.6-35B-A3B
+ax-engine convert-mtplx mlx-community/Qwen3.6-35B-A3B-4bit --mtp-source Qwen/Qwen3.6-35B-A3B
 ```
 
 The architectural risk is that a convenience CLI could blur AX's evidence
@@ -25,12 +25,13 @@ sidecar provenance, and benchmark/publication claims must remain explicit.
 
 ## Decision
 
-AX Engine will add a new top-level orchestration CLI named `ax-engine`.
+AX Engine adds a new top-level orchestration CLI named `ax-engine`.
 
 The CLI will:
 
 - wrap `ax-engine-server` for local serving;
-- keep `ax-engine-server` as the actual HTTP server process;
+- keep `ax-engine-server` as the actual HTTP server process and
+  backward-compatible low-level entrypoint;
 - introduce a data-driven alias registry for common models;
 - expose `convert-mtplx` as a stable wrapper around the existing MTP sidecar
   packaging contract;
@@ -79,7 +80,7 @@ resolution and server startup.
 
 ### Negative
 
-- Release packaging must include one more binary.
+- Release packaging must include one more command surface.
 - Alias registry drift becomes a maintenance concern.
 - The CLI must discover source-checkout versus installed-tool mode reliably.
 - A partial implementation may temporarily duplicate some server preset data.
@@ -95,12 +96,17 @@ resolution and server startup.
 ## Guardrails
 
 - Alias output must include the resolved repo/path and selected backend.
+- Model-specific defaults may fill omitted optional parameters, but output must
+  still expose the resolved command/contract so users can audit the selected
+  values.
 - Runtime metadata remains authoritative for backend and support tier.
 - `convert-mtplx` must write and validate `ax_mtp_sidecar_manifest.json`.
 - Local `--mtp-source` paths must use real local shard discovery or fail closed;
   they must not be forwarded to the helper's `--hf-repo` argument as repo ids.
 - README performance claims must not be updated from conversion output alone.
 - `serve --dry-run --json` must exist before foreground launch is promoted.
+- Documentation should present `ax-engine serve` as the common practice and
+  `ax-engine-server` as the explicit/backward-compatible path.
 - Daemon mode must start as non-persistent; boot persistence requires a follow-up
   ADR.
 

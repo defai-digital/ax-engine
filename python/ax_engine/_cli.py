@@ -153,6 +153,15 @@ def _run_capture(command: list[str]) -> subprocess.CompletedProcess[str]:
     return subprocess.run(command, capture_output=True, text=True)
 
 
+def _default_mtp_depth_max(base_model: str, mtp_source: str) -> int:
+    label = f"{base_model} {mtp_source}".lower()
+    if "qwen3.6-27b" in label or "qwen3-6-27b" in label:
+        return 3
+    if "qwen3.6-35b" in label or "qwen3-6-35b" in label or "35b-a3b" in label:
+        return 1
+    return 1
+
+
 def _cmd_convert_mtplx(args: argparse.Namespace) -> int:
     prepare_script = _find_repo_script("prepare_mtp_sidecar.py")
     check_script = _find_repo_script("check_mtp_sidecar_provenance.py")
@@ -160,6 +169,10 @@ def _cmd_convert_mtplx(args: argparse.Namespace) -> int:
         raise SystemExit("cannot locate scripts/prepare_mtp_sidecar.py")
     if check_script is None:
         raise SystemExit("cannot locate scripts/check_mtp_sidecar_provenance.py")
+
+    mtp_depth_max = args.mtp_depth_max
+    if mtp_depth_max is None:
+        mtp_depth_max = _default_mtp_depth_max(args.base_model, args.mtp_source)
 
     prepare_cmd = [
         sys.executable,
@@ -169,7 +182,7 @@ def _cmd_convert_mtplx(args: argparse.Namespace) -> int:
         "--base",
         args.base_model,
         "--mtp-depth-max",
-        str(args.mtp_depth_max),
+        str(mtp_depth_max),
         "--group-size",
         str(args.group_size),
     ]
@@ -215,6 +228,7 @@ def _cmd_convert_mtplx(args: argparse.Namespace) -> int:
                 "command": "convert-mtplx",
                 "base_model": args.base_model,
                 "mtp_source": args.mtp_source,
+                "mtp_depth_max": mtp_depth_max,
                 "output_dir": output_dir,
                 "prepare_command": prepare_cmd,
                 "provenance_command": check_cmd,
@@ -245,7 +259,12 @@ def build_parser() -> argparse.ArgumentParser:
     convert_parser.add_argument("--mtp-source", required=True, help="HF repo that ships mtp.* tensors")
     convert_parser.add_argument("--output", default=None)
     convert_parser.add_argument("--quantize", type=int, choices=[4, 8], default=None)
-    convert_parser.add_argument("--mtp-depth-max", type=int, default=1)
+    convert_parser.add_argument(
+        "--mtp-depth-max",
+        type=int,
+        default=None,
+        help="Max MTP draft depth. Defaults by model: Qwen3.6 27B -> 3, Qwen3.6 35B-A3B -> 1.",
+    )
     convert_parser.add_argument("--group-size", type=int, default=64)
     convert_parser.add_argument("--fair-base-only", action="store_true")
     convert_parser.add_argument("--json", action="store_true")

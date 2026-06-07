@@ -154,6 +154,66 @@ class AxEngineCliTests(unittest.TestCase):
         self.assertIn("--fair-base-only", payload["provenance_command"])
         self.assertTrue(payload["provenance"]["fair_base_only"])
 
+    def test_convert_mtplx_uses_model_specific_depth_default(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            scripts = root / "scripts"
+            scripts.mkdir()
+            output_dir = root / "out"
+
+            (scripts / "prepare_mtp_sidecar.py").write_text(
+                textwrap.dedent(
+                    """
+                    import argparse
+                    from pathlib import Path
+
+                    p = argparse.ArgumentParser()
+                    p.add_argument("--hf-repo", required=True)
+                    p.add_argument("--base", required=True)
+                    p.add_argument("--output")
+                    p.add_argument("--mtp-depth-max")
+                    p.add_argument("--group-size")
+                    args = p.parse_args()
+                    out = Path(args.output)
+                    out.mkdir(parents=True, exist_ok=True)
+                    (out / "ax_mtp_sidecar_manifest.json").write_text("{}")
+                    print("Sidecar ready at:")
+                    print(f"  {out}")
+                    """
+                )
+            )
+            (scripts / "check_mtp_sidecar_provenance.py").write_text(
+                textwrap.dedent(
+                    """
+                    import argparse, json
+                    p = argparse.ArgumentParser()
+                    p.add_argument("manifest_or_dir")
+                    p.add_argument("--json", action="store_true")
+                    args = p.parse_args()
+                    print(json.dumps({"manifest": args.manifest_or_dir}))
+                    """
+                )
+            )
+
+            with mock.patch.dict(os.environ, {"AX_ENGINE_REPO_ROOT": str(root)}):
+                code, stdout = self.capture_main(
+                    [
+                        "convert-mtplx",
+                        "mlx-community/Qwen3.6-27B-4bit",
+                        "--mtp-source",
+                        "Qwen/Qwen3.6-27B",
+                        "--output",
+                        str(output_dir),
+                        "--json",
+                    ]
+                )
+
+        self.assertEqual(code, 0)
+        payload = json.loads(stdout)
+        self.assertEqual(payload["mtp_depth_max"], 3)
+        depth_index = payload["prepare_command"].index("--mtp-depth-max") + 1
+        self.assertEqual(payload["prepare_command"][depth_index], "3")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,12 +1,52 @@
 # CLI
 
-AX Engine currently exposes three command surfaces:
+AX Engine currently exposes four command surfaces:
 
+- `ax-engine` for common local serving workflows. It is the recommended entrypoint
+  for starting a local server and preparing Qwen3.6 MTP sidecars.
+- `ax-engine-server` for the backward-compatible low-level HTTP/gRPC server
+  process when callers need explicit runtime flags.
 - `ax-engine-bench` for workload contracts, readiness, bounded autotune, Metal
   build checks, and thin direct SDK inference helpers.
 - `scripts/bench_mlx_inference_stack.py` for repo-owned MLX runtime
   model-inference comparison against MLX-family references.
-- `ax-engine-server` for the preview local HTTP adapter.
+
+## `ax-engine`
+
+`ax-engine` is the product-level orchestration CLI. It wraps existing AX Engine
+components but does not replace them: `serve` launches `ax-engine-server`, and
+`convert-mtplx` wraps the sidecar packaging/provenance tools.
+
+Use `serve` as the normal local-server entrypoint:
+
+```text
+ax-engine serve /path/to/mlx-model --port 8080
+ax-engine serve qwen36-35b --dry-run --json
+ax-engine serve qwen36-35b -- --max-batch-tokens 1024
+```
+
+`serve --dry-run --json` emits an `ax.local_serve_plan.v1` document with the
+resolved model/preset and exact `ax-engine-server` argv. A local filesystem path
+wins over alias lookup. Extra flags after `--` are passed through to
+`ax-engine-server`.
+
+Use `convert-mtplx` to package standard Qwen3.6 MTP source shards with a
+quantized MLX serving base:
+
+```text
+ax-engine convert-mtplx mlx-community/Qwen3.6-27B-4bit \
+  --mtp-source Qwen/Qwen3.6-27B \
+  --fair-base-only \
+  --json
+```
+
+`convert-mtplx` writes `mtp.safetensors`, `mtplx_runtime.json`, patched
+`config.json`, and `ax_mtp_sidecar_manifest.json`, then runs the provenance
+checker before reporting success. Optional knobs use model-specific defaults
+when omitted: Qwen3.6 27B uses MTP depth 3, and Qwen3.6 35B-A3B uses depth 1.
+The current `--mtp-source` contract is a Hugging Face repo id that ships `mtp.*`
+tensors; local MTP source directories must fail closed unless local shard
+discovery is implemented.
 
 ## `ax-engine-bench`
 

@@ -220,7 +220,8 @@ pip install ax-engine
 `pip install ax-engine` includes the `ax-engine` orchestration CLI and the
 `ax-engine-server` binary. After install, both are available on your `PATH`.
 
-**Homebrew** (for `ax-engine-bench` and an alternative `ax-engine-server` install):
+**Homebrew** (for `ax-engine-bench` and an alternative `ax-engine-server`
+backward-compatible install):
 
 ```bash
 brew tap defai-digital/ax-engine
@@ -461,11 +462,16 @@ from standard `Qwen/Qwen3.6-*` MTP shards plus the matching
 All three engines (MTPLX, AX MTP, AX MTP+n-gram) run on the same prompt
 suites, token caps, sampler, warmup, repetition count, and cooldown.
 
-Use the three-engine harness to reproduce the Qwen3.6 comparison:
+Use `ax-engine convert-mtplx` to prepare the AX sidecars, then run the
+three-engine harness to reproduce the Qwen3.6 comparison:
 
 ```bash
-python3 scripts/prepare_qwen36_mtp_sidecar.py --model 27b
-python3 scripts/prepare_qwen36_mtp_sidecar.py --model 35b
+ax-engine convert-mtplx mlx-community/Qwen3.6-27B-4bit \
+  --mtp-source Qwen/Qwen3.6-27B \
+  --fair-base-only
+ax-engine convert-mtplx mlx-community/Qwen3.6-35B-A3B-4bit \
+  --mtp-source Qwen/Qwen3.6-35B-A3B \
+  --fair-base-only
 python3 scripts/bench_qwen36_mtp_fair.py \
   --engines mtplx ax \
   --modes mtp mtp-ngram \
@@ -476,7 +482,10 @@ python3 scripts/bench_qwen36_mtp_fair.py \
   --cooldown 30
 ```
 
-The generated `summary.md`, `summary.json`, and `decode-tok-s.svg` live under
+`convert-mtplx` wraps the generic sidecar packager, applies model-specific
+defaults when optional knobs are omitted (Qwen3.6 27B depth 3; 35B-A3B depth 1),
+and validates `ax_mtp_sidecar_manifest.json` before reporting success. The
+generated `summary.md`, `summary.json`, and `decode-tok-s.svg` live under
 `benchmarks/results/mtp-fair/`. Full methodology and caveats live in
 [`docs/PERFORMANCE.md#mtp-mode`](docs/PERFORMANCE.md#mtp-mode).
 
@@ -648,11 +657,11 @@ pip install ax-engine
 
 Requires macOS 14+, Apple Silicon (M2 Max or newer), Python 3.10+.
 
-The pip wheel includes the `ax-engine-server` binary. After install it is on
-your `PATH`:
+The pip wheel includes the `ax-engine` orchestration CLI and the
+`ax-engine-server` binary. After install both are on your `PATH`:
 
 ```bash
-ax-engine-server --mlx --mlx-model-artifacts-dir "$MODEL_DIR" --port 8080
+ax-engine serve "$MODEL_DIR" --port 8080
 ```
 
 Optional extras:
@@ -664,7 +673,7 @@ pip install "ax-engine[download]" # mlx-lm for model download helpers
 ### Homebrew (CLI tools)
 
 For `ax-engine-bench` (workload-contract CLI), or as an alternative way to
-install `ax-engine-server`:
+install the backward-compatible `ax-engine-server` binary:
 
 ```bash
 brew tap defai-digital/ax-engine
@@ -692,11 +701,12 @@ The fastest local workflow is:
 3. check model readiness;
 4. start the local server and call its HTTP endpoints.
 
-The commands below use source-build paths. If you installed via pip or Homebrew,
-use `ax-engine-server` and `ax-engine-bench` directly instead of
-`./target/release/...`.
+The installed PyPI workflow uses `ax-engine serve` for the common local-serving
+path. `ax-engine-server` remains available as the backward-compatible low-level
+entrypoint when you need explicit runtime flags. The source-build examples below
+use `./target/release/...` so every server flag is visible.
 
-### Start `ax-engine-server` from the CLI
+### Start the local server
 
 ```bash
 # Download a model and generate its manifest
@@ -704,10 +714,13 @@ MODEL_DIR="$(python3 scripts/download_model.py mlx-community/Qwen3-4B-4bit --jso
 # MODEL_DIR uses the Hugging Face Hub snapshot cache by default, e.g.
 # ~/.cache/huggingface/hub/models--mlx-community--Qwen3-4B-4bit/snapshots/<hash>
 
+# Recommended installed path: resolve and launch ax-engine-server in the foreground
+ax-engine serve "$MODEL_DIR" --port 8080
+
 # Check readiness
 ./target/release/ax-engine-bench doctor --mlx-model-artifacts-dir "$MODEL_DIR"
 
-# HTTP inference server (repo-owned MLX runtime)
+# Backward-compatible low-level path: call the server binary directly
 ./target/release/ax-engine-server \
   --mlx \
   --mlx-model-artifacts-dir "$MODEL_DIR" \
@@ -812,7 +825,7 @@ download also lands in that cache and ax-engine can auto-discover it:
 ```bash
 python -m mlx_lm.generate --model mlx-community/Qwen3-4B-4bit --prompt "x" --max-tokens 1
 ax-engine-bench generate-manifest ~/.cache/huggingface/hub/models--mlx-community--Qwen3-4B-4bit/snapshots/<hash>
-ax-engine-server --mlx --resolve-model-artifacts hf-cache --preset qwen3_dense --port 8080
+ax-engine serve ~/.cache/huggingface/hub/models--mlx-community--Qwen3-4B-4bit/snapshots/<hash> --port 8080
 ```
 
 ### Raw HuggingFace checkpoint
@@ -823,7 +836,7 @@ Raw checkpoints need sanitization before ax-engine can load them. Use `mlx_lm.co
 pip install mlx-lm
 mlx_lm.convert --hf-path <org/model> --mlx-path /path/to/dest -q --q-bits 4
 ax-engine-bench generate-manifest /path/to/dest
-ax-engine-server --mlx --mlx-model-artifacts-dir /path/to/dest --port 8080
+ax-engine serve /path/to/dest --port 8080
 ```
 
 ### Manifest generation

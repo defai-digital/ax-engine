@@ -14,6 +14,10 @@ The first implementation should focus on foreground `serve`, `serve --dry-run`,
 and `convert-mtplx`. Daemon/status/kill are specified as a follow-up phase so
 the command surface can be designed without committing to boot persistence.
 
+Current P0 status: the PyPI console script implements `serve`, `serve --dry-run
+--json`, and `convert-mtplx`; `ax-engine-server` remains available for
+backward-compatible explicit server invocation.
+
 ## Current Boundary
 
 Relevant current files:
@@ -63,22 +67,11 @@ console script; Homebrew parity is a follow-up packaging slice.
 
 ## Command Model
 
-Use subcommands:
+Use subcommands. The current PyPI parser exposes:
 
-```rust
-#[derive(Parser)]
-#[command(name = "ax-engine", version, about)]
-struct Cli {
-    #[command(subcommand)]
-    command: Command,
-}
-
-enum Command {
-    Serve(ServeArgs),
-    ConvertMtplx(ConvertMtplxArgs),
-    Status(StatusArgs),
-    Kill(KillArgs),
-}
+```text
+ax-engine serve ...
+ax-engine convert-mtplx ...
 ```
 
 P0 implements `serve` and `convert-mtplx`. `status` and `kill` are P1 commands;
@@ -91,10 +84,7 @@ not-implemented error until the process registry exists.
 ax-engine serve <alias-or-model-dir>
   [--host 127.0.0.1]
   [--port 8080]
-  [--model-id <label>]
-  [--backend auto|mlx|mlx-lm-delegated|llama-cpp]
   [--hf-cache-root <dir>]
-  [--download]
   [--dry-run]
   [--json]
   [-- <extra ax-engine-server args>]
@@ -103,15 +93,16 @@ ax-engine serve <alias-or-model-dir>
 Rules:
 
 1. A filesystem path wins over alias lookup when it exists.
-2. Alias lookup returns a `ModelProfile`.
-3. `--backend auto` picks the profile's preferred backend.
-4. `--download` may call the existing download helper; without `--download`,
-   a missing cached model fails with remediation text.
-5. `--dry-run` resolves everything and prints the server argv but never starts
+2. Alias lookup maps to the server's preset vocabulary.
+3. Missing optional parameters use model-specific defaults from the selected
+   preset or model profile; explicit user flags always override defaults.
+4. `--dry-run` resolves everything and prints the server argv but never starts
    a process.
-6. Additional server flags after `--` are appended after generated argv, and
-   conflicts should be rejected when they override managed fields such as
+5. Additional server flags after `--` are appended after generated argv, and
+   future hardening should reject conflicts when they override managed fields such as
    `--mlx-model-artifacts-dir`.
+6. `--download`, explicit backend selection, and automatic manifest generation
+   remain follow-up work.
 
 ### `convert-mtplx`
 
@@ -121,7 +112,8 @@ ax-engine convert-mtplx <base-model>
   [--output <dir>]
   [--mtp-depth-max <n>]
   [--quantize 4|8]
-  [--quantization-group-size 64]
+  [--group-size 64]
+  [--fair-base-only]
   [--json]
 ```
 
@@ -130,6 +122,10 @@ Rust wrapper may call a library implementation, spawn the Python script in
 source-checkout mode, or initially delegate to an installed helper. The
 automation contract is the `ax-engine convert-mtplx --json` output, not the
 intermediate script text.
+
+If `--mtp-depth-max` is omitted, infer the safe default from the model identity:
+Qwen3.6 27B uses depth 3; Qwen3.6 35B-A3B uses depth 1. Unknown MTP models fall
+back to depth 1 until they have an explicit profile.
 
 Argument mapping to the current helper:
 
@@ -140,7 +136,8 @@ Argument mapping to the current helper:
 | `--output <dir>` | `--output <dir>` |
 | `--mtp-depth-max <n>` | `--mtp-depth-max <n>` |
 | `--quantize 4|8` | `--quantize 4|8` |
-| `--quantization-group-size <n>` | `--group-size <n>` |
+| `--group-size <n>` | `--group-size <n>` |
+| `--fair-base-only` | provenance checker `--fair-base-only` |
 
 The current helper's `--hf-repo` path supports Hugging Face repo ids. If
 `--mtp-source` is a local directory, the wrapper must extend the helper or use a
@@ -209,6 +206,16 @@ ax-engine-server
   --mlx-model-artifacts-dir <resolved-dir>
 ```
 
+The common user-facing path should prefer:
+
+```text
+ax-engine serve <alias-or-model-dir>
+```
+
+Direct `ax-engine-server ...` invocation remains supported for backward
+compatibility, source-build debugging, and cases where callers need to spell out
+every runtime flag.
+
 For delegated `mlx_lm.server`, the CLI should not start `mlx_lm.server` in the
 first phase. It should require `--mlx-lm-server-url` or fail with a concrete
 example.
@@ -224,21 +231,16 @@ require explicit model path or server URL.
 {
   "schema_version": "ax.local_serve_plan.v1",
   "command": "serve",
-  "alias": "qwen3.6-35b",
-  "resolved_model": {
-    "kind": "hf_cache_snapshot",
-    "repo_id": "mlx-community/Qwen3.6-35B-A3B-4bit",
-    "path": "/Users/me/.cache/huggingface/hub/...",
-    "manifest_present": true,
-    "model_family": "qwen3_next"
+  "input": "qwen36-35b",
+  "resolved": {
+    "kind": "preset",
+    "model": "qwen36-35b",
+    "preset": "qwen3.6-35b",
+    "resolution": "hf-cache"
   },
-  "backend": "mlx",
-  "support_tier": "mlx-preview",
   "server": {
-    "host": "127.0.0.1",
-    "port": 8080,
     "url": "http://127.0.0.1:8080",
-    "argv": ["ax-engine-server", "--mlx", "..."]
+    "argv": ["ax-engine-server", "--host", "127.0.0.1", "--port", "8080", "--mlx", "..."]
   }
 }
 ```
@@ -256,6 +258,7 @@ require explicit model path or server URL.
   "mtp_source": {
     "input": "Qwen/Qwen3.6-35B-A3B"
   },
+  "mtp_depth_max": 1,
   "output_dir": "/Users/me/.cache/huggingface/hub/models--ax-local--Qwen3.6-35B-MTP/snapshots/v1",
   "files": {
     "mtp": "mtp.safetensors",
