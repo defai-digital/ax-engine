@@ -21,6 +21,7 @@ Use `serve` as the normal local-server entrypoint:
 
 ```text
 ax-engine serve /path/to/mlx-model --port 8080
+ax-engine serve qwen36-35b --download --port 8080
 ax-engine serve qwen36-35b --dry-run --json
 ax-engine serve qwen36-35b -- --max-batch-tokens 1024
 ```
@@ -28,7 +29,42 @@ ax-engine serve qwen36-35b -- --max-batch-tokens 1024
 `serve --dry-run --json` emits an `ax.local_serve_plan.v1` document with the
 resolved model/preset and exact `ax-engine-server` argv. A local filesystem path
 wins over alias lookup. Extra flags after `--` are passed through to
-`ax-engine-server`.
+`ax-engine-server`. `serve --download` is explicit: it downloads supported aliases
+or raw Hugging Face repo ids before launch, and fails closed if the downloader
+does not return ready AX artifacts.
+
+Use `download` when you want model acquisition as a separate step:
+
+```text
+ax-engine download --list
+ax-engine download qwen36-35b
+ax-engine download qwen36-27b
+ax-engine download qwen36-27b-5bit
+ax-engine download qwen36-27b-6bit
+ax-engine download qwen36-27b-8bit
+ax-engine download gemma4-e2b
+ax-engine download gemma4-e2b-5bit
+ax-engine download gemma4-e2b-6bit
+ax-engine download gemma4-e2b-8bit
+ax-engine download gemma4-31b
+ax-engine download mlx-community/Qwen3.6-35B-A3B-4bit --json
+ax-engine download qwen36-35b --dest /path/to/explicit-copy
+```
+
+`download` wraps the same workflow as `scripts/download_model.py`: download
+through `mlx-lm`, validate `config.json` and safetensors, and run
+`ax-engine-bench generate-manifest` when available. The JSON output is the
+`ax.download_model.v1` summary. The built-in download aliases target Qwen3.6 and
+Gemma 4 MLX models, including Qwen3.6 27B and Gemma 4 E2B 5/6/8-bit variants
+where repo support is already tracked; other models should use an explicit repo
+id or local path. If the model argument is missing or an alias is unknown,
+`download` prints the same target list; `download --list --json` emits an
+`ax.download_options.v1` document for automation.
+
+Best practice is to keep the default Hugging Face Hub cache destination. That
+cache is shared with `mlx-lm` and `huggingface_hub`, and its location is
+controlled by `HF_HUB_CACHE`, `HF_HOME`, or `XDG_CACHE_HOME`. Use `--dest` only
+when you need an explicit copied model directory outside the shared cache.
 
 Use `convert-mtplx` to package standard Qwen3.6 MTP source shards with a
 quantized MLX serving base:

@@ -33,6 +33,8 @@ The CLI will:
 - keep `ax-engine-server` as the actual HTTP server process and
   backward-compatible low-level entrypoint;
 - introduce a data-driven alias registry for common models;
+- expose explicit Qwen3.6 and Gemma 4 MLX model acquisition through
+  `ax-engine download` and `ax-engine serve --download`;
 - expose `convert-mtplx` as a stable wrapper around the existing MTP sidecar
   packaging contract;
 - ship stable JSON output for automation;
@@ -119,6 +121,8 @@ The decision is implemented when:
 - `ax-engine serve <local-dir> --dry-run --json` works without alias lookup;
 - foreground `ax-engine serve` launches `ax-engine-server` with equivalent
   explicit flags;
+- `ax-engine download <alias-or-repo-id> --json` emits an
+  `ax.download_model.v1` document;
 - `ax-engine convert-mtplx ... --json` emits an `ax.convert_mtplx.v1` document;
 - existing server, doctor, and script gates continue to pass;
 - documentation explains direct runtime, delegated routes, and sidecar

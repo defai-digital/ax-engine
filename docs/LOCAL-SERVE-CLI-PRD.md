@@ -4,10 +4,10 @@
 
 P0 partially implemented.
 
-The PyPI CLI now ships `ax-engine serve` and `ax-engine convert-mtplx`.
-`ax-engine-server` remains the backward-compatible low-level server binary.
-Daemon/status/kill, automatic download, and automatic manifest generation remain
-follow-up work.
+The PyPI CLI now ships `ax-engine serve`, `ax-engine download`, and
+`ax-engine convert-mtplx`. `ax-engine-server` remains the backward-compatible
+low-level server binary. Daemon/status/kill remain follow-up work because they
+require a process registry.
 
 ## Background
 
@@ -103,7 +103,7 @@ by alias or id once the foreground command is stable.
 The first release adds:
 
 ```text
-ax-engine serve <alias-or-model-dir> [--port <port>] [--host <host>] [--dry-run] [--json]
+ax-engine serve <alias-or-model-dir> [--port <port>] [--host <host>] [--download] [--dry-run] [--json]
 ```
 
 The command must:
@@ -114,10 +114,12 @@ The command must:
 3. Preserve manifest validation in the server/runtime path.
 4. Apply model-specific defaults when the model identity is known and the user
    has not supplied an explicit override.
-5. Print the exact `ax-engine-server` command before launching.
-6. Launch `ax-engine-server` in the foreground.
-7. Preserve `Ctrl-C` shutdown semantics.
-8. Support `--dry-run` so users can inspect the resolved server command without
+5. Download a supported alias or raw Hugging Face repo id only when the user
+   explicitly passes `--download`.
+6. Print the exact `ax-engine-server` command before launching.
+7. Launch `ax-engine-server` in the foreground.
+8. Preserve `Ctrl-C` shutdown semantics.
+9. Support `--dry-run` so users can inspect the resolved server command without
    starting a process.
 
 The command must fail with remediation text when:
@@ -134,8 +136,15 @@ mirror server presets until a data-backed alias registry lands:
 
 | Alias | Model source | Route |
 |---|---|---|
+| `qwen3.6-27b` / `qwen36-27b` | `mlx-community/Qwen3.6-27B-4bit` | repo-owned MLX via downloaded local dir |
+| `qwen3.6-27b-5bit` / `qwen36-27b-5bit` | `mlx-community/Qwen3.6-27B-5bit` | repo-owned MLX via downloaded local dir |
+| `qwen3.6-27b-6bit` / `qwen36-27b-6bit` | `mlx-community/Qwen3.6-27B-6bit` | repo-owned MLX via downloaded local dir |
+| `qwen3.6-27b-8bit` / `qwen36-27b-8bit` | `mlx-community/Qwen3.6-27B-8bit` | repo-owned MLX via downloaded local dir |
 | `qwen3.6-35b` / `qwen36-35b` | HF cache preset resolution | repo-owned MLX |
 | `gemma4-e2b` | HF cache preset resolution | repo-owned MLX |
+| `gemma4-e2b-5bit` | `mlx-community/gemma-4-e2b-it-5bit` | repo-owned MLX via downloaded local dir |
+| `gemma4-e2b-6bit` | `mlx-community/gemma-4-e2b-it-6bit` | repo-owned MLX via downloaded local dir |
+| `gemma4-e2b-8bit` | `mlx-community/gemma-4-e2b-it-8bit` | repo-owned MLX via downloaded local dir |
 | `gemma4-31b` | HF cache preset resolution | repo-owned MLX |
 | `glm4.7-flash-4bit` | delegated preset | requires `--mlx-lm-server-url` pass-through |
 
@@ -145,6 +154,31 @@ runtime validation exists.
 
 Aliases must not silently imply performance claims. The runtime report remains
 the source of truth for selected backend, support tier, and acceleration route.
+
+### P0: `download`
+
+The first release adds:
+
+```text
+ax-engine download <alias-or-repo-id> [--dest <dir>] [--force] [--json]
+```
+
+The command wraps the existing `scripts/download_model.py` workflow and must:
+
+1. Resolve supported Qwen3.6 and Gemma 4 MLX aliases to their Hugging Face repo
+   ids.
+2. Accept a raw Hugging Face repo id when the input contains `/`.
+3. Download through `mlx-lm` and reuse the existing HF cache when available.
+4. Validate `config.json` and safetensors.
+5. Run AX manifest generation when available.
+6. Emit the `ax.download_model.v1` summary in JSON mode.
+
+`serve --download` uses this same contract and must fail closed unless the
+download summary reports `status: "ready"`.
+
+The default destination is the Hugging Face Hub cache, controlled by
+`HF_HUB_CACHE`, `HF_HOME`, or `XDG_CACHE_HOME`. `--dest` is an explicit copy/export
+path, not the default storage policy.
 
 ### P0: `convert-mtplx`
 

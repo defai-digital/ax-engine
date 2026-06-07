@@ -25,6 +25,43 @@ class AxEngineCliTests(unittest.TestCase):
             code = _cli.main(argv)
         return code, out.getvalue()
 
+    def test_download_list_json_shows_targets(self) -> None:
+        code, stdout = self.capture_main(["download", "--list", "--json"])
+
+        self.assertEqual(code, 0)
+        payload = json.loads(stdout)
+        self.assertEqual(payload["schema_version"], "ax.download_options.v1")
+        self.assertEqual(payload["default_destination"]["kind"], "huggingface_hub_cache")
+        self.assertIn("HF_HUB_CACHE", payload["default_destination"]["env"])
+        aliases = {target["alias"] for target in payload["targets"]}
+        self.assertIn("qwen3.6-35b", aliases)
+        self.assertIn("qwen3.6-27b-8bit", aliases)
+        self.assertIn("gemma4-e2b-6bit", aliases)
+
+    def test_download_list_text_shows_cache_policy(self) -> None:
+        code, stdout = self.capture_main(["download", "--list"])
+
+        self.assertEqual(code, 0)
+        self.assertIn("Hugging Face Hub cache", stdout)
+        self.assertIn("HF_HUB_CACHE", stdout)
+        self.assertIn("--dest only", stdout)
+
+    def test_download_missing_model_shows_targets(self) -> None:
+        code, stdout = self.capture_main(["download"])
+
+        self.assertEqual(code, 2)
+        self.assertIn("missing model alias or repo id", stdout)
+        self.assertIn("qwen3.6-35b", stdout)
+        self.assertIn("gemma4-e2b-8bit", stdout)
+
+    def test_download_unknown_alias_shows_targets(self) -> None:
+        with self.assertRaises(SystemExit) as raised:
+            self.capture_main(["download", "unknown-model"])
+
+        self.assertIn("unknown model alias", str(raised.exception))
+        self.assertIn("qwen3.6-27b-8bit", str(raised.exception))
+        self.assertIn("gemma4-e2b-6bit", str(raised.exception))
+
     def test_serve_dry_run_json_uses_server_preset(self) -> None:
         with mock.patch.object(_cli, "_server_bin", return_value="/opt/bin/ax-engine-server"):
             code, stdout = self.capture_main(
@@ -79,6 +116,208 @@ class AxEngineCliTests(unittest.TestCase):
         self.assertIn("--mlx-model-artifacts-dir", payload["server"]["argv"])
         path_index = payload["server"]["argv"].index("--mlx-model-artifacts-dir") + 1
         self.assertEqual(payload["server"]["argv"][path_index], str(model_dir.resolve()))
+
+    def test_download_alias_wraps_download_helper(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            scripts = root / "scripts"
+            scripts.mkdir()
+            model_dir = root / "model"
+            model_dir.mkdir()
+            (model_dir / "config.json").write_text("{}")
+            (model_dir / "model.safetensors").write_bytes(b"placeholder")
+            (model_dir / "model-manifest.json").write_text("{}")
+
+            (scripts / "download_model.py").write_text(
+                textwrap.dedent(
+                    """
+                    import argparse, json
+                    p = argparse.ArgumentParser()
+                    p.add_argument("repo_id")
+                    p.add_argument("--dest")
+                    p.add_argument("--force", action="store_true")
+                    p.add_argument("--json", action="store_true")
+                    args = p.parse_args()
+                    print(json.dumps({
+                        "schema_version": "ax.download_model.v1",
+                        "repo_id": args.repo_id,
+                        "dest": __import__("os").environ["FAKE_MODEL_DIR"],
+                        "manifest_present": True,
+                        "safetensors_count": 1,
+                        "config_present": True,
+                        "status": "ready",
+                        "errors": [],
+                        "server_command": ["ax-engine-server"],
+                    }))
+                    """
+                )
+            )
+
+            with mock.patch.dict(
+                os.environ,
+                {"AX_ENGINE_REPO_ROOT": str(root), "FAKE_MODEL_DIR": str(model_dir)},
+            ):
+                code, stdout = self.capture_main(["download", "qwen36-35b", "--json"])
+
+        self.assertEqual(code, 0)
+        payload = json.loads(stdout)
+        self.assertEqual(payload["schema_version"], "ax.download_model.v1")
+        self.assertEqual(payload["repo_id"], "mlx-community/Qwen3.6-35B-A3B-4bit")
+        self.assertEqual(payload["alias"], "qwen3.6-35b")
+        self.assertEqual(payload["preset"], "qwen3.6-35b")
+
+    def test_download_qwen36_27b_bit_alias_uses_mlx_target(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            scripts = root / "scripts"
+            scripts.mkdir()
+            model_dir = root / "model"
+            model_dir.mkdir()
+            (scripts / "download_model.py").write_text(
+                textwrap.dedent(
+                    """
+                    import argparse, json, os
+                    p = argparse.ArgumentParser()
+                    p.add_argument("repo_id")
+                    p.add_argument("--dest")
+                    p.add_argument("--force", action="store_true")
+                    p.add_argument("--json", action="store_true")
+                    args = p.parse_args()
+                    print(json.dumps({
+                        "schema_version": "ax.download_model.v1",
+                        "repo_id": args.repo_id,
+                        "dest": os.environ["FAKE_MODEL_DIR"],
+                        "manifest_present": True,
+                        "safetensors_count": 1,
+                        "config_present": True,
+                        "status": "ready",
+                        "errors": [],
+                        "server_command": ["ax-engine-server"],
+                    }))
+                    """
+                )
+            )
+
+            with mock.patch.dict(
+                os.environ,
+                {"AX_ENGINE_REPO_ROOT": str(root), "FAKE_MODEL_DIR": str(model_dir)},
+            ):
+                code, stdout = self.capture_main(["download", "qwen36-27b-8bit", "--json"])
+
+        self.assertEqual(code, 0)
+        payload = json.loads(stdout)
+        self.assertEqual(payload["repo_id"], "mlx-community/Qwen3.6-27B-8bit")
+        self.assertEqual(payload["alias"], "qwen3.6-27b-8bit")
+        self.assertNotIn("preset", payload)
+
+    def test_download_gemma4_e2b_bit_alias_uses_mlx_target(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            scripts = root / "scripts"
+            scripts.mkdir()
+            model_dir = root / "model"
+            model_dir.mkdir()
+            (scripts / "download_model.py").write_text(
+                textwrap.dedent(
+                    """
+                    import argparse, json, os
+                    p = argparse.ArgumentParser()
+                    p.add_argument("repo_id")
+                    p.add_argument("--dest")
+                    p.add_argument("--force", action="store_true")
+                    p.add_argument("--json", action="store_true")
+                    args = p.parse_args()
+                    print(json.dumps({
+                        "schema_version": "ax.download_model.v1",
+                        "repo_id": args.repo_id,
+                        "dest": os.environ["FAKE_MODEL_DIR"],
+                        "manifest_present": True,
+                        "safetensors_count": 1,
+                        "config_present": True,
+                        "status": "ready",
+                        "errors": [],
+                        "server_command": ["ax-engine-server"],
+                    }))
+                    """
+                )
+            )
+
+            with mock.patch.dict(
+                os.environ,
+                {"AX_ENGINE_REPO_ROOT": str(root), "FAKE_MODEL_DIR": str(model_dir)},
+            ):
+                code, stdout = self.capture_main(["download", "gemma4-e2b-6bit", "--json"])
+
+        self.assertEqual(code, 0)
+        payload = json.loads(stdout)
+        self.assertEqual(payload["repo_id"], "mlx-community/gemma-4-e2b-it-6bit")
+        self.assertEqual(payload["alias"], "gemma4-e2b-6bit")
+        self.assertNotIn("preset", payload)
+
+    def test_serve_download_uses_ready_downloaded_artifacts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            scripts = root / "scripts"
+            scripts.mkdir()
+            model_dir = root / "model"
+            model_dir.mkdir()
+            (model_dir / "config.json").write_text("{}")
+            (model_dir / "model.safetensors").write_bytes(b"placeholder")
+            (model_dir / "model-manifest.json").write_text("{}")
+
+            (scripts / "download_model.py").write_text(
+                textwrap.dedent(
+                    """
+                    import argparse, json, os
+                    p = argparse.ArgumentParser()
+                    p.add_argument("repo_id")
+                    p.add_argument("--dest")
+                    p.add_argument("--force", action="store_true")
+                    p.add_argument("--json", action="store_true")
+                    args = p.parse_args()
+                    print(json.dumps({
+                        "schema_version": "ax.download_model.v1",
+                        "repo_id": args.repo_id,
+                        "dest": os.environ["FAKE_MODEL_DIR"],
+                        "manifest_present": True,
+                        "safetensors_count": 1,
+                        "config_present": True,
+                        "status": "ready",
+                        "errors": [],
+                        "server_command": ["ax-engine-server"],
+                    }))
+                    """
+                )
+            )
+
+            with mock.patch.dict(
+                os.environ,
+                {"AX_ENGINE_REPO_ROOT": str(root), "FAKE_MODEL_DIR": str(model_dir)},
+            ), mock.patch.object(_cli, "_server_bin", return_value="/opt/bin/ax-engine-server"):
+                code, stdout = self.capture_main(
+                    ["serve", "qwen36-35b", "--download", "--dry-run", "--json"]
+                )
+
+            self.assertEqual(code, 0)
+            payload = json.loads(stdout)
+            self.assertEqual(payload["resolved"]["kind"], "preset")
+            self.assertEqual(payload["resolved"]["download"]["dry_run"], True)
+            self.assertEqual(payload["server"]["argv"][0], "/opt/bin/ax-engine-server")
+
+            with mock.patch.dict(
+                os.environ,
+                {"AX_ENGINE_REPO_ROOT": str(root), "FAKE_MODEL_DIR": str(model_dir)},
+            ), mock.patch.object(
+                _cli, "_server_bin", return_value="/opt/bin/ax-engine-server"
+            ), mock.patch.object(os, "execvp", side_effect=RuntimeError("stop")) as execvp:
+                with self.assertRaisesRegex(RuntimeError, "stop"):
+                    self.capture_main(["serve", "qwen36-35b", "--download"])
+
+            argv = execvp.call_args.args[1]
+            self.assertIn("--preset", argv)
+            self.assertIn("qwen3.6-35b", argv)
+            path_index = argv.index("--mlx-model-artifacts-dir") + 1
+            self.assertEqual(argv[path_index], str(model_dir.resolve()))
 
     def test_convert_mtplx_json_wraps_prepare_and_provenance_scripts(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

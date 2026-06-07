@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass
 import json
 import os
 import pathlib
@@ -11,23 +12,115 @@ import sys
 from typing import Sequence
 
 
-SERVER_PRESET_ALIASES = {
-    "gemma4-e2b": "gemma4-e2b",
-    "gemma-4-e2b": "gemma4-e2b",
-    "gemma-4-e2b-it": "gemma4-e2b",
-    "gemma4-31b": "gemma4-31b",
-    "gemma-4-31b": "gemma4-31b",
-    "gemma-4-31b-it": "gemma4-31b",
-    "glm4.7-flash-4bit": "glm4.7-flash-4bit",
-    "glm47-flash-4bit": "glm4.7-flash-4bit",
-    "glm4-moe-lite": "glm4.7-flash-4bit",
-    "glm4_moe_lite": "glm4.7-flash-4bit",
-    "qwen3.6-35b": "qwen3.6-35b",
-    "qwen36-35b": "qwen3.6-35b",
-    "qwen3-6-35b": "qwen3.6-35b",
-    "qwen3.6-35b-a3b": "qwen3.6-35b",
-    "qwen36-35b-a3b": "qwen3.6-35b",
-}
+@dataclass(frozen=True)
+class ModelProfile:
+    label: str
+    preset: str | None
+    repo_id: str
+    aliases: tuple[str, ...]
+    downloadable: bool = True
+
+
+MODEL_PROFILES = (
+    ModelProfile(
+        label="gemma4-e2b",
+        preset="gemma4-e2b",
+        repo_id="mlx-community/gemma-4-e2b-it-4bit",
+        aliases=("gemma4-e2b", "gemma-4-e2b", "gemma-4-e2b-it", "gemma4-e2b-4bit"),
+    ),
+    ModelProfile(
+        label="gemma4-e2b-5bit",
+        preset=None,
+        repo_id="mlx-community/gemma-4-e2b-it-5bit",
+        aliases=("gemma4-e2b-5bit", "gemma-4-e2b-5bit", "gemma-4-e2b-it-5bit"),
+    ),
+    ModelProfile(
+        label="gemma4-e2b-6bit",
+        preset=None,
+        repo_id="mlx-community/gemma-4-e2b-it-6bit",
+        aliases=("gemma4-e2b-6bit", "gemma-4-e2b-6bit", "gemma-4-e2b-it-6bit"),
+    ),
+    ModelProfile(
+        label="gemma4-e2b-8bit",
+        preset=None,
+        repo_id="mlx-community/gemma-4-e2b-it-8bit",
+        aliases=("gemma4-e2b-8bit", "gemma-4-e2b-8bit", "gemma-4-e2b-it-8bit"),
+    ),
+    ModelProfile(
+        label="gemma4-31b",
+        preset="gemma4-31b",
+        repo_id="mlx-community/gemma-4-31b-it-4bit",
+        aliases=("gemma4-31b", "gemma-4-31b", "gemma-4-31b-it", "gemma4-31b-4bit"),
+    ),
+    ModelProfile(
+        label="glm4.7-flash-4bit",
+        preset="glm4.7-flash-4bit",
+        repo_id="mlx-community/GLM-4.7-Flash-4bit",
+        aliases=(
+            "glm4.7-flash-4bit",
+            "glm47-flash-4bit",
+            "glm4-moe-lite",
+            "glm4_moe_lite",
+            "glm-4.7-flash-4bit",
+            "glm-4-7-flash-4bit",
+        ),
+        downloadable=False,
+    ),
+    ModelProfile(
+        label="qwen3.6-27b",
+        preset=None,
+        repo_id="mlx-community/Qwen3.6-27B-4bit",
+        aliases=(
+            "qwen3.6-27b",
+            "qwen36-27b",
+            "qwen3-6-27b",
+            "qwen3.6-27b-4bit",
+            "qwen36-27b-4bit",
+        ),
+    ),
+    ModelProfile(
+        label="qwen3.6-27b-5bit",
+        preset=None,
+        repo_id="mlx-community/Qwen3.6-27B-5bit",
+        aliases=(
+            "qwen3.6-27b-5bit",
+            "qwen36-27b-5bit",
+            "qwen3-6-27b-5bit",
+        ),
+    ),
+    ModelProfile(
+        label="qwen3.6-27b-6bit",
+        preset=None,
+        repo_id="mlx-community/Qwen3.6-27B-6bit",
+        aliases=(
+            "qwen3.6-27b-6bit",
+            "qwen36-27b-6bit",
+            "qwen3-6-27b-6bit",
+        ),
+    ),
+    ModelProfile(
+        label="qwen3.6-27b-8bit",
+        preset=None,
+        repo_id="mlx-community/Qwen3.6-27B-8bit",
+        aliases=(
+            "qwen3.6-27b-8bit",
+            "qwen36-27b-8bit",
+            "qwen3-6-27b-8bit",
+        ),
+    ),
+    ModelProfile(
+        label="qwen3.6-35b",
+        preset="qwen3.6-35b",
+        repo_id="mlx-community/Qwen3.6-35B-A3B-4bit",
+        aliases=(
+            "qwen3.6-35b",
+            "qwen36-35b",
+            "qwen3-6-35b",
+            "qwen3.6-35b-a3b",
+            "qwen36-35b-a3b",
+        ),
+    ),
+)
 
 
 def _server_bin() -> pathlib.Path | str:
@@ -48,6 +141,95 @@ def _json_dump(value: dict) -> None:
 
 def _normalize_alias(value: str) -> str:
     return value.strip().lower().replace("_", "-")
+
+
+def _profile_for_model(value: str) -> ModelProfile | None:
+    normalized = _normalize_alias(value)
+    for profile in MODEL_PROFILES:
+        if normalized in {_normalize_alias(alias) for alias in profile.aliases}:
+            return profile
+    return None
+
+
+def _downloadable_profiles() -> list[ModelProfile]:
+    return [profile for profile in MODEL_PROFILES if profile.downloadable]
+
+
+def _download_options_payload() -> dict:
+    return {
+        "schema_version": "ax.download_options.v1",
+        "default_destination": {
+            "kind": "huggingface_hub_cache",
+            "env": ["HF_HUB_CACHE", "HF_HOME", "XDG_CACHE_HOME"],
+            "dest_semantics": "--dest copies the resolved snapshot to an explicit directory",
+        },
+        "targets": [
+            {
+                "alias": profile.label,
+                "repo_id": profile.repo_id,
+                "preset": profile.preset,
+                "aliases": list(profile.aliases),
+            }
+            for profile in _downloadable_profiles()
+        ],
+        "examples": [
+            "ax-engine download qwen36-35b",
+            "ax-engine download qwen36-27b-8bit",
+            "ax-engine download gemma4-e2b-6bit",
+            "ax-engine download mlx-community/Qwen3.6-35B-A3B-4bit --json",
+        ],
+    }
+
+
+def _format_download_options() -> str:
+    lines = [
+        "Available Qwen3.6 and Gemma 4 MLX download targets:",
+    ]
+    for profile in _downloadable_profiles():
+        lines.append(f"  {profile.label:<20} {profile.repo_id}")
+    lines.extend(
+        [
+            "",
+            "Examples:",
+            "  ax-engine download qwen36-35b",
+            "  ax-engine download qwen36-27b-8bit",
+            "  ax-engine download gemma4-e2b-6bit",
+            "  ax-engine download mlx-community/Qwen3.6-35B-A3B-4bit --json",
+            "",
+            "Destination:",
+            "  Default: Hugging Face Hub cache shared by mlx-lm and huggingface_hub.",
+            "  Override cache location with HF_HUB_CACHE, HF_HOME, or XDG_CACHE_HOME.",
+            "  Use --dest only when you want an explicit copy outside the shared cache.",
+        ]
+    )
+    return "\n".join(lines)
+
+
+SERVER_PRESET_ALIASES = {
+    _normalize_alias(alias): profile.preset
+    for profile in MODEL_PROFILES
+    for alias in profile.aliases
+    if profile.preset is not None
+}
+
+
+def _download_repo_id(value: str) -> tuple[str, ModelProfile | None]:
+    profile = _profile_for_model(value)
+    if profile is not None:
+        if not profile.downloadable:
+            raise SystemExit(
+                f"{profile.label} is not managed by ax-engine download; "
+                "use an explicit repo id or one of these targets:\n"
+                f"{_format_download_options()}"
+            )
+        return profile.repo_id, profile
+    if "/" in value:
+        return value, None
+    raise SystemExit(
+        f"unknown model alias or repo id: {value!r}; pass a Hugging Face repo id "
+        "or one of these targets:\n"
+        f"{_format_download_options()}"
+    )
 
 
 def _find_repo_script(name: str) -> pathlib.Path | None:
@@ -75,6 +257,76 @@ def _strip_remainder_separator(values: list[str]) -> list[str]:
     return values
 
 
+def _parse_download_summary(stdout: str) -> dict | None:
+    if not stdout.strip():
+        return None
+    try:
+        parsed = json.loads(stdout)
+        if isinstance(parsed, dict):
+            return parsed
+    except json.JSONDecodeError:
+        pass
+    for line in reversed(stdout.splitlines()):
+        if not line.strip():
+            continue
+        try:
+            parsed = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(parsed, dict) and parsed.get("schema_version") == "ax.download_model.v1":
+            return parsed
+    return None
+
+
+def _download_summary(
+    model: str,
+    *,
+    dest: str | None = None,
+    force: bool = False,
+) -> tuple[int, dict | None, str]:
+    repo_id, profile = _download_repo_id(model)
+    download_script = _find_repo_script("download_model.py")
+    if download_script is None:
+        raise SystemExit(
+            "cannot locate scripts/download_model.py. Reinstall ax-engine or run from a source checkout."
+        )
+
+    command = [sys.executable, str(download_script), repo_id, "--json"]
+    if dest:
+        command.extend(["--dest", dest])
+    if force:
+        command.append("--force")
+
+    result = _run_capture(command)
+    summary = _parse_download_summary(result.stdout)
+    if summary is not None:
+        summary["input"] = model
+        if profile is not None:
+            summary["alias"] = profile.label
+            if profile.preset is not None:
+                summary["preset"] = profile.preset
+    return result.returncode, summary, result.stderr
+
+
+def _print_download_summary(summary: dict) -> None:
+    status = summary.get("status", "unknown")
+    repo_id = summary.get("repo_id", "unknown")
+    dest = summary.get("dest", "")
+    print(f"AX Engine model: {repo_id}")
+    print(f"Status: {status}")
+    if dest:
+        print(f"Path: {dest}")
+    errors = summary.get("errors") or []
+    for error in errors:
+        print(f"Error: {error}", file=sys.stderr)
+    if status == "ready" and dest:
+        print("Next:")
+        print(f"  ax-engine serve {dest}")
+    elif dest:
+        print("Next:")
+        print(f"  ax-engine-bench generate-manifest {dest}")
+
+
 def _serve_argv(args: argparse.Namespace) -> tuple[list[str], dict]:
     server_bin = str(_server_bin())
     target = args.model
@@ -88,22 +340,63 @@ def _serve_argv(args: argparse.Namespace) -> tuple[list[str], dict]:
         }
         argv.extend(["--mlx", "--mlx-model-artifacts-dir", resolved["model"]])
     else:
-        preset = SERVER_PRESET_ALIASES.get(_normalize_alias(target))
-        if preset is None:
+        profile = _profile_for_model(target)
+        preset = profile.preset if profile is not None else None
+        if args.download and not args.dry_run:
+            code, summary, stderr = _download_summary(target)
+            if code != 0 or summary is None or summary.get("status") != "ready":
+                if stderr:
+                    sys.stderr.write(stderr)
+                if summary is not None:
+                    _print_download_summary(summary)
+                raise SystemExit(
+                    "model download did not produce ready AX artifacts; "
+                    f"run: ax-engine download {target}"
+                )
+            model_dir = str(pathlib.Path(str(summary["dest"])).expanduser().resolve())
+            resolved = {
+                "kind": "downloaded",
+                "model": target,
+                "repo_id": summary.get("repo_id"),
+                "path": model_dir,
+                "download": {
+                    "status": summary.get("status"),
+                    "manifest_present": summary.get("manifest_present"),
+                },
+            }
+            argv.append("--mlx")
+            if preset is not None:
+                resolved["preset"] = preset
+                argv.extend(["--preset", preset])
+            argv.extend(["--mlx-model-artifacts-dir", model_dir])
+        elif preset is None:
+            download_hint = (
+                f" or run: ax-engine serve {target} --download"
+                if "/" in target
+                else ""
+            )
             raise SystemExit(
                 "unknown model alias or missing local directory: "
                 f"{target!r}; pass a model directory or one of "
                 f"{', '.join(sorted(set(SERVER_PRESET_ALIASES.values())))}"
+                f"{download_hint}"
             )
-        resolved = {
-            "kind": "preset",
-            "model": target,
-            "preset": preset,
-            "resolution": "hf-cache",
-        }
-        argv.extend(["--mlx", "--preset", preset, "--resolve-model-artifacts", "hf-cache"])
-        if args.hf_cache_root:
-            argv.extend(["--hf-cache-root", args.hf_cache_root])
+        else:
+            resolved = {
+                "kind": "preset",
+                "model": target,
+                "preset": preset,
+                "resolution": "hf-cache",
+            }
+            if args.download:
+                resolved["download"] = {
+                    "enabled": True,
+                    "repo_id": profile.repo_id if profile is not None else None,
+                    "dry_run": True,
+                }
+            argv.extend(["--mlx", "--preset", preset, "--resolve-model-artifacts", "hf-cache"])
+            if args.hf_cache_root:
+                argv.extend(["--hf-cache-root", args.hf_cache_root])
 
     argv.extend(_strip_remainder_separator(args.extra_server_args))
     return argv, resolved
@@ -135,6 +428,42 @@ def _cmd_serve(args: argparse.Namespace) -> int:
 
     os.execvp(argv[0], argv)
     return 0
+
+
+def _cmd_download(args: argparse.Namespace) -> int:
+    if args.list:
+        if args.json:
+            _json_dump(_download_options_payload())
+        else:
+            print(_format_download_options())
+        return 0
+
+    if not args.model:
+        if args.json:
+            _json_dump(_download_options_payload())
+        else:
+            print("missing model alias or repo id\n")
+            print(_format_download_options())
+        return 2
+
+    code, summary, stderr = _download_summary(
+        args.model,
+        dest=args.dest,
+        force=args.force,
+    )
+    if args.json:
+        if summary is not None:
+            _json_dump(summary)
+        if stderr:
+            sys.stderr.write(stderr)
+        return code
+
+    if stderr:
+        sys.stderr.write(stderr)
+    if summary is None:
+        raise SystemExit("download helper did not emit an ax.download_model.v1 summary")
+    _print_download_summary(summary)
+    return code
 
 
 def _parse_output_dir(stdout: str, explicit_output: str | None) -> str | None:
@@ -247,9 +576,29 @@ def build_parser() -> argparse.ArgumentParser:
     serve_parser.add_argument("--host", default="127.0.0.1")
     serve_parser.add_argument("--port", type=int, default=8080)
     serve_parser.add_argument("--hf-cache-root", default=None)
+    serve_parser.add_argument(
+        "--download",
+        action="store_true",
+        help="Download missing alias/repo artifacts first",
+    )
     serve_parser.add_argument("--dry-run", action="store_true")
     serve_parser.add_argument("--json", action="store_true")
     serve_parser.set_defaults(func=_cmd_serve)
+
+    download_parser = subparsers.add_parser(
+        "download",
+        help="Download an MLX model and generate its AX manifest",
+    )
+    download_parser.add_argument("model", nargs="?", help="Server preset alias or Hugging Face repo id")
+    download_parser.add_argument(
+        "--dest",
+        default=None,
+        help="Copy the resolved HF cache snapshot to this directory; default uses the shared Hugging Face Hub cache",
+    )
+    download_parser.add_argument("--force", action="store_true")
+    download_parser.add_argument("--list", action="store_true", help="Show supported download targets")
+    download_parser.add_argument("--json", action="store_true")
+    download_parser.set_defaults(func=_cmd_download)
 
     convert_parser = subparsers.add_parser(
         "convert-mtplx",

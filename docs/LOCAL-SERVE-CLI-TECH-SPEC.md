@@ -10,13 +10,14 @@ ax-engine serve <alias-or-model-dir>
 ax-engine convert-mtplx <base-model> --mtp-source <source-model>
 ```
 
-The first implementation should focus on foreground `serve`, `serve --dry-run`,
-and `convert-mtplx`. Daemon/status/kill are specified as a follow-up phase so
-the command surface can be designed without committing to boot persistence.
+The first implementation should focus on foreground `serve`, explicit
+`serve --download`, standalone `download`, `serve --dry-run`, and
+`convert-mtplx`. Daemon/status/kill are specified as a follow-up phase so the
+command surface can be designed without committing to boot persistence.
 
-Current P0 status: the PyPI console script implements `serve`, `serve --dry-run
---json`, and `convert-mtplx`; `ax-engine-server` remains available for
-backward-compatible explicit server invocation.
+Current P0 status: the PyPI console script implements `serve`, `serve --download`,
+`serve --dry-run --json`, `download`, and `convert-mtplx`; `ax-engine-server`
+remains available for backward-compatible explicit server invocation.
 
 ## Current Boundary
 
@@ -71,12 +72,13 @@ Use subcommands. The current PyPI parser exposes:
 
 ```text
 ax-engine serve ...
+ax-engine download ...
 ax-engine convert-mtplx ...
 ```
 
-P0 implements `serve` and `convert-mtplx`. `status` and `kill` are P1 commands;
-they should either be omitted from the shipped parser or return a clear
-not-implemented error until the process registry exists.
+P0 implements `serve`, `download`, and `convert-mtplx`. `status` and `kill` are
+P1 commands; they should either be omitted from the shipped parser or return a
+clear not-implemented error until the process registry exists.
 
 ### `serve`
 
@@ -85,6 +87,7 @@ ax-engine serve <alias-or-model-dir>
   [--host 127.0.0.1]
   [--port 8080]
   [--hf-cache-root <dir>]
+  [--download]
   [--dry-run]
   [--json]
   [-- <extra ax-engine-server args>]
@@ -96,13 +99,42 @@ Rules:
 2. Alias lookup maps to the server's preset vocabulary.
 3. Missing optional parameters use model-specific defaults from the selected
    preset or model profile; explicit user flags always override defaults.
-4. `--dry-run` resolves everything and prints the server argv but never starts
+4. `--download` explicitly downloads supported aliases or raw Hugging Face repo
+   ids before launch. Without `--download`, missing model artifacts fail closed
+   with a concrete next command.
+5. `--dry-run` resolves everything and prints the server argv but never starts
    a process.
-5. Additional server flags after `--` are appended after generated argv, and
+6. Additional server flags after `--` are appended after generated argv, and
    future hardening should reject conflicts when they override managed fields such as
    `--mlx-model-artifacts-dir`.
-6. `--download`, explicit backend selection, and automatic manifest generation
-   remain follow-up work.
+7. Explicit backend selection remains follow-up work.
+
+### `download`
+
+```text
+ax-engine download <alias-or-repo-id>
+  [--dest <dir>]
+  [--force]
+  [--json]
+```
+
+Rules:
+
+1. Alias input resolves through the Qwen3.6 and Gemma 4 MLX entries in the same
+   model profile table as `serve`. Qwen3.6 27B and Gemma 4 E2B include
+   4/5/6/8-bit download aliases.
+2. Inputs containing `/` are treated as raw Hugging Face repo ids.
+3. Unknown non-repo inputs fail with the supported alias list.
+4. The command delegates to `scripts/download_model.py`, which downloads through
+   `mlx-lm`, validates files, and generates `model-manifest.json` when possible.
+5. JSON mode emits the helper's `ax.download_model.v1` summary plus resolved
+   alias/preset metadata when applicable.
+6. Bit variants without a server preset still serve through the downloaded local
+   artifact directory after `serve --download`; they do not pretend to be preset
+   aliases.
+7. The default destination is the Hugging Face Hub cache. `HF_HUB_CACHE`,
+   `HF_HOME`, and `XDG_CACHE_HOME` control the cache location. `--dest` copies
+   the resolved snapshot to an explicit directory and is not the default.
 
 ### `convert-mtplx`
 
@@ -188,9 +220,10 @@ Resolved model directory readiness:
 4. Manifest model family matches the profile's expected model types when a
    profile is used.
 
-When `--download` is set and a repo id is missing, the CLI should call the same
+When `--download` is set and a repo id is missing, the CLI calls the same
 workflow as `scripts/download_model.py`: acquire via `mlx-lm`, validate files,
-and generate a manifest.
+and generate a manifest. `serve --download` requires the download summary to
+report `status: "ready"` before it starts `ax-engine-server`.
 
 ## Server Command Construction
 
@@ -242,6 +275,38 @@ require explicit model path or server URL.
     "url": "http://127.0.0.1:8080",
     "argv": ["ax-engine-server", "--host", "127.0.0.1", "--port", "8080", "--mlx", "..."]
   }
+}
+```
+
+### `download --json`
+
+```json
+{
+  "schema_version": "ax.download_model.v1",
+  "input": "qwen36-35b",
+  "alias": "qwen3.6-35b",
+  "preset": "qwen3.6-35b",
+  "repo_id": "mlx-community/Qwen3.6-35B-A3B-4bit",
+  "dest": "/Users/me/.cache/huggingface/hub/models--mlx-community--Qwen3.6-35B-A3B-4bit/snapshots/<hash>",
+  "manifest_present": true,
+  "safetensors_count": 5,
+  "config_present": true,
+  "status": "ready",
+  "errors": []
+}
+```
+
+### `download --list --json`
+
+```json
+{
+  "schema_version": "ax.download_options.v1",
+  "default_destination": {
+    "kind": "huggingface_hub_cache",
+    "env": ["HF_HUB_CACHE", "HF_HOME", "XDG_CACHE_HOME"],
+    "dest_semantics": "--dest copies the resolved snapshot to an explicit directory"
+  },
+  "targets": []
 }
 ```
 

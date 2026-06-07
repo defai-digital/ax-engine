@@ -44,7 +44,8 @@ include = [
     # Placed inside ax_engine/_bin/ so delocate's @loader_path rewrite (../.dylibs/)
     # stays valid after pip installation. Exposed to the user's PATH via console_scripts.
     { path = "python/ax_engine/_bin/ax-engine-server", format = ["wheel"] },
-    # Top-level orchestration CLI wraps the source-compatible MTP sidecar tools.
+    # Top-level orchestration CLI wraps source-compatible download and MTP tools.
+    { path = "scripts/download_model.py", format = ["wheel"] },
     { path = "scripts/prepare_mtp_sidecar.py", format = ["wheel"] },
     { path = "scripts/check_mtp_sidecar_provenance.py", format = ["wheel"] },
 ]

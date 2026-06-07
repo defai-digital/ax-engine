@@ -245,11 +245,12 @@ with Session(mlx=True, mlx_model_artifacts_dir=str(path)) as s:
 Or start the OpenAI-compatible server:
 
 ```bash
-# Download a model
-MODEL_DIR="$(python3 scripts/download_model.py mlx-community/Qwen3-4B-4bit --json | python3 -c 'import json,sys; print(json.load(sys.stdin)["dest"])')"
+# Download a target MLX model and generate its AX manifest
+ax-engine download qwen36-35b --json
 
-# Start the server (wraps ax-engine-server and prints the resolved command)
-ax-engine serve "$MODEL_DIR" --port 8080
+# Start the server. For built-in aliases, --download resolves the model repo
+# only when the model is not already ready in the local cache.
+ax-engine serve qwen36-35b --download --port 8080
 ```
 
 Then call it from any OpenAI client:
@@ -265,8 +266,9 @@ resp = client.chat.completions.create(
 print(resp.choices[0].message.content)
 ```
 
-`download_model()` downloads weights and auto-runs `ax-engine-bench generate-manifest`.
-See [Getting a Model](#getting-a-model) for all paths including raw HF checkpoints.
+`ax-engine download` and `download_model()` download weights and auto-run
+`ax-engine-bench generate-manifest`. See [Getting a Model](#getting-a-model) for
+all paths including raw HF checkpoints.
 
 ## Typical Hardware Stack ([hardware FAQ](docs/FAQ.md#what-hardware-does-ax-engine-support))
 
@@ -710,9 +712,9 @@ use `./target/release/...` so every server flag is visible.
 
 ```bash
 # Download a model and generate its manifest
-MODEL_DIR="$(python3 scripts/download_model.py mlx-community/Qwen3-4B-4bit --json | python3 -c 'import json,sys; print(json.load(sys.stdin)["dest"])')"
+MODEL_DIR="$(ax-engine download qwen36-35b --json | python3 -c 'import json,sys; print(json.load(sys.stdin)["dest"])')"
 # MODEL_DIR uses the Hugging Face Hub snapshot cache by default, e.g.
-# ~/.cache/huggingface/hub/models--mlx-community--Qwen3-4B-4bit/snapshots/<hash>
+# ~/.cache/huggingface/hub/models--mlx-community--Qwen3.6-35B-A3B-4bit/snapshots/<hash>
 
 # Recommended installed path: resolve and launch ax-engine-server in the foreground
 ax-engine serve "$MODEL_DIR" --port 8080
@@ -803,24 +805,61 @@ architecture (Qwen3.5, Qwen3-Next) raises a hard error at load time.
 
 ### mlx-community model (recommended)
 
-`download_model()` and `scripts/download_model.py` download weights and auto-generate
-the required `model-manifest.json` in one step:
+`ax-engine download`, `download_model()`, and `scripts/download_model.py`
+download weights and auto-generate the required `model-manifest.json` in one
+step:
 
 ```bash
-# Script (works with pip, Homebrew, or source build)
-python scripts/download_model.py mlx-community/Qwen3-4B-4bit
+# Show supported Qwen3.6 and Gemma 4 MLX download targets
+ax-engine download --list
 
-# For automation, emit a parseable summary
-python scripts/download_model.py mlx-community/Qwen3-4B-4bit --json
+# Target Qwen3.6 and Gemma 4 MLX aliases for the local serve CLI
+ax-engine download qwen36-35b --json
+ax-engine download qwen36-27b --json
+ax-engine download qwen36-27b-5bit --json
+ax-engine download qwen36-27b-6bit --json
+ax-engine download qwen36-27b-8bit --json
+ax-engine download gemma4-e2b --json
+ax-engine download gemma4-e2b-5bit --json
+ax-engine download gemma4-e2b-6bit --json
+ax-engine download gemma4-e2b-8bit --json
+ax-engine download gemma4-31b --json
+
+# Or download and serve in one explicit command
+ax-engine serve qwen36-35b --download --port 8080
+
+# Raw mlx-community repo ids are still accepted
+ax-engine download mlx-community/Qwen3.6-35B-A3B-4bit --json
+ax-engine download mlx-community/gemma-4-e2b-it-4bit --json
+
+# Optional: copy the resolved HF cache snapshot to an explicit directory
+ax-engine download qwen36-35b --dest /Volumes/Models/qwen36-35b
+
+# Source-build helper path
+python scripts/download_model.py mlx-community/Qwen3.6-35B-A3B-4bit --json
 
 # Python SDK
 from ax_engine import download_model
-path = download_model("mlx-community/Qwen3-4B-4bit")
+path = download_model("mlx-community/Qwen3.6-35B-A3B-4bit")
 ```
 
-By default these helpers use the same Hugging Face Hub snapshot cache as
-`mlx_lm` and `huggingface_hub`. If you already have `mlx_lm` installed, its
-download also lands in that cache and ax-engine can auto-discover it:
+Built-in download aliases resolve to these MLX repos:
+
+| Alias | Repo |
+|---|---|
+| `qwen36-35b` | `mlx-community/Qwen3.6-35B-A3B-4bit` |
+| `qwen36-27b`, `qwen36-27b-5bit`, `qwen36-27b-6bit`, `qwen36-27b-8bit` | `mlx-community/Qwen3.6-27B-{4,5,6,8}bit` |
+| `gemma4-e2b`, `gemma4-e2b-5bit`, `gemma4-e2b-6bit`, `gemma4-e2b-8bit` | `mlx-community/gemma-4-e2b-it-{4,5,6,8}bit` |
+| `gemma4-31b` | `mlx-community/gemma-4-31b-it-4bit` |
+
+Best practice: leave downloads in the Hugging Face Hub cache by default. This is
+the cache shared by `mlx_lm`, `huggingface_hub`, and other HF-aware tools, so it
+avoids duplicate copies of large model weights. Move the cache with
+`HF_HUB_CACHE`, `HF_HOME`, or `XDG_CACHE_HOME`; use `--dest` only when you want
+an explicit copy outside the shared cache.
+
+If you already have `mlx_lm` installed, its download also lands in that cache and
+ax-engine can auto-discover it:
 
 ```bash
 python -m mlx_lm.generate --model mlx-community/Qwen3-4B-4bit --prompt "x" --max-tokens 1
