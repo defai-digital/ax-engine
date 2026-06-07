@@ -1,0 +1,230 @@
+name: Brew Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to publish (e.g. v5.3.0). Must already be pushed."
+        required: true
+        type: string
+      dry_run:
+        description: "Dry run — build and package but skip upload and tap push."
+        required: false
+        default: false
+        type: boolean
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write  # upload release assets
+
+env:
+  MAIN_REPO: defai-digital/ax-engine
+  TAP_REPO: defai-digital/homebrew-ax-engine
+  TAP_FORMULA: Formula/ax-engine.rb
+  AX_ALLOW_UNSUPPORTED_HOST: "1"
+
+jobs:
+  brew-release:
+    name: Build and Publish Homebrew Release
+    runs-on: macos-14
+    timeout-minutes: 40
+
+    steps:
+      - name: Resolve tag
+        id: tag
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            TAG="${{ inputs.tag }}"
+          else
+            TAG="${GITHUB_REF_NAME}"
+          fi
+          if [[ -z "$TAG" ]]; then
+            echo "error: could not determine release tag" >&2
+            exit 1
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Check out repository
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ steps.tag.outputs.tag }}
+
+      - name: Ensure stable Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      - name: Install native build dependencies
+        run: brew install mlx-c protobuf
+
+      - name: Verify Apple Silicon runner
+        run: |
+          arch="$(uname -m)"
+          if [[ "$arch" != "arm64" ]]; then
+            echo "error: brew release requires arm64 runner; got $arch" >&2
+            exit 1
+          fi
+
+      - name: Verify tag matches workspace version
+        run: |
+          python3 - <<'PY'
+          import os, pathlib, sys, tomllib
+
+          root = pathlib.Path.cwd()
+          tag_version = os.environ["TAG"].removeprefix("v")
+          cargo_version = tomllib.loads((root / "Cargo.toml").read_text())["workspace"]["package"]["version"]
+
+          if tag_version != cargo_version:
+              print(f"Version mismatch: tag={tag_version}, workspace={cargo_version}", file=sys.stderr)
+              raise SystemExit(1)
+          print(f"Version verified: {tag_version}")
+          PY
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+
+      - name: Build release binaries
+        run: cargo build --release -p ax-engine-server -p ax-engine-bench
+
+      - name: Package archive
+        id: package
+        run: |
+          TAG="${{ steps.tag.outputs.tag }}"
+          ARCHIVE="ax-engine-${TAG}-macos-arm64.tar.gz"
+          ARCHIVE_PATH="/tmp/${ARCHIVE}"
+          tar -czf "$ARCHIVE_PATH" -C target/release ax-engine-server ax-engine-bench
+          SHA256="$(shasum -a 256 "$ARCHIVE_PATH" | awk '{print $1}')"
+          DOWNLOAD_URL="https://github.com/${MAIN_REPO}/releases/download/${TAG}/${ARCHIVE}"
+          echo "archive=$ARCHIVE"         >> "$GITHUB_OUTPUT"
+          echo "archive_path=$ARCHIVE_PATH" >> "$GITHUB_OUTPUT"
+          echo "sha256=$SHA256"           >> "$GITHUB_OUTPUT"
+          echo "download_url=$DOWNLOAD_URL" >> "$GITHUB_OUTPUT"
+          echo "Archive: $ARCHIVE ($( du -sh "$ARCHIVE_PATH" | awk '{print $1}' ))"
+          echo "SHA256:  $SHA256"
+
+      - name: Create GitHub release (if absent)
+        if: ${{ inputs.dry_run != true }}
+        run: |
+          TAG="${{ steps.tag.outputs.tag }}"
+          if ! gh release view "$TAG" --repo "$MAIN_REPO" &>/dev/null; then
+            gh release create "$TAG" \
+              --repo "$MAIN_REPO" \
+              --title "$TAG" \
+              --generate-notes
+            echo "Created release $TAG"
+          else
+            echo "Release $TAG already exists"
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload archive to GitHub release
+        if: ${{ inputs.dry_run != true }}
+        run: |
+          gh release upload "${{ steps.tag.outputs.tag }}" \
+            "${{ steps.package.outputs.archive_path }}" \
+            --repo "$MAIN_REPO" \
+            --clobber
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Update Homebrew tap formula
+        if: ${{ inputs.dry_run != true }}
+        run: |
+          set -euo pipefail
+
+          TAG="${{ steps.tag.outputs.tag }}"
+          VERSION="${{ steps.tag.outputs.version }}"
+          SHA256="${{ steps.package.outputs.sha256 }}"
+          DOWNLOAD_URL="${{ steps.package.outputs.download_url }}"
+
+          TAP_DIR="$(mktemp -d /tmp/ax-engine-tap.XXXXXX)"
+          trap 'rm -rf "$TAP_DIR"' EXIT
+
+          git clone \
+            "https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/${TAP_REPO}.git" \
+            --depth=1 --quiet \
+            "$TAP_DIR"
+
+          cd "$TAP_DIR"
+          git config user.name  "Automatosx"
+          git config user.email "automatosx@defai.digital"
+
+          FORMULA_PATH="$TAP_DIR/$TAP_FORMULA"
+          if [[ ! -f "$FORMULA_PATH" ]]; then
+            echo "error: $TAP_FORMULA not found in tap" >&2
+            exit 1
+          fi
+
+          sed -i '' \
+            -e "s|version \"[^\"]*\"|version \"${VERSION}\"|" \
+            -e "s|url \"[^\"]*\"|url \"${DOWNLOAD_URL}\"|" \
+            -e "s|sha256 \"[^\"]*\"|sha256 \"${SHA256}\"|" \
+            "$FORMULA_PATH"
+
+          # Verify all three substitutions landed
+          for pattern in "version \"${VERSION}\"" "url \"${DOWNLOAD_URL}\"" "sha256 \"${SHA256}\""; do
+            if ! grep -qF "$pattern" "$FORMULA_PATH"; then
+              echo "error: formula update failed — pattern not found: $pattern" >&2
+              exit 1
+            fi
+          done
+
+          ruby -c "$FORMULA_PATH" > /dev/null
+          echo "Formula syntax OK"
+
+          git add "$TAP_FORMULA"
+          if git diff --cached --quiet; then
+            echo "Formula already up to date — nothing to commit"
+            exit 0
+          fi
+
+          echo "Formula diff:"
+          git diff --cached "$TAP_FORMULA"
+
+          git commit -m "chore: update ax-engine to ${TAG}"
+          git push origin main
+          echo "Tap updated: ${TAP_REPO}"
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+
+      - name: Step summary
+        if: always()
+        run: |
+          TAG="${{ steps.tag.outputs.tag }}"
+          VERSION="${{ steps.tag.outputs.version }}"
+          SHA256="${{ steps.package.outputs.sha256 }}"
+          ARCHIVE="${{ steps.package.outputs.archive }}"
+          DOWNLOAD_URL="${{ steps.package.outputs.download_url }}"
+          DRY="${{ inputs.dry_run }}"
+
+          {
+            echo "## Brew Release: ${TAG}"
+            echo
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Archive | \`${ARCHIVE}\` |"
+            echo "| SHA256 | \`${SHA256}\` |"
+            if [[ "$DRY" == "true" ]]; then
+              echo "| Status | dry-run — nothing uploaded or pushed |"
+            else
+              echo "| Download | ${DOWNLOAD_URL} |"
+              echo "| Tap | \`${TAP_FORMULA}\` in \`${TAP_REPO}\` updated |"
+              echo
+              echo "\`\`\`"
+              echo "brew tap defai-digital/ax-engine"
+              echo "brew install defai-digital/ax-engine/ax-engine"
+              echo "\`\`\`"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
