@@ -1523,6 +1523,13 @@ struct MtpTelemetry {
     ngram_safety_reason: u32,
     ngram_submitted_tokens: u32,
     ngram_submitted_accepted_tokens: u32,
+    utility_baseline_steps: u32,
+    utility_baseline_wall_us: u32,
+    utility_baseline_emitted_tokens: u32,
+    utility_stacked_steps: u32,
+    utility_stacked_wall_us: u32,
+    utility_stacked_emitted_tokens: u32,
+    utility_stacked_ngram_submitted_tokens: u32,
     /// Steps where auto-optimistic activated (EWMA ≥ 0.99 without env override).
     auto_optimistic_steps: u32,
 }
@@ -1542,6 +1549,7 @@ struct MtpStepTimings {
     ngram_lookup_wall_us: u32,
     verify_tokens: u32,
     emitted_tokens: u32,
+    ngram_submitted_tokens: u32,
 }
 
 impl MtpTelemetry {
@@ -1799,6 +1807,31 @@ impl MtpTelemetry {
             .saturating_add(timings.ngram_lookup_wall_us);
         self.verify_tokens = self.verify_tokens.saturating_add(timings.verify_tokens);
         self.emitted_tokens = self.emitted_tokens.saturating_add(timings.emitted_tokens);
+
+        let utility_wall_us = timings
+            .verify_forward_wall_us
+            .saturating_add(timings.verify_eval_wall_us)
+            .saturating_add(timings.target_softmax_wall_us)
+            .saturating_add(timings.draft_wall_us);
+        if timings.ngram_submitted_tokens > 0 {
+            self.utility_stacked_steps = self.utility_stacked_steps.saturating_add(1);
+            self.utility_stacked_wall_us =
+                self.utility_stacked_wall_us.saturating_add(utility_wall_us);
+            self.utility_stacked_emitted_tokens = self
+                .utility_stacked_emitted_tokens
+                .saturating_add(timings.emitted_tokens);
+            self.utility_stacked_ngram_submitted_tokens = self
+                .utility_stacked_ngram_submitted_tokens
+                .saturating_add(timings.ngram_submitted_tokens);
+        } else {
+            self.utility_baseline_steps = self.utility_baseline_steps.saturating_add(1);
+            self.utility_baseline_wall_us = self
+                .utility_baseline_wall_us
+                .saturating_add(utility_wall_us);
+            self.utility_baseline_emitted_tokens = self
+                .utility_baseline_emitted_tokens
+                .saturating_add(timings.emitted_tokens);
+        }
     }
 
     fn merge_from(&mut self, other: Self) {
@@ -1991,39 +2024,47 @@ impl MtpTelemetry {
         self.ngram_submitted_accepted_tokens = self
             .ngram_submitted_accepted_tokens
             .saturating_add(other.ngram_submitted_accepted_tokens);
+        self.utility_baseline_steps = self
+            .utility_baseline_steps
+            .saturating_add(other.utility_baseline_steps);
+        self.utility_baseline_wall_us = self
+            .utility_baseline_wall_us
+            .saturating_add(other.utility_baseline_wall_us);
+        self.utility_baseline_emitted_tokens = self
+            .utility_baseline_emitted_tokens
+            .saturating_add(other.utility_baseline_emitted_tokens);
+        self.utility_stacked_steps = self
+            .utility_stacked_steps
+            .saturating_add(other.utility_stacked_steps);
+        self.utility_stacked_wall_us = self
+            .utility_stacked_wall_us
+            .saturating_add(other.utility_stacked_wall_us);
+        self.utility_stacked_emitted_tokens = self
+            .utility_stacked_emitted_tokens
+            .saturating_add(other.utility_stacked_emitted_tokens);
+        self.utility_stacked_ngram_submitted_tokens = self
+            .utility_stacked_ngram_submitted_tokens
+            .saturating_add(other.utility_stacked_ngram_submitted_tokens);
         self.auto_optimistic_steps = self
             .auto_optimistic_steps
             .saturating_add(other.auto_optimistic_steps);
     }
 
     fn baseline_utility(&self) -> DraftSourceUtility {
-        let submitted_tokens = self
-            .source_mtp_submitted_tokens
-            .saturating_add(self.source_assistant_submitted_tokens);
         DraftSourceUtility {
-            submitted_tokens,
-            proposer_wall_us: self
-                .source_mtp_proposer_wall_us
-                .saturating_add(self.source_assistant_proposer_wall_us),
-            verify_wall_us: self
-                .verify_forward_wall_us
-                .saturating_add(self.verify_eval_wall_us)
-                .saturating_add(self.target_softmax_wall_us),
-            emitted_tokens: self
-                .source_mtp_accepted_tokens
-                .saturating_add(self.source_assistant_accepted_tokens),
+            submitted_tokens: self.utility_baseline_emitted_tokens,
+            proposer_wall_us: 0,
+            verify_wall_us: self.utility_baseline_wall_us,
+            emitted_tokens: self.utility_baseline_emitted_tokens,
         }
     }
 
     fn stacked_utility(&self) -> DraftSourceUtility {
         DraftSourceUtility {
-            submitted_tokens: self.ngram_submitted_tokens,
-            proposer_wall_us: self.draft_wall_us,
-            verify_wall_us: self
-                .verify_forward_wall_us
-                .saturating_add(self.verify_eval_wall_us)
-                .saturating_add(self.target_softmax_wall_us),
-            emitted_tokens: self.emitted_tokens,
+            submitted_tokens: self.utility_stacked_ngram_submitted_tokens,
+            proposer_wall_us: 0,
+            verify_wall_us: self.utility_stacked_wall_us,
+            emitted_tokens: self.utility_stacked_emitted_tokens,
         }
     }
 
@@ -2214,6 +2255,38 @@ impl MtpTelemetry {
             (
                 "ax_mtp_ngram_submitted_accepted_tokens",
                 self.ngram_submitted_accepted_tokens,
+            ),
+            (
+                "ax_mtp_ngram_accepted_tokens",
+                self.ngram_submitted_accepted_tokens,
+            ),
+            (
+                "ax_mtp_ngram_utility_baseline_steps",
+                self.utility_baseline_steps,
+            ),
+            (
+                "ax_mtp_ngram_utility_baseline_wall_us",
+                self.utility_baseline_wall_us,
+            ),
+            (
+                "ax_mtp_ngram_utility_baseline_emitted_tokens",
+                self.utility_baseline_emitted_tokens,
+            ),
+            (
+                "ax_mtp_ngram_utility_stacked_steps",
+                self.utility_stacked_steps,
+            ),
+            (
+                "ax_mtp_ngram_utility_stacked_wall_us",
+                self.utility_stacked_wall_us,
+            ),
+            (
+                "ax_mtp_ngram_utility_stacked_emitted_tokens",
+                self.utility_stacked_emitted_tokens,
+            ),
+            (
+                "ax_mtp_ngram_utility_stacked_ngram_submitted_tokens",
+                self.utility_stacked_ngram_submitted_tokens,
             ),
             (
                 "ax_mtp_ngram_acceptance_mode",
@@ -5416,8 +5489,11 @@ impl MlxRunner {
                             token_ids,
                             sampling,
                             is_greedy,
-                            terminal_token_ids,
-                            final_by_max_output,
+                            DecodeOneOptions {
+                                terminal_token_ids,
+                                final_by_max_output,
+                                request_context: ctx,
+                            },
                         )
                     }
                 } else {
@@ -5426,8 +5502,11 @@ impl MlxRunner {
                         token_ids,
                         sampling,
                         is_greedy,
-                        terminal_token_ids,
-                        final_by_max_output,
+                        DecodeOneOptions {
+                            terminal_token_ids,
+                            final_by_max_output,
+                            request_context: ctx,
+                        },
                     )
                 };
                 state
@@ -6072,8 +6151,7 @@ impl MlxRunner {
         input_tokens: &[u32],
         sampling: MlxSamplingParams,
         is_greedy: bool,
-        terminal_token_ids: &[u32],
-        final_by_max_output: bool,
+        options: DecodeOneOptions<'_>,
     ) -> u32 {
         // Serve pre-verified bonus tokens without re-running the model.
         // (Bonus tokens only exist on the n-gram acceleration path; the direct pipeline
@@ -6097,7 +6175,12 @@ impl MlxRunner {
                 .next_model_last_token
                 .or_else(|| input_tokens.last().copied())
                 .unwrap_or(0);
-            return self.run_direct_pipeline_decode(state, last_token, final_by_max_output, false);
+            return self.run_direct_pipeline_decode(
+                state,
+                last_token,
+                options.final_by_max_output,
+                false,
+            );
         }
 
         let last_token = state
@@ -6116,12 +6199,23 @@ impl MlxRunner {
             state
                 .ngram_acceleration
                 .record_request_disabled_reason(state.ngram_request_disable_reason);
-            return self.run_direct_pipeline_decode(state, last_token, final_by_max_output, false);
+            return self.run_direct_pipeline_decode(
+                state,
+                last_token,
+                options.final_by_max_output,
+                false,
+            );
         }
 
-        let result =
-            self.run_model_decode(state, last_token, sampling, is_greedy, final_by_max_output);
-        apply_decode_result(state, &result, terminal_token_ids)
+        let result = self.run_model_decode(
+            state,
+            last_token,
+            sampling,
+            is_greedy,
+            options.final_by_max_output,
+            options.request_context,
+        );
+        apply_decode_result(state, &result, options.terminal_token_ids)
     }
 
     /// Decode one deterministic token on the direct double-buffer pipeline.
@@ -6560,6 +6654,7 @@ impl MlxRunner {
         state: &mut RequestState,
         last_token: u32,
         sampling: MlxSamplingParams,
+        ctx: Option<&RunnerRequestContext>,
     ) -> Vec<u32> {
         use crate::ngram_accel::sample_logit_row;
         use mlx_sys::{argmax, eval};
@@ -7142,6 +7237,15 @@ impl MlxRunner {
             }
         }
 
+        mtp_timings.ngram_submitted_tokens = saturating_u32(
+            state
+                .mtp_pending_draft_sources
+                .iter()
+                .take(pending.len())
+                .filter(|source| **source == MtpDraftSource::Ngram)
+                .count(),
+        );
+
         state.ngram.feed(&result);
 
         let mtp_max_depth = self.mtp_max_depth();
@@ -7186,7 +7290,7 @@ impl MlxRunner {
             adaptive_ngram_draft_len(has_linear_attention, state.ngram_posterior_mean())
         };
         let safety_decision = if ngram_max > 0 {
-            mtp_ngram_speculative_safety_decision(mtp_post_think_guarded)
+            mtp_ngram_speculative_safety_decision(ctx, mtp_post_think_guarded)
         } else {
             SpeculativeSafetyDecision::default()
         };
@@ -7688,6 +7792,7 @@ impl MlxRunner {
         sampling: MlxSamplingParams,
         is_greedy: bool,
         final_by_max_output: bool,
+        ctx: Option<&RunnerRequestContext>,
     ) -> Vec<u32> {
         let has_linear_attention = self.cfg.linear_attention.is_some();
 
@@ -7700,7 +7805,7 @@ impl MlxRunner {
         // correction/bonus tokens are sampled with the request's temperature.
         if self.has_mtp() && !self.disable_ngram_acceleration && !sampling.uses_repetition_penalty()
         {
-            return self.run_mtp_decode(state, last_token, sampling);
+            return self.run_mtp_decode(state, last_token, sampling, ctx);
         }
 
         if let Some(result) =
@@ -8051,16 +8156,36 @@ struct SpeculativeSafetyDecision {
     reason: SpeculativeSafetyReason,
 }
 
-fn mtp_ngram_speculative_safety_decision(post_think_guarded: bool) -> SpeculativeSafetyDecision {
-    mtp_ngram_speculative_safety_decision_for_mode(mtp_ngram_safety_mode(), post_think_guarded)
+fn mtp_ngram_speculative_safety_decision(
+    ctx: Option<&RunnerRequestContext>,
+    post_think_guarded: bool,
+) -> SpeculativeSafetyDecision {
+    mtp_ngram_speculative_safety_decision_for_mode(
+        mtp_ngram_safety_mode(),
+        ctx.map(|ctx| ctx.tool_call_mode).unwrap_or(false),
+        ctx.map(|ctx| ctx.structured_output_mode).unwrap_or(false),
+        post_think_guarded,
+    )
 }
 
 fn mtp_ngram_speculative_safety_decision_for_mode(
     mode: MtpNgramSafetyMode,
+    tool_call_mode: bool,
+    structured_output_mode: bool,
     post_think_guarded: bool,
 ) -> SpeculativeSafetyDecision {
     match mode {
         MtpNgramSafetyMode::Off => SpeculativeSafetyDecision::default(),
+        _ if tool_call_mode => SpeculativeSafetyDecision {
+            disable_ngram: true,
+            reason: SpeculativeSafetyReason::ToolCall,
+            ..SpeculativeSafetyDecision::default()
+        },
+        _ if structured_output_mode => SpeculativeSafetyDecision {
+            disable_ngram: true,
+            reason: SpeculativeSafetyReason::StructuredOutput,
+            ..SpeculativeSafetyDecision::default()
+        },
         MtpNgramSafetyMode::DisableAll => SpeculativeSafetyDecision {
             disable_ngram: true,
             reason: SpeculativeSafetyReason::ExperimentalOverride,
@@ -8852,6 +8977,13 @@ struct MlxItemRun {
     kv_usage: MlxKVCacheUsage,
     prefix_cache: MlxPrefixCacheTelemetry,
     kv_compression_shadow_sync_wall_us: Option<u32>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct DecodeOneOptions<'a> {
+    terminal_token_ids: &'a [u32],
+    final_by_max_output: bool,
+    request_context: Option<&'a RunnerRequestContext>,
 }
 
 fn ngram_acceleration_disabled_steps(
@@ -9950,6 +10082,8 @@ mod tests {
             repetition_penalty: 1.0,
             repetition_context_size: None,
             ignore_eos: false,
+            tool_call_mode: false,
+            structured_output_mode: false,
         }
     }
 
@@ -10043,6 +10177,7 @@ mod tests {
             ngram_lookup_wall_us: 73,
             verify_tokens: 8,
             emitted_tokens: 4,
+            ngram_submitted_tokens: 0,
         });
 
         let mut decisions = Vec::new();
@@ -10091,6 +10226,10 @@ mod tests {
         assert!(decisions.contains(&("ax_mtp_ngram_self_tune_disabled_steps".into(), 0)));
         assert!(decisions.contains(&("ax_mtp_ngram_submitted_tokens".into(), 0)));
         assert!(decisions.contains(&("ax_mtp_ngram_submitted_accepted_tokens".into(), 0)));
+        assert!(decisions.contains(&("ax_mtp_ngram_accepted_tokens".into(), 0)));
+        assert!(decisions.contains(&("ax_mtp_ngram_utility_baseline_steps".into(), 1)));
+        assert!(decisions.contains(&("ax_mtp_ngram_utility_baseline_emitted_tokens".into(), 4)));
+        assert!(decisions.contains(&("ax_mtp_ngram_utility_stacked_steps".into(), 0)));
         assert!(decisions.contains(&("ax_mtp_ngram_acceptance_mode".into(), 0)));
     }
 
@@ -10138,6 +10277,7 @@ mod tests {
         assert!(decisions.contains(&("ax_mtp_ngram_proposed_tokens".into(), 2)));
         assert!(decisions.contains(&("ax_mtp_ngram_submitted_tokens".into(), 2)));
         assert!(decisions.contains(&("ax_mtp_ngram_submitted_accepted_tokens".into(), 2)));
+        assert!(decisions.contains(&("ax_mtp_ngram_accepted_tokens".into(), 2)));
         assert!(decisions.contains(&("ax_mtp_ngram_rejected_tokens".into(), 0)));
         assert!(decisions.contains(&("ax_mtp_ngram_cascade_rejected_tokens".into(), 0)));
         assert!(decisions.contains(&("ax_mtp_source_mtp_submitted_tokens".into(), 1)));
@@ -10434,13 +10574,59 @@ mod tests {
     }
 
     #[test]
+    fn mtp_utility_uses_separate_baseline_and_stacked_step_buckets() {
+        let mut telemetry = MtpTelemetry::default();
+
+        telemetry.record_timings(MtpStepTimings {
+            verify_forward_wall_us: 100,
+            verify_eval_wall_us: 10,
+            target_softmax_wall_us: 10,
+            draft_wall_us: 0,
+            emitted_tokens: 4,
+            ngram_submitted_tokens: 0,
+            ..MtpStepTimings::default()
+        });
+        telemetry.record_timings(MtpStepTimings {
+            verify_forward_wall_us: 200,
+            verify_eval_wall_us: 50,
+            target_softmax_wall_us: 25,
+            draft_wall_us: 25,
+            emitted_tokens: 2,
+            ngram_submitted_tokens: 5,
+            ..MtpStepTimings::default()
+        });
+
+        let baseline = telemetry.baseline_utility();
+        let stacked = telemetry.stacked_utility();
+
+        assert_eq!(baseline.cost_per_emitted_token_us(), Some(30.0));
+        assert_eq!(stacked.cost_per_emitted_token_us(), Some(150.0));
+        assert_eq!(stacked.submitted_tokens, 5);
+
+        let mut decisions = Vec::new();
+        telemetry.append_route_decisions(&mut decisions);
+        assert!(decisions.contains(&("ax_mtp_ngram_utility_baseline_steps".into(), 1)));
+        assert!(decisions.contains(&("ax_mtp_ngram_utility_baseline_wall_us".into(), 120)));
+        assert!(decisions.contains(&("ax_mtp_ngram_utility_stacked_steps".into(), 1)));
+        assert!(decisions.contains(&("ax_mtp_ngram_utility_stacked_wall_us".into(), 300)));
+        assert!(decisions.contains(&(
+            "ax_mtp_ngram_utility_stacked_ngram_submitted_tokens".into(),
+            5
+        )));
+    }
+
+    #[test]
     fn mtp_ngram_safety_defaults_to_reasoning_tighten_mode() {
         assert_eq!(
             MtpNgramSafetyMode::default(),
             MtpNgramSafetyMode::TightenReasoning
         );
-        let decision =
-            mtp_ngram_speculative_safety_decision_for_mode(MtpNgramSafetyMode::default(), true);
+        let decision = mtp_ngram_speculative_safety_decision_for_mode(
+            MtpNgramSafetyMode::default(),
+            false,
+            false,
+            true,
+        );
 
         assert!(decision.tighten_ngram);
         assert!(!decision.disable_ngram);
@@ -10449,20 +10635,52 @@ mod tests {
 
     #[test]
     fn mtp_ngram_safety_disable_modes_are_explicit() {
-        let all =
-            mtp_ngram_speculative_safety_decision_for_mode(MtpNgramSafetyMode::DisableAll, false);
+        let all = mtp_ngram_speculative_safety_decision_for_mode(
+            MtpNgramSafetyMode::DisableAll,
+            false,
+            false,
+            false,
+        );
         assert!(all.disable_ngram);
         assert_eq!(all.reason, SpeculativeSafetyReason::ExperimentalOverride);
 
         let reasoning = mtp_ngram_speculative_safety_decision_for_mode(
             MtpNgramSafetyMode::DisableReasoning,
+            false,
+            false,
             true,
         );
         assert!(reasoning.disable_ngram);
         assert_eq!(reasoning.reason, SpeculativeSafetyReason::ReasoningTrace);
 
-        let off = mtp_ngram_speculative_safety_decision_for_mode(MtpNgramSafetyMode::Off, true);
+        let off = mtp_ngram_speculative_safety_decision_for_mode(
+            MtpNgramSafetyMode::Off,
+            true,
+            true,
+            true,
+        );
         assert_eq!(off, SpeculativeSafetyDecision::default());
+    }
+
+    #[test]
+    fn mtp_ngram_safety_disables_tool_and_structured_workloads() {
+        let tool = mtp_ngram_speculative_safety_decision_for_mode(
+            MtpNgramSafetyMode::default(),
+            true,
+            false,
+            false,
+        );
+        assert!(tool.disable_ngram);
+        assert_eq!(tool.reason, SpeculativeSafetyReason::ToolCall);
+
+        let structured = mtp_ngram_speculative_safety_decision_for_mode(
+            MtpNgramSafetyMode::default(),
+            false,
+            true,
+            false,
+        );
+        assert!(structured.disable_ngram);
+        assert_eq!(structured.reason, SpeculativeSafetyReason::StructuredOutput);
     }
 
     #[test]
@@ -11372,6 +11590,8 @@ mod tests {
             repetition_penalty: 1.0,
             repetition_context_size: None,
             ignore_eos: false,
+            tool_call_mode: false,
+            structured_output_mode: false,
         };
         assert!(!prefill_item_completes_prompt(&item, Some(&first_context)));
 

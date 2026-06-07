@@ -4,6 +4,7 @@ use ax_engine_sdk::{
 };
 use axum::Json;
 use axum::http::StatusCode;
+use serde_json::{Map, Value};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -88,6 +89,8 @@ pub(crate) fn build_openai_completion_request(
 ) -> Result<OpenAiBuiltRequest, (StatusCode, Json<ErrorResponse>)> {
     let max_output_tokens = openai_max_tokens(request.max_tokens);
     let sampling_params = OpenAiSamplingParams::from_completion_request(&request);
+    let structured_output = openai_response_format_is_structured(request.response_format.as_ref());
+    let metadata = openai_workload_metadata(request.metadata, false, structured_output);
     let (input_tokens, input_text) = match request.prompt {
         OpenAiPromptInput::Text(text) => (Vec::new(), Some(text)),
         OpenAiPromptInput::TextBatch(prompts) => {
@@ -110,7 +113,7 @@ pub(crate) fn build_openai_completion_request(
             .map(OpenAiStopInput::into_vec)
             .unwrap_or_default(),
         stream: request.stream,
-        metadata: request.metadata,
+        metadata,
     };
 
     build_openai_generate_request(state, input_tokens, input_text, max_output_tokens, payload)
@@ -124,12 +127,15 @@ pub(crate) fn build_openai_chat_request(
     let sampling_params = OpenAiSamplingParams::from_chat_request(&request);
     validate_native_chat_artifacts(state)?;
     let input_text = render_openai_chat_prompt(state.model_id.as_ref(), &request.messages)?;
+    let tool_call = openai_tools_are_enabled(request.tools.as_ref(), request.tool_choice.as_ref());
+    let structured_output = openai_response_format_is_structured(request.response_format.as_ref());
+    let metadata = openai_workload_metadata(request.metadata, tool_call, structured_output);
 
     let payload = OpenAiBuiltPayload {
         sampling: build_openai_sampling(state, sampling_params),
         stop_sequences: openai_chat_stop_sequences(state.model_id.as_ref(), request.stop),
         stream: request.stream,
-        metadata: request.metadata,
+        metadata,
     };
 
     build_openai_generate_request(
@@ -160,6 +166,9 @@ pub(crate) fn build_openai_mlx_lm_chat_request(
     let messages = build_mlx_lm_chat_messages(&request.messages)?;
     let sampling = build_openai_sampling_with_default_repetition_penalty(sampling_params, 1.0);
     let stop_sequences = openai_chat_stop_sequences(state.model_id.as_ref(), request.stop);
+    let tool_call = openai_tools_are_enabled(request.tools.as_ref(), request.tool_choice.as_ref());
+    let structured_output = openai_response_format_is_structured(request.response_format.as_ref());
+    let metadata = openai_workload_metadata(request.metadata, tool_call, structured_output);
 
     Ok(OpenAiBuiltMlxLmChatRequest {
         chat_request: MlxLmChatGenerateRequest {
@@ -168,7 +177,7 @@ pub(crate) fn build_openai_mlx_lm_chat_request(
             max_output_tokens,
             sampling,
             stop_sequences,
-            metadata: request.metadata,
+            metadata,
             chat_template_kwargs: chat_template_kwargs_for_model_id(state.model_id.as_ref()),
         },
         stream: request.stream,
@@ -184,6 +193,9 @@ pub(crate) fn build_openai_llama_cpp_chat_request(
     let messages = build_llama_cpp_chat_messages(&request.messages)?;
     let sampling = build_openai_sampling_with_default_repetition_penalty(sampling_params, 1.0);
     let stop_sequences = openai_chat_stop_sequences(state.model_id.as_ref(), request.stop);
+    let tool_call = openai_tools_are_enabled(request.tools.as_ref(), request.tool_choice.as_ref());
+    let structured_output = openai_response_format_is_structured(request.response_format.as_ref());
+    let metadata = openai_workload_metadata(request.metadata, tool_call, structured_output);
 
     Ok(OpenAiBuiltLlamaCppChatRequest {
         chat_request: LlamaCppChatGenerateRequest {
@@ -192,7 +204,7 @@ pub(crate) fn build_openai_llama_cpp_chat_request(
             max_output_tokens,
             sampling,
             stop_sequences,
-            metadata: request.metadata,
+            metadata,
         },
         stream: request.stream,
     })
@@ -345,6 +357,98 @@ fn default_openai_seed(temperature: f32) -> u64 {
     let counter = OPENAI_SEED_COUNTER.fetch_add(1, Ordering::Relaxed);
     let seed = now ^ counter.wrapping_mul(0x9E37_79B9_7F4A_7C15);
     if seed == 0 { counter } else { seed }
+}
+
+fn openai_workload_metadata(
+    metadata: Option<String>,
+    tool_call: bool,
+    structured_output: bool,
+) -> Option<String> {
+    if !tool_call && !structured_output {
+        return metadata;
+    }
+
+    let mut hints = Map::new();
+    if tool_call {
+        hints.insert("ax_speculative_tool_call".to_string(), Value::Bool(true));
+    }
+    if structured_output {
+        hints.insert(
+            "ax_speculative_structured_output".to_string(),
+            Value::Bool(true),
+        );
+    }
+
+    let Some(metadata) = metadata else {
+        return Some(Value::Object(hints).to_string());
+    };
+    if let Ok(Value::Object(mut object)) = serde_json::from_str::<Value>(&metadata) {
+        for (key, value) in hints {
+            object.entry(key).or_insert(value);
+        }
+        return Some(Value::Object(object).to_string());
+    }
+
+    let suffix = hints
+        .keys()
+        .map(|key| format!("{key}=true"))
+        .collect::<Vec<_>>()
+        .join("; ");
+    Some(format!("{metadata}; {suffix}"))
+}
+
+fn openai_tools_are_enabled(tools: Option<&Value>, tool_choice: Option<&Value>) -> bool {
+    tools.map(openai_value_is_present).unwrap_or(false)
+        || tool_choice
+            .map(openai_tool_choice_enables_tool_call)
+            .unwrap_or(false)
+}
+
+fn openai_tool_choice_enables_tool_call(value: &Value) -> bool {
+    match value {
+        Value::Null => false,
+        Value::Bool(value) => *value,
+        Value::String(value) => {
+            let value = value.trim().to_ascii_lowercase();
+            !matches!(value.as_str(), "" | "none" | "false" | "off")
+        }
+        Value::Array(values) => !values.is_empty(),
+        Value::Object(object) => !object.is_empty(),
+        Value::Number(value) => value.as_u64().unwrap_or(1) != 0,
+    }
+}
+
+fn openai_response_format_is_structured(response_format: Option<&Value>) -> bool {
+    let Some(response_format) = response_format else {
+        return false;
+    };
+    match response_format {
+        Value::Null => false,
+        Value::String(value) => {
+            let value = value.trim().to_ascii_lowercase();
+            !matches!(value.as_str(), "" | "text" | "none" | "false" | "off")
+        }
+        Value::Object(object) => object
+            .get("type")
+            .and_then(Value::as_str)
+            .map(|value| {
+                let value = value.trim().to_ascii_lowercase();
+                !matches!(value.as_str(), "text" | "none" | "false" | "off")
+            })
+            .unwrap_or(!object.is_empty()),
+        value => openai_value_is_present(value),
+    }
+}
+
+fn openai_value_is_present(value: &Value) -> bool {
+    match value {
+        Value::Null => false,
+        Value::Bool(value) => *value,
+        Value::String(value) => !value.trim().is_empty(),
+        Value::Array(values) => !values.is_empty(),
+        Value::Object(object) => !object.is_empty(),
+        Value::Number(value) => value.as_u64().unwrap_or(1) != 0,
+    }
 }
 
 fn openai_max_tokens(max_tokens: Option<u32>) -> u32 {

@@ -34,6 +34,159 @@ pub struct RequestSubmission {
     pub metadata: Option<String>,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct RequestWorkloadHints {
+    pub tool_call: bool,
+    pub structured_output: bool,
+}
+
+impl RequestWorkloadHints {
+    pub fn from_metadata(metadata: Option<&str>) -> Self {
+        let Some(metadata) = metadata.map(str::trim).filter(|value| !value.is_empty()) else {
+            return Self::default();
+        };
+
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(metadata) {
+            let mut hints = Self::default();
+            hints.merge_json(&value);
+            return hints;
+        }
+
+        let mut hints = Self::default();
+        hints.merge_text(metadata);
+        hints
+    }
+
+    fn merge_json(&mut self, value: &serde_json::Value) {
+        match value {
+            serde_json::Value::Object(object) => {
+                for (key, value) in object {
+                    self.merge_json_key_value(key, value);
+                }
+            }
+            serde_json::Value::Array(values) => {
+                for value in values {
+                    self.merge_json(value);
+                }
+            }
+            serde_json::Value::String(value) => self.merge_text(value),
+            _ => {}
+        }
+    }
+
+    fn merge_json_key_value(&mut self, key: &str, value: &serde_json::Value) {
+        let key = normalize_workload_hint_token(key);
+        let truthy = json_hint_truthy(value);
+        let structured_truthy = if key == "response_format" {
+            json_response_format_is_structured(value)
+        } else {
+            truthy
+        };
+
+        if truthy
+            && matches!(
+                key.as_str(),
+                "tool_call"
+                    | "tool_call_mode"
+                    | "ax_speculative_tool_call"
+                    | "openai_tools"
+                    | "tools"
+                    | "tool_choice"
+            )
+        {
+            self.tool_call = true;
+        }
+        if structured_truthy
+            && matches!(
+                key.as_str(),
+                "structured_output"
+                    | "structured_output_mode"
+                    | "ax_speculative_structured_output"
+                    | "json_mode"
+                    | "json_object"
+                    | "strict_json"
+                    | "response_format"
+                    | "json_schema"
+            )
+        {
+            self.structured_output = true;
+        }
+
+        if matches!(key.as_str(), "workload" | "ax_workload" | "mode" | "task")
+            || matches!(
+                key.as_str(),
+                "response_format" | "tools" | "tool_choice" | "json_schema"
+            )
+        {
+            self.merge_json(value);
+        }
+    }
+
+    fn merge_text(&mut self, value: &str) {
+        let value = normalize_workload_hint_token(value);
+        if value.contains("tool_call")
+            || value.contains("toolcall")
+            || value.contains("ax_speculative_tool_call")
+        {
+            self.tool_call = true;
+        }
+        if value.contains("structured_output")
+            || value.contains("json_mode")
+            || value.contains("json_object")
+            || value.contains("strict_json")
+            || value.contains("response_format")
+            || value.contains("json_schema")
+        {
+            self.structured_output = true;
+        }
+    }
+}
+
+fn normalize_workload_hint_token(value: &str) -> String {
+    value
+        .trim()
+        .to_ascii_lowercase()
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
+fn json_hint_truthy(value: &serde_json::Value) -> bool {
+    match value {
+        serde_json::Value::Null => false,
+        serde_json::Value::Bool(value) => *value,
+        serde_json::Value::Number(value) => value.as_u64().unwrap_or(1) != 0,
+        serde_json::Value::String(value) => {
+            let value = normalize_workload_hint_token(value);
+            !matches!(value.as_str(), "" | "false" | "none" | "null" | "off" | "0")
+        }
+        serde_json::Value::Array(values) => !values.is_empty(),
+        serde_json::Value::Object(object) => !object.is_empty(),
+    }
+}
+
+fn json_response_format_is_structured(value: &serde_json::Value) -> bool {
+    match value {
+        serde_json::Value::Null => false,
+        serde_json::Value::String(value) => {
+            let value = normalize_workload_hint_token(value);
+            !matches!(value.as_str(), "" | "text" | "none" | "false" | "off" | "0")
+        }
+        serde_json::Value::Object(object) => object
+            .get("type")
+            .and_then(serde_json::Value::as_str)
+            .map(|value| normalize_workload_hint_token(value) != "text")
+            .unwrap_or(!object.is_empty()),
+        value => json_hint_truthy(value),
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct RequestRecord {
     pub request_id: RequestId,
@@ -46,6 +199,7 @@ pub struct RequestRecord {
     pub generated_token_logprobs: Vec<Option<f32>>,
     pub max_output_tokens: u32,
     pub sampling_params: SamplingParams,
+    pub workload_hints: RequestWorkloadHints,
     pub execution_plan_ref: Option<String>,
     pub route_metadata_hint: RouteMetadata,
     pub block_table: BlockTable,
@@ -68,6 +222,7 @@ impl RequestRecord {
             generated_token_logprobs: Vec::new(),
             max_output_tokens: submission.max_output_tokens,
             sampling_params: submission.sampling_params,
+            workload_hints: RequestWorkloadHints::from_metadata(submission.metadata.as_deref()),
             execution_plan_ref: None,
             route_metadata_hint: RouteMetadata::empty(),
             block_table,
@@ -270,6 +425,32 @@ mod tests {
         };
 
         RequestRecord::new(submission, BlockTable::empty(CacheGroupId(0)))
+    }
+
+    #[test]
+    fn parses_request_workload_hints_from_metadata_json() {
+        let hints = RequestWorkloadHints::from_metadata(Some(
+            r#"{"tool_call": true, "response_format": {"type": "json_object"}}"#,
+        ));
+        assert!(hints.tool_call);
+        assert!(hints.structured_output);
+
+        let hints = RequestWorkloadHints::from_metadata(Some(
+            r#"{"tool_call": false, "structured_output": false}"#,
+        ));
+        assert_eq!(hints, RequestWorkloadHints::default());
+
+        let hints =
+            RequestWorkloadHints::from_metadata(Some(r#"{"response_format":{"type":"text"}}"#));
+        assert_eq!(hints, RequestWorkloadHints::default());
+    }
+
+    #[test]
+    fn parses_request_workload_hints_from_metadata_text() {
+        let hints =
+            RequestWorkloadHints::from_metadata(Some("workload=tool-call; mode=strict-json"));
+        assert!(hints.tool_call);
+        assert!(hints.structured_output);
     }
 
     #[test]

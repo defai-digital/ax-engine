@@ -20,7 +20,7 @@
 
 pub use ax_engine_core::{
     CacheGroupId, EmbeddingMatrix, EmbeddingPooling, KvCompressionConfig, KvCompressionMode,
-    KvManagerConfig, TurboQuantPreset,
+    KvManagerConfig, RequestWorkloadHints, TurboQuantPreset,
 };
 #[allow(deprecated)]
 pub use ax_engine_core::{MlxKvCompressionConfig, MlxKvCompressionMode, MlxTurboQuantPreset};

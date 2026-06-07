@@ -744,6 +744,8 @@ impl EngineCore {
                     repetition_penalty: record.sampling_params.repetition_penalty,
                     repetition_context_size: record.sampling_params.repetition_context_size,
                     ignore_eos: record.sampling_params.ignore_eos,
+                    tool_call_mode: record.workload_hints.tool_call,
+                    structured_output_mode: record.workload_hints.structured_output,
                 });
             }
         }

@@ -378,14 +378,21 @@ def summarize_artifact(path: Path, *, expected_engine: str) -> dict[str, Any]:
         telemetry = row.get("ngram_acceleration_telemetry") or {}
         generic_mtp_drafted += telemetry_int(telemetry, "ax_mtp_draft_tokens")
         generic_mtp_accepted += telemetry_int(telemetry, "ax_mtp_accepted_tokens")
-        ngram_drafted += telemetry_int(telemetry, "ax_ngram_draft_tokens")
-        ngram_accepted += telemetry_int(telemetry, "ax_ngram_accepted_tokens")
-        ngram_drafted += telemetry_int(telemetry, "ax_mtp_ngram_submitted_tokens")
-        ngram_accepted += telemetry_int(
-            telemetry,
-            "ax_mtp_ngram_submitted_accepted_tokens",
-        )
-        ngram_hit_steps += telemetry_int(telemetry, "ax_mtp_ngram_hit_steps")
+        mtp_ngram_drafted = telemetry_int(telemetry, "ax_mtp_ngram_submitted_tokens")
+        mtp_ngram_accepted = telemetry_int(telemetry, "ax_mtp_ngram_accepted_tokens")
+        if mtp_ngram_accepted == 0:
+            mtp_ngram_accepted = telemetry_int(
+                telemetry,
+                "ax_mtp_ngram_submitted_accepted_tokens",
+            )
+        row_ngram_hit_steps = telemetry_int(telemetry, "ax_mtp_ngram_hit_steps")
+        if mtp_ngram_drafted > 0 or mtp_ngram_accepted > 0 or row_ngram_hit_steps > 0:
+            ngram_drafted += mtp_ngram_drafted
+            ngram_accepted += mtp_ngram_accepted
+        else:
+            ngram_drafted += telemetry_int(telemetry, "ax_ngram_draft_tokens")
+            ngram_accepted += telemetry_int(telemetry, "ax_ngram_accepted_tokens")
+        ngram_hit_steps += row_ngram_hit_steps
         source_mtp_submitted += telemetry_int(telemetry, "ax_mtp_source_mtp_submitted_tokens")
         source_mtp_accepted += telemetry_int(telemetry, "ax_mtp_source_mtp_accepted_tokens")
         source_mtp_rejected += telemetry_int(telemetry, "ax_mtp_source_mtp_rejected_tokens")

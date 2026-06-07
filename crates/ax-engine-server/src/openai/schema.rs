@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 /// Pre-tokenized input for the embedding endpoint. Mirrors OpenAI's
 /// `input` shape support: one sequence (`[1,2,3]`) or a batch of
@@ -107,6 +108,8 @@ pub(crate) struct OpenAiCompletionHttpRequest {
     pub(crate) stream: bool,
     #[serde(default)]
     pub(crate) metadata: Option<String>,
+    #[serde(default)]
+    pub(crate) response_format: Option<Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -136,6 +139,12 @@ pub(crate) struct OpenAiChatCompletionHttpRequest {
     pub(crate) stream: bool,
     #[serde(default)]
     pub(crate) metadata: Option<String>,
+    #[serde(default)]
+    pub(crate) response_format: Option<Value>,
+    #[serde(default)]
+    pub(crate) tools: Option<Value>,
+    #[serde(default)]
+    pub(crate) tool_choice: Option<Value>,
 }
 
 /// OpenAI `stop` field: either a single string or an array of strings.

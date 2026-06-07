@@ -46,6 +46,10 @@ pub struct RunnerRequestContext {
     /// Request-scoped fixed-generation mode. When true, native runners ignore
     /// model EOS / terminal token ids and stop only at the output budget.
     pub ignore_eos: bool,
+    /// Request asks the model to emit tool-call syntax or function-call payloads.
+    pub tool_call_mode: bool,
+    /// Request asks the model to emit constrained JSON or another structured format.
+    pub structured_output_mode: bool,
 }
 
 impl RunnerInput {
@@ -565,6 +569,8 @@ mod tests {
                     repetition_penalty: 1.0,
                     repetition_context_size: None,
                     ignore_eos: false,
+                    tool_call_mode: false,
+                    structured_output_mode: false,
                 },
                 RunnerRequestContext {
                     request_id: RequestId(2),
@@ -579,6 +585,8 @@ mod tests {
                     repetition_penalty: 1.0,
                     repetition_context_size: None,
                     ignore_eos: false,
+                    tool_call_mode: false,
+                    structured_output_mode: false,
                 },
             ],
         });
@@ -708,6 +716,8 @@ mod tests {
                 repetition_penalty: 1.0,
                 repetition_context_size: None,
                 ignore_eos: false,
+                tool_call_mode: false,
+                structured_output_mode: false,
             }],
         });
 

@@ -48,7 +48,8 @@ pub use model::{
     NativeTensorQuantization, NativeTensorRole, NativeTensorSpec, WeightSanitize,
 };
 pub use request::{
-    RequestRecord, RequestSnapshot, RequestState, RequestSubmission, StateTransitionError,
+    RequestRecord, RequestSnapshot, RequestState, RequestSubmission, RequestWorkloadHints,
+    StateTransitionError,
 };
 pub use request_manager::{RequestManager, RequestManagerError};
 pub use runner::{

@@ -6,6 +6,7 @@ use crate::openai::requests::{
 use crate::openai::schema::{OpenAiChatCompletionHttpRequest, OpenAiChatMessage, OpenAiStopInput};
 use crate::openai::validation::validate_openai_request;
 use crate::routes::build_router;
+use ax_engine_sdk::RequestWorkloadHints;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use serde_json::{Value, json};
@@ -201,6 +202,59 @@ async fn openai_chat_request_applies_gemma4_default_stop_to_native_generate() {
         built.generate_request.stop_sequences,
         vec!["<turn|>".to_string()]
     );
+}
+
+#[tokio::test]
+async fn openai_chat_request_marks_tool_and_structured_workload_metadata() {
+    let state = test_app_state(|args| {
+        args.model_id = "gemma4-e2b".to_string();
+        args.llama_server_url = Some("http://127.0.0.1:1".to_string());
+    });
+    let request: OpenAiChatCompletionHttpRequest = serde_json::from_value(json!({
+        "messages": [{"role": "user", "content": "Call a tool and return JSON"}],
+        "max_tokens": 8,
+        "tools": [
+            {
+                "type": "function",
+                "function": {"name": "lookup", "parameters": {"type": "object"}}
+            }
+        ],
+        "response_format": {"type": "json_object"}
+    }))
+    .expect("sample chat request should deserialize");
+
+    let built = build_openai_chat_request(&state, request).expect("chat request should build");
+    let hints = RequestWorkloadHints::from_metadata(built.generate_request.metadata.as_deref());
+
+    assert!(hints.tool_call);
+    assert!(hints.structured_output);
+}
+
+#[tokio::test]
+async fn openai_chat_request_preserves_text_metadata_when_adding_workload_hints() {
+    let state = test_app_state(|args| {
+        args.model_id = "gemma4-e2b".to_string();
+        args.llama_server_url = Some("http://127.0.0.1:1".to_string());
+    });
+    let request: OpenAiChatCompletionHttpRequest = serde_json::from_value(json!({
+        "messages": [{"role": "user", "content": "Call a tool"}],
+        "max_tokens": 8,
+        "metadata": "tenant=bench",
+        "tool_choice": {"type": "function", "function": {"name": "lookup"}}
+    }))
+    .expect("sample chat request should deserialize");
+
+    let built = build_openai_chat_request(&state, request).expect("chat request should build");
+    let metadata = built
+        .generate_request
+        .metadata
+        .as_deref()
+        .expect("metadata should include the original value and hints");
+    let hints = RequestWorkloadHints::from_metadata(Some(metadata));
+
+    assert!(metadata.contains("tenant=bench"));
+    assert!(hints.tool_call);
+    assert!(!hints.structured_output);
 }
 
 #[tokio::test]
