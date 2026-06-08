@@ -13,10 +13,57 @@ export interface GenerateSampling {
   ignore_eos?: boolean;
 }
 
+export type Gemma4UnifiedModality = "image" | "audio" | "video";
+
+export interface Gemma4UnifiedTokenSpan {
+  modality: Gemma4UnifiedModality;
+  placeholder_index: number;
+  replacement_start: number;
+  soft_token_count: number;
+  replacement_token_count: number;
+}
+
+export interface Gemma4UnifiedSoftTokenRange {
+  start: number;
+  soft_token_count: number;
+}
+
+export interface Gemma4UnifiedImageRuntimeInput {
+  span: Gemma4UnifiedTokenSpan;
+  pixel_values: number[];
+  pixel_position_ids: Array<[number, number]>;
+}
+
+export interface Gemma4UnifiedAudioRuntimeInput {
+  span: Gemma4UnifiedTokenSpan;
+  input_features: number[];
+  frame_count: number;
+  feature_count: number;
+}
+
+export interface Gemma4UnifiedVideoRuntimeInput {
+  span: Gemma4UnifiedTokenSpan;
+  soft_token_ranges?: Gemma4UnifiedSoftTokenRange[];
+  pixel_values: number[];
+  pixel_position_ids: Array<[number, number]>;
+  frame_count: number;
+}
+
+export interface Gemma4UnifiedRuntimeInputs {
+  images?: Gemma4UnifiedImageRuntimeInput[];
+  audios?: Gemma4UnifiedAudioRuntimeInput[];
+  videos?: Gemma4UnifiedVideoRuntimeInput[];
+}
+
+export interface RequestMultimodalInputs {
+  gemma4_unified?: Gemma4UnifiedRuntimeInputs;
+}
+
 export interface PreviewGenerateRequest {
   model?: string;
   input_tokens?: number[];
   input_text?: string;
+  multimodal_inputs?: RequestMultimodalInputs;
   max_output_tokens?: number;
   sampling?: GenerateSampling;
   metadata?: string;
@@ -41,10 +88,16 @@ export interface OpenAiChatMessage {
   role: string;
   content:
     | string
-    | Array<{
-        type: string;
-        text?: string;
-      }>;
+    | Array<OpenAiChatContentPart>;
+}
+
+export interface OpenAiChatContentPart {
+  type: string;
+  text?: string;
+  image_url?: unknown;
+  input_audio?: unknown;
+  audio_url?: unknown;
+  video_url?: unknown;
 }
 
 export interface OpenAiChatCompletionRequest {

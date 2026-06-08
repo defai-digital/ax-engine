@@ -9,14 +9,66 @@ type GenerateSampling struct {
 	Seed              *int64   `json:"seed,omitempty"`
 }
 
+// Gemma4UnifiedTokenSpan describes where processed media tokens replace a prompt placeholder.
+type Gemma4UnifiedTokenSpan struct {
+	Modality              string `json:"modality"`
+	PlaceholderIndex      int    `json:"placeholder_index"`
+	ReplacementStart      int    `json:"replacement_start"`
+	SoftTokenCount        int    `json:"soft_token_count"`
+	ReplacementTokenCount int    `json:"replacement_token_count"`
+}
+
+// Gemma4UnifiedSoftTokenRange points at a non-contiguous video soft-token span.
+type Gemma4UnifiedSoftTokenRange struct {
+	Start          int `json:"start"`
+	SoftTokenCount int `json:"soft_token_count"`
+}
+
+// Gemma4UnifiedImageRuntimeInput is a processed image tensor for Gemma 4 unified models.
+type Gemma4UnifiedImageRuntimeInput struct {
+	Span             Gemma4UnifiedTokenSpan `json:"span"`
+	PixelValues      []float64              `json:"pixel_values"`
+	PixelPositionIDs [][]int                `json:"pixel_position_ids"`
+}
+
+// Gemma4UnifiedAudioRuntimeInput is a processed audio feature tensor for Gemma 4 unified models.
+type Gemma4UnifiedAudioRuntimeInput struct {
+	Span          Gemma4UnifiedTokenSpan `json:"span"`
+	InputFeatures []float64              `json:"input_features"`
+	FrameCount    int                    `json:"frame_count"`
+	FeatureCount  int                    `json:"feature_count"`
+}
+
+// Gemma4UnifiedVideoRuntimeInput is a processed video tensor for Gemma 4 unified models.
+type Gemma4UnifiedVideoRuntimeInput struct {
+	Span             Gemma4UnifiedTokenSpan        `json:"span"`
+	SoftTokenRanges  []Gemma4UnifiedSoftTokenRange `json:"soft_token_ranges,omitempty"`
+	PixelValues      []float64                     `json:"pixel_values"`
+	PixelPositionIDs [][]int                       `json:"pixel_position_ids"`
+	FrameCount       int                           `json:"frame_count"`
+}
+
+// Gemma4UnifiedRuntimeInputs carries preprocessed Gemma 4 image/audio/video tensors.
+type Gemma4UnifiedRuntimeInputs struct {
+	Images []Gemma4UnifiedImageRuntimeInput `json:"images,omitempty"`
+	Audios []Gemma4UnifiedAudioRuntimeInput `json:"audios,omitempty"`
+	Videos []Gemma4UnifiedVideoRuntimeInput `json:"videos,omitempty"`
+}
+
+// RequestMultimodalInputs carries processed multimodal inputs for native generate.
+type RequestMultimodalInputs struct {
+	Gemma4Unified *Gemma4UnifiedRuntimeInputs `json:"gemma4_unified,omitempty"`
+}
+
 // PreviewGenerateRequest is the ax-engine native generate request.
 type PreviewGenerateRequest struct {
-	Model           *string          `json:"model,omitempty"`
-	InputTokens     []int            `json:"input_tokens,omitempty"`
-	InputText       *string          `json:"input_text,omitempty"`
-	MaxOutputTokens *int             `json:"max_output_tokens,omitempty"`
-	Sampling        *GenerateSampling `json:"sampling,omitempty"`
-	Metadata        *string          `json:"metadata,omitempty"`
+	Model            *string                  `json:"model,omitempty"`
+	InputTokens      []int                    `json:"input_tokens,omitempty"`
+	InputText        *string                  `json:"input_text,omitempty"`
+	MultimodalInputs *RequestMultimodalInputs `json:"multimodal_inputs,omitempty"`
+	MaxOutputTokens  *int                     `json:"max_output_tokens,omitempty"`
+	Sampling         *GenerateSampling        `json:"sampling,omitempty"`
+	Metadata         *string                  `json:"metadata,omitempty"`
 }
 
 // OpenAiUsage contains token usage information.
@@ -28,18 +80,18 @@ type OpenAiUsage struct {
 
 // OpenAiCompletionRequest is the /v1/completions request body.
 type OpenAiCompletionRequest struct {
-	Model             *string      `json:"model,omitempty"`
-	Prompt            interface{}  `json:"prompt"` // string | []string | []int
-	MaxTokens         *int         `json:"max_tokens,omitempty"`
-	Temperature       *float64     `json:"temperature,omitempty"`
-	TopP              *float64     `json:"top_p,omitempty"`
-	TopK              *int         `json:"top_k,omitempty"`
-	MinP              *float64     `json:"min_p,omitempty"`
-	RepetitionPenalty *float64     `json:"repetition_penalty,omitempty"`
-	Stop              interface{}  `json:"stop,omitempty"` // string | []string
-	Seed              *int64       `json:"seed,omitempty"`
-	Stream            *bool        `json:"stream,omitempty"`
-	Metadata          *string      `json:"metadata,omitempty"`
+	Model             *string     `json:"model,omitempty"`
+	Prompt            interface{} `json:"prompt"` // string | []string | []int
+	MaxTokens         *int        `json:"max_tokens,omitempty"`
+	Temperature       *float64    `json:"temperature,omitempty"`
+	TopP              *float64    `json:"top_p,omitempty"`
+	TopK              *int        `json:"top_k,omitempty"`
+	MinP              *float64    `json:"min_p,omitempty"`
+	RepetitionPenalty *float64    `json:"repetition_penalty,omitempty"`
+	Stop              interface{} `json:"stop,omitempty"` // string | []string
+	Seed              *int64      `json:"seed,omitempty"`
+	Stream            *bool       `json:"stream,omitempty"`
+	Metadata          *string     `json:"metadata,omitempty"`
 }
 
 // OpenAiCompletionChoice is a single completion choice.
@@ -144,11 +196,11 @@ type OpenAiChatCompletionChunk struct {
 
 // OpenAiEmbeddingRequest is the /v1/embeddings request body.
 type OpenAiEmbeddingRequest struct {
-	Model          *string  `json:"model,omitempty"`
-	Input          []int    `json:"input"`
-	EncodingFormat *string  `json:"encoding_format,omitempty"`
-	Pooling        *string  `json:"pooling,omitempty"`
-	Normalize      *bool    `json:"normalize,omitempty"`
+	Model          *string `json:"model,omitempty"`
+	Input          []int   `json:"input"`
+	EncodingFormat *string `json:"encoding_format,omitempty"`
+	Pooling        *string `json:"pooling,omitempty"`
+	Normalize      *bool   `json:"normalize,omitempty"`
 }
 
 // OpenAiEmbeddingObject is a single embedding result.
@@ -171,61 +223,61 @@ type OpenAiEmbeddingResponse struct {
 
 // GenerateRoute holds routing metadata for a generate request.
 type GenerateRoute struct {
-	ExecutionPlan      *string             `json:"execution_plan,omitempty"`
-	AttentionRoute     *string             `json:"attention_route,omitempty"`
-	KvMode             *string             `json:"kv_mode,omitempty"`
-	PrefixCachePath    *string             `json:"prefix_cache_path,omitempty"`
-	BarrierMode        *string             `json:"barrier_mode,omitempty"`
-	CrossoverDecisions map[string]float64  `json:"crossover_decisions,omitempty"`
+	ExecutionPlan      *string            `json:"execution_plan,omitempty"`
+	AttentionRoute     *string            `json:"attention_route,omitempty"`
+	KvMode             *string            `json:"kv_mode,omitempty"`
+	PrefixCachePath    *string            `json:"prefix_cache_path,omitempty"`
+	BarrierMode        *string            `json:"barrier_mode,omitempty"`
+	CrossoverDecisions map[string]float64 `json:"crossover_decisions,omitempty"`
 }
 
 // GenerateResponse is the response from /v1/generate.
 type GenerateResponse struct {
-	RequestID           int64          `json:"request_id"`
-	ModelID             string         `json:"model_id"`
-	PromptTokens        []int          `json:"prompt_tokens"`
-	PromptText          *string        `json:"prompt_text,omitempty"`
-	OutputTokens        []int          `json:"output_tokens"`
-	OutputTokenLogprobs []*float64     `json:"output_token_logprobs,omitempty"`
-	OutputText          *string        `json:"output_text,omitempty"`
-	Status              string         `json:"status"`
-	FinishReason        *string        `json:"finish_reason,omitempty"`
-	StepCount           int            `json:"step_count"`
-	TtftStep            *int           `json:"ttft_step,omitempty"`
-	Route               GenerateRoute  `json:"route"`
+	RequestID           int64         `json:"request_id"`
+	ModelID             string        `json:"model_id"`
+	PromptTokens        []int         `json:"prompt_tokens"`
+	PromptText          *string       `json:"prompt_text,omitempty"`
+	OutputTokens        []int         `json:"output_tokens"`
+	OutputTokenLogprobs []*float64    `json:"output_token_logprobs,omitempty"`
+	OutputText          *string       `json:"output_text,omitempty"`
+	Status              string        `json:"status"`
+	FinishReason        *string       `json:"finish_reason,omitempty"`
+	StepCount           int           `json:"step_count"`
+	TtftStep            *int          `json:"ttft_step,omitempty"`
+	Route               GenerateRoute `json:"route"`
 }
 
 // RequestReport is a snapshot of a live or completed request.
 type RequestReport struct {
-	RequestID               int64         `json:"request_id"`
-	ModelID                 string        `json:"model_id"`
-	State                   string        `json:"state"`
-	PromptTokens            []int         `json:"prompt_tokens"`
-	ProcessedPromptTokens   int           `json:"processed_prompt_tokens"`
-	OutputTokens            []int         `json:"output_tokens"`
-	OutputTokenLogprobs     []*float64    `json:"output_token_logprobs,omitempty"`
-	PromptLen               int           `json:"prompt_len"`
-	OutputLen               int           `json:"output_len"`
-	MaxOutputTokens         int           `json:"max_output_tokens"`
-	CancelRequested         bool          `json:"cancel_requested"`
-	ExecutionPlanRef        *string       `json:"execution_plan_ref,omitempty"`
-	Route                   GenerateRoute `json:"route"`
-	FinishReason            *string       `json:"finish_reason,omitempty"`
-	TerminalStopReason      *string       `json:"terminal_stop_reason,omitempty"`
+	RequestID             int64         `json:"request_id"`
+	ModelID               string        `json:"model_id"`
+	State                 string        `json:"state"`
+	PromptTokens          []int         `json:"prompt_tokens"`
+	ProcessedPromptTokens int           `json:"processed_prompt_tokens"`
+	OutputTokens          []int         `json:"output_tokens"`
+	OutputTokenLogprobs   []*float64    `json:"output_token_logprobs,omitempty"`
+	PromptLen             int           `json:"prompt_len"`
+	OutputLen             int           `json:"output_len"`
+	MaxOutputTokens       int           `json:"max_output_tokens"`
+	CancelRequested       bool          `json:"cancel_requested"`
+	ExecutionPlanRef      *string       `json:"execution_plan_ref,omitempty"`
+	Route                 GenerateRoute `json:"route"`
+	FinishReason          *string       `json:"finish_reason,omitempty"`
+	TerminalStopReason    *string       `json:"terminal_stop_reason,omitempty"`
 }
 
 // StepReport is the result of a /v1/step call.
 type StepReport struct {
-	StepID             *int64        `json:"step_id,omitempty"`
-	ScheduledRequests  int           `json:"scheduled_requests"`
-	ScheduledTokens    int           `json:"scheduled_tokens"`
-	TtftEvents         int           `json:"ttft_events"`
-	PrefixHits         int           `json:"prefix_hits"`
-	KvUsageBlocks      int           `json:"kv_usage_blocks"`
-	Evictions          int           `json:"evictions"`
-	CpuTimeUs          int64         `json:"cpu_time_us"`
-	RunnerTimeUs       int64         `json:"runner_time_us"`
-	Route              *GenerateRoute `json:"route,omitempty"`
+	StepID            *int64         `json:"step_id,omitempty"`
+	ScheduledRequests int            `json:"scheduled_requests"`
+	ScheduledTokens   int            `json:"scheduled_tokens"`
+	TtftEvents        int            `json:"ttft_events"`
+	PrefixHits        int            `json:"prefix_hits"`
+	KvUsageBlocks     int            `json:"kv_usage_blocks"`
+	Evictions         int            `json:"evictions"`
+	CpuTimeUs         int64          `json:"cpu_time_us"`
+	RunnerTimeUs      int64          `json:"runner_time_us"`
+	Route             *GenerateRoute `json:"route,omitempty"`
 }
 
 // HealthResponse is the response from /health.

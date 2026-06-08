@@ -1,6 +1,6 @@
 use ax_engine_sdk::{
     EngineTokenizer, GenerateRequest, GenerateSampling, LlamaCppChatGenerateRequest,
-    MlxLmChatGenerateRequest, SelectedBackend,
+    MlxLmChatGenerateRequest, RequestMultimodalInputs, SelectedBackend,
 };
 use axum::Json;
 use axum::http::StatusCode;
@@ -34,6 +34,16 @@ struct OpenAiBuiltPayload {
     stop_sequences: Vec<String>,
     stream: bool,
     metadata: Option<String>,
+}
+
+pub(crate) struct GenerateRequestParts {
+    pub(crate) input_tokens: Vec<u32>,
+    pub(crate) input_text: Option<String>,
+    pub(crate) multimodal_inputs: RequestMultimodalInputs,
+    pub(crate) max_output_tokens: u32,
+    pub(crate) sampling: GenerateSampling,
+    pub(crate) stop_sequences: Vec<String>,
+    pub(crate) metadata: Option<String>,
 }
 
 pub(crate) struct OpenAiBuiltMlxLmChatRequest {
@@ -223,12 +233,15 @@ fn build_openai_generate_request(
     Ok(OpenAiBuiltRequest {
         generate_request: build_generate_request_internal(
             state,
-            input_tokens,
-            input_text,
-            max_output_tokens,
-            payload.sampling,
-            payload.stop_sequences,
-            payload.metadata,
+            GenerateRequestParts {
+                input_tokens,
+                input_text,
+                multimodal_inputs: Default::default(),
+                max_output_tokens,
+                sampling: payload.sampling,
+                stop_sequences: payload.stop_sequences,
+                metadata: payload.metadata,
+            },
         ),
         stream: payload.stream,
     })
@@ -278,22 +291,17 @@ fn tokenize_native_mlx_text_input(
 
 pub(crate) fn build_generate_request_internal(
     state: &AppState,
-    input_tokens: Vec<u32>,
-    input_text: Option<String>,
-    max_output_tokens: u32,
-    sampling: GenerateSampling,
-    stop_sequences: Vec<String>,
-    metadata: Option<String>,
+    parts: GenerateRequestParts,
 ) -> GenerateRequest {
     GenerateRequest {
         model_id: state.model_id.to_string(),
-        input_tokens,
-        input_text,
-        multimodal_inputs: Default::default(),
-        max_output_tokens,
-        sampling,
-        stop_sequences,
-        metadata,
+        input_tokens: parts.input_tokens,
+        input_text: parts.input_text,
+        multimodal_inputs: parts.multimodal_inputs,
+        max_output_tokens: parts.max_output_tokens,
+        sampling: parts.sampling,
+        stop_sequences: parts.stop_sequences,
+        metadata: parts.metadata,
     }
 }
 

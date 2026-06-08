@@ -4,7 +4,9 @@ use axum::http::StatusCode;
 
 use crate::chat;
 use crate::errors::{ErrorResponse, error_response};
-use crate::openai::schema::{OpenAiChatContent, OpenAiChatMessage, OpenAiStopInput};
+use crate::openai::schema::{
+    OpenAiChatContent, OpenAiChatContentPart, OpenAiChatMessage, OpenAiStopInput,
+};
 
 type HttpErrorResponse = (StatusCode, Json<ErrorResponse>);
 type ChatMessagePairs = Vec<(String, String)>;
@@ -99,26 +101,105 @@ fn render_openai_chat_content(content: &OpenAiChatContent) -> Result<String, Htt
         OpenAiChatContent::Parts(parts) => {
             let mut rendered = String::new();
             for part in parts {
-                if part.part_type != "text" {
-                    return Err(error_response(
-                        StatusCode::BAD_REQUEST,
-                        "invalid_request",
-                        format!(
-                            "unsupported chat content part type {}; AX preview currently accepts text-only chat messages",
-                            part.part_type
-                        ),
-                    ));
+                match chat_content_part_kind(part) {
+                    OpenAiChatContentPartKind::Text => {
+                        let text = part.text.as_deref().ok_or_else(|| {
+                            error_response(
+                                StatusCode::BAD_REQUEST,
+                                "invalid_request",
+                                format!(
+                                    "{} chat content parts require a text field",
+                                    part.part_type
+                                ),
+                            )
+                        })?;
+                        rendered.push_str(text);
+                    }
+                    OpenAiChatContentPartKind::Media(kind) => {
+                        return Err(openai_media_part_error(kind, part));
+                    }
+                    OpenAiChatContentPartKind::Unsupported => {
+                        return Err(error_response(
+                            StatusCode::BAD_REQUEST,
+                            "invalid_request",
+                            format!(
+                                "unsupported chat content part type {}; AX preview currently accepts text-only OpenAI chat content plus processed multimodal_inputs on /v1/generate",
+                                part.part_type
+                            ),
+                        ));
+                    }
                 }
-                let text = part.text.as_deref().ok_or_else(|| {
-                    error_response(
-                        StatusCode::BAD_REQUEST,
-                        "invalid_request",
-                        "text chat content parts require a text field".to_string(),
-                    )
-                })?;
-                rendered.push_str(text);
             }
             Ok(rendered)
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum OpenAiChatContentPartKind {
+    Text,
+    Media(OpenAiChatMediaKind),
+    Unsupported,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum OpenAiChatMediaKind {
+    Image,
+    Audio,
+    Video,
+}
+
+fn chat_content_part_kind(part: &OpenAiChatContentPart) -> OpenAiChatContentPartKind {
+    match part.part_type.as_str() {
+        "text" | "input_text" => OpenAiChatContentPartKind::Text,
+        "image_url" | "input_image" | "image" => {
+            OpenAiChatContentPartKind::Media(OpenAiChatMediaKind::Image)
+        }
+        "input_audio" | "audio_url" | "audio" => {
+            OpenAiChatContentPartKind::Media(OpenAiChatMediaKind::Audio)
+        }
+        "video_url" | "input_video" | "video" => {
+            OpenAiChatContentPartKind::Media(OpenAiChatMediaKind::Video)
+        }
+        _ => OpenAiChatContentPartKind::Unsupported,
+    }
+}
+
+fn openai_media_part_error(
+    media_kind: OpenAiChatMediaKind,
+    part: &OpenAiChatContentPart,
+) -> HttpErrorResponse {
+    let field_hint = match media_kind {
+        OpenAiChatMediaKind::Image => {
+            if part.image_url.is_some() {
+                "image_url"
+            } else {
+                "image payload"
+            }
+        }
+        OpenAiChatMediaKind::Audio => {
+            if part.input_audio.is_some() {
+                "input_audio"
+            } else if part.audio_url.is_some() {
+                "audio_url"
+            } else {
+                "audio payload"
+            }
+        }
+        OpenAiChatMediaKind::Video => {
+            if part.video_url.is_some() {
+                "video_url"
+            } else {
+                "video payload"
+            }
+        }
+    };
+    error_response(
+        StatusCode::BAD_REQUEST,
+        "invalid_request",
+        format!(
+            "OpenAI chat content part type {} includes {field_hint}, but AX Engine does not yet decode raw OpenAI media into Gemma4UnifiedRuntimeInputs; send processed multimodal_inputs.gemma4_unified tensors through /v1/generate or use text-only chat",
+            part.part_type
+        ),
+    )
 }

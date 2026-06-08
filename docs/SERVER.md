@@ -517,6 +517,11 @@ The response includes:
 fresh SDK session for one blocking request.
 That endpoint now preserves one process-local request-id sequence even though
 it creates fresh SDK sessions internally.
+For native MLX Gemma4 unified models, `/v1/generate` and
+`/v1/generate/stream` also accept preprocessed
+`multimodal_inputs.gemma4_unified` image/audio/video tensors. AX does not
+decode raw image/audio/video URLs or files on this path; callers must run media
+loading and processor output generation before sending the native request.
 `POST /v1/generate/stream` uses the same stateless request shape but streams
 preview SSE events named `request`, `step`, `response`, and `error`.
 `POST /v1/completions` and `POST /v1/chat/completions` are response-shape
@@ -539,6 +544,8 @@ supports streamed OpenAI-compatible completion/chat endpoints by forwarding
 upstream text deltas through AX response envelopes. These streams are
 compatibility surfaces: AX does not tokenize the upstream text response and does
 not claim AX-owned token IDs, KV state, or MLX kernel throughput for this route.
+Delegated routes are text-only and return an invalid request when
+`multimodal_inputs` is present.
 
 For delegated text responses, `output_text` is authoritative. `output_tokens`
 is intentionally empty because AX did not tokenize the upstream text response;

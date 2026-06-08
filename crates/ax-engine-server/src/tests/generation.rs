@@ -1,13 +1,17 @@
+use crate::generation::requests::{GenerateHttpRequest, build_generate_request};
 use crate::routes::build_router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use serde_json::{Value, json};
+use std::fs;
 
 use super::fixtures::{
-    json_request_body, json_response, llama_cpp_server_state, llama_cpp_state,
-    mlx_lm_delegated_state, normalize_measurement_fields, parse_sse_events, sample_http_request,
-    sample_sdk_request, sample_text_http_request, sdk_session_for_state, sdk_stream_payload,
-    spawn_llama_cpp_completion_server, spawn_llama_cpp_completion_stream_server, text_response,
+    assert_invalid_request_response, json_request_body, json_response, llama_cpp_server_state,
+    llama_cpp_state, minimal_tokenizer_artifact, mlx_lm_delegated_state,
+    native_mlx_openai_builder_state, normalize_measurement_fields, parse_sse_events,
+    sample_http_request, sample_sdk_request, sample_text_http_request, sdk_session_for_state,
+    sdk_stream_payload, spawn_llama_cpp_completion_server,
+    spawn_llama_cpp_completion_stream_server, text_response,
 };
 
 #[tokio::test]
@@ -61,6 +65,88 @@ async fn llama_cpp_generate_endpoint_runs_text_request_through_sdk() {
             .and_then(|value| value.as_str()),
         Some("llama_cpp")
     );
+}
+
+#[tokio::test]
+async fn generate_endpoint_rejects_gemma4_multimodal_inputs_on_delegated_backend() {
+    let app = build_router(llama_cpp_state());
+    let mut request_body = sample_http_request(&[10, 258880, 11], 1);
+    let request = request_body
+        .as_object_mut()
+        .expect("sample request should be an object");
+    request.insert(
+        "multimodal_inputs".to_string(),
+        json!({
+            "gemma4_unified": {
+                "images": [{
+                    "span": {
+                        "modality": "image",
+                        "placeholder_index": 1,
+                        "replacement_start": 1,
+                        "soft_token_count": 1,
+                        "replacement_token_count": 3
+                    },
+                    "pixel_values": [0.0, 1.0, 2.0],
+                    "pixel_position_ids": [[0, 0]]
+                }],
+                "audios": [],
+                "videos": []
+            }
+        }),
+    );
+
+    let (status, json) = json_response(
+        &app,
+        Request::builder()
+            .method("POST")
+            .uri("/v1/generate")
+            .header("content-type", "application/json")
+            .body(Body::from(json_request_body(&request_body)))
+            .unwrap(),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_invalid_request_response(&json, "multimodal_inputs require native MLX backend");
+}
+
+#[tokio::test]
+async fn generate_request_builder_preserves_gemma4_multimodal_inputs_for_native_mlx() {
+    let artifact_dir = minimal_tokenizer_artifact("native-gemma4-multimodal-builder");
+    let state = native_mlx_openai_builder_state("gemma-4-12b-it", &artifact_dir);
+    let request: GenerateHttpRequest = serde_json::from_value(json!({
+        "model": "gemma-4-12b-it",
+        "input_tokens": [10, 258880, 11],
+        "max_output_tokens": 1,
+        "multimodal_inputs": {
+            "gemma4_unified": {
+                "images": [{
+                    "span": {
+                        "modality": "image",
+                        "placeholder_index": 1,
+                        "replacement_start": 1,
+                        "soft_token_count": 1,
+                        "replacement_token_count": 3
+                    },
+                    "pixel_values": [0.0, 1.0, 2.0],
+                    "pixel_position_ids": [[0, 0]]
+                }],
+                "audios": [],
+                "videos": []
+            }
+        }
+    }))
+    .expect("Gemma4 multimodal generate request should deserialize");
+
+    let built = build_generate_request(&state, request);
+    let inputs = built
+        .multimodal_inputs
+        .gemma4_unified
+        .expect("builder should preserve Gemma4 multimodal tensors");
+    assert_eq!(inputs.images.len(), 1);
+    assert_eq!(inputs.images[0].pixel_values, vec![0.0, 1.0, 2.0]);
+
+    fs::remove_dir_all(artifact_dir).expect("artifact dir should clean up");
 }
 
 #[tokio::test]

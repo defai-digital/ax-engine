@@ -24,6 +24,10 @@ pub enum EngineSessionError {
     )]
     MlxBackendRequiresTokenizedInput,
     #[error(
+        "multimodal_inputs require native MLX backend; delegated backend {selected_backend:?} is text-only"
+    )]
+    MultimodalInputsRequireNativeMlx { selected_backend: SelectedBackend },
+    #[error(
         "MLX mode requires validated Metal runtime artifacts; deterministic fallback is internal-only and must be explicitly enabled"
     )]
     MlxRuntimeArtifactsRequired,

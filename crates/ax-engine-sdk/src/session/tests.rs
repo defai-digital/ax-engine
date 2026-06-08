@@ -5,6 +5,10 @@ use std::path::Path;
 use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use ax_engine_core::gemma4_unified::{
+    Gemma4UnifiedImageRuntimeInput, Gemma4UnifiedModality, Gemma4UnifiedRuntimeInputs,
+    Gemma4UnifiedTokenSpan,
+};
 use ax_engine_core::metal::{
     MetalDispatchExecutionInfo, MetalDispatchKvMetadata, MetalDispatchNumericTrace,
     MetalDispatchRuntimeInfo, MetalNumericValidationSummary,
@@ -14,8 +18,8 @@ use ax_engine_core::{
     KvManagerConfig, KvWriteSummary, MetalBinaryArchiveInfo, MetalBinaryArchiveState,
     MetalCommandBufferStatus, MetalDispatchArenaInfo, MetalDispatchKernelTrace, MetalDispatchTrace,
     MetalDispatchWorkload, MetalThreadgroupSize, ModelId, NativeModelArtifactsSummary,
-    NativeTensorFormat, RequestExecutionUpdate, RunnerInput, RunnerOutput, SamplingParams,
-    SequenceNo,
+    NativeTensorFormat, RequestExecutionUpdate, RequestMultimodalInputs, RunnerInput, RunnerOutput,
+    SamplingParams, SequenceNo,
 };
 use serde_json::Value;
 
@@ -37,6 +41,26 @@ fn sample_submission() -> RequestSubmission {
         max_output_tokens: 2,
         arrival_sequence: SequenceNo(1),
         metadata: None,
+    }
+}
+
+fn sample_gemma4_multimodal_inputs() -> RequestMultimodalInputs {
+    RequestMultimodalInputs {
+        gemma4_unified: Some(Gemma4UnifiedRuntimeInputs {
+            images: vec![Gemma4UnifiedImageRuntimeInput {
+                span: Gemma4UnifiedTokenSpan {
+                    modality: Gemma4UnifiedModality::Image,
+                    placeholder_index: 1,
+                    replacement_start: 1,
+                    soft_token_count: 1,
+                    replacement_token_count: 3,
+                },
+                pixel_values: vec![0.0, 1.0, 2.0],
+                pixel_position_ids: vec![[0, 0]],
+            }],
+            audios: Vec::new(),
+            videos: Vec::new(),
+        }),
     }
 }
 
@@ -490,6 +514,51 @@ fn preview_session_config_factory_builds_mlx_lm_delegated_backend() {
     assert!(runtime.capabilities.text_generation);
     assert!(runtime.capabilities.token_streaming);
     assert!(runtime.mlx_runtime.is_none());
+}
+
+#[test]
+fn delegated_generate_validation_rejects_gemma4_multimodal_inputs() {
+    let request = GenerateRequest {
+        model_id: "gemma-4-12b-it".to_string(),
+        input_tokens: vec![10, 258880, 11],
+        input_text: None,
+        multimodal_inputs: sample_gemma4_multimodal_inputs(),
+        max_output_tokens: 1,
+        sampling: Default::default(),
+        stop_sequences: Vec::new(),
+        metadata: None,
+    };
+
+    let error = EngineSession::validate_generate_request_for_backend(
+        SelectedBackend::MlxLmDelegated,
+        1,
+        &request,
+    )
+    .expect_err("delegated text backends must reject Gemma4 processed media");
+
+    assert!(matches!(
+        error,
+        EngineSessionError::MultimodalInputsRequireNativeMlx {
+            selected_backend: SelectedBackend::MlxLmDelegated
+        }
+    ));
+}
+
+#[test]
+fn native_generate_validation_allows_gemma4_multimodal_inputs() {
+    let request = GenerateRequest {
+        model_id: "gemma-4-12b-it".to_string(),
+        input_tokens: vec![10, 258880, 11],
+        input_text: None,
+        multimodal_inputs: sample_gemma4_multimodal_inputs(),
+        max_output_tokens: 1,
+        sampling: Default::default(),
+        stop_sequences: Vec::new(),
+        metadata: None,
+    };
+
+    EngineSession::validate_generate_request_for_backend(SelectedBackend::Mlx, 1, &request)
+        .expect("native MLX should accept processed Gemma4 media tensors");
 }
 
 #[test]

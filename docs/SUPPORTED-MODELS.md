@@ -36,7 +36,7 @@ Current direct-support LLM families:
 
 | Family | Direct model IDs | Current scope | Notes |
 |---|---|---|---|
-| Gemma 4 | `gemma-4-e2b-it`, `gemma-4-e4b-it`, `gemma-4-12b-it`, `gemma-4-26b-a4b-it`, `gemma-4-31b-it` | Repo-owned MLX runtime; MLX affine 4/5/6/8-bit weights where available; assistant-MTP packaging for matched `*-assistant` drafters | Dense, unified 12B, per-layer embedding, and MoE variants; sliding-window + full attention; K=V full-attention layers; logit softcapping |
+| Gemma 4 | `gemma-4-e2b-it`, `gemma-4-e4b-it`, `gemma-4-12b-it`, `gemma-4-26b-a4b-it`, `gemma-4-31b-it` | Repo-owned MLX runtime; MLX affine 4/5/6/8-bit weights where available; assistant-MTP packaging for matched `*-assistant` drafters; processed Gemma4 unified media tensors on the native generate API | Dense, unified 12B, per-layer embedding, and MoE variants; sliding-window + full attention; K=V full-attention layers; logit softcapping |
 | Qwen 3 | `Qwen3-4B-4bit` and manifest-backed Qwen 3 dense checkpoints | Repo-owned MLX runtime | SwiGLU dense FFN; per-head QK norm; optional MoE variants require manifest evidence |
 | Qwen 3.5 | `Qwen3.5-9B-MLX-4bit` | Repo-owned MLX runtime | Linear attention + MoE FFN; `attn_output_gate` per-head interleaving |
 | Qwen 3.6 / Coder Next | `Qwen3.6-35B-A3B` 4-bit MLX, `Qwen3.6-27B` 4/5/6/8-bit MLX, `Qwen3-Coder-Next-4bit` | Repo-owned MLX runtime | `qwen3_next`: GatedDelta linear attention, full attention with per-head sigmoid gate, sparse top-k MoE with shared expert |
@@ -158,7 +158,8 @@ runtime.
 | You want AX-owned performance and token/KV behavior for a listed family | Direct support | AX owns the MLX graph and runtime policy |
 | You have an MLX text model that `mlx-lm` already serves but AX does not own | `mlx_lm_delegated` | Keeps AX API surfaces while upstream runs the model |
 | You have GGUF weights or a non-MLX local model | `llama_cpp` | llama.cpp is the delegated local inference route |
-| You need multimodal, visual, or unsupported prompt shapes | Unsupported unless explicitly documented elsewhere | Current delegated routes are text-first and fail closed outside their contract |
+| You have Gemma4 unified image/audio/video inputs already preprocessed into AX's `multimodal_inputs.gemma4_unified` tensor contract | Direct support | Native MLX can consume processed media tensors without raw media decoding in the hot path |
+| You need raw image/audio/video URL or file decoding, or multimodal input on delegated routes | Unsupported unless explicitly documented elsewhere | Current delegated routes are text-first and raw media preprocessing is not part of AX's OpenAI text adapter |
 
 ## Evidence Rules
 

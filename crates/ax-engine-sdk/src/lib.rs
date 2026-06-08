@@ -18,9 +18,14 @@
 //! The internal `session/*` module tree owns lifecycle details while preserving
 //! the existing crate-root exports.
 
+pub use ax_engine_core::gemma4_unified::{
+    Gemma4UnifiedAudioRuntimeInput, Gemma4UnifiedImageRuntimeInput, Gemma4UnifiedModality,
+    Gemma4UnifiedRuntimeInputs, Gemma4UnifiedSoftTokenRange, Gemma4UnifiedTokenSpan,
+    Gemma4UnifiedVideoRuntimeInput,
+};
 pub use ax_engine_core::{
     CacheGroupId, EmbeddingMatrix, EmbeddingPooling, KvCompressionConfig, KvCompressionMode,
-    KvManagerConfig, RequestWorkloadHints, TurboQuantPreset,
+    KvManagerConfig, RequestMultimodalInputs, RequestWorkloadHints, TurboQuantPreset,
 };
 #[allow(deprecated)]
 pub use ax_engine_core::{MlxKvCompressionConfig, MlxKvCompressionMode, MlxTurboQuantPreset};

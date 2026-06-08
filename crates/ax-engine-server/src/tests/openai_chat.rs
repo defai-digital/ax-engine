@@ -51,6 +51,58 @@ fn openai_chat_prompt_renderer_uses_model_family_templates() {
 }
 
 #[test]
+fn openai_chat_prompt_renderer_accepts_input_text_parts() {
+    let messages: Vec<OpenAiChatMessage> = serde_json::from_value(json!([
+        {
+            "role": "user",
+            "content": [
+                {"type": "input_text", "text": "Describe"},
+                {"type": "text", "text": " this scene."}
+            ]
+        }
+    ]))
+    .expect("sample messages should deserialize");
+
+    assert_eq!(
+        render_openai_chat_prompt("unknown-local-model", &messages).expect("plain prompt"),
+        "user: Describe this scene.\nassistant:"
+    );
+}
+
+#[test]
+fn openai_chat_prompt_renderer_rejects_raw_media_parts_with_tensor_route_guidance() {
+    let messages: Vec<OpenAiChatMessage> = serde_json::from_value(json!([
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "Describe this image"},
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB"
+                    }
+                }
+            ]
+        }
+    ]))
+    .expect("sample messages should deserialize");
+
+    let error = render_openai_chat_prompt("unknown-local-model", &messages)
+        .expect_err("raw OpenAI media must fail closed until preprocessing exists");
+
+    assert_eq!(error.0, StatusCode::BAD_REQUEST);
+    assert!(
+        error
+            .1
+            .error
+            .message
+            .contains("multimodal_inputs.gemma4_unified"),
+        "unexpected error: {}",
+        error.1.error.message
+    );
+}
+
+#[test]
 fn openai_chat_stop_sequences_merge_family_defaults_with_user_stop() {
     assert_eq!(
         openai_chat_stop_sequences("qwen3", None),

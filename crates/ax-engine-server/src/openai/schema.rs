@@ -191,6 +191,14 @@ pub(crate) struct OpenAiChatContentPart {
     pub(crate) part_type: String,
     #[serde(default)]
     pub(crate) text: Option<String>,
+    #[serde(default)]
+    pub(crate) image_url: Option<Value>,
+    #[serde(default)]
+    pub(crate) input_audio: Option<Value>,
+    #[serde(default)]
+    pub(crate) audio_url: Option<Value>,
+    #[serde(default)]
+    pub(crate) video_url: Option<Value>,
 }
 
 #[derive(Debug, Serialize)]

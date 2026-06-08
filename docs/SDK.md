@@ -255,6 +255,7 @@ pub struct GenerateRequest {
     pub model_id: String,
     pub input_tokens: Vec<u32>,       // required for MLX path
     pub input_text: Option<String>,   // optional; delegated backends may use this
+    pub multimodal_inputs: RequestMultimodalInputs,
     pub max_output_tokens: u32,
     pub sampling: GenerateSampling,
     pub stop_sequences: Vec<String>,
@@ -264,6 +265,10 @@ pub struct GenerateRequest {
 
 The MLX path requires `input_tokens` to be non-empty. Delegated backends
 accept `input_text` as an alternative when tokenization happens server-side.
+Gemma4 unified image/audio/video inputs are accepted only as preprocessed
+`multimodal_inputs.gemma4_unified` tensors on the native MLX path. Delegated
+`mlx_lm` and llama.cpp routes remain text-only and fail closed when
+`multimodal_inputs` is present.
 
 `GenerateSampling` carries `temperature`, `top_p`, `seed`, and `repetition_penalty`.
 When `session.config.deterministic = true`, `temperature` is forced to 0.0

@@ -113,7 +113,11 @@ impl StatelessGenerateContext {
             return session.generate_with_request_id(request_id, request);
         }
 
-        EngineSession::validate_generate_request(request_id, &request)?;
+        EngineSession::validate_generate_request_for_backend(
+            self.config.resolved_backend.selected_backend,
+            request_id,
+            &request,
+        )?;
         let runtime =
             self.delegated_runtime
                 .as_ref()
@@ -153,7 +157,11 @@ impl StatelessGenerateContext {
             );
         }
 
-        EngineSession::validate_generate_request(request_id, &request)?;
+        EngineSession::validate_generate_request_for_backend(
+            self.config.resolved_backend.selected_backend,
+            request_id,
+            &request,
+        )?;
         let runtime =
             self.delegated_runtime
                 .as_ref()
@@ -256,6 +264,19 @@ impl EngineSession {
         Ok(())
     }
 
+    fn validate_generate_request_for_backend(
+        selected_backend: SelectedBackend,
+        request_id: u64,
+        request: &GenerateRequest,
+    ) -> Result<(), EngineSessionError> {
+        Self::validate_generate_request(request_id, request)?;
+        if !selected_backend.is_mlx() && !request.multimodal_inputs.is_empty() {
+            return Err(EngineSessionError::MultimodalInputsRequireNativeMlx { selected_backend });
+        }
+
+        Ok(())
+    }
+
     fn advance_request_id(&mut self, request_id: u64) {
         self.next_request_id = self.next_request_id.max(request_id.saturating_add(1));
     }
@@ -320,7 +341,11 @@ impl EngineSession {
         request_id: u64,
         request: GenerateRequest,
     ) -> Result<u64, EngineSessionError> {
-        Self::validate_generate_request(request_id, &request)?;
+        Self::validate_generate_request_for_backend(
+            self.config.resolved_backend.selected_backend,
+            request_id,
+            &request,
+        )?;
         self.advance_request_id(request_id);
         let (_runtime, stream, _route_backend) =
             self.llama_cpp_stream_start(request_id, &request)?;
@@ -360,7 +385,11 @@ impl EngineSession {
         request_id: u64,
         request: GenerateRequest,
     ) -> Result<GenerateStreamState, EngineSessionError> {
-        Self::validate_generate_request(request_id, &request)?;
+        Self::validate_generate_request_for_backend(
+            self.config.resolved_backend.selected_backend,
+            request_id,
+            &request,
+        )?;
         self.advance_request_id(request_id);
 
         let (runtime, stream, _route_backend) =
@@ -437,7 +466,11 @@ impl EngineSession {
             return session.generate_with_request_id(request_id, request);
         }
 
-        Self::validate_generate_request(request_id, &request)?;
+        Self::validate_generate_request_for_backend(
+            config.resolved_backend.selected_backend,
+            request_id,
+            &request,
+        )?;
         config.validate()?;
         run_delegated_generate_with_config(config, request_id, &request)
     }
@@ -606,7 +639,11 @@ impl EngineSession {
         request_id: u64,
         request: GenerateRequest,
     ) -> Result<u64, EngineSessionError> {
-        Self::validate_generate_request(request_id, &request)?;
+        Self::validate_generate_request_for_backend(
+            self.config.resolved_backend.selected_backend,
+            request_id,
+            &request,
+        )?;
         if !self.uses_mlx_runtime() {
             return match self.config.resolved_backend.selected_backend {
                 SelectedBackend::LlamaCpp => {
@@ -681,6 +718,11 @@ impl EngineSession {
         request: GenerateRequest,
     ) -> Result<GenerateResponse, EngineSessionError> {
         if !self.uses_mlx_runtime() {
+            Self::validate_generate_request_for_backend(
+                self.config.resolved_backend.selected_backend,
+                request_id,
+                &request,
+            )?;
             return run_delegated_generate_with_config(&self.config, request_id, &request);
         }
         let request_id = self.submit_generate_with_request_id(request_id, request)?;
@@ -768,6 +810,11 @@ impl EngineSession {
         request: GenerateRequest,
     ) -> Result<GenerateStreamState, EngineSessionError> {
         if !self.uses_mlx_runtime() {
+            Self::validate_generate_request_for_backend(
+                self.config.resolved_backend.selected_backend,
+                request_id,
+                &request,
+            )?;
             return match self.config.resolved_backend.selected_backend {
                 SelectedBackend::LlamaCpp => {
                     self.llama_cpp_stream_state_with_request_id(request_id, request)

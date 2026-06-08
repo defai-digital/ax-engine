@@ -20,20 +20,118 @@ public struct GenerateSampling: Encodable, Sendable {
 
 // MARK: - Native ax-engine generate API
 
+public enum Gemma4UnifiedModality: String, Encodable, Sendable {
+    case image
+    case audio
+    case video
+}
+
+public struct Gemma4UnifiedTokenSpan: Encodable, Sendable {
+    public var modality: Gemma4UnifiedModality
+    public var placeholderIndex: Int
+    public var replacementStart: Int
+    public var softTokenCount: Int
+    public var replacementTokenCount: Int
+
+    public init(
+        modality: Gemma4UnifiedModality, placeholderIndex: Int, replacementStart: Int,
+        softTokenCount: Int, replacementTokenCount: Int
+    ) {
+        self.modality = modality; self.placeholderIndex = placeholderIndex
+        self.replacementStart = replacementStart; self.softTokenCount = softTokenCount
+        self.replacementTokenCount = replacementTokenCount
+    }
+}
+
+public struct Gemma4UnifiedSoftTokenRange: Encodable, Sendable {
+    public var start: Int
+    public var softTokenCount: Int
+
+    public init(start: Int, softTokenCount: Int) {
+        self.start = start; self.softTokenCount = softTokenCount
+    }
+}
+
+public struct Gemma4UnifiedImageRuntimeInput: Encodable, Sendable {
+    public var span: Gemma4UnifiedTokenSpan
+    public var pixelValues: [Double]
+    public var pixelPositionIds: [[Int]]
+
+    public init(span: Gemma4UnifiedTokenSpan, pixelValues: [Double], pixelPositionIds: [[Int]]) {
+        self.span = span; self.pixelValues = pixelValues; self.pixelPositionIds = pixelPositionIds
+    }
+}
+
+public struct Gemma4UnifiedAudioRuntimeInput: Encodable, Sendable {
+    public var span: Gemma4UnifiedTokenSpan
+    public var inputFeatures: [Double]
+    public var frameCount: Int
+    public var featureCount: Int
+
+    public init(
+        span: Gemma4UnifiedTokenSpan, inputFeatures: [Double], frameCount: Int, featureCount: Int
+    ) {
+        self.span = span; self.inputFeatures = inputFeatures
+        self.frameCount = frameCount; self.featureCount = featureCount
+    }
+}
+
+public struct Gemma4UnifiedVideoRuntimeInput: Encodable, Sendable {
+    public var span: Gemma4UnifiedTokenSpan
+    public var softTokenRanges: [Gemma4UnifiedSoftTokenRange]?
+    public var pixelValues: [Double]
+    public var pixelPositionIds: [[Int]]
+    public var frameCount: Int
+
+    public init(
+        span: Gemma4UnifiedTokenSpan, softTokenRanges: [Gemma4UnifiedSoftTokenRange]? = nil,
+        pixelValues: [Double], pixelPositionIds: [[Int]], frameCount: Int
+    ) {
+        self.span = span; self.softTokenRanges = softTokenRanges
+        self.pixelValues = pixelValues; self.pixelPositionIds = pixelPositionIds
+        self.frameCount = frameCount
+    }
+}
+
+public struct Gemma4UnifiedRuntimeInputs: Encodable, Sendable {
+    public var images: [Gemma4UnifiedImageRuntimeInput]?
+    public var audios: [Gemma4UnifiedAudioRuntimeInput]?
+    public var videos: [Gemma4UnifiedVideoRuntimeInput]?
+
+    public init(
+        images: [Gemma4UnifiedImageRuntimeInput]? = nil,
+        audios: [Gemma4UnifiedAudioRuntimeInput]? = nil,
+        videos: [Gemma4UnifiedVideoRuntimeInput]? = nil
+    ) {
+        self.images = images; self.audios = audios; self.videos = videos
+    }
+}
+
+public struct RequestMultimodalInputs: Encodable, Sendable {
+    public var gemma4Unified: Gemma4UnifiedRuntimeInputs?
+
+    public init(gemma4Unified: Gemma4UnifiedRuntimeInputs? = nil) {
+        self.gemma4Unified = gemma4Unified
+    }
+}
+
 public struct PreviewGenerateRequest: Encodable, Sendable {
     public var model: String?
     public var inputTokens: [Int]?
     public var inputText: String?
+    public var multimodalInputs: RequestMultimodalInputs?
     public var maxOutputTokens: Int?
     public var sampling: GenerateSampling?
     public var metadata: String?
 
     public init(
         model: String? = nil, inputTokens: [Int]? = nil, inputText: String? = nil,
-        maxOutputTokens: Int? = nil, sampling: GenerateSampling? = nil, metadata: String? = nil
+        multimodalInputs: RequestMultimodalInputs? = nil, maxOutputTokens: Int? = nil,
+        sampling: GenerateSampling? = nil, metadata: String? = nil
     ) {
         self.model = model; self.inputTokens = inputTokens; self.inputText = inputText
-        self.maxOutputTokens = maxOutputTokens; self.sampling = sampling; self.metadata = metadata
+        self.multimodalInputs = multimodalInputs; self.maxOutputTokens = maxOutputTokens
+        self.sampling = sampling; self.metadata = metadata
     }
 }
 
