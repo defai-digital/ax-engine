@@ -9885,6 +9885,103 @@ fn decode_projection_q4km_gpu_output_matches_reference_dequantizer() {
     let _ = std::fs::remove_dir_all(output_dir);
 }
 
+/// Throughput microbench for `decode_projection_q4km` on a realistic Gemma4 12B
+/// FFN-down GEMV shape (n_rows=3072 output, input_width=12288 intermediate).
+///
+/// Opt-in (`#[ignore]`): run with
+///   `cargo test -p ax-engine-core --release decode_projection_q4km_throughput -- --ignored --nocapture`
+///
+/// Reports achieved memory bandwidth (GB/s). The 4-bit weight is the dominant
+/// memory traffic: 3072 rows × 48 blocks/row × 144 bytes/block ≈ 21.2 MiB read
+/// per GEMV. Compare against the M-series peak (~440 GB/s seen end-to-end on
+/// Qwen3-4B) and llama.cpp's ~390 GB/s effective on 12B to judge whether AX's
+/// hand-written Q4_K kernel can underpin a native runtime that beats llama.cpp.
+#[cfg(target_os = "macos")]
+#[test]
+#[ignore]
+fn decode_projection_q4km_throughput() {
+    let Some((bringup, output_dir)) = try_compile_real_bringup() else {
+        eprintln!("q4km throughput: bringup unavailable, skipping");
+        return;
+    };
+    let device = Device::system_default().expect("Metal device should exist");
+
+    // Gemma4 12B FFN down projection: [hidden=3072, intermediate=12288].
+    let n_rows: u32 = 3072;
+    let input_width: u32 = 12288;
+    let n_blocks = (input_width / 256) as usize;
+    let bytes_per_gemv = n_rows as usize * n_blocks * 144;
+
+    // One valid Q4_K block (d=1, dmin=0, all scales=1, all nibbles=1), tiled
+    // across every row/block. Values are irrelevant for a throughput measure;
+    // the memory traffic and access pattern are what matter.
+    let scales = [1u8, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1, 1];
+    let qs = [0x11u8; 128];
+    let block = make_q4k_block(0x3C00, 0x0000, &scales, &qs);
+    let mut weight_bytes = Vec::with_capacity(bytes_per_gemv);
+    for _ in 0..(n_rows as usize * n_blocks) {
+        weight_bytes.extend_from_slice(&block);
+    }
+    let weight_buf = new_shared_buffer_with_data(&device, &weight_bytes);
+    let hidden: Vec<f32> = vec![1.0f32; input_width as usize];
+    let hidden_buf = new_shared_buffer_with_data(&device, &hidden);
+    let output_buf = new_zeroed_shared_buffer::<f32>(&device, n_rows);
+
+    let plan = bringup.state.optional_kernel_dispatch_plan;
+    let Some((kernel_name, pipeline_idx)) = plan.projection_kernel(NativeTensorDataType::Q4Km)
+    else {
+        eprintln!("q4km throughput: kernel unavailable, skipping");
+        return;
+    };
+    let pipeline = find_optional_pipeline_handle_by_index(
+        &bringup.state,
+        &bringup.metallib.path,
+        kernel_name,
+        pipeline_idx,
+    )
+    .expect("q4km projection pipeline should compile");
+
+    let dispatch_once = |reps: usize| {
+        autoreleasepool(|| {
+            let command_buffer = bringup.state.command_queue.new_command_buffer();
+            let encoder = command_buffer.new_compute_command_encoder();
+            encoder.set_compute_pipeline_state(&pipeline.pipeline);
+            encoder.set_buffer(0, Some(&hidden_buf), 0);
+            encoder.set_buffer(1, Some(&weight_buf), 0);
+            encoder.set_buffer(2, Some(&output_buf), 0);
+            set_q4km_projection_dispatch_params(encoder, 3, n_rows, input_width);
+            let (tg_count, tg_size) = q4km_dispatch(n_rows as usize);
+            for _ in 0..reps {
+                encoder.dispatch_thread_groups(tg_count, tg_size);
+            }
+            encoder.end_encoding();
+            command_buffer.commit();
+            command_buffer.wait_until_completed();
+        });
+    };
+
+    // Warmup, then time many dispatches in a single committed buffer to exclude
+    // per-commit overhead and isolate kernel/memory throughput.
+    dispatch_once(8);
+    let reps = 200usize;
+    let start = std::time::Instant::now();
+    dispatch_once(reps);
+    let elapsed = start.elapsed();
+
+    let total_bytes = bytes_per_gemv as f64 * reps as f64;
+    let gb_s = total_bytes / elapsed.as_secs_f64() / 1.0e9;
+    let us_per_gemv = elapsed.as_secs_f64() * 1.0e6 / reps as f64;
+    // A 12B decode token does ~3 such matmul-equivalents in FFN (gate+up packed
+    // ≈ 2× this, down = 1×) plus attention; this is a single-kernel ceiling.
+    eprintln!(
+        "decode_projection_q4km [{n_rows}x{input_width}] q4_k: {gb_s:.1} GB/s, {us_per_gemv:.1} us/GEMV ({} reps, {:.2} MiB/GEMV)",
+        reps,
+        bytes_per_gemv as f64 / 1048576.0
+    );
+
+    let _ = std::fs::remove_dir_all(output_dir);
+}
+
 // --- GPU test: reshape_and_cache (required kernel) ------------------------
 
 /// Runs the full required-kernel dispatch and verifies that `reshape_and_cache`
