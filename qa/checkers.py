@@ -109,6 +109,18 @@ def check_coherence(text, prompt):
                        (alpha_ratio + unique_ratio) / 2)
 
 
+def check_unicode_replacement(text, prompt=None):
+    replacement_count = text.count("\uFFFD")
+    if replacement_count == 0:
+        return CheckResult("unicode_replacement", True, "none", 1.0)
+    return CheckResult(
+        "unicode_replacement",
+        False,
+        f"{replacement_count} replacement chars (possible UTF-8 stream corruption)",
+        0.0,
+    )
+
+
 def check_garbage(text):
     if not text.strip():
         return CheckResult("garbage", True, "empty (no garbage)", 1.0)
@@ -144,6 +156,7 @@ def run_all_checks(text, prompt):
         check_keywords(text, prompt),
         check_regex(text, prompt),
         check_coherence(text, prompt),
+        check_unicode_replacement(text, prompt),
         check_garbage(text),
     ]
     report = QualityReport(
