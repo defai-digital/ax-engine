@@ -46,6 +46,8 @@ ax-engine download gemma4-e2b
 ax-engine download gemma4-e2b-5bit
 ax-engine download gemma4-e2b-6bit
 ax-engine download gemma4-e2b-8bit
+ax-engine download gemma4-12b
+ax-engine download gemma4-12b-6bit
 ax-engine download gemma4-31b
 ax-engine download mlx-community/Qwen3.6-35B-A3B-4bit --json
 ax-engine download qwen36-35b --dest /path/to/explicit-copy
@@ -55,11 +57,11 @@ ax-engine download qwen36-35b --dest /path/to/explicit-copy
 through `mlx-lm`, validate `config.json` and safetensors, and run
 `ax-engine-bench generate-manifest` when available. The JSON output is the
 `ax.download_model.v1` summary. The built-in download aliases target Qwen3.6 and
-Gemma 4 MLX models, including Qwen3.6 27B and Gemma 4 E2B 5/6/8-bit variants
-where repo support is already tracked; other models should use an explicit repo
-id or local path. If the model argument is missing or an alias is unknown,
-`download` prints the same target list; `download --list --json` emits an
-`ax.download_options.v1` document for automation.
+Gemma 4 MLX models, including Qwen3.6 27B, Gemma 4 E2B 5/6/8-bit, and Gemma 4
+12B 4/6-bit variants where repo support is already tracked; other models should
+use an explicit repo id or local path. If the model argument is missing or an
+alias is unknown, `download` prints the same target list. The JSON form of
+`download --list` emits an `ax.download_options.v1` document for automation.
 
 Best practice is to keep the default Hugging Face Hub cache destination. That
 cache is shared with `mlx-lm` and `huggingface_hub`, and its location is

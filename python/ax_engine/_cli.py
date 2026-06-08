@@ -47,6 +47,18 @@ MODEL_PROFILES = (
         aliases=("gemma4-e2b-8bit", "gemma-4-e2b-8bit", "gemma-4-e2b-it-8bit"),
     ),
     ModelProfile(
+        label="gemma4-12b",
+        preset="gemma4-12b",
+        repo_id="mlx-community/gemma-4-12B-it-4bit",
+        aliases=("gemma4-12b", "gemma-4-12b", "gemma-4-12b-it", "gemma4-12b-4bit"),
+    ),
+    ModelProfile(
+        label="gemma4-12b-6bit",
+        preset=None,
+        repo_id="mlx-community/gemma-4-12B-it-6bit",
+        aliases=("gemma4-12b-6bit", "gemma-4-12b-6bit", "gemma-4-12b-it-6bit"),
+    ),
+    ModelProfile(
         label="gemma4-31b",
         preset="gemma4-31b",
         repo_id="mlx-community/gemma-4-31b-it-4bit",
@@ -175,6 +187,7 @@ def _download_options_payload() -> dict:
         "examples": [
             "ax-engine download qwen36-35b",
             "ax-engine download qwen36-27b-8bit",
+            "ax-engine download gemma4-12b",
             "ax-engine download gemma4-e2b-6bit",
             "ax-engine download mlx-community/Qwen3.6-35B-A3B-4bit --json",
         ],
@@ -193,6 +206,7 @@ def _format_download_options() -> str:
             "Examples:",
             "  ax-engine download qwen36-35b",
             "  ax-engine download qwen36-27b-8bit",
+            "  ax-engine download gemma4-12b",
             "  ax-engine download gemma4-e2b-6bit",
             "  ax-engine download mlx-community/Qwen3.6-35B-A3B-4bit --json",
             "",

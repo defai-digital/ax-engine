@@ -6,6 +6,8 @@ use super::PreviewSupportTier;
 pub enum ServerPreset {
     #[value(name = "gemma4-e2b")]
     Gemma4E2b,
+    #[value(name = "gemma4-12b")]
+    Gemma4_12b,
     #[value(name = "gemma4-31b")]
     Gemma4_31b,
     #[value(
@@ -38,6 +40,21 @@ impl ServerPreset {
                 model_id: "gemma4-e2b",
                 aliases: &["gemma4-e2b", "gemma-4-e2b", "gemma-4-e2b-it"],
                 model_types: &["gemma4"],
+                support_tier: PreviewSupportTier::MlxPreview,
+                max_batch_tokens: 2048,
+            },
+            Self::Gemma4_12b => PresetDefinition {
+                preset: self,
+                label: "gemma4-12b",
+                model_id: "gemma4-12b",
+                aliases: &[
+                    "gemma4-12b",
+                    "gemma4-12b-4bit",
+                    "gemma-4-12b",
+                    "gemma-4-12b-it",
+                    "gemma-4-12b-it-4bit",
+                ],
+                model_types: &["gemma4_unified", "gemma4_unified_text", "gemma4"],
                 support_tier: PreviewSupportTier::MlxPreview,
                 max_batch_tokens: 2048,
             },
@@ -94,6 +111,7 @@ impl ServerPreset {
 pub fn render_presets() -> String {
     [
         ServerPreset::Gemma4E2b,
+        ServerPreset::Gemma4_12b,
         ServerPreset::Gemma4_31b,
         ServerPreset::Glm47Flash4bit,
         ServerPreset::Qwen36_35b,

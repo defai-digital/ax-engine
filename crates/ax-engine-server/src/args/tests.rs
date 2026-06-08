@@ -393,6 +393,33 @@ fn preset_selects_mlx_preview_defaults() {
 }
 
 #[test]
+fn gemma4_12b_preset_selects_mlx_preview_defaults() {
+    let mlx_model_artifacts_dir = PathBuf::from("/tmp/gemma-4-12B-it-4bit");
+    let args = ServerArgs {
+        preset: Some(ServerPreset::Gemma4_12b),
+        mlx_model_artifacts_dir: Some(mlx_model_artifacts_dir.clone()),
+        ..base_args()
+    };
+
+    let actual = args.session_config().expect("session config should build");
+
+    assert_eq!(args.effective_model_id(), "gemma4-12b");
+    assert_eq!(
+        args.effective_support_tier(),
+        PreviewSupportTier::MlxPreview
+    );
+    assert_eq!(
+        actual.resolved_backend.selected_backend,
+        SelectedBackend::Mlx
+    );
+    assert_eq!(
+        actual.mlx_model_artifacts_dir.as_deref(),
+        Some(mlx_model_artifacts_dir.as_path())
+    );
+    assert!(!actual.mlx_disable_ngram_acceleration);
+}
+
+#[test]
 fn glm_preset_selects_mlx_lm_delegated_defaults() {
     // GLM 4.7 Flash is a passby model: the preset selects the delegated tier
     // and routes to an external mlx-lm server rather than the native MLX graph.
@@ -451,6 +478,7 @@ fn delegated_preset_is_not_forced_native_by_mlx_flag() {
 fn render_presets_lists_glm_preset() {
     let presets = render_presets();
 
+    assert!(presets.contains("gemma4-12b\tmodel_id=gemma4-12b"));
     assert!(presets.contains("glm4.7-flash-4bit\tmodel_id=glm4_moe_lite"));
 }
 
@@ -465,6 +493,31 @@ fn preset_hf_cache_resolution_finds_single_valid_snapshot() {
     );
     let args = ServerArgs {
         preset: Some(ServerPreset::Gemma4E2b),
+        resolve_model_artifacts: ModelArtifactResolution::HfCache,
+        hf_cache_root: Some(root.clone()),
+        ..base_args()
+    };
+
+    let actual = args.session_config().expect("session config should build");
+
+    assert_eq!(
+        actual.mlx_model_artifacts_dir.as_deref(),
+        Some(expected.as_path())
+    );
+    fs::remove_dir_all(root).expect("test dir should clean up");
+}
+
+#[test]
+fn preset_hf_cache_resolution_accepts_gemma4_12b_unified_snapshot() {
+    let root = unique_test_dir("hf-cache-gemma4-12b");
+    let expected = write_hf_snapshot(
+        &root,
+        "models--mlx-community--gemma-4-12B-it-4bit",
+        "abc123",
+        "gemma4_unified",
+    );
+    let args = ServerArgs {
+        preset: Some(ServerPreset::Gemma4_12b),
         resolve_model_artifacts: ModelArtifactResolution::HfCache,
         hf_cache_root: Some(root.clone()),
         ..base_args()

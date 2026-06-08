@@ -862,6 +862,8 @@ ax-engine download gemma4-e2b --json
 ax-engine download gemma4-e2b-5bit --json
 ax-engine download gemma4-e2b-6bit --json
 ax-engine download gemma4-e2b-8bit --json
+ax-engine download gemma4-12b --json
+ax-engine download gemma4-12b-6bit --json
 ax-engine download gemma4-31b --json
 
 # Or download and serve in one explicit command
@@ -889,6 +891,7 @@ Built-in download aliases resolve to these MLX repos:
 | `qwen36-35b` | `mlx-community/Qwen3.6-35B-A3B-4bit` |
 | `qwen36-27b`, `qwen36-27b-5bit`, `qwen36-27b-6bit`, `qwen36-27b-8bit` | `mlx-community/Qwen3.6-27B-{4,5,6,8}bit` |
 | `gemma4-e2b`, `gemma4-e2b-5bit`, `gemma4-e2b-6bit`, `gemma4-e2b-8bit` | `mlx-community/gemma-4-e2b-it-{4,5,6,8}bit` |
+| `gemma4-12b`, `gemma4-12b-6bit` | `mlx-community/gemma-4-12B-it-{4,6}bit` |
 | `gemma4-31b` | `mlx-community/gemma-4-31b-it-4bit` |
 
 Best practice: leave downloads in the Hugging Face Hub cache by default. This is

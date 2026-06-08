@@ -44,6 +44,8 @@ class AxEngineCliTests(unittest.TestCase):
         self.assertIn("qwen3.6-35b", aliases)
         self.assertIn("qwen3.6-27b-8bit", aliases)
         self.assertIn("gemma4-e2b-6bit", aliases)
+        self.assertIn("gemma4-12b", aliases)
+        self.assertIn("gemma4-12b-6bit", aliases)
 
     def test_download_list_text_shows_cache_policy(self) -> None:
         code, stdout = self.capture_main(["download", "--list"])
@@ -59,6 +61,7 @@ class AxEngineCliTests(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertIn("missing model alias or repo id", stdout)
         self.assertIn("qwen3.6-35b", stdout)
+        self.assertIn("gemma4-12b", stdout)
         self.assertIn("gemma4-e2b-8bit", stdout)
 
     def test_download_unknown_alias_shows_targets(self) -> None:
@@ -67,6 +70,7 @@ class AxEngineCliTests(unittest.TestCase):
 
         self.assertIn("unknown model alias", str(raised.exception))
         self.assertIn("qwen3.6-27b-8bit", str(raised.exception))
+        self.assertIn("gemma4-12b", str(raised.exception))
         self.assertIn("gemma4-e2b-6bit", str(raised.exception))
 
     def test_serve_dry_run_json_uses_server_preset(self) -> None:
@@ -123,6 +127,31 @@ class AxEngineCliTests(unittest.TestCase):
         self.assertIn("--mlx-model-artifacts-dir", payload["server"]["argv"])
         path_index = payload["server"]["argv"].index("--mlx-model-artifacts-dir") + 1
         self.assertEqual(payload["server"]["argv"][path_index], str(model_dir.resolve()))
+
+    def test_serve_dry_run_json_uses_gemma4_12b_server_preset(self) -> None:
+        with mock.patch.object(_cli, "_server_bin", return_value="/opt/bin/ax-engine-server"):
+            code, stdout = self.capture_main(
+                ["serve", "gemma4-12b", "--port", "9010", "--dry-run", "--json"]
+            )
+
+        self.assertEqual(code, 0)
+        payload = json.loads(stdout)
+        self.assertEqual(payload["resolved"]["preset"], "gemma4-12b")
+        self.assertEqual(
+            payload["server"]["argv"],
+            [
+                "/opt/bin/ax-engine-server",
+                "--host",
+                "127.0.0.1",
+                "--port",
+                "9010",
+                "--mlx",
+                "--preset",
+                "gemma4-12b",
+                "--resolve-model-artifacts",
+                "hf-cache",
+            ],
+        )
 
     def test_download_alias_wraps_download_helper(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -260,6 +289,62 @@ class AxEngineCliTests(unittest.TestCase):
         self.assertEqual(payload["repo_id"], "mlx-community/gemma-4-e2b-it-6bit")
         self.assertEqual(payload["alias"], "gemma4-e2b-6bit")
         self.assertNotIn("preset", payload)
+
+    def test_download_gemma4_12b_alias_uses_mlx_target(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            scripts = root / "scripts"
+            scripts.mkdir()
+            model_dir = root / "model"
+            model_dir.mkdir()
+            (scripts / "download_model.py").write_text(
+                textwrap.dedent(
+                    """
+                    import argparse, json, os
+                    p = argparse.ArgumentParser()
+                    p.add_argument("repo_id")
+                    p.add_argument("--dest")
+                    p.add_argument("--force", action="store_true")
+                    p.add_argument("--json", action="store_true")
+                    args = p.parse_args()
+                    print(json.dumps({
+                        "schema_version": "ax.download_model.v1",
+                        "repo_id": args.repo_id,
+                        "dest": os.environ["FAKE_MODEL_DIR"],
+                        "manifest_present": True,
+                        "safetensors_count": 1,
+                        "config_present": True,
+                        "status": "ready",
+                        "errors": [],
+                        "server_command": ["ax-engine-server"],
+                    }))
+                    """
+                )
+            )
+
+            with mock.patch.dict(
+                os.environ,
+                {"AX_ENGINE_REPO_ROOT": str(root), "FAKE_MODEL_DIR": str(model_dir)},
+            ):
+                code, stdout = self.capture_main(["download", "gemma4-12b", "--json"])
+
+            self.assertEqual(code, 0)
+            payload = json.loads(stdout)
+            self.assertEqual(payload["repo_id"], "mlx-community/gemma-4-12B-it-4bit")
+            self.assertEqual(payload["alias"], "gemma4-12b")
+            self.assertEqual(payload["preset"], "gemma4-12b")
+
+            with mock.patch.dict(
+                os.environ,
+                {"AX_ENGINE_REPO_ROOT": str(root), "FAKE_MODEL_DIR": str(model_dir)},
+            ):
+                code, stdout = self.capture_main(["download", "gemma4-12b-6bit", "--json"])
+
+            self.assertEqual(code, 0)
+            payload = json.loads(stdout)
+            self.assertEqual(payload["repo_id"], "mlx-community/gemma-4-12B-it-6bit")
+            self.assertEqual(payload["alias"], "gemma4-12b-6bit")
+            self.assertNotIn("preset", payload)
 
     def test_serve_download_uses_ready_downloaded_artifacts(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
