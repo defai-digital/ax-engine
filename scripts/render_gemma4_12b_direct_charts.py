@@ -37,9 +37,10 @@ PROMPT_TOKENS = (128, 512, 2048)
 
 # (engine key in artifact, legend label, fill, stroke) — palette matches the
 # existing direct-comparison section in render_readme_performance_charts.py.
+# llama.cpp first, AX second — consistent with the README table column order.
 SERIES = [
-    ("ax_engine_mlx", "AX Engine (native MLX)", "#2eaf5f", "#176c37"),
     ("llama_cpp_metal", "llama.cpp Metal", "#f97316", "#c2410c"),
+    ("ax_engine_mlx", "AX Engine (native MLX)", "#2eaf5f", "#176c37"),
 ]
 
 # (metric key, slug, title, unit, lower_is_better)
@@ -137,7 +138,7 @@ def render_chart(
         f'<text x="{left}" y="46" font-family="{FONT}" font-size="11" fill="#4b5563">'
         f"median over reps · grouped by prompt tokens · mlx_lm N/A (no gemma4_unified graph)</text>",
         f'<text x="{left}" y="62" font-family="{FONT}" font-size="10" fill="#6b7280">'
-        f"AX Engine native MLX vs llama.cpp Metal (ggml-org Q4_K_M, shape-compatible)</text>",
+        f"llama.cpp Metal vs AX Engine native MLX (ggml-org Q4_K_M, shape-compatible)</text>",
         f'<rect x="{width - 34 - unit_w}" y="13" width="{unit_w}" height="22" rx="11" '
         f'fill="#eef2ff" stroke="#c7d2fe"/>',
         f'<text x="{width - 34 - unit_w / 2:.1f}" y="28" text-anchor="middle" '

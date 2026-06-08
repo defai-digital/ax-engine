@@ -11,7 +11,10 @@ AX Engine is a Mac-first LLM inference runtime, local server, SDK layer, and ben
 - [What AX Engine Does](#what-ax-engine-does)
 - [Supported Models](#supported-models)
 - [Performance](#performance)
+  - [Gemma 4 12B](#gemma-4-12b)
   - [Speculative Decoding (MTP)](#speculative-decoding-mtp)
+    - [Gemma 4](#gemma-4)
+    - [Qwen 3.6](#qwen-36)
   - [Direct Decode · Prefill · TTFT](#direct-decode--prefill--ttft)
 - [SDKs](#sdks)
 - [Server Usage](#server-usage)
@@ -236,87 +239,7 @@ Full list: [`docs/SUPPORTED-MODELS.md`](docs/SUPPORTED-MODELS.md).
 ## Performance
 
 Full result tables and interpretation live in [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md). Benchmark methodology, test setup, and reproduction details live in [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md).
-
-### Speculative Decoding (MTP)
-
-AX Engine's key Mac advantage is **dual-family speculative decoding** — it supports both Gemma 4's separate assistant-drafter contract and Qwen3.6's fused sidecar contract in one repo-owned runtime and benchmark surface. A single benchmark surface records route identity, sampler, prompt suite, cooldown, accept behavior, and artifact provenance so the two MTP families are comparable without pretending they use the same architecture.
-
-#### Gemma 4 Assistant MTP
-
-Unlike Qwen's fused `mtp.*` sidecar, Gemma 4's multi-token prediction uses a small **assistant drafter** that shares the target's tokenizer and embedding table, drafts one token per step from the target's last-layer hidden state, and attends to the target's own KV cache. AX runs it assistant-MTP-only (`mtp`) and with n-gram stacked on top (`mtp-ngram`).
-
-A **draft confidence gate** (`AX_MLX_GEMMA4_ASSISTANT_MTP_DRAFT_MIN_CONFIDENCE`, default `0.999`) only proposes a draft when the drafter's top-token probability clears the threshold, keeping accept high while remaining correctness-preserving. Lower the gate toward `0` for more speculation on less predictable content.
-
-No peer engine (MTPLX, Rapid-MLX, lightning-mlx) exposes a runnable Gemma 4 assistant-MTP path, so this benchmark has no peer comparison rows.
-
-**Gemma 4 speculative decoding holds draft accept ≥98% on every cell below** (98.4–99.5% across 26B / 31B × {MTP, MTP+n-gram} × {flappy, long_code, python_modules_long}).
-
-##### Gemma 4 26B / 31B
-
-<table>
-<tr>
-<td align="center"><strong>Gemma 4 26B A4B 4-bit</strong></td>
-<td align="center"><strong>Gemma 4 31B 4-bit</strong></td>
-</tr>
-<tr>
-<td><img width="100%" src="docs/assets/perf-gemma4-assistant-mtp-26b-decode-tok-s.svg" alt="Grouped box-and-whisker plot comparing Gemma 4 26B A4B 4-bit assistant-MTP and assistant MTP+n-gram decode throughput across flappy, long_code, and python_modules_long prompt suites"></td>
-<td><img width="100%" src="docs/assets/perf-gemma4-assistant-mtp-31b-decode-tok-s.svg" alt="Grouped box-and-whisker plot comparing Gemma 4 31B 4-bit assistant-MTP and assistant MTP+n-gram decode throughput across flappy, long_code, and python_modules_long prompt suites"></td>
-</tr>
-<tr>
-<td><img width="100%" src="docs/assets/perf-gemma4-assistant-mtp-26b-accept-rate.svg" alt="Grouped box-and-whisker plot comparing Gemma 4 26B A4B 4-bit assistant-MTP and assistant MTP+n-gram accept rate across flappy, long_code, and python_modules_long prompt suites"></td>
-<td><img width="100%" src="docs/assets/perf-gemma4-assistant-mtp-31b-accept-rate.svg" alt="Grouped box-and-whisker plot comparing Gemma 4 31B 4-bit assistant-MTP and assistant MTP+n-gram accept rate across flappy, long_code, and python_modules_long prompt suites"></td>
-</tr>
-<tr>
-<td><img width="100%" src="docs/assets/perf-gemma4-assistant-mtp-26b-prefill-tok-s.svg" alt="Grouped box-and-whisker plot comparing Gemma 4 26B A4B 4-bit assistant-MTP and assistant MTP+n-gram prefill throughput across flappy, long_code, and python_modules_long prompt suites"></td>
-<td><img width="100%" src="docs/assets/perf-gemma4-assistant-mtp-31b-prefill-tok-s.svg" alt="Grouped box-and-whisker plot comparing Gemma 4 31B 4-bit assistant-MTP and assistant MTP+n-gram prefill throughput across flappy, long_code, and python_modules_long prompt suites"></td>
-</tr>
-<tr>
-<td><img width="100%" src="docs/assets/perf-gemma4-assistant-mtp-26b-ttft-ms.svg" alt="Grouped box-and-whisker plot comparing Gemma 4 26B A4B 4-bit assistant-MTP and assistant MTP+n-gram time-to-first-token across flappy, long_code, and python_modules_long prompt suites"></td>
-<td><img width="100%" src="docs/assets/perf-gemma4-assistant-mtp-31b-ttft-ms.svg" alt="Grouped box-and-whisker plot comparing Gemma 4 31B 4-bit assistant-MTP and assistant MTP+n-gram time-to-first-token across flappy, long_code, and python_modules_long prompt suites"></td>
-</tr>
-</table>
-
-| Model | Suite | Depth | AX MTP tok/s | AX MTP accept | AX MTP+ngram tok/s | AX MTP+ngram accept |
-|---|---|---:|---:|---:|---:|---:|
-| Gemma 4 26B A4B 4-bit | flappy | 1 | 126.1 | 99.3% | 129.1 | 99.5% |
-| Gemma 4 26B A4B 4-bit | long_code | 1 | 125.5 | 99.1% | 127.1 | 99.1% |
-| Gemma 4 26B A4B 4-bit | python_modules_long | 1 | 124.0 | 98.5% | 124.1 | 98.6% |
-| Gemma 4 31B 4-bit | flappy | 1 | 37.9 | 99.3% | 38.2 | 99.2% |
-| Gemma 4 31B 4-bit | long_code | 1 | 37.8 | 99.2% | 38.9 | 99.1% |
-| Gemma 4 31B 4-bit | python_modules_long | 1 | 37.4 | 98.4% | 37.3 | 98.6% |
-
-**Prefill and TTFT — same run:**
-
-| Model | Suite | AX MTP prefill | AX MTP+ngram prefill | AX MTP ttft ms | AX MTP+ngram ttft ms |
-|---|---|---:|---:|---:|---:|
-| Gemma 4 26B A4B 4-bit | flappy | 2,711 | 2,739 | 130 | 129 |
-| Gemma 4 26B A4B 4-bit | long_code | 3,991 | 3,977 | 203 | 205 |
-| Gemma 4 26B A4B 4-bit | python_modules_long | 2,909 | 2,912 | 131 | 131 |
-| Gemma 4 31B 4-bit | flappy | 747 | 751 | 475 | 486 |
-| Gemma 4 31B 4-bit | long_code | 769 | 798 | 1,035 | 995 |
-| Gemma 4 31B 4-bit | python_modules_long | 739 | 728 | 477 | 481 |
-
-The gated assistant already captures the speculation, so stacking n-gram on top adds little — the two modes track closely. Sampler: temperature=0.6, top_p=0.95, top_k=20; 1,000 generated tokens, 5 repetitions, 10 s / 5 s cooldowns. Apple M5 Max · AX Engine v6.0.1.
-
-Full artifacts: [`2026-06-07-gemma4-assistant-mtp`](benchmarks/results/gemma4-assistant-mtp/2026-06-07-gemma4-assistant-mtp/summary.json).
-
-<details>
-<summary>Reproduce this benchmark</summary>
-
-```bash
-python3 scripts/bench_gemma4_assistant_mtp.py \
-  --models 26b-a4b-4bit,31b-4bit \
-  --modes mtp,mtp-ngram \
-  --suites flappy,long_code,python_modules_long \
-  --max-tokens 1000 --repetitions 5
-python3 scripts/render_gemma4_assistant_mtp_charts.py \
-  --results-dir benchmarks/results/gemma4-assistant-mtp/<run-dir>
-```
-
-Artifacts land under `benchmarks/results/gemma4-assistant-mtp/`; SVGs render into `docs/assets/`. Tune the accept/throughput trade-off with `AX_MLX_GEMMA4_ASSISTANT_MTP_DRAFT_MIN_CONFIDENCE` (default `0.999`; `0` disables the gate).
-</details>
-
-##### Gemma 4 12B (Unified Architecture — AX-only on MLX)
+### Gemma 4 12B
 
 Gemma 4 12B (`model_type: gemma4_unified`) is a different implementation from the per-layer-embedding E2B/E4B and the MoE 26B/31B. **Upstream `mlx_lm` 0.31.3 cannot load it** — it fails with `ValueError: Model type gemma4_unified not supported`. The external reference here is **llama.cpp Metal** on a shape-compatible GGUF.
 
@@ -345,6 +268,8 @@ AX wins decode at every prompt size, and the margin widens with context (+12% / 
 **Memory bandwidth utilization:**
 
 Decode is memory-bandwidth-bound on Apple Silicon: each token reads the model weights once, so decode tok/s is set by bytes-read and how close the engine gets to the memory ceiling. Measured M5 Max GPU peak read bandwidth ≈ 577 GB/s (MLX reduction over a 6 GB array).
+
+<img src="docs/assets/perf-gemma4-12b-bandwidth.svg" alt="Horizontal bar chart showing percentage of M5 Max GPU peak memory bandwidth consumed per decode token for AX 8-bit FFN (86%), AX 4-bit FFN (80%), llama.cpp depth-0 (77%), and llama.cpp depth-512 (72%)">
 
 | Engine / quantization | Weights/token | Decode tok/s | Effective BW | % of 577 GB/s peak |
 |---|---:|---:|---:|---:|
@@ -419,7 +344,87 @@ ax-engine-bench generate-manifest \
 ```
 </details>
 
-#### Qwen3.6 Fair MTP
+
+
+### Speculative Decoding (MTP)
+
+AX Engine's key Mac advantage is **dual-family speculative decoding** — it supports both Gemma 4's separate assistant-drafter contract and Qwen3.6's fused sidecar contract in one repo-owned runtime and benchmark surface. A single benchmark surface records route identity, sampler, prompt suite, cooldown, accept behavior, and artifact provenance so the two MTP families are comparable without pretending they use the same architecture.
+
+#### Gemma 4
+
+Unlike Qwen's fused `mtp.*` sidecar, Gemma 4's multi-token prediction uses a small **assistant drafter** that shares the target's tokenizer and embedding table, drafts one token per step from the target's last-layer hidden state, and attends to the target's own KV cache. AX runs it assistant-MTP-only (`mtp`) and with n-gram stacked on top (`mtp-ngram`).
+
+A **draft confidence gate** (`AX_MLX_GEMMA4_ASSISTANT_MTP_DRAFT_MIN_CONFIDENCE`, default `0.999`) only proposes a draft when the drafter's top-token probability clears the threshold, keeping accept high while remaining correctness-preserving. Lower the gate toward `0` for more speculation on less predictable content.
+
+No peer engine (MTPLX, Rapid-MLX, lightning-mlx) exposes a runnable Gemma 4 assistant-MTP path, so this benchmark has no peer comparison rows.
+
+**Gemma 4 speculative decoding holds draft accept ≥98% on every cell below** (98.4–99.5% across 26B / 31B × {MTP, MTP+n-gram} × {flappy, long_code, python_modules_long}).
+
+
+<table>
+<tr>
+<td align="center"><strong>Gemma 4 26B A4B 4-bit</strong></td>
+<td align="center"><strong>Gemma 4 31B 4-bit</strong></td>
+</tr>
+<tr>
+<td><img width="100%" src="docs/assets/perf-gemma4-assistant-mtp-26b-decode-tok-s.svg" alt="Grouped box-and-whisker plot comparing Gemma 4 26B A4B 4-bit assistant-MTP and assistant MTP+n-gram decode throughput across flappy, long_code, and python_modules_long prompt suites"></td>
+<td><img width="100%" src="docs/assets/perf-gemma4-assistant-mtp-31b-decode-tok-s.svg" alt="Grouped box-and-whisker plot comparing Gemma 4 31B 4-bit assistant-MTP and assistant MTP+n-gram decode throughput across flappy, long_code, and python_modules_long prompt suites"></td>
+</tr>
+<tr>
+<td><img width="100%" src="docs/assets/perf-gemma4-assistant-mtp-26b-accept-rate.svg" alt="Grouped box-and-whisker plot comparing Gemma 4 26B A4B 4-bit assistant-MTP and assistant MTP+n-gram accept rate across flappy, long_code, and python_modules_long prompt suites"></td>
+<td><img width="100%" src="docs/assets/perf-gemma4-assistant-mtp-31b-accept-rate.svg" alt="Grouped box-and-whisker plot comparing Gemma 4 31B 4-bit assistant-MTP and assistant MTP+n-gram accept rate across flappy, long_code, and python_modules_long prompt suites"></td>
+</tr>
+<tr>
+<td><img width="100%" src="docs/assets/perf-gemma4-assistant-mtp-26b-prefill-tok-s.svg" alt="Grouped box-and-whisker plot comparing Gemma 4 26B A4B 4-bit assistant-MTP and assistant MTP+n-gram prefill throughput across flappy, long_code, and python_modules_long prompt suites"></td>
+<td><img width="100%" src="docs/assets/perf-gemma4-assistant-mtp-31b-prefill-tok-s.svg" alt="Grouped box-and-whisker plot comparing Gemma 4 31B 4-bit assistant-MTP and assistant MTP+n-gram prefill throughput across flappy, long_code, and python_modules_long prompt suites"></td>
+</tr>
+<tr>
+<td><img width="100%" src="docs/assets/perf-gemma4-assistant-mtp-26b-ttft-ms.svg" alt="Grouped box-and-whisker plot comparing Gemma 4 26B A4B 4-bit assistant-MTP and assistant MTP+n-gram time-to-first-token across flappy, long_code, and python_modules_long prompt suites"></td>
+<td><img width="100%" src="docs/assets/perf-gemma4-assistant-mtp-31b-ttft-ms.svg" alt="Grouped box-and-whisker plot comparing Gemma 4 31B 4-bit assistant-MTP and assistant MTP+n-gram time-to-first-token across flappy, long_code, and python_modules_long prompt suites"></td>
+</tr>
+</table>
+
+| Model | Suite | Depth | AX MTP tok/s | AX MTP accept | AX MTP+ngram tok/s | AX MTP+ngram accept |
+|---|---|---:|---:|---:|---:|---:|
+| Gemma 4 26B A4B 4-bit | flappy | 1 | 126.1 | 99.3% | 129.1 | 99.5% |
+| Gemma 4 26B A4B 4-bit | long_code | 1 | 125.5 | 99.1% | 127.1 | 99.1% |
+| Gemma 4 26B A4B 4-bit | python_modules_long | 1 | 124.0 | 98.5% | 124.1 | 98.6% |
+| Gemma 4 31B 4-bit | flappy | 1 | 37.9 | 99.3% | 38.2 | 99.2% |
+| Gemma 4 31B 4-bit | long_code | 1 | 37.8 | 99.2% | 38.9 | 99.1% |
+| Gemma 4 31B 4-bit | python_modules_long | 1 | 37.4 | 98.4% | 37.3 | 98.6% |
+
+**Prefill and TTFT — same run:**
+
+| Model | Suite | AX MTP prefill | AX MTP+ngram prefill | AX MTP ttft ms | AX MTP+ngram ttft ms |
+|---|---|---:|---:|---:|---:|
+| Gemma 4 26B A4B 4-bit | flappy | 2,711 | 2,739 | 130 | 129 |
+| Gemma 4 26B A4B 4-bit | long_code | 3,991 | 3,977 | 203 | 205 |
+| Gemma 4 26B A4B 4-bit | python_modules_long | 2,909 | 2,912 | 131 | 131 |
+| Gemma 4 31B 4-bit | flappy | 747 | 751 | 475 | 486 |
+| Gemma 4 31B 4-bit | long_code | 769 | 798 | 1,035 | 995 |
+| Gemma 4 31B 4-bit | python_modules_long | 739 | 728 | 477 | 481 |
+
+The gated assistant already captures the speculation, so stacking n-gram on top adds little — the two modes track closely. Sampler: temperature=0.6, top_p=0.95, top_k=20; 1,000 generated tokens, 5 repetitions, 10 s / 5 s cooldowns. Apple M5 Max · AX Engine v6.0.1.
+
+Full artifacts: [`2026-06-07-gemma4-assistant-mtp`](benchmarks/results/gemma4-assistant-mtp/2026-06-07-gemma4-assistant-mtp/summary.json).
+
+<details>
+<summary>Reproduce this benchmark</summary>
+
+```bash
+python3 scripts/bench_gemma4_assistant_mtp.py \
+  --models 26b-a4b-4bit,31b-4bit \
+  --modes mtp,mtp-ngram \
+  --suites flappy,long_code,python_modules_long \
+  --max-tokens 1000 --repetitions 5
+python3 scripts/render_gemma4_assistant_mtp_charts.py \
+  --results-dir benchmarks/results/gemma4-assistant-mtp/<run-dir>
+```
+
+Artifacts land under `benchmarks/results/gemma4-assistant-mtp/`; SVGs render into `docs/assets/`. Tune the accept/throughput trade-off with `AX_MLX_GEMMA4_ASSISTANT_MTP_DRAFT_MIN_CONFIDENCE` (default `0.999`; `0` disables the gate).
+</details>
+
+#### Qwen 3.6
 
 Three-engine MTP comparison (MTPLX 0.3.7, AX Engine MTP, AX Engine MTP+n-gram) using standard `Qwen/Qwen3.6-*` sidecars plus matching `mlx-community/*-4bit` MLX bases. No `Youssofal/*MTPLX*` bundles are used. All three engines run on the same prompt suites, token caps, sampler, warmup, repetition count, and cooldown.
 
@@ -512,7 +517,7 @@ python3 scripts/bench_qwen36_mtp_fair.py \
 `convert-mtplx` wraps the generic sidecar packager, applies model-specific defaults when optional knobs are omitted (Qwen3.6 27B depth 3; 35B-A3B depth 1), and validates `ax_mtp_sidecar_manifest.json` before reporting success. The generated `summary.md`, `summary.json`, and `decode-tok-s.svg` live under `benchmarks/results/mtp-fair/`. Full methodology and caveats in [`docs/PERFORMANCE.md#mtp-mode`](docs/PERFORMANCE.md#mtp-mode).
 </details>
 
-### Direct Decode · Prefill · TTFT — AX vs mlx_lm vs llama.cpp
+### Direct Decode · Prefill · TTFT
 
 <!-- readme-performance-artifacts: reference=benchmarks/results/mlx-inference/2026-05-26-direct-mode-clean-refresh/; ax-overlay=benchmarks/results/mlx-inference/2026-06-04-ax-direct-ngram-readme-rerun/ -->
 

@@ -245,7 +245,7 @@ pub(crate) fn build_inference_session(args: &InferenceArgs) -> Result<EngineSess
     );
     let disable_mtp_ngram_stacking = matches!(
         std::env::var("AX_MLX_MTP_DISABLE_NGRAM_STACKING").as_deref(),
-        Ok("1") | Ok("true") | Ok("TRUE")
+        Ok("1") | Ok("true") | Ok("yes")
     );
     let config =
         EngineSessionConfig::from_preview_request(ax_engine_sdk::PreviewSessionConfigRequest {
