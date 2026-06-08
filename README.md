@@ -139,12 +139,15 @@ warmup repetition.
 
 | Model | Suite | Depth | MTPLX tok/s | MTPLX accept | AX tok/s | AX accept | AX+ngram tok/s | AX+ngram accept |
 |---|---|---:|---:|---:|---:|---:|---:|---:|
-| Qwen3.6 27B 4-bit | flappy | 3 | 56.1 | 100.0% | 60.6 | 99.9% | 57.4 | 99.1% |
-| Qwen3.6 27B 4-bit | long_code | 3 | 57.9 | 99.7% | 54.9 | 99.9% | 59.3 | 99.1% |
-| Qwen3.6 27B 4-bit | python_modules_long | 3 | 52.7 | 87.6% | 47.8 | 97.6% | 50.2 | 97.2% |
-| Qwen3.6 35B-A3B 4-bit | flappy | 1 | 104.3 | 49.5% | 180.6 | 100.0% | 182.3 | 99.6% |
-| Qwen3.6 35B-A3B 4-bit | long_code | 1 | 105.6 | 51.4% | 179.1 | 100.0% | 224.2 | 99.8% |
-| Qwen3.6 35B-A3B 4-bit | python_modules_long | 1 | 98.2 | 42.6% | 182.4 | 99.3% | 169.4 | 97.6% |
+| Qwen3.6 27B 4-bit | flappy | 3 | 56.1 | 100.0% (96.0–100.0) | 60.6 | 99.9% (98.3–100.0) | 57.4 | 99.1% (96.5–99.5) |
+| Qwen3.6 27B 4-bit | long_code | 3 | 57.9 | 99.7% (98.4–100.0) | 54.9 | 99.9% (99.2–100.0) | 59.3 | 99.1% (98.4–99.7) |
+| Qwen3.6 27B 4-bit | python_modules_long | 3 | 52.7 | 87.6% (81.2–95.0) | 47.8 | 97.6% (96.7–99.8) | 50.2 | 97.2% (95.3–98.6) |
+| Qwen3.6 35B-A3B 4-bit | flappy | 1 | 104.3 | 49.5% (42.3–60.6) | 180.6 | 100.0% (99.1–100.0) | 182.3 | 99.6% (97.9–99.7) |
+| Qwen3.6 35B-A3B 4-bit | long_code | 1 | 105.6 | 51.4% (43.1–66.7) | 179.1 | 100.0% (99.8–100.0) | 224.2 | 99.8% (99.0–100.0) |
+| Qwen3.6 35B-A3B 4-bit | python_modules_long | 1 | 98.2 | 42.6% (37.0–46.1) | 182.4 | 99.3% (98.0–99.7) | 169.4 | 97.6% (96.2–98.4) |
+
+Accept cells show the median with the `(min–max)` range across the suite's cases × 5 reps, so the run-to-run spread on the
+borderline `python_modules_long` suite is visible rather than hidden behind a single point.
 
 AX MTP uses pure MTP (n-gram stacking disabled); AX MTP+n-gram stacks n-gram speculative drafting on top of MTP. AX MTP runs the default
 draft confidence gate (`AX_MLX_MTP_DRAFT_MIN_CONFIDENCE`) that only proposes draft tokens the MTP head is confident in. The accept
