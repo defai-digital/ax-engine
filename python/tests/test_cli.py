@@ -12,8 +12,15 @@ from unittest import mock
 
 import sys
 
-REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(REPO_ROOT / "python"))
+# Default to importing ax_engine from the source tree (for `maturin develop`
+# runs). When validating an installed wheel (AX_ENGINE_RUN_INSTALLED_TESTS=1),
+# keep the source off sys.path so the installed package — with its compiled
+# _ax_engine extension — is imported instead of the un-built source. Inserting
+# it unconditionally shadowed the wheel for the whole discovery process and
+# broke the installed-wheel smoke tests.
+if os.environ.get("AX_ENGINE_RUN_INSTALLED_TESTS") != "1":
+    REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
+    sys.path.insert(0, str(REPO_ROOT / "python"))
 
 from ax_engine import _cli
 
