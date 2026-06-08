@@ -29,13 +29,13 @@ ROWS = [
 
 # Chart dimensions
 WIDTH = 720
-HEIGHT = 270
+HEIGHT = 280
 
 LABEL_W = 218   # right edge of label area
 PLOT_LEFT = LABEL_W + 8
 PLOT_RIGHT = 530
-PLOT_TOP = 62
-PLOT_BOTTOM = 218
+PLOT_TOP = 72
+PLOT_BOTTOM = 228
 
 PLOT_W = PLOT_RIGHT - PLOT_LEFT
 PLOT_H = PLOT_BOTTOM - PLOT_TOP
@@ -75,6 +75,8 @@ def render() -> str:
         f'<rect width="{WIDTH}" height="{HEIGHT}" fill="#f8fafc"/>',
         f'<text x="10" y="22" font-family="{FONT}" font-size="15" font-weight="700"'
         f' fill="#111827">Gemma 4 12B — Memory Bandwidth Utilization</text>',
+        f'<text x="{WIDTH - 10}" y="22" text-anchor="end" font-family="{FONT}" font-size="10"'
+        f' font-weight="700" fill="#374151">Higher is better</text>',
         f'<text x="10" y="40" font-family="{FONT}" font-size="10" fill="#4b5563">'
         f'{e(SUBTITLE)}</text>',
         f'<text x="10" y="54" font-family="{FONT}" font-size="10" fill="#6b7280">'
@@ -95,16 +97,20 @@ def render() -> str:
             f' font-family="{FONT}" font-size="10" fill="#6b7280">{pct}%</text>'
         )
 
-    # Peak reference line at 100%
-    peak_x = fx(100)
+    # Best-value reference line
+    best_pct = max(row[4] for row in ROWS)
+    best_x = fx(best_pct)
     parts.append(
-        f'<line x1="{peak_x:.1f}" y1="{PLOT_TOP}" x2="{peak_x:.1f}" y2="{PLOT_BOTTOM}"'
-        f' stroke="{RED}" stroke-width="1.4" stroke-dasharray="1 4" stroke-linecap="round"/>'
+        f'<line x1="{best_x:.1f}" y1="{PLOT_TOP}" x2="{best_x:.1f}" y2="{PLOT_BOTTOM}"'
+        f' stroke="{RED}" stroke-width="1.2" stroke-dasharray="1 4" stroke-linecap="round"/>'
     )
     parts.append(
-        f'<text x="{peak_x + 6:.1f}" y="{PLOT_TOP + 11}" text-anchor="start"'
-        f' font-family="{FONT}" font-size="10" font-weight="700" fill="{RED}">peak</text>'
+        f'<text x="{best_x - 4:.1f}" y="66" text-anchor="end"'
+        f' font-family="{FONT}" font-size="10" font-weight="700" fill="{RED}">'
+        f'highest: {best_pct}%</text>'
     )
+
+
 
     # Bars
     for i, (label, _wgb, tok_s, bw_gbs, pct, fill, stroke) in enumerate(ROWS):
@@ -140,8 +146,8 @@ def render() -> str:
     legend_y = PLOT_BOTTOM + 36
     legend_x = PLOT_LEFT
     for lbl, clr, stroke in (
-        ("AX Engine (native MLX)", "#2eaf5f", "#176c37"),
         ("llama.cpp Metal", "#f97316", "#c2410c"),
+        ("AX Engine (native MLX)", "#2eaf5f", "#176c37"),
     ):
         parts += [
             f'<rect x="{legend_x}" y="{legend_y - 9}" width="10" height="10" rx="2"'

@@ -1,45 +1,46 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="720" height="270" viewBox="0 0 720 270" role="img" aria-labelledby="title desc">
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="280" viewBox="0 0 720 280" role="img" aria-labelledby="title desc">
 <title>Gemma 4 12B — Memory Bandwidth Utilization</title>
 <desc>Horizontal bar chart showing the percentage of M5 Max GPU peak memory bandwidth (577 GB/s) consumed per decode token for four engine/quantization configurations of Gemma 4 12B. AX 8-bit FFN reaches 86%, AX 4-bit FFN 80%, llama.cpp depth-0 77%, llama.cpp depth-512 72%.</desc>
-<rect width="720" height="270" fill="#f8fafc"/>
+<rect width="720" height="280" fill="#f8fafc"/>
 <text x="10" y="22" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="15" font-weight="700" fill="#111827">Gemma 4 12B — Memory Bandwidth Utilization</text>
+<text x="710" y="22" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#374151">Higher is better</text>
 <text x="10" y="40" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#4b5563">% of M5 Max GPU peak (577 GB/s) · decode is bandwidth-bound · each tok reads weights once</text>
 <text x="10" y="54" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">AX Engine v6.0.1 · llama.cpp b9430 · M5 Max · peak measured via MLX reduction probe</text>
-<rect x="226" y="62" width="304" height="156" rx="4" fill="#ffffff" stroke="#dbe3ef"/>
-<line x1="226.0" y1="62" x2="226.0" y2="218" stroke="#e5e7eb" stroke-width="1"/>
-<text x="226.0" y="232" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">0%</text>
-<line x1="302.0" y1="62" x2="302.0" y2="218" stroke="#e5e7eb" stroke-width="1"/>
-<text x="302.0" y="232" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">25%</text>
-<line x1="378.0" y1="62" x2="378.0" y2="218" stroke="#e5e7eb" stroke-width="1"/>
-<text x="378.0" y="232" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">50%</text>
-<line x1="454.0" y1="62" x2="454.0" y2="218" stroke="#e5e7eb" stroke-width="1"/>
-<text x="454.0" y="232" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">75%</text>
-<line x1="530.0" y1="62" x2="530.0" y2="218" stroke="#e5e7eb" stroke-width="1"/>
-<text x="530.0" y="232" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">100%</text>
-<line x1="530.0" y1="62" x2="530.0" y2="218" stroke="#dc2626" stroke-width="1.4" stroke-dasharray="1 4" stroke-linecap="round"/>
-<text x="536.0" y="73" text-anchor="start" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#dc2626">peak</text>
-<text x="218" y="85.5" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#374151">llama.cpp — depth 0 (tg)</text>
-<rect x="226" y="70.5" width="234.1" height="22" rx="3" fill="#f97316" fill-opacity="0.26" stroke="#c2410c" stroke-width="1.6"/>
-<line x1="460.1" y1="70.5" x2="460.1" y2="92.5" stroke="#c2410c" stroke-width="2.2"/>
-<text x="465.1" y="85.5" text-anchor="start" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">77%</text>
-<text x="540" y="85.5" text-anchor="start" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">446 GB/s · 60.4 tok/s</text>
-<text x="218" y="124.5" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#374151">llama.cpp — depth 512</text>
-<rect x="226" y="109.5" width="218.9" height="22" rx="3" fill="#f97316" fill-opacity="0.26" stroke="#c2410c" stroke-width="1.6"/>
-<line x1="444.9" y1="109.5" x2="444.9" y2="131.5" stroke="#c2410c" stroke-width="2.2"/>
-<text x="449.9" y="124.5" text-anchor="start" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">72%</text>
-<text x="540" y="124.5" text-anchor="start" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">418 GB/s · 56.6 tok/s</text>
-<text x="218" y="163.5" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#374151">AX — 8-bit FFN (upstream)</text>
-<rect x="226" y="148.5" width="261.4" height="22" rx="3" fill="#2eaf5f" fill-opacity="0.26" stroke="#176c37" stroke-width="1.6"/>
-<line x1="487.4" y1="148.5" x2="487.4" y2="170.5" stroke="#176c37" stroke-width="2.2"/>
-<text x="492.4" y="163.5" text-anchor="start" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">86%</text>
-<text x="540" y="163.5" text-anchor="start" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">494 GB/s · 45.0 tok/s</text>
-<text x="218" y="202.5" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#374151">AX — 4-bit FFN (re-quantized)</text>
-<rect x="226" y="187.5" width="243.2" height="22" rx="3" fill="#2eaf5f" fill-opacity="0.26" stroke="#176c37" stroke-width="1.6"/>
-<line x1="469.2" y1="187.5" x2="469.2" y2="209.5" stroke="#176c37" stroke-width="2.2"/>
-<text x="474.2" y="202.5" text-anchor="start" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">80%</text>
-<text x="540" y="202.5" text-anchor="start" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">459 GB/s · 68.1 tok/s</text>
-<rect x="226" y="245" width="10" height="10" rx="2" fill="#2eaf5f" fill-opacity="0.5" stroke="#176c37" stroke-width="1.4"/>
-<text x="240" y="254" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#374151">AX Engine (native MLX)</text>
-<rect x="386" y="245" width="10" height="10" rx="2" fill="#f97316" fill-opacity="0.5" stroke="#c2410c" stroke-width="1.4"/>
-<text x="400" y="254" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#374151">llama.cpp Metal</text>
+<rect x="226" y="72" width="304" height="156" rx="4" fill="#ffffff" stroke="#dbe3ef"/>
+<line x1="226.0" y1="72" x2="226.0" y2="228" stroke="#e5e7eb" stroke-width="1"/>
+<text x="226.0" y="242" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">0%</text>
+<line x1="302.0" y1="72" x2="302.0" y2="228" stroke="#e5e7eb" stroke-width="1"/>
+<text x="302.0" y="242" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">25%</text>
+<line x1="378.0" y1="72" x2="378.0" y2="228" stroke="#e5e7eb" stroke-width="1"/>
+<text x="378.0" y="242" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">50%</text>
+<line x1="454.0" y1="72" x2="454.0" y2="228" stroke="#e5e7eb" stroke-width="1"/>
+<text x="454.0" y="242" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">75%</text>
+<line x1="530.0" y1="72" x2="530.0" y2="228" stroke="#e5e7eb" stroke-width="1"/>
+<text x="530.0" y="242" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">100%</text>
+<line x1="487.4" y1="72" x2="487.4" y2="228" stroke="#dc2626" stroke-width="1.2" stroke-dasharray="1 4" stroke-linecap="round"/>
+<text x="483.4" y="66" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#dc2626">highest: 86%</text>
+<text x="218" y="95.5" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#374151">llama.cpp — depth 0 (tg)</text>
+<rect x="226" y="80.5" width="234.1" height="22" rx="3" fill="#f97316" fill-opacity="0.26" stroke="#c2410c" stroke-width="1.6"/>
+<line x1="460.1" y1="80.5" x2="460.1" y2="102.5" stroke="#c2410c" stroke-width="2.2"/>
+<text x="465.1" y="95.5" text-anchor="start" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">77%</text>
+<text x="540" y="95.5" text-anchor="start" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">446 GB/s · 60.4 tok/s</text>
+<text x="218" y="134.5" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#374151">llama.cpp — depth 512</text>
+<rect x="226" y="119.5" width="218.9" height="22" rx="3" fill="#f97316" fill-opacity="0.26" stroke="#c2410c" stroke-width="1.6"/>
+<line x1="444.9" y1="119.5" x2="444.9" y2="141.5" stroke="#c2410c" stroke-width="2.2"/>
+<text x="449.9" y="134.5" text-anchor="start" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">72%</text>
+<text x="540" y="134.5" text-anchor="start" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">418 GB/s · 56.6 tok/s</text>
+<text x="218" y="173.5" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#374151">AX — 8-bit FFN (upstream)</text>
+<rect x="226" y="158.5" width="261.4" height="22" rx="3" fill="#2eaf5f" fill-opacity="0.26" stroke="#176c37" stroke-width="1.6"/>
+<line x1="487.4" y1="158.5" x2="487.4" y2="180.5" stroke="#176c37" stroke-width="2.2"/>
+<text x="492.4" y="173.5" text-anchor="start" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">86%</text>
+<text x="540" y="173.5" text-anchor="start" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">494 GB/s · 45.0 tok/s</text>
+<text x="218" y="212.5" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#374151">AX — 4-bit FFN (re-quantized)</text>
+<rect x="226" y="197.5" width="243.2" height="22" rx="3" fill="#2eaf5f" fill-opacity="0.26" stroke="#176c37" stroke-width="1.6"/>
+<line x1="469.2" y1="197.5" x2="469.2" y2="219.5" stroke="#176c37" stroke-width="2.2"/>
+<text x="474.2" y="212.5" text-anchor="start" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">80%</text>
+<text x="540" y="212.5" text-anchor="start" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">459 GB/s · 68.1 tok/s</text>
+<rect x="226" y="255" width="10" height="10" rx="2" fill="#f97316" fill-opacity="0.5" stroke="#c2410c" stroke-width="1.4"/>
+<text x="240" y="264" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#374151">llama.cpp Metal</text>
+<rect x="386" y="255" width="10" height="10" rx="2" fill="#2eaf5f" fill-opacity="0.5" stroke="#176c37" stroke-width="1.4"/>
+<text x="400" y="264" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#374151">AX Engine (native MLX)</text>
 </svg>
