@@ -1454,13 +1454,32 @@ def load_model_tokenizer(model_dir: Path) -> Any:
 
     Reuses `mlx_lm.load` so the tokenizer choice matches the reference
     path used by mlx_lm.benchmark. The full model load is wasted work,
-    but mlx_lm does not expose a tokenizer-only entry point and the
-    one-shot load cost is small compared to the bench run itself.
+    but it keeps the tokenizer choice byte-identical to the reference
+    runtime for architectures mlx_lm supports.
+
+    Some AX-native architectures (e.g. Gemma 4's unified ``gemma4_unified``
+    12B) have no upstream mlx_lm graph, so the full `load` raises before it
+    ever reaches the tokenizer. mlx_lm builds its tokenizer from the same
+    `mlx_lm.tokenizer_utils.load` helper regardless of model class, so we
+    fall back to that model-free loader to obtain the identical tokenizer
+    without instantiating an unsupported model graph. This only affects
+    `--prompt-source real` AX-only runs (mlx_lm rows are skipped for those
+    architectures anyway).
     """
     from mlx_lm import load
 
-    _model, tokenizer, _config = load(str(model_dir), return_config=True)
-    return tokenizer
+    try:
+        _model, tokenizer, _config = load(str(model_dir), return_config=True)
+        return tokenizer
+    except (ValueError, ModuleNotFoundError) as error:
+        from mlx_lm.tokenizer_utils import load as load_tokenizer_only
+
+        print(
+            f"  [tokenizer] mlx_lm.load could not instantiate the model graph "
+            f"({error}); falling back to model-free tokenizer load",
+            file=sys.stderr,
+        )
+        return load_tokenizer_only(Path(model_dir))
 
 
 def tokenize_real_prompt(

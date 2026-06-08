@@ -138,6 +138,15 @@ DEFAULT_PROFILE_BY_MODE = {
 
 
 GEMMA4_PROFILES = {
+    "12b-4bit": Gemma4Profile(
+        key="12b-4bit",
+        label="Gemma 4 12B 4-bit",
+        target_model_id="gemma-4-12b-it",
+        assistant_model_id="gemma-4-12b-it-assistant",
+        target_ref="mlx-community/gemma-4-12B-it-4bit",
+        assistant_ref="mlx-community/gemma-4-12B-it-assistant-4bit",
+        prepared_slug="models--ax-local--gemma-4-12b-it-4bit-assistant-mtp",
+    ),
     "26b-a4b-4bit": Gemma4Profile(
         key="26b-a4b-4bit",
         label="Gemma 4 26B A4B 4-bit",

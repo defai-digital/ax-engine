@@ -106,6 +106,92 @@ tokens, 5 repetitions, 10 s / 5 s cooldowns. Apple M5 Max · AX Engine v6.0.1.
 
 Full artifacts: [`2026-06-07-gemma4-assistant-mtp`](benchmarks/results/gemma4-assistant-mtp/2026-06-07-gemma4-assistant-mtp/summary.json).
 
+### Gemma 4 12B (unified architecture) — a model only AX runs on MLX
+
+Gemma 4 12B is the **unified dense** Gemma 4 variant (`model_type: gemma4_unified`),
+a different implementation from the per-layer-embedding E2B/E4B and the MoE
+26B/31B. It gets its own section because **upstream `mlx_lm` 0.31.3 cannot load
+it at all** — it has no `gemma4_unified` graph and fails closed with
+`ValueError: Model type gemma4_unified not supported`. So unlike every other row
+in this README, there is no `mlx_lm` MLX baseline to show: AX Engine's repo-owned
+native runtime is the *only* MLX runtime that serves this model. The external
+reference here is **llama.cpp Metal** on a shape-compatible GGUF.
+
+The takeaway: in raw **direct** decode, llama.cpp Metal leads AX by ~30% (~60 vs
+~46 tok/s). AX's lever on this model is **assistant-MTP** speculative decoding —
+which `mlx_lm` can't run and llama.cpp doesn't have — and it closes that gap,
+lifting AX to **57–62 tok/s (1.24–1.35× over AX direct)** at **≥98.4% assistant
+accept**, reaching llama.cpp-Metal parity (ahead on `long_code`, level on
+`flappy`, ~5% behind on `python_modules_long`).
+
+#### Direct decode — AX native MLX vs llama.cpp Metal (mlx_lm N/A)
+
+<table>
+<tr>
+<td><img width="100%" src="docs/assets/perf-gemma4-12b-direct-decode-tok-s.svg" alt="Grouped bar chart comparing Gemma 4 12B 4-bit median direct decode throughput for AX Engine native MLX and llama.cpp Metal at 128/512/2048 prompt tokens; mlx_lm is not available because it has no gemma4_unified graph"></td>
+<td><img width="100%" src="docs/assets/perf-gemma4-12b-direct-prefill-tok-s.svg" alt="Grouped bar chart comparing Gemma 4 12B 4-bit median prefill throughput for AX Engine native MLX and llama.cpp Metal at 128/512/2048 prompt tokens"></td>
+<td><img width="100%" src="docs/assets/perf-gemma4-12b-direct-ttft-ms.svg" alt="Grouped bar chart comparing Gemma 4 12B 4-bit median time to first token for AX Engine native MLX and llama.cpp Metal at 128/512/2048 prompt tokens"></td>
+</tr>
+</table>
+
+| Prompt tokens | AX direct decode | llama.cpp decode | AX prefill | llama.cpp prefill | AX TTFT (ms) | llama.cpp TTFT (ms) |
+|---:|---:|---:|---:|---:|---:|---:|
+| 128 | 46.7 | 60.6 | 995 | 1,228 | 129 | 104 |
+| 512 | 46.0 | 60.3 | 1,703 | 1,762 | 301 | 291 |
+| 2048 | 44.9 | 59.9 | 1,967 | 1,691 | 1,041 | 1,211 |
+
+Decode/prefill are tok/s. AX prefill overtakes llama.cpp at 2048 tokens (1,967 vs
+1,691) and AX TTFT is lower at 2048 (1,041 vs 1,211 ms). The `llama.cpp Metal`
+column is a **shape-compatible external GGUF baseline only** (ggml-org Q4_K_M,
+text-only conversion) — not prompt-hash parity, no repo-owned-MLX claim. `mlx_lm`
+is **absent because it cannot load `gemma4_unified`**, not because it was skipped.
+
+#### Assistant-MTP speculative decode (depth 1)
+
+Same assistant-drafter contract and draft confidence gate as the 26B/31B section
+above. AX runs it assistant-MTP-only (`mtp`) and with n-gram stacked on top
+(`mtp-ngram`).
+
+<table>
+<tr>
+<td><img width="100%" src="docs/assets/perf-gemma4-assistant-mtp-12b-decode-tok-s.svg" alt="Grouped box-and-whisker plot comparing Gemma 4 12B 4-bit assistant-MTP and assistant MTP+n-gram decode throughput across flappy, long_code, and python_modules_long prompt suites"></td>
+<td><img width="100%" src="docs/assets/perf-gemma4-assistant-mtp-12b-accept-rate.svg" alt="Grouped box-and-whisker plot comparing Gemma 4 12B 4-bit assistant-MTP and assistant MTP+n-gram accept rate across flappy, long_code, and python_modules_long prompt suites"></td>
+</tr>
+<tr>
+<td><img width="100%" src="docs/assets/perf-gemma4-assistant-mtp-12b-prefill-tok-s.svg" alt="Grouped box-and-whisker plot comparing Gemma 4 12B 4-bit assistant-MTP and assistant MTP+n-gram prefill throughput across flappy, long_code, and python_modules_long prompt suites"></td>
+<td><img width="100%" src="docs/assets/perf-gemma4-assistant-mtp-12b-ttft-ms.svg" alt="Grouped box-and-whisker plot comparing Gemma 4 12B 4-bit assistant-MTP and assistant MTP+n-gram time-to-first-token across flappy, long_code, and python_modules_long prompt suites"></td>
+</tr>
+</table>
+
+| Suite | Depth | AX MTP tok/s | AX MTP accept | AX MTP+ngram tok/s | AX MTP+ngram accept | n-gram accept | n-gram hits |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| flappy | 1 | 60.8 | 99.2% | 61.9 | 99.1% | 72.6% | 68 |
+| long_code | 1 | 62.0 | 99.0% | 62.1 | 99.0% | 72.3% | 53 |
+| python_modules_long | 1 | 56.9 | 98.4% | 57.2 | 98.6% | 56.9% | 35 |
+
+#### Prefill throughput (tok/s) and time to first token (ms) — same run
+
+| Suite | AX MTP prefill | AX MTP+ngram prefill | AX MTP ttft ms | AX MTP+ngram ttft ms |
+|---|---:|---:|---:|---:|
+| flappy | 1,844 | 1,847 | 195 | 195 |
+| long_code | 1,992 | 1,992 | 400 | 400 |
+| python_modules_long | 1,810 | 1,809 | 202 | 202 |
+
+As with 26B/31B, the gated assistant already captures the speculation, so stacking
+n-gram on top adds little (+0.1–1.1 tok/s; n-gram accept 56.9–72.6%). Direct rows:
+sampler greedy-equivalent, 128 generated tokens, 5 repetitions, 15 s cooldown,
+random-token prompts (mlx_lm.benchmark contract). MTP rows: temperature=0.6,
+top_p=0.95, top_k=20; 1000 generated tokens, 5 repetitions, 10 s / 5 s cooldowns.
+Apple M5 Max · AX Engine v6.0.1 · llama.cpp b9430 (Metal) · mlx_lm 0.31.3 (no
+`gemma4_unified` support).
+
+Full artifacts:
+[`2026-06-08-gemma-4-12b-it-4bit-direct`](benchmarks/results/mlx-inference/2026-06-08-gemma-4-12b-it-4bit-direct/gemma-4-12b-it-4bit.json)
+(direct; llama.cpp GGUF provenance in
+[`llama_cpp_gguf_provenance.json`](benchmarks/results/mlx-inference/2026-06-08-gemma-4-12b-it-4bit-direct/llama_cpp_gguf_provenance.json)) ·
+[`2026-06-08-gemma4-12b-assistant-mtp`](benchmarks/results/gemma4-assistant-mtp/2026-06-08-gemma4-12b-assistant-mtp/summary.json)
+(assistant-MTP).
+
 ### Qwen3.6 Fair MTP
 
 Three-engine MTP comparison (MTPLX 0.3.7, AX Engine MTP, AX Engine MTP+n-gram) using

@@ -37,9 +37,16 @@ ENGINE_LABELS = {ENGINE_MTP: "AX assistant MTP", ENGINE_NGRAM: "AX assistant MTP
 ENGINE_COLORS = {ENGINE_MTP: "#2eaf5f", ENGINE_NGRAM: "#137a3d"}
 
 MODELS = [
+    ("12b-4bit", "Gemma 4 12B 4-bit"),
     ("26b-a4b-4bit", "Gemma 4 26B A4B 4-bit"),
     ("31b-4bit", "Gemma 4 31B 4-bit"),
 ]
+# Maps a model key to the compact slug used in chart filenames.
+MODEL_SHORT = {
+    "12b-4bit": "12b",
+    "26b-a4b-4bit": "26b",
+    "31b-4bit": "31b",
+}
 SUITES = [
     ("flappy", "flappy"),
     ("long_code", "long_code"),
@@ -309,10 +316,26 @@ def write_box_whisker_svg(
     path.write_text("\n".join(parts) + "\n")
 
 
+# Candidate per-suite artifact basenames per mode, newest naming first.
+# bench_gemma4_assistant_mtp.py writes profile-keyed names
+# (assistant_mtp_default / assistant_mtp_ngram_default); older runs wrote the
+# bare mode name (mtp / mtp-ngram). Try both so this renders new and archived
+# result trees alike.
+MODE_FILE_CANDIDATES = {
+    "mtp": ("assistant_mtp_default", "mtp"),
+    "mtp-ngram": ("assistant_mtp_ngram_default", "mtp-ngram"),
+}
+
+
 def engine_rows(results_dir: Path, model_key: str, suite_key: str, mode_file: str, engine: str) -> list[dict[str, Any]]:
-    path = results_dir / model_key / suite_key / f"{mode_file}.json"
-    if not path.exists():
-        raise FileNotFoundError(path)
+    suite_dir = results_dir / model_key / suite_key
+    candidates = MODE_FILE_CANDIDATES.get(mode_file, (mode_file,))
+    path = next(
+        (suite_dir / f"{name}.json" for name in candidates if (suite_dir / f"{name}.json").exists()),
+        None,
+    )
+    if path is None:
+        raise FileNotFoundError(suite_dir / f"{candidates[0]}.json")
     payload = json.loads(path.read_text())
     return [r for r in payload.get("results", []) if r.get("engine") == engine]
 
@@ -363,14 +386,23 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--results-dir", type=Path, required=True)
     parser.add_argument("--assets-dir", type=Path, default=REPO_ROOT / "docs" / "assets")
+    parser.add_argument(
+        "--models",
+        default="",
+        help="Comma-separated subset of model keys to render. Defaults to every "
+        f"model with artifacts present. Choices: {', '.join(k for k, _ in MODELS)}",
+    )
     args = parser.parse_args()
+
+    selected = {m.strip() for m in args.models.split(",") if m.strip()}
+    models = [(k, label) for k, label in MODELS if not selected or k in selected]
 
     args.assets_dir.mkdir(parents=True, exist_ok=True)
     written: list[str] = []
-    for model_key, model_label in MODELS:
+    for model_key, model_label in models:
         for metric, slug, title_metric, unit, direction, lower_is_better, axis_min, axis_max in METRICS:
             groups = build_groups(args.results_dir, model_key, metric)
-            short = "26b" if model_key.startswith("26b") else "31b"
+            short = MODEL_SHORT[model_key]
             out = args.assets_dir / f"perf-gemma4-assistant-mtp-{short}-{slug}.svg"
             write_box_whisker_svg(
                 out,
