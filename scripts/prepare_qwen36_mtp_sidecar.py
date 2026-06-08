@@ -251,6 +251,21 @@ def prepare_sidecar(model_key: str, base_dir: Path | None) -> Path:
     size_mb = mtp_path.stat().st_size / 1024**2
     print(f"\nSaved mtp.safetensors ({size_mb:.1f} MB) -> {mtp_path}", flush=True)
 
+    # Post-save sanity check: verify that all 1-D norm weights have mean_abs >= 0.15.
+    # Raw HF delta-form norms (mean_abs ~ 0.01) cause silent garbage output from the
+    # MTP head; shifted norms cluster near 1.0 well above this threshold.
+    bad_norms = [
+        k for k, v in tensors.items()
+        if "norm" in k and getattr(v, "ndim", None) == 1
+        and float(mx.mean(mx.abs(mx.array(v))).item()) < 0.15
+    ]
+    if bad_norms:
+        sys.exit(
+            f"ERROR: norm weights appear unshifted after _shift_norm_weights "
+            f"(mean_abs < 0.15): {bad_norms}. "
+            f"This should not happen — check that _shift_norm_weights ran correctly."
+        )
+
     # Write mtplx_runtime.json.
     runtime = _runtime_contract(cfg, len(tensors))
     runtime_path = out_dir / "mtplx_runtime.json"
