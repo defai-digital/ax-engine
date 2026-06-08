@@ -34,6 +34,8 @@ REPO_OWNED_TYPES = {
     "qwen3.6",
     "qwen3_moe",
     "gemma4",
+    "gemma4_unified",
+    "gemma4_unified_text",
 }
 
 
@@ -201,6 +203,95 @@ def probe_deepseek_v4(model_dir: Path, keys: list[str]) -> dict[str, Any]:
     }
 
 
+def probe_gemma4_unified(model_dir: Path, keys: list[str]) -> dict[str, Any]:
+    manifest_exists = (model_dir / "model-manifest.json").exists()
+    vllm_unified_ref = (
+        REPO_ROOT / ".internal/reference/vllm/vllm/model_executor/models/gemma4_unified.py"
+    )
+    vllm_mm_ref = REPO_ROOT / ".internal/reference/vllm/vllm/model_executor/models/gemma4_mm.py"
+    llama_mtmd_ref = REPO_ROOT / ".internal/reference/llama.cpp/tools/mtmd/mtmd.cpp"
+    reference_files = [
+        _file_probe(
+            vllm_unified_ref,
+            ["Gemma4UnifiedVisionEmbedder", "vision_embedder", "embed_audio"],
+        ),
+        _file_probe(
+            vllm_mm_ref,
+            ["get_image_repl", "use_bidirectional_attention", "mm_prefix_range"],
+        ),
+        _file_probe(llama_mtmd_ref, ["PROJECTOR_TYPE_GEMMA4V", "mtmd_decode_use_non_causal"]),
+    ]
+    features = {
+        "language_model_prefix": any(key.startswith("language_model.model.") for key in keys),
+        "vision_embedder": _has_any(keys, "vision_embedder.patch_dense.weight")
+        and _has_any(keys, "vision_embedder.pos_embedding"),
+        "vision_connector": _has_any(keys, "embed_vision.embedding_projection.weight"),
+        "audio_connector": _has_any(keys, "embed_audio.embedding_projection.weight"),
+        "vision_tower_absent": not any(key.startswith("vision_tower.") for key in keys),
+        "audio_tower_absent": not any(key.startswith("audio_tower.") for key in keys),
+    }
+    reference_ready = all(item["exists"] for item in reference_files) and all(
+        all(markers.values()) for markers in (item.get("markers") or {} for item in reference_files)
+    )
+    text_candidate = features["language_model_prefix"] and reference_ready
+    runtime_source_ready = (
+        (REPO_ROOT / "crates/ax-engine-mlx/src/gemma4_unified.rs").exists()
+        and (REPO_ROOT / "crates/ax-engine-core/src/gemma4_unified.rs").exists()
+    )
+    multimodal_candidate = (
+        features["vision_embedder"]
+        and features["vision_connector"]
+        and features["vision_tower_absent"]
+    )
+    multimodal_tensor_ready = manifest_exists and text_candidate and multimodal_candidate and runtime_source_ready
+    audio_tensor_ready = multimodal_tensor_ready and features["audio_connector"]
+
+    blockers: list[str] = []
+    if not reference_ready:
+        blockers.append("local Gemma4 unified vLLM/llama.cpp reference probes are incomplete")
+    if not features["language_model_prefix"]:
+        blockers.append("checkpoint does not expose language_model.model.* text weights")
+    if not manifest_exists:
+        blockers.append("AX model-manifest.json is absent for this artifact")
+    if manifest_exists and text_candidate and multimodal_candidate and not runtime_source_ready:
+        blockers.append("AX Gemma4 unified runtime tensor path is absent")
+
+    if multimodal_tensor_ready:
+        support_decision = "text_and_multimodal_tensor_runtime_ready"
+    elif manifest_exists and text_candidate:
+        support_decision = "text_manifest_ready"
+    elif text_candidate:
+        support_decision = "implementation_candidate"
+    else:
+        support_decision = "fail_closed_incomplete_reference"
+
+    return {
+        "support_decision": support_decision,
+        "can_implement_repo_owned_runtime": text_candidate,
+        "reference_support": "complete_enough_for_ax_port" if reference_ready else "incomplete",
+        "reference_files": reference_files,
+        "checkpoint_features": features,
+        "modalities": {
+            "text": "manifest_ready" if manifest_exists and text_candidate else "candidate",
+            "image": "runtime_tensor_ready" if multimodal_tensor_ready else ("candidate" if multimodal_candidate else "unsupported"),
+            "audio": "runtime_tensor_ready" if audio_tensor_ready else ("candidate" if features["audio_connector"] else "unsupported"),
+            "video": "runtime_tensor_ready" if multimodal_tensor_ready else ("candidate" if multimodal_candidate else "unsupported"),
+        },
+        "integration_gaps": []
+        if not multimodal_tensor_ready
+        else [
+            "OpenAI-compatible media URLs/files are not preprocessed by ax-engine-server; callers must provide Gemma4UnifiedRuntimeInputs tensors",
+        ],
+        "blockers": blockers,
+        "next_steps": []
+        if manifest_exists and text_candidate
+        else [
+            "generate and validate model-manifest.json before runtime claims",
+            "keep image/audio/video unsupported until projector, prompt replacement, and attention-mask paths are implemented",
+        ],
+    }
+
+
 def generic_probe(model_dir: Path, model_type: str, keys: list[str]) -> dict[str, Any]:
     manifest_exists = (model_dir / "model-manifest.json").exists()
     if model_type in REPO_OWNED_TYPES:
@@ -238,6 +329,8 @@ def probe_model(model_dir: Path) -> dict[str, Any]:
 
     if model_type == "glm4_moe_lite":
         architecture = probe_glm4_moe_lite(model_dir, keys)
+    elif model_type in ("gemma4_unified", "gemma4_unified_text"):
+        architecture = probe_gemma4_unified(model_dir, keys)
     elif model_type == "deepseek_v4":
         architecture = probe_deepseek_v4(model_dir, keys)
     else:

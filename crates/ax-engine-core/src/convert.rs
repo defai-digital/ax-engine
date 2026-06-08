@@ -39,7 +39,7 @@ pub enum ConvertError {
         source: serde_json::Error,
     },
     #[error(
-        "unsupported model type {model_type}; supported: qwen3, qwen3_5, qwen3_next, gemma4, gemma4_assistant, glm4_moe_lite, llama3, mistral3, mixtral, deepseek_v3, llama4 draft manifests"
+        "unsupported model type {model_type}; supported: qwen3, qwen3_5, qwen3_next, gemma4, gemma4_unified, gemma4_assistant, glm4_moe_lite, llama3, mistral3, mixtral, deepseek_v3, llama4 draft manifests"
     )]
     UnsupportedModelType { model_type: String },
     #[error("missing config field: {field}")]
@@ -121,6 +121,16 @@ pub fn convert_hf_model_dir(model_dir: &Path) -> Result<NativeModelManifest, Con
     let sliding_window_size = arch_u64(&config, &model_type, "sliding_window").and_then(u64_to_u32);
     let final_logit_softcapping =
         arch_f64(&config, &model_type, "final_logit_softcapping").map(|v| v as f32);
+    let hidden_size_per_layer_input = arch_u64(&config, &model_type, "hidden_size_per_layer_input")
+        .and_then(u64_to_u32)
+        .unwrap_or(0);
+    let vocab_size_per_layer_input = if hidden_size_per_layer_input > 0 {
+        arch_u64(&config, &model_type, "vocab_size_per_layer_input")
+            .and_then(u64_to_u32)
+            .filter(|v| *v > 0)
+    } else {
+        None
+    };
     let kv_shared_source_layers =
         compute_kv_shared_sources(&config, &model_type, &layer_types, arch.layer_count);
     let attention_value_from_key_layers = compute_attention_value_from_key_layers(
@@ -174,7 +184,7 @@ pub fn convert_hf_model_dir(model_dir: &Path) -> Result<NativeModelManifest, Con
         partial_rotary_factor,
         rms_norm_eps,
         attention_value_from_key_layers,
-        attention_v_norm_no_scale_layers: if model_type == "gemma4" {
+        attention_v_norm_no_scale_layers: if is_gemma4_target_model_type(&model_type) {
             (0..arch.layer_count)
                 .filter(|&i| !kv_shared_source_layers.contains_key(&i))
                 .collect()
@@ -186,19 +196,15 @@ pub fn convert_hf_model_dir(model_dir: &Path) -> Result<NativeModelManifest, Con
         layer_types,
         kv_shared_source_layers,
         final_logit_softcapping,
-        hidden_states_scale: if model_type == "gemma4" {
+        hidden_states_scale: if is_gemma4_target_model_type(&model_type) {
             Some((arch.hidden_size as f32).sqrt())
         } else {
             None
         },
         moe_norm_topk_prob: arch_bool(&config, &model_type, "norm_topk_prob")
             .unwrap_or(default_moe_norm_topk_prob(&model_type)),
-        hidden_size_per_layer_input: arch_u64(&config, &model_type, "hidden_size_per_layer_input")
-            .and_then(u64_to_u32)
-            .unwrap_or(0),
-        vocab_size_per_layer_input: arch_u64(&config, &model_type, "vocab_size_per_layer_input")
-            .and_then(u64_to_u32)
-            .filter(|v| *v > 0),
+        hidden_size_per_layer_input,
+        vocab_size_per_layer_input,
         linear_attention,
         mla_attention,
         moe: moe_config(&config, &model_type),
@@ -754,6 +760,59 @@ const GEMMA4_ASSISTANT_EXTRA_TENSOR_MAP: &[(&str, TensorMapping)] = &[
     ),
 ];
 
+/// Extra global tensors for Gemma4 Unified's encoder-free multimodal path.
+///
+/// This mirrors vLLM's `Gemma4UnifiedVisionEmbedder` plus
+/// `Gemma4MultimodalEmbedder` modules:
+/// raw patches -> LayerNorm -> Dense -> LayerNorm -> factorized pos emb ->
+/// LayerNorm -> multimodal projection.
+const GEMMA4_UNIFIED_EXTRA_TENSOR_MAP: &[(&str, TensorMapping)] = &[
+    (
+        "vision_embedder.patch_dense.weight",
+        TensorMapping::Global(NativeTensorRole::Gemma4UnifiedVisionPatchDense),
+    ),
+    (
+        "vision_embedder.patch_dense.bias",
+        TensorMapping::Global(NativeTensorRole::Gemma4UnifiedVisionPatchDenseBias),
+    ),
+    (
+        "vision_embedder.patch_ln1.weight",
+        TensorMapping::Global(NativeTensorRole::Gemma4UnifiedVisionPatchNorm1),
+    ),
+    (
+        "vision_embedder.patch_ln1.bias",
+        TensorMapping::Global(NativeTensorRole::Gemma4UnifiedVisionPatchNorm1Bias),
+    ),
+    (
+        "vision_embedder.patch_ln2.weight",
+        TensorMapping::Global(NativeTensorRole::Gemma4UnifiedVisionPatchNorm2),
+    ),
+    (
+        "vision_embedder.patch_ln2.bias",
+        TensorMapping::Global(NativeTensorRole::Gemma4UnifiedVisionPatchNorm2Bias),
+    ),
+    (
+        "vision_embedder.pos_embedding",
+        TensorMapping::Global(NativeTensorRole::Gemma4UnifiedVisionPositionEmbedding),
+    ),
+    (
+        "vision_embedder.pos_norm.weight",
+        TensorMapping::Global(NativeTensorRole::Gemma4UnifiedVisionPositionNorm),
+    ),
+    (
+        "vision_embedder.pos_norm.bias",
+        TensorMapping::Global(NativeTensorRole::Gemma4UnifiedVisionPositionNormBias),
+    ),
+    (
+        "embed_vision.embedding_projection.weight",
+        TensorMapping::Global(NativeTensorRole::Gemma4UnifiedVisionProjection),
+    ),
+    (
+        "embed_audio.embedding_projection.weight",
+        TensorMapping::Global(NativeTensorRole::Gemma4UnifiedAudioProjection),
+    ),
+];
+
 /// Gemma4 and Qwen3.5+ wrap the text model under `language_model.model.`, so
 /// tensor names in safetensors appear as
 /// `language_model.model.layers.0.self_attn.q_proj.weight`.
@@ -828,10 +887,14 @@ fn model_family_for_type(
             extra_tensor_map: Some(QWEN3_MOE_EXTRA_TENSOR_MAP),
             uses_language_model_prefix: false,
         }),
-        "gemma4" => Ok(ModelFamily {
+        "gemma4" | "gemma4_unified" | "gemma4_unified_text" => Ok(ModelFamily {
             family_name: "gemma4",
             tensor_map: HF_STANDARD_TENSOR_MAP,
-            extra_tensor_map: None,
+            extra_tensor_map: if matches!(model_type, "gemma4_unified" | "gemma4_unified_text") {
+                Some(GEMMA4_UNIFIED_EXTRA_TENSOR_MAP)
+            } else {
+                None
+            },
             uses_language_model_prefix: true,
         }),
         "gemma4_assistant" => Ok(ModelFamily {
@@ -923,6 +986,8 @@ fn uses_text_config(model_type: &str) -> bool {
     matches!(
         model_type,
         "gemma4"
+            | "gemma4_unified"
+            | "gemma4_unified_text"
             | "gemma4_assistant"
             | "llama4"
             | "qwen3_5"
@@ -944,6 +1009,17 @@ fn is_qwen3_5_family(model_type: &str) -> bool {
 
 fn is_qwen_gated_delta_family(model_type: &str) -> bool {
     is_qwen3_5_family(model_type) || matches!(model_type, "qwen3_next" | "qwen3_6" | "qwen3.6")
+}
+
+fn is_gemma4_target_model_type(model_type: &str) -> bool {
+    matches!(
+        model_type,
+        "gemma4" | "gemma4_unified" | "gemma4_unified_text"
+    )
+}
+
+fn is_gemma4_text_model_type(model_type: &str) -> bool {
+    is_gemma4_target_model_type(model_type) || model_type == "gemma4_assistant"
 }
 
 fn is_qwen_family_model_type(model_type: &str) -> bool {
@@ -1166,7 +1242,7 @@ fn parse_rope_params(
     config: &serde_json::Value,
     model_type: &str,
 ) -> (Option<u32>, Option<u32>, Option<f32>) {
-    if matches!(model_type, "gemma4" | "gemma4_assistant") {
+    if is_gemma4_text_model_type(model_type) {
         let rp = config
             .get("text_config")
             .and_then(|tc| tc.get("rope_parameters"));
@@ -1273,7 +1349,7 @@ fn parse_layer_types(
     model_type: &str,
     layer_count: u32,
 ) -> Vec<String> {
-    if !matches!(model_type, "gemma4" | "gemma4_assistant") {
+    if !is_gemma4_text_model_type(model_type) {
         return Vec::new();
     }
     if let Some(layer_types) = config
@@ -1321,11 +1397,12 @@ fn compute_kv_shared_sources(
     layer_types: &[String],
     layer_count: u32,
 ) -> BTreeMap<u32, u32> {
-    if model_type != "gemma4" || layer_types.is_empty() {
+    if !is_gemma4_target_model_type(model_type) || layer_types.is_empty() {
         return BTreeMap::new();
     }
+    let default_shared_layers = if model_type == "gemma4" { 20 } else { 0 };
     let num_shared = arch_u64(config, model_type, "num_kv_shared_layers")
-        .unwrap_or(20)
+        .unwrap_or(default_shared_layers)
         .min(u64::from(layer_count)) as usize;
     let non_shared_count = layer_count as usize - num_shared;
 
@@ -1358,7 +1435,8 @@ fn compute_attention_value_from_key_layers(
     kv_shared_source_layers: &BTreeMap<u32, u32>,
     layer_count: u32,
 ) -> Vec<u32> {
-    if model_type != "gemma4" || !arch_bool(config, model_type, "attention_k_eq_v").unwrap_or(false)
+    if !is_gemma4_target_model_type(model_type)
+        || !arch_bool(config, model_type, "attention_k_eq_v").unwrap_or(false)
     {
         return Vec::new();
     }
@@ -1828,7 +1906,7 @@ fn validate_converted_model_contract(
     model_type: &str,
     manifest: &NativeModelManifest,
 ) -> Result<(), ConvertError> {
-    if model_type == "gemma4" {
+    if is_gemma4_target_model_type(model_type) {
         return validate_gemma4_contract(manifest);
     }
     if model_type == "gemma4_assistant" {
@@ -2874,6 +2952,226 @@ mod tests {
         assert!(!manifest.kv_shared_source_layers.contains_key(&14));
         assert!(manifest.attention_v_norm_no_scale_layers.contains(&14));
         assert!(!manifest.attention_v_norm_no_scale_layers.contains(&15));
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn converts_gemma4_unified_text_without_tower_tensors() {
+        let dir = unique_test_dir("gemma4_unified_text");
+        write_config(
+            &dir,
+            serde_json::json!({
+                "model_type": "gemma4_unified",
+                "architectures": ["Gemma4UnifiedForConditionalGeneration"],
+                "vocab_size": 262144,
+                "tie_word_embeddings": false,
+                "text_config": {
+                    "model_type": "gemma4_unified_text",
+                    "hidden_size": 3072,
+                    "num_attention_heads": 32,
+                    "num_key_value_heads": 8,
+                    "num_global_key_value_heads": 4,
+                    "head_dim": 128,
+                    "global_head_dim": 256,
+                    "sliding_window": 1024,
+                    "attention_k_eq_v": true,
+                    "num_kv_shared_layers": 0,
+                    "hidden_size_per_layer_input": 0,
+                    "vocab_size_per_layer_input": 262144,
+                    "final_logit_softcapping": 30.0,
+                    "num_hidden_layers": 2,
+                    "vocab_size": 262144,
+                    "layer_types": ["sliding_attention", "full_attention"],
+                    "rope_parameters": {
+                        "full_attention": {
+                            "rope_theta": 1000000,
+                            "partial_rotary_factor": 0.25
+                        },
+                        "sliding_attention": {
+                            "rope_theta": 10000
+                        }
+                    }
+                },
+                "vision_config": {
+                    "model_type": "gemma4_unified_vision"
+                }
+            }),
+        );
+        write_fake_safetensors(
+            &dir,
+            "model.safetensors",
+            &[
+                (
+                    "language_model.model.embed_tokens.weight",
+                    "BF16",
+                    &[262144, 3072],
+                ),
+                ("language_model.model.norm.weight", "BF16", &[3072]),
+                ("language_model.lm_head.weight", "BF16", &[262144, 3072]),
+                (
+                    "language_model.model.layers.0.input_layernorm.weight",
+                    "BF16",
+                    &[3072],
+                ),
+                (
+                    "language_model.model.layers.0.self_attn.q_proj.weight",
+                    "BF16",
+                    &[4096, 3072],
+                ),
+                (
+                    "language_model.model.layers.0.self_attn.k_proj.weight",
+                    "BF16",
+                    &[1024, 3072],
+                ),
+                (
+                    "language_model.model.layers.0.self_attn.v_proj.weight",
+                    "BF16",
+                    &[1024, 3072],
+                ),
+                (
+                    "language_model.model.layers.0.self_attn.o_proj.weight",
+                    "BF16",
+                    &[3072, 4096],
+                ),
+                (
+                    "language_model.model.layers.0.self_attn.q_norm.weight",
+                    "BF16",
+                    &[128],
+                ),
+                (
+                    "language_model.model.layers.0.self_attn.k_norm.weight",
+                    "BF16",
+                    &[128],
+                ),
+                (
+                    "language_model.model.layers.0.post_attention_layernorm.weight",
+                    "BF16",
+                    &[3072],
+                ),
+                (
+                    "language_model.model.layers.0.pre_feedforward_layernorm.weight",
+                    "BF16",
+                    &[3072],
+                ),
+                (
+                    "language_model.model.layers.0.post_feedforward_layernorm.weight",
+                    "BF16",
+                    &[3072],
+                ),
+                (
+                    "language_model.model.layers.0.mlp.gate_proj.weight",
+                    "BF16",
+                    &[12288, 3072],
+                ),
+                (
+                    "language_model.model.layers.0.mlp.up_proj.weight",
+                    "BF16",
+                    &[12288, 3072],
+                ),
+                (
+                    "language_model.model.layers.0.mlp.down_proj.weight",
+                    "BF16",
+                    &[3072, 12288],
+                ),
+                (
+                    "language_model.model.layers.1.input_layernorm.weight",
+                    "BF16",
+                    &[3072],
+                ),
+                (
+                    "language_model.model.layers.1.self_attn.q_proj.weight",
+                    "BF16",
+                    &[8192, 3072],
+                ),
+                (
+                    "language_model.model.layers.1.self_attn.k_proj.weight",
+                    "BF16",
+                    &[1024, 3072],
+                ),
+                (
+                    "language_model.model.layers.1.self_attn.o_proj.weight",
+                    "BF16",
+                    &[3072, 8192],
+                ),
+                (
+                    "language_model.model.layers.1.self_attn.q_norm.weight",
+                    "BF16",
+                    &[256],
+                ),
+                (
+                    "language_model.model.layers.1.self_attn.k_norm.weight",
+                    "BF16",
+                    &[256],
+                ),
+                (
+                    "language_model.model.layers.1.post_attention_layernorm.weight",
+                    "BF16",
+                    &[3072],
+                ),
+                (
+                    "language_model.model.layers.1.pre_feedforward_layernorm.weight",
+                    "BF16",
+                    &[3072],
+                ),
+                (
+                    "language_model.model.layers.1.post_feedforward_layernorm.weight",
+                    "BF16",
+                    &[3072],
+                ),
+                (
+                    "language_model.model.layers.1.mlp.gate_proj.weight",
+                    "BF16",
+                    &[12288, 3072],
+                ),
+                (
+                    "language_model.model.layers.1.mlp.up_proj.weight",
+                    "BF16",
+                    &[12288, 3072],
+                ),
+                (
+                    "language_model.model.layers.1.mlp.down_proj.weight",
+                    "BF16",
+                    &[3072, 12288],
+                ),
+                // Unified multimodal tensors are global projector roles, not towers.
+                ("vision_embedder.pos_embedding", "BF16", &[1120, 2, 3072]),
+            ],
+        );
+
+        let manifest = convert_hf_model_dir(&dir).expect("unified text conversion should succeed");
+
+        assert_eq!(manifest.model_family, "gemma4");
+        assert_eq!(manifest.hidden_size, 3072);
+        assert_eq!(manifest.rope_theta, Some(1000000));
+        assert_eq!(manifest.rope_theta_swa, Some(10000));
+        assert_eq!(manifest.partial_rotary_factor, Some(0.25));
+        assert_eq!(manifest.global_head_dim, Some(256));
+        assert_eq!(manifest.sliding_window_size, Some(1024));
+        assert_eq!(manifest.final_logit_softcapping, Some(30.0));
+        assert_eq!(manifest.hidden_states_scale, Some((3072_f32).sqrt()));
+        assert_eq!(manifest.hidden_size_per_layer_input, 0);
+        assert_eq!(manifest.vocab_size_per_layer_input, None);
+        assert_eq!(
+            manifest.layer_types,
+            vec![
+                "sliding_attention".to_string(),
+                "full_attention".to_string()
+            ]
+        );
+        assert!(manifest.kv_shared_source_layers.is_empty());
+        assert_eq!(manifest.attention_value_from_key_layers, vec![1]);
+        assert_eq!(manifest.attention_v_norm_no_scale_layers, vec![0, 1]);
+        assert!(
+            manifest.tensors.iter().any(|tensor| {
+                tensor.role == NativeTensorRole::Gemma4UnifiedVisionPositionEmbedding
+                    && tensor.name == "vision_embedder.pos_embedding"
+            }),
+            "unified projector tensors should be mapped for multimodal runtime support"
+        );
+        write_manifest(&dir, &manifest).expect("write should succeed");
+        crate::model::NativeModelArtifacts::from_dir(&dir)
+            .expect("Gemma4 unified text manifest should validate");
 
         let _ = fs::remove_dir_all(dir);
     }

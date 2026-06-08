@@ -490,9 +490,105 @@ pub(crate) fn build_layer_masks(
     }
 }
 
+/// Build vLLM-style Gemma4 multimodal PrefixLM masks.
+///
+/// vLLM applies `(causal AND sliding_window) OR mm_prefix` to sliding-attention
+/// layers only. Full-attention layers keep the regular causal mask.
+pub(crate) fn build_layer_masks_with_media_ranges(
+    cfg: &ModelConfig,
+    n_layers: usize,
+    seq: usize,
+    key_len: usize,
+    media_ranges: &[(usize, usize)],
+) -> Vec<Option<MlxArray>> {
+    if media_ranges.is_empty() {
+        return build_layer_masks(cfg, n_layers, seq, key_len);
+    }
+
+    if cfg.layer_configs.is_empty() {
+        let Some(window) = cfg.global_sliding_window else {
+            return build_layer_masks(cfg, n_layers, seq, key_len);
+        };
+        let ranges = filtered_media_ranges(media_ranges, Some(window));
+        if ranges.is_empty() {
+            return build_layer_masks(cfg, n_layers, seq, key_len);
+        }
+        let mask = media_prefix_mask_array(seq, key_len, Some(window), &ranges);
+        return vec![Some(mask); n_layers];
+    }
+
+    cfg.layer_configs
+        .iter()
+        .map(|lc| {
+            let Some(window) = lc.sliding_window else {
+                return attention_mask_array(seq, key_len, None);
+            };
+            let ranges = filtered_media_ranges(media_ranges, Some(window));
+            if ranges.is_empty() {
+                return attention_mask_array(seq, key_len, Some(window));
+            }
+            Some(media_prefix_mask_array(seq, key_len, Some(window), &ranges))
+        })
+        .collect()
+}
+
+fn filtered_media_ranges(
+    media_ranges: &[(usize, usize)],
+    sliding_window: Option<usize>,
+) -> Vec<(usize, usize)> {
+    media_ranges
+        .iter()
+        .copied()
+        .filter(|(start, end)| {
+            *start < *end
+                && sliding_window
+                    .is_none_or(|window| end.saturating_sub(*start).saturating_add(1) <= window)
+        })
+        .collect()
+}
+
+fn media_prefix_mask_array(
+    seq_len: usize,
+    key_len: usize,
+    sliding_window: Option<usize>,
+    media_ranges: &[(usize, usize)],
+) -> MlxArray {
+    let offset = key_len.saturating_sub(seq_len);
+    let mut mask = vec![0_u8; seq_len.saturating_mul(key_len)];
+    for query in 0..seq_len {
+        let query_abs = offset + query;
+        for key in 0..key_len {
+            let mut allowed = key <= query_abs;
+            if allowed && let Some(window) = sliding_window {
+                allowed = query_abs - key < window;
+            }
+            if !allowed {
+                allowed = media_ranges.iter().any(|(start, end)| {
+                    query_abs >= *start && query_abs <= *end && key >= *start && key <= *end
+                });
+            }
+            mask[query * key_len + key] = u8::from(allowed);
+        }
+    }
+    MlxArray::from_raw_data(
+        mask.as_ptr(),
+        mask.len(),
+        &[seq_len as i32, key_len as i32],
+        MlxDtype::Bool,
+    )
+}
+
 #[cfg(test)]
 mod tests {
-    use super::qwen_direct_qk_norm_rope_default_family;
+    use super::{media_prefix_mask_array, qwen_direct_qk_norm_rope_default_family};
+    use mlx_sys::{MlxArray, eval};
+
+    fn mask_data(mask: &MlxArray) -> Vec<u8> {
+        eval(&[mask]);
+        let len = mask.nbytes();
+        let ptr = mask.data_raw();
+        unsafe { std::slice::from_raw_parts(ptr, len).to_vec() }
+    }
 
     #[test]
     fn qwen_direct_qk_norm_rope_defaults_cover_all_qwen_families() {
@@ -501,5 +597,23 @@ mod tests {
         assert!(qwen_direct_qk_norm_rope_default_family("qwen3_next"));
         assert!(!qwen_direct_qk_norm_rope_default_family("gemma4"));
         assert!(!qwen_direct_qk_norm_rope_default_family("llama3"));
+    }
+
+    #[test]
+    fn media_prefix_mask_or_extends_sliding_window_inside_range() {
+        let mask = media_prefix_mask_array(6, 6, Some(2), &[(1, 3)]);
+
+        assert_eq!(mask.shape(), vec![6, 6]);
+        assert_eq!(
+            mask_data(&mask),
+            vec![
+                1, 0, 0, 0, 0, 0, //
+                1, 1, 1, 1, 0, 0, //
+                0, 1, 1, 1, 0, 0, //
+                0, 1, 1, 1, 0, 0, //
+                0, 0, 0, 1, 1, 0, //
+                0, 0, 0, 0, 1, 1,
+            ]
+        );
     }
 }

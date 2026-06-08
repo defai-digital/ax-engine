@@ -32,6 +32,7 @@ pub(crate) fn build_generate_request(
         model_id,
         input_tokens,
         input_text,
+        multimodal_inputs: Default::default(),
         max_output_tokens,
         sampling,
         stop_sequences,

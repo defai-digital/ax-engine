@@ -27,7 +27,89 @@ def write_model(root: Path, model_type: str, keys: list[str]) -> Path:
     return model_dir
 
 
+def write_gemma4_unified_refs(repo: Path) -> None:
+    vllm_models = repo / ".internal/reference/vllm/vllm/model_executor/models"
+    llama_mtmd = repo / ".internal/reference/llama.cpp/tools/mtmd"
+    vllm_models.mkdir(parents=True)
+    llama_mtmd.mkdir(parents=True)
+    (vllm_models / "gemma4_unified.py").write_text(
+        "Gemma4UnifiedVisionEmbedder vision_embedder embed_audio"
+    )
+    (vllm_models / "gemma4_mm.py").write_text(
+        "get_image_repl use_bidirectional_attention mm_prefix_range"
+    )
+    (llama_mtmd / "mtmd.cpp").write_text(
+        "PROJECTOR_TYPE_GEMMA4V mtmd_decode_use_non_causal"
+    )
+
+
+def write_gemma4_unified_runtime(repo: Path) -> None:
+    (repo / "crates/ax-engine-core/src").mkdir(parents=True)
+    (repo / "crates/ax-engine-mlx/src").mkdir(parents=True)
+    (repo / "crates/ax-engine-core/src/gemma4_unified.rs").write_text("// core runtime")
+    (repo / "crates/ax-engine-mlx/src/gemma4_unified.rs").write_text("// mlx runtime")
+
+
 class MlxModelSupportProbeTests(unittest.TestCase):
+    def test_gemma4_unified_is_candidate_without_manifest(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            write_gemma4_unified_refs(repo)
+            model_dir = write_model(
+                root,
+                "gemma4_unified",
+                [
+                    "language_model.model.embed_tokens.weight",
+                    "language_model.model.layers.0.self_attn.q_proj.weight",
+                    "vision_embedder.patch_dense.weight",
+                    "vision_embedder.pos_embedding",
+                    "embed_vision.embedding_projection.weight",
+                    "embed_audio.embedding_projection.weight",
+                ],
+            )
+
+            with patch.object(probe, "REPO_ROOT", repo):
+                report = probe.probe_model(model_dir)
+
+        self.assertEqual(report["support_decision"], "implementation_candidate")
+        self.assertTrue(report["can_implement_repo_owned_runtime"])
+        self.assertEqual(report["reference_support"], "complete_enough_for_ax_port")
+        self.assertEqual(report["modalities"]["text"], "candidate")
+        self.assertEqual(report["modalities"]["image"], "candidate")
+        self.assertIn("model-manifest.json", " ".join(report["blockers"]))
+        self.assertTrue(report["checkpoint_features"]["vision_tower_absent"])
+
+    def test_gemma4_unified_is_text_and_tensor_runtime_ready_with_manifest(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            write_gemma4_unified_refs(repo)
+            write_gemma4_unified_runtime(repo)
+            model_dir = write_model(
+                root,
+                "gemma4_unified",
+                [
+                    "language_model.model.embed_tokens.weight",
+                    "language_model.model.layers.0.self_attn.q_proj.weight",
+                    "vision_embedder.patch_dense.weight",
+                    "vision_embedder.pos_embedding",
+                    "embed_vision.embedding_projection.weight",
+                    "embed_audio.embedding_projection.weight",
+                ],
+            )
+            (model_dir / "model-manifest.json").write_text(json.dumps({"model_family": "gemma4"}))
+
+            with patch.object(probe, "REPO_ROOT", repo):
+                report = probe.probe_model(model_dir)
+
+        self.assertEqual(report["support_decision"], "text_and_multimodal_tensor_runtime_ready")
+        self.assertTrue(report["can_implement_repo_owned_runtime"])
+        self.assertEqual(report["blockers"], [])
+        self.assertEqual(report["modalities"]["text"], "manifest_ready")
+        self.assertEqual(report["modalities"]["audio"], "runtime_tensor_ready")
+        self.assertIn("Gemma4UnifiedRuntimeInputs", " ".join(report["integration_gaps"]))
+
     def test_glm_is_runtime_ready_when_manifest_references_and_features_exist(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

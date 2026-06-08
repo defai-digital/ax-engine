@@ -41,7 +41,7 @@ use shared::*;
 mod families;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum FinalLogitsMode {
+pub(crate) enum FinalLogitsMode {
     Full,
     ArgmaxOnly,
 }
@@ -495,6 +495,92 @@ fn forward_with_turboquant_context_and_logits_mode(
         record_prefill_profile_step(weights.layers.len() as u32, seq as u32);
     }
     logits
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn forward_with_initial_hidden_and_media_ranges(
+    cfg: &ModelConfig,
+    weights: &ModelWeights,
+    token_ids: &[u32],
+    hidden: MlxArray,
+    media_ranges: &[(usize, usize)],
+    cache: &mut MlxKVCache,
+    token_offset: usize,
+    logits_mode: FinalLogitsMode,
+) -> MlxArray {
+    let ids_1d = MlxArray::from_raw_data(
+        token_ids.as_ptr() as *const u8,
+        std::mem::size_of_val(token_ids),
+        &[token_ids.len() as i32],
+        MlxDtype::Uint32,
+    );
+    let seq = token_ids.len();
+    let decode_mask: Option<MlxArray> = None;
+    let masks = if seq > 1 {
+        Some(build_layer_masks_with_media_ranges(
+            cfg,
+            weights.layers.len(),
+            seq,
+            token_offset + seq,
+            media_ranges,
+        ))
+    } else {
+        None
+    };
+    let per_layer_inputs = compute_per_layer_inputs_arr(cfg, weights, &ids_1d, &hidden);
+    let mut hidden = hidden;
+    let last_layer_idx = weights.layers.len().saturating_sub(1);
+    let use_last_layer_optimization = seq > 1;
+    for (li, layer_w) in weights.layers.iter().enumerate() {
+        let pli = per_layer_inputs.as_ref().map(|v| &v[li]);
+        let shared_mask = masks
+            .as_ref()
+            .map(|masks| &masks[li])
+            .unwrap_or(&decode_mask);
+        hidden = if use_last_layer_optimization && li == last_layer_idx {
+            layer_forward_with_turboquant_context_last_only(
+                cfg,
+                layer_w,
+                &hidden,
+                cache,
+                li,
+                token_offset,
+                pli,
+                Some(shared_mask),
+                None,
+            )
+        } else {
+            layer_forward_with_turboquant_context(
+                cfg,
+                layer_w,
+                &hidden,
+                cache,
+                li,
+                token_offset,
+                pli,
+                Some(shared_mask),
+                None,
+            )
+        };
+    }
+
+    let last_hidden = if hidden.shape().get(1).copied().unwrap_or(1) > 1 {
+        let last = (token_ids.len() - 1) as i32;
+        let hs = cfg.hidden_size as i32;
+        slice(&hidden, &[0, last, 0], &[1, last + 1, hs], &[1, 1, 1], None)
+    } else {
+        hidden
+    };
+
+    let normed = rms_norm(
+        &last_hidden,
+        Some(&weights.final_norm),
+        cfg.rms_norm_eps,
+        None,
+    );
+    let logits = qw(&normed, &weights.lm_head);
+    let logits = finalize_lm_head_logits(cfg, &logits, logits_mode);
+    reshape(&logits, &[cfg.vocab_size as i32], None)
 }
 
 /// Forward pass returning logits for ALL token positions — `[seq, vocab_size]` f32.
@@ -2124,6 +2210,8 @@ mod tests {
             gemma4_assistant_mtp: Default::default(),
             assistant_pre_projection: None,
             assistant_post_projection: None,
+            gemma4_unified_vision: None,
+            gemma4_unified_audio: None,
         };
 
         let per_layer = compute_per_layer_inputs_arr(&cfg, &weights, &ids_scalar, &hidden)
@@ -3380,6 +3468,8 @@ mod tests {
             gemma4_assistant_mtp: Default::default(),
             assistant_pre_projection: None,
             assistant_post_projection: None,
+            gemma4_unified_vision: None,
+            gemma4_unified_audio: None,
         };
         let mut cache = MlxKVCache::new(cfg.layer_count);
 

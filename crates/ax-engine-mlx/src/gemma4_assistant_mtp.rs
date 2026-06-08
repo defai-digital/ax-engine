@@ -354,6 +354,7 @@ fn is_known_gemma4_assistant_pair(assistant_model_id: &str, target_model_id: &st
     const KNOWN_TARGETS: &[&str] = &[
         "gemma-4-e2b-it",
         "gemma-4-e4b-it",
+        "gemma-4-12b-it",
         "gemma-4-26b-a4b-it",
         "gemma-4-31b-it",
     ];

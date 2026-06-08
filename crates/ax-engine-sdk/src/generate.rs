@@ -1,6 +1,9 @@
 use std::collections::BTreeMap;
 
-use ax_engine_core::{RequestSnapshot, RequestState, RouteMetadata, SamplingParams, StopReason};
+use ax_engine_core::{
+    RequestMultimodalInputs, RequestSnapshot, RequestState, RouteMetadata, SamplingParams,
+    StopReason,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::backend::RuntimeReport;
@@ -12,6 +15,8 @@ pub struct GenerateRequest {
     pub input_tokens: Vec<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub input_text: Option<String>,
+    #[serde(default, skip_serializing_if = "RequestMultimodalInputs::is_empty")]
+    pub multimodal_inputs: RequestMultimodalInputs,
     pub max_output_tokens: u32,
     #[serde(default)]
     pub sampling: GenerateSampling,

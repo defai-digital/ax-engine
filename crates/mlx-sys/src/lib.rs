@@ -62,13 +62,14 @@ pub use ops::{
     as_strided, astype, broadcast_to, clip, concatenate, contiguous, conv1d, cos, dequantize,
     dequantize_with_mode, divide, erf, exp, expand_dims, expand_dims_axes, flatten, floor,
     from_fp8, gather_mm, gather_qmm, gelu, gelu_approx, gelu_approx_mul,
-    gelu_approx_mul_quantized_matmul, gemma4_post_attn_ffn_block, greater_equal, less, log, log1p,
-    logical_and, matmul, maximum, minimum, multiply, negative, outer, pad, power, put_along_axis,
-    qk_norm_rope_bhsd_from_proj, quantize, quantized_matmul, quantized_matmul_rms_norm,
-    qwen_linear_attention_inputs_packed, qwen_linear_attention_post_input, random_categorical,
-    repeat, repeat_axis, reshape, sigmoid, silu_mul, sin, slice, slice_last_dim, slice_update,
-    softmax, softmax_precise, split, stack, stop_gradient, subtract, sum_axis, take,
-    take_along_axis, tanh, to_fp8, topk, topk_axis, transpose, unflatten, where_cond, zeros,
+    gelu_approx_mul_quantized_matmul, gemma4_post_attn_ffn_block, greater_equal, layer_norm, less,
+    log, log1p, logical_and, matmul, maximum, minimum, multiply, negative, outer, pad, power,
+    put_along_axis, qk_norm_rope_bhsd_from_proj, quantize, quantized_matmul,
+    quantized_matmul_rms_norm, qwen_linear_attention_inputs_packed,
+    qwen_linear_attention_post_input, random_categorical, repeat, repeat_axis, reshape, sigmoid,
+    silu_mul, sin, slice, slice_last_dim, slice_update, softmax, softmax_precise, split, stack,
+    stop_gradient, subtract, sum_axis, take, take_along_axis, tanh, to_fp8, topk, topk_axis,
+    transpose, unflatten, where_cond, zeros,
 };
 pub use stream::MlxStream;
 pub use transforms::{

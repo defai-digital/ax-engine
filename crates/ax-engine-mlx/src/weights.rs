@@ -41,6 +41,31 @@ pub struct ModelWeights {
     pub assistant_pre_projection: Option<QuantizedWeight>,
     /// Gemma4 Assistant post-projection from assistant hidden back to target hidden.
     pub assistant_post_projection: Option<QuantizedWeight>,
+    /// Gemma4 Unified encoder-free vision embedder + connector.
+    pub gemma4_unified_vision: Option<Gemma4UnifiedVisionWeights>,
+    /// Gemma4 Unified encoder-free audio connector.
+    pub gemma4_unified_audio: Option<Gemma4UnifiedAudioWeights>,
+}
+
+/// Gemma4 Unified vision path, matching vLLM's
+/// `Gemma4UnifiedVisionEmbedder` followed by `Gemma4MultimodalEmbedder`.
+pub struct Gemma4UnifiedVisionWeights {
+    pub patch_ln1_weight: MlxArray,
+    pub patch_ln1_bias: MlxArray,
+    pub patch_dense: QuantizedWeight,
+    pub patch_dense_bias: MlxArray,
+    pub patch_ln2_weight: MlxArray,
+    pub patch_ln2_bias: MlxArray,
+    pub pos_embedding: MlxArray,
+    pub pos_norm_weight: MlxArray,
+    pub pos_norm_bias: MlxArray,
+    pub projection: QuantizedWeight,
+}
+
+/// Gemma4 Unified audio path, matching vLLM's direct
+/// `Gemma4MultimodalEmbedder` projection.
+pub struct Gemma4UnifiedAudioWeights {
+    pub projection: QuantizedWeight,
 }
 
 /// Weights for a recurrent MTP (Multi-Token Prediction) draft head.
@@ -389,6 +414,8 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
         } else {
             None
         };
+    let gemma4_unified_vision = load_gemma4_unified_vision_weights(specs, &mut name_map)?;
+    let gemma4_unified_audio = load_gemma4_unified_audio_weights(specs, &mut name_map)?;
 
     let mut layers = Vec::with_capacity(layer_count);
     for li in 0..layer_count {
@@ -835,11 +862,127 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
         gemma4_assistant_mtp,
         assistant_pre_projection,
         assistant_post_projection,
+        gemma4_unified_vision,
+        gemma4_unified_audio,
     };
 
     apply_rotated_checkpoint(&mut model, artifacts)?;
 
     Ok(model)
+}
+
+fn load_gemma4_unified_vision_weights(
+    specs: &[NativeTensorSpec],
+    name_map: &mut HashMap<String, MlxArray>,
+) -> Result<Option<Gemma4UnifiedVisionWeights>, WeightLoadError> {
+    if !has_role(specs, NativeTensorRole::Gemma4UnifiedVisionPatchDense, None)
+        && !has_role(specs, NativeTensorRole::Gemma4UnifiedVisionProjection, None)
+    {
+        return Ok(None);
+    }
+
+    Ok(Some(Gemma4UnifiedVisionWeights {
+        patch_ln1_weight: take_plain_required(
+            specs,
+            name_map,
+            NativeTensorRole::Gemma4UnifiedVisionPatchNorm1,
+            None,
+            "gemma4_unified.patch_ln1.weight",
+        )?,
+        patch_ln1_bias: take_plain_required(
+            specs,
+            name_map,
+            NativeTensorRole::Gemma4UnifiedVisionPatchNorm1Bias,
+            None,
+            "gemma4_unified.patch_ln1.bias",
+        )?,
+        patch_dense: take_weight(
+            specs,
+            name_map,
+            NativeTensorRole::Gemma4UnifiedVisionPatchDense,
+            None,
+            "gemma4_unified.patch_dense",
+        )?,
+        patch_dense_bias: take_plain_required(
+            specs,
+            name_map,
+            NativeTensorRole::Gemma4UnifiedVisionPatchDenseBias,
+            None,
+            "gemma4_unified.patch_dense.bias",
+        )?,
+        patch_ln2_weight: take_plain_required(
+            specs,
+            name_map,
+            NativeTensorRole::Gemma4UnifiedVisionPatchNorm2,
+            None,
+            "gemma4_unified.patch_ln2.weight",
+        )?,
+        patch_ln2_bias: take_plain_required(
+            specs,
+            name_map,
+            NativeTensorRole::Gemma4UnifiedVisionPatchNorm2Bias,
+            None,
+            "gemma4_unified.patch_ln2.bias",
+        )?,
+        pos_embedding: take_plain_required(
+            specs,
+            name_map,
+            NativeTensorRole::Gemma4UnifiedVisionPositionEmbedding,
+            None,
+            "gemma4_unified.pos_embedding",
+        )?,
+        pos_norm_weight: take_plain_required(
+            specs,
+            name_map,
+            NativeTensorRole::Gemma4UnifiedVisionPositionNorm,
+            None,
+            "gemma4_unified.pos_norm.weight",
+        )?,
+        pos_norm_bias: take_plain_required(
+            specs,
+            name_map,
+            NativeTensorRole::Gemma4UnifiedVisionPositionNormBias,
+            None,
+            "gemma4_unified.pos_norm.bias",
+        )?,
+        projection: take_weight(
+            specs,
+            name_map,
+            NativeTensorRole::Gemma4UnifiedVisionProjection,
+            None,
+            "gemma4_unified.embed_vision.embedding_projection",
+        )?,
+    }))
+}
+
+fn load_gemma4_unified_audio_weights(
+    specs: &[NativeTensorSpec],
+    name_map: &mut HashMap<String, MlxArray>,
+) -> Result<Option<Gemma4UnifiedAudioWeights>, WeightLoadError> {
+    if !has_role(specs, NativeTensorRole::Gemma4UnifiedAudioProjection, None) {
+        return Ok(None);
+    }
+
+    Ok(Some(Gemma4UnifiedAudioWeights {
+        projection: take_weight(
+            specs,
+            name_map,
+            NativeTensorRole::Gemma4UnifiedAudioProjection,
+            None,
+            "gemma4_unified.embed_audio.embedding_projection",
+        )?,
+    }))
+}
+
+fn take_plain_required(
+    specs: &[NativeTensorSpec],
+    name_map: &mut HashMap<String, MlxArray>,
+    role: NativeTensorRole,
+    layer_index: Option<u32>,
+    label: &str,
+) -> Result<MlxArray, WeightLoadError> {
+    try_take_plain(specs, name_map, role, layer_index)?
+        .ok_or_else(|| WeightLoadError::RoleMissing(format!("{label}[{layer_index:?}]")))
 }
 
 /// Take a plain (non-quantized) tensor from `name_map` by exact key.

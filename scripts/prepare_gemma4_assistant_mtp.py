@@ -12,9 +12,11 @@ This tool assembles a self-contained, ready-to-serve model directory:
 
     <output>/
       config.json, *.safetensors, tokenizer.json   (target, hardlinked)
+      model-manifest.json                           (target AX manifest)
       ax_gemma4_assistant_mtp.json                  (the contract)
       assistant/
         config.json, *.safetensors, tokenizer.json  (assistant)
+        model-manifest.json                         (assistant AX manifest)
 
 It also patches the ax-engine packaging markers the runtime requires on the
 assistant config (``model_type: gemma4_assistant`` and ``backbone_hidden_size``),
@@ -44,6 +46,7 @@ import argparse
 import json
 import os
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -61,6 +64,7 @@ ASSISTANT_MODEL_TYPE = "gemma4_assistant"
 KNOWN_TARGETS = (
     "gemma-4-e2b-it",
     "gemma-4-e4b-it",
+    "gemma-4-12b-it",
     "gemma-4-26b-a4b-it",
     "gemma-4-31b-it",
 )
@@ -140,6 +144,13 @@ def _derive_canonical_target_id(ref: str) -> str:
         if leaf.endswith(suffix):
             return leaf[: -len(suffix)]
     return leaf
+
+
+def _derive_output_target_id(ref: str, canonical_target_id: str) -> str:
+    leaf = _model_id_leaf(ref)
+    if leaf == canonical_target_id or leaf.startswith(f"{canonical_target_id}-"):
+        return leaf
+    return canonical_target_id
 
 
 def is_known_pair(assistant_model_id: str, target_model_id: str) -> bool:
@@ -253,6 +264,71 @@ def _safe_copy(src: str, dst: str) -> None:
         shutil.copy2(src, dst)
 
 
+def _repo_root() -> Path:
+    return Path(__file__).resolve().parent.parent
+
+
+def _generate_manifest(model_dir: Path) -> None:
+    """Generate and validate an AX model-manifest.json for a packaged subtree."""
+    manifest_path = model_dir / "model-manifest.json"
+    if manifest_path.exists():
+        manifest_path.unlink()
+
+    root = _repo_root()
+    commands = [
+        ([str(root / "target" / "release" / "generate-manifest"), "--validate", str(model_dir)], root),
+        ([str(root / "target" / "debug" / "generate-manifest"), "--validate", str(model_dir)], root),
+        (["ax-engine-bench", "generate-manifest", str(model_dir), "--validate"], root),
+        (
+            [
+                "cargo",
+                "run",
+                "-q",
+                "-p",
+                "ax-engine-core",
+                "--bin",
+                "generate-manifest",
+                "--",
+                "--validate",
+                str(model_dir),
+            ],
+            root,
+        ),
+    ]
+
+    failures: list[str] = []
+    for command, cwd in commands:
+        executable = Path(command[0])
+        if executable.is_absolute() and not executable.exists():
+            continue
+        try:
+            result = subprocess.run(
+                command,
+                cwd=cwd,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+        except FileNotFoundError:
+            continue
+        if result.returncode == 0 and manifest_path.exists():
+            return
+        failures.append(
+            "$ "
+            + " ".join(command)
+            + "\nstdout:\n"
+            + result.stdout.strip()
+            + "\nstderr:\n"
+            + result.stderr.strip()
+        )
+
+    details = "\n\n".join(failures) if failures else "no manifest generator command was available"
+    sys.exit(
+        f"ERROR: failed to generate validated model-manifest.json for {model_dir}.\n{details}"
+    )
+
+
 # --------------------------------------------------------------------------- #
 # Driver
 # --------------------------------------------------------------------------- #
@@ -308,7 +384,8 @@ def prepare(
     if output is not None:
         out_dir = output.expanduser().resolve()
     else:
-        out_dir = HF_CACHE / f"models--ax-local--{target_id}-assistant-mtp" / "snapshots" / "v1"
+        output_target_id = _derive_output_target_id(target, target_id)
+        out_dir = HF_CACHE / f"models--ax-local--{output_target_id}-assistant-mtp" / "snapshots" / "v1"
     out_dir.mkdir(parents=True, exist_ok=True)
     print(f"Output dir:      {out_dir}", flush=True)
 
@@ -366,6 +443,12 @@ def prepare(
     contract_path.write_text(json.dumps(contract, indent=2))
     print(f"\nWrote {CONTRACT_FILE} -> {contract_path}", flush=True)
 
+    print("\nGenerating AX manifests...", flush=True)
+    _generate_manifest(out_dir)
+    print(f"  OK: {out_dir / 'model-manifest.json'}", flush=True)
+    _generate_manifest(assistant_out)
+    print(f"  OK: {assistant_out / 'model-manifest.json'}", flush=True)
+
     print(f"\nGemma 4 assistant MTP package ready at:\n  {out_dir}", flush=True)
     print(
         "Serve with the gemma4 assistant MTP enabled "
@@ -411,7 +494,7 @@ def main() -> None:
         "--max-depth",
         type=int,
         default=1,
-        help="Draft depth written to the contract (runtime caps at 1 today).",
+        help="Draft depth written to the contract; runtime may cap or override it.",
     )
     args = parser.parse_args()
 

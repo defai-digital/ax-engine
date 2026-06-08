@@ -747,6 +747,33 @@ pub fn qwen_linear_attention_post_input(
     None
 }
 
+/// Fast LayerNorm over the last dimension.
+///
+/// This is the same MLX primitive used by `nn.LayerNorm`; unlike `rms_norm`,
+/// it subtracts the mean and applies both affine weight and bias.
+pub fn layer_norm(
+    x: &MlxArray,
+    weight: &MlxArray,
+    bias: &MlxArray,
+    eps: f32,
+    s: Option<&MlxStream>,
+) -> MlxArray {
+    crate::op_count::bump();
+    unsafe {
+        let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
+        let mut res = MlxArray::empty();
+        ffi::mlx_fast_layer_norm(
+            &mut res.inner,
+            x.inner,
+            weight.inner,
+            bias.inner,
+            eps,
+            stream,
+        );
+        res
+    }
+}
+
 /// Compute `(add(x, y), rms_norm(add(x, y), norm_weight, eps))` in one C++ call.
 ///
 /// Both outputs are usually needed immediately: the residual sum for the

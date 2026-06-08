@@ -14704,6 +14704,7 @@ fn runner_input_for_execution_items(
     let mut block_tables = Vec::new();
     let mut seen_request_ids = BTreeSet::new();
     let mut request_contexts = Vec::new();
+    let mut request_multimodal_inputs = Vec::new();
     for item in items {
         if seen_block_table_refs.insert(item.block_table_ref) {
             block_tables.push(
@@ -14716,6 +14717,12 @@ fn runner_input_for_execution_items(
         }
         if seen_request_ids.insert(item.request_id) {
             request_contexts.push(*input.request_context(item.request_id)?);
+            if let Some(inputs) = input.request_multimodal_inputs(item.request_id) {
+                request_multimodal_inputs.push(crate::runner::RunnerRequestMultimodalInput {
+                    request_id: item.request_id,
+                    inputs: inputs.clone(),
+                });
+            }
         }
     }
 
@@ -14731,6 +14738,7 @@ fn runner_input_for_execution_items(
         },
         block_tables,
         request_contexts,
+        request_multimodal_inputs,
     })
 }
 

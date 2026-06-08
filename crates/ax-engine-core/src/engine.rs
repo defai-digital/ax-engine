@@ -16,7 +16,7 @@ use crate::request_manager::{RequestManager, RequestManagerError, RunnerApplySum
 use crate::runner::RequestLogitsOutput;
 use crate::runner::{
     DeterministicRunner, ExecutionRunner, ResolvedBlockTable, RunnerInput, RunnerOutput,
-    RunnerRequestContext,
+    RunnerRequestContext, RunnerRequestMultimodalInput,
 };
 use crate::sampling::{
     DeterministicSampler, SampledToken, SamplerInput, SamplerRequest, TokenSampler,
@@ -717,6 +717,7 @@ impl EngineCore {
         let mut block_tables = Vec::with_capacity(execution_batch.items.len());
         self.scratch_seen_request_ids.clear();
         let mut request_contexts = Vec::with_capacity(execution_batch.items.len());
+        let mut request_multimodal_inputs = Vec::new();
 
         for item in &execution_batch.items {
             block_tables.push(ResolvedBlockTable {
@@ -728,6 +729,12 @@ impl EngineCore {
                     .request_manager
                     .record(item.request_id)
                     .ok_or(RequestManagerError::UnknownRequest(item.request_id))?;
+                if !record.multimodal_inputs.is_empty() {
+                    request_multimodal_inputs.push(RunnerRequestMultimodalInput {
+                        request_id: item.request_id,
+                        inputs: record.multimodal_inputs.clone(),
+                    });
+                }
                 request_contexts.push(RunnerRequestContext {
                     request_id: item.request_id,
                     prompt_len: record.prompt_tokens.len() as u32,
@@ -755,6 +762,7 @@ impl EngineCore {
             execution_batch: execution_batch.clone(),
             block_tables,
             request_contexts,
+            request_multimodal_inputs,
         })
     }
 
@@ -1670,6 +1678,7 @@ mod tests {
             request_id: RequestId(request_id),
             model_id: ModelId("qwen3".into()),
             input_tokens,
+            multimodal_inputs: Default::default(),
             sampling_params: SamplingParams::default(),
             max_output_tokens,
             arrival_sequence: SequenceNo(arrival_sequence),
@@ -2793,6 +2802,7 @@ mod tests {
                 request_id: RequestId(1),
                 model_id: ModelId("gemma-4-27b-it".into()),
                 input_tokens: vec![1, 2, 3, 4],
+                multimodal_inputs: Default::default(),
                 sampling_params: SamplingParams::default(),
                 max_output_tokens: 2,
                 arrival_sequence: SequenceNo(1),
@@ -2924,6 +2934,7 @@ mod tests {
                 request_id: RequestId(1),
                 model_id: ModelId("qwen3".into()),
                 input_tokens: vec![1, 2, 3, 4],
+                multimodal_inputs: Default::default(),
                 sampling_params: SamplingParams::default(),
                 max_output_tokens: 1,
                 arrival_sequence: SequenceNo(1),
@@ -2935,6 +2946,7 @@ mod tests {
                 request_id: RequestId(2),
                 model_id: ModelId("gemma".into()),
                 input_tokens: vec![5, 6, 7, 8],
+                multimodal_inputs: Default::default(),
                 sampling_params: SamplingParams::default(),
                 max_output_tokens: 1,
                 arrival_sequence: SequenceNo(2),

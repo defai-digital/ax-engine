@@ -592,6 +592,7 @@ mod tests {
             request_id: RequestId(request_id),
             model_id: ModelId(model_id.into()),
             input_tokens: vec![10, 11, 12],
+            multimodal_inputs: Default::default(),
             sampling_params: SamplingParams::default(),
             max_output_tokens: 16,
             arrival_sequence: SequenceNo(arrival_sequence),

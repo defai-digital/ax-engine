@@ -7422,6 +7422,7 @@ fn generate_request_from_spec(
         model_id: spec.model_family.clone(),
         input_tokens: spec.input_tokens.clone(),
         input_text: spec.input_text.clone(),
+        multimodal_inputs: Default::default(),
         max_output_tokens: spec.max_output_tokens,
         sampling: GenerateSampling {
             temperature: manifest.sampling.temperature,
@@ -8173,6 +8174,7 @@ impl SyntheticRequestSpec {
             request_id: self.request_id,
             model_id: ax_engine_core::ModelId(self.model_family),
             input_tokens: self.input_tokens,
+            multimodal_inputs: Default::default(),
             sampling_params: self.sampling_params,
             max_output_tokens: self.max_output_tokens,
             arrival_sequence: self.arrival_sequence,

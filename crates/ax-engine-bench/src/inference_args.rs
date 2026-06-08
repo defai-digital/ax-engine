@@ -79,6 +79,7 @@ impl InferenceArgs {
             model_id: self.model_id.clone(),
             input_tokens: self.input_tokens.clone(),
             input_text: self.input_text.clone(),
+            multimodal_inputs: Default::default(),
             max_output_tokens: self.max_output_tokens,
             sampling: self.sampling.clone(),
             stop_sequences: Vec::new(),

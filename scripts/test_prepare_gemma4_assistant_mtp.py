@@ -54,6 +54,9 @@ class PairDetectionTests(unittest.TestCase):
     def test_known_pairs_accepted(self) -> None:
         self.assertTrue(prep.is_known_pair("gemma-4-e2b-it-assistant", "gemma-4-e2b-it"))
         self.assertTrue(
+            prep.is_known_pair("mlx-community/gemma-4-12B-it-assistant", "mlx-community/gemma-4-12B-it")
+        )
+        self.assertTrue(
             prep.is_known_pair("google/gemma-4-31b-it-assistant", "google/gemma-4-31b-it")
         )
 
@@ -70,6 +73,16 @@ class PairDetectionTests(unittest.TestCase):
         self.assertEqual(prep._derive_canonical_target_id("mlx-community/gemma-4-e2b-it-4bit"), "gemma-4-e2b-it")
         self.assertEqual(prep._derive_canonical_target_id("/x/gemma-4-31b-it-bf16"), "gemma-4-31b-it")
         self.assertEqual(prep._derive_canonical_target_id("google/gemma-4-e4b-it"), "gemma-4-e4b-it")
+
+    def test_derive_output_target_keeps_quant_suffix_when_available(self) -> None:
+        self.assertEqual(
+            prep._derive_output_target_id("mlx-community/gemma-4-12B-it-4bit", "gemma-4-12b-it"),
+            "gemma-4-12b-it-4bit",
+        )
+        self.assertEqual(
+            prep._derive_output_target_id("/cache/snapshots/5377970", "gemma-4-12b-it"),
+            "gemma-4-12b-it",
+        )
 
 
 class ArchValidationTests(unittest.TestCase):
@@ -178,15 +191,23 @@ class DriverTests(unittest.TestCase):
 
     def _run(self, root: Path, tdir: Path, adir: Path, **kw):
         # Suppress the driver's progress prints so they don't clutter the gate log.
-        with contextlib.redirect_stdout(io.StringIO()):
-            return prep.prepare(
-                target=str(tdir),
-                assistant=str(adir),
-                target_model_id=None,
-                assistant_model_id=None,
-                output=root / "out",
-                max_depth=kw.pop("max_depth", 1),
-            )
+        def fake_generate_manifest(model_dir: Path) -> None:
+            (model_dir / "model-manifest.json").write_text("{}")
+
+        original = prep._generate_manifest
+        prep._generate_manifest = fake_generate_manifest
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                return prep.prepare(
+                    target=str(tdir),
+                    assistant=str(adir),
+                    target_model_id=None,
+                    assistant_model_id=None,
+                    output=root / "out",
+                    max_depth=kw.pop("max_depth", 1),
+                )
+        finally:
+            prep._generate_manifest = original
 
     def test_happy_path_writes_valid_contract(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -198,6 +219,8 @@ class DriverTests(unittest.TestCase):
             tok_t = (out / "tokenizer.json").read_bytes()
             tok_a = (out / "assistant" / "tokenizer.json").read_bytes()
             self.assertEqual(tok_t, tok_a)
+            self.assertTrue((out / "model-manifest.json").is_file())
+            self.assertTrue((out / "assistant" / "model-manifest.json").is_file())
 
     def test_missing_target_tokenizer_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -289,6 +289,7 @@ pub(crate) fn build_generate_request_internal(
         model_id: state.model_id.to_string(),
         input_tokens,
         input_text,
+        multimodal_inputs: Default::default(),
         max_output_tokens,
         sampling,
         stop_sequences,

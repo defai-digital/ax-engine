@@ -381,7 +381,7 @@ delegated rows are not AX-owned throughput claims.
 
 | Family | Direct model IDs | Current scope | Architecture notes |
 |---|---|---|---|
-| Gemma 4 | `gemma-4-e2b-it`, `gemma-4-e4b-it`, `gemma-4-26b-a4b-it`, `gemma-4-31b-it` | Repo-owned MLX runtime; MLX affine 4/5/6/8-bit weights where available; assistant-MTP benchmark path for matched `*-assistant` drafters | Dense, per-layer embedding, and MoE variants; sliding-window + full attention, K=V full-attention layers, logit softcapping |
+| Gemma 4 | `gemma-4-e2b-it`, `gemma-4-e4b-it`, `gemma-4-12b-it`, `gemma-4-26b-a4b-it`, `gemma-4-31b-it` | Repo-owned MLX runtime; MLX affine 4/5/6/8-bit weights where available; assistant-MTP benchmark path for matched `*-assistant` drafters | Dense, unified 12B, per-layer embedding, and MoE variants; sliding-window + full attention, K=V full-attention layers, logit softcapping |
 | Qwen 3 | `Qwen3-4B-4bit` and manifest-backed Qwen 3 dense checkpoints | Repo-owned MLX runtime | SwiGLU dense FFN; per-head QK norm; optional MoE variants require manifest evidence |
 | Qwen 3.5 | `Qwen3.5-9B-MLX-4bit` | Repo-owned MLX runtime | Linear attention + MoE FFN; `attn_output_gate` per-head interleaving |
 | Qwen 3.6 / Coder Next | `Qwen3.6-35B-A3B` 4-bit MLX, `Qwen3.6-27B` 4/5/6/8-bit MLX, `Qwen3-Coder-Next-4bit` | Repo-owned MLX runtime | `qwen3_next`: GatedDelta linear attention, full attention with per-head sigmoid gate, sparse top-k MoE with shared expert |
@@ -461,6 +461,41 @@ Artifacts land under `benchmarks/results/gemma4-assistant-mtp/`; the SVGs render
 into `docs/assets/`. Tune the accept/throughput trade-off with
 `AX_MLX_GEMMA4_ASSISTANT_MTP_DRAFT_MIN_CONFIDENCE` (default `0.999`; `0` disables
 the gate).
+
+Gemma 4 12B MLX target and assistant repos are already converted to MLX
+safetensors, so they do not go through `ax-engine convert-mtplx` or
+`scripts/prepare_mtp_sidecar.py`. Download the target and matching assistant,
+then package them with the Gemma-specific assistant-MTP helper:
+
+```bash
+hf download mlx-community/gemma-4-12B-it-4bit
+hf download mlx-community/gemma-4-12B-it-assistant-4bit
+python3 scripts/prepare_gemma4_assistant_mtp.py \
+  --target mlx-community/gemma-4-12B-it-4bit \
+  --assistant mlx-community/gemma-4-12B-it-assistant-4bit
+
+hf download mlx-community/gemma-4-12B-it-6bit
+hf download mlx-community/gemma-4-12B-it-assistant-6bit
+python3 scripts/prepare_gemma4_assistant_mtp.py \
+  --target mlx-community/gemma-4-12B-it-6bit \
+  --assistant mlx-community/gemma-4-12B-it-assistant-6bit
+```
+
+The default outputs are quant-specific synthetic HF cache snapshots:
+`models--ax-local--gemma-4-12b-it-4bit-assistant-mtp/snapshots/v1/` and
+`models--ax-local--gemma-4-12b-it-6bit-assistant-mtp/snapshots/v1/`. Each package
+contains the target files, an `assistant/` subtree, and
+`ax_gemma4_assistant_mtp.json`. Generate or validate the AX manifest on the
+packaged snapshot before serving:
+
+```bash
+ax-engine-bench generate-manifest \
+  ~/.cache/huggingface/hub/models--ax-local--gemma-4-12b-it-4bit-assistant-mtp/snapshots/v1 \
+  --validate
+ax-engine-bench generate-manifest \
+  ~/.cache/huggingface/hub/models--ax-local--gemma-4-12b-it-6bit-assistant-mtp/snapshots/v1 \
+  --validate
+```
 
 AX Engine's fair Qwen3.6 MTP benchmark uses local, provenance-recorded sidecars
 from standard `Qwen/Qwen3.6-*` MTP shards plus the matching

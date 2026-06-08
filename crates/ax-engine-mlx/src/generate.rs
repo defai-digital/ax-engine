@@ -2,14 +2,17 @@ use std::cell::Cell;
 use std::sync::OnceLock;
 use std::time::Instant;
 
+use ax_engine_core::gemma4_unified::Gemma4UnifiedRuntimeInputs;
 use mlx_sys::{MlxArray, argmax, async_eval, clear_cache, eval};
 
+use crate::gemma4_unified::build_chunk_embeddings;
 use crate::kv_cache::MlxKVCache;
 use crate::linear_attention_ops::GATED_DELTA_THREADGROUP_CACHE_CAPACITY;
 use crate::model::{
-    ModelConfig, TurboQuantModelDecodeContext, forward, forward_all_positions_with_final_hidden,
-    forward_all_positions_with_post_norm, forward_argmax_with_turboquant_context,
-    forward_lazy_single_argmax_with_turboquant_context, forward_with_turboquant_context,
+    FinalLogitsMode, ModelConfig, TurboQuantModelDecodeContext, forward,
+    forward_all_positions_with_final_hidden, forward_all_positions_with_post_norm,
+    forward_argmax_with_turboquant_context, forward_lazy_single_argmax_with_turboquant_context,
+    forward_with_initial_hidden_and_media_ranges, forward_with_turboquant_context,
 };
 use crate::sampling::{
     MlxSamplingParams, MlxSamplingRequest, Xorshift64, sample_categorical_gpu,
@@ -314,6 +317,68 @@ pub fn chunked_prefill_with_sampling_buffers(
             async_eval(&[&logits]);
         }
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn chunked_prefill_gemma4_unified_with_sampling_buffers(
+    cfg: &ModelConfig,
+    weights: &ModelWeights,
+    prompt_tokens: &[u32],
+    cache: &mut MlxKVCache,
+    inputs: &Gemma4UnifiedRuntimeInputs,
+    sampling_request: MlxSamplingRequest<'_>,
+    rng: &mut Xorshift64,
+    sampling_probs_buf: &mut Vec<f32>,
+    sampling_logits_buf: &mut Vec<f32>,
+    sampling_candidates_buf: &mut Vec<(usize, f32)>,
+) -> Result<u32, String> {
+    let sampling = sampling_request.params;
+    let chunk = build_chunk_embeddings(cfg, weights, prompt_tokens, 0, inputs)?;
+    let media_ranges: Vec<(usize, usize)> = chunk
+        .media_ranges
+        .iter()
+        .map(|range| (range.start, range.end_inclusive))
+        .collect();
+    let logits = forward_with_initial_hidden_and_media_ranges(
+        cfg,
+        weights,
+        prompt_tokens,
+        chunk.hidden,
+        &media_ranges,
+        cache,
+        0,
+        FinalLogitsMode::Full,
+    );
+    cache.seq_len += prompt_tokens.len();
+
+    let tok = if sampling.temperature > 0.0 || sampling.uses_repetition_penalty() {
+        if let Some(tok) = sample_categorical_with_topk_gpu(
+            &logits,
+            sampling,
+            sampling_request.repetition_tokens,
+            rng,
+        ) {
+            tok
+        } else {
+            eval_with_kv_refs(&logits, cache);
+            let logits_data = logits.data_f32();
+            sample_categorical_into(
+                logits_data,
+                sampling,
+                sampling_request.repetition_tokens,
+                rng,
+                sampling_probs_buf,
+                sampling_logits_buf,
+                sampling_candidates_buf,
+            )
+        }
+    } else {
+        let token_arr = argmax(&logits, None);
+        eval_with_kv_refs(&token_arr, cache);
+        token_arr.first_u32_unchecked()
+    };
+    clear_cache();
+    Ok(tok)
 }
 
 /// Like `chunked_prefill` but also returns the pre-norm hidden at the last

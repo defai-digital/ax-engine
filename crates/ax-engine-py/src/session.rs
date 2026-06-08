@@ -881,6 +881,7 @@ mod tests {
             model_id: "qwen3".to_string(),
             input_tokens: input_tokens.to_vec(),
             input_text: None,
+            multimodal_inputs: Default::default(),
             max_output_tokens,
             sampling: GenerateSampling::default(),
             stop_sequences: Vec::new(),

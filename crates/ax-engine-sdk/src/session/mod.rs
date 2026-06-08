@@ -631,6 +631,7 @@ impl EngineSession {
             request_id,
             model_id: ModelId(request.model_id),
             input_tokens: request.input_tokens,
+            multimodal_inputs: request.multimodal_inputs,
             sampling_params: request.sampling.into_core(self.config.deterministic),
             max_output_tokens: request.max_output_tokens,
             arrival_sequence: SequenceNo(request_id.0),

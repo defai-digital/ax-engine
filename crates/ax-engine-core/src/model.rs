@@ -117,6 +117,28 @@ pub enum NativeTensorRole {
     AssistantPreProjection,
     /// Gemma4 Assistant projection from assistant hidden back into target hidden space.
     AssistantPostProjection,
+    /// Gemma4 Unified raw-patch projection weight.
+    Gemma4UnifiedVisionPatchDense,
+    /// Gemma4 Unified raw-patch projection bias.
+    Gemma4UnifiedVisionPatchDenseBias,
+    /// Gemma4 Unified pre-patch-projection LayerNorm weight.
+    Gemma4UnifiedVisionPatchNorm1,
+    /// Gemma4 Unified pre-patch-projection LayerNorm bias.
+    Gemma4UnifiedVisionPatchNorm1Bias,
+    /// Gemma4 Unified post-patch-projection LayerNorm weight.
+    Gemma4UnifiedVisionPatchNorm2,
+    /// Gemma4 Unified post-patch-projection LayerNorm bias.
+    Gemma4UnifiedVisionPatchNorm2Bias,
+    /// Gemma4 Unified factorized 2D positional embedding table.
+    Gemma4UnifiedVisionPositionEmbedding,
+    /// Gemma4 Unified post-position LayerNorm weight.
+    Gemma4UnifiedVisionPositionNorm,
+    /// Gemma4 Unified post-position LayerNorm bias.
+    Gemma4UnifiedVisionPositionNormBias,
+    /// Gemma4 Unified vision multimodal projection into LM hidden space.
+    Gemma4UnifiedVisionProjection,
+    /// Gemma4 Unified audio multimodal projection into LM hidden space.
+    Gemma4UnifiedAudioProjection,
     FinalNorm,
     LmHead,
     RopeFreqs,

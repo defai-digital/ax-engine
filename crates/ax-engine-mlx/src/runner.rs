@@ -66,8 +66,8 @@ use ax_engine_core::{
     ROUTE_DECISION_AX_MLX_KV_SLIDING_RECLAIMABLE_CAPACITY_KIB,
     ROUTE_DECISION_AX_MLX_KV_SLIDING_RECLAIMABLE_CAPACITY_TOKENS,
     ROUTE_DECISION_AX_MLX_KV_SLIDING_RETAINED_TOKENS,
-    ROUTE_DECISION_AX_MLX_KV_SLIDING_WINDOW_LAYERS, RequestExecutionUpdate, RequestId, RunnerInput,
-    RunnerOutput, StopReason, upsert_route_decision,
+    ROUTE_DECISION_AX_MLX_KV_SLIDING_WINDOW_LAYERS, RequestExecutionUpdate, RequestId,
+    RequestMultimodalInputs, RunnerInput, RunnerOutput, StopReason, upsert_route_decision,
 };
 
 use crate::gemma4_assistant_mtp::{
@@ -77,9 +77,9 @@ use crate::gemma4_assistant_mtp::{
 };
 use crate::generate::{
     DirectPipelineTimings, advance_direct_pipeline_with_timings_and_turboquant_context,
-    chunked_prefill, chunked_prefill_with_mtp_history_and_sampling_buffers,
-    chunked_prefill_with_sampling_buffers, decode_step,
-    start_direct_pipeline_with_turboquant_context,
+    chunked_prefill, chunked_prefill_gemma4_unified_with_sampling_buffers,
+    chunked_prefill_with_mtp_history_and_sampling_buffers, chunked_prefill_with_sampling_buffers,
+    decode_step, start_direct_pipeline_with_turboquant_context,
 };
 use crate::kv_cache::{MlxKVCache, MlxKVCacheUsage};
 use crate::model::{
@@ -4644,6 +4644,7 @@ impl ExecutionRunner for MlxRunner {
                 ctx,
                 &input.execution_batch.model_id,
                 input.block_size_tokens,
+                input.request_multimodal_inputs(item.request_id),
             );
             ngram_acceleration.merge_from(result.ngram_acceleration);
             mtp_telemetry.merge_from(result.mtp_telemetry);
@@ -5208,6 +5209,7 @@ impl MlxRunner {
         ctx: Option<&RunnerRequestContext>,
         model_id: &str,
         block_size_tokens: u32,
+        multimodal_inputs: Option<&RequestMultimodalInputs>,
     ) -> MlxItemRun {
         let token_ids = &item.input_token_slice;
         if token_ids.is_empty() {
@@ -5243,6 +5245,10 @@ impl MlxRunner {
         };
         let prefill_completes_prompt = prefill_item_completes_prompt(item, ctx);
         let is_prefill = matches!(item.mode, ExecutionMode::Prefill);
+        let gemma4_unified_inputs = multimodal_inputs
+            .and_then(|inputs| inputs.gemma4_unified.as_ref())
+            .filter(|inputs| !inputs.is_empty());
+        let has_gemma4_unified_multimodal_prefill = is_prefill && gemma4_unified_inputs.is_some();
         let sampling = ctx
             .map(|c| {
                 MlxSamplingParams::new(c.temperature, c.top_p, c.top_k)
@@ -5267,14 +5273,18 @@ impl MlxRunner {
                 .remove(&item.request_id)
                 .unwrap_or_else(|| RequestState::new(self.cfg.layer_count, item.request_id))
         };
-        let mut prefix_cache = self.restore_reused_prefix_state(
-            &mut state,
-            item,
-            ctx,
-            model_id,
-            block_size_tokens,
-            sampling,
-        );
+        let mut prefix_cache = if has_gemma4_unified_multimodal_prefill {
+            MlxPrefixCacheTelemetry::default()
+        } else {
+            self.restore_reused_prefix_state(
+                &mut state,
+                item,
+                ctx,
+                model_id,
+                block_size_tokens,
+                sampling,
+            )
+        };
 
         let kv_compression_layer_eligible = if self.kv_compression.is_enabled() {
             Some(self.kv_compression_layer_eligible.as_slice())
@@ -5290,80 +5300,157 @@ impl MlxRunner {
         let sampled_token = match item.mode {
             ExecutionMode::Prefill => {
                 let prefill_started = Instant::now();
-                let full_recompute_tokens = full_prefill_recompute_tokens_for_warmup_fallback(
-                    item,
-                    token_ids,
-                    &prefix_cache,
-                    &state,
-                );
-                let prefill_tokens_base = full_recompute_tokens.as_deref().unwrap_or(token_ids);
-                if full_recompute_tokens.is_some() {
+                if let Some(inputs) = gemma4_unified_inputs {
+                    if !prefill_completes_prompt {
+                        return errored_item_run(
+                            item.request_id,
+                            "Gemma4 unified multimodal prefill requires the complete prompt in one execution item",
+                        );
+                    }
                     state.cache.reset();
                     state.prompt_prefix_tokens.clear();
                     state.cached_prefill_output_token = None;
-                }
-                // F3 M4 — when the runner-side probe restored more
-                // prefix tokens than the scheduler knew about (e.g.
-                // cross-restart L2 hit, where the scheduler's block
-                // table is empty), `token_ids` still includes the
-                // tokens already covered by `state.cache`. Without
-                // slicing them off, chunked_prefill would write
-                // duplicate K/V past the existing seq_len. Detect
-                // that gap and skip the leading reused portion.
-                let probe_over_claim = if full_recompute_tokens.is_some() {
-                    0
-                } else {
+                    state.mtp_prefill_hidden = None;
+                    state.mtp_prefill_history_tokens.clear();
+
+                    let mut full_prompt_tokens = Vec::with_capacity(
+                        item.reused_prefix_token_slice
+                            .len()
+                            .saturating_add(token_ids.len()),
+                    );
+                    full_prompt_tokens.extend_from_slice(&item.reused_prefix_token_slice);
+                    full_prompt_tokens.extend_from_slice(token_ids);
+                    let repetition_history =
+                        state.repetition_history(&full_prompt_tokens, sampling);
+                    let prefill_forward_started = Instant::now();
+                    let tok = match chunked_prefill_gemma4_unified_with_sampling_buffers(
+                        &self.cfg,
+                        &self.weights,
+                        &full_prompt_tokens,
+                        &mut state.cache,
+                        inputs,
+                        MlxSamplingRequest::new(sampling, &repetition_history),
+                        &mut state.rng,
+                        &mut state.sampling_probs_buf,
+                        &mut state.sampling_logits_buf,
+                        &mut state.sampling_candidates_buf,
+                    ) {
+                        Ok(tok) => tok,
+                        Err(error) => return errored_item_run(item.request_id, error),
+                    };
+                    let prefill_forward_wall_us = elapsed_us(prefill_forward_started);
+                    state.prompt_prefix_tokens = full_prompt_tokens;
+
                     state
-                        .cache
-                        .seq_len
-                        .saturating_sub(item.reused_prefix_token_slice.len())
-                };
-                let prefill_tokens = if probe_over_claim < prefill_tokens_base.len() {
-                    &prefill_tokens_base[probe_over_claim..]
+                        .decode_telemetry
+                        .record_prefill(elapsed_us(prefill_started));
+                    let generation_state_started = Instant::now();
+                    kv_compression_shadow_sync_wall_us = self.initialize_generation_state(
+                        &mut state,
+                        max_output,
+                        kv_compression_layer_eligible,
+                        Some(tok),
+                        is_greedy,
+                    );
+                    let prefill_generation_state_wall_us = elapsed_us(generation_state_started);
+                    state.decode_telemetry.record_prefill_eval_barrier();
+                    state.decode_telemetry.record_prefill_breakdown(
+                        prefill_forward_wall_us,
+                        0,
+                        prefill_generation_state_wall_us,
+                    );
+                    Some(tok)
                 } else {
-                    &[][..]
-                };
-                let mut effective_prefill_token_count = prefill_tokens.len();
-                let repetition_history = state.repetition_history(prefill_tokens, sampling);
-                let prefill_forward_started = Instant::now();
-                // When the runner-probe over-claimed enough to wipe
-                // out `prefill_tokens`, every input position is
-                // already covered by `state.cache`. We must NOT call
-                // chunked_prefill on an empty slice (it would still
-                // sample logits from an undefined state). Instead,
-                // emit `cached_prefill_output_token` as the first
-                // generated token — which is what L1-equivalence
-                // demands, since that token *is* the prefill output
-                // for the producing cold prefill.
-                // Pick chunk size based on whether this prefill will extend
-                // a restored snapshot (warm-extend → small MLA-aligned chunk
-                // so SDPA shape sequence matches the snapshot's producing
-                // path) or start from an empty KV cache (cold → caller's
-                // larger chunk for prefill throughput). For MLA models the
-                // two values differ; for non-MLA models they're identical.
-                let prefill_chunk_for_request = if state.cache.seq_len == 0 {
-                    self.cold_prefill_chunk
-                } else {
-                    self.prefill_chunk
-                };
-                let tok = if prefill_tokens.is_empty() {
-                    if let Some(tok) = state.cached_prefill_output_token.take() {
-                        tok
-                    } else {
-                        // Defensive: if a full-prefix disk entry does
-                        // not carry a prefill output token, do not run
-                        // decode_one on the restored full cache: that
-                        // would append the last prompt token twice.
-                        // Fall back to an exact cold prefill — `cache`
-                        // is reset on the line below, so the cold chunk
-                        // size applies regardless of how we got here.
+                    let full_recompute_tokens = full_prefill_recompute_tokens_for_warmup_fallback(
+                        item,
+                        token_ids,
+                        &prefix_cache,
+                        &state,
+                    );
+                    let prefill_tokens_base = full_recompute_tokens.as_deref().unwrap_or(token_ids);
+                    if full_recompute_tokens.is_some() {
                         state.cache.reset();
                         state.prompt_prefix_tokens.clear();
-                        effective_prefill_token_count = token_ids.len();
-                        let recompute_history = state.repetition_history(token_ids, sampling);
-                        if self.weights.mtp.is_some() && prefill_completes_prompt {
-                            let (tok, hidden, history_tokens) =
-                                chunked_prefill_with_mtp_history_and_sampling_buffers(
+                        state.cached_prefill_output_token = None;
+                    }
+                    // F3 M4 — when the runner-side probe restored more
+                    // prefix tokens than the scheduler knew about (e.g.
+                    // cross-restart L2 hit, where the scheduler's block
+                    // table is empty), `token_ids` still includes the
+                    // tokens already covered by `state.cache`. Without
+                    // slicing them off, chunked_prefill would write
+                    // duplicate K/V past the existing seq_len. Detect
+                    // that gap and skip the leading reused portion.
+                    let probe_over_claim = if full_recompute_tokens.is_some() {
+                        0
+                    } else {
+                        state
+                            .cache
+                            .seq_len
+                            .saturating_sub(item.reused_prefix_token_slice.len())
+                    };
+                    let prefill_tokens = if probe_over_claim < prefill_tokens_base.len() {
+                        &prefill_tokens_base[probe_over_claim..]
+                    } else {
+                        &[][..]
+                    };
+                    let mut effective_prefill_token_count = prefill_tokens.len();
+                    let repetition_history = state.repetition_history(prefill_tokens, sampling);
+                    let prefill_forward_started = Instant::now();
+                    // When the runner-probe over-claimed enough to wipe
+                    // out `prefill_tokens`, every input position is
+                    // already covered by `state.cache`. We must NOT call
+                    // chunked_prefill on an empty slice (it would still
+                    // sample logits from an undefined state). Instead,
+                    // emit `cached_prefill_output_token` as the first
+                    // generated token — which is what L1-equivalence
+                    // demands, since that token *is* the prefill output
+                    // for the producing cold prefill.
+                    // Pick chunk size based on whether this prefill will extend
+                    // a restored snapshot (warm-extend → small MLA-aligned chunk
+                    // so SDPA shape sequence matches the snapshot's producing
+                    // path) or start from an empty KV cache (cold → caller's
+                    // larger chunk for prefill throughput). For MLA models the
+                    // two values differ; for non-MLA models they're identical.
+                    let prefill_chunk_for_request = if state.cache.seq_len == 0 {
+                        self.cold_prefill_chunk
+                    } else {
+                        self.prefill_chunk
+                    };
+                    let tok = if prefill_tokens.is_empty() {
+                        if let Some(tok) = state.cached_prefill_output_token.take() {
+                            tok
+                        } else {
+                            // Defensive: if a full-prefix disk entry does
+                            // not carry a prefill output token, do not run
+                            // decode_one on the restored full cache: that
+                            // would append the last prompt token twice.
+                            // Fall back to an exact cold prefill — `cache`
+                            // is reset on the line below, so the cold chunk
+                            // size applies regardless of how we got here.
+                            state.cache.reset();
+                            state.prompt_prefix_tokens.clear();
+                            effective_prefill_token_count = token_ids.len();
+                            let recompute_history = state.repetition_history(token_ids, sampling);
+                            if self.weights.mtp.is_some() && prefill_completes_prompt {
+                                let (tok, hidden, history_tokens) =
+                                    chunked_prefill_with_mtp_history_and_sampling_buffers(
+                                        &self.cfg,
+                                        &self.weights,
+                                        token_ids,
+                                        &mut state.cache,
+                                        self.cold_prefill_chunk,
+                                        MlxSamplingRequest::new(sampling, &recompute_history),
+                                        &mut state.rng,
+                                        &mut state.sampling_probs_buf,
+                                        &mut state.sampling_logits_buf,
+                                        &mut state.sampling_candidates_buf,
+                                    );
+                                state.mtp_prefill_hidden = Some(hidden);
+                                state.mtp_prefill_history_tokens = history_tokens;
+                                tok
+                            } else {
+                                chunked_prefill_with_sampling_buffers(
                                     &self.cfg,
                                     &self.weights,
                                     token_ids,
@@ -5374,28 +5461,28 @@ impl MlxRunner {
                                     &mut state.sampling_probs_buf,
                                     &mut state.sampling_logits_buf,
                                     &mut state.sampling_candidates_buf,
-                                );
-                            state.mtp_prefill_hidden = Some(hidden);
-                            state.mtp_prefill_history_tokens = history_tokens;
-                            tok
-                        } else {
-                            chunked_prefill_with_sampling_buffers(
+                                )
+                            }
+                        }
+                    } else if self.weights.mtp.is_some() && prefill_completes_prompt {
+                        let (tok, hidden, history_tokens) =
+                            chunked_prefill_with_mtp_history_and_sampling_buffers(
                                 &self.cfg,
                                 &self.weights,
-                                token_ids,
+                                prefill_tokens,
                                 &mut state.cache,
-                                self.cold_prefill_chunk,
-                                MlxSamplingRequest::new(sampling, &recompute_history),
+                                prefill_chunk_for_request,
+                                MlxSamplingRequest::new(sampling, &repetition_history),
                                 &mut state.rng,
                                 &mut state.sampling_probs_buf,
                                 &mut state.sampling_logits_buf,
                                 &mut state.sampling_candidates_buf,
-                            )
-                        }
-                    }
-                } else if self.weights.mtp.is_some() && prefill_completes_prompt {
-                    let (tok, hidden, history_tokens) =
-                        chunked_prefill_with_mtp_history_and_sampling_buffers(
+                            );
+                        state.mtp_prefill_hidden = Some(hidden);
+                        state.mtp_prefill_history_tokens = history_tokens;
+                        tok
+                    } else {
+                        chunked_prefill_with_sampling_buffers(
                             &self.cfg,
                             &self.weights,
                             prefill_tokens,
@@ -5406,77 +5493,62 @@ impl MlxRunner {
                             &mut state.sampling_probs_buf,
                             &mut state.sampling_logits_buf,
                             &mut state.sampling_candidates_buf,
-                        );
-                    state.mtp_prefill_hidden = Some(hidden);
-                    state.mtp_prefill_history_tokens = history_tokens;
-                    tok
-                } else {
-                    chunked_prefill_with_sampling_buffers(
-                        &self.cfg,
-                        &self.weights,
-                        prefill_tokens,
-                        &mut state.cache,
-                        prefill_chunk_for_request,
-                        MlxSamplingRequest::new(sampling, &repetition_history),
-                        &mut state.rng,
-                        &mut state.sampling_probs_buf,
-                        &mut state.sampling_logits_buf,
-                        &mut state.sampling_candidates_buf,
-                    )
-                };
-                let prefill_forward_wall_us = elapsed_us(prefill_forward_started);
-                let prefill_token_count = effective_prefill_token_count;
-                if let Some(tokens) = full_recompute_tokens {
-                    state.prompt_prefix_tokens = tokens;
-                } else {
-                    extend_prompt_prefix_tokens(&mut state, item, token_ids);
-                }
-                let prefix_cache_started = Instant::now();
-                prefix_cache.merge_from(
-                    self.store_prompt_prefix_snapshots(
-                        model_id,
-                        block_size_tokens,
-                        &state,
-                        prefill_completes_prompt
-                            .then_some(tok)
-                            .filter(|_| prefill_output_token_cacheable(ctx, sampling)),
-                    ),
-                );
-                let prefill_prefix_cache_wall_us = elapsed_us(prefix_cache_started);
-                // Record pure prefill wall time before initialize_generation_state.
-                // MTP warmup and generation-state init are decode preparation, not
-                // prefill — including them in the prefill rate artificially lowers
-                // the reported throughput by 5–12 % on MTP workloads.
-                state
-                    .decode_telemetry
-                    .record_prefill(elapsed_us(prefill_started));
-                let mut prefill_generation_state_wall_us = 0;
-                if prefill_completes_prompt {
-                    let generation_state_started = Instant::now();
-                    kv_compression_shadow_sync_wall_us = self.initialize_generation_state(
-                        &mut state,
-                        max_output,
-                        kv_compression_layer_eligible,
-                        Some(tok),
-                        is_greedy,
+                        )
+                    };
+                    let prefill_forward_wall_us = elapsed_us(prefill_forward_started);
+                    let prefill_token_count = effective_prefill_token_count;
+                    if let Some(tokens) = full_recompute_tokens {
+                        state.prompt_prefix_tokens = tokens;
+                    } else {
+                        extend_prompt_prefix_tokens(&mut state, item, token_ids);
+                    }
+                    let prefix_cache_started = Instant::now();
+                    prefix_cache.merge_from(
+                        self.store_prompt_prefix_snapshots(
+                            model_id,
+                            block_size_tokens,
+                            &state,
+                            prefill_completes_prompt
+                                .then_some(tok)
+                                .filter(|_| prefill_output_token_cacheable(ctx, sampling)),
+                        ),
                     );
-                    prefill_generation_state_wall_us = elapsed_us(generation_state_started);
-                }
+                    let prefill_prefix_cache_wall_us = elapsed_us(prefix_cache_started);
+                    // Record pure prefill wall time before initialize_generation_state.
+                    // MTP warmup and generation-state init are decode preparation, not
+                    // prefill — including them in the prefill rate artificially lowers
+                    // the reported throughput by 5–12 % on MTP workloads.
+                    state
+                        .decode_telemetry
+                        .record_prefill(elapsed_us(prefill_started));
+                    let mut prefill_generation_state_wall_us = 0;
+                    if prefill_completes_prompt {
+                        let generation_state_started = Instant::now();
+                        kv_compression_shadow_sync_wall_us = self.initialize_generation_state(
+                            &mut state,
+                            max_output,
+                            kv_compression_layer_eligible,
+                            Some(tok),
+                            is_greedy,
+                        );
+                        prefill_generation_state_wall_us = elapsed_us(generation_state_started);
+                    }
 
-                // Each non-final chunk in chunked_prefill calls async_eval; only the
-                // last chunk calls a blocking eval.  Compute counts from prompt length.
-                let drain_count =
-                    prefill_token_count.saturating_sub(1) as u32 / self.prefill_chunk as u32;
-                state
-                    .decode_telemetry
-                    .record_prefill_drain_async_evals(drain_count);
-                state.decode_telemetry.record_prefill_eval_barrier();
-                state.decode_telemetry.record_prefill_breakdown(
-                    prefill_forward_wall_us,
-                    prefill_prefix_cache_wall_us,
-                    prefill_generation_state_wall_us,
-                );
-                prefill_completes_prompt.then_some(tok)
+                    // Each non-final chunk in chunked_prefill calls async_eval; only the
+                    // last chunk calls a blocking eval.  Compute counts from prompt length.
+                    let drain_count =
+                        prefill_token_count.saturating_sub(1) as u32 / self.prefill_chunk as u32;
+                    state
+                        .decode_telemetry
+                        .record_prefill_drain_async_evals(drain_count);
+                    state.decode_telemetry.record_prefill_eval_barrier();
+                    state.decode_telemetry.record_prefill_breakdown(
+                        prefill_forward_wall_us,
+                        prefill_prefix_cache_wall_us,
+                        prefill_generation_state_wall_us,
+                    );
+                    prefill_completes_prompt.then_some(tok)
+                }
             }
             ExecutionMode::Decode => {
                 let decode_started = Instant::now();
@@ -9032,6 +9104,30 @@ struct MlxItemRun {
     kv_compression_shadow_sync_wall_us: Option<u32>,
 }
 
+fn errored_item_run(request_id: RequestId, error: impl Into<String>) -> MlxItemRun {
+    MlxItemRun {
+        update: RequestExecutionUpdate {
+            request_id,
+            tokens_executed: 0,
+            output_token: None,
+            stop_reason: None,
+            error: Some(error.into()),
+        },
+        ngram_acceleration: NgramAccelerationTelemetry::default(),
+        mtp_telemetry: MtpTelemetry::default(),
+        gemma4_assistant_mtp_telemetry: Gemma4AssistantMtpTelemetry::default(),
+        decode_telemetry: DecodeTelemetry::default(),
+        gemma4_moe_profile: Gemma4MoeProfileSnapshot::default(),
+        linear_attention_profile: LinearAttentionProfileSnapshot::default(),
+        direct_mlx_hotpath_profile: DirectMlxHotpathProfileSnapshot::default(),
+        prefill_profile: PrefillProfileSnapshot::default(),
+        decode_profile: DecodeProfileSnapshot::default(),
+        kv_usage: MlxKVCacheUsage::default(),
+        prefix_cache: MlxPrefixCacheTelemetry::default(),
+        kv_compression_shadow_sync_wall_us: None,
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 struct DecodeOneOptions<'a> {
     terminal_token_ids: &'a [u32],
@@ -11788,6 +11884,8 @@ mod tests {
             gemma4_assistant_mtp: Default::default(),
             assistant_pre_projection: None,
             assistant_post_projection: None,
+            gemma4_unified_vision: None,
+            gemma4_unified_audio: None,
         }
     }
 

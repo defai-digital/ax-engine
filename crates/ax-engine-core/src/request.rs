@@ -1,10 +1,12 @@
 use thiserror::Error;
 
 use crate::execution_plan::ExecutionPlanBinding;
+use crate::gemma4_unified::Gemma4UnifiedRuntimeInputs;
 use crate::ids::{ModelId, RequestId, SequenceNo};
 use crate::kv::BlockTable;
 use crate::sampling::{SamplingParams, StopReason};
 use crate::scheduler::RouteMetadata;
+use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RequestState {
@@ -28,10 +30,25 @@ pub struct RequestSubmission {
     pub request_id: RequestId,
     pub model_id: ModelId,
     pub input_tokens: Vec<u32>,
+    pub multimodal_inputs: RequestMultimodalInputs,
     pub sampling_params: SamplingParams,
     pub max_output_tokens: u32,
     pub arrival_sequence: SequenceNo,
     pub metadata: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
+pub struct RequestMultimodalInputs {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gemma4_unified: Option<Gemma4UnifiedRuntimeInputs>,
+}
+
+impl RequestMultimodalInputs {
+    pub fn is_empty(&self) -> bool {
+        self.gemma4_unified
+            .as_ref()
+            .is_none_or(|inputs| inputs.is_empty())
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -194,6 +211,7 @@ pub struct RequestRecord {
     pub arrival_sequence: SequenceNo,
     pub state: RequestState,
     pub prompt_tokens: Vec<u32>,
+    pub multimodal_inputs: RequestMultimodalInputs,
     pub processed_prompt_tokens: u32,
     pub generated_tokens: Vec<u32>,
     pub generated_token_logprobs: Vec<Option<f32>>,
@@ -217,6 +235,7 @@ impl RequestRecord {
             arrival_sequence: submission.arrival_sequence,
             state: RequestState::Waiting,
             prompt_tokens: submission.input_tokens,
+            multimodal_inputs: submission.multimodal_inputs,
             processed_prompt_tokens: 0,
             generated_tokens: Vec::new(),
             generated_token_logprobs: Vec::new(),
@@ -418,6 +437,7 @@ mod tests {
             request_id: RequestId(1),
             model_id: ModelId("qwen3".into()),
             input_tokens: vec![1, 2, 3],
+            multimodal_inputs: Default::default(),
             sampling_params: SamplingParams::default(),
             max_output_tokens: 32,
             arrival_sequence: SequenceNo(1),

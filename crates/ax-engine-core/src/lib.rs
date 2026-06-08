@@ -3,6 +3,7 @@
 pub mod convert;
 pub mod engine;
 pub mod execution_plan;
+pub mod gemma4_unified;
 pub mod gguf;
 pub mod ids;
 pub mod kv;
@@ -48,15 +49,15 @@ pub use model::{
     NativeTensorQuantization, NativeTensorRole, NativeTensorSpec, WeightSanitize,
 };
 pub use request::{
-    RequestRecord, RequestSnapshot, RequestState, RequestSubmission, RequestWorkloadHints,
-    StateTransitionError,
+    RequestMultimodalInputs, RequestRecord, RequestSnapshot, RequestState, RequestSubmission,
+    RequestWorkloadHints, StateTransitionError,
 };
 pub use request_manager::{RequestManager, RequestManagerError};
 pub use runner::{
     DeterministicRunner, EmbeddingMatrix, EmbeddingPooling, ExecutionRunner, ExecutionStatus,
     KvCompressionConfig, KvCompressionMode, KvWriteSummary, NativeModelBindingSummary,
     RequestExecutionUpdate, RequestLogitsOutput, ResolvedBlockTable, RunnerInput, RunnerOutput,
-    TurboQuantPreset,
+    RunnerRequestMultimodalInput, TurboQuantPreset,
 };
 #[allow(deprecated)]
 pub use runner::{MlxKvCompressionConfig, MlxKvCompressionMode, MlxTurboQuantPreset};

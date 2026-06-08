@@ -102,6 +102,7 @@ pub(super) fn sample_runner_input() -> RunnerInput {
                 structured_output_mode: false,
             },
         ],
+        request_multimodal_inputs: Vec::new(),
     }
 }
 
@@ -202,6 +203,7 @@ pub(super) fn sample_decode_only_runner_input() -> RunnerInput {
                 structured_output_mode: false,
             },
         ],
+        request_multimodal_inputs: Vec::new(),
     }
 }
 
@@ -259,6 +261,7 @@ pub(super) fn sample_prefill_only_runner_input() -> RunnerInput {
             tool_call_mode: false,
             structured_output_mode: false,
         }],
+        request_multimodal_inputs: Vec::new(),
     }
 }
 
@@ -316,5 +319,6 @@ pub(super) fn sample_decode_continuation_runner_input() -> RunnerInput {
             tool_call_mode: false,
             structured_output_mode: false,
         }],
+        request_multimodal_inputs: Vec::new(),
     }
 }

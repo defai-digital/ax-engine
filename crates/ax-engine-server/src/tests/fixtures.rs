@@ -43,6 +43,7 @@ pub(super) fn sample_sdk_request(input_tokens: &[u32], max_output_tokens: u32) -
         model_id: TEST_MODEL_ID.to_string(),
         input_tokens: input_tokens.to_vec(),
         input_text: None,
+        multimodal_inputs: Default::default(),
         max_output_tokens,
         sampling: GenerateSampling::default(),
         stop_sequences: Vec::new(),

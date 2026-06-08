@@ -36,6 +36,7 @@ pub(super) fn proto_to_generate_request(
         } else {
             Some(req.input_text)
         },
+        multimodal_inputs: Default::default(),
         max_output_tokens: if req.max_output_tokens == 0 {
             256
         } else {

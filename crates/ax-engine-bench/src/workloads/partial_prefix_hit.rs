@@ -96,6 +96,7 @@ impl PartialPrefixHit {
                 ordinal,
             ),
             input_text: None,
+            multimodal_inputs: Default::default(),
             max_output_tokens: self.decode_tokens,
             sampling: GenerateSampling::default(),
             stop_sequences: Vec::new(),

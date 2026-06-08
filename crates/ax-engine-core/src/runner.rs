@@ -5,6 +5,7 @@ use crate::ids::{RequestId, StepId};
 use crate::kv::BlockTableView;
 use crate::metal::MetalDispatchTrace;
 use crate::model::NativeModelArtifactsSummary;
+use crate::request::RequestMultimodalInputs;
 use crate::sampling::StopReason;
 use crate::scheduler::{ExecutionBatch, ExecutionMode, RouteMetadata};
 
@@ -20,6 +21,7 @@ pub struct RunnerInput {
     pub execution_batch: ExecutionBatch,
     pub block_tables: Vec<ResolvedBlockTable>,
     pub request_contexts: Vec<RunnerRequestContext>,
+    pub request_multimodal_inputs: Vec<RunnerRequestMultimodalInput>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -52,11 +54,27 @@ pub struct RunnerRequestContext {
     pub structured_output_mode: bool,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct RunnerRequestMultimodalInput {
+    pub request_id: RequestId,
+    pub inputs: RequestMultimodalInputs,
+}
+
 impl RunnerInput {
     pub fn request_context(&self, request_id: RequestId) -> Option<&RunnerRequestContext> {
         self.request_contexts
             .iter()
             .find(|context| context.request_id == request_id)
+    }
+
+    pub fn request_multimodal_inputs(
+        &self,
+        request_id: RequestId,
+    ) -> Option<&RequestMultimodalInputs> {
+        self.request_multimodal_inputs
+            .iter()
+            .find(|entry| entry.request_id == request_id)
+            .map(|entry| &entry.inputs)
     }
 }
 
@@ -589,6 +607,7 @@ mod tests {
                     structured_output_mode: false,
                 },
             ],
+            request_multimodal_inputs: Vec::new(),
         });
 
         assert_eq!(output.execution_status, ExecutionStatus::Success);
@@ -665,6 +684,7 @@ mod tests {
                 },
             ],
             request_contexts: Vec::new(),
+            request_multimodal_inputs: Vec::new(),
         });
 
         assert_eq!(output.kv_write_summary.blocks_touched, 3);
@@ -719,6 +739,7 @@ mod tests {
                 tool_call_mode: false,
                 structured_output_mode: false,
             }],
+            request_multimodal_inputs: Vec::new(),
         });
 
         assert_eq!(output.route_metadata, RouteMetadata::empty());
