@@ -5378,7 +5378,7 @@ impl MlxRunner {
         // to two concurrent run() calls — otherwise one call would create a fresh
         // empty state from None while the other holds the extracted state.
         let mut state = {
-            let mut states = self.states.lock().unwrap();
+            let mut states = self.states.lock().unwrap_or_else(|p| p.into_inner());
             states
                 .remove(&item.request_id)
                 .unwrap_or_else(|| RequestState::new(self.cfg.layer_count, item.request_id))
@@ -5760,7 +5760,7 @@ impl MlxRunner {
             .kv_compression
             .apply_decode_usage(turboquant_decode_usage);
         if stop_reason.is_none() {
-            let mut states = self.states.lock().unwrap();
+            let mut states = self.states.lock().unwrap_or_else(|p| p.into_inner());
             states.insert(item.request_id, state);
         } else {
             // Free MLX's intermediate graph and compute cache after each completed
@@ -5888,7 +5888,7 @@ impl MlxRunner {
         block_size_tokens: u32,
         input: &[u32],
     ) -> Option<Vec<u32>> {
-        let cache = self.prefix_cache.lock().unwrap();
+        let cache = self.prefix_cache.lock().unwrap_or_else(|p| p.into_inner());
         Self::longest_block_aligned_prefix_by_probe(block_size_tokens, input, |prefix| {
             let key = self.prefix_cache_key(model_id, block_size_tokens, prefix);
             if cache.contains_exact_tokens(&key, prefix) {
@@ -5980,7 +5980,7 @@ impl MlxRunner {
             return telemetry;
         }
 
-        if !self.prefix_cache.lock().unwrap().enabled() {
+        if !self.prefix_cache.lock().unwrap_or_else(|p| p.into_inner()).enabled() {
             telemetry.record_blocked_policy_disabled();
             if !defer_prefill_warmup {
                 self.warm_reused_prefix_without_cache(
@@ -5999,7 +5999,7 @@ impl MlxRunner {
 
         let key = self.prefix_cache_key(model_id, block_size_tokens, reused_tokens);
         let hit = {
-            let mut cache = self.prefix_cache.lock().unwrap();
+            let mut cache = self.prefix_cache.lock().unwrap_or_else(|p| p.into_inner());
             let hit = cache.get(&key, reused_tokens);
             telemetry.record_stats(cache.stats());
             hit
@@ -6200,7 +6200,7 @@ impl MlxRunner {
             telemetry.record_blocked_unsupported_layout();
             return telemetry;
         }
-        if !self.prefix_cache.lock().unwrap().enabled() {
+        if !self.prefix_cache.lock().unwrap_or_else(|p| p.into_inner()).enabled() {
             telemetry.record_blocked_policy_disabled();
             return telemetry;
         }
@@ -6274,7 +6274,7 @@ impl MlxRunner {
                 .then_some(greedy_prefill_output_token)
                 .flatten();
             let outcome = {
-                let mut cache = self.prefix_cache.lock().unwrap();
+                let mut cache = self.prefix_cache.lock().unwrap_or_else(|p| p.into_inner());
                 let outcome = cache.insert(
                     key,
                     MlxPrefixSnapshot::from_serialized_cache(

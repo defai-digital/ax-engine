@@ -868,6 +868,8 @@ def _resized_dimensions(
 ) -> tuple[int, int]:
     max_patches = max_soft_tokens * pooling_kernel_size**2
     target_px = max_patches * patch_size**2
+    if height <= 0 or width <= 0:
+        raise ValueError(f"Invalid image dimensions: {width}x{height}")
     factor = math.sqrt(target_px / (height * width))
     side_mult = pooling_kernel_size * patch_size
     target_height = math.floor(factor * height / side_mult) * side_mult

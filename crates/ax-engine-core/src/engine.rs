@@ -925,7 +925,10 @@ impl EngineCore {
             let item = item_by_request
                 .get(&update.request_id)
                 .copied()
-                .expect("validated request_id should exist in execution batch");
+                .ok_or(EngineCoreError::RunnerContractViolation {
+                    step_id: execution_batch.step_id,
+                    message: "request_id in batch set but missing from item_by_request",
+                })?;
 
             if item.mode == ExecutionMode::Prefill
                 && update.output_token.is_some()
@@ -1035,7 +1038,10 @@ impl EngineCore {
             let update = update_by_request
                 .get(&request_id)
                 .copied()
-                .expect("validated request_id should exist in runner output");
+                .ok_or(EngineCoreError::RunnerContractViolation {
+                    step_id: execution_batch.step_id,
+                    message: "decode request_id missing from runner output updates",
+                })?;
             let failed = update.error.is_some()
                 || matches!(update.stop_reason, Some(crate::sampling::StopReason::Error));
             let decode_result_sources = u32::from(update.output_token.is_some())

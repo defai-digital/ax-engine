@@ -330,7 +330,7 @@ def stream_completion_chunks(
     accumulated_tokens: list[int] = []
     prev_text_len = 0
     with lock:
-        for event in session.stream_generate(
+        generator = session.stream_generate(
             input_tokens,
             max_output_tokens=max_tokens,
             temperature=temperature,
@@ -339,31 +339,32 @@ def stream_completion_chunks(
             repetition_penalty=float(payload.get("repetition_penalty", default_rp)),
             seed=int(payload.get("seed", 0)),
             metadata=payload.get("metadata"),
-        ):
-            if event.event == "step" and event.delta_tokens:
-                accumulated_tokens.extend(event.delta_tokens)
-                full_text = tokenizer.decode(accumulated_tokens)
-                new_text = full_text[prev_text_len:]
-                prev_text_len = len(full_text)
-                if new_text:
-                    yield sse_chunk(stream_id, created, model_id, new_text, None, kind)
-            elif event.event == "response" and event.response is not None:
-                # Flush any remaining text from incomplete UTF-8 sequences
-                if accumulated_tokens:
-                    final_text = tokenizer.decode(accumulated_tokens)
-                    remaining = final_text[prev_text_len:]
-                    if remaining:
-                        yield sse_chunk(
-                            stream_id, created, model_id, remaining, None, kind
-                        )
-                yield sse_chunk(
-                    stream_id,
-                    created,
-                    model_id,
-                    "",
-                    finish_reason(event.response.finish_reason),
-                    kind,
-                )
+        )
+    for event in generator:
+        if event.event == "step" and event.delta_tokens:
+            accumulated_tokens.extend(event.delta_tokens)
+            full_text = tokenizer.decode(accumulated_tokens)
+            new_text = full_text[prev_text_len:]
+            prev_text_len = len(full_text)
+            if new_text:
+                yield sse_chunk(stream_id, created, model_id, new_text, None, kind)
+        elif event.event == "response" and event.response is not None:
+            # Flush any remaining text from incomplete UTF-8 sequences
+            if accumulated_tokens:
+                final_text = tokenizer.decode(accumulated_tokens)
+                remaining = final_text[prev_text_len:]
+                if remaining:
+                    yield sse_chunk(
+                        stream_id, created, model_id, remaining, None, kind
+                    )
+            yield sse_chunk(
+                stream_id,
+                created,
+                model_id,
+                "",
+                finish_reason(event.response.finish_reason),
+                kind,
+            )
     yield "data: [DONE]\n\n"
 
 

@@ -196,8 +196,11 @@ class AXEngineChatModel(BaseChatModel):
     ) -> ChatResult:
         url = self.base_url.rstrip("/") + "/v1/chat/completions"
         resp = _post_json(url, self._build_request(messages, stop), self.timeout)
-        choice = resp["choices"][0]
-        text = choice["message"]["content"]
+        choices = resp.get("choices", [])
+        if not choices:
+            raise RuntimeError("Server returned empty choices array")
+        choice = choices[0]
+        text = choice.get("message", {}).get("content", "")
         return ChatResult(
             generations=[
                 ChatGeneration(
@@ -299,7 +302,10 @@ class AXEngineLLM(LLM):
     ) -> str:
         url = self.base_url.rstrip("/") + "/v1/completions"
         resp = _post_json(url, self._build_request(prompt, stop), self.timeout)
-        return resp["choices"][0]["text"]
+        choices = resp.get("choices", [])
+        if not choices:
+            raise RuntimeError("Server returned empty choices array")
+        return choices[0].get("text", "")
 
     def _stream(
         self,
