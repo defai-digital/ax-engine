@@ -199,6 +199,7 @@ public struct OpenAiChatMessage: Codable, Sendable {
 public struct OpenAiChatCompletionRequest: Encodable, Sendable {
     public var model: String?
     public var messages: [OpenAiChatMessage]
+    public var inputTokens: [Int]?
     public var maxTokens: Int?
     public var temperature: Double?
     public var topP: Double?
@@ -209,18 +210,23 @@ public struct OpenAiChatCompletionRequest: Encodable, Sendable {
     public var seed: Int?
     public var stream: Bool?
     public var metadata: String?
+    public var multimodalInputs: RequestMultimodalInputs?
 
     public init(
         model: String? = nil, messages: [OpenAiChatMessage],
+        inputTokens: [Int]? = nil,
         maxTokens: Int? = nil, temperature: Double? = nil,
         topP: Double? = nil, topK: Int? = nil, minP: Double? = nil,
         repetitionPenalty: Double? = nil, stop: [String]? = nil,
-        seed: Int? = nil, metadata: String? = nil
+        seed: Int? = nil, metadata: String? = nil,
+        multimodalInputs: RequestMultimodalInputs? = nil
     ) {
         self.model = model; self.messages = messages; self.maxTokens = maxTokens
+        self.inputTokens = inputTokens
         self.temperature = temperature; self.topP = topP; self.topK = topK
         self.minP = minP; self.repetitionPenalty = repetitionPenalty
         self.stop = stop; self.seed = seed; self.metadata = metadata
+        self.multimodalInputs = multimodalInputs
     }
 }
 
@@ -271,9 +277,27 @@ public struct OpenAiChatCompletionChunk: Decodable, Sendable {
 
 // MARK: - OpenAI-compatible text completion
 
+public enum OpenAiCompletionPrompt: Encodable, Sendable {
+    case text(String)
+    case textBatch([String])
+    case tokens([Int])
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        switch self {
+        case .text(let value):
+            try container.encode(value)
+        case .textBatch(let value):
+            try container.encode(value)
+        case .tokens(let value):
+            try container.encode(value)
+        }
+    }
+}
+
 public struct OpenAiCompletionRequest: Encodable, Sendable {
     public var model: String?
-    public var prompt: String
+    public var prompt: OpenAiCompletionPrompt
     public var maxTokens: Int?
     public var temperature: Double?
     public var topP: Double?
@@ -284,18 +308,36 @@ public struct OpenAiCompletionRequest: Encodable, Sendable {
     public var seed: Int?
     public var stream: Bool?
     public var metadata: String?
+    public var multimodalInputs: RequestMultimodalInputs?
 
     public init(
         model: String? = nil, prompt: String,
         maxTokens: Int? = nil, temperature: Double? = nil,
         topP: Double? = nil, topK: Int? = nil, minP: Double? = nil,
         repetitionPenalty: Double? = nil, stop: [String]? = nil,
-        seed: Int? = nil, metadata: String? = nil
+        seed: Int? = nil, metadata: String? = nil,
+        multimodalInputs: RequestMultimodalInputs? = nil
     ) {
-        self.model = model; self.prompt = prompt; self.maxTokens = maxTokens
+        self.model = model; self.prompt = .text(prompt); self.maxTokens = maxTokens
         self.temperature = temperature; self.topP = topP; self.topK = topK
         self.minP = minP; self.repetitionPenalty = repetitionPenalty
         self.stop = stop; self.seed = seed; self.metadata = metadata
+        self.multimodalInputs = multimodalInputs
+    }
+
+    public init(
+        model: String? = nil, promptTokens: [Int],
+        maxTokens: Int? = nil, temperature: Double? = nil,
+        topP: Double? = nil, topK: Int? = nil, minP: Double? = nil,
+        repetitionPenalty: Double? = nil, stop: [String]? = nil,
+        seed: Int? = nil, metadata: String? = nil,
+        multimodalInputs: RequestMultimodalInputs? = nil
+    ) {
+        self.model = model; self.prompt = .tokens(promptTokens); self.maxTokens = maxTokens
+        self.temperature = temperature; self.topP = topP; self.topK = topK
+        self.minP = minP; self.repetitionPenalty = repetitionPenalty
+        self.stop = stop; self.seed = seed; self.metadata = metadata
+        self.multimodalInputs = multimodalInputs
     }
 }
 

@@ -158,8 +158,9 @@ runtime.
 | You want AX-owned performance and token/KV behavior for a listed family | Direct support | AX owns the MLX graph and runtime policy |
 | You have an MLX text model that `mlx-lm` already serves but AX does not own | `mlx_lm_delegated` | Keeps AX API surfaces while upstream runs the model |
 | You have GGUF weights or a non-MLX local model | `llama_cpp` | llama.cpp is the delegated local inference route |
-| You have Gemma4 unified image/audio/video inputs already preprocessed into AX's validated `multimodal_inputs.gemma4_unified` tensor contract | Direct support | Native MLX can consume processed media tensors without raw media decoding in the hot path |
-| You need raw image/audio/video URL or file decoding, or multimodal input on delegated routes | Unsupported unless explicitly documented elsewhere | Current delegated routes are text-first and raw media preprocessing is not part of AX's OpenAI text adapter |
+| You have Gemma4 unified image/audio/video inputs already preprocessed into AX's validated `multimodal_inputs.gemma4_unified` tensor contract | Direct support | Native MLX can consume processed media tensors without raw media decoding in the hot path; OpenAI-shaped routes require pre-tokenized prompt tokens for span alignment |
+| You need client-side preprocessing for image URLs/data URIs, WAV audio URLs/data URIs, OpenAI-style `input_audio` WAV base64, or decoded video frames | Direct support through the Python helper | The helper prepares the processed tensor contract before the request reaches the optimized runtime |
+| You need server-side raw image/audio/video OpenAI media content-part decoding, encoded video container decoding, or multimodal input on delegated routes | Unsupported unless explicitly documented elsewhere | Current delegated routes are text-first and raw media preprocessing is not part of AX's OpenAI text adapter |
 
 ## Evidence Rules
 

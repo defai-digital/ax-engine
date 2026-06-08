@@ -138,7 +138,7 @@ final class AxEngineClientTests: XCTestCase {
                 "choices": [["index": 0, "message": ["role": "assistant", "content": "ok"], "finish_reason": "stop"]],
             ])
         }
-        try await makeClient().chatCompletion(.init(
+        _ = try await makeClient().chatCompletion(.init(
             messages: [
                 .init(role: "system", content: "You are AX."),
                 .init(role: "user",   content: "Hello"),
@@ -153,6 +153,37 @@ final class AxEngineClientTests: XCTestCase {
         XCTAssertEqual(captured["seed"] as? Int, 42)
     }
 
+    func testChatCompletionEncodesTokenizedGemma4Inputs() async throws {
+        var captured: [String: Any] = [:]
+        MockURLProtocol.handler = { req in
+            captured = readBody(req).flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] } ?? [:]
+            return jsonResponse([
+                "id": "c1", "object": "chat.completion", "created": 0, "model": "m",
+                "choices": [["index": 0, "message": ["role": "assistant", "content": "ok"], "finish_reason": "stop"]],
+            ])
+        }
+        let multimodalInputs = RequestMultimodalInputs(gemma4Unified: .init(images: [
+            .init(
+                span: .init(
+                    modality: .image, placeholderIndex: 1, replacementStart: 1,
+                    softTokenCount: 1, replacementTokenCount: 3
+                ),
+                pixelValues: [0.0, 1.0, 2.0],
+                pixelPositionIds: [[0, 0]]
+            ),
+        ]))
+
+        _ = try await makeClient().chatCompletion(.init(
+            messages: [.init(role: "user", content: "Describe this image")],
+            inputTokens: [10, 258_880, 11],
+            maxTokens: 1,
+            multimodalInputs: multimodalInputs
+        ))
+
+        XCTAssertEqual(captured["input_tokens"] as? [Int], [10, 258_880, 11])
+        XCTAssertNotNil(captured["multimodal_inputs"])
+    }
+
     func testCompletion() async throws {
         MockURLProtocol.handler = { _ in
             jsonResponse([
@@ -165,6 +196,36 @@ final class AxEngineClientTests: XCTestCase {
         XCTAssertEqual(resp.object, "text_completion")
         XCTAssertEqual(resp.choices.first?.text, "Hello world")
         XCTAssertEqual(resp.usage?.totalTokens, 5)
+    }
+
+    func testCompletionEncodesTokenPromptAndGemma4Inputs() async throws {
+        var captured: [String: Any] = [:]
+        MockURLProtocol.handler = { req in
+            captured = readBody(req).flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] } ?? [:]
+            return jsonResponse([
+                "id": "cmpl-1", "object": "text_completion", "created": 0, "model": "qwen3_dense",
+                "choices": [["index": 0, "text": "ok", "finish_reason": "stop"]],
+            ])
+        }
+        let multimodalInputs = RequestMultimodalInputs(gemma4Unified: .init(images: [
+            .init(
+                span: .init(
+                    modality: .image, placeholderIndex: 1, replacementStart: 1,
+                    softTokenCount: 1, replacementTokenCount: 3
+                ),
+                pixelValues: [0.0, 1.0, 2.0],
+                pixelPositionIds: [[0, 0]]
+            ),
+        ]))
+
+        _ = try await makeClient().completion(.init(
+            promptTokens: [10, 258_880, 11],
+            maxTokens: 1,
+            multimodalInputs: multimodalInputs
+        ))
+
+        XCTAssertEqual(captured["prompt"] as? [Int], [10, 258_880, 11])
+        XCTAssertNotNil(captured["multimodal_inputs"])
     }
 
     func testEmbeddings() async throws {
@@ -186,7 +247,7 @@ final class AxEngineClientTests: XCTestCase {
             jsonResponse(["error": ["message": "bad request"]], statusCode: 400)
         }
         do {
-            try await makeClient().completion(.init(prompt: "x"))
+            _ = try await makeClient().completion(.init(prompt: "x"))
             XCTFail("Expected AxEngineHTTPError")
         } catch let err as AxEngineHTTPError {
             XCTAssertEqual(err.statusCode, 400)

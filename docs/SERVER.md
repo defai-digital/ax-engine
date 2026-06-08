@@ -405,6 +405,10 @@ server applies the preview default of 256 generated tokens. `/v1/completions`
 accepts one string prompt or one token-array prompt per request; string-array
 batch prompts fail closed until the server can return one independent choice per
 input prompt.
+For native MLX Gemma4 unified models, token-array completion prompts can also
+carry processed `multimodal_inputs.gemma4_unified` tensors. Text prompts with
+`multimodal_inputs` fail closed because Gemma4 media spans must point at
+absolute positions in the already-expanded prompt tokens.
 
 To stream OpenAI-compatible completion chunks instead:
 
@@ -437,6 +441,13 @@ curl http://127.0.0.1:8080/v1/chat/completions \
     "max_tokens": 32
 }'
 ```
+
+For native MLX Gemma4 unified models, `/v1/chat/completions` also accepts the
+AX extension `input_tokens` plus processed `multimodal_inputs.gemma4_unified`.
+When `input_tokens` is present, AX validates the message roles and still rejects
+raw image/audio/video content parts, then uses the supplied prompt tokens
+directly so media spans remain aligned. Delegated chat backends reject both
+`input_tokens` and `multimodal_inputs`.
 
 For embedding-capable repo-owned MLX sessions, the server also exposes an
 OpenAI-shaped embedding response over token-array input:
@@ -522,6 +533,14 @@ For native MLX Gemma4 unified models, `/v1/generate` and
 `multimodal_inputs.gemma4_unified` image/audio/video tensors. AX does not
 decode raw image/audio/video URLs or files on this path; callers must run media
 loading and processor output generation before sending the native request.
+The Python SDK helper can perform that client-side preprocessing for image
+paths/URLs/data URIs, WAV audio paths/URLs/data URIs, OpenAI-style
+`input_audio` WAV base64 dictionaries, and decoded video frame sequences.
+Native MLX OpenAI-compatible completions and chat can also carry processed
+`multimodal_inputs` when the prompt is already tokenized: completions use a
+token-array `prompt`, while chat uses AX's `input_tokens` extension. Text
+prompts with processed media tensors are rejected because Gemma4 unified media
+spans are absolute positions in the expanded token sequence.
 The server validates processed tensor span bounds, modality labels, soft-token
 counts, and tensor lengths before scheduling the request; malformed inputs
 return `invalid_request`.
@@ -529,7 +548,8 @@ return `invalid_request`.
 preview SSE events named `request`, `step`, `response`, and `error`.
 `POST /v1/completions` and `POST /v1/chat/completions` are response-shape
 adapters over the same stateless request flow. Native MLX requests tokenize text
-through the configured model artifacts; delegated `llama_cpp` and
+through the configured model artifacts unless callers supply pre-tokenized
+OpenAI completion prompts or chat `input_tokens`; delegated `llama_cpp` and
 `mlx_lm_delegated` requests forward text to the configured upstream backend.
 Streaming mode emits unnamed SSE `data:` chunks plus `[DONE]` in the familiar
 OpenAI-style envelope instead of AX-specific lifecycle event names.

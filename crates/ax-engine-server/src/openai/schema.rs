@@ -1,3 +1,4 @@
+use ax_engine_sdk::RequestMultimodalInputs;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -109,6 +110,8 @@ pub(crate) struct OpenAiCompletionHttpRequest {
     #[serde(default)]
     pub(crate) metadata: Option<String>,
     #[serde(default)]
+    pub(crate) multimodal_inputs: RequestMultimodalInputs,
+    #[serde(default)]
     pub(crate) response_format: Option<Value>,
 }
 
@@ -117,6 +120,8 @@ pub(crate) struct OpenAiChatCompletionHttpRequest {
     #[serde(default)]
     pub(crate) model: Option<String>,
     pub(crate) messages: Vec<OpenAiChatMessage>,
+    #[serde(default)]
+    pub(crate) input_tokens: Vec<u32>,
     #[serde(default)]
     pub(crate) max_tokens: Option<u32>,
     #[serde(default)]
@@ -139,6 +144,8 @@ pub(crate) struct OpenAiChatCompletionHttpRequest {
     pub(crate) stream: bool,
     #[serde(default)]
     pub(crate) metadata: Option<String>,
+    #[serde(default)]
+    pub(crate) multimodal_inputs: RequestMultimodalInputs,
     #[serde(default)]
     pub(crate) response_format: Option<Value>,
     #[serde(default)]

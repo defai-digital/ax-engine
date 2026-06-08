@@ -1,7 +1,7 @@
 use crate::chat;
 use crate::openai::requests::{
-    DEFAULT_OPENAI_MAX_TOKENS, build_openai_chat_request, chat_template_kwargs_for_model_id,
-    openai_chat_stop_sequences, render_openai_chat_prompt,
+    DEFAULT_OPENAI_MAX_TOKENS, build_openai_chat_request, build_openai_mlx_lm_chat_request,
+    chat_template_kwargs_for_model_id, openai_chat_stop_sequences, render_openai_chat_prompt,
 };
 use crate::openai::schema::{OpenAiChatCompletionHttpRequest, OpenAiChatMessage, OpenAiStopInput};
 use crate::openai::validation::validate_openai_request;
@@ -16,8 +16,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use super::fixtures::{
     assert_invalid_request_response, json_request_body, json_response, llama_cpp_server_state,
     minimal_tokenizer_artifact, mlx_lm_delegated_state, native_mlx_openai_builder_state,
-    openai_first_choice, sample_openai_chat_request, sample_openai_chat_request_with_role,
-    spawn_llama_cpp_completion_server, test_app_state,
+    openai_first_choice, sample_gemma4_multimodal_inputs, sample_openai_chat_request,
+    sample_openai_chat_request_with_role, spawn_llama_cpp_completion_server, test_app_state,
 };
 
 #[test]
@@ -357,6 +357,154 @@ async fn openai_chat_request_tokenizes_text_for_native_mlx_backend() {
     assert!(!built.stream);
 
     fs::remove_dir_all(artifact_dir).expect("artifact dir should clean up");
+}
+
+#[tokio::test]
+async fn openai_chat_request_preserves_gemma4_multimodal_inputs_for_native_mlx_tokens() {
+    let artifact_dir = minimal_tokenizer_artifact("native-openai-chat-mm-tokenizer");
+    let state = native_mlx_openai_builder_state("gemma-4-12b-it", &artifact_dir);
+    let request: OpenAiChatCompletionHttpRequest = serde_json::from_value(json!({
+        "model": "gemma-4-12b-it",
+        "messages": [{"role": "user", "content": "Describe this image"}],
+        "input_tokens": [10, 258880, 11],
+        "max_tokens": 8,
+        "multimodal_inputs": sample_gemma4_multimodal_inputs()
+    }))
+    .expect("sample chat request should deserialize");
+
+    let built = build_openai_chat_request(&state, request).expect("chat request should build");
+    let inputs = built
+        .generate_request
+        .multimodal_inputs
+        .gemma4_unified
+        .expect("OpenAI chat should preserve processed Gemma4 media tensors");
+
+    assert_eq!(built.generate_request.input_tokens, vec![10, 258880, 11]);
+    assert_eq!(built.generate_request.input_text, None);
+    assert_eq!(inputs.images.len(), 1);
+    assert_eq!(inputs.images[0].pixel_values, vec![0.0, 1.0, 2.0]);
+
+    fs::remove_dir_all(artifact_dir).expect("artifact dir should clean up");
+}
+
+#[tokio::test]
+async fn openai_chat_request_rejects_gemma4_multimodal_inputs_without_input_tokens() {
+    let artifact_dir = minimal_tokenizer_artifact("native-openai-chat-mm-no-tokens");
+    let state = native_mlx_openai_builder_state("gemma-4-12b-it", &artifact_dir);
+    let request: OpenAiChatCompletionHttpRequest = serde_json::from_value(json!({
+        "model": "gemma-4-12b-it",
+        "messages": [{"role": "user", "content": "Describe this image"}],
+        "max_tokens": 8,
+        "multimodal_inputs": sample_gemma4_multimodal_inputs()
+    }))
+    .expect("sample chat request should deserialize");
+
+    let error = match build_openai_chat_request(&state, request) {
+        Ok(_) => panic!("chat media tensors without input_tokens should fail"),
+        Err(error) => error,
+    };
+
+    assert_eq!(error.0, StatusCode::BAD_REQUEST);
+    assert!(
+        error.1.error.message.contains("pre-tokenized input"),
+        "unexpected error: {}",
+        error.1.error.message
+    );
+
+    fs::remove_dir_all(artifact_dir).expect("artifact dir should clean up");
+}
+
+#[tokio::test]
+async fn openai_chat_request_rejects_raw_media_parts_even_with_input_tokens() {
+    let artifact_dir = minimal_tokenizer_artifact("native-openai-chat-token-raw-media");
+    let state = native_mlx_openai_builder_state("gemma-4-12b-it", &artifact_dir);
+    let request: OpenAiChatCompletionHttpRequest = serde_json::from_value(json!({
+        "model": "gemma-4-12b-it",
+        "messages": [{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "Describe this image"},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,AA=="}}
+            ]
+        }],
+        "input_tokens": [10, 258880, 11],
+        "max_tokens": 8
+    }))
+    .expect("sample chat request should deserialize");
+
+    let error = match build_openai_chat_request(&state, request) {
+        Ok(_) => panic!("raw media parts should fail even with input_tokens"),
+        Err(error) => error,
+    };
+
+    assert_eq!(error.0, StatusCode::BAD_REQUEST);
+    assert!(
+        error
+            .1
+            .error
+            .message
+            .contains("multimodal_inputs.gemma4_unified"),
+        "unexpected error: {}",
+        error.1.error.message
+    );
+
+    fs::remove_dir_all(artifact_dir).expect("artifact dir should clean up");
+}
+
+#[tokio::test]
+async fn delegated_openai_chat_rejects_input_tokens_extension() {
+    let state = mlx_lm_delegated_state("http://127.0.0.1:1".to_string());
+    let request: OpenAiChatCompletionHttpRequest = serde_json::from_value(json!({
+        "model": "gemma-4-12b-it",
+        "messages": [{"role": "user", "content": "Describe this image"}],
+        "input_tokens": [10, 11],
+        "max_tokens": 8
+    }))
+    .expect("sample chat request should deserialize");
+
+    let error = match build_openai_mlx_lm_chat_request(&state, request) {
+        Ok(_) => panic!("delegated text backends should reject tokenized chat"),
+        Err(error) => error,
+    };
+
+    assert_eq!(error.0, StatusCode::BAD_REQUEST);
+    assert!(
+        error
+            .1
+            .error
+            .message
+            .contains("input_tokens require native MLX"),
+        "unexpected error: {}",
+        error.1.error.message
+    );
+}
+
+#[tokio::test]
+async fn delegated_openai_chat_rejects_gemma4_multimodal_inputs() {
+    let state = mlx_lm_delegated_state("http://127.0.0.1:1".to_string());
+    let request: OpenAiChatCompletionHttpRequest = serde_json::from_value(json!({
+        "model": "gemma-4-12b-it",
+        "messages": [{"role": "user", "content": "Describe this image"}],
+        "max_tokens": 8,
+        "multimodal_inputs": sample_gemma4_multimodal_inputs()
+    }))
+    .expect("sample chat request should deserialize");
+
+    let error = match build_openai_mlx_lm_chat_request(&state, request) {
+        Ok(_) => panic!("delegated text backends should reject processed media tensors"),
+        Err(error) => error,
+    };
+
+    assert_eq!(error.0, StatusCode::BAD_REQUEST);
+    assert!(
+        error
+            .1
+            .error
+            .message
+            .contains("OpenAI chat multimodal_inputs require native MLX backend"),
+        "unexpected error: {}",
+        error.1.error.message
+    );
 }
 
 #[tokio::test]

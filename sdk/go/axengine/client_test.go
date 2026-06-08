@@ -134,6 +134,96 @@ func TestChatCompletionOK(t *testing.T) {
 	})
 }
 
+func TestCompletionEncodesGemma4MultimodalInputs(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/completions", func(w http.ResponseWriter, r *http.Request) {
+		var req OpenAiCompletionRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("decode body: %v", err)
+		}
+		prompt, ok := req.Prompt.([]any)
+		if !ok || len(prompt) != 3 {
+			t.Errorf("prompt: got %#v want token array", req.Prompt)
+		}
+		if req.MultimodalInputs == nil || req.MultimodalInputs.Gemma4Unified == nil {
+			t.Errorf("multimodal_inputs missing from completion request")
+		}
+		writeJSON(w, OpenAiCompletionResponse{
+			ID:      "cmpl-1",
+			Object:  "text_completion",
+			Model:   "gemma-4-12b-it",
+			Choices: []OpenAiCompletionChoice{{Index: 0, Text: "ok", FinishReason: Ptr("stop")}},
+		})
+	})
+	startServer(t, mux, func(baseURL string) {
+		client := NewClient(&ClientOptions{BaseURL: baseURL})
+		_, err := client.Completion(context.Background(), OpenAiCompletionRequest{
+			Prompt:           []int{10, 258880, 11},
+			MaxTokens:        Ptr(1),
+			MultimodalInputs: sampleGemma4MultimodalInputs(),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	})
+}
+
+func TestChatCompletionEncodesGemma4MultimodalInputs(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/chat/completions", func(w http.ResponseWriter, r *http.Request) {
+		var req OpenAiChatCompletionRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("decode body: %v", err)
+		}
+		if len(req.InputTokens) != 3 || req.InputTokens[1] != 258880 {
+			t.Errorf("input_tokens: got %#v", req.InputTokens)
+		}
+		if req.MultimodalInputs == nil || req.MultimodalInputs.Gemma4Unified == nil {
+			t.Errorf("multimodal_inputs missing from chat request")
+		}
+		writeJSON(w, OpenAiChatCompletionResponse{
+			ID:     "chatcmpl-1",
+			Object: "chat.completion",
+			Model:  "gemma-4-12b-it",
+			Choices: []OpenAiChatCompletionChoice{{
+				Index:        0,
+				Message:      OpenAiChatMessageResponse{Role: "assistant", Content: "ok"},
+				FinishReason: Ptr("stop"),
+			}},
+		})
+	})
+	startServer(t, mux, func(baseURL string) {
+		client := NewClient(&ClientOptions{BaseURL: baseURL})
+		_, err := client.ChatCompletion(context.Background(), OpenAiChatCompletionRequest{
+			Messages:         []OpenAiChatMessage{{Role: "user", Content: "Describe this image"}},
+			InputTokens:      []int{10, 258880, 11},
+			MaxTokens:        Ptr(1),
+			MultimodalInputs: sampleGemma4MultimodalInputs(),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	})
+}
+
+func sampleGemma4MultimodalInputs() *RequestMultimodalInputs {
+	return &RequestMultimodalInputs{
+		Gemma4Unified: &Gemma4UnifiedRuntimeInputs{
+			Images: []Gemma4UnifiedImageRuntimeInput{{
+				Span: Gemma4UnifiedTokenSpan{
+					Modality:              "image",
+					PlaceholderIndex:      1,
+					ReplacementStart:      1,
+					SoftTokenCount:        1,
+					ReplacementTokenCount: 3,
+				},
+				PixelValues:      []float64{0.0, 1.0, 2.0},
+				PixelPositionIDs: [][]int{{0, 0}},
+			}},
+		},
+	}
+}
+
 func TestHTTPErrorPropagated(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/completions", func(w http.ResponseWriter, r *http.Request) {

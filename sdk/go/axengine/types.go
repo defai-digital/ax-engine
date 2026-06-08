@@ -80,18 +80,19 @@ type OpenAiUsage struct {
 
 // OpenAiCompletionRequest is the /v1/completions request body.
 type OpenAiCompletionRequest struct {
-	Model             *string     `json:"model,omitempty"`
-	Prompt            interface{} `json:"prompt"` // string | []string | []int
-	MaxTokens         *int        `json:"max_tokens,omitempty"`
-	Temperature       *float64    `json:"temperature,omitempty"`
-	TopP              *float64    `json:"top_p,omitempty"`
-	TopK              *int        `json:"top_k,omitempty"`
-	MinP              *float64    `json:"min_p,omitempty"`
-	RepetitionPenalty *float64    `json:"repetition_penalty,omitempty"`
-	Stop              interface{} `json:"stop,omitempty"` // string | []string
-	Seed              *int64      `json:"seed,omitempty"`
-	Stream            *bool       `json:"stream,omitempty"`
-	Metadata          *string     `json:"metadata,omitempty"`
+	Model             *string                  `json:"model,omitempty"`
+	Prompt            interface{}              `json:"prompt"` // string | []string | []int
+	MaxTokens         *int                     `json:"max_tokens,omitempty"`
+	Temperature       *float64                 `json:"temperature,omitempty"`
+	TopP              *float64                 `json:"top_p,omitempty"`
+	TopK              *int                     `json:"top_k,omitempty"`
+	MinP              *float64                 `json:"min_p,omitempty"`
+	RepetitionPenalty *float64                 `json:"repetition_penalty,omitempty"`
+	Stop              interface{}              `json:"stop,omitempty"` // string | []string
+	Seed              *int64                   `json:"seed,omitempty"`
+	Stream            *bool                    `json:"stream,omitempty"`
+	Metadata          *string                  `json:"metadata,omitempty"`
+	MultimodalInputs  *RequestMultimodalInputs `json:"multimodal_inputs,omitempty"`
 }
 
 // OpenAiCompletionChoice is a single completion choice.
@@ -135,18 +136,20 @@ type OpenAiChatMessage struct {
 
 // OpenAiChatCompletionRequest is the /v1/chat/completions request body.
 type OpenAiChatCompletionRequest struct {
-	Model             *string             `json:"model,omitempty"`
-	Messages          []OpenAiChatMessage `json:"messages"`
-	MaxTokens         *int                `json:"max_tokens,omitempty"`
-	Temperature       *float64            `json:"temperature,omitempty"`
-	TopP              *float64            `json:"top_p,omitempty"`
-	TopK              *int                `json:"top_k,omitempty"`
-	MinP              *float64            `json:"min_p,omitempty"`
-	RepetitionPenalty *float64            `json:"repetition_penalty,omitempty"`
-	Stop              interface{}         `json:"stop,omitempty"`
-	Seed              *int64              `json:"seed,omitempty"`
-	Stream            *bool               `json:"stream,omitempty"`
-	Metadata          *string             `json:"metadata,omitempty"`
+	Model             *string                  `json:"model,omitempty"`
+	Messages          []OpenAiChatMessage      `json:"messages"`
+	InputTokens       []int                    `json:"input_tokens,omitempty"`
+	MaxTokens         *int                     `json:"max_tokens,omitempty"`
+	Temperature       *float64                 `json:"temperature,omitempty"`
+	TopP              *float64                 `json:"top_p,omitempty"`
+	TopK              *int                     `json:"top_k,omitempty"`
+	MinP              *float64                 `json:"min_p,omitempty"`
+	RepetitionPenalty *float64                 `json:"repetition_penalty,omitempty"`
+	Stop              interface{}              `json:"stop,omitempty"`
+	Seed              *int64                   `json:"seed,omitempty"`
+	Stream            *bool                    `json:"stream,omitempty"`
+	Metadata          *string                  `json:"metadata,omitempty"`
+	MultimodalInputs  *RequestMultimodalInputs `json:"multimodal_inputs,omitempty"`
 }
 
 // OpenAiChatMessageResponse is the assistant message in a chat completion response.

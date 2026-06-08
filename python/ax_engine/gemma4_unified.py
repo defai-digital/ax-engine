@@ -1,12 +1,19 @@
 from __future__ import annotations
 
+import base64
 import json
 import math
+import urllib.parse
+import urllib.request
 import wave
 from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
 from typing import Any
+
+
+_REMOTE_MEDIA_TIMEOUT_SECONDS = 10
+_MAX_REMOTE_MEDIA_BYTES = 64 * 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -456,20 +463,38 @@ def _load_pil_image(image: Any):
             "install ax-engine[multimodal] or pillow"
         ) from exc
 
+    if isinstance(image, dict):
+        image = _media_source_from_dict(image, "image")
     if isinstance(image, Image.Image):
         return image
     if isinstance(image, bytes):
         return Image.open(BytesIO(image))
+    if isinstance(image, str):
+        if image.startswith("data:"):
+            return Image.open(BytesIO(_decode_data_uri(image, ("image/",))))
+        if _is_remote_url(image):
+            return Image.open(BytesIO(_fetch_url_bytes(image)))
+        if image.startswith("file://"):
+            image = _file_url_to_path(image)
     return Image.open(image)
 
 
 def _load_audio_waveform(audio: Any, default_sampling_rate: int) -> tuple[list[float], int]:
+    if isinstance(audio, dict):
+        audio = _audio_source_from_dict(audio)
     if isinstance(audio, tuple) and len(audio) == 2:
         waveform, sampling_rate = audio
         return _flatten_audio_values(waveform), int(sampling_rate)
     if isinstance(audio, bytes):
         return _load_wav(BytesIO(audio))
-    if isinstance(audio, (str, Path)):
+    if isinstance(audio, str):
+        if audio.startswith("data:"):
+            return _load_wav(BytesIO(_decode_data_uri(audio, ("audio/", "application/"))))
+        if _is_remote_url(audio):
+            return _load_wav(BytesIO(_fetch_url_bytes(audio)))
+        if audio.startswith("file://"):
+            audio = _file_url_to_path(audio)
+    if isinstance(audio, Path) or isinstance(audio, str):
         with Path(audio).open("rb") as handle:
             return _load_wav(handle)
     return _flatten_audio_values(audio), default_sampling_rate
@@ -558,6 +583,88 @@ def _load_video_frames(video: Any) -> list[Any]:
     if not frames:
         raise ValueError("Gemma4 unified video input must contain at least one frame")
     return frames
+
+
+def _media_source_from_dict(source: dict[str, Any], modality: str) -> Any:
+    if "url" in source:
+        return source["url"]
+    nested = source.get(f"{modality}_url")
+    if isinstance(nested, dict) and "url" in nested:
+        return nested["url"]
+    if isinstance(nested, str):
+        return nested
+    raise ValueError(
+        f"Gemma4 unified {modality} source dict must contain url or {modality}_url.url"
+    )
+
+
+def _audio_source_from_dict(source: dict[str, Any]) -> Any:
+    if "data" in source:
+        audio_format = str(source.get("format", "wav")).lower()
+        if audio_format not in {"wav", "wave"}:
+            raise ValueError(
+                "Gemma4 unified input_audio data currently supports WAV format only"
+            )
+        return base64.b64decode(str(source["data"]), validate=True)
+    if "input_audio" in source and isinstance(source["input_audio"], dict):
+        return _audio_source_from_dict(source["input_audio"])
+    if "url" in source:
+        return source["url"]
+    audio_url = source.get("audio_url")
+    if isinstance(audio_url, dict) and "url" in audio_url:
+        return audio_url["url"]
+    if isinstance(audio_url, str):
+        return audio_url
+    raise ValueError(
+        "Gemma4 unified audio source dict must contain data, input_audio, url, "
+        "or audio_url.url"
+    )
+
+
+def _decode_data_uri(uri: str, accepted_media_prefixes: tuple[str, ...]) -> bytes:
+    if "," not in uri:
+        raise ValueError("Gemma4 unified media data URI is missing a comma separator")
+    header, payload = uri.split(",", 1)
+    header_lower = header.lower()
+    media_type = header_lower[5:].split(";", 1)[0]
+    if accepted_media_prefixes and not any(
+        media_type.startswith(prefix) for prefix in accepted_media_prefixes
+    ):
+        accepted = ", ".join(accepted_media_prefixes)
+        raise ValueError(
+            f"Gemma4 unified media data URI has unsupported media type "
+            f"{media_type!r}; expected one of {accepted}"
+        )
+    if ";base64" in header_lower:
+        return base64.b64decode(payload, validate=True)
+    return urllib.parse.unquote_to_bytes(payload)
+
+
+def _is_remote_url(source: str) -> bool:
+    return source.startswith(("http://", "https://"))
+
+
+def _fetch_url_bytes(url: str) -> bytes:
+    try:
+        with urllib.request.urlopen(url, timeout=_REMOTE_MEDIA_TIMEOUT_SECONDS) as response:
+            data = response.read(_MAX_REMOTE_MEDIA_BYTES + 1)
+    except Exception as exc:
+        raise ValueError(f"Gemma4 unified media URL fetch failed: {url}") from exc
+    if len(data) > _MAX_REMOTE_MEDIA_BYTES:
+        raise ValueError(
+            "Gemma4 unified media URL response exceeded "
+            f"{_MAX_REMOTE_MEDIA_BYTES} bytes"
+        )
+    return data
+
+
+def _file_url_to_path(url: str) -> Path:
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme != "file":
+        raise ValueError(f"Gemma4 unified expected a file URL, got {url}")
+    if parsed.netloc not in ("", "localhost"):
+        raise ValueError("Gemma4 unified file URLs must be local")
+    return Path(urllib.parse.unquote(parsed.path))
 
 
 def _sample_video_frames(frames: list[Any], max_frames: int) -> list[Any]:

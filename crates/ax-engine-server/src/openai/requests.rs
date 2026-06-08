@@ -31,6 +31,7 @@ pub(crate) struct OpenAiBuiltRequest {
 
 struct OpenAiBuiltPayload {
     sampling: GenerateSampling,
+    multimodal_inputs: RequestMultimodalInputs,
     stop_sequences: Vec<String>,
     stream: bool,
     metadata: Option<String>,
@@ -101,8 +102,21 @@ pub(crate) fn build_openai_completion_request(
     let sampling_params = OpenAiSamplingParams::from_completion_request(&request);
     let structured_output = openai_response_format_is_structured(request.response_format.as_ref());
     let metadata = openai_workload_metadata(request.metadata, false, structured_output);
+    let multimodal_inputs = request.multimodal_inputs;
+    reject_openai_multimodal_inputs_without_native_mlx(
+        state,
+        "OpenAI completions",
+        &multimodal_inputs,
+    )?;
     let (input_tokens, input_text) = match request.prompt {
-        OpenAiPromptInput::Text(text) => (Vec::new(), Some(text)),
+        OpenAiPromptInput::Text(text) => {
+            reject_openai_multimodal_inputs_without_tokens(
+                "OpenAI completions",
+                &multimodal_inputs,
+                false,
+            )?;
+            (Vec::new(), Some(text))
+        }
         OpenAiPromptInput::TextBatch(prompts) => {
             return Err(error_response(
                 StatusCode::BAD_REQUEST,
@@ -113,11 +127,19 @@ pub(crate) fn build_openai_completion_request(
                 ),
             ));
         }
-        OpenAiPromptInput::Tokens(tokens) => (tokens, None),
+        OpenAiPromptInput::Tokens(tokens) => {
+            reject_openai_multimodal_inputs_without_tokens(
+                "OpenAI completions",
+                &multimodal_inputs,
+                !tokens.is_empty(),
+            )?;
+            (tokens, None)
+        }
     };
 
     let payload = OpenAiBuiltPayload {
         sampling: build_openai_sampling(state, sampling_params),
+        multimodal_inputs,
         stop_sequences: request
             .stop
             .map(OpenAiStopInput::into_vec)
@@ -135,26 +157,39 @@ pub(crate) fn build_openai_chat_request(
 ) -> Result<OpenAiBuiltRequest, (StatusCode, Json<ErrorResponse>)> {
     let max_output_tokens = openai_max_tokens(request.max_tokens);
     let sampling_params = OpenAiSamplingParams::from_chat_request(&request);
-    validate_native_chat_artifacts(state)?;
-    let input_text = render_openai_chat_prompt(state.model_id.as_ref(), &request.messages)?;
+    let input_tokens = request.input_tokens;
+    let multimodal_inputs = request.multimodal_inputs;
+    reject_openai_multimodal_inputs_without_native_mlx(state, "OpenAI chat", &multimodal_inputs)?;
+    reject_openai_multimodal_inputs_without_tokens(
+        "OpenAI chat",
+        &multimodal_inputs,
+        !input_tokens.is_empty(),
+    )?;
+    let input_text = if input_tokens.is_empty() {
+        validate_native_chat_artifacts(state)?;
+        Some(render_openai_chat_prompt(
+            state.model_id.as_ref(),
+            &request.messages,
+        )?)
+    } else {
+        // Keep message validation and raw-media rejection even when the AX
+        // extension supplies an already-tokenized prompt.
+        let _ = build_mlx_lm_chat_messages(&request.messages)?;
+        None
+    };
     let tool_call = openai_tools_are_enabled(request.tools.as_ref(), request.tool_choice.as_ref());
     let structured_output = openai_response_format_is_structured(request.response_format.as_ref());
     let metadata = openai_workload_metadata(request.metadata, tool_call, structured_output);
 
     let payload = OpenAiBuiltPayload {
         sampling: build_openai_sampling(state, sampling_params),
+        multimodal_inputs,
         stop_sequences: openai_chat_stop_sequences(state.model_id.as_ref(), request.stop),
         stream: request.stream,
         metadata,
     };
 
-    build_openai_generate_request(
-        state,
-        Vec::new(),
-        Some(input_text),
-        max_output_tokens,
-        payload,
-    )
+    build_openai_generate_request(state, input_tokens, input_text, max_output_tokens, payload)
 }
 
 fn validate_native_chat_artifacts(
@@ -171,6 +206,7 @@ pub(crate) fn build_openai_mlx_lm_chat_request(
     state: &AppState,
     request: OpenAiChatCompletionHttpRequest,
 ) -> Result<OpenAiBuiltMlxLmChatRequest, (StatusCode, Json<ErrorResponse>)> {
+    reject_delegated_chat_extensions(&request.input_tokens, &request.multimodal_inputs)?;
     let max_output_tokens = openai_max_tokens(request.max_tokens);
     let sampling_params = OpenAiSamplingParams::from_chat_request(&request);
     let messages = build_mlx_lm_chat_messages(&request.messages)?;
@@ -198,6 +234,7 @@ pub(crate) fn build_openai_llama_cpp_chat_request(
     state: &AppState,
     request: OpenAiChatCompletionHttpRequest,
 ) -> Result<OpenAiBuiltLlamaCppChatRequest, (StatusCode, Json<ErrorResponse>)> {
+    reject_delegated_chat_extensions(&request.input_tokens, &request.multimodal_inputs)?;
     let max_output_tokens = openai_max_tokens(request.max_tokens);
     let sampling_params = OpenAiSamplingParams::from_chat_request(&request);
     let messages = build_llama_cpp_chat_messages(&request.messages)?;
@@ -236,7 +273,7 @@ fn build_openai_generate_request(
             GenerateRequestParts {
                 input_tokens,
                 input_text,
-                multimodal_inputs: Default::default(),
+                multimodal_inputs: payload.multimodal_inputs,
                 max_output_tokens,
                 sampling: payload.sampling,
                 stop_sequences: payload.stop_sequences,
@@ -287,6 +324,62 @@ fn tokenize_native_mlx_text_input(
     })?;
 
     Ok((input_tokens, None))
+}
+
+fn reject_openai_multimodal_inputs_without_native_mlx(
+    state: &AppState,
+    route: &str,
+    multimodal_inputs: &RequestMultimodalInputs,
+) -> Result<(), (StatusCode, Json<ErrorResponse>)> {
+    if multimodal_inputs.is_empty() || state.runtime_report.selected_backend == SelectedBackend::Mlx
+    {
+        return Ok(());
+    }
+    Err(error_response(
+        StatusCode::BAD_REQUEST,
+        "invalid_request",
+        format!(
+            "{route} multimodal_inputs require native MLX backend; delegated text backends cannot consume Gemma4UnifiedRuntimeInputs"
+        ),
+    ))
+}
+
+fn reject_openai_multimodal_inputs_without_tokens(
+    route: &str,
+    multimodal_inputs: &RequestMultimodalInputs,
+    has_input_tokens: bool,
+) -> Result<(), (StatusCode, Json<ErrorResponse>)> {
+    if multimodal_inputs.is_empty() || has_input_tokens {
+        return Ok(());
+    }
+    Err(error_response(
+        StatusCode::BAD_REQUEST,
+        "invalid_request",
+        format!(
+            "{route} multimodal_inputs require pre-tokenized input because Gemma4 unified media spans are absolute positions in the expanded prompt"
+        ),
+    ))
+}
+
+fn reject_delegated_chat_extensions(
+    input_tokens: &[u32],
+    multimodal_inputs: &RequestMultimodalInputs,
+) -> Result<(), (StatusCode, Json<ErrorResponse>)> {
+    if !input_tokens.is_empty() {
+        return Err(error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "OpenAI chat input_tokens require native MLX backend; delegated chat backends render text messages upstream".to_string(),
+        ));
+    }
+    if !multimodal_inputs.is_empty() {
+        return Err(error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            "OpenAI chat multimodal_inputs require native MLX backend; delegated text backends cannot consume Gemma4UnifiedRuntimeInputs".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 pub(crate) fn build_generate_request_internal(

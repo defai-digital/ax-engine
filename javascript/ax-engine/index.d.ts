@@ -82,6 +82,7 @@ export interface OpenAiCompletionRequest {
   seed?: number;
   stream?: boolean;
   metadata?: string;
+  multimodal_inputs?: RequestMultimodalInputs;
 }
 
 export interface OpenAiChatMessage {
@@ -103,6 +104,7 @@ export interface OpenAiChatContentPart {
 export interface OpenAiChatCompletionRequest {
   model?: string;
   messages: OpenAiChatMessage[];
+  input_tokens?: number[];
   max_tokens?: number;
   temperature?: number;
   top_p?: number;
@@ -113,6 +115,7 @@ export interface OpenAiChatCompletionRequest {
   seed?: number;
   stream?: boolean;
   metadata?: string;
+  multimodal_inputs?: RequestMultimodalInputs;
 }
 
 export interface OpenAiUsage {

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import importlib.util
 import json
 import sys
@@ -92,6 +93,24 @@ class Gemma4UnifiedImagePreprocessTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "placeholder count mismatch"):
                 module.prepare_gemma4_unified_image_request(model_dir, [7, 8], [image])
 
+    @unittest.skipIf(Image is None, "Pillow is required for Gemma4 image preprocessing")
+    def test_prepare_image_request_decodes_data_uri_source(self) -> None:
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            model_dir = Path(tmp)
+            write_tiny_config(model_dir)
+
+            request = module.prepare_gemma4_unified_image_request(
+                model_dir,
+                [7, 100, 8],
+                [{"url": tiny_png_data_uri()}],
+            )
+
+        self.assertEqual(request.input_tokens, [7, 101, 100, 100, 102, 8])
+        image_input = request.multimodal_inputs["gemma4_unified"]["images"][0]
+        self.assertEqual(image_input["span"]["soft_token_count"], 2)
+        self.assertEqual(len(image_input["pixel_values"]), 24)
+
     def test_prepare_audio_request_chunks_waveform_and_expands_placeholder(self) -> None:
         module = load_module()
         with tempfile.TemporaryDirectory() as tmp:
@@ -155,6 +174,44 @@ class Gemma4UnifiedImagePreprocessTests(unittest.TestCase):
         self.assertEqual(audio_input["input_features"], [0.0, 0.5, -0.5, 0.0])
         self.assertEqual(audio_input["frame_count"], 2)
         self.assertEqual(audio_input["feature_count"], 2)
+
+    def test_prepare_audio_request_decodes_data_uri_source(self) -> None:
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            model_dir = Path(tmp)
+            write_tiny_config(model_dir)
+            audio_uri = "data:audio/wav;base64," + base64.b64encode(
+                tiny_wav_bytes([0, 16384, -16384], 4)
+            ).decode("ascii")
+
+            request = module.prepare_gemma4_unified_audio_request(
+                model_dir,
+                [7, 200, 8],
+                [{"url": audio_uri}],
+            )
+
+        audio_input = request.multimodal_inputs["gemma4_unified"]["audios"][0]
+        self.assertEqual(audio_input["input_features"], [0.0, 0.5, -0.5, 0.0])
+        self.assertEqual(audio_input["frame_count"], 2)
+
+    def test_prepare_audio_request_accepts_openai_input_audio_dict(self) -> None:
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            model_dir = Path(tmp)
+            write_tiny_config(model_dir)
+            audio_data = base64.b64encode(tiny_wav_bytes([0, 16384, -16384], 4)).decode(
+                "ascii"
+            )
+
+            request = module.prepare_gemma4_unified_audio_request(
+                model_dir,
+                [7, 200, 8],
+                [{"input_audio": {"data": audio_data, "format": "wav"}}],
+            )
+
+        audio_input = request.multimodal_inputs["gemma4_unified"]["audios"][0]
+        self.assertEqual(audio_input["input_features"], [0.0, 0.5, -0.5, 0.0])
+        self.assertEqual(audio_input["frame_count"], 2)
 
     @unittest.skipIf(Image is None, "Pillow is required for Gemma4 video preprocessing")
     def test_prepare_video_request_uses_frame_ranges_and_timestamps(self) -> None:
@@ -261,6 +318,13 @@ def tiny_rgb_image():
         for x in range(4):
             image.putpixel((x, y), (x, y, x + y))
     return image
+
+
+def tiny_png_data_uri() -> str:
+    assert Image is not None
+    buffer = BytesIO()
+    tiny_rgb_image().save(buffer, format="PNG")
+    return "data:image/png;base64," + base64.b64encode(buffer.getvalue()).decode("ascii")
 
 
 def tiny_wav_bytes(samples: list[int], sampling_rate: int) -> bytes:

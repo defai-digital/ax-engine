@@ -51,6 +51,26 @@ pub(super) fn sample_sdk_request(input_tokens: &[u32], max_output_tokens: u32) -
     }
 }
 
+pub(super) fn sample_gemma4_multimodal_inputs() -> Value {
+    json!({
+        "gemma4_unified": {
+            "images": [{
+                "span": {
+                    "modality": "image",
+                    "placeholder_index": 1,
+                    "replacement_start": 1,
+                    "soft_token_count": 1,
+                    "replacement_token_count": 3
+                },
+                "pixel_values": [0.0, 1.0, 2.0],
+                "pixel_position_ids": [[0, 0]]
+            }],
+            "audios": [],
+            "videos": []
+        }
+    })
+}
+
 pub(super) fn sample_openai_request_base(
     max_tokens: Option<u32>,
     stream: bool,

@@ -271,6 +271,12 @@ Gemma4 unified image/audio/video inputs are accepted only as preprocessed
 `multimodal_inputs` is present. Native validation checks processed tensor span
 bounds, modality labels, soft-token counts, and tensor lengths before request
 submission.
+OpenAI-shaped `/v1/completions` and `/v1/chat/completions` can use the same
+processed tensors only when the prompt is already tokenized: send a token-array
+completion `prompt`, or send chat `input_tokens` alongside text-only `messages`.
+AX rejects raw OpenAI media parts and rejects processed media with server-side
+text tokenization because Gemma4 spans must match absolute positions in the
+expanded token prompt.
 
 Python callers can install `ax-engine[multimodal]` and build processed payloads
 with `prepare_gemma4_unified_image_request`,
@@ -296,14 +302,23 @@ with Session(model_id="gemma-4-12b-it", mlx=True) as session:
     )
 ```
 
-The image/video helpers accept decoded frames or image paths and use Pillow for
-RGB conversion, resize, patchify, and padding. The audio helper accepts
-PCM WAV path/bytes, waveform-like arrays, or `(samples, sampling_rate)` tuples
-and resamples to the model processor's sampling rate before chunking raw
-waveform frames.
+The image helper accepts Pillow images, image bytes, local paths, `file://`
+URLs, HTTP(S) URLs, data URIs, and OpenAI-style `{"url": ...}` image objects,
+then uses Pillow for RGB conversion, resize, patchify, and padding. The audio
+helper accepts PCM WAV path/bytes, `file://` URLs, HTTP(S) URLs, audio data
+URIs, OpenAI-style `input_audio` WAV base64 dictionaries, waveform-like arrays,
+or `(samples, sampling_rate)` tuples and resamples to the model processor's
+sampling rate before chunking raw waveform frames.
+The video helper accepts decoded frame sequences; encoded video container
+decoding remains caller-owned.
 Video timestamps remain explicit: pass already-tokenized timestamp IDs through
 `timestamp_token_ids` / `video_timestamp_token_ids` when matching the HF/vLLM
 `mm:ss <boi><|video|>*N<eoi>` prompt format.
+Processed Gemma4 tensors can also be sent through native MLX OpenAI-compatible
+request shapes when the prompt is already tokenized: use a token-array
+completion `prompt` or AX's chat `input_tokens` extension. Text prompts with
+processed media tensors are rejected because the runtime spans are absolute
+token positions.
 
 `GenerateSampling` carries `temperature`, `top_p`, `seed`, and `repetition_penalty`.
 When `session.config.deterministic = true`, `temperature` is forced to 0.0
