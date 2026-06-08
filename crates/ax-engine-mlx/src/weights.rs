@@ -1158,6 +1158,34 @@ fn parse_mtp_max_depth_cap(raw: &str) -> Option<usize> {
     raw.trim().parse::<usize>().ok()
 }
 
+/// Auto-correct a single MTP RMSNorm weight when it looks like a raw HF zero-centred
+/// delta rather than the shifted MLX multiplier form (mean_abs < 0.15).
+///
+/// The Qwen3.6 MTP head stores norms as delta-from-one values; `prepare_qwen36_mtp_sidecar.py`
+/// applies `+1.0` to convert them. Sidecars built without that transform produce
+/// near-zero activations that collapse all draft tokens to the same garbage token.
+/// This function detects and corrects that case at load time.
+fn sanitize_mtp_norm(w: MlxArray, key: &str, any_corrected: &mut bool) -> MlxArray {
+    let Some(mean_abs) = norm_mean_abs(&w) else {
+        return w;
+    };
+    if mean_abs >= SANITIZED_NORM_MIN_MEAN_ABS {
+        return w;
+    }
+    *any_corrected = true;
+    tracing::warn!(
+        target: "ax_mlx::weights",
+        key,
+        mean_abs,
+        "MTP norm weight appears to be a raw HF delta (mean_abs={mean_abs:.4} < {SANITIZED_NORM_MIN_MEAN_ABS}); \
+         applying +1.0 correction automatically. Regenerate the MTP sidecar with \
+         scripts/prepare_qwen36_mtp_sidecar.py to silence this warning."
+    );
+    let one = MlxArray::from_f32(1.0_f32);
+    let corrected = add(&astype(&w, MlxDtype::Float32, None), &one, None);
+    astype(&corrected, w.dtype(), None)
+}
+
 /// Try to load MTP weights from `mtp.*` keys in `name_map`.
 ///
 /// Returns `None` when no MTP keys are found, allowing graceful fallback to
@@ -1220,6 +1248,57 @@ fn load_mtp(
     if !has_moe_ffn && (gate_proj.is_none() || up_proj.is_none() || down_proj.is_none()) {
         return None;
     }
+
+    // Detect and auto-correct unshifted MTP norm weights produced by sidecars that
+    // omitted the `+1.0` HF-delta → MLX-multiplier transform. Raw HF delta norms
+    // (mean_abs < 0.15) cause all MTP activations to collapse to near-zero, which
+    // makes every draft token the same garbage token (typically `!`). The corrected
+    // weights are identical to what `prepare_qwen36_mtp_sidecar.py` produces.
+    // Must run before `ffn_layer` is built so that `attn_norm`/`ffn_norm` clones
+    // inside `ffn_layer` also receive the corrected values.
+    let mut any_corrected = false;
+    let pre_fc_norm_embedding = sanitize_mtp_norm(
+        pre_fc_norm_embedding,
+        "mtp.pre_fc_norm_embedding.weight",
+        &mut any_corrected,
+    );
+    let pre_fc_norm_hidden = sanitize_mtp_norm(
+        pre_fc_norm_hidden,
+        "mtp.pre_fc_norm_hidden.weight",
+        &mut any_corrected,
+    );
+    let mtp_norm = sanitize_mtp_norm(mtp_norm, "mtp.norm.weight", &mut any_corrected);
+    let attn_norm = sanitize_mtp_norm(
+        attn_norm,
+        &format!("{p}.input_layernorm.weight"),
+        &mut any_corrected,
+    );
+    let ffn_norm = sanitize_mtp_norm(
+        ffn_norm,
+        &format!("{p}.post_attention_layernorm.weight"),
+        &mut any_corrected,
+    );
+    let q_norm = q_norm.map(|w| {
+        sanitize_mtp_norm(
+            w,
+            &format!("{p}.self_attn.q_norm.weight"),
+            &mut any_corrected,
+        )
+    });
+    let k_norm = k_norm.map(|w| {
+        sanitize_mtp_norm(
+            w,
+            &format!("{p}.self_attn.k_norm.weight"),
+            &mut any_corrected,
+        )
+    });
+    if any_corrected {
+        eprintln!(
+            "[ax_mlx::weights] MTP sidecar norm weights auto-corrected (+1.0 shift applied). \
+             Regenerate the sidecar with scripts/prepare_qwen36_mtp_sidecar.py to avoid this."
+        );
+    }
+
     let ffn_layer = LayerWeights {
         attn_norm: attn_norm.clone(),
         attn_post_norm: None,

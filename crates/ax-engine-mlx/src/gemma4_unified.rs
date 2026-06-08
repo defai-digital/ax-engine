@@ -476,7 +476,131 @@ fn mask_array(values: &[f32], len: usize, dtype: MlxDtype) -> MlxArray {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ax_engine_core::gemma4_unified::{Gemma4UnifiedModality, Gemma4UnifiedSoftTokenRange};
+    use crate::gemma4_assistant_mtp::Gemma4AssistantMtpStatus;
+    use crate::model::ModelConfig;
+    use crate::weights::{ModelWeights, QuantizedWeight};
+    use ax_engine_core::gemma4_unified::{
+        Gemma4UnifiedAudioRuntimeInput, Gemma4UnifiedModality, Gemma4UnifiedSoftTokenRange,
+    };
+    use mlx_sys::{MlxDtype, zeros};
+
+    fn text_only_weights() -> ModelWeights {
+        let dummy = || QuantizedWeight::new(zeros(&[1, 1], MlxDtype::Float32, None), None, None);
+        ModelWeights {
+            token_embedding: dummy(),
+            final_norm: zeros(&[1], MlxDtype::Float32, None),
+            lm_head: dummy(),
+            layers: Vec::new(),
+            per_layer_embed: None,
+            per_layer_model_proj: None,
+            per_layer_proj_norm: None,
+            mtp: None,
+            gemma4_assistant_mtp: Gemma4AssistantMtpStatus::default(),
+            assistant_pre_projection: None,
+            assistant_post_projection: None,
+            gemma4_unified_vision: None,
+            gemma4_unified_audio: None,
+        }
+    }
+
+    fn text_only_config() -> ModelConfig {
+        ModelConfig {
+            model_family: "gemma4_unified".to_string(),
+            layer_count: 0,
+            hidden_size: 1,
+            intermediate_size: 0,
+            n_heads: 1,
+            n_kv_heads: 1,
+            head_dim: 1,
+            vocab_size: 1,
+            rope_theta: 10000.0,
+            rope_dims: 0,
+            attn_output_gate: false,
+            query_scale: 1.0,
+            final_logit_softcapping: None,
+            moe_expert_count: 0,
+            moe_experts_per_token: 0,
+            moe_expert_intermediate_size: 0,
+            layer_configs: Vec::new(),
+            global_sliding_window: None,
+            gemma4_moe_router: false,
+            uses_geglu: true,
+            hidden_states_scale: None,
+            moe_norm_topk_prob: false,
+            hidden_size_per_layer_input: 0,
+            linear_attention: None,
+            mla_attention: None,
+            glm_router: None,
+            rms_norm_eps: 1e-6,
+            rope_freqs: None,
+            no_rope_layer_interval: 0,
+            attn_temperature_floor: 0.0,
+            attn_temperature_scale: 0.0,
+            intermediate_size_mlp: 0,
+            moe_layer_freq: 0,
+            moe_first_dense_layers: 0,
+            moe_shared_expert_count: 0,
+            moe_sigmoid_routing: false,
+            moe_routed_scaling_factor: 1.0,
+            moe_n_group: 1,
+            moe_topk_group: 1,
+            think_start_token_id: None,
+            think_end_token_id: None,
+        }
+    }
+
+    fn stub_image() -> Gemma4UnifiedImageRuntimeInput {
+        Gemma4UnifiedImageRuntimeInput {
+            span: Gemma4UnifiedTokenSpan {
+                modality: Gemma4UnifiedModality::Image,
+                placeholder_index: 0,
+                replacement_start: 0,
+                soft_token_count: 1,
+                replacement_token_count: 1,
+            },
+            pixel_values: vec![0.0],
+            pixel_position_ids: vec![[0, 0]],
+        }
+    }
+
+    fn stub_audio() -> Gemma4UnifiedAudioRuntimeInput {
+        Gemma4UnifiedAudioRuntimeInput {
+            span: Gemma4UnifiedTokenSpan {
+                modality: Gemma4UnifiedModality::Audio,
+                placeholder_index: 0,
+                replacement_start: 0,
+                soft_token_count: 1,
+                replacement_token_count: 1,
+            },
+            input_features: vec![0.0],
+            frame_count: 1,
+            feature_count: 1,
+        }
+    }
+
+    #[test]
+    fn image_input_rejected_when_vision_weights_absent() {
+        let err =
+            image_embeddings(&text_only_config(), &text_only_weights(), &stub_image()).unwrap_err();
+        assert_eq!(err, "Gemma4 unified image input requires vision weights");
+    }
+
+    #[test]
+    fn audio_input_rejected_when_audio_weights_absent() {
+        let err =
+            audio_embeddings(&text_only_config(), &text_only_weights(), &stub_audio()).unwrap_err();
+        assert_eq!(err, "Gemma4 unified audio input requires audio weights");
+    }
+
+    #[test]
+    fn video_input_rejected_when_vision_weights_absent() {
+        let video = video_with_ranges(vec![Gemma4UnifiedSoftTokenRange {
+            start: 0,
+            soft_token_count: 1,
+        }]);
+        let err = video_embeddings(&text_only_config(), &text_only_weights(), &video).unwrap_err();
+        assert_eq!(err, "Gemma4 unified video input requires vision weights");
+    }
 
     fn video_with_ranges(
         ranges: Vec<Gemma4UnifiedSoftTokenRange>,
