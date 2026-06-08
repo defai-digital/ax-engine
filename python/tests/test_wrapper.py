@@ -5,6 +5,7 @@ import sys
 import types
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 SOURCE_ROOT = Path(__file__).resolve().parents[1]
@@ -841,6 +842,32 @@ class WrapperContractTests(unittest.TestCase):
                     "mlx-community/Qwen3-4B-4bit",
                     dest=model_dir,
                 )
+
+    def test_download_model_uses_huggingface_hub_for_gemma4_unified(self) -> None:
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            snapshot = Path(tmp) / "snapshot"
+            calls: list[str] = []
+
+            def fake_download(repo_id: str) -> Path:
+                calls.append(repo_id)
+                snapshot.mkdir()
+                (snapshot / "config.json").write_text('{"model_type":"gemma4_unified"}')
+                (snapshot / "model.safetensors").write_bytes(b"placeholder")
+                return snapshot
+
+            with patch.object(
+                self.ax_engine, "_run_hf_snapshot_download", fake_download
+            ), patch.object(
+                self.ax_engine,
+                "_try_generate_manifest",
+                return_value=True,
+            ):
+                resolved = self.ax_engine.download_model("mlx-community/gemma-4-12B-it-4bit")
+
+        self.assertEqual(calls, ["mlx-community/gemma-4-12B-it-4bit"])
+        self.assertEqual(resolved, snapshot)
 
     def test_openai_mlx_shim_helpers_tokenize_and_render_chat_prompt(self) -> None:
         openai_server = importlib.import_module("ax_engine.openai_server")

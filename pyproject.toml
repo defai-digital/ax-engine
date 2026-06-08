@@ -15,6 +15,7 @@ ax-engine-server = "ax_engine._cli:server"
 
 [project.optional-dependencies]
 download = [
+    "huggingface-hub>=0.23",
     "mlx-lm>=0.31",
 ]
 openai = [

@@ -54,7 +54,7 @@ ax-engine download qwen36-35b --dest /path/to/explicit-copy
 ```
 
 `download` wraps the same workflow as `scripts/download_model.py`: download
-through `mlx-lm`, validate `config.json` and safetensors, and run
+through Hugging Face Hub, validate `config.json` and safetensors, and run
 `ax-engine-bench generate-manifest` when available. The JSON output is the
 `ax.download_model.v1` summary. The built-in download aliases target Qwen3.6 and
 Gemma 4 MLX models, including Qwen3.6 27B, Gemma 4 E2B 5/6/8-bit, and Gemma 4

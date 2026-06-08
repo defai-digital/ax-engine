@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Download an MLX model through mlx-lm for use with ax-engine.
+"""Download an MLX model through Hugging Face Hub for use with ax-engine.
 
 Downloads model weights and automatically generates the ax-engine manifest
 (model-manifest.json). Tries ax-engine-bench (Homebrew install) then cargo (dev).
@@ -22,7 +22,6 @@ import os
 import shutil
 import subprocess
 import sys
-import threading
 import time
 from pathlib import Path
 
@@ -48,7 +47,7 @@ def _reject_non_llm_repo(repo_id: str) -> None:
 
 
 def default_mlx_lm_cache_root() -> Path:
-    """Return the Hub cache root where mlx-lm stores downloaded model snapshots."""
+    """Return the shared Hugging Face Hub cache root for model snapshots."""
     if hf_hub_cache := os.environ.get("HF_HUB_CACHE"):
         return Path(hf_hub_cache).expanduser()
     if hf_home := os.environ.get("HF_HOME"):
@@ -130,7 +129,7 @@ def _download_progress_message(repo_id: str, started_at: float) -> tuple[int, st
     synthetic = min(25, 5 + int(elapsed // 20))
     return (
         synthetic,
-        f"Downloading with mlx-lm (elapsed {_format_duration(elapsed)}, ETA estimating)",
+        f"Downloading with Hugging Face Hub (elapsed {_format_duration(elapsed)})",
     )
 
 
@@ -138,59 +137,42 @@ def _emit_progress(done: int, total: int, file: str) -> None:
     print(json.dumps({"event": "progress", "done": done, "total": total, "file": file}), flush=True)
 
 
-def _run_mlx_lm_download(
+def _run_hf_snapshot_download(
     repo_id: str,
     *,
     quiet: bool = False,
     progress_json: bool = False,
-) -> None:
-    env = os.environ.copy()
+) -> Path:
+    try:
+        from huggingface_hub import snapshot_download
+    except ImportError as error:
+        raise RuntimeError(
+            "huggingface_hub is required for model downloads. Install it with:\n"
+            "  pip install huggingface_hub\n"
+            "or:\n"
+            "  pip install 'ax-engine[download]'"
+        ) from error
+
+    previous_progress = os.environ.get("HF_HUB_DISABLE_PROGRESS_BARS")
     if quiet:
-        env["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
-    command = [
-        sys.executable,
-        "-m",
-        "mlx_lm",
-        "generate",
-        "--model",
-        repo_id,
-        "--prompt",
-        "x",
-        "--max-tokens",
-        "1",
-    ]
-    if not progress_json:
-        result = subprocess.run(command, capture_output=True, text=True, env=env)
-    else:
-        started_at = time.monotonic()
-        proc = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env)
-        output_parts: list[str] = []
-
-        def drain(stream: object) -> None:
-            if stream is None:
-                return
-            for line in stream:
-                output_parts.append(line)
-
-        stdout_thread = threading.Thread(target=drain, args=(proc.stdout,), daemon=True)
-        stderr_thread = threading.Thread(target=drain, args=(proc.stderr,), daemon=True)
-        stdout_thread.start()
-        stderr_thread.start()
-        while proc.poll() is None:
+        os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
+    started_at = time.monotonic()
+    try:
+        if progress_json:
             done, message = _download_progress_message(repo_id, started_at)
             _emit_progress(done, 100, message)
-            time.sleep(2)
-        stdout_thread.join(timeout=1)
-        stderr_thread.join(timeout=1)
-        result = subprocess.CompletedProcess(command, proc.returncode, "".join(output_parts), "")
-    if result.returncode != 0:
-        output = "\n".join(part for part in [result.stderr.strip(), result.stdout.strip()] if part)
-        raise RuntimeError(
-            "mlx-lm download failed. Install mlx-lm with:\n"
-            "  pip install mlx-lm\n"
-            f"Command: {' '.join(command)}\n"
-            f"{output}".rstrip()
-        )
+        snapshot = Path(snapshot_download(repo_id=repo_id))
+        if progress_json:
+            _emit_progress(85, 100, "Downloaded Hugging Face Hub snapshot")
+        return snapshot
+    except Exception as error:
+        raise RuntimeError(f"Hugging Face Hub download failed for {repo_id}: {error}") from error
+    finally:
+        if quiet:
+            if previous_progress is None:
+                os.environ.pop("HF_HUB_DISABLE_PROGRESS_BARS", None)
+            else:
+                os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = previous_progress
 
 
 def _copy_snapshot_to_dest(snapshot: Path, dest: Path) -> None:
@@ -239,21 +221,22 @@ def download(
     snapshot = None if force else _latest_mlx_lm_snapshot(repo_id)
     if snapshot is not None and not _validation_errors(snapshot):
         if progress_json:
-            _emit_progress(85, 100, "Using existing mlx-lm cache snapshot")
+            _emit_progress(85, 100, "Using existing Hugging Face Hub cache snapshot")
         if dest is None:
             if not quiet:
-                print(f"  already present in mlx-lm cache: {snapshot}")
+                print(f"  already present in Hugging Face Hub cache: {snapshot}")
             return snapshot
         _copy_snapshot_to_dest(snapshot, dest)
         return dest
 
     if not quiet:
-        destination = "mlx-lm cache" if dest is None else f"{dest} via mlx-lm cache"
+        destination = (
+            "Hugging Face Hub cache"
+            if dest is None
+            else f"{dest} via Hugging Face Hub cache"
+        )
         print(f"  downloading {repo_id} -> {destination}")
-    _run_mlx_lm_download(repo_id, quiet=quiet, progress_json=progress_json)
-    snapshot = _latest_mlx_lm_snapshot(repo_id)
-    if snapshot is None:
-        raise RuntimeError(f"mlx-lm completed but no cache snapshot was found for {repo_id}")
+    snapshot = _run_hf_snapshot_download(repo_id, quiet=quiet, progress_json=progress_json)
 
     if dest is None:
         return snapshot
@@ -384,14 +367,14 @@ def _print_json_line(summary: dict) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Download an MLX model through mlx-lm for ax-engine"
+        description="Download an MLX model through Hugging Face Hub for ax-engine"
     )
     parser.add_argument("repo_id", help="MLX LLM repo id, e.g. mlx-community/Qwen3-4B-4bit")
     parser.add_argument(
         "--dest",
         type=Path,
         default=None,
-        help="Destination directory (default: mlx-lm cache snapshot)",
+        help="Destination directory (default: Hugging Face Hub cache snapshot)",
     )
     parser.add_argument("--force", action="store_true", help="Re-download even if present")
     parser.add_argument("--json", action="store_true", help="Emit a machine-readable run summary")
@@ -408,7 +391,7 @@ def main() -> int:
         print(f"\n[{args.repo_id}]")
     try:
         if args.progress_json:
-            _emit_progress(0, 100, "Starting mlx-lm download")
+            _emit_progress(0, 100, "Starting Hugging Face Hub download")
         dest = download(
             args.repo_id,
             dest,

@@ -1319,34 +1319,30 @@ def _latest_mlx_lm_snapshot(repo_id: str) -> Path | None:
     return max(candidates, key=lambda path: path.stat().st_mtime, default=None)
 
 
-def _run_mlx_lm_download(repo_id: str) -> None:
+def _run_hf_snapshot_download(repo_id: str) -> Path:
     import os
-    import subprocess
-    import sys
 
-    env = os.environ.copy()
-    env["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
-    command = [
-        sys.executable,
-        "-m",
-        "mlx_lm",
-        "generate",
-        "--model",
-        repo_id,
-        "--prompt",
-        "x",
-        "--max-tokens",
-        "1",
-    ]
-    result = subprocess.run(command, capture_output=True, text=True, env=env)
-    if result.returncode != 0:
-        output = "\n".join(part for part in [result.stderr.strip(), result.stdout.strip()] if part)
+    try:
+        from huggingface_hub import snapshot_download
+    except ImportError as error:
         raise RuntimeError(
-            "mlx-lm is required for download_model(). Install it with:\n"
-            "  pip install mlx-lm\n"
-            f"Command failed: {' '.join(command)}\n"
-            f"{output}".rstrip()
-        )
+            "huggingface_hub is required for download_model(). Install it with:\n"
+            "  pip install huggingface_hub\n"
+            "or:\n"
+            "  pip install 'ax-engine[download]'"
+        ) from error
+
+    previous = os.environ.get("HF_HUB_DISABLE_PROGRESS_BARS")
+    os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
+    try:
+        return Path(snapshot_download(repo_id=repo_id))
+    except Exception as error:
+        raise RuntimeError(f"Hugging Face Hub download failed for {repo_id}: {error}") from error
+    finally:
+        if previous is None:
+            os.environ.pop("HF_HUB_DISABLE_PROGRESS_BARS", None)
+        else:
+            os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = previous
 
 
 def _copy_mlx_lm_snapshot(snapshot: Path, dest: Path) -> None:
@@ -1379,7 +1375,7 @@ def download_model(
     *,
     force: bool = False,
 ) -> Path:
-    """Download an MLX model through mlx-lm and generate its ax-engine manifest.
+    """Download an MLX model through Hugging Face Hub and generate its ax-engine manifest.
 
     Downloads the model, then automatically tries to generate ``model-manifest.json``
     via ``ax-engine-bench generate-manifest`` (installed) or ``cargo run`` (dev).
@@ -1387,8 +1383,8 @@ def download_model(
 
     Args:
         repo_id: MLX LLM repo id, e.g. ``"mlx-community/Qwen3-4B-4bit"``.
-        dest: Destination directory. Defaults to the mlx-lm cache snapshot.
-        force: Re-download the default mlx-lm cache entry before resolving the snapshot.
+        dest: Destination directory. Defaults to the Hugging Face Hub cache snapshot.
+        force: Re-download the default Hugging Face Hub cache entry before resolving the snapshot.
     """
     _reject_non_llm_repo(repo_id)
 
@@ -1401,10 +1397,7 @@ def download_model(
         )
 
     if dest is None:
-        _run_mlx_lm_download(repo_id)
-        dest = _latest_mlx_lm_snapshot(repo_id)
-        if dest is None:
-            raise RuntimeError(f"mlx-lm completed but no cache snapshot was found for {repo_id}")
+        dest = _run_hf_snapshot_download(repo_id)
         _validate_downloaded_model_dir(dest)
         if not (dest / _MODEL_MANIFEST_FILE).exists():
             if not _try_generate_manifest(dest):
@@ -1423,10 +1416,7 @@ def download_model(
                 _print_manifest_reminder(dest)
             return dest
 
-    _run_mlx_lm_download(repo_id)
-    snapshot = _latest_mlx_lm_snapshot(repo_id)
-    if snapshot is None:
-        raise RuntimeError(f"mlx-lm completed but no cache snapshot was found for {repo_id}")
+    snapshot = _run_hf_snapshot_download(repo_id)
     _copy_mlx_lm_snapshot(snapshot, dest)
     _validate_downloaded_model_dir(dest)
 

@@ -154,18 +154,24 @@ class DownloadModelScriptTest(unittest.TestCase):
 
             calls: list[str] = []
 
-            def fake_mlx_lm_download(model: str, *, quiet: bool = False) -> None:
+            def fake_hf_download(
+                model: str,
+                *,
+                quiet: bool = False,
+                progress_json: bool = False,
+            ) -> Path:
                 calls.append(model)
+                return snapshot
 
             with patch.dict(os.environ, {"HF_HOME": str(root)}, clear=True), patch.object(
-                download_model, "_run_mlx_lm_download", fake_mlx_lm_download
+                download_model, "_run_hf_snapshot_download", fake_hf_download
             ):
                 resolved = download_model.download(repo_id, None, quiet=True)
 
             self.assertEqual(calls, [])
             self.assertEqual(resolved, snapshot)
 
-    def test_download_uses_mlx_lm_then_resolves_cache_snapshot(self) -> None:
+    def test_download_uses_huggingface_hub_snapshot_download(self) -> None:
         repo_id = "mlx-community/Qwen3-4B-4bit"
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -176,19 +182,46 @@ class DownloadModelScriptTest(unittest.TestCase):
 
             calls: list[str] = []
 
-            def fake_mlx_lm_download(
+            def fake_hf_download(
                 model: str,
                 *,
                 quiet: bool = False,
                 progress_json: bool = False,
-            ) -> None:
+            ) -> Path:
                 calls.append(model)
                 snapshot.mkdir(parents=True)
                 (snapshot / "config.json").write_text("{}")
                 (snapshot / "model.safetensors").write_bytes(b"placeholder")
+                return snapshot
 
             with patch.dict(os.environ, {"HF_HOME": str(root)}, clear=True), patch.object(
-                download_model, "_run_mlx_lm_download", fake_mlx_lm_download
+                download_model, "_run_hf_snapshot_download", fake_hf_download
+            ):
+                resolved = download_model.download(repo_id, None, quiet=True)
+
+            self.assertEqual(calls, [repo_id])
+            self.assertEqual(resolved, snapshot)
+
+    def test_gemma4_unified_download_does_not_invoke_mlx_lm_generation(self) -> None:
+        repo_id = "mlx-community/gemma-4-12B-it-4bit"
+        with tempfile.TemporaryDirectory() as tmp:
+            snapshot = Path(tmp) / "snapshot"
+            calls: list[str] = []
+
+            def fake_hf_download(
+                model: str,
+                *,
+                quiet: bool = False,
+                progress_json: bool = False,
+            ) -> Path:
+                calls.append(model)
+                snapshot.mkdir(parents=True)
+                (snapshot / "config.json").write_text('{"model_type":"gemma4_unified"}')
+                (snapshot / "model.safetensors").write_bytes(b"placeholder")
+                return snapshot
+
+            with patch.dict(os.environ, {"HF_HOME": tmp}, clear=True), patch.object(
+                download_model, "_run_hf_snapshot_download", fake_hf_download
             ):
                 resolved = download_model.download(repo_id, None, quiet=True)
 

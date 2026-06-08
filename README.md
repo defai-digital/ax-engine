@@ -78,7 +78,7 @@ Requires macOS 14+, Apple Silicon (M2 Max or newer), Python 3.10+. The pip wheel
 Optional extras:
 
 ```bash
-pip install "ax-engine[download]"  # mlx-lm for model download helpers
+pip install "ax-engine[download]"  # Hugging Face Hub downloads plus mlx-lm tools
 ```
 
 ### Homebrew
