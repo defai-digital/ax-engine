@@ -203,6 +203,20 @@ const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_DISK_INSERT_BYTES_KIB: &str =
     "ax_mlx_prefix_cache_disk_insert_bytes_kib";
 const ROUTE_DECISION_AX_MLX_PREFIX_CACHE_DISK_EVICTIONS: &str =
     "ax_mlx_prefix_cache_disk_evictions";
+const ROUTE_DECISION_AX_MLX_GEMMA4_UNIFIED_MULTIMODAL_PREFILL_REQUESTS: &str =
+    "ax_mlx_gemma4_unified_multimodal_prefill_requests";
+const ROUTE_DECISION_AX_MLX_GEMMA4_UNIFIED_IMAGE_INPUTS: &str =
+    "ax_mlx_gemma4_unified_image_inputs";
+const ROUTE_DECISION_AX_MLX_GEMMA4_UNIFIED_AUDIO_INPUTS: &str =
+    "ax_mlx_gemma4_unified_audio_inputs";
+const ROUTE_DECISION_AX_MLX_GEMMA4_UNIFIED_VIDEO_INPUTS: &str =
+    "ax_mlx_gemma4_unified_video_inputs";
+const ROUTE_DECISION_AX_MLX_GEMMA4_UNIFIED_VISUAL_INPUTS: &str =
+    "ax_mlx_gemma4_unified_visual_inputs";
+const ROUTE_DECISION_AX_MLX_GEMMA4_UNIFIED_PREFIX_CACHE_DISABLED: &str =
+    "ax_mlx_gemma4_unified_prefix_cache_disabled";
+const ROUTE_DECISION_AX_MLX_GEMMA4_UNIFIED_MTP_PREFILL_WARMUP_SKIPPED: &str =
+    "ax_mlx_gemma4_unified_mtp_prefill_warmup_skipped";
 const COMMON_EOT_TOKEN_STRINGS: &[&str] = &[
     "<|eot_id|>",
     "<|im_end|>",
@@ -676,6 +690,93 @@ impl MlxPrefixCacheTelemetry {
         self.disk_inserts = self.disk_inserts.saturating_add(1);
         self.disk_insert_bytes = self.disk_insert_bytes.saturating_add(bytes);
         self.disk_evictions = self.disk_evictions.saturating_add(evictions);
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct Gemma4UnifiedMultimodalTelemetry {
+    prefill_requests: u32,
+    image_inputs: u32,
+    audio_inputs: u32,
+    video_inputs: u32,
+    visual_inputs: u32,
+    prefix_cache_disabled: u32,
+    mtp_prefill_warmup_skipped: u32,
+}
+
+impl Gemma4UnifiedMultimodalTelemetry {
+    fn record_prefill(
+        &mut self,
+        inputs: &ax_engine_core::gemma4_unified::Gemma4UnifiedRuntimeInputs,
+        mtp_available: bool,
+    ) {
+        self.prefill_requests = self.prefill_requests.saturating_add(1);
+        let image_inputs = saturating_u32(inputs.images.len());
+        let audio_inputs = saturating_u32(inputs.audios.len());
+        let video_inputs = saturating_u32(inputs.videos.len());
+        self.image_inputs = self.image_inputs.saturating_add(image_inputs);
+        self.audio_inputs = self.audio_inputs.saturating_add(audio_inputs);
+        self.video_inputs = self.video_inputs.saturating_add(video_inputs);
+        self.visual_inputs = self
+            .visual_inputs
+            .saturating_add(image_inputs.saturating_add(video_inputs));
+        self.prefix_cache_disabled = self.prefix_cache_disabled.saturating_add(1);
+        if mtp_available {
+            self.mtp_prefill_warmup_skipped = self.mtp_prefill_warmup_skipped.saturating_add(1);
+        }
+    }
+
+    fn merge_from(&mut self, other: Self) {
+        self.prefill_requests = self.prefill_requests.saturating_add(other.prefill_requests);
+        self.image_inputs = self.image_inputs.saturating_add(other.image_inputs);
+        self.audio_inputs = self.audio_inputs.saturating_add(other.audio_inputs);
+        self.video_inputs = self.video_inputs.saturating_add(other.video_inputs);
+        self.visual_inputs = self.visual_inputs.saturating_add(other.visual_inputs);
+        self.prefix_cache_disabled = self
+            .prefix_cache_disabled
+            .saturating_add(other.prefix_cache_disabled);
+        self.mtp_prefill_warmup_skipped = self
+            .mtp_prefill_warmup_skipped
+            .saturating_add(other.mtp_prefill_warmup_skipped);
+    }
+
+    fn append_route_decisions(&self, decisions: &mut impl RouteDecisionSink) {
+        if *self == Self::default() {
+            return;
+        }
+        let entries = [
+            (
+                ROUTE_DECISION_AX_MLX_GEMMA4_UNIFIED_MULTIMODAL_PREFILL_REQUESTS,
+                self.prefill_requests,
+            ),
+            (
+                ROUTE_DECISION_AX_MLX_GEMMA4_UNIFIED_IMAGE_INPUTS,
+                self.image_inputs,
+            ),
+            (
+                ROUTE_DECISION_AX_MLX_GEMMA4_UNIFIED_AUDIO_INPUTS,
+                self.audio_inputs,
+            ),
+            (
+                ROUTE_DECISION_AX_MLX_GEMMA4_UNIFIED_VIDEO_INPUTS,
+                self.video_inputs,
+            ),
+            (
+                ROUTE_DECISION_AX_MLX_GEMMA4_UNIFIED_VISUAL_INPUTS,
+                self.visual_inputs,
+            ),
+            (
+                ROUTE_DECISION_AX_MLX_GEMMA4_UNIFIED_PREFIX_CACHE_DISABLED,
+                self.prefix_cache_disabled,
+            ),
+            (
+                ROUTE_DECISION_AX_MLX_GEMMA4_UNIFIED_MTP_PREFILL_WARMUP_SKIPPED,
+                self.mtp_prefill_warmup_skipped,
+            ),
+        ];
+        for (key, value) in entries {
+            decisions.upsert_route_decision(key, value);
+        }
     }
 }
 
@@ -4624,6 +4725,7 @@ impl ExecutionRunner for MlxRunner {
         let mut ngram_acceleration = NgramAccelerationTelemetry::default();
         let mut mtp_telemetry = MtpTelemetry::default();
         let mut gemma4_assistant_mtp_telemetry = Gemma4AssistantMtpTelemetry::default();
+        let mut gemma4_unified_multimodal_telemetry = Gemma4UnifiedMultimodalTelemetry::default();
         let mut decode_telemetry = DecodeTelemetry::default();
         let mut gemma4_moe_profile = Gemma4MoeProfileSnapshot::default();
         let mut linear_attention_profile = LinearAttentionProfileSnapshot::default();
@@ -4649,6 +4751,8 @@ impl ExecutionRunner for MlxRunner {
             ngram_acceleration.merge_from(result.ngram_acceleration);
             mtp_telemetry.merge_from(result.mtp_telemetry);
             gemma4_assistant_mtp_telemetry.merge_from(result.gemma4_assistant_mtp_telemetry);
+            gemma4_unified_multimodal_telemetry
+                .merge_from(result.gemma4_unified_multimodal_telemetry);
             decode_telemetry.merge_from(result.decode_telemetry);
             gemma4_moe_profile.merge_from(result.gemma4_moe_profile);
             linear_attention_profile.merge_from(result.linear_attention_profile);
@@ -4677,6 +4781,7 @@ impl ExecutionRunner for MlxRunner {
                 .append_route_decisions(&mut route_decisions);
             self.gemma4_assistant_mtp_status()
                 .append_route_decisions(gemma4_assistant_mtp_telemetry, &mut route_decisions);
+            gemma4_unified_multimodal_telemetry.append_route_decisions(&mut route_decisions);
             self.affine_quant_telemetry
                 .append_route_decisions(&mut route_decisions);
             kv_cache.append_route_decisions(&mut route_decisions);
@@ -5224,6 +5329,7 @@ impl MlxRunner {
                 ngram_acceleration: NgramAccelerationTelemetry::default(),
                 mtp_telemetry: MtpTelemetry::default(),
                 gemma4_assistant_mtp_telemetry: Gemma4AssistantMtpTelemetry::default(),
+                gemma4_unified_multimodal_telemetry: Gemma4UnifiedMultimodalTelemetry::default(),
                 decode_telemetry: DecodeTelemetry::default(),
                 gemma4_moe_profile: Gemma4MoeProfileSnapshot::default(),
                 linear_attention_profile: LinearAttentionProfileSnapshot::default(),
@@ -5249,6 +5355,10 @@ impl MlxRunner {
             .and_then(|inputs| inputs.gemma4_unified.as_ref())
             .filter(|inputs| !inputs.is_empty());
         let has_gemma4_unified_multimodal_prefill = is_prefill && gemma4_unified_inputs.is_some();
+        let mut gemma4_unified_multimodal_telemetry = Gemma4UnifiedMultimodalTelemetry::default();
+        if has_gemma4_unified_multimodal_prefill && let Some(inputs) = gemma4_unified_inputs {
+            gemma4_unified_multimodal_telemetry.record_prefill(inputs, self.has_mtp());
+        }
         let sampling = ctx
             .map(|c| {
                 MlxSamplingParams::new(c.temperature, c.top_p, c.top_k)
@@ -5670,6 +5780,7 @@ impl MlxRunner {
             ngram_acceleration,
             mtp_telemetry,
             gemma4_assistant_mtp_telemetry,
+            gemma4_unified_multimodal_telemetry,
             decode_telemetry,
             gemma4_moe_profile,
             linear_attention_profile,
@@ -9093,6 +9204,7 @@ struct MlxItemRun {
     ngram_acceleration: NgramAccelerationTelemetry,
     mtp_telemetry: MtpTelemetry,
     gemma4_assistant_mtp_telemetry: Gemma4AssistantMtpTelemetry,
+    gemma4_unified_multimodal_telemetry: Gemma4UnifiedMultimodalTelemetry,
     decode_telemetry: DecodeTelemetry,
     gemma4_moe_profile: Gemma4MoeProfileSnapshot,
     linear_attention_profile: LinearAttentionProfileSnapshot,
@@ -9116,6 +9228,7 @@ fn errored_item_run(request_id: RequestId, error: impl Into<String>) -> MlxItemR
         ngram_acceleration: NgramAccelerationTelemetry::default(),
         mtp_telemetry: MtpTelemetry::default(),
         gemma4_assistant_mtp_telemetry: Gemma4AssistantMtpTelemetry::default(),
+        gemma4_unified_multimodal_telemetry: Gemma4UnifiedMultimodalTelemetry::default(),
         decode_telemetry: DecodeTelemetry::default(),
         gemma4_moe_profile: Gemma4MoeProfileSnapshot::default(),
         linear_attention_profile: LinearAttentionProfileSnapshot::default(),
@@ -12035,6 +12148,90 @@ mod tests {
         assert_eq!(
             decisions.get("ax_mlx_gemma4_assistant_mtp_draft_forward_wall_us"),
             Some(&0)
+        );
+    }
+
+    #[test]
+    fn gemma4_unified_multimodal_telemetry_reports_modality_counts() {
+        let inputs = ax_engine_core::gemma4_unified::Gemma4UnifiedRuntimeInputs {
+            images: vec![
+                ax_engine_core::gemma4_unified::Gemma4UnifiedImageRuntimeInput {
+                    span: ax_engine_core::gemma4_unified::Gemma4UnifiedTokenSpan {
+                        modality: ax_engine_core::gemma4_unified::Gemma4UnifiedModality::Image,
+                        placeholder_index: 1,
+                        replacement_start: 1,
+                        soft_token_count: 1,
+                        replacement_token_count: 3,
+                    },
+                    pixel_values: vec![0.0, 1.0, 2.0],
+                    pixel_position_ids: vec![[0, 0]],
+                },
+            ],
+            audios: vec![
+                ax_engine_core::gemma4_unified::Gemma4UnifiedAudioRuntimeInput {
+                    span: ax_engine_core::gemma4_unified::Gemma4UnifiedTokenSpan {
+                        modality: ax_engine_core::gemma4_unified::Gemma4UnifiedModality::Audio,
+                        placeholder_index: 4,
+                        replacement_start: 4,
+                        soft_token_count: 1,
+                        replacement_token_count: 3,
+                    },
+                    input_features: vec![0.0, 1.0],
+                    frame_count: 1,
+                    feature_count: 2,
+                },
+            ],
+            videos: vec![
+                ax_engine_core::gemma4_unified::Gemma4UnifiedVideoRuntimeInput {
+                    span: ax_engine_core::gemma4_unified::Gemma4UnifiedTokenSpan {
+                        modality: ax_engine_core::gemma4_unified::Gemma4UnifiedModality::Video,
+                        placeholder_index: 7,
+                        replacement_start: 7,
+                        soft_token_count: 1,
+                        replacement_token_count: 3,
+                    },
+                    soft_token_ranges: Vec::new(),
+                    pixel_values: vec![0.0, 1.0, 2.0],
+                    pixel_position_ids: vec![[0, 0]],
+                    frame_count: 1,
+                },
+            ],
+        };
+        let mut telemetry = Gemma4UnifiedMultimodalTelemetry::default();
+        telemetry.record_prefill(&inputs, true);
+        let mut decisions = Vec::new();
+        telemetry.append_route_decisions(&mut decisions);
+        let decisions = decisions
+            .into_iter()
+            .collect::<std::collections::BTreeMap<_, _>>();
+
+        assert_eq!(
+            decisions.get("ax_mlx_gemma4_unified_multimodal_prefill_requests"),
+            Some(&1)
+        );
+        assert_eq!(
+            decisions.get("ax_mlx_gemma4_unified_image_inputs"),
+            Some(&1)
+        );
+        assert_eq!(
+            decisions.get("ax_mlx_gemma4_unified_audio_inputs"),
+            Some(&1)
+        );
+        assert_eq!(
+            decisions.get("ax_mlx_gemma4_unified_video_inputs"),
+            Some(&1)
+        );
+        assert_eq!(
+            decisions.get("ax_mlx_gemma4_unified_visual_inputs"),
+            Some(&2)
+        );
+        assert_eq!(
+            decisions.get("ax_mlx_gemma4_unified_prefix_cache_disabled"),
+            Some(&1)
+        );
+        assert_eq!(
+            decisions.get("ax_mlx_gemma4_unified_mtp_prefill_warmup_skipped"),
+            Some(&1)
         );
     }
 

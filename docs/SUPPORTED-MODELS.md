@@ -158,7 +158,7 @@ runtime.
 | You want AX-owned performance and token/KV behavior for a listed family | Direct support | AX owns the MLX graph and runtime policy |
 | You have an MLX text model that `mlx-lm` already serves but AX does not own | `mlx_lm_delegated` | Keeps AX API surfaces while upstream runs the model |
 | You have GGUF weights or a non-MLX local model | `llama_cpp` | llama.cpp is the delegated local inference route |
-| You have Gemma4 unified image/audio/video inputs already preprocessed into AX's `multimodal_inputs.gemma4_unified` tensor contract | Direct support | Native MLX can consume processed media tensors without raw media decoding in the hot path |
+| You have Gemma4 unified image/audio/video inputs already preprocessed into AX's validated `multimodal_inputs.gemma4_unified` tensor contract | Direct support | Native MLX can consume processed media tensors without raw media decoding in the hot path |
 | You need raw image/audio/video URL or file decoding, or multimodal input on delegated routes | Unsupported unless explicitly documented elsewhere | Current delegated routes are text-first and raw media preprocessing is not part of AX's OpenAI text adapter |
 
 ## Evidence Rules

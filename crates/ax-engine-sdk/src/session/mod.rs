@@ -273,6 +273,13 @@ impl EngineSession {
         if !selected_backend.is_mlx() && !request.multimodal_inputs.is_empty() {
             return Err(EngineSessionError::MultimodalInputsRequireNativeMlx { selected_backend });
         }
+        if selected_backend.is_mlx()
+            && !request.multimodal_inputs.is_empty()
+            && !request.input_tokens.is_empty()
+            && let Some(inputs) = request.multimodal_inputs.gemma4_unified.as_ref()
+        {
+            inputs.validate_for_prompt_len(request.input_tokens.len())?;
+        }
 
         Ok(())
     }

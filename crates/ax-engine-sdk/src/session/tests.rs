@@ -548,7 +548,7 @@ fn delegated_generate_validation_rejects_gemma4_multimodal_inputs() {
 fn native_generate_validation_allows_gemma4_multimodal_inputs() {
     let request = GenerateRequest {
         model_id: "gemma-4-12b-it".to_string(),
-        input_tokens: vec![10, 258880, 11],
+        input_tokens: vec![10, 255999, 258880, 258882, 11],
         input_text: None,
         multimodal_inputs: sample_gemma4_multimodal_inputs(),
         max_output_tokens: 1,
@@ -559,6 +559,37 @@ fn native_generate_validation_allows_gemma4_multimodal_inputs() {
 
     EngineSession::validate_generate_request_for_backend(SelectedBackend::Mlx, 1, &request)
         .expect("native MLX should accept processed Gemma4 media tensors");
+}
+
+#[test]
+fn native_generate_validation_rejects_malformed_gemma4_multimodal_inputs() {
+    let mut multimodal_inputs = sample_gemma4_multimodal_inputs();
+    multimodal_inputs
+        .gemma4_unified
+        .as_mut()
+        .expect("Gemma4 inputs")
+        .images[0]
+        .span
+        .soft_token_count = 2;
+    let request = GenerateRequest {
+        model_id: "gemma-4-12b-it".to_string(),
+        input_tokens: vec![10, 255999, 258880, 258882, 11],
+        input_text: None,
+        multimodal_inputs,
+        max_output_tokens: 1,
+        sampling: Default::default(),
+        stop_sequences: Vec::new(),
+        metadata: None,
+    };
+
+    let error =
+        EngineSession::validate_generate_request_for_backend(SelectedBackend::Mlx, 1, &request)
+            .expect_err("native MLX should reject malformed processed media tensors");
+
+    assert!(matches!(
+        error,
+        EngineSessionError::InvalidMultimodalInputs(_)
+    ));
 }
 
 #[test]

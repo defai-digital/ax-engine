@@ -12,7 +12,9 @@ use pyo3::types::{PyAny, PyBytes, PyDict};
 use crate::dicts::{generate_response_dict, request_report_dict, runtime_dict, step_report_dict};
 use crate::embedding::{floats_to_pybytes, parse_pooling};
 use crate::errors::{py_engine_state_error, to_py_runtime_error};
-use crate::request::{build_generate_request, delegated_http_timeouts_from_secs};
+use crate::request::{
+    build_generate_request, delegated_http_timeouts_from_secs, multimodal_inputs_from_py,
+};
 use crate::stream::GenerateStreamIterator;
 
 #[pyclass(module = "ax_engine._ax_engine", unsendable)]
@@ -135,12 +137,13 @@ impl Session {
     }
 
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (input_tokens=None, *, input_text=None, max_output_tokens, temperature=0.0, top_p=1.0, top_k=0, min_p=None, repetition_penalty=1.0, repetition_context_size=None, seed=0, deterministic=None, ignore_eos=false, stop_sequences=None, metadata=None))]
+    #[pyo3(signature = (input_tokens=None, *, input_text=None, multimodal_inputs=None, max_output_tokens, temperature=0.0, top_p=1.0, top_k=0, min_p=None, repetition_penalty=1.0, repetition_context_size=None, seed=0, deterministic=None, ignore_eos=false, stop_sequences=None, metadata=None))]
     fn generate<'py>(
         &mut self,
         py: Python<'py>,
         input_tokens: Option<Vec<u32>>,
         input_text: Option<String>,
+        multimodal_inputs: Option<&Bound<'_, PyAny>>,
         max_output_tokens: u32,
         temperature: f32,
         top_p: f32,
@@ -155,10 +158,12 @@ impl Session {
         metadata: Option<String>,
     ) -> PyResult<Py<PyDict>> {
         let model_id = self.model_id.clone();
+        let multimodal_inputs = multimodal_inputs_from_py(multimodal_inputs)?;
         let request = build_generate_request(
             model_id,
             input_tokens.unwrap_or_default(),
             input_text,
+            multimodal_inputs,
             max_output_tokens,
             GenerateSampling {
                 temperature,
@@ -194,11 +199,12 @@ impl Session {
     }
 
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (input_tokens=None, *, input_text=None, max_output_tokens, temperature=0.0, top_p=1.0, top_k=0, min_p=None, repetition_penalty=1.0, repetition_context_size=None, seed=0, deterministic=None, ignore_eos=false, stop_sequences=None, metadata=None))]
+    #[pyo3(signature = (input_tokens=None, *, input_text=None, multimodal_inputs=None, max_output_tokens, temperature=0.0, top_p=1.0, top_k=0, min_p=None, repetition_penalty=1.0, repetition_context_size=None, seed=0, deterministic=None, ignore_eos=false, stop_sequences=None, metadata=None))]
     fn submit(
         &mut self,
         input_tokens: Option<Vec<u32>>,
         input_text: Option<String>,
+        multimodal_inputs: Option<&Bound<'_, PyAny>>,
         max_output_tokens: u32,
         temperature: f32,
         top_p: f32,
@@ -213,10 +219,12 @@ impl Session {
         metadata: Option<String>,
     ) -> PyResult<u64> {
         let model_id = self.model_id.clone();
+        let multimodal_inputs = multimodal_inputs_from_py(multimodal_inputs)?;
         let request = build_generate_request(
             model_id,
             input_tokens.unwrap_or_default(),
             input_text,
+            multimodal_inputs,
             max_output_tokens,
             GenerateSampling {
                 temperature,
@@ -298,12 +306,13 @@ impl Session {
     }
 
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (input_tokens=None, *, input_text=None, max_output_tokens, temperature=0.0, top_p=1.0, top_k=0, min_p=None, repetition_penalty=1.0, repetition_context_size=None, seed=0, deterministic=None, ignore_eos=false, stop_sequences=None, metadata=None))]
+    #[pyo3(signature = (input_tokens=None, *, input_text=None, multimodal_inputs=None, max_output_tokens, temperature=0.0, top_p=1.0, top_k=0, min_p=None, repetition_penalty=1.0, repetition_context_size=None, seed=0, deterministic=None, ignore_eos=false, stop_sequences=None, metadata=None))]
     fn stream_generate<'py>(
         &mut self,
         py: Python<'py>,
         input_tokens: Option<Vec<u32>>,
         input_text: Option<String>,
+        multimodal_inputs: Option<&Bound<'_, PyAny>>,
         max_output_tokens: u32,
         temperature: f32,
         top_p: f32,
@@ -318,6 +327,7 @@ impl Session {
         metadata: Option<String>,
     ) -> PyResult<Py<GenerateStreamIterator>> {
         let model_id = self.model_id.clone();
+        let multimodal_inputs = multimodal_inputs_from_py(multimodal_inputs)?;
         let mut slot = self
             .inner
             .lock()
@@ -339,6 +349,7 @@ impl Session {
             model_id,
             input_tokens.unwrap_or_default(),
             input_text,
+            multimodal_inputs,
             max_output_tokens,
             GenerateSampling {
                 temperature,
@@ -929,6 +940,7 @@ sys.stdout.write(f"python::{prompt}")
                     py,
                     None,
                     Some("hello from python".to_string()),
+                    None,
                     2,
                     0.0,
                     1.0,
@@ -1000,6 +1012,7 @@ sys.stdout.write(f"python::{prompt}")
                     py,
                     Some(vec![1, 2, 3]),
                     None,
+                    None,
                     2,
                     0.0,
                     1.0,
@@ -1065,6 +1078,7 @@ sys.stdout.write(f"python::{prompt}")
                 .stream_generate(
                     py,
                     Some(vec![1, 2, 3]),
+                    None,
                     None,
                     2,
                     0.0,
@@ -1149,6 +1163,7 @@ sys.stdout.write(f"python::{prompt}")
             let request_id = session
                 .submit(
                     Some(vec![1, 2, 3]),
+                    None,
                     None,
                     2,
                     0.0,
@@ -1255,6 +1270,7 @@ sys.stdout.write(f"python::{prompt}")
                 .submit(
                     Some(vec![1, 2, 3]),
                     None,
+                    None,
                     2,
                     0.0,
                     1.0,
@@ -1272,6 +1288,7 @@ sys.stdout.write(f"python::{prompt}")
             let second_request_id = session
                 .submit(
                     Some(vec![7, 8, 9]),
+                    None,
                     None,
                     2,
                     0.0,
@@ -1359,6 +1376,7 @@ sys.stdout.write(f"python::{prompt}")
             let request_id = session
                 .submit(
                     Some(vec![7, 8, 9]),
+                    None,
                     None,
                     2,
                     0.0,

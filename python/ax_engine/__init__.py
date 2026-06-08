@@ -103,6 +103,10 @@ from ._ax_engine import (
     EngineStateError,
     Session as _Session,
 )
+from .gemma4_unified import (
+    Gemma4UnifiedImageRequest,
+    prepare_gemma4_unified_image_request,
+)
 
 _QWEN_CHATML_ASSISTANT_GENERATION_PROMPT = (
     "<|im_start|>assistant\n<think>\n\n</think>\n\n"
@@ -423,6 +427,7 @@ class Session:
         input_tokens: list[int] | None = None,
         *,
         input_text: str | None = None,
+        multimodal_inputs: dict[str, Any] | None = None,
         max_output_tokens: int,
         temperature: float = 0.0,
         top_p: float = 1.0,
@@ -439,6 +444,7 @@ class Session:
             self._inner.generate(
                 input_tokens,
                 input_text=input_text,
+                multimodal_inputs=multimodal_inputs,
                 max_output_tokens=max_output_tokens,
                 temperature=temperature,
                 top_p=top_p,
@@ -458,6 +464,7 @@ class Session:
         input_tokens: list[int] | None = None,
         *,
         input_text: str | None = None,
+        multimodal_inputs: dict[str, Any] | None = None,
         max_output_tokens: int,
         temperature: float = 0.0,
         top_p: float = 1.0,
@@ -473,6 +480,7 @@ class Session:
         return self._inner.submit(
             input_tokens,
             input_text=input_text,
+            multimodal_inputs=multimodal_inputs,
             max_output_tokens=max_output_tokens,
             temperature=temperature,
             top_p=top_p,
@@ -503,6 +511,7 @@ class Session:
         input_tokens: list[int] | None = None,
         *,
         input_text: str | None = None,
+        multimodal_inputs: dict[str, Any] | None = None,
         max_output_tokens: int,
         temperature: float = 0.0,
         top_p: float = 1.0,
@@ -518,6 +527,7 @@ class Session:
         for value in self._inner.stream_generate(
             input_tokens,
             input_text=input_text,
+            multimodal_inputs=multimodal_inputs,
             max_output_tokens=max_output_tokens,
             temperature=temperature,
             top_p=top_p,
@@ -1491,6 +1501,7 @@ __all__ = [
     "EngineError",
     "EngineInferenceError",
     "EngineStateError",
+    "Gemma4UnifiedImageRequest",
     "GenerateResult",
     "GenerateRoute",
     "GenerateStreamEvent",
@@ -1507,4 +1518,5 @@ __all__ = [
     "SourceQuantizationInfo",
     "StepReport",
     "download_model",
+    "prepare_gemma4_unified_image_request",
 ]

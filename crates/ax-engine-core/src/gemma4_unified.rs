@@ -99,6 +99,49 @@ impl Gemma4UnifiedRuntimeInputs {
     pub fn is_empty(&self) -> bool {
         self.images.is_empty() && self.audios.is_empty() && self.videos.is_empty()
     }
+
+    pub fn validate_for_prompt_len(
+        &self,
+        prompt_token_len: usize,
+    ) -> Result<(), Gemma4UnifiedRuntimeInputError> {
+        for (idx, image) in self.images.iter().enumerate() {
+            validate_contiguous_span(
+                &format!("images[{idx}].span"),
+                &image.span,
+                Gemma4UnifiedModality::Image,
+                prompt_token_len,
+            )?;
+            validate_vision_tensors(
+                &format!("images[{idx}]"),
+                &image.pixel_values,
+                &image.pixel_position_ids,
+                image.span.soft_token_count as usize,
+            )?;
+        }
+
+        for (idx, audio) in self.audios.iter().enumerate() {
+            validate_contiguous_span(
+                &format!("audios[{idx}].span"),
+                &audio.span,
+                Gemma4UnifiedModality::Audio,
+                prompt_token_len,
+            )?;
+            validate_audio_tensors(idx, audio)?;
+        }
+
+        for (idx, video) in self.videos.iter().enumerate() {
+            validate_video_span(idx, video, prompt_token_len)?;
+            validate_vision_tensors(
+                &format!("videos[{idx}]"),
+                &video.pixel_values,
+                &video.pixel_position_ids,
+                video.span.soft_token_count as usize,
+            )?;
+            validate_video_frame_shape(idx, video)?;
+        }
+
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -145,6 +188,293 @@ pub enum Gemma4UnifiedError {
         expected: usize,
         actual: usize,
     },
+}
+
+#[derive(Debug, Error, Eq, PartialEq)]
+pub enum Gemma4UnifiedRuntimeInputError {
+    #[error("invalid Gemma4 unified runtime input {field}: {message}")]
+    InvalidField { field: String, message: String },
+}
+
+fn invalid_runtime_input(
+    field: impl Into<String>,
+    message: impl Into<String>,
+) -> Gemma4UnifiedRuntimeInputError {
+    Gemma4UnifiedRuntimeInputError::InvalidField {
+        field: field.into(),
+        message: message.into(),
+    }
+}
+
+fn validate_span_bounds(
+    field: &str,
+    span: &Gemma4UnifiedTokenSpan,
+    expected_modality: Gemma4UnifiedModality,
+    prompt_token_len: usize,
+) -> Result<usize, Gemma4UnifiedRuntimeInputError> {
+    if span.modality != expected_modality {
+        return Err(invalid_runtime_input(
+            format!("{field}.modality"),
+            format!("expected {expected_modality:?}, found {:?}", span.modality),
+        ));
+    }
+    if span.soft_token_count == 0 {
+        return Err(invalid_runtime_input(
+            format!("{field}.soft_token_count"),
+            "must be greater than zero",
+        ));
+    }
+    if span.replacement_token_count == 0 {
+        return Err(invalid_runtime_input(
+            format!("{field}.replacement_token_count"),
+            "must be greater than zero",
+        ));
+    }
+    let replacement_end = span
+        .replacement_start
+        .checked_add(span.replacement_token_count as usize)
+        .ok_or_else(|| {
+            invalid_runtime_input(format!("{field}.replacement_start"), "span end overflow")
+        })?;
+    if replacement_end > prompt_token_len {
+        return Err(invalid_runtime_input(
+            field,
+            format!(
+                "replacement span [{}..{}) exceeds prompt length {prompt_token_len}",
+                span.replacement_start, replacement_end
+            ),
+        ));
+    }
+    Ok(replacement_end)
+}
+
+fn validate_contiguous_span(
+    field: &str,
+    span: &Gemma4UnifiedTokenSpan,
+    expected_modality: Gemma4UnifiedModality,
+    prompt_token_len: usize,
+) -> Result<(), Gemma4UnifiedRuntimeInputError> {
+    validate_span_bounds(field, span, expected_modality, prompt_token_len)?;
+    let expected_replacement = span.soft_token_count.checked_add(2).ok_or_else(|| {
+        invalid_runtime_input(format!("{field}.soft_token_count"), "span length overflow")
+    })?;
+    if span.replacement_token_count != expected_replacement {
+        return Err(invalid_runtime_input(
+            format!("{field}.replacement_token_count"),
+            format!(
+                "expected soft_token_count + 2 boundary tokens ({expected_replacement}), found {}",
+                span.replacement_token_count
+            ),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_vision_tensors(
+    field: &str,
+    pixel_values: &[f32],
+    pixel_position_ids: &[[i32; 2]],
+    expected_soft_tokens: usize,
+) -> Result<(), Gemma4UnifiedRuntimeInputError> {
+    let patch_count = pixel_position_ids.len();
+    if patch_count == 0 {
+        return Err(invalid_runtime_input(
+            format!("{field}.pixel_position_ids"),
+            "must contain at least one patch position",
+        ));
+    }
+    let Some(patch_dim) = pixel_values
+        .len()
+        .checked_div(patch_count)
+        .filter(|dim| *dim > 0 && *dim * patch_count == pixel_values.len())
+    else {
+        return Err(invalid_runtime_input(
+            format!("{field}.pixel_values"),
+            format!(
+                "length {} must divide evenly by patch count {patch_count}",
+                pixel_values.len()
+            ),
+        ));
+    };
+    if patch_dim == 0 {
+        return Err(invalid_runtime_input(
+            format!("{field}.pixel_values"),
+            "patch dimension must be greater than zero",
+        ));
+    }
+    let mut valid_patch_count = 0usize;
+    let mut saw_padding = false;
+    for (idx, [x, y]) in pixel_position_ids.iter().enumerate() {
+        let is_valid = *x >= 0 && *y >= 0;
+        let is_padding = *x == -1 && *y == -1;
+        if is_valid {
+            if saw_padding {
+                return Err(invalid_runtime_input(
+                    format!("{field}.pixel_position_ids[{idx}]"),
+                    "valid patch positions must be a prefix before [-1, -1] padding rows",
+                ));
+            }
+            valid_patch_count += 1;
+        } else if is_padding {
+            saw_padding = true;
+        } else {
+            return Err(invalid_runtime_input(
+                format!("{field}.pixel_position_ids[{idx}]"),
+                "must be a non-negative patch position or [-1, -1] padding",
+            ));
+        }
+    }
+    if valid_patch_count != expected_soft_tokens {
+        return Err(invalid_runtime_input(
+            format!("{field}.pixel_position_ids"),
+            format!(
+                "contains {valid_patch_count} valid patch positions, but span expects {expected_soft_tokens} soft tokens"
+            ),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_audio_tensors(
+    idx: usize,
+    audio: &Gemma4UnifiedAudioRuntimeInput,
+) -> Result<(), Gemma4UnifiedRuntimeInputError> {
+    let frame_count = audio.frame_count as usize;
+    let feature_count = audio.feature_count as usize;
+    if frame_count == 0 || feature_count == 0 {
+        return Err(invalid_runtime_input(
+            format!("audios[{idx}]"),
+            "frame_count and feature_count must be greater than zero",
+        ));
+    }
+    if audio.input_features.len() != frame_count * feature_count {
+        return Err(invalid_runtime_input(
+            format!("audios[{idx}].input_features"),
+            format!(
+                "length {} must equal frame_count * feature_count ({})",
+                audio.input_features.len(),
+                frame_count * feature_count
+            ),
+        ));
+    }
+    if audio.span.soft_token_count as usize != frame_count {
+        return Err(invalid_runtime_input(
+            format!("audios[{idx}].frame_count"),
+            format!(
+                "must match span.soft_token_count {}; found {frame_count}",
+                audio.span.soft_token_count
+            ),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_video_span(
+    idx: usize,
+    video: &Gemma4UnifiedVideoRuntimeInput,
+    prompt_token_len: usize,
+) -> Result<(), Gemma4UnifiedRuntimeInputError> {
+    let field = format!("videos[{idx}].span");
+    let replacement_end = validate_span_bounds(
+        &field,
+        &video.span,
+        Gemma4UnifiedModality::Video,
+        prompt_token_len,
+    )?;
+    if video.frame_count == 0 {
+        return Err(invalid_runtime_input(
+            format!("videos[{idx}].frame_count"),
+            "must be greater than zero",
+        ));
+    }
+    if video.soft_token_ranges.is_empty() {
+        validate_contiguous_span(
+            &field,
+            &video.span,
+            Gemma4UnifiedModality::Video,
+            prompt_token_len,
+        )?;
+        return Ok(());
+    }
+    if video.soft_token_ranges.len() != video.frame_count as usize {
+        return Err(invalid_runtime_input(
+            format!("videos[{idx}].soft_token_ranges"),
+            format!(
+                "expected one range per frame ({}), found {}",
+                video.frame_count,
+                video.soft_token_ranges.len()
+            ),
+        ));
+    }
+    let mut previous_end = video.span.replacement_start;
+    let mut summed_soft_tokens = 0usize;
+    for (range_idx, range) in video.soft_token_ranges.iter().enumerate() {
+        if range.soft_token_count == 0 {
+            return Err(invalid_runtime_input(
+                format!("videos[{idx}].soft_token_ranges[{range_idx}].soft_token_count"),
+                "must be greater than zero",
+            ));
+        }
+        if range.start < video.span.replacement_start || range.start >= replacement_end {
+            return Err(invalid_runtime_input(
+                format!("videos[{idx}].soft_token_ranges[{range_idx}].start"),
+                format!(
+                    "must be inside replacement span [{}..{})",
+                    video.span.replacement_start, replacement_end
+                ),
+            ));
+        }
+        let range_end = range
+            .start
+            .checked_add(range.soft_token_count as usize)
+            .ok_or_else(|| {
+                invalid_runtime_input(
+                    format!("videos[{idx}].soft_token_ranges[{range_idx}]"),
+                    "range end overflow",
+                )
+            })?;
+        if range_end > replacement_end {
+            return Err(invalid_runtime_input(
+                format!("videos[{idx}].soft_token_ranges[{range_idx}]"),
+                format!("range end {range_end} exceeds replacement end {replacement_end}"),
+            ));
+        }
+        if range.start < previous_end {
+            return Err(invalid_runtime_input(
+                format!("videos[{idx}].soft_token_ranges[{range_idx}].start"),
+                "ranges must be non-overlapping and sorted",
+            ));
+        }
+        previous_end = range_end;
+        summed_soft_tokens += range.soft_token_count as usize;
+    }
+    if summed_soft_tokens != video.span.soft_token_count as usize {
+        return Err(invalid_runtime_input(
+            format!("videos[{idx}].soft_token_ranges"),
+            format!(
+                "sum to {summed_soft_tokens} soft tokens, but span expects {}",
+                video.span.soft_token_count
+            ),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_video_frame_shape(
+    idx: usize,
+    video: &Gemma4UnifiedVideoRuntimeInput,
+) -> Result<(), Gemma4UnifiedRuntimeInputError> {
+    let frame_count = video.frame_count as usize;
+    if !video.pixel_position_ids.len().is_multiple_of(frame_count) {
+        return Err(invalid_runtime_input(
+            format!("videos[{idx}].pixel_position_ids"),
+            format!(
+                "patch count {} must divide evenly by frame_count {frame_count}",
+                video.pixel_position_ids.len()
+            ),
+        ));
+    }
+    Ok(())
 }
 
 impl Gemma4UnifiedProcessorConfig {
@@ -804,6 +1134,170 @@ mod tests {
             Gemma4UnifiedError::InvalidField {
                 field: "video.timestamp_token_ids_per_frame",
                 message: "expected 2 timestamp entries, found 1".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn validates_processed_runtime_inputs_for_all_modalities() {
+        let cfg = local_like_config();
+        let (tokens, image_spans) = cfg
+            .expand_image_placeholders(
+                &[10, 258880, 258881, 258884, 11],
+                &[Gemma4UnifiedImageInput {
+                    width: 1,
+                    height: 1,
+                }],
+            )
+            .expect("image placeholder should expand");
+        let (tokens, audio_spans) = cfg
+            .expand_audio_placeholders(
+                &tokens,
+                &[Gemma4UnifiedAudioInput {
+                    sample_count: 16000,
+                }],
+            )
+            .expect("audio placeholder should expand");
+        let (tokens, video_spans) = cfg
+            .expand_video_placeholders(
+                &tokens,
+                &[Gemma4UnifiedVideoInput {
+                    frame_count: 2,
+                    soft_tokens_per_frame: 2,
+                    timestamp_token_ids_per_frame: vec![vec![901], vec![902]],
+                }],
+            )
+            .expect("video placeholder should expand");
+        let image_soft = image_spans[0].soft_token_count as usize;
+        let audio_soft = audio_spans[0].soft_token_count as usize;
+        let video = &video_spans[0];
+        let video_soft = video.span.soft_token_count as usize;
+
+        let inputs = Gemma4UnifiedRuntimeInputs {
+            images: vec![Gemma4UnifiedImageRuntimeInput {
+                span: image_spans[0].clone(),
+                pixel_values: vec![0.25; image_soft * 3],
+                pixel_position_ids: (0..image_soft).map(|idx| [idx as i32, 0]).collect(),
+            }],
+            audios: vec![Gemma4UnifiedAudioRuntimeInput {
+                span: audio_spans[0].clone(),
+                input_features: vec![0.5; audio_soft * 4],
+                frame_count: audio_soft as u32,
+                feature_count: 4,
+            }],
+            videos: vec![Gemma4UnifiedVideoRuntimeInput {
+                span: video.span.clone(),
+                soft_token_ranges: video.soft_token_ranges.clone(),
+                pixel_values: vec![0.75; video_soft * 3],
+                pixel_position_ids: (0..video_soft).map(|idx| [idx as i32, 0]).collect(),
+                frame_count: 2,
+            }],
+        };
+
+        inputs
+            .validate_for_prompt_len(tokens.len())
+            .expect("processed tensors should validate against expanded prompt");
+    }
+
+    #[test]
+    fn rejects_processed_runtime_inputs_with_bad_video_ranges() {
+        let inputs = Gemma4UnifiedRuntimeInputs {
+            images: Vec::new(),
+            audios: Vec::new(),
+            videos: vec![Gemma4UnifiedVideoRuntimeInput {
+                span: Gemma4UnifiedTokenSpan {
+                    modality: Gemma4UnifiedModality::Video,
+                    placeholder_index: 1,
+                    replacement_start: 1,
+                    soft_token_count: 4,
+                    replacement_token_count: 8,
+                },
+                soft_token_ranges: vec![
+                    Gemma4UnifiedSoftTokenRange {
+                        start: 3,
+                        soft_token_count: 2,
+                    },
+                    Gemma4UnifiedSoftTokenRange {
+                        start: 4,
+                        soft_token_count: 2,
+                    },
+                ],
+                pixel_values: vec![0.0; 12],
+                pixel_position_ids: vec![[0, 0], [1, 0], [2, 0], [3, 0]],
+                frame_count: 2,
+            }],
+        };
+        let error = inputs
+            .validate_for_prompt_len(12)
+            .expect_err("overlapping ranges must fail");
+
+        assert_eq!(
+            error,
+            Gemma4UnifiedRuntimeInputError::InvalidField {
+                field: "videos[0].soft_token_ranges[1].start".to_string(),
+                message: "ranges must be non-overlapping and sorted".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_processed_runtime_inputs_with_image_tensor_mismatch() {
+        let inputs = Gemma4UnifiedRuntimeInputs {
+            images: vec![Gemma4UnifiedImageRuntimeInput {
+                span: Gemma4UnifiedTokenSpan {
+                    modality: Gemma4UnifiedModality::Image,
+                    placeholder_index: 1,
+                    replacement_start: 1,
+                    soft_token_count: 2,
+                    replacement_token_count: 4,
+                },
+                pixel_values: vec![0.0, 1.0, 2.0],
+                pixel_position_ids: vec![[0, 0]],
+            }],
+            audios: Vec::new(),
+            videos: Vec::new(),
+        };
+        let error = inputs
+            .validate_for_prompt_len(6)
+            .expect_err("valid patch count mismatch must fail");
+
+        assert_eq!(
+            error,
+            Gemma4UnifiedRuntimeInputError::InvalidField {
+                field: "images[0].pixel_position_ids".to_string(),
+                message: "contains 1 valid patch positions, but span expects 2 soft tokens"
+                    .to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_processed_runtime_inputs_with_non_prefix_image_padding() {
+        let inputs = Gemma4UnifiedRuntimeInputs {
+            images: vec![Gemma4UnifiedImageRuntimeInput {
+                span: Gemma4UnifiedTokenSpan {
+                    modality: Gemma4UnifiedModality::Image,
+                    placeholder_index: 1,
+                    replacement_start: 1,
+                    soft_token_count: 2,
+                    replacement_token_count: 4,
+                },
+                pixel_values: vec![0.0; 9],
+                pixel_position_ids: vec![[0, 0], [-1, -1], [1, 0]],
+            }],
+            audios: Vec::new(),
+            videos: Vec::new(),
+        };
+        let error = inputs
+            .validate_for_prompt_len(6)
+            .expect_err("valid patch positions after padding must fail");
+
+        assert_eq!(
+            error,
+            Gemma4UnifiedRuntimeInputError::InvalidField {
+                field: "images[0].pixel_position_ids[2]".to_string(),
+                message: "valid patch positions must be a prefix before [-1, -1] padding rows"
+                    .to_string(),
             }
         );
     }

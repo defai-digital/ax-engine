@@ -20,6 +20,7 @@ pub use engine::{EngineCore, EngineCoreError, EngineEvent, EngineStepOutcome, St
 pub use execution_plan::{
     DeterministicExecutionPlanResolver, ExecutionPlanBinding, ExecutionPlanResolver,
 };
+pub use gemma4_unified::Gemma4UnifiedRuntimeInputError;
 pub use ids::{BlockId, CacheGroupId, ModelId, RequestId, SequenceNo, StepId};
 pub use kv::{
     AllocationPlan, AllocationStatus, AppendMode, BlockTable, BlockTableView, FreeResult,

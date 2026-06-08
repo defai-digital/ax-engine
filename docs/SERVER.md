@@ -522,6 +522,9 @@ For native MLX Gemma4 unified models, `/v1/generate` and
 `multimodal_inputs.gemma4_unified` image/audio/video tensors. AX does not
 decode raw image/audio/video URLs or files on this path; callers must run media
 loading and processor output generation before sending the native request.
+The server validates processed tensor span bounds, modality labels, soft-token
+counts, and tensor lengths before scheduling the request; malformed inputs
+return `invalid_request`.
 `POST /v1/generate/stream` uses the same stateless request shape but streams
 preview SSE events named `request`, `step`, `response`, and `error`.
 `POST /v1/completions` and `POST /v1/chat/completions` are response-shape

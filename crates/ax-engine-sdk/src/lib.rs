@@ -20,8 +20,8 @@
 
 pub use ax_engine_core::gemma4_unified::{
     Gemma4UnifiedAudioRuntimeInput, Gemma4UnifiedImageRuntimeInput, Gemma4UnifiedModality,
-    Gemma4UnifiedRuntimeInputs, Gemma4UnifiedSoftTokenRange, Gemma4UnifiedTokenSpan,
-    Gemma4UnifiedVideoRuntimeInput,
+    Gemma4UnifiedRuntimeInputError, Gemma4UnifiedRuntimeInputs, Gemma4UnifiedSoftTokenRange,
+    Gemma4UnifiedTokenSpan, Gemma4UnifiedVideoRuntimeInput,
 };
 pub use ax_engine_core::{
     CacheGroupId, EmbeddingMatrix, EmbeddingPooling, KvCompressionConfig, KvCompressionMode,

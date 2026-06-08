@@ -1,4 +1,4 @@
-use ax_engine_core::{EngineCoreError, MetalRuntimeError};
+use ax_engine_core::{EngineCoreError, Gemma4UnifiedRuntimeInputError, MetalRuntimeError};
 use thiserror::Error;
 
 use crate::backend::{BackendContractError, SelectedBackend};
@@ -27,6 +27,8 @@ pub enum EngineSessionError {
         "multimodal_inputs require native MLX backend; delegated backend {selected_backend:?} is text-only"
     )]
     MultimodalInputsRequireNativeMlx { selected_backend: SelectedBackend },
+    #[error(transparent)]
+    InvalidMultimodalInputs(#[from] Gemma4UnifiedRuntimeInputError),
     #[error(
         "MLX mode requires validated Metal runtime artifacts; deterministic fallback is internal-only and must be explicitly enabled"
     )]

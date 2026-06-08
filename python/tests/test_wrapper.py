@@ -735,6 +735,41 @@ class WrapperContractTests(unittest.TestCase):
         self.assertEqual(result.runtime.selected_backend, "llama_cpp")
         self.assertEqual(result.runtime.support_tier, "llama_cpp")
 
+    def test_generate_forwards_multimodal_inputs(self) -> None:
+        multimodal_inputs = {
+            "gemma4_unified": {
+                "images": [
+                    {
+                        "span": {
+                            "modality": "image",
+                            "placeholder_index": 1,
+                            "replacement_start": 1,
+                            "soft_token_count": 1,
+                            "replacement_token_count": 3,
+                        },
+                        "pixel_values": [0.0, 1.0, 2.0],
+                        "pixel_position_ids": [[0, 0]],
+                    }
+                ],
+                "audios": [],
+                "videos": [],
+            }
+        }
+
+        with self.ax_engine.Session(
+            model_id="gemma-4-12b-it",
+            mlx=True,
+            mlx_model_artifacts_dir=FAKE_MLX_MODEL_DIR,
+        ) as session:
+            session.generate(
+                [10, 255999, 258880, 258882, 11],
+                multimodal_inputs=multimodal_inputs,
+                max_output_tokens=2,
+            )
+
+        native = FakeNativeSession.instances[-1]
+        self.assertIs(native.generate_calls[0][1]["multimodal_inputs"], multimodal_inputs)
+
     def test_generate_supports_server_backed_llama_cpp_surface(self) -> None:
         with self.ax_engine.Session(
             model_id="qwen3_dense",
@@ -1088,6 +1123,43 @@ class WrapperContractTests(unittest.TestCase):
         self.assertEqual(native.submit_calls[0][1]["max_output_tokens"], 2)
         self.assertEqual(native.cancelled, [11])
 
+    def test_submit_forwards_multimodal_inputs(self) -> None:
+        multimodal_inputs = {
+            "gemma4_unified": {
+                "images": [],
+                "audios": [
+                    {
+                        "span": {
+                            "modality": "audio",
+                            "placeholder_index": 1,
+                            "replacement_start": 1,
+                            "soft_token_count": 2,
+                            "replacement_token_count": 4,
+                        },
+                        "input_features": [0.0, 1.0, 2.0, 3.0],
+                        "frame_count": 2,
+                        "feature_count": 2,
+                    }
+                ],
+                "videos": [],
+            }
+        }
+
+        with self.ax_engine.Session(
+            model_id="gemma-4-12b-it",
+            mlx=True,
+            mlx_model_artifacts_dir=FAKE_MLX_MODEL_DIR,
+        ) as session:
+            request_id = session.submit(
+                [10, 256000, 262145, 262145, 258883, 11],
+                multimodal_inputs=multimodal_inputs,
+                max_output_tokens=2,
+            )
+
+        native = FakeNativeSession.instances[-1]
+        self.assertEqual(request_id, 11)
+        self.assertIs(native.submit_calls[0][1]["multimodal_inputs"], multimodal_inputs)
+
     def test_stream_generate_emits_request_step_and_response_events(self) -> None:
         with self.ax_engine.Session(
             model_id="qwen3_dense",
@@ -1142,6 +1214,45 @@ class WrapperContractTests(unittest.TestCase):
         native = FakeNativeSession.instances[-1]
         self.assertEqual(native.generate_calls[0][0], [1, 2, 3])
         self.assertEqual(native.generate_calls[0][1]["max_output_tokens"], 2)
+
+    def test_stream_generate_forwards_multimodal_inputs(self) -> None:
+        multimodal_inputs = {
+            "gemma4_unified": {
+                "images": [],
+                "audios": [],
+                "videos": [
+                    {
+                        "span": {
+                            "modality": "video",
+                            "placeholder_index": 1,
+                            "replacement_start": 1,
+                            "soft_token_count": 1,
+                            "replacement_token_count": 3,
+                        },
+                        "soft_token_ranges": [{"start": 2, "soft_token_count": 1}],
+                        "pixel_values": [0.0, 1.0, 2.0],
+                        "pixel_position_ids": [[0, 0]],
+                        "frame_count": 1,
+                    }
+                ],
+            }
+        }
+
+        with self.ax_engine.Session(
+            model_id="gemma-4-12b-it",
+            mlx=True,
+            mlx_model_artifacts_dir=FAKE_MLX_MODEL_DIR,
+        ) as session:
+            list(
+                session.stream_generate(
+                    [10, 255999, 262146, 258882, 11],
+                    multimodal_inputs=multimodal_inputs,
+                    max_output_tokens=2,
+                )
+            )
+
+        native = FakeNativeSession.instances[-1]
+        self.assertIs(native.generate_calls[0][1]["multimodal_inputs"], multimodal_inputs)
 
     def test_stream_generate_raises_when_request_never_terminates(self) -> None:
         self.ax_engine = import_wrapper_module(HungNativeSession)

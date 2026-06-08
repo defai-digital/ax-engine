@@ -1,5 +1,6 @@
 from dataclasses import dataclass, field
-from typing import Iterator
+from pathlib import Path
+from typing import Any, Iterator
 
 
 class EngineError(RuntimeError): ...
@@ -12,6 +13,20 @@ class EngineInferenceError(EngineError): ...
 
 
 class EngineStateError(EngineError): ...
+
+
+@dataclass(frozen=True)
+class Gemma4UnifiedImageRequest:
+    input_tokens: list[int]
+    multimodal_inputs: dict[str, Any]
+    soft_token_counts: list[int]
+
+
+def prepare_gemma4_unified_image_request(
+    model_dir: str | Path,
+    input_tokens: list[int],
+    images: list[Any],
+) -> Gemma4UnifiedImageRequest: ...
 
 
 @dataclass(frozen=True)
@@ -288,6 +303,7 @@ class Session:
         input_tokens: list[int] | None = None,
         *,
         input_text: str | None = None,
+        multimodal_inputs: dict[str, Any] | None = None,
         max_output_tokens: int,
         temperature: float = 0.0,
         top_p: float = 1.0,
@@ -315,6 +331,7 @@ class Session:
         input_tokens: list[int] | None = None,
         *,
         input_text: str | None = None,
+        multimodal_inputs: dict[str, Any] | None = None,
         max_output_tokens: int,
         temperature: float = 0.0,
         top_p: float = 1.0,
@@ -345,6 +362,7 @@ class Session:
         input_tokens: list[int] | None = None,
         *,
         input_text: str | None = None,
+        multimodal_inputs: dict[str, Any] | None = None,
         max_output_tokens: int,
         temperature: float = 0.0,
         top_p: float = 1.0,

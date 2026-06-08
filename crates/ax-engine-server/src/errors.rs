@@ -54,6 +54,7 @@ pub(crate) fn map_session_error(error: EngineSessionError) -> (StatusCode, Json<
         | EngineSessionError::InvalidMaxOutputTokens
         | EngineSessionError::MlxBackendRequiresTokenizedInput
         | EngineSessionError::MultimodalInputsRequireNativeMlx { .. }
+        | EngineSessionError::InvalidMultimodalInputs(_)
         | EngineSessionError::InvalidMaxBatchTokens
         | EngineSessionError::InvalidRequestId
         | EngineSessionError::UnsupportedSupportTier
@@ -154,5 +155,31 @@ fn openai_error_type(status: StatusCode) -> &'static str {
         "invalid_request_error"
     } else {
         "server_error"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ax_engine_sdk::Gemma4UnifiedRuntimeInputError;
+
+    #[test]
+    fn invalid_multimodal_inputs_map_to_invalid_request() {
+        let (status, body) = map_session_error(EngineSessionError::InvalidMultimodalInputs(
+            Gemma4UnifiedRuntimeInputError::InvalidField {
+                field: "images[0].span".to_string(),
+                message: "replacement span exceeds prompt".to_string(),
+            },
+        ));
+
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let body = body.0;
+        assert_eq!(body.error.code.as_deref(), Some("invalid_request"));
+        assert_eq!(body.error.error_type, "invalid_request_error");
+        assert!(
+            body.error
+                .message
+                .contains("invalid Gemma4 unified runtime input")
+        );
     }
 }

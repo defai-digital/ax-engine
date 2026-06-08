@@ -268,7 +268,30 @@ accept `input_text` as an alternative when tokenization happens server-side.
 Gemma4 unified image/audio/video inputs are accepted only as preprocessed
 `multimodal_inputs.gemma4_unified` tensors on the native MLX path. Delegated
 `mlx_lm` and llama.cpp routes remain text-only and fail closed when
-`multimodal_inputs` is present.
+`multimodal_inputs` is present. Native validation checks processed tensor span
+bounds, modality labels, soft-token counts, and tensor lengths before request
+submission.
+
+Python callers that only need image input can install `ax-engine[multimodal]`
+and build the processed payload with `prepare_gemma4_unified_image_request`.
+The helper follows the Gemma4 unified processor config in the model directory:
+
+```python
+from ax_engine import Session, prepare_gemma4_unified_image_request
+
+request = prepare_gemma4_unified_image_request(
+    ".internal/models/gemma-4-12B-it-4bit",
+    input_tokens=[7, 258880, 8],
+    images=["diagram.png"],
+)
+
+with Session(model_id="gemma-4-12b-it", mlx=True) as session:
+    response = session.generate(
+        request.input_tokens,
+        multimodal_inputs=request.multimodal_inputs,
+        max_output_tokens=64,
+    )
+```
 
 `GenerateSampling` carries `temperature`, `top_p`, `seed`, and `repetition_penalty`.
 When `session.config.deterministic = true`, `temperature` is forced to 0.0
@@ -334,6 +357,13 @@ pub struct GenerateRouteReport {
 
 `crossover_decisions` holds all numeric telemetry values from the scheduler and
 KV manager, keyed by the `ROUTE_DECISION_AX_*` constants from `ax-engine-core`.
+Gemma4 unified multimodal requests also report modality counts and runtime
+boundaries through keys such as
+`ax_mlx_gemma4_unified_multimodal_prefill_requests`,
+`ax_mlx_gemma4_unified_image_inputs`,
+`ax_mlx_gemma4_unified_audio_inputs`,
+`ax_mlx_gemma4_unified_video_inputs`, and
+`ax_mlx_gemma4_unified_prefix_cache_disabled`.
 Helper methods:
 
 | Method | Key read |
