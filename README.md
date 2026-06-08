@@ -146,6 +146,40 @@ column is a **shape-compatible external GGUF baseline only** (ggml-org Q4_K_M,
 text-only conversion) — not prompt-hash parity, no repo-owned-MLX claim. `mlx_lm`
 is **absent because it cannot load `gemma4_unified`**, not because it was skipped.
 
+> The direct-decode table and charts above use the upstream
+> `mlx-community/gemma-4-12B-it-4bit` snapshot, which keeps the **FFN at 8-bit**
+> — see the memory-bandwidth analysis next for why that, not the runtime, is the
+> gap, and how a bit-comparable 4-bit-FFN re-quant makes AX direct decode beat
+> llama.cpp.
+
+#### Memory bandwidth utilization
+
+Decode is memory-bandwidth-bound on Apple Silicon: each token reads the model
+weights once, so decode tok/s is set by bytes-read and how close the engine gets
+to the memory ceiling. Measured **M5 Max GPU peak read bandwidth ≈ 577 GB/s**
+(MLX reduction over a 6 GB array). Effective decode bandwidth =
+weights-per-token × decode tok/s:
+
+| Engine / quantization | Weights/token | Decode tok/s | Effective BW | % of 577 GB/s peak |
+|---|---:|---:|---:|---:|
+| AX — 8-bit FFN (upstream 4bit snapshot) | 10.98 GB | 45.0 | 494 GB/s | 86% |
+| AX — 4-bit FFN (re-quantized) | 6.74 GB | 67.2 | 453 GB/s | 78% |
+| llama.cpp Q4_K_M — decode @ depth 512 | 7.38 GB | 57.6 | 425 GB/s | 74% |
+| llama.cpp Q4_K_M — decode @ depth 0 (`tg`) | 7.38 GB | 60.0 | 443 GB/s | 77% |
+
+AX sustains **as much or more memory bandwidth than llama.cpp** (453 vs 425 GB/s
+at matched depth) — both are near the hardware ceiling, so neither is
+bandwidth-starved and AX is not under-utilizing memory. The reason the upstream
+snapshot trails in the direct table is purely *bytes read*: it keeps the FFN at
+**8-bit** (~10.4 GiB, ~1.5× the FFN bytes of the Q4_K_M GGUF), and decode is
+bandwidth-bound. Re-quantizing the FFN to uniform 4-bit group-64 (~6.3 GiB,
+~4.5 bpw, bit-comparable to Q4_K_M's ~4.8 bpw) makes AX direct decode **67.2 vs
+57.6 tok/s — beating llama.cpp** at a fair, depth-matched comparison, with output
+verified coherent. Build it with `scripts/requantize_gemma4_12b_ffn_4bit.py`.
+Note: 8-bit weights saturate bandwidth slightly better (86% vs 78% of peak)
+because 4-bit needs more dequant compute per byte — that ~8% headroom lives in
+MLX's `quantized_matmul` 4-bit kernel, not AX's runtime.
+
 #### Assistant-MTP speculative decode (depth 1)
 
 Same assistant-drafter contract and draft confidence gate as the 26B/31B section
