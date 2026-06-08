@@ -139,16 +139,17 @@ warmup repetition.
 
 | Model | Suite | Depth | MTPLX tok/s | MTPLX accept | AX tok/s | AX accept | AX+ngram tok/s | AX+ngram accept |
 |---|---|---:|---:|---:|---:|---:|---:|---:|
-| Qwen3.6 27B 4-bit | flappy | 3 | 59.6 | 100.0% | 61.4 | 99.9% | 61.7 | 99.4% |
-| Qwen3.6 27B 4-bit | long_code | 3 | 59.3 | 99.7% | 55.9 | 99.9% | 53.4 | 99.4% |
-| Qwen3.6 27B 4-bit | python_modules_long | 3 | 54.4 | 87.6% | 47.5 | 99.3% | 47.1 | 98.9% |
-| Qwen3.6 35B-A3B 4-bit | flappy | 1 | 105.3 | 48.5% | 181.0 | 100.0% | 182.1 | 99.2% |
-| Qwen3.6 35B-A3B 4-bit | long_code | 1 | 106.0 | 51.7% | 178.9 | 100.0% | 185.3 | 98.3% |
-| Qwen3.6 35B-A3B 4-bit | python_modules_long | 1 | 102.1 | 43.4% | 183.2 | 99.6% | 183.2 | 98.7% |
+| Qwen3.6 27B 4-bit | flappy | 3 | 56.1 | 100.0% | 60.6 | 99.9% | 57.4 | 99.1% |
+| Qwen3.6 27B 4-bit | long_code | 3 | 57.9 | 99.7% | 54.9 | 99.9% | 59.3 | 99.1% |
+| Qwen3.6 27B 4-bit | python_modules_long | 3 | 52.7 | 87.6% | 47.8 | 97.6% | 50.2 | 97.2% |
+| Qwen3.6 35B-A3B 4-bit | flappy | 1 | 104.3 | 49.5% | 180.6 | 100.0% | 182.3 | 99.6% |
+| Qwen3.6 35B-A3B 4-bit | long_code | 1 | 105.6 | 51.4% | 179.1 | 100.0% | 224.2 | 99.8% |
+| Qwen3.6 35B-A3B 4-bit | python_modules_long | 1 | 98.2 | 42.6% | 182.4 | 99.3% | 169.4 | 97.6% |
 
 AX MTP uses pure MTP (n-gram stacking disabled); AX MTP+n-gram stacks n-gram speculative drafting on top of MTP. AX MTP runs the default
 draft confidence gate (`AX_MLX_MTP_DRAFT_MIN_CONFIDENCE`) that only proposes draft tokens the MTP head is confident in. The accept
-columns below are the accept-maximizing `0.98` setting, which holds pure-MTP accept ≥99% on every row; the shipped default is `0.90`,
+columns below are the accept-maximizing `0.98` setting, which holds pure-MTP accept ≥99% on every row except the hardest
+`python_modules_long` suite (27B 97.6%, 35B-A3B 99.3%); the shipped default is `0.90`,
 which trades ~1–2 points of accept on the hardest row for +5–13% decode throughput (see `docs/MTP-DRAFT-GATE-THROUGHPUT.md`). Set the
 variable to `0.98` to restore the accept-maximizing behavior, or `0` to disable. The gate is scoped to pure MTP, so the
 n-gram-stacked column pools lower-confidence n-gram drafts and sits slightly below it. Sampler: temperature=0.6,
@@ -162,12 +163,12 @@ AX prefill is measured at runner level. Both are pure GPU compute measurements.
 
 | Model | Suite | Depth | MTPLX tok/s | AX MTP tok/s | AX MTP+ngram tok/s |
 |---|---|---:|---:|---:|---:|
-| Qwen3.6 27B 4-bit | flappy | 3 | 683 | 686 | 686 |
-| Qwen3.6 27B 4-bit | long_code | 3 | 798 | 791 | 766 |
-| Qwen3.6 27B 4-bit | python_modules_long | 3 | 691 | 695 | 694 |
-| Qwen3.6 35B-A3B 4-bit | flappy | 1 | 1,545 | 1,821 | 1,839 |
-| Qwen3.6 35B-A3B 4-bit | long_code | 1 | 2,287 | 2,730 | 2,725 |
-| Qwen3.6 35B-A3B 4-bit | python_modules_long | 1 | 1,431 | 2,013 | 2,009 |
+| Qwen3.6 27B 4-bit | flappy | 3 | 657 | 681 | 639 |
+| Qwen3.6 27B 4-bit | long_code | 3 | 793 | 769 | 765 |
+| Qwen3.6 27B 4-bit | python_modules_long | 3 | 680 | 692 | 671 |
+| Qwen3.6 35B-A3B 4-bit | flappy | 1 | 1,520 | 1,831 | 1,836 |
+| Qwen3.6 35B-A3B 4-bit | long_code | 1 | 2,431 | 2,735 | 2,707 |
+| Qwen3.6 35B-A3B 4-bit | python_modules_long | 1 | 1,654 | 1,966 | 1,967 |
 
 #### Time to first token (ms) — same run
 
@@ -175,14 +176,14 @@ MTPLX TTFT is derived from `prompt_eval_time_s` (runner-level). AX TTFT is a run
 
 | Model | Suite | Depth | MTPLX ms | AX MTP ms | AX MTP+ngram ms |
 |---|---|---:|---:|---:|---:|
-| Qwen3.6 27B 4-bit | flappy | 3 | 471 | 469 | 469 |
-| Qwen3.6 27B 4-bit | long_code | 3 | 900 | 907 | 938 |
-| Qwen3.6 27B 4-bit | python_modules_long | 3 | 503 | 504 | 504 |
-| Qwen3.6 35B-A3B 4-bit | flappy | 1 | 208 | 177 | 175 |
-| Qwen3.6 35B-A3B 4-bit | long_code | 1 | 314 | 263 | 263 |
-| Qwen3.6 35B-A3B 4-bit | python_modules_long | 1 | 229 | 172 | 172 |
+| Qwen3.6 27B 4-bit | flappy | 3 | 489 | 477 | 504 |
+| Qwen3.6 27B 4-bit | long_code | 3 | 905 | 934 | 938 |
+| Qwen3.6 27B 4-bit | python_modules_long | 3 | 509 | 505 | 505 |
+| Qwen3.6 35B-A3B 4-bit | flappy | 1 | 213 | 176 | 176 |
+| Qwen3.6 35B-A3B 4-bit | long_code | 1 | 295 | 262 | 265 |
+| Qwen3.6 35B-A3B 4-bit | python_modules_long | 1 | 206 | 172 | 177 |
 
-Full artifacts: [`2026-06-05-ax-mtp-gate-fresh`](benchmarks/results/mtp-fair/2026-06-05-ax-mtp-gate-fresh/summary.json) (fresh AX MTP + n-gram run with the default draft confidence gate, 2026-06-05; MTPLX rows reused from the 2026-06-04 same-day sidecar run).
+Full artifacts: [`2026-06-07-qwen36-fair`](benchmarks/results/mtp-fair/2026-06-07-qwen36-fair/summary.json) (full same-day run; MTPLX and AX MTP+n-gram rows at their defaults, AX pure-MTP rows at the accept-maximizing `0.98` gate).
 
 ### llama.cpp metal vs mlx-lm vs AX-Engine
 
