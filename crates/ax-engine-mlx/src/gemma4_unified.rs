@@ -1,6 +1,6 @@
 use ax_engine_core::gemma4_unified::{
     Gemma4UnifiedAudioRuntimeInput, Gemma4UnifiedImageRuntimeInput, Gemma4UnifiedRuntimeInputs,
-    Gemma4UnifiedTokenSpan, Gemma4UnifiedVideoRuntimeInput,
+    Gemma4UnifiedSoftTokenRange, Gemma4UnifiedTokenSpan, Gemma4UnifiedVideoRuntimeInput,
 };
 use mlx_sys::{
     MlxArray, MlxDtype, add, astype, layer_norm, multiply, reshape, rms_norm, slice, slice_update,
@@ -62,14 +62,8 @@ pub(crate) fn build_chunk_embeddings(
     }
     for video in &inputs.videos {
         let embeddings = video_embeddings(cfg, weights, video)?;
-        hidden = overwrite_span(
-            hidden,
-            &embeddings,
-            &video.span,
-            chunk_start,
-            cfg.hidden_size,
-        )?;
-        push_media_range(&mut media_ranges, &video.span);
+        hidden = overwrite_video_spans(hidden, &embeddings, video, chunk_start, cfg.hidden_size)?;
+        push_video_media_ranges(&mut media_ranges, video);
     }
 
     Ok(Gemma4UnifiedChunkEmbeddings {
@@ -339,6 +333,82 @@ fn overwrite_span(
     ))
 }
 
+fn overwrite_video_spans(
+    hidden: MlxArray,
+    embeddings: &MlxArray,
+    video: &Gemma4UnifiedVideoRuntimeInput,
+    chunk_start: usize,
+    hidden_size: usize,
+) -> Result<MlxArray, String> {
+    if video.soft_token_ranges.is_empty() {
+        return overwrite_span(hidden, embeddings, &video.span, chunk_start, hidden_size);
+    }
+    overwrite_soft_token_ranges(
+        hidden,
+        embeddings,
+        &video.soft_token_ranges,
+        chunk_start,
+        hidden_size,
+    )
+}
+
+fn overwrite_soft_token_ranges(
+    mut hidden: MlxArray,
+    embeddings: &MlxArray,
+    ranges: &[Gemma4UnifiedSoftTokenRange],
+    chunk_start: usize,
+    hidden_size: usize,
+) -> Result<MlxArray, String> {
+    let expected_tokens = ranges.iter().try_fold(0usize, |acc, range| {
+        acc.checked_add(range.soft_token_count as usize)
+            .ok_or_else(|| "Gemma4 unified video soft-token range overflow".to_string())
+    })?;
+    let actual_tokens = embeddings.shape().first().copied().unwrap_or(0) as usize;
+    if expected_tokens != actual_tokens {
+        return Err(format!(
+            "Gemma4 unified video soft-token range mismatch: ranges expect {expected_tokens}, embeddings contain {actual_tokens}"
+        ));
+    }
+
+    let chunk_end =
+        chunk_start.saturating_add(hidden.shape().get(1).copied().unwrap_or(0) as usize);
+    let mut source_cursor = 0usize;
+    for range in ranges {
+        let soft_start = range.start;
+        let soft_end = soft_start.saturating_add(range.soft_token_count as usize);
+        let start = soft_start.max(chunk_start);
+        let end = soft_end.min(chunk_end);
+        if start < end {
+            let source_start = source_cursor + start - soft_start;
+            let source_end = source_cursor + end - soft_start;
+            let local_start = start - chunk_start;
+            let local_end = end - chunk_start;
+            let update = slice(
+                embeddings,
+                &[source_start as i32, 0],
+                &[source_end as i32, hidden_size as i32],
+                &[1, 1],
+                None,
+            );
+            let update = reshape(
+                &update,
+                &[1, (source_end - source_start) as i32, hidden_size as i32],
+                None,
+            );
+            hidden = slice_update(
+                &hidden,
+                &update,
+                &[0, local_start as i32, 0],
+                &[1, local_end as i32, hidden_size as i32],
+                &[1, 1, 1],
+                None,
+            );
+        }
+        source_cursor += range.soft_token_count as usize;
+    }
+    Ok(hidden)
+}
+
 fn push_media_range(ranges: &mut Vec<Gemma4UnifiedMediaRange>, span: &Gemma4UnifiedTokenSpan) {
     if span.soft_token_count == 0 {
         return;
@@ -348,6 +418,32 @@ fn push_media_range(ranges: &mut Vec<Gemma4UnifiedMediaRange>, span: &Gemma4Unif
         start,
         end_inclusive: start + span.soft_token_count as usize - 1,
     });
+}
+
+fn push_video_media_ranges(
+    ranges: &mut Vec<Gemma4UnifiedMediaRange>,
+    video: &Gemma4UnifiedVideoRuntimeInput,
+) {
+    if video.soft_token_ranges.is_empty() {
+        push_media_range(ranges, &video.span);
+        return;
+    }
+    for range in &video.soft_token_ranges {
+        if range.soft_token_count == 0 {
+            continue;
+        }
+        let Some(end_inclusive) = range
+            .start
+            .checked_add(range.soft_token_count as usize)
+            .and_then(|end| end.checked_sub(1))
+        else {
+            continue;
+        };
+        ranges.push(Gemma4UnifiedMediaRange {
+            start: range.start,
+            end_inclusive,
+        });
+    }
 }
 
 fn valid_patch_indices(pixel_position_ids: &[[i32; 2]]) -> Vec<u32> {
@@ -375,4 +471,75 @@ fn mask_array(values: &[f32], len: usize, dtype: MlxDtype) -> MlxArray {
         MlxDtype::Float32,
     );
     astype(&arr, dtype, None)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ax_engine_core::gemma4_unified::{Gemma4UnifiedModality, Gemma4UnifiedSoftTokenRange};
+
+    fn video_with_ranges(
+        ranges: Vec<Gemma4UnifiedSoftTokenRange>,
+    ) -> Gemma4UnifiedVideoRuntimeInput {
+        Gemma4UnifiedVideoRuntimeInput {
+            span: Gemma4UnifiedTokenSpan {
+                modality: Gemma4UnifiedModality::Video,
+                placeholder_index: 1,
+                replacement_start: 1,
+                soft_token_count: 6,
+                replacement_token_count: 13,
+            },
+            soft_token_ranges: ranges,
+            pixel_values: Vec::new(),
+            pixel_position_ids: Vec::new(),
+            frame_count: 2,
+        }
+    }
+
+    #[test]
+    fn video_media_ranges_follow_non_contiguous_frame_ranges() {
+        let video = video_with_ranges(vec![
+            Gemma4UnifiedSoftTokenRange {
+                start: 4,
+                soft_token_count: 3,
+            },
+            Gemma4UnifiedSoftTokenRange {
+                start: 10,
+                soft_token_count: 3,
+            },
+        ]);
+        let mut ranges = Vec::new();
+
+        push_video_media_ranges(&mut ranges, &video);
+
+        assert_eq!(
+            ranges,
+            vec![
+                Gemma4UnifiedMediaRange {
+                    start: 4,
+                    end_inclusive: 6,
+                },
+                Gemma4UnifiedMediaRange {
+                    start: 10,
+                    end_inclusive: 12,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn video_media_ranges_fall_back_to_legacy_contiguous_span() {
+        let video = video_with_ranges(Vec::new());
+        let mut ranges = Vec::new();
+
+        push_video_media_ranges(&mut ranges, &video);
+
+        assert_eq!(
+            ranges,
+            vec![Gemma4UnifiedMediaRange {
+                start: 2,
+                end_inclusive: 7,
+            }]
+        );
+    }
 }

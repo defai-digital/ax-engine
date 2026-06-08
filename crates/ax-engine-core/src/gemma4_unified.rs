@@ -57,6 +57,14 @@ pub struct Gemma4UnifiedAudioInput {
 pub struct Gemma4UnifiedVideoInput {
     pub frame_count: u32,
     pub soft_tokens_per_frame: u32,
+    /// Per-frame timestamp token IDs, already tokenized without special tokens.
+    ///
+    /// vLLM/HF format videos as:
+    /// `mm:ss <boi><|video|>*N<eoi> ...`.
+    /// AX core stays tokenizer-agnostic, so callers that need vLLM parity pass
+    /// the timestamp token IDs here. An empty outer vector keeps the legacy
+    /// tensor-only fallback with no timestamp tokens.
+    pub timestamp_token_ids_per_frame: Vec<Vec<u32>>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -66,6 +74,18 @@ pub struct Gemma4UnifiedTokenSpan {
     pub replacement_start: usize,
     pub soft_token_count: u32,
     pub replacement_token_count: u32,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct Gemma4UnifiedSoftTokenRange {
+    pub start: usize,
+    pub soft_token_count: u32,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct Gemma4UnifiedExpandedVideoPlaceholder {
+    pub span: Gemma4UnifiedTokenSpan,
+    pub soft_token_ranges: Vec<Gemma4UnifiedSoftTokenRange>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
@@ -102,6 +122,8 @@ pub struct Gemma4UnifiedAudioRuntimeInput {
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct Gemma4UnifiedVideoRuntimeInput {
     pub span: Gemma4UnifiedTokenSpan,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub soft_token_ranges: Vec<Gemma4UnifiedSoftTokenRange>,
     /// Flattened per-frame image processor output, same patch shape as images.
     pub pixel_values: Vec<f32>,
     pub pixel_position_ids: Vec<[i32; 2]>,
@@ -221,18 +243,76 @@ impl Gemma4UnifiedProcessorConfig {
         Ok(tokens)
     }
 
-    pub fn video_replacement_tokens(&self, video: Gemma4UnifiedVideoInput) -> Vec<u32> {
+    pub fn video_replacement_tokens(
+        &self,
+        video: Gemma4UnifiedVideoInput,
+    ) -> Result<Vec<u32>, Gemma4UnifiedError> {
+        self.video_replacement_tokens_with_ranges(video)
+            .map(|(tokens, _)| tokens)
+    }
+
+    pub fn video_replacement_tokens_with_ranges(
+        &self,
+        video: Gemma4UnifiedVideoInput,
+    ) -> Result<(Vec<u32>, Vec<Gemma4UnifiedSoftTokenRange>), Gemma4UnifiedError> {
+        if video.frame_count == 0 || video.soft_tokens_per_frame == 0 {
+            return Err(Gemma4UnifiedError::InvalidField {
+                field: "video",
+                message: "frame_count and soft_tokens_per_frame must be greater than zero"
+                    .to_string(),
+            });
+        }
+        if !video.timestamp_token_ids_per_frame.is_empty()
+            && video.timestamp_token_ids_per_frame.len() != video.frame_count as usize
+        {
+            return Err(Gemma4UnifiedError::InvalidField {
+                field: "video.timestamp_token_ids_per_frame",
+                message: format!(
+                    "expected {} timestamp entries, found {}",
+                    video.frame_count,
+                    video.timestamp_token_ids_per_frame.len()
+                ),
+            });
+        }
+
+        let timestamp_token_ids_per_frame = if video.timestamp_token_ids_per_frame.is_empty() {
+            vec![Vec::new(); video.frame_count as usize]
+        } else {
+            video.timestamp_token_ids_per_frame
+        };
+        let timestamp_tokens = timestamp_token_ids_per_frame
+            .iter()
+            .map(Vec::len)
+            .sum::<usize>();
         let soft_tokens = video
             .frame_count
-            .saturating_mul(video.soft_tokens_per_frame);
-        let mut tokens = Vec::with_capacity(soft_tokens as usize + 2);
-        tokens.push(self.tokens.boi_token_id);
-        tokens.extend(std::iter::repeat_n(
-            self.tokens.video_token_id,
-            soft_tokens as usize,
-        ));
-        tokens.push(self.tokens.eoi_token_id);
-        tokens
+            .checked_mul(video.soft_tokens_per_frame)
+            .ok_or_else(|| Gemma4UnifiedError::InvalidField {
+                field: "video",
+                message: "soft token count overflow".to_string(),
+            })?;
+        let mut tokens = Vec::with_capacity(
+            timestamp_tokens
+                .saturating_add(soft_tokens as usize)
+                .saturating_add(video.frame_count as usize * 2),
+        );
+        let mut soft_token_ranges = Vec::with_capacity(video.frame_count as usize);
+
+        for timestamp_token_ids in timestamp_token_ids_per_frame {
+            tokens.extend_from_slice(&timestamp_token_ids);
+            tokens.push(self.tokens.boi_token_id);
+            let start = tokens.len();
+            tokens.extend(std::iter::repeat_n(
+                self.tokens.video_token_id,
+                video.soft_tokens_per_frame as usize,
+            ));
+            soft_token_ranges.push(Gemma4UnifiedSoftTokenRange {
+                start,
+                soft_token_count: video.soft_tokens_per_frame,
+            });
+            tokens.push(self.tokens.eoi_token_id);
+        }
+        Ok((tokens, soft_token_ranges))
     }
 
     pub fn expand_image_placeholders(
@@ -240,22 +320,88 @@ impl Gemma4UnifiedProcessorConfig {
         input_tokens: &[u32],
         images: &[Gemma4UnifiedImageInput],
     ) -> Result<(Vec<u32>, Vec<Gemma4UnifiedTokenSpan>), Gemma4UnifiedError> {
-        expand_placeholders(input_tokens, self.tokens.image_token_id, images, |image| {
-            self.image_replacement_tokens(*image)
-                .map(|tokens| (tokens, self.image_soft_tokens(*image).unwrap_or(0)))
-        })
-        .map(|(tokens, spans)| {
-            (
-                tokens,
-                spans
+        expand_placeholders(
+            Gemma4UnifiedModality::Image,
+            input_tokens,
+            self.tokens.image_token_id,
+            images,
+            |image| {
+                self.image_replacement_tokens(*image)
+                    .map(|tokens| (tokens, self.image_soft_tokens(*image).unwrap_or(0)))
+            },
+        )
+    }
+
+    pub fn expand_audio_placeholders(
+        &self,
+        input_tokens: &[u32],
+        audios: &[Gemma4UnifiedAudioInput],
+    ) -> Result<(Vec<u32>, Vec<Gemma4UnifiedTokenSpan>), Gemma4UnifiedError> {
+        expand_placeholders(
+            Gemma4UnifiedModality::Audio,
+            input_tokens,
+            self.tokens.audio_token_id,
+            audios,
+            |audio| {
+                let soft_tokens = self.audio_soft_tokens(audio.clone()).unwrap_or(0);
+                self.audio_replacement_tokens(audio.clone())
+                    .map(|tokens| (tokens, soft_tokens))
+            },
+        )
+    }
+
+    pub fn expand_video_placeholders(
+        &self,
+        input_tokens: &[u32],
+        videos: &[Gemma4UnifiedVideoInput],
+    ) -> Result<(Vec<u32>, Vec<Gemma4UnifiedExpandedVideoPlaceholder>), Gemma4UnifiedError> {
+        let actual = input_tokens
+            .iter()
+            .filter(|&&token| token == self.tokens.video_token_id)
+            .count();
+        if actual != videos.len() {
+            return Err(Gemma4UnifiedError::PlaceholderCountMismatch {
+                modality: Gemma4UnifiedModality::Video,
+                expected: videos.len(),
+                actual,
+            });
+        }
+
+        let mut video_index = 0usize;
+        let mut output = Vec::new();
+        let mut spans = Vec::new();
+        for (idx, token) in input_tokens.iter().copied().enumerate() {
+            if token == self.tokens.video_token_id {
+                let replacement_start = output.len();
+                let (replacement_tokens, relative_ranges) =
+                    self.video_replacement_tokens_with_ranges(videos[video_index].clone())?;
+                output.extend_from_slice(&replacement_tokens);
+                let soft_token_count = relative_ranges.iter().fold(0_u32, |acc, range| {
+                    acc.saturating_add(range.soft_token_count)
+                });
+                let soft_token_ranges = relative_ranges
                     .into_iter()
-                    .map(|span| Gemma4UnifiedTokenSpan {
-                        modality: Gemma4UnifiedModality::Image,
-                        ..span
+                    .map(|range| Gemma4UnifiedSoftTokenRange {
+                        start: replacement_start + range.start,
+                        soft_token_count: range.soft_token_count,
                     })
-                    .collect(),
-            )
-        })
+                    .collect();
+                spans.push(Gemma4UnifiedExpandedVideoPlaceholder {
+                    span: Gemma4UnifiedTokenSpan {
+                        modality: Gemma4UnifiedModality::Video,
+                        placeholder_index: idx,
+                        replacement_start,
+                        soft_token_count,
+                        replacement_token_count: replacement_tokens.len() as u32,
+                    },
+                    soft_token_ranges,
+                });
+                video_index += 1;
+            } else {
+                output.push(token);
+            }
+        }
+        Ok((output, spans))
     }
 }
 
@@ -320,7 +466,8 @@ impl Gemma4UnifiedAudioProcessor {
     }
 }
 
-fn expand_placeholders<T: Copy>(
+fn expand_placeholders<T>(
+    modality: Gemma4UnifiedModality,
     input_tokens: &[u32],
     placeholder_token: u32,
     items: &[T],
@@ -332,7 +479,7 @@ fn expand_placeholders<T: Copy>(
         .count();
     if actual != items.len() {
         return Err(Gemma4UnifiedError::PlaceholderCountMismatch {
-            modality: Gemma4UnifiedModality::Image,
+            modality,
             expected: items.len(),
             actual,
         });
@@ -347,7 +494,7 @@ fn expand_placeholders<T: Copy>(
             let replacement_start = output.len();
             output.extend_from_slice(&replacement_tokens);
             spans.push(Gemma4UnifiedTokenSpan {
-                modality: Gemma4UnifiedModality::Image,
+                modality,
                 placeholder_index: idx,
                 replacement_start,
                 soft_token_count,
@@ -512,16 +659,152 @@ mod tests {
     }
 
     #[test]
+    fn expands_audio_placeholder_to_boundary_and_soft_tokens() {
+        let cfg = local_like_config();
+        let (tokens, spans) = cfg
+            .expand_audio_placeholders(
+                &[10, 258881, 11],
+                &[Gemma4UnifiedAudioInput {
+                    sample_count: 16000,
+                }],
+            )
+            .expect("placeholder should expand");
+
+        assert_eq!(tokens[0], 10);
+        assert_eq!(tokens[1], 256000);
+        assert_eq!(tokens[2], 258881);
+        assert_eq!(tokens[tokens.len() - 2], 258883);
+        assert_eq!(tokens[tokens.len() - 1], 11);
+        assert_eq!(tokens.len(), 29);
+        assert_eq!(
+            spans,
+            vec![Gemma4UnifiedTokenSpan {
+                modality: Gemma4UnifiedModality::Audio,
+                placeholder_index: 1,
+                replacement_start: 1,
+                soft_token_count: 25,
+                replacement_token_count: 27,
+            }]
+        );
+    }
+
+    #[test]
+    fn rejects_audio_placeholder_count_mismatch_with_audio_modality() {
+        let cfg = local_like_config();
+        let error = cfg
+            .expand_audio_placeholders(
+                &[10, 11],
+                &[Gemma4UnifiedAudioInput {
+                    sample_count: 16000,
+                }],
+            )
+            .expect_err("missing placeholder should fail");
+
+        assert_eq!(
+            error,
+            Gemma4UnifiedError::PlaceholderCountMismatch {
+                modality: Gemma4UnifiedModality::Audio,
+                expected: 1,
+                actual: 0
+            }
+        );
+    }
+
+    #[test]
     fn builds_video_replacement_tokens() {
         let cfg = local_like_config();
-        let tokens = cfg.video_replacement_tokens(Gemma4UnifiedVideoInput {
-            frame_count: 2,
-            soft_tokens_per_frame: 70,
-        });
+        let (tokens, ranges) = cfg
+            .video_replacement_tokens_with_ranges(Gemma4UnifiedVideoInput {
+                frame_count: 2,
+                soft_tokens_per_frame: 70,
+                timestamp_token_ids_per_frame: Vec::new(),
+            })
+            .expect("video replacement should build");
 
-        assert_eq!(tokens.len(), 142);
+        assert_eq!(tokens.len(), 144);
         assert_eq!(tokens[0], 255999);
         assert_eq!(tokens[1], 258884);
+        assert_eq!(tokens[70], 258884);
+        assert_eq!(tokens[71], 258882);
+        assert_eq!(tokens[72], 255999);
         assert_eq!(tokens[tokens.len() - 1], 258882);
+        assert_eq!(
+            ranges,
+            vec![
+                Gemma4UnifiedSoftTokenRange {
+                    start: 1,
+                    soft_token_count: 70,
+                },
+                Gemma4UnifiedSoftTokenRange {
+                    start: 73,
+                    soft_token_count: 70,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn expands_video_placeholder_with_timestamped_frame_ranges() {
+        let cfg = local_like_config();
+        let (tokens, videos) = cfg
+            .expand_video_placeholders(
+                &[10, 258884, 11],
+                &[Gemma4UnifiedVideoInput {
+                    frame_count: 2,
+                    soft_tokens_per_frame: 3,
+                    timestamp_token_ids_per_frame: vec![vec![901, 902], vec![903]],
+                }],
+            )
+            .expect("placeholder should expand");
+
+        assert_eq!(
+            tokens,
+            vec![
+                10, 901, 902, 255999, 258884, 258884, 258884, 258882, 903, 255999, 258884, 258884,
+                258884, 258882, 11
+            ]
+        );
+        assert_eq!(
+            videos,
+            vec![Gemma4UnifiedExpandedVideoPlaceholder {
+                span: Gemma4UnifiedTokenSpan {
+                    modality: Gemma4UnifiedModality::Video,
+                    placeholder_index: 1,
+                    replacement_start: 1,
+                    soft_token_count: 6,
+                    replacement_token_count: 13,
+                },
+                soft_token_ranges: vec![
+                    Gemma4UnifiedSoftTokenRange {
+                        start: 4,
+                        soft_token_count: 3,
+                    },
+                    Gemma4UnifiedSoftTokenRange {
+                        start: 10,
+                        soft_token_count: 3,
+                    },
+                ],
+            }]
+        );
+    }
+
+    #[test]
+    fn rejects_video_timestamp_count_mismatch() {
+        let cfg = local_like_config();
+        let error = cfg
+            .video_replacement_tokens_with_ranges(Gemma4UnifiedVideoInput {
+                frame_count: 2,
+                soft_tokens_per_frame: 70,
+                timestamp_token_ids_per_frame: vec![vec![901]],
+            })
+            .expect_err("timestamp count mismatch should fail");
+
+        assert_eq!(
+            error,
+            Gemma4UnifiedError::InvalidField {
+                field: "video.timestamp_token_ids_per_frame",
+                message: "expected 2 timestamp entries, found 1".to_string(),
+            }
+        );
     }
 }
