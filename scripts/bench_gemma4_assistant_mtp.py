@@ -146,6 +146,7 @@ GEMMA4_PROFILES = {
         target_ref="mlx-community/gemma-4-12B-it-4bit",
         assistant_ref="mlx-community/gemma-4-12B-it-assistant-4bit",
         prepared_slug="models--ax-local--gemma-4-12b-it-4bit-assistant-mtp",
+        depth=2,
     ),
     "26b-a4b-4bit": Gemma4Profile(
         key="26b-a4b-4bit",
@@ -608,11 +609,22 @@ def main() -> None:
     )
     parser.add_argument("--no-build-ax-engine", action="store_true")
     parser.add_argument(
+        "--depth",
+        type=int,
+        default=None,
+        help="Override the assistant draft depth for every profile (default: each "
+        "profile's own depth). The runtime caps this by the prepared bundle's "
+        "contract max_depth, so the bundle must be prepared with --max-depth >= "
+        "this value for it to take effect.",
+    )
+    parser.add_argument(
         "--resume",
         action="store_true",
         help="Reuse existing per-suite artifacts instead of rerunning them.",
     )
     args = parser.parse_args()
+    if args.depth is not None and args.depth < 1:
+        parser.error("--depth must be >= 1")
 
     model_keys = parse_csv(args.models)
     modes = parse_csv(args.modes)
@@ -635,6 +647,7 @@ def main() -> None:
     rows: list[dict[str, Any]] = []
     for model_key in model_keys:
         profile = GEMMA4_PROFILES[model_key]
+        effective_depth = args.depth if args.depth is not None else profile.depth
         model_dir = resolve_model_dir(
             profile,
             overrides=overrides,
@@ -663,7 +676,7 @@ def main() -> None:
                         cooldown=args.cooldown,
                         inter_case_cooldown=args.inter_case_cooldown,
                         sampling=args.sampling,
-                        depth=profile.depth,
+                        depth=effective_depth,
                         no_build=args.no_build_ax_engine,
                         env_overrides=bench_profile.env,
                     )
@@ -678,7 +691,7 @@ def main() -> None:
                         "profile_label": bench_profile.label,
                         "profile_experimental": bench_profile.experimental,
                         "profile_env": bench_profile.env,
-                        "depth": profile.depth,
+                        "depth": effective_depth,
                         "model_dir": str(model_dir),
                     }
                 )

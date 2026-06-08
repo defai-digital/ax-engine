@@ -493,8 +493,11 @@ def main() -> None:
     parser.add_argument(
         "--max-depth",
         type=int,
-        default=1,
-        help="Draft depth written to the contract; runtime may cap or override it.",
+        default=2,
+        help="Draft depth written to the contract; runtime may cap or override it. "
+        "Defaults to 2 to match the engine's shipped Gemma4 assistant-MTP depth "
+        "(DEFAULT_GEMMA4_ASSISTANT_MTP_MAX_DEPTH); the runtime still clamps to "
+        "min(contract, AX_MLX_GEMMA4_ASSISTANT_MTP_MAX_DEPTH).",
     )
     args = parser.parse_args()
 
