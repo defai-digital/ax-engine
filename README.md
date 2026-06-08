@@ -102,7 +102,7 @@ Assistant accept is the share of proposed drafts the target accepts. The
 `mtp-ngram` column stacks n-gram drafting on top of the assistant but contributes
 little here — the gated assistant already captures the speculation, so the two
 modes track closely. Sampler temperature=0.6, top_p=0.95, top_k=20; 1000 generated
-tokens, 5 repetitions, 10 s / 5 s cooldowns. Apple M5 Max · AX Engine v6.0.0.
+tokens, 5 repetitions, 10 s / 5 s cooldowns. Apple M5 Max · AX Engine v6.0.1.
 
 Full artifacts: [`2026-06-07-gemma4-assistant-mtp`](benchmarks/results/gemma4-assistant-mtp/2026-06-07-gemma4-assistant-mtp/summary.json).
 
@@ -157,7 +157,7 @@ which trades ~1–2 points of accept on the hardest row for +5–13% decode thro
 variable to `0.98` to restore the accept-maximizing behavior, or `0` to disable. The gate is scoped to pure MTP, so the
 n-gram-stacked column pools lower-confidence n-gram drafts and sits slightly below it. Sampler: temperature=0.6,
 top_p=0.95, top_k=20. 1000 gen tokens, 5 repetitions, 30 s cooldown, 10 s inter-case cooldown.
-MTPLX 0.3.7 · AX Engine v6.0.0.
+MTPLX 0.3.7 · AX Engine v6.0.1.
 
 #### Prefill throughput (tok/s) — same run
 

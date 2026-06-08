@@ -7,33 +7,28 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Release tag to publish (e.g. v6.0.0). Must already be pushed."
+        description: "Release tag to update the tap for (e.g. v6.0.1). The signed release must already exist."
         required: true
         type: string
-      dry_run:
-        description: "Dry run — build and package but skip upload and tap push."
-        required: false
-        default: false
-        type: boolean
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: false
 
+# Only needs to read the release assets; the tap push uses HOMEBREW_TAP_TOKEN.
 permissions:
-  contents: write  # upload release assets
+  contents: read
 
 env:
   MAIN_REPO: defai-digital/ax-engine
   TAP_REPO: defai-digital/homebrew-ax-engine
   TAP_FORMULA: Formula/ax-engine.rb
-  AX_ALLOW_UNSUPPORTED_HOST: "1"
 
 jobs:
-  brew-release:
-    name: Build and Publish Homebrew Release
-    runs-on: macos-14
-    timeout-minutes: 40
+  update-tap:
+    name: Update Homebrew tap formula
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
 
     steps:
       - name: Resolve tag
@@ -55,31 +50,10 @@ jobs:
         uses: actions/checkout@v5
         with:
           ref: ${{ steps.tag.outputs.tag }}
-          # Don't install a global github.com credential helper: it overrides the
-          # HOMEBREW_TAP_TOKEN embedded in the tap clone URL and makes the tap push
+          # Don't install a global github.com credential helper: it would override the
+          # HOMEBREW_TAP_TOKEN embedded in the tap clone URL and make the tap push
           # authenticate as the default Actions identity (403 to the tap repo).
           persist-credentials: false
-
-      - name: Ensure stable Rust toolchain
-        run: |
-          rustup toolchain install stable --profile minimal
-          rustup default stable
-
-      - name: Cache Rust build artifacts
-        uses: Swatinem/rust-cache@v2
-        with:
-          cache-on-failure: true
-
-      - name: Install native build dependencies
-        run: brew install mlx-c protobuf
-
-      - name: Verify Apple Silicon runner
-        run: |
-          arch="$(uname -m)"
-          if [[ "$arch" != "arm64" ]]; then
-            echo "error: brew release requires arm64 runner; got $arch" >&2
-            exit 1
-          fi
 
       - name: Verify tag matches workspace version
         run: |
@@ -98,60 +72,57 @@ jobs:
         env:
           TAG: ${{ steps.tag.outputs.tag }}
 
-      - name: Build release binaries
-        run: cargo build --release -p ax-engine-server -p ax-engine-bench
-
-      - name: Package archive
-        id: package
+      - name: Resolve checksum from the signed release asset
+        id: asset
         run: |
+          set -euo pipefail
+
           TAG="${{ steps.tag.outputs.tag }}"
           ARCHIVE="ax-engine-${TAG}-macos-arm64.tar.gz"
-          ARCHIVE_PATH="/tmp/${ARCHIVE}"
-          tar -czf "$ARCHIVE_PATH" -C target/release ax-engine-server ax-engine-bench
-          SHA256="$(shasum -a 256 "$ARCHIVE_PATH" | awk '{print $1}')"
           DOWNLOAD_URL="https://github.com/${MAIN_REPO}/releases/download/${TAG}/${ARCHIVE}"
-          echo "archive=$ARCHIVE"         >> "$GITHUB_OUTPUT"
-          echo "archive_path=$ARCHIVE_PATH" >> "$GITHUB_OUTPUT"
-          echo "sha256=$SHA256"           >> "$GITHUB_OUTPUT"
-          echo "download_url=$DOWNLOAD_URL" >> "$GITHUB_OUTPUT"
-          echo "Archive: $ARCHIVE ($( du -sh "$ARCHIVE_PATH" | awk '{print $1}' ))"
-          echo "SHA256:  $SHA256"
 
-      - name: Create GitHub release (if absent)
-        if: ${{ inputs.dry_run != true }}
-        run: |
-          TAG="${{ steps.tag.outputs.tag }}"
-          if ! gh release view "$TAG" --repo "$MAIN_REPO" &>/dev/null; then
-            gh release create "$TAG" \
-              --repo "$MAIN_REPO" \
-              --title "$TAG" \
-              --generate-notes
-            echo "Created release $TAG"
-          else
-            echo "Release $TAG already exists"
+          # The signed binary release is produced by scripts/publish-github-release.sh,
+          # which uploads the tarball, its minisign signature, and a .sha256 sidecar.
+          # We read that authoritative checksum here instead of rebuilding the tarball,
+          # so the tap formula always points at the exact signed artifact (and we never
+          # clobber it). The tag push can trigger this job before the assets finish
+          # uploading, so poll for the sidecar.
+          for attempt in $(seq 1 30); do
+            if gh release download "$TAG" --repo "$MAIN_REPO" \
+                 --pattern "${ARCHIVE}.sha256" --dir /tmp --clobber 2>/dev/null; then
+              break
+            fi
+            echo "waiting for ${ARCHIVE}.sha256 on release $TAG (attempt ${attempt}/30)..."
+            sleep 10
+          done
+
+          if [[ ! -f "/tmp/${ARCHIVE}.sha256" ]]; then
+            echo "error: ${ARCHIVE}.sha256 not found on release $TAG after waiting." >&2
+            echo "The signed release must be published first (scripts/publish-github-release.sh)." >&2
+            exit 1
           fi
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Upload archive to GitHub release
-        if: ${{ inputs.dry_run != true }}
-        run: |
-          gh release upload "${{ steps.tag.outputs.tag }}" \
-            "${{ steps.package.outputs.archive_path }}" \
-            --repo "$MAIN_REPO" \
-            --clobber
+          SHA256="$(awk '{print $1}' "/tmp/${ARCHIVE}.sha256")"
+          if [[ ! "$SHA256" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "error: could not parse a sha256 from the sidecar: '${SHA256}'" >&2
+            exit 1
+          fi
+
+          echo "archive=$ARCHIVE"           >> "$GITHUB_OUTPUT"
+          echo "sha256=$SHA256"             >> "$GITHUB_OUTPUT"
+          echo "download_url=$DOWNLOAD_URL" >> "$GITHUB_OUTPUT"
+          echo "Resolved checksum from signed release asset: $SHA256"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Update Homebrew tap formula
-        if: ${{ inputs.dry_run != true }}
         run: |
           set -euo pipefail
 
           TAG="${{ steps.tag.outputs.tag }}"
           VERSION="${{ steps.tag.outputs.version }}"
-          SHA256="${{ steps.package.outputs.sha256 }}"
-          DOWNLOAD_URL="${{ steps.package.outputs.download_url }}"
+          SHA256="${{ steps.asset.outputs.sha256 }}"
+          DOWNLOAD_URL="${{ steps.asset.outputs.download_url }}"
 
           TAP_DIR="$(mktemp -d /tmp/ax-engine-tap.XXXXXX)"
           trap 'rm -rf "$TAP_DIR"' EXIT
@@ -171,7 +142,8 @@ jobs:
             exit 1
           fi
 
-          sed -i '' \
+          # GNU sed (ubuntu runner): in-place edit without the BSD '' backup arg.
+          sed -i \
             -e "s|version \"[^\"]*\"|version \"${VERSION}\"|" \
             -e "s|url \"[^\"]*\"|url \"${DOWNLOAD_URL}\"|" \
             -e "s|sha256 \"[^\"]*\"|sha256 \"${SHA256}\"|" \
@@ -207,28 +179,24 @@ jobs:
         if: always()
         run: |
           TAG="${{ steps.tag.outputs.tag }}"
-          VERSION="${{ steps.tag.outputs.version }}"
-          SHA256="${{ steps.package.outputs.sha256 }}"
-          ARCHIVE="${{ steps.package.outputs.archive }}"
-          DOWNLOAD_URL="${{ steps.package.outputs.download_url }}"
-          DRY="${{ inputs.dry_run }}"
+          SHA256="${{ steps.asset.outputs.sha256 }}"
+          ARCHIVE="${{ steps.asset.outputs.archive }}"
+          DOWNLOAD_URL="${{ steps.asset.outputs.download_url }}"
 
           {
             echo "## Brew Release: ${TAG}"
+            echo
+            echo "Tap formula updated to point at the signed release asset (not rebuilt)."
             echo
             echo "| | |"
             echo "|---|---|"
             echo "| Archive | \`${ARCHIVE}\` |"
             echo "| SHA256 | \`${SHA256}\` |"
-            if [[ "$DRY" == "true" ]]; then
-              echo "| Status | dry-run — nothing uploaded or pushed |"
-            else
-              echo "| Download | ${DOWNLOAD_URL} |"
-              echo "| Tap | \`${TAP_FORMULA}\` in \`${TAP_REPO}\` updated |"
-              echo
-              echo "\`\`\`"
-              echo "brew tap defai-digital/ax-engine"
-              echo "brew install defai-digital/ax-engine/ax-engine"
-              echo "\`\`\`"
-            fi
+            echo "| Download | ${DOWNLOAD_URL} |"
+            echo "| Tap | \`${TAP_FORMULA}\` in \`${TAP_REPO}\` |"
+            echo
+            echo "\`\`\`"
+            echo "brew tap defai-digital/ax-engine"
+            echo "brew install defai-digital/ax-engine/ax-engine"
+            echo "\`\`\`"
           } >> "$GITHUB_STEP_SUMMARY"

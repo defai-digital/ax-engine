@@ -4,6 +4,32 @@ All notable changes to AX Engine are documented here. This project follows
 [Semantic Versioning](https://semver.org/). Releases prior to `v6.0.0` are
 tracked via Git tags and GitHub Releases.
 
+## [6.0.1] - 2026-06-08
+
+Release-pipeline fixes only. The engine, server, and SDK code is byte-for-byte
+identical to `6.0.0`; the benchmark numbers in the README carry over unchanged.
+
+### Fixed
+- **PyPI wheel smoke test:** `python/tests/test_cli.py` prepended the source
+  `python/` dir to `sys.path` unconditionally at import time, so during
+  `unittest discover` the un-built source package shadowed the installed wheel
+  and the `AX_ENGINE_RUN_INSTALLED_TESTS=1` smoke tests failed with
+  `ModuleNotFoundError: ax_engine._ax_engine`. The insert is now guarded the
+  same way as `test_embedding_smoke.py`. This was blocking the PyPI publish.
+- **Homebrew tap push:** `actions/checkout` installs a global github.com
+  credential helper (`persist-credentials: true`) that overrode the
+  `HOMEBREW_TAP_TOKEN` embedded in the tap clone URL, so the tap push
+  authenticated as the default Actions identity and was denied (403). The Brew
+  workflow now checks out with `persist-credentials: false`.
+
+### Changed
+- **Brew release workflow no longer rebuilds the binary.** It previously built
+  and uploaded its own tarball with `--clobber`, overwriting the minisign-signed
+  artifact from `scripts/publish-github-release.sh` and breaking the signature
+  and `.sha256`. It now reads the authoritative checksum from the published
+  `.sha256` sidecar and points the formula at the signed asset, never rebuilding
+  or clobbering it (and runs on `ubuntu-latest`).
+
 ## [6.0.0] - 2026-06-07
 
 `v6.0.0` is a milestone release centred on the v6 MTP n-gram utility gating
