@@ -243,6 +243,9 @@ Full result tables and interpretation live in [`docs/PERFORMANCE.md`](docs/PERFO
 
 Gemma 4 12B (`model_type: gemma4_unified`) is a different implementation from the per-layer-embedding E2B/E4B and the MoE 26B/31B. **Upstream `mlx_lm` 0.31.3 cannot load it** — it fails with `ValueError: Model type gemma4_unified not supported`. The external reference here is **llama.cpp Metal** on a shape-compatible GGUF.
 
+> [!NOTE]
+> **AX Engine currently supports text-only input for Gemma 4 12B.** Image and audio modalities are planned for **v6.2.0**.
+
 **AX beats llama.cpp Metal on this model in both modes.** In **direct** decode, AX runs **68 tok/s** on a bit-comparable 4-bit-FFN artifact vs llama.cpp's **57–61** (depth-matched), and the margin grows with context (+12% at 128 tokens → +26% at 2,048). On top of that, **depth-2 assistant-MTP** — which `mlx_lm` can't run and llama.cpp doesn't have — holds **62–69 tok/s at ≥97.6% assistant accept**. The earlier story (llama.cpp ahead by ~30%) was an artifact handicap: the upstream snapshot keeps the FFN at 8-bit and so reads ~1.5× the weight bytes; decode is bandwidth-bound, so matching the quantization closes the gap (see the bandwidth table below).
 
 **Direct decode — AX native MLX vs llama.cpp Metal (mlx_lm N/A):**
