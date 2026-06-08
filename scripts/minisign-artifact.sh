@@ -20,8 +20,8 @@ usage() {
 usage: scripts/minisign-artifact.sh [options] <artifact> [artifact ...]
 
 Options:
-  --secret-key <path>       Minisign secret key. Default: ~/signkey/ax-engine.minisign.key
-  --public-key <path>       Minisign public key. Default: ~/signkey/ax-engine.minisign.pub
+  --secret-key <path>       Minisign secret key. Default: ~/signkey/ax-code.sec
+  --public-key <path>       Minisign public key. Default: ~/signkey/ax-code.pub
   --public-key-string <key> Minisign public key string for verification.
   --signature-dir <dir>     Write signatures to this directory.
   --trusted-comment <text>  Trusted comment embedded in the signature.
@@ -29,9 +29,9 @@ Options:
   --force                   Overwrite an existing signature file.
   --no-verify               Do not verify generated signatures after signing.
   --keychain-service <svc>  macOS Keychain service name for passphrase lookup.
-                            Default: ax-engine-minisign
+                            Default: ax-code-minisign
   --keychain-account <acct> macOS Keychain account name for passphrase lookup.
-                            Default: ax-engine-release
+                            Default: ax-code-release
 
 Environment:
   AX_MINISIGN_SECRET_KEY         Overrides the default secret key path.
@@ -39,11 +39,11 @@ Environment:
   AX_MINISIGN_PUBLIC_KEY_STRING  Public key string for verification.
   AX_MINISIGN_TRUSTED_COMMENT    Default trusted comment.
   AX_MINISIGN_PASSWORD           Key passphrase (prefer Keychain over this).
-  AX_MINISIGN_KEYCHAIN_SERVICE   Keychain service name (default: ax-engine-minisign).
-  AX_MINISIGN_KEYCHAIN_ACCOUNT   Keychain account name (default: ax-engine-release).
+  AX_MINISIGN_KEYCHAIN_SERVICE   Keychain service name (default: ax-code-minisign).
+  AX_MINISIGN_KEYCHAIN_ACCOUNT   Keychain account name (default: ax-code-release).
 
 Keychain setup (one-time, macOS):
-  security add-generic-password -U -a ax-engine-release -s ax-engine-minisign -w
+  security add-generic-password -U -a ax-code-release -s ax-code-minisign -w
   # (you will be prompted for the passphrase)
 EOF
 }

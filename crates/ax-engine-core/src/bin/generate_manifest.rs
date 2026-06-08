@@ -13,7 +13,9 @@ fn main() {
                 print_usage();
                 return;
             }
-            _ if model_dir.is_none() && !arg.starts_with('-') => model_dir = Some(PathBuf::from(arg)),
+            _ if model_dir.is_none() && !arg.starts_with('-') => {
+                model_dir = Some(PathBuf::from(arg))
+            }
             _ => {
                 eprintln!("unexpected argument: {arg}");
                 print_usage();

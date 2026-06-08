@@ -5980,7 +5980,12 @@ impl MlxRunner {
             return telemetry;
         }
 
-        if !self.prefix_cache.lock().unwrap_or_else(|p| p.into_inner()).enabled() {
+        if !self
+            .prefix_cache
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .enabled()
+        {
             telemetry.record_blocked_policy_disabled();
             if !defer_prefill_warmup {
                 self.warm_reused_prefix_without_cache(
@@ -6200,7 +6205,12 @@ impl MlxRunner {
             telemetry.record_blocked_unsupported_layout();
             return telemetry;
         }
-        if !self.prefix_cache.lock().unwrap_or_else(|p| p.into_inner()).enabled() {
+        if !self
+            .prefix_cache
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .enabled()
+        {
             telemetry.record_blocked_policy_disabled();
             return telemetry;
         }

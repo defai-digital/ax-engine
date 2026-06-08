@@ -52,8 +52,8 @@ Options:
   --prerelease               Mark the release as prerelease.
   --clobber-assets           Overwrite existing release assets when uploading.
   --no-minisign              Do not sign release artifacts.
-  --minisign-key <path>      Secret key path. Default: ~/signkey/ax-engine.minisign.key
-  --minisign-pubkey <path>   Public key file path. Default: ~/signkey/ax-engine.minisign.pub
+  --minisign-key <path>      Secret key path. Default: ~/signkey/ax-code.sec
+  --minisign-pubkey <path>   Public key file path. Default: ~/signkey/ax-code.pub
   --minisign-public-key <k>  Public key string for verification.
   -h, --help                 Show this help.
 EOF

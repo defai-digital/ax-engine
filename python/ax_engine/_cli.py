@@ -142,6 +142,13 @@ def _server_bin() -> pathlib.Path | str:
     return shutil.which("ax-engine-server") or "ax-engine-server"
 
 
+def _bench_bin() -> pathlib.Path | str:
+    bundled = pathlib.Path(__file__).parent / "_bin" / "ax-engine-bench"
+    if bundled.exists():
+        return bundled
+    return shutil.which("ax-engine-bench") or "ax-engine-bench"
+
+
 def server() -> None:
     bin_path = _server_bin()
     os.execvp(str(bin_path), [str(bin_path)] + sys.argv[1:])
@@ -581,6 +588,17 @@ def _cmd_convert_mtplx(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_doctor(args: argparse.Namespace) -> int:
+    bench_bin = str(_bench_bin())
+    argv = [bench_bin, "doctor"]
+    if args.json:
+        argv.append("--json")
+    if args.mlx_model_artifacts_dir:
+        argv.extend(["--mlx-model-artifacts-dir", args.mlx_model_artifacts_dir])
+    os.execvp(argv[0], argv)
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="ax-engine")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -613,6 +631,19 @@ def build_parser() -> argparse.ArgumentParser:
     download_parser.add_argument("--list", action="store_true", help="Show supported download targets")
     download_parser.add_argument("--json", action="store_true")
     download_parser.set_defaults(func=_cmd_download)
+
+    doctor_parser = subparsers.add_parser(
+        "doctor",
+        help="Check AX Engine system readiness (host, Metal toolchain, model artifacts)",
+    )
+    doctor_parser.add_argument("--json", action="store_true")
+    doctor_parser.add_argument(
+        "--mlx-model-artifacts-dir",
+        default=None,
+        dest="mlx_model_artifacts_dir",
+        help="Check a specific model artifact directory for AX readiness",
+    )
+    doctor_parser.set_defaults(func=_cmd_doctor)
 
     convert_parser = subparsers.add_parser(
         "convert-mtplx",

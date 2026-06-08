@@ -153,6 +153,32 @@ class AxEngineCliTests(unittest.TestCase):
             ],
         )
 
+    def test_doctor_wraps_bench_doctor(self) -> None:
+        with mock.patch.object(
+            _cli, "_bench_bin", return_value="/opt/bin/ax-engine-bench"
+        ), mock.patch.object(os, "execvp", side_effect=RuntimeError("stop")) as execvp:
+            with self.assertRaisesRegex(RuntimeError, "stop"):
+                self.capture_main(
+                    [
+                        "doctor",
+                        "--json",
+                        "--mlx-model-artifacts-dir",
+                        "/models/gemma4-12b",
+                    ]
+                )
+
+        self.assertEqual(execvp.call_args.args[0], "/opt/bin/ax-engine-bench")
+        self.assertEqual(
+            execvp.call_args.args[1],
+            [
+                "/opt/bin/ax-engine-bench",
+                "doctor",
+                "--json",
+                "--mlx-model-artifacts-dir",
+                "/models/gemma4-12b",
+            ],
+        )
+
     def test_download_alias_wraps_download_helper(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)

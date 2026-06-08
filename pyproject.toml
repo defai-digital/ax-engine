@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "ax-engine"
-version = "6.0.1"
+version = "6.1.0"
 description = "Python bindings for AX Engine"
 requires-python = ">=3.10"
 readme = "crates/ax-engine-py/README.md"
@@ -43,10 +43,12 @@ include = [
     { path = "python/ax_engine/_metal/metal/phase1-kernels.json", format = ["wheel"] },
     { path = "python/ax_engine/_metal/metal/kernels/phase1_dense_path.metal", format = ["wheel"] },
     { path = "python/ax_engine.dylibs/mlx.metallib", format = ["wheel"] },
-    # ax-engine-server binary — staged by scripts/build-pypi-wheel.sh before maturin runs.
-    # Placed inside ax_engine/_bin/ so delocate's @loader_path rewrite (../.dylibs/)
-    # stays valid after pip installation. Exposed to the user's PATH via console_scripts.
+    # ax-engine-server and ax-engine-bench binaries — staged by scripts/build-pypi-wheel.sh
+    # before maturin runs. Placed inside ax_engine/_bin/ so delocate's @loader_path rewrite
+    # (../.dylibs/) stays valid after pip installation. ax-engine-server is exposed via
+    # console_scripts; ax-engine-bench is invoked by `ax-engine doctor` and friends.
     { path = "python/ax_engine/_bin/ax-engine-server", format = ["wheel"] },
+    { path = "python/ax_engine/_bin/ax-engine-bench", format = ["wheel"] },
     # Top-level orchestration CLI wraps source-compatible download and MTP tools.
     { path = "scripts/download_model.py", format = ["wheel"] },
     { path = "scripts/prepare_mtp_sidecar.py", format = ["wheel"] },

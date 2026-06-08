@@ -61,13 +61,19 @@ rm -f "${WHEEL_OUT}"/ax_engine-*.whl
 rm -f "${DELOCATED_OUT}"/ax_engine-*.whl
 mkdir -p "$WHEEL_OUT" "$DELOCATED_OUT"
 
-# ── 3. Build ax-engine-server binary and stage it into the wheel data dir ─
-echo "==> Building ax-engine-server binary..."
-cargo build --release -p ax-engine-server
+# ── 3. Build ax-engine-server and ax-engine-bench; stage into wheel data dir ─
+echo "==> Building ax-engine-server and ax-engine-bench binaries..."
+cargo build --release -p ax-engine-server -p ax-engine-bench
 
 SERVER_BIN="$REPO_ROOT/target/release/ax-engine-server"
 if [[ ! -f "$SERVER_BIN" ]]; then
     echo "error: expected binary at $SERVER_BIN after cargo build"
+    exit 1
+fi
+
+BENCH_BIN="$REPO_ROOT/target/release/ax-engine-bench"
+if [[ ! -f "$BENCH_BIN" ]]; then
+    echo "error: expected binary at $BENCH_BIN after cargo build"
     exit 1
 fi
 
@@ -76,6 +82,9 @@ mkdir -p "$SCRIPTS_DIR"
 cp "$SERVER_BIN" "$SCRIPTS_DIR/ax-engine-server"
 chmod +x "$SCRIPTS_DIR/ax-engine-server"
 echo "    staged: $SCRIPTS_DIR/ax-engine-server"
+cp "$BENCH_BIN" "$SCRIPTS_DIR/ax-engine-bench"
+chmod +x "$SCRIPTS_DIR/ax-engine-bench"
+echo "    staged: $SCRIPTS_DIR/ax-engine-bench"
 
 # ── 3b. Stage mlx.metallib so the wheel ships MLX's Metal shader library. ──
 # pyproject.toml includes python/ax_engine.dylibs/mlx.metallib in the wheel and
@@ -128,6 +137,7 @@ delocate-listdeps "$DELOCATED"
 echo "==> Verifying bundled MLX runtime assets..."
 verify_wheel_member "$DELOCATED" "ax_engine.dylibs/mlx.metallib"
 verify_wheel_member "$DELOCATED" "ax_engine/_bin/ax-engine-server"
+verify_wheel_member "$DELOCATED" "ax_engine/_bin/ax-engine-bench"
 
 # ── 6. Optionally publish ──────────────────────────────────────────────────
 if [[ "${1:-}" == "--publish" ]]; then
