@@ -337,6 +337,9 @@ export interface AxEngineModelMetadata {
   openai_chat_completions_supported: boolean;
   openai_tool_calling_supported: boolean;
   openai_text_input_supported: boolean;
+  native_multimodal_input_supported: boolean;
+  gemma4_unified_multimodal_input_supported: boolean;
+  openai_tokenized_multimodal_input_supported: boolean;
 }
 
 export interface ModelsResponse {

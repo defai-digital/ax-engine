@@ -71,6 +71,9 @@ test("models fetches ax-code-safe capability metadata", async () => {
               openai_chat_completions_supported: true,
               openai_tool_calling_supported: false,
               openai_text_input_supported: true,
+              native_multimodal_input_supported: false,
+              gemma4_unified_multimodal_input_supported: false,
+              openai_tokenized_multimodal_input_supported: false,
             },
             runtime: {
               selected_backend: "llama_cpp",
@@ -86,6 +89,7 @@ test("models fetches ax-code-safe capability metadata", async () => {
     assert.equal(models.data[0].capabilities.input.text, true);
     assert.equal(models.data[0].limit.context, 16384);
     assert.equal(models.data[0].ax_engine.openai_tool_calling_supported, false);
+    assert.equal(models.data[0].ax_engine.native_multimodal_input_supported, false);
   });
 });
 

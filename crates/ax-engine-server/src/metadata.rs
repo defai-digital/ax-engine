@@ -3,7 +3,7 @@ use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
 use serde::Serialize;
-use serde_json::json;
+use serde_json::{Value, json};
 
 use crate::app_state::AppState;
 use crate::errors::{ErrorResponse, error_response};
@@ -74,6 +74,22 @@ struct AxEngineModelMetadata {
     openai_chat_completions_supported: bool,
     openai_tool_calling_supported: bool,
     openai_text_input_supported: bool,
+    native_multimodal_input_supported: bool,
+    gemma4_unified_multimodal_input_supported: bool,
+    openai_tokenized_multimodal_input_supported: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct NativeProcessedMultimodalSupport {
+    image: bool,
+    audio: bool,
+    video: bool,
+}
+
+impl NativeProcessedMultimodalSupport {
+    const fn any(self) -> bool {
+        self.image || self.audio || self.video
+    }
 }
 
 pub(crate) async fn health(
@@ -112,20 +128,21 @@ pub(crate) async fn models(State(state): State<AppState>) -> Json<ModelsResponse
     let context_length = context_length(&state);
     let max_output_tokens = max_output_tokens(&state, context_length);
     let openai_text = openai_text_supported(&state);
+    let native_multimodal = native_processed_multimodal_support(&state);
     Json(ModelsResponse {
         object: "list",
         data: vec![ModelCard {
             id: state.model_id.to_string(),
             object: "model",
             owned_by: MODEL_OWNER,
-            capabilities: model_capabilities(openai_text),
+            capabilities: model_capabilities(openai_text, native_multimodal),
             limit: ModelLimit {
                 context: context_length,
                 output: max_output_tokens,
             },
             context_length,
             max_output_tokens,
-            ax_engine: ax_engine_model_metadata(openai_text),
+            ax_engine: ax_engine_model_metadata(openai_text, native_multimodal),
             runtime: runtime_response(&state),
         }],
     })
@@ -146,17 +163,20 @@ fn runtime_response(state: &AppState) -> RuntimeResponse {
     state.runtime_report.clone()
 }
 
-fn model_capabilities(openai_text: bool) -> ModelCapabilities {
+fn model_capabilities(
+    openai_text: bool,
+    native_multimodal: NativeProcessedMultimodalSupport,
+) -> ModelCapabilities {
     ModelCapabilities {
         temperature: openai_text,
         reasoning: false,
-        attachment: false,
+        attachment: native_multimodal.any(),
         toolcall: false,
         input: ModelModalities {
             text: openai_text,
-            audio: false,
-            image: false,
-            video: false,
+            audio: native_multimodal.audio,
+            image: native_multimodal.image,
+            video: native_multimodal.video,
             pdf: false,
         },
         output: ModelModalities {
@@ -166,19 +186,80 @@ fn model_capabilities(openai_text: bool) -> ModelCapabilities {
             video: false,
             pdf: false,
         },
-        interleaved: false,
+        interleaved: native_multimodal.any(),
     }
 }
 
-fn ax_engine_model_metadata(openai_text: bool) -> AxEngineModelMetadata {
+fn ax_engine_model_metadata(
+    openai_text: bool,
+    native_multimodal: NativeProcessedMultimodalSupport,
+) -> AxEngineModelMetadata {
+    let native_multimodal_input = native_multimodal.any();
     AxEngineModelMetadata {
         native_generate_supported: true,
         openai_completions_supported: openai_text,
         openai_chat_completions_supported: openai_text,
         openai_tool_calling_supported: false,
         openai_text_input_supported: openai_text,
+        native_multimodal_input_supported: native_multimodal_input,
+        gemma4_unified_multimodal_input_supported: native_multimodal_input,
+        openai_tokenized_multimodal_input_supported: native_multimodal_input,
     }
 }
+
+fn native_processed_multimodal_support(state: &AppState) -> NativeProcessedMultimodalSupport {
+    if state.runtime_report.selected_backend != SelectedBackend::Mlx {
+        return NativeProcessedMultimodalSupport::default();
+    }
+
+    let Some(artifacts_dir) = state.session_config.mlx_model_artifacts_dir() else {
+        return NativeProcessedMultimodalSupport::default();
+    };
+    let manifest_path = artifacts_dir.join("model-manifest.json");
+    let Ok(manifest_bytes) = std::fs::read(manifest_path) else {
+        return NativeProcessedMultimodalSupport::default();
+    };
+    let Ok(manifest) = serde_json::from_slice::<Value>(&manifest_bytes) else {
+        return NativeProcessedMultimodalSupport::default();
+    };
+    let Some(tensors) = manifest.get("tensors").and_then(Value::as_array) else {
+        return NativeProcessedMultimodalSupport::default();
+    };
+
+    let image = GEMMA4_UNIFIED_VISION_ROLES
+        .iter()
+        .all(|role| has_global_tensor_role(tensors, role));
+    let audio = has_global_tensor_role(tensors, GEMMA4_UNIFIED_AUDIO_ROLE);
+    NativeProcessedMultimodalSupport {
+        image,
+        audio,
+        video: image,
+    }
+}
+
+fn has_global_tensor_role(tensors: &[Value], role: &str) -> bool {
+    tensors.iter().any(|tensor| {
+        tensor.get("role").and_then(Value::as_str) == Some(role)
+            && tensor
+                .get("layer_index")
+                .is_none_or(|layer_index| layer_index.is_null())
+    })
+}
+
+const GEMMA4_UNIFIED_VISION_ROLES: &[&str] = &[
+    "gemma4_unified_vision_patch_dense",
+    "gemma4_unified_vision_patch_dense_bias",
+    "gemma4_unified_vision_patch_norm1",
+    "gemma4_unified_vision_patch_norm1_bias",
+    "gemma4_unified_vision_patch_norm2",
+    "gemma4_unified_vision_patch_norm2_bias",
+    "gemma4_unified_vision_position_embedding",
+    "gemma4_unified_vision_position_norm",
+    "gemma4_unified_vision_position_norm_bias",
+    "gemma4_unified_vision_projection",
+];
+
+const GEMMA4_UNIFIED_AUDIO_ROLE: &str = "gemma4_unified_audio_projection";
 
 fn openai_text_supported(state: &AppState) -> bool {
     // Keep this in sync with `validate_openai_text_backend` in `openai::validation`:

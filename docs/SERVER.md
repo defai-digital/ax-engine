@@ -232,6 +232,14 @@ guessing tokenizer or template behavior. Delegated `llama_cpp` and
 `mlx_lm_delegated` routes keep forwarding rendered text to their configured
 upstream backend.
 
+`GET /v1/models` advertises image, audio, and video input only for repo-owned
+native MLX sessions whose `model-manifest.json` contains the converted Gemma4
+unified media tensor roles. This is a processed-input contract: OpenAI
+completions and chat accept media tensors only when the caller also supplies
+AX tokenized prompt IDs (`prompt` token arrays or `input_tokens`) so media
+placeholder tokens and tensors stay aligned. Raw OpenAI image/audio parts and
+delegated multimodal routes still fail closed.
+
 You can also run the optional Python OpenAI shim with an explicit MLX model
 artifact directory and tokenizer:
 
