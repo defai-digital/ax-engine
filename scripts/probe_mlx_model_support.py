@@ -210,6 +210,14 @@ def probe_gemma4_unified(model_dir: Path, keys: list[str]) -> dict[str, Any]:
     )
     vllm_mm_ref = REPO_ROOT / ".internal/reference/vllm/vllm/model_executor/models/gemma4_mm.py"
     llama_mtmd_ref = REPO_ROOT / ".internal/reference/llama.cpp/tools/mtmd/mtmd.cpp"
+    mlx_vlm_unified_ref = (
+        REPO_ROOT
+        / ".internal/reference/mlx-vlm/mlx_vlm/models/gemma4_unified/gemma4_unified.py"
+    )
+    mlx_vlm_processor_ref = (
+        REPO_ROOT
+        / ".internal/reference/mlx-vlm/mlx_vlm/models/gemma4_unified/processing_gemma4_unified.py"
+    )
     reference_files = [
         _file_probe(
             vllm_unified_ref,
@@ -220,6 +228,24 @@ def probe_gemma4_unified(model_dir: Path, keys: list[str]) -> dict[str, Any]:
             ["get_image_repl", "use_bidirectional_attention", "mm_prefix_range"],
         ),
         _file_probe(llama_mtmd_ref, ["PROJECTOR_TYPE_GEMMA4V", "mtmd_decode_use_non_causal"]),
+        _file_probe(
+            mlx_vlm_unified_ref,
+            [
+                "Encoder-free Gemma 4 unified vision embedder",
+                "get_input_embeddings",
+                "mm_token_type_ids",
+                "draft_kind == \"mtp\"",
+            ],
+        ),
+        _file_probe(
+            mlx_vlm_processor_ref,
+            [
+                "Gemma4UnifiedProcessor",
+                "Gemma4UnifiedImageProcessor",
+                "Gemma4UnifiedAudioFeatureExtractor",
+                "Gemma4UnifiedVideoProcessor",
+            ],
+        ),
     ]
     features = {
         "language_model_prefix": any(key.startswith("language_model.model.") for key in keys),
@@ -248,7 +274,7 @@ def probe_gemma4_unified(model_dir: Path, keys: list[str]) -> dict[str, Any]:
 
     blockers: list[str] = []
     if not reference_ready:
-        blockers.append("local Gemma4 unified vLLM/llama.cpp reference probes are incomplete")
+        blockers.append("local Gemma4 unified vLLM/llama.cpp/mlx-vlm reference probes are incomplete")
     if not features["language_model_prefix"]:
         blockers.append("checkpoint does not expose language_model.model.* text weights")
     if not manifest_exists:

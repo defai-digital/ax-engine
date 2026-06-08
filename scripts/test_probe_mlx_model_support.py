@@ -30,8 +30,10 @@ def write_model(root: Path, model_type: str, keys: list[str]) -> Path:
 def write_gemma4_unified_refs(repo: Path) -> None:
     vllm_models = repo / ".internal/reference/vllm/vllm/model_executor/models"
     llama_mtmd = repo / ".internal/reference/llama.cpp/tools/mtmd"
+    mlx_vlm_models = repo / ".internal/reference/mlx-vlm/mlx_vlm/models/gemma4_unified"
     vllm_models.mkdir(parents=True)
     llama_mtmd.mkdir(parents=True)
+    mlx_vlm_models.mkdir(parents=True)
     (vllm_models / "gemma4_unified.py").write_text(
         "Gemma4UnifiedVisionEmbedder vision_embedder embed_audio"
     )
@@ -40,6 +42,14 @@ def write_gemma4_unified_refs(repo: Path) -> None:
     )
     (llama_mtmd / "mtmd.cpp").write_text(
         "PROJECTOR_TYPE_GEMMA4V mtmd_decode_use_non_causal"
+    )
+    (mlx_vlm_models / "gemma4_unified.py").write_text(
+        'Encoder-free Gemma 4 unified vision embedder get_input_embeddings '
+        'mm_token_type_ids draft_kind == "mtp"'
+    )
+    (mlx_vlm_models / "processing_gemma4_unified.py").write_text(
+        "Gemma4UnifiedProcessor Gemma4UnifiedImageProcessor "
+        "Gemma4UnifiedAudioFeatureExtractor Gemma4UnifiedVideoProcessor"
     )
 
 
@@ -79,6 +89,9 @@ class MlxModelSupportProbeTests(unittest.TestCase):
         self.assertEqual(report["modalities"]["image"], "candidate")
         self.assertIn("model-manifest.json", " ".join(report["blockers"]))
         self.assertTrue(report["checkpoint_features"]["vision_tower_absent"])
+        self.assertTrue(
+            any("mlx-vlm" in item["path"] for item in report["reference_files"])
+        )
 
     def test_gemma4_unified_is_text_and_tensor_runtime_ready_with_manifest(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

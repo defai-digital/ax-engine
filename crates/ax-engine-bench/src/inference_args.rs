@@ -243,6 +243,10 @@ pub(crate) fn build_inference_session(args: &InferenceArgs) -> Result<EngineSess
         std::env::var("AX_NO_SPEC").as_deref(),
         Ok("1") | Ok("true") | Ok("yes")
     );
+    let disable_mtp_ngram_stacking = matches!(
+        std::env::var("AX_MLX_MTP_DISABLE_NGRAM_STACKING").as_deref(),
+        Ok("1") | Ok("true") | Ok("TRUE")
+    );
     let config =
         EngineSessionConfig::from_preview_request(ax_engine_sdk::PreviewSessionConfigRequest {
             cache_group_id: CacheGroupId(0),
@@ -254,7 +258,7 @@ pub(crate) fn build_inference_session(args: &InferenceArgs) -> Result<EngineSess
             backend_request,
             mlx_model_artifacts_dir,
             mlx_disable_ngram_acceleration: disable_ngram,
-            mlx_mtp_disable_ngram_stacking: false,
+            mlx_mtp_disable_ngram_stacking: disable_mtp_ngram_stacking,
             mlx_kv_compression: ax_engine_sdk::KvCompressionConfig::disabled(),
             mlx_prefill_chunk: args.mlx_prefill_chunk,
         })
