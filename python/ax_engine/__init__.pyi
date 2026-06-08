@@ -16,10 +16,47 @@ class EngineStateError(EngineError): ...
 
 
 @dataclass(frozen=True)
+class Gemma4UnifiedMultimodalRequest:
+    input_tokens: list[int]
+    multimodal_inputs: dict[str, Any]
+    image_soft_token_counts: list[int]
+    audio_soft_token_counts: list[int]
+    video_soft_token_counts: list[int]
+    video_frame_counts: list[int]
+
+
+@dataclass(frozen=True)
 class Gemma4UnifiedImageRequest:
     input_tokens: list[int]
     multimodal_inputs: dict[str, Any]
     soft_token_counts: list[int]
+
+
+@dataclass(frozen=True)
+class Gemma4UnifiedAudioRequest:
+    input_tokens: list[int]
+    multimodal_inputs: dict[str, Any]
+    soft_token_counts: list[int]
+
+
+@dataclass(frozen=True)
+class Gemma4UnifiedVideoRequest:
+    input_tokens: list[int]
+    multimodal_inputs: dict[str, Any]
+    soft_token_counts: list[int]
+    frame_counts: list[int]
+
+
+def prepare_gemma4_unified_multimodal_request(
+    model_dir: str | Path,
+    input_tokens: list[int],
+    *,
+    images: list[Any] | None = None,
+    audios: list[Any] | None = None,
+    audio_sampling_rates: list[int] | None = None,
+    videos: list[Any] | None = None,
+    video_timestamp_token_ids: list[list[list[int]]] | None = None,
+) -> Gemma4UnifiedMultimodalRequest: ...
 
 
 def prepare_gemma4_unified_image_request(
@@ -27,6 +64,24 @@ def prepare_gemma4_unified_image_request(
     input_tokens: list[int],
     images: list[Any],
 ) -> Gemma4UnifiedImageRequest: ...
+
+
+def prepare_gemma4_unified_audio_request(
+    model_dir: str | Path,
+    input_tokens: list[int],
+    audios: list[Any],
+    *,
+    sampling_rates: list[int] | None = None,
+) -> Gemma4UnifiedAudioRequest: ...
+
+
+def prepare_gemma4_unified_video_request(
+    model_dir: str | Path,
+    input_tokens: list[int],
+    videos: list[Any],
+    *,
+    timestamp_token_ids: list[list[list[int]]] | None = None,
+) -> Gemma4UnifiedVideoRequest: ...
 
 
 @dataclass(frozen=True)

@@ -272,9 +272,12 @@ Gemma4 unified image/audio/video inputs are accepted only as preprocessed
 bounds, modality labels, soft-token counts, and tensor lengths before request
 submission.
 
-Python callers that only need image input can install `ax-engine[multimodal]`
-and build the processed payload with `prepare_gemma4_unified_image_request`.
-The helper follows the Gemma4 unified processor config in the model directory:
+Python callers can install `ax-engine[multimodal]` and build processed payloads
+with `prepare_gemma4_unified_image_request`,
+`prepare_gemma4_unified_audio_request`,
+`prepare_gemma4_unified_video_request`, or the combined
+`prepare_gemma4_unified_multimodal_request`. The helper follows the Gemma4
+unified processor config in the model directory:
 
 ```python
 from ax_engine import Session, prepare_gemma4_unified_image_request
@@ -292,6 +295,15 @@ with Session(model_id="gemma-4-12b-it", mlx=True) as session:
         max_output_tokens=64,
     )
 ```
+
+The image/video helpers accept decoded frames or image paths and use Pillow for
+RGB conversion, resize, patchify, and padding. The audio helper accepts
+PCM WAV path/bytes, waveform-like arrays, or `(samples, sampling_rate)` tuples
+and resamples to the model processor's sampling rate before chunking raw
+waveform frames.
+Video timestamps remain explicit: pass already-tokenized timestamp IDs through
+`timestamp_token_ids` / `video_timestamp_token_ids` when matching the HF/vLLM
+`mm:ss <boi><|video|>*N<eoi>` prompt format.
 
 `GenerateSampling` carries `temperature`, `top_p`, `seed`, and `repetition_penalty`.
 When `session.config.deterministic = true`, `temperature` is forced to 0.0

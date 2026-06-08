@@ -104,8 +104,14 @@ from ._ax_engine import (
     Session as _Session,
 )
 from .gemma4_unified import (
+    Gemma4UnifiedAudioRequest,
     Gemma4UnifiedImageRequest,
+    Gemma4UnifiedMultimodalRequest,
+    Gemma4UnifiedVideoRequest,
+    prepare_gemma4_unified_audio_request,
     prepare_gemma4_unified_image_request,
+    prepare_gemma4_unified_multimodal_request,
+    prepare_gemma4_unified_video_request,
 )
 
 _QWEN_CHATML_ASSISTANT_GENERATION_PROMPT = (
@@ -1501,7 +1507,10 @@ __all__ = [
     "EngineError",
     "EngineInferenceError",
     "EngineStateError",
+    "Gemma4UnifiedAudioRequest",
     "Gemma4UnifiedImageRequest",
+    "Gemma4UnifiedMultimodalRequest",
+    "Gemma4UnifiedVideoRequest",
     "GenerateResult",
     "GenerateRoute",
     "GenerateStreamEvent",
@@ -1518,5 +1527,8 @@ __all__ = [
     "SourceQuantizationInfo",
     "StepReport",
     "download_model",
+    "prepare_gemma4_unified_audio_request",
     "prepare_gemma4_unified_image_request",
+    "prepare_gemma4_unified_multimodal_request",
+    "prepare_gemma4_unified_video_request",
 ]
