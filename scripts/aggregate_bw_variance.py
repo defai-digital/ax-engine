@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Aggregate multiple `ax.bw_profile.v1` artifacts into a single variance summary.
 
-Formalizes the variance-characterization protocol established in
-`DS4-REFERENCE-LEARNINGS-PRD.md` Phase 1: run `profile_decode_bandwidth.py`
-N≥3 times sequentially on an idle machine with distinct `--run-tag`, then
-aggregate. CV < 5% confirms a clean reading; larger CV indicates GPU
-contention, thermal effects, or a model behaviour worth investigating.
+Formalizes the variance-characterization protocol for decode bandwidth
+artifacts: run `profile_decode_bandwidth.py` N≥3 times sequentially on an idle
+machine with distinct `--run-tag`, then aggregate. CV < 5% confirms a clean
+reading; larger CV indicates GPU contention, thermal effects, or a model
+behaviour worth investigating.
 
 Output schema: ax.bw_profile_variance.v1
 

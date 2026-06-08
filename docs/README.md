@@ -26,8 +26,8 @@ Start here:
   compatibility boundaries
 - `SERVER.md`: local HTTP server routes and backend behavior
 - `CLI.md`: `ax-engine-bench` and server command surfaces
-- `ROADMAP.md`: current serving runtime direction, shipped v4.10.0 baseline, and
-  evidence gates for future claims
+- `ROADMAP.md`: current serving runtime direction and evidence gates for future
+  claims
 - `BENCHMARKS.md`: benchmark methodology, test setup, commands, evidence
   contracts, and reproduction details
 - `SERVING-BENCHMARKS.md`: online serving benchmark contract for prompt-mix,
@@ -64,6 +64,10 @@ Public docs should not contain:
 
 - PRDs
 - ADRs
+- tech specs
 - implementation plans
 - internal rewrite notes
 - engineering best-practice memos
+
+Internal planning records live under `.internal/adr`, `.internal/prd`, and
+`.internal/tech-spec`.

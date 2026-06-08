@@ -10,7 +10,9 @@ evidence classification, see [`docs/BENCHMARKS.md`](BENCHMARKS.md).
 
 ## Current Result Set
 
-The current public table was refreshed on 2026-05-14 on:
+The current README generation-model table is a provenance-tracked composite:
+`mlx_lm` reference rows were refreshed on 2026-05-26, and the AX direct/n-gram
+overlay was refreshed on 2026-06-04 on:
 
 - Apple M5 Max
 - 128 GB memory
@@ -26,26 +28,21 @@ Benchmark shape:
 - 5 repetitions per engine/model/prompt row
 - 15-second cooldown between trials
 
-The current README generation-model snapshot is a provenance-tracked composite
-from:
+The current README generation-model snapshot is backed by:
 
 ```text
-benchmarks/results/mlx-inference/2026-05-21-ax-only-post-shim-sweep/
+benchmarks/results/mlx-inference/2026-05-26-direct-mode-clean-refresh/
+benchmarks/results/mlx-inference/2026-06-04-ax-direct-ngram-readme-rerun/
 ```
 
-The directory's 12-model AX refresh reruns the direct and n-gram AX rows on
-current binaries (post linear-attention shim) with generation=128, 5
-repetitions, and a 15-second cooldown. Same-host `mlx_lm` reference rows
-come from
-`benchmarks/results/mlx-inference/2026-05-18-mlx-lm-llamacpp-sweep/` and are
-pulled in by the README composite at chart-render time, while each AX
-artifact's own `ax_only_refresh.reference_results_source` field records the
-exact carry-forward file. All rows use the same prompt-token contract and
-prompt SHA checks. The AX rows were produced with production-build server
-binaries (`[profile.release]`: LTO thin, `codegen-units=1`, `panic=abort`,
-stripped debuginfo). This composite is intentional: the third-party reference
-rows stay attached to the same artifact contract while AX-only refreshes can
-update current runtime behavior without rerunning the reference adapters.
+The reference directory supplies the 12 Gemma 4 and Qwen 3.6 `mlx_lm` rows in
+the README table. The AX overlay directory reruns the matching direct and
+n-gram AX rows with generation=128, 5 measured repetitions, a 15-second
+cooldown, AX prefix cache disabled for cold prefill and TTFT measurement, and
+production-build server binaries. All MLX and AX rows use the same prompt-token
+contract and prompt SHA checks. The `llama.cpp Metal*` column is injected from
+the llama.cpp Metal manifest/artifact set documented in the README and remains
+shape-compatible external context, not prompt-hash parity evidence.
 
 `ax direct baseline` is the direct same-policy comparison against `mlx_lm`; the
 benchmark starts the AX server with n-gram acceleration disabled for this row.

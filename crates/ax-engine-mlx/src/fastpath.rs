@@ -12,9 +12,6 @@
 //! opt-in or kill switch, and an explicit fallback. Co-locating the env-var
 //! names here gives a single grep target for "which optimization flags does the
 //! runtime expose?" and matches the W1.3 / W2.a audit conventions.
-//!
-//! See `.internal/planning/MLX-FASTPATH-AUDIT-2026-05-14.md` for the full
-//! audit and gap analysis.
 
 use std::sync::OnceLock;
 

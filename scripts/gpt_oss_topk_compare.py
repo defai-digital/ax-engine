@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """Compare ax-engine delegated output against mlx_lm.server direct output.
 
-Phase A evidence helper for openai/gpt-oss-{20b,120b} (PRD:
-.internal/planning/GPT-OSS-SUPPORT-PRD.md, W1.4 correctness gate).
+Phase A evidence helper for openai/gpt-oss-{20b,120b} W1.4 correctness gates.
 
 Both ax-engine `/v1/completions` (when configured with
 `--support-tier mlx_lm_delegated --mlx-lm-server-url <ref>`) and the same

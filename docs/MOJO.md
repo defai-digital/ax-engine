@@ -1,6 +1,6 @@
 # Mojo SDK
 
-`sdk/mojo/ax_engine.mojo` is the Mojo SDK for AX Engine v4.
+`sdk/mojo/ax_engine.mojo` is the Mojo SDK for AX Engine v6.
 
 It delegates to the Python `ax_engine` package via Mojo's `PythonObject`
 interop. This keeps the Mojo surface thin while reusing the full Python SDK

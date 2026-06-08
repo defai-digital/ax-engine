@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """Profile n-gram speculative-decode behaviour split by prompt class.
 
-This script produces the REQ-6 artifact required by the DS4 Reference
-Learnings PRD (`.internal/planning/DS4-REFERENCE-LEARNINGS-PRD.md`). It
-exercises one supported model with a mixed corpus of repeating and
+This script produces the REQ-6 n-gram observability artifact. It exercises one
+supported model with a mixed corpus of repeating and
 non-repeating prompts, captures the per-request `ax_*` route decisions
 already emitted by `ax-engine-mlx`, and aggregates accept-rate / fallback
 ratios per `ax_prompt_class_code`.

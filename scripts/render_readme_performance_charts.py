@@ -653,6 +653,7 @@ def render_family_chart(spec: ChartSpec, engine_groups: list[EngineGroupStats]) 
             cap_left = sub_x - sub_bar_w * 0.36
             cap_right = sub_x + sub_bar_w * 0.36
             box_left = sub_x - sub_bar_w / 2
+            label_x = box_left + sub_bar_w + 4
 
             sa = f'stroke="{eg.color}" stroke-opacity="{stroke_op}"'
             lines.extend(
@@ -668,6 +669,10 @@ def render_family_chart(spec: ChartSpec, engine_groups: list[EngineGroupStats]) 
                     f' fill="{eg.color}" fill-opacity="{fill_op}" {sa} stroke-width="1.7"/>',
                     f'<line x1="{box_left:g}" y1="{y_med:.1f}"'
                     f' x2="{box_left + sub_bar_w:g}" y2="{y_med:.1f}" {sa} stroke-width="2.4"/>',
+                    f'<text x="{label_x:g}" y="{y_med + 3.5:.1f}" text-anchor="start"'
+                    f' font-family="{FONT}" font-size="9" font-weight="700"'
+                    f' fill="#111827" stroke="#ffffff" stroke-width="3"'
+                    f' paint-order="stroke">{escape(short_number(s.median))}</text>',
                     f'<text x="{sub_x:g}" y="{y_ctx}"'
                     f' text-anchor="middle" font-family="{FONT}"'
                     f' font-size="9" fill="#6b7280">{cs.prompt_tokens}</text>',

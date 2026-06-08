@@ -1,8 +1,7 @@
 //! F4 — MLA warm-extend drift bisect probe.
 //!
-//! Implements the diagnostic tool scoped by
-//! `.internal/planning/MLX-MLA-DRIFT-BISECT-PRD-2026-05-14.md`. Given a
-//! GLM-class (MLA) model and a (base_len, suffix_len) split, the probe
+//! Implements the MLA warm-extend drift diagnostic tool. Given a GLM-class
+//! (MLA) model and a (base_len, suffix_len) split, the probe
 //! runs both the **cold** forward pass (chunked_prefill of base + suffix
 //! from scratch) and the **warm** forward pass (chunked_prefill of base,
 //! snapshot the cache, restore into a fresh cache, then chunked_prefill

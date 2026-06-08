@@ -467,5 +467,5 @@ See `docs/PYTHON.md` for the current Python preview scope.
 ## Stability Note
 
 Public command surfaces and runtime behavior are still evolving.
-Expect interface changes while the v4 engine loop, KV manager, sampler
+Expect interface changes while the v6 engine loop, KV manager, sampler
 boundary, and benchmark system continue to mature.

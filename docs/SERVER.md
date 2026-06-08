@@ -13,7 +13,8 @@ The current preview server is intentionally narrow:
 - explicit backend and support-tier reporting
 - preview generation endpoint for bring-up and integration testing
 - preview OpenAI-compatible `/v1/completions` and `/v1/chat/completions`
-  endpoints for delegated text integration
+  endpoints for native MLX sessions with tokenizer artifacts and delegated text
+  integration
 - OpenAI-shaped `/v1/embeddings` response envelopes for embedding-capable
   repo-owned MLX sessions
 - stepwise request lifecycle endpoints that mirror the SDK preview contract for
@@ -49,11 +50,15 @@ Current preview endpoints:
 
 - `--mlx` selects the repo-owned MLX runtime for supported local model
   artifacts
-- `--support-tier mlx_lm_delegated` delegates text generation to a
+- `--support-tier mlx-lm-delegated` delegates text generation to a
   user-provided `mlx_lm.server` while preserving AX blocking, SSE, and
   OpenAI-compatible text surfaces
-- `--support-tier llama_cpp` or a GGUF target delegates non-MLX inference to
+- `--support-tier llama-cpp` or a GGUF target delegates non-MLX inference to
   llama.cpp
+
+Runtime metadata continues to report SDK labels such as `mlx_lm_delegated` and
+`llama_cpp`; the `ax-engine-server` CLI uses hyphenated Clap values such as
+`mlx-lm-delegated` and `llama-cpp`.
 
 Retired AX native mode is not a supported user-facing server mode.
 
@@ -125,8 +130,9 @@ be omitted. Current native MLX built-ins are `gemma4-e2b`, `gemma4-31b`, and
 `qwen3.6-35b`.
 
 The `glm4.7-flash-4bit` preset (GLM-4.7 Flash, `glm4_moe_lite`) is a passby
-preset: it selects the `mlx_lm_delegated` tier and requires `--mlx-lm-server-url`
-instead of a local artifacts dir. GLM is no longer a direct-support model — see
+preset: it reports the `mlx_lm_delegated` runtime tier and requires
+`--mlx-lm-server-url` instead of a local artifacts dir. GLM is no longer a
+direct-support model — see
 [`SUPPORTED-MODELS.md`](SUPPORTED-MODELS.md).
 
 Hugging Face cache discovery is opt-in:
@@ -172,7 +178,7 @@ GGUF/non-MLX server-backed inference:
 ```text
 cargo run -p ax-engine-server -- \
   --model-id qwen3_dense \
-  --support-tier llama_cpp \
+  --support-tier llama-cpp \
   --llama-server-url http://127.0.0.1:8081 \
   --port 8080
 ```
@@ -203,7 +209,7 @@ mlx_lm.server --model /absolute/path/to/mlx-model --host 127.0.0.1 --port 8090
 
 cargo run -p ax-engine-server -- \
   --model-id local-mlx-model \
-  --support-tier mlx_lm_delegated \
+  --support-tier mlx-lm-delegated \
   --mlx-lm-server-url http://127.0.0.1:8090 \
   --port 8080
 ```
@@ -214,21 +220,20 @@ claim, and it is not a visual/multimodal contract. Streaming responses on this
 route are delegated text deltas through AX's HTTP/SSE surfaces, not AX-owned
 token IDs or KV-cache evidence.
 
-The preview server now also exposes thin OpenAI-compatible endpoints over that
-same llama.cpp-backed path:
+The preview server exposes OpenAI-compatible text endpoints:
 
 - `POST /v1/completions`
 - `POST /v1/chat/completions`
 
-Those routes are intentionally delegated-text routes in this repository:
-`llama_cpp` and `mlx_lm_delegated` are supported, while the repo-owned MLX
-runtime remains token-based and therefore fails closed on those text or
-chat-oriented endpoints instead of inventing tokenizer behavior for native MLX.
-The delegated chat bridge renders messages through the built-in model-family
-template registry before forwarding text to the backend.
+For repo-owned MLX sessions, these endpoints require an explicit MLX model
+artifact directory with tokenizer files. Chat requests also require a supported
+server-owned chat-template family. Unsupported families fail closed rather than
+guessing tokenizer or template behavior. Delegated `llama_cpp` and
+`mlx_lm_delegated` routes keep forwarding rendered text to their configured
+upstream backend.
 
-For OpenAI-compatible repo-owned MLX serving, run the optional Python shim with
-an explicit MLX model artifact directory and tokenizer:
+You can also run the optional Python OpenAI shim with an explicit MLX model
+artifact directory and tokenizer:
 
 ```text
 python -m ax_engine.openai_server \
@@ -514,13 +519,14 @@ That endpoint now preserves one process-local request-id sequence even though
 it creates fresh SDK sessions internally.
 `POST /v1/generate/stream` uses the same stateless request shape but streams
 preview SSE events named `request`, `step`, `response`, and `error`.
-`POST /v1/completions` and `POST /v1/chat/completions` are thin response-shape
-adapters over the same stateless text request flow for server-backed
-`llama_cpp` and `mlx_lm_delegated`; their streaming mode emits unnamed SSE
-`data:` chunks plus `[DONE]` in the familiar OpenAI-style envelope instead of
-AX-specific lifecycle event names. OpenAI-shaped completion and chat responses
-include `system_fingerprint: null` because the preview server does not yet
-publish a stable backend fingerprint.
+`POST /v1/completions` and `POST /v1/chat/completions` are response-shape
+adapters over the same stateless request flow. Native MLX requests tokenize text
+through the configured model artifacts; delegated `llama_cpp` and
+`mlx_lm_delegated` requests forward text to the configured upstream backend.
+Streaming mode emits unnamed SSE `data:` chunks plus `[DONE]` in the familiar
+OpenAI-style envelope instead of AX-specific lifecycle event names.
+OpenAI-shaped completion and chat responses include `system_fingerprint: null`
+because the preview server does not yet publish a stable backend fingerprint.
 The `/v1/requests` and `/v1/step` endpoints instead operate on one shared
 preview session held by the server so they can surface the same request
 lifecycle contract as the SDK.

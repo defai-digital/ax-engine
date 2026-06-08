@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """In-process Phase A evidence harness for openai/gpt-oss-{20b,120b}.
 
-Phase A baseline: PRD GPT-OSS-SUPPORT-PRD.md W1.4. Because mlx_lm.server
-crashes on every generation under Python 3.14 + mlx_lm 0.31.2
+Phase A baseline for delegated gpt-oss support. Because mlx_lm.server crashes
+on every generation under Python 3.14 + mlx_lm 0.31.2
 (RuntimeError: There is no Stream(gpu, N) in current thread — affects
 all models, not gpt-oss-specific), this harness bypasses the HTTP server
 and exercises mlx_lm.stream_generate directly to confirm the

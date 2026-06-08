@@ -61,7 +61,7 @@ doctor_text = subprocess.check_output(
     text=True,
 )
 
-assert "AX Engine v4 doctor" in doctor_text
+assert "AX Engine v6 doctor" in doctor_text
 assert f"status={expected_status}" in doctor_text
 assert "issues:" in doctor_text
 assert "notes:" in doctor_text

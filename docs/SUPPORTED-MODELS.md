@@ -78,7 +78,7 @@ This path requires a running `mlx_lm.server`:
 mlx_lm.server --model /path/to/local/mlx-model --host 127.0.0.1 --port 8090
 
 ax-engine-server \
-  --support-tier mlx_lm_delegated \
+  --support-tier mlx-lm-delegated \
   --mlx-lm-server-url http://127.0.0.1:8090
 ```
 
@@ -129,7 +129,7 @@ This path can target a running llama.cpp server:
 llama-server -m /path/to/model.gguf --host 127.0.0.1 --port 8081
 
 ax-engine-server \
-  --support-tier llama_cpp \
+  --support-tier llama-cpp \
   --llama-server-url http://127.0.0.1:8081
 ```
 

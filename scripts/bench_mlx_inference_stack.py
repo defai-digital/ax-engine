@@ -785,7 +785,7 @@ def build_gateddelta_prefill_profile_contract(
         )
     return {
         "schema_version": "ax.gateddelta_prefill_profile.v1",
-        "prd": ".internal/planning/MLX-DECODE-OPTIMIZATION-PRD.md#pr-2-gateddelta-prefill-optimization",
+        "evidence_contract": "gateddelta_prefill_profile",
         "purpose": "evidence_first_gateddelta_long_prompt_prefill_profile",
         "model_family": model_metadata.get("model_family")
         or model_metadata.get("model_type")

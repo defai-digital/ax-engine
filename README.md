@@ -30,7 +30,7 @@ Qwen3.6 has MTPLX comparison rows below.
 ### Gemma 4 Assistant MTP
 
 **Gemma 4 speculative decoding holds draft accept ≥98% on every cell below**
-(98.4–99.4% across 26B / 31B × {MTP, MTP+n-gram} × {flappy, long_code,
+(98.4–99.5% across 26B / 31B × {MTP, MTP+n-gram} × {flappy, long_code,
 python_modules_long}).
 
 Unlike Qwen's fused `mtp.*` sidecar, Gemma 4's multi-token prediction is a small,
@@ -80,31 +80,31 @@ for more speculation on less predictable content.
 
 | Model | Suite | Depth | AX MTP tok/s | AX MTP accept | AX MTP+ngram tok/s | AX MTP+ngram accept |
 |---|---|---:|---:|---:|---:|---:|
-| Gemma 4 26B A4B 4-bit | flappy | 1 | 123.3 | 99.3% | 122.9 | 99.4% |
-| Gemma 4 26B A4B 4-bit | long_code | 1 | 119.3 | 99.1% | 117.6 | 99.1% |
-| Gemma 4 26B A4B 4-bit | python_modules_long | 1 | 120.0 | 98.5% | 120.5 | 98.7% |
-| Gemma 4 31B 4-bit | flappy | 1 | 37.3 | 99.3% | 37.0 | 99.3% |
-| Gemma 4 31B 4-bit | long_code | 1 | 35.9 | 99.2% | 35.2 | 99.4% |
-| Gemma 4 31B 4-bit | python_modules_long | 1 | 35.9 | 98.4% | 35.8 | 98.4% |
+| Gemma 4 26B A4B 4-bit | flappy | 1 | 126.1 | 99.3% | 129.1 | 99.5% |
+| Gemma 4 26B A4B 4-bit | long_code | 1 | 125.5 | 99.1% | 127.1 | 99.1% |
+| Gemma 4 26B A4B 4-bit | python_modules_long | 1 | 124.0 | 98.5% | 124.1 | 98.6% |
+| Gemma 4 31B 4-bit | flappy | 1 | 37.9 | 99.3% | 38.2 | 99.2% |
+| Gemma 4 31B 4-bit | long_code | 1 | 37.8 | 99.2% | 38.9 | 99.1% |
+| Gemma 4 31B 4-bit | python_modules_long | 1 | 37.4 | 98.4% | 37.3 | 98.6% |
 
 #### Prefill throughput (tok/s) and time to first token (ms) — same run
 
 | Model | Suite | AX MTP prefill | AX MTP+ngram prefill | AX MTP ttft ms | AX MTP+ngram ttft ms |
 |---|---|---:|---:|---:|---:|
-| Gemma 4 26B A4B 4-bit | flappy | 2,693 | 2,672 | 131 | 132 |
-| Gemma 4 26B A4B 4-bit | long_code | 3,905 | 3,893 | 210 | 210 |
-| Gemma 4 26B A4B 4-bit | python_modules_long | 2,917 | 2,916 | 131 | 131 |
-| Gemma 4 31B 4-bit | flappy | 734 | 734 | 490 | 490 |
-| Gemma 4 31B 4-bit | long_code | 782 | 783 | 1,019 | 1,017 |
-| Gemma 4 31B 4-bit | python_modules_long | 742 | 744 | 473 | 472 |
+| Gemma 4 26B A4B 4-bit | flappy | 2,711 | 2,739 | 130 | 129 |
+| Gemma 4 26B A4B 4-bit | long_code | 3,991 | 3,977 | 203 | 205 |
+| Gemma 4 26B A4B 4-bit | python_modules_long | 2,909 | 2,912 | 131 | 131 |
+| Gemma 4 31B 4-bit | flappy | 747 | 751 | 475 | 486 |
+| Gemma 4 31B 4-bit | long_code | 769 | 798 | 1,035 | 995 |
+| Gemma 4 31B 4-bit | python_modules_long | 739 | 728 | 477 | 481 |
 
 Assistant accept is the share of proposed drafts the target accepts. The
 `mtp-ngram` column stacks n-gram drafting on top of the assistant but contributes
 little here — the gated assistant already captures the speculation, so the two
 modes track closely. Sampler temperature=0.6, top_p=0.95, top_k=20; 1000 generated
-tokens, 5 repetitions, 10 s / 5 s cooldowns. Apple M5 Max · AX Engine v5.3.1.
+tokens, 5 repetitions, 10 s / 5 s cooldowns. Apple M5 Max · AX Engine v5.3.2.
 
-Full artifacts: [`2026-06-06-gemma4-26b-31b-assistant-mtp`](benchmarks/results/gemma4-assistant-mtp/2026-06-06-gemma4-26b-31b-assistant-mtp/summary.json).
+Full artifacts: [`2026-06-07-gemma4-assistant-mtp`](benchmarks/results/gemma4-assistant-mtp/2026-06-07-gemma4-assistant-mtp/summary.json).
 
 ### Qwen3.6 Fair MTP
 
@@ -153,7 +153,7 @@ which trades ~1–2 points of accept on the hardest row for +5–13% decode thro
 variable to `0.98` to restore the accept-maximizing behavior, or `0` to disable. The gate is scoped to pure MTP, so the
 n-gram-stacked column pools lower-confidence n-gram drafts and sits slightly below it. Sampler: temperature=0.6,
 top_p=0.95, top_k=20. 1000 gen tokens, 5 repetitions, 30 s cooldown, 10 s inter-case cooldown.
-MTPLX 0.3.7 · AX Engine v5.3.1.
+MTPLX 0.3.7 · AX Engine v5.3.2.
 
 #### Prefill throughput (tok/s) — same run
 
@@ -193,14 +193,14 @@ Full artifacts: [`2026-06-05-ax-mtp-gate-fresh`](benchmarks/results/mtp-fair/202
 <td align="center"><strong>Qwen 3.6</strong></td>
 </tr>
 <tr>
-<td align="center"><strong>Prefill rate</strong></td>
-<td><img src="docs/assets/perf-gemma4-prefill-box-whisker.svg" alt="Grouped box-and-whisker plot comparing llama.cpp Metal, mlx_lm, and ax_engine prefill rates for Gemma 4 models at 128/512/2048 prompt tokens with a red highest-median reference line"></td>
-<td><img src="docs/assets/perf-qwen-prefill-box-whisker.svg" alt="Grouped box-and-whisker plot comparing llama.cpp Metal, mlx_lm, and ax_engine prefill rates for Qwen 3.6 models at 128/512/2048 prompt tokens with a red highest-median reference line"></td>
-</tr>
-<tr>
 <td align="center"><strong>Decode rate</strong></td>
 <td><img src="docs/assets/perf-gemma4-decode-box-whisker.svg" alt="Grouped box-and-whisker plot comparing llama.cpp Metal, mlx_lm, and ax_engine direct decode rates for Gemma 4 models at 128/512/2048 prompt tokens with a red highest-median reference line"></td>
 <td><img src="docs/assets/perf-qwen-decode-box-whisker.svg" alt="Grouped box-and-whisker plot comparing llama.cpp Metal, mlx_lm, and ax_engine direct decode rates for Qwen 3.6 models at 128/512/2048 prompt tokens with a red highest-median reference line"></td>
+</tr>
+<tr>
+<td align="center"><strong>Prefill rate</strong></td>
+<td><img src="docs/assets/perf-gemma4-prefill-box-whisker.svg" alt="Grouped box-and-whisker plot comparing llama.cpp Metal, mlx_lm, and ax_engine prefill rates for Gemma 4 models at 128/512/2048 prompt tokens with a red highest-median reference line"></td>
+<td><img src="docs/assets/perf-qwen-prefill-box-whisker.svg" alt="Grouped box-and-whisker plot comparing llama.cpp Metal, mlx_lm, and ax_engine prefill rates for Qwen 3.6 models at 128/512/2048 prompt tokens with a red highest-median reference line"></td>
 </tr>
 <tr>
 <td align="center"><strong>TTFT</strong></td>
@@ -1084,6 +1084,37 @@ Public documentation is in `docs/`. Canonical benchmark manifests are in
 [KV Cache](docs/KV-CACHE.md) ·
 [Benchmarking](docs/BENCH-DESIGN.md) ·
 [Serving Benchmarks](docs/SERVING-BENCHMARKS.md)
+
+## Benchmark Reference Projects
+
+AX Engine's benchmark design and compatibility checks are informed by local
+reference checkouts of related open-source projects. We acknowledge those
+projects here:
+
+| Project | Repository |
+|---|---|
+| ds4 | [antirez/ds4](https://github.com/antirez/ds4) |
+| lightning-mlx | [samuelfaj/lightning-mlx](https://github.com/samuelfaj/lightning-mlx) |
+| llama.cpp | [ggml-org/llama.cpp](https://github.com/ggml-org/llama.cpp) |
+| mistral.rs | [EricLBuehler/mistral.rs](https://github.com/EricLBuehler/mistral.rs) |
+| MLX | [ml-explore/mlx](https://github.com/ml-explore/mlx) |
+| mlx-c | [ml-explore/mlx-c](https://github.com/ml-explore/mlx-c) |
+| mlx-engine | [lmstudio-ai/mlx-engine](https://github.com/lmstudio-ai/mlx-engine) |
+| mlx-lm | [ml-explore/mlx-lm](https://github.com/ml-explore/mlx-lm) |
+| mlx-turboquant | [rachittshah/mlx-turboquant](https://github.com/rachittshah/mlx-turboquant) |
+| MTPLX | [youssofal/MTPLX](https://github.com/youssofal/MTPLX) |
+| Rapid-MLX | [raullenchai/Rapid-MLX](https://github.com/raullenchai/Rapid-MLX) |
+| turboquant-mlx | [arozanov/turboquant-mlx](https://github.com/arozanov/turboquant-mlx) |
+| vLLM | [vllm-project/vllm](https://github.com/vllm-project/vllm) |
+
+Not every reference project appears in AX Engine's public performance tables or
+charts. A row is published only when it fits the benchmark contract for the
+specific workload: comparable model artifacts, prompt and sampling policy,
+prefill/decode/TTFT definitions, repeatability, host/runtime metadata, and
+provenance. Some reference projects are experimental, version-unstable, focused
+on a different serving route, or not shaped for the same Apple MLX/Metal
+measurement strategy, so those results remain implementation guidance or
+diagnostic evidence rather than public comparison rows.
 
 ## Limitations
 

@@ -1,7 +1,7 @@
 //! F1 probe — bf16 vs f16 matmul throughput on FFN-shape tensors.
 //!
 //! Tests the hypothesis recorded in
-//! `.internal/planning/DS4-LEARNINGS-FOLLOWUP-PRD-2026-05-14.md` §4 that
+//! `.internal/prd/DS4-LEARNINGS-FOLLOWUP-PRD-2026-05-14.md` §4 that
 //! Apple Silicon GPUs have native f16 matrix hardware that may dispatch
 //! faster than bf16 for the post-dequantization FFN matmul path.
 //!

@@ -9,8 +9,8 @@ not as a claim that the entire OpenAI API is implemented.
 | Endpoint | Status | Runtime paths | Request scope | Response scope |
 |---|---|---|---|---|
 | `GET /v1/models` | Preview-compatible model list | All server modes | None | OpenAI-style `object=list`, one local model card, AX runtime metadata, conservative `capabilities`, `limit`, `context_length`, `max_output_tokens`, and `ax_engine` integration metadata |
-| `POST /v1/completions` | Preview-compatible text completion | `llama_cpp`, `mlx_lm_delegated` | `prompt` as one string or one token array; string-array batch prompts are rejected until per-prompt result assembly is implemented; `max_tokens` optional, defaults to 256; `temperature`, `top_p`, `seed`, `stream`, `metadata` | OpenAI-style completion envelope or SSE chunks with `system_fingerprint: null`; `usage` only when backend token counts are authoritative |
-| `POST /v1/chat/completions` | Preview-compatible text chat completion | `llama_cpp`, `mlx_lm_delegated` | text-only messages; roles `system`, `user`, `assistant`, `tool`, `function`; `max_tokens` optional, defaults to 256; `temperature`, `top_p`, `seed`, `stream`, `metadata` | OpenAI-style chat envelope or SSE chunks with `system_fingerprint: null` after AX renders messages with the selected model-family prompt template |
+| `POST /v1/completions` | Preview-compatible text completion | repo-owned MLX sessions with tokenizer artifacts, `llama_cpp`, `mlx_lm_delegated` | `prompt` as one string or one token array; string-array batch prompts are rejected until per-prompt result assembly is implemented; `max_tokens` optional, defaults to 256; `temperature`, `top_p`, `top_k`, `min_p`, `repetition_penalty`, `seed`, `stream`, `metadata`; `response_format` is accepted only as workload metadata | OpenAI-style completion envelope or SSE chunks with `system_fingerprint: null`; `usage` only when backend token counts are authoritative |
+| `POST /v1/chat/completions` | Preview-compatible text chat completion | repo-owned MLX sessions with tokenizer and supported chat-template artifacts, `llama_cpp`, `mlx_lm_delegated` | text-only messages; roles `system`, `user`, `assistant`, `tool`, `function`; `max_tokens` optional, defaults to 256; `temperature`, `top_p`, `top_k`, `min_p`, `seed`, `stream`, `metadata`; `tools`, `tool_choice`, and `response_format` are accepted only as workload metadata | OpenAI-style chat envelope or SSE chunks with `system_fingerprint: null` after AX renders messages with the selected model-family prompt template |
 | `POST /v1/embeddings` | AX embedding route with OpenAI-shaped response | repo-owned MLX embedding-capable sessions | token-array `input`; optional `pooling`, `normalize`, and `encoding_format` placeholder | OpenAI-style embedding list with float vectors and token usage |
 
 ## Explicit Non-Goals Today
@@ -27,29 +27,28 @@ These are not in the current compatibility contract:
 - full tokenizer ownership or arbitrary model chat-template discovery inside
   `ax-engine-server`
 
-Repo-owned MLX generation remains token-first on `POST /v1/generate`. The Rust
-server intentionally rejects text/chat OpenAI endpoints for repo-owned MLX
-generation instead of inventing tokenizer behavior at the transport layer. The
-delegated text routes include a small built-in chat-template registry for common
-Qwen ChatML and Llama 3 prompt rendering before forwarding to the configured
-text backend.
+Repo-owned MLX generation remains token-first on `POST /v1/generate`, but the
+OpenAI-shaped completion and chat endpoints can tokenize text when the configured
+model artifacts include tokenizer files. Chat support is limited to the
+server-owned template registry; unsupported model families fail closed instead
+of guessing chat-template behavior. Delegated text routes continue to forward
+rendered text to their configured upstream backend.
 
 ## JavaScript/TypeScript Surface
 
-The checked-in JavaScript package is currently `@ax-engine/preview-client`.
-It is useful for Node.js integration against the local preview server, but it is
-not yet a published stable SDK.
+The checked-in JavaScript package is currently `@ax-engine/sdk`.
+It is useful for Node.js integration against the local preview server and for
+LangChain-compatible local inference clients.
 
 The current package has TypeScript declarations and Node tests for the preview
-client methods it exposes. A versioned npm release is not part of the current
-public contract.
+client methods it exposes.
 
 ## Tool Calling Status
 
 Tool calling is not in the current compatibility contract. AX Engine accepts
-`tool` and `function` as chat roles for text replay, but it does not yet accept
-`tools`, `tool_choice`, or assistant `tool_calls` as structured request/response
-semantics.
+`tool` and `function` as chat roles for text replay, and it accepts `tools` /
+`tool_choice` as workload metadata hints for speculative-safety routing, but it
+does not implement structured tool-call request/response semantics.
 
 AX Engine should remain an inference runtime. Tool execution, permissions,
 network effects, and workflow orchestration belong to caller applications or a

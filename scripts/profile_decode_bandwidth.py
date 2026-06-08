@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """Profile decode-stage weight bandwidth utilization for an ax-engine model.
 
-This script produces the W1 evidence artifact required by the Weight
-Quantization & Speculation PRD (`.internal/planning/WEIGHT-QUANT-AND-SPECULATION-PRD.md`)
-under ADR 0022. It answers one question per model: is decode binding on weight
+This script produces the W1 evidence artifact for decode-stage weight-bandwidth
+studies. It answers one question per model: is decode binding on weight
 bandwidth, on dispatch overhead, or mixed? That answer gates whether
 rotation-based or sub-4-bit weight quantization is worth pursuing for the model.
 

@@ -2,7 +2,7 @@
 //!
 //! This module owns the on-disk framing for the future durable
 //! prefix-cache layer scoped by
-//! `.internal/planning/MLX-DISK-PREFIX-CACHE-PRD-2026-05-14.md`. The
+//! `.internal/prd/MLX-DISK-PREFIX-CACHE-PRD-2026-05-14.md`. The
 //! current implementation owns file-level get / insert primitives,
 //! wire framing around the kv_cache payload, runner-side L2 lookup,
 //! and best-effort post-insert eviction. Mutating operations take a

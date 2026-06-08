@@ -65,8 +65,8 @@ pub const MAX_DRAFT_LEN: usize = 6;
 pub const DRAFT_CONFIDENCE_THRESHOLD: f32 = 0.4;
 
 /// Environment variable that overrides `DRAFT_CONFIDENCE_THRESHOLD` at runtime.
-/// Defined by DS4-REFERENCE-LEARNINGS-PRD REQ-6 to let per-family tuning
-/// be observed against `ax.bw_profile.v1` artifacts without recompilation.
+/// Lets per-family tuning be observed against `ax.bw_profile.v1` artifacts
+/// without recompilation.
 pub const DRAFT_CONFIDENCE_THRESHOLD_ENV: &str = "AX_NGRAM_CONFIDENCE_THRESHOLD";
 
 /// Parse a candidate confidence threshold. Returns the default when `raw` is
@@ -88,8 +88,7 @@ pub fn parse_confidence_threshold(raw: Option<&str>) -> f32 {
 
 /// Resolve the effective draft confidence threshold for the current process.
 /// Reads `AX_NGRAM_CONFIDENCE_THRESHOLD` once and caches the result. Invalid
-/// values fail fast on first call rather than silently clamping; this is the
-/// fail-closed contract in DS4-REFERENCE-LEARNINGS-PRD REQ-6.
+/// values fail fast on first call rather than silently clamping.
 pub fn effective_draft_confidence_threshold() -> f32 {
     use std::sync::OnceLock;
     static CACHED: OnceLock<f32> = OnceLock::new();

@@ -7,9 +7,8 @@ turn appends the previous turn's output plus a fresh user-turn delta,
 matching the live-checkpoint growth pattern that DS4's
 `ds4_session_sync` handles.
 
-Companion plan: `.internal/planning/MLX-PHASE-C-MULTITURN-BASELINE-PLAN-<date>.md`.
-That plan defines the go/no-go decision rules consumed by the next
-artifact.
+The generated artifact carries the go/no-go signals consumed by follow-up
+reports.
 
 Output schema: `ax.kv_multiturn_chat_evidence.v1` with per-turn rows
 plus a derived `ttft_growth_ratio = turn_N.ttft_s / turn_2.ttft_s` and

@@ -1,10 +1,8 @@
 //! Phase B.0 microbench — kernel-chain command-batching probe.
 //!
-//! Answers the follow-up from
-//! `.internal/planning/MLX-PHASE-B-CUSTOM-KERNEL-SPIKE-2026-05-14.md`:
-//! when N `MlxMetalKernel::apply` calls are chained without intervening
-//! `eval`, does MLX coalesce them into one Metal command buffer, or
-//! does each apply commit on its own?
+//! Answers whether N `MlxMetalKernel::apply` calls chained without intervening
+//! `eval` are coalesced by MLX into one Metal command buffer, or whether each
+//! apply commits on its own.
 //!
 //! Method: register a trivial add-one kernel where per-element compute
 //! is negligible, then time two cases over a CHAIN_LEN-deep dependency
@@ -21,8 +19,7 @@
 //! Run:
 //!   cargo run -p ax-engine-microbench --release --bin kernel-chain-batching-probe
 //!
-//! Output: human-readable summary plus the verdict bucket. Paste into
-//! `.internal/planning/MLX-PHASE-B-BATCH-MICROBENCH-<date>.md`.
+//! Output: human-readable summary plus the verdict bucket for follow-up reports.
 
 use std::time::Instant;
 

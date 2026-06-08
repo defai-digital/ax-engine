@@ -75,7 +75,7 @@ curl http://127.0.0.1:8080/v1/generate \
 
 cargo run -p ax-engine-server -- \
   --model-id qwen3 \
-  --support-tier llama_cpp \
+  --support-tier llama-cpp \
   --llama-server-url http://127.0.0.1:8081 \
   --port 8080
 
@@ -89,7 +89,7 @@ curl http://127.0.0.1:8080/v1/generate \
 
 cargo run -p ax-engine-server -- \
   --model-id qwen3 \
-  --support-tier llama_cpp \
+  --support-tier llama-cpp \
   --llama-cli-path llama-cli \
   --llama-model-path /absolute/path/to/model.gguf \
   --port 8080
