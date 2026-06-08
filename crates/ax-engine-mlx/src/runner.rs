@@ -72,7 +72,8 @@ use ax_engine_core::{
 
 use crate::gemma4_assistant_mtp::{
     Gemma4AssistantMtpConfig, Gemma4AssistantMtpDisableReason, Gemma4AssistantMtpStatus,
-    gemma4_assistant_mtp_debug_enabled, gemma4_assistant_mtp_draft_min_confidence,
+    gemma4_assistant_mtp_debug_enabled, gemma4_assistant_mtp_deep_draft_min_confidence,
+    gemma4_assistant_mtp_draft_min_confidence, gemma4_assistant_mtp_max_depth_cap,
 };
 use crate::generate::{
     DirectPipelineTimings, advance_direct_pipeline_with_timings_and_turboquant_context,
@@ -4214,7 +4215,14 @@ fn load_gemma4_assistant_mtp_runtime(
     let Some(mut config) = status.config.clone().filter(|_| status.validated) else {
         return (status.clone(), None);
     };
-    config.max_depth = config.max_depth.min(1);
+    // The prepared contract historically declares max_depth = 1, but the assistant
+    // is stateless per step (re-reads the target KV cache each forward; carries
+    // draft context through its post_projection backbone-hidden estimate), so the
+    // SAME weights support recurrent multi-token drafting. The runtime env cap
+    // (default 2) drives the draft depth — the canonical T=0.6 26B benchmark
+    // measured depth-2 at 1.10-1.20x decode while holding accept >97%. See
+    // gemma4_assistant_mtp.rs and docs/GEMMA4-ASSISTANT-MULTI-DEPTH.md.
+    config.max_depth = gemma4_assistant_mtp_max_depth_cap();
 
     let disabled = |config: Gemma4AssistantMtpConfig, message: &str| {
         if gemma4_assistant_mtp_debug_enabled() {
@@ -6588,49 +6596,94 @@ impl MlxRunner {
         let Some(runtime) = self.gemma4_assistant_mtp.as_ref() else {
             return (vec![], vec![], vec![]);
         };
-        if state.mtp_adaptive_max_depth == 0 || runtime.status.max_depth == 0 {
+        // Draft depth: the adaptive controller capped by the runtime ceiling
+        // (default 2). The assistant is stateless per step, so it can be applied
+        // recurrently to draft >1 token.
+        let max_depth = state.mtp_adaptive_max_depth.min(runtime.status.max_depth);
+        if max_depth == 0 {
             return (vec![], vec![], vec![]);
         }
 
-        let Ok((logits, _projected_hidden)) = crate::model::gemma4_assistant_forward_one(
-            &runtime.cfg,
-            &runtime.weights,
-            &self.cfg,
-            &self.weights,
-            &state.cache,
-            runtime.target_shared_layers,
-            last_token,
-            last_backbone_hidden,
-            state.cache.seq_len,
-        ) else {
-            return (vec![], vec![], vec![]);
-        };
+        let base_position = state.cache.seq_len;
+        let first_gate = gemma4_assistant_mtp_draft_min_confidence();
 
-        eval(&[&logits]);
-        let logits_cpu = logits.data_f32().to_vec();
-        // Draft confidence gate (mirrors the Qwen MTP head's gate_forces_greedy).
-        // When enabled, draft the assistant's top token (greedy) and only propose
-        // it when the drafter's own top-token probability (at T=1.0) is at least
-        // the threshold; a low-confidence step suppresses its draft and falls back
-        // to an ordinary verified decode. Greedy drafting maximizes the accept
-        // rate under the default greedy (argmax-match) acceptance mode without
-        // changing the committed output — accepted positions commit the target's
-        // argmax either way, so this is purely an accept-rate / throughput knob.
-        let min_confidence = gemma4_assistant_mtp_draft_min_confidence();
-        if min_confidence > 0.0 {
-            let (token, confidence) = argmax_with_softmax_confidence(&logits_cpu);
-            if confidence < min_confidence {
+        // Ungated (gate disabled, gate <= 0): a single sampled draft carrying a
+        // log-prob + distribution so rejection-sampling acceptance can engage.
+        // Recurrent multi-depth drafting is the gated greedy path below; the
+        // sampled path stays depth-1 (per-depth sampled log-probs are out of scope).
+        if first_gate <= 0.0 {
+            let Ok((logits, _projected_hidden)) = crate::model::gemma4_assistant_forward_one(
+                &runtime.cfg,
+                &runtime.weights,
+                &self.cfg,
+                &self.weights,
+                &state.cache,
+                runtime.target_shared_layers,
+                last_token,
+                &astype(last_backbone_hidden, MlxDtype::Bfloat16, None),
+                base_position,
+            ) else {
                 return (vec![], vec![], vec![]);
-            }
-            // Greedy draft: no log-prob / distribution — acceptance uses the
-            // argmax match (and rejection mode falls back to it for empty
-            // log-probs), so only the drafted argmax token is carried.
-            return (vec![token], vec![], vec![]);
+            };
+            eval(&[&logits]);
+            let logits_cpu = logits.data_f32().to_vec();
+            let (token, log_prob, distribution) = sample_categorical_with_logprob_and_distribution(
+                &logits_cpu,
+                sampling,
+                &mut state.rng,
+            );
+            return (
+                vec![token],
+                vec![log_prob],
+                distribution.into_iter().collect(),
+            );
         }
-        let (token, log_prob, distribution) =
-            sample_categorical_with_logprob_and_distribution(&logits_cpu, sampling, &mut state.rng);
-        let distributions = distribution.into_iter().collect();
-        (vec![token], vec![log_prob], distributions)
+
+        // Gated greedy recurrent drafting (the default). Each position d feeds the
+        // assistant's `post_projection` "backbone hidden" estimate of position d
+        // back in as the next step's hidden — the same signal the production verify
+        // forward provides at depth 0 — and advances the RoPE position by one. The
+        // assistant attends the target's frozen KV (it has no k/v of its own); the
+        // drafted token's signal flows through the residual, which the depth-2
+        // sweep confirmed is enough to hold ~97-100% accept on the 2nd token.
+        //
+        // A position is proposed only when its T=1.0 argmax confidence clears the
+        // gate — tight 0.999 on the first token, 0.99 on deeper positions (a wrong
+        // deep draft costs a full target recompute, so the deep gate stays tight).
+        // A miss stops drafting. Suppression is correctness-preserving: a short or
+        // empty draft just verifies fewer speculative positions, never changing the
+        // committed token. Greedy drafts carry no log-prob, so acceptance falls to
+        // argmax-match (the Gemma default acceptance mode).
+        let deep_gate = gemma4_assistant_mtp_deep_draft_min_confidence();
+        let mut drafts: Vec<u32> = Vec::with_capacity(max_depth);
+        let mut cur_token = last_token;
+        let mut cur_hidden = astype(last_backbone_hidden, MlxDtype::Bfloat16, None);
+        for d in 0..max_depth {
+            let Ok((logits, projected_hidden)) = crate::model::gemma4_assistant_forward_one(
+                &runtime.cfg,
+                &runtime.weights,
+                &self.cfg,
+                &self.weights,
+                &state.cache,
+                runtime.target_shared_layers,
+                cur_token,
+                &cur_hidden,
+                base_position + d,
+            ) else {
+                break;
+            };
+            eval(&[&logits]);
+            let logits_cpu = logits.data_f32().to_vec();
+            let (token, confidence) = argmax_with_softmax_confidence(&logits_cpu);
+            let gate = if d == 0 { first_gate } else { deep_gate };
+            if confidence < gate {
+                break;
+            }
+            drafts.push(token);
+            cur_token = token;
+            cur_hidden = astype(&projected_hidden, MlxDtype::Bfloat16, None);
+        }
+        (drafts, vec![], vec![])
     }
 
     /// MTP model-based speculative decode step.

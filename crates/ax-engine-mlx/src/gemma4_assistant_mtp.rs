@@ -384,14 +384,33 @@ fn gemma4_assistant_mtp_env_enabled() -> bool {
     })
 }
 
-fn gemma4_assistant_mtp_max_depth_cap() -> usize {
+/// Default assistant draft depth. The drafter is stateless per step (it re-reads
+/// the target KV cache each forward and carries draft context through its
+/// `post_projection` "backbone hidden" estimate), so it can be applied
+/// recurrently to draft >1 token/step. The canonical 26B benchmark (M5 Max,
+/// T=0.6, chat-templated flappy/long_code/python_modules_long, multi-prompt,
+/// n-gram off) measured depth-2 at a uniform 0.999 gate giving 1.10-1.20x decode
+/// throughput over depth-1 while holding assistant accept 0.977-0.983 (all above
+/// 97%). Depth-3 could not hold 97% accept on the hardest suite (~0.937 in the
+/// greedy probe), so 2 is the constrained optimum. Probe + methodology:
+/// `crates/ax-engine-mlx/src/bin/gemma_depth_probe.rs`,
+/// `docs/GEMMA4-ASSISTANT-MULTI-DEPTH.md`.
+pub const DEFAULT_GEMMA4_ASSISTANT_MTP_MAX_DEPTH: usize = 2;
+
+/// Runtime ceiling on the assistant draft depth, from
+/// `AX_MLX_GEMMA4_ASSISTANT_MTP_MAX_DEPTH` (default
+/// [`DEFAULT_GEMMA4_ASSISTANT_MTP_MAX_DEPTH`]). This overrides the prepared
+/// contract's `max_depth` (historically 1): recurrent drafting is a runtime
+/// capability of the same weights, not a property of the bundle. Set to 1 to
+/// restore single-token drafting.
+pub fn gemma4_assistant_mtp_max_depth_cap() -> usize {
     static CACHED: OnceLock<usize> = OnceLock::new();
     *CACHED.get_or_init(|| {
         std::env::var("AX_MLX_GEMMA4_ASSISTANT_MTP_MAX_DEPTH")
             .ok()
             .and_then(|v| v.parse::<usize>().ok())
             .filter(|v| *v > 0)
-            .unwrap_or(1)
+            .unwrap_or(DEFAULT_GEMMA4_ASSISTANT_MTP_MAX_DEPTH)
     })
 }
 
@@ -453,6 +472,43 @@ pub fn gemma4_assistant_mtp_draft_min_confidence() -> f32 {
                 .filter(|value| value.is_finite() && *value >= 0.0 && *value < 1.0)
                 .unwrap_or(DEFAULT_GEMMA4_ASSISTANT_MTP_DRAFT_MIN_CONFIDENCE),
             Err(_) => DEFAULT_GEMMA4_ASSISTANT_MTP_DRAFT_MIN_CONFIDENCE,
+        }
+    })
+}
+
+/// Default draft confidence gate for the assistant's DEEP draft positions
+/// (the 2nd token and beyond). Equal to the first-position gate
+/// [`DEFAULT_GEMMA4_ASSISTANT_MTP_DRAFT_MIN_CONFIDENCE`] (0.999) — i.e. a uniform
+/// 0.999 gate across the depth-2 draft — but exposed as a separate knob so deep
+/// drafts can be loosened independently for throughput experiments.
+///
+/// A wrong deep draft costs a full target recompute, so unlike the
+/// throughput-tuned Qwen head this gate stays TIGHT. The canonical T=0.6
+/// 26B benchmark (chat-templated flappy/long_code/python_modules_long,
+/// multi-prompt, n-gram off) found 0.999 STRICTLY DOMINATES 0.99: it lifts the
+/// assistant accept rate on every suite (long_code 0.966 -> 0.977, clearing the
+/// 97% bar) at IDENTICAL decode throughput — the looser 0.99 deep gate bought no
+/// speed, only lower accept. Final depth-2 result vs depth-1: accept
+/// 0.977-0.983 (all above 97%) at 1.10-1.20x decode. Depth-3 cannot hold 97% on
+/// the hardest suite, so depth-2 @ 0.999 is the constrained optimum. Ungated deep
+/// drafts are net-negative (recompute storm).
+pub const DEFAULT_GEMMA4_ASSISTANT_MTP_DEEP_DRAFT_MIN_CONFIDENCE: f32 = 0.999;
+
+/// Read the deep-position (depth >= 2) draft confidence gate from
+/// `AX_MLX_GEMMA4_ASSISTANT_MTP_DEEP_DRAFT_MIN_CONFIDENCE`; valid range
+/// `[0.0, 1.0)`. Defaults to
+/// [`DEFAULT_GEMMA4_ASSISTANT_MTP_DEEP_DRAFT_MIN_CONFIDENCE`].
+pub fn gemma4_assistant_mtp_deep_draft_min_confidence() -> f32 {
+    static CACHED: OnceLock<f32> = OnceLock::new();
+    *CACHED.get_or_init(|| {
+        match std::env::var("AX_MLX_GEMMA4_ASSISTANT_MTP_DEEP_DRAFT_MIN_CONFIDENCE") {
+            Ok(raw) => raw
+                .trim()
+                .parse::<f32>()
+                .ok()
+                .filter(|value| value.is_finite() && *value >= 0.0 && *value < 1.0)
+                .unwrap_or(DEFAULT_GEMMA4_ASSISTANT_MTP_DEEP_DRAFT_MIN_CONFIDENCE),
+            Err(_) => DEFAULT_GEMMA4_ASSISTANT_MTP_DEEP_DRAFT_MIN_CONFIDENCE,
         }
     })
 }
