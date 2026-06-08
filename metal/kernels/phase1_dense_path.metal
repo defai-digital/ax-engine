@@ -1829,10 +1829,16 @@ kernel void decode_projection_q4km(
 
     float sumf = 0.f;
 
-    // Thread tiisg (0..31) processes 8 elements per block across 4 groups of 64:
-    //   group j: qs[j*32 + tiisg] → lo nibble: element j*64+tiisg (sub-block j*2)
-    //                              → hi nibble: element j*64+32+tiisg (sub-block j*2+1)
-    // After simd_sum, all 32 threads together cover all 256 elements of each block.
+    // Each lane owns one 64-element sub-block pair (sub-blocks 2*sb_pair and
+    // 2*sb_pair+1) and the 4 contiguous qs bytes at qs[tiisg*4 .. tiisg*4+3].
+    //   byte b = tiisg*4+n  →  lo nibble: element (b/32)*64 + (b%32)  (sub-block 2*(b/32))
+    //                          hi nibble: element (b/32)*64 + 32 + (b%32) (sub-block 2*(b/32)+1)
+    // Since the 4 bytes of a lane stay within one 32-byte group, b/32 == sb_pair
+    // for all of them, so each lane computes its scale/min pair exactly once per
+    // block and issues a single coalesced 32-bit qs load (lanes 0..31 cover the
+    // full 128-byte qs contiguously). simd_sum reduces the 32 lane partials.
+    const uint sb_pair = (uint)tiisg >> 3;          // 0..3
+    const uint pos4    = ((uint)tiisg & 7u) * 4u;   // 0,4,...,28 within the sub-block
     for (uint ib = 0; ib < n_blocks; ib++) {
         device const uint8_t* blk    = row_w + ib * 144u;
         device const uint8_t* scales = blk + 4u;
@@ -1841,21 +1847,21 @@ kernel void decode_projection_q4km(
         const float d    = float(((device const half*)blk)[0]);
         const float dmin = float(((device const half*)blk)[1]);
 
-        for (int j = 0; j < 4; j++) {
-            float sc_lo, mn_lo, sc_hi, mn_hi;
-            q4k_get_scale_min(j * 2,     scales, &sc_lo, &mn_lo, d, dmin);
-            q4k_get_scale_min(j * 2 + 1, scales, &sc_hi, &mn_hi, d, dmin);
+        float sc_lo, mn_lo, sc_hi, mn_hi;
+        q4k_get_scale_min(sb_pair * 2u,      scales, &sc_lo, &mn_lo, d, dmin);
+        q4k_get_scale_min(sb_pair * 2u + 1u, scales, &sc_hi, &mn_hi, d, dmin);
 
-            uint8_t byte = qs[(uint)j * 32u + (uint)tiisg];
+        const uint qword = *((device const uint*)(qs + (uint)tiisg * 4u));
+        const uint hbase = ib * 256u + sb_pair * 64u + pos4;
+
+        for (uint n = 0; n < 4u; n++) {
+            uint byte = (qword >> (n * 8u)) & 0xFFu;
             float qlo = float(byte & 0xFu);
             float qhi = float(byte >> 4u);
-
-            uint elem_base = ib * 256u + (uint)j * 64u;
-            float hlo = hidden[elem_base + (uint)tiisg];
-            float hhi = hidden[elem_base + (uint)tiisg + 32u];
-
-            sumf += sc_lo * hlo * qlo - mn_lo * hlo
-                  + sc_hi * hhi * qhi - mn_hi * hhi;
+            float hlo = hidden[hbase + n];
+            float hhi = hidden[hbase + n + 32u];
+            sumf = fma(sc_lo * qlo - mn_lo, hlo, sumf);
+            sumf = fma(sc_hi * qhi - mn_hi, hhi, sumf);
         }
     }
 
