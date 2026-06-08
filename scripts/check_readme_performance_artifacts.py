@@ -378,19 +378,19 @@ def parse_readme_metrics(readme_path: Path) -> list[ReadmeMetric]:
     return [
         *parse_readme_table(
             text,
-            heading_prefix="### Decode throughput",
+            heading_prefix="#### Decode throughput",
             table_name="decode",
             column_map=DECODE_TABLE_COLUMNS,
         ),
         *parse_readme_table(
             text,
-            heading_prefix="### Prefill throughput",
+            heading_prefix="#### Prefill throughput",
             table_name="prefill",
             column_map=PREFILL_TABLE_COLUMNS,
         ),
         *parse_readme_table(
             text,
-            heading_prefix="### Time to first token",
+            heading_prefix="#### Time to first token",
             table_name="ttft",
             column_map=TTFT_TABLE_COLUMNS,
         ),

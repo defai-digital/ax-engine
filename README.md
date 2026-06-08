@@ -320,7 +320,7 @@ Artifacts land under `benchmarks/results/gemma4-assistant-mtp/`; SVGs render int
 
 Gemma 4 12B (`model_type: gemma4_unified`) is a different implementation from the per-layer-embedding E2B/E4B and the MoE 26B/31B. **Upstream `mlx_lm` 0.31.3 cannot load it** — it fails with `ValueError: Model type gemma4_unified not supported`. The external reference here is **llama.cpp Metal** on a shape-compatible GGUF.
 
-In raw **direct** decode, llama.cpp Metal leads AX by ~30% (~60 vs ~46 tok/s). AX's lever is **assistant-MTP** speculative decoding — which `mlx_lm` can't run and llama.cpp doesn't have — and it closes that gap, lifting AX to **57–62 tok/s (1.24–1.35× over AX direct)** at **≥98.4% assistant accept**, reaching llama.cpp-Metal parity (ahead on `long_code`, level on `flappy`, ~5% behind on `python_modules_long`).
+**AX beats llama.cpp Metal on this model in both modes.** In **direct** decode, AX runs **68 tok/s** on a bit-comparable 4-bit-FFN artifact vs llama.cpp's **57–61** (depth-matched), and the margin grows with context (+12% at 128 tokens → +26% at 2,048). On top of that, **depth-2 assistant-MTP** — which `mlx_lm` can't run and llama.cpp doesn't have — holds **62–69 tok/s at ≥97.6% assistant accept**. The earlier story (llama.cpp ahead by ~30%) was an artifact handicap: the upstream snapshot keeps the FFN at 8-bit and so reads ~1.5× the weight bytes; decode is bandwidth-bound, so matching the quantization closes the gap (see the bandwidth table below).
 
 **Direct decode — AX native MLX vs llama.cpp Metal (mlx_lm N/A):**
 
@@ -332,15 +332,15 @@ In raw **direct** decode, llama.cpp Metal leads AX by ~30% (~60 vs ~46 tok/s). A
 </tr>
 </table>
 
-| Prompt tokens | AX direct decode | llama.cpp decode | AX prefill | llama.cpp prefill | AX TTFT (ms) | llama.cpp TTFT (ms) |
-|---:|---:|---:|---:|---:|---:|---:|
-| 128 | 46.7 | 60.6 | 995 | 1,228 | 129 | 104 |
-| 512 | 46.0 | 60.3 | 1,703 | 1,762 | 301 | 291 |
-| 2048 | 44.9 | 59.9 | 1,967 | 1,691 | 1,041 | 1,211 |
+| Prompt tokens | AX decode | llama.cpp decode (depth 0) | llama.cpp decode (matched depth) | AX prefill | llama.cpp prefill | AX TTFT (ms) | llama.cpp TTFT (ms) |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| 128 | 68.0 | 60.4 | 60.7 | 1,180 | 1,242 | 108 | 103 |
+| 512 | 68.1 | 57.7 | 56.6 | 1,886 | 1,748 | 271 | 293 |
+| 2048 | 63.8 | 58.3 | 50.6 | 2,035 | 1,640 | 1,007 | 1,249 |
 
-AX prefill overtakes llama.cpp at 2,048 tokens (1,967 vs 1,691) and AX TTFT is lower at 2,048 (1,041 vs 1,211 ms). The `llama.cpp Metal` column is a **shape-compatible external GGUF baseline only** (ggml-org Q4_K_M, text-only conversion) — not prompt-hash parity, no repo-owned-MLX claim. `mlx_lm` is **absent because it cannot load `gemma4_unified`**, not because it was skipped.
+AX wins decode at every prompt size, and the margin widens with context (+12% / +20% / +26% vs the matched-depth column). The two llama.cpp decode columns matter: plain `llama-bench tg` decodes from an **empty context** (depth 0 — its best case), while AX decodes *after* the prompt prefill; the **matched-depth** column (`-d {prompt} -n 128`) is the apples-to-apples figure, and llama.cpp slows more with depth (58 → 51 at 2,048). AX prefill also leads at 2,048 (2,035 vs 1,640). The `llama.cpp Metal` columns are a **shape-compatible external GGUF baseline** (ggml-org Q4_K_M); `mlx_lm` is **absent because it cannot load `gemma4_unified`**.
 
-> The direct-decode table uses the upstream `mlx-community/gemma-4-12B-it-4bit` snapshot, which keeps the **FFN at 8-bit**. See the memory-bandwidth analysis below for why that — not the runtime — is the gap, and how a 4-bit-FFN re-quant makes AX direct decode beat llama.cpp.
+> This table uses the bit-comparable **4-bit-FFN** AX artifact (`scripts/requantize_gemma4_12b_ffn_4bit.py`), ~4.5 bpw vs the Q4_K_M GGUF's ~4.8 bpw. The upstream `mlx-community/gemma-4-12B-it-4bit` snapshot keeps the FFN at **8-bit** (~10.4 GiB, ~1.5× the FFN bytes) and trails llama.cpp at ~46 tok/s — that's a *bytes-read* handicap, not a runtime one; see the memory-bandwidth analysis next.
 
 **Memory bandwidth utilization:**
 
@@ -349,13 +349,15 @@ Decode is memory-bandwidth-bound on Apple Silicon: each token reads the model we
 | Engine / quantization | Weights/token | Decode tok/s | Effective BW | % of 577 GB/s peak |
 |---|---:|---:|---:|---:|
 | AX — 8-bit FFN (upstream 4bit snapshot) | 10.98 GB | 45.0 | 494 GB/s | 86% |
-| AX — 4-bit FFN (re-quantized) | 6.74 GB | 67.2 | 453 GB/s | 78% |
-| llama.cpp Q4_K_M — decode @ depth 512 | 7.38 GB | 57.6 | 425 GB/s | 74% |
-| llama.cpp Q4_K_M — decode @ depth 0 (`tg`) | 7.38 GB | 60.0 | 443 GB/s | 77% |
+| AX — 4-bit FFN (re-quantized) | 6.74 GB | 68.1 | 459 GB/s | 80% |
+| llama.cpp Q4_K_M — decode @ depth 512 | 7.38 GB | 56.6 | 418 GB/s | 72% |
+| llama.cpp Q4_K_M — decode @ depth 0 (`tg`) | 7.38 GB | 60.4 | 446 GB/s | 77% |
 
-AX sustains **as much or more memory bandwidth than llama.cpp** (453 vs 425 GB/s at matched depth). The direct-decode gap is purely *bytes read*: the upstream snapshot keeps the FFN at 8-bit (~10.4 GiB, ~1.5× the FFN bytes of the Q4_K_M GGUF). Re-quantizing to uniform 4-bit group-64 (~6.3 GiB, ~4.5 bpw, bit-comparable to Q4_K_M's ~4.8 bpw) makes AX direct decode **67.2 vs 57.6 tok/s — beating llama.cpp** at a fair, depth-matched comparison, with output verified coherent. Build it with `scripts/requantize_gemma4_12b_ffn_4bit.py`.
+AX sustains **as much or more memory bandwidth than llama.cpp** (459 vs 418 GB/s at matched depth) — both near the hardware ceiling, so neither is bandwidth-starved and AX is not under-utilizing memory. The direct-decode gap is purely *bytes read*: the upstream snapshot keeps the FFN at 8-bit (~10.4 GiB, ~1.5× the FFN bytes of the Q4_K_M GGUF). Re-quantizing to uniform 4-bit group-64 (~6.3 GiB, ~4.5 bpw, bit-comparable to Q4_K_M's ~4.8 bpw) makes AX direct decode **68.1 vs 56.6 tok/s — beating llama.cpp** at a fair, depth-matched comparison, with output verified coherent. Build it with `scripts/requantize_gemma4_12b_ffn_4bit.py`. (8-bit weights saturate bandwidth slightly better — 86% vs 80% of peak — because 4-bit needs more dequant compute per byte; that ~6% headroom lives in MLX's `quantized_matmul` kernel, not AX's runtime.)
 
-**Assistant-MTP speculative decode (depth 1):**
+**Assistant-MTP speculative decode (depth 2):**
+
+On top of the 4-bit-FFN direct win, the assistant-MTP path (depth-2 draft, default `0.999` confidence gate) runs on the assistant bundle and adds a second speculative lever `mlx_lm` and llama.cpp don't have:
 
 <table>
 <tr>
@@ -370,19 +372,19 @@ AX sustains **as much or more memory bandwidth than llama.cpp** (453 vs 425 GB/s
 
 | Suite | Depth | AX MTP tok/s | AX MTP accept | AX MTP+ngram tok/s | AX MTP+ngram accept | n-gram accept | n-gram hits |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| flappy | 1 | 60.8 | 99.2% | 61.9 | 99.1% | 72.6% | 68 |
-| long_code | 1 | 62.0 | 99.0% | 62.1 | 99.0% | 72.3% | 53 |
-| python_modules_long | 1 | 56.9 | 98.4% | 57.2 | 98.6% | 56.9% | 35 |
+| flappy | 2 | 64.3 | 98.7% | 61.9 | 98.7% | 86.3% | 106 |
+| long_code | 2 | 67.1 | 98.7% | 68.8 | 98.6% | 65.9% | 46 |
+| python_modules_long | 2 | 62.7 | 98.0% | 62.5 | 97.6% | 82.0% | 67 |
 
 **Prefill and TTFT — same run:**
 
 | Suite | AX MTP prefill | AX MTP+ngram prefill | AX MTP ttft ms | AX MTP+ngram ttft ms |
 |---|---:|---:|---:|---:|
-| flappy | 1,844 | 1,847 | 195 | 195 |
-| long_code | 1,992 | 1,992 | 400 | 400 |
-| python_modules_long | 1,810 | 1,809 | 202 | 202 |
+| flappy | 1,827 | 1,792 | 197 | 202 |
+| long_code | 1,971 | 1,992 | 405 | 400 |
+| python_modules_long | 1,809 | 1,811 | 202 | 201 |
 
-MTP rows: temperature=0.6, top_p=0.95, top_k=20; 1,000 generated tokens, 5 repetitions, 10 s / 5 s cooldowns. Apple M5 Max · AX Engine v6.0.1 · llama.cpp b9430 (Metal) · mlx_lm 0.31.3 (no `gemma4_unified` support).
+Direct rows: 4-bit-FFN artifact, greedy-equivalent sampler, 128 generated tokens, 5 repetitions, 15 s cooldown, random-token prompts (mlx_lm.benchmark contract); llama.cpp decode shown at depth 0 (`tg`) and at matched context depth (`-d {prompt}`). MTP rows: depth-2 draft, temperature=0.6, top_p=0.95, top_k=20; 1,000 generated tokens, 5 repetitions, 10 s / 5 s cooldowns. Apple M5 Max · AX Engine v6.0.1 · llama.cpp b9430 (Metal) · mlx_lm 0.31.3 (no `gemma4_unified` support).
 
 Full artifacts: [`2026-06-08-gemma-4-12b-it-4bit-direct`](benchmarks/results/mlx-inference/2026-06-08-gemma-4-12b-it-4bit-direct/gemma-4-12b-it-4bit.json) (direct; llama.cpp GGUF provenance in [`llama_cpp_gguf_provenance.json`](benchmarks/results/mlx-inference/2026-06-08-gemma-4-12b-it-4bit-direct/llama_cpp_gguf_provenance.json)) · [`2026-06-08-gemma4-12b-assistant-mtp`](benchmarks/results/gemma4-assistant-mtp/2026-06-08-gemma4-12b-assistant-mtp/summary.json) (assistant-MTP).
 
