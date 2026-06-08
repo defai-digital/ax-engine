@@ -1,59 +1,257 @@
 # AX Engine
 
-AX Engine is a Mac-first LLM inference runtime, local server, SDK layer, and
-benchmark toolkit for Apple Silicon.
+AX Engine is a Mac-first LLM inference runtime, local server, SDK layer, and benchmark toolkit for Apple Silicon. It runs direct-support MLX model families natively, and routes other MLX text models or non-MLX models through explicit `mlx-lm` and `llama.cpp` compatibility routes.
 
-AX Engine runs direct-support MLX model families on Apple Silicon, and keeps
-other MLX text models or non-MLX models reachable through explicit `mlx-lm` and
-`llama.cpp` compatibility routes. Users get one AX server, SDK, and benchmark
-surface while repo-owned model coverage grows.
+## Table of Contents
 
-## First-Class MTP on Mac
+- [Quick Start](#quick-start)
+- [Installation](#installation)
+- [Getting a Model](#getting-a-model)
+- [Typical Hardware](#typical-hardware)
+- [What AX Engine Does](#what-ax-engine-does)
+- [Supported Models](#supported-models)
+- [Performance](#performance)
+  - [Speculative Decoding (MTP)](#speculative-decoding-mtp)
+  - [Direct Decode · Prefill · TTFT](#direct-decode--prefill--ttft)
+- [SDKs](#sdks)
+- [Server Usage](#server-usage)
+- [Workspace](#workspace)
+- [Development](#development)
+- [Benchmark Reference Projects](#benchmark-reference-projects)
+- [Limitations](#limitations)
+- [Contributing](#contributing)
+- [Community](#community)
+- [License](#license)
 
-AX Engine's current Mac advantage is **dual-family speculative decoding under one
-repo-owned runtime contract**:
+## Quick Start
 
-- **Gemma 4 Assistant MTP** uses Google's separate `*-assistant` drafter
-  contract, not a Qwen-style fused sidecar, with AX-owned telemetry for draft
-  tokens, accepted tokens, corrections, and accept rate.
-- **Qwen3.6 MTP** uses standard `Qwen/Qwen3.6-*` MTP sidecars, with pure MTP and
-  MTP+n-gram rows benchmarked against MTPLX on the same prompt suites.
-- **One benchmark surface** records route identity, sampler, prompt suite,
-  cooldown, accept behavior, and artifact provenance so the two MTP families are
-  comparable without pretending they use the same architecture.
+**Install:**
 
-Peer rows are included where a peer exposes the same runnable contract. Gemma 4
-is AX-only in this README because the checked MTPLX, Rapid-MLX, and
-lightning-mlx references do not expose a runnable Gemma 4 assistant-MTP path.
-Qwen3.6 has MTPLX comparison rows below.
+```bash
+pip install ax-engine
+```
 
-### Gemma 4 Assistant MTP
+**Download a model and start the server:**
 
-**Gemma 4 speculative decoding holds draft accept ≥98% on every cell below**
-(98.4–99.5% across 26B / 31B × {MTP, MTP+n-gram} × {flappy, long_code,
-python_modules_long}).
+```bash
+ax-engine serve qwen36-35b --download --port 8080
+```
 
-Unlike Qwen's fused `mtp.*` sidecar, Gemma 4's multi-token prediction is a small,
-separate **assistant drafter** that shares the target's tokenizer and embedding
-table, drafts one token per step from the target's last-layer hidden state, and
-attends to the target's own KV cache. AX runs it assistant-MTP-only (`mtp`) and
-with n-gram stacked on top (`mtp-ngram`) at native depth 1.
+**Call it from any OpenAI client:**
 
-The table below is AX-only by design. In the checked peer set, MTPLX marks Gemma
-MTP as backend-pending/no-MTP, while Rapid-MLX and lightning-mlx wire MTP through
-Qwen-style `model-mtp.safetensors` / `mtp.safetensors` sidecars. Because that is
-not Gemma 4's assistant-drafter contract, there is no apples-to-apples peer
-benchmark row for Gemma 4 MTP here.
+```python
+from openai import OpenAI
+client = OpenAI(base_url="http://127.0.0.1:8080/v1", api_key="local")
+resp = client.chat.completions.create(
+    model="my-model",
+    messages=[{"role": "user", "content": "What is AGI?"}],
+    max_tokens=128,
+)
+print(resp.choices[0].message.content)
+```
 
-A **draft confidence gate** (`AX_MLX_GEMMA4_ASSISTANT_MTP_DRAFT_MIN_CONFIDENCE`,
-default `0.999`) keeps accept high: each step drafts the assistant's top token but
-proposes it only when the drafter's probability in that token clears the
-threshold, so only high-confidence tokens are verified (default greedy
-argmax-match acceptance, like the Qwen MTP head). Suppressing a low-confidence
-draft is correctness-preserving — it changes only whether a step speculates, never
-the committed token — so the gate trades speculation depth for accept rate. The
-hardest suite, `python_modules_long`, sets the default; lower the gate toward `0`
-for more speculation on less predictable content.
+**Or use the Python SDK directly:**
+
+```python
+from ax_engine import download_model, Session
+
+path = download_model("mlx-community/Qwen3-4B-4bit")
+with Session(mlx=True, mlx_model_artifacts_dir=str(path)) as s:
+    print(s.generate([1, 2, 3], max_output_tokens=8).output_tokens)
+```
+
+> Requires **macOS 14 (Sonoma) or later** on **Apple Silicon M2 Max or newer** with **32 GB RAM minimum**.
+
+## Installation
+
+### Python (recommended)
+
+```bash
+pip install ax-engine
+```
+
+Requires macOS 14+, Apple Silicon (M2 Max or newer), Python 3.10+. The pip wheel includes the `ax-engine` orchestration CLI and the `ax-engine-server` binary — both are on your `PATH` after install.
+
+Optional extras:
+
+```bash
+pip install "ax-engine[download]"  # mlx-lm for model download helpers
+```
+
+### Homebrew
+
+For `ax-engine-bench` (workload-contract CLI), or as an alternative way to install `ax-engine-server`:
+
+```bash
+brew tap defai-digital/ax-engine
+brew install ax-engine
+ax-engine-bench doctor
+```
+
+If `doctor` fails with `Library not loaded: libmlxc.dylib`, run:
+`brew install mlx-c && brew reinstall ax-engine`.
+
+### Source
+
+```bash
+brew install mlx-c
+cargo build --workspace --release
+maturin develop  # Python bindings
+```
+
+## Getting a Model
+
+AX Engine requires pre-sanitized MLX weights. The recommended source is [mlx-community](https://huggingface.co/mlx-community) — models there are already converted and validated.
+
+### mlx-community (recommended)
+
+`ax-engine download`, `download_model()`, and `scripts/download_model.py` download weights and auto-generate the required `model-manifest.json` in one step:
+
+```bash
+# List supported download targets
+ax-engine download --list
+
+# Download by alias
+ax-engine download qwen36-35b --json
+ax-engine download qwen36-27b --json
+ax-engine download gemma4-e2b --json
+ax-engine download gemma4-12b --json
+ax-engine download gemma4-31b --json
+
+# Download and serve in one command
+ax-engine serve qwen36-35b --download --port 8080
+
+# Raw mlx-community repo IDs are also accepted
+ax-engine download mlx-community/Qwen3.6-35B-A3B-4bit --json
+ax-engine download mlx-community/gemma-4-e2b-it-4bit --json
+
+# Optional: copy snapshot to an explicit directory
+ax-engine download qwen36-35b --dest /Volumes/Models/qwen36-35b
+
+# Python SDK
+from ax_engine import download_model
+path = download_model("mlx-community/Qwen3.6-35B-A3B-4bit")
+```
+
+Built-in download aliases:
+
+| Alias | Repo |
+|---|---|
+| `qwen36-35b` | `mlx-community/Qwen3.6-35B-A3B-4bit` |
+| `qwen36-27b`, `qwen36-27b-5bit`, `qwen36-27b-6bit`, `qwen36-27b-8bit` | `mlx-community/Qwen3.6-27B-{4,5,6,8}bit` |
+| `gemma4-e2b`, `gemma4-e2b-5bit`, `gemma4-e2b-6bit`, `gemma4-e2b-8bit` | `mlx-community/gemma-4-e2b-it-{4,5,6,8}bit` |
+| `gemma4-12b`, `gemma4-12b-6bit` | `mlx-community/gemma-4-12B-it-{4,6}bit` |
+| `gemma4-31b` | `mlx-community/gemma-4-31b-it-4bit` |
+
+Leave downloads in the Hugging Face Hub cache by default — it's shared with `mlx_lm` and other HF-aware tools, avoiding duplicate copies of large weights. Use `--dest` only when you want an explicit copy outside the shared cache.
+
+If you already have `mlx_lm` installed, its downloads land in the same cache and AX Engine can auto-discover them:
+
+```bash
+python -m mlx_lm.generate --model mlx-community/Qwen3-4B-4bit --prompt "x" --max-tokens 1
+ax-engine-bench generate-manifest ~/.cache/huggingface/hub/models--mlx-community--Qwen3-4B-4bit/snapshots/<hash>
+ax-engine serve ~/.cache/huggingface/hub/models--mlx-community--Qwen3-4B-4bit/snapshots/<hash> --port 8080
+```
+
+### Raw HuggingFace checkpoint
+
+Raw checkpoints need sanitization before AX Engine can load them:
+
+```bash
+pip install mlx-lm
+mlx_lm.convert --hf-path <org/model> --mlx-path /path/to/dest -q --q-bits 4
+ax-engine-bench generate-manifest /path/to/dest
+ax-engine serve /path/to/dest --port 8080
+```
+
+### Manifest generation
+
+Both paths above require `model-manifest.json`. Download helpers generate it automatically. To run it directly:
+
+```bash
+ax-engine-bench generate-manifest /path/to/model      # pip, Homebrew, or built binary
+cargo run -p ax-engine-core --bin generate-manifest -- /path/to/model  # source
+```
+
+## Typical Hardware
+
+For local agent and chatbot workloads, AX Engine is a better fit for a small model portfolio than for one model serving every workflow. See the [FAQ model-stack guidance](docs/FAQ.md#what-model-stack-should-i-run-on-high-memory-apple-silicon) for the full recommendation.
+
+| Hardware | Recommended memory | Best fit |
+|---|---:|---|
+| Mac mini M4 Pro | 64 GB RAM | Compact always-on local chatbot and agent server |
+| MacBook Pro M5 Max | 128 GB RAM | Portable high-throughput chatbot, agent, and coding stack |
+| Mac Studio M3 Ultra | 256 GB RAM | Larger local model portfolio, longer contexts, and heavier parallel workloads |
+
+| Role | Recommended model | Setup | App | Why |
+|---|---|---|---|---|
+| Default chatbot | Gemma 4 26B-A4B / 31B | 4-bit or 6-bit, 16K-32K | [ax-studio](https://github.com/defai-digital/ax-studio) | General assistant path for reasoning, chat, JSON/function calling, and on-device agent workflows |
+| General agentic model | Qwen3.6-35B-A3B / Qwen3.6-27B | 35B A3B 4-bit; 27B 4/5/6/8-bit, 16K-32K | AX server / SDK | Strong general agent and coding balance; sparse MoE keeps active compute low |
+| Coding specialist | Qwen3-Coder-Next | 6-bit + 16K default; 4-bit/5-bit + 32K when needed | [ax-code](https://github.com/defai-digital/ax-code) | Dedicated local coding-agent path for repo editing, tool use, and long coding sessions |
+
+## What AX Engine Does
+
+AX Engine gives local inference work a stable runtime contract:
+
+- **Repo-owned MLX execution** tracks [direct-support model families](#supported-models) separately from delegated routes — delegated results are not AX-owned throughput claims.
+- **Dual-family speculative decoding** supports both Qwen3.6's fused MTP sidecar and Gemma 4's separate assistant-drafter contract in the same repo-owned runtime and benchmark tooling.
+- **N-gram acceleration** reaches up to 3.1× mlx_lm decode throughput on high-hit benchmark rows with no second draft model.
+- **Long-session prefix reuse** restores physical MLX KV snapshots on validated cache layouts, so long-running chat and agent loops avoid repeatedly pre-filling accumulated context. See [`docs/LONG-CONTEXT.md`](docs/LONG-CONTEXT.md).
+- **Workload-contract tooling** (`ax-engine-bench`) validates correctness, determinism, route identity, and regression across checked-in manifests.
+- **Delegated routes** (`mlx_lm_delegated`, `llama_cpp`) cover explicit compatibility cases without polluting AX-owned performance claims.
+
+[mlx_lm](https://github.com/ml-explore/mlx-lm) is the canonical MLX reference. AX Engine compares against `mlx_lm.benchmark` and keeps `mlx_lm.server` as the explicit delegated compatibility route when AX does not yet have a repo-owned graph. See the [FAQ](docs/FAQ.md#is-ax-faster-because-it-replaces-mlx-kernels) for the boundary between MLX kernels and AX-owned runtime behavior.
+
+Design details: [Scheduler](docs/SCHEDULER.md) · [KV Cache](docs/KV-CACHE.md) · [Long Context](docs/LONG-CONTEXT.md) · [Benchmark Design](docs/BENCH-DESIGN.md).
+
+### Runtime Paths
+
+| Path | Use it for | Current scope |
+|---|---|---|
+| Repo-owned MLX runtime | Direct-support MLX model families and repo-owned performance claims backed by benchmark artifacts | Local Apple Silicon inference, token-based server/SDK requests, direct and n-gram acceleration modes |
+| `mlx_lm_delegated` | MLX text models that upstream `mlx-lm` supports before AX has a repo-owned graph | Blocking and SSE text generation through a user-provided `mlx_lm.server`; not AX-owned token/KV performance |
+| `llama_cpp` | GGUF and non-MLX local inference | Delegated llama.cpp server/CLI compatibility; route-contract evidence, not repo-owned MLX throughput |
+
+The runtime report exposes `selected_backend`, `support_tier`, and `resolution_policy` so callers and benchmark artifacts can distinguish these paths. For the exact OpenAI-shaped endpoint contract see `docs/API-COMPATIBILITY.md`.
+
+## Supported Models
+
+Direct support means AX has a repo-owned `ax-engine-mlx` graph for the model family and loads MLX safetensors through the AX manifest path. Other MLX text models can still use the explicit `mlx_lm_delegated` compatibility route.
+
+| Family | Direct model IDs | Current scope | Architecture notes |
+|---|---|---|---|
+| Gemma 4 | `gemma-4-e2b-it`, `gemma-4-e4b-it`, `gemma-4-12b-it`, `gemma-4-26b-a4b-it`, `gemma-4-31b-it` | Repo-owned MLX runtime; MLX affine 4/5/6/8-bit weights; assistant-MTP benchmark path | Dense unified 12B, per-layer embedding, and MoE variants; sliding-window + full attention, logit softcapping |
+| Qwen 3 | `Qwen3-4B-4bit` and manifest-backed dense checkpoints | Repo-owned MLX runtime | SwiGLU dense FFN; per-head QK norm |
+| Qwen 3.5 | `Qwen3.5-9B-MLX-4bit` | Repo-owned MLX runtime | Linear attention + MoE FFN; `attn_output_gate` per-head interleaving |
+| Qwen 3.6 / Coder Next | `Qwen3.6-35B-A3B` 4-bit, `Qwen3.6-27B` 4/5/6/8-bit, `Qwen3-Coder-Next-4bit` | Repo-owned MLX runtime | `qwen3_next`: GatedDelta linear attention, full attention with per-head sigmoid gate, sparse top-k MoE |
+
+> GLM 4.7 Flash (`glm4_moe_lite`) was demoted from direct support to the `mlx_lm_delegated` passby route: native decode only reaches `mlx_lm` parity and the 4-bit export has no MTP head. The `glm4.7-flash-4bit` preset now selects the delegated tier and requires `--mlx-lm-server-url`. See [`docs/SUPPORTED-MODELS.md`](docs/SUPPORTED-MODELS.md).
+
+Adding a new architecture means implementing the model graph in `ax-engine-mlx`, not wiring up a generic loader. Architecture code alone is not a direct-support claim — a model requires a repo-owned graph, manifest, smoke coverage, and benchmark evidence before promotion here. LLaMA, Mistral, Mixtral, DeepSeek, and unlisted Gemma/Qwen variants should use the explicit delegated route.
+
+Before promoting another architecture or checkpoint, run `scripts/probe_mlx_model_support.py --model-dir <model-dir>`; a model should report `repo_owned_runtime_ready` only when its manifest, local reference files, and runtime path are all present.
+
+Full list: [`docs/SUPPORTED-MODELS.md`](docs/SUPPORTED-MODELS.md).
+
+## Performance
+
+Full result tables and interpretation live in [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md). Benchmark methodology, test setup, and reproduction details live in [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md).
+
+### Speculative Decoding (MTP)
+
+AX Engine's key Mac advantage is **dual-family speculative decoding** — it supports both Gemma 4's separate assistant-drafter contract and Qwen3.6's fused sidecar contract in one repo-owned runtime and benchmark surface. A single benchmark surface records route identity, sampler, prompt suite, cooldown, accept behavior, and artifact provenance so the two MTP families are comparable without pretending they use the same architecture.
+
+#### Gemma 4 Assistant MTP
+
+Unlike Qwen's fused `mtp.*` sidecar, Gemma 4's multi-token prediction uses a small **assistant drafter** that shares the target's tokenizer and embedding table, drafts one token per step from the target's last-layer hidden state, and attends to the target's own KV cache. AX runs it assistant-MTP-only (`mtp`) and with n-gram stacked on top (`mtp-ngram`).
+
+A **draft confidence gate** (`AX_MLX_GEMMA4_ASSISTANT_MTP_DRAFT_MIN_CONFIDENCE`, default `0.999`) only proposes a draft when the drafter's top-token probability clears the threshold, keeping accept high while remaining correctness-preserving. Lower the gate toward `0` for more speculation on less predictable content.
+
+No peer engine (MTPLX, Rapid-MLX, lightning-mlx) exposes a runnable Gemma 4 assistant-MTP path, so this benchmark has no peer comparison rows.
+
+**Gemma 4 speculative decoding holds draft accept ≥98% on every cell below** (98.4–99.5% across 26B / 31B × {MTP, MTP+n-gram} × {flappy, long_code, python_modules_long}).
+
+##### Gemma 4 26B / 31B
 
 <table>
 <tr>
@@ -87,7 +285,7 @@ for more speculation on less predictable content.
 | Gemma 4 31B 4-bit | long_code | 1 | 37.8 | 99.2% | 38.9 | 99.1% |
 | Gemma 4 31B 4-bit | python_modules_long | 1 | 37.4 | 98.4% | 37.3 | 98.6% |
 
-#### Prefill throughput (tok/s) and time to first token (ms) — same run
+**Prefill and TTFT — same run:**
 
 | Model | Suite | AX MTP prefill | AX MTP+ngram prefill | AX MTP ttft ms | AX MTP+ngram ttft ms |
 |---|---|---:|---:|---:|---:|
@@ -98,33 +296,33 @@ for more speculation on less predictable content.
 | Gemma 4 31B 4-bit | long_code | 769 | 798 | 1,035 | 995 |
 | Gemma 4 31B 4-bit | python_modules_long | 739 | 728 | 477 | 481 |
 
-Assistant accept is the share of proposed drafts the target accepts. The
-`mtp-ngram` column stacks n-gram drafting on top of the assistant but contributes
-little here — the gated assistant already captures the speculation, so the two
-modes track closely. Sampler temperature=0.6, top_p=0.95, top_k=20; 1000 generated
-tokens, 5 repetitions, 10 s / 5 s cooldowns. Apple M5 Max · AX Engine v6.0.1.
+The gated assistant already captures the speculation, so stacking n-gram on top adds little — the two modes track closely. Sampler: temperature=0.6, top_p=0.95, top_k=20; 1,000 generated tokens, 5 repetitions, 10 s / 5 s cooldowns. Apple M5 Max · AX Engine v6.0.1.
 
 Full artifacts: [`2026-06-07-gemma4-assistant-mtp`](benchmarks/results/gemma4-assistant-mtp/2026-06-07-gemma4-assistant-mtp/summary.json).
 
-### Gemma 4 12B (unified architecture) — a model only AX runs on MLX
+<details>
+<summary>Reproduce this benchmark</summary>
 
-Gemma 4 12B is the **unified dense** Gemma 4 variant (`model_type: gemma4_unified`),
-a different implementation from the per-layer-embedding E2B/E4B and the MoE
-26B/31B. It gets its own section because **upstream `mlx_lm` 0.31.3 cannot load
-it at all** — it has no `gemma4_unified` graph and fails closed with
-`ValueError: Model type gemma4_unified not supported`. So unlike every other row
-in this README, there is no `mlx_lm` MLX baseline to show: AX Engine's repo-owned
-native runtime is the *only* MLX runtime that serves this model. The external
-reference here is **llama.cpp Metal** on a shape-compatible GGUF.
+```bash
+python3 scripts/bench_gemma4_assistant_mtp.py \
+  --models 26b-a4b-4bit,31b-4bit \
+  --modes mtp,mtp-ngram \
+  --suites flappy,long_code,python_modules_long \
+  --max-tokens 1000 --repetitions 5
+python3 scripts/render_gemma4_assistant_mtp_charts.py \
+  --results-dir benchmarks/results/gemma4-assistant-mtp/<run-dir>
+```
 
-The takeaway: in raw **direct** decode, llama.cpp Metal leads AX by ~30% (~60 vs
-~46 tok/s). AX's lever on this model is **assistant-MTP** speculative decoding —
-which `mlx_lm` can't run and llama.cpp doesn't have — and it closes that gap,
-lifting AX to **57–62 tok/s (1.24–1.35× over AX direct)** at **≥98.4% assistant
-accept**, reaching llama.cpp-Metal parity (ahead on `long_code`, level on
-`flappy`, ~5% behind on `python_modules_long`).
+Artifacts land under `benchmarks/results/gemma4-assistant-mtp/`; SVGs render into `docs/assets/`. Tune the accept/throughput trade-off with `AX_MLX_GEMMA4_ASSISTANT_MTP_DRAFT_MIN_CONFIDENCE` (default `0.999`; `0` disables the gate).
+</details>
 
-#### Direct decode — AX native MLX vs llama.cpp Metal (mlx_lm N/A)
+##### Gemma 4 12B (Unified Architecture — AX-only on MLX)
+
+Gemma 4 12B (`model_type: gemma4_unified`) is a different implementation from the per-layer-embedding E2B/E4B and the MoE 26B/31B. **Upstream `mlx_lm` 0.31.3 cannot load it** — it fails with `ValueError: Model type gemma4_unified not supported`. The external reference here is **llama.cpp Metal** on a shape-compatible GGUF.
+
+In raw **direct** decode, llama.cpp Metal leads AX by ~30% (~60 vs ~46 tok/s). AX's lever is **assistant-MTP** speculative decoding — which `mlx_lm` can't run and llama.cpp doesn't have — and it closes that gap, lifting AX to **57–62 tok/s (1.24–1.35× over AX direct)** at **≥98.4% assistant accept**, reaching llama.cpp-Metal parity (ahead on `long_code`, level on `flappy`, ~5% behind on `python_modules_long`).
+
+**Direct decode — AX native MLX vs llama.cpp Metal (mlx_lm N/A):**
 
 <table>
 <tr>
@@ -140,25 +338,13 @@ accept**, reaching llama.cpp-Metal parity (ahead on `long_code`, level on
 | 512 | 46.0 | 60.3 | 1,703 | 1,762 | 301 | 291 |
 | 2048 | 44.9 | 59.9 | 1,967 | 1,691 | 1,041 | 1,211 |
 
-Decode/prefill are tok/s. AX prefill overtakes llama.cpp at 2048 tokens (1,967 vs
-1,691) and AX TTFT is lower at 2048 (1,041 vs 1,211 ms). The `llama.cpp Metal`
-column is a **shape-compatible external GGUF baseline only** (ggml-org Q4_K_M,
-text-only conversion) — not prompt-hash parity, no repo-owned-MLX claim. `mlx_lm`
-is **absent because it cannot load `gemma4_unified`**, not because it was skipped.
+AX prefill overtakes llama.cpp at 2,048 tokens (1,967 vs 1,691) and AX TTFT is lower at 2,048 (1,041 vs 1,211 ms). The `llama.cpp Metal` column is a **shape-compatible external GGUF baseline only** (ggml-org Q4_K_M, text-only conversion) — not prompt-hash parity, no repo-owned-MLX claim. `mlx_lm` is **absent because it cannot load `gemma4_unified`**, not because it was skipped.
 
-> The direct-decode table and charts above use the upstream
-> `mlx-community/gemma-4-12B-it-4bit` snapshot, which keeps the **FFN at 8-bit**
-> — see the memory-bandwidth analysis next for why that, not the runtime, is the
-> gap, and how a bit-comparable 4-bit-FFN re-quant makes AX direct decode beat
-> llama.cpp.
+> The direct-decode table uses the upstream `mlx-community/gemma-4-12B-it-4bit` snapshot, which keeps the **FFN at 8-bit**. See the memory-bandwidth analysis below for why that — not the runtime — is the gap, and how a 4-bit-FFN re-quant makes AX direct decode beat llama.cpp.
 
-#### Memory bandwidth utilization
+**Memory bandwidth utilization:**
 
-Decode is memory-bandwidth-bound on Apple Silicon: each token reads the model
-weights once, so decode tok/s is set by bytes-read and how close the engine gets
-to the memory ceiling. Measured **M5 Max GPU peak read bandwidth ≈ 577 GB/s**
-(MLX reduction over a 6 GB array). Effective decode bandwidth =
-weights-per-token × decode tok/s:
+Decode is memory-bandwidth-bound on Apple Silicon: each token reads the model weights once, so decode tok/s is set by bytes-read and how close the engine gets to the memory ceiling. Measured M5 Max GPU peak read bandwidth ≈ 577 GB/s (MLX reduction over a 6 GB array).
 
 | Engine / quantization | Weights/token | Decode tok/s | Effective BW | % of 577 GB/s peak |
 |---|---:|---:|---:|---:|
@@ -167,24 +353,9 @@ weights-per-token × decode tok/s:
 | llama.cpp Q4_K_M — decode @ depth 512 | 7.38 GB | 57.6 | 425 GB/s | 74% |
 | llama.cpp Q4_K_M — decode @ depth 0 (`tg`) | 7.38 GB | 60.0 | 443 GB/s | 77% |
 
-AX sustains **as much or more memory bandwidth than llama.cpp** (453 vs 425 GB/s
-at matched depth) — both are near the hardware ceiling, so neither is
-bandwidth-starved and AX is not under-utilizing memory. The reason the upstream
-snapshot trails in the direct table is purely *bytes read*: it keeps the FFN at
-**8-bit** (~10.4 GiB, ~1.5× the FFN bytes of the Q4_K_M GGUF), and decode is
-bandwidth-bound. Re-quantizing the FFN to uniform 4-bit group-64 (~6.3 GiB,
-~4.5 bpw, bit-comparable to Q4_K_M's ~4.8 bpw) makes AX direct decode **67.2 vs
-57.6 tok/s — beating llama.cpp** at a fair, depth-matched comparison, with output
-verified coherent. Build it with `scripts/requantize_gemma4_12b_ffn_4bit.py`.
-Note: 8-bit weights saturate bandwidth slightly better (86% vs 78% of peak)
-because 4-bit needs more dequant compute per byte — that ~8% headroom lives in
-MLX's `quantized_matmul` 4-bit kernel, not AX's runtime.
+AX sustains **as much or more memory bandwidth than llama.cpp** (453 vs 425 GB/s at matched depth). The direct-decode gap is purely *bytes read*: the upstream snapshot keeps the FFN at 8-bit (~10.4 GiB, ~1.5× the FFN bytes of the Q4_K_M GGUF). Re-quantizing to uniform 4-bit group-64 (~6.3 GiB, ~4.5 bpw, bit-comparable to Q4_K_M's ~4.8 bpw) makes AX direct decode **67.2 vs 57.6 tok/s — beating llama.cpp** at a fair, depth-matched comparison, with output verified coherent. Build it with `scripts/requantize_gemma4_12b_ffn_4bit.py`.
 
-#### Assistant-MTP speculative decode (depth 1)
-
-Same assistant-drafter contract and draft confidence gate as the 26B/31B section
-above. AX runs it assistant-MTP-only (`mtp`) and with n-gram stacked on top
-(`mtp-ngram`).
+**Assistant-MTP speculative decode (depth 1):**
 
 <table>
 <tr>
@@ -203,7 +374,7 @@ above. AX runs it assistant-MTP-only (`mtp`) and with n-gram stacked on top
 | long_code | 1 | 62.0 | 99.0% | 62.1 | 99.0% | 72.3% | 53 |
 | python_modules_long | 1 | 56.9 | 98.4% | 57.2 | 98.6% | 56.9% | 35 |
 
-#### Prefill throughput (tok/s) and time to first token (ms) — same run
+**Prefill and TTFT — same run:**
 
 | Suite | AX MTP prefill | AX MTP+ngram prefill | AX MTP ttft ms | AX MTP+ngram ttft ms |
 |---|---:|---:|---:|---:|
@@ -211,28 +382,46 @@ above. AX runs it assistant-MTP-only (`mtp`) and with n-gram stacked on top
 | long_code | 1,992 | 1,992 | 400 | 400 |
 | python_modules_long | 1,810 | 1,809 | 202 | 202 |
 
-As with 26B/31B, the gated assistant already captures the speculation, so stacking
-n-gram on top adds little (+0.1–1.1 tok/s; n-gram accept 56.9–72.6%). Direct rows:
-sampler greedy-equivalent, 128 generated tokens, 5 repetitions, 15 s cooldown,
-random-token prompts (mlx_lm.benchmark contract). MTP rows: temperature=0.6,
-top_p=0.95, top_k=20; 1000 generated tokens, 5 repetitions, 10 s / 5 s cooldowns.
-Apple M5 Max · AX Engine v6.0.1 · llama.cpp b9430 (Metal) · mlx_lm 0.31.3 (no
-`gemma4_unified` support).
+MTP rows: temperature=0.6, top_p=0.95, top_k=20; 1,000 generated tokens, 5 repetitions, 10 s / 5 s cooldowns. Apple M5 Max · AX Engine v6.0.1 · llama.cpp b9430 (Metal) · mlx_lm 0.31.3 (no `gemma4_unified` support).
 
-Full artifacts:
-[`2026-06-08-gemma-4-12b-it-4bit-direct`](benchmarks/results/mlx-inference/2026-06-08-gemma-4-12b-it-4bit-direct/gemma-4-12b-it-4bit.json)
-(direct; llama.cpp GGUF provenance in
-[`llama_cpp_gguf_provenance.json`](benchmarks/results/mlx-inference/2026-06-08-gemma-4-12b-it-4bit-direct/llama_cpp_gguf_provenance.json)) ·
-[`2026-06-08-gemma4-12b-assistant-mtp`](benchmarks/results/gemma4-assistant-mtp/2026-06-08-gemma4-12b-assistant-mtp/summary.json)
-(assistant-MTP).
+Full artifacts: [`2026-06-08-gemma-4-12b-it-4bit-direct`](benchmarks/results/mlx-inference/2026-06-08-gemma-4-12b-it-4bit-direct/gemma-4-12b-it-4bit.json) (direct; llama.cpp GGUF provenance in [`llama_cpp_gguf_provenance.json`](benchmarks/results/mlx-inference/2026-06-08-gemma-4-12b-it-4bit-direct/llama_cpp_gguf_provenance.json)) · [`2026-06-08-gemma4-12b-assistant-mtp`](benchmarks/results/gemma4-assistant-mtp/2026-06-08-gemma4-12b-assistant-mtp/summary.json) (assistant-MTP).
 
-### Qwen3.6 Fair MTP
+<details>
+<summary>Prepare Gemma 4 12B assistant-MTP artifacts</summary>
 
-Three-engine MTP comparison (MTPLX 0.3.7, AX Engine MTP, AX Engine MTP+n-gram) using
-standard `Qwen/Qwen3.6-*` sidecars plus matching `mlx-community/*-4bit` MLX
-bases. No `Youssofal/*MTPLX*` bundles are used. Latest local rerun: native
-depth, sampled decode, max tokens `1000`, five measured repetitions, one
-warmup repetition.
+Gemma 4 12B MLX target and assistant repos are already converted to MLX safetensors — they do not go through `ax-engine convert-mtplx` or `scripts/prepare_mtp_sidecar.py`. Download the target and matching assistant, then package them with the Gemma-specific helper:
+
+```bash
+hf download mlx-community/gemma-4-12B-it-4bit
+hf download mlx-community/gemma-4-12B-it-assistant-4bit
+python3 scripts/prepare_gemma4_assistant_mtp.py \
+  --target mlx-community/gemma-4-12B-it-4bit \
+  --assistant mlx-community/gemma-4-12B-it-assistant-4bit
+
+hf download mlx-community/gemma-4-12B-it-6bit
+hf download mlx-community/gemma-4-12B-it-assistant-6bit
+python3 scripts/prepare_gemma4_assistant_mtp.py \
+  --target mlx-community/gemma-4-12B-it-6bit \
+  --assistant mlx-community/gemma-4-12B-it-assistant-6bit
+```
+
+The default outputs are quant-specific synthetic HF cache snapshots: `models--ax-local--gemma-4-12b-it-4bit-assistant-mtp/snapshots/v1/` and `models--ax-local--gemma-4-12b-it-6bit-assistant-mtp/snapshots/v1/`. Each package contains the target files, an `assistant/` subtree, and `ax_gemma4_assistant_mtp.json`. Generate or validate the AX manifest before serving:
+
+```bash
+ax-engine-bench generate-manifest \
+  ~/.cache/huggingface/hub/models--ax-local--gemma-4-12b-it-4bit-assistant-mtp/snapshots/v1 \
+  --validate
+ax-engine-bench generate-manifest \
+  ~/.cache/huggingface/hub/models--ax-local--gemma-4-12b-it-6bit-assistant-mtp/snapshots/v1 \
+  --validate
+```
+</details>
+
+#### Qwen3.6 Fair MTP
+
+Three-engine MTP comparison (MTPLX 0.3.7, AX Engine MTP, AX Engine MTP+n-gram) using standard `Qwen/Qwen3.6-*` sidecars plus matching `mlx-community/*-4bit` MLX bases. No `Youssofal/*MTPLX*` bundles are used. All three engines run on the same prompt suites, token caps, sampler, warmup, repetition count, and cooldown.
+
+AX MTP runs the default draft confidence gate (`AX_MLX_MTP_DRAFT_MIN_CONFIDENCE`). The accept columns below use the accept-maximizing `0.98` setting, which holds pure-MTP accept ≥99% on every row except the hardest `python_modules_long` suite (27B 97.6%, 35B-A3B 99.3%). The shipped default is `0.90`, which trades ~1–2 points of accept for +5–13% decode throughput (see `docs/MTP-DRAFT-GATE-THROUGHPUT.md`). Set the variable to `0.98` to restore the accept-maximizing behavior, or `0` to disable.
 
 <table>
 <tr>
@@ -266,23 +455,11 @@ warmup repetition.
 | Qwen3.6 35B-A3B 4-bit | long_code | 1 | 105.6 | 51.4% (43.1–66.7) | 179.1 | 100.0% (99.8–100.0) | 224.2 | 99.8% (99.0–100.0) |
 | Qwen3.6 35B-A3B 4-bit | python_modules_long | 1 | 98.2 | 42.6% (37.0–46.1) | 182.4 | 99.3% (98.0–99.7) | 169.4 | 97.6% (96.2–98.4) |
 
-Accept cells show the median with the `(min–max)` range across the suite's cases × 5 reps, so the run-to-run spread on the
-borderline `python_modules_long` suite is visible rather than hidden behind a single point.
+Accept cells show median with `(min–max)` range across the suite's cases × 5 reps, so the run-to-run spread on the borderline `python_modules_long` suite is visible rather than hidden behind a single point.
 
-AX MTP uses pure MTP (n-gram stacking disabled); AX MTP+n-gram stacks n-gram speculative drafting on top of MTP. AX MTP runs the default
-draft confidence gate (`AX_MLX_MTP_DRAFT_MIN_CONFIDENCE`) that only proposes draft tokens the MTP head is confident in. The accept
-columns below are the accept-maximizing `0.98` setting, which holds pure-MTP accept ≥99% on every row except the hardest
-`python_modules_long` suite (27B 97.6%, 35B-A3B 99.3%); the shipped default is `0.90`,
-which trades ~1–2 points of accept on the hardest row for +5–13% decode throughput (see `docs/MTP-DRAFT-GATE-THROUGHPUT.md`). Set the
-variable to `0.98` to restore the accept-maximizing behavior, or `0` to disable. The gate is scoped to pure MTP, so the
-n-gram-stacked column pools lower-confidence n-gram drafts and sits slightly below it. Sampler: temperature=0.6,
-top_p=0.95, top_k=20. 1000 gen tokens, 5 repetitions, 30 s cooldown, 10 s inter-case cooldown.
-MTPLX 0.3.7 · AX Engine v6.0.1.
+**Prefill throughput (tok/s) — same run:**
 
-#### Prefill throughput (tok/s) — same run
-
-MTPLX prefill is derived from `prompt_tokens / prompt_eval_time_s` (runner-level).
-AX prefill is measured at runner level. Both are pure GPU compute measurements.
+MTPLX prefill is derived from `prompt_tokens / prompt_eval_time_s` (runner-level). AX prefill is measured at runner level. Both are pure GPU compute measurements.
 
 | Model | Suite | Depth | MTPLX tok/s | AX MTP tok/s | AX MTP+ngram tok/s |
 |---|---|---:|---:|---:|---:|
@@ -293,9 +470,9 @@ AX prefill is measured at runner level. Both are pure GPU compute measurements.
 | Qwen3.6 35B-A3B 4-bit | long_code | 1 | 2,431 | 2,735 | 2,707 |
 | Qwen3.6 35B-A3B 4-bit | python_modules_long | 1 | 1,654 | 1,966 | 1,967 |
 
-#### Time to first token (ms) — same run
+**Time to first token (ms) — same run:**
 
-MTPLX TTFT is derived from `prompt_eval_time_s` (runner-level). AX TTFT is a runner-time measurement. Both are pure prefill measurements.
+MTPLX TTFT is derived from `prompt_eval_time_s`. AX TTFT is a runner-time measurement. Both are pure prefill measurements.
 
 | Model | Suite | Depth | MTPLX ms | AX MTP ms | AX MTP+ngram ms |
 |---|---|---:|---:|---:|---:|
@@ -306,9 +483,38 @@ MTPLX TTFT is derived from `prompt_eval_time_s` (runner-level). AX TTFT is a run
 | Qwen3.6 35B-A3B 4-bit | long_code | 1 | 295 | 262 | 265 |
 | Qwen3.6 35B-A3B 4-bit | python_modules_long | 1 | 206 | 172 | 177 |
 
+Sampler: temperature=0.6, top_p=0.95, top_k=20; 1,000 gen tokens, 5 repetitions, 30 s cooldown, 10 s inter-case cooldown. MTPLX 0.3.7 · AX Engine v6.0.1.
+
 Full artifacts: [`2026-06-07-qwen36-fair`](benchmarks/results/mtp-fair/2026-06-07-qwen36-fair/summary.json) (full same-day run; MTPLX and AX MTP+n-gram rows at their defaults, AX pure-MTP rows at the accept-maximizing `0.98` gate).
 
-### llama.cpp metal vs mlx-lm vs AX-Engine
+<details>
+<summary>Reproduce this benchmark</summary>
+
+```bash
+ax-engine convert-mtplx mlx-community/Qwen3.6-27B-4bit \
+  --mtp-source Qwen/Qwen3.6-27B \
+  --fair-base-only
+ax-engine convert-mtplx mlx-community/Qwen3.6-35B-A3B-4bit \
+  --mtp-source Qwen/Qwen3.6-35B-A3B \
+  --fair-base-only
+python3 scripts/bench_qwen36_mtp_fair.py \
+  --engines mtplx ax \
+  --modes mtp mtp-ngram \
+  --models 27b-4bit 35b-a3b-4bit \
+  --suites flappy long_code python_modules_long \
+  --max-tokens 1000 \
+  --repetitions 5 \
+  --cooldown 30
+```
+
+`convert-mtplx` wraps the generic sidecar packager, applies model-specific defaults when optional knobs are omitted (Qwen3.6 27B depth 3; 35B-A3B depth 1), and validates `ax_mtp_sidecar_manifest.json` before reporting success. The generated `summary.md`, `summary.json`, and `decode-tok-s.svg` live under `benchmarks/results/mtp-fair/`. Full methodology and caveats in [`docs/PERFORMANCE.md#mtp-mode`](docs/PERFORMANCE.md#mtp-mode).
+</details>
+
+### Direct Decode · Prefill · TTFT — AX vs mlx_lm vs llama.cpp
+
+<!-- readme-performance-artifacts: reference=benchmarks/results/mlx-inference/2026-05-26-direct-mode-clean-refresh/; ax-overlay=benchmarks/results/mlx-inference/2026-06-04-ax-direct-ngram-readme-rerun/ -->
+
+The tables below compare **direct (non-speculative) decode** across llama.cpp Metal, mlx_lm, and ax engine, covering Gemma 4 and Qwen 3.6 at 128/512/2048 prompt tokens. `ax direct baseline` disables n-gram acceleration, MTP, and assistant drafting to measure the repo-owned direct decode path. Bench prompts are `mlx_lm.benchmark` seed-0 random tokens, which keeps prompt-hash parity across MLX rows.
 
 <table>
 <tr>
@@ -333,336 +539,19 @@ Full artifacts: [`2026-06-07-qwen36-fair`](benchmarks/results/mtp-fair/2026-06-0
 </tr>
 </table>
 
-## Quick Install
+> **`llama.cpp Metal*` column** — Shape-compatible reference produced by Metal-enabled `llama-bench`. `llama-bench` generates its own internal synthetic prompt tokens and does not consume the harness prompt JSON, so these numbers are **not** prompt-hash parity with the other columns. No percentage delta is shown. MLX bit-widths are mapped to the nearest standard GGUF K-quant (4→Q4_K_M, 5→Q5_K_M, 6→Q6_K, 8→Q8_0). Source: `benchmarks/manifests/llama_cpp_metal/inventory.json`, `scripts/bench_llama_cpp_metal_sweep.py`.
 
-**Python (recommended):**
+<details>
+<summary>Benchmark provenance and methodology</summary>
 
-```bash
-pip install ax-engine
-```
+The `mlx_lm` reference rows for the 12 Gemma 4 and Qwen 3.6 rows shown below come from `benchmarks/results/mlx-inference/2026-05-26-direct-mode-clean-refresh/`. The AX direct-mode cells come from the full 12-model AX-only rerun in `benchmarks/results/mlx-inference/2026-06-04-ax-direct-ngram-readme-rerun/` (v5.1.8, `5402992b`). The `llama.cpp Metal*` column is injected from `benchmarks/manifests/llama_cpp_metal/inventory.json` and the `2026-05-18-llama-cpp-metal-gemma-e2b-4bit-depth-fa/` Gemma 4 E2B 4-bit recheck.
 
-`pip install ax-engine` includes the `ax-engine` orchestration CLI and the
-`ax-engine-server` binary. After install, both are available on your `PATH`.
+Setup: generation=128, 5 measured repetitions, 15-second cooldown, AX prefix cache disabled for cold prefill and TTFT measurement, production-build binaries, matching prompt SHA checks. Long-greedy AX prefill rows are runner-time measurements of the cache-state prefix plus final prompt-token boundary — not full-logits prompt scoring throughput. Percentages are versus `mlx_lm`.
 
-**Homebrew** (for `ax-engine-bench` and an alternative `ax-engine-server`
-backward-compatible install):
+The 2K `llama.cpp Metal*` prefill rows are long-context, GGUF-runtime-reference rows. The Gemma 4 E2B 4-bit row was produced with llama.cpp b9110 and rechecked on b9200 with Metal offload, `-b/-ub 2048`, and flash attention enabled. The b9200 recheck improved 2K prefill only slightly — this is our benchmark boundary, not an upstream llama.cpp official bug statement.
+</details>
 
-```bash
-brew tap defai-digital/ax-engine
-brew install ax-engine
-```
-
-> Requires **macOS 14 (Sonoma) or later** on **Apple Silicon M2 Max or newer** with **32 GB RAM minimum**.
-
-## 30-Second Setup
-
-Download a model and run it from Python:
-
-```python
-from ax_engine import download_model, Session
-
-path = download_model("mlx-community/Qwen3-4B-4bit")
-with Session(mlx=True, mlx_model_artifacts_dir=str(path)) as s:
-    print(s.generate([1, 2, 3], max_output_tokens=8).output_tokens)
-```
-
-Or start the OpenAI-compatible server:
-
-```bash
-# Download a target MLX model and generate its AX manifest
-ax-engine download qwen36-35b --json
-
-# Start the server. For built-in aliases, --download resolves the model repo
-# only when the model is not already ready in the local cache.
-ax-engine serve qwen36-35b --download --port 8080
-```
-
-Then call it from any OpenAI client:
-
-```python
-from openai import OpenAI
-client = OpenAI(base_url="http://127.0.0.1:8080/v1", api_key="local")
-resp = client.chat.completions.create(
-    model="my-model",
-    messages=[{"role": "user", "content": "What is AGI?"}],
-    max_tokens=128,
-)
-print(resp.choices[0].message.content)
-```
-
-`ax-engine download` and `download_model()` download weights and auto-run
-`ax-engine-bench generate-manifest`. See [Getting a Model](#getting-a-model) for
-all paths including raw HF checkpoints.
-
-## Typical Hardware Stack ([hardware FAQ](docs/FAQ.md#what-hardware-does-ax-engine-support))
-
-For local agent and chatbot workloads, AX Engine is a better fit for a small
-model portfolio than for one model serving every workflow. See the
-[FAQ model-stack guidance](docs/FAQ.md#what-model-stack-should-i-run-on-high-memory-apple-silicon)
-for the full recommendation.
-
-| Hardware | Recommended memory | Best fit |
-|---|---:|---|
-| Mac mini M4 Pro | 64 GB RAM | Compact always-on local chatbot and agent server |
-| MacBook Pro M5 Max | 128 GB RAM | Portable high-throughput chatbot, agent, and coding stack |
-| Mac Studio M3 Ultra | 256 GB RAM | Larger local model portfolio, longer contexts, and heavier parallel workloads |
-
-| Role | Recommended model | Setup | App | Why |
-|---|---|---|---|---|
-| Default chatbot | Gemma 4 26B-A4B / 31B | 4-bit or 6-bit, 16K-32K | [ax-studio](https://github.com/defai-digital/ax-studio) | General assistant path for reasoning, chat, JSON/function calling, and on-device agent workflows |
-| General agentic model | Qwen3.6-35B-A3B / Qwen3.6-27B | 35B A3B 4-bit; 27B 4/5/6/8-bit, 16K-32K | AX server / SDK | Strong general agent and coding balance; sparse MoE keeps active compute low |
-| Coding specialist | Qwen3-Coder-Next | 6-bit + 16K default; 4-bit/5-bit + 32K when needed | [ax-code](https://github.com/defai-digital/ax-code) | Dedicated local coding-agent path for repo editing, tool use, and long coding sessions |
-
-## Why AX Engine ([FAQ](docs/FAQ.md#is-ax-faster-because-it-replaces-mlx-kernels))
-
-AX Engine gives local inference work a stable runtime contract:
-
-- `ax-engine-server` exposes a local HTTP adapter over the runtime.
-- `ax-engine-bench` records workload contracts, route identity, correctness,
-  determinism, and performance evidence.
-- `ax-engine-sdk`, Python bindings, and the JavaScript client provide
-  thin integration surfaces over the same backend-resolution rules.
-- Repo-owned MLX execution is tracked in
-  [Direct Support Models](#direct-support-models-support-llm-models); delegated
-  routes stay separate from AX-owned throughput claims.
-- Delegated `mlx_lm.server` and `llama.cpp` routes cover explicit
-  compatibility cases without turning delegated results into AX-owned
-  throughput claims.
-
-[mlx_lm](https://github.com/ml-explore/mlx-lm) is the canonical MLX reference.
-AX Engine compares against `mlx_lm.benchmark` and keeps `mlx_lm.server` as the
-explicit delegated compatibility route when AX does not yet have a repo-owned
-graph.
-
-For measured direct-support transformer families on Apple Silicon, the AX-owned
-runtime layer can produce higher effective throughput than the reference MLX
-runtimes on matching benchmark shapes:
-
-- **N-gram acceleration** reaches up to 3.1x mlx_lm decode
-  throughput on high-hit benchmark rows with no second draft model. It is a
-  workload-sensitive path; Qwen 3.6 27B random-token rows below currently fall
-  back near direct decode because the prompt/output stream does not provide a
-  useful n-gram draft source.
-- **Dual MTP coverage on Apple Silicon** supports both Qwen3.6's fused sidecar
-  MTP contract and Gemma 4's separate assistant-drafter MTP contract in the same
-  repo-owned runtime and benchmark tooling.
-- **Coding-shaped decode is a natural fit when local repetition exists**,
-  including completion, edit loops, structured diffs, JSON/tool output, imports,
-  indentation, and repeated identifiers
-- **AX-owned request lifecycle** provides deterministic, auditable scheduling,
-  KV block management, and prefix reuse that upstream Python runtimes do not
-  expose as stable contracts
-- **Long-session prefix reuse** restores physical MLX KV snapshots on validated
-  cache layouts, so long-running chat and agent loops can avoid repeatedly
-  pre-filling the same accumulated context. See
-  [`docs/LONG-CONTEXT.md`](docs/LONG-CONTEXT.md) for the evidence boundary.
-- **workload-contract tooling** (`ax-engine-bench`) validates correctness,
-  determinism, route identity, and regression across checked-in manifests, not
-  just throughput snapshots
-
-See the [FAQ](docs/FAQ.md#is-ax-faster-because-it-replaces-mlx-kernels) for
-the boundary between MLX kernels and AX-owned runtime behavior.
-
-## Runtime Paths
-
-| Path | Use it for | Current scope |
-|---|---|---|
-| Repo-owned MLX runtime | Direct-support MLX model families and repo-owned performance claims when backed by benchmark artifacts | Local Apple Silicon inference, token-based server/SDK requests, benchmarked direct and n-gram acceleration modes |
-| `mlx_lm_delegated` | MLX text models that upstream `mlx-lm` supports before AX has a repo-owned graph | Blocking and SSE text generation through a user-provided `mlx_lm.server`; `/v1/generate`, `/v1/generate/stream`, and OpenAI-compatible completion/chat text endpoints. Streaming is delegated text compatibility evidence, not repo-owned token/KV performance |
-| `llama_cpp` | GGUF and non-MLX local inference | Delegated llama.cpp server/CLI compatibility; route-contract evidence, not repo-owned MLX throughput |
-
-The runtime report exposes `selected_backend`, `support_tier`, and
-`resolution_policy` so callers and benchmark artifacts can distinguish these
-paths.
-
-For the exact OpenAI-shaped endpoint contract, including what is and is not
-compatible today, see `docs/API-COMPATIBILITY.md`.
-
-## Design
-
-The repo-owned MLX path uses MLX directly for tensor operations through the
-official `mlx-c` C API. MLX owns the Apple-maintained Metal kernels; AX owns the
-runtime behavior above the graph: request lifecycle, scheduling, KV/cache
-policy, n-gram acceleration, manifests, and benchmark evidence.
-
-Design details live in the focused docs:
-[Scheduler](docs/SCHEDULER.md) ·
-[KV Cache](docs/KV-CACHE.md) ·
-[Long Context](docs/LONG-CONTEXT.md) ·
-[Benchmark Design](docs/BENCH-DESIGN.md) ·
-[FAQ](docs/FAQ.md#is-ax-faster-because-it-replaces-mlx-kernels).
-
-## Direct Support Models ([support LLM models](docs/SUPPORTED-MODELS.md))
-
-Direct support means AX has a repo-owned `ax-engine-mlx` graph for the model
-family and loads MLX safetensors through the AX manifest path. Other MLX text
-models can still use the explicit `mlx_lm_delegated` compatibility route, but
-delegated rows are not AX-owned throughput claims.
-
-| Family | Direct model IDs | Current scope | Architecture notes |
-|---|---|---|---|
-| Gemma 4 | `gemma-4-e2b-it`, `gemma-4-e4b-it`, `gemma-4-12b-it`, `gemma-4-26b-a4b-it`, `gemma-4-31b-it` | Repo-owned MLX runtime; MLX affine 4/5/6/8-bit weights where available; assistant-MTP benchmark path for matched `*-assistant` drafters | Dense, unified 12B, per-layer embedding, and MoE variants; sliding-window + full attention, K=V full-attention layers, logit softcapping |
-| Qwen 3 | `Qwen3-4B-4bit` and manifest-backed Qwen 3 dense checkpoints | Repo-owned MLX runtime | SwiGLU dense FFN; per-head QK norm; optional MoE variants require manifest evidence |
-| Qwen 3.5 | `Qwen3.5-9B-MLX-4bit` | Repo-owned MLX runtime | Linear attention + MoE FFN; `attn_output_gate` per-head interleaving |
-| Qwen 3.6 / Coder Next | `Qwen3.6-35B-A3B` 4-bit MLX, `Qwen3.6-27B` 4/5/6/8-bit MLX, `Qwen3-Coder-Next-4bit` | Repo-owned MLX runtime | `qwen3_next`: GatedDelta linear attention, full attention with per-head sigmoid gate, sparse top-k MoE with shared expert |
-
-> GLM 4.7 Flash (`glm4_moe_lite`) was demoted from direct support to the
-> `mlx_lm_delegated` passby route: native decode only reaches `mlx_lm` parity and
-> the 4-bit export has no MTP head for AX speculation to exploit. The
-> `glm4.7-flash-4bit` preset now selects the delegated tier and requires
-> `--mlx-lm-server-url`. See [`docs/SUPPORTED-MODELS.md`](docs/SUPPORTED-MODELS.md).
-
-Direct-support models use MLX safetensors format with the AX
-`model-manifest.json` descriptor. Each supported architecture has a hand-written
-forward pass in `ax-engine-mlx`. Adding a new architecture means implementing
-the model graph, not wiring up a generic loader.
-
-Architecture code, tensor-role metadata, or comments are not public direct
-support claims by themselves. LLaMA, Mistral, Mixtral, DeepSeek, and unlisted
-Gemma/Qwen variants should use the explicit delegated route when upstream
-`mlx-lm` or `llama.cpp` can serve them, or fail closed until a repo-owned graph,
-manifest, smoke coverage, and benchmark evidence are promoted here.
-
-Community-model checks are tracked by evidence level. Before promoting another
-architecture or checkpoint, run
-`scripts/probe_mlx_model_support.py --model-dir <model-dir>`; a model should
-report `repo_owned_runtime_ready` only when its manifest, local reference files,
-and runtime path are all present.
-
-## Performance ([full performance docs](docs/PERFORMANCE.md))
-
-<!-- readme-performance-artifacts: reference=benchmarks/results/mlx-inference/2026-05-26-direct-mode-clean-refresh/; ax-overlay=benchmarks/results/mlx-inference/2026-06-04-ax-direct-ngram-readme-rerun/ -->
-The README keeps the common Gemma 4 and Qwen 3.6 generation benchmark rows
-visible. Full result tables and interpretation live in
-[`docs/PERFORMANCE.md`](docs/PERFORMANCE.md); benchmark methodology, test setup,
-and reproduction details live in [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md).
-
-These rows are a provenance-tracked composite. The current `mlx_lm` reference
-rows for the 12 Gemma 4 and Qwen 3.6 rows shown below come from
-`benchmarks/results/mlx-inference/2026-05-26-direct-mode-clean-refresh/`. The
-AX direct-mode cells come from the full 12-model AX-only rerun in
-`benchmarks/results/mlx-inference/2026-06-04-ax-direct-ngram-readme-rerun/`,
-which reused those `mlx_lm` reference rows and was produced with v5.1.8
-(`5402992b`).
-The `llama.cpp Metal*` column is also injected from
-`benchmarks/manifests/llama_cpp_metal/inventory.json` and the
-`benchmarks/results/mlx-inference/2026-05-18-llama-cpp-metal-gemma-e2b-4bit-depth-fa/`
-Gemma 4 E2B 4-bit recheck. The latest refreshed AX overlay uses
-generation=128, 5 measured repetitions, a 15-second cooldown between trials, AX
-prefix cache disabled for cold prefill and TTFT measurement, and
-production-build binaries. MLX and AX rows also use matching prompt SHA checks.
-Long-greedy AX prefill rows are runner-time measurements of the cache-state
-prefix plus final prompt-token boundary; they are not full-logits prompt scoring
-throughput.
-Percentages are versus `mlx_lm`. The `llama.cpp Metal*` column is a
-shape-compatible external reference; it does not share prompt-token hashes with
-the MLX rows.
-
-### MTP speculative decoding
-
-Gemma 4 uses an assistant **drafter** instead of a fused sidecar. We could not
-find runnable Gemma 4 assistant-MTP support in MTPLX, Rapid-MLX, or
-lightning-mlx, so this benchmark has no peer-engine comparison and uses its own
-AX harness. With the target and `*-assistant` checkpoints in the HF cache, the
-benchmark prepares the pair automatically, then renders the box-and-whisker
-charts:
-
-```bash
-python3 scripts/bench_gemma4_assistant_mtp.py \
-  --models 26b-a4b-4bit,31b-4bit \
-  --modes mtp,mtp-ngram \
-  --suites flappy,long_code,python_modules_long \
-  --max-tokens 1000 --repetitions 5
-python3 scripts/render_gemma4_assistant_mtp_charts.py \
-  --results-dir benchmarks/results/gemma4-assistant-mtp/<run-dir>
-```
-
-Artifacts land under `benchmarks/results/gemma4-assistant-mtp/`; the SVGs render
-into `docs/assets/`. Tune the accept/throughput trade-off with
-`AX_MLX_GEMMA4_ASSISTANT_MTP_DRAFT_MIN_CONFIDENCE` (default `0.999`; `0` disables
-the gate).
-
-Gemma 4 12B MLX target and assistant repos are already converted to MLX
-safetensors, so they do not go through `ax-engine convert-mtplx` or
-`scripts/prepare_mtp_sidecar.py`. Download the target and matching assistant,
-then package them with the Gemma-specific assistant-MTP helper:
-
-```bash
-hf download mlx-community/gemma-4-12B-it-4bit
-hf download mlx-community/gemma-4-12B-it-assistant-4bit
-python3 scripts/prepare_gemma4_assistant_mtp.py \
-  --target mlx-community/gemma-4-12B-it-4bit \
-  --assistant mlx-community/gemma-4-12B-it-assistant-4bit
-
-hf download mlx-community/gemma-4-12B-it-6bit
-hf download mlx-community/gemma-4-12B-it-assistant-6bit
-python3 scripts/prepare_gemma4_assistant_mtp.py \
-  --target mlx-community/gemma-4-12B-it-6bit \
-  --assistant mlx-community/gemma-4-12B-it-assistant-6bit
-```
-
-The default outputs are quant-specific synthetic HF cache snapshots:
-`models--ax-local--gemma-4-12b-it-4bit-assistant-mtp/snapshots/v1/` and
-`models--ax-local--gemma-4-12b-it-6bit-assistant-mtp/snapshots/v1/`. Each package
-contains the target files, an `assistant/` subtree, and
-`ax_gemma4_assistant_mtp.json`. Generate or validate the AX manifest on the
-packaged snapshot before serving:
-
-```bash
-ax-engine-bench generate-manifest \
-  ~/.cache/huggingface/hub/models--ax-local--gemma-4-12b-it-4bit-assistant-mtp/snapshots/v1 \
-  --validate
-ax-engine-bench generate-manifest \
-  ~/.cache/huggingface/hub/models--ax-local--gemma-4-12b-it-6bit-assistant-mtp/snapshots/v1 \
-  --validate
-```
-
-AX Engine's fair Qwen3.6 MTP benchmark uses local, provenance-recorded sidecars
-from standard `Qwen/Qwen3.6-*` MTP shards plus the matching
-`mlx-community/*-4bit` MLX base, excluding `Youssofal/*MTPLX*` bundles.
-All three engines (MTPLX, AX MTP, AX MTP+n-gram) run on the same prompt
-suites, token caps, sampler, warmup, repetition count, and cooldown.
-
-Use `ax-engine convert-mtplx` to prepare the AX sidecars, then run the
-three-engine harness to reproduce the Qwen3.6 comparison:
-
-```bash
-ax-engine convert-mtplx mlx-community/Qwen3.6-27B-4bit \
-  --mtp-source Qwen/Qwen3.6-27B \
-  --fair-base-only
-ax-engine convert-mtplx mlx-community/Qwen3.6-35B-A3B-4bit \
-  --mtp-source Qwen/Qwen3.6-35B-A3B \
-  --fair-base-only
-python3 scripts/bench_qwen36_mtp_fair.py \
-  --engines mtplx ax \
-  --modes mtp mtp-ngram \
-  --models 27b-4bit 35b-a3b-4bit \
-  --suites flappy long_code python_modules_long \
-  --max-tokens 1000 \
-  --repetitions 5 \
-  --cooldown 30
-```
-
-`convert-mtplx` wraps the generic sidecar packager, applies model-specific
-defaults when optional knobs are omitted (Qwen3.6 27B depth 3; 35B-A3B depth 1),
-and validates `ax_mtp_sidecar_manifest.json` before reporting success. The
-generated `summary.md`, `summary.json`, and `decode-tok-s.svg` live under
-`benchmarks/results/mtp-fair/`. Full methodology and caveats live in
-[`docs/PERFORMANCE.md#mtp-mode`](docs/PERFORMANCE.md#mtp-mode).
-
-<!-- llama-cpp-column-disclaimer -->
-**`llama.cpp Metal*` column** — Shape-compatible reference produced by Metal-enabled `llama-bench`. `llama-bench` generates its own internal synthetic prompt tokens and does not consume the harness prompt JSON, so these numbers are NOT prompt-hash parity with the other columns. The intent is rough side-by-side context against a well-known third-party Metal runtime, not head-to-head comparison. MLX bit-widths are mapped to the nearest standard bartowski GGUF K-quant (4→Q4_K_M, 5→Q5_K_M, 6→Q6_K, 8→Q8_0). No percentage delta is shown for this column because the prompt is not shared. Source: `benchmarks/manifests/llama_cpp_metal/inventory.json`, `scripts/bench_llama_cpp_metal_sweep.py`.
-
-Note: The 2K `llama.cpp Metal*` prefill rows are long-context,
-GGUF-runtime-reference rows, not MLX parity claims. Across this dataset, the 2K
-`llama.cpp Metal*` prefill column commonly trails the MLX/AX rows, with the
-largest gap on Gemma 4 E2B. The Gemma 4 E2B 4-bit row was produced with
-`llama.cpp` b9110 (`ef22b3e4a`) and rechecked on b9200 (`3e12fbdea`) with Metal
-offload, `-b/-ub 2048`, and flash attention enabled. The b9200 recheck improved
-2K prefill only slightly, and no missing benchmark flag was found. This is our
-benchmark boundary, not an upstream `llama.cpp` official bug statement.
-
-### Prefill throughput (tok/s) — percentages vs mlx_lm
+#### Prefill throughput (tok/s) — percentages vs mlx_lm
 
 | Model | MLX quantization | Prompt tok | llama.cpp Metal* | mlx_lm | ax engine |
 |---|---|---:| ---: |---:|---:|
@@ -703,12 +592,7 @@ benchmark boundary, not an upstream `llama.cpp` official bug statement.
 |  |  | 512 | 3,146.6 | 1,599.5 | **2,618.6 (+63.7%)** |
 |  |  | 2048 | 3,542.3 | 3,513.1 | **3,700.6 (+5.3%)** |
 
-### Decode throughput (tok/s) — generation=128 tokens, temp=0
-
-Higher is better. `ax direct baseline` disables n-gram acceleration, MTP, and
-assistant drafting, so this table measures AX's repo-owned direct decode path
-rather than speculative throughput. The bench prompts are `mlx_lm.benchmark`
-seed-0 random tokens, which keeps prompt-hash parity across the MLX rows.
+#### Decode throughput (tok/s) — generation=128 tokens, temp=0
 
 | Model | MLX quantization | Prompt tok | llama.cpp Metal* | mlx_lm | ax direct baseline |
 |---|---|---:| ---: |---:|---:|
@@ -749,21 +633,11 @@ seed-0 random tokens, which keeps prompt-hash parity across the MLX rows.
 |  |  | 512 | 108.2 | 136.5 | **152.8 (+12.0%)** |
 |  |  | 2048 | 105.7 | 134.5 | **151.8 (+12.9%)** |
 
-Qwen 3.6 27B 4-bit at prompt=2048 originally produced zero decode tokens
-because 4-bit quantization noise pushed an EOS token to argmax at decode
-step 0 on the `mlx_lm.benchmark` random-token contract. The benchmark harness
-now sends request-scoped `sampling.ignore_eos=true` for AX throughput runs,
-matching how `mlx_lm.benchmark` measures fixed `gen=N` throughput regardless
-of stop-token argmax. Production requests default to `ignore_eos=false` and
-still honor EOS at step 0 on this specific synthetic prompt. Source:
-`benchmarks/results/mlx-inference/2026-05-20-qwen27-4to5-direct-ngram-directcpp-r2/qwen3_6-27b-4bit.json`.
+> Qwen 3.6 27B 4-bit at prompt=2,048 originally produced zero decode tokens because 4-bit quantization noise pushed an EOS token to argmax at decode step 0 on the `mlx_lm.benchmark` random-token contract. The benchmark harness now sends `sampling.ignore_eos=true` for AX throughput runs, matching how `mlx_lm.benchmark` measures fixed `gen=N` throughput. Production requests default to `ignore_eos=false`. Source: `benchmarks/results/mlx-inference/2026-05-20-qwen27-4to5-direct-ngram-directcpp-r2/qwen3_6-27b-4bit.json`.
 
-### Time to first token (ms) — generation=128 tokens, temp=0
+#### Time to first token (ms) — generation=128 tokens, temp=0
 
-**Lower is better.** `mlx_lm` values are derived from reported prefill throughput.
-AX values are measured directly from per-step runner timing in the SSE event
-stream. New AX benchmark artifacts also record `client_wall_ttft_ms` separately
-so server/client timing does not get mixed with runner-time throughput.
+**Lower is better.** `mlx_lm` values are derived from reported prefill throughput. AX values are measured directly from per-step runner timing in the SSE event stream.
 
 | Model | MLX quantization | Prompt tok | llama.cpp Metal* | mlx_lm | ax engine |
 |---|---|---:| ---: |---:|---:|
@@ -804,256 +678,11 @@ so server/client timing does not get mixed with runner-time throughput.
 |  |  | 512 | 162.7 | 320.1 | **195.5 (-38.9%)** |
 |  |  | 2048 | 578.2 | 583.0 | **553.4 (-5.1%)** |
 
-Embedding benchmarks are kept out of this README summary; see
-[`docs/EMBEDDINGS.md`](docs/EMBEDDINGS.md) for embedding throughput, serving,
-and cold-start measurements.
-
-## Installation
-
-### Python
-
-```bash
-pip install ax-engine
-```
-
-Requires macOS 14+, Apple Silicon (M2 Max or newer), Python 3.10+.
-
-The pip wheel includes the `ax-engine` orchestration CLI and the
-`ax-engine-server` binary. After install both are on your `PATH`:
-
-```bash
-ax-engine serve "$MODEL_DIR" --port 8080
-```
-
-Optional extras:
-
-```bash
-pip install "ax-engine[download]" # mlx-lm for model download helpers
-```
-
-### Homebrew (CLI tools)
-
-For `ax-engine-bench` (workload-contract CLI), or as an alternative way to
-install the backward-compatible `ax-engine-server` binary:
-
-```bash
-brew tap defai-digital/ax-engine
-brew install ax-engine
-ax-engine-bench doctor
-```
-
-If `doctor` fails with `Library not loaded: libmlxc.dylib`, run:
-`brew install mlx-c && brew reinstall ax-engine`.
-
-### Source
-
-```bash
-brew install mlx-c
-cargo build --workspace --release
-maturin develop  # Python bindings
-```
-
-## Quick Start
-
-The fastest local workflow is:
-
-1. install or build the command-line tools;
-2. download a supported MLX model and generate its manifest;
-3. check model readiness;
-4. start the local server and call its HTTP endpoints.
-
-The installed PyPI workflow uses `ax-engine serve` for the common local-serving
-path. `ax-engine-server` remains available as the backward-compatible low-level
-entrypoint when you need explicit runtime flags. The source-build examples below
-use `./target/release/...` so every server flag is visible.
-
-### Start the local server
-
-```bash
-# Download a model and generate its manifest
-MODEL_DIR="$(ax-engine download qwen36-35b --json | python3 -c 'import json,sys; print(json.load(sys.stdin)["dest"])')"
-# MODEL_DIR uses the Hugging Face Hub snapshot cache by default, e.g.
-# ~/.cache/huggingface/hub/models--mlx-community--Qwen3.6-35B-A3B-4bit/snapshots/<hash>
-
-# Recommended installed path: resolve and launch ax-engine-server in the foreground
-ax-engine serve "$MODEL_DIR" --port 8080
-
-# Check readiness
-./target/release/ax-engine-bench doctor --mlx-model-artifacts-dir "$MODEL_DIR"
-
-# Backward-compatible low-level path: call the server binary directly
-./target/release/ax-engine-server \
-  --mlx \
-  --mlx-model-artifacts-dir "$MODEL_DIR" \
-  --port 8080
-
-# In another terminal, inspect the running server
-curl http://127.0.0.1:8080/v1/runtime
-
-# Optional smoke generation request
-curl http://127.0.0.1:8080/v1/generate \
-  -H 'content-type: application/json' \
-  -d '{
-    "model": "qwen3_dense",
-    "input_tokens": [1, 2, 3, 4],
-    "max_output_tokens": 4,
-    "sampling": {
-      "temperature": 0.0,
-      "top_p": 1.0,
-      "top_k": 0,
-      "seed": 1234
-    }
-  }'
-```
-
-```python
-# Python bindings (after maturin develop)
-import ax_engine
-
-path = ax_engine.download_model("mlx-community/Qwen3-4B-4bit")
-with ax_engine.Session(mlx=True, mlx_model_artifacts_dir=str(path)) as s:
-    result = s.generate([1, 2, 3], max_output_tokens=32)
-    print(result.output_tokens)
-```
-
-For an unsupported MLX text model that upstream `mlx-lm` can serve, keep AX
-Engine as the CLI/server surface and delegate the model execution explicitly:
-
-```bash
-mlx_lm.server --model /path/to/local/mlx-model --host 127.0.0.1 --port 8090
-
-./target/release/ax-engine-bench generate \
-  --prompt "Hello from mlx-lm" \
-  --support-tier mlx_lm_delegated \
-  --mlx-lm-server-url http://127.0.0.1:8090
-```
-
-`mlx_lm_delegated` is a compatibility route, not an AX-owned MLX throughput
-claim. AX forwards text generation to upstream `mlx_lm.server`, preserves
-sampling fields such as `temperature`, `top_p`, `top_k`, `repetition_penalty`,
-and `seed`, and exposes blocking plus SSE text through the AX API. Streamed
-chunks are delegated text deltas; they are not AX-owned token IDs, KV state, or
-model-kernel throughput evidence. Tool calls and visual/multimodal inputs are
-not compatibility contracts yet.
-
-```bash
-# Primary benchmark: AX vs mlx_lm
-python3 scripts/bench_mlx_inference_stack.py \
-  --model-dir /path/to/local/mlx-model \
-  --prompt-tokens 128,512,2048 --generation-tokens 128 \
-  --ax-compare-policies --repetitions 5 \
-  --output benchmarks/results/mlx-inference/$(date +%F)/gemma-4-e2b-it-4bit.json
-
-# Secondary workload-contract benchmark
-./target/release/ax-engine-bench scenario \
-  --manifest benchmarks/manifests/scenario/chat_gemma4_e2b_short.json \
-  --output-root benchmarks/results
-
-# Smoke checks
-./target/release/ax-engine-bench doctor --mlx-model-artifacts-dir "$MODEL_DIR"
-bash scripts/check-server-preview.sh
-bash scripts/check-python-preview.sh
-```
-
-## Getting a Model
-
-ax-engine requires pre-sanitized MLX weights. The recommended source is
-[mlx-community](https://huggingface.co/mlx-community) — models there are already
-converted and validated. Loading an unsanitized raw HF checkpoint into a hybrid
-architecture (Qwen3.5, Qwen3-Next) raises a hard error at load time.
-
-### mlx-community model (recommended)
-
-`ax-engine download`, `download_model()`, and `scripts/download_model.py`
-download weights and auto-generate the required `model-manifest.json` in one
-step:
-
-```bash
-# Show supported Qwen3.6 and Gemma 4 MLX download targets
-ax-engine download --list
-
-# Target Qwen3.6 and Gemma 4 MLX aliases for the local serve CLI
-ax-engine download qwen36-35b --json
-ax-engine download qwen36-27b --json
-ax-engine download qwen36-27b-5bit --json
-ax-engine download qwen36-27b-6bit --json
-ax-engine download qwen36-27b-8bit --json
-ax-engine download gemma4-e2b --json
-ax-engine download gemma4-e2b-5bit --json
-ax-engine download gemma4-e2b-6bit --json
-ax-engine download gemma4-e2b-8bit --json
-ax-engine download gemma4-12b --json
-ax-engine download gemma4-12b-6bit --json
-ax-engine download gemma4-31b --json
-
-# Or download and serve in one explicit command
-ax-engine serve qwen36-35b --download --port 8080
-
-# Raw mlx-community repo ids are still accepted
-ax-engine download mlx-community/Qwen3.6-35B-A3B-4bit --json
-ax-engine download mlx-community/gemma-4-e2b-it-4bit --json
-
-# Optional: copy the resolved HF cache snapshot to an explicit directory
-ax-engine download qwen36-35b --dest /Volumes/Models/qwen36-35b
-
-# Source-build helper path
-python scripts/download_model.py mlx-community/Qwen3.6-35B-A3B-4bit --json
-
-# Python SDK
-from ax_engine import download_model
-path = download_model("mlx-community/Qwen3.6-35B-A3B-4bit")
-```
-
-Built-in download aliases resolve to these MLX repos:
-
-| Alias | Repo |
-|---|---|
-| `qwen36-35b` | `mlx-community/Qwen3.6-35B-A3B-4bit` |
-| `qwen36-27b`, `qwen36-27b-5bit`, `qwen36-27b-6bit`, `qwen36-27b-8bit` | `mlx-community/Qwen3.6-27B-{4,5,6,8}bit` |
-| `gemma4-e2b`, `gemma4-e2b-5bit`, `gemma4-e2b-6bit`, `gemma4-e2b-8bit` | `mlx-community/gemma-4-e2b-it-{4,5,6,8}bit` |
-| `gemma4-12b`, `gemma4-12b-6bit` | `mlx-community/gemma-4-12B-it-{4,6}bit` |
-| `gemma4-31b` | `mlx-community/gemma-4-31b-it-4bit` |
-
-Best practice: leave downloads in the Hugging Face Hub cache by default. This is
-the cache shared by `mlx_lm`, `huggingface_hub`, and other HF-aware tools, so it
-avoids duplicate copies of large model weights. Move the cache with
-`HF_HUB_CACHE`, `HF_HOME`, or `XDG_CACHE_HOME`; use `--dest` only when you want
-an explicit copy outside the shared cache.
-
-If you already have `mlx_lm` installed, its download also lands in that cache and
-ax-engine can auto-discover it:
-
-```bash
-python -m mlx_lm.generate --model mlx-community/Qwen3-4B-4bit --prompt "x" --max-tokens 1
-ax-engine-bench generate-manifest ~/.cache/huggingface/hub/models--mlx-community--Qwen3-4B-4bit/snapshots/<hash>
-ax-engine serve ~/.cache/huggingface/hub/models--mlx-community--Qwen3-4B-4bit/snapshots/<hash> --port 8080
-```
-
-### Raw HuggingFace checkpoint
-
-Raw checkpoints need sanitization before ax-engine can load them. Use `mlx_lm.convert`:
-
-```bash
-pip install mlx-lm
-mlx_lm.convert --hf-path <org/model> --mlx-path /path/to/dest -q --q-bits 4
-ax-engine-bench generate-manifest /path/to/dest
-ax-engine serve /path/to/dest --port 8080
-```
-
-### Manifest generation
-
-Both paths above require `model-manifest.json`. The download helpers generate it
-automatically. To run it directly:
-
-```bash
-ax-engine-bench generate-manifest /path/to/model      # pip, Homebrew, or built binary
-cargo run -p ax-engine-core --bin generate-manifest -- /path/to/model  # source
-```
+Embedding benchmarks are kept out of this README summary; see [`docs/EMBEDDINGS.md`](docs/EMBEDDINGS.md).
 
 ## SDKs
 
-ax-engine-server exposes OpenAI-compatible HTTP endpoints, and several SDKs
-wrap those endpoints or the in-process Rust session directly.
+ax-engine-server exposes OpenAI-compatible HTTP endpoints, and several SDKs wrap those endpoints or the in-process Rust session directly.
 
 | Language | Package / path | LangChain |
 |----------|---------------|-----------|
@@ -1114,14 +743,11 @@ for chunk := range ch {
 }
 ```
 
-See `examples/go/` for runnable examples. For LangChain, point
-[langchaingo](https://github.com/tmc/langchaingo)'s OpenAI provider at
-`http://127.0.0.1:8080/v1` — see `examples/go/langchain/` and `docs/GO.md`.
+See `examples/go/` for runnable examples. For LangChain, point [langchaingo](https://github.com/tmc/langchaingo)'s OpenAI provider at `http://127.0.0.1:8080/v1` — see `examples/go/langchain/` and `docs/GO.md`.
 
 ### Ruby
 
-The Ruby SDK lives at `sdk/ruby/` (`ax-engine-sdk` gem). Zero dependencies —
-stdlib `net/http` only. Streaming uses a block interface.
+The Ruby SDK lives at `sdk/ruby/` (`ax-engine-sdk` gem). Zero dependencies — stdlib `net/http` only. Streaming uses a block interface.
 
 ```ruby
 require "ax_engine"
@@ -1174,9 +800,7 @@ Requires `pip install langchain-core`. See `docs/PYTHON.md` for full details.
 
 ### Mojo
 
-The Mojo SDK (`sdk/mojo/ax_engine.mojo`) wraps the Python `ax_engine` package
-via Mojo's `PythonObject` interop. Requires the Python extension to be built
-first (`maturin develop`).
+The Mojo SDK (`sdk/mojo/ax_engine.mojo`) wraps the Python `ax_engine` package via Mojo's `PythonObject` interop. Requires the Python extension to be built first (`maturin develop`).
 
 ```mojo
 from sdk.mojo.ax_engine import Session
@@ -1189,6 +813,82 @@ var session = Session(
 var result = session.generate("Hello from Mojo!", max_output_tokens=64)
 print(result.output_text)
 session.close()
+```
+
+## Server Usage
+
+The installed PyPI workflow uses `ax-engine serve` for the common local-serving path. `ax-engine-server` remains available as the backward-compatible low-level entrypoint when you need explicit runtime flags.
+
+```bash
+# Download a model and generate its manifest
+MODEL_DIR="$(ax-engine download qwen36-35b --json | python3 -c 'import json,sys; print(json.load(sys.stdin)["dest"])')"
+
+# Recommended: resolve and launch ax-engine-server
+ax-engine serve "$MODEL_DIR" --port 8080
+
+# Backward-compatible low-level path
+./target/release/ax-engine-server \
+  --mlx \
+  --mlx-model-artifacts-dir "$MODEL_DIR" \
+  --port 8080
+
+# Inspect the running server
+curl http://127.0.0.1:8080/v1/runtime
+
+# Smoke generation request
+curl http://127.0.0.1:8080/v1/generate \
+  -H 'content-type: application/json' \
+  -d '{
+    "model": "qwen3_dense",
+    "input_tokens": [1, 2, 3, 4],
+    "max_output_tokens": 4,
+    "sampling": { "temperature": 0.0, "top_p": 1.0, "top_k": 0, "seed": 1234 }
+  }'
+```
+
+**Python bindings (after `maturin develop`):**
+
+```python
+import ax_engine
+
+path = ax_engine.download_model("mlx-community/Qwen3-4B-4bit")
+with ax_engine.Session(mlx=True, mlx_model_artifacts_dir=str(path)) as s:
+    result = s.generate([1, 2, 3], max_output_tokens=32)
+    print(result.output_tokens)
+```
+
+**Delegated route** (for unsupported MLX text models that `mlx-lm` can serve):
+
+```bash
+mlx_lm.server --model /path/to/local/mlx-model --host 127.0.0.1 --port 8090
+
+./target/release/ax-engine-bench generate \
+  --prompt "Hello from mlx-lm" \
+  --support-tier mlx_lm_delegated \
+  --mlx-lm-server-url http://127.0.0.1:8090
+```
+
+`mlx_lm_delegated` is a compatibility route, not an AX-owned MLX throughput claim. AX forwards text generation to upstream `mlx_lm.server` and preserves `temperature`, `top_p`, `top_k`, `repetition_penalty`, and `seed`. Streamed chunks are delegated text deltas — not AX-owned token IDs, KV state, or model-kernel throughput evidence.
+
+**Check readiness and run benchmarks:**
+
+```bash
+# Readiness check
+./target/release/ax-engine-bench doctor --mlx-model-artifacts-dir "$MODEL_DIR"
+bash scripts/check-server-preview.sh
+bash scripts/check-python-preview.sh
+
+# Primary benchmark: AX vs mlx_lm
+python3 scripts/bench_mlx_inference_stack.py \
+  --model-dir /path/to/local/mlx-model \
+  --prompt-tokens 128,512,2048 --generation-tokens 128 \
+  --ax-compare-policies --repetitions 5 \
+  --output benchmarks/results/mlx-inference/$(date +%F)/gemma-4-e2b-it-4bit.json
+
+# Secondary workload-contract benchmark
+./target/release/ax-engine-bench scenario \
+  --manifest benchmarks/manifests/scenario/chat_gemma4_e2b_short.json \
+  --output-root benchmarks/results
 ```
 
 ## Workspace
@@ -1207,10 +907,6 @@ sdk/ruby/                Ruby HTTP SDK (ax-engine-sdk gem)
 sdk/mojo/                Mojo SDK (Python-interop)
 ```
 
-Unsupported MLX text models can use the explicit delegated `mlx_lm_delegated`
-route through a user-provided `mlx_lm.server`. Non-MLX inference routes through
-the delegated `llama.cpp` contract.
-
 ## Development
 
 ```bash
@@ -1223,19 +919,11 @@ python -m unittest discover -s python/tests -v                   # Python tests
 bash scripts/check-mlx-telemetry.sh                              # Gemma/AX MLX telemetry gate
 ```
 
-For Gemma/AX MLX telemetry and decode-profile changes, prefer the targeted
-`scripts/check-mlx-telemetry.sh` gate. Use
-`scripts/check-mlx-telemetry.sh --full-workspace` when the change touches shared
-Rust contracts; that protected path compiles the workspace with
-`cargo test --workspace --no-run --jobs 1` before running crate-by-crate tests.
+For Gemma/AX MLX telemetry and decode-profile changes, prefer the targeted `scripts/check-mlx-telemetry.sh` gate. Use `scripts/check-mlx-telemetry.sh --full-workspace` when the change touches shared Rust contracts; that protected path compiles the workspace with `cargo test --workspace --no-run --jobs 1` before running crate-by-crate tests.
 
-Coverage is collected by the report-only GitHub Actions workflow in
-`.github/workflows/coverage.yml`. It publishes Rust `cargo llvm-cov` and Python
-`coverage.py` artifacts without enforcing a percentage threshold yet; add a gate
-only after the project has a stable baseline across macOS, MLX, and PyO3 paths.
+Coverage is collected by the report-only GitHub Actions workflow in `.github/workflows/coverage.yml`. It publishes Rust `cargo llvm-cov` and Python `coverage.py` artifacts without enforcing a percentage threshold yet.
 
-Public documentation is in `docs/`. Canonical benchmark manifests are in
-`benchmarks/manifests/`. Key design documents:
+Public documentation is in `docs/`. Canonical benchmark manifests are in `benchmarks/manifests/`. Key design docs:
 [SDK / API](docs/SDK.md) ·
 [Python](docs/PYTHON.md) ·
 [JavaScript / TypeScript](docs/JAVASCRIPT.md) ·
@@ -1249,9 +937,7 @@ Public documentation is in `docs/`. Canonical benchmark manifests are in
 
 ## Benchmark Reference Projects
 
-AX Engine's benchmark design and compatibility checks are informed by local
-reference checkouts of related open-source projects. We acknowledge those
-projects here:
+AX Engine's benchmark design and compatibility checks are informed by local reference checkouts of related open-source projects. A row is published only when it fits the benchmark contract for the specific workload: comparable model artifacts, prompt and sampling policy, prefill/decode/TTFT definitions, repeatability, host/runtime metadata, and provenance.
 
 | Project | Repository |
 |---|---|
@@ -1269,42 +955,22 @@ projects here:
 | turboquant-mlx | [arozanov/turboquant-mlx](https://github.com/arozanov/turboquant-mlx) |
 | vLLM | [vllm-project/vllm](https://github.com/vllm-project/vllm) |
 
-Not every reference project appears in AX Engine's public performance tables or
-charts. A row is published only when it fits the benchmark contract for the
-specific workload: comparable model artifacts, prompt and sampling policy,
-prefill/decode/TTFT definitions, repeatability, host/runtime metadata, and
-provenance. Some reference projects are experimental, version-unstable, focused
-on a different serving route, or not shaped for the same Apple MLX/Metal
-measurement strategy, so those results remain implementation guidance or
-diagnostic evidence rather than public comparison rows.
+Some reference projects are experimental, version-unstable, focused on a different serving route, or not shaped for the same Apple MLX/Metal measurement strategy, so those results remain implementation guidance or diagnostic evidence rather than public comparison rows.
 
 ## Limitations
 
-- **Qwen3.5 long-prompt prefill**: Qwen3.5 prefill can trail upstream MLX
-  references on longer prompts; decode and Qwen3-Next are not affected in the
-  same way.
-- **Raw HuggingFace weights**: use pre-sanitized MLX community weights or
-  convert first with `mlx_lm.convert`.
-- **N-gram acceleration rows**: effective-throughput measurements, not raw
-  model-kernel speedups.
+- **Qwen3.5 long-prompt prefill**: Qwen3.5 prefill can trail upstream MLX references on longer prompts; decode and Qwen3-Next are not affected in the same way.
+- **Raw HuggingFace weights**: use pre-sanitized MLX community weights or convert first with `mlx_lm.convert`.
+- **N-gram acceleration rows**: effective-throughput measurements, not raw model-kernel speedups.
 - **TurboQuant KV compression**: experimental and off by default.
 
-See the [FAQ limitations entry](docs/FAQ.md#what-are-the-current-limitations)
-for details.
+See the [FAQ limitations entry](docs/FAQ.md#what-are-the-current-limitations) for details.
 
 ## Contributing
 
-AX Engine welcomes community input through issue tickets, wishlist requests,
-reproducible benchmark results, and documentation feedback. We generally do not
-accept unsolicited code PRs, especially for runtime, model, kernel, scheduler,
-cache, n-gram, or performance-tuning changes.
+AX Engine welcomes community input through issue tickets, wishlist requests, reproducible benchmark results, and documentation feedback. We generally do not accept unsolicited code PRs, especially for runtime, model, kernel, scheduler, cache, n-gram, or performance-tuning changes.
 
-Performance tuning is tightly coupled: a local speedup can regress correctness,
-TTFT, memory pressure, direct-vs-n-gram behavior, long-context behavior, serving
-stability, or another model family. Please open an issue first with the problem,
-target workload, and evidence so maintainers can choose the right validation
-path. See [CONTRIBUTING.md](CONTRIBUTING.md) for issue, wishlist, and benchmark
-result guidelines.
+Performance tuning is tightly coupled: a local speedup can regress correctness, TTFT, memory pressure, direct-vs-n-gram behavior, long-context behavior, serving stability, or another model family. Please open an issue first with the problem, target workload, and evidence so maintainers can choose the right validation path. See [CONTRIBUTING.md](CONTRIBUTING.md) for issue, wishlist, and benchmark result guidelines.
 
 ## Community
 
