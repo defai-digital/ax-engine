@@ -32,6 +32,10 @@ pub struct Gemma4UnifiedVisionProcessor {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Gemma4UnifiedAudioProcessor {
     pub sampling_rate: u32,
+    /// Raw waveform samples consumed per audio soft token. The encoder-free
+    /// connector chunks the (zero-padded) waveform into frames of this size and
+    /// projects one embedding per frame, so one frame == one soft token.
+    pub audio_samples_per_token: u32,
     pub audio_seq_length: Option<u32>,
 }
 
@@ -518,9 +522,21 @@ impl Gemma4UnifiedProcessorConfig {
                     .or_else(|| optional_u32(vision_config, "default_output_length"))
                     .ok_or(Gemma4UnifiedError::MissingField("vision.max_soft_tokens"))?,
             },
-            audio: feature_extractor.map(|feature_extractor| Gemma4UnifiedAudioProcessor {
-                sampling_rate: optional_u32(feature_extractor, "sampling_rate").unwrap_or(16000),
-                audio_seq_length: optional_u32(processor_config, "audio_seq_length"),
+            audio: feature_extractor.map(|feature_extractor| {
+                let audio_config = model_config.get("audio_config");
+                Gemma4UnifiedAudioProcessor {
+                    sampling_rate: optional_u32(feature_extractor, "sampling_rate")
+                        .unwrap_or(16000),
+                    audio_samples_per_token: optional_nested_u32(
+                        audio_config,
+                        "audio_samples_per_token",
+                    )
+                    .or_else(|| optional_u32(feature_extractor, "audio_samples_per_token"))
+                    .or_else(|| optional_u32(feature_extractor, "feature_size"))
+                    .or_else(|| optional_nested_u32(audio_config, "audio_embed_dim"))
+                    .unwrap_or(640),
+                    audio_seq_length: optional_u32(processor_config, "audio_seq_length"),
+                }
             }),
         })
     }
@@ -772,27 +788,18 @@ impl Gemma4UnifiedVisionProcessor {
 
 impl Gemma4UnifiedAudioProcessor {
     pub fn compute_soft_tokens(&self, sample_count: u32) -> u32 {
-        if sample_count == 0 || self.sampling_rate == 0 {
+        if sample_count == 0 || self.audio_samples_per_token == 0 {
             return 0;
         }
-        let sampling_rate = self.sampling_rate as f64;
-        let frame_length = (sampling_rate * 20.0 / 1000.0).round() as i64;
-        let hop_length = (sampling_rate * 10.0 / 1000.0).round() as i64;
-        let frame_size_for_unfold = frame_length + 1;
-        let pad_left = frame_length / 2;
-        let padded_samples = i64::from(sample_count) + pad_left;
-        let num_mel_frames = (padded_samples - frame_size_for_unfold) / hop_length + 1;
-        if num_mel_frames <= 0 {
-            return 0;
-        }
-        let mut t = num_mel_frames;
-        for _ in 0..2 {
-            t = (t + 2 - 3) / 2 + 1;
-        }
-        let tokens = t.max(0) as u32;
+        // Encoder-free connector: the waveform is zero-padded up to a multiple of
+        // `audio_samples_per_token` and reshaped into that many fixed-size frames;
+        // each frame is projected into exactly one soft token. This mirrors the
+        // reference processor (waveform.reshape(-1, audio_samples_per_token)) and
+        // the AX Python/MLX runtime, which truncate to `audio_seq_length`.
+        let frames = sample_count.div_ceil(self.audio_samples_per_token);
         self.audio_seq_length
-            .map(|limit| tokens.min(limit))
-            .unwrap_or(tokens)
+            .map(|limit| frames.min(limit))
+            .unwrap_or(frames)
     }
 }
 
@@ -979,12 +986,71 @@ mod tests {
     fn computes_audio_soft_tokens_from_sample_count() {
         let cfg = local_like_config();
 
+        // Encoder-free chunking: one soft token per `audio_samples_per_token`
+        // (640) waveform samples, padding the final partial frame. 16000 / 640
+        // divides evenly into 25 frames.
         assert_eq!(
             cfg.audio_soft_tokens(Gemma4UnifiedAudioInput {
                 sample_count: 16000
             })
             .unwrap(),
             25
+        );
+
+        // A non-multiple sample count rounds up (ceil), matching the reference
+        // processor's zero-padding of the trailing frame.
+        assert_eq!(
+            cfg.audio_soft_tokens(Gemma4UnifiedAudioInput {
+                sample_count: 16001
+            })
+            .unwrap(),
+            26
+        );
+        assert_eq!(
+            cfg.audio_soft_tokens(Gemma4UnifiedAudioInput { sample_count: 1 })
+                .unwrap(),
+            1
+        );
+    }
+
+    #[test]
+    fn audio_soft_tokens_respect_seq_length_cap_and_config_override() {
+        // audio_seq_length caps the frame count; audio_samples_per_token is read
+        // from the model audio_config when present.
+        let model = json!({
+            "image_token_id": 256,
+            "audio_token_id": 257,
+            "video_token_id": 258,
+            "boi_token_id": 255,
+            "eoi_token_id": 262,
+            "boa_token_id": 259,
+            "eoa_token_id": 260,
+            "vision_config": {
+                "patch_size": 16,
+                "model_patch_size": 48,
+                "pooling_kernel_size": 3,
+                "num_soft_tokens": 280
+            },
+            "audio_config": { "audio_samples_per_token": 320 }
+        });
+        let processor = json!({
+            "feature_extractor": { "sampling_rate": 16000 },
+            "audio_seq_length": 4
+        });
+        let cfg = Gemma4UnifiedProcessorConfig::from_model_and_processor_config(&model, &processor)
+            .expect("config should parse");
+
+        // 1600 / 320 = 5 frames, capped to audio_seq_length = 4.
+        assert_eq!(
+            cfg.audio_soft_tokens(Gemma4UnifiedAudioInput { sample_count: 1600 })
+                .unwrap(),
+            4
+        );
+        // 960 / 320 = 3 frames, under the cap.
+        assert_eq!(
+            cfg.audio_soft_tokens(Gemma4UnifiedAudioInput { sample_count: 960 })
+                .unwrap(),
+            3
         );
     }
 

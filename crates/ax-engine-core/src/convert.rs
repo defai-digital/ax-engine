@@ -1022,6 +1022,10 @@ fn is_gemma4_text_model_type(model_type: &str) -> bool {
     is_gemma4_target_model_type(model_type) || model_type == "gemma4_assistant"
 }
 
+fn is_gemma4_unified_model_type(model_type: &str) -> bool {
+    matches!(model_type, "gemma4_unified" | "gemma4_unified_text")
+}
+
 fn is_qwen_family_model_type(model_type: &str) -> bool {
     model_type.starts_with("qwen3")
 }
@@ -1435,8 +1439,13 @@ fn compute_attention_value_from_key_layers(
     kv_shared_source_layers: &BTreeMap<u32, u32>,
     layer_count: u32,
 ) -> Vec<u32> {
+    // The reference config dataclasses default this field differently per model
+    // type: standard gemma4 (27B) defaults False, while gemma4_unified (12B)
+    // defaults True. AX reads config.json directly without a dataclass to supply
+    // the default, so we mirror the per-type default when the field is absent.
+    let default_k_eq_v = is_gemma4_unified_model_type(model_type);
     if !is_gemma4_target_model_type(model_type)
-        || !arch_bool(config, model_type, "attention_k_eq_v").unwrap_or(false)
+        || !arch_bool(config, model_type, "attention_k_eq_v").unwrap_or(default_k_eq_v)
     {
         return Vec::new();
     }
@@ -3174,6 +3183,57 @@ mod tests {
             .expect("Gemma4 unified text manifest should validate");
 
         let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn attention_k_eq_v_default_is_model_type_aware_when_field_absent() {
+        use std::collections::BTreeMap;
+
+        let layer_types = vec![
+            "sliding_attention".to_string(),
+            "full_attention".to_string(),
+        ];
+        let no_shared = BTreeMap::new();
+        // Field omitted from config: the dataclass defaults differ by type, so
+        // gemma4_unified must default True (full-attention layer 1 uses V-from-K)
+        // while standard gemma4 must default False (no V-from-K layers).
+        let empty = serde_json::json!({});
+        assert_eq!(
+            compute_attention_value_from_key_layers(
+                &empty,
+                "gemma4_unified_text",
+                &layer_types,
+                &no_shared,
+                2,
+            ),
+            vec![1],
+        );
+        assert_eq!(
+            compute_attention_value_from_key_layers(
+                &empty,
+                "gemma4_unified",
+                &layer_types,
+                &no_shared,
+                2,
+            ),
+            vec![1],
+        );
+        assert!(
+            compute_attention_value_from_key_layers(&empty, "gemma4", &layer_types, &no_shared, 2,)
+                .is_empty(),
+        );
+        // An explicit value still overrides the per-type default.
+        let disabled = serde_json::json!({ "attention_k_eq_v": false });
+        assert!(
+            compute_attention_value_from_key_layers(
+                &disabled,
+                "gemma4_unified_text",
+                &layer_types,
+                &no_shared,
+                2,
+            )
+            .is_empty(),
+        );
     }
 
     #[test]
