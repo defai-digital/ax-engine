@@ -339,5 +339,93 @@ def tiny_wav_bytes(samples: list[int], sampling_rate: int) -> bytes:
     return buffer.getvalue()
 
 
+GOLDEN_DIR = (
+    Path(__file__).resolve().parents[2]
+    / "crates"
+    / "ax-engine-server"
+    / "src"
+    / "tests"
+    / "fixtures"
+    / "gemma4_golden"
+)
+
+
+def write_golden_image_config(model_dir: Path, cfg: dict) -> None:
+    """Config matching scripts/gen_gemma4_golden.py so the Python SDK output can
+    be compared against the same HF reference vectors the Rust path uses."""
+    (model_dir / "config.json").write_text(
+        json.dumps(
+            {
+                "image_token_id": 100,
+                "audio_token_id": 200,
+                "video_token_id": 300,
+                "boi_token_id": 101,
+                "eoi_token_id": 102,
+                "boa_token_id": 201,
+                "eoa_token_id": 202,
+                "vision_config": {
+                    "patch_size": cfg["patch_size"],
+                    "model_patch_size": cfg["model_patch_size"],
+                    "pooling_kernel_size": cfg["pooling_kernel_size"],
+                    "default_output_length": cfg["max_soft_tokens"],
+                },
+            }
+        )
+    )
+    (model_dir / "processor_config.json").write_text(
+        json.dumps(
+            {
+                "image_processor": {
+                    "image_processor_type": "Gemma4UnifiedImageProcessor",
+                    "do_convert_rgb": True,
+                    "do_resize": True,
+                    "do_rescale": True,
+                    "rescale_factor": 1.0 / 255.0,
+                    "do_normalize": False,
+                    "patch_size": cfg["patch_size"],
+                    "model_patch_size": cfg["model_patch_size"],
+                    "pooling_kernel_size": cfg["pooling_kernel_size"],
+                    "max_soft_tokens": cfg["max_soft_tokens"],
+                    "image_mean": [0.5, 0.5, 0.5],
+                    "image_std": [0.5, 0.5, 0.5],
+                },
+                "processor_class": "Gemma4UnifiedProcessor",
+            }
+        )
+    )
+
+
+class Gemma4UnifiedGoldenParityTests(unittest.TestCase):
+    """Validate the Python SDK preprocessing against the same golden vectors the
+    Rust server path uses, so the two parallel implementations cannot drift apart
+    from the HF reference."""
+
+    @unittest.skipIf(Image is None, "Pillow is required for Gemma4 image preprocessing")
+    def test_image_preprocessing_matches_golden_reference(self) -> None:
+        golden_path = GOLDEN_DIR / "golden_noresize.json"
+        if not golden_path.is_file():
+            self.skipTest("golden fixtures not present")
+        module = load_module()
+        golden = json.loads(golden_path.read_text())
+
+        with tempfile.TemporaryDirectory() as tmp:
+            model_dir = Path(tmp)
+            write_golden_image_config(model_dir, golden["config"])
+            image = Image.open(GOLDEN_DIR / "image_noresize.png").convert("RGB")
+            request = module.prepare_gemma4_unified_image_request(model_dir, [100], [image])
+
+        image_input = request.multimodal_inputs["gemma4_unified"]["images"][0]
+        self.assertEqual(
+            image_input["pixel_position_ids"],
+            [list(pair) for pair in golden["positions"]],
+        )
+        expected = golden["pixel_values"]
+        actual = image_input["pixel_values"]
+        self.assertEqual(len(actual), len(expected))
+        # No-resize fixture: patchify / normalize / positions must match exactly.
+        max_diff = max(abs(a - b) for a, b in zip(actual, expected))
+        self.assertLess(max_diff, 1e-6, f"pixel diff vs reference = {max_diff}")
+
+
 if __name__ == "__main__":
     unittest.main()
