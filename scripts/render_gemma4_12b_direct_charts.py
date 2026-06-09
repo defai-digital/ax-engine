@@ -52,6 +52,10 @@ METRICS = [
 
 
 def metric_median(row: dict[str, Any], key: str) -> float | None:
+    if row.get("engine") == "llama_cpp_metal" and key == "decode_tok_s":
+        depth_metric = row.get("decode_at_depth_tok_s")
+        if isinstance(depth_metric, dict) and isinstance(depth_metric.get("median"), (int, float)):
+            return float(depth_metric["median"])
     metric = row.get(key)
     if isinstance(metric, dict) and isinstance(metric.get("median"), (int, float)):
         return float(metric["median"])

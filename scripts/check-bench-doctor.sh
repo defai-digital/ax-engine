@@ -62,8 +62,11 @@ doctor_text = subprocess.check_output(
 )
 
 assert "AX Engine v6 doctor" in doctor_text
-assert f"status={expected_status}" in doctor_text
-assert "issues:" in doctor_text
-assert "notes:" in doctor_text
+assert f"Status: {expected_status.replace('_', ' ')}" in doctor_text
+assert "Summary:" in doctor_text
+assert "Workflow:" in doctor_text
+assert "Model artifacts:" in doctor_text
+assert "Issues:" in doctor_text
+assert "Notes:" in doctor_text
 assert "llama.cpp backends do not widen supported host scope" in doctor_text
 PY

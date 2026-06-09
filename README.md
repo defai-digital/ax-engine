@@ -246,7 +246,7 @@ Gemma 4 12B (`model_type: gemma4_unified`) is a different implementation from th
 > [!NOTE]
 > **AX Engine currently supports text-only input for Gemma 4 12B.** Image and audio modalities are planned for **v6.2.0**.
 
-**AX beats llama.cpp Metal on this model in both modes.** In **direct** decode, AX runs **68 tok/s** on a bit-comparable 4-bit-FFN artifact vs llama.cpp's **57–61** (depth-matched), and the margin grows with context (+12% at 128 tokens → +26% at 2,048). On top of that, **depth-2 assistant-MTP** — which `mlx_lm` can't run and llama.cpp doesn't have — holds **62–69 tok/s at ≥97.6% assistant accept**. The earlier story (llama.cpp ahead by ~30%) was an artifact handicap: the upstream snapshot keeps the FFN at 8-bit and so reads ~1.5× the weight bytes; decode is bandwidth-bound, so matching the quantization closes the gap (see the bandwidth table below).
+**AX beats llama.cpp Metal on this model in both modes.** In **direct** decode, AX runs **65.6-69.3 tok/s** on a bit-comparable 4-bit-FFN artifact vs llama.cpp's **52.5-60.2** depth-matched tok/s, and the margin grows with context (+15% at 128 tokens -> +25% at 2,048). On top of that, **depth-2 assistant-MTP** -- which `mlx_lm` can't run and llama.cpp doesn't have -- holds **99.4-105.0 tok/s** on code-like prompt suites, a same-artifact **2.83-2.92x** speedup over direct decode. The earlier story (llama.cpp ahead by ~30%) was an artifact handicap: the upstream snapshot keeps the FFN at 8-bit and so reads ~1.5x the weight bytes; decode is bandwidth-bound, so matching the quantization closes the gap (see the bandwidth table below).
 
 **Direct decode — AX native MLX vs llama.cpp Metal (mlx_lm N/A):**
 
@@ -260,11 +260,11 @@ Gemma 4 12B (`model_type: gemma4_unified`) is a different implementation from th
 
 | Prompt tokens | AX decode | llama.cpp decode (depth 0) | llama.cpp decode (matched depth) | AX prefill | llama.cpp prefill | AX TTFT (ms) | llama.cpp TTFT (ms) |
 |---:|---:|---:|---:|---:|---:|---:|---:|
-| 128 | 68.0 | 60.4 | 60.7 | 1,180 | 1,242 | 108 | 103 |
-| 512 | 68.1 | 57.7 | 56.6 | 1,886 | 1,748 | 271 | 293 |
-| 2048 | 63.8 | 58.3 | 50.6 | 2,035 | 1,640 | 1,007 | 1,249 |
+| 128 | 69.3 | 60.4 | 60.2 | 1,199 | 1,242 | 107 | 103 |
+| 512 | 67.9 | 60.2 | 57.9 | 1,888 | 1,757 | 271 | 291 |
+| 2048 | 65.6 | 60.4 | 52.5 | 2,069 | 1,690 | 990 | 1,212 |
 
-AX wins decode at every prompt size, and the margin widens with context (+12% / +20% / +26% vs the matched-depth column). The two llama.cpp decode columns matter: plain `llama-bench tg` decodes from an **empty context** (depth 0 — its best case), while AX decodes *after* the prompt prefill; the **matched-depth** column (`-d {prompt} -n 128`) is the apples-to-apples figure, and llama.cpp slows more with depth (58 → 51 at 2,048). AX prefill also leads at 2,048 (2,035 vs 1,640). The `llama.cpp Metal` columns are a **shape-compatible external GGUF baseline** (ggml-org Q4_K_M); `mlx_lm` is **absent because it cannot load `gemma4_unified`**.
+AX wins decode at every prompt size, and the margin widens with context (+15% / +17% / +25% vs the matched-depth column). The two llama.cpp decode columns matter: plain `llama-bench tg` decodes from an **empty context** (depth 0 -- its best case), while AX decodes *after* the prompt prefill; the **matched-depth** column (`-d {prompt} -n 128`) is the apples-to-apples figure, and llama.cpp slows more with depth (60.2 -> 52.5 at 2,048). AX prefill also leads at 512 and 2,048. The `llama.cpp Metal` columns are a **shape-compatible external GGUF baseline** (ggml-org Q4_K_M); `mlx_lm` is **absent because it cannot load `gemma4_unified`**.
 
 > This table uses the bit-comparable **4-bit-FFN** AX artifact (`scripts/requantize_gemma4_12b_ffn_4bit.py`), ~4.5 bpw vs the Q4_K_M GGUF's ~4.8 bpw. The upstream `mlx-community/gemma-4-12B-it-4bit` snapshot keeps the FFN at **8-bit** (~10.4 GiB, ~1.5× the FFN bytes) and trails llama.cpp at ~46 tok/s — that's a *bytes-read* handicap, not a runtime one; see the memory-bandwidth analysis next.
 
@@ -285,7 +285,7 @@ AX sustains **as much or more memory bandwidth than llama.cpp** (459 vs 418 GB/s
 
 **Assistant-MTP speculative decode (depth 2):**
 
-On top of the 4-bit-FFN direct win, the assistant-MTP path (depth-2 draft, default `0.999` confidence gate) runs on the assistant bundle and adds a second speculative lever `mlx_lm` and llama.cpp don't have:
+On top of the 4-bit-FFN direct win, the assistant-MTP path (depth-2 draft, default first-token confidence gate `0.90`, deep-token gate `0.999`, GPU-exact confidence) runs on the assistant bundle and adds a second speculative lever `mlx_lm` and llama.cpp don't have. Pure assistant-MTP is the default; MTP+n-gram stacking remains available as an opt-in because it is workload-dependent and did not beat pure MTP on every suite.
 
 <table>
 <tr>
@@ -300,21 +300,21 @@ On top of the 4-bit-FFN direct win, the assistant-MTP path (depth-2 draft, defau
 
 | Suite | Depth | AX MTP tok/s | AX MTP accept | AX MTP+ngram tok/s | AX MTP+ngram accept | n-gram accept | n-gram hits |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| flappy | 2 | 64.3 | 98.7% | 61.9 | 98.7% | 86.3% | 106 |
-| long_code | 2 | 67.1 | 98.7% | 68.8 | 98.6% | 65.9% | 46 |
-| python_modules_long | 2 | 62.7 | 98.0% | 62.5 | 97.6% | 82.0% | 67 |
+| flappy | 2 | 102.3 | 95.5% | 104.0 | 95.6% | 79.2% | 51 |
+| long_code | 2 | 99.4 | 95.2% | 101.0 | 94.5% | 71.7% | 39 |
+| python_modules_long | 2 | 105.0 | 93.5% | 103.5 | 93.3% | 81.4% | 73 |
 
 **Prefill and TTFT — same run:**
 
 | Suite | AX MTP prefill | AX MTP+ngram prefill | AX MTP ttft ms | AX MTP+ngram ttft ms |
 |---|---:|---:|---:|---:|
-| flappy | 1,827 | 1,792 | 197 | 202 |
-| long_code | 1,971 | 1,992 | 405 | 400 |
-| python_modules_long | 1,809 | 1,811 | 202 | 201 |
+| flappy | 1,975 | 1,965 | 186 | 185 |
+| long_code | 2,076 | 2,076 | 383 | 383 |
+| python_modules_long | 1,910 | 1,897 | 189 | 189 |
 
-Direct rows: 4-bit-FFN artifact, greedy-equivalent sampler, 128 generated tokens, 5 repetitions, 15 s cooldown, random-token prompts (mlx_lm.benchmark contract); llama.cpp decode shown at depth 0 (`tg`) and at matched context depth (`-d {prompt}`). MTP rows: depth-2 draft, temperature=0.6, top_p=0.95, top_k=20; 1,000 generated tokens, 5 repetitions, 10 s / 5 s cooldowns. Apple M5 Max · AX Engine v6.0.1 · llama.cpp b9430 (Metal) · mlx_lm 0.31.3 (no `gemma4_unified` support).
+Direct rows: 4-bit-FFN artifact, greedy-equivalent sampler, 128 generated tokens, 5 repetitions, 15 s cooldown, random-token prompts (mlx_lm.benchmark contract); llama.cpp decode shown at depth 0 (`tg`) and at matched context depth (`-d {prompt}`). MTP rows: same 4-bit-FFN assistant-MTP artifact, depth-2 draft, temperature=0.6, top_p=0.95, top_k=20; 512 generated tokens, 3 repetitions, 5 s / 2 s cooldowns. Apple M5 Max · AX Engine v6.0.1 · llama.cpp b9430 (Metal) · mlx_lm 0.31.3 (no `gemma4_unified` support).
 
-Full artifacts: [`2026-06-08-gemma-4-12b-it-4bit-direct`](benchmarks/results/mlx-inference/2026-06-08-gemma-4-12b-it-4bit-direct/gemma-4-12b-it-4bit.json) (direct; llama.cpp GGUF provenance in [`llama_cpp_gguf_provenance.json`](benchmarks/results/mlx-inference/2026-06-08-gemma-4-12b-it-4bit-direct/llama_cpp_gguf_provenance.json)) · [`2026-06-08-gemma4-12b-assistant-mtp`](benchmarks/results/gemma4-assistant-mtp/2026-06-08-gemma4-12b-assistant-mtp/summary.json) (assistant-MTP).
+Full artifacts: [`2026-06-09-gemma-4-12b-it-4bit-direct`](benchmarks/results/mlx-inference/2026-06-09-gemma-4-12b-it-4bit-direct/gemma-4-12b-it-4bit.json) (direct; llama.cpp GGUF provenance in [`llama_cpp_gguf_provenance.json`](benchmarks/results/mlx-inference/2026-06-09-gemma-4-12b-it-4bit-direct/llama_cpp_gguf_provenance.json)) · [`2026-06-09-gemma4-12b-ffn4-mtp-phase4-focused`](benchmarks/results/gemma4-assistant-mtp/2026-06-09-gemma4-12b-ffn4-mtp-phase4-focused/summary.json) (assistant-MTP).
 
 <details>
 <summary>Prepare Gemma 4 12B assistant-MTP artifacts</summary>
@@ -355,21 +355,21 @@ AX Engine's key Mac advantage is **dual-family speculative decoding** — it sup
 
 #### Gemma 4
 
-Unlike Qwen's fused `mtp.*` sidecar, Gemma 4's multi-token prediction uses a small **assistant drafter** that shares the target's tokenizer and embedding table, drafts one token per step from the target's last-layer hidden state, and attends to the target's own KV cache. AX runs it assistant-MTP-only (`mtp`) and with n-gram stacked on top (`mtp-ngram`).
+Unlike Qwen's fused `mtp.*` sidecar, Gemma 4's multi-token prediction uses a small **assistant drafter** that shares the target's tokenizer and embedding table, drafts one token per step from the target's last-layer hidden state, and attends to the target's own KV cache. AX runs it assistant-MTP-only (`mtp`, default) and with n-gram stacked on top (`mtp-ngram`, opt-in).
 
-A **draft confidence gate** (`AX_MLX_GEMMA4_ASSISTANT_MTP_DRAFT_MIN_CONFIDENCE`, default `0.999`) only proposes a draft when the drafter's top-token probability clears the threshold, keeping accept high while remaining correctness-preserving. Lower the gate toward `0` for more speculation on less predictable content.
+A **draft confidence gate** (`AX_MLX_GEMMA4_ASSISTANT_MTP_DRAFT_MIN_CONFIDENCE`, default `0.90` for the first draft token; deep draft default `0.999`) only proposes a draft when the drafter's top-token probability clears the threshold, keeping accept high while remaining correctness-preserving. Lower the gate toward `0` for more speculation on predictable content; raise it for flatter sampled chat.
 
-> **The gate is a speed knob, not a quality knob — lowering it does not corrupt output (e.g. code).** Every drafted token is verified by the target model before it is emitted (rejection sampling when draft log-probs exist, greedy argmax-match otherwise), so a mismatched draft is discarded and replaced by the target's own token. Relaxing the gate (say `0.999` → `0.95`) only lets the drafter propose *more* speculative tokens; it lowers the accept rate and shifts throughput, but the emitted sequence is still the verified target sequence. On code — where the drafter is already sharply peaked and clears `0.999` on most positions — relaxing the gate barely changes behavior and will not introduce errors. (Output-altering approximations are separate, explicit opt-ins such as top-k target softmax, never the confidence gate.)
+> **The gate is a speed knob, not a quality knob -- lowering it does not corrupt output (e.g. code).** Every drafted token is verified by the target model before it is emitted (rejection sampling when draft log-probs exist, greedy argmax-match otherwise), so a mismatched draft is discarded and replaced by the target's own token. Relaxing the gate only lets the drafter propose *more* speculative tokens; it lowers the accept rate and shifts throughput, but the emitted sequence is still the verified target sequence. Output-altering approximations are separate, explicit opt-ins such as top-k target softmax, never the confidence gate.
 
 **Choosing the gate by workload.** Because the output is verified either way, the gate is a throughput dial, not a safety one — pick it by how *predictable* your content is, and (only for temperature-sampled chat) how much reply diversity you want. Lower gate = more speculation = lower accept rate but more multi-token runs. Starting points:
 
 | Workload | Suggested gate | Expected accept¹ | Why |
 |---|---|---|---|
-| **Coding** | `~0.90` (aggressive) | stays high (~96–98%) | Sharply peaked output: even `0.999` already clears ~98%, so low-confidence drafts are rare and usually still correct. Deterministic, so no diversity cost — tune purely for speed. |
-| **Agentic** (tools / JSON / reasoning) | `~0.90–0.95` | high (~95–98%) | Templated and low-temperature like code; output is verified, so no correctness risk. Keep the n-gram structured-output safety gates on. |
+| **Coding** | `~0.90` (aggressive) | high (~93–96% on 12B code suites) | Sharply peaked output makes the first draft token useful even with a looser gate. Deterministic, so no diversity cost -- tune purely for speed. |
+| **Agentic** (tools / JSON / reasoning) | `~0.90–0.95` | high (~93–96% expected on code-like templates) | Templated and low-temperature like code; output is verified, so no correctness risk. Keep n-gram stacking opt-in unless the workload is measured. |
 | **Chatbot** | `~0.99–0.999` if sampling for variety; lower at low temperature | drops on flat text | Natural language is flatter, so accept falls faster; at temperature > 0 a low gate makes replies follow the greedy token and feel less varied. Here a high gate protects *diversity*, not correctness. |
 
-> ¹ Only the code-like benchmark suites below (`flappy`, `long_code`, `python_modules_long`) are measured — they sit ≥98%. The agentic and chatbot figures are expected ranges, and the suggested gates are principled starting points (from output peakedness and the Qwen `0.90` throughput precedent), not measured 12B optima. The `assistant_mtp_gate*` ablation profiles lock the exact per-workload sweet spot.
+> ¹ Only the code-like benchmark suites below (`flappy`, `long_code`, `python_modules_long`) are measured for 12B at the Phase 4 default -- they sit at 93.3-95.6% assistant accept and still deliver 2.83-2.92x same-artifact speedup over direct decode. The agentic and chatbot figures are expected ranges, and the suggested gates are starting points, not universal optima. The `assistant_mtp_gate*` ablation profiles lock the exact per-workload sweet spot.
 
 No peer engine (MTPLX, Rapid-MLX, lightning-mlx) exposes a runnable Gemma 4 assistant-MTP path, so this benchmark has no peer comparison rows.
 
@@ -436,7 +436,7 @@ python3 scripts/render_gemma4_assistant_mtp_charts.py \
   --results-dir benchmarks/results/gemma4-assistant-mtp/<run-dir>
 ```
 
-Artifacts land under `benchmarks/results/gemma4-assistant-mtp/`; SVGs render into `docs/assets/`. Tune the accept/throughput trade-off with `AX_MLX_GEMMA4_ASSISTANT_MTP_DRAFT_MIN_CONFIDENCE` (default `0.999`; `0` disables the gate).
+Artifacts land under `benchmarks/results/gemma4-assistant-mtp/`; SVGs render into `docs/assets/`. Tune the accept/throughput trade-off with `AX_MLX_GEMMA4_ASSISTANT_MTP_DRAFT_MIN_CONFIDENCE` (default `0.90`; `0` disables the first-position gate) and `AX_MLX_GEMMA4_ASSISTANT_MTP_DEEP_DRAFT_MIN_CONFIDENCE` (default `0.999`). MTP+n-gram stacking is opt-in: use `--mlx-mtp-enable-ngram-stacking` through the server/SDK path, or set `AX_MLX_MTP_DISABLE_NGRAM_STACKING=0` for low-level benchmark runs.
 </details>
 
 #### Qwen 3.6

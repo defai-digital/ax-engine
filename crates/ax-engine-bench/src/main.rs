@@ -12170,12 +12170,17 @@ mod tests {
         let text = render_doctor_report(&report);
 
         assert!(text.contains("AX Engine v6 doctor"));
-        assert!(text.contains("status=not_ready"));
-        assert!(text.contains("workflow.mode=unknown"));
-        assert!(text.contains("host.detected_soc=Apple M3 Max"));
-        assert!(text.contains("issues:"));
-        assert!(text.contains("notes:"));
-        assert!(text.contains("performance_advice:"));
+        assert!(text.contains("Status: not ready"));
+        assert!(text.contains("Summary:"));
+        assert!(text.contains("  - Host: Apple M3 Max (macos/aarch64)"));
+        assert!(text.contains("Workflow:"));
+        assert!(text.contains("  - Mode: unknown"));
+        assert!(text.contains("Model artifacts:"));
+        assert!(text.contains("Issues:"));
+        assert!(text.contains("Notes:"));
+        assert!(text.contains("Performance advice:"));
+        assert!(text.contains("Warnings:"));
+        assert!(text.contains("Info:"));
         assert!(text.contains("ngram_acceleration_default_on"));
         assert!(text.contains("llama.cpp backends do not widen supported host scope"));
     }

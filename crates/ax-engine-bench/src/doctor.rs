@@ -62,6 +62,14 @@ impl DoctorStatus {
             Self::NotReady => "not_ready",
         }
     }
+
+    fn human_label(self) -> &'static str {
+        match self {
+            Self::Ready => "ready",
+            Self::BringupOnly => "bring-up only",
+            Self::NotReady => "not ready",
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -89,11 +97,11 @@ pub(crate) enum DoctorModelArtifactsStatus {
 }
 
 impl DoctorModelArtifactsStatus {
-    fn as_str(self) -> &'static str {
+    fn human_label(self) -> &'static str {
         match self {
-            Self::NotSelected => "not_selected",
+            Self::NotSelected => "not selected",
             Self::Ready => "ready",
-            Self::NotReady => "not_ready",
+            Self::NotReady => "not ready",
         }
     }
 }
@@ -164,15 +172,6 @@ impl DoctorAdvice {
             severity,
             summary: summary.to_string(),
             detail: detail.to_string(),
-        }
-    }
-}
-
-impl DoctorAdviceSeverity {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Info => "info",
-            Self::Warning => "warning",
         }
     }
 }
@@ -618,39 +617,103 @@ fn missing_metal_tools(metal_toolchain: &MetalToolchainReport) -> Vec<&'static s
     missing
 }
 
-fn tool_version_text(tool: &ToolStatusReport) -> &str {
-    tool.version.as_deref().unwrap_or("unknown")
+fn tool_version_summary(tool: &ToolStatusReport) -> &str {
+    tool.version
+        .as_deref()
+        .and_then(|version| version.lines().next())
+        .unwrap_or("unknown")
+}
+
+fn yes_no(value: bool) -> &'static str {
+    if value { "yes" } else { "no" }
+}
+
+fn ready_not_ready(value: bool) -> &'static str {
+    if value { "ready" } else { "not ready" }
+}
+
+fn available_missing(value: bool) -> &'static str {
+    if value { "available" } else { "missing" }
+}
+
+fn render_bullets(lines: &mut Vec<String>, items: &[String]) {
+    if items.is_empty() {
+        lines.push("  - none".to_string());
+    } else {
+        lines.extend(items.iter().map(|item| format!("  - {item}")));
+    }
+}
+
+fn render_advice_group(
+    lines: &mut Vec<String>,
+    title: &str,
+    advice: &[DoctorAdvice],
+    severity: DoctorAdviceSeverity,
+) {
+    let matching: Vec<&DoctorAdvice> = advice
+        .iter()
+        .filter(|item| item.severity == severity)
+        .collect();
+    if matching.is_empty() {
+        return;
+    }
+
+    lines.push(format!("{title}:"));
+    for item in matching {
+        lines.push(format!("  - {}: {}", item.id, item.summary));
+        lines.push(format!("    {}", item.detail));
+    }
 }
 
 pub(crate) fn render_doctor_report(report: &DoctorReport) -> String {
     let mut lines = vec![
         "AX Engine v6 doctor".to_string(),
-        format!("schema_version={}", report.schema_version),
-        format!("target={}", report.mlx_target),
-        format!("status={}", report.status.as_str()),
-        format!("mlx_runtime_ready={}", report.mlx_runtime_ready),
-        format!("bringup_allowed={}", report.bringup_allowed),
+        format!("Status: {}", report.status.human_label()),
+        format!("Schema: {}", report.schema_version),
+        String::new(),
+        "Summary:".to_string(),
         format!(
-            "workflow.mode={}",
-            workflow_mode_label(report.workflow.mode)
+            "  - MLX runtime: {}",
+            ready_not_ready(report.mlx_runtime_ready)
         ),
-        format!("workflow.cwd={}", report.workflow.cwd),
+        format!("  - Bring-up allowed: {}", yes_no(report.bringup_allowed)),
+        format!("  - Target: {}", report.mlx_target),
         format!(
-            "workflow.source_root={}",
+            "  - Host: {} ({}/{})",
+            report.host.detected_soc.as_deref().unwrap_or("unknown"),
+            report.host.os,
+            report.host.arch
+        ),
+        format!(
+            "  - Metal toolchain: {}",
+            ready_not_ready(report.metal_toolchain.fully_available)
+        ),
+        String::new(),
+        "Workflow:".to_string(),
+        format!(
+            "  - Mode: {}",
+            workflow_mode_label(report.workflow.mode).replace('_', " ")
+        ),
+        format!("  - Current directory: {}", report.workflow.cwd),
+        format!(
+            "  - Source checkout: {}",
             report.workflow.source_root.as_deref().unwrap_or("none")
         ),
-        format!("workflow.doctor={}", command_text(&report.workflow.doctor)),
-        format!("workflow.server={}", command_text(&report.workflow.server)),
         format!(
-            "workflow.generate_manifest={}",
+            "  - Machine-readable doctor: {}",
+            command_text(&report.workflow.doctor)
+        ),
+        format!("  - Server: {}", command_text(&report.workflow.server)),
+        format!(
+            "  - Generate manifest: {}",
             command_text(&report.workflow.generate_manifest)
         ),
         format!(
-            "workflow.benchmark={}",
+            "  - Benchmark: {}",
             command_text(&report.workflow.benchmark)
         ),
         format!(
-            "workflow.download_model={}",
+            "  - Download model: {}",
             report
                 .workflow
                 .download_model
@@ -658,104 +721,101 @@ pub(crate) fn render_doctor_report(report: &DoctorReport) -> String {
                 .map(command_text)
                 .unwrap_or_else(|| "none".to_string())
         ),
+        String::new(),
+        "Model artifacts:".to_string(),
         format!(
-            "model_artifacts.status={}",
-            report.model_artifacts.status.as_str()
+            "  - Status: {}",
+            report.model_artifacts.status.human_label()
         ),
         format!(
-            "model_artifacts.path={}",
+            "  - Path: {}",
             report.model_artifacts.path.as_deref().unwrap_or("none")
         ),
         format!(
-            "model_artifacts.config_present={}",
-            report.model_artifacts.config_present
+            "  - config.json: {}",
+            yes_no(report.model_artifacts.config_present)
         ),
         format!(
-            "model_artifacts.manifest_present={}",
-            report.model_artifacts.manifest_present
+            "  - model-manifest.json: {}",
+            yes_no(report.model_artifacts.manifest_present)
         ),
         format!(
-            "model_artifacts.safetensors_present={}",
-            report.model_artifacts.safetensors_present
+            "  - safetensors: {}",
+            yes_no(report.model_artifacts.safetensors_present)
         ),
         format!(
-            "model_artifacts.model_type={}",
+            "  - Model type: {}",
             report
                 .model_artifacts
                 .model_type
                 .as_deref()
                 .unwrap_or("unknown")
         ),
-        format!("host.os={}", report.host.os),
-        format!("host.arch={}", report.host.arch),
-        format!(
-            "host.detected_soc={}",
-            report.host.detected_soc.as_deref().unwrap_or("unknown")
-        ),
-        format!(
-            "host.supported_mlx_runtime={}",
-            report.host.supported_mlx_runtime
-        ),
-        format!(
-            "host.unsupported_host_override_active={}",
-            report.host.unsupported_host_override_active
-        ),
-        format!(
-            "metal_toolchain.fully_available={}",
-            report.metal_toolchain.fully_available
-        ),
     ];
 
-    lines.extend([
-        format!(
-            "metal.available={} ({})",
-            report.metal_toolchain.metal.available,
-            tool_version_text(&report.metal_toolchain.metal)
-        ),
-        format!(
-            "metallib.available={} ({})",
-            report.metal_toolchain.metallib.available,
-            tool_version_text(&report.metal_toolchain.metallib)
-        ),
-        format!(
-            "metal_ar.available={} ({})",
-            report.metal_toolchain.metal_ar.available,
-            tool_version_text(&report.metal_toolchain.metal_ar)
-        ),
-        "issues:".to_string(),
-    ]);
-
-    if report.issues.is_empty() {
-        lines.push("  - none".to_string());
-    } else {
-        lines.extend(report.issues.iter().map(|issue| format!("  - {issue}")));
-    }
-
-    lines.push("model_artifacts.issues:".to_string());
-    if report.model_artifacts.issues.is_empty() {
-        lines.push("  - none".to_string());
-    } else {
-        lines.extend(
-            report
-                .model_artifacts
-                .issues
-                .iter()
-                .map(|issue| format!("  - {issue}")),
+    if !report.model_artifacts.selected {
+        lines.push(
+            "  - Next: pass --mlx-model-artifacts-dir <model-dir> for model-specific checks"
+                .to_string(),
         );
     }
 
-    lines.push("notes:".to_string());
-    lines.extend(report.notes.iter().map(|note| format!("  - {note}")));
-    lines.push("performance_advice:".to_string());
-    lines.extend(report.performance_advice.iter().map(|advice| {
+    lines.extend([
+        String::new(),
+        "Host:".to_string(),
         format!(
-            "  - [{}] {}: {} ({})",
-            advice.severity.as_str(),
-            advice.id,
-            advice.summary,
-            advice.detail
-        )
-    }));
+            "  - Supported MLX runtime host: {}",
+            yes_no(report.host.supported_mlx_runtime)
+        ),
+        format!(
+            "  - Unsupported-host override active: {}",
+            yes_no(report.host.unsupported_host_override_active)
+        ),
+        String::new(),
+        "Metal toolchain:".to_string(),
+        format!(
+            "  - metal: {} - {}",
+            available_missing(report.metal_toolchain.metal.available),
+            tool_version_summary(&report.metal_toolchain.metal)
+        ),
+        format!(
+            "  - metallib: {} - {}",
+            available_missing(report.metal_toolchain.metallib.available),
+            tool_version_summary(&report.metal_toolchain.metallib)
+        ),
+        format!(
+            "  - metal-ar: {} - {}",
+            available_missing(report.metal_toolchain.metal_ar.available),
+            tool_version_summary(&report.metal_toolchain.metal_ar)
+        ),
+        String::new(),
+        "Issues:".to_string(),
+    ]);
+
+    render_bullets(&mut lines, &report.issues);
+
+    lines.push(String::new());
+    lines.push("Model artifact issues:".to_string());
+    render_bullets(&mut lines, &report.model_artifacts.issues);
+
+    lines.push(String::new());
+    lines.push("Notes:".to_string());
+    render_bullets(&mut lines, &report.notes);
+
+    lines.push(String::new());
+    lines.push("Performance advice:".to_string());
+    render_advice_group(
+        &mut lines,
+        "Warnings",
+        &report.performance_advice,
+        DoctorAdviceSeverity::Warning,
+    );
+    render_advice_group(
+        &mut lines,
+        "Info",
+        &report.performance_advice,
+        DoctorAdviceSeverity::Info,
+    );
 
     lines.join("\n")
 }

@@ -37,12 +37,14 @@ ENGINE_LABELS = {ENGINE_MTP: "AX assistant MTP", ENGINE_NGRAM: "AX assistant MTP
 ENGINE_COLORS = {ENGINE_MTP: "#2eaf5f", ENGINE_NGRAM: "#137a3d"}
 
 MODELS = [
+    ("12b-4bit-ffn4", "Gemma 4 12B 4-bit-FFN"),
     ("12b-4bit", "Gemma 4 12B 4-bit"),
     ("26b-a4b-4bit", "Gemma 4 26B A4B 4-bit"),
     ("31b-4bit", "Gemma 4 31B 4-bit"),
 ]
 # Maps a model key to the compact slug used in chart filenames.
 MODEL_SHORT = {
+    "12b-4bit-ffn4": "12b",
     "12b-4bit": "12b",
     "26b-a4b-4bit": "26b",
     "31b-4bit": "31b",
@@ -52,7 +54,7 @@ SUITES = [
     ("long_code", "long_code"),
     ("python_modules_long", "python_modules_long"),
 ]
-FOOTNOTE = "Apple M5 Max · AX Engine v5.2.4 · gate 0.999 · T=0.6/top_p=0.95/top_k=20"
+FOOTNOTE = "Apple M5 Max · gate 0.90 first / 0.999 deep · GPU exact · T=0.6/top_p=0.95/top_k=20"
 FONT = "Inter,Segoe UI,Arial,sans-serif"
 
 
@@ -376,7 +378,7 @@ def build_groups(results_dir: Path, model_key: str, metric: str) -> list[dict[st
 
 METRICS = [
     ("decode", "decode-tok-s", "Decode throughput", "tok/s", "Higher is better", False, 0.0, None),
-    ("accept", "accept-rate", "Assistant accept rate", "%", "Higher is better", False, 95.0, 100.0),
+    ("accept", "accept-rate", "Assistant accept rate", "%", "Higher is better", False, 90.0, 100.0),
     ("prefill", "prefill-tok-s", "Prefill throughput", "tok/s", "Higher is better", False, 0.0, None),
     ("ttft", "ttft-ms", "Time to first token", "ms", "Lower is better", True, 0.0, None),
 ]

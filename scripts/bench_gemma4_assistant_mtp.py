@@ -215,6 +215,13 @@ BENCH_PROFILES = {
     ),
 }
 
+
+def effective_profile_env(profile: BenchProfile) -> dict[str, str]:
+    env = dict(profile.env)
+    if profile.mode == "mtp-ngram":
+        env.setdefault("AX_MLX_MTP_DISABLE_NGRAM_STACKING", "0")
+    return env
+
 DEFAULT_PROFILE_BY_MODE = {
     "direct": "direct",
     "mtp": "assistant_mtp_default",
@@ -1111,6 +1118,7 @@ def main() -> None:
                 raise FileNotFoundError(f"missing prompt suite {suite_file}")
             for bench_profile in bench_profiles:
                 mode = bench_profile.mode
+                profile_env = effective_profile_env(bench_profile)
                 row_depth = bench_profile.depth or effective_depth
                 artifact_path = output_dir / model_key / suite / f"{bench_profile.key}.json"
                 artifact_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1130,7 +1138,7 @@ def main() -> None:
                         sampling=args.sampling,
                         depth=row_depth,
                         no_build=args.no_build_ax_engine,
-                        env_overrides=bench_profile.env,
+                        env_overrides=profile_env,
                     )
                 row = summarize_artifact(artifact_path, expected_engine=ENGINE_KEYS[mode])
                 row.update(
@@ -1142,7 +1150,7 @@ def main() -> None:
                         "profile": bench_profile.key,
                         "profile_label": bench_profile.label,
                         "profile_experimental": bench_profile.experimental,
-                        "profile_env": bench_profile.env,
+                        "profile_env": profile_env,
                         "depth": row_depth,
                         "model_dir": str(model_dir),
                     }
