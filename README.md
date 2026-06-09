@@ -389,6 +389,8 @@ No peer engine (MTPLX, Rapid-MLX, lightning-mlx) exposes a runnable Gemma 4 assi
 
 **Gemma 4 speculative decoding holds draft accept ≥98% on every cell below** (98.4–99.5% across 26B / 31B × {MTP, MTP+n-gram} × {flappy, long_code, python_modules_long}).
 
+The 26B/31B public run below is the promotion-grade assistant-MTP matrix only; unpublished retry fragments and failed direct-baseline attempts are excluded from this artifact set. Without a complete same-artifact direct row for these two models, the public verdict is scoped to MTP+n-gram versus pure assistant-MTP. In that scope n-gram is **keep-opt-in**: +1.3% median decode for 26B and +1.0% for 31B, with no suite regressing more than 0.1%.
+
 
 <table>
 <tr>
@@ -435,7 +437,7 @@ No peer engine (MTPLX, Rapid-MLX, lightning-mlx) exposes a runnable Gemma 4 assi
 
 The gated assistant already captures the speculation, so stacking n-gram on top adds little — the two modes track closely. Sampler: temperature=0.6, top_p=0.95, top_k=20; 1,000 generated tokens, 5 repetitions, 10 s / 5 s cooldowns. Apple M5 Max · AX Engine v6.0.1.
 
-Full artifacts: [`2026-06-07-gemma4-assistant-mtp`](benchmarks/results/gemma4-assistant-mtp/2026-06-07-gemma4-assistant-mtp/summary.json).
+Full artifacts: [`2026-06-09-gemma4-26b-31b-optimized-scenario`](benchmarks/results/gemma4-assistant-mtp/2026-06-09-gemma4-26b-31b-optimized-scenario/summary.json).
 
 <details>
 <summary>Reproduce this benchmark</summary>

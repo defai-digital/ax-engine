@@ -447,10 +447,18 @@ class ComparisonTests(unittest.TestCase):
     ) -> dict:
         return {
             "model": "12b-4bit",
+            "model_label": "Gemma 4 12B 4-bit",
             "suite": suite,
             "mode": mode,
             "profile": profile,
+            "depth": 1,
             "decode_tok_s_median": decode,
+            "assistant_accept_rate": 0.9,
+            "mtp_accept_rate": 0.9 if mode != "direct" else None,
+            "ngram_accept_rate": 0.8 if mode == "mtp-ngram" else None,
+            "ngram_hit_steps": 1 if mode == "mtp-ngram" else 0,
+            "ngram_utility_gated_steps": 0,
+            "ngram_safety_tightened_steps": 0,
             "assistant_draft_tokens": drafted,
             "affine_max_bits": max_bits,
             "affine_8bit_count": eightbit,
@@ -558,6 +566,47 @@ class ComparisonTests(unittest.TestCase):
         ]
         result = bench.build_comparisons(rows)
         self.assertTrue(any("no direct-decode row" in w for w in result["warnings"]))
+
+    def test_write_summary_scopes_markdown_when_direct_row_is_missing(self) -> None:
+        rows = [
+            self._row(
+                profile="assistant_mtp_default",
+                mode="mtp",
+                suite="flappy",
+                decode=60.0,
+                max_bits=4,
+                eightbit=0,
+                drafted=500,
+            ),
+            self._row(
+                profile="assistant_mtp_ngram_default",
+                mode="mtp-ngram",
+                suite="flappy",
+                decode=61.0,
+                max_bits=4,
+                eightbit=0,
+                drafted=500,
+            ),
+        ]
+        comparison = bench.build_comparisons(rows)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_dir = Path(tmpdir)
+            bench.write_summary(
+                output_dir,
+                {
+                    "schema": "test",
+                    "generated_at": "2026-06-09T00:00:00Z",
+                    "output_dir": str(output_dir),
+                    "rows": rows,
+                    "comparison": comparison,
+                    "optimized_scenarios": [],
+                },
+            )
+            summary_md = (output_dir / "summary.md").read_text()
+
+        self.assertIn("## Assistant-MTP relative comparison", summary_md)
+        self.assertIn("scoped to MTP+n-gram versus pure assistant-MTP", summary_md)
+        self.assertNotIn("direct-baseline target artifact", summary_md)
 
 
 if __name__ == "__main__":

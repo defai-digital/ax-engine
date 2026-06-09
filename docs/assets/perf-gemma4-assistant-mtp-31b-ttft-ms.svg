@@ -4,7 +4,7 @@
 <rect width="100%" height="100%" fill="#f8fafc"/>
 <text x="24" y="24" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="16" font-weight="700" fill="#111827">Gemma 4 31B 4-bit — Time to first token</text>
 <text x="24" y="46" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#4b5563">All suites | box=IQR | whiskers=min/max | dots=runs</text>
-<text x="24" y="62" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">Apple M5 Max · AX Engine v5.2.4 · gate 0.999 · T=0.6/top_p=0.95/top_k=20</text>
+<text x="24" y="62" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">Apple M5 Max · gate 0.90 first / 0.999 deep · GPU exact · T=0.6/top_p=0.95/top_k=20</text>
 <rect x="678" y="13" width="48" height="22" rx="11" fill="#eef2ff" stroke="#c7d2fe"/>
 <text x="702.0" y="28" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#3730a3">ms</text>
 <text x="726" y="52" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#dc2626">Lower is better</text>

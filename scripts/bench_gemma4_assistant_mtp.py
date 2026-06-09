@@ -1066,14 +1066,27 @@ def write_summary(output_dir: Path, summary: dict[str, Any]) -> None:
     comparison = summary.get("comparison") or {}
     comparisons = comparison.get("comparisons") or []
     if comparisons:
-        parity_note = (
-            "All compared profiles share the direct-baseline target artifact."
-            if comparison.get("parity_ok")
-            else "**Artifact parity mismatch detected — survival verdicts marked `retest`.**"
+        has_direct_comparison = any(entry.get("baseline") == "direct" for entry in comparisons)
+        section_title = (
+            "Same-artifact survival comparison"
+            if has_direct_comparison
+            else "Assistant-MTP relative comparison"
         )
+        if has_direct_comparison:
+            parity_note = (
+                "Direct-baseline rows share the same target artifact; assistant-MTP+n-gram "
+                "rows use pure assistant-MTP as their baseline."
+                if comparison.get("parity_ok")
+                else "**Artifact parity mismatch detected — survival verdicts marked `retest`.**"
+            )
+        else:
+            parity_note = (
+                "No direct-decode rows are present in this artifact set, so this table is "
+                "scoped to MTP+n-gram versus pure assistant-MTP."
+            )
         lines += [
             "",
-            "## Same-artifact survival comparison",
+            f"## {section_title}",
             "",
             parity_note,
             "",
