@@ -437,6 +437,23 @@ def validate_readme_ready_peer_rows(
             errors.append(
                 f"rows[{index}] readme-ready measured peer row reports cached prompt tokens"
             )
+        server_cached_tokens = metric_median(row, "server_prompt_cached_tokens")
+        if isinstance(server_cached_tokens, (int, float)) and server_cached_tokens > 0:
+            errors.append(
+                f"rows[{index}] readme-ready measured peer row reports server prompt cache hits"
+            )
+        reported_prompt_tokens = metric_median(row, "prompt_tokens_reported")
+        server_prompt_tokens = metric_median(row, "server_prompt_tokens")
+        if (
+            isinstance(reported_prompt_tokens, (int, float))
+            and reported_prompt_tokens > 0
+            and isinstance(server_prompt_tokens, (int, float))
+            and server_prompt_tokens < reported_prompt_tokens * 0.9
+        ):
+            errors.append(
+                f"rows[{index}] readme-ready measured peer row server prompt tokens "
+                "are too low for a cold prompt evaluation"
+            )
 
 
 def validate_artifact(

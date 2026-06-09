@@ -981,6 +981,7 @@ def run_chat_one(
     if isinstance(timings, dict):
         result["server_timings"] = timings
         timing_key_map = {
+            "cache_n": "server_prompt_cached_tokens",
             "prompt_ms": "server_prompt_ms",
             "prompt_n": "server_prompt_tokens",
             "prompt_per_second": "server_prompt_tokens_per_second",
@@ -1302,8 +1303,11 @@ def peer_capability(args: argparse.Namespace, case: PreparedCase) -> PeerDecisio
         "cache_policy": args.llama_cache_policy,
         "cache_policy_contract": {
             "prompt_cache_disabled": [
-                "--no-cache-prompt",
+                "--cache-ram",
+                "0",
                 "--no-cache-idle-slots",
+                "--slot-prompt-similarity",
+                "0",
             ],
             "prompt_cache_enabled": [
                 "--cache-prompt",
@@ -1458,6 +1462,7 @@ def build_artifact(args: argparse.Namespace) -> dict[str, Any]:
                         "prompt_cached_tokens_reported",
                         "completion_reasoning_tokens_reported",
                         "server_prompt_ms",
+                        "server_prompt_cached_tokens",
                         "server_prompt_tokens",
                         "server_prompt_tokens_per_second",
                         "server_predicted_ms",
@@ -1503,6 +1508,7 @@ def build_artifact(args: argparse.Namespace) -> dict[str, Any]:
                             "prompt_cached_tokens_reported",
                             "completion_reasoning_tokens_reported",
                             "server_prompt_ms",
+                            "server_prompt_cached_tokens",
                             "server_prompt_tokens",
                             "server_prompt_tokens_per_second",
                             "server_predicted_ms",

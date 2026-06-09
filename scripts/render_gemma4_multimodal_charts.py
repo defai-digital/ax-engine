@@ -123,6 +123,15 @@ def peer_comparison_series(artifact: dict[str, Any]) -> list[dict[str, Any]]:
         capability = row.get("capability")
         if not isinstance(capability, dict) or capability.get("cache_policy") != "prompt_cache_disabled":
             continue
+        peer_prompt_tokens = metric_median_from_row(row, "prompt_tokens_reported")
+        peer_server_prompt_tokens = metric_median_from_row(row, "server_prompt_tokens")
+        if (
+            peer_prompt_tokens is not None
+            and peer_server_prompt_tokens is not None
+            and peer_prompt_tokens > 0
+            and peer_server_prompt_tokens < peer_prompt_tokens * 0.9
+        ):
+            continue
         ax_output_tokens = metric_median_from_row(ax_row, "output_tokens")
         peer_output_tokens = metric_median_from_row(row, "output_tokens")
         if ax_output_tokens != peer_output_tokens:
@@ -180,6 +189,23 @@ def peer_exclusions(artifact: dict[str, Any]) -> list[dict[str, Any]]:
                     "cache_policy": (
                         capability.get("cache_policy") if isinstance(capability, dict) else None
                     ),
+                }
+            )
+            continue
+        peer_prompt_tokens = metric_median_from_row(row, "prompt_tokens_reported")
+        peer_server_prompt_tokens = metric_median_from_row(row, "server_prompt_tokens")
+        if (
+            peer_prompt_tokens is not None
+            and peer_server_prompt_tokens is not None
+            and peer_prompt_tokens > 0
+            and peer_server_prompt_tokens < peer_prompt_tokens * 0.9
+        ):
+            exclusions.append(
+                {
+                    "case_id": case_id,
+                    "reason": "peer_server_prompt_tokens_too_low",
+                    "peer_prompt_tokens": peer_prompt_tokens,
+                    "peer_server_prompt_tokens": peer_server_prompt_tokens,
                 }
             )
             continue

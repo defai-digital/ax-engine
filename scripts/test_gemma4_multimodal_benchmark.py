@@ -167,6 +167,8 @@ def measured_peer_row(case_id: str, fixture_ids: list[str], *, modalities: list[
                     "output_tokens": 8,
                     "prompt_tokens_reported": 78,
                     "prompt_cached_tokens_reported": 0,
+                    "server_prompt_cached_tokens": 0,
+                    "server_prompt_tokens": 78,
                 },
                 {
                     "client_wall_ms": 330.0,
@@ -175,6 +177,8 @@ def measured_peer_row(case_id: str, fixture_ids: list[str], *, modalities: list[
                     "output_tokens": 8,
                     "prompt_tokens_reported": 78,
                     "prompt_cached_tokens_reported": 0,
+                    "server_prompt_cached_tokens": 0,
+                    "server_prompt_tokens": 78,
                 },
             ],
             "summary": {
@@ -184,6 +188,8 @@ def measured_peer_row(case_id: str, fixture_ids: list[str], *, modalities: list[
                 "output_tokens": metric(8.0, 8.0, 8.0, 8.0),
                 "prompt_tokens_reported": metric(78.0, 78.0, 78.0, 78.0),
                 "prompt_cached_tokens_reported": metric(0.0, 0.0, 0.0, 0.0),
+                "server_prompt_cached_tokens": metric(0.0, 0.0, 0.0, 0.0),
+                "server_prompt_tokens": metric(78.0, 78.0, 78.0, 78.0),
             },
             "capability": {
                 "url": "http://127.0.0.1:18081",
@@ -503,6 +509,28 @@ class Gemma4MultimodalBenchmarkTests(unittest.TestCase):
         )
         errors = checker.validate_artifact(artifact, readme_ready=True)
         self.assertTrue(any("reports cached prompt tokens" in error for error in errors))
+
+    def test_checker_rejects_readme_ready_peer_server_cache_hits(self) -> None:
+        artifact = sample_artifact()
+        artifact["rows"] = [
+            measured_chat_row("image_single_256soft", ["image_red_64"], modalities=["image"]),
+            measured_peer_row("image_single_256soft", ["image_red_64"], modalities=["image"]),
+        ]
+        artifact["rows"][1]["summary"]["server_prompt_cached_tokens"] = metric(
+            7.0, 7.0, 7.0, 7.0
+        )
+        errors = checker.validate_artifact(artifact, readme_ready=True)
+        self.assertTrue(any("server prompt cache hits" in error for error in errors))
+
+    def test_checker_rejects_readme_ready_peer_low_server_prompt_tokens(self) -> None:
+        artifact = sample_artifact()
+        artifact["rows"] = [
+            measured_chat_row("image_single_256soft", ["image_red_64"], modalities=["image"]),
+            measured_peer_row("image_single_256soft", ["image_red_64"], modalities=["image"]),
+        ]
+        artifact["rows"][1]["summary"]["server_prompt_tokens"] = metric(5.0, 5.0, 5.0, 5.0)
+        errors = checker.validate_artifact(artifact, readme_ready=True)
+        self.assertTrue(any("server prompt tokens are too low" in error for error in errors))
 
     def test_checker_rejects_zero_measured_timing(self) -> None:
         errors = checker.validate_artifact(sample_artifact(zero_metric=True))
