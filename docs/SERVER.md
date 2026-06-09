@@ -72,6 +72,17 @@ cargo run -p ax-engine-server -- \
   --port 8080
 ```
 
+`--speculation-profile {auto,coding,agentic,chatbot}` (short `-s`, alias
+`--spec`; env `AX_MLX_SPECULATION_PROFILE`) bundles the MTP and n-gram
+speculative-decode configuration into one posture (ADR-022). `auto` is the
+default and is temperature-driven: it keeps the shipped gate at low temperature
+and raises it for higher-temperature sampled chat to protect reply diversity.
+`coding`/`agentic` defer to the shipped gate defaults (the Gemma ablation found
+lowering the gate does not add code throughput); `chatbot` raises the gate and
+prefers the n-gram utility gate. Explicit per-knob env vars still override the
+profile, and the resolved posture is reported in route metadata as
+`ax_mlx_speculation_profile`.
+
 Experimental MLX KV compression is opt-in and off by default. The current
 `turboquant-shadow` mode is for benchmark evidence and route telemetry only: it
 keeps generation on the existing full-precision MLX KV path, does not change
