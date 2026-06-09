@@ -27,6 +27,13 @@ pub enum EngineSessionError {
         "multimodal_inputs require native MLX backend; delegated backend {selected_backend:?} is text-only"
     )]
     MultimodalInputsRequireNativeMlx { selected_backend: SelectedBackend },
+    #[error(
+        "multimodal prompt is {prompt_len} tokens but max_batch_tokens is {max_batch_tokens}; multimodal prefill must complete in one scheduler step — raise max_batch_tokens or reduce media size"
+    )]
+    MultimodalPromptExceedsMaxBatchTokens {
+        prompt_len: u32,
+        max_batch_tokens: u32,
+    },
     #[error(transparent)]
     InvalidMultimodalInputs(#[from] Gemma4UnifiedRuntimeInputError),
     #[error(

@@ -1690,6 +1690,41 @@ mod tests {
         }
     }
 
+    fn make_multimodal_submission(
+        request_id: u64,
+        arrival_sequence: u64,
+        input_tokens: Vec<u32>,
+        max_output_tokens: u32,
+    ) -> RequestSubmission {
+        use crate::gemma4_unified::{
+            Gemma4UnifiedImageRuntimeInput, Gemma4UnifiedModality, Gemma4UnifiedRuntimeInputs,
+            Gemma4UnifiedTokenSpan,
+        };
+
+        let mut submission = make_submission_with_prompt(
+            request_id,
+            arrival_sequence,
+            input_tokens,
+            max_output_tokens,
+        );
+        submission.multimodal_inputs.gemma4_unified = Some(Gemma4UnifiedRuntimeInputs {
+            images: vec![Gemma4UnifiedImageRuntimeInput {
+                span: Gemma4UnifiedTokenSpan {
+                    modality: Gemma4UnifiedModality::Image,
+                    placeholder_index: 0,
+                    replacement_start: 0,
+                    soft_token_count: 1,
+                    replacement_token_count: 3,
+                },
+                pixel_values: vec![0.0],
+                pixel_position_ids: vec![[0, 0]],
+            }],
+            audios: Vec::new(),
+            videos: Vec::new(),
+        });
+        submission
+    }
+
     #[derive(Debug)]
     struct AssertSamplingContextRunner {
         temperature: f32,
@@ -1795,6 +1830,34 @@ mod tests {
                 .and_then(|batch| batch.route_metadata.attention_route.as_deref()),
             Some("qwen3_prefill")
         );
+    }
+
+    #[test]
+    fn multimodal_prefill_defers_until_budget_covers_full_prompt() {
+        let mut engine =
+            EngineCore::with_kv_config(KvManagerConfig::validated(CacheGroupId(2), 4, 8));
+
+        engine
+            .submit(make_multimodal_submission(5, 1, vec![1, 2, 3, 4], 2))
+            .unwrap();
+
+        // Budget smaller than the prompt: the multimodal prefill must defer
+        // whole instead of splitting (the runner would otherwise fail the
+        // request because media spans cannot cross execution items).
+        let outcome = engine.step(3, true).unwrap();
+        assert!(outcome.schedule_plan.selected_requests.is_empty());
+        assert_eq!(outcome.schedule_plan.deferred_requests, vec![RequestId(5)]);
+        assert!(outcome.runner_output.is_none());
+        let snapshot = engine.request_manager().snapshot(RequestId(5)).unwrap();
+        assert_eq!(snapshot.state, RequestState::Runnable);
+        assert_eq!(snapshot.processed_prompt_tokens, 0);
+
+        // A later step with enough budget completes the prompt in one item.
+        let outcome = engine.step(4, true).unwrap();
+        assert_eq!(outcome.schedule_plan.selected_requests, vec![RequestId(5)]);
+        assert_eq!(outcome.metrics.scheduled_tokens, 4);
+        let snapshot = engine.request_manager().snapshot(RequestId(5)).unwrap();
+        assert_eq!(snapshot.processed_prompt_tokens, 4);
     }
 
     #[test]

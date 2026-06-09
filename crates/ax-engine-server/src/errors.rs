@@ -54,6 +54,7 @@ pub(crate) fn map_session_error(error: EngineSessionError) -> (StatusCode, Json<
         | EngineSessionError::InvalidMaxOutputTokens
         | EngineSessionError::MlxBackendRequiresTokenizedInput
         | EngineSessionError::MultimodalInputsRequireNativeMlx { .. }
+        | EngineSessionError::MultimodalPromptExceedsMaxBatchTokens { .. }
         | EngineSessionError::InvalidMultimodalInputs(_)
         | EngineSessionError::InvalidMaxBatchTokens
         | EngineSessionError::InvalidRequestId

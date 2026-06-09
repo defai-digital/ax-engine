@@ -531,6 +531,7 @@ fn delegated_generate_validation_rejects_gemma4_multimodal_inputs() {
 
     let error = EngineSession::validate_generate_request_for_backend(
         SelectedBackend::MlxLmDelegated,
+        2048,
         1,
         &request,
     )
@@ -557,8 +558,45 @@ fn native_generate_validation_allows_gemma4_multimodal_inputs() {
         metadata: None,
     };
 
-    EngineSession::validate_generate_request_for_backend(SelectedBackend::Mlx, 1, &request)
+    EngineSession::validate_generate_request_for_backend(SelectedBackend::Mlx, 2048, 1, &request)
         .expect("native MLX should accept processed Gemma4 media tensors");
+}
+
+#[test]
+fn native_generate_validation_rejects_multimodal_prompt_over_max_batch_tokens() {
+    let request = GenerateRequest {
+        model_id: "gemma-4-12b-it".to_string(),
+        input_tokens: vec![10, 255999, 258880, 258882, 11],
+        input_text: None,
+        multimodal_inputs: sample_gemma4_multimodal_inputs(),
+        max_output_tokens: 1,
+        sampling: Default::default(),
+        stop_sequences: Vec::new(),
+        metadata: None,
+    };
+
+    // Multimodal prefill must complete in one scheduler step, so a prompt
+    // longer than max_batch_tokens could never be scheduled — it must be
+    // rejected at submission rather than deferred forever.
+    let error =
+        EngineSession::validate_generate_request_for_backend(SelectedBackend::Mlx, 4, 1, &request)
+            .expect_err("multimodal prompt longer than max_batch_tokens must be rejected");
+
+    assert!(matches!(
+        error,
+        EngineSessionError::MultimodalPromptExceedsMaxBatchTokens {
+            prompt_len: 5,
+            max_batch_tokens: 4,
+        }
+    ));
+
+    // The same prompt without multimodal inputs is fine: text prefill chunks.
+    let text_request = GenerateRequest {
+        multimodal_inputs: Default::default(),
+        ..request
+    };
+    EngineSession::validate_generate_request_for_backend(SelectedBackend::Mlx, 4, 1, &text_request)
+        .expect("text prompts longer than max_batch_tokens are chunked, not rejected");
 }
 
 #[test]
@@ -582,9 +620,13 @@ fn native_generate_validation_rejects_malformed_gemma4_multimodal_inputs() {
         metadata: None,
     };
 
-    let error =
-        EngineSession::validate_generate_request_for_backend(SelectedBackend::Mlx, 1, &request)
-            .expect_err("native MLX should reject malformed processed media tensors");
+    let error = EngineSession::validate_generate_request_for_backend(
+        SelectedBackend::Mlx,
+        2048,
+        1,
+        &request,
+    )
+    .expect_err("native MLX should reject malformed processed media tensors");
 
     assert!(matches!(
         error,

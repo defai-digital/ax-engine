@@ -115,6 +115,7 @@ impl StatelessGenerateContext {
 
         EngineSession::validate_generate_request_for_backend(
             self.config.resolved_backend.selected_backend,
+            self.config.max_batch_tokens,
             request_id,
             &request,
         )?;
@@ -159,6 +160,7 @@ impl StatelessGenerateContext {
 
         EngineSession::validate_generate_request_for_backend(
             self.config.resolved_backend.selected_backend,
+            self.config.max_batch_tokens,
             request_id,
             &request,
         )?;
@@ -266,6 +268,7 @@ impl EngineSession {
 
     fn validate_generate_request_for_backend(
         selected_backend: SelectedBackend,
+        max_batch_tokens: u32,
         request_id: u64,
         request: &GenerateRequest,
     ) -> Result<(), EngineSessionError> {
@@ -273,12 +276,22 @@ impl EngineSession {
         if !selected_backend.is_mlx() && !request.multimodal_inputs.is_empty() {
             return Err(EngineSessionError::MultimodalInputsRequireNativeMlx { selected_backend });
         }
-        if selected_backend.is_mlx()
-            && !request.multimodal_inputs.is_empty()
-            && !request.input_tokens.is_empty()
-            && let Some(inputs) = request.multimodal_inputs.gemma4_unified.as_ref()
-        {
-            inputs.validate_for_prompt_len(request.input_tokens.len())?;
+        if selected_backend.is_mlx() && !request.multimodal_inputs.is_empty() {
+            // Multimodal prefill is atomic (the runner requires the complete
+            // prompt in one execution item), so a prompt longer than the
+            // per-step token budget could never be scheduled. Reject it here
+            // with an actionable error instead of deferring it forever.
+            if request.input_tokens.len() > max_batch_tokens as usize {
+                return Err(EngineSessionError::MultimodalPromptExceedsMaxBatchTokens {
+                    prompt_len: request.input_tokens.len() as u32,
+                    max_batch_tokens,
+                });
+            }
+            if !request.input_tokens.is_empty()
+                && let Some(inputs) = request.multimodal_inputs.gemma4_unified.as_ref()
+            {
+                inputs.validate_for_prompt_len(request.input_tokens.len())?;
+            }
         }
 
         Ok(())
@@ -350,6 +363,7 @@ impl EngineSession {
     ) -> Result<u64, EngineSessionError> {
         Self::validate_generate_request_for_backend(
             self.config.resolved_backend.selected_backend,
+            self.config.max_batch_tokens,
             request_id,
             &request,
         )?;
@@ -394,6 +408,7 @@ impl EngineSession {
     ) -> Result<GenerateStreamState, EngineSessionError> {
         Self::validate_generate_request_for_backend(
             self.config.resolved_backend.selected_backend,
+            self.config.max_batch_tokens,
             request_id,
             &request,
         )?;
@@ -475,6 +490,7 @@ impl EngineSession {
 
         Self::validate_generate_request_for_backend(
             config.resolved_backend.selected_backend,
+            config.max_batch_tokens,
             request_id,
             &request,
         )?;
@@ -648,6 +664,7 @@ impl EngineSession {
     ) -> Result<u64, EngineSessionError> {
         Self::validate_generate_request_for_backend(
             self.config.resolved_backend.selected_backend,
+            self.config.max_batch_tokens,
             request_id,
             &request,
         )?;
@@ -727,6 +744,7 @@ impl EngineSession {
         if !self.uses_mlx_runtime() {
             Self::validate_generate_request_for_backend(
                 self.config.resolved_backend.selected_backend,
+                self.config.max_batch_tokens,
                 request_id,
                 &request,
             )?;
@@ -819,6 +837,7 @@ impl EngineSession {
         if !self.uses_mlx_runtime() {
             Self::validate_generate_request_for_backend(
                 self.config.resolved_backend.selected_backend,
+                self.config.max_batch_tokens,
                 request_id,
                 &request,
             )?;

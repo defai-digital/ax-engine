@@ -530,8 +530,15 @@ impl Scheduler {
         }
 
         if snapshot.processed_prompt_tokens < snapshot.prompt_len {
-            let scheduled_token_count =
-                remaining_budget.min(snapshot.prompt_len - snapshot.processed_prompt_tokens);
+            let remaining_prompt = snapshot.prompt_len - snapshot.processed_prompt_tokens;
+            // Multimodal prefill is atomic: the runner rejects any prefill item
+            // that does not complete the prompt, and an item error permanently
+            // fails the request. Defer the whole prefill until a step has
+            // enough budget for the full remainder instead of splitting it.
+            if snapshot.has_multimodal_inputs && remaining_budget < remaining_prompt {
+                return None;
+            }
+            let scheduled_token_count = remaining_budget.min(remaining_prompt);
             let start = snapshot.processed_prompt_tokens as usize;
             let end = start + scheduled_token_count as usize;
 
@@ -700,6 +707,7 @@ mod tests {
             generated_len: generated_tokens.len() as u32,
             max_output_tokens,
             cancel_requested: false,
+            has_multimodal_inputs: false,
             execution_plan_ref: None,
             route_metadata_hint: RouteMetadata::empty(),
             terminal_stop_reason: None,
@@ -838,6 +846,143 @@ mod tests {
         assert_eq!(execution_batch.items[0].scheduled_token_count, 3);
         assert_eq!(execution_batch.items[1].scheduled_token_count, 2);
         assert_eq!(execution_batch.items[1].input_token_slice, vec![20, 21]);
+    }
+
+    fn make_multimodal_snapshot(
+        request_id: u64,
+        arrival_sequence: u64,
+        model_id: &str,
+        prompt_tokens: &[u32],
+        processed_prompt_tokens: u32,
+    ) -> RequestSnapshot {
+        let mut snapshot = make_snapshot(
+            request_id,
+            arrival_sequence,
+            model_id,
+            prompt_tokens,
+            processed_prompt_tokens,
+            &[],
+            16,
+        );
+        snapshot.has_multimodal_inputs = true;
+        snapshot
+    }
+
+    #[test]
+    fn defers_multimodal_prefill_instead_of_splitting() {
+        let scheduler = Scheduler::new();
+        let schedule_plan = scheduler.plan(&SchedulerInput {
+            step_id: StepId(4),
+            request_snapshots: vec![make_multimodal_snapshot(
+                1,
+                1,
+                "gemma4",
+                &[10, 11, 12, 13],
+                0,
+            )],
+            memory_pressure: None,
+            global_token_budget: 3,
+        });
+
+        assert!(schedule_plan.selected_requests.is_empty());
+        assert_eq!(schedule_plan.deferred_requests, vec![RequestId(1)]);
+        assert!(schedule_plan.execution_batch.is_none());
+    }
+
+    #[test]
+    fn schedules_multimodal_prefill_atomically_when_budget_fits() {
+        let scheduler = Scheduler::new();
+        let schedule_plan = scheduler.plan(&SchedulerInput {
+            step_id: StepId(4),
+            request_snapshots: vec![make_multimodal_snapshot(
+                1,
+                1,
+                "gemma4",
+                &[10, 11, 12, 13],
+                0,
+            )],
+            memory_pressure: None,
+            global_token_budget: 4,
+        });
+
+        assert_eq!(schedule_plan.selected_requests, vec![RequestId(1)]);
+        let execution_batch = schedule_plan.execution_batch.unwrap();
+        assert_eq!(execution_batch.items.len(), 1);
+        assert_eq!(execution_batch.items[0].scheduled_token_count, 4);
+        assert_eq!(
+            execution_batch.items[0].input_token_slice,
+            vec![10, 11, 12, 13]
+        );
+    }
+
+    #[test]
+    fn multimodal_prefill_defers_while_text_prefill_still_chunks() {
+        let scheduler = Scheduler::new();
+        let schedule_plan = scheduler.plan(&SchedulerInput {
+            step_id: StepId(4),
+            request_snapshots: vec![
+                make_multimodal_snapshot(1, 1, "gemma4", &[10, 11, 12, 13], 0),
+                make_snapshot(2, 2, "gemma4", &[20, 21, 22, 23], 0, &[], 16),
+            ],
+            memory_pressure: None,
+            global_token_budget: 3,
+        });
+
+        // The older multimodal prefill cannot complete in this step's budget,
+        // so it defers whole; the younger text prefill still chunks.
+        assert_eq!(schedule_plan.selected_requests, vec![RequestId(2)]);
+        assert_eq!(schedule_plan.deferred_requests, vec![RequestId(1)]);
+        let execution_batch = schedule_plan.execution_batch.unwrap();
+        assert_eq!(execution_batch.items.len(), 1);
+        assert_eq!(execution_batch.items[0].mode, ExecutionMode::Prefill);
+        assert_eq!(execution_batch.items[0].scheduled_token_count, 3);
+    }
+
+    #[test]
+    fn defers_multimodal_prefill_when_decode_consumes_budget() {
+        let scheduler = Scheduler::new();
+        let schedule_plan = scheduler.plan(&SchedulerInput {
+            step_id: StepId(4),
+            request_snapshots: vec![
+                make_multimodal_snapshot(1, 1, "gemma4", &[10, 11, 12, 13], 0),
+                make_snapshot(2, 2, "gemma4", &[20, 21, 22, 23], 4, &[99], 16),
+            ],
+            memory_pressure: None,
+            global_token_budget: 4,
+        });
+
+        // Decode is scheduled first and leaves only 3 budget tokens — not
+        // enough for the 4-token multimodal prompt, which must not split.
+        assert_eq!(schedule_plan.selected_requests, vec![RequestId(2)]);
+        assert_eq!(schedule_plan.deferred_requests, vec![RequestId(1)]);
+        let execution_batch = schedule_plan.execution_batch.unwrap();
+        assert_eq!(execution_batch.items.len(), 1);
+        assert_eq!(execution_batch.items[0].mode, ExecutionMode::Decode);
+    }
+
+    #[test]
+    fn schedules_multimodal_prefill_remainder_after_prefix_reuse() {
+        let scheduler = Scheduler::new();
+        let schedule_plan = scheduler.plan(&SchedulerInput {
+            step_id: StepId(4),
+            request_snapshots: vec![make_multimodal_snapshot(
+                1,
+                1,
+                "gemma4",
+                &[10, 11, 12, 13, 14, 15],
+                4,
+            )],
+            memory_pressure: None,
+            global_token_budget: 2,
+        });
+
+        // Prefix reuse advanced processed_prompt_tokens; the remainder fits
+        // the budget, so the prefill completes the prompt in one item.
+        assert_eq!(schedule_plan.selected_requests, vec![RequestId(1)]);
+        let execution_batch = schedule_plan.execution_batch.unwrap();
+        assert_eq!(execution_batch.items.len(), 1);
+        assert_eq!(execution_batch.items[0].scheduled_token_count, 2);
+        assert_eq!(execution_batch.items[0].input_token_slice, vec![14, 15]);
     }
 
     #[test]

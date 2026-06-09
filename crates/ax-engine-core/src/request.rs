@@ -266,6 +266,7 @@ impl RequestRecord {
             generated_len: self.generated_tokens.len() as u32,
             max_output_tokens: self.max_output_tokens,
             cancel_requested: self.cancel_requested,
+            has_multimodal_inputs: !self.multimodal_inputs.is_empty(),
             execution_plan_ref: self.execution_plan_ref.clone(),
             route_metadata_hint: self.route_metadata_hint.clone(),
             terminal_stop_reason: self.terminal_stop_reason,
@@ -411,6 +412,11 @@ pub struct RequestSnapshot {
     pub generated_len: u32,
     pub max_output_tokens: u32,
     pub cancel_requested: bool,
+    /// Multimodal prefill is atomic: the MLX runner rejects any prefill item
+    /// that does not complete the prompt (media soft-token spans cannot be
+    /// split across execution items), so the scheduler must defer rather than
+    /// chunk prefill work for requests that carry multimodal inputs.
+    pub has_multimodal_inputs: bool,
     pub execution_plan_ref: Option<String>,
     pub route_metadata_hint: RouteMetadata,
     pub terminal_stop_reason: Option<StopReason>,

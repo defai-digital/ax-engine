@@ -101,6 +101,7 @@ mod tests {
             generated_len,
             max_output_tokens,
             cancel_requested: false,
+            has_multimodal_inputs: false,
             execution_plan_ref: None,
             route_metadata_hint: RouteMetadata::empty(),
             terminal_stop_reason: None,
