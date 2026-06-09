@@ -20,13 +20,13 @@
 //! higher temperature it raises gates to protect sampling diversity from the
 //! greedy argmax-match bias.
 //!
-//! The per-profile Gemma gate values are CALIBRATED from the 2026-06-09
-//! 12B-4bit-FFN gate ablation (PRD-2026-06-09-gemma4-12b-mtp-speedup R5): the
-//! sweep found that lowering the Gemma assistant gate does not improve code
-//! throughput (gate 0.90 is −2% to −4.5% vs the 0.999 default at identical
-//! accept), so every Gemma posture keeps 0.999 and the presets differentiate via
-//! n-gram policy. Qwen keeps its separately-validated 0.90 default. See the
-//! constants below for the measured numbers.
+//! Calibration (PRD-2026-06-09-gemma4-12b-mtp-speedup R5): the 2026-06-09 12B
+//! ablation showed lowering the Gemma assistant gate does not add code throughput
+//! (the greedy drafter is so peaked that the shipped default and a lower gate
+//! propose the same drafts at the same accept). So `coding`/`agentic` DEFER to
+//! the shipped Gemma default rather than override it, and Qwen defers to its
+//! separately-validated 0.90 default. Only the diversity regime (`chatbot` /
+//! high-temperature `auto`) raises the gate, to preserve sampled-chat diversity.
 
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU8, Ordering};
@@ -37,12 +37,12 @@ pub enum SpeculationProfile {
     /// Temperature-driven default: built-in defaults at low temperature,
     /// diversity-preserving at high temperature.
     Auto,
-    /// Low-temperature, sharply-peaked content. Keeps the calibrated Gemma gate
-    /// (0.999 — the ablation showed lowering it does not help code throughput);
-    /// Qwen uses its validated 0.90 default.
+    /// Low-temperature, sharply-peaked content. Defers to the shipped gate
+    /// defaults (the ablation showed lowering the Gemma gate does not help code
+    /// throughput, and the shipped default already is the throughput setting).
     Coding,
-    /// Low-temperature structured output (tools/JSON/reasoning). Same calibrated
-    /// gate as `coding`; reserved for tightened n-gram structured-output safety.
+    /// Low-temperature structured output (tools/JSON/reasoning). Same gate as
+    /// `coding`; reserved for tightened n-gram structured-output safety.
     Agentic,
     /// Higher-temperature conversational output. Conservative gate / utility
     /// n-gram to protect reply diversity.
@@ -74,24 +74,16 @@ impl ResolutionSource {
 /// to the diversity-preserving regime.
 pub const AUTO_DIVERSITY_TEMPERATURE: f32 = 0.5;
 
-// CALIBRATED from the 2026-06-09 12B-4bit-FFN gate ablation
-// (`benchmarks/results/gemma4-assistant-mtp/2026-06-09-gemma4-12b-ffn4-mtp-phase4-focused`).
-//
-// Key finding: lowering the Gemma assistant gate does NOT help throughput on
-// code. The greedy assistant drafter is so peaked that gate 0.90 proposes the
-// SAME drafts as 0.999 (identical 95.5% accept) but is consistently SLOWER
-// (flappy 100.2 vs 102.3, long_code 97.7 vs 99.4, python_modules_long 100.3 vs
-// 105.0 tok/s — −2% to −4.5%). This is the opposite of the Qwen MTP head, where
-// 0.90 wins. So every Gemma posture keeps the accept-maximizing 0.999 default;
-// the speed comes from assistant-MTP itself (~2.8x over direct), not from gate
-// loosening. The presets differentiate Gemma only via n-gram policy, and Qwen
-// via its own validated gate.
-const CODING_GEMMA_FIRST_GATE: f32 = 0.999;
-const CODING_GEMMA_DEEP_GATE: f32 = 0.999;
-const AGENTIC_GEMMA_FIRST_GATE: f32 = 0.999;
-const AGENTIC_GEMMA_DEEP_GATE: f32 = 0.999;
-/// Gemma's diversity-preserving gate equals its measured-optimal accept-
-/// maximizing default (0.999): `chatbot`/high-temp `auto` keep Gemma as it ships.
+// Informed by the 2026-06-09 12B-4bit-FFN ablation
+// (`benchmarks/results/gemma4-assistant-mtp/2026-06-09-gemma4-12b-ffn4-mtp-phase4-focused`):
+// assistant-MTP beats direct decode ~2.8x, and lowering the Gemma assistant gate
+// does not add code throughput (the greedy drafter is so peaked that the shipped
+// default and a lower gate propose the same drafts at the same ~95% accept). So
+// `coding`/`agentic` DEFER to the shipped Gemma default (they return `None`)
+// instead of overriding it — robust to the default being retuned. Only the
+// diversity regime raises the gate, to cut the greedy argmax-match bias on flat
+// sampled chat text (Gemma assistant drafts are greedy, so a higher gate makes
+// MTP fire less and preserves more sampled diversity).
 const CHATBOT_GEMMA_FIRST_GATE: f32 = 0.999;
 const CHATBOT_GEMMA_DEEP_GATE: f32 = 0.999;
 /// Qwen's shipped default (0.90) is already the throughput sweet spot
@@ -144,21 +136,24 @@ impl SpeculationProfile {
     }
 
     /// Gemma assistant first-position gate this profile prescribes, or `None` to
-    /// defer to the built-in default. `temperature` drives `auto`.
+    /// defer to the shipped default. `coding`/`agentic` defer (the ablation found
+    /// lowering the Gemma gate does not help code throughput, so the shipped
+    /// default already is the throughput setting); only the diversity regime
+    /// raises it to cut greedy argmax-match bias on flat sampled text.
+    /// `temperature` drives `auto`.
     pub fn gemma_first_gate(self, temperature: Option<f32>) -> Option<f32> {
         match self.effective(temperature)? {
-            Self::Coding => Some(CODING_GEMMA_FIRST_GATE),
-            Self::Agentic => Some(AGENTIC_GEMMA_FIRST_GATE),
+            Self::Coding | Self::Agentic => None,
             Self::Chatbot => Some(CHATBOT_GEMMA_FIRST_GATE),
             Self::Auto => None,
         }
     }
 
-    /// Gemma assistant deep-position gate this profile prescribes, or `None`.
+    /// Gemma assistant deep-position gate this profile prescribes, or `None` to
+    /// defer to the shipped default (which is already conservative).
     pub fn gemma_deep_gate(self, temperature: Option<f32>) -> Option<f32> {
         match self.effective(temperature)? {
-            Self::Coding => Some(CODING_GEMMA_DEEP_GATE),
-            Self::Agentic => Some(AGENTIC_GEMMA_DEEP_GATE),
+            Self::Coding | Self::Agentic => None,
             Self::Chatbot => Some(CHATBOT_GEMMA_DEEP_GATE),
             Self::Auto => None,
         }
@@ -284,20 +279,20 @@ mod tests {
     }
 
     #[test]
-    fn coding_keeps_calibrated_gemma_gate_at_any_temperature() {
-        // The 2026-06-09 ablation found lowering the Gemma gate hurts code
-        // throughput, so `coding` keeps the measured-optimal 0.999 — temperature
-        // independent (explicit profile applies regardless of temperature).
+    fn coding_and_agentic_defer_to_shipped_gemma_default() {
+        // The ablation found lowering the Gemma gate does not help code
+        // throughput, so coding/agentic defer to the shipped default (None),
+        // never overriding it — at any temperature.
+        assert_eq!(SpeculationProfile::Coding.gemma_first_gate(Some(0.0)), None);
+        assert_eq!(SpeculationProfile::Coding.gemma_first_gate(Some(0.9)), None);
         assert_eq!(
-            SpeculationProfile::Coding.gemma_first_gate(Some(0.0)),
-            Some(0.999)
+            SpeculationProfile::Agentic.gemma_first_gate(Some(0.0)),
+            None
         );
+        assert_eq!(SpeculationProfile::Agentic.gemma_deep_gate(Some(0.0)), None);
+        // The diversity regime still raises the Gemma gate.
         assert_eq!(
-            SpeculationProfile::Coding.gemma_first_gate(Some(0.9)),
-            Some(0.999)
-        );
-        assert_eq!(
-            SpeculationProfile::Agentic.gemma_deep_gate(Some(0.0)),
+            SpeculationProfile::Chatbot.gemma_first_gate(Some(0.9)),
             Some(0.999)
         );
     }

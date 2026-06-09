@@ -407,6 +407,8 @@ A **draft confidence gate** (`AX_MLX_GEMMA4_ASSISTANT_MTP_DRAFT_MIN_CONFIDENCE`,
 
 > ¹ Only the code-like benchmark suites below (`flappy`, `long_code`, `python_modules_long`) are measured for 12B at the Phase 4 default -- they sit at 93.3-95.6% assistant accept and still deliver 2.83-2.92x same-artifact speedup over direct decode. The agentic and chatbot figures are expected ranges, and the suggested gates are starting points, not universal optima. The `assistant_mtp_gate*` ablation profiles lock the exact per-workload sweet spot.
 
+**One flag instead of the env vars.** Rather than hand-set the gate knobs, the server accepts `--speculation-profile {auto,coding,agentic,chatbot}` (short `-s`, alias `--spec`; or env `AX_MLX_SPECULATION_PROFILE`), which bundles the MTP and n-gram configuration into one posture. `auto` (default) is temperature-driven: it keeps the shipped gate at low/zero temperature and raises it for higher-temperature sampled chat to protect reply diversity. `coding`/`agentic` keep the shipped gate defaults — the 12B ablation found lowering the Gemma gate does not add code throughput, so the default already is the throughput setting — while `chatbot` raises the gate and prefers the n-gram utility gate. Any explicit per-knob env var (e.g. `AX_MLX_GEMMA4_ASSISTANT_MTP_DRAFT_MIN_CONFIDENCE`) still overrides the profile. The resolved posture is recorded in route metadata as `ax_mlx_speculation_profile`.
+
 No peer engine (MTPLX, Rapid-MLX, lightning-mlx) exposes a runnable Gemma 4 assistant-MTP path, so this benchmark has no peer comparison rows.
 
 **Gemma 4 speculative decoding holds draft accept ≥98% on every cell below** (98.4–99.5% across 26B / 31B × {MTP, MTP+n-gram} × {flappy, long_code, python_modules_long}).
