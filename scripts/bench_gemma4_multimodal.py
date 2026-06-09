@@ -1308,6 +1308,8 @@ def peer_capability(args: argparse.Namespace, case: PreparedCase) -> PeerDecisio
                 "--no-cache-idle-slots",
                 "--slot-prompt-similarity",
                 "0",
+                "--ctx-checkpoints",
+                "0",
             ],
             "prompt_cache_enabled": [
                 "--cache-prompt",
