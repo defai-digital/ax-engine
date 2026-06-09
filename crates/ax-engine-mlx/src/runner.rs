@@ -2438,6 +2438,14 @@ impl MtpTelemetry {
                 HurtGateMode::LegacyEwma => 1u32,
             },
         );
+        // Resolved speculation profile (ADR-022), on the MTP/n-gram telemetry
+        // path so Qwen fused-MTP rows expose it too — not only the Gemma
+        // assistant path. `upsert` keeps it idempotent for Gemma+n-gram rows that
+        // also emit it from the assistant-MTP status block (same value).
+        decisions.upsert_route_decision(
+            "ax_mlx_speculation_profile",
+            speculation_profile_from_env().route_code(),
+        );
         decisions.upsert_route_decision(
             "ax_mtp_ngram_gate_policy",
             mtp_ngram_gate_policy_from_env().route_code(),

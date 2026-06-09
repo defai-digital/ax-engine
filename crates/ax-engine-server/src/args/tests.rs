@@ -752,3 +752,57 @@ fn session_config_preserves_explicit_gguf_model_path_source() {
         Some(ax_engine_sdk::NativeModelArtifactsSource::ExplicitConfig)
     );
 }
+
+#[test]
+fn speculation_profile_flag_parses_all_forms() {
+    use clap::Parser;
+
+    let coding = ServerArgs::try_parse_from(["ax-engine-server", "-s", "coding"])
+        .expect("`-s coding` should parse");
+    assert_eq!(
+        coding.speculation_profile,
+        Some(SpeculationProfileArg::Coding)
+    );
+
+    // Hidden `--spec` alias.
+    let agentic = ServerArgs::try_parse_from(["ax-engine-server", "--spec", "agentic"])
+        .expect("`--spec agentic` should parse");
+    assert_eq!(
+        agentic.speculation_profile,
+        Some(SpeculationProfileArg::Agentic)
+    );
+
+    let chatbot =
+        ServerArgs::try_parse_from(["ax-engine-server", "--speculation-profile", "chatbot"])
+            .expect("`--speculation-profile chatbot` should parse");
+    assert_eq!(
+        chatbot.speculation_profile,
+        Some(SpeculationProfileArg::Chatbot)
+    );
+
+    // Unset stays None so the runtime falls back to env / built-in `auto`.
+    let unset = ServerArgs::try_parse_from(["ax-engine-server"]).expect("no flag should parse");
+    assert_eq!(unset.speculation_profile, None);
+
+    // value_enum rejects unknown postures.
+    assert!(ServerArgs::try_parse_from(["ax-engine-server", "-s", "bogus"]).is_err());
+}
+
+#[test]
+fn speculation_profile_maps_into_session_config() {
+    let args = ServerArgs {
+        support_tier: PreviewSupportTier::MlxPreview,
+        speculation_profile: Some(SpeculationProfileArg::Coding),
+        ..base_args()
+    };
+    let config = args.session_config().expect("session config should build");
+    assert_eq!(config.mlx_speculation_profile.as_deref(), Some("coding"));
+
+    let unset = ServerArgs {
+        support_tier: PreviewSupportTier::MlxPreview,
+        speculation_profile: None,
+        ..base_args()
+    };
+    let config = unset.session_config().expect("session config should build");
+    assert_eq!(config.mlx_speculation_profile, None);
+}
