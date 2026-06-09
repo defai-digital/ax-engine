@@ -44,6 +44,7 @@ HF_CACHE = Path(
 # and reference source under `.internal/reference/lightning-mlx` are kept
 # for ad-hoc probes but Lightning rows no longer appear in the matrix.
 ENGINE_LABELS = {
+    "ax_direct": "AX Engine v5.2.2 (direct same-artifact baseline)",
     "mtplx": "MTPLX 0.3.7 (default)",
     "mtplx_tuned": "MTPLX 0.3.7 (tuned)",
     "ax_engine": "AX Engine v5.2.2 (MTP-only)",
@@ -54,6 +55,7 @@ VERSIONS_FOOTNOTE = (
     "Vendor-default config per row · MTPLX 0.3.7 · AX Engine v5.2.2"
 )
 ENGINE_COLORS = {
+    "ax_direct": "#d97706",
     "mtplx": "#14532d",
     "mtplx_tuned": "#0f766e",
     "ax_engine": "#f97316",
@@ -61,6 +63,7 @@ ENGINE_COLORS = {
     "ax_engine_tuned": "#2563eb",
 }
 ENGINE_ORDER = [
+    "ax_direct",
     "mtplx",
     "mtplx_tuned",
     "ax_engine",
@@ -68,21 +71,27 @@ ENGINE_ORDER = [
     "ax_engine_tuned",
 ]
 AX_DIRECT_ENGINE_KEY = "ax_engine_mlx"
-AX_FAIR_ENGINES = {"ax_engine", "ax_engine_ngram", "ax_engine_tuned"}
+AX_DIRECT_FAIR_ENGINE = "ax_direct"
+AX_FAIR_ENGINES = {AX_DIRECT_FAIR_ENGINE, "ax_engine", "ax_engine_ngram", "ax_engine_tuned"}
 MTPLX_FAIR_ENGINES = {"mtplx", "mtplx_tuned"}
 AX_RESULT_ENGINES = {AX_DIRECT_ENGINE_KEY, *diff.AX_MTP_ENGINES}
+KEEP_DEFAULT_MIN_GAIN = 0.05
+NGRAM_KEEP_DEFAULT_MIN_GAIN = 0.03
+MAX_SUITE_REGRESSION = 0.03
 
 # User-facing engine vendor names for --engines
 ENGINE_VENDORS = ["mtplx", "ax"]
 # User-facing decode mode names for --modes
-ENGINE_MODES = ["mtp", "mtp-ngram", "tuned"]
+ENGINE_MODES = ["direct", "mtp", "mtp-ngram", "tuned"]
 # Maps (vendor, mode) -> internal engine key, or None if not yet supported.
 # None entries are skipped at runtime with a warning; update this matrix
 # when a vendor adds support for a new mode.
 SUPPORT_MATRIX: dict[tuple[str, str], str | None] = {
+    ("mtplx", "direct"): None,  # not a same-artifact AX direct baseline
     ("mtplx", "mtp"): "mtplx",
     ("mtplx", "mtp-ngram"): None,  # not supported yet
     ("mtplx", "tuned"): "mtplx_tuned",
+    ("ax", "direct"): AX_DIRECT_FAIR_ENGINE,
     ("ax", "mtp"): "ax_engine",
     ("ax", "mtp-ngram"): "ax_engine_ngram",
     ("ax", "tuned"): "ax_engine_tuned",
@@ -797,6 +806,18 @@ def run_engine_suite(
     if args.skip_existing and output_path.is_file():
         return output_path
     try:
+        if engine == AX_DIRECT_FAIR_ENGINE:
+            return run_ax_suite(
+                python=args.ax_python,
+                suite=suite,
+                suite_file=suite_file,
+                output_path=output_path,
+                model_dir=model_dir,
+                config=config,
+                no_build=args.no_build_ax_engine,
+                ax_policy="direct",
+                inter_case_cooldown_s=args.inter_case_cooldown,
+            )
         if engine == "ax_engine":
             return run_ax_suite(
                 python=args.ax_python,
@@ -952,10 +973,15 @@ def depth_accept_rate(run: dict[str, Any]) -> float | None:
     return accepted / drafted if drafted else None
 
 
-def ax_cases_for_fair(artifact: dict[str, Any]) -> dict[str, dict[str, Any]]:
+def ax_cases_for_fair(
+    artifact: dict[str, Any],
+    *,
+    allowed_row_engines: set[str] | None = None,
+) -> dict[str, dict[str, Any]]:
     cases: dict[str, dict[str, Any]] = {}
+    allowed = allowed_row_engines or AX_RESULT_ENGINES
     for row in artifact.get("results", []):
-        if row.get("engine") not in AX_RESULT_ENGINES:
+        if row.get("engine") not in allowed:
             continue
         prompt_id = row.get("prompt_case_id")
         if not prompt_id:
@@ -983,6 +1009,8 @@ def accept_rate_samples_for_engine(
     engine: str, artifact: dict[str, Any]
 ) -> list[float]:
     samples: list[float] = []
+    if engine == AX_DIRECT_FAIR_ENGINE:
+        return samples
     if engine in AX_FAIR_ENGINES:
         for row in artifact.get("results", []):
             if row.get("engine") not in diff.AX_MTP_ENGINES:
@@ -1038,6 +1066,8 @@ def cases_for_engine(
 ) -> dict[str, dict[str, Any]]:
     if artifact.get("schema") == "ax.mtp_engine_error.v1":
         return {}
+    if engine == AX_DIRECT_FAIR_ENGINE:
+        return ax_cases_for_fair(artifact, allowed_row_engines={AX_DIRECT_ENGINE_KEY})
     if engine in AX_FAIR_ENGINES:
         return ax_cases_for_fair(artifact)
     if engine in MTPLX_FAIR_ENGINES:
@@ -1087,6 +1117,12 @@ def summarize_engine_artifact(engine: str, artifact_path: Path) -> dict[str, Any
     ngram_hit_steps = sum(
         int(case.get("ngram_hit_steps", 0) or 0) for case in cases.values()
     )
+    mtp_draft_tokens = sum(
+        int(case.get("draft_tokens", 0) or 0) for case in cases.values()
+    )
+    mtp_accepted_tokens = sum(
+        int(case.get("accepted_tokens", 0) or 0) for case in cases.values()
+    )
     decode_samples = (
         metric_samples_from_summary(artifact, "decode_tok_s") or decode_values
     )
@@ -1111,6 +1147,8 @@ def summarize_engine_artifact(engine: str, artifact_path: Path) -> dict[str, Any
         "accept_rate": median(accept_values),
         "decode_tok_s_samples": decode_samples,
         "accept_rate_samples": accept_samples,
+        "mtp_draft_tokens": mtp_draft_tokens,
+        "mtp_accepted_tokens": mtp_accepted_tokens,
         "tuning": artifact.get("tuning") if isinstance(artifact.get("tuning"), dict) else None,
         "ngram_accept_rate": median(ngram_accept_values)
         if ngram_accept_values
@@ -1125,6 +1163,180 @@ def ratio(left: float | None, right: float | None) -> float | None:
     if left is None or right is None or right <= 0:
         return None
     return left / right
+
+
+def compare_suite_decodes(
+    profile_suites: dict[str, float | None],
+    baseline_suites: dict[str, float | None],
+) -> dict[str, Any]:
+    common = sorted(
+        suite
+        for suite, value in profile_suites.items()
+        if suite in baseline_suites
+        and value is not None
+        and baseline_suites[suite] is not None
+    )
+    if not common:
+        return {
+            "delta": None,
+            "worst_suite_delta": None,
+            "per_suite_delta": {},
+            "profile_agg": None,
+            "baseline_agg": None,
+            "suites": [],
+        }
+    per_suite: dict[str, float | None] = {}
+    for suite in common:
+        base = baseline_suites[suite]
+        per_suite[suite] = (profile_suites[suite] - base) / base if base else None
+    profile_agg = statistics.median([profile_suites[suite] for suite in common])
+    baseline_agg = statistics.median([baseline_suites[suite] for suite in common])
+    valid_deltas = [value for value in per_suite.values() if value is not None]
+    return {
+        "delta": (profile_agg - baseline_agg) / baseline_agg if baseline_agg else None,
+        "worst_suite_delta": min(valid_deltas) if valid_deltas else None,
+        "per_suite_delta": per_suite,
+        "profile_agg": profile_agg,
+        "baseline_agg": baseline_agg,
+        "suites": common,
+    }
+
+
+def classify_vs_direct(
+    delta: float | None,
+    worst_suite_delta: float | None,
+    drafted: bool,
+) -> str:
+    if delta is None:
+        return "retest"
+    if not drafted:
+        return "reject"
+    no_bad_regression = worst_suite_delta is None or worst_suite_delta >= -MAX_SUITE_REGRESSION
+    if delta >= KEEP_DEFAULT_MIN_GAIN and no_bad_regression:
+        return "keep-default"
+    if delta >= 0:
+        return "keep-opt-in"
+    return "remove-claim"
+
+
+def classify_ngram_vs_mtp(
+    delta: float | None,
+    worst_suite_delta: float | None,
+) -> str:
+    if delta is None:
+        return "retest"
+    no_bad_regression = worst_suite_delta is None or worst_suite_delta >= -MAX_SUITE_REGRESSION
+    if delta >= NGRAM_KEEP_DEFAULT_MIN_GAIN and no_bad_regression:
+        return "keep-default"
+    if delta >= 0:
+        return "keep-opt-in"
+    return "remove-claim"
+
+
+def build_survival_comparison(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    index: dict[str, dict[str, dict[str, Any]]] = {}
+    for row in rows:
+        model = row["model"]
+        engines = index.setdefault(model, {})
+        for engine, summary in row["engines"].items():
+            entry = engines.setdefault(
+                engine,
+                {
+                    "suites": {},
+                    "drafted": False,
+                },
+            )
+            entry["suites"][row["suite"]] = summary.get("decode_tok_s")
+            if int(summary.get("mtp_draft_tokens", 0) or 0) > 0:
+                entry["drafted"] = True
+
+    comparisons: list[dict[str, Any]] = []
+    warnings: list[str] = []
+    for model in sorted(index):
+        engines = index[model]
+        direct = engines.get(AX_DIRECT_FAIR_ENGINE)
+        if direct is None:
+            warnings.append(
+                f"{model}: no AX direct row; AX MTP survival cannot be judged "
+                "against same-artifact direct decode."
+            )
+        for engine in ("ax_engine", "ax_engine_ngram", "ax_engine_tuned"):
+            entry = engines.get(engine)
+            if entry is None or direct is None:
+                continue
+            result = compare_suite_decodes(entry["suites"], direct["suites"])
+            comparisons.append(
+                {
+                    "model": model,
+                    "engine": engine,
+                    "baseline": AX_DIRECT_FAIR_ENGINE,
+                    "decode_tok_s_agg": result["profile_agg"],
+                    "baseline_tok_s_agg": result["baseline_agg"],
+                    "delta_vs_baseline": result["delta"],
+                    "worst_suite_delta": result["worst_suite_delta"],
+                    "per_suite_delta": result["per_suite_delta"],
+                    "drafted": entry["drafted"],
+                    "classification": classify_vs_direct(
+                        result["delta"],
+                        result["worst_suite_delta"],
+                        entry["drafted"],
+                    ),
+                }
+            )
+            if not entry["drafted"]:
+                warnings.append(
+                    f"{model}/{engine}: route metadata shows zero MTP draft tokens."
+                )
+
+        ngram = engines.get("ax_engine_ngram")
+        mtp = engines.get("ax_engine")
+        if ngram is not None and mtp is not None:
+            result = compare_suite_decodes(ngram["suites"], mtp["suites"])
+            comparisons.append(
+                {
+                    "model": model,
+                    "engine": "ax_engine_ngram",
+                    "baseline": "ax_engine",
+                    "decode_tok_s_agg": result["profile_agg"],
+                    "baseline_tok_s_agg": result["baseline_agg"],
+                    "delta_vs_baseline": result["delta"],
+                    "worst_suite_delta": result["worst_suite_delta"],
+                    "per_suite_delta": result["per_suite_delta"],
+                    "classification": classify_ngram_vs_mtp(
+                        result["delta"], result["worst_suite_delta"]
+                    ),
+                }
+            )
+    return {"warnings": warnings, "comparisons": comparisons}
+
+
+def build_optimized_scenarios(comparisons: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    scenarios: list[dict[str, Any]] = []
+    models = sorted({entry["model"] for entry in comparisons})
+    for model in models:
+        candidates = [
+            entry
+            for entry in comparisons
+            if entry["model"] == model
+            and entry["baseline"] == AX_DIRECT_FAIR_ENGINE
+            and entry["classification"] in ("keep-default", "keep-opt-in")
+            and entry.get("decode_tok_s_agg") is not None
+        ]
+        if not candidates:
+            continue
+        best = max(candidates, key=lambda entry: float(entry["decode_tok_s_agg"]))
+        scenarios.append(
+            {
+                "model": model,
+                "engine": best["engine"],
+                "decode_tok_s_agg": best["decode_tok_s_agg"],
+                "baseline_tok_s_agg": best["baseline_tok_s_agg"],
+                "delta_vs_direct": best["delta_vs_baseline"],
+                "worst_suite_delta": best["worst_suite_delta"],
+                "classification": best["classification"],
+            }
+        )
+    return scenarios
 
 
 def build_summary(
@@ -1161,6 +1373,9 @@ def build_summary(
                         "AX_MLX_MTP_DISABLE_NGRAM_STACKING may not be honored "
                         f"for {profile.key}/{suite}: {ngram_hit_steps}"
                     )
+            ax_direct_tok_s = (engine_summaries.get(AX_DIRECT_FAIR_ENGINE) or {}).get(
+                "decode_tok_s"
+            )
             ax_tok_s = (engine_summaries.get("ax_engine") or {}).get("decode_tok_s")
             ax_ngram_tok_s = (engine_summaries.get("ax_engine_ngram") or {}).get(
                 "decode_tok_s"
@@ -1187,6 +1402,10 @@ def build_summary(
                     "engines": engine_summaries,
                     "ratios": {
                         "ax_engine_vs_mtplx": ratio(ax_tok_s, mtplx_tok_s),
+                        "ax_engine_vs_ax_direct": ratio(ax_tok_s, ax_direct_tok_s),
+                        "ax_engine_ngram_vs_ax_direct": ratio(
+                            ax_ngram_tok_s, ax_direct_tok_s
+                        ),
                         "ax_engine_vs_lightning_mlx": ratio(ax_tok_s, lightning_tok_s),
                         "ax_engine_ngram_vs_mtplx": ratio(ax_ngram_tok_s, mtplx_tok_s),
                         "ax_engine_tuned_vs_mtplx_tuned": ratio(
@@ -1208,7 +1427,7 @@ def build_summary(
                     },
                 }
             )
-    return {
+    summary = {
         "schema": "ax.qwen36_mtp_fair.v1",
         "created_at": date.today().isoformat(),
         "contract": {
@@ -1298,6 +1517,12 @@ def build_summary(
         },
         "rows": rows,
     }
+    survival_comparison = build_survival_comparison(rows)
+    summary["survival_comparison"] = survival_comparison
+    summary["optimized_scenarios"] = build_optimized_scenarios(
+        survival_comparison["comparisons"]
+    )
+    return summary
 
 
 def fmt_number(value: Any, digits: int = 1) -> str:
@@ -1322,6 +1547,7 @@ def fmt_validation(engine_summary: dict[str, Any]) -> str:
 
 def markdown_engine_label(engine: str) -> str:
     return {
+        "ax_direct": "AX direct",
         "mtplx": "MTPLX",
         "mtplx_tuned": "MTPLX tuned",
         "lightning_mlx": "Light. MTP",
@@ -1330,6 +1556,12 @@ def markdown_engine_label(engine: str) -> str:
         "ax_engine_ngram": "AX MTP+n-gram",
         "ax_engine_tuned": "AX tuned",
     }.get(engine, engine)
+
+
+def fmt_delta(value: Any) -> str:
+    if value is None:
+        return "-"
+    return f"{float(value) * 100:+.1f}%"
 
 
 def write_markdown(path: Path, summary: dict[str, Any]) -> None:
@@ -1379,6 +1611,59 @@ def write_markdown(path: Path, summary: dict[str, Any]) -> None:
                 fmt_percent(e.get("accept_rate")),
             ]
         lines.append("| " + " | ".join(cells) + " |")
+    survival = summary.get("survival_comparison") or {}
+    comparisons = survival.get("comparisons") or []
+    if comparisons:
+        lines += [
+            "",
+            "## Same-artifact AX survival comparison",
+            "",
+            "AX direct is the same sidecar package decoded without MTP or n-gram. "
+            "Use this table to decide whether AX MTP should be a default and "
+            "whether AX MTP+n-gram should remain opt-in.",
+            "",
+            "| Model | Engine | Baseline | Decode tok/s | Baseline tok/s | Δ vs baseline | Worst suite Δ | Drafted | Classification |",
+            "|---|---|---|---:|---:|---:|---:|:---:|---|",
+        ]
+        for entry in comparisons:
+            lines.append(
+                "| {model} | {engine} | {baseline} | {decode} | {base_decode} | {delta} | {worst} | {drafted} | {classification} |".format(
+                    model=entry["model"],
+                    engine=markdown_engine_label(entry["engine"]),
+                    baseline=markdown_engine_label(entry["baseline"]),
+                    decode=fmt_number(entry.get("decode_tok_s_agg")),
+                    base_decode=fmt_number(entry.get("baseline_tok_s_agg")),
+                    delta=fmt_delta(entry.get("delta_vs_baseline")),
+                    worst=fmt_delta(entry.get("worst_suite_delta")),
+                    drafted="—" if "drafted" not in entry else ("yes" if entry["drafted"] else "NO"),
+                    classification=entry["classification"],
+                )
+            )
+        warnings = survival.get("warnings") or []
+        if warnings:
+            lines += ["", "### Warnings", ""]
+            lines += [f"- {warning}" for warning in warnings]
+    scenarios = summary.get("optimized_scenarios") or []
+    if scenarios:
+        lines += [
+            "",
+            "## Optimized AX scenario",
+            "",
+            "| Model | Engine | Decode tok/s | Direct tok/s | Δ vs direct | Worst suite Δ | Classification |",
+            "|---|---|---:|---:|---:|---:|---|",
+        ]
+        for entry in scenarios:
+            lines.append(
+                "| {model} | {engine} | {decode} | {direct} | {delta} | {worst} | {classification} |".format(
+                    model=entry["model"],
+                    engine=markdown_engine_label(entry["engine"]),
+                    decode=fmt_number(entry.get("decode_tok_s_agg")),
+                    direct=fmt_number(entry.get("baseline_tok_s_agg")),
+                    delta=fmt_delta(entry.get("delta_vs_direct")),
+                    worst=fmt_delta(entry.get("worst_suite_delta")),
+                    classification=entry["classification"],
+                )
+            )
     lines.append("")
     lines.append("Artifacts:")
     lines.append("")
@@ -1773,7 +2058,9 @@ def write_accept_model_svg(path: Path, summary: dict[str, Any], model_key: str) 
     if not rows:
         return
     engines = [
-        engine for engine in ENGINE_ORDER if engine in summary["contract"]["engines"]
+        engine
+        for engine in ENGINE_ORDER
+        if engine in summary["contract"]["engines"] and engine != AX_DIRECT_FAIR_ENGINE
     ]
     write_mtp_box_whisker_svg(
         path,
@@ -1807,10 +2094,11 @@ def parse_args() -> argparse.Namespace:
         "--modes",
         nargs="+",
         choices=ENGINE_MODES,
-        default=["mtp", "mtp-ngram"],
+        default=["direct", "mtp", "mtp-ngram"],
         help=(
-            "Decode modes to include. Default: fixed-depth mtp and mtp-ngram. "
-            "Add 'tuned' to run MTPLX tune and AX best-of policy sweep rows."
+            "Decode modes to include. Default: direct, fixed-depth mtp, and "
+            "mtp-ngram so AX rows get a same-artifact survival verdict. Add "
+            "'tuned' to run MTPLX tune and AX best-of policy sweep rows."
         ),
     )
     parser.add_argument("--suites", nargs="+", default=["flappy", "long_code"])
@@ -1980,7 +2268,13 @@ def main() -> int:
         )
         return 1
     if args.warmup_repetitions != 1 and any(
-        e in args.engines for e in ("ax_engine", "ax_engine_ngram", "ax_engine_tuned")
+        e in args.engines
+        for e in (
+            AX_DIRECT_FAIR_ENGINE,
+            "ax_engine",
+            "ax_engine_ngram",
+            "ax_engine_tuned",
+        )
     ):
         raise ValueError(
             "AX prompt-suite benchmark has an implicit 1 warmup repetition"

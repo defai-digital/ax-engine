@@ -40,6 +40,43 @@ class Gemma4AssistantMtpBenchTests(unittest.TestCase):
         self.assertEqual([profile.env for profile in profiles], [{}, {}])
         self.assertFalse(any(profile.experimental for profile in profiles))
 
+    def test_existing_artifact_for_profile_supports_legacy_resume_names(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_dir = Path(tmpdir)
+            suite_dir = output_dir / "26b-a4b-4bit" / "flappy"
+            suite_dir.mkdir(parents=True)
+            legacy_mtp = suite_dir / "mtp.json"
+            legacy_mtp.write_text("{}\n")
+
+            self.assertEqual(
+                bench.existing_artifact_for_profile(
+                    output_dir,
+                    model_key="26b-a4b-4bit",
+                    suite="flappy",
+                    bench_profile=bench.BENCH_PROFILES["assistant_mtp_default"],
+                    resume=True,
+                ),
+                legacy_mtp,
+            )
+            self.assertIsNone(
+                bench.existing_artifact_for_profile(
+                    output_dir,
+                    model_key="26b-a4b-4bit",
+                    suite="flappy",
+                    bench_profile=bench.BENCH_PROFILES["assistant_mtp_default"],
+                    resume=False,
+                )
+            )
+            self.assertIsNone(
+                bench.existing_artifact_for_profile(
+                    output_dir,
+                    model_key="26b-a4b-4bit",
+                    suite="flappy",
+                    bench_profile=bench.BENCH_PROFILES["direct"],
+                    resume=True,
+                )
+            )
+
     def test_select_bench_profiles_exposes_explicit_experimental_profile(self) -> None:
         profiles = bench.select_bench_profiles(
             modes=[],
@@ -482,6 +519,36 @@ class ComparisonTests(unittest.TestCase):
         self.assertEqual(ngram_cmp["baseline_profile"], "assistant_mtp_default")
         # 99 vs 110 is a regression -> n-gram should not be a default.
         self.assertEqual(ngram_cmp["classification"], "remove-claim")
+
+    def test_build_optimized_scenarios_picks_fastest_surviving_profile(self) -> None:
+        scenarios = bench.build_optimized_scenarios(
+            [
+                {
+                    "model": "12b-4bit",
+                    "profile": "assistant_mtp_default",
+                    "mode": "mtp",
+                    "baseline": "direct",
+                    "decode_tok_s_agg": 100.0,
+                    "baseline_tok_s_agg": 50.0,
+                    "delta_vs_baseline": 1.0,
+                    "worst_suite_delta": 0.9,
+                    "classification": "keep-default",
+                },
+                {
+                    "model": "12b-4bit",
+                    "profile": "bad_experiment",
+                    "mode": "mtp",
+                    "baseline": "direct",
+                    "decode_tok_s_agg": 120.0,
+                    "baseline_tok_s_agg": 50.0,
+                    "delta_vs_baseline": 1.4,
+                    "worst_suite_delta": -0.5,
+                    "classification": "remove-claim",
+                },
+            ]
+        )
+
+        self.assertEqual(scenarios[0]["profile"], "assistant_mtp_default")
 
     def test_build_comparisons_warns_when_no_direct_row(self) -> None:
         rows = [

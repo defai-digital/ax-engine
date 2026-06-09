@@ -1,0 +1,540 @@
+//! Gemma 4 unified multimodal preprocessing for the OpenAI-compatible endpoint.
+//!
+//! The Gemma 4 unified model graph is "encoder-free": there is no SigLIP/CLIP
+//! vision tower and no mel-spectrogram audio front-end. Image patches are fed
+//! directly into a LayerNorm/Linear/LayerNorm + factorized-position-embedding
+//! connector, and audio is a raw 16 kHz waveform chunked into fixed-size frames.
+//! This module turns raw media (base64 `data:` URIs) into the exact tensors the
+//! [`ax_engine_core::gemma4_unified`] runtime expects, mirroring the reference
+//! `processing_gemma4_unified.py`.
+//!
+//! Scope: image (PNG/JPEG) and audio (PCM WAV). Video and non-WAV audio decode
+//! are intentionally out of scope here — `/v1/generate` still accepts fully
+//! pre-computed tensors for those.
+
+use std::path::Path;
+
+use ax_engine_sdk::{
+    Gemma4UnifiedAudioProcessor, Gemma4UnifiedProcessorConfig, Gemma4UnifiedVisionProcessor,
+};
+use base64::Engine as _;
+use serde_json::Value;
+
+/// Failure modes for media decoding/preprocessing. Callers map these onto HTTP
+/// 400 responses.
+#[derive(Debug)]
+pub(crate) enum MediaError {
+    /// The bytes could not be decoded as the declared media type.
+    Decode(String),
+    /// The request asked for a modality/format this preview does not handle.
+    Unsupported(String),
+    /// The model's processor config could not be loaded or is incomplete.
+    Config(String),
+}
+
+impl std::fmt::Display for MediaError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            MediaError::Decode(message) => write!(f, "{message}"),
+            MediaError::Unsupported(message) => write!(f, "{message}"),
+            MediaError::Config(message) => write!(f, "{message}"),
+        }
+    }
+}
+
+/// Pixel rescale/normalize parameters taken from `preprocessor_config.json`.
+///
+/// The encoder-free connector applies no normalization itself, so whatever the
+/// reference HF processor does must happen here. Defaults match the Gemma 4
+/// image processor (`do_rescale = true`, `rescale_factor = 1/255`,
+/// `do_normalize = false`, `mean = std = 0.5`).
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct ImageNormalization {
+    pub do_rescale: bool,
+    pub rescale_factor: f32,
+    pub do_normalize: bool,
+    pub mean: [f32; 3],
+    pub std: [f32; 3],
+}
+
+impl Default for ImageNormalization {
+    fn default() -> Self {
+        Self {
+            do_rescale: true,
+            rescale_factor: 1.0 / 255.0,
+            do_normalize: false,
+            mean: [0.5, 0.5, 0.5],
+            std: [0.5, 0.5, 0.5],
+        }
+    }
+}
+
+/// Image tensors ready to attach to a `Gemma4UnifiedImageRuntimeInput`.
+#[derive(Debug)]
+pub(crate) struct PreprocessedImage {
+    /// Original decoded width/height — drives `compute_soft_tokens` and span
+    /// expansion in core.
+    pub width: u32,
+    pub height: u32,
+    /// `[num_patches * model_patch_size^2 * 3]`, row-major per patch as
+    /// `[row][col][channel]`.
+    pub pixel_values: Vec<f32>,
+    /// `[num_patches]` of `[patch_x, patch_y]`. Every entry is valid (no `-1`
+    /// padding) — we send exactly `soft_token_count` patches.
+    pub pixel_position_ids: Vec<[i32; 2]>,
+}
+
+/// Audio tensors ready to attach to a `Gemma4UnifiedAudioRuntimeInput`.
+#[derive(Debug)]
+pub(crate) struct PreprocessedAudio {
+    /// Sample count at the model's target sample rate — drives
+    /// `audio_soft_tokens` / span expansion in core.
+    pub sample_count: u32,
+    /// `[frame_count * feature_count]`.
+    pub input_features: Vec<f32>,
+    pub frame_count: u32,
+    pub feature_count: u32,
+}
+
+/// Load the Gemma 4 unified processor config plus image normalization params
+/// from a model artifacts directory (`config.json` + `preprocessor_config.json`).
+pub(crate) fn load_processor_config(
+    model_dir: &Path,
+) -> Result<(Gemma4UnifiedProcessorConfig, ImageNormalization), MediaError> {
+    let model_cfg = read_json(&model_dir.join("config.json"))?;
+    let processor_cfg = read_json(&model_dir.join("preprocessor_config.json"))
+        .or_else(|_| read_json(&model_dir.join("processor_config.json")))?;
+    let config =
+        Gemma4UnifiedProcessorConfig::from_model_and_processor_config(&model_cfg, &processor_cfg)
+            .map_err(|error| MediaError::Config(error.to_string()))?;
+    let normalization = image_normalization_from(&processor_cfg);
+    Ok((config, normalization))
+}
+
+/// Decode an inline base64 `data:` URI into `(mime, bytes)`. Only base64 data
+/// URIs are accepted — remote `http(s)` URLs are rejected so the server never
+/// performs outbound fetches on a client's behalf.
+pub(crate) fn decode_data_uri(uri: &str) -> Result<(String, Vec<u8>), MediaError> {
+    let rest = uri.strip_prefix("data:").ok_or_else(|| {
+        MediaError::Unsupported(
+            "only inline base64 data: URIs are supported for media (no remote URLs)".to_string(),
+        )
+    })?;
+    let (meta, data) = rest
+        .split_once(',')
+        .ok_or_else(|| MediaError::Decode("malformed data: URI (missing comma)".to_string()))?;
+    if !meta.contains("base64") {
+        return Err(MediaError::Unsupported(
+            "data: URI media must be base64-encoded".to_string(),
+        ));
+    }
+    let mime = meta.split(';').next().unwrap_or_default().to_string();
+    let bytes = decode_base64(data)?;
+    Ok((mime, bytes))
+}
+
+/// Decode a raw (non-URI) standard base64 payload, e.g. OpenAI `input_audio.data`.
+pub(crate) fn decode_base64(data: &str) -> Result<Vec<u8>, MediaError> {
+    base64::engine::general_purpose::STANDARD
+        .decode(data.trim())
+        .map_err(|error| MediaError::Decode(format!("invalid base64 media payload: {error}")))
+}
+
+fn read_json(path: &Path) -> Result<Value, MediaError> {
+    let text = std::fs::read_to_string(path)
+        .map_err(|error| MediaError::Config(format!("{}: {error}", path.display())))?;
+    serde_json::from_str(&text)
+        .map_err(|error| MediaError::Config(format!("{}: {error}", path.display())))
+}
+
+fn image_normalization_from(processor_cfg: &Value) -> ImageNormalization {
+    let mut norm = ImageNormalization::default();
+    let block = processor_cfg
+        .get("image_processor")
+        .filter(|value| value.is_object())
+        .unwrap_or(processor_cfg);
+    if let Some(value) = block.get("do_rescale").and_then(Value::as_bool) {
+        norm.do_rescale = value;
+    }
+    if let Some(value) = block.get("rescale_factor").and_then(Value::as_f64) {
+        norm.rescale_factor = value as f32;
+    }
+    if let Some(value) = block.get("do_normalize").and_then(Value::as_bool) {
+        norm.do_normalize = value;
+    }
+    if let Some(mean) = rgb_triplet(block.get("image_mean")) {
+        norm.mean = mean;
+    }
+    if let Some(std) = rgb_triplet(block.get("image_std")) {
+        norm.std = std;
+    }
+    norm
+}
+
+fn rgb_triplet(value: Option<&Value>) -> Option<[f32; 3]> {
+    let array = value?.as_array()?;
+    if array.len() != 3 {
+        return None;
+    }
+    let mut out = [0f32; 3];
+    for (slot, item) in out.iter_mut().zip(array) {
+        *slot = item.as_f64()? as f32;
+    }
+    Some(out)
+}
+
+/// Decode and patchify an image into the encoder-free vision connector's input.
+///
+/// Mirrors `processing_gemma4_unified.py`: aspect-ratio-preserving resize so the
+/// patch grid fits the soft-token budget, rescale/normalize per config, then
+/// reshape pixels directly into `model_patch_size` patches with a 2D position
+/// grid. The patch count is kept identical to core's `compute_soft_tokens`.
+pub(crate) fn preprocess_image(
+    bytes: &[u8],
+    vision: &Gemma4UnifiedVisionProcessor,
+    normalization: &ImageNormalization,
+) -> Result<PreprocessedImage, MediaError> {
+    let decoded = image::load_from_memory(bytes)
+        .map_err(|error| MediaError::Decode(format!("failed to decode image: {error}")))?
+        .to_rgb8();
+    let (width, height) = (decoded.width(), decoded.height());
+    if width == 0 || height == 0 {
+        return Err(MediaError::Decode(
+            "image has zero width or height".to_string(),
+        ));
+    }
+    if vision.patch_size == 0 || vision.pooling_kernel_size == 0 || vision.max_soft_tokens == 0 {
+        return Err(MediaError::Config(
+            "vision processor has zero patch_size, pooling_kernel_size, or max_soft_tokens"
+                .to_string(),
+        ));
+    }
+
+    // `model_patch_size == patch_size * pooling_kernel_size`; use it for both the
+    // resize unit (core parity) and patch extraction (internal consistency).
+    let patch = vision.patch_size * vision.pooling_kernel_size;
+    let (target_w, target_h) = resize_target(vision, width, height);
+    let resized = if target_w == width && target_h == height {
+        decoded
+    } else {
+        image::imageops::resize(
+            &decoded,
+            target_w,
+            target_h,
+            image::imageops::FilterType::CatmullRom,
+        )
+    };
+
+    let grid_w = target_w / patch;
+    let grid_h = target_h / patch;
+    let total_patches = (grid_w as usize) * (grid_h as usize);
+    let keep = total_patches.min(vision.max_soft_tokens as usize);
+    let patch_dim = (patch as usize) * (patch as usize) * 3;
+
+    let mut pixel_values = Vec::with_capacity(keep * patch_dim);
+    let mut pixel_position_ids = Vec::with_capacity(keep);
+    'patches: for patch_y in 0..grid_h {
+        for patch_x in 0..grid_w {
+            if pixel_position_ids.len() >= keep {
+                break 'patches;
+            }
+            for row in 0..patch {
+                for col in 0..patch {
+                    let pixel = resized.get_pixel(patch_x * patch + col, patch_y * patch + row);
+                    for channel in 0..3 {
+                        pixel_values.push(normalize_channel(
+                            pixel.0[channel],
+                            channel,
+                            normalization,
+                        ));
+                    }
+                }
+            }
+            pixel_position_ids.push([patch_x as i32, patch_y as i32]);
+        }
+    }
+
+    Ok(PreprocessedImage {
+        width,
+        height,
+        pixel_values,
+        pixel_position_ids,
+    })
+}
+
+fn normalize_channel(value: u8, channel: usize, normalization: &ImageNormalization) -> f32 {
+    let mut pixel = value as f32;
+    if normalization.do_rescale {
+        pixel *= normalization.rescale_factor;
+    }
+    if normalization.do_normalize {
+        pixel = (pixel - normalization.mean[channel]) / normalization.std[channel];
+    }
+    pixel
+}
+
+/// Compute the aspect-ratio-preserving resize target, matching the formula in
+/// `Gemma4UnifiedVisionProcessor::compute_soft_tokens` so the patch grid produced
+/// here agrees with core's soft-token count.
+fn resize_target(vision: &Gemma4UnifiedVisionProcessor, width: u32, height: u32) -> (u32, u32) {
+    let patch = vision.patch_size as f64;
+    let pooling = vision.pooling_kernel_size as f64;
+    let unit = patch * pooling;
+    let max_patches = vision.max_soft_tokens as f64 * pooling * pooling;
+    let original_patches = (height as f64 / patch) * (width as f64 / patch);
+    let scale = (max_patches / original_patches).sqrt();
+    let target_h = unit.max(((height as f64 * scale / unit).floor()) * unit);
+    let target_w = unit.max(((width as f64 * scale / unit).floor()) * unit);
+    (target_w as u32, target_h as u32)
+}
+
+/// Decode a PCM WAV stream and chunk the (mono, resampled) waveform into the
+/// encoder-free audio connector's fixed-size frames.
+///
+/// Mirrors `Gemma4UnifiedAudioFeatureExtractor`: downmix to mono, resample to
+/// `sampling_rate`, zero-pad to a multiple of `audio_samples_per_token`, and
+/// reshape into `[frames, audio_samples_per_token]`. WAV only — other container
+/// formats would need a heavier decoder (e.g. symphonia).
+pub(crate) fn preprocess_wav(
+    bytes: &[u8],
+    audio: &Gemma4UnifiedAudioProcessor,
+) -> Result<PreprocessedAudio, MediaError> {
+    let reader = hound::WavReader::new(std::io::Cursor::new(bytes))
+        .map_err(|error| MediaError::Decode(format!("failed to decode WAV audio: {error}")))?;
+    let spec = reader.spec();
+    let channels = spec.channels.max(1) as usize;
+    let interleaved = read_wav_samples(reader, spec)?;
+    let mono = downmix_to_mono(&interleaved, channels);
+    let resampled = resample_linear(&mono, spec.sample_rate, audio.sampling_rate);
+
+    let per_token = audio.audio_samples_per_token.max(1) as usize;
+    if resampled.is_empty() {
+        return Err(MediaError::Decode("audio contains no samples".to_string()));
+    }
+    let mut frame_count = resampled.len().div_ceil(per_token);
+    if let Some(limit) = audio.audio_seq_length {
+        frame_count = frame_count.min(limit as usize);
+    }
+    if frame_count == 0 {
+        return Err(MediaError::Decode(
+            "audio resolves to zero frames".to_string(),
+        ));
+    }
+
+    let mut input_features = vec![0f32; frame_count * per_token];
+    let copy_len = (frame_count * per_token).min(resampled.len());
+    input_features[..copy_len].copy_from_slice(&resampled[..copy_len]);
+
+    Ok(PreprocessedAudio {
+        sample_count: resampled.len() as u32,
+        input_features,
+        frame_count: frame_count as u32,
+        feature_count: per_token as u32,
+    })
+}
+
+fn read_wav_samples(
+    reader: hound::WavReader<std::io::Cursor<&[u8]>>,
+    spec: hound::WavSpec,
+) -> Result<Vec<f32>, MediaError> {
+    let mut reader = reader;
+    let samples = match spec.sample_format {
+        hound::SampleFormat::Float => reader
+            .samples::<f32>()
+            .filter_map(Result::ok)
+            .collect::<Vec<_>>(),
+        hound::SampleFormat::Int => {
+            let scale = (1i64 << (spec.bits_per_sample.saturating_sub(1))) as f32;
+            let scale = if scale == 0.0 { 1.0 } else { scale };
+            reader
+                .samples::<i32>()
+                .filter_map(Result::ok)
+                .map(|value| value as f32 / scale)
+                .collect::<Vec<_>>()
+        }
+    };
+    Ok(samples)
+}
+
+fn downmix_to_mono(interleaved: &[f32], channels: usize) -> Vec<f32> {
+    if channels <= 1 {
+        return interleaved.to_vec();
+    }
+    interleaved
+        .chunks(channels)
+        .map(|frame| frame.iter().sum::<f32>() / channels as f32)
+        .collect()
+}
+
+/// Linear-interpolation resampler. Adequate for the encoder-free connector's
+/// learned projection; not a band-limited sinc resampler. Inputs already at the
+/// target rate pass through untouched.
+fn resample_linear(input: &[f32], from_rate: u32, to_rate: u32) -> Vec<f32> {
+    if from_rate == to_rate || input.is_empty() || from_rate == 0 || to_rate == 0 {
+        return input.to_vec();
+    }
+    let ratio = to_rate as f64 / from_rate as f64;
+    let out_len = ((input.len() as f64) * ratio).round().max(1.0) as usize;
+    let last = input.len() - 1;
+    let mut out = Vec::with_capacity(out_len);
+    for index in 0..out_len {
+        let source = index as f64 / ratio;
+        let lower = source.floor() as usize;
+        let frac = (source - lower as f64) as f32;
+        let a = input[lower.min(last)];
+        let b = input[(lower + 1).min(last)];
+        out.push(a + (b - a) * frac);
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn vision() -> Gemma4UnifiedVisionProcessor {
+        Gemma4UnifiedVisionProcessor {
+            patch_size: 16,
+            model_patch_size: 48,
+            pooling_kernel_size: 3,
+            max_soft_tokens: 280,
+        }
+    }
+
+    fn solid_png(width: u32, height: u32, rgb: [u8; 3]) -> Vec<u8> {
+        let buffer = image::RgbImage::from_pixel(width, height, image::Rgb(rgb));
+        let mut bytes: Vec<u8> = Vec::new();
+        image::DynamicImage::ImageRgb8(buffer)
+            .write_to(
+                &mut std::io::Cursor::new(&mut bytes),
+                image::ImageFormat::Png,
+            )
+            .expect("encode png");
+        bytes
+    }
+
+    #[test]
+    fn resize_target_matches_core_soft_token_count() {
+        // For each of these, the number of kept patches must equal what core's
+        // compute_soft_tokens returns from the original dimensions.
+        for (w, h, expected) in [(224, 224, 256), (1024, 256, 264), (3, 900, 280)] {
+            let vision = vision();
+            let core = vision.compute_soft_tokens(w, h).unwrap() as usize;
+            assert_eq!(core, expected, "core soft tokens for {w}x{h}");
+
+            let png = solid_png(w.max(1), h.max(1), [10, 20, 30]);
+            let pre = preprocess_image(&png, &vision, &ImageNormalization::default()).unwrap();
+            assert_eq!(
+                pre.pixel_position_ids.len(),
+                core,
+                "kept patches must equal core soft tokens for {w}x{h}"
+            );
+            let patch_dim = (vision.patch_size * vision.pooling_kernel_size) as usize;
+            let patch_dim = patch_dim * patch_dim * 3;
+            assert_eq!(
+                pre.pixel_values.len(),
+                pre.pixel_position_ids.len() * patch_dim
+            );
+        }
+    }
+
+    #[test]
+    fn patch_positions_are_row_major_x_then_y() {
+        let vision = vision();
+        // Small images are upscaled to fill the patch budget (reference
+        // behavior), so derive the actual grid from the resize target and verify
+        // the [x, y] ordering is y-outer / x-inner with no truncation.
+        let png = solid_png(96, 48, [128, 128, 128]);
+        let pre = preprocess_image(&png, &vision, &ImageNormalization::default()).unwrap();
+
+        let patch = vision.patch_size * vision.pooling_kernel_size;
+        let (target_w, target_h) = resize_target(&vision, 96, 48);
+        let grid_w = (target_w / patch) as i32;
+        let grid_h = (target_h / patch) as i32;
+        assert!((grid_w as usize) * (grid_h as usize) <= vision.max_soft_tokens as usize);
+        assert_eq!(pre.pixel_position_ids.len(), (grid_w * grid_h) as usize);
+
+        for (index, position) in pre.pixel_position_ids.iter().enumerate() {
+            let index = index as i32;
+            assert_eq!(*position, [index % grid_w, index / grid_w]);
+        }
+    }
+
+    #[test]
+    fn default_normalization_is_rescale_only() {
+        let norm = ImageNormalization::default();
+        assert_eq!(normalize_channel(255, 0, &norm), 1.0);
+        assert_eq!(normalize_channel(0, 0, &norm), 0.0);
+        let normed = ImageNormalization {
+            do_normalize: true,
+            ..ImageNormalization::default()
+        };
+        assert_eq!(normalize_channel(255, 0, &normed), 1.0);
+        assert_eq!(normalize_channel(0, 0, &normed), -1.0);
+    }
+
+    fn audio() -> Gemma4UnifiedAudioProcessor {
+        Gemma4UnifiedAudioProcessor {
+            sampling_rate: 16000,
+            audio_samples_per_token: 640,
+            audio_seq_length: Some(1500),
+        }
+    }
+
+    fn wav_16k_mono(samples: &[f32]) -> Vec<u8> {
+        let spec = hound::WavSpec {
+            channels: 1,
+            sample_rate: 16000,
+            bits_per_sample: 32,
+            sample_format: hound::SampleFormat::Float,
+        };
+        let mut bytes: Vec<u8> = Vec::new();
+        {
+            let mut writer =
+                hound::WavWriter::new(std::io::Cursor::new(&mut bytes), spec).expect("writer");
+            for &sample in samples {
+                writer.write_sample(sample).expect("write");
+            }
+            writer.finalize().expect("finalize");
+        }
+        bytes
+    }
+
+    #[test]
+    fn wav_frames_match_core_soft_tokens() {
+        let audio = audio();
+        // 1600 samples @ 16k -> ceil(1600/640) = 3 frames.
+        let wav = wav_16k_mono(&vec![0.25f32; 1600]);
+        let pre = preprocess_wav(&wav, &audio).unwrap();
+        let core = audio.compute_soft_tokens(pre.sample_count);
+        assert_eq!(pre.frame_count, core);
+        assert_eq!(pre.frame_count, 3);
+        assert_eq!(pre.feature_count, 640);
+        assert_eq!(pre.input_features.len(), 3 * 640);
+        // First samples preserved, tail zero-padded.
+        assert_eq!(pre.input_features[0], 0.25);
+        assert_eq!(*pre.input_features.last().unwrap(), 0.0);
+    }
+
+    #[test]
+    fn decode_data_uri_accepts_base64_and_rejects_remote() {
+        let (mime, bytes) =
+            decode_data_uri("data:image/png;base64,aGVsbG8=").expect("valid data uri");
+        assert_eq!(mime, "image/png");
+        assert_eq!(bytes, b"hello");
+
+        let remote = decode_data_uri("https://example.com/cat.png").unwrap_err();
+        assert!(matches!(remote, MediaError::Unsupported(_)));
+
+        let not_base64 = decode_data_uri("data:image/png,hello").unwrap_err();
+        assert!(matches!(not_base64, MediaError::Unsupported(_)));
+    }
+
+    #[test]
+    fn resample_halves_length_when_downsampling() {
+        let input: Vec<f32> = (0..100).map(|i| i as f32).collect();
+        let out = resample_linear(&input, 32000, 16000);
+        assert_eq!(out.len(), 50);
+        assert_eq!(out[0], 0.0);
+    }
+}

@@ -36,8 +36,20 @@ pip install ax-engine
 
 **Download a model and start the server:**
 
+Qwen 3.6 35B:
 ```bash
-ax-engine serve qwen36-35b --download --port 8080
+ax-engine download qwen36-35b
+```
+```bash
+ax-engine serve qwen36-35b --port 8080
+```
+
+Gemma 4 12B:
+```bash
+ax-engine download gemma4-12b
+```
+```bash
+ax-engine serve gemma4-12b --port 8080
 ```
 
 **Call it from any OpenAI client:**
@@ -287,9 +299,11 @@ AX sustains **as much or more memory bandwidth than llama.cpp** (459 vs 418 GB/s
 
 On top of the 4-bit-FFN direct win, the assistant-MTP path (depth-2 draft, default first-token confidence gate `0.90`, deep-token gate `0.999`, GPU-exact confidence) runs on the assistant bundle and adds a second speculative lever `mlx_lm` and llama.cpp don't have. Pure assistant-MTP is the default; MTP+n-gram stacking remains available as an opt-in because it is workload-dependent and did not beat pure MTP on every suite.
 
+No runnable peer benchmark currently covers **Gemma 4 12B assistant-MTP** in this matrix: `mlx_lm` cannot load `gemma4_unified`, llama.cpp does not expose a Gemma assistant-MTP path, and the available MTP peer tools target different sidecar contracts. To keep the 12B MTP chart reviewable, the yellow row uses AX direct decode from the same MTP harness prompts, artifact, and sampler as a reference baseline. This has a real limitation: it is **not** a peer-engine MTP comparison, and it does not measure another implementation's speculative overhead. It only answers the narrower question that matters for keeping the feature: how much AX assistant-MTP and AX MTP+n-gram improve over AX direct decode under matched 12B conditions. The random-token direct/llama.cpp comparison remains in the separate chart above.
+
 <table>
 <tr>
-<td><img width="100%" src="docs/assets/perf-gemma4-assistant-mtp-12b-decode-tok-s.svg" alt="Grouped box-and-whisker plot comparing Gemma 4 12B 4-bit assistant-MTP and assistant MTP+n-gram decode throughput across flappy, long_code, and python_modules_long prompt suites"></td>
+<td><img width="100%" src="docs/assets/perf-gemma4-assistant-mtp-12b-decode-tok-s.svg" alt="Grouped box-and-whisker plot comparing Gemma 4 12B 4-bit AX direct same-prompt baseline, assistant-MTP, and assistant MTP+n-gram decode throughput across flappy, long_code, and python_modules_long prompt suites"></td>
 <td><img width="100%" src="docs/assets/perf-gemma4-assistant-mtp-12b-accept-rate.svg" alt="Grouped box-and-whisker plot comparing Gemma 4 12B 4-bit assistant-MTP and assistant MTP+n-gram accept rate across flappy, long_code, and python_modules_long prompt suites"></td>
 </tr>
 <tr>

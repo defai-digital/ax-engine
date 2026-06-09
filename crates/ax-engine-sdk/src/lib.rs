@@ -19,9 +19,11 @@
 //! the existing crate-root exports.
 
 pub use ax_engine_core::gemma4_unified::{
-    Gemma4UnifiedAudioRuntimeInput, Gemma4UnifiedImageRuntimeInput, Gemma4UnifiedModality,
-    Gemma4UnifiedRuntimeInputError, Gemma4UnifiedRuntimeInputs, Gemma4UnifiedSoftTokenRange,
-    Gemma4UnifiedTokenSpan, Gemma4UnifiedVideoRuntimeInput,
+    Gemma4UnifiedAudioInput, Gemma4UnifiedAudioProcessor, Gemma4UnifiedAudioRuntimeInput,
+    Gemma4UnifiedError, Gemma4UnifiedImageInput, Gemma4UnifiedImageRuntimeInput,
+    Gemma4UnifiedModality, Gemma4UnifiedProcessorConfig, Gemma4UnifiedRuntimeInputError,
+    Gemma4UnifiedRuntimeInputs, Gemma4UnifiedSoftTokenRange, Gemma4UnifiedTokenSpan,
+    Gemma4UnifiedVideoRuntimeInput, Gemma4UnifiedVisionProcessor,
 };
 pub use ax_engine_core::{
     CacheGroupId, EmbeddingMatrix, EmbeddingPooling, KvCompressionConfig, KvCompressionMode,

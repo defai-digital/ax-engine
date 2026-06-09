@@ -15,6 +15,7 @@ mod errors;
 mod generation;
 mod grpc;
 mod metadata;
+mod multimodal;
 mod openai;
 mod routes;
 mod tasks;

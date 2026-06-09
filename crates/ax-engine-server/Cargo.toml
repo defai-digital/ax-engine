@@ -7,7 +7,10 @@ version.workspace = true
 [dependencies]
 ax-engine-sdk = { path = "../ax-engine-sdk", features = ["mlx-native", "tokenizer"] }
 axum = "0.7"
+base64.workspace = true
 clap = { version = "4", features = ["derive"] }
+hound.workspace = true
+image.workspace = true
 prost = "0.13"
 serde.workspace = true
 serde_json.workspace = true

@@ -4,8 +4,9 @@
 This is the Gemma-specific companion to the Qwen3.6 fair MTP harness. Gemma 4
 uses an assistant drafter model instead of a fused ``mtp.safetensors`` sidecar,
 so this script prepares or locates ``ax_gemma4_assistant_mtp.json`` model
-directories and runs AX Engine in both assistant-MTP-only and assistant
-MTP+n-gram modes.
+directories and runs AX Engine in direct, assistant-MTP-only, and assistant
+MTP+n-gram modes. The default matrix includes same-artifact direct decode so
+every Gemma model produces a survival verdict for the speculative modes.
 """
 
 from __future__ import annotations
@@ -296,6 +297,33 @@ def select_bench_profiles(*, modes: list[str], profile_keys: list[str]) -> list[
     if unknown_modes:
         raise ValueError(f"unknown mode(s): {', '.join(unknown_modes)}")
     return [BENCH_PROFILES[DEFAULT_PROFILE_BY_MODE[mode]] for mode in modes]
+
+
+LEGACY_ARTIFACT_BY_PROFILE = {
+    "assistant_mtp_default": "mtp.json",
+    "assistant_mtp_ngram_default": "mtp-ngram.json",
+}
+
+
+def existing_artifact_for_profile(
+    output_dir: Path,
+    *,
+    model_key: str,
+    suite: str,
+    bench_profile: BenchProfile,
+    resume: bool,
+) -> Path | None:
+    """Return an existing artifact path for --resume, including legacy names."""
+    artifact_path = output_dir / model_key / suite / f"{bench_profile.key}.json"
+    if artifact_path.exists():
+        return artifact_path
+    if not resume:
+        return None
+    legacy_name = LEGACY_ARTIFACT_BY_PROFILE.get(bench_profile.key)
+    if legacy_name is None:
+        return None
+    legacy_path = output_dir / model_key / suite / legacy_name
+    return legacy_path if legacy_path.exists() else None
 
 
 def prepared_dir(profile: Gemma4Profile, hf_cache: Path = HF_CACHE) -> Path:
@@ -936,6 +964,36 @@ def build_comparisons(rows: list[dict[str, Any]]) -> dict[str, Any]:
     return {"parity_ok": parity_ok, "warnings": warnings, "comparisons": comparisons}
 
 
+def build_optimized_scenarios(comparisons: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    scenarios: list[dict[str, Any]] = []
+    models = sorted({entry["model"] for entry in comparisons})
+    for model in models:
+        candidates = [
+            entry
+            for entry in comparisons
+            if entry["model"] == model
+            and entry["baseline"] == "direct"
+            and entry["classification"] in ("keep-default", "keep-opt-in")
+            and entry.get("decode_tok_s_agg") is not None
+        ]
+        if not candidates:
+            continue
+        best = max(candidates, key=lambda entry: float(entry["decode_tok_s_agg"]))
+        scenarios.append(
+            {
+                "model": model,
+                "profile": best["profile"],
+                "mode": best["mode"],
+                "decode_tok_s_agg": best["decode_tok_s_agg"],
+                "baseline_tok_s_agg": best["baseline_tok_s_agg"],
+                "delta_vs_direct": best["delta_vs_baseline"],
+                "worst_suite_delta": best["worst_suite_delta"],
+                "classification": best["classification"],
+            }
+        )
+    return scenarios
+
+
 def fmt_number(value: float | None, digits: int = 1) -> str:
     return "n/a" if value is None else f"{value:.{digits}f}"
 
@@ -981,6 +1039,29 @@ def write_summary(output_dir: Path, summary: dict[str, Any]) -> None:
                 safety_tightens=row["ngram_safety_tightened_steps"],
             )
         )
+
+    scenarios = summary.get("optimized_scenarios") or []
+    if scenarios:
+        lines += [
+            "",
+            "## Optimized scenario",
+            "",
+            "| Model | Profile | Mode | Decode tok/s | Direct tok/s | Δ vs direct | Worst suite Δ | Classification |",
+            "|---|---|---|---:|---:|---:|---:|---|",
+        ]
+        for entry in scenarios:
+            lines.append(
+                "| {model} | {profile} | {mode} | {decode} | {direct} | {delta} | {worst} | {classification} |".format(
+                    model=entry["model"],
+                    profile=entry["profile"],
+                    mode=entry["mode"],
+                    decode=fmt_number(entry.get("decode_tok_s_agg")),
+                    direct=fmt_number(entry.get("baseline_tok_s_agg")),
+                    delta=fmt_delta(entry.get("delta_vs_direct")),
+                    worst=fmt_delta(entry.get("worst_suite_delta")),
+                    classification=entry["classification"],
+                )
+            )
 
     comparison = summary.get("comparison") or {}
     comparisons = comparison.get("comparisons") or []
@@ -1032,8 +1113,12 @@ def main() -> None:
     )
     parser.add_argument(
         "--modes",
-        default="mtp,mtp-ngram",
-        help="Comma-separated legacy modes used when --profiles is omitted: mtp, mtp-ngram.",
+        default="direct,mtp,mtp-ngram",
+        help=(
+            "Comma-separated legacy modes used when --profiles is omitted: "
+            "direct, mtp, mtp-ngram. Keep direct in optimized-scenario runs so "
+            "the summary can classify MTP survival against same-artifact decode."
+        ),
     )
     parser.add_argument(
         "--profiles",
@@ -1122,7 +1207,15 @@ def main() -> None:
                 row_depth = bench_profile.depth or effective_depth
                 artifact_path = output_dir / model_key / suite / f"{bench_profile.key}.json"
                 artifact_path.parent.mkdir(parents=True, exist_ok=True)
-                if args.resume and artifact_path.exists():
+                existing_artifact = existing_artifact_for_profile(
+                    output_dir,
+                    model_key=model_key,
+                    suite=suite,
+                    bench_profile=bench_profile,
+                    resume=args.resume,
+                )
+                if args.resume and existing_artifact is not None:
+                    artifact_path = existing_artifact
                     print(f"[resume] using existing {artifact_path}", flush=True)
                 else:
                     run_ax_suite(
@@ -1171,6 +1264,7 @@ def main() -> None:
         "inter_case_cooldown": args.inter_case_cooldown,
         "rows": rows,
         "comparison": comparison,
+        "optimized_scenarios": build_optimized_scenarios(comparison["comparisons"]),
     }
     write_summary(output_dir, summary)
     for warning in comparison["warnings"]:

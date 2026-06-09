@@ -20,6 +20,7 @@ use crate::openai::schema::{
 pub(crate) const DEFAULT_OPENAI_MAX_TOKENS: u32 = 256;
 static OPENAI_SEED_COUNTER: AtomicU64 = AtomicU64::new(1);
 
+use crate::openai::chat_requests::render_gemma4_unified_chat_with_media;
 pub(crate) use crate::openai::chat_requests::{
     chat_template_kwargs_for_model_id, openai_chat_stop_sequences, render_openai_chat_prompt,
 };
@@ -157,25 +158,53 @@ pub(crate) fn build_openai_chat_request(
 ) -> Result<OpenAiBuiltRequest, (StatusCode, Json<ErrorResponse>)> {
     let max_output_tokens = openai_max_tokens(request.max_tokens);
     let sampling_params = OpenAiSamplingParams::from_chat_request(&request);
-    let input_tokens = request.input_tokens;
-    let multimodal_inputs = request.multimodal_inputs;
+    let mut input_tokens = request.input_tokens;
+    let mut multimodal_inputs = request.multimodal_inputs;
     reject_openai_multimodal_inputs_without_native_mlx(state, "OpenAI chat", &multimodal_inputs)?;
     reject_openai_multimodal_inputs_without_tokens(
         "OpenAI chat",
         &multimodal_inputs,
         !input_tokens.is_empty(),
     )?;
-    let input_text = if input_tokens.is_empty() {
-        validate_native_chat_artifacts(state)?;
-        Some(render_openai_chat_prompt(
-            state.model_id.as_ref(),
-            &request.messages,
-        )?)
-    } else {
+    let input_text = if !input_tokens.is_empty() {
         // Keep message validation and raw-media rejection even when the AX
         // extension supplies an already-tokenized prompt.
         let _ = build_mlx_lm_chat_messages(&request.messages)?;
         None
+    } else {
+        validate_native_chat_artifacts(state)?;
+        // On native MLX, decode inline base64 image/audio parts into Gemma 4
+        // unified soft-token spans + tensors. Falls back to text-only rendering
+        // when there is no inline media.
+        let media_prompt = if state.runtime_report.selected_backend == SelectedBackend::Mlx
+            && multimodal_inputs.is_empty()
+        {
+            let model_dir = state.session_config.mlx_model_artifacts_dir().ok_or_else(|| {
+                error_response(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_request",
+                    "native MLX multimodal chat requires mlx_model_artifacts_dir with tokenizer.json and config".to_string(),
+                )
+            })?;
+            render_gemma4_unified_chat_with_media(
+                state.model_id.as_ref(),
+                model_dir,
+                &request.messages,
+            )?
+        } else {
+            None
+        };
+        match media_prompt {
+            Some(prompt) => {
+                input_tokens = prompt.input_tokens;
+                multimodal_inputs.gemma4_unified = Some(prompt.runtime_inputs);
+                None
+            }
+            None => Some(render_openai_chat_prompt(
+                state.model_id.as_ref(),
+                &request.messages,
+            )?),
+        }
     };
     let tool_call = openai_tools_are_enabled(request.tools.as_ref(), request.tool_choice.as_ref());
     let structured_output = openai_response_format_is_structured(request.response_format.as_ref());

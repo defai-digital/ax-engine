@@ -94,6 +94,13 @@ impl EngineTokenizer {
         Ok(ids)
     }
 
+    /// Look up the surface string for a single token id. Used to render a
+    /// special placeholder token (e.g. the Gemma image soft token) into a
+    /// prompt so that it re-encodes back to exactly that id.
+    pub fn id_to_token(&self, id: u32) -> Option<String> {
+        self.inner.id_to_token(id)
+    }
+
     /// Encode a batch. Uses the upstream crate's `encode_batch` so
     /// individual sequence tokenization is parallelised internally.
     /// Returns one `Vec<u32>` per input string, in input order.

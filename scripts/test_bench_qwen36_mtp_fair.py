@@ -44,6 +44,12 @@ class Qwen36MtpFairTests(unittest.TestCase):
             ["mtplx_tuned", "ax_engine_tuned"],
         )
 
+    def test_resolve_engines_supports_ax_direct_mode(self) -> None:
+        self.assertEqual(
+            fair.resolve_engines(["mtplx", "ax"], ["direct", "mtp"]),
+            ["ax_direct", "mtplx", "ax_engine"],
+        )
+
     def test_depth_policy_native_uses_profile_depth(self) -> None:
         profile = fair.QWEN36_PROFILES["27b-4bit"]
         self.assertEqual(
@@ -233,6 +239,65 @@ class Qwen36MtpFairTests(unittest.TestCase):
             {"ax_engine_ngram": "mtp_ngram_stacked"},
         )
 
+    def test_build_summary_records_ax_survival_comparison(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            hf_cache = root / "hf"
+            make_sidecar_manifest(hf_cache)
+            artifacts = {
+                ("27b-4bit", "flappy", "ax_direct"): write_json(
+                    root / "direct.json", fake_ax_direct_artifact(decode=10.0)
+                ),
+                ("27b-4bit", "flappy", "ax_engine"): write_json(
+                    root / "ax.json",
+                    fake_ax_mtp_artifact("ax_engine_mlx_pure_mtp", decode=11.0),
+                ),
+                ("27b-4bit", "flappy", "ax_engine_ngram"): write_json(
+                    root / "ax-ngram.json",
+                    fake_ax_mtp_artifact("ax_engine_mlx_ngram_accel", decode=11.5),
+                ),
+            }
+            args = Namespace(
+                models=["27b-4bit"],
+                engines=["ax_direct", "ax_engine", "ax_engine_ngram"],
+                suites=["flappy"],
+                depth_policy="native",
+                depth=None,
+                mode="sampled",
+                temperature=0.6,
+                top_p=0.95,
+                top_k=20,
+                max_tokens=128,
+                repetitions=1,
+                warmup_repetitions=1,
+                cooldown=0.0,
+                hf_cache=hf_cache,
+                pure_mtp=False,
+            )
+
+            summary = fair.build_summary(args, artifacts)
+
+        self.assertEqual(
+            summary["contract"]["ax_engine_modes"],
+            {
+                "ax_engine": "pure_mtp",
+                "ax_engine_ngram": "mtp_ngram_stacked",
+            },
+        )
+        comparisons = summary["survival_comparison"]["comparisons"]
+        by_key = {(entry["engine"], entry["baseline"]): entry for entry in comparisons}
+        self.assertEqual(
+            by_key[("ax_engine", "ax_direct")]["classification"], "keep-default"
+        )
+        self.assertEqual(
+            by_key[("ax_engine_ngram", "ax_engine")]["classification"],
+            "keep-default",
+        )
+        self.assertEqual(summary["optimized_scenarios"][0]["engine"], "ax_engine_ngram")
+        self.assertAlmostEqual(
+            summary["rows"][0]["ratios"]["ax_engine_vs_ax_direct"], 1.1
+        )
+
     def test_build_summary_records_tuned_contract(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -351,6 +416,47 @@ class Qwen36MtpFairTests(unittest.TestCase):
         self.assertEqual(ngram_cmd[ngram_cmd.index("--ax-mtp-max-depth") + 1], "0")
         self.assertIn("--ax-mtp-disable-ngram-stacking", mtp_cmd)
         self.assertEqual(mtp_cmd[mtp_cmd.index("--ax-mtp-max-depth") + 1], "3")
+
+    def test_run_engine_suite_dispatches_ax_direct(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            sidecar = (
+                root
+                / "hf"
+                / "models--ax-local--Qwen3.6-27B-MTP"
+                / "snapshots"
+                / "v1"
+            )
+            args = Namespace(
+                hf_cache=root / "hf",
+                suites_dir=root / "suites",
+                output_dir=root / "out",
+                mode="sampled",
+                max_tokens=64,
+                repetitions=1,
+                warmup_repetitions=1,
+                cooldown=0.0,
+                temperature=0.6,
+                top_p=0.95,
+                top_k=20,
+                enable_thinking=False,
+                skip_existing=False,
+                ax_python=Path("python"),
+                no_build_ax_engine=True,
+                inter_case_cooldown=0.0,
+            )
+            with patch.object(fair, "run_ax_suite", return_value=root / "direct.json") as run:
+                fair.run_engine_suite(
+                    args,
+                    engine="ax_direct",
+                    profile=fair.QWEN36_PROFILES["27b-4bit"],
+                    suite="flappy",
+                    depth=3,
+                    port=18765,
+                )
+
+        self.assertEqual(run.call_args.kwargs["model_dir"], sidecar)
+        self.assertEqual(run.call_args.kwargs["ax_policy"], "direct")
 
     def test_mtplx_tune_selects_best_depth_or_fallback(self) -> None:
         self.assertEqual(
@@ -619,6 +725,16 @@ class Qwen36MtpFairTests(unittest.TestCase):
         self.assertEqual(summary["validations_passed"], 1)
         self.assertEqual(summary["validations_total"], 2)
 
+    def test_ax_direct_summary_filters_to_direct_runtime_rows(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            artifact = fake_ax_direct_artifact(decode=12.0)
+            artifact["results"].append(fake_ax_mtp_artifact("ax_engine_mlx_pure_mtp", decode=99.0)["results"][0])
+            path = write_json(Path(tmp) / "direct.json", artifact)
+            summary = fair.summarize_engine_artifact("ax_direct", path)
+
+        self.assertEqual(summary["decode_tok_s"], 12.0)
+        self.assertEqual(summary["mtp_draft_tokens"], 0)
+
     def test_summarize_engine_records_box_plot_samples(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             artifact = fake_mtplx_artifact()
@@ -765,6 +881,49 @@ def fake_ax_artifact() -> dict:
                     "ax_mtp_accepted_tokens": 2,
                     "ax_mtp_drafted_depth0": 4,
                     "ax_mtp_accepted_depth0": 2,
+                },
+                "trials": [{"output_token_ids": [1, 2]}],
+            }
+        ],
+    }
+
+
+def fake_ax_direct_artifact(*, decode: float) -> dict:
+    return {
+        "schema_version": "ax.mlx_inference_stack.v2",
+        "build": {"git_tracked_dirty": False},
+        "repetitions": 1,
+        "results": [
+            {
+                "engine": "ax_engine_mlx",
+                "prompt_case_id": "case_1",
+                "decode_tok_s": {"median": decode},
+                "ngram_acceleration_telemetry": {},
+                "trials": [{"output_token_ids": [1, 2]}],
+            }
+        ],
+    }
+
+
+def fake_ax_mtp_artifact(row_engine: str, *, decode: float) -> dict:
+    return {
+        "schema_version": "ax.mlx_inference_stack.v2",
+        "build": {"git_tracked_dirty": False},
+        "repetitions": 1,
+        "ax_mtp_max_depth": 3,
+        "results": [
+            {
+                "engine": row_engine,
+                "prompt_case_id": "case_1",
+                "decode_tok_s": {"median": decode},
+                "ngram_acceleration_telemetry": {
+                    "ax_mtp_draft_tokens": 4,
+                    "ax_mtp_accepted_tokens": 3,
+                    "ax_mtp_drafted_depth0": 4,
+                    "ax_mtp_accepted_depth0": 3,
+                    "ax_mtp_ngram_hit_steps": 1
+                    if row_engine == "ax_engine_mlx_ngram_accel"
+                    else 0,
                 },
                 "trials": [{"output_token_ids": [1, 2]}],
             }

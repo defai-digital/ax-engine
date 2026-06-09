@@ -2,9 +2,10 @@
 """Render Gemma 4 assistant-MTP box-and-whisker SVG charts for the README.
 
 Companion to bench_gemma4_assistant_mtp.py. Reads the per-suite artifacts a run
-writes (``<model>/<suite>/{mtp,mtp-ngram}.json``) and renders grouped
+writes (``<model>/<suite>/{direct,mtp,mtp-ngram}.json``) and renders grouped
 box-and-whisker SVGs in the same visual style as the Qwen fair-MTP charts, one
-chart per model x metric. Series are AX assistant-MTP and AX assistant
+chart per model x metric. Decode charts also include a same-prompt AX direct
+baseline; other metrics stay focused on AX assistant-MTP and AX assistant
 MTP+n-gram (Gemma has no MTPLX reference). Groups are the prompt suites.
 
 Per-run distributions come from each prompt case's ``trials`` array
@@ -30,11 +31,17 @@ from typing import Any
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 # Engine keys written by bench_gemma4_assistant_mtp.py.
+ENGINE_DIRECT = "ax_engine_mlx"
 ENGINE_MTP = "ax_engine_gemma4_assistant_mtp"
 ENGINE_NGRAM = "ax_engine_gemma4_assistant_mtp_ngram"
-ENGINES = [ENGINE_MTP, ENGINE_NGRAM]
-ENGINE_LABELS = {ENGINE_MTP: "AX assistant MTP", ENGINE_NGRAM: "AX assistant MTP+n-gram"}
-ENGINE_COLORS = {ENGINE_MTP: "#2eaf5f", ENGINE_NGRAM: "#137a3d"}
+DEFAULT_ENGINES = [ENGINE_MTP, ENGINE_NGRAM]
+DECODE_ENGINES = [ENGINE_DIRECT, ENGINE_MTP, ENGINE_NGRAM]
+ENGINE_LABELS = {
+    ENGINE_DIRECT: "AX direct (same prompts)",
+    ENGINE_MTP: "AX assistant MTP",
+    ENGINE_NGRAM: "AX assistant MTP+n-gram",
+}
+ENGINE_COLORS = {ENGINE_DIRECT: "#d97706", ENGINE_MTP: "#2eaf5f", ENGINE_NGRAM: "#137a3d"}
 
 MODELS = [
     ("12b-4bit-ffn4", "Gemma 4 12B 4-bit-FFN"),
@@ -130,6 +137,7 @@ def write_box_whisker_svg(
     *,
     title: str,
     subtitle: str,
+    engines: list[str],
     unit: str,
     direction_label: str,
     groups: list[dict[str, Any]],
@@ -150,13 +158,13 @@ def write_box_whisker_svg(
     plot_h = height - top - bottom
     group_w = plot_w / max(len(groups), 1)
     gap = 8.0
-    box_w = min(34.0, max(12.0, (group_w - 56 - gap * (len(ENGINES) - 1)) / max(len(ENGINES), 1)))
+    box_w = min(34.0, max(12.0, (group_w - 56 - gap * (len(engines) - 1)) / max(len(engines), 1)))
 
     stats_by_key: dict[tuple[int, str], BoxStats] = {}
     all_values: list[float] = []
     all_medians: list[float] = []
     for gi, group in enumerate(groups):
-        for engine in ENGINES:
+        for engine in engines:
             values = [float(v) for v in group["values"].get(engine, []) if v is not None]
             if not values:
                 continue
@@ -190,7 +198,7 @@ def write_box_whisker_svg(
     best_line_label = "lowest median" if lower_is_better else "highest median"
     best_side_label = "lowest" if lower_is_better else "highest"
     best_label = f"{best_side_label}: {point_label(best_value, unit)}"
-    engine_desc = ", ".join(ENGINE_LABELS[e] for e in ENGINES)
+    engine_desc = ", ".join(ENGINE_LABELS[e] for e in engines)
     group_desc = ", ".join(group["label"] for group in groups)
     unit_w = max(48, len(unit) * 7 + 24)
     parts = [
@@ -252,13 +260,13 @@ def write_box_whisker_svg(
     dot_jitter = [(-0.36 + 0.72 * i / (dot_slots - 1)) * box_w for i in range(dot_slots)]
     for gi, group in enumerate(groups):
         group_x = left + group_w * gi
-        centers = engine_centers(group_x, len(ENGINES))
+        centers = engine_centers(group_x, len(engines))
         parts.append(
             f'<text x="{group_x + group_w / 2:.1f}" y="{height - 62}" text-anchor="middle" '
             f'font-family="{FONT}" font-size="11" font-weight="700" fill="#111827">'
             f'{html.escape(group["label"])}</text>'
         )
-        for ei, engine in enumerate(ENGINES):
+        for ei, engine in enumerate(engines):
             stats = stats_by_key.get((gi, engine))
             if stats is None:
                 continue
@@ -300,9 +308,9 @@ def write_box_whisker_svg(
             )
 
     legend_y = height - 18
-    legend_step = max(150.0, (width - left - right) / max(len(ENGINES), 1))
+    legend_step = max(150.0, (width - left - right) / max(len(engines), 1))
     legend_x = left
-    for engine in ENGINES:
+    for engine in engines:
         color = ENGINE_COLORS[engine]
         parts.append(
             f'<rect x="{legend_x:.1f}" y="{legend_y - 9}" width="10" height="10" rx="2" '
@@ -324,18 +332,25 @@ def write_box_whisker_svg(
 # bare mode name (mtp / mtp-ngram). Try both so this renders new and archived
 # result trees alike.
 MODE_FILE_CANDIDATES = {
+    "direct": ("direct",),
     "mtp": ("assistant_mtp_default", "mtp"),
     "mtp-ngram": ("assistant_mtp_ngram_default", "mtp-ngram"),
 }
 
 
-def engine_rows(results_dir: Path, model_key: str, suite_key: str, mode_file: str, engine: str) -> list[dict[str, Any]]:
+def mode_artifact_path(results_dir: Path, model_key: str, suite_key: str, mode_file: str) -> Path | None:
     suite_dir = results_dir / model_key / suite_key
     candidates = MODE_FILE_CANDIDATES.get(mode_file, (mode_file,))
-    path = next(
+    return next(
         (suite_dir / f"{name}.json" for name in candidates if (suite_dir / f"{name}.json").exists()),
         None,
     )
+
+
+def engine_rows(results_dir: Path, model_key: str, suite_key: str, mode_file: str, engine: str) -> list[dict[str, Any]]:
+    suite_dir = results_dir / model_key / suite_key
+    candidates = MODE_FILE_CANDIDATES.get(mode_file, (mode_file,))
+    path = mode_artifact_path(results_dir, model_key, suite_key, mode_file)
     if path is None:
         raise FileNotFoundError(suite_dir / f"{candidates[0]}.json")
     payload = json.loads(path.read_text())
@@ -363,17 +378,39 @@ def accept_values(rows: list[dict[str, Any]]) -> list[float]:
     return out
 
 
-def build_groups(results_dir: Path, model_key: str, metric: str) -> list[dict[str, Any]]:
-    mode_for_engine = {ENGINE_MTP: "mtp", ENGINE_NGRAM: "mtp-ngram"}
+def build_groups(results_dir: Path, model_key: str, metric: str, engines: list[str]) -> list[dict[str, Any]]:
+    mode_for_engine = {ENGINE_DIRECT: "direct", ENGINE_MTP: "mtp", ENGINE_NGRAM: "mtp-ngram"}
     trial_key = {"decode": "decode_tok_s", "prefill": "prefill_tok_s", "ttft": "ttft_ms"}.get(metric)
     groups: list[dict[str, Any]] = []
     for suite_key, suite_label in SUITES:
         values: dict[str, list[float]] = {}
-        for engine in ENGINES:
+        for engine in engines:
             rows = engine_rows(results_dir, model_key, suite_key, mode_for_engine[engine], engine)
             values[engine] = accept_values(rows) if metric == "accept" else trial_values(rows, trial_key)
         groups.append({"label": suite_label, "values": values})
     return groups
+
+
+def engines_for_metric(results_dir: Path, model_key: str, metric: str) -> list[str]:
+    if metric != "decode":
+        return DEFAULT_ENGINES
+    direct_present = [
+        mode_artifact_path(results_dir, model_key, suite_key, "direct") is not None
+        for suite_key, _suite_label in SUITES
+    ]
+    if all(direct_present):
+        return DECODE_ENGINES
+    if any(direct_present):
+        missing = [
+            suite_key
+            for (suite_key, _suite_label), present in zip(SUITES, direct_present, strict=True)
+            if not present
+        ]
+        raise FileNotFoundError(
+            f"{model_key}: partial direct baseline; missing direct artifact(s) for "
+            + ", ".join(missing)
+        )
+    return DEFAULT_ENGINES
 
 
 METRICS = [
@@ -403,13 +440,15 @@ def main() -> None:
     written: list[str] = []
     for model_key, model_label in models:
         for metric, slug, title_metric, unit, direction, lower_is_better, axis_min, axis_max in METRICS:
-            groups = build_groups(args.results_dir, model_key, metric)
+            engines = engines_for_metric(args.results_dir, model_key, metric)
+            groups = build_groups(args.results_dir, model_key, metric, engines)
             short = MODEL_SHORT[model_key]
             out = args.assets_dir / f"perf-gemma4-assistant-mtp-{short}-{slug}.svg"
             write_box_whisker_svg(
                 out,
                 title=f"{model_label} — {title_metric}",
                 subtitle="All suites | box=IQR | whiskers=min/max | dots=runs",
+                engines=engines,
                 unit=unit,
                 direction_label=direction,
                 groups=groups,
