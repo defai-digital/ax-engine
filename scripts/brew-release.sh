@@ -53,7 +53,12 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 MAIN_REPO="defai-digital/ax-engine"
 TAP_REPO="defai-digital/homebrew-ax-engine"
 TAP_FORMULA="Formula/ax-engine.rb"
-RELEASE_BINS=(ax-engine-server ax-engine-bench)
+RELEASE_BINS=(ax-engine ax-engine-server ax-engine-bench)
+RELEASE_HELPER_SOURCES=(
+    "scripts/download_model.py:ax-engine-download-model.py"
+    "scripts/prepare_mtp_sidecar.py:ax-engine-prepare-mtp-sidecar.py"
+    "scripts/check_mtp_sidecar_provenance.py:ax-engine-check-mtp-sidecar-provenance.py"
+)
 
 # ── parse arguments ──────────────────────────────────────────────────────────
 
@@ -186,7 +191,7 @@ cd "$ROOT_DIR"
 
 if [[ "$SKIP_BUILD" = false ]]; then
     echo "▶ building release binaries…"
-    cargo build --release -p ax-engine-server -p ax-engine-bench
+    cargo build --release -p ax-engine-server -p ax-engine-bench --bins
 else
     echo "▶ skipping build (--skip-build)"
     for bin in "${RELEASE_BINS[@]}"; do
@@ -225,9 +230,25 @@ fi
 
 ARCHIVE="ax-engine-${TAG}-macos-arm64.tar.gz"
 ARCHIVE_PATH="/tmp/${ARCHIVE}"
+STAGING_DIR="$(mktemp -d /tmp/ax-engine-release-payload.XXXXXX)"
+TAP_DIR=""
+trap 'rm -rf "${TAP_DIR:-}" "$STAGING_DIR"' EXIT
 
 echo "▶ packaging ${ARCHIVE}…"
-tar -czf "$ARCHIVE_PATH" -C target/release "${RELEASE_BINS[@]}"
+release_payload=()
+for bin in "${RELEASE_BINS[@]}"; do
+    cp "target/release/$bin" "$STAGING_DIR/$bin"
+    chmod +x "$STAGING_DIR/$bin"
+    release_payload+=("$bin")
+done
+for mapping in "${RELEASE_HELPER_SOURCES[@]}"; do
+    source_path="${mapping%%:*}"
+    install_name="${mapping#*:}"
+    cp "$source_path" "$STAGING_DIR/$install_name"
+    chmod +x "$STAGING_DIR/$install_name"
+    release_payload+=("$install_name")
+done
+tar -czf "$ARCHIVE_PATH" -C "$STAGING_DIR" "${release_payload[@]}"
 SHA256=$(shasum -a 256 "$ARCHIVE_PATH" | awk '{print $1}')
 ARCHIVE_SIZE=$(du -sh "$ARCHIVE_PATH" | awk '{print $1}')
 
@@ -338,7 +359,7 @@ cleanup_tap_dir() {
                 "https://github.com/${TAP_REPO}.git" 2>/dev/null || true
         fi
     fi
-    rm -rf "$TAP_DIR"
+    rm -rf "$TAP_DIR" "$STAGING_DIR"
 }
 trap cleanup_tap_dir EXIT
 
@@ -376,7 +397,7 @@ for pattern in "version \"${VERSION}\"" "url \"${DOWNLOAD_URL}\"" "sha256 \"${SH
     fi
 done
 
-python3 - "$FORMULA_PATH" "${RELEASE_BINS[@]}" <<'PY'
+python3 - "$FORMULA_PATH" "${release_payload[@]}" <<'PY'
 from __future__ import annotations
 
 import re

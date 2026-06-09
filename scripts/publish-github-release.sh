@@ -7,7 +7,12 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 MAIN_REPO="${AX_RELEASE_REPO:-defai-digital/ax-engine}"
-RELEASE_BINS=(ax-engine-server ax-engine-bench)
+RELEASE_BINS=(ax-engine ax-engine-server ax-engine-bench)
+RELEASE_HELPER_SOURCES=(
+    "scripts/download_model.py:ax-engine-download-model.py"
+    "scripts/prepare_mtp_sidecar.py:ax-engine-prepare-mtp-sidecar.py"
+    "scripts/check_mtp_sidecar_provenance.py:ax-engine-check-mtp-sidecar-provenance.py"
+)
 
 TAG=""
 DRY_RUN=false
@@ -227,7 +232,7 @@ else
 fi
 
 if [[ "$SKIP_BUILD" = false ]]; then
-    run cargo build --release -p ax-engine-server -p ax-engine-bench
+    run cargo build --release -p ax-engine-server -p ax-engine-bench --bins
 else
     echo "warning: skipping build (--skip-build)" >&2
 fi
@@ -237,6 +242,24 @@ for bin in "${RELEASE_BINS[@]}"; do
 done
 
 mkdir -p "$ARTIFACT_DIR"
+STAGING_DIR="$ARTIFACT_DIR/payload"
+rm -rf "$STAGING_DIR"
+mkdir -p "$STAGING_DIR"
+
+release_payload=()
+for bin in "${RELEASE_BINS[@]}"; do
+    cp "target/release/$bin" "$STAGING_DIR/$bin"
+    chmod +x "$STAGING_DIR/$bin"
+    release_payload+=("$bin")
+done
+for mapping in "${RELEASE_HELPER_SOURCES[@]}"; do
+    source_path="${mapping%%:*}"
+    install_name="${mapping#*:}"
+    [[ -f "$source_path" ]] || die "missing release helper $source_path"
+    cp "$source_path" "$STAGING_DIR/$install_name"
+    chmod +x "$STAGING_DIR/$install_name"
+    release_payload+=("$install_name")
+done
 
 ARCHIVE="ax-engine-${TAG}-macos-arm64.tar.gz"
 ARCHIVE_PATH="$ARTIFACT_DIR/$ARCHIVE"
@@ -244,11 +267,11 @@ SHA256_PATH="$ARTIFACT_DIR/$ARCHIVE.sha256"
 MANIFEST_PATH="$ARTIFACT_DIR/ax-engine-${TAG}-macos-arm64.manifest.json"
 DOWNLOAD_URL="https://github.com/${MAIN_REPO}/releases/download/${TAG}/${ARCHIVE}"
 
-run tar -czf "$ARCHIVE_PATH" -C target/release "${RELEASE_BINS[@]}"
+run tar -czf "$ARCHIVE_PATH" -C "$STAGING_DIR" "${release_payload[@]}"
 SHA256="$(shasum -a 256 "$ARCHIVE_PATH" | awk '{print $1}')"
 printf '%s  %s\n' "$SHA256" "$ARCHIVE" > "$SHA256_PATH"
 
-python3 - "$TAG" "$VERSION" "$MAIN_REPO" "$head_commit" "$ARCHIVE" "$SHA256" "$DOWNLOAD_URL" "$MANIFEST_PATH" "${RELEASE_BINS[@]}" <<'PY'
+python3 - "$TAG" "$VERSION" "$MAIN_REPO" "$head_commit" "$ARCHIVE" "$SHA256" "$DOWNLOAD_URL" "$MANIFEST_PATH" "${RELEASE_BINS[@]}" "--" "${release_payload[@]}" <<'PY'
 from __future__ import annotations
 
 import json
@@ -256,7 +279,10 @@ import pathlib
 import sys
 from datetime import datetime, timezone
 
-tag, version, repo, commit, archive, sha256, download_url, manifest_path, *bins = sys.argv[1:]
+args = sys.argv[1:]
+separator = args.index("--")
+tag, version, repo, commit, archive, sha256, download_url, manifest_path, *bins = args[:separator]
+payload = args[separator + 1 :]
 manifest = {
     "schema_version": "ax.github_release_manifest.v1",
     "project": "ax-engine",
@@ -272,6 +298,7 @@ manifest = {
         "download_url": download_url,
     },
     "binaries": bins,
+    "payload": payload,
 }
 path = pathlib.Path(manifest_path)
 path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")

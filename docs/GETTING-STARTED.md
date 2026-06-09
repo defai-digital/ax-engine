@@ -51,11 +51,12 @@ brew tap defai-digital/ax-engine
 brew install ax-engine
 ```
 
-This installs `ax-engine-server` and `ax-engine-bench`.
+This installs `ax-engine`, `ax-engine-server`, and `ax-engine-bench`.
 The Homebrew formula also installs the `mlx-c` runtime dependency used by the
 released binaries.
 
 ```bash
+ax-engine doctor
 ax-engine-server --help
 ax-engine-bench doctor
 ```

@@ -106,12 +106,13 @@ pip install "ax-engine[download]"  # Hugging Face Hub downloads plus mlx-lm tool
 
 ### Homebrew
 
-For `ax-engine-bench` (workload-contract CLI), or as an alternative way to install `ax-engine-server`:
+For the same top-level `ax-engine` CLI plus the native `ax-engine-server` and
+`ax-engine-bench` tools:
 
 ```bash
 brew tap defai-digital/ax-engine
 brew install ax-engine
-ax-engine-bench doctor
+ax-engine doctor
 ```
 
 If `doctor` fails with `Library not loaded: libmlxc.dylib`, run:

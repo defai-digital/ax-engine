@@ -14,7 +14,8 @@ Requires macOS 14+, Apple Silicon (M2 Max or newer), Python 3.10+.
 
 ### Command-line tools (Homebrew)
 
-To install the `ax-engine-server` HTTP adapter and `ax-engine-bench` CLI:
+To install the `ax-engine` orchestration CLI, `ax-engine-server` HTTP adapter,
+and `ax-engine-bench` CLI:
 
 ```bash
 brew install defai-digital/ax-engine/ax-engine
