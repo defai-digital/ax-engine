@@ -2,13 +2,24 @@
 
 AX Engine is a Mac-first LLM inference runtime, local server, SDK layer, and benchmark toolkit for Apple Silicon. It runs direct-support MLX model families natively, and routes other MLX text models or non-MLX models through explicit `mlx-lm` and `llama.cpp` compatibility routes.
 
+## Release Highlights
+
+AX Engine is for developers who want a local OpenAI-compatible model server on Apple Silicon without hiding which runtime path is doing the work.
+
+- OpenAI-compatible local text endpoints for common chat and completion flows, with SDKs for Python, TypeScript/JavaScript, Go, Ruby, and Mojo.
+- Repo-owned MLX runtime paths for direct-support Gemma and Qwen families, with delegated routes kept explicit.
+- Announcement-ready benchmark claims where evidence is complete: Gemma 4 12B assistant-MTP is 2.83-2.92x faster than same-artifact direct decode, and Qwen3.6 35B-A3B AX MTP is +76.4% faster than MTPLX on the public sidecar-fair matrix.
+- Workload-contract benchmark tooling records route identity, artifacts, prompt suite, sampler, cooldowns, accept rate, and dirty-state provenance.
+
 ## Table of Contents
 
+- [Release Highlights](#release-highlights)
 - [Quick Start](#quick-start)
 - [Installation](#installation)
 - [Getting a Model](#getting-a-model)
 - [Typical Hardware](#typical-hardware)
 - [What AX Engine Does](#what-ax-engine-does)
+- [Public Claim Boundaries](#public-claim-boundaries)
 - [Supported Models](#supported-models)
 - [Performance](#performance)
   - [Gemma 4 12B](#gemma-4-12b)
@@ -31,25 +42,22 @@ AX Engine is a Mac-first LLM inference runtime, local server, SDK layer, and ben
 **Install:**
 
 ```bash
-pip install ax-engine
+pip install "ax-engine[download]"
 ```
 
-**Download a model and start the server:**
+**Download a small model and start the server:**
 
-Qwen 3.6 35B:
 ```bash
-ax-engine download qwen36-35b
-```
-```bash
-ax-engine serve qwen36-35b --port 8080
+MODEL_DIR="$(ax-engine download mlx-community/Qwen3-4B-4bit --json | python3 -c 'import json,sys; print(json.load(sys.stdin)["dest"])')"
+ax-engine serve "$MODEL_DIR" --port 8080
 ```
 
-Gemma 4 12B:
+**High-memory model shortcuts:**
+
 ```bash
-ax-engine download gemma4-12b
-```
-```bash
-ax-engine serve gemma4-12b --port 8080
+# Choose one:
+ax-engine serve qwen36-35b --download --port 8080
+ax-engine serve gemma4-12b --download --port 8080
 ```
 
 **Call it from any OpenAI client:**
@@ -57,8 +65,10 @@ ax-engine serve gemma4-12b --port 8080
 ```python
 from openai import OpenAI
 client = OpenAI(base_url="http://127.0.0.1:8080/v1", api_key="local")
+model = client.models.list().data[0].id
+
 resp = client.chat.completions.create(
-    model="my-model",
+    model=model,
     messages=[{"role": "user", "content": "What is AGI?"}],
     max_tokens=128,
 )
@@ -75,7 +85,7 @@ with Session(mlx=True, mlx_model_artifacts_dir=str(path)) as s:
     print(s.generate([1, 2, 3], max_output_tokens=8).output_tokens)
 ```
 
-> Requires **macOS 14 (Sonoma) or later** on **Apple Silicon M2 Max or newer** with **32 GB RAM minimum**.
+> Quick Start requires **macOS 14 (Sonoma) or later** on **Apple Silicon M2 Max or newer** with **32 GB unified memory or more**. Larger models such as Qwen3.6 35B-A3B and Gemma 4 12B need the memory tiers listed in [Typical Hardware](#typical-hardware).
 
 ## Installation
 
@@ -229,6 +239,18 @@ Design details: [Scheduler](docs/SCHEDULER.md) · [KV Cache](docs/KV-CACHE.md) �
 
 The runtime report exposes `selected_backend`, `support_tier`, and `resolution_policy` so callers and benchmark artifacts can distinguish these paths. For the exact OpenAI-shaped endpoint contract see `docs/API-COMPATIBILITY.md`.
 
+## Public Claim Boundaries
+
+AX Engine's public performance claims are scoped to benchmark artifacts that preserve route identity, model artifacts, prompt suite, sampler settings, and repository provenance.
+
+| Area | Public claim | Status |
+|---|---|---|
+| Gemma 4 12B assistant-MTP | 2.83-2.92x faster than same-artifact AX direct decode on the 12B MTP prompt suites | Announcement-ready |
+| Gemma 4 26B/31B assistant-MTP | 98.4%-99.5% accept rate; MTP+n-gram adds +1.0%-1.3% over pure MTP in the current matrix | Scoped; no public direct-speedup claim yet |
+| Qwen3.6 35B-A3B MTP | AX MTP is +76.4% vs MTPLX, and AX MTP+n-gram is +77.5% vs MTPLX on the sidecar-fair aggregate | Announcement-ready |
+| Qwen3.6 27B MTP | Mixed pure-MTP result; MTP+n-gram recovers to +2.1% vs MTPLX and +3.5% vs pure AX MTP | Opt-in / workload-dependent |
+| N-gram acceleration | Up to 3.1x `mlx_lm` decode throughput on high-hit benchmark rows without a second draft model | Workload-dependent |
+
 ## Supported Models
 
 Direct support means AX has a repo-owned `ax-engine-mlx` graph for the model family and loads MLX safetensors through the AX manifest path. Other MLX text models can still use the explicit `mlx_lm_delegated` compatibility route.
@@ -256,7 +278,7 @@ Full result tables and interpretation live in [`docs/PERFORMANCE.md`](docs/PERFO
 Gemma 4 12B (`model_type: gemma4_unified`) is a different implementation from the per-layer-embedding E2B/E4B and the MoE 26B/31B. **Upstream `mlx_lm` 0.31.3 cannot load it** — it fails with `ValueError: Model type gemma4_unified not supported`. The external reference here is **llama.cpp Metal** on a shape-compatible GGUF.
 
 > [!NOTE]
-> **AX Engine currently supports text-only input for Gemma 4 12B.** Image and audio modalities are planned for **v6.2.0**.
+> **AX Engine currently supports text-only OpenAI chat for Gemma 4 12B.** Processed Gemma4 media tensor support is tracked separately; raw OpenAI image/audio content is not part of this announcement.
 
 **AX beats llama.cpp Metal on this model in both modes.** In **direct** decode, AX runs **65.6-69.3 tok/s** on a bit-comparable 4-bit-FFN artifact vs llama.cpp's **52.5-60.2** depth-matched tok/s, and the margin grows with context (+15% at 128 tokens -> +25% at 2,048). On top of that, **depth-2 assistant-MTP** -- which `mlx_lm` can't run and llama.cpp doesn't have -- holds **99.4-105.0 tok/s** on code-like prompt suites, a same-artifact **2.83-2.92x** speedup over direct decode. The earlier story (llama.cpp ahead by ~30%) was an artifact handicap: the upstream snapshot keeps the FFN at 8-bit and so reads ~1.5x the weight bytes; decode is bandwidth-bound, so matching the quantization closes the gap (see the bandwidth table below).
 
