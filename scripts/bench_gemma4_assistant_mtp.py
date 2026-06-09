@@ -36,9 +36,19 @@ HF_CACHE = Path(
 )
 
 ENGINE_KEYS = {
+    "direct": "ax_engine_mlx",
     "mtp": "ax_engine_gemma4_assistant_mtp",
     "mtp-ngram": "ax_engine_gemma4_assistant_mtp_ngram",
 }
+
+# PRD survival thresholds (PRD-2026-06-09-gemma4-12b-mtp-speedup R3/R4).
+# Assistant-MTP keeps a default speed claim only if it beats same-artifact direct
+# decode by this margin on the prompt-suite aggregate, with no suite regressing by
+# more than MAX_SUITE_REGRESSION. MTP+n-gram keeps a default only if it beats pure
+# assistant-MTP by NGRAM_KEEP_DEFAULT_MIN_GAIN under the same regression guard.
+KEEP_DEFAULT_MIN_GAIN = 0.05
+NGRAM_KEEP_DEFAULT_MIN_GAIN = 0.03
+MAX_SUITE_REGRESSION = 0.03
 
 
 @dataclass(frozen=True)
@@ -63,6 +73,12 @@ class BenchProfile:
 
 
 BENCH_PROFILES = {
+    "direct": BenchProfile(
+        key="direct",
+        label="direct decode (no assistant MTP / no n-gram)",
+        mode="direct",
+        env={},
+    ),
     "assistant_mtp_default": BenchProfile(
         key="assistant_mtp_default",
         label="assistant MTP default",
@@ -102,6 +118,30 @@ BENCH_PROFILES = {
         mode="mtp",
         env={"AX_MLX_GEMMA4_ASSISTANT_MTP_DRAFT_MIN_CONFIDENCE": "0.95"},
     ),
+    "assistant_mtp_gate090": BenchProfile(
+        key="assistant_mtp_gate090",
+        label="assistant MTP confidence gate 0.90 (Qwen-style throughput-first)",
+        mode="mtp",
+        env={"AX_MLX_GEMMA4_ASSISTANT_MTP_DRAFT_MIN_CONFIDENCE": "0.90"},
+    ),
+    "assistant_mtp_gate085": BenchProfile(
+        key="assistant_mtp_gate085",
+        label="assistant MTP confidence gate 0.85 (hard-workload speculation)",
+        mode="mtp",
+        env={"AX_MLX_GEMMA4_ASSISTANT_MTP_DRAFT_MIN_CONFIDENCE": "0.85"},
+    ),
+    "assistant_mtp_deep099": BenchProfile(
+        key="assistant_mtp_deep099",
+        label="assistant MTP deep gate 0.99",
+        mode="mtp",
+        env={"AX_MLX_GEMMA4_ASSISTANT_MTP_DEEP_DRAFT_MIN_CONFIDENCE": "0.99"},
+    ),
+    "assistant_mtp_deep095": BenchProfile(
+        key="assistant_mtp_deep095",
+        label="assistant MTP deep gate 0.95",
+        mode="mtp",
+        env={"AX_MLX_GEMMA4_ASSISTANT_MTP_DEEP_DRAFT_MIN_CONFIDENCE": "0.95"},
+    ),
     "target_softmax_topk256_experimental": BenchProfile(
         key="target_softmax_topk256_experimental",
         label="target softmax top-k 256 experimental",
@@ -132,6 +172,7 @@ BENCH_PROFILES = {
 }
 
 DEFAULT_PROFILE_BY_MODE = {
+    "direct": "direct",
     "mtp": "assistant_mtp_default",
     "mtp-ngram": "assistant_mtp_ngram_default",
 }
@@ -261,7 +302,7 @@ def run_subprocess(
     print(f"  log: {log_path}", flush=True)
 
 
-def run_ax_suite(
+def build_ax_cmd(
     *,
     python: Path,
     suite_file: Path,
@@ -275,8 +316,18 @@ def run_ax_suite(
     sampling: dict[str, Any],
     depth: int,
     no_build: bool,
-    env_overrides: dict[str, str],
-) -> Path:
+) -> list[str]:
+    """Build the bench_mlx_inference_stack invocation for one suite row.
+
+    ``mode`` selects the decode policy on the *same* model package:
+
+    - ``direct``: native MLX decode with no assistant drafter, no MTP, and no
+      n-gram stacking. This is the same-artifact baseline the PRD survival test
+      compares against; it must record ``ax_engine_mlx`` rows and zero assistant
+      draft tokens.
+    - ``mtp``: assistant-MTP with n-gram stacking disabled.
+    - ``mtp-ngram``: assistant-MTP with n-gram stacking enabled.
+    """
     cmd = [
         str(python),
         str(AX_BENCH_SCRIPT),
@@ -298,16 +349,48 @@ def run_ax_suite(
         json.dumps(sampling, sort_keys=True),
         "--skip-mlx-lm",
         "--capture-output-token-ids",
-        "--ax-gemma4-assistant-mtp",
-        "--ax-mtp-max-depth",
-        str(depth),
         "--output",
         str(output_path),
     ]
-    if mode == "mtp":
-        cmd.append("--ax-mtp-disable-ngram-stacking")
+    if mode != "direct":
+        cmd += ["--ax-gemma4-assistant-mtp", "--ax-mtp-max-depth", str(depth)]
+        if mode == "mtp":
+            cmd.append("--ax-mtp-disable-ngram-stacking")
     if no_build:
         cmd.append("--no-build-ax-engine")
+    return cmd
+
+
+def run_ax_suite(
+    *,
+    python: Path,
+    suite_file: Path,
+    output_path: Path,
+    model_dir: Path,
+    mode: str,
+    max_tokens: int,
+    repetitions: int,
+    cooldown: float,
+    inter_case_cooldown: float,
+    sampling: dict[str, Any],
+    depth: int,
+    no_build: bool,
+    env_overrides: dict[str, str],
+) -> Path:
+    cmd = build_ax_cmd(
+        python=python,
+        suite_file=suite_file,
+        output_path=output_path,
+        model_dir=model_dir,
+        mode=mode,
+        max_tokens=max_tokens,
+        repetitions=repetitions,
+        cooldown=cooldown,
+        inter_case_cooldown=inter_case_cooldown,
+        sampling=sampling,
+        depth=depth,
+        no_build=no_build,
+    )
     run_subprocess(
         cmd,
         log_path=output_path.with_suffix(".log"),
@@ -377,7 +460,32 @@ def summarize_artifact(path: Path, *, expected_engine: str) -> dict[str, Any]:
     safety_reasons: list[int] = []
     claim_statuses: list[str] = []
     effective_routes: list[str] = []
+    affine_min_bits: int | None = None
+    affine_max_bits: int | None = None
+    affine_tensor_count = 0
+    affine_4bit_count = 0
+    affine_8bit_count = 0
     for row in rows:
+        # Affine bit summary is constant per model load (set at startup, not
+        # accumulated per step), so max-merge counts and max bits, min-merge min
+        # bits across the trial rows. These prove which target package actually
+        # ran and gate the same-artifact parity check (PRD R2).
+        mlx_telemetry = row.get("ax_mlx_telemetry") or {}
+        if "ax_mlx_affine_min_bits" in mlx_telemetry:
+            bits = telemetry_int(mlx_telemetry, "ax_mlx_affine_min_bits")
+            affine_min_bits = bits if affine_min_bits is None else min(affine_min_bits, bits)
+        if "ax_mlx_affine_max_bits" in mlx_telemetry:
+            bits = telemetry_int(mlx_telemetry, "ax_mlx_affine_max_bits")
+            affine_max_bits = bits if affine_max_bits is None else max(affine_max_bits, bits)
+        affine_tensor_count = max(
+            affine_tensor_count, telemetry_int(mlx_telemetry, "ax_mlx_affine_tensor_count")
+        )
+        affine_4bit_count = max(
+            affine_4bit_count, telemetry_int(mlx_telemetry, "ax_mlx_affine_4bit_count")
+        )
+        affine_8bit_count = max(
+            affine_8bit_count, telemetry_int(mlx_telemetry, "ax_mlx_affine_8bit_count")
+        )
         assistant = row.get("ax_mlx_gemma4_assistant_mtp") or {}
         assistant_drafted += int(
             assistant.get("ax_mlx_gemma4_assistant_mtp_draft_tokens", 0) or 0
@@ -523,8 +631,242 @@ def summarize_artifact(path: Path, *, expected_engine: str) -> dict[str, Any]:
         "safety_reasons": sorted(set(safety_reasons)),
         "claim_statuses": sorted(set(claim_statuses)),
         "effective_routes": sorted(set(effective_routes)),
+        "affine_tensor_count": affine_tensor_count,
+        "affine_min_bits": affine_min_bits,
+        "affine_max_bits": affine_max_bits,
+        "affine_4bit_count": affine_4bit_count,
+        "affine_8bit_count": affine_8bit_count,
         "build": payload.get("build", {}),
     }
+
+
+def classify_vs_direct(
+    delta: float | None,
+    worst_suite_delta: float | None,
+    parity: bool,
+    drafted: bool,
+) -> str:
+    """Classify an assistant-MTP profile against same-artifact direct decode.
+
+    Implements the PRD-2026-06-09 R3 survival criterion. ``delta`` is the
+    aggregate decode tok/s gain over direct; ``worst_suite_delta`` is the
+    most negative per-suite delta. Returns one of the PRD R6 statuses.
+    """
+    if delta is None:
+        return "retest"
+    if not parity:
+        # A mixed-artifact comparison cannot decide MTP viability (PRD R2).
+        return "retest"
+    if not drafted:
+        # Route metadata proves the decode policy never drafted (PRD R3).
+        return "reject"
+    no_bad_regression = worst_suite_delta is None or worst_suite_delta >= -MAX_SUITE_REGRESSION
+    if delta >= KEEP_DEFAULT_MIN_GAIN and no_bad_regression:
+        return "keep-default"
+    if delta >= 0:
+        return "keep-opt-in"
+    return "remove-claim"
+
+
+def classify_ngram_vs_mtp(
+    delta: float | None,
+    worst_suite_delta: float | None,
+) -> str:
+    """Classify an MTP+n-gram profile against pure assistant-MTP (PRD R4)."""
+    if delta is None:
+        return "retest"
+    no_bad_regression = worst_suite_delta is None or worst_suite_delta >= -MAX_SUITE_REGRESSION
+    if delta >= NGRAM_KEEP_DEFAULT_MIN_GAIN and no_bad_regression:
+        return "keep-default"
+    if delta >= 0:
+        return "keep-opt-in"
+    return "remove-claim"
+
+
+def compare_suite_decodes(
+    profile_suites: dict[str, float | None],
+    baseline_suites: dict[str, float | None],
+) -> dict[str, Any]:
+    """Compare two profiles' per-suite decode medians over their shared suites.
+
+    The aggregate delta uses the median of each side over the common suites; the
+    worst-suite delta drives the regression guard.
+    """
+    common = sorted(
+        suite
+        for suite, value in profile_suites.items()
+        if suite in baseline_suites
+        and value is not None
+        and baseline_suites[suite] is not None
+    )
+    if not common:
+        return {
+            "delta": None,
+            "worst_suite_delta": None,
+            "per_suite_delta": {},
+            "profile_agg": None,
+            "baseline_agg": None,
+            "suites": [],
+        }
+    per_suite: dict[str, float | None] = {}
+    for suite in common:
+        base = baseline_suites[suite]
+        per_suite[suite] = (profile_suites[suite] - base) / base if base else None
+    profile_agg = statistics.median([profile_suites[suite] for suite in common])
+    baseline_agg = statistics.median([baseline_suites[suite] for suite in common])
+    delta = (profile_agg - baseline_agg) / baseline_agg if baseline_agg else None
+    valid_deltas = [value for value in per_suite.values() if value is not None]
+    worst = min(valid_deltas) if valid_deltas else None
+    return {
+        "delta": delta,
+        "worst_suite_delta": worst,
+        "per_suite_delta": per_suite,
+        "profile_agg": profile_agg,
+        "baseline_agg": baseline_agg,
+        "suites": common,
+    }
+
+
+def _index_rows_by_profile(rows: list[dict[str, Any]]) -> dict[str, dict[str, dict[str, Any]]]:
+    index: dict[str, dict[str, dict[str, Any]]] = {}
+    for row in rows:
+        model = row["model"]
+        profile = row["profile"]
+        profiles = index.setdefault(model, {})
+        entry = profiles.setdefault(
+            profile,
+            {
+                "mode": row["mode"],
+                "suites": {},
+                "affine_max_bits": None,
+                "affine_8bit_count": None,
+                "affine_4bit_count": None,
+                "affine_tensor_count": None,
+                "drafted": False,
+                "model_dir": row.get("model_dir"),
+            },
+        )
+        entry["suites"][row["suite"]] = row.get("decode_tok_s_median")
+        if (row.get("assistant_draft_tokens") or 0) > 0:
+            entry["drafted"] = True
+        for key in (
+            "affine_max_bits",
+            "affine_8bit_count",
+            "affine_4bit_count",
+            "affine_tensor_count",
+        ):
+            value = row.get(key)
+            if value is not None:
+                current = entry[key]
+                entry[key] = value if current is None else max(current, value)
+    return index
+
+
+def _select_mtp_baseline(profiles: dict[str, dict[str, Any]]) -> str | None:
+    if "assistant_mtp_default" in profiles:
+        return "assistant_mtp_default"
+    for key in sorted(profiles):
+        if profiles[key]["mode"] == "mtp":
+            return key
+    return None
+
+
+def build_comparisons(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Build same-artifact survival comparisons from summary rows.
+
+    Produces, per model: each non-direct profile vs same-artifact direct decode,
+    and each MTP+n-gram profile vs pure assistant-MTP. Flags artifact-parity
+    mismatches (PRD R2) and missing draft participation (PRD R3) as warnings, and
+    classifies every comparison with the PRD R6 taxonomy.
+    """
+    index = _index_rows_by_profile(rows)
+    comparisons: list[dict[str, Any]] = []
+    warnings: list[str] = []
+    parity_ok = True
+    for model in sorted(index):
+        profiles = index[model]
+        direct = next(
+            (entry for entry in profiles.values() if entry["mode"] == "direct"), None
+        )
+        mtp_baseline_key = _select_mtp_baseline(profiles)
+        if direct is None:
+            warnings.append(
+                f"{model}: no direct-decode row; assistant-MTP cannot be judged "
+                "against same-artifact direct decode (PRD R1/R3)."
+            )
+        for profile_key in sorted(profiles):
+            entry = profiles[profile_key]
+            if entry["mode"] == "direct":
+                continue
+            if direct is not None:
+                result = compare_suite_decodes(entry["suites"], direct["suites"])
+                parity = (entry["affine_max_bits"], entry["affine_8bit_count"]) == (
+                    direct["affine_max_bits"],
+                    direct["affine_8bit_count"],
+                )
+                if not parity:
+                    parity_ok = False
+                    warnings.append(
+                        f"{model}/{profile_key}: artifact parity mismatch vs direct "
+                        f"(direct max_bits={direct['affine_max_bits']} "
+                        f"8bit={direct['affine_8bit_count']}, profile "
+                        f"max_bits={entry['affine_max_bits']} "
+                        f"8bit={entry['affine_8bit_count']}); same-artifact survival "
+                        "verdict is not valid (PRD R2)."
+                    )
+                if not entry["drafted"]:
+                    warnings.append(
+                        f"{model}/{profile_key}: route metadata shows zero assistant "
+                        "draft tokens; decode policy did not actually run (PRD R3)."
+                    )
+                comparisons.append(
+                    {
+                        "model": model,
+                        "profile": profile_key,
+                        "mode": entry["mode"],
+                        "baseline": "direct",
+                        "decode_tok_s_agg": result["profile_agg"],
+                        "baseline_tok_s_agg": result["baseline_agg"],
+                        "delta_vs_baseline": result["delta"],
+                        "worst_suite_delta": result["worst_suite_delta"],
+                        "per_suite_delta": result["per_suite_delta"],
+                        "parity_ok": parity,
+                        "drafted": entry["drafted"],
+                        "affine_max_bits": entry["affine_max_bits"],
+                        "affine_8bit_count": entry["affine_8bit_count"],
+                        "classification": classify_vs_direct(
+                            result["delta"],
+                            result["worst_suite_delta"],
+                            parity,
+                            entry["drafted"],
+                        ),
+                    }
+                )
+            if (
+                entry["mode"] == "mtp-ngram"
+                and mtp_baseline_key is not None
+                and mtp_baseline_key != profile_key
+            ):
+                base = profiles[mtp_baseline_key]
+                result = compare_suite_decodes(entry["suites"], base["suites"])
+                comparisons.append(
+                    {
+                        "model": model,
+                        "profile": profile_key,
+                        "mode": entry["mode"],
+                        "baseline": "assistant_mtp",
+                        "baseline_profile": mtp_baseline_key,
+                        "decode_tok_s_agg": result["profile_agg"],
+                        "baseline_tok_s_agg": result["baseline_agg"],
+                        "delta_vs_baseline": result["delta"],
+                        "worst_suite_delta": result["worst_suite_delta"],
+                        "per_suite_delta": result["per_suite_delta"],
+                        "classification": classify_ngram_vs_mtp(
+                            result["delta"], result["worst_suite_delta"]
+                        ),
+                    }
+                )
+    return {"parity_ok": parity_ok, "warnings": warnings, "comparisons": comparisons}
 
 
 def fmt_number(value: float | None, digits: int = 1) -> str:
@@ -535,6 +877,14 @@ def fmt_pct(value: float | None) -> str:
     return "n/a" if value is None else f"{value * 100:.1f}%"
 
 
+def fmt_delta(value: float | None) -> str:
+    return "n/a" if value is None else f"{value * 100:+.1f}%"
+
+
+def fmt_bits(value: int | None) -> str:
+    return "n/a" if value is None else str(value)
+
+
 def write_summary(output_dir: Path, summary: dict[str, Any]) -> None:
     (output_dir / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
     lines = [
@@ -542,18 +892,20 @@ def write_summary(output_dir: Path, summary: dict[str, Any]) -> None:
         "",
         f"Output: `{output_dir}`",
         "",
-        "| Model | Suite | Profile | Mode | Depth | Decode tok/s | Assistant accept | MTP accept | n-gram accept | n-gram hits | Utility gates | Safety tightens |",
-        "|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|",
+        "| Model | Suite | Profile | Mode | Depth | Decode tok/s | Affine max-bits | 8-bit tensors | Assistant accept | MTP accept | n-gram accept | n-gram hits | Utility gates | Safety tightens |",
+        "|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for row in summary["rows"]:
         lines.append(
-            "| {model} | {suite} | {profile} | {mode} | {depth} | {decode} | {assistant} | {mtp} | {ngram} | {hits} | {utility_gates} | {safety_tightens} |".format(
+            "| {model} | {suite} | {profile} | {mode} | {depth} | {decode} | {max_bits} | {eightbit} | {assistant} | {mtp} | {ngram} | {hits} | {utility_gates} | {safety_tightens} |".format(
                 model=row["model_label"],
                 suite=row["suite"],
                 profile=row["profile"],
                 mode=row["mode"],
                 depth=row["depth"],
                 decode=fmt_number(row["decode_tok_s_median"]),
+                max_bits=fmt_bits(row.get("affine_max_bits")),
+                eightbit=fmt_bits(row.get("affine_8bit_count")),
                 assistant=fmt_pct(row["assistant_accept_rate"]),
                 mtp=fmt_pct(row["mtp_accept_rate"]),
                 ngram=fmt_pct(row["ngram_accept_rate"]),
@@ -562,6 +914,45 @@ def write_summary(output_dir: Path, summary: dict[str, Any]) -> None:
                 safety_tightens=row["ngram_safety_tightened_steps"],
             )
         )
+
+    comparison = summary.get("comparison") or {}
+    comparisons = comparison.get("comparisons") or []
+    if comparisons:
+        parity_note = (
+            "All compared profiles share the direct-baseline target artifact."
+            if comparison.get("parity_ok")
+            else "**Artifact parity mismatch detected — survival verdicts marked `retest`.**"
+        )
+        lines += [
+            "",
+            "## Same-artifact survival comparison",
+            "",
+            parity_note,
+            "",
+            "| Model | Profile | Mode | Baseline | Decode tok/s | Baseline tok/s | Δ vs baseline | Worst suite Δ | Parity | Drafted | Classification |",
+            "|---|---|---|---|---:|---:|---:|---:|:---:|:---:|---|",
+        ]
+        for entry in comparisons:
+            lines.append(
+                "| {model} | {profile} | {mode} | {baseline} | {decode} | {baseline_decode} | {delta} | {worst} | {parity} | {drafted} | {cls} |".format(
+                    model=entry["model"],
+                    profile=entry["profile"],
+                    mode=entry["mode"],
+                    baseline=entry.get("baseline_profile") or entry["baseline"],
+                    decode=fmt_number(entry.get("decode_tok_s_agg")),
+                    baseline_decode=fmt_number(entry.get("baseline_tok_s_agg")),
+                    delta=fmt_delta(entry.get("delta_vs_baseline")),
+                    worst=fmt_delta(entry.get("worst_suite_delta")),
+                    parity="—" if "parity_ok" not in entry else ("yes" if entry["parity_ok"] else "NO"),
+                    drafted="—" if "drafted" not in entry else ("yes" if entry["drafted"] else "NO"),
+                    cls=entry["classification"],
+                )
+            )
+        warnings = comparison.get("warnings") or []
+        if warnings:
+            lines += ["", "### Warnings", ""]
+            lines += [f"- {warning}" for warning in warnings]
+
     (output_dir / "summary.md").write_text("\n".join(lines) + "\n")
 
 
@@ -697,8 +1088,9 @@ def main() -> None:
                 )
                 rows.append(row)
 
+    comparison = build_comparisons(rows)
     summary = {
-        "schema": "ax.gemma4_assistant_mtp_benchmark.v1",
+        "schema": "ax.gemma4_assistant_mtp_benchmark.v2",
         "models": model_keys,
         "modes": modes,
         "profiles": [profile.key for profile in bench_profiles],
@@ -709,8 +1101,11 @@ def main() -> None:
         "cooldown": args.cooldown,
         "inter_case_cooldown": args.inter_case_cooldown,
         "rows": rows,
+        "comparison": comparison,
     }
     write_summary(output_dir, summary)
+    for warning in comparison["warnings"]:
+        print(f"[warn] {warning}", file=sys.stderr, flush=True)
     print(f"Wrote {output_dir / 'summary.json'}", flush=True)
 
 
