@@ -101,26 +101,36 @@ def measured_row(case_id: str, fixture_ids: list[str], *, modalities: list[str])
     }
 
 
-def skipped_peer_row() -> dict:
+def skipped_peer_row(
+    case_id: str = "video_2frame_distinct",
+    fixture_ids: list[str] | None = None,
+    *,
+    modalities: list[str] | None = None,
+    skip_reason: str = "llama_cpp_video_not_supported",
+    skip_detail: str = "video is not supported by the peer server",
+) -> dict:
+    fixture_ids = fixture_ids or ["video_2frame_red_green"]
+    modalities = modalities or ["video"]
+    soft_tokens = soft_tokens_for_modalities(modalities)
     return {
-        "row_id": "llama_cpp_metal.peer_comparison.video_2frame_distinct",
+        "row_id": f"llama_cpp_metal.peer_comparison.{case_id}",
         "engine": "llama_cpp_metal",
         "backend": "metal",
         "layer": "peer_comparison",
         "endpoint": None,
-        "case_id": "video_2frame_distinct",
-        "description": "video peer skip",
-        "modalities": ["video"],
-        "modality_set": ["video"],
-        "fixture_ids": ["video_2frame_red_green"],
+        "case_id": case_id,
+        "description": "peer skip",
+        "modalities": modalities,
+        "modality_set": modality_set_for_modalities(modalities),
+        "fixture_ids": fixture_ids,
         "prompt": prompt_block(
-            ["video_2frame_red_green"],
-            expanded_tokens=240,
-            soft_tokens={"image": 0, "audio": 0, "video": 140},
+            fixture_ids,
+            expanded_tokens=300,
+            soft_tokens=soft_tokens,
         ),
         "status": "skipped",
-        "skip_reason": "llama_cpp_video_not_supported",
-        "skip_detail": "video is not supported by the peer server",
+        "skip_reason": skip_reason,
+        "skip_detail": skip_detail,
         "runs": [],
         "summary": {},
         "capability": {
@@ -132,11 +142,68 @@ def skipped_peer_row() -> dict:
             "mmproj_sha256": None,
             "supports_image": True,
             "supports_audio": True,
-            "supports_video": False,
+            "supports_video": "video" not in modalities,
             "prompt_contract": "openai_chat_completions",
             "proof": False,
         },
     }
+
+
+def measured_peer_row(case_id: str, fixture_ids: list[str], *, modalities: list[str]) -> dict:
+    row = measured_row(case_id, fixture_ids, modalities=modalities)
+    row.update(
+        {
+            "row_id": f"llama_cpp_metal.peer_comparison.{case_id}",
+            "engine": "llama_cpp_metal",
+            "backend": "metal",
+            "layer": "peer_comparison",
+            "endpoint": "/v1/chat/completions",
+            "runs": [
+                {"client_wall_ms": 310.0, "reasoning_chars": 12, "response_chars": 12},
+                {"client_wall_ms": 330.0, "reasoning_chars": 14, "response_chars": 14},
+            ],
+            "summary": {
+                "client_wall_ms": metric(320.0, 320.0, 310.0, 330.0),
+                "reasoning_chars": metric(13.0, 13.0, 12.0, 14.0),
+                "response_chars": metric(13.0, 13.0, 12.0, 14.0),
+            },
+            "capability": {
+                "url": "http://127.0.0.1:18081",
+                "binary": "llama-server",
+                "text_gguf": "gemma-4-12B-it-Q4_K_M.gguf",
+                "text_gguf_sha256": "text-sha",
+                "mmproj": "mmproj-gemma-4-12B-it-Q8_0.gguf",
+                "mmproj_sha256": "mmproj-sha",
+                "supports_image": True,
+                "supports_audio": True,
+                "supports_video": False,
+                "prompt_contract": "openai_chat_completions",
+                "proof": True,
+            },
+        }
+    )
+    return row
+
+
+def measured_chat_row(case_id: str, fixture_ids: list[str], *, modalities: list[str]) -> dict:
+    row = measured_row(case_id, fixture_ids, modalities=modalities)
+    row.update(
+        {
+            "row_id": f"ax_engine_mlx.openai_chat_e2e.{case_id}",
+            "layer": "openai_chat_e2e",
+            "endpoint": "/v1/chat/completions",
+            "runs": [
+                {"client_wall_ms": 410.0, "content_chars": 8, "response_chars": 8},
+                {"client_wall_ms": 430.0, "content_chars": 10, "response_chars": 10},
+            ],
+            "summary": {
+                "client_wall_ms": metric(420.0, 420.0, 410.0, 430.0),
+                "content_chars": metric(9.0, 9.0, 8.0, 10.0),
+                "response_chars": metric(9.0, 9.0, 8.0, 10.0),
+            },
+        }
+    )
+    return row
 
 
 def sample_artifact(*, tracked_dirty: bool = False, zero_metric: bool = False) -> dict:
@@ -227,7 +294,16 @@ def sample_artifact(*, tracked_dirty: bool = False, zero_metric: bool = False) -
                 },
             },
         ],
-        "rows": [row, skipped_peer_row()],
+        "rows": [
+            row,
+            skipped_peer_row(
+                "image_single_256soft",
+                ["image_red_64"],
+                modalities=["image"],
+                skip_reason="missing_llama_cpp_mmproj_for_gemma4_12b",
+                skip_detail="Gemma 4 12B multimodal projector was not provided",
+            ),
+        ],
         "summary": {"measured_rows": 1, "skipped_rows": 1},
         "command": {"argv": ["bench"]},
     }
@@ -239,6 +315,19 @@ class Gemma4MultimodalBenchmarkTests(unittest.TestCase):
             bench.summarize([1.0, None, 3.0]),
             {"mean": 2.0, "median": 2.0, "min": 1.0, "max": 3.0},
         )
+
+    def test_sse_parser_skips_done_sentinel(self) -> None:
+        # The native /v1/generate/stream terminates an errored stream with a
+        # non-JSON `data: [DONE]` line; parsing it must not raise.
+        lines = [
+            "event: step",
+            'data: {"step": {"runner_time_us": 1000}}',
+            "",
+            "data: [DONE]",
+            "",
+        ]
+        events = list(bench.iter_sse_json_events(iter(lines)))
+        self.assertEqual([name for name, _ in events], ["step"])
 
     def test_modality_set_is_canonical_and_deduplicated(self) -> None:
         self.assertEqual(bench.modality_set(["video", "image", "image"]), ["image", "video"])
@@ -273,6 +362,23 @@ class Gemma4MultimodalBenchmarkTests(unittest.TestCase):
         raw = fixtures["video_2frame_red_green"].raw
         self.assertEqual(raw["timestamp_seconds"], [0.0, 2.0])
         self.assertEqual(raw["duration_ms_per_frame"], 2000)
+
+    @unittest.skipIf(bench.Image is None, "Pillow is required for multimodal fixtures")
+    def test_video_cap_case_timestamps_match_preprocess_cap(self) -> None:
+        fixtures = bench.build_fixture_registry()
+        cases = bench.build_case_registry()
+        raw = fixtures["video_40frame_cap"].raw
+        self.assertEqual(raw["source_frame_count"], 40)
+        self.assertEqual(len(cases["video_32frame_cap"].video_timestamp_seconds[0]), 32)
+
+    @unittest.skipIf(bench.Image is None, "Pillow is required for multimodal fixtures")
+    def test_fixture_record_hashes_non_byte_native_payloads(self) -> None:
+        fixtures = bench.build_fixture_registry()
+        audio = bench.fixture_record(fixtures["audio_tone_0_5s"])
+        video = bench.fixture_record(fixtures["video_2frame_red_green"])
+        self.assertEqual(len(audio["sha256"]), 64)
+        self.assertEqual(len(video["sha256"]), 64)
+        self.assertEqual(len(video["raw"]["native_frame_sha256"]), 2)
 
     def test_video_timestamp_tokens_match_server_prefix_shape(self) -> None:
         class FakeTokenizer:
@@ -312,11 +418,32 @@ class Gemma4MultimodalBenchmarkTests(unittest.TestCase):
         errors = checker.validate_artifact(sample_artifact(tracked_dirty=True), readme_ready=True)
         self.assertIn("readme-ready artifacts must have build.git_tracked_dirty=false", errors)
 
+    def test_checker_rejects_readme_ready_missing_peer_rows(self) -> None:
+        artifact = sample_artifact()
+        artifact["rows"] = [
+            row for row in artifact["rows"] if row.get("layer") != "peer_comparison"
+        ]
+        errors = checker.validate_artifact(artifact, readme_ready=True)
+        self.assertTrue(
+            any("must include peer_comparison rows for every case" in error for error in errors)
+        )
+
     def test_checker_rejects_zero_measured_timing(self) -> None:
         errors = checker.validate_artifact(sample_artifact(zero_metric=True))
         self.assertTrue(
             any("runner_prefill_ttft_ms" in error and "must be positive" in error for error in errors)
         )
+
+    def test_checker_rejects_native_row_without_client_ttft(self) -> None:
+        artifact = sample_artifact()
+        artifact["rows"][0]["summary"]["client_wall_ttft_ms"] = {
+            "mean": None,
+            "median": None,
+            "min": None,
+            "max": None,
+        }
+        errors = checker.validate_artifact(artifact)
+        self.assertTrue(any("requires positive client_wall_ttft_ms" in error for error in errors))
 
     def test_checker_rejects_missing_fixture_reference(self) -> None:
         artifact = sample_artifact()
@@ -384,6 +511,15 @@ class Gemma4MultimodalBenchmarkTests(unittest.TestCase):
         errors = checker.validate_artifact(artifact)
         self.assertTrue(any("capability.proof=true" in error for error in errors))
 
+    def test_checker_rejects_measured_chat_without_response_chars(self) -> None:
+        artifact = sample_artifact()
+        artifact["rows"] = [
+            measured_chat_row("image_single_256soft", ["image_red_64"], modalities=["image"])
+        ]
+        artifact["rows"][0]["summary"]["response_chars"]["median"] = 0.0
+        errors = checker.validate_artifact(artifact)
+        self.assertTrue(any("requires positive response_chars" in error for error in errors))
+
     def test_renderer_accepts_matrix_schema(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -394,14 +530,33 @@ class Gemma4MultimodalBenchmarkTests(unittest.TestCase):
                 1,
                 measured_row("audio_0_5s", ["audio_tone_0_5s"], modalities=["audio"]),
             )
+            artifact["rows"].insert(
+                2,
+                measured_chat_row("image_single_256soft", ["image_red_64"], modalities=["image"]),
+            )
+            artifact["rows"].insert(
+                3,
+                measured_peer_row("image_single_256soft", ["image_red_64"], modalities=["image"]),
+            )
             artifact_path.write_text(json.dumps(artifact))
             outputs = renderer.render(artifact_path, assets_dir)
-            self.assertEqual(len(outputs), 2)
+            self.assertEqual(len(outputs), 3)
+            self.assertEqual(
+                {path.name for path in outputs},
+                {
+                    "perf-gemma4-12b-multimodal-ttft-ms.svg",
+                    "perf-gemma4-12b-multimodal-prefill-tok-s.svg",
+                    "perf-gemma4-12b-multimodal-peer-chat-ms.svg",
+                },
+            )
             for path in outputs:
                 text = path.read_text()
                 self.assertIn("<svg", text)
                 self.assertIn("image_single_256soft", text)
-                self.assertIn("audio_0_5s", text)
+                if path.name != "perf-gemma4-12b-multimodal-peer-chat-ms.svg":
+                    self.assertIn("audio_0_5s", text)
+                else:
+                    self.assertIn("llama.cpp", text)
 
 
 if __name__ == "__main__":

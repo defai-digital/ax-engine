@@ -78,6 +78,31 @@ class EmbeddingApiSurfaceTests(unittest.TestCase):
             "should import numpy only when called.",
         )
 
+    def test_embed_batch_array_missing_numpy_gives_helpful_error(self) -> None:
+        """When numpy is not installed, `embed_batch_array` must raise a
+        helpful RuntimeError with install instructions, not a raw
+        ModuleNotFoundError. The numpy import is the method's first
+        statement, so a stubbed-missing numpy fails before any model call."""
+        import ax_engine
+
+        class _Dummy:
+            embed_batch_array = ax_engine.Session.embed_batch_array
+
+            def embed_batch_flat_bytes(self, *args, **kwargs):
+                raise AssertionError("must fail on the numpy import, not reach here")
+
+        saved = sys.modules.get("numpy")
+        sys.modules["numpy"] = None  # makes `import numpy` raise ImportError
+        try:
+            with self.assertRaises(RuntimeError) as ctx:
+                _Dummy().embed_batch_array([[1, 2, 3]])
+            self.assertIn("numpy is required", str(ctx.exception))
+        finally:
+            if saved is not None:
+                sys.modules["numpy"] = saved
+            else:
+                sys.modules.pop("numpy", None)
+
     def test_inner_native_methods_match_wrapper(self) -> None:
         """Catch the stale-`.so` case: the Python wrapper at
         `ax_engine.Session` forwards to `self._inner.<name>`. If the

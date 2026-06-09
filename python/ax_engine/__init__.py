@@ -862,7 +862,14 @@ class Session:
         >>> # zero-copy hand off to faiss:
         >>> # index.add(arr)
         """
-        import numpy as np
+        try:
+            import numpy as np
+        except ImportError as error:
+            raise RuntimeError(
+                "numpy is required for embed_batch_array(). Install it with:\n"
+                "  pip install numpy\n"
+                "or use embed_batch_flat_bytes() for a numpy-free interface."
+            ) from error
 
         blob, batch_size, hidden_size = self.embed_batch_flat_bytes(
             batch_token_ids, pooling=pooling, normalize=normalize

@@ -301,7 +301,7 @@ fn patchify_rgb(
     // `model_patch_size == patch_size * pooling_kernel_size`; use it for both the
     // resize unit (core parity) and patch extraction (internal consistency).
     let patch = vision.patch_size * vision.pooling_kernel_size;
-    let (target_w, target_h) = resize_target(vision, width, height);
+    let (target_w, target_h) = vision.resize_target(width, height);
     let resized = if target_w == width && target_h == height {
         std::borrow::Cow::Borrowed(frame)
     } else {
@@ -399,13 +399,25 @@ pub(crate) fn decode_video_frames(
         .collect())
 }
 
-/// Uniformly pick at most `max` indices from `[0, len)`, always including the
-/// first frame.
+/// Uniformly pick at most `max` indices from `[0, len)`, anchored at the first
+/// and last frame. Mirrors the reference `Gemma4UnifiedVideoProcessor._sample_frames`
+/// (`np.linspace(0, len - 1, max).round()`, round-ties-to-even like numpy) so AX
+/// selects the same frames the model was calibrated on, and agrees with the
+/// Python SDK's `_sample_video_frames`. A plain `i * len / max` floor never
+/// includes the last frame and shifts most indices.
 fn sample_frame_indices(len: usize, max: usize) -> Vec<usize> {
     if len <= max {
         return (0..len).collect();
     }
-    (0..max).map(|i| i * len / max).collect()
+    if max <= 1 {
+        return vec![0];
+    }
+    (0..max)
+        .map(|i| {
+            let pos = i as f64 * (len - 1) as f64 / (max - 1) as f64;
+            pos.round_ties_even() as usize
+        })
+        .collect()
 }
 
 /// Patchify each decoded frame (sharing one patch grid) into the video
@@ -463,21 +475,6 @@ fn normalize_channel(value: u8, channel: usize, normalization: &ImageNormalizati
         pixel = (pixel - normalization.mean[channel]) / normalization.std[channel];
     }
     pixel
-}
-
-/// Compute the aspect-ratio-preserving resize target, matching the formula in
-/// `Gemma4UnifiedVisionProcessor::compute_soft_tokens` so the patch grid produced
-/// here agrees with core's soft-token count.
-fn resize_target(vision: &Gemma4UnifiedVisionProcessor, width: u32, height: u32) -> (u32, u32) {
-    let patch = vision.patch_size as f64;
-    let pooling = vision.pooling_kernel_size as f64;
-    let unit = patch * pooling;
-    let max_patches = vision.max_soft_tokens as f64 * pooling * pooling;
-    let original_patches = (height as f64 / patch) * (width as f64 / patch);
-    let scale = (max_patches / original_patches).sqrt();
-    let target_h = unit.max(((height as f64 * scale / unit).floor()) * unit);
-    let target_w = unit.max(((width as f64 * scale / unit).floor()) * unit);
-    (target_w as u32, target_h as u32)
 }
 
 /// Decode a PCM WAV stream and chunk the (mono, resampled) waveform into the
@@ -640,7 +637,7 @@ mod tests {
         let pre = preprocess_image(&png, &vision, &ImageNormalization::default()).unwrap();
 
         let patch = vision.patch_size * vision.pooling_kernel_size;
-        let (target_w, target_h) = resize_target(&vision, 96, 48);
+        let (target_w, target_h) = vision.resize_target(96, 48);
         let grid_w = (target_w / patch) as i32;
         let grid_h = (target_h / patch) as i32;
         assert!((grid_w as usize) * (grid_h as usize) <= vision.max_soft_tokens as usize);
@@ -827,7 +824,27 @@ mod tests {
         assert_eq!(sampled.len(), 16);
         assert_eq!(sampled[0], 0);
         assert!(sampled.windows(2).all(|w| w[0] < w[1]));
-        assert!(*sampled.last().unwrap() < 100);
+        // Endpoint-anchored: the last sampled index is the final frame, matching
+        // the reference linspace(0, len - 1, max).round().
+        assert_eq!(*sampled.last().unwrap(), 99);
+        assert_eq!(sample_frame_indices(5, 1), vec![0]);
+    }
+
+    #[test]
+    fn sample_frame_indices_matches_reference_linspace() {
+        // Reference: np.linspace(0, len - 1, max).round() (round ties to even).
+        for (len, max) in [(100, 32), (60, 8), (7, 5), (101, 16)] {
+            let got = sample_frame_indices(len, max);
+            let expected: Vec<usize> = (0..max)
+                .map(|i| {
+                    let pos = i as f64 * (len - 1) as f64 / (max - 1) as f64;
+                    pos.round_ties_even() as usize
+                })
+                .collect();
+            assert_eq!(got, expected, "len={len} max={max}");
+            assert_eq!(*got.first().unwrap(), 0);
+            assert_eq!(*got.last().unwrap(), len - 1);
+        }
     }
 
     fn parse_golden(

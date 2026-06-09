@@ -31,6 +31,7 @@ POSITIVE_METRICS = {
     "non_streaming_total_ms",
     "prefill_tok_s",
     "payload_bytes",
+    "response_chars",
 }
 
 
@@ -321,10 +322,26 @@ def validate_row(
             errors.append(
                 f"rows[{row_index}] native_runtime_prefill requires runner_prefill_ttft_ms"
             )
+        if row.get("layer") == "native_runtime_prefill":
+            ttft_stats = metric_stats(row, "client_wall_ttft_ms")
+            ttft_median = ttft_stats.get("median") if isinstance(ttft_stats, dict) else None
+            if not isinstance(ttft_median, (int, float)) or ttft_median <= 0:
+                errors.append(
+                    f"rows[{row_index}] native_runtime_prefill requires positive client_wall_ttft_ms"
+                )
         if row.get("layer") in {"openai_chat_e2e", "peer_comparison"} and metric_stats(
             row, "client_wall_ms"
         ) is None:
             errors.append(f"rows[{row_index}] {row.get('layer')} requires client_wall_ms")
+        if row.get("layer") in {"openai_chat_e2e", "peer_comparison"}:
+            response_stats = metric_stats(row, "response_chars")
+            response_median = (
+                response_stats.get("median") if isinstance(response_stats, dict) else None
+            )
+            if not isinstance(response_median, (int, float)) or response_median <= 0:
+                errors.append(
+                    f"rows[{row_index}] {row.get('layer')} requires positive response_chars"
+                )
     else:
         reason = row.get("skip_reason")
         if reason not in ALLOWED_SKIP_REASONS:
@@ -337,6 +354,32 @@ def validate_row(
             errors.append(f"rows[{row_index}].runs must be empty for skipped rows")
     if row.get("layer") == "peer_comparison":
         validate_peer_capability(errors, row_index=row_index, row=row)
+
+
+def validate_readme_ready_peer_rows(
+    errors: list[str],
+    *,
+    benchmark: dict[str, Any] | None,
+    rows: list[Any],
+) -> None:
+    if benchmark is None:
+        return
+    cases = benchmark.get("cases")
+    if not isinstance(cases, list) or not cases:
+        errors.append("readme-ready artifacts must record benchmark.cases")
+        return
+    expected_cases = {case for case in cases if isinstance(case, str) and case}
+    peer_cases = {
+        row.get("case_id")
+        for row in rows
+        if isinstance(row, dict) and row.get("layer") == "peer_comparison"
+    }
+    missing = sorted(expected_cases - peer_cases)
+    if missing:
+        errors.append(
+            "readme-ready artifacts must include peer_comparison rows for every case: "
+            + ", ".join(missing)
+        )
 
 
 def validate_artifact(
@@ -391,6 +434,9 @@ def validate_artifact(
         missing = sorted(require_modalities - measured)
         if missing:
             errors.append(f"missing measured modality coverage: {', '.join(missing)}")
+
+    if readme_ready:
+        validate_readme_ready_peer_rows(errors, benchmark=benchmark, rows=rows)
 
     return errors
 

@@ -84,6 +84,10 @@ def iter_sse_json_events(lines: Iterable[str]) -> Iterator[tuple[str, Any]]:
         data_parts = []
         if not data:
             return None
+        # The native /v1/generate/stream emits a non-JSON `data: [DONE]` sentinel
+        # after an error event; skip it rather than crashing on json.loads.
+        if data == "[DONE]":
+            return None
         return name, json.loads(data)
 
     for raw_line in lines:

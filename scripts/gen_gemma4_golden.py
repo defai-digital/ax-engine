@@ -43,6 +43,16 @@ def aspect_ratio_preserving_resize(image_chw, patch_size, max_patches, pooling):
     target_width = int(math.floor(factor * width / side_mult)) * side_mult
     if target_height == 0 and target_width == 0:
         raise ValueError("0x0 resize")
+    # Reference single-axis fallback + max_side_length clamp (processing_gemma4.py
+    # lines 115-125): keep extreme aspect ratios downscaling the whole image
+    # rather than collapsing one axis to zero.
+    max_side_length = (max_patches // pooling**2) * side_mult
+    if target_height == 0:
+        target_height = side_mult
+        target_width = min(int(math.floor(width / height)) * side_mult, max_side_length)
+    elif target_width == 0:
+        target_width = side_mult
+        target_height = min(int(math.floor(height / width)) * side_mult, max_side_length)
     if target_height == height and target_width == width:
         return image_chw
     img = np.transpose(image_chw, (1, 2, 0))  # HWC

@@ -61,6 +61,17 @@ MODEL_PROFILES = (
         aliases=("gemma4-12b-6bit", "gemma-4-12b-6bit", "gemma-4-12b-it-6bit"),
     ),
     ModelProfile(
+        label="gemma4-26b",
+        preset="gemma4-26b",
+        repo_id="mlx-community/gemma-4-26b-a4b-it-4bit",
+        aliases=(
+            "gemma4-26b",
+            "gemma-4-26b",
+            "gemma-4-26b-a4b-it",
+            "gemma4-26b-4bit",
+        ),
+    ),
+    ModelProfile(
         label="gemma4-31b",
         preset="gemma4-31b",
         repo_id="mlx-community/gemma-4-31b-it-4bit",

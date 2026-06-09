@@ -11,9 +11,14 @@ from typing import Any
 
 
 FONT = "Inter,Segoe UI,Arial,sans-serif"
-OUTPUTS = {
+LEGACY_OUTPUTS = {
     "ttft": "perf-gemma4-12b-multimodal-image-ttft-ms.svg",
     "prefill": "perf-gemma4-12b-multimodal-image-prefill-tok-s.svg",
+}
+MATRIX_OUTPUTS = {
+    "ttft": "perf-gemma4-12b-multimodal-ttft-ms.svg",
+    "prefill": "perf-gemma4-12b-multimodal-prefill-tok-s.svg",
+    "peer": "perf-gemma4-12b-multimodal-peer-chat-ms.svg",
 }
 
 
@@ -82,6 +87,44 @@ def native_prefill_rows(artifact: dict[str, Any]) -> list[dict[str, Any]]:
     return measured
 
 
+def peer_comparison_series(artifact: dict[str, Any]) -> list[dict[str, Any]]:
+    rows = artifact.get("rows")
+    if not isinstance(rows, list):
+        return []
+    ax_by_case = {
+        row.get("case_id"): row
+        for row in rows
+        if isinstance(row, dict)
+        and row.get("status") == "measured"
+        and row.get("engine") in {"ax_engine", "ax_engine_mlx"}
+        and row.get("layer") == "openai_chat_e2e"
+    }
+    series = []
+    for row in rows:
+        if (
+            not isinstance(row, dict)
+            or row.get("status") != "measured"
+            or row.get("engine") != "llama_cpp_metal"
+            or row.get("layer") != "peer_comparison"
+        ):
+            continue
+        case_id = row.get("case_id")
+        ax_row = ax_by_case.get(case_id)
+        if not isinstance(case_id, str) or not isinstance(ax_row, dict):
+            continue
+        ax_stats = metric_summary_from_row(ax_row, "client_wall_ms")
+        peer_stats = metric_summary_from_row(row, "client_wall_ms")
+        series.append(
+            {
+                "label": case_id,
+                "modalities": "+".join(row.get("modalities") or []),
+                "ax": ax_stats,
+                "peer": peer_stats,
+            }
+        )
+    return series
+
+
 def chart_inputs(artifact: dict[str, Any]) -> dict[str, Any]:
     schema = artifact.get("schema")
     if schema == "ax.gemma4_multimodal_benchmark.v1":
@@ -111,9 +154,11 @@ def chart_inputs(artifact: dict[str, Any]) -> dict[str, Any]:
         return {
             "ttft_series": series_for("runner_prefill_ttft_ms"),
             "prefill_series": series_for("prefill_tok_s"),
+            "peer_series": peer_comparison_series(artifact),
             "case_id": "matrix",
             "subtitle": "AX Engine native MLX, runner-time multimodal prefill",
             "throughput_subtitle": "AX Engine native MLX, expanded prompt includes soft tokens",
+            "peer_subtitle": "OpenAI chat E2E, AX native MLX vs llama.cpp Metal",
             "footnote": f"{len(rows)} case(s), {repetitions} reps, max_output_tokens={max_output_tokens}",
         }
     if schema not in (None, "ax.gemma4_image_prefill_ttft.v1"):
@@ -143,14 +188,22 @@ def chart_inputs(artifact: dict[str, Any]) -> dict[str, Any]:
                 **metric_summary(artifact, "prefill_tok_s"),
             }
         ],
+        "peer_series": [],
         "case_id": "image_single_256soft",
         "subtitle": "AX Engine native MLX, runner-time image+text prefill",
         "throughput_subtitle": "AX Engine native MLX, expanded prompt includes image soft tokens",
+        "peer_subtitle": "",
         "footnote": (
             f"{expanded_tokens} expanded tokens, {image_soft_tokens} image soft tokens, "
             f"{repetitions} reps, max_output_tokens={max_output_tokens}"
         ),
     }
+
+
+def output_filenames(artifact: dict[str, Any]) -> dict[str, str]:
+    if artifact.get("schema") == "ax.gemma4_multimodal_benchmark.v1":
+        return MATRIX_OUTPUTS
+    return LEGACY_OUTPUTS
 
 
 def render_bar_chart(
@@ -255,16 +308,130 @@ def render_bar_chart(
     return "\n".join(parts) + "\n"
 
 
+def render_peer_comparison_chart(
+    *,
+    title: str,
+    subtitle: str,
+    series: list[dict[str, Any]],
+    footnote: str,
+) -> str:
+    width = 920
+    height = 430 if len(series) > 6 else 360
+    left, right, top, bottom = 82, 180, 82, 118
+    plot_w = width - left - right
+    plot_h = height - top - bottom
+    all_max = [
+        float(item[engine]["max"])
+        for item in series
+        for engine in ("ax", "peer")
+    ]
+    axis_max = nice_axis_ceiling(max(all_max) * 1.18)
+
+    def fy(value: float) -> float:
+        return top + plot_h - (max(0.0, min(value, axis_max)) / axis_max) * plot_h
+
+    group_gap = 14
+    group_w = max(34, (plot_w - group_gap * (len(series) + 1)) / max(1, len(series)))
+    bar_gap = 4
+    bar_w = max(10, min(24, (group_w - bar_gap) / 2))
+    colors = {
+        "ax": ("#2eaf5f", "#176c37", "AX Engine"),
+        "peer": ("#3b82f6", "#1d4ed8", "llama.cpp"),
+    }
+
+    parts = [
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" '
+        f'viewBox="0 0 {width} {height}" role="img" aria-labelledby="title desc">',
+        f"<title>{html.escape(title)}</title>",
+        f"<desc>{html.escape(subtitle)} {len(series)} measured peer case(s).</desc>",
+        '<rect width="100%" height="100%" fill="#f8fafc"/>',
+        f'<text id="title" x="{left}" y="28" font-family="{FONT}" font-size="16" '
+        f'font-weight="700" fill="#111827">{html.escape(title)}</text>',
+        f'<text x="{left}" y="48" font-family="{FONT}" font-size="11" fill="#4b5563">'
+        f"{html.escape(subtitle)}</text>",
+        f'<text x="{width - 32}" y="31" text-anchor="end" font-family="{FONT}" '
+        'font-size="10" font-weight="700" fill="#dc2626">Lower is better</text>',
+        f'<rect x="{left}" y="{top}" width="{plot_w}" height="{plot_h}" rx="6" '
+        f'fill="#ffffff" stroke="#dbe3ef"/>',
+    ]
+
+    for i in range(5):
+        grid_value = axis_max * i / 4
+        grid_y = fy(grid_value)
+        parts.append(
+            f'<line x1="{left}" y1="{grid_y:.1f}" x2="{left + plot_w}" y2="{grid_y:.1f}" '
+            'stroke="#e5e7eb" stroke-width="1"/>'
+        )
+        parts.append(
+            f'<text x="{left - 10}" y="{grid_y + 4:.1f}" text-anchor="end" '
+            f'font-family="{FONT}" font-size="11" fill="#6b7280">{fmt_value(grid_value)}</text>'
+        )
+
+    for index, item in enumerate(series):
+        group_x = left + group_gap + index * (group_w + group_gap)
+        for offset, engine in enumerate(("ax", "peer")):
+            median = float(item[engine]["median"])
+            bar_x = group_x + offset * (bar_w + bar_gap)
+            bar_center = bar_x + bar_w / 2
+            y = fy(median)
+            fill, stroke, _ = colors[engine]
+            parts.extend(
+                [
+                    f'<rect x="{bar_x:.1f}" y="{y:.1f}" width="{bar_w:.1f}" '
+                    f'height="{top + plot_h - y:.1f}" rx="3" fill="{fill}" '
+                    f'fill-opacity="0.30" stroke="{stroke}" stroke-width="1.5"/>',
+                    f'<line x1="{bar_x:.1f}" y1="{y:.1f}" x2="{bar_x + bar_w:.1f}" '
+                    f'y2="{y:.1f}" stroke="{stroke}" stroke-width="2"/>',
+                    f'<text x="{bar_center:.1f}" y="{y - 6:.1f}" text-anchor="middle" '
+                    f'font-family="{FONT}" font-size="8" font-weight="700" fill="#111827">'
+                    f"{fmt_value(median)}</text>",
+                ]
+            )
+        label_x = group_x + group_w / 2
+        parts.append(
+            f'<text x="{label_x:.1f}" y="{top + plot_h + 18:.1f}" text-anchor="middle" '
+            f'font-family="{FONT}" font-size="9" fill="#111827" '
+            f'transform="rotate(45 {label_x:.1f} {top + plot_h + 18:.1f})">'
+            f"{html.escape(str(item['label']))}</text>"
+        )
+
+    legend_y = top + 30
+    for index, engine in enumerate(("ax", "peer")):
+        fill, stroke, label = colors[engine]
+        y = legend_y + index * 22
+        parts.extend(
+            [
+                f'<rect x="{left + plot_w + 16}" y="{y - 10}" width="12" height="12" '
+                f'rx="2" fill="{fill}" fill-opacity="0.30" stroke="{stroke}"/>',
+                f'<text x="{left + plot_w + 36}" y="{y}" font-family="{FONT}" '
+                f'font-size="11" fill="#374151">{html.escape(label)}</text>',
+            ]
+        )
+
+    parts.extend(
+        [
+            f'<text x="{left + plot_w + 16}" y="{legend_y + 60}" font-family="{FONT}" '
+            f'font-size="10" fill="#6b7280">unit: ms</text>',
+            f'<text x="{left}" y="{height - 20}" font-family="{FONT}" font-size="10" '
+            f'fill="#6b7280">{html.escape(footnote)}</text>',
+            "</svg>",
+        ]
+    )
+    return "\n".join(parts) + "\n"
+
+
 def render(artifact_path: Path, assets_dir: Path) -> list[Path]:
     artifact = json.loads(artifact_path.read_text())
     inputs = chart_inputs(artifact)
+    output_names = output_filenames(artifact)
     ttft = inputs["ttft_series"]
     prefill = inputs["prefill_series"]
+    peer = inputs["peer_series"]
 
     assets_dir.mkdir(parents=True, exist_ok=True)
     outputs = [
         (
-            OUTPUTS["ttft"],
+            output_names["ttft"],
             render_bar_chart(
                 title="Gemma 4 12B multimodal prefill TTFT",
                 subtitle=inputs["subtitle"],
@@ -275,7 +442,7 @@ def render(artifact_path: Path, assets_dir: Path) -> list[Path]:
             ),
         ),
         (
-            OUTPUTS["prefill"],
+            output_names["prefill"],
             render_bar_chart(
                 title="Gemma 4 12B multimodal prefill throughput",
                 subtitle=inputs["throughput_subtitle"],
@@ -286,6 +453,18 @@ def render(artifact_path: Path, assets_dir: Path) -> list[Path]:
             ),
         ),
     ]
+    if peer and "peer" in output_names:
+        outputs.append(
+            (
+                output_names["peer"],
+                render_peer_comparison_chart(
+                    title="Gemma 4 12B multimodal chat latency",
+                    subtitle=inputs["peer_subtitle"],
+                    series=peer,
+                    footnote=inputs["footnote"],
+                ),
+            )
+        )
 
     written: list[Path] = []
     for filename, svg in outputs:
@@ -302,7 +481,7 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=Path(
             "benchmarks/results/gemma4-multimodal/"
-            "2026-06-09-gemma4-12b-image-prefill-ttft.json"
+            "2026-06-09-gemma4-12b-multimodal-matrix.json"
         ),
     )
     parser.add_argument("--assets-dir", type=Path, default=Path("docs/assets"))

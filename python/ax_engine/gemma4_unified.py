@@ -664,10 +664,13 @@ def _is_remote_url(source: str) -> bool:
 def _fetch_url_bytes(url: str) -> bytes:
     try:
         with urllib.request.urlopen(url, timeout=_REMOTE_MEDIA_TIMEOUT_SECONDS) as response:
-            data = response.read(_MAX_REMOTE_MEDIA_BYTES + 1)
+            # Read at most the limit, then probe a single byte to detect overflow
+            # rather than pulling the whole oversized body into memory first.
+            data = response.read(_MAX_REMOTE_MEDIA_BYTES)
+            overflowed = bool(response.read(1))
     except Exception as exc:
         raise ValueError(f"Gemma4 unified media URL fetch failed: {url}") from exc
-    if len(data) > _MAX_REMOTE_MEDIA_BYTES:
+    if overflowed:
         raise ValueError(
             "Gemma4 unified media URL response exceeded "
             f"{_MAX_REMOTE_MEDIA_BYTES} bytes"

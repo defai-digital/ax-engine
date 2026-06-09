@@ -8,6 +8,8 @@ pub enum ServerPreset {
     Gemma4E2b,
     #[value(name = "gemma4-12b")]
     Gemma4_12b,
+    #[value(name = "gemma4-26b")]
+    Gemma4_26b,
     #[value(name = "gemma4-31b")]
     Gemma4_31b,
     #[value(
@@ -55,6 +57,20 @@ impl ServerPreset {
                     "gemma-4-12b-it-4bit",
                 ],
                 model_types: &["gemma4_unified", "gemma4_unified_text", "gemma4"],
+                support_tier: PreviewSupportTier::MlxPreview,
+                max_batch_tokens: 2048,
+            },
+            Self::Gemma4_26b => PresetDefinition {
+                preset: self,
+                label: "gemma4-26b",
+                model_id: "gemma4-26b",
+                aliases: &[
+                    "gemma4-26b",
+                    "gemma-4-26b",
+                    "gemma-4-26b-a4b-it",
+                    "gemma4-26b-4bit",
+                ],
+                model_types: &["gemma4"],
                 support_tier: PreviewSupportTier::MlxPreview,
                 max_batch_tokens: 2048,
             },
@@ -112,6 +128,7 @@ pub fn render_presets() -> String {
     [
         ServerPreset::Gemma4E2b,
         ServerPreset::Gemma4_12b,
+        ServerPreset::Gemma4_26b,
         ServerPreset::Gemma4_31b,
         ServerPreset::Glm47Flash4bit,
         ServerPreset::Qwen36_35b,

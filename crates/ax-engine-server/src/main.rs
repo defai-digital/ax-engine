@@ -24,9 +24,9 @@ use app_state::build_app_state;
 use args::{ServerArgs, render_presets};
 use routes::build_router;
 
-// Processed Gemma4 unified image tensors are JSON-heavy; keep the server cap
-// aligned with the Python helper's bounded media fetch policy.
-const MAX_REQUEST_BODY_BYTES: usize = 64 * 1024 * 1024;
+// Processed Gemma4 unified media tensors are JSON-heavy: multi-image and capped
+// video benchmark cases can exceed 100 MiB before transport compression.
+const DEFAULT_MAX_REQUEST_BODY_BYTES: usize = 256 * 1024 * 1024;
 
 fn log_host_detection_warnings(session_config: &EngineSessionConfig) {
     let host = ax_engine_sdk::current_host_report();

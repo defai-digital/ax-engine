@@ -785,17 +785,49 @@ impl Gemma4UnifiedVisionProcessor {
             });
         }
 
-        let patch_size = self.patch_size as f64;
-        let pooling = self.pooling_kernel_size as f64;
-        let unit = patch_size * pooling;
-        let max_patches = self.max_soft_tokens as f64 * pooling * pooling;
-        let original_patches =
-            (image_height as f64 / patch_size) * (image_width as f64 / patch_size);
-        let scale = (max_patches / original_patches).sqrt();
-        let target_h = unit.max(((image_height as f64 * scale / unit).floor()) * unit);
-        let target_w = unit.max(((image_width as f64 * scale / unit).floor()) * unit);
-        let num_patches = ((target_h / patch_size) as u32) * ((target_w / patch_size) as u32);
+        let (target_w, target_h) = self.resize_target(image_width, image_height);
+        let num_patches = (target_h / self.patch_size) * (target_w / self.patch_size);
         Ok((num_patches / self.pooling_kernel_size.pow(2)).min(self.max_soft_tokens))
+    }
+
+    /// Aspect-ratio-preserving resize target `(width, height)`, mirroring the
+    /// reference `aspect_ratio_preserving_resize`: the largest dimensions that
+    /// produce at most `max_soft_tokens` model patches and are divisible by
+    /// `patch_size * pooling_kernel_size`. Includes the reference's single-axis
+    /// fallback and `max_side_length` clamp so extreme aspect ratios resize the
+    /// same way the model expects (a plain per-axis `max(unit, …)` would crop a
+    /// wide/tall image to one half instead of downscaling it whole).
+    ///
+    /// Callers that patchify pixels (e.g. the server's media preprocessing) must
+    /// resize to exactly these dimensions so their patch grid matches
+    /// [`Self::compute_soft_tokens`].
+    pub fn resize_target(&self, width: u32, height: u32) -> (u32, u32) {
+        let patch = self.patch_size as f64;
+        let pooling = self.pooling_kernel_size as f64;
+        let unit = patch * pooling;
+        if width == 0 || height == 0 || unit == 0.0 {
+            return (unit as u32, unit as u32);
+        }
+        let max_patches = self.max_soft_tokens as f64 * pooling * pooling;
+        let target_px = max_patches * patch * patch;
+        let factor = (target_px / (height as f64 * width as f64)).sqrt();
+        let mut target_h = (factor * height as f64 / unit).floor() * unit;
+        let mut target_w = (factor * width as f64 / unit).floor() * unit;
+        // Reference: max_side_length = (max_patches / pooling^2) * side_mult.
+        let max_side = self.max_soft_tokens as f64 * unit;
+        if target_h == 0.0 && target_w == 0.0 {
+            // Reference raises here; clamp to a single patch instead of crashing
+            // (width/height are already validated as non-zero by the caller).
+            target_h = unit;
+            target_w = unit;
+        } else if target_h == 0.0 {
+            target_h = unit;
+            target_w = ((width as f64 / height as f64).floor() * unit).min(max_side);
+        } else if target_w == 0.0 {
+            target_w = unit;
+            target_h = ((height as f64 / width as f64).floor() * unit).min(max_side);
+        }
+        (target_w as u32, target_h as u32)
     }
 }
 
@@ -939,6 +971,28 @@ mod tests {
             .unwrap(),
             280
         );
+    }
+
+    #[test]
+    fn resize_target_handles_extreme_aspect_ratios_like_reference() {
+        // patch=4, pooling=2 -> unit=8, max_soft_tokens=4, max_side=32.
+        let vision = Gemma4UnifiedVisionProcessor {
+            patch_size: 4,
+            model_patch_size: 8,
+            pooling_kernel_size: 2,
+            max_soft_tokens: 4,
+        };
+        // Very wide image: reference downscales the whole width (32x8), it must
+        // NOT collapse height to 0 or crop to a half-width grid.
+        assert_eq!(vision.resize_target(100, 5), (32, 8));
+        // Very tall image is the symmetric case.
+        assert_eq!(vision.resize_target(5, 100), (8, 32));
+        // Both axes stay non-zero and divisible by unit, and the soft-token count
+        // stays within budget.
+        let (w, h) = vision.resize_target(100, 5);
+        assert_eq!(w % 8, 0);
+        assert_eq!(h % 8, 0);
+        assert!(vision.compute_soft_tokens(100, 5).unwrap() <= 4);
     }
 
     #[test]

@@ -21,6 +21,7 @@ import statistics
 import struct
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.parse
 import wave
@@ -100,6 +101,13 @@ class PeerDecision:
     reason: str | None
     detail: str | None
     capability: dict[str, Any]
+
+
+@dataclass
+class ManagedServer:
+    process: subprocess.Popen[bytes]
+    log_path: Path
+    log_file: Any
 
 
 def require_pillow() -> None:
@@ -213,7 +221,10 @@ def gif_frames(
 
 
 def fixture_record(fixture: MediaFixture) -> dict[str, Any]:
-    if fixture.modality == "video":
+    if fixture.modality == "audio":
+        payload_hash = sha256_bytes(fixture.chat_payload or b"")
+        raw = fixture.raw
+    elif fixture.modality == "video":
         payload_hash = sha256_bytes(fixture.chat_payload or b"")
         native_hashes = []
         for frame in fixture.payload:
@@ -376,9 +387,10 @@ def build_case_registry() -> dict[str, BenchmarkCase]:
             "<|turn>model\n<|channel>thought\n<channel|>"
         )
 
-    def video_timestamps(fixture_id: str) -> list[float]:
+    def video_timestamps(fixture_id: str, *, max_frames: int | None = None) -> list[float]:
         raw = fixtures[fixture_id].raw
-        return [float(value) for value in raw["timestamp_seconds"]]
+        values = [float(value) for value in raw["timestamp_seconds"]]
+        return values[:max_frames] if max_frames is not None else values
 
     cases = [
         BenchmarkCase(
@@ -496,7 +508,7 @@ def build_case_registry() -> dict[str, BenchmarkCase]:
             prompt("Summarize this long generated clip.", "<|video|>"),
             "Summarize this long generated clip.",
             ["video_40frame_cap"],
-            [video_timestamps("video_40frame_cap")],
+            [video_timestamps("video_40frame_cap", max_frames=32)],
         ),
         BenchmarkCase(
             "image_audio",
@@ -674,6 +686,10 @@ def iter_sse_json_events(lines: Iterable[str]) -> Iterator[tuple[str, Any]]:
         data_parts = []
         if not data:
             return None
+        # The native /v1/generate/stream and the OpenAI stream both terminate with
+        # a `data: [DONE]` sentinel that is not JSON; skip it rather than crashing.
+        if data == "[DONE]":
+            return None
         return name, json.loads(data)
 
     for raw_line in lines:
@@ -717,6 +733,93 @@ def http_connection(url: str, timeout: int = DEFAULT_TIMEOUT_S) -> tuple[http.cl
         conn = http.client.HTTPConnection(host, port, timeout=timeout)
     base_path = parsed.path.rstrip("/")
     return conn, base_path
+
+
+def tail_text(path: Path, max_bytes: int = 4096) -> str:
+    try:
+        data = path.read_bytes()
+    except OSError as exc:
+        return f"<failed to read {path}: {exc}>"
+    return data[-max_bytes:].decode("utf-8", errors="replace").strip()
+
+
+def wait_for_server_ready(
+    *,
+    url: str,
+    process: subprocess.Popen[bytes],
+    log_path: Path,
+    timeout_s: int,
+) -> None:
+    deadline = time.monotonic() + timeout_s
+    last_error = ""
+    while time.monotonic() < deadline:
+        exit_code = process.poll()
+        if exit_code is not None:
+            raise RuntimeError(
+                f"server command exited before accepting connections "
+                f"(exit={exit_code}, log={log_path}):\n{tail_text(log_path)}"
+            )
+        conn, _ = http_connection(url, timeout=1)
+        try:
+            conn.connect()
+            return
+        except OSError as exc:
+            last_error = str(exc)
+            time.sleep(0.25)
+        finally:
+            conn.close()
+    raise RuntimeError(
+        f"server command did not accept connections within {timeout_s}s at {url} "
+        f"(last_error={last_error}, log={log_path}):\n{tail_text(log_path)}"
+    )
+
+
+def start_managed_server(args: argparse.Namespace) -> ManagedServer | None:
+    if not args.server_command:
+        return None
+    command = shlex.split(args.server_command)
+    if not command:
+        raise ValueError("--server-command must not be empty")
+    log_file = tempfile.NamedTemporaryFile(  # noqa: SIM115 - closed by stop_managed_server
+        prefix="ax-gemma4-multimodal-server-",
+        suffix=".log",
+        delete=False,
+    )
+    log_path = Path(log_file.name)
+    process = subprocess.Popen(
+        command,
+        cwd=REPO_ROOT,
+        stdout=log_file,
+        stderr=subprocess.STDOUT,
+    )
+    server = ManagedServer(process=process, log_path=log_path, log_file=log_file)
+    try:
+        wait_for_server_ready(
+            url=args.url,
+            process=process,
+            log_path=log_path,
+            timeout_s=min(args.timeout, 60),
+        )
+    except Exception:
+        stop_managed_server(server)
+        raise
+    print(f"started server pid={process.pid} log={log_path}", file=sys.stderr)
+    return server
+
+
+def stop_managed_server(server: ManagedServer | None) -> None:
+    if server is None:
+        return
+    try:
+        if server.process.poll() is None:
+            server.process.terminate()
+            try:
+                server.process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                server.process.kill()
+                server.process.wait(timeout=5)
+    finally:
+        server.log_file.close()
 
 
 def run_native_one(
@@ -786,6 +889,8 @@ def run_native_one(
 
     total_wall_ms = (time.perf_counter() - started) * 1000.0
     runner_prefill_ms = prefill_us / 1000.0
+    if max_output_tokens > 0 and output_tokens <= 0:
+        raise RuntimeError("native stream produced no output tokens")
     return {
         "runner_prefill_ttft_ms": runner_prefill_ms,
         "client_wall_ttft_ms": (
@@ -838,11 +943,16 @@ def run_chat_one(
         conn.close()
 
     content = ""
+    reasoning_content = ""
     choices = obj.get("choices")
     if isinstance(choices, list) and choices:
         message = choices[0].get("message") or {}
         content = str(message.get("content") or "")
+        reasoning_content = str(message.get("reasoning_content") or "")
     usage = obj.get("usage") or {}
+    response_chars = len(content) + len(reasoning_content)
+    if max_output_tokens > 0 and response_chars <= 0:
+        raise RuntimeError("chat completion produced no assistant content or reasoning_content")
     return {
         "non_streaming_total_ms": wall_ms,
         "client_wall_ms": wall_ms,
@@ -850,6 +960,8 @@ def run_chat_one(
         "output_tokens": usage.get("completion_tokens"),
         "prompt_tokens_reported": usage.get("prompt_tokens"),
         "content_chars": len(content),
+        "reasoning_chars": len(reasoning_content),
+        "response_chars": response_chars,
         "payload_bytes": len(payload),
     }
 
@@ -1136,6 +1248,27 @@ def peer_capability(args: argparse.Namespace, case: PreparedCase) -> PeerDecisio
     return PeerDecision("measured", None, None, capability)
 
 
+def run_case_repetitions(
+    *,
+    case: PreparedCase,
+    layer: str,
+    warmup: int,
+    repetitions: int,
+    cooldown_s: float,
+    run: Any,
+) -> list[dict[str, Any]]:
+    print(f"running case={case.case_id} layer={layer}", file=sys.stderr, flush=True)
+    try:
+        return run_repetitions(
+            warmup=warmup,
+            repetitions=repetitions,
+            cooldown_s=cooldown_s,
+            run=run,
+        )
+    except Exception as exc:
+        raise RuntimeError(f"case={case.case_id} layer={layer} failed") from exc
+
+
 def artifact_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
     measured = [row for row in rows if row.get("status") == "measured"]
     skipped = [row for row in rows if row.get("status") == "skipped"]
@@ -1169,7 +1302,9 @@ def build_artifact(args: argparse.Namespace) -> dict[str, Any]:
     rows: list[dict[str, Any]] = []
     for case in prepared_cases:
         if "native_runtime_prefill" in layers:
-            runs = run_repetitions(
+            runs = run_case_repetitions(
+                case=case,
+                layer="native_runtime_prefill",
                 warmup=args.warmup,
                 repetitions=args.repetitions,
                 cooldown_s=args.cooldown,
@@ -1198,7 +1333,9 @@ def build_artifact(args: argparse.Namespace) -> dict[str, Any]:
             )
 
         if "openai_chat_e2e" in layers:
-            runs = run_repetitions(
+            runs = run_case_repetitions(
+                case=case,
+                layer="openai_chat_e2e",
                 warmup=args.warmup,
                 repetitions=args.repetitions,
                 cooldown_s=args.cooldown,
@@ -1218,6 +1355,8 @@ def build_artifact(args: argparse.Namespace) -> dict[str, Any]:
                         "non_streaming_total_ms",
                         "client_wall_ms",
                         "content_chars",
+                        "reasoning_chars",
+                        "response_chars",
                         "payload_bytes",
                         "output_tokens",
                     ],
@@ -1230,7 +1369,9 @@ def build_artifact(args: argparse.Namespace) -> dict[str, Any]:
         if not args.no_llama_cpp:
             decision = peer_capability(args, case)
             if decision.status == "measured":
-                runs = run_repetitions(
+                runs = run_case_repetitions(
+                    case=case,
+                    layer="peer_comparison",
                     warmup=args.warmup,
                     repetitions=args.repetitions,
                     cooldown_s=args.cooldown,
@@ -1250,6 +1391,8 @@ def build_artifact(args: argparse.Namespace) -> dict[str, Any]:
                             "non_streaming_total_ms",
                             "client_wall_ms",
                             "content_chars",
+                            "reasoning_chars",
+                            "response_chars",
                             "payload_bytes",
                             "output_tokens",
                         ],
@@ -1347,7 +1490,11 @@ def main() -> int:
         raise ValueError("--repetitions must be > 0")
     if args.timeout <= 0:
         raise ValueError("--timeout must be > 0")
-    artifact = build_artifact(args)
+    server = start_managed_server(args)
+    try:
+        artifact = build_artifact(args)
+    finally:
+        stop_managed_server(server)
     text = json.dumps(artifact, indent=2) + "\n"
     output = args.output or default_output_path()
     output.parent.mkdir(parents=True, exist_ok=True)
