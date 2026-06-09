@@ -11,7 +11,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-DATE=2026-06-08
+DATE=2026-06-09
 PY=python3
 LLAMA_BENCH=/opt/homebrew/bin/llama-bench
 GGUF=$(ls "$HOME"/.cache/huggingface/hub/models--ggml-org--gemma-4-12B-it-GGUF/snapshots/*/gemma-4-12B-it-Q4_K_M.gguf | head -1)
@@ -66,7 +66,7 @@ cat > "$DIRECT_DIR/llama_cpp_gguf_provenance.json" <<JSON
   "gguf_quant_target": "Q4_K_M",
   "decode_comparison_contract": "llama.cpp decode measured at matched context depth (--llama-cpp-decode-at-depth: llama-bench -n GEN -d PROMPT), not depth-0 tg, to match AX's prompt-context decode.",
   "llama_cpp_arch": "gemma4",
-  "publisher_deviation_note": "bartowski has not published a Gemma 4 12B GGUF (404 at bartowski/google_gemma-4-12B-it-GGUF as of 2026-06-08). Uses the official ggml-org conversion, the same publisher as the on-disk 26B/31B/E2B/E4B GGUFs. Shape-compatible external baseline only; not prompt-hash parity.",
+  "publisher_deviation_note": "bartowski has not published a Gemma 4 12B GGUF (404 at bartowski/google_gemma-4-12B-it-GGUF as of 2026-06-09). Uses the official ggml-org conversion, the same publisher as the on-disk 26B/31B/E2B/E4B GGUFs. Shape-compatible external baseline only; not prompt-hash parity.",
   "mlx_lm_baseline": "absent_unsupported_architecture",
   "mlx_lm_note": "mlx_lm 0.31.3 has no graph for model_type gemma4_unified (ValueError: Model type gemma4_unified not supported); the MLX-side reference is AX Engine's repo-owned native runtime."
 }
