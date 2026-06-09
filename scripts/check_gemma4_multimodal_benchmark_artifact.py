@@ -101,11 +101,11 @@ def validate_top_level(
                     errors.append(f"model.{key} is required")
 
 
-def validate_fixtures(errors: list[str], fixtures: Any) -> set[str]:
+def validate_fixtures(errors: list[str], fixtures: Any) -> dict[str, str]:
     if not isinstance(fixtures, list) or not fixtures:
         errors.append("fixtures must be a non-empty list")
-        return set()
-    ids: set[str] = set()
+        return {}
+    ids: dict[str, str] = {}
     for index, fixture in enumerate(fixtures):
         if not isinstance(fixture, dict):
             errors.append(f"fixtures[{index}] must be an object")
@@ -116,7 +116,7 @@ def validate_fixtures(errors: list[str], fixtures: Any) -> set[str]:
         elif fixture_id in ids:
             errors.append(f"fixtures[{index}].id duplicates {fixture_id}")
         else:
-            ids.add(fixture_id)
+            ids[fixture_id] = str(fixture.get("modality") or "")
         if fixture.get("modality") not in ALLOWED_MODALITIES:
             errors.append(f"fixtures[{index}].modality must be one of {sorted(ALLOWED_MODALITIES)}")
         for key in ("source", "sha256", "mime"):
@@ -150,7 +150,9 @@ def validate_prompt(
     *,
     row_index: int,
     prompt: Any,
-    fixture_ids: set[str],
+    fixture_modalities: dict[str, str],
+    expected_row_fixture_ids: list[Any] | None,
+    row_modalities: list[Any] | None,
 ) -> None:
     if not isinstance(prompt, dict):
         errors.append(f"rows[{row_index}].prompt must be an object")
@@ -186,13 +188,25 @@ def validate_prompt(
         errors.append(f"rows[{row_index}].prompt.span_order must be a list")
     elif any(item not in ALLOWED_MODALITIES for item in span_order):
         errors.append(f"rows[{row_index}].prompt.span_order contains an unknown modality")
-    row_fixture_ids = prompt.get("fixture_ids")
-    if not isinstance(row_fixture_ids, list) or not row_fixture_ids:
+    elif isinstance(row_modalities, list) and set(span_order) != set(row_modalities):
+        errors.append(f"rows[{row_index}].prompt.span_order modalities must match row modalities")
+    prompt_fixture_ids = prompt.get("fixture_ids")
+    if not isinstance(prompt_fixture_ids, list) or not prompt_fixture_ids:
         errors.append(f"rows[{row_index}].prompt.fixture_ids must be a non-empty list")
     else:
-        missing = [fixture_id for fixture_id in row_fixture_ids if fixture_id not in fixture_ids]
+        missing = [fixture_id for fixture_id in prompt_fixture_ids if fixture_id not in fixture_modalities]
         if missing:
             errors.append(f"rows[{row_index}].prompt.fixture_ids missing fixtures: {missing}")
+    if isinstance(prompt_fixture_ids, list) and prompt_fixture_ids != expected_row_fixture_ids:
+        errors.append(f"rows[{row_index}].prompt.fixture_ids must match row fixture_ids")
+    if isinstance(prompt_fixture_ids, list) and isinstance(span_order, list):
+        expected_span_order = [
+            fixture_modalities[fixture_id]
+            for fixture_id in prompt_fixture_ids
+            if fixture_id in fixture_modalities
+        ]
+        if len(expected_span_order) == len(prompt_fixture_ids) and span_order != expected_span_order:
+            errors.append(f"rows[{row_index}].prompt.span_order must match fixture order")
     for key in ("image_soft_tokens", "audio_soft_tokens", "video_soft_tokens", "video_frame_counts"):
         value = prompt.get(key)
         if not isinstance(value, list):
@@ -224,7 +238,7 @@ def validate_row(
     row_index: int,
     row: Any,
     min_repetitions: int,
-    fixture_ids: set[str],
+    fixture_modalities: dict[str, str],
 ) -> None:
     if not isinstance(row, dict):
         errors.append(f"rows[{row_index}] must be an object")
@@ -240,13 +254,44 @@ def validate_row(
         errors.append(f"rows[{row_index}].modalities must be a non-empty list")
     elif any(modality not in ALLOWED_MODALITIES for modality in modalities):
         errors.append(f"rows[{row_index}].modalities contains an unknown modality")
+    row_fixture_ids = row.get("fixture_ids")
+    if not isinstance(row_fixture_ids, list) or not row_fixture_ids:
+        errors.append(f"rows[{row_index}].fixture_ids must be a non-empty list")
+    else:
+        missing = [fixture_id for fixture_id in row_fixture_ids if fixture_id not in fixture_modalities]
+        if missing:
+            errors.append(f"rows[{row_index}].fixture_ids missing fixtures: {missing}")
+        fixture_modality_set = {
+            fixture_modalities[fixture_id]
+            for fixture_id in row_fixture_ids
+            if fixture_id in fixture_modalities
+        }
+        if isinstance(modalities, list):
+            row_modality_set = set(modalities)
+            missing_modalities = sorted(row_modality_set - fixture_modality_set)
+            extra_modalities = sorted(fixture_modality_set - row_modality_set)
+            if missing_modalities:
+                errors.append(
+                    f"rows[{row_index}].fixture_ids missing modality fixtures: {missing_modalities}"
+                )
+            if extra_modalities:
+                errors.append(
+                    f"rows[{row_index}].fixture_ids include unrelated modalities: {extra_modalities}"
+                )
 
     status = row.get("status")
     if status not in ALLOWED_STATUS:
         errors.append(f"rows[{row_index}].status must be one of {sorted(ALLOWED_STATUS)}")
         return
 
-    validate_prompt(errors, row_index=row_index, prompt=row.get("prompt"), fixture_ids=fixture_ids)
+    validate_prompt(
+        errors,
+        row_index=row_index,
+        prompt=row.get("prompt"),
+        fixture_modalities=fixture_modalities,
+        expected_row_fixture_ids=row_fixture_ids if isinstance(row_fixture_ids, list) else None,
+        row_modalities=modalities if isinstance(modalities, list) else None,
+    )
     runs = row.get("runs")
     if status == "measured":
         if not isinstance(runs, list) or len(runs) < min_repetitions:
@@ -296,7 +341,7 @@ def validate_artifact(
         require_build_provenance=require_build_provenance,
         readme_ready=readme_ready,
     )
-    fixture_ids = validate_fixtures(errors, artifact.get("fixtures"))
+    fixture_modalities = validate_fixtures(errors, artifact.get("fixtures"))
 
     benchmark = require_object(errors, artifact.get("benchmark"), "benchmark")
     if benchmark is not None:
@@ -320,7 +365,7 @@ def validate_artifact(
             row_index=row_index,
             row=row,
             min_repetitions=min_repetitions,
-            fixture_ids=fixture_ids,
+            fixture_modalities=fixture_modalities,
         )
 
     if require_modalities:

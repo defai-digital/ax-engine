@@ -54,6 +54,14 @@ def prompt_block(
     }
 
 
+def soft_tokens_for_modalities(modalities: list[str]) -> dict:
+    return {
+        "image": 256 if "image" in modalities else 0,
+        "audio": 80 if "audio" in modalities else 0,
+        "video": 140 if "video" in modalities else 0,
+    }
+
+
 def measured_row(case_id: str, fixture_ids: list[str], *, modalities: list[str]) -> dict:
     return {
         "row_id": f"ax_engine_mlx.native_runtime_prefill.{case_id}",
@@ -66,7 +74,11 @@ def measured_row(case_id: str, fixture_ids: list[str], *, modalities: list[str])
         "modalities": modalities,
         "modality_set": modalities,
         "fixture_ids": fixture_ids,
-        "prompt": prompt_block(fixture_ids),
+        "prompt": prompt_block(
+            fixture_ids,
+            expanded_tokens=320,
+            soft_tokens=soft_tokens_for_modalities(modalities),
+        ),
         "status": "measured",
         "sampling": {"temperature": 0.0, "ignore_eos": True},
         "max_output_tokens": 8,
@@ -198,6 +210,18 @@ def sample_artifact(*, tracked_dirty: bool = False, zero_metric: bool = False) -
                     "timestamp_seconds": [0.0, 2.0],
                 },
             },
+            {
+                "id": "audio_tone_0_5s",
+                "modality": "audio",
+                "source": "generated",
+                "sha256": "audio-sha",
+                "mime": "audio/wav",
+                "raw": {
+                    "duration_s": 0.5,
+                    "sample_rate": 16000,
+                    "sample_count": 8000,
+                },
+            },
         ],
         "rows": [row, skipped_peer_row()],
         "summary": {"measured_rows": 1, "skipped_rows": 1},
@@ -293,6 +317,39 @@ class Gemma4MultimodalBenchmarkTests(unittest.TestCase):
         errors = checker.validate_artifact(artifact)
         self.assertTrue(any("missing fixtures" in error for error in errors))
 
+    def test_checker_rejects_row_fixture_modality_mismatch(self) -> None:
+        artifact = sample_artifact()
+        artifact["rows"][0]["modalities"] = ["audio"]
+        errors = checker.validate_artifact(artifact)
+        self.assertTrue(any("missing modality fixtures" in error for error in errors))
+        self.assertTrue(any("unrelated modalities" in error for error in errors))
+
+    def test_checker_rejects_row_fixture_id_not_in_registry(self) -> None:
+        artifact = sample_artifact()
+        artifact["rows"][0]["fixture_ids"] = ["missing_fixture"]
+        errors = checker.validate_artifact(artifact)
+        self.assertTrue(any("fixture_ids missing fixtures" in error for error in errors))
+
+    def test_checker_rejects_prompt_fixture_id_mismatch(self) -> None:
+        artifact = sample_artifact()
+        artifact["rows"][0]["prompt"]["fixture_ids"] = ["video_2frame_red_green"]
+        errors = checker.validate_artifact(artifact)
+        self.assertTrue(any("prompt.fixture_ids must match row fixture_ids" in error for error in errors))
+
+    def test_checker_rejects_span_order_mismatch(self) -> None:
+        artifact = sample_artifact()
+        artifact["rows"][0]["prompt"]["span_order"] = ["audio"]
+        errors = checker.validate_artifact(artifact)
+        self.assertTrue(any("prompt.span_order modalities must match row modalities" in error for error in errors))
+
+    def test_checker_rejects_repeated_span_order_loss(self) -> None:
+        artifact = sample_artifact()
+        artifact["rows"][0]["fixture_ids"] = ["image_red_64", "image_red_64"]
+        artifact["rows"][0]["prompt"]["fixture_ids"] = ["image_red_64", "image_red_64"]
+        artifact["rows"][0]["prompt"]["span_order"] = ["image"]
+        errors = checker.validate_artifact(artifact)
+        self.assertTrue(any("prompt.span_order must match fixture order" in error for error in errors))
+
     def test_checker_rejects_measured_peer_without_capability_proof(self) -> None:
         artifact = sample_artifact()
         peer = skipped_peer_row()
@@ -311,7 +368,7 @@ class Gemma4MultimodalBenchmarkTests(unittest.TestCase):
             artifact = sample_artifact()
             artifact["rows"].insert(
                 1,
-                measured_row("audio_0_5s", ["image_red_64"], modalities=["audio"]),
+                measured_row("audio_0_5s", ["audio_tone_0_5s"], modalities=["audio"]),
             )
             artifact_path.write_text(json.dumps(artifact))
             outputs = renderer.render(artifact_path, assets_dir)

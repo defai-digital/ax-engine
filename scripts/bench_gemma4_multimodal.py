@@ -654,7 +654,7 @@ def prepare_case(
         audio_soft_tokens=[int(value) for value in request.audio_soft_token_counts],
         video_soft_tokens=[int(value) for value in request.video_soft_token_counts],
         video_frame_counts=[int(value) for value in request.video_frame_counts],
-        span_order=case.modalities,
+        span_order=[fixtures[fixture_id].modality for fixture_id in case.fixture_ids],
         video_timestamp_seconds=case.video_timestamp_seconds,
         chat_content=chat_content_for_case(fixtures, case),
         chat_enabled=case.chat_enabled,
