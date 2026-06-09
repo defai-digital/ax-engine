@@ -13,7 +13,21 @@ ax_tmp_dir() {
 ax_tmp_file() {
     local prefix="$1"
     local suffix="${2:-}"
-    mktemp "${TMPDIR:-/tmp}/${prefix}.XXXXXX${suffix}"
+    local tmp_root="${TMPDIR:-/tmp}"
+    if [[ -z "$suffix" ]]; then
+        mktemp "$tmp_root/${prefix}.XXXXXX"
+        return
+    fi
+    "$AX_PYTHON_BIN" - "$tmp_root" "$prefix" "$suffix" <<'PY'
+import os
+import sys
+import tempfile
+
+tmp_root, prefix, suffix = sys.argv[1:4]
+fd, path = tempfile.mkstemp(prefix=f"{prefix}.", suffix=suffix, dir=tmp_root)
+os.close(fd)
+print(path)
+PY
 }
 
 ax_rm_rf() {
