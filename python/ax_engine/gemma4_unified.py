@@ -236,19 +236,36 @@ def prepare_gemma4_unified_video_request(
 
 def _load_config(model_dir: Path) -> _Gemma4UnifiedConfig:
     model_config_path = model_dir / "config.json"
-    processor_config_path = model_dir / "processor_config.json"
     if not model_config_path.is_file():
         raise FileNotFoundError(f"Gemma4 unified config not found: {model_config_path}")
-    if not processor_config_path.is_file():
+
+    # The image/audio processor params live in `preprocessor_config.json` for most
+    # HF checkpoints, but combined processors save them to `processor_config.json`.
+    # Accept either (preferring `preprocessor_config.json`, like the AX server's
+    # `load_processor_config`) so the SDK loads the same models the server serves
+    # and never silently reads the wrong file.
+    processor_config_candidates = (
+        model_dir / "preprocessor_config.json",
+        model_dir / "processor_config.json",
+    )
+    processor_config_path = next(
+        (path for path in processor_config_candidates if path.is_file()), None
+    )
+    if processor_config_path is None:
         raise FileNotFoundError(
-            f"Gemma4 unified processor config not found: {processor_config_path}"
+            "Gemma4 unified processor config not found: expected one of "
+            + ", ".join(str(path) for path in processor_config_candidates)
         )
 
     model_config = json.loads(model_config_path.read_text())
     processor_config = json.loads(processor_config_path.read_text())
     image_config = processor_config.get("image_processor") or {}
     video_config = processor_config.get("video_processor") or {}
-    feature_config = processor_config.get("feature_extractor") or {}
+    feature_config = (
+        processor_config.get("feature_extractor")
+        or processor_config.get("audio_feature_extractor")
+        or {}
+    )
     vision_config = model_config.get("vision_config") or {}
     audio_config = model_config.get("audio_config") or {}
     if image_config.get("image_processor_type") not in (None, "Gemma4UnifiedImageProcessor"):
@@ -294,8 +311,8 @@ def _load_config(model_dir: Path) -> _Gemma4UnifiedConfig:
         do_rescale=bool(image_config.get("do_rescale", True)),
         rescale_factor=float(image_config.get("rescale_factor", 1 / 255)),
         do_normalize=bool(image_config.get("do_normalize", False)),
-        image_mean=_triple(image_config.get("image_mean", [0.0, 0.0, 0.0])),
-        image_std=_triple(image_config.get("image_std", [1.0, 1.0, 1.0])),
+        image_mean=_triple(image_config.get("image_mean", [0.5, 0.5, 0.5])),
+        image_std=_triple(image_config.get("image_std", [0.5, 0.5, 0.5])),
         patch_size=_optional_int(image_config, "patch_size")
         or _required_int(vision_config, "patch_size"),
         model_patch_size=_optional_int(image_config, "model_patch_size")

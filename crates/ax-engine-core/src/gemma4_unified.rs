@@ -2,6 +2,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
 
+/// Default audio soft-token cap when `preprocessor_config.json` omits
+/// `audio_seq_length`, matching the reference Gemma4UnifiedProcessor.
+const DEFAULT_AUDIO_SEQ_LENGTH: u32 = 750;
+
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Gemma4UnifiedModality {
@@ -535,7 +539,16 @@ impl Gemma4UnifiedProcessorConfig {
                     .or_else(|| optional_u32(feature_extractor, "feature_size"))
                     .or_else(|| optional_nested_u32(audio_config, "audio_embed_dim"))
                     .unwrap_or(640),
-                    audio_seq_length: optional_u32(processor_config, "audio_seq_length"),
+                    // The reference Gemma4UnifiedProcessor caps audio at
+                    // `audio_seq_length` and defaults it to 750 when the config
+                    // omits it (processing_gemma4_unified.py / processing_gemma4.py
+                    // `_compute_audio_num_tokens` -> min(..., audio_seq_length)).
+                    // Mirror that default so long audio doesn't expand to an
+                    // unbounded soft-token count that diverges from the reference.
+                    audio_seq_length: Some(
+                        optional_u32(processor_config, "audio_seq_length")
+                            .unwrap_or(DEFAULT_AUDIO_SEQ_LENGTH),
+                    ),
                 }
             }),
         })
@@ -1051,6 +1064,41 @@ mod tests {
             cfg.audio_soft_tokens(Gemma4UnifiedAudioInput { sample_count: 960 })
                 .unwrap(),
             3
+        );
+    }
+
+    #[test]
+    fn audio_seq_length_defaults_to_reference_cap_when_config_omits_it() {
+        // The reference caps audio at 750 soft tokens by default; a config that
+        // omits `audio_seq_length` must not produce an unbounded count.
+        let model = json!({
+            "image_token_id": 256,
+            "audio_token_id": 257,
+            "video_token_id": 258,
+            "boi_token_id": 255,
+            "eoi_token_id": 262,
+            "boa_token_id": 259,
+            "eoa_token_id": 260,
+            "vision_config": {
+                "patch_size": 16,
+                "model_patch_size": 48,
+                "pooling_kernel_size": 3,
+                "num_soft_tokens": 280
+            }
+        });
+        let processor = json!({
+            "feature_extractor": { "sampling_rate": 16000 }
+        });
+        let cfg = Gemma4UnifiedProcessorConfig::from_model_and_processor_config(&model, &processor)
+            .expect("config should parse");
+        assert_eq!(cfg.audio.as_ref().unwrap().audio_seq_length, Some(750));
+        // 800 frames worth of samples (800 * 640) caps to the default 750.
+        assert_eq!(
+            cfg.audio_soft_tokens(Gemma4UnifiedAudioInput {
+                sample_count: 800 * 640
+            })
+            .unwrap(),
+            750
         );
     }
 

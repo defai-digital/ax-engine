@@ -83,6 +83,26 @@ class Gemma4UnifiedImagePreprocessTests(unittest.TestCase):
         )
 
     @unittest.skipIf(Image is None, "Pillow is required for Gemma4 image preprocessing")
+    def test_prepare_image_request_reads_preprocessor_config_json(self) -> None:
+        # Most HF checkpoints ship the image/audio params in
+        # `preprocessor_config.json`; the SDK must accept it like the AX server
+        # does, not only `processor_config.json`.
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            model_dir = Path(tmp)
+            write_tiny_config(model_dir, processor_filename="preprocessor_config.json")
+            image = tiny_rgb_image()
+
+            request = module.prepare_gemma4_unified_image_request(
+                model_dir,
+                [7, 100, 8],
+                [image],
+            )
+
+        self.assertEqual(request.input_tokens, [7, 101, 100, 100, 102, 8])
+        self.assertEqual(request.soft_token_counts, [2])
+
+    @unittest.skipIf(Image is None, "Pillow is required for Gemma4 image preprocessing")
     def test_prepare_image_request_rejects_placeholder_mismatch(self) -> None:
         module = load_module()
         with tempfile.TemporaryDirectory() as tmp:
@@ -258,7 +278,9 @@ class Gemma4UnifiedImagePreprocessTests(unittest.TestCase):
         self.assertEqual(len(video_input["pixel_values"]), 48)
 
 
-def write_tiny_config(model_dir: Path) -> None:
+def write_tiny_config(
+    model_dir: Path, processor_filename: str = "processor_config.json"
+) -> None:
     (model_dir / "config.json").write_text(
         json.dumps(
             {
@@ -282,7 +304,7 @@ def write_tiny_config(model_dir: Path) -> None:
             }
         )
     )
-    (model_dir / "processor_config.json").write_text(
+    (model_dir / processor_filename).write_text(
         json.dumps(
             {
                 "image_processor": {
