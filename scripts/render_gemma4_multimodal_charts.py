@@ -398,9 +398,10 @@ def render_peer_comparison_chart(
     group_w = max(34, (plot_w - group_gap * (len(series) + 1)) / max(1, len(series)))
     bar_gap = 4
     bar_w = max(10, min(24, (group_w - bar_gap) / 2))
+    engine_order = ("peer", "ax")
     colors = {
+        "peer": ("#f59e0b", "#b45309", "llama.cpp"),
         "ax": ("#2eaf5f", "#176c37", "AX Engine"),
-        "peer": ("#3b82f6", "#1d4ed8", "llama.cpp"),
     }
 
     parts = [
@@ -433,7 +434,7 @@ def render_peer_comparison_chart(
 
     for index, item in enumerate(series):
         group_x = left + group_gap + index * (group_w + group_gap)
-        for offset, engine in enumerate(("ax", "peer")):
+        for offset, engine in enumerate(engine_order):
             median = float(item[engine]["median"])
             bar_x = group_x + offset * (bar_w + bar_gap)
             bar_center = bar_x + bar_w / 2
@@ -460,7 +461,7 @@ def render_peer_comparison_chart(
         )
 
     legend_y = top + 30
-    for index, engine in enumerate(("ax", "peer")):
+    for index, engine in enumerate(engine_order):
         fill, stroke, label = colors[engine]
         y = legend_y + index * 22
         parts.extend(
