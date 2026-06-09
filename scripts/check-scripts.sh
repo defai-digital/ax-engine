@@ -42,6 +42,10 @@ bash -n scripts/*.sh scripts/lib/common.sh
   scripts/test_prepare_gemma4_assistant_mtp.py \
   scripts/bench_gemma4_assistant_mtp.py \
   scripts/test_bench_gemma4_assistant_mtp.py \
+  scripts/bench_gemma4_multimodal.py \
+  scripts/check_gemma4_multimodal_benchmark_artifact.py \
+  scripts/render_gemma4_multimodal_charts.py \
+  scripts/test_gemma4_multimodal_benchmark.py \
   scripts/bench_lightning_mlx_raw.py \
   scripts/bench_qwen36_mtp_fair.py \
   scripts/bench_rapid_mlx_prompt_suites.py \
@@ -165,6 +169,7 @@ bash -n scripts/*.sh scripts/lib/common.sh
   scripts/test_prepare_mtp_sidecar.py \
   scripts/test_prepare_gemma4_assistant_mtp.py \
   scripts/test_bench_gemma4_assistant_mtp.py \
+  scripts/test_gemma4_multimodal_benchmark.py \
   scripts/test_bench_lightning_mlx_raw.py \
   scripts/test_bench_qwen36_mtp_fair.py \
   scripts/test_bench_rapid_mlx_prompt_suites.py \

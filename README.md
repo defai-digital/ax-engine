@@ -23,6 +23,7 @@ AX Engine is for developers who want a local OpenAI-compatible model server on A
 - [Supported Models](#supported-models)
 - [Performance](#performance)
   - [Gemma 4 12B](#gemma-4-12b)
+    - [Gemma 4 12B Multimodal](#gemma-4-12b-multimodal)
   - [Speculative Decoding (MTP)](#speculative-decoding-mtp)
     - [Gemma 4](#gemma-4)
     - [Qwen 3.6](#qwen-36)
@@ -278,7 +279,7 @@ Full result tables and interpretation live in [`docs/PERFORMANCE.md`](docs/PERFO
 Gemma 4 12B (`model_type: gemma4_unified`) is a different implementation from the per-layer-embedding E2B/E4B and the MoE 26B/31B. **Upstream `mlx_lm` 0.31.3 cannot load it** — it fails with `ValueError: Model type gemma4_unified not supported`. The external reference here is **llama.cpp Metal** on a shape-compatible GGUF.
 
 > [!NOTE]
-> **AX Engine currently supports text-only OpenAI chat for Gemma 4 12B.** Processed Gemma4 media tensor support is tracked separately; raw OpenAI image/audio content is not part of this announcement.
+> **AX Engine's repo-owned native MLX route supports Gemma 4 12B text plus inline base64 image/audio/video chat.** Delegated compatibility routes remain text-first; `/v1/generate` accepts the processed `multimodal_inputs.gemma4_unified` tensor contract.
 
 **AX beats llama.cpp Metal on this model in both modes.** In **direct** decode, AX runs **65.6-69.3 tok/s** on a bit-comparable 4-bit-FFN artifact vs llama.cpp's **52.5-60.2** depth-matched tok/s, and the margin grows with context (+15% at 128 tokens -> +25% at 2,048). On top of that, **depth-2 assistant-MTP** -- which `mlx_lm` can't run and llama.cpp doesn't have -- holds **99.4-105.0 tok/s** on code-like prompt suites, a same-artifact **2.83-2.92x** speedup over direct decode. The earlier story (llama.cpp ahead by ~30%) was an artifact handicap: the upstream snapshot keeps the FFN at 8-bit and so reads ~1.5x the weight bytes; decode is bandwidth-bound, so matching the quantization closes the gap (see the bandwidth table below).
 
@@ -351,6 +352,53 @@ No runnable peer benchmark currently covers **Gemma 4 12B assistant-MTP** in thi
 Direct rows: 4-bit-FFN artifact, greedy-equivalent sampler, 128 generated tokens, 5 repetitions, 15 s cooldown, random-token prompts (mlx_lm.benchmark contract); llama.cpp decode shown at depth 0 (`tg`) and at matched context depth (`-d {prompt}`). MTP rows: same 4-bit-FFN assistant-MTP artifact, depth-2 draft, temperature=0.6, top_p=0.95, top_k=20; 512 generated tokens, 3 repetitions, 5 s / 2 s cooldowns. Apple M5 Max · AX Engine v6.0.1 · llama.cpp b9430 (Metal) · mlx_lm 0.31.3 (no `gemma4_unified` support).
 
 Full artifacts: [`2026-06-09-gemma-4-12b-it-4bit-direct`](benchmarks/results/mlx-inference/2026-06-09-gemma-4-12b-it-4bit-direct/gemma-4-12b-it-4bit.json) (direct; llama.cpp GGUF provenance in [`llama_cpp_gguf_provenance.json`](benchmarks/results/mlx-inference/2026-06-09-gemma-4-12b-it-4bit-direct/llama_cpp_gguf_provenance.json)) · [`2026-06-09-gemma4-12b-ffn4-mtp-phase4-focused`](benchmarks/results/gemma4-assistant-mtp/2026-06-09-gemma4-12b-ffn4-mtp-phase4-focused/summary.json) (assistant-MTP).
+
+#### Gemma 4 12B Multimodal
+
+Gemma 4 12B multimodal timing is reported separately from the text benchmark above because media inputs expand into validated Gemma4 unified soft-token spans before the MLX graph runs. The current publication-grade timing artifact covers **image prefill**: a text prompt plus one inline PNG expands from **20 prompt tokens** to **277 total tokens**, including **256 image soft tokens**. Audio and video are validated by golden-vector preprocessing and the live QA smoke path, but do not yet have a published timing matrix.
+
+<table>
+<tr>
+<td><img width="100%" src="docs/assets/perf-gemma4-12b-multimodal-image-ttft-ms.svg" alt="Bar chart showing Gemma 4 12B multimodal image prefill time to first token for AX Engine native MLX"></td>
+<td><img width="100%" src="docs/assets/perf-gemma4-12b-multimodal-image-prefill-tok-s.svg" alt="Bar chart showing Gemma 4 12B multimodal image prefill throughput for AX Engine native MLX"></td>
+</tr>
+</table>
+
+| Modality | Published timing | Expanded input | Median runner prefill TTFT | Median client-wall TTFT | Median prefill | Validation status |
+|---|---|---:|---:|---:|---:|---|
+| Image | AX native MLX | 277 tokens (256 image soft tokens) | 189.843 ms | 735.824 ms | 1,459.1 tok/s | Golden preprocessing parity + live chat smoke |
+| Audio | Not yet timed | — | — | — | — | Golden preprocessing parity + live chat smoke |
+| Video | Not yet timed | — | — | — | — | Golden preprocessing parity + live chat smoke |
+
+The image row uses `/v1/generate/stream` with processed `multimodal_inputs.gemma4_unified`, `max_output_tokens=8`, 1 warmup, and 3 measured repetitions. Runner prefill TTFT is the MLX execution-time prefill measurement; client-wall TTFT includes request/stream overhead. The OpenAI chat QA script separately probes inline image, audio, and video through `/v1/chat/completions`.
+
+There is no llama.cpp multimodal row for 12B in this chart yet: the local 12B GGUF baseline is text-only unless a matching Gemma 4 12B multimodal projector (`mmproj`) is available, and the local `llama-mtmd-cli` surface exposes image/audio rather than a like-for-like video path. The text llama.cpp comparison remains the direct benchmark above.
+
+Full artifact: [`2026-06-09-gemma4-12b-image-prefill-ttft`](benchmarks/results/gemma4-multimodal/2026-06-09-gemma4-12b-image-prefill-ttft.json). Render charts with:
+
+```bash
+python3 scripts/render_gemma4_multimodal_charts.py \
+  --artifact benchmarks/results/gemma4-multimodal/2026-06-09-gemma4-12b-image-prefill-ttft.json \
+  --assets-dir docs/assets
+```
+
+To produce the next image/audio/video timing matrix from a running Gemma 4 12B AX Engine server, use the matrix runner and validate the resulting artifact before publishing charts:
+
+```bash
+python3 scripts/bench_gemma4_multimodal.py \
+  --url http://127.0.0.1:18080 \
+  --model gemma-4-12B-it \
+  --model-dir .internal/models/gemma-4-12B-it-4bit \
+  --cases image_single_256soft,audio_0_5s,video_2frame_distinct,image_audio_video \
+  --output benchmarks/results/gemma4-multimodal/gemma4-12b-multimodal-matrix.json
+
+python3 scripts/check_gemma4_multimodal_benchmark_artifact.py \
+  benchmarks/results/gemma4-multimodal/gemma4-12b-multimodal-matrix.json \
+  --require-modalities image,audio,video \
+  --require-build-provenance
+```
+
+Pass `--llama-url http://127.0.0.1:<port>` to record llama.cpp OpenAI-compatible peer rows for supported image/audio cases. Video rows remain explicit skips until the peer server exposes a like-for-like video path for Gemma 4 12B.
 
 <details>
 <summary>Prepare Gemma 4 12B assistant-MTP artifacts</summary>

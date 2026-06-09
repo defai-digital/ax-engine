@@ -889,6 +889,47 @@ class WrapperContractTests(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, "not AX-ready"):
                     self.ax_engine.download_model("mlx-community/gemma-4-12B-it-4bit")
 
+    def test_download_model_force_regenerates_stale_manifest(self) -> None:
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = Path(tmp) / "dest"
+            dest.mkdir()
+            (dest / "model-manifest.json").write_text('{"stale":true}')
+            snapshot = Path(tmp) / "snapshot"
+
+            def fake_download(repo_id: str) -> Path:
+                snapshot.mkdir()
+                (snapshot / "config.json").write_text('{"model_type":"qwen3"}')
+                (snapshot / "model.safetensors").write_bytes(b"new")
+                return snapshot
+
+            manifest_calls: list[Path] = []
+
+            def fake_generate(target: Path) -> bool:
+                manifest_calls.append(Path(target))
+                (Path(target) / "model-manifest.json").write_text('{"fresh":true}')
+                return True
+
+            with patch.object(
+                self.ax_engine, "_run_hf_snapshot_download", fake_download
+            ), patch.object(
+                self.ax_engine, "_try_generate_manifest", side_effect=fake_generate
+            ), patch.object(
+                # Keep the force-rmtree off the user's real Hugging Face cache.
+                self.ax_engine,
+                "_default_mlx_lm_cache_root",
+                return_value=Path(tmp) / "cache",
+            ):
+                resolved = self.ax_engine.download_model(
+                    "mlx-community/Qwen3-4B-4bit", dest=dest, force=True
+                )
+
+            self.assertEqual(resolved, dest)
+            # The stale manifest is invalidated and regenerated against the new weights.
+            self.assertEqual(manifest_calls, [dest])
+            self.assertEqual((dest / "model-manifest.json").read_text(), '{"fresh":true}')
+
     def test_try_generate_manifest_prefers_bundled_binary_over_path(self) -> None:
         import subprocess
         import tempfile

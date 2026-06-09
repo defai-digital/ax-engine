@@ -243,6 +243,10 @@ def download(
         return snapshot
 
     _copy_snapshot_to_dest(snapshot, dest)
+    if force:
+        # Weights were refreshed; drop any manifest left from a prior model so it is
+        # regenerated against the new weights rather than served stale.
+        (dest / MODEL_MANIFEST_FILE).unlink(missing_ok=True)
     return dest
 
 

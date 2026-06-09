@@ -230,6 +230,34 @@ class DownloadModelScriptTest(unittest.TestCase):
             self.assertEqual(calls, [repo_id])
             self.assertEqual(resolved, snapshot)
 
+    def test_force_removes_stale_manifest_from_dest(self) -> None:
+        repo_id = "mlx-community/Qwen3-4B-4bit"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            dest = root / "dest"
+            dest.mkdir()
+            # Artifacts left from a prior (possibly different) model.
+            (dest / "model-manifest.json").write_text('{"stale":true}')
+            (dest / "old.safetensors").write_bytes(b"old")
+
+            snapshot = root / "snapshot"
+
+            def fake_hf_download(model, *, quiet=False, progress_json=False):
+                snapshot.mkdir(parents=True)
+                (snapshot / "config.json").write_text('{"model_type":"qwen3"}')
+                (snapshot / "model.safetensors").write_bytes(b"new")
+                return snapshot
+
+            with patch.dict(os.environ, {"HF_HOME": str(root)}, clear=True), patch.object(
+                download_model, "_run_hf_snapshot_download", fake_hf_download
+            ):
+                resolved = download_model.download(repo_id, dest, force=True, quiet=True)
+
+            self.assertEqual(resolved, dest)
+            # Stale manifest is dropped so main() regenerates it against the new weights.
+            self.assertFalse((dest / "model-manifest.json").exists())
+            self.assertTrue((dest / "model.safetensors").exists())
+
     def test_embedding_repos_are_rejected(self) -> None:
         with self.assertRaisesRegex(RuntimeError, "embedding model downloads are not managed"):
             download_model.download("mlx-community/Qwen3-Embedding-0.6B-8bit", None, quiet=True)

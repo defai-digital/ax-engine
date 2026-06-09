@@ -1422,6 +1422,10 @@ def download_model(
 
     snapshot = _run_hf_snapshot_download(repo_id)
     _copy_mlx_lm_snapshot(snapshot, dest)
+    if force:
+        # Weights were refreshed; drop any manifest left from a prior model so it is
+        # regenerated against the new weights rather than reused stale.
+        (dest / _MODEL_MANIFEST_FILE).unlink(missing_ok=True)
     _validate_downloaded_model_dir(dest)
     _ensure_manifest(dest)
 
