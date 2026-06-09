@@ -34,11 +34,24 @@ POSITIVE_METRICS = {
     "prompt_tokens_reported",
     "response_chars",
 }
+ALLOWED_LLAMA_CACHE_POLICIES = {
+    "unknown",
+    "prompt_cache_disabled",
+    "prompt_cache_enabled",
+}
 
 
 def metric_stats(row: dict[str, Any], key: str) -> dict[str, Any] | None:
     raw = row.get("summary", {}).get(key)
     return raw if isinstance(raw, dict) else None
+
+
+def metric_median(row: dict[str, Any], key: str) -> float | None:
+    stats = metric_stats(row, key)
+    if stats is None:
+        return None
+    value = stats.get("median")
+    return float(value) if isinstance(value, (int, float)) else None
 
 
 def require_object(errors: list[str], value: Any, path: str) -> dict[str, Any] | None:
@@ -241,6 +254,12 @@ def validate_peer_capability(errors: list[str], *, row_index: int, row: dict[str
         for key in ("text_gguf_sha256", "mmproj_sha256", "prompt_contract"):
             if not isinstance(capability.get(key), str) or not capability[key]:
                 errors.append(f"rows[{row_index}].capability.{key} is required")
+        cache_policy = capability.get("cache_policy")
+        if cache_policy is not None and cache_policy not in ALLOWED_LLAMA_CACHE_POLICIES:
+            errors.append(
+                f"rows[{row_index}].capability.cache_policy must be one of "
+                f"{sorted(ALLOWED_LLAMA_CACHE_POLICIES)}"
+            )
     if "video" in row.get("modalities", []) and row.get("status") == "measured":
         if capability.get("supports_video") is not True:
             errors.append(f"rows[{row_index}] cannot measure video peer row without supports_video")
@@ -391,6 +410,33 @@ def validate_readme_ready_peer_rows(
             "readme-ready artifacts must include peer_comparison rows for every case: "
             + ", ".join(missing)
         )
+    peer_fairness = benchmark.get("peer_fairness")
+    if not isinstance(peer_fairness, dict):
+        errors.append("readme-ready artifacts must record benchmark.peer_fairness")
+    elif peer_fairness.get("llama_cache_policy") != "prompt_cache_disabled":
+        errors.append(
+            "readme-ready peer comparisons must declare "
+            "benchmark.peer_fairness.llama_cache_policy=prompt_cache_disabled"
+        )
+    for index, row in enumerate(rows):
+        if (
+            not isinstance(row, dict)
+            or row.get("layer") != "peer_comparison"
+            or row.get("status") != "measured"
+        ):
+            continue
+        capability = row.get("capability")
+        cache_policy = capability.get("cache_policy") if isinstance(capability, dict) else None
+        if cache_policy != "prompt_cache_disabled":
+            errors.append(
+                f"rows[{index}] readme-ready measured peer row requires "
+                "capability.cache_policy=prompt_cache_disabled"
+            )
+        cached_tokens = metric_median(row, "prompt_cached_tokens_reported")
+        if isinstance(cached_tokens, (int, float)) and cached_tokens > 0:
+            errors.append(
+                f"rows[{index}] readme-ready measured peer row reports cached prompt tokens"
+            )
 
 
 def validate_artifact(

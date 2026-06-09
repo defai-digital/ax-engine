@@ -120,6 +120,9 @@ def peer_comparison_series(artifact: dict[str, Any]) -> list[dict[str, Any]]:
         ax_row = ax_by_case.get(case_id)
         if not isinstance(case_id, str) or not isinstance(ax_row, dict):
             continue
+        capability = row.get("capability")
+        if not isinstance(capability, dict) or capability.get("cache_policy") != "prompt_cache_disabled":
+            continue
         ax_output_tokens = metric_median_from_row(ax_row, "output_tokens")
         peer_output_tokens = metric_median_from_row(row, "output_tokens")
         if ax_output_tokens != peer_output_tokens:
@@ -132,6 +135,9 @@ def peer_comparison_series(artifact: dict[str, Any]) -> list[dict[str, Any]]:
                 "modalities": "+".join(row.get("modalities") or []),
                 "ax_prompt_tokens": metric_median_from_row(ax_row, "prompt_tokens_reported"),
                 "peer_prompt_tokens": metric_median_from_row(row, "prompt_tokens_reported"),
+                "peer_cached_tokens": metric_median_from_row(
+                    row, "prompt_cached_tokens_reported"
+                ),
                 "output_tokens": ax_output_tokens,
                 "ax": ax_stats,
                 "peer": peer_stats,
@@ -164,6 +170,18 @@ def peer_exclusions(artifact: dict[str, Any]) -> list[dict[str, Any]]:
         case_id = row.get("case_id")
         ax_row = ax_by_case.get(case_id)
         if not isinstance(case_id, str) or not isinstance(ax_row, dict):
+            continue
+        capability = row.get("capability")
+        if not isinstance(capability, dict) or capability.get("cache_policy") != "prompt_cache_disabled":
+            exclusions.append(
+                {
+                    "case_id": case_id,
+                    "reason": "peer_cache_policy_not_disabled",
+                    "cache_policy": (
+                        capability.get("cache_policy") if isinstance(capability, dict) else None
+                    ),
+                }
+            )
             continue
         ax_output_tokens = metric_median_from_row(ax_row, "output_tokens")
         peer_output_tokens = metric_median_from_row(row, "output_tokens")
@@ -208,8 +226,9 @@ def chart_inputs(artifact: dict[str, Any]) -> dict[str, Any]:
         peer_series = peer_comparison_series(artifact)
         excluded_peer = peer_exclusions(artifact)
         peer_note = (
-            "Endpoint latency only; prompt token accounting differs by engine; "
-            f"{len(excluded_peer)} measured peer case(s) excluded for output-token mismatch"
+            "Cold endpoint latency only; llama.cpp prompt cache disabled; "
+            "prompt token accounting differs by engine; "
+            f"{len(excluded_peer)} measured peer case(s) excluded"
         )
         return {
             "ttft_series": series_for("runner_prefill_ttft_ms"),
@@ -219,7 +238,7 @@ def chart_inputs(artifact: dict[str, Any]) -> dict[str, Any]:
             "case_id": "matrix",
             "subtitle": "AX Engine native MLX, runner-time multimodal prefill",
             "throughput_subtitle": "AX Engine native MLX, expanded prompt includes soft tokens",
-            "peer_subtitle": "OpenAI chat endpoint latency, matched output-token cases only",
+            "peer_subtitle": "OpenAI chat endpoint latency, no prompt-cache peer rows only",
             "footnote": f"{len(rows)} case(s), {repetitions} reps, max_output_tokens={max_output_tokens}",
             "peer_footnote": f"{peer_note}; {repetitions} reps, max_output_tokens={max_output_tokens}",
         }

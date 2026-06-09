@@ -144,6 +144,7 @@ def skipped_peer_row(
             "supports_audio": True,
             "supports_video": "video" not in modalities,
             "prompt_contract": "openai_chat_completions",
+            "cache_policy": "prompt_cache_disabled",
             "proof": False,
         },
     }
@@ -165,6 +166,7 @@ def measured_peer_row(case_id: str, fixture_ids: list[str], *, modalities: list[
                     "response_chars": 12,
                     "output_tokens": 8,
                     "prompt_tokens_reported": 78,
+                    "prompt_cached_tokens_reported": 0,
                 },
                 {
                     "client_wall_ms": 330.0,
@@ -172,6 +174,7 @@ def measured_peer_row(case_id: str, fixture_ids: list[str], *, modalities: list[
                     "response_chars": 14,
                     "output_tokens": 8,
                     "prompt_tokens_reported": 78,
+                    "prompt_cached_tokens_reported": 0,
                 },
             ],
             "summary": {
@@ -180,6 +183,7 @@ def measured_peer_row(case_id: str, fixture_ids: list[str], *, modalities: list[
                 "response_chars": metric(13.0, 13.0, 12.0, 14.0),
                 "output_tokens": metric(8.0, 8.0, 8.0, 8.0),
                 "prompt_tokens_reported": metric(78.0, 78.0, 78.0, 78.0),
+                "prompt_cached_tokens_reported": metric(0.0, 0.0, 0.0, 0.0),
             },
             "capability": {
                 "url": "http://127.0.0.1:18081",
@@ -192,6 +196,7 @@ def measured_peer_row(case_id: str, fixture_ids: list[str], *, modalities: list[
                 "supports_audio": True,
                 "supports_video": False,
                 "prompt_contract": "openai_chat_completions",
+                "cache_policy": "prompt_cache_disabled",
                 "proof": True,
             },
         }
@@ -286,6 +291,10 @@ def sample_artifact(*, tracked_dirty: bool = False, zero_metric: bool = False) -
             "cooldown_s": 0.0,
             "max_output_tokens": 8,
             "timeout_s": 300,
+            "peer_fairness": {
+                "llama_cache_policy": "prompt_cache_disabled",
+                "required_for_readme_peer_chart": "prompt_cache_disabled",
+            },
         },
         "fixtures": [
             {
@@ -427,6 +436,7 @@ class Gemma4MultimodalBenchmarkTests(unittest.TestCase):
                 "llama_binary": None,
                 "llama_gguf": None,
                 "llama_mmproj": None,
+                "llama_cache_policy": "prompt_cache_disabled",
             },
         )()
         case = type("Case", (), {"modalities": ["image"]})()
@@ -469,6 +479,30 @@ class Gemma4MultimodalBenchmarkTests(unittest.TestCase):
         self.assertTrue(
             any("must include peer_comparison rows for every case" in error for error in errors)
         )
+
+    def test_checker_rejects_readme_ready_unknown_peer_cache_policy(self) -> None:
+        artifact = sample_artifact()
+        artifact["rows"] = [
+            measured_chat_row("image_single_256soft", ["image_red_64"], modalities=["image"]),
+            measured_peer_row("image_single_256soft", ["image_red_64"], modalities=["image"]),
+        ]
+        artifact["benchmark"]["peer_fairness"]["llama_cache_policy"] = "unknown"
+        artifact["rows"][1]["capability"]["cache_policy"] = "unknown"
+        errors = checker.validate_artifact(artifact, readme_ready=True)
+        self.assertTrue(any("llama_cache_policy=prompt_cache_disabled" in error for error in errors))
+        self.assertTrue(any("capability.cache_policy=prompt_cache_disabled" in error for error in errors))
+
+    def test_checker_rejects_readme_ready_cached_peer_tokens(self) -> None:
+        artifact = sample_artifact()
+        artifact["rows"] = [
+            measured_chat_row("image_single_256soft", ["image_red_64"], modalities=["image"]),
+            measured_peer_row("image_single_256soft", ["image_red_64"], modalities=["image"]),
+        ]
+        artifact["rows"][1]["summary"]["prompt_cached_tokens_reported"] = metric(
+            4.0, 4.0, 4.0, 4.0
+        )
+        errors = checker.validate_artifact(artifact, readme_ready=True)
+        self.assertTrue(any("reports cached prompt tokens" in error for error in errors))
 
     def test_checker_rejects_zero_measured_timing(self) -> None:
         errors = checker.validate_artifact(sample_artifact(zero_metric=True))

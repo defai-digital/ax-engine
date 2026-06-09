@@ -50,6 +50,8 @@ DEFAULT_URL = "http://127.0.0.1:18080"
 DEFAULT_CASES = "all"
 DEFAULT_LAYERS = "native_runtime_prefill,openai_chat_e2e"
 DEFAULT_TIMEOUT_S = 300
+DEFAULT_COOLDOWN_S = 1.0
+DEFAULT_LLAMA_CACHE_POLICY = "unknown"
 MODALITY_ORDER = ("image", "audio", "video")
 
 
@@ -953,7 +955,8 @@ def run_chat_one(
     response_chars = len(content) + len(reasoning_content)
     if max_output_tokens > 0 and response_chars <= 0:
         raise RuntimeError("chat completion produced no assistant content or reasoning_content")
-    return {
+
+    result = {
         "non_streaming_total_ms": wall_ms,
         "client_wall_ms": wall_ms,
         "client_wall_ttft_ms": None,
@@ -964,6 +967,31 @@ def run_chat_one(
         "response_chars": response_chars,
         "payload_bytes": len(payload),
     }
+    prompt_details = usage.get("prompt_tokens_details")
+    if isinstance(prompt_details, dict):
+        result["prompt_cached_tokens_reported"] = prompt_details.get("cached_tokens")
+        result["prompt_tokens_details"] = prompt_details
+    completion_details = usage.get("completion_tokens_details")
+    if isinstance(completion_details, dict):
+        result["completion_reasoning_tokens_reported"] = completion_details.get(
+            "reasoning_tokens"
+        )
+        result["completion_tokens_details"] = completion_details
+    timings = obj.get("timings")
+    if isinstance(timings, dict):
+        result["server_timings"] = timings
+        timing_key_map = {
+            "prompt_ms": "server_prompt_ms",
+            "prompt_n": "server_prompt_tokens",
+            "prompt_per_second": "server_prompt_tokens_per_second",
+            "predicted_ms": "server_predicted_ms",
+            "predicted_n": "server_predicted_tokens",
+            "predicted_per_second": "server_predicted_tokens_per_second",
+        }
+        for source_key, result_key in timing_key_map.items():
+            if source_key in timings:
+                result[result_key] = timings.get(source_key)
+    return result
 
 
 def summarize(values: list[float | int | None]) -> dict[str, float | None]:
@@ -1230,6 +1258,14 @@ def benchmark_block(args: argparse.Namespace, cases: list[PreparedCase], layers:
         "max_output_tokens": args.max_output_tokens,
         "timeout_s": args.timeout,
         "sampler": {"temperature": 0.0},
+        "peer_fairness": {
+            "llama_cache_policy": args.llama_cache_policy,
+            "required_for_readme_peer_chart": "prompt_cache_disabled",
+            "note": (
+                "Use prompt_cache_disabled for cold endpoint comparisons. "
+                "Use prompt_cache_enabled only for explicit hot-cache diagnostics."
+            ),
+        },
     }
 
 
@@ -1242,6 +1278,7 @@ def command_json(args: argparse.Namespace) -> dict[str, Any]:
         "llama_url": args.llama_url,
         "llama_gguf": str(args.llama_gguf) if args.llama_gguf else None,
         "llama_mmproj": str(args.llama_mmproj) if args.llama_mmproj else None,
+        "llama_cache_policy": args.llama_cache_policy,
     }
 
 
@@ -1262,6 +1299,16 @@ def peer_capability(args: argparse.Namespace, case: PreparedCase) -> PeerDecisio
         "supports_audio": supports_audio,
         "supports_video": supports_video,
         "prompt_contract": "openai_chat_completions",
+        "cache_policy": args.llama_cache_policy,
+        "cache_policy_contract": {
+            "prompt_cache_disabled": [
+                "--no-cache-prompt",
+                "--no-cache-idle-slots",
+            ],
+            "prompt_cache_enabled": [
+                "--cache-prompt",
+            ],
+        },
         "proof": False,
     }
     if "video" in case.modalities:
@@ -1408,6 +1455,14 @@ def build_artifact(args: argparse.Namespace) -> dict[str, Any]:
                         "payload_bytes",
                         "output_tokens",
                         "prompt_tokens_reported",
+                        "prompt_cached_tokens_reported",
+                        "completion_reasoning_tokens_reported",
+                        "server_prompt_ms",
+                        "server_prompt_tokens",
+                        "server_prompt_tokens_per_second",
+                        "server_predicted_ms",
+                        "server_predicted_tokens",
+                        "server_predicted_tokens_per_second",
                     ],
                     max_output_tokens=args.max_output_tokens,
                     warmup=args.warmup,
@@ -1445,6 +1500,14 @@ def build_artifact(args: argparse.Namespace) -> dict[str, Any]:
                             "payload_bytes",
                             "output_tokens",
                             "prompt_tokens_reported",
+                            "prompt_cached_tokens_reported",
+                            "completion_reasoning_tokens_reported",
+                            "server_prompt_ms",
+                            "server_prompt_tokens",
+                            "server_prompt_tokens_per_second",
+                            "server_predicted_ms",
+                            "server_predicted_tokens",
+                            "server_predicted_tokens_per_second",
                         ],
                         max_output_tokens=args.max_output_tokens,
                         warmup=args.warmup,
@@ -1518,7 +1581,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--layers", default=DEFAULT_LAYERS)
     parser.add_argument("--warmup", type=int, default=1)
     parser.add_argument("--repetitions", type=int, default=3)
-    parser.add_argument("--cooldown", type=float, default=0.0)
+    parser.add_argument("--cooldown", type=float, default=DEFAULT_COOLDOWN_S)
     parser.add_argument("--max-output-tokens", type=int, default=8)
     parser.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT_S)
     parser.add_argument("--output", type=Path)
@@ -1528,6 +1591,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--llama-binary")
     parser.add_argument("--llama-gguf", type=Path)
     parser.add_argument("--llama-mmproj", type=Path)
+    parser.add_argument(
+        "--llama-cache-policy",
+        choices=("unknown", "prompt_cache_disabled", "prompt_cache_enabled"),
+        default=DEFAULT_LLAMA_CACHE_POLICY,
+        help=(
+            "Declared llama.cpp prompt-cache policy for peer rows. "
+            "README-ready peer charts require prompt_cache_disabled."
+        ),
+    )
     parser.add_argument("--no-llama-cpp", action="store_true")
     return parser
 
