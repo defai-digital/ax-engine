@@ -969,12 +969,26 @@ def run_chat_one(
 def summarize(values: list[float | int | None]) -> dict[str, float | None]:
     present = [float(value) for value in values if value is not None]
     if not present:
-        return {"mean": None, "median": None, "min": None, "max": None}
+        return {"mean": None, "median": None, "min": None, "max": None, "p90": None}
+    sorted_values = sorted(present)
+
+    def percentile(percent: float) -> float:
+        if len(sorted_values) == 1:
+            return sorted_values[0]
+        rank = (len(sorted_values) - 1) * percent
+        lower = math.floor(rank)
+        upper = math.ceil(rank)
+        if lower == upper:
+            return sorted_values[lower]
+        weight = rank - lower
+        return sorted_values[lower] * (1.0 - weight) + sorted_values[upper] * weight
+
     return {
         "mean": sum(present) / len(present),
         "median": statistics.median(present),
         "min": min(present),
         "max": max(present),
+        "p90": percentile(0.90),
     }
 
 
@@ -1121,15 +1135,49 @@ def run_git(args: list[str]) -> str | None:
     return result.stdout.strip()
 
 
-def build_block() -> dict[str, Any]:
+def infer_build_profile(args: argparse.Namespace) -> str:
+    candidates: list[str] = []
+    if args.server_binary:
+        candidates.append(str(args.server_binary))
+    if args.server_command:
+        try:
+            candidates.extend(shlex.split(args.server_command))
+        except ValueError:
+            candidates.append(args.server_command)
+    for candidate in candidates:
+        path = candidate.replace("\\", "/")
+        if "/target/release/" in path or path.startswith("target/release/"):
+            return "release"
+        if "/target/debug/" in path or path.startswith("target/debug/"):
+            return "debug"
+    return "unknown"
+
+
+def build_block(args: argparse.Namespace) -> dict[str, Any]:
     status = run_git(["status", "--porcelain", "--untracked-files=no"])
     return {
         "commit": run_git(["rev-parse", "HEAD"]),
-        "build_profile": "unknown",
+        "build_profile": infer_build_profile(args),
         "git_tracked_dirty": bool(status),
         "git_tracked_status": status.splitlines() if status else [],
         "git_tracked_dirty_accepted": False,
     }
+
+
+def host_memory_gb() -> float | None:
+    if sys.platform != "darwin":
+        return None
+    try:
+        result = subprocess.run(
+            ["sysctl", "-n", "hw.memsize"],
+            check=True,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
+        return round(int(result.stdout.strip()) / (1024**3), 1)
+    except (OSError, subprocess.CalledProcessError, ValueError):
+        return None
 
 
 def host_block() -> dict[str, Any]:
@@ -1140,7 +1188,7 @@ def host_block() -> dict[str, Any]:
         "processor": platform.processor(),
         "python": platform.python_version(),
         "chip": platform.processor() or "unknown",
-        "memory_gb": None,
+        "memory_gb": host_memory_gb(),
         "os_version": platform.platform(),
     }
 
@@ -1359,6 +1407,7 @@ def build_artifact(args: argparse.Namespace) -> dict[str, Any]:
                         "response_chars",
                         "payload_bytes",
                         "output_tokens",
+                        "prompt_tokens_reported",
                     ],
                     max_output_tokens=args.max_output_tokens,
                     warmup=args.warmup,
@@ -1395,6 +1444,7 @@ def build_artifact(args: argparse.Namespace) -> dict[str, Any]:
                             "response_chars",
                             "payload_bytes",
                             "output_tokens",
+                            "prompt_tokens_reported",
                         ],
                         max_output_tokens=args.max_output_tokens,
                         warmup=args.warmup,
@@ -1422,7 +1472,7 @@ def build_artifact(args: argparse.Namespace) -> dict[str, Any]:
         "schema": SCHEMA,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "host": host_block(),
-        "build": build_block(),
+        "build": build_block(args),
         "server": server_block(args),
         "model": model_block(args.model, args.model_dir),
         "benchmark": benchmark_block(args, prepared_cases, layers),

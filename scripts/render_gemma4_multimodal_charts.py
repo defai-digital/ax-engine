@@ -69,6 +69,14 @@ def metric_summary_from_row(row: dict[str, Any], key: str) -> dict[str, float]:
     return out
 
 
+def metric_median_from_row(row: dict[str, Any], key: str) -> float | None:
+    raw = row.get("summary", {}).get(key)
+    if not isinstance(raw, dict):
+        return None
+    value = raw.get("median")
+    return float(value) if isinstance(value, (int, float)) else None
+
+
 def native_prefill_rows(artifact: dict[str, Any]) -> list[dict[str, Any]]:
     rows = artifact.get("rows")
     if not isinstance(rows, list):
@@ -112,17 +120,63 @@ def peer_comparison_series(artifact: dict[str, Any]) -> list[dict[str, Any]]:
         ax_row = ax_by_case.get(case_id)
         if not isinstance(case_id, str) or not isinstance(ax_row, dict):
             continue
+        ax_output_tokens = metric_median_from_row(ax_row, "output_tokens")
+        peer_output_tokens = metric_median_from_row(row, "output_tokens")
+        if ax_output_tokens != peer_output_tokens:
+            continue
         ax_stats = metric_summary_from_row(ax_row, "client_wall_ms")
         peer_stats = metric_summary_from_row(row, "client_wall_ms")
         series.append(
             {
                 "label": case_id,
                 "modalities": "+".join(row.get("modalities") or []),
+                "ax_prompt_tokens": metric_median_from_row(ax_row, "prompt_tokens_reported"),
+                "peer_prompt_tokens": metric_median_from_row(row, "prompt_tokens_reported"),
+                "output_tokens": ax_output_tokens,
                 "ax": ax_stats,
                 "peer": peer_stats,
             }
         )
     return series
+
+
+def peer_exclusions(artifact: dict[str, Any]) -> list[dict[str, Any]]:
+    rows = artifact.get("rows")
+    if not isinstance(rows, list):
+        return []
+    ax_by_case = {
+        row.get("case_id"): row
+        for row in rows
+        if isinstance(row, dict)
+        and row.get("status") == "measured"
+        and row.get("engine") in {"ax_engine", "ax_engine_mlx"}
+        and row.get("layer") == "openai_chat_e2e"
+    }
+    exclusions: list[dict[str, Any]] = []
+    for row in rows:
+        if (
+            not isinstance(row, dict)
+            or row.get("status") != "measured"
+            or row.get("engine") != "llama_cpp_metal"
+            or row.get("layer") != "peer_comparison"
+        ):
+            continue
+        case_id = row.get("case_id")
+        ax_row = ax_by_case.get(case_id)
+        if not isinstance(case_id, str) or not isinstance(ax_row, dict):
+            continue
+        ax_output_tokens = metric_median_from_row(ax_row, "output_tokens")
+        peer_output_tokens = metric_median_from_row(row, "output_tokens")
+        if ax_output_tokens != peer_output_tokens:
+            exclusions.append(
+                {
+                    "case_id": case_id,
+                    "reason": "output_token_mismatch",
+                    "ax_output_tokens": ax_output_tokens,
+                    "peer_output_tokens": peer_output_tokens,
+                }
+            )
+    return exclusions
 
 
 def chart_inputs(artifact: dict[str, Any]) -> dict[str, Any]:
@@ -151,15 +205,23 @@ def chart_inputs(artifact: dict[str, Any]) -> dict[str, Any]:
                 )
             return series
 
+        peer_series = peer_comparison_series(artifact)
+        excluded_peer = peer_exclusions(artifact)
+        peer_note = (
+            "Endpoint latency only; prompt token accounting differs by engine; "
+            f"{len(excluded_peer)} measured peer case(s) excluded for output-token mismatch"
+        )
         return {
             "ttft_series": series_for("runner_prefill_ttft_ms"),
             "prefill_series": series_for("prefill_tok_s"),
-            "peer_series": peer_comparison_series(artifact),
+            "peer_series": peer_series,
+            "peer_exclusions": excluded_peer,
             "case_id": "matrix",
             "subtitle": "AX Engine native MLX, runner-time multimodal prefill",
             "throughput_subtitle": "AX Engine native MLX, expanded prompt includes soft tokens",
-            "peer_subtitle": "OpenAI chat E2E, AX native MLX vs llama.cpp Metal",
+            "peer_subtitle": "OpenAI chat endpoint latency, matched output-token cases only",
             "footnote": f"{len(rows)} case(s), {repetitions} reps, max_output_tokens={max_output_tokens}",
+            "peer_footnote": f"{peer_note}; {repetitions} reps, max_output_tokens={max_output_tokens}",
         }
     if schema not in (None, "ax.gemma4_image_prefill_ttft.v1"):
         raise ValueError(f"unsupported artifact schema: {schema}")
@@ -189,6 +251,7 @@ def chart_inputs(artifact: dict[str, Any]) -> dict[str, Any]:
             }
         ],
         "peer_series": [],
+        "peer_exclusions": [],
         "case_id": "image_single_256soft",
         "subtitle": "AX Engine native MLX, runner-time image+text prefill",
         "throughput_subtitle": "AX Engine native MLX, expanded prompt includes image soft tokens",
@@ -197,6 +260,7 @@ def chart_inputs(artifact: dict[str, Any]) -> dict[str, Any]:
             f"{expanded_tokens} expanded tokens, {image_soft_tokens} image soft tokens, "
             f"{repetitions} reps, max_output_tokens={max_output_tokens}"
         ),
+        "peer_footnote": "",
     }
 
 
@@ -411,7 +475,9 @@ def render_peer_comparison_chart(
     parts.extend(
         [
             f'<text x="{left + plot_w + 16}" y="{legend_y + 60}" font-family="{FONT}" '
-            f'font-size="10" fill="#6b7280">unit: ms</text>',
+            f'font-size="10" fill="#6b7280">unit: endpoint ms</text>',
+            f'<text x="{left + plot_w + 16}" y="{legend_y + 78}" font-family="{FONT}" '
+            f'font-size="10" fill="#6b7280">not throughput</text>',
             f'<text x="{left}" y="{height - 20}" font-family="{FONT}" font-size="10" '
             f'fill="#6b7280">{html.escape(footnote)}</text>',
             "</svg>",
@@ -461,7 +527,7 @@ def render(artifact_path: Path, assets_dir: Path) -> list[Path]:
                     title="Gemma 4 12B multimodal chat latency",
                     subtitle=inputs["peer_subtitle"],
                     series=peer,
-                    footnote=inputs["footnote"],
+                    footnote=inputs["peer_footnote"],
                 ),
             )
         )

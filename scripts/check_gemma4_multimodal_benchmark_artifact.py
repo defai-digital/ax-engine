@@ -31,6 +31,7 @@ POSITIVE_METRICS = {
     "non_streaming_total_ms",
     "prefill_tok_s",
     "payload_bytes",
+    "prompt_tokens_reported",
     "response_chars",
 }
 
@@ -64,6 +65,10 @@ def validate_top_level(
         for key in ("platform", "machine", "python", "os_version"):
             if not isinstance(host.get(key), str) or not host[key]:
                 errors.append(f"host.{key} must be a non-empty string")
+        if readme_ready:
+            memory_gb = host.get("memory_gb")
+            if not isinstance(memory_gb, (int, float)) or memory_gb <= 0:
+                errors.append("readme-ready artifacts must record positive host.memory_gb")
 
     build = require_object(errors, artifact.get("build"), "build")
     if build is not None:
@@ -75,6 +80,8 @@ def validate_top_level(
             errors.append("build.git_tracked_status must be a list")
         if readme_ready and build.get("git_tracked_dirty"):
             errors.append("readme-ready artifacts must have build.git_tracked_dirty=false")
+        if readme_ready and build.get("build_profile") not in {"release", "debug"}:
+            errors.append("readme-ready artifacts must record build.build_profile")
 
     server = require_object(errors, artifact.get("server"), "server")
     if server is not None:
@@ -334,6 +341,10 @@ def validate_row(
         ) is None:
             errors.append(f"rows[{row_index}] {row.get('layer')} requires client_wall_ms")
         if row.get("layer") in {"openai_chat_e2e", "peer_comparison"}:
+            if metric_stats(row, "prompt_tokens_reported") is None:
+                errors.append(
+                    f"rows[{row_index}] {row.get('layer')} requires prompt_tokens_reported"
+                )
             response_stats = metric_stats(row, "response_chars")
             response_median = (
                 response_stats.get("median") if isinstance(response_stats, dict) else None

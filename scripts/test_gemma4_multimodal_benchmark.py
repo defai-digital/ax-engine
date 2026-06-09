@@ -159,13 +159,27 @@ def measured_peer_row(case_id: str, fixture_ids: list[str], *, modalities: list[
             "layer": "peer_comparison",
             "endpoint": "/v1/chat/completions",
             "runs": [
-                {"client_wall_ms": 310.0, "reasoning_chars": 12, "response_chars": 12},
-                {"client_wall_ms": 330.0, "reasoning_chars": 14, "response_chars": 14},
+                {
+                    "client_wall_ms": 310.0,
+                    "reasoning_chars": 12,
+                    "response_chars": 12,
+                    "output_tokens": 8,
+                    "prompt_tokens_reported": 78,
+                },
+                {
+                    "client_wall_ms": 330.0,
+                    "reasoning_chars": 14,
+                    "response_chars": 14,
+                    "output_tokens": 8,
+                    "prompt_tokens_reported": 78,
+                },
             ],
             "summary": {
                 "client_wall_ms": metric(320.0, 320.0, 310.0, 330.0),
                 "reasoning_chars": metric(13.0, 13.0, 12.0, 14.0),
                 "response_chars": metric(13.0, 13.0, 12.0, 14.0),
+                "output_tokens": metric(8.0, 8.0, 8.0, 8.0),
+                "prompt_tokens_reported": metric(78.0, 78.0, 78.0, 78.0),
             },
             "capability": {
                 "url": "http://127.0.0.1:18081",
@@ -193,13 +207,27 @@ def measured_chat_row(case_id: str, fixture_ids: list[str], *, modalities: list[
             "layer": "openai_chat_e2e",
             "endpoint": "/v1/chat/completions",
             "runs": [
-                {"client_wall_ms": 410.0, "content_chars": 8, "response_chars": 8},
-                {"client_wall_ms": 430.0, "content_chars": 10, "response_chars": 10},
+                {
+                    "client_wall_ms": 410.0,
+                    "content_chars": 8,
+                    "response_chars": 8,
+                    "output_tokens": 8,
+                    "prompt_tokens_reported": 282,
+                },
+                {
+                    "client_wall_ms": 430.0,
+                    "content_chars": 10,
+                    "response_chars": 10,
+                    "output_tokens": 8,
+                    "prompt_tokens_reported": 282,
+                },
             ],
             "summary": {
                 "client_wall_ms": metric(420.0, 420.0, 410.0, 430.0),
                 "content_chars": metric(9.0, 9.0, 8.0, 10.0),
                 "response_chars": metric(9.0, 9.0, 8.0, 10.0),
+                "output_tokens": metric(8.0, 8.0, 8.0, 8.0),
+                "prompt_tokens_reported": metric(282.0, 282.0, 282.0, 282.0),
             },
         }
     )
@@ -220,7 +248,7 @@ def sample_artifact(*, tracked_dirty: bool = False, zero_metric: bool = False) -
             "processor": "arm",
             "python": "3.14",
             "chip": "Apple",
-            "memory_gb": None,
+            "memory_gb": 128.0,
             "os_version": "macOS",
         },
         "build": {
@@ -311,10 +339,12 @@ def sample_artifact(*, tracked_dirty: bool = False, zero_metric: bool = False) -
 
 class Gemma4MultimodalBenchmarkTests(unittest.TestCase):
     def test_summarize_ignores_none(self) -> None:
-        self.assertEqual(
-            bench.summarize([1.0, None, 3.0]),
-            {"mean": 2.0, "median": 2.0, "min": 1.0, "max": 3.0},
-        )
+        summary = bench.summarize([1.0, None, 3.0])
+        self.assertEqual(summary["mean"], 2.0)
+        self.assertEqual(summary["median"], 2.0)
+        self.assertEqual(summary["min"], 1.0)
+        self.assertEqual(summary["max"], 3.0)
+        self.assertAlmostEqual(summary["p90"], 2.8)
 
     def test_sse_parser_skips_done_sentinel(self) -> None:
         # The native /v1/generate/stream terminates an errored stream with a
@@ -418,6 +448,18 @@ class Gemma4MultimodalBenchmarkTests(unittest.TestCase):
         errors = checker.validate_artifact(sample_artifact(tracked_dirty=True), readme_ready=True)
         self.assertIn("readme-ready artifacts must have build.git_tracked_dirty=false", errors)
 
+    def test_checker_rejects_readme_ready_missing_build_profile(self) -> None:
+        artifact = sample_artifact()
+        artifact["build"]["build_profile"] = "unknown"
+        errors = checker.validate_artifact(artifact, readme_ready=True)
+        self.assertIn("readme-ready artifacts must record build.build_profile", errors)
+
+    def test_checker_rejects_readme_ready_missing_memory(self) -> None:
+        artifact = sample_artifact()
+        artifact["host"]["memory_gb"] = None
+        errors = checker.validate_artifact(artifact, readme_ready=True)
+        self.assertIn("readme-ready artifacts must record positive host.memory_gb", errors)
+
     def test_checker_rejects_readme_ready_missing_peer_rows(self) -> None:
         artifact = sample_artifact()
         artifact["rows"] = [
@@ -519,6 +561,27 @@ class Gemma4MultimodalBenchmarkTests(unittest.TestCase):
         artifact["rows"][0]["summary"]["response_chars"]["median"] = 0.0
         errors = checker.validate_artifact(artifact)
         self.assertTrue(any("requires positive response_chars" in error for error in errors))
+
+    def test_checker_rejects_measured_chat_without_prompt_tokens_reported(self) -> None:
+        artifact = sample_artifact()
+        artifact["rows"] = [
+            measured_chat_row("image_single_256soft", ["image_red_64"], modalities=["image"])
+        ]
+        artifact["rows"][0]["summary"].pop("prompt_tokens_reported")
+        errors = checker.validate_artifact(artifact)
+        self.assertTrue(any("requires prompt_tokens_reported" in error for error in errors))
+
+    def test_renderer_excludes_peer_output_token_mismatch(self) -> None:
+        artifact = sample_artifact()
+        artifact["rows"] = [
+            measured_row("audio_0_5s", ["audio_tone_0_5s"], modalities=["audio"]),
+            measured_chat_row("image_single_256soft", ["image_red_64"], modalities=["image"]),
+            measured_peer_row("image_single_256soft", ["image_red_64"], modalities=["image"]),
+        ]
+        artifact["rows"][1]["summary"]["output_tokens"] = metric(2.0, 2.0, 2.0, 2.0)
+        self.assertEqual(renderer.peer_comparison_series(artifact), [])
+        exclusions = renderer.peer_exclusions(artifact)
+        self.assertEqual([item["case_id"] for item in exclusions], ["image_single_256soft"])
 
     def test_renderer_accepts_matrix_schema(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
