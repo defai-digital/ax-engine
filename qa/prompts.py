@@ -15,6 +15,8 @@ class QaPrompt:
     min_length: int = 20
     max_repetition_ratio: float = 0.3
     description: str = ""
+    min_test_count: int = 0
+    json_expected_total: Optional[float] = None
 
 
 PROMPTS: list[QaPrompt] = [
@@ -113,6 +115,32 @@ PROMPTS: list[QaPrompt] = [
         keywords=["school", "teacher", "hospital", "doctor"],
         min_length=30,
         description="Analogy completion with explanation",
+    ),
+    QaPrompt(
+        id="unit_test",
+        category="testing",
+        system=None,
+        user="Write three pytest tests for a function is_even(n) that returns True when n is even.",
+        keywords=["assert", "is_even"],
+        regex_patterns=[r"def test_\w+\("],
+        min_length=100,
+        min_test_count=3,
+        description="pytest test function generation — requires at least three def test_ functions",
+    ),
+    QaPrompt(
+        id="json_invoice_nested",
+        category="json",
+        system=None,
+        user=(
+            "Return only valid JSON for this invoice: invoice AX-1042, customer Mina, "
+            "currency USD, items: cable quantity 2 unit_price 4.25, dock quantity 1 unit_price 31.00. "
+            "Include invoice_id, customer, currency, items, and total."
+        ),
+        keywords=["AX-1042", "Mina"],
+        regex_patterns=[r'"invoice_id"', r'"items"'],
+        min_length=80,
+        json_expected_total=39.5,
+        description="nested JSON invoice — total must be 39.50 (2*4.25 + 1*31.00)",
     ),
 ]
 

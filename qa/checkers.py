@@ -1,4 +1,5 @@
 """Quality checkers for AX Engine QA."""
+import json
 import re
 from collections import Counter
 from dataclasses import dataclass, field
@@ -149,6 +150,54 @@ def check_garbage(text):
     return CheckResult("garbage", True, f"scripts: {', '.join(sorted(scripts)) or 'none'}", 1.0)
 
 
+def check_pytest_test_count(text, prompt):
+    if not prompt.min_test_count:
+        return CheckResult("pytest_test_count", True, "not required", 1.0)
+    found = len(re.findall(r"def test_\w+\s*\(", text))
+    passed = found >= prompt.min_test_count
+    detail = f"found {found} test function(s) (min {prompt.min_test_count})"
+    score = min(1.0, found / max(1, prompt.min_test_count))
+    return CheckResult("pytest_test_count", passed, detail, score)
+
+
+def check_invoice_total(text, prompt):
+    if prompt.json_expected_total is None:
+        return CheckResult("invoice_total", True, "not required", 1.0)
+    expected = prompt.json_expected_total
+
+    # Try to extract JSON from markdown code blocks first, then raw text.
+    json_candidates = re.findall(r"```(?:json)?\s*([\s\S]*?)```", text)
+    if not json_candidates:
+        json_candidates = [text]
+
+    for candidate in json_candidates:
+        candidate = candidate.strip()
+        if not candidate:
+            continue
+        try:
+            data = json.loads(candidate)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if not isinstance(data, dict) or "total" not in data:
+            continue
+        actual = float(data["total"])
+        if abs(actual - expected) < 0.001:
+            return CheckResult(
+                "invoice_total", True, f"total={actual} matches expected {expected}", 1.0
+            )
+        return CheckResult(
+            "invoice_total",
+            False,
+            f"total={actual} != expected {expected} (wrong arithmetic)",
+            0.0,
+        )
+
+    # If no valid JSON with a total field was found, flag as failing.
+    return CheckResult(
+        "invoice_total", False, f"no JSON with 'total' field found (expected {expected})", 0.0
+    )
+
+
 def run_all_checks(text, prompt):
     checks = [
         check_length(text, prompt),
@@ -158,6 +207,8 @@ def run_all_checks(text, prompt):
         check_coherence(text, prompt),
         check_unicode_replacement(text, prompt),
         check_garbage(text),
+        check_pytest_test_count(text, prompt),
+        check_invoice_total(text, prompt),
     ]
     report = QualityReport(
         prompt_id=prompt.id,
