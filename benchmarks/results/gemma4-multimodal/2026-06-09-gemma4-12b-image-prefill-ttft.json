@@ -1,0 +1,60 @@
+{
+  "schema": "ax.gemma4_image_prefill_ttft.v1",
+  "model": "gemma-4-12B-it",
+  "server_url": "http://127.0.0.1:18080",
+  "model_dir": ".internal/models/gemma-4-12B-it-4bit",
+  "prompt": {
+    "original_tokens": 20,
+    "expanded_tokens": 277,
+    "image_soft_tokens": 256
+  },
+  "max_output_tokens": 8,
+  "warmup": 1,
+  "repetitions": 3,
+  "runs": [
+    {
+      "runner_prefill_ttft_ms": 189.843,
+      "client_wall_ttft_ms": 746.6681670048274,
+      "client_wall_total_ms": 884.7087080357596,
+      "prefill_tok_s": 1459.1004145530783,
+      "output_tokens": 8,
+      "execution_plan": "phase1.gemma_4_12b_it.dense_prefill"
+    },
+    {
+      "runner_prefill_ttft_ms": 189.527,
+      "client_wall_ttft_ms": 733.4214580478147,
+      "client_wall_total_ms": 871.4390830136836,
+      "prefill_tok_s": 1461.5331852453742,
+      "output_tokens": 8,
+      "execution_plan": "phase1.gemma_4_12b_it.dense_prefill"
+    },
+    {
+      "runner_prefill_ttft_ms": 189.913,
+      "client_wall_ttft_ms": 735.8238339656964,
+      "client_wall_total_ms": 874.0774589823559,
+      "prefill_tok_s": 1458.5626049822813,
+      "output_tokens": 8,
+      "execution_plan": "phase1.gemma_4_12b_it.dense_prefill"
+    }
+  ],
+  "summary": {
+    "runner_prefill_ttft_ms": {
+      "mean": 189.761,
+      "median": 189.843,
+      "min": 189.527,
+      "max": 189.913
+    },
+    "client_wall_ttft_ms": {
+      "mean": 738.6378196727795,
+      "median": 735.8238339656964,
+      "min": 733.4214580478147,
+      "max": 746.6681670048274
+    },
+    "prefill_tok_s": {
+      "mean": 1459.7320682602447,
+      "median": 1459.1004145530783,
+      "min": 1458.5626049822813,
+      "max": 1461.5331852453742
+    }
+  }
+}

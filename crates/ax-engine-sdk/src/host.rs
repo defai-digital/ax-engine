@@ -123,6 +123,16 @@ fn detect_soc() -> SocDetection {
         return SocDetection::default();
     }
     let (soc, error) = command_stdout_with_reason("sysctl", &["-n", "machdep.cpu.brand_string"]);
+    if soc.is_some() {
+        return SocDetection { soc, error: None };
+    }
+    let profiler_soc = detect_soc_from_system_profiler();
+    if profiler_soc.is_some() {
+        return SocDetection {
+            soc: profiler_soc,
+            error: None,
+        };
+    }
     if soc.is_none() {
         let reason = error.as_deref().unwrap_or("sysctl returned no output");
         tracing::warn!(
@@ -135,6 +145,23 @@ fn detect_soc() -> SocDetection {
         );
     }
     SocDetection { soc, error }
+}
+
+fn detect_soc_from_system_profiler() -> Option<String> {
+    command_stdout("system_profiler", &["SPDisplaysDataType"])
+        .and_then(|text| parse_system_profiler_chipset_model(&text))
+}
+
+fn parse_system_profiler_chipset_model(text: &str) -> Option<String> {
+    text.lines().find_map(|line| {
+        let (_, value) = line.trim().split_once("Chipset Model:")?;
+        let value = value.trim();
+        if parse_apple_m_series_generation(value).is_some() {
+            Some(value.to_string())
+        } else {
+            None
+        }
+    })
 }
 
 fn soc_detection_cached() -> &'static SocDetection {
@@ -268,7 +295,7 @@ fn unsupported_host_override_enabled() -> bool {
 mod tests {
     use super::{
         HostSupport, classify_host, command_stdout_with_reason, parse_apple_m_series_generation,
-        runtime_host_report, runtime_metal_toolchain_report,
+        parse_system_profiler_chipset_model, runtime_host_report, runtime_metal_toolchain_report,
     };
 
     #[test]
@@ -279,6 +306,16 @@ mod tests {
         assert_eq!(parse_apple_m_series_generation("Apple M3 Pro"), Some(3));
         assert_eq!(parse_apple_m_series_generation("Intel Core i9"), None);
         assert_eq!(parse_apple_m_series_generation("unknown"), None);
+    }
+
+    #[test]
+    fn parses_system_profiler_chipset_model() {
+        let text = "Graphics/Displays:\n\n    Apple M5 Max:\n\n      Chipset Model: Apple M5 Max\n      Metal: Supported\n";
+
+        assert_eq!(
+            parse_system_profiler_chipset_model(text).as_deref(),
+            Some("Apple M5 Max")
+        );
     }
 
     #[test]

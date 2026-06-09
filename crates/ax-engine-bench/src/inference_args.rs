@@ -1,8 +1,9 @@
 use ax_engine_core::CacheGroupId;
 use ax_engine_sdk::{
     EngineSession, EngineSessionConfig, GenerateRequest, GenerateSampling, PreviewBackendRequest,
-    SupportTier, preview_support_tier_from_label,
+    RequestMultimodalInputs, SupportTier, preview_support_tier_from_label,
 };
+use std::fs;
 use std::path::PathBuf;
 
 use crate::args::{next_flag_value, parse_flag_value, parse_token_list};
@@ -35,6 +36,7 @@ pub(crate) struct InferenceArgs {
     pub(crate) model_id: String,
     pub(crate) input_tokens: Vec<u32>,
     pub(crate) input_text: Option<String>,
+    pub(crate) multimodal_inputs: RequestMultimodalInputs,
     pub(crate) max_output_tokens: u32,
     pub(crate) sampling: GenerateSampling,
     pub(crate) metadata: Option<String>,
@@ -56,6 +58,7 @@ impl Default for InferenceArgs {
             model_id: "qwen3".to_string(),
             input_tokens: Vec::new(),
             input_text: None,
+            multimodal_inputs: RequestMultimodalInputs::default(),
             max_output_tokens: 32,
             sampling: GenerateSampling::default(),
             metadata: None,
@@ -79,7 +82,7 @@ impl InferenceArgs {
             model_id: self.model_id.clone(),
             input_tokens: self.input_tokens.clone(),
             input_text: self.input_text.clone(),
-            multimodal_inputs: Default::default(),
+            multimodal_inputs: self.multimodal_inputs.clone(),
             max_output_tokens: self.max_output_tokens,
             sampling: self.sampling.clone(),
             stop_sequences: Vec::new(),
@@ -104,6 +107,22 @@ pub(crate) fn parse_inference_args(
             }
             "--tokens" => {
                 parsed.input_tokens = parse_token_list(next_flag_value(&mut iter, "--tokens")?)?
+            }
+            "--multimodal-inputs-json" => {
+                parsed.multimodal_inputs = parse_multimodal_inputs_json(next_flag_value(
+                    &mut iter,
+                    "--multimodal-inputs-json",
+                )?)?
+            }
+            "--multimodal-inputs-file" => {
+                let path = PathBuf::from(next_flag_value(&mut iter, "--multimodal-inputs-file")?);
+                let raw = fs::read_to_string(&path).map_err(|error| {
+                    CliError::Usage(format!(
+                        "failed to read --multimodal-inputs-file {}: {error}",
+                        path.display()
+                    ))
+                })?;
+                parsed.multimodal_inputs = parse_multimodal_inputs_json(&raw)?;
             }
             "--max-output-tokens" => {
                 parsed.max_output_tokens = parse_flag_value::<u32>(
@@ -199,12 +218,25 @@ pub(crate) fn parse_inference_args(
             "{command} requires either --prompt or --tokens"
         )));
     }
+    if !parsed.multimodal_inputs.is_empty() && parsed.input_tokens.is_empty() {
+        return Err(CliError::Usage(format!(
+            "{command} multimodal inputs require --tokens because Gemma4 unified media spans are absolute positions in the expanded prompt"
+        )));
+    }
 
     parsed.support_tier = preview_support_tier_from_label(&support_tier_label)
         .map_err(|error| CliError::Usage(format!("invalid --support-tier: {error}")))?;
     parsed.sampling.deterministic = Some(parsed.deterministic);
 
     Ok(parsed)
+}
+
+fn parse_multimodal_inputs_json(raw: &str) -> Result<RequestMultimodalInputs, CliError> {
+    serde_json::from_str::<RequestMultimodalInputs>(raw).map_err(|error| {
+        CliError::Usage(format!(
+            "invalid Gemma4 multimodal inputs JSON for --multimodal-inputs-json/--multimodal-inputs-file: {error}"
+        ))
+    })
 }
 
 pub(crate) fn build_inference_session(args: &InferenceArgs) -> Result<EngineSession, CliError> {

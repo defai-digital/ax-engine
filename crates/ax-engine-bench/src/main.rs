@@ -12816,6 +12816,81 @@ mod tests {
         );
     }
 
+    #[test]
+    fn parse_inference_args_preserves_gemma4_multimodal_inputs_json() {
+        let args = vec![
+            "--tokens".to_string(),
+            "10,258880,11".to_string(),
+            "--multimodal-inputs-json".to_string(),
+            json!({
+                "gemma4_unified": {
+                    "images": [{
+                        "span": {
+                            "modality": "image",
+                            "placeholder_index": 1,
+                            "replacement_start": 1,
+                            "soft_token_count": 1,
+                            "replacement_token_count": 3
+                        },
+                        "pixel_values": [0.0, 1.0, 2.0],
+                        "pixel_position_ids": [[0, 0]]
+                    }],
+                    "audios": [],
+                    "videos": []
+                }
+            })
+            .to_string(),
+        ];
+
+        let parsed = parse_inference_args(&args, "generate").expect("inference args should parse");
+        let request = parsed.generate_request();
+        let inputs = request
+            .multimodal_inputs
+            .gemma4_unified
+            .expect("Gemma4 multimodal inputs should be preserved");
+
+        assert_eq!(request.input_tokens, vec![10, 258880, 11]);
+        assert_eq!(inputs.images.len(), 1);
+        assert_eq!(inputs.images[0].span.replacement_start, 1);
+        assert_eq!(inputs.images[0].pixel_position_ids, vec![[0, 0]]);
+    }
+
+    #[test]
+    fn parse_inference_args_rejects_multimodal_inputs_without_tokens() {
+        let args = vec![
+            "--prompt".to_string(),
+            "describe this".to_string(),
+            "--multimodal-inputs-json".to_string(),
+            json!({
+                "gemma4_unified": {
+                    "images": [{
+                        "span": {
+                            "modality": "image",
+                            "placeholder_index": 1,
+                            "replacement_start": 1,
+                            "soft_token_count": 1,
+                            "replacement_token_count": 3
+                        },
+                        "pixel_values": [0.0, 1.0, 2.0],
+                        "pixel_position_ids": [[0, 0]]
+                    }],
+                    "audios": [],
+                    "videos": []
+                }
+            })
+            .to_string(),
+        ];
+
+        let error = parse_inference_args(&args, "generate")
+            .expect_err("text multimodal prompt should fail");
+        assert!(
+            error
+                .to_string()
+                .contains("multimodal inputs require --tokens"),
+            "unexpected error: {error}"
+        );
+    }
+
     fn native_metrics_fixture(run_id: &str, ttft_ms: f64, decode_tok_s: f64) -> Value {
         json!({
             "schema_version": "ax.engine_bench.metrics.v1",

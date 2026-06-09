@@ -2,8 +2,8 @@ pub(crate) fn usage() -> String {
     let text = r#"AX Engine v6 benchmark CLI
 
 Usage:
-  ax-engine-bench generate [--model-id <id>] (--prompt <text> | --tokens <ids>) [--max-output-tokens <n>] [--mlx] [--support-tier <tier>] [--llama-cli-path <path>] [--llama-model-path <path>] [--llama-server-url <url>] [--mlx-lm-server-url <url>] [--mlx-model-artifacts-dir <path>] [--json]
-  ax-engine-bench stream [--model-id <id>] (--prompt <text> | --tokens <ids>) [--max-output-tokens <n>] [--mlx] [--support-tier <tier>] [--llama-cli-path <path>] [--llama-model-path <path>] [--llama-server-url <url>] [--mlx-lm-server-url <url>] [--mlx-model-artifacts-dir <path>] [--json]
+  ax-engine-bench generate [--model-id <id>] (--prompt <text> | --tokens <ids>) [--multimodal-inputs-json <json> | --multimodal-inputs-file <path>] [--max-output-tokens <n>] [--mlx] [--support-tier <tier>] [--llama-cli-path <path>] [--llama-model-path <path>] [--llama-server-url <url>] [--mlx-lm-server-url <url>] [--mlx-model-artifacts-dir <path>] [--json]
+  ax-engine-bench stream [--model-id <id>] (--prompt <text> | --tokens <ids>) [--multimodal-inputs-json <json> | --multimodal-inputs-file <path>] [--max-output-tokens <n>] [--mlx] [--support-tier <tier>] [--llama-cli-path <path>] [--llama-model-path <path>] [--llama-server-url <url>] [--mlx-lm-server-url <url>] [--mlx-model-artifacts-dir <path>] [--json]
   ax-engine-bench scenario --manifest <path> --output-root <path> [--json] [--no-trace]
   ax-engine-bench replay --manifest <path> --output-root <path> [--json] [--no-trace]
   ax-engine-bench compare --baseline <path> --candidate <path> --output-root <path> [--json]
