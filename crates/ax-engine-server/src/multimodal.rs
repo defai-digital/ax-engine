@@ -858,7 +858,12 @@ mod tests {
                 ]
             })
             .collect();
-        let soft = golden["soft_tokens"].as_u64().unwrap() as usize;
+        // Image goldens carry `soft_tokens`; the video golden uses
+        // `soft_tokens_per_frame` instead, so this is optional.
+        let soft = golden
+            .get("soft_tokens")
+            .and_then(Value::as_u64)
+            .unwrap_or(0) as usize;
         (vision, pixel_values, positions, soft)
     }
 
@@ -909,6 +914,76 @@ mod tests {
             diff < 0.12,
             "resize pixel diff vs PIL bicubic too large: {diff}"
         );
+    }
+
+    #[test]
+    fn golden_audio_matches_reference_exactly() {
+        let wav = include_bytes!("tests/fixtures/gemma4_golden/audio_noresize.wav");
+        let golden: Value = serde_json::from_str(include_str!(
+            "tests/fixtures/gemma4_golden/golden_audio_noresize.json"
+        ))
+        .unwrap();
+        let audio = Gemma4UnifiedAudioProcessor {
+            sampling_rate: golden["sample_rate"].as_u64().unwrap() as u32,
+            audio_samples_per_token: golden["audio_samples_per_token"].as_u64().unwrap() as u32,
+            audio_seq_length: None,
+        };
+
+        let pre = preprocess_wav(wav, &audio).unwrap();
+
+        // Input is already at the model rate (no resample) and int16/32768
+        // round-trips losslessly, so the framing must match the reference exactly.
+        assert_eq!(
+            pre.frame_count,
+            golden["frame_count"].as_u64().unwrap() as u32
+        );
+        assert_eq!(
+            pre.feature_count,
+            golden["feature_count"].as_u64().unwrap() as u32
+        );
+        let expected: Vec<f32> = golden["input_features"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_f64().unwrap() as f32)
+            .collect();
+        assert_eq!(pre.input_features.len(), expected.len());
+        let diff = max_abs_diff(&pre.input_features, &expected);
+        assert!(diff < 1e-6, "audio diff vs reference = {diff}");
+    }
+
+    #[test]
+    fn golden_video_matches_reference_exactly() {
+        let frame0 = include_bytes!("tests/fixtures/gemma4_golden/video_noresize_frame0.png");
+        let frame1 = include_bytes!("tests/fixtures/gemma4_golden/video_noresize_frame1.png");
+        let golden: Value = serde_json::from_str(include_str!(
+            "tests/fixtures/gemma4_golden/golden_video_noresize.json"
+        ))
+        .unwrap();
+        let (vision, expected_values, expected_positions, _soft) = parse_golden(&golden);
+
+        let to_frame = |bytes: &[u8]| VideoFrame {
+            image: image::load_from_memory(bytes).unwrap().to_rgb8(),
+            timestamp_seconds: 0.0,
+        };
+        let frames = vec![to_frame(frame0), to_frame(frame1)];
+        let pre =
+            preprocess_video_frames(&frames, &vision, &ImageNormalization::default()).unwrap();
+
+        // Two distinct no-resize frames: per-frame patchify is exact, and this
+        // validates frame concatenation order + per-frame position reset.
+        assert_eq!(
+            pre.frame_count,
+            golden["frame_count"].as_u64().unwrap() as u32
+        );
+        assert_eq!(
+            pre.soft_tokens_per_frame,
+            golden["soft_tokens_per_frame"].as_u64().unwrap() as u32
+        );
+        assert_eq!(pre.pixel_position_ids, expected_positions);
+        assert_eq!(pre.pixel_values.len(), expected_values.len());
+        let diff = max_abs_diff(&pre.pixel_values, &expected_values);
+        assert!(diff < 1e-6, "video diff vs reference = {diff}");
     }
 
     #[test]

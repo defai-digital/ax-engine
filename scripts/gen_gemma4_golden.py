@@ -109,12 +109,101 @@ def dump(name, width, height):
     print(f"{name}: {width}x{height} -> {patches.shape[0]} patches, dim {patches.shape[1]}")
 
 
+AUDIO_SAMPLES_PER_TOKEN = 640
+AUDIO_SAMPLE_RATE = 16000
+
+
+def _write_int16_wav(path, samples_i16, sample_rate):
+    import wave
+
+    with wave.open(str(path), "wb") as writer:
+        writer.setnchannels(1)
+        writer.setsampwidth(2)
+        writer.setframerate(sample_rate)
+        writer.writeframes(samples_i16.astype("<i2").tobytes())
+
+
+def dump_audio(name, num_samples):
+    # Deterministic int16 waveform; int16/32768 round-trips losslessly through
+    # the Rust hound decoder, so the reshape can be compared bit-for-bit.
+    samples_i16 = np.array(
+        [((i * 37) % 65536) - 32768 for i in range(num_samples)], dtype=np.int16
+    )
+    _write_int16_wav(OUT / f"audio_{name}.wav", samples_i16, AUDIO_SAMPLE_RATE)
+
+    # Reference Gemma4UnifiedAudioFeatureExtractor: pad to a multiple of
+    # audio_samples_per_token, reshape into fixed frames.
+    waveform = samples_i16.astype(np.float32) / 32768.0
+    pad = (-num_samples) % AUDIO_SAMPLES_PER_TOKEN
+    padded = np.pad(waveform, (0, pad), mode="constant", constant_values=0.0)
+    features = padded.reshape(-1, AUDIO_SAMPLES_PER_TOKEN)
+    golden = {
+        "audio_samples_per_token": AUDIO_SAMPLES_PER_TOKEN,
+        "sample_rate": AUDIO_SAMPLE_RATE,
+        "sample_count": int(num_samples),
+        "frame_count": int(features.shape[0]),
+        "feature_count": AUDIO_SAMPLES_PER_TOKEN,
+        "input_features": features.reshape(-1).tolist(),
+    }
+    (OUT / f"golden_audio_{name}.json").write_text(json.dumps(golden))
+    print(f"audio {name}: {num_samples} samples -> {features.shape[0]} frames")
+
+
+def _video_frame(width, height, seed):
+    rgb = np.zeros((height, width, 3), dtype=np.uint8)
+    for y in range(height):
+        for x in range(width):
+            rgb[y, x] = [
+                (x * 13 + seed * 7) % 256,
+                (y * 17 + seed * 11) % 256,
+                (x * y + seed * 23) % 256,
+            ]
+    return rgb
+
+
+def dump_video(name, sizes):
+    # No-resize frames (scale == 1) so per-frame patchify is exact; the golden
+    # validates frame concatenation order and per-frame position reset on top of
+    # the already-golden patchify. Frames are made distinct (different seed) so a
+    # "duplicate frame 0" bug would be caught.
+    pixel_values = []
+    positions = []
+    soft_per_frame = None
+    for index, (width, height) in enumerate(sizes):
+        rgb = _video_frame(width, height, index)
+        Image.fromarray(rgb).save(OUT / f"video_{name}_frame{index}.png")
+        patches, frame_positions = preprocess(rgb)
+        if soft_per_frame is None:
+            soft_per_frame = int(patches.shape[0])
+        pixel_values.append(patches.reshape(-1))
+        positions.append(frame_positions)
+
+    golden = {
+        "config": {
+            "patch_size": PATCH_SIZE,
+            "pooling_kernel_size": POOLING,
+            "model_patch_size": MODEL_PATCH_SIZE,
+            "max_soft_tokens": MAX_SOFT_TOKENS,
+        },
+        "frame_count": len(sizes),
+        "soft_tokens_per_frame": soft_per_frame,
+        "pixel_values": np.concatenate(pixel_values).tolist(),
+        "positions": np.concatenate(positions).tolist(),
+    }
+    (OUT / f"golden_video_{name}.json").write_text(json.dumps(golden))
+    print(f"video {name}: {len(sizes)} frames -> {soft_per_frame} soft tokens/frame")
+
+
 def main():
     OUT.mkdir(parents=True, exist_ok=True)
     # 16x16: scale == 1 so resize is a no-op -> Rust must match exactly.
     dump("noresize", 16, 16)
     # 12x12: upscaled to 16x16 via bicubic -> Rust compares within tolerance.
     dump("resize", 12, 12)
+    # Audio: 1600 samples -> 3 frames of 640 (last frame zero-padded).
+    dump_audio("noresize", 1600)
+    # Video: two no-resize 16x16 frames -> exact concatenated patches.
+    dump_video("noresize", [(16, 16), (16, 16)])
 
 
 if __name__ == "__main__":
