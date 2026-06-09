@@ -363,20 +363,20 @@ Gemma 4 12B multimodal timing is reported separately from the text benchmark abo
 <tr>
 <td><img width="100%" src="docs/assets/perf-gemma4-12b-multimodal-ttft-ms.svg" alt="Bar chart showing Gemma 4 12B multimodal prefill time to first token for AX Engine native MLX"></td>
 <td><img width="100%" src="docs/assets/perf-gemma4-12b-multimodal-prefill-tok-s.svg" alt="Bar chart showing Gemma 4 12B multimodal prefill throughput for AX Engine native MLX"></td>
-<td><img width="100%" src="docs/assets/perf-gemma4-12b-multimodal-peer-chat-ms.svg" alt="Grouped bar chart comparing Gemma 4 12B AX Engine chat E2E latency and llama.cpp Metal peer chat latency for supported multimodal cases"></td>
+<td><img width="100%" src="docs/assets/perf-gemma4-12b-multimodal-peer-chat-ms.svg" alt="Grouped bar chart showing Gemma 4 12B AX Engine chat E2E endpoint latency and llama.cpp Metal peer endpoint latency for matched-output multimodal cases"></td>
 </tr>
 </table>
 
-| Coverage | AX cases measured | Expanded input | Median runner prefill TTFT | Median prefill | Median AX chat E2E | llama.cpp peer chat |
+| Coverage | AX cases measured | Expanded input | Median runner prefill TTFT | Median prefill | Median AX chat E2E | llama.cpp peer endpoint |
 |---|---:|---:|---:|---:|---:|---|
-| Image | 5 | 275-535 tokens | 188.9-314.8 ms | 1,449.8-1,699.8 tok/s | 1,451.3-1,705.1 ms | 5 measured: 364.9-482.3 ms |
-| Audio | 4 | 32-771 tokens | 76.3-418.5 ms | 419.4-1,842.2 tok/s | 1,452.1-1,825.1 ms | 4 measured: 190.7-370.5 ms |
-| Video | 4 | 92-2,355 tokens | 105.8-2,926.8 ms | 804.6-1,677.5 tok/s | 1,475.5-4,374.7 ms | 4 skipped: llama.cpp video path unsupported |
-| Combined | 4 | 181-442 tokens | 133.2-256.0 ms | 1,358.4-1,726.3 tok/s | 1,494.2-1,669.1 ms | 1 measured: 494.8 ms; 3 skipped: video unsupported |
+| Image | 5 | 275-535 tokens | 190.1-318.6 ms | 1,446.5-1,679.3 tok/s | 1,502.4-1,777.5 ms | 5 measured; 4 charted: 381.1-505.6 ms; 1 output-token mismatch excluded |
+| Audio | 4 | 32-771 tokens | 76.1-420.7 ms | 420.3-1,832.6 tok/s | 1,471.5-2,004.3 ms | 4 measured/charted: 188.7-370.1 ms |
+| Video | 4 | 92-2,355 tokens | 106.2-2,982.2 ms | 789.7-1,674.3 tok/s | 1,589.4-4,449.2 ms | 4 skipped: llama.cpp video path unsupported |
+| Combined | 4 | 181-442 tokens | 133.1-260.2 ms | 1,359.8-1,699.2 tok/s | 1,539.0-1,701.3 ms | 1 measured/charted: 486.4 ms; 3 skipped: video unsupported |
 
-Rows use `/v1/generate/stream` with processed `multimodal_inputs.gemma4_unified` for runner-time prefill and `/v1/chat/completions` with inline media for client-wall E2E latency. This run used `max_output_tokens=8`, 1 warmup, 3 measured repetitions, `--max-batch-tokens 4096`, and a clean tracked worktree at `761eded8058f82b8a8c65582991e1215873be3aa`.
+Rows use `/v1/generate/stream` with processed `multimodal_inputs.gemma4_unified` for runner-time prefill and `/v1/chat/completions` with inline media for client-wall E2E latency. This run used `max_output_tokens=8`, 1 warmup, 3 measured repetitions, `--max-batch-tokens 4096`, a release server binary, 128 GB unified memory, and a clean tracked worktree at `2d821354c986e4bab792da364504f3cdf4149ae3`.
 
-The llama.cpp peer rows use reference llama.cpp `19bba67c1` with Metal, `gemma-4-12B-it-Q4_K_M.gguf`, and `mmproj-gemma-4-12B-it-Q8_0.gguf`. They are OpenAI chat E2E latency rows for supported image/audio inputs, not native prefill rows. Video-containing peer rows are explicit skips because the local llama.cpp Gemma 4 path does not expose a like-for-like video contract. The artifact requires positive `response_chars`; for this Gemma 4 llama.cpp build, most peer text appears in `reasoning_content` rather than `message.content`.
+The llama.cpp peer rows use reference llama.cpp `19bba67c1` with Metal, `gemma-4-12B-it-Q4_K_M.gguf`, and `mmproj-gemma-4-12B-it-Q8_0.gguf`. They are OpenAI chat endpoint-latency rows for supported image/audio inputs, not native prefill rows and not a throughput comparison. Prompt token accounting differs by engine because AX reports expanded Gemma4 soft-token prompt length while llama.cpp reports its own OpenAI-server prompt tokens. The peer chart includes only measured rows with matching output-token counts; `image_single_256soft` remains in the artifact but is excluded from the chart because AX emitted 2 output tokens while llama.cpp emitted 8. Video-containing peer rows are explicit skips because the local llama.cpp Gemma 4 path does not expose a like-for-like video contract. The artifact requires positive `response_chars`; for this Gemma 4 llama.cpp build, most peer text appears in `reasoning_content` rather than `message.content`.
 
 Full artifact: [`2026-06-09-gemma4-12b-multimodal-matrix`](benchmarks/results/gemma4-multimodal/2026-06-09-gemma4-12b-multimodal-matrix.json). Render charts with:
 
