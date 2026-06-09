@@ -526,6 +526,92 @@ async fn openai_chat_request_decodes_inline_gif_video_with_timestamps() {
 }
 
 #[tokio::test]
+async fn openai_chat_request_decodes_combined_image_audio_video() {
+    use base64::Engine as _;
+
+    let artifact_dir = gemma4_unified_artifact("native-openai-chat-combined");
+    let state = native_mlx_openai_builder_state("qwen3", &artifact_dir);
+    let encode = |bytes: &[u8]| base64::engine::general_purpose::STANDARD.encode(bytes);
+
+    let png = include_bytes!("fixtures/gemma4_golden/image_noresize.png");
+    let image_uri = format!("data:image/png;base64,{}", encode(png));
+
+    // 16kHz mono WAV, 1600 samples -> ceil(1600/640) = 3 audio frames.
+    let mut wav: Vec<u8> = Vec::new();
+    {
+        let spec = hound::WavSpec {
+            channels: 1,
+            sample_rate: 16000,
+            bits_per_sample: 32,
+            sample_format: hound::SampleFormat::Float,
+        };
+        let mut writer = hound::WavWriter::new(std::io::Cursor::new(&mut wav), spec).unwrap();
+        for _ in 0..1600 {
+            writer.write_sample(0.1f32).unwrap();
+        }
+        writer.finalize().unwrap();
+    }
+    let audio_b64 = encode(&wav);
+
+    // 2-frame 16x16 animated GIF.
+    let mut gif: Vec<u8> = Vec::new();
+    {
+        let mut encoder = image::codecs::gif::GifEncoder::new(std::io::Cursor::new(&mut gif));
+        for rgb in [[10u8, 20, 30], [40, 50, 60]] {
+            let frame =
+                image::RgbaImage::from_pixel(16, 16, image::Rgba([rgb[0], rgb[1], rgb[2], 255]));
+            encoder.encode_frame(image::Frame::new(frame)).unwrap();
+        }
+    }
+    let video_uri = format!("data:image/gif;base64,{}", encode(&gif));
+
+    let request: OpenAiChatCompletionHttpRequest = serde_json::from_value(json!({
+        "model": "qwen3",
+        "messages": [{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "describe"},
+                {"type": "image_url", "image_url": {"url": image_uri}},
+                {"type": "input_audio", "input_audio": {"data": audio_b64, "format": "wav"}},
+                {"type": "video_url", "video_url": {"url": video_uri}}
+            ]
+        }],
+        "max_tokens": 8
+    }))
+    .expect("combined multimodal request should deserialize");
+
+    let built =
+        build_openai_chat_request(&state, request).expect("combined multimodal chat should build");
+    let inputs = built
+        .generate_request
+        .multimodal_inputs
+        .gemma4_unified
+        .expect("all three modalities should attach tensors");
+
+    // All three modalities present together.
+    assert_eq!(inputs.images.len(), 1);
+    assert_eq!(inputs.audios.len(), 1);
+    assert_eq!(inputs.videos.len(), 1);
+    assert_eq!(inputs.images[0].span.soft_token_count, 4);
+    assert_eq!(inputs.audios[0].frame_count, 3);
+    assert_eq!(inputs.audios[0].span.soft_token_count, 3);
+    assert_eq!(inputs.videos[0].frame_count, 2);
+    assert_eq!(inputs.videos[0].soft_token_ranges.len(), 2);
+
+    // Every placeholder round-tripped and expanded in one pass: image(100),
+    // audio(101), video(104) soft tokens all present in the final stream.
+    let tokens = &built.generate_request.input_tokens;
+    assert_eq!(tokens.iter().filter(|&&t| t == 100).count(), 4);
+    assert_eq!(tokens.iter().filter(|&&t| t == 101).count(), 3);
+    assert_eq!(
+        tokens.iter().filter(|&&t| t == 104).count() as u32,
+        inputs.videos[0].span.soft_token_count
+    );
+
+    fs::remove_dir_all(artifact_dir).expect("artifact dir should clean up");
+}
+
+#[tokio::test]
 async fn openai_chat_request_rejects_gemma4_multimodal_inputs_without_input_tokens() {
     let artifact_dir = minimal_tokenizer_artifact("native-openai-chat-mm-no-tokens");
     let state = native_mlx_openai_builder_state("gemma-4-12b-it", &artifact_dir);

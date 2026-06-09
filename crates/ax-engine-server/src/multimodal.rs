@@ -673,10 +673,10 @@ mod tests {
         }
     }
 
-    fn wav_16k_mono(samples: &[f32]) -> Vec<u8> {
+    fn wav_mono(samples: &[f32], sample_rate: u32) -> Vec<u8> {
         let spec = hound::WavSpec {
             channels: 1,
-            sample_rate: 16000,
+            sample_rate,
             bits_per_sample: 32,
             sample_format: hound::SampleFormat::Float,
         };
@@ -690,6 +690,10 @@ mod tests {
             writer.finalize().expect("finalize");
         }
         bytes
+    }
+
+    fn wav_16k_mono(samples: &[f32]) -> Vec<u8> {
+        wav_mono(samples, 16000)
     }
 
     #[test]
@@ -706,6 +710,55 @@ mod tests {
         // First samples preserved, tail zero-padded.
         assert_eq!(pre.input_features[0], 0.25);
         assert_eq!(*pre.input_features.last().unwrap(), 0.0);
+    }
+
+    #[test]
+    fn wav_resampled_from_44100_to_16000_target_rate() {
+        let audio = audio();
+        // 1 second at 44.1kHz resamples to ~16000 samples at the model's 16kHz.
+        let wav = wav_mono(&vec![0.1f32; 44_100], 44_100);
+        let pre = preprocess_wav(&wav, &audio).unwrap();
+        assert!(
+            (pre.sample_count as i64 - 16_000).abs() <= 1,
+            "expected ~16000 resampled samples, got {}",
+            pre.sample_count
+        );
+        // Frame count follows the 16kHz sample count, not the source rate.
+        assert_eq!(pre.frame_count, pre.sample_count.div_ceil(640));
+        assert_eq!(pre.frame_count, audio.compute_soft_tokens(pre.sample_count));
+        assert_eq!(pre.feature_count, 640);
+    }
+
+    #[test]
+    fn image_decodes_jpeg_input() {
+        // Fixtures elsewhere are PNG; confirm the JPEG decode path also works.
+        let vision = Gemma4UnifiedVisionProcessor {
+            patch_size: 4,
+            model_patch_size: 8,
+            pooling_kernel_size: 2,
+            max_soft_tokens: 4,
+        };
+        let buffer = image::RgbImage::from_fn(16, 16, |x, y| {
+            image::Rgb([(x * 8) as u8, (y * 8) as u8, 96])
+        });
+        let mut bytes: Vec<u8> = Vec::new();
+        image::DynamicImage::ImageRgb8(buffer)
+            .write_to(
+                &mut std::io::Cursor::new(&mut bytes),
+                image::ImageFormat::Jpeg,
+            )
+            .expect("encode jpeg");
+
+        let pre = preprocess_image(&bytes, &vision, &ImageNormalization::default()).unwrap();
+        let core = vision.compute_soft_tokens(16, 16).unwrap() as usize;
+        assert_eq!(pre.pixel_position_ids.len(), core);
+        let patch_dim = 8 * 8 * 3;
+        assert_eq!(pre.pixel_values.len(), core * patch_dim);
+        assert!(
+            pre.pixel_values
+                .iter()
+                .all(|value| (0.0..=1.0).contains(value))
+        );
     }
 
     fn animated_gif(frames: &[image::RgbImage]) -> Vec<u8> {
