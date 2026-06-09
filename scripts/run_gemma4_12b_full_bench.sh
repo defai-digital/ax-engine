@@ -26,6 +26,7 @@ BASE_DIR=$(dirname "$(ls "$HOME"/.cache/huggingface/hub/models--mlx-community--g
 # 4-bit group-64, ~4.5 bpw, comparable to Q4_K_M's ~4.8 bpw) for an apples-to-
 # apples decode comparison. Build it once if absent.
 FFN4_DIR="$HOME/.cache/huggingface/hub/models--ax-local--gemma-4-12B-it-4bit-ffn4/snapshots/v1"
+FFN4_MTP_DIR="$HOME/.cache/huggingface/hub/models--ax-local--gemma-4-12b-it-4bit-ffn4-assistant-mtp/snapshots/v1"
 if [ ! -f "$FFN4_DIR/model-manifest.json" ]; then
   echo "===== Building fair-quant 4-bit-FFN artifact (one-time) -> $FFN4_DIR"
   mkdir -p "$FFN4_DIR"
@@ -34,8 +35,19 @@ if [ ! -f "$FFN4_DIR/model-manifest.json" ]; then
 fi
 
 DIRECT_DIR="benchmarks/results/mlx-inference/${DATE}-gemma-4-12b-it-4bit-direct"
-MTP_DIR="benchmarks/results/gemma4-assistant-mtp/${DATE}-gemma4-12b-assistant-mtp"
+MTP_DIR="benchmarks/results/gemma4-assistant-mtp/${DATE}-gemma4-12b-ffn4-mtp-speedup"
 mkdir -p "$DIRECT_DIR"
+
+if [ ! -f "$FFN4_MTP_DIR/model-manifest.json" ]; then
+  echo "===== Building fair-quant 4-bit-FFN assistant-MTP package -> $FFN4_MTP_DIR"
+  $PY scripts/prepare_gemma4_assistant_mtp.py \
+    --target "$FFN4_DIR" \
+    --assistant mlx-community/gemma-4-12B-it-assistant-4bit \
+    --target-model-id gemma-4-12b-it \
+    --assistant-model-id gemma-4-12b-it-assistant \
+    --output "$FFN4_MTP_DIR" \
+    --max-depth 2
+fi
 
 echo "===== GGUF: $GGUF"
 echo "===== BASE_DIR: $BASE_DIR"
@@ -79,10 +91,12 @@ $PY scripts/bench_mlx_inference_stack.py \
   --llama-cpp-decode-at-depth \
   --output "$DIRECT_DIR/gemma-4-12b-it-4bit.json"
 
-echo "===== Phase 2/2: assistant-MTP and MTP+n-gram ====="
+echo "===== Phase 2/2: same-artifact direct/MTP/MTP+n-gram ablation ====="
 $PY scripts/bench_gemma4_assistant_mtp.py \
-  --models 12b-4bit --modes mtp,mtp-ngram \
+  --models 12b-4bit-ffn4 \
+  --profiles direct,assistant_mtp_default,assistant_mtp_ngram_default,utility_gate_candidate,assistant_mtp_gate095,assistant_mtp_gate090,assistant_mtp_gate085,assistant_mtp_deep099,assistant_mtp_deep095,assistant_mtp_depth1,assistant_mtp_depth2,assistant_mtp_gpu_confidence,assistant_mtp_ngram_gpu_confidence,assistant_mtp_ngram_ctx2_support1,assistant_mtp_ngram_ctx4_support4,assistant_mtp_ngram_confidence050,assistant_mtp_ngram_safety_disable_all \
   --suites flappy,long_code,python_modules_long \
+  --model-dir "12b-4bit-ffn4=$FFN4_MTP_DIR" \
   --max-tokens 1000 --repetitions 5 --cooldown 10 --inter-case-cooldown 5 \
   --no-build-ax-engine \
   --output-dir "$MTP_DIR"

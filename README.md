@@ -359,6 +359,18 @@ Unlike Qwen's fused `mtp.*` sidecar, Gemma 4's multi-token prediction uses a sma
 
 A **draft confidence gate** (`AX_MLX_GEMMA4_ASSISTANT_MTP_DRAFT_MIN_CONFIDENCE`, default `0.999`) only proposes a draft when the drafter's top-token probability clears the threshold, keeping accept high while remaining correctness-preserving. Lower the gate toward `0` for more speculation on less predictable content.
 
+> **The gate is a speed knob, not a quality knob — lowering it does not corrupt output (e.g. code).** Every drafted token is verified by the target model before it is emitted (rejection sampling when draft log-probs exist, greedy argmax-match otherwise), so a mismatched draft is discarded and replaced by the target's own token. Relaxing the gate (say `0.999` → `0.95`) only lets the drafter propose *more* speculative tokens; it lowers the accept rate and shifts throughput, but the emitted sequence is still the verified target sequence. On code — where the drafter is already sharply peaked and clears `0.999` on most positions — relaxing the gate barely changes behavior and will not introduce errors. (Output-altering approximations are separate, explicit opt-ins such as top-k target softmax, never the confidence gate.)
+
+**Choosing the gate by workload.** Because the output is verified either way, the gate is a throughput dial, not a safety one — pick it by how *predictable* your content is, and (only for temperature-sampled chat) how much reply diversity you want. Lower gate = more speculation = lower accept rate but more multi-token runs. Starting points:
+
+| Workload | Suggested gate | Expected accept¹ | Why |
+|---|---|---|---|
+| **Coding** | `~0.90` (aggressive) | stays high (~96–98%) | Sharply peaked output: even `0.999` already clears ~98%, so low-confidence drafts are rare and usually still correct. Deterministic, so no diversity cost — tune purely for speed. |
+| **Agentic** (tools / JSON / reasoning) | `~0.90–0.95` | high (~95–98%) | Templated and low-temperature like code; output is verified, so no correctness risk. Keep the n-gram structured-output safety gates on. |
+| **Chatbot** | `~0.99–0.999` if sampling for variety; lower at low temperature | drops on flat text | Natural language is flatter, so accept falls faster; at temperature > 0 a low gate makes replies follow the greedy token and feel less varied. Here a high gate protects *diversity*, not correctness. |
+
+> ¹ Only the code-like benchmark suites below (`flappy`, `long_code`, `python_modules_long`) are measured — they sit ≥98%. The agentic and chatbot figures are expected ranges, and the suggested gates are principled starting points (from output peakedness and the Qwen `0.90` throughput precedent), not measured 12B optima. The `assistant_mtp_gate*` ablation profiles lock the exact per-workload sweet spot.
+
 No peer engine (MTPLX, Rapid-MLX, lightning-mlx) exposes a runnable Gemma 4 assistant-MTP path, so this benchmark has no peer comparison rows.
 
 **Gemma 4 speculative decoding holds draft accept ≥98% on every cell below** (98.4–99.5% across 26B / 31B × {MTP, MTP+n-gram} × {flappy, long_code, python_modules_long}).

@@ -2599,6 +2599,7 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
                     "ax_mlx_gemma4_assistant_mtp_attach_failed": 0,
                     "ax_mlx_gemma4_assistant_mtp_disable_reason": 0,
                     "ax_mlx_gemma4_assistant_mtp_depth": 1,
+                    "ax_mlx_gemma4_assistant_mtp_confidence_mode": 1,
                     "ax_mlx_gemma4_assistant_mtp_draft_tokens": 4,
                     "ax_mlx_gemma4_assistant_mtp_accepted_tokens": 3,
                     "ax_mlx_gemma4_assistant_mtp_rejected_tokens": 1,
@@ -2613,6 +2614,7 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         )
 
         self.assertEqual(telemetry["ax_mlx_gemma4_assistant_mtp_enabled"], 1)
+        self.assertEqual(telemetry["ax_mlx_gemma4_assistant_mtp_confidence_mode"], 1)
         self.assertEqual(telemetry["ax_mlx_gemma4_assistant_mtp_draft_tokens"], 4)
         self.assertNotIn("unrelated", telemetry)
 
@@ -2623,6 +2625,7 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
                     "ax_mlx_gemma4_assistant_mtp": {
                         "ax_mlx_gemma4_assistant_mtp_enabled": 1,
                         "ax_mlx_gemma4_assistant_mtp_depth": 1,
+                        "ax_mlx_gemma4_assistant_mtp_confidence_mode": 1,
                         "ax_mlx_gemma4_assistant_mtp_draft_tokens": 2,
                         "ax_mlx_gemma4_assistant_mtp_accepted_tokens": 1,
                         "ax_mlx_gemma4_assistant_mtp_rejected_tokens": 1,
@@ -2636,6 +2639,7 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         )
         self.assertEqual(summary["ax_mlx_gemma4_assistant_mtp_enabled"], 1)
         self.assertEqual(summary["ax_mlx_gemma4_assistant_mtp_depth"], 1)
+        self.assertEqual(summary["ax_mlx_gemma4_assistant_mtp_confidence_mode"], 1)
         self.assertEqual(summary["ax_mlx_gemma4_assistant_mtp_draft_tokens"], 6)
         self.assertEqual(summary["ax_mlx_gemma4_assistant_mtp_accepted_tokens"], 4)
         self.assertEqual(summary["ax_mlx_gemma4_assistant_mtp_rejected_tokens"], 2)

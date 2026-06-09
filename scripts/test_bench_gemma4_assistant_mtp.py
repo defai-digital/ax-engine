@@ -53,6 +53,56 @@ class Gemma4AssistantMtpBenchTests(unittest.TestCase):
             {"AX_MLX_MTP_TARGET_SOFTMAX_MODE": "topk-256"},
         )
 
+    def test_select_bench_profiles_exposes_depth_and_gpu_confidence_profiles(self) -> None:
+        profiles = bench.select_bench_profiles(
+            modes=[],
+            profile_keys=[
+                "assistant_mtp_depth1",
+                "assistant_mtp_gpu_confidence",
+                "assistant_mtp_ngram_gpu_confidence",
+            ],
+        )
+
+        self.assertEqual(profiles[0].depth, 1)
+        self.assertTrue(profiles[1].experimental)
+        self.assertEqual(
+            profiles[1].env,
+            {"AX_MLX_GEMMA4_ASSISTANT_MTP_CONFIDENCE_MODE": "gpu-exact"},
+        )
+        self.assertEqual(profiles[2].mode, "mtp-ngram")
+        self.assertTrue(profiles[2].experimental)
+
+    def test_select_bench_profiles_exposes_ngram_policy_ablation_profiles(self) -> None:
+        profiles = bench.select_bench_profiles(
+            modes=[],
+            profile_keys=[
+                "assistant_mtp_ngram_ctx4_support4",
+                "assistant_mtp_ngram_safety_disable_all",
+            ],
+        )
+
+        self.assertEqual(
+            profiles[0].env,
+            {
+                "AX_MLX_MTP_NGRAM_MIN_CONTEXT_LEN": "4",
+                "AX_MLX_MTP_NGRAM_MIN_SUPPORT": "4",
+            },
+        )
+        self.assertEqual(
+            profiles[1].env,
+            {"AX_MLX_MTP_NGRAM_SAFETY_MODE": "disable-all"},
+        )
+
+    def test_ffn4_model_profile_targets_parity_package(self) -> None:
+        profile = bench.GEMMA4_PROFILES["12b-4bit-ffn4"]
+
+        self.assertEqual(profile.target_model_id, "gemma-4-12b-it")
+        self.assertEqual(profile.assistant_model_id, "gemma-4-12b-it-assistant")
+        self.assertEqual(
+            profile.prepared_slug,
+            "models--ax-local--gemma-4-12b-it-4bit-ffn4-assistant-mtp",
+        )
+
     def test_summarize_artifact_extracts_assistant_and_ngram_telemetry(self) -> None:
         artifact = {
             "build": {"git_tracked_dirty": False},
@@ -67,6 +117,7 @@ class Gemma4AssistantMtpBenchTests(unittest.TestCase):
                     "ax_mlx_gemma4_assistant_mtp": {
                         "ax_mlx_gemma4_assistant_mtp_draft_tokens": 10,
                         "ax_mlx_gemma4_assistant_mtp_accepted_tokens": 8,
+                        "ax_mlx_gemma4_assistant_mtp_confidence_mode": 1,
                     },
                     "ngram_acceleration_telemetry": {
                         "ax_mtp_draft_tokens": 12,
@@ -109,6 +160,7 @@ class Gemma4AssistantMtpBenchTests(unittest.TestCase):
                     "ax_mlx_gemma4_assistant_mtp": {
                         "ax_mlx_gemma4_assistant_mtp_draft_tokens": 10,
                         "ax_mlx_gemma4_assistant_mtp_accepted_tokens": 7,
+                        "ax_mlx_gemma4_assistant_mtp_confidence_mode": 1,
                     },
                     "ngram_acceleration_telemetry": {
                         "ax_mtp_draft_tokens": 8,
@@ -185,6 +237,7 @@ class Gemma4AssistantMtpBenchTests(unittest.TestCase):
         self.assertEqual(summary["utility_stacked_cost_per_emitted_token_us_median"], 105.0)
         self.assertEqual(summary["gate_policies"], [1])
         self.assertEqual(summary["safety_reasons"], [3, 4])
+        self.assertEqual(summary["assistant_confidence_modes"], [1])
 
     def test_summarize_artifact_fails_closed_on_missing_engine(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

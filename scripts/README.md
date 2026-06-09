@@ -145,10 +145,12 @@ throughput baselines.
   fixed-depth and tuned-best-of summaries separate for headline comparisons.
 - `bench_gemma4_assistant_mtp.py`: Gemma 4 assistant-MTP prompt-suite harness
   for AX Engine. It locates or prepares `ax_gemma4_assistant_mtp.json` model
-  directories for Gemma 4 26B A4B and 31B, runs assistant-MTP-only and
-  assistant MTP+n-gram rows, and writes summaries under
-  `benchmarks/results/gemma4-assistant-mtp/`. Use `--resume` to continue a long
-  matrix without rerunning completed per-suite artifacts.
+  directories for Gemma 4 12B/26B A4B/31B, runs same-artifact direct,
+  assistant-MTP-only, and assistant MTP+n-gram rows, records target affine bit
+  composition plus route telemetry, and writes summaries under
+  `benchmarks/results/gemma4-assistant-mtp/`. Use `--profiles` for the
+  gate/depth/confidence/n-gram ablation matrix and `--resume` to continue a
+  long matrix without rerunning completed per-suite artifacts.
 - `bench_llama_cpp_metal_sweep.py`: resolves GGUF candidates from
   `benchmarks/manifests/llama_cpp_metal/inventory.json` and runs
   `bench_mlx_inference_stack.py` for the matching README rows. By default it

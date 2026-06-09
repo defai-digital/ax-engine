@@ -69,7 +69,16 @@ KNOWN_TARGETS = (
     "gemma-4-31b-it",
 )
 # Quant/format suffixes stripped when deriving the canonical pair id.
-_QUANT_SUFFIXES = ("-4bit", "-6bit", "-8bit", "-bf16", "-fp16", "-mlx", "-mlx-4bit")
+_QUANT_SUFFIXES = (
+    "-4bit-ffn4",
+    "-4bit",
+    "-6bit",
+    "-8bit",
+    "-bf16",
+    "-fp16",
+    "-mlx",
+    "-mlx-4bit",
+)
 
 
 # --------------------------------------------------------------------------- #

@@ -71,6 +71,10 @@ class PairDetectionTests(unittest.TestCase):
 
     def test_derive_canonical_target_strips_quant_suffix(self) -> None:
         self.assertEqual(prep._derive_canonical_target_id("mlx-community/gemma-4-e2b-it-4bit"), "gemma-4-e2b-it")
+        self.assertEqual(
+            prep._derive_canonical_target_id("ax-local/gemma-4-12B-it-4bit-ffn4"),
+            "gemma-4-12b-it",
+        )
         self.assertEqual(prep._derive_canonical_target_id("/x/gemma-4-31b-it-bf16"), "gemma-4-31b-it")
         self.assertEqual(prep._derive_canonical_target_id("google/gemma-4-e4b-it"), "gemma-4-e4b-it")
 
@@ -78,6 +82,10 @@ class PairDetectionTests(unittest.TestCase):
         self.assertEqual(
             prep._derive_output_target_id("mlx-community/gemma-4-12B-it-4bit", "gemma-4-12b-it"),
             "gemma-4-12b-it-4bit",
+        )
+        self.assertEqual(
+            prep._derive_output_target_id("ax-local/gemma-4-12B-it-4bit-ffn4", "gemma-4-12b-it"),
+            "gemma-4-12b-it-4bit-ffn4",
         )
         self.assertEqual(
             prep._derive_output_target_id("/cache/snapshots/5377970", "gemma-4-12b-it"),

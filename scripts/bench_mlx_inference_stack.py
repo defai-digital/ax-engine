@@ -440,6 +440,7 @@ AX_MLX_GEMMA4_ASSISTANT_MTP_KEYS = [
     "ax_mlx_gemma4_assistant_mtp_attach_failed",
     "ax_mlx_gemma4_assistant_mtp_disable_reason",
     "ax_mlx_gemma4_assistant_mtp_depth",
+    "ax_mlx_gemma4_assistant_mtp_confidence_mode",
     "ax_mlx_gemma4_assistant_mtp_draft_tokens",
     "ax_mlx_gemma4_assistant_mtp_accepted_tokens",
     "ax_mlx_gemma4_assistant_mtp_rejected_tokens",
@@ -2693,6 +2694,7 @@ def summarize_ax_mlx_gemma4_assistant_mtp(runs: list[dict[str, Any]]) -> dict[st
         "ax_mlx_gemma4_assistant_mtp_attach_failed",
         "ax_mlx_gemma4_assistant_mtp_disable_reason",
         "ax_mlx_gemma4_assistant_mtp_depth",
+        "ax_mlx_gemma4_assistant_mtp_confidence_mode",
     }
     for run in runs:
         for key, value in (run.get("ax_mlx_gemma4_assistant_mtp") or {}).items():

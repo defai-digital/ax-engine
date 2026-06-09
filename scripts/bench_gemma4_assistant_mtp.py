@@ -70,6 +70,7 @@ class BenchProfile:
     mode: str
     env: dict[str, str]
     experimental: bool = False
+    depth: int | None = None
 
 
 BENCH_PROFILES = {
@@ -106,11 +107,26 @@ BENCH_PROFILES = {
             "AX_MLX_MTP_NGRAM_MIN_SUPPORT": "1",
         },
     ),
+    "assistant_mtp_ngram_ctx4_support4": BenchProfile(
+        key="assistant_mtp_ngram_ctx4_support4",
+        label="assistant MTP + n-gram ctx4 support4",
+        mode="mtp-ngram",
+        env={
+            "AX_MLX_MTP_NGRAM_MIN_CONTEXT_LEN": "4",
+            "AX_MLX_MTP_NGRAM_MIN_SUPPORT": "4",
+        },
+    ),
     "assistant_mtp_ngram_confidence050": BenchProfile(
         key="assistant_mtp_ngram_confidence050",
         label="assistant MTP + n-gram confidence 0.50",
         mode="mtp-ngram",
         env={"AX_MLX_MTP_NGRAM_CONFIDENCE_THRESHOLD": "0.50"},
+    ),
+    "assistant_mtp_ngram_safety_disable_all": BenchProfile(
+        key="assistant_mtp_ngram_safety_disable_all",
+        label="assistant MTP + n-gram safety disable all",
+        mode="mtp-ngram",
+        env={"AX_MLX_MTP_NGRAM_SAFETY_MODE": "disable-all"},
     ),
     "assistant_mtp_gate095": BenchProfile(
         key="assistant_mtp_gate095",
@@ -141,6 +157,34 @@ BENCH_PROFILES = {
         label="assistant MTP deep gate 0.95",
         mode="mtp",
         env={"AX_MLX_GEMMA4_ASSISTANT_MTP_DEEP_DRAFT_MIN_CONFIDENCE": "0.95"},
+    ),
+    "assistant_mtp_depth1": BenchProfile(
+        key="assistant_mtp_depth1",
+        label="assistant MTP depth 1",
+        mode="mtp",
+        env={},
+        depth=1,
+    ),
+    "assistant_mtp_depth2": BenchProfile(
+        key="assistant_mtp_depth2",
+        label="assistant MTP depth 2",
+        mode="mtp",
+        env={},
+        depth=2,
+    ),
+    "assistant_mtp_gpu_confidence": BenchProfile(
+        key="assistant_mtp_gpu_confidence",
+        label="assistant MTP GPU-exact confidence",
+        mode="mtp",
+        env={"AX_MLX_GEMMA4_ASSISTANT_MTP_CONFIDENCE_MODE": "gpu-exact"},
+        experimental=True,
+    ),
+    "assistant_mtp_ngram_gpu_confidence": BenchProfile(
+        key="assistant_mtp_ngram_gpu_confidence",
+        label="assistant MTP + n-gram GPU-exact confidence",
+        mode="mtp-ngram",
+        env={"AX_MLX_GEMMA4_ASSISTANT_MTP_CONFIDENCE_MODE": "gpu-exact"},
+        experimental=True,
     ),
     "target_softmax_topk256_experimental": BenchProfile(
         key="target_softmax_topk256_experimental",
@@ -187,6 +231,16 @@ GEMMA4_PROFILES = {
         target_ref="mlx-community/gemma-4-12B-it-4bit",
         assistant_ref="mlx-community/gemma-4-12B-it-assistant-4bit",
         prepared_slug="models--ax-local--gemma-4-12b-it-4bit-assistant-mtp",
+        depth=2,
+    ),
+    "12b-4bit-ffn4": Gemma4Profile(
+        key="12b-4bit-ffn4",
+        label="Gemma 4 12B 4-bit-FFN",
+        target_model_id="gemma-4-12b-it",
+        assistant_model_id="gemma-4-12b-it-assistant",
+        target_ref="ax-local/gemma-4-12B-it-4bit-ffn4",
+        assistant_ref="mlx-community/gemma-4-12B-it-assistant-4bit",
+        prepared_slug="models--ax-local--gemma-4-12b-it-4bit-ffn4-assistant-mtp",
         depth=2,
     ),
     "26b-a4b-4bit": Gemma4Profile(
@@ -458,6 +512,7 @@ def summarize_artifact(path: Path, *, expected_engine: str) -> dict[str, Any]:
     utility_stacked_costs: list[int] = []
     gate_policies: list[int] = []
     safety_reasons: list[int] = []
+    assistant_confidence_modes: list[int] = []
     claim_statuses: list[str] = []
     effective_routes: list[str] = []
     affine_min_bits: int | None = None
@@ -493,6 +548,10 @@ def summarize_artifact(path: Path, *, expected_engine: str) -> dict[str, Any]:
         assistant_accepted += int(
             assistant.get("ax_mlx_gemma4_assistant_mtp_accepted_tokens", 0) or 0
         )
+        if assistant.get("ax_mlx_gemma4_assistant_mtp_confidence_mode") is not None:
+            assistant_confidence_modes.append(
+                telemetry_int(assistant, "ax_mlx_gemma4_assistant_mtp_confidence_mode")
+            )
         telemetry = row.get("ngram_acceleration_telemetry") or {}
         generic_mtp_drafted += telemetry_int(telemetry, "ax_mtp_draft_tokens")
         generic_mtp_accepted += telemetry_int(telemetry, "ax_mtp_accepted_tokens")
@@ -629,6 +688,7 @@ def summarize_artifact(path: Path, *, expected_engine: str) -> dict[str, Any]:
         ),
         "gate_policies": sorted(set(gate_policies)),
         "safety_reasons": sorted(set(safety_reasons)),
+        "assistant_confidence_modes": sorted(set(assistant_confidence_modes)),
         "claim_statuses": sorted(set(claim_statuses)),
         "effective_routes": sorted(set(effective_routes)),
         "affine_tensor_count": affine_tensor_count,
@@ -1051,6 +1111,7 @@ def main() -> None:
                 raise FileNotFoundError(f"missing prompt suite {suite_file}")
             for bench_profile in bench_profiles:
                 mode = bench_profile.mode
+                row_depth = bench_profile.depth or effective_depth
                 artifact_path = output_dir / model_key / suite / f"{bench_profile.key}.json"
                 artifact_path.parent.mkdir(parents=True, exist_ok=True)
                 if args.resume and artifact_path.exists():
@@ -1067,7 +1128,7 @@ def main() -> None:
                         cooldown=args.cooldown,
                         inter_case_cooldown=args.inter_case_cooldown,
                         sampling=args.sampling,
-                        depth=effective_depth,
+                        depth=row_depth,
                         no_build=args.no_build_ax_engine,
                         env_overrides=bench_profile.env,
                     )
@@ -1082,7 +1143,7 @@ def main() -> None:
                         "profile_label": bench_profile.label,
                         "profile_experimental": bench_profile.experimental,
                         "profile_env": bench_profile.env,
-                        "depth": effective_depth,
+                        "depth": row_depth,
                         "model_dir": str(model_dir),
                     }
                 )

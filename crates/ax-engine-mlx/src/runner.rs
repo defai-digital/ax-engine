@@ -6,9 +6,9 @@ use std::thread::{self, ThreadId};
 use std::time::Instant;
 
 use mlx_sys::{
-    MlxArray, MlxDtype, MlxStream, add, argpartition_axis, astype, clear_cache, divide,
-    enable_compile, eval, max_recommended_working_set_size, multiply, power, set_wired_limit,
-    slice, softmax, stack, sum_axis, take, take_along_axis,
+    MlxArray, MlxDtype, MlxStream, add, argmax, argpartition_axis, astype, clear_cache, divide,
+    enable_compile, eval, max_recommended_working_set_size, multiply, power, reshape,
+    set_wired_limit, slice, softmax, stack, sum_axis, take, take_along_axis,
 };
 
 use ax_engine_core::runner::RunnerRequestContext;
@@ -1329,6 +1329,10 @@ impl Gemma4AssistantMtpStatus {
         decisions.upsert_route_decision(
             "ax_mlx_gemma4_assistant_mtp_depth",
             saturating_u32(self.max_depth),
+        );
+        decisions.upsert_route_decision(
+            "ax_mlx_gemma4_assistant_mtp_confidence_mode",
+            gemma4_assistant_mtp_confidence_mode_from_env().route_code(),
         );
         decisions.upsert_route_decision(
             "ax_mlx_gemma4_assistant_mtp_draft_tokens",
@@ -6796,6 +6800,7 @@ impl MlxRunner {
 
         let base_position = state.cache.seq_len;
         let first_gate = gemma4_assistant_mtp_draft_min_confidence();
+        let confidence_mode = gemma4_assistant_mtp_confidence_mode_from_env();
 
         // Ungated (gate disabled, gate <= 0): a single sampled draft carrying a
         // log-prob + distribution so rejection-sampling acceptance can engage.
@@ -6862,9 +6867,8 @@ impl MlxRunner {
             ) else {
                 break;
             };
-            eval(&[&logits]);
-            let logits_cpu = logits.data_f32().to_vec();
-            let (token, confidence) = argmax_with_softmax_confidence(&logits_cpu);
+            let (token, confidence) =
+                argmax_with_softmax_confidence_for_logits(&logits, confidence_mode);
             let gate = if d == 0 { first_gate } else { deep_gate };
             if confidence < gate {
                 break;
@@ -9047,6 +9051,76 @@ fn mtp_accept_count(
         all_accepted: ac == pending.len(),
         rejection_correction: None,
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Gemma4AssistantMtpConfidenceMode {
+    ExactCpu,
+    GpuExact,
+}
+
+impl Gemma4AssistantMtpConfidenceMode {
+    fn route_code(self) -> u32 {
+        match self {
+            Self::ExactCpu => 0,
+            Self::GpuExact => 1,
+        }
+    }
+}
+
+fn parse_gemma4_assistant_mtp_confidence_mode(
+    raw: &str,
+) -> Option<Gemma4AssistantMtpConfidenceMode> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "exact-cpu" | "exact_cpu" | "cpu" => Some(Gemma4AssistantMtpConfidenceMode::ExactCpu),
+        "gpu-exact" | "gpu_exact" => Some(Gemma4AssistantMtpConfidenceMode::GpuExact),
+        _ => None,
+    }
+}
+
+fn gemma4_assistant_mtp_confidence_mode_from_env() -> Gemma4AssistantMtpConfidenceMode {
+    static CACHED: OnceLock<Gemma4AssistantMtpConfidenceMode> = OnceLock::new();
+    *CACHED.get_or_init(|| {
+        std::env::var("AX_MLX_GEMMA4_ASSISTANT_MTP_CONFIDENCE_MODE")
+            .ok()
+            .and_then(|raw| parse_gemma4_assistant_mtp_confidence_mode(&raw))
+            .unwrap_or(Gemma4AssistantMtpConfidenceMode::ExactCpu)
+    })
+}
+
+fn argmax_with_softmax_confidence_for_logits(
+    logits: &MlxArray,
+    mode: Gemma4AssistantMtpConfidenceMode,
+) -> (u32, f32) {
+    match mode {
+        Gemma4AssistantMtpConfidenceMode::ExactCpu => {
+            eval(&[logits]);
+            let logits_cpu = logits.data_f32().to_vec();
+            argmax_with_softmax_confidence(&logits_cpu)
+        }
+        Gemma4AssistantMtpConfidenceMode::GpuExact => {
+            argmax_with_softmax_confidence_gpu_exact(logits)
+        }
+    }
+}
+
+fn argmax_with_softmax_confidence_gpu_exact(logits: &MlxArray) -> (u32, f32) {
+    let shape = logits.shape();
+    let Some(vocab) = shape.last().copied() else {
+        return (0, 0.0);
+    };
+    if vocab <= 0 || shape.iter().copied().product::<i32>() != vocab {
+        return (0, 0.0);
+    }
+
+    let logits_2d = reshape(logits, &[1, vocab], None);
+    let token_arr = argmax(&logits_2d, None);
+    let probs = softmax(&logits_2d, -1, None);
+    let prob_arr = take(&probs, &token_arr, 1, None);
+    eval(&[&token_arr, &prob_arr]);
+    let token = token_arr.data_u32().first().copied().unwrap_or(0);
+    let confidence = prob_arr.data_f32().first().copied().unwrap_or(0.0);
+    (token, confidence)
 }
 
 /// Top token of a logit row plus its `softmax` probability at temperature 1.0 —
@@ -12091,6 +12165,25 @@ mod tests {
     }
 
     #[test]
+    fn gemma4_assistant_mtp_confidence_mode_parser_accepts_stable_aliases() {
+        assert_eq!(
+            parse_gemma4_assistant_mtp_confidence_mode("gpu-exact"),
+            Some(Gemma4AssistantMtpConfidenceMode::GpuExact)
+        );
+        assert_eq!(
+            parse_gemma4_assistant_mtp_confidence_mode("GPU_EXACT"),
+            Some(Gemma4AssistantMtpConfidenceMode::GpuExact)
+        );
+        assert_eq!(
+            parse_gemma4_assistant_mtp_confidence_mode("cpu"),
+            Some(Gemma4AssistantMtpConfidenceMode::ExactCpu)
+        );
+        assert_eq!(parse_gemma4_assistant_mtp_confidence_mode("approx"), None);
+        assert_eq!(Gemma4AssistantMtpConfidenceMode::ExactCpu.route_code(), 0);
+        assert_eq!(Gemma4AssistantMtpConfidenceMode::GpuExact.route_code(), 1);
+    }
+
+    #[test]
     fn gemma4_assistant_mtp_status_emits_prd_route_metadata() {
         let status = Gemma4AssistantMtpStatus {
             configured: true,
@@ -12124,6 +12217,10 @@ mod tests {
             Some(&0)
         );
         assert_eq!(decisions.get("ax_mlx_gemma4_assistant_mtp_depth"), Some(&1));
+        assert_eq!(
+            decisions.get("ax_mlx_gemma4_assistant_mtp_confidence_mode"),
+            Some(&0)
+        );
         assert_eq!(
             decisions.get("ax_mlx_gemma4_assistant_mtp_draft_tokens"),
             Some(&0)
@@ -12266,6 +12363,10 @@ mod tests {
         assert_eq!(
             decisions.get("ax_mlx_gemma4_assistant_mtp_enabled"),
             Some(&1)
+        );
+        assert_eq!(
+            decisions.get("ax_mlx_gemma4_assistant_mtp_confidence_mode"),
+            Some(&0)
         );
         assert_eq!(
             decisions.get("ax_mlx_gemma4_assistant_mtp_draft_tokens"),
