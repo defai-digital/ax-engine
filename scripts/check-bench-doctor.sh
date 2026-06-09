@@ -44,6 +44,11 @@ expected_status = (
     if expected_bringup_allowed
     else "not_ready"
 )
+expected_status_label = {
+    "ready": "ready",
+    "bringup_only": "bring-up only",
+    "not_ready": "not ready",
+}[expected_status]
 
 assert report["mlx_runtime_ready"] is expected_ready
 assert report["bringup_allowed"] is expected_bringup_allowed
@@ -62,7 +67,7 @@ doctor_text = subprocess.check_output(
 )
 
 assert "AX Engine v6 doctor" in doctor_text
-assert f"Status: {expected_status.replace('_', ' ')}" in doctor_text
+assert f"Status: {expected_status_label}" in doctor_text
 assert "Summary:" in doctor_text
 assert "Workflow:" in doctor_text
 assert "Model artifacts:" in doctor_text
