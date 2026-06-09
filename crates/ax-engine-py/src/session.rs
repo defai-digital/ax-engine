@@ -98,7 +98,8 @@ impl Session {
             mlx_runtime_artifacts_dir: None,
             mlx_model_artifacts_dir: effective_mlx_model_artifacts_dir,
             mlx_disable_ngram_acceleration: false,
-            mlx_mtp_disable_ngram_stacking: false,
+            mlx_mtp_disable_ngram_stacking: true,
+            mlx_speculation_profile: None,
             mlx_kv_compression: ax_engine_sdk::KvCompressionConfig::disabled(),
             mlx_prefill_chunk: None,
         })

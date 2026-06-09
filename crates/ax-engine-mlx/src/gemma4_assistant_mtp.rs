@@ -436,27 +436,19 @@ pub fn gemma4_assistant_mtp_debug_enabled() -> bool {
 /// Default draft confidence gate for the Gemma 4 assistant drafter.
 ///
 /// The assistant proposes one token per decode step; without a gate every step
-/// is verified regardless of how unsure the drafter is, so its rejections drag
-/// the measured accept rate down (~94% on real code). Gating mirrors the Qwen
-/// MTP head's [`crate::mtp::DEFAULT_MTP_DRAFT_MIN_CONFIDENCE`]: a step only
-/// proposes its draft when the drafter's own (temperature-1.0) probability in
-/// its top token is at least this threshold, otherwise the draft is suppressed
-/// and the step falls back to an ordinary verified decode. Suppression is
-/// correctness-preserving — it never changes the committed token, only whether a
-/// step speculates — so this is an accept-rate / throughput knob, not a quality
-/// change. The default holds assistant accept above 98% on the fair-MTP suites
-/// for both 26B and 31B; lower it toward `0` for more speculation (more drafts,
-/// lower accept on less predictable content) via the env override.
+/// is verified regardless of how unsure the drafter is, so rejections drag the
+/// measured accept rate down. Gating mirrors the Qwen MTP head's
+/// [`crate::mtp::DEFAULT_MTP_DRAFT_MIN_CONFIDENCE`]: a step only proposes its
+/// draft when the drafter's own (temperature-1.0) top-token probability clears
+/// this threshold, otherwise the step falls back to an ordinary verified decode.
+/// Suppression is correctness-preserving: it never changes the committed token,
+/// only whether a step speculates.
 ///
-/// On code, the drafter is extremely peaked, so even a 0.999 gate still passes
-/// ~95% of its drafts (decode cost is ~1-2% vs a looser gate) while filtering
-/// the uncertain tail that causes most rejections. The hard suite is long code:
-/// a 26B `long_code` sweep (~1.4k drafts/point) measured accept 97.5% @0.98,
-/// 97.4% @0.99, 98.3% @0.995, 98.7% @0.999 — flappy already clears 98% by ~0.97,
-/// but long code only crosses it near 0.995, so the default is set for the
-/// hardest suite. The residual rejections are genuine drafter-vs-target argmax
-/// disagreements that no gate can filter.
-pub const DEFAULT_GEMMA4_ASSISTANT_MTP_DRAFT_MIN_CONFIDENCE: f32 = 0.999;
+/// The 2026-06-09 Gemma 4 12B Phase 4 sweep found that `0.90` plus GPU-exact
+/// confidence preserves code-suite assistant accept at roughly 93-96% while
+/// raising depth-2 decode to about 99-105 tok/s. The deep-position gate stays
+/// tight at 0.999 because wrong deep drafts still pay a larger recompute cost.
+pub const DEFAULT_GEMMA4_ASSISTANT_MTP_DRAFT_MIN_CONFIDENCE: f32 = 0.90;
 
 /// Read the assistant draft confidence gate from
 /// `AX_MLX_GEMMA4_ASSISTANT_MTP_DRAFT_MIN_CONFIDENCE`; valid range `[0.0, 1.0)`.
@@ -478,10 +470,9 @@ pub fn gemma4_assistant_mtp_draft_min_confidence() -> f32 {
 }
 
 /// Default draft confidence gate for the assistant's DEEP draft positions
-/// (the 2nd token and beyond). Equal to the first-position gate
-/// [`DEFAULT_GEMMA4_ASSISTANT_MTP_DRAFT_MIN_CONFIDENCE`] (0.999) — i.e. a uniform
-/// 0.999 gate across the depth-2 draft — but exposed as a separate knob so deep
-/// drafts can be loosened independently for throughput experiments.
+/// (the 2nd token and beyond). Exposed separately from the first-position gate
+/// so deep drafts can stay conservative while first-position speculation is
+/// throughput-tuned.
 ///
 /// A wrong deep draft costs a full target recompute, so unlike the
 /// throughput-tuned Qwen head this gate stays TIGHT. The canonical T=0.6

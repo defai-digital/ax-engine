@@ -34,6 +34,28 @@ pub enum ModelArtifactResolution {
     HfCache,
 }
 
+/// Speculative-decode posture preset (ADR-022). Bundles the MTP + n-gram gate
+/// configuration into one selector.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+pub enum SpeculationProfileArg {
+    Auto,
+    Coding,
+    Agentic,
+    Chatbot,
+}
+
+impl SpeculationProfileArg {
+    /// Canonical lowercase name passed to the runtime resolver.
+    pub fn as_name(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Coding => "coding",
+            Self::Agentic => "agentic",
+            Self::Chatbot => "chatbot",
+        }
+    }
+}
+
 #[derive(Parser, Debug, Clone)]
 #[command(name = "ax-engine-server", version, about)]
 pub struct ServerArgs {
@@ -110,11 +132,28 @@ pub struct ServerArgs {
     #[arg(long = "disable-ngram-acceleration", default_value_t = false)]
     pub disable_ngram_acceleration: bool,
 
+    /// Enable n-gram-first drafting inside the MTP verify loop. Disabled by
+    /// default after the Gemma 4 12B Phase 4 sweep found pure assistant-MTP is
+    /// the stronger default and n-gram stacking is workload-dependent.
+    #[arg(
+        long = "mlx-mtp-enable-ngram-stacking",
+        default_value_t = false,
+        conflicts_with = "mlx_mtp_disable_ngram_stacking"
+    )]
+    pub mlx_mtp_enable_ngram_stacking: bool,
+
     /// Keep MTP speculation enabled but disable n-gram-first drafting inside
-    /// the MTP verify loop. Useful for pure-MTP benchmark comparisons against
-    /// MTP-head-only reference engines.
+    /// the MTP verify loop. This remains for explicit pure-MTP benchmark
+    /// comparisons; it is also the default when the enable flag is absent.
     #[arg(long = "mlx-mtp-disable-ngram-stacking", default_value_t = false)]
     pub mlx_mtp_disable_ngram_stacking: bool,
+
+    /// Speculative-decode posture preset (ADR-022): `auto` (default,
+    /// temperature-driven), `coding`, `agentic`, or `chatbot`. Bundles the MTP
+    /// and n-gram gate configuration into one selector. Unset falls back to the
+    /// `AX_MLX_SPECULATION_PROFILE` env / built-in `auto`.
+    #[arg(short = 's', long = "speculation-profile", alias = "spec", value_enum)]
+    pub speculation_profile: Option<SpeculationProfileArg>,
 
     /// Override the MLX prefill chunk size. When unset, the runner uses
     /// `DEFAULT_PREFILL_CHUNK` (2048), matching mlx_lm's default

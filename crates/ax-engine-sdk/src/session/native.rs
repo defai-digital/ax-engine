@@ -48,6 +48,17 @@ fn build_mlx_core(
     use ax_engine_core::{DeterministicSampler, NativeModelArtifacts};
     use ax_engine_mlx::{MlxRunner, generate::DEFAULT_PREFILL_CHUNK};
 
+    // Install the speculation-profile override (ADR-022) from the resolved CLI
+    // flag before the runner reads it. This is a safe alternative to mutating the
+    // process environment, which the server/SDK crates cannot do under
+    // `unsafe_code = "forbid"`. An unparsable name is ignored (falls back to env
+    // / `auto`).
+    if let Some(name) = config.mlx_speculation_profile.as_deref() {
+        if let Some(profile) = ax_engine_mlx::speculation_profile::SpeculationProfile::parse(name) {
+            ax_engine_mlx::speculation_profile::set_speculation_profile_override(profile);
+        }
+    }
+
     let model_dir = config
         .mlx_model_artifacts_dir()
         .ok_or(EngineSessionError::MlxRuntimeArtifactsRequired)?;

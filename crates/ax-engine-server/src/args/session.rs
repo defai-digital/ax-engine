@@ -109,6 +109,9 @@ impl ServerArgs {
             }
         };
 
+        let mlx_mtp_disable_ngram_stacking =
+            self.mlx_mtp_disable_ngram_stacking || !self.mlx_mtp_enable_ngram_stacking;
+
         EngineSessionConfig::from_preview_request(PreviewSessionConfigRequest {
             cache_group_id: ax_engine_sdk::CacheGroupId(self.cache_group_id),
             block_size_tokens: self.block_size_tokens,
@@ -119,7 +122,10 @@ impl ServerArgs {
             mlx_runtime_artifacts_dir: None,
             mlx_model_artifacts_dir,
             mlx_disable_ngram_acceleration: self.disable_ngram_acceleration,
-            mlx_mtp_disable_ngram_stacking: self.mlx_mtp_disable_ngram_stacking,
+            mlx_mtp_disable_ngram_stacking,
+            mlx_speculation_profile: self
+                .speculation_profile
+                .map(|profile| profile.as_name().to_string()),
             mlx_kv_compression: self.experimental_mlx_kv_compression.as_config(
                 self.experimental_mlx_kv_compression_hot_window_tokens,
                 self.experimental_mlx_kv_compression_min_context_tokens,

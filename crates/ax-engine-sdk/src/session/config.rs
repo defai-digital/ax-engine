@@ -40,6 +40,10 @@ pub struct EngineSessionConfig {
     /// When true, MLX MTP decode keeps MTP enabled but disables the n-gram-first
     /// draft source inside the MTP verify loop.
     pub mlx_mtp_disable_ngram_stacking: bool,
+    /// Optional speculation-profile preset name (ADR-022): one of
+    /// `auto`/`coding`/`agentic`/`chatbot`. `None` falls back to the
+    /// `AX_MLX_SPECULATION_PROFILE` env / built-in `auto`.
+    pub mlx_speculation_profile: Option<String>,
     /// Optional MLX KV compression policy. Disabled by default.
     pub mlx_kv_compression: KvCompressionConfig,
     /// Override the MLX runner's prefill chunk size. `None` keeps the
@@ -66,6 +70,10 @@ pub struct PreviewSessionConfigRequest {
     /// When true, MLX MTP decode keeps MTP enabled but disables the n-gram-first
     /// draft source inside the MTP verify loop.
     pub mlx_mtp_disable_ngram_stacking: bool,
+    /// Optional speculation-profile preset name (ADR-022): one of
+    /// `auto`/`coding`/`agentic`/`chatbot`. `None` falls back to the
+    /// `AX_MLX_SPECULATION_PROFILE` env / built-in `auto`.
+    pub mlx_speculation_profile: Option<String>,
     /// Optional MLX KV compression policy. Disabled by default.
     pub mlx_kv_compression: KvCompressionConfig,
     /// Optional MLX prefill chunk override. `None` keeps the runner's
@@ -87,7 +95,8 @@ impl Default for PreviewSessionConfigRequest {
             mlx_runtime_artifacts_dir: None,
             mlx_model_artifacts_dir: None,
             mlx_disable_ngram_acceleration: false,
-            mlx_mtp_disable_ngram_stacking: false,
+            mlx_mtp_disable_ngram_stacking: true,
+            mlx_speculation_profile: None,
             mlx_kv_compression: KvCompressionConfig::disabled(),
             mlx_prefill_chunk: None,
         }
@@ -111,6 +120,7 @@ pub struct ResolvedSessionConfigRequest {
     pub mlx_model_artifacts_source: Option<NativeModelArtifactsSource>,
     pub mlx_disable_ngram_acceleration: bool,
     pub mlx_mtp_disable_ngram_stacking: bool,
+    pub mlx_speculation_profile: Option<String>,
     pub mlx_kv_compression: KvCompressionConfig,
     pub mlx_prefill_chunk: Option<usize>,
 }
@@ -134,6 +144,7 @@ impl Default for ResolvedSessionConfigRequest {
             mlx_model_artifacts_source: default.mlx_model_artifacts_source,
             mlx_disable_ngram_acceleration: default.mlx_disable_ngram_acceleration,
             mlx_mtp_disable_ngram_stacking: default.mlx_mtp_disable_ngram_stacking,
+            mlx_speculation_profile: default.mlx_speculation_profile.clone(),
             mlx_kv_compression: default.mlx_kv_compression,
             mlx_prefill_chunk: default.mlx_prefill_chunk,
         }
@@ -169,7 +180,8 @@ impl Default for EngineSessionConfig {
                 .map(|selection| selection.dir.clone()),
             mlx_model_artifacts_source: mlx_model_artifacts.map(|selection| selection.source),
             mlx_disable_ngram_acceleration: false,
-            mlx_mtp_disable_ngram_stacking: false,
+            mlx_mtp_disable_ngram_stacking: true,
+            mlx_speculation_profile: None,
             mlx_kv_compression: KvCompressionConfig::disabled(),
             mlx_prefill_chunk: None,
         }
@@ -217,10 +229,18 @@ impl EngineSessionConfig {
     }
 
     /// Keeps MTP speculation enabled but disables the n-gram-first draft source
-    /// inside the MTP verify loop. This is intended for pure-MTP benchmarking
-    /// against MTP-head-only reference engines.
+    /// inside the MTP verify loop. This is the default after the Gemma 4 12B
+    /// Phase 4 sweep; call [`Self::with_mtp_ngram_stacking`] to opt in.
     pub fn without_mtp_ngram_stacking(mut self) -> Self {
         self.mlx_mtp_disable_ngram_stacking = true;
+        self
+    }
+
+    /// Enables n-gram-first drafting inside the MTP verify loop. This is an
+    /// opt-in for workloads where benchmark evidence shows stacking beats pure
+    /// MTP.
+    pub fn with_mtp_ngram_stacking(mut self) -> Self {
+        self.mlx_mtp_disable_ngram_stacking = false;
         self
     }
 
@@ -274,6 +294,7 @@ impl EngineSessionConfig {
                 .or(default.mlx_model_artifacts_source),
             mlx_disable_ngram_acceleration: request.mlx_disable_ngram_acceleration,
             mlx_mtp_disable_ngram_stacking: request.mlx_mtp_disable_ngram_stacking,
+            mlx_speculation_profile: request.mlx_speculation_profile,
             mlx_kv_compression: request.mlx_kv_compression,
             mlx_prefill_chunk: request.mlx_prefill_chunk,
         })
@@ -314,6 +335,7 @@ impl EngineSessionConfig {
             mlx_model_artifacts_source: request.mlx_model_artifacts_source,
             mlx_disable_ngram_acceleration: request.mlx_disable_ngram_acceleration,
             mlx_mtp_disable_ngram_stacking: request.mlx_mtp_disable_ngram_stacking,
+            mlx_speculation_profile: request.mlx_speculation_profile,
             mlx_kv_compression: request.mlx_kv_compression,
             mlx_prefill_chunk: request.mlx_prefill_chunk,
         }

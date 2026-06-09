@@ -58,7 +58,9 @@ fn base_args() -> ServerArgs {
         resolve_model_artifacts: ModelArtifactResolution::ExplicitOnly,
         hf_cache_root: None,
         disable_ngram_acceleration: false,
+        mlx_mtp_enable_ngram_stacking: false,
         mlx_mtp_disable_ngram_stacking: false,
+        speculation_profile: None,
         prefill_chunk: None,
         experimental_mlx_kv_compression: PreviewMlxKvCompression::Disabled,
         experimental_mlx_kv_compression_hot_window_tokens:
@@ -132,7 +134,8 @@ fn session_config_matches_sdk_preview_factory_for_mlx_preview() {
         mlx_runtime_artifacts_dir: None,
         mlx_model_artifacts_dir: None,
         mlx_disable_ngram_acceleration: false,
-        mlx_mtp_disable_ngram_stacking: false,
+        mlx_mtp_disable_ngram_stacking: true,
+        mlx_speculation_profile: None,
         mlx_kv_compression: KvCompressionConfig::disabled(),
         mlx_prefill_chunk: None,
         backend_request: PreviewBackendRequest {
@@ -173,7 +176,8 @@ fn session_config_matches_sdk_preview_factory_for_llama_cpp_server() {
         mlx_runtime_artifacts_dir: None,
         mlx_model_artifacts_dir: None,
         mlx_disable_ngram_acceleration: false,
-        mlx_mtp_disable_ngram_stacking: false,
+        mlx_mtp_disable_ngram_stacking: true,
+        mlx_speculation_profile: None,
         mlx_kv_compression: KvCompressionConfig::disabled(),
         mlx_prefill_chunk: None,
         backend_request: PreviewBackendRequest::shipping_default_llama_cpp(
@@ -267,7 +271,8 @@ fn session_config_matches_sdk_preview_factory_for_mlx_lm_delegated_server() {
         mlx_runtime_artifacts_dir: None,
         mlx_model_artifacts_dir: None,
         mlx_disable_ngram_acceleration: false,
-        mlx_mtp_disable_ngram_stacking: false,
+        mlx_mtp_disable_ngram_stacking: true,
+        mlx_speculation_profile: None,
         mlx_kv_compression: KvCompressionConfig::disabled(),
         mlx_prefill_chunk: None,
         backend_request: PreviewBackendRequest {
@@ -627,7 +632,27 @@ fn mlx_mtp_disable_ngram_stacking_flag_sets_session_config() {
 }
 
 #[test]
-fn default_args_do_not_disable_ngram_acceleration() {
+fn mlx_mtp_enable_ngram_stacking_flag_sets_session_config() {
+    let args = ServerArgs {
+        mlx: true,
+        mlx_mtp_enable_ngram_stacking: true,
+        ..base_args()
+    };
+
+    let actual = args.session_config().expect("session config should build");
+
+    assert!(
+        !actual.mlx_mtp_disable_ngram_stacking,
+        "--mlx-mtp-enable-ngram-stacking must opt in to MTP n-gram stacking"
+    );
+    assert!(
+        !actual.mlx_disable_ngram_acceleration,
+        "MTP n-gram stacking opt-in must not disable n-gram acceleration globally"
+    );
+}
+
+#[test]
+fn default_args_do_not_disable_global_ngram_acceleration() {
     let args = ServerArgs {
         mlx: true,
         ..base_args()
@@ -640,8 +665,8 @@ fn default_args_do_not_disable_ngram_acceleration() {
         "n-gram acceleration should be enabled by default"
     );
     assert!(
-        !actual.mlx_mtp_disable_ngram_stacking,
-        "MTP n-gram stacking should be enabled by default"
+        actual.mlx_mtp_disable_ngram_stacking,
+        "MTP n-gram stacking should be opt-in by default"
     );
 }
 

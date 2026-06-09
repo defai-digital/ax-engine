@@ -9101,7 +9101,7 @@ fn gemma4_assistant_mtp_confidence_mode_from_env() -> Gemma4AssistantMtpConfiden
         std::env::var("AX_MLX_GEMMA4_ASSISTANT_MTP_CONFIDENCE_MODE")
             .ok()
             .and_then(|raw| parse_gemma4_assistant_mtp_confidence_mode(&raw))
-            .unwrap_or(Gemma4AssistantMtpConfidenceMode::ExactCpu)
+            .unwrap_or(Gemma4AssistantMtpConfidenceMode::GpuExact)
     })
 }
 
@@ -9477,9 +9477,9 @@ fn maybe_reenable_linear_ngram_from_fallback_output(
     state.direct_pipeline_emitted_tokens = 0;
 }
 
-/// When set to `1`, disables n-gram drafting inside `run_mtp_decode` so the MTP
-/// verify loop always sources its draft from the MTP head.  Used by the fair
-/// benchmark to measure pure-MTP acceptance without ADR-008 stacking.
+/// Disables n-gram drafting inside `run_mtp_decode` so the MTP verify loop
+/// always sources its draft from the MTP head. Set
+/// `AX_MLX_MTP_DISABLE_NGRAM_STACKING=0` to opt back into ADR-008 stacking.
 ///
 /// Other decode paths (non-MTP `ngram_accel_decode_step`, prefill seeding) are
 /// unaffected — only the n-gram-first branch inside `run_mtp_decode` is gated.
@@ -9684,11 +9684,9 @@ fn mtp_model_acceptance_mode_from_env() -> MtpModelAcceptanceMode {
 fn mtp_disable_ngram_stacking_from_env() -> bool {
     static CACHED: OnceLock<bool> = OnceLock::new();
     *CACHED.get_or_init(|| {
-        matches!(
-            std::env::var("AX_MLX_MTP_DISABLE_NGRAM_STACKING")
-                .unwrap_or_default()
-                .as_str(),
-            "1" | "true" | "TRUE"
+        !matches!(
+            std::env::var("AX_MLX_MTP_DISABLE_NGRAM_STACKING").as_deref(),
+            Ok("0") | Ok("false") | Ok("FALSE") | Ok("no") | Ok("NO")
         )
     })
 }
@@ -12244,7 +12242,7 @@ mod tests {
         assert_eq!(decisions.get("ax_mlx_gemma4_assistant_mtp_depth"), Some(&1));
         assert_eq!(
             decisions.get("ax_mlx_gemma4_assistant_mtp_confidence_mode"),
-            Some(&0)
+            Some(&1)
         );
         assert_eq!(decisions.get("ax_mlx_speculation_profile"), Some(&0));
         assert_eq!(
@@ -12392,7 +12390,7 @@ mod tests {
         );
         assert_eq!(
             decisions.get("ax_mlx_gemma4_assistant_mtp_confidence_mode"),
-            Some(&0)
+            Some(&1)
         );
         assert_eq!(decisions.get("ax_mlx_speculation_profile"), Some(&0));
         assert_eq!(

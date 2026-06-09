@@ -27,6 +27,7 @@
 //! defaults.
 
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU8, Ordering};
 
 /// Speculative-decode posture selected by `AX_MLX_SPECULATION_PROFILE`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -173,9 +174,37 @@ impl SpeculationProfile {
     }
 }
 
-/// Resolved speculation profile from `AX_MLX_SPECULATION_PROFILE` (cached).
-/// Defaults to [`SpeculationProfile::Auto`].
+/// Process-level programmatic override, encoded as `route_code() + 1` so that
+/// `0` means "no override". Set once by the SDK/server from the
+/// `--speculation-profile` CLI flag (a safe alternative to mutating the process
+/// environment, which the server/SDK crates cannot do under `unsafe_code =
+/// "forbid"`). It is checked before the env var, so an explicit flag wins over a
+/// stale `AX_MLX_SPECULATION_PROFILE` in the environment.
+static PROFILE_OVERRIDE: AtomicU8 = AtomicU8::new(0);
+
+/// Install a programmatic speculation-profile override (server/SDK CLI path).
+/// Idempotent and last-write-wins; intended to be called once at startup before
+/// decoding begins.
+pub fn set_speculation_profile_override(profile: SpeculationProfile) {
+    PROFILE_OVERRIDE.store(profile.route_code() as u8 + 1, Ordering::Relaxed);
+}
+
+fn speculation_profile_override() -> Option<SpeculationProfile> {
+    match PROFILE_OVERRIDE.load(Ordering::Relaxed) {
+        1 => Some(SpeculationProfile::Auto),
+        2 => Some(SpeculationProfile::Coding),
+        3 => Some(SpeculationProfile::Agentic),
+        4 => Some(SpeculationProfile::Chatbot),
+        _ => None,
+    }
+}
+
+/// Resolved speculation profile: programmatic override (CLI) first, else
+/// `AX_MLX_SPECULATION_PROFILE` (cached), else [`SpeculationProfile::Auto`].
 pub fn speculation_profile_from_env() -> SpeculationProfile {
+    if let Some(profile) = speculation_profile_override() {
+        return profile;
+    }
     static CACHED: OnceLock<SpeculationProfile> = OnceLock::new();
     *CACHED.get_or_init(|| {
         std::env::var("AX_MLX_SPECULATION_PROFILE")
@@ -283,6 +312,21 @@ mod tests {
         assert!(SpeculationProfile::Chatbot.prefers_ngram_utility(Some(0.0)));
         assert!(SpeculationProfile::Auto.prefers_ngram_utility(Some(0.7)));
         assert!(!SpeculationProfile::Auto.prefers_ngram_utility(Some(0.0)));
+    }
+
+    #[test]
+    fn override_maps_round_trip() {
+        // Exercises the encoding used by the programmatic override without
+        // mutating the shared static (which other tests in this binary rely on
+        // being unset). The decode arm mirrors `speculation_profile_override`.
+        for (p, code) in [
+            (SpeculationProfile::Auto, 1u8),
+            (SpeculationProfile::Coding, 2),
+            (SpeculationProfile::Agentic, 3),
+            (SpeculationProfile::Chatbot, 4),
+        ] {
+            assert_eq!(p.route_code() as u8 + 1, code);
+        }
     }
 
     #[test]
