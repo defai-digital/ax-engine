@@ -12,6 +12,7 @@ SCHEMA = "ax.gemma4_multimodal_benchmark.v1"
 ALLOWED_STATUS = {"measured", "skipped"}
 ALLOWED_LAYERS = {"native_runtime_prefill", "openai_chat_e2e", "peer_comparison"}
 ALLOWED_MODALITIES = {"image", "audio", "video"}
+MODALITY_ORDER = ("image", "audio", "video")
 ALLOWED_SKIP_REASONS = {
     "llama_cpp_video_not_supported",
     "missing_llama_cpp_mmproj_for_gemma4_12b",
@@ -145,6 +146,11 @@ def validate_positive_metric(
             errors.append(f"rows[{row_index}].summary.{key}.{stat_name} must be positive")
 
 
+def expected_modality_set(modalities: list[Any]) -> list[str]:
+    present = {modality for modality in modalities if modality in ALLOWED_MODALITIES}
+    return [modality for modality in MODALITY_ORDER if modality in present]
+
+
 def validate_prompt(
     errors: list[str],
     *,
@@ -254,6 +260,13 @@ def validate_row(
         errors.append(f"rows[{row_index}].modalities must be a non-empty list")
     elif any(modality not in ALLOWED_MODALITIES for modality in modalities):
         errors.append(f"rows[{row_index}].modalities contains an unknown modality")
+    modality_set = row.get("modality_set")
+    if not isinstance(modality_set, list) or not modality_set:
+        errors.append(f"rows[{row_index}].modality_set must be a non-empty list")
+    elif any(modality not in ALLOWED_MODALITIES for modality in modality_set):
+        errors.append(f"rows[{row_index}].modality_set contains an unknown modality")
+    elif isinstance(modalities, list) and modality_set != expected_modality_set(modalities):
+        errors.append(f"rows[{row_index}].modality_set must match row modalities")
     row_fixture_ids = row.get("fixture_ids")
     if not isinstance(row_fixture_ids, list) or not row_fixture_ids:
         errors.append(f"rows[{row_index}].fixture_ids must be a non-empty list")

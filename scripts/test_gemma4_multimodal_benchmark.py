@@ -62,6 +62,10 @@ def soft_tokens_for_modalities(modalities: list[str]) -> dict:
     }
 
 
+def modality_set_for_modalities(modalities: list[str]) -> list[str]:
+    return [modality for modality in ("image", "audio", "video") if modality in set(modalities)]
+
+
 def measured_row(case_id: str, fixture_ids: list[str], *, modalities: list[str]) -> dict:
     return {
         "row_id": f"ax_engine_mlx.native_runtime_prefill.{case_id}",
@@ -72,7 +76,7 @@ def measured_row(case_id: str, fixture_ids: list[str], *, modalities: list[str])
         "case_id": case_id,
         "description": "sample row",
         "modalities": modalities,
-        "modality_set": modalities,
+        "modality_set": modality_set_for_modalities(modalities),
         "fixture_ids": fixture_ids,
         "prompt": prompt_block(
             fixture_ids,
@@ -236,6 +240,9 @@ class Gemma4MultimodalBenchmarkTests(unittest.TestCase):
             {"mean": 2.0, "median": 2.0, "min": 1.0, "max": 3.0},
         )
 
+    def test_modality_set_is_canonical_and_deduplicated(self) -> None:
+        self.assertEqual(bench.modality_set(["video", "image", "image"]), ["image", "video"])
+
     @unittest.skipIf(bench.Image is None, "Pillow is required for multimodal fixtures")
     def test_all_cases_cover_required_matrix(self) -> None:
         names = {case.case_id for case in bench.select_cases("all")}
@@ -323,6 +330,23 @@ class Gemma4MultimodalBenchmarkTests(unittest.TestCase):
         errors = checker.validate_artifact(artifact)
         self.assertTrue(any("missing modality fixtures" in error for error in errors))
         self.assertTrue(any("unrelated modalities" in error for error in errors))
+
+    def test_checker_rejects_modality_set_mismatch(self) -> None:
+        artifact = sample_artifact()
+        artifact["rows"][0]["modality_set"] = ["audio"]
+        errors = checker.validate_artifact(artifact)
+        self.assertTrue(any("modality_set must match row modalities" in error for error in errors))
+
+    def test_checker_rejects_uncanonical_modality_set_order(self) -> None:
+        artifact = sample_artifact()
+        artifact["rows"][0] = measured_row(
+            "image_audio",
+            ["image_red_64", "audio_tone_0_5s"],
+            modalities=["image", "audio"],
+        )
+        artifact["rows"][0]["modality_set"] = ["audio", "image"]
+        errors = checker.validate_artifact(artifact)
+        self.assertTrue(any("modality_set must match row modalities" in error for error in errors))
 
     def test_checker_rejects_row_fixture_id_not_in_registry(self) -> None:
         artifact = sample_artifact()

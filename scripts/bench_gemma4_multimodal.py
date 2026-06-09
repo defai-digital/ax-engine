@@ -49,6 +49,7 @@ DEFAULT_URL = "http://127.0.0.1:18080"
 DEFAULT_CASES = "all"
 DEFAULT_LAYERS = "native_runtime_prefill,openai_chat_e2e"
 DEFAULT_TIMEOUT_S = 300
+MODALITY_ORDER = ("image", "audio", "video")
 
 
 @dataclass(frozen=True)
@@ -869,6 +870,11 @@ def summarize_runs(runs: list[dict[str, Any]], keys: list[str]) -> dict[str, dic
     return {key: summarize([run.get(key) for run in runs]) for key in keys}
 
 
+def modality_set(modalities: list[str]) -> list[str]:
+    present = set(modalities)
+    return [modality for modality in MODALITY_ORDER if modality in present]
+
+
 def prompt_block(case: PreparedCase) -> dict[str, Any]:
     soft_tokens = {
         "image": sum(case.image_soft_tokens),
@@ -906,7 +912,7 @@ def row_common(
         "case_id": case.case_id,
         "description": case.description,
         "modalities": case.modalities,
-        "modality_set": case.modalities,
+        "modality_set": modality_set(case.modalities),
         "fixture_ids": case.fixture_ids,
         "prompt": prompt_block(case),
     }
