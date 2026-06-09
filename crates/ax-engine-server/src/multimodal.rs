@@ -8,9 +8,11 @@
 //! [`ax_engine_core::gemma4_unified`] runtime expects, mirroring the reference
 //! `processing_gemma4_unified.py`.
 //!
-//! Scope: image (PNG/JPEG) and audio (PCM WAV). Video and non-WAV audio decode
-//! are intentionally out of scope here — `/v1/generate` still accepts fully
-//! pre-computed tensors for those.
+//! Scope: image (PNG/JPEG), audio (PCM WAV), and video (animated GIF). Video
+//! frames reuse the image patchify path at a lower per-frame soft-token budget
+//! with `mm:ss` timestamps, matching the reference `Gemma4UnifiedVideoProcessor`.
+//! Non-GIF video containers and non-WAV audio are out of scope — `/v1/generate`
+//! still accepts fully pre-computed tensors for those.
 
 use std::path::Path;
 
@@ -84,8 +86,18 @@ pub(crate) struct PreprocessedImage {
     pub pixel_position_ids: Vec<[i32; 2]>,
 }
 
-/// Upper bound on sampled video frames, to keep the soft-token budget bounded.
-pub(crate) const VIDEO_MAX_FRAMES: usize = 16;
+/// Reference video defaults (`Gemma4UnifiedVideoProcessor`): up to 32 frames at
+/// 70 soft tokens each, with a 2 fps fallback when frame timing is unavailable.
+pub(crate) const DEFAULT_VIDEO_MAX_FRAMES: usize = 32;
+pub(crate) const DEFAULT_VIDEO_SOFT_TOKENS: u32 = 70;
+pub(crate) const DEFAULT_VIDEO_FPS: f32 = 2.0;
+
+/// One decoded video frame with its timestamp (seconds from the start).
+#[derive(Debug)]
+pub(crate) struct VideoFrame {
+    pub image: image::RgbImage,
+    pub timestamp_seconds: f32,
+}
 
 /// Video tensors ready to attach to a `Gemma4UnifiedVideoRuntimeInput`. The
 /// per-frame patches are concatenated; every frame shares `soft_tokens_per_frame`.
@@ -96,6 +108,17 @@ pub(crate) struct PreprocessedVideo {
     /// `[frame_count * soft_tokens_per_frame * model_patch_size^2 * 3]`.
     pub pixel_values: Vec<f32>,
     pub pixel_position_ids: Vec<[i32; 2]>,
+}
+
+/// Everything needed to preprocess Gemma 4 unified chat media: the core processor
+/// config (token ids + image/audio params), image normalization, and the
+/// video-specific vision config (lower per-frame soft-token budget + frame cap).
+#[derive(Debug)]
+pub(crate) struct MediaProcessors {
+    pub config: Gemma4UnifiedProcessorConfig,
+    pub normalization: ImageNormalization,
+    pub video_vision: Gemma4UnifiedVisionProcessor,
+    pub video_max_frames: usize,
 }
 
 /// Audio tensors ready to attach to a `Gemma4UnifiedAudioRuntimeInput`.
@@ -110,11 +133,10 @@ pub(crate) struct PreprocessedAudio {
     pub feature_count: u32,
 }
 
-/// Load the Gemma 4 unified processor config plus image normalization params
-/// from a model artifacts directory (`config.json` + `preprocessor_config.json`).
-pub(crate) fn load_processor_config(
-    model_dir: &Path,
-) -> Result<(Gemma4UnifiedProcessorConfig, ImageNormalization), MediaError> {
+/// Load the Gemma 4 unified processor config, image normalization, and the
+/// video processor params from a model artifacts directory (`config.json` +
+/// `preprocessor_config.json`).
+pub(crate) fn load_processor_config(model_dir: &Path) -> Result<MediaProcessors, MediaError> {
     let model_cfg = read_json(&model_dir.join("config.json"))?;
     let processor_cfg = read_json(&model_dir.join("preprocessor_config.json"))
         .or_else(|_| read_json(&model_dir.join("processor_config.json")))?;
@@ -122,7 +144,42 @@ pub(crate) fn load_processor_config(
         Gemma4UnifiedProcessorConfig::from_model_and_processor_config(&model_cfg, &processor_cfg)
             .map_err(|error| MediaError::Config(error.to_string()))?;
     let normalization = image_normalization_from(&processor_cfg);
-    Ok((config, normalization))
+    let (video_vision, video_max_frames) = video_processor_from(&processor_cfg, &config.vision);
+    Ok(MediaProcessors {
+        config,
+        normalization,
+        video_vision,
+        video_max_frames,
+    })
+}
+
+/// Derive the video-specific vision processor (a lower per-frame soft-token
+/// budget than images) and frame cap from `preprocessor_config.json`. Defaults
+/// match the reference `Gemma4UnifiedVideoProcessor`: 70 soft tokens, 32 frames.
+fn video_processor_from(
+    processor_cfg: &Value,
+    image_vision: &Gemma4UnifiedVisionProcessor,
+) -> (Gemma4UnifiedVisionProcessor, usize) {
+    let block = processor_cfg
+        .get("video_processor")
+        .filter(|value| value.is_object());
+    let max_soft_tokens = block
+        .and_then(|value| value.get("max_soft_tokens"))
+        .and_then(Value::as_u64)
+        .map(|value| value as u32)
+        .unwrap_or(DEFAULT_VIDEO_SOFT_TOKENS);
+    let max_frames = block
+        .and_then(|value| value.get("num_frames"))
+        .and_then(Value::as_u64)
+        .map(|value| value as usize)
+        .unwrap_or(DEFAULT_VIDEO_MAX_FRAMES);
+    let video_vision = Gemma4UnifiedVisionProcessor {
+        patch_size: image_vision.patch_size,
+        model_patch_size: image_vision.model_patch_size,
+        pooling_kernel_size: image_vision.pooling_kernel_size,
+        max_soft_tokens,
+    };
+    (video_vision, max_frames)
 }
 
 /// Decode an inline base64 `data:` URI into `(mime, bytes)`. Only base64 data
@@ -288,10 +345,15 @@ fn patchify_rgb(
     Ok((pixel_values, pixel_position_ids))
 }
 
-/// Decode an animated container into RGB frames, uniformly sampled down to
-/// `VIDEO_MAX_FRAMES`. Only animated GIF is supported inline; `mp4`/`webm` would
-/// need a video codec — send pre-extracted frame tensors through `/v1/generate`.
-pub(crate) fn decode_video_frames(bytes: &[u8]) -> Result<Vec<image::RgbImage>, MediaError> {
+/// Decode an animated container into RGB frames with timestamps, uniformly
+/// sampled down to `max_frames`. Timestamps accumulate the per-frame GIF delays;
+/// if the container carries no timing, frames fall back to `DEFAULT_VIDEO_FPS`.
+/// Only animated GIF is supported inline; `mp4`/`webm` need a video codec — send
+/// pre-extracted frame tensors through `/v1/generate`.
+pub(crate) fn decode_video_frames(
+    bytes: &[u8],
+    max_frames: usize,
+) -> Result<Vec<VideoFrame>, MediaError> {
     use image::AnimationDecoder;
 
     let decoder = image::codecs::gif::GifDecoder::new(std::io::Cursor::new(bytes)).map_err(|_| {
@@ -307,10 +369,33 @@ pub(crate) fn decode_video_frames(bytes: &[u8]) -> Result<Vec<image::RgbImage>, 
         return Err(MediaError::Decode("video has no frames".to_string()));
     }
 
-    let sampled = sample_frame_indices(frames.len(), VIDEO_MAX_FRAMES);
-    Ok(sampled
+    // Cumulative timestamp (seconds) at the start of each frame.
+    let mut timestamps = Vec::with_capacity(frames.len());
+    let mut elapsed = 0.0f32;
+    let mut images = Vec::with_capacity(frames.len());
+    for frame in frames {
+        let (numer, denom) = frame.delay().numer_denom_ms();
+        timestamps.push(elapsed);
+        elapsed += if denom == 0 {
+            0.0
+        } else {
+            numer as f32 / denom as f32 / 1000.0
+        };
+        images.push(image::DynamicImage::ImageRgba8(frame.into_buffer()).to_rgb8());
+    }
+    // GIFs without frame delays report zero duration; fall back to a fixed fps.
+    if elapsed <= 0.0 {
+        for (index, timestamp) in timestamps.iter_mut().enumerate() {
+            *timestamp = index as f32 / DEFAULT_VIDEO_FPS;
+        }
+    }
+
+    Ok(sample_frame_indices(images.len(), max_frames)
         .into_iter()
-        .map(|index| image::DynamicImage::ImageRgba8(frames[index].clone().into_buffer()).to_rgb8())
+        .map(|index| VideoFrame {
+            image: images[index].clone(),
+            timestamp_seconds: timestamps[index],
+        })
         .collect())
 }
 
@@ -327,7 +412,7 @@ fn sample_frame_indices(len: usize, max: usize) -> Vec<usize> {
 /// connector's concatenated tensor. Mirrors the per-frame branch of
 /// `Gemma4UnifiedVideoProcessor`.
 pub(crate) fn preprocess_video_frames(
-    frames: &[image::RgbImage],
+    frames: &[VideoFrame],
     vision: &Gemma4UnifiedVisionProcessor,
     normalization: &ImageNormalization,
 ) -> Result<PreprocessedVideo, MediaError> {
@@ -339,7 +424,7 @@ pub(crate) fn preprocess_video_frames(
     let mut pixel_position_ids = Vec::new();
     let mut soft_tokens_per_frame: Option<u32> = None;
     for frame in frames {
-        let (frame_values, frame_positions) = patchify_rgb(frame, vision, normalization)?;
+        let (frame_values, frame_positions) = patchify_rgb(&frame.image, vision, normalization)?;
         let count = frame_positions.len() as u32;
         match soft_tokens_per_frame {
             None => soft_tokens_per_frame = Some(count),
@@ -644,8 +729,12 @@ mod tests {
         let frame_b = image::RgbImage::from_pixel(96, 48, image::Rgb([40, 50, 60]));
         let gif = animated_gif(&[frame_a, frame_b]);
 
-        let frames = decode_video_frames(&gif).expect("decode gif frames");
+        let frames =
+            decode_video_frames(&gif, DEFAULT_VIDEO_MAX_FRAMES).expect("decode gif frames");
         assert_eq!(frames.len(), 2);
+        // First frame starts at t=0; second frame strictly later.
+        assert_eq!(frames[0].timestamp_seconds, 0.0);
+        assert!(frames[1].timestamp_seconds > 0.0);
 
         let pre =
             preprocess_video_frames(&frames, &vision, &ImageNormalization::default()).unwrap();
@@ -657,6 +746,25 @@ mod tests {
         let per_frame = pre.soft_tokens_per_frame as usize;
         assert_eq!(pre.pixel_position_ids.len(), 2 * per_frame);
         assert_eq!(pre.pixel_values.len(), 2 * per_frame * patch_dim);
+    }
+
+    #[test]
+    fn video_uses_lower_soft_token_budget_than_images() {
+        // A model with no video_processor block falls back to the 70-soft-token
+        // video budget, which is lower than the image budget (280 here).
+        let processor_cfg = serde_json::json!({
+            "image_processor": {
+                "patch_size": 16,
+                "model_patch_size": 48,
+                "pooling_kernel_size": 3,
+                "max_soft_tokens": 280
+            }
+        });
+        let image_vision = vision();
+        let (video_vision, max_frames) = video_processor_from(&processor_cfg, &image_vision);
+        assert_eq!(video_vision.max_soft_tokens, DEFAULT_VIDEO_SOFT_TOKENS);
+        assert_eq!(max_frames, DEFAULT_VIDEO_MAX_FRAMES);
+        assert!(video_vision.max_soft_tokens < image_vision.max_soft_tokens);
     }
 
     #[test]

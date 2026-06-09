@@ -443,6 +443,89 @@ async fn openai_chat_request_decodes_inline_image_into_gemma4_unified_tensors() 
 }
 
 #[tokio::test]
+async fn openai_chat_request_decodes_inline_gif_video_with_timestamps() {
+    use base64::Engine as _;
+
+    let artifact_dir = gemma4_unified_artifact("native-openai-chat-inline-video");
+    let state = native_mlx_openai_builder_state("qwen3", &artifact_dir);
+
+    // A 2-frame 16x16 animated GIF.
+    let mut gif_bytes: Vec<u8> = Vec::new();
+    {
+        let mut encoder = image::codecs::gif::GifEncoder::new(std::io::Cursor::new(&mut gif_bytes));
+        for rgb in [[10u8, 20, 30], [40, 50, 60]] {
+            let frame =
+                image::RgbaImage::from_pixel(16, 16, image::Rgba([rgb[0], rgb[1], rgb[2], 255]));
+            encoder
+                .encode_frame(image::Frame::new(frame))
+                .expect("encode gif frame");
+        }
+    }
+    let data_uri = format!(
+        "data:image/gif;base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(&gif_bytes)
+    );
+    let request: OpenAiChatCompletionHttpRequest = serde_json::from_value(json!({
+        "model": "qwen3",
+        "messages": [{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "describe"},
+                {"type": "video_url", "video_url": {"url": data_uri}}
+            ]
+        }],
+        "max_tokens": 8
+    }))
+    .expect("multimodal chat request should deserialize");
+
+    let built =
+        build_openai_chat_request(&state, request).expect("inline video chat request should build");
+
+    let inputs = built
+        .generate_request
+        .multimodal_inputs
+        .gemma4_unified
+        .expect("inline video should attach Gemma4 unified tensors");
+    assert_eq!(inputs.videos.len(), 1);
+    let video = &inputs.videos[0];
+    assert_eq!(video.frame_count, 2);
+    assert_eq!(video.soft_token_ranges.len(), 2);
+
+    // Frames use the lower video soft-token budget (<= 70), not the image budget.
+    let per_frame = video.soft_token_ranges[0].soft_token_count;
+    assert!(
+        per_frame <= 70,
+        "video frame should use the <=70 budget: {per_frame}"
+    );
+    assert!(
+        video
+            .soft_token_ranges
+            .iter()
+            .all(|range| range.soft_token_count == per_frame)
+    );
+    assert_eq!(video.span.soft_token_count, 2 * per_frame);
+    assert_eq!(
+        video.pixel_values.len() as u32,
+        video.span.soft_token_count * 8 * 8 * 3
+    );
+
+    // mm:ss timestamp tokens were interleaved before each frame's boi, so the
+    // replacement is longer than just (boi + soft + eoi) per frame.
+    assert!(video.span.replacement_token_count > 2 * (per_frame + 2));
+
+    // Token stream: video soft tokens(104), two boi(102), two eoi(103).
+    let tokens = &built.generate_request.input_tokens;
+    assert_eq!(
+        tokens.iter().filter(|&&token| token == 104).count() as u32,
+        video.span.soft_token_count
+    );
+    assert_eq!(tokens.iter().filter(|&&token| token == 102).count(), 2);
+    assert_eq!(tokens.iter().filter(|&&token| token == 103).count(), 2);
+
+    fs::remove_dir_all(artifact_dir).expect("artifact dir should clean up");
+}
+
+#[tokio::test]
 async fn openai_chat_request_rejects_gemma4_multimodal_inputs_without_input_tokens() {
     let artifact_dir = minimal_tokenizer_artifact("native-openai-chat-mm-no-tokens");
     let state = native_mlx_openai_builder_state("gemma-4-12b-it", &artifact_dir);

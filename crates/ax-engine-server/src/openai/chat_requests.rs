@@ -14,7 +14,8 @@ use serde_json::Value;
 use crate::chat;
 use crate::errors::{ErrorResponse, error_response};
 use crate::multimodal::{
-    self, MediaError, PreprocessedAudio, PreprocessedImage, PreprocessedVideo,
+    self, MediaError, MediaProcessors, PreprocessedAudio, PreprocessedImage, PreprocessedVideo,
+    VideoFrame,
 };
 use crate::openai::schema::{
     OpenAiChatContent, OpenAiChatContentPart, OpenAiChatMessage, OpenAiStopInput,
@@ -259,8 +260,12 @@ pub(crate) fn render_gemma4_unified_chat_with_media(
             format!("failed to load tokenizer for multimodal chat: {error}"),
         )
     })?;
-    let (config, normalization) =
-        multimodal::load_processor_config(model_dir).map_err(media_error_response)?;
+    let MediaProcessors {
+        config,
+        normalization,
+        video_vision,
+        video_max_frames,
+    } = multimodal::load_processor_config(model_dir).map_err(media_error_response)?;
 
     let image_placeholder = placeholder_string(&tokenizer, config.tokens.image_token_id, "image")?;
     let audio_placeholder = placeholder_string(&tokenizer, config.tokens.audio_token_id, "audio")?;
@@ -318,15 +323,20 @@ pub(crate) fn render_gemma4_unified_chat_with_media(
         })
         .collect::<Result<_, _>>()
         .map_err(media_error_response)?;
-    let videos: Vec<PreprocessedVideo> = collected
-        .videos
-        .iter()
-        .map(|bytes| {
-            let frames = multimodal::decode_video_frames(bytes)?;
-            multimodal::preprocess_video_frames(&frames, &config.vision, &normalization)
-        })
-        .collect::<Result<_, _>>()
-        .map_err(media_error_response)?;
+    // Video frames use a lower per-frame soft-token budget and carry mm:ss
+    // timestamp tokens, matching the reference Gemma4UnifiedVideoProcessor.
+    let mut videos: Vec<PreprocessedVideo> = Vec::with_capacity(collected.videos.len());
+    let mut video_timestamp_tokens: Vec<Vec<Vec<u32>>> = Vec::with_capacity(collected.videos.len());
+    for bytes in &collected.videos {
+        let frames = multimodal::decode_video_frames(bytes, video_max_frames)
+            .map_err(media_error_response)?;
+        let timestamps = build_video_timestamp_tokens(&tokenizer, &frames)?;
+        let preprocessed =
+            multimodal::preprocess_video_frames(&frames, &video_vision, &normalization)
+                .map_err(media_error_response)?;
+        videos.push(preprocessed);
+        video_timestamp_tokens.push(timestamps);
+    }
 
     // Expand all placeholders in a single pass so every span indexes the final
     // token stream (separate passes would shift later positions).
@@ -345,10 +355,11 @@ pub(crate) fn render_gemma4_unified_chat_with_media(
         .collect();
     let video_inputs: Vec<Gemma4UnifiedVideoInput> = videos
         .iter()
-        .map(|video| Gemma4UnifiedVideoInput {
+        .zip(&video_timestamp_tokens)
+        .map(|(video, timestamps)| Gemma4UnifiedVideoInput {
             frame_count: video.frame_count,
             soft_tokens_per_frame: video.soft_tokens_per_frame,
-            timestamp_token_ids_per_frame: Vec::new(),
+            timestamp_token_ids_per_frame: timestamps.clone(),
         })
         .collect();
     let expanded = expand_media(
@@ -496,6 +507,37 @@ fn video_part_bytes(part: &OpenAiChatContentPart) -> Result<Vec<u8>, HttpErrorRe
         data_value_url(value).ok_or_else(|| media_payload_missing("video", "video_url.url"))?;
     let (_mime, bytes) = multimodal::decode_data_uri(url).map_err(media_error_response)?;
     Ok(bytes)
+}
+
+/// Tokenize the `mm:ss` timestamp prefix for each video frame, matching the
+/// reference `get_video_repl`: a leading space on every frame except the first,
+/// and always a trailing space, e.g. `"00:00 "` then `" 00:02 "`.
+fn build_video_timestamp_tokens(
+    tokenizer: &EngineTokenizer,
+    frames: &[VideoFrame],
+) -> Result<Vec<Vec<u32>>, HttpErrorResponse> {
+    frames
+        .iter()
+        .enumerate()
+        .map(|(index, frame)| {
+            let seconds = frame.timestamp_seconds.max(0.0);
+            let minutes = (seconds / 60.0).floor() as u32;
+            let secs = (seconds % 60.0).floor() as u32;
+            let stamp = format!("{minutes:02}:{secs:02}");
+            let prefix = if index == 0 {
+                format!("{stamp} ")
+            } else {
+                format!(" {stamp} ")
+            };
+            tokenizer.encode(&prefix, false).map_err(|error| {
+                error_response(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_request",
+                    format!("failed to tokenize video timestamp: {error}"),
+                )
+            })
+        })
+        .collect()
 }
 
 /// OpenAI media URL fields are either a bare string or `{ "url": "..." }`.
