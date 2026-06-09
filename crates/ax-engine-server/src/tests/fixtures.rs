@@ -413,6 +413,85 @@ pub(super) fn minimal_tokenizer_artifact(label: &str) -> PathBuf {
     dir
 }
 
+/// A native-MLX artifact dir for a Gemma 4 unified-style multimodal model: a
+/// `config.json` + `preprocessor_config.json` describing the encoder-free
+/// connector, and a `tokenizer.json` whose added tokens make the image/audio/
+/// video placeholders round-trip to single ids. Uses a tiny synthetic vision
+/// config (model_patch_size 8, max_soft_tokens 4) so a 16x16 image yields
+/// exactly 4 soft tokens.
+pub(super) fn gemma4_unified_artifact(label: &str) -> PathBuf {
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system time should be valid")
+        .as_nanos();
+    let dir = std::env::temp_dir().join(format!("ax-engine-server-{label}-{unique}"));
+    fs::create_dir_all(&dir).expect("artifact dir should create");
+    fs::write(
+        dir.join("config.json"),
+        r#"{
+  "eos_token_id": 2,
+  "image_token_id": 100,
+  "audio_token_id": 101,
+  "video_token_id": 104,
+  "boi_token_id": 102,
+  "eoi_token_id": 103,
+  "boa_token_id": 105,
+  "eoa_token_index": 106,
+  "vision_config": {
+    "patch_size": 4,
+    "model_patch_size": 8,
+    "pooling_kernel_size": 2,
+    "num_soft_tokens": 4
+  }
+}"#,
+    )
+    .expect("config should write");
+    fs::write(
+        dir.join("preprocessor_config.json"),
+        r#"{
+  "image_processor": {
+    "patch_size": 4,
+    "model_patch_size": 8,
+    "pooling_kernel_size": 2,
+    "max_soft_tokens": 4
+  },
+  "feature_extractor": {"sampling_rate": 16000},
+  "audio_seq_length": 1500
+}"#,
+    )
+    .expect("preprocessor config should write");
+    fs::write(
+        dir.join("tokenizer.json"),
+        r#"{
+  "version": "1.0",
+  "truncation": null,
+  "padding": null,
+  "added_tokens": [
+    {"id": 100, "content": "<img>", "single_word": false, "lstrip": false, "rstrip": false, "normalized": false, "special": true},
+    {"id": 101, "content": "<aud>", "single_word": false, "lstrip": false, "rstrip": false, "normalized": false, "special": true},
+    {"id": 104, "content": "<vid>", "single_word": false, "lstrip": false, "rstrip": false, "normalized": false, "special": true}
+  ],
+  "normalizer": null,
+  "pre_tokenizer": {"type": "Whitespace"},
+  "post_processor": null,
+  "decoder": null,
+  "model": {
+    "type": "WordLevel",
+    "vocab": {
+      "[UNK]": 0,
+      "describe": 1,
+      "<img>": 100,
+      "<aud>": 101,
+      "<vid>": 104
+    },
+    "unk_token": "[UNK]"
+  }
+}"#,
+    )
+    .expect("tokenizer should write");
+    dir
+}
+
 pub(super) fn spawn_llama_cpp_completion_server(
     response_body: String,
     assert_request: impl FnMut(Value) + Send + 'static,

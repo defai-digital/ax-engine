@@ -84,6 +84,20 @@ pub(crate) struct PreprocessedImage {
     pub pixel_position_ids: Vec<[i32; 2]>,
 }
 
+/// Upper bound on sampled video frames, to keep the soft-token budget bounded.
+pub(crate) const VIDEO_MAX_FRAMES: usize = 16;
+
+/// Video tensors ready to attach to a `Gemma4UnifiedVideoRuntimeInput`. The
+/// per-frame patches are concatenated; every frame shares `soft_tokens_per_frame`.
+#[derive(Debug)]
+pub(crate) struct PreprocessedVideo {
+    pub frame_count: u32,
+    pub soft_tokens_per_frame: u32,
+    /// `[frame_count * soft_tokens_per_frame * model_patch_size^2 * 3]`.
+    pub pixel_values: Vec<f32>,
+    pub pixel_position_ids: Vec<[i32; 2]>,
+}
+
 /// Audio tensors ready to attach to a `Gemma4UnifiedAudioRuntimeInput`.
 #[derive(Debug)]
 pub(crate) struct PreprocessedAudio {
@@ -198,6 +212,23 @@ pub(crate) fn preprocess_image(
         .map_err(|error| MediaError::Decode(format!("failed to decode image: {error}")))?
         .to_rgb8();
     let (width, height) = (decoded.width(), decoded.height());
+    let (pixel_values, pixel_position_ids) = patchify_rgb(&decoded, vision, normalization)?;
+    Ok(PreprocessedImage {
+        width,
+        height,
+        pixel_values,
+        pixel_position_ids,
+    })
+}
+
+/// Resize one already-decoded RGB frame, then reshape it into the connector's
+/// patches and 2D positions. Shared by the image and video paths.
+fn patchify_rgb(
+    frame: &image::RgbImage,
+    vision: &Gemma4UnifiedVisionProcessor,
+    normalization: &ImageNormalization,
+) -> Result<(Vec<f32>, Vec<[i32; 2]>), MediaError> {
+    let (width, height) = (frame.width(), frame.height());
     if width == 0 || height == 0 {
         return Err(MediaError::Decode(
             "image has zero width or height".to_string(),
@@ -215,14 +246,14 @@ pub(crate) fn preprocess_image(
     let patch = vision.patch_size * vision.pooling_kernel_size;
     let (target_w, target_h) = resize_target(vision, width, height);
     let resized = if target_w == width && target_h == height {
-        decoded
+        std::borrow::Cow::Borrowed(frame)
     } else {
-        image::imageops::resize(
-            &decoded,
+        std::borrow::Cow::Owned(image::imageops::resize(
+            frame,
             target_w,
             target_h,
             image::imageops::FilterType::CatmullRom,
-        )
+        ))
     };
 
     let grid_w = target_w / patch;
@@ -254,9 +285,85 @@ pub(crate) fn preprocess_image(
         }
     }
 
-    Ok(PreprocessedImage {
-        width,
-        height,
+    Ok((pixel_values, pixel_position_ids))
+}
+
+/// Decode an animated container into RGB frames, uniformly sampled down to
+/// `VIDEO_MAX_FRAMES`. Only animated GIF is supported inline; `mp4`/`webm` would
+/// need a video codec — send pre-extracted frame tensors through `/v1/generate`.
+pub(crate) fn decode_video_frames(bytes: &[u8]) -> Result<Vec<image::RgbImage>, MediaError> {
+    use image::AnimationDecoder;
+
+    let decoder = image::codecs::gif::GifDecoder::new(std::io::Cursor::new(bytes)).map_err(|_| {
+        MediaError::Unsupported(
+            "inline video must be an animated GIF; mp4/webm require pre-extracted frame tensors via /v1/generate".to_string(),
+        )
+    })?;
+    let frames = decoder
+        .into_frames()
+        .collect_frames()
+        .map_err(|error| MediaError::Decode(format!("failed to decode video frames: {error}")))?;
+    if frames.is_empty() {
+        return Err(MediaError::Decode("video has no frames".to_string()));
+    }
+
+    let sampled = sample_frame_indices(frames.len(), VIDEO_MAX_FRAMES);
+    Ok(sampled
+        .into_iter()
+        .map(|index| image::DynamicImage::ImageRgba8(frames[index].clone().into_buffer()).to_rgb8())
+        .collect())
+}
+
+/// Uniformly pick at most `max` indices from `[0, len)`, always including the
+/// first frame.
+fn sample_frame_indices(len: usize, max: usize) -> Vec<usize> {
+    if len <= max {
+        return (0..len).collect();
+    }
+    (0..max).map(|i| i * len / max).collect()
+}
+
+/// Patchify each decoded frame (sharing one patch grid) into the video
+/// connector's concatenated tensor. Mirrors the per-frame branch of
+/// `Gemma4UnifiedVideoProcessor`.
+pub(crate) fn preprocess_video_frames(
+    frames: &[image::RgbImage],
+    vision: &Gemma4UnifiedVisionProcessor,
+    normalization: &ImageNormalization,
+) -> Result<PreprocessedVideo, MediaError> {
+    if frames.is_empty() {
+        return Err(MediaError::Decode("video has no frames".to_string()));
+    }
+
+    let mut pixel_values = Vec::new();
+    let mut pixel_position_ids = Vec::new();
+    let mut soft_tokens_per_frame: Option<u32> = None;
+    for frame in frames {
+        let (frame_values, frame_positions) = patchify_rgb(frame, vision, normalization)?;
+        let count = frame_positions.len() as u32;
+        match soft_tokens_per_frame {
+            None => soft_tokens_per_frame = Some(count),
+            Some(expected) if expected != count => {
+                return Err(MediaError::Unsupported(
+                    "video frames must share dimensions so every frame yields the same soft-token count".to_string(),
+                ));
+            }
+            _ => {}
+        }
+        pixel_values.extend(frame_values);
+        pixel_position_ids.extend(frame_positions);
+    }
+
+    let soft_tokens_per_frame = soft_tokens_per_frame.unwrap_or(0);
+    if soft_tokens_per_frame == 0 {
+        return Err(MediaError::Decode(
+            "video frames produced zero soft tokens".to_string(),
+        ));
+    }
+
+    Ok(PreprocessedVideo {
+        frame_count: frames.len() as u32,
+        soft_tokens_per_frame,
         pixel_values,
         pixel_position_ids,
     })
@@ -514,6 +621,133 @@ mod tests {
         // First samples preserved, tail zero-padded.
         assert_eq!(pre.input_features[0], 0.25);
         assert_eq!(*pre.input_features.last().unwrap(), 0.0);
+    }
+
+    fn animated_gif(frames: &[image::RgbImage]) -> Vec<u8> {
+        let mut bytes: Vec<u8> = Vec::new();
+        {
+            let mut encoder = image::codecs::gif::GifEncoder::new(std::io::Cursor::new(&mut bytes));
+            for frame in frames {
+                let rgba = image::DynamicImage::ImageRgb8(frame.clone()).to_rgba8();
+                encoder
+                    .encode_frame(image::Frame::new(rgba))
+                    .expect("encode gif frame");
+            }
+        }
+        bytes
+    }
+
+    #[test]
+    fn video_frames_decode_and_concatenate_per_frame_patches() {
+        let vision = vision();
+        let frame_a = image::RgbImage::from_pixel(96, 48, image::Rgb([10, 20, 30]));
+        let frame_b = image::RgbImage::from_pixel(96, 48, image::Rgb([40, 50, 60]));
+        let gif = animated_gif(&[frame_a, frame_b]);
+
+        let frames = decode_video_frames(&gif).expect("decode gif frames");
+        assert_eq!(frames.len(), 2);
+
+        let pre =
+            preprocess_video_frames(&frames, &vision, &ImageNormalization::default()).unwrap();
+        assert_eq!(pre.frame_count, 2);
+        assert!(pre.soft_tokens_per_frame > 0);
+
+        let patch = (vision.patch_size * vision.pooling_kernel_size) as usize;
+        let patch_dim = patch * patch * 3;
+        let per_frame = pre.soft_tokens_per_frame as usize;
+        assert_eq!(pre.pixel_position_ids.len(), 2 * per_frame);
+        assert_eq!(pre.pixel_values.len(), 2 * per_frame * patch_dim);
+    }
+
+    #[test]
+    fn sample_frame_indices_caps_and_keeps_first() {
+        assert_eq!(sample_frame_indices(3, 16), vec![0, 1, 2]);
+        let sampled = sample_frame_indices(100, 16);
+        assert_eq!(sampled.len(), 16);
+        assert_eq!(sampled[0], 0);
+        assert!(sampled.windows(2).all(|w| w[0] < w[1]));
+        assert!(*sampled.last().unwrap() < 100);
+    }
+
+    fn parse_golden(
+        golden: &Value,
+    ) -> (Gemma4UnifiedVisionProcessor, Vec<f32>, Vec<[i32; 2]>, usize) {
+        let cfg = &golden["config"];
+        let vision = Gemma4UnifiedVisionProcessor {
+            patch_size: cfg["patch_size"].as_u64().unwrap() as u32,
+            model_patch_size: cfg["model_patch_size"].as_u64().unwrap() as u32,
+            pooling_kernel_size: cfg["pooling_kernel_size"].as_u64().unwrap() as u32,
+            max_soft_tokens: cfg["max_soft_tokens"].as_u64().unwrap() as u32,
+        };
+        let pixel_values = golden["pixel_values"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_f64().unwrap() as f32)
+            .collect();
+        let positions = golden["positions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| {
+                let pair = p.as_array().unwrap();
+                [
+                    pair[0].as_i64().unwrap() as i32,
+                    pair[1].as_i64().unwrap() as i32,
+                ]
+            })
+            .collect();
+        let soft = golden["soft_tokens"].as_u64().unwrap() as usize;
+        (vision, pixel_values, positions, soft)
+    }
+
+    fn max_abs_diff(a: &[f32], b: &[f32]) -> f32 {
+        a.iter()
+            .zip(b)
+            .map(|(x, y)| (x - y).abs())
+            .fold(0.0f32, f32::max)
+    }
+
+    #[test]
+    fn golden_noresize_matches_reference_exactly() {
+        let png = include_bytes!("tests/fixtures/gemma4_golden/image_noresize.png");
+        let golden: Value = serde_json::from_str(include_str!(
+            "tests/fixtures/gemma4_golden/golden_noresize.json"
+        ))
+        .unwrap();
+        let (vision, expected_values, expected_positions, soft) = parse_golden(&golden);
+
+        let pre = preprocess_image(png, &vision, &ImageNormalization::default()).unwrap();
+
+        // No resize happens (scale == 1), so the patchify/normalize/position math
+        // must match the reference numpy path bit-for-bit.
+        assert_eq!(pre.pixel_position_ids.len(), soft);
+        assert_eq!(pre.pixel_position_ids, expected_positions);
+        assert_eq!(pre.pixel_values.len(), expected_values.len());
+        let diff = max_abs_diff(&pre.pixel_values, &expected_values);
+        assert!(diff < 1e-6, "max abs diff vs reference = {diff}");
+    }
+
+    #[test]
+    fn golden_resize_matches_reference_within_tolerance() {
+        let png = include_bytes!("tests/fixtures/gemma4_golden/image_resize.png");
+        let golden: Value = serde_json::from_str(include_str!(
+            "tests/fixtures/gemma4_golden/golden_resize.json"
+        ))
+        .unwrap();
+        let (vision, expected_values, expected_positions, soft) = parse_golden(&golden);
+
+        let pre = preprocess_image(png, &vision, &ImageNormalization::default()).unwrap();
+
+        // Resize uses CatmullRom vs the reference's PIL BICUBIC: same patch grid
+        // and positions, pixel values close but not bit-identical.
+        assert_eq!(pre.pixel_position_ids.len(), soft);
+        assert_eq!(pre.pixel_position_ids, expected_positions);
+        let diff = max_abs_diff(&pre.pixel_values, &expected_values);
+        assert!(
+            diff < 0.12,
+            "resize pixel diff vs PIL bicubic too large: {diff}"
+        );
     }
 
     #[test]

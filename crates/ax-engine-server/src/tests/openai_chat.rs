@@ -14,10 +14,11 @@ use std::fs;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::fixtures::{
-    assert_invalid_request_response, json_request_body, json_response, llama_cpp_server_state,
-    minimal_tokenizer_artifact, mlx_lm_delegated_state, native_mlx_openai_builder_state,
-    openai_first_choice, sample_gemma4_multimodal_inputs, sample_openai_chat_request,
-    sample_openai_chat_request_with_role, spawn_llama_cpp_completion_server, test_app_state,
+    assert_invalid_request_response, gemma4_unified_artifact, json_request_body, json_response,
+    llama_cpp_server_state, minimal_tokenizer_artifact, mlx_lm_delegated_state,
+    native_mlx_openai_builder_state, openai_first_choice, sample_gemma4_multimodal_inputs,
+    sample_openai_chat_request, sample_openai_chat_request_with_role,
+    spawn_llama_cpp_completion_server, test_app_state,
 };
 
 #[test]
@@ -383,6 +384,60 @@ async fn openai_chat_request_preserves_gemma4_multimodal_inputs_for_native_mlx_t
     assert_eq!(built.generate_request.input_text, None);
     assert_eq!(inputs.images.len(), 1);
     assert_eq!(inputs.images[0].pixel_values, vec![0.0, 1.0, 2.0]);
+
+    fs::remove_dir_all(artifact_dir).expect("artifact dir should clean up");
+}
+
+#[tokio::test]
+async fn openai_chat_request_decodes_inline_image_into_gemma4_unified_tensors() {
+    use base64::Engine as _;
+
+    let artifact_dir = gemma4_unified_artifact("native-openai-chat-inline-image");
+    let state = native_mlx_openai_builder_state("qwen3", &artifact_dir);
+
+    // The golden 16x16 fixture decodes to exactly 4 soft tokens under the
+    // synthetic vision config baked into the artifact.
+    let png = include_bytes!("fixtures/gemma4_golden/image_noresize.png");
+    let data_uri = format!(
+        "data:image/png;base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(png)
+    );
+    let request: OpenAiChatCompletionHttpRequest = serde_json::from_value(json!({
+        "model": "qwen3",
+        "messages": [{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "describe"},
+                {"type": "image_url", "image_url": {"url": data_uri}}
+            ]
+        }],
+        "max_tokens": 8
+    }))
+    .expect("multimodal chat request should deserialize");
+
+    let built =
+        build_openai_chat_request(&state, request).expect("inline image chat request should build");
+
+    // The image was decoded, preprocessed, and attached as Gemma4 unified tensors.
+    let inputs = built
+        .generate_request
+        .multimodal_inputs
+        .gemma4_unified
+        .expect("inline image should attach Gemma4 unified tensors");
+    assert_eq!(inputs.images.len(), 1);
+    assert_eq!(inputs.images[0].span.soft_token_count, 4);
+    assert_eq!(inputs.images[0].pixel_position_ids.len(), 4);
+    assert_eq!(inputs.images[0].pixel_values.len(), 4 * 8 * 8 * 3);
+    assert!(inputs.audios.is_empty());
+    assert!(inputs.videos.is_empty());
+
+    // The single <img> placeholder round-tripped and expanded into boi(102) +
+    // four image soft tokens(100) + eoi(103) in the tokenized prompt.
+    let tokens = &built.generate_request.input_tokens;
+    assert_eq!(tokens.iter().filter(|&&token| token == 100).count(), 4);
+    assert_eq!(tokens.iter().filter(|&&token| token == 102).count(), 1);
+    assert_eq!(tokens.iter().filter(|&&token| token == 103).count(), 1);
+    assert_eq!(built.generate_request.input_text, None);
 
     fs::remove_dir_all(artifact_dir).expect("artifact dir should clean up");
 }

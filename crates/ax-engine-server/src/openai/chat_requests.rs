@@ -3,7 +3,8 @@ use std::path::Path;
 use ax_engine_sdk::{
     EngineTokenizer, Gemma4UnifiedAudioInput, Gemma4UnifiedAudioRuntimeInput, Gemma4UnifiedError,
     Gemma4UnifiedImageInput, Gemma4UnifiedImageRuntimeInput, Gemma4UnifiedModality,
-    Gemma4UnifiedProcessorConfig, Gemma4UnifiedRuntimeInputs, Gemma4UnifiedTokenSpan,
+    Gemma4UnifiedProcessorConfig, Gemma4UnifiedRuntimeInputs, Gemma4UnifiedSoftTokenRange,
+    Gemma4UnifiedTokenSpan, Gemma4UnifiedVideoInput, Gemma4UnifiedVideoRuntimeInput,
     LlamaCppChatMessage, MlxLmChatMessage,
 };
 use axum::Json;
@@ -12,7 +13,9 @@ use serde_json::Value;
 
 use crate::chat;
 use crate::errors::{ErrorResponse, error_response};
-use crate::multimodal::{self, MediaError, PreprocessedAudio, PreprocessedImage};
+use crate::multimodal::{
+    self, MediaError, PreprocessedAudio, PreprocessedImage, PreprocessedVideo,
+};
 use crate::openai::schema::{
     OpenAiChatContent, OpenAiChatContentPart, OpenAiChatMessage, OpenAiStopInput,
 };
@@ -261,11 +264,20 @@ pub(crate) fn render_gemma4_unified_chat_with_media(
 
     let image_placeholder = placeholder_string(&tokenizer, config.tokens.image_token_id, "image")?;
     let audio_placeholder = placeholder_string(&tokenizer, config.tokens.audio_token_id, "audio")?;
+    // A video_token_id of 0 means the model declares no video token.
+    let video_placeholder = if config.tokens.video_token_id != 0 {
+        Some(placeholder_string(
+            &tokenizer,
+            config.tokens.video_token_id,
+            "video",
+        )?)
+    } else {
+        None
+    };
 
     // Render the prompt with one placeholder token per media item, collecting the
     // raw bytes in document order so they line up with the placeholder positions.
-    let mut image_bytes: Vec<Vec<u8>> = Vec::new();
-    let mut audio_bytes: Vec<Vec<u8>> = Vec::new();
+    let mut collected = CollectedMedia::default();
     let mut pairs: ChatMessagePairs = Vec::with_capacity(messages.len());
     for message in messages {
         let role = chat::normalize_role(&message.role).map_err(chat_error_response)?;
@@ -273,8 +285,8 @@ pub(crate) fn render_gemma4_unified_chat_with_media(
             &message.content,
             &image_placeholder,
             &audio_placeholder,
-            &mut image_bytes,
-            &mut audio_bytes,
+            video_placeholder.as_deref(),
+            &mut collected,
         )?;
         pairs.push((role.to_string(), content));
     }
@@ -289,12 +301,14 @@ pub(crate) fn render_gemma4_unified_chat_with_media(
     })?;
 
     // Preprocess raw media into the encoder-free connector's tensors.
-    let images: Vec<PreprocessedImage> = image_bytes
+    let images: Vec<PreprocessedImage> = collected
+        .images
         .iter()
         .map(|bytes| multimodal::preprocess_image(bytes, &config.vision, &normalization))
         .collect::<Result<_, _>>()
         .map_err(media_error_response)?;
-    let audios: Vec<PreprocessedAudio> = audio_bytes
+    let audios: Vec<PreprocessedAudio> = collected
+        .audios
         .iter()
         .map(|bytes| match config.audio.as_ref() {
             Some(processor) => multimodal::preprocess_wav(bytes, processor),
@@ -304,9 +318,18 @@ pub(crate) fn render_gemma4_unified_chat_with_media(
         })
         .collect::<Result<_, _>>()
         .map_err(media_error_response)?;
+    let videos: Vec<PreprocessedVideo> = collected
+        .videos
+        .iter()
+        .map(|bytes| {
+            let frames = multimodal::decode_video_frames(bytes)?;
+            multimodal::preprocess_video_frames(&frames, &config.vision, &normalization)
+        })
+        .collect::<Result<_, _>>()
+        .map_err(media_error_response)?;
 
-    // Expand image and audio placeholders in a single pass so every span indexes
-    // the final token stream (separate passes would shift later positions).
+    // Expand all placeholders in a single pass so every span indexes the final
+    // token stream (separate passes would shift later positions).
     let image_inputs: Vec<Gemma4UnifiedImageInput> = images
         .iter()
         .map(|image| Gemma4UnifiedImageInput {
@@ -320,12 +343,25 @@ pub(crate) fn render_gemma4_unified_chat_with_media(
             sample_count: audio.sample_count,
         })
         .collect();
-    let (input_tokens, image_spans, audio_spans) =
-        expand_image_and_audio(&config, &tokens, &image_inputs, &audio_inputs)?;
+    let video_inputs: Vec<Gemma4UnifiedVideoInput> = videos
+        .iter()
+        .map(|video| Gemma4UnifiedVideoInput {
+            frame_count: video.frame_count,
+            soft_tokens_per_frame: video.soft_tokens_per_frame,
+            timestamp_token_ids_per_frame: Vec::new(),
+        })
+        .collect();
+    let expanded = expand_media(
+        &config,
+        &tokens,
+        &image_inputs,
+        &audio_inputs,
+        &video_inputs,
+    )?;
 
-    let runtime_inputs = build_runtime_inputs(images, image_spans, audios, audio_spans);
+    let runtime_inputs = build_runtime_inputs(images, audios, videos, expanded.spans);
     runtime_inputs
-        .validate_for_prompt_len(input_tokens.len())
+        .validate_for_prompt_len(expanded.tokens.len())
         .map_err(|error| {
             error_response(
                 StatusCode::BAD_REQUEST,
@@ -335,9 +371,17 @@ pub(crate) fn render_gemma4_unified_chat_with_media(
         })?;
 
     Ok(Some(Gemma4UnifiedChatPrompt {
-        input_tokens,
+        input_tokens: expanded.tokens,
         runtime_inputs,
     }))
+}
+
+/// Raw media bytes collected while rendering, in document order per modality.
+#[derive(Default)]
+struct CollectedMedia {
+    images: Vec<Vec<u8>>,
+    audios: Vec<Vec<u8>>,
+    videos: Vec<Vec<u8>>,
 }
 
 fn placeholder_string(
@@ -360,8 +404,8 @@ fn render_content_collecting_media(
     content: &OpenAiChatContent,
     image_placeholder: &str,
     audio_placeholder: &str,
-    image_bytes: &mut Vec<Vec<u8>>,
-    audio_bytes: &mut Vec<Vec<u8>>,
+    video_placeholder: Option<&str>,
+    collected: &mut CollectedMedia,
 ) -> Result<String, HttpErrorResponse> {
     match content {
         OpenAiChatContent::Text(text) => Ok(text.clone()),
@@ -383,19 +427,23 @@ fn render_content_collecting_media(
                         rendered.push_str(text);
                     }
                     OpenAiChatContentPartKind::Media(OpenAiChatMediaKind::Image) => {
-                        image_bytes.push(image_part_bytes(part)?);
+                        collected.images.push(image_part_bytes(part)?);
                         rendered.push_str(image_placeholder);
                     }
                     OpenAiChatContentPartKind::Media(OpenAiChatMediaKind::Audio) => {
-                        audio_bytes.push(audio_part_bytes(part)?);
+                        collected.audios.push(audio_part_bytes(part)?);
                         rendered.push_str(audio_placeholder);
                     }
                     OpenAiChatContentPartKind::Media(OpenAiChatMediaKind::Video) => {
-                        return Err(error_response(
-                            StatusCode::BAD_REQUEST,
-                            "invalid_request",
-                            "video chat content is not supported; send processed multimodal_inputs.gemma4_unified tensors through /v1/generate".to_string(),
-                        ));
+                        let placeholder = video_placeholder.ok_or_else(|| {
+                            error_response(
+                                StatusCode::BAD_REQUEST,
+                                "invalid_request",
+                                "model declares no video token; video chat content is not supported".to_string(),
+                            )
+                        })?;
+                        collected.videos.push(video_part_bytes(part)?);
+                        rendered.push_str(placeholder);
                     }
                     OpenAiChatContentPartKind::Unsupported => {
                         return Err(error_response(
@@ -439,6 +487,17 @@ fn audio_part_bytes(part: &OpenAiChatContentPart) -> Result<Vec<u8>, HttpErrorRe
     Err(media_payload_missing("audio", "input_audio or audio_url"))
 }
 
+fn video_part_bytes(part: &OpenAiChatContentPart) -> Result<Vec<u8>, HttpErrorResponse> {
+    let value = part
+        .video_url
+        .as_ref()
+        .ok_or_else(|| media_payload_missing("video", "video_url"))?;
+    let url =
+        data_value_url(value).ok_or_else(|| media_payload_missing("video", "video_url.url"))?;
+    let (_mime, bytes) = multimodal::decode_data_uri(url).map_err(media_error_response)?;
+    Ok(bytes)
+}
+
 /// OpenAI media URL fields are either a bare string or `{ "url": "..." }`.
 fn data_value_url(value: &Value) -> Option<&str> {
     match value {
@@ -447,23 +506,38 @@ fn data_value_url(value: &Value) -> Option<&str> {
     }
 }
 
-/// Expanded token stream plus the image and audio spans it produced.
-type ExpandedMedia = (
-    Vec<u32>,
-    Vec<Gemma4UnifiedTokenSpan>,
-    Vec<Gemma4UnifiedTokenSpan>,
-);
+/// A video span plus the per-frame soft-token ranges it occupies in the final
+/// token stream.
+type VideoSpan = (Gemma4UnifiedTokenSpan, Vec<Gemma4UnifiedSoftTokenRange>);
 
-/// Single-pass expansion of image and audio placeholder tokens into their
-/// boundary + soft-token replacements, recording spans against the final stream.
-fn expand_image_and_audio(
+/// The expanded token stream and the spans for each modality, in document order.
+#[derive(Debug)]
+struct ExpandedMedia {
+    tokens: Vec<u32>,
+    spans: MediaSpans,
+}
+
+#[derive(Debug, Default)]
+struct MediaSpans {
+    image: Vec<Gemma4UnifiedTokenSpan>,
+    audio: Vec<Gemma4UnifiedTokenSpan>,
+    video: Vec<VideoSpan>,
+}
+
+/// Single-pass expansion of image, audio, and video placeholder tokens into
+/// their boundary + soft-token replacements, recording spans against the final
+/// stream. A single pass keeps every span (and video frame range) aligned with
+/// the post-expansion token positions.
+fn expand_media(
     config: &Gemma4UnifiedProcessorConfig,
     tokens: &[u32],
     image_inputs: &[Gemma4UnifiedImageInput],
     audio_inputs: &[Gemma4UnifiedAudioInput],
+    video_inputs: &[Gemma4UnifiedVideoInput],
 ) -> Result<ExpandedMedia, HttpErrorResponse> {
     let image_token = config.tokens.image_token_id;
     let audio_token = config.tokens.audio_token_id;
+    let video_token = config.tokens.video_token_id;
 
     let image_markers = tokens.iter().filter(|&&t| t == image_token).count();
     let audio_markers = tokens.iter().filter(|&&t| t == audio_token).count();
@@ -481,12 +555,22 @@ fn expand_image_and_audio(
             audio_markers,
         ));
     }
+    if video_token != 0 {
+        let video_markers = tokens.iter().filter(|&&t| t == video_token).count();
+        if video_markers != video_inputs.len() {
+            return Err(placeholder_count_error(
+                "video",
+                video_inputs.len(),
+                video_markers,
+            ));
+        }
+    }
 
     let mut out = Vec::with_capacity(tokens.len());
-    let mut image_spans = Vec::with_capacity(image_inputs.len());
-    let mut audio_spans = Vec::with_capacity(audio_inputs.len());
+    let mut spans = MediaSpans::default();
     let mut image_index = 0usize;
     let mut audio_index = 0usize;
+    let mut video_index = 0usize;
 
     for (token_index, &token) in tokens.iter().enumerate() {
         if token == image_token {
@@ -498,7 +582,7 @@ fn expand_image_and_audio(
             let soft = config
                 .image_soft_tokens(input)
                 .map_err(gemma4_unified_error_response)?;
-            image_spans.push(Gemma4UnifiedTokenSpan {
+            spans.image.push(Gemma4UnifiedTokenSpan {
                 modality: Gemma4UnifiedModality::Image,
                 placeholder_index: token_index,
                 replacement_start: out.len(),
@@ -515,7 +599,7 @@ fn expand_image_and_audio(
             let soft = config
                 .audio_soft_tokens(input)
                 .map_err(gemma4_unified_error_response)?;
-            audio_spans.push(Gemma4UnifiedTokenSpan {
+            spans.audio.push(Gemma4UnifiedTokenSpan {
                 modality: Gemma4UnifiedModality::Audio,
                 placeholder_index: token_index,
                 replacement_start: out.len(),
@@ -523,23 +607,54 @@ fn expand_image_and_audio(
                 replacement_token_count: replacement.len() as u32,
             });
             out.extend_from_slice(&replacement);
+        } else if video_token != 0 && token == video_token {
+            let input = video_inputs[video_index].clone();
+            video_index += 1;
+            let (replacement, relative_ranges) = config
+                .video_replacement_tokens_with_ranges(input)
+                .map_err(gemma4_unified_error_response)?;
+            let replacement_start = out.len();
+            let soft = relative_ranges
+                .iter()
+                .map(|range| range.soft_token_count)
+                .sum();
+            // The ranges are relative to the replacement block; offset them onto
+            // the final stream.
+            let ranges = relative_ranges
+                .into_iter()
+                .map(|range| Gemma4UnifiedSoftTokenRange {
+                    start: replacement_start + range.start,
+                    soft_token_count: range.soft_token_count,
+                })
+                .collect();
+            spans.video.push((
+                Gemma4UnifiedTokenSpan {
+                    modality: Gemma4UnifiedModality::Video,
+                    placeholder_index: token_index,
+                    replacement_start,
+                    soft_token_count: soft,
+                    replacement_token_count: replacement.len() as u32,
+                },
+                ranges,
+            ));
+            out.extend_from_slice(&replacement);
         } else {
             out.push(token);
         }
     }
 
-    Ok((out, image_spans, audio_spans))
+    Ok(ExpandedMedia { tokens: out, spans })
 }
 
 fn build_runtime_inputs(
     images: Vec<PreprocessedImage>,
-    image_spans: Vec<Gemma4UnifiedTokenSpan>,
     audios: Vec<PreprocessedAudio>,
-    audio_spans: Vec<Gemma4UnifiedTokenSpan>,
+    videos: Vec<PreprocessedVideo>,
+    spans: MediaSpans,
 ) -> Gemma4UnifiedRuntimeInputs {
     let images = images
         .into_iter()
-        .zip(image_spans)
+        .zip(spans.image)
         .map(|(image, span)| Gemma4UnifiedImageRuntimeInput {
             span,
             pixel_values: image.pixel_values,
@@ -548,7 +663,7 @@ fn build_runtime_inputs(
         .collect();
     let audios = audios
         .into_iter()
-        .zip(audio_spans)
+        .zip(spans.audio)
         .map(|(audio, span)| Gemma4UnifiedAudioRuntimeInput {
             span,
             input_features: audio.input_features,
@@ -556,10 +671,23 @@ fn build_runtime_inputs(
             feature_count: audio.feature_count,
         })
         .collect();
+    let videos = videos
+        .into_iter()
+        .zip(spans.video)
+        .map(
+            |(video, (span, soft_token_ranges))| Gemma4UnifiedVideoRuntimeInput {
+                span,
+                soft_token_ranges,
+                pixel_values: video.pixel_values,
+                pixel_position_ids: video.pixel_position_ids,
+                frame_count: video.frame_count,
+            },
+        )
+        .collect();
     Gemma4UnifiedRuntimeInputs {
         images,
         audios,
-        videos: Vec::new(),
+        videos,
     }
 }
 
@@ -643,8 +771,9 @@ mod media_tests {
         }];
         let audios = [Gemma4UnifiedAudioInput { sample_count: 1600 }];
 
-        let (expanded, image_spans, audio_spans) =
-            expand_image_and_audio(&config, &tokens, &images, &audios).expect("expansion");
+        let expanded = expand_media(&config, &tokens, &images, &audios, &[]).expect("expansion");
+        let image_spans = &expanded.spans.image;
+        let audio_spans = &expanded.spans.audio;
 
         assert_eq!(image_spans.len(), 1);
         assert_eq!(audio_spans.len(), 1);
@@ -663,20 +792,54 @@ mod media_tests {
         assert_eq!(audio.replacement_token_count, 5); // boa + 3 soft + eoa
 
         // Total length: 3 plain tokens + 258 + 5 replacements.
-        assert_eq!(expanded.len(), 3 + 258 + 5);
+        assert_eq!(expanded.tokens.len(), 3 + 258 + 5);
         // Boundary tokens landed where the spans say they did.
-        assert_eq!(expanded[image.replacement_start], 255999); // boi
-        assert_eq!(expanded[audio.replacement_start], 256000); // boa
+        assert_eq!(expanded.tokens[image.replacement_start], 255999); // boi
+        assert_eq!(expanded.tokens[audio.replacement_start], 256000); // boa
+    }
+
+    #[test]
+    fn video_expansion_aligns_per_frame_ranges() {
+        let config = processor_config();
+        // text, <video>, text
+        let tokens = [10u32, 258884, 11];
+        let videos = [Gemma4UnifiedVideoInput {
+            frame_count: 2,
+            soft_tokens_per_frame: 4,
+            timestamp_token_ids_per_frame: Vec::new(),
+        }];
+
+        let expanded = expand_media(&config, &tokens, &[], &[], &videos).expect("expansion");
+        assert_eq!(expanded.spans.video.len(), 1);
+        let (span, ranges) = &expanded.spans.video[0];
+
+        // Each frame contributes boi + 4 soft + eoi = 6 tokens; two frames = 12.
+        assert_eq!(span.replacement_start, 1);
+        assert_eq!(span.soft_token_count, 8); // 2 frames * 4
+        assert_eq!(span.replacement_token_count, 12);
+        assert_eq!(ranges.len(), 2);
+
+        // Frame ranges point at the soft tokens (after each boi) in the final
+        // stream: frame 0 at 1+1=2, frame 1 at 1+6+1=8.
+        assert_eq!(ranges[0].start, 2);
+        assert_eq!(ranges[0].soft_token_count, 4);
+        assert_eq!(ranges[1].start, 8);
+        assert_eq!(ranges[1].soft_token_count, 4);
+        assert_eq!(expanded.tokens[span.replacement_start], 255999); // boi of frame 0
+        for range in ranges {
+            assert_eq!(expanded.tokens[range.start], 258884); // video soft token
+        }
     }
 
     #[test]
     fn rejects_placeholder_count_mismatch() {
         let config = processor_config();
         let tokens = [10u32, 258880, 11]; // one image marker
-        let error = expand_image_and_audio(
+        let error = expand_media(
             &config,
             &tokens,
             &[], // but zero image inputs
+            &[],
             &[],
         )
         .expect_err("mismatch should fail");
