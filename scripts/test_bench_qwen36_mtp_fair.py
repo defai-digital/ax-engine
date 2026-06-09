@@ -784,6 +784,21 @@ class Qwen36MtpFairTests(unittest.TestCase):
             [9.5, 10.0, 10.5, 10.8, 11.0, 11.2],
         )
 
+    def test_decode_improvement_svg_renders_ratio_story(self) -> None:
+        summary = fake_chart_summary()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "decode-improvement.svg"
+            fair.write_decode_improvement_svg(path, summary)
+            text = path.read_text()
+
+        rows = fair.build_decode_improvement_rows(summary)
+        self.assertEqual(rows[0]["label"], "27B")
+        self.assertAlmostEqual(rows[0]["ratios"]["ax_mtp_vs_mtplx"], (10.65 / 8.65) - 1.0)
+        self.assertIn("Qwen3.6 MTP decode improvement", text)
+        self.assertIn("AX MTP+ngram vs MTPLX", text)
+        self.assertIn("ngram vs AX MTP", text)
+        self.assertIn("<rect", text)
+
     def test_prefill_svg_is_grouped_box_whisker(self) -> None:
         report = fake_prefill_report()
         with tempfile.TemporaryDirectory() as tmp:
@@ -961,7 +976,7 @@ def fake_chart_summary() -> dict:
     return {
         "schema": "ax.qwen36_mtp_fair.v1",
         "contract": {
-            "engines": ["mtplx", "ax_engine"],
+            "engines": ["mtplx", "ax_engine", "ax_engine_ngram"],
             "suites": ["flappy", "long_code"],
         },
         "rows": [
@@ -983,6 +998,12 @@ def fake_chart_summary() -> dict:
                         "accept_rate": 0.70,
                         "accept_rate_samples": [0.65, 0.70, 0.75],
                     },
+                    "ax_engine_ngram": {
+                        "decode_tok_s": 12.0,
+                        "decode_tok_s_samples": [11.5, 12.0, 12.5],
+                        "accept_rate": 0.90,
+                        "accept_rate_samples": [0.85, 0.90, 0.95],
+                    },
                 },
             },
             {
@@ -1002,6 +1023,12 @@ def fake_chart_summary() -> dict:
                         "decode_tok_s_samples": [10.8, 11.0, 11.2],
                         "accept_rate": 0.80,
                         "accept_rate_samples": [0.78, 0.80, 0.82],
+                    },
+                    "ax_engine_ngram": {
+                        "decode_tok_s": 13.0,
+                        "decode_tok_s_samples": [12.8, 13.0, 13.2],
+                        "accept_rate": 0.92,
+                        "accept_rate_samples": [0.90, 0.92, 0.94],
                     },
                 },
             },

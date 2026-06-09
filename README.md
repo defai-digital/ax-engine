@@ -461,6 +461,10 @@ Three-engine MTP comparison (MTPLX 0.3.7, AX Engine MTP, AX Engine MTP+n-gram) u
 
 AX MTP runs the default draft confidence gate (`AX_MLX_MTP_DRAFT_MIN_CONFIDENCE`). The accept columns below use the accept-maximizing `0.98` setting, which holds pure-MTP accept ≥99% on every row except the hardest `python_modules_long` suite (27B 97.6%, 35B-A3B 99.3%). The shipped default is `0.90`, which trades ~1–2 points of accept for +5–13% decode throughput (see `docs/MTP-DRAFT-GATE-THROUGHPUT.md`). Set the variable to `0.98` to restore the accept-maximizing behavior, or `0` to disable.
 
+The aggregate improvement view below uses sample medians across all three suites. The 35B-A3B sidecar is the clear public win: AX MTP is **+76.4%** vs MTPLX and AX MTP+n-gram is **+77.5%** vs MTPLX. The 27B row is mixed rather than a default win: pure AX MTP is **-1.4%** vs MTPLX, while AX MTP+n-gram recovers to **+2.1%** vs MTPLX and **+3.5%** vs pure AX MTP, so stacking remains opt-in.
+
+<p><img width="100%" src="docs/assets/perf-mtp-fair-decode-improvement.svg" alt="Bar chart comparing Qwen3.6 aggregate decode improvement for AX MTP versus MTPLX, AX MTP+n-gram versus MTPLX, and MTP+n-gram versus pure AX MTP"></p>
+
 <table>
 <tr>
 <td align="center"><strong>Qwen3.6 27B 4-bit</strong></td>

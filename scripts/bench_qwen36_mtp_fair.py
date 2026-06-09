@@ -2075,6 +2075,163 @@ def write_accept_model_svg(path: Path, summary: dict[str, Any], model_key: str) 
     )
 
 
+def aggregate_metric_median(
+    summary: dict[str, Any], model_key: str, engine: str, metric: str
+) -> float | None:
+    values: list[float] = []
+    for row in summary["rows"]:
+        if row["model"] != model_key:
+            continue
+        values.extend(chart_samples(row["engines"].get(engine, {}), metric))
+    return statistics.median(values) if values else None
+
+
+def build_decode_improvement_rows(summary: dict[str, Any]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    seen_models: list[str] = []
+    for row in summary["rows"]:
+        model_key = row["model"]
+        if model_key not in seen_models:
+            seen_models.append(model_key)
+    for model_key in seen_models:
+        model_rows = [row for row in summary["rows"] if row["model"] == model_key]
+        if not model_rows:
+            continue
+        mtplx = aggregate_metric_median(summary, model_key, "mtplx", "decode_tok_s")
+        ax_mtp = aggregate_metric_median(summary, model_key, "ax_engine", "decode_tok_s")
+        ax_ngram = aggregate_metric_median(
+            summary, model_key, "ax_engine_ngram", "decode_tok_s"
+        )
+        if mtplx is None or ax_mtp is None or ax_ngram is None:
+            continue
+        rows.append(
+            {
+                "model": model_key,
+                "label": model_short_label(model_rows[0]["model_label"]),
+                "ratios": {
+                    "ax_mtp_vs_mtplx": ax_mtp / mtplx - 1.0,
+                    "ax_ngram_vs_mtplx": ax_ngram / mtplx - 1.0,
+                    "ax_ngram_vs_ax_mtp": ax_ngram / ax_mtp - 1.0,
+                },
+                "medians": {
+                    "mtplx": mtplx,
+                    "ax_engine": ax_mtp,
+                    "ax_engine_ngram": ax_ngram,
+                },
+            }
+        )
+    return rows
+
+
+def write_decode_improvement_svg(path: Path, summary: dict[str, Any]) -> None:
+    rows = build_decode_improvement_rows(summary)
+    width = 900
+    height = 360
+    left = 72
+    right = 34
+    top = 82
+    bottom = 84
+    plot_w = width - left - right
+    plot_h = height - top - bottom
+    metrics = [
+        ("ax_mtp_vs_mtplx", "AX MTP vs MTPLX", ENGINE_COLORS["ax_engine"]),
+        ("ax_ngram_vs_mtplx", "AX MTP+ngram vs MTPLX", ENGINE_COLORS["ax_engine_ngram"]),
+        ("ax_ngram_vs_ax_mtp", "ngram vs AX MTP", "#7c3aed"),
+    ]
+    values = [entry["ratios"][key] * 100.0 for entry in rows for key, _, _ in metrics]
+    min_value = min([0.0, *values])
+    max_value = max([1.0, *values])
+    lower = -10.0 if min_value < 0 else 0.0
+    upper = nice_axis_ceiling(max_value * 1.12)
+    if upper <= 0:
+        upper = 1.0
+    group_w = plot_w / max(len(rows), 1)
+    bar_gap = 10.0
+    bar_w = min(44.0, max(18.0, (group_w - 90.0 - bar_gap * 2) / len(metrics)))
+
+    def fx(group_index: int, metric_index: int) -> float:
+        group_x = left + group_w * group_index
+        span = bar_w * len(metrics) + bar_gap * (len(metrics) - 1)
+        start = group_x + (group_w - span) / 2
+        return start + metric_index * (bar_w + bar_gap)
+
+    def fy(value: float) -> float:
+        clamped = max(lower, min(value, upper))
+        return top + plot_h - ((clamped - lower) / (upper - lower)) * plot_h
+
+    zero_y = fy(0.0)
+    parts = [
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" '
+        f'viewBox="0 0 {width} {height}" role="img" aria-labelledby="title desc">',
+        "<title>Qwen3.6 MTP decode improvement</title>",
+        "<desc>Bar chart comparing aggregate sample-median decode improvement for AX MTP, "
+        "AX MTP plus n-gram, and n-gram over pure AX MTP.</desc>",
+        '<rect width="100%" height="100%" fill="#f8fafc"/>',
+        '<text x="24" y="24" font-family="Inter,Segoe UI,Arial,sans-serif" '
+        'font-size="16" font-weight="700" fill="#111827">Qwen3.6 MTP decode improvement</text>',
+        '<text x="24" y="46" font-family="Inter,Segoe UI,Arial,sans-serif" '
+        'font-size="11" fill="#4b5563">Aggregate sample median over flappy, long_code, '
+        'and python_modules_long | higher is better</text>',
+        '<rect x="64" y="82" width="802" height="194" rx="6" fill="#ffffff" stroke="#dbe3ef"/>',
+    ]
+    for i in range(5):
+        value = lower + (upper - lower) * i / 4
+        y = fy(value)
+        parts.append(
+            f'<line x1="{left}" y1="{y:.1f}" x2="{width - right}" y2="{y:.1f}" '
+            f'stroke="#e5e7eb" stroke-width="1"/>'
+        )
+        parts.append(
+            f'<text x="{left - 8}" y="{y + 4:.1f}" text-anchor="end" '
+            f'font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#6b7280">'
+            f"{axis_label(value, '%')}</text>"
+        )
+    parts.append(
+        f'<line x1="{left}" y1="{zero_y:.1f}" x2="{width - right}" y2="{zero_y:.1f}" '
+        'stroke="#111827" stroke-opacity="0.45" stroke-width="1.2"/>'
+    )
+    for group_index, entry in enumerate(rows):
+        group_x = left + group_w * group_index
+        parts.append(
+            f'<text x="{group_x + group_w / 2:.1f}" y="{height - 54}" text-anchor="middle" '
+            f'font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" font-weight="700" '
+            f'fill="#111827">{html.escape(entry["label"])}</text>'
+        )
+        for metric_index, (key, _label, color) in enumerate(metrics):
+            value = entry["ratios"][key] * 100.0
+            x = fx(group_index, metric_index)
+            y_value = fy(value)
+            y = min(y_value, zero_y)
+            bar_h = max(abs(zero_y - y_value), 1.0)
+            fill = color if value >= 0 else "#dc2626"
+            parts.append(
+                f'<rect x="{x:.1f}" y="{y:.1f}" width="{bar_w:.1f}" height="{bar_h:.1f}" '
+                f'rx="3" fill="{fill}" fill-opacity="0.78"/>'
+            )
+            label_y = y - 6 if value >= 0 else y + bar_h + 14
+            parts.append(
+                f'<text x="{x + bar_w / 2:.1f}" y="{label_y:.1f}" text-anchor="middle" '
+                f'font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" '
+                f'font-weight="700" fill="#111827" stroke="#ffffff" stroke-width="3" '
+                f'paint-order="stroke">{html.escape(point_label(value, "%"))}</text>'
+            )
+    legend_x = left
+    legend_y = height - 18
+    for _key, label, color in metrics:
+        parts.append(
+            f'<rect x="{legend_x:.1f}" y="{legend_y - 9}" width="10" height="10" rx="2" '
+            f'fill="{color}" fill-opacity="0.78"/>'
+        )
+        parts.append(
+            f'<text x="{legend_x + 14:.1f}" y="{legend_y}" '
+            f'font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#374151">'
+            f"{html.escape(label)}</text>"
+        )
+        legend_x += 210
+    parts.append("</svg>")
+    path.write_text("\n".join(parts) + "\n")
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -2344,9 +2501,11 @@ def main() -> int:
     summary_json = args.output_dir / "summary.json"
     summary_md = args.output_dir / "summary.md"
     chart_svg = args.output_dir / "decode-tok-s.svg"
+    improvement_svg = args.output_dir / "decode-improvement.svg"
     summary_json.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n")
     write_markdown(summary_md, summary)
     write_decode_svg(chart_svg, summary)
+    write_decode_improvement_svg(improvement_svg, summary)
     decode_y_max: dict[str, float] = {"27b-4bit": 80.0, "35b-a3b-4bit": 300.0}
     model_chart_paths: list[Path] = []
     for model_key in args.models:
@@ -2361,6 +2520,7 @@ def main() -> int:
     print(f"Saved summary: {summary_json}")
     print(f"Saved markdown: {summary_md}")
     print(f"Saved chart: {chart_svg}")
+    print(f"Saved chart: {improvement_svg}")
     for model_chart in model_chart_paths:
         print(f"Saved chart: {model_chart}")
     return 0
