@@ -450,6 +450,23 @@ class Gemma4MultimodalBenchmarkTests(unittest.TestCase):
         self.assertEqual(decision.status, "skipped")
         self.assertEqual(decision.reason, "missing_llama_cpp_gguf_for_gemma4_12b")
 
+    def test_peer_decision_skips_unstable_audio_cap(self) -> None:
+        args = type(
+            "Args",
+            (),
+            {
+                "llama_url": "http://127.0.0.1:18081",
+                "llama_binary": None,
+                "llama_gguf": None,
+                "llama_mmproj": None,
+                "llama_cache_policy": "prompt_cache_disabled",
+            },
+        )()
+        case = type("Case", (), {"case_id": "audio_cap", "modalities": ["audio"]})()
+        decision = bench.peer_capability(args, case)
+        self.assertEqual(decision.status, "skipped")
+        self.assertEqual(decision.reason, "llama_cpp_audio_cap_unstable")
+
     def test_checker_accepts_valid_artifact_and_skip_row(self) -> None:
         errors = checker.validate_artifact(
             sample_artifact(),

@@ -1322,6 +1322,16 @@ def peer_capability(args: argparse.Namespace, case: PreparedCase) -> PeerDecisio
             "local llama.cpp multimodal support covers image/audio but not video",
             capability,
         )
+    if getattr(case, "case_id", None) == "audio_cap":
+        return PeerDecision(
+            "skipped",
+            "llama_cpp_audio_cap_unstable",
+            (
+                "local llama.cpp Gemma 4 audio path fails the warmup+repetition "
+                "contract for the capped audio case"
+            ),
+            capability,
+        )
     if not args.llama_url:
         return PeerDecision(
             "skipped",

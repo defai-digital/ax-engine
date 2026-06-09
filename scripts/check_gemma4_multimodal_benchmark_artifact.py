@@ -14,6 +14,7 @@ ALLOWED_LAYERS = {"native_runtime_prefill", "openai_chat_e2e", "peer_comparison"
 ALLOWED_MODALITIES = {"image", "audio", "video"}
 MODALITY_ORDER = ("image", "audio", "video")
 ALLOWED_SKIP_REASONS = {
+    "llama_cpp_audio_cap_unstable",
     "llama_cpp_video_not_supported",
     "missing_llama_cpp_mmproj_for_gemma4_12b",
     "missing_llama_cpp_gguf_for_gemma4_12b",
