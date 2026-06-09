@@ -28,6 +28,7 @@ import argparse
 import base64
 import io
 import json
+import re
 import struct
 import sys
 import urllib.error
@@ -195,7 +196,17 @@ def main() -> int:
 
         match = ""
         if probe.expect_substring is not None:
-            hit = probe.expect_substring.lower() in text.lower()
+            # Word-boundary match so a numeric expectation like "3" is not
+            # falsely satisfied by "13"/"30", and a word like "red" is not
+            # satisfied by an unrelated substring.
+            hit = (
+                re.search(
+                    rf"\b{re.escape(probe.expect_substring)}\b",
+                    text,
+                    re.IGNORECASE,
+                )
+                is not None
+            )
             match = f"  (match '{probe.expect_substring}': {'yes' if hit else 'no'})"
         snippet = text.replace("\n", " ")[:80]
         print(f"[PASS] {probe.name}: {snippet!r}{match}")
