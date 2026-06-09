@@ -27,7 +27,7 @@
       "gemma-4-12B-it",
       "--mlx",
       "--mlx-model-artifacts-dir",
-      "/Users/akiralam/code/ax-engine_v5/.internal/models/gemma-4-12B-it-4bit",
+      "/path/to/gemma-4-12B-it-4bit",
       "--max-batch-tokens",
       "4096",
       "--port",
@@ -42,7 +42,7 @@
   },
   "model": {
     "id": "gemma-4-12B-it",
-    "model_dir": "/Users/akiralam/code/ax-engine_v5/.internal/models/gemma-4-12B-it-4bit",
+    "model_dir": "/path/to/gemma-4-12B-it-4bit",
     "model_type": "gemma4_unified",
     "model_manifest_sha256": "ec9cb1da4ba299baee789f320d668d5331bc780a1d661994bc6f7b0805dc51c5",
     "config_sha256": "a17d0966c7e4be270f5ce096e286935ad4386d8262c9c6d6982e61ed4d50f286",
@@ -52,7 +52,7 @@
   "benchmark": {
     "name": "gemma4_12b_multimodal",
     "model": "gemma-4-12B-it",
-    "model_dir": "/Users/akiralam/code/ax-engine_v5/.internal/models/gemma-4-12B-it-4bit",
+    "model_dir": "/path/to/gemma-4-12B-it-4bit",
     "layers": [
       "native_runtime_prefill",
       "openai_chat_e2e"
@@ -1961,7 +1961,7 @@
       },
       "capability": {
         "url": "http://127.0.0.1:18191",
-        "binary": "/Users/akiralam/code/ax-engine_v5/.internal/reference/llama.cpp/build/bin/llama-server",
+        "binary": "/path/to/llama-server",
         "text_gguf": "/Users/akiralam/.cache/huggingface/hub/models--ggml-org--gemma-4-12B-it-GGUF/snapshots/44ee90c4b61e888ac5b318a54ec7a94df61e9cd7/gemma-4-12B-it-Q4_K_M.gguf",
         "text_gguf_sha256": "1278394b693672ac2799eadc9a83fd98259a6a88a40acfb1dcaa6c6fc895a606",
         "mmproj": "/Users/akiralam/.cache/huggingface/hub/models--ggml-org--gemma-4-12B-it-GGUF/snapshots/44ee90c4b61e888ac5b318a54ec7a94df61e9cd7/mmproj-gemma-4-12B-it-Q8_0.gguf",
@@ -3263,7 +3263,7 @@
       },
       "capability": {
         "url": "http://127.0.0.1:18191",
-        "binary": "/Users/akiralam/code/ax-engine_v5/.internal/reference/llama.cpp/build/bin/llama-server",
+        "binary": "/path/to/llama-server",
         "text_gguf": "/Users/akiralam/.cache/huggingface/hub/models--ggml-org--gemma-4-12B-it-GGUF/snapshots/44ee90c4b61e888ac5b318a54ec7a94df61e9cd7/gemma-4-12B-it-Q4_K_M.gguf",
         "text_gguf_sha256": "1278394b693672ac2799eadc9a83fd98259a6a88a40acfb1dcaa6c6fc895a606",
         "mmproj": "/Users/akiralam/.cache/huggingface/hub/models--ggml-org--gemma-4-12B-it-GGUF/snapshots/44ee90c4b61e888ac5b318a54ec7a94df61e9cd7/mmproj-gemma-4-12B-it-Q8_0.gguf",
@@ -4553,7 +4553,7 @@
       },
       "capability": {
         "url": "http://127.0.0.1:18191",
-        "binary": "/Users/akiralam/code/ax-engine_v5/.internal/reference/llama.cpp/build/bin/llama-server",
+        "binary": "/path/to/llama-server",
         "text_gguf": "/Users/akiralam/.cache/huggingface/hub/models--ggml-org--gemma-4-12B-it-GGUF/snapshots/44ee90c4b61e888ac5b318a54ec7a94df61e9cd7/gemma-4-12B-it-Q4_K_M.gguf",
         "text_gguf_sha256": "1278394b693672ac2799eadc9a83fd98259a6a88a40acfb1dcaa6c6fc895a606",
         "mmproj": "/Users/akiralam/.cache/huggingface/hub/models--ggml-org--gemma-4-12B-it-GGUF/snapshots/44ee90c4b61e888ac5b318a54ec7a94df61e9cd7/mmproj-gemma-4-12B-it-Q8_0.gguf",
@@ -5843,7 +5843,7 @@
       },
       "capability": {
         "url": "http://127.0.0.1:18191",
-        "binary": "/Users/akiralam/code/ax-engine_v5/.internal/reference/llama.cpp/build/bin/llama-server",
+        "binary": "/path/to/llama-server",
         "text_gguf": "/Users/akiralam/.cache/huggingface/hub/models--ggml-org--gemma-4-12B-it-GGUF/snapshots/44ee90c4b61e888ac5b318a54ec7a94df61e9cd7/gemma-4-12B-it-Q4_K_M.gguf",
         "text_gguf_sha256": "1278394b693672ac2799eadc9a83fd98259a6a88a40acfb1dcaa6c6fc895a606",
         "mmproj": "/Users/akiralam/.cache/huggingface/hub/models--ggml-org--gemma-4-12B-it-GGUF/snapshots/44ee90c4b61e888ac5b318a54ec7a94df61e9cd7/mmproj-gemma-4-12B-it-Q8_0.gguf",
@@ -7133,7 +7133,7 @@
       },
       "capability": {
         "url": "http://127.0.0.1:18191",
-        "binary": "/Users/akiralam/code/ax-engine_v5/.internal/reference/llama.cpp/build/bin/llama-server",
+        "binary": "/path/to/llama-server",
         "text_gguf": "/Users/akiralam/.cache/huggingface/hub/models--ggml-org--gemma-4-12B-it-GGUF/snapshots/44ee90c4b61e888ac5b318a54ec7a94df61e9cd7/gemma-4-12B-it-Q4_K_M.gguf",
         "text_gguf_sha256": "1278394b693672ac2799eadc9a83fd98259a6a88a40acfb1dcaa6c6fc895a606",
         "mmproj": "/Users/akiralam/.cache/huggingface/hub/models--ggml-org--gemma-4-12B-it-GGUF/snapshots/44ee90c4b61e888ac5b318a54ec7a94df61e9cd7/mmproj-gemma-4-12B-it-Q8_0.gguf",
@@ -8423,7 +8423,7 @@
       },
       "capability": {
         "url": "http://127.0.0.1:18191",
-        "binary": "/Users/akiralam/code/ax-engine_v5/.internal/reference/llama.cpp/build/bin/llama-server",
+        "binary": "/path/to/llama-server",
         "text_gguf": "/Users/akiralam/.cache/huggingface/hub/models--ggml-org--gemma-4-12B-it-GGUF/snapshots/44ee90c4b61e888ac5b318a54ec7a94df61e9cd7/gemma-4-12B-it-Q4_K_M.gguf",
         "text_gguf_sha256": "1278394b693672ac2799eadc9a83fd98259a6a88a40acfb1dcaa6c6fc895a606",
         "mmproj": "/Users/akiralam/.cache/huggingface/hub/models--ggml-org--gemma-4-12B-it-GGUF/snapshots/44ee90c4b61e888ac5b318a54ec7a94df61e9cd7/mmproj-gemma-4-12B-it-Q8_0.gguf",
@@ -9713,7 +9713,7 @@
       },
       "capability": {
         "url": "http://127.0.0.1:18191",
-        "binary": "/Users/akiralam/code/ax-engine_v5/.internal/reference/llama.cpp/build/bin/llama-server",
+        "binary": "/path/to/llama-server",
         "text_gguf": "/Users/akiralam/.cache/huggingface/hub/models--ggml-org--gemma-4-12B-it-GGUF/snapshots/44ee90c4b61e888ac5b318a54ec7a94df61e9cd7/gemma-4-12B-it-Q4_K_M.gguf",
         "text_gguf_sha256": "1278394b693672ac2799eadc9a83fd98259a6a88a40acfb1dcaa6c6fc895a606",
         "mmproj": "/Users/akiralam/.cache/huggingface/hub/models--ggml-org--gemma-4-12B-it-GGUF/snapshots/44ee90c4b61e888ac5b318a54ec7a94df61e9cd7/mmproj-gemma-4-12B-it-Q8_0.gguf",
@@ -11003,7 +11003,7 @@
       },
       "capability": {
         "url": "http://127.0.0.1:18191",
-        "binary": "/Users/akiralam/code/ax-engine_v5/.internal/reference/llama.cpp/build/bin/llama-server",
+        "binary": "/path/to/llama-server",
         "text_gguf": "/Users/akiralam/.cache/huggingface/hub/models--ggml-org--gemma-4-12B-it-GGUF/snapshots/44ee90c4b61e888ac5b318a54ec7a94df61e9cd7/gemma-4-12B-it-Q4_K_M.gguf",
         "text_gguf_sha256": "1278394b693672ac2799eadc9a83fd98259a6a88a40acfb1dcaa6c6fc895a606",
         "mmproj": "/Users/akiralam/.cache/huggingface/hub/models--ggml-org--gemma-4-12B-it-GGUF/snapshots/44ee90c4b61e888ac5b318a54ec7a94df61e9cd7/mmproj-gemma-4-12B-it-Q8_0.gguf",
@@ -12068,7 +12068,7 @@
       "summary": {},
       "capability": {
         "url": "http://127.0.0.1:18191",
-        "binary": "/Users/akiralam/code/ax-engine_v5/.internal/reference/llama.cpp/build/bin/llama-server",
+        "binary": "/path/to/llama-server",
         "text_gguf": "/Users/akiralam/.cache/huggingface/hub/models--ggml-org--gemma-4-12B-it-GGUF/snapshots/44ee90c4b61e888ac5b318a54ec7a94df61e9cd7/gemma-4-12B-it-Q4_K_M.gguf",
         "text_gguf_sha256": "1278394b693672ac2799eadc9a83fd98259a6a88a40acfb1dcaa6c6fc895a606",
         "mmproj": "/Users/akiralam/.cache/huggingface/hub/models--ggml-org--gemma-4-12B-it-GGUF/snapshots/44ee90c4b61e888ac5b318a54ec7a94df61e9cd7/mmproj-gemma-4-12B-it-Q8_0.gguf",
@@ -13151,7 +13151,7 @@
       "summary": {},
       "capability": {
         "url": "http://127.0.0.1:18191",
-        "binary": "/Users/akiralam/code/ax-engine_v5/.internal/reference/llama.cpp/build/bin/llama-server",
+        "binary": "/path/to/llama-server",
         "text_gguf": "/Users/akiralam/.cache/huggingface/hub/models--ggml-org--gemma-4-12B-it-GGUF/snapshots/44ee90c4b61e888ac5b318a54ec7a94df61e9cd7/gemma-4-12B-it-Q4_K_M.gguf",
         "text_gguf_sha256": "1278394b693672ac2799eadc9a83fd98259a6a88a40acfb1dcaa6c6fc895a606",
         "mmproj": "/Users/akiralam/.cache/huggingface/hub/models--ggml-org--gemma-4-12B-it-GGUF/snapshots/44ee90c4b61e888ac5b318a54ec7a94df61e9cd7/mmproj-gemma-4-12B-it-Q8_0.gguf",
@@ -14237,7 +14237,7 @@
       "summary": {},
       "capability": {
         "url": "http://127.0.0.1:18191",
-        "binary": "/Users/akiralam/code/ax-engine_v5/.internal/reference/llama.cpp/build/bin/llama-server",
+        "binary": "/path/to/llama-server",
         "text_gguf": "/Users/akiralam/.cache/huggingface/hub/models--ggml-org--gemma-4-12B-it-GGUF/snapshots/44ee90c4b61e888ac5b318a54ec7a94df61e9cd7/gemma-4-12B-it-Q4_K_M.gguf",
         "text_gguf_sha256": "1278394b693672ac2799eadc9a83fd98259a6a88a40acfb1dcaa6c6fc895a606",
         "mmproj": "/Users/akiralam/.cache/huggingface/hub/models--ggml-org--gemma-4-12B-it-GGUF/snapshots/44ee90c4b61e888ac5b318a54ec7a94df61e9cd7/mmproj-gemma-4-12B-it-Q8_0.gguf",
@@ -15341,7 +15341,7 @@
       "summary": {},
       "capability": {
         "url": "http://127.0.0.1:18191",
-        "binary": "/Users/akiralam/code/ax-engine_v5/.internal/reference/llama.cpp/build/bin/llama-server",
+        "binary": "/path/to/llama-server",
         "text_gguf": "/Users/akiralam/.cache/huggingface/hub/models--ggml-org--gemma-4-12B-it-GGUF/snapshots/44ee90c4b61e888ac5b318a54ec7a94df61e9cd7/gemma-4-12B-it-Q4_K_M.gguf",
         "text_gguf_sha256": "1278394b693672ac2799eadc9a83fd98259a6a88a40acfb1dcaa6c6fc895a606",
         "mmproj": "/Users/akiralam/.cache/huggingface/hub/models--ggml-org--gemma-4-12B-it-GGUF/snapshots/44ee90c4b61e888ac5b318a54ec7a94df61e9cd7/mmproj-gemma-4-12B-it-Q8_0.gguf",
@@ -16517,7 +16517,7 @@
       "summary": {},
       "capability": {
         "url": "http://127.0.0.1:18191",
-        "binary": "/Users/akiralam/code/ax-engine_v5/.internal/reference/llama.cpp/build/bin/llama-server",
+        "binary": "/path/to/llama-server",
         "text_gguf": "/Users/akiralam/.cache/huggingface/hub/models--ggml-org--gemma-4-12B-it-GGUF/snapshots/44ee90c4b61e888ac5b318a54ec7a94df61e9cd7/gemma-4-12B-it-Q4_K_M.gguf",
         "text_gguf_sha256": "1278394b693672ac2799eadc9a83fd98259a6a88a40acfb1dcaa6c6fc895a606",
         "mmproj": "/Users/akiralam/.cache/huggingface/hub/models--ggml-org--gemma-4-12B-it-GGUF/snapshots/44ee90c4b61e888ac5b318a54ec7a94df61e9cd7/mmproj-gemma-4-12B-it-Q8_0.gguf",
@@ -17828,7 +17828,7 @@
       },
       "capability": {
         "url": "http://127.0.0.1:18191",
-        "binary": "/Users/akiralam/code/ax-engine_v5/.internal/reference/llama.cpp/build/bin/llama-server",
+        "binary": "/path/to/llama-server",
         "text_gguf": "/Users/akiralam/.cache/huggingface/hub/models--ggml-org--gemma-4-12B-it-GGUF/snapshots/44ee90c4b61e888ac5b318a54ec7a94df61e9cd7/gemma-4-12B-it-Q4_K_M.gguf",
         "text_gguf_sha256": "1278394b693672ac2799eadc9a83fd98259a6a88a40acfb1dcaa6c6fc895a606",
         "mmproj": "/Users/akiralam/.cache/huggingface/hub/models--ggml-org--gemma-4-12B-it-GGUF/snapshots/44ee90c4b61e888ac5b318a54ec7a94df61e9cd7/mmproj-gemma-4-12B-it-Q8_0.gguf",
@@ -18935,7 +18935,7 @@
       "summary": {},
       "capability": {
         "url": "http://127.0.0.1:18191",
-        "binary": "/Users/akiralam/code/ax-engine_v5/.internal/reference/llama.cpp/build/bin/llama-server",
+        "binary": "/path/to/llama-server",
         "text_gguf": "/Users/akiralam/.cache/huggingface/hub/models--ggml-org--gemma-4-12B-it-GGUF/snapshots/44ee90c4b61e888ac5b318a54ec7a94df61e9cd7/gemma-4-12B-it-Q4_K_M.gguf",
         "text_gguf_sha256": "1278394b693672ac2799eadc9a83fd98259a6a88a40acfb1dcaa6c6fc895a606",
         "mmproj": "/Users/akiralam/.cache/huggingface/hub/models--ggml-org--gemma-4-12B-it-GGUF/snapshots/44ee90c4b61e888ac5b318a54ec7a94df61e9cd7/mmproj-gemma-4-12B-it-Q8_0.gguf",
@@ -20042,7 +20042,7 @@
       "summary": {},
       "capability": {
         "url": "http://127.0.0.1:18191",
-        "binary": "/Users/akiralam/code/ax-engine_v5/.internal/reference/llama.cpp/build/bin/llama-server",
+        "binary": "/path/to/llama-server",
         "text_gguf": "/Users/akiralam/.cache/huggingface/hub/models--ggml-org--gemma-4-12B-it-GGUF/snapshots/44ee90c4b61e888ac5b318a54ec7a94df61e9cd7/gemma-4-12B-it-Q4_K_M.gguf",
         "text_gguf_sha256": "1278394b693672ac2799eadc9a83fd98259a6a88a40acfb1dcaa6c6fc895a606",
         "mmproj": "/Users/akiralam/.cache/huggingface/hub/models--ggml-org--gemma-4-12B-it-GGUF/snapshots/44ee90c4b61e888ac5b318a54ec7a94df61e9cd7/mmproj-gemma-4-12B-it-Q8_0.gguf",
@@ -21170,7 +21170,7 @@
       "summary": {},
       "capability": {
         "url": "http://127.0.0.1:18191",
-        "binary": "/Users/akiralam/code/ax-engine_v5/.internal/reference/llama.cpp/build/bin/llama-server",
+        "binary": "/path/to/llama-server",
         "text_gguf": "/Users/akiralam/.cache/huggingface/hub/models--ggml-org--gemma-4-12B-it-GGUF/snapshots/44ee90c4b61e888ac5b318a54ec7a94df61e9cd7/gemma-4-12B-it-Q4_K_M.gguf",
         "text_gguf_sha256": "1278394b693672ac2799eadc9a83fd98259a6a88a40acfb1dcaa6c6fc895a606",
         "mmproj": "/Users/akiralam/.cache/huggingface/hub/models--ggml-org--gemma-4-12B-it-GGUF/snapshots/44ee90c4b61e888ac5b318a54ec7a94df61e9cd7/mmproj-gemma-4-12B-it-Q8_0.gguf",
@@ -21219,7 +21219,7 @@
       "--model",
       "gemma-4-12B-it",
       "--model-dir",
-      "/Users/akiralam/code/ax-engine_v5/.internal/models/gemma-4-12B-it-4bit",
+      "/path/to/gemma-4-12B-it-4bit",
       "--cases",
       "all",
       "--layers",
@@ -21235,11 +21235,11 @@
       "--timeout",
       "300",
       "--server-command",
-      "/Users/akiralam/code/ax-engine_v5/target/release/ax-engine-server --model-id gemma-4-12B-it --mlx --mlx-model-artifacts-dir /Users/akiralam/code/ax-engine_v5/.internal/models/gemma-4-12B-it-4bit --max-batch-tokens 4096 --port 18080",
+      "/path/to/ax-engine-server --model-id gemma-4-12B-it --mlx --mlx-model-artifacts-dir /path/to/gemma-4-12B-it-4bit --max-batch-tokens 4096 --port 18080",
       "--llama-url",
       "http://127.0.0.1:18191",
       "--llama-binary",
-      "/Users/akiralam/code/ax-engine_v5/.internal/reference/llama.cpp/build/bin/llama-server",
+      "/path/to/llama-server",
       "--llama-gguf",
       "/Users/akiralam/.cache/huggingface/hub/models--ggml-org--gemma-4-12B-it-GGUF/snapshots/44ee90c4b61e888ac5b318a54ec7a94df61e9cd7/gemma-4-12B-it-Q4_K_M.gguf",
       "--llama-mmproj",
@@ -21251,7 +21251,7 @@
     ],
     "url": "http://127.0.0.1:18080",
     "model": "gemma-4-12B-it",
-    "model_dir": "/Users/akiralam/code/ax-engine_v5/.internal/models/gemma-4-12B-it-4bit",
+    "model_dir": "/path/to/gemma-4-12B-it-4bit",
     "llama_url": "http://127.0.0.1:18191",
     "llama_gguf": "/Users/akiralam/.cache/huggingface/hub/models--ggml-org--gemma-4-12B-it-GGUF/snapshots/44ee90c4b61e888ac5b318a54ec7a94df61e9cd7/gemma-4-12B-it-Q4_K_M.gguf",
     "llama_mmproj": "/Users/akiralam/.cache/huggingface/hub/models--ggml-org--gemma-4-12B-it-GGUF/snapshots/44ee90c4b61e888ac5b318a54ec7a94df61e9cd7/mmproj-gemma-4-12B-it-Q8_0.gguf",
