@@ -216,7 +216,7 @@ cargo run -p ax-engine-core --bin generate-manifest -- /path/to/model  # from so
 
 If you installed with Homebrew, use `ax-engine-bench` directly. If you are
 working from source, replace `ax-engine-bench` with
-`cargo run -p ax-engine-bench --`.
+`cargo run -p ax-engine-bench --bin ax-engine-bench --`.
 
 To inspect the workload-contract CLI:
 
@@ -336,7 +336,7 @@ compiled Metal preview artifacts (`.air`, `.metalar`, and `.metallib`) when the
 local toolchain is actually ready:
 
 ```text
-cargo run -p ax-engine-bench -- metal-build
+cargo run -p ax-engine-bench --bin ax-engine-bench -- metal-build
 bash scripts/build-metal-kernels.sh
 ```
 

@@ -650,7 +650,7 @@ itself").
 
 ```bash
 # Session-free fixture: exercises every deviation class.
-cargo run -p ax-engine-bench -- serving-stress \
+cargo run -p ax-engine-bench --bin ax-engine-bench -- serving-stress \
   --workload post_restart_cache_safety --json
 
 # Unit tests for the payload-level validation contract.

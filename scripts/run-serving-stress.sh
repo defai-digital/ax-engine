@@ -2,7 +2,7 @@
 #
 # Serving-stress agent-workload runner (PRD §10 acceptance).
 #
-# Invokes `cargo run -p ax-engine-bench -- serving-stress --workload <name>`
+# Invokes `cargo run -p ax-engine-bench --bin ax-engine-bench -- serving-stress --workload <name>`
 # for every Phase 1 / Phase 5 fixture and aggregates the JSON artifacts under
 # a per-run output directory. Fixtures that require an MLX model artifact
 # directory will skip cleanly when AX_ENGINE_MLX_MODEL_ARTIFACTS_DIR is
@@ -135,7 +135,7 @@ for fixture in "${fixtures[@]}"; do
     artifact_path="$OUTPUT_DIR/$fixture.json"
     echo "--> $fixture"
     cmd=(
-        cargo run --quiet -p ax-engine-bench --
+        cargo run --quiet -p ax-engine-bench --bin ax-engine-bench --
         serving-stress
         --workload "$fixture"
         --seed "$SEED"

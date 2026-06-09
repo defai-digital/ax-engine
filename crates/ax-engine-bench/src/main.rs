@@ -12077,6 +12077,8 @@ mod tests {
                 "run",
                 "-p",
                 "ax-engine-bench",
+                "--bin",
+                "ax-engine-bench",
                 "--",
                 "doctor",
                 "--json"

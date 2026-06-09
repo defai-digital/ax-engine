@@ -18,7 +18,7 @@ asserted in prose.
   the `ax.serving_workload.report.v1` artifact.
 - **Reproducer**:
   ```bash
-  cargo run -p ax-engine-bench -- serving-stress \
+  cargo run -p ax-engine-bench --bin ax-engine-bench -- serving-stress \
     --workload long_prefill_vs_decode \
     --mlx-model-artifacts-dir "$AX_ENGINE_MLX_MODEL_ARTIFACTS_DIR" \
     --json --output-path /tmp/long_prefill_vs_decode.json

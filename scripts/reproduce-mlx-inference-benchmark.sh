@@ -218,8 +218,8 @@ echo "  model_dir: $MODEL_DIR"
 echo "  output: $RUN_DIR"
 
 echo "Collecting readiness report..."
-cargo run -p ax-engine-bench -- doctor --json > "$RUN_DIR/doctor.json"
-cargo run -p ax-engine-bench -- doctor > "$RUN_DIR/doctor.txt"
+cargo run -p ax-engine-bench --bin ax-engine-bench -- doctor --json > "$RUN_DIR/doctor.json"
+cargo run -p ax-engine-bench --bin ax-engine-bench -- doctor > "$RUN_DIR/doctor.txt"
 
 echo "Building release server binary..."
 cargo build -p ax-engine-server --release

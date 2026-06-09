@@ -21,7 +21,7 @@ from pathlib import Path
 repo = Path.cwd()
 
 doctor_json = subprocess.check_output(
-    ["cargo", "run", "-p", "ax-engine-bench", "--", "doctor", "--json"],
+    ["cargo", "run", "-p", "ax-engine-bench", "--bin", "ax-engine-bench", "--", "doctor", "--json"],
     cwd=repo,
     text=True,
 )
@@ -61,7 +61,7 @@ assert any(
 )
 
 doctor_text = subprocess.check_output(
-    ["cargo", "run", "-p", "ax-engine-bench", "--", "doctor"],
+    ["cargo", "run", "-p", "ax-engine-bench", "--bin", "ax-engine-bench", "--", "doctor"],
     cwd=repo,
     text=True,
 )
