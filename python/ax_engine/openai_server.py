@@ -329,6 +329,7 @@ def stream_completion_chunks(
     default_rp = 1.1 if temperature <= 0.0 else 1.0
     accumulated_tokens: list[int] = []
     prev_text_len = 0
+    role_emitted = False
     with lock:
         generator = session.stream_generate(
             input_tokens,
@@ -347,16 +348,31 @@ def stream_completion_chunks(
             new_text = full_text[prev_text_len:]
             prev_text_len = len(full_text)
             if new_text:
-                yield sse_chunk(stream_id, created, model_id, new_text, None, kind)
+                emit_role = kind == "chat" and not role_emitted
+                role_emitted = role_emitted or emit_role
+                yield sse_chunk(
+                    stream_id, created, model_id, new_text, None, kind,
+                    emit_role=emit_role,
+                )
         elif event.event == "response" and event.response is not None:
             # Flush any remaining text from incomplete UTF-8 sequences
             if accumulated_tokens:
                 final_text = tokenizer.decode(accumulated_tokens)
                 remaining = final_text[prev_text_len:]
                 if remaining:
+                    emit_role = kind == "chat" and not role_emitted
+                    role_emitted = role_emitted or emit_role
                     yield sse_chunk(
-                        stream_id, created, model_id, remaining, None, kind
+                        stream_id, created, model_id, remaining, None, kind,
+                        emit_role=emit_role,
                     )
+            # OpenAI spec: the role must appear in at least one chunk. If no
+            # content chunks were emitted (0-token completion), emit a role-only
+            # chunk before the finish_reason chunk so clients can read the role.
+            if kind == "chat" and not role_emitted:
+                yield sse_chunk(
+                    stream_id, created, model_id, "", None, kind, emit_role=True
+                )
             yield sse_chunk(
                 stream_id,
                 created,
@@ -375,15 +391,18 @@ def sse_chunk(
     text: str,
     reason: str | None,
     kind: str,
+    *,
+    emit_role: bool = False,
 ) -> str:
     if kind == "chat":
+        delta: dict[str, Any] = {"content": text}
+        if emit_role:
+            delta["role"] = "assistant"
         choice: dict[str, Any] = {
             "index": 0,
-            "delta": {"content": text},
+            "delta": delta,
             "finish_reason": reason,
         }
-        if text:
-            choice["delta"]["role"] = "assistant"
         object_name = "chat.completion.chunk"
     else:
         choice = {"index": 0, "text": text, "finish_reason": reason}

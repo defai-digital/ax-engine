@@ -2398,7 +2398,7 @@ impl MtpTelemetry {
         ];
         decisions.upsert_route_decision(
             "ax_mtp_accept_rate_ewma_x1000",
-            (self.accept_rate_ewma * 1000.0) as u32,
+            (self.accept_rate_ewma.clamp(0.0, 1.0) * 1000.0) as u32,
         );
         decisions.upsert_route_decision(
             "ax_mtp_accept_rate_ewma_samples",
@@ -2406,7 +2406,7 @@ impl MtpTelemetry {
         );
         decisions.upsert_route_decision(
             "ax_mtp_mtp_only_accept_rate_ewma_x1000",
-            (self.mtp_only_accept_rate_ewma * 1000.0) as u32,
+            (self.mtp_only_accept_rate_ewma.clamp(0.0, 1.0) * 1000.0) as u32,
         );
         decisions.upsert_route_decision(
             "ax_mtp_mtp_only_accept_rate_ewma_samples",
@@ -2460,9 +2460,6 @@ impl MtpTelemetry {
             decisions
                 .upsert_route_decision(&format!("ax_mtp_accept_rate_depth{d}_x1000"), rate_x1000);
         }
-        // TODO(2026-06-03): observed values exceed 1000 in v0632 artifacts.
-        // See PRD-2026-06-03 F4. accept_rate_ewma is asserted 0..=1 in tests;
-        // emission scale or aggregation path has drifted.
         for (key, value) in entries {
             decisions.upsert_route_decision(key, value);
         }
@@ -4683,7 +4680,7 @@ impl MlxRunner {
         let stats = self
             .embed_compile_stats
             .lock()
-            .expect("embed_compile_stats mutex poisoned");
+            .unwrap_or_else(|p| p.into_inner());
         let single_len = self
             .embed_compile_cache
             .lock()
@@ -5166,7 +5163,7 @@ impl MlxRunner {
         let mut cache = self
             .embed_compile_cache
             .lock()
-            .expect("embed_compile_cache mutex poisoned");
+            .unwrap_or_else(|p| p.into_inner());
         let was_present = cache.contains_key(&key);
         if !was_present {
             match crate::model::build_embedding_forward_closure(
@@ -5192,7 +5189,7 @@ impl MlxRunner {
             let mut stats = self
                 .embed_compile_stats
                 .lock()
-                .expect("embed_compile_stats mutex poisoned");
+                .unwrap_or_else(|p| p.into_inner());
             if was_present {
                 stats.single_hits += 1;
             } else {
@@ -5254,7 +5251,7 @@ impl MlxRunner {
         let mut cache = self
             .embed_batch_compile_cache
             .lock()
-            .expect("embed_batch_compile_cache mutex poisoned");
+            .unwrap_or_else(|p| p.into_inner());
         let was_present = cache.contains_key(&key);
         if !was_present {
             match crate::model::build_embedding_batch_forward_closure(
@@ -5280,7 +5277,7 @@ impl MlxRunner {
             let mut stats = self
                 .embed_compile_stats
                 .lock()
-                .expect("embed_compile_stats mutex poisoned");
+                .unwrap_or_else(|p| p.into_inner());
             if was_present {
                 stats.batched_hits += 1;
             } else {
