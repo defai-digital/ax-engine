@@ -1,30 +1,30 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="720" height="360" viewBox="0 0 720 360" role="img" aria-labelledby="title desc">
-<title>Gemma 4 12B multimodal image prefill throughput</title>
-<desc>AX Engine native MLX, expanded prompt includes image soft tokens Median tok/s is 1,459 with min 1,459 and max 1,462.</desc>
+<title>Gemma 4 12B multimodal prefill throughput</title>
+<desc>AX Engine native MLX, expanded prompt includes image soft tokens 1 measured case(s).</desc>
 <rect width="100%" height="100%" fill="#f8fafc"/>
-<text id="title" x="82" y="28" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="16" font-weight="700" fill="#111827">Gemma 4 12B multimodal image prefill throughput</text>
+<text id="title" x="82" y="28" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="16" font-weight="700" fill="#111827">Gemma 4 12B multimodal prefill throughput</text>
 <text x="82" y="48" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#4b5563">AX Engine native MLX, expanded prompt includes image soft tokens</text>
 <text x="688" y="31" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#374151">Higher is better</text>
-<rect x="82" y="82" width="468" height="206" rx="6" fill="#ffffff" stroke="#dbe3ef"/>
-<line x1="82" y1="288.0" x2="550" y2="288.0" stroke="#e5e7eb" stroke-width="1"/>
-<text x="72" y="292.0" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#6b7280">0.00</text>
-<line x1="82" y1="236.5" x2="550" y2="236.5" stroke="#e5e7eb" stroke-width="1"/>
-<text x="72" y="240.5" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#6b7280">500.0</text>
-<line x1="82" y1="185.0" x2="550" y2="185.0" stroke="#e5e7eb" stroke-width="1"/>
-<text x="72" y="189.0" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#6b7280">1,000</text>
-<line x1="82" y1="133.5" x2="550" y2="133.5" stroke="#e5e7eb" stroke-width="1"/>
-<text x="72" y="137.5" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#6b7280">1,500</text>
+<rect x="82" y="82" width="468" height="166" rx="6" fill="#ffffff" stroke="#dbe3ef"/>
+<line x1="82" y1="248.0" x2="550" y2="248.0" stroke="#e5e7eb" stroke-width="1"/>
+<text x="72" y="252.0" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#6b7280">0.00</text>
+<line x1="82" y1="206.5" x2="550" y2="206.5" stroke="#e5e7eb" stroke-width="1"/>
+<text x="72" y="210.5" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#6b7280">500.0</text>
+<line x1="82" y1="165.0" x2="550" y2="165.0" stroke="#e5e7eb" stroke-width="1"/>
+<text x="72" y="169.0" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#6b7280">1,000</text>
+<line x1="82" y1="123.5" x2="550" y2="123.5" stroke="#e5e7eb" stroke-width="1"/>
+<text x="72" y="127.5" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#6b7280">1,500</text>
 <line x1="82" y1="82.0" x2="550" y2="82.0" stroke="#e5e7eb" stroke-width="1"/>
 <text x="72" y="86.0" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#6b7280">2,000</text>
-<rect x="219.6" y="137.7" width="118" height="150.3" rx="5" fill="#2eaf5f" fill-opacity="0.28" stroke="#176c37" stroke-width="2"/>
-<line x1="219.6" y1="137.7" x2="337.6" y2="137.7" stroke="#176c37" stroke-width="3"/>
-<line x1="278.6" y1="137.5" x2="278.6" y2="137.8" stroke="#111827" stroke-width="1.4"/>
-<line x1="254.6" y1="137.5" x2="302.6" y2="137.5" stroke="#111827" stroke-width="1.4"/>
-<line x1="254.6" y1="137.8" x2="302.6" y2="137.8" stroke="#111827" stroke-width="1.4"/>
-<text x="278.6" y="129.7" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="13" font-weight="700" fill="#111827">1,459</text>
-<text x="278.6" y="312.0" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">image_single_256soft</text>
-<text x="566" y="110" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#374151">median: <tspan font-weight="700">1,459 tok/s</tspan></text>
-<text x="566" y="130" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#6b7280">min: 1,459</text>
-<text x="566" y="148" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#6b7280">max: 1,462</text>
+<rect x="94.0" y="126.9" width="56.0" height="121.1" rx="4" fill="#2eaf5f" fill-opacity="0.28" stroke="#176c37" stroke-width="1.6"/>
+<line x1="94.0" y1="126.9" x2="150.0" y2="126.9" stroke="#176c37" stroke-width="2"/>
+<line x1="122.0" y1="126.7" x2="122.0" y2="126.9" stroke="#111827" stroke-width="1.2"/>
+<line x1="114.0" y1="126.7" x2="130.0" y2="126.7" stroke="#111827" stroke-width="1.2"/>
+<line x1="114.0" y1="126.9" x2="130.0" y2="126.9" stroke="#111827" stroke-width="1.2"/>
+<text x="122.0" y="119.9" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">1,459</text>
+<text x="122.0" y="266.0" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="9" fill="#111827" transform="rotate(45 122.0 266.0)">image_single_256soft</text>
+<text x="566" y="110" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#374151">best: <tspan font-weight="700">image_single_256soft</tspan></text>
+<text x="566" y="130" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#6b7280">1,459 tok/s</text>
+<text x="566" y="152" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">error bars: min-max</text>
 <text x="82" y="340" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">277 expanded tokens, 256 image soft tokens, 3 reps, max_output_tokens=8</text>
 </svg>

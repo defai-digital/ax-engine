@@ -10,10 +10,15 @@ from typing import Any
 
 SCHEMA = "ax.gemma4_multimodal_benchmark.v1"
 ALLOWED_STATUS = {"measured", "skipped"}
+ALLOWED_LAYERS = {"native_runtime_prefill", "openai_chat_e2e", "peer_comparison"}
+ALLOWED_MODALITIES = {"image", "audio", "video"}
 ALLOWED_SKIP_REASONS = {
     "llama_cpp_video_not_supported",
-    "missing_llama_cpp_mmproj",
+    "missing_llama_cpp_mmproj_for_gemma4_12b",
+    "missing_llama_cpp_gguf_for_gemma4_12b",
     "no_llama_cpp_server_url",
+    "peer_binary_missing",
+    "peer_prompt_contract_unmatched",
     "server_unavailable",
     "unsupported_modality",
 }
@@ -22,13 +27,104 @@ POSITIVE_METRICS = {
     "client_wall_ttft_ms",
     "client_wall_total_ms",
     "client_wall_ms",
+    "non_streaming_total_ms",
     "prefill_tok_s",
+    "payload_bytes",
 }
 
 
 def metric_stats(row: dict[str, Any], key: str) -> dict[str, Any] | None:
     raw = row.get("summary", {}).get(key)
     return raw if isinstance(raw, dict) else None
+
+
+def require_object(errors: list[str], value: Any, path: str) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        errors.append(f"{path} must be an object")
+        return None
+    return value
+
+
+def validate_top_level(
+    errors: list[str],
+    artifact: dict[str, Any],
+    *,
+    require_build_provenance: bool,
+    readme_ready: bool,
+) -> None:
+    if artifact.get("schema") != SCHEMA:
+        errors.append(f"schema must be {SCHEMA}")
+    if not isinstance(artifact.get("created_at"), str) or not artifact["created_at"]:
+        errors.append("created_at must be a non-empty string")
+
+    host = require_object(errors, artifact.get("host"), "host")
+    if host is not None:
+        for key in ("platform", "machine", "python", "os_version"):
+            if not isinstance(host.get(key), str) or not host[key]:
+                errors.append(f"host.{key} must be a non-empty string")
+
+    build = require_object(errors, artifact.get("build"), "build")
+    if build is not None:
+        if require_build_provenance and not isinstance(build.get("commit"), str):
+            errors.append("build.commit is required")
+        if not isinstance(build.get("git_tracked_dirty"), bool):
+            errors.append("build.git_tracked_dirty must be a boolean")
+        if not isinstance(build.get("git_tracked_status"), list):
+            errors.append("build.git_tracked_status must be a list")
+        if readme_ready and build.get("git_tracked_dirty"):
+            errors.append("readme-ready artifacts must have build.git_tracked_dirty=false")
+
+    server = require_object(errors, artifact.get("server"), "server")
+    if server is not None:
+        if not isinstance(server.get("url"), str) or not server["url"]:
+            errors.append("server.url must be a non-empty string")
+        if not isinstance(server.get("endpoint_layers"), list) or not server["endpoint_layers"]:
+            errors.append("server.endpoint_layers must be a non-empty list")
+        if not isinstance(server.get("request_timeout_s"), int) or server["request_timeout_s"] <= 0:
+            errors.append("server.request_timeout_s must be a positive integer")
+        if readme_ready and server.get("command") is None:
+            errors.append("readme-ready artifacts must record server.command")
+
+    model = require_object(errors, artifact.get("model"), "model")
+    if model is not None:
+        for key in ("id", "model_dir", "model_type"):
+            if not isinstance(model.get(key), str) or not model[key]:
+                errors.append(f"model.{key} must be a non-empty string")
+        if require_build_provenance:
+            for key in (
+                "model_manifest_sha256",
+                "config_sha256",
+                "processor_config_sha256",
+                "tokenizer_sha256",
+            ):
+                if not isinstance(model.get(key), str) or not model[key]:
+                    errors.append(f"model.{key} is required")
+
+
+def validate_fixtures(errors: list[str], fixtures: Any) -> set[str]:
+    if not isinstance(fixtures, list) or not fixtures:
+        errors.append("fixtures must be a non-empty list")
+        return set()
+    ids: set[str] = set()
+    for index, fixture in enumerate(fixtures):
+        if not isinstance(fixture, dict):
+            errors.append(f"fixtures[{index}] must be an object")
+            continue
+        fixture_id = fixture.get("id")
+        if not isinstance(fixture_id, str) or not fixture_id:
+            errors.append(f"fixtures[{index}].id must be a non-empty string")
+        elif fixture_id in ids:
+            errors.append(f"fixtures[{index}].id duplicates {fixture_id}")
+        else:
+            ids.add(fixture_id)
+        if fixture.get("modality") not in ALLOWED_MODALITIES:
+            errors.append(f"fixtures[{index}].modality must be one of {sorted(ALLOWED_MODALITIES)}")
+        for key in ("source", "sha256", "mime"):
+            if not isinstance(fixture.get(key), str) or not fixture[key]:
+                errors.append(f"fixtures[{index}].{key} must be a non-empty string")
+        if not isinstance(fixture.get("raw"), dict) or not fixture["raw"]:
+            errors.append(f"fixtures[{index}].raw must be a non-empty object")
+    return ids
 
 
 def validate_positive_metric(
@@ -49,7 +145,13 @@ def validate_positive_metric(
             errors.append(f"rows[{row_index}].summary.{key}.{stat_name} must be positive")
 
 
-def validate_prompt(errors: list[str], *, row_index: int, prompt: Any) -> None:
+def validate_prompt(
+    errors: list[str],
+    *,
+    row_index: int,
+    prompt: Any,
+    fixture_ids: set[str],
+) -> None:
     if not isinstance(prompt, dict):
         errors.append(f"rows[{row_index}].prompt must be an object")
         return
@@ -57,12 +159,40 @@ def validate_prompt(errors: list[str], *, row_index: int, prompt: Any) -> None:
         value = prompt.get(key)
         if not isinstance(value, int) or value <= 0:
             errors.append(f"rows[{row_index}].prompt.{key} must be a positive integer")
+    soft_tokens = prompt.get("soft_tokens")
+    if not isinstance(soft_tokens, dict):
+        errors.append(f"rows[{row_index}].prompt.soft_tokens must be an object")
+        soft_total = 0
+    else:
+        soft_total = 0
+        for modality in ALLOWED_MODALITIES:
+            value = soft_tokens.get(modality)
+            if not isinstance(value, int) or value < 0:
+                errors.append(
+                    f"rows[{row_index}].prompt.soft_tokens.{modality} must be a non-negative integer"
+                )
+            else:
+                soft_total += value
     if (
         isinstance(prompt.get("original_tokens"), int)
         and isinstance(prompt.get("expanded_tokens"), int)
-        and prompt["expanded_tokens"] < prompt["original_tokens"]
+        and prompt["expanded_tokens"] < prompt["original_tokens"] + soft_total
     ):
-        errors.append(f"rows[{row_index}].prompt.expanded_tokens must be >= original_tokens")
+        errors.append(
+            f"rows[{row_index}].prompt.expanded_tokens must be >= original_tokens + soft tokens"
+        )
+    span_order = prompt.get("span_order")
+    if not isinstance(span_order, list):
+        errors.append(f"rows[{row_index}].prompt.span_order must be a list")
+    elif any(item not in ALLOWED_MODALITIES for item in span_order):
+        errors.append(f"rows[{row_index}].prompt.span_order contains an unknown modality")
+    row_fixture_ids = prompt.get("fixture_ids")
+    if not isinstance(row_fixture_ids, list) or not row_fixture_ids:
+        errors.append(f"rows[{row_index}].prompt.fixture_ids must be a non-empty list")
+    else:
+        missing = [fixture_id for fixture_id in row_fixture_ids if fixture_id not in fixture_ids]
+        if missing:
+            errors.append(f"rows[{row_index}].prompt.fixture_ids missing fixtures: {missing}")
     for key in ("image_soft_tokens", "audio_soft_tokens", "video_soft_tokens", "video_frame_counts"):
         value = prompt.get(key)
         if not isinstance(value, list):
@@ -72,18 +202,43 @@ def validate_prompt(errors: list[str], *, row_index: int, prompt: Any) -> None:
             errors.append(f"rows[{row_index}].prompt.{key} entries must be non-negative integers")
 
 
-def validate_row(errors: list[str], *, row_index: int, row: Any, min_repetitions: int) -> None:
+def validate_peer_capability(errors: list[str], *, row_index: int, row: dict[str, Any]) -> None:
+    capability = row.get("capability")
+    if not isinstance(capability, dict):
+        errors.append(f"rows[{row_index}].capability is required for peer_comparison")
+        return
+    if row.get("status") == "measured" and capability.get("proof") is not True:
+        errors.append(f"rows[{row_index}] measured peer row requires capability.proof=true")
+    if row.get("status") == "measured":
+        for key in ("text_gguf_sha256", "mmproj_sha256", "prompt_contract"):
+            if not isinstance(capability.get(key), str) or not capability[key]:
+                errors.append(f"rows[{row_index}].capability.{key} is required")
+    if "video" in row.get("modalities", []) and row.get("status") == "measured":
+        if capability.get("supports_video") is not True:
+            errors.append(f"rows[{row_index}] cannot measure video peer row without supports_video")
+
+
+def validate_row(
+    errors: list[str],
+    *,
+    row_index: int,
+    row: Any,
+    min_repetitions: int,
+    fixture_ids: set[str],
+) -> None:
     if not isinstance(row, dict):
         errors.append(f"rows[{row_index}] must be an object")
         return
 
-    for key in ("engine", "backend", "layer", "case_id"):
+    for key in ("row_id", "engine", "backend", "layer", "case_id"):
         if not isinstance(row.get(key), str) or not row[key]:
             errors.append(f"rows[{row_index}].{key} must be a non-empty string")
+    if row.get("layer") not in ALLOWED_LAYERS:
+        errors.append(f"rows[{row_index}].layer must be one of {sorted(ALLOWED_LAYERS)}")
     modalities = row.get("modalities")
     if not isinstance(modalities, list) or not modalities:
         errors.append(f"rows[{row_index}].modalities must be a non-empty list")
-    elif any(modality not in {"image", "audio", "video"} for modality in modalities):
+    elif any(modality not in ALLOWED_MODALITIES for modality in modalities):
         errors.append(f"rows[{row_index}].modalities contains an unknown modality")
 
     status = row.get("status")
@@ -91,7 +246,7 @@ def validate_row(errors: list[str], *, row_index: int, row: Any, min_repetitions
         errors.append(f"rows[{row_index}].status must be one of {sorted(ALLOWED_STATUS)}")
         return
 
-    validate_prompt(errors, row_index=row_index, prompt=row.get("prompt"))
+    validate_prompt(errors, row_index=row_index, prompt=row.get("prompt"), fixture_ids=fixture_ids)
     runs = row.get("runs")
     if status == "measured":
         if not isinstance(runs, list) or len(runs) < min_repetitions:
@@ -108,8 +263,10 @@ def validate_row(errors: list[str], *, row_index: int, row: Any, min_repetitions
             errors.append(
                 f"rows[{row_index}] native_runtime_prefill requires runner_prefill_ttft_ms"
             )
-        if row.get("layer") == "openai_chat_e2e" and metric_stats(row, "client_wall_ms") is None:
-            errors.append(f"rows[{row_index}] openai_chat_e2e requires client_wall_ms")
+        if row.get("layer") in {"openai_chat_e2e", "peer_comparison"} and metric_stats(
+            row, "client_wall_ms"
+        ) is None:
+            errors.append(f"rows[{row_index}] {row.get('layer')} requires client_wall_ms")
     else:
         reason = row.get("skip_reason")
         if reason not in ALLOWED_SKIP_REASONS:
@@ -120,30 +277,8 @@ def validate_row(errors: list[str], *, row_index: int, row: Any, min_repetitions
             errors.append(f"rows[{row_index}].skip_detail must be a non-empty string")
         if runs not in ([], None):
             errors.append(f"rows[{row_index}].runs must be empty for skipped rows")
-
-
-def validate_provenance(
-    errors: list[str],
-    artifact: dict[str, Any],
-    *,
-    require_build_provenance: bool,
-    readme_ready: bool,
-) -> None:
-    provenance = artifact.get("provenance")
-    if not isinstance(provenance, dict):
-        errors.append("provenance must be an object")
-        return
-    git = provenance.get("git")
-    if not isinstance(git, dict):
-        errors.append("provenance.git must be an object")
-        return
-    if require_build_provenance and not git.get("commit"):
-        errors.append("provenance.git.commit is required")
-    if readme_ready and git.get("tracked_dirty"):
-        errors.append("readme-ready artifacts must not have provenance.git.tracked_dirty=true")
-    fingerprints = provenance.get("model_fingerprints")
-    if require_build_provenance and not isinstance(fingerprints, dict):
-        errors.append("provenance.model_fingerprints is required")
+    if row.get("layer") == "peer_comparison":
+        validate_peer_capability(errors, row_index=row_index, row=row)
 
 
 def validate_artifact(
@@ -155,16 +290,20 @@ def validate_artifact(
     readme_ready: bool = False,
 ) -> list[str]:
     errors: list[str] = []
-    if artifact.get("schema") != SCHEMA:
-        errors.append(f"schema must be {SCHEMA}")
-    benchmark = artifact.get("benchmark")
-    if not isinstance(benchmark, dict):
-        errors.append("benchmark must be an object")
-    else:
-        for key in ("name", "model"):
+    validate_top_level(
+        errors,
+        artifact,
+        require_build_provenance=require_build_provenance,
+        readme_ready=readme_ready,
+    )
+    fixture_ids = validate_fixtures(errors, artifact.get("fixtures"))
+
+    benchmark = require_object(errors, artifact.get("benchmark"), "benchmark")
+    if benchmark is not None:
+        for key in ("name", "model", "model_dir"):
             if not isinstance(benchmark.get(key), str) or not benchmark[key]:
                 errors.append(f"benchmark.{key} must be a non-empty string")
-        for key in ("warmup", "repetitions", "max_output_tokens"):
+        for key in ("warmup", "repetitions", "max_output_tokens", "timeout_s"):
             value = benchmark.get(key)
             if not isinstance(value, int) or value < 0:
                 errors.append(f"benchmark.{key} must be a non-negative integer")
@@ -176,14 +315,13 @@ def validate_artifact(
         errors.append("rows must be a non-empty list")
         rows = []
     for row_index, row in enumerate(rows):
-        validate_row(errors, row_index=row_index, row=row, min_repetitions=min_repetitions)
-
-    validate_provenance(
-        errors,
-        artifact,
-        require_build_provenance=require_build_provenance,
-        readme_ready=readme_ready,
-    )
+        validate_row(
+            errors,
+            row_index=row_index,
+            row=row,
+            min_repetitions=min_repetitions,
+            fixture_ids=fixture_ids,
+        )
 
     if require_modalities:
         measured = {

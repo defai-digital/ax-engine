@@ -389,7 +389,8 @@ python3 scripts/bench_gemma4_multimodal.py \
   --url http://127.0.0.1:18080 \
   --model gemma-4-12B-it \
   --model-dir .internal/models/gemma-4-12B-it-4bit \
-  --cases image_single_256soft,audio_0_5s,video_2frame_distinct,image_audio_video \
+  --cases all \
+  --server-command "target/release/ax-engine-server --mlx --mlx-model-artifacts-dir .internal/models/gemma-4-12B-it-4bit --port 18080" \
   --output benchmarks/results/gemma4-multimodal/gemma4-12b-multimodal-matrix.json
 
 python3 scripts/check_gemma4_multimodal_benchmark_artifact.py \
@@ -398,7 +399,7 @@ python3 scripts/check_gemma4_multimodal_benchmark_artifact.py \
   --require-build-provenance
 ```
 
-Pass `--llama-url http://127.0.0.1:<port>` to record llama.cpp OpenAI-compatible peer rows for supported image/audio cases. Video rows remain explicit skips until the peer server exposes a like-for-like video path for Gemma 4 12B.
+Pass `--llama-url http://127.0.0.1:<port> --llama-gguf <path> --llama-mmproj <path>` to record llama.cpp OpenAI-compatible peer rows for supported image/audio cases. Without a matching Gemma 4 12B GGUF and multimodal projector, peer rows are explicit skips. Video rows remain explicit skips until the peer server exposes a like-for-like video path for Gemma 4 12B.
 
 <details>
 <summary>Prepare Gemma 4 12B assistant-MTP artifacts</summary>
