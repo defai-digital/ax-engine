@@ -1377,14 +1377,21 @@ def download_model(
 ) -> Path:
     """Download an MLX model through Hugging Face Hub and generate its ax-engine manifest.
 
-    Downloads the model, then automatically tries to generate ``model-manifest.json``
-    via ``ax-engine-bench generate-manifest`` (installed) or ``cargo run`` (dev).
-    Prints a manual command if neither is available.
+    Downloads the model, then generates ``model-manifest.json`` via the bundled
+    ``ax-engine-bench`` (wheel), an ``ax-engine-bench`` on ``PATH``, or ``cargo run``
+    (dev). The returned path is always AX-ready: if the manifest is missing and cannot
+    be generated, this raises rather than returning a path to a non-ready model.
 
     Args:
         repo_id: MLX LLM repo id, e.g. ``"mlx-community/Qwen3-4B-4bit"``.
         dest: Destination directory. Defaults to the Hugging Face Hub cache snapshot.
         force: Re-download the default Hugging Face Hub cache entry before resolving the snapshot.
+
+    Returns:
+        Path to the downloaded, AX-ready model directory (contains ``model-manifest.json``).
+
+    Raises:
+        RuntimeError: if the download is incomplete or the manifest cannot be generated.
     """
     _reject_non_llm_repo(repo_id)
 
@@ -1399,9 +1406,7 @@ def download_model(
     if dest is None:
         dest = _run_hf_snapshot_download(repo_id)
         _validate_downloaded_model_dir(dest)
-        if not (dest / _MODEL_MANIFEST_FILE).exists():
-            if not _try_generate_manifest(dest):
-                _print_manifest_reminder(dest)
+        _ensure_manifest(dest)
         return dest
 
     dest = Path(dest)
@@ -1412,38 +1417,75 @@ def download_model(
             return dest
         if safetensors:
             _validate_downloaded_model_dir(dest)
-            if not _try_generate_manifest(dest):
-                _print_manifest_reminder(dest)
+            _ensure_manifest(dest)
             return dest
 
     snapshot = _run_hf_snapshot_download(repo_id)
     _copy_mlx_lm_snapshot(snapshot, dest)
     _validate_downloaded_model_dir(dest)
-
-    if not (dest / _MODEL_MANIFEST_FILE).exists():
-        if not _try_generate_manifest(dest):
-            _print_manifest_reminder(dest)
+    _ensure_manifest(dest)
 
     return dest
 
 
+def _bundled_binary(name: str) -> Path | None:
+    """Return the path to a binary bundled inside the installed wheel, if present.
+
+    Release wheels stage ``ax-engine-server`` and ``ax-engine-bench`` under
+    ``ax_engine/_bin/`` so they always match the installed package version. Editable
+    and source-checkout installs have no ``_bin`` directory, so this returns ``None``
+    and callers fall back to a PATH lookup or ``cargo run``.
+    """
+    candidate = Path(__file__).resolve().parent / "_bin" / name
+    if candidate.is_file() and os.access(candidate, os.X_OK):
+        return candidate
+    return None
+
+
+def _ensure_manifest(dest: Path) -> None:
+    """Ensure ``dest`` contains a model-manifest.json, generating it if necessary.
+
+    Raises:
+        RuntimeError: when the manifest is absent and cannot be generated, so callers
+            of :func:`download_model` never receive a path to a model that is not
+            actually AX-ready.
+    """
+    if (dest / _MODEL_MANIFEST_FILE).exists():
+        return
+    if _try_generate_manifest(dest):
+        return
+    raise RuntimeError(_manifest_failure_message(dest))
+
+
 def _try_generate_manifest(dest: Path) -> bool:
-    """Try to run generate-manifest via installed bench binary or cargo. Returns True on success."""
+    """Try to run generate-manifest via the bundled, installed, or cargo binary.
+
+    Returns True on success.
+    """
     import shutil
     import subprocess
 
-    # Prefer the installed ax-engine-bench binary (works for Homebrew users).
-    if shutil.which("ax-engine-bench"):
+    # Prefer the ax-engine-bench bundled in this exact release. A bare PATH lookup can
+    # resolve to a stale ax-engine-bench from an unrelated install (e.g. an old
+    # cargo-installed binary) that rejects newer model types, so the bundled binary wins.
+    bundled = _bundled_binary("ax-engine-bench")
+    bench = (
+        str(bundled)
+        if bundled is not None
+        else ("ax-engine-bench" if shutil.which("ax-engine-bench") else None)
+    )
+    if bench is not None:
         result = subprocess.run(
-            ["ax-engine-bench", "generate-manifest", str(dest)],
+            [bench, "generate-manifest", str(dest)],
             capture_output=True,
             text=True,
         )
         if result.returncode == 0:
             print(f"manifest generated: {dest / _MODEL_MANIFEST_FILE}")
             return True
-        # Non-zero but bench exists — show its error rather than silently falling back.
-        print(f"ax-engine-bench generate-manifest failed:\n{result.stderr.strip()}")
+        # The binary exists but failed — surface its error rather than silently
+        # falling back to a different (and likely equally unable) generator.
+        print(f"{bench} generate-manifest failed:\n{result.stderr.strip()}")
         return False
 
     # Dev environment fallback: cargo run (slow on first call but works).
@@ -1478,9 +1520,11 @@ def _try_generate_manifest(dest: Path) -> bool:
     return False
 
 
-def _print_manifest_reminder(dest: Path) -> None:
-    print(
-        f"\nDownloaded to: {dest}\n"
+def _manifest_failure_message(dest: Path) -> str:
+    return (
+        f"manifest generation failed for {dest}.\n"
+        "The model weights downloaded but model-manifest.json could not be created, "
+        "so the model is not AX-ready.\n"
         "Generate the ax-engine manifest manually:\n"
         f"  ax-engine-bench generate-manifest {dest}\n"
         "or (from source):\n"

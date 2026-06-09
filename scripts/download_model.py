@@ -2,7 +2,8 @@
 """Download an MLX model through Hugging Face Hub for use with ax-engine.
 
 Downloads model weights and automatically generates the ax-engine manifest
-(model-manifest.json). Tries ax-engine-bench (Homebrew install) then cargo (dev).
+(model-manifest.json). Prefers the ax-engine-bench bundled in the installed wheel,
+then an ax-engine-bench on PATH, then a source-checkout build / cargo (dev).
 
 Usage:
   python scripts/download_model.py mlx-community/Qwen3-4B-4bit
@@ -268,8 +269,30 @@ def _run_manifest_command(
     return False
 
 
+def _bundled_bench_bin() -> str | None:
+    """Return the ax-engine-bench bundled in the installed ax_engine wheel, if present.
+
+    When this script runs from a pip-installed wheel it lives at
+    ``site-packages/scripts/download_model.py`` and the binary is staged alongside the
+    package at ``site-packages/ax_engine/_bin/ax-engine-bench``. Preferring it over a
+    bare PATH lookup avoids picking up a stale ax-engine-bench from an unrelated install
+    (e.g. an old cargo-installed binary that cannot handle newer model types).
+    """
+    candidate = Path(__file__).resolve().parent.parent / "ax_engine" / "_bin" / "ax-engine-bench"
+    if candidate.is_file() and os.access(candidate, os.X_OK):
+        return str(candidate)
+    return None
+
+
 def _try_generate_manifest(dest: Path, *, quiet: bool = False) -> bool:
-    """Try installed and source-checkout manifest generators. Returns True on success."""
+    """Try bundled, installed, and source-checkout manifest generators. Returns True on success."""
+    if (bundled := _bundled_bench_bin()) is not None:
+        command = [bundled, "generate-manifest", str(dest)]
+        if quiet:
+            command.append("--json")
+        if _run_manifest_command(command, quiet=quiet, label="bundled ax-engine-bench generate-manifest"):
+            return True
+
     if shutil.which("ax-engine-bench"):
         command = ["ax-engine-bench", "generate-manifest", str(dest)]
         if quiet:
@@ -444,7 +467,9 @@ def main() -> int:
                     _print_json(summary)
             else:
                 _print_manifest_hint(dest)
-            return 0  # not fatal; user has instructions
+            # The weights downloaded but the model is not AX-ready without a manifest.
+            # Return non-zero so automation/CI does not treat this as success.
+            return 1
 
     if args.json:
         summary = _summary(args.repo_id, dest, status=READY_STATUS)

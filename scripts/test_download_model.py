@@ -2,12 +2,14 @@
 from __future__ import annotations
 
 import importlib.util
+import io
 import json
 import os
 import subprocess
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
@@ -283,6 +285,53 @@ class DownloadModelScriptTest(unittest.TestCase):
                     [str(local_bin), str(model_dir)],
                 ],
             )
+
+    def test_manifest_generation_prefers_bundled_binary_over_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            model_dir = Path(tmp) / "model"
+            model_dir.mkdir()
+            bundled = "/wheel/ax_engine/_bin/ax-engine-bench"
+            calls: list[list[str]] = []
+
+            def fake_run(command, **kwargs):
+                calls.append(command)
+                return subprocess.CompletedProcess(command, 0, stdout="ok\n", stderr="")
+
+            with patch.object(
+                download_model, "_bundled_bench_bin", return_value=bundled
+            ), patch.object(
+                download_model.shutil,
+                "which",
+                side_effect=lambda name: "/usr/bin/ax-engine-bench",
+            ), patch.object(download_model.subprocess, "run", fake_run):
+                self.assertTrue(download_model._try_generate_manifest(model_dir, quiet=True))
+
+            # The bundled binary is used; the stale PATH binary is never invoked.
+            self.assertEqual(calls, [[bundled, "generate-manifest", str(model_dir), "--json"]])
+
+    def test_main_returns_nonzero_when_manifest_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            model_dir = Path(tmp)
+            (model_dir / "config.json").write_text('{"model_type":"qwen3"}')
+            (model_dir / "model.safetensors").write_bytes(b"placeholder")
+
+            argv = [
+                "download_model.py",
+                "mlx-community/Qwen3-4B-4bit",
+                "--dest",
+                str(model_dir),
+                "--json",
+            ]
+            stdout = io.StringIO()
+            with patch.object(sys, "argv", argv), patch.object(
+                download_model, "_try_generate_manifest", return_value=False
+            ), redirect_stdout(stdout):
+                code = download_model.main()
+
+            self.assertEqual(code, 1)
+            summary = json.loads(stdout.getvalue())
+            self.assertEqual(summary["status"], "manifest_missing")
+            self.assertFalse(summary["manifest_present"])
 
 
 if __name__ == "__main__":

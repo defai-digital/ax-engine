@@ -869,6 +869,49 @@ class WrapperContractTests(unittest.TestCase):
         self.assertEqual(calls, ["mlx-community/gemma-4-12B-it-4bit"])
         self.assertEqual(resolved, snapshot)
 
+    def test_download_model_raises_when_manifest_generation_fails(self) -> None:
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            snapshot = Path(tmp) / "snapshot"
+
+            def fake_download(repo_id: str) -> Path:
+                snapshot.mkdir()
+                (snapshot / "config.json").write_text('{"model_type":"gemma4_unified"}')
+                (snapshot / "model.safetensors").write_bytes(b"placeholder")
+                return snapshot
+
+            with patch.object(
+                self.ax_engine, "_run_hf_snapshot_download", fake_download
+            ), patch.object(
+                self.ax_engine, "_try_generate_manifest", return_value=False
+            ):
+                with self.assertRaisesRegex(RuntimeError, "not AX-ready"):
+                    self.ax_engine.download_model("mlx-community/gemma-4-12B-it-4bit")
+
+    def test_try_generate_manifest_prefers_bundled_binary_over_path(self) -> None:
+        import subprocess
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            model_dir = Path(tmp)
+            bundled = Path("/wheel/ax_engine/_bin/ax-engine-bench")
+            calls: list[list[str]] = []
+
+            def fake_run(command, **kwargs):
+                calls.append(command)
+                return subprocess.CompletedProcess(command, 0, stdout="ok\n", stderr="")
+
+            with patch.object(
+                self.ax_engine, "_bundled_binary", return_value=bundled
+            ), patch("shutil.which", return_value="/usr/bin/ax-engine-bench"), patch(
+                "subprocess.run", fake_run
+            ):
+                self.assertTrue(self.ax_engine._try_generate_manifest(model_dir))
+
+            # The bundled binary is used; the stale PATH binary is never invoked.
+            self.assertEqual(calls, [[str(bundled), "generate-manifest", str(model_dir)]])
+
     def test_openai_mlx_shim_helpers_tokenize_and_render_chat_prompt(self) -> None:
         openai_server = importlib.import_module("ax_engine.openai_server")
 

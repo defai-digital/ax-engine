@@ -11,6 +11,8 @@ import subprocess
 import sys
 from typing import Sequence
 
+from . import _bundled_binary
+
 
 @dataclass(frozen=True)
 class ModelProfile:
@@ -136,15 +138,15 @@ MODEL_PROFILES = (
 
 
 def _server_bin() -> pathlib.Path | str:
-    bundled = pathlib.Path(__file__).parent / "_bin" / "ax-engine-server"
-    if bundled.exists():
+    bundled = _bundled_binary("ax-engine-server")
+    if bundled is not None:
         return bundled
     return shutil.which("ax-engine-server") or "ax-engine-server"
 
 
 def _bench_bin() -> pathlib.Path | str:
-    bundled = pathlib.Path(__file__).parent / "_bin" / "ax-engine-bench"
-    if bundled.exists():
+    bundled = _bundled_binary("ax-engine-bench")
+    if bundled is not None:
         return bundled
     return shutil.which("ax-engine-bench") or "ax-engine-bench"
 
