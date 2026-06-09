@@ -11,6 +11,7 @@ pub mod mtp;
 pub mod ngram_accel;
 pub mod runner;
 pub mod sampling;
+pub mod speculation_profile;
 pub mod turboquant;
 pub mod turboquant_metal;
 pub mod weight_rotation;

@@ -72,8 +72,8 @@ use ax_engine_core::{
 
 use crate::gemma4_assistant_mtp::{
     Gemma4AssistantMtpConfig, Gemma4AssistantMtpDisableReason, Gemma4AssistantMtpStatus,
-    gemma4_assistant_mtp_debug_enabled, gemma4_assistant_mtp_deep_draft_min_confidence,
-    gemma4_assistant_mtp_draft_min_confidence, gemma4_assistant_mtp_max_depth_cap,
+    gemma4_assistant_mtp_debug_enabled, gemma4_assistant_mtp_max_depth_cap,
+    resolve_gemma4_assistant_mtp_deep_gate, resolve_gemma4_assistant_mtp_first_gate,
 };
 use crate::generate::{
     DirectPipelineTimings, advance_direct_pipeline_with_timings_and_turboquant_context,
@@ -101,6 +101,7 @@ use crate::sampling::{
     MlxSamplingParams, MlxSamplingRequest, TokenDistribution, Xorshift64,
     sample_categorical_with_logprob_and_distribution, sample_residual_token_distribution,
 };
+use crate::speculation_profile::speculation_profile_from_env;
 use crate::turboquant::{
     TURBOQUANT_ROUTE_METADATA_SCHEMA_VERSION, TurboQuantProductionRequirements,
     turboquant_support_report,
@@ -1333,6 +1334,12 @@ impl Gemma4AssistantMtpStatus {
         decisions.upsert_route_decision(
             "ax_mlx_gemma4_assistant_mtp_confidence_mode",
             gemma4_assistant_mtp_confidence_mode_from_env().route_code(),
+        );
+        // Resolved speculation profile (ADR-022) — route-visible so benchmarks
+        // and logs prove which posture ran.
+        decisions.upsert_route_decision(
+            "ax_mlx_speculation_profile",
+            speculation_profile_from_env().route_code(),
         );
         decisions.upsert_route_decision(
             "ax_mlx_gemma4_assistant_mtp_draft_tokens",
@@ -6799,7 +6806,15 @@ impl MlxRunner {
         }
 
         let base_position = state.cache.seq_len;
-        let first_gate = gemma4_assistant_mtp_draft_min_confidence();
+        // Speculation-profile resolution (ADR-022): explicit env > profile preset
+        // > built-in default. `auto` is temperature-driven and never lowers the
+        // shipped Gemma default at low temperature.
+        let speculation_profile = speculation_profile_from_env();
+        let first_gate = resolve_gemma4_assistant_mtp_first_gate(
+            speculation_profile,
+            Some(sampling.temperature),
+        )
+        .0;
         let confidence_mode = gemma4_assistant_mtp_confidence_mode_from_env();
 
         // Ungated (gate disabled, gate <= 0): a single sampled draft carrying a
@@ -6849,7 +6864,9 @@ impl MlxRunner {
         // empty draft just verifies fewer speculative positions, never changing the
         // committed token. Greedy drafts carry no log-prob, so acceptance falls to
         // argmax-match (the Gemma default acceptance mode).
-        let deep_gate = gemma4_assistant_mtp_deep_draft_min_confidence();
+        let deep_gate =
+            resolve_gemma4_assistant_mtp_deep_gate(speculation_profile, Some(sampling.temperature))
+                .0;
         let mut drafts: Vec<u32> = Vec::with_capacity(max_depth);
         let mut cur_token = last_token;
         let mut cur_hidden = astype(last_backbone_hidden, MlxDtype::Bfloat16, None);
@@ -9542,8 +9559,16 @@ fn mtp_ngram_gate_policy_from_env() -> MtpNgramGatePolicy {
             .replace('_', "-")
             .as_str()
         {
-            "utility" => MtpNgramGatePolicy::Utility,
-            _ => MtpNgramGatePolicy::Rate,
+            "utility" => return MtpNgramGatePolicy::Utility,
+            "rate" => return MtpNgramGatePolicy::Rate,
+            _ => {}
+        }
+        // Else the speculation profile may prefer the utility gate (chatbot /
+        // high-temperature `auto`, where n-gram rarely helps prose).
+        if speculation_profile_from_env().prefers_ngram_utility(None) {
+            MtpNgramGatePolicy::Utility
+        } else {
+            MtpNgramGatePolicy::Rate
         }
     })
 }
@@ -12221,6 +12246,7 @@ mod tests {
             decisions.get("ax_mlx_gemma4_assistant_mtp_confidence_mode"),
             Some(&0)
         );
+        assert_eq!(decisions.get("ax_mlx_speculation_profile"), Some(&0));
         assert_eq!(
             decisions.get("ax_mlx_gemma4_assistant_mtp_draft_tokens"),
             Some(&0)
@@ -12368,6 +12394,7 @@ mod tests {
             decisions.get("ax_mlx_gemma4_assistant_mtp_confidence_mode"),
             Some(&0)
         );
+        assert_eq!(decisions.get("ax_mlx_speculation_profile"), Some(&0));
         assert_eq!(
             decisions.get("ax_mlx_gemma4_assistant_mtp_draft_tokens"),
             Some(&4)

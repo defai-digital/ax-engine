@@ -514,6 +514,55 @@ pub fn gemma4_assistant_mtp_deep_draft_min_confidence() -> f32 {
     })
 }
 
+/// Parse a gate env var to `Some(value)` only when set and valid (`[0.0, 1.0)`);
+/// `None` when unset/invalid, so speculation-profile resolution can supply a
+/// preset instead. Mirrors the getters' validation.
+fn gate_env_explicit(key: &str) -> Option<f32> {
+    std::env::var(key).ok().and_then(|raw| {
+        raw.trim()
+            .parse::<f32>()
+            .ok()
+            .filter(|value| value.is_finite() && *value >= 0.0 && *value < 1.0)
+    })
+}
+
+fn gemma_first_gate_env_explicit() -> Option<f32> {
+    static CACHED: OnceLock<Option<f32>> = OnceLock::new();
+    *CACHED.get_or_init(|| gate_env_explicit("AX_MLX_GEMMA4_ASSISTANT_MTP_DRAFT_MIN_CONFIDENCE"))
+}
+
+fn gemma_deep_gate_env_explicit() -> Option<f32> {
+    static CACHED: OnceLock<Option<f32>> = OnceLock::new();
+    *CACHED
+        .get_or_init(|| gate_env_explicit("AX_MLX_GEMMA4_ASSISTANT_MTP_DEEP_DRAFT_MIN_CONFIDENCE"))
+}
+
+/// Resolve the assistant FIRST-position gate with speculation-profile
+/// precedence: explicit env > profile preset > built-in default. `temperature`
+/// drives the `auto` profile. Returns the value and how it was chosen.
+pub fn resolve_gemma4_assistant_mtp_first_gate(
+    profile: crate::speculation_profile::SpeculationProfile,
+    temperature: Option<f32>,
+) -> (f32, crate::speculation_profile::ResolutionSource) {
+    crate::speculation_profile::resolve_gate(
+        gemma_first_gate_env_explicit(),
+        profile.gemma_first_gate(temperature),
+        DEFAULT_GEMMA4_ASSISTANT_MTP_DRAFT_MIN_CONFIDENCE,
+    )
+}
+
+/// Resolve the assistant DEEP-position gate with the same precedence.
+pub fn resolve_gemma4_assistant_mtp_deep_gate(
+    profile: crate::speculation_profile::SpeculationProfile,
+    temperature: Option<f32>,
+) -> (f32, crate::speculation_profile::ResolutionSource) {
+    crate::speculation_profile::resolve_gate(
+        gemma_deep_gate_env_explicit(),
+        profile.gemma_deep_gate(temperature),
+        DEFAULT_GEMMA4_ASSISTANT_MTP_DEEP_DRAFT_MIN_CONFIDENCE,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;

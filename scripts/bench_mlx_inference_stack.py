@@ -329,6 +329,8 @@ AX_MLX_DIRECT_CPP_GEMMA4_POST_ATTN_FFN_KEYS = [
 ]
 
 AX_MLX_TELEMETRY_KEYS = [
+    # Resolved speculation profile (ADR-022): 0=auto, 1=coding, 2=agentic, 3=chatbot.
+    "ax_mlx_speculation_profile",
     "ax_mlx_prefill_steps",
     "ax_mlx_prefill_wall_us",
     "ax_mlx_prefill_forward_wall_us",

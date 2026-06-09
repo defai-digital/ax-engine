@@ -76,6 +76,44 @@ pub fn mtp_draft_min_confidence_from_env() -> f32 {
     })
 }
 
+/// `AX_MLX_MTP_DRAFT_MIN_CONFIDENCE` parsed to `Some(value)` only when set and
+/// valid; `None` when unset, so speculation-profile resolution can supply a
+/// preset instead.
+fn mtp_draft_min_confidence_explicit() -> Option<f32> {
+    static CACHED: OnceLock<Option<f32>> = OnceLock::new();
+    *CACHED.get_or_init(|| {
+        std::env::var("AX_MLX_MTP_DRAFT_MIN_CONFIDENCE")
+            .ok()
+            .and_then(|raw| {
+                raw.trim()
+                    .parse::<f32>()
+                    .ok()
+                    .filter(|value| value.is_finite() && *value >= 0.0 && *value < 1.0)
+            })
+    })
+}
+
+/// Resolve the Qwen fused MTP gate with speculation-profile precedence (ADR-022):
+/// explicit env > profile preset > built-in default.
+///
+/// The Qwen MTP path accepts via rejection sampling (it carries draft log-probs),
+/// so it preserves the sampling distribution exactly — it has no greedy-bias
+/// concern. Accordingly `coding`/`agentic`/`auto` defer to the validated `0.90`
+/// default; only `chatbot` raises the gate, and that is a throughput choice (cut
+/// rejection waste at high temperature), not a correctness one. `temperature`
+/// drives `auto`.
+pub fn resolve_mtp_draft_min_confidence(
+    profile: crate::speculation_profile::SpeculationProfile,
+    temperature: Option<f32>,
+) -> f32 {
+    crate::speculation_profile::resolve_gate(
+        mtp_draft_min_confidence_explicit(),
+        profile.qwen_gate(temperature),
+        DEFAULT_MTP_DRAFT_MIN_CONFIDENCE,
+    )
+    .0
+}
+
 /// Default MTP draft confidence gate, tuned for **throughput** (not for the
 /// maximum accept rate).
 ///
@@ -479,7 +517,13 @@ pub fn mtp_draft_tokens(
         cache,
         max_depth_cap,
         rng,
-        mtp_draft_min_confidence_from_env(),
+        // Speculation-profile resolution (ADR-022): explicit env > profile > 0.90
+        // default. Temperature is unavailable at this wrapper, so `auto` keeps the
+        // validated default; explicit profiles still apply.
+        resolve_mtp_draft_min_confidence(
+            crate::speculation_profile::speculation_profile_from_env(),
+            None,
+        ),
     )
 }
 

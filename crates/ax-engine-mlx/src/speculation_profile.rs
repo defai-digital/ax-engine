@@ -1,0 +1,303 @@
+//! Speculation profile presets (ADR-022).
+//!
+//! A single selector — `AX_MLX_SPECULATION_PROFILE` (server CLI:
+//! `--speculation-profile` / `-s`, hidden alias `--spec`) — bundles the
+//! per-knob MTP and n-gram speculative-decode configuration into named
+//! postures: `auto`, `coding`, `agentic`, `chatbot`.
+//!
+//! The profile is a convenience layer over the existing env knobs, not a new
+//! decode path. It only selects gate values and n-gram policy among the paths
+//! the runtime already has; committed tokens are always the verified target
+//! tokens regardless of profile.
+//!
+//! Resolution precedence (highest first): an explicit per-knob env var > the
+//! selected profile preset > the built-in default. So a profile never silently
+//! overwrites a value the user set explicitly.
+//!
+//! `auto` is the default and is **temperature-driven**: at low/zero request
+//! temperature it defers entirely to the built-in defaults (no regression, and
+//! — per ADR-021 — no speculative lowering of the Gemma assistant gate); at
+//! higher temperature it raises gates to protect sampling diversity from the
+//! greedy argmax-match bias.
+//!
+//! NOTE: the per-profile gate values below are PROVISIONAL placeholders pending
+//! the same-artifact gate ablation (PRD-2026-06-09-gemma4-12b-mtp-speedup R5).
+//! They are deliberately conservative — `auto` never lowers a shipped default —
+//! and must be replaced with measured optima before being presented as tuned
+//! defaults.
+
+use std::sync::OnceLock;
+
+/// Speculative-decode posture selected by `AX_MLX_SPECULATION_PROFILE`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SpeculationProfile {
+    /// Temperature-driven default: built-in defaults at low temperature,
+    /// diversity-preserving at high temperature.
+    Auto,
+    /// Low-temperature, sharply-peaked content. Aggressive gate, max throughput.
+    Coding,
+    /// Low-temperature structured output (tools/JSON/reasoning). Aggressive gate
+    /// plus tightened n-gram structured-output safety.
+    Agentic,
+    /// Higher-temperature conversational output. Conservative gate / utility
+    /// n-gram to protect reply diversity.
+    Chatbot,
+}
+
+/// How the resolved value was chosen, for route telemetry.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ResolutionSource {
+    /// An explicit per-knob env var was set and won.
+    Explicit,
+    /// The selected profile preset supplied the value.
+    Profile,
+    /// Neither applied; the built-in default was used.
+    Default,
+}
+
+impl ResolutionSource {
+    pub fn route_code(self) -> u32 {
+        match self {
+            Self::Default => 0,
+            Self::Profile => 1,
+            Self::Explicit => 2,
+        }
+    }
+}
+
+/// Request temperature at/above which `auto` switches from the throughput regime
+/// to the diversity-preserving regime. PROVISIONAL (pending ablation).
+pub const AUTO_DIVERSITY_TEMPERATURE: f32 = 0.5;
+
+// Provisional preset gate values — see module note. Pending R5 ablation.
+const CODING_GEMMA_FIRST_GATE: f32 = 0.90;
+const CODING_GEMMA_DEEP_GATE: f32 = 0.90;
+const AGENTIC_GEMMA_FIRST_GATE: f32 = 0.92;
+const AGENTIC_GEMMA_DEEP_GATE: f32 = 0.95;
+/// Gemma's diversity-preserving gate equals its current accept-maximizing
+/// default (0.999): `chatbot`/high-temp `auto` keep Gemma exactly as it ships.
+const CHATBOT_GEMMA_FIRST_GATE: f32 = 0.999;
+const CHATBOT_GEMMA_DEEP_GATE: f32 = 0.999;
+/// Qwen's shipped default (0.90) is already the throughput sweet spot, so
+/// `coding`/`agentic` defer to it (return `None`); only the diversity regime
+/// raises it.
+const CHATBOT_QWEN_GATE: f32 = 0.99;
+
+impl SpeculationProfile {
+    /// Parse the selector value. Accepts the canonical names plus short aliases.
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "auto" => Some(Self::Auto),
+            "coding" | "code" => Some(Self::Coding),
+            "agentic" | "agent" => Some(Self::Agentic),
+            "chatbot" | "chat" => Some(Self::Chatbot),
+            _ => None,
+        }
+    }
+
+    /// Stable route-telemetry code.
+    pub fn route_code(self) -> u32 {
+        match self {
+            Self::Auto => 0,
+            Self::Coding => 1,
+            Self::Agentic => 2,
+            Self::Chatbot => 3,
+        }
+    }
+
+    /// True when `auto` should treat this temperature as diversity-sensitive.
+    /// `None` (temperature unknown at the call site) is treated as low.
+    fn is_diversity_temperature(temperature: Option<f32>) -> bool {
+        matches!(temperature, Some(t) if t.is_finite() && t >= AUTO_DIVERSITY_TEMPERATURE)
+    }
+
+    /// Concrete regime an explicit profile applies, or what `auto` resolves to at
+    /// the given temperature. `auto` at low temperature returns `None` (defer to
+    /// built-in defaults — no regression, no speculative Gemma lowering).
+    fn effective(self, temperature: Option<f32>) -> Option<Self> {
+        match self {
+            Self::Auto => {
+                if Self::is_diversity_temperature(temperature) {
+                    Some(Self::Chatbot)
+                } else {
+                    None
+                }
+            }
+            other => Some(other),
+        }
+    }
+
+    /// Gemma assistant first-position gate this profile prescribes, or `None` to
+    /// defer to the built-in default. `temperature` drives `auto`.
+    pub fn gemma_first_gate(self, temperature: Option<f32>) -> Option<f32> {
+        match self.effective(temperature)? {
+            Self::Coding => Some(CODING_GEMMA_FIRST_GATE),
+            Self::Agentic => Some(AGENTIC_GEMMA_FIRST_GATE),
+            Self::Chatbot => Some(CHATBOT_GEMMA_FIRST_GATE),
+            Self::Auto => None,
+        }
+    }
+
+    /// Gemma assistant deep-position gate this profile prescribes, or `None`.
+    pub fn gemma_deep_gate(self, temperature: Option<f32>) -> Option<f32> {
+        match self.effective(temperature)? {
+            Self::Coding => Some(CODING_GEMMA_DEEP_GATE),
+            Self::Agentic => Some(AGENTIC_GEMMA_DEEP_GATE),
+            Self::Chatbot => Some(CHATBOT_GEMMA_DEEP_GATE),
+            Self::Auto => None,
+        }
+    }
+
+    /// Qwen fused MTP gate this profile prescribes, or `None` to keep the shipped
+    /// 0.90 default. `coding`/`agentic` defer (0.90 is already the sweet spot);
+    /// only the diversity regime raises it.
+    pub fn qwen_gate(self, temperature: Option<f32>) -> Option<f32> {
+        match self.effective(temperature)? {
+            Self::Coding | Self::Agentic => None,
+            Self::Chatbot => Some(CHATBOT_QWEN_GATE),
+            Self::Auto => None,
+        }
+    }
+
+    /// Whether this profile prefers the n-gram utility gate when the n-gram gate
+    /// policy is not explicitly set. Diversity/chatbot prefers utility (prose
+    /// rarely benefits from n-gram and stale matches can hurt).
+    pub fn prefers_ngram_utility(self, temperature: Option<f32>) -> bool {
+        matches!(self.effective(temperature), Some(Self::Chatbot))
+    }
+
+    /// Whether this profile tightens n-gram structured-output safety when the
+    /// safety mode is not explicitly set. Agentic protects JSON/tool-call syntax.
+    pub fn tightens_ngram_safety(self, temperature: Option<f32>) -> bool {
+        matches!(self.effective(temperature), Some(Self::Agentic))
+    }
+}
+
+/// Resolved speculation profile from `AX_MLX_SPECULATION_PROFILE` (cached).
+/// Defaults to [`SpeculationProfile::Auto`].
+pub fn speculation_profile_from_env() -> SpeculationProfile {
+    static CACHED: OnceLock<SpeculationProfile> = OnceLock::new();
+    *CACHED.get_or_init(|| {
+        std::env::var("AX_MLX_SPECULATION_PROFILE")
+            .ok()
+            .and_then(|raw| SpeculationProfile::parse(&raw))
+            .unwrap_or(SpeculationProfile::Auto)
+    })
+}
+
+/// Generic precedence resolver: explicit value wins, else the profile preset,
+/// else the built-in default. Returns the chosen value and its source for
+/// telemetry.
+pub fn resolve_gate(
+    explicit: Option<f32>,
+    preset: Option<f32>,
+    default: f32,
+) -> (f32, ResolutionSource) {
+    if let Some(v) = explicit {
+        (v, ResolutionSource::Explicit)
+    } else if let Some(v) = preset {
+        (v, ResolutionSource::Profile)
+    } else {
+        (default, ResolutionSource::Default)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_canonical_and_aliases() {
+        assert_eq!(
+            SpeculationProfile::parse("auto"),
+            Some(SpeculationProfile::Auto)
+        );
+        assert_eq!(
+            SpeculationProfile::parse("CODING"),
+            Some(SpeculationProfile::Coding)
+        );
+        assert_eq!(
+            SpeculationProfile::parse("code"),
+            Some(SpeculationProfile::Coding)
+        );
+        assert_eq!(
+            SpeculationProfile::parse(" agent "),
+            Some(SpeculationProfile::Agentic)
+        );
+        assert_eq!(
+            SpeculationProfile::parse("chat"),
+            Some(SpeculationProfile::Chatbot)
+        );
+        assert_eq!(SpeculationProfile::parse("nonsense"), None);
+    }
+
+    #[test]
+    fn route_codes_are_stable() {
+        assert_eq!(SpeculationProfile::Auto.route_code(), 0);
+        assert_eq!(SpeculationProfile::Coding.route_code(), 1);
+        assert_eq!(SpeculationProfile::Agentic.route_code(), 2);
+        assert_eq!(SpeculationProfile::Chatbot.route_code(), 3);
+    }
+
+    #[test]
+    fn coding_uses_aggressive_gemma_gate_at_any_temperature() {
+        assert_eq!(
+            SpeculationProfile::Coding.gemma_first_gate(Some(0.0)),
+            Some(0.90)
+        );
+        assert_eq!(
+            SpeculationProfile::Coding.gemma_first_gate(Some(0.9)),
+            Some(0.90)
+        );
+    }
+
+    #[test]
+    fn auto_defers_to_default_at_low_temperature() {
+        // No speculative lowering of Gemma's shipped 0.999 default (ADR-021).
+        assert_eq!(SpeculationProfile::Auto.gemma_first_gate(Some(0.0)), None);
+        assert_eq!(SpeculationProfile::Auto.gemma_first_gate(None), None);
+        assert_eq!(SpeculationProfile::Auto.qwen_gate(Some(0.2)), None);
+    }
+
+    #[test]
+    fn auto_protects_diversity_at_high_temperature() {
+        // Gemma stays at its conservative default value; Qwen is raised from 0.90.
+        assert_eq!(
+            SpeculationProfile::Auto.gemma_first_gate(Some(0.7)),
+            Some(0.999)
+        );
+        assert_eq!(SpeculationProfile::Auto.qwen_gate(Some(0.7)), Some(0.99));
+    }
+
+    #[test]
+    fn qwen_defers_for_coding_and_agentic() {
+        assert_eq!(SpeculationProfile::Coding.qwen_gate(Some(0.0)), None);
+        assert_eq!(SpeculationProfile::Agentic.qwen_gate(Some(0.0)), None);
+        assert_eq!(SpeculationProfile::Chatbot.qwen_gate(Some(0.0)), Some(0.99));
+    }
+
+    #[test]
+    fn ngram_policy_hints_match_profiles() {
+        assert!(SpeculationProfile::Agentic.tightens_ngram_safety(Some(0.0)));
+        assert!(!SpeculationProfile::Coding.tightens_ngram_safety(Some(0.0)));
+        assert!(SpeculationProfile::Chatbot.prefers_ngram_utility(Some(0.0)));
+        assert!(SpeculationProfile::Auto.prefers_ngram_utility(Some(0.7)));
+        assert!(!SpeculationProfile::Auto.prefers_ngram_utility(Some(0.0)));
+    }
+
+    #[test]
+    fn resolve_gate_precedence() {
+        assert_eq!(
+            resolve_gate(Some(0.95), Some(0.90), 0.999),
+            (0.95, ResolutionSource::Explicit)
+        );
+        assert_eq!(
+            resolve_gate(None, Some(0.90), 0.999),
+            (0.90, ResolutionSource::Profile)
+        );
+        assert_eq!(
+            resolve_gate(None, None, 0.999),
+            (0.999, ResolutionSource::Default)
+        );
+    }
+}
