@@ -6,6 +6,8 @@ tracked via Git tags and GitHub Releases.
 
 ## [Unreleased]
 
+## [6.2.6] - 2026-06-10
+
 ### Added
 
 - **Inline MP4/WebM video on chat (ffmpeg)** — `POST /v1/chat/completions`
