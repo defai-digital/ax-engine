@@ -985,10 +985,14 @@ def _resized_dimensions(
     max_side_length = (max_patches // pooling_kernel_size**2) * side_mult
     if target_height == 0:
         target_height = side_mult
-        target_width = min(math.floor(width / height) * side_mult, max_side_length)
+        target_width = min(
+            max(int(width / height * side_mult), side_mult), max_side_length
+        )
     elif target_width == 0:
         target_width = side_mult
-        target_height = min(math.floor(height / width) * side_mult, max_side_length)
+        target_height = min(
+            max(int(height / width * side_mult), side_mult), max_side_length
+        )
     return int(target_width), int(target_height)
 
 
