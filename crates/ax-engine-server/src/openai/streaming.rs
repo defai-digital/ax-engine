@@ -12,6 +12,7 @@ use tokio::sync::mpsc;
 
 use crate::app_state::AppState;
 use crate::backends::{llama_cpp, mlx_lm};
+use crate::chat::{Gemma4ChannelIds, strip_gemma4_channel_name_header};
 use crate::errors::{ErrorResponse, error_response, map_session_error};
 use crate::generation::streaming::{
     StreamEventSender, StreamStateSource, build_keep_alive_stream, build_stream_state,
@@ -127,6 +128,15 @@ fn drive_openai_stream_state<N>(
     N: FnMut(&mut GenerateStreamState) -> Result<Option<GenerateStreamEvent>, EngineSessionError>,
 {
     let mut chat_role_emitted = false;
+    // Chat streams over the native token path strip Gemma 4 thinking-channel
+    // framing; raw completion streams keep the verbatim decode.
+    let mut channel_filter = match stream_kind {
+        OpenAiStreamKind::ChatCompletion => tokenizer
+            .as_ref()
+            .and_then(Gemma4ChannelIds::from_tokenizer)
+            .map(Gemma4ChannelStreamFilter::new),
+        OpenAiStreamKind::Completion => None,
+    };
     let mut decoder = tokenizer.map(IncrementalDecoder::new);
 
     drive_stream_events(
@@ -141,6 +151,7 @@ fn drive_openai_stream_state<N>(
                 &mut chat_role_emitted,
                 output_postprocessing,
                 decoder.as_mut(),
+                channel_filter.as_mut(),
             )
         },
         || {
@@ -155,7 +166,8 @@ fn send_openai_stream_event(
     stream_kind: OpenAiStreamKind,
     chat_role_emitted: &mut bool,
     output_postprocessing: &mut OpenAiOutputPostprocessingState,
-    decoder: Option<&mut IncrementalDecoder>,
+    mut decoder: Option<&mut IncrementalDecoder>,
+    mut channel_filter: Option<&mut Gemma4ChannelStreamFilter>,
 ) -> bool {
     match event {
         GenerateStreamEvent::Request(_) => true,
@@ -182,8 +194,22 @@ fn send_openai_stream_event(
                 send_openai_stream_chunk(tx, &chunk)
             }
             OpenAiStreamKind::ChatCompletion => {
+                // Native token path: drop Gemma 4 channel-framing tokens
+                // before decode so thinking channels never surface as content.
+                let filtered;
+                let delta_tokens = if payload.delta_text.is_none()
+                    && let Some(filter) = channel_filter.as_mut()
+                {
+                    filtered = filter.filter(&payload.delta_tokens);
+                    if filtered.is_empty() {
+                        return true;
+                    }
+                    filtered.as_slice()
+                } else {
+                    payload.delta_tokens.as_slice()
+                };
                 let Some(delta_text) =
-                    stream_delta_text(&payload.delta_text, &payload.delta_tokens, decoder, tx)
+                    stream_delta_text(&payload.delta_text, delta_tokens, decoder, tx)
                 else {
                     return true;
                 };
@@ -194,6 +220,9 @@ fn send_openai_stream_event(
                 };
                 if processed_delta_text.is_empty() {
                     return true;
+                }
+                if let Some(filter) = channel_filter.as_mut() {
+                    filter.kept_output = true;
                 }
                 let role = next_chat_delta_role(chat_role_emitted);
                 let chunk = chat_delta_chunk(
@@ -217,6 +246,30 @@ fn send_openai_stream_event(
                 send_openai_stream_chunk(tx, &chunk)
             }
             OpenAiStreamKind::ChatCompletion => {
+                // The model can leave its entire answer inside an unclosed
+                // thinking channel; serve that body (minus the channel-name
+                // header) before the final chunk rather than an empty message.
+                if let Some(filter) = channel_filter.as_mut()
+                    && let Some(body_tokens) = filter.take_fallback_tokens()
+                    && let Some(decoder) = decoder.as_mut()
+                    && let Ok(body_text) = decoder.push(&body_tokens)
+                {
+                    let body_text = strip_gemma4_channel_name_header(&body_text);
+                    if let Some(text) = output_postprocessing.apply_delta_text(body_text)
+                        && !text.is_empty()
+                    {
+                        let role = next_chat_delta_role(chat_role_emitted);
+                        let chunk = chat_delta_chunk(
+                            payload.response.request_id,
+                            payload.response.model_id.clone(),
+                            role,
+                            text,
+                        );
+                        if !send_openai_stream_chunk(tx, &chunk) {
+                            return false;
+                        }
+                    }
+                }
                 let finish_reason =
                     output_postprocessing.apply_finish_reason(payload.response.finish_reason);
                 let chunk = chat_final_chunk(
@@ -227,6 +280,59 @@ fn send_openai_stream_event(
                 send_openai_stream_chunk(tx, &chunk)
             }
         },
+    }
+}
+
+/// Streaming counterpart of `decode_gemma4_chat_output`: drops Gemma 4
+/// channel-framing tokens from a chat token stream, buffering the most recent
+/// channel body so an answer the model left inside a thinking channel can
+/// still be served at end of stream when nothing else was emitted.
+struct Gemma4ChannelStreamFilter {
+    ids: Gemma4ChannelIds,
+    in_channel: bool,
+    last_channel_body: Vec<u32>,
+    /// True once a non-empty outside-channel chunk has been sent.
+    kept_output: bool,
+}
+
+impl Gemma4ChannelStreamFilter {
+    fn new(ids: Gemma4ChannelIds) -> Self {
+        Self {
+            ids,
+            in_channel: false,
+            last_channel_body: Vec::new(),
+            kept_output: false,
+        }
+    }
+
+    /// Partition a delta: returns the tokens outside channel spans; tokens
+    /// inside spans accumulate as the candidate fallback body.
+    fn filter(&mut self, delta_tokens: &[u32]) -> Vec<u32> {
+        let mut kept = Vec::with_capacity(delta_tokens.len());
+        for &token in delta_tokens {
+            if self.in_channel {
+                if token == self.ids.close {
+                    self.in_channel = false;
+                } else {
+                    self.last_channel_body.push(token);
+                }
+            } else if token == self.ids.open {
+                self.in_channel = true;
+                self.last_channel_body.clear();
+            } else {
+                kept.push(token);
+            }
+        }
+        kept
+    }
+
+    /// At end of stream: the channel body to serve when no outside-channel
+    /// content was emitted.
+    fn take_fallback_tokens(&mut self) -> Option<Vec<u32>> {
+        if self.kept_output || self.last_channel_body.is_empty() {
+            return None;
+        }
+        Some(std::mem::take(&mut self.last_channel_body))
     }
 }
 

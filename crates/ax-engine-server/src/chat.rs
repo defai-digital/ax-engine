@@ -1,11 +1,21 @@
 use std::path::Path;
 
+use ax_engine_sdk::{EngineTokenizer, EngineTokenizerError};
 use serde_json::{Value, json};
 
 // Gemma 4 closes every conversational turn with this token. Instruction-tuned
 // artifacts list it in `generation_config.json`'s `eos_token_id`; base
 // (pretrained) artifacts do not, which is how we tell them apart below.
 const GEMMA4_TURN_TERMINATOR: &str = "<turn|>";
+
+// Gemma 4 frames assistant reasoning as a channel: `<|channel>thought\n` opens
+// a thinking channel and `<channel|>` closes it; the user-facing answer follows
+// the close marker. The generation prompt below pre-fills an empty thought
+// channel, but the model can still re-open one mid-generation, so chat
+// responses must strip the framing (the reference chat template does the same
+// with its `strip_thinking` macro when re-rendering history).
+const GEMMA4_CHANNEL_OPEN: &str = "<|channel>";
+const GEMMA4_CHANNEL_CLOSE: &str = "<channel|>";
 
 // Pre-fills `<think>\n\n</think>\n\n` to signal the model to skip reasoning.
 // This matches Qwen chat templates rendered with `enable_thinking=false` and
@@ -347,6 +357,95 @@ pub(crate) fn render_prompt_with_template(
     Ok(prompt)
 }
 
+/// Token ids of the Gemma 4 channel markers, looked up from the model's
+/// tokenizer. `None` for tokenizers that do not define them (non-Gemma4
+/// models), which disables channel stripping.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Gemma4ChannelIds {
+    pub(crate) open: u32,
+    pub(crate) close: u32,
+}
+
+impl Gemma4ChannelIds {
+    pub(crate) fn from_tokenizer(tokenizer: &EngineTokenizer) -> Option<Self> {
+        Some(Self {
+            open: tokenizer.token_to_id(GEMMA4_CHANNEL_OPEN)?,
+            close: tokenizer.token_to_id(GEMMA4_CHANNEL_CLOSE)?,
+        })
+    }
+}
+
+/// Split generated tokens into text kept outside channels and the bodies of
+/// any `<|channel>…<channel|>` spans (an unterminated span runs to the end).
+fn split_gemma4_channels(tokens: &[u32], ids: Gemma4ChannelIds) -> (Vec<u32>, Vec<Vec<u32>>) {
+    let mut kept = Vec::with_capacity(tokens.len());
+    let mut channel_bodies = Vec::new();
+    let mut i = 0;
+    while i < tokens.len() {
+        if tokens[i] == ids.open {
+            let body_start = i + 1;
+            match tokens[body_start..].iter().position(|&t| t == ids.close) {
+                Some(offset) => {
+                    channel_bodies.push(tokens[body_start..body_start + offset].to_vec());
+                    i = body_start + offset + 1;
+                }
+                None => {
+                    channel_bodies.push(tokens[body_start..].to_vec());
+                    i = tokens.len();
+                }
+            }
+        } else {
+            kept.push(tokens[i]);
+            i += 1;
+        }
+    }
+    (kept, channel_bodies)
+}
+
+/// Drop the channel-name header line (e.g. `thought`) from a decoded channel
+/// body. Keeps the body intact when the first line does not look like a bare
+/// channel name.
+pub(crate) fn strip_gemma4_channel_name_header(body: &str) -> &str {
+    let Some((name, rest)) = body.split_once('\n') else {
+        return body;
+    };
+    let name = name.trim();
+    if !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        rest
+    } else {
+        body
+    }
+}
+
+/// Decode Gemma 4 chat output tokens with thinking-channel framing removed.
+///
+/// Mirrors the reference template's `strip_thinking` semantics: channel spans
+/// are dropped and only text outside them is served. When the model puts its
+/// entire answer inside a channel (so stripping would serve an empty message),
+/// fall back to the last channel body minus its channel-name header — the
+/// useful content is there.
+pub(crate) fn decode_gemma4_chat_output(
+    tokenizer: &EngineTokenizer,
+    output_tokens: &[u32],
+) -> Result<String, EngineTokenizerError> {
+    let Some(ids) = Gemma4ChannelIds::from_tokenizer(tokenizer) else {
+        return tokenizer.decode(output_tokens, true);
+    };
+    let (kept, channel_bodies) = split_gemma4_channels(output_tokens, ids);
+    if channel_bodies.is_empty() {
+        return tokenizer.decode(output_tokens, true);
+    }
+    let kept_text = tokenizer.decode(&kept, true)?;
+    if !kept_text.trim().is_empty() {
+        return Ok(kept_text);
+    }
+    let Some(body) = channel_bodies.last() else {
+        return Ok(kept_text);
+    };
+    let body_text = tokenizer.decode(body, true)?;
+    Ok(strip_gemma4_channel_name_header(&body_text).to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -363,6 +462,48 @@ mod tests {
             stop_sequences("Meta-Llama-3.1-8B-Instruct", vec!["<|eot_id|>".to_string()]),
             vec!["<|eot_id|>".to_string()]
         );
+    }
+
+    const CHANNEL_IDS: Gemma4ChannelIds = Gemma4ChannelIds {
+        open: 100,
+        close: 101,
+    };
+
+    #[test]
+    fn split_gemma4_channels_keeps_text_outside_closed_channel() {
+        // <|channel> name+thinking <channel|> answer
+        let (kept, bodies) = split_gemma4_channels(&[100, 7, 8, 9, 101, 20, 21], CHANNEL_IDS);
+        assert_eq!(kept, vec![20, 21]);
+        assert_eq!(bodies, vec![vec![7, 8, 9]]);
+    }
+
+    #[test]
+    fn split_gemma4_channels_captures_unclosed_channel_body() {
+        let (kept, bodies) = split_gemma4_channels(&[5, 100, 7, 8, 9], CHANNEL_IDS);
+        assert_eq!(kept, vec![5]);
+        assert_eq!(bodies, vec![vec![7, 8, 9]]);
+    }
+
+    #[test]
+    fn split_gemma4_channels_passes_through_plain_output() {
+        let (kept, bodies) = split_gemma4_channels(&[5, 6, 7], CHANNEL_IDS);
+        assert_eq!(kept, vec![5, 6, 7]);
+        assert!(bodies.is_empty());
+    }
+
+    #[test]
+    fn channel_name_header_is_stripped_from_body() {
+        assert_eq!(
+            strip_gemma4_channel_name_header("thought\nThe quick brown fox."),
+            "The quick brown fox."
+        );
+        // A first line that is not a bare channel name stays intact.
+        assert_eq!(
+            strip_gemma4_channel_name_header("First line of prose.\nSecond line."),
+            "First line of prose.\nSecond line."
+        );
+        // Single-line bodies stay intact.
+        assert_eq!(strip_gemma4_channel_name_header("answer"), "answer");
     }
 
     #[test]

@@ -4,6 +4,7 @@ use axum::http::StatusCode;
 
 use crate::app_state::AppState;
 use crate::backends::{llama_cpp, mlx_lm};
+use crate::chat::decode_gemma4_chat_output;
 use crate::errors::{ErrorResponse, error_response, map_session_error};
 use crate::generation::native::run_stateless_generate_request;
 use crate::openai::requests::{
@@ -86,7 +87,7 @@ pub(crate) async fn run_openai_text_generation(
 
     let (request_id, mut response) =
         run_stateless_generate_request(&state, generate_request).await?;
-    populate_native_mlx_output_text(&state, &mut response)?;
+    populate_native_mlx_output_text(&state, &mut response, kind)?;
     apply_openai_chat_output_postprocessing(&mut response, output_postprocessing);
 
     Ok(kind.build_non_stream_response(&response, request_id))
@@ -109,6 +110,7 @@ fn apply_openai_chat_output_postprocessing(
 fn populate_native_mlx_output_text(
     state: &AppState,
     response: &mut GenerateResponse,
+    kind: OpenAiStreamKind,
 ) -> Result<(), (StatusCode, Json<ErrorResponse>)> {
     if state.runtime_report.selected_backend != SelectedBackend::Mlx
         || response.output_text.is_some()
@@ -132,15 +134,22 @@ fn populate_native_mlx_output_text(
             format!("failed to load tokenizer for native MLX OpenAI response decode: {error}"),
         )
     })?;
-    let output_text = tokenizer
-        .decode(&response.output_tokens, true)
-        .map_err(|error| {
-            error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "server_error",
-                format!("failed to decode native MLX OpenAI response tokens: {error}"),
-            )
-        })?;
+    // Chat responses strip Gemma 4 thinking-channel framing (the markers are
+    // model-specific control tokens that must not surface as content); raw
+    // completions keep the verbatim decode.
+    let output_text = match kind {
+        OpenAiStreamKind::ChatCompletion => {
+            decode_gemma4_chat_output(&tokenizer, &response.output_tokens)
+        }
+        OpenAiStreamKind::Completion => tokenizer.decode(&response.output_tokens, true),
+    }
+    .map_err(|error| {
+        error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "server_error",
+            format!("failed to decode native MLX OpenAI response tokens: {error}"),
+        )
+    })?;
     response.output_text = Some(output_text);
 
     Ok(())
