@@ -376,7 +376,16 @@ impl Gemma4ChannelIds {
 }
 
 /// Split generated tokens into text kept outside channels and the bodies of
-/// any `<|channel>…<channel|>` spans (an unterminated span runs to the end).
+/// channel spans.
+///
+/// Two span shapes occur in practice:
+/// - explicit `<|channel>…<channel|>` spans (an unterminated one runs to the
+///   end of the output), and
+/// - a stray `<channel|>` close with no preceding open: the generation prompt
+///   pre-fills `<|channel>thought\n<channel|>`, and the model often continues
+///   that channel anyway (re-emitting `thought\n` as plain text plus optional
+///   reasoning) before closing it. Everything before such a stray close is
+///   channel content, not the answer.
 fn split_gemma4_channels(tokens: &[u32], ids: Gemma4ChannelIds) -> (Vec<u32>, Vec<Vec<u32>>) {
     let mut kept = Vec::with_capacity(tokens.len());
     let mut channel_bodies = Vec::new();
@@ -394,6 +403,11 @@ fn split_gemma4_channels(tokens: &[u32], ids: Gemma4ChannelIds) -> (Vec<u32>, Ve
                     i = tokens.len();
                 }
             }
+        } else if tokens[i] == ids.close {
+            if !kept.is_empty() {
+                channel_bodies.push(std::mem::take(&mut kept));
+            }
+            i += 1;
         } else {
             kept.push(tokens[i]);
             i += 1;
@@ -489,6 +503,15 @@ mod tests {
         let (kept, bodies) = split_gemma4_channels(&[5, 6, 7], CHANNEL_IDS);
         assert_eq!(kept, vec![5, 6, 7]);
         assert!(bodies.is_empty());
+    }
+
+    #[test]
+    fn split_gemma4_channels_treats_stray_close_as_channel_boundary() {
+        // The model continued the prompt's pre-filled thought channel ("thought\n…")
+        // and closed it with a bare <channel|> before the answer.
+        let (kept, bodies) = split_gemma4_channels(&[40, 41, 101, 20, 21], CHANNEL_IDS);
+        assert_eq!(kept, vec![20, 21]);
+        assert_eq!(bodies, vec![vec![40, 41]]);
     }
 
     #[test]

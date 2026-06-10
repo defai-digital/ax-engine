@@ -131,10 +131,13 @@ fn drive_openai_stream_state<N>(
     // Chat streams over the native token path strip Gemma 4 thinking-channel
     // framing; raw completion streams keep the verbatim decode.
     let mut channel_filter = match stream_kind {
-        OpenAiStreamKind::ChatCompletion => tokenizer
-            .as_ref()
-            .and_then(Gemma4ChannelIds::from_tokenizer)
-            .map(Gemma4ChannelStreamFilter::new),
+        OpenAiStreamKind::ChatCompletion => tokenizer.as_ref().and_then(|tokenizer| {
+            let ids = Gemma4ChannelIds::from_tokenizer(tokenizer)?;
+            Some(Gemma4ChannelStreamFilter::new(
+                ids,
+                tokenizer.token_to_id("thought"),
+            ))
+        }),
         OpenAiStreamKind::Completion => None,
     };
     let mut decoder = tokenizer.map(IncrementalDecoder::new);
@@ -287,26 +290,51 @@ fn send_openai_stream_event(
 /// channel-framing tokens from a chat token stream, buffering the most recent
 /// channel body so an answer the model left inside a thinking channel can
 /// still be served at end of stream when nothing else was emitted.
+///
+/// The generation prompt pre-fills `<|channel>thought\n<channel|>`, and the
+/// model often continues that channel anyway: it re-emits the channel name
+/// (`thought`) as plain text, optionally reasons, then closes with a stray
+/// `<channel|>` before the answer. Streamed tokens cannot be retracted, so the
+/// filter suppresses from the start only when the very first token is the
+/// channel-name word — answers that start with anything else stream with zero
+/// added latency.
 struct Gemma4ChannelStreamFilter {
     ids: Gemma4ChannelIds,
+    /// Token id of the bare channel-name word (`thought`), when the tokenizer
+    /// has it as a single piece.
+    thought_lead: Option<u32>,
+    state: Gemma4ChannelStreamState,
     in_channel: bool,
     last_channel_body: Vec<u32>,
     /// True once a non-empty outside-channel chunk has been sent.
     kept_output: bool,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Gemma4ChannelStreamState {
+    /// Before the first content token: decide between suppressing a channel
+    /// continuation and normal pass-through.
+    LeadPending,
+    /// Buffering a suspected channel continuation until its stray close.
+    Suppressing,
+    /// Normal pass-through.
+    Passing,
+}
+
 impl Gemma4ChannelStreamFilter {
-    fn new(ids: Gemma4ChannelIds) -> Self {
+    fn new(ids: Gemma4ChannelIds, thought_lead: Option<u32>) -> Self {
         Self {
             ids,
+            thought_lead,
+            state: Gemma4ChannelStreamState::LeadPending,
             in_channel: false,
             last_channel_body: Vec::new(),
             kept_output: false,
         }
     }
 
-    /// Partition a delta: returns the tokens outside channel spans; tokens
-    /// inside spans accumulate as the candidate fallback body.
+    /// Partition a delta: returns the tokens to stream; tokens inside channel
+    /// spans accumulate as the candidate fallback body.
     fn filter(&mut self, delta_tokens: &[u32]) -> Vec<u32> {
         let mut kept = Vec::with_capacity(delta_tokens.len());
         for &token in delta_tokens {
@@ -316,11 +344,42 @@ impl Gemma4ChannelStreamFilter {
                 } else {
                     self.last_channel_body.push(token);
                 }
-            } else if token == self.ids.open {
+                continue;
+            }
+            if token == self.ids.open {
                 self.in_channel = true;
                 self.last_channel_body.clear();
-            } else {
-                kept.push(token);
+                if self.state == Gemma4ChannelStreamState::LeadPending {
+                    self.state = Gemma4ChannelStreamState::Passing;
+                }
+                continue;
+            }
+            match self.state {
+                Gemma4ChannelStreamState::LeadPending => {
+                    if self.thought_lead == Some(token) {
+                        self.state = Gemma4ChannelStreamState::Suppressing;
+                        self.last_channel_body.push(token);
+                    } else {
+                        self.state = Gemma4ChannelStreamState::Passing;
+                        if token != self.ids.close {
+                            kept.push(token);
+                        }
+                    }
+                }
+                Gemma4ChannelStreamState::Suppressing => {
+                    if token == self.ids.close {
+                        self.state = Gemma4ChannelStreamState::Passing;
+                    } else {
+                        self.last_channel_body.push(token);
+                    }
+                }
+                Gemma4ChannelStreamState::Passing => {
+                    // A stray close after content has streamed: swallow the
+                    // marker itself (nothing can be retracted).
+                    if token != self.ids.close {
+                        kept.push(token);
+                    }
+                }
             }
         }
         kept
