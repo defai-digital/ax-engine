@@ -1,6 +1,7 @@
 use crate::chat;
 use crate::openai::requests::{
-    DEFAULT_OPENAI_MAX_TOKENS, build_openai_chat_request, build_openai_mlx_lm_chat_request,
+    DEFAULT_OPENAI_MAX_TOKENS, build_openai_chat_request,
+    build_openai_chat_request_offloading_media, build_openai_mlx_lm_chat_request,
     chat_template_kwargs_for_model_id, openai_chat_stop_sequences, render_openai_chat_prompt,
 };
 use crate::openai::schema::{OpenAiChatCompletionHttpRequest, OpenAiChatMessage, OpenAiStopInput};
@@ -527,6 +528,73 @@ async fn openai_chat_request_decodes_inline_image_into_gemma4_unified_tensors() 
     assert_eq!(tokens.iter().filter(|&&token| token == 102).count(), 1);
     assert_eq!(tokens.iter().filter(|&&token| token == 103).count(), 1);
     assert_eq!(built.generate_request.input_text, None);
+
+    fs::remove_dir_all(artifact_dir).expect("artifact dir should clean up");
+}
+
+#[tokio::test]
+async fn openai_chat_media_build_offloads_to_blocking_pool_and_matches_inline_build() {
+    use base64::Engine as _;
+
+    let artifact_dir = gemma4_unified_artifact("native-openai-chat-offload-media");
+    let state = native_mlx_openai_builder_state("qwen3", &artifact_dir);
+
+    let png = include_bytes!("fixtures/gemma4_golden/image_noresize.png");
+    let data_uri = format!(
+        "data:image/png;base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(png)
+    );
+    let media_request = || -> OpenAiChatCompletionHttpRequest {
+        serde_json::from_value(json!({
+            "model": "qwen3",
+            "messages": [{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "describe"},
+                    {"type": "image_url", "image_url": {"url": data_uri}}
+                ]
+            }],
+            "max_tokens": 8
+        }))
+        .expect("multimodal chat request should deserialize")
+    };
+
+    // Media requests run on the blocking pool and must build the same request
+    // the inline (sync) build produces.
+    let offloaded = build_openai_chat_request_offloading_media(&state, media_request())
+        .await
+        .expect("offloaded media build should succeed");
+    let inline = build_openai_chat_request(&state, media_request())
+        .expect("inline media build should succeed");
+    assert_eq!(
+        offloaded.generate_request.input_tokens,
+        inline.generate_request.input_tokens
+    );
+    assert!(
+        offloaded
+            .generate_request
+            .multimodal_inputs
+            .gemma4_unified
+            .is_some()
+    );
+
+    // Text-only requests take the inline fast path and still build.
+    let text_request: OpenAiChatCompletionHttpRequest = serde_json::from_value(json!({
+        "model": "qwen3",
+        "messages": [{"role": "user", "content": "hello"}],
+        "max_tokens": 8
+    }))
+    .expect("text chat request should deserialize");
+    let built = build_openai_chat_request_offloading_media(&state, text_request)
+        .await
+        .expect("text-only build should succeed");
+    assert!(
+        built
+            .generate_request
+            .multimodal_inputs
+            .gemma4_unified
+            .is_none()
+    );
 
     fs::remove_dir_all(artifact_dir).expect("artifact dir should clean up");
 }

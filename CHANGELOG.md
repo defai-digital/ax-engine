@@ -20,6 +20,13 @@ tracked via Git tags and GitHub Releases.
 
 ### Fixed
 
+- **Inline media preprocessing no longer blocks the async executor** — chat
+  requests carrying inline image/audio/video parts now build on the tokio
+  blocking pool (`spawn_blocking`) on both the OpenAI chat and Anthropic
+  Messages routes. Media decoding is CPU-bound and, for MP4/WebM, waits on an
+  ffmpeg child process — seconds-scale work that previously stalled an async
+  worker thread and degraded unrelated concurrent requests. Text-only chat
+  requests keep building inline.
 - **Anthropic Messages no-op feature payloads** — `tools: []`,
   `tool_choice: {"type": "none"}` / `{"type": "auto"}`, and
   `thinking: {"type": "disabled"}` are valid Anthropic payloads that use no

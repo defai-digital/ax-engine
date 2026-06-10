@@ -14,7 +14,7 @@ use crate::openai::generation::{
 };
 use crate::openai::requests::{
     OpenAiBuiltLlamaCppChatRequest, OpenAiBuiltMlxLmChatRequest, OpenAiBuiltRequest,
-    build_openai_chat_request, build_openai_llama_cpp_chat_request,
+    build_openai_chat_request_offloading_media, build_openai_llama_cpp_chat_request,
     build_openai_mlx_lm_chat_request,
 };
 use crate::openai::schema::{
@@ -271,7 +271,7 @@ async fn run_anthropic_messages_generation(
         stream,
         response_options: _,
         output_postprocessing,
-    } = build_openai_chat_request(&state, request)?;
+    } = build_openai_chat_request_offloading_media(&state, request).await?;
     reject_unexpected_stream(stream)?;
     let (request_id, mut response) =
         run_stateless_generate_request(&state, generate_request).await?;

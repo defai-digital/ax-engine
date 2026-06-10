@@ -9,7 +9,7 @@ use crate::openai::generation::{
     run_openai_llama_cpp_chat_generation, run_openai_mlx_lm_chat_generation,
     run_openai_text_generation,
 };
-use crate::openai::requests::build_openai_chat_request;
+use crate::openai::requests::build_openai_chat_request_offloading_media;
 use crate::openai::schema::{OpenAiChatCompletionHttpRequest, OpenAiStreamKind};
 use crate::openai::validation::validate_openai_request;
 
@@ -24,7 +24,7 @@ pub(crate) async fn openai_chat_completions(
     if llama_cpp::supports_server_chat(&state) {
         return run_openai_llama_cpp_chat_generation(state, request).await;
     }
-    let request = build_openai_chat_request(&state, request)?;
+    let request = build_openai_chat_request_offloading_media(&state, request).await?;
 
     run_openai_text_generation(state, request, OpenAiStreamKind::ChatCompletion).await
 }

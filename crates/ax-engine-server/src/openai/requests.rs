@@ -21,10 +21,13 @@ use crate::openai::schema::{
 pub(crate) const DEFAULT_OPENAI_MAX_TOKENS: u32 = 256;
 static OPENAI_SEED_COUNTER: AtomicU64 = AtomicU64::new(1);
 
-use crate::openai::chat_requests::render_gemma4_unified_chat_with_media;
 pub(crate) use crate::openai::chat_requests::{
     chat_template_kwargs_for_model_id, openai_chat_stop_sequences, render_openai_chat_prompt,
 };
+use crate::openai::chat_requests::{
+    messages_contain_inline_media, render_gemma4_unified_chat_with_media,
+};
+use crate::tasks::run_blocking_http_task;
 
 pub(crate) struct OpenAiBuiltRequest {
     pub(crate) generate_request: GenerateRequest,
@@ -377,6 +380,22 @@ pub(crate) fn build_openai_completion_request(
         response_options,
         output_postprocessing,
     )
+}
+
+/// Build an OpenAI chat request, offloading the build to the blocking pool
+/// when the messages carry inline media. Media preprocessing decodes
+/// image/audio bytes and can wait on an ffmpeg child process for MP4/WebM
+/// video — seconds-scale blocking work that must not stall the async executor
+/// threads. Text-only requests build inline; that path is template rendering.
+pub(crate) async fn build_openai_chat_request_offloading_media(
+    state: &AppState,
+    request: OpenAiChatCompletionHttpRequest,
+) -> Result<OpenAiBuiltRequest, (StatusCode, Json<ErrorResponse>)> {
+    if !messages_contain_inline_media(&request.messages) {
+        return build_openai_chat_request(state, request);
+    }
+    let state = state.clone();
+    run_blocking_http_task(move || build_openai_chat_request(&state, request)).await
 }
 
 pub(crate) fn build_openai_chat_request(
