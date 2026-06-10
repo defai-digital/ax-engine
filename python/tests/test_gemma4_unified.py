@@ -301,9 +301,11 @@ class Gemma4UnifiedImagePreprocessTests(unittest.TestCase):
 
 class Gemma4UnifiedConfigValidationTests(unittest.TestCase):
     def test_load_config_rejects_non_positive_image_std_when_normalizing(self) -> None:
-        # A zero std channel would divide every pixel into inf/NaN, and a
-        # negative one would silently sign-flip every pixel; the checkpoint
-        # config must be rejected at load time.
+        # Zero divides every pixel into inf/NaN, a negative channel silently
+        # sign-flips pixels, a subnormal-for-f32 value (1e-40) passes a naive
+        # > 0 check but overflows the division once values land in f32, and
+        # NaN/inf are never valid; the checkpoint config must be rejected at
+        # load time for all of them.
         module = load_module()
         with tempfile.TemporaryDirectory() as tmp:
             model_dir = Path(tmp)
@@ -311,16 +313,18 @@ class Gemma4UnifiedConfigValidationTests(unittest.TestCase):
             processor_path = model_dir / "processor_config.json"
             processor = json.loads(processor_path.read_text())
             processor["image_processor"]["do_normalize"] = True
-            processor["image_processor"]["image_std"] = [0.5, 0.0, 0.5]
-            processor_path.write_text(json.dumps(processor))
 
-            with self.assertRaisesRegex(ValueError, "image_std"):
-                module._load_config(model_dir)
+            for bad_channel in [0.0, -0.5, 1e-40, 1e40, float("nan"), float("inf")]:
+                with self.subTest(bad_channel=bad_channel):
+                    processor["image_processor"]["image_std"] = [0.5, bad_channel, 0.5]
+                    processor_path.write_text(json.dumps(processor))
+                    with self.assertRaisesRegex(ValueError, "image_std"):
+                        module._load_config(model_dir)
 
+            # Reset to a finite (still invalid-for-normalization) std so the
+            # loadable-without-normalization check below writes standard JSON
+            # rather than leaking the loop's last non-finite value.
             processor["image_processor"]["image_std"] = [0.5, -0.5, 0.5]
-            processor_path.write_text(json.dumps(processor))
-            with self.assertRaisesRegex(ValueError, "image_std"):
-                module._load_config(model_dir)
 
             # The same std values are unused (and loadable) when
             # normalization stays off.
@@ -362,12 +366,21 @@ class Gemma4UnifiedConfigValidationTests(unittest.TestCase):
             ),
             (8, 32),
         )
+        # (33, 7) also hits the fallback branch (pre-clamp height floors to 0)
+        # without being a degenerate ratio.
+        self.assertEqual(
+            module._resized_dimensions(
+                33, 7, patch_size=4, pooling_kernel_size=2, max_soft_tokens=4
+            ),
+            (32, 8),
+        )
         for width, height in [(100, 5), (5, 100), (1, 10_000), (33, 7)]:
-            target_w, target_h = module._resized_dimensions(
-                width, height, patch_size=4, pooling_kernel_size=2, max_soft_tokens=4
-            )
-            self.assertEqual(target_w % 8, 0)
-            self.assertEqual(target_h % 8, 0)
+            with self.subTest(width=width, height=height):
+                target_w, target_h = module._resized_dimensions(
+                    width, height, patch_size=4, pooling_kernel_size=2, max_soft_tokens=4
+                )
+                self.assertEqual(target_w % 8, 0)
+                self.assertEqual(target_h % 8, 0)
 
 
 def write_tiny_config(

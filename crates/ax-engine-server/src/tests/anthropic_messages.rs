@@ -124,7 +124,7 @@ async fn anthropic_messages_endpoint_rejects_tool_use() {
 
 #[tokio::test]
 async fn anthropic_messages_endpoint_accepts_empty_tools_and_disabled_thinking() {
-    // `tools: []`, `tool_choice: {"type": "none"}`, and
+    // `tools: []`, `tool_choice: {"type": "auto"}` (or `"none"`), and
     // `thinking: {"type": "disabled"}` are valid Anthropic payloads that use
     // no unsupported feature; they must not be rejected.
     let (llama_server_url, llama_cpp_server_handle) = spawn_llama_cpp_completion_server(
@@ -150,16 +150,16 @@ async fn anthropic_messages_endpoint_accepts_empty_tools_and_disabled_thinking()
                 "messages": [{"role": "user", "content": "hello"}],
                 "max_tokens": 4,
                 "tools": [],
-                "tool_choice": {"type": "none"},
+                "tool_choice": {"type": "auto"},
                 "thinking": {"type": "disabled"}
             }))))
             .unwrap(),
     )
     .await;
-    llama_cpp_server_handle
-        .join()
-        .expect("llama.cpp server thread should finish");
 
+    // Assert before joining the mock-server thread: a validation regression
+    // would 400 without ever contacting the mock, and join() would then hang
+    // instead of failing the test.
     assert_eq!(status, StatusCode::OK);
     assert_eq!(
         response
@@ -170,6 +170,9 @@ async fn anthropic_messages_endpoint_accepts_empty_tools_and_disabled_thinking()
             .and_then(Value::as_str),
         Some("no tools used")
     );
+    llama_cpp_server_handle
+        .join()
+        .expect("llama.cpp server thread should finish");
 }
 
 #[tokio::test]

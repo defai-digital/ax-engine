@@ -9,21 +9,26 @@ tracked via Git tags and GitHub Releases.
 ### Fixed
 
 - **Anthropic Messages no-op feature payloads** — `tools: []`,
-  `tool_choice: {"type": "none"}`, and `thinking: {"type": "disabled"}` are
-  valid Anthropic payloads that use no unsupported feature and are accepted
-  again instead of being rejected with 400. Non-empty `tools`, enabled
-  `thinking`, and malformed values are still rejected.
-- **Negative `image_std` rejected at config load** — image normalization
-  validation now rejects non-positive (not just zero or non-finite) std
-  channels in both the server and the Python SDK. The per-pixel epsilon
-  clamps — which silently rewrote a negative std to ~1.2e-7 (Rust) or 1e-12
-  (Python), exploding pixel values by orders of magnitude — are removed in
-  favor of the load-time guarantee.
-- **Gemma 4 resize fallback divisibility** — the single-axis resize fallback
-  floors the aspect ratio again, keeping the fallback dimension a multiple of
-  `patch_size * pooling_kernel_size` by construction instead of relying on
-  the `max_side` clamp always binding. The Python parity test now pins the
-  same vectors and the divisibility contract as the Rust test.
+  `tool_choice: {"type": "none"}` / `{"type": "auto"}`, and
+  `thinking: {"type": "disabled"}` are valid Anthropic payloads that use no
+  unsupported feature and are now accepted instead of being rejected with
+  400 (`tools: []` regressed in v6.2.5; the others were rejected since the
+  endpoint was introduced). Non-empty `tools`, enabled `thinking`, and
+  malformed values are still rejected.
+- **Non-positive or subnormal `image_std` rejected at config load** — image
+  normalization validation now rejects negative, zero, and subnormal-for-f32
+  std channels (previously only zero or non-finite) in both the server and
+  the Python SDK; a subnormal value such as `1e-40` passed a naive `> 0`
+  check but still overflowed the per-pixel division to inf. The per-pixel
+  epsilon clamps — which silently rewrote a bad std to ~1.2e-7 (Rust) or
+  1e-12 (Python) — are removed in favor of the load-time guarantee.
+- **Gemma 4 resize fallback divisibility (hardening, no output change)** —
+  the single-axis resize fallback floors the aspect ratio again, keeping the
+  fallback dimension a multiple of `patch_size * pooling_kernel_size` by
+  construction rather than only via the `max_side` clamp (which still binds
+  for every reachable input today, so resize outputs are unchanged). The
+  Python parity test now pins the same vectors and the divisibility contract
+  as the Rust test.
 
 ## [6.2.5] - 2026-06-10
 

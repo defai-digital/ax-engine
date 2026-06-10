@@ -822,9 +822,10 @@ impl Gemma4UnifiedVisionProcessor {
             target_w = unit;
         } else if target_h == 0.0 {
             // Flooring the aspect ratio keeps the fallback dimension a
-            // multiple of `unit` by construction (the clamps alone only
-            // guarantee it because this branch implies width/height >
-            // max_soft_tokens, which is fragile).
+            // multiple of `unit` by construction. Today the `min(max_side)`
+            // clamp always binds anyway (this branch implies width/height >
+            // max_soft_tokens), so the floor changes no output; it just stops
+            // divisibility from depending on that reachability argument.
             target_h = unit;
             target_w = ((width as f64 / height as f64).floor() * unit)
                 .max(unit)

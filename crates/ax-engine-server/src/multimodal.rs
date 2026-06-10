@@ -240,18 +240,21 @@ fn image_normalization_from(processor_cfg: &Value) -> Result<ImageNormalization,
     if let Some(std) = rgb_triplet(block.get("image_std")) {
         norm.std = std;
     }
-    // A non-positive or non-finite std channel would corrupt every pixel
-    // (inf/NaN or sign-flipped values); reject the checkpoint config up
-    // front instead. normalize_channel divides by std relying on this.
+    // A non-positive, subnormal, or non-finite std channel would corrupt
+    // every pixel (inf/NaN, overflow, or sign-flipped values); reject the
+    // checkpoint config up front instead. `is_normal` also excludes the
+    // subnormal window (~1e-45..1e-38) where the value passes a `> 0` check
+    // but `pixel / std` still overflows f32 to inf. normalize_channel
+    // divides by std relying on this.
     if norm.do_normalize
         && let Some(channel) = norm
             .std
             .iter()
-            .find(|value| !value.is_finite() || **value <= 0.0)
+            .find(|value| !value.is_normal() || **value < 0.0)
     {
         return Err(MediaError::Config(format!(
-            "preprocessor_config.json image_std contains a non-positive or non-finite channel \
-             ({channel}); cannot normalize image pixels"
+            "preprocessor_config.json image_std contains a channel that is not a positive \
+             normal float32 value (parsed as {channel}); cannot normalize image pixels"
         )));
     }
     Ok(norm)
@@ -487,7 +490,8 @@ fn normalize_channel(value: u8, channel: usize, normalization: &ImageNormalizati
         pixel *= normalization.rescale_factor;
     }
     if normalization.do_normalize {
-        // std > 0 is guaranteed by image normalization config validation.
+        // std is a positive normal float, guaranteed by the image
+        // normalization config validation, so this division cannot overflow.
         pixel = (pixel - normalization.mean[channel]) / normalization.std[channel];
     }
     pixel
@@ -813,25 +817,22 @@ mod tests {
 
     #[test]
     fn normalization_config_rejects_non_positive_or_non_finite_std_channels() {
-        // A zero std channel would divide every pixel into inf/NaN; the
-        // checkpoint config must be rejected at load time.
-        let zero_std = serde_json::json!({
-            "do_normalize": true,
-            "image_std": [0.5, 0.0, 0.5]
-        });
-        let error = image_normalization_from(&zero_std)
-            .expect_err("zero image_std channel must be rejected when do_normalize is set");
-        assert!(format!("{error:?}").contains("image_std"));
-
-        // A negative std channel (sign typo in a checkpoint) would silently
-        // sign-flip every pixel; reject it the same way.
-        let negative_std = serde_json::json!({
-            "do_normalize": true,
-            "image_std": [0.5, -0.5, 0.5]
-        });
-        let error = image_normalization_from(&negative_std)
-            .expect_err("negative image_std channel must be rejected when do_normalize is set");
-        assert!(format!("{error:?}").contains("image_std"));
+        // Zero divides every pixel into inf/NaN, a negative channel (sign
+        // typo) silently flips pixel signs, a subnormal f32 (1e-40) passes a
+        // naive > 0 check but overflows the division to inf, and a value too
+        // large for f32 (1e40) casts to inf. All must be rejected at load
+        // time. (JSON cannot express NaN/inf directly; the non-finite arm is
+        // reachable only via the f64 -> f32 cast.)
+        for bad_channel in [0.0, -0.5, 1e-40, 1e40] {
+            let config = serde_json::json!({
+                "do_normalize": true,
+                "image_std": [0.5, bad_channel, 0.5]
+            });
+            let error = image_normalization_from(&config).expect_err(&format!(
+                "image_std channel {bad_channel} must be rejected when do_normalize is set"
+            ));
+            assert!(format!("{error:?}").contains("image_std"));
+        }
 
         // Without do_normalize the std values are unused, so the same config
         // stays loadable.

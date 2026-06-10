@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import json
 import math
+import struct
 import urllib.parse
 import urllib.request
 import wave
@@ -14,6 +15,23 @@ from typing import Any
 
 _REMOTE_MEDIA_TIMEOUT_SECONDS = 10
 _MAX_REMOTE_MEDIA_BYTES = 64 * 1024 * 1024
+# Smallest positive normal f32; image_std channels below this would overflow
+# the per-pixel division once the values land in f32 tensors. Matches the
+# Rust server's is_normal() validation.
+_MIN_NORMAL_F32 = 1.1754943508222875e-38
+
+
+def _is_positive_normal_f32(value: float) -> bool:
+    """Mirror the Rust server's `value as f32` + `is_normal()` validation
+    exactly: round to f32 first so overflow (e.g. 1e40 -> inf) and half-ULP
+    boundary values agree with the server bit-for-bit."""
+    try:
+        cast = struct.unpack("<f", struct.pack("<f", value))[0]
+    except (OverflowError, struct.error):
+        # struct raises for finite f64 values too large for f32, where the
+        # Rust cast saturates to inf; both reject.
+        return False
+    return math.isfinite(cast) and cast >= _MIN_NORMAL_F32
 
 
 @dataclass(frozen=True)
@@ -310,15 +328,19 @@ def _load_config(model_dir: Path) -> _Gemma4UnifiedConfig:
 
     do_normalize = bool(image_config.get("do_normalize", False))
     image_std = _triple(image_config.get("image_std", [0.5, 0.5, 0.5]))
-    if do_normalize and any(
-        not math.isfinite(channel) or channel <= 0 for channel in image_std
+    if do_normalize and not all(
+        _is_positive_normal_f32(channel) for channel in image_std
     ):
-        # A non-positive or non-finite std channel would corrupt every pixel
-        # (inf/NaN or sign-flipped values); reject the checkpoint config.
-        # _rgb_pixels divides by std relying on this.
+        # A std channel that is not a positive normal f32 would corrupt every
+        # pixel (inf/NaN, overflow, or sign-flipped values) once values land
+        # in f32 tensors: a subnormal like 1e-40 passes a naive > 0 check but
+        # overflows the division, and 1e40 is finite in f64 but inf in f32.
+        # Reject the checkpoint config instead; _rgb_pixels divides by std
+        # relying on this.
         raise ValueError(
-            "preprocessor_config.json image_std contains a non-positive or "
-            f"non-finite channel {image_std!r}; cannot normalize image pixels"
+            "preprocessor_config.json image_std contains a channel that is "
+            f"not a positive normal float32 value {image_std!r}; cannot "
+            "normalize image pixels"
         )
 
     return _Gemma4UnifiedConfig(
@@ -985,8 +1007,10 @@ def _resized_dimensions(
 
     max_side_length = (max_patches // pooling_kernel_size**2) * side_mult
     # Flooring the aspect ratio keeps the fallback dimension a multiple of
-    # side_mult by construction (the clamps alone only guarantee it because
-    # this branch implies width/height > max_soft_tokens, which is fragile).
+    # side_mult by construction. Today the min(max_side_length) clamp always
+    # binds anyway (this branch implies width/height > max_soft_tokens), so
+    # the floor changes no output; it just stops divisibility from depending
+    # on that reachability argument.
     if target_height == 0:
         target_height = side_mult
         target_width = min(

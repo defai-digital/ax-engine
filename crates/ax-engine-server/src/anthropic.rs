@@ -117,12 +117,19 @@ impl AnthropicMessagesRequest {
                 "Anthropic Messages streaming is not supported by this preview endpoint; send stream=false",
             ));
         }
-        if tools_in_use(self.tools.as_ref()) || tool_choice_in_use(self.tool_choice.as_ref()) {
+        // `tool_choice` "none" opts out explicitly; "auto" (the SDK default
+        // some adapters always serialize) requests nothing once `tools` is
+        // empty, which the tools_in_use check already guarantees here.
+        if tools_in_use(self.tools.as_ref())
+            || feature_requested(self.tool_choice.as_ref(), &["none", "auto"])
+        {
             return Err(invalid_request(
                 "Anthropic Messages tool use is not supported by this inference-only endpoint",
             ));
         }
-        if thinking_requested(self.thinking.as_ref()) {
+        // `thinking: {"type": "disabled"}` is the documented way to turn
+        // extended thinking off; it must not trip the rejection.
+        if feature_requested(self.thinking.as_ref(), &["disabled"]) {
             return Err(invalid_request(
                 "Anthropic extended thinking is not supported by this inference-only endpoint",
             ));
@@ -333,23 +340,79 @@ fn tools_in_use(value: Option<&Value>) -> bool {
     }
 }
 
-/// `tool_choice: {"type": "none"}` explicitly opts out of tool use.
-fn tool_choice_in_use(value: Option<&Value>) -> bool {
+/// A feature payload is "requested" unless it is absent, null, or carries one
+/// of the documented opt-out `type` values. Malformed values still count as
+/// requested so the unsupported-feature error surfaces them.
+fn feature_requested(value: Option<&Value>, opt_out_types: &[&str]) -> bool {
     match value {
         None | Some(Value::Null) => false,
-        Some(value) => value.get("type").and_then(Value::as_str) != Some("none"),
-    }
-}
-
-/// `thinking: {"type": "disabled"}` is the documented way to explicitly turn
-/// extended thinking off; it must not trip the unsupported-feature rejection.
-fn thinking_requested(value: Option<&Value>) -> bool {
-    match value {
-        None | Some(Value::Null) => false,
-        Some(value) => value.get("type").and_then(Value::as_str) != Some("disabled"),
+        Some(value) => !value
+            .get("type")
+            .and_then(Value::as_str)
+            .is_some_and(|kind| opt_out_types.contains(&kind)),
     }
 }
 
 fn invalid_request(message: impl Into<String>) -> (StatusCode, Json<ErrorResponse>) {
     error_response(StatusCode::BAD_REQUEST, "invalid_request", message.into())
+}
+
+#[cfg(test)]
+mod feature_gate_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn feature_requested_truth_table() {
+        let tool_choice_opt_outs = ["none", "auto"];
+        // Absent, null, and documented opt-out types are not requests.
+        assert!(!feature_requested(None, &tool_choice_opt_outs));
+        assert!(!feature_requested(
+            Some(&Value::Null),
+            &tool_choice_opt_outs
+        ));
+        assert!(!feature_requested(
+            Some(&json!({"type": "none"})),
+            &tool_choice_opt_outs
+        ));
+        assert!(!feature_requested(
+            Some(&json!({"type": "auto"})),
+            &tool_choice_opt_outs
+        ));
+        assert!(!feature_requested(
+            Some(&json!({"type": "disabled"})),
+            &["disabled"]
+        ));
+        // Real requests and malformed values must trip the rejection.
+        assert!(feature_requested(
+            Some(&json!({"type": "any"})),
+            &tool_choice_opt_outs
+        ));
+        assert!(feature_requested(
+            Some(&json!({"type": "tool", "name": "bash"})),
+            &tool_choice_opt_outs
+        ));
+        assert!(feature_requested(Some(&json!({})), &tool_choice_opt_outs));
+        assert!(feature_requested(
+            Some(&json!("none")),
+            &tool_choice_opt_outs
+        ));
+        assert!(feature_requested(
+            Some(&json!({"type": 5})),
+            &tool_choice_opt_outs
+        ));
+        assert!(feature_requested(
+            Some(&json!({"type": "enabled", "budget_tokens": 1024})),
+            &["disabled"]
+        ));
+    }
+
+    #[test]
+    fn tools_in_use_only_for_non_empty_arrays() {
+        assert!(!tools_in_use(None));
+        assert!(!tools_in_use(Some(&Value::Null)));
+        assert!(!tools_in_use(Some(&json!([]))));
+        assert!(tools_in_use(Some(&json!([{"name": "bash"}]))));
+        assert!(tools_in_use(Some(&json!(0))));
+    }
 }
