@@ -4,6 +4,91 @@ All notable changes to AX Engine are documented here. This project follows
 [Semantic Versioning](https://semver.org/). Releases prior to `v6.0.0` are
 tracked via Git tags and GitHub Releases.
 
+## [6.2.5] - 2026-06-10
+
+Adds API key authentication, a Prometheus metrics endpoint, agentic
+response contracts (logprobs, reasoning, tool calls, JSON validation), a
+CLI model manager, and hardens multimodal serving against misconfigured
+checkpoints.
+
+### Added
+
+- **API key authentication** — `--api-key` flag or `AX_ENGINE_API_KEY`
+  environment variable requires `Authorization: Bearer <key>` on all
+  `/v1/*` routes. `/health` and `/healthz` stay unauthenticated for
+  readiness probes. Token comparison uses constant-time equality to avoid
+  timing side channels.
+- **Prometheus metrics** (`GET /metrics`) — HTTP request counters (total,
+  in-flight, 2xx/4xx/5xx) and engine-step gauges (scheduled requests and
+  tokens, KV block usage, prefix-cache hits). Engine-step gauges are
+  read-only snapshots from real generation steps; the scrape path never
+  advances the engine. Requires the API key when auth is enabled.
+- **Logprobs** (completions and chat) — when the engine observed
+  sampled-token logprobs, non-streaming responses carry them in OpenAI-shaped
+  `logprobs` blocks. Logprobs are all-or-nothing: partially observed values
+  are omitted entirely to keep arrays aligned. Streaming logprobs are
+  rejected with `400 unsupported_parameter` for now.
+- **Reasoning output** (chat) — opt-in via the `reasoning` field. Known
+  model-family thinking patterns are split into
+  `message.reasoning_content`: Qwen ` THOUGHT…` text markers and Gemma 4
+  thinking channels (extracted token-level during native decode). Unknown
+  formats are left in `content` untouched.
+- **Tool call extraction** (chat) — experimental. When `tools` are present,
+  explicit `ARGS…` spans in model output are parsed into
+  `message.tool_calls`. Bare JSON is never reinterpreted as a tool call.
+  `/v1/models` continues to report `openai_tool_calling_supported: false`
+  until streaming deltas and continuation handling land.
+- **JSON object validation** (`response_format: json_object`) — non-streaming
+  responses are validated server-side; output that is not a JSON object
+  returns `502 invalid_output`. This is post-hoc validation, not constrained
+  decoding.
+- **CLI model manager** — `ax-engine models list`, `info`, and `rm`
+  subcommands for inspecting and cleaning up downloaded model artifacts.
+
+### Fixed
+
+- **Image normalization division by zero** — config loading now rejects a
+  zero or non-finite `image_std` channel when `do_normalize` is set (server
+  returns `MediaError::Config`, Python SDK raises `ValueError`) instead of
+  producing inf/NaN pixels.
+- **Anthropic request validation** — `json_value_is_present` now checks for
+  presence (non-null) rather than truthiness, so `thinking: false` or
+  `tools: 0` correctly trigger the unsupported-feature rejection.
+- **Resize extreme aspect ratios** — single-axis fallback in `resize_target`
+  now uses `.max(unit)` to guarantee at least one patch unit per dimension,
+  preventing zero-dimension targets on extreme aspect ratios (e.g., 1×10000).
+
+## [6.2.4] - 2026-06-10
+
+Adds an Anthropic-compatible Messages endpoint, accepts MP3 audio in
+multimodal chat, and hardens Gemma 4 input validation.
+
+### Added
+
+- **Anthropic Messages endpoint** (`POST /v1/messages`) — translates
+  Anthropic-style `system`, `messages`, `max_tokens`, `temperature`,
+  `top_p`, `top_k`, and `stop_sequences` into the internal OpenAI chat
+  pipeline. Content blocks, `model` validation, and usage tracking are
+  supported. Streaming, tool use, and extended thinking are rejected with
+  clear error messages. Works with native MLX, MLX-LM delegated, and
+  llama.cpp delegated backends.
+- **MP3 audio in multimodal chat** — `/v1/chat/completions` now accepts MP3
+  inline audio in addition to WAV. The container is sniffed from magic bytes
+  (RIFF → hound WAV decoder, ID3/MPEG sync → symphonia MP3 decoder). MP3
+  decoding stops at the model's `audio_seq_length` frame cap to cap memory
+  use. AAC/OGG/FLAC remain unsupported; send pre-computed tensors via
+  `/v1/generate` for those. The Python SDK preprocessing helper stays WAV-only.
+
+### Changed
+
+- **Gemma 4 video timestamp validation** — `video_timestamp_token_ids` now
+  validates that every entry is a non-negative integer (rejects booleans,
+  floats, and negative values) with per-element error messages identifying
+  the exact video, frame, and index.
+- **Serving contract documentation** — `docs/SERVER.md` updated to reflect
+  WAV/MP3 audio support, magic-byte sniffing, decode cap, and fixed
+  soft-token budgets.
+
 ## [6.2.2] - 2026-06-09
 
 Patch release that fixes a critical multimodal attention bug in Gemma 4
