@@ -311,7 +311,12 @@ def main() -> int:
             failures += 1
             continue
 
+        # Label honestly: [PASS] is reserved for probes whose content
+        # expectation matched. Probes without an expectation only verify the
+        # serving path and report [SMOKE]; a content mismatch outside --strict
+        # reports [WARN] so readers never mistake either for verified output.
         match = ""
+        label = "SMOKE"
         if probe.expect_substring is not None:
             # Word-boundary match so a numeric expectation like "3" is not
             # falsely satisfied by "13"/"30", and a word like "red" is not
@@ -330,8 +335,9 @@ def main() -> int:
                 print(f"[FAIL] {probe.name}: {snippet!r}{match}")
                 failures += 1
                 continue
+            label = "PASS" if hit else "WARN"
         snippet = text.replace("\n", " ")[:80]
-        print(f"[PASS] {probe.name}: {snippet!r}{match}")
+        print(f"[{label}] {probe.name}: {snippet!r}{match}")
 
     print()
     if failures:
