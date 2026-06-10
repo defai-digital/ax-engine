@@ -6,6 +6,18 @@ tracked via Git tags and GitHub Releases.
 
 ## [Unreleased]
 
+### Added
+
+- **Inline MP4/WebM video on chat (ffmpeg)** — `POST /v1/chat/completions`
+  `video_url` content parts now accept inline base64 MP4/WebM in addition to
+  animated GIF when `ffmpeg` is available on the server `PATH`. Containers
+  are routed by magic bytes; ffmpeg pipes PNG frames with `showinfo`
+  timestamps keyed by frame number. Extraction is resource-bounded: frames
+  are downscaled to at most 1600 px on the longest side, the decoded stream
+  is capped at 512 MiB, and only the ≤ 32 uniformly sampled frames are
+  PNG-decoded. Without `ffmpeg`, MP4/WebM still report a clear unsupported
+  error and `/v1/generate` keeps accepting pre-extracted frame tensors.
+
 ### Fixed
 
 - **Anthropic Messages no-op feature payloads** — `tools: []`,

@@ -324,10 +324,10 @@ unified media tensor roles. Two input shapes are accepted on those sessions:
 
 - **Inline media on chat.** `POST /v1/chat/completions` accepts OpenAI-style
   content parts with base64 `data:` URIs: `image_url` (PNG/JPEG),
-  `input_audio` / `audio_url` (WAV or MP3), and `video_url` (animated GIF). The
-  server decodes and preprocesses media into Gemma4 unified soft-token spans
-  and tensors. Remote `http(s)` media URLs are rejected; callers must inline
-  base64 data.
+  `input_audio` / `audio_url` (WAV or MP3), and `video_url` (animated GIF, plus
+  MP4/WebM when `ffmpeg` is installed on the server `PATH`). The server decodes
+  and preprocesses media into Gemma4 unified soft-token spans and tensors.
+  Remote `http(s)` media URLs are rejected; callers must inline base64 data.
 - **Processed tensors.** OpenAI completions and chat also accept
   `multimodal_inputs.gemma4_unified` tensors directly, but only when the
   caller supplies AX tokenized prompt IDs (`prompt` token arrays or
@@ -354,8 +354,14 @@ Multimodal serving contract limits:
   pre-computed audio tensors via `/v1/generate` instead. Audio longer than
   the model's `audio_seq_length` cap (750 frames × 40 ms = 30 s by default)
   is silently truncated, and MP3 decoding stops at that cap.
-- **Video.** Animated GIF only; frames are sampled uniformly to at most 32
-  frames, each rendered with an `mm:ss` timestamp.
+- **Video.** Animated GIF is decoded in-process. MP4/WebM inline input is
+  decoded by `ffmpeg` if that binary is available on the server `PATH`; video
+  container and codec decode is not an MLX tensor-kernel operation. Frames are
+  sampled uniformly to at most 32 frames, each rendered with an `mm:ss`
+  timestamp. During extraction frames are downscaled to at most 1600 px on the
+  longest side and the decoded stream is capped at 512 MiB; a video whose
+  decoded stream exceeds that cap is sampled from the decoded prefix only. If
+  `ffmpeg` is unavailable, send pre-computed video tensors via `/v1/generate`.
 - **Caching.** Prefix caching is disabled for multimodal requests; every
   multimodal prefill recomputes the full prompt with that request's own
   media tensors.

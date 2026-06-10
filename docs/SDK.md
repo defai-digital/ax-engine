@@ -310,7 +310,9 @@ URIs, OpenAI-style `input_audio` WAV base64 dictionaries, waveform-like arrays,
 or `(samples, sampling_rate)` tuples and resamples to the model processor's
 sampling rate before chunking raw waveform frames.
 The video helper accepts decoded frame sequences; encoded video container
-decoding remains caller-owned.
+decoding remains caller-owned in the Python helper (the server's OpenAI chat
+route decodes inline GIF in-process and MP4/WebM via `ffmpeg` — see
+`docs/SERVER.md`).
 Video timestamps remain explicit: pass already-tokenized timestamp IDs through
 `timestamp_token_ids` / `video_timestamp_token_ids` when matching the HF/vLLM
 `mm:ss <boi><|video|>*N<eoi>` prompt format.

@@ -8,10 +8,10 @@
 //! [`ax_engine_core::gemma4_unified`] runtime expects, mirroring the reference
 //! `processing_gemma4_unified.py`.
 //!
-//! Scope: image (PNG/JPEG), audio (PCM WAV or MP3), and video (animated GIF).
-//! Video frames reuse the image patchify path at a lower per-frame soft-token
-//! budget with `mm:ss` timestamps, matching the reference
-//! `Gemma4UnifiedVideoProcessor`. Non-GIF video containers and other audio
+//! Scope: image (PNG/JPEG), audio (PCM WAV or MP3), and video (animated GIF plus
+//! MP4/WebM when `ffmpeg` is available on the server `PATH`). Video frames reuse
+//! the image patchify path at a lower per-frame soft-token budget with `mm:ss`
+//! timestamps, matching the reference `Gemma4UnifiedVideoProcessor`. Other audio
 //! formats (AAC/OGG/FLAC) are out of scope — `/v1/generate` still accepts fully
 //! pre-computed tensors for those.
 
@@ -92,6 +92,15 @@ pub(crate) struct PreprocessedImage {
 pub(crate) const DEFAULT_VIDEO_MAX_FRAMES: usize = 32;
 pub(crate) const DEFAULT_VIDEO_SOFT_TOKENS: u32 = 70;
 pub(crate) const DEFAULT_VIDEO_FPS: f32 = 2.0;
+
+/// Resource bounds for the ffmpeg inline-video path. Frames are downscaled to
+/// at most this side length before piping (the patchify resize target never
+/// exceeds it for realistic aspect ratios, so quality is unaffected), and the
+/// piped PNG stream is capped so a pathological video cannot exhaust server
+/// RAM — `Command::output` buffers the whole stream. Videos whose decoded
+/// stream exceeds the cap are sampled from the decoded prefix.
+const FFMPEG_VIDEO_MAX_FRAME_SIDE: u32 = 1600;
+const FFMPEG_VIDEO_MAX_OUTPUT_BYTES: u64 = 512 * 1024 * 1024;
 
 /// One decoded video frame with its timestamp (seconds from the start).
 #[derive(Debug)]
@@ -364,19 +373,32 @@ fn patchify_rgb(
 }
 
 /// Decode an animated container into RGB frames with timestamps, uniformly
-/// sampled down to `max_frames`. Timestamps accumulate the per-frame GIF delays;
-/// if the container carries no timing, frames fall back to `DEFAULT_VIDEO_FPS`.
-/// Only animated GIF is supported inline; `mp4`/`webm` need a video codec — send
-/// pre-extracted frame tensors through `/v1/generate`.
+/// sampled down to `max_frames`. GIF timestamps accumulate per-frame delays; if
+/// the container carries no usable timing, frames fall back to
+/// `DEFAULT_VIDEO_FPS`. MP4/WebM are decoded by an optional `ffmpeg` process:
+/// video codecs are not MLX tensor kernels, while the downstream Gemma4 tensor
+/// path stays native MLX.
 pub(crate) fn decode_video_frames(
     bytes: &[u8],
     max_frames: usize,
 ) -> Result<Vec<VideoFrame>, MediaError> {
+    if looks_like_gif(bytes) {
+        return decode_gif_video_frames(bytes, max_frames);
+    }
+    if looks_like_ffmpeg_video(bytes) {
+        return decode_video_frames_ffmpeg(bytes, max_frames);
+    }
+    Err(MediaError::Unsupported(
+        "inline video must be GIF, MP4, or WebM; MP4/WebM require ffmpeg on PATH, or send pre-extracted frame tensors via /v1/generate".to_string(),
+    ))
+}
+
+fn decode_gif_video_frames(bytes: &[u8], max_frames: usize) -> Result<Vec<VideoFrame>, MediaError> {
     use image::AnimationDecoder;
 
     let decoder = image::codecs::gif::GifDecoder::new(std::io::Cursor::new(bytes)).map_err(|_| {
         MediaError::Unsupported(
-            "inline video must be an animated GIF; mp4/webm require pre-extracted frame tensors via /v1/generate".to_string(),
+            "inline GIF video could not be decoded; MP4/WebM require ffmpeg on PATH, or send pre-extracted frame tensors via /v1/generate".to_string(),
         )
     })?;
     let frames = decoder
@@ -415,6 +437,261 @@ pub(crate) fn decode_video_frames(
             timestamp_seconds: timestamps[index],
         })
         .collect())
+}
+
+fn decode_video_frames_ffmpeg(
+    bytes: &[u8],
+    max_frames: usize,
+) -> Result<Vec<VideoFrame>, MediaError> {
+    decode_video_frames_with_ffmpeg_path(bytes, max_frames, "ffmpeg")
+}
+
+fn decode_video_frames_with_ffmpeg_path(
+    bytes: &[u8],
+    max_frames: usize,
+    ffmpeg_path: impl AsRef<Path>,
+) -> Result<Vec<VideoFrame>, MediaError> {
+    let input = TempVideoInput::new(bytes)?;
+    // Downscale before piping: `min(iw, SIDE)` never upscales, and
+    // `force_original_aspect_ratio=decrease` keeps the aspect ratio when one
+    // axis hits the cap. `showinfo` must stay after `scale` in the chain so
+    // its `pts_time` lines describe exactly the frames that reach the pipe.
+    let video_filter = format!(
+        "scale=w=min(iw\\,{side}):h=min(ih\\,{side}):force_original_aspect_ratio=decrease,showinfo",
+        side = FFMPEG_VIDEO_MAX_FRAME_SIDE
+    );
+    let output = std::process::Command::new(ffmpeg_path.as_ref())
+        .arg("-hide_banner")
+        .arg("-nostdin")
+        .arg("-v")
+        .arg("info")
+        .arg("-i")
+        .arg(input.path())
+        .arg("-map")
+        .arg("0:v:0")
+        .arg("-an")
+        .arg("-sn")
+        .arg("-vf")
+        .arg(video_filter)
+        .arg("-vsync")
+        .arg("0")
+        .arg("-fs")
+        .arg(FFMPEG_VIDEO_MAX_OUTPUT_BYTES.to_string())
+        .arg("-f")
+        .arg("image2pipe")
+        .arg("-vcodec")
+        .arg("png")
+        .arg("pipe:1")
+        .output()
+        .map_err(|error| {
+            if error.kind() == std::io::ErrorKind::NotFound {
+                MediaError::Unsupported(
+                    "inline MP4/WebM video requires ffmpeg on PATH to extract frames; install ffmpeg or send pre-extracted frame tensors via /v1/generate".to_string(),
+                )
+            } else {
+                MediaError::Decode(format!("failed to run ffmpeg video decoder: {error}"))
+            }
+        })?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let message = stderr.lines().last().unwrap_or("ffmpeg failed");
+        return Err(MediaError::Decode(format!(
+            "failed to decode inline video with ffmpeg: {message}"
+        )));
+    }
+
+    let pngs = split_png_stream(&output.stdout)?;
+    if pngs.is_empty() {
+        return Err(MediaError::Decode(
+            "ffmpeg decoded no video frames".to_string(),
+        ));
+    }
+    let timestamps = parse_ffmpeg_showinfo_timestamps(&output.stderr);
+    // Sample before decoding: the pipe can carry thousands of PNGs while the
+    // model consumes at most `max_frames`, so only the sampled frames are
+    // worth the PNG-to-RGB decode (the GIF path samples the same way).
+    let indices = sample_frame_indices(pngs.len(), max_frames);
+    let mut frames = Vec::with_capacity(indices.len());
+    for index in indices {
+        let image = image::load_from_memory_with_format(pngs[index], image::ImageFormat::Png)
+            .map_err(|error| {
+                MediaError::Decode(format!("failed to decode ffmpeg PNG frame: {error}"))
+            })?
+            .to_rgb8();
+        let timestamp_seconds = timestamps
+            .get(index)
+            .copied()
+            .flatten()
+            .unwrap_or(index as f32 / DEFAULT_VIDEO_FPS);
+        frames.push(VideoFrame {
+            image,
+            timestamp_seconds,
+        });
+    }
+    Ok(frames)
+}
+
+struct TempVideoInput {
+    path: std::path::PathBuf,
+}
+
+impl TempVideoInput {
+    fn new(bytes: &[u8]) -> Result<Self, MediaError> {
+        // The timestamp alone is not unique: concurrent requests can observe
+        // the same SystemTime tick (and a clock that went backwards collapses
+        // it to 0), so a per-process counter breaks the tie — a collision
+        // would let `fs::write` truncate another request's staged video.
+        static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let mut path = std::env::temp_dir();
+        let unique = format!(
+            "ax-engine-inline-video-{}-{}-{}.bin",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|duration| duration.as_nanos())
+                .unwrap_or(0),
+            SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        );
+        path.push(unique);
+        std::fs::write(&path, bytes).map_err(|error| {
+            MediaError::Decode(format!(
+                "failed to stage inline video for decoding at {}: {error}",
+                path.display()
+            ))
+        })?;
+        Ok(Self { path })
+    }
+
+    fn path(&self) -> &std::path::Path {
+        &self.path
+    }
+}
+
+impl Drop for TempVideoInput {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+fn looks_like_gif(bytes: &[u8]) -> bool {
+    bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a")
+}
+
+fn looks_like_ffmpeg_video(bytes: &[u8]) -> bool {
+    looks_like_isobmff(bytes) || looks_like_webm(bytes)
+}
+
+fn looks_like_isobmff(bytes: &[u8]) -> bool {
+    bytes.len() >= 12 && &bytes[4..8] == b"ftyp"
+}
+
+fn looks_like_webm(bytes: &[u8]) -> bool {
+    bytes.starts_with(&[0x1A, 0x45, 0xDF, 0xA3])
+}
+
+fn split_png_stream(bytes: &[u8]) -> Result<Vec<&[u8]>, MediaError> {
+    const PNG_SIGNATURE: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
+    let mut frames = Vec::new();
+    let mut pos = 0usize;
+    while pos < bytes.len() {
+        let Some(start_offset) = find_bytes(&bytes[pos..], PNG_SIGNATURE) else {
+            break;
+        };
+        let start = pos + start_offset;
+        let mut cursor = start + PNG_SIGNATURE.len();
+        loop {
+            if cursor + 12 > bytes.len() {
+                return Err(MediaError::Decode(
+                    "truncated PNG frame from ffmpeg".to_string(),
+                ));
+            }
+            let len = u32::from_be_bytes([
+                bytes[cursor],
+                bytes[cursor + 1],
+                bytes[cursor + 2],
+                bytes[cursor + 3],
+            ]) as usize;
+            let chunk_type_start = cursor + 4;
+            let chunk_data_start = cursor + 8;
+            let next = chunk_data_start
+                .checked_add(len)
+                .and_then(|value| value.checked_add(4))
+                .ok_or_else(|| {
+                    MediaError::Decode("PNG frame from ffmpeg is too large".to_string())
+                })?;
+            if next > bytes.len() {
+                return Err(MediaError::Decode(
+                    "truncated PNG frame from ffmpeg".to_string(),
+                ));
+            }
+            let chunk_type = &bytes[chunk_type_start..chunk_type_start + 4];
+            cursor = next;
+            if chunk_type == b"IEND" {
+                frames.push(&bytes[start..cursor]);
+                pos = cursor;
+                break;
+            }
+        }
+    }
+    Ok(frames)
+}
+
+fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    if needle.is_empty() || needle.len() > haystack.len() {
+        return None;
+    }
+    haystack
+        .windows(needle.len())
+        .position(|window| window == needle)
+}
+
+/// Parse per-frame `pts_time:` values from ffmpeg `showinfo` stderr, keyed by
+/// the `n:` frame number on the same line. Keying by `n` (instead of line
+/// position) means a malformed or dropped line yields a gap for that one frame
+/// rather than silently shifting every later frame onto the wrong timestamp.
+/// Only `Parsed_showinfo` lines are read so `-v info` metadata dumps (which
+/// echo container strings) cannot inject entries.
+fn parse_ffmpeg_showinfo_timestamps(stderr: &[u8]) -> Vec<Option<f32>> {
+    // Backstop against absurd `n:` values resizing the Vec; the `-fs` output
+    // cap keeps real streams far below this.
+    const MAX_FRAME_INDEX: usize = 1 << 20;
+    let mut timestamps: Vec<Option<f32>> = Vec::new();
+    for line in String::from_utf8_lossy(stderr).lines() {
+        let Some((prefix, fields)) = line.split_once(']') else {
+            continue;
+        };
+        if !prefix.contains("Parsed_showinfo") {
+            continue;
+        }
+        let Some(frame_index) = parse_showinfo_field(fields, "n:")
+            .and_then(|value| value.parse::<usize>().ok())
+            .filter(|index| *index < MAX_FRAME_INDEX)
+        else {
+            continue;
+        };
+        let Some(pts_seconds) =
+            parse_showinfo_field(fields, "pts_time:").and_then(|value| value.parse::<f32>().ok())
+        else {
+            continue;
+        };
+        if frame_index >= timestamps.len() {
+            timestamps.resize(frame_index + 1, None);
+        }
+        timestamps[frame_index] = Some(pts_seconds);
+    }
+    timestamps
+}
+
+/// Value of a `label:value` field in a showinfo line, tolerating the padding
+/// spaces ffmpeg inserts between the label and the value (`n:   4`).
+fn parse_showinfo_field<'a>(fields: &'a str, label: &str) -> Option<&'a str> {
+    let start = fields.find(label)? + label.len();
+    let rest = fields[start..].trim_start();
+    let end = rest
+        .find(|ch: char| ch.is_ascii_whitespace())
+        .unwrap_or(rest.len());
+    Some(&rest[..end])
 }
 
 /// Uniformly pick at most `max` indices from `[0, len)`, anchored at the first
@@ -1077,6 +1354,129 @@ mod tests {
         let per_frame = pre.soft_tokens_per_frame as usize;
         assert_eq!(pre.pixel_position_ids.len(), 2 * per_frame);
         assert_eq!(pre.pixel_values.len(), 2 * per_frame * patch_dim);
+    }
+
+    #[test]
+    fn png_pipe_and_showinfo_timestamps_are_parsed() {
+        let frame_a = image::RgbImage::from_pixel(4, 4, image::Rgb([10, 20, 30]));
+        let frame_b = image::RgbImage::from_pixel(4, 4, image::Rgb([40, 50, 60]));
+        let mut stream = Vec::new();
+        for frame in [frame_a, frame_b] {
+            let mut encoded = Vec::new();
+            image::DynamicImage::ImageRgb8(frame)
+                .write_to(
+                    &mut std::io::Cursor::new(&mut encoded),
+                    image::ImageFormat::Png,
+                )
+                .expect("encode png frame");
+            stream.extend(encoded);
+        }
+
+        let frames = split_png_stream(&stream).expect("split PNG pipe");
+        assert_eq!(frames.len(), 2);
+
+        let timestamps = parse_ffmpeg_showinfo_timestamps(
+            b"[Parsed_showinfo_0 @ x] n:0 pts:0 pts_time:0\n\
+              [Parsed_showinfo_0 @ x] n:1 pts:512 pts_time:0.5\n",
+        );
+        assert_eq!(timestamps, vec![Some(0.0), Some(0.5)]);
+    }
+
+    #[test]
+    fn showinfo_timestamps_key_by_frame_number_and_ignore_non_showinfo_lines() {
+        // A dropped/malformed line must leave a gap at its own frame, not
+        // shift later frames; metadata echoes of container strings must not
+        // inject entries.
+        let timestamps = parse_ffmpeg_showinfo_timestamps(
+            b"[mov,mp4 @ x] title : n:0 pts_time:99\n\
+              [Parsed_showinfo_0 @ x] n:   0 pts:0 pts_time:0\n\
+              [Parsed_showinfo_0 @ x] n:   1 pts:512 pts_time:garbage\n\
+              [Parsed_showinfo_0 @ x] n:   2 pts:1024 pts_time:1\n",
+        );
+        assert_eq!(timestamps, vec![Some(0.0), None, Some(1.0)]);
+    }
+
+    #[test]
+    fn video_container_routing_rejects_unknown_formats() {
+        let error = decode_video_frames(b"definitely not a video container", 4)
+            .expect_err("unknown container bytes must be rejected");
+        assert!(matches!(error, MediaError::Unsupported(_)));
+        assert!(error.to_string().contains("GIF, MP4, or WebM"));
+
+        // GIF magic routes to the in-process GIF decoder, never to ffmpeg
+        // (the header may parse, so the failure can also surface from frame
+        // decoding — both messages are GIF-path errors).
+        let error = decode_video_frames(b"GIF89a then truncated garbage", 4)
+            .expect_err("corrupt GIF must fail in the GIF decoder");
+        let message = error.to_string();
+        assert!(
+            message.contains("inline GIF video could not be decoded")
+                || message.contains("failed to decode video frames")
+                || message.contains("video has no frames"),
+            "expected a GIF-path error, got: {message}"
+        );
+
+        // ISO-BMFF magic routes to the ffmpeg path: the error mentions ffmpeg
+        // (missing binary or failed decode) rather than the GIF decoder.
+        let mut isobmff = vec![0u8; 16];
+        isobmff[4..8].copy_from_slice(b"ftyp");
+        let error = decode_video_frames(&isobmff, 4)
+            .expect_err("truncated ISO-BMFF must fail in the ffmpeg path");
+        let message = error.to_string();
+        assert!(message.contains("ffmpeg"), "unexpected error: {message}");
+        assert!(!message.contains("inline GIF video could not be decoded"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ffmpeg_video_decode_path_samples_fake_png_pipe() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = std::env::temp_dir().join(format!(
+            "ax-engine-fake-ffmpeg-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        let frames_path = dir.join("frames.pngpipe");
+        let ffmpeg_path = dir.join("ffmpeg");
+
+        let mut stream = Vec::new();
+        for rgb in [[10u8, 20, 30], [40, 50, 60], [70, 80, 90]] {
+            let frame = image::RgbImage::from_pixel(4, 4, image::Rgb(rgb));
+            let mut encoded = Vec::new();
+            image::DynamicImage::ImageRgb8(frame)
+                .write_to(
+                    &mut std::io::Cursor::new(&mut encoded),
+                    image::ImageFormat::Png,
+                )
+                .expect("encode png frame");
+            stream.extend(encoded);
+        }
+        std::fs::write(&frames_path, stream).expect("write fake frame pipe");
+        let script = format!(
+            "#!/bin/sh\ncat '{}'\nprintf '%s\\n' '[Parsed_showinfo_0 @ x] n:0 pts_time:0' '[Parsed_showinfo_0 @ x] n:1 pts_time:0.5' '[Parsed_showinfo_0 @ x] n:2 pts_time:1' >&2\n",
+            frames_path.display()
+        );
+        std::fs::write(&ffmpeg_path, script).expect("write fake ffmpeg");
+        let mut permissions = std::fs::metadata(&ffmpeg_path)
+            .expect("fake ffmpeg metadata")
+            .permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&ffmpeg_path, permissions).expect("chmod fake ffmpeg");
+
+        let frames = decode_video_frames_with_ffmpeg_path(b"fake mp4", 2, &ffmpeg_path)
+            .expect("fake ffmpeg should decode frames");
+        assert_eq!(frames.len(), 2);
+        assert_eq!(frames[0].timestamp_seconds, 0.0);
+        assert_eq!(frames[1].timestamp_seconds, 1.0);
+        assert_eq!(frames[0].image.get_pixel(0, 0).0, [10, 20, 30]);
+        assert_eq!(frames[1].image.get_pixel(0, 0).0, [70, 80, 90]);
+
+        std::fs::remove_dir_all(dir).expect("cleanup fake ffmpeg dir");
     }
 
     #[test]

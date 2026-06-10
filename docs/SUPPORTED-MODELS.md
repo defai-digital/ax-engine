@@ -160,7 +160,8 @@ runtime.
 | You have GGUF weights or a non-MLX local model | `llama_cpp` | llama.cpp is the delegated local inference route |
 | You have Gemma4 unified image/audio/video inputs already preprocessed into AX's validated `multimodal_inputs.gemma4_unified` tensor contract | Direct support | Native MLX can consume processed media tensors without raw media decoding in the hot path; OpenAI-shaped routes require pre-tokenized prompt tokens for span alignment |
 | You need client-side preprocessing for image URLs/data URIs, WAV audio URLs/data URIs, OpenAI-style `input_audio` WAV base64, or decoded video frames | Direct support through the Python helper | The helper prepares the processed tensor contract before the request reaches the optimized runtime |
-| You need server-side raw image/audio/video OpenAI media content-part decoding, encoded video container decoding, or multimodal input on delegated routes | Unsupported unless explicitly documented elsewhere | Current delegated routes are text-first and raw media preprocessing is not part of AX's OpenAI text adapter |
+| You need server-side raw OpenAI media content-part decoding on native Gemma4 unified chat | Direct support when documented for that format | Inline PNG/JPEG, WAV/MP3, GIF, and FFmpeg-backed MP4/WebM are decoded into AX's processed tensor contract before the optimized runtime |
+| You need multimodal input on delegated routes, remote media URL fetching, or encoded video decoding without `ffmpeg` | Unsupported unless explicitly documented elsewhere | Delegated routes are text-first, remote fetching is intentionally disabled, and MP4/WebM codec decode is outside MLX tensor kernels |
 
 ## Evidence Rules
 
