@@ -487,7 +487,8 @@ fn normalize_channel(value: u8, channel: usize, normalization: &ImageNormalizati
         pixel *= normalization.rescale_factor;
     }
     if normalization.do_normalize {
-        pixel = (pixel - normalization.mean[channel]) / normalization.std[channel];
+        let std = normalization.std[channel].max(f32::EPSILON);
+        pixel = (pixel - normalization.mean[channel]) / std;
     }
     pixel
 }

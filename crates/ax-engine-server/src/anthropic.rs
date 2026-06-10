@@ -324,14 +324,7 @@ fn reject_unexpected_stream(stream: bool) -> Result<(), (StatusCode, Json<ErrorR
 }
 
 fn json_value_is_present(value: Option<&Value>) -> bool {
-    match value {
-        None | Some(Value::Null) => false,
-        Some(Value::Bool(value)) => *value,
-        Some(Value::String(value)) => !value.trim().is_empty(),
-        Some(Value::Array(values)) => !values.is_empty(),
-        Some(Value::Object(object)) => !object.is_empty(),
-        Some(Value::Number(value)) => value.as_u64().unwrap_or(1) != 0,
-    }
+    !matches!(value, None | Some(Value::Null))
 }
 
 fn invalid_request(message: impl Into<String>) -> (StatusCode, Json<ErrorResponse>) {
