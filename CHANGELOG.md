@@ -4,6 +4,189 @@ All notable changes to AX Engine are documented here. This project follows
 [Semantic Versioning](https://semver.org/). Releases prior to `v6.0.0` are
 tracked via Git tags and GitHub Releases.
 
+## [6.2.2] - 2026-06-09
+
+Patch release that fixes a critical multimodal attention bug in Gemma 4
+where vision tokens lost intra-image bidirectionality on full-attention
+layers, improves OpenAI API output postprocessing, and adds idempotent
+PyPI publish.
+
+### Fixed
+- **Gemma 4 media block overlay** — multimodal PrefixLM mask was previously
+  applied only to sliding-window layers, leaving full-attention layers with
+  a plain causal mask. Vision tokens larger than the sliding window were
+  silently dropped, losing intra-image bidirectionality on every global
+  layer. Now the bidirectional vision-block overlay is applied to both
+  full-attention and sliding-window layers, matching the reference
+  implementation. Memoized per unique window size for efficiency.
+- **Gemma 4 channel output markers** — thinking-channel framing stripped
+  from chat responses to prevent leaking internal model markers.
+- **OpenAI unusual prompt output postprocessing** — handles edge cases
+  where model output contains unexpected prompt echoes or structural anomalies.
+- **OpenAI response formatting** — standardized postprocessing for
+  consistent API output.
+
+### Added
+- **Tokenizer token lookup** — exposed for debugging and inspection of
+  tokenized inputs.
+- **Idempotent PyPI release publish** — re-publishing the same version
+  no longer fails, enabling safe retry of interrupted releases.
+
+## [6.2.1] - 2026-06-09
+
+Patch release focused on multimodal peer benchmark methodology hardening,
+Gemma 4 benchmark artifact sanitization, and a new Homebrew CLI entrypoint.
+
+### Added
+- **Homebrew CLI entrypoint** — `ax-engine` installable and runnable via Homebrew.
+- **Cold peer benchmark** — refreshed Gemma 4 multimodal cold peer benchmark
+  with documented llama peer launch contract.
+
+### Changed
+- **Atomic multimodal prefill scheduling** — prefill no longer split across
+  scheduling boundaries, eliminating race conditions in peer benchmarks.
+- Peer benchmark methodology hardened with stricter validation and
+  reproducibility guarantees.
+- Gemma 4 peer chart styling adjusted for clarity.
+
+### Fixed
+- **Benchmark preview smoke binary selection** — smoke test now selects the
+  correct `ax-engine-bench` binary.
+- **`cargo run` disambiguation** — `ax-engine-bench` cargo run commands now
+  unambiguous in workspace.
+- **Gemma 4 benchmark artifact paths** — sanitized to prevent path traversal
+  in artifact naming.
+- **Llama peer slot reuse** — rejected in multimodal benchmarks to prevent
+  stale state contamination.
+- **Llama audio cap peer row** — skipped due to instability.
+- **Multimodal peer fairness** — hardened scheduling to ensure equitable
+  resource allocation across peers.
+
+## [6.2.0] - 2026-06-09
+
+Completes the **Gemma 4 12B multimodal story** (image, audio, video) with
+golden-validated preprocessing, introduces **speculation profile presets** for
+workload-tuned MTP gating, and ships benchmark hardening and download UX improvements.
+
+### Added
+- **Gemma 4 multimodal chat** — inline video (GIF), image, and audio input in
+  chat conversations.
+- **Golden-validated preprocessing** — Python SDK preprocessing matches the
+  reference implementation for audio and video vectors.
+- **Video fidelity** — 70-token frames, 32-frame cap, mm:ss timestamp formatting.
+- **Runtime smoke tests** — image TTFT and end-to-end multimodal probes.
+- **Speculation profiles** — four presets (`auto`, `coding`, `agentic`,
+  `chatbot`) with calibrated MTP draft-confidence gates. Gemma 4 gates
+  calibrated from 12B ablation data. CLI flag `--speculation-profile` with
+  programmatic SDK override.
+- **Hugging Face Hub** snapshot download support.
+- **Same-artifact direct-vs-MTP parity harness** for Gemma 4 12B.
+
+### Changed
+- **`--force` flag** now invalidates stale manifests in download destination.
+- **Bundled benchmark binary** preferred; fails loudly on missing manifest.
+- Multimodal benchmark modality set validation prevents invalid configurations.
+- Qwen MTP improvement chart added to README.
+- Gemma 4 MTP public artifacts and phase 4 results published.
+- README announcement flow productized.
+
+### Fixed
+- **Embed mutex poison recovery** — embedding pipeline no longer panics on
+  poisoned mutex.
+- **EWMA clamp** — exponential moving average clamped to prevent numerical drift.
+- **SSE role emission** — role field now correctly emitted in streaming responses.
+- Multimodal benchmark artifact validation for missing or malformed outputs.
+- Gemma4 multimodal QA probe false-positive content match.
+- Multimodal config-loading divergences from the reference implementation.
+- Shifted MTP norm sidecar validation.
+- Bench doctor smoke status check.
+
+## [6.1.2] - 2026-06-09
+
+Patch release that establishes a fair same-artifact benchmark harness for
+Gemma 4 12B MTP vs direct decode, adds GPU-exact draft confidence mode,
+and fixes three latent bugs.
+
+### Added
+- **Same-artifact direct-vs-MTP parity harness** — direct decode and MTP now
+  run in the same prompt-suite harness with identical artifacts. Survival
+  taxonomy classifies each profile (keep-default/keep-opt-in/retest/reject/
+  remove-claim) with artifact-parity gate and route-draft validation.
+- **GPU-exact draft confidence mode** — opt-in
+  `AX_MLX_GEMMA4_ASSISTANT_MTP_CONFIDENCE_MODE=gpu-exact` computes argmax +
+  softmax confidence on-device. Default stays `exact-cpu`.
+- **Per-workload gate guidance table** — README documents draft confidence
+  gate as a speed knob with starting-point recommendations for coding,
+  agentic, and chatbot workloads.
+- **Affine quantization telemetry** — records bit composition per row
+  (min/max bits, 4-bit and 8-bit tensor counts).
+- **`unit_test` QA prompt** — verifies model produces ≥3 `def test_()` functions.
+- **`json_invoice_nested` QA prompt** — verifies correct invoice total computation.
+
+### Fixed
+- **Embed mutex poison recovery** — extended to `embed_compile_stats`,
+  `embed_compile_cache`, and `embed_batch_compile_cache` (5 call sites),
+  eliminating cascade-panic risk in the embed JIT path.
+- **EWMA clamp** — `accept_rate_ewma` and `mtp_only_accept_rate_ewma` clamped
+  to `[0.0, 1.0]` before `u32` cast, preventing >1000 telemetry emissions.
+- **SSE role emission** — `role:"assistant"` now always emitted in at least
+  one SSE chunk, fixing zero-token completions that violated the OpenAI
+  streaming API spec.
+
+## [6.1.1] - 2026-06-08
+
+Small patch release adding Hugging Face Hub download support and MTP norm
+sidecar validation.
+
+### Added
+- **Hugging Face Hub download** — MLX model snapshots can now be downloaded
+  directly via Hugging Face Hub.
+
+### Changed
+- **Shifted MTP norm sidecar validation** — validates shifted MTP norm
+  sidecar files to catch malformed or mismatched artifacts early.
+
+## [6.1.0] - 2026-06-08
+
+First-class support for **Google Gemma 4 12B (unified)** with assistant
+speculative decoding (MTP depth-2), multimodal preprocessing infrastructure,
+and a ~34% GEMV decode kernel speedup.
+
+### Added
+- **Gemma 4 12B (unified) model support.** Full text inference with preset
+  aliases for quick model selection. Multimodal preprocessing routes (image,
+  audio, video) are wired and validated; full multimodal chat arrives in v6.2.0.
+- **Assistant MTP depth-2 drafting.** Delivers 1.10–1.20× decode speedup over
+  direct decode. Ships with 4-bit-FFN artifacts for fair benchmarking against
+  llama.cpp Metal.
+- **Benchmark suite.** Gemma 4 12B text benchmarks: direct, MTP, and MTP+n-gram
+  vs llama.cpp Metal. New q4km GEMV throughput microbench for kernel diagnostics.
+- **Multimodal infrastructure.** Unified media preprocessing pipeline, input
+  validation for Gemma4 multimodal payloads, tokenized media routes, and video
+  frame range handling.
+- **Memory-bandwidth utilization table** in README for Gemma 4 12B.
+
+### Changed
+- **~34% faster `decode_projection_q4km` GEMV kernel** via vectorization and
+  per-lane scale reuse.
+- README reorganized: TOC, install-first flow, collapsed repro blocks.
+- Gemma 4 12B benchmark artifacts and charts refreshed (4-bit-FFN direct +
+  depth-2 MTP).
+- Bandwidth chart refreshed with corrected height and "Higher is better" annotation.
+
+### Fixed
+- **Streaming lock scope** — tightened lock holding to prevent concurrent
+  decode corruption.
+- **LangChain SSE parser** — choices guard now correctly accumulates multi-line
+  `data:` events per SSE spec.
+- **Mutex poison recovery** — engine no longer panics on poisoned mutex after
+  thread failure.
+- Image zero-dimension guard prevents panic on empty image inputs.
+- Environment variable typo in model download path resolution.
+- CLI flag parser edge case for composite boolean flags.
+- Gemma4 12B audio soft-token count and `k_eq_v` default corrected.
+- Benchmark chart annotation overflow and axis label rendering.
+
 ## [6.0.1] - 2026-06-08
 
 Release-pipeline fixes only. The engine, server, and SDK code is byte-for-byte
