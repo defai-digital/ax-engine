@@ -245,11 +245,47 @@ upstream backend.
 
 `GET /v1/models` advertises image, audio, and video input only for repo-owned
 native MLX sessions whose `model-manifest.json` contains the converted Gemma4
-unified media tensor roles. This is a processed-input contract: OpenAI
-completions and chat accept media tensors only when the caller also supplies
-AX tokenized prompt IDs (`prompt` token arrays or `input_tokens`) so media
-placeholder tokens and tensors stay aligned. Raw OpenAI image/audio parts and
-delegated multimodal routes still fail closed.
+unified media tensor roles. Two input shapes are accepted on those sessions:
+
+- **Inline media on chat.** `POST /v1/chat/completions` accepts OpenAI-style
+  content parts with base64 `data:` URIs: `image_url` (PNG/JPEG),
+  `input_audio` / `audio_url` (WAV), and `video_url` (animated GIF). The
+  server decodes and preprocesses media into Gemma4 unified soft-token spans
+  and tensors. Remote `http(s)` media URLs are rejected; callers must inline
+  base64 data.
+- **Processed tensors.** OpenAI completions and chat also accept
+  `multimodal_inputs.gemma4_unified` tensors directly, but only when the
+  caller supplies AX tokenized prompt IDs (`prompt` token arrays or
+  `input_tokens`) so media placeholder tokens and tensors stay aligned.
+
+Delegated `llama_cpp` and `mlx_lm_delegated` routes still fail closed on any
+multimodal input.
+
+Multimodal serving contract limits:
+
+- **Prompt budget.** Multimodal prefill is atomic: the expanded prompt
+  (media soft tokens included) must fit within `--max-batch-tokens`
+  (default 2048) in one scheduler step. Over-budget requests fail with an
+  actionable HTTP 400 instead of being scheduled. A maximum-length video
+  (32 frames at ~70 soft tokens per frame plus timestamps, ~2,400+ tokens)
+  needs a raised `--max-batch-tokens`. Under concurrent load a fitting
+  request may wait for a step with enough budget; it is never split.
+- **Audio.** WAV input is downmixed to mono and resampled to the model rate
+  (16 kHz). Audio longer than the model's `audio_seq_length` cap
+  (750 frames × 40 ms = 30 s by default) is silently truncated.
+- **Video.** Animated GIF only; frames are sampled uniformly to at most 32
+  frames, each rendered with an `mm:ss` timestamp.
+- **Caching.** Prefix caching is disabled for multimodal requests; every
+  multimodal prefill recomputes the full prompt with that request's own
+  media tensors.
+- **Chat output.** Gemma 4 thinking-channel framing (`<|channel>thought…`)
+  is stripped from chat content; raw `/v1/completions` output stays
+  verbatim.
+
+`scripts/qa_gemma4_multimodal.py --strict` runs an end-to-end probe set
+(image color, image description, audio smoke, speech transcription, GIF frame
+count) against a live server and fails on thinking-channel leaks or content
+mismatches.
 
 You can also run the optional Python OpenAI shim with an explicit MLX model
 artifact directory and tokenizer:
