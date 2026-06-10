@@ -20,6 +20,17 @@ tracked via Git tags and GitHub Releases.
 
 ### Fixed
 
+- **Removed prompt-keyed output rewriting (integrity fix)** — since v6.2.2 the
+  OpenAI/Anthropic chat routes silently rewrote model output for requests
+  whose prompt matched three specific benchmark phrasings: a five-words/no-'e'
+  prompt could have its real output replaced with a hardcoded sentence, a
+  750 ml unit-conversion prompt could be replaced with a hardcoded answer
+  (with `finish_reason` forced to `stop`), and "return only YAML" prompts had
+  markdown code fences stripped. This made the server misreport what the
+  model actually generated, both in QA runs and for any real user whose
+  prompt matched. The entire `OpenAiOutputPostprocessing` mechanism is
+  removed; responses now always carry the model's actual output. Affected
+  releases: v6.2.2 through v6.2.5.
 - **Inline media preprocessing no longer blocks the async executor** — chat
   requests carrying inline image/audio/video parts now build on the tokio
   blocking pool (`spawn_blocking`) on both the OpenAI chat and Anthropic

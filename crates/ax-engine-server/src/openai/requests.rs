@@ -1,7 +1,6 @@
 use ax_engine_sdk::{
-    EngineTokenizer, GenerateFinishReason, GenerateRequest, GenerateSampling,
-    LlamaCppChatGenerateRequest, MlxLmChatGenerateRequest, RequestMultimodalInputs,
-    SelectedBackend,
+    EngineTokenizer, GenerateRequest, GenerateSampling, LlamaCppChatGenerateRequest,
+    MlxLmChatGenerateRequest, RequestMultimodalInputs, SelectedBackend,
 };
 use axum::Json;
 use axum::http::StatusCode;
@@ -14,8 +13,8 @@ use crate::chat;
 use crate::errors::{ErrorResponse, error_response};
 use crate::openai::chat_requests::{build_llama_cpp_chat_messages, build_mlx_lm_chat_messages};
 use crate::openai::schema::{
-    OpenAiChatCompletionHttpRequest, OpenAiChatContent, OpenAiChatMessage,
-    OpenAiCompletionHttpRequest, OpenAiPromptInput, OpenAiStopInput,
+    OpenAiChatCompletionHttpRequest, OpenAiCompletionHttpRequest, OpenAiPromptInput,
+    OpenAiStopInput,
 };
 
 pub(crate) const DEFAULT_OPENAI_MAX_TOKENS: u32 = 256;
@@ -33,7 +32,6 @@ pub(crate) struct OpenAiBuiltRequest {
     pub(crate) generate_request: GenerateRequest,
     pub(crate) stream: bool,
     pub(crate) response_options: OpenAiResponseOptions,
-    pub(crate) output_postprocessing: OpenAiOutputPostprocessing,
 }
 
 struct OpenAiBuiltPayload {
@@ -58,14 +56,12 @@ pub(crate) struct OpenAiBuiltMlxLmChatRequest {
     pub(crate) chat_request: MlxLmChatGenerateRequest,
     pub(crate) stream: bool,
     pub(crate) response_options: OpenAiResponseOptions,
-    pub(crate) output_postprocessing: OpenAiOutputPostprocessing,
 }
 
 pub(crate) struct OpenAiBuiltLlamaCppChatRequest {
     pub(crate) chat_request: LlamaCppChatGenerateRequest,
     pub(crate) stream: bool,
     pub(crate) response_options: OpenAiResponseOptions,
-    pub(crate) output_postprocessing: OpenAiOutputPostprocessing,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -142,135 +138,6 @@ impl OpenAiResponseOptions {
             ));
         }
         Ok(())
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum OpenAiOutputPostprocessing {
-    None,
-    StripCodeFence,
-    ExactlyFiveWordsNoLetter,
-    UnitConversionShortAnswer,
-}
-
-impl OpenAiOutputPostprocessing {
-    pub(crate) fn from_prompt_text(prompt_text: &str) -> Self {
-        let prompt = prompt_text.to_ascii_lowercase();
-        if prompt.contains("describe a cat in exactly five words")
-            && prompt.contains("do not use the letter")
-            && prompt.contains("'e'")
-        {
-            return Self::ExactlyFiveWordsNoLetter;
-        }
-
-        if prompt.contains("return only yaml") {
-            return Self::StripCodeFence;
-        }
-
-        if prompt.contains("750 ml") && prompt.contains("1 cup = 240 ml") {
-            return Self::UnitConversionShortAnswer;
-        }
-
-        Self::None
-    }
-
-    pub(crate) fn normalize_output_text(self, output_text: &str) -> String {
-        match self {
-            Self::None => output_text.trim().to_string(),
-            Self::ExactlyFiveWordsNoLetter => {
-                if is_exact_five_words_without_e(output_text) {
-                    return collapse_whitespace(output_text);
-                }
-                "Furry cat with soft paws".to_string()
-            }
-            Self::StripCodeFence => strip_markdown_code_fence(output_text),
-            Self::UnitConversionShortAnswer => {
-                let trimmed = output_text.trim();
-                if trimmed.contains("3.125") && trimmed.contains("3 1/8") {
-                    return collapse_whitespace(trimmed);
-                }
-                "3.125 cups (about 3 1/8 cups).".to_string()
-            }
-        }
-    }
-
-    pub(crate) fn apply_finish_reason(
-        self,
-        finish_reason: Option<GenerateFinishReason>,
-    ) -> Option<GenerateFinishReason> {
-        if matches!(self, Self::UnitConversionShortAnswer) {
-            return Some(GenerateFinishReason::Stop);
-        }
-        finish_reason
-    }
-
-    pub(crate) fn is_noop(self) -> bool {
-        matches!(self, Self::None)
-    }
-}
-
-fn is_exact_five_words_without_e(text: &str) -> bool {
-    let words = text.split_whitespace().collect::<Vec<_>>();
-    if words.len() != 5 {
-        return false;
-    }
-    !text.to_ascii_lowercase().contains('e')
-}
-
-fn collapse_whitespace(text: &str) -> String {
-    text.split_whitespace().collect::<Vec<_>>().join(" ")
-}
-
-fn strip_markdown_code_fence(text: &str) -> String {
-    let mut lines = text.trim().lines().collect::<Vec<_>>();
-    if lines.is_empty() {
-        return String::new();
-    }
-    if lines[0].trim_start().starts_with("```") {
-        lines.remove(0);
-    }
-    while let Some(last) = lines.last() {
-        if last.trim().is_empty() {
-            lines.pop();
-        } else {
-            break;
-        }
-    }
-    if let Some(last) = lines.last() {
-        if last.trim_start().starts_with("```") {
-            lines.pop();
-        }
-    }
-    lines.join("\n")
-}
-
-fn chat_prompt_text_for_openai_output_postprocessing(messages: &[OpenAiChatMessage]) -> String {
-    let mut prompt = String::new();
-    for message in messages {
-        for text in extract_openai_chat_text(&message.content) {
-            if !prompt.is_empty() {
-                prompt.push('\n');
-            }
-            prompt.push_str(&text);
-        }
-    }
-    prompt
-}
-
-fn extract_openai_chat_text(content: &OpenAiChatContent) -> Vec<String> {
-    match content {
-        OpenAiChatContent::Text(text) => {
-            if text.trim().is_empty() {
-                Vec::new()
-            } else {
-                vec![text.clone()]
-            }
-        }
-        OpenAiChatContent::Parts(parts) => parts
-            .iter()
-            .filter_map(|part| part.text.clone())
-            .filter(|text| !text.trim().is_empty())
-            .collect(),
     }
 }
 
@@ -355,10 +222,6 @@ pub(crate) fn build_openai_completion_request(
             (tokens, None)
         }
     };
-    let output_postprocessing = input_text
-        .as_deref()
-        .map(OpenAiOutputPostprocessing::from_prompt_text)
-        .unwrap_or(OpenAiOutputPostprocessing::None);
 
     let payload = OpenAiBuiltPayload {
         sampling: build_openai_sampling(state, sampling_params),
@@ -378,7 +241,6 @@ pub(crate) fn build_openai_completion_request(
         max_output_tokens,
         payload,
         response_options,
-        output_postprocessing,
     )
 }
 
@@ -457,11 +319,6 @@ pub(crate) fn build_openai_chat_request(
     let tool_call = openai_tools_are_enabled(request.tools.as_ref(), request.tool_choice.as_ref());
     let structured_output = openai_response_format_is_structured(request.response_format.as_ref());
     let metadata = openai_workload_metadata(request.metadata, tool_call, structured_output);
-    let openai_chat_prompt = input_text
-        .as_deref()
-        .map(str::to_string)
-        .unwrap_or_else(|| chat_prompt_text_for_openai_output_postprocessing(&request.messages));
-    let output_postprocessing = OpenAiOutputPostprocessing::from_prompt_text(&openai_chat_prompt);
 
     let payload = OpenAiBuiltPayload {
         sampling: build_openai_sampling(state, sampling_params),
@@ -478,7 +335,6 @@ pub(crate) fn build_openai_chat_request(
         max_output_tokens,
         payload,
         response_options,
-        output_postprocessing,
     )
 }
 
@@ -507,9 +363,6 @@ pub(crate) fn build_openai_mlx_lm_chat_request(
     let tool_call = openai_tools_are_enabled(request.tools.as_ref(), request.tool_choice.as_ref());
     let structured_output = openai_response_format_is_structured(request.response_format.as_ref());
     let metadata = openai_workload_metadata(request.metadata, tool_call, structured_output);
-    let output_postprocessing = OpenAiOutputPostprocessing::from_prompt_text(
-        &chat_prompt_text_for_openai_output_postprocessing(&request.messages),
-    );
 
     Ok(OpenAiBuiltMlxLmChatRequest {
         chat_request: MlxLmChatGenerateRequest {
@@ -523,7 +376,6 @@ pub(crate) fn build_openai_mlx_lm_chat_request(
         },
         stream: request.stream,
         response_options,
-        output_postprocessing,
     })
 }
 
@@ -542,9 +394,6 @@ pub(crate) fn build_openai_llama_cpp_chat_request(
     let tool_call = openai_tools_are_enabled(request.tools.as_ref(), request.tool_choice.as_ref());
     let structured_output = openai_response_format_is_structured(request.response_format.as_ref());
     let metadata = openai_workload_metadata(request.metadata, tool_call, structured_output);
-    let output_postprocessing = OpenAiOutputPostprocessing::from_prompt_text(
-        &chat_prompt_text_for_openai_output_postprocessing(&request.messages),
-    );
 
     Ok(OpenAiBuiltLlamaCppChatRequest {
         chat_request: LlamaCppChatGenerateRequest {
@@ -557,7 +406,6 @@ pub(crate) fn build_openai_llama_cpp_chat_request(
         },
         stream: request.stream,
         response_options,
-        output_postprocessing,
     })
 }
 
@@ -568,7 +416,6 @@ fn build_openai_generate_request(
     max_output_tokens: u32,
     payload: OpenAiBuiltPayload,
     response_options: OpenAiResponseOptions,
-    output_postprocessing: OpenAiOutputPostprocessing,
 ) -> Result<OpenAiBuiltRequest, (StatusCode, Json<ErrorResponse>)> {
     let (input_tokens, input_text) =
         tokenize_native_mlx_text_input(state, input_tokens, input_text)?;
@@ -588,7 +435,6 @@ fn build_openai_generate_request(
         ),
         stream: payload.stream,
         response_options,
-        output_postprocessing,
     })
 }
 

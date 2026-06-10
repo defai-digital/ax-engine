@@ -9,8 +9,7 @@ use crate::errors::{ErrorResponse, error_response, map_session_error};
 use crate::generation::native::run_stateless_generate_request;
 use crate::openai::requests::{
     OpenAiBuiltLlamaCppChatRequest, OpenAiBuiltMlxLmChatRequest, OpenAiBuiltRequest,
-    OpenAiOutputPostprocessing, OpenAiResponseOptions, build_openai_llama_cpp_chat_request,
-    build_openai_mlx_lm_chat_request,
+    OpenAiResponseOptions, build_openai_llama_cpp_chat_request, build_openai_mlx_lm_chat_request,
 };
 use crate::openai::schema::{OpenAiChatCompletionHttpRequest, OpenAiStreamKind};
 use crate::openai::streaming::{
@@ -26,11 +25,9 @@ pub(crate) async fn run_openai_llama_cpp_chat_generation(
         chat_request,
         stream,
         response_options,
-        output_postprocessing,
     } = build_openai_llama_cpp_chat_request(&state, request)?;
     if stream {
-        return stream_openai_llama_cpp_chat_request(state, chat_request, output_postprocessing)
-            .await;
+        return stream_openai_llama_cpp_chat_request(state, chat_request).await;
     }
 
     let request_id = state.allocate_request_id();
@@ -40,8 +37,6 @@ pub(crate) async fn run_openai_llama_cpp_chat_generation(
         llama_cpp::run_chat_generate(request_id, &runtime, &llama_backend, &chat_request)
     })
     .await?;
-    let mut response = response;
-    apply_openai_chat_output_postprocessing(&mut response, output_postprocessing);
     validate_openai_json_object_response(&response, response_options)?;
 
     Ok(OpenAiStreamKind::ChatCompletion.build_non_stream_response(
@@ -60,10 +55,9 @@ pub(crate) async fn run_openai_mlx_lm_chat_generation(
         chat_request,
         stream,
         response_options,
-        output_postprocessing,
     } = build_openai_mlx_lm_chat_request(&state, request)?;
     if stream {
-        return stream_openai_mlx_lm_chat_request(state, chat_request, output_postprocessing).await;
+        return stream_openai_mlx_lm_chat_request(state, chat_request).await;
     }
 
     let request_id = state.allocate_request_id();
@@ -73,8 +67,6 @@ pub(crate) async fn run_openai_mlx_lm_chat_generation(
         mlx_lm::run_chat_generate(request_id, &runtime, &mlx_lm_backend, &chat_request)
     })
     .await?;
-    let mut response = response;
-    apply_openai_chat_output_postprocessing(&mut response, output_postprocessing);
     validate_openai_json_object_response(&response, response_options)?;
 
     Ok(OpenAiStreamKind::ChatCompletion.build_non_stream_response(
@@ -94,10 +86,9 @@ pub(crate) async fn run_openai_text_generation(
         generate_request,
         stream,
         response_options,
-        output_postprocessing,
     } = request;
     if stream {
-        return stream_openai_request(state, generate_request, kind, output_postprocessing).await;
+        return stream_openai_request(state, generate_request, kind).await;
     }
 
     let (request_id, mut response) =
@@ -108,24 +99,9 @@ pub(crate) async fn run_openai_text_generation(
         kind,
         response_options.include_reasoning,
     )?;
-    apply_openai_chat_output_postprocessing(&mut response, output_postprocessing);
     validate_openai_json_object_response(&response, response_options)?;
 
     Ok(kind.build_non_stream_response(&response, request_id, response_options, native_reasoning))
-}
-
-pub(crate) fn apply_openai_chat_output_postprocessing(
-    response: &mut GenerateResponse,
-    output_postprocessing: OpenAiOutputPostprocessing,
-) {
-    if output_postprocessing.is_noop() {
-        return;
-    }
-
-    if let Some(output_text) = response.output_text.take() {
-        response.output_text = Some(output_postprocessing.normalize_output_text(&output_text));
-    }
-    response.finish_reason = output_postprocessing.apply_finish_reason(response.finish_reason);
 }
 
 pub(crate) fn validate_openai_json_object_response(

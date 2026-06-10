@@ -9,9 +9,7 @@ use crate::app_state::AppState;
 use crate::backends::{llama_cpp, mlx_lm};
 use crate::errors::{ErrorResponse, error_response, map_session_error};
 use crate::generation::native::run_stateless_generate_request;
-use crate::openai::generation::{
-    apply_openai_chat_output_postprocessing, populate_native_mlx_output_text,
-};
+use crate::openai::generation::populate_native_mlx_output_text;
 use crate::openai::requests::{
     OpenAiBuiltLlamaCppChatRequest, OpenAiBuiltMlxLmChatRequest, OpenAiBuiltRequest,
     build_openai_chat_request_offloading_media, build_openai_llama_cpp_chat_request,
@@ -233,17 +231,15 @@ async fn run_anthropic_messages_generation(
             chat_request,
             stream,
             response_options: _,
-            output_postprocessing,
         } = build_openai_mlx_lm_chat_request(&state, request)?;
         reject_unexpected_stream(stream)?;
         let request_id = state.allocate_request_id();
         let runtime = state.runtime_report.clone();
         let mlx_lm_backend = mlx_lm::config(&state).map_err(map_session_error)?;
-        let mut response = run_blocking_session_task(move || {
+        let response = run_blocking_session_task(move || {
             mlx_lm::run_chat_generate(request_id, &runtime, &mlx_lm_backend, &chat_request)
         })
         .await?;
-        apply_openai_chat_output_postprocessing(&mut response, output_postprocessing);
         return Ok((request_id, response));
     }
 
@@ -252,17 +248,15 @@ async fn run_anthropic_messages_generation(
             chat_request,
             stream,
             response_options: _,
-            output_postprocessing,
         } = build_openai_llama_cpp_chat_request(&state, request)?;
         reject_unexpected_stream(stream)?;
         let request_id = state.allocate_request_id();
         let runtime = state.runtime_report.clone();
         let llama_backend = llama_cpp::config(&state).map_err(map_session_error)?;
-        let mut response = run_blocking_session_task(move || {
+        let response = run_blocking_session_task(move || {
             llama_cpp::run_chat_generate(request_id, &runtime, &llama_backend, &chat_request)
         })
         .await?;
-        apply_openai_chat_output_postprocessing(&mut response, output_postprocessing);
         return Ok((request_id, response));
     }
 
@@ -270,7 +264,6 @@ async fn run_anthropic_messages_generation(
         generate_request,
         stream,
         response_options: _,
-        output_postprocessing,
     } = build_openai_chat_request_offloading_media(&state, request).await?;
     reject_unexpected_stream(stream)?;
     let (request_id, mut response) =
@@ -281,7 +274,6 @@ async fn run_anthropic_messages_generation(
         OpenAiStreamKind::ChatCompletion,
         false,
     )?;
-    apply_openai_chat_output_postprocessing(&mut response, output_postprocessing);
     Ok((request_id, response))
 }
 

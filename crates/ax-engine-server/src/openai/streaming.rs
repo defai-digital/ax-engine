@@ -22,7 +22,6 @@ use crate::openai::chunks::{
     chat_delta_chunk, chat_final_chunk, completion_delta_chunk, completion_final_chunk,
     next_chat_delta_role,
 };
-use crate::openai::requests::OpenAiOutputPostprocessing;
 use crate::openai::responses::finish_reason_from_llama_cpp_chat;
 use crate::openai::schema::OpenAiStreamKind;
 use crate::openai::sse::send_openai_stream_chunk;
@@ -34,11 +33,9 @@ pub(crate) async fn stream_openai_request(
     state: AppState,
     request: GenerateRequest,
     stream_kind: OpenAiStreamKind,
-    output_postprocessing: OpenAiOutputPostprocessing,
 ) -> Result<axum::response::Response, (StatusCode, Json<ErrorResponse>)> {
     let (stream_state, stream_context) = build_stream_state(&state, request).await?;
     let tokenizer = native_mlx_openai_stream_tokenizer(&state)?;
-    let mut postprocessing = OpenAiOutputPostprocessingState::new(output_postprocessing);
 
     let (tx, rx) = mpsc::channel(STREAM_CHANNEL_CAPACITY);
     spawn_stream_task(
@@ -52,7 +49,6 @@ pub(crate) async fn stream_openai_request(
                     stream_kind,
                     |state| context.next_stream_event(state),
                     tokenizer,
-                    &mut postprocessing,
                 );
             }
             StreamStateSource::Stateful(mut session) => {
@@ -62,7 +58,6 @@ pub(crate) async fn stream_openai_request(
                     stream_kind,
                     |state| session.next_stream_event(state),
                     tokenizer,
-                    &mut postprocessing,
                 );
             }
         },
@@ -74,7 +69,6 @@ pub(crate) async fn stream_openai_request(
 pub(crate) async fn stream_openai_mlx_lm_chat_request(
     state: AppState,
     request: MlxLmChatGenerateRequest,
-    output_postprocessing: OpenAiOutputPostprocessing,
 ) -> Result<axum::response::Response, (StatusCode, Json<ErrorResponse>)> {
     let request_id = state.allocate_request_id();
     let model_id = request.model_id.clone();
@@ -84,11 +78,10 @@ pub(crate) async fn stream_openai_mlx_lm_chat_request(
         mlx_lm::start_chat_stream(&runtime, &mlx_lm_backend, &request)
     })
     .await?;
-    let mut postprocessing = OpenAiOutputPostprocessingState::new(output_postprocessing);
 
     let (tx, rx) = mpsc::channel(STREAM_CHANNEL_CAPACITY);
     spawn_sse_blocking_stream_task(tx, "openai mlx_lm chat stream", move |tx| {
-        drive_openai_mlx_lm_chat_stream(tx, request_id, model_id, stream, &mut postprocessing);
+        drive_openai_mlx_lm_chat_stream(tx, request_id, model_id, stream);
     });
 
     Ok(build_keep_alive_stream(rx).into_response())
@@ -97,7 +90,6 @@ pub(crate) async fn stream_openai_mlx_lm_chat_request(
 pub(crate) async fn stream_openai_llama_cpp_chat_request(
     state: AppState,
     request: LlamaCppChatGenerateRequest,
-    output_postprocessing: OpenAiOutputPostprocessing,
 ) -> Result<axum::response::Response, (StatusCode, Json<ErrorResponse>)> {
     let request_id = state.allocate_request_id();
     let model_id = request.model_id.clone();
@@ -107,11 +99,10 @@ pub(crate) async fn stream_openai_llama_cpp_chat_request(
         llama_cpp::start_streaming_chat_generate(&runtime, &llama_backend, &request)
     })
     .await?;
-    let mut postprocessing = OpenAiOutputPostprocessingState::new(output_postprocessing);
 
     let (tx, rx) = mpsc::channel(STREAM_CHANNEL_CAPACITY);
     spawn_sse_blocking_stream_task(tx, "openai llama.cpp chat stream", move |tx| {
-        drive_openai_llama_cpp_chat_stream(tx, request_id, model_id, stream, &mut postprocessing);
+        drive_openai_llama_cpp_chat_stream(tx, request_id, model_id, stream);
     });
 
     Ok(build_keep_alive_stream(rx).into_response())
@@ -123,7 +114,6 @@ fn drive_openai_stream_state<N>(
     stream_kind: OpenAiStreamKind,
     next_event: N,
     tokenizer: Option<EngineTokenizer>,
-    output_postprocessing: &mut OpenAiOutputPostprocessingState,
 ) where
     N: FnMut(&mut GenerateStreamState) -> Result<Option<GenerateStreamEvent>, EngineSessionError>,
 {
@@ -152,7 +142,6 @@ fn drive_openai_stream_state<N>(
                 event,
                 stream_kind,
                 &mut chat_role_emitted,
-                output_postprocessing,
                 decoder.as_mut(),
                 channel_filter.as_mut(),
             )
@@ -168,7 +157,6 @@ fn send_openai_stream_event(
     event: GenerateStreamEvent,
     stream_kind: OpenAiStreamKind,
     chat_role_emitted: &mut bool,
-    output_postprocessing: &mut OpenAiOutputPostprocessingState,
     mut decoder: Option<&mut IncrementalDecoder>,
     mut channel_filter: Option<&mut Gemma4ChannelStreamFilter>,
 ) -> bool {
@@ -181,18 +169,13 @@ fn send_openai_stream_event(
                 else {
                     return true;
                 };
-                let Some(processed_delta_text) =
-                    output_postprocessing.apply_delta_text(&delta_text)
-                else {
-                    return true;
-                };
-                if processed_delta_text.is_empty() {
+                if delta_text.is_empty() {
                     return true;
                 }
                 let chunk = completion_delta_chunk(
                     payload.request.request_id,
                     payload.request.model_id,
-                    processed_delta_text,
+                    delta_text,
                 );
                 send_openai_stream_chunk(tx, &chunk)
             }
@@ -216,12 +199,7 @@ fn send_openai_stream_event(
                 else {
                     return true;
                 };
-                let Some(processed_delta_text) =
-                    output_postprocessing.apply_delta_text(&delta_text)
-                else {
-                    return true;
-                };
-                if processed_delta_text.is_empty() {
+                if delta_text.is_empty() {
                     return true;
                 }
                 if let Some(filter) = channel_filter.as_mut() {
@@ -232,19 +210,17 @@ fn send_openai_stream_event(
                     payload.request.request_id,
                     payload.request.model_id,
                     role,
-                    processed_delta_text,
+                    delta_text,
                 );
                 send_openai_stream_chunk(tx, &chunk)
             }
         },
         GenerateStreamEvent::Response(payload) => match stream_kind {
             OpenAiStreamKind::Completion => {
-                let finish_reason =
-                    output_postprocessing.apply_finish_reason(payload.response.finish_reason);
                 let chunk = completion_final_chunk(
                     payload.response.request_id,
                     payload.response.model_id,
-                    finish_reason,
+                    payload.response.finish_reason,
                 );
                 send_openai_stream_chunk(tx, &chunk)
             }
@@ -258,27 +234,23 @@ fn send_openai_stream_event(
                     && let Ok(body_text) = decoder.push(&body_tokens)
                 {
                     let body_text = strip_gemma4_channel_name_header(&body_text);
-                    if let Some(text) = output_postprocessing.apply_delta_text(body_text)
-                        && !text.is_empty()
-                    {
+                    if !body_text.is_empty() {
                         let role = next_chat_delta_role(chat_role_emitted);
                         let chunk = chat_delta_chunk(
                             payload.response.request_id,
                             payload.response.model_id.clone(),
                             role,
-                            text,
+                            body_text.to_string(),
                         );
                         if !send_openai_stream_chunk(tx, &chunk) {
                             return false;
                         }
                     }
                 }
-                let finish_reason =
-                    output_postprocessing.apply_finish_reason(payload.response.finish_reason);
                 let chunk = chat_final_chunk(
                     payload.response.request_id,
                     payload.response.model_id,
-                    finish_reason,
+                    payload.response.finish_reason,
                 );
                 send_openai_stream_chunk(tx, &chunk)
             }
@@ -523,36 +495,26 @@ fn drive_openai_mlx_lm_chat_stream(
     request_id: u64,
     model_id: String,
     mut stream: MlxLmStreamHandle,
-    output_postprocessing: &mut OpenAiOutputPostprocessingState,
 ) {
     let mut chat_role_emitted = false;
     loop {
         match stream.next_chunk() {
             Ok(Some(chunk)) => {
                 if !chunk.text.is_empty() {
-                    if let Some(processed_delta_text) =
-                        output_postprocessing.apply_delta_text(&chunk.text)
-                    {
-                        if !processed_delta_text.is_empty() {
-                            let role = next_chat_delta_role(&mut chat_role_emitted);
-                            let delta = chat_delta_chunk(
-                                request_id,
-                                model_id.clone(),
-                                role,
-                                processed_delta_text,
-                            );
-                            if !send_openai_stream_chunk(&tx, &delta) {
-                                return;
-                            }
-                        }
+                    let role = next_chat_delta_role(&mut chat_role_emitted);
+                    let delta = chat_delta_chunk(request_id, model_id.clone(), role, chunk.text);
+                    if !send_openai_stream_chunk(&tx, &delta) {
+                        return;
                     }
                 }
 
                 if let Some(finish_reason) = chunk.finish_reason {
-                    let finish_reason = output_postprocessing.apply_finish_reason(
+                    send_openai_mlx_lm_chat_final_chunk(
+                        &tx,
+                        request_id,
+                        &model_id,
                         finish_reason_from_mlx_lm(Some(finish_reason.as_str())),
                     );
-                    send_openai_mlx_lm_chat_final_chunk(&tx, request_id, &model_id, finish_reason);
                     let _ = tx.blocking_send(Ok(Event::default().data("[DONE]")));
                     return;
                 }
@@ -576,40 +538,25 @@ fn drive_openai_llama_cpp_chat_stream(
     request_id: u64,
     model_id: String,
     mut stream: LlamaCppStreamHandle,
-    output_postprocessing: &mut OpenAiOutputPostprocessingState,
 ) {
     let mut chat_role_emitted = false;
     loop {
         match stream.next_chunk() {
             Ok(Some(chunk)) => {
                 if !chunk.content.is_empty() {
-                    if let Some(processed_delta_text) =
-                        output_postprocessing.apply_delta_text(&chunk.content)
-                    {
-                        if !processed_delta_text.is_empty() {
-                            let role = next_chat_delta_role(&mut chat_role_emitted);
-                            let delta = chat_delta_chunk(
-                                request_id,
-                                model_id.clone(),
-                                role,
-                                processed_delta_text,
-                            );
-                            if !send_openai_stream_chunk(&tx, &delta) {
-                                return;
-                            }
-                        }
+                    let role = next_chat_delta_role(&mut chat_role_emitted);
+                    let delta = chat_delta_chunk(request_id, model_id.clone(), role, chunk.content);
+                    if !send_openai_stream_chunk(&tx, &delta) {
+                        return;
                     }
                 }
 
                 if chunk.stop {
-                    let finish_reason = output_postprocessing.apply_finish_reason(
-                        finish_reason_from_llama_cpp_chat(chunk.stop_type.as_deref()),
-                    );
                     send_openai_llama_cpp_chat_final_chunk(
                         &tx,
                         request_id,
                         &model_id,
-                        finish_reason,
+                        finish_reason_from_llama_cpp_chat(chunk.stop_type.as_deref()),
                     );
                     let _ = tx.blocking_send(Ok(Event::default().data("[DONE]")));
                     return;
@@ -647,54 +594,6 @@ fn send_openai_llama_cpp_chat_final_chunk(
 ) -> bool {
     let chunk = chat_final_chunk(request_id, model_id.to_string(), finish_reason);
     send_openai_stream_chunk(tx, &chunk)
-}
-
-struct OpenAiOutputPostprocessingState {
-    postprocessing: OpenAiOutputPostprocessing,
-    raw_output_text: String,
-    emitted_output_text: String,
-}
-
-impl OpenAiOutputPostprocessingState {
-    fn new(postprocessing: OpenAiOutputPostprocessing) -> Self {
-        Self {
-            postprocessing,
-            raw_output_text: String::new(),
-            emitted_output_text: String::new(),
-        }
-    }
-
-    fn apply_delta_text(&mut self, delta_text: &str) -> Option<String> {
-        if self.postprocessing.is_noop() {
-            return Some(delta_text.to_string());
-        }
-
-        self.raw_output_text.push_str(delta_text);
-        let normalized = self
-            .postprocessing
-            .normalize_output_text(&self.raw_output_text);
-        let normalized_len = normalized.len();
-        let emitted_len = self.emitted_output_text.len();
-        if normalized_len < emitted_len {
-            self.emitted_output_text = normalized;
-            return None;
-        }
-
-        let delta_text = normalized[emitted_len..].to_string();
-        self.emitted_output_text = normalized;
-        if delta_text.is_empty() {
-            None
-        } else {
-            Some(delta_text)
-        }
-    }
-
-    fn apply_finish_reason(
-        &self,
-        finish_reason: Option<GenerateFinishReason>,
-    ) -> Option<GenerateFinishReason> {
-        self.postprocessing.apply_finish_reason(finish_reason)
-    }
 }
 
 #[cfg(test)]
