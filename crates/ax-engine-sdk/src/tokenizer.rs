@@ -101,6 +101,13 @@ impl EngineTokenizer {
         self.inner.id_to_token(id)
     }
 
+    /// Look up the id of a single token by its surface string. Used to find
+    /// model-specific control tokens (e.g. the Gemma 4 channel markers) in
+    /// generated output without hardcoding ids.
+    pub fn token_to_id(&self, token: &str) -> Option<u32> {
+        self.inner.token_to_id(token)
+    }
+
     /// Encode a batch. Uses the upstream crate's `encode_batch` so
     /// individual sequence tokenization is parallelised internally.
     /// Returns one `Vec<u32>` per input string, in input order.
