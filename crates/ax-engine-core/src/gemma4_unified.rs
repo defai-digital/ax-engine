@@ -822,10 +822,14 @@ impl Gemma4UnifiedVisionProcessor {
             target_w = unit;
         } else if target_h == 0.0 {
             target_h = unit;
-            target_w = ((width as f64 / height as f64).floor() * unit).min(max_side);
+            target_w = ((width as f64 / height as f64) * unit)
+                .max(unit)
+                .min(max_side);
         } else if target_w == 0.0 {
             target_w = unit;
-            target_h = ((height as f64 / width as f64).floor() * unit).min(max_side);
+            target_h = ((height as f64 / width as f64) * unit)
+                .max(unit)
+                .min(max_side);
         }
         (target_w as u32, target_h as u32)
     }
