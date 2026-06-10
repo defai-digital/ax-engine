@@ -101,6 +101,34 @@ workload-tuned MTP gating, and ships benchmark hardening and download UX improve
 - Shifted MTP norm sidecar validation.
 - Bench doctor smoke status check.
 
+## [6.1.3] - 2026-06-09
+
+Introduces speculation profile presets (`auto`, `coding`, `agentic`,
+`chatbot`) that bundle per-knob MTP and n-gram speculative-decode
+configuration into named postures.
+
+### Added
+- **Speculation profiles** — four presets (`auto`, `coding`, `agentic`,
+  `chatbot`) with calibrated MTP draft-confidence gates and n-gram policies.
+- **CLI flag:** `--speculation-profile` / `-s` server flag with hidden alias
+  `--spec`.
+- **SDK wiring:** `EngineSessionConfig::mlx_speculation_profile` threaded
+  through preview/resolved request structs.
+- **Safe process-level override:** `AtomicU8` checked before env var,
+  compatible with `unsafe_code = "forbid"`.
+- **Precedence:** explicit per-knob env > profile preset > built-in default.
+- **Telemetry:** route metadata emits `ax_mlx_speculation_profile` with
+  `ResolutionSource` tracking.
+- **Gemma 4 12B MTP phase 4 results** published.
+
+### Preset Behavior
+- **`auto`** (default) — temperature-driven: low temp defers to built-in
+  defaults (never lowers Gemma 0.999 gate); high temp raises gates to protect
+  sampling diversity.
+- **`coding`** — optimized for code generation.
+- **`agentic`** — optimized for agentic/tool-use workloads.
+- **`chatbot`** — raises Qwen gate; prefers utility gate for n-gram policy.
+
 ## [6.1.2] - 2026-06-09
 
 Patch release that establishes a fair same-artifact benchmark harness for
