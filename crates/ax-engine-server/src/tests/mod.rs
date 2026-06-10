@@ -1,5 +1,6 @@
 mod fixtures;
 
+mod anthropic_messages;
 mod embeddings;
 mod generation;
 mod grpc;

@@ -93,7 +93,7 @@ pub(crate) async fn run_openai_text_generation(
     Ok(kind.build_non_stream_response(&response, request_id))
 }
 
-fn apply_openai_chat_output_postprocessing(
+pub(crate) fn apply_openai_chat_output_postprocessing(
     response: &mut GenerateResponse,
     output_postprocessing: OpenAiOutputPostprocessing,
 ) {
@@ -107,7 +107,7 @@ fn apply_openai_chat_output_postprocessing(
     response.finish_reason = output_postprocessing.apply_finish_reason(response.finish_reason);
 }
 
-fn populate_native_mlx_output_text(
+pub(crate) fn populate_native_mlx_output_text(
     state: &AppState,
     response: &mut GenerateResponse,
     kind: OpenAiStreamKind,

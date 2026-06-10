@@ -9,6 +9,7 @@ use axum::routing::{get, post};
 use tokio::sync::Semaphore;
 
 use super::DEFAULT_MAX_REQUEST_BODY_BYTES;
+use super::anthropic::anthropic_messages;
 use super::app_state::AppState;
 use super::generation::lifecycle::{
     cancel_request, request_snapshot, step_request, submit_request,
@@ -34,6 +35,7 @@ pub(crate) fn build_router(state: AppState) -> Router {
         .route("/v1/runtime", get(runtime_info))
         .route("/v1/models", get(models))
         .route("/v1/embeddings", post(openai_embeddings))
+        .route("/v1/messages", post(anthropic_messages))
         .route("/v1/completions", post(openai_completions))
         .route("/v1/chat/completions", post(openai_chat_completions))
         .route("/v1/step", post(step_request))

@@ -6,6 +6,7 @@ use std::env;
 use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
+mod anthropic;
 mod app_state;
 mod args;
 mod backends;
