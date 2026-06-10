@@ -311,13 +311,14 @@ def _load_config(model_dir: Path) -> _Gemma4UnifiedConfig:
     do_normalize = bool(image_config.get("do_normalize", False))
     image_std = _triple(image_config.get("image_std", [0.5, 0.5, 0.5]))
     if do_normalize and any(
-        not math.isfinite(channel) or channel == 0 for channel in image_std
+        not math.isfinite(channel) or channel <= 0 for channel in image_std
     ):
-        # A zero std channel would divide every pixel into inf/NaN and
-        # silently corrupt the vision input; reject the checkpoint config.
+        # A non-positive or non-finite std channel would corrupt every pixel
+        # (inf/NaN or sign-flipped values); reject the checkpoint config.
+        # _rgb_pixels divides by std relying on this.
         raise ValueError(
-            "preprocessor_config.json image_std contains a zero or non-finite "
-            f"channel {image_std!r}; cannot normalize image pixels"
+            "preprocessor_config.json image_std contains a non-positive or "
+            f"non-finite channel {image_std!r}; cannot normalize image pixels"
         )
 
     return _Gemma4UnifiedConfig(
@@ -983,15 +984,18 @@ def _resized_dimensions(
         raise ValueError("attempting to resize to a 0 x 0 image")
 
     max_side_length = (max_patches // pooling_kernel_size**2) * side_mult
+    # Flooring the aspect ratio keeps the fallback dimension a multiple of
+    # side_mult by construction (the clamps alone only guarantee it because
+    # this branch implies width/height > max_soft_tokens, which is fragile).
     if target_height == 0:
         target_height = side_mult
         target_width = min(
-            max(int(width / height * side_mult), side_mult), max_side_length
+            max(math.floor(width / height) * side_mult, side_mult), max_side_length
         )
     elif target_width == 0:
         target_width = side_mult
         target_height = min(
-            max(int(height / width * side_mult), side_mult), max_side_length
+            max(math.floor(height / width) * side_mult, side_mult), max_side_length
         )
     return int(target_width), int(target_height)
 
@@ -1008,8 +1012,9 @@ def _rgb_pixels(
         if config.do_rescale:
             pixel = [channel * config.rescale_factor for channel in pixel]
         if config.do_normalize:
+            # std > 0 is guaranteed by _load_config's image_std validation.
             pixel = [
-                (channel - mean) / max(std, 1e-12)
+                (channel - mean) / std
                 for channel, mean, std in zip(
                     pixel, config.image_mean, config.image_std
                 )

@@ -117,14 +117,12 @@ impl AnthropicMessagesRequest {
                 "Anthropic Messages streaming is not supported by this preview endpoint; send stream=false",
             ));
         }
-        if json_value_is_present(self.tools.as_ref())
-            || json_value_is_present(self.tool_choice.as_ref())
-        {
+        if tools_in_use(self.tools.as_ref()) || tool_choice_in_use(self.tool_choice.as_ref()) {
             return Err(invalid_request(
                 "Anthropic Messages tool use is not supported by this inference-only endpoint",
             ));
         }
-        if json_value_is_present(self.thinking.as_ref()) {
+        if thinking_requested(self.thinking.as_ref()) {
             return Err(invalid_request(
                 "Anthropic extended thinking is not supported by this inference-only endpoint",
             ));
@@ -323,8 +321,33 @@ fn reject_unexpected_stream(stream: bool) -> Result<(), (StatusCode, Json<ErrorR
     Ok(())
 }
 
-fn json_value_is_present(value: Option<&Value>) -> bool {
-    !matches!(value, None | Some(Value::Null))
+/// The Anthropic API accepts `tools: []` as "no tools" (some SDK adapters
+/// always serialize the key), so only a non-empty array counts as tool use.
+/// Malformed non-array values still count so the unsupported-feature error
+/// surfaces them.
+fn tools_in_use(value: Option<&Value>) -> bool {
+    match value {
+        None | Some(Value::Null) => false,
+        Some(Value::Array(tools)) => !tools.is_empty(),
+        Some(_) => true,
+    }
+}
+
+/// `tool_choice: {"type": "none"}` explicitly opts out of tool use.
+fn tool_choice_in_use(value: Option<&Value>) -> bool {
+    match value {
+        None | Some(Value::Null) => false,
+        Some(value) => value.get("type").and_then(Value::as_str) != Some("none"),
+    }
+}
+
+/// `thinking: {"type": "disabled"}` is the documented way to explicitly turn
+/// extended thinking off; it must not trip the unsupported-feature rejection.
+fn thinking_requested(value: Option<&Value>) -> bool {
+    match value {
+        None | Some(Value::Null) => false,
+        Some(value) => value.get("type").and_then(Value::as_str) != Some("disabled"),
+    }
 }
 
 fn invalid_request(message: impl Into<String>) -> (StatusCode, Json<ErrorResponse>) {

@@ -123,6 +123,98 @@ async fn anthropic_messages_endpoint_rejects_tool_use() {
 }
 
 #[tokio::test]
+async fn anthropic_messages_endpoint_accepts_empty_tools_and_disabled_thinking() {
+    // `tools: []`, `tool_choice: {"type": "none"}`, and
+    // `thinking: {"type": "disabled"}` are valid Anthropic payloads that use
+    // no unsupported feature; they must not be rejected.
+    let (llama_server_url, llama_cpp_server_handle) = spawn_llama_cpp_completion_server(
+        serde_json::json!({
+            "choices": [{
+                "message": {"content": "no tools used"},
+                "finish_reason": "stop"
+            }],
+            "usage": {"prompt_tokens": 4, "completion_tokens": 2}
+        })
+        .to_string(),
+        |_payload| {},
+    );
+    let app = build_router(llama_cpp_server_state(llama_server_url));
+    let (status, response) = json_response(
+        &app,
+        Request::builder()
+            .method("POST")
+            .uri("/v1/messages")
+            .header("content-type", "application/json")
+            .body(Body::from(json_request_body(&json!({
+                "model": "qwen3",
+                "messages": [{"role": "user", "content": "hello"}],
+                "max_tokens": 4,
+                "tools": [],
+                "tool_choice": {"type": "none"},
+                "thinking": {"type": "disabled"}
+            }))))
+            .unwrap(),
+    )
+    .await;
+    llama_cpp_server_handle
+        .join()
+        .expect("llama.cpp server thread should finish");
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        response
+            .get("content")
+            .and_then(Value::as_array)
+            .and_then(|content| content.first())
+            .and_then(|block| block.get("text"))
+            .and_then(Value::as_str),
+        Some("no tools used")
+    );
+}
+
+#[tokio::test]
+async fn anthropic_messages_endpoint_rejects_enabled_thinking_and_malformed_tools() {
+    let app = build_router(llama_cpp_server_state("http://127.0.0.1:1".to_string()));
+    let (status, response) = json_response(
+        &app,
+        Request::builder()
+            .method("POST")
+            .uri("/v1/messages")
+            .header("content-type", "application/json")
+            .body(Body::from(json_request_body(&json!({
+                "model": "qwen3",
+                "messages": [{"role": "user", "content": "hello"}],
+                "max_tokens": 4,
+                "thinking": {"type": "enabled", "budget_tokens": 1024}
+            }))))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_invalid_request_response(&response, "extended thinking is not supported");
+
+    // Malformed non-array `tools` values still surface the rejection.
+    let app = build_router(llama_cpp_server_state("http://127.0.0.1:1".to_string()));
+    let (status, response) = json_response(
+        &app,
+        Request::builder()
+            .method("POST")
+            .uri("/v1/messages")
+            .header("content-type", "application/json")
+            .body(Body::from(json_request_body(&json!({
+                "model": "qwen3",
+                "messages": [{"role": "user", "content": "hello"}],
+                "max_tokens": 4,
+                "tools": 0
+            }))))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_invalid_request_response(&response, "tool use is not supported");
+}
+
+#[tokio::test]
 async fn anthropic_messages_endpoint_rejects_non_text_content_blocks() {
     let app = build_router(llama_cpp_server_state("http://127.0.0.1:1".to_string()));
     let (status, response) = json_response(

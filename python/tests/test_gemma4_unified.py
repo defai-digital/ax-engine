@@ -300,9 +300,10 @@ class Gemma4UnifiedImagePreprocessTests(unittest.TestCase):
 
 
 class Gemma4UnifiedConfigValidationTests(unittest.TestCase):
-    def test_load_config_rejects_zero_image_std_when_normalizing(self) -> None:
-        # A zero std channel would divide every pixel into inf/NaN; the
-        # checkpoint config must be rejected at load time.
+    def test_load_config_rejects_non_positive_image_std_when_normalizing(self) -> None:
+        # A zero std channel would divide every pixel into inf/NaN, and a
+        # negative one would silently sign-flip every pixel; the checkpoint
+        # config must be rejected at load time.
         module = load_module()
         with tempfile.TemporaryDirectory() as tmp:
             model_dir = Path(tmp)
@@ -313,6 +314,11 @@ class Gemma4UnifiedConfigValidationTests(unittest.TestCase):
             processor["image_processor"]["image_std"] = [0.5, 0.0, 0.5]
             processor_path.write_text(json.dumps(processor))
 
+            with self.assertRaisesRegex(ValueError, "image_std"):
+                module._load_config(model_dir)
+
+            processor["image_processor"]["image_std"] = [0.5, -0.5, 0.5]
+            processor_path.write_text(json.dumps(processor))
             with self.assertRaisesRegex(ValueError, "image_std"):
                 module._load_config(model_dir)
 
@@ -341,6 +347,27 @@ class Gemma4UnifiedConfigValidationTests(unittest.TestCase):
             ),
             (32, 8),
         )
+        # Moderate-aspect vectors pinned to the same values as core's
+        # resize_target test, plus the divisibility contract: both dimensions
+        # must stay multiples of patch_size * pooling_kernel_size.
+        self.assertEqual(
+            module._resized_dimensions(
+                100, 5, patch_size=4, pooling_kernel_size=2, max_soft_tokens=4
+            ),
+            (32, 8),
+        )
+        self.assertEqual(
+            module._resized_dimensions(
+                5, 100, patch_size=4, pooling_kernel_size=2, max_soft_tokens=4
+            ),
+            (8, 32),
+        )
+        for width, height in [(100, 5), (5, 100), (1, 10_000), (33, 7)]:
+            target_w, target_h = module._resized_dimensions(
+                width, height, patch_size=4, pooling_kernel_size=2, max_soft_tokens=4
+            )
+            self.assertEqual(target_w % 8, 0)
+            self.assertEqual(target_h % 8, 0)
 
 
 def write_tiny_config(

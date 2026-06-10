@@ -821,13 +821,17 @@ impl Gemma4UnifiedVisionProcessor {
             target_h = unit;
             target_w = unit;
         } else if target_h == 0.0 {
+            // Flooring the aspect ratio keeps the fallback dimension a
+            // multiple of `unit` by construction (the clamps alone only
+            // guarantee it because this branch implies width/height >
+            // max_soft_tokens, which is fragile).
             target_h = unit;
-            target_w = ((width as f64 / height as f64) * unit)
+            target_w = ((width as f64 / height as f64).floor() * unit)
                 .max(unit)
                 .min(max_side);
         } else if target_w == 0.0 {
             target_w = unit;
-            target_h = ((height as f64 / width as f64) * unit)
+            target_h = ((height as f64 / width as f64).floor() * unit)
                 .max(unit)
                 .min(max_side);
         }

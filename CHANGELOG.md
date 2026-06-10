@@ -4,6 +4,27 @@ All notable changes to AX Engine are documented here. This project follows
 [Semantic Versioning](https://semver.org/). Releases prior to `v6.0.0` are
 tracked via Git tags and GitHub Releases.
 
+## [Unreleased]
+
+### Fixed
+
+- **Anthropic Messages no-op feature payloads** — `tools: []`,
+  `tool_choice: {"type": "none"}`, and `thinking: {"type": "disabled"}` are
+  valid Anthropic payloads that use no unsupported feature and are accepted
+  again instead of being rejected with 400. Non-empty `tools`, enabled
+  `thinking`, and malformed values are still rejected.
+- **Negative `image_std` rejected at config load** — image normalization
+  validation now rejects non-positive (not just zero or non-finite) std
+  channels in both the server and the Python SDK. The per-pixel epsilon
+  clamps — which silently rewrote a negative std to ~1.2e-7 (Rust) or 1e-12
+  (Python), exploding pixel values by orders of magnitude — are removed in
+  favor of the load-time guarantee.
+- **Gemma 4 resize fallback divisibility** — the single-axis resize fallback
+  floors the aspect ratio again, keeping the fallback dimension a multiple of
+  `patch_size * pooling_kernel_size` by construction instead of relying on
+  the `max_side` clamp always binding. The Python parity test now pins the
+  same vectors and the divisibility contract as the Rust test.
+
 ## [6.2.5] - 2026-06-10
 
 Adds API key authentication, a Prometheus metrics endpoint, agentic
