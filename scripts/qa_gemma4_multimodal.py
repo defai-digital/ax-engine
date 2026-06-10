@@ -16,9 +16,18 @@ of CI. Run it against a local server:
     python3 scripts/qa_gemma4_multimodal.py --url http://127.0.0.1:8000 \
         --model gemma-4-12B-it
 
-Exit code is 0 only if every probe returns HTTP 200 with non-empty content.
-Content-match checks (e.g. the answer mentions "red") are reported but do not
-fail the run, since exact wording depends on the quantized weights.
+Exit code is 0 only if every probe returns HTTP 200 with non-empty content and
+no response leaks Gemma 4 thinking-channel framing (a content prefix like
+`thought\n`). Content-match checks (e.g. the answer mentions "red") are
+reported but do not fail the run by default, since exact wording depends on
+the quantized weights; pass `--strict` to fail on substring mismatches too.
+
+On macOS the probe set includes a speech-transcription check synthesized with
+`say`/`afconvert`. Speech transcription is the reliable audio-health signal:
+the 2026-06-09 baseline showed the model transcribes speech verbatim through
+both AX and llama.cpp, while synthetic tone/silence classification fails in
+BOTH engines (out-of-distribution for the model), so tone probes here are
+smoke-only.
 
 Requires Pillow (`pip install pillow`); WAV uses the stdlib.
 """
@@ -30,11 +39,14 @@ import io
 import json
 import re
 import struct
+import subprocess
 import sys
+import tempfile
 import urllib.error
 import urllib.request
 import wave
 from dataclasses import dataclass
+from pathlib import Path
 
 try:
     from PIL import Image
@@ -91,6 +103,36 @@ def _wav_tone(seconds: float = 0.5, sample_rate: int = 16000, freq: float = 220.
     return buffer.getvalue()
 
 
+SPEECH_SENTENCE = "The quick brown fox jumps over the lazy dog"
+
+
+def _wav_speech() -> bytes | None:
+    """Synthesize a known sentence as 16 kHz mono WAV via macOS `say`.
+
+    Returns None when synthesis is unavailable (non-macOS host, missing
+    tools), in which case the speech probe is skipped with a notice.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        aiff = Path(tmp) / "speech.aiff"
+        wav = Path(tmp) / "speech.wav"
+        try:
+            subprocess.run(
+                ["say", "-o", str(aiff), SPEECH_SENTENCE],
+                check=True,
+                capture_output=True,
+                timeout=60,
+            )
+            subprocess.run(
+                ["afconvert", "-f", "WAVE", "-d", "LEI16@16000", "-c", "1", str(aiff), str(wav)],
+                check=True,
+                capture_output=True,
+                timeout=60,
+            )
+            return wav.read_bytes()
+        except (OSError, subprocess.SubprocessError):
+            return None
+
+
 def _b64(data: bytes) -> str:
     return base64.b64encode(data).decode("ascii")
 
@@ -103,23 +145,28 @@ class Probe:
 
 
 def _build_probes() -> list[Probe]:
-    red_png = _png_solid(64, 64, (220, 20, 20))
+    # Blue is the robust color expectation: the model answers red squares as
+    # "maroon"/"red" interchangeably at temperature 0 (llama.cpp's own
+    # reasoning lists both as candidates for pure red), while saturated blue
+    # and green answer unambiguously.
+    blue_png = _png_solid(64, 64, (0, 0, 255))
     gradient_png = _png_gradient(96, 96)
     tone_wav = _wav_tone()
+    speech_wav = _wav_speech()
     three_frame_gif = _gif_frames(32, 32, [(255, 0, 0), (0, 255, 0), (0, 0, 255)])
 
     image_part = lambda data: {  # noqa: E731 - terse local helper
         "type": "image_url",
         "image_url": {"url": f"data:image/png;base64,{_b64(data)}"},
     }
-    return [
+    probes = [
         Probe(
             name="image-color",
             content=[
                 {"type": "text", "text": "What color is this image? Answer in one word."},
-                image_part(red_png),
+                image_part(blue_png),
             ],
-            expect_substring="red",
+            expect_substring="blue",
         ),
         Probe(
             name="image-describe",
@@ -129,8 +176,12 @@ def _build_probes() -> list[Probe]:
             ],
             expect_substring=None,
         ),
+        # Smoke-only: synthetic tones are out-of-distribution for the model.
+        # The 2026-06-09 baseline showed tone/silence classification fails the
+        # same way through llama.cpp, so no content expectation is asserted —
+        # speech transcription below is the audio-health signal.
         Probe(
-            name="audio-transcribe",
+            name="audio-describe-tone",
             content=[
                 {"type": "text", "text": "Describe this audio."},
                 {"type": "input_audio", "input_audio": {"data": _b64(tone_wav), "format": "wav"}},
@@ -149,6 +200,26 @@ def _build_probes() -> list[Probe]:
             expect_substring="3",
         ),
     ]
+    if speech_wav is not None:
+        probes.append(
+            Probe(
+                name="audio-transcribe-speech",
+                content=[
+                    {"type": "text", "text": "Transcribe the speech in this audio."},
+                    {
+                        "type": "input_audio",
+                        "input_audio": {"data": _b64(speech_wav), "format": "wav"},
+                    },
+                ],
+                expect_substring="quick brown fox",
+            )
+        )
+    else:
+        print(
+            "note: speech synthesis unavailable (say/afconvert); "
+            "skipping audio-transcribe-speech probe"
+        )
+    return probes
 
 
 def _post_chat(url: str, model: str, content: list[dict], max_tokens: int) -> str:
@@ -176,6 +247,11 @@ def main() -> int:
     parser.add_argument("--url", default="http://127.0.0.1:8000")
     parser.add_argument("--model", default="gemma-4-12B-it")
     parser.add_argument("--max-tokens", type=int, default=64)
+    parser.add_argument(
+        "--strict",
+        action="store_true",
+        help="fail the run when a content-match expectation misses",
+    )
     args = parser.parse_args()
 
     failures = 0
@@ -194,6 +270,14 @@ def main() -> int:
             failures += 1
             continue
 
+        # Guard against the Gemma 4 thinking-channel header leaking into chat
+        # content (`thought\n…`): the server must strip channel framing.
+        if text == "thought" or text.startswith("thought\n"):
+            snippet = text.replace("\n", " ")[:80]
+            print(f"[FAIL] {probe.name}: thinking-channel header leaked: {snippet!r}")
+            failures += 1
+            continue
+
         match = ""
         if probe.expect_substring is not None:
             # Word-boundary match so a numeric expectation like "3" is not
@@ -208,14 +292,19 @@ def main() -> int:
                 is not None
             )
             match = f"  (match '{probe.expect_substring}': {'yes' if hit else 'no'})"
+            if args.strict and not hit:
+                snippet = text.replace("\n", " ")[:80]
+                print(f"[FAIL] {probe.name}: {snippet!r}{match}")
+                failures += 1
+                continue
         snippet = text.replace("\n", " ")[:80]
         print(f"[PASS] {probe.name}: {snippet!r}{match}")
 
     print()
     if failures:
-        print(f"{failures} probe(s) failed (HTTP error or empty content).")
+        print(f"{failures} probe(s) failed.")
         return 1
-    print("All probes returned non-empty content.")
+    print("All probes passed.")
     return 0
 
 
