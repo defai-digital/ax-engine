@@ -612,6 +612,56 @@ async fn openai_chat_request_decodes_combined_image_audio_video() {
 }
 
 #[tokio::test]
+async fn openai_chat_request_decodes_mp3_input_audio() {
+    use base64::Engine as _;
+
+    let artifact_dir = gemma4_unified_artifact("native-openai-chat-mp3");
+    let state = native_mlx_openai_builder_state("qwen3", &artifact_dir);
+
+    // 0.5 s 16 kHz mono MP3 tone; decodes to ~9216 samples with encoder
+    // delay/padding -> ceil(samples/640) frames.
+    let mp3 = include_bytes!("fixtures/gemma4_golden/audio_tone_16k_mono.mp3");
+    let audio_b64 = base64::engine::general_purpose::STANDARD.encode(mp3);
+
+    let request: OpenAiChatCompletionHttpRequest = serde_json::from_value(json!({
+        "model": "qwen3",
+        "messages": [{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "describe"},
+                {"type": "input_audio", "input_audio": {"data": audio_b64, "format": "mp3"}}
+            ]
+        }],
+        "max_tokens": 8
+    }))
+    .expect("mp3 chat request should deserialize");
+
+    let built = build_openai_chat_request(&state, request).expect("mp3 chat should build");
+    let inputs = built
+        .generate_request
+        .multimodal_inputs
+        .gemma4_unified
+        .expect("mp3 audio should attach tensors");
+
+    assert_eq!(inputs.audios.len(), 1);
+    let audio = &inputs.audios[0];
+    assert_eq!(audio.span.soft_token_count, audio.frame_count);
+    assert!(
+        (12..=18).contains(&audio.frame_count),
+        "expected ~15 audio frames from the 0.5 s MP3, got {}",
+        audio.frame_count
+    );
+    // The audio placeholder (101) expanded to one soft token per frame.
+    let tokens = &built.generate_request.input_tokens;
+    assert_eq!(
+        tokens.iter().filter(|&&t| t == 101).count() as u32,
+        audio.frame_count
+    );
+
+    fs::remove_dir_all(artifact_dir).expect("artifact dir should clean up");
+}
+
+#[tokio::test]
 async fn openai_chat_request_rejects_gemma4_multimodal_inputs_without_input_tokens() {
     let artifact_dir = minimal_tokenizer_artifact("native-openai-chat-mm-no-tokens");
     let state = native_mlx_openai_builder_state("gemma-4-12b-it", &artifact_dir);

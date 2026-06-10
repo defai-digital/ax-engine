@@ -8,11 +8,12 @@
 //! [`ax_engine_core::gemma4_unified`] runtime expects, mirroring the reference
 //! `processing_gemma4_unified.py`.
 //!
-//! Scope: image (PNG/JPEG), audio (PCM WAV), and video (animated GIF). Video
-//! frames reuse the image patchify path at a lower per-frame soft-token budget
-//! with `mm:ss` timestamps, matching the reference `Gemma4UnifiedVideoProcessor`.
-//! Non-GIF video containers and non-WAV audio are out of scope — `/v1/generate`
-//! still accepts fully pre-computed tensors for those.
+//! Scope: image (PNG/JPEG), audio (PCM WAV or MP3), and video (animated GIF).
+//! Video frames reuse the image patchify path at a lower per-frame soft-token
+//! budget with `mm:ss` timestamps, matching the reference
+//! `Gemma4UnifiedVideoProcessor`. Non-GIF video containers and other audio
+//! formats (AAC/OGG/FLAC) are out of scope — `/v1/generate` still accepts fully
+//! pre-computed tensors for those.
 
 use std::path::Path;
 
@@ -477,13 +478,37 @@ fn normalize_channel(value: u8, channel: usize, normalization: &ImageNormalizati
     pixel
 }
 
+/// Decode inline chat audio into the encoder-free audio connector's fixed-size
+/// frames. The container is sniffed from magic bytes rather than the caller's
+/// declared format: `RIFF` → PCM WAV via hound, ID3 tag or MPEG frame sync →
+/// MP3 via symphonia. Other formats (AAC/OGG/FLAC) stay unsupported.
+pub(crate) fn preprocess_audio(
+    bytes: &[u8],
+    audio: &Gemma4UnifiedAudioProcessor,
+) -> Result<PreprocessedAudio, MediaError> {
+    if bytes.starts_with(b"RIFF") {
+        return preprocess_wav(bytes, audio);
+    }
+    if looks_like_mp3(bytes) {
+        return preprocess_mp3(bytes, audio);
+    }
+    Err(MediaError::Unsupported(
+        "inline audio must be PCM WAV or MP3; other formats require pre-computed audio tensors via /v1/generate".to_string(),
+    ))
+}
+
+/// MP3 streams start with an ID3v2 tag or directly with an MPEG audio frame
+/// sync (11 set bits: `0xFF` then the top 3 bits of the next byte).
+fn looks_like_mp3(bytes: &[u8]) -> bool {
+    bytes.starts_with(b"ID3") || (bytes.len() >= 2 && bytes[0] == 0xFF && bytes[1] & 0xE0 == 0xE0)
+}
+
 /// Decode a PCM WAV stream and chunk the (mono, resampled) waveform into the
 /// encoder-free audio connector's fixed-size frames.
 ///
 /// Mirrors `Gemma4UnifiedAudioFeatureExtractor`: downmix to mono, resample to
 /// `sampling_rate`, zero-pad to a multiple of `audio_samples_per_token`, and
-/// reshape into `[frames, audio_samples_per_token]`. WAV only — other container
-/// formats would need a heavier decoder (e.g. symphonia).
+/// reshape into `[frames, audio_samples_per_token]`.
 pub(crate) fn preprocess_wav(
     bytes: &[u8],
     audio: &Gemma4UnifiedAudioProcessor,
@@ -495,7 +520,129 @@ pub(crate) fn preprocess_wav(
     let interleaved = read_wav_samples(reader, spec)?;
     let mono = downmix_to_mono(&interleaved, channels);
     let resampled = resample_linear(&mono, spec.sample_rate, audio.sampling_rate);
+    frame_resampled_waveform(resampled, audio)
+}
 
+/// Decode an MP3 stream via symphonia and chunk the (mono, resampled) waveform
+/// into the connector's frames, sharing the WAV path's downmix/resample/framing
+/// semantics. MP3 is lossy and pads with encoder delay, so sample counts differ
+/// slightly from the original PCM.
+fn preprocess_mp3(
+    bytes: &[u8],
+    audio: &Gemma4UnifiedAudioProcessor,
+) -> Result<PreprocessedAudio, MediaError> {
+    let (mono, source_rate) = decode_mp3_mono(bytes, audio)?;
+    let resampled = resample_linear(&mono, source_rate, audio.sampling_rate);
+    frame_resampled_waveform(resampled, audio)
+}
+
+/// Decode an MP3 stream into a mono waveform at its source rate. Decoding stops
+/// once enough source samples exist to fill the model's `audio_seq_length`
+/// frame cap, so an oversized upload cannot expand unbounded in memory.
+fn decode_mp3_mono(
+    bytes: &[u8],
+    audio: &Gemma4UnifiedAudioProcessor,
+) -> Result<(Vec<f32>, u32), MediaError> {
+    use symphonia::core::audio::SampleBuffer;
+    use symphonia::core::codecs::DecoderOptions;
+    use symphonia::core::errors::Error as SymphoniaError;
+    use symphonia::core::formats::FormatOptions;
+    use symphonia::core::io::MediaSourceStream;
+    use symphonia::core::meta::MetadataOptions;
+    use symphonia::core::probe::Hint;
+
+    let decode_error = |error: SymphoniaError| -> MediaError {
+        MediaError::Decode(format!("failed to decode MP3 audio: {error}"))
+    };
+
+    let stream = MediaSourceStream::new(
+        Box::new(std::io::Cursor::new(bytes.to_vec())),
+        Default::default(),
+    );
+    let mut hint = Hint::new();
+    hint.with_extension("mp3");
+    let probed = symphonia::default::get_probe()
+        .format(
+            &hint,
+            stream,
+            &FormatOptions::default(),
+            &MetadataOptions::default(),
+        )
+        .map_err(decode_error)?;
+    let mut format = probed.format;
+    let track = format
+        .default_track()
+        .ok_or_else(|| MediaError::Decode("MP3 stream has no audio track".to_string()))?;
+    let track_id = track.id;
+    let mut decoder = symphonia::default::get_codecs()
+        .make(&track.codec_params, &DecoderOptions::default())
+        .map_err(decode_error)?;
+
+    let mut source_rate = track.codec_params.sample_rate.unwrap_or(0);
+    let mut mono = Vec::new();
+    loop {
+        let packet = match format.next_packet() {
+            Ok(packet) => packet,
+            // End of stream surfaces as an UnexpectedEof I/O error.
+            Err(SymphoniaError::IoError(error))
+                if error.kind() == std::io::ErrorKind::UnexpectedEof =>
+            {
+                break;
+            }
+            Err(error) => return Err(decode_error(error)),
+        };
+        if packet.track_id() != track_id {
+            continue;
+        }
+        let decoded = match decoder.decode(&packet) {
+            Ok(decoded) => decoded,
+            // A corrupt frame is skippable; the decoder stays usable.
+            Err(SymphoniaError::DecodeError(_)) => continue,
+            Err(error) => return Err(decode_error(error)),
+        };
+        let spec = *decoded.spec();
+        source_rate = spec.rate;
+        let channels = spec.channels.count().max(1);
+        let mut buffer = SampleBuffer::<f32>::new(decoded.capacity() as u64, spec);
+        buffer.copy_interleaved_ref(decoded);
+        mono.extend(
+            buffer
+                .samples()
+                .chunks(channels)
+                .map(|frame| frame.iter().sum::<f32>() / channels as f32),
+        );
+        if let Some(cap) = mp3_decode_sample_cap(audio, source_rate)
+            && mono.len() >= cap
+        {
+            break;
+        }
+    }
+
+    if source_rate == 0 {
+        return Err(MediaError::Decode(
+            "MP3 stream declares no sample rate".to_string(),
+        ));
+    }
+    Ok((mono, source_rate))
+}
+
+/// Source-rate sample count that fills the model's `audio_seq_length` frame cap
+/// (plus one frame of slack); `None` when the model declares no cap.
+fn mp3_decode_sample_cap(audio: &Gemma4UnifiedAudioProcessor, source_rate: u32) -> Option<usize> {
+    let frames = audio.audio_seq_length? as u64;
+    let per_token = audio.audio_samples_per_token.max(1) as u64;
+    let target_samples = (frames + 1) * per_token;
+    let target_rate = audio.sampling_rate.max(1) as u64;
+    Some((target_samples * source_rate.max(1) as u64).div_ceil(target_rate) as usize)
+}
+
+/// Zero-pad a mono waveform (already at the model rate) to a multiple of
+/// `audio_samples_per_token` and reshape it into
+/// `[frames, audio_samples_per_token]`, capped at `audio_seq_length` frames.
+fn frame_resampled_waveform(
+    resampled: Vec<f32>,
+    audio: &Gemma4UnifiedAudioProcessor,
+) -> Result<PreprocessedAudio, MediaError> {
     let per_token = audio.audio_samples_per_token.max(1) as usize;
     if resampled.is_empty() {
         return Err(MediaError::Decode("audio contains no samples".to_string()));
@@ -724,6 +871,83 @@ mod tests {
         assert_eq!(pre.frame_count, pre.sample_count.div_ceil(640));
         assert_eq!(pre.frame_count, audio.compute_soft_tokens(pre.sample_count));
         assert_eq!(pre.feature_count, 640);
+    }
+
+    fn rms(samples: &[f32]) -> f32 {
+        (samples.iter().map(|s| s * s).sum::<f32>() / samples.len().max(1) as f32).sqrt()
+    }
+
+    #[test]
+    fn mp3_mono_16k_decodes_and_frames_like_wav() {
+        let audio = audio();
+        // 0.5 s, 440 Hz tone at 0.5 amplitude, 16 kHz mono (lame, 64 kbps).
+        let mp3 = include_bytes!("tests/fixtures/gemma4_golden/audio_tone_16k_mono.mp3");
+        let pre = preprocess_audio(mp3, &audio).unwrap();
+
+        // 8000 PCM samples plus MP3 encoder delay/padding (~0.576 s decoded).
+        assert!(
+            (7000..=11000).contains(&(pre.sample_count as usize)),
+            "expected ~8000-9300 samples, got {}",
+            pre.sample_count
+        );
+        assert_eq!(pre.frame_count, audio.compute_soft_tokens(pre.sample_count));
+        assert_eq!(pre.feature_count, 640);
+
+        // The decoded tone must carry real signal energy (a 0.5-amplitude sine
+        // has RMS ~0.35; lossy decode and delay padding lower it slightly).
+        let signal_len = (pre.sample_count as usize).min(pre.input_features.len());
+        let energy = rms(&pre.input_features[..signal_len]);
+        assert!(
+            energy > 0.1 && energy < 1.0,
+            "decoded MP3 tone RMS out of range: {energy}"
+        );
+    }
+
+    #[test]
+    fn mp3_stereo_44k_downmixes_and_resamples_to_16k() {
+        let audio = audio();
+        // 0.5 s stereo tone at 44.1 kHz resamples to ~8000 samples at 16 kHz.
+        let mp3 = include_bytes!("tests/fixtures/gemma4_golden/audio_tone_44k_stereo.mp3");
+        let pre = preprocess_audio(mp3, &audio).unwrap();
+
+        assert!(
+            (7000..=11000).contains(&(pre.sample_count as usize)),
+            "expected ~8000-8900 resampled samples, got {}",
+            pre.sample_count
+        );
+        assert_eq!(pre.frame_count, audio.compute_soft_tokens(pre.sample_count));
+        assert_eq!(pre.feature_count, 640);
+    }
+
+    #[test]
+    fn preprocess_audio_routes_wav_and_rejects_unknown_containers() {
+        let audio = audio();
+
+        // RIFF magic routes to the existing WAV path.
+        let wav = wav_16k_mono(&vec![0.25f32; 1600]);
+        let pre = preprocess_audio(&wav, &audio).unwrap();
+        assert_eq!(pre.frame_count, 3);
+
+        // Anything that is neither RIFF nor MP3 fails closed as unsupported.
+        let error = preprocess_audio(b"OggS\x00\x02 not supported", &audio).unwrap_err();
+        assert!(matches!(error, MediaError::Unsupported(_)));
+        assert!(error.to_string().contains("PCM WAV or MP3"));
+    }
+
+    #[test]
+    fn mp3_decode_cap_scales_with_source_rate() {
+        let audio = audio(); // 16 kHz, 640 samples/token, 1500-frame cap
+        let cap_16k = mp3_decode_sample_cap(&audio, 16000).unwrap();
+        assert_eq!(cap_16k, 1501 * 640);
+        let cap_32k = mp3_decode_sample_cap(&audio, 32000).unwrap();
+        assert_eq!(cap_32k, 2 * cap_16k);
+
+        let uncapped = Gemma4UnifiedAudioProcessor {
+            sampling_rate: 16000,
+            audio_samples_per_token: 640,
+            audio_seq_length: None,
+        };
+        assert_eq!(mp3_decode_sample_cap(&uncapped, 16000), None);
     }
 
     #[test]

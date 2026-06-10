@@ -316,7 +316,7 @@ pub(crate) fn render_gemma4_unified_chat_with_media(
         .audios
         .iter()
         .map(|bytes| match config.audio.as_ref() {
-            Some(processor) => multimodal::preprocess_wav(bytes, processor),
+            Some(processor) => multimodal::preprocess_audio(bytes, processor),
             None => Err(MediaError::Unsupported(
                 "model has no audio feature extractor; audio input is not supported".to_string(),
             )),

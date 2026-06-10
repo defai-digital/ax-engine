@@ -29,7 +29,9 @@ both AX and llama.cpp, while synthetic tone/silence classification fails in
 BOTH engines (out-of-distribution for the model), so tone probes here are
 smoke-only.
 
-Requires Pillow (`pip install pillow`); WAV uses the stdlib.
+Requires Pillow (`pip install pillow`); WAV uses the stdlib. The MP3 probe
+reuses the checked-in unit-test fixture (macOS cannot encode MP3 at runtime)
+and is skipped when the script runs outside the repo.
 """
 from __future__ import annotations
 
@@ -104,6 +106,13 @@ def _wav_tone(seconds: float = 0.5, sample_rate: int = 16000, freq: float = 220.
 
 
 SPEECH_SENTENCE = "The quick brown fox jumps over the lazy dog"
+
+# 0.5 s 440 Hz tone, 16 kHz mono — the same fixture the server's MP3 decode
+# unit tests use, so this probe exercises the symphonia path end to end.
+MP3_TONE_FIXTURE = (
+    Path(__file__).resolve().parent.parent
+    / "crates/ax-engine-server/src/tests/fixtures/gemma4_golden/audio_tone_16k_mono.mp3"
+)
 
 
 def _wav_speech() -> bytes | None:
@@ -200,6 +209,30 @@ def _build_probes() -> list[Probe]:
             expect_substring="3",
         ),
     ]
+    if MP3_TONE_FIXTURE.exists():
+        # Smoke-only like the WAV tone: verifies the server decodes MP3 and the
+        # audio graph produces tokens; content quality is not asserted.
+        probes.append(
+            Probe(
+                name="audio-describe-tone-mp3",
+                content=[
+                    {"type": "text", "text": "Describe this audio."},
+                    {
+                        "type": "input_audio",
+                        "input_audio": {
+                            "data": _b64(MP3_TONE_FIXTURE.read_bytes()),
+                            "format": "mp3",
+                        },
+                    },
+                ],
+                expect_substring=None,
+            )
+        )
+    else:
+        print(
+            f"note: MP3 fixture not found at {MP3_TONE_FIXTURE}; "
+            "skipping audio-describe-tone-mp3 probe"
+        )
     if speech_wav is not None:
         probes.append(
             Probe(

@@ -249,7 +249,7 @@ unified media tensor roles. Two input shapes are accepted on those sessions:
 
 - **Inline media on chat.** `POST /v1/chat/completions` accepts OpenAI-style
   content parts with base64 `data:` URIs: `image_url` (PNG/JPEG),
-  `input_audio` / `audio_url` (WAV), and `video_url` (animated GIF). The
+  `input_audio` / `audio_url` (WAV or MP3), and `video_url` (animated GIF). The
   server decodes and preprocesses media into Gemma4 unified soft-token spans
   and tensors. Remote `http(s)` media URLs are rejected; callers must inline
   base64 data.
@@ -270,9 +270,15 @@ Multimodal serving contract limits:
   (32 frames at ~70 soft tokens per frame plus timestamps, ~2,400+ tokens)
   needs a raised `--max-batch-tokens`. Under concurrent load a fitting
   request may wait for a step with enough budget; it is never split.
-- **Audio.** WAV input is downmixed to mono and resampled to the model rate
-  (16 kHz). Audio longer than the model's `audio_seq_length` cap
-  (750 frames × 40 ms = 30 s by default) is silently truncated.
+- **Token budgets.** Image and video soft-token budgets come from the model's
+  `preprocessor_config.json` (Gemma 4 12B: up to 280 soft tokens per image,
+  70 per video frame); there is no per-request budget or quality override.
+- **Audio.** WAV and MP3 input is downmixed to mono and resampled to the
+  model rate (16 kHz). The container is sniffed from magic bytes, not the
+  declared `format` field. Other formats (AAC/OGG/FLAC) are rejected; send
+  pre-computed audio tensors via `/v1/generate` instead. Audio longer than
+  the model's `audio_seq_length` cap (750 frames × 40 ms = 30 s by default)
+  is silently truncated, and MP3 decoding stops at that cap.
 - **Video.** Animated GIF only; frames are sampled uniformly to at most 32
   frames, each rendered with an `mm:ss` timestamp.
 - **Caching.** Prefix caching is disabled for multimodal requests; every

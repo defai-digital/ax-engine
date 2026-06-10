@@ -14,6 +14,7 @@ image.workspace = true
 prost = "0.13"
 serde.workspace = true
 serde_json.workspace = true
+symphonia.workspace = true
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
 tonic = "0.12"
