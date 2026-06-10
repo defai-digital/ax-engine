@@ -302,6 +302,18 @@ def _load_config(model_dir: Path) -> _Gemma4UnifiedConfig:
         or 640
     )
 
+    do_normalize = bool(image_config.get("do_normalize", False))
+    image_std = _triple(image_config.get("image_std", [0.5, 0.5, 0.5]))
+    if do_normalize and any(
+        not math.isfinite(channel) or channel == 0 for channel in image_std
+    ):
+        # A zero std channel would divide every pixel into inf/NaN and
+        # silently corrupt the vision input; reject the checkpoint config.
+        raise ValueError(
+            "preprocessor_config.json image_std contains a zero or non-finite "
+            f"channel {image_std!r}; cannot normalize image pixels"
+        )
+
     return _Gemma4UnifiedConfig(
         image_token_id=_required_int(model_config, "image_token_id"),
         audio_token_id=_required_int(model_config, "audio_token_id"),
@@ -315,9 +327,9 @@ def _load_config(model_dir: Path) -> _Gemma4UnifiedConfig:
         do_resize=bool(image_config.get("do_resize", True)),
         do_rescale=bool(image_config.get("do_rescale", True)),
         rescale_factor=float(image_config.get("rescale_factor", 1 / 255)),
-        do_normalize=bool(image_config.get("do_normalize", False)),
+        do_normalize=do_normalize,
         image_mean=_triple(image_config.get("image_mean", [0.5, 0.5, 0.5])),
-        image_std=_triple(image_config.get("image_std", [0.5, 0.5, 0.5])),
+        image_std=image_std,
         patch_size=_optional_int(image_config, "patch_size")
         or _required_int(vision_config, "patch_size"),
         model_patch_size=_optional_int(image_config, "model_patch_size")

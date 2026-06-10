@@ -261,6 +261,7 @@ pub(super) fn base_server_args() -> ServerArgs {
         host: "127.0.0.1".to_string(),
         port: 8080,
         model_id: TEST_MODEL_ID.to_string(),
+        api_key: None,
         preset: None,
         list_presets: false,
         deterministic: true,

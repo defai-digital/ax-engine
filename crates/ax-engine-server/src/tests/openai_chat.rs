@@ -284,6 +284,95 @@ async fn openai_chat_request_marks_tool_and_structured_workload_metadata() {
 }
 
 #[tokio::test]
+async fn openai_chat_request_rejects_top_logprobs_until_top_n_is_supported() {
+    let state = test_app_state(|args| {
+        args.model_id = "gemma4-e2b".to_string();
+        args.llama_server_url = Some("http://127.0.0.1:1".to_string());
+    });
+    let request: OpenAiChatCompletionHttpRequest = serde_json::from_value(json!({
+        "messages": [{"role": "user", "content": "Hello"}],
+        "max_tokens": 8,
+        "logprobs": true,
+        "top_logprobs": 5
+    }))
+    .expect("sample chat request should deserialize");
+
+    let error = match build_openai_chat_request(&state, request) {
+        Ok(_) => panic!("top_logprobs should fail closed until top-N alternatives are available"),
+        Err(error) => error,
+    };
+
+    assert_eq!(error.0, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        error.1.0.error.code.as_deref(),
+        Some("unsupported_parameter")
+    );
+}
+
+#[tokio::test]
+async fn openai_chat_request_rejects_streaming_json_object_validation() {
+    let state = test_app_state(|args| {
+        args.model_id = "gemma4-e2b".to_string();
+        args.llama_server_url = Some("http://127.0.0.1:1".to_string());
+    });
+    let request: OpenAiChatCompletionHttpRequest = serde_json::from_value(json!({
+        "messages": [{"role": "user", "content": "Return JSON"}],
+        "max_tokens": 8,
+        "stream": true,
+        "response_format": {"type": "json_object"}
+    }))
+    .expect("sample chat request should deserialize");
+
+    let error = match build_openai_chat_request(&state, request) {
+        Ok(_) => panic!("streaming JSON object validation should fail closed"),
+        Err(error) => error,
+    };
+
+    assert_eq!(error.0, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        error.1.0.error.code.as_deref(),
+        Some("unsupported_parameter")
+    );
+}
+
+#[tokio::test]
+async fn openai_chat_request_rejects_streaming_logprobs_and_reasoning() {
+    // Streaming chunks do not carry logprobs or reasoning yet; the request
+    // must fail closed instead of silently dropping the asked-for contract.
+    let state = test_app_state(|args| {
+        args.model_id = "gemma4-e2b".to_string();
+        args.llama_server_url = Some("http://127.0.0.1:1".to_string());
+    });
+
+    for body in [
+        json!({
+            "messages": [{"role": "user", "content": "Hello"}],
+            "max_tokens": 8,
+            "stream": true,
+            "logprobs": true
+        }),
+        json!({
+            "messages": [{"role": "user", "content": "Hello"}],
+            "max_tokens": 8,
+            "stream": true,
+            "reasoning": true
+        }),
+    ] {
+        let request: OpenAiChatCompletionHttpRequest =
+            serde_json::from_value(body).expect("sample chat request should deserialize");
+        let error = match build_openai_chat_request(&state, request) {
+            Ok(_) => panic!("streaming logprobs/reasoning should fail closed"),
+            Err(error) => error,
+        };
+        assert_eq!(error.0, StatusCode::BAD_REQUEST);
+        assert_eq!(
+            error.1.0.error.code.as_deref(),
+            Some("unsupported_parameter")
+        );
+    }
+}
+
+#[tokio::test]
 async fn openai_chat_request_preserves_text_metadata_when_adding_workload_hints() {
     let state = test_app_state(|args| {
         args.model_id = "gemma4-e2b".to_string();

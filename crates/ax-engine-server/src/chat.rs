@@ -442,22 +442,40 @@ pub(crate) fn decode_gemma4_chat_output(
     tokenizer: &EngineTokenizer,
     output_tokens: &[u32],
 ) -> Result<String, EngineTokenizerError> {
+    decode_gemma4_chat_output_with_reasoning(tokenizer, output_tokens)
+        .map(|(content, _reasoning)| content)
+}
+
+/// Like [`decode_gemma4_chat_output`], but also returns the decoded channel
+/// bodies (channel-name headers removed) so callers serving an explicit
+/// reasoning contract can expose them instead of discarding them. When the
+/// fallback serves the last channel body as content, that body is excluded
+/// from the reasoning text.
+pub(crate) fn decode_gemma4_chat_output_with_reasoning(
+    tokenizer: &EngineTokenizer,
+    output_tokens: &[u32],
+) -> Result<(String, Option<String>), EngineTokenizerError> {
     let Some(ids) = Gemma4ChannelIds::from_tokenizer(tokenizer) else {
-        return tokenizer.decode(output_tokens, true);
+        return Ok((tokenizer.decode(output_tokens, true)?, None));
     };
     let (kept, channel_bodies) = split_gemma4_channels(output_tokens, ids);
     if channel_bodies.is_empty() {
-        return tokenizer.decode(output_tokens, true);
+        return Ok((tokenizer.decode(output_tokens, true)?, None));
+    }
+    let mut body_texts = Vec::with_capacity(channel_bodies.len());
+    for body in &channel_bodies {
+        let body_text = tokenizer.decode(body, true)?;
+        body_texts.push(strip_gemma4_channel_name_header(&body_text).to_string());
     }
     let kept_text = tokenizer.decode(&kept, true)?;
-    if !kept_text.trim().is_empty() {
-        return Ok(kept_text);
-    }
-    let Some(body) = channel_bodies.last() else {
-        return Ok(kept_text);
+    let content = if kept_text.trim().is_empty() {
+        body_texts.pop().unwrap_or(kept_text)
+    } else {
+        kept_text
     };
-    let body_text = tokenizer.decode(body, true)?;
-    Ok(strip_gemma4_channel_name_header(&body_text).to_string())
+    let reasoning = body_texts.join("\n");
+    let reasoning = (!reasoning.trim().is_empty()).then(|| reasoning.trim().to_string());
+    Ok((content, reasoning))
 }
 
 #[cfg(test)]

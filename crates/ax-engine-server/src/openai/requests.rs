@@ -29,6 +29,7 @@ pub(crate) use crate::openai::chat_requests::{
 pub(crate) struct OpenAiBuiltRequest {
     pub(crate) generate_request: GenerateRequest,
     pub(crate) stream: bool,
+    pub(crate) response_options: OpenAiResponseOptions,
     pub(crate) output_postprocessing: OpenAiOutputPostprocessing,
 }
 
@@ -53,13 +54,92 @@ pub(crate) struct GenerateRequestParts {
 pub(crate) struct OpenAiBuiltMlxLmChatRequest {
     pub(crate) chat_request: MlxLmChatGenerateRequest,
     pub(crate) stream: bool,
+    pub(crate) response_options: OpenAiResponseOptions,
     pub(crate) output_postprocessing: OpenAiOutputPostprocessing,
 }
 
 pub(crate) struct OpenAiBuiltLlamaCppChatRequest {
     pub(crate) chat_request: LlamaCppChatGenerateRequest,
     pub(crate) stream: bool,
+    pub(crate) response_options: OpenAiResponseOptions,
     pub(crate) output_postprocessing: OpenAiOutputPostprocessing,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct OpenAiResponseOptions {
+    pub(crate) include_logprobs: bool,
+    pub(crate) include_reasoning: bool,
+    pub(crate) validate_json_object: bool,
+    pub(crate) parse_tool_calls: bool,
+}
+
+impl OpenAiResponseOptions {
+    fn from_completion_request(
+        request: &OpenAiCompletionHttpRequest,
+    ) -> Result<Self, (StatusCode, Json<ErrorResponse>)> {
+        reject_unsupported_top_logprobs(request.top_logprobs)?;
+        reject_unsupported_completion_logprobs(request.logprobs)?;
+        Ok(Self {
+            include_logprobs: request.logprobs.is_some(),
+            include_reasoning: false,
+            validate_json_object: openai_response_format_is_json_object(
+                request.response_format.as_ref(),
+            ),
+            parse_tool_calls: false,
+        })
+    }
+
+    fn from_chat_request(
+        request: &OpenAiChatCompletionHttpRequest,
+    ) -> Result<Self, (StatusCode, Json<ErrorResponse>)> {
+        reject_unsupported_top_logprobs(request.top_logprobs)?;
+        Ok(Self {
+            include_logprobs: request.logprobs,
+            include_reasoning: openai_reasoning_is_enabled(request.reasoning.as_ref()),
+            validate_json_object: openai_response_format_is_json_object(
+                request.response_format.as_ref(),
+            ),
+            parse_tool_calls: openai_tools_are_enabled(
+                request.tools.as_ref(),
+                request.tool_choice.as_ref(),
+            ),
+        })
+    }
+
+    /// Streaming chunks do not carry logprob, reasoning, or validated
+    /// JSON-object payloads yet; fail closed instead of silently dropping a
+    /// contract the caller asked for.
+    pub(crate) fn reject_unsupported_streaming_contract(
+        self,
+        stream: bool,
+    ) -> Result<(), (StatusCode, Json<ErrorResponse>)> {
+        if !stream {
+            return Ok(());
+        }
+        if self.validate_json_object {
+            return Err(error_response(
+                StatusCode::BAD_REQUEST,
+                "unsupported_parameter",
+                "response_format json_object validation is not supported for streaming requests yet"
+                    .to_string(),
+            ));
+        }
+        if self.include_logprobs {
+            return Err(error_response(
+                StatusCode::BAD_REQUEST,
+                "unsupported_parameter",
+                "logprobs are not supported for streaming requests yet".to_string(),
+            ));
+        }
+        if self.include_reasoning {
+            return Err(error_response(
+                StatusCode::BAD_REQUEST,
+                "unsupported_parameter",
+                "reasoning output is not supported for streaming requests yet".to_string(),
+            ));
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -234,6 +314,8 @@ pub(crate) fn build_openai_completion_request(
 ) -> Result<OpenAiBuiltRequest, (StatusCode, Json<ErrorResponse>)> {
     let max_output_tokens = openai_max_tokens(request.max_tokens);
     let sampling_params = OpenAiSamplingParams::from_completion_request(&request);
+    let response_options = OpenAiResponseOptions::from_completion_request(&request)?;
+    response_options.reject_unsupported_streaming_contract(request.stream)?;
     let structured_output = openai_response_format_is_structured(request.response_format.as_ref());
     let metadata = openai_workload_metadata(request.metadata, false, structured_output);
     let multimodal_inputs = request.multimodal_inputs;
@@ -292,6 +374,7 @@ pub(crate) fn build_openai_completion_request(
         input_text,
         max_output_tokens,
         payload,
+        response_options,
         output_postprocessing,
     )
 }
@@ -302,6 +385,8 @@ pub(crate) fn build_openai_chat_request(
 ) -> Result<OpenAiBuiltRequest, (StatusCode, Json<ErrorResponse>)> {
     let max_output_tokens = openai_max_tokens(request.max_tokens);
     let sampling_params = OpenAiSamplingParams::from_chat_request(&request);
+    let response_options = OpenAiResponseOptions::from_chat_request(&request)?;
+    response_options.reject_unsupported_streaming_contract(request.stream)?;
     let mut input_tokens = request.input_tokens;
     let mut multimodal_inputs = request.multimodal_inputs;
     reject_openai_multimodal_inputs_without_native_mlx(state, "OpenAI chat", &multimodal_inputs)?;
@@ -373,6 +458,7 @@ pub(crate) fn build_openai_chat_request(
         input_text,
         max_output_tokens,
         payload,
+        response_options,
         output_postprocessing,
     )
 }
@@ -394,6 +480,8 @@ pub(crate) fn build_openai_mlx_lm_chat_request(
     reject_delegated_chat_extensions(&request.input_tokens, &request.multimodal_inputs)?;
     let max_output_tokens = openai_max_tokens(request.max_tokens);
     let sampling_params = OpenAiSamplingParams::from_chat_request(&request);
+    let response_options = OpenAiResponseOptions::from_chat_request(&request)?;
+    response_options.reject_unsupported_streaming_contract(request.stream)?;
     let messages = build_mlx_lm_chat_messages(&request.messages)?;
     let sampling = build_openai_sampling_with_default_repetition_penalty(sampling_params, 1.0);
     let stop_sequences = openai_chat_stop_sequences(state.model_id.as_ref(), request.stop);
@@ -415,6 +503,7 @@ pub(crate) fn build_openai_mlx_lm_chat_request(
             chat_template_kwargs: chat_template_kwargs_for_model_id(state.model_id.as_ref()),
         },
         stream: request.stream,
+        response_options,
         output_postprocessing,
     })
 }
@@ -426,6 +515,8 @@ pub(crate) fn build_openai_llama_cpp_chat_request(
     reject_delegated_chat_extensions(&request.input_tokens, &request.multimodal_inputs)?;
     let max_output_tokens = openai_max_tokens(request.max_tokens);
     let sampling_params = OpenAiSamplingParams::from_chat_request(&request);
+    let response_options = OpenAiResponseOptions::from_chat_request(&request)?;
+    response_options.reject_unsupported_streaming_contract(request.stream)?;
     let messages = build_llama_cpp_chat_messages(&request.messages)?;
     let sampling = build_openai_sampling_with_default_repetition_penalty(sampling_params, 1.0);
     let stop_sequences = openai_chat_stop_sequences(state.model_id.as_ref(), request.stop);
@@ -446,6 +537,7 @@ pub(crate) fn build_openai_llama_cpp_chat_request(
             metadata,
         },
         stream: request.stream,
+        response_options,
         output_postprocessing,
     })
 }
@@ -456,6 +548,7 @@ fn build_openai_generate_request(
     input_text: Option<String>,
     max_output_tokens: u32,
     payload: OpenAiBuiltPayload,
+    response_options: OpenAiResponseOptions,
     output_postprocessing: OpenAiOutputPostprocessing,
 ) -> Result<OpenAiBuiltRequest, (StatusCode, Json<ErrorResponse>)> {
     let (input_tokens, input_text) =
@@ -475,6 +568,7 @@ fn build_openai_generate_request(
             },
         ),
         stream: payload.stream,
+        response_options,
         output_postprocessing,
     })
 }
@@ -737,6 +831,21 @@ fn openai_response_format_is_structured(response_format: Option<&Value>) -> bool
     }
 }
 
+fn openai_response_format_is_json_object(response_format: Option<&Value>) -> bool {
+    let Some(response_format) = response_format else {
+        return false;
+    };
+    match response_format {
+        Value::String(value) => value.trim().eq_ignore_ascii_case("json_object"),
+        Value::Object(object) => object
+            .get("type")
+            .and_then(Value::as_str)
+            .map(|value| value.trim().eq_ignore_ascii_case("json_object"))
+            .unwrap_or(false),
+        _ => false,
+    }
+}
+
 fn openai_value_is_present(value: &Value) -> bool {
     match value {
         Value::Null => false,
@@ -745,6 +854,59 @@ fn openai_value_is_present(value: &Value) -> bool {
         Value::Array(values) => !values.is_empty(),
         Value::Object(object) => !object.is_empty(),
         Value::Number(value) => value.as_u64().unwrap_or(1) != 0,
+    }
+}
+
+fn reject_unsupported_top_logprobs(
+    top_logprobs: Option<u32>,
+) -> Result<(), (StatusCode, Json<ErrorResponse>)> {
+    if top_logprobs.unwrap_or(0) == 0 {
+        return Ok(());
+    }
+    Err(error_response(
+        StatusCode::BAD_REQUEST,
+        "unsupported_parameter",
+        "top_logprobs is not supported yet; AX currently exposes sampled-token logprobs only"
+            .to_string(),
+    ))
+}
+
+/// Legacy completions `logprobs` is a top-N alternative count, not a flag;
+/// anything above sampled-token-only (`0`) fails closed until the runner
+/// emits top-N alternatives.
+fn reject_unsupported_completion_logprobs(
+    logprobs: Option<u32>,
+) -> Result<(), (StatusCode, Json<ErrorResponse>)> {
+    if logprobs.unwrap_or(0) == 0 {
+        return Ok(());
+    }
+    Err(error_response(
+        StatusCode::BAD_REQUEST,
+        "unsupported_parameter",
+        "completions logprobs above 0 request top-N alternatives, which are not supported yet; \
+         send logprobs=0 for sampled-token logprobs"
+            .to_string(),
+    ))
+}
+
+fn openai_reasoning_is_enabled(reasoning: Option<&Value>) -> bool {
+    let Some(reasoning) = reasoning else {
+        return false;
+    };
+    match reasoning {
+        Value::Null => false,
+        Value::Bool(value) => *value,
+        Value::String(value) => matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "true" | "auto" | "exposed" | "include" | "enabled"
+        ),
+        Value::Object(object) => object
+            .get("enabled")
+            .or_else(|| object.get("include"))
+            .or_else(|| object.get("mode"))
+            .map(openai_value_is_present)
+            .unwrap_or(!object.is_empty()),
+        value => openai_value_is_present(value),
     }
 }
 

@@ -8,6 +8,7 @@ mod session;
 
 pub use presets::{ServerPreset, render_presets};
 
+pub const API_KEY_ENV: &str = "AX_ENGINE_API_KEY";
 const MODEL_ARTIFACTS_ENV: &str = "AX_ENGINE_MLX_MODEL_ARTIFACTS_DIR";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
@@ -67,6 +68,11 @@ pub struct ServerArgs {
 
     #[arg(long = "model-id", default_value = "qwen3")]
     pub model_id: String,
+
+    /// Require `Authorization: Bearer <key>` on HTTP API routes. If unset, the
+    /// server falls back to AX_ENGINE_API_KEY; empty values disable auth.
+    #[arg(long = "api-key")]
+    pub api_key: Option<String>,
 
     #[arg(long = "preset", value_enum, conflicts_with_all = ["model_id", "support_tier"])]
     pub preset: Option<ServerPreset>,
@@ -180,6 +186,16 @@ pub struct ServerArgs {
     /// HTTP only. Format `host:port`, e.g. `127.0.0.1:50051`.
     #[arg(long = "grpc-bind-address")]
     pub grpc_bind_address: Option<String>,
+}
+
+impl ServerArgs {
+    pub fn resolved_api_key(&self) -> Option<String> {
+        self.api_key
+            .clone()
+            .or_else(|| std::env::var(API_KEY_ENV).ok())
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+    }
 }
 
 #[cfg(test)]

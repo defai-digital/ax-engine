@@ -144,7 +144,7 @@ pub(crate) fn load_processor_config(model_dir: &Path) -> Result<MediaProcessors,
     let config =
         Gemma4UnifiedProcessorConfig::from_model_and_processor_config(&model_cfg, &processor_cfg)
             .map_err(|error| MediaError::Config(error.to_string()))?;
-    let normalization = image_normalization_from(&processor_cfg);
+    let normalization = image_normalization_from(&processor_cfg)?;
     let (video_vision, video_max_frames) = video_processor_from(&processor_cfg, &config.vision);
     Ok(MediaProcessors {
         config,
@@ -219,7 +219,7 @@ fn read_json(path: &Path) -> Result<Value, MediaError> {
         .map_err(|error| MediaError::Config(format!("{}: {error}", path.display())))
 }
 
-fn image_normalization_from(processor_cfg: &Value) -> ImageNormalization {
+fn image_normalization_from(processor_cfg: &Value) -> Result<ImageNormalization, MediaError> {
     let mut norm = ImageNormalization::default();
     let block = processor_cfg
         .get("image_processor")
@@ -240,7 +240,21 @@ fn image_normalization_from(processor_cfg: &Value) -> ImageNormalization {
     if let Some(std) = rgb_triplet(block.get("image_std")) {
         norm.std = std;
     }
-    norm
+    // A zero (or non-finite) std channel would divide every pixel into
+    // inf/NaN and silently corrupt the vision input; reject the checkpoint
+    // config up front instead.
+    if norm.do_normalize
+        && let Some(channel) = norm
+            .std
+            .iter()
+            .find(|value| !value.is_finite() || **value == 0.0)
+    {
+        return Err(MediaError::Config(format!(
+            "preprocessor_config.json image_std contains a zero or non-finite channel \
+             ({channel}); cannot normalize image pixels"
+        )));
+    }
+    Ok(norm)
 }
 
 fn rgb_triplet(value: Option<&Value>) -> Option<[f32; 3]> {
@@ -794,6 +808,37 @@ mod tests {
             let index = index as i32;
             assert_eq!(*position, [index % grid_w, index / grid_w]);
         }
+    }
+
+    #[test]
+    fn normalization_config_rejects_zero_or_non_finite_std_channels() {
+        // A zero std channel would divide every pixel into inf/NaN; the
+        // checkpoint config must be rejected at load time.
+        let zero_std = serde_json::json!({
+            "do_normalize": true,
+            "image_std": [0.5, 0.0, 0.5]
+        });
+        let error = image_normalization_from(&zero_std)
+            .expect_err("zero image_std channel must be rejected when do_normalize is set");
+        assert!(format!("{error:?}").contains("image_std"));
+
+        // Without do_normalize the std values are unused, so the same config
+        // stays loadable.
+        let normalize_off = serde_json::json!({
+            "do_normalize": false,
+            "image_std": [0.5, 0.0, 0.5]
+        });
+        assert!(
+            !image_normalization_from(&normalize_off)
+                .unwrap()
+                .do_normalize
+        );
+
+        let valid = serde_json::json!({
+            "do_normalize": true,
+            "image_std": [0.5, 0.5, 0.5]
+        });
+        assert!(image_normalization_from(&valid).unwrap().do_normalize);
     }
 
     #[test]

@@ -107,6 +107,13 @@ pub(crate) struct OpenAiCompletionHttpRequest {
     pub(crate) seed: Option<u64>,
     #[serde(default)]
     pub(crate) stream: bool,
+    /// OpenAI legacy completions shape: an integer count of top alternatives
+    /// to include. `0` requests sampled-token logprobs only; values above `0`
+    /// are rejected until the runner emits top-N alternatives.
+    #[serde(default)]
+    pub(crate) logprobs: Option<u32>,
+    #[serde(default)]
+    pub(crate) top_logprobs: Option<u32>,
     #[serde(default)]
     pub(crate) metadata: Option<String>,
     #[serde(default)]
@@ -142,6 +149,12 @@ pub(crate) struct OpenAiChatCompletionHttpRequest {
     pub(crate) seed: Option<u64>,
     #[serde(default)]
     pub(crate) stream: bool,
+    #[serde(default)]
+    pub(crate) logprobs: bool,
+    #[serde(default)]
+    pub(crate) top_logprobs: Option<u32>,
+    #[serde(default)]
+    pub(crate) reasoning: Option<Value>,
     #[serde(default)]
     pub(crate) metadata: Option<String>,
     #[serde(default)]
@@ -224,7 +237,17 @@ pub(crate) struct OpenAiCompletionResponse {
 pub(crate) struct OpenAiCompletionChoice {
     pub(crate) index: u32,
     pub(crate) text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) logprobs: Option<OpenAiCompletionLogprobs>,
     pub(crate) finish_reason: Option<&'static str>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct OpenAiCompletionLogprobs {
+    pub(crate) tokens: Vec<String>,
+    pub(crate) token_logprobs: Vec<Option<f32>>,
+    pub(crate) top_logprobs: Vec<Option<Value>>,
+    pub(crate) text_offset: Vec<u32>,
 }
 
 #[derive(Debug, Serialize)]
@@ -243,6 +266,8 @@ pub(crate) struct OpenAiChatCompletionResponse {
 pub(crate) struct OpenAiChatCompletionChoice {
     pub(crate) index: u32,
     pub(crate) message: OpenAiChatMessageResponse,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) logprobs: Option<OpenAiChatLogprobs>,
     pub(crate) finish_reason: Option<&'static str>,
 }
 
@@ -250,6 +275,37 @@ pub(crate) struct OpenAiChatCompletionChoice {
 pub(crate) struct OpenAiChatMessageResponse {
     pub(crate) role: &'static str,
     pub(crate) content: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) reasoning_content: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) tool_calls: Option<Vec<OpenAiToolCall>>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct OpenAiToolCall {
+    pub(crate) id: String,
+    #[serde(rename = "type")]
+    pub(crate) tool_type: &'static str,
+    pub(crate) function: OpenAiFunctionCall,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct OpenAiFunctionCall {
+    pub(crate) name: String,
+    pub(crate) arguments: String,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct OpenAiChatLogprobs {
+    pub(crate) content: Vec<OpenAiChatTokenLogprob>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct OpenAiChatTokenLogprob {
+    pub(crate) token: String,
+    pub(crate) logprob: f32,
+    pub(crate) bytes: Option<Vec<u8>>,
+    pub(crate) top_logprobs: Vec<Value>,
 }
 
 #[derive(Debug, Serialize)]

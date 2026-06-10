@@ -1,6 +1,7 @@
 use serde_json::{Value, json};
 use std::env;
 use std::ffi::{OsStr, OsString};
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
 
@@ -171,6 +172,7 @@ fn run(args: Vec<OsString>) -> Result<u8, String> {
     match args[0].to_string_lossy().as_ref() {
         "serve" => cmd_serve(&args[1..]),
         "download" => cmd_download(&args[1..]),
+        "models" => cmd_models(&args[1..]),
         "doctor" => cmd_doctor(&args[1..]),
         "convert-mtplx" => cmd_convert_mtplx(&args[1..]),
         unknown => Err(format!(
@@ -181,7 +183,7 @@ fn run(args: Vec<OsString>) -> Result<u8, String> {
 
 fn print_usage() {
     println!(
-        "Usage:\n  ax-engine serve <model-dir-or-alias> [--host <host>] [--port <port>] [--download] [--dry-run] [--json] [-- <ax-engine-server args>]\n  ax-engine download [<alias-or-repo-id>] [--dest <path>] [--force] [--list] [--json]\n  ax-engine doctor [--json] [--mlx-model-artifacts-dir <path>]\n  ax-engine convert-mtplx <base-model> --mtp-source <repo> [--output <dir>] [--quantize 4|8] [--mtp-depth-max <n>] [--group-size <n>] [--fair-base-only] [--json]"
+        "Usage:\n  ax-engine serve <model-dir-or-alias> [--host <host>] [--port <port>] [--download] [--dry-run] [--json] [-- <ax-engine-server args>]\n  ax-engine download [<alias-or-repo-id>] [--dest <path>] [--force] [--list] [--json]\n  ax-engine models list [--models-dir <path>] [--json]\n  ax-engine models info <alias-or-path> [--json]\n  ax-engine models rm <path> [--dry-run] [--yes] [--json]\n  ax-engine doctor [--json] [--mlx-model-artifacts-dir <path>]\n  ax-engine convert-mtplx <base-model> --mtp-source <repo> [--output <dir>] [--quantize 4|8] [--mtp-depth-max <n>] [--group-size <n>] [--fair-base-only] [--json]"
     );
 }
 
@@ -402,6 +404,375 @@ fn parse_serve_args(args: &[OsString]) -> Result<ServeArgs, String> {
         json,
         passthrough,
     })
+}
+
+fn cmd_models(args: &[OsString]) -> Result<u8, String> {
+    let Some(command) = args.first() else {
+        return Err(models_usage());
+    };
+    match command.to_string_lossy().as_ref() {
+        "list" => cmd_models_list(&args[1..]),
+        "info" => cmd_models_info(&args[1..]),
+        "rm" => cmd_models_rm(&args[1..]),
+        "--help" | "-h" => {
+            println!("{}", models_usage());
+            Ok(0)
+        }
+        unknown => Err(format!(
+            "unknown models command: {unknown}\n\n{}",
+            models_usage()
+        )),
+    }
+}
+
+fn models_usage() -> String {
+    "Usage:\n  ax-engine models list [--models-dir <path>] [--json]\n  ax-engine models info <alias-or-path> [--json]\n  ax-engine models rm <path> [--dry-run] [--yes] [--json]".to_string()
+}
+
+fn cmd_models_list(args: &[OsString]) -> Result<u8, String> {
+    let mut models_dir = env::var_os("AX_ENGINE_MODELS_DIR").map(PathBuf::from);
+    let mut json_output = false;
+    let mut index = 0;
+    while index < args.len() {
+        let arg = args[index].to_string_lossy();
+        match arg.as_ref() {
+            "--models-dir" => {
+                index += 1;
+                models_dir = Some(expand_home(&require_value(args, index, "--models-dir")?));
+            }
+            "--json" => json_output = true,
+            flag if flag.starts_with('-') => {
+                return Err(format!("unknown models list option: {flag}"));
+            }
+            _ => return Err("models list does not accept positional arguments".into()),
+        }
+        index += 1;
+    }
+
+    let payload = models_list_payload(models_dir.as_deref());
+    if json_output {
+        print_json(&payload);
+    } else {
+        println!("{}", format_models_list(&payload));
+    }
+    Ok(0)
+}
+
+fn cmd_models_info(args: &[OsString]) -> Result<u8, String> {
+    let mut target = None;
+    let mut json_output = false;
+    let mut index = 0;
+    while index < args.len() {
+        let arg = args[index].to_string_lossy();
+        match arg.as_ref() {
+            "--json" => json_output = true,
+            flag if flag.starts_with('-') => {
+                return Err(format!("unknown models info option: {flag}"));
+            }
+            _ => {
+                if target.replace(arg.to_string()).is_some() {
+                    return Err("models info accepts exactly one alias or path".into());
+                }
+            }
+        }
+        index += 1;
+    }
+    let target = target.ok_or_else(|| "models info requires an alias or path".to_string())?;
+    let payload = model_info_payload(&target)?;
+    if json_output {
+        print_json(&payload);
+    } else {
+        println!("{}", format_model_info(&payload));
+    }
+    Ok(0)
+}
+
+fn cmd_models_rm(args: &[OsString]) -> Result<u8, String> {
+    let mut target = None;
+    let mut dry_run = false;
+    let mut yes = false;
+    let mut json_output = false;
+    let mut index = 0;
+    while index < args.len() {
+        let arg = args[index].to_string_lossy();
+        match arg.as_ref() {
+            "--dry-run" => dry_run = true,
+            "--yes" => yes = true,
+            "--json" => json_output = true,
+            flag if flag.starts_with('-') => {
+                return Err(format!("unknown models rm option: {flag}"));
+            }
+            _ => {
+                if target.replace(arg.to_string()).is_some() {
+                    return Err("models rm accepts exactly one path".into());
+                }
+            }
+        }
+        index += 1;
+    }
+    let target = target.ok_or_else(|| "models rm requires a local model path".to_string())?;
+    if profile_for_model(&target).is_some() {
+        return Err(
+            "models rm refuses aliases; pass an explicit local model directory path".into(),
+        );
+    }
+    let path = absolute_path(&expand_home(&target));
+    let effective_dry_run = dry_run || !yes;
+    let report = validate_model_rm_target(&path, effective_dry_run)?;
+    if !effective_dry_run {
+        fs::remove_dir_all(&path)
+            .map_err(|err| format!("failed to remove {}: {err}", path.display()))?;
+    }
+    let payload = json!({
+        "schema_version": "ax.models_rm.v1",
+        "command": "models rm",
+        "path": path.to_string_lossy(),
+        "dry_run": effective_dry_run,
+        "removed": !effective_dry_run,
+        "safety": report,
+    });
+    if json_output {
+        print_json(&payload);
+    } else if !effective_dry_run {
+        println!("Removed {}", path.display());
+    } else {
+        println!("Dry run: would remove {}", path.display());
+        println!("Pass --yes to remove this local artifact directory.");
+    }
+    Ok(0)
+}
+
+fn models_list_payload(models_dir: Option<&Path>) -> Value {
+    json!({
+        "schema_version": "ax.models_list.v1",
+        "supported_aliases": MODEL_PROFILES.iter().map(model_profile_payload).collect::<Vec<_>>(),
+        "local_artifacts": models_dir.map(local_model_artifacts_payload).unwrap_or_else(|| {
+            json!({
+                "source": "not_selected",
+                "env": "AX_ENGINE_MODELS_DIR",
+                "items": [],
+            })
+        }),
+    })
+}
+
+fn model_profile_payload(profile: &ModelProfile) -> Value {
+    json!({
+        "kind": "supported_alias",
+        "label": profile.label,
+        "repo_id": profile.repo_id,
+        "preset": profile.preset,
+        "downloadable": profile.downloadable,
+        "aliases": profile.aliases,
+    })
+}
+
+fn local_model_artifacts_payload(root: &Path) -> Value {
+    let root = absolute_path(root);
+    let mut items = Vec::new();
+    if let Ok(entries) = fs::read_dir(&root) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir()
+                && let Some(item) = local_model_artifact_payload(&path)
+            {
+                items.push(item);
+            }
+        }
+    }
+    json!({
+        "source": "models_dir",
+        "path": root.to_string_lossy(),
+        "items": items,
+    })
+}
+
+fn local_model_artifact_payload(path: &Path) -> Option<Value> {
+    let manifest_present = path.join("model-manifest.json").is_file();
+    let config_present = path.join("config.json").is_file();
+    if !manifest_present && !config_present {
+        return None;
+    }
+    Some(json!({
+        "kind": "local_artifact",
+        "path": absolute_path(path).to_string_lossy(),
+        "manifest_present": manifest_present,
+        "config_present": config_present,
+    }))
+}
+
+fn model_info_payload(target: &str) -> Result<Value, String> {
+    if let Some(profile) = profile_for_model(target) {
+        return Ok(json!({
+            "schema_version": "ax.models_info.v1",
+            "query": target,
+            "kind": "supported_alias",
+            "profile": model_profile_payload(&profile),
+        }));
+    }
+    let path = expand_home(target);
+    if path.exists() {
+        let path = absolute_path(&path);
+        return Ok(json!({
+            "schema_version": "ax.models_info.v1",
+            "query": target,
+            "kind": "local_artifact",
+            "path": path.to_string_lossy(),
+            "manifest_present": path.join("model-manifest.json").is_file(),
+            "config_present": path.join("config.json").is_file(),
+            "hf_cache_path": is_hf_cache_path(&path),
+        }));
+    }
+    if target.contains('/') {
+        return Ok(json!({
+            "schema_version": "ax.models_info.v1",
+            "query": target,
+            "kind": "repo_id",
+            "repo_id": target,
+            "managed_alias": false,
+        }));
+    }
+    Err(format!(
+        "unknown model alias or missing local path: {target:?}; run `ax-engine models list`"
+    ))
+}
+
+fn validate_model_rm_target(path: &Path, dry_run: bool) -> Result<Value, String> {
+    if !path.exists() {
+        return Err(format!(
+            "models rm target does not exist: {}",
+            path.display()
+        ));
+    }
+    if !path.is_dir() {
+        return Err(format!(
+            "models rm target is not a directory: {}",
+            path.display()
+        ));
+    }
+    if is_hf_cache_path(path) {
+        return Err(format!(
+            "models rm refuses Hugging Face cache paths; remove cache entries with huggingface-cli instead: {}",
+            path.display()
+        ));
+    }
+    if path.parent().is_none() {
+        return Err("models rm refuses filesystem root".into());
+    }
+    let manifest_present = path.join("model-manifest.json").is_file();
+    let config_present = path.join("config.json").is_file();
+    if !manifest_present && !config_present {
+        return Err(format!(
+            "models rm target does not look like an AX/MLX artifact directory: {}",
+            path.display()
+        ));
+    }
+    Ok(json!({
+        "dry_run": dry_run,
+        "manifest_present": manifest_present,
+        "config_present": config_present,
+        "hf_cache_path": false,
+    }))
+}
+
+fn is_hf_cache_path(path: &Path) -> bool {
+    let text = path.to_string_lossy();
+    text.contains("/huggingface/hub/")
+        || text.contains("/.cache/huggingface/")
+        || path.components().any(|component| {
+            component
+                .as_os_str()
+                .to_string_lossy()
+                .starts_with("models--")
+        })
+}
+
+fn format_models_list(payload: &Value) -> String {
+    let mut lines = vec!["Supported aliases:".to_string()];
+    if let Some(targets) = payload.get("supported_aliases").and_then(Value::as_array) {
+        for target in targets {
+            lines.push(format!(
+                "  - {} -> {}",
+                target
+                    .get("label")
+                    .and_then(Value::as_str)
+                    .unwrap_or("unknown"),
+                target
+                    .get("repo_id")
+                    .and_then(Value::as_str)
+                    .unwrap_or("unknown")
+            ));
+        }
+    }
+    lines.push("Local artifacts:".into());
+    let local = &payload["local_artifacts"];
+    if local.get("source").and_then(Value::as_str) == Some("not_selected") {
+        lines.push("  - set AX_ENGINE_MODELS_DIR or pass --models-dir".into());
+    } else if let Some(items) = local.get("items").and_then(Value::as_array) {
+        if items.is_empty() {
+            lines.push("  - none found".into());
+        } else {
+            for item in items {
+                lines.push(format!(
+                    "  - {}",
+                    item.get("path")
+                        .and_then(Value::as_str)
+                        .unwrap_or("unknown")
+                ));
+            }
+        }
+    }
+    lines.join("\n")
+}
+
+fn format_model_info(payload: &Value) -> String {
+    match payload.get("kind").and_then(Value::as_str) {
+        Some("supported_alias") => {
+            let profile = &payload["profile"];
+            format!(
+                "Supported alias: {}\nRepo: {}\nPreset: {}",
+                profile
+                    .get("label")
+                    .and_then(Value::as_str)
+                    .unwrap_or("unknown"),
+                profile
+                    .get("repo_id")
+                    .and_then(Value::as_str)
+                    .unwrap_or("unknown"),
+                profile
+                    .get("preset")
+                    .and_then(Value::as_str)
+                    .unwrap_or("none")
+            )
+        }
+        Some("local_artifact") => format!(
+            "Local artifact: {}\nmodel-manifest.json: {}\nconfig.json: {}\nHF cache path: {}",
+            payload
+                .get("path")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown"),
+            payload
+                .get("manifest_present")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            payload
+                .get("config_present")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            payload
+                .get("hf_cache_path")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+        ),
+        Some("repo_id") => format!(
+            "Repo id: {}\nManaged alias: false",
+            payload
+                .get("repo_id")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown")
+        ),
+        _ => "Unknown model".to_string(),
+    }
 }
 
 #[derive(Debug)]
@@ -1016,6 +1387,67 @@ mod tests {
     }
 
     #[test]
+    fn models_info_distinguishes_aliases_from_repo_ids() {
+        let alias = model_info_payload("gemma4-12b").unwrap();
+        assert_eq!(alias["kind"], "supported_alias");
+        assert_eq!(
+            alias["profile"]["repo_id"],
+            "mlx-community/gemma-4-12B-it-4bit"
+        );
+
+        let repo = model_info_payload("mlx-community/custom-model").unwrap();
+        assert_eq!(repo["kind"], "repo_id");
+        assert_eq!(repo["managed_alias"], false);
+    }
+
+    #[test]
+    fn models_list_reports_local_artifacts_from_explicit_root() {
+        let root = unique_temp_dir("ax-engine-models-list");
+        let model_dir = root.join("local-model");
+        fs::create_dir_all(&model_dir).unwrap();
+        fs::write(model_dir.join("model-manifest.json"), "{}").unwrap();
+
+        let payload = models_list_payload(Some(&root));
+        let items = payload["local_artifacts"]["items"].as_array().unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0]["kind"], "local_artifact");
+        assert_eq!(items[0]["manifest_present"], true);
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn models_rm_refuses_hugging_face_cache_paths() {
+        let root = unique_temp_dir("ax-engine-models-rm");
+        let cache_model = root
+            .join("huggingface")
+            .join("hub")
+            .join("models--org--model");
+        fs::create_dir_all(&cache_model).unwrap();
+        fs::write(cache_model.join("config.json"), "{}").unwrap();
+
+        let error = validate_model_rm_target(&cache_model, true)
+            .expect_err("HF cache paths must be removed with cache tooling");
+        assert!(error.contains("Hugging Face cache"));
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn models_rm_allows_dry_run_for_local_artifact_directories() {
+        let root = unique_temp_dir("ax-engine-models-rm-local");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("config.json"), "{}").unwrap();
+
+        let report = validate_model_rm_target(&root, true).unwrap();
+        assert_eq!(report["dry_run"], true);
+        assert_eq!(report["config_present"], true);
+        assert!(root.exists(), "dry-run validation must not remove files");
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn parse_output_dir_handles_prepare_messages() {
         assert_eq!(
             parse_output_dir("Sidecar ready at:\n  /tmp/model\n", None).as_deref(),
@@ -1025,5 +1457,13 @@ mod tests {
             parse_output_dir("Output dir: /tmp/other\n", None).as_deref(),
             Some("/tmp/other")
         );
+    }
+
+    fn unique_temp_dir(label: &str) -> PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        env::temp_dir().join(format!("{label}-{nanos}"))
     }
 }

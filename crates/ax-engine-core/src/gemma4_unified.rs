@@ -987,6 +987,12 @@ mod tests {
         assert_eq!(vision.resize_target(100, 5), (32, 8));
         // Very tall image is the symmetric case.
         assert_eq!(vision.resize_target(5, 100), (8, 32));
+        // Degenerate aspect ratios stay non-zero: the single-axis fallback
+        // branch only runs when the floored axis is the *smaller* one, so the
+        // width/height ratio it floors is always >= 1 (regression pin for the
+        // resize-extreme-aspect-zero report, which assumed the opposite).
+        assert_eq!(vision.resize_target(1, 10_000), (8, 32));
+        assert_eq!(vision.resize_target(10_000, 1), (32, 8));
         // Both axes stay non-zero and divisible by unit, and the soft-token count
         // stays within budget.
         let (w, h) = vision.resize_target(100, 5);

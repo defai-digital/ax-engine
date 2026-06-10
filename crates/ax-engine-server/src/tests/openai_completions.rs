@@ -125,6 +125,45 @@ async fn openai_completions_endpoint_translates_mlx_lm_delegated_response() {
 }
 
 #[tokio::test]
+async fn openai_completion_logprobs_follows_legacy_integer_shape() {
+    // Legacy completions `logprobs` is a top-N count: 0 opts into
+    // sampled-token logprobs, anything above 0 fails closed until the runner
+    // emits top-N alternatives.
+    let artifact_dir = minimal_tokenizer_artifact("native-openai-completion-logprobs");
+    let state = native_mlx_openai_builder_state("qwen3", &artifact_dir);
+
+    let request: OpenAiCompletionHttpRequest = serde_json::from_value(json!({
+        "model": "qwen3",
+        "prompt": "hello",
+        "max_tokens": 8,
+        "logprobs": 0
+    }))
+    .expect("sample completion request should deserialize");
+    let built =
+        build_openai_completion_request(&state, request).expect("completion request should build");
+    assert!(built.response_options.include_logprobs);
+
+    let request: OpenAiCompletionHttpRequest = serde_json::from_value(json!({
+        "model": "qwen3",
+        "prompt": "hello",
+        "max_tokens": 8,
+        "logprobs": 2
+    }))
+    .expect("sample completion request should deserialize");
+    let error = match build_openai_completion_request(&state, request) {
+        Ok(_) => panic!("logprobs above 0 should fail closed until top-N is supported"),
+        Err(error) => error,
+    };
+    assert_eq!(error.0, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        error.1.0.error.code.as_deref(),
+        Some("unsupported_parameter")
+    );
+
+    std::fs::remove_dir_all(artifact_dir).expect("artifact dir should clean up");
+}
+
+#[tokio::test]
 async fn openai_completion_request_tokenizes_text_for_native_mlx_backend() {
     let artifact_dir = minimal_tokenizer_artifact("native-openai-completion-tokenizer");
     let state = native_mlx_openai_builder_state("qwen3", &artifact_dir);

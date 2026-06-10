@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use axum::Router;
 use axum::extract::{DefaultBodyLimit, Request};
-use axum::http::StatusCode;
+use axum::http::{StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
@@ -17,6 +17,7 @@ use super::generation::lifecycle::{
 use super::generation::native::generate;
 use super::generation::streaming::generate_stream;
 use super::metadata::{health, models, runtime_info};
+use super::metrics::prometheus_metrics;
 use super::openai::chat::openai_chat_completions;
 use super::openai::completions::openai_completions;
 use super::openai::embeddings::openai_embeddings;
@@ -32,6 +33,7 @@ pub(crate) fn build_router(state: AppState) -> Router {
     let router = Router::new()
         .route("/health", get(health))
         .route("/healthz", get(health))
+        .route("/metrics", get(prometheus_metrics))
         .route("/v1/runtime", get(runtime_info))
         .route("/v1/models", get(models))
         .route("/v1/embeddings", post(openai_embeddings))
@@ -72,9 +74,69 @@ pub(crate) fn build_router(state: AppState) -> Router {
         None => router,
     };
 
+    let router = match state.api_key.clone() {
+        Some(api_key) => router.layer(middleware::from_fn(move |request: Request, next: Next| {
+            let api_key = api_key.clone();
+            async move {
+                if is_health_probe(request.uri().path())
+                    || request_has_valid_bearer_token(&request, api_key.as_ref())
+                {
+                    return next.run(request).await;
+                }
+                (
+                    StatusCode::UNAUTHORIZED,
+                    [(header::WWW_AUTHENTICATE, "Bearer")],
+                    "missing or invalid bearer token",
+                )
+                    .into_response()
+            }
+        })),
+        None => router,
+    };
+
+    let metrics = state.metrics.clone();
+    let router = router.layer(middleware::from_fn(move |request: Request, next: Next| {
+        let metrics = metrics.clone();
+        async move {
+            metrics.begin_http_request();
+            let response = next.run(request).await;
+            metrics.finish_http_request(response.status());
+            response
+        }
+    }));
+
     router
         .layer(DefaultBodyLimit::max(max_request_body_bytes_from_env()))
         .with_state(state)
+}
+
+fn is_health_probe(path: &str) -> bool {
+    matches!(path, "/health" | "/healthz")
+}
+
+fn request_has_valid_bearer_token<B>(request: &axum::http::Request<B>, expected: &str) -> bool {
+    let Some(value) = request
+        .headers()
+        .get(header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+    else {
+        return false;
+    };
+    let Some((scheme, token)) = value.split_once(' ') else {
+        return false;
+    };
+    scheme.eq_ignore_ascii_case("Bearer") && constant_time_str_eq(token.trim(), expected)
+}
+
+/// Compare without short-circuiting on the first mismatched byte, so response
+/// latency does not leak how long a matching token prefix is. Token length
+/// remains observable, which is standard for bearer-token checks.
+fn constant_time_str_eq(a: &str, b: &str) -> bool {
+    let (a, b) = (a.as_bytes(), b.as_bytes());
+    if a.len() != b.len() {
+        return false;
+    }
+    a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
 fn max_concurrent_requests_from_env() -> Option<usize> {
@@ -110,7 +172,23 @@ fn parse_max_request_body_bytes(value: Option<String>) -> Option<usize> {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_max_concurrent_requests, parse_max_request_body_bytes};
+    use axum::body::Body;
+    use axum::http::{Request, header};
+
+    use super::{
+        constant_time_str_eq, parse_max_concurrent_requests, parse_max_request_body_bytes,
+        request_has_valid_bearer_token,
+    };
+
+    #[test]
+    fn constant_time_eq_matches_str_eq_semantics() {
+        assert!(constant_time_str_eq("secret", "secret"));
+        assert!(!constant_time_str_eq("secret", "secres"));
+        assert!(!constant_time_str_eq("secret", "Secret"));
+        assert!(!constant_time_str_eq("secret", "secret1"));
+        assert!(!constant_time_str_eq("", "secret"));
+        assert!(constant_time_str_eq("", ""));
+    }
 
     #[test]
     fn parses_positive_limit() {
@@ -158,5 +236,29 @@ mod tests {
             parse_max_request_body_bytes(Some("256MiB".to_string())),
             None
         );
+    }
+
+    #[test]
+    fn validates_bearer_authorization_header() {
+        let request = Request::builder()
+            .header(header::AUTHORIZATION, "Bearer secret")
+            .body(Body::empty())
+            .unwrap();
+        assert!(request_has_valid_bearer_token(&request, "secret"));
+
+        let lower_scheme = Request::builder()
+            .header(header::AUTHORIZATION, "bearer secret")
+            .body(Body::empty())
+            .unwrap();
+        assert!(request_has_valid_bearer_token(&lower_scheme, "secret"));
+
+        let wrong_token = Request::builder()
+            .header(header::AUTHORIZATION, "Bearer other")
+            .body(Body::empty())
+            .unwrap();
+        assert!(!request_has_valid_bearer_token(&wrong_token, "secret"));
+
+        let missing = Request::builder().body(Body::empty()).unwrap();
+        assert!(!request_has_valid_bearer_token(&missing, "secret"));
     }
 }

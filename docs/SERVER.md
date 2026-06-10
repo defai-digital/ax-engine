@@ -19,6 +19,7 @@ The current preview server is intentionally narrow:
   repo-owned MLX sessions
 - stepwise request lifecycle endpoints that mirror the SDK preview contract for
   repo-owned MLX sessions plus the llama.cpp delegated path
+- optional API key authentication for HTTP API routes
 
 It is not yet:
 
@@ -32,6 +33,7 @@ Current preview endpoints:
 
 - `GET /health`
 - `GET /healthz`
+- `GET /metrics`
 - `GET /v1/runtime`
 - `GET /v1/models`
 - `POST /v1/embeddings`
@@ -43,6 +45,79 @@ Current preview endpoints:
 - `POST /v1/step`
 - `POST /v1/generate/stream`
 - `POST /v1/generate`
+
+## Authentication
+
+HTTP authentication is disabled by default for local development. To require a
+Bearer token on API routes, start the server with `--api-key` or set
+`AX_ENGINE_API_KEY`:
+
+```text
+cargo run -p ax-engine-server -- \
+  --model-id qwen3_dense \
+  --mlx \
+  --mlx-model-artifacts-dir /absolute/path/to/mlx-model-artifacts \
+  --api-key "$AX_ENGINE_API_KEY" \
+  --port 8080
+```
+
+When enabled, requests to `/v1/*` routes must include:
+
+```text
+Authorization: Bearer <key>
+```
+
+`/health` and `/healthz` remain unauthenticated readiness probes so process
+supervisors and benchmark harnesses can detect startup and liveness without
+holding inference credentials.
+
+`--api-key` covers HTTP routes only. The optional gRPC adapter
+(`--grpc-bind-address`) has no authentication yet; bind it to loopback or keep
+it disabled when the HTTP surface is key-protected.
+
+## Observability
+
+`GET /metrics` serves a Prometheus text exposition with HTTP request counters
+(total, in-flight, 2xx/4xx/5xx) and engine-step gauges (scheduled requests and
+tokens, KV block usage, accumulated prefix-cache hits). The endpoint is
+read-only: engine-step values are snapshots cached when generation endpoints
+drive real steps, never sampled by stepping the engine from the scrape path.
+Engine-step gauges appear only after at least one step has been observed via
+`POST /v1/step`. `/metrics` requires the API key when authentication is
+enabled and never exposes prompts, outputs, or credentials.
+
+## OpenAI Surface Extensions
+
+The OpenAI-compatible endpoints accept a few agentic-contract fields in
+preview form. Everything below is non-streaming only; streaming requests that
+ask for these contracts are rejected with `400 unsupported_parameter` rather
+than silently dropped.
+
+- **`logprobs`** (completions and chat): when the engine observed sampled-token
+  logprobs, responses carry them in OpenAI-shaped `logprobs` blocks. The
+  blocks are all-or-nothing — partially observed values are omitted entirely
+  to keep token/logprob arrays aligned. `token` entries are currently token
+  ids rendered as strings (not decoded text), and completion `text_offset`
+  values are token indices. Field shapes follow OpenAI: chat takes a boolean
+  `logprobs`, while legacy completions take an integer where `0` opts into
+  sampled-token logprobs. Requests for top-N alternatives (chat
+  `top_logprobs > 0`, completions `logprobs > 0`) are rejected with
+  `400 unsupported_parameter` until the runner emits them.
+- **`reasoning`** (chat): opt-in. When set, known model-family reasoning is
+  split into `message.reasoning_content`: Qwen `<think>…</think>` text and
+  Gemma 4 thinking channels (extracted token-level during native decode).
+  Unknown formats fail closed — the text is left in `content` untouched.
+  Without the opt-in, responses keep their existing default behavior.
+- **`response_format: json_object`** (completions and chat): non-streaming
+  responses are validated server-side; output that is not a JSON object
+  returns `502 invalid_output`. This is post-hoc validation, not constrained
+  decoding — JSON schema enforcement is not supported yet.
+- **`tools` / `tool_choice`** (chat): experimental. When tools are present,
+  explicit `<tool_call>{…}</tool_call>` spans in the model output are parsed
+  into `message.tool_calls`. Bare JSON answers are never reinterpreted as tool
+  calls. `/v1/models` continues to report
+  `openai_tool_calling_supported: false` until prompt-side tool rendering,
+  streaming deltas, and continuation handling land end-to-end.
 
 ## Examples
 

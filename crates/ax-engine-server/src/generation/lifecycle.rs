@@ -73,5 +73,6 @@ pub(crate) async fn step_request(
         session.step_report()
     })
     .await?;
+    state.metrics.record_step_report(&report);
     Ok(Json(report))
 }

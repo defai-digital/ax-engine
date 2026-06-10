@@ -299,6 +299,50 @@ class Gemma4UnifiedImagePreprocessTests(unittest.TestCase):
                         )
 
 
+class Gemma4UnifiedConfigValidationTests(unittest.TestCase):
+    def test_load_config_rejects_zero_image_std_when_normalizing(self) -> None:
+        # A zero std channel would divide every pixel into inf/NaN; the
+        # checkpoint config must be rejected at load time.
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            model_dir = Path(tmp)
+            write_tiny_config(model_dir)
+            processor_path = model_dir / "processor_config.json"
+            processor = json.loads(processor_path.read_text())
+            processor["image_processor"]["do_normalize"] = True
+            processor["image_processor"]["image_std"] = [0.5, 0.0, 0.5]
+            processor_path.write_text(json.dumps(processor))
+
+            with self.assertRaisesRegex(ValueError, "image_std"):
+                module._load_config(model_dir)
+
+            # The same std values are unused (and loadable) when
+            # normalization stays off.
+            processor["image_processor"]["do_normalize"] = False
+            processor_path.write_text(json.dumps(processor))
+            config = module._load_config(model_dir)
+            self.assertFalse(config.do_normalize)
+
+    def test_resized_dimensions_extreme_aspect_ratios_stay_nonzero(self) -> None:
+        # Regression pin for the resize-extreme-aspect-zero report: the
+        # single-axis fallback only runs when the floored width/height ratio
+        # is >= 1, so degenerate aspect ratios still produce a non-zero patch
+        # grid (matches core's resize_target test).
+        module = load_module()
+        self.assertEqual(
+            module._resized_dimensions(
+                1, 10_000, patch_size=4, pooling_kernel_size=2, max_soft_tokens=4
+            ),
+            (8, 32),
+        )
+        self.assertEqual(
+            module._resized_dimensions(
+                10_000, 1, patch_size=4, pooling_kernel_size=2, max_soft_tokens=4
+            ),
+            (32, 8),
+        )
+
+
 def write_tiny_config(
     model_dir: Path, processor_filename: str = "processor_config.json"
 ) -> None:

@@ -38,6 +38,7 @@ fn base_args() -> ServerArgs {
         host: "127.0.0.1".to_string(),
         port: 8080,
         model_id: "qwen3".to_string(),
+        api_key: None,
         preset: None,
         list_presets: false,
         deterministic: true,
@@ -112,6 +113,21 @@ fn preview_support_tier_maps_to_sdk_support_tier() {
         PreviewSupportTier::LlamaCpp.as_sdk_support_tier(),
         SupportTier::LlamaCpp
     );
+}
+
+#[test]
+fn api_key_flag_trims_empty_values() {
+    let args = ServerArgs {
+        api_key: Some("  secret  ".to_string()),
+        ..base_args()
+    };
+    assert_eq!(args.resolved_api_key(), Some("secret".to_string()));
+
+    let disabled = ServerArgs {
+        api_key: Some("   ".to_string()),
+        ..base_args()
+    };
+    assert_eq!(disabled.resolved_api_key(), None);
 }
 
 #[test]

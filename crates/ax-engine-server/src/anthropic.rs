@@ -178,6 +178,9 @@ impl AnthropicMessagesRequest {
                 .map(OpenAiStopInput::Multiple),
             seed: None,
             stream: false,
+            logprobs: false,
+            top_logprobs: None,
+            reasoning: None,
             metadata: None,
             multimodal_inputs: Default::default(),
             response_format: None,
@@ -224,6 +227,7 @@ async fn run_anthropic_messages_generation(
         let OpenAiBuiltMlxLmChatRequest {
             chat_request,
             stream,
+            response_options: _,
             output_postprocessing,
         } = build_openai_mlx_lm_chat_request(&state, request)?;
         reject_unexpected_stream(stream)?;
@@ -242,6 +246,7 @@ async fn run_anthropic_messages_generation(
         let OpenAiBuiltLlamaCppChatRequest {
             chat_request,
             stream,
+            response_options: _,
             output_postprocessing,
         } = build_openai_llama_cpp_chat_request(&state, request)?;
         reject_unexpected_stream(stream)?;
@@ -259,12 +264,18 @@ async fn run_anthropic_messages_generation(
     let OpenAiBuiltRequest {
         generate_request,
         stream,
+        response_options: _,
         output_postprocessing,
     } = build_openai_chat_request(&state, request)?;
     reject_unexpected_stream(stream)?;
     let (request_id, mut response) =
         run_stateless_generate_request(&state, generate_request).await?;
-    populate_native_mlx_output_text(&state, &mut response, OpenAiStreamKind::ChatCompletion)?;
+    populate_native_mlx_output_text(
+        &state,
+        &mut response,
+        OpenAiStreamKind::ChatCompletion,
+        false,
+    )?;
     apply_openai_chat_output_postprocessing(&mut response, output_postprocessing);
     Ok((request_id, response))
 }

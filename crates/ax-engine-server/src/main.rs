@@ -16,6 +16,7 @@ mod errors;
 mod generation;
 mod grpc;
 mod metadata;
+mod metrics;
 mod multimodal;
 mod openai;
 mod routes;
@@ -62,7 +63,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map_err(|message| std::io::Error::new(std::io::ErrorKind::InvalidInput, message))?;
     log_host_detection_warnings(&session_config);
     let session = EngineSession::new(session_config.clone())?;
-    let state = build_app_state(model_id.clone(), session)?;
+    let state = build_app_state(model_id.clone(), session)?.with_api_key(args.resolved_api_key());
     let app = build_router(state.clone());
     let listener = tokio::net::TcpListener::bind(&bind_address).await?;
 
