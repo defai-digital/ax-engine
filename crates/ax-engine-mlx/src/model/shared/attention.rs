@@ -490,10 +490,15 @@ pub(crate) fn build_layer_masks(
     }
 }
 
-/// Build vLLM-style Gemma4 multimodal PrefixLM masks.
+/// Build Gemma4 multimodal PrefixLM masks.
 ///
-/// vLLM applies `(causal AND sliding_window) OR mm_prefix` to sliding-attention
-/// layers only. Full-attention layers keep the regular causal mask.
+/// Mirrors the reference `masking_utils.blockwise_overlay` (transformers
+/// v5.10, used by Gemma4 Unified with `use_bidirectional_attention="vision"`):
+/// vision soft-token blocks attend bidirectionally to themselves, OR-composed
+/// onto every layer's base mask — `causal OR block` on full-attention layers
+/// and `(causal AND sliding_window) OR block` on sliding-attention layers.
+/// The reference applies the overlay to both mask kinds and never filters a
+/// block against the window size.
 pub(crate) fn build_layer_masks_with_media_ranges(
     cfg: &ModelConfig,
     n_layers: usize,
@@ -501,48 +506,34 @@ pub(crate) fn build_layer_masks_with_media_ranges(
     key_len: usize,
     media_ranges: &[(usize, usize)],
 ) -> Vec<Option<MlxArray>> {
-    if media_ranges.is_empty() {
+    let ranges: Vec<(usize, usize)> = media_ranges
+        .iter()
+        .copied()
+        .filter(|(start, end)| start <= end)
+        .collect();
+    if ranges.is_empty() {
         return build_layer_masks(cfg, n_layers, seq, key_len);
     }
 
     if cfg.layer_configs.is_empty() {
-        let Some(window) = cfg.global_sliding_window else {
-            return build_layer_masks(cfg, n_layers, seq, key_len);
-        };
-        let ranges = filtered_media_ranges(media_ranges, Some(window));
-        if ranges.is_empty() {
-            return build_layer_masks(cfg, n_layers, seq, key_len);
-        }
-        let mask = media_prefix_mask_array(seq, key_len, Some(window), &ranges);
+        let mask = media_prefix_mask_array(seq, key_len, cfg.global_sliding_window, &ranges);
         return vec![Some(mask); n_layers];
     }
 
+    // One mask per unique window size (Gemma4 alternates sliding/global), the
+    // same memoization shape as `build_layer_masks`.
+    let mut memo: std::collections::HashMap<Option<usize>, MlxArray> =
+        std::collections::HashMap::with_capacity(2);
     cfg.layer_configs
         .iter()
         .map(|lc| {
-            let Some(window) = lc.sliding_window else {
-                return attention_mask_array(seq, key_len, None);
-            };
-            let ranges = filtered_media_ranges(media_ranges, Some(window));
-            if ranges.is_empty() {
-                return attention_mask_array(seq, key_len, Some(window));
-            }
-            Some(media_prefix_mask_array(seq, key_len, Some(window), &ranges))
-        })
-        .collect()
-}
-
-fn filtered_media_ranges(
-    media_ranges: &[(usize, usize)],
-    sliding_window: Option<usize>,
-) -> Vec<(usize, usize)> {
-    media_ranges
-        .iter()
-        .copied()
-        .filter(|(start, end)| {
-            *start < *end
-                && sliding_window
-                    .is_none_or(|window| end.saturating_sub(*start).saturating_add(1) <= window)
+            Some(
+                memo.entry(lc.sliding_window)
+                    .or_insert_with(|| {
+                        media_prefix_mask_array(seq, key_len, lc.sliding_window, &ranges)
+                    })
+                    .clone(),
+            )
         })
         .collect()
 }
@@ -580,7 +571,11 @@ fn media_prefix_mask_array(
 
 #[cfg(test)]
 mod tests {
-    use super::{media_prefix_mask_array, qwen_direct_qk_norm_rope_default_family};
+    use super::{
+        build_layer_masks_with_media_ranges, media_prefix_mask_array,
+        qwen_direct_qk_norm_rope_default_family,
+    };
+    use crate::model::{LayerConfig, ModelConfig};
     use mlx_sys::{MlxArray, eval};
 
     fn mask_data(mask: &MlxArray) -> Vec<u8> {
@@ -613,6 +608,131 @@ mod tests {
                 0, 1, 1, 1, 0, 0, //
                 0, 0, 0, 1, 1, 0, //
                 0, 0, 0, 0, 1, 1,
+            ]
+        );
+    }
+
+    #[test]
+    fn media_prefix_mask_extends_causal_mask_without_window() {
+        // Full-attention layers: `causal OR block` — vision tokens at 1..=3
+        // attend bidirectionally to themselves; everything else is causal.
+        let mask = media_prefix_mask_array(6, 6, None, &[(1, 3)]);
+
+        assert_eq!(
+            mask_data(&mask),
+            vec![
+                1, 0, 0, 0, 0, 0, //
+                1, 1, 1, 1, 0, 0, //
+                1, 1, 1, 1, 0, 0, //
+                1, 1, 1, 1, 0, 0, //
+                1, 1, 1, 1, 1, 0, //
+                1, 1, 1, 1, 1, 1,
+            ]
+        );
+    }
+
+    #[test]
+    fn media_prefix_mask_keeps_block_larger_than_sliding_window() {
+        // A vision block larger than the window still attends to itself in
+        // full: the reference blockwise overlay is not filtered by window size.
+        let mask = media_prefix_mask_array(5, 5, Some(2), &[(0, 3)]);
+
+        assert_eq!(
+            mask_data(&mask),
+            vec![
+                1, 1, 1, 1, 0, //
+                1, 1, 1, 1, 0, //
+                1, 1, 1, 1, 0, //
+                1, 1, 1, 1, 0, //
+                0, 0, 0, 1, 1,
+            ]
+        );
+    }
+
+    fn interleaved_mask_test_config() -> ModelConfig {
+        let layer = |sliding_window: Option<usize>| LayerConfig {
+            head_dim: 1,
+            rope_theta: 10000.0,
+            rope_dims: 0,
+            rope_freqs: None,
+            sliding_window,
+            kv_source_layer: None,
+            v_norm_no_scale: false,
+        };
+        ModelConfig {
+            model_family: "gemma4_unified".to_string(),
+            layer_count: 2,
+            hidden_size: 1,
+            intermediate_size: 0,
+            n_heads: 1,
+            n_kv_heads: 1,
+            head_dim: 1,
+            vocab_size: 1,
+            rope_theta: 10000.0,
+            rope_dims: 0,
+            attn_output_gate: false,
+            query_scale: 1.0,
+            final_logit_softcapping: None,
+            moe_expert_count: 0,
+            moe_experts_per_token: 0,
+            moe_expert_intermediate_size: 0,
+            layer_configs: vec![layer(Some(2)), layer(None)],
+            global_sliding_window: None,
+            gemma4_moe_router: false,
+            uses_geglu: true,
+            hidden_states_scale: None,
+            moe_norm_topk_prob: false,
+            hidden_size_per_layer_input: 0,
+            linear_attention: None,
+            mla_attention: None,
+            glm_router: None,
+            rms_norm_eps: 1e-6,
+            rope_freqs: None,
+            no_rope_layer_interval: 0,
+            attn_temperature_floor: 0.0,
+            attn_temperature_scale: 0.0,
+            intermediate_size_mlp: 0,
+            moe_layer_freq: 0,
+            moe_first_dense_layers: 0,
+            moe_shared_expert_count: 0,
+            moe_sigmoid_routing: false,
+            moe_routed_scaling_factor: 1.0,
+            moe_n_group: 1,
+            moe_topk_group: 1,
+            think_start_token_id: None,
+            think_end_token_id: None,
+        }
+    }
+
+    #[test]
+    fn media_layer_masks_apply_block_overlay_to_full_attention_layers() {
+        let cfg = interleaved_mask_test_config();
+
+        let masks = build_layer_masks_with_media_ranges(&cfg, 2, 6, 6, &[(1, 3)]);
+
+        assert_eq!(masks.len(), 2);
+        // Sliding layer: (causal AND window 2) OR block.
+        assert_eq!(
+            mask_data(masks[0].as_ref().expect("sliding layer mask")),
+            vec![
+                1, 0, 0, 0, 0, 0, //
+                1, 1, 1, 1, 0, 0, //
+                0, 1, 1, 1, 0, 0, //
+                0, 1, 1, 1, 0, 0, //
+                0, 0, 0, 1, 1, 0, //
+                0, 0, 0, 0, 1, 1,
+            ]
+        );
+        // Full-attention layer: causal OR block — previously plain causal.
+        assert_eq!(
+            mask_data(masks[1].as_ref().expect("full-attention layer mask")),
+            vec![
+                1, 0, 0, 0, 0, 0, //
+                1, 1, 1, 1, 0, 0, //
+                1, 1, 1, 1, 0, 0, //
+                1, 1, 1, 1, 0, 0, //
+                1, 1, 1, 1, 1, 0, //
+                1, 1, 1, 1, 1, 1,
             ]
         );
     }
