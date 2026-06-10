@@ -27,12 +27,8 @@ pub(crate) async fn run_openai_llama_cpp_chat_generation(
         output_postprocessing,
     } = build_openai_llama_cpp_chat_request(&state, request)?;
     if stream {
-        return stream_openai_llama_cpp_chat_request(
-            state,
-            chat_request,
-            output_postprocessing,
-        )
-        .await;
+        return stream_openai_llama_cpp_chat_request(state, chat_request, output_postprocessing)
+            .await;
     }
 
     let request_id = state.allocate_request_id();
@@ -43,10 +39,7 @@ pub(crate) async fn run_openai_llama_cpp_chat_generation(
     })
     .await?;
     let mut response = response;
-    apply_openai_chat_output_postprocessing(
-        &mut response,
-        output_postprocessing,
-    );
+    apply_openai_chat_output_postprocessing(&mut response, output_postprocessing);
 
     Ok(OpenAiStreamKind::ChatCompletion.build_non_stream_response(&response, request_id))
 }
@@ -61,12 +54,7 @@ pub(crate) async fn run_openai_mlx_lm_chat_generation(
         output_postprocessing,
     } = build_openai_mlx_lm_chat_request(&state, request)?;
     if stream {
-        return stream_openai_mlx_lm_chat_request(
-            state,
-            chat_request,
-            output_postprocessing,
-        )
-        .await;
+        return stream_openai_mlx_lm_chat_request(state, chat_request, output_postprocessing).await;
     }
 
     let request_id = state.allocate_request_id();
@@ -77,10 +65,7 @@ pub(crate) async fn run_openai_mlx_lm_chat_generation(
     })
     .await?;
     let mut response = response;
-    apply_openai_chat_output_postprocessing(
-        &mut response,
-        output_postprocessing,
-    );
+    apply_openai_chat_output_postprocessing(&mut response, output_postprocessing);
 
     Ok(OpenAiStreamKind::ChatCompletion.build_non_stream_response(&response, request_id))
 }
@@ -96,21 +81,13 @@ pub(crate) async fn run_openai_text_generation(
         output_postprocessing,
     } = request;
     if stream {
-        return stream_openai_request(
-            state,
-            generate_request,
-            kind,
-            output_postprocessing,
-        )
-        .await;
+        return stream_openai_request(state, generate_request, kind, output_postprocessing).await;
     }
 
-    let (request_id, mut response) = run_stateless_generate_request(&state, generate_request).await?;
+    let (request_id, mut response) =
+        run_stateless_generate_request(&state, generate_request).await?;
     populate_native_mlx_output_text(&state, &mut response)?;
-    apply_openai_chat_output_postprocessing(
-        &mut response,
-        output_postprocessing,
-    );
+    apply_openai_chat_output_postprocessing(&mut response, output_postprocessing);
 
     Ok(kind.build_non_stream_response(&response, request_id))
 }

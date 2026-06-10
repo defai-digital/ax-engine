@@ -1,6 +1,6 @@
 use ax_engine_sdk::{
-    EngineSessionError, EngineTokenizer, EngineTokenizerError, GenerateRequest,
-    GenerateFinishReason, GenerateStreamEvent, GenerateStreamState, LlamaCppChatGenerateRequest,
+    EngineSessionError, EngineTokenizer, EngineTokenizerError, GenerateFinishReason,
+    GenerateRequest, GenerateStreamEvent, GenerateStreamState, LlamaCppChatGenerateRequest,
     LlamaCppStreamHandle, MlxLmChatGenerateRequest, MlxLmStreamHandle, SelectedBackend,
     finish_reason_from_mlx_lm,
 };
@@ -13,7 +13,6 @@ use tokio::sync::mpsc;
 use crate::app_state::AppState;
 use crate::backends::{llama_cpp, mlx_lm};
 use crate::errors::{ErrorResponse, error_response, map_session_error};
-use crate::openai::requests::OpenAiOutputPostprocessing;
 use crate::generation::streaming::{
     StreamEventSender, StreamStateSource, build_keep_alive_stream, build_stream_state,
     drive_stream_events, send_stream_error, spawn_sse_blocking_stream_task, spawn_stream_task,
@@ -22,6 +21,7 @@ use crate::openai::chunks::{
     chat_delta_chunk, chat_final_chunk, completion_delta_chunk, completion_final_chunk,
     next_chat_delta_role,
 };
+use crate::openai::requests::OpenAiOutputPostprocessing;
 use crate::openai::responses::finish_reason_from_llama_cpp_chat;
 use crate::openai::schema::OpenAiStreamKind;
 use crate::openai::sse::send_openai_stream_chunk;
@@ -87,13 +87,7 @@ pub(crate) async fn stream_openai_mlx_lm_chat_request(
 
     let (tx, rx) = mpsc::channel(STREAM_CHANNEL_CAPACITY);
     spawn_sse_blocking_stream_task(tx, "openai mlx_lm chat stream", move |tx| {
-        drive_openai_mlx_lm_chat_stream(
-            tx,
-            request_id,
-            model_id,
-            stream,
-            &mut postprocessing,
-        );
+        drive_openai_mlx_lm_chat_stream(tx, request_id, model_id, stream, &mut postprocessing);
     });
 
     Ok(build_keep_alive_stream(rx).into_response())
@@ -116,13 +110,7 @@ pub(crate) async fn stream_openai_llama_cpp_chat_request(
 
     let (tx, rx) = mpsc::channel(STREAM_CHANNEL_CAPACITY);
     spawn_sse_blocking_stream_task(tx, "openai llama.cpp chat stream", move |tx| {
-        drive_openai_llama_cpp_chat_stream(
-            tx,
-            request_id,
-            model_id,
-            stream,
-            &mut postprocessing,
-        );
+        drive_openai_llama_cpp_chat_stream(tx, request_id, model_id, stream, &mut postprocessing);
     });
 
     Ok(build_keep_alive_stream(rx).into_response())
@@ -178,7 +166,8 @@ fn send_openai_stream_event(
                 else {
                     return true;
                 };
-                let Some(processed_delta_text) = output_postprocessing.apply_delta_text(&delta_text)
+                let Some(processed_delta_text) =
+                    output_postprocessing.apply_delta_text(&delta_text)
                 else {
                     return true;
                 };
@@ -198,7 +187,8 @@ fn send_openai_stream_event(
                 else {
                     return true;
                 };
-                let Some(processed_delta_text) = output_postprocessing.apply_delta_text(&delta_text)
+                let Some(processed_delta_text) =
+                    output_postprocessing.apply_delta_text(&delta_text)
                 else {
                     return true;
                 };
@@ -394,14 +384,10 @@ fn drive_openai_mlx_lm_chat_stream(
                 }
 
                 if let Some(finish_reason) = chunk.finish_reason {
-                    let finish_reason = output_postprocessing
-                        .apply_finish_reason(finish_reason_from_mlx_lm(Some(finish_reason.as_str())));
-                    send_openai_mlx_lm_chat_final_chunk(
-                        &tx,
-                        request_id,
-                        &model_id,
-                        finish_reason,
+                    let finish_reason = output_postprocessing.apply_finish_reason(
+                        finish_reason_from_mlx_lm(Some(finish_reason.as_str())),
                     );
+                    send_openai_mlx_lm_chat_final_chunk(&tx, request_id, &model_id, finish_reason);
                     let _ = tx.blocking_send(Ok(Event::default().data("[DONE]")));
                     return;
                 }
@@ -432,7 +418,8 @@ fn drive_openai_llama_cpp_chat_stream(
         match stream.next_chunk() {
             Ok(Some(chunk)) => {
                 if !chunk.content.is_empty() {
-                    if let Some(processed_delta_text) = output_postprocessing.apply_delta_text(&chunk.content)
+                    if let Some(processed_delta_text) =
+                        output_postprocessing.apply_delta_text(&chunk.content)
                     {
                         if !processed_delta_text.is_empty() {
                             let role = next_chat_delta_role(&mut chat_role_emitted);
@@ -450,10 +437,9 @@ fn drive_openai_llama_cpp_chat_stream(
                 }
 
                 if chunk.stop {
-                    let finish_reason =
-                        output_postprocessing.apply_finish_reason(finish_reason_from_llama_cpp_chat(
-                            chunk.stop_type.as_deref(),
-                        ));
+                    let finish_reason = output_postprocessing.apply_finish_reason(
+                        finish_reason_from_llama_cpp_chat(chunk.stop_type.as_deref()),
+                    );
                     send_openai_llama_cpp_chat_final_chunk(
                         &tx,
                         request_id,
@@ -519,7 +505,9 @@ impl OpenAiOutputPostprocessingState {
         }
 
         self.raw_output_text.push_str(delta_text);
-        let normalized = self.postprocessing.normalize_output_text(&self.raw_output_text);
+        let normalized = self
+            .postprocessing
+            .normalize_output_text(&self.raw_output_text);
         let normalized_len = normalized.len();
         let emitted_len = self.emitted_output_text.len();
         if normalized_len < emitted_len {

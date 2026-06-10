@@ -1,6 +1,7 @@
 use ax_engine_sdk::{
-    EngineTokenizer, GenerateFinishReason, GenerateRequest, GenerateSampling, LlamaCppChatGenerateRequest,
-    MlxLmChatGenerateRequest, RequestMultimodalInputs, SelectedBackend,
+    EngineTokenizer, GenerateFinishReason, GenerateRequest, GenerateSampling,
+    LlamaCppChatGenerateRequest, MlxLmChatGenerateRequest, RequestMultimodalInputs,
+    SelectedBackend,
 };
 use axum::Json;
 use axum::http::StatusCode;
@@ -13,8 +14,8 @@ use crate::chat;
 use crate::errors::{ErrorResponse, error_response};
 use crate::openai::chat_requests::{build_llama_cpp_chat_messages, build_mlx_lm_chat_messages};
 use crate::openai::schema::{
-    OpenAiChatCompletionHttpRequest, OpenAiCompletionHttpRequest, OpenAiPromptInput,
-    OpenAiChatContent, OpenAiChatMessage, OpenAiStopInput,
+    OpenAiChatCompletionHttpRequest, OpenAiChatContent, OpenAiChatMessage,
+    OpenAiCompletionHttpRequest, OpenAiPromptInput, OpenAiStopInput,
 };
 
 pub(crate) const DEFAULT_OPENAI_MAX_TOKENS: u32 = 256;
