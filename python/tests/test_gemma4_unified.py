@@ -277,6 +277,27 @@ class Gemma4UnifiedImagePreprocessTests(unittest.TestCase):
         self.assertEqual(len(video_input["pixel_position_ids"]), 4)
         self.assertEqual(len(video_input["pixel_values"]), 48)
 
+    @unittest.skipIf(Image is None, "Pillow is required for Gemma4 video preprocessing")
+    def test_prepare_video_request_rejects_malformed_timestamp_tokens(self) -> None:
+        module = load_module()
+        bad_timestamp_cases = [
+            ([[[400], 401]], "frame entry"),
+            ([[[400.5], [401]]], "non-integer"),
+            ([[[-1], [401]]], "non-negative"),
+        ]
+        for timestamp_token_ids, message in bad_timestamp_cases:
+            with self.subTest(message=message):
+                with tempfile.TemporaryDirectory() as tmp:
+                    model_dir = Path(tmp)
+                    write_tiny_config(model_dir)
+                    with self.assertRaisesRegex(ValueError, message):
+                        module.prepare_gemma4_unified_video_request(
+                            model_dir,
+                            [9, 300, 10],
+                            [[tiny_rgb_image(), tiny_rgb_image()]],
+                            timestamp_token_ids=timestamp_token_ids,
+                        )
+
 
 def write_tiny_config(
     model_dir: Path, processor_filename: str = "processor_config.json"

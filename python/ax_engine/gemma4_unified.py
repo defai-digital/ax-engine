@@ -90,13 +90,18 @@ def prepare_gemma4_unified_multimodal_request(
     Raw media decoding stays outside AX's optimized model path. This helper
     prepares the processed tensor contract consumed by the native MLX runtime.
     Video timestamps are accepted as already-tokenized IDs so callers can keep
-    tokenizer policy explicit.
+    tokenizer policy explicit. When provided, `video_timestamp_token_ids` must be
+    shaped as `[video][frame][token]` and must contain as many video entries as
+    videos provided, plus one frame entry per sampled frame after preprocessing.
     """
 
     config = _load_config(Path(model_dir))
-    processed_images = [_process_image(image, config) for image in (images or [])]
-    processed_audios = _process_audios(audios or [], audio_sampling_rates, config)
-    processed_videos = [_process_video(video, config) for video in (videos or [])]
+    prepared_images = [] if images is None else list(images)
+    prepared_audios = [] if audios is None else list(audios)
+    prepared_videos = [] if videos is None else list(videos)
+    processed_images = [_process_image(image, config) for image in prepared_images]
+    processed_audios = _process_audios(prepared_audios, audio_sampling_rates, config)
+    processed_videos = [_process_video(video, config) for video in prepared_videos]
     timestamp_ids = _normalize_video_timestamp_ids(
         video_timestamp_token_ids,
         [item["frame_count"] for item in processed_videos],
@@ -741,18 +746,60 @@ def _normalize_video_timestamp_ids(
 ) -> list[list[list[int]]]:
     if timestamp_ids is None:
         return [[[] for _ in range(frame_count)] for frame_count in frame_counts]
+    if not isinstance(timestamp_ids, list):
+        raise ValueError(
+            "Gemma4 unified video timestamp_token_ids must be a list of videos"
+        )
     if len(timestamp_ids) != len(frame_counts):
         raise ValueError(
             "Gemma4 unified video timestamp_token_ids length must match video count"
         )
     normalized = []
     for idx, (video_timestamps, frame_count) in enumerate(zip(timestamp_ids, frame_counts)):
+        if not isinstance(video_timestamps, list):
+            raise ValueError(
+                "Gemma4 unified video timestamp_token_ids entry "
+                f"for video {idx} must be a list of frame token lists"
+            )
         if len(video_timestamps) != frame_count:
             raise ValueError(
                 "Gemma4 unified video timestamp_token_ids frame count mismatch: "
                 f"video {idx} expected {frame_count}, found {len(video_timestamps)}"
             )
-        normalized.append([[int(token) for token in frame] for frame in video_timestamps])
+        normalized_frame_tokens: list[list[int]] = []
+        for frame_idx, frame_tokens in enumerate(video_timestamps):
+            if not isinstance(frame_tokens, list):
+                raise ValueError(
+                    "Gemma4 unified video timestamp_token_ids frame entry "
+                    f"for video {idx}, frame {frame_idx} must be a list"
+                )
+            normalized_tokens: list[int] = []
+            for token_idx, token in enumerate(frame_tokens):
+                if isinstance(token, bool):
+                    raise ValueError(
+                        "Gemma4 unified video timestamp_token_ids must contain integer token ids; "
+                        f"found bool at video {idx}, frame {frame_idx}, index {token_idx}"
+                    )
+                try:
+                    int_token = int(token)
+                except (TypeError, ValueError) as exc:
+                    raise ValueError(
+                        "Gemma4 unified video timestamp_token_ids must contain integer token ids; "
+                        f"found non-integer at video {idx}, frame {frame_idx}, index {token_idx}"
+                    ) from exc
+                if isinstance(token, float) and not token.is_integer():
+                    raise ValueError(
+                        "Gemma4 unified video timestamp_token_ids must contain integer token ids; "
+                        f"found non-integer {token!r} at video {idx}, frame {frame_idx}, index {token_idx}"
+                    )
+                if int_token < 0:
+                    raise ValueError(
+                        "Gemma4 unified video timestamp_token_ids must contain non-negative token ids; "
+                        f"found {int_token} at video {idx}, frame {frame_idx}, index {token_idx}"
+                    )
+                normalized_tokens.append(int_token)
+            normalized_frame_tokens.append(normalized_tokens)
+        normalized.append(normalized_frame_tokens)
     return normalized
 
 

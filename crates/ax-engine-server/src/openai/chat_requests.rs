@@ -218,7 +218,7 @@ fn openai_media_part_error(
         StatusCode::BAD_REQUEST,
         "invalid_request",
         format!(
-            "OpenAI chat content part type {} includes {field_hint}, but AX Engine does not yet decode raw OpenAI media into Gemma4UnifiedRuntimeInputs; send processed multimodal_inputs.gemma4_unified tensors through /v1/generate or use text-only chat",
+            "OpenAI chat content part type {} includes {field_hint}, but this request path is text-only. Inline media requires native MLX Gemma4 chat without pre-supplied multimodal_inputs; for manual multimodal control, send preprocessed multimodal_inputs.gemma4_unified to /v1/generate",
             part.part_type
         ),
     )
