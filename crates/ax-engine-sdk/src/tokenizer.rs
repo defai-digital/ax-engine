@@ -94,6 +94,21 @@ impl EngineTokenizer {
         Ok(ids)
     }
 
+    /// Encode a single string using the tokenizer's own special-token handling.
+    /// This mirrors compatibility endpoints such as llama.cpp's `/tokenize`,
+    /// where `add_special` is not the same as appending the model EOS token.
+    pub fn encode_with_special_tokens(
+        &self,
+        text: &str,
+        add_special_tokens: bool,
+    ) -> Result<Vec<u32>, EngineTokenizerError> {
+        let encoding = self
+            .inner
+            .encode(text, add_special_tokens)
+            .map_err(|e| EngineTokenizerError::Encode(e.to_string()))?;
+        Ok(encoding.get_ids().to_vec())
+    }
+
     /// Look up the surface string for a single token id. Used to render a
     /// special placeholder token (e.g. the Gemma image soft token) into a
     /// prompt so that it re-encodes back to exactly that id.
