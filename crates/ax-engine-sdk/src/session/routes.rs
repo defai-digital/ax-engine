@@ -23,6 +23,56 @@ const MONOTONIC_CROSSOVER_DECISION_KEYS: &[&str] = &[
     "branch_decode_tokens",
 ];
 
+// TurboQuant per-step delta counters: each engine step drains the KV cache's
+// decode usage (`take_turboquant_decode_usage`) into that step's route, so the
+// request-level value is the SUM across steps. Last-wins reported whichever
+// step happened to come last — typically the request-completion step with zero
+// decode deltas — which erased all fused-decode evidence from generate
+// responses even while the fused path ran every decode step.
+const ADDITIVE_CROSSOVER_DECISION_KEYS: &[&str] = &[
+    "ax_mlx_kv_compression_request_snapshots",
+    "ax_mlx_kv_compression_shadow_sync_calls",
+    "ax_mlx_kv_compression_shadow_sync_wall_us",
+    "ax_mlx_kv_compression_fused_decode_candidates",
+    "ax_mlx_kv_compression_fused_decode_attempts",
+    "ax_mlx_kv_compression_fused_decode_successes",
+    "ax_mlx_kv_compression_fused_decode_metal_successes",
+    "ax_mlx_kv_compression_fused_decode_fallbacks",
+    "ax_mlx_kv_compression_fused_decode_ready_candidates",
+    "ax_mlx_kv_compression_fused_decode_blocked_prefill_only",
+    "ax_mlx_kv_compression_fused_decode_blocked_attention_kind",
+    "ax_mlx_kv_compression_fused_decode_blocked_linear_attention",
+    "ax_mlx_kv_compression_fused_decode_blocked_sliding_window",
+    "ax_mlx_kv_compression_fused_decode_blocked_kv_shared",
+    "ax_mlx_kv_compression_fused_decode_blocked_ineligible_layer",
+    "ax_mlx_kv_compression_fused_decode_blocked_unsupported_preset",
+    "ax_mlx_kv_compression_fused_decode_blocked_unsupported_head_dim",
+    "ax_mlx_kv_compression_fused_decode_blocked_gqa",
+    "ax_mlx_kv_compression_fused_decode_blocked_missing_storage",
+    "ax_mlx_kv_compression_fused_decode_query_readback_wall_us",
+    "ax_mlx_kv_compression_fused_decode_cold_metal_wall_us",
+    "ax_mlx_kv_compression_fused_decode_hot_tail_merge_wall_us",
+    "ax_mlx_kv_compression_fused_decode_output_staging_wall_us",
+];
+
+const KV_COMPRESSION_DECODE_PATH_KEY: &str = "ax_mlx_kv_compression_decode_path";
+const KV_COMPRESSION_FALLBACK_REASON_KEY: &str =
+    "ax_mlx_kv_compression_fused_decode_fallback_reason";
+const KV_COMPRESSION_FUSED_ATTEMPTS_KEY: &str = "ax_mlx_kv_compression_fused_decode_attempts";
+const FALLBACK_REASON_RUNNER_NOT_INTEGRATED: u32 = 4;
+
+// Path codes: 1 = full-precision shadow, 2 = fused compressed decode,
+// 3 = legacy CPU-oracle compressed decode. Codes are not rank-ordered, so the
+// request-level merge keeps the most significant path observed on any step.
+fn decode_path_rank(code: u32) -> u32 {
+    match code {
+        2 => 3, // fused compressed decode
+        3 => 2, // cpu-oracle compressed decode (legacy/diagnostic)
+        1 => 1, // full-precision shadow
+        _ => 0,
+    }
+}
+
 // Apply per-step route metadata onto the route accumulated so far for the same
 // request. String fields are last-wins, except `prefix_cache_path` keeps a more
 // informative stored value rather than being clobbered by the decode-step default
@@ -52,10 +102,38 @@ pub(super) fn merge_native_route_into(stored: &mut GenerateRouteReport, new: Gen
         (_, Some(_)) => stored.prefix_cache_path = new.prefix_cache_path,
         _ => {}
     }
+    let saw_fused_attempts = stored
+        .crossover_decisions
+        .get(KV_COMPRESSION_FUSED_ATTEMPTS_KEY)
+        .copied()
+        .unwrap_or(0)
+        > 0
+        || new
+            .crossover_decisions
+            .get(KV_COMPRESSION_FUSED_ATTEMPTS_KEY)
+            .copied()
+            .unwrap_or(0)
+            > 0;
     for (key, new_val) in new.crossover_decisions {
         if MONOTONIC_CROSSOVER_DECISION_KEYS.contains(&key.as_str()) {
             let slot = stored.crossover_decisions.entry(key).or_insert(0);
             *slot = (*slot).max(new_val);
+        } else if ADDITIVE_CROSSOVER_DECISION_KEYS.contains(&key.as_str()) {
+            let slot = stored.crossover_decisions.entry(key).or_insert(0);
+            *slot = slot.saturating_add(new_val);
+        } else if key == KV_COMPRESSION_DECODE_PATH_KEY {
+            let slot = stored.crossover_decisions.entry(key).or_insert(0);
+            if decode_path_rank(new_val) > decode_path_rank(*slot) {
+                *slot = new_val;
+            }
+        } else if key == KV_COMPRESSION_FALLBACK_REASON_KEY {
+            // A step with no decode work reports "runner_not_integrated"; do
+            // not let it clobber the reason from steps that actually
+            // attempted fused decode.
+            let slot = stored.crossover_decisions.entry(key).or_insert(new_val);
+            if !(new_val == FALLBACK_REASON_RUNNER_NOT_INTEGRATED && saw_fused_attempts) {
+                *slot = new_val;
+            }
         } else {
             stored.crossover_decisions.insert(key, new_val);
         }
@@ -173,6 +251,75 @@ mod tests {
             stored.crossover_decisions.get("prefix_reused_blocks"),
             Some(&32),
             "smaller monotonic value must not overwrite the max"
+        );
+    }
+
+    #[test]
+    fn merge_native_route_sums_turboquant_fused_decode_deltas_across_steps() {
+        // Reproduces the observed bug: every decode step drains its TurboQuant
+        // decode usage into that step's route (8 ready/attempts per step on a
+        // gemma4 12B), but the request-completion step carries zero deltas and
+        // a "runner_not_integrated" fallback reason. Last-wins reporting
+        // erased all fused-decode evidence from the generate response.
+        let step = |attempts: u32, successes: u32, path: u32, reason: u32| GenerateRouteReport {
+            crossover_decisions: [
+                (
+                    "ax_mlx_kv_compression_fused_decode_attempts".to_string(),
+                    attempts,
+                ),
+                (
+                    "ax_mlx_kv_compression_fused_decode_metal_successes".to_string(),
+                    successes,
+                ),
+                (
+                    "ax_mlx_kv_compression_fused_decode_ready_candidates".to_string(),
+                    attempts,
+                ),
+                (
+                    "ax_mlx_kv_compression_fused_decode_blocked_sliding_window".to_string(),
+                    if attempts > 0 { 20 } else { 0 },
+                ),
+                ("ax_mlx_kv_compression_decode_path".to_string(), path),
+                (
+                    "ax_mlx_kv_compression_fused_decode_fallback_reason".to_string(),
+                    reason,
+                ),
+                ("ax_mlx_kv_compression_request_snapshots".to_string(), 1),
+            ]
+            .into_iter()
+            .collect(),
+            ..Default::default()
+        };
+
+        let mut stored = step(8, 8, 2, 0);
+        merge_native_route_into(&mut stored, step(8, 8, 2, 0));
+        // Request-completion step: zero deltas, shadow path, reason 4.
+        merge_native_route_into(&mut stored, step(0, 0, 1, 4));
+
+        let get = |key: &str| stored.crossover_decisions.get(key).copied();
+        assert_eq!(get("ax_mlx_kv_compression_fused_decode_attempts"), Some(16));
+        assert_eq!(
+            get("ax_mlx_kv_compression_fused_decode_metal_successes"),
+            Some(16)
+        );
+        assert_eq!(
+            get("ax_mlx_kv_compression_fused_decode_ready_candidates"),
+            Some(16)
+        );
+        assert_eq!(
+            get("ax_mlx_kv_compression_fused_decode_blocked_sliding_window"),
+            Some(40)
+        );
+        assert_eq!(get("ax_mlx_kv_compression_request_snapshots"), Some(3));
+        assert_eq!(
+            get("ax_mlx_kv_compression_decode_path"),
+            Some(2),
+            "fused path must not be demoted by a shadow-only completion step"
+        );
+        assert_eq!(
+            get("ax_mlx_kv_compression_fused_decode_fallback_reason"),
+            Some(0),
+            "runner_not_integrated from a no-decode step must not clobber the real reason"
         );
     }
 
