@@ -2752,10 +2752,10 @@ def build_bandwidth_accounting(
     if moe_block is not None:
         if active_bytes is not None:
             estimate_kind = "moe_active_estimate"
-            bytes_for_estimate = active_bytes
+            bytes_for_estimate: int | None = active_bytes
         else:
             estimate_kind = "not_comparable"
-            bytes_for_estimate = safetensor_bytes
+            bytes_for_estimate = None
     else:
         estimate_kind = "dense_safetensor_total"
         bytes_for_estimate = safetensor_bytes
@@ -2763,10 +2763,23 @@ def build_bandwidth_accounting(
     per_row: list[dict[str, Any]] = []
     for cell in results:
         engine = str(cell.get("engine", ""))
-        if not engine.startswith("ax_engine"):
+        method = str(cell.get("method", ""))
+        if engine != "ax_engine_mlx" or method != "server_sse_runner_time_us":
             continue
         decode_tok_s = metric_value(cell, "decode_tok_s")
-        if decode_tok_s <= 0 or bytes_for_estimate <= 0:
+        if decode_tok_s <= 0:
+            continue
+        if bytes_for_estimate is None or bytes_for_estimate <= 0:
+            per_row.append(
+                {
+                    "engine": engine,
+                    "prompt_tokens": cell.get("prompt_tokens"),
+                    "generation_tokens": cell.get("generation_tokens"),
+                    "decode_tok_s_median": decode_tok_s,
+                    "ax_bandwidth_estimate_kind": estimate_kind,
+                    "ax_bandwidth_estimate_blocked_reason": "moe_active_bytes_unavailable",
+                }
+            )
             continue
         bytes_per_token = bytes_for_estimate
         bandwidth_gb_s = (bytes_per_token * decode_tok_s) / 1e9

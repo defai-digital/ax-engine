@@ -62,6 +62,11 @@ def write_gateddelta_model(
     return model_dir
 
 
+def write_sparse_file(path: Path, size: int) -> None:
+    with path.open("wb") as handle:
+        handle.truncate(size)
+
+
 class MlxInferenceStackBenchTests(unittest.TestCase):
     def test_default_repetition_and_cooldown_contract_matches_docs(self) -> None:
         self.assertEqual(bench.DEFAULT_REPETITIONS, 5)
@@ -3857,17 +3862,26 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
     def test_bandwidth_accounting_dense_model(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             model_dir = Path(tmp)
-            (model_dir / "model-00001.safetensors").write_bytes(b"\x00" * 5_000_000_000)
-            (model_dir / "model-00002.safetensors").write_bytes(b"\x00" * 5_000_000_000)
+            write_sparse_file(model_dir / "model-00001.safetensors", 5_000_000_000)
+            write_sparse_file(model_dir / "model-00002.safetensors", 5_000_000_000)
             results = [
                 {
                     "engine": "ax_engine_mlx",
+                    "method": "server_sse_runner_time_us",
                     "prompt_tokens": 128,
                     "generation_tokens": 128,
                     "decode_tok_s": {"median": 35.0},
                 },
                 {
+                    "engine": "ax_engine_mlx_ngram_accel",
+                    "method": "server_sse_runner_time_us",
+                    "prompt_tokens": 128,
+                    "generation_tokens": 128,
+                    "decode_tok_s": {"median": 70.0},
+                },
+                {
                     "engine": "mlx_lm",
+                    "method": "mlx_lm.benchmark",
                     "prompt_tokens": 128,
                     "generation_tokens": 128,
                     "decode_tok_s": {"median": 30.0},
@@ -3914,6 +3928,7 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
             results = [
                 {
                     "engine": "ax_engine_mlx",
+                    "method": "server_sse_runner_time_us",
                     "prompt_tokens": 512,
                     "generation_tokens": 128,
                     "decode_tok_s": {"median": 40.0},
@@ -3935,10 +3950,11 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
     def test_bandwidth_accounting_with_peak_bandwidth(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             model_dir = Path(tmp)
-            (model_dir / "w.safetensors").write_bytes(b"\x00" * 1_000_000_000)
+            write_sparse_file(model_dir / "w.safetensors", 1_000_000_000)
             results = [
                 {
                     "engine": "ax_engine_mlx",
+                    "method": "server_sse_runner_time_us",
                     "prompt_tokens": 128,
                     "generation_tokens": 128,
                     "decode_tok_s": {"median": 50.0},
@@ -3967,6 +3983,7 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
             results = [
                 {
                     "engine": "ax_engine_mlx",
+                    "method": "server_sse_runner_time_us",
                     "prompt_tokens": 128,
                     "generation_tokens": 128,
                     "decode_tok_s": {"median": 0.0},
@@ -3975,6 +3992,39 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
             accounting = bench.build_bandwidth_accounting(model_dir, results)
 
         self.assertEqual(len(accounting["per_row"]), 0)
+
+    def test_bandwidth_accounting_blocks_moe_without_active_bytes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            model_dir = Path(tmp)
+            (model_dir / "model.safetensors").write_bytes(b"\x00" * 1_000_000)
+            (model_dir / "model-manifest.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": "ax.native_model_manifest.v1",
+                        "moe": {"expert_count": 8, "experts_per_token": 2},
+                        "tensors": [
+                            {"role": "self_attn.q_proj", "length_bytes": 1_000_000}
+                        ],
+                    }
+                )
+            )
+            results = [
+                {
+                    "engine": "ax_engine_mlx",
+                    "method": "server_sse_runner_time_us",
+                    "prompt_tokens": 128,
+                    "generation_tokens": 128,
+                    "decode_tok_s": {"median": 50.0},
+                }
+            ]
+            accounting = bench.build_bandwidth_accounting(model_dir, results)
+
+        self.assertEqual(accounting["estimate_kind"], "not_comparable")
+        self.assertIsNone(accounting["bytes_used_for_estimate"])
+        row = accounting["per_row"][0]
+        self.assertEqual(row["ax_bandwidth_estimate_kind"], "not_comparable")
+        self.assertNotIn("ax_effective_weight_bytes_per_token", row)
+        self.assertNotIn("ax_effective_bandwidth_gb_s", row)
 
 
 if __name__ == "__main__":

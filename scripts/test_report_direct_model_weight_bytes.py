@@ -24,7 +24,8 @@ def _write_fake_safetensors(model_dir: Path, files: dict[str, int]) -> None:
     for name, size in files.items():
         path = model_dir / name
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(b"\x00" * size)
+        with path.open("wb") as handle:
+            handle.truncate(size)
 
 
 def _write_model_manifest(model_dir: Path, manifest: dict) -> None:
