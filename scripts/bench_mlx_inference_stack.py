@@ -33,6 +33,7 @@ Optional llama.cpp decode-at-depth evidence:
   `-p 0 -n {generation_tokens} -d {prompt_tokens}`. This records depth-aware
   decode metrics without replacing the regular shape-compatible `pp`/`tg` row.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -164,7 +165,9 @@ def missing_ax_model_artifacts(model_dir: Path) -> list[str]:
     return missing
 
 
-def resolve_model_dir(model_dir: Path | None, repo_id: str, hf_cache_root: Path | None) -> Path:
+def resolve_model_dir(
+    model_dir: Path | None, repo_id: str, hf_cache_root: Path | None
+) -> Path:
     if model_dir is not None:
         return model_dir
 
@@ -237,7 +240,7 @@ def infer_hf_repo_id_from_path(path: Path) -> str | None:
     for parent in (path, *path.parents):
         name = parent.name
         if name.startswith("models--"):
-            slug = name[len("models--"):]
+            slug = name[len("models--") :]
             if "--" in slug:
                 org, rest = slug.split("--", 1)
                 if org and rest:
@@ -252,7 +255,9 @@ def ensure_ax_engine_server_binary(*, build: bool = True) -> None:
         try:
             subprocess.run(cmd, cwd=REPO_ROOT, check=True)
         except FileNotFoundError as error:
-            raise RuntimeError("cargo was not found; cannot build ax-engine-server") from error
+            raise RuntimeError(
+                "cargo was not found; cannot build ax-engine-server"
+            ) from error
         except subprocess.CalledProcessError as error:
             raise RuntimeError(
                 f"cargo build -p ax-engine-server --release failed with exit={error.returncode}"
@@ -263,6 +268,7 @@ def ensure_ax_engine_server_binary(*, build: bool = True) -> None:
             f"ax-engine-server not found at {AX_ENGINE_SERVER}. "
             "Run: cargo build -p ax-engine-server --release"
         )
+
 
 CLAIMS_REQUIRING_ARTIFACT_EVIDENCE = [
     "continuous_batching",
@@ -398,8 +404,9 @@ AX_MLX_TELEMETRY_KEYS = [
 # Affine quantization bit keys are constant per model load (set at startup, not
 # accumulated per step). They must be max-merged across trials, not summed.
 AX_MLX_AFFINE_MAX_KEYS: frozenset[str] = frozenset(
-    key for key in AX_MLX_TELEMETRY_KEYS if key.startswith("ax_mlx_affine_")
-    or key == "ax_mlx_experimental_3bit_gate"
+    key
+    for key in AX_MLX_TELEMETRY_KEYS
+    if key.startswith("ax_mlx_affine_") or key == "ax_mlx_experimental_3bit_gate"
 )
 
 AX_MLX_PREFIX_CACHE_MAX_KEYS = {
@@ -411,7 +418,8 @@ AX_MLX_PREFIX_CACHE_MAX_KEYS = {
 AX_MLX_PREFIX_CACHE_SUM_KEYS = {
     key
     for key in AX_MLX_TELEMETRY_KEYS
-    if key.startswith("ax_mlx_prefix_cache_") and key not in AX_MLX_PREFIX_CACHE_MAX_KEYS
+    if key.startswith("ax_mlx_prefix_cache_")
+    and key not in AX_MLX_PREFIX_CACHE_MAX_KEYS
 }
 
 AX_SCHEDULER_TELEMETRY_KEYS = [
@@ -590,7 +598,7 @@ def collect_host_metadata() -> dict[str, Any]:
     chip = _sysctl("machdep.cpu.brand_string") or _sysctl("hw.model")
     memory_bytes = _sysctl("hw.memsize")
     try:
-        memory_gb = round(int(memory_bytes) / (1024 ** 3))
+        memory_gb = round(int(memory_bytes) / (1024**3))
     except ValueError:
         memory_gb = "unknown"
 
@@ -647,6 +655,7 @@ def collect_build_metadata() -> dict[str, Any]:
         "git_tracked_status": tracked_status[:50],
     }
 
+
 def collect_model_metadata(model_dir: Path) -> dict[str, Any]:
     """Read model config.json for provenance; returns empty dict if unavailable."""
     metadata: dict[str, Any] = {}
@@ -702,7 +711,9 @@ def linear_attention_projection_layout(manifest: dict[str, Any]) -> dict[str, An
             continue
         role = tensor.get("role")
         layer_index = tensor.get("layer_index")
-        if not isinstance(role, str) or not role.startswith("linear_attention_in_proj_"):
+        if not isinstance(role, str) or not role.startswith(
+            "linear_attention_in_proj_"
+        ):
             continue
         role_counts[role] = role_counts.get(role, 0) + 1
         if isinstance(layer_index, int):
@@ -769,7 +780,9 @@ def normalize_gateddelta_prefill_profile_prompt_lengths(value: str) -> list[int]
         return list(GATEDDELTA_PREFILL_PROFILE_PROMPT_TOKENS)
     prompt_lengths = parse_prompt_lengths(value)
     if prompt_lengths != GATEDDELTA_PREFILL_PROFILE_PROMPT_TOKENS:
-        expected = ",".join(str(item) for item in GATEDDELTA_PREFILL_PROFILE_PROMPT_TOKENS)
+        expected = ",".join(
+            str(item) for item in GATEDDELTA_PREFILL_PROFILE_PROMPT_TOKENS
+        )
         raise ValueError(
             "--gateddelta-prefill-profile requires --prompt-tokens "
             f"{expected} so profile rows are comparable across runs"
@@ -931,7 +944,10 @@ def ax_ngram_outcome_tier(
         if status == "mtp_head_only_contract_violation":
             return "contract_violation"
         return "no_draft_fallback"
-    if status == "ngram_acceleration_effective_throughput" and route == "ngram_verified_bonus_tokens":
+    if (
+        status == "ngram_acceleration_effective_throughput"
+        and route == "ngram_verified_bonus_tokens"
+    ):
         return "effective_throughput"
     if status == "ngram_no_draft_direct_fallback":
         return "no_draft_fallback"
@@ -976,9 +992,7 @@ def ax_decode_effective_route(
     draft_attempts = int(telemetry.get("ax_ngram_draft_attempts", 0))
     accepted_tokens = int(telemetry.get("ax_ngram_accepted_tokens", 0))
     no_draft_steps = int(telemetry.get("ax_ngram_no_draft_steps", 0))
-    request_disabled_steps = int(
-        telemetry.get("ax_ngram_request_disabled_steps", 0)
-    )
+    request_disabled_steps = int(telemetry.get("ax_ngram_request_disabled_steps", 0))
     linear_no_draft_steps = int(
         telemetry.get("ax_ngram_fallback_linear_no_draft_steps", 0)
     )
@@ -1145,10 +1159,14 @@ def assert_no_distribution_exact_promotion_under_sampling(row: dict[str, Any]) -
     """
     mode = row.get("ax_decode_claim_mode")
     status = row.get("ax_decode_claim_status")
-    if mode in (
-        "direct_sampling_not_distribution_exact",
-        "ngram_sampling_not_distribution_exact",
-    ) and status == "ngram_acceleration_effective_throughput":
+    if (
+        mode
+        in (
+            "direct_sampling_not_distribution_exact",
+            "ngram_sampling_not_distribution_exact",
+        )
+        and status == "ngram_acceleration_effective_throughput"
+    ):
         # The status field is allowed to record effective throughput, but the
         # *promotion* — labeling the row as distribution-exact — is forbidden.
         # Currently nothing in this script emits a distribution_exact label
@@ -1175,6 +1193,7 @@ MLX_TRIAL_RE = re.compile(
     r"peak_memory=(?P<memory>[0-9.]+),\s+"
     r"total_time=(?P<total>[0-9.]+)"
 )
+
 
 def wait_for_server(
     url: str,
@@ -1335,7 +1354,10 @@ def write_prompt_tokens(
 ) -> dict[str, Any]:
     artifact_root.mkdir(parents=True, exist_ok=True)
     token_hash = token_sha256(tokens)
-    path = artifact_root / f"prompt-{prompt_tokens}-gen-{generation_tokens}-{token_hash[:12]}.json"
+    path = (
+        artifact_root
+        / f"prompt-{prompt_tokens}-gen-{generation_tokens}-{token_hash[:12]}.json"
+    )
     payload = {
         "schema_version": "ax.mlx_reference_prompt.v1",
         "source": "mlx_lm.benchmark",
@@ -1423,9 +1445,7 @@ def load_real_prompt_suite(path: Path) -> list[RealPromptCase]:
         try:
             payload = json.loads(stripped)
         except json.JSONDecodeError as exc:
-            raise ValueError(
-                f"{path}:{line_no} is not valid JSON: {exc}"
-            ) from exc
+            raise ValueError(f"{path}:{line_no} is not valid JSON: {exc}") from exc
         if not isinstance(payload, dict):
             raise ValueError(f"{path}:{line_no} must be a JSON object")
         for required in ("id", "category", "prompt"):
@@ -1435,9 +1455,7 @@ def load_real_prompt_suite(path: Path) -> list[RealPromptCase]:
                 )
         case_id = str(payload["id"])
         if case_id in seen_ids:
-            raise ValueError(
-                f"{path}:{line_no} duplicate prompt id {case_id!r}"
-            )
+            raise ValueError(f"{path}:{line_no} duplicate prompt id {case_id!r}")
         seen_ids.add(case_id)
         cases.append(
             RealPromptCase(
@@ -1616,7 +1634,9 @@ def build_real_prompts(
     prompts: list[dict[str, Any]] = []
     for case in cases:
         tokens = tokenize_real_prompt(
-            tokenizer, case.prompt, chat_template=chat_template,
+            tokenizer,
+            case.prompt,
+            chat_template=chat_template,
             enable_thinking=enable_thinking,
         )
         prompts.append(
@@ -1799,7 +1819,9 @@ def run_mlx_lm_benchmark(
     result = subprocess.run(cmd, capture_output=True, text=True)
     combined = result.stdout + result.stderr
     if result.returncode != 0:
-        raise RuntimeError(f"mlx_lm.benchmark failed with exit={result.returncode}:\n{combined}")
+        raise RuntimeError(
+            f"mlx_lm.benchmark failed with exit={result.returncode}:\n{combined}"
+        )
     cell = parse_mlx_lm_benchmark_output(combined)
     cell.update(
         {
@@ -1928,7 +1950,9 @@ def start_axengine(
             "  [ax-engine] prefix cache disabled for cold prefill/TTFT measurement",
             file=sys.stderr,
         )
-    return subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, env=env)
+    return subprocess.Popen(
+        cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, env=env
+    )
 
 
 def ax_linear_attention_profile_enabled(args: argparse.Namespace) -> bool:
@@ -2086,10 +2110,7 @@ def extract_ax_mlx_gemma4_moe_profile(
     decisions = route.get("crossover_decisions") or {}
     if "ax_mlx_gemma4_moe_profile_enabled" not in decisions:
         return {}
-    return {
-        key: int(decisions.get(key, 0))
-        for key in AX_MLX_GEMMA4_MOE_PROFILE_KEYS
-    }
+    return {key: int(decisions.get(key, 0)) for key in AX_MLX_GEMMA4_MOE_PROFILE_KEYS}
 
 
 def extract_ax_mlx_gemma4_assistant_mtp(
@@ -2100,10 +2121,7 @@ def extract_ax_mlx_gemma4_assistant_mtp(
     decisions = route.get("crossover_decisions") or {}
     if "ax_mlx_gemma4_assistant_mtp_configured" not in decisions:
         return {}
-    return {
-        key: int(decisions.get(key, 0))
-        for key in AX_MLX_GEMMA4_ASSISTANT_MTP_KEYS
-    }
+    return {key: int(decisions.get(key, 0)) for key in AX_MLX_GEMMA4_ASSISTANT_MTP_KEYS}
 
 
 def extract_ax_mlx_linear_attention_profile(
@@ -2115,8 +2133,7 @@ def extract_ax_mlx_linear_attention_profile(
     if "ax_mlx_linear_attention_profile_enabled" not in decisions:
         return {}
     return {
-        key: int(decisions.get(key, 0))
-        for key in AX_MLX_LINEAR_ATTENTION_PROFILE_KEYS
+        key: int(decisions.get(key, 0)) for key in AX_MLX_LINEAR_ATTENTION_PROFILE_KEYS
     }
 
 
@@ -2128,10 +2145,7 @@ def extract_ax_mlx_decode_profile(
     decisions = route.get("crossover_decisions") or {}
     if "ax_mlx_decode_profile_enabled" not in decisions:
         return {}
-    return {
-        key: int(decisions.get(key, 0))
-        for key in AX_MLX_DECODE_PROFILE_KEYS
-    }
+    return {key: int(decisions.get(key, 0)) for key in AX_MLX_DECODE_PROFILE_KEYS}
 
 
 def extract_ax_mlx_prefill_profile(
@@ -2142,10 +2156,7 @@ def extract_ax_mlx_prefill_profile(
     decisions = route.get("crossover_decisions") or {}
     if "ax_mlx_prefill_profile_enabled" not in decisions:
         return {}
-    return {
-        key: int(decisions.get(key, 0))
-        for key in AX_MLX_PREFILL_PROFILE_KEYS
-    }
+    return {key: int(decisions.get(key, 0)) for key in AX_MLX_PREFILL_PROFILE_KEYS}
 
 
 def extract_ax_mlx_kv_compression_telemetry(
@@ -2158,8 +2169,7 @@ def extract_ax_mlx_kv_compression_telemetry(
     if not present:
         return {}
     return {
-        key: int(decisions.get(key, 0))
-        for key in AX_MLX_KV_COMPRESSION_TELEMETRY_KEYS
+        key: int(decisions.get(key, 0)) for key in AX_MLX_KV_COMPRESSION_TELEMETRY_KEYS
     }
 
 
@@ -2188,8 +2198,7 @@ def route_with_more_decisions(
         priority_values += [
             int(v)
             for k, v in decisions.items()
-            if any(k.startswith(p) for p in AX_NGRAM_TELEMETRY_PREFIXES)
-            and int(v) > 0
+            if any(k.startswith(p) for p in AX_NGRAM_TELEMETRY_PREFIXES) and int(v) > 0
         ]
         return (
             len(priority_values),
@@ -2502,9 +2511,7 @@ def summarize_ax_mlx_direct_cpp_linear_attention_post_input(
     )
     if attempts <= 0:
         return {}
-    hits = int(
-        telemetry.get("ax_mlx_direct_cpp_linear_attention_post_input_hits", 0)
-    )
+    hits = int(telemetry.get("ax_mlx_direct_cpp_linear_attention_post_input_hits", 0))
     fallbacks = int(
         telemetry.get("ax_mlx_direct_cpp_linear_attention_post_input_fallbacks", 0)
     )
@@ -2542,9 +2549,7 @@ def summarize_ax_mlx_direct_cpp_linear_attention_post_input(
 def summarize_ax_mlx_direct_cpp_gemma4_post_attn_ffn(
     telemetry: dict[str, int],
 ) -> dict[str, Any]:
-    attempts = int(
-        telemetry.get("ax_mlx_direct_cpp_gemma4_post_attn_ffn_attempts", 0)
-    )
+    attempts = int(telemetry.get("ax_mlx_direct_cpp_gemma4_post_attn_ffn_attempts", 0))
     if attempts <= 0:
         return {}
     hits = int(telemetry.get("ax_mlx_direct_cpp_gemma4_post_attn_ffn_hits", 0))
@@ -2646,7 +2651,9 @@ def summarize_prefix_reuse_evidence(results: list[dict[str, Any]]) -> dict[str, 
         telemetry = row.get("ax_mlx_telemetry") or {}
         evidence["hit_count"] += int(telemetry.get("ax_mlx_prefix_cache_hits", 0))
         evidence["miss_count"] += int(telemetry.get("ax_mlx_prefix_cache_misses", 0))
-        evidence["blocked_count"] += int(telemetry.get("ax_mlx_prefix_cache_blocked", 0))
+        evidence["blocked_count"] += int(
+            telemetry.get("ax_mlx_prefix_cache_blocked", 0)
+        )
         evidence["blocked_policy_disabled_count"] += int(
             telemetry.get("ax_mlx_prefix_cache_blocked_policy_disabled", 0)
         )
@@ -2656,8 +2663,12 @@ def summarize_prefix_reuse_evidence(results: list[dict[str, Any]]) -> dict[str, 
         evidence["blocked_trim_failure_count"] += int(
             telemetry.get("ax_mlx_prefix_cache_blocked_trim_failure", 0)
         )
-        evidence["stored_prefix_count"] += int(telemetry.get("ax_mlx_prefix_cache_stores", 0))
-        evidence["eviction_count"] += int(telemetry.get("ax_mlx_prefix_cache_evictions", 0))
+        evidence["stored_prefix_count"] += int(
+            telemetry.get("ax_mlx_prefix_cache_stores", 0)
+        )
+        evidence["eviction_count"] += int(
+            telemetry.get("ax_mlx_prefix_cache_evictions", 0)
+        )
         evidence["reused_token_count"] += int(
             telemetry.get("ax_mlx_prefix_cache_reused_tokens", 0)
         )
@@ -2674,6 +2685,117 @@ def summarize_prefix_reuse_evidence(results: list[dict[str, Any]]) -> dict[str, 
         )
     evidence.update(classify_prefix_reuse_evidence(evidence))
     return evidence
+
+
+def _sum_safetensor_bytes(model_dir: Path) -> int:
+    total = 0
+    for path in model_dir.rglob("*.safetensors"):
+        if path.is_file():
+            total += path.stat().st_size
+    return total
+
+
+def _detect_moe_block(model_dir: Path) -> dict[str, Any] | None:
+    manifest_path = model_dir / "model-manifest.json"
+    if not manifest_path.is_file():
+        return None
+    try:
+        manifest = json.loads(manifest_path.read_text())
+    except (json.JSONDecodeError, OSError):
+        return None
+    return manifest.get("moe")
+
+
+def _compute_active_expert_bytes(model_dir: Path) -> int | None:
+    moe_block = _detect_moe_block(model_dir)
+    if moe_block is None:
+        return None
+    expert_count = int(moe_block.get("expert_count", 0))
+    experts_per_token = int(moe_block.get("experts_per_token", 0))
+    if expert_count <= 0 or experts_per_token <= 0:
+        return None
+    manifest_path = model_dir / "model-manifest.json"
+    try:
+        manifest = json.loads(manifest_path.read_text())
+    except (json.JSONDecodeError, OSError):
+        return None
+    tensors = manifest.get("tensors", [])
+    if not tensors:
+        return None
+    routed_bytes = 0
+    other_bytes = 0
+    for t in tensors:
+        role = t.get("role", "")
+        nbytes = t.get("length_bytes", 0)
+        if "shared_expert" in role:
+            other_bytes += nbytes
+        elif any(tag in role for tag in ("_exps", "routed_expert")):
+            routed_bytes += nbytes
+        else:
+            other_bytes += nbytes
+    if routed_bytes == 0:
+        return None
+    active_ratio = experts_per_token / expert_count
+    return other_bytes + int(routed_bytes * active_ratio)
+
+
+def build_bandwidth_accounting(
+    model_dir: Path,
+    results: list[dict[str, Any]],
+    peak_bandwidth_gb_s: float | None = None,
+    peak_bandwidth_source: str | None = None,
+) -> dict[str, Any]:
+    safetensor_bytes = _sum_safetensor_bytes(model_dir)
+    moe_block = _detect_moe_block(model_dir)
+    active_bytes = _compute_active_expert_bytes(model_dir)
+
+    if moe_block is not None:
+        if active_bytes is not None:
+            estimate_kind = "moe_active_estimate"
+            bytes_for_estimate = active_bytes
+        else:
+            estimate_kind = "not_comparable"
+            bytes_for_estimate = safetensor_bytes
+    else:
+        estimate_kind = "dense_safetensor_total"
+        bytes_for_estimate = safetensor_bytes
+
+    per_row: list[dict[str, Any]] = []
+    for cell in results:
+        engine = str(cell.get("engine", ""))
+        if not engine.startswith("ax_engine"):
+            continue
+        decode_tok_s = metric_value(cell, "decode_tok_s")
+        if decode_tok_s <= 0 or bytes_for_estimate <= 0:
+            continue
+        bytes_per_token = bytes_for_estimate
+        bandwidth_gb_s = (bytes_per_token * decode_tok_s) / 1e9
+        row: dict[str, Any] = {
+            "engine": engine,
+            "prompt_tokens": cell.get("prompt_tokens"),
+            "generation_tokens": cell.get("generation_tokens"),
+            "decode_tok_s_median": decode_tok_s,
+            "ax_effective_weight_bytes_per_token": bytes_per_token,
+            "ax_effective_bandwidth_gb_s": round(bandwidth_gb_s, 3),
+            "ax_bandwidth_estimate_kind": estimate_kind,
+        }
+        if peak_bandwidth_gb_s is not None and peak_bandwidth_gb_s > 0:
+            row["ax_effective_bandwidth_percent_of_peak"] = round(
+                bandwidth_gb_s / peak_bandwidth_gb_s * 100, 2
+            )
+        per_row.append(row)
+
+    accounting: dict[str, Any] = {
+        "safetensor_bytes": safetensor_bytes,
+        "moe_block": moe_block,
+        "moe_active_bytes": active_bytes,
+        "bytes_used_for_estimate": bytes_for_estimate,
+        "estimate_kind": estimate_kind,
+        "peak_bandwidth_gb_s": peak_bandwidth_gb_s,
+        "peak_bandwidth_source": peak_bandwidth_source,
+        "per_row": per_row,
+    }
+    return accounting
 
 
 def summarize_ax_mlx_gemma4_moe_profile(runs: list[dict[str, Any]]) -> dict[str, int]:
@@ -2709,7 +2831,9 @@ def summarize_ax_mlx_gemma4_assistant_mtp(runs: list[dict[str, Any]]) -> dict[st
     drafted = totals.get("ax_mlx_gemma4_assistant_mtp_draft_tokens", 0)
     if drafted > 0:
         totals["ax_mlx_gemma4_assistant_mtp_accept_rate_x1000"] = int(
-            totals.get("ax_mlx_gemma4_assistant_mtp_accepted_tokens", 0) * 1000 / drafted
+            totals.get("ax_mlx_gemma4_assistant_mtp_accepted_tokens", 0)
+            * 1000
+            / drafted
         )
     return totals
 
@@ -3067,7 +3191,9 @@ def summarize_runs(runs: list[dict[str, Any]], key: str) -> dict[str, float | No
     }
 
 
-def ax_prefill_work_contract(prompt_tokens: int, *, sampler: dict[str, Any] | None) -> str:
+def ax_prefill_work_contract(
+    prompt_tokens: int, *, sampler: dict[str, Any] | None
+) -> str:
     if sampler is None and prompt_tokens > 512:
         return "mlx_lm_style_cache_only_prefix_plus_final_prompt_token"
     return "historical_full_logits_prefill_or_sampler_required"
@@ -3144,7 +3270,9 @@ def bench_axengine(
         f"kv_compression={kv_compression}",
         file=sys.stderr,
     )
-    axengine_one_run(port, tokens, generation_tokens, server_pid=server_pid, sampler=sampler)
+    axengine_one_run(
+        port, tokens, generation_tokens, server_pid=server_pid, sampler=sampler
+    )
     if cooldown > 0:
         time.sleep(cooldown)
 
@@ -3254,7 +3382,9 @@ def bench_axengine(
         # Sampler config (PRD §7.1 release-claim artifact requirement).
         # Greedy by default; non-None when --ax-sampling is active.
         # canonical signature equals "greedy" when no knob is set.
-        "sampler_settings": canonical_sampler_signature(sampler) if sampler else "greedy",
+        "sampler_settings": canonical_sampler_signature(sampler)
+        if sampler
+        else "greedy",
         # Row identity block + same-policy baseline pointer (PRD §8 Phase 6).
         "ax_decode_row_identity": build_row_identity(
             model_id=(
@@ -3283,7 +3413,9 @@ def bench_axengine(
         "scheduler_telemetry": summarize_scheduler_telemetry(runs),
         "ax_mlx_gemma4_moe_profile": summarize_ax_mlx_gemma4_moe_profile(runs),
         "ax_mlx_gemma4_assistant_mtp": summarize_ax_mlx_gemma4_assistant_mtp(runs),
-        "ax_mlx_linear_attention_profile": summarize_ax_mlx_linear_attention_profile(runs),
+        "ax_mlx_linear_attention_profile": summarize_ax_mlx_linear_attention_profile(
+            runs
+        ),
         "ax_mlx_prefill_profile": summarize_ax_mlx_prefill_profile(runs),
         "ax_mlx_decode_profile": summarize_ax_mlx_decode_profile(runs),
         "trials": runs,
@@ -3336,9 +3468,7 @@ def bench_axengine(
             compression_summary
         )
         row["kv_compression_fused_decode_blocked_total"] = blocked_summary["total"]
-        row["kv_compression_fused_decode_blocked_reasons"] = blocked_summary[
-            "reasons"
-        ]
+        row["kv_compression_fused_decode_blocked_reasons"] = blocked_summary["reasons"]
         attention_kind_blocked_summary = (
             kv_compression_fused_decode_blocked_attention_kind_summary(
                 compression_summary
@@ -3373,7 +3503,9 @@ def _llama_cpp_metric_from_row(row: dict[str, Any]) -> dict[str, Any]:
     return {"mean": float(avg), "median": float(avg)}
 
 
-def _llama_cpp_trial_rows(row: dict[str, Any], metric_name: str) -> list[dict[str, Any]]:
+def _llama_cpp_trial_rows(
+    row: dict[str, Any], metric_name: str
+) -> list[dict[str, Any]]:
     samples = row.get("samples_ts")
     if not isinstance(samples, list):
         return []
@@ -3381,7 +3513,11 @@ def _llama_cpp_trial_rows(row: dict[str, Any], metric_name: str) -> list[dict[st
     sample_ns = raw_ns if isinstance(raw_ns, list) else []
     trials = []
     for index, value in enumerate(samples):
-        ns = sample_ns[index] if index < len(sample_ns) and sample_ns[index] is not None else None
+        ns = (
+            sample_ns[index]
+            if index < len(sample_ns) and sample_ns[index] is not None
+            else None
+        )
         trials.append(
             {
                 "trial": index + 1,
@@ -3419,13 +3555,19 @@ def parse_llama_cpp_bench_json(
             decode_row = row
 
     if prefill_row is None:
-        raise RuntimeError(f"llama-bench JSON missing pp row for n_prompt={prompt_tokens}")
+        raise RuntimeError(
+            f"llama-bench JSON missing pp row for n_prompt={prompt_tokens}"
+        )
     if decode_row is None:
-        raise RuntimeError(f"llama-bench JSON missing tg row for n_gen={generation_tokens}")
+        raise RuntimeError(
+            f"llama-bench JSON missing tg row for n_gen={generation_tokens}"
+        )
 
     backends = str(prefill_row.get("backends") or decode_row.get("backends") or "")
     if require_metal:
-        tokens = {token.strip().lower() for token in backends.split(",") if token.strip()}
+        tokens = {
+            token.strip().lower() for token in backends.split(",") if token.strip()
+        }
         if "metal" not in tokens and "mtl" not in tokens:
             raise RuntimeError(
                 f"llama-bench row did not report Metal/MTL backend: {backends!r}"
@@ -3487,7 +3629,11 @@ def parse_llama_cpp_decode_depth_json(
         n_prompt = int(row.get("n_prompt", 0))
         n_gen = int(row.get("n_gen", 0))
         n_depth = int(row.get("n_depth", 0))
-        if n_prompt == 0 and n_gen == generation_tokens and n_depth == context_depth_tokens:
+        if (
+            n_prompt == 0
+            and n_gen == generation_tokens
+            and n_depth == context_depth_tokens
+        ):
             decode_row = row
             break
 
@@ -3499,7 +3645,9 @@ def parse_llama_cpp_decode_depth_json(
 
     backends = str(decode_row.get("backends") or "")
     if require_metal:
-        tokens = {token.strip().lower() for token in backends.split(",") if token.strip()}
+        tokens = {
+            token.strip().lower() for token in backends.split(",") if token.strip()
+        }
         if "metal" not in tokens and "mtl" not in tokens:
             raise RuntimeError(
                 f"llama-bench depth row did not report Metal/MTL backend: {backends!r}"
@@ -3696,7 +3844,9 @@ def attach_llama_cpp_decode_at_depth_benchmark(
     extra_args: str | None = None,
 ) -> None:
     if cell.get("engine") != "llama_cpp_metal":
-        raise RuntimeError("decode-at-depth evidence can only be attached to llama_cpp_metal rows")
+        raise RuntimeError(
+            "decode-at-depth evidence can only be attached to llama_cpp_metal rows"
+        )
     if not binary.exists():
         raise RuntimeError(f"llama.cpp benchmark binary not found: {binary}")
     if not gguf.exists():
@@ -3942,7 +4092,9 @@ def render_gateddelta_prefill_profile_output(path: Path, output: Path) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Benchmark AX MLX against MLX reference runtimes")
+    parser = argparse.ArgumentParser(
+        description="Benchmark AX MLX against MLX reference runtimes"
+    )
     parser.add_argument("--model", default=DEFAULT_MODEL_ID)
     parser.add_argument(
         "--model-repo-id",
@@ -4014,7 +4166,9 @@ def main() -> None:
             "enable_thinking=false runtime setting."
         ),
     )
-    parser.add_argument("--generation-tokens", type=int, default=DEFAULT_GENERATION_TOKENS)
+    parser.add_argument(
+        "--generation-tokens", type=int, default=DEFAULT_GENERATION_TOKENS
+    )
     parser.add_argument("--repetitions", type=int, default=DEFAULT_REPETITIONS)
     parser.add_argument("--cooldown", type=float, default=DEFAULT_COOLDOWN)
     parser.add_argument(
@@ -4122,7 +4276,7 @@ def main() -> None:
         metavar="JSON",
         help=(
             "JSON object of extra sampling knobs sent in every AX HTTP request "
-            "(e.g. '{\"temperature\": 0.6, \"top_p\": 0.95, \"top_k\": 20}'). "
+            '(e.g. \'{"temperature": 0.6, "top_p": 0.95, "top_k": 20}\'). '
             "Omit for greedy (default). Non-greedy rows are labeled "
             "sampling_not_distribution_exact and cannot be promoted as "
             "distribution-exact baselines."
@@ -4348,6 +4502,21 @@ def main() -> None:
             "included in ax.long_context_decode_at_depth.v1 artifacts."
         ),
     )
+    parser.add_argument(
+        "--peak-bandwidth-gb-s",
+        type=float,
+        default=None,
+        help=(
+            "Peak unified-memory read bandwidth for the host SoC in GB/s. "
+            "When provided, bandwidth accounting rows include percent-of-peak. "
+            "Example: M5 Max ~ 800."
+        ),
+    )
+    parser.add_argument(
+        "--peak-bandwidth-source",
+        default=None,
+        help="Short label for the peak bandwidth source (e.g. 'mlx_read_calibration').",
+    )
     model_arg_explicit = arg_was_provided(sys.argv[1:], "--model")
     model_repo_id_arg_explicit = arg_was_provided(sys.argv[1:], "--model-repo-id")
     args = parser.parse_args()
@@ -4386,7 +4555,9 @@ def main() -> None:
     if args.ax_ngram_accel and args.ax_compare_policies:
         parser.error("--ax-ngram-accel conflicts with --ax-compare-policies")
     if args.ax_mtp_disable_ngram_stacking and args.ax_direct:
-        parser.error("--ax-mtp-disable-ngram-stacking requires an MTP/speculative AX row")
+        parser.error(
+            "--ax-mtp-disable-ngram-stacking requires an MTP/speculative AX row"
+        )
     if args.ax_mtp_disable_ngram_stacking and args.skip_ax_engine:
         parser.error("--ax-mtp-disable-ngram-stacking requires AX rows")
     if args.ax_gemma4_assistant_mtp and args.skip_ax_engine:
@@ -4411,7 +4582,10 @@ def main() -> None:
             "--ax-compare-linear-attention-projection-pack requires direct AX rows; "
             "do not combine it with --ax-ngram-accel or --ax-compare-policies"
         )
-    if args.ax_compare_linear_attention_projection_pack and args.ax_pack_linear_attention_projections:
+    if (
+        args.ax_compare_linear_attention_projection_pack
+        and args.ax_pack_linear_attention_projections
+    ):
         parser.error(
             "--ax-compare-linear-attention-projection-pack already runs the packed row; "
             "do not combine it with --ax-pack-linear-attention-projections"
@@ -4430,7 +4604,10 @@ def main() -> None:
             "--ax-compare-dense-ffn-gate-up-pack already runs the packed row; "
             "do not combine it with --ax-pack-dense-ffn-gate-up"
         )
-    if args.ax_compare_dense_ffn_gate_up_pack and args.ax_compare_linear_attention_projection_pack:
+    if (
+        args.ax_compare_dense_ffn_gate_up_pack
+        and args.ax_compare_linear_attention_projection_pack
+    ):
         parser.error(
             "--ax-compare-dense-ffn-gate-up-pack and "
             "--ax-compare-linear-attention-projection-pack both run paired AX rows; "
@@ -4447,7 +4624,9 @@ def main() -> None:
     if bool(args.llama_cpp_bench) != bool(args.llama_cpp_gguf):
         parser.error("--llama-cpp-bench and --llama-cpp-gguf must be provided together")
     if args.llama_cpp_decode_at_depth and not args.llama_cpp_bench:
-        parser.error("--llama-cpp-decode-at-depth requires --llama-cpp-bench and --llama-cpp-gguf")
+        parser.error(
+            "--llama-cpp-decode-at-depth requires --llama-cpp-bench and --llama-cpp-gguf"
+        )
     if args.skip_mlx_lm and args.reuse_reference_results_from:
         parser.error("--skip-mlx-lm conflicts with --reuse-reference-results-from")
     if args.prompt_source == "real":
@@ -4480,14 +4659,15 @@ def main() -> None:
                 "artifact, which requires the random-token prompt ladder"
             )
     elif args.real_prompt_suite is not None:
-        parser.error(
-            "--real-prompt-suite is only honored when --prompt-source=real"
-        )
+        parser.error("--real-prompt-suite is only honored when --prompt-source=real")
     if args.prefill_scaling_output and not args.output:
         parser.error("--prefill-scaling-output requires --output")
     if args.gateddelta_prefill_profile_report_output and not args.output:
         parser.error("--gateddelta-prefill-profile-report-output requires --output")
-    if args.gateddelta_prefill_profile_report_output and not args.gateddelta_prefill_profile:
+    if (
+        args.gateddelta_prefill_profile_report_output
+        and not args.gateddelta_prefill_profile
+    ):
         parser.error(
             "--gateddelta-prefill-profile-report-output requires --gateddelta-prefill-profile"
         )
@@ -4500,7 +4680,9 @@ def main() -> None:
                 "it with --ax-ngram-accel or --ax-compare-policies"
             )
         if args.ax_gemma4_moe_profile:
-            parser.error("--gateddelta-prefill-profile conflicts with --ax-gemma4-moe-profile")
+            parser.error(
+                "--gateddelta-prefill-profile conflicts with --ax-gemma4-moe-profile"
+            )
         if args.experimental_mlx_kv_compression != "disabled":
             parser.error(
                 "--gateddelta-prefill-profile requires KV compression disabled so "
@@ -4523,7 +4705,9 @@ def main() -> None:
     elif args.output:
         prompt_artifact_root = args.output.parent / f"{args.output.stem}-prompts"
     else:
-        prompt_artifact_root = Path(tempfile.mkdtemp(prefix="ax-mlx-reference-prompts-"))
+        prompt_artifact_root = Path(
+            tempfile.mkdtemp(prefix="ax-mlx-reference-prompts-")
+        )
     print("\n=== AX Engine MLX inference stack ===", file=sys.stderr)
     print(f"  model: {args.model}", file=sys.stderr)
     print(f"  model_repo_id: {args.model_repo_id}", file=sys.stderr)
@@ -4819,12 +5003,9 @@ def main() -> None:
                 direct_gemma4_post_attn_ffn_route,
                 engine_key,
             ) in ax_run_configs:
-                gemma4_assistant_mtp = (
-                    engine_key
-                    in (
-                        AX_ENGINE_GEMMA4_ASSISTANT_MTP_KEY,
-                        AX_ENGINE_GEMMA4_ASSISTANT_MTP_NGRAM_KEY,
-                    )
+                gemma4_assistant_mtp = engine_key in (
+                    AX_ENGINE_GEMMA4_ASSISTANT_MTP_KEY,
+                    AX_ENGINE_GEMMA4_ASSISTANT_MTP_NGRAM_KEY,
                 )
                 mtp_disable_ngram_stacking = (
                     bool(args.ax_mtp_disable_ngram_stacking) and not direct_mode
@@ -4872,7 +5053,9 @@ def main() -> None:
                     proc=proc,
                 ):
                     stderr = process_stderr_snapshot(proc)
-                    raise RuntimeError(f"ax-engine-server did not become ready:\n{stderr}")
+                    raise RuntimeError(
+                        f"ax-engine-server did not become ready:\n{stderr}"
+                    )
                 for prompt_doc in prompts:
                     validate_prompt_doc(
                         prompt_doc,
@@ -4900,7 +5083,9 @@ def main() -> None:
                     )
                     results[-1]["prefill_step_size"] = args.prefill_step_size
                     results[-1]["prompt_token_ids_path"] = prompt_doc["token_ids_path"]
-                    results[-1]["prompt_token_ids_sha256"] = prompt_doc["token_ids_sha256"]
+                    results[-1]["prompt_token_ids_sha256"] = prompt_doc[
+                        "token_ids_sha256"
+                    ]
                     results[-1]["prompt_source"] = prompt_doc.get(
                         "prompt_source", "random"
                     )
@@ -4916,7 +5101,9 @@ def main() -> None:
                     results[-1]["ax_linear_attention_projection_pack"] = bool(
                         pack_linear_attention_projections
                     )
-                    results[-1]["ax_dense_ffn_gate_up_pack"] = bool(pack_dense_ffn_gate_up)
+                    results[-1]["ax_dense_ffn_gate_up_pack"] = bool(
+                        pack_dense_ffn_gate_up
+                    )
                     results[-1]["ax_mtp_disable_ngram_stacking"] = bool(
                         mtp_disable_ngram_stacking
                     )
@@ -4929,10 +5116,7 @@ def main() -> None:
                     results[-1]["ax_direct_gemma4_post_attn_ffn_route"] = bool(
                         direct_gemma4_post_attn_ffn_route
                     )
-                    if (
-                        args.inter_case_cooldown > 0
-                        and prompt_doc is not prompts[-1]
-                    ):
+                    if args.inter_case_cooldown > 0 and prompt_doc is not prompts[-1]:
                         print(
                             f"  [ax-engine] inter-case cooldown {args.inter_case_cooldown:.0f}s",
                             file=sys.stderr,
@@ -4940,18 +5124,25 @@ def main() -> None:
                         time.sleep(args.inter_case_cooldown)
                 kill_proc(proc)
                 procs.remove(proc)
-                if (direct_mode and args.ax_compare_policies) or (
-                    not pack_linear_attention_projections
-                    and args.ax_compare_linear_attention_projection_pack
-                ) or (
-                    not pack_dense_ffn_gate_up and args.ax_compare_dense_ffn_gate_up_pack
-                ) or (
-                    direct_linear_attention_inputs_route
-                    and not direct_linear_attention_post_input_route
-                    and args.ax_compare_direct_linear_attention_post_input_route
-                ) or (
-                    not direct_gemma4_post_attn_ffn_route
-                    and args.ax_compare_direct_gemma4_ffn_route
+                if (
+                    (direct_mode and args.ax_compare_policies)
+                    or (
+                        not pack_linear_attention_projections
+                        and args.ax_compare_linear_attention_projection_pack
+                    )
+                    or (
+                        not pack_dense_ffn_gate_up
+                        and args.ax_compare_dense_ffn_gate_up_pack
+                    )
+                    or (
+                        direct_linear_attention_inputs_route
+                        and not direct_linear_attention_post_input_route
+                        and args.ax_compare_direct_linear_attention_post_input_route
+                    )
+                    or (
+                        not direct_gemma4_post_attn_ffn_route
+                        and args.ax_compare_direct_gemma4_ffn_route
+                    )
                 ):
                     time.sleep(3)  # brief cooldown between modes
     finally:
@@ -5059,7 +5250,9 @@ def main() -> None:
         "ax_dense_ffn_gate_up_pack": bool(
             args.ax_pack_dense_ffn_gate_up or args.ax_compare_dense_ffn_gate_up_pack
         ),
-        "ax_dense_ffn_gate_up_pack_compare": bool(args.ax_compare_dense_ffn_gate_up_pack),
+        "ax_dense_ffn_gate_up_pack_compare": bool(
+            args.ax_compare_dense_ffn_gate_up_pack
+        ),
         "ax_direct_linear_attention_post_input_route_compare": bool(
             args.ax_compare_direct_linear_attention_post_input_route
         ),
@@ -5070,6 +5263,12 @@ def main() -> None:
         "ax_decode_profile": bool(args.ax_decode_profile),
         "results": results,
     }
+    doc["bandwidth_accounting"] = build_bandwidth_accounting(
+        args.model_dir,
+        results,
+        peak_bandwidth_gb_s=args.peak_bandwidth_gb_s,
+        peak_bandwidth_source=args.peak_bandwidth_source,
+    )
     if gateddelta_prefill_profile_contract:
         doc["gateddelta_prefill_profile"] = gateddelta_prefill_profile_contract
     if args.reuse_reference_results_from:
@@ -5077,11 +5276,7 @@ def main() -> None:
             "method": "reuse_existing_reference_rows_and_rerun_ax_engine_rows",
             "reference_results_source": str(args.reuse_reference_results_from),
             "reference_rows_reused": len(
-                [
-                    cell
-                    for cell in results
-                    if cell.get("engine") == "mlx_lm"
-                ]
+                [cell for cell in results if cell.get("engine") == "mlx_lm"]
             ),
             "ax_rows_refreshed": len(
                 [
@@ -5138,7 +5333,10 @@ def main() -> None:
         args.prefill_scaling_output.write_text(json.dumps(scaling_doc, indent=2) + "\n")
         if not args.skip_prefill_scaling_validate:
             validate_prefill_scaling_artifact(args.prefill_scaling_output)
-        print(f"Saved prefill scaling artifact to {args.prefill_scaling_output}", file=sys.stderr)
+        print(
+            f"Saved prefill scaling artifact to {args.prefill_scaling_output}",
+            file=sys.stderr,
+        )
 
 
 if __name__ == "__main__":

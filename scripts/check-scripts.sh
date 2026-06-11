@@ -150,7 +150,9 @@ bash -n scripts/*.sh scripts/lib/common.sh
   scripts/test_verify_prefix_reuse_equivalence.py \
   scripts/profile_kv_long_context_evidence.py \
   scripts/profile_kv_multiturn_chat_evidence.py \
-  scripts/test_profile_kv_multiturn_chat_evidence.py
+  scripts/test_profile_kv_multiturn_chat_evidence.py \
+  scripts/report_direct_model_weight_bytes.py \
+  scripts/test_report_direct_model_weight_bytes.py
 "$PYTHON_BIN" -m unittest \
   scripts/test_bench_ax_serving.py \
   scripts/test_embedding_server_ports.py \
@@ -187,7 +189,8 @@ bash -n scripts/*.sh scripts/lib/common.sh
   scripts/test_long_context_decode_at_depth_artifact.py \
   scripts/test_run_mlx_artifact_wrappers.py \
   scripts/test_verify_prefix_reuse_equivalence.py \
-  scripts/test_profile_kv_multiturn_chat_evidence.py
+  scripts/test_profile_kv_multiturn_chat_evidence.py \
+  scripts/test_report_direct_model_weight_bytes.py
 bash scripts/check-bench-inference-stack.sh
 bash scripts/check-turboquant-quality-gate.sh
 bash scripts/check-turboquant-microbench-gate.sh

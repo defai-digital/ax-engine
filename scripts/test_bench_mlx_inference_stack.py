@@ -15,7 +15,9 @@ from pathlib import Path
 from unittest.mock import patch
 
 SCRIPT_PATH = Path(__file__).with_name("bench_mlx_inference_stack.py")
-MODULE_SPEC = importlib.util.spec_from_file_location("bench_mlx_inference_stack", SCRIPT_PATH)
+MODULE_SPEC = importlib.util.spec_from_file_location(
+    "bench_mlx_inference_stack", SCRIPT_PATH
+)
 assert MODULE_SPEC and MODULE_SPEC.loader
 bench = importlib.util.module_from_spec(MODULE_SPEC)
 # Register in sys.modules before exec so @dataclass decorators can resolve
@@ -404,7 +406,9 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         self.assertEqual(row["peak_memory_gb"]["max"], 13.0)
         self.assertEqual(row["memory_source"], "server_process_rss_after_stream")
 
-    def test_ax_prefill_work_contract_labels_long_greedy_cache_only_boundary(self) -> None:
+    def test_ax_prefill_work_contract_labels_long_greedy_cache_only_boundary(
+        self,
+    ) -> None:
         self.assertEqual(
             bench.ax_prefill_work_contract(2048, sampler=None),
             "mlx_lm_style_cache_only_prefix_plus_final_prompt_token",
@@ -434,7 +438,10 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
                         },
                     },
                 ]
-                for event_name, payload in (("step", frames[0]), ("response", frames[1])):
+                for event_name, payload in (
+                    ("step", frames[0]),
+                    ("response", frames[1]),
+                ):
                     yield f"event: {event_name}\n".encode()
                     yield b"data: " + json.dumps(payload).encode() + b"\n"
                     yield b"\n"
@@ -453,14 +460,18 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
                 pass
 
         with patch.object(bench.http.client, "HTTPConnection", FakeConnection):
-            with patch.object(bench.time, "perf_counter", side_effect=[10.0, 10.123, 10.456]):
+            with patch.object(
+                bench.time, "perf_counter", side_effect=[10.0, 10.123, 10.456]
+            ):
                 run = bench.axengine_one_run(19091, [1, 2, 3, 4], 1)
 
         self.assertAlmostEqual(run["client_wall_ttft_ms"], 123.0, places=6)
         self.assertAlmostEqual(run["client_wall_total_ms"], 456.0, places=6)
         self.assertEqual(run["ttft_ms"], 100.0)
 
-    def test_axengine_one_run_decode_rate_matches_mlx_lm_generation_contract(self) -> None:
+    def test_axengine_one_run_decode_rate_matches_mlx_lm_generation_contract(
+        self,
+    ) -> None:
         class FakeResponse:
             status = 200
 
@@ -508,7 +519,9 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
                 pass
 
         with patch.object(bench.http.client, "HTTPConnection", FakeConnection):
-            with patch.object(bench.time, "perf_counter", side_effect=[10.0, 10.1, 11.0]):
+            with patch.object(
+                bench.time, "perf_counter", side_effect=[10.0, 10.1, 11.0]
+            ):
                 run = bench.axengine_one_run(19091, [1, 2, 3, 4], 3)
 
         self.assertEqual(run["output_tokens"], 3.0)
@@ -567,8 +580,22 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
 
     def test_axengine_summary_can_label_linear_attention_pack_row(self) -> None:
         runs = [
-            {"prefill_s": 0.2, "decode_s": 0.1, "ttft_ms": 200.0, "prefill_tok_s": 15.0, "decode_tok_s": 20.0, "output_tokens": 3.0},
-            {"prefill_s": 0.2, "decode_s": 0.1, "ttft_ms": 200.0, "prefill_tok_s": 15.0, "decode_tok_s": 20.0, "output_tokens": 3.0},
+            {
+                "prefill_s": 0.2,
+                "decode_s": 0.1,
+                "ttft_ms": 200.0,
+                "prefill_tok_s": 15.0,
+                "decode_tok_s": 20.0,
+                "output_tokens": 3.0,
+            },
+            {
+                "prefill_s": 0.2,
+                "decode_s": 0.1,
+                "ttft_ms": 200.0,
+                "prefill_tok_s": 15.0,
+                "decode_tok_s": 20.0,
+                "output_tokens": 3.0,
+            },
         ]
         with patch.object(bench, "axengine_one_run", side_effect=runs):
             row = bench.bench_axengine(
@@ -612,12 +639,16 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
             )
 
         route = row["ax_mlx_direct_cpp_linear_attention_inputs"]
-        self.assertEqual(route["schema_version"], "ax.mlx_direct_cpp_linear_attention_inputs.v1")
+        self.assertEqual(
+            route["schema_version"], "ax.mlx_direct_cpp_linear_attention_inputs.v1"
+        )
         self.assertEqual(route["classification"], "all_hits")
         self.assertEqual(route["attempts"], 4)
         self.assertEqual(route["hits"], 4)
 
-    def test_axengine_summary_exposes_direct_cpp_linear_attention_post_input_route(self) -> None:
+    def test_axengine_summary_exposes_direct_cpp_linear_attention_post_input_route(
+        self,
+    ) -> None:
         run = {
             "prefill_s": 0.2,
             "decode_s": 0.1,
@@ -652,7 +683,9 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         self.assertEqual(route["attempts"], 4)
         self.assertEqual(route["hits"], 4)
 
-    def test_axengine_summary_exposes_direct_cpp_gemma4_post_attn_ffn_route(self) -> None:
+    def test_axengine_summary_exposes_direct_cpp_gemma4_post_attn_ffn_route(
+        self,
+    ) -> None:
         run = {
             "prefill_s": 0.2,
             "decode_s": 0.1,
@@ -679,7 +712,9 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
             )
 
         route = row["ax_mlx_direct_cpp_gemma4_post_attn_ffn"]
-        self.assertEqual(route["schema_version"], "ax.mlx_direct_cpp_gemma4_post_attn_ffn.v1")
+        self.assertEqual(
+            route["schema_version"], "ax.mlx_direct_cpp_gemma4_post_attn_ffn.v1"
+        )
         self.assertEqual(route["classification"], "mixed_hit_fallback")
         self.assertEqual(route["attempts"], 4)
         self.assertEqual(route["hits"], 3)
@@ -702,7 +737,9 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
                 "ax_mlx_ngram_decode_steps": 2,
             },
         }
-        with patch.object(bench, "axengine_one_run", side_effect=[contaminated, contaminated]):
+        with patch.object(
+            bench, "axengine_one_run", side_effect=[contaminated, contaminated]
+        ):
             with self.assertRaisesRegex(RuntimeError, "direct AX benchmark row"):
                 bench.bench_axengine(
                     19091,
@@ -732,7 +769,9 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
                 "ax_mlx_ngram_decode_steps": 2,
             },
         }
-        with patch.object(bench, "axengine_one_run", side_effect=[ngram_run, ngram_run]):
+        with patch.object(
+            bench, "axengine_one_run", side_effect=[ngram_run, ngram_run]
+        ):
             row = bench.bench_axengine(
                 19091,
                 [1, 2, 3],
@@ -827,16 +866,22 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
             )
 
         self.assertEqual(row["engine"], bench.AX_ENGINE_GEMMA4_ASSISTANT_MTP_KEY)
-        self.assertEqual(row["ax_decode_policy"], "gemma4_assistant_mtp_no_ngram_stacking")
+        self.assertEqual(
+            row["ax_decode_policy"], "gemma4_assistant_mtp_no_ngram_stacking"
+        )
         self.assertEqual(row["ax_mtp_draft_source"], "gemma4_assistant_head_only")
         assistant = row["ax_mlx_gemma4_assistant_mtp"]
         self.assertEqual(assistant["ax_mlx_gemma4_assistant_mtp_enabled"], 1)
         self.assertEqual(assistant["ax_mlx_gemma4_assistant_mtp_draft_tokens"], 2)
         self.assertEqual(assistant["ax_mlx_gemma4_assistant_mtp_accepted_tokens"], 1)
         self.assertEqual(assistant["ax_mlx_gemma4_assistant_mtp_rejected_tokens"], 1)
-        self.assertEqual(assistant["ax_mlx_gemma4_assistant_mtp_accept_rate_x1000"], 500)
+        self.assertEqual(
+            assistant["ax_mlx_gemma4_assistant_mtp_accept_rate_x1000"], 500
+        )
 
-    def test_axengine_gemma4_assistant_mtp_ngram_row_has_distinct_identity(self) -> None:
+    def test_axengine_gemma4_assistant_mtp_ngram_row_has_distinct_identity(
+        self,
+    ) -> None:
         run = {
             "prefill_s": 0.2,
             "decode_s": 0.1,
@@ -879,7 +924,9 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
 
         self.assertEqual(row["engine"], bench.AX_ENGINE_GEMMA4_ASSISTANT_MTP_NGRAM_KEY)
         self.assertEqual(row["ax_decode_policy"], "gemma4_assistant_mtp_ngram_stacking")
-        self.assertEqual(row["ax_mtp_draft_source"], "gemma4_assistant_head_or_ngram_stacked")
+        self.assertEqual(
+            row["ax_mtp_draft_source"], "gemma4_assistant_head_or_ngram_stacked"
+        )
 
     def test_ax_decode_claim_status_reports_throughput_policy_only(self) -> None:
         ngram_telemetry = {
@@ -1027,12 +1074,8 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
             suite.write_text(
                 "\n".join(
                     [
-                        json.dumps(
-                            {"id": "same", "category": "x", "prompt": "a"}
-                        ),
-                        json.dumps(
-                            {"id": "same", "category": "x", "prompt": "b"}
-                        ),
+                        json.dumps({"id": "same", "category": "x", "prompt": "a"}),
+                        json.dumps({"id": "same", "category": "x", "prompt": "b"}),
                     ]
                 )
                 + "\n"
@@ -1057,9 +1100,7 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
                     [
                         "# this is a comment",
                         "",
-                        json.dumps(
-                            {"id": "only_one", "category": "x", "prompt": "p"}
-                        ),
+                        json.dumps({"id": "only_one", "category": "x", "prompt": "p"}),
                         "   ",
                     ]
                 )
@@ -1112,7 +1153,9 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
             path = Path(doc["token_ids_path"])
             self.assertTrue(path.is_file())
             payload = json.loads(path.read_text())
-            self.assertEqual(payload["schema_version"], bench.REAL_PROMPT_SCHEMA_VERSION)
+            self.assertEqual(
+                payload["schema_version"], bench.REAL_PROMPT_SCHEMA_VERSION
+            )
             self.assertEqual(payload["prompt_source"], "real")
             self.assertEqual(payload["prompt_text_sha256"], doc["prompt_text_sha256"])
 
@@ -1201,7 +1244,9 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         with (
             tempfile.TemporaryDirectory() as tmp,
             patch.object(bench, "model_vocab_size", return_value=64),
-            patch.object(bench, "mlx_lm_reference_prompt_tokens", return_value=[1, 2, 3, 4]),
+            patch.object(
+                bench, "mlx_lm_reference_prompt_tokens", return_value=[1, 2, 3, 4]
+            ),
         ):
             prompts = bench.build_reference_prompts(
                 [4],
@@ -1287,15 +1332,29 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
                 returncode=0,
                 stdout=json.dumps(
                     [
-                        {"backends": "Metal", "n_prompt": 4, "n_gen": 0, "avg_ts": 1.0, "samples_ts": [1.0]},
-                        {"backends": "Metal", "n_prompt": 0, "n_gen": 2, "avg_ts": 1.0, "samples_ts": [1.0]},
+                        {
+                            "backends": "Metal",
+                            "n_prompt": 4,
+                            "n_gen": 0,
+                            "avg_ts": 1.0,
+                            "samples_ts": [1.0],
+                        },
+                        {
+                            "backends": "Metal",
+                            "n_prompt": 0,
+                            "n_gen": 2,
+                            "avg_ts": 1.0,
+                            "samples_ts": [1.0],
+                        },
                     ]
                 ),
                 stderr="",
             )
             with (
                 patch.object(bench.subprocess, "run", return_value=completed) as run,
-                patch.object(bench, "collect_llama_cpp_device_evidence", return_value=None),
+                patch.object(
+                    bench, "collect_llama_cpp_device_evidence", return_value=None
+                ),
             ):
                 bench.run_llama_cpp_metal_benchmark(
                     binary,
@@ -1337,15 +1396,29 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
                 returncode=0,
                 stdout=json.dumps(
                     [
-                        {"backends": "Metal", "n_prompt": 2048, "n_gen": 0, "avg_ts": 1.0, "samples_ts": [1.0]},
-                        {"backends": "Metal", "n_prompt": 0, "n_gen": 128, "avg_ts": 1.0, "samples_ts": [1.0]},
+                        {
+                            "backends": "Metal",
+                            "n_prompt": 2048,
+                            "n_gen": 0,
+                            "avg_ts": 1.0,
+                            "samples_ts": [1.0],
+                        },
+                        {
+                            "backends": "Metal",
+                            "n_prompt": 0,
+                            "n_gen": 128,
+                            "avg_ts": 1.0,
+                            "samples_ts": [1.0],
+                        },
                     ]
                 ),
                 stderr="",
             )
             with (
                 patch.object(bench.subprocess, "run", return_value=completed) as run,
-                patch.object(bench, "collect_llama_cpp_device_evidence", return_value=None),
+                patch.object(
+                    bench, "collect_llama_cpp_device_evidence", return_value=None
+                ),
             ):
                 bench.run_llama_cpp_metal_benchmark(
                     binary,
@@ -1383,8 +1456,20 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         parsed = bench.parse_llama_cpp_bench_json(
             json.dumps(
                 [
-                    {"backends": "BLAS,MTL", "n_prompt": 4, "n_gen": 0, "avg_ts": 10.0, "samples_ts": [10.0]},
-                    {"backends": "BLAS,MTL", "n_prompt": 0, "n_gen": 2, "avg_ts": 1.0, "samples_ts": [1.0]},
+                    {
+                        "backends": "BLAS,MTL",
+                        "n_prompt": 4,
+                        "n_gen": 0,
+                        "avg_ts": 10.0,
+                        "samples_ts": [10.0],
+                    },
+                    {
+                        "backends": "BLAS,MTL",
+                        "n_prompt": 0,
+                        "n_gen": 2,
+                        "avg_ts": 1.0,
+                        "samples_ts": [1.0],
+                    },
                 ]
             ),
             prompt_tokens=4,
@@ -1420,10 +1505,14 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         )
 
         self.assertEqual(parsed["decode_at_depth_tok_s"]["median"], 42.0)
-        self.assertEqual(parsed["decode_at_depth_trials"][0]["decode_at_depth_tok_s"], 40.0)
+        self.assertEqual(
+            parsed["decode_at_depth_trials"][0]["decode_at_depth_tok_s"], 40.0
+        )
         self.assertEqual(parsed["llama_cpp_depth"]["n_depth"], 8192)
 
-    def test_attach_llama_cpp_decode_at_depth_benchmark_records_depth_contract(self) -> None:
+    def test_attach_llama_cpp_decode_at_depth_benchmark_records_depth_contract(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             binary = root / "llama-bench"
@@ -1514,7 +1603,11 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
             )
             with (
                 patch.object(bench.subprocess, "run", return_value=completed) as run,
-                patch.object(bench, "collect_llama_cpp_device_evidence", return_value="Metal device"),
+                patch.object(
+                    bench,
+                    "collect_llama_cpp_device_evidence",
+                    return_value="Metal device",
+                ),
             ):
                 row = bench.run_llama_cpp_metal_benchmark(
                     binary,
@@ -1536,8 +1629,12 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         delay_value = command_args[command_args.index("--delay") + 1]
         self.assertEqual(delay_value, "0")
         self.assertEqual(row["engine"], "llama_cpp_metal")
-        self.assertEqual(row["runtime_identity"]["route_identity"], "external_llama_cpp_metal")
-        self.assertEqual(row["prompt_contract"], "shape_compatible_llama_bench_internal_tokens")
+        self.assertEqual(
+            row["runtime_identity"]["route_identity"], "external_llama_cpp_metal"
+        )
+        self.assertEqual(
+            row["prompt_contract"], "shape_compatible_llama_bench_internal_tokens"
+        )
         self.assertIn("not prompt-hash parity", row["claim_boundary"])
         self.assertEqual(row["ttft_source"], "derived_from_llama_cpp_pp_tok_s")
         self.assertEqual(row["llama_cpp_device_evidence"], "Metal device")
@@ -1647,7 +1744,9 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "requires --prompt-tokens"):
             bench.normalize_gateddelta_prefill_profile_prompt_lengths("512,8192")
 
-    def test_gateddelta_prefill_profile_requires_linear_attention_metadata(self) -> None:
+    def test_gateddelta_prefill_profile_requires_linear_attention_metadata(
+        self,
+    ) -> None:
         with self.assertRaisesRegex(RuntimeError, "linear-attention MLX manifest"):
             bench.build_gateddelta_prefill_profile_contract(
                 {"linear_attention_enabled": False},
@@ -1679,7 +1778,9 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         self.assertEqual(contract["direct_ax_row_required"], True)
         self.assertEqual(contract["ngram_policy_allowed"], False)
         self.assertEqual(contract["required_prompt_tokens"], [512, 2048, 8192, 32768])
-        self.assertEqual(contract["runtime_profile_env"], "AX_MLX_LINEAR_ATTENTION_PROFILE=1")
+        self.assertEqual(
+            contract["runtime_profile_env"], "AX_MLX_LINEAR_ATTENTION_PROFILE=1"
+        )
         self.assertEqual(
             contract["model_preflight"]["schema_version"],
             "ax.gateddelta_prefill_model_preflight.v1",
@@ -1706,7 +1807,9 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         self.assertEqual(metadata["linear_attention"]["key_head_dim"], 64)
 
         with tempfile.TemporaryDirectory() as tmp:
-            invalid_family_dir = write_gateddelta_model(Path(tmp), model_family="gemma4")
+            invalid_family_dir = write_gateddelta_model(
+                Path(tmp), model_family="gemma4"
+            )
 
             with self.assertRaisesRegex(RuntimeError, "model_family must be"):
                 bench.validate_gateddelta_prefill_profile_model(invalid_family_dir)
@@ -2047,7 +2150,9 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
             "ngram_acceleration_effective_throughput",
         )
 
-    def test_ax_decode_effective_route_identifies_linear_no_draft_fallback(self) -> None:
+    def test_ax_decode_effective_route_identifies_linear_no_draft_fallback(
+        self,
+    ) -> None:
         telemetry = {
             "ax_ngram_draft_attempts": 0,
             "ax_ngram_accepted_tokens": 0,
@@ -2111,7 +2216,12 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         self.assertEqual(bench.canonical_sampler_signature({}), "greedy")
         self.assertEqual(
             bench.canonical_sampler_signature(
-                {"temperature": 0.0, "top_p": 1.0, "top_k": 0, "repetition_penalty": 1.0}
+                {
+                    "temperature": 0.0,
+                    "top_p": 1.0,
+                    "top_k": 0,
+                    "repetition_penalty": 1.0,
+                }
             ),
             "greedy",
         )
@@ -2147,9 +2257,7 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
 
     def test_absent_ax_mlx_telemetry_stays_silent(self) -> None:
         self.assertEqual(
-            bench.extract_ax_mlx_telemetry(
-                {"crossover_decisions": {"unrelated": 99}}
-            ),
+            bench.extract_ax_mlx_telemetry({"crossover_decisions": {"unrelated": 99}}),
             {},
         )
 
@@ -2327,12 +2435,16 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
             summary["ax_mlx_direct_pipeline_linear_attention_layer_count"], 2
         )
         self.assertEqual(summary["ax_mlx_direct_pipeline_full_attention_layer_ops"], 40)
-        self.assertEqual(summary["ax_mlx_direct_pipeline_full_attention_layer_count"], 4)
+        self.assertEqual(
+            summary["ax_mlx_direct_pipeline_full_attention_layer_count"], 4
+        )
         self.assertEqual(summary["ax_mlx_prefix_cache_hits"], 1)
         self.assertEqual(summary["ax_mlx_prefix_cache_blocked_policy_disabled"], 2)
         self.assertEqual(summary["ax_mlx_prefix_cache_reused_tokens"], 16)
 
-    def test_ax_mlx_decode_route_summary_classifies_pipeline_and_mixed_rows(self) -> None:
+    def test_ax_mlx_decode_route_summary_classifies_pipeline_and_mixed_rows(
+        self,
+    ) -> None:
         direct = bench.summarize_ax_mlx_decode_route(
             {
                 "ax_mlx_decode_steps": 10,
@@ -2450,7 +2562,10 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
     def test_prefix_reuse_evidence_summarizes_ax_rows(self) -> None:
         evidence = bench.summarize_prefix_reuse_evidence(
             [
-                {"engine": "mlx_lm", "ax_mlx_telemetry": {"ax_mlx_prefix_cache_hits": 99}},
+                {
+                    "engine": "mlx_lm",
+                    "ax_mlx_telemetry": {"ax_mlx_prefix_cache_hits": 99},
+                },
                 {
                     "engine": "ax_engine_mlx",
                     "ax_mlx_telemetry": {
@@ -2798,7 +2913,9 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         self.assertEqual(telemetry["ax_mlx_kv_compression_fused_decode_candidates"], 1)
         self.assertEqual(telemetry["ax_mlx_kv_compression_fused_decode_attempts"], 0)
         self.assertEqual(telemetry["ax_mlx_kv_compression_fused_decode_fallbacks"], 0)
-        self.assertEqual(telemetry["ax_mlx_kv_compression_fused_decode_fallback_reason"], 1)
+        self.assertEqual(
+            telemetry["ax_mlx_kv_compression_fused_decode_fallback_reason"], 1
+        )
         self.assertEqual(
             telemetry["ax_mlx_kv_compression_fused_decode_blocked_attention_kind"],
             2,
@@ -2857,7 +2974,9 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
             summary["ax_mlx_kv_compression_fused_decode_metal_successes"], 0
         )
         self.assertEqual(summary["ax_mlx_kv_compression_fused_decode_fallbacks"], 0)
-        self.assertEqual(summary["ax_mlx_kv_compression_fused_decode_fallback_reason"], 1)
+        self.assertEqual(
+            summary["ax_mlx_kv_compression_fused_decode_fallback_reason"], 1
+        )
         self.assertEqual(
             summary["ax_mlx_kv_compression_fused_decode_blocked_attention_kind"],
             5,
@@ -2984,7 +3103,9 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
             {},
         )
 
-    def test_ax_step_timing_classifies_chunked_prefill_by_scheduled_tokens(self) -> None:
+    def test_ax_step_timing_classifies_chunked_prefill_by_scheduled_tokens(
+        self,
+    ) -> None:
         self.assertTrue(
             bench.is_ax_prefill_step({"scheduled_tokens": 1}, seen_prefill=False)
         )
@@ -3073,7 +3194,9 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         self.assertIn("--experimental-mlx-kv-compression-hot-window-tokens", command)
         self.assertIn("--experimental-mlx-kv-compression-min-context-tokens", command)
 
-    def test_axengine_command_can_request_fused_experimental_kv_compression(self) -> None:
+    def test_axengine_command_can_request_fused_experimental_kv_compression(
+        self,
+    ) -> None:
         with (
             patch.object(bench, "ensure_port_available"),
             patch.object(bench.subprocess, "Popen") as popen,
@@ -3419,7 +3542,9 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
             {"mean": None, "median": None, "min": None, "max": None},
         )
 
-    def test_route_with_more_decisions_keeps_step_telemetry_over_response_route(self) -> None:
+    def test_route_with_more_decisions_keeps_step_telemetry_over_response_route(
+        self,
+    ) -> None:
         step_route = {
             "attention_route": "qwen_paged_decode",
             "crossover_decisions": {
@@ -3438,7 +3563,9 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
             step_route,
         )
 
-    def test_route_with_more_decisions_prefers_nonzero_counters_on_equal_keys(self) -> None:
+    def test_route_with_more_decisions_prefers_nonzero_counters_on_equal_keys(
+        self,
+    ) -> None:
         prefill_route = {
             "crossover_decisions": {
                 "ax_ngram_draft_attempts": 0,
@@ -3457,7 +3584,9 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
             decode_route,
         )
 
-    def test_route_with_more_decisions_prefers_decode_signals_over_prefill_totals(self) -> None:
+    def test_route_with_more_decisions_prefers_decode_signals_over_prefill_totals(
+        self,
+    ) -> None:
         prefill_route = {
             "crossover_decisions": {
                 "ax_scheduler_scheduled_prefill_tokens": 512,
@@ -3482,7 +3611,9 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
             decode_route,
         )
 
-    def test_step_local_route_decisions_are_merged_into_selected_decode_route(self) -> None:
+    def test_step_local_route_decisions_are_merged_into_selected_decode_route(
+        self,
+    ) -> None:
         step_local: dict[str, int] = {}
         bench.merge_step_local_route_decisions(
             step_local,
@@ -3694,7 +3825,9 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
                 )
             )
 
-            with self.assertRaisesRegex(RuntimeError, "duplicate mlx_lm reference rows"):
+            with self.assertRaisesRegex(
+                RuntimeError, "duplicate mlx_lm reference rows"
+            ):
                 bench.load_reused_reference_rows(
                     path,
                     prompt_lengths=[4],
@@ -3720,6 +3853,128 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
 
         with self.assertRaisesRegex(RuntimeError, "prompt hash mismatch"):
             bench.validate_reused_reference_prompt_hashes(rows, prompts)
+
+    def test_bandwidth_accounting_dense_model(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            model_dir = Path(tmp)
+            (model_dir / "model-00001.safetensors").write_bytes(b"\x00" * 5_000_000_000)
+            (model_dir / "model-00002.safetensors").write_bytes(b"\x00" * 5_000_000_000)
+            results = [
+                {
+                    "engine": "ax_engine_mlx",
+                    "prompt_tokens": 128,
+                    "generation_tokens": 128,
+                    "decode_tok_s": {"median": 35.0},
+                },
+                {
+                    "engine": "mlx_lm",
+                    "prompt_tokens": 128,
+                    "generation_tokens": 128,
+                    "decode_tok_s": {"median": 30.0},
+                },
+            ]
+            accounting = bench.build_bandwidth_accounting(model_dir, results)
+
+        self.assertEqual(accounting["safetensor_bytes"], 10_000_000_000)
+        self.assertEqual(accounting["estimate_kind"], "dense_safetensor_total")
+        self.assertEqual(accounting["bytes_used_for_estimate"], 10_000_000_000)
+        self.assertIsNone(accounting["moe_block"])
+        self.assertIsNone(accounting["moe_active_bytes"])
+        self.assertEqual(len(accounting["per_row"]), 1)
+        row = accounting["per_row"][0]
+        self.assertEqual(row["engine"], "ax_engine_mlx")
+        self.assertEqual(row["ax_effective_weight_bytes_per_token"], 10_000_000_000)
+        self.assertAlmostEqual(row["ax_effective_bandwidth_gb_s"], 350.0, places=1)
+        self.assertEqual(row["ax_bandwidth_estimate_kind"], "dense_safetensor_total")
+
+    def test_bandwidth_accounting_moe_model_with_active_experts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            model_dir = Path(tmp)
+            (model_dir / "model.safetensors").write_bytes(b"\x00" * 10_000_000)
+            (model_dir / "model-manifest.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": "ax.native_model_manifest.v1",
+                        "model_family": "gemma4",
+                        "moe": {"expert_count": 8, "experts_per_token": 2},
+                        "tensors": [
+                            {"role": "self_attn.q_proj", "length_bytes": 3_000_000},
+                            {
+                                "role": "block_sparse_moe._exps.weight",
+                                "length_bytes": 6_000_000,
+                            },
+                            {
+                                "role": "block_sparse_moe.shared_expert.weight",
+                                "length_bytes": 1_000_000,
+                            },
+                        ],
+                    }
+                )
+            )
+            results = [
+                {
+                    "engine": "ax_engine_mlx",
+                    "prompt_tokens": 512,
+                    "generation_tokens": 128,
+                    "decode_tok_s": {"median": 40.0},
+                },
+            ]
+            accounting = bench.build_bandwidth_accounting(model_dir, results)
+
+        self.assertEqual(accounting["estimate_kind"], "moe_active_estimate")
+        self.assertIsNotNone(accounting["moe_block"])
+        non_routed = 3_000_000 + 1_000_000
+        active_routed = int(6_000_000 * (2 / 8))
+        self.assertEqual(accounting["moe_active_bytes"], non_routed + active_routed)
+        self.assertEqual(
+            accounting["bytes_used_for_estimate"], non_routed + active_routed
+        )
+        row = accounting["per_row"][0]
+        self.assertEqual(row["ax_bandwidth_estimate_kind"], "moe_active_estimate")
+
+    def test_bandwidth_accounting_with_peak_bandwidth(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            model_dir = Path(tmp)
+            (model_dir / "w.safetensors").write_bytes(b"\x00" * 1_000_000_000)
+            results = [
+                {
+                    "engine": "ax_engine_mlx",
+                    "prompt_tokens": 128,
+                    "generation_tokens": 128,
+                    "decode_tok_s": {"median": 50.0},
+                },
+            ]
+            accounting = bench.build_bandwidth_accounting(
+                model_dir,
+                results,
+                peak_bandwidth_gb_s=800.0,
+                peak_bandwidth_source="mlx_read_calibration",
+            )
+
+        self.assertEqual(accounting["peak_bandwidth_gb_s"], 800.0)
+        self.assertEqual(accounting["peak_bandwidth_source"], "mlx_read_calibration")
+        row = accounting["per_row"][0]
+        self.assertIn("ax_effective_bandwidth_percent_of_peak", row)
+        expected_pct = (50.0 / 800.0) * 100
+        self.assertAlmostEqual(
+            row["ax_effective_bandwidth_percent_of_peak"], expected_pct, places=1
+        )
+
+    def test_bandwidth_accounting_skips_zero_decode(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            model_dir = Path(tmp)
+            (model_dir / "w.safetensors").write_bytes(b"\x00" * 1_000_000)
+            results = [
+                {
+                    "engine": "ax_engine_mlx",
+                    "prompt_tokens": 128,
+                    "generation_tokens": 128,
+                    "decode_tok_s": {"median": 0.0},
+                },
+            ]
+            accounting = bench.build_bandwidth_accounting(model_dir, results)
+
+        self.assertEqual(len(accounting["per_row"]), 0)
 
 
 if __name__ == "__main__":
