@@ -9,6 +9,7 @@ pub(crate) mod linear_attention_ops;
 pub mod model;
 pub mod mtp;
 pub mod ngram_accel;
+pub mod per_layer_compile;
 pub mod runner;
 pub mod sampling;
 pub mod speculation_profile;
