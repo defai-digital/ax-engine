@@ -323,3 +323,16 @@ type GenerateStreamEvent struct {
 	Step     *GenerateStreamStepEvent
 	Response *GenerateStreamResponseEvent
 }
+
+// LoadModelRequest is the body for POST /v1/model/load.
+type LoadModelRequest struct {
+	ModelID   string `json:"model_id"`
+	ModelPath string `json:"model_path"`
+}
+
+// LoadModelResponse is the response from POST /v1/model/load.
+type LoadModelResponse struct {
+	ModelID       string `json:"model_id"`
+	State         string `json:"state"`
+	ContextLength uint32 `json:"context_length"`
+}

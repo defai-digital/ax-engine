@@ -79,6 +79,12 @@ module AxEngine
       post("/v1/embeddings", request)
     end
 
+    # POST /v1/model/load — hot-swap the running model without server restart.
+    # request: { model_id:, model_path: }
+    def load_model(request)
+      post("/v1/model/load", request)
+    end
+
     # Stream POST /v1/generate/stream  — yields SSE event hashes.
     #
     #   client.stream_generate(input_tokens: [1, 2, 3], max_output_tokens: 32) do |event|

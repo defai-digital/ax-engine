@@ -185,6 +185,11 @@ func (c *Client) Embeddings(ctx context.Context, req OpenAiEmbeddingRequest) (Op
 	return requestJSON[OpenAiEmbeddingResponse](c, ctx, http.MethodPost, "/v1/embeddings", req)
 }
 
+// LoadModel calls POST /v1/model/load to hot-swap the running model.
+func (c *Client) LoadModel(ctx context.Context, req LoadModelRequest) (LoadModelResponse, error) {
+	return requestJSON[LoadModelResponse](c, ctx, http.MethodPost, "/v1/model/load", req)
+}
+
 // StreamCompletion streams POST /v1/completions with stream=true. The caller
 // receives chunks over the returned channel; when the channel is closed the
 // stream is done. The errCh channel delivers at most one error.

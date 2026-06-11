@@ -89,6 +89,11 @@ public final class AxEngineClient: @unchecked Sendable {
         try await post("/v1/embeddings", body: request)
     }
 
+    /// POST /v1/model/load — hot-swap the running model without server restart.
+    public func loadModel(_ request: LoadModelRequest) async throws -> LoadModelResponse {
+        try await post("/v1/model/load", body: request)
+    }
+
     // MARK: - Streaming
 
     /// Stream POST /v1/generate/stream — native ax-engine SSE events.

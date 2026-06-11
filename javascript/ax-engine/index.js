@@ -179,6 +179,13 @@ export class AxEngineClient {
     });
   }
 
+  async loadModel(request) {
+    return this.#requestJson("/v1/model/load", {
+      method: "POST",
+      body: request,
+    });
+  }
+
   async *streamGenerate(request) {
     yield* this.#stream("/v1/generate/stream", request);
   }

@@ -451,3 +451,32 @@ public struct GenerateStreamEvent: Sendable {
     public let step: GenerateStreamStepEvent?
     public let response: GenerateStreamResponseEvent?
 }
+
+// MARK: - Model Load
+
+public struct LoadModelRequest: Encodable, Sendable {
+    public var modelId: String
+    public var modelPath: String
+
+    public init(modelId: String, modelPath: String) {
+        self.modelId = modelId
+        self.modelPath = modelPath
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case modelId = "model_id"
+        case modelPath = "model_path"
+    }
+}
+
+public struct LoadModelResponse: Decodable, Sendable {
+    public var modelId: String
+    public var state: String
+    public var contextLength: UInt32
+
+    enum CodingKeys: String, CodingKey {
+        case modelId = "model_id"
+        case state
+        case contextLength = "context_length"
+    }
+}
