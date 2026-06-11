@@ -55,6 +55,20 @@ evidence:
   guarded by `scripts/check_qwen_post_input_route_promotion.py`, which requires
   paired route flags, all-hit summaries, zero fallback/profile-blocked counters,
   and a minimum decode ratio of 1.01; the current artifact is `not_promoted`.
+- **Direct C++ Gemma4 post-attention + FFN route**
+  (`AX_MLX_DIRECT_CPP_GEMMA4_POST_ATTN_FFN`). The P0 microbench win did
+  not transfer to real models. The route is structurally unable to engage
+  on E2B/E4B (per-layer-embedding weights trip the guard) or 26B-A4B
+  (MoE router) — the 2026-05-20 E2B artifact is `all_fallback` and
+  therefore inconclusive, and the promotion checker's default
+  `gemma-4-e2b` model fragments point at a model that can never take the
+  route. On the two models where it does engage (`all_hits`), the
+  2026-06-11 A/B (p128/512/2048, gen=128, 5 reps, 15 s cooldown)
+  **regressed both phases**: Gemma 4 31B 4-bit decode 0.89–0.94x and
+  prefill 0.91–0.93x; Gemma 4 12B 4-bit decode 0.97x and prefill
+  0.91–0.98x. `check_direct_gemma4_ffn_route_promotion.py` decision:
+  `not_promoted` on both. Stays opt-in/OFF; raw artifacts at
+  `benchmarks/results/mlx-inference/2026-06-11-gemma4-ffn-route-ab/`.
 - **Fused `add + rms_norm` Metal kernel** for the post-attention
   residual + ffn_norm boundary. The decode profile identified this stage
   as 52.7% of `AX_MLX_DECODE_PROFILE=1` wall share. The custom kernel

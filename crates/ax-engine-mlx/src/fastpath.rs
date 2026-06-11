@@ -318,12 +318,18 @@ env_flag!(
     /// `AX_MLX_DIRECT_CPP_GEMMA4_POST_ATTN_FFN` — opt-in direct C++ route for
     /// Gemma4 dense post-attention residual + FFN + layer-scalar orchestration.
     ///
-    /// **Default: OFF**. The P0 clean microbench artifact proves this large-block
-    /// boundary can beat the portable Rust/`mlx-c` composition on the candidate
-    /// shape, but promotion still requires real-model A/B artifacts. The
-    /// production route is guarded to dense packed-quantized Gemma4 layers without
-    /// per-layer input gating, profiling, last-position slicing, or active weight
-    /// rotation.
+    /// **Default: OFF — real-model A/B rejected promotion (2026-06-11).** The P0
+    /// clean microbench artifact showed this large-block boundary beating the
+    /// portable Rust/`mlx-c` composition, but the full A/B on the two models that
+    /// can engage the route (Gemma 4 31B and 12B 4-bit, `all_hits`) regressed
+    /// decode to 0.89-0.97x and prefill to 0.91-0.98x;
+    /// `check_direct_gemma4_ffn_route_promotion.py` decision: `not_promoted`.
+    /// E2B/E4B (per-layer-embedding weights) and 26B-A4B (MoE router) cannot take
+    /// the route at all. Artifacts:
+    /// `benchmarks/results/mlx-inference/2026-06-11-gemma4-ffn-route-ab/`.
+    /// The production route is guarded to dense packed-quantized Gemma4 layers
+    /// without per-layer input gating, profiling, last-position slicing, or
+    /// active weight rotation.
     direct_cpp_gemma4_post_attn_ffn_enabled,
     "AX_MLX_DIRECT_CPP_GEMMA4_POST_ATTN_FFN"
 );
