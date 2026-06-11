@@ -103,7 +103,8 @@ pub(crate) async fn anthropic_messages(
     let live = state.snapshot();
     validate_openai_request(&live, request.model.as_deref())?;
     let openai_request = request.into_openai_chat_request()?;
-    let (request_id, response) = run_anthropic_messages_generation(state, openai_request).await?;
+    let (request_id, response) =
+        run_anthropic_messages_generation(state, live, openai_request).await?;
     Ok(Json(anthropic_message_response(request_id, &response)))
 }
 
@@ -225,9 +226,9 @@ impl AnthropicContent {
 
 async fn run_anthropic_messages_generation(
     state: AppState,
+    live: crate::app_state::LiveState,
     request: OpenAiChatCompletionHttpRequest,
 ) -> Result<(u64, GenerateResponse), (StatusCode, Json<ErrorResponse>)> {
-    let live = state.snapshot();
     if mlx_lm::is_selected(&live) {
         let OpenAiBuiltMlxLmChatRequest {
             chat_request,
@@ -269,7 +270,7 @@ async fn run_anthropic_messages_generation(
     } = build_openai_chat_request_offloading_media(&live, request).await?;
     reject_unexpected_stream(stream)?;
     let (request_id, mut response) =
-        run_stateless_generate_request(&state, generate_request).await?;
+        run_stateless_generate_request(&state, &live, generate_request).await?;
     populate_native_mlx_output_text(
         &live,
         &mut response,

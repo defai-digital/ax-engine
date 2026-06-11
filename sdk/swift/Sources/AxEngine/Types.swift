@@ -462,21 +462,10 @@ public struct LoadModelRequest: Encodable, Sendable {
         self.modelId = modelId
         self.modelPath = modelPath
     }
-
-    enum CodingKeys: String, CodingKey {
-        case modelId = "model_id"
-        case modelPath = "model_path"
-    }
 }
 
 public struct LoadModelResponse: Decodable, Sendable {
     public var modelId: String
     public var state: String
     public var contextLength: UInt32
-
-    enum CodingKeys: String, CodingKey {
-        case modelId = "model_id"
-        case state
-        case contextLength = "context_length"
-    }
 }

@@ -5,7 +5,7 @@ use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
 
-use crate::app_state::AppState;
+use crate::app_state::{AppState, LiveState};
 use crate::errors::ErrorResponse;
 use crate::generation::requests::{GenerateHttpRequest, build_generate_request};
 use crate::openai::validation::validate_model;
@@ -19,16 +19,19 @@ pub(crate) async fn generate(
     validate_model(&live, request.model.as_deref())?;
 
     let request = build_generate_request(&live, request);
-    let (_, response) = run_stateless_generate_request(&state, request).await?;
+    let (_, response) = run_stateless_generate_request(&state, &live, request).await?;
 
     Ok(Json(response))
 }
 
+/// Runs a generate request against the caller's `LiveState` snapshot, so the
+/// model that validated/tokenized the request is the one that executes it
+/// even if a hot-swap lands mid-request.
 pub(crate) async fn run_stateless_generate_request(
     state: &AppState,
+    live: &LiveState,
     request: GenerateRequest,
 ) -> Result<(u64, GenerateResponse), (StatusCode, Json<ErrorResponse>)> {
-    let live = state.snapshot();
     let request_id = state.allocate_request_id();
     let context = Arc::clone(&live.stateless_generate_context);
     let response =

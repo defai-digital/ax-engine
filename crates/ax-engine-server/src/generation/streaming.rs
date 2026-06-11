@@ -13,7 +13,7 @@ use serde::Serialize;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 
-use crate::app_state::AppState;
+use crate::app_state::{AppState, LiveState};
 use crate::errors::{ErrorResponse, map_session_error};
 use crate::generation::requests::{GenerateHttpRequest, build_generate_request};
 use crate::openai::validation::validate_model;
@@ -33,7 +33,7 @@ pub(crate) async fn generate_stream(
     validate_model(&live, request.model.as_deref())?;
 
     let request = build_generate_request(&live, request);
-    let (stream_state, stream_context) = build_stream_state(&state, request).await?;
+    let (stream_state, stream_context) = build_stream_state(&state, &live, request).await?;
 
     let (tx, rx) = mpsc::channel(STREAM_CHANNEL_CAPACITY);
     spawn_stream_task(
@@ -61,11 +61,14 @@ pub(crate) enum StreamStateSource {
     Stateful(Box<EngineSession>),
 }
 
+/// Builds stream state against the caller's `LiveState` snapshot, so the
+/// model that validated/tokenized the request is the one that streams it
+/// even if a hot-swap lands mid-request.
 pub(crate) async fn build_stream_state(
     state: &AppState,
+    live: &LiveState,
     request: GenerateRequest,
 ) -> Result<(GenerateStreamState, StreamStateSource), (StatusCode, Json<ErrorResponse>)> {
-    let live = state.snapshot();
     let request_id = state.allocate_request_id();
     if live
         .stateless_generate_context

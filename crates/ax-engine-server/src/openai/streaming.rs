@@ -31,11 +31,11 @@ const STREAM_CHANNEL_CAPACITY: usize = 128;
 
 pub(crate) async fn stream_openai_request(
     state: AppState,
+    live: LiveState,
     request: GenerateRequest,
     stream_kind: OpenAiStreamKind,
 ) -> Result<axum::response::Response, (StatusCode, Json<ErrorResponse>)> {
-    let live = state.snapshot();
-    let (stream_state, stream_context) = build_stream_state(&state, request).await?;
+    let (stream_state, stream_context) = build_stream_state(&state, &live, request).await?;
     let tokenizer = native_mlx_openai_stream_tokenizer(&live)?;
 
     let (tx, rx) = mpsc::channel(STREAM_CHANNEL_CAPACITY);
@@ -69,9 +69,9 @@ pub(crate) async fn stream_openai_request(
 
 pub(crate) async fn stream_openai_mlx_lm_chat_request(
     state: AppState,
+    live: LiveState,
     request: MlxLmChatGenerateRequest,
 ) -> Result<axum::response::Response, (StatusCode, Json<ErrorResponse>)> {
-    let live = state.snapshot();
     let request_id = state.allocate_request_id();
     let model_id = request.model_id.clone();
     let runtime = live.runtime_report.clone();
@@ -91,9 +91,9 @@ pub(crate) async fn stream_openai_mlx_lm_chat_request(
 
 pub(crate) async fn stream_openai_llama_cpp_chat_request(
     state: AppState,
+    live: LiveState,
     request: LlamaCppChatGenerateRequest,
 ) -> Result<axum::response::Response, (StatusCode, Json<ErrorResponse>)> {
-    let live = state.snapshot();
     let request_id = state.allocate_request_id();
     let model_id = request.model_id.clone();
     let runtime = live.runtime_report.clone();

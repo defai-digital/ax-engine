@@ -207,7 +207,7 @@ pub(crate) struct PropsResponse {
 
 pub(crate) async fn props(State(state): State<AppState>) -> Json<PropsResponse> {
     let live = state.snapshot();
-    let n_ctx = context_length(&state);
+    let n_ctx = context_length(&live);
     let chat_template = read_chat_template_live(&live);
     let model = live.model_id.as_ref().clone();
 
@@ -309,7 +309,7 @@ pub(crate) async fn slots(State(state): State<AppState>) -> Json<Vec<SlotEntry>>
     } else {
         (0u32, "idle")
     };
-    let n_ctx = context_length(&state);
+    let n_ctx = context_length(&live);
     let model = live.model_id.as_ref().clone();
 
     Json(vec![SlotEntry {

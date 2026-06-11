@@ -50,17 +50,12 @@ fn spawn_grpc_blocking_stream_task<T, F>(
     });
 }
 
+/// Builds gRPC stream state against the caller's `LiveState` snapshot, so the
+/// model that built the request is the one that streams it even if a hot-swap
+/// lands mid-request.
 pub(super) async fn build_grpc_stream_state(
     state: &AppState,
-    request: GenerateRequest,
-) -> Result<(GenerateStreamState, StreamStateSource), Status> {
-    let live = state.snapshot();
-    build_grpc_stream_state_from_live(state, live, request).await
-}
-
-async fn build_grpc_stream_state_from_live(
-    state: &AppState,
-    live: LiveState,
+    live: &LiveState,
     request: GenerateRequest,
 ) -> Result<(GenerateStreamState, StreamStateSource), Status> {
     let request_id = state.allocate_request_id();

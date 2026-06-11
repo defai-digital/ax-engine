@@ -19,16 +19,16 @@ use crate::tasks::run_blocking_session_task;
 
 pub(crate) async fn run_openai_llama_cpp_chat_generation(
     state: AppState,
+    live: LiveState,
     request: OpenAiChatCompletionHttpRequest,
 ) -> Result<axum::response::Response, (StatusCode, Json<ErrorResponse>)> {
-    let live = state.snapshot();
     let OpenAiBuiltLlamaCppChatRequest {
         chat_request,
         stream,
         response_options,
     } = build_openai_llama_cpp_chat_request(&live, request)?;
     if stream {
-        return stream_openai_llama_cpp_chat_request(state, chat_request).await;
+        return stream_openai_llama_cpp_chat_request(state, live, chat_request).await;
     }
 
     let request_id = state.allocate_request_id();
@@ -50,16 +50,16 @@ pub(crate) async fn run_openai_llama_cpp_chat_generation(
 
 pub(crate) async fn run_openai_mlx_lm_chat_generation(
     state: AppState,
+    live: LiveState,
     request: OpenAiChatCompletionHttpRequest,
 ) -> Result<axum::response::Response, (StatusCode, Json<ErrorResponse>)> {
-    let live = state.snapshot();
     let OpenAiBuiltMlxLmChatRequest {
         chat_request,
         stream,
         response_options,
     } = build_openai_mlx_lm_chat_request(&live, request)?;
     if stream {
-        return stream_openai_mlx_lm_chat_request(state, chat_request).await;
+        return stream_openai_mlx_lm_chat_request(state, live, chat_request).await;
     }
 
     let request_id = state.allocate_request_id();
@@ -81,21 +81,21 @@ pub(crate) async fn run_openai_mlx_lm_chat_generation(
 
 pub(crate) async fn run_openai_text_generation(
     state: AppState,
+    live: LiveState,
     request: OpenAiBuiltRequest,
     kind: OpenAiStreamKind,
 ) -> Result<axum::response::Response, (StatusCode, Json<ErrorResponse>)> {
-    let live = state.snapshot();
     let OpenAiBuiltRequest {
         generate_request,
         stream,
         response_options,
     } = request;
     if stream {
-        return stream_openai_request(state, generate_request, kind).await;
+        return stream_openai_request(state, live, generate_request, kind).await;
     }
 
     let (request_id, mut response) =
-        run_stateless_generate_request(&state, generate_request).await?;
+        run_stateless_generate_request(&state, &live, generate_request).await?;
     let native_reasoning = populate_native_mlx_output_text(
         &live,
         &mut response,

@@ -64,40 +64,67 @@ pub(crate) async fn load_model(
 
     // Clone the current config and swap in the new model artifacts dir.
     // All other KV / backend settings are inherited from the running config.
+    // Only the MLX-native backend reads mlx_model_artifacts_dir — on a
+    // delegated backend (mlx-lm, llama.cpp) the rebuilt session would silently
+    // keep serving the old model under the new model_id, so reject up front.
     let new_config = {
         let live = state.snapshot();
+        if !live
+            .session_config
+            .resolved_backend
+            .selected_backend
+            .is_mlx()
+        {
+            state.loading.store(false, Ordering::Release);
+            return Err(error_response(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "unsupported_backend",
+                "model load is only supported on the MLX-native backend".to_string(),
+            ));
+        }
         Arc::unwrap_or_clone(live.session_config).with_mlx_model_artifacts_dir(model_path.clone())
     };
 
     let model_id = request.model_id.clone();
+
+    // Run load + swap in a detached task: axum drops handler futures when the
+    // client disconnects, and the load must still complete (or fail) and clear
+    // the loading flag either way.
     let state_clone = state.clone();
+    let load_task = tokio::spawn(async move {
+        // Load the session on the blocking thread pool — weight loading can take
+        // tens of seconds; blocking the async runtime would stall all other requests.
+        let result =
+            tokio::task::spawn_blocking(move || build_new_session(model_id, new_config)).await;
+        let response = match result {
+            Ok(Ok(live)) => {
+                let ctx_len = crate::metadata::context_length(&live);
+                state_clone.swap_live(live);
+                Ok(ctx_len)
+            }
+            Ok(Err(e)) => Err(error_response(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "load_failed",
+                format!("failed to load model: {e}"),
+            )),
+            Err(e) => Err(error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "server_error",
+                format!("load task panicked: {e}"),
+            )),
+        };
+        // Always clear the loading flag, even on failure.
+        state_clone.loading.store(false, Ordering::Release);
+        response
+    });
 
-    // Load the session on the blocking thread pool — weight loading can take
-    // tens of seconds; blocking the async runtime would stall all other requests.
-    let result = tokio::task::spawn_blocking(move || build_new_session(model_id, new_config)).await;
-
-    // Always clear the loading flag, even on failure.
-    state.loading.store(false, Ordering::Release);
-
-    match result {
-        Ok(Ok(live)) => {
-            let ctx_len = {
-                // Compute context_length from the new config before swapping.
-                let kv = &live.session_config.kv_config;
-                kv.block_size_tokens.saturating_mul(kv.total_blocks)
-            };
-            state_clone.swap_live(live);
-            Ok(Json(LoadModelResponse {
-                model_id: request.model_id,
-                state: "loaded",
-                context_length: ctx_len,
-            }))
-        }
-        Ok(Err(e)) => Err(error_response(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "load_failed",
-            format!("failed to load model: {e}"),
-        )),
+    match load_task.await {
+        Ok(Ok(ctx_len)) => Ok(Json(LoadModelResponse {
+            model_id: request.model_id,
+            state: "loaded",
+            context_length: ctx_len,
+        })),
+        Ok(Err(e)) => Err(e),
         Err(e) => Err(error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             "server_error",

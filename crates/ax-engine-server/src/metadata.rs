@@ -128,7 +128,7 @@ pub(crate) async fn runtime_info(State(state): State<AppState>) -> Json<ServerIn
 
 pub(crate) async fn models(State(state): State<AppState>) -> Json<ModelsResponse> {
     let live = state.snapshot();
-    let context_length = context_length_live(&live);
+    let context_length = context_length(&live);
     let max_output_tokens = max_output_tokens_live(&live, context_length);
     let openai_text = openai_text_supported_live(&live);
     let native_multimodal = native_processed_multimodal_support_live(&live);
@@ -269,17 +269,14 @@ fn openai_text_supported_live(live: &LiveState) -> bool {
     )
 }
 
-fn context_length_live(live: &LiveState) -> u32 {
+/// Computes context length from the caller's `LiveState` snapshot — callers
+/// must pass the snapshot they are already serving the request from, never a
+/// fresh one, so all fields in a response come from the same model.
+pub(crate) fn context_length(live: &LiveState) -> u32 {
     live.session_config
         .kv_config
         .block_size_tokens
         .saturating_mul(live.session_config.kv_config.total_blocks)
-}
-
-/// Public entry point: snapshot live state then compute context length.
-pub(crate) fn context_length(state: &AppState) -> u32 {
-    let live = state.snapshot();
-    context_length_live(&live)
 }
 
 fn max_output_tokens_live(live: &LiveState, context_length: u32) -> u32 {

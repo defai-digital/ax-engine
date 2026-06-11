@@ -53,11 +53,10 @@ impl AxEngineGrpcService {
 }
 
 async fn run_grpc_generate_request(
-    state: &AppState,
+    live: &crate::app_state::LiveState,
     request_id: u64,
     request: ax_engine_sdk::GenerateRequest,
 ) -> Result<ax_engine_sdk::GenerateResponse, Status> {
-    let live = state.snapshot();
     let ctx = Arc::clone(&live.stateless_generate_context);
     run_blocking(move || ctx.generate_with_request_id(request_id, request)).await
 }
@@ -110,7 +109,7 @@ impl AxEngine for AxEngineGrpcService {
         let live = self.state.snapshot();
         let req = proto_to_generate_request(&live, request.into_inner());
         let request_id = self.state.allocate_request_id();
-        let response = run_grpc_generate_request(&self.state, request_id, req).await?;
+        let response = run_grpc_generate_request(&live, request_id, req).await?;
         Ok(Response::new(sdk_response_to_proto(response)))
     }
 
@@ -124,7 +123,7 @@ impl AxEngine for AxEngineGrpcService {
     ) -> Result<Response<Self::StreamGenerateStream>, Status> {
         let live = self.state.snapshot();
         let req = proto_to_generate_request(&live, request.into_inner());
-        let (ss, ctx) = build_grpc_stream_state(&self.state, req).await?;
+        let (ss, ctx) = build_grpc_stream_state(&self.state, &live, req).await?;
         let (tx, rx) = mpsc::channel(GRPC_CHANNEL_CAPACITY);
         spawn_grpc_generate_stream(ss, tx, ctx);
         Ok(Response::new(ReceiverStream::new(rx)))
@@ -140,7 +139,7 @@ impl AxEngine for AxEngineGrpcService {
         let req = request.into_inner();
         let generate_req = build_chat_generate_request(&live, &req)?;
         let request_id = self.state.allocate_request_id();
-        let r = run_grpc_generate_request(&self.state, request_id, generate_req).await?;
+        let r = run_grpc_generate_request(&live, request_id, generate_req).await?;
         let content = r.output_text.unwrap_or_default();
         let finish_reason = r.finish_reason.map(finish_reason_str).unwrap_or_default();
         Ok(Response::new(proto::ChatCompletionResponse {
@@ -176,7 +175,7 @@ impl AxEngine for AxEngineGrpcService {
         let req = request.into_inner();
         let model_id = live.model_id.to_string();
         let generate_req = build_chat_generate_request(&live, &req)?;
-        let (ss, ctx) = build_grpc_stream_state(&self.state, generate_req).await?;
+        let (ss, ctx) = build_grpc_stream_state(&self.state, &live, generate_req).await?;
         let (tx, rx) = mpsc::channel(GRPC_CHANNEL_CAPACITY);
         spawn_grpc_chat_stream(ss, model_id, tx, ctx);
         Ok(Response::new(ReceiverStream::new(rx)))
@@ -192,7 +191,7 @@ impl AxEngine for AxEngineGrpcService {
         let req = request.into_inner();
         let generate_req = build_completion_generate_request(&live, &req);
         let request_id = self.state.allocate_request_id();
-        let r = run_grpc_generate_request(&self.state, request_id, generate_req).await?;
+        let r = run_grpc_generate_request(&live, request_id, generate_req).await?;
         let text = r.output_text.unwrap_or_default();
         let finish_reason = r.finish_reason.map(finish_reason_str).unwrap_or_default();
         Ok(Response::new(proto::CompletionResponse {
@@ -225,7 +224,7 @@ impl AxEngine for AxEngineGrpcService {
         let req = request.into_inner();
         let model_id = live.model_id.to_string();
         let generate_req = build_completion_generate_request(&live, &req);
-        let (ss, ctx) = build_grpc_stream_state(&self.state, generate_req).await?;
+        let (ss, ctx) = build_grpc_stream_state(&self.state, &live, generate_req).await?;
         let (tx, rx) = mpsc::channel(GRPC_CHANNEL_CAPACITY);
         spawn_grpc_completion_stream(ss, model_id, tx, ctx);
         Ok(Response::new(ReceiverStream::new(rx)))

@@ -17,5 +17,5 @@ pub(crate) async fn openai_completions(
     validate_openai_request(&live, request.model.as_deref())?;
     let request = build_openai_completion_request(&live, request)?;
 
-    run_openai_text_generation(state, request, OpenAiStreamKind::Completion).await
+    run_openai_text_generation(state, live, request, OpenAiStreamKind::Completion).await
 }
