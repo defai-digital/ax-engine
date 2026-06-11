@@ -270,7 +270,7 @@ fn openai_text_supported(state: &AppState) -> bool {
     )
 }
 
-fn context_length(state: &AppState) -> u32 {
+pub(crate) fn context_length(state: &AppState) -> u32 {
     state
         .session_config
         .kv_config

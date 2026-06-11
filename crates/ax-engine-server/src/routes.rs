@@ -19,7 +19,7 @@ use super::generation::streaming::generate_stream;
 use super::metadata::{health, models, runtime_info};
 use super::metrics::prometheus_metrics;
 use super::openai::chat::openai_chat_completions;
-use super::openai::compat::{apply_template, tokenize};
+use super::openai::compat::{apply_template, detokenize, props, slots, tokenize};
 use super::openai::completions::openai_completions;
 use super::openai::embeddings::openai_embeddings;
 
@@ -37,8 +37,12 @@ pub(crate) fn build_router(state: AppState) -> Router {
         .route("/metrics", get(prometheus_metrics))
         .route("/v1/runtime", get(runtime_info))
         .route("/v1/models", get(models))
+        .route("/props", get(props))
+        .route("/slots", get(slots))
         .route("/tokenize", post(tokenize))
         .route("/v1/tokenize", post(tokenize))
+        .route("/detokenize", post(detokenize))
+        .route("/v1/detokenize", post(detokenize))
         .route("/apply-template", post(apply_template))
         .route("/v1/apply-template", post(apply_template))
         .route("/v1/embeddings", post(openai_embeddings))
