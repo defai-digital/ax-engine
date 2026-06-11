@@ -1594,4 +1594,105 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn turboquant_sparse_value_sum_parity_at_engaging_context_length() {
+        // The sparse-V threshold only engages in production at >= 4096-token
+        // contexts (fastpath::turboquant_sparse_v_min_context_tokens); all
+        // other parity tests run at toy sizes where the approximation is
+        // never exercised. Token 0 dominates the softmax (key aligned with
+        // the query at a large norm), so the noise tokens' normalized
+        // weights fall far below the 1e-5 production threshold and the
+        // sparse path actually drops them.
+        let head_dim = 128usize;
+        let cold_tokens = 4096usize;
+        let layout = TurboQuantBlockLayout::new(TurboQuantBlockLayoutConfig {
+            preset: TurboQuantPreset::K8V4,
+            block_tokens: 256,
+            n_kv_heads: 1,
+            head_dim,
+            value_group_size: 32,
+        })
+        .expect("layout should build");
+        let plan =
+            TurboQuantCompressedDecodePlan::new(layout, cold_tokens, 0).expect("plan should build");
+        let mut buffer = TurboQuantCompressedBlockBuffer::new(layout);
+
+        let query = (0..head_dim)
+            .map(|dim| ((dim % 19) as f32 - 9.0) / 10.0)
+            .collect::<Vec<_>>();
+        for token_index in 0..cold_tokens {
+            let (key, value) = if token_index == 0 {
+                (
+                    query.iter().map(|component| component * 50.0).collect(),
+                    (0..head_dim)
+                        .map(|dim| ((dim % 11) as f32 - 5.0) / 8.0)
+                        .collect::<Vec<_>>(),
+                )
+            } else {
+                (
+                    (0..head_dim)
+                        .map(|dim| (((dim * 7 + token_index) % 13) as f32 - 6.0) / 600.0)
+                        .collect(),
+                    (0..head_dim)
+                        .map(|dim| (((dim * 5 + token_index) % 7) as f32 - 3.0) / 6.0)
+                        .collect(),
+                )
+            };
+            buffer
+                .write_token(token_index, &[(key, value)])
+                .expect("token should compress");
+        }
+
+        let queries = vec![query.clone()];
+        let descriptor = plan
+            .fused_decode_launch_descriptor(&buffer, &queries)
+            .expect("descriptor should build");
+        let reference = buffer
+            .debug_decode_partition_stats_for_all_heads(&queries, cold_tokens)
+            .expect("CPU reference stats");
+
+        let dense = turboquant_fused_cold_decode_metal_two_stage_sparse_partition_stats_flat(
+            descriptor, &buffer, &query, 1, 0.0,
+        )
+        .expect("dense Metal stats");
+        let sparse = turboquant_fused_cold_decode_metal_two_stage_sparse_partition_stats_flat(
+            descriptor, &buffer, &query, 1, 1.0e-5,
+        )
+        .expect("sparse Metal stats");
+
+        // Dense Metal must track the CPU oracle even at this scale.
+        assert!((dense[0].max_score - reference[0].max_score).abs() < 1e-3);
+        assert!(
+            (dense[0].exp_sum - reference[0].exp_sum).abs()
+                < reference[0].exp_sum.abs() * 1e-3 + 1e-3
+        );
+        for (dim, (expected, actual)) in reference[0]
+            .weighted_value_sum
+            .iter()
+            .zip(&dense[0].weighted_value_sum)
+            .enumerate()
+        {
+            assert!(
+                (actual - expected).abs() < 2e-3,
+                "dense mismatch vs CPU oracle at dim {dim}: actual={actual} expected={expected}"
+            );
+        }
+
+        // The sparse approximation only affects value sums, and the dropped
+        // contributions are bounded by threshold * token count * max |v|.
+        assert_eq!(sparse[0].max_score, dense[0].max_score);
+        assert_eq!(sparse[0].exp_sum, dense[0].exp_sum);
+        for (dim, (expected, actual)) in dense[0]
+            .weighted_value_sum
+            .iter()
+            .zip(&sparse[0].weighted_value_sum)
+            .enumerate()
+        {
+            assert!(
+                (actual - expected).abs() < 5e-3,
+                "sparse drop exceeded bound at dim {dim}: actual={actual} expected={expected}"
+            );
+        }
+    }
 }

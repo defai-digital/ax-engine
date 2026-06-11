@@ -6725,4 +6725,97 @@ mod tests {
             Err(TurboQuantCodecError::CompressedSlotUnwritten { .. })
         ));
     }
+
+    #[test]
+    fn seven_bit_pack_round_trips_at_tail_lengths() {
+        for index_count in [1usize, 7, 8, 13, 64] {
+            let indices = (0..index_count)
+                .map(|index| ((index * 37 + 11) % 128) as u8)
+                .collect::<Vec<_>>();
+            let packed = pack_indices(&indices, 7).expect("7-bit pack");
+            assert_eq!(packed.len(), packed_index_bytes(index_count, 7).unwrap());
+            let unpacked = unpack_indices(&packed, index_count, 7).expect("7-bit unpack");
+            assert_eq!(
+                unpacked, indices,
+                "round trip failed at {index_count} indices"
+            );
+        }
+        assert!(matches!(
+            pack_indices(&[128], 7),
+            Err(TurboQuantCodecError::PackedIndexOutOfRange { .. })
+        ));
+    }
+
+    #[test]
+    fn k7v4_key_codec_round_trips_with_high_cosine() {
+        let dim = 64usize;
+        let vector = (0..dim)
+            .map(|index| ((index * 13 + 5) % 17) as f32 / 8.0 - 1.0)
+            .collect::<Vec<_>>();
+        let encoded =
+            encode_key_vector_for_head(&vector, TurboQuantPreset::K7V4, 0).expect("K7V4 encode");
+        assert_eq!(encoded.bit_width, 7);
+        let decoded = decode_key_vector(&encoded).expect("K7V4 decode");
+
+        let dot = vector.iter().zip(&decoded).map(|(a, b)| a * b).sum::<f32>();
+        let norm_a = vector.iter().map(|v| v * v).sum::<f32>().sqrt();
+        let norm_b = decoded.iter().map(|v| v * v).sum::<f32>().sqrt();
+        let cosine = dot / (norm_a * norm_b).max(f32::EPSILON);
+        assert!(cosine > 0.995, "K7V4 cosine too low: {cosine}");
+    }
+
+    #[test]
+    fn ragged_value_groups_round_trip_within_group_scale() {
+        // 10 elements with group size 4 leaves a ragged 2-element tail group.
+        let values = (0..10)
+            .map(|index| ((index * 19 + 3) % 23) as f32 / 7.0 - 1.5)
+            .collect::<Vec<_>>();
+        for preset in [TurboQuantPreset::K8V4, TurboQuantPreset::K8V3_5] {
+            let encoded =
+                encode_value_groups_for_preset(&values, 4, preset).expect("ragged encode");
+            assert_eq!(encoded.element_count, 10);
+            assert_eq!(encoded.mins.len(), 3);
+            let decoded = decode_value_groups_4bit(&encoded).expect("ragged decode");
+            assert_eq!(decoded.len(), values.len());
+            for (index, (original, decoded)) in values.iter().zip(&decoded).enumerate() {
+                let scale = encoded.scales[index / 4];
+                assert!(
+                    (original - decoded).abs() <= scale * 0.5 + 1e-6,
+                    "{preset:?} element {index}: original={original} decoded={decoded} scale={scale}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn f16_conversion_edges() {
+        // Exactly representable values round-trip bit-perfectly.
+        for value in [0.0f32, 1.0, -2.5, 0.25, 65504.0, -65504.0] {
+            assert_eq!(f16_bits_to_f32(f32_to_f16_bits(value)), value);
+        }
+        // Values beyond f16 range saturate to infinity (current contract:
+        // callers must bound inputs; K vectors never approach 65504).
+        assert_eq!(f16_bits_to_f32(f32_to_f16_bits(70000.0)), f32::INFINITY);
+        assert_eq!(
+            f16_bits_to_f32(f32_to_f16_bits(-70000.0)),
+            f32::NEG_INFINITY
+        );
+        // NaN stays NaN.
+        assert!(f16_bits_to_f32(f32_to_f16_bits(f32::NAN)).is_nan());
+        // Subnormals round-trip within one subnormal step (~5.96e-8).
+        let tiny = 1.0e-7f32;
+        let round_tripped = f16_bits_to_f32(f32_to_f16_bits(tiny));
+        assert!(
+            (round_tripped - tiny).abs() <= 6.0e-8,
+            "subnormal round trip drifted: {round_tripped}"
+        );
+        // Values straddling a representable step round to a neighbour within
+        // half a ULP (f16 ULP at 1.0 is ~9.77e-4).
+        let nearly_one = 1.0003f32;
+        let round_tripped = f16_bits_to_f32(f32_to_f16_bits(nearly_one));
+        assert!(
+            (round_tripped - nearly_one).abs() <= 4.9e-4,
+            "rounding drifted: {round_tripped}"
+        );
+    }
 }
