@@ -1,6 +1,7 @@
 use std::ffi::CString;
 
 use crate::array::MlxArray;
+use crate::error::{install_recoverable_error_handler, last_error_message, take_last_error};
 use crate::ffi;
 
 fn make_vector_array(arrays: &[&MlxArray]) -> ffi::mlx_vector_array {
@@ -14,15 +15,34 @@ fn make_vector_array(arrays: &[&MlxArray]) -> ffi::mlx_vector_array {
 }
 
 /// Block the calling thread until all arrays have been computed on the GPU.
+///
+/// Panics on evaluation failure. Before the recording error handler existed,
+/// mlx-c's default handler would `exit(-1)` instead, so this is strictly more
+/// diagnosable; callers with a fallback path should use [`try_eval`].
 pub fn eval(arrays: &[&MlxArray]) {
-    if arrays.is_empty() {
-        return;
+    if let Err(message) = try_eval(arrays) {
+        panic!("{message}");
     }
+}
+
+/// Block the calling thread until all arrays have been computed on the GPU,
+/// surfacing MLX errors (including lazy Metal-kernel compile failures) as
+/// `Err` instead of killing the process.
+pub fn try_eval(arrays: &[&MlxArray]) -> Result<(), String> {
+    if arrays.is_empty() {
+        return Ok(());
+    }
+    install_recoverable_error_handler();
+    let _ = take_last_error();
     unsafe {
         let vec = make_vector_array(arrays);
-        ffi::mlx_eval(vec);
+        let rc = ffi::mlx_eval(vec);
         ffi::mlx_vector_array_free(vec);
+        if rc != 0 {
+            return Err(last_error_message("mlx_eval"));
+        }
     }
+    Ok(())
 }
 
 /// Evaluate a scalar uint32 array and return its first element.

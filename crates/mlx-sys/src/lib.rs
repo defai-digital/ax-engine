@@ -20,6 +20,7 @@
 
 pub mod array;
 pub mod closure;
+pub mod error;
 pub mod fast;
 pub mod io;
 pub mod mempressure;
@@ -47,6 +48,7 @@ pub mod ffi {
 
 pub use array::{MlxArray, MlxDtype};
 pub use closure::{MlxClosure, MlxVectorArray};
+pub use error::{install_recoverable_error_handler, take_last_error};
 pub use fast::{
     ScaledDotProductAttentionMask, rms_norm, rope, scaled_dot_product_attention,
     scaled_dot_product_attention_with_mask,
@@ -74,5 +76,5 @@ pub use ops::{
 pub use stream::MlxStream;
 pub use transforms::{
     async_eval, clear_cache, enable_compile, eval, eval_first_u32,
-    max_recommended_working_set_size, set_wired_limit,
+    max_recommended_working_set_size, set_wired_limit, try_eval,
 };

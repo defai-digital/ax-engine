@@ -1,7 +1,7 @@
 use std::sync::OnceLock;
 
 use ax_engine_core::TurboQuantPreset;
-use mlx_sys::{KernelOutputSpec, KernelTemplateArg, MlxArray, MlxDtype, MlxMetalKernel, eval};
+use mlx_sys::{KernelOutputSpec, KernelTemplateArg, MlxArray, MlxDtype, MlxMetalKernel, try_eval};
 
 use crate::turboquant::{
     TurboQuantAttentionPartitionStats, TurboQuantAttentionPartitionStatsBatch,
@@ -10,6 +10,10 @@ use crate::turboquant::{
     merge_attention_partition_stats, randomized_hadamard_in_place,
     turboquant_query_head_to_kv_head, turboquant_rotation_seed,
 };
+
+fn metal_kernel_error(message: String) -> TurboQuantCodecError {
+    TurboQuantCodecError::MetalKernelFailed { message }
+}
 
 static TURBOQUANT_FUSED_KEY_ENCODE_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
 static TURBOQUANT_FUSED_COLD_DECODE_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
@@ -96,44 +100,46 @@ pub fn turboquant_fused_key_encode_metal_k8(
         )
     });
     let vector_count = token_count.saturating_mul(n_kv_heads);
-    let outputs = kernel.apply_with_template(
-        &[keys, &signs],
-        &[
-            KernelOutputSpec {
-                shape: vec![vector_count as i32, head_dim as i32],
-                dtype: MlxDtype::Uint8,
-            },
-            KernelOutputSpec {
-                shape: vec![vector_count as i32],
-                dtype: MlxDtype::Float32,
-            },
-        ],
-        &[
-            KernelTemplateArg::Int {
-                name: "TOKEN_START",
-                value: token_start as i32,
-            },
-            KernelTemplateArg::Int {
-                name: "TOKEN_COUNT",
-                value: token_count as i32,
-            },
-            KernelTemplateArg::Int {
-                name: "KV_HEADS",
-                value: n_kv_heads as i32,
-            },
-            KernelTemplateArg::Int {
-                name: "CAPACITY_TOKENS",
-                value: capacity_tokens as i32,
-            },
-            KernelTemplateArg::Int {
-                name: "HEAD_DIM",
-                value: head_dim as i32,
-            },
-        ],
-        (vector_count as i32 * head_dim as i32, 1, 1),
-        (head_dim as i32, 1, 1),
-        None,
-    );
+    let outputs = kernel
+        .try_apply_with_template(
+            &[keys, &signs],
+            &[
+                KernelOutputSpec {
+                    shape: vec![vector_count as i32, head_dim as i32],
+                    dtype: MlxDtype::Uint8,
+                },
+                KernelOutputSpec {
+                    shape: vec![vector_count as i32],
+                    dtype: MlxDtype::Float32,
+                },
+            ],
+            &[
+                KernelTemplateArg::Int {
+                    name: "TOKEN_START",
+                    value: token_start as i32,
+                },
+                KernelTemplateArg::Int {
+                    name: "TOKEN_COUNT",
+                    value: token_count as i32,
+                },
+                KernelTemplateArg::Int {
+                    name: "KV_HEADS",
+                    value: n_kv_heads as i32,
+                },
+                KernelTemplateArg::Int {
+                    name: "CAPACITY_TOKENS",
+                    value: capacity_tokens as i32,
+                },
+                KernelTemplateArg::Int {
+                    name: "HEAD_DIM",
+                    value: head_dim as i32,
+                },
+            ],
+            (vector_count as i32 * head_dim as i32, 1, 1),
+            (head_dim as i32, 1, 1),
+            None,
+        )
+        .map_err(metal_kernel_error)?;
     let mut outputs = outputs.into_iter();
     let packed = outputs
         .next()
@@ -141,7 +147,7 @@ pub fn turboquant_fused_key_encode_metal_k8(
     let norms = outputs
         .next()
         .expect("TurboQuant fused key encode norm output");
-    eval(&[&packed, &norms]);
+    try_eval(&[&packed, &norms]).map_err(metal_kernel_error)?;
     let packed_key_bytes =
         unsafe { std::slice::from_raw_parts(packed.data_raw(), packed.nbytes()).to_vec() };
 
@@ -310,84 +316,86 @@ pub fn turboquant_fused_cold_decode_metal(
         )
     });
 
-    let outputs = kernel.apply_with_template(
-        &[&compressed, &query],
-        &[KernelOutputSpec {
-            shape: vec![descriptor.n_query_heads as i32, descriptor.head_dim as i32],
-            dtype: MlxDtype::Float32,
-        }],
-        &[
-            KernelTemplateArg::Int {
-                name: "COLD_TOKENS",
-                value: descriptor.cold_tokens as i32,
-            },
-            KernelTemplateArg::Int {
-                name: "HEADS",
-                value: descriptor.n_query_heads as i32,
-            },
-            KernelTemplateArg::Int {
-                name: "KV_HEADS",
-                value: descriptor.n_kv_heads as i32,
-            },
-            KernelTemplateArg::Int {
-                name: "HEAD_DIM",
-                value: descriptor.head_dim as i32,
-            },
-            KernelTemplateArg::Int {
-                name: "BLOCK_TOKENS",
-                value: descriptor.block_tokens as i32,
-            },
-            KernelTemplateArg::Int {
-                name: "BLOCK_BYTES",
-                value: descriptor.block_bytes as i32,
-            },
-            KernelTemplateArg::Int {
-                name: "TOKEN_STRIDE_BYTES",
-                value: descriptor.token_stride_bytes as i32,
-            },
-            KernelTemplateArg::Int {
-                name: "SLOT_BYTES",
-                value: descriptor.slot_bytes_per_head as i32,
-            },
-            KernelTemplateArg::Int {
-                name: "KEY_PAYLOAD_OFFSET",
-                value: descriptor.key_payload_offset_in_slot as i32,
-            },
-            KernelTemplateArg::Int {
-                name: "KEY_NORM_OFFSET",
-                value: descriptor.key_norm_offset_in_slot as i32,
-            },
-            KernelTemplateArg::Int {
-                name: "VALUE_PAYLOAD_OFFSET",
-                value: descriptor.value_payload_offset_in_slot as i32,
-            },
-            KernelTemplateArg::Int {
-                name: "VALUE_MINS_OFFSET",
-                value: descriptor.value_mins_offset_in_slot as i32,
-            },
-            KernelTemplateArg::Int {
-                name: "VALUE_SCALES_OFFSET",
-                value: descriptor.value_scales_offset_in_slot as i32,
-            },
-            KernelTemplateArg::Int {
-                name: "VALUE_GROUP_SIZE",
-                value: descriptor.value_group_size as i32,
-            },
-        ],
-        (
-            descriptor.head_dim as i32 * 32,
-            descriptor.n_query_heads as i32,
-            1,
-        ),
-        (32, 1, 1),
-        None,
-    );
+    let outputs = kernel
+        .try_apply_with_template(
+            &[&compressed, &query],
+            &[KernelOutputSpec {
+                shape: vec![descriptor.n_query_heads as i32, descriptor.head_dim as i32],
+                dtype: MlxDtype::Float32,
+            }],
+            &[
+                KernelTemplateArg::Int {
+                    name: "COLD_TOKENS",
+                    value: descriptor.cold_tokens as i32,
+                },
+                KernelTemplateArg::Int {
+                    name: "HEADS",
+                    value: descriptor.n_query_heads as i32,
+                },
+                KernelTemplateArg::Int {
+                    name: "KV_HEADS",
+                    value: descriptor.n_kv_heads as i32,
+                },
+                KernelTemplateArg::Int {
+                    name: "HEAD_DIM",
+                    value: descriptor.head_dim as i32,
+                },
+                KernelTemplateArg::Int {
+                    name: "BLOCK_TOKENS",
+                    value: descriptor.block_tokens as i32,
+                },
+                KernelTemplateArg::Int {
+                    name: "BLOCK_BYTES",
+                    value: descriptor.block_bytes as i32,
+                },
+                KernelTemplateArg::Int {
+                    name: "TOKEN_STRIDE_BYTES",
+                    value: descriptor.token_stride_bytes as i32,
+                },
+                KernelTemplateArg::Int {
+                    name: "SLOT_BYTES",
+                    value: descriptor.slot_bytes_per_head as i32,
+                },
+                KernelTemplateArg::Int {
+                    name: "KEY_PAYLOAD_OFFSET",
+                    value: descriptor.key_payload_offset_in_slot as i32,
+                },
+                KernelTemplateArg::Int {
+                    name: "KEY_NORM_OFFSET",
+                    value: descriptor.key_norm_offset_in_slot as i32,
+                },
+                KernelTemplateArg::Int {
+                    name: "VALUE_PAYLOAD_OFFSET",
+                    value: descriptor.value_payload_offset_in_slot as i32,
+                },
+                KernelTemplateArg::Int {
+                    name: "VALUE_MINS_OFFSET",
+                    value: descriptor.value_mins_offset_in_slot as i32,
+                },
+                KernelTemplateArg::Int {
+                    name: "VALUE_SCALES_OFFSET",
+                    value: descriptor.value_scales_offset_in_slot as i32,
+                },
+                KernelTemplateArg::Int {
+                    name: "VALUE_GROUP_SIZE",
+                    value: descriptor.value_group_size as i32,
+                },
+            ],
+            (
+                descriptor.head_dim as i32 * 32,
+                descriptor.n_query_heads as i32,
+                1,
+            ),
+            (32, 1, 1),
+            None,
+        )
+        .map_err(metal_kernel_error)?;
 
     let output = outputs
         .into_iter()
         .next()
         .expect("TurboQuant fused decode output");
-    eval(&[&output]);
+    try_eval(&[&output]).map_err(metal_kernel_error)?;
     Ok(output
         .data_f32()
         .chunks(descriptor.head_dim)
@@ -444,76 +452,78 @@ pub fn turboquant_fused_cold_decode_metal_head_serial(
         )
     });
 
-    let outputs = kernel.apply_with_template(
-        &[&compressed, &query],
-        &[KernelOutputSpec {
-            shape: vec![descriptor.n_kv_heads as i32, descriptor.head_dim as i32],
-            dtype: MlxDtype::Float32,
-        }],
-        &[
-            KernelTemplateArg::Int {
-                name: "COLD_TOKENS",
-                value: descriptor.cold_tokens as i32,
-            },
-            KernelTemplateArg::Int {
-                name: "HEADS",
-                value: descriptor.n_kv_heads as i32,
-            },
-            KernelTemplateArg::Int {
-                name: "HEAD_DIM",
-                value: descriptor.head_dim as i32,
-            },
-            KernelTemplateArg::Int {
-                name: "BLOCK_TOKENS",
-                value: descriptor.block_tokens as i32,
-            },
-            KernelTemplateArg::Int {
-                name: "BLOCK_BYTES",
-                value: descriptor.block_bytes as i32,
-            },
-            KernelTemplateArg::Int {
-                name: "TOKEN_STRIDE_BYTES",
-                value: descriptor.token_stride_bytes as i32,
-            },
-            KernelTemplateArg::Int {
-                name: "SLOT_BYTES",
-                value: descriptor.slot_bytes_per_head as i32,
-            },
-            KernelTemplateArg::Int {
-                name: "KEY_PAYLOAD_OFFSET",
-                value: descriptor.key_payload_offset_in_slot as i32,
-            },
-            KernelTemplateArg::Int {
-                name: "KEY_NORM_OFFSET",
-                value: descriptor.key_norm_offset_in_slot as i32,
-            },
-            KernelTemplateArg::Int {
-                name: "VALUE_PAYLOAD_OFFSET",
-                value: descriptor.value_payload_offset_in_slot as i32,
-            },
-            KernelTemplateArg::Int {
-                name: "VALUE_MINS_OFFSET",
-                value: descriptor.value_mins_offset_in_slot as i32,
-            },
-            KernelTemplateArg::Int {
-                name: "VALUE_SCALES_OFFSET",
-                value: descriptor.value_scales_offset_in_slot as i32,
-            },
-            KernelTemplateArg::Int {
-                name: "VALUE_GROUP_SIZE",
-                value: descriptor.value_group_size as i32,
-            },
-        ],
-        (descriptor.n_kv_heads as i32, 1, 1),
-        (1, 1, 1),
-        None,
-    );
+    let outputs = kernel
+        .try_apply_with_template(
+            &[&compressed, &query],
+            &[KernelOutputSpec {
+                shape: vec![descriptor.n_kv_heads as i32, descriptor.head_dim as i32],
+                dtype: MlxDtype::Float32,
+            }],
+            &[
+                KernelTemplateArg::Int {
+                    name: "COLD_TOKENS",
+                    value: descriptor.cold_tokens as i32,
+                },
+                KernelTemplateArg::Int {
+                    name: "HEADS",
+                    value: descriptor.n_kv_heads as i32,
+                },
+                KernelTemplateArg::Int {
+                    name: "HEAD_DIM",
+                    value: descriptor.head_dim as i32,
+                },
+                KernelTemplateArg::Int {
+                    name: "BLOCK_TOKENS",
+                    value: descriptor.block_tokens as i32,
+                },
+                KernelTemplateArg::Int {
+                    name: "BLOCK_BYTES",
+                    value: descriptor.block_bytes as i32,
+                },
+                KernelTemplateArg::Int {
+                    name: "TOKEN_STRIDE_BYTES",
+                    value: descriptor.token_stride_bytes as i32,
+                },
+                KernelTemplateArg::Int {
+                    name: "SLOT_BYTES",
+                    value: descriptor.slot_bytes_per_head as i32,
+                },
+                KernelTemplateArg::Int {
+                    name: "KEY_PAYLOAD_OFFSET",
+                    value: descriptor.key_payload_offset_in_slot as i32,
+                },
+                KernelTemplateArg::Int {
+                    name: "KEY_NORM_OFFSET",
+                    value: descriptor.key_norm_offset_in_slot as i32,
+                },
+                KernelTemplateArg::Int {
+                    name: "VALUE_PAYLOAD_OFFSET",
+                    value: descriptor.value_payload_offset_in_slot as i32,
+                },
+                KernelTemplateArg::Int {
+                    name: "VALUE_MINS_OFFSET",
+                    value: descriptor.value_mins_offset_in_slot as i32,
+                },
+                KernelTemplateArg::Int {
+                    name: "VALUE_SCALES_OFFSET",
+                    value: descriptor.value_scales_offset_in_slot as i32,
+                },
+                KernelTemplateArg::Int {
+                    name: "VALUE_GROUP_SIZE",
+                    value: descriptor.value_group_size as i32,
+                },
+            ],
+            (descriptor.n_kv_heads as i32, 1, 1),
+            (1, 1, 1),
+            None,
+        )
+        .map_err(metal_kernel_error)?;
 
     let output = outputs
         .into_iter()
         .next()
         .expect("TurboQuant fused decode output");
-    eval(&[&output]);
+    try_eval(&[&output]).map_err(metal_kernel_error)?;
     Ok(output
         .data_f32()
         .chunks(descriptor.head_dim)
@@ -743,65 +753,67 @@ fn turboquant_fused_cold_decode_metal_two_stage_stats_batch_with_rotated_queries
             true,
         )
     });
-    let score_outputs = score_kernel.apply_with_template(
-        &[compressed, &query],
-        &[KernelOutputSpec {
-            shape: vec![
-                descriptor.n_query_heads as i32,
-                descriptor.cold_tokens as i32,
+    let score_outputs = score_kernel
+        .try_apply_with_template(
+            &[compressed, &query],
+            &[KernelOutputSpec {
+                shape: vec![
+                    descriptor.n_query_heads as i32,
+                    descriptor.cold_tokens as i32,
+                ],
+                dtype: MlxDtype::Float32,
+            }],
+            &[
+                KernelTemplateArg::Int {
+                    name: "COLD_TOKENS",
+                    value: descriptor.cold_tokens as i32,
+                },
+                KernelTemplateArg::Int {
+                    name: "HEADS",
+                    value: descriptor.n_query_heads as i32,
+                },
+                KernelTemplateArg::Int {
+                    name: "KV_HEADS",
+                    value: descriptor.n_kv_heads as i32,
+                },
+                KernelTemplateArg::Int {
+                    name: "HEAD_DIM",
+                    value: descriptor.head_dim as i32,
+                },
+                KernelTemplateArg::Int {
+                    name: "BLOCK_TOKENS",
+                    value: descriptor.block_tokens as i32,
+                },
+                KernelTemplateArg::Int {
+                    name: "BLOCK_BYTES",
+                    value: descriptor.block_bytes as i32,
+                },
+                KernelTemplateArg::Int {
+                    name: "TOKEN_STRIDE_BYTES",
+                    value: descriptor.token_stride_bytes as i32,
+                },
+                KernelTemplateArg::Int {
+                    name: "SLOT_BYTES",
+                    value: descriptor.slot_bytes_per_head as i32,
+                },
+                KernelTemplateArg::Int {
+                    name: "KEY_PAYLOAD_OFFSET",
+                    value: descriptor.key_payload_offset_in_slot as i32,
+                },
+                KernelTemplateArg::Int {
+                    name: "KEY_NORM_OFFSET",
+                    value: descriptor.key_norm_offset_in_slot as i32,
+                },
             ],
-            dtype: MlxDtype::Float32,
-        }],
-        &[
-            KernelTemplateArg::Int {
-                name: "COLD_TOKENS",
-                value: descriptor.cold_tokens as i32,
-            },
-            KernelTemplateArg::Int {
-                name: "HEADS",
-                value: descriptor.n_query_heads as i32,
-            },
-            KernelTemplateArg::Int {
-                name: "KV_HEADS",
-                value: descriptor.n_kv_heads as i32,
-            },
-            KernelTemplateArg::Int {
-                name: "HEAD_DIM",
-                value: descriptor.head_dim as i32,
-            },
-            KernelTemplateArg::Int {
-                name: "BLOCK_TOKENS",
-                value: descriptor.block_tokens as i32,
-            },
-            KernelTemplateArg::Int {
-                name: "BLOCK_BYTES",
-                value: descriptor.block_bytes as i32,
-            },
-            KernelTemplateArg::Int {
-                name: "TOKEN_STRIDE_BYTES",
-                value: descriptor.token_stride_bytes as i32,
-            },
-            KernelTemplateArg::Int {
-                name: "SLOT_BYTES",
-                value: descriptor.slot_bytes_per_head as i32,
-            },
-            KernelTemplateArg::Int {
-                name: "KEY_PAYLOAD_OFFSET",
-                value: descriptor.key_payload_offset_in_slot as i32,
-            },
-            KernelTemplateArg::Int {
-                name: "KEY_NORM_OFFSET",
-                value: descriptor.key_norm_offset_in_slot as i32,
-            },
-        ],
-        (
-            descriptor.cold_tokens as i32 * 32,
-            descriptor.n_query_heads as i32,
-            1,
-        ),
-        (32, 1, 1),
-        None,
-    );
+            (
+                descriptor.cold_tokens as i32 * 32,
+                descriptor.n_query_heads as i32,
+                1,
+            ),
+            (32, 1, 1),
+            None,
+        )
+        .map_err(metal_kernel_error)?;
     let scores = score_outputs
         .into_iter()
         .next()
@@ -817,32 +829,34 @@ fn turboquant_fused_cold_decode_metal_two_stage_stats_batch_with_rotated_queries
             true,
         )
     });
-    let stats_outputs = stats_kernel.apply_with_template(
-        &[&scores],
-        &[
-            KernelOutputSpec {
-                shape: vec![descriptor.n_query_heads as i32],
-                dtype: MlxDtype::Float32,
-            },
-            KernelOutputSpec {
-                shape: vec![descriptor.n_query_heads as i32],
-                dtype: MlxDtype::Float32,
-            },
-        ],
-        &[
-            KernelTemplateArg::Int {
-                name: "COLD_TOKENS",
-                value: descriptor.cold_tokens as i32,
-            },
-            KernelTemplateArg::Int {
-                name: "HEADS",
-                value: descriptor.n_query_heads as i32,
-            },
-        ],
-        (descriptor.n_query_heads as i32 * 32, 1, 1),
-        (32, 1, 1),
-        None,
-    );
+    let stats_outputs = stats_kernel
+        .try_apply_with_template(
+            &[&scores],
+            &[
+                KernelOutputSpec {
+                    shape: vec![descriptor.n_query_heads as i32],
+                    dtype: MlxDtype::Float32,
+                },
+                KernelOutputSpec {
+                    shape: vec![descriptor.n_query_heads as i32],
+                    dtype: MlxDtype::Float32,
+                },
+            ],
+            &[
+                KernelTemplateArg::Int {
+                    name: "COLD_TOKENS",
+                    value: descriptor.cold_tokens as i32,
+                },
+                KernelTemplateArg::Int {
+                    name: "HEADS",
+                    value: descriptor.n_query_heads as i32,
+                },
+            ],
+            (descriptor.n_query_heads as i32 * 32, 1, 1),
+            (32, 1, 1),
+            None,
+        )
+        .map_err(metal_kernel_error)?;
     let mut stats_outputs = stats_outputs.into_iter();
     let max_scores = stats_outputs
         .next()
@@ -874,82 +888,84 @@ fn turboquant_fused_cold_decode_metal_two_stage_stats_batch_with_rotated_queries
         &[1],
         MlxDtype::Float32,
     );
-    let value_outputs = value_sum_kernel.apply_with_template(
-        &[
-            compressed,
-            &scores,
-            &max_scores,
-            &exp_sums,
-            &sparse_threshold,
-        ],
-        &[KernelOutputSpec {
-            shape: vec![descriptor.n_query_heads as i32, descriptor.head_dim as i32],
-            dtype: MlxDtype::Float32,
-        }],
-        &[
-            KernelTemplateArg::Int {
-                name: "COLD_TOKENS",
-                value: descriptor.cold_tokens as i32,
-            },
-            KernelTemplateArg::Int {
-                name: "HEADS",
-                value: descriptor.n_query_heads as i32,
-            },
-            KernelTemplateArg::Int {
-                name: "KV_HEADS",
-                value: descriptor.n_kv_heads as i32,
-            },
-            KernelTemplateArg::Int {
-                name: "HEAD_DIM",
-                value: descriptor.head_dim as i32,
-            },
-            KernelTemplateArg::Int {
-                name: "BLOCK_TOKENS",
-                value: descriptor.block_tokens as i32,
-            },
-            KernelTemplateArg::Int {
-                name: "BLOCK_BYTES",
-                value: descriptor.block_bytes as i32,
-            },
-            KernelTemplateArg::Int {
-                name: "TOKEN_STRIDE_BYTES",
-                value: descriptor.token_stride_bytes as i32,
-            },
-            KernelTemplateArg::Int {
-                name: "SLOT_BYTES",
-                value: descriptor.slot_bytes_per_head as i32,
-            },
-            KernelTemplateArg::Int {
-                name: "VALUE_PAYLOAD_OFFSET",
-                value: descriptor.value_payload_offset_in_slot as i32,
-            },
-            KernelTemplateArg::Int {
-                name: "VALUE_MINS_OFFSET",
-                value: descriptor.value_mins_offset_in_slot as i32,
-            },
-            KernelTemplateArg::Int {
-                name: "VALUE_SCALES_OFFSET",
-                value: descriptor.value_scales_offset_in_slot as i32,
-            },
-            KernelTemplateArg::Int {
-                name: "VALUE_GROUP_SIZE",
-                value: descriptor.value_group_size as i32,
-            },
-        ],
-        (
-            descriptor.head_dim as i32,
-            descriptor.n_query_heads as i32,
-            1,
-        ),
-        (descriptor.value_group_size as i32, 1, 1),
-        None,
-    );
+    let value_outputs = value_sum_kernel
+        .try_apply_with_template(
+            &[
+                compressed,
+                &scores,
+                &max_scores,
+                &exp_sums,
+                &sparse_threshold,
+            ],
+            &[KernelOutputSpec {
+                shape: vec![descriptor.n_query_heads as i32, descriptor.head_dim as i32],
+                dtype: MlxDtype::Float32,
+            }],
+            &[
+                KernelTemplateArg::Int {
+                    name: "COLD_TOKENS",
+                    value: descriptor.cold_tokens as i32,
+                },
+                KernelTemplateArg::Int {
+                    name: "HEADS",
+                    value: descriptor.n_query_heads as i32,
+                },
+                KernelTemplateArg::Int {
+                    name: "KV_HEADS",
+                    value: descriptor.n_kv_heads as i32,
+                },
+                KernelTemplateArg::Int {
+                    name: "HEAD_DIM",
+                    value: descriptor.head_dim as i32,
+                },
+                KernelTemplateArg::Int {
+                    name: "BLOCK_TOKENS",
+                    value: descriptor.block_tokens as i32,
+                },
+                KernelTemplateArg::Int {
+                    name: "BLOCK_BYTES",
+                    value: descriptor.block_bytes as i32,
+                },
+                KernelTemplateArg::Int {
+                    name: "TOKEN_STRIDE_BYTES",
+                    value: descriptor.token_stride_bytes as i32,
+                },
+                KernelTemplateArg::Int {
+                    name: "SLOT_BYTES",
+                    value: descriptor.slot_bytes_per_head as i32,
+                },
+                KernelTemplateArg::Int {
+                    name: "VALUE_PAYLOAD_OFFSET",
+                    value: descriptor.value_payload_offset_in_slot as i32,
+                },
+                KernelTemplateArg::Int {
+                    name: "VALUE_MINS_OFFSET",
+                    value: descriptor.value_mins_offset_in_slot as i32,
+                },
+                KernelTemplateArg::Int {
+                    name: "VALUE_SCALES_OFFSET",
+                    value: descriptor.value_scales_offset_in_slot as i32,
+                },
+                KernelTemplateArg::Int {
+                    name: "VALUE_GROUP_SIZE",
+                    value: descriptor.value_group_size as i32,
+                },
+            ],
+            (
+                descriptor.head_dim as i32,
+                descriptor.n_query_heads as i32,
+                1,
+            ),
+            (descriptor.value_group_size as i32, 1, 1),
+            None,
+        )
+        .map_err(metal_kernel_error)?;
 
     let weighted_value_sum = value_outputs
         .into_iter()
         .next()
         .expect("TurboQuant partition weighted-value output");
-    eval(&[&max_scores, &exp_sums, &weighted_value_sum]);
+    try_eval(&[&max_scores, &exp_sums, &weighted_value_sum]).map_err(metal_kernel_error)?;
 
     let max_scores = max_scores.data_f32();
     let exp_sums = exp_sums.data_f32();

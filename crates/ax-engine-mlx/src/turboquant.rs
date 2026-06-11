@@ -83,6 +83,8 @@ impl TurboQuantProductionReadiness {
 
 #[derive(Clone, Debug, Error, Eq, PartialEq)]
 pub enum TurboQuantCodecError {
+    #[error("TurboQuant Metal kernel failed: {message}")]
+    MetalKernelFailed { message: String },
     #[error("TurboQuant reference codec requires a non-empty vector")]
     EmptyVector,
     #[error("Hadamard rotation requires power-of-two dimensions, got {0}")]
