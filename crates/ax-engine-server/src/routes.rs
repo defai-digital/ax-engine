@@ -17,8 +17,8 @@ use super::generation::lifecycle::{
 use super::generation::native::generate;
 use super::generation::streaming::generate_stream;
 use super::metadata::{health, models, runtime_info};
-use super::model_load::load_model;
 use super::metrics::prometheus_metrics;
+use super::model_load::load_model;
 use super::openai::chat::openai_chat_completions;
 use super::openai::compat::{apply_template, detokenize, props, slots, tokenize};
 use super::openai::completions::openai_completions;

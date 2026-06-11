@@ -3,14 +3,15 @@
 - elapsed: 12851s
 - downloaded: 252.1 GB
 - freed: 439.0 GB
+- partial rows without mlx_lm: gemma-4-e2b-it-4bit, gemma-4-e2b-it-5bit, gemma-4-e2b-it-6bit, gemma-4-e2b-it-8bit, gemma-4-e4b-it-4bit
 
 | slug | status | repo | quant | notes |
 |---|---|---|---|---|
-| gemma-4-e2b-it-4bit | bench_failed | bartowski/google_gemma-4-E2B-it-GGUF | Q4_K_M | mlx_lm.benchmark failed before AX/llama.cpp artifact write; see logs. |
-| gemma-4-e2b-it-5bit | bench_failed | bartowski/google_gemma-4-E2B-it-GGUF | Q5_K_M | mlx_lm.benchmark failed before AX/llama.cpp artifact write; see logs. |
-| gemma-4-e2b-it-6bit | bench_failed | bartowski/google_gemma-4-E2B-it-GGUF | Q6_K | mlx_lm.benchmark failed before AX/llama.cpp artifact write; see logs. |
-| gemma-4-e2b-it-8bit | bench_failed | bartowski/google_gemma-4-E2B-it-GGUF | Q8_0 | mlx_lm.benchmark failed before AX/llama.cpp artifact write; see logs. |
-| gemma-4-e4b-it-4bit | bench_failed | bartowski/google_gemma-4-E4B-it-GGUF | Q4_K_M | mlx_lm.benchmark failed before AX/llama.cpp artifact write; see logs. |
+| gemma-4-e2b-it-4bit | ok | bartowski/google_gemma-4-E2B-it-GGUF | Q4_K_M | partial AX+llama.cpp artifact; mlx_lm skipped because mlx_lm.benchmark rejects this small Gemma artifact. |
+| gemma-4-e2b-it-5bit | ok | bartowski/google_gemma-4-E2B-it-GGUF | Q5_K_M | partial AX+llama.cpp artifact; mlx_lm skipped because mlx_lm.benchmark rejects this small Gemma artifact. |
+| gemma-4-e2b-it-6bit | ok | bartowski/google_gemma-4-E2B-it-GGUF | Q6_K | partial AX+llama.cpp artifact; mlx_lm skipped because mlx_lm.benchmark rejects this small Gemma artifact. |
+| gemma-4-e2b-it-8bit | ok | bartowski/google_gemma-4-E2B-it-GGUF | Q8_0 | partial AX+llama.cpp artifact; mlx_lm skipped because mlx_lm.benchmark rejects this small Gemma artifact. |
+| gemma-4-e4b-it-4bit | ok | bartowski/google_gemma-4-E4B-it-GGUF | Q4_K_M | partial AX+llama.cpp artifact; mlx_lm skipped because mlx_lm.benchmark rejects this small Gemma artifact. |
 | gemma-4-26b-a4b-it-4bit | ok | bartowski/google_gemma-4-26B-A4B-it-GGUF | Q4_K_M |  |
 | gemma-4-26b-a4b-it-6bit | ok | bartowski/google_gemma-4-26B-A4B-it-GGUF | Q6_K |  |
 | gemma-4-31b-it-4bit | ok | bartowski/google_gemma-4-31B-it-GGUF | Q4_K_M |  |

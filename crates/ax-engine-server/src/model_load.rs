@@ -1,6 +1,6 @@
 use std::path::PathBuf;
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 use ax_engine_sdk::{EngineSession, EngineSessionConfig, EngineSessionError};
 use axum::Json;
@@ -66,8 +66,7 @@ pub(crate) async fn load_model(
     // All other KV / backend settings are inherited from the running config.
     let new_config = {
         let live = state.snapshot();
-        Arc::unwrap_or_clone(live.session_config)
-            .with_mlx_model_artifacts_dir(model_path.clone())
+        Arc::unwrap_or_clone(live.session_config).with_mlx_model_artifacts_dir(model_path.clone())
     };
 
     let model_id = request.model_id.clone();
@@ -75,10 +74,7 @@ pub(crate) async fn load_model(
 
     // Load the session on the blocking thread pool — weight loading can take
     // tens of seconds; blocking the async runtime would stall all other requests.
-    let result = tokio::task::spawn_blocking(move || {
-        build_new_session(model_id, new_config)
-    })
-    .await;
+    let result = tokio::task::spawn_blocking(move || build_new_session(model_id, new_config)).await;
 
     // Always clear the loading flag, even on failure.
     state.loading.store(false, Ordering::Release);

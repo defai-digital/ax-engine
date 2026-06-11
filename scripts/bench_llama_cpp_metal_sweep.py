@@ -306,6 +306,19 @@ def missing_ax_model_artifacts(model_dir: Path) -> list[str]:
     return missing
 
 
+def latest_ax_ready_hf_cache_snapshot(repo_id: str, cache_dir: Path) -> Path | None:
+    repo_cache = cache_dir / f"models--{_slug_repo_id(repo_id)}"
+    snapshots = repo_cache / "snapshots"
+    if not snapshots.is_dir():
+        return None
+    candidates = [
+        path
+        for path in snapshots.iterdir()
+        if path.is_dir() and not missing_ax_model_artifacts(path)
+    ]
+    return max(candidates, key=lambda path: path.stat().st_mtime, default=None)
+
+
 def resolve_mlx_model_args(
     row: dict[str, Any],
     *,
@@ -327,10 +340,13 @@ def resolve_mlx_model_args(
         return None, f"No Hugging Face cache snapshot found for MLX repo {repo_id}."
     missing = missing_ax_model_artifacts(snapshot)
     if missing:
-        return None, (
-            f"MLX cache snapshot for {repo_id} is not AX-ready: {snapshot}; "
-            f"missing {', '.join(missing)}."
-        )
+        ax_ready_snapshot = latest_ax_ready_hf_cache_snapshot(repo_id, cache_dir)
+        if ax_ready_snapshot is None:
+            return None, (
+                f"MLX cache snapshot for {repo_id} is not AX-ready: {snapshot}; "
+                f"missing {', '.join(missing)}."
+            )
+        return ["--model-dir", str(ax_ready_snapshot), "--model-repo-id", repo_id], None
     return ["--model-repo-id", repo_id, "--hf-cache-root", str(cache_dir)], None
 
 

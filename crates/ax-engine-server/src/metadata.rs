@@ -206,9 +206,7 @@ fn ax_engine_model_metadata(
     }
 }
 
-fn native_processed_multimodal_support_live(
-    live: &LiveState,
-) -> NativeProcessedMultimodalSupport {
+fn native_processed_multimodal_support_live(live: &LiveState) -> NativeProcessedMultimodalSupport {
     if live.runtime_report.selected_backend != SelectedBackend::Mlx {
         return NativeProcessedMultimodalSupport::default();
     }

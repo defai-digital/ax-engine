@@ -108,10 +108,7 @@ fn tokenizer_for_live(live: &LiveState) -> Result<EngineTokenizer, HttpErrorResp
     tokenizer_for_live_op(live, "this endpoint")
 }
 
-fn tokenizer_for_live_op(
-    live: &LiveState,
-    op: &str,
-) -> Result<EngineTokenizer, HttpErrorResponse> {
+fn tokenizer_for_live_op(live: &LiveState, op: &str) -> Result<EngineTokenizer, HttpErrorResponse> {
     let Some(model_dir) = live.session_config.mlx_model_artifacts_dir() else {
         return Err(error_response(
             StatusCode::BAD_REQUEST,
@@ -146,15 +143,13 @@ pub(crate) async fn detokenize(
 ) -> Result<Json<DetokenizeResponse>, HttpErrorResponse> {
     let live = state.snapshot();
     let tokenizer = tokenizer_for_live_op(&live, "/detokenize")?;
-    let content = tokenizer
-        .decode(&request.tokens, false)
-        .map_err(|error| {
-            error_response(
-                StatusCode::BAD_REQUEST,
-                "invalid_request",
-                format!("detokenization failed: {error}"),
-            )
-        })?;
+    let content = tokenizer.decode(&request.tokens, false).map_err(|error| {
+        error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            format!("detokenization failed: {error}"),
+        )
+    })?;
     Ok(Json(DetokenizeResponse { content }))
 }
 
@@ -309,7 +304,11 @@ pub(crate) struct SlotEntry {
 pub(crate) async fn slots(State(state): State<AppState>) -> Json<Vec<SlotEntry>> {
     let live = state.snapshot();
     let busy = live.request_session.try_lock().is_err();
-    let (slot_state, state_str) = if busy { (1u32, "processing") } else { (0u32, "idle") };
+    let (slot_state, state_str) = if busy {
+        (1u32, "processing")
+    } else {
+        (0u32, "idle")
+    };
     let n_ctx = context_length(&state);
     let model = live.model_id.as_ref().clone();
 
@@ -367,7 +366,10 @@ fn read_chat_template_live(live: &LiveState) -> String {
                     .iter()
                     .find(|e| e.get("name").and_then(|n| n.as_str()) == Some("default"))
                     .or_else(|| arr.first())?;
-                return pick.get("template").and_then(|t| t.as_str()).map(str::to_owned);
+                return pick
+                    .get("template")
+                    .and_then(|t| t.as_str())
+                    .map(str::to_owned);
             }
             None
         })
