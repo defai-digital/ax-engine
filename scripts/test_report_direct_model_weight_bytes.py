@@ -69,6 +69,22 @@ class ReportDirectModelWeightBytesTests(unittest.TestCase):
         self.assertTrue(report["symlinks_followed"])
         self.assertIn("real_model", report["resolved_model_dir"])
 
+    def test_hf_snapshot_file_symlink_marks_symlinks_followed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            blob = root / "blobs" / "abc123"
+            blob.parent.mkdir()
+            blob.write_bytes(b"12345")
+            snapshot = root / "models--org--repo" / "snapshots" / "rev"
+            snapshot.mkdir(parents=True)
+            (snapshot / "model.safetensors").symlink_to(blob)
+
+            report = mod.build_report(snapshot)
+
+        self.assertEqual(report["safetensor_bytes"], 5)
+        self.assertTrue(report["symlinks_followed"])
+        self.assertEqual(report["safetensor_file_list"], ["model.safetensors"])
+
     def test_moe_active_expert_accounting(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

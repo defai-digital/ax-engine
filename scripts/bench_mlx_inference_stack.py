@@ -2796,6 +2796,7 @@ def build_bandwidth_accounting(
             row["ax_effective_bandwidth_percent_of_peak"] = round(
                 bandwidth_gb_s / peak_bandwidth_gb_s * 100, 2
             )
+            row["ax_bandwidth_peak_source"] = peak_bandwidth_source
         per_row.append(row)
 
     accounting: dict[str, Any] = {
@@ -2806,6 +2807,7 @@ def build_bandwidth_accounting(
         "estimate_kind": estimate_kind,
         "peak_bandwidth_gb_s": peak_bandwidth_gb_s,
         "peak_bandwidth_source": peak_bandwidth_source,
+        "ax_bandwidth_peak_source": peak_bandwidth_source,
         "per_row": per_row,
     }
     return accounting

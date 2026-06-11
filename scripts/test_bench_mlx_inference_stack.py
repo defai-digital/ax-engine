@@ -3969,8 +3969,12 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
 
         self.assertEqual(accounting["peak_bandwidth_gb_s"], 800.0)
         self.assertEqual(accounting["peak_bandwidth_source"], "mlx_read_calibration")
+        self.assertEqual(
+            accounting["ax_bandwidth_peak_source"], "mlx_read_calibration"
+        )
         row = accounting["per_row"][0]
         self.assertIn("ax_effective_bandwidth_percent_of_peak", row)
+        self.assertEqual(row["ax_bandwidth_peak_source"], "mlx_read_calibration")
         expected_pct = (50.0 / 800.0) * 100
         self.assertAlmostEqual(
             row["ax_effective_bandwidth_percent_of_peak"], expected_pct, places=1

@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
 from pathlib import Path
 
@@ -45,17 +44,19 @@ def resolve_symlinks(model_dir: Path) -> tuple[Path, bool]:
     return resolved, resolved != model_dir
 
 
-def sum_safetensor_bytes(model_dir: Path) -> tuple[int, int, list[str]]:
+def sum_safetensor_bytes(model_dir: Path) -> tuple[int, int, list[str], bool]:
     total = 0
     count = 0
     files: list[str] = []
+    file_symlinks_followed = False
     for path in sorted(model_dir.rglob(f"*{SAFETENSOR_SUFFIX}")):
         if path.is_file():
             size = path.stat().st_size
             total += size
             count += 1
             files.append(str(path.relative_to(model_dir)))
-    return total, count, files
+            file_symlinks_followed = file_symlinks_followed or path.is_symlink()
+    return total, count, files, file_symlinks_followed
 
 
 def detect_moe_from_manifest(model_dir: Path) -> dict | None:
@@ -111,10 +112,14 @@ def build_report(model_dir: Path) -> dict:
     if not model_dir.is_dir():
         raise SystemExit(f"model_dir does not exist or is not a directory: {model_dir}")
 
-    resolved_dir, symlinks_followed = resolve_symlinks(model_dir)
-    safetensor_bytes, safetensor_count, safetensor_files = sum_safetensor_bytes(
-        resolved_dir
-    )
+    resolved_dir, model_dir_symlink = resolve_symlinks(model_dir)
+    (
+        safetensor_bytes,
+        safetensor_count,
+        safetensor_files,
+        safetensor_symlink,
+    ) = sum_safetensor_bytes(resolved_dir)
+    symlinks_followed = model_dir_symlink or safetensor_symlink
 
     if safetensor_bytes == 0:
         raise SystemExit(
