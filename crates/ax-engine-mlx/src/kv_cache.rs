@@ -183,7 +183,7 @@ fn kv_heads_for_token_from_f32_slices(
     v_values: &[f32],
     shape: KvHeadSliceShape,
     token_index: usize,
-) -> Vec<FullPrecisionKvTokenVectors> {
+) -> Option<Vec<FullPrecisionKvTokenVectors>> {
     (0..shape.n_kv_heads as usize)
         .map(|head_index| {
             kv_head_for_token_from_f32_slices(k_values, v_values, shape, token_index, head_index)
@@ -322,11 +322,11 @@ fn kv_head_for_token_from_f32_slices(
     shape: KvHeadSliceShape,
     token_index: usize,
     head_index: usize,
-) -> FullPrecisionKvTokenVectors {
-    (
-        kv_vector_for_token_head_from_f32_slice(k_values, shape, token_index, head_index),
-        kv_vector_for_token_head_from_f32_slice(v_values, shape, token_index, head_index),
-    )
+) -> Option<FullPrecisionKvTokenVectors> {
+    Some((
+        kv_vector_for_token_head_from_f32_slice(k_values, shape, token_index, head_index)?,
+        kv_vector_for_token_head_from_f32_slice(v_values, shape, token_index, head_index)?,
+    ))
 }
 
 #[cfg(test)]
@@ -347,12 +347,14 @@ fn kv_vector_for_token_head(
         .collect()
 }
 
+// Fails closed: an out-of-range read means the shape/capacity bookkeeping is
+// wrong, and silently compressing zero vectors would corrupt attention.
 fn kv_vector_for_token_head_from_f32_slice(
     values: &[f32],
     shape: KvHeadSliceShape,
     token_index: usize,
     head_index: usize,
-) -> Vec<f32> {
+) -> Option<Vec<f32>> {
     let capacity = shape.capacity;
     let head_dim = shape.head_dim as usize;
     let base_element = head_index
@@ -362,7 +364,6 @@ fn kv_vector_for_token_head_from_f32_slice(
     values
         .get(base_element..base_element.saturating_add(head_dim))
         .map(|slice| slice.to_vec())
-        .unwrap_or_else(|| vec![0.0; head_dim])
 }
 
 fn copy_token_range_to_rotating(
@@ -2078,7 +2079,8 @@ impl MlxKVCache {
                     v_values,
                     source.shape,
                     token_index,
-                );
+                )
+                .expect("TurboQuant shadow sync reads KV slices within layer capacity");
                 if let Some(encoded_keys) = preencoded_k8_keys.as_ref() {
                     let relative_token_index = token_index.saturating_sub(source.compressed_tokens);
                     let key_bytes_per_token = storage
@@ -3551,6 +3553,7 @@ mod tests {
                         token_index,
                         kv_head_index,
                     )
+                    .expect("test KV slices are in bounds")
                 })
                 .collect::<Vec<_>>();
             let expected =
@@ -3629,6 +3632,7 @@ mod tests {
                         token_index,
                         kv_head_index,
                     )
+                    .expect("test KV slices are in bounds")
                 })
                 .collect::<Vec<_>>();
             let hot_tokens = (0..hot_token_count)
@@ -3640,6 +3644,7 @@ mod tests {
                         token_index,
                         kv_head_index,
                     )
+                    .expect("test KV slices are in bounds")
                 })
                 .collect::<Vec<_>>();
             let cold_stats =

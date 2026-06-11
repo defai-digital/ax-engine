@@ -1120,9 +1120,24 @@ impl TurboQuantCompressedDecodePlan {
             return Err(TurboQuantCodecError::CompressedDecodePlanLayoutMismatch);
         }
 
+        // Sequential shadow sync writes every slot for tokens [0, token_count),
+        // so full coverage makes the per-slot scan redundant; this runs every
+        // decode step and the scan is O(cold_tokens * n_kv_heads).
+        let n_kv_heads = self.layout.config.n_kv_heads;
+        if buffer
+            .token_count
+            .checked_mul(n_kv_heads)
+            .is_some_and(|full| full == buffer.written_slot_count)
+        {
+            return Ok(self
+                .cold_tokens
+                .min(buffer.token_count)
+                .saturating_mul(n_kv_heads));
+        }
+
         let mut written_slots = 0usize;
         for token_index in 0..self.cold_tokens {
-            for head_index in 0..self.layout.config.n_kv_heads {
+            for head_index in 0..n_kv_heads {
                 let slot_index = buffer.slot_index(token_index, head_index)?;
                 if buffer
                     .written_slots
@@ -1859,8 +1874,13 @@ impl TurboQuantCompressedBlockBuffer {
         }
 
         self.ensure_dequant_buffer_capacity(token_index.saturating_add(1))?;
+        // Cache the quantize->dequantize reconstruction of the slot that was
+        // just written, not the original full-precision inputs: the lazy fill
+        // in `ensure_dequant_buffers_for_tokens` reconstructs from the
+        // compressed buffer, and both paths must observe identical values.
+        let token = self.debug_reconstruct_token(token_index)?;
         let head_dim = self.layout.config.head_dim;
-        for (head_index, (key, value)) in heads.iter().enumerate() {
+        for (head_index, (key, value)) in token.iter().enumerate() {
             let start = token_index.saturating_mul(head_dim);
             let end = start.saturating_add(head_dim);
             for (target, source) in self.k_deq_buf[head_index][start..end].iter_mut().zip(key) {
@@ -3611,11 +3631,17 @@ fn validate_layout_nonzero(name: &'static str, value: usize) -> Result<(), Turbo
     Ok(())
 }
 
+/// Bytes per element of the full-precision serving KV cache used as the
+/// savings baseline. Serving caches hold f16/bf16 K/V, so the honest baseline
+/// is 2 bytes, not f32 — an f32 baseline overstates compression ~2x and makes
+/// the `NoColdSavings` promotion gate unable to fire.
+const FULL_PRECISION_KV_ELEMENT_BYTES: usize = 2;
+
 fn full_precision_kv_bytes(token_count: usize, n_kv_heads: usize, head_dim: usize) -> usize {
     token_count
         .saturating_mul(n_kv_heads)
         .saturating_mul(head_dim)
-        .saturating_mul(std::mem::size_of::<f32>())
+        .saturating_mul(FULL_PRECISION_KV_ELEMENT_BYTES)
         .saturating_mul(2)
 }
 
@@ -4531,19 +4557,19 @@ mod tests {
                 cold_score_elements: 1,
                 hot_score_elements: 1,
                 output_elements: TURBOQUANT_INITIAL_FUSED_DECODE_HEAD_DIM,
-                full_precision_cold_kv_bytes: 1024,
-                full_precision_total_kv_bytes: 2048,
+                full_precision_cold_kv_bytes: 512,
+                full_precision_total_kv_bytes: 1024,
                 compressed_key_payload_bytes: 128,
                 compressed_key_norm_bytes: 4,
                 compressed_value_payload_bytes: 64,
                 compressed_value_metadata_bytes: 32,
                 compressed_raw_slot_bytes: 228,
                 compressed_aligned_slot_bytes: 240,
-                hot_full_precision_kv_bytes: 1024,
-                estimated_total_read_bytes: 1252,
-                estimated_cold_saved_bytes: 796,
-                estimated_total_saved_read_bytes: 796,
-                cold_compression_ratio_milli: 222,
+                hot_full_precision_kv_bytes: 512,
+                estimated_total_read_bytes: 740,
+                estimated_cold_saved_bytes: 284,
+                estimated_total_saved_read_bytes: 284,
+                cold_compression_ratio_milli: 445,
             }
         );
     }
@@ -4596,13 +4622,13 @@ mod tests {
                 output_elements: TURBOQUANT_INITIAL_FUSED_DECODE_HEAD_DIM,
                 compressed_buffer_kib: 1,
                 full_precision_cold_kv_kib: 1,
-                full_precision_total_kv_kib: 2,
+                full_precision_total_kv_kib: 1,
                 estimated_compressed_cold_kv_kib: 1,
                 hot_full_precision_kv_kib: 1,
-                estimated_total_read_kib: 2,
+                estimated_total_read_kib: 1,
                 estimated_cold_saved_kib: 1,
                 estimated_total_saved_read_kib: 1,
-                cold_compression_ratio_milli: 222,
+                cold_compression_ratio_milli: 445,
             }
         );
     }
@@ -4657,7 +4683,7 @@ mod tests {
         assert_eq!(readiness.benchmark_estimate.estimated_cold_saved_kib, 1);
         assert_eq!(
             readiness.benchmark_estimate.cold_compression_ratio_milli,
-            222
+            445
         );
     }
 
@@ -4773,7 +4799,7 @@ mod tests {
                 min_cosine_similarity_limit_microunits: 998_000,
                 estimated_cold_saved_kib: 1,
                 estimated_total_saved_read_kib: 1,
-                cold_compression_ratio_milli: 222,
+                cold_compression_ratio_milli: 445,
             }
         );
     }
@@ -6596,6 +6622,66 @@ mod tests {
             .expect("overwrite slot");
         assert_eq!(buffer.dequant_buffer_token_count(), 0);
         assert_eq!(buffer.dequant_buffer_alloc_tokens(), 0);
+    }
+
+    #[test]
+    fn incremental_dequant_cache_matches_lazy_reconstruction() {
+        // Regression: the sequential-write path used to cache f16(original
+        // input) while a cache miss reconstructed from the compressed buffer,
+        // so the same token returned different values depending on access
+        // order — and a warm cache reported zero quantization error.
+        let layout = TurboQuantBlockLayout::new(TurboQuantBlockLayoutConfig {
+            preset: TurboQuantPreset::K8V4,
+            block_tokens: 4,
+            n_kv_heads: 1,
+            head_dim: 8,
+            value_group_size: 4,
+        })
+        .expect("layout");
+        let tokens = (0..3)
+            .map(|token_index| {
+                (
+                    (0..8)
+                        .map(|idx| ((idx * 7 + token_index * 3) % 11) as f32 / 9.0 - 0.5)
+                        .collect::<Vec<_>>(),
+                    (0..8)
+                        .map(|idx| ((idx * 5 + token_index * 2) % 13) as f32 / 7.0 - 0.8)
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .collect::<Vec<_>>();
+
+        let mut warm = TurboQuantCompressedBlockBuffer::new(layout);
+        let mut cold = TurboQuantCompressedBlockBuffer::new(layout);
+        for (token_index, token) in tokens.iter().enumerate() {
+            warm.write_token(token_index, std::slice::from_ref(token))
+                .expect("warm write");
+            cold.write_token(token_index, std::slice::from_ref(token))
+                .expect("cold write");
+        }
+        assert_eq!(warm.dequant_buffer_token_count(), 3);
+        cold.invalidate_dequant_buffers();
+        assert_eq!(cold.dequant_buffer_token_count(), 0);
+
+        let warm_history = warm
+            .debug_reconstruct_head_history_cached(0, 3)
+            .expect("warm cached reconstruct");
+        let cold_history = cold
+            .debug_reconstruct_head_history_cached(0, 3)
+            .expect("cold lazy reconstruct");
+        assert_eq!(warm_history, cold_history);
+
+        // The cached history must reflect the codec roundtrip, not the
+        // original inputs: K8V4 keys are lossy on this data.
+        let (original_key, _) = &tokens[0];
+        let (cached_key, _) = &warm_history[0];
+        assert!(
+            original_key
+                .iter()
+                .zip(cached_key)
+                .any(|(original, cached)| (original - cached).abs() > 1e-4),
+            "cached history unexpectedly matches the pre-quantization inputs"
+        );
     }
 
     #[test]

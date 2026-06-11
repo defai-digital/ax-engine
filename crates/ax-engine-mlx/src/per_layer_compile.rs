@@ -89,10 +89,10 @@ pub fn apply_layer_decode(
 ///
 /// This is useful for testing or when switching models.
 pub fn clear_layer_decode_cache() {
-    if let Some(cache) = LAYER_DECODE_CACHE.get() {
-        if let Ok(mut guard) = cache.lock() {
-            guard.clear();
-        }
+    if let Some(cache) = LAYER_DECODE_CACHE.get()
+        && let Ok(mut guard) = cache.lock()
+    {
+        guard.clear();
     }
 }
 

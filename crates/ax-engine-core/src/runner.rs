@@ -120,9 +120,10 @@ pub struct RunnerOutput {
 pub enum KvCompressionMode {
     #[default]
     Disabled,
-    /// Opt-in accounting-only TurboQuant path. It does not change KV storage or logits.
+    /// Accounting-only TurboQuant path. It does not change KV storage or logits.
     TurboQuantShadow,
-    /// Opt-in fused decode route selection experiment. Falls back to full precision until promoted.
+    /// Fused decode route selection (the MLX serving default). Compressed cold-KV decode runs
+    /// on layers that pass every eligibility gate; all other layers fall back to full precision.
     TurboQuantFusedExperimental,
 }
 
@@ -155,17 +156,19 @@ impl TurboQuantPreset {
         }
     }
 
+    /// Per-element value bit width, rounded up to whole bits. Fractional
+    /// presets (see [`Self::has_fractional_values`]) pack a 4-bit half and a
+    /// 3-bit half; size accounting for them must use [`Self::value_bits_x2`],
+    /// not this rounded width.
     pub fn value_bits(self) -> u32 {
-        match self {
-            Self::K8V3_5 => 4,
-            _ => 4,
-        }
+        self.value_bits_x2().div_ceil(2)
     }
 
+    /// Exact per-element value bit width in half-bit units (7 = 3.5 bits).
     pub fn value_bits_x2(self) -> u32 {
         match self {
             Self::K8V3_5 => 7,
-            _ => self.value_bits() * 2,
+            _ => 8,
         }
     }
 

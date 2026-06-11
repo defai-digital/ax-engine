@@ -158,13 +158,16 @@ prefers the n-gram utility gate. Explicit per-knob env vars still override the
 profile, and the resolved posture is reported in route metadata as
 `ax_mlx_speculation_profile`.
 
-Experimental MLX KV compression is opt-in and off by default. The current
-`turboquant-shadow` mode is for benchmark evidence and route telemetry only: it
-keeps generation on the existing full-precision MLX KV path, does not change
-SDPA inputs, logits, sampling, or output tokens, and does not imply production
-TurboQuant support.
+MLX KV compression defaults to `turboquant-fused-experimental`. Pass
+`--experimental-mlx-kv-compression disabled` to keep the full-precision KV path
+unchanged, or set `AX_DISABLE_TURBOQUANT_FUSED_DECODE=1` as a runtime kill
+switch that forces every layer back to the full-precision SDPA route without
+restarting with a different flag. The `turboquant-shadow` mode is for benchmark
+evidence and route telemetry only: it keeps generation on the existing
+full-precision MLX KV path, does not change SDPA inputs, logits, sampling, or
+output tokens.
 
-`turboquant-fused-experimental` is an additional route-selection experiment. It
+`turboquant-fused-experimental` (the default) is the fused route selection. It
 requests compressed decode and tries the two-stage Metal cold decode plus
 full-precision hot-tail merge for eligible K8/V4 single-token decode layers.
 When Metal succeeds, route metadata reports `fused_compressed_decode`; when

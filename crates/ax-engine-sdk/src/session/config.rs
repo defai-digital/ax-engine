@@ -44,7 +44,8 @@ pub struct EngineSessionConfig {
     /// `auto`/`coding`/`agentic`/`chatbot`. `None` falls back to the
     /// `AX_MLX_SPECULATION_PROFILE` env / built-in `auto`.
     pub mlx_speculation_profile: Option<String>,
-    /// Optional MLX KV compression policy. Disabled by default.
+    /// MLX KV compression policy. Defaults to TurboQuant fused decode; use
+    /// `KvCompressionConfig::disabled()` to opt out.
     pub mlx_kv_compression: KvCompressionConfig,
     /// Override the MLX runner's prefill chunk size. `None` keeps the
     /// runner's `DEFAULT_PREFILL_CHUNK` (2048), matching mlx_lm's default
@@ -74,7 +75,8 @@ pub struct PreviewSessionConfigRequest {
     /// `auto`/`coding`/`agentic`/`chatbot`. `None` falls back to the
     /// `AX_MLX_SPECULATION_PROFILE` env / built-in `auto`.
     pub mlx_speculation_profile: Option<String>,
-    /// Optional MLX KV compression policy. Disabled by default.
+    /// MLX KV compression policy. Defaults to TurboQuant fused decode; use
+    /// `KvCompressionConfig::disabled()` to opt out.
     pub mlx_kv_compression: KvCompressionConfig,
     /// Optional MLX prefill chunk override. `None` keeps the runner's
     /// `DEFAULT_PREFILL_CHUNK`. The bench harness uses this to match the
@@ -97,7 +99,7 @@ impl Default for PreviewSessionConfigRequest {
             mlx_disable_ngram_acceleration: false,
             mlx_mtp_disable_ngram_stacking: true,
             mlx_speculation_profile: None,
-            mlx_kv_compression: KvCompressionConfig::disabled(),
+            mlx_kv_compression: KvCompressionConfig::turboquant_fused_experimental(),
             mlx_prefill_chunk: None,
         }
     }
@@ -182,7 +184,7 @@ impl Default for EngineSessionConfig {
             mlx_disable_ngram_acceleration: false,
             mlx_mtp_disable_ngram_stacking: true,
             mlx_speculation_profile: None,
-            mlx_kv_compression: KvCompressionConfig::disabled(),
+            mlx_kv_compression: KvCompressionConfig::turboquant_fused_experimental(),
             mlx_prefill_chunk: None,
         }
     }
@@ -214,8 +216,11 @@ impl EngineSessionConfig {
         self
     }
 
-    /// Enables TurboQuant fused-decode mode: compressed KV paths are used when all quality
-    /// gates pass; falls back to full precision otherwise. **Experimental — not production-ready.**
+    /// Enables TurboQuant fused-decode mode (the default): compressed KV paths are used on
+    /// layers where all eligibility and quality gates pass; ineligible layers fall back to
+    /// full precision per step. `AX_DISABLE_TURBOQUANT_FUSED_DECODE=1` is the runtime kill
+    /// switch, and [`Self::with_kv_compression`] with `KvCompressionConfig::disabled()` opts
+    /// out entirely.
     pub fn with_turboquant_fused_experimental(mut self) -> Self {
         self.mlx_kv_compression = KvCompressionConfig::turboquant_fused_experimental();
         self

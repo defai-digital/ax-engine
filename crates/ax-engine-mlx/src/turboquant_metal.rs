@@ -1225,35 +1225,32 @@ const TURBOQUANT_FUSED_COLD_DECODE_HEAD_STATS_KERNEL_SOURCE: &str = r#"
 "#;
 
 const TURBOQUANT_FUSED_COLD_DECODE_VALUE_SUM_KERNEL_SOURCE: &str = r#"
-    const int lane = (int)thread_position_in_threadgroup.x;
     const int dim = (int)thread_position_in_grid.x;
     const int group = dim / VALUE_GROUP_SIZE;
     const int head = thread_position_in_grid.y;
     if (head >= HEADS) {
       return;
     }
-	    const int kv_head = head / (HEADS / KV_HEADS);
+    const int kv_head = head / (HEADS / KV_HEADS);
 
-	    const float max_score = max_scores[head];
-	    const float denom = max(exp_sums[head], 1.17549435e-38f);
-	    const float min_weight = max(threshold[0], 0.0f);
-	    float weighted = 0.0f;
-	    for (int token = 0; token < COLD_TOKENS; ++token) {
-	      const int block = token / BLOCK_TOKENS;
-	      const int token_offset = token - block * BLOCK_TOKENS;
-	      const int slot = block * BLOCK_BYTES
-	        + token_offset * TOKEN_STRIDE_BYTES
-	        + kv_head * SLOT_BYTES;
-	      const float weight = exp(scores[head * COLD_TOKENS + token] - max_score);
-	      if ((weight / denom) < min_weight) {
-	        continue;
-	      }
-	      const int value_payload = slot + VALUE_PAYLOAD_OFFSET;
-      float value_min = lane == 0 ? tq_read_f32(compressed, slot + VALUE_MINS_OFFSET + group * 4) : 0.0f;
-      float value_scale = lane == 0 ? tq_read_f32(compressed, slot + VALUE_SCALES_OFFSET + group * 4) : 0.0f;
-      value_min = simd_broadcast_first(value_min);
-      value_scale = simd_broadcast_first(value_scale);
+    const float max_score = max_scores[head];
+    const float denom = max(exp_sums[head], 1.17549435e-38f);
+    const float min_weight = max(threshold[0], 0.0f);
+    float weighted = 0.0f;
+    for (int token = 0; token < COLD_TOKENS; ++token) {
+      const int block = token / BLOCK_TOKENS;
+      const int token_offset = token - block * BLOCK_TOKENS;
+      const int slot = block * BLOCK_BYTES
+        + token_offset * TOKEN_STRIDE_BYTES
+        + kv_head * SLOT_BYTES;
+      const float weight = exp(scores[head * COLD_TOKENS + token] - max_score);
+      if ((weight / denom) < min_weight) {
+        continue;
+      }
       if (dim < HEAD_DIM) {
+        const int value_payload = slot + VALUE_PAYLOAD_OFFSET;
+        const float value_min = tq_read_f32(compressed, slot + VALUE_MINS_OFFSET + group * 4);
+        const float value_scale = tq_read_f32(compressed, slot + VALUE_SCALES_OFFSET + group * 4);
         const float value = value_min + value_scale * (float)tq_unpack_v4(compressed, value_payload, dim);
         weighted += weight * value;
       }
@@ -1488,21 +1485,31 @@ mod tests {
 
     #[test]
     fn turboquant_two_stage_metal_matches_reference_for_256_dim_gqa() {
-        assert_two_stage_metal_matches_reference_for_dim(256);
+        assert_two_stage_metal_matches_reference_for_dim(256, 32);
     }
 
     #[test]
     fn turboquant_two_stage_metal_matches_reference_for_512_dim_gqa() {
-        assert_two_stage_metal_matches_reference_for_dim(512);
+        assert_two_stage_metal_matches_reference_for_dim(512, 32);
     }
 
-    fn assert_two_stage_metal_matches_reference_for_dim(head_dim: usize) {
+    #[test]
+    fn turboquant_two_stage_metal_matches_reference_for_value_group_size_above_simd_width() {
+        // Regression: the value-sum kernel previously fetched value mins/scales on
+        // lane 0 and used simd_broadcast_first, which only covers the first 32-wide
+        // SIMD-group of the threadgroup. Group sizes above 32 silently decoded the
+        // remaining dims of each group with min=0/scale=0.
+        assert_two_stage_metal_matches_reference_for_dim(256, 64);
+        assert_two_stage_metal_matches_reference_for_dim(512, 128);
+    }
+
+    fn assert_two_stage_metal_matches_reference_for_dim(head_dim: usize, value_group_size: usize) {
         let layout = TurboQuantBlockLayout::new(TurboQuantBlockLayoutConfig {
             preset: TurboQuantPreset::K8V4,
             block_tokens: 256,
             n_kv_heads: 2,
             head_dim,
-            value_group_size: 32,
+            value_group_size,
         })
         .expect("layout should build");
         let plan = TurboQuantCompressedDecodePlan::new(layout, 2, 0).expect("plan should build");

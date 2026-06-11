@@ -687,9 +687,26 @@ fn default_args_do_not_disable_global_ngram_acceleration() {
 }
 
 #[test]
-fn default_args_leave_mlx_kv_compression_disabled() {
+fn default_flag_value_enables_turboquant_fused_decode() {
     let args = ServerArgs {
         mlx: true,
+        experimental_mlx_kv_compression: PreviewMlxKvCompression::default(),
+        ..base_args()
+    };
+
+    let actual = args.session_config().expect("session config should build");
+
+    assert_eq!(
+        actual.mlx_kv_compression,
+        KvCompressionConfig::turboquant_fused_experimental()
+    );
+}
+
+#[test]
+fn disabled_flag_value_keeps_full_precision_kv_path() {
+    let args = ServerArgs {
+        mlx: true,
+        experimental_mlx_kv_compression: PreviewMlxKvCompression::Disabled,
         ..base_args()
     };
 

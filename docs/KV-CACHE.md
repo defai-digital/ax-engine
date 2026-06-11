@@ -488,7 +488,7 @@ an intermediate recurrent state from a token-index boundary alone.
 
 ---
 
-## TurboQuant Compression (Experimental)
+## TurboQuant Compression
 
 `TurboQuantShadowLayerStorage` holds a CPU-side compressed copy of cold tokens
 for a subset of layers. Cold tokens are those beyond a recency window;
@@ -504,10 +504,14 @@ Sync is triggered every `KV_CHUNK_TOKENS` cold token advances via
 followed by CPU-side quantization. This is a synchronous operation that stalls
 the step loop for the duration of the transfer.
 
-TurboQuant is gated behind `TurboQuantProductionRequirements` and is not yet
-wired into the default inference path. A fused decode kernel that reads
-compressed cold K/V in-place on GPU (avoiding the CPU roundtrip) is the
-primary prerequisite for production use.
+The fused decode path (`turboquant-fused-experimental`) is the default for MLX
+serving: a two-stage Metal kernel reads compressed cold K/V in place on GPU and
+merges with a full-precision hot tail; layers that fail any eligibility gate
+(linear attention, MLA, sliding window, shared KV, non-K8V4 preset, unsupported
+head dim) fall back to full-precision SDPA per step.
+`AX_DISABLE_TURBOQUANT_FUSED_DECODE=1` is the runtime kill switch.
+`TurboQuantProductionRequirements` still reports the long-context benchmark
+artifact as an open blocker in route metadata until that artifact lands.
 
 ---
 
