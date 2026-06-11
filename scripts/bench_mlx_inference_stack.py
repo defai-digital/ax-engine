@@ -554,7 +554,6 @@ AX_MLX_KV_COMPRESSION_TELEMETRY_KEYS = [
     "ax_mlx_kv_compression_fused_decode_blocked_prefill_only",
     "ax_mlx_kv_compression_fused_decode_blocked_attention_kind",
     "ax_mlx_kv_compression_fused_decode_blocked_linear_attention",
-    "ax_mlx_kv_compression_fused_decode_blocked_glm_mla",
     "ax_mlx_kv_compression_fused_decode_blocked_sliding_window",
     "ax_mlx_kv_compression_fused_decode_blocked_kv_shared",
     "ax_mlx_kv_compression_fused_decode_blocked_ineligible_layer",
@@ -580,7 +579,6 @@ KV_COMPRESSION_FUSED_DECODE_BLOCKED_COUNTERS = {
 
 KV_COMPRESSION_FUSED_DECODE_BLOCKED_ATTENTION_KIND_COUNTERS = {
     "linear_attention": "ax_mlx_kv_compression_fused_decode_blocked_linear_attention",
-    "glm_mla": "ax_mlx_kv_compression_fused_decode_blocked_glm_mla",
     "sliding_window": "ax_mlx_kv_compression_fused_decode_blocked_sliding_window",
     "kv_shared": "ax_mlx_kv_compression_fused_decode_blocked_kv_shared",
 }

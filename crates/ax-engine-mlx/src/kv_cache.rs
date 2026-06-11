@@ -516,7 +516,6 @@ pub struct MlxKvCompressionUsage {
     pub fused_decode_blocked_prefill_only: u64,
     pub fused_decode_blocked_attention_kind: u64,
     pub fused_decode_blocked_linear_attention: u64,
-    pub fused_decode_blocked_glm_mla: u64,
     pub fused_decode_blocked_sliding_window: u64,
     pub fused_decode_blocked_kv_shared: u64,
     pub fused_decode_blocked_ineligible_layer: u64,
@@ -556,7 +555,6 @@ pub struct MlxKvCompressionDecodeUsage {
     pub fused_decode_blocked_prefill_only: u64,
     pub fused_decode_blocked_attention_kind: u64,
     pub fused_decode_blocked_linear_attention: u64,
-    pub fused_decode_blocked_glm_mla: u64,
     pub fused_decode_blocked_sliding_window: u64,
     pub fused_decode_blocked_kv_shared: u64,
     pub fused_decode_blocked_ineligible_layer: u64,
@@ -596,9 +594,6 @@ impl MlxKvCompressionUsage {
         self.fused_decode_blocked_linear_attention = self
             .fused_decode_blocked_linear_attention
             .saturating_add(usage.fused_decode_blocked_linear_attention);
-        self.fused_decode_blocked_glm_mla = self
-            .fused_decode_blocked_glm_mla
-            .saturating_add(usage.fused_decode_blocked_glm_mla);
         self.fused_decode_blocked_sliding_window = self
             .fused_decode_blocked_sliding_window
             .saturating_add(usage.fused_decode_blocked_sliding_window);
@@ -668,7 +663,6 @@ pub enum MlxKvCompressionDecodeCandidate {
     PrefillOnly,
     AttentionKind,
     LinearAttention,
-    GlmMla,
     SlidingWindow,
     KvShared,
     IneligibleLayer,
@@ -943,9 +937,6 @@ impl MlxKVCache {
             }
             MlxKvCompressionDecodeCandidate::LinearAttention => {
                 Some(&mut usage.fused_decode_blocked_linear_attention)
-            }
-            MlxKvCompressionDecodeCandidate::GlmMla => {
-                Some(&mut usage.fused_decode_blocked_glm_mla)
             }
             MlxKvCompressionDecodeCandidate::SlidingWindow => {
                 Some(&mut usage.fused_decode_blocked_sliding_window)
@@ -1549,7 +1540,6 @@ impl MlxKVCache {
         if matches!(
             candidate,
             MlxKvCompressionDecodeCandidate::LinearAttention
-                | MlxKvCompressionDecodeCandidate::GlmMla
                 | MlxKvCompressionDecodeCandidate::SlidingWindow
                 | MlxKvCompressionDecodeCandidate::KvShared
         ) {
@@ -3091,7 +3081,6 @@ mod tests {
             fused_decode_blocked_prefill_only: 7,
             fused_decode_blocked_attention_kind: 8,
             fused_decode_blocked_linear_attention: 9,
-            fused_decode_blocked_glm_mla: 10,
             fused_decode_blocked_sliding_window: 11,
             fused_decode_blocked_kv_shared: 12,
             fused_decode_blocked_ineligible_layer: 13,
@@ -3113,7 +3102,6 @@ mod tests {
         assert_eq!(usage.fused_decode_blocked_prefill_only, 7);
         assert_eq!(usage.fused_decode_blocked_attention_kind, 8);
         assert_eq!(usage.fused_decode_blocked_linear_attention, 9);
-        assert_eq!(usage.fused_decode_blocked_glm_mla, 10);
         assert_eq!(usage.fused_decode_blocked_sliding_window, 11);
         assert_eq!(usage.fused_decode_blocked_kv_shared, 12);
         assert_eq!(usage.fused_decode_blocked_ineligible_layer, 13);
@@ -3132,14 +3120,12 @@ mod tests {
         let mut cache = MlxKVCache::new(1);
 
         cache.record_turboquant_decode_candidate(MlxKvCompressionDecodeCandidate::LinearAttention);
-        cache.record_turboquant_decode_candidate(MlxKvCompressionDecodeCandidate::GlmMla);
         cache.record_turboquant_decode_candidate(MlxKvCompressionDecodeCandidate::SlidingWindow);
         cache.record_turboquant_decode_candidate(MlxKvCompressionDecodeCandidate::KvShared);
 
         let usage = cache.take_turboquant_decode_usage();
-        assert_eq!(usage.fused_decode_blocked_attention_kind, 4);
+        assert_eq!(usage.fused_decode_blocked_attention_kind, 3);
         assert_eq!(usage.fused_decode_blocked_linear_attention, 1);
-        assert_eq!(usage.fused_decode_blocked_glm_mla, 1);
         assert_eq!(usage.fused_decode_blocked_sliding_window, 1);
         assert_eq!(usage.fused_decode_blocked_kv_shared, 1);
     }

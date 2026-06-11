@@ -50,7 +50,6 @@ FUSED_DECODE_BLOCKED_COUNTERS = {
 }
 FUSED_DECODE_BLOCKED_ATTENTION_KIND_COUNTERS = {
     "linear_attention": "ax_mlx_kv_compression_fused_decode_blocked_linear_attention",
-    "glm_mla": "ax_mlx_kv_compression_fused_decode_blocked_glm_mla",
     "sliding_window": "ax_mlx_kv_compression_fused_decode_blocked_sliding_window",
     "kv_shared": "ax_mlx_kv_compression_fused_decode_blocked_kv_shared",
 }

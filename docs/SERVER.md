@@ -162,10 +162,11 @@ MLX KV compression defaults to `turboquant-fused-experimental`. Pass
 `--experimental-mlx-kv-compression disabled` to keep the full-precision KV path
 unchanged, or set `AX_DISABLE_TURBOQUANT_FUSED_DECODE=1` as a runtime kill
 switch that forces every layer back to the full-precision SDPA route without
-restarting with a different flag. The `turboquant-shadow` mode is for benchmark
-evidence and route telemetry only: it keeps generation on the existing
-full-precision MLX KV path, does not change SDPA inputs, logits, sampling, or
-output tokens.
+restarting with a different flag. Default-on route selection does not imply
+production TurboQuant support: promotion remains gated on the long-context
+quality artifact. The `turboquant-shadow` mode is for benchmark evidence and
+route telemetry only: it keeps generation on the existing full-precision MLX KV
+path, does not change SDPA inputs, logits, sampling, or output tokens.
 
 `turboquant-fused-experimental` (the default) is the fused route selection. It
 requests compressed decode and tries the two-stage Metal cold decode plus

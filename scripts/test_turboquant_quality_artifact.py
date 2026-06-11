@@ -611,7 +611,7 @@ class TurboQuantQualityArtifactTests(unittest.TestCase):
             decisions["ax_mlx_kv_compression_fused_decode_metal_successes"] = 0
             decisions["ax_mlx_kv_compression_fused_decode_fallback_reason"] = 4
             decisions["ax_mlx_kv_compression_fused_decode_blocked_attention_kind"] = 5
-            decisions["ax_mlx_kv_compression_fused_decode_blocked_glm_mla"] = 2
+            decisions["ax_mlx_kv_compression_fused_decode_blocked_linear_attention"] = 2
             decisions["ax_mlx_kv_compression_fused_decode_blocked_sliding_window"] = 3
 
             truth = checker.route_truth_surface(artifact["route_metadata"])
@@ -620,10 +620,12 @@ class TurboQuantQualityArtifactTests(unittest.TestCase):
             self.assertEqual(truth["fused_decode_blocked_reasons"], ["attention_kind"])
             self.assertEqual(
                 truth["fused_decode_blocked_attention_kind_reasons"],
-                ["glm_mla", "sliding_window"],
+                ["linear_attention", "sliding_window"],
             )
             self.assertEqual(
-                truth["fused_decode_blocked_attention_kind_counters"]["glm_mla"],
+                truth["fused_decode_blocked_attention_kind_counters"][
+                    "linear_attention"
+                ],
                 2,
             )
             self.assertEqual(
@@ -1107,14 +1109,14 @@ class TurboQuantQualityArtifactTests(unittest.TestCase):
                         "missing_storage",
                     ],
                     "fused_decode_blocked_attention_kind_reasons": [
-                        "glm_mla",
+                        "linear_attention",
                         "sliding_window",
                     ],
                 }
             ),
             (
                 "fix fused decode blockers before rerun: "
-                "attention_kind (glm_mla, sliding_window), missing_storage"
+                "attention_kind (linear_attention, sliding_window), missing_storage"
             ),
         )
 

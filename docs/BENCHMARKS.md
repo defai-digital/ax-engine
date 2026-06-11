@@ -670,7 +670,8 @@ oracle for the hot-window merge: cold and hot partitions must be combined
 through shared log-sum-exp normalization, not by adding independently normalized
 output vectors.
 
-The default remains disabled. `turboquant-shadow` keeps generation on the
+The engine default is `turboquant-fused-experimental`; pass `disabled` for a
+full-precision baseline row. `turboquant-shadow` keeps generation on the
 full-precision MLX decode path and records route counters for eligibility,
 estimated saved KiB, runtime shadow-storage writes, shadow-storage sync calls
 and wall time, current compression decode path, fused decode candidate

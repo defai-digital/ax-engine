@@ -25,7 +25,6 @@ use ax_engine_core::{
     ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FULL_PRECISION_KIB,
     ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_ATTEMPTS,
     ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_BLOCKED_ATTENTION_KIND,
-    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_BLOCKED_GLM_MLA,
     ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_BLOCKED_GQA,
     ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_BLOCKED_INELIGIBLE_LAYER,
     ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_BLOCKED_KV_SHARED,
@@ -3451,7 +3450,6 @@ struct KvCacheTelemetry {
     compression_fused_decode_blocked_prefill_only: u64,
     compression_fused_decode_blocked_attention_kind: u64,
     compression_fused_decode_blocked_linear_attention: u64,
-    compression_fused_decode_blocked_glm_mla: u64,
     compression_fused_decode_blocked_sliding_window: u64,
     compression_fused_decode_blocked_kv_shared: u64,
     compression_fused_decode_blocked_ineligible_layer: u64,
@@ -3489,9 +3487,6 @@ impl KvCacheTelemetry {
         self.compression_fused_decode_blocked_linear_attention = self
             .compression_fused_decode_blocked_linear_attention
             .saturating_add(compression.fused_decode_blocked_linear_attention);
-        self.compression_fused_decode_blocked_glm_mla = self
-            .compression_fused_decode_blocked_glm_mla
-            .saturating_add(compression.fused_decode_blocked_glm_mla);
         self.compression_fused_decode_blocked_sliding_window = self
             .compression_fused_decode_blocked_sliding_window
             .saturating_add(compression.fused_decode_blocked_sliding_window);
@@ -3874,10 +3869,6 @@ impl KvCacheTelemetry {
                 (
                     ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_BLOCKED_LINEAR_ATTENTION,
                     saturating_u32_from_u64(self.compression_fused_decode_blocked_linear_attention),
-                ),
-                (
-                    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_BLOCKED_GLM_MLA,
-                    saturating_u32_from_u64(self.compression_fused_decode_blocked_glm_mla),
                 ),
                 (
                     ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_BLOCKED_SLIDING_WINDOW,

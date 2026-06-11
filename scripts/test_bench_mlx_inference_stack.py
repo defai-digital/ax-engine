@@ -545,7 +545,7 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
                 "ax_mlx_kv_compression_decode_path": 1,
                 "ax_mlx_kv_compression_fused_decode_fallback_reason": 1,
                 "ax_mlx_kv_compression_fused_decode_blocked_attention_kind": 2,
-                "ax_mlx_kv_compression_fused_decode_blocked_glm_mla": 2,
+                "ax_mlx_kv_compression_fused_decode_blocked_linear_attention": 2,
                 "ax_mlx_kv_compression_fused_decode_blocked_missing_storage": 1,
             },
         }
@@ -580,7 +580,7 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         )
         self.assertEqual(
             row["kv_compression_fused_decode_blocked_attention_kind_reasons"],
-            ["glm_mla"],
+            ["linear_attention"],
         )
 
     def test_axengine_summary_can_label_linear_attention_pack_row(self) -> None:
@@ -2899,7 +2899,7 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
                     "ax_mlx_kv_compression_fused_decode_fallbacks": 0,
                     "ax_mlx_kv_compression_fused_decode_fallback_reason": 1,
                     "ax_mlx_kv_compression_fused_decode_blocked_attention_kind": 2,
-                    "ax_mlx_kv_compression_fused_decode_blocked_glm_mla": 2,
+                    "ax_mlx_kv_compression_fused_decode_blocked_linear_attention": 2,
                     "ax_mlx_kv_compression_fused_decode_blocked_missing_storage": 1,
                     "unrelated": 99,
                 }
@@ -2926,7 +2926,7 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
             2,
         )
         self.assertEqual(
-            telemetry["ax_mlx_kv_compression_fused_decode_blocked_glm_mla"],
+            telemetry["ax_mlx_kv_compression_fused_decode_blocked_linear_attention"],
             2,
         )
         self.assertEqual(
@@ -2954,7 +2954,7 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
                         "ax_mlx_kv_compression_fused_decode_fallbacks": 0,
                         "ax_mlx_kv_compression_fused_decode_fallback_reason": 1,
                         "ax_mlx_kv_compression_fused_decode_blocked_attention_kind": 3,
-                        "ax_mlx_kv_compression_fused_decode_blocked_glm_mla": 1,
+                        "ax_mlx_kv_compression_fused_decode_blocked_linear_attention": 1,
                         "ax_mlx_kv_compression_fused_decode_blocked_sliding_window": 2,
                         "ax_mlx_kv_compression_fused_decode_blocked_unsupported_head_dim": 4,
                     }
@@ -2987,7 +2987,7 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
             5,
         )
         self.assertEqual(
-            summary["ax_mlx_kv_compression_fused_decode_blocked_glm_mla"],
+            summary["ax_mlx_kv_compression_fused_decode_blocked_linear_attention"],
             3,
         )
         self.assertEqual(
@@ -3027,12 +3027,11 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
             {
                 "total": 5,
                 "reasons": [
-                    "glm_mla",
+                    "linear_attention",
                     "sliding_window",
                 ],
                 "counters": {
-                    "linear_attention": 0,
-                    "glm_mla": 3,
+                    "linear_attention": 3,
                     "sliding_window": 2,
                     "kv_shared": 0,
                 },

@@ -1693,43 +1693,43 @@ mod tests {
 
         assert_eq!(
             context
-                .decode_candidate(&cfg, &cache, 0, 2, 128, 2, None, None, false)
+                .decode_candidate(&cfg, &cache, 0, 2, 128, 2, None, None)
                 .status,
             TurboQuantModelDecodeCandidateStatus::PrefillOnly
         );
         assert_eq!(
             context
-                .decode_candidate(&cfg, &cache, 0, 1, 128, 2, None, None, false)
+                .decode_candidate(&cfg, &cache, 0, 1, 128, 2, None, None)
                 .status,
             TurboQuantModelDecodeCandidateStatus::MissingRuntimeStorage
         );
         assert_eq!(
             context
-                .decode_candidate(&cfg, &cache, 0, 1, 256, 1, None, None, false)
+                .decode_candidate(&cfg, &cache, 0, 1, 256, 1, None, None)
                 .status,
             TurboQuantModelDecodeCandidateStatus::MissingRuntimeStorage
         );
         assert_eq!(
             context
-                .decode_candidate(&cfg, &cache, 0, 1, 128, 2, Some(128), None, false)
+                .decode_candidate(&cfg, &cache, 0, 1, 128, 2, Some(128), None)
                 .status,
             TurboQuantModelDecodeCandidateStatus::SlidingWindowLayer
         );
         assert_eq!(
             context
-                .decode_candidate(&cfg, &cache, 0, 1, 128, 2, None, Some(0), false)
+                .decode_candidate(&cfg, &cache, 0, 1, 128, 2, None, Some(0))
                 .status,
             TurboQuantModelDecodeCandidateStatus::KvSharedLayer
         );
         assert_eq!(
             context
-                .decode_candidate(&cfg, &cache, 0, 1, 64, 2, None, None, false)
+                .decode_candidate(&cfg, &cache, 0, 1, 64, 2, None, None)
                 .status,
             TurboQuantModelDecodeCandidateStatus::UnsupportedHeadDim
         );
         assert_eq!(
             context
-                .decode_candidate(&cfg, &cache, 0, 1, 128, 3, None, None, false)
+                .decode_candidate(&cfg, &cache, 0, 1, 128, 3, None, None)
                 .status,
             TurboQuantModelDecodeCandidateStatus::GroupedQueryAttention
         );
@@ -1740,7 +1740,7 @@ mod tests {
         };
         assert_eq!(
             context
-                .decode_candidate(&cfg, &cache, 0, 1, 128, 2, None, None, false)
+                .decode_candidate(&cfg, &cache, 0, 1, 128, 2, None, None)
                 .status,
             TurboQuantModelDecodeCandidateStatus::IneligibleLayer
         );
@@ -1755,7 +1755,7 @@ mod tests {
             layer_eligible: &[true],
         };
 
-        let candidate = context.decode_candidate(&cfg, &cache, 0, 1, 128, 2, None, None, false);
+        let candidate = context.decode_candidate(&cfg, &cache, 0, 1, 128, 2, None, None);
 
         assert_eq!(
             candidate.status,

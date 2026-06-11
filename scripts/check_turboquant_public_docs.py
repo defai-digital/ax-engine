@@ -10,7 +10,8 @@ ROOT = Path(__file__).resolve().parents[1]
 
 REQUIRED_SNIPPETS = {
     "docs/SERVER.md": [
-        "Experimental MLX KV compression is opt-in and off by default.",
+        "MLX KV compression defaults to `turboquant-fused-experimental`",
+        "AX_DISABLE_TURBOQUANT_FUSED_DECODE",
         "keeps generation on the existing full-precision MLX KV path",
         "turboquant-fused-experimental",
         "runner_not_integrated",
@@ -22,7 +23,7 @@ REQUIRED_SNIPPETS = {
         "wall time",
     ],
     "docs/CLI.md": [
-        "This mode is optional, disabled by default",
+        "The engine default is `turboquant-fused-experimental`",
         "full-precision shadow path",
         "turboquant-fused-experimental",
         "runner_not_integrated",
@@ -33,7 +34,7 @@ REQUIRED_SNIPPETS = {
         "not a production support claim",
     ],
     "docs/BENCHMARKS.md": [
-        "The default remains disabled.",
+        "The engine default is `turboquant-fused-experimental`",
         "turboquant-fused-experimental",
         "runner_not_integrated",
         "full-precision MLX decode path",

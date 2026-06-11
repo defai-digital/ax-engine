@@ -189,15 +189,16 @@ python3 scripts/bench_mlx_inference_stack.py \
   --experimental-mlx-kv-compression turboquant-shadow
 ```
 
-This mode is optional, disabled by default, and records TurboQuant route
-metadata only when the runtime emits it. The current implementation is the
-full-precision shadow path: generation still uses the existing MLX KV decode
-path, while the optional side path records eligibility, estimated saved KiB,
+The engine default is `turboquant-fused-experimental`; pass
+`--experimental-mlx-kv-compression disabled` for a full-precision baseline run,
+or `turboquant-shadow` for accounting-only evidence collection. Shadow mode is
+the full-precision shadow path: generation still uses the existing MLX KV
+decode path, while the side path records eligibility, estimated saved KiB,
 runtime shadow-storage writes, shadow-storage sync calls and wall time, current
 compression decode path, and fused decode candidate/attempt/success/fallback
-counters. It is not a production support claim and should be paired with
-`scripts/check_turboquant_quality_artifact.py` before being used as promotion
-evidence.
+counters. Route telemetry is not a production support claim and should be
+paired with `scripts/check_turboquant_quality_artifact.py` before being used as
+promotion evidence.
 
 For runner-route experiments, `--experimental-mlx-kv-compression
 turboquant-fused-experimental` requests compressed decode selection and may

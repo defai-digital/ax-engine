@@ -507,8 +507,10 @@ the step loop for the duration of the transfer.
 The fused decode path (`turboquant-fused-experimental`) is the default for MLX
 serving: a two-stage Metal kernel reads compressed cold K/V in place on GPU and
 merges with a full-precision hot tail; layers that fail any eligibility gate
-(linear attention, MLA, sliding window, shared KV, non-K8V4 preset, unsupported
-head dim) fall back to full-precision SDPA per step.
+(linear attention, sliding window, shared KV, non-K8V4 preset, unsupported
+head dim) fall back to full-precision SDPA per step. GLM (MLA) models are not
+supported: the GLM families never consult the TurboQuant decode candidate and
+always use their own full-precision KV path.
 `AX_DISABLE_TURBOQUANT_FUSED_DECODE=1` is the runtime kill switch.
 `TurboQuantProductionRequirements` still reports the long-context benchmark
 artifact as an open blocker in route metadata until that artifact lands.

@@ -433,7 +433,6 @@ pub(crate) fn layer_forward(
                     cached_k.shape()[1] as usize,
                     sliding_window,
                     kv_source,
-                    false,
                 )
             })
             .unwrap_or_else(TurboQuantModelDecodeCandidate::disabled);

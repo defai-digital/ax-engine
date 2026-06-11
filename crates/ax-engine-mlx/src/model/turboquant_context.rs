@@ -11,7 +11,6 @@ pub enum TurboQuantModelDecodeCandidateStatus {
     Disabled,
     PrefillOnly,
     LinearAttentionLayer,
-    GlmMlaLayer,
     SlidingWindowLayer,
     KvSharedLayer,
     IneligibleLayer,
@@ -55,9 +54,6 @@ impl TurboQuantModelDecodeCandidate {
             TurboQuantModelDecodeCandidateStatus::LinearAttentionLayer => {
                 MlxKvCompressionDecodeCandidate::LinearAttention
             }
-            TurboQuantModelDecodeCandidateStatus::GlmMlaLayer => {
-                MlxKvCompressionDecodeCandidate::GlmMla
-            }
             TurboQuantModelDecodeCandidateStatus::SlidingWindowLayer => {
                 MlxKvCompressionDecodeCandidate::SlidingWindow
             }
@@ -96,7 +92,6 @@ impl<'a> TurboQuantModelDecodeContext<'a> {
         kv_heads: usize,
         sliding_window: Option<usize>,
         kv_source: Option<usize>,
-        has_glm_mla_attention: bool,
     ) -> TurboQuantModelDecodeCandidate {
         let status = if !self.config.requests_fused_decode()
             || fastpath::turboquant_fused_decode_disabled()
@@ -106,8 +101,6 @@ impl<'a> TurboQuantModelDecodeContext<'a> {
             TurboQuantModelDecodeCandidateStatus::PrefillOnly
         } else if cfg.is_linear_attention_layer(layer_idx) {
             TurboQuantModelDecodeCandidateStatus::LinearAttentionLayer
-        } else if has_glm_mla_attention {
-            TurboQuantModelDecodeCandidateStatus::GlmMlaLayer
         } else if sliding_window.is_some() {
             TurboQuantModelDecodeCandidateStatus::SlidingWindowLayer
         } else if kv_source.is_some() {
