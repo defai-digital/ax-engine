@@ -131,6 +131,7 @@ async fn openai_completion_logprobs_follows_legacy_integer_shape() {
     // emits top-N alternatives.
     let artifact_dir = minimal_tokenizer_artifact("native-openai-completion-logprobs");
     let state = native_mlx_openai_builder_state("qwen3", &artifact_dir);
+    let live = state.snapshot();
 
     let request: OpenAiCompletionHttpRequest = serde_json::from_value(json!({
         "model": "qwen3",
@@ -140,7 +141,7 @@ async fn openai_completion_logprobs_follows_legacy_integer_shape() {
     }))
     .expect("sample completion request should deserialize");
     let built =
-        build_openai_completion_request(&state.snapshot(), request).expect("completion request should build");
+        build_openai_completion_request(&live, request).expect("completion request should build");
     assert!(built.response_options.include_logprobs);
 
     let request: OpenAiCompletionHttpRequest = serde_json::from_value(json!({
@@ -150,7 +151,7 @@ async fn openai_completion_logprobs_follows_legacy_integer_shape() {
         "logprobs": 2
     }))
     .expect("sample completion request should deserialize");
-    let error = match build_openai_completion_request(&state.snapshot(), request) {
+    let error = match build_openai_completion_request(&live, request) {
         Ok(_) => panic!("logprobs above 0 should fail closed until top-N is supported"),
         Err(error) => error,
     };
@@ -167,6 +168,7 @@ async fn openai_completion_logprobs_follows_legacy_integer_shape() {
 async fn openai_completion_request_tokenizes_text_for_native_mlx_backend() {
     let artifact_dir = minimal_tokenizer_artifact("native-openai-completion-tokenizer");
     let state = native_mlx_openai_builder_state("qwen3", &artifact_dir);
+    let live = state.snapshot();
     let request: OpenAiCompletionHttpRequest = serde_json::from_value(json!({
         "model": "qwen3",
         "prompt": "hello openai completion",
@@ -174,10 +176,10 @@ async fn openai_completion_request_tokenizes_text_for_native_mlx_backend() {
     }))
     .expect("sample completion request should deserialize");
 
-    validate_openai_request(&state.snapshot(), request.model.as_deref())
+    validate_openai_request(&live, request.model.as_deref())
         .expect("native MLX OpenAI completion should pass validation");
     let built =
-        build_openai_completion_request(&state.snapshot(), request).expect("completion request should build");
+        build_openai_completion_request(&live, request).expect("completion request should build");
 
     assert!(
         !built.generate_request.input_tokens.is_empty(),
@@ -194,6 +196,7 @@ async fn openai_completion_request_tokenizes_text_for_native_mlx_backend() {
 async fn openai_completion_request_preserves_gemma4_multimodal_inputs_for_native_mlx_tokens() {
     let artifact_dir = minimal_tokenizer_artifact("native-openai-completion-gemma4-mm");
     let state = native_mlx_openai_builder_state("gemma-4-12b-it", &artifact_dir);
+    let live = state.snapshot();
     let request: OpenAiCompletionHttpRequest = serde_json::from_value(json!({
         "model": "gemma-4-12b-it",
         "prompt": [10, 258880, 11],
@@ -203,7 +206,7 @@ async fn openai_completion_request_preserves_gemma4_multimodal_inputs_for_native
     .expect("Gemma4 OpenAI completion request should deserialize");
 
     let built =
-        build_openai_completion_request(&state.snapshot(), request).expect("completion request should build");
+        build_openai_completion_request(&live, request).expect("completion request should build");
     let inputs = built
         .generate_request
         .multimodal_inputs
@@ -222,6 +225,7 @@ async fn openai_completion_request_preserves_gemma4_multimodal_inputs_for_native
 async fn openai_completion_request_rejects_gemma4_multimodal_inputs_with_text_prompt() {
     let artifact_dir = minimal_tokenizer_artifact("native-openai-completion-gemma4-mm-text");
     let state = native_mlx_openai_builder_state("gemma-4-12b-it", &artifact_dir);
+    let live = state.snapshot();
     let request: OpenAiCompletionHttpRequest = serde_json::from_value(json!({
         "model": "gemma-4-12b-it",
         "prompt": "describe this image",
@@ -230,7 +234,7 @@ async fn openai_completion_request_rejects_gemma4_multimodal_inputs_with_text_pr
     }))
     .expect("Gemma4 OpenAI completion request should deserialize");
 
-    let error = match build_openai_completion_request(&state.snapshot(), request) {
+    let error = match build_openai_completion_request(&live, request) {
         Ok(_) => panic!("text prompt with Gemma4 multimodal inputs should fail"),
         Err(error) => error,
     };
@@ -248,6 +252,7 @@ async fn openai_completion_request_rejects_gemma4_multimodal_inputs_with_text_pr
 #[tokio::test]
 async fn openai_completion_request_rejects_gemma4_multimodal_inputs_on_delegated_backend() {
     let state = llama_cpp_server_state("http://127.0.0.1:1".to_string());
+    let live = state.snapshot();
     let request: OpenAiCompletionHttpRequest = serde_json::from_value(json!({
         "model": "gemma-4-12b-it",
         "prompt": [10, 258880, 11],
@@ -256,7 +261,7 @@ async fn openai_completion_request_rejects_gemma4_multimodal_inputs_on_delegated
     }))
     .expect("Gemma4 OpenAI completion request should deserialize");
 
-    let error = match build_openai_completion_request(&state.snapshot(), request) {
+    let error = match build_openai_completion_request(&live, request) {
         Ok(_) => panic!("delegated Gemma4 multimodal inputs should fail"),
         Err(error) => error,
     };
@@ -273,6 +278,7 @@ async fn openai_completion_request_rejects_gemma4_multimodal_inputs_on_delegated
 async fn openai_qwen_completion_uses_greedy_repetition_penalty_default() {
     let artifact_dir = minimal_tokenizer_artifact("native-openai-completion-qwen-rp-tokenizer");
     let state = native_mlx_openai_builder_state("Qwen3.6-27B-4bit", &artifact_dir);
+    let live = state.snapshot();
     let request: OpenAiCompletionHttpRequest = serde_json::from_value(json!({
         "model": "Qwen3.6-27B-4bit",
         "prompt": "hello openai completion",
@@ -282,7 +288,7 @@ async fn openai_qwen_completion_uses_greedy_repetition_penalty_default() {
     .expect("sample completion request should deserialize");
 
     let built =
-        build_openai_completion_request(&state.snapshot(), request).expect("completion request should build");
+        build_openai_completion_request(&live, request).expect("completion request should build");
 
     assert_eq!(built.generate_request.sampling.repetition_penalty, 1.1);
 

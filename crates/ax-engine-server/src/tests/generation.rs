@@ -114,6 +114,7 @@ async fn generate_endpoint_rejects_gemma4_multimodal_inputs_on_delegated_backend
 async fn generate_request_builder_preserves_gemma4_multimodal_inputs_for_native_mlx() {
     let artifact_dir = minimal_tokenizer_artifact("native-gemma4-multimodal-builder");
     let state = native_mlx_openai_builder_state("gemma-4-12b-it", &artifact_dir);
+    let live = state.snapshot();
     let request: GenerateHttpRequest = serde_json::from_value(json!({
         "model": "gemma-4-12b-it",
         "input_tokens": [10, 258880, 11],
@@ -138,7 +139,7 @@ async fn generate_request_builder_preserves_gemma4_multimodal_inputs_for_native_
     }))
     .expect("Gemma4 multimodal generate request should deserialize");
 
-    let built = build_generate_request(&state.snapshot(), request);
+    let built = build_generate_request(&live, request);
     let inputs = built
         .multimodal_inputs
         .gemma4_unified

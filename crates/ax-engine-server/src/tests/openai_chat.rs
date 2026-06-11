@@ -1,4 +1,3 @@
-use crate::app_state::LiveState;
 use crate::chat;
 use crate::openai::requests::{
     DEFAULT_OPENAI_MAX_TOKENS, build_openai_chat_request,
@@ -865,6 +864,7 @@ async fn openai_chat_request_rejects_gemma4_multimodal_inputs_without_input_toke
 async fn openai_chat_request_rejects_raw_media_parts_even_with_input_tokens() {
     let artifact_dir = minimal_tokenizer_artifact("native-openai-chat-token-raw-media");
     let state = native_mlx_openai_builder_state("gemma-4-12b-it", &artifact_dir);
+    let live = state.snapshot();
     let request: OpenAiChatCompletionHttpRequest = serde_json::from_value(json!({
         "model": "gemma-4-12b-it",
         "messages": [{
@@ -879,7 +879,7 @@ async fn openai_chat_request_rejects_raw_media_parts_even_with_input_tokens() {
     }))
     .expect("sample chat request should deserialize");
 
-    let error = match build_openai_chat_request(&state.snapshot(), request) {
+    let error = match build_openai_chat_request(&live, request) {
         Ok(_) => panic!("raw media parts should fail even with input_tokens"),
         Err(error) => error,
     };
@@ -901,6 +901,7 @@ async fn openai_chat_request_rejects_raw_media_parts_even_with_input_tokens() {
 #[tokio::test]
 async fn delegated_openai_chat_rejects_input_tokens_extension() {
     let state = mlx_lm_delegated_state("http://127.0.0.1:1".to_string());
+    let live = state.snapshot();
     let request: OpenAiChatCompletionHttpRequest = serde_json::from_value(json!({
         "model": "gemma-4-12b-it",
         "messages": [{"role": "user", "content": "Describe this image"}],
@@ -909,7 +910,7 @@ async fn delegated_openai_chat_rejects_input_tokens_extension() {
     }))
     .expect("sample chat request should deserialize");
 
-    let error = match build_openai_mlx_lm_chat_request(&state.snapshot(), request) {
+    let error = match build_openai_mlx_lm_chat_request(&live, request) {
         Ok(_) => panic!("delegated text backends should reject tokenized chat"),
         Err(error) => error,
     };
@@ -929,6 +930,7 @@ async fn delegated_openai_chat_rejects_input_tokens_extension() {
 #[tokio::test]
 async fn delegated_openai_chat_rejects_gemma4_multimodal_inputs() {
     let state = mlx_lm_delegated_state("http://127.0.0.1:1".to_string());
+    let live = state.snapshot();
     let request: OpenAiChatCompletionHttpRequest = serde_json::from_value(json!({
         "model": "gemma-4-12b-it",
         "messages": [{"role": "user", "content": "Describe this image"}],
@@ -937,7 +939,7 @@ async fn delegated_openai_chat_rejects_gemma4_multimodal_inputs() {
     }))
     .expect("sample chat request should deserialize");
 
-    let error = match build_openai_mlx_lm_chat_request(&state.snapshot(), request) {
+    let error = match build_openai_mlx_lm_chat_request(&live, request) {
         Ok(_) => panic!("delegated text backends should reject processed media tensors"),
         Err(error) => error,
     };
@@ -958,6 +960,7 @@ async fn delegated_openai_chat_rejects_gemma4_multimodal_inputs() {
 async fn openai_qwen_chat_uses_greedy_repetition_penalty_default() {
     let artifact_dir = minimal_tokenizer_artifact("native-openai-qwen-rp-tokenizer");
     let state = native_mlx_openai_builder_state("Qwen3.6-35B-A3B-4bit", &artifact_dir);
+    let live = state.snapshot();
     let request: OpenAiChatCompletionHttpRequest = serde_json::from_value(json!({
         "model": "Qwen3.6-35B-A3B-4bit",
         "messages": [{"role": "user", "content": "hello openai chat"}],
@@ -966,7 +969,7 @@ async fn openai_qwen_chat_uses_greedy_repetition_penalty_default() {
     }))
     .expect("sample chat request should deserialize");
 
-    let built = build_openai_chat_request(&state.snapshot(), request).expect("chat request should build");
+    let built = build_openai_chat_request(&live, request).expect("chat request should build");
 
     assert_eq!(built.generate_request.sampling.repetition_penalty, 1.1);
 
@@ -977,6 +980,7 @@ async fn openai_qwen_chat_uses_greedy_repetition_penalty_default() {
 async fn openai_qwen_chat_preserves_explicit_repetition_penalty() {
     let artifact_dir = minimal_tokenizer_artifact("native-openai-qwen-explicit-rp-tokenizer");
     let state = native_mlx_openai_builder_state("Qwen3.6-27B-4bit", &artifact_dir);
+    let live = state.snapshot();
     let request: OpenAiChatCompletionHttpRequest = serde_json::from_value(json!({
         "model": "Qwen3.6-27B-4bit",
         "messages": [{"role": "user", "content": "hello openai chat"}],
@@ -986,7 +990,7 @@ async fn openai_qwen_chat_preserves_explicit_repetition_penalty() {
     }))
     .expect("sample chat request should deserialize");
 
-    let built = build_openai_chat_request(&state.snapshot(), request).expect("chat request should build");
+    let built = build_openai_chat_request(&live, request).expect("chat request should build");
 
     assert_eq!(built.generate_request.sampling.repetition_penalty, 1.03);
 
@@ -997,6 +1001,7 @@ async fn openai_qwen_chat_preserves_explicit_repetition_penalty() {
 async fn openai_glm_chat_keeps_standard_repetition_penalty_default() {
     let artifact_dir = minimal_tokenizer_artifact("native-openai-glm-tokenizer");
     let state = native_mlx_openai_builder_state("glm4_moe_lite", &artifact_dir);
+    let live = state.snapshot();
     let request: OpenAiChatCompletionHttpRequest = serde_json::from_value(json!({
         "model": "glm4_moe_lite",
         "messages": [{"role": "user", "content": "hello openai chat"}],
@@ -1005,7 +1010,7 @@ async fn openai_glm_chat_keeps_standard_repetition_penalty_default() {
     }))
     .expect("sample chat request should deserialize");
 
-    let built = build_openai_chat_request(&state.snapshot(), request).expect("chat request should build");
+    let built = build_openai_chat_request(&live, request).expect("chat request should build");
 
     assert_eq!(built.generate_request.sampling.repetition_penalty, 1.0);
 
@@ -1016,6 +1021,7 @@ async fn openai_glm_chat_keeps_standard_repetition_penalty_default() {
 async fn openai_glm_chat_preserves_explicit_repetition_penalty() {
     let artifact_dir = minimal_tokenizer_artifact("native-openai-glm-rp-tokenizer");
     let state = native_mlx_openai_builder_state("glm4_moe_lite", &artifact_dir);
+    let live = state.snapshot();
     let request: OpenAiChatCompletionHttpRequest = serde_json::from_value(json!({
         "model": "glm4_moe_lite",
         "messages": [{"role": "user", "content": "hello openai chat"}],
@@ -1025,7 +1031,7 @@ async fn openai_glm_chat_preserves_explicit_repetition_penalty() {
     }))
     .expect("sample chat request should deserialize");
 
-    let built = build_openai_chat_request(&state.snapshot(), request).expect("chat request should build");
+    let built = build_openai_chat_request(&live, request).expect("chat request should build");
 
     assert_eq!(built.generate_request.sampling.repetition_penalty, 1.03);
 
@@ -1047,13 +1053,14 @@ async fn openai_chat_request_rejects_gemma4_artifact_without_chat_template() {
         args.llama_server_url = Some("http://127.0.0.1:1".to_string());
         args.mlx_model_artifacts_dir = Some(artifact_dir.clone());
     });
+    let live = state.snapshot();
     let request: OpenAiChatCompletionHttpRequest = serde_json::from_value(json!({
         "messages": [{"role": "user", "content": "Hello"}],
         "max_tokens": 8
     }))
     .expect("sample chat request should deserialize");
 
-    let error = match build_openai_chat_request(&state.snapshot(), request) {
+    let error = match build_openai_chat_request(&live, request) {
         Ok(_) => panic!("Gemma4 base artifact should fail closed for OpenAI chat"),
         Err(error) => error,
     };
