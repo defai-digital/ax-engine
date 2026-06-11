@@ -256,6 +256,9 @@ func (c *Client) StreamGenerate(ctx context.Context, req PreviewGenerateRequest)
 		defer close(ch)
 		defer close(errCh)
 		if err := c.streamEvents(ctx, "/v1/generate/stream", req, func(ev *SSEEvent) error {
+			if ev.Event == "error" {
+				return sseStreamError(ev.Data)
+			}
 			var out GenerateStreamEvent
 			out.Event = ev.Event
 			switch ev.Event {
@@ -314,8 +317,25 @@ func (c *Client) streamEvents(ctx context.Context, path string, body interface{}
 
 func (c *Client) streamChunks(ctx context.Context, path string, body interface{}, handle func(string) error) error {
 	return c.streamEvents(ctx, path, body, func(ev *SSEEvent) error {
+		if ev.Event == "error" {
+			return sseStreamError(ev.Data)
+		}
 		return handle(ev.Data)
 	})
+}
+
+// sseStreamError converts a server "error" SSE event payload into an error.
+// The payload matches the non-stream error body: {"error":{"message":...}}.
+func sseStreamError(data string) error {
+	var errBody struct {
+		Error struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if json.Unmarshal([]byte(data), &errBody) == nil && errBody.Error.Message != "" {
+		return fmt.Errorf("ax-engine: stream error: %s", errBody.Error.Message)
+	}
+	return fmt.Errorf("ax-engine: stream error: %s", data)
 }
 
 // Ptr is a convenience helper that returns a pointer to v.

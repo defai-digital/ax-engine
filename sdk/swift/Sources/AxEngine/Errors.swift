@@ -8,3 +8,11 @@ public struct AxEngineHTTPError: Error, CustomStringConvertible, Sendable {
 
     public var description: String { "ax-engine: HTTP \(statusCode): \(message)" }
 }
+
+/// Thrown when ax-engine-server emits an `error` event mid-stream.
+public struct AxEngineStreamError: Error, CustomStringConvertible, Sendable {
+    public let message: String
+    public let payload: String
+
+    public var description: String { "ax-engine: stream error: \(message)" }
+}

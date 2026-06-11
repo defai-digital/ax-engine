@@ -182,6 +182,9 @@ public final class AxEngineClient: @unchecked Sendable {
                     let (asyncBytes, response) = try await session.bytes(for: urlRequest)
                     try self.validate(response: response, data: nil)
                     for try await event in SSEParser(bytes: asyncBytes) {
+                        if event.event == "error" {
+                            throw Self.streamError(from: event.data)
+                        }
                         let value = try decode(event)
                         continuation.yield(value)
                     }
@@ -210,6 +213,16 @@ public final class AxEngineClient: @unchecked Sendable {
             }
             throw AxEngineHTTPError(statusCode: http.statusCode, message: message, payload: data)
         }
+    }
+
+    private static func streamError(from data: String) -> AxEngineStreamError {
+        let message: String
+        if let body = try? JSONDecoder().decode(ErrorBody.self, from: Data(data.utf8)) {
+            message = body.error.message
+        } else {
+            message = data
+        }
+        return AxEngineStreamError(message: message, payload: data)
     }
 
     private struct Empty: Encodable {}

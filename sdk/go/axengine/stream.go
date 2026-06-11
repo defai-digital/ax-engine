@@ -21,9 +21,16 @@ type SSEReader struct {
 	dataBuf strings.Builder
 }
 
+// maxSSELineSize bounds a single SSE line. The native /v1/generate/stream
+// response event carries the full response JSON (all tokens plus text) on one
+// data: line, which easily exceeds bufio.Scanner's 64KiB default.
+const maxSSELineSize = 16 * 1024 * 1024
+
 // NewSSEReader creates a new SSEReader wrapping r.
 func NewSSEReader(r io.Reader) *SSEReader {
-	return &SSEReader{scanner: bufio.NewScanner(r), event: "message"}
+	scanner := bufio.NewScanner(r)
+	scanner.Buffer(make([]byte, 0, 64*1024), maxSSELineSize)
+	return &SSEReader{scanner: scanner, event: "message"}
 }
 
 // Next advances to the next event. Returns (event, true) when an event is

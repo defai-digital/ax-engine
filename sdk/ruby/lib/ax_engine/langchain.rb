@@ -28,6 +28,16 @@ module AxEngine
         "Install it with: gem install langchainrb"
     end
 
+    # Surfaces server `error` SSE events as exceptions instead of silently
+    # skipping them (their payload has no choices, so the delta digs miss).
+    def self.raise_on_stream_error!(event)
+      return unless event["event"] == "error"
+
+      data = event["data"]
+      message = data.is_a?(Hash) ? data.dig("error", "message") : data.to_s
+      raise AxEngine::StreamError.new(message || "stream error", payload: data)
+    end
+
     # Shared parameter helpers.
     module Params
       SAMPLING_KEYS = %i[
@@ -81,6 +91,7 @@ module AxEngine
 
         if stream && block_given?
           @client.stream_chat_completion(params) do |event|
+            Langchain.raise_on_stream_error!(event)
             delta = event.dig("data", "choices", 0, "delta", "content")
             block.call(delta) if delta
           end
@@ -121,6 +132,7 @@ module AxEngine
 
         if stream && block_given?
           @client.stream_completion(params) do |event|
+            Langchain.raise_on_stream_error!(event)
             text = event.dig("data", "choices", 0, "text")
             block.call(text) if text && !text.empty?
           end

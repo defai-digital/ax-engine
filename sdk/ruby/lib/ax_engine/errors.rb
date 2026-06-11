@@ -9,4 +9,14 @@ module AxEngine
       @payload = payload
     end
   end
+
+  # Raised when the server emits an `error` event mid-stream.
+  class StreamError < StandardError
+    attr_reader :payload
+
+    def initialize(message, payload: nil)
+      super(message)
+      @payload = payload
+    end
+  end
 end

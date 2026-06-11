@@ -738,16 +738,24 @@ impl KvManager {
         // Collect and sort all candidates once — O(n log n) instead of O(k·n).
         // Entries evicted as descendants of earlier selections are skipped via
         // the `cached_blocks.contains_key` guard in evict_cached_block.
+        //
+        // Entries whose block is shared with a live request (refcount > 1) are
+        // not candidates: evicting them frees no block — it only drops the
+        // cache's co-ownership, leaving the live sharer as sole owner, which
+        // breaks the rollback_prefix_share invariant if that request's
+        // allocation later fails. Descendants of a releasing block can never
+        // be live-shared (a live share of a block implies shares of all its
+        // ancestors), so cascaded evictions stay confined to releasing blocks.
         let mut candidates: Vec<(u8, u64, CachedBlockKey)> = self
             .cached_blocks
             .iter()
+            .filter(|(_, entry)| self.cached_entry_releases_block(entry))
             .map(|(key, entry)| {
                 let is_leaf = self
                     .cached_children_by_parent
                     .get(key)
                     .is_none_or(|ch| ch.is_empty());
-                let releases = self.cached_entry_releases_block(entry);
-                let priority = eviction_priority(is_leaf, releases);
+                let priority = eviction_priority(is_leaf, true);
                 (priority, entry.last_touch_tick, *key)
             })
             .collect();
