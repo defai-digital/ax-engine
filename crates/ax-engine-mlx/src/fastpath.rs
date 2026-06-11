@@ -108,6 +108,18 @@ env_flag_default_on!(
     "AX_TURBOQUANT_INCREMENTAL_DECODE"
 );
 
+env_flag_default_on!(
+    /// `AX_TURBOQUANT_INCREMENTAL_UPLOAD` — refresh the TurboQuant shadow
+    /// Metal buffer by uploading only the byte range written since the last
+    /// sync (`slice_update` into the existing device array) instead of
+    /// re-uploading the whole compressed buffer. Falls back to a full upload
+    /// automatically when the buffer grows (256-token block boundary).
+    ///
+    /// **Default: ON** (kill-switch via `AX_TURBOQUANT_INCREMENTAL_UPLOAD=0`).
+    turboquant_incremental_upload_enabled,
+    "AX_TURBOQUANT_INCREMENTAL_UPLOAD"
+);
+
 /// Sparse-V minimum normalized attention weight for the TurboQuant two-stage
 /// value-sum kernel. Defaults to the PRD value (`1e-5`) and treats invalid or
 /// negative input as the default.

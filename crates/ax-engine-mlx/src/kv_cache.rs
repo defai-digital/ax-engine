@@ -485,6 +485,75 @@ fn turboquant_shadow_metal_buffer_array(buffer: &TurboQuantCompressedBlockBuffer
     metal_buffer
 }
 
+/// First byte of `token_index`'s slot run in the compressed block buffer.
+/// Token slots are laid out in ascending byte order (block-major, then token
+/// stride), so the bytes written for tokens `[first, last]` form one
+/// contiguous range.
+fn turboquant_shadow_token_byte_offset(
+    layout: &TurboQuantBlockLayout,
+    token_index: usize,
+) -> usize {
+    let block = token_index / layout.config.block_tokens;
+    let token_offset = token_index % layout.config.block_tokens;
+    block
+        .saturating_mul(layout.block_bytes)
+        .saturating_add(token_offset.saturating_mul(layout.token_stride_bytes))
+}
+
+/// Refresh the device copy of the shadow compressed buffer after a sync that
+/// appended tokens `[previous_tokens, compressed_tokens)`.
+///
+/// The compressed buffer is append-only with a stable prefix, so when the
+/// host buffer length is unchanged only the newly written byte range needs
+/// uploading; `slice_update` writes it into the existing device array (the
+/// prior handle is dropped before eval so MLX can donate the buffer instead
+/// of copying it). Buffer growth — which happens once per 256-token block —
+/// and the `AX_TURBOQUANT_INCREMENTAL_UPLOAD=0` kill switch fall back to a
+/// full re-upload.
+fn turboquant_shadow_metal_buffer_update(
+    existing: Option<MlxArray>,
+    layout: &TurboQuantBlockLayout,
+    buffer: &TurboQuantCompressedBlockBuffer,
+    previous_tokens: usize,
+    compressed_tokens: usize,
+) -> MlxArray {
+    let bytes = buffer.as_bytes();
+    let incremental_eligible = fastpath::turboquant_incremental_upload_enabled()
+        && previous_tokens < compressed_tokens
+        && bytes.len() <= i32::MAX as usize;
+    let Some(existing) =
+        existing.filter(|array| incremental_eligible && array.nbytes() == bytes.len())
+    else {
+        return turboquant_shadow_metal_buffer_array(buffer);
+    };
+
+    let start = turboquant_shadow_token_byte_offset(layout, previous_tokens);
+    let end = turboquant_shadow_token_byte_offset(layout, compressed_tokens - 1)
+        .saturating_add(layout.token_stride_bytes)
+        .min(bytes.len());
+    if start >= end {
+        return turboquant_shadow_metal_buffer_array(buffer);
+    }
+
+    let update = MlxArray::from_raw_data(
+        bytes[start..end].as_ptr(),
+        end - start,
+        &[(end - start) as i32],
+        MlxDtype::Uint8,
+    );
+    let updated = slice_update(
+        &existing,
+        &update,
+        &[start as i32],
+        &[end as i32],
+        &[1],
+        None,
+    );
+    drop(existing);
+    eval(&[&updated]);
+    updated
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct MlxKVCacheUsage {
     pub logical_tokens: usize,
@@ -2104,7 +2173,14 @@ impl MlxKVCache {
                     .expect("TurboQuant shadow storage writes validated KV slots");
             }
             storage.compressed_tokens = cold_tokens;
-            storage.metal_buffer = Some(turboquant_shadow_metal_buffer_array(&storage.buffer));
+            let existing = storage.metal_buffer.take();
+            storage.metal_buffer = Some(turboquant_shadow_metal_buffer_update(
+                existing,
+                &storage.layout,
+                &storage.buffer,
+                source.compressed_tokens,
+                cold_tokens,
+            ));
         }
 
         self.turboquant_shadow_storage_usage()
@@ -3062,6 +3138,67 @@ impl MlxKVCache {
 mod tests {
     use super::*;
     use crate::turboquant::reference_decode_attention;
+
+    #[test]
+    fn turboquant_shadow_metal_buffer_incremental_update_matches_host_bytes() {
+        let layout = TurboQuantBlockLayout::new(TurboQuantBlockLayoutConfig {
+            preset: TurboQuantPreset::K8V4,
+            block_tokens: 4,
+            n_kv_heads: 2,
+            head_dim: 8,
+            value_group_size: 4,
+        })
+        .expect("layout");
+        let mut buffer = TurboQuantCompressedBlockBuffer::new(layout);
+        let mut metal: Option<MlxArray> = None;
+        let mut uploaded_tokens = 0usize;
+
+        // Sync widths chosen to cover: initial full upload, 1-token
+        // incremental updates, a multi-token update, and block-boundary
+        // growth (block_tokens = 4) forcing the full-upload fallback.
+        for sync_width in [1usize, 1, 2, 1, 3, 1] {
+            for token_index in uploaded_tokens..uploaded_tokens + sync_width {
+                let heads = (0..2)
+                    .map(|head| {
+                        (
+                            (0..8)
+                                .map(|dim| {
+                                    ((token_index * 7 + head * 3 + dim) % 11) as f32 / 5.0 - 1.0
+                                })
+                                .collect::<Vec<_>>(),
+                            (0..8)
+                                .map(|dim| {
+                                    ((token_index * 5 + head * 2 + dim) % 13) as f32 / 6.0 - 1.0
+                                })
+                                .collect::<Vec<_>>(),
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                buffer
+                    .write_token(token_index, &heads)
+                    .expect("write token");
+            }
+            let synced_tokens = uploaded_tokens + sync_width;
+
+            let updated = turboquant_shadow_metal_buffer_update(
+                metal.take(),
+                &layout,
+                &buffer,
+                uploaded_tokens,
+                synced_tokens,
+            );
+            assert_eq!(updated.nbytes(), buffer.as_bytes().len());
+            let device =
+                unsafe { std::slice::from_raw_parts(updated.data_raw(), updated.nbytes()) };
+            assert_eq!(
+                device,
+                buffer.as_bytes(),
+                "device bytes diverged after syncing to {synced_tokens} tokens"
+            );
+            metal = Some(updated);
+            uploaded_tokens = synced_tokens;
+        }
+    }
 
     #[test]
     fn compression_usage_accumulates_decode_usage() {
