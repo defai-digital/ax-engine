@@ -4,23 +4,22 @@ use ax_engine_sdk::{
     start_streaming_llama_cpp_chat_generate,
 };
 
-use crate::app_state::AppState;
+use crate::app_state::LiveState;
 
-pub(crate) fn supports_server_chat(state: &AppState) -> bool {
-    state.runtime_report.selected_backend == SelectedBackend::LlamaCpp
+pub(crate) fn supports_server_chat(live: &LiveState) -> bool {
+    live.runtime_report.selected_backend == SelectedBackend::LlamaCpp
         && matches!(
-            state.session_config.llama_backend.as_ref(),
+            live.session_config.llama_backend.as_ref(),
             Some(LlamaCppConfig::ServerCompletion(_))
         )
 }
 
-pub(crate) fn config(state: &AppState) -> Result<LlamaCppConfig, EngineSessionError> {
-    state
-        .session_config
+pub(crate) fn config(live: &LiveState) -> Result<LlamaCppConfig, EngineSessionError> {
+    live.session_config
         .llama_backend
         .clone()
         .ok_or(EngineSessionError::MissingLlamaCppConfig {
-            selected_backend: state.runtime_report.selected_backend,
+            selected_backend: live.runtime_report.selected_backend,
         })
 }
 

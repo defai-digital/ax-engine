@@ -4,7 +4,7 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use serde::{Deserialize, Serialize};
 
-use crate::app_state::AppState;
+use crate::app_state::{AppState, LiveState};
 use crate::errors::{ErrorResponse, error_response};
 use crate::metadata::context_length;
 use crate::openai::chat_requests::render_openai_chat_prompt;
@@ -51,8 +51,9 @@ pub(crate) async fn tokenize(
     State(state): State<AppState>,
     Json(request): Json<TokenizeRequest>,
 ) -> Result<Json<serde_json::Value>, HttpErrorResponse> {
-    validate_model(&state, request.model.as_deref())?;
-    let tokenizer = tokenizer_for_state(&state)?;
+    let live = state.snapshot();
+    validate_model(&live, request.model.as_deref())?;
+    let tokenizer = tokenizer_for_live(&live)?;
     let tokens = tokenizer
         .encode_with_special_tokens(&request.content, request.add_special)
         .map_err(|error| {
@@ -97,20 +98,21 @@ pub(crate) async fn apply_template(
     State(state): State<AppState>,
     Json(request): Json<OpenAiChatCompletionHttpRequest>,
 ) -> Result<Json<ApplyTemplateResponse>, HttpErrorResponse> {
-    validate_model(&state, request.model.as_deref())?;
-    let prompt = render_openai_chat_prompt(state.model_id.as_ref(), &request.messages)?;
+    let live = state.snapshot();
+    validate_model(&live, request.model.as_deref())?;
+    let prompt = render_openai_chat_prompt(live.model_id.as_ref(), &request.messages)?;
     Ok(Json(ApplyTemplateResponse { prompt }))
 }
 
-fn tokenizer_for_state(state: &AppState) -> Result<EngineTokenizer, HttpErrorResponse> {
-    tokenizer_for_state_op(state, "this endpoint")
+fn tokenizer_for_live(live: &LiveState) -> Result<EngineTokenizer, HttpErrorResponse> {
+    tokenizer_for_live_op(live, "this endpoint")
 }
 
-fn tokenizer_for_state_op(
-    state: &AppState,
+fn tokenizer_for_live_op(
+    live: &LiveState,
     op: &str,
 ) -> Result<EngineTokenizer, HttpErrorResponse> {
-    let Some(model_dir) = state.session_config.mlx_model_artifacts_dir() else {
+    let Some(model_dir) = live.session_config.mlx_model_artifacts_dir() else {
         return Err(error_response(
             StatusCode::BAD_REQUEST,
             "invalid_request",
@@ -142,7 +144,8 @@ pub(crate) async fn detokenize(
     State(state): State<AppState>,
     Json(request): Json<DetokenizeRequest>,
 ) -> Result<Json<DetokenizeResponse>, HttpErrorResponse> {
-    let tokenizer = tokenizer_for_state_op(&state, "/detokenize")?;
+    let live = state.snapshot();
+    let tokenizer = tokenizer_for_live_op(&live, "/detokenize")?;
     let content = tokenizer
         .decode(&request.tokens, false)
         .map_err(|error| {
@@ -208,9 +211,10 @@ pub(crate) struct PropsResponse {
 }
 
 pub(crate) async fn props(State(state): State<AppState>) -> Json<PropsResponse> {
+    let live = state.snapshot();
     let n_ctx = context_length(&state);
-    let chat_template = read_chat_template(&state);
-    let model = state.model_id.as_ref().clone();
+    let chat_template = read_chat_template_live(&live);
+    let model = live.model_id.as_ref().clone();
 
     Json(PropsResponse {
         system_prompt: String::new(),
@@ -303,10 +307,11 @@ pub(crate) struct SlotEntry {
 }
 
 pub(crate) async fn slots(State(state): State<AppState>) -> Json<Vec<SlotEntry>> {
-    let busy = state.request_session.try_lock().is_err();
+    let live = state.snapshot();
+    let busy = live.request_session.try_lock().is_err();
     let (slot_state, state_str) = if busy { (1u32, "processing") } else { (0u32, "idle") };
     let n_ctx = context_length(&state);
-    let model = state.model_id.as_ref().clone();
+    let model = live.model_id.as_ref().clone();
 
     Json(vec![SlotEntry {
         id: 0,
@@ -336,8 +341,8 @@ pub(crate) async fn slots(State(state): State<AppState>) -> Json<Vec<SlotEntry>>
     }])
 }
 
-fn read_chat_template(state: &AppState) -> String {
-    let Some(model_dir) = state.session_config.mlx_model_artifacts_dir() else {
+fn read_chat_template_live(live: &LiveState) -> String {
+    let Some(model_dir) = live.session_config.mlx_model_artifacts_dir() else {
         return String::new();
     };
     // Prefer the explicit jinja file (used by Gemma4 and instruction-tuned models).

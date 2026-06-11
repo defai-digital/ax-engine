@@ -7,39 +7,52 @@ use ax_engine_sdk::{
 };
 use tokio::sync::{Mutex, mpsc, oneshot};
 
+/// All state that changes atomically when a new model is loaded.
+/// Wrapped behind `Arc<RwLock<>>` in `AppState` so every in-flight request
+/// that has already cloned its Arcs continues with the old model, while new
+/// requests immediately see the replacement.
 #[derive(Clone)]
-pub(crate) struct AppState {
+pub(crate) struct LiveState {
     pub(crate) model_id: Arc<String>,
-    pub(crate) api_key: Option<Arc<String>>,
-    pub(crate) metrics: Arc<ServerMetrics>,
     pub(crate) session_config: Arc<EngineSessionConfig>,
     pub(crate) stateless_generate_context: Arc<StatelessGenerateContext>,
     pub(crate) runtime_report: RuntimeReport,
     pub(crate) request_session: Arc<Mutex<EngineSession>>,
     pub(crate) embedding_batcher: Arc<EmbeddingMicroBatcher>,
+}
+
+#[derive(Clone)]
+pub(crate) struct AppState {
+    /// Swappable model state — take a snapshot at the start of each handler.
+    pub(crate) live: Arc<std::sync::RwLock<LiveState>>,
+    pub(crate) api_key: Option<Arc<String>>,
+    pub(crate) metrics: Arc<ServerMetrics>,
+    /// Set to true while a model load is in progress; prevents concurrent loads.
+    pub(crate) loading: Arc<AtomicBool>,
     next_request_id: Arc<AtomicU64>,
 }
 
 impl AppState {
-    pub(crate) fn new(
-        model_id: String,
-        session_config: EngineSessionConfig,
-        stateless_generate_context: Arc<StatelessGenerateContext>,
-        runtime_report: RuntimeReport,
-        request_session: Arc<Mutex<EngineSession>>,
-        embedding_batcher: Arc<EmbeddingMicroBatcher>,
-    ) -> Self {
+    pub(crate) fn new(live: LiveState) -> Self {
         Self {
-            model_id: Arc::new(model_id),
+            live: Arc::new(std::sync::RwLock::new(live)),
             api_key: None,
             metrics: Arc::new(ServerMetrics::default()),
-            session_config: Arc::new(session_config),
-            stateless_generate_context,
-            runtime_report,
-            request_session,
-            embedding_batcher,
+            loading: Arc::new(AtomicBool::new(false)),
             next_request_id: Arc::new(AtomicU64::new(1)),
         }
+    }
+
+    /// Clone all live-model fields atomically. The read lock is held only for
+    /// the duration of the Arc clones — never across an await point.
+    pub(crate) fn snapshot(&self) -> LiveState {
+        self.live.read().unwrap().clone()
+    }
+
+    /// Replace the live model state. Called by the load endpoint after
+    /// successfully building a new session outside the lock.
+    pub(crate) fn swap_live(&self, new: LiveState) {
+        *self.live.write().unwrap() = new;
     }
 
     pub(crate) fn allocate_request_id(&self) -> u64 {
@@ -120,25 +133,34 @@ impl ServerMetrics {
     }
 }
 
-pub(crate) fn build_app_state(
+/// Build a `LiveState` from a freshly created session. Used both at startup
+/// and by the load endpoint when swapping to a new model.
+pub(crate) fn build_live_state(
     model_id: String,
     session: EngineSession,
-) -> Result<AppState, EngineSessionError> {
+) -> Result<LiveState, EngineSessionError> {
     let session_config = session.config().clone();
     let stateless_generate_context =
         StatelessGenerateContext::new(session_config.clone()).map(Arc::new)?;
     let runtime_report = session.runtime_report();
     let request_session = Arc::new(Mutex::new(session));
     let embedding_batcher = EmbeddingMicroBatcher::spawn(request_session.clone());
-
-    Ok(AppState::new(
-        model_id,
-        session_config,
+    Ok(LiveState {
+        model_id: Arc::new(model_id),
+        session_config: Arc::new(session_config),
         stateless_generate_context,
         runtime_report,
         request_session,
         embedding_batcher,
-    ))
+    })
+}
+
+pub(crate) fn build_app_state(
+    model_id: String,
+    session: EngineSession,
+) -> Result<AppState, EngineSessionError> {
+    let live = build_live_state(model_id, session)?;
+    Ok(AppState::new(live))
 }
 
 #[derive(Clone)]

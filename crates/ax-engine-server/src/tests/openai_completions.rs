@@ -140,7 +140,7 @@ async fn openai_completion_logprobs_follows_legacy_integer_shape() {
     }))
     .expect("sample completion request should deserialize");
     let built =
-        build_openai_completion_request(&state, request).expect("completion request should build");
+        build_openai_completion_request(&state.snapshot(), request).expect("completion request should build");
     assert!(built.response_options.include_logprobs);
 
     let request: OpenAiCompletionHttpRequest = serde_json::from_value(json!({
@@ -150,7 +150,7 @@ async fn openai_completion_logprobs_follows_legacy_integer_shape() {
         "logprobs": 2
     }))
     .expect("sample completion request should deserialize");
-    let error = match build_openai_completion_request(&state, request) {
+    let error = match build_openai_completion_request(&state.snapshot(), request) {
         Ok(_) => panic!("logprobs above 0 should fail closed until top-N is supported"),
         Err(error) => error,
     };
@@ -174,10 +174,10 @@ async fn openai_completion_request_tokenizes_text_for_native_mlx_backend() {
     }))
     .expect("sample completion request should deserialize");
 
-    validate_openai_request(&state, request.model.as_deref())
+    validate_openai_request(&state.snapshot(), request.model.as_deref())
         .expect("native MLX OpenAI completion should pass validation");
     let built =
-        build_openai_completion_request(&state, request).expect("completion request should build");
+        build_openai_completion_request(&state.snapshot(), request).expect("completion request should build");
 
     assert!(
         !built.generate_request.input_tokens.is_empty(),
@@ -203,7 +203,7 @@ async fn openai_completion_request_preserves_gemma4_multimodal_inputs_for_native
     .expect("Gemma4 OpenAI completion request should deserialize");
 
     let built =
-        build_openai_completion_request(&state, request).expect("completion request should build");
+        build_openai_completion_request(&state.snapshot(), request).expect("completion request should build");
     let inputs = built
         .generate_request
         .multimodal_inputs
@@ -230,7 +230,7 @@ async fn openai_completion_request_rejects_gemma4_multimodal_inputs_with_text_pr
     }))
     .expect("Gemma4 OpenAI completion request should deserialize");
 
-    let error = match build_openai_completion_request(&state, request) {
+    let error = match build_openai_completion_request(&state.snapshot(), request) {
         Ok(_) => panic!("text prompt with Gemma4 multimodal inputs should fail"),
         Err(error) => error,
     };
@@ -256,7 +256,7 @@ async fn openai_completion_request_rejects_gemma4_multimodal_inputs_on_delegated
     }))
     .expect("Gemma4 OpenAI completion request should deserialize");
 
-    let error = match build_openai_completion_request(&state, request) {
+    let error = match build_openai_completion_request(&state.snapshot(), request) {
         Ok(_) => panic!("delegated Gemma4 multimodal inputs should fail"),
         Err(error) => error,
     };
@@ -282,7 +282,7 @@ async fn openai_qwen_completion_uses_greedy_repetition_penalty_default() {
     .expect("sample completion request should deserialize");
 
     let built =
-        build_openai_completion_request(&state, request).expect("completion request should build");
+        build_openai_completion_request(&state.snapshot(), request).expect("completion request should build");
 
     assert_eq!(built.generate_request.sampling.repetition_penalty, 1.1);
 

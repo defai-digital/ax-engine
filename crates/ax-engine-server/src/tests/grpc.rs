@@ -8,7 +8,8 @@ use super::fixtures::llama_cpp_server_state;
 async fn grpc_health_reports_unavailable_when_session_is_busy() {
     let state = llama_cpp_server_state("http://127.0.0.1:1".to_string());
     let service = AxEngineGrpcService::new(state.clone());
-    let session_guard = state.request_session.lock().await;
+    let live = state.snapshot();
+    let session_guard = live.request_session.lock().await;
 
     let error = service
         .health(tonic::Request::new(proto::HealthRequest {}))

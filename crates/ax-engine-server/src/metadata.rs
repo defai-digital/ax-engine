@@ -5,7 +5,7 @@ use axum::http::StatusCode;
 use serde::Serialize;
 use serde_json::{Value, json};
 
-use crate::app_state::AppState;
+use crate::app_state::{AppState, LiveState};
 use crate::errors::{ErrorResponse, error_response};
 
 pub(crate) const MODEL_OWNER: &str = "ax-engine";
@@ -95,6 +95,7 @@ impl NativeProcessedMultimodalSupport {
 pub(crate) async fn health(
     State(state): State<AppState>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrorResponse>)> {
+    let live = state.snapshot();
     // `/health` is the readiness probe most callers (bench harness,
     // k8s, load balancers) poll while a server starts. Returning 200
     // when the server has bound a port but the inference session is
@@ -103,7 +104,7 @@ pub(crate) async fn health(
     // into the failure pattern below. A `try_lock` is a sub-us probe
     // that confirms the session mutex is grabbable, which is the
     // strongest "ready" signal we can give without doing real work.
-    let session_lock = state.request_session.try_lock();
+    let session_lock = live.request_session.try_lock();
     if session_lock.is_err() {
         return Err(error_response(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -115,24 +116,26 @@ pub(crate) async fn health(
     Ok(Json(json!({
         "status": "ok",
         "service": "ax-engine-server",
-        "model_id": state.model_id.as_ref(),
-        "runtime": runtime_response(&state),
+        "model_id": live.model_id.as_ref(),
+        "runtime": live.runtime_report.clone(),
     })))
 }
 
 pub(crate) async fn runtime_info(State(state): State<AppState>) -> Json<ServerInfoResponse> {
-    Json(server_info_response(&state))
+    let live = state.snapshot();
+    Json(server_info_response(&live))
 }
 
 pub(crate) async fn models(State(state): State<AppState>) -> Json<ModelsResponse> {
-    let context_length = context_length(&state);
-    let max_output_tokens = max_output_tokens(&state, context_length);
-    let openai_text = openai_text_supported(&state);
-    let native_multimodal = native_processed_multimodal_support(&state);
+    let live = state.snapshot();
+    let context_length = context_length_live(&live);
+    let max_output_tokens = max_output_tokens_live(&live, context_length);
+    let openai_text = openai_text_supported_live(&live);
+    let native_multimodal = native_processed_multimodal_support_live(&live);
     Json(ModelsResponse {
         object: "list",
         data: vec![ModelCard {
-            id: state.model_id.to_string(),
+            id: live.model_id.to_string(),
             object: "model",
             owned_by: MODEL_OWNER,
             capabilities: model_capabilities(openai_text, native_multimodal),
@@ -143,24 +146,20 @@ pub(crate) async fn models(State(state): State<AppState>) -> Json<ModelsResponse
             context_length,
             max_output_tokens,
             ax_engine: ax_engine_model_metadata(openai_text, native_multimodal),
-            runtime: runtime_response(&state),
+            runtime: live.runtime_report.clone(),
         }],
     })
 }
 
-fn server_info_response(state: &AppState) -> ServerInfoResponse {
+fn server_info_response(live: &LiveState) -> ServerInfoResponse {
     ServerInfoResponse {
         service: "ax-engine-server",
-        model_id: state.model_id.to_string(),
-        deterministic: state.session_config.deterministic,
-        max_batch_tokens: state.session_config.max_batch_tokens,
-        block_size_tokens: state.session_config.kv_config.block_size_tokens,
-        runtime: runtime_response(state),
+        model_id: live.model_id.to_string(),
+        deterministic: live.session_config.deterministic,
+        max_batch_tokens: live.session_config.max_batch_tokens,
+        block_size_tokens: live.session_config.kv_config.block_size_tokens,
+        runtime: live.runtime_report.clone(),
     }
-}
-
-fn runtime_response(state: &AppState) -> RuntimeResponse {
-    state.runtime_report.clone()
 }
 
 fn model_capabilities(
@@ -207,12 +206,14 @@ fn ax_engine_model_metadata(
     }
 }
 
-fn native_processed_multimodal_support(state: &AppState) -> NativeProcessedMultimodalSupport {
-    if state.runtime_report.selected_backend != SelectedBackend::Mlx {
+fn native_processed_multimodal_support_live(
+    live: &LiveState,
+) -> NativeProcessedMultimodalSupport {
+    if live.runtime_report.selected_backend != SelectedBackend::Mlx {
         return NativeProcessedMultimodalSupport::default();
     }
 
-    let Some(artifacts_dir) = state.session_config.mlx_model_artifacts_dir() else {
+    let Some(artifacts_dir) = live.session_config.mlx_model_artifacts_dir() else {
         return NativeProcessedMultimodalSupport::default();
     };
     let manifest_path = artifacts_dir.join("model-manifest.json");
@@ -261,26 +262,30 @@ const GEMMA4_UNIFIED_VISION_ROLES: &[&str] = &[
 
 const GEMMA4_UNIFIED_AUDIO_ROLE: &str = "gemma4_unified_audio_projection";
 
-fn openai_text_supported(state: &AppState) -> bool {
+fn openai_text_supported_live(live: &LiveState) -> bool {
     // Keep this in sync with `validate_openai_text_backend` in `openai::validation`:
     // every backend that serves the OpenAI text endpoints must advertise them here.
     matches!(
-        state.runtime_report.selected_backend,
+        live.runtime_report.selected_backend,
         SelectedBackend::LlamaCpp | SelectedBackend::MlxLmDelegated | SelectedBackend::Mlx
     )
 }
 
-pub(crate) fn context_length(state: &AppState) -> u32 {
-    state
-        .session_config
+fn context_length_live(live: &LiveState) -> u32 {
+    live.session_config
         .kv_config
         .block_size_tokens
-        .saturating_mul(state.session_config.kv_config.total_blocks)
+        .saturating_mul(live.session_config.kv_config.total_blocks)
 }
 
-fn max_output_tokens(state: &AppState, context_length: u32) -> u32 {
-    state
-        .session_config
+/// Public entry point: snapshot live state then compute context length.
+pub(crate) fn context_length(state: &AppState) -> u32 {
+    let live = state.snapshot();
+    context_length_live(&live)
+}
+
+fn max_output_tokens_live(live: &LiveState, context_length: u32) -> u32 {
+    live.session_config
         .max_batch_tokens
         .min(context_length)
         .max(1)

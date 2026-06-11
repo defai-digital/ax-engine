@@ -29,9 +29,10 @@ pub(crate) async fn generate_stream(
     State(state): State<AppState>,
     Json(request): Json<GenerateHttpRequest>,
 ) -> Result<Sse<ReceiverStream<StreamEvent>>, (StatusCode, Json<ErrorResponse>)> {
-    validate_model(&state, request.model.as_deref())?;
+    let live = state.snapshot();
+    validate_model(&live, request.model.as_deref())?;
 
-    let request = build_generate_request(&state, request);
+    let request = build_generate_request(&live, request);
     let (stream_state, stream_context) = build_stream_state(&state, request).await?;
 
     let (tx, rx) = mpsc::channel(STREAM_CHANNEL_CAPACITY);
@@ -64,12 +65,13 @@ pub(crate) async fn build_stream_state(
     state: &AppState,
     request: GenerateRequest,
 ) -> Result<(GenerateStreamState, StreamStateSource), (StatusCode, Json<ErrorResponse>)> {
+    let live = state.snapshot();
     let request_id = state.allocate_request_id();
-    if state
+    if live
         .stateless_generate_context
         .supports_stateless_streaming()
     {
-        let stateless_generate_context = Arc::clone(&state.stateless_generate_context);
+        let stateless_generate_context = Arc::clone(&live.stateless_generate_context);
         let stream_context = Arc::clone(&stateless_generate_context);
         let stream_state = run_blocking_session_task(move || {
             stream_context.stream_state_with_request_id(request_id, request)
@@ -82,7 +84,7 @@ pub(crate) async fn build_stream_state(
         ));
     }
 
-    let stateful_context = Arc::clone(&state.stateless_generate_context);
+    let stateful_context = Arc::clone(&live.stateless_generate_context);
     let (session, stream_state) = run_blocking_session_task(move || {
         let mut session = stateful_context.build_stateful_session()?;
         let stream_state = session.stream_generate_state_with_request_id(request_id, request)?;

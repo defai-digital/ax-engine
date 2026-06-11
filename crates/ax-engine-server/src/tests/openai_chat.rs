@@ -1,3 +1,4 @@
+use crate::app_state::LiveState;
 use crate::chat;
 use crate::openai::requests::{
     DEFAULT_OPENAI_MAX_TOKENS, build_openai_chat_request,
@@ -244,13 +245,14 @@ async fn openai_chat_request_applies_gemma4_default_stop_to_native_generate() {
         args.model_id = "gemma4-e2b".to_string();
         args.llama_server_url = Some("http://127.0.0.1:1".to_string());
     });
+    let live = state.snapshot();
     let request: OpenAiChatCompletionHttpRequest = serde_json::from_value(json!({
         "messages": [{"role": "user", "content": "Hello"}],
         "max_tokens": 8
     }))
     .expect("sample chat request should deserialize");
 
-    let built = build_openai_chat_request(&state, request).expect("chat request should build");
+    let built = build_openai_chat_request(&live, request).expect("chat request should build");
 
     assert_eq!(
         built.generate_request.stop_sequences,
@@ -264,6 +266,7 @@ async fn openai_chat_request_marks_tool_and_structured_workload_metadata() {
         args.model_id = "gemma4-e2b".to_string();
         args.llama_server_url = Some("http://127.0.0.1:1".to_string());
     });
+    let live = state.snapshot();
     let request: OpenAiChatCompletionHttpRequest = serde_json::from_value(json!({
         "messages": [{"role": "user", "content": "Call a tool and return JSON"}],
         "max_tokens": 8,
@@ -277,7 +280,7 @@ async fn openai_chat_request_marks_tool_and_structured_workload_metadata() {
     }))
     .expect("sample chat request should deserialize");
 
-    let built = build_openai_chat_request(&state, request).expect("chat request should build");
+    let built = build_openai_chat_request(&live, request).expect("chat request should build");
     let hints = RequestWorkloadHints::from_metadata(built.generate_request.metadata.as_deref());
 
     assert!(hints.tool_call);
@@ -290,6 +293,7 @@ async fn openai_chat_request_rejects_top_logprobs_until_top_n_is_supported() {
         args.model_id = "gemma4-e2b".to_string();
         args.llama_server_url = Some("http://127.0.0.1:1".to_string());
     });
+    let live = state.snapshot();
     let request: OpenAiChatCompletionHttpRequest = serde_json::from_value(json!({
         "messages": [{"role": "user", "content": "Hello"}],
         "max_tokens": 8,
@@ -298,7 +302,7 @@ async fn openai_chat_request_rejects_top_logprobs_until_top_n_is_supported() {
     }))
     .expect("sample chat request should deserialize");
 
-    let error = match build_openai_chat_request(&state, request) {
+    let error = match build_openai_chat_request(&live, request) {
         Ok(_) => panic!("top_logprobs should fail closed until top-N alternatives are available"),
         Err(error) => error,
     };
@@ -316,6 +320,7 @@ async fn openai_chat_request_rejects_streaming_json_object_validation() {
         args.model_id = "gemma4-e2b".to_string();
         args.llama_server_url = Some("http://127.0.0.1:1".to_string());
     });
+    let live = state.snapshot();
     let request: OpenAiChatCompletionHttpRequest = serde_json::from_value(json!({
         "messages": [{"role": "user", "content": "Return JSON"}],
         "max_tokens": 8,
@@ -324,7 +329,7 @@ async fn openai_chat_request_rejects_streaming_json_object_validation() {
     }))
     .expect("sample chat request should deserialize");
 
-    let error = match build_openai_chat_request(&state, request) {
+    let error = match build_openai_chat_request(&live, request) {
         Ok(_) => panic!("streaming JSON object validation should fail closed"),
         Err(error) => error,
     };
@@ -344,6 +349,7 @@ async fn openai_chat_request_rejects_streaming_logprobs_and_reasoning() {
         args.model_id = "gemma4-e2b".to_string();
         args.llama_server_url = Some("http://127.0.0.1:1".to_string());
     });
+    let live = state.snapshot();
 
     for body in [
         json!({
@@ -361,7 +367,7 @@ async fn openai_chat_request_rejects_streaming_logprobs_and_reasoning() {
     ] {
         let request: OpenAiChatCompletionHttpRequest =
             serde_json::from_value(body).expect("sample chat request should deserialize");
-        let error = match build_openai_chat_request(&state, request) {
+        let error = match build_openai_chat_request(&live, request) {
             Ok(_) => panic!("streaming logprobs/reasoning should fail closed"),
             Err(error) => error,
         };
@@ -379,6 +385,7 @@ async fn openai_chat_request_preserves_text_metadata_when_adding_workload_hints(
         args.model_id = "gemma4-e2b".to_string();
         args.llama_server_url = Some("http://127.0.0.1:1".to_string());
     });
+    let live = state.snapshot();
     let request: OpenAiChatCompletionHttpRequest = serde_json::from_value(json!({
         "messages": [{"role": "user", "content": "Call a tool"}],
         "max_tokens": 8,
@@ -387,7 +394,7 @@ async fn openai_chat_request_preserves_text_metadata_when_adding_workload_hints(
     }))
     .expect("sample chat request should deserialize");
 
-    let built = build_openai_chat_request(&state, request).expect("chat request should build");
+    let built = build_openai_chat_request(&live, request).expect("chat request should build");
     let metadata = built
         .generate_request
         .metadata
@@ -406,13 +413,14 @@ async fn openai_chat_request_rejects_unsupported_ax_rendered_family() {
         args.model_id = "deepseek-ai/DeepSeek-V3".to_string();
         args.llama_server_url = Some("http://127.0.0.1:1".to_string());
     });
+    let live = state.snapshot();
     let request: OpenAiChatCompletionHttpRequest = serde_json::from_value(json!({
         "messages": [{"role": "user", "content": "Hello"}],
         "max_tokens": 8
     }))
     .expect("sample chat request should deserialize");
 
-    let error = match build_openai_chat_request(&state, request) {
+    let error = match build_openai_chat_request(&live, request) {
         Ok(_) => panic!("AX-rendered fallback should fail closed"),
         Err(error) => error,
     };
@@ -424,6 +432,7 @@ async fn openai_chat_request_rejects_unsupported_ax_rendered_family() {
 async fn openai_chat_request_tokenizes_text_for_native_mlx_backend() {
     let artifact_dir = minimal_tokenizer_artifact("native-openai-chat-tokenizer");
     let state = native_mlx_openai_builder_state("qwen3", &artifact_dir);
+    let live = state.snapshot();
     let request: OpenAiChatCompletionHttpRequest = serde_json::from_value(json!({
         "model": "qwen3",
         "messages": [{"role": "user", "content": "hello openai chat"}],
@@ -431,9 +440,9 @@ async fn openai_chat_request_tokenizes_text_for_native_mlx_backend() {
     }))
     .expect("sample chat request should deserialize");
 
-    validate_openai_request(&state, request.model.as_deref())
+    validate_openai_request(&live, request.model.as_deref())
         .expect("native MLX OpenAI chat should pass validation");
-    let built = build_openai_chat_request(&state, request).expect("chat request should build");
+    let built = build_openai_chat_request(&live, request).expect("chat request should build");
 
     assert!(
         !built.generate_request.input_tokens.is_empty(),
@@ -454,6 +463,7 @@ async fn openai_chat_request_tokenizes_text_for_native_mlx_backend() {
 async fn openai_chat_request_preserves_gemma4_multimodal_inputs_for_native_mlx_tokens() {
     let artifact_dir = minimal_tokenizer_artifact("native-openai-chat-mm-tokenizer");
     let state = native_mlx_openai_builder_state("gemma-4-12b-it", &artifact_dir);
+    let live = state.snapshot();
     let request: OpenAiChatCompletionHttpRequest = serde_json::from_value(json!({
         "model": "gemma-4-12b-it",
         "messages": [{"role": "user", "content": "Describe this image"}],
@@ -463,7 +473,7 @@ async fn openai_chat_request_preserves_gemma4_multimodal_inputs_for_native_mlx_t
     }))
     .expect("sample chat request should deserialize");
 
-    let built = build_openai_chat_request(&state, request).expect("chat request should build");
+    let built = build_openai_chat_request(&live, request).expect("chat request should build");
     let inputs = built
         .generate_request
         .multimodal_inputs
@@ -484,6 +494,7 @@ async fn openai_chat_request_decodes_inline_image_into_gemma4_unified_tensors() 
 
     let artifact_dir = gemma4_unified_artifact("native-openai-chat-inline-image");
     let state = native_mlx_openai_builder_state("qwen3", &artifact_dir);
+    let live = state.snapshot();
 
     // The golden 16x16 fixture decodes to exactly 4 soft tokens under the
     // synthetic vision config baked into the artifact.
@@ -506,7 +517,7 @@ async fn openai_chat_request_decodes_inline_image_into_gemma4_unified_tensors() 
     .expect("multimodal chat request should deserialize");
 
     let built =
-        build_openai_chat_request(&state, request).expect("inline image chat request should build");
+        build_openai_chat_request(&live, request).expect("inline image chat request should build");
 
     // The image was decoded, preprocessed, and attached as Gemma4 unified tensors.
     let inputs = built
@@ -538,6 +549,7 @@ async fn openai_chat_media_build_offloads_to_blocking_pool_and_matches_inline_bu
 
     let artifact_dir = gemma4_unified_artifact("native-openai-chat-offload-media");
     let state = native_mlx_openai_builder_state("qwen3", &artifact_dir);
+    let live = state.snapshot();
 
     let png = include_bytes!("fixtures/gemma4_golden/image_noresize.png");
     let data_uri = format!(
@@ -561,10 +573,10 @@ async fn openai_chat_media_build_offloads_to_blocking_pool_and_matches_inline_bu
 
     // Media requests run on the blocking pool and must build the same request
     // the inline (sync) build produces.
-    let offloaded = build_openai_chat_request_offloading_media(&state, media_request())
+    let offloaded = build_openai_chat_request_offloading_media(&live, media_request())
         .await
         .expect("offloaded media build should succeed");
-    let inline = build_openai_chat_request(&state, media_request())
+    let inline = build_openai_chat_request(&live, media_request())
         .expect("inline media build should succeed");
     assert_eq!(
         offloaded.generate_request.input_tokens,
@@ -585,7 +597,7 @@ async fn openai_chat_media_build_offloads_to_blocking_pool_and_matches_inline_bu
         "max_tokens": 8
     }))
     .expect("text chat request should deserialize");
-    let built = build_openai_chat_request_offloading_media(&state, text_request)
+    let built = build_openai_chat_request_offloading_media(&live, text_request)
         .await
         .expect("text-only build should succeed");
     assert!(
@@ -605,6 +617,7 @@ async fn openai_chat_request_decodes_inline_gif_video_with_timestamps() {
 
     let artifact_dir = gemma4_unified_artifact("native-openai-chat-inline-video");
     let state = native_mlx_openai_builder_state("qwen3", &artifact_dir);
+    let live = state.snapshot();
 
     // A 2-frame 16x16 animated GIF.
     let mut gif_bytes: Vec<u8> = Vec::new();
@@ -636,7 +649,7 @@ async fn openai_chat_request_decodes_inline_gif_video_with_timestamps() {
     .expect("multimodal chat request should deserialize");
 
     let built =
-        build_openai_chat_request(&state, request).expect("inline video chat request should build");
+        build_openai_chat_request(&live, request).expect("inline video chat request should build");
 
     let inputs = built
         .generate_request
@@ -688,6 +701,7 @@ async fn openai_chat_request_decodes_combined_image_audio_video() {
 
     let artifact_dir = gemma4_unified_artifact("native-openai-chat-combined");
     let state = native_mlx_openai_builder_state("qwen3", &artifact_dir);
+    let live = state.snapshot();
     let encode = |bytes: &[u8]| base64::engine::general_purpose::STANDARD.encode(bytes);
 
     let png = include_bytes!("fixtures/gemma4_golden/image_noresize.png");
@@ -738,7 +752,7 @@ async fn openai_chat_request_decodes_combined_image_audio_video() {
     .expect("combined multimodal request should deserialize");
 
     let built =
-        build_openai_chat_request(&state, request).expect("combined multimodal chat should build");
+        build_openai_chat_request(&live, request).expect("combined multimodal chat should build");
     let inputs = built
         .generate_request
         .multimodal_inputs
@@ -774,6 +788,7 @@ async fn openai_chat_request_decodes_mp3_input_audio() {
 
     let artifact_dir = gemma4_unified_artifact("native-openai-chat-mp3");
     let state = native_mlx_openai_builder_state("qwen3", &artifact_dir);
+    let live = state.snapshot();
 
     // 0.5 s 16 kHz mono MP3 tone; decodes to ~9216 samples with encoder
     // delay/padding -> ceil(samples/640) frames.
@@ -793,7 +808,7 @@ async fn openai_chat_request_decodes_mp3_input_audio() {
     }))
     .expect("mp3 chat request should deserialize");
 
-    let built = build_openai_chat_request(&state, request).expect("mp3 chat should build");
+    let built = build_openai_chat_request(&live, request).expect("mp3 chat should build");
     let inputs = built
         .generate_request
         .multimodal_inputs
@@ -822,6 +837,7 @@ async fn openai_chat_request_decodes_mp3_input_audio() {
 async fn openai_chat_request_rejects_gemma4_multimodal_inputs_without_input_tokens() {
     let artifact_dir = minimal_tokenizer_artifact("native-openai-chat-mm-no-tokens");
     let state = native_mlx_openai_builder_state("gemma-4-12b-it", &artifact_dir);
+    let live = state.snapshot();
     let request: OpenAiChatCompletionHttpRequest = serde_json::from_value(json!({
         "model": "gemma-4-12b-it",
         "messages": [{"role": "user", "content": "Describe this image"}],
@@ -830,7 +846,7 @@ async fn openai_chat_request_rejects_gemma4_multimodal_inputs_without_input_toke
     }))
     .expect("sample chat request should deserialize");
 
-    let error = match build_openai_chat_request(&state, request) {
+    let error = match build_openai_chat_request(&live, request) {
         Ok(_) => panic!("chat media tensors without input_tokens should fail"),
         Err(error) => error,
     };
@@ -863,7 +879,7 @@ async fn openai_chat_request_rejects_raw_media_parts_even_with_input_tokens() {
     }))
     .expect("sample chat request should deserialize");
 
-    let error = match build_openai_chat_request(&state, request) {
+    let error = match build_openai_chat_request(&state.snapshot(), request) {
         Ok(_) => panic!("raw media parts should fail even with input_tokens"),
         Err(error) => error,
     };
@@ -893,7 +909,7 @@ async fn delegated_openai_chat_rejects_input_tokens_extension() {
     }))
     .expect("sample chat request should deserialize");
 
-    let error = match build_openai_mlx_lm_chat_request(&state, request) {
+    let error = match build_openai_mlx_lm_chat_request(&state.snapshot(), request) {
         Ok(_) => panic!("delegated text backends should reject tokenized chat"),
         Err(error) => error,
     };
@@ -921,7 +937,7 @@ async fn delegated_openai_chat_rejects_gemma4_multimodal_inputs() {
     }))
     .expect("sample chat request should deserialize");
 
-    let error = match build_openai_mlx_lm_chat_request(&state, request) {
+    let error = match build_openai_mlx_lm_chat_request(&state.snapshot(), request) {
         Ok(_) => panic!("delegated text backends should reject processed media tensors"),
         Err(error) => error,
     };
@@ -950,7 +966,7 @@ async fn openai_qwen_chat_uses_greedy_repetition_penalty_default() {
     }))
     .expect("sample chat request should deserialize");
 
-    let built = build_openai_chat_request(&state, request).expect("chat request should build");
+    let built = build_openai_chat_request(&state.snapshot(), request).expect("chat request should build");
 
     assert_eq!(built.generate_request.sampling.repetition_penalty, 1.1);
 
@@ -970,7 +986,7 @@ async fn openai_qwen_chat_preserves_explicit_repetition_penalty() {
     }))
     .expect("sample chat request should deserialize");
 
-    let built = build_openai_chat_request(&state, request).expect("chat request should build");
+    let built = build_openai_chat_request(&state.snapshot(), request).expect("chat request should build");
 
     assert_eq!(built.generate_request.sampling.repetition_penalty, 1.03);
 
@@ -989,7 +1005,7 @@ async fn openai_glm_chat_keeps_standard_repetition_penalty_default() {
     }))
     .expect("sample chat request should deserialize");
 
-    let built = build_openai_chat_request(&state, request).expect("chat request should build");
+    let built = build_openai_chat_request(&state.snapshot(), request).expect("chat request should build");
 
     assert_eq!(built.generate_request.sampling.repetition_penalty, 1.0);
 
@@ -1009,7 +1025,7 @@ async fn openai_glm_chat_preserves_explicit_repetition_penalty() {
     }))
     .expect("sample chat request should deserialize");
 
-    let built = build_openai_chat_request(&state, request).expect("chat request should build");
+    let built = build_openai_chat_request(&state.snapshot(), request).expect("chat request should build");
 
     assert_eq!(built.generate_request.sampling.repetition_penalty, 1.03);
 
@@ -1037,7 +1053,7 @@ async fn openai_chat_request_rejects_gemma4_artifact_without_chat_template() {
     }))
     .expect("sample chat request should deserialize");
 
-    let error = match build_openai_chat_request(&state, request) {
+    let error = match build_openai_chat_request(&state.snapshot(), request) {
         Ok(_) => panic!("Gemma4 base artifact should fail closed for OpenAI chat"),
         Err(error) => error,
     };

@@ -1,7 +1,7 @@
 use ax_engine_sdk::{GenerateRequest, GenerateSampling, RequestMultimodalInputs};
 use serde::Deserialize;
 
-use crate::app_state::AppState;
+use crate::app_state::LiveState;
 use crate::openai::requests::{GenerateRequestParts, build_generate_request_internal};
 
 #[derive(Debug, Deserialize)]
@@ -23,11 +23,11 @@ pub(crate) struct GenerateHttpRequest {
 }
 
 pub(crate) fn build_generate_request(
-    state: &AppState,
+    live: &LiveState,
     request: GenerateHttpRequest,
 ) -> GenerateRequest {
     build_generate_request_internal(
-        state,
+        live,
         GenerateRequestParts {
             input_tokens: request.input_tokens,
             input_text: request.input_text,

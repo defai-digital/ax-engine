@@ -3,7 +3,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use ax_engine_sdk::{GenerateFinishReason, GenerateRequest, GenerateSampling, GenerateStreamEvent};
 
 use super::proto;
-use crate::app_state::AppState;
+use crate::app_state::LiveState;
 
 pub(super) fn proto_sampling_to_sdk(s: proto::GenerateSampling) -> GenerateSampling {
     GenerateSampling {
@@ -24,12 +24,12 @@ pub(super) fn proto_sampling_to_sdk(s: proto::GenerateSampling) -> GenerateSampl
 }
 
 pub(super) fn proto_to_generate_request(
-    state: &AppState,
+    live: &LiveState,
     req: proto::GenerateRequest,
 ) -> GenerateRequest {
     let sampling = req.sampling.map(proto_sampling_to_sdk).unwrap_or_default();
     GenerateRequest {
-        model_id: state.model_id.to_string(),
+        model_id: live.model_id.to_string(),
         input_tokens: req.input_tokens,
         input_text: if req.input_text.is_empty() {
             None

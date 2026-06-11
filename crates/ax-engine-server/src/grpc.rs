@@ -57,7 +57,8 @@ async fn run_grpc_generate_request(
     request_id: u64,
     request: ax_engine_sdk::GenerateRequest,
 ) -> Result<ax_engine_sdk::GenerateResponse, Status> {
-    let ctx = Arc::clone(&state.stateless_generate_context);
+    let live = state.snapshot();
+    let ctx = Arc::clone(&live.stateless_generate_context);
     run_blocking(move || ctx.generate_with_request_id(request_id, request)).await
 }
 
@@ -69,7 +70,8 @@ impl AxEngine for AxEngineGrpcService {
         &self,
         _request: Request<proto::HealthRequest>,
     ) -> Result<Response<proto::HealthResponse>, Status> {
-        let session_lock = self.state.request_session.try_lock();
+        let live = self.state.snapshot();
+        let session_lock = live.request_session.try_lock();
         if session_lock.is_err() {
             return Err(Status::unavailable(
                 "ax-engine-server has not finished initialising its inference session",
@@ -80,7 +82,7 @@ impl AxEngine for AxEngineGrpcService {
         Ok(Response::new(proto::HealthResponse {
             status: "ok".to_string(),
             service: "ax-engine-server".to_string(),
-            model_id: self.state.model_id.to_string(),
+            model_id: live.model_id.to_string(),
         }))
     }
 
@@ -88,10 +90,11 @@ impl AxEngine for AxEngineGrpcService {
         &self,
         _request: Request<proto::ModelsRequest>,
     ) -> Result<Response<proto::ModelsResponse>, Status> {
+        let live = self.state.snapshot();
         Ok(Response::new(proto::ModelsResponse {
             object: "list".to_string(),
             data: vec![proto::ModelCard {
-                id: self.state.model_id.to_string(),
+                id: live.model_id.to_string(),
                 object: "model".to_string(),
                 owned_by: MODEL_OWNER.to_string(),
             }],
@@ -104,7 +107,8 @@ impl AxEngine for AxEngineGrpcService {
         &self,
         request: Request<proto::GenerateRequest>,
     ) -> Result<Response<proto::GenerateResponse>, Status> {
-        let req = proto_to_generate_request(&self.state, request.into_inner());
+        let live = self.state.snapshot();
+        let req = proto_to_generate_request(&live, request.into_inner());
         let request_id = self.state.allocate_request_id();
         let response = run_grpc_generate_request(&self.state, request_id, req).await?;
         Ok(Response::new(sdk_response_to_proto(response)))
@@ -118,7 +122,8 @@ impl AxEngine for AxEngineGrpcService {
         &self,
         request: Request<proto::GenerateRequest>,
     ) -> Result<Response<Self::StreamGenerateStream>, Status> {
-        let req = proto_to_generate_request(&self.state, request.into_inner());
+        let live = self.state.snapshot();
+        let req = proto_to_generate_request(&live, request.into_inner());
         let (ss, ctx) = build_grpc_stream_state(&self.state, req).await?;
         let (tx, rx) = mpsc::channel(GRPC_CHANNEL_CAPACITY);
         spawn_grpc_generate_stream(ss, tx, ctx);
@@ -131,8 +136,9 @@ impl AxEngine for AxEngineGrpcService {
         &self,
         request: Request<proto::ChatCompletionRequest>,
     ) -> Result<Response<proto::ChatCompletionResponse>, Status> {
+        let live = self.state.snapshot();
         let req = request.into_inner();
-        let generate_req = build_chat_generate_request(&self.state, &req)?;
+        let generate_req = build_chat_generate_request(&live, &req)?;
         let request_id = self.state.allocate_request_id();
         let r = run_grpc_generate_request(&self.state, request_id, generate_req).await?;
         let content = r.output_text.unwrap_or_default();
@@ -166,9 +172,10 @@ impl AxEngine for AxEngineGrpcService {
         &self,
         request: Request<proto::ChatCompletionRequest>,
     ) -> Result<Response<Self::StreamChatCompletionStream>, Status> {
+        let live = self.state.snapshot();
         let req = request.into_inner();
-        let model_id = self.state.model_id.to_string();
-        let generate_req = build_chat_generate_request(&self.state, &req)?;
+        let model_id = live.model_id.to_string();
+        let generate_req = build_chat_generate_request(&live, &req)?;
         let (ss, ctx) = build_grpc_stream_state(&self.state, generate_req).await?;
         let (tx, rx) = mpsc::channel(GRPC_CHANNEL_CAPACITY);
         spawn_grpc_chat_stream(ss, model_id, tx, ctx);
@@ -181,8 +188,9 @@ impl AxEngine for AxEngineGrpcService {
         &self,
         request: Request<proto::CompletionRequest>,
     ) -> Result<Response<proto::CompletionResponse>, Status> {
+        let live = self.state.snapshot();
         let req = request.into_inner();
-        let generate_req = build_completion_generate_request(&self.state, &req);
+        let generate_req = build_completion_generate_request(&live, &req);
         let request_id = self.state.allocate_request_id();
         let r = run_grpc_generate_request(&self.state, request_id, generate_req).await?;
         let text = r.output_text.unwrap_or_default();
@@ -213,9 +221,10 @@ impl AxEngine for AxEngineGrpcService {
         &self,
         request: Request<proto::CompletionRequest>,
     ) -> Result<Response<Self::StreamCompletionStream>, Status> {
+        let live = self.state.snapshot();
         let req = request.into_inner();
-        let model_id = self.state.model_id.to_string();
-        let generate_req = build_completion_generate_request(&self.state, &req);
+        let model_id = live.model_id.to_string();
+        let generate_req = build_completion_generate_request(&live, &req);
         let (ss, ctx) = build_grpc_stream_state(&self.state, generate_req).await?;
         let (tx, rx) = mpsc::channel(GRPC_CHANNEL_CAPACITY);
         spawn_grpc_completion_stream(ss, model_id, tx, ctx);
@@ -228,16 +237,16 @@ impl AxEngine for AxEngineGrpcService {
         &self,
         request: Request<proto::EmbeddingsRequest>,
     ) -> Result<Response<proto::EmbeddingsResponse>, Status> {
+        let live = self.state.snapshot();
         let req = request.into_inner();
-        let model_id = self.state.model_id.to_string();
+        let model_id = live.model_id.to_string();
         let pooling = match req.pooling.as_str() {
             "mean" => EmbeddingPooling::Mean,
             "cls" => EmbeddingPooling::Cls,
             _ => EmbeddingPooling::Last,
         };
         let prompt_tokens = grpc_embedding_prompt_tokens(&req.input);
-        let embedding = self
-            .state
+        let embedding = live
             .embedding_batcher
             .embed(req.input, pooling, req.normalize)
             .await

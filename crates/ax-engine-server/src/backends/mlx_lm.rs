@@ -3,15 +3,14 @@ use ax_engine_sdk::{
     RuntimeReport, SelectedBackend, run_blocking_chat_generate, start_streaming_chat_generate,
 };
 
-use crate::app_state::AppState;
+use crate::app_state::LiveState;
 
-pub(crate) fn is_selected(state: &AppState) -> bool {
-    state.runtime_report.selected_backend == SelectedBackend::MlxLmDelegated
+pub(crate) fn is_selected(live: &LiveState) -> bool {
+    live.runtime_report.selected_backend == SelectedBackend::MlxLmDelegated
 }
 
-pub(crate) fn config(state: &AppState) -> Result<MlxLmConfig, EngineSessionError> {
-    state
-        .session_config
+pub(crate) fn config(live: &LiveState) -> Result<MlxLmConfig, EngineSessionError> {
+    live.session_config
         .mlx_lm_backend
         .clone()
         .ok_or(EngineSessionError::MissingMlxLmConfig)

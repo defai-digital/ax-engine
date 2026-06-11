@@ -17,6 +17,7 @@ use super::generation::lifecycle::{
 use super::generation::native::generate;
 use super::generation::streaming::generate_stream;
 use super::metadata::{health, models, runtime_info};
+use super::model_load::load_model;
 use super::metrics::prometheus_metrics;
 use super::openai::chat::openai_chat_completions;
 use super::openai::compat::{apply_template, detokenize, props, slots, tokenize};
@@ -45,6 +46,7 @@ pub(crate) fn build_router(state: AppState) -> Router {
         .route("/v1/detokenize", post(detokenize))
         .route("/apply-template", post(apply_template))
         .route("/v1/apply-template", post(apply_template))
+        .route("/v1/model/load", post(load_model))
         .route("/v1/embeddings", post(openai_embeddings))
         .route("/v1/messages", post(anthropic_messages))
         .route("/v1/completions", post(openai_completions))

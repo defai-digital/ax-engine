@@ -138,7 +138,7 @@ async fn generate_request_builder_preserves_gemma4_multimodal_inputs_for_native_
     }))
     .expect("Gemma4 multimodal generate request should deserialize");
 
-    let built = build_generate_request(&state, request);
+    let built = build_generate_request(&state.snapshot(), request);
     let inputs = built
         .multimodal_inputs
         .gemma4_unified

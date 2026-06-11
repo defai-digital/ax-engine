@@ -17,14 +17,15 @@ pub(crate) async fn openai_chat_completions(
     State(state): State<AppState>,
     Json(request): Json<OpenAiChatCompletionHttpRequest>,
 ) -> Result<axum::response::Response, (StatusCode, Json<ErrorResponse>)> {
-    validate_openai_request(&state, request.model.as_deref())?;
-    if mlx_lm::is_selected(&state) {
+    let live = state.snapshot();
+    validate_openai_request(&live, request.model.as_deref())?;
+    if mlx_lm::is_selected(&live) {
         return run_openai_mlx_lm_chat_generation(state, request).await;
     }
-    if llama_cpp::supports_server_chat(&state) {
+    if llama_cpp::supports_server_chat(&live) {
         return run_openai_llama_cpp_chat_generation(state, request).await;
     }
-    let request = build_openai_chat_request_offloading_media(&state, request).await?;
+    let request = build_openai_chat_request_offloading_media(&live, request).await?;
 
     run_openai_text_generation(state, request, OpenAiStreamKind::ChatCompletion).await
 }

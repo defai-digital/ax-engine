@@ -6,7 +6,7 @@ use ax_engine_sdk::{GenerateRequest, GenerateSampling};
 use tonic::Status;
 
 use super::proto;
-use crate::{app_state::AppState, chat};
+use crate::{app_state::LiveState, chat};
 
 /// Render a chat prompt from plain (role, content) pairs.
 fn render_grpc_chat_prompt(
@@ -22,12 +22,12 @@ fn grpc_chat_stop_sequences(model_id: &str, stop: Vec<String>) -> Vec<String> {
 }
 
 pub(super) fn build_chat_generate_request(
-    state: &AppState,
+    live: &LiveState,
     req: &proto::ChatCompletionRequest,
 ) -> Result<GenerateRequest, Status> {
     chat::validate_native_chat_artifact(
-        state.model_id.as_ref(),
-        state.session_config.mlx_model_artifacts_dir.as_deref(),
+        live.model_id.as_ref(),
+        live.session_config.mlx_model_artifacts_dir.as_deref(),
     )
     .map_err(Status::invalid_argument)?;
     let pairs: Vec<(String, String)> = req
@@ -35,7 +35,7 @@ pub(super) fn build_chat_generate_request(
         .iter()
         .map(|m| (m.role.clone(), m.content.clone()))
         .collect();
-    let input_text = render_grpc_chat_prompt(state.model_id.as_ref(), &pairs)
+    let input_text = render_grpc_chat_prompt(live.model_id.as_ref(), &pairs)
         .map_err(Status::invalid_argument)?;
     let max_output_tokens = if req.max_tokens == 0 {
         256
@@ -54,10 +54,10 @@ pub(super) fn build_chat_generate_request(
         deterministic: None,
         ignore_eos: false,
     };
-    let stop_sequences = grpc_chat_stop_sequences(state.model_id.as_ref(), req.stop.clone());
+    let stop_sequences = grpc_chat_stop_sequences(live.model_id.as_ref(), req.stop.clone());
 
     Ok(GenerateRequest {
-        model_id: state.model_id.to_string(),
+        model_id: live.model_id.to_string(),
         input_tokens: Vec::new(),
         input_text: Some(input_text),
         multimodal_inputs: Default::default(),
@@ -69,7 +69,7 @@ pub(super) fn build_chat_generate_request(
 }
 
 pub(super) fn build_completion_generate_request(
-    state: &AppState,
+    live: &LiveState,
     req: &proto::CompletionRequest,
 ) -> GenerateRequest {
     let max_output_tokens = if req.max_tokens == 0 {
@@ -90,7 +90,7 @@ pub(super) fn build_completion_generate_request(
         ignore_eos: false,
     };
     GenerateRequest {
-        model_id: state.model_id.to_string(),
+        model_id: live.model_id.to_string(),
         input_tokens: Vec::new(),
         input_text: Some(req.prompt.clone()),
         multimodal_inputs: Default::default(),
@@ -108,7 +108,7 @@ pub(super) fn grpc_embedding_prompt_tokens(input: &[u32]) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app_state::build_app_state;
+    use crate::app_state::{AppState, build_app_state};
     use crate::args::ServerArgs;
     use ax_engine_sdk::EngineSession;
     use clap::Parser;
@@ -189,7 +189,8 @@ mod tests {
             stop: Vec::new(),
         };
 
-        let error = build_chat_generate_request(&state, &req)
+        let live = state.snapshot();
+        let error = build_chat_generate_request(&live, &req)
             .expect_err("Gemma4 base artifact should fail closed for gRPC chat");
         assert_eq!(error.code(), tonic::Code::InvalidArgument);
         assert!(error.message().contains("chat_template.jinja"));

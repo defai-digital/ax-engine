@@ -2,7 +2,7 @@ use ax_engine_sdk::{EngineTokenizer, GenerateResponse, SelectedBackend};
 use axum::Json;
 use axum::http::StatusCode;
 
-use crate::app_state::AppState;
+use crate::app_state::{AppState, LiveState};
 use crate::backends::{llama_cpp, mlx_lm};
 use crate::chat::{decode_gemma4_chat_output, decode_gemma4_chat_output_with_reasoning};
 use crate::errors::{ErrorResponse, error_response, map_session_error};
@@ -21,18 +21,19 @@ pub(crate) async fn run_openai_llama_cpp_chat_generation(
     state: AppState,
     request: OpenAiChatCompletionHttpRequest,
 ) -> Result<axum::response::Response, (StatusCode, Json<ErrorResponse>)> {
+    let live = state.snapshot();
     let OpenAiBuiltLlamaCppChatRequest {
         chat_request,
         stream,
         response_options,
-    } = build_openai_llama_cpp_chat_request(&state, request)?;
+    } = build_openai_llama_cpp_chat_request(&live, request)?;
     if stream {
         return stream_openai_llama_cpp_chat_request(state, chat_request).await;
     }
 
     let request_id = state.allocate_request_id();
-    let runtime = state.runtime_report.clone();
-    let llama_backend = llama_cpp::config(&state).map_err(map_session_error)?;
+    let runtime = live.runtime_report.clone();
+    let llama_backend = llama_cpp::config(&live).map_err(map_session_error)?;
     let response = run_blocking_session_task(move || {
         llama_cpp::run_chat_generate(request_id, &runtime, &llama_backend, &chat_request)
     })
@@ -51,18 +52,19 @@ pub(crate) async fn run_openai_mlx_lm_chat_generation(
     state: AppState,
     request: OpenAiChatCompletionHttpRequest,
 ) -> Result<axum::response::Response, (StatusCode, Json<ErrorResponse>)> {
+    let live = state.snapshot();
     let OpenAiBuiltMlxLmChatRequest {
         chat_request,
         stream,
         response_options,
-    } = build_openai_mlx_lm_chat_request(&state, request)?;
+    } = build_openai_mlx_lm_chat_request(&live, request)?;
     if stream {
         return stream_openai_mlx_lm_chat_request(state, chat_request).await;
     }
 
     let request_id = state.allocate_request_id();
-    let runtime = state.runtime_report.clone();
-    let mlx_lm_backend = mlx_lm::config(&state).map_err(map_session_error)?;
+    let runtime = live.runtime_report.clone();
+    let mlx_lm_backend = mlx_lm::config(&live).map_err(map_session_error)?;
     let response = run_blocking_session_task(move || {
         mlx_lm::run_chat_generate(request_id, &runtime, &mlx_lm_backend, &chat_request)
     })
@@ -82,6 +84,7 @@ pub(crate) async fn run_openai_text_generation(
     request: OpenAiBuiltRequest,
     kind: OpenAiStreamKind,
 ) -> Result<axum::response::Response, (StatusCode, Json<ErrorResponse>)> {
+    let live = state.snapshot();
     let OpenAiBuiltRequest {
         generate_request,
         stream,
@@ -94,7 +97,7 @@ pub(crate) async fn run_openai_text_generation(
     let (request_id, mut response) =
         run_stateless_generate_request(&state, generate_request).await?;
     let native_reasoning = populate_native_mlx_output_text(
-        &state,
+        &live,
         &mut response,
         kind,
         response_options.include_reasoning,
@@ -134,19 +137,19 @@ pub(crate) fn validate_openai_json_object_response(
 /// token-level and never survives into `output_text`, so the response layer
 /// cannot recover it afterwards).
 pub(crate) fn populate_native_mlx_output_text(
-    state: &AppState,
+    live: &LiveState,
     response: &mut GenerateResponse,
     kind: OpenAiStreamKind,
     include_reasoning: bool,
 ) -> Result<Option<String>, (StatusCode, Json<ErrorResponse>)> {
-    if state.runtime_report.selected_backend != SelectedBackend::Mlx
+    if live.runtime_report.selected_backend != SelectedBackend::Mlx
         || response.output_text.is_some()
         || response.output_tokens.is_empty()
     {
         return Ok(None);
     }
 
-    let Some(model_dir) = state.session_config.mlx_model_artifacts_dir() else {
+    let Some(model_dir) = live.session_config.mlx_model_artifacts_dir() else {
         return Err(error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             "server_error",

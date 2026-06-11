@@ -8,7 +8,7 @@ use serde_json::{Map, Value};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::app_state::AppState;
+use crate::app_state::LiveState;
 use crate::chat;
 use crate::errors::{ErrorResponse, error_response};
 use crate::openai::chat_requests::{build_llama_cpp_chat_messages, build_mlx_lm_chat_messages};
@@ -179,7 +179,7 @@ impl OpenAiSamplingParams {
 }
 
 pub(crate) fn build_openai_completion_request(
-    state: &AppState,
+    live: &LiveState,
     request: OpenAiCompletionHttpRequest,
 ) -> Result<OpenAiBuiltRequest, (StatusCode, Json<ErrorResponse>)> {
     let max_output_tokens = openai_max_tokens(request.max_tokens);
@@ -190,7 +190,7 @@ pub(crate) fn build_openai_completion_request(
     let metadata = openai_workload_metadata(request.metadata, false, structured_output);
     let multimodal_inputs = request.multimodal_inputs;
     reject_openai_multimodal_inputs_without_native_mlx(
-        state,
+        live,
         "OpenAI completions",
         &multimodal_inputs,
     )?;
@@ -224,7 +224,7 @@ pub(crate) fn build_openai_completion_request(
     };
 
     let payload = OpenAiBuiltPayload {
-        sampling: build_openai_sampling(state, sampling_params),
+        sampling: build_openai_sampling(live, sampling_params),
         multimodal_inputs,
         stop_sequences: request
             .stop
@@ -235,7 +235,7 @@ pub(crate) fn build_openai_completion_request(
     };
 
     build_openai_generate_request(
-        state,
+        live,
         input_tokens,
         input_text,
         max_output_tokens,
@@ -250,18 +250,18 @@ pub(crate) fn build_openai_completion_request(
 /// video — seconds-scale blocking work that must not stall the async executor
 /// threads. Text-only requests build inline; that path is template rendering.
 pub(crate) async fn build_openai_chat_request_offloading_media(
-    state: &AppState,
+    live: &LiveState,
     request: OpenAiChatCompletionHttpRequest,
 ) -> Result<OpenAiBuiltRequest, (StatusCode, Json<ErrorResponse>)> {
     if !messages_contain_inline_media(&request.messages) {
-        return build_openai_chat_request(state, request);
+        return build_openai_chat_request(live, request);
     }
-    let state = state.clone();
-    run_blocking_http_task(move || build_openai_chat_request(&state, request)).await
+    let live = live.clone();
+    run_blocking_http_task(move || build_openai_chat_request(&live, request)).await
 }
 
 pub(crate) fn build_openai_chat_request(
-    state: &AppState,
+    live: &LiveState,
     request: OpenAiChatCompletionHttpRequest,
 ) -> Result<OpenAiBuiltRequest, (StatusCode, Json<ErrorResponse>)> {
     let max_output_tokens = openai_max_tokens(request.max_tokens);
@@ -270,7 +270,7 @@ pub(crate) fn build_openai_chat_request(
     response_options.reject_unsupported_streaming_contract(request.stream)?;
     let mut input_tokens = request.input_tokens;
     let mut multimodal_inputs = request.multimodal_inputs;
-    reject_openai_multimodal_inputs_without_native_mlx(state, "OpenAI chat", &multimodal_inputs)?;
+    reject_openai_multimodal_inputs_without_native_mlx(live, "OpenAI chat", &multimodal_inputs)?;
     reject_openai_multimodal_inputs_without_tokens(
         "OpenAI chat",
         &multimodal_inputs,
@@ -282,14 +282,14 @@ pub(crate) fn build_openai_chat_request(
         let _ = build_mlx_lm_chat_messages(&request.messages)?;
         None
     } else {
-        validate_native_chat_artifacts(state)?;
+        validate_native_chat_artifacts(live)?;
         // On native MLX, decode inline base64 image/audio parts into Gemma 4
         // unified soft-token spans + tensors. Falls back to text-only rendering
         // when there is no inline media.
-        let media_prompt = if state.runtime_report.selected_backend == SelectedBackend::Mlx
+        let media_prompt = if live.runtime_report.selected_backend == SelectedBackend::Mlx
             && multimodal_inputs.is_empty()
         {
-            let model_dir = state.session_config.mlx_model_artifacts_dir().ok_or_else(|| {
+            let model_dir = live.session_config.mlx_model_artifacts_dir().ok_or_else(|| {
                 error_response(
                     StatusCode::BAD_REQUEST,
                     "invalid_request",
@@ -297,7 +297,7 @@ pub(crate) fn build_openai_chat_request(
                 )
             })?;
             render_gemma4_unified_chat_with_media(
-                state.model_id.as_ref(),
+                live.model_id.as_ref(),
                 model_dir,
                 &request.messages,
             )?
@@ -311,7 +311,7 @@ pub(crate) fn build_openai_chat_request(
                 None
             }
             None => Some(render_openai_chat_prompt(
-                state.model_id.as_ref(),
+                live.model_id.as_ref(),
                 &request.messages,
             )?),
         }
@@ -321,15 +321,15 @@ pub(crate) fn build_openai_chat_request(
     let metadata = openai_workload_metadata(request.metadata, tool_call, structured_output);
 
     let payload = OpenAiBuiltPayload {
-        sampling: build_openai_sampling(state, sampling_params),
+        sampling: build_openai_sampling(live, sampling_params),
         multimodal_inputs,
-        stop_sequences: openai_chat_stop_sequences(state.model_id.as_ref(), request.stop),
+        stop_sequences: openai_chat_stop_sequences(live.model_id.as_ref(), request.stop),
         stream: request.stream,
         metadata,
     };
 
     build_openai_generate_request(
-        state,
+        live,
         input_tokens,
         input_text,
         max_output_tokens,
@@ -339,17 +339,17 @@ pub(crate) fn build_openai_chat_request(
 }
 
 fn validate_native_chat_artifacts(
-    state: &AppState,
+    live: &LiveState,
 ) -> Result<(), (StatusCode, Json<ErrorResponse>)> {
     chat::validate_native_chat_artifact(
-        state.model_id.as_ref(),
-        state.session_config.mlx_model_artifacts_dir.as_deref(),
+        live.model_id.as_ref(),
+        live.session_config.mlx_model_artifacts_dir.as_deref(),
     )
     .map_err(|message| error_response(StatusCode::BAD_REQUEST, "invalid_request", message))
 }
 
 pub(crate) fn build_openai_mlx_lm_chat_request(
-    state: &AppState,
+    live: &LiveState,
     request: OpenAiChatCompletionHttpRequest,
 ) -> Result<OpenAiBuiltMlxLmChatRequest, (StatusCode, Json<ErrorResponse>)> {
     reject_delegated_chat_extensions(&request.input_tokens, &request.multimodal_inputs)?;
@@ -359,20 +359,20 @@ pub(crate) fn build_openai_mlx_lm_chat_request(
     response_options.reject_unsupported_streaming_contract(request.stream)?;
     let messages = build_mlx_lm_chat_messages(&request.messages)?;
     let sampling = build_openai_sampling_with_default_repetition_penalty(sampling_params, 1.0);
-    let stop_sequences = openai_chat_stop_sequences(state.model_id.as_ref(), request.stop);
+    let stop_sequences = openai_chat_stop_sequences(live.model_id.as_ref(), request.stop);
     let tool_call = openai_tools_are_enabled(request.tools.as_ref(), request.tool_choice.as_ref());
     let structured_output = openai_response_format_is_structured(request.response_format.as_ref());
     let metadata = openai_workload_metadata(request.metadata, tool_call, structured_output);
 
     Ok(OpenAiBuiltMlxLmChatRequest {
         chat_request: MlxLmChatGenerateRequest {
-            model_id: state.model_id.to_string(),
+            model_id: live.model_id.to_string(),
             messages,
             max_output_tokens,
             sampling,
             stop_sequences,
             metadata,
-            chat_template_kwargs: chat_template_kwargs_for_model_id(state.model_id.as_ref()),
+            chat_template_kwargs: chat_template_kwargs_for_model_id(live.model_id.as_ref()),
         },
         stream: request.stream,
         response_options,
@@ -380,7 +380,7 @@ pub(crate) fn build_openai_mlx_lm_chat_request(
 }
 
 pub(crate) fn build_openai_llama_cpp_chat_request(
-    state: &AppState,
+    live: &LiveState,
     request: OpenAiChatCompletionHttpRequest,
 ) -> Result<OpenAiBuiltLlamaCppChatRequest, (StatusCode, Json<ErrorResponse>)> {
     reject_delegated_chat_extensions(&request.input_tokens, &request.multimodal_inputs)?;
@@ -390,14 +390,14 @@ pub(crate) fn build_openai_llama_cpp_chat_request(
     response_options.reject_unsupported_streaming_contract(request.stream)?;
     let messages = build_llama_cpp_chat_messages(&request.messages)?;
     let sampling = build_openai_sampling_with_default_repetition_penalty(sampling_params, 1.0);
-    let stop_sequences = openai_chat_stop_sequences(state.model_id.as_ref(), request.stop);
+    let stop_sequences = openai_chat_stop_sequences(live.model_id.as_ref(), request.stop);
     let tool_call = openai_tools_are_enabled(request.tools.as_ref(), request.tool_choice.as_ref());
     let structured_output = openai_response_format_is_structured(request.response_format.as_ref());
     let metadata = openai_workload_metadata(request.metadata, tool_call, structured_output);
 
     Ok(OpenAiBuiltLlamaCppChatRequest {
         chat_request: LlamaCppChatGenerateRequest {
-            model_id: state.model_id.to_string(),
+            model_id: live.model_id.to_string(),
             messages,
             max_output_tokens,
             sampling,
@@ -410,7 +410,7 @@ pub(crate) fn build_openai_llama_cpp_chat_request(
 }
 
 fn build_openai_generate_request(
-    state: &AppState,
+    live: &LiveState,
     input_tokens: Vec<u32>,
     input_text: Option<String>,
     max_output_tokens: u32,
@@ -418,11 +418,11 @@ fn build_openai_generate_request(
     response_options: OpenAiResponseOptions,
 ) -> Result<OpenAiBuiltRequest, (StatusCode, Json<ErrorResponse>)> {
     let (input_tokens, input_text) =
-        tokenize_native_mlx_text_input(state, input_tokens, input_text)?;
+        tokenize_native_mlx_text_input(live, input_tokens, input_text)?;
 
     Ok(OpenAiBuiltRequest {
         generate_request: build_generate_request_internal(
-            state,
+            live,
             GenerateRequestParts {
                 input_tokens,
                 input_text,
@@ -443,11 +443,11 @@ type NativeMlxTokenizeResult =
     Result<(Vec<u32>, Option<String>), (StatusCode, Json<ErrorResponse>)>;
 
 fn tokenize_native_mlx_text_input(
-    state: &AppState,
+    live: &LiveState,
     input_tokens: Vec<u32>,
     input_text: Option<String>,
 ) -> NativeMlxTokenizeResult {
-    if state.runtime_report.selected_backend != SelectedBackend::Mlx {
+    if live.runtime_report.selected_backend != SelectedBackend::Mlx {
         return Ok((input_tokens, input_text));
     }
     if !input_tokens.is_empty() || input_text.is_none() {
@@ -455,7 +455,7 @@ fn tokenize_native_mlx_text_input(
     }
 
     let input_text = input_text.expect("checked above");
-    let Some(model_dir) = state.session_config.mlx_model_artifacts_dir() else {
+    let Some(model_dir) = live.session_config.mlx_model_artifacts_dir() else {
         return Err(error_response(
             StatusCode::BAD_REQUEST,
             "invalid_request",
@@ -481,11 +481,11 @@ fn tokenize_native_mlx_text_input(
 }
 
 fn reject_openai_multimodal_inputs_without_native_mlx(
-    state: &AppState,
+    live: &LiveState,
     route: &str,
     multimodal_inputs: &RequestMultimodalInputs,
 ) -> Result<(), (StatusCode, Json<ErrorResponse>)> {
-    if multimodal_inputs.is_empty() || state.runtime_report.selected_backend == SelectedBackend::Mlx
+    if multimodal_inputs.is_empty() || live.runtime_report.selected_backend == SelectedBackend::Mlx
     {
         return Ok(());
     }
@@ -537,11 +537,11 @@ fn reject_delegated_chat_extensions(
 }
 
 pub(crate) fn build_generate_request_internal(
-    state: &AppState,
+    live: &LiveState,
     parts: GenerateRequestParts,
 ) -> GenerateRequest {
     GenerateRequest {
-        model_id: state.model_id.to_string(),
+        model_id: live.model_id.to_string(),
         input_tokens: parts.input_tokens,
         input_text: parts.input_text,
         multimodal_inputs: parts.multimodal_inputs,
@@ -552,10 +552,10 @@ pub(crate) fn build_generate_request_internal(
     }
 }
 
-fn build_openai_sampling(state: &AppState, params: OpenAiSamplingParams) -> GenerateSampling {
+fn build_openai_sampling(live: &LiveState, params: OpenAiSamplingParams) -> GenerateSampling {
     let temperature = params.temperature.unwrap_or(0.0);
     let default_repetition_penalty =
-        default_native_mlx_openai_repetition_penalty(state, temperature);
+        default_native_mlx_openai_repetition_penalty(live, temperature);
     build_openai_sampling_with_default_repetition_penalty(
         OpenAiSamplingParams {
             temperature: Some(temperature),
@@ -587,12 +587,12 @@ fn build_openai_sampling_with_default_repetition_penalty(
     }
 }
 
-fn default_native_mlx_openai_repetition_penalty(state: &AppState, temperature: f32) -> f32 {
-    if state.runtime_report.selected_backend != SelectedBackend::Mlx || temperature > 0.0 {
+fn default_native_mlx_openai_repetition_penalty(live: &LiveState, temperature: f32) -> f32 {
+    if live.runtime_report.selected_backend != SelectedBackend::Mlx || temperature > 0.0 {
         return 1.0;
     }
 
-    let model_id = state.model_id.to_ascii_lowercase();
+    let model_id = live.model_id.to_ascii_lowercase();
     if model_id.contains("glm") {
         return 1.0;
     }

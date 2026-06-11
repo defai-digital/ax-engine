@@ -13,8 +13,9 @@ pub(crate) async fn openai_completions(
     State(state): State<AppState>,
     Json(request): Json<OpenAiCompletionHttpRequest>,
 ) -> Result<axum::response::Response, (StatusCode, Json<ErrorResponse>)> {
-    validate_openai_request(&state, request.model.as_deref())?;
-    let request = build_openai_completion_request(&state, request)?;
+    let live = state.snapshot();
+    validate_openai_request(&live, request.model.as_deref())?;
+    let request = build_openai_completion_request(&live, request)?;
 
     run_openai_text_generation(state, request, OpenAiStreamKind::Completion).await
 }

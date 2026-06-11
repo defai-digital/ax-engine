@@ -9,7 +9,7 @@ use tonic::Status;
 
 use super::conversions::{sdk_stream_event_to_proto, unix_now};
 use super::proto;
-use crate::app_state::AppState;
+use crate::app_state::{AppState, LiveState};
 use crate::generation::streaming::StreamStateSource;
 
 pub(super) type GenerateEventStream = ReceiverStream<Result<proto::GenerateStreamEvent, Status>>;
@@ -54,20 +54,29 @@ pub(super) async fn build_grpc_stream_state(
     state: &AppState,
     request: GenerateRequest,
 ) -> Result<(GenerateStreamState, StreamStateSource), Status> {
+    let live = state.snapshot();
+    build_grpc_stream_state_from_live(state, live, request).await
+}
+
+async fn build_grpc_stream_state_from_live(
+    state: &AppState,
+    live: LiveState,
+    request: GenerateRequest,
+) -> Result<(GenerateStreamState, StreamStateSource), Status> {
     let request_id = state.allocate_request_id();
 
-    if state
+    if live
         .stateless_generate_context
         .supports_stateless_streaming()
     {
-        let ctx = Arc::clone(&state.stateless_generate_context);
+        let ctx = Arc::clone(&live.stateless_generate_context);
         let stream_ctx = Arc::clone(&ctx);
         let ss = run_blocking(move || stream_ctx.stream_state_with_request_id(request_id, request))
             .await?;
         return Ok((ss, StreamStateSource::Stateless(ctx)));
     }
 
-    let stateful_context = Arc::clone(&state.stateless_generate_context);
+    let stateful_context = Arc::clone(&live.stateless_generate_context);
     let (session, ss) = run_blocking(move || {
         let mut session = stateful_context
             .build_stateful_session()

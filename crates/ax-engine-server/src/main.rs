@@ -17,6 +17,7 @@ mod generation;
 mod grpc;
 mod metadata;
 mod metrics;
+mod model_load;
 mod multimodal;
 mod openai;
 mod routes;

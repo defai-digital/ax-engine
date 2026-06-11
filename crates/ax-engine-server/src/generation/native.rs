@@ -15,9 +15,10 @@ pub(crate) async fn generate(
     State(state): State<AppState>,
     Json(request): Json<GenerateHttpRequest>,
 ) -> Result<Json<GenerateResponse>, (StatusCode, Json<ErrorResponse>)> {
-    validate_model(&state, request.model.as_deref())?;
+    let live = state.snapshot();
+    validate_model(&live, request.model.as_deref())?;
 
-    let request = build_generate_request(&state, request);
+    let request = build_generate_request(&live, request);
     let (_, response) = run_stateless_generate_request(&state, request).await?;
 
     Ok(Json(response))
@@ -27,8 +28,9 @@ pub(crate) async fn run_stateless_generate_request(
     state: &AppState,
     request: GenerateRequest,
 ) -> Result<(u64, GenerateResponse), (StatusCode, Json<ErrorResponse>)> {
+    let live = state.snapshot();
     let request_id = state.allocate_request_id();
-    let context = Arc::clone(&state.stateless_generate_context);
+    let context = Arc::clone(&live.stateless_generate_context);
     let response =
         run_blocking_session_task(move || context.generate_with_request_id(request_id, request))
             .await?;

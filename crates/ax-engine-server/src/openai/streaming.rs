@@ -10,7 +10,7 @@ use axum::response::IntoResponse;
 use axum::response::sse::Event;
 use tokio::sync::mpsc;
 
-use crate::app_state::AppState;
+use crate::app_state::{AppState, LiveState};
 use crate::backends::{llama_cpp, mlx_lm};
 use crate::chat::{Gemma4ChannelIds, strip_gemma4_channel_name_header};
 use crate::errors::{ErrorResponse, error_response, map_session_error};
@@ -34,8 +34,9 @@ pub(crate) async fn stream_openai_request(
     request: GenerateRequest,
     stream_kind: OpenAiStreamKind,
 ) -> Result<axum::response::Response, (StatusCode, Json<ErrorResponse>)> {
+    let live = state.snapshot();
     let (stream_state, stream_context) = build_stream_state(&state, request).await?;
-    let tokenizer = native_mlx_openai_stream_tokenizer(&state)?;
+    let tokenizer = native_mlx_openai_stream_tokenizer(&live)?;
 
     let (tx, rx) = mpsc::channel(STREAM_CHANNEL_CAPACITY);
     spawn_stream_task(
@@ -70,10 +71,11 @@ pub(crate) async fn stream_openai_mlx_lm_chat_request(
     state: AppState,
     request: MlxLmChatGenerateRequest,
 ) -> Result<axum::response::Response, (StatusCode, Json<ErrorResponse>)> {
+    let live = state.snapshot();
     let request_id = state.allocate_request_id();
     let model_id = request.model_id.clone();
-    let runtime = state.runtime_report.clone();
-    let mlx_lm_backend = mlx_lm::config(&state).map_err(map_session_error)?;
+    let runtime = live.runtime_report.clone();
+    let mlx_lm_backend = mlx_lm::config(&live).map_err(map_session_error)?;
     let stream = run_blocking_session_task(move || {
         mlx_lm::start_chat_stream(&runtime, &mlx_lm_backend, &request)
     })
@@ -91,10 +93,11 @@ pub(crate) async fn stream_openai_llama_cpp_chat_request(
     state: AppState,
     request: LlamaCppChatGenerateRequest,
 ) -> Result<axum::response::Response, (StatusCode, Json<ErrorResponse>)> {
+    let live = state.snapshot();
     let request_id = state.allocate_request_id();
     let model_id = request.model_id.clone();
-    let runtime = state.runtime_report.clone();
-    let llama_backend = llama_cpp::config(&state).map_err(map_session_error)?;
+    let runtime = live.runtime_report.clone();
+    let llama_backend = llama_cpp::config(&live).map_err(map_session_error)?;
     let stream = run_blocking_session_task(move || {
         llama_cpp::start_streaming_chat_generate(&runtime, &llama_backend, &request)
     })
@@ -368,12 +371,12 @@ impl Gemma4ChannelStreamFilter {
 }
 
 fn native_mlx_openai_stream_tokenizer(
-    state: &AppState,
+    live: &LiveState,
 ) -> Result<Option<EngineTokenizer>, (StatusCode, Json<ErrorResponse>)> {
-    if state.runtime_report.selected_backend != SelectedBackend::Mlx {
+    if live.runtime_report.selected_backend != SelectedBackend::Mlx {
         return Ok(None);
     }
-    let Some(model_dir) = state.session_config.mlx_model_artifacts_dir() else {
+    let Some(model_dir) = live.session_config.mlx_model_artifacts_dir() else {
         return Err(error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             "server_error",

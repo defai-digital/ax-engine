@@ -14,12 +14,13 @@ pub(crate) async fn openai_embeddings(
     State(state): State<AppState>,
     Json(request): Json<OpenAiEmbeddingRequest>,
 ) -> Result<Json<OpenAiEmbeddingResponse>, (StatusCode, Json<ErrorResponse>)> {
-    validate_model(&state, request.model.as_deref())?;
+    let live = state.snapshot();
+    validate_model(&live, request.model.as_deref())?;
 
     let pooling = parse_embedding_pooling(request.pooling.as_deref())
         .map_err(|message| error_response(StatusCode::BAD_REQUEST, "invalid_request", message))?;
     let normalize = request.normalize.unwrap_or(true);
-    let model_id = state.model_id.as_ref().clone();
+    let model_id = live.model_id.as_ref().clone();
     let was_single = request.input.is_single();
     let batch = request.input.into_batch();
 
@@ -54,14 +55,13 @@ pub(crate) async fn openai_embeddings(
             .next()
             .expect("batch.len() == 1 because input was Single");
         vec![
-            state
-                .embedding_batcher
+            live.embedding_batcher
                 .embed(single, pooling, normalize)
                 .await
                 .map_err(map_session_error)?,
         ]
     } else {
-        let session = state.request_session.clone();
+        let session = live.request_session.clone();
         tokio::task::spawn_blocking(move || {
             let s = session.blocking_lock();
             s.embed_batch_flat(&batch, pooling, normalize)
