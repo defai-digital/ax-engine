@@ -1,0 +1,799 @@
+{
+  "schema": "ax.gemma4_assistant_mtp_benchmark.v2",
+  "models": [
+    "12b-4bit-ffn4"
+  ],
+  "modes": [
+    "direct",
+    "mtp",
+    "mtp-ngram"
+  ],
+  "profiles": [
+    "direct",
+    "assistant_mtp_default",
+    "assistant_mtp_ngram_default"
+  ],
+  "suites": [
+    "flappy",
+    "long_code",
+    "python_modules_long"
+  ],
+  "sampling": {
+    "temperature": 0.6,
+    "top_p": 0.95,
+    "top_k": 20
+  },
+  "max_tokens": 1000,
+  "repetitions": 5,
+  "cooldown": 10.0,
+  "inter_case_cooldown": 5.0,
+  "rows": [
+    {
+      "artifact": "benchmarks/results/gemma4-assistant-mtp/2026-06-10-gemma4-assistant-mtp-full/12b-4bit-ffn4/flappy/direct.json",
+      "engine": "ax_engine_mlx",
+      "case_count": 4,
+      "decode_tok_s_median": 34.58233436038199,
+      "prefill_tok_s_median": 1938.1307942063095,
+      "ttft_ms_median": 188.6815,
+      "assistant_draft_tokens": 0,
+      "assistant_accepted_tokens": 0,
+      "assistant_accept_rate": null,
+      "mtp_draft_tokens": 0,
+      "mtp_accepted_tokens": 0,
+      "mtp_accept_rate": null,
+      "ngram_draft_tokens": 0,
+      "ngram_accepted_tokens": 0,
+      "ngram_accept_rate": null,
+      "ngram_hit_steps": 0,
+      "source_mtp_submitted_tokens": 0,
+      "source_mtp_accepted_tokens": 0,
+      "source_mtp_rejected_tokens": 0,
+      "source_mtp_cascade_rejected_tokens": 0,
+      "source_assistant_submitted_tokens": 0,
+      "source_assistant_accepted_tokens": 0,
+      "source_assistant_rejected_tokens": 0,
+      "source_assistant_cascade_rejected_tokens": 0,
+      "ngram_proposed_tokens": 0,
+      "ngram_rejected_tokens": 0,
+      "ngram_cascade_rejected_tokens": 0,
+      "ngram_utility_gated_steps": 0,
+      "ngram_utility_insufficient_sample_steps": 0,
+      "ngram_safety_disabled_steps": 0,
+      "ngram_safety_tightened_steps": 0,
+      "ngram_lookup_wall_us": 0,
+      "target_softmax_wall_us": 0,
+      "verify_tokens": 0,
+      "emitted_tokens": 0,
+      "utility_baseline_cost_per_emitted_token_us_median": null,
+      "utility_stacked_cost_per_emitted_token_us_median": null,
+      "gate_policies": [
+        0
+      ],
+      "safety_reasons": [
+        0
+      ],
+      "assistant_confidence_modes": [
+        1
+      ],
+      "claim_statuses": [
+        "direct_same_policy_baseline"
+      ],
+      "effective_routes": [
+        "direct_single_decode_baseline"
+      ],
+      "affine_tensor_count": 332,
+      "affine_min_bits": 4,
+      "affine_max_bits": 4,
+      "affine_4bit_count": 332,
+      "affine_8bit_count": 0,
+      "build": {
+        "commit": "be6572b5522fed62c84f5745361307932034d3e3",
+        "build_profile": "release",
+        "server_binary": "/Users/akiralam/code/ax-engine_v5/target/release/ax-engine-server",
+        "git_tracked_dirty": false,
+        "git_tracked_status": []
+      },
+      "model": "12b-4bit-ffn4",
+      "model_label": "Gemma 4 12B 4-bit-FFN",
+      "suite": "flappy",
+      "mode": "direct",
+      "profile": "direct",
+      "profile_label": "direct decode (no assistant MTP / no n-gram)",
+      "profile_experimental": false,
+      "profile_env": {},
+      "depth": 2,
+      "model_dir": "/Users/akiralam/.cache/huggingface/hub/models--ax-local--gemma-4-12b-it-4bit-ffn4-assistant-mtp/snapshots/v1"
+    },
+    {
+      "artifact": "benchmarks/results/gemma4-assistant-mtp/2026-06-10-gemma4-assistant-mtp-full/12b-4bit-ffn4/flappy/assistant_mtp_default.json",
+      "engine": "ax_engine_gemma4_assistant_mtp",
+      "case_count": 4,
+      "decode_tok_s_median": 99.66258760435099,
+      "prefill_tok_s_median": 1975.2829489295243,
+      "ttft_ms_median": 183.83499999999998,
+      "assistant_draft_tokens": 11379,
+      "assistant_accepted_tokens": 11228,
+      "assistant_accept_rate": 0.9867299411196063,
+      "mtp_draft_tokens": 11348,
+      "mtp_accepted_tokens": 11228,
+      "mtp_accept_rate": 0.9894254494183997,
+      "ngram_draft_tokens": 0,
+      "ngram_accepted_tokens": 0,
+      "ngram_accept_rate": null,
+      "ngram_hit_steps": 0,
+      "source_mtp_submitted_tokens": 0,
+      "source_mtp_accepted_tokens": 0,
+      "source_mtp_rejected_tokens": 0,
+      "source_mtp_cascade_rejected_tokens": 0,
+      "source_assistant_submitted_tokens": 11348,
+      "source_assistant_accepted_tokens": 11228,
+      "source_assistant_rejected_tokens": 89,
+      "source_assistant_cascade_rejected_tokens": 31,
+      "ngram_proposed_tokens": 0,
+      "ngram_rejected_tokens": 0,
+      "ngram_cascade_rejected_tokens": 0,
+      "ngram_utility_gated_steps": 0,
+      "ngram_utility_insufficient_sample_steps": 0,
+      "ngram_safety_disabled_steps": 0,
+      "ngram_safety_tightened_steps": 0,
+      "ngram_lookup_wall_us": 0,
+      "target_softmax_wall_us": 13,
+      "verify_tokens": 20122,
+      "emitted_tokens": 20002,
+      "utility_baseline_cost_per_emitted_token_us_median": 48960.0,
+      "utility_stacked_cost_per_emitted_token_us_median": null,
+      "gate_policies": [
+        0
+      ],
+      "safety_reasons": [
+        0
+      ],
+      "assistant_confidence_modes": [
+        1
+      ],
+      "claim_statuses": [
+        "mtp_head_only_effective"
+      ],
+      "effective_routes": [
+        "mtp_head_only_verify_loop"
+      ],
+      "affine_tensor_count": 332,
+      "affine_min_bits": 4,
+      "affine_max_bits": 4,
+      "affine_4bit_count": 332,
+      "affine_8bit_count": 0,
+      "build": {
+        "commit": "be6572b5522fed62c84f5745361307932034d3e3",
+        "build_profile": "release",
+        "server_binary": "/Users/akiralam/code/ax-engine_v5/target/release/ax-engine-server",
+        "git_tracked_dirty": false,
+        "git_tracked_status": []
+      },
+      "model": "12b-4bit-ffn4",
+      "model_label": "Gemma 4 12B 4-bit-FFN",
+      "suite": "flappy",
+      "mode": "mtp",
+      "profile": "assistant_mtp_default",
+      "profile_label": "assistant MTP default",
+      "profile_experimental": false,
+      "profile_env": {},
+      "depth": 2,
+      "model_dir": "/Users/akiralam/.cache/huggingface/hub/models--ax-local--gemma-4-12b-it-4bit-ffn4-assistant-mtp/snapshots/v1"
+    },
+    {
+      "artifact": "benchmarks/results/gemma4-assistant-mtp/2026-06-10-gemma4-assistant-mtp-full/12b-4bit-ffn4/flappy/assistant_mtp_ngram_default.json",
+      "engine": "ax_engine_gemma4_assistant_mtp_ngram",
+      "case_count": 4,
+      "decode_tok_s_median": 99.36287047238241,
+      "prefill_tok_s_median": 1979.416664909872,
+      "ttft_ms_median": 184.29649999999998,
+      "assistant_draft_tokens": 11379,
+      "assistant_accepted_tokens": 11228,
+      "assistant_accept_rate": 0.9867299411196063,
+      "mtp_draft_tokens": 11348,
+      "mtp_accepted_tokens": 11228,
+      "mtp_accept_rate": 0.9894254494183997,
+      "ngram_draft_tokens": 0,
+      "ngram_accepted_tokens": 0,
+      "ngram_accept_rate": null,
+      "ngram_hit_steps": 0,
+      "source_mtp_submitted_tokens": 0,
+      "source_mtp_accepted_tokens": 0,
+      "source_mtp_rejected_tokens": 0,
+      "source_mtp_cascade_rejected_tokens": 0,
+      "source_assistant_submitted_tokens": 11348,
+      "source_assistant_accepted_tokens": 11228,
+      "source_assistant_rejected_tokens": 89,
+      "source_assistant_cascade_rejected_tokens": 31,
+      "ngram_proposed_tokens": 0,
+      "ngram_rejected_tokens": 0,
+      "ngram_cascade_rejected_tokens": 0,
+      "ngram_utility_gated_steps": 0,
+      "ngram_utility_insufficient_sample_steps": 0,
+      "ngram_safety_disabled_steps": 0,
+      "ngram_safety_tightened_steps": 0,
+      "ngram_lookup_wall_us": 0,
+      "target_softmax_wall_us": 2,
+      "verify_tokens": 20122,
+      "emitted_tokens": 20002,
+      "utility_baseline_cost_per_emitted_token_us_median": 49236.0,
+      "utility_stacked_cost_per_emitted_token_us_median": null,
+      "gate_policies": [
+        0
+      ],
+      "safety_reasons": [
+        0
+      ],
+      "assistant_confidence_modes": [
+        1
+      ],
+      "claim_statuses": [
+        "ngram_no_observed_draft_path"
+      ],
+      "effective_routes": [
+        "ngram_route_not_observed"
+      ],
+      "affine_tensor_count": 332,
+      "affine_min_bits": 4,
+      "affine_max_bits": 4,
+      "affine_4bit_count": 332,
+      "affine_8bit_count": 0,
+      "build": {
+        "commit": "be6572b5522fed62c84f5745361307932034d3e3",
+        "build_profile": "release",
+        "server_binary": "/Users/akiralam/code/ax-engine_v5/target/release/ax-engine-server",
+        "git_tracked_dirty": false,
+        "git_tracked_status": []
+      },
+      "model": "12b-4bit-ffn4",
+      "model_label": "Gemma 4 12B 4-bit-FFN",
+      "suite": "flappy",
+      "mode": "mtp-ngram",
+      "profile": "assistant_mtp_ngram_default",
+      "profile_label": "assistant MTP + n-gram default",
+      "profile_experimental": false,
+      "profile_env": {
+        "AX_MLX_MTP_DISABLE_NGRAM_STACKING": "0"
+      },
+      "depth": 2,
+      "model_dir": "/Users/akiralam/.cache/huggingface/hub/models--ax-local--gemma-4-12b-it-4bit-ffn4-assistant-mtp/snapshots/v1"
+    },
+    {
+      "artifact": "benchmarks/results/gemma4-assistant-mtp/2026-06-10-gemma4-assistant-mtp-full/12b-4bit-ffn4/long_code/direct.json",
+      "engine": "ax_engine_mlx",
+      "case_count": 4,
+      "decode_tok_s_median": 35.72805481052589,
+      "prefill_tok_s_median": 2074.6080098893917,
+      "ttft_ms_median": 384.0265,
+      "assistant_draft_tokens": 0,
+      "assistant_accepted_tokens": 0,
+      "assistant_accept_rate": null,
+      "mtp_draft_tokens": 0,
+      "mtp_accepted_tokens": 0,
+      "mtp_accept_rate": null,
+      "ngram_draft_tokens": 0,
+      "ngram_accepted_tokens": 0,
+      "ngram_accept_rate": null,
+      "ngram_hit_steps": 0,
+      "source_mtp_submitted_tokens": 0,
+      "source_mtp_accepted_tokens": 0,
+      "source_mtp_rejected_tokens": 0,
+      "source_mtp_cascade_rejected_tokens": 0,
+      "source_assistant_submitted_tokens": 0,
+      "source_assistant_accepted_tokens": 0,
+      "source_assistant_rejected_tokens": 0,
+      "source_assistant_cascade_rejected_tokens": 0,
+      "ngram_proposed_tokens": 0,
+      "ngram_rejected_tokens": 0,
+      "ngram_cascade_rejected_tokens": 0,
+      "ngram_utility_gated_steps": 0,
+      "ngram_utility_insufficient_sample_steps": 0,
+      "ngram_safety_disabled_steps": 0,
+      "ngram_safety_tightened_steps": 0,
+      "ngram_lookup_wall_us": 0,
+      "target_softmax_wall_us": 0,
+      "verify_tokens": 0,
+      "emitted_tokens": 0,
+      "utility_baseline_cost_per_emitted_token_us_median": null,
+      "utility_stacked_cost_per_emitted_token_us_median": null,
+      "gate_policies": [
+        0
+      ],
+      "safety_reasons": [
+        0
+      ],
+      "assistant_confidence_modes": [
+        1
+      ],
+      "claim_statuses": [
+        "direct_same_policy_baseline"
+      ],
+      "effective_routes": [
+        "direct_single_decode_baseline"
+      ],
+      "affine_tensor_count": 332,
+      "affine_min_bits": 4,
+      "affine_max_bits": 4,
+      "affine_4bit_count": 332,
+      "affine_8bit_count": 0,
+      "build": {
+        "commit": "be6572b5522fed62c84f5745361307932034d3e3",
+        "build_profile": "release",
+        "server_binary": "/Users/akiralam/code/ax-engine_v5/target/release/ax-engine-server",
+        "git_tracked_dirty": false,
+        "git_tracked_status": []
+      },
+      "model": "12b-4bit-ffn4",
+      "model_label": "Gemma 4 12B 4-bit-FFN",
+      "suite": "long_code",
+      "mode": "direct",
+      "profile": "direct",
+      "profile_label": "direct decode (no assistant MTP / no n-gram)",
+      "profile_experimental": false,
+      "profile_env": {},
+      "depth": 2,
+      "model_dir": "/Users/akiralam/.cache/huggingface/hub/models--ax-local--gemma-4-12b-it-4bit-ffn4-assistant-mtp/snapshots/v1"
+    },
+    {
+      "artifact": "benchmarks/results/gemma4-assistant-mtp/2026-06-10-gemma4-assistant-mtp-full/12b-4bit-ffn4/long_code/assistant_mtp_default.json",
+      "engine": "ax_engine_gemma4_assistant_mtp",
+      "case_count": 4,
+      "decode_tok_s_median": 99.16278496426764,
+      "prefill_tok_s_median": 2082.4414471225637,
+      "ttft_ms_median": 383.54449999999997,
+      "assistant_draft_tokens": 11500,
+      "assistant_accepted_tokens": 11357,
+      "assistant_accept_rate": 0.9875652173913043,
+      "mtp_draft_tokens": 11465,
+      "mtp_accepted_tokens": 11357,
+      "mtp_accept_rate": 0.990580026166594,
+      "ngram_draft_tokens": 0,
+      "ngram_accepted_tokens": 0,
+      "ngram_accept_rate": null,
+      "ngram_hit_steps": 0,
+      "source_mtp_submitted_tokens": 0,
+      "source_mtp_accepted_tokens": 0,
+      "source_mtp_rejected_tokens": 0,
+      "source_mtp_cascade_rejected_tokens": 0,
+      "source_assistant_submitted_tokens": 11465,
+      "source_assistant_accepted_tokens": 11357,
+      "source_assistant_rejected_tokens": 86,
+      "source_assistant_cascade_rejected_tokens": 22,
+      "ngram_proposed_tokens": 0,
+      "ngram_rejected_tokens": 0,
+      "ngram_cascade_rejected_tokens": 0,
+      "ngram_utility_gated_steps": 0,
+      "ngram_utility_insufficient_sample_steps": 0,
+      "ngram_safety_disabled_steps": 0,
+      "ngram_safety_tightened_steps": 0,
+      "ngram_lookup_wall_us": 0,
+      "target_softmax_wall_us": 4,
+      "verify_tokens": 20101,
+      "emitted_tokens": 19993,
+      "utility_baseline_cost_per_emitted_token_us_median": 49332.0,
+      "utility_stacked_cost_per_emitted_token_us_median": null,
+      "gate_policies": [
+        0
+      ],
+      "safety_reasons": [
+        0
+      ],
+      "assistant_confidence_modes": [
+        1
+      ],
+      "claim_statuses": [
+        "mtp_head_only_effective"
+      ],
+      "effective_routes": [
+        "mtp_head_only_verify_loop"
+      ],
+      "affine_tensor_count": 332,
+      "affine_min_bits": 4,
+      "affine_max_bits": 4,
+      "affine_4bit_count": 332,
+      "affine_8bit_count": 0,
+      "build": {
+        "commit": "be6572b5522fed62c84f5745361307932034d3e3",
+        "build_profile": "release",
+        "server_binary": "/Users/akiralam/code/ax-engine_v5/target/release/ax-engine-server",
+        "git_tracked_dirty": false,
+        "git_tracked_status": []
+      },
+      "model": "12b-4bit-ffn4",
+      "model_label": "Gemma 4 12B 4-bit-FFN",
+      "suite": "long_code",
+      "mode": "mtp",
+      "profile": "assistant_mtp_default",
+      "profile_label": "assistant MTP default",
+      "profile_experimental": false,
+      "profile_env": {},
+      "depth": 2,
+      "model_dir": "/Users/akiralam/.cache/huggingface/hub/models--ax-local--gemma-4-12b-it-4bit-ffn4-assistant-mtp/snapshots/v1"
+    },
+    {
+      "artifact": "benchmarks/results/gemma4-assistant-mtp/2026-06-10-gemma4-assistant-mtp-full/12b-4bit-ffn4/long_code/assistant_mtp_ngram_default.json",
+      "engine": "ax_engine_gemma4_assistant_mtp_ngram",
+      "case_count": 4,
+      "decode_tok_s_median": 99.52051064782904,
+      "prefill_tok_s_median": 2084.3858511315566,
+      "ttft_ms_median": 383.3695,
+      "assistant_draft_tokens": 11500,
+      "assistant_accepted_tokens": 11357,
+      "assistant_accept_rate": 0.9875652173913043,
+      "mtp_draft_tokens": 11465,
+      "mtp_accepted_tokens": 11357,
+      "mtp_accept_rate": 0.990580026166594,
+      "ngram_draft_tokens": 0,
+      "ngram_accepted_tokens": 0,
+      "ngram_accept_rate": null,
+      "ngram_hit_steps": 0,
+      "source_mtp_submitted_tokens": 0,
+      "source_mtp_accepted_tokens": 0,
+      "source_mtp_rejected_tokens": 0,
+      "source_mtp_cascade_rejected_tokens": 0,
+      "source_assistant_submitted_tokens": 11465,
+      "source_assistant_accepted_tokens": 11357,
+      "source_assistant_rejected_tokens": 86,
+      "source_assistant_cascade_rejected_tokens": 22,
+      "ngram_proposed_tokens": 0,
+      "ngram_rejected_tokens": 0,
+      "ngram_cascade_rejected_tokens": 0,
+      "ngram_utility_gated_steps": 0,
+      "ngram_utility_insufficient_sample_steps": 0,
+      "ngram_safety_disabled_steps": 0,
+      "ngram_safety_tightened_steps": 0,
+      "ngram_lookup_wall_us": 0,
+      "target_softmax_wall_us": 23,
+      "verify_tokens": 20101,
+      "emitted_tokens": 19993,
+      "utility_baseline_cost_per_emitted_token_us_median": 49010.0,
+      "utility_stacked_cost_per_emitted_token_us_median": null,
+      "gate_policies": [
+        0
+      ],
+      "safety_reasons": [
+        0
+      ],
+      "assistant_confidence_modes": [
+        1
+      ],
+      "claim_statuses": [
+        "ngram_no_observed_draft_path"
+      ],
+      "effective_routes": [
+        "ngram_route_not_observed"
+      ],
+      "affine_tensor_count": 332,
+      "affine_min_bits": 4,
+      "affine_max_bits": 4,
+      "affine_4bit_count": 332,
+      "affine_8bit_count": 0,
+      "build": {
+        "commit": "be6572b5522fed62c84f5745361307932034d3e3",
+        "build_profile": "release",
+        "server_binary": "/Users/akiralam/code/ax-engine_v5/target/release/ax-engine-server",
+        "git_tracked_dirty": false,
+        "git_tracked_status": []
+      },
+      "model": "12b-4bit-ffn4",
+      "model_label": "Gemma 4 12B 4-bit-FFN",
+      "suite": "long_code",
+      "mode": "mtp-ngram",
+      "profile": "assistant_mtp_ngram_default",
+      "profile_label": "assistant MTP + n-gram default",
+      "profile_experimental": false,
+      "profile_env": {
+        "AX_MLX_MTP_DISABLE_NGRAM_STACKING": "0"
+      },
+      "depth": 2,
+      "model_dir": "/Users/akiralam/.cache/huggingface/hub/models--ax-local--gemma-4-12b-it-4bit-ffn4-assistant-mtp/snapshots/v1"
+    },
+    {
+      "artifact": "benchmarks/results/gemma4-assistant-mtp/2026-06-10-gemma4-assistant-mtp-full/12b-4bit-ffn4/python_modules_long/direct.json",
+      "engine": "ax_engine_mlx",
+      "case_count": 3,
+      "decode_tok_s_median": 35.200027146260936,
+      "prefill_tok_s_median": 1904.6980957804715,
+      "ttft_ms_median": 190.1,
+      "assistant_draft_tokens": 0,
+      "assistant_accepted_tokens": 0,
+      "assistant_accept_rate": null,
+      "mtp_draft_tokens": 0,
+      "mtp_accepted_tokens": 0,
+      "mtp_accept_rate": null,
+      "ngram_draft_tokens": 0,
+      "ngram_accepted_tokens": 0,
+      "ngram_accept_rate": null,
+      "ngram_hit_steps": 0,
+      "source_mtp_submitted_tokens": 0,
+      "source_mtp_accepted_tokens": 0,
+      "source_mtp_rejected_tokens": 0,
+      "source_mtp_cascade_rejected_tokens": 0,
+      "source_assistant_submitted_tokens": 0,
+      "source_assistant_accepted_tokens": 0,
+      "source_assistant_rejected_tokens": 0,
+      "source_assistant_cascade_rejected_tokens": 0,
+      "ngram_proposed_tokens": 0,
+      "ngram_rejected_tokens": 0,
+      "ngram_cascade_rejected_tokens": 0,
+      "ngram_utility_gated_steps": 0,
+      "ngram_utility_insufficient_sample_steps": 0,
+      "ngram_safety_disabled_steps": 0,
+      "ngram_safety_tightened_steps": 0,
+      "ngram_lookup_wall_us": 0,
+      "target_softmax_wall_us": 0,
+      "verify_tokens": 0,
+      "emitted_tokens": 0,
+      "utility_baseline_cost_per_emitted_token_us_median": null,
+      "utility_stacked_cost_per_emitted_token_us_median": null,
+      "gate_policies": [
+        0
+      ],
+      "safety_reasons": [
+        0
+      ],
+      "assistant_confidence_modes": [
+        1
+      ],
+      "claim_statuses": [
+        "direct_same_policy_baseline"
+      ],
+      "effective_routes": [
+        "direct_single_decode_baseline"
+      ],
+      "affine_tensor_count": 332,
+      "affine_min_bits": 4,
+      "affine_max_bits": 4,
+      "affine_4bit_count": 332,
+      "affine_8bit_count": 0,
+      "build": {
+        "commit": "d912fed5b7e9fb87ad58f979db1ac705fae5bcf9",
+        "build_profile": "release",
+        "server_binary": "/Users/akiralam/code/ax-engine_v5/target/release/ax-engine-server",
+        "git_tracked_dirty": false,
+        "git_tracked_status": []
+      },
+      "model": "12b-4bit-ffn4",
+      "model_label": "Gemma 4 12B 4-bit-FFN",
+      "suite": "python_modules_long",
+      "mode": "direct",
+      "profile": "direct",
+      "profile_label": "direct decode (no assistant MTP / no n-gram)",
+      "profile_experimental": false,
+      "profile_env": {},
+      "depth": 2,
+      "model_dir": "/Users/akiralam/.cache/huggingface/hub/models--ax-local--gemma-4-12b-it-4bit-ffn4-assistant-mtp/snapshots/v1"
+    },
+    {
+      "artifact": "benchmarks/results/gemma4-assistant-mtp/2026-06-10-gemma4-assistant-mtp-full/12b-4bit-ffn4/python_modules_long/assistant_mtp_default.json",
+      "engine": "ax_engine_gemma4_assistant_mtp",
+      "case_count": 3,
+      "decode_tok_s_median": 90.24224990533588,
+      "prefill_tok_s_median": 1899.4349419670127,
+      "ttft_ms_median": 189.75900000000001,
+      "assistant_draft_tokens": 7317,
+      "assistant_accepted_tokens": 7111,
+      "assistant_accept_rate": 0.971846385130518,
+      "mtp_draft_tokens": 7304,
+      "mtp_accepted_tokens": 7111,
+      "mtp_accept_rate": 0.9735761226725083,
+      "ngram_draft_tokens": 0,
+      "ngram_accepted_tokens": 0,
+      "ngram_accept_rate": null,
+      "ngram_hit_steps": 0,
+      "source_mtp_submitted_tokens": 0,
+      "source_mtp_accepted_tokens": 0,
+      "source_mtp_rejected_tokens": 0,
+      "source_mtp_cascade_rejected_tokens": 0,
+      "source_assistant_submitted_tokens": 7304,
+      "source_assistant_accepted_tokens": 7111,
+      "source_assistant_rejected_tokens": 145,
+      "source_assistant_cascade_rejected_tokens": 48,
+      "ngram_proposed_tokens": 0,
+      "ngram_rejected_tokens": 0,
+      "ngram_cascade_rejected_tokens": 0,
+      "ngram_utility_gated_steps": 0,
+      "ngram_utility_insufficient_sample_steps": 0,
+      "ngram_safety_disabled_steps": 0,
+      "ngram_safety_tightened_steps": 0,
+      "ngram_lookup_wall_us": 0,
+      "target_softmax_wall_us": 0,
+      "verify_tokens": 15187,
+      "emitted_tokens": 14994,
+      "utility_baseline_cost_per_emitted_token_us_median": 54769.0,
+      "utility_stacked_cost_per_emitted_token_us_median": null,
+      "gate_policies": [
+        0
+      ],
+      "safety_reasons": [
+        0
+      ],
+      "assistant_confidence_modes": [
+        1
+      ],
+      "claim_statuses": [
+        "mtp_head_only_effective"
+      ],
+      "effective_routes": [
+        "mtp_head_only_verify_loop"
+      ],
+      "affine_tensor_count": 332,
+      "affine_min_bits": 4,
+      "affine_max_bits": 4,
+      "affine_4bit_count": 332,
+      "affine_8bit_count": 0,
+      "build": {
+        "commit": "d912fed5b7e9fb87ad58f979db1ac705fae5bcf9",
+        "build_profile": "release",
+        "server_binary": "/Users/akiralam/code/ax-engine_v5/target/release/ax-engine-server",
+        "git_tracked_dirty": false,
+        "git_tracked_status": []
+      },
+      "model": "12b-4bit-ffn4",
+      "model_label": "Gemma 4 12B 4-bit-FFN",
+      "suite": "python_modules_long",
+      "mode": "mtp",
+      "profile": "assistant_mtp_default",
+      "profile_label": "assistant MTP default",
+      "profile_experimental": false,
+      "profile_env": {},
+      "depth": 2,
+      "model_dir": "/Users/akiralam/.cache/huggingface/hub/models--ax-local--gemma-4-12b-it-4bit-ffn4-assistant-mtp/snapshots/v1"
+    },
+    {
+      "artifact": "benchmarks/results/gemma4-assistant-mtp/2026-06-10-gemma4-assistant-mtp-full/12b-4bit-ffn4/python_modules_long/assistant_mtp_ngram_default.json",
+      "engine": "ax_engine_gemma4_assistant_mtp_ngram",
+      "case_count": 3,
+      "decode_tok_s_median": 90.14429035980733,
+      "prefill_tok_s_median": 1905.9203248684291,
+      "ttft_ms_median": 188.829,
+      "assistant_draft_tokens": 7317,
+      "assistant_accepted_tokens": 7111,
+      "assistant_accept_rate": 0.971846385130518,
+      "mtp_draft_tokens": 7304,
+      "mtp_accepted_tokens": 7111,
+      "mtp_accept_rate": 0.9735761226725083,
+      "ngram_draft_tokens": 0,
+      "ngram_accepted_tokens": 0,
+      "ngram_accept_rate": null,
+      "ngram_hit_steps": 0,
+      "source_mtp_submitted_tokens": 0,
+      "source_mtp_accepted_tokens": 0,
+      "source_mtp_rejected_tokens": 0,
+      "source_mtp_cascade_rejected_tokens": 0,
+      "source_assistant_submitted_tokens": 7304,
+      "source_assistant_accepted_tokens": 7111,
+      "source_assistant_rejected_tokens": 145,
+      "source_assistant_cascade_rejected_tokens": 48,
+      "ngram_proposed_tokens": 0,
+      "ngram_rejected_tokens": 0,
+      "ngram_cascade_rejected_tokens": 0,
+      "ngram_utility_gated_steps": 0,
+      "ngram_utility_insufficient_sample_steps": 0,
+      "ngram_safety_disabled_steps": 0,
+      "ngram_safety_tightened_steps": 0,
+      "ngram_lookup_wall_us": 0,
+      "target_softmax_wall_us": 30,
+      "verify_tokens": 15187,
+      "emitted_tokens": 14994,
+      "utility_baseline_cost_per_emitted_token_us_median": 54668.0,
+      "utility_stacked_cost_per_emitted_token_us_median": null,
+      "gate_policies": [
+        0
+      ],
+      "safety_reasons": [
+        0
+      ],
+      "assistant_confidence_modes": [
+        1
+      ],
+      "claim_statuses": [
+        "ngram_no_observed_draft_path"
+      ],
+      "effective_routes": [
+        "ngram_route_not_observed"
+      ],
+      "affine_tensor_count": 332,
+      "affine_min_bits": 4,
+      "affine_max_bits": 4,
+      "affine_4bit_count": 332,
+      "affine_8bit_count": 0,
+      "build": {
+        "commit": "9d3890433e192f4d307ba6fdeac73c3469acaa5c",
+        "build_profile": "release",
+        "server_binary": "/Users/akiralam/code/ax-engine_v5/target/release/ax-engine-server",
+        "git_tracked_dirty": true,
+        "git_tracked_status": [
+          " M benchmarks/results/gemma4-assistant-mtp/2026-06-10-gemma4-assistant-mtp-full/12b-4bit-ffn4/python_modules_long/assistant_mtp_ngram_default.log"
+        ]
+      },
+      "model": "12b-4bit-ffn4",
+      "model_label": "Gemma 4 12B 4-bit-FFN",
+      "suite": "python_modules_long",
+      "mode": "mtp-ngram",
+      "profile": "assistant_mtp_ngram_default",
+      "profile_label": "assistant MTP + n-gram default",
+      "profile_experimental": false,
+      "profile_env": {
+        "AX_MLX_MTP_DISABLE_NGRAM_STACKING": "0"
+      },
+      "depth": 2,
+      "model_dir": "/Users/akiralam/.cache/huggingface/hub/models--ax-local--gemma-4-12b-it-4bit-ffn4-assistant-mtp/snapshots/v1"
+    }
+  ],
+  "comparison": {
+    "parity_ok": true,
+    "warnings": [],
+    "comparisons": [
+      {
+        "model": "12b-4bit-ffn4",
+        "profile": "assistant_mtp_default",
+        "mode": "mtp",
+        "baseline": "direct",
+        "decode_tok_s_agg": 99.16278496426764,
+        "baseline_tok_s_agg": 35.200027146260936,
+        "delta_vs_baseline": 1.8171224002820419,
+        "worst_suite_delta": 1.5636983042759305,
+        "per_suite_delta": {
+          "flappy": 1.8818930083136853,
+          "long_code": 1.7754879321068764,
+          "python_modules_long": 1.5636983042759305
+        },
+        "parity_ok": true,
+        "drafted": true,
+        "affine_max_bits": 4,
+        "affine_8bit_count": 0,
+        "classification": "keep-default"
+      },
+      {
+        "model": "12b-4bit-ffn4",
+        "profile": "assistant_mtp_ngram_default",
+        "mode": "mtp-ngram",
+        "baseline": "direct",
+        "decode_tok_s_agg": 99.36287047238241,
+        "baseline_tok_s_agg": 35.200027146260936,
+        "delta_vs_baseline": 1.8228066432879744,
+        "worst_suite_delta": 1.5609153647878011,
+        "per_suite_delta": {
+          "flappy": 1.8732262384870673,
+          "long_code": 1.7855003910962757,
+          "python_modules_long": 1.5609153647878011
+        },
+        "parity_ok": true,
+        "drafted": true,
+        "affine_max_bits": 4,
+        "affine_8bit_count": 0,
+        "classification": "keep-default"
+      },
+      {
+        "model": "12b-4bit-ffn4",
+        "profile": "assistant_mtp_ngram_default",
+        "mode": "mtp-ngram",
+        "baseline": "assistant_mtp",
+        "baseline_profile": "assistant_mtp_default",
+        "decode_tok_s_agg": 99.36287047238241,
+        "baseline_tok_s_agg": 99.16278496426764,
+        "delta_vs_baseline": 0.002017747970540224,
+        "worst_suite_delta": -0.00300731838469236,
+        "per_suite_delta": {
+          "flappy": -0.00300731838469236,
+          "long_code": 0.003607459024978988,
+          "python_modules_long": -0.0010855175445128298
+        },
+        "classification": "keep-opt-in"
+      }
+    ]
+  },
+  "optimized_scenarios": [
+    {
+      "model": "12b-4bit-ffn4",
+      "profile": "assistant_mtp_ngram_default",
+      "mode": "mtp-ngram",
+      "decode_tok_s_agg": 99.36287047238241,
+      "baseline_tok_s_agg": 35.200027146260936,
+      "delta_vs_direct": 1.8228066432879744,
+      "worst_suite_delta": 1.5609153647878011,
+      "classification": "keep-default"
+    }
+  ]
+}

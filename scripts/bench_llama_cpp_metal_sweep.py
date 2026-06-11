@@ -372,6 +372,7 @@ def run_bench_for_row(
     model_args: list[str],
     full_stack: bool,
     build_ax_engine: bool,
+    skip_mlx_lm: bool = False,
     include_mlx_lm: bool = False,
 ) -> dict[str, Any]:
     """Invoke bench_mlx_inference_stack.py for one GGUF-mapped README row.
@@ -380,7 +381,8 @@ def run_bench_for_row(
     harness can generate the shape-matching prompt artifact (random tokens at
     the right vocab size). By default the llama.cpp row is the only entry in results[].
     With --full-stack, the same invocation also runs mlx_lm plus AX direct and
-    AX n-gram rows.
+    AX n-gram rows unless --skip-mlx-lm is explicitly passed for unsupported
+    reference-baseline collection.
     """
     slug = row["slug"]
     out_json = output_dir / f"{slug}.json"
@@ -415,6 +417,8 @@ def run_bench_for_row(
         cmd.append("--llama-cpp-decode-at-depth")
     if full_stack:
         cmd.append("--ax-compare-policies")
+        if skip_mlx_lm:
+            cmd.append("--skip-mlx-lm")
         if not build_ax_engine:
             cmd.append("--no-build-ax-engine")
     else:
@@ -690,6 +694,15 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--skip-mlx-lm",
+        action="store_true",
+        help=(
+            "With --full-stack, skip the mlx_lm.benchmark baseline and still "
+            "collect AX plus llama.cpp rows. Default full-stack behavior remains "
+            "fail-closed when mlx_lm.benchmark fails."
+        ),
+    )
+    parser.add_argument(
         "--no-build-ax-engine",
         action="store_true",
         help=(
@@ -843,6 +856,7 @@ def main() -> None:
             model_args=model_args,
             full_stack=args.full_stack,
             build_ax_engine=not args.no_build_ax_engine,
+            skip_mlx_lm=args.skip_mlx_lm,
             include_mlx_lm=args.include_mlx_lm,
         )
         record.update(bench_result)
@@ -870,6 +884,7 @@ def main() -> None:
         "llama_cpp_flash_attn": args.llama_cpp_flash_attn,
         "llama_cpp_decode_at_depth": args.llama_cpp_decode_at_depth,
         "full_stack": args.full_stack,
+        "skip_mlx_lm": args.skip_mlx_lm,
         "started_at": time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(started)),
         "elapsed_seconds": round(elapsed, 1),
         "total_bytes_downloaded": total_bytes_downloaded,
