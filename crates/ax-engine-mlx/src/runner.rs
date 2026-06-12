@@ -1187,10 +1187,15 @@ impl WeightLayoutTelemetry {
                 }
             }
             // Track QKV packing for dense attention layers
-            if layer.q_proj.is_some() || layer.k_proj.is_some() || layer.v_proj.is_some() || layer.qkv_packed.is_some() {
+            if layer.q_proj.is_some()
+                || layer.k_proj.is_some()
+                || layer.v_proj.is_some()
+                || layer.qkv_packed.is_some()
+            {
                 if layer.qkv_packed.is_some() {
-                    telemetry.dense_attention_qkv_packed_layers =
-                        telemetry.dense_attention_qkv_packed_layers.saturating_add(1);
+                    telemetry.dense_attention_qkv_packed_layers = telemetry
+                        .dense_attention_qkv_packed_layers
+                        .saturating_add(1);
                 } else {
                     telemetry.dense_attention_split_qkv_layers =
                         telemetry.dense_attention_split_qkv_layers.saturating_add(1);
