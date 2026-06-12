@@ -1162,6 +1162,8 @@ fn kv_layer_windows_from_config(cfg: &ModelConfig) -> Vec<Option<usize>> {
 struct WeightLayoutTelemetry {
     dense_ffn_gate_up_packed_layers: u32,
     dense_ffn_split_gate_up_layers: u32,
+    dense_attention_qkv_packed_layers: u32,
+    dense_attention_split_qkv_layers: u32,
     linear_attention_qkvz_ba_packed_layers: u32,
     linear_attention_split_qkvba_layers: u32,
 }
@@ -1182,6 +1184,16 @@ impl WeightLayoutTelemetry {
                     // only count bits≠5 split layers as unexpected hotpath fallbacks.
                     telemetry.dense_ffn_split_gate_up_layers =
                         telemetry.dense_ffn_split_gate_up_layers.saturating_add(1);
+                }
+            }
+            // Track QKV packing for dense attention layers
+            if layer.q_proj.is_some() || layer.k_proj.is_some() || layer.v_proj.is_some() || layer.qkv_packed.is_some() {
+                if layer.qkv_packed.is_some() {
+                    telemetry.dense_attention_qkv_packed_layers =
+                        telemetry.dense_attention_qkv_packed_layers.saturating_add(1);
+                } else {
+                    telemetry.dense_attention_split_qkv_layers =
+                        telemetry.dense_attention_split_qkv_layers.saturating_add(1);
                 }
             }
             if let Some(la) = layer.linear_attn.as_ref() {
@@ -1211,6 +1223,14 @@ impl WeightLayoutTelemetry {
         decisions.upsert_route_decision(
             "ax_mlx_dense_ffn_split_gate_up_layers",
             self.dense_ffn_split_gate_up_layers,
+        );
+        decisions.upsert_route_decision(
+            "ax_mlx_dense_attention_qkv_packed_layers",
+            self.dense_attention_qkv_packed_layers,
+        );
+        decisions.upsert_route_decision(
+            "ax_mlx_dense_attention_split_qkv_layers",
+            self.dense_attention_split_qkv_layers,
         );
         decisions.upsert_route_decision(
             "ax_mlx_linear_attention_qkvz_ba_packed_layers",
