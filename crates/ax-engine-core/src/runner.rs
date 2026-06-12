@@ -122,8 +122,9 @@ pub enum KvCompressionMode {
     Disabled,
     /// Accounting-only TurboQuant path. It does not change KV storage or logits.
     TurboQuantShadow,
-    /// Fused decode route selection (the MLX serving default). Compressed cold-KV decode runs
-    /// on layers that pass every eligibility gate; all other layers fall back to full precision.
+    /// Opt-in fused decode route selection. Compressed cold-KV decode runs on layers that
+    /// pass every eligibility gate; all other layers fall back to full precision. Demoted
+    /// from default-on after a real-model A/B measured ~2x slower decode (gemma4 12B).
     TurboQuantFusedExperimental,
 }
 

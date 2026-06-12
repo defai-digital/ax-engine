@@ -21,10 +21,10 @@ pub enum PreviewSupportTier {
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum)]
 pub enum PreviewMlxKvCompression {
+    #[default]
     Disabled,
     #[value(name = "turboquant-shadow")]
     TurboQuantShadow,
-    #[default]
     #[value(name = "turboquant-fused-experimental")]
     TurboQuantFusedExperimental,
 }
@@ -170,12 +170,14 @@ pub struct ServerArgs {
     #[arg(long = "prefill-chunk")]
     pub prefill_chunk: Option<usize>,
 
-    /// MLX KV compression policy. Defaults to TurboQuant fused decode (K8V4),
-    /// which compresses cold KV history on eligible layers and falls back to
-    /// the full-precision path per layer otherwise. Pass `disabled` to keep
-    /// the existing KV path unchanged; `AX_DISABLE_TURBOQUANT_FUSED_DECODE=1`
-    /// is the runtime kill switch.
-    #[arg(long = "experimental-mlx-kv-compression", value_enum, default_value_t = PreviewMlxKvCompression::TurboQuantFusedExperimental)]
+    /// MLX KV compression policy. Disabled by default: the TurboQuant fused
+    /// route is functionally complete and holds greedy parity on real
+    /// prompts, but a gemma4-12b A/B measured ~2x slower decode at 700-token
+    /// context (per-layer synchronous dispatch + query readback + CPU
+    /// hot-tail merge), failing the >=0.85 decode-throughput promotion gate.
+    /// Opt in with `turboquant-fused-experimental`;
+    /// `AX_DISABLE_TURBOQUANT_FUSED_DECODE=1` is the runtime kill switch.
+    #[arg(long = "experimental-mlx-kv-compression", value_enum, default_value_t = PreviewMlxKvCompression::Disabled)]
     pub experimental_mlx_kv_compression: PreviewMlxKvCompression,
 
     /// Full-precision tail retained when experimental MLX KV compression is enabled.

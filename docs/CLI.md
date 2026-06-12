@@ -189,9 +189,11 @@ python3 scripts/bench_mlx_inference_stack.py \
   --experimental-mlx-kv-compression turboquant-shadow
 ```
 
-The engine default is `turboquant-fused-experimental`; pass
-`--experimental-mlx-kv-compression disabled` for a full-precision baseline run,
-or `turboquant-shadow` for accounting-only evidence collection. Shadow mode is
+The engine default is `disabled` (the fused route holds greedy parity but a
+gemma4-12b A/B measured ~2x slower decode, so it stays opt-in); pass
+`--experimental-mlx-kv-compression turboquant-fused-experimental` to exercise
+the fused route, or `turboquant-shadow` for accounting-only evidence
+collection. Shadow mode is
 the full-precision shadow path: generation still uses the existing MLX KV
 decode path, while the side path records eligibility, estimated saved KiB,
 runtime shadow-storage writes, shadow-storage sync calls and wall time, current

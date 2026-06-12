@@ -158,17 +158,22 @@ prefers the n-gram utility gate. Explicit per-knob env vars still override the
 profile, and the resolved posture is reported in route metadata as
 `ax_mlx_speculation_profile`.
 
-MLX KV compression defaults to `turboquant-fused-experimental`. Pass
-`--experimental-mlx-kv-compression disabled` to keep the full-precision KV path
-unchanged, or set `AX_DISABLE_TURBOQUANT_FUSED_DECODE=1` as a runtime kill
-switch that forces every layer back to the full-precision SDPA route without
-restarting with a different flag. Default-on route selection does not imply
+MLX KV compression defaults to `disabled`. The TurboQuant fused route is
+functionally complete — it engages on eligible global-attention layers, holds
+greedy parity with full precision on real long prompts, and reports honest
+route telemetry — but it is demoted from default-on because a gemma4-12b A/B
+measured ~2x slower decode at 700-token context (per-layer synchronous Metal
+dispatch, query readback, and the CPU hot-tail merge), failing the >=0.85
+decode-throughput promotion gate. Opt in with `--experimental-mlx-kv-compression
+turboquant-fused-experimental`; `AX_DISABLE_TURBOQUANT_FUSED_DECODE=1` is the
+runtime kill switch when it is enabled. Opt-in route selection does not imply
 production TurboQuant support: promotion remains gated on the long-context
-quality artifact. The `turboquant-shadow` mode is for benchmark evidence and
-route telemetry only: it keeps generation on the existing full-precision MLX KV
-path, does not change SDPA inputs, logits, sampling, or output tokens.
+quality artifact and the decode-throughput gate. The `turboquant-shadow` mode is for benchmark
+evidence and route telemetry only: it keeps generation on the existing
+full-precision MLX KV path, does not change SDPA inputs, logits, sampling, or
+output tokens.
 
-`turboquant-fused-experimental` (the default) is the fused route selection. It
+`turboquant-fused-experimental` is the opt-in fused route selection. It
 requests compressed decode and tries the two-stage Metal cold decode plus
 full-precision hot-tail merge for eligible K8/V4 single-token decode layers.
 When Metal succeeds, route metadata reports `fused_compressed_decode`; when
