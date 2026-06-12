@@ -219,11 +219,7 @@ impl TurboQuantRotationSigns {
     }
 
     pub fn sign_at(&self, index: usize) -> f32 {
-        if self.signs[index] >= 0 {
-            1.0
-        } else {
-            -1.0
-        }
+        if self.signs[index] >= 0 { 1.0 } else { -1.0 }
     }
 
     pub fn apply(&self, values: &mut [f32]) -> Result<(), TurboQuantCodecError> {
@@ -5051,10 +5047,12 @@ mod tests {
         let address = layout
             .address_for_token(5, 1)
             .expect("address should be in range");
-        assert!(buffer.as_bytes()[address.key_payload_offset_bytes
-            ..address.key_payload_offset_bytes + layout.key_payload_bytes_per_head]
-            .iter()
-            .any(|byte| *byte != 0));
+        assert!(
+            buffer.as_bytes()[address.key_payload_offset_bytes
+                ..address.key_payload_offset_bytes + layout.key_payload_bytes_per_head]
+                .iter()
+                .any(|byte| *byte != 0)
+        );
 
         let compressed = buffer
             .read_compressed_slot(5, 1)
@@ -6939,7 +6937,6 @@ mod tests {
     fn turboquant_memory_savings_scale_with_context_length() {
         // Verify the math: for N tokens with head_dim D and n_kv_heads H,
         // the memory savings from TurboQuant are proportional to context length.
-        use ax_engine_core::TurboQuantPreset;
         let head_dim: u64 = 128;
         let n_kv_heads: u64 = 8;
         let fp16_bytes_per_token = 2 * head_dim * n_kv_heads * 2; // 2 (K+V) × D × H × 2 bytes
