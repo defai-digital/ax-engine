@@ -219,7 +219,11 @@ impl TurboQuantRotationSigns {
     }
 
     pub fn sign_at(&self, index: usize) -> f32 {
-        if self.signs[index] >= 0 { 1.0 } else { -1.0 }
+        if self.signs[index] >= 0 {
+            1.0
+        } else {
+            -1.0
+        }
     }
 
     pub fn apply(&self, values: &mut [f32]) -> Result<(), TurboQuantCodecError> {
@@ -5047,12 +5051,10 @@ mod tests {
         let address = layout
             .address_for_token(5, 1)
             .expect("address should be in range");
-        assert!(
-            buffer.as_bytes()[address.key_payload_offset_bytes
-                ..address.key_payload_offset_bytes + layout.key_payload_bytes_per_head]
-                .iter()
-                .any(|byte| *byte != 0)
-        );
+        assert!(buffer.as_bytes()[address.key_payload_offset_bytes
+            ..address.key_payload_offset_bytes + layout.key_payload_bytes_per_head]
+            .iter()
+            .any(|byte| *byte != 0));
 
         let compressed = buffer
             .read_compressed_slot(5, 1)
@@ -6817,5 +6819,233 @@ mod tests {
             (round_tripped - nearly_one).abs() <= 4.9e-4,
             "rounding drifted: {round_tripped}"
         );
+    }
+
+    // ── SSD memory optimisation: TurboQuant memory reduction tests ──
+
+    #[test]
+    fn preset_key_bits_and_value_bits_match_documentation() {
+        use ax_engine_core::TurboQuantPreset;
+        // Verify every preset reports the documented bit widths.
+        assert_eq!(TurboQuantPreset::K8V4.key_bits(), 8);
+        assert_eq!(TurboQuantPreset::K8V4.value_bits(), 4);
+
+        assert_eq!(TurboQuantPreset::K4V4.key_bits(), 4);
+        assert_eq!(TurboQuantPreset::K4V4.value_bits(), 4);
+
+        assert_eq!(TurboQuantPreset::K3V4Research.key_bits(), 3);
+        assert_eq!(TurboQuantPreset::K3V4Research.value_bits(), 4);
+
+        assert_eq!(TurboQuantPreset::K16V4.key_bits(), 16);
+        assert_eq!(TurboQuantPreset::K16V4.value_bits(), 4);
+
+        assert_eq!(TurboQuantPreset::K8V3_5.key_bits(), 8);
+        // K8V3_5 has fractional values (3.5 bits): value_bits_x2 = 7
+        assert_eq!(TurboQuantPreset::K8V3_5.value_bits_x2(), 7);
+        assert_eq!(TurboQuantPreset::K8V3_5.value_bits(), 4); // 7.div_ceil(2) = 4
+
+        assert_eq!(TurboQuantPreset::K7V4.key_bits(), 7);
+        assert_eq!(TurboQuantPreset::K7V4.value_bits(), 4);
+    }
+
+    #[test]
+    fn k8v4_memory_reduction_vs_fp16_is_approximately_62_percent() {
+        use ax_engine_core::TurboQuantPreset;
+        let preset = TurboQuantPreset::K8V4;
+        let compressed_bits = preset.key_bits() + preset.value_bits(); // 12
+        let fp16_bits: u32 = 32; // 16-bit key + 16-bit value
+        let ratio = compressed_bits as f64 / fp16_bits as f64;
+        // 12/32 = 0.375 → 62.5% reduction
+        assert!(
+            (ratio - 0.375).abs() < 0.01,
+            "K8V4 ratio must be ~37.5% of fp16 (62.5% reduction), got {ratio}"
+        );
+    }
+
+    #[test]
+    fn k4v4_memory_reduction_vs_fp16_is_approximately_75_percent() {
+        use ax_engine_core::TurboQuantPreset;
+        let preset = TurboQuantPreset::K4V4;
+        let compressed_bits = preset.key_bits() + preset.value_bits(); // 8
+        let fp16_bits: u32 = 32;
+        let ratio = compressed_bits as f64 / fp16_bits as f64;
+        // 8/32 = 0.25 → 75% reduction
+        assert!(
+            (ratio - 0.25).abs() < 0.01,
+            "K4V4 ratio must be ~25% of fp16 (75% reduction), got {ratio}"
+        );
+    }
+
+    #[test]
+    fn k3v4_research_memory_reduction_vs_fp16_is_approximately_78_percent() {
+        use ax_engine_core::TurboQuantPreset;
+        let preset = TurboQuantPreset::K3V4Research;
+        let compressed_bits = preset.key_bits() + preset.value_bits(); // 7
+        let fp16_bits: u32 = 32;
+        let ratio = compressed_bits as f64 / fp16_bits as f64;
+        // 7/32 = ~0.219 → ~78.1% reduction
+        assert!(
+            (ratio - 0.21875).abs() < 0.01,
+            "K3V4 ratio must be ~21.9% of fp16 (~78% reduction), got {ratio}"
+        );
+    }
+
+    #[test]
+    fn k16v4_fallback_preset_has_full_precision_keys() {
+        use ax_engine_core::TurboQuantPreset;
+        assert!(
+            TurboQuantPreset::K16V4.has_full_precision_keys(),
+            "K16V4 must report full-precision keys (fallback mode)"
+        );
+        // Non-K16V4 presets must not report full precision keys.
+        assert!(!TurboQuantPreset::K8V4.has_full_precision_keys());
+        assert!(!TurboQuantPreset::K4V4.has_full_precision_keys());
+    }
+
+    #[test]
+    fn k8v3_5_is_the_only_fractional_value_preset() {
+        use ax_engine_core::TurboQuantPreset;
+        assert!(
+            TurboQuantPreset::K8V3_5.has_fractional_values(),
+            "K8V3_5 must report fractional values"
+        );
+        // All other presets must not have fractional values.
+        assert!(!TurboQuantPreset::K8V4.has_fractional_values());
+        assert!(!TurboQuantPreset::K4V4.has_fractional_values());
+        assert!(!TurboQuantPreset::K3V4Research.has_fractional_values());
+        assert!(!TurboQuantPreset::K16V4.has_fractional_values());
+        assert!(!TurboQuantPreset::K7V4.has_fractional_values());
+    }
+
+    #[test]
+    fn all_presets_have_unique_route_codes() {
+        use ax_engine_core::TurboQuantPreset;
+        use std::collections::HashSet;
+        let codes: HashSet<u32> = [
+            TurboQuantPreset::K8V4,
+            TurboQuantPreset::K4V4,
+            TurboQuantPreset::K3V4Research,
+            TurboQuantPreset::K16V4,
+            TurboQuantPreset::K8V3_5,
+            TurboQuantPreset::K7V4,
+        ]
+        .iter()
+        .map(|p| p.route_code())
+        .collect();
+        assert_eq!(codes.len(), 6, "all 6 presets must have unique route codes");
+    }
+
+    #[test]
+    fn turboquant_memory_savings_scale_with_context_length() {
+        // Verify the math: for N tokens with head_dim D and n_kv_heads H,
+        // the memory savings from TurboQuant are proportional to context length.
+        use ax_engine_core::TurboQuantPreset;
+        let head_dim: u64 = 128;
+        let n_kv_heads: u64 = 8;
+        let fp16_bytes_per_token = 2 * head_dim * n_kv_heads * 2; // 2 (K+V) × D × H × 2 bytes
+
+        // 1K context
+        let ctx_1k: u64 = 1024;
+        let fp16_1k = fp16_bytes_per_token * ctx_1k;
+
+        // K8V4 compressed: (8+4)/32 of fp16
+        let compressed_1k = (fp16_1k * 12) / 32;
+        let savings_1k = fp16_1k - compressed_1k;
+
+        // 8K context — savings should scale 8x
+        let ctx_8k: u64 = 8192;
+        let fp16_8k = fp16_bytes_per_token * ctx_8k;
+        let compressed_8k = (fp16_8k * 12) / 32;
+        let savings_8k = fp16_8k - compressed_8k;
+
+        assert_eq!(
+            savings_8k / savings_1k,
+            8,
+            "TurboQuant memory savings must scale linearly with context length"
+        );
+
+        // Verify the absolute savings for 1K context
+        // fp16_1k = 2 × 128 × 8 × 2 × 1024 = 4,194,304 bytes = 4 MiB
+        assert_eq!(fp16_1k, 4_194_304, "fp16 KV for 1K ctx must be 4 MiB");
+        // compressed_1k = 4,194,304 × 12 / 32 = 1,572,864 bytes ≈ 1.5 MiB
+        assert_eq!(compressed_1k, 1_572_864, "K8V4 compressed must be 1.5 MiB");
+        // savings = 4 MiB - 1.5 MiB = 2.5 MiB = 62.5%
+        assert_eq!(savings_1k, 2_621_440, "savings must be 2.5 MiB (62.5%)");
+    }
+
+    #[test]
+    fn fallback_preset_returns_k16v4_when_quality_gate_fails_for_k8v4() {
+        use ax_engine_core::TurboQuantPreset;
+        // When K8V4 fails the quality gate, the fallback must be K16V4.
+        let readiness = TurboQuantFusedDecodePromotionReadiness {
+            status: TurboQuantFusedDecodePromotionStatus::QualityGateFailed,
+            preset: TurboQuantPreset::K8V4,
+            quality_profile: TurboQuantDecodeQualityProfile::for_quantization_preset(
+                TurboQuantPreset::K8V4,
+            ),
+            benchmark_estimate: zero_benchmark_estimate(TurboQuantPreset::K8V4),
+        };
+        assert_eq!(
+            readiness.fallback_preset(),
+            Some(TurboQuantPreset::K16V4),
+            "K8V4 with failed quality gate must fallback to K16V4"
+        );
+        assert_eq!(
+            readiness.effective_preset(),
+            TurboQuantPreset::K16V4,
+            "effective_preset must return the fallback"
+        );
+    }
+
+    #[test]
+    fn fallback_preset_returns_none_when_quality_gate_passes() {
+        use ax_engine_core::TurboQuantPreset;
+        let readiness = TurboQuantFusedDecodePromotionReadiness {
+            status: TurboQuantFusedDecodePromotionStatus::Ready,
+            preset: TurboQuantPreset::K8V4,
+            quality_profile: TurboQuantDecodeQualityProfile::for_quantization_preset(
+                TurboQuantPreset::K8V4,
+            ),
+            benchmark_estimate: zero_benchmark_estimate(TurboQuantPreset::K8V4),
+        };
+        assert_eq!(
+            readiness.fallback_preset(),
+            None,
+            "no fallback when quality gate passes"
+        );
+        assert_eq!(
+            readiness.effective_preset(),
+            TurboQuantPreset::K8V4,
+            "effective_preset must return the original preset"
+        );
+    }
+
+    fn zero_benchmark_estimate(
+        preset: ax_engine_core::TurboQuantPreset,
+    ) -> TurboQuantFusedDecodeBenchmarkEstimate {
+        TurboQuantFusedDecodeBenchmarkEstimate {
+            preset,
+            key_bits: preset.key_bits(),
+            value_bits: preset.value_bits(),
+            total_tokens: 0,
+            cold_tokens: 0,
+            hot_tokens: 0,
+            n_query_heads: 0,
+            n_kv_heads: 0,
+            head_dim: 0,
+            compressed_blocks: 0,
+            cold_score_elements: 0,
+            hot_score_elements: 0,
+            output_elements: 0,
+            compressed_buffer_kib: 0,
+            full_precision_cold_kv_kib: 0,
+            full_precision_total_kv_kib: 0,
+            estimated_compressed_cold_kv_kib: 0,
+            hot_full_precision_kv_kib: 0,
+            estimated_total_read_kib: 0,
+            estimated_cold_saved_kib: 0,
+            estimated_total_saved_read_kib: 0,
+            cold_compression_ratio_milli: 0,
+        }
     }
 }

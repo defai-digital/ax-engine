@@ -1103,4 +1103,259 @@ mod tests {
         assert!(entries.is_empty(), "no .tmp.* file should remain");
         let _ = fs::remove_dir_all(&dir);
     }
+
+    // ── SSD memory optimisation: env-var configuration & budget tests ──
+
+    /// Helper to safely set an env var in tests (unsafe in Rust 2024 edition).
+    unsafe fn test_set_var(key: &str, value: &str) {
+        // SAFETY: test-only env mutation, restored before test returns.
+        unsafe {
+            env::set_var(key, value);
+        }
+    }
+
+    /// Helper to safely remove an env var in tests (unsafe in Rust 2024 edition).
+    unsafe fn test_remove_var(key: &str) {
+        // SAFETY: test-only env mutation, restored before test returns.
+        unsafe {
+            env::remove_var(key);
+        }
+    }
+
+    /// Helper to restore an env var to its original value.
+    unsafe fn test_restore_var(key: &str, original: Option<String>) {
+        // SAFETY: test-only env mutation, restoring original value.
+        unsafe {
+            match original {
+                Some(v) => env::set_var(key, v),
+                None => env::remove_var(key),
+            }
+        }
+    }
+
+    #[test]
+    fn policy_from_env_respects_max_bytes_override() {
+        let key = "AX_MLX_PREFIX_CACHE_DISK_MAX_BYTES";
+        let old = env::var(key).ok();
+        unsafe {
+            test_set_var(key, "4096");
+        }
+        let policy = DiskPrefixCachePolicy::from_env();
+        assert_eq!(policy.max_bytes, 4096, "env override must be respected");
+        unsafe {
+            test_restore_var(key, old);
+        }
+    }
+
+    #[test]
+    fn policy_from_env_respects_max_entries_override() {
+        let key = "AX_MLX_PREFIX_CACHE_DISK_MAX_ENTRIES";
+        let old = env::var(key).ok();
+        unsafe {
+            test_set_var(key, "42");
+        }
+        let policy = DiskPrefixCachePolicy::from_env();
+        assert_eq!(policy.max_entries, 42, "env override must be respected");
+        unsafe {
+            test_restore_var(key, old);
+        }
+    }
+
+    #[test]
+    fn policy_from_env_falls_back_to_defaults() {
+        let key_bytes = "AX_MLX_PREFIX_CACHE_DISK_MAX_BYTES";
+        let key_entries = "AX_MLX_PREFIX_CACHE_DISK_MAX_ENTRIES";
+        let old_bytes = env::var(key_bytes).ok();
+        let old_entries = env::var(key_entries).ok();
+        unsafe {
+            test_remove_var(key_bytes);
+            test_remove_var(key_entries);
+        }
+        let policy = DiskPrefixCachePolicy::from_env();
+        assert_eq!(
+            policy.max_bytes, DEFAULT_DISK_CACHE_MAX_BYTES,
+            "default max_bytes must be 8 GiB"
+        );
+        assert_eq!(
+            policy.max_entries, DEFAULT_DISK_CACHE_MAX_ENTRIES,
+            "default max_entries must be 1024"
+        );
+        unsafe {
+            test_restore_var(key_bytes, old_bytes);
+            test_restore_var(key_entries, old_entries);
+        }
+    }
+
+    #[test]
+    fn policy_from_env_ignores_malformed_values() {
+        let key_bytes = "AX_MLX_PREFIX_CACHE_DISK_MAX_BYTES";
+        let key_entries = "AX_MLX_PREFIX_CACHE_DISK_MAX_ENTRIES";
+        let old_bytes = env::var(key_bytes).ok();
+        let old_entries = env::var(key_entries).ok();
+        unsafe {
+            test_set_var(key_bytes, "not-a-number");
+            test_set_var(key_entries, "xyz");
+        }
+        let policy = DiskPrefixCachePolicy::from_env();
+        assert_eq!(
+            policy.max_bytes, DEFAULT_DISK_CACHE_MAX_BYTES,
+            "malformed max_bytes must fall back to default"
+        );
+        assert_eq!(
+            policy.max_entries, DEFAULT_DISK_CACHE_MAX_ENTRIES,
+            "malformed max_entries must fall back to default"
+        );
+        unsafe {
+            test_restore_var(key_bytes, old_bytes);
+            test_restore_var(key_entries, old_entries);
+        }
+    }
+
+    #[test]
+    fn policy_from_env_rejects_zero_values() {
+        let key_bytes = "AX_MLX_PREFIX_CACHE_DISK_MAX_BYTES";
+        let key_entries = "AX_MLX_PREFIX_CACHE_DISK_MAX_ENTRIES";
+        let old_bytes = env::var(key_bytes).ok();
+        let old_entries = env::var(key_entries).ok();
+        unsafe {
+            test_set_var(key_bytes, "0");
+            test_set_var(key_entries, "0");
+        }
+        let policy = DiskPrefixCachePolicy::from_env();
+        assert_eq!(
+            policy.max_bytes, DEFAULT_DISK_CACHE_MAX_BYTES,
+            "zero max_bytes must fall back to default"
+        );
+        assert_eq!(
+            policy.max_entries, DEFAULT_DISK_CACHE_MAX_ENTRIES,
+            "zero max_entries must fall back to default"
+        );
+        unsafe {
+            test_restore_var(key_bytes, old_bytes);
+            test_restore_var(key_entries, old_entries);
+        }
+    }
+
+    #[test]
+    fn cross_session_persistence_writes_and_reopens() {
+        // Simulate two independent sessions sharing the same cache directory.
+        // Session 1 writes; session 2 opens the same dir and reads.
+        let dir = unique_tempdir("cross-session");
+        let key_bytes = canonical_key_bytes("model-x", "policy-x", "layout-x", 16, 1024, 0xcafe);
+        let payload = b"session-1-payload".to_vec();
+        let entry = DiskPrefixCacheEntry {
+            payload: payload.clone(),
+            prefill_output_token: Some(42),
+        };
+
+        // Session 1: open, write, drop.
+        {
+            let cache1 = DiskPrefixCache::open(&dir).expect("session 1 open");
+            cache1.insert(&key_bytes, &entry).expect("session 1 insert");
+        }
+
+        // Session 2: reopen, read.
+        {
+            let cache2 = DiskPrefixCache::open(&dir).expect("session 2 open");
+            let got = cache2.get(&key_bytes).expect("session 2 get").expect("hit");
+            assert_eq!(got.payload, payload);
+            assert_eq!(got.prefill_output_token, Some(42));
+        }
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn disk_cache_stores_and_measures_large_payload() {
+        // Verify that a realistically-sized KV cache payload (simulated)
+        // is stored and measured correctly for SSD capacity accounting.
+        let dir = unique_tempdir("large-payload");
+        let policy = DiskPrefixCachePolicy {
+            max_bytes: 1024 * 1024, // 1 MiB budget
+            max_entries: usize::MAX,
+        };
+        let cache = DiskPrefixCache::with_policy(&dir, policy).expect("open");
+
+        // 256 KiB payload — should fit within 1 MiB budget
+        let payload_256k = vec![0xAB_u8; 256 * 1024];
+        let key1 = canonical_key_bytes("m", "p", "l", 16, 1024, 1);
+        cache
+            .insert(&key1, &payload_only(&payload_256k))
+            .expect("insert 256k");
+
+        // Second 256 KiB — still within budget
+        let key2 = canonical_key_bytes("m", "p", "l", 16, 1024, 2);
+        let outcome = cache
+            .insert(&key2, &payload_only(&payload_256k))
+            .expect("insert second 256k");
+        assert_eq!(outcome.evictions, 0, "two 256k payloads must fit in 1 MiB");
+
+        // Verify both are readable
+        assert!(cache.get(&key1).expect("get").is_some());
+        assert!(cache.get(&key2).expect("get").is_some());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn disk_cache_evicts_when_payload_exceeds_byte_budget() {
+        // With a tight budget, inserting a large payload forces eviction.
+        let dir = unique_tempdir("evict-large");
+        let budget = 4096u64; // 4 KiB
+        let policy = DiskPrefixCachePolicy {
+            max_bytes: budget,
+            max_entries: usize::MAX,
+        };
+        let cache = DiskPrefixCache::with_policy(&dir, policy).expect("open");
+
+        let key1 = canonical_key_bytes("m", "p", "l", 16, 1024, 0xaa);
+        cache
+            .insert(&key1, &payload_only(&vec![0u8; 2048]))
+            .expect("insert first");
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+
+        let key2 = canonical_key_bytes("m", "p", "l", 16, 1024, 0xbb);
+        let outcome = cache
+            .insert(&key2, &payload_only(&vec![0u8; 2048]))
+            .expect("insert second");
+        // Two 2048-byte payloads + header overhead > 4096 budget
+        assert!(outcome.evictions >= 1, "must evict at least one entry");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn with_policy_trims_existing_entries_on_reopen() {
+        // Pre-populate 5 entries, then reopen with max_entries=2.
+        // Only 2 newest should survive.
+        let dir = unique_tempdir("reopen-trim");
+        {
+            let cache = DiskPrefixCache::open(&dir).expect("open default");
+            for i in 0..5u64 {
+                let key = canonical_key_bytes("m", "p", "l", 16, 1024, i);
+                cache
+                    .insert(&key, &payload_only(format!("payload-{i}").as_bytes()))
+                    .expect("insert");
+                std::thread::sleep(std::time::Duration::from_millis(1050));
+            }
+        }
+
+        let tight = DiskPrefixCachePolicy {
+            max_bytes: u64::MAX,
+            max_entries: 2,
+        };
+        let cache = DiskPrefixCache::with_policy(&dir, tight).expect("reopen tight");
+
+        // Entries 0-2 must be evicted; 3-4 must survive.
+        for i in 0..3 {
+            let key = canonical_key_bytes("m", "p", "l", 16, 1024, i);
+            assert!(!cache.contains(&key), "entry {i} must be evicted");
+        }
+        for i in 3..5 {
+            let key = canonical_key_bytes("m", "p", "l", 16, 1024, i);
+            assert!(cache.contains(&key), "entry {i} must survive");
+        }
+
+        let _ = fs::remove_dir_all(&dir);
+    }
 }
