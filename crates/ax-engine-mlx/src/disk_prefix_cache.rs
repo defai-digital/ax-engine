@@ -572,6 +572,9 @@ fn parse_file(raw: &[u8], expected_key: &[u8]) -> Option<DiskPrefixCacheEntry> {
 mod tests {
     use super::*;
     use std::env;
+    use std::sync::Mutex;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     fn unique_tempdir(label: &str) -> PathBuf {
         let mut dir = env::temp_dir();
@@ -1106,29 +1109,29 @@ mod tests {
 
     // ── SSD memory optimisation: env-var configuration & budget tests ──
 
-    /// Helper to safely set an env var in tests (unsafe in Rust 2024 edition).
-    unsafe fn test_set_var(key: &str, value: &str) {
-        // SAFETY: test-only env mutation, restored before test returns.
-        unsafe {
-            env::set_var(key, value);
+    struct EnvVarGuard {
+        saved: Vec<(&'static str, Option<String>)>,
+    }
+
+    impl EnvVarGuard {
+        fn capture(keys: &[&'static str]) -> Self {
+            Self {
+                saved: keys.iter().map(|&key| (key, env::var(key).ok())).collect(),
+            }
         }
     }
 
-    /// Helper to safely remove an env var in tests (unsafe in Rust 2024 edition).
-    unsafe fn test_remove_var(key: &str) {
-        // SAFETY: test-only env mutation, restored before test returns.
-        unsafe {
-            env::remove_var(key);
-        }
-    }
-
-    /// Helper to restore an env var to its original value.
-    unsafe fn test_restore_var(key: &str, original: Option<String>) {
-        // SAFETY: test-only env mutation, restoring original value.
-        unsafe {
-            match original {
-                Some(v) => env::set_var(key, v),
-                None => env::remove_var(key),
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            for (key, value) in self.saved.drain(..) {
+                // SAFETY: env-mutating tests hold ENV_LOCK for the whole scope,
+                // and this guard restores the original value before releasing it.
+                unsafe {
+                    match value {
+                        Some(v) => env::set_var(key, v),
+                        None => env::remove_var(key),
+                    }
+                }
             }
         }
     }
@@ -1136,40 +1139,51 @@ mod tests {
     #[test]
     fn policy_from_env_respects_max_bytes_override() {
         let key = "AX_MLX_PREFIX_CACHE_DISK_MAX_BYTES";
-        let old = env::var(key).ok();
+        let _env_lock = ENV_LOCK.lock().expect("env lock");
+        let _env_guard = EnvVarGuard::capture(&[key]);
         unsafe {
-            test_set_var(key, "4096");
+            env::set_var(key, "4096");
         }
         let policy = DiskPrefixCachePolicy::from_env();
         assert_eq!(policy.max_bytes, 4096, "env override must be respected");
-        unsafe {
-            test_restore_var(key, old);
-        }
     }
 
     #[test]
     fn policy_from_env_respects_max_entries_override() {
         let key = "AX_MLX_PREFIX_CACHE_DISK_MAX_ENTRIES";
-        let old = env::var(key).ok();
+        let _env_lock = ENV_LOCK.lock().expect("env lock");
+        let _env_guard = EnvVarGuard::capture(&[key]);
         unsafe {
-            test_set_var(key, "42");
+            env::set_var(key, "42");
         }
         let policy = DiskPrefixCachePolicy::from_env();
         assert_eq!(policy.max_entries, 42, "env override must be respected");
+    }
+
+    #[test]
+    fn policy_from_env_respects_combined_overrides() {
+        let key_bytes = "AX_MLX_PREFIX_CACHE_DISK_MAX_BYTES";
+        let key_entries = "AX_MLX_PREFIX_CACHE_DISK_MAX_ENTRIES";
+        let _env_lock = ENV_LOCK.lock().expect("env lock");
+        let _env_guard = EnvVarGuard::capture(&[key_bytes, key_entries]);
         unsafe {
-            test_restore_var(key, old);
+            env::set_var(key_bytes, "8192");
+            env::set_var(key_entries, "7");
         }
+        let policy = DiskPrefixCachePolicy::from_env();
+        assert_eq!(policy.max_bytes, 8192);
+        assert_eq!(policy.max_entries, 7);
     }
 
     #[test]
     fn policy_from_env_falls_back_to_defaults() {
         let key_bytes = "AX_MLX_PREFIX_CACHE_DISK_MAX_BYTES";
         let key_entries = "AX_MLX_PREFIX_CACHE_DISK_MAX_ENTRIES";
-        let old_bytes = env::var(key_bytes).ok();
-        let old_entries = env::var(key_entries).ok();
+        let _env_lock = ENV_LOCK.lock().expect("env lock");
+        let _env_guard = EnvVarGuard::capture(&[key_bytes, key_entries]);
         unsafe {
-            test_remove_var(key_bytes);
-            test_remove_var(key_entries);
+            env::remove_var(key_bytes);
+            env::remove_var(key_entries);
         }
         let policy = DiskPrefixCachePolicy::from_env();
         assert_eq!(
@@ -1180,21 +1194,17 @@ mod tests {
             policy.max_entries, DEFAULT_DISK_CACHE_MAX_ENTRIES,
             "default max_entries must be 1024"
         );
-        unsafe {
-            test_restore_var(key_bytes, old_bytes);
-            test_restore_var(key_entries, old_entries);
-        }
     }
 
     #[test]
     fn policy_from_env_ignores_malformed_values() {
         let key_bytes = "AX_MLX_PREFIX_CACHE_DISK_MAX_BYTES";
         let key_entries = "AX_MLX_PREFIX_CACHE_DISK_MAX_ENTRIES";
-        let old_bytes = env::var(key_bytes).ok();
-        let old_entries = env::var(key_entries).ok();
+        let _env_lock = ENV_LOCK.lock().expect("env lock");
+        let _env_guard = EnvVarGuard::capture(&[key_bytes, key_entries]);
         unsafe {
-            test_set_var(key_bytes, "not-a-number");
-            test_set_var(key_entries, "xyz");
+            env::set_var(key_bytes, "not-a-number");
+            env::set_var(key_entries, "xyz");
         }
         let policy = DiskPrefixCachePolicy::from_env();
         assert_eq!(
@@ -1205,21 +1215,17 @@ mod tests {
             policy.max_entries, DEFAULT_DISK_CACHE_MAX_ENTRIES,
             "malformed max_entries must fall back to default"
         );
-        unsafe {
-            test_restore_var(key_bytes, old_bytes);
-            test_restore_var(key_entries, old_entries);
-        }
     }
 
     #[test]
     fn policy_from_env_rejects_zero_values() {
         let key_bytes = "AX_MLX_PREFIX_CACHE_DISK_MAX_BYTES";
         let key_entries = "AX_MLX_PREFIX_CACHE_DISK_MAX_ENTRIES";
-        let old_bytes = env::var(key_bytes).ok();
-        let old_entries = env::var(key_entries).ok();
+        let _env_lock = ENV_LOCK.lock().expect("env lock");
+        let _env_guard = EnvVarGuard::capture(&[key_bytes, key_entries]);
         unsafe {
-            test_set_var(key_bytes, "0");
-            test_set_var(key_entries, "0");
+            env::set_var(key_bytes, "0");
+            env::set_var(key_entries, "0");
         }
         let policy = DiskPrefixCachePolicy::from_env();
         assert_eq!(
@@ -1230,10 +1236,6 @@ mod tests {
             policy.max_entries, DEFAULT_DISK_CACHE_MAX_ENTRIES,
             "zero max_entries must fall back to default"
         );
-        unsafe {
-            test_restore_var(key_bytes, old_bytes);
-            test_restore_var(key_entries, old_entries);
-        }
     }
 
     #[test]

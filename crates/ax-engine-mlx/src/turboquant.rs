@@ -6934,6 +6934,88 @@ mod tests {
     }
 
     #[test]
+    fn turboquant_layout_estimates_real_compressed_memory_savings() {
+        fn estimate_for_context(total_tokens: usize) -> TurboQuantFusedDecodeBenchmarkEstimate {
+            let hot_tokens = 128;
+            let cold_tokens = total_tokens - hot_tokens;
+            let layout = TurboQuantBlockLayout::new(TurboQuantBlockLayoutConfig {
+                preset: TurboQuantPreset::K8V4,
+                block_tokens: 16,
+                n_kv_heads: 8,
+                head_dim: TURBOQUANT_INITIAL_FUSED_DECODE_HEAD_DIM,
+                value_group_size: 32,
+            })
+            .expect("layout should build");
+            let compressed_buffer_bytes = layout
+                .buffer_bytes_for_tokens(cold_tokens)
+                .expect("buffer size should fit");
+            let key_payload_offset_in_slot = 0;
+            let key_norm_offset_in_slot =
+                key_payload_offset_in_slot + layout.key_payload_bytes_per_head;
+            let value_payload_offset_in_slot =
+                key_norm_offset_in_slot + layout.key_norm_bytes_per_head;
+            let value_mins_offset_in_slot =
+                value_payload_offset_in_slot + layout.value_payload_bytes_per_head;
+            let value_scales_offset_in_slot =
+                value_mins_offset_in_slot + layout.value_group_count * std::mem::size_of::<f32>();
+
+            TurboQuantFusedDecodeLaunchDescriptor {
+                preset: TurboQuantPreset::K8V4,
+                key_bits: TurboQuantPreset::K8V4.key_bits(),
+                value_bits: TurboQuantPreset::K8V4.value_bits(),
+                total_tokens,
+                cold_tokens,
+                hot_tokens,
+                n_query_heads: 32,
+                n_kv_heads: layout.config.n_kv_heads,
+                head_dim: layout.config.head_dim,
+                block_tokens: layout.config.block_tokens,
+                compressed_blocks: layout.block_count_for_tokens(cold_tokens),
+                compressed_buffer_bytes,
+                required_compressed_slots: cold_tokens * layout.config.n_kv_heads,
+                value_group_size: layout.config.value_group_size,
+                value_group_count: layout.value_group_count,
+                key_payload_bytes_per_head: layout.key_payload_bytes_per_head,
+                key_norm_bytes_per_head: layout.key_norm_bytes_per_head,
+                value_payload_bytes_per_head: layout.value_payload_bytes_per_head,
+                value_metadata_bytes_per_head: layout.value_metadata_bytes_per_head,
+                raw_slot_bytes_per_head: layout.raw_slot_bytes_per_head,
+                slot_bytes_per_head: layout.slot_bytes_per_head,
+                token_stride_bytes: layout.token_stride_bytes,
+                block_bytes: layout.block_bytes,
+                key_payload_offset_in_slot,
+                key_norm_offset_in_slot,
+                value_payload_offset_in_slot,
+                value_mins_offset_in_slot,
+                value_scales_offset_in_slot,
+            }
+            .benchmark_estimate()
+        }
+
+        let ctx_1k = estimate_for_context(1024);
+        let ctx_8k = estimate_for_context(8192);
+
+        assert_eq!(ctx_1k.full_precision_total_kv_kib, 4096);
+        assert_eq!(ctx_8k.full_precision_total_kv_kib, 32768);
+        assert!(
+            ctx_1k.compressed_buffer_kib < ctx_1k.full_precision_cold_kv_kib,
+            "compressed K8V4 buffer should be smaller than cold fp16 KV"
+        );
+        assert!(
+            ctx_1k.estimated_total_saved_read_kib > 0,
+            "real layout estimate should report positive read savings"
+        );
+        assert!(
+            ctx_1k.cold_compression_ratio_milli < 1000,
+            "real layout cold read ratio should stay below fp16"
+        );
+        assert!(
+            ctx_8k.estimated_total_saved_read_kib > ctx_1k.estimated_total_saved_read_kib * 7,
+            "savings should scale with context length after fixed hot window"
+        );
+    }
+
+    #[test]
     fn turboquant_memory_savings_scale_with_context_length() {
         // Verify the math: for N tokens with head_dim D and n_kv_heads H,
         // the memory savings from TurboQuant are proportional to context length.
