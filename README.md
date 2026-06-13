@@ -722,8 +722,8 @@ The 2K `llama.cpp Metal*` prefill rows are long-context, GGUF-runtime-reference 
 | Qwen 3.6 35B A3B | 4-bit | 128 | 1,706.9 | 539.4 | **1,115.0 (+106.7%)** |
 |  |  | 512 | 3,146.6 | 1,599.5 | **2,618.6 (+63.7%)** |
 |  |  | 2048 | 3,542.3 | 3,513.1 | **3,700.6 (+5.3%)** |
-| Qwen Coder Next | 4-bit | 128 | — | 314.0 | **900.7 (+186.8%)** |
-|  |  | 512 | — | 959.3 | **1,921.9 (+100.3%)** |
+| Qwen Coder Next | 4-bit | 128 | 1,258.4 | 314.0 | **900.7 (+186.8%)** |
+|  |  | 512 | 2,153.7 | 959.3 | **1,921.9 (+100.3%)** |
 
 #### Decode throughput (tok/s) — generation=128 tokens, temp=0
 
@@ -765,10 +765,10 @@ The 2K `llama.cpp Metal*` prefill rows are long-context, GGUF-runtime-reference 
 | Qwen 3.6 35B A3B | 4-bit | 128 | 108.1 | 140.1 | **155.2 (+10.8%)** |
 |  |  | 512 | 108.2 | 136.5 | **152.8 (+12.0%)** |
 |  |  | 2048 | 105.7 | 134.5 | **151.8 (+12.9%)** |
-| Qwen Coder Next | 4-bit | 128 | — | 100.9 | **105.6 (+4.7%)** |
-|  |  | 512 | — | 102.0 | **104.7 (+2.7%)** |
+| Qwen Coder Next | 4-bit | 128 | 86.5 | 100.9 | **105.6 (+4.7%)** |
+|  |  | 512 | 86.5 | 102.0 | **104.7 (+2.7%)** |
 
-> **Qwen Coder Next limitations:** This model does not ship MTP (Multi-Token Prediction) heads, so MTP and MTP+ngram speculative decoding modes are not available. Ngram acceleration was tested with both random and real coding prompts but showed no acceleration (0 accepted tokens), so only direct mode is reported. The llama.cpp column shows "—" because the Q4_K_M GGUF version is ~45GB and was not benchmarked; the model uses a hybrid linear attention + MoE architecture (512 experts, 10 active) that is memory-bandwidth bound at ~116 tok/s decode on Apple M5 Max. All AX Engine optimizations (linear attention projection packing, dense FFN gate-up packing, 4-bit affine quantization) are enabled by default for `qwen3_next` models.
+> **Qwen Coder Next limitations:** This model does not ship MTP (Multi-Token Prediction) heads, so MTP and MTP+ngram speculative decoding modes are not available. Ngram acceleration was tested with both random and real coding prompts but showed no acceleration (0 accepted tokens), so only direct mode is reported. The model uses a hybrid linear attention + MoE architecture (512 experts, 10 active) that is memory-bandwidth bound at ~116 tok/s decode on Apple M5 Max. All AX Engine optimizations (linear attention projection packing, dense FFN gate-up packing, 4-bit affine quantization) are enabled by default for `qwen3_next` models.
 
 > Qwen 3.6 27B 4-bit at prompt=2,048 originally produced zero decode tokens because 4-bit quantization noise pushed an EOS token to argmax at decode step 0 on the `mlx_lm.benchmark` random-token contract. The benchmark harness now sends `sampling.ignore_eos=true` for AX throughput runs, matching how `mlx_lm.benchmark` measures fixed `gen=N` throughput. Production requests default to `ignore_eos=false`. Source: `benchmarks/results/mlx-inference/2026-05-20-qwen27-4to5-direct-ngram-directcpp-r2/qwen3_6-27b-4bit.json`.
 
@@ -814,8 +814,8 @@ The 2K `llama.cpp Metal*` prefill rows are long-context, GGUF-runtime-reference 
 | Qwen 3.6 35B A3B | 4-bit | 128 | 75.0 | 237.3 | **114.8 (-51.6%)** |
 |  |  | 512 | 162.7 | 320.1 | **195.5 (-38.9%)** |
 |  |  | 2048 | 578.2 | 583.0 | **553.4 (-5.1%)** |
-| Qwen Coder Next | 4-bit | 128 | — | 407.7 | **142.1 (-65.1%)** |
-|  |  | 512 | — | 533.7 | **266.4 (-50.1%)** |
+| Qwen Coder Next | 4-bit | 128 | 101.7 | 407.7 | **142.1 (-65.1%)** |
+|  |  | 512 | 237.7 | 533.7 | **266.4 (-50.1%)** |
 
 Embedding benchmarks are kept out of this README summary; see [`docs/EMBEDDINGS.md`](docs/EMBEDDINGS.md).
 
