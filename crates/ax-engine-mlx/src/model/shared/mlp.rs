@@ -319,6 +319,7 @@ static PACKED_SWIGLU_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
 static GEMMA4_MOE_WEIGHTED_SUM_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
 static GEMMA4_MOE_WEIGHTED_SCALED_SUM_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
 static QWEN3_MOE_WEIGHTED_SUM_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
+static QWEN3_MOE_WEIGHTED_SUM_SORTED_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
 
 const PACKED_GEGLU_KERNEL_SOURCE: &str = r#"
     uint idx = thread_position_in_grid.x;
@@ -421,6 +422,28 @@ const QWEN3_MOE_WEIGHTED_SUM_KERNEL_SOURCE: &str = r#"
     out[idx] = static_cast<OutT>(acc);
 "#;
 
+const QWEN3_MOE_WEIGHTED_SUM_SORTED_KERNEL_SOURCE: &str = r#"
+    uint idx = thread_position_in_grid.x;
+    if (idx >= ElementCount) {
+        return;
+    }
+
+    uint hidden_idx = idx % HiddenDim;
+    uint token_idx = idx / HiddenDim;
+    uint weight_base = token_idx * TopK;
+    float acc = 0.0f;
+
+    for (uint k = 0; k < TopK; ++k) {
+        uint orig_pos = weight_base + k;
+        uint sorted_pos = inv_order[orig_pos];
+        float y = static_cast<float>(down_out[sorted_pos * HiddenDim + hidden_idx]);
+        float w = static_cast<float>(top_k_weights[weight_base + k]);
+        acc += y * w;
+    }
+
+    out[idx] = static_cast<OutT>(acc);
+"#;
+
 fn qwen3_moe_weighted_sum_metal(
     down_out: &MlxArray,
     top_k_weights: &MlxArray,
@@ -472,6 +495,121 @@ fn qwen3_moe_weighted_sum_metal(
     });
     let mut outputs = kernel.apply_with_template(
         &[down_out, top_k_weights],
+        &[KernelOutputSpec {
+            shape: out_shape,
+            dtype: output_dtype,
+        }],
+        &[
+            KernelTemplateArg::Dtype {
+                name: "OutT",
+                dtype: output_dtype,
+            },
+            KernelTemplateArg::Int {
+                name: "TopK",
+                value: top_k,
+            },
+            KernelTemplateArg::Int {
+                name: "HiddenDim",
+                value: hidden_dim,
+            },
+            KernelTemplateArg::Int {
+                name: "ElementCount",
+                value: element_count,
+            },
+        ],
+        (element_count, 1, 1),
+        (256, 1, 1),
+        None,
+    );
+    outputs.pop()
+}
+
+/// Sorted variant of `qwen3_moe_weighted_sum_metal`: takes the down projection
+/// output in **sorted expert order** plus the inverse permutation, and fuses
+/// the unsort + weighted-sum into a single Metal kernel. This eliminates the
+/// separate `take` + `reshape` unsort step (2 MLX graph nodes per layer) and
+/// avoids materializing the intermediate unsorted [batch, seq, top_k, hidden]
+/// tensor.
+fn qwen3_moe_weighted_sum_sorted_metal(
+    down_out: &MlxArray,
+    top_k_weights: &MlxArray,
+    inv_order: &MlxArray,
+    output_dtype: MlxDtype,
+    original_indices_shape: &[i32],
+) -> Option<MlxArray> {
+    if !matches!(
+        down_out.dtype(),
+        MlxDtype::Bfloat16 | MlxDtype::Float16 | MlxDtype::Float32
+    ) || !matches!(
+        top_k_weights.dtype(),
+        MlxDtype::Bfloat16 | MlxDtype::Float16 | MlxDtype::Float32
+    ) || !matches!(
+        output_dtype,
+        MlxDtype::Bfloat16 | MlxDtype::Float16 | MlxDtype::Float32
+    ) {
+        return None;
+    }
+
+    // original_indices_shape is [batch, seq, top_k].
+    if original_indices_shape.len() != 3 {
+        return None;
+    }
+    let batch = original_indices_shape[0];
+    let seq = original_indices_shape[1];
+    let top_k = original_indices_shape[2];
+    if top_k <= 0 || batch <= 0 || seq <= 0 {
+        return None;
+    }
+    let num_tokens = batch * seq;
+    let selection_count = num_tokens * top_k;
+
+    // down_out must be 2D [selection_count, hidden_dim].
+    let down_shape = down_out.shape();
+    if down_shape.len() != 2 || down_shape[0] != selection_count {
+        return None;
+    }
+    let hidden_dim = *down_shape.last()?;
+    if hidden_dim <= 0 {
+        return None;
+    }
+
+    // inv_order must be 1D with selection_count elements.
+    let inv_shape = inv_order.shape();
+    if inv_shape.len() != 1 || inv_shape[0] != selection_count {
+        return None;
+    }
+    // Cast inv_order to uint32 for the kernel (argsort may return int32).
+    let inv_order_u32 = if inv_order.dtype() == MlxDtype::Uint32 {
+        inv_order.clone()
+    } else {
+        astype(inv_order, MlxDtype::Uint32, None)
+    };
+
+    // top_k_weights: [batch, seq, top_k]. Validate total element count.
+    let weights_count: i64 = top_k_weights
+        .shape()
+        .iter()
+        .map(|d| i64::from(*d))
+        .product();
+    if weights_count != i64::from(selection_count) {
+        return None;
+    }
+
+    let out_shape = vec![batch, seq, hidden_dim];
+    let element_count = num_tokens * hidden_dim;
+
+    let kernel = QWEN3_MOE_WEIGHTED_SUM_SORTED_KERNEL.get_or_init(|| {
+        MlxMetalKernel::new(
+            "ax_qwen3_moe_weighted_sum_sorted_v1",
+            &["down_out", "top_k_weights", "inv_order"],
+            &["out"],
+            QWEN3_MOE_WEIGHTED_SUM_SORTED_KERNEL_SOURCE,
+            "",
+            true,
+        )
+    });
+    let mut outputs = kernel.apply_with_template(
+        &[down_out, top_k_weights, &inv_order_u32],
         &[KernelOutputSpec {
             shape: out_shape,
             dtype: output_dtype,
@@ -1586,13 +1724,39 @@ fn moe_experts_forward_impl(
 
     // Down projection: [1, seq, top_k, hidden]
     let down_started = profile_forward.then(Instant::now);
-    let down_out = squeeze_switch_singleton(&qw_gather(
+    let down_out_squeezed = squeeze_switch_singleton(&qw_gather(
         &hidden,
         down_exps,
         &gather_inputs.indices,
         gather_inputs.sorted_indices,
     ));
-    let down_out = gather_inputs.unsort(down_out);
+
+    // Fast path for sorted (prefill) Qwen3 MoE: fuse unsort + weighted sum
+    // into a single Metal kernel. Avoids materializing the intermediate
+    // [batch, seq, top_k, hidden] tensor and eliminates 2 graph nodes/layer.
+    if !cfg.gemma4_moe_router
+        && let Some(inv_order) = &gather_inputs.inv_order
+        && let Some(out) = qwen3_moe_weighted_sum_sorted_metal(
+            &down_out_squeezed,
+            top_k_weights,
+            inv_order,
+            x.dtype(),
+            &gather_inputs.original_indices_shape,
+        )
+    {
+        if let Some(started) = down_started {
+            forward_profile_eval_elapsed(
+                profile_decode,
+                profile_prefill,
+                DecodeProfileStage::PostAttnFfnDown,
+                started,
+                &[&out],
+            );
+        }
+        return out;
+    }
+
+    let down_out = gather_inputs.unsort(down_out_squeezed);
 
     // Weighted sum over top_k dimension → [1, seq, hidden]. Gemma4 decode hits
     // this in every layer; fuse multiply + reduction + cast to keep the direct
