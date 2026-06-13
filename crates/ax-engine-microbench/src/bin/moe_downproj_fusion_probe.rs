@@ -167,7 +167,9 @@ fn run_weighted_sum(
         (THREADS_PER_GROUP, 1, 1),
         None,
     );
-    outputs.pop().expect("weighted-sum kernel must produce output")
+    outputs
+        .pop()
+        .expect("weighted-sum kernel must produce output")
 }
 
 fn run_weighted_sum_residual(
@@ -206,7 +208,9 @@ fn run_weighted_sum_residual(
         (THREADS_PER_GROUP, 1, 1),
         None,
     );
-    outputs.pop().expect("residual weighted-sum kernel must produce output")
+    outputs
+        .pop()
+        .expect("residual weighted-sum kernel must produce output")
 }
 
 // One down-projection gather_qmm over top_k routed experts:
@@ -329,13 +333,27 @@ fn main() {
     // defeat MLX common-subexpression elision.
     let xs: Vec<MlxArray> = (0..CHAIN)
         .map(|i| {
-            let d = random_f32(NUM_TOKENS * MOE_INTER, 0x1357_BD13 ^ (i as u64).wrapping_mul(0x9E37), 0.0, 0.5);
-            expand_dims_axes(&bf16_array(&d, &[NUM_TOKENS as i32, MOE_INTER as i32]), &[-2, -3], None)
+            let d = random_f32(
+                NUM_TOKENS * MOE_INTER,
+                0x1357_BD13 ^ (i as u64).wrapping_mul(0x9E37),
+                0.0,
+                0.5,
+            );
+            expand_dims_axes(
+                &bf16_array(&d, &[NUM_TOKENS as i32, MOE_INTER as i32]),
+                &[-2, -3],
+                None,
+            )
         })
         .collect();
     let ws_v: Vec<MlxArray> = (0..CHAIN)
         .map(|i| {
-            let d = random_f32(NUM_TOKENS * TOP_K, 0x2468_ACE0 ^ (i as u64).wrapping_mul(0x85EB), 0.0, 1.0);
+            let d = random_f32(
+                NUM_TOKENS * TOP_K,
+                0x2468_ACE0 ^ (i as u64).wrapping_mul(0x85EB),
+                0.0,
+                1.0,
+            );
             bf16_array(&d, &[NUM_TOKENS as i32, TOP_K as i32])
         })
         .collect();
@@ -386,7 +404,10 @@ fn main() {
 
     println!();
     println!("=== gather_qmm-epilogue ceiling (NEEDS a matmul rewrite to claim) ===");
-    println!("  weighted-sum share of down-stage: {:.1}%", t_ws / t_comb * 100.0);
+    println!(
+        "  weighted-sum share of down-stage: {:.1}%",
+        t_ws / t_comb * 100.0
+    );
     println!(
         "  ceiling / token (x{NUM_LAYERS} layers): {ceiling_per_token:.1} us \
          ({pct_of_step:.2}% of a {DECODE_STEP_US:.0} us decode step)"
@@ -410,7 +431,12 @@ fn main() {
     println!("=== Tail fusion A/B: {{ws + add}} vs fused {{ws+residual}} ===");
     let res_v: Vec<MlxArray> = (0..CHAIN)
         .map(|i| {
-            let d = random_f32(NUM_TOKENS * HIDDEN, 0x0F0F_5A5A ^ (i as u64).wrapping_mul(0xC2B2), 0.0, 0.5);
+            let d = random_f32(
+                NUM_TOKENS * HIDDEN,
+                0x0F0F_5A5A ^ (i as u64).wrapping_mul(0xC2B2),
+                0.0,
+                0.5,
+            );
             bf16_array(&d, &[NUM_TOKENS as i32, HIDDEN as i32])
         })
         .collect();
@@ -453,7 +479,13 @@ fn main() {
     let t_fused = time_amortized(
         "fused:   ws+residual kernel",
         Box::new(|i| {
-            run_weighted_sum_residual(&ws_res_kernel, &down_v[i], &ws_v[i], &res_v[i], MlxDtype::Bfloat16)
+            run_weighted_sum_residual(
+                &ws_res_kernel,
+                &down_v[i],
+                &ws_v[i],
+                &res_v[i],
+                MlxDtype::Bfloat16,
+            )
         }),
     );
     let saved_per_layer = (t_unfused - t_fused).max(0.0);

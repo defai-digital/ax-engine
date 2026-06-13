@@ -192,7 +192,11 @@ fn run_current(
         false,
         None,
     );
-    let down = reshape(&down, &[NUM_TOKENS as i32, TOP_K as i32, HIDDEN as i32], None);
+    let down = reshape(
+        &down,
+        &[NUM_TOKENS as i32, TOP_K as i32, HIDDEN as i32],
+        None,
+    );
     let element_count = (NUM_TOKENS * HIDDEN) as i32;
     let mut outputs = ws_kernel.apply_with_template(
         &[&down, wsum_2d],
@@ -201,10 +205,22 @@ fn run_current(
             dtype,
         }],
         &[
-            KernelTemplateArg::Dtype { name: "OutT", dtype },
-            KernelTemplateArg::Int { name: "TopK", value: TOP_K as i32 },
-            KernelTemplateArg::Int { name: "HiddenDim", value: HIDDEN as i32 },
-            KernelTemplateArg::Int { name: "ElementCount", value: element_count },
+            KernelTemplateArg::Dtype {
+                name: "OutT",
+                dtype,
+            },
+            KernelTemplateArg::Int {
+                name: "TopK",
+                value: TOP_K as i32,
+            },
+            KernelTemplateArg::Int {
+                name: "HiddenDim",
+                value: HIDDEN as i32,
+            },
+            KernelTemplateArg::Int {
+                name: "ElementCount",
+                value: element_count,
+            },
         ],
         (element_count, 1, 1),
         (256, 1, 1),
@@ -229,12 +245,30 @@ fn run_fused(
             dtype,
         }],
         &[
-            KernelTemplateArg::Dtype { name: "OutT", dtype },
-            KernelTemplateArg::Int { name: "TopK", value: TOP_K as i32 },
-            KernelTemplateArg::Int { name: "Hidden", value: HIDDEN as i32 },
-            KernelTemplateArg::Int { name: "InWords", value: IN_WORDS as i32 },
-            KernelTemplateArg::Int { name: "Groups", value: GROUPS as i32 },
-            KernelTemplateArg::Int { name: "GroupSize", value: GROUP_SIZE as i32 },
+            KernelTemplateArg::Dtype {
+                name: "OutT",
+                dtype,
+            },
+            KernelTemplateArg::Int {
+                name: "TopK",
+                value: TOP_K as i32,
+            },
+            KernelTemplateArg::Int {
+                name: "Hidden",
+                value: HIDDEN as i32,
+            },
+            KernelTemplateArg::Int {
+                name: "InWords",
+                value: IN_WORDS as i32,
+            },
+            KernelTemplateArg::Int {
+                name: "Groups",
+                value: GROUPS as i32,
+            },
+            KernelTemplateArg::Int {
+                name: "GroupSize",
+                value: GROUP_SIZE as i32,
+            },
         ],
         ((HIDDEN * SIMD) as i32, 1, 1),
         (SIMD as i32, 1, 1),
@@ -244,7 +278,10 @@ fn run_fused(
 }
 
 fn max_abs_diff(a: &[f32], b: &[f32]) -> f32 {
-    a.iter().zip(b).map(|(x, y)| (x - y).abs()).fold(0.0, f32::max)
+    a.iter()
+        .zip(b)
+        .map(|(x, y)| (x - y).abs())
+        .fold(0.0, f32::max)
 }
 
 fn time_amortized<F: FnMut(usize) -> MlxArray>(label: &str, mut build: F) -> f64 {
@@ -303,12 +340,30 @@ fn main() {
     println!("=== Correctness: fused vs MLX gather_qmm + weighted-sum (f32) ===");
     let qf = quantize_weights(&w_src, MlxDtype::Float32);
     let x_flat_f = f32_array(&x_src, &[MOE_INTER as i32]);
-    let x_exp_f = expand_dims_axes(&f32_array(&x_src, &[NUM_TOKENS as i32, MOE_INTER as i32]), &[-2, -3], None);
+    let x_exp_f = expand_dims_axes(
+        &f32_array(&x_src, &[NUM_TOKENS as i32, MOE_INTER as i32]),
+        &[-2, -3],
+        None,
+    );
     let wsum_1d_f = f32_array(&wsum_src, &[TOP_K as i32]);
     let wsum_2d_f = reshape(&wsum_1d_f, &[NUM_TOKENS as i32, TOP_K as i32], None);
 
-    let current = run_current(&ws_kernel, &x_exp_f, &qf, &indices_2d, &wsum_2d_f, MlxDtype::Float32);
-    let fused = run_fused(&fused_kernel, &x_flat_f, &qf, &indices_1d, &wsum_1d_f, MlxDtype::Float32);
+    let current = run_current(
+        &ws_kernel,
+        &x_exp_f,
+        &qf,
+        &indices_2d,
+        &wsum_2d_f,
+        MlxDtype::Float32,
+    );
+    let fused = run_fused(
+        &fused_kernel,
+        &x_flat_f,
+        &qf,
+        &indices_1d,
+        &wsum_1d_f,
+        MlxDtype::Float32,
+    );
     eval(&[&current, &fused]);
 
     let cur_v = reshape(&current, &[HIDDEN as i32], None);
@@ -331,7 +386,11 @@ fn main() {
     let qb = quantize_weights(&w_src, MlxDtype::Bfloat16);
     let x_flat_b = typed_array(&x_src, &[MOE_INTER as i32], MlxDtype::Bfloat16);
     let x_exp_b = expand_dims_axes(
-        &typed_array(&x_src, &[NUM_TOKENS as i32, MOE_INTER as i32], MlxDtype::Bfloat16),
+        &typed_array(
+            &x_src,
+            &[NUM_TOKENS as i32, MOE_INTER as i32],
+            MlxDtype::Bfloat16,
+        ),
         &[-2, -3],
         None,
     );
@@ -351,25 +410,53 @@ fn main() {
             false,
             None,
         );
-        reshape(&down, &[NUM_TOKENS as i32, TOP_K as i32, HIDDEN as i32], None)
+        reshape(
+            &down,
+            &[NUM_TOKENS as i32, TOP_K as i32, HIDDEN as i32],
+            None,
+        )
     });
-    let t_current = time_amortized(
-        "current: MLX gather_qmm + custom ws kernel",
-        |_| run_current(&ws_kernel, &x_exp_b, &qb, &indices_2d, &wsum_2d_b, MlxDtype::Bfloat16),
-    );
+    let t_current = time_amortized("current: MLX gather_qmm + custom ws kernel", |_| {
+        run_current(
+            &ws_kernel,
+            &x_exp_b,
+            &qb,
+            &indices_2d,
+            &wsum_2d_b,
+            MlxDtype::Bfloat16,
+        )
+    });
     let _t_mlx_tail = time_amortized("alt:     MLX gather_qmm + MLX multiply/sum", |_| {
         let down = gather_qmm(
-            &x_exp_b, &qb.packed, &qb.scales, Some(&qb.biases), &indices_2d,
-            true, Some(GROUP_SIZE as i32), Some(BITS as i32), false, None,
+            &x_exp_b,
+            &qb.packed,
+            &qb.scales,
+            Some(&qb.biases),
+            &indices_2d,
+            true,
+            Some(GROUP_SIZE as i32),
+            Some(BITS as i32),
+            false,
+            None,
         );
-        let down = reshape(&down, &[NUM_TOKENS as i32, TOP_K as i32, HIDDEN as i32], None);
+        let down = reshape(
+            &down,
+            &[NUM_TOKENS as i32, TOP_K as i32, HIDDEN as i32],
+            None,
+        );
         let scores = expand_dims(&wsum_2d_b, 2, None); // [1, top_k, 1]
         sum_axis(&multiply(&down, &scores, None), 1, false, None)
     });
-    let t_fused = time_amortized(
-        "fused:   custom int4 gather-GEMV",
-        |_| run_fused(&fused_kernel, &x_flat_b, &qb, &indices_1d, &wsum_1d_b, MlxDtype::Bfloat16),
-    );
+    let t_fused = time_amortized("fused:   custom int4 gather-GEMV", |_| {
+        run_fused(
+            &fused_kernel,
+            &x_flat_b,
+            &qb,
+            &indices_1d,
+            &wsum_1d_b,
+            MlxDtype::Bfloat16,
+        )
+    });
 
     // --- Verdict ----------------------------------------------------------
     let delta = t_current - t_fused;
