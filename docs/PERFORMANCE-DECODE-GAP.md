@@ -69,6 +69,13 @@ evidence:
   0.91–0.98x. `check_direct_gemma4_ffn_route_promotion.py` decision:
   `not_promoted` on both. Stays opt-in/OFF; raw artifacts at
   `benchmarks/results/mlx-inference/2026-06-11-gemma4-ffn-route-ab/`.
+  **Update:** the `AX_MLX_DIRECT_CPP_GEMMA4_POST_ATTN_FFN` flag, its
+  `try_direct_gemma4_post_attn_ffn` route, the `DirectMlxHotpathProfileSnapshot`
+  telemetry channel, the bench `--ax-compare-direct-gemma4-ffn-route` mode, and
+  `check_direct_gemma4_ffn_route_promotion.py` were all removed as dead code once
+  the route was conclusively rejected; the analysis above is retained as the
+  rationale. The shared `gemma4_post_attn_ffn_block` mlx-sys FFI is kept for the
+  direct-mlx-hotpath microbench probe.
 - **Fused `add + rms_norm` Metal kernel** for the post-attention
   residual + ffn_norm boundary. The decode profile identified this stage
   as 52.7% of `AX_MLX_DECODE_PROFILE=1` wall share. The custom kernel
