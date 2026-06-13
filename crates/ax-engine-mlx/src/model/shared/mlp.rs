@@ -1060,6 +1060,28 @@ pub(crate) fn moe_router_qwen3(
         .expect("Qwen3 MoE layer must have router_proj");
     let logits = qw(normed, router_proj);
     let last_axis = logits.ndim() as i32 - 1;
+
+    // When norm_topk_prob renormalises the selected weights to sum to 1, the
+    // full softmax over all experts is mathematically redundant. softmax is
+    // monotonic, so argpartition on raw logits selects the same top-k experts.
+    // Softmax over just the top-k logits then yields identical renormalised
+    // weights: exp(x_i) / Σ_topk exp(x_j). This eliminates 3 graph nodes per
+    // layer (full softmax + sum + divide) and avoids materialising the
+    // [batch, seq, num_experts] intermediate array.
+    if cfg.moe_norm_topk_prob {
+        let (top_k_indices, top_k_logits) = top_k_by_argpartition(
+            &logits,
+            cfg.moe_expert_count,
+            cfg.moe_experts_per_token,
+            false,
+        );
+        // mlx-lm uses mx.softmax(..., precise=True); with bf16 logits the
+        // round-off can shift weights, so keep precise softmax here too.
+        let top_k_weights = softmax_precise(&top_k_logits, last_axis, None);
+        return (top_k_indices, top_k_weights);
+    }
+
+    // Fallback (norm_topk_prob=false): full precise softmax → top-k → no renorm.
     // mlx-lm uses mx.softmax(..., precise=True) for all MoE routers; with bf16 logits and
     // many experts (e.g. 256) the tiny round-off can flip top-k rankings and corrupt output.
     let weights_all = softmax_precise(&logits, last_axis, None);
@@ -1069,13 +1091,6 @@ pub(crate) fn moe_router_qwen3(
         cfg.moe_experts_per_token,
         false,
     );
-    // norm_topk_prob: renormalise top-k weights to sum to 1.
-    let top_k_weights = if cfg.moe_norm_topk_prob {
-        let sum = sum_axis(&top_k_weights, last_axis, true, None);
-        mlx_sys::ops::divide(&top_k_weights, &sum, None)
-    } else {
-        top_k_weights
-    };
     (top_k_indices, top_k_weights)
 }
 
