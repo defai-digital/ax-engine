@@ -688,42 +688,6 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         self.assertEqual(route["attempts"], 4)
         self.assertEqual(route["hits"], 4)
 
-    def test_axengine_summary_exposes_direct_cpp_gemma4_post_attn_ffn_route(
-        self,
-    ) -> None:
-        run = {
-            "prefill_s": 0.2,
-            "decode_s": 0.1,
-            "ttft_ms": 200.0,
-            "prefill_tok_s": 15.0,
-            "decode_tok_s": 20.0,
-            "output_tokens": 3.0,
-            "ax_mlx_telemetry": {
-                "ax_mlx_direct_cpp_gemma4_post_attn_ffn_attempts": 4,
-                "ax_mlx_direct_cpp_gemma4_post_attn_ffn_hits": 3,
-                "ax_mlx_direct_cpp_gemma4_post_attn_ffn_fallbacks": 1,
-                "ax_mlx_direct_cpp_gemma4_post_attn_ffn_profile_blocked": 0,
-            },
-        }
-        with patch.object(bench, "axengine_one_run", side_effect=[run, run]):
-            row = bench.bench_axengine(
-                19091,
-                [1, 2, 3],
-                3,
-                1,
-                0.0,
-                model_metadata={},
-                direct_mode=True,
-            )
-
-        route = row["ax_mlx_direct_cpp_gemma4_post_attn_ffn"]
-        self.assertEqual(
-            route["schema_version"], "ax.mlx_direct_cpp_gemma4_post_attn_ffn.v1"
-        )
-        self.assertEqual(route["classification"], "mixed_hit_fallback")
-        self.assertEqual(route["attempts"], 4)
-        self.assertEqual(route["hits"], 3)
-
     def test_axengine_direct_summary_rejects_ngram_telemetry(self) -> None:
         contaminated = {
             "prefill_s": 0.2,
@@ -3281,22 +3245,6 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         env = popen.call_args.kwargs["env"]
         self.assertEqual(env["AX_MLX_PACK_LINEAR_ATTENTION_PROJECTIONS"], "1")
 
-    def test_axengine_command_can_enable_direct_gemma4_ffn_route(self) -> None:
-        with (
-            patch.object(bench, "ensure_port_available"),
-            patch.object(bench.subprocess, "Popen") as popen,
-        ):
-            bench.start_axengine(
-                Path("/tmp/ax-engine-server"),
-                Path("/tmp/model"),
-                19091,
-                direct_mode=True,
-                direct_gemma4_post_attn_ffn_route=True,
-            )
-
-        env = popen.call_args.kwargs["env"]
-        self.assertEqual(env["AX_MLX_DIRECT_CPP_GEMMA4_POST_ATTN_FFN"], "1")
-
     def test_axengine_command_can_enable_gemma4_assistant_mtp(self) -> None:
         with (
             patch.object(bench, "ensure_port_available"),
@@ -3333,28 +3281,6 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         self.assertEqual(env["AX_MLX_DIRECT_CPP_LINEAR_ATTENTION_INPUTS"], "1")
         self.assertEqual(env["AX_MLX_DIRECT_CPP_LINEAR_ATTENTION_POST_INPUT"], "1")
 
-    def direct_gemma4_ffn_route_compare_args(
-        self, **overrides: bool
-    ) -> argparse.Namespace:
-        values = {
-            "ax_compare_direct_gemma4_ffn_route": True,
-            "skip_ax_engine": False,
-            "ax_ngram_accel": False,
-            "ax_compare_policies": False,
-            "ax_compare_linear_attention_projection_pack": False,
-            "ax_compare_dense_ffn_gate_up_pack": False,
-            "ax_compare_direct_linear_attention_post_input_route": False,
-            "ax_prefill_profile": False,
-            "ax_decode_profile": False,
-        }
-        values.update(overrides)
-        return argparse.Namespace(**values)
-
-    def test_direct_gemma4_ffn_route_compare_accepts_direct_ax_rows(self) -> None:
-        bench.validate_direct_gemma4_ffn_route_compare_args(
-            self.direct_gemma4_ffn_route_compare_args()
-        )
-
     def direct_linear_attention_post_input_route_compare_args(
         self, **overrides: bool
     ) -> argparse.Namespace:
@@ -3365,7 +3291,6 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
             "ax_compare_policies": False,
             "ax_compare_linear_attention_projection_pack": False,
             "ax_compare_dense_ffn_gate_up_pack": False,
-            "ax_compare_direct_gemma4_ffn_route": False,
             "gateddelta_prefill_profile": False,
             "ax_linear_attention_profile": False,
             "ax_prefill_profile": False,
@@ -3409,7 +3334,6 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         for option in (
             "ax_compare_linear_attention_projection_pack",
             "ax_compare_dense_ffn_gate_up_pack",
-            "ax_compare_direct_gemma4_ffn_route",
         ):
             with self.subTest(option=option):
                 with self.assertRaisesRegex(ValueError, "run one comparison at a time"):
@@ -3434,40 +3358,6 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
                         self.direct_linear_attention_post_input_route_compare_args(
                             **{option: True}
                         )
-                    )
-
-    def test_direct_gemma4_ffn_route_compare_rejects_missing_ax_rows(self) -> None:
-        with self.assertRaisesRegex(ValueError, "requires AX rows"):
-            bench.validate_direct_gemma4_ffn_route_compare_args(
-                self.direct_gemma4_ffn_route_compare_args(skip_ax_engine=True)
-            )
-
-    def test_direct_gemma4_ffn_route_compare_rejects_non_direct_ax_modes(self) -> None:
-        for option in ("ax_ngram_accel", "ax_compare_policies"):
-            with self.subTest(option=option):
-                with self.assertRaisesRegex(ValueError, "requires direct AX rows"):
-                    bench.validate_direct_gemma4_ffn_route_compare_args(
-                        self.direct_gemma4_ffn_route_compare_args(**{option: True})
-                    )
-
-    def test_direct_gemma4_ffn_route_compare_rejects_other_paired_modes(self) -> None:
-        for option in (
-            "ax_compare_linear_attention_projection_pack",
-            "ax_compare_dense_ffn_gate_up_pack",
-            "ax_compare_direct_linear_attention_post_input_route",
-        ):
-            with self.subTest(option=option):
-                with self.assertRaisesRegex(ValueError, "run one comparison at a time"):
-                    bench.validate_direct_gemma4_ffn_route_compare_args(
-                        self.direct_gemma4_ffn_route_compare_args(**{option: True})
-                    )
-
-    def test_direct_gemma4_ffn_route_compare_rejects_profile_modes(self) -> None:
-        for option in ("ax_prefill_profile", "ax_decode_profile"):
-            with self.subTest(option=option):
-                with self.assertRaisesRegex(ValueError, "profiling blocks the route"):
-                    bench.validate_direct_gemma4_ffn_route_compare_args(
-                        self.direct_gemma4_ffn_route_compare_args(**{option: True})
                     )
 
     def test_linear_attention_pack_compare_enables_profile_gate(self) -> None:

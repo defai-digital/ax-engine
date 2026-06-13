@@ -73,7 +73,6 @@ AX_ENGINE_NGRAM_ACCEL_KEY = "ax_engine_mlx_ngram_accel"
 AX_ENGINE_PURE_MTP_KEY = "ax_engine_mlx_pure_mtp"
 AX_ENGINE_LINEAR_ATTENTION_PACK_KEY = "ax_engine_mlx_linear_pack"
 AX_ENGINE_DENSE_FFN_PACK_KEY = "ax_engine_mlx_dense_ffn_pack"
-AX_ENGINE_DIRECT_GEMMA4_FFN_ROUTE_KEY = "ax_engine_mlx_direct_gemma4_ffn"
 AX_ENGINE_GEMMA4_ASSISTANT_MTP_KEY = "ax_engine_gemma4_assistant_mtp"
 AX_ENGINE_GEMMA4_ASSISTANT_MTP_NGRAM_KEY = "ax_engine_gemma4_assistant_mtp_ngram"
 AX_ENGINE_DIRECT_LINEAR_ATTENTION_INPUTS_KEY = (
@@ -327,13 +326,6 @@ AX_MLX_QWEN_LINEAR_ATTENTION_DECODE_POST_INPUT_METAL_KEYS = [
     "ax_mlx_qwen_linear_attention_decode_post_input_metal_profile_blocked",
 ]
 
-AX_MLX_DIRECT_CPP_GEMMA4_POST_ATTN_FFN_KEYS = [
-    "ax_mlx_direct_cpp_gemma4_post_attn_ffn_attempts",
-    "ax_mlx_direct_cpp_gemma4_post_attn_ffn_hits",
-    "ax_mlx_direct_cpp_gemma4_post_attn_ffn_fallbacks",
-    "ax_mlx_direct_cpp_gemma4_post_attn_ffn_profile_blocked",
-]
-
 AX_MLX_TELEMETRY_KEYS = [
     # Resolved speculation profile (ADR-022): 0=auto, 1=coding, 2=agentic, 3=chatbot.
     "ax_mlx_speculation_profile",
@@ -389,7 +381,6 @@ AX_MLX_TELEMETRY_KEYS = [
     *AX_MLX_DIRECT_CPP_LINEAR_ATTENTION_INPUT_KEYS,
     *AX_MLX_DIRECT_CPP_LINEAR_ATTENTION_POST_INPUT_KEYS,
     *AX_MLX_QWEN_LINEAR_ATTENTION_DECODE_POST_INPUT_METAL_KEYS,
-    *AX_MLX_DIRECT_CPP_GEMMA4_POST_ATTN_FFN_KEYS,
     # Affine quantization bit summary — constant per model load, max-merged across trials.
     "ax_mlx_affine_tensor_count",
     "ax_mlx_affine_min_bits",
@@ -1867,7 +1858,6 @@ def start_axengine(
     pack_dense_ffn_gate_up: bool = False,
     direct_linear_attention_inputs_route: bool = False,
     direct_linear_attention_post_input_route: bool = False,
-    direct_gemma4_post_attn_ffn_route: bool = False,
     gemma4_assistant_mtp: bool = False,
     mtp_max_depth: int | None = None,
     mtp_disable_ngram_stacking: bool = False,
@@ -1928,8 +1918,6 @@ def start_axengine(
         env["AX_MLX_DIRECT_CPP_LINEAR_ATTENTION_INPUTS"] = "1"
     if direct_linear_attention_post_input_route:
         env["AX_MLX_DIRECT_CPP_LINEAR_ATTENTION_POST_INPUT"] = "1"
-    if direct_gemma4_post_attn_ffn_route:
-        env["AX_MLX_DIRECT_CPP_GEMMA4_POST_ATTN_FFN"] = "1"
     if gemma4_assistant_mtp:
         env["AX_MLX_GEMMA4_ASSISTANT_MTP"] = "1"
     if mtp_max_depth is not None:
@@ -1965,32 +1953,6 @@ def ax_linear_attention_profile_enabled(args: argparse.Namespace) -> bool:
     )
 
 
-def validate_direct_gemma4_ffn_route_compare_args(args: argparse.Namespace) -> None:
-    if not args.ax_compare_direct_gemma4_ffn_route:
-        return
-    if args.skip_ax_engine:
-        raise ValueError("--ax-compare-direct-gemma4-ffn-route requires AX rows")
-    if args.ax_ngram_accel or args.ax_compare_policies:
-        raise ValueError(
-            "--ax-compare-direct-gemma4-ffn-route requires direct AX rows; "
-            "do not combine it with --ax-ngram-accel or --ax-compare-policies"
-        )
-    if (
-        args.ax_compare_linear_attention_projection_pack
-        or args.ax_compare_dense_ffn_gate_up_pack
-        or args.ax_compare_direct_linear_attention_post_input_route
-    ):
-        raise ValueError(
-            "--ax-compare-direct-gemma4-ffn-route runs paired AX rows; "
-            "run one comparison at a time"
-        )
-    if args.ax_prefill_profile or args.ax_decode_profile:
-        raise ValueError(
-            "--ax-compare-direct-gemma4-ffn-route cannot be combined with "
-            "--ax-prefill-profile or --ax-decode-profile because profiling blocks the route"
-        )
-
-
 def validate_direct_linear_attention_post_input_route_compare_args(
     args: argparse.Namespace,
 ) -> None:
@@ -2008,7 +1970,6 @@ def validate_direct_linear_attention_post_input_route_compare_args(
     if (
         args.ax_compare_linear_attention_projection_pack
         or args.ax_compare_dense_ffn_gate_up_pack
-        or args.ax_compare_direct_gemma4_ffn_route
     ):
         raise ValueError(
             "--ax-compare-direct-linear-attention-post-input-route runs paired AX rows; "
@@ -2539,45 +2500,6 @@ def summarize_ax_mlx_direct_cpp_linear_attention_post_input(
         classification = "incomplete_accounting"
     return {
         "schema_version": "ax.mlx_direct_cpp_linear_attention_post_input.v1",
-        "classification": classification,
-        "attempts": attempts,
-        "hits": hits,
-        "fallbacks": fallbacks,
-        "profile_blocked": profile_blocked,
-        "hit_rate_micros": int(round(hits * 1_000_000 / attempts)),
-    }
-
-
-def summarize_ax_mlx_direct_cpp_gemma4_post_attn_ffn(
-    telemetry: dict[str, int],
-) -> dict[str, Any]:
-    attempts = int(telemetry.get("ax_mlx_direct_cpp_gemma4_post_attn_ffn_attempts", 0))
-    if attempts <= 0:
-        return {}
-    hits = int(telemetry.get("ax_mlx_direct_cpp_gemma4_post_attn_ffn_hits", 0))
-    fallbacks = int(
-        telemetry.get("ax_mlx_direct_cpp_gemma4_post_attn_ffn_fallbacks", 0)
-    )
-    profile_blocked = int(
-        telemetry.get("ax_mlx_direct_cpp_gemma4_post_attn_ffn_profile_blocked", 0)
-    )
-    accounted = hits + fallbacks
-    if accounted < attempts:
-        classification = "incomplete_accounting"
-    elif profile_blocked > 0 and hits > 0:
-        classification = "mixed_hit_profile_blocked"
-    elif profile_blocked > 0:
-        classification = "profile_blocked_fallback"
-    elif hits == attempts and fallbacks == 0:
-        classification = "all_hits"
-    elif hits > 0 and fallbacks > 0:
-        classification = "mixed_hit_fallback"
-    elif fallbacks >= attempts:
-        classification = "all_fallback"
-    else:
-        classification = "incomplete_accounting"
-    return {
-        "schema_version": "ax.mlx_direct_cpp_gemma4_post_attn_ffn.v1",
         "classification": classification,
         "attempts": attempts,
         "hits": hits,
@@ -3449,11 +3371,6 @@ def bench_axengine(
         row["ax_mlx_direct_cpp_linear_attention_post_input"] = (
             direct_cpp_linear_post_input
         )
-    direct_cpp_gemma4_ffn = summarize_ax_mlx_direct_cpp_gemma4_post_attn_ffn(
-        ax_mlx_telemetry
-    )
-    if direct_cpp_gemma4_ffn:
-        row["ax_mlx_direct_cpp_gemma4_post_attn_ffn"] = direct_cpp_gemma4_ffn
     cache_warm_trials = sum(1 for run in runs if run.get("prefill_cache_warm"))
     if cache_warm_trials > 0:
         # Document at row level so README updaters and aggregators can detect
@@ -4391,16 +4308,6 @@ def main() -> None:
         ),
     )
     parser.add_argument(
-        "--ax-compare-direct-gemma4-ffn-route",
-        action="store_true",
-        help=(
-            "Run direct AX rows twice for the same prompts: first the default route, "
-            "then AX_MLX_DIRECT_CPP_GEMMA4_POST_ATTN_FFN=1 emitted as "
-            f"{AX_ENGINE_DIRECT_GEMMA4_FFN_ROUTE_KEY}. Use with Gemma4 E2B 4-bit "
-            "p128/p512/p2048 artifacts before running the promotion checker."
-        ),
-    )
-    parser.add_argument(
         "--ax-compare-direct-linear-attention-post-input-route",
         action="store_true",
         help=(
@@ -4584,7 +4491,6 @@ def main() -> None:
         or args.ax_compare_policies
         or args.ax_compare_linear_attention_projection_pack
         or args.ax_compare_dense_ffn_gate_up_pack
-        or args.ax_compare_direct_gemma4_ffn_route
         or args.ax_compare_direct_linear_attention_post_input_route
     ):
         parser.error(
@@ -4630,10 +4536,6 @@ def main() -> None:
             "--ax-compare-linear-attention-projection-pack both run paired AX rows; "
             "run one comparison at a time"
         )
-    try:
-        validate_direct_gemma4_ffn_route_compare_args(args)
-    except ValueError as error:
-        parser.error(str(error))
     try:
         validate_direct_linear_attention_post_input_route_compare_args(args)
     except ValueError as error:
@@ -4871,14 +4773,12 @@ def main() -> None:
                         args.ax_pack_dense_ffn_gate_up,
                         False,
                         False,
-                        False,
                         AX_ENGINE_DIRECT_KEY,
                     ),
                     (
                         True,
                         True,
                         args.ax_pack_dense_ffn_gate_up,
-                        False,
                         False,
                         False,
                         AX_ENGINE_LINEAR_ATTENTION_PACK_KEY,
@@ -4892,14 +4792,12 @@ def main() -> None:
                         False,
                         False,
                         False,
-                        False,
                         AX_ENGINE_DIRECT_KEY,
                     ),
                     (
                         True,
                         args.ax_pack_linear_attention_projections,
                         True,
-                        False,
                         False,
                         False,
                         AX_ENGINE_DENSE_FFN_PACK_KEY,
@@ -4913,7 +4811,6 @@ def main() -> None:
                         args.ax_pack_dense_ffn_gate_up,
                         True,
                         False,
-                        False,
                         AX_ENGINE_DIRECT_LINEAR_ATTENTION_INPUTS_KEY,
                     ),
                     (
@@ -4922,29 +4819,7 @@ def main() -> None:
                         args.ax_pack_dense_ffn_gate_up,
                         True,
                         True,
-                        False,
                         AX_ENGINE_DIRECT_LINEAR_ATTENTION_POST_INPUT_KEY,
-                    ),
-                ]
-            elif args.ax_compare_direct_gemma4_ffn_route:
-                ax_run_configs = [
-                    (
-                        True,
-                        args.ax_pack_linear_attention_projections,
-                        args.ax_pack_dense_ffn_gate_up,
-                        False,
-                        False,
-                        False,
-                        AX_ENGINE_DIRECT_KEY,
-                    ),
-                    (
-                        True,
-                        args.ax_pack_linear_attention_projections,
-                        args.ax_pack_dense_ffn_gate_up,
-                        False,
-                        False,
-                        True,
-                        AX_ENGINE_DIRECT_GEMMA4_FFN_ROUTE_KEY,
                     ),
                 ]
             elif args.ax_compare_policies:
@@ -4955,14 +4830,12 @@ def main() -> None:
                         args.ax_pack_dense_ffn_gate_up,
                         False,
                         False,
-                        False,
                         AX_ENGINE_DIRECT_KEY,
                     ),
                     (
                         False,
                         args.ax_pack_linear_attention_projections,
                         args.ax_pack_dense_ffn_gate_up,
-                        False,
                         False,
                         False,
                         AX_ENGINE_PURE_MTP_KEY
@@ -4978,7 +4851,6 @@ def main() -> None:
                         args.ax_pack_dense_ffn_gate_up,
                         False,
                         False,
-                        False,
                         AX_ENGINE_PURE_MTP_KEY
                         if args.ax_mtp_disable_ngram_stacking
                         else AX_ENGINE_NGRAM_ACCEL_KEY,
@@ -4990,7 +4862,6 @@ def main() -> None:
                         False,
                         args.ax_pack_linear_attention_projections,
                         args.ax_pack_dense_ffn_gate_up,
-                        False,
                         False,
                         False,
                         AX_ENGINE_GEMMA4_ASSISTANT_MTP_KEY
@@ -5006,7 +4877,6 @@ def main() -> None:
                         args.ax_pack_dense_ffn_gate_up,
                         False,
                         False,
-                        False,
                         AX_ENGINE_DIRECT_KEY,
                     )
                 ]
@@ -5017,7 +4887,6 @@ def main() -> None:
                 pack_dense_ffn_gate_up,
                 direct_linear_attention_inputs_route,
                 direct_linear_attention_post_input_route,
-                direct_gemma4_post_attn_ffn_route,
                 engine_key,
             ) in ax_run_configs:
                 gemma4_assistant_mtp = engine_key in (
@@ -5051,7 +4920,6 @@ def main() -> None:
                     direct_linear_attention_post_input_route=(
                         direct_linear_attention_post_input_route
                     ),
-                    direct_gemma4_post_attn_ffn_route=direct_gemma4_post_attn_ffn_route,
                     gemma4_assistant_mtp=gemma4_assistant_mtp,
                     mtp_max_depth=args.ax_mtp_max_depth,
                     mtp_disable_ngram_stacking=mtp_disable_ngram_stacking,
@@ -5130,9 +4998,6 @@ def main() -> None:
                     results[-1]["ax_direct_linear_attention_post_input_route"] = bool(
                         direct_linear_attention_post_input_route
                     )
-                    results[-1]["ax_direct_gemma4_post_attn_ffn_route"] = bool(
-                        direct_gemma4_post_attn_ffn_route
-                    )
                     if args.inter_case_cooldown > 0 and prompt_doc is not prompts[-1]:
                         print(
                             f"  [ax-engine] inter-case cooldown {args.inter_case_cooldown:.0f}s",
@@ -5155,10 +5020,6 @@ def main() -> None:
                         direct_linear_attention_inputs_route
                         and not direct_linear_attention_post_input_route
                         and args.ax_compare_direct_linear_attention_post_input_route
-                    )
-                    or (
-                        not direct_gemma4_post_attn_ffn_route
-                        and args.ax_compare_direct_gemma4_ffn_route
                     )
                 ):
                     time.sleep(3)  # brief cooldown between modes
@@ -5272,9 +5133,6 @@ def main() -> None:
         ),
         "ax_direct_linear_attention_post_input_route_compare": bool(
             args.ax_compare_direct_linear_attention_post_input_route
-        ),
-        "ax_direct_gemma4_post_attn_ffn_route_compare": bool(
-            args.ax_compare_direct_gemma4_ffn_route
         ),
         "ax_prefill_profile": bool(args.ax_prefill_profile),
         "ax_decode_profile": bool(args.ax_decode_profile),
