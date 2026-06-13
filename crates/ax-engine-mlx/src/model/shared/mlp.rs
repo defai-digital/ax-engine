@@ -1,9 +1,9 @@
 use mlx_sys::{
     KernelOutputSpec, KernelTemplateArg, MlxArray, MlxClosure, MlxDtype, MlxMetalKernel,
     MlxVectorArray, add, argpartition_axis, argsort_axis, astype, divide, expand_dims,
-    expand_dims_axes, gelu_approx_mul, gelu_approx_mul_quantized_matmul, multiply,
-    quantized_matmul_rms_norm, reshape, rms_norm, silu_mul, slice_last_dim, softmax,
-    softmax_precise, sum_axis, take, take_along_axis, topk_axis,
+    expand_dims_axes, gelu_approx_mul, gelu_approx_mul_quantized_matmul, multiply, reshape,
+    rms_norm, silu_mul, slice_last_dim, softmax, softmax_precise, sum_axis, take, take_along_axis,
+    topk_axis,
 };
 use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
@@ -832,31 +832,6 @@ pub(crate) fn ffn_swiglu(
                     .as_ref()
                     .expect("dense FFN layer must have down_proj");
                 if let Some(norm_w) = post_norm {
-                    if !profile_decode
-                        && !profile_prefill
-                        && fastpath::dense_qmatmul_rms_norm_enabled()
-                        && let Some(scales) = down.scales.as_ref()
-                    {
-                        let out = quantized_matmul_rms_norm(
-                            &ffn_hidden,
-                            &down.weight,
-                            scales,
-                            down.biases.as_ref(),
-                            down.group_size,
-                            down.bits,
-                            norm_w,
-                            cfg.rms_norm_eps,
-                            None,
-                        );
-                        forward_profile_eval_elapsed(
-                            profile_decode,
-                            profile_prefill,
-                            DecodeProfileStage::PostAttnFfnDown,
-                            down_started,
-                            &[&out],
-                        );
-                        return out;
-                    }
                     let out = qw(&ffn_hidden, down);
                     forward_profile_eval_elapsed(
                         profile_decode,
@@ -904,31 +879,6 @@ pub(crate) fn ffn_swiglu(
                     .as_ref()
                     .expect("dense FFN layer must have down_proj");
                 if let Some(norm_w) = post_norm {
-                    if !profile_decode
-                        && !profile_prefill
-                        && fastpath::dense_qmatmul_rms_norm_enabled()
-                        && let Some(scales) = down.scales.as_ref()
-                    {
-                        let out = quantized_matmul_rms_norm(
-                            &ffn_hidden,
-                            &down.weight,
-                            scales,
-                            down.biases.as_ref(),
-                            down.group_size,
-                            down.bits,
-                            norm_w,
-                            cfg.rms_norm_eps,
-                            None,
-                        );
-                        forward_profile_eval_elapsed(
-                            profile_decode,
-                            profile_prefill,
-                            DecodeProfileStage::PostAttnFfnDown,
-                            down_started,
-                            &[&out],
-                        );
-                        return out;
-                    }
                     let out = qw(&ffn_hidden, down);
                     forward_profile_eval_elapsed(
                         profile_decode,
@@ -999,31 +949,6 @@ pub(crate) fn ffn_swiglu(
         .as_ref()
         .expect("dense FFN layer must have down_proj");
     if let Some(norm_w) = post_norm {
-        if !profile_decode
-            && !profile_prefill
-            && fastpath::dense_qmatmul_rms_norm_enabled()
-            && let Some(scales) = down.scales.as_ref()
-        {
-            let out = quantized_matmul_rms_norm(
-                &ffn_hidden,
-                &down.weight,
-                scales,
-                down.biases.as_ref(),
-                down.group_size,
-                down.bits,
-                norm_w,
-                cfg.rms_norm_eps,
-                None,
-            );
-            forward_profile_eval_elapsed(
-                profile_decode,
-                profile_prefill,
-                DecodeProfileStage::PostAttnFfnDown,
-                down_started,
-                &[&out],
-            );
-            return out;
-        }
         let out = qw(&ffn_hidden, down);
         forward_profile_eval_elapsed(
             profile_decode,
