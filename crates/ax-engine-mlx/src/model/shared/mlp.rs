@@ -971,8 +971,23 @@ pub(crate) fn ffn_swiglu(
 }
 
 pub(crate) fn shared_expert_forward(cfg: &ModelConfig, w: &LayerWeights, x: &MlxArray) -> MlxArray {
+    let seq = x.shape().get(1).copied().unwrap_or(1);
+    let profile_decode = seq == 1 && decode_profile_enabled();
+    let profile_prefill = seq > 1 && prefill_profile_enabled();
+    let profile_forward = profile_decode || profile_prefill;
+
+    let gate_up_started = profile_forward.then(Instant::now);
     let hidden = if let Some(packed) = w.shared_gate_up_proj.as_ref() {
         let gate_up = qw(x, packed);
+        if let Some(started) = gate_up_started {
+            forward_profile_eval_elapsed(
+                profile_decode,
+                profile_prefill,
+                DecodeProfileStage::PostAttnFfnGateUp,
+                started,
+                &[&gate_up],
+            );
+        }
         let packed_dim = gate_up
             .shape()
             .last()
@@ -983,12 +998,32 @@ pub(crate) fn shared_expert_forward(cfg: &ModelConfig, w: &LayerWeights, x: &Mlx
             "packed shared expert output last dimension must be positive and even, got {packed_dim}"
         );
         let half = packed_dim / 2;
+        let activation_started = profile_forward.then(Instant::now);
         if let Some(hidden) = packed_ffn_activation(cfg, &gate_up, half) {
+            if let Some(started) = activation_started {
+                forward_profile_eval_elapsed(
+                    profile_decode,
+                    profile_prefill,
+                    DecodeProfileStage::PostAttnFfnActivation,
+                    started,
+                    &[&hidden],
+                );
+            }
             hidden
         } else {
             let gate = mlx_slice_last_dim(&gate_up, 0, half);
             let up = mlx_slice_last_dim(&gate_up, half, half * 2);
-            dense_ffn_activation(cfg, &gate, &up)
+            let hidden = dense_ffn_activation(cfg, &gate, &up);
+            if let Some(started) = activation_started {
+                forward_profile_eval_elapsed(
+                    profile_decode,
+                    profile_prefill,
+                    DecodeProfileStage::PostAttnFfnActivation,
+                    started,
+                    &[&hidden],
+                );
+            }
+            hidden
         }
     } else {
         let gate = qw(
@@ -1003,20 +1038,51 @@ pub(crate) fn shared_expert_forward(cfg: &ModelConfig, w: &LayerWeights, x: &Mlx
                 .as_ref()
                 .expect("shared expert must have up projection"),
         );
-        dense_ffn_activation(cfg, &gate, &up)
+        if let Some(started) = gate_up_started {
+            forward_profile_eval_elapsed(
+                profile_decode,
+                profile_prefill,
+                DecodeProfileStage::PostAttnFfnGateUp,
+                started,
+                &[&gate, &up],
+            );
+        }
+        let activation_started = profile_forward.then(Instant::now);
+        let hidden = dense_ffn_activation(cfg, &gate, &up);
+        if let Some(started) = activation_started {
+            forward_profile_eval_elapsed(
+                profile_decode,
+                profile_prefill,
+                DecodeProfileStage::PostAttnFfnActivation,
+                started,
+                &[&hidden],
+            );
+        }
+        hidden
     };
+    let down_started = profile_forward.then(Instant::now);
     let shared = qw(
         &hidden,
         w.shared_down_proj
             .as_ref()
             .expect("shared expert must have down projection"),
     );
-    if let Some(shared_expert_gate) = &w.shared_expert_gate {
+    let shared = if let Some(shared_expert_gate) = &w.shared_expert_gate {
         let shared_gate = qw(x, shared_expert_gate);
         multiply(&mlx_sys::ops::sigmoid(&shared_gate, None), &shared, None)
     } else {
         shared
+    };
+    if let Some(started) = down_started {
+        forward_profile_eval_elapsed(
+            profile_decode,
+            profile_prefill,
+            DecodeProfileStage::PostAttnFfnDown,
+            started,
+            &[&shared],
+        );
     }
+    shared
 }
 
 /// Gemma4 MoE router: rms_norm(scale * hidden) → proj → argpartition → softmax.
@@ -1438,12 +1504,19 @@ fn moe_experts_forward_impl(
     top_k_weights: &MlxArray,
     top_k_expert_scale: Option<&MlxArray>,
 ) -> MlxArray {
+    let seq = x.shape().get(1).copied().unwrap_or(1);
+    let profile_decode = seq == 1 && decode_profile_enabled();
+    let profile_prefill = seq > 1 && prefill_profile_enabled();
+    let profile_forward = profile_decode || profile_prefill;
+
     // Match MLX SwitchGLU: [batch, seq, hidden] → [batch, seq, 1, 1, hidden].
     // The extra singleton before top_k is required by gather_mm/gather_qmm broadcasting.
     let x_exp = expand_dims_axes(x, &[-2, -3], None);
     let gather_inputs = switch_gather_inputs(&x_exp, top_k_indices);
     let down_exps = w.down_exps.as_ref().expect("MoE layer must have down_exps");
 
+    let gate_up_started = profile_forward.then(Instant::now);
+    let packed_gate_up: Option<MlxArray>;
     let (gate_out, up_out) = if let Some(packed) = &w.gate_up_exps_packed {
         let out = qw_gather(
             &gather_inputs.x,
@@ -1451,12 +1524,14 @@ fn moe_experts_forward_impl(
             &gather_inputs.indices,
             gather_inputs.sorted_indices,
         );
+        packed_gate_up = Some(out.clone());
         let half = cfg.moe_expert_intermediate_size as i32;
         (
             mlx_slice_last_dim(&out, 0, half),
             mlx_slice_last_dim(&out, half, half * 2),
         )
     } else {
+        packed_gate_up = None;
         let gate_exps = w.gate_exps.as_ref().expect("MoE layer must have gate_exps");
         let up_exps = w.up_exps.as_ref().expect("MoE layer must have up_exps");
         (
@@ -1474,13 +1549,43 @@ fn moe_experts_forward_impl(
             ),
         )
     };
+    if let Some(started) = gate_up_started {
+        if let Some(packed) = packed_gate_up.as_ref() {
+            forward_profile_eval_elapsed(
+                profile_decode,
+                profile_prefill,
+                DecodeProfileStage::PostAttnFfnGateUp,
+                started,
+                &[packed],
+            );
+        } else {
+            forward_profile_eval_elapsed(
+                profile_decode,
+                profile_prefill,
+                DecodeProfileStage::PostAttnFfnGateUp,
+                started,
+                &[&gate_out, &up_out],
+            );
+        }
+    }
 
     // Gemma4 experts use direct GEGLU with fast-approx GELU (matches
     // mlx_lm's `nn.gelu_approx`). Qwen3 uses the SwiGLU helper, which can
     // still use the compiled-closure cache.
+    let activation_started = profile_forward.then(Instant::now);
     let hidden = dense_ffn_activation(cfg, &gate_out, &up_out);
+    if let Some(started) = activation_started {
+        forward_profile_eval_elapsed(
+            profile_decode,
+            profile_prefill,
+            DecodeProfileStage::PostAttnFfnActivation,
+            started,
+            &[&hidden],
+        );
+    }
 
     // Down projection: [1, seq, top_k, hidden]
+    let down_started = profile_forward.then(Instant::now);
     let down_out = squeeze_switch_singleton(&qw_gather(
         &hidden,
         down_exps,
@@ -1501,14 +1606,41 @@ fn moe_experts_forward_impl(
                 expert_scale,
                 x.dtype(),
             ) {
+                if let Some(started) = down_started {
+                    forward_profile_eval_elapsed(
+                        profile_decode,
+                        profile_prefill,
+                        DecodeProfileStage::PostAttnFfnDown,
+                        started,
+                        &[&out],
+                    );
+                }
                 return out;
             }
         } else if let Some(out) = gemma4_moe_weighted_sum_metal(&down_out, top_k_weights, x.dtype())
         {
+            if let Some(started) = down_started {
+                forward_profile_eval_elapsed(
+                    profile_decode,
+                    profile_prefill,
+                    DecodeProfileStage::PostAttnFfnDown,
+                    started,
+                    &[&out],
+                );
+            }
             return out;
         }
     } else if let Some(out) = qwen3_moe_weighted_sum_metal(&down_out, top_k_weights, x.dtype()) {
         // Qwen3 MoE: use Metal kernel for weighted sum (fuses multiply + reduce + cast)
+        if let Some(started) = down_started {
+            forward_profile_eval_elapsed(
+                profile_decode,
+                profile_prefill,
+                DecodeProfileStage::PostAttnFfnDown,
+                started,
+                &[&out],
+            );
+        }
         return out;
     }
     let scaled_weights;
@@ -1527,7 +1659,17 @@ fn moe_experts_forward_impl(
     // Cast back to the input dtype. GLM scores are f32 (sigmoid over astype→f32),
     // so without this the weighted sum is f32 and contaminates all downstream
     // residuals and projections. Python's MoE does `.astype(y.dtype)` here.
-    astype(&out, x.dtype(), None)
+    let out = astype(&out, x.dtype(), None);
+    if let Some(started) = down_started {
+        forward_profile_eval_elapsed(
+            profile_decode,
+            profile_prefill,
+            DecodeProfileStage::PostAttnFfnDown,
+            started,
+            &[&out],
+        );
+    }
+    out
 }
 
 pub(crate) struct SwitchGatherInputs {
