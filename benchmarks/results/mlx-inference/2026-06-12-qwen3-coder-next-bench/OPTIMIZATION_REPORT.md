@@ -296,6 +296,47 @@ difference is within noise for prompts ≤ 2048 tokens. Chunk=4096 causes
 memory pressure / compile timeouts. No code change recommended — the current
 default is well-tuned.
 
+### Prefill Profile Deep-Dive (512 tokens, scaled to production)
+
+Profiled prefill (704ms) is inflated 2.4× over production (292ms) due to
+forced graph evaluation between stages. Scaling to production:
+
+| Stage | Production (ms) | % of prefill | Actionable from Rust? |
+|-------|----------------:|-------------:|:----------------------|
+| MoE FFN (gate_up + down + activation) | 109 | 37% | ❌ Inside MLX `gather_qmm` |
+| residual_norm (add + rms_norm) | 31 | 11% | ❌ MLX graph compiler already fuses |
+| SDPA attention (12 layers) | 29 | 10% | ❌ MLX `sdpa` kernel |
+| MoE FFN (continued) | ~60 | ~20% | ❌ Inside MLX `gather_qmm` |
+| pre_sdpa (QKV proj + RoPE) | 5 | 2% | ❌ Already direct-C++ shim |
+| residual_gate | 4 | 1% | ❌ Single `add` op |
+| lm_head | 0.2 | <1% | ❌ Negligible |
+
+**Key findings**:
+1. 61% of prefill time is in MLX's `gather_qmm` (MoE expert matmul)
+2. The `last_position_only_after_attention` optimization IS active (layer 47
+   is full-attention, correctly receives the slice)
+3. Linear attention layers (36/48) already use C++ direct dispatch shims
+4. SwiGLU activation already uses compiled closure
+5. All 9 fastpath env flags already enabled by default
+
+**Conclusion**: No further prefill optimization is actionable from the
+ax-engine Rust layer. The 18-36% gap vs llama.cpp is inside MLX's
+`gather_qmm` Metal kernel dispatch strategy. Closing it requires either:
+- Forking MLX to batch expert matmuls differently, or
+- A completely different MoE dispatch approach (multi-week project)
+
+## Current Performance State (2026-06-13)
+
+| Prompt | Prefill (tok/s) | Decode (tok/s) | TTFT (ms) |
+|-------:|----------------:|---------------:|----------:|
+| 128    | 785             | 106            | 163       |
+| 512    | 1781            | 115            | 288       |
+
+Compared to llama.cpp (Q4_K_M):
+- Decode: **33% faster** (115 vs 86.5 tok/s)
+- Prefill: **18-36% slower** (1781 vs 2150 tok/s at 512 tokens)
+- TTFT: **22-57% slower** (288 vs 186ms at 512 tokens)
+
 ## References
 
 - **Benchmark results**: `benchmarks/results/mlx-inference/2026-06-12-qwen3-coder-next-bench/`
