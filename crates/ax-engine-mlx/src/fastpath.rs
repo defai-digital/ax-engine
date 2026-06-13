@@ -159,20 +159,6 @@ env_flag!(
 );
 
 env_flag!(
-    /// `AX_MLX_MOE_FUSED_DOWNPROJ` — opt-in fusion of the MoE down-projection
-    /// `gather_qmm` and its routing-weighted sum into one custom int4/int8
-    /// gather-GEMV kernel, for the single-token (non-sorted) decode path. At
-    /// M=1 a purpose-built GEMV matches MLX's GEMM-shaped `gather_qmm` while
-    /// folding the reduce in, eliminating the separate weighted-sum dispatch
-    /// and the `[top_k, hidden]` intermediate (~2-3% decode in microbench).
-    /// Falls back to the standard gather_qmm + weighted-sum on any unsupported
-    /// config (sorted/prefill, expert scale, non-affine, dtype/shape mismatch).
-    /// Gated off pending end-to-end validation on a real MoE checkpoint.
-    moe_fused_downproj_enabled,
-    "AX_MLX_MOE_FUSED_DOWNPROJ"
-);
-
-env_flag!(
     /// `AX_MLX_MTP_FAST_TAIL_TOPK_SAMPLING` — opt-in MTP/n-gram tail sampler
     /// that samples from the top-k logits on GPU and reads back only scalar
     /// indices instead of transferring a full vocabulary row to CPU. This is a

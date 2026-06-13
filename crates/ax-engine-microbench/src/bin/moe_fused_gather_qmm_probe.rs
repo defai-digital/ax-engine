@@ -1,10 +1,17 @@
-//! MoE fused gather-qmm probe — the article's actual approach.
+//! MoE fused gather-qmm probe — a self-originated fusion idea.
 //!
-//! Tests whether REWRITING `gather_qmm` (instead of leaving MLX's and bolting a
-//! weighted-sum kernel after it) wins at single-token decode. This is the path
-//! the Apple Core AI article took: a custom int4 gather-matmul that folds the
-//! routing-weighted sum directly into the matmul epilogue, so the per-expert
-//! `[top_k, hidden]` intermediate is never written.
+//! NOTE: This is NOT the approach taken by the "Apple Core AI MoE decode 2-3.6x
+//! faster" article. That article's win was a *bandwidth fix*: Core AI's
+//! `GatherMM` read every expert's weights on every token, and the custom
+//! `gather_qmm` made the routing index a runtime index so only the routed
+//! experts were read. AX already has that property — `mlx_sys::gather_qmm`
+//! reads only the routed experts — so the article's literal change is a no-op
+//! for AX. See `moe_downproj_fusion_probe.rs` for that bandwidth-point
+//! ceiling analysis.
+//!
+//! This probe tests a DIFFERENT, self-originated idea: REWRITE `gather_qmm` and
+//! fold the routing-weighted sum directly into the matmul epilogue, so the
+//! per-expert `[top_k, hidden]` intermediate is never written.
 //!
 //!   current:  MLX gather_qmm  ->  [top_k, hidden]  ->  weighted-sum kernel  ->  [hidden]
 //!   fused:    one custom kernel:  out[h] = sum_k w_k * (x . dequant(W[e_k][h]))
@@ -15,6 +22,13 @@
 //! from-scratch int4 GEMV can stay close enough to MLX's tuned `gather_qmm` that
 //! removing the tail is a net win, or whether it gives back more on the matmul
 //! than it saves.
+//!
+//! RESULT (end-to-end on Qwen3.6-35B-A3B-4bit): the fused GEMV LOST ~2-4%
+//! decode throughput and changed greedy output (bf16 reduction-order drift). The
+//! microbench's isolated per-dispatch win did not survive the real graph, where
+//! MLX already overlaps the weighted-sum tail with surrounding ops. See
+//! `docs/PERFORMANCE-MOE-FUSED-DOWNPROJ.md` for the full investigation. Kept as
+//! a reusable microbench, not a production path.
 //!
 //! Decode is batch=1 => this is a quantized matrix-VECTOR multiply (GEMV). The
 //! kernel maps one simdgroup (32 lanes) to one output row `h`; lanes split the

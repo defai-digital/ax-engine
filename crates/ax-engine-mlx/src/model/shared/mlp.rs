@@ -322,7 +322,6 @@ static GEMMA4_MOE_WEIGHTED_SUM_SORTED_KERNEL: OnceLock<MlxMetalKernel> = OnceLoc
 static GEMMA4_MOE_WEIGHTED_SCALED_SUM_SORTED_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
 static QWEN3_MOE_WEIGHTED_SUM_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
 static QWEN3_MOE_WEIGHTED_SUM_SORTED_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
-static FUSED_MOE_DOWNPROJ_GEMV_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
 
 const PACKED_GEGLU_KERNEL_SOURCE: &str = r#"
     uint idx = thread_position_in_grid.x;
@@ -423,56 +422,6 @@ const QWEN3_MOE_WEIGHTED_SUM_KERNEL_SOURCE: &str = r#"
     }
 
     out[idx] = static_cast<OutT>(acc);
-"#;
-
-// Fused int4/int8 affine gather-GEMV + routing-weighted sum for the MoE
-// down-projection at single-token (M=1) decode. One simdgroup (32 lanes) per
-// output row (token, h); lanes split the contracted MoE-inner dim and
-// `simd_sum`-reduce each routed expert's dot product:
-//   out[t][h] = sum_{k<TopK} wsum[t][k] *
-//               sum_{i<InDim} hidden[t][k][i] * (q(W[e][h][i]) * scale + bias)
-// `hidden` is per-expert ([num_rows = NumTokens*TopK, InDim]); MLX affine packs
-// `ValuesPerWord` (= 32/Bits) values per uint32, little-endian, one (scale,bias)
-// per GroupSize inputs. GroupSize is a multiple of ValuesPerWord (validated), so
-// a packed word's values never straddle a group boundary.
-const FUSED_MOE_DOWNPROJ_GEMV_KERNEL_SOURCE: &str = r#"
-    uint row = threadgroup_position_in_grid.x; // global output row = t*OutDim + h
-    uint total_rows = NumTokens * OutDim;
-    if (row >= total_rows) {
-        return;
-    }
-    uint t = row / OutDim;
-    uint h = row % OutDim;
-    uint lane = thread_position_in_threadgroup.x; // 0..31
-    uint qmask = (1u << Bits) - 1u;
-
-    float acc = 0.0f;
-    for (uint kk = 0; kk < TopK; ++kk) {
-        uint sel = t * TopK + kk;
-        uint e = indices[sel];
-        float wk = static_cast<float>(wsum[sel]);
-        uint hidden_base = sel * InDim;
-        uint w_base = (e * OutDim + h) * InWords;
-        uint sb_base = (e * OutDim + h) * Groups;
-
-        float dot = 0.0f;
-        for (uint wi = lane; wi < InWords; wi += 32u) {
-            uint packed = wq[w_base + wi];
-            uint i0 = wi * ValuesPerWord;
-            uint g = i0 / GroupSize;
-            float sc = static_cast<float>(scales[sb_base + g]);
-            float bs = static_cast<float>(biases[sb_base + g]);
-            for (uint n = 0; n < ValuesPerWord; ++n) {
-                uint q = (packed >> (Bits * n)) & qmask;
-                float wv = static_cast<float>(q) * sc + bs;
-                dot += static_cast<float>(hidden[hidden_base + i0 + n]) * wv;
-            }
-        }
-        acc += wk * simd_sum(dot);
-    }
-    if (lane == 0u) {
-        out[row] = static_cast<OutT>(acc);
-    }
 "#;
 
 const QWEN3_MOE_WEIGHTED_SUM_SORTED_KERNEL_SOURCE: &str = r#"
@@ -621,180 +570,6 @@ fn qwen3_moe_weighted_sum_metal(
         None,
     );
     outputs.pop()
-}
-
-/// Fused MoE down-projection: one custom int4/int8 affine gather-GEMV kernel
-/// that computes `gather_qmm(hidden, down) -> weighted-sum` in a single
-/// dispatch, for the single-token (non-sorted) decode path. Returns `None`
-/// (caller falls back to the standard gather_qmm + weighted-sum) on any
-/// unsupported config.
-///
-/// `hidden` is the per-expert activation, total `num_tokens * top_k * in_dim`.
-/// `top_k_indices` / `top_k_weights` are `[batch, seq, top_k]`.
-fn fused_moe_downproj_gemv(
-    hidden: &MlxArray,
-    down_qw: &QuantizedWeight,
-    top_k_indices: &MlxArray,
-    top_k_weights: &MlxArray,
-    output_dtype: MlxDtype,
-) -> Option<MlxArray> {
-    // Affine-quantized weights only (packed uint32 + scales + biases).
-    let scales = down_qw.scales.as_ref()?;
-    let biases = down_qw.biases.as_ref()?;
-    if down_qw.weight.dtype() != MlxDtype::Uint32 {
-        return None;
-    }
-    if !matches!(
-        hidden.dtype(),
-        MlxDtype::Bfloat16 | MlxDtype::Float16 | MlxDtype::Float32
-    ) || !matches!(
-        top_k_weights.dtype(),
-        MlxDtype::Bfloat16 | MlxDtype::Float16 | MlxDtype::Float32
-    ) || !matches!(
-        output_dtype,
-        MlxDtype::Bfloat16 | MlxDtype::Float16 | MlxDtype::Float32
-    ) {
-        return None;
-    }
-
-    let bits = down_qw.bits;
-    let group_size = down_qw.group_size;
-    if !(bits == 4 || bits == 8) || group_size <= 0 || 32 % bits != 0 {
-        return None;
-    }
-    let values_per_word = 32 / bits;
-    // Each packed word's values must stay within one quant group.
-    if group_size % values_per_word != 0 {
-        return None;
-    }
-
-    // packed: [n_exp, out_dim, in_words]; scales/biases: [n_exp, out_dim, groups].
-    let pshape = down_qw.weight.shape();
-    if pshape.len() != 3 {
-        return None;
-    }
-    let out_dim = pshape[1];
-    let in_words = pshape[2];
-    if out_dim <= 0 || in_words <= 0 {
-        return None;
-    }
-    let in_dim = in_words.checked_mul(32)?.checked_div(bits)?;
-    if in_dim % group_size != 0 {
-        return None;
-    }
-    let groups = in_dim / group_size;
-    if scales.shape() != [pshape[0], out_dim, groups]
-        || biases.shape() != [pshape[0], out_dim, groups]
-    {
-        return None;
-    }
-
-    // indices: [batch, seq, top_k].
-    let ishape = top_k_indices.shape();
-    if ishape.len() != 3 {
-        return None;
-    }
-    let (batch, seq, top_k) = (ishape[0], ishape[1], ishape[2]);
-    if batch <= 0 || seq <= 0 || top_k <= 0 {
-        return None;
-    }
-    let num_tokens = batch.checked_mul(seq)?;
-    let num_rows = num_tokens.checked_mul(top_k)?;
-
-    // hidden total element count must be num_rows * in_dim.
-    let hidden_count: i64 = hidden.shape().iter().map(|d| i64::from(*d)).product();
-    if hidden_count != i64::from(num_rows) * i64::from(in_dim) {
-        return None;
-    }
-    // weights total must match num_rows.
-    let weights_count: i64 = top_k_weights
-        .shape()
-        .iter()
-        .map(|d| i64::from(*d))
-        .product();
-    if weights_count != i64::from(num_rows) {
-        return None;
-    }
-
-    let total_rows = num_tokens.checked_mul(out_dim)?;
-    let grid_threads = total_rows.checked_mul(32)?;
-
-    // Flatten inputs to the contiguous layouts the kernel indexes.
-    let hidden_2d = reshape(hidden, &[num_rows, in_dim], None);
-    let indices_1d = ensure_uint32(&reshape(top_k_indices, &[num_rows], None));
-    let weights_1d = reshape(top_k_weights, &[num_rows], None);
-
-    let kernel = FUSED_MOE_DOWNPROJ_GEMV_KERNEL.get_or_init(|| {
-        MlxMetalKernel::new(
-            "ax_fused_moe_downproj_gemv_v1",
-            &["hidden", "wq", "scales", "biases", "indices", "wsum"],
-            &["out"],
-            FUSED_MOE_DOWNPROJ_GEMV_KERNEL_SOURCE,
-            "",
-            true,
-        )
-    });
-    let mut outputs = kernel.apply_with_template(
-        &[
-            &hidden_2d,
-            &down_qw.weight,
-            scales,
-            biases,
-            &indices_1d,
-            &weights_1d,
-        ],
-        &[KernelOutputSpec {
-            shape: vec![total_rows],
-            dtype: output_dtype,
-        }],
-        &[
-            KernelTemplateArg::Dtype {
-                name: "OutT",
-                dtype: output_dtype,
-            },
-            KernelTemplateArg::Int {
-                name: "TopK",
-                value: top_k,
-            },
-            KernelTemplateArg::Int {
-                name: "OutDim",
-                value: out_dim,
-            },
-            KernelTemplateArg::Int {
-                name: "InDim",
-                value: in_dim,
-            },
-            KernelTemplateArg::Int {
-                name: "InWords",
-                value: in_words,
-            },
-            KernelTemplateArg::Int {
-                name: "Groups",
-                value: groups,
-            },
-            KernelTemplateArg::Int {
-                name: "GroupSize",
-                value: group_size,
-            },
-            KernelTemplateArg::Int {
-                name: "Bits",
-                value: bits,
-            },
-            KernelTemplateArg::Int {
-                name: "ValuesPerWord",
-                value: values_per_word,
-            },
-            KernelTemplateArg::Int {
-                name: "NumTokens",
-                value: num_tokens,
-            },
-        ],
-        (grid_threads, 1, 1),
-        (32, 1, 1),
-        None,
-    );
-    let out = outputs.pop()?;
-    Some(reshape(&out, &[batch, seq, out_dim], None))
 }
 
 /// Sorted variant of `qwen3_moe_weighted_sum_metal`: takes the down projection
@@ -2165,29 +1940,6 @@ fn moe_experts_forward_impl(
     // Down projection: [1, seq, top_k, hidden]
     let down_started = profile_forward.then(Instant::now);
 
-    // Fused down-projection fast path: one int4/int8 gather-GEMV that folds the
-    // routing-weighted sum into the matmul epilogue, for the non-sorted
-    // (single-token decode) path with no per-expert scale. Replaces
-    // qw_gather(down) + the separate weighted-sum dispatch. Falls through to the
-    // standard path on any unsupported config or when the flag is off.
-    if gather_inputs.inv_order.is_none()
-        && top_k_expert_scale.is_none()
-        && fastpath::moe_fused_downproj_enabled()
-        && let Some(out) =
-            fused_moe_downproj_gemv(&hidden, down_exps, top_k_indices, top_k_weights, x.dtype())
-    {
-        if let Some(started) = down_started {
-            forward_profile_eval_elapsed(
-                profile_decode,
-                profile_prefill,
-                DecodeProfileStage::PostAttnFfnDown,
-                started,
-                &[&out],
-            );
-        }
-        return out;
-    }
-
     let down_out_squeezed = squeeze_switch_singleton(&qw_gather(
         &hidden,
         down_exps,
@@ -2595,99 +2347,9 @@ mod tests {
     }
 
     #[test]
-    fn fused_moe_downproj_gemv_matches_dequant_matmul_reference() {
-        use mlx_sys::{dequantize, matmul, ops::MlxQuantizationMode, ops::quantize, take};
-
-        // Small config: 4 experts, top_k=2, out=8 (hidden), in=64 (=group_size).
-        const N_EXP: i32 = 4;
-        const TOP_K: i32 = 2;
-        const OUT_DIM: i32 = 8;
-        const IN_DIM: i32 = 64;
-        const GROUP: i32 = 64;
-        const BITS: i32 = 4;
-
-        // Deterministic pseudo-random weights/activations in a small range.
-        let rng = |n: usize, seed: u64, scale: f32, mean: f32| -> Vec<f32> {
-            let mut s = seed;
-            (0..n)
-                .map(|_| {
-                    s ^= s << 13;
-                    s ^= s >> 7;
-                    s ^= s << 17;
-                    ((s >> 32) as f32 / u32::MAX as f32) * scale + mean
-                })
-                .collect()
-        };
-
-        let w_src = rng((N_EXP * OUT_DIM * IN_DIM) as usize, 0xA1, 1.0, -0.5);
-        let w = array_f32(&w_src, &[N_EXP, OUT_DIM, IN_DIM]);
-        let parts = quantize(
-            &w,
-            Some(GROUP),
-            Some(BITS),
-            MlxQuantizationMode::Affine,
-            None,
-            None,
-        );
-        let (packed, scales, biases) = (parts[0].clone(), parts[1].clone(), parts[2].clone());
-        let down_qw = QuantizedWeight {
-            weight: packed.clone(),
-            scales: Some(scales.clone()),
-            biases: Some(biases.clone()),
-            group_size: GROUP,
-            bits: BITS,
-        };
-
-        // Per-expert activation [num_rows = top_k, in_dim] and routing.
-        let hidden_src = rng((TOP_K * IN_DIM) as usize, 0xB2, 1.0, -0.5);
-        let hidden = array_f32(&hidden_src, &[1, TOP_K, IN_DIM]);
-        let idx_data: Vec<u32> = vec![1, 3];
-        let indices = MlxArray::from_raw_data(
-            idx_data.as_ptr().cast(),
-            std::mem::size_of_val(idx_data.as_slice()),
-            &[1, 1, TOP_K],
-            MlxDtype::Uint32,
-        );
-        let wsum_src = rng(TOP_K as usize, 0xC3, 1.0, 0.0);
-        let wsum = array_f32(&wsum_src, &[1, 1, TOP_K]);
-
-        // Reference: dequantize -> per-row matvec -> routing-weighted sum.
-        let w_deq = dequantize(
-            &packed,
-            &scales,
-            Some(&biases),
-            Some(GROUP),
-            Some(BITS),
-            None,
-        );
-        let idx_flat = reshape(&indices, &[TOP_K], None);
-        let w_sel = take(&w_deq, &idx_flat, 0, None); // [top_k, out, in]
-        let hidden_rows = reshape(&hidden, &[TOP_K, IN_DIM, 1], None);
-        let dots = reshape(
-            &matmul(&w_sel, &hidden_rows, None),
-            &[1, TOP_K, OUT_DIM],
-            None,
-        );
-        let scores = expand_dims(&wsum, 3, None); // [1,1,top_k,1] -> broadcast
-        let scores = reshape(&scores, &[1, TOP_K, 1], None);
-        let reference = sum_axis(&multiply(&dots, &scores, None), 1, false, None); // [1, OUT_DIM]
-
-        let fused = fused_moe_downproj_gemv(&hidden, &down_qw, &indices, &wsum, MlxDtype::Float32)
-            .expect("fused down-proj GEMV should support this config");
-        let fused = reshape(&fused, &[1, OUT_DIM], None);
-        eval(&[&reference, &fused]);
-
-        assert_eq!(fused.shape(), vec![1, OUT_DIM]);
-        // Both dequant the same way; differences are pure float-reduction order.
-        assert_close(fused.data_f32(), reference.data_f32(), 1.0e-3);
-    }
-
-    #[test]
     fn moe_experts_forward_quantized_matches_dequant_reference() {
         // Drives a quantized SwiGLU MoE through the full `moe_experts_forward`.
-        // With AX_MLX_MOE_FUSED_DOWNPROJ=1 this exercises the fused down-proj
-        // wiring; with the flag off it exercises the standard path. Either way
-        // the result must equal the dequantize -> matmul reference.
+        // The result must equal the dequantize -> matmul reference.
         use mlx_sys::{
             broadcast_to, dequantize, matmul, ops::MlxQuantizationMode, ops::quantize, take,
         };
@@ -2790,30 +2452,6 @@ mod tests {
         eval(&[&actual2, &reference]);
         assert_eq!(actual.shape(), vec![1, 1, H]);
         assert_close(actual2.data_f32(), reference.data_f32(), 5.0e-3);
-    }
-
-    #[test]
-    fn fused_moe_downproj_gemv_rejects_unsupported() {
-        // Non-affine (no scales) must bail to the standard path.
-        let dense = QuantizedWeight {
-            weight: array_f32(&[0.0_f32; 16], &[2, 2, 4]),
-            scales: None,
-            biases: None,
-            group_size: 64,
-            bits: 4,
-        };
-        let hidden = array_f32(&[0.0_f32; 8], &[1, 2, 4]);
-        let idx: Vec<u32> = vec![0, 1];
-        let indices = MlxArray::from_raw_data(
-            idx.as_ptr().cast(),
-            std::mem::size_of_val(idx.as_slice()),
-            &[1, 1, 2],
-            MlxDtype::Uint32,
-        );
-        let wsum = array_f32(&[0.5, 0.5], &[1, 1, 2]);
-        assert!(
-            fused_moe_downproj_gemv(&hidden, &dense, &indices, &wsum, MlxDtype::Float32).is_none()
-        );
     }
 
     #[test]
