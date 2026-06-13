@@ -256,6 +256,45 @@ All optimization work has been committed to the repository:
 5. `90e16a12` - Update README with Qwen3 MoE Metal kernel benchmark results
 6. `d816e334` - Add comprehensive Qwen3-Coder-Next optimization benchmarks
 7. `057f2553` - Document MoE router optimization regression (-23% decode speed)
+8. `68981d9c` - Skip redundant full softmax in MoE router (graph simplification, neutral)
+9. `236611ee` - Fuse MoE unsort + weighted sum into single Metal kernel (+2% prefill)
+10. `8f275c36` - Add Gemma4 sorted weighted-sum Metal kernels + refactor shared helpers
+
+## Session 2 Findings (2026-06-13)
+
+### Gemma4 MoE Verification
+
+Benchmarked `mlx-community/gemma-4-12B-it-4bit` to verify the Gemma4 sorted
+weighted-sum kernels activate and produce correct output:
+- Prefill: 1155 tok/s (128tok), 1847 tok/s (512tok)
+- Decode: 66.5 tok/s
+- The sorted kernels work correctly on Gemma4 MoE models.
+
+### Prefill Chunk Size Investigation
+
+Swept prefill chunk sizes (256, 512, 1024, 2048, 4096) on Qwen3-Coder-Next:
+
+**1024-token prompt** (single-chunk for chunk ≥ 1024):
+| Chunk | Prefill (tok/s) | TTFT (ms) |
+|------:|----------------:|----------:|
+| 256   | 1249            | 820       |
+| 512   | 1776            | 577       |
+| 1024  | 2478            | 413       |
+| 2048  | 2480            | 413       |
+
+**4096-token prompt** (multi-chunk):
+| Chunk | Prefill (tok/s) | TTFT (ms) | # chunks |
+|------:|----------------:|----------:|---------:|
+| 512   | 1848            | 2217      | 8        |
+| 1024  | **2541**        | **1612**  | 4        |
+| 2048  | 2508            | 1633      | 2        |
+| 4096  | timeout (>10m)  | —         | 1        |
+
+**Conclusion**: The default chunk size (2048) is near-optimal. Chunk=1024 is
+marginally better for long prompts (+1.3% prefill, -1.3% TTFT) but the
+difference is within noise for prompts ≤ 2048 tokens. Chunk=4096 causes
+memory pressure / compile timeouts. No code change recommended — the current
+default is well-tuned.
 
 ## References
 
