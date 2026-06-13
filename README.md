@@ -552,6 +552,8 @@ AX MTP runs the default draft confidence gate (`AX_MLX_MTP_DRAFT_MIN_CONFIDENCE`
 
 The aggregate improvement view below uses sample medians across all three suites. The 35B-A3B sidecar is the clear public win: AX MTP is **+76.4%** vs MTPLX and AX MTP+n-gram is **+77.5%** vs MTPLX. The 27B row is mixed rather than a default win: pure AX MTP is **-1.4%** vs MTPLX, while AX MTP+n-gram recovers to **+2.1%** vs MTPLX and **+3.5%** vs pure AX MTP, so stacking remains opt-in.
 
+The latency view follows the same boundary. On **Qwen3.6 35B-A3B**, AX wins every listed MTPLX prefill and TTFT row because the sidecar path stays inside the repo-owned MLX runner and records the target-model prefill separately from speculative verification. On **Qwen3.6 27B**, prefill and TTFT are intentionally called mixed: AX is close, but the 27B sidecar does not show a clean latency win on every suite. Treat the 35B-A3B rows as the public MTP latency advantage and the 27B rows as workload-dependent.
+
 <p><img width="100%" src="docs/assets/perf-mtp-fair-decode-improvement.svg" alt="Bar chart comparing Qwen3.6 aggregate decode improvement for AX MTP versus MTPLX, AX MTP+n-gram versus MTPLX, and MTP+n-gram versus pure AX MTP"></p>
 
 <table>
@@ -646,6 +648,8 @@ python3 scripts/bench_qwen36_mtp_fair.py \
 <!-- readme-performance-artifacts: reference=benchmarks/results/mlx-inference/2026-05-26-direct-mode-clean-refresh/; ax-overlay=benchmarks/results/mlx-inference/2026-06-04-ax-direct-ngram-readme-rerun/ -->
 
 The tables below compare **direct (non-speculative) decode** across llama.cpp Metal, mlx_lm, and ax engine, covering Gemma 4 and Qwen 3.6 at 128/512/2048 prompt tokens. `ax direct baseline` disables n-gram acceleration, MTP, and assistant drafting to measure the repo-owned direct decode path. Bench prompts are `mlx_lm.benchmark` seed-0 random tokens, which keeps prompt-hash parity across MLX rows.
+
+The prefill and TTFT advantage is the practical direct-mode story. AX is ahead of `mlx_lm` in every listed prefill and TTFT cell below, while decode gains are smaller and model-dependent. That means the repo-owned MLX route is especially valuable for interactive requests where prompt ingestion dominates perceived latency: AX keeps prompt prefill, first-token timing, model-specific graph paths, and route metadata in one measured runtime path. These are cold-prefix rows, not prompt-cache, continuous-batching, or speculative-decoding claims.
 
 <table>
 <tr>

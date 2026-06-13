@@ -318,6 +318,7 @@ static PACKED_GEGLU_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
 static PACKED_SWIGLU_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
 static GEMMA4_MOE_WEIGHTED_SUM_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
 static GEMMA4_MOE_WEIGHTED_SCALED_SUM_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
+static QWEN3_MOE_WEIGHTED_SUM_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
 
 const PACKED_GEGLU_KERNEL_SOURCE: &str = r#"
     uint idx = thread_position_in_grid.x;
@@ -398,6 +399,107 @@ const GEMMA4_MOE_WEIGHTED_SCALED_SUM_KERNEL_SOURCE: &str = r#"
 
     out[idx] = static_cast<OutT>(acc);
 "#;
+
+const QWEN3_MOE_WEIGHTED_SUM_KERNEL_SOURCE: &str = r#"
+    uint idx = thread_position_in_grid.x;
+    if (idx >= ElementCount) {
+        return;
+    }
+
+    uint hidden_idx = idx % HiddenDim;
+    uint row = idx / HiddenDim;
+    uint down_base = row * TopK * HiddenDim + hidden_idx;
+    uint weight_base = row * TopK;
+    float acc = 0.0f;
+
+    for (uint k = 0; k < TopK; ++k) {
+        float y = static_cast<float>(down_out[down_base + k * HiddenDim]);
+        float w = static_cast<float>(top_k_weights[weight_base + k]);
+        acc += y * w;
+    }
+
+    out[idx] = static_cast<OutT>(acc);
+"#;
+
+fn qwen3_moe_weighted_sum_metal(
+    down_out: &MlxArray,
+    top_k_weights: &MlxArray,
+    output_dtype: MlxDtype,
+) -> Option<MlxArray> {
+    if !matches!(
+        down_out.dtype(),
+        MlxDtype::Bfloat16 | MlxDtype::Float16 | MlxDtype::Float32
+    ) || !matches!(
+        top_k_weights.dtype(),
+        MlxDtype::Bfloat16 | MlxDtype::Float16 | MlxDtype::Float32
+    ) || !matches!(
+        output_dtype,
+        MlxDtype::Bfloat16 | MlxDtype::Float16 | MlxDtype::Float32
+    ) {
+        return None;
+    }
+
+    let down_shape = down_out.shape();
+    let weights_shape = top_k_weights.shape();
+    if down_shape.len() != weights_shape.len() + 1 || weights_shape.is_empty() {
+        return None;
+    }
+    let hidden_dim = *down_shape.last()?;
+    let top_k = *weights_shape.last()?;
+    if top_k <= 0 || hidden_dim <= 0 {
+        return None;
+    }
+    if down_shape[..down_shape.len() - 1] != weights_shape[..] {
+        return None;
+    }
+
+    let mut out_shape = weights_shape[..weights_shape.len() - 1].to_vec();
+    out_shape.push(hidden_dim);
+    let element_count = out_shape
+        .iter()
+        .try_fold(1_i64, |acc, &dim| acc.checked_mul(i64::from(dim)))?;
+    let element_count = i32::try_from(element_count).ok()?;
+
+    let kernel = QWEN3_MOE_WEIGHTED_SUM_KERNEL.get_or_init(|| {
+        MlxMetalKernel::new(
+            "ax_qwen3_moe_weighted_sum_v1",
+            &["down_out", "top_k_weights"],
+            &["out"],
+            QWEN3_MOE_WEIGHTED_SUM_KERNEL_SOURCE,
+            "",
+            true,
+        )
+    });
+    let mut outputs = kernel.apply_with_template(
+        &[down_out, top_k_weights],
+        &[KernelOutputSpec {
+            shape: out_shape,
+            dtype: output_dtype,
+        }],
+        &[
+            KernelTemplateArg::Dtype {
+                name: "OutT",
+                dtype: output_dtype,
+            },
+            KernelTemplateArg::Int {
+                name: "TopK",
+                value: top_k,
+            },
+            KernelTemplateArg::Int {
+                name: "HiddenDim",
+                value: hidden_dim,
+            },
+            KernelTemplateArg::Int {
+                name: "ElementCount",
+                value: element_count,
+            },
+        ],
+        (element_count, 1, 1),
+        (256, 1, 1),
+        None,
+    );
+    outputs.pop()
+}
 
 fn packed_geglu_metal(gate_up: &MlxArray, hidden_dim: i32) -> Option<MlxArray> {
     if !fastpath::dense_geglu_packed_metal_enabled() {
@@ -1465,6 +1567,9 @@ fn moe_experts_forward_impl(
         {
             return out;
         }
+    } else if let Some(out) = qwen3_moe_weighted_sum_metal(&down_out, top_k_weights, x.dtype()) {
+        // Qwen3 MoE: use Metal kernel for weighted sum (fuses multiply + reduce + cast)
+        return out;
     }
     let scaled_weights;
     let top_k_weights = if let Some(expert_scale) = top_k_expert_scale {
