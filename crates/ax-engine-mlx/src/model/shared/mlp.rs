@@ -1654,8 +1654,10 @@ fn moe_experts_forward_impl(
 
     // Phase 1B: when the expert gate_up is packed and the flag is on, try the
     // packed SwiGLU Metal kernel directly on the gather_qmm output, fusing the
-    // last-dim split + SiLU + multiply into one dispatch. Falls back to the
-    // split-activation path when the kernel is ineligible.
+    // last-dim split + SiLU + multiply into one dispatch. Decode-only (seq==1):
+    // at prefill the tensor is large and bandwidth-bound, where the separate
+    // slice+silu_mul ops are faster than the single packed dispatch. Falls back
+    // to the split-activation path when the kernel is ineligible or at prefill.
     let hidden = if let Some(packed) = &w.gate_up_exps_packed {
         let gate_up_started = Instant::now();
         let out = qw_gather(
@@ -1673,6 +1675,7 @@ fn moe_experts_forward_impl(
         );
         let half = cfg.moe_expert_intermediate_size as i32;
         if !cfg.uses_geglu
+            && seq == 1
             && fastpath::moe_swiglu_packed_metal_enabled()
             && let Some(fused) = packed_swiglu_metal_impl(&out, half)
         {
@@ -1756,8 +1759,12 @@ fn moe_experts_forward_impl(
     let weighted_sum_started = Instant::now();
 
     // Phase 1A: when shared_expert_out is provided, try the fused weighted-sum
-    // kernel that adds the shared expert inside the same dispatch.
-    if let Some(shared) = shared_expert_out
+    // kernel that adds the shared expert inside the same dispatch. Decode-only
+    // (seq==1): at prefill the weighted-sum is bandwidth-bound on a large tensor,
+    // where the fused kernel's extra input read costs more than the dispatch it
+    // saves. Falls back to the separate `add` in the branches below at prefill.
+    if seq == 1
+        && let Some(shared) = shared_expert_out
         && fastpath::moe_fuse_shared_expert_add_enabled()
         && let Some(out) =
             qwen3_moe_weighted_sum_with_shared_metal(&down_out, top_k_weights, shared, x.dtype())
