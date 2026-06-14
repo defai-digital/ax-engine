@@ -45,7 +45,7 @@ AX Engine is for developers who want a local OpenAI-compatible model server on A
 **Install:**
 
 ```bash
-pip install "ax-engine[download]"
+python3 -m pip install "ax-engine[download]>=6.4.1,<7"
 ```
 
 **Download a small model and start the server:**
@@ -92,40 +92,76 @@ with Session(mlx=True, mlx_model_artifacts_dir=str(path)) as s:
 
 ## Installation
 
-### Python (recommended)
+### Match this README
+
+This README documents the current `6.4.x` command surface, including the
+top-level `ax-engine` orchestration CLI. Before using a released package, verify
+that the package channel has caught up to this version:
 
 ```bash
-pip install ax-engine
+python3 -m pip index versions ax-engine
+brew info defai-digital/ax-engine/ax-engine
 ```
 
-Requires macOS 14+, Apple Silicon (M2 Max or newer), Python 3.10+. The pip wheel includes the `ax-engine` orchestration CLI and the `ax-engine-server` binary — both are on your `PATH` after install.
+If either channel reports an older version, use the source install below for the
+commands in this README. Older PyPI wheels and older Homebrew formulae may
+install successfully while missing `ax-engine download`, `ax-engine serve`, or
+the current bundled binaries.
+
+### Python wheel
+
+```bash
+python3 -m pip install "ax-engine[download]>=6.4.1,<7"
+ax-engine doctor
+```
+
+Requires macOS 14+, Apple Silicon (M2 Max or newer), Python 3.10+. The current
+macOS arm64 wheel includes the `ax-engine` orchestration CLI plus bundled
+`ax-engine-server` and `ax-engine-bench` binaries, so all three are available
+through the installed Python environment. If pip says no matching distribution
+exists for `>=6.4.1`, the current wheel has not been published for your platform
+yet; use [Source](#source) instead of accepting an older resolver result.
 
 Optional extras:
 
 ```bash
-pip install "ax-engine[download]"  # Hugging Face Hub downloads plus mlx-lm tools
+python3 -m pip install "ax-engine[openai]>=6.4.1,<7"      # FastAPI OpenAI shim
+python3 -m pip install "ax-engine[multimodal]>=6.4.1,<7"  # image/audio helpers
 ```
 
 ### Homebrew
 
-For the same top-level `ax-engine` CLI plus the native `ax-engine-server` and
-`ax-engine-bench` tools:
+Homebrew is the native binary channel for tagged macOS arm64 releases, but the
+tap can lag behind the README. Check the formula version first:
 
 ```bash
-brew tap defai-digital/ax-engine
-brew install ax-engine
-ax-engine doctor
+brew info defai-digital/ax-engine/ax-engine
 ```
 
-If `doctor` fails with `Library not loaded: libmlxc.dylib`, run:
-`brew install mlx-c && brew reinstall ax-engine`.
+Install only when the formula is `6.4.1` or newer:
+
+```bash
+brew install defai-digital/ax-engine/ax-engine
+ax-engine doctor
+ax-engine-server --help
+ax-engine-bench doctor
+```
+
+If the formula is older, use [Source](#source) for this README's commands. If
+`doctor` fails with `Library not loaded: libmlxc.dylib`, run:
+`brew install mlx-c && brew reinstall defai-digital/ax-engine/ax-engine`.
 
 ### Source
 
 ```bash
-brew install mlx-c
-cargo build --workspace --release
-maturin develop  # Python bindings
+brew install mlx mlx-c protobuf
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip maturin
+cargo build --release -p ax-engine-server -p ax-engine-bench
+maturin develop --release
+export PATH="$PWD/target/release:$PATH"
+ax-engine doctor
 ```
 
 ## Getting a Model

@@ -61,8 +61,8 @@ path = download_model("mlx-community/Qwen3-4B-4bit")
 # path is ready to pass directly to Session(mlx_model_artifacts_dir=...)
 ```
 
-Install `mlx-lm` first, or install the Python package with the download extra:
-`pip install "ax-engine[download]"`.
+Install `mlx-lm` first, or install the current Python package with the download
+extra: `python3 -m pip install "ax-engine[download]>=6.4.1,<7"`.
 
 The source-tree script uses the same `mlx-lm` download path and can emit a
 machine-readable summary for automation:

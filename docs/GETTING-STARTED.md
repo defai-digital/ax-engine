@@ -42,18 +42,48 @@ paths validate compatibility and route behavior.
 
 ## Installation
 
+### Match this guide
+
+This guide documents the current `6.4.x` command surface. Released install
+channels can lag behind the repository, so check the version before assuming the
+examples below apply:
+
+```bash
+python3 -m pip index versions ax-engine
+brew info defai-digital/ax-engine/ax-engine
+```
+
+If PyPI or Homebrew reports an older version, use the source build for this
+guide. Older packages may install successfully while missing the top-level
+`ax-engine` CLI subcommands used here.
+
+### Python wheel
+
+For the Python SDK plus the top-level orchestration CLI:
+
+```bash
+python3 -m pip install "ax-engine[download]>=6.4.1,<7"
+ax-engine doctor
+```
+
+The current macOS arm64 wheel bundles `ax-engine-server` and `ax-engine-bench`
+behind the Python entrypoints. If pip cannot find `>=6.4.1` for your platform,
+use the source build below instead of silently accepting an older release.
+
 ### Homebrew
 
 For tagged macOS arm64 releases:
 
 ```bash
-brew tap defai-digital/ax-engine
-brew install ax-engine
+brew info defai-digital/ax-engine/ax-engine
+brew install defai-digital/ax-engine/ax-engine
 ```
 
-This installs `ax-engine`, `ax-engine-server`, and `ax-engine-bench`.
-The Homebrew formula also installs the `mlx-c` runtime dependency used by the
-released binaries.
+Use Homebrew for this guide only when the formula reports `6.4.1` or newer.
+The current formula should install `ax-engine`, `ax-engine-server`, and
+`ax-engine-bench`; older formulae may install only the lower-level tools. The
+formula also installs the `mlx-c` runtime dependency used by the released
+binaries.
 
 ```bash
 ax-engine doctor
@@ -67,7 +97,7 @@ runtime dependency with:
 
 ```bash
 brew install mlx-c
-brew reinstall ax-engine
+brew reinstall defai-digital/ax-engine/ax-engine
 ```
 
 The GitHub release archive is the Homebrew formula payload, not a standalone
@@ -111,14 +141,19 @@ Use source builds for development, Python bindings, local examples, or changes
 that have not been tagged yet:
 
 ```text
-brew install mlx-c
-cargo build --workspace --release
+brew install mlx mlx-c protobuf
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip maturin
+cargo build --release -p ax-engine-server -p ax-engine-bench
+maturin develop --release
+export PATH="$PWD/target/release:$PATH"
+ax-engine doctor
 ```
 
-Python bindings are built into the active environment with:
+Run the Python test slice from the same environment with:
 
 ```text
-maturin develop
 python -m unittest discover -s python/tests -v
 ```
 
@@ -173,8 +208,8 @@ path = download_model("mlx-community/Qwen3-4B-4bit")
 # Session is ready once this returns
 ```
 
-Install `mlx-lm` first, or install the Python package with
-`pip install "ax-engine[download]"`.
+Install `mlx-lm` first, or install the current Python package with
+`python3 -m pip install "ax-engine[download]>=6.4.1,<7"`.
 
 Or via the script (also uses `mlx-lm` and generates the manifest automatically):
 
