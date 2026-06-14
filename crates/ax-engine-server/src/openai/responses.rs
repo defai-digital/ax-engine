@@ -91,6 +91,11 @@ pub(crate) fn openai_chat_completion_response(
     } else {
         None
     };
+    let finish_reason = if tool_calls.as_ref().is_some_and(|calls| !calls.is_empty()) {
+        Some("tool_calls")
+    } else {
+        openai_finish_reason(response.finish_reason)
+    };
     OpenAiChatCompletionResponse {
         id,
         object: "chat.completion",
@@ -106,7 +111,7 @@ pub(crate) fn openai_chat_completion_response(
                 tool_calls,
             },
             logprobs: openai_chat_logprobs(response, options),
-            finish_reason: openai_finish_reason(response.finish_reason),
+            finish_reason,
         }],
         usage: openai_usage(response),
     }
@@ -198,28 +203,43 @@ fn split_tagged_reasoning(text: &str, start: &str, end: &str) -> Option<(String,
 // the model legitimately answers with JSON; bare-JSON parser families can be
 // added per model family once their templates are rendered server-side.
 fn extract_tool_calls(content: &mut String) -> Option<Vec<OpenAiToolCall>> {
-    let (tool_json, remaining) = extract_tool_call_payload(content)?;
-    let function = parse_tool_call_function(&tool_json)?;
+    let mut remaining = content.clone();
+    let mut calls = Vec::new();
+    while let Some((function, next_remaining)) = extract_tool_call_payload(&remaining) {
+        calls.push(OpenAiToolCall {
+            id: format!("call_{}", calls.len()),
+            tool_type: "function",
+            function,
+        });
+        remaining = next_remaining;
+    }
+    if calls.is_empty() {
+        return None;
+    }
     *content = remaining.trim().to_string();
-    Some(vec![OpenAiToolCall {
-        id: "call_0".to_string(),
-        tool_type: "function",
-        function,
-    }])
+    Some(calls)
 }
 
-fn extract_tool_call_payload(content: &str) -> Option<(Value, String)> {
+fn extract_tool_call_payload(content: &str) -> Option<(OpenAiFunctionCall, String)> {
     let start = content.find("<tool_call>")?;
     let body_start = start + "<tool_call>".len();
-    let relative_end = content[body_start..].find("</tool_call>")?;
-    let end = body_start + relative_end;
-    let value = serde_json::from_str(content[body_start..end].trim()).ok()?;
-    let remaining = format!(
-        "{}{}",
-        &content[..start],
-        &content[end + "</tool_call>".len()..]
-    );
-    Some((value, remaining))
+    let relative_end = content[body_start..].find("</tool_call>");
+    let end = relative_end
+        .map(|offset| body_start + offset)
+        .unwrap_or(content.len());
+    let function = parse_tool_call_body(content[body_start..end].trim())?;
+    let suffix_start = relative_end
+        .map(|_| end + "</tool_call>".len())
+        .unwrap_or(content.len());
+    let remaining = format!("{}{}", &content[..start], &content[suffix_start..]);
+    Some((function, remaining))
+}
+
+fn parse_tool_call_body(body: &str) -> Option<OpenAiFunctionCall> {
+    if let Ok(value) = serde_json::from_str::<Value>(body) {
+        return parse_tool_call_function(&value);
+    }
+    parse_qwen_function_tool_call(body)
 }
 
 fn parse_tool_call_function(value: &Value) -> Option<OpenAiFunctionCall> {
@@ -232,6 +252,63 @@ fn parse_tool_call_function(value: &Value) -> Option<OpenAiFunctionCall> {
     let name = object.get("name")?.as_str()?.to_string();
     let arguments = serialize_tool_arguments(object.get("arguments"));
     Some(OpenAiFunctionCall { name, arguments })
+}
+
+fn parse_qwen_function_tool_call(body: &str) -> Option<OpenAiFunctionCall> {
+    let function_marker = "<function=";
+    let function_start = body.find(function_marker)?;
+    let name_start = function_start + function_marker.len();
+    let name_end = name_start + body[name_start..].find('>')?;
+    let name = body[name_start..name_end].trim().to_string();
+    if name.is_empty() {
+        return None;
+    }
+
+    let body_start = name_end + 1;
+    let body_end = body[body_start..]
+        .find("</function>")
+        .map(|offset| body_start + offset)
+        .unwrap_or(body.len());
+    let inner = body[body_start..body_end].trim();
+    let parameters = parse_qwen_tool_parameters(inner);
+    let arguments = if parameters.is_empty() && !inner.is_empty() {
+        serde_json::from_str::<Value>(inner)
+            .ok()
+            .map(|value| serialize_tool_arguments(Some(&value)))?
+    } else {
+        serde_json::to_string(&Value::Object(parameters)).ok()?
+    };
+    Some(OpenAiFunctionCall { name, arguments })
+}
+
+fn parse_qwen_tool_parameters(body: &str) -> serde_json::Map<String, Value> {
+    let mut parameters = serde_json::Map::new();
+    let parameter_marker = "<parameter=";
+    let mut offset = 0;
+    while let Some(relative_start) = body[offset..].find(parameter_marker) {
+        let name_start = offset + relative_start + parameter_marker.len();
+        let Some(relative_name_end) = body[name_start..].find('>') else {
+            break;
+        };
+        let name_end = name_start + relative_name_end;
+        let name = body[name_start..name_end].trim();
+        if name.is_empty() {
+            offset = name_end + 1;
+            continue;
+        }
+
+        let value_start = name_end + 1;
+        let Some(relative_value_end) = body[value_start..].find("</parameter>") else {
+            break;
+        };
+        let value_end = value_start + relative_value_end;
+        let raw_value = body[value_start..value_end].trim();
+        let value = serde_json::from_str(raw_value)
+            .unwrap_or_else(|_| Value::String(raw_value.to_string()));
+        parameters.insert(name.to_string(), value);
+        offset = value_end + "</parameter>".len();
+    }
+    parameters
 }
 
 fn serialize_tool_arguments(value: Option<&Value>) -> String {

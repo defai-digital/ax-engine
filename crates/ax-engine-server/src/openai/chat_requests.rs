@@ -35,7 +35,18 @@ pub(crate) fn render_openai_chat_prompt(
     model_id: &str,
     messages: &[OpenAiChatMessage],
 ) -> Result<String, HttpErrorResponse> {
+    render_openai_chat_prompt_with_tools(model_id, messages, None, None)
+}
+
+pub(crate) fn render_openai_chat_prompt_with_tools(
+    model_id: &str,
+    messages: &[OpenAiChatMessage],
+    tools: Option<&Value>,
+    tool_choice: Option<&Value>,
+) -> Result<String, HttpErrorResponse> {
     let rendered_messages = render_openai_chat_message_pairs(messages)?;
+    let rendered_messages =
+        prepend_qwen_tool_contract(model_id, rendered_messages, tools, tool_choice);
     chat::render_prompt(model_id, &rendered_messages).map_err(chat_error_response)
 }
 
@@ -50,7 +61,7 @@ pub(crate) fn build_mlx_lm_chat_messages(
         .iter()
         .map(|message| {
             let role = chat::normalize_role(&message.role).map_err(chat_error_response)?;
-            let content = render_openai_chat_content(&message.content)?;
+            let content = render_openai_chat_content(message.content.as_ref())?;
             Ok(MlxLmChatMessage::new(role, content))
         })
         .collect()
@@ -67,7 +78,7 @@ pub(crate) fn build_llama_cpp_chat_messages(
         .iter()
         .map(|message| {
             let role = chat::normalize_role(&message.role).map_err(chat_error_response)?;
-            let content = render_openai_chat_content(&message.content)?;
+            let content = render_openai_chat_content(message.content.as_ref())?;
             Ok(LlamaCppChatMessage::new(role, content))
         })
         .collect()
@@ -97,7 +108,16 @@ fn render_openai_chat_message_pairs(
         .iter()
         .map(|message| {
             let role = chat::normalize_role(&message.role).map_err(chat_error_response)?;
-            let content = render_openai_chat_content(&message.content)?;
+            let mut content = render_openai_chat_content(message.content.as_ref())?;
+            if role == "assistant"
+                && let Some(tool_calls) = message.tool_calls.as_ref()
+                && let Some(rendered_tool_calls) = render_assistant_tool_calls(tool_calls)
+            {
+                if !content.trim().is_empty() {
+                    content.push('\n');
+                }
+                content.push_str(&rendered_tool_calls);
+            }
             Ok((role.to_string(), content))
         })
         .collect()
@@ -115,7 +135,12 @@ fn chat_error_response(message: String) -> HttpErrorResponse {
     error_response(StatusCode::BAD_REQUEST, "invalid_request", message)
 }
 
-fn render_openai_chat_content(content: &OpenAiChatContent) -> Result<String, HttpErrorResponse> {
+fn render_openai_chat_content(
+    content: Option<&OpenAiChatContent>,
+) -> Result<String, HttpErrorResponse> {
+    let Some(content) = content else {
+        return Ok(String::new());
+    };
     match content {
         OpenAiChatContent::Text(text) => Ok(text.clone()),
         OpenAiChatContent::Parts(parts) => {
@@ -153,6 +178,131 @@ fn render_openai_chat_content(content: &OpenAiChatContent) -> Result<String, Htt
             Ok(rendered)
         }
     }
+}
+
+fn prepend_qwen_tool_contract(
+    model_id: &str,
+    mut messages: ChatMessagePairs,
+    tools: Option<&Value>,
+    tool_choice: Option<&Value>,
+) -> ChatMessagePairs {
+    if !matches!(
+        chat::ChatPromptTemplate::for_model_id(model_id),
+        chat::ChatPromptTemplate::QwenChatMl
+    ) {
+        return messages;
+    }
+    let Some(contract) = render_tool_contract_system_message(tools, tool_choice) else {
+        return messages;
+    };
+    messages.insert(0, ("system".to_string(), contract));
+    messages
+}
+
+fn render_tool_contract_system_message(
+    tools: Option<&Value>,
+    tool_choice: Option<&Value>,
+) -> Option<String> {
+    let tools = tools?;
+    if !openai_value_is_present(tools) {
+        return None;
+    }
+
+    let mut message = String::from(
+        "You have access to the following functions.\n\
+         When you need to call a function, respond with exactly one or more \
+         <tool_call>...</tool_call> blocks and no surrounding prose.\n\
+         The JSON inside each block must be {\"name\":\"function_name\",\"arguments\":{...}}.\n\
+         After a tool result is provided, continue the answer normally.\n\
+         <tools>\n",
+    );
+    for line in render_tool_lines(tools) {
+        message.push_str(&line);
+        message.push('\n');
+    }
+    message.push_str("</tools>");
+
+    if let Some(choice) = tool_choice
+        && tool_choice_forces_tool_call(choice)
+    {
+        message.push_str(
+            "\nThe current tool_choice requires using a tool when a matching function is available.",
+        );
+    }
+
+    Some(message)
+}
+
+fn render_tool_lines(tools: &Value) -> Vec<String> {
+    match tools {
+        Value::Array(items) => items.iter().map(compact_json).collect(),
+        value => vec![compact_json(value)],
+    }
+}
+
+fn render_assistant_tool_calls(value: &Value) -> Option<String> {
+    let calls = match value {
+        Value::Array(calls) => calls.as_slice(),
+        Value::Object(_) => std::slice::from_ref(value),
+        _ => return None,
+    };
+
+    let rendered = calls
+        .iter()
+        .filter_map(render_assistant_tool_call)
+        .collect::<Vec<_>>();
+    (!rendered.is_empty()).then(|| rendered.join("\n"))
+}
+
+fn render_assistant_tool_call(value: &Value) -> Option<String> {
+    let object = value.as_object()?;
+    let function = object.get("function").and_then(Value::as_object)?;
+    let name = function.get("name")?.as_str()?;
+    let arguments = normalize_tool_arguments(function.get("arguments"));
+    let payload = serde_json::json!({
+        "name": name,
+        "arguments": arguments,
+    });
+    Some(format!("<tool_call>{}</tool_call>", compact_json(&payload)))
+}
+
+fn normalize_tool_arguments(value: Option<&Value>) -> Value {
+    match value {
+        Some(Value::String(value)) => {
+            serde_json::from_str(value).unwrap_or_else(|_| Value::String(value.clone()))
+        }
+        Some(value) => value.clone(),
+        None => serde_json::json!({}),
+    }
+}
+
+fn tool_choice_forces_tool_call(value: &Value) -> bool {
+    match value {
+        Value::Null => false,
+        Value::Bool(value) => *value,
+        Value::String(value) => {
+            let value = value.trim().to_ascii_lowercase();
+            !matches!(value.as_str(), "" | "auto" | "none" | "false" | "off")
+        }
+        Value::Array(values) => !values.is_empty(),
+        Value::Object(object) => !object.is_empty(),
+        Value::Number(value) => value.as_u64().unwrap_or(1) != 0,
+    }
+}
+
+fn openai_value_is_present(value: &Value) -> bool {
+    match value {
+        Value::Null => false,
+        Value::Bool(value) => *value,
+        Value::String(value) => !value.trim().is_empty(),
+        Value::Array(values) => !values.is_empty(),
+        Value::Object(object) => !object.is_empty(),
+        Value::Number(value) => value.as_u64().unwrap_or(1) != 0,
+    }
+}
+
+fn compact_json(value: &Value) -> String {
+    serde_json::to_string(value).unwrap_or_else(|_| "null".to_string())
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -227,8 +377,8 @@ fn openai_media_part_error(
 /// True when any message carries an inline media content part (image/audio/video).
 pub(crate) fn messages_contain_inline_media(messages: &[OpenAiChatMessage]) -> bool {
     messages.iter().any(|message| match &message.content {
-        OpenAiChatContent::Text(_) => false,
-        OpenAiChatContent::Parts(parts) => parts.iter().any(|part| {
+        Some(OpenAiChatContent::Text(_)) | None => false,
+        Some(OpenAiChatContent::Parts(parts)) => parts.iter().any(|part| {
             matches!(
                 chat_content_part_kind(part),
                 OpenAiChatContentPartKind::Media(_)
@@ -287,7 +437,7 @@ pub(crate) fn render_gemma4_unified_chat_with_media(
     for message in messages {
         let role = chat::normalize_role(&message.role).map_err(chat_error_response)?;
         let content = render_content_collecting_media(
-            &message.content,
+            message.content.as_ref(),
             &image_placeholder,
             &audio_placeholder,
             video_placeholder.as_deref(),
@@ -412,12 +562,15 @@ fn placeholder_string(
 }
 
 fn render_content_collecting_media(
-    content: &OpenAiChatContent,
+    content: Option<&OpenAiChatContent>,
     image_placeholder: &str,
     audio_placeholder: &str,
     video_placeholder: Option<&str>,
     collected: &mut CollectedMedia,
 ) -> Result<String, HttpErrorResponse> {
+    let Some(content) = content else {
+        return Ok(String::new());
+    };
     match content {
         OpenAiChatContent::Text(text) => Ok(text.clone()),
         OpenAiChatContent::Parts(parts) => {

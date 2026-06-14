@@ -1,16 +1,27 @@
+use std::convert::Infallible;
+
 use ax_engine_sdk::{EngineTokenizer, GenerateResponse, SelectedBackend};
 use axum::Json;
 use axum::http::StatusCode;
+use axum::response::IntoResponse;
+use axum::response::sse::Event;
+use serde::Serialize;
+use tokio::sync::mpsc;
 
 use crate::app_state::{AppState, LiveState};
 use crate::backends::{llama_cpp, mlx_lm};
 use crate::chat::{decode_gemma4_chat_output, decode_gemma4_chat_output_with_reasoning};
 use crate::errors::{ErrorResponse, error_response, map_session_error};
 use crate::generation::native::run_stateless_generate_request;
+use crate::generation::streaming::{StreamEvent, build_keep_alive_stream};
+use crate::openai::chunks::{
+    chat_delta_chunk, chat_final_chunk, chat_tool_calls_delta_chunk, chat_tool_calls_final_chunk,
+};
 use crate::openai::requests::{
     OpenAiBuiltLlamaCppChatRequest, OpenAiBuiltMlxLmChatRequest, OpenAiBuiltRequest,
     OpenAiResponseOptions, build_openai_llama_cpp_chat_request, build_openai_mlx_lm_chat_request,
 };
+use crate::openai::responses::openai_chat_completion_response;
 use crate::openai::schema::{OpenAiChatCompletionHttpRequest, OpenAiStreamKind};
 use crate::openai::streaming::{
     stream_openai_llama_cpp_chat_request, stream_openai_mlx_lm_chat_request, stream_openai_request,
@@ -28,6 +39,9 @@ pub(crate) async fn run_openai_llama_cpp_chat_generation(
         response_options,
     } = build_openai_llama_cpp_chat_request(&live, request)?;
     if stream {
+        if response_options.parse_tool_calls {
+            return Err(streaming_delegated_tool_calls_error());
+        }
         return stream_openai_llama_cpp_chat_request(state, live, chat_request).await;
     }
 
@@ -59,6 +73,9 @@ pub(crate) async fn run_openai_mlx_lm_chat_generation(
         response_options,
     } = build_openai_mlx_lm_chat_request(&live, request)?;
     if stream {
+        if response_options.parse_tool_calls {
+            return Err(streaming_delegated_tool_calls_error());
+        }
         return stream_openai_mlx_lm_chat_request(state, live, chat_request).await;
     }
 
@@ -91,6 +108,15 @@ pub(crate) async fn run_openai_text_generation(
         response_options,
     } = request;
     if stream {
+        if response_options.parse_tool_calls && matches!(kind, OpenAiStreamKind::ChatCompletion) {
+            return stream_buffered_openai_tool_chat_response(
+                state,
+                live,
+                generate_request,
+                response_options,
+            )
+            .await;
+        }
         return stream_openai_request(state, live, generate_request, kind).await;
     }
 
@@ -105,6 +131,116 @@ pub(crate) async fn run_openai_text_generation(
     validate_openai_json_object_response(&response, response_options)?;
 
     Ok(kind.build_non_stream_response(&response, request_id, response_options, native_reasoning))
+}
+
+async fn stream_buffered_openai_tool_chat_response(
+    state: AppState,
+    live: LiveState,
+    generate_request: ax_engine_sdk::GenerateRequest,
+    response_options: OpenAiResponseOptions,
+) -> Result<axum::response::Response, (StatusCode, Json<ErrorResponse>)> {
+    let (request_id, mut response) =
+        run_stateless_generate_request(&state, &live, generate_request).await?;
+    let native_reasoning = populate_native_mlx_output_text(
+        &live,
+        &mut response,
+        OpenAiStreamKind::ChatCompletion,
+        response_options.include_reasoning,
+    )?;
+    validate_openai_json_object_response(&response, response_options)?;
+
+    let chat_response = openai_chat_completion_response(
+        &response,
+        OpenAiStreamKind::ChatCompletion.response_id(request_id),
+        response_options,
+        native_reasoning,
+    );
+    let Some(choice) = chat_response.choices.into_iter().next() else {
+        return Err(error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "server_error",
+            "OpenAI chat response did not contain a choice".to_string(),
+        ));
+    };
+
+    let (tx, rx) = mpsc::channel::<StreamEvent>(8);
+    let mut role_emitted = false;
+    if !choice.message.content.is_empty() {
+        let chunk = chat_delta_chunk(
+            request_id,
+            chat_response.model.clone(),
+            Some("assistant"),
+            choice.message.content,
+        );
+        role_emitted = true;
+        send_openai_chunk_async(&tx, &chunk).await;
+    }
+    if let Some(tool_calls) = choice.message.tool_calls.as_ref()
+        && !tool_calls.is_empty()
+    {
+        let chunk = chat_tool_calls_delta_chunk(
+            request_id,
+            chat_response.model.clone(),
+            if role_emitted {
+                None
+            } else {
+                Some("assistant")
+            },
+            tool_calls,
+        );
+        role_emitted = true;
+        send_openai_chunk_async(&tx, &chunk).await;
+    }
+    if !role_emitted {
+        let chunk = chat_delta_chunk(
+            request_id,
+            chat_response.model.clone(),
+            Some("assistant"),
+            String::new(),
+        );
+        send_openai_chunk_async(&tx, &chunk).await;
+    }
+
+    let final_chunk = if choice.finish_reason == Some("tool_calls") {
+        chat_tool_calls_final_chunk(request_id, chat_response.model)
+    } else {
+        chat_final_chunk(request_id, chat_response.model, response.finish_reason)
+    };
+    send_openai_chunk_async(&tx, &final_chunk).await;
+    let _ = tx.send(Ok(Event::default().data("[DONE]"))).await;
+    drop(tx);
+
+    Ok(build_keep_alive_stream(rx).into_response())
+}
+
+async fn send_openai_chunk_async<T: Serialize>(
+    tx: &mpsc::Sender<Result<Event, Infallible>>,
+    payload: &T,
+) -> bool {
+    match serde_json::to_string(payload) {
+        Ok(data) => tx.send(Ok(Event::default().data(data))).await.is_ok(),
+        Err(error) => {
+            let payload = ErrorResponse::server_error(format!(
+                "failed to serialize OpenAI stream chunk: {error}"
+            ));
+            let data = serde_json::to_string(&payload).unwrap_or_else(|_| {
+                r#"{"error":{"code":"server_error","message":"failed to serialize OpenAI stream chunk"}}"#
+                    .to_string()
+            });
+            let _ = tx
+                .send(Ok(Event::default().event("error").data(data)))
+                .await;
+            false
+        }
+    }
+}
+
+fn streaming_delegated_tool_calls_error() -> (StatusCode, Json<ErrorResponse>) {
+    error_response(
+        StatusCode::BAD_REQUEST,
+        "unsupported_parameter",
+        "streaming tool calls require native Qwen ChatML rendering; delegated text backends do not expose structured tool-call deltas yet".to_string(),
+    )
 }
 
 pub(crate) fn validate_openai_json_object_response(

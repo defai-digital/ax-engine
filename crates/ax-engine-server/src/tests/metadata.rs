@@ -72,6 +72,7 @@ async fn models_advertises_openai_text_support_for_native_mlx() {
     assert_eq!(model["capabilities"]["input"]["video"], json!(false));
     assert_eq!(model["capabilities"]["output"]["text"], json!(true));
     assert_eq!(model["capabilities"]["attachment"], json!(false));
+    assert_eq!(model["capabilities"]["toolcall"], json!(true));
     assert_eq!(model["capabilities"]["interleaved"], json!(false));
     assert_eq!(
         model["ax_engine"]["openai_chat_completions_supported"],
@@ -86,6 +87,10 @@ async fn models_advertises_openai_text_support_for_native_mlx() {
         json!(true)
     );
     assert_eq!(
+        model["ax_engine"]["openai_tool_calling_supported"],
+        json!(true)
+    );
+    assert_eq!(
         model["ax_engine"]["native_multimodal_input_supported"],
         json!(false)
     );
@@ -96,6 +101,33 @@ async fn models_advertises_openai_text_support_for_native_mlx() {
     assert_eq!(
         model["ax_engine"]["openai_tokenized_multimodal_input_supported"],
         json!(false)
+    );
+}
+
+#[tokio::test]
+async fn models_advertises_tool_calls_for_ax_code_qwen_coder_next_id() {
+    let artifact_dir = minimal_tokenizer_artifact("qwen3-coder-next-metadata-tokenizer");
+    let app = build_router(native_mlx_openai_builder_state(
+        "ax-engine/qwen3-coder-next",
+        &artifact_dir,
+    ));
+    let (status, json) = json_response(
+        &app,
+        Request::builder()
+            .method("GET")
+            .uri("/v1/models")
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK);
+    let model = &json["data"][0];
+    assert_eq!(model["id"], json!("ax-engine/qwen3-coder-next"));
+    assert_eq!(model["capabilities"]["toolcall"], json!(true));
+    assert_eq!(
+        model["ax_engine"]["openai_tool_calling_supported"],
+        json!(true)
     );
 }
 

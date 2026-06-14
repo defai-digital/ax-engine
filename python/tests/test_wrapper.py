@@ -1002,6 +1002,50 @@ class WrapperContractTests(unittest.TestCase):
             ),
             "user: Line 1\\nLine 2\nassistant:",
         )
+        qwen_tool_prompt = openai_server.render_chat_prompt(
+            [{"role": "user", "content": "Read README.md"}],
+            "mlx-community/Qwen3-Coder-Next-4bit",
+            tools=[
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "read_file",
+                        "description": "Read a workspace file",
+                        "parameters": {"type": "object"},
+                    },
+                }
+            ],
+            tool_choice="auto",
+        )
+        self.assertIn("You have access to the following functions.", qwen_tool_prompt)
+        self.assertIn("<tools>", qwen_tool_prompt)
+        self.assertIn("<tool_call>...</tool_call>", qwen_tool_prompt)
+        self.assertIn('"name":"read_file"', qwen_tool_prompt)
+
+        replay_prompt = openai_server.render_chat_prompt(
+            [
+                {"role": "user", "content": "Read README.md"},
+                {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": "call_123",
+                            "type": "function",
+                            "function": {
+                                "name": "read_file",
+                                "arguments": '{"path":"README.md"}',
+                            },
+                        }
+                    ],
+                },
+                {"role": "tool", "tool_call_id": "call_123", "content": "AX Engine"},
+            ],
+            "mlx-community/Qwen3-Coder-Next-4bit",
+        )
+        self.assertIn("<tool_call>", replay_prompt)
+        self.assertIn('"arguments":{"path":"README.md"}', replay_prompt)
+        self.assertIn("<|im_start|>tool\nAX Engine<|im_end|>", replay_prompt)
 
     def test_openai_mlx_shim_rejects_boolean_max_tokens(self) -> None:
         openai_server = importlib.import_module("ax_engine.openai_server")
@@ -1025,6 +1069,98 @@ class WrapperContractTests(unittest.TestCase):
         self.assertEqual(openai_server.finish_reason("cancelled"), "cancel")
         self.assertIsNone(openai_server.finish_reason("error"))
         self.assertIsNone(openai_server.finish_reason(None))
+
+    def test_openai_mlx_shim_extracts_tool_calls(self) -> None:
+        openai_server = importlib.import_module("ax_engine.openai_server")
+
+        content, tool_calls = openai_server.extract_tool_calls(
+            'Before <tool_call>{"name":"lookup","arguments":{"query":"ax"}}</tool_call> after'
+        )
+
+        self.assertEqual(content, "Before  after")
+        self.assertEqual(
+            tool_calls,
+            [
+                {
+                    "id": "call_0",
+                    "type": "function",
+                    "function": {
+                        "name": "lookup",
+                        "arguments": '{"query":"ax"}',
+                    },
+                }
+            ],
+        )
+
+    def test_openai_mlx_shim_extracts_qwen_function_parameter_tool_calls(self) -> None:
+        openai_server = importlib.import_module("ax_engine.openai_server")
+
+        content, tool_calls = openai_server.extract_tool_calls(
+            """<tool_call><function=todo_write>
+<parameter=todos>
+[{"content":"create index.html","status":"pending"}]
+</parameter>
+</function></tool_call>"""
+        )
+
+        self.assertEqual(content, "")
+        self.assertEqual(
+            tool_calls,
+            [
+                {
+                    "id": "call_0",
+                    "type": "function",
+                    "function": {
+                        "name": "todo_write",
+                        "arguments": '{"todos":[{"content":"create index.html","status":"pending"}]}',
+                    },
+                }
+            ],
+        )
+
+    def test_openai_mlx_shim_recovers_qwen_function_tool_calls_without_closing_tags(self) -> None:
+        openai_server = importlib.import_module("ax_engine.openai_server")
+
+        content, tool_calls = openai_server.extract_tool_calls(
+            """I'll create it now.
+
+<tool_call>
+<function=todo_write>
+{"explanation":"Creating a responsive coffee shop website in Traditional Chinese","tasks":[{"file_path":"index.html","status":"in_progress"}]}"""
+        )
+
+        self.assertEqual(content, "I'll create it now.")
+        self.assertEqual(
+            tool_calls,
+            [
+                {
+                    "id": "call_0",
+                    "type": "function",
+                    "function": {
+                        "name": "todo_write",
+                        "arguments": '{"explanation":"Creating a responsive coffee shop website in Traditional Chinese","tasks":[{"file_path":"index.html","status":"in_progress"}]}',
+                    },
+                }
+            ],
+        )
+
+    def test_openai_mlx_shim_streams_buffered_tool_call_chunks(self) -> None:
+        openai_server = importlib.import_module("ax_engine.openai_server")
+
+        body = "".join(
+            openai_server.stream_buffered_tool_chat_chunks(
+                "qwen3",
+                7,
+                '<tool_call>{"name":"lookup","arguments":{"query":"ax"}}</tool_call>',
+                "stop",
+            )
+        )
+
+        self.assertIn('"tool_calls":[{"index":0,"id":"call_0"', body)
+        self.assertIn('"name":"lookup"', body)
+        self.assertIn('"arguments":"{\\"query\\":\\"ax\\"}"', body)
+        self.assertIn('"finish_reason":"tool_calls"', body)
+        self.assertIn("data: [DONE]", body)
 
     def test_qwen_chat_prompt_matches_real_tokenizer_enable_thinking_false(self) -> None:
         openai_server = importlib.import_module("ax_engine.openai_server")

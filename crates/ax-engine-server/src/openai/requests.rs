@@ -21,10 +21,11 @@ pub(crate) const DEFAULT_OPENAI_MAX_TOKENS: u32 = 256;
 static OPENAI_SEED_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 pub(crate) use crate::openai::chat_requests::{
-    chat_template_kwargs_for_model_id, openai_chat_stop_sequences, render_openai_chat_prompt,
+    chat_template_kwargs_for_model_id, openai_chat_stop_sequences,
 };
 use crate::openai::chat_requests::{
     messages_contain_inline_media, render_gemma4_unified_chat_with_media,
+    render_openai_chat_prompt_with_tools,
 };
 use crate::tasks::run_blocking_http_task;
 
@@ -310,9 +311,11 @@ pub(crate) fn build_openai_chat_request(
                 multimodal_inputs.gemma4_unified = Some(prompt.runtime_inputs);
                 None
             }
-            None => Some(render_openai_chat_prompt(
+            None => Some(render_openai_chat_prompt_with_tools(
                 live.model_id.as_ref(),
                 &request.messages,
+                request.tools.as_ref(),
+                request.tool_choice.as_ref(),
             )?),
         }
     };

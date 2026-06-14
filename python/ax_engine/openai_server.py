@@ -17,7 +17,12 @@ class OpenAiShimError(ValueError):
     pass
 
 
-def render_chat_prompt(messages: list[dict[str, Any]], model_id: str) -> str:
+def render_chat_prompt(
+    messages: list[dict[str, Any]],
+    model_id: str,
+    tools: Any = None,
+    tool_choice: Any = None,
+) -> str:
     if not messages:
         raise OpenAiShimError("chat.completions requires at least one message")
 
@@ -26,6 +31,11 @@ def render_chat_prompt(messages: list[dict[str, Any]], model_id: str) -> str:
     if template == "llama3":
         prompt_parts.append("<|begin_of_text|>")
 
+    if template == "qwen_chatml":
+        tool_contract = render_tool_contract_system_message(tools, tool_choice)
+        if tool_contract is not None:
+            prompt_parts.append(f"<|im_start|>system\n{tool_contract}<|im_end|>\n")
+
     for message in messages:
         role = str(message.get("role", "")).strip()
         if role not in ALLOWED_CHAT_ROLES:
@@ -33,6 +43,12 @@ def render_chat_prompt(messages: list[dict[str, Any]], model_id: str) -> str:
                 "unsupported chat role; expected one of system, user, assistant, tool, function"
             )
         content = render_chat_content(message.get("content"))
+        if role == "assistant":
+            rendered_tool_calls = render_assistant_tool_calls(message.get("tool_calls"))
+            if rendered_tool_calls:
+                if content.strip():
+                    content += "\n"
+                content += rendered_tool_calls
         if template == "qwen_chatml":
             prompt_parts.append(f"<|im_start|>{role}\n{content}<|im_end|>\n")
         elif template == "llama3":
@@ -62,6 +78,8 @@ def chat_prompt_template(model_id: str) -> str:
 
 
 def render_chat_content(content: Any) -> str:
+    if content is None:
+        return ""
     if isinstance(content, str):
         return content
     if isinstance(content, list):
@@ -77,6 +95,207 @@ def render_chat_content(content: Any) -> str:
             rendered.append(text)
         return "".join(rendered)
     raise OpenAiShimError("chat message content must be a string or text parts")
+
+
+def render_tool_contract_system_message(tools: Any, tool_choice: Any) -> str | None:
+    if not openai_value_is_present(tools):
+        return None
+    lines = [
+        "You have access to the following functions.",
+        "When you need to call a function, respond with exactly one or more "
+        "<tool_call>...</tool_call> blocks and no surrounding prose.",
+        'The JSON inside each block must be {"name":"function_name","arguments":{...}}.',
+        "After a tool result is provided, continue the answer normally.",
+        "<tools>",
+    ]
+    if isinstance(tools, list):
+        lines.extend(json.dumps(tool, separators=(",", ":")) for tool in tools)
+    else:
+        lines.append(json.dumps(tools, separators=(",", ":")))
+    lines.append("</tools>")
+    if tool_choice_forces_tool_call(tool_choice):
+        lines.append(
+            "The current tool_choice requires using a tool when a matching function is available."
+        )
+    return "\n".join(lines)
+
+
+def render_assistant_tool_calls(tool_calls: Any) -> str | None:
+    if isinstance(tool_calls, dict):
+        calls = [tool_calls]
+    elif isinstance(tool_calls, list):
+        calls = tool_calls
+    else:
+        return None
+    rendered = [
+        rendered
+        for call in calls
+        if (rendered := render_assistant_tool_call(call)) is not None
+    ]
+    return "\n".join(rendered) if rendered else None
+
+
+def render_assistant_tool_call(tool_call: Any) -> str | None:
+    if not isinstance(tool_call, dict):
+        return None
+    function = tool_call.get("function")
+    if not isinstance(function, dict) or not isinstance(function.get("name"), str):
+        return None
+    payload = {
+        "name": function["name"],
+        "arguments": normalize_tool_arguments(function.get("arguments")),
+    }
+    return f"<tool_call>{json.dumps(payload, separators=(',', ':'))}</tool_call>"
+
+
+def normalize_tool_arguments(arguments: Any) -> Any:
+    if isinstance(arguments, str):
+        try:
+            return json.loads(arguments)
+        except json.JSONDecodeError:
+            return arguments
+    if arguments is None:
+        return {}
+    return arguments
+
+
+def openai_tools_are_enabled(tools: Any, tool_choice: Any) -> bool:
+    return openai_value_is_present(tools) or tool_choice_forces_tool_call(tool_choice)
+
+
+def tool_choice_forces_tool_call(value: Any) -> bool:
+    if value is None or value is False:
+        return False
+    if isinstance(value, str):
+        return value.strip().lower() not in {"", "auto", "none", "false", "off"}
+    if isinstance(value, (list, dict)):
+        return bool(value)
+    if isinstance(value, (int, float)):
+        return value != 0
+    return bool(value)
+
+
+def openai_value_is_present(value: Any) -> bool:
+    if value is None or value is False:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, (list, dict)):
+        return bool(value)
+    if isinstance(value, (int, float)):
+        return value != 0
+    return True
+
+
+def extract_tool_calls(content: str) -> tuple[str, list[dict[str, Any]] | None]:
+    remaining = content
+    calls: list[dict[str, Any]] = []
+    while True:
+        start = remaining.find("<tool_call>")
+        if start < 0:
+            break
+        body_start = start + len("<tool_call>")
+        end = remaining.find("</tool_call>", body_start)
+        suffix_start = len(remaining) if end < 0 else end + len("</tool_call>")
+        body_end = len(remaining) if end < 0 else end
+        function = parse_tool_call_body(remaining[body_start:body_end].strip())
+        if function is None:
+            break
+        calls.append(
+            {
+                "id": f"call_{len(calls)}",
+                "type": "function",
+                "function": function,
+            }
+        )
+        remaining = remaining[:start] + remaining[suffix_start:]
+    return remaining.strip(), calls or None
+
+
+def parse_tool_call_body(body: str) -> dict[str, str] | None:
+    try:
+        payload = json.loads(body)
+    except json.JSONDecodeError:
+        return parse_qwen_function_tool_call(body)
+    return parse_tool_call_function(payload)
+
+
+def parse_tool_call_function(payload: Any) -> dict[str, str] | None:
+    if not isinstance(payload, dict):
+        return None
+    function = payload.get("function")
+    if isinstance(function, dict):
+        name = function.get("name")
+        arguments = function.get("arguments")
+    else:
+        name = payload.get("name")
+        arguments = payload.get("arguments")
+    if not isinstance(name, str):
+        return None
+    if isinstance(arguments, str):
+        arguments_text = arguments
+    elif arguments is None:
+        arguments_text = "{}"
+    else:
+        arguments_text = json.dumps(arguments, separators=(",", ":"))
+    return {"name": name, "arguments": arguments_text}
+
+
+def parse_qwen_function_tool_call(body: str) -> dict[str, str] | None:
+    function_marker = "<function="
+    function_start = body.find(function_marker)
+    if function_start < 0:
+        return None
+    name_start = function_start + len(function_marker)
+    name_end = body.find(">", name_start)
+    if name_end < 0:
+        return None
+    name = body[name_start:name_end].strip()
+    if not name:
+        return None
+
+    body_start = name_end + 1
+    close_start = body.find("</function>", body_start)
+    inner = body[body_start:] if close_start < 0 else body[body_start:close_start]
+    parameters = parse_qwen_tool_parameters(inner)
+    if not parameters and inner.strip():
+        try:
+            arguments = json.dumps(json.loads(inner), separators=(",", ":"))
+        except json.JSONDecodeError:
+            return None
+    else:
+        arguments = json.dumps(parameters, separators=(",", ":"))
+    return {"name": name, "arguments": arguments}
+
+
+def parse_qwen_tool_parameters(body: str) -> dict[str, Any]:
+    parameters: dict[str, Any] = {}
+    parameter_marker = "<parameter="
+    offset = 0
+    while True:
+        parameter_start = body.find(parameter_marker, offset)
+        if parameter_start < 0:
+            break
+        name_start = parameter_start + len(parameter_marker)
+        name_end = body.find(">", name_start)
+        if name_end < 0:
+            break
+        name = body[name_start:name_end].strip()
+        if not name:
+            offset = name_end + 1
+            continue
+        value_start = name_end + 1
+        value_end = body.find("</parameter>", value_start)
+        if value_end < 0:
+            break
+        raw_value = body[value_start:value_end].strip()
+        try:
+            value = json.loads(raw_value)
+        except json.JSONDecodeError:
+            value = raw_value
+        parameters[name] = value
+        offset = value_end + len("</parameter>")
+    return parameters
 
 
 def prompt_to_tokens(prompt: Any, tokenizer: Any) -> tuple[list[int], str | None]:
@@ -218,12 +437,44 @@ def create_app(
             return openai_error(*error)
 
         try:
-            prompt = render_chat_prompt(payload.get("messages") or [], model_id)
+            prompt = render_chat_prompt(
+                payload.get("messages") or [],
+                model_id,
+                payload.get("tools"),
+                payload.get("tool_choice"),
+            )
             input_tokens, _prompt_text = prompt_to_tokens(prompt, tokenizer)
         except OpenAiShimError as error:
             return openai_error(400, str(error))
 
+        parse_tool_calls = openai_tools_are_enabled(
+            payload.get("tools"), payload.get("tool_choice")
+        )
         if bool(payload.get("stream", False)):
+            if parse_tool_calls:
+                temperature = float(payload.get("temperature", 0.0))
+                default_rp = 1.1 if temperature <= 0.0 else 1.0
+                with lock:
+                    result = session.generate(
+                        input_tokens,
+                        max_output_tokens=int(payload["max_tokens"]),
+                        temperature=temperature,
+                        top_p=float(payload.get("top_p", 1.0)),
+                        top_k=int(payload.get("top_k", 0)),
+                        repetition_penalty=float(
+                            payload.get("repetition_penalty", default_rp)
+                        ),
+                        seed=int(payload.get("seed", 0)),
+                        metadata=payload.get("metadata"),
+                    )
+                text = tokenizer.decode(list(result.output_tokens))
+                events = stream_buffered_tool_chat_chunks(
+                    model_id,
+                    result.request_id,
+                    text,
+                    finish_reason(result.finish_reason),
+                )
+                return StreamingResponse(events, media_type="text/event-stream")
             events = stream_completion_chunks(
                 session,
                 lock,
@@ -250,6 +501,14 @@ def create_app(
                 metadata=payload.get("metadata"),
             )
         text = tokenizer.decode(list(result.output_tokens))
+        message: dict[str, Any] = {"role": "assistant", "content": text}
+        response_finish_reason = finish_reason(result.finish_reason)
+        if parse_tool_calls:
+            content, tool_calls = extract_tool_calls(text)
+            if tool_calls:
+                message["content"] = content
+                message["tool_calls"] = tool_calls
+                response_finish_reason = "tool_calls"
         return {
             "id": f"chatcmpl-{result.request_id}",
             "object": "chat.completion",
@@ -258,8 +517,8 @@ def create_app(
             "choices": [
                 {
                     "index": 0,
-                    "message": {"role": "assistant", "content": text},
-                    "finish_reason": finish_reason(result.finish_reason),
+                    "message": message,
+                    "finish_reason": response_finish_reason,
                 }
             ],
             "usage": usage(input_tokens, list(result.output_tokens)),
@@ -413,6 +672,73 @@ def sse_chunk(
         "created": created,
         "model": model_id,
         "choices": [choice],
+    }
+    return f"data: {json.dumps(payload, separators=(',', ':'))}\n\n"
+
+
+def stream_buffered_tool_chat_chunks(
+    model_id: str,
+    request_id: int,
+    text: str,
+    terminal_reason: str | None,
+) -> Iterator[str]:
+    stream_id = f"chatcmpl-{request_id}"
+    created = int(time.time())
+    content, tool_calls = extract_tool_calls(text)
+    role_emitted = False
+    if content:
+        yield chat_sse_payload(
+            stream_id,
+            created,
+            model_id,
+            {"role": "assistant", "content": content},
+            None,
+        )
+        role_emitted = True
+    if tool_calls:
+        delta_tool_calls = [
+            {
+                "index": index,
+                "id": call["id"],
+                "type": call["type"],
+                "function": {
+                    "name": call["function"]["name"],
+                    "arguments": call["function"]["arguments"],
+                },
+            }
+            for index, call in enumerate(tool_calls)
+        ]
+        delta: dict[str, Any] = {"tool_calls": delta_tool_calls}
+        if not role_emitted:
+            delta["role"] = "assistant"
+        yield chat_sse_payload(stream_id, created, model_id, delta, None)
+        terminal_reason = "tool_calls"
+        role_emitted = True
+    if not role_emitted:
+        yield chat_sse_payload(
+            stream_id,
+            created,
+            model_id,
+            {"role": "assistant", "content": ""},
+            None,
+        )
+    yield chat_sse_payload(stream_id, created, model_id, {}, terminal_reason)
+    yield "data: [DONE]\n\n"
+
+
+def chat_sse_payload(
+    stream_id: str,
+    created: int,
+    model_id: str,
+    delta: dict[str, Any],
+    reason: str | None,
+) -> str:
+    payload = {
+        "id": stream_id,
+        "object": "chat.completion.chunk",
+        "created": created,
+        "model": model_id,
+        "choices": [{"index": 0, "delta": delta, "finish_reason": reason}],
     }
     return f"data: {json.dumps(payload, separators=(',', ':'))}\n\n"
 

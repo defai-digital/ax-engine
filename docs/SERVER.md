@@ -112,12 +112,13 @@ than silently dropped.
   responses are validated server-side; output that is not a JSON object
   returns `502 invalid_output`. This is post-hoc validation, not constrained
   decoding — JSON schema enforcement is not supported yet.
-- **`tools` / `tool_choice`** (chat): experimental. When tools are present,
-  explicit `<tool_call>{…}</tool_call>` spans in the model output are parsed
-  into `message.tool_calls`. Bare JSON answers are never reinterpreted as tool
-  calls. `/v1/models` continues to report
-  `openai_tool_calling_supported: false` until prompt-side tool rendering,
-  streaming deltas, and continuation handling land end-to-end.
+- **`tools` / `tool_choice`** (chat): experimental. Native
+  Qwen ChatML sessions render tool schemas into the prompt, replay assistant
+  `tool_calls` history as explicit `<tool_call>{...}</tool_call>` spans, and
+  parse generated spans back into `message.tool_calls` with
+  `finish_reason=tool_calls`. Streaming requests return buffered SSE chunks
+  with `delta.tool_calls` once the tool call is complete. Bare JSON answers are
+  never reinterpreted as tool calls.
 
 ## Examples
 

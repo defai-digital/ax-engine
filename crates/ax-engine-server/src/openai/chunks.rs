@@ -3,7 +3,8 @@ use ax_engine_sdk::GenerateFinishReason;
 use crate::openai::responses::{openai_finish_reason, unix_timestamp_secs};
 use crate::openai::schema::{
     OpenAiChatCompletionChunk, OpenAiChatCompletionChunkChoice, OpenAiChatDelta,
-    OpenAiCompletionChunk, OpenAiCompletionChunkChoice, OpenAiStreamKind,
+    OpenAiCompletionChunk, OpenAiCompletionChunkChoice, OpenAiFunctionCallDelta, OpenAiStreamKind,
+    OpenAiToolCall, OpenAiToolCallDelta,
 };
 
 pub(crate) fn completion_delta_chunk(
@@ -61,6 +62,45 @@ pub(crate) fn chat_delta_chunk(
             delta: OpenAiChatDelta {
                 role,
                 content: Some(content),
+                tool_calls: None,
+            },
+            finish_reason: None,
+        }],
+    }
+}
+
+pub(crate) fn chat_tool_calls_delta_chunk(
+    request_id: u64,
+    model: String,
+    role: Option<&'static str>,
+    tool_calls: &[OpenAiToolCall],
+) -> OpenAiChatCompletionChunk {
+    OpenAiChatCompletionChunk {
+        id: OpenAiStreamKind::ChatCompletion.response_id(request_id),
+        object: OpenAiStreamKind::ChatCompletion.stream_chunk_object(),
+        created: unix_timestamp_secs(),
+        model,
+        system_fingerprint: None,
+        choices: vec![OpenAiChatCompletionChunkChoice {
+            index: 0,
+            delta: OpenAiChatDelta {
+                role,
+                content: None,
+                tool_calls: Some(
+                    tool_calls
+                        .iter()
+                        .enumerate()
+                        .map(|(index, call)| OpenAiToolCallDelta {
+                            index: index as u32,
+                            id: Some(call.id.clone()),
+                            tool_type: Some(call.tool_type),
+                            function: Some(OpenAiFunctionCallDelta {
+                                name: Some(call.function.name.clone()),
+                                arguments: Some(call.function.arguments.clone()),
+                            }),
+                        })
+                        .collect(),
+                ),
             },
             finish_reason: None,
         }],
@@ -91,6 +131,24 @@ pub(crate) fn chat_final_chunk(
             index: 0,
             delta: OpenAiChatDelta::default(),
             finish_reason: openai_finish_reason(finish_reason),
+        }],
+    }
+}
+
+pub(crate) fn chat_tool_calls_final_chunk(
+    request_id: u64,
+    model: String,
+) -> OpenAiChatCompletionChunk {
+    OpenAiChatCompletionChunk {
+        id: OpenAiStreamKind::ChatCompletion.response_id(request_id),
+        object: OpenAiStreamKind::ChatCompletion.stream_chunk_object(),
+        created: unix_timestamp_secs(),
+        model,
+        system_fingerprint: None,
+        choices: vec![OpenAiChatCompletionChunkChoice {
+            index: 0,
+            delta: OpenAiChatDelta::default(),
+            finish_reason: Some("tool_calls"),
         }],
     }
 }

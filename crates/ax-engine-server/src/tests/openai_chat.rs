@@ -1,8 +1,11 @@
 use crate::chat;
+use crate::openai::chat_requests::{
+    render_openai_chat_prompt, render_openai_chat_prompt_with_tools,
+};
 use crate::openai::requests::{
     DEFAULT_OPENAI_MAX_TOKENS, build_openai_chat_request,
     build_openai_chat_request_offloading_media, build_openai_mlx_lm_chat_request,
-    chat_template_kwargs_for_model_id, openai_chat_stop_sequences, render_openai_chat_prompt,
+    chat_template_kwargs_for_model_id, openai_chat_stop_sequences,
 };
 use crate::openai::schema::{OpenAiChatCompletionHttpRequest, OpenAiChatMessage, OpenAiStopInput};
 use crate::openai::validation::validate_openai_request;
@@ -50,6 +53,71 @@ fn openai_chat_prompt_renderer_uses_model_family_templates() {
         render_openai_chat_prompt("unknown-local-model", &messages).expect("plain prompt"),
         "system: Be concise.\nuser: Hello\nassistant:"
     );
+}
+
+#[test]
+fn openai_chat_prompt_renderer_injects_qwen_tool_contract() {
+    let messages: Vec<OpenAiChatMessage> = serde_json::from_value(json!([
+        {"role": "user", "content": "Read README.md"}
+    ]))
+    .expect("sample messages should deserialize");
+
+    let prompt = render_openai_chat_prompt_with_tools(
+        "mlx-community/Qwen3-Coder-Next-4bit",
+        &messages,
+        Some(&json!([
+            {
+                "type": "function",
+                "function": {
+                    "name": "read_file",
+                    "description": "Read a workspace file",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"path": {"type": "string"}},
+                        "required": ["path"]
+                    }
+                }
+            }
+        ])),
+        Some(&json!("auto")),
+    )
+    .expect("qwen tool prompt should render");
+
+    assert!(prompt.contains("<|im_start|>system\nYou have access to the following functions."));
+    assert!(prompt.contains("<tools>\n{\"function\":{\"description\":\"Read a workspace file\""));
+    assert!(prompt.contains("<tool_call>...</tool_call>"));
+    assert!(prompt.contains("\"name\":\"read_file\""));
+    assert!(prompt.contains("<|im_start|>user\nRead README.md<|im_end|>"));
+    assert!(prompt.ends_with(chat::QWEN_CHATML_ASSISTANT_GENERATION_PROMPT));
+}
+
+#[test]
+fn openai_chat_prompt_renderer_replays_assistant_tool_calls() {
+    let messages: Vec<OpenAiChatMessage> = serde_json::from_value(json!([
+        {"role": "user", "content": "Read README.md"},
+        {
+            "role": "assistant",
+            "content": null,
+            "tool_calls": [{
+                "id": "call_123",
+                "type": "function",
+                "function": {
+                    "name": "read_file",
+                    "arguments": "{\"path\":\"README.md\"}"
+                }
+            }]
+        },
+        {"role": "tool", "tool_call_id": "call_123", "content": "AX Engine"}
+    ]))
+    .expect("tool replay messages should deserialize");
+
+    let prompt = render_openai_chat_prompt("mlx-community/Qwen3-Coder-Next-4bit", &messages)
+        .expect("qwen replay prompt should render");
+
+    assert!(prompt.contains("<|im_start|>assistant\n<tool_call>"));
+    assert!(prompt.contains("\"name\":\"read_file\""));
+    assert!(prompt.contains("\"arguments\":{\"path\":\"README.md\"}"));
+    assert!(prompt.contains("<|im_start|>tool\nAX Engine<|im_end|>"));
 }
 
 #[test]
@@ -338,6 +406,30 @@ async fn openai_chat_request_rejects_streaming_json_object_validation() {
         error.1.0.error.code.as_deref(),
         Some("unsupported_parameter")
     );
+}
+
+#[tokio::test]
+async fn openai_chat_request_allows_streaming_tool_calls_for_native_qwen_buffering() {
+    let artifact_dir = minimal_tokenizer_artifact("native-openai-chat-stream-tools");
+    let state = native_mlx_openai_builder_state("qwen3", &artifact_dir);
+    let live = state.snapshot();
+    let request: OpenAiChatCompletionHttpRequest = serde_json::from_value(json!({
+        "messages": [{"role": "user", "content": "Call a tool"}],
+        "max_tokens": 8,
+        "stream": true,
+        "tools": [{
+            "type": "function",
+            "function": {"name": "lookup", "parameters": {"type": "object"}}
+        }]
+    }))
+    .expect("sample chat request should deserialize");
+
+    let built = build_openai_chat_request(&live, request)
+        .expect("native Qwen streaming tool calls should build for buffered SSE");
+
+    assert!(built.stream);
+    assert!(built.response_options.parse_tool_calls);
+    fs::remove_dir_all(artifact_dir).expect("artifact dir should clean up");
 }
 
 #[tokio::test]

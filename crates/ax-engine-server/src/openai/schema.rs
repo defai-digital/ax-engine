@@ -195,7 +195,16 @@ pub(crate) enum OpenAiPromptInput {
 #[derive(Debug, Deserialize)]
 pub(crate) struct OpenAiChatMessage {
     pub(crate) role: String,
-    pub(crate) content: OpenAiChatContent,
+    #[serde(default)]
+    pub(crate) content: Option<OpenAiChatContent>,
+    #[serde(default)]
+    pub(crate) tool_calls: Option<Value>,
+    #[serde(default)]
+    #[serde(rename = "tool_call_id")]
+    pub(crate) _tool_call_id: Option<String>,
+    #[serde(default)]
+    #[serde(rename = "name")]
+    pub(crate) _name: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -281,7 +290,7 @@ pub(crate) struct OpenAiChatMessageResponse {
     pub(crate) tool_calls: Option<Vec<OpenAiToolCall>>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub(crate) struct OpenAiToolCall {
     pub(crate) id: String,
     #[serde(rename = "type")]
@@ -289,7 +298,7 @@ pub(crate) struct OpenAiToolCall {
     pub(crate) function: OpenAiFunctionCall,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub(crate) struct OpenAiFunctionCall {
     pub(crate) name: String,
     pub(crate) arguments: String,
@@ -348,6 +357,27 @@ pub(crate) struct OpenAiChatDelta {
     pub(crate) role: Option<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) content: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) tool_calls: Option<Vec<OpenAiToolCallDelta>>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct OpenAiToolCallDelta {
+    pub(crate) index: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) id: Option<String>,
+    #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
+    pub(crate) tool_type: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) function: Option<OpenAiFunctionCallDelta>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct OpenAiFunctionCallDelta {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) arguments: Option<String>,
 }
 
 #[derive(Debug, Serialize)]

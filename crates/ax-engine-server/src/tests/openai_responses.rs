@@ -1,3 +1,4 @@
+use crate::openai::chunks::{chat_tool_calls_delta_chunk, chat_tool_calls_final_chunk};
 use crate::openai::generation::validate_openai_json_object_response;
 use crate::openai::requests::OpenAiResponseOptions;
 use crate::openai::responses::{
@@ -188,12 +189,162 @@ fn chat_response_extracts_tool_call_when_tool_contract_requested() {
 
     let message = &openai.choices[0].message;
     assert_eq!(message.content, "Before  after");
+    assert_eq!(openai.choices[0].finish_reason, Some("tool_calls"));
     let tool_call = &message
         .tool_calls
         .as_ref()
         .expect("tool call should be parsed")[0];
     assert_eq!(tool_call.function.name, "lookup");
     assert_eq!(tool_call.function.arguments, r#"{"query":"ax"}"#);
+}
+
+#[test]
+fn chat_response_extracts_multiple_tool_calls() {
+    let response = sample_generate_response(
+        r#"<tool_call>{"name":"read_file","arguments":{"path":"README.md"}}</tool_call>
+<tool_call>{"function":{"name":"run_command","arguments":"{\"cmd\":\"cargo test\"}"}}</tool_call>"#,
+        Vec::new(),
+        Vec::new(),
+    );
+
+    let openai = openai_chat_completion_response(
+        &response,
+        "chatcmpl-test".to_string(),
+        OpenAiResponseOptions {
+            parse_tool_calls: true,
+            ..Default::default()
+        },
+        None,
+    );
+
+    let message = &openai.choices[0].message;
+    let tool_calls = message
+        .tool_calls
+        .as_ref()
+        .expect("tool calls should be parsed");
+    assert_eq!(message.content, "");
+    assert_eq!(tool_calls.len(), 2);
+    assert_eq!(tool_calls[0].id, "call_0");
+    assert_eq!(tool_calls[0].function.name, "read_file");
+    assert_eq!(tool_calls[0].function.arguments, r#"{"path":"README.md"}"#);
+    assert_eq!(tool_calls[1].id, "call_1");
+    assert_eq!(tool_calls[1].function.name, "run_command");
+    assert_eq!(tool_calls[1].function.arguments, r#"{"cmd":"cargo test"}"#);
+    assert_eq!(openai.choices[0].finish_reason, Some("tool_calls"));
+}
+
+#[test]
+fn chat_response_extracts_qwen_function_parameter_tool_call() {
+    let response = sample_generate_response(
+        r#"<tool_call><function=todo_write>
+<parameter=todos>
+[{"content":"create index.html","status":"pending"}]
+</parameter>
+</function></tool_call>"#,
+        Vec::new(),
+        Vec::new(),
+    );
+
+    let openai = openai_chat_completion_response(
+        &response,
+        "chatcmpl-test".to_string(),
+        OpenAiResponseOptions {
+            parse_tool_calls: true,
+            ..Default::default()
+        },
+        None,
+    );
+
+    let message = &openai.choices[0].message;
+    let tool_call = &message
+        .tool_calls
+        .as_ref()
+        .expect("qwen function tool call should be parsed")[0];
+    assert_eq!(message.content, "");
+    assert_eq!(openai.choices[0].finish_reason, Some("tool_calls"));
+    assert_eq!(tool_call.function.name, "todo_write");
+    assert_eq!(
+        tool_call.function.arguments,
+        r#"{"todos":[{"content":"create index.html","status":"pending"}]}"#
+    );
+}
+
+#[test]
+fn chat_response_recovers_qwen_function_tool_call_without_closing_tags() {
+    let response = sample_generate_response(
+        r#"I'll create it now.
+
+<tool_call>
+<function=todo_write>
+{"explanation":"Creating a responsive coffee shop website in Traditional Chinese","tasks":[{"file_path":"index.html","status":"in_progress"}]}"#,
+        Vec::new(),
+        Vec::new(),
+    );
+
+    let openai = openai_chat_completion_response(
+        &response,
+        "chatcmpl-test".to_string(),
+        OpenAiResponseOptions {
+            parse_tool_calls: true,
+            ..Default::default()
+        },
+        None,
+    );
+
+    let message = &openai.choices[0].message;
+    let tool_call = &message
+        .tool_calls
+        .as_ref()
+        .expect("partial qwen function tool call should be parsed")[0];
+    assert_eq!(message.content, "I'll create it now.");
+    assert_eq!(openai.choices[0].finish_reason, Some("tool_calls"));
+    assert_eq!(tool_call.function.name, "todo_write");
+    assert_eq!(
+        tool_call.function.arguments,
+        r#"{"explanation":"Creating a responsive coffee shop website in Traditional Chinese","tasks":[{"file_path":"index.html","status":"in_progress"}]}"#
+    );
+}
+
+#[test]
+fn chat_tool_call_stream_chunks_use_openai_delta_shape() {
+    let response = sample_generate_response(
+        r#"<tool_call>{"name":"lookup","arguments":{"query":"ax"}}</tool_call>"#,
+        Vec::new(),
+        Vec::new(),
+    );
+    let openai = openai_chat_completion_response(
+        &response,
+        "chatcmpl-test".to_string(),
+        OpenAiResponseOptions {
+            parse_tool_calls: true,
+            ..Default::default()
+        },
+        None,
+    );
+    let tool_calls = openai.choices[0]
+        .message
+        .tool_calls
+        .as_ref()
+        .expect("tool call should parse");
+
+    let delta = serde_json::to_value(chat_tool_calls_delta_chunk(
+        7,
+        "qwen3".to_string(),
+        Some("assistant"),
+        tool_calls,
+    ))
+    .expect("chunk should serialize");
+    let first_call = &delta["choices"][0]["delta"]["tool_calls"][0];
+    assert_eq!(delta["choices"][0]["delta"]["role"], "assistant");
+    assert_eq!(first_call["index"], 0);
+    assert_eq!(first_call["id"], "call_0");
+    assert_eq!(first_call["type"], "function");
+    assert_eq!(first_call["function"]["name"], "lookup");
+    assert_eq!(first_call["function"]["arguments"], r#"{"query":"ax"}"#);
+
+    let final_chunk = serde_json::to_value(chat_tool_calls_final_chunk(7, "qwen3".to_string()))
+        .expect("final chunk should serialize");
+    assert_eq!(final_chunk["choices"][0]["finish_reason"], "tool_calls");
 }
 
 #[test]
