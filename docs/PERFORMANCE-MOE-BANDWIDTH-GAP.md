@@ -3,10 +3,12 @@
 ## Summary
 
 On Qwen3-Coder-Next (MoE, 10-of-512 experts, batch=1 decode), AX Engine
-sustains **39% of the M5 Max GPU peak memory bandwidth** (227 GB/s of
-577 GB/s) at 115.4 tok/s, reading 1.96 GB/token. On **dense** models on
+v6.4.0 sustains **40% of the M5 Max GPU peak memory bandwidth** (231 GB/s of
+577 GB/s) at 117.7 tok/s, reading 1.96 GB/token. On **dense** models on
 the same hardware AX reaches **78–86% of peak** — so there is a ~40-point
-bandwidth-utilization gap that is specific to batch=1 MoE decode.
+bandwidth-utilization gap that is specific to batch=1 MoE decode. (v6.4.0's
+MoE MLP rework already captured a small slice — 39%→40%, +2% decode vs
+v6.3.4 — confirming the lever is real; the bulk of the headroom below remains.)
 
 This is **not** a gap to llama.cpp (llama.cpp is at 42% but reads 1.44×
 the bytes, so it decodes slowest). It is a gap to AX's own dense-model
@@ -22,12 +24,13 @@ separate (and largely closed) 1–6% dense-decode gap to `mlx_lm`.
 
 | Engine / quantization | Weights/token | Decode tok/s | Effective BW | % of 577 GB/s peak |
 |---|---:|---:|---:|---:|
-| AX — MLX 4-bit | 1.96 GB | 115.4 | 227 GB/s | 39% |
+| AX — MLX 4-bit (v6.4.0) | 1.96 GB | 117.7 | 231 GB/s | 40% |
 | mlx-lm — MLX 4-bit | 1.96 GB | 99.2 | 195 GB/s | 34% |
 | llama.cpp — Q4_K_M | 2.83 GB | 86.2 | 244 GB/s | 42% |
 
-Source: `benchmarks/results/mlx-inference/2026-06-13-qwen3-coder-next-prefill-probe/`
-and `benchmarks/results/llama-cpp-metal/2026-06-13-qwen3-coder-next-9620-fa/`.
+Source (AX): `benchmarks/results/mlx-inference/2026-06-14-qwen3-coder-next-29af647f-ax-direct/`;
+mlx-lm: `benchmarks/results/mlx-inference/2026-06-13-qwen3-coder-next-prefill-probe/`;
+llama.cpp: `benchmarks/results/llama-cpp-metal/2026-06-13-qwen3-coder-next-9620-fa/`.
 The 577 GB/s peak is an MLX reduction probe over a 6 GB array (same probe
 used for the Gemma 4 dense-model bandwidth table).
 
@@ -175,7 +178,7 @@ the highest-risk Tier 1 item; defer until 1A/1B are validated.
 **Tier 1 aggregate estimate:** eliminating ~7 dispatches/layer (1A+1B)
 raises bus duty cycle modestly. A rough ceiling: if dispatch overhead is
 ~1–3µs each and there are ~960 dispatches/token, removing ~336 (7×48)
-saves ~0.3–1.0ms/token out of an 8.66ms step (115.4 tok/s) — roughly +4–12%.
+saves ~0.3–1.0ms/token out of an 8.50ms step (117.7 tok/s) — roughly +4–12%.
 This is consistent with the README's "+8% if AX matched llama.cpp's 42%."
 The Tier 1 ceiling is probably in the +5–10% range, not the +100% needed
 to reach dense-level utilization.
@@ -198,7 +201,7 @@ effort with real correctness risk (4-bit affine dequant, scatter-gather
 indexing, activation fusion).
 
 Effort: very high. Risk: high. Impact: theoretical max — this is the only
-single change that could plausibly move AX from 39% toward dense-level
+single change that could plausibly move AX from 40% toward dense-level
 utilization, because it attacks the dispatch density directly.
 
 ### Tier 3 — Graph-level compilation (highest leverage, high effort)
@@ -262,7 +265,7 @@ MoE requires either Tier 2 (deep kernel fusion) or Tier 3 (graph compile).
 4. **2A (deep expert-block kernel) — only if 3A is insufficient.** This is
    the Metal engineering path to dense-level utilization. ~4–8 weeks.
 
-The single most important caveat: **the 39% number is derived, not measured
+The single most important caveat: **the 40% number is derived, not measured
 with performance counters, and `peak_bandwidth_gb_s` was null in the bench
 run.** Before investing in any of the above, a direct Metal performance-counter
 measurement of bus utilization during MoE decode would confirm (or revise)

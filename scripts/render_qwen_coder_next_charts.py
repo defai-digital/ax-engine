@@ -155,6 +155,11 @@ def collect(rows: list[dict[str, Any]], metric: str) -> dict[str, dict[int, Stat
         prompt_tokens = row.get("prompt_tokens")
         if engine not in data or prompt_tokens not in PROMPT_TOKENS:
             continue
+        # First-wins: when multiple artifacts carry the same engine+prompt (e.g. a
+        # fresh AX-only rerun passed before the older combined artifact), the first
+        # one provided takes precedence. mlx_lm still fills in from later artifacts.
+        if int(prompt_tokens) in data[str(engine)]:
+            continue
         values = trial_values(row, metric)
         if values:
             data[str(engine)][int(prompt_tokens)] = summarize(values)
