@@ -3231,6 +3231,24 @@ impl PrefillProfileSnapshot {
             .post_attn_residual_gate_wall_us
             .saturating_add(other.post_attn_residual_gate_wall_us);
         self.lm_head_wall_us = self.lm_head_wall_us.saturating_add(other.lm_head_wall_us);
+        self.moe_router_wall_us = self
+            .moe_router_wall_us
+            .saturating_add(other.moe_router_wall_us);
+        self.moe_expert_gate_up_wall_us = self
+            .moe_expert_gate_up_wall_us
+            .saturating_add(other.moe_expert_gate_up_wall_us);
+        self.moe_expert_activation_wall_us = self
+            .moe_expert_activation_wall_us
+            .saturating_add(other.moe_expert_activation_wall_us);
+        self.moe_expert_down_wall_us = self
+            .moe_expert_down_wall_us
+            .saturating_add(other.moe_expert_down_wall_us);
+        self.moe_expert_weighted_sum_wall_us = self
+            .moe_expert_weighted_sum_wall_us
+            .saturating_add(other.moe_expert_weighted_sum_wall_us);
+        self.moe_shared_expert_wall_us = self
+            .moe_shared_expert_wall_us
+            .saturating_add(other.moe_shared_expert_wall_us);
     }
 
     fn append_route_decisions(&self, decisions: &mut impl RouteDecisionSink) {
@@ -3300,6 +3318,30 @@ impl PrefillProfileSnapshot {
                 "ax_mlx_prefill_profile_lm_head_wall_us",
                 self.lm_head_wall_us,
             ),
+            (
+                "ax_mlx_prefill_profile_moe_router_wall_us",
+                self.moe_router_wall_us,
+            ),
+            (
+                "ax_mlx_prefill_profile_moe_expert_gate_up_wall_us",
+                self.moe_expert_gate_up_wall_us,
+            ),
+            (
+                "ax_mlx_prefill_profile_moe_expert_activation_wall_us",
+                self.moe_expert_activation_wall_us,
+            ),
+            (
+                "ax_mlx_prefill_profile_moe_expert_down_wall_us",
+                self.moe_expert_down_wall_us,
+            ),
+            (
+                "ax_mlx_prefill_profile_moe_expert_weighted_sum_wall_us",
+                self.moe_expert_weighted_sum_wall_us,
+            ),
+            (
+                "ax_mlx_prefill_profile_moe_shared_expert_wall_us",
+                self.moe_shared_expert_wall_us,
+            ),
         ];
 
         for (key, value) in entries {
@@ -3352,6 +3394,24 @@ impl DecodeProfileSnapshot {
             .post_attn_residual_gate_wall_us
             .saturating_add(other.post_attn_residual_gate_wall_us);
         self.lm_head_wall_us = self.lm_head_wall_us.saturating_add(other.lm_head_wall_us);
+        self.moe_router_wall_us = self
+            .moe_router_wall_us
+            .saturating_add(other.moe_router_wall_us);
+        self.moe_expert_gate_up_wall_us = self
+            .moe_expert_gate_up_wall_us
+            .saturating_add(other.moe_expert_gate_up_wall_us);
+        self.moe_expert_activation_wall_us = self
+            .moe_expert_activation_wall_us
+            .saturating_add(other.moe_expert_activation_wall_us);
+        self.moe_expert_down_wall_us = self
+            .moe_expert_down_wall_us
+            .saturating_add(other.moe_expert_down_wall_us);
+        self.moe_expert_weighted_sum_wall_us = self
+            .moe_expert_weighted_sum_wall_us
+            .saturating_add(other.moe_expert_weighted_sum_wall_us);
+        self.moe_shared_expert_wall_us = self
+            .moe_shared_expert_wall_us
+            .saturating_add(other.moe_shared_expert_wall_us);
     }
 
     fn append_route_decisions(&self, decisions: &mut impl RouteDecisionSink) {
@@ -3419,6 +3479,30 @@ impl DecodeProfileSnapshot {
             (
                 "ax_mlx_decode_profile_lm_head_wall_us",
                 self.lm_head_wall_us,
+            ),
+            (
+                "ax_mlx_decode_profile_moe_router_wall_us",
+                self.moe_router_wall_us,
+            ),
+            (
+                "ax_mlx_decode_profile_moe_expert_gate_up_wall_us",
+                self.moe_expert_gate_up_wall_us,
+            ),
+            (
+                "ax_mlx_decode_profile_moe_expert_activation_wall_us",
+                self.moe_expert_activation_wall_us,
+            ),
+            (
+                "ax_mlx_decode_profile_moe_expert_down_wall_us",
+                self.moe_expert_down_wall_us,
+            ),
+            (
+                "ax_mlx_decode_profile_moe_expert_weighted_sum_wall_us",
+                self.moe_expert_weighted_sum_wall_us,
+            ),
+            (
+                "ax_mlx_decode_profile_moe_shared_expert_wall_us",
+                self.moe_shared_expert_wall_us,
             ),
         ];
 
@@ -13658,6 +13742,12 @@ mod tests {
             post_attn_residual_norm_wall_us: 100,
             post_attn_residual_gate_wall_us: 200,
             lm_head_wall_us: 150,
+            moe_router_wall_us: 400,
+            moe_expert_gate_up_wall_us: 500,
+            moe_expert_activation_wall_us: 100,
+            moe_expert_down_wall_us: 300,
+            moe_expert_weighted_sum_wall_us: 50,
+            moe_shared_expert_wall_us: 450,
         };
         profile.merge_from(DecodeProfileSnapshot {
             enabled: 1,
@@ -13678,6 +13768,12 @@ mod tests {
             post_attn_residual_norm_wall_us: 25,
             post_attn_residual_gate_wall_us: 50,
             lm_head_wall_us: 50,
+            moe_router_wall_us: 100,
+            moe_expert_gate_up_wall_us: 120,
+            moe_expert_activation_wall_us: 30,
+            moe_expert_down_wall_us: 80,
+            moe_expert_weighted_sum_wall_us: 15,
+            moe_shared_expert_wall_us: 110,
         });
 
         let mut decisions = Vec::new();
@@ -13752,6 +13848,30 @@ mod tests {
             decisions.get("ax_mlx_decode_profile_lm_head_wall_us"),
             Some(&200)
         );
+        assert_eq!(
+            decisions.get("ax_mlx_decode_profile_moe_router_wall_us"),
+            Some(&500)
+        );
+        assert_eq!(
+            decisions.get("ax_mlx_decode_profile_moe_expert_gate_up_wall_us"),
+            Some(&620)
+        );
+        assert_eq!(
+            decisions.get("ax_mlx_decode_profile_moe_expert_activation_wall_us"),
+            Some(&130)
+        );
+        assert_eq!(
+            decisions.get("ax_mlx_decode_profile_moe_expert_down_wall_us"),
+            Some(&380)
+        );
+        assert_eq!(
+            decisions.get("ax_mlx_decode_profile_moe_expert_weighted_sum_wall_us"),
+            Some(&65)
+        );
+        assert_eq!(
+            decisions.get("ax_mlx_decode_profile_moe_shared_expert_wall_us"),
+            Some(&560)
+        );
 
         let mut disabled_decisions = Vec::new();
         DecodeProfileSnapshot::default().append_route_decisions(&mut disabled_decisions);
@@ -13780,6 +13900,12 @@ mod tests {
             post_attn_residual_norm_wall_us: 100,
             post_attn_residual_gate_wall_us: 200,
             lm_head_wall_us: 150,
+            moe_router_wall_us: 400,
+            moe_expert_gate_up_wall_us: 500,
+            moe_expert_activation_wall_us: 100,
+            moe_expert_down_wall_us: 300,
+            moe_expert_weighted_sum_wall_us: 50,
+            moe_shared_expert_wall_us: 450,
         };
         profile.merge_from(PrefillProfileSnapshot {
             enabled: 1,
@@ -13801,6 +13927,12 @@ mod tests {
             post_attn_residual_norm_wall_us: 25,
             post_attn_residual_gate_wall_us: 50,
             lm_head_wall_us: 50,
+            moe_router_wall_us: 100,
+            moe_expert_gate_up_wall_us: 120,
+            moe_expert_activation_wall_us: 30,
+            moe_expert_down_wall_us: 80,
+            moe_expert_weighted_sum_wall_us: 15,
+            moe_shared_expert_wall_us: 110,
         });
 
         let mut decisions = Vec::new();
@@ -13847,6 +13979,30 @@ mod tests {
         assert_eq!(
             decisions.get("ax_mlx_prefill_profile_lm_head_wall_us"),
             Some(&200)
+        );
+        assert_eq!(
+            decisions.get("ax_mlx_prefill_profile_moe_router_wall_us"),
+            Some(&500)
+        );
+        assert_eq!(
+            decisions.get("ax_mlx_prefill_profile_moe_expert_gate_up_wall_us"),
+            Some(&620)
+        );
+        assert_eq!(
+            decisions.get("ax_mlx_prefill_profile_moe_expert_activation_wall_us"),
+            Some(&130)
+        );
+        assert_eq!(
+            decisions.get("ax_mlx_prefill_profile_moe_expert_down_wall_us"),
+            Some(&380)
+        );
+        assert_eq!(
+            decisions.get("ax_mlx_prefill_profile_moe_expert_weighted_sum_wall_us"),
+            Some(&65)
+        );
+        assert_eq!(
+            decisions.get("ax_mlx_prefill_profile_moe_shared_expert_wall_us"),
+            Some(&560)
         );
 
         let mut disabled_decisions = Vec::new();

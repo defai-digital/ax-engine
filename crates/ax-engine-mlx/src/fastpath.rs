@@ -506,6 +506,40 @@ env_flag_default_on!(
     "AX_MLX_LINEAR_ATTENTION_RMS_NORM_GATE_METAL"
 );
 
+env_flag_default_on!(
+    /// `AX_MLX_MOE_FUSE_SHARED_EXPERT_ADD` — fuse the shared-expert add
+    /// into the Qwen3 MoE weighted-sum Metal kernel.
+    ///
+    /// **Default: ON** (kill-switch via
+    /// `AX_MLX_MOE_FUSE_SHARED_EXPERT_ADD=0`).
+    ///
+    /// When the shared expert is present and the weighted-sum Metal kernel
+    /// is eligible, the shared-expert output is added inside the same kernel
+    /// that combines the top-k expert outputs — eliminating one `add`
+    /// dispatch per MoE layer. Falls back to the separate `add` when the
+    /// kernel is ineligible (dtype or shape mismatch) or the flag is off.
+    moe_fuse_shared_expert_add_enabled,
+    "AX_MLX_MOE_FUSE_SHARED_EXPERT_ADD"
+);
+
+env_flag_default_on!(
+    /// `AX_MLX_MOE_SWIGLU_PACKED_METAL` — route the MoE expert SwiGLU
+    /// activation through the same packed Metal kernel used by the dense
+    /// FFN path.
+    ///
+    /// **Default: ON** (kill-switch via
+    /// `AX_MLX_MOE_SWIGLU_PACKED_METAL=0`).
+    ///
+    /// When the MoE expert gate_up projection is packed (the common Qwen3
+    /// path), the gather_qmm output is passed directly to the packed
+    /// `ax_qwen_packed_swiglu_v1` kernel, which fuses the last-dim split,
+    /// SiLU, and multiply into one dispatch instead of slice + slice +
+    /// silu_mul. Falls back to the split-activation path when the kernel is
+    /// ineligible or the flag is off.
+    moe_swiglu_packed_metal_enabled,
+    "AX_MLX_MOE_SWIGLU_PACKED_METAL"
+);
+
 /// Tuning override for the MLA prefill chunk size. Smaller chunks let
 /// cold and warm-extend prefill paths produce the same SDPA Q/K shape
 /// sequence over the same absolute positions, avoiding the reproduced

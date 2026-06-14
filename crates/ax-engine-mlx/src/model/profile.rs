@@ -75,6 +75,12 @@ pub struct PrefillProfileSnapshot {
     pub post_attn_residual_norm_wall_us: u32,
     pub post_attn_residual_gate_wall_us: u32,
     pub lm_head_wall_us: u32,
+    pub moe_router_wall_us: u32,
+    pub moe_expert_gate_up_wall_us: u32,
+    pub moe_expert_activation_wall_us: u32,
+    pub moe_expert_down_wall_us: u32,
+    pub moe_expert_weighted_sum_wall_us: u32,
+    pub moe_shared_expert_wall_us: u32,
 }
 
 /// Per-section wall time for the single-token lazy decode path.
@@ -121,6 +127,18 @@ pub struct PrefillProfileSnapshot {
 ///   optional Gemma per-layer-input gate/projection/norm, and optional layer
 ///   scalar.
 /// - `lm_head_wall_us` — final RMSNorm + lm_head matmul + softcap + reshape.
+/// - `moe_router_wall_us` — subset of post_attn_ffn: just the MoE router
+///   (quantized_matmul + softmax + top-k + renorm).
+/// - `moe_expert_gate_up_wall_us` — subset of post_attn_ffn: the expert
+///   gate/up gather_qmm.
+/// - `moe_expert_activation_wall_us` — subset of post_attn_ffn: the SwiGLU
+///   activation on the expert gate_up output.
+/// - `moe_expert_down_wall_us` — subset of post_attn_ffn: the expert down
+///   gather_qmm.
+/// - `moe_expert_weighted_sum_wall_us` — subset of post_attn_ffn: the
+///   weighted-sum kernel (or MLX fallback) combining expert outputs.
+/// - `moe_shared_expert_wall_us` — subset of post_attn_ffn: the shared
+///   expert forward (gate/up/down projections + gate activation + multiply).
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct DecodeProfileSnapshot {
     pub enabled: u32,
@@ -141,6 +159,12 @@ pub struct DecodeProfileSnapshot {
     pub post_attn_residual_norm_wall_us: u32,
     pub post_attn_residual_gate_wall_us: u32,
     pub lm_head_wall_us: u32,
+    pub moe_router_wall_us: u32,
+    pub moe_expert_gate_up_wall_us: u32,
+    pub moe_expert_activation_wall_us: u32,
+    pub moe_expert_down_wall_us: u32,
+    pub moe_expert_weighted_sum_wall_us: u32,
+    pub moe_shared_expert_wall_us: u32,
 }
 
 #[derive(Clone, Copy)]
@@ -184,6 +208,12 @@ pub(crate) enum DecodeProfileStage {
     PostAttnResidualNorm,
     PostAttnResidualGate,
     LmHead,
+    MoeRouter,
+    MoeExpertGateUp,
+    MoeExpertActivation,
+    MoeExpertDown,
+    MoeExpertWeightedSum,
+    MoeSharedExpert,
 }
 
 static GEMMA4_MOE_PROFILE: OnceLock<Mutex<Gemma4MoeProfileSnapshot>> = OnceLock::new();
@@ -417,6 +447,12 @@ pub(super) fn record_prefill_profile_stage(stage: DecodeProfileStage, wall_us: u
         DecodeProfileStage::PostAttnResidualNorm => &mut profile.post_attn_residual_norm_wall_us,
         DecodeProfileStage::PostAttnResidualGate => &mut profile.post_attn_residual_gate_wall_us,
         DecodeProfileStage::LmHead => &mut profile.lm_head_wall_us,
+        DecodeProfileStage::MoeRouter => &mut profile.moe_router_wall_us,
+        DecodeProfileStage::MoeExpertGateUp => &mut profile.moe_expert_gate_up_wall_us,
+        DecodeProfileStage::MoeExpertActivation => &mut profile.moe_expert_activation_wall_us,
+        DecodeProfileStage::MoeExpertDown => &mut profile.moe_expert_down_wall_us,
+        DecodeProfileStage::MoeExpertWeightedSum => &mut profile.moe_expert_weighted_sum_wall_us,
+        DecodeProfileStage::MoeSharedExpert => &mut profile.moe_shared_expert_wall_us,
     };
     *target = target.saturating_add(wall_us);
 }
@@ -440,6 +476,12 @@ pub(super) fn record_decode_profile_stage(stage: DecodeProfileStage, wall_us: u3
         DecodeProfileStage::PostAttnResidualNorm => &mut profile.post_attn_residual_norm_wall_us,
         DecodeProfileStage::PostAttnResidualGate => &mut profile.post_attn_residual_gate_wall_us,
         DecodeProfileStage::LmHead => &mut profile.lm_head_wall_us,
+        DecodeProfileStage::MoeRouter => &mut profile.moe_router_wall_us,
+        DecodeProfileStage::MoeExpertGateUp => &mut profile.moe_expert_gate_up_wall_us,
+        DecodeProfileStage::MoeExpertActivation => &mut profile.moe_expert_activation_wall_us,
+        DecodeProfileStage::MoeExpertDown => &mut profile.moe_expert_down_wall_us,
+        DecodeProfileStage::MoeExpertWeightedSum => &mut profile.moe_expert_weighted_sum_wall_us,
+        DecodeProfileStage::MoeSharedExpert => &mut profile.moe_shared_expert_wall_us,
     };
     *target = target.saturating_add(wall_us);
 }
