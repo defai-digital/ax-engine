@@ -540,6 +540,9 @@ fn qwen3_moe_weighted_sum_with_shared_metal(
         top_k_weights.dtype(),
         MlxDtype::Bfloat16 | MlxDtype::Float16 | MlxDtype::Float32
     ) || !matches!(
+        shared_out.dtype(),
+        MlxDtype::Bfloat16 | MlxDtype::Float16 | MlxDtype::Float32
+    ) || !matches!(
         output_dtype,
         MlxDtype::Bfloat16 | MlxDtype::Float16 | MlxDtype::Float32
     ) {
@@ -1673,11 +1676,12 @@ fn moe_experts_forward_impl(
             && fastpath::moe_swiglu_packed_metal_enabled()
             && let Some(fused) = packed_swiglu_metal_impl(&out, half)
         {
+            let activation_started = Instant::now();
             forward_profile_eval_elapsed(
                 profile_decode,
                 profile_prefill,
                 DecodeProfileStage::MoeExpertActivation,
-                gate_up_started,
+                activation_started,
                 &[&fused],
             );
             fused
@@ -1747,6 +1751,10 @@ fn moe_experts_forward_impl(
         &[&down_out],
     );
 
+    // Fresh timer for the weighted-sum stage so it does not include the down
+    // projection time (which is already recorded under MoeExpertDown).
+    let weighted_sum_started = Instant::now();
+
     // Phase 1A: when shared_expert_out is provided, try the fused weighted-sum
     // kernel that adds the shared expert inside the same dispatch.
     if let Some(shared) = shared_expert_out
@@ -1758,7 +1766,7 @@ fn moe_experts_forward_impl(
             profile_decode,
             profile_prefill,
             DecodeProfileStage::MoeExpertWeightedSum,
-            down_started,
+            weighted_sum_started,
             &[&out],
         );
         return out;
@@ -1769,29 +1777,40 @@ fn moe_experts_forward_impl(
     // pipeline graph smaller. Other MoE families keep the generic MLX path.
     if cfg.gemma4_moe_router {
         if let Some(expert_scale) = top_k_expert_scale {
-            if let Some(out) = gemma4_moe_weighted_scaled_sum_metal(
+            if let Some(expert_sum) = gemma4_moe_weighted_scaled_sum_metal(
                 &down_out,
                 top_k_weights,
                 top_k_indices,
                 expert_scale,
                 x.dtype(),
             ) {
+                let out = if let Some(shared) = shared_expert_out {
+                    add(&expert_sum, shared, None)
+                } else {
+                    expert_sum
+                };
                 forward_profile_eval_elapsed(
                     profile_decode,
                     profile_prefill,
                     DecodeProfileStage::MoeExpertWeightedSum,
-                    down_started,
+                    weighted_sum_started,
                     &[&out],
                 );
                 return out;
             }
-        } else if let Some(out) = gemma4_moe_weighted_sum_metal(&down_out, top_k_weights, x.dtype())
+        } else if let Some(expert_sum) =
+            gemma4_moe_weighted_sum_metal(&down_out, top_k_weights, x.dtype())
         {
+            let out = if let Some(shared) = shared_expert_out {
+                add(&expert_sum, shared, None)
+            } else {
+                expert_sum
+            };
             forward_profile_eval_elapsed(
                 profile_decode,
                 profile_prefill,
                 DecodeProfileStage::MoeExpertWeightedSum,
-                down_started,
+                weighted_sum_started,
                 &[&out],
             );
             return out;
@@ -1811,7 +1830,7 @@ fn moe_experts_forward_impl(
             profile_decode,
             profile_prefill,
             DecodeProfileStage::MoeExpertWeightedSum,
-            down_started,
+            weighted_sum_started,
             &[&out],
         );
         return out;
@@ -1844,7 +1863,7 @@ fn moe_experts_forward_impl(
         profile_decode,
         profile_prefill,
         DecodeProfileStage::MoeExpertWeightedSum,
-        down_started,
+        weighted_sum_started,
         &[&out],
     );
     out
