@@ -176,11 +176,13 @@ cleanest Tier 3A candidate: fully static-shape (no dynamic top-k indices),
    `QuantizedWeight`s. `QuantizedWeight` does not derive `Clone`; either add
    a manual clone (MlxArray is refcounted, so cheap) or pass all weight
    tensors as closure inputs.
-2. `shapeless=true` with quantized_matmul is **untested** in this codebase.
-   The embedding closures use `shapeless=false` (per-shape recompile); the
-   SwiGLU cache uses shapeless but is elementwise-only. A wrong trace could
-   silently produce garbage on certain shapes. The `try_apply` fail-closed
-   path must be exercised correctly.
+2. `shapeless=true` with a captured linear projection is **not safe enough
+   for this path today**. The guardrail test
+   `shapeless_compiled_linear_closure_is_not_shape_polymorphic` shows that a
+   shapeless compiled linear + sigmoid + multiply closure can match the traced
+   decode shape but diverge on a different sequence length. Tier 3A must use a
+   per-shape cache or another fail-closed strategy before it can touch shared
+   expert production decode.
 3. This is a real focused-1-day task, not a 30-minute rush — rushing weight-
    capture + shapeless-quantized-matmul code under time pressure is how
    silent numerical bugs enter a model's forward pass.

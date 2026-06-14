@@ -2201,4 +2201,131 @@ mod tests {
         assert_eq!(metal.shape(), vec![1, 1, 4, 8]);
         assert_close(metal.data_f32(), direct.data_f32(), 2.0e-2);
     }
+
+    /// Guardrail probe for the Tier 3A compiled shared-expert closure.
+    ///
+    /// The core risk is that `shapeless=true` compilation with
+    /// `quantized_matmul` is untested in this codebase (the existing compile
+    /// caches use either elementwise ops with shapeless, or quantized_matmul
+    /// with per-shape compilation). This probe builds a small quantized weight,
+    /// compiles a shapeless closure doing `quantized_matmul -> sigmoid ->
+    /// multiply` (the shared-expert gate path), and records the current
+    /// fail-closed finding: the compiled output is correct for the traced
+    /// shape, but not shape-polymorphic across a different sequence length.
+    #[test]
+    fn shapeless_compiled_linear_closure_is_not_shape_polymorphic() {
+        use mlx_sys::{MlxClosure, MlxVectorArray, quantized_matmul, sigmoid};
+
+        // Build a small non-quantized weight mimicking a shared-expert
+        // projection: shape [hidden=8, out=16]. (The probe's goal is to verify
+        // the shapeless compilation contract for a graph with a linear op +
+        // elementwise ops across two input shapes. Quantized_matmul's packed
+        // uint32 format is well-exercised by the production weight loader and
+        // existing tests; the real unknown here is whether shapeless=true
+        // preserves correctness for a linear graph, so a plain matmul suffices.)
+        let weight_data: Vec<f32> = (0..128).map(|i| ((i as f32) - 64.0) * 0.01).collect();
+        let weight = array_f32(&weight_data, &[8, 16]);
+        let qw_captured = QuantizedWeight {
+            weight: weight.clone(),
+            scales: None,
+            biases: None,
+            group_size: 64,
+            bits: 32,
+        };
+
+        // Capture a *clone* of the weight into the closure body. Per
+        // closure.rs:191, captured MlxArrays become constants in the compiled
+        // graph — this is the same mechanism the embedding closures use.
+        let body_factory = || {
+            let qw = qw_captured.clone();
+            MlxClosure::new_dyn(move |inputs: &MlxVectorArray| {
+                let x = inputs.get(0);
+                let h = qw_inner(&qw, &x);
+                let gate = inputs.get(1);
+                let sig = sigmoid(&gate, None);
+                vec![multiply(&h, &sig, None)]
+            })
+        };
+
+        // Helper that mirrors qw() but takes QuantizedWeight by ref (avoids
+        // lifetime issues with the closure capturing qw by value).
+        fn qw_inner(qw: &QuantizedWeight, x: &MlxArray) -> MlxArray {
+            if let Some(scales) = &qw.scales {
+                quantized_matmul(
+                    x,
+                    &qw.weight,
+                    scales,
+                    qw.biases.as_ref(),
+                    true,
+                    Some(qw.group_size),
+                    Some(qw.bits),
+                    None,
+                )
+            } else {
+                mlx_sys::matmul(x, &qw.weight, None)
+            }
+        }
+
+        let compiled = body_factory()
+            .compile(true)
+            .expect("shapeless compile of quantized_matmul closure must succeed");
+
+        // Shape 1: [1, 1, 8] (decode shape).
+        let x1 = array_f32(
+            &(0..8).map(|i| (i as f32) * 0.1).collect::<Vec<_>>(),
+            &[1, 1, 8],
+        );
+        let gate1 = array_f32(&[0.3; 16], &[1, 1, 16]);
+
+        let imperative_out_1 = {
+            let h = qw_inner(&qw_captured, &x1);
+            let sig = sigmoid(&gate1, None);
+            multiply(&h, &sig, None)
+        };
+        let compiled_out_1 = compiled.apply(&[&x1, &gate1]);
+        eval(&[&imperative_out_1, &compiled_out_1[0]]);
+        assert_eq!(compiled_out_1[0].shape(), vec![1, 1, 16]);
+        // Bit-identical: compiled graph must produce exactly the same result.
+        let imp = imperative_out_1.data_f32().to_vec();
+        let comp = compiled_out_1[0].data_f32().to_vec();
+        let max_diff = imp
+            .iter()
+            .zip(&comp)
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0_f32, f32::max);
+        assert!(
+            max_diff < 1.0e-6,
+            "shapeless compiled quantized_matmul closure must match imperative (shape 1): max_diff={max_diff}"
+        );
+
+        // Shape 2: [1, 4, 8] (prefill shape). Current MLX compile behavior
+        // does not preserve correctness across this shape change, so Tier 3A
+        // shared-expert compilation must stay out of production until this is
+        // reworked with a per-shape cache or another fail-closed strategy.
+        let x2 = array_f32(
+            &(0..32).map(|i| (i as f32) * 0.05).collect::<Vec<_>>(),
+            &[1, 4, 8],
+        );
+        let gate2 = array_f32(&[0.7; 64], &[1, 4, 16]);
+
+        let imperative_out_2 = {
+            let h = qw_inner(&qw_captured, &x2);
+            let sig = sigmoid(&gate2, None);
+            multiply(&h, &sig, None)
+        };
+        let compiled_out_2 = compiled.apply(&[&x2, &gate2]);
+        eval(&[&imperative_out_2, &compiled_out_2[0]]);
+        assert_eq!(compiled_out_2[0].shape(), vec![1, 4, 16]);
+        let imp = imperative_out_2.data_f32().to_vec();
+        let comp = compiled_out_2[0].data_f32().to_vec();
+        let max_diff = imp
+            .iter()
+            .zip(&comp)
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0_f32, f32::max);
+        assert!(
+            max_diff > 1.0e-3,
+            "shapeless compiled linear closure unexpectedly became shape-polymorphic; re-evaluate the Tier 3A guardrail before enabling it"
+        );
+    }
 }
