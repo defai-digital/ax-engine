@@ -9,6 +9,7 @@ AX Engine is for developers who want a local OpenAI-compatible model server on A
 - OpenAI-compatible local text endpoints for common chat and completion flows, with SDKs for Python, TypeScript/JavaScript, Go, Ruby, and Mojo.
 - Repo-owned MLX runtime paths for direct-support Gemma and Qwen families, with delegated routes kept explicit.
 - Announcement-ready benchmark claims where evidence is complete: Gemma 4 12B assistant-MTP is 2.83-2.92x faster than same-artifact direct decode, and Qwen3.6 35B-A3B AX MTP is +76.4% faster than MTPLX on the public sidecar-fair matrix.
+- Dedicated Qwen3-Coder-Next direct-support path for local coding agents, called out separately from Qwen3.6 because it has no MTP sidecar but carries its own coding-first architecture and benchmark boundary.
 - Workload-contract benchmark tooling records route identity, artifacts, prompt suite, sampler, cooldowns, accept rate, and dirty-state provenance.
 
 ## Table of Contents
@@ -28,6 +29,7 @@ AX Engine is for developers who want a local OpenAI-compatible model server on A
     - [Gemma 4](#gemma-4)
     - [Qwen 3.6](#qwen-36)
   - [Direct Decode · Prefill · TTFT](#direct-decode--prefill--ttft)
+    - [Qwen3-Coder-Next](#qwen3-coder-next)
 - [SDKs](#sdks)
 - [Server Usage](#server-usage)
 - [Workspace](#workspace)
@@ -150,6 +152,7 @@ ax-engine serve qwen36-35b --download --port 8080
 
 # Raw mlx-community repo IDs are also accepted
 ax-engine download mlx-community/Qwen3.6-35B-A3B-4bit --json
+ax-engine download mlx-community/Qwen3-Coder-Next-4bit --json
 ax-engine download mlx-community/gemma-4-e2b-it-4bit --json
 
 # Optional: copy snapshot to an explicit directory
@@ -252,6 +255,7 @@ AX Engine's public performance claims are scoped to benchmark artifacts that pre
 | Gemma 4 26B/31B assistant-MTP | 98.4%-99.5% accept rate; MTP+n-gram adds +1.0%-1.3% over pure MTP in the current matrix | Scoped; no public direct-speedup claim yet |
 | Qwen3.6 35B-A3B MTP | AX MTP is +76.4% vs MTPLX, and AX MTP+n-gram is +77.5% vs MTPLX on the sidecar-fair aggregate | Announcement-ready |
 | Qwen3.6 27B MTP | Mixed pure-MTP result; MTP+n-gram recovers to +2.1% vs MTPLX and +3.5% vs pure AX MTP | Opt-in / workload-dependent |
+| Qwen3-Coder-Next direct | AX direct decode is +13.8%-16.3% vs `mlx_lm` and +29.5%-36.4% vs shape-compatible llama.cpp Metal (`b9620`, flash-attn) at 128/512/2048 tokens | Scoped; direct-only |
 | N-gram acceleration | Up to 3.1x `mlx_lm` decode throughput on high-hit benchmark rows without a second draft model | Workload-dependent |
 
 ## Supported Models
@@ -263,7 +267,8 @@ Direct support means AX has a repo-owned `ax-engine-mlx` graph for the model fam
 | Gemma 4 | `gemma-4-e2b-it`, `gemma-4-e4b-it`, `gemma-4-12b-it`, `gemma-4-26b-a4b-it`, `gemma-4-31b-it` | Repo-owned MLX runtime; MLX affine 4/5/6/8-bit weights; assistant-MTP benchmark path | Dense unified 12B, per-layer embedding, and MoE variants; sliding-window + full attention, logit softcapping |
 | Qwen 3 | `Qwen3-4B-4bit` and manifest-backed dense checkpoints | Repo-owned MLX runtime | SwiGLU dense FFN; per-head QK norm |
 | Qwen 3.5 | `Qwen3.5-9B-MLX-4bit` | Repo-owned MLX runtime | Linear attention + MoE FFN; `attn_output_gate` per-head interleaving |
-| Qwen 3.6 / Coder Next | `Qwen3.6-35B-A3B` 4-bit, `Qwen3.6-27B` 4/5/6/8-bit, `Qwen3-Coder-Next-4bit` | Repo-owned MLX runtime | `qwen3_next`: GatedDelta linear attention, full attention with per-head sigmoid gate, sparse top-k MoE |
+| Qwen 3.6 | `Qwen3.6-35B-A3B` 4-bit, `Qwen3.6-27B` 4/5/6/8-bit | Repo-owned MLX runtime; fused sidecar-MTP benchmark path | `qwen3_next`: GatedDelta linear attention, full attention with per-head sigmoid gate, sparse top-k MoE |
+| Qwen3-Coder-Next | `Qwen3-Coder-Next-4bit` | Repo-owned MLX runtime; direct coding-agent path | `qwen3_next` coding-specialist checkpoint; hybrid linear/full attention, sparse top-10-of-512 MoE, shared expert, 8-bit router/shared-expert gates |
 
 > GLM 4.7 Flash (`glm4_moe_lite`) was demoted from direct support to the `mlx_lm_delegated` passby route: native decode only reaches `mlx_lm` parity and the 4-bit export has no MTP head. The `glm4.7-flash-4bit` preset now selects the delegated tier and requires `--mlx-lm-server-url`. See [`docs/SUPPORTED-MODELS.md`](docs/SUPPORTED-MODELS.md).
 
@@ -447,7 +452,6 @@ ax-engine-bench generate-manifest \
   --validate
 ```
 </details>
-
 
 
 ### Speculative Decoding (MTP)
@@ -645,9 +649,74 @@ python3 scripts/bench_qwen36_mtp_fair.py \
 
 ### Direct Decode · Prefill · TTFT
 
+#### Qwen3-Coder-Next
+
+Qwen3-Coder-Next is the coding-specialist `qwen3_next` checkpoint, so it is reported separately from Qwen 3.6. It uses the same repo-owned AX MLX graph family, but its benchmark boundary is different: it does **not** ship MTP heads or a Qwen3.6 sidecar, so the public README path is direct decode only.
+
+The direct comparison below uses grouped bar charts at 128/512/2048 prompt tokens. Each engine's version is printed on the charts: AX native MLX (`6.3.4`) and `mlx_lm` (`0.31.3`) use the MLX artifact and prompt-hash parity; llama.cpp Metal (`b9620`, ggml `0.15.1`, flash-attn on) is a shape-compatible external GGUF reference run on one consistent build across all three prompt sizes. AX direct decode is +16.3% / +15.6% / +13.8% versus `mlx_lm`, and +33.9% / +36.4% / +29.5% versus llama.cpp.
+
+<table>
+<tr>
+<td><img width="100%" src="docs/assets/perf-qwen-coder-next-decode-tok-s.svg" alt="Grouped bar chart comparing Qwen3-Coder-Next 4-bit median direct decode throughput for llama.cpp Metal, mlx_lm, and AX Engine native MLX at 128/512/2048 prompt tokens"></td>
+<td><img width="100%" src="docs/assets/perf-qwen-coder-next-prefill-tok-s.svg" alt="Grouped bar chart comparing Qwen3-Coder-Next 4-bit median prefill throughput for llama.cpp Metal, mlx_lm, and AX Engine native MLX at 128/512/2048 prompt tokens"></td>
+<td><img width="100%" src="docs/assets/perf-qwen-coder-next-ttft-ms.svg" alt="Grouped bar chart comparing Qwen3-Coder-Next 4-bit median time to first token for llama.cpp Metal, mlx_lm, and AX Engine native MLX at 128/512/2048 prompt tokens"></td>
+</tr>
+</table>
+
+| Prompt tokens | llama.cpp decode | mlx_lm decode | AX direct decode | AX vs mlx_lm | AX vs llama.cpp |
+|---:|---:|---:|---:|---:|---:|
+| 128 | 86.2 | 99.2 | 115.4 | +16.3% | +33.9% |
+| 512 | 85.1 | 100.4 | 116.1 | +15.6% | +36.4% |
+| 2048 | 85.2 | 96.9 | 110.3 | +13.8% | +29.5% |
+
+**Prefill and TTFT peers — same run:**
+
+| Prompt tokens | llama.cpp prefill | mlx_lm prefill | AX direct prefill | llama.cpp TTFT | mlx_lm TTFT | AX direct TTFT |
+|---:|---:|---:|---:|---:|---:|---:|
+| 128 | 1,253.9 | 301.8 | 804.7 | 102 ms | 426 ms | 159 ms |
+| 512 | 2,150.4 | 897.2 | 1,786.9 | 238 ms | 574 ms | 287 ms |
+| 2048 | 2,554.7 | 2,226.9 | 2,614.7 | 802 ms | 920 ms | 783 ms |
+
+> llama.cpp leads prefill/TTFT at the short 128/512 contexts (flash-attn GGUF prompt ingestion); AX overtakes it at 2048 (2,614.7 vs 2,554.7 tok/s prefill, 783 vs 802 ms TTFT). The AX decode advantage holds at every size.
+
+> **What drives the decode gap (it is not bandwidth saturation).** This is a runtime shootout at each engine's standard 4-bit, not a controlled kernel test. Qwen3-Coder-Next is MoE, so each decode token reads only the dense backbone plus the 10-of-512 active experts — and at that footprint **none of the three engines is bandwidth-bound** (all sit at 34–42% of the 577 GB/s M5 Max peak; see the bandwidth table below). The gap splits cleanly: **AX beats llama.cpp on bytes-read** — Q4_K_M reads **~1.44× the bytes/token** (2.83 vs 1.96 GB) because its dense backbone (linear-attention/SSM, embeddings, output head) stays at higher precision; llama.cpp actually sustains the *most* bandwidth (~42%) yet is slowest. **AX beats mlx_lm on kernel efficiency** — identical 1.96 GB/token MLX weights, but AX extracts ~39% of peak vs mlx-lm's ~34% (the MoE gather-GEMV win). The parity-controlled claim is **AX vs mlx_lm** (identical weights, prompt-hash parity): +13.8%–16.3%; llama-bench consumes its own internal tokens (no prompt-hash parity), so the llama.cpp column is a shape-compatible external reference only.
+
+**Memory bandwidth utilization:**
+
+Decode speed follows one identity: **tok/s = effective bandwidth ÷ bytes read per token**. The chart below plots decode throughput (y) against weight bytes read per token (x), with the measured M5 Max peak (≈577 GB/s, MLX reduction probe) drawn as the ceiling curve `tok/s = 577 / bytes`. It reads in one view: AX and mlx-lm share the same x (identical MLX 4-bit weights), so the vertical gap between them is **pure kernel efficiency** (+16%, AX's MoE gather-GEMV); llama.cpp is pushed right because **Q4_K_M reads 1.44× the bytes/token**, which is why it decodes slowest even though it sustains the most raw bandwidth; and every point sits far below the ceiling, so **decode is gather/dispatch-bound, not bandwidth-bound** — the room up to the curve is headroom.
+
+<img src="docs/assets/perf-qwen-coder-next-bandwidth.svg" alt="Scatter plot of Qwen3-Coder-Next 4-bit MoE decode: x-axis is weight bytes read per token, y-axis is decode tok/s, with the 577 GB/s bandwidth ceiling as a curve. AX (1.96 GB/token, 115.4 tok/s, 39% of peak) and mlx-lm (1.96 GB/token, 99.2 tok/s, 34%) share the same x, so the vertical gap is kernel efficiency; llama.cpp (2.83 GB/token, 86.2 tok/s, 42%) is shifted right because Q4_K_M reads 1.44x the bytes per token and decodes slowest. All three sit far below the ceiling, so decode is gather-bound, not bandwidth-bound.">
+
+| Engine / quantization | Dense backbone | Active experts | Weights/token | Decode tok/s | Effective BW | % of 577 GB/s peak (used) |
+|---|---:|---:|---:|---:|---:|---:|
+| AX — MLX 4-bit | 1.21 GB (24%) | 0.76 GB (15%) | 1.96 GB | 115.4 | 227 GB/s | 39% |
+| mlx-lm — MLX 4-bit | 1.21 GB (21%) | 0.76 GB (13%) | 1.96 GB | 99.2 | 195 GB/s | 34% |
+| llama.cpp — Q4_K_M | 1.91 GB (28%) | 0.91 GB (14%) | 2.83 GB | 86.2 | 244 GB/s | 42% |
+
+> Per-segment percentages are that read's share of the 577 GB/s peak (dense + experts = used); the remainder is idle headroom. The dense backbone (read in full every token) is where Q4_K_M's higher precision shows up — 1.91 GB vs MLX's 1.21 GB.
+
+AX and mlx-lm read the **same** 1.96 GB of active weights per token (identical MLX 4-bit artifact); AX is faster because it extracts more of the available bandwidth — a runtime/kernel win, not a quant difference. llama.cpp reads **1.44× more** (2.83 GB) because Q4_K_M keeps the dense backbone — Qwen3-Next's linear-attention/SSM weights, token embeddings, and output head — at higher precision; that bytes-read overhead, not bandwidth starvation, is why its decode trails. Active-byte figures: MLX from the harness `bandwidth_accounting` (`moe_active_estimate`), llama.cpp computed from the GGUF tensor table (`dense + routed × 10/512`, the same formula). Rows are prompt=128; decode tok/s is essentially depth-independent for this model.
+
+The same chart also shows the remaining AX headroom. If AX kept the 1.96 GB/token footprint and merely matched llama.cpp's 42% effective-bandwidth row, decode would land around 124 tok/s (+8%); on **dense** models on this same M5 Max hardware AX reaches **78–86% of peak**, so the ~40-point gap here is specific to batch-1 MoE decode, where each token gathers only 10-of-512 experts and fixed routing, gather setup, dispatch, dequant, and expert weighted-sum overhead dominate costs that do not scale with bytes read (the bus idles while dispatch runs). The next lever is therefore **kernel/dispatch engineering** — fewer and larger fused MoE operations such as batched expert dispatch and deeper gather+GEMV+weighted-sum fusion — **not** pushing quantization lower (AX already reads the fewest bytes of the three; going lower would cost model quality). This is an upper bound, not a commitment: single-token MoE decode is latency-bound at its core.
+
+Artifacts: [`qwen3-coder-next-4bit-p128-p2048-step4096.json`](benchmarks/results/mlx-inference/2026-06-13-qwen3-coder-next-prefill-probe/qwen3-coder-next-4bit-p128-p2048-step4096.json) and [`qwen3-coder-next-4bit-p512-step4096.json`](benchmarks/results/mlx-inference/2026-06-13-qwen3-coder-next-prefill-probe/qwen3-coder-next-4bit-p512-step4096.json) (MLX/AX rows), plus [`2026-06-13-qwen3-coder-next-9620-fa/qwen3-coder-next-4bit.json`](benchmarks/results/llama-cpp-metal/2026-06-13-qwen3-coder-next-9620-fa/qwen3-coder-next-4bit.json) (llama.cpp Metal `b9620` / ggml `0.15.1` / flash-attn 128/512/2048 rows, one build across all sizes).
+
+Render charts with:
+
+```bash
+python3 scripts/render_qwen_coder_next_charts.py \
+  --artifact benchmarks/results/mlx-inference/2026-06-13-qwen3-coder-next-prefill-probe/qwen3-coder-next-4bit-p128-p2048-step4096.json \
+  --artifact benchmarks/results/mlx-inference/2026-06-13-qwen3-coder-next-prefill-probe/qwen3-coder-next-4bit-p512-step4096.json \
+  --llama-artifact benchmarks/results/llama-cpp-metal/2026-06-13-qwen3-coder-next-9620-fa/qwen3-coder-next-4bit.json \
+  --assets-dir docs/assets
+
+# Memory-bandwidth utilization chart (static data; see script header for provenance)
+python3 scripts/render_qwen_coder_next_bandwidth_chart.py --assets-dir docs/assets
+```
+
 <!-- readme-performance-artifacts: reference=benchmarks/results/mlx-inference/2026-05-26-direct-mode-clean-refresh/; ax-overlay=benchmarks/results/mlx-inference/2026-06-04-ax-direct-ngram-readme-rerun/ -->
 
-The tables below compare **direct (non-speculative) decode** across llama.cpp Metal, mlx_lm, and ax engine, covering Gemma 4 and Qwen 3.6 at 128/512/2048 prompt tokens. `ax direct baseline` disables n-gram acceleration, MTP, and assistant drafting to measure the repo-owned direct decode path. Bench prompts are `mlx_lm.benchmark` seed-0 random tokens, which keeps prompt-hash parity across MLX rows.
+The family tables below compare **direct (non-speculative) decode** across llama.cpp Metal, mlx_lm, and ax engine, covering Gemma 4 and Qwen 3.6 at 128/512/2048 prompt tokens. `ax direct baseline` disables n-gram acceleration, MTP, and assistant drafting to measure the repo-owned direct decode path. Bench prompts are `mlx_lm.benchmark` seed-0 random tokens, which keeps prompt-hash parity across MLX rows.
 
 The prefill and TTFT advantage is the practical direct-mode story. AX is ahead of `mlx_lm` in every listed prefill and TTFT cell below, while decode gains are smaller and model-dependent. That means the repo-owned MLX route is especially valuable for interactive requests where prompt ingestion dominates perceived latency: AX keeps prompt prefill, first-token timing, model-specific graph paths, and route metadata in one measured runtime path. These are cold-prefix rows, not prompt-cache, continuous-batching, or speculative-decoding claims.
 
@@ -679,7 +748,7 @@ The prefill and TTFT advantage is the practical direct-mode story. AX is ahead o
 <details>
 <summary>Benchmark provenance and methodology</summary>
 
-The `mlx_lm` reference rows for the 12 Gemma 4 and Qwen 3.6 rows shown below come from `benchmarks/results/mlx-inference/2026-05-26-direct-mode-clean-refresh/`. The AX direct-mode cells come from the full 12-model AX-only rerun in `benchmarks/results/mlx-inference/2026-06-04-ax-direct-ngram-readme-rerun/` (v5.1.8, `5402992b`). Qwen Coder Next rows come from `benchmarks/results/mlx-inference/2026-05-15-k-spike-swiglu-qwen/qwen3-coder-next-4bit.json`. The `llama.cpp Metal*` column is injected from `benchmarks/manifests/llama_cpp_metal/inventory.json` and the `2026-05-18-llama-cpp-metal-gemma-e2b-4bit-depth-fa/` Gemma 4 E2B 4-bit recheck.
+The `mlx_lm` reference rows for the 12 Gemma 4 and Qwen 3.6 rows shown below come from `benchmarks/results/mlx-inference/2026-05-26-direct-mode-clean-refresh/`. The AX direct-mode cells come from the full 12-model AX-only rerun in `benchmarks/results/mlx-inference/2026-06-04-ax-direct-ngram-readme-rerun/` (v5.1.8, `5402992b`). Qwen3-Coder-Next is intentionally handled as the opening direct-mode subsection because it has a direct-only benchmark boundary; its MLX/AX and llama.cpp Metal rows now cover 128/512/2048 prompt tokens. The `llama.cpp Metal*` column is injected from `benchmarks/manifests/llama_cpp_metal/inventory.json` and the `2026-05-18-llama-cpp-metal-gemma-e2b-4bit-depth-fa/` Gemma 4 E2B 4-bit recheck.
 
 Setup: generation=128, 5 measured repetitions, 15-second cooldown, AX prefix cache disabled for cold prefill and TTFT measurement, production-build binaries, matching prompt SHA checks. Long-greedy AX prefill rows are runner-time measurements of the cache-state prefix plus final prompt-token boundary — not full-logits prompt scoring throughput. Percentages are versus `mlx_lm`.
 
@@ -726,8 +795,6 @@ The 2K `llama.cpp Metal*` prefill rows are long-context, GGUF-runtime-reference 
 | Qwen 3.6 35B A3B | 4-bit | 128 | 1,706.9 | 539.4 | **1,115.0 (+106.7%)** |
 |  |  | 512 | 3,146.6 | 1,599.5 | **2,618.6 (+63.7%)** |
 |  |  | 2048 | 3,542.3 | 3,513.1 | **3,700.6 (+5.3%)** |
-| Qwen Coder Next | 4-bit | 128 | 1,258.4 | 314.0 | **795.0 (+152.9%)** |
-|  |  | 512 | 2,153.7 | 959.3 | **1,759.8 (+83.4%)** |
 
 #### Decode throughput (tok/s) — generation=128 tokens, temp=0
 
@@ -769,11 +836,6 @@ The 2K `llama.cpp Metal*` prefill rows are long-context, GGUF-runtime-reference 
 | Qwen 3.6 35B A3B | 4-bit | 128 | 108.1 | 140.1 | **155.2 (+10.8%)** |
 |  |  | 512 | 108.2 | 136.5 | **152.8 (+12.0%)** |
 |  |  | 2048 | 105.7 | 134.5 | **151.8 (+12.9%)** |
-| Qwen Coder Next | 4-bit | 128 | 86.5 | 100.9 | **113.7 (+12.7%)** |
-|  |  | 512 | 86.5 | 102.0 | **112.8 (+10.6%)** |
-
-> **Qwen Coder Next limitations:** This model does not ship MTP (Multi-Token Prediction) heads, so MTP and MTP+ngram speculative decoding modes are not available. Ngram acceleration was tested with both random and real coding prompts but showed no acceleration (0 accepted tokens), so only direct mode is reported. The model uses a hybrid linear attention + MoE architecture (512 experts, 10 active) that is memory-bandwidth bound at ~116 tok/s decode on Apple M5 Max. All AX Engine optimizations (linear attention projection packing, dense FFN gate-up packing, 4-bit affine quantization) are enabled by default for `qwen3_next` models.
-
 > Qwen 3.6 27B 4-bit at prompt=2,048 originally produced zero decode tokens because 4-bit quantization noise pushed an EOS token to argmax at decode step 0 on the `mlx_lm.benchmark` random-token contract. The benchmark harness now sends `sampling.ignore_eos=true` for AX throughput runs, matching how `mlx_lm.benchmark` measures fixed `gen=N` throughput. Production requests default to `ignore_eos=false`. Source: `benchmarks/results/mlx-inference/2026-05-20-qwen27-4to5-direct-ngram-directcpp-r2/qwen3_6-27b-4bit.json`.
 
 #### Time to first token (ms) — generation=128 tokens, temp=0
@@ -818,9 +880,6 @@ The 2K `llama.cpp Metal*` prefill rows are long-context, GGUF-runtime-reference 
 | Qwen 3.6 35B A3B | 4-bit | 128 | 75.0 | 237.3 | **114.8 (-51.6%)** |
 |  |  | 512 | 162.7 | 320.1 | **195.5 (-38.9%)** |
 |  |  | 2048 | 578.2 | 583.0 | **553.4 (-5.1%)** |
-| Qwen Coder Next | 4-bit | 128 | 101.7 | 407.7 | **161.0 (-60.5%)** |
-|  |  | 512 | 237.7 | 533.7 | **290.9 (-45.6%)** |
-
 Embedding benchmarks are kept out of this README summary; see [`docs/EMBEDDINGS.md`](docs/EMBEDDINGS.md).
 
 ## SDKs
