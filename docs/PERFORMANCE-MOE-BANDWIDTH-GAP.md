@@ -114,7 +114,78 @@ So AX already beats `mlx_lm` by +13.8–16.3% on this model (the custom
 weighted-sum kernel and the gather-qmm routing are the runtime wins). The
 question is how to close the remaining gap to AX's own dense ceiling.
 
-## What must be measured first (Tier 0 — prerequisite)
+## Update (2026-06-14): Tier 0/1A/1B SHIPPED and benchmarked
+
+Phase 0 (MoE sub-stage profiling), Phase 1A (fused shared-expert add), and
+Phase 1B (packed SwiGLU on MoE expert path) are implemented in `ddec57e4`,
+with bug fixes in `29af647f` and decode-only gating in `1c02d089`. They
+ship behind `AX_MLX_MOE_FUSE_SHARED_EXPERT_ADD` (default ON, decode-only)
+and `AX_MLX_MOE_SWIGLU_PACKED_METAL` (default ON, decode-only).
+
+**Benchmarked result vs v6.3.4 baseline (correct build):**
+
+| prompt | decode Δ | prefill Δ | TTFT Δ |
+|---|---:|---:|---:|
+| 128 | **+2.0%** | −1.0% | +1.0% |
+| 512 | +0.6% (flat) | −1.8% | +1.9% |
+| 2048 | **+3.8%** | −2.8% | +2.9% |
+
+**Critical finding from the A/B:** the fused kernels help decode
+(dispatch-bound) but regress prefill/TTFT (bandwidth-bound) — the
+regression grows with context. This is why the kernels are now gated to
+`seq == 1` (decode-only); prefill falls back to the unfused MLX path.
+The Tier 1 estimate in the original study (+5–10%) was optimistic;
+measured reality is +2–3.8% decode. Single-op fusion alone, as
+`PERFORMANCE-DECODE-GAP.md` predicted for dense, has a low ceiling even on
+MoE — but unlike dense it IS positive.
+
+**decode-trace wall breakdown (Qwen3-Coder-Next, 64 steps):**
+
+```
+total wall                8503.6 µs/tok
+forward (host graph)      1545.7 µs/tok  (18% — graph construction)
+async_eval (GPU submit)   6954.6 µs/tok  (82% — actual Metal work)
+```
+
+The 18% host graph-construction time is the addressable chunk for compile-
+based optimizations (Tier 3A). The 82% GPU time is what bandwidth utiliza-
+tion measures against.
+
+## Tier 3A discovery: compile infrastructure exists but is dormant
+
+`mlx_compile` FFI is fully exposed (`mlx-sys/src/closure.rs:221`) and
+`enable_compile()` (global Metal shader cache) is active
+(`runner.rs:4601`). Three compiled-closure caches already exist:
+
+- **`swiglu()` compile cache** (`mlp.rs:266-293`) — compiles `silu(gate)*up`
+  with `shapeless=true`. Active. Elementwise-only — no weights captured.
+- **Embedding forward closures** (`mod.rs:1078-1095`) — captures
+  `Arc<ModelWeights>`, uses `shapeless=false` (per-shape recompile). Active.
+- **`per_layer_compile.rs`** (`apply_layer_decode`, `per_layer_compile.rs:59`)
+  — a per-`(layer_index, ThreadId)` compiled-closure cache. **Defined but
+  NEVER CALLED.** Dormant POC for whole-layer decode compilation.
+
+The shared expert forward (`shared_expert_forward`, `mlp.rs:1166`) is the
+cleanest Tier 3A candidate: fully static-shape (no dynamic top-k indices),
+~6–7 ops (3× quantized_matmul + activation + sigmoid + multiply) across
+48 layers. A compiled closure would collapse ~288–336 host graph ops/tok.
+
+**Blockers for a focused implementation session:**
+1. `ModelWeights.layers` is `Vec<LayerWeights>` (owned, `weights.rs:27`), not
+   `Arc`-wrapped. Per-layer compiled closures must capture that layer's
+   `QuantizedWeight`s. `QuantizedWeight` does not derive `Clone`; either add
+   a manual clone (MlxArray is refcounted, so cheap) or pass all weight
+   tensors as closure inputs.
+2. `shapeless=true` with quantized_matmul is **untested** in this codebase.
+   The embedding closures use `shapeless=false` (per-shape recompile); the
+   SwiGLU cache uses shapeless but is elementwise-only. A wrong trace could
+   silently produce garbage on certain shapes. The `try_apply` fail-closed
+   path must be exercised correctly.
+3. This is a real focused-1-day task, not a 30-minute rush — rushing weight-
+   capture + shapeless-quantized-matmul code under time pressure is how
+   silent numerical bugs enter a model's forward pass.
+
+## What must be measured first (Tier 0 — prerequisite) — DONE
 
 **There is currently no instrumentation that can attribute MoE decode time
 to sub-stages on Qwen3-Next.** The existing profilers are:
