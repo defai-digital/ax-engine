@@ -50,9 +50,10 @@ pub use tokenizer::{EngineTokenizer, EngineTokenizerError};
 pub use backend::{
     BackendContractError, BackendPolicy, CapabilityLevel, CapabilityReport, HostReport,
     MetalToolchainReport, NativeModelArtifactsSource, NativeModelReport, NativeRunnerKind,
-    NativeRuntimeArtifactsSource, NativeRuntimeReport, PreviewBackendMode, PreviewBackendRequest,
-    PreviewBackendResolution, PreviewBackendResolutionError, ResolutionPolicy, ResolvedBackend,
-    RuntimeReport, SelectedBackend, SupportTier, ToolStatusReport, current_host_report,
+    NativeRuntimeArtifactsSource, NativeRuntimeReport, NativeRuntimeStatus,
+    NativeSourceQuantization, PreviewBackendMode, PreviewBackendRequest, PreviewBackendResolution,
+    PreviewBackendResolutionError, ResolutionPolicy, ResolvedBackend, RuntimeReport,
+    SelectedBackend, SupportTier, ToolStatusReport, current_host_report,
     current_metal_toolchain_report, preview_support_tier_from_label, resolve_preview_backend,
 };
 pub use delegated_http::{

@@ -166,7 +166,7 @@ impl Session {
             input_text,
             multimodal_inputs,
             max_output_tokens,
-            GenerateSampling {
+            sampling_from_params(
                 temperature,
                 top_p,
                 top_k,
@@ -176,24 +176,12 @@ impl Session {
                 seed,
                 deterministic,
                 ignore_eos,
-            },
+            ),
             stop_sequences.unwrap_or_default(),
             metadata,
         );
-        let inner = Arc::clone(&self.inner);
-        let response = py.allow_threads(move || {
-            let mut slot = inner
-                .lock()
-                .map_err(|_| py_engine_state_error("session mutex poisoned"))?;
-            match &mut *slot {
-                SessionSlot::Ready(session) => {
-                    session.generate(request).map_err(to_py_runtime_error)
-                }
-                SessionSlot::Streaming => {
-                    Err(py_engine_state_error("session has an active stream"))
-                }
-                SessionSlot::Closed => Err(py_engine_state_error("session is closed")),
-            }
+        let response = self.with_ready_session(py, |session| {
+            session.generate(request).map_err(to_py_runtime_error)
         })?;
 
         Ok(generate_response_dict(py, &response))
@@ -203,6 +191,7 @@ impl Session {
     #[pyo3(signature = (input_tokens=None, *, input_text=None, multimodal_inputs=None, max_output_tokens, temperature=0.0, top_p=1.0, top_k=0, min_p=None, repetition_penalty=1.0, repetition_context_size=None, seed=0, deterministic=None, ignore_eos=false, stop_sequences=None, metadata=None))]
     fn submit(
         &mut self,
+        py: Python<'_>,
         input_tokens: Option<Vec<u32>>,
         input_text: Option<String>,
         multimodal_inputs: Option<&Bound<'_, PyAny>>,
@@ -227,7 +216,7 @@ impl Session {
             input_text,
             multimodal_inputs,
             max_output_tokens,
-            GenerateSampling {
+            sampling_from_params(
                 temperature,
                 top_p,
                 top_k,
@@ -237,42 +226,20 @@ impl Session {
                 seed,
                 deterministic,
                 ignore_eos,
-            },
+            ),
             stop_sequences.unwrap_or_default(),
             metadata,
         );
-        let inner = Arc::clone(&self.inner);
-        Python::with_gil(|py| {
-            py.allow_threads(move || {
-                let mut slot = inner
-                    .lock()
-                    .map_err(|_| py_engine_state_error("session mutex poisoned"))?;
-                match &mut *slot {
-                    SessionSlot::Ready(session) => session
-                        .submit_generate(request)
-                        .map_err(to_py_runtime_error),
-                    SessionSlot::Streaming => {
-                        Err(py_engine_state_error("session has an active stream"))
-                    }
-                    SessionSlot::Closed => Err(py_engine_state_error("session is closed")),
-                }
-            })
+        self.with_ready_session(py, |session| {
+            session
+                .submit_generate(request)
+                .map_err(to_py_runtime_error)
         })
     }
 
     fn step<'py>(&mut self, py: Python<'py>) -> PyResult<Py<PyDict>> {
-        let inner = Arc::clone(&self.inner);
-        let report = py.allow_threads(move || {
-            let mut slot = inner
-                .lock()
-                .map_err(|_| py_engine_state_error("session mutex poisoned"))?;
-            match &mut *slot {
-                SessionSlot::Ready(session) => session.step_report().map_err(to_py_runtime_error),
-                SessionSlot::Streaming => {
-                    Err(py_engine_state_error("session has an active stream"))
-                }
-                SessionSlot::Closed => Err(py_engine_state_error("session is closed")),
-            }
+        let report = self.with_ready_session(py, |session| {
+            session.step_report().map_err(to_py_runtime_error)
         })?;
 
         Ok(step_report_dict(py, &report))
@@ -286,23 +253,11 @@ impl Session {
         })
     }
 
-    fn cancel(&mut self, request_id: u64) -> PyResult<()> {
-        let inner = Arc::clone(&self.inner);
-        Python::with_gil(|py| {
-            py.allow_threads(move || {
-                let mut slot = inner
-                    .lock()
-                    .map_err(|_| py_engine_state_error("session mutex poisoned"))?;
-                match &mut *slot {
-                    SessionSlot::Ready(session) => session
-                        .cancel_request(request_id)
-                        .map_err(to_py_runtime_error),
-                    SessionSlot::Streaming => {
-                        Err(py_engine_state_error("session has an active stream"))
-                    }
-                    SessionSlot::Closed => Err(py_engine_state_error("session is closed")),
-                }
-            })
+    fn cancel(&mut self, py: Python<'_>, request_id: u64) -> PyResult<()> {
+        self.with_ready_session(py, |session| {
+            session
+                .cancel_request(request_id)
+                .map_err(to_py_runtime_error)
         })
     }
 
@@ -352,7 +307,7 @@ impl Session {
             input_text,
             multimodal_inputs,
             max_output_tokens,
-            GenerateSampling {
+            sampling_from_params(
                 temperature,
                 top_p,
                 top_k,
@@ -362,7 +317,7 @@ impl Session {
                 seed,
                 deterministic,
                 ignore_eos,
-            },
+            ),
             stop_sequences.unwrap_or_default(),
             metadata,
         );
@@ -418,20 +373,10 @@ impl Session {
         normalize: bool,
     ) -> PyResult<Vec<f32>> {
         let pooling_mode = parse_pooling(pooling)?;
-        let inner = Arc::clone(&self.inner);
-        py.allow_threads(move || {
-            let slot = inner
-                .lock()
-                .map_err(|_| py_engine_state_error("session mutex poisoned"))?;
-            match &*slot {
-                SessionSlot::Ready(session) => session
-                    .embed(&token_ids, pooling_mode, normalize)
-                    .map_err(to_py_runtime_error),
-                SessionSlot::Streaming => {
-                    Err(py_engine_state_error("session has an active stream"))
-                }
-                SessionSlot::Closed => Err(py_engine_state_error("session is closed")),
-            }
+        self.with_ready_session(py, |session| {
+            session
+                .embed(&token_ids, pooling_mode, normalize)
+                .map_err(to_py_runtime_error)
         })
     }
 
@@ -449,20 +394,10 @@ impl Session {
         normalize: bool,
     ) -> PyResult<Bound<'py, PyBytes>> {
         let pooling_mode = parse_pooling(pooling)?;
-        let inner = Arc::clone(&self.inner);
-        let floats: Vec<f32> = py.allow_threads(move || {
-            let slot = inner
-                .lock()
-                .map_err(|_| py_engine_state_error("session mutex poisoned"))?;
-            match &*slot {
-                SessionSlot::Ready(session) => session
-                    .embed(&token_ids, pooling_mode, normalize)
-                    .map_err(to_py_runtime_error),
-                SessionSlot::Streaming => {
-                    Err(py_engine_state_error("session has an active stream"))
-                }
-                SessionSlot::Closed => Err(py_engine_state_error("session is closed")),
-            }
+        let floats: Vec<f32> = self.with_ready_session(py, |session| {
+            session
+                .embed(&token_ids, pooling_mode, normalize)
+                .map_err(to_py_runtime_error)
         })?;
         floats_to_pybytes(py, &floats)
     }
@@ -476,20 +411,10 @@ impl Session {
         normalize: bool,
     ) -> PyResult<Vec<Vec<f32>>> {
         let pooling_mode = parse_pooling(pooling)?;
-        let inner = Arc::clone(&self.inner);
-        py.allow_threads(move || {
-            let slot = inner
-                .lock()
-                .map_err(|_| py_engine_state_error("session mutex poisoned"))?;
-            match &*slot {
-                SessionSlot::Ready(session) => session
-                    .embed_batch(&batch_token_ids, pooling_mode, normalize)
-                    .map_err(to_py_runtime_error),
-                SessionSlot::Streaming => {
-                    Err(py_engine_state_error("session has an active stream"))
-                }
-                SessionSlot::Closed => Err(py_engine_state_error("session is closed")),
-            }
+        self.with_ready_session(py, |session| {
+            session
+                .embed_batch(&batch_token_ids, pooling_mode, normalize)
+                .map_err(to_py_runtime_error)
         })
     }
 
@@ -505,20 +430,10 @@ impl Session {
         normalize: bool,
     ) -> PyResult<Vec<Bound<'py, PyBytes>>> {
         let pooling_mode = parse_pooling(pooling)?;
-        let inner = Arc::clone(&self.inner);
-        let vecs: Vec<Vec<f32>> = py.allow_threads(move || {
-            let slot = inner
-                .lock()
-                .map_err(|_| py_engine_state_error("session mutex poisoned"))?;
-            match &*slot {
-                SessionSlot::Ready(session) => session
-                    .embed_batch(&batch_token_ids, pooling_mode, normalize)
-                    .map_err(to_py_runtime_error),
-                SessionSlot::Streaming => {
-                    Err(py_engine_state_error("session has an active stream"))
-                }
-                SessionSlot::Closed => Err(py_engine_state_error("session is closed")),
-            }
+        let vecs: Vec<Vec<f32>> = self.with_ready_session(py, |session| {
+            session
+                .embed_batch(&batch_token_ids, pooling_mode, normalize)
+                .map_err(to_py_runtime_error)
         })?;
         vecs.iter().map(|v| floats_to_pybytes(py, v)).collect()
     }
@@ -538,20 +453,10 @@ impl Session {
         normalize: bool,
     ) -> PyResult<(Bound<'py, PyBytes>, usize, usize)> {
         let pooling_mode = parse_pooling(pooling)?;
-        let inner = Arc::clone(&self.inner);
-        let matrix: ax_engine_sdk::EmbeddingMatrix = py.allow_threads(move || {
-            let slot = inner
-                .lock()
-                .map_err(|_| py_engine_state_error("session mutex poisoned"))?;
-            match &*slot {
-                SessionSlot::Ready(session) => session
-                    .embed_batch_flat(&batch_token_ids, pooling_mode, normalize)
-                    .map_err(to_py_runtime_error),
-                SessionSlot::Streaming => {
-                    Err(py_engine_state_error("session has an active stream"))
-                }
-                SessionSlot::Closed => Err(py_engine_state_error("session is closed")),
-            }
+        let matrix: ax_engine_sdk::EmbeddingMatrix = self.with_ready_session(py, |session| {
+            session
+                .embed_batch_flat(&batch_token_ids, pooling_mode, normalize)
+                .map_err(to_py_runtime_error)
         })?;
         let blob = floats_to_pybytes(py, &matrix.data)?;
         Ok((blob, matrix.batch_size, matrix.hidden_size))
@@ -579,6 +484,54 @@ impl Session {
             SessionSlot::Streaming => Err(py_engine_state_error("session has an active stream")),
             SessionSlot::Closed => Err(py_engine_state_error("session is closed")),
         }
+    }
+
+    fn with_ready_session<T>(
+        &self,
+        py: Python<'_>,
+        f: impl FnOnce(&mut EngineSession) -> PyResult<T> + Send,
+    ) -> PyResult<T>
+    where
+        T: Send,
+    {
+        let inner = Arc::clone(&self.inner);
+        py.allow_threads(move || {
+            let mut slot = inner
+                .lock()
+                .map_err(|_| py_engine_state_error("session mutex poisoned"))?;
+            match &mut *slot {
+                SessionSlot::Ready(session) => f(session.as_mut()),
+                SessionSlot::Streaming => {
+                    Err(py_engine_state_error("session has an active stream"))
+                }
+                SessionSlot::Closed => Err(py_engine_state_error("session is closed")),
+            }
+        })
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn sampling_from_params(
+    temperature: f32,
+    top_p: f32,
+    top_k: u32,
+    min_p: Option<f32>,
+    repetition_penalty: f32,
+    repetition_context_size: Option<u32>,
+    seed: u64,
+    deterministic: Option<bool>,
+    ignore_eos: bool,
+) -> GenerateSampling {
+    GenerateSampling {
+        temperature,
+        top_p,
+        top_k,
+        min_p,
+        repetition_penalty,
+        repetition_context_size,
+        seed,
+        deterministic,
+        ignore_eos,
     }
 }
 
@@ -1163,6 +1116,7 @@ sys.stdout.write(f"python::{prompt}")
                 .expect("sdk llama.cpp submit should succeed");
             let request_id = session
                 .submit(
+                    py,
                     Some(vec![1, 2, 3]),
                     None,
                     None,
@@ -1269,6 +1223,7 @@ sys.stdout.write(f"python::{prompt}")
             let mut expected_session = sdk_llama_cpp_server_session(server_url);
             let first_request_id = session
                 .submit(
+                    py,
                     Some(vec![1, 2, 3]),
                     None,
                     None,
@@ -1288,6 +1243,7 @@ sys.stdout.write(f"python::{prompt}")
                 .expect("first llama.cpp submit should succeed");
             let second_request_id = session
                 .submit(
+                    py,
                     Some(vec![7, 8, 9]),
                     None,
                     None,
@@ -1376,6 +1332,7 @@ sys.stdout.write(f"python::{prompt}")
             let mut expected_session = sdk_llama_cpp_server_session(server_url);
             let request_id = session
                 .submit(
+                    py,
                     Some(vec![7, 8, 9]),
                     None,
                     None,
@@ -1398,7 +1355,7 @@ sys.stdout.write(f"python::{prompt}")
                 .expect("sdk llama.cpp submit should succeed");
 
             session
-                .cancel(request_id)
+                .cancel(py, request_id)
                 .expect("llama.cpp cancel should succeed");
             expected_session
                 .cancel_request(request_id)

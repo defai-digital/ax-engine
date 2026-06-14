@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use ax_engine_core::model::{NativeRuntimeStatus, NativeSourceQuantization};
+pub use ax_engine_core::model::{NativeRuntimeStatus, NativeSourceQuantization};
 use ax_engine_core::{NativeModelArtifactsSummary, NativeModelBindingSummary, NativeTensorFormat};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;

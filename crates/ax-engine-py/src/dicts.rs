@@ -2,7 +2,8 @@ use ax_engine_sdk::{
     CapabilityReport, EngineStepReport, GenerateResponse, GenerateRouteReport,
     GenerateStreamEvent as SdkGenerateStreamEvent, HostReport, MetalDispatchKernelStepReport,
     MetalDispatchNumericStepReport, MetalDispatchStepReport, MetalDispatchValidationStepReport,
-    MetalToolchainReport, RuntimeReport, SessionRequestReport, ToolStatusReport,
+    MetalToolchainReport, NativeRuntimeStatus, NativeSourceQuantization, RuntimeReport,
+    SessionRequestReport, ToolStatusReport,
 };
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyString};
@@ -140,85 +141,44 @@ fn native_model_dict<'py>(
     dict.unbind()
 }
 
-fn native_source_quantization_dict<'py, T>(py: Python<'py>, source_quantization: &T) -> Py<PyDict>
-where
-    T: serde::Serialize,
-{
-    let value = serde_json::to_value(source_quantization)
-        .expect("native source quantization should serialize to JSON");
+fn native_source_quantization_dict<'py>(
+    py: Python<'py>,
+    source_quantization: &NativeSourceQuantization,
+) -> Py<PyDict> {
     let dict = PyDict::new(py);
-    if let Some(format) = value.get("format").and_then(|value| value.as_str()) {
-        dict.set_item("format", format)
-            .expect("source_quantization.format should serialize");
-    }
-    if let Some(counts) = value
-        .get("tensor_type_counts")
-        .and_then(|value| value.as_object())
-    {
-        let counts_dict = PyDict::new(py);
-        for (key, value) in counts {
-            if let Some(count) = value.as_u64() {
-                counts_dict
-                    .set_item(key, count)
-                    .expect("source_quantization.tensor_type_counts should serialize");
-            }
-        }
-        dict.set_item("tensor_type_counts", counts_dict)
+    dict.set_item("format", &source_quantization.format)
+        .expect("source_quantization.format should serialize");
+    let counts_dict = PyDict::new(py);
+    for (key, count) in &source_quantization.tensor_type_counts {
+        counts_dict
+            .set_item(key, *count)
             .expect("source_quantization.tensor_type_counts should serialize");
     }
-    if let Some(count) = value
-        .get("quantized_tensor_count")
-        .and_then(|value| value.as_u64())
-    {
-        dict.set_item("quantized_tensor_count", count)
-            .expect("source_quantization.quantized_tensor_count should serialize");
-    }
-    if let Some(contains) = value
-        .get("contains_quantized_tensors")
-        .and_then(|value| value.as_bool())
-    {
-        dict.set_item("contains_quantized_tensors", contains)
-            .expect("source_quantization.contains_quantized_tensors should serialize");
-    }
+    dict.set_item("tensor_type_counts", counts_dict)
+        .expect("source_quantization.tensor_type_counts should serialize");
+    dict.set_item(
+        "quantized_tensor_count",
+        source_quantization.quantized_tensor_count,
+    )
+    .expect("source_quantization.quantized_tensor_count should serialize");
+    dict.set_item(
+        "contains_quantized_tensors",
+        source_quantization.contains_quantized_tensors,
+    )
+    .expect("source_quantization.contains_quantized_tensors should serialize");
     dict.unbind()
 }
 
-fn native_runtime_status_dict<'py, T>(py: Python<'py>, runtime_status: &T) -> Py<PyDict>
-where
-    T: serde::Serialize,
-{
-    let value = serde_json::to_value(runtime_status)
-        .expect("native runtime status should serialize to JSON");
+fn native_runtime_status_dict<'py>(
+    py: Python<'py>,
+    runtime_status: &NativeRuntimeStatus,
+) -> Py<PyDict> {
     let dict = PyDict::new(py);
-    let ready = value
-        .get("ready")
-        .and_then(|value| value.as_bool())
-        .unwrap_or(true);
-    dict.set_item("ready", ready)
+    dict.set_item("ready", runtime_status.ready)
         .expect("runtime_status.ready should serialize");
-    let blockers = value
-        .get("blockers")
-        .and_then(|value| value.as_array())
-        .map(|values| {
-            values
-                .iter()
-                .filter_map(|value| value.as_str().map(str::to_string))
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-    dict.set_item("blockers", blockers)
+    dict.set_item("blockers", runtime_status.blockers.clone())
         .expect("runtime_status.blockers should serialize");
-    let notes = value
-        .get("notes")
-        .and_then(|value| value.as_array())
-        .map(|values| {
-            values
-                .iter()
-                .filter_map(|value| value.as_str().map(str::to_string))
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-    dict.set_item("notes", notes)
+    dict.set_item("notes", runtime_status.notes.clone())
         .expect("runtime_status.notes should serialize");
     dict.unbind()
 }
