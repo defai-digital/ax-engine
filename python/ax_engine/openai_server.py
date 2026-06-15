@@ -86,7 +86,9 @@ def render_chat_content(content: Any) -> str:
 def prompt_to_tokens(prompt: Any, tokenizer: Any) -> tuple[list[int], str | None]:
     if isinstance(prompt, str):
         return list(tokenizer.encode(prompt).ids), prompt
-    if isinstance(prompt, list) and all(isinstance(token, int) for token in prompt):
+    if isinstance(prompt, list) and all(
+        isinstance(token, int) and not isinstance(token, bool) for token in prompt
+    ):
         return [int(token) for token in prompt], None
     raise OpenAiShimError("completions prompt must be a string or token id array")
 
