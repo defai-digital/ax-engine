@@ -21,6 +21,7 @@ use crate::openai::schema::{
 };
 
 pub(crate) const DEFAULT_OPENAI_MAX_TOKENS: u32 = 256;
+const OPENAI_SAFE_MAX_TOKENS: u32 = 512;
 static OPENAI_SEED_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 pub(crate) use crate::openai::chat_requests::{
@@ -552,7 +553,8 @@ fn build_openai_generate_request(
 ) -> Result<OpenAiBuiltRequest, (StatusCode, Json<ErrorResponse>)> {
     let (input_tokens, input_text) =
         tokenize_native_mlx_text_input(live, input_tokens, input_text)?;
-    preflight_context_length(live, &input_tokens, max_output_tokens)?;
+    let max_output_tokens =
+        fit_openai_max_output_tokens_to_context(live, &input_tokens, max_output_tokens)?;
 
     Ok(OpenAiBuiltRequest {
         generate_request: build_generate_request_internal(
@@ -572,30 +574,33 @@ fn build_openai_generate_request(
     })
 }
 
-fn preflight_context_length(
+fn fit_openai_max_output_tokens_to_context(
     live: &LiveState,
     input_tokens: &[u32],
     max_output_tokens: u32,
-) -> Result<(), (StatusCode, Json<ErrorResponse>)> {
+) -> Result<u32, (StatusCode, Json<ErrorResponse>)> {
     if input_tokens.is_empty() {
-        return Ok(());
+        return Ok(max_output_tokens);
     }
     let context_length = context_length(live);
-    let requested_tokens = input_tokens
-        .len()
-        .saturating_add(max_output_tokens as usize);
-    if requested_tokens <= context_length as usize {
-        return Ok(());
+    let prompt_tokens = input_tokens.len();
+    if prompt_tokens >= context_length as usize {
+        return Err(error_response(
+            StatusCode::BAD_REQUEST,
+            "context_length_exceeded",
+            format!(
+                "request prompt requires {prompt_tokens} tokens, leaving no room for output within model context length {context_length}",
+            ),
+        ));
     }
 
-    Err(error_response(
-        StatusCode::BAD_REQUEST,
-        "context_length_exceeded",
-        format!(
-            "request requires {requested_tokens} tokens ({prompt_tokens} prompt + {max_output_tokens} max output), exceeding model context length {context_length}",
-            prompt_tokens = input_tokens.len(),
-        ),
-    ))
+    let requested_tokens = prompt_tokens.saturating_add(max_output_tokens as usize);
+    if requested_tokens <= context_length as usize {
+        return Ok(max_output_tokens);
+    }
+
+    let remaining_output = context_length.saturating_sub(prompt_tokens as u32);
+    Ok(remaining_output.max(1))
 }
 
 /// `(tokens, optional decoded text)` on success, or an HTTP error response.
@@ -959,5 +964,7 @@ fn openai_reasoning_is_enabled(reasoning: Option<&Value>) -> bool {
 }
 
 fn openai_max_tokens(max_tokens: Option<u32>) -> u32 {
-    max_tokens.unwrap_or(DEFAULT_OPENAI_MAX_TOKENS)
+    max_tokens
+        .unwrap_or(DEFAULT_OPENAI_MAX_TOKENS)
+        .min(OPENAI_SAFE_MAX_TOKENS)
 }
