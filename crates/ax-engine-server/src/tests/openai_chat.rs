@@ -87,13 +87,14 @@ fn openai_chat_prompt_renderer_injects_qwen_tool_contract() {
     )
     .expect("qwen tool prompt should render");
 
-    assert!(prompt.contains("# Tools\n\nYou have access to these tools:"));
+    assert!(prompt.contains("# Tools\n\nYou have access to the following tools:"));
     assert!(prompt.contains("<function>\n<name>read_file</name>"));
     assert!(prompt.contains("<description>Read a workspace file</description>"));
     assert!(prompt.contains("<parameter>\n<name>path</name>"));
-    assert!(prompt.contains("<function=name>"));
-    assert!(prompt.contains("<parameter=key>"));
-    assert!(prompt.contains("Call a tool only when needed."));
+    assert!(prompt.contains("<function=example_function_name>"));
+    assert!(prompt.contains("<parameter=example_parameter_1>"));
+    assert!(prompt.contains("If you choose to call a tool ONLY reply"));
+    assert!(prompt.contains("the tool calling block MUST begin with an opening <tool_call> tag"));
     assert!(prompt.contains("<|im_start|>user\nRead README.md<|im_end|>"));
     assert!(prompt.ends_with(chat::QWEN_CHATML_ASSISTANT_GENERATION_PROMPT_NO_THINK));
 }
@@ -126,19 +127,20 @@ fn openai_chat_prompt_renderer_uses_qwen36_function_xml_tool_contract() {
     )
     .expect("qwen3.6 tool prompt should render");
 
-    assert!(prompt.contains("# Tools\n\nYou have access to these functions:"));
-    assert!(prompt.contains("<function>\n<name>read_file</name>"));
-    assert!(prompt.contains("<description>Read a workspace file</description>"));
-    assert!(prompt.contains("<parameter>\n<name>path</name>"));
-    assert!(prompt.contains("Call a function only when needed."));
-    assert!(prompt.contains("<function=name>"));
-    assert!(prompt.contains("<parameter=key>"));
+    assert!(prompt.contains("# Tools\n\nYou have access to the following functions:"));
+    assert!(prompt.contains("\"name\":\"read_file\""));
+    assert!(prompt.contains("\"description\":\"Read a workspace file\""));
+    assert!(!prompt.contains("<function>\n<name>read_file</name>"));
+    assert!(prompt.contains("If you choose to call a function ONLY reply"));
+    assert!(prompt.contains("<function=example_function_name>"));
+    assert!(prompt.contains("<parameter=example_parameter_1>"));
+    assert!(prompt.contains("an inner <function=...></function> block must be nested"));
     assert!(prompt.contains("<|im_start|>user\nRead README.md<|im_end|>"));
     assert!(prompt.ends_with(chat::QWEN_CHATML_ASSISTANT_GENERATION_PROMPT));
 }
 
 #[test]
-fn openai_chat_prompt_renderer_compacts_qwen_tool_schema_metadata() {
+fn openai_chat_prompt_renderer_preserves_qwen_coder_tool_schema_metadata() {
     let messages: Vec<OpenAiChatMessage> = serde_json::from_value(json!([
         {"role": "user", "content": "Read README.md"}
     ]))
@@ -187,10 +189,11 @@ fn openai_chat_prompt_renderer_compacts_qwen_tool_schema_metadata() {
     assert!(prompt.contains("<parameter>\n<name>path</name>"));
     assert!(prompt.contains("<required>[\"path\"]</required>"));
     assert!(prompt.contains("<enum>[\"read\",\"write\"]</enum>"));
-    assert!(!prompt.contains("$schema"));
-    assert!(!prompt.contains("default"));
-    assert!(!prompt.contains("examples"));
-    assert!(!prompt.contains(&long_description));
+    assert!(prompt.contains("<$schema>http://json-schema.org/draft-07/schema#</$schema>"));
+    assert!(prompt.contains("<default>{}</default>"));
+    assert!(prompt.contains("<examples>[{\"path\":\"README.md\"}]</examples>"));
+    assert!(prompt.contains("<default>.</default>"));
+    assert!(prompt.contains(long_description.trim()));
 }
 
 #[test]

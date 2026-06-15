@@ -54,10 +54,11 @@ prompting follows the matching Ollama template for the selected model family:
 Qwen3 dense uses the JSON
 `<tool_call>{"name": ..., "arguments": ...}</tool_call>` contract,
 Qwen3.5/Qwen3.6 use the function-XML contract, and Qwen3-Coder-Next uses the
-Qwen3-Coder XML contract. For Qwen XML-output families, AX keeps the output
-contract XML-compatible while rendering tool schemas as compact OpenAI JSON
-objects to avoid inflating large tool sets. Native Gemma 4 text chat uses the
-Ollama/Gemma 4 `<|tool>`, `<|tool_call>`, and `<|tool_response>` DSL.
+Qwen3-Coder XML contract. AX mirrors the selected Ollama-family template shape:
+Qwen3.5/Qwen3.6 render tool schemas as OpenAI tool JSON lines before asking for
+function-XML calls, while Qwen3-Coder renders XML tool declarations. Native
+Gemma 4 text chat uses the Ollama/Gemma 4 `<|tool>`, `<|tool_call>`, and
+`<|tool_response>` DSL.
 
 AX Engine should remain an inference runtime. Tool execution, permissions,
 network effects, and workflow orchestration belong to caller applications or a

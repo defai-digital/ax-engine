@@ -1058,15 +1058,17 @@ class WrapperContractTests(unittest.TestCase):
             tool_choice="auto",
         )
         self.assertIn(
-            "<|im_start|>system\n# Tools\n\nYou have access to these tools.",
+            "<|im_start|>system\n# Tools\n\nYou have access to the following tools:",
             qwen_tool_prompt,
         )
-        self.assertIn("Schemas are compact OpenAI tool JSON objects:", qwen_tool_prompt)
         self.assertIn("<tools>", qwen_tool_prompt)
-        self.assertIn('"name":"read_file"', qwen_tool_prompt)
-        self.assertNotIn("<function>\n<name>read_file</name>", qwen_tool_prompt)
-        self.assertIn("Call a tool only when needed.", qwen_tool_prompt)
-        self.assertIn("<function=name>", qwen_tool_prompt)
+        self.assertIn("<function>\n<name>read_file</name>", qwen_tool_prompt)
+        self.assertIn("If you choose to call a tool ONLY reply", qwen_tool_prompt)
+        self.assertIn("<function=example_function_name>", qwen_tool_prompt)
+        self.assertIn(
+            "the tool calling block MUST begin with an opening <tool_call> tag",
+            qwen_tool_prompt,
+        )
         self.assertTrue(qwen_tool_prompt.endswith("<|im_start|>assistant\n"))
 
         qwen36_tool_prompt = openai_server.render_chat_prompt(
@@ -1084,12 +1086,15 @@ class WrapperContractTests(unittest.TestCase):
             ],
             tool_choice="auto",
         )
-        self.assertIn("You have access to these functions.", qwen36_tool_prompt)
-        self.assertIn("Schemas are compact OpenAI tool JSON objects:", qwen36_tool_prompt)
+        self.assertIn("You have access to the following functions:", qwen36_tool_prompt)
         self.assertIn('"name":"read_file"', qwen36_tool_prompt)
         self.assertNotIn("<function>\n<name>read_file</name>", qwen36_tool_prompt)
-        self.assertIn("Call a function only when needed.", qwen36_tool_prompt)
-        self.assertIn("<function=name>", qwen36_tool_prompt)
+        self.assertIn("If you choose to call a function ONLY reply", qwen36_tool_prompt)
+        self.assertIn("<function=example_function_name>", qwen36_tool_prompt)
+        self.assertIn(
+            "an inner <function=...></function> block must be nested",
+            qwen36_tool_prompt,
+        )
         self.assertTrue(
             qwen36_tool_prompt.endswith(
                 openai_server.QWEN_CHATML_ASSISTANT_GENERATION_PROMPT

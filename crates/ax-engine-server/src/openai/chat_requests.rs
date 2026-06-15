@@ -24,9 +24,6 @@ use crate::openai::schema::{
 
 type HttpErrorResponse = (StatusCode, Json<ErrorResponse>);
 type ChatMessagePairs = Vec<(String, String)>;
-const TOOL_DESCRIPTION_MAX_CHARS: usize = 180;
-const SCHEMA_DESCRIPTION_MAX_CHARS: usize = 96;
-const TOOL_SCHEMA_JSON_MAX_CHARS: usize = 240;
 
 /// A native-MLX chat prompt with Gemma 4 unified media already expanded into
 /// soft-token spans and preprocessed tensors.
@@ -667,23 +664,35 @@ fn render_qwen_function_tool_contract_system_message(
 ) -> Option<String> {
     let mut message = String::from(
         "# Tools\n\n\
-         You have access to these functions:\n\
-         <tools>\n",
+         You have access to the following functions:\n\n\
+         <tools>",
     );
-    for line in render_qwen_tool_declarations(tools) {
-        message.push_str(&line);
+    for line in render_json_tool_lines(tools) {
         message.push('\n');
+        message.push_str(&line);
     }
-    message.push_str("</tools>");
+    message.push_str("\n</tools>");
     message.push_str(
-        "\n\nCall a function only when needed. Reply with tool calls in this format and no suffix:\n\
+        "\n\nIf you choose to call a function ONLY reply in the following format with NO suffix:\n\n\
          <tool_call>\n\
-         <function=name>\n\
-         <parameter=key>\n\
-         value\n\
+         <function=example_function_name>\n\
+         <parameter=example_parameter_1>\n\
+         value_1\n\
+         </parameter>\n\
+         <parameter=example_parameter_2>\n\
+         This is the value for the second parameter\n\
+         that can span\n\
+         multiple lines\n\
          </parameter>\n\
          </function>\n\
-         </tool_call>",
+         </tool_call>\n\n\
+         <IMPORTANT>\n\
+         Reminder:\n\
+         - Function calls MUST follow the specified format: an inner <function=...></function> block must be nested within <tool_call></tool_call> XML tags\n\
+         - Required parameters MUST be specified\n\
+         - You may provide optional reasoning for your function call in natural language BEFORE the function call, but NOT after\n\
+         - If there is no function call available, answer the question like normal with your current knowledge and do not tell the user about function calls\n\
+         </IMPORTANT>",
     );
 
     if let Some(choice) = tool_choice
@@ -701,25 +710,31 @@ fn render_qwen_coder_tool_contract_system_message(
     tools: &Value,
     tool_choice: Option<&Value>,
 ) -> Option<String> {
-    let mut message = String::from(
-        "# Tools\n\n\
-         You have access to these tools:\n\
-         <tools>\n",
-    );
+    let mut message = String::from("# Tools\n\nYou have access to the following tools:\n\n<tools>");
     for line in render_qwen_tool_declarations(tools) {
-        message.push_str(&line);
         message.push('\n');
+        message.push_str(&line);
     }
-    message.push_str("</tools>");
+    message.push_str("\n</tools>");
     message.push_str(
-        "\n\nCall a tool only when needed. Reply with tool calls in this format and no suffix:\n\
+        "\n\nIf you choose to call a tool ONLY reply in the following format with NO suffix:\n\n\
          <tool_call>\n\
-         <function=name>\n\
-         <parameter=key>\n\
-         value\n\
+         <function=example_function_name>\n\
+         <parameter=example_parameter_1>\n\
+         value_1\n\
+         </parameter>\n\
+         <parameter=example_parameter_2>\n\
+         value_2\n\
          </parameter>\n\
          </function>\n\
-         </tool_call>",
+         </tool_call>\n\n\
+         <IMPORTANT>\n\
+         Reminder:\n\
+         - Function calls MUST follow the specified format: the tool calling block MUST begin with an opening <tool_call> tag and end with a closing </tool_call> tag.\n\
+         - Required parameters MUST be specified\n\
+         - You may provide optional reasoning for your function call in natural language BEFORE the function call, but NOT after\n\
+         - If there is no function call available, answer the question like normal with your current knowledge and do not tell the user about function calls\n\
+         </IMPORTANT>",
     );
 
     if let Some(choice) = tool_choice
@@ -772,8 +787,8 @@ fn normalize_model_id_token(model_id: &str) -> String {
 
 fn render_json_tool_lines(tools: &Value) -> Vec<String> {
     match tools {
-        Value::Array(items) => items.iter().map(compact_tool_json).collect(),
-        value => vec![compact_tool_json(value)],
+        Value::Array(items) => items.iter().map(compact_json).collect(),
+        value => vec![compact_json(value)],
     }
 }
 
@@ -795,10 +810,10 @@ fn render_qwen_tool_declaration(tool: &Value) -> Option<String> {
     rendered.push_str(&escape_xml_text(name));
     rendered.push_str("</name>");
     if let Some(description) = function.get("description").and_then(Value::as_str) {
-        let description = compact_text(description, TOOL_DESCRIPTION_MAX_CHARS);
+        let description = description.trim();
         if !description.is_empty() {
             rendered.push_str("\n<description>");
-            rendered.push_str(&escape_xml_text(&description));
+            rendered.push_str(&escape_xml_text(description));
             rendered.push_str("</description>");
         }
     }
@@ -818,10 +833,10 @@ fn render_qwen_tool_declaration(tool: &Value) -> Option<String> {
                 if let Some(description) =
                     parameter_fields.get("description").and_then(Value::as_str)
                 {
-                    let description = compact_text(description, SCHEMA_DESCRIPTION_MAX_CHARS);
+                    let description = description.trim();
                     if !description.is_empty() {
                         rendered.push_str("\n<description>");
-                        rendered.push_str(&escape_xml_text(&description));
+                        rendered.push_str(&escape_xml_text(description));
                         rendered.push_str("</description>");
                     }
                 }
@@ -844,19 +859,14 @@ fn render_schema_extra(rendered: &mut String, value: &Value, handled_keys: &[&st
         return;
     };
     for (key, value) in object {
-        if handled_keys.iter().any(|handled| *handled == key) || schema_key_is_prompt_noise(key) {
-            continue;
-        }
-        let value = compact_schema_node(value);
-        let text = compact_json(&value);
-        if text.len() > TOOL_SCHEMA_JSON_MAX_CHARS {
+        if handled_keys.iter().any(|handled| *handled == key) {
             continue;
         }
         rendered.push('\n');
         rendered.push('<');
         rendered.push_str(&escape_xml_text(key));
         rendered.push('>');
-        rendered.push_str(&escape_xml_text(&text));
+        rendered.push_str(&escape_xml_text(&stringify_json_scalar(value)));
         rendered.push_str("</");
         rendered.push_str(&escape_xml_text(key));
         rendered.push('>');
@@ -869,102 +879,6 @@ fn openai_tool_function(tool: &Value) -> Option<&Map<String, Value>> {
         .get("function")
         .and_then(Value::as_object)
         .or_else(|| object.get("name").is_some().then_some(object))
-}
-
-fn compact_tool_json(value: &Value) -> String {
-    compact_json(&compact_tool_for_prompt(value))
-}
-
-fn compact_tool_for_prompt(value: &Value) -> Value {
-    let Some(function) = openai_tool_function(value) else {
-        return compact_schema_node(value);
-    };
-
-    let mut compact_function = Map::new();
-    if let Some(name) = function.get("name").and_then(Value::as_str) {
-        compact_function.insert("name".to_string(), Value::String(name.to_string()));
-    }
-    if let Some(description) = function.get("description").and_then(Value::as_str) {
-        let description = compact_text(description, TOOL_DESCRIPTION_MAX_CHARS);
-        if !description.is_empty() {
-            compact_function.insert("description".to_string(), Value::String(description));
-        }
-    }
-    if let Some(parameters) = function.get("parameters") {
-        compact_function.insert("parameters".to_string(), compact_schema_node(parameters));
-    }
-
-    if value.get("function").is_some() {
-        let mut wrapper = Map::new();
-        wrapper.insert("type".to_string(), Value::String("function".to_string()));
-        wrapper.insert("function".to_string(), Value::Object(compact_function));
-        Value::Object(wrapper)
-    } else {
-        Value::Object(compact_function)
-    }
-}
-
-fn compact_schema_node(value: &Value) -> Value {
-    match value {
-        Value::Array(items) => Value::Array(items.iter().map(compact_schema_node).collect()),
-        Value::Object(object) => {
-            let mut compact = Map::new();
-            for (key, value) in object {
-                if schema_key_is_prompt_noise(key) {
-                    continue;
-                }
-                match key.as_str() {
-                    "description" => {
-                        if let Some(description) = value.as_str() {
-                            let description =
-                                compact_text(description, SCHEMA_DESCRIPTION_MAX_CHARS);
-                            if !description.is_empty() {
-                                compact.insert(key.clone(), Value::String(description));
-                            }
-                        }
-                    }
-                    "title" => {
-                        if let Some(title) = value.as_str()
-                            && title.len() <= 32
-                        {
-                            compact.insert(key.clone(), Value::String(title.to_string()));
-                        }
-                    }
-                    _ => {
-                        compact.insert(key.clone(), compact_schema_node(value));
-                    }
-                }
-            }
-            Value::Object(compact)
-        }
-        value => value.clone(),
-    }
-}
-
-fn schema_key_is_prompt_noise(key: &str) -> bool {
-    matches!(
-        key,
-        "$schema"
-            | "$id"
-            | "$comment"
-            | "examples"
-            | "default"
-            | "deprecated"
-            | "readOnly"
-            | "writeOnly"
-    )
-}
-
-fn compact_text(input: &str, max_chars: usize) -> String {
-    let text = input.split_whitespace().collect::<Vec<_>>().join(" ");
-    if text.chars().count() <= max_chars {
-        return text;
-    }
-    let keep = max_chars.saturating_sub(3);
-    let mut compact = text.chars().take(keep).collect::<String>();
-    compact = compact.trim_end().to_string();
-    compact.push_str("...");
-    compact
 }
 
 fn render_assistant_tool_calls(value: &Value, style: QwenToolContractStyle) -> Option<String> {

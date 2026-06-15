@@ -120,9 +120,10 @@ than silently dropped.
   Qwen3 dense uses the JSON
   `<tool_call>{"name": ..., "arguments": ...}</tool_call>` contract,
   Qwen3.5/Qwen3.6 use the function-XML contract, and Qwen3-Coder-Next uses the
-  Qwen3-Coder XML contract. For Qwen XML-output families, AX keeps the output
-  contract XML-compatible while rendering tool schemas as compact OpenAI JSON
-  objects to avoid inflating large tool sets.
+  Qwen3-Coder XML contract. AX mirrors the selected Ollama-family template
+  shape: Qwen3.5/Qwen3.6 render tool schemas as OpenAI tool JSON lines before
+  asking for function-XML calls, while Qwen3-Coder renders XML tool
+  declarations.
   Gemma 4 text chat uses the Ollama/Gemma 4 `<|tool>`, `<|tool_call>`, and
   `<|tool_response>` DSL. Gemma 4 tools still fail closed for delegated,
   pre-tokenized, and inline-media chat requests because AX cannot safely inject
