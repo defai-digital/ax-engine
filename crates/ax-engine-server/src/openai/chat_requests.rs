@@ -44,7 +44,8 @@ pub(crate) fn render_openai_chat_prompt_with_tools(
     tools: Option<&Value>,
     tool_choice: Option<&Value>,
 ) -> Result<String, HttpErrorResponse> {
-    let rendered_messages = render_openai_chat_message_pairs(messages)?;
+    let tool_contract_style = qwen_tool_contract_style(model_id);
+    let rendered_messages = render_openai_chat_message_pairs(messages, tool_contract_style)?;
     let rendered_messages =
         prepend_qwen_tool_contract(model_id, rendered_messages, tools, tool_choice);
     chat::render_prompt(model_id, &rendered_messages).map_err(chat_error_response)
@@ -100,6 +101,7 @@ pub(crate) fn openai_chat_stop_sequences(
 
 fn render_openai_chat_message_pairs(
     messages: &[OpenAiChatMessage],
+    tool_contract_style: QwenToolContractStyle,
 ) -> Result<ChatMessagePairs, HttpErrorResponse> {
     if messages.is_empty() {
         return Err(empty_chat_messages_error());
@@ -111,7 +113,8 @@ fn render_openai_chat_message_pairs(
             let mut content = render_openai_chat_content(message.content.as_ref())?;
             if role == "assistant"
                 && let Some(tool_calls) = message.tool_calls.as_ref()
-                && let Some(rendered_tool_calls) = render_assistant_tool_calls(tool_calls)
+                && let Some(rendered_tool_calls) =
+                    render_assistant_tool_calls(tool_calls, tool_contract_style)
             {
                 if !content.trim().is_empty() {
                     content.push('\n');
@@ -192,22 +195,50 @@ fn prepend_qwen_tool_contract(
     ) {
         return messages;
     }
-    let Some(contract) = render_tool_contract_system_message(tools, tool_choice) else {
+    let Some(contract) =
+        render_tool_contract_system_message(tools, tool_choice, qwen_tool_contract_style(model_id))
+    else {
         return messages;
     };
-    messages.insert(0, ("system".to_string(), contract));
+    if let Some((role, content)) = messages.first_mut()
+        && role == "system"
+    {
+        content.push_str("\n\n");
+        content.push_str(&contract);
+    } else {
+        let mut content = String::from(
+            "You are Qwen, a helpful AI assistant that can interact with a computer to solve tasks.\n\n",
+        );
+        content.push_str(&contract);
+        messages.insert(0, ("system".to_string(), content));
+    }
     messages
 }
 
 fn render_tool_contract_system_message(
     tools: Option<&Value>,
     tool_choice: Option<&Value>,
+    style: QwenToolContractStyle,
 ) -> Option<String> {
     let tools = tools?;
     if !openai_value_is_present(tools) {
         return None;
     }
 
+    match style {
+        QwenToolContractStyle::JsonTools => {
+            render_json_tool_contract_system_message(tools, tool_choice)
+        }
+        QwenToolContractStyle::FunctionXml => {
+            render_qwen_coder_tool_contract_system_message(tools, tool_choice)
+        }
+    }
+}
+
+fn render_json_tool_contract_system_message(
+    tools: &Value,
+    tool_choice: Option<&Value>,
+) -> Option<String> {
     let mut message = String::from(
         "You have access to the following functions.\n\
          When you need to call a function, respond with exactly one or more \
@@ -216,7 +247,7 @@ fn render_tool_contract_system_message(
          After a tool result is provided, continue the answer normally.\n\
          <tools>\n",
     );
-    for line in render_tool_lines(tools) {
+    for line in render_json_tool_lines(tools) {
         message.push_str(&line);
         message.push('\n');
     }
@@ -233,14 +264,138 @@ fn render_tool_contract_system_message(
     Some(message)
 }
 
-fn render_tool_lines(tools: &Value) -> Vec<String> {
+fn render_qwen_coder_tool_contract_system_message(
+    tools: &Value,
+    tool_choice: Option<&Value>,
+) -> Option<String> {
+    let mut message = String::from("# Tools\n\nYou have access to the following tools:\n\n<tools>");
+    for tool in render_xml_tool_blocks(tools) {
+        message.push('\n');
+        message.push_str(&tool);
+    }
+    message.push_str("\n</tools>");
+    message.push_str(
+        "\n\nIf you choose to call a tool ONLY reply in the following format with NO suffix:\n\n\
+         <tool_call>\n\
+         <function=example_function_name>\n\
+         <parameter=example_parameter_1>\n\
+         value_1\n\
+         </parameter>\n\
+         <parameter=example_parameter_2>\n\
+         value_2\n\
+         </parameter>\n\
+         </function>\n\
+         </tool_call>\n\n\
+         <IMPORTANT>\n\
+         Reminder:\n\
+         - Function calls MUST follow the specified format: the tool calling block MUST begin with an opening <tool_call> tag and end with a closing </tool_call> tag.\n\
+         - Required parameters MUST be specified\n\
+         - You may provide optional reasoning for your function call in natural language BEFORE the function call, but NOT after\n\
+         - If there is no function call available, answer the question like normal with your current knowledge and do not tell the user about function calls\n\
+         </IMPORTANT>",
+    );
+
+    if let Some(choice) = tool_choice
+        && tool_choice_forces_tool_call(choice)
+    {
+        message.push_str(
+            "\nThe current tool_choice requires using a tool when a matching function is available.",
+        );
+    }
+
+    Some(message)
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum QwenToolContractStyle {
+    JsonTools,
+    FunctionXml,
+}
+
+fn qwen_tool_contract_style(model_id: &str) -> QwenToolContractStyle {
+    if chat::is_qwen_non_thinking_only_model(model_id) {
+        QwenToolContractStyle::FunctionXml
+    } else {
+        QwenToolContractStyle::JsonTools
+    }
+}
+
+fn render_json_tool_lines(tools: &Value) -> Vec<String> {
     match tools {
         Value::Array(items) => items.iter().map(compact_json).collect(),
         value => vec![compact_json(value)],
     }
 }
 
-fn render_assistant_tool_calls(value: &Value) -> Option<String> {
+fn render_xml_tool_blocks(tools: &Value) -> Vec<String> {
+    match tools {
+        Value::Array(items) => items.iter().filter_map(render_tool_block).collect(),
+        value => render_tool_block(value).into_iter().collect(),
+    }
+}
+
+fn render_tool_block(tool: &Value) -> Option<String> {
+    let function = tool
+        .get("function")
+        .and_then(Value::as_object)
+        .or_else(|| tool.as_object())?;
+    let name = function.get("name")?.as_str()?;
+    let mut rendered = String::new();
+    rendered.push_str("<function>\n<name>");
+    rendered.push_str(&escape_xml_text(name));
+    rendered.push_str("</name>");
+    if let Some(description) = function.get("description").and_then(Value::as_str) {
+        rendered.push_str("\n<description>");
+        rendered.push_str(&escape_xml_text(description.trim()));
+        rendered.push_str("</description>");
+    }
+    rendered.push_str("\n<parameters>");
+    if let Some(parameters) = function.get("parameters").and_then(Value::as_object) {
+        if let Some(properties) = parameters.get("properties").and_then(Value::as_object) {
+            for (param_name, param_fields) in properties {
+                rendered.push_str("\n<parameter>\n<name>");
+                rendered.push_str(&escape_xml_text(param_name));
+                rendered.push_str("</name>");
+                if let Some(param_type) = param_fields.get("type") {
+                    rendered.push_str("\n<type>");
+                    rendered.push_str(&escape_xml_text(&stringify_json_scalar(param_type)));
+                    rendered.push_str("</type>");
+                }
+                if let Some(description) = param_fields.get("description").and_then(Value::as_str) {
+                    rendered.push_str("\n<description>");
+                    rendered.push_str(&escape_xml_text(description.trim()));
+                    rendered.push_str("</description>");
+                }
+                if let Some(param_fields) = param_fields.as_object() {
+                    for (key, value) in param_fields {
+                        if matches!(key.as_str(), "name" | "type" | "description") {
+                            continue;
+                        }
+                        render_extra_xml_field(&mut rendered, key, value);
+                    }
+                }
+                rendered.push_str("</parameter>");
+            }
+        }
+        for (key, value) in parameters {
+            if matches!(key.as_str(), "type" | "properties") {
+                continue;
+            }
+            render_extra_xml_field(&mut rendered, key, value);
+        }
+    }
+    rendered.push_str("\n</parameters>");
+    for (key, value) in function {
+        if matches!(key.as_str(), "type" | "name" | "description" | "parameters") {
+            continue;
+        }
+        render_extra_xml_field(&mut rendered, key, value);
+    }
+    rendered.push_str("\n</function>");
+    Some(rendered)
+}
+
+fn render_assistant_tool_calls(value: &Value, style: QwenToolContractStyle) -> Option<String> {
     let calls = match value {
         Value::Array(calls) => calls.as_slice(),
         Value::Object(_) => std::slice::from_ref(value),
@@ -249,21 +404,26 @@ fn render_assistant_tool_calls(value: &Value) -> Option<String> {
 
     let rendered = calls
         .iter()
-        .filter_map(render_assistant_tool_call)
+        .filter_map(|call| render_assistant_tool_call(call, style))
         .collect::<Vec<_>>();
     (!rendered.is_empty()).then(|| rendered.join("\n"))
 }
 
-fn render_assistant_tool_call(value: &Value) -> Option<String> {
+fn render_assistant_tool_call(value: &Value, style: QwenToolContractStyle) -> Option<String> {
     let object = value.as_object()?;
     let function = object.get("function").and_then(Value::as_object)?;
     let name = function.get("name")?.as_str()?;
     let arguments = normalize_tool_arguments(function.get("arguments"));
-    let payload = serde_json::json!({
-        "name": name,
-        "arguments": arguments,
-    });
-    Some(format!("<tool_call>{}</tool_call>", compact_json(&payload)))
+    match style {
+        QwenToolContractStyle::JsonTools => {
+            let payload = serde_json::json!({
+                "name": name,
+                "arguments": arguments,
+            });
+            Some(format!("<tool_call>{}</tool_call>", compact_json(&payload)))
+        }
+        QwenToolContractStyle::FunctionXml => Some(render_qwen_xml_tool_call(name, &arguments)),
+    }
 }
 
 fn normalize_tool_arguments(value: Option<&Value>) -> Value {
@@ -303,6 +463,49 @@ fn openai_value_is_present(value: &Value) -> bool {
 
 fn compact_json(value: &Value) -> String {
     serde_json::to_string(value).unwrap_or_else(|_| "null".to_string())
+}
+
+fn render_qwen_xml_tool_call(name: &str, arguments: &Value) -> String {
+    let mut rendered = String::new();
+    rendered.push_str("<tool_call>\n<function=");
+    rendered.push_str(&escape_xml_text(name));
+    rendered.push('>');
+    if let Some(args) = arguments.as_object() {
+        for (key, value) in args {
+            rendered.push_str("\n<parameter=");
+            rendered.push_str(&escape_xml_text(key));
+            rendered.push_str(">\n");
+            rendered.push_str(&escape_xml_text(&stringify_json_scalar(value)));
+            rendered.push_str("\n</parameter>");
+        }
+    }
+    rendered.push_str("\n</function>\n</tool_call>");
+    rendered
+}
+
+fn render_extra_xml_field(rendered: &mut String, key: &str, value: &Value) {
+    rendered.push('\n');
+    rendered.push('<');
+    rendered.push_str(&escape_xml_text(key));
+    rendered.push('>');
+    rendered.push_str(&escape_xml_text(&stringify_json_scalar(value)));
+    rendered.push_str("</");
+    rendered.push_str(&escape_xml_text(key));
+    rendered.push('>');
+}
+
+fn stringify_json_scalar(value: &Value) -> String {
+    match value {
+        Value::String(value) => value.clone(),
+        value => compact_json(value),
+    }
+}
+
+fn escape_xml_text(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

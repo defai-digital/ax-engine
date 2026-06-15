@@ -25,6 +25,32 @@ async fn apply_template_endpoint_renders_openai_messages() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(
         body.get("prompt").and_then(Value::as_str),
+        Some("<|im_start|>user\nhello<|im_end|>\n<|im_start|>assistant\n")
+    );
+
+    std::fs::remove_dir_all(artifact_dir).expect("artifact dir should clean up");
+}
+
+#[tokio::test]
+async fn apply_template_endpoint_preserves_qwen36_preclosed_think_prompt() {
+    let artifact_dir = minimal_tokenizer_artifact("compat-apply-template-qwen36");
+    let app = build_router(native_mlx_openai_builder_state(
+        "Qwen3.6-35B-A3B-4bit",
+        &artifact_dir,
+    ));
+    let request = Request::post("/apply-template")
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(json_request_body(&json!({
+            "model": "Qwen3.6-35B-A3B-4bit",
+            "messages": [{"role": "user", "content": "hello"}]
+        }))))
+        .expect("request should build");
+
+    let (status, body) = json_response(&app, request).await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        body.get("prompt").and_then(Value::as_str),
         Some("<|im_start|>user\nhello<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n")
     );
 

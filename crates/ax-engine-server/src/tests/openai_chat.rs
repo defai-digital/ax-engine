@@ -35,6 +35,10 @@ fn openai_chat_prompt_renderer_uses_model_family_templates() {
 
     assert_eq!(
         render_openai_chat_prompt("qwen3", &messages).expect("qwen prompt"),
+        "<|im_start|>system\nBe concise.<|im_end|>\n<|im_start|>user\nHello<|im_end|>\n<|im_start|>assistant\n"
+    );
+    assert_eq!(
+        render_openai_chat_prompt("Qwen3.6-35B-A3B-4bit", &messages).expect("qwen3.6 prompt"),
         "<|im_start|>system\nBe concise.<|im_end|>\n<|im_start|>user\nHello<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
     );
     assert_eq!(
@@ -83,10 +87,53 @@ fn openai_chat_prompt_renderer_injects_qwen_tool_contract() {
     )
     .expect("qwen tool prompt should render");
 
-    assert!(prompt.contains("<|im_start|>system\nYou have access to the following functions."));
-    assert!(prompt.contains("<tools>\n{\"function\":{\"description\":\"Read a workspace file\""));
-    assert!(prompt.contains("<tool_call>...</tool_call>"));
+    assert!(prompt.contains("<|im_start|>system\nYou are Qwen, a helpful AI assistant"));
+    assert!(prompt.contains("# Tools\n\nYou have access to the following tools:"));
+    assert!(prompt.contains("<function>\n<name>read_file</name>"));
+    assert!(prompt.contains("<description>Read a workspace file</description>"));
+    assert!(prompt.contains("<parameter>\n<name>path</name>\n<type>string</type>"));
+    assert!(prompt.contains("<function=example_function_name>"));
+    assert!(prompt.contains("If you choose to call a tool ONLY reply"));
+    assert!(prompt.contains("<|im_start|>user\nRead README.md<|im_end|>"));
+    assert!(prompt.ends_with(chat::QWEN_CHATML_ASSISTANT_GENERATION_PROMPT_NO_THINK));
+}
+
+#[test]
+fn openai_chat_prompt_renderer_uses_qwen36_json_tool_contract() {
+    let messages: Vec<OpenAiChatMessage> = serde_json::from_value(json!([
+        {"role": "user", "content": "Read README.md"}
+    ]))
+    .expect("sample messages should deserialize");
+
+    let prompt = render_openai_chat_prompt_with_tools(
+        "Qwen3.6-35B-A3B-4bit",
+        &messages,
+        Some(&json!([
+            {
+                "type": "function",
+                "function": {
+                    "name": "read_file",
+                    "description": "Read a workspace file",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"path": {"type": "string"}},
+                        "required": ["path"]
+                    }
+                }
+            }
+        ])),
+        Some(&json!("auto")),
+    )
+    .expect("qwen3.6 tool prompt should render");
+
+    assert!(prompt.contains("You have access to the following functions."));
+    assert!(prompt.contains("<tools>\n{"));
+    assert!(prompt.contains("\"function\""));
     assert!(prompt.contains("\"name\":\"read_file\""));
+    assert!(prompt.contains("\"parameters\""));
+    assert!(!prompt.contains("<function>\n<name>read_file</name>"));
+    assert!(prompt.contains("The JSON inside each block must be"));
+    assert!(!prompt.contains("<function=example_function_name>"));
     assert!(prompt.contains("<|im_start|>user\nRead README.md<|im_end|>"));
     assert!(prompt.ends_with(chat::QWEN_CHATML_ASSISTANT_GENERATION_PROMPT));
 }
@@ -115,9 +162,12 @@ fn openai_chat_prompt_renderer_replays_assistant_tool_calls() {
         .expect("qwen replay prompt should render");
 
     assert!(prompt.contains("<|im_start|>assistant\n<tool_call>"));
-    assert!(prompt.contains("\"name\":\"read_file\""));
-    assert!(prompt.contains("\"arguments\":{\"path\":\"README.md\"}"));
-    assert!(prompt.contains("<|im_start|>tool\nAX Engine<|im_end|>"));
+    assert!(prompt.contains("<function=read_file>"));
+    assert!(prompt.contains("<parameter=path>\nREADME.md\n</parameter>"));
+    assert!(
+        prompt
+            .contains("<|im_start|>user\n<tool_response>\nAX Engine\n</tool_response>\n<|im_end|>")
+    );
 }
 
 #[test]
