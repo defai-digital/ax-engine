@@ -36,6 +36,85 @@ async fn ollama_tags_lists_loaded_ax_engine_model() {
 }
 
 #[tokio::test]
+async fn ollama_show_returns_loaded_model_metadata() {
+    let app = build_router(llama_cpp_state());
+    let (status, json) = json_response(
+        &app,
+        Request::builder()
+            .method("POST")
+            .uri("/api/show")
+            .header("content-type", "application/json")
+            .body(Body::from(json_request_body(&json!({"model": "qwen3"}))))
+            .unwrap(),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json["details"]["format"], json!("ax-engine"));
+    assert_eq!(json["details"]["family"], json!("qwen"));
+    assert_eq!(json["model_info"]["general.name"], json!("qwen3"));
+    assert_eq!(
+        json["model_info"]["ax_engine.context_length"],
+        json!(16 * 1024)
+    );
+    assert!(
+        json["capabilities"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("completion"))
+    );
+    assert!(
+        json["modelfile"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("FROM qwen3")
+    );
+}
+
+#[tokio::test]
+async fn ollama_ps_lists_current_model_as_loaded() {
+    let app = build_router(llama_cpp_state());
+    let (status, json) = json_response(
+        &app,
+        Request::builder()
+            .method("GET")
+            .uri("/api/ps")
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK);
+    let model = &json["models"][0];
+    assert_eq!(model["name"], json!("qwen3"));
+    assert_eq!(model["details"]["format"], json!("ax-engine"));
+    assert_eq!(model["size_vram"], json!(0));
+    assert!(
+        model["expires_at"]
+            .as_str()
+            .unwrap_or_default()
+            .ends_with('Z')
+    );
+}
+
+#[tokio::test]
+async fn ollama_version_returns_ax_engine_version_string() {
+    let app = build_router(llama_cpp_state());
+    let (status, json) = json_response(
+        &app,
+        Request::builder()
+            .method("GET")
+            .uri("/api/version")
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json["version"], json!(env!("CARGO_PKG_VERSION")));
+}
+
+#[tokio::test]
 async fn ollama_chat_non_stream_maps_to_openai_chat_and_returns_ollama_shape() {
     let (llama_server_url, llama_cpp_server_handle) = spawn_llama_cpp_completion_server(
         json!({
@@ -184,4 +263,44 @@ async fn ollama_generate_non_stream_returns_ollama_shape() {
     assert_eq!(json["done"], json!(true));
     assert_eq!(json["done_reason"], json!("stop"));
     assert_eq!(json["eval_count"], json!(2));
+}
+
+#[tokio::test]
+async fn ollama_generate_empty_prompt_returns_load_or_unload_noop() {
+    let app = build_router(llama_cpp_state());
+    let (load_status, load_json) = json_response(
+        &app,
+        Request::builder()
+            .method("POST")
+            .uri("/api/generate")
+            .header("content-type", "application/json")
+            .body(Body::from(json_request_body(&json!({"model": "qwen3"}))))
+            .unwrap(),
+    )
+    .await;
+
+    assert_eq!(load_status, StatusCode::OK);
+    assert_eq!(load_json["model"], json!("qwen3"));
+    assert_eq!(load_json["response"], json!(""));
+    assert_eq!(load_json["done"], json!(true));
+    assert!(load_json.get("done_reason").is_none());
+
+    let (unload_status, unload_json) = json_response(
+        &app,
+        Request::builder()
+            .method("POST")
+            .uri("/api/generate")
+            .header("content-type", "application/json")
+            .body(Body::from(json_request_body(&json!({
+                "model": "qwen3",
+                "keep_alive": 0
+            }))))
+            .unwrap(),
+    )
+    .await;
+
+    assert_eq!(unload_status, StatusCode::OK);
+    assert_eq!(unload_json["response"], json!(""));
+    assert_eq!(unload_json["done"], json!(true));
+    assert_eq!(unload_json["done_reason"], json!("unload"));
 }

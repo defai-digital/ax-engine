@@ -17,8 +17,9 @@ The current preview server is intentionally narrow:
   integration
 - OpenAI-shaped `/v1/embeddings` response envelopes for embedding-capable
   repo-owned MLX sessions
-- Ollama-shaped `/api/tags`, `/api/chat`, and `/api/generate` adapters for
-  local clients that expect Ollama HTTP envelopes
+- Ollama-shaped `/api/tags`, `/api/show`, `/api/ps`, `/api/version`,
+  `/api/chat`, and `/api/generate` adapters for local clients that expect
+  Ollama HTTP envelopes
 - stepwise request lifecycle endpoints that mirror the SDK preview contract for
   repo-owned MLX sessions plus the llama.cpp delegated path
 - optional API key authentication for HTTP API routes
@@ -39,6 +40,9 @@ Current preview endpoints:
 - `GET /v1/runtime`
 - `GET /v1/models`
 - `GET /api/tags`
+- `POST /api/show`
+- `GET /api/ps`
+- `GET /api/version`
 - `POST /api/chat`
 - `POST /api/generate`
 - `POST /v1/embeddings`
@@ -148,6 +152,9 @@ AX also exposes a focused Ollama-shaped adapter for the loaded local model:
 
 - `GET /api/tags` returns an Ollama-style `models` list containing the current
   AX model.
+- `POST /api/show`, `GET /api/ps`, and `GET /api/version` provide the
+  Ollama-style metadata/readiness probes common clients use before issuing a
+  chat request.
 - `POST /api/chat` accepts Ollama text `messages`, `tools`, `format`, `stream`,
   and common `options` fields. It maps them onto the same chat builder used by
   `/v1/chat/completions`, so supported Qwen/Gemma templates and tool-call
@@ -155,6 +162,11 @@ AX also exposes a focused Ollama-shaped adapter for the loaded local model:
 - `POST /api/generate` accepts Ollama `prompt`, optional `system`, `format`,
   `stream`, and common `options` fields, then maps them onto the same completion
   builder used by `/v1/completions`.
+
+OpenAI-compatible `/v1/*` remains the recommended baseline for coder engines
+and provider-neutral applications. The Ollama `/api/*` surface is a
+runtime-specific adapter for existing local clients; it must not own agent
+state, tool execution, file editing, approval policy, memory, or planning.
 
 Ollama `stream` defaults to `true`, matching Ollama's API. AX returns
 newline-delimited JSON with `application/x-ndjson`; the first chunk carries the
@@ -164,7 +176,8 @@ full Ollama daemon: model pull/push/create/copy/delete, arbitrary Modelfile
 templates, stateful prompt context replay, `/api/generate` images, and other
 unsupported fields fail closed with `400 unsupported_parameter` instead of being
 ignored. Harmless Ollama lifecycle fields such as `keep_alive` are accepted as
-no-ops.
+no-ops, and empty `/api/generate` prompts return Ollama-style load/unload no-op
+responses.
 
 ## Examples
 

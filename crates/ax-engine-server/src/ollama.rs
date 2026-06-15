@@ -1,6 +1,6 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use ax_engine_sdk::GenerateResponse;
+use ax_engine_sdk::{GenerateResponse, SelectedBackend};
 use axum::Json;
 use axum::body::Body;
 use axum::extract::State;
@@ -11,9 +11,10 @@ use serde_json::{Value, json};
 
 use crate::app_state::{AppState, LiveState};
 use crate::backends::{llama_cpp, mlx_lm};
+use crate::chat::ChatPromptTemplate;
 use crate::errors::{ErrorResponse, error_response, map_session_error};
 use crate::generation::native::run_stateless_generate_request;
-use crate::metadata::MODEL_OWNER;
+use crate::metadata::{MODEL_OWNER, context_length};
 use crate::openai::generation::{
     populate_native_mlx_output_text, validate_openai_json_object_response,
 };
@@ -132,7 +133,15 @@ pub(crate) struct OllamaGenerateRequest {
     #[serde(default)]
     _raw: Option<bool>,
     #[serde(default)]
-    _keep_alive: Option<Value>,
+    keep_alive: Option<Value>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct OllamaShowRequest {
+    #[serde(default)]
+    model: Option<String>,
+    #[serde(default)]
+    _verbose: Option<bool>,
 }
 
 #[derive(Debug, Serialize)]
@@ -140,7 +149,7 @@ pub(crate) struct OllamaTagsResponse {
     models: Vec<OllamaModelTag>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub(crate) struct OllamaModelTag {
     name: String,
     model: String,
@@ -150,7 +159,7 @@ pub(crate) struct OllamaModelTag {
     details: OllamaModelDetails,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub(crate) struct OllamaModelDetails {
     parent_model: String,
     format: String,
@@ -184,6 +193,7 @@ pub(crate) struct OllamaGenerateResponse {
     done: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     done_reason: Option<&'static str>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     context: Vec<u32>,
     total_duration: u64,
     load_duration: u64,
@@ -193,25 +203,82 @@ pub(crate) struct OllamaGenerateResponse {
     eval_duration: u64,
 }
 
+#[derive(Debug, Serialize)]
+pub(crate) struct OllamaShowResponse {
+    license: String,
+    modelfile: String,
+    parameters: String,
+    template: String,
+    details: OllamaModelDetails,
+    model_info: Value,
+    capabilities: Vec<&'static str>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct OllamaPsResponse {
+    models: Vec<OllamaRunningModel>,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct OllamaRunningModel {
+    name: String,
+    model: String,
+    size: u64,
+    digest: String,
+    details: OllamaModelDetails,
+    expires_at: String,
+    size_vram: u64,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct OllamaVersionResponse {
+    version: &'static str,
+}
+
 pub(crate) async fn ollama_tags(State(state): State<AppState>) -> Json<OllamaTagsResponse> {
     let live = state.snapshot();
-    let model = live.model_id.to_string();
     Json(OllamaTagsResponse {
-        models: vec![OllamaModelTag {
-            name: model.clone(),
-            model,
-            modified_at: rfc3339_now(),
-            size: 0,
-            digest: format!("ax-engine:{:?}", live.runtime_report.selected_backend),
-            details: OllamaModelDetails {
-                parent_model: String::new(),
-                format: MODEL_OWNER.to_string(),
-                family: ollama_model_family(live.model_id.as_ref()),
-                families: vec![ollama_model_family(live.model_id.as_ref())],
-                parameter_size: "unknown".to_string(),
-                quantization_level: "unknown".to_string(),
-            },
+        models: vec![ollama_model_tag(&live)],
+    })
+}
+
+pub(crate) async fn ollama_show(
+    State(state): State<AppState>,
+    Json(request): Json<OllamaShowRequest>,
+) -> Result<Json<OllamaShowResponse>, (StatusCode, Json<ErrorResponse>)> {
+    let live = state.snapshot();
+    validate_openai_request(&live, request.model.as_deref())?;
+    let tag = ollama_model_tag(&live);
+    Ok(Json(OllamaShowResponse {
+        license: String::new(),
+        modelfile: ollama_modelfile(&live),
+        parameters: ollama_parameters(&live),
+        template: ollama_template_hint(&live),
+        details: tag.details,
+        model_info: ollama_model_info(&live),
+        capabilities: ollama_capabilities(&live),
+    }))
+}
+
+pub(crate) async fn ollama_ps(State(state): State<AppState>) -> Json<OllamaPsResponse> {
+    let live = state.snapshot();
+    let tag = ollama_model_tag(&live);
+    Json(OllamaPsResponse {
+        models: vec![OllamaRunningModel {
+            name: tag.name,
+            model: tag.model,
+            size: tag.size,
+            digest: tag.digest,
+            details: tag.details,
+            expires_at: rfc3339_now(),
+            size_vram: 0,
         }],
+    })
+}
+
+pub(crate) async fn ollama_version() -> Json<OllamaVersionResponse> {
+    Json(OllamaVersionResponse {
+        version: env!("CARGO_PKG_VERSION"),
     })
 }
 
@@ -240,6 +307,9 @@ pub(crate) async fn ollama_generate(
 ) -> Result<Response, (StatusCode, Json<ErrorResponse>)> {
     let live = state.snapshot();
     validate_openai_request(&live, request.model.as_deref())?;
+    if let Some(response) = ollama_generate_lifecycle_response(&live, &request) {
+        return Ok(Json(response).into_response());
+    }
     let stream = request.stream;
     let openai_request = ollama_generate_to_openai_request(request)?;
     let ollama = run_ollama_completion(state, live, openai_request).await?;
@@ -315,6 +385,47 @@ fn ollama_generate_to_openai_request(
         multimodal_inputs: Default::default(),
         response_format: ollama_format_to_openai(request.format),
     })
+}
+
+fn ollama_generate_lifecycle_response(
+    live: &LiveState,
+    request: &OllamaGenerateRequest,
+) -> Option<OllamaGenerateResponse> {
+    if !request.prompt.is_empty()
+        || request
+            .system
+            .as_deref()
+            .is_some_and(|system| !system.trim().is_empty())
+        || request.images.is_some()
+        || request.template.is_some()
+    {
+        return None;
+    }
+    Some(OllamaGenerateResponse {
+        model: live.model_id.to_string(),
+        created_at: rfc3339_now(),
+        response: String::new(),
+        done: true,
+        done_reason: keep_alive_requests_unload(request.keep_alive.as_ref()).then_some("unload"),
+        context: Vec::new(),
+        total_duration: 0,
+        load_duration: 0,
+        prompt_eval_count: 0,
+        prompt_eval_duration: 0,
+        eval_count: 0,
+        eval_duration: 0,
+    })
+}
+
+fn keep_alive_requests_unload(value: Option<&Value>) -> bool {
+    match value {
+        Some(Value::Number(number)) => number.as_i64() == Some(0) || number.as_u64() == Some(0),
+        Some(Value::String(value)) => matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "0" | "0s" | "0m" | "0h"
+        ),
+        _ => false,
+    }
 }
 
 fn ollama_message_to_openai_message(
@@ -615,6 +726,87 @@ fn ollama_model_family(model_id: &str) -> String {
         "glm".to_string()
     } else {
         "unknown".to_string()
+    }
+}
+
+fn ollama_model_tag(live: &LiveState) -> OllamaModelTag {
+    let model = live.model_id.to_string();
+    OllamaModelTag {
+        name: model.clone(),
+        model,
+        modified_at: rfc3339_now(),
+        size: 0,
+        digest: ollama_model_digest(live),
+        details: ollama_model_details(live),
+    }
+}
+
+fn ollama_model_digest(live: &LiveState) -> String {
+    format!("ax-engine:{:?}", live.runtime_report.selected_backend)
+}
+
+fn ollama_model_details(live: &LiveState) -> OllamaModelDetails {
+    let family = ollama_model_family(live.model_id.as_ref());
+    OllamaModelDetails {
+        parent_model: String::new(),
+        format: MODEL_OWNER.to_string(),
+        family: family.clone(),
+        families: vec![family],
+        parameter_size: "unknown".to_string(),
+        quantization_level: "unknown".to_string(),
+    }
+}
+
+fn ollama_model_info(live: &LiveState) -> Value {
+    json!({
+        "general.architecture": ollama_model_family(live.model_id.as_ref()),
+        "general.name": live.model_id.as_ref(),
+        "ax_engine.backend": format!("{:?}", live.runtime_report.selected_backend),
+        "ax_engine.context_length": context_length(live),
+        "ax_engine.max_batch_tokens": live.session_config.max_batch_tokens,
+    })
+}
+
+fn ollama_capabilities(live: &LiveState) -> Vec<&'static str> {
+    let mut capabilities = vec!["completion"];
+    if ollama_tools_supported(live) {
+        capabilities.push("tools");
+    }
+    capabilities
+}
+
+fn ollama_tools_supported(live: &LiveState) -> bool {
+    live.runtime_report.selected_backend == SelectedBackend::Mlx
+        && matches!(
+            ChatPromptTemplate::for_model_id(live.model_id.as_ref()),
+            ChatPromptTemplate::QwenChatMl | ChatPromptTemplate::Gemma4
+        )
+}
+
+fn ollama_parameters(live: &LiveState) -> String {
+    format!(
+        "num_ctx {}\nnum_batch {}",
+        context_length(live),
+        live.session_config.max_batch_tokens
+    )
+}
+
+fn ollama_modelfile(live: &LiveState) -> String {
+    format!(
+        "# AX Engine Ollama-compatible view for {}\nFROM {}",
+        live.model_id.as_ref(),
+        live.model_id.as_ref()
+    )
+}
+
+fn ollama_template_hint(live: &LiveState) -> String {
+    match ChatPromptTemplate::for_model_id(live.model_id.as_ref()) {
+        ChatPromptTemplate::QwenChatMl => "qwen-chatml".to_string(),
+        ChatPromptTemplate::Gemma4 => "gemma4".to_string(),
+        ChatPromptTemplate::Llama3 => "llama3".to_string(),
+        ChatPromptTemplate::Glm47 => "glm".to_string(),
+        ChatPromptTemplate::Unsupported(family) => family.label().to_string(),
+        ChatPromptTemplate::PlainRolePrefix => "plain".to_string(),
     }
 }
 
