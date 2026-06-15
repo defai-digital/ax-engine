@@ -310,20 +310,22 @@ def _load_config(model_dir: Path) -> _Gemma4UnifiedConfig:
             "Gemma4 unified video preprocessing requires Gemma4UnifiedVideoProcessor"
         )
 
-    sampling_rate = _optional_int(feature_config, "sampling_rate") or 16000
-    audio_samples_per_token = (
-        _optional_int(audio_config, "audio_samples_per_token")
-        or _optional_int(feature_config, "audio_samples_per_token")
-        or _optional_int(feature_config, "feature_size")
-        or _optional_int(audio_config, "audio_embed_dim")
-        or int(
-            round(
-                sampling_rate
-                * float(processor_config.get("audio_ms_per_token", 40))
-                / 1000
-            )
+    sampling_rate = _optional_int_or_default(feature_config, "sampling_rate", 16000)
+    computed_audio_samples_per_token = int(
+        round(
+            sampling_rate
+            * float(processor_config.get("audio_ms_per_token", 40))
+            / 1000
         )
-        or 640
+    )
+    audio_samples_per_token = _first_optional_int_or_default(
+        (
+            (audio_config, "audio_samples_per_token"),
+            (feature_config, "audio_samples_per_token"),
+            (feature_config, "feature_size"),
+            (audio_config, "audio_embed_dim"),
+        ),
+        computed_audio_samples_per_token,
     )
 
     do_normalize = bool(image_config.get("do_normalize", False))
@@ -360,20 +362,38 @@ def _load_config(model_dir: Path) -> _Gemma4UnifiedConfig:
         do_normalize=do_normalize,
         image_mean=_triple(image_config.get("image_mean", [0.5, 0.5, 0.5])),
         image_std=image_std,
-        patch_size=_optional_int(image_config, "patch_size")
-        or _required_int(vision_config, "patch_size"),
-        model_patch_size=_optional_int(image_config, "model_patch_size")
-        or _required_int(vision_config, "model_patch_size"),
-        pooling_kernel_size=_optional_int(image_config, "pooling_kernel_size")
-        or _required_int(vision_config, "pooling_kernel_size"),
-        max_soft_tokens=_optional_int(image_config, "max_soft_tokens")
-        or _optional_int(vision_config, "num_soft_tokens")
-        or _required_int(vision_config, "default_output_length"),
+        patch_size=_first_optional_int_or_required(
+            ((image_config, "patch_size"),),
+            vision_config,
+            "patch_size",
+        ),
+        model_patch_size=_first_optional_int_or_required(
+            ((image_config, "model_patch_size"),),
+            vision_config,
+            "model_patch_size",
+        ),
+        pooling_kernel_size=_first_optional_int_or_required(
+            ((image_config, "pooling_kernel_size"),),
+            vision_config,
+            "pooling_kernel_size",
+        ),
+        max_soft_tokens=_first_optional_int_or_required(
+            (
+                (image_config, "max_soft_tokens"),
+                (vision_config, "num_soft_tokens"),
+            ),
+            vision_config,
+            "default_output_length",
+        ),
         sampling_rate=sampling_rate,
         audio_samples_per_token=audio_samples_per_token,
-        audio_seq_length=_optional_int(processor_config, "audio_seq_length") or 750,
-        video_max_soft_tokens=_optional_int(video_config, "max_soft_tokens") or 70,
-        video_num_frames=_optional_int(video_config, "num_frames") or 32,
+        audio_seq_length=_optional_int_or_default(
+            processor_config, "audio_seq_length", 750
+        ),
+        video_max_soft_tokens=_optional_int_or_default(
+            video_config, "max_soft_tokens", 70
+        ),
+        video_num_frames=_optional_int_or_default(video_config, "num_frames", 32),
     )
 
 
@@ -385,6 +405,14 @@ def _process_image(
 ) -> dict[str, Any]:
     if max_soft_tokens is None:
         max_soft_tokens = config.max_soft_tokens
+    if config.patch_size <= 0:
+        raise ValueError("Gemma4 unified patch_size must be positive")
+    if config.model_patch_size <= 0:
+        raise ValueError("Gemma4 unified model_patch_size must be positive")
+    if config.pooling_kernel_size <= 0:
+        raise ValueError("Gemma4 unified pooling_kernel_size must be positive")
+    if max_soft_tokens <= 0:
+        raise ValueError("Gemma4 unified max_soft_tokens must be positive")
     pil_image = _load_pil_image(image)
     if config.do_convert_rgb:
         pil_image = pil_image.convert("RGB")
@@ -1087,6 +1115,43 @@ def _optional_int_or_required(
     if value is not None:
         return value
     return _required_int(config, required_key)
+
+
+def _optional_int_or_default(config: dict[str, Any], key: str, default: int) -> int:
+    value = _optional_int(config, key)
+    if value is not None:
+        return value
+    return default
+
+
+def _first_optional_int(
+    options: tuple[tuple[dict[str, Any], str], ...],
+) -> int | None:
+    for config, key in options:
+        value = _optional_int(config, key)
+        if value is not None:
+            return value
+    return None
+
+
+def _first_optional_int_or_default(
+    options: tuple[tuple[dict[str, Any], str], ...], default: int
+) -> int:
+    value = _first_optional_int(options)
+    if value is not None:
+        return value
+    return default
+
+
+def _first_optional_int_or_required(
+    options: tuple[tuple[dict[str, Any], str], ...],
+    required_config: dict[str, Any],
+    required_key: str,
+) -> int:
+    value = _first_optional_int(options)
+    if value is not None:
+        return value
+    return _required_int(required_config, required_key)
 
 
 def _optional_int(config: dict[str, Any], key: str) -> int | None:
