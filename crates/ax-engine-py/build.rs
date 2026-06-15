@@ -1,7 +1,7 @@
 fn main() {
     pyo3_build_config::use_pyo3_cfgs();
 
-    let python_lib_dir = pyo3_build_config::get().lib_dir.clone();
+    let python_lib_dir = pyo3_build_config::get().lib_dir().map(str::to_owned);
 
     if std::env::var_os("CARGO_FEATURE_PYTHON_EXTENSION").is_some() {
         pyo3_build_config::add_extension_module_link_args();

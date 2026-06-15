@@ -38,7 +38,7 @@ impl GenerateStreamIterator {
             return Ok(None);
         };
 
-        match py.allow_threads(|| session.next_stream_event(state)) {
+        match py.detach(|| session.next_stream_event(state)) {
             Ok(Some(event)) => {
                 let is_terminal = matches!(event, SdkGenerateStreamEvent::Response(_));
                 let payload = stream_event_dict(py, &event);
