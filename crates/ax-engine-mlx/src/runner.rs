@@ -82,12 +82,10 @@ use crate::generate::{
 };
 use crate::kv_cache::{MlxKVCache, MlxKVCacheUsage};
 use crate::model::{
-    DecodeProfileSnapshot, DirectMlxHotpathProfileSnapshot, Gemma4MoeProfileSnapshot,
-    LinearAttentionProfileSnapshot, ModelConfig, PrefillProfileSnapshot,
-    TurboQuantModelDecodeContext, forward_all_positions_with_post_norm,
-    take_decode_profile_snapshot, take_direct_mlx_hotpath_profile_snapshot,
-    take_gemma4_moe_profile_snapshot, take_linear_attention_profile_snapshot,
-    take_prefill_profile_snapshot,
+    DecodeProfileSnapshot, Gemma4MoeProfileSnapshot, LinearAttentionProfileSnapshot, ModelConfig,
+    PrefillProfileSnapshot, TurboQuantModelDecodeContext, forward_all_positions_with_post_norm,
+    take_decode_profile_snapshot, take_gemma4_moe_profile_snapshot,
+    take_linear_attention_profile_snapshot, take_prefill_profile_snapshot,
 };
 use crate::mtp::{mtp_draft_tokens, mtp_draft_tokens_after_forced_prefix};
 use crate::ngram_accel::{
@@ -3136,56 +3134,6 @@ impl LinearAttentionProfileSnapshot {
     }
 }
 
-impl DirectMlxHotpathProfileSnapshot {
-    fn merge_from(&mut self, other: Self) {
-        self.gemma4_post_attn_ffn_attempts = self
-            .gemma4_post_attn_ffn_attempts
-            .saturating_add(other.gemma4_post_attn_ffn_attempts);
-        self.gemma4_post_attn_ffn_hits = self
-            .gemma4_post_attn_ffn_hits
-            .saturating_add(other.gemma4_post_attn_ffn_hits);
-        self.gemma4_post_attn_ffn_fallbacks = self
-            .gemma4_post_attn_ffn_fallbacks
-            .saturating_add(other.gemma4_post_attn_ffn_fallbacks);
-        self.gemma4_post_attn_ffn_profile_blocked = self
-            .gemma4_post_attn_ffn_profile_blocked
-            .saturating_add(other.gemma4_post_attn_ffn_profile_blocked);
-    }
-
-    fn append_route_decisions(&self, decisions: &mut impl RouteDecisionSink) {
-        if self.gemma4_post_attn_ffn_attempts == 0
-            && self.gemma4_post_attn_ffn_hits == 0
-            && self.gemma4_post_attn_ffn_fallbacks == 0
-            && self.gemma4_post_attn_ffn_profile_blocked == 0
-        {
-            return;
-        }
-
-        let entries = [
-            (
-                "ax_mlx_direct_cpp_gemma4_post_attn_ffn_attempts",
-                self.gemma4_post_attn_ffn_attempts,
-            ),
-            (
-                "ax_mlx_direct_cpp_gemma4_post_attn_ffn_hits",
-                self.gemma4_post_attn_ffn_hits,
-            ),
-            (
-                "ax_mlx_direct_cpp_gemma4_post_attn_ffn_fallbacks",
-                self.gemma4_post_attn_ffn_fallbacks,
-            ),
-            (
-                "ax_mlx_direct_cpp_gemma4_post_attn_ffn_profile_blocked",
-                self.gemma4_post_attn_ffn_profile_blocked,
-            ),
-        ];
-
-        for (key, value) in entries {
-            decisions.upsert_route_decision(key, value);
-        }
-    }
-}
-
 impl PrefillProfileSnapshot {
     fn merge_from(&mut self, other: Self) {
         self.enabled = self.enabled.max(other.enabled);
@@ -4761,7 +4709,6 @@ impl ExecutionRunner for MlxRunner {
         let mut decode_telemetry = DecodeTelemetry::default();
         let mut gemma4_moe_profile = Gemma4MoeProfileSnapshot::default();
         let mut linear_attention_profile = LinearAttentionProfileSnapshot::default();
-        let mut direct_mlx_hotpath_profile = DirectMlxHotpathProfileSnapshot::default();
         let mut prefill_profile = PrefillProfileSnapshot::default();
         let mut decode_profile = DecodeProfileSnapshot::default();
         let mut kv_cache = KvCacheTelemetry::default();
@@ -4788,7 +4735,6 @@ impl ExecutionRunner for MlxRunner {
             decode_telemetry.merge_from(result.decode_telemetry);
             gemma4_moe_profile.merge_from(result.gemma4_moe_profile);
             linear_attention_profile.merge_from(result.linear_attention_profile);
-            direct_mlx_hotpath_profile.merge_from(result.direct_mlx_hotpath_profile);
             prefill_profile.merge_from(result.prefill_profile);
             decode_profile.merge_from(result.decode_profile);
             kv_cache.merge_from(result.kv_usage);
@@ -4806,7 +4752,6 @@ impl ExecutionRunner for MlxRunner {
             decode_telemetry.append_route_decisions(&mut route_decisions);
             gemma4_moe_profile.append_route_decisions(&mut route_decisions);
             linear_attention_profile.append_route_decisions(&mut route_decisions);
-            direct_mlx_hotpath_profile.append_route_decisions(&mut route_decisions);
             prefill_profile.append_route_decisions(&mut route_decisions);
             decode_profile.append_route_decisions(&mut route_decisions);
             self.weight_layout_telemetry
@@ -5365,7 +5310,6 @@ impl MlxRunner {
                 decode_telemetry: DecodeTelemetry::default(),
                 gemma4_moe_profile: Gemma4MoeProfileSnapshot::default(),
                 linear_attention_profile: LinearAttentionProfileSnapshot::default(),
-                direct_mlx_hotpath_profile: DirectMlxHotpathProfileSnapshot::default(),
                 prefill_profile: PrefillProfileSnapshot::default(),
                 decode_profile: DecodeProfileSnapshot::default(),
                 kv_usage: MlxKVCacheUsage::default(),
@@ -5758,7 +5702,6 @@ impl MlxRunner {
         let decode_telemetry = state.decode_telemetry;
         let gemma4_moe_profile = take_gemma4_moe_profile_snapshot();
         let linear_attention_profile = take_linear_attention_profile_snapshot();
-        let direct_mlx_hotpath_profile = take_direct_mlx_hotpath_profile_snapshot();
         state
             .prefill_profile
             .merge_from(take_prefill_profile_snapshot());
@@ -5816,7 +5759,6 @@ impl MlxRunner {
             decode_telemetry,
             gemma4_moe_profile,
             linear_attention_profile,
-            direct_mlx_hotpath_profile,
             prefill_profile,
             decode_profile,
             kv_usage,
@@ -9330,7 +9272,6 @@ struct MlxItemRun {
     decode_telemetry: DecodeTelemetry,
     gemma4_moe_profile: Gemma4MoeProfileSnapshot,
     linear_attention_profile: LinearAttentionProfileSnapshot,
-    direct_mlx_hotpath_profile: DirectMlxHotpathProfileSnapshot,
     prefill_profile: PrefillProfileSnapshot,
     decode_profile: DecodeProfileSnapshot,
     kv_usage: MlxKVCacheUsage,
@@ -9354,7 +9295,6 @@ fn errored_item_run(request_id: RequestId, error: impl Into<String>) -> MlxItemR
         decode_telemetry: DecodeTelemetry::default(),
         gemma4_moe_profile: Gemma4MoeProfileSnapshot::default(),
         linear_attention_profile: LinearAttentionProfileSnapshot::default(),
-        direct_mlx_hotpath_profile: DirectMlxHotpathProfileSnapshot::default(),
         prefill_profile: PrefillProfileSnapshot::default(),
         decode_profile: DecodeProfileSnapshot::default(),
         kv_usage: MlxKVCacheUsage::default(),
@@ -13592,49 +13532,6 @@ mod tests {
             Some(&1)
         );
         assert!(!decisions.contains_key("ax_mlx_linear_attention_profile_enabled"));
-    }
-
-    #[test]
-    fn direct_mlx_hotpath_route_decisions_emit_when_attempted() {
-        let mut profile = DirectMlxHotpathProfileSnapshot {
-            gemma4_post_attn_ffn_attempts: 2,
-            gemma4_post_attn_ffn_hits: 1,
-            gemma4_post_attn_ffn_fallbacks: 1,
-            gemma4_post_attn_ffn_profile_blocked: 1,
-        };
-        profile.merge_from(DirectMlxHotpathProfileSnapshot {
-            gemma4_post_attn_ffn_attempts: 3,
-            gemma4_post_attn_ffn_hits: 2,
-            gemma4_post_attn_ffn_fallbacks: 1,
-            gemma4_post_attn_ffn_profile_blocked: 0,
-        });
-
-        let mut decisions = Vec::new();
-        profile.append_route_decisions(&mut decisions);
-        let decisions = decisions
-            .into_iter()
-            .collect::<std::collections::BTreeMap<_, _>>();
-
-        assert_eq!(
-            decisions.get("ax_mlx_direct_cpp_gemma4_post_attn_ffn_attempts"),
-            Some(&5)
-        );
-        assert_eq!(
-            decisions.get("ax_mlx_direct_cpp_gemma4_post_attn_ffn_hits"),
-            Some(&3)
-        );
-        assert_eq!(
-            decisions.get("ax_mlx_direct_cpp_gemma4_post_attn_ffn_fallbacks"),
-            Some(&2)
-        );
-        assert_eq!(
-            decisions.get("ax_mlx_direct_cpp_gemma4_post_attn_ffn_profile_blocked"),
-            Some(&1)
-        );
-
-        let mut disabled_decisions = Vec::new();
-        DirectMlxHotpathProfileSnapshot::default().append_route_decisions(&mut disabled_decisions);
-        assert!(disabled_decisions.is_empty());
     }
 
     #[test]

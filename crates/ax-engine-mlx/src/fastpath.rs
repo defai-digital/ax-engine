@@ -327,50 +327,6 @@ env_flag_default_on!(
 );
 
 env_flag!(
-    /// `AX_MLX_DIRECT_CPP_GEMMA4_POST_ATTN_FFN` — opt-in direct C++ route for
-    /// Gemma4 dense post-attention residual + FFN + layer-scalar orchestration.
-    ///
-    /// **Default: OFF — real-model A/B rejected promotion (2026-06-11).** The P0
-    /// clean microbench artifact showed this large-block boundary beating the
-    /// portable Rust/`mlx-c` composition, but the full A/B on the two models that
-    /// can engage the route (Gemma 4 31B and 12B 4-bit, `all_hits`) regressed
-    /// decode to 0.89-0.97x and prefill to 0.91-0.98x;
-    /// `check_direct_gemma4_ffn_route_promotion.py` decision: `not_promoted`.
-    /// E2B/E4B (per-layer-embedding weights) and 26B-A4B (MoE router) cannot take
-    /// the route at all. Artifacts:
-    /// `benchmarks/results/mlx-inference/2026-06-11-gemma4-ffn-route-ab/`.
-    /// The production route is guarded to dense packed-quantized Gemma4 layers
-    /// without per-layer input gating, profiling, last-position slicing, or
-    /// active weight rotation.
-    direct_cpp_gemma4_post_attn_ffn_enabled,
-    "AX_MLX_DIRECT_CPP_GEMMA4_POST_ATTN_FFN"
-);
-
-env_flag!(
-    /// `AX_MLX_DENSE_ADD_RMS_NORM_PAIR` — fuse the attention residual-add and
-    /// pre-FFN RMSNorm into one C++ call for dense-layer decode.
-    ///
-    /// **Default: OFF**. A/B on Gemma 4 31B showed this shim regresses by
-    /// ~0.1% on that model. The C++ function call overhead (2 output arrays,
-    /// extra parameter marshaling) exceeds the savings from one fewer Rust→C
-    /// FFI crossing. Left as opt-in for future re-evaluation.
-    dense_add_rms_norm_pair_enabled,
-    "AX_MLX_DENSE_ADD_RMS_NORM_PAIR"
-);
-
-env_flag!(
-    /// `AX_MLX_DENSE_QMATMUL_RMS_NORM` — fuse the dense FFN down-projection
-    /// and post-FFN RMSNorm into one C++ call.
-    ///
-    /// **Default: OFF**. A/B on Gemma 4 31B showed ~0.45% regression. The
-    /// C++ wrapper overhead (10 parameters, optional biases conversion) exceeds
-    /// the savings from one fewer Rust→C FFI crossing. MLX graph node count is
-    /// unchanged either way. Left as opt-in for future re-evaluation.
-    dense_qmatmul_rms_norm_enabled,
-    "AX_MLX_DENSE_QMATMUL_RMS_NORM"
-);
-
-env_flag!(
     /// `AX_MLX_DIRECT_CPP_QK_NORM_ROPE` — opt-in direct C++ probe route for
     /// standard attention Q/K `as_strided -> rms_norm -> rope`.
     ///
@@ -807,21 +763,6 @@ mod tests {
         ));
         assert!(probe_default_on(
             "AX_FASTPATH_TEST_QWEN_DIRECT_CPP_QK_NORM_ROPE_ENABLED",
-            "1"
-        ));
-    }
-
-    #[test]
-    fn direct_cpp_gemma4_post_attn_ffn_uses_opt_in_contract() {
-        assert!(!parse_bool_env(
-            "AX_FASTPATH_TEST_DIRECT_GEMMA4_POST_ATTN_FFN_UNSET"
-        ));
-        assert!(!probe(
-            "AX_FASTPATH_TEST_DIRECT_GEMMA4_POST_ATTN_FFN_DISABLED",
-            "0"
-        ));
-        assert!(probe(
-            "AX_FASTPATH_TEST_DIRECT_GEMMA4_POST_ATTN_FFN_ENABLED",
             "1"
         ));
     }

@@ -118,7 +118,6 @@ bash -n scripts/*.sh scripts/lib/common.sh
   scripts/check_turboquant_microbench_artifact.py \
   scripts/check_turboquant_prd_completion.py \
   scripts/check_direct_mlx_hotpath_probe_artifact.py \
-  scripts/check_direct_gemma4_ffn_route_promotion.py \
   scripts/check_direct_mlx_no_production_route.py \
   scripts/check_mlx_fastpath_env_controls.py \
   scripts/check_mla_prefix_restore_evidence.py \
@@ -130,7 +129,6 @@ bash -n scripts/*.sh scripts/lib/common.sh
   scripts/test_turboquant_microbench_artifact.py \
   scripts/test_turboquant_prd_completion.py \
   scripts/test_check_direct_mlx_hotpath_probe_artifact.py \
-  scripts/test_check_direct_gemma4_ffn_route_promotion.py \
   scripts/test_check_direct_mlx_no_production_route.py \
   scripts/test_check_mlx_fastpath_env_controls.py \
   scripts/test_check_qwen_post_input_route_promotion.py \
@@ -187,7 +185,6 @@ bash -n scripts/*.sh scripts/lib/common.sh
   scripts/test_build_offline_policy_search_artifact.py \
   scripts/test_search_turboquant_kv_policy.py \
   scripts/test_check_direct_mlx_hotpath_probe_artifact.py \
-  scripts/test_check_direct_gemma4_ffn_route_promotion.py \
   scripts/test_check_direct_mlx_no_production_route.py \
   scripts/test_check_mlx_fastpath_env_controls.py \
   scripts/test_check_mla_prefix_restore_evidence.py \

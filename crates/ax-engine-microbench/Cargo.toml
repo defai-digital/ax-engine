@@ -40,3 +40,11 @@ path = "src/bin/mla_warm_extend_drift_probe.rs"
 [[bin]]
 name = "disk-prefix-cache-stress"
 path = "src/bin/disk_prefix_cache_stress.rs"
+
+[[bin]]
+name = "moe-downproj-fusion-probe"
+path = "src/bin/moe_downproj_fusion_probe.rs"
+
+[[bin]]
+name = "moe-fused-gather-qmm-probe"
+path = "src/bin/moe_fused_gather_qmm_probe.rs"
