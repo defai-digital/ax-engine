@@ -1058,7 +1058,7 @@ class WrapperContractTests(unittest.TestCase):
             tool_choice="auto",
         )
         self.assertIn(
-            "<|im_start|>system\n# Tools\n\nYou have access to the following tools:",
+            "<|im_start|>system\nYou are Qwen, a helpful AI assistant that can interact with a computer to solve tasks.\n\n# Tools\n\nYou have access to the following tools:",
             qwen_tool_prompt,
         )
         self.assertIn("<tools>", qwen_tool_prompt)
@@ -1070,6 +1070,33 @@ class WrapperContractTests(unittest.TestCase):
             qwen_tool_prompt,
         )
         self.assertTrue(qwen_tool_prompt.endswith("<|im_start|>assistant\n"))
+
+        qwen_custom_system_prompt = openai_server.render_chat_prompt(
+            [
+                {"role": "system", "content": "Use the project coding conventions."},
+                {"role": "user", "content": "Read README.md"},
+            ],
+            "mlx-community/Qwen3-Coder-Next-4bit",
+            tools=[
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "read_file",
+                        "description": "Read a workspace file",
+                        "parameters": {"type": "object"},
+                    },
+                }
+            ],
+            tool_choice="auto",
+        )
+        self.assertIn(
+            "<|im_start|>system\nUse the project coding conventions.\n\n# Tools",
+            qwen_custom_system_prompt,
+        )
+        self.assertNotIn(
+            "You are Qwen, a helpful AI assistant",
+            qwen_custom_system_prompt,
+        )
 
         qwen36_tool_prompt = openai_server.render_chat_prompt(
             [{"role": "user", "content": "Read README.md"}],

@@ -87,6 +87,9 @@ fn openai_chat_prompt_renderer_injects_qwen_tool_contract() {
     )
     .expect("qwen tool prompt should render");
 
+    assert!(prompt.starts_with(
+        "<|im_start|>system\nYou are Qwen, a helpful AI assistant that can interact with a computer to solve tasks.\n\n# Tools"
+    ));
     assert!(prompt.contains("# Tools\n\nYou have access to the following tools:"));
     assert!(prompt.contains("<function>\n<name>read_file</name>"));
     assert!(prompt.contains("<description>Read a workspace file</description>"));
@@ -95,6 +98,44 @@ fn openai_chat_prompt_renderer_injects_qwen_tool_contract() {
     assert!(prompt.contains("<parameter=example_parameter_1>"));
     assert!(prompt.contains("If you choose to call a tool ONLY reply"));
     assert!(prompt.contains("the tool calling block MUST begin with an opening <tool_call> tag"));
+    assert!(prompt.contains("<|im_start|>user\nRead README.md<|im_end|>"));
+    assert!(prompt.ends_with(chat::QWEN_CHATML_ASSISTANT_GENERATION_PROMPT_NO_THINK));
+}
+
+#[test]
+fn openai_chat_prompt_renderer_preserves_qwen_coder_user_system_with_tool_contract() {
+    let messages: Vec<OpenAiChatMessage> = serde_json::from_value(json!([
+        {"role": "system", "content": "Use the project coding conventions."},
+        {"role": "user", "content": "Read README.md"}
+    ]))
+    .expect("sample messages should deserialize");
+
+    let prompt = render_openai_chat_prompt_with_tools(
+        "Qwen/Qwen3-Coder-Next-Q4_K_M",
+        &messages,
+        Some(&json!([
+            {
+                "type": "function",
+                "function": {
+                    "name": "read_file",
+                    "description": "Read a workspace file",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"path": {"type": "string"}},
+                        "required": ["path"]
+                    }
+                }
+            }
+        ])),
+        Some(&json!("auto")),
+    )
+    .expect("qwen coder prompt should render");
+
+    assert!(
+        prompt.starts_with("<|im_start|>system\nUse the project coding conventions.\n\n# Tools")
+    );
+    assert!(!prompt.contains("You are Qwen, a helpful AI assistant"));
+    assert!(prompt.contains("<function>\n<name>read_file</name>"));
     assert!(prompt.contains("<|im_start|>user\nRead README.md<|im_end|>"));
     assert!(prompt.ends_with(chat::QWEN_CHATML_ASSISTANT_GENERATION_PROMPT_NO_THINK));
 }

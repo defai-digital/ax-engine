@@ -64,6 +64,12 @@ def render_chat_prompt(
                 role, content = rendered_messages[0]
                 rendered_messages[0] = (role, f"{content}\n\n{tool_contract}")
             else:
+                if qwen_tool_style == "coder_xml":
+                    tool_contract = (
+                        "You are Qwen, a helpful AI assistant that can interact "
+                        "with a computer to solve tasks.\n\n"
+                        f"{tool_contract}"
+                    )
                 rendered_messages.insert(
                     0,
                     ("system", tool_contract),

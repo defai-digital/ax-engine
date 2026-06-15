@@ -471,6 +471,26 @@ real HTTP:
 bash scripts/check-server-preview.sh
 ```
 
+To run a direct native-MLX model compatibility smoke for the coder-facing
+Qwen3-Coder-Next, Qwen3.6 35B-A3B, and Gemma 4 routes, provide local AX model
+artifacts and run:
+
+```text
+AX_ENGINE_QWEN_CODER_NEXT_ARTIFACTS_DIR=/absolute/path/to/qwen3-coder-next-artifacts \
+AX_ENGINE_QWEN36_35B_ARTIFACTS_DIR=/absolute/path/to/qwen3.6-35b-a3b-artifacts \
+AX_ENGINE_GEMMA4_ARTIFACTS_DIR=/absolute/path/to/gemma4-artifacts \
+python3 scripts/check_direct_model_compat_smoke.py
+```
+
+The check starts `ax-engine-server` with `--mlx`, verifies `/health` selected the
+native MLX backend, verifies `/v1/models` advertises tool-call support, then
+sends equivalent tool-enabled requests through OpenAI
+`/v1/chat/completions` and Ollama `/api/chat`. It fails if either surface leaks
+raw tool-call markup instead of returning a normal response envelope. Add
+`--expect-tool-call` when the local model/configuration is expected to choose an
+actual parsed tool call for the smoke prompt. Without configured artifacts the
+script prints a JSON `skipped` result and exits zero.
+
 To run the optional OpenWebUI integration smoke, start or provide an
 OpenAI-compatible AX endpoint, then opt in explicitly:
 

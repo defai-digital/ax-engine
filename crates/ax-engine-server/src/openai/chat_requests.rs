@@ -586,9 +586,8 @@ fn prepend_qwen_tool_contract(
     ) {
         return messages;
     }
-    let Some(contract) =
-        render_tool_contract_system_message(tools, tool_choice, qwen_tool_contract_style(model_id))
-    else {
+    let style = qwen_tool_contract_style(model_id);
+    let Some(contract) = render_tool_contract_system_message(tools, tool_choice, style) else {
         return messages;
     };
     if let Some((role, content)) = messages.first_mut()
@@ -597,7 +596,14 @@ fn prepend_qwen_tool_contract(
         content.push_str("\n\n");
         content.push_str(&contract);
     } else {
-        messages.insert(0, ("system".to_string(), contract));
+        let content = if style == QwenToolContractStyle::CoderXml {
+            format!(
+                "You are Qwen, a helpful AI assistant that can interact with a computer to solve tasks.\n\n{contract}"
+            )
+        } else {
+            contract
+        };
+        messages.insert(0, ("system".to_string(), content));
     }
     messages
 }

@@ -153,6 +153,7 @@ bash -n scripts/*.sh scripts/lib/common.sh
   scripts/test_profile_kv_multiturn_chat_evidence.py \
   scripts/report_direct_model_weight_bytes.py \
   scripts/test_report_direct_model_weight_bytes.py \
+  scripts/test_check_direct_model_compat_smoke.py \
   scripts/report_quantization_recipe_inventory.py \
   scripts/test_report_quantization_recipe_inventory.py \
   scripts/generate_candidate_quantization_manifests.py \
@@ -199,6 +200,7 @@ bash -n scripts/*.sh scripts/lib/common.sh
   scripts/test_verify_prefix_reuse_equivalence.py \
   scripts/test_profile_kv_multiturn_chat_evidence.py \
   scripts/test_report_direct_model_weight_bytes.py \
+  scripts/test_check_direct_model_compat_smoke.py \
   scripts/test_report_quantization_recipe_inventory.py \
   scripts/test_generate_candidate_quantization_manifests.py \
   scripts/test_check_quantization_quality_gate.py \
