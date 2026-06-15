@@ -298,17 +298,39 @@ fn parse_qwen_tool_parameters(body: &str) -> serde_json::Map<String, Value> {
         }
 
         let value_start = name_end + 1;
-        let Some(relative_value_end) = body[value_start..].find("</parameter>") else {
-            break;
-        };
-        let value_end = value_start + relative_value_end;
+        let value_end = qwen_parameter_value_end(body, value_start);
         let raw_value = body[value_start..value_end].trim();
         let value = serde_json::from_str(raw_value)
             .unwrap_or_else(|_| Value::String(raw_value.to_string()));
         parameters.insert(name.to_string(), value);
-        offset = value_end + "</parameter>".len();
+        offset = value_end;
     }
     parameters
+}
+
+/// End index (exclusive) of a `<parameter=>` value, matching the reference
+/// `qwen3_coder_xml` parser's alternation: an explicit `</parameter>` close is
+/// preferred, but a missing close is treated as an implicit terminator at the
+/// next `<parameter=`, `</function>`, or end of body. Qwen3-Coder models
+/// frequently truncate or omit the closing tag, and the earlier `break`-on-
+/// missing dropped the entire parameter (and, because the residual XML body is
+/// not bare JSON, the whole tool call) — surfacing it as plain text that the
+/// guard then blocks as `unexecutable_tool_text`.
+fn qwen_parameter_value_end(body: &str, value_start: usize) -> usize {
+    if let Some(relative) = body[value_start..].find("</parameter>") {
+        return value_start + relative;
+    }
+    let next_param = body[value_start..]
+        .find("<parameter=")
+        .map(|relative| value_start + relative);
+    let function_end = body[value_start..]
+        .find("</function>")
+        .map(|relative| value_start + relative);
+    match (next_param, function_end) {
+        (Some(param), Some(func)) => param.min(func),
+        (Some(only), None) | (None, Some(only)) => only,
+        (None, None) => body.len(),
+    }
 }
 
 fn serialize_tool_arguments(value: Option<&Value>) -> String {

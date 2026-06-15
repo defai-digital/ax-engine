@@ -306,6 +306,87 @@ fn chat_response_recovers_qwen_function_tool_call_without_closing_tags() {
 }
 
 #[test]
+fn chat_response_recovers_qwen_tool_call_when_parameter_close_is_truncated() {
+    // Qwen3-Coder models frequently emit the value but truncate the closing
+    // </parameter> tag (max_tokens or premature stop). The reference
+    // qwen3_coder_xml parser terminates the value at </function>; AX must do
+    // the same instead of dropping the whole tool call onto the plain-text
+    // path (which the guard then blocks as `unexecutable_tool_text`).
+    let response = sample_generate_response(
+        r#"<tool_call><function=todo_write>
+<parameter=todos>
+[{"content":"create index.html","status":"pending"}]
+</function></tool_call>"#,
+        Vec::new(),
+        Vec::new(),
+    );
+
+    let openai = openai_chat_completion_response(
+        &response,
+        "chatcmpl-test".to_string(),
+        OpenAiResponseOptions {
+            parse_tool_calls: true,
+            ..Default::default()
+        },
+        None,
+    );
+
+    let message = &openai.choices[0].message;
+    let tool_call = &message
+        .tool_calls
+        .as_ref()
+        .expect("tool call with a truncated </parameter> should still parse")[0];
+    assert_eq!(message.content, "");
+    assert_eq!(openai.choices[0].finish_reason, Some("tool_calls"));
+    assert_eq!(tool_call.function.name, "todo_write");
+    assert_eq!(
+        tool_call.function.arguments,
+        r#"{"todos":[{"content":"create index.html","status":"pending"}]}"#
+    );
+}
+
+#[test]
+fn chat_response_recovers_qwen_tool_call_when_parameter_close_missing_and_function_truncated() {
+    // Both </parameter> and </function> omitted: the value runs to end of body.
+    // Mirrors the second-round `did you finish?` output the model emitted in
+    // the field report, which previously surfaced as plain text.
+    let response = sample_generate_response(
+        r#"I haven't done it yet.
+<tool_call>
+<function=write_file>
+<parameter=path>index.html
+<parameter=content><!DOCTYPE html><html></html>"#,
+        Vec::new(),
+        Vec::new(),
+    );
+
+    let openai = openai_chat_completion_response(
+        &response,
+        "chatcmpl-test".to_string(),
+        OpenAiResponseOptions {
+            parse_tool_calls: true,
+            ..Default::default()
+        },
+        None,
+    );
+
+    let message = &openai.choices[0].message;
+    let tool_calls = message
+        .tool_calls
+        .as_ref()
+        .expect("tool call with truncated tags should still parse");
+    assert_eq!(tool_calls.len(), 1);
+    assert_eq!(tool_calls[0].function.name, "write_file");
+    let args: serde_json::Value =
+        serde_json::from_str(&tool_calls[0].function.arguments).expect("arguments are JSON");
+    // path terminates at the next <parameter=; content runs to end of body.
+    assert_eq!(args["path"], "index.html");
+    assert_eq!(args["content"], "<!DOCTYPE html><html></html>");
+    // The prose before <tool_call> survives as content.
+    assert_eq!(message.content, "I haven't done it yet.");
+}
+
+#[test]
 fn chat_tool_call_stream_chunks_use_openai_delta_shape() {
     let response = sample_generate_response(
         r#"<tool_call>{"name":"lookup","arguments":{"query":"ax"}}</tool_call>"#,

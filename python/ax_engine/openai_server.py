@@ -285,17 +285,33 @@ def parse_qwen_tool_parameters(body: str) -> dict[str, Any]:
             offset = name_end + 1
             continue
         value_start = name_end + 1
-        value_end = body.find("</parameter>", value_start)
-        if value_end < 0:
-            break
+        value_end = _qwen_parameter_value_end(body, value_start)
         raw_value = body[value_start:value_end].strip()
         try:
             value = json.loads(raw_value)
         except json.JSONDecodeError:
             value = raw_value
         parameters[name] = value
-        offset = value_end + len("</parameter>")
+        offset = value_end
     return parameters
+
+
+def _qwen_parameter_value_end(body: str, value_start: int) -> int:
+    """End index (exclusive) of a `<parameter=>` value, matching the reference
+    `qwen3_coder_xml` parser's alternation: an explicit `</parameter>` close is
+    preferred, but a missing close is treated as an implicit terminator at the
+    next `<parameter=`, `</function>`, or end of body. Qwen3-Coder models
+    frequently truncate or omit the closing tag; the earlier `break`-on-missing
+    dropped the whole tool call onto the plain-text path.
+    """
+    explicit = body.find("</parameter>", value_start)
+    if explicit >= 0:
+        return explicit
+    candidates = [
+        body.find(marker, value_start) for marker in ("<parameter=", "</function>")
+    ]
+    next_implicit = min((idx for idx in candidates if idx >= 0), default=-1)
+    return next_implicit if next_implicit >= 0 else len(body)
 
 
 def prompt_to_tokens(prompt: Any, tokenizer: Any) -> tuple[list[int], str | None]:
@@ -610,7 +626,12 @@ def stream_completion_chunks(
                 emit_role = kind == "chat" and not role_emitted
                 role_emitted = role_emitted or emit_role
                 yield sse_chunk(
-                    stream_id, created, model_id, new_text, None, kind,
+                    stream_id,
+                    created,
+                    model_id,
+                    new_text,
+                    None,
+                    kind,
                     emit_role=emit_role,
                 )
         elif event.event == "response" and event.response is not None:
@@ -622,7 +643,12 @@ def stream_completion_chunks(
                     emit_role = kind == "chat" and not role_emitted
                     role_emitted = role_emitted or emit_role
                     yield sse_chunk(
-                        stream_id, created, model_id, remaining, None, kind,
+                        stream_id,
+                        created,
+                        model_id,
+                        remaining,
+                        None,
+                        kind,
                         emit_role=emit_role,
                     )
             # OpenAI spec: the role must appear in at least one chunk. If no
