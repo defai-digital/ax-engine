@@ -18,6 +18,8 @@ class OpenAiShimError(ValueError):
 
 
 def render_chat_prompt(messages: list[dict[str, Any]], model_id: str) -> str:
+    if not isinstance(messages, list):
+        raise OpenAiShimError("chat.completions messages must be a list")
     if not messages:
         raise OpenAiShimError("chat.completions requires at least one message")
 
@@ -27,6 +29,8 @@ def render_chat_prompt(messages: list[dict[str, Any]], model_id: str) -> str:
         prompt_parts.append("<|begin_of_text|>")
 
     for message in messages:
+        if not isinstance(message, dict):
+            raise OpenAiShimError("chat.completions message entries must be objects")
         role = str(message.get("role", "")).strip()
         if role not in ALLOWED_CHAT_ROLES:
             raise OpenAiShimError(

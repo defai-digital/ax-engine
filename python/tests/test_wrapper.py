@@ -1003,6 +1003,16 @@ class WrapperContractTests(unittest.TestCase):
             "user: Line 1\\nLine 2\nassistant:",
         )
 
+    def test_openai_mlx_shim_rejects_malformed_chat_messages(self) -> None:
+        openai_server = importlib.import_module("ax_engine.openai_server")
+
+        with self.assertRaisesRegex(
+            openai_server.OpenAiShimError, "messages must be a list"
+        ):
+            openai_server.render_chat_prompt("not-a-list", "qwen3_dense")
+        with self.assertRaisesRegex(openai_server.OpenAiShimError, "message entries"):
+            openai_server.render_chat_prompt([1], "qwen3_dense")
+
     def test_openai_mlx_shim_rejects_boolean_max_tokens(self) -> None:
         openai_server = importlib.import_module("ax_engine.openai_server")
 
