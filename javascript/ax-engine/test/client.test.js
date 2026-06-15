@@ -16,6 +16,13 @@ test("type declarations expose loadModel", async () => {
   );
 });
 
+test("type declarations allow minimal health responses", async () => {
+  const declarations = await readFile(new URL("../index.d.ts", import.meta.url), "utf8");
+
+  assert.match(declarations, /model_id\?: string/);
+  assert.match(declarations, /runtime\?: RuntimeInfo/);
+});
+
 async function withServer(handler, run) {
   const server = http.createServer(handler);
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -29,6 +36,27 @@ async function withServer(handler, run) {
     );
   }
 }
+
+test("health accepts minimal shim response", async () => {
+  await withServer((req, res) => {
+    assert.equal(req.method, "GET");
+    assert.equal(req.url, "/health");
+    res.setHeader("content-type", "application/json");
+    res.end(
+      JSON.stringify({
+        status: "ok",
+        service: "ax-engine-openai-mlx-shim",
+      }),
+    );
+  }, async (baseUrl) => {
+    const client = new AxEngineClient({ baseUrl });
+    const health = await client.health();
+    assert.equal(health.status, "ok");
+    assert.equal(health.service, "ax-engine-openai-mlx-shim");
+    assert.equal(health.model_id, undefined);
+    assert.equal(health.runtime, undefined);
+  });
+});
 
 test("runtime fetches preview runtime metadata", async () => {
   await withServer((req, res) => {

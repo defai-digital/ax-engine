@@ -235,8 +235,8 @@ export interface StreamEvent<T = unknown> {
 export interface HealthResponse {
   status: string;
   service: string;
-  model_id: string;
-  runtime: RuntimeInfo;
+  model_id?: string;
+  runtime?: RuntimeInfo;
 }
 
 export interface CapabilityReport {
