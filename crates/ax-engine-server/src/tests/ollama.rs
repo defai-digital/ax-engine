@@ -95,6 +95,69 @@ async fn ollama_show_returns_loaded_model_metadata() {
 }
 
 #[tokio::test]
+async fn ollama_show_accepts_verbose_false_probe() {
+    let app = build_router(llama_cpp_state());
+    let (status, json) = json_response(
+        &app,
+        Request::builder()
+            .method("POST")
+            .uri("/api/show")
+            .header("content-type", "application/json")
+            .body(Body::from(json_request_body(&json!({
+                "model": "qwen3",
+                "verbose": false
+            }))))
+            .unwrap(),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json["details"]["family"], json!("qwen"));
+}
+
+#[tokio::test]
+async fn ollama_show_rejects_verbose_true_until_supported() {
+    let app = build_router(llama_cpp_state());
+    let (status, json) = json_response(
+        &app,
+        Request::builder()
+            .method("POST")
+            .uri("/api/show")
+            .header("content-type", "application/json")
+            .body(Body::from(json_request_body(&json!({
+                "model": "qwen3",
+                "verbose": true
+            }))))
+            .unwrap(),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_unsupported_parameter_response(&json, "`verbose`");
+}
+
+#[tokio::test]
+async fn ollama_show_rejects_unknown_fields() {
+    let app = build_router(llama_cpp_state());
+    let (status, json) = json_response(
+        &app,
+        Request::builder()
+            .method("POST")
+            .uri("/api/show")
+            .header("content-type", "application/json")
+            .body(Body::from(json_request_body(&json!({
+                "model": "qwen3",
+                "license": "unsupported"
+            }))))
+            .unwrap(),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_unsupported_parameter_response(&json, "`license`");
+}
+
+#[tokio::test]
 async fn ollama_ps_lists_current_model_as_loaded() {
     let app = build_router(llama_cpp_state());
     let (status, json) = json_response(

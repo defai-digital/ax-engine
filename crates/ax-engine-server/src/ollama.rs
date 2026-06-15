@@ -154,7 +154,9 @@ pub(crate) struct OllamaShowRequest {
     #[serde(default)]
     model: Option<String>,
     #[serde(default)]
-    _verbose: Option<bool>,
+    verbose: Option<bool>,
+    #[serde(default, flatten)]
+    unsupported: BTreeMap<String, Value>,
 }
 
 #[derive(Debug, Serialize)]
@@ -262,6 +264,10 @@ pub(crate) async fn ollama_show(
     Json(request): Json<OllamaShowRequest>,
 ) -> Result<Json<OllamaShowResponse>, (StatusCode, Json<ErrorResponse>)> {
     let live = state.snapshot();
+    reject_unsupported_fields(&request.unsupported, "request")?;
+    if request.verbose == Some(true) {
+        reject_unused_field(request.verbose, "verbose")?;
+    }
     validate_openai_request(&live, request.model.as_deref())?;
     let tag = ollama_model_tag(&live);
     Ok(Json(OllamaShowResponse {

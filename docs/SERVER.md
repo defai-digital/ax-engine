@@ -154,7 +154,9 @@ AX also exposes a focused Ollama-shaped adapter for the loaded local model:
   AX model.
 - `POST /api/show`, `GET /api/ps`, and `GET /api/version` provide the
   Ollama-style metadata/readiness probes common clients use before issuing a
-  chat request.
+  chat request. `/api/show` accepts `verbose=false` as a probe shape, but
+  `verbose=true` fails closed until AX can return the larger verbose Ollama
+  metadata payload.
 - `POST /api/chat` accepts Ollama text `messages`, `tools`, `format`, `stream`,
   and common `options` fields. It maps them onto the same chat builder used by
   `/v1/chat/completions`, so supported Qwen/Gemma templates and tool-call
