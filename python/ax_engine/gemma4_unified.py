@@ -350,8 +350,9 @@ def _load_config(model_dir: Path) -> _Gemma4UnifiedConfig:
         boi_token_id=_required_int(model_config, "boi_token_id"),
         eoi_token_id=_required_int(model_config, "eoi_token_id"),
         boa_token_id=_required_int(model_config, "boa_token_id"),
-        eoa_token_id=_optional_int(model_config, "eoa_token_index")
-        or _required_int(model_config, "eoa_token_id"),
+        eoa_token_id=_optional_int_or_required(
+            model_config, "eoa_token_index", "eoa_token_id"
+        ),
         do_convert_rgb=bool(image_config.get("do_convert_rgb", True)),
         do_resize=bool(image_config.get("do_resize", True)),
         do_rescale=bool(image_config.get("do_rescale", True)),
@@ -1077,6 +1078,15 @@ def _required_int(config: dict[str, Any], key: str) -> int:
     if value is None:
         raise ValueError(f"missing Gemma4 unified config field {key}")
     return value
+
+
+def _optional_int_or_required(
+    config: dict[str, Any], optional_key: str, required_key: str
+) -> int:
+    value = _optional_int(config, optional_key)
+    if value is not None:
+        return value
+    return _required_int(config, required_key)
 
 
 def _optional_int(config: dict[str, Any], key: str) -> int | None:

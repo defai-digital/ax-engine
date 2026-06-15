@@ -300,6 +300,21 @@ class Gemma4UnifiedImagePreprocessTests(unittest.TestCase):
 
 
 class Gemma4UnifiedConfigValidationTests(unittest.TestCase):
+    def test_load_config_accepts_zero_eoa_token_index(self) -> None:
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            model_dir = Path(tmp)
+            write_tiny_config(model_dir)
+            config_path = model_dir / "config.json"
+            model_config = json.loads(config_path.read_text())
+            model_config["eoa_token_index"] = 0
+            del model_config["eoa_token_id"]
+            config_path.write_text(json.dumps(model_config))
+
+            config = module._load_config(model_dir)
+
+        self.assertEqual(config.eoa_token_id, 0)
+
     def test_load_config_rejects_non_positive_image_std_when_normalizing(self) -> None:
         # Zero divides every pixel into inf/NaN, a negative channel silently
         # sign-flips pixels, a subnormal-for-f32 value (1e-40) passes a naive
