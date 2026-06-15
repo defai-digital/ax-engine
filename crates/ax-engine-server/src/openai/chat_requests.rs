@@ -662,34 +662,25 @@ fn render_qwen_function_tool_contract_system_message(
     tools: &Value,
     tool_choice: Option<&Value>,
 ) -> Option<String> {
-    let mut message =
-        String::from("# Tools\n\nYou have access to the following functions:\n\n<tools>");
-    for tool in render_xml_tool_blocks(tools) {
+    let mut message = String::from(
+        "# Tools\n\n\
+         You have access to these functions. Schemas are compact OpenAI tool JSON objects:\n\
+         <tools>\n",
+    );
+    for line in render_json_tool_lines(tools) {
+        message.push_str(&line);
         message.push('\n');
-        message.push_str(&tool);
     }
-    message.push_str("\n</tools>");
+    message.push_str("</tools>");
     message.push_str(
-        "\n\nIf you choose to call a function ONLY reply in the following format with NO suffix:\n\n\
+        "\n\nCall a function only when needed. Reply with tool calls in this format and no suffix:\n\
          <tool_call>\n\
-         <function=example_function_name>\n\
-         <parameter=example_parameter_1>\n\
-         value_1\n\
-         </parameter>\n\
-         <parameter=example_parameter_2>\n\
-         This is the value for the second parameter\n\
-         that can span\n\
-         multiple lines\n\
+         <function=name>\n\
+         <parameter=key>\n\
+         value\n\
          </parameter>\n\
          </function>\n\
-         </tool_call>\n\n\
-         <IMPORTANT>\n\
-         Reminder:\n\
-         - Function calls MUST follow the specified format: an inner <function=...></function> block must be nested within <tool_call></tool_call> XML tags\n\
-         - Required parameters MUST be specified\n\
-         - You may provide optional reasoning for your function call in natural language BEFORE the function call, but NOT after\n\
-         - If there is no function call available, answer the question like normal with your current knowledge and do not tell the user about function calls\n\
-         </IMPORTANT>",
+         </tool_call>",
     );
 
     if let Some(choice) = tool_choice
@@ -707,31 +698,25 @@ fn render_qwen_coder_tool_contract_system_message(
     tools: &Value,
     tool_choice: Option<&Value>,
 ) -> Option<String> {
-    let mut message = String::from("# Tools\n\nYou have access to the following tools:\n\n<tools>");
-    for tool in render_xml_tool_blocks(tools) {
+    let mut message = String::from(
+        "# Tools\n\n\
+         You have access to these tools. Schemas are compact OpenAI tool JSON objects:\n\
+         <tools>\n",
+    );
+    for line in render_json_tool_lines(tools) {
+        message.push_str(&line);
         message.push('\n');
-        message.push_str(&tool);
     }
-    message.push_str("\n</tools>");
+    message.push_str("</tools>");
     message.push_str(
-        "\n\nIf you choose to call a tool ONLY reply in the following format with NO suffix:\n\n\
+        "\n\nCall a tool only when needed. Reply with tool calls in this format and no suffix:\n\
          <tool_call>\n\
-         <function=example_function_name>\n\
-         <parameter=example_parameter_1>\n\
-         value_1\n\
-         </parameter>\n\
-         <parameter=example_parameter_2>\n\
-         value_2\n\
+         <function=name>\n\
+         <parameter=key>\n\
+         value\n\
          </parameter>\n\
          </function>\n\
-         </tool_call>\n\n\
-         <IMPORTANT>\n\
-         Reminder:\n\
-         - Function calls MUST follow the specified format: the tool calling block MUST begin with an opening <tool_call> tag and end with a closing </tool_call> tag.\n\
-         - Required parameters MUST be specified\n\
-         - You may provide optional reasoning for your function call in natural language BEFORE the function call, but NOT after\n\
-         - If there is no function call available, answer the question like normal with your current knowledge and do not tell the user about function calls\n\
-         </IMPORTANT>",
+         </tool_call>",
     );
 
     if let Some(choice) = tool_choice
@@ -787,74 +772,6 @@ fn render_json_tool_lines(tools: &Value) -> Vec<String> {
         Value::Array(items) => items.iter().map(compact_json).collect(),
         value => vec![compact_json(value)],
     }
-}
-
-fn render_xml_tool_blocks(tools: &Value) -> Vec<String> {
-    match tools {
-        Value::Array(items) => items.iter().filter_map(render_tool_block).collect(),
-        value => render_tool_block(value).into_iter().collect(),
-    }
-}
-
-fn render_tool_block(tool: &Value) -> Option<String> {
-    let function = tool
-        .get("function")
-        .and_then(Value::as_object)
-        .or_else(|| tool.as_object())?;
-    let name = function.get("name")?.as_str()?;
-    let mut rendered = String::new();
-    rendered.push_str("<function>\n<name>");
-    rendered.push_str(&escape_xml_text(name));
-    rendered.push_str("</name>");
-    if let Some(description) = function.get("description").and_then(Value::as_str) {
-        rendered.push_str("\n<description>");
-        rendered.push_str(&escape_xml_text(description.trim()));
-        rendered.push_str("</description>");
-    }
-    rendered.push_str("\n<parameters>");
-    if let Some(parameters) = function.get("parameters").and_then(Value::as_object) {
-        if let Some(properties) = parameters.get("properties").and_then(Value::as_object) {
-            for (param_name, param_fields) in properties {
-                rendered.push_str("\n<parameter>\n<name>");
-                rendered.push_str(&escape_xml_text(param_name));
-                rendered.push_str("</name>");
-                if let Some(param_type) = param_fields.get("type") {
-                    rendered.push_str("\n<type>");
-                    rendered.push_str(&escape_xml_text(&stringify_json_scalar(param_type)));
-                    rendered.push_str("</type>");
-                }
-                if let Some(description) = param_fields.get("description").and_then(Value::as_str) {
-                    rendered.push_str("\n<description>");
-                    rendered.push_str(&escape_xml_text(description.trim()));
-                    rendered.push_str("</description>");
-                }
-                if let Some(param_fields) = param_fields.as_object() {
-                    for (key, value) in param_fields {
-                        if matches!(key.as_str(), "name" | "type" | "description") {
-                            continue;
-                        }
-                        render_extra_xml_field(&mut rendered, key, value);
-                    }
-                }
-                rendered.push_str("</parameter>");
-            }
-        }
-        for (key, value) in parameters {
-            if matches!(key.as_str(), "type" | "properties") {
-                continue;
-            }
-            render_extra_xml_field(&mut rendered, key, value);
-        }
-    }
-    rendered.push_str("\n</parameters>");
-    for (key, value) in function {
-        if matches!(key.as_str(), "type" | "name" | "description" | "parameters") {
-            continue;
-        }
-        render_extra_xml_field(&mut rendered, key, value);
-    }
-    rendered.push_str("\n</function>");
-    Some(rendered)
 }
 
 fn render_assistant_tool_calls(value: &Value, style: QwenToolContractStyle) -> Option<String> {
@@ -945,17 +862,6 @@ fn render_qwen_xml_tool_call(name: &str, arguments: &Value) -> String {
     }
     rendered.push_str("\n</function>\n</tool_call>");
     rendered
-}
-
-fn render_extra_xml_field(rendered: &mut String, key: &str, value: &Value) {
-    rendered.push('\n');
-    rendered.push('<');
-    rendered.push_str(&escape_xml_text(key));
-    rendered.push('>');
-    rendered.push_str(&escape_xml_text(&stringify_json_scalar(value)));
-    rendered.push_str("</");
-    rendered.push_str(&escape_xml_text(key));
-    rendered.push('>');
 }
 
 fn stringify_json_scalar(value: &Value) -> String {

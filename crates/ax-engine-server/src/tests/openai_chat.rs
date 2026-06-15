@@ -87,15 +87,14 @@ fn openai_chat_prompt_renderer_injects_qwen_tool_contract() {
     )
     .expect("qwen tool prompt should render");
 
-    assert!(
-        prompt.contains("<|im_start|>system\n# Tools\n\nYou have access to the following tools:")
-    );
-    assert!(prompt.contains("# Tools\n\nYou have access to the following tools:"));
-    assert!(prompt.contains("<function>\n<name>read_file</name>"));
-    assert!(prompt.contains("<description>Read a workspace file</description>"));
-    assert!(prompt.contains("<parameter>\n<name>path</name>\n<type>string</type>"));
-    assert!(prompt.contains("<function=example_function_name>"));
-    assert!(prompt.contains("If you choose to call a tool ONLY reply"));
+    assert!(prompt.contains("<|im_start|>system\n# Tools\n\nYou have access to these tools."));
+    assert!(prompt.contains("Schemas are compact OpenAI tool JSON objects:"));
+    assert!(prompt.contains("\"name\":\"read_file\""));
+    assert!(prompt.contains("\"description\":\"Read a workspace file\""));
+    assert!(!prompt.contains("<function>\n<name>read_file</name>"));
+    assert!(prompt.contains("<function=name>"));
+    assert!(prompt.contains("<parameter=key>"));
+    assert!(prompt.contains("Call a tool only when needed."));
     assert!(prompt.contains("<|im_start|>user\nRead README.md<|im_end|>"));
     assert!(prompt.ends_with(chat::QWEN_CHATML_ASSISTANT_GENERATION_PROMPT_NO_THINK));
 }
@@ -128,13 +127,14 @@ fn openai_chat_prompt_renderer_uses_qwen36_function_xml_tool_contract() {
     )
     .expect("qwen3.6 tool prompt should render");
 
-    assert!(prompt.contains("# Tools\n\nYou have access to the following functions:"));
-    assert!(prompt.contains("<function>\n<name>read_file</name>"));
-    assert!(prompt.contains("<description>Read a workspace file</description>"));
-    assert!(prompt.contains("<parameter>\n<name>path</name>\n<type>string</type>"));
-    assert!(prompt.contains("If you choose to call a function ONLY reply"));
-    assert!(prompt.contains("<function=example_function_name>"));
-    assert!(prompt.contains("an inner <function=...></function> block must be nested"));
+    assert!(prompt.contains("# Tools\n\nYou have access to these functions."));
+    assert!(prompt.contains("Schemas are compact OpenAI tool JSON objects:"));
+    assert!(prompt.contains("\"name\":\"read_file\""));
+    assert!(prompt.contains("\"description\":\"Read a workspace file\""));
+    assert!(!prompt.contains("<function>\n<name>read_file</name>"));
+    assert!(prompt.contains("Call a function only when needed."));
+    assert!(prompt.contains("<function=name>"));
+    assert!(prompt.contains("<parameter=key>"));
     assert!(prompt.contains("<|im_start|>user\nRead README.md<|im_end|>"));
     assert!(prompt.ends_with(chat::QWEN_CHATML_ASSISTANT_GENERATION_PROMPT));
 }
@@ -496,6 +496,33 @@ async fn openai_chat_request_marks_tool_and_structured_workload_metadata() {
 
     assert!(hints.tool_call);
     assert!(hints.structured_output);
+    fs::remove_dir_all(artifact_dir).expect("artifact dir should clean up");
+}
+
+#[tokio::test]
+async fn openai_chat_request_rejects_context_length_exceeded_before_generation() {
+    let artifact_dir = minimal_tokenizer_artifact("native-openai-chat-context-preflight");
+    let state = native_mlx_openai_builder_state("qwen3", &artifact_dir);
+    let live = state.snapshot();
+    let request: OpenAiChatCompletionHttpRequest = serde_json::from_value(json!({
+        "messages": [{"role": "user", "content": "Hello"}],
+        "input_tokens": vec![1; 16 * 1024],
+        "max_tokens": 1
+    }))
+    .expect("sample chat request should deserialize");
+
+    let error = match build_openai_chat_request(&live, request) {
+        Ok(_) => panic!("context-overflowing chat request should fail before generation"),
+        Err(error) => error,
+    };
+
+    assert_eq!(error.0, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        error.1.0.error.code.as_deref(),
+        Some("context_length_exceeded")
+    );
+    assert!(error.1.0.error.message.contains("16385 tokens"));
+    assert!(error.1.0.error.message.contains("context length 16384"));
     fs::remove_dir_all(artifact_dir).expect("artifact dir should clean up");
 }
 

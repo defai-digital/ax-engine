@@ -120,7 +120,9 @@ than silently dropped.
   Qwen3 dense uses the JSON
   `<tool_call>{"name": ..., "arguments": ...}</tool_call>` contract,
   Qwen3.5/Qwen3.6 use the function-XML contract, and Qwen3-Coder-Next uses the
-  Qwen3-Coder XML contract.
+  Qwen3-Coder XML contract. For Qwen XML-output families, AX keeps the output
+  contract XML-compatible while rendering tool schemas as compact OpenAI JSON
+  objects to avoid inflating large tool sets.
   Gemma 4 text chat uses the Ollama/Gemma 4 `<|tool>`, `<|tool_call>`, and
   `<|tool_response>` DSL. Gemma 4 tools still fail closed for delegated,
   pre-tokenized, and inline-media chat requests because AX cannot safely inject
@@ -128,6 +130,11 @@ than silently dropped.
   Streaming requests return buffered SSE chunks with `delta.tool_calls` once the
   tool call is complete. Bare JSON answers are never reinterpreted as tool
   calls.
+- **Context limit preflight** (native MLX OpenAI text/chat): AX tokenizes the
+  rendered prompt before generation and rejects
+  `prompt_tokens + max_tokens > context_length` with
+  `400 context_length_exceeded`. This catches oversized tool prompts before they
+  reach the runtime terminate guard.
 
 ## Examples
 

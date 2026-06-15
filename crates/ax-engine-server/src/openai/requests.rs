@@ -11,6 +11,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::app_state::LiveState;
 use crate::chat;
 use crate::errors::{ErrorResponse, error_response};
+use crate::metadata::context_length;
 use crate::openai::chat_requests::{build_llama_cpp_chat_messages, build_mlx_lm_chat_messages};
 use crate::openai::schema::{
     OpenAiChatCompletionHttpRequest, OpenAiCompletionHttpRequest, OpenAiPromptInput,
@@ -440,6 +441,7 @@ fn build_openai_generate_request(
 ) -> Result<OpenAiBuiltRequest, (StatusCode, Json<ErrorResponse>)> {
     let (input_tokens, input_text) =
         tokenize_native_mlx_text_input(live, input_tokens, input_text)?;
+    preflight_context_length(live, &input_tokens, max_output_tokens)?;
 
     Ok(OpenAiBuiltRequest {
         generate_request: build_generate_request_internal(
@@ -457,6 +459,32 @@ fn build_openai_generate_request(
         stream: payload.stream,
         response_options,
     })
+}
+
+fn preflight_context_length(
+    live: &LiveState,
+    input_tokens: &[u32],
+    max_output_tokens: u32,
+) -> Result<(), (StatusCode, Json<ErrorResponse>)> {
+    if input_tokens.is_empty() {
+        return Ok(());
+    }
+    let context_length = context_length(live);
+    let requested_tokens = input_tokens
+        .len()
+        .saturating_add(max_output_tokens as usize);
+    if requested_tokens <= context_length as usize {
+        return Ok(());
+    }
+
+    Err(error_response(
+        StatusCode::BAD_REQUEST,
+        "context_length_exceeded",
+        format!(
+            "request requires {requested_tokens} tokens ({prompt_tokens} prompt + {max_output_tokens} max output), exceeding model context length {context_length}",
+            prompt_tokens = input_tokens.len(),
+        ),
+    ))
 }
 
 /// `(tokens, optional decoded text)` on success, or an HTTP error response.

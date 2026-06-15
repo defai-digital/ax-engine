@@ -54,8 +54,10 @@ prompting follows the matching Ollama template for the selected model family:
 Qwen3 dense uses the JSON
 `<tool_call>{"name": ..., "arguments": ...}</tool_call>` contract,
 Qwen3.5/Qwen3.6 use the function-XML contract, and Qwen3-Coder-Next uses the
-Qwen3-Coder XML contract. Native Gemma 4 text chat uses the Ollama/Gemma 4
-`<|tool>`, `<|tool_call>`, and `<|tool_response>` DSL.
+Qwen3-Coder XML contract. For Qwen XML-output families, AX keeps the output
+contract XML-compatible while rendering tool schemas as compact OpenAI JSON
+objects to avoid inflating large tool sets. Native Gemma 4 text chat uses the
+Ollama/Gemma 4 `<|tool>`, `<|tool_call>`, and `<|tool_response>` DSL.
 
 AX Engine should remain an inference runtime. Tool execution, permissions,
 network effects, and workflow orchestration belong to caller applications or a
@@ -72,3 +74,8 @@ buffered OpenAI-shaped SSE chunks with `delta.tool_calls`; they do not stream
 the tool call token-by-token yet. Integrations such as `ax-code` should treat
 these fields as authoritative instead of assuming generic OpenAI-compatible
 providers support tool calls.
+
+Native MLX OpenAI text/chat requests are tokenized before generation and checked
+against the advertised `context_length`. If `prompt_tokens + max_tokens` would
+exceed the model context, AX returns `400 context_length_exceeded` instead of
+starting a request that cannot terminate.

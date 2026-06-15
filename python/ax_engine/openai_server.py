@@ -208,37 +208,25 @@ def render_qwen_function_tool_contract_system_message(tools: Any, tool_choice: A
     lines = [
         "# Tools",
         "",
-        "You have access to the following functions:",
-        "",
+        "You have access to these functions. Schemas are compact OpenAI tool JSON objects:",
         "<tools>",
     ]
-    lines.extend(render_xml_tool_blocks(tools))
+    if isinstance(tools, list):
+        lines.extend(json.dumps(tool, separators=(",", ":")) for tool in tools)
+    else:
+        lines.append(json.dumps(tools, separators=(",", ":")))
     lines.extend(
         [
             "</tools>",
             "",
-            "If you choose to call a function ONLY reply in the following format with NO suffix:",
-            "",
+            "Call a function only when needed. Reply with tool calls in this format and no suffix:",
             "<tool_call>",
-            "<function=example_function_name>",
-            "<parameter=example_parameter_1>",
-            "value_1",
-            "</parameter>",
-            "<parameter=example_parameter_2>",
-            "This is the value for the second parameter",
-            "that can span",
-            "multiple lines",
+            "<function=name>",
+            "<parameter=key>",
+            "value",
             "</parameter>",
             "</function>",
             "</tool_call>",
-            "",
-            "<IMPORTANT>",
-            "Reminder:",
-            "- Function calls MUST follow the specified format: an inner <function=...></function> block must be nested within <tool_call></tool_call> XML tags",
-            "- Required parameters MUST be specified",
-            "- You may provide optional reasoning for your function call in natural language BEFORE the function call, but NOT after",
-            "- If there is no function call available, answer the question like normal with your current knowledge and do not tell the user about function calls",
-            "</IMPORTANT>",
         ]
     )
     if tool_choice_forces_tool_call(tool_choice):
@@ -252,35 +240,25 @@ def render_qwen_coder_tool_contract_system_message(tools: Any, tool_choice: Any)
     lines = [
         "# Tools",
         "",
-        "You have access to the following tools:",
-        "",
+        "You have access to these tools. Schemas are compact OpenAI tool JSON objects:",
         "<tools>",
     ]
-    lines.extend(render_xml_tool_blocks(tools))
+    if isinstance(tools, list):
+        lines.extend(json.dumps(tool, separators=(",", ":")) for tool in tools)
+    else:
+        lines.append(json.dumps(tools, separators=(",", ":")))
     lines.extend(
         [
             "</tools>",
             "",
-            "If you choose to call a tool ONLY reply in the following format with NO suffix:",
-            "",
+            "Call a tool only when needed. Reply with tool calls in this format and no suffix:",
             "<tool_call>",
-            "<function=example_function_name>",
-            "<parameter=example_parameter_1>",
-            "value_1",
-            "</parameter>",
-            "<parameter=example_parameter_2>",
-            "value_2",
+            "<function=name>",
+            "<parameter=key>",
+            "value",
             "</parameter>",
             "</function>",
             "</tool_call>",
-            "",
-            "<IMPORTANT>",
-            "Reminder:",
-            "- Function calls MUST follow the specified format: the tool calling block MUST begin with an opening <tool_call> tag and end with a closing </tool_call> tag.",
-            "- Required parameters MUST be specified",
-            "- You may provide optional reasoning for your function call in natural language BEFORE the function call, but NOT after",
-            "- If there is no function call available, answer the question like normal with your current knowledge and do not tell the user about function calls",
-            "</IMPORTANT>",
         ]
     )
     if tool_choice_forces_tool_call(tool_choice):
