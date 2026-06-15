@@ -569,6 +569,77 @@ async fn ollama_chat_rejects_unknown_top_level_fields() {
 }
 
 #[tokio::test]
+async fn ollama_chat_rejects_tools_when_model_does_not_advertise_tool_capability() {
+    let app = build_router(llama_cpp_state());
+    let (status, json) = json_response(
+        &app,
+        Request::builder()
+            .method("POST")
+            .uri("/api/chat")
+            .header("content-type", "application/json")
+            .body(Body::from(json_request_body(&json!({
+                "model": "qwen3",
+                "stream": false,
+                "messages": [{"role": "user", "content": "hello"}],
+                "tools": [{
+                    "type": "function",
+                    "function": {
+                        "name": "lookup",
+                        "parameters": {"type": "object"}
+                    }
+                }]
+            }))))
+            .unwrap(),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_unsupported_parameter_response(&json, "`tools`");
+}
+
+#[tokio::test]
+async fn ollama_chat_allows_empty_tools_without_claiming_tool_contract() {
+    let (llama_server_url, llama_cpp_server_handle) = spawn_llama_cpp_completion_server(
+        json!({
+            "choices": [{
+                "message": {"content": "chat reply"},
+                "finish_reason": "stop"
+            }],
+            "usage": {"prompt_tokens": 4, "completion_tokens": 2, "total_tokens": 6}
+        })
+        .to_string(),
+        |payload| {
+            assert_eq!(
+                payload.get("messages"),
+                Some(&json!([{"role": "user", "content": "hello"}]))
+            );
+        },
+    );
+    let app = build_router(llama_cpp_server_state(llama_server_url));
+    let (status, json) = json_response(
+        &app,
+        Request::builder()
+            .method("POST")
+            .uri("/api/chat")
+            .header("content-type", "application/json")
+            .body(Body::from(json_request_body(&json!({
+                "model": "qwen3",
+                "stream": false,
+                "messages": [{"role": "user", "content": "hello"}],
+                "tools": []
+            }))))
+            .unwrap(),
+    )
+    .await;
+    llama_cpp_server_handle
+        .join()
+        .expect("llama.cpp server thread should finish");
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json["message"]["content"], json!("chat reply"));
+}
+
+#[tokio::test]
 async fn ollama_chat_rejects_unknown_message_fields() {
     let app = build_router(llama_cpp_state());
     let (status, json) = json_response(

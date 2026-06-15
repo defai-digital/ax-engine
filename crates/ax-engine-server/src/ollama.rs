@@ -311,6 +311,7 @@ pub(crate) async fn ollama_chat(
 ) -> Result<Response, (StatusCode, Json<ErrorResponse>)> {
     let live = state.snapshot();
     validate_openai_request(&live, request.model.as_deref())?;
+    reject_ollama_tools_without_support(&live, request.tools.as_ref())?;
     let stream = request.stream;
     let openai_request = ollama_chat_to_openai_request(request)?;
     let response = run_ollama_chat_completion(state, live, openai_request).await?;
@@ -457,6 +458,32 @@ fn keep_alive_requests_unload(value: Option<&Value>) -> bool {
             "0" | "0s" | "0m" | "0h"
         ),
         _ => false,
+    }
+}
+
+fn reject_ollama_tools_without_support(
+    live: &LiveState,
+    tools: Option<&Value>,
+) -> Result<(), (StatusCode, Json<ErrorResponse>)> {
+    if !ollama_value_is_present(tools) || ollama_tools_supported(live) {
+        return Ok(());
+    }
+    Err(error_response(
+        StatusCode::BAD_REQUEST,
+        "unsupported_parameter",
+        "Ollama-compatible field `tools` is not supported by the selected AX Engine backend/model yet"
+            .to_string(),
+    ))
+}
+
+fn ollama_value_is_present(value: Option<&Value>) -> bool {
+    match value {
+        None | Some(Value::Null) => false,
+        Some(Value::String(value)) => !value.trim().is_empty(),
+        Some(Value::Array(values)) => !values.is_empty(),
+        Some(Value::Object(object)) => !object.is_empty(),
+        Some(Value::Bool(value)) => *value,
+        Some(Value::Number(number)) => number.as_u64().unwrap_or(1) != 0,
     }
 }
 
