@@ -19,6 +19,7 @@ mod metadata;
 mod metrics;
 mod model_load;
 mod multimodal;
+mod ollama;
 mod openai;
 mod routes;
 mod tasks;

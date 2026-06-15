@@ -19,6 +19,7 @@ use super::generation::streaming::generate_stream;
 use super::metadata::{health, models, runtime_info};
 use super::metrics::prometheus_metrics;
 use super::model_load::load_model;
+use super::ollama::{ollama_chat, ollama_generate, ollama_tags};
 use super::openai::chat::openai_chat_completions;
 use super::openai::compat::{apply_template, detokenize, props, slots, tokenize};
 use super::openai::completions::openai_completions;
@@ -38,6 +39,9 @@ pub(crate) fn build_router(state: AppState) -> Router {
         .route("/metrics", get(prometheus_metrics))
         .route("/v1/runtime", get(runtime_info))
         .route("/v1/models", get(models))
+        .route("/api/tags", get(ollama_tags))
+        .route("/api/chat", post(ollama_chat))
+        .route("/api/generate", post(ollama_generate))
         .route("/props", get(props))
         .route("/slots", get(slots))
         .route("/tokenize", post(tokenize))

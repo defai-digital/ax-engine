@@ -17,6 +17,8 @@ The current preview server is intentionally narrow:
   integration
 - OpenAI-shaped `/v1/embeddings` response envelopes for embedding-capable
   repo-owned MLX sessions
+- Ollama-shaped `/api/tags`, `/api/chat`, and `/api/generate` adapters for
+  local clients that expect Ollama HTTP envelopes
 - stepwise request lifecycle endpoints that mirror the SDK preview contract for
   repo-owned MLX sessions plus the llama.cpp delegated path
 - optional API key authentication for HTTP API routes
@@ -36,6 +38,9 @@ Current preview endpoints:
 - `GET /metrics`
 - `GET /v1/runtime`
 - `GET /v1/models`
+- `GET /api/tags`
+- `POST /api/chat`
+- `POST /api/generate`
 - `POST /v1/embeddings`
 - `POST /v1/completions`
 - `POST /v1/chat/completions`
@@ -136,6 +141,30 @@ than silently dropped.
   `prompt_tokens + max_tokens > context_length` with
   `400 context_length_exceeded`. This catches oversized tool prompts before they
   reach the runtime terminate guard.
+
+## Ollama Surface
+
+AX also exposes a focused Ollama-shaped adapter for the loaded local model:
+
+- `GET /api/tags` returns an Ollama-style `models` list containing the current
+  AX model.
+- `POST /api/chat` accepts Ollama text `messages`, `tools`, `format`, `stream`,
+  and common `options` fields. It maps them onto the same chat builder used by
+  `/v1/chat/completions`, so supported Qwen/Gemma templates and tool-call
+  parsing stay identical across the OpenAI and Ollama surfaces.
+- `POST /api/generate` accepts Ollama `prompt`, optional `system`, `format`,
+  `stream`, and common `options` fields, then maps them onto the same completion
+  builder used by `/v1/completions`.
+
+Ollama `stream` defaults to `true`, matching Ollama's API. AX returns
+newline-delimited JSON with `application/x-ndjson`; the first chunk carries the
+buffered text or tool-call message and the final chunk carries `done=true` plus
+available token counts. This is an Ollama envelope compatibility layer, not a
+full Ollama daemon: model pull/push/create/copy/delete, arbitrary Modelfile
+templates, stateful prompt context replay, `/api/generate` images, and other
+unsupported fields fail closed with `400 unsupported_parameter` instead of being
+ignored. Harmless Ollama lifecycle fields such as `keep_alive` are accepted as
+no-ops.
 
 ## Examples
 
