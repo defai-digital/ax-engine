@@ -178,7 +178,7 @@ fn json_hint_truthy(value: &serde_json::Value) -> bool {
     match value {
         serde_json::Value::Null => false,
         serde_json::Value::Bool(value) => *value,
-        serde_json::Value::Number(value) => value.as_u64().unwrap_or(1) != 0,
+        serde_json::Value::Number(value) => json_number_is_nonzero(value),
         serde_json::Value::String(value) => {
             let value = normalize_workload_hint_token(value);
             !matches!(value.as_str(), "" | "false" | "none" | "null" | "off" | "0")
@@ -186,6 +186,15 @@ fn json_hint_truthy(value: &serde_json::Value) -> bool {
         serde_json::Value::Array(values) => !values.is_empty(),
         serde_json::Value::Object(object) => !object.is_empty(),
     }
+}
+
+fn json_number_is_nonzero(value: &serde_json::Number) -> bool {
+    value
+        .as_i64()
+        .map(|value| value != 0)
+        .or_else(|| value.as_u64().map(|value| value != 0))
+        .or_else(|| value.as_f64().map(|value| value != 0.0))
+        .unwrap_or(true)
 }
 
 fn json_response_format_is_structured(value: &serde_json::Value) -> bool {
@@ -469,6 +478,37 @@ mod tests {
         let hints =
             RequestWorkloadHints::from_metadata(Some(r#"{"response_format":{"type":"text"}}"#));
         assert_eq!(hints, RequestWorkloadHints::default());
+    }
+
+    #[test]
+    fn workload_hint_truthiness_treats_numeric_zero_as_false() {
+        for value in [
+            r#"{"tools":0}"#,
+            r#"{"tools":0.0}"#,
+            r#"{"tool_choice":0}"#,
+            r#"{"tool_choice":0.0}"#,
+            r#"{"structured_output":0}"#,
+            r#"{"structured_output":0.0}"#,
+        ] {
+            let hints = RequestWorkloadHints::from_metadata(Some(value));
+            assert_eq!(hints, RequestWorkloadHints::default(), "{value}");
+        }
+
+        for value in [
+            r#"{"tools":-1}"#,
+            r#"{"tools":0.5}"#,
+            r#"{"tool_choice":-1}"#,
+            r#"{"tool_choice":0.5}"#,
+            r#"{"structured_output":-1}"#,
+            r#"{"structured_output":0.5}"#,
+        ] {
+            let hints = RequestWorkloadHints::from_metadata(Some(value));
+            if value.contains("structured_output") {
+                assert!(hints.structured_output, "{value}");
+            } else {
+                assert!(hints.tool_call, "{value}");
+            }
+        }
     }
 
     #[test]
