@@ -321,7 +321,7 @@ impl Session {
             stop_sequences.unwrap_or_default(),
             metadata,
         );
-        let state = match py.allow_threads(|| session.stream_generate_state(request)) {
+        let state = match py.detach(|| session.stream_generate_state(request)) {
             Ok(state) => state,
             Err(error) => {
                 if let Ok(mut slot) = self.inner.lock() {
@@ -495,7 +495,7 @@ impl Session {
         T: Send,
     {
         let inner = Arc::clone(&self.inner);
-        py.allow_threads(move || {
+        py.detach(move || {
             let mut slot = inner
                 .lock()
                 .map_err(|_| py_engine_state_error("session mutex poisoned"))?;
@@ -554,7 +554,7 @@ mod tests {
 
     fn init_python() {
         static PYTHON_INIT: Once = Once::new();
-        PYTHON_INIT.call_once(pyo3::prepare_freethreaded_python);
+        PYTHON_INIT.call_once(pyo3::Python::initialize);
     }
 
     fn llama_cpp_session() -> Session {
@@ -628,7 +628,7 @@ mod tests {
         )
         .expect("default llama.cpp session should build");
 
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let runtime = session.runtime(py).expect("runtime should serialize");
             let runtime = runtime.bind(py);
             assert_eq!(dict_string(runtime, "selected_backend"), "llama_cpp");
@@ -658,7 +658,7 @@ mod tests {
         )
         .expect("GGUF session should build");
 
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let runtime = session.runtime(py).expect("runtime should serialize");
             let runtime = runtime.bind(py);
             assert_eq!(dict_string(runtime, "selected_backend"), "llama_cpp");
@@ -688,7 +688,7 @@ mod tests {
         )
         .expect("mlx-lm delegated session should build");
 
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let runtime = session.runtime(py).expect("runtime should serialize");
             let runtime = runtime.bind(py);
             assert_eq!(dict_string(runtime, "selected_backend"), "mlx_lm_delegated");
@@ -887,7 +887,7 @@ sys.stdout.write(f"python::{prompt}")
     #[test]
     fn python_session_llama_cpp_generate_returns_text_fields() {
         init_python();
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let mut session = llama_cpp_session();
             let response = session
                 .generate(
@@ -934,7 +934,7 @@ sys.stdout.write(f"python::{prompt}")
                 .get_item("runtime")
                 .unwrap()
                 .unwrap()
-                .downcast_into::<PyDict>()
+                .cast_into::<PyDict>()
                 .unwrap();
             assert_eq!(dict_string(&runtime, "selected_backend"), "llama_cpp");
             assert_eq!(dict_string(&runtime, "support_tier"), "llama_cpp");
@@ -959,7 +959,7 @@ sys.stdout.write(f"python::{prompt}")
             },
         );
 
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let mut session = llama_cpp_server_session(server_url);
             let response = session
                 .generate(
@@ -1026,7 +1026,7 @@ sys.stdout.write(f"python::{prompt}")
             },
         );
 
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let mut session = llama_cpp_server_session(server_url.clone());
             let stream = session
                 .stream_generate(
@@ -1108,7 +1108,7 @@ sys.stdout.write(f"python::{prompt}")
             },
         );
 
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let mut session = llama_cpp_server_session(server_url.clone());
             let mut expected_session = sdk_llama_cpp_server_session(server_url);
             let expected_request_id = expected_session
@@ -1218,7 +1218,7 @@ sys.stdout.write(f"python::{prompt}")
             },
         );
 
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let mut session = llama_cpp_server_session(server_url.clone());
             let mut expected_session = sdk_llama_cpp_server_session(server_url);
             let first_request_id = session
@@ -1327,7 +1327,7 @@ sys.stdout.write(f"python::{prompt}")
             },
         );
 
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let mut session = llama_cpp_server_session(server_url.clone());
             let mut expected_session = sdk_llama_cpp_server_session(server_url);
             let request_id = session

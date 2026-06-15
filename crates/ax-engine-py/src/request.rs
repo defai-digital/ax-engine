@@ -84,13 +84,13 @@ fn py_any_to_json(value: &Bound<'_, PyAny>) -> PyResult<Value> {
     if let Ok(value) = value.extract::<String>() {
         return Ok(Value::String(value));
     }
-    if let Ok(dict) = value.downcast::<PyDict>() {
+    if let Ok(dict) = value.cast::<PyDict>() {
         return py_dict_to_json(dict);
     }
-    if let Ok(list) = value.downcast::<PyList>() {
+    if let Ok(list) = value.cast::<PyList>() {
         return py_iterable_to_json_array(list.iter());
     }
-    if let Ok(tuple) = value.downcast::<PyTuple>() {
+    if let Ok(tuple) = value.cast::<PyTuple>() {
         return py_iterable_to_json_array(tuple.iter());
     }
     Err(PyValueError::new_err(format!(
@@ -181,8 +181,8 @@ mod tests {
 
     #[test]
     fn multimodal_inputs_from_py_deserializes_gemma4_image_payload() {
-        pyo3::prepare_freethreaded_python();
-        Python::with_gil(|py| {
+        pyo3::Python::initialize();
+        Python::attach(|py| {
             let payload = PyDict::new(py);
             let root = PyDict::new(py);
             let image = PyDict::new(py);

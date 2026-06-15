@@ -714,7 +714,7 @@ fn has_observed_token_logprobs(logprobs: &[Option<f32>]) -> bool {
     logprobs.iter().any(Option::is_some)
 }
 
-fn enum_label<T>(py: Python<'_>, value: T) -> PyObject
+fn enum_label<T>(py: Python<'_>, value: T) -> Py<PyAny>
 where
     T: serde::Serialize,
 {
@@ -752,10 +752,10 @@ pub(crate) mod test_support {
         if value.is_none() {
             return Value::Null;
         }
-        if let Ok(dict) = value.downcast::<PyDict>() {
+        if let Ok(dict) = value.cast::<PyDict>() {
             return py_dict_to_json(dict);
         }
-        if let Ok(list) = value.downcast::<PyList>() {
+        if let Ok(list) = value.cast::<PyList>() {
             return Value::Array(list.iter().map(|item| py_any_to_json(&item)).collect());
         }
         if let Ok(string) = value.extract::<String>() {

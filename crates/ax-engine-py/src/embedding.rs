@@ -36,7 +36,7 @@ mod tests {
 
     fn init_python() {
         static PYTHON_INIT: Once = Once::new();
-        PYTHON_INIT.call_once(pyo3::prepare_freethreaded_python);
+        PYTHON_INIT.call_once(pyo3::Python::initialize);
     }
 
     #[test]
@@ -61,7 +61,7 @@ mod tests {
     fn floats_to_pybytes_uses_little_endian_f32_layout() {
         init_python();
 
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let bytes = floats_to_pybytes(py, &[1.0, -2.5]).expect("floats should encode");
             assert_eq!(
                 bytes.as_bytes(),

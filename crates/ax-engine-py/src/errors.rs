@@ -106,14 +106,14 @@ mod tests {
 
     fn init_python() {
         static PYTHON_INIT: Once = Once::new();
-        PYTHON_INIT.call_once(pyo3::prepare_freethreaded_python);
+        PYTHON_INIT.call_once(pyo3::Python::initialize);
     }
 
     #[test]
     fn python_engine_errors_use_custom_exception_hierarchy() {
         init_python();
 
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let backend_error = to_py_runtime_error(EngineSessionError::LlamaCpp(
                 LlamaCppBackendError::HttpStatus {
                     endpoint: "http://127.0.0.1:8081/completion".to_string(),
