@@ -24,6 +24,8 @@ def render_chat_prompt(
     tools: Any = None,
     tool_choice: Any = None,
 ) -> str:
+    if not isinstance(messages, list):
+        raise OpenAiShimError("chat.completions messages must be a list")
     if not messages:
         raise OpenAiShimError("chat.completions requires at least one message")
 
@@ -35,6 +37,8 @@ def render_chat_prompt(
     qwen_tool_style = qwen_tool_contract_style(model_id)
     rendered_messages: list[tuple[str, str]] = []
     for message in messages:
+        if not isinstance(message, dict):
+            raise OpenAiShimError("chat.completions message entries must be objects")
         role = str(message.get("role", "")).strip()
         if role not in ALLOWED_CHAT_ROLES:
             raise OpenAiShimError(
@@ -579,7 +583,9 @@ def _qwen_parameter_value_end(body: str, value_start: int) -> int:
 def prompt_to_tokens(prompt: Any, tokenizer: Any) -> tuple[list[int], str | None]:
     if isinstance(prompt, str):
         return list(tokenizer.encode(prompt).ids), prompt
-    if isinstance(prompt, list) and all(isinstance(token, int) for token in prompt):
+    if isinstance(prompt, list) and all(
+        isinstance(token, int) and not isinstance(token, bool) for token in prompt
+    ):
         return [int(token) for token in prompt], None
     raise OpenAiShimError("completions prompt must be a string or token id array")
 
@@ -654,7 +660,12 @@ def create_app(
     @app.post("/v1/completions")
     async def completions(request: Request) -> Any:
         payload = await request.json()
-        error = validate_model(payload, model_id) or require_max_tokens(payload)
+        error = (
+            validate_payload_object(payload)
+            or validate_model(payload, model_id)
+            or require_max_tokens(payload)
+            or validate_sampling_params(payload)
+        )
         if error is not None:
             return openai_error(*error)
 
@@ -710,7 +721,12 @@ def create_app(
     @app.post("/v1/chat/completions")
     async def chat_completions(request: Request) -> Any:
         payload = await request.json()
-        error = validate_model(payload, model_id) or require_max_tokens(payload)
+        error = (
+            validate_payload_object(payload)
+            or validate_model(payload, model_id)
+            or require_max_tokens(payload)
+            or validate_sampling_params(payload)
+        )
         if error is not None:
             return openai_error(*error)
 
@@ -839,6 +855,12 @@ def validate_model(payload: dict[str, Any], model_id: str) -> tuple[int, str] | 
     return None
 
 
+def validate_payload_object(payload: Any) -> tuple[int, str] | None:
+    if not isinstance(payload, dict):
+        return 400, "OpenAI-compatible MLX shim request body must be a JSON object"
+    return None
+
+
 def require_max_tokens(payload: dict[str, Any]) -> tuple[int, str] | None:
     max_tokens = payload.get("max_tokens")
     if (
@@ -847,6 +869,20 @@ def require_max_tokens(payload: dict[str, Any]) -> tuple[int, str] | None:
         or max_tokens <= 0
     ):
         return 400, "OpenAI-compatible MLX shim requires max_tokens > 0"
+    return None
+
+
+def validate_sampling_params(payload: dict[str, Any]) -> tuple[int, str] | None:
+    for key in ("temperature", "top_p", "repetition_penalty"):
+        value = payload.get(key)
+        if value is not None and (
+            isinstance(value, bool) or not isinstance(value, (int, float))
+        ):
+            return 400, f"OpenAI-compatible MLX shim requires {key} to be numeric"
+    for key in ("top_k", "seed"):
+        value = payload.get(key)
+        if value is not None and (isinstance(value, bool) or not isinstance(value, int)):
+            return 400, f"OpenAI-compatible MLX shim requires {key} to be an integer"
     return None
 
 

@@ -216,6 +216,17 @@ export interface OpenAiEmbeddingResponse {
   };
 }
 
+export interface LoadModelRequest {
+  model_id: string;
+  model_path: string;
+}
+
+export interface LoadModelResponse {
+  model_id: string;
+  state: "loaded" | string;
+  context_length: number;
+}
+
 export interface StreamEvent<T = unknown> {
   event: string;
   data: T;
@@ -224,8 +235,8 @@ export interface StreamEvent<T = unknown> {
 export interface HealthResponse {
   status: string;
   service: string;
-  model_id: string;
-  runtime: RuntimeInfo;
+  model_id?: string;
+  runtime?: RuntimeInfo;
 }
 
 export interface CapabilityReport {
@@ -513,6 +524,7 @@ export class AxEngineClient {
   completion(request: OpenAiCompletionRequest): Promise<OpenAiCompletionResponse>;
   chatCompletion(request: OpenAiChatCompletionRequest): Promise<OpenAiChatCompletionResponse>;
   embeddings(request: OpenAiEmbeddingRequest): Promise<OpenAiEmbeddingResponse>;
+  loadModel(request: LoadModelRequest): Promise<LoadModelResponse>;
   streamGenerate(
     request: PreviewGenerateRequest,
   ): AsyncGenerator<PreviewGenerateStreamEvent, void, void>;

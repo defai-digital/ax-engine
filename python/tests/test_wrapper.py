@@ -1187,6 +1187,28 @@ class WrapperContractTests(unittest.TestCase):
             replay_prompt,
         )
 
+    def test_openai_mlx_shim_rejects_boolean_prompt_tokens(self) -> None:
+        openai_server = importlib.import_module("ax_engine.openai_server")
+
+        class FakeTokenizer:
+            def encode(self, text: str) -> object:
+                return types.SimpleNamespace(ids=[ord(ch) for ch in text])
+
+        with self.assertRaisesRegex(openai_server.OpenAiShimError, "token id array"):
+            openai_server.prompt_to_tokens([True], FakeTokenizer())
+        with self.assertRaisesRegex(openai_server.OpenAiShimError, "token id array"):
+            openai_server.prompt_to_tokens([1, False], FakeTokenizer())
+
+    def test_openai_mlx_shim_rejects_malformed_chat_messages(self) -> None:
+        openai_server = importlib.import_module("ax_engine.openai_server")
+
+        with self.assertRaisesRegex(
+            openai_server.OpenAiShimError, "messages must be a list"
+        ):
+            openai_server.render_chat_prompt("not-a-list", "qwen3_dense")
+        with self.assertRaisesRegex(openai_server.OpenAiShimError, "message entries"):
+            openai_server.render_chat_prompt([1], "qwen3_dense")
+
     def test_openai_mlx_shim_rejects_boolean_max_tokens(self) -> None:
         openai_server = importlib.import_module("ax_engine.openai_server")
 
@@ -1198,6 +1220,56 @@ class WrapperContractTests(unittest.TestCase):
         self.assertEqual(
             openai_server.require_max_tokens({"max_tokens": False}),
             (400, "OpenAI-compatible MLX shim requires max_tokens > 0"),
+        )
+
+    def test_openai_mlx_shim_rejects_malformed_sampling_params(self) -> None:
+        openai_server = importlib.import_module("ax_engine.openai_server")
+
+        self.assertIsNone(
+            openai_server.validate_sampling_params(
+                {
+                    "temperature": 0.0,
+                    "top_p": 1.0,
+                    "repetition_penalty": 1,
+                    "top_k": 0,
+                    "seed": 42,
+                }
+            )
+        )
+        self.assertEqual(
+            openai_server.validate_sampling_params({"temperature": "cold"}),
+            (400, "OpenAI-compatible MLX shim requires temperature to be numeric"),
+        )
+        self.assertEqual(
+            openai_server.validate_sampling_params({"top_p": True}),
+            (400, "OpenAI-compatible MLX shim requires top_p to be numeric"),
+        )
+        self.assertEqual(
+            openai_server.validate_sampling_params({"top_k": 1.5}),
+            (400, "OpenAI-compatible MLX shim requires top_k to be an integer"),
+        )
+        self.assertEqual(
+            openai_server.validate_sampling_params({"seed": False}),
+            (400, "OpenAI-compatible MLX shim requires seed to be an integer"),
+        )
+
+    def test_openai_mlx_shim_rejects_non_object_payloads(self) -> None:
+        openai_server = importlib.import_module("ax_engine.openai_server")
+
+        self.assertIsNone(openai_server.validate_payload_object({"max_tokens": 1}))
+        self.assertEqual(
+            openai_server.validate_payload_object([]),
+            (
+                400,
+                "OpenAI-compatible MLX shim request body must be a JSON object",
+            ),
+        )
+        self.assertEqual(
+            openai_server.validate_payload_object("not-an-object"),
+            (
+                400,
+                "OpenAI-compatible MLX shim request body must be a JSON object",
+            ),
         )
 
     def test_openai_mlx_shim_finish_reason_maps_terminal_reasons(self) -> None:
