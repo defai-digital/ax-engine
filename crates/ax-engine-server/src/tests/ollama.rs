@@ -266,6 +266,56 @@ async fn ollama_generate_non_stream_returns_ollama_shape() {
 }
 
 #[tokio::test]
+async fn ollama_generate_defaults_to_ndjson_stream_shape() {
+    let (llama_server_url, llama_cpp_server_handle) = spawn_llama_cpp_completion_server(
+        json!({
+            "content": "streamed generated text",
+            "tokens": [12, 13, 14],
+            "stop": true,
+            "stop_type": "limit"
+        })
+        .to_string(),
+        |payload| {
+            assert_eq!(
+                payload.get("prompt"),
+                Some(&json!("hello streamed generate"))
+            );
+            assert_eq!(payload.get("stream"), Some(&Value::Bool(false)));
+        },
+    );
+    let app = build_router(llama_cpp_server_state(llama_server_url));
+    let (status, content_type, body) = text_response(
+        &app,
+        Request::builder()
+            .method("POST")
+            .uri("/api/generate")
+            .header("content-type", "application/json")
+            .body(Body::from(json_request_body(&json!({
+                "model": "qwen3",
+                "prompt": "hello streamed generate"
+            }))))
+            .unwrap(),
+    )
+    .await;
+    llama_cpp_server_handle
+        .join()
+        .expect("llama.cpp server thread should finish");
+
+    assert_eq!(status, StatusCode::OK);
+    assert!(content_type.starts_with("application/x-ndjson"));
+    let lines = body
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).expect("line should be json"))
+        .collect::<Vec<_>>();
+    assert_eq!(lines.len(), 2);
+    assert_eq!(lines[0]["response"], json!("streamed generated text"));
+    assert_eq!(lines[0]["done"], json!(false));
+    assert_eq!(lines[1]["done"], json!(true));
+    assert_eq!(lines[1]["done_reason"], json!("length"));
+    assert_eq!(lines[1]["eval_count"], json!(3));
+}
+
+#[tokio::test]
 async fn ollama_generate_empty_prompt_returns_load_or_unload_noop() {
     let app = build_router(llama_cpp_state());
     let (load_status, load_json) = json_response(
