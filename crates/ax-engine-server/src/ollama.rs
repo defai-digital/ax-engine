@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use ax_engine_sdk::{GenerateResponse, SelectedBackend};
@@ -46,7 +47,9 @@ pub(crate) struct OllamaChatRequest {
     #[serde(default)]
     format: Option<Value>,
     #[serde(default)]
-    _keep_alive: Option<Value>,
+    keep_alive: Option<Value>,
+    #[serde(default, flatten)]
+    unsupported: BTreeMap<String, Value>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -58,11 +61,15 @@ pub(crate) struct OllamaMessage {
     images: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     tool_calls: Option<Vec<OllamaToolCall>>,
+    #[serde(default, flatten, skip_serializing_if = "BTreeMap::is_empty")]
+    unsupported: BTreeMap<String, Value>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub(crate) struct OllamaToolCall {
     function: OllamaFunctionCall,
+    #[serde(default, flatten, skip_serializing_if = "BTreeMap::is_empty")]
+    unsupported: BTreeMap<String, Value>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -70,6 +77,8 @@ pub(crate) struct OllamaFunctionCall {
     name: String,
     #[serde(default)]
     arguments: Value,
+    #[serde(default, flatten, skip_serializing_if = "BTreeMap::is_empty")]
+    unsupported: BTreeMap<String, Value>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -92,6 +101,8 @@ pub(crate) struct OllamaOptions {
     seed: Option<u64>,
     #[serde(default)]
     stop: Option<OllamaStopInput>,
+    #[serde(default, flatten)]
+    unsupported: BTreeMap<String, Value>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -129,11 +140,13 @@ pub(crate) struct OllamaGenerateRequest {
     #[serde(default)]
     template: Option<String>,
     #[serde(default)]
-    _context: Option<Vec<u32>>,
+    context: Option<Vec<u32>>,
     #[serde(default)]
-    _raw: Option<bool>,
+    raw: Option<bool>,
     #[serde(default)]
     keep_alive: Option<Value>,
+    #[serde(default, flatten)]
+    unsupported: BTreeMap<String, Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -209,6 +222,7 @@ pub(crate) struct OllamaShowResponse {
     modelfile: String,
     parameters: String,
     template: String,
+    modified_at: String,
     details: OllamaModelDetails,
     model_info: Value,
     capabilities: Vec<&'static str>,
@@ -228,6 +242,7 @@ pub(crate) struct OllamaRunningModel {
     details: OllamaModelDetails,
     expires_at: String,
     size_vram: u64,
+    context_length: u32,
 }
 
 #[derive(Debug, Serialize)]
@@ -254,6 +269,7 @@ pub(crate) async fn ollama_show(
         modelfile: ollama_modelfile(&live),
         parameters: ollama_parameters(&live),
         template: ollama_template_hint(&live),
+        modified_at: rfc3339_now(),
         details: tag.details,
         model_info: ollama_model_info(&live),
         capabilities: ollama_capabilities(&live),
@@ -272,6 +288,7 @@ pub(crate) async fn ollama_ps(State(state): State<AppState>) -> Json<OllamaPsRes
             details: tag.details,
             expires_at: rfc3339_now(),
             size_vram: 0,
+            context_length: context_length(&live),
         }],
     })
 }
@@ -325,6 +342,9 @@ pub(crate) async fn ollama_generate(
 fn ollama_chat_to_openai_request(
     request: OllamaChatRequest,
 ) -> Result<OpenAiChatCompletionHttpRequest, (StatusCode, Json<ErrorResponse>)> {
+    reject_unsupported_fields(&request.unsupported, "request")?;
+    reject_unsupported_fields(&request.options.unsupported, "options")?;
+    let _ = request.keep_alive;
     let messages = request
         .messages
         .into_iter()
@@ -358,10 +378,13 @@ fn ollama_chat_to_openai_request(
 fn ollama_generate_to_openai_request(
     request: OllamaGenerateRequest,
 ) -> Result<OpenAiCompletionHttpRequest, (StatusCode, Json<ErrorResponse>)> {
+    reject_unsupported_fields(&request.unsupported, "request")?;
+    reject_unsupported_fields(&request.options.unsupported, "options")?;
     reject_unused_field(request.images, "images")?;
     reject_unused_field(request.template, "template")?;
+    reject_unused_field(request.context, "context")?;
     let prompt = match request.system {
-        Some(system) if !system.trim().is_empty() => {
+        Some(system) if request.raw != Some(true) && !system.trim().is_empty() => {
             format!("{}\n\n{}", system.trim(), request.prompt)
         }
         _ => request.prompt,
@@ -398,6 +421,9 @@ fn ollama_generate_lifecycle_response(
             .is_some_and(|system| !system.trim().is_empty())
         || request.images.is_some()
         || request.template.is_some()
+        || request.context.is_some()
+        || !request.unsupported.is_empty()
+        || !request.options.unsupported.is_empty()
     {
         return None;
     }
@@ -431,10 +457,21 @@ fn keep_alive_requests_unload(value: Option<&Value>) -> bool {
 fn ollama_message_to_openai_message(
     message: OllamaMessage,
 ) -> Result<OpenAiChatMessage, (StatusCode, Json<ErrorResponse>)> {
+    reject_unsupported_fields(&message.unsupported, "messages[]")?;
     reject_unused_field(message.images, "messages[].images")?;
-    let tool_calls = message
-        .tool_calls
-        .map(|calls| serde_json::to_value(calls).unwrap_or(Value::Null));
+    let tool_calls = match message.tool_calls {
+        Some(calls) => {
+            for call in &calls {
+                reject_unsupported_fields(&call.unsupported, "messages[].tool_calls[]")?;
+                reject_unsupported_fields(
+                    &call.function.unsupported,
+                    "messages[].tool_calls[].function",
+                )?;
+            }
+            Some(serde_json::to_value(calls).unwrap_or(Value::Null))
+        }
+        None => None,
+    };
     Ok(OpenAiChatMessage {
         role: message.role,
         content: Some(OpenAiChatContent::Text(message.content)),
@@ -572,6 +609,7 @@ fn ollama_chat_response_from_openai(
             content: choice.message.content,
             images: None,
             tool_calls,
+            unsupported: BTreeMap::new(),
         },
         done: true,
         done_reason: choice.finish_reason.and_then(ollama_done_reason),
@@ -613,7 +651,9 @@ fn ollama_tool_call(call: OpenAiToolCall) -> OllamaToolCall {
         function: OllamaFunctionCall {
             name: call.function.name,
             arguments,
+            unsupported: BTreeMap::new(),
         },
+        unsupported: BTreeMap::new(),
     }
 }
 
@@ -697,6 +737,25 @@ fn reject_unused_field<T>(
         format!(
             "Ollama-compatible field `{field}` is not supported by this AX Engine endpoint yet"
         ),
+    ))
+}
+
+fn reject_unsupported_fields(
+    fields: &BTreeMap<String, Value>,
+    scope: &'static str,
+) -> Result<(), (StatusCode, Json<ErrorResponse>)> {
+    let Some(field) = fields.keys().next() else {
+        return Ok(());
+    };
+    let name = if scope == "request" {
+        field.to_string()
+    } else {
+        format!("{scope}.{field}")
+    };
+    Err(error_response(
+        StatusCode::BAD_REQUEST,
+        "unsupported_parameter",
+        format!("Ollama-compatible field `{name}` is not supported by this AX Engine endpoint yet"),
     ))
 }
 
@@ -867,6 +926,7 @@ mod tests {
                 content: "hello".to_string(),
                 images: None,
                 tool_calls: None,
+                unsupported: BTreeMap::new(),
             }],
             stream: true,
             options: OllamaOptions {
@@ -880,7 +940,8 @@ mod tests {
                 json!([{"type":"function","function":{"name":"lookup","parameters":{"type":"object"}}}]),
             ),
             format: Some(json!("json")),
-            _keep_alive: None,
+            keep_alive: None,
+            unsupported: BTreeMap::new(),
         };
 
         let openai = ollama_chat_to_openai_request(request).expect("request should map");

@@ -160,8 +160,9 @@ AX also exposes a focused Ollama-shaped adapter for the loaded local model:
   `/v1/chat/completions`, so supported Qwen/Gemma templates and tool-call
   parsing stay identical across the OpenAI and Ollama surfaces.
 - `POST /api/generate` accepts Ollama `prompt`, optional `system`, `format`,
-  `stream`, and common `options` fields, then maps them onto the same completion
-  builder used by `/v1/completions`.
+  `stream`, `raw`, and common `options` fields, then maps them onto the same
+  completion builder used by `/v1/completions`. When `raw=true`, AX sends the
+  prompt without its simple system-prefix wrapper.
 
 OpenAI-compatible `/v1/*` remains the recommended baseline for coder engines
 and provider-neutral applications. The Ollama `/api/*` surface is a
@@ -173,11 +174,11 @@ newline-delimited JSON with `application/x-ndjson`; the first chunk carries the
 buffered text or tool-call message and the final chunk carries `done=true` plus
 available token counts. This is an Ollama envelope compatibility layer, not a
 full Ollama daemon: model pull/push/create/copy/delete, arbitrary Modelfile
-templates, stateful prompt context replay, `/api/generate` images, and other
-unsupported fields fail closed with `400 unsupported_parameter` instead of being
-ignored. Harmless Ollama lifecycle fields such as `keep_alive` are accepted as
-no-ops, and empty `/api/generate` prompts return Ollama-style load/unload no-op
-responses.
+templates, stateful prompt context replay, `/api/generate` images, Ollama
+thinking/logprob controls, and other unsupported fields fail closed with
+`400 unsupported_parameter` instead of being ignored. Harmless Ollama lifecycle
+fields such as `keep_alive` are accepted as no-ops, and empty `/api/generate`
+prompts return Ollama-style load/unload no-op responses.
 
 ## Examples
 

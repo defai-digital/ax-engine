@@ -301,6 +301,5 @@ fn max_output_tokens_live(live: &LiveState, context_length: u32) -> u32 {
     live.session_config
         .max_batch_tokens
         .min(context_length)
-        .min(OPENAI_SAFE_MAX_OUTPUT_TOKENS)
-        .max(1)
+        .clamp(1, OPENAI_SAFE_MAX_OUTPUT_TOKENS)
 }

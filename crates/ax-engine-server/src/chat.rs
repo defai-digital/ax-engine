@@ -277,6 +277,7 @@ fn render_prompt_with_template_for_model(
     )
 }
 
+#[cfg(test)]
 pub(crate) fn render_prompt_with_template(
     template: ChatPromptTemplate,
     messages: &[(String, String)],

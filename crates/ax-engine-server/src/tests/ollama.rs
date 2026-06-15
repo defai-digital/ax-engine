@@ -8,6 +8,23 @@ use super::fixtures::{
     spawn_llama_cpp_completion_server, text_response,
 };
 
+fn assert_unsupported_parameter_response(json: &Value, message_fragment: &str) {
+    assert_eq!(
+        json.get("error")
+            .and_then(|error| error.get("code"))
+            .and_then(Value::as_str),
+        Some("unsupported_parameter")
+    );
+    assert!(
+        json.get("error")
+            .and_then(|error| error.get("message"))
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .contains(message_fragment),
+        "error message should include expected fragment"
+    );
+}
+
 #[tokio::test]
 async fn ollama_tags_lists_loaded_ax_engine_model() {
     let app = build_router(llama_cpp_state());
@@ -58,6 +75,12 @@ async fn ollama_show_returns_loaded_model_metadata() {
         json!(16 * 1024)
     );
     assert!(
+        json["modified_at"]
+            .as_str()
+            .unwrap_or_default()
+            .ends_with('Z')
+    );
+    assert!(
         json["capabilities"]
             .as_array()
             .unwrap()
@@ -89,6 +112,7 @@ async fn ollama_ps_lists_current_model_as_loaded() {
     assert_eq!(model["name"], json!("qwen3"));
     assert_eq!(model["details"]["format"], json!("ax-engine"));
     assert_eq!(model["size_vram"], json!(0));
+    assert_eq!(model["context_length"], json!(16 * 1024));
     assert!(
         model["expires_at"]
             .as_str()
@@ -247,7 +271,6 @@ async fn ollama_generate_non_stream_returns_ollama_shape() {
                 "prompt": "hello generate",
                 "keep_alive": 0,
                 "raw": true,
-                "context": [1, 2, 3],
                 "options": {"num_predict": 9}
             }))))
             .unwrap(),
@@ -263,6 +286,45 @@ async fn ollama_generate_non_stream_returns_ollama_shape() {
     assert_eq!(json["done"], json!(true));
     assert_eq!(json["done_reason"], json!("stop"));
     assert_eq!(json["eval_count"], json!(2));
+}
+
+#[tokio::test]
+async fn ollama_generate_raw_true_does_not_prepend_system_prompt() {
+    let (llama_server_url, llama_cpp_server_handle) = spawn_llama_cpp_completion_server(
+        json!({
+            "content": "raw text",
+            "tokens": [10],
+            "stop": true,
+            "stop_type": "eos"
+        })
+        .to_string(),
+        |payload| {
+            assert_eq!(payload.get("prompt"), Some(&json!("raw prompt")));
+        },
+    );
+    let app = build_router(llama_cpp_server_state(llama_server_url));
+    let (status, json) = json_response(
+        &app,
+        Request::builder()
+            .method("POST")
+            .uri("/api/generate")
+            .header("content-type", "application/json")
+            .body(Body::from(json_request_body(&json!({
+                "model": "qwen3",
+                "stream": false,
+                "system": "system prompt",
+                "prompt": "raw prompt",
+                "raw": true
+            }))))
+            .unwrap(),
+    )
+    .await;
+    llama_cpp_server_handle
+        .join()
+        .expect("llama.cpp server thread should finish");
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json["response"], json!("raw text"));
 }
 
 #[tokio::test]
@@ -353,4 +415,148 @@ async fn ollama_generate_empty_prompt_returns_load_or_unload_noop() {
     assert_eq!(unload_json["response"], json!(""));
     assert_eq!(unload_json["done"], json!(true));
     assert_eq!(unload_json["done_reason"], json!("unload"));
+}
+
+#[tokio::test]
+async fn ollama_generate_rejects_context_replay_until_supported() {
+    let app = build_router(llama_cpp_state());
+    let (status, json) = json_response(
+        &app,
+        Request::builder()
+            .method("POST")
+            .uri("/api/generate")
+            .header("content-type", "application/json")
+            .body(Body::from(json_request_body(&json!({
+                "model": "qwen3",
+                "prompt": "hello",
+                "context": [1, 2, 3]
+            }))))
+            .unwrap(),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_unsupported_parameter_response(&json, "`context`");
+}
+
+#[tokio::test]
+async fn ollama_generate_rejects_unknown_top_level_fields() {
+    let app = build_router(llama_cpp_state());
+    let (status, json) = json_response(
+        &app,
+        Request::builder()
+            .method("POST")
+            .uri("/api/generate")
+            .header("content-type", "application/json")
+            .body(Body::from(json_request_body(&json!({
+                "model": "qwen3",
+                "prompt": "hello",
+                "suffix": "unsupported suffix"
+            }))))
+            .unwrap(),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_unsupported_parameter_response(&json, "`suffix`");
+}
+
+#[tokio::test]
+async fn ollama_generate_rejects_unknown_options_fields() {
+    let app = build_router(llama_cpp_state());
+    let (status, json) = json_response(
+        &app,
+        Request::builder()
+            .method("POST")
+            .uri("/api/generate")
+            .header("content-type", "application/json")
+            .body(Body::from(json_request_body(&json!({
+                "model": "qwen3",
+                "prompt": "hello",
+                "options": {"num_ctx": 4096}
+            }))))
+            .unwrap(),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_unsupported_parameter_response(&json, "`options.num_ctx`");
+}
+
+#[tokio::test]
+async fn ollama_chat_rejects_unknown_top_level_fields() {
+    let app = build_router(llama_cpp_state());
+    let (status, json) = json_response(
+        &app,
+        Request::builder()
+            .method("POST")
+            .uri("/api/chat")
+            .header("content-type", "application/json")
+            .body(Body::from(json_request_body(&json!({
+                "model": "qwen3",
+                "think": true,
+                "messages": [{"role": "user", "content": "hello"}]
+            }))))
+            .unwrap(),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_unsupported_parameter_response(&json, "`think`");
+}
+
+#[tokio::test]
+async fn ollama_chat_rejects_unknown_message_fields() {
+    let app = build_router(llama_cpp_state());
+    let (status, json) = json_response(
+        &app,
+        Request::builder()
+            .method("POST")
+            .uri("/api/chat")
+            .header("content-type", "application/json")
+            .body(Body::from(json_request_body(&json!({
+                "model": "qwen3",
+                "messages": [{
+                    "role": "user",
+                    "content": "hello",
+                    "thinking": "unsupported"
+                }]
+            }))))
+            .unwrap(),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_unsupported_parameter_response(&json, "`messages[].thinking`");
+}
+
+#[tokio::test]
+async fn ollama_chat_rejects_unknown_tool_call_fields() {
+    let app = build_router(llama_cpp_state());
+    let (status, json) = json_response(
+        &app,
+        Request::builder()
+            .method("POST")
+            .uri("/api/chat")
+            .header("content-type", "application/json")
+            .body(Body::from(json_request_body(&json!({
+                "model": "qwen3",
+                "messages": [{
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [{
+                        "id": "call_1",
+                        "function": {
+                            "name": "lookup",
+                            "arguments": {}
+                        }
+                    }]
+                }]
+            }))))
+            .unwrap(),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_unsupported_parameter_response(&json, "`messages[].tool_calls[].id`");
 }
