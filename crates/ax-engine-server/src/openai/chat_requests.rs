@@ -769,13 +769,11 @@ impl QwenToolContractStyle {
 
 fn qwen_tool_contract_style(model_id: &str) -> QwenToolContractStyle {
     let normalized = normalize_model_id_token(model_id);
-    if chat::is_qwen_non_thinking_only_model(model_id) {
+    if chat::uses_qwen_coder_xml_tool_contract(model_id) {
         QwenToolContractStyle::CoderXml
     } else if normalized.contains("qwen3-next")
         || normalized.contains("qwen3-5")
         || normalized.contains("qwen35")
-        || normalized.contains("qwen3-6")
-        || normalized.contains("qwen36")
     {
         QwenToolContractStyle::FunctionXml
     } else {

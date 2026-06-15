@@ -422,6 +422,17 @@ pub(crate) fn is_qwen_non_thinking_only_model(model_id: &str) -> bool {
         || normalized.contains("qwen3-coder")
 }
 
+pub(crate) fn uses_qwen_coder_xml_tool_contract(model_id: &str) -> bool {
+    if is_qwen_non_thinking_only_model(model_id) {
+        return true;
+    }
+    let normalized = model_id.to_ascii_lowercase();
+    normalized.contains("qwen3.6")
+        || normalized.contains("qwen3_6")
+        || normalized.contains("qwen3-6")
+        || normalized.contains("qwen36")
+}
+
 /// Token ids of the Gemma 4 channel markers, looked up from the model's
 /// tokenizer. `None` for tokenizers that do not define them (non-Gemma4
 /// models), which disables channel stripping.
@@ -741,6 +752,19 @@ mod tests {
                 Some(json!({"enable_thinking": false})),
                 "{model_id}"
             );
+        }
+    }
+
+    #[test]
+    fn qwen36_uses_coder_xml_tools_without_becoming_non_thinking_only() {
+        for model_id in [
+            "qwen3.6-27b-8bit",
+            "Qwen3.6-35B-A3B-4bit",
+            "mlx-community/Qwen3.6-35B-A3B-4bit",
+        ] {
+            assert!(is_qwen_thinking_model(model_id), "{model_id}");
+            assert!(!is_qwen_non_thinking_only_model(model_id), "{model_id}");
+            assert!(uses_qwen_coder_xml_tool_contract(model_id), "{model_id}");
         }
     }
 }

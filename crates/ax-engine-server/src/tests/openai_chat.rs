@@ -141,7 +141,7 @@ fn openai_chat_prompt_renderer_preserves_qwen_coder_user_system_with_tool_contra
 }
 
 #[test]
-fn openai_chat_prompt_renderer_uses_qwen36_function_xml_tool_contract() {
+fn openai_chat_prompt_renderer_uses_qwen36_coder_xml_tool_contract() {
     let messages: Vec<OpenAiChatMessage> = serde_json::from_value(json!([
         {"role": "user", "content": "Read README.md"}
     ]))
@@ -168,14 +168,17 @@ fn openai_chat_prompt_renderer_uses_qwen36_function_xml_tool_contract() {
     )
     .expect("qwen3.6 tool prompt should render");
 
-    assert!(prompt.contains("# Tools\n\nYou have access to the following functions:"));
-    assert!(prompt.contains("\"name\":\"read_file\""));
-    assert!(prompt.contains("\"description\":\"Read a workspace file\""));
-    assert!(!prompt.contains("<function>\n<name>read_file</name>"));
-    assert!(prompt.contains("If you choose to call a function ONLY reply"));
+    assert!(prompt.starts_with(
+        "<|im_start|>system\nYou are Qwen, a helpful AI assistant that can interact with a computer to solve tasks.\n\n# Tools"
+    ));
+    assert!(prompt.contains("# Tools\n\nYou have access to the following tools:"));
+    assert!(prompt.contains("<function>\n<name>read_file</name>"));
+    assert!(prompt.contains("<description>Read a workspace file</description>"));
+    assert!(prompt.contains("<parameter>\n<name>path</name>"));
+    assert!(prompt.contains("If you choose to call a tool ONLY reply"));
     assert!(prompt.contains("<function=example_function_name>"));
     assert!(prompt.contains("<parameter=example_parameter_1>"));
-    assert!(prompt.contains("an inner <function=...></function> block must be nested"));
+    assert!(prompt.contains("the tool calling block MUST begin with an opening <tool_call> tag"));
     assert!(prompt.contains("<|im_start|>user\nRead README.md<|im_end|>"));
     assert!(prompt.ends_with(chat::QWEN_CHATML_ASSISTANT_GENERATION_PROMPT));
 }

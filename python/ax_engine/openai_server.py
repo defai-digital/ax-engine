@@ -156,13 +156,25 @@ def is_qwen_non_thinking_only_model(model_id: str) -> bool:
     )
 
 
+def uses_qwen_coder_xml_tool_contract(model_id: str) -> bool:
+    if is_qwen_non_thinking_only_model(model_id):
+        return True
+    normalized = model_id.lower()
+    return (
+        "qwen3.6" in normalized
+        or "qwen3_6" in normalized
+        or "qwen3-6" in normalized
+        or "qwen36" in normalized
+    )
+
+
 def qwen_tool_contract_style(model_id: str) -> str:
     normalized = normalize_model_id_token(model_id)
-    if is_qwen_non_thinking_only_model(model_id):
+    if uses_qwen_coder_xml_tool_contract(model_id):
         return "coder_xml"
     if any(
         marker in normalized
-        for marker in ("qwen3-next", "qwen3-5", "qwen35", "qwen3-6", "qwen36")
+        for marker in ("qwen3-next", "qwen3-5", "qwen35")
     ):
         return "function_xml"
     return "json_tools"

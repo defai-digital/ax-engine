@@ -128,10 +128,10 @@ than silently dropped.
   prompting follows the matching Ollama template for the selected model family:
   Qwen3 dense uses the JSON
   `<tool_call>{"name": ..., "arguments": ...}</tool_call>` contract,
-  Qwen3.5/Qwen3.6 use the function-XML contract, and Qwen3-Coder-Next uses the
-  Qwen3-Coder XML contract. AX mirrors the selected Ollama-family template
-  shape: Qwen3.5/Qwen3.6 render tool schemas as OpenAI tool JSON lines before
-  asking for function-XML calls, while Qwen3-Coder renders XML tool
+  Qwen3.5 uses the function-XML contract, and Qwen3.6 plus Qwen3-Coder-Next
+  use the Qwen3-Coder XML contract. AX mirrors the selected Ollama-family
+  template shape: Qwen3.5 renders tool schemas as OpenAI tool JSON lines before
+  asking for function-XML calls, while Qwen3.6 and Qwen3-Coder render XML tool
   declarations.
   Gemma 4 text chat uses the Ollama/Gemma 4 `<|tool>`, `<|tool_call>`, and
   `<|tool_response>` DSL. Gemma 4 tools still fail closed for delegated,

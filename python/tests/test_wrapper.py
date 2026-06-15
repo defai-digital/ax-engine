@@ -1113,13 +1113,13 @@ class WrapperContractTests(unittest.TestCase):
             ],
             tool_choice="auto",
         )
-        self.assertIn("You have access to the following functions:", qwen36_tool_prompt)
-        self.assertIn('"name":"read_file"', qwen36_tool_prompt)
-        self.assertNotIn("<function>\n<name>read_file</name>", qwen36_tool_prompt)
-        self.assertIn("If you choose to call a function ONLY reply", qwen36_tool_prompt)
+        self.assertIn("You have access to the following tools:", qwen36_tool_prompt)
+        self.assertIn("<function>\n<name>read_file</name>", qwen36_tool_prompt)
+        self.assertIn("<description>Read a workspace file</description>", qwen36_tool_prompt)
+        self.assertIn("If you choose to call a tool ONLY reply", qwen36_tool_prompt)
         self.assertIn("<function=example_function_name>", qwen36_tool_prompt)
         self.assertIn(
-            "an inner <function=...></function> block must be nested",
+            "the tool calling block MUST begin with an opening <tool_call> tag",
             qwen36_tool_prompt,
         )
         self.assertTrue(
