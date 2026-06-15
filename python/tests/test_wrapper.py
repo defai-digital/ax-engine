@@ -1026,6 +1026,37 @@ class WrapperContractTests(unittest.TestCase):
             (400, "OpenAI-compatible MLX shim requires max_tokens > 0"),
         )
 
+    def test_openai_mlx_shim_rejects_malformed_sampling_params(self) -> None:
+        openai_server = importlib.import_module("ax_engine.openai_server")
+
+        self.assertIsNone(
+            openai_server.validate_sampling_params(
+                {
+                    "temperature": 0.0,
+                    "top_p": 1.0,
+                    "repetition_penalty": 1,
+                    "top_k": 0,
+                    "seed": 42,
+                }
+            )
+        )
+        self.assertEqual(
+            openai_server.validate_sampling_params({"temperature": "cold"}),
+            (400, "OpenAI-compatible MLX shim requires temperature to be numeric"),
+        )
+        self.assertEqual(
+            openai_server.validate_sampling_params({"top_p": True}),
+            (400, "OpenAI-compatible MLX shim requires top_p to be numeric"),
+        )
+        self.assertEqual(
+            openai_server.validate_sampling_params({"top_k": 1.5}),
+            (400, "OpenAI-compatible MLX shim requires top_k to be an integer"),
+        )
+        self.assertEqual(
+            openai_server.validate_sampling_params({"seed": False}),
+            (400, "OpenAI-compatible MLX shim requires seed to be an integer"),
+        )
+
     def test_openai_mlx_shim_finish_reason_maps_terminal_reasons(self) -> None:
         openai_server = importlib.import_module("ax_engine.openai_server")
 

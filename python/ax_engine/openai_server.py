@@ -161,7 +161,11 @@ def create_app(
     @app.post("/v1/completions")
     async def completions(request: Request) -> Any:
         payload = await request.json()
-        error = validate_model(payload, model_id) or require_max_tokens(payload)
+        error = (
+            validate_model(payload, model_id)
+            or require_max_tokens(payload)
+            or validate_sampling_params(payload)
+        )
         if error is not None:
             return openai_error(*error)
 
@@ -217,7 +221,11 @@ def create_app(
     @app.post("/v1/chat/completions")
     async def chat_completions(request: Request) -> Any:
         payload = await request.json()
-        error = validate_model(payload, model_id) or require_max_tokens(payload)
+        error = (
+            validate_model(payload, model_id)
+            or require_max_tokens(payload)
+            or validate_sampling_params(payload)
+        )
         if error is not None:
             return openai_error(*error)
 
@@ -314,6 +322,20 @@ def require_max_tokens(payload: dict[str, Any]) -> tuple[int, str] | None:
         or max_tokens <= 0
     ):
         return 400, "OpenAI-compatible MLX shim requires max_tokens > 0"
+    return None
+
+
+def validate_sampling_params(payload: dict[str, Any]) -> tuple[int, str] | None:
+    for key in ("temperature", "top_p", "repetition_penalty"):
+        value = payload.get(key)
+        if value is not None and (
+            isinstance(value, bool) or not isinstance(value, (int, float))
+        ):
+            return 400, f"OpenAI-compatible MLX shim requires {key} to be numeric"
+    for key in ("top_k", "seed"):
+        value = payload.get(key)
+        if value is not None and (isinstance(value, bool) or not isinstance(value, int)):
+            return 400, f"OpenAI-compatible MLX shim requires {key} to be an integer"
     return None
 
 
