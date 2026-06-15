@@ -162,7 +162,8 @@ def create_app(
     async def completions(request: Request) -> Any:
         payload = await request.json()
         error = (
-            validate_model(payload, model_id)
+            validate_payload_object(payload)
+            or validate_model(payload, model_id)
             or require_max_tokens(payload)
             or validate_sampling_params(payload)
         )
@@ -222,7 +223,8 @@ def create_app(
     async def chat_completions(request: Request) -> Any:
         payload = await request.json()
         error = (
-            validate_model(payload, model_id)
+            validate_payload_object(payload)
+            or validate_model(payload, model_id)
             or require_max_tokens(payload)
             or validate_sampling_params(payload)
         )
@@ -322,6 +324,12 @@ def require_max_tokens(payload: dict[str, Any]) -> tuple[int, str] | None:
         or max_tokens <= 0
     ):
         return 400, "OpenAI-compatible MLX shim requires max_tokens > 0"
+    return None
+
+
+def validate_payload_object(payload: Any) -> tuple[int, str] | None:
+    if not isinstance(payload, dict):
+        return 400, "OpenAI-compatible MLX shim request body must be a JSON object"
     return None
 
 

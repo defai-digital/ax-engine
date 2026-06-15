@@ -1057,6 +1057,25 @@ class WrapperContractTests(unittest.TestCase):
             (400, "OpenAI-compatible MLX shim requires seed to be an integer"),
         )
 
+    def test_openai_mlx_shim_rejects_non_object_payloads(self) -> None:
+        openai_server = importlib.import_module("ax_engine.openai_server")
+
+        self.assertIsNone(openai_server.validate_payload_object({"max_tokens": 1}))
+        self.assertEqual(
+            openai_server.validate_payload_object([]),
+            (
+                400,
+                "OpenAI-compatible MLX shim request body must be a JSON object",
+            ),
+        )
+        self.assertEqual(
+            openai_server.validate_payload_object("not-an-object"),
+            (
+                400,
+                "OpenAI-compatible MLX shim request body must be a JSON object",
+            ),
+        )
+
     def test_openai_mlx_shim_finish_reason_maps_terminal_reasons(self) -> None:
         openai_server = importlib.import_module("ax_engine.openai_server")
 
