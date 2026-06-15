@@ -10,6 +10,7 @@ use crate::chat::ChatPromptTemplate;
 use crate::errors::{ErrorResponse, error_response};
 
 pub(crate) const MODEL_OWNER: &str = "ax-engine";
+const OPENAI_SAFE_MAX_OUTPUT_TOKENS: u32 = 512;
 
 #[derive(Debug, Serialize)]
 pub(crate) struct ServerInfoResponse {
@@ -300,5 +301,6 @@ fn max_output_tokens_live(live: &LiveState, context_length: u32) -> u32 {
     live.session_config
         .max_batch_tokens
         .min(context_length)
+        .min(OPENAI_SAFE_MAX_OUTPUT_TOKENS)
         .max(1)
 }

@@ -5,7 +5,7 @@ use axum::Json;
 use axum::response::IntoResponse;
 use serde_json::Value;
 
-use super::requests::OpenAiResponseOptions;
+use super::requests::{OpenAiResponseOptions, OpenAiToolContract};
 use super::schema::{
     OpenAiChatCompletionChoice, OpenAiChatCompletionResponse, OpenAiChatLogprobs,
     OpenAiChatMessageResponse, OpenAiChatTokenLogprob, OpenAiCompletionChoice,
@@ -87,7 +87,7 @@ pub(crate) fn openai_chat_completion_response(
         _ => split_reasoning_content(&raw_content, options.include_reasoning),
     };
     let tool_calls = if options.parse_tool_calls {
-        extract_tool_calls(&mut content)
+        extract_tool_calls(&mut content, options.tool_contract.as_deref())
     } else {
         None
     };
@@ -202,10 +202,17 @@ fn split_tagged_reasoning(text: &str, start: &str, end: &str) -> Option<(String,
 // object in the content as a tool call misfires when tools are offered but
 // the model legitimately answers with JSON; bare-JSON parser families can be
 // added per model family once their templates are rendered server-side.
-fn extract_tool_calls(content: &mut String) -> Option<Vec<OpenAiToolCall>> {
+fn extract_tool_calls(
+    content: &mut String,
+    tool_contract: Option<&OpenAiToolContract>,
+) -> Option<Vec<OpenAiToolCall>> {
     let mut remaining = content.clone();
     let mut calls = Vec::new();
-    while let Some((function, next_remaining)) = extract_tool_call_payload(&remaining) {
+    while let Some((mut function, next_remaining)) = extract_tool_call_payload(&remaining) {
+        if let Some(contract) = tool_contract {
+            function.name = contract.canonical_tool_name(&function.name);
+            function.arguments = contract.canonical_arguments(&function.name, function.arguments);
+        }
         calls.push(OpenAiToolCall {
             id: format!("call_{}", calls.len()),
             tool_type: "function",

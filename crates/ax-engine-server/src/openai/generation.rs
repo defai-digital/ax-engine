@@ -52,7 +52,7 @@ pub(crate) async fn run_openai_llama_cpp_chat_generation(
         llama_cpp::run_chat_generate(request_id, &runtime, &llama_backend, &chat_request)
     })
     .await?;
-    validate_openai_json_object_response(&response, response_options)?;
+    validate_openai_json_object_response(&response, &response_options)?;
 
     Ok(OpenAiStreamKind::ChatCompletion.build_non_stream_response(
         &response,
@@ -86,7 +86,7 @@ pub(crate) async fn run_openai_mlx_lm_chat_generation(
         mlx_lm::run_chat_generate(request_id, &runtime, &mlx_lm_backend, &chat_request)
     })
     .await?;
-    validate_openai_json_object_response(&response, response_options)?;
+    validate_openai_json_object_response(&response, &response_options)?;
 
     Ok(OpenAiStreamKind::ChatCompletion.build_non_stream_response(
         &response,
@@ -128,7 +128,7 @@ pub(crate) async fn run_openai_text_generation(
         kind,
         response_options.include_reasoning,
     )?;
-    validate_openai_json_object_response(&response, response_options)?;
+    validate_openai_json_object_response(&response, &response_options)?;
 
     Ok(kind.build_non_stream_response(&response, request_id, response_options, native_reasoning))
 }
@@ -147,7 +147,7 @@ async fn stream_buffered_openai_tool_chat_response(
         OpenAiStreamKind::ChatCompletion,
         response_options.include_reasoning,
     )?;
-    validate_openai_json_object_response(&response, response_options)?;
+    validate_openai_json_object_response(&response, &response_options)?;
 
     let chat_response = openai_chat_completion_response(
         &response,
@@ -245,7 +245,7 @@ fn streaming_delegated_tool_calls_error() -> (StatusCode, Json<ErrorResponse>) {
 
 pub(crate) fn validate_openai_json_object_response(
     response: &GenerateResponse,
-    options: OpenAiResponseOptions,
+    options: &OpenAiResponseOptions,
 ) -> Result<(), (StatusCode, Json<ErrorResponse>)> {
     if !options.validate_json_object {
         return Ok(());

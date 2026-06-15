@@ -1,6 +1,6 @@
 use crate::openai::chunks::{chat_tool_calls_delta_chunk, chat_tool_calls_final_chunk};
 use crate::openai::generation::validate_openai_json_object_response;
-use crate::openai::requests::OpenAiResponseOptions;
+use crate::openai::requests::{OpenAiResponseOptions, OpenAiToolContract};
 use crate::openai::responses::{
     openai_chat_completion_response, openai_completion_response, openai_finish_reason,
 };
@@ -8,6 +8,8 @@ use ax_engine_sdk::{
     CapabilityReport, GenerateFinishReason, GenerateResponse, GenerateRouteReport, GenerateStatus,
     ResolutionPolicy, RuntimeReport, SelectedBackend, SupportTier,
 };
+use serde_json::json;
+use std::sync::Arc;
 
 #[test]
 fn finish_reason_maps_terminal_labels_without_hiding_cancellations() {
@@ -80,7 +82,8 @@ fn logprobs_are_omitted_when_partially_observed_to_keep_arrays_aligned() {
         include_logprobs: true,
         ..Default::default()
     };
-    let completion = openai_completion_response(&response, "cmpl-test".to_string(), options);
+    let completion =
+        openai_completion_response(&response, "cmpl-test".to_string(), options.clone());
     assert!(completion.choices[0].logprobs.is_none());
 
     let chat =
@@ -420,6 +423,56 @@ fn chat_response_recovers_qwen_tool_call_when_parameter_close_missing_and_functi
 }
 
 #[test]
+fn chat_response_canonicalizes_qwen_tool_calls_against_openai_tools_contract() {
+    let response = sample_generate_response(
+        r#"<tool_call><function=write_file>
+<parameter=path>index.html</parameter>
+<parameter=content><!DOCTYPE html><html></html></parameter>
+</function></tool_call>"#,
+        Vec::new(),
+        Vec::new(),
+    );
+
+    let tools = json!([
+        {
+            "type": "function",
+            "function": {
+                "name": "write",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "filePath": {"type": "string"},
+                        "content": {"type": "string"}
+                    },
+                    "required": ["filePath", "content"]
+                }
+            }
+        }
+    ]);
+    let openai = openai_chat_completion_response(
+        &response,
+        "chatcmpl-test".to_string(),
+        OpenAiResponseOptions {
+            parse_tool_calls: true,
+            tool_contract: OpenAiToolContract::from_tools(Some(&tools)).map(Arc::new),
+            ..Default::default()
+        },
+        None,
+    );
+
+    let tool_call = &openai.choices[0]
+        .message
+        .tool_calls
+        .as_ref()
+        .expect("tool call should be parsed")[0];
+    assert_eq!(tool_call.function.name, "write");
+    assert_eq!(
+        tool_call.function.arguments,
+        r#"{"content":"<!DOCTYPE html><html></html>","filePath":"index.html"}"#
+    );
+}
+
+#[test]
 fn chat_tool_call_stream_chunks_use_openai_delta_shape() {
     let response = sample_generate_response(
         r#"<tool_call>{"name":"lookup","arguments":{"query":"ax"}}</tool_call>"#,
@@ -492,7 +545,7 @@ fn json_object_validation_rejects_invalid_model_output() {
 
     let error = validate_openai_json_object_response(
         &response,
-        OpenAiResponseOptions {
+        &OpenAiResponseOptions {
             validate_json_object: true,
             ..Default::default()
         },
@@ -510,11 +563,11 @@ fn json_object_validation_accepts_json_objects_only() {
         validate_json_object: true,
         ..Default::default()
     };
-    validate_openai_json_object_response(&object_response, options)
+    validate_openai_json_object_response(&object_response, &options)
         .expect("JSON object should be accepted");
 
     let array_response = sample_generate_response(r#"[1,2]"#, Vec::new(), Vec::new());
-    let _ = validate_openai_json_object_response(&array_response, options)
+    let _ = validate_openai_json_object_response(&array_response, &options)
         .expect_err("non-object JSON should fail closed");
 }
 

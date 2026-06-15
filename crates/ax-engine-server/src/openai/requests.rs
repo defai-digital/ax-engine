@@ -5,6 +5,8 @@ use ax_engine_sdk::{
 use axum::Json;
 use axum::http::StatusCode;
 use serde_json::{Map, Value};
+use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -66,12 +68,119 @@ pub(crate) struct OpenAiBuiltLlamaCppChatRequest {
     pub(crate) response_options: OpenAiResponseOptions,
 }
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub(crate) struct OpenAiResponseOptions {
     pub(crate) include_logprobs: bool,
     pub(crate) include_reasoning: bool,
     pub(crate) validate_json_object: bool,
     pub(crate) parse_tool_calls: bool,
+    pub(crate) tool_contract: Option<Arc<OpenAiToolContract>>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct OpenAiToolContract {
+    tools: BTreeMap<String, OpenAiToolShape>,
+}
+
+#[derive(Clone, Debug, Default)]
+struct OpenAiToolShape {
+    properties: BTreeSet<String>,
+}
+
+impl OpenAiToolContract {
+    pub(crate) fn from_tools(value: Option<&Value>) -> Option<Self> {
+        let tools = value.and_then(Value::as_array)?;
+        let mut contract = OpenAiToolContract::default();
+        for tool in tools {
+            let Some(function) = tool.get("function").and_then(Value::as_object) else {
+                continue;
+            };
+            let Some(name) = function.get("name").and_then(Value::as_str) else {
+                continue;
+            };
+            let properties = function
+                .get("parameters")
+                .and_then(|parameters| parameters.get("properties"))
+                .and_then(Value::as_object)
+                .map(|properties| properties.keys().cloned().collect())
+                .unwrap_or_default();
+            contract
+                .tools
+                .insert(name.to_string(), OpenAiToolShape { properties });
+        }
+        (!contract.tools.is_empty()).then_some(contract)
+    }
+
+    pub(crate) fn canonical_tool_name(&self, name: &str) -> String {
+        if self.tools.contains_key(name) {
+            return name.to_string();
+        }
+        let normalized = normalize_tool_name(name);
+        self.tools
+            .keys()
+            .find(|candidate| normalize_tool_name(candidate) == normalized)
+            .cloned()
+            .or_else(|| {
+                common_tool_alias(name)
+                    .and_then(|alias| self.tools.contains_key(alias).then(|| alias.to_string()))
+            })
+            .unwrap_or_else(|| name.to_string())
+    }
+
+    pub(crate) fn canonical_arguments(&self, tool_name: &str, arguments: String) -> String {
+        let Some(shape) = self.tools.get(tool_name) else {
+            return arguments;
+        };
+        let Ok(Value::Object(mut object)) = serde_json::from_str::<Value>(&arguments) else {
+            return arguments;
+        };
+        let mut changed = false;
+        for canonical in &shape.properties {
+            if object.contains_key(canonical) {
+                continue;
+            }
+            if let Some(alias) = argument_aliases(canonical)
+                .iter()
+                .find(|alias| object.contains_key(**alias))
+            {
+                if let Some(value) = object.remove(*alias) {
+                    object.insert(canonical.clone(), value);
+                    changed = true;
+                }
+            }
+        }
+        if !changed {
+            return arguments;
+        }
+        serde_json::to_string(&Value::Object(object)).unwrap_or(arguments)
+    }
+}
+
+fn normalize_tool_name(name: &str) -> String {
+    name.chars()
+        .filter(|ch| *ch != '_' && *ch != '-')
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
+fn common_tool_alias(name: &str) -> Option<&'static str> {
+    match name {
+        "edit_file" => Some("edit"),
+        "list_files" => Some("glob"),
+        "read_file" => Some("read"),
+        "write_file" => Some("write"),
+        _ => None,
+    }
+}
+
+fn argument_aliases(canonical: &str) -> &'static [&'static str] {
+    match canonical {
+        "filePath" => &["file_path", "filepath", "path", "filename"],
+        "newString" => &["new_string", "new"],
+        "oldString" => &["old_string", "old"],
+        "replaceAll" => &["replace_all"],
+        _ => &[],
+    }
 }
 
 impl OpenAiResponseOptions {
@@ -87,6 +196,7 @@ impl OpenAiResponseOptions {
                 request.response_format.as_ref(),
             ),
             parse_tool_calls: false,
+            tool_contract: None,
         })
     }
 
@@ -104,6 +214,7 @@ impl OpenAiResponseOptions {
                 request.tools.as_ref(),
                 request.tool_choice.as_ref(),
             ),
+            tool_contract: OpenAiToolContract::from_tools(request.tools.as_ref()).map(Arc::new),
         })
     }
 
@@ -111,7 +222,7 @@ impl OpenAiResponseOptions {
     /// JSON-object payloads yet; fail closed instead of silently dropping a
     /// contract the caller asked for.
     pub(crate) fn reject_unsupported_streaming_contract(
-        self,
+        &self,
         stream: bool,
     ) -> Result<(), (StatusCode, Json<ErrorResponse>)> {
         if !stream {
