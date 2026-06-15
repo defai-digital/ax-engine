@@ -599,8 +599,13 @@ fn fit_openai_max_output_tokens_to_context(
         return Ok(max_output_tokens);
     }
 
-    let remaining_output = context_length.saturating_sub(prompt_tokens as u32);
-    Ok(remaining_output.max(1))
+    Err(error_response(
+        StatusCode::BAD_REQUEST,
+        "context_length_exceeded",
+        format!(
+            "request requires {requested_tokens} tokens ({prompt_tokens} prompt + {max_output_tokens} output), exceeding model context length {context_length}",
+        ),
+    ))
 }
 
 /// `(tokens, optional decoded text)` on success, or an HTTP error response.
