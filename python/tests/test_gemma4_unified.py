@@ -300,6 +300,132 @@ class Gemma4UnifiedImagePreprocessTests(unittest.TestCase):
 
 
 class Gemma4UnifiedConfigValidationTests(unittest.TestCase):
+    def test_load_config_accepts_zero_eoa_token_index(self) -> None:
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            model_dir = Path(tmp)
+            write_tiny_config(model_dir)
+            config_path = model_dir / "config.json"
+            model_config = json.loads(config_path.read_text())
+            model_config["eoa_token_index"] = 0
+            del model_config["eoa_token_id"]
+            config_path.write_text(json.dumps(model_config))
+
+            config = module._load_config(model_dir)
+
+        self.assertEqual(config.eoa_token_id, 0)
+
+    def test_load_config_preserves_zero_processor_fields(self) -> None:
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            model_dir = Path(tmp)
+            write_tiny_config(model_dir)
+            config_path = model_dir / "config.json"
+            model_config = json.loads(config_path.read_text())
+            model_config["audio_config"]["audio_samples_per_token"] = 0
+            config_path.write_text(json.dumps(model_config))
+            processor_path = model_dir / "processor_config.json"
+            processor = json.loads(processor_path.read_text())
+            processor["image_processor"]["patch_size"] = 0
+            processor["image_processor"]["model_patch_size"] = 0
+            processor["image_processor"]["pooling_kernel_size"] = 0
+            processor["image_processor"]["max_soft_tokens"] = 0
+            processor["feature_extractor"]["sampling_rate"] = 0
+            processor["audio_seq_length"] = 0
+            processor["video_processor"] = {
+                "video_processor_type": "Gemma4UnifiedVideoProcessor",
+                "max_soft_tokens": 0,
+                "num_frames": 0,
+            }
+            processor_path.write_text(json.dumps(processor))
+
+            config = module._load_config(model_dir)
+
+        self.assertEqual(config.patch_size, 0)
+        self.assertEqual(config.model_patch_size, 0)
+        self.assertEqual(config.pooling_kernel_size, 0)
+        self.assertEqual(config.max_soft_tokens, 0)
+        self.assertEqual(config.sampling_rate, 0)
+        self.assertEqual(config.audio_samples_per_token, 0)
+        self.assertEqual(config.audio_seq_length, 0)
+        self.assertEqual(config.video_max_soft_tokens, 0)
+        self.assertEqual(config.video_num_frames, 0)
+
+    def test_prepare_audio_request_rejects_zero_audio_samples_per_token(self) -> None:
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            model_dir = Path(tmp)
+            write_tiny_config(model_dir)
+            config_path = model_dir / "config.json"
+            model_config = json.loads(config_path.read_text())
+            model_config["audio_config"]["audio_samples_per_token"] = 0
+            config_path.write_text(json.dumps(model_config))
+
+            with self.assertRaisesRegex(ValueError, "audio_samples_per_token"):
+                module.prepare_gemma4_unified_audio_request(
+                    model_dir,
+                    [7, 200, 8],
+                    [[0.5, -0.5]],
+                    sampling_rates=[4],
+                )
+
+    def test_prepare_audio_request_rejects_zero_audio_seq_length(self) -> None:
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            model_dir = Path(tmp)
+            write_tiny_config(model_dir)
+            processor_path = model_dir / "processor_config.json"
+            processor = json.loads(processor_path.read_text())
+            processor["audio_seq_length"] = 0
+            processor_path.write_text(json.dumps(processor))
+
+            with self.assertRaisesRegex(ValueError, "audio produced no feature frames"):
+                module.prepare_gemma4_unified_audio_request(
+                    model_dir,
+                    [7, 200, 8],
+                    [[0.5, -0.5]],
+                    sampling_rates=[4],
+                )
+
+    @unittest.skipIf(Image is None, "Pillow is required for Gemma4 image preprocessing")
+    def test_prepare_image_request_rejects_zero_max_soft_tokens(self) -> None:
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            model_dir = Path(tmp)
+            write_tiny_config(model_dir)
+            processor_path = model_dir / "processor_config.json"
+            processor = json.loads(processor_path.read_text())
+            processor["image_processor"]["max_soft_tokens"] = 0
+            processor_path.write_text(json.dumps(processor))
+
+            with self.assertRaisesRegex(ValueError, "max_soft_tokens"):
+                module.prepare_gemma4_unified_image_request(
+                    model_dir,
+                    [7, 100, 8],
+                    [tiny_rgb_image()],
+                )
+
+    @unittest.skipIf(Image is None, "Pillow is required for Gemma4 video preprocessing")
+    def test_prepare_video_request_rejects_zero_num_frames(self) -> None:
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            model_dir = Path(tmp)
+            write_tiny_config(model_dir)
+            processor_path = model_dir / "processor_config.json"
+            processor = json.loads(processor_path.read_text())
+            processor["video_processor"] = {
+                "video_processor_type": "Gemma4UnifiedVideoProcessor",
+                "num_frames": 0,
+            }
+            processor_path.write_text(json.dumps(processor))
+
+            with self.assertRaisesRegex(ValueError, "video num_frames"):
+                module.prepare_gemma4_unified_video_request(
+                    model_dir,
+                    [9, 300, 10],
+                    [[tiny_rgb_image()]],
+                )
+
     def test_load_config_rejects_non_positive_image_std_when_normalizing(self) -> None:
         # Zero divides every pixel into inf/NaN, a negative channel silently
         # sign-flips pixels, a subnormal-for-f32 value (1e-40) passes a naive
