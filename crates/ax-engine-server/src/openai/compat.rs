@@ -129,6 +129,8 @@ fn tokenizer_for_live_op(live: &LiveState, op: &str) -> Result<EngineTokenizer, 
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct DetokenizeRequest {
+    #[serde(default)]
+    model: Option<String>,
     tokens: Vec<u32>,
 }
 
@@ -142,6 +144,7 @@ pub(crate) async fn detokenize(
     Json(request): Json<DetokenizeRequest>,
 ) -> Result<Json<DetokenizeResponse>, HttpErrorResponse> {
     let live = state.snapshot();
+    validate_model(&live, request.model.as_deref())?;
     let tokenizer = tokenizer_for_live_op(&live, "/detokenize")?;
     let content = tokenizer.decode(&request.tokens, false).map_err(|error| {
         error_response(

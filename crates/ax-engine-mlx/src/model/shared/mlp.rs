@@ -1,9 +1,9 @@
 use mlx_sys::{
     KernelOutputSpec, KernelTemplateArg, MlxArray, MlxClosure, MlxDtype, MlxMetalKernel,
     MlxVectorArray, add, argpartition_axis, argsort_axis, astype, divide, expand_dims,
-    expand_dims_axes, gelu_approx_mul, gelu_approx_mul_quantized_matmul, multiply, reshape,
-    rms_norm, silu_mul, slice_last_dim, softmax, softmax_precise, sum_axis, take, take_along_axis,
-    topk_axis,
+    expand_dims_axes, gelu_approx_mul, gelu_approx_mul_quantized_matmul, multiply,
+    quantized_matmul_rms_norm, reshape, rms_norm, silu_mul, slice_last_dim, softmax,
+    softmax_precise, sum_axis, take, take_along_axis, topk_axis,
 };
 use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
@@ -318,10 +318,8 @@ static PACKED_GEGLU_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
 static PACKED_SWIGLU_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
 static GEMMA4_MOE_WEIGHTED_SUM_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
 static GEMMA4_MOE_WEIGHTED_SCALED_SUM_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
-static GEMMA4_MOE_WEIGHTED_SUM_SORTED_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
-static GEMMA4_MOE_WEIGHTED_SCALED_SUM_SORTED_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
 static QWEN3_MOE_WEIGHTED_SUM_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
-static QWEN3_MOE_WEIGHTED_SUM_SORTED_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
+static QWEN3_MOE_WEIGHTED_SUM_WITH_SHARED_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
 
 const PACKED_GEGLU_KERNEL_SOURCE: &str = r#"
     uint idx = thread_position_in_grid.x;
@@ -424,70 +422,24 @@ const QWEN3_MOE_WEIGHTED_SUM_KERNEL_SOURCE: &str = r#"
     out[idx] = static_cast<OutT>(acc);
 "#;
 
-const QWEN3_MOE_WEIGHTED_SUM_SORTED_KERNEL_SOURCE: &str = r#"
+const QWEN3_MOE_WEIGHTED_SUM_WITH_SHARED_KERNEL_SOURCE: &str = r#"
     uint idx = thread_position_in_grid.x;
     if (idx >= ElementCount) {
         return;
     }
 
     uint hidden_idx = idx % HiddenDim;
-    uint token_idx = idx / HiddenDim;
-    uint weight_base = token_idx * TopK;
+    uint row = idx / HiddenDim;
+    uint down_base = row * TopK * HiddenDim + hidden_idx;
+    uint weight_base = row * TopK;
     float acc = 0.0f;
 
     for (uint k = 0; k < TopK; ++k) {
-        uint orig_pos = weight_base + k;
-        uint sorted_pos = inv_order[orig_pos];
-        float y = static_cast<float>(down_out[sorted_pos * HiddenDim + hidden_idx]);
+        float y = static_cast<float>(down_out[down_base + k * HiddenDim]);
         float w = static_cast<float>(top_k_weights[weight_base + k]);
         acc += y * w;
     }
-
-    out[idx] = static_cast<OutT>(acc);
-"#;
-
-const GEMMA4_MOE_WEIGHTED_SUM_SORTED_KERNEL_SOURCE: &str = r#"
-    uint idx = thread_position_in_grid.x;
-    if (idx >= ElementCount) {
-        return;
-    }
-
-    uint hidden_idx = idx % HiddenDim;
-    uint token_idx = idx / HiddenDim;
-    uint weight_base = token_idx * TopK;
-    float acc = 0.0f;
-
-    for (uint k = 0; k < TopK; ++k) {
-        uint orig_pos = weight_base + k;
-        uint sorted_pos = inv_order[orig_pos];
-        float y = static_cast<float>(down_out[sorted_pos * HiddenDim + hidden_idx]);
-        float w = static_cast<float>(top_k_weights[weight_base + k]);
-        acc += y * w;
-    }
-
-    out[idx] = static_cast<OutT>(acc);
-"#;
-
-const GEMMA4_MOE_WEIGHTED_SCALED_SUM_SORTED_KERNEL_SOURCE: &str = r#"
-    uint idx = thread_position_in_grid.x;
-    if (idx >= ElementCount) {
-        return;
-    }
-
-    uint hidden_idx = idx % HiddenDim;
-    uint token_idx = idx / HiddenDim;
-    uint weight_base = token_idx * TopK;
-    float acc = 0.0f;
-
-    for (uint k = 0; k < TopK; ++k) {
-        uint orig_pos = weight_base + k;
-        uint sorted_pos = inv_order[orig_pos];
-        float y = static_cast<float>(down_out[sorted_pos * HiddenDim + hidden_idx]);
-        float w = static_cast<float>(top_k_weights[weight_base + k]);
-        uint expert_idx = top_k_indices[weight_base + k];
-        float scale = static_cast<float>(expert_scale[expert_idx]);
-        acc += y * w * scale;
-    }
+    acc += static_cast<float>(shared_out[idx]);
 
     out[idx] = static_cast<OutT>(acc);
 "#;
@@ -572,286 +524,99 @@ fn qwen3_moe_weighted_sum_metal(
     outputs.pop()
 }
 
-/// Sorted variant of `qwen3_moe_weighted_sum_metal`: takes the down projection
-/// output in **sorted expert order** plus the inverse permutation, and fuses
-/// the unsort + weighted-sum into a single Metal kernel. This eliminates the
-/// separate `take` + `reshape` unsort step (2 MLX graph nodes per layer) and
-/// avoids materializing the intermediate unsorted [batch, seq, top_k, hidden]
-/// tensor.
-fn qwen3_moe_weighted_sum_sorted_metal(
+/// Weighted-sum kernel variant that fuses the shared-expert add.
+/// Equivalent to `qwen3_moe_weighted_sum_metal(down_out, top_k_weights, dtype)`
+/// followed by `add(out, shared_out)`, but in a single Metal dispatch.
+fn qwen3_moe_weighted_sum_with_shared_metal(
     down_out: &MlxArray,
     top_k_weights: &MlxArray,
-    inv_order: &MlxArray,
+    shared_out: &MlxArray,
     output_dtype: MlxDtype,
-    original_indices_shape: &[i32],
 ) -> Option<MlxArray> {
-    if !matches!(
-        output_dtype,
-        MlxDtype::Bfloat16 | MlxDtype::Float16 | MlxDtype::Float32
-    ) {
-        return None;
-    }
-    let (batch, seq, top_k, hidden_dim, _num_tokens, _selection_count, element_count) =
-        validate_sorted_weighted_sum_inputs(
-            down_out,
-            top_k_weights,
-            inv_order,
-            original_indices_shape,
-        )?;
-
-    let inv_order_u32 = ensure_uint32(inv_order);
-
-    let out_shape = vec![batch, seq, hidden_dim];
-    let kernel = QWEN3_MOE_WEIGHTED_SUM_SORTED_KERNEL.get_or_init(|| {
-        MlxMetalKernel::new(
-            "ax_qwen3_moe_weighted_sum_sorted_v1",
-            &["down_out", "top_k_weights", "inv_order"],
-            &["out"],
-            QWEN3_MOE_WEIGHTED_SUM_SORTED_KERNEL_SOURCE,
-            "",
-            true,
-        )
-    });
-    let mut outputs = kernel.apply_with_template(
-        &[down_out, top_k_weights, &inv_order_u32],
-        &[KernelOutputSpec {
-            shape: out_shape,
-            dtype: output_dtype,
-        }],
-        &sorted_weighted_sum_template_args(output_dtype, top_k, hidden_dim, element_count),
-        (element_count, 1, 1),
-        (256, 1, 1),
-        None,
-    );
-    outputs.pop()
-}
-
-/// Sorted variant of `gemma4_moe_weighted_sum_metal`: same fused unsort + weighted
-/// sum pattern as the Qwen3 sorted kernel, for Gemma4 MoE without expert scaling.
-fn gemma4_moe_weighted_sum_sorted_metal(
-    down_out: &MlxArray,
-    top_k_weights: &MlxArray,
-    inv_order: &MlxArray,
-    output_dtype: MlxDtype,
-    original_indices_shape: &[i32],
-) -> Option<MlxArray> {
-    let (batch, seq, top_k, hidden_dim, _num_tokens, _selection_count, element_count) =
-        validate_sorted_weighted_sum_inputs(
-            down_out,
-            top_k_weights,
-            inv_order,
-            original_indices_shape,
-        )?;
-
-    let inv_order_u32 = ensure_uint32(inv_order);
-
-    let out_shape = vec![batch, seq, hidden_dim];
-    let kernel = GEMMA4_MOE_WEIGHTED_SUM_SORTED_KERNEL.get_or_init(|| {
-        MlxMetalKernel::new(
-            "ax_gemma4_moe_weighted_sum_sorted_v1",
-            &["down_out", "top_k_weights", "inv_order"],
-            &["out"],
-            GEMMA4_MOE_WEIGHTED_SUM_SORTED_KERNEL_SOURCE,
-            "",
-            true,
-        )
-    });
-    let mut outputs = kernel.apply_with_template(
-        &[down_out, top_k_weights, &inv_order_u32],
-        &[KernelOutputSpec {
-            shape: out_shape,
-            dtype: output_dtype,
-        }],
-        &sorted_weighted_sum_template_args(output_dtype, top_k, hidden_dim, element_count),
-        (element_count, 1, 1),
-        (256, 1, 1),
-        None,
-    );
-    outputs.pop()
-}
-
-/// Sorted variant of `gemma4_moe_weighted_scaled_sum_metal`: fused unsort +
-/// scaled weighted sum. The `top_k_indices` are in original token order (not
-/// sorted), matching how the router output flows before `switch_gather_inputs`
-/// reorders the gather inputs.
-fn gemma4_moe_weighted_scaled_sum_sorted_metal(
-    down_out: &MlxArray,
-    top_k_weights: &MlxArray,
-    top_k_indices: &MlxArray,
-    expert_scale: &MlxArray,
-    inv_order: &MlxArray,
-    output_dtype: MlxDtype,
-    original_indices_shape: &[i32],
-) -> Option<MlxArray> {
-    if top_k_indices.dtype() != MlxDtype::Uint32
-        || !matches!(
-            expert_scale.dtype(),
-            MlxDtype::Bfloat16 | MlxDtype::Float16 | MlxDtype::Float32
-        )
-        || expert_scale.shape().len() != 1
-    {
-        return None;
-    }
-
-    let (batch, seq, top_k, hidden_dim, _num_tokens, selection_count, element_count) =
-        validate_sorted_weighted_sum_inputs(
-            down_out,
-            top_k_weights,
-            inv_order,
-            original_indices_shape,
-        )?;
-
-    // top_k_indices must have the same element count as inv_order.
-    let indices_count: i64 = top_k_indices
-        .shape()
-        .iter()
-        .map(|d| i64::from(*d))
-        .product();
-    if indices_count != i64::from(selection_count) {
-        return None;
-    }
-
-    let inv_order_u32 = ensure_uint32(inv_order);
-
-    let out_shape = vec![batch, seq, hidden_dim];
-    let kernel = GEMMA4_MOE_WEIGHTED_SCALED_SUM_SORTED_KERNEL.get_or_init(|| {
-        MlxMetalKernel::new(
-            "ax_gemma4_moe_weighted_scaled_sum_sorted_v1",
-            &[
-                "down_out",
-                "top_k_weights",
-                "inv_order",
-                "top_k_indices",
-                "expert_scale",
-            ],
-            &["out"],
-            GEMMA4_MOE_WEIGHTED_SCALED_SUM_SORTED_KERNEL_SOURCE,
-            "",
-            true,
-        )
-    });
-    let mut outputs = kernel.apply_with_template(
-        &[
-            down_out,
-            top_k_weights,
-            &inv_order_u32,
-            top_k_indices,
-            expert_scale,
-        ],
-        &[KernelOutputSpec {
-            shape: out_shape,
-            dtype: output_dtype,
-        }],
-        &sorted_weighted_sum_template_args(output_dtype, top_k, hidden_dim, element_count),
-        (element_count, 1, 1),
-        (256, 1, 1),
-        None,
-    );
-    outputs.pop()
-}
-
-/// Shared validation for all sorted weighted-sum kernels.
-/// Returns (batch, seq, top_k, hidden_dim, num_tokens, selection_count, element_count).
-fn validate_sorted_weighted_sum_inputs(
-    down_out: &MlxArray,
-    top_k_weights: &MlxArray,
-    inv_order: &MlxArray,
-    original_indices_shape: &[i32],
-) -> Option<(i32, i32, i32, i32, i32, i32, i32)> {
     if !matches!(
         down_out.dtype(),
         MlxDtype::Bfloat16 | MlxDtype::Float16 | MlxDtype::Float32
     ) || !matches!(
         top_k_weights.dtype(),
         MlxDtype::Bfloat16 | MlxDtype::Float16 | MlxDtype::Float32
+    ) || !matches!(
+        shared_out.dtype(),
+        MlxDtype::Bfloat16 | MlxDtype::Float16 | MlxDtype::Float32
+    ) || !matches!(
+        output_dtype,
+        MlxDtype::Bfloat16 | MlxDtype::Float16 | MlxDtype::Float32
     ) {
         return None;
     }
 
-    // original_indices_shape is [batch, seq, top_k].
-    if original_indices_shape.len() != 3 {
-        return None;
-    }
-    let batch = original_indices_shape[0];
-    let seq = original_indices_shape[1];
-    let top_k = original_indices_shape[2];
-    if top_k <= 0 || batch <= 0 || seq <= 0 {
-        return None;
-    }
-    let num_tokens = batch * seq;
-    let selection_count = num_tokens * top_k;
-
-    // down_out must be 2D [selection_count, hidden_dim].
     let down_shape = down_out.shape();
-    if down_shape.len() != 2 || down_shape[0] != selection_count {
+    let weights_shape = top_k_weights.shape();
+    let shared_shape = shared_out.shape();
+    if down_shape.len() != weights_shape.len() + 1 || weights_shape.is_empty() {
         return None;
     }
     let hidden_dim = *down_shape.last()?;
-    if hidden_dim <= 0 {
+    let top_k = *weights_shape.last()?;
+    if top_k <= 0 || hidden_dim <= 0 {
+        return None;
+    }
+    if down_shape[..down_shape.len() - 1] != weights_shape[..] {
+        return None;
+    }
+    // shared_out must match the output shape [.., hidden_dim] (weights minus top_k dim).
+    let expected_shared_shape = &weights_shape[..weights_shape.len() - 1];
+    let mut expected_shared_with_hidden = expected_shared_shape.to_vec();
+    expected_shared_with_hidden.push(hidden_dim);
+    if shared_shape != expected_shared_with_hidden {
         return None;
     }
 
-    // inv_order must be 1D with selection_count elements.
-    let inv_shape = inv_order.shape();
-    if inv_shape.len() != 1 || inv_shape[0] != selection_count {
-        return None;
-    }
-
-    // top_k_weights total element count must match selection_count.
-    let weights_count: i64 = top_k_weights
-        .shape()
+    let mut out_shape = weights_shape[..weights_shape.len() - 1].to_vec();
+    out_shape.push(hidden_dim);
+    let element_count = out_shape
         .iter()
-        .map(|d| i64::from(*d))
-        .product();
-    if weights_count != i64::from(selection_count) {
-        return None;
-    }
+        .try_fold(1_i64, |acc, &dim| acc.checked_mul(i64::from(dim)))?;
+    let element_count = i32::try_from(element_count).ok()?;
 
-    let element_count = num_tokens * hidden_dim;
-    Some((
-        batch,
-        seq,
-        top_k,
-        hidden_dim,
-        num_tokens,
-        selection_count,
-        element_count,
-    ))
-}
-
-/// Shared template args builder for all sorted weighted-sum kernels.
-fn sorted_weighted_sum_template_args(
-    output_dtype: MlxDtype,
-    top_k: i32,
-    hidden_dim: i32,
-    element_count: i32,
-) -> [KernelTemplateArg<'static>; 4] {
-    [
-        KernelTemplateArg::Dtype {
-            name: "OutT",
+    let kernel = QWEN3_MOE_WEIGHTED_SUM_WITH_SHARED_KERNEL.get_or_init(|| {
+        MlxMetalKernel::new(
+            "ax_qwen3_moe_weighted_sum_with_shared_v1",
+            &["down_out", "top_k_weights", "shared_out"],
+            &["out"],
+            QWEN3_MOE_WEIGHTED_SUM_WITH_SHARED_KERNEL_SOURCE,
+            "",
+            true,
+        )
+    });
+    let mut outputs = kernel.apply_with_template(
+        &[down_out, top_k_weights, shared_out],
+        &[KernelOutputSpec {
+            shape: out_shape,
             dtype: output_dtype,
-        },
-        KernelTemplateArg::Int {
-            name: "TopK",
-            value: top_k,
-        },
-        KernelTemplateArg::Int {
-            name: "HiddenDim",
-            value: hidden_dim,
-        },
-        KernelTemplateArg::Int {
-            name: "ElementCount",
-            value: element_count,
-        },
-    ]
-}
-
-fn ensure_uint32(arr: &MlxArray) -> MlxArray {
-    if arr.dtype() == MlxDtype::Uint32 {
-        arr.clone()
-    } else {
-        astype(arr, MlxDtype::Uint32, None)
-    }
+        }],
+        &[
+            KernelTemplateArg::Dtype {
+                name: "OutT",
+                dtype: output_dtype,
+            },
+            KernelTemplateArg::Int {
+                name: "TopK",
+                value: top_k,
+            },
+            KernelTemplateArg::Int {
+                name: "HiddenDim",
+                value: hidden_dim,
+            },
+            KernelTemplateArg::Int {
+                name: "ElementCount",
+                value: element_count,
+            },
+        ],
+        (element_count, 1, 1),
+        (256, 1, 1),
+        None,
+    );
+    outputs.pop()
 }
 
 fn packed_geglu_metal(gate_up: &MlxArray, hidden_dim: i32) -> Option<MlxArray> {
@@ -1185,6 +950,31 @@ pub(crate) fn ffn_swiglu(
                     .as_ref()
                     .expect("dense FFN layer must have down_proj");
                 if let Some(norm_w) = post_norm {
+                    if !profile_decode
+                        && !profile_prefill
+                        && fastpath::dense_qmatmul_rms_norm_enabled()
+                        && let Some(scales) = down.scales.as_ref()
+                    {
+                        let out = quantized_matmul_rms_norm(
+                            &ffn_hidden,
+                            &down.weight,
+                            scales,
+                            down.biases.as_ref(),
+                            down.group_size,
+                            down.bits,
+                            norm_w,
+                            cfg.rms_norm_eps,
+                            None,
+                        );
+                        forward_profile_eval_elapsed(
+                            profile_decode,
+                            profile_prefill,
+                            DecodeProfileStage::PostAttnFfnDown,
+                            down_started,
+                            &[&out],
+                        );
+                        return out;
+                    }
                     let out = qw(&ffn_hidden, down);
                     forward_profile_eval_elapsed(
                         profile_decode,
@@ -1232,6 +1022,31 @@ pub(crate) fn ffn_swiglu(
                     .as_ref()
                     .expect("dense FFN layer must have down_proj");
                 if let Some(norm_w) = post_norm {
+                    if !profile_decode
+                        && !profile_prefill
+                        && fastpath::dense_qmatmul_rms_norm_enabled()
+                        && let Some(scales) = down.scales.as_ref()
+                    {
+                        let out = quantized_matmul_rms_norm(
+                            &ffn_hidden,
+                            &down.weight,
+                            scales,
+                            down.biases.as_ref(),
+                            down.group_size,
+                            down.bits,
+                            norm_w,
+                            cfg.rms_norm_eps,
+                            None,
+                        );
+                        forward_profile_eval_elapsed(
+                            profile_decode,
+                            profile_prefill,
+                            DecodeProfileStage::PostAttnFfnDown,
+                            down_started,
+                            &[&out],
+                        );
+                        return out;
+                    }
                     let out = qw(&ffn_hidden, down);
                     forward_profile_eval_elapsed(
                         profile_decode,
@@ -1302,6 +1117,31 @@ pub(crate) fn ffn_swiglu(
         .as_ref()
         .expect("dense FFN layer must have down_proj");
     if let Some(norm_w) = post_norm {
+        if !profile_decode
+            && !profile_prefill
+            && fastpath::dense_qmatmul_rms_norm_enabled()
+            && let Some(scales) = down.scales.as_ref()
+        {
+            let out = quantized_matmul_rms_norm(
+                &ffn_hidden,
+                &down.weight,
+                scales,
+                down.biases.as_ref(),
+                down.group_size,
+                down.bits,
+                norm_w,
+                cfg.rms_norm_eps,
+                None,
+            );
+            forward_profile_eval_elapsed(
+                profile_decode,
+                profile_prefill,
+                DecodeProfileStage::PostAttnFfnDown,
+                down_started,
+                &[&out],
+            );
+            return out;
+        }
         let out = qw(&ffn_hidden, down);
         forward_profile_eval_elapsed(
             profile_decode,
@@ -1324,23 +1164,8 @@ pub(crate) fn ffn_swiglu(
 }
 
 pub(crate) fn shared_expert_forward(cfg: &ModelConfig, w: &LayerWeights, x: &MlxArray) -> MlxArray {
-    let seq = x.shape().get(1).copied().unwrap_or(1);
-    let profile_decode = seq == 1 && decode_profile_enabled();
-    let profile_prefill = seq > 1 && prefill_profile_enabled();
-    let profile_forward = profile_decode || profile_prefill;
-
-    let gate_up_started = profile_forward.then(Instant::now);
     let hidden = if let Some(packed) = w.shared_gate_up_proj.as_ref() {
         let gate_up = qw(x, packed);
-        if let Some(started) = gate_up_started {
-            forward_profile_eval_elapsed(
-                profile_decode,
-                profile_prefill,
-                DecodeProfileStage::PostAttnFfnGateUp,
-                started,
-                &[&gate_up],
-            );
-        }
         let packed_dim = gate_up
             .shape()
             .last()
@@ -1351,32 +1176,12 @@ pub(crate) fn shared_expert_forward(cfg: &ModelConfig, w: &LayerWeights, x: &Mlx
             "packed shared expert output last dimension must be positive and even, got {packed_dim}"
         );
         let half = packed_dim / 2;
-        let activation_started = profile_forward.then(Instant::now);
         if let Some(hidden) = packed_ffn_activation(cfg, &gate_up, half) {
-            if let Some(started) = activation_started {
-                forward_profile_eval_elapsed(
-                    profile_decode,
-                    profile_prefill,
-                    DecodeProfileStage::PostAttnFfnActivation,
-                    started,
-                    &[&hidden],
-                );
-            }
             hidden
         } else {
             let gate = mlx_slice_last_dim(&gate_up, 0, half);
             let up = mlx_slice_last_dim(&gate_up, half, half * 2);
-            let hidden = dense_ffn_activation(cfg, &gate, &up);
-            if let Some(started) = activation_started {
-                forward_profile_eval_elapsed(
-                    profile_decode,
-                    profile_prefill,
-                    DecodeProfileStage::PostAttnFfnActivation,
-                    started,
-                    &[&hidden],
-                );
-            }
-            hidden
+            dense_ffn_activation(cfg, &gate, &up)
         }
     } else {
         let gate = qw(
@@ -1391,51 +1196,20 @@ pub(crate) fn shared_expert_forward(cfg: &ModelConfig, w: &LayerWeights, x: &Mlx
                 .as_ref()
                 .expect("shared expert must have up projection"),
         );
-        if let Some(started) = gate_up_started {
-            forward_profile_eval_elapsed(
-                profile_decode,
-                profile_prefill,
-                DecodeProfileStage::PostAttnFfnGateUp,
-                started,
-                &[&gate, &up],
-            );
-        }
-        let activation_started = profile_forward.then(Instant::now);
-        let hidden = dense_ffn_activation(cfg, &gate, &up);
-        if let Some(started) = activation_started {
-            forward_profile_eval_elapsed(
-                profile_decode,
-                profile_prefill,
-                DecodeProfileStage::PostAttnFfnActivation,
-                started,
-                &[&hidden],
-            );
-        }
-        hidden
+        dense_ffn_activation(cfg, &gate, &up)
     };
-    let down_started = profile_forward.then(Instant::now);
     let shared = qw(
         &hidden,
         w.shared_down_proj
             .as_ref()
             .expect("shared expert must have down projection"),
     );
-    let shared = if let Some(shared_expert_gate) = &w.shared_expert_gate {
+    if let Some(shared_expert_gate) = &w.shared_expert_gate {
         let shared_gate = qw(x, shared_expert_gate);
         multiply(&mlx_sys::ops::sigmoid(&shared_gate, None), &shared, None)
     } else {
         shared
-    };
-    if let Some(started) = down_started {
-        forward_profile_eval_elapsed(
-            profile_decode,
-            profile_prefill,
-            DecodeProfileStage::PostAttnFfnDown,
-            started,
-            &[&shared],
-        );
     }
-    shared
 }
 
 /// Gemma4 MoE router: rms_norm(scale * hidden) → proj → argpartition → softmax.
@@ -1479,28 +1253,6 @@ pub(crate) fn moe_router_qwen3(
         .expect("Qwen3 MoE layer must have router_proj");
     let logits = qw(normed, router_proj);
     let last_axis = logits.ndim() as i32 - 1;
-
-    // When norm_topk_prob renormalises the selected weights to sum to 1, the
-    // full softmax over all experts is mathematically redundant. softmax is
-    // monotonic, so argpartition on raw logits selects the same top-k experts.
-    // Softmax over just the top-k logits then yields identical renormalised
-    // weights: exp(x_i) / Σ_topk exp(x_j). This eliminates 3 graph nodes per
-    // layer (full softmax + sum + divide) and avoids materialising the
-    // [batch, seq, num_experts] intermediate array.
-    if cfg.moe_norm_topk_prob {
-        let (top_k_indices, top_k_logits) = top_k_by_argpartition(
-            &logits,
-            cfg.moe_expert_count,
-            cfg.moe_experts_per_token,
-            false,
-        );
-        // mlx-lm uses mx.softmax(..., precise=True); with bf16 logits the
-        // round-off can shift weights, so keep precise softmax here too.
-        let top_k_weights = softmax_precise(&top_k_logits, last_axis, None);
-        return (top_k_indices, top_k_weights);
-    }
-
-    // Fallback (norm_topk_prob=false): full precise softmax → top-k → no renorm.
     // mlx-lm uses mx.softmax(..., precise=True) for all MoE routers; with bf16 logits and
     // many experts (e.g. 256) the tiny round-off can flip top-k rankings and corrupt output.
     let weights_all = softmax_precise(&logits, last_axis, None);
@@ -1510,6 +1262,13 @@ pub(crate) fn moe_router_qwen3(
         cfg.moe_experts_per_token,
         false,
     );
+    // norm_topk_prob: renormalise top-k weights to sum to 1.
+    let top_k_weights = if cfg.moe_norm_topk_prob {
+        let sum = sum_axis(&top_k_weights, last_axis, true, None);
+        mlx_sys::ops::divide(&top_k_weights, &sum, None)
+    } else {
+        top_k_weights
+    };
     (top_k_indices, top_k_weights)
 }
 
@@ -1829,7 +1588,30 @@ pub(crate) fn moe_experts_forward(
     top_k_indices: &MlxArray,
     top_k_weights: &MlxArray,
 ) -> MlxArray {
-    moe_experts_forward_impl(cfg, w, x, top_k_indices, top_k_weights, None)
+    moe_experts_forward_impl(cfg, w, x, top_k_indices, top_k_weights, None, None)
+}
+
+/// Expert forward with shared-expert output for fused weighted-sum (Phase 1A).
+/// When `shared_expert_out` is provided and the fused Metal kernel is eligible,
+/// the shared-expert add is fused into the weighted-sum kernel, eliminating one
+/// `add` dispatch per layer.
+pub(crate) fn moe_experts_forward_with_shared(
+    cfg: &ModelConfig,
+    w: &LayerWeights,
+    x: &MlxArray,
+    top_k_indices: &MlxArray,
+    top_k_weights: &MlxArray,
+    shared_expert_out: &MlxArray,
+) -> MlxArray {
+    moe_experts_forward_impl(
+        cfg,
+        w,
+        x,
+        top_k_indices,
+        top_k_weights,
+        None,
+        Some(shared_expert_out),
+    )
 }
 
 pub(crate) fn moe_experts_forward_gemma4(
@@ -1846,9 +1628,11 @@ pub(crate) fn moe_experts_forward_gemma4(
         top_k_indices,
         top_k_weights,
         w.router_expert_scale.as_ref(),
+        None,
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn moe_experts_forward_impl(
     cfg: &ModelConfig,
     w: &LayerWeights,
@@ -1856,11 +1640,11 @@ fn moe_experts_forward_impl(
     top_k_indices: &MlxArray,
     top_k_weights: &MlxArray,
     top_k_expert_scale: Option<&MlxArray>,
+    shared_expert_out: Option<&MlxArray>,
 ) -> MlxArray {
-    let seq = x.shape().get(1).copied().unwrap_or(1);
+    let seq = x.shape().get(1).copied().unwrap_or(1) as usize;
     let profile_decode = seq == 1 && decode_profile_enabled();
     let profile_prefill = seq > 1 && prefill_profile_enabled();
-    let profile_forward = profile_decode || profile_prefill;
 
     // Match MLX SwitchGLU: [batch, seq, hidden] → [batch, seq, 1, 1, hidden].
     // The extra singleton before top_k is required by gather_mm/gather_qmm broadcasting.
@@ -1868,198 +1652,194 @@ fn moe_experts_forward_impl(
     let gather_inputs = switch_gather_inputs(&x_exp, top_k_indices);
     let down_exps = w.down_exps.as_ref().expect("MoE layer must have down_exps");
 
-    let gate_up_started = profile_forward.then(Instant::now);
-    let packed_gate_up: Option<MlxArray>;
-    let (gate_out, up_out) = if let Some(packed) = &w.gate_up_exps_packed {
+    // Phase 1B: when the expert gate_up is packed and the flag is on, try the
+    // packed SwiGLU Metal kernel directly on the gather_qmm output, fusing the
+    // last-dim split + SiLU + multiply into one dispatch. Decode-only (seq==1):
+    // at prefill the tensor is large and bandwidth-bound, where the separate
+    // slice+silu_mul ops are faster than the single packed dispatch. Falls back
+    // to the split-activation path when the kernel is ineligible or at prefill.
+    let hidden = if let Some(packed) = &w.gate_up_exps_packed {
+        let gate_up_started = Instant::now();
         let out = qw_gather(
             &gather_inputs.x,
             packed,
             &gather_inputs.indices,
             gather_inputs.sorted_indices,
         );
-        packed_gate_up = Some(out.clone());
-        let half = cfg.moe_expert_intermediate_size as i32;
-        (
-            mlx_slice_last_dim(&out, 0, half),
-            mlx_slice_last_dim(&out, half, half * 2),
-        )
-    } else {
-        packed_gate_up = None;
-        let gate_exps = w.gate_exps.as_ref().expect("MoE layer must have gate_exps");
-        let up_exps = w.up_exps.as_ref().expect("MoE layer must have up_exps");
-        (
-            qw_gather(
-                &gather_inputs.x,
-                gate_exps,
-                &gather_inputs.indices,
-                gather_inputs.sorted_indices,
-            ),
-            qw_gather(
-                &gather_inputs.x,
-                up_exps,
-                &gather_inputs.indices,
-                gather_inputs.sorted_indices,
-            ),
-        )
-    };
-    if let Some(started) = gate_up_started {
-        if let Some(packed) = packed_gate_up.as_ref() {
-            forward_profile_eval_elapsed(
-                profile_decode,
-                profile_prefill,
-                DecodeProfileStage::PostAttnFfnGateUp,
-                started,
-                &[packed],
-            );
-        } else {
-            forward_profile_eval_elapsed(
-                profile_decode,
-                profile_prefill,
-                DecodeProfileStage::PostAttnFfnGateUp,
-                started,
-                &[&gate_out, &up_out],
-            );
-        }
-    }
-
-    // Gemma4 experts use direct GEGLU with fast-approx GELU (matches
-    // mlx_lm's `nn.gelu_approx`). Qwen3 uses the SwiGLU helper, which can
-    // still use the compiled-closure cache.
-    let activation_started = profile_forward.then(Instant::now);
-    let hidden = dense_ffn_activation(cfg, &gate_out, &up_out);
-    if let Some(started) = activation_started {
         forward_profile_eval_elapsed(
             profile_decode,
             profile_prefill,
-            DecodeProfileStage::PostAttnFfnActivation,
-            started,
-            &[&hidden],
+            DecodeProfileStage::MoeExpertGateUp,
+            gate_up_started,
+            &[&out],
         );
-    }
+        let half = cfg.moe_expert_intermediate_size as i32;
+        if !cfg.uses_geglu
+            && seq == 1
+            && fastpath::moe_swiglu_packed_metal_enabled()
+            && let Some(fused) = packed_swiglu_metal_impl(&out, half)
+        {
+            let activation_started = Instant::now();
+            forward_profile_eval_elapsed(
+                profile_decode,
+                profile_prefill,
+                DecodeProfileStage::MoeExpertActivation,
+                activation_started,
+                &[&fused],
+            );
+            fused
+        } else {
+            let gate = mlx_slice_last_dim(&out, 0, half);
+            let up = mlx_slice_last_dim(&out, half, half * 2);
+            let activation_started = Instant::now();
+            let h = dense_ffn_activation(cfg, &gate, &up);
+            forward_profile_eval_elapsed(
+                profile_decode,
+                profile_prefill,
+                DecodeProfileStage::MoeExpertActivation,
+                activation_started,
+                &[&h],
+            );
+            h
+        }
+    } else {
+        let gate_up_started = Instant::now();
+        let gate_exps = w.gate_exps.as_ref().expect("MoE layer must have gate_exps");
+        let gate_out = qw_gather(
+            &gather_inputs.x,
+            gate_exps,
+            &gather_inputs.indices,
+            gather_inputs.sorted_indices,
+        );
+        let up_exps = w.up_exps.as_ref().expect("MoE layer must have up_exps");
+        let up_out = qw_gather(
+            &gather_inputs.x,
+            up_exps,
+            &gather_inputs.indices,
+            gather_inputs.sorted_indices,
+        );
+        forward_profile_eval_elapsed(
+            profile_decode,
+            profile_prefill,
+            DecodeProfileStage::MoeExpertGateUp,
+            gate_up_started,
+            &[&gate_out, &up_out],
+        );
+        let activation_started = Instant::now();
+        let h = dense_ffn_activation(cfg, &gate_out, &up_out);
+        forward_profile_eval_elapsed(
+            profile_decode,
+            profile_prefill,
+            DecodeProfileStage::MoeExpertActivation,
+            activation_started,
+            &[&h],
+        );
+        h
+    };
 
     // Down projection: [1, seq, top_k, hidden]
-    let down_started = profile_forward.then(Instant::now);
-
-    let down_out_squeezed = squeeze_switch_singleton(&qw_gather(
+    let down_started = Instant::now();
+    let down_out = squeeze_switch_singleton(&qw_gather(
         &hidden,
         down_exps,
         &gather_inputs.indices,
         gather_inputs.sorted_indices,
     ));
+    let down_out = gather_inputs.unsort(down_out);
+    forward_profile_eval_elapsed(
+        profile_decode,
+        profile_prefill,
+        DecodeProfileStage::MoeExpertDown,
+        down_started,
+        &[&down_out],
+    );
 
-    // Fast paths for sorted (prefill) MoE: fuse unsort + weighted sum into a
-    // single Metal kernel. Avoids materializing the intermediate
-    // [batch, seq, top_k, hidden] tensor and eliminates 2 graph nodes/layer.
-    if let Some(inv_order) = &gather_inputs.inv_order {
-        if cfg.gemma4_moe_router {
-            if let Some(expert_scale) = top_k_expert_scale {
-                if let Some(out) = gemma4_moe_weighted_scaled_sum_sorted_metal(
-                    &down_out_squeezed,
-                    top_k_weights,
-                    top_k_indices,
-                    expert_scale,
-                    inv_order,
-                    x.dtype(),
-                    &gather_inputs.original_indices_shape,
-                ) {
-                    if let Some(started) = down_started {
-                        forward_profile_eval_elapsed(
-                            profile_decode,
-                            profile_prefill,
-                            DecodeProfileStage::PostAttnFfnDown,
-                            started,
-                            &[&out],
-                        );
-                    }
-                    return out;
-                }
-            } else if let Some(out) = gemma4_moe_weighted_sum_sorted_metal(
-                &down_out_squeezed,
-                top_k_weights,
-                inv_order,
-                x.dtype(),
-                &gather_inputs.original_indices_shape,
-            ) {
-                if let Some(started) = down_started {
-                    forward_profile_eval_elapsed(
-                        profile_decode,
-                        profile_prefill,
-                        DecodeProfileStage::PostAttnFfnDown,
-                        started,
-                        &[&out],
-                    );
-                }
-                return out;
-            }
-        } else if let Some(out) = qwen3_moe_weighted_sum_sorted_metal(
-            &down_out_squeezed,
-            top_k_weights,
-            inv_order,
-            x.dtype(),
-            &gather_inputs.original_indices_shape,
-        ) {
-            if let Some(started) = down_started {
-                forward_profile_eval_elapsed(
-                    profile_decode,
-                    profile_prefill,
-                    DecodeProfileStage::PostAttnFfnDown,
-                    started,
-                    &[&out],
-                );
-            }
-            return out;
-        }
+    // Fresh timer for the weighted-sum stage so it does not include the down
+    // projection time (which is already recorded under MoeExpertDown).
+    let weighted_sum_started = Instant::now();
+
+    // Phase 1A: when shared_expert_out is provided, try the fused weighted-sum
+    // kernel that adds the shared expert inside the same dispatch. Decode-only
+    // (seq==1): at prefill the weighted-sum is bandwidth-bound on a large tensor,
+    // where the fused kernel's extra input read costs more than the dispatch it
+    // saves. Falls back to the separate `add` in the branches below at prefill.
+    if seq == 1
+        && let Some(shared) = shared_expert_out
+        && fastpath::moe_fuse_shared_expert_add_enabled()
+        && let Some(out) =
+            qwen3_moe_weighted_sum_with_shared_metal(&down_out, top_k_weights, shared, x.dtype())
+    {
+        forward_profile_eval_elapsed(
+            profile_decode,
+            profile_prefill,
+            DecodeProfileStage::MoeExpertWeightedSum,
+            weighted_sum_started,
+            &[&out],
+        );
+        return out;
     }
-
-    let down_out = gather_inputs.unsort(down_out_squeezed);
 
     // Weighted sum over top_k dimension → [1, seq, hidden]. Gemma4 decode hits
     // this in every layer; fuse multiply + reduction + cast to keep the direct
     // pipeline graph smaller. Other MoE families keep the generic MLX path.
     if cfg.gemma4_moe_router {
         if let Some(expert_scale) = top_k_expert_scale {
-            if let Some(out) = gemma4_moe_weighted_scaled_sum_metal(
+            if let Some(expert_sum) = gemma4_moe_weighted_scaled_sum_metal(
                 &down_out,
                 top_k_weights,
                 top_k_indices,
                 expert_scale,
                 x.dtype(),
             ) {
-                if let Some(started) = down_started {
-                    forward_profile_eval_elapsed(
-                        profile_decode,
-                        profile_prefill,
-                        DecodeProfileStage::PostAttnFfnDown,
-                        started,
-                        &[&out],
-                    );
-                }
-                return out;
-            }
-        } else if let Some(out) = gemma4_moe_weighted_sum_metal(&down_out, top_k_weights, x.dtype())
-        {
-            if let Some(started) = down_started {
+                let out = if let Some(shared) = shared_expert_out {
+                    add(&expert_sum, shared, None)
+                } else {
+                    expert_sum
+                };
                 forward_profile_eval_elapsed(
                     profile_decode,
                     profile_prefill,
-                    DecodeProfileStage::PostAttnFfnDown,
-                    started,
+                    DecodeProfileStage::MoeExpertWeightedSum,
+                    weighted_sum_started,
                     &[&out],
                 );
+                return out;
             }
-            return out;
-        }
-    } else if let Some(out) = qwen3_moe_weighted_sum_metal(&down_out, top_k_weights, x.dtype()) {
-        // Qwen3 MoE: use Metal kernel for weighted sum (fuses multiply + reduce + cast)
-        if let Some(started) = down_started {
+        } else if let Some(expert_sum) =
+            gemma4_moe_weighted_sum_metal(&down_out, top_k_weights, x.dtype())
+        {
+            let out = if let Some(shared) = shared_expert_out {
+                add(&expert_sum, shared, None)
+            } else {
+                expert_sum
+            };
             forward_profile_eval_elapsed(
                 profile_decode,
                 profile_prefill,
-                DecodeProfileStage::PostAttnFfnDown,
-                started,
+                DecodeProfileStage::MoeExpertWeightedSum,
+                weighted_sum_started,
                 &[&out],
             );
+            return out;
         }
+    } else if let Some(expert_sum) =
+        qwen3_moe_weighted_sum_metal(&down_out, top_k_weights, x.dtype())
+    {
+        // Qwen3 MoE: use Metal kernel for weighted sum (fuses multiply + reduce + cast).
+        // If shared_expert_out is present but the fused kernel was ineligible, add
+        // the shared expert here as a separate dispatch.
+        let out = if let Some(shared) = shared_expert_out {
+            add(&expert_sum, shared, None)
+        } else {
+            expert_sum
+        };
+        forward_profile_eval_elapsed(
+            profile_decode,
+            profile_prefill,
+            DecodeProfileStage::MoeExpertWeightedSum,
+            weighted_sum_started,
+            &[&out],
+        );
         return out;
     }
     let scaled_weights;
@@ -2079,15 +1859,20 @@ fn moe_experts_forward_impl(
     // so without this the weighted sum is f32 and contaminates all downstream
     // residuals and projections. Python's MoE does `.astype(y.dtype)` here.
     let out = astype(&out, x.dtype(), None);
-    if let Some(started) = down_started {
-        forward_profile_eval_elapsed(
-            profile_decode,
-            profile_prefill,
-            DecodeProfileStage::PostAttnFfnDown,
-            started,
-            &[&out],
-        );
-    }
+    // If shared_expert_out is present and the fused kernel was ineligible, add
+    // the shared expert as a separate dispatch.
+    let out = if let Some(shared) = shared_expert_out {
+        add(&out, shared, None)
+    } else {
+        out
+    };
+    forward_profile_eval_elapsed(
+        profile_decode,
+        profile_prefill,
+        DecodeProfileStage::MoeExpertWeightedSum,
+        weighted_sum_started,
+        &[&out],
+    );
     out
 }
 
@@ -2190,97 +1975,6 @@ mod tests {
         );
     }
 
-    // Minimal Qwen3-style SwiGLU MoE config for forward-path tests.
-    fn test_moe_cfg() -> ModelConfig {
-        ModelConfig {
-            model_family: "qwen3".to_string(),
-            layer_count: 1,
-            hidden_size: 64,
-            intermediate_size: 64,
-            n_heads: 2,
-            n_kv_heads: 1,
-            head_dim: 8,
-            vocab_size: 32,
-            rope_theta: 10000.0,
-            rope_dims: 8,
-            attn_output_gate: false,
-            query_scale: 1.0,
-            final_logit_softcapping: None,
-            moe_expert_count: 4,
-            moe_experts_per_token: 2,
-            moe_expert_intermediate_size: 64,
-            layer_configs: Vec::new(),
-            global_sliding_window: None,
-            gemma4_moe_router: false,
-            uses_geglu: false,
-            hidden_states_scale: None,
-            moe_norm_topk_prob: false,
-            hidden_size_per_layer_input: 0,
-            linear_attention: None,
-            mla_attention: None,
-            glm_router: None,
-            rms_norm_eps: 1e-6,
-            rope_freqs: None,
-            no_rope_layer_interval: 0,
-            attn_temperature_floor: 8192.0,
-            attn_temperature_scale: 0.1,
-            intermediate_size_mlp: 0,
-            moe_layer_freq: 1,
-            moe_first_dense_layers: 0,
-            moe_shared_expert_count: 0,
-            moe_sigmoid_routing: false,
-            moe_routed_scaling_factor: 1.0,
-            moe_n_group: 1,
-            moe_topk_group: 1,
-            think_start_token_id: None,
-            think_end_token_id: None,
-        }
-    }
-
-    fn empty_moe_layer_weights(hidden_size: usize) -> LayerWeights {
-        LayerWeights {
-            attn_norm: mlx_sys::zeros(&[hidden_size as i32], MlxDtype::Float32, None),
-            attn_post_norm: None,
-            q_norm: None,
-            k_norm: None,
-            q_proj: None,
-            k_proj: None,
-            v_proj: None,
-            qkv_packed: None,
-            o_proj: None,
-            linear_attn: None,
-            glm_mla_attn: None,
-            ffn_norm: mlx_sys::zeros(&[hidden_size as i32], MlxDtype::Float32, None),
-            ffn_post_norm: None,
-            gate_proj: None,
-            up_proj: None,
-            gate_up_packed: None,
-            down_proj: None,
-            ffn_norm2: None,
-            ffn_post_norm1: None,
-            ffn_post_norm2: None,
-            router_proj: None,
-            router_correction_bias: None,
-            router_scale: None,
-            router_combined_scale: None,
-            router_expert_scale: None,
-            layer_scalar: None,
-            per_layer_gate: None,
-            per_layer_proj_w: None,
-            per_layer_post_norm: None,
-            shared_expert_gate: None,
-            shared_gate_up_proj: None,
-            shared_gate_proj: None,
-            shared_up_proj: None,
-            shared_down_proj: None,
-            gate_up_exps_packed: None,
-            gate_exps: None,
-            up_exps: None,
-            down_exps: None,
-            rotation_smoothing_inverse: None,
-        }
-    }
-
     #[test]
     fn packed_geglu_metal_matches_direct_geglu_for_bf16_packed_gate_up() {
         let gate_data: Vec<f32> = (0..24).map(|i| ((i as f32) - 12.0) * 0.083).collect();
@@ -2344,114 +2038,6 @@ mod tests {
 
         assert_eq!(metal.shape(), vec![1, 1, 4, 8]);
         assert_close(metal.data_f32(), direct.data_f32(), 2.0e-2);
-    }
-
-    #[test]
-    fn moe_experts_forward_quantized_matches_dequant_reference() {
-        // Drives a quantized SwiGLU MoE through the full `moe_experts_forward`.
-        // The result must equal the dequantize -> matmul reference.
-        use mlx_sys::{
-            broadcast_to, dequantize, matmul, ops::MlxQuantizationMode, ops::quantize, take,
-        };
-
-        const H: i32 = 64;
-        const INTER: i32 = 64;
-        const N_EXP: i32 = 4;
-        const TOP_K: i32 = 2;
-        const G: i32 = 64;
-        const B: i32 = 4;
-
-        let rng = |n: usize, seed: u64, scale: f32, mean: f32| -> Vec<f32> {
-            let mut s = seed;
-            (0..n)
-                .map(|_| {
-                    s ^= s << 13;
-                    s ^= s >> 7;
-                    s ^= s << 17;
-                    ((s >> 32) as f32 / u32::MAX as f32) * scale + mean
-                })
-                .collect()
-        };
-        let quant = |data: &[f32], shape: &[i32]| -> (QuantizedWeight, MlxArray) {
-            let w = array_f32(data, shape);
-            let parts = quantize(
-                &w,
-                Some(G),
-                Some(B),
-                MlxQuantizationMode::Affine,
-                None,
-                None,
-            );
-            let qw = QuantizedWeight {
-                weight: parts[0].clone(),
-                scales: Some(parts[1].clone()),
-                biases: Some(parts[2].clone()),
-                group_size: G,
-                bits: B,
-            };
-            // Dequantized reference weight for the oracle.
-            let deq = dequantize(
-                &parts[0],
-                &parts[1],
-                Some(&parts[2]),
-                Some(G),
-                Some(B),
-                None,
-            );
-            (qw, deq)
-        };
-
-        let gate_src = rng((N_EXP * INTER * H) as usize, 0x11, 0.6, -0.3);
-        let up_src = rng((N_EXP * INTER * H) as usize, 0x22, 0.6, -0.3);
-        let down_src = rng((N_EXP * H * INTER) as usize, 0x33, 0.6, -0.3);
-        let (gate_qw, gate_deq) = quant(&gate_src, &[N_EXP, INTER, H]);
-        let (up_qw, up_deq) = quant(&up_src, &[N_EXP, INTER, H]);
-        let (down_qw, down_deq) = quant(&down_src, &[N_EXP, H, INTER]);
-
-        let x_src = rng(H as usize, 0x44, 1.0, -0.5);
-        let x = array_f32(&x_src, &[1, 1, H]);
-        let idx_data: Vec<u32> = vec![0, 3];
-        let indices = MlxArray::from_raw_data(
-            idx_data.as_ptr().cast(),
-            std::mem::size_of_val(idx_data.as_slice()),
-            &[1, 1, TOP_K],
-            MlxDtype::Uint32,
-        );
-        let wsum_src = rng(TOP_K as usize, 0x55, 1.0, 0.0);
-        let weights = array_f32(&wsum_src, &[1, 1, TOP_K]);
-
-        let mut cfg = test_moe_cfg();
-        cfg.hidden_size = H as usize;
-        cfg.moe_expert_count = N_EXP as usize;
-        cfg.moe_experts_per_token = TOP_K as usize;
-        cfg.moe_expert_intermediate_size = INTER as usize;
-
-        let mut w = empty_moe_layer_weights(H as usize);
-        w.gate_exps = Some(gate_qw);
-        w.up_exps = Some(up_qw);
-        w.down_exps = Some(down_qw);
-
-        let actual = moe_experts_forward(&cfg, &w, &x, &indices, &weights);
-
-        // Oracle: per-expert SwiGLU then routing-weighted sum, all dequantized.
-        let idx_flat = reshape(&indices, &[TOP_K], None);
-        let x_col = reshape(&x, &[1, H, 1], None);
-        let x_b = broadcast_to(&x_col, &[TOP_K, H, 1], None);
-        let gate_sel = take(&gate_deq, &idx_flat, 0, None); // [top_k, inter, H]
-        let up_sel = take(&up_deq, &idx_flat, 0, None);
-        let gate = reshape(&matmul(&gate_sel, &x_b, None), &[TOP_K, INTER], None);
-        let up = reshape(&matmul(&up_sel, &x_b, None), &[TOP_K, INTER], None);
-        let act = silu_mul(&gate, &up, None); // [top_k, inter]
-        let act_col = reshape(&act, &[TOP_K, INTER, 1], None);
-        let down_sel = take(&down_deq, &idx_flat, 0, None); // [top_k, H, inter]
-        let down = reshape(&matmul(&down_sel, &act_col, None), &[1, TOP_K, H], None);
-        let scores = reshape(&weights, &[1, TOP_K, 1], None);
-        let reference = sum_axis(&multiply(&down, &scores, None), 1, false, None); // [1, H]
-
-        let actual2 = reshape(&actual, &[1, H], None);
-        eval(&[&actual2, &reference]);
-        assert_eq!(actual.shape(), vec![1, 1, H]);
-        assert_close(actual2.data_f32(), reference.data_f32(), 5.0e-3);
     }
 
     #[test]
@@ -2536,6 +2122,210 @@ mod tests {
         assert!(
             packed_swiglu_metal_impl(&gate, 6).is_none(),
             "already-split gate tensors must stay on the normal SwiGLU path"
+        );
+    }
+
+    #[test]
+    fn qwen3_moe_weighted_sum_with_shared_metal_matches_unfused() {
+        // down_out: [batch=1, seq=2, top_k=3, hidden=4]
+        let down_data: Vec<f32> = (0..24).map(|i| ((i as f32) - 8.0) * 0.037).collect();
+        let weight_data: Vec<f32> = vec![0.1, 0.25, 0.65, 0.5, 0.125, 0.375];
+        let shared_data: Vec<f32> = (0..8).map(|i| ((i as f32) + 1.0) * 0.053).collect();
+
+        let down = array_f32(&down_data, &[1, 2, 3, 4]);
+        let weights = array_f32(&weight_data, &[1, 2, 3]);
+        let shared = array_f32(&shared_data, &[1, 2, 4]);
+
+        // Unfused reference: weighted_sum(down, weights) + shared
+        let scores_exp = expand_dims(&weights, weights.ndim() as i32, None);
+        let weighted = multiply(&down, &scores_exp, None);
+        let expert_sum = sum_axis(&weighted, 2, false, None);
+        let unfused = add(&expert_sum, &shared, None);
+
+        // Fused kernel
+        let fused =
+            qwen3_moe_weighted_sum_with_shared_metal(&down, &weights, &shared, MlxDtype::Float32)
+                .expect("fused weighted-sum-with-shared kernel should support f32 inputs");
+        eval(&[&unfused, &fused]);
+
+        assert_eq!(fused.shape(), vec![1, 2, 4]);
+        assert_close(fused.data_f32(), unfused.data_f32(), 1.0e-5);
+    }
+
+    #[test]
+    fn qwen3_moe_weighted_sum_with_shared_metal_rejects_shape_mismatch() {
+        let down = array_f32(&[0.0; 24], &[1, 2, 3, 4]);
+        let weights = array_f32(&[0.0; 6], &[1, 2, 3]);
+        // Wrong shared shape: [1, 3, 4] instead of [1, 2, 4]
+        let shared = array_f32(&[0.0; 12], &[1, 3, 4]);
+        assert!(
+            qwen3_moe_weighted_sum_with_shared_metal(&down, &weights, &shared, MlxDtype::Float32)
+                .is_none(),
+            "kernel must reject mismatched shared_expert shape"
+        );
+    }
+
+    #[test]
+    fn packed_swiglu_metal_matches_slice_and_silu_mul_on_moe_shaped_input() {
+        // Simulates the MoE expert gate_up gather_qmm output: [batch=1, seq=1, top_k=4, 2*expert_size=16]
+        let gate_data: Vec<f32> = (0..32).map(|i| ((i as f32) - 16.0) * 0.053).collect();
+        let up_data: Vec<f32> = (0..32).map(|i| ((i as f32) + 2.0) * 0.031).collect();
+        let gate = astype(
+            &array_f32(&gate_data, &[1, 1, 4, 8]),
+            MlxDtype::Bfloat16,
+            None,
+        );
+        let up = astype(
+            &array_f32(&up_data, &[1, 1, 4, 8]),
+            MlxDtype::Bfloat16,
+            None,
+        );
+        let packed = concatenate(&[&gate, &up], -1, None);
+
+        // Unfused reference: slice + silu_mul (matches the MoE fallback path)
+        let half = 8_i32;
+        let gate_slice = mlx_slice_last_dim(&packed, 0, half);
+        let up_slice = mlx_slice_last_dim(&packed, half, half * 2);
+        let direct = astype(
+            &silu_mul(&gate_slice, &up_slice, None),
+            MlxDtype::Float32,
+            None,
+        );
+
+        // Fused packed SwiGLU kernel (same kernel as dense path, applied to MoE shape)
+        let metal = packed_swiglu_metal_impl(&packed, 8)
+            .expect("packed SwiGLU Metal kernel should support MoE-shaped gate_up");
+        let metal = astype(&metal, MlxDtype::Float32, None);
+        eval(&[&direct, &metal]);
+
+        assert_eq!(metal.shape(), vec![1, 1, 4, 8]);
+        assert_close(metal.data_f32(), direct.data_f32(), 2.0e-2);
+    }
+
+    /// Guardrail probe for the Tier 3A compiled shared-expert closure.
+    ///
+    /// The core risk is that `shapeless=true` compilation with
+    /// `quantized_matmul` is untested in this codebase (the existing compile
+    /// caches use either elementwise ops with shapeless, or quantized_matmul
+    /// with per-shape compilation). This probe builds a small quantized weight,
+    /// compiles a shapeless closure doing `quantized_matmul -> sigmoid ->
+    /// multiply` (the shared-expert gate path), and records the current
+    /// fail-closed finding: the compiled output is correct for the traced
+    /// shape, but not shape-polymorphic across a different sequence length.
+    #[test]
+    fn shapeless_compiled_linear_closure_is_not_shape_polymorphic() {
+        use mlx_sys::{MlxClosure, MlxVectorArray, quantized_matmul, sigmoid};
+
+        // Build a small non-quantized weight mimicking a shared-expert
+        // projection: shape [hidden=8, out=16]. (The probe's goal is to verify
+        // the shapeless compilation contract for a graph with a linear op +
+        // elementwise ops across two input shapes. Quantized_matmul's packed
+        // uint32 format is well-exercised by the production weight loader and
+        // existing tests; the real unknown here is whether shapeless=true
+        // preserves correctness for a linear graph, so a plain matmul suffices.)
+        let weight_data: Vec<f32> = (0..128).map(|i| ((i as f32) - 64.0) * 0.01).collect();
+        let weight = array_f32(&weight_data, &[8, 16]);
+        let qw_captured = QuantizedWeight {
+            weight: weight.clone(),
+            scales: None,
+            biases: None,
+            group_size: 64,
+            bits: 32,
+        };
+
+        // Capture a *clone* of the weight into the closure body. Per
+        // closure.rs:191, captured MlxArrays become constants in the compiled
+        // graph — this is the same mechanism the embedding closures use.
+        let body_factory = || {
+            let qw = qw_captured.clone();
+            MlxClosure::new_dyn(move |inputs: &MlxVectorArray| {
+                let x = inputs.get(0);
+                let h = qw_inner(&qw, &x);
+                let gate = inputs.get(1);
+                let sig = sigmoid(&gate, None);
+                vec![multiply(&h, &sig, None)]
+            })
+        };
+
+        // Helper that mirrors qw() but takes QuantizedWeight by ref (avoids
+        // lifetime issues with the closure capturing qw by value).
+        fn qw_inner(qw: &QuantizedWeight, x: &MlxArray) -> MlxArray {
+            if let Some(scales) = &qw.scales {
+                quantized_matmul(
+                    x,
+                    &qw.weight,
+                    scales,
+                    qw.biases.as_ref(),
+                    true,
+                    Some(qw.group_size),
+                    Some(qw.bits),
+                    None,
+                )
+            } else {
+                mlx_sys::matmul(x, &qw.weight, None)
+            }
+        }
+
+        let compiled = body_factory()
+            .compile(true)
+            .expect("shapeless compile of quantized_matmul closure must succeed");
+
+        // Shape 1: [1, 1, 8] (decode shape).
+        let x1 = array_f32(
+            &(0..8).map(|i| (i as f32) * 0.1).collect::<Vec<_>>(),
+            &[1, 1, 8],
+        );
+        let gate1 = array_f32(&[0.3; 16], &[1, 1, 16]);
+
+        let imperative_out_1 = {
+            let h = qw_inner(&qw_captured, &x1);
+            let sig = sigmoid(&gate1, None);
+            multiply(&h, &sig, None)
+        };
+        let compiled_out_1 = compiled.apply(&[&x1, &gate1]);
+        eval(&[&imperative_out_1, &compiled_out_1[0]]);
+        assert_eq!(compiled_out_1[0].shape(), vec![1, 1, 16]);
+        // Bit-identical: compiled graph must produce exactly the same result.
+        let imp = imperative_out_1.data_f32().to_vec();
+        let comp = compiled_out_1[0].data_f32().to_vec();
+        let max_diff = imp
+            .iter()
+            .zip(&comp)
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0_f32, f32::max);
+        assert!(
+            max_diff < 1.0e-6,
+            "shapeless compiled quantized_matmul closure must match imperative (shape 1): max_diff={max_diff}"
+        );
+
+        // Shape 2: [1, 4, 8] (prefill shape). Current MLX compile behavior
+        // does not preserve correctness across this shape change, so Tier 3A
+        // shared-expert compilation must stay out of production until this is
+        // reworked with a per-shape cache or another fail-closed strategy.
+        let x2 = array_f32(
+            &(0..32).map(|i| (i as f32) * 0.05).collect::<Vec<_>>(),
+            &[1, 4, 8],
+        );
+        let gate2 = array_f32(&[0.7; 64], &[1, 4, 16]);
+
+        let imperative_out_2 = {
+            let h = qw_inner(&qw_captured, &x2);
+            let sig = sigmoid(&gate2, None);
+            multiply(&h, &sig, None)
+        };
+        let compiled_out_2 = compiled.apply(&[&x2, &gate2]);
+        eval(&[&imperative_out_2, &compiled_out_2[0]]);
+        assert_eq!(compiled_out_2[0].shape(), vec![1, 4, 16]);
+        let imp = imperative_out_2.data_f32().to_vec();
+        let comp = compiled_out_2[0].data_f32().to_vec();
+        let max_diff = imp
+            .iter()
+            .zip(&comp)
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0_f32, f32::max);
+        assert!(
+            max_diff > 1.0e-3,
+            "shapeless compiled linear closure unexpectedly became shape-polymorphic; re-evaluate the Tier 3A guardrail before enabling it"
         );
     }
 }

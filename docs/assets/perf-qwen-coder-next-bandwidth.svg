@@ -1,0 +1,63 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="840" height="470" viewBox="0 0 840 470" role="img" aria-labelledby="title desc">
+<title>Qwen3-Coder-Next 4-bit — MoE Decode Efficiency: speed = bandwidth ÷ bytes/token</title>
+<desc>Scatter plot of Qwen3-Coder-Next 4-bit MoE decode. X axis is weight bytes read per token, Y axis is decode tok/s; the curve is the 577 GB/s bandwidth ceiling (tok/s = 577 / bytes). AX and mlx-lm share x = 1.96 GB/token (identical MLX weights) so the vertical gap between them is kernel efficiency: AX 117.7 tok/s vs mlx-lm 99.2 tok/s. llama.cpp reads 2.83 GB/token (1.44x more, Q4_K_M) and decodes slowest at 86.2 tok/s. All three sit far below the ceiling, so decode is gather-bound, not bandwidth-bound.</desc>
+<rect width="840" height="470" fill="#f8fafc"/>
+<text x="20" y="28" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="15" font-weight="700" fill="#111827">Qwen3-Coder-Next 4-bit — MoE Decode Efficiency: speed = bandwidth ÷ bytes/token</text>
+<text x="20" y="48" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#4b5563">decode throughput vs weight bytes read per token · the curve is the 577 GB/s M5 Max bandwidth ceiling</text>
+<text x="20" y="64" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">every engine sits far below the ceiling — MoE decode is gather/dispatch-bound, not bandwidth-bound; the room above each point is headroom</text>
+<rect x="74" y="104" width="526" height="288" rx="4" fill="#ffffff" stroke="#dbe3ef"/>
+<line x1="74" y1="392.0" x2="600" y2="392.0" stroke="#eef2f7" stroke-width="1"/>
+<text x="66" y="395.0" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">0</text>
+<line x1="74" y1="356.0" x2="600" y2="356.0" stroke="#eef2f7" stroke-width="1"/>
+<text x="66" y="359.0" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">40</text>
+<line x1="74" y1="320.0" x2="600" y2="320.0" stroke="#eef2f7" stroke-width="1"/>
+<text x="66" y="323.0" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">80</text>
+<line x1="74" y1="284.0" x2="600" y2="284.0" stroke="#eef2f7" stroke-width="1"/>
+<text x="66" y="287.0" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">120</text>
+<line x1="74" y1="248.0" x2="600" y2="248.0" stroke="#eef2f7" stroke-width="1"/>
+<text x="66" y="251.0" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">160</text>
+<line x1="74" y1="212.0" x2="600" y2="212.0" stroke="#eef2f7" stroke-width="1"/>
+<text x="66" y="215.0" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">200</text>
+<line x1="74" y1="176.0" x2="600" y2="176.0" stroke="#eef2f7" stroke-width="1"/>
+<text x="66" y="179.0" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">240</text>
+<line x1="74" y1="140.0" x2="600" y2="140.0" stroke="#eef2f7" stroke-width="1"/>
+<text x="66" y="143.0" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">280</text>
+<line x1="74" y1="104.0" x2="600" y2="104.0" stroke="#eef2f7" stroke-width="1"/>
+<text x="66" y="107.0" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">320</text>
+<text x="20" y="248.0" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#374151" transform="rotate(-90 20 248.0)">decode tok/s (higher is better)</text>
+<line x1="74.0" y1="104" x2="74.0" y2="392" stroke="#eef2f7" stroke-width="1"/>
+<text x="74.0" y="408.0" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">1.5</text>
+<line x1="172.6" y1="104" x2="172.6" y2="392" stroke="#eef2f7" stroke-width="1"/>
+<text x="172.6" y="408.0" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">1.8</text>
+<line x1="271.2" y1="104" x2="271.2" y2="392" stroke="#eef2f7" stroke-width="1"/>
+<text x="271.2" y="408.0" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">2.1</text>
+<line x1="369.9" y1="104" x2="369.9" y2="392" stroke="#eef2f7" stroke-width="1"/>
+<text x="369.9" y="408.0" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">2.4</text>
+<line x1="468.5" y1="104" x2="468.5" y2="392" stroke="#eef2f7" stroke-width="1"/>
+<text x="468.5" y="408.0" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">2.7</text>
+<line x1="567.1" y1="104" x2="567.1" y2="392" stroke="#eef2f7" stroke-width="1"/>
+<text x="567.1" y="408.0" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">3.0</text>
+<text x="337.0" y="426.0" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#374151">weight bytes read per token (GB) — fewer is better ←</text>
+<polyline points="179.2,106.7 185.8,109.8 192.3,112.8 198.9,115.8 205.5,118.7 212.1,121.5 218.6,124.3 225.2,127.1 231.8,129.7 238.4,132.3 245.0,134.9 251.5,137.4 258.1,139.9 264.7,142.3 271.2,144.7 277.8,147.0 284.4,149.3 291.0,151.6 297.6,153.8 304.1,156.0 310.7,158.1 317.3,160.2 323.8,162.2 330.4,164.2 337.0,166.2 343.6,168.2 350.1,170.1 356.7,172.0 363.3,173.8 369.9,175.6 376.4,177.4 383.0,179.2 389.6,180.9 396.2,182.6 402.8,184.3 409.3,185.9 415.9,187.6 422.5,189.1 429.1,190.7 435.6,192.3 442.2,193.8 448.8,195.3 455.4,196.8 461.9,198.2 468.5,199.7 475.1,201.1 481.7,202.5 488.2,203.8 494.8,205.2 501.4,206.5 508.0,207.9 514.5,209.1 521.1,210.4 527.7,211.7 534.2,212.9 540.8,214.2 547.4,215.4 554.0,216.6 560.5,217.7 567.1,218.9 573.7,220.0 580.3,221.2 586.9,222.3 593.4,223.4 600.0,224.5" fill="none" stroke="#dc2626" stroke-width="1.8" stroke-dasharray="6 4"/>
+<text x="546.8" y="208.2" text-anchor="start" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#dc2626">577 GB/s ceiling</text>
+<text x="546.8" y="220.2" text-anchor="start" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="9" fill="#dc2626" fill-opacity="0.8">max speed if saturated</text>
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#c2410c"/></marker></defs>
+<line x1="226.8" y1="286.1" x2="226.8" y2="131.7" stroke="#94a3b8" stroke-width="1.2" stroke-dasharray="2 3"/>
+<text x="234.8" y="149.7" text-anchor="start" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#64748b">60% idle</text>
+<text x="234.8" y="162.7" text-anchor="start" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#64748b">headroom</text>
+<line x1="230.8" y1="257.0" x2="501.4" y2="257.0" stroke="#c2410c" stroke-width="1.4" marker-end="url(#arrow)"/>
+<text x="368.6" y="251.0" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#c2410c">Q4_K_M reads 1.44× the bytes/token</text>
+<path d="M 218.8 286.1 H 212.8 V 302.7 H 218.8" fill="none" stroke="#176c37" stroke-width="1.4"/>
+<text x="208.8" y="291.4" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#176c37">+19% decode</text>
+<text x="208.8" y="303.4" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="9" fill="#176c37">same weights, AX kernels</text>
+<circle cx="226.8" cy="286.1" r="7.5" fill="#2eaf5f" fill-opacity="0.92" stroke="#176c37" stroke-width="2"/>
+<text x="239.8" y="275.1" text-anchor="start" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">AX Engine 6.4.0</text>
+<text x="239.8" y="287.1" text-anchor="start" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#4b5563">117.7 tok/s · 1.96 GB/tok · 40% of peak</text>
+<circle cx="226.8" cy="302.7" r="7.5" fill="#f2b705" fill-opacity="0.92" stroke="#9a6a00" stroke-width="2"/>
+<text x="239.8" y="317.7" text-anchor="start" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">mlx-lm 0.31.3</text>
+<text x="239.8" y="329.7" text-anchor="start" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#4b5563">99.2 tok/s · 1.96 GB/tok · 34% of peak</text>
+<circle cx="510.4" cy="314.4" r="7.5" fill="#f97316" fill-opacity="0.92" stroke="#c2410c" stroke-width="2"/>
+<text x="524.4" y="310.4" text-anchor="start" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">llama.cpp b9620</text>
+<text x="524.4" y="323.4" text-anchor="start" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#4b5563">86.2 tok/s · 2.83 GB/tok · 42% of peak</text>
+<text x="20" y="456" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="9" fill="#9ca3af">AX 6.4.0 · mlx-lm 0.31.3 · llama.cpp b9620 · M5 Max · peak via MLX reduction probe · llama bytes/token from GGUF tensor table</text>
+</svg>

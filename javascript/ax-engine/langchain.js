@@ -3,6 +3,14 @@ import { LLM } from "@langchain/core/language_models/llms";
 import { AIMessage, AIMessageChunk } from "@langchain/core/messages";
 import AxEngineClient from "./index.js";
 
+function firstChoice(response, endpoint) {
+  const choices = response?.choices;
+  if (!Array.isArray(choices) || choices.length === 0) {
+    throw new Error(`ax-engine ${endpoint} response contained no choices`);
+  }
+  return choices[0];
+}
+
 function messageToOpenAi(message) {
   const type = message._getType ? message._getType() : message.role;
   let role;
@@ -72,7 +80,7 @@ export class ChatAXEngine extends BaseChatModel {
   async _generate(messages, options, _runManager) {
     const request = this._buildChatRequest(messages, options);
     const response = await this.client.chatCompletion(request);
-    const choice = response.choices[0];
+    const choice = firstChoice(response, "chat completions");
     const text = choice?.message?.content ?? "";
     return {
       generations: [
@@ -156,7 +164,7 @@ export class AXEngineLLM extends LLM {
   async _call(prompt, options, _runManager) {
     const request = this._buildCompletionRequest(prompt, options);
     const response = await this.client.completion(request);
-    return response.choices[0]?.text ?? "";
+    return firstChoice(response, "completions")?.text ?? "";
   }
 
   async *_streamResponseChunks(prompt, options, runManager) {

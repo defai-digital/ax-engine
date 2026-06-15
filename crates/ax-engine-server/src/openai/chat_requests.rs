@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use ax_engine_sdk::{
@@ -9,7 +10,7 @@ use ax_engine_sdk::{
 };
 use axum::Json;
 use axum::http::StatusCode;
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 use crate::chat;
 use crate::errors::{ErrorResponse, error_response};
@@ -35,7 +36,26 @@ pub(crate) fn render_openai_chat_prompt(
     model_id: &str,
     messages: &[OpenAiChatMessage],
 ) -> Result<String, HttpErrorResponse> {
-    let rendered_messages = render_openai_chat_message_pairs(messages)?;
+    render_openai_chat_prompt_with_tools(model_id, messages, None, None)
+}
+
+pub(crate) fn render_openai_chat_prompt_with_tools(
+    model_id: &str,
+    messages: &[OpenAiChatMessage],
+    tools: Option<&Value>,
+    tool_choice: Option<&Value>,
+) -> Result<String, HttpErrorResponse> {
+    if matches!(
+        chat::ChatPromptTemplate::for_model_id(model_id),
+        chat::ChatPromptTemplate::Gemma4
+    ) && gemma4_tool_surface_is_present(messages, tools, tool_choice)
+    {
+        return render_gemma4_openai_chat_prompt(messages, tools);
+    }
+    let tool_contract_style = qwen_tool_contract_style(model_id);
+    let rendered_messages = render_openai_chat_message_pairs(messages, tool_contract_style)?;
+    let rendered_messages =
+        prepend_qwen_tool_contract(model_id, rendered_messages, tools, tool_choice);
     chat::render_prompt(model_id, &rendered_messages).map_err(chat_error_response)
 }
 
@@ -50,7 +70,7 @@ pub(crate) fn build_mlx_lm_chat_messages(
         .iter()
         .map(|message| {
             let role = chat::normalize_role(&message.role).map_err(chat_error_response)?;
-            let content = render_openai_chat_content(&message.content)?;
+            let content = render_openai_chat_content(message.content.as_ref())?;
             Ok(MlxLmChatMessage::new(role, content))
         })
         .collect()
@@ -67,7 +87,7 @@ pub(crate) fn build_llama_cpp_chat_messages(
         .iter()
         .map(|message| {
             let role = chat::normalize_role(&message.role).map_err(chat_error_response)?;
-            let content = render_openai_chat_content(&message.content)?;
+            let content = render_openai_chat_content(message.content.as_ref())?;
             Ok(LlamaCppChatMessage::new(role, content))
         })
         .collect()
@@ -89,6 +109,7 @@ pub(crate) fn openai_chat_stop_sequences(
 
 fn render_openai_chat_message_pairs(
     messages: &[OpenAiChatMessage],
+    tool_contract_style: QwenToolContractStyle,
 ) -> Result<ChatMessagePairs, HttpErrorResponse> {
     if messages.is_empty() {
         return Err(empty_chat_messages_error());
@@ -97,7 +118,21 @@ fn render_openai_chat_message_pairs(
         .iter()
         .map(|message| {
             let role = chat::normalize_role(&message.role).map_err(chat_error_response)?;
-            let content = render_openai_chat_content(&message.content)?;
+            let mut content = render_openai_chat_content(message.content.as_ref())?;
+            if role == "assistant"
+                && let Some(tool_calls) = message.tool_calls.as_ref()
+                && let Some(rendered_tool_calls) =
+                    render_assistant_tool_calls(tool_calls, tool_contract_style)
+            {
+                if !content.trim().is_empty() {
+                    if tool_contract_style.uses_xml_tool_calls() {
+                        content.push_str("\n\n");
+                    } else {
+                        content.push('\n');
+                    }
+                }
+                content.push_str(&rendered_tool_calls);
+            }
             Ok((role.to_string(), content))
         })
         .collect()
@@ -115,7 +150,12 @@ fn chat_error_response(message: String) -> HttpErrorResponse {
     error_response(StatusCode::BAD_REQUEST, "invalid_request", message)
 }
 
-fn render_openai_chat_content(content: &OpenAiChatContent) -> Result<String, HttpErrorResponse> {
+fn render_openai_chat_content(
+    content: Option<&OpenAiChatContent>,
+) -> Result<String, HttpErrorResponse> {
+    let Some(content) = content else {
+        return Ok(String::new());
+    };
     match content {
         OpenAiChatContent::Text(text) => Ok(text.clone()),
         OpenAiChatContent::Parts(parts) => {
@@ -153,6 +193,811 @@ fn render_openai_chat_content(content: &OpenAiChatContent) -> Result<String, Htt
             Ok(rendered)
         }
     }
+}
+
+fn gemma4_tool_surface_is_present(
+    messages: &[OpenAiChatMessage],
+    tools: Option<&Value>,
+    tool_choice: Option<&Value>,
+) -> bool {
+    tools.map(openai_value_is_present).unwrap_or(false)
+        || tool_choice
+            .map(tool_choice_forces_tool_call)
+            .unwrap_or(false)
+        || messages.iter().any(|message| {
+            matches!(message.role.as_str(), "tool" | "function")
+                || message
+                    .tool_calls
+                    .as_ref()
+                    .is_some_and(openai_value_is_present)
+        })
+}
+
+fn render_gemma4_openai_chat_prompt(
+    messages: &[OpenAiChatMessage],
+    tools: Option<&Value>,
+) -> Result<String, HttpErrorResponse> {
+    if messages.is_empty() {
+        return Err(empty_chat_messages_error());
+    }
+
+    let mut prompt = String::from("<bos>");
+    let mut index = 0usize;
+    let has_tools = tools.map(openai_value_is_present).unwrap_or(false);
+    let first_role = messages
+        .first()
+        .map(|message| message.role.trim())
+        .unwrap_or_default();
+
+    if has_tools || matches!(first_role, "system" | "developer") {
+        prompt.push_str("<|turn>system\n");
+        if matches!(first_role, "system" | "developer") {
+            let content = render_openai_chat_content(messages[0].content.as_ref())?;
+            prompt.push_str(content.trim());
+            index = 1;
+        }
+        if let Some(tools) = tools
+            && openai_value_is_present(tools)
+        {
+            for declaration in render_gemma4_tool_declarations(tools) {
+                prompt.push_str("<|tool>");
+                prompt.push_str(&declaration);
+                prompt.push_str("<tool|>");
+            }
+        }
+        prompt.push_str("<turn|>\n");
+    }
+
+    let mut suppress_generation_prompt = false;
+    while index < messages.len() {
+        let message = &messages[index];
+        let role = chat::normalize_role(&message.role).map_err(chat_error_response)?;
+        if matches!(role, "tool" | "function") {
+            index += 1;
+            continue;
+        }
+
+        let turn = if role == "assistant" { "model" } else { role };
+        prompt.push_str("<|turn>");
+        prompt.push_str(turn);
+        prompt.push('\n');
+
+        if role == "assistant" {
+            let mut rendered_tool_call = false;
+            let mut tool_names_by_id = BTreeMap::new();
+            if let Some(tool_calls) = message.tool_calls.as_ref() {
+                for call in gemma4_tool_calls(tool_calls) {
+                    if let Some(id) = call.id {
+                        tool_names_by_id.insert(id, call.name.clone());
+                    }
+                    prompt.push_str("<|tool_call>call:");
+                    prompt.push_str(&call.name);
+                    prompt.push('{');
+                    prompt.push_str(&format_gemma4_arguments_object(&call.arguments));
+                    prompt.push_str("}<tool_call|>");
+                    rendered_tool_call = true;
+                }
+            }
+
+            let (tool_response_count, next_index) = render_following_gemma4_tool_responses(
+                messages,
+                index + 1,
+                &tool_names_by_id,
+                &mut prompt,
+            )?;
+            let content = render_openai_chat_content(message.content.as_ref())?;
+            if !content.trim().is_empty() {
+                prompt.push_str(strip_gemma4_thinking_from_history(&content).trim());
+            }
+
+            if rendered_tool_call && tool_response_count == 0 {
+                prompt.push_str("<|tool_response>");
+                suppress_generation_prompt = true;
+            } else if !(tool_response_count > 0 && content.trim().is_empty()) {
+                prompt.push_str("<turn|>\n");
+                suppress_generation_prompt = false;
+            } else {
+                suppress_generation_prompt = true;
+            }
+            index = next_index;
+            continue;
+        }
+
+        let content = render_openai_chat_content(message.content.as_ref())?;
+        prompt.push_str(content.trim());
+        prompt.push_str("<turn|>\n");
+        suppress_generation_prompt = false;
+        index += 1;
+    }
+
+    if !suppress_generation_prompt {
+        prompt.push_str("<|turn>model\n<|channel>thought\n<channel|>");
+    }
+    Ok(prompt)
+}
+
+#[derive(Debug)]
+struct Gemma4ToolCall {
+    id: Option<String>,
+    name: String,
+    arguments: Value,
+}
+
+fn gemma4_tool_calls(value: &Value) -> Vec<Gemma4ToolCall> {
+    let calls = match value {
+        Value::Array(calls) => calls.as_slice(),
+        Value::Object(_) => std::slice::from_ref(value),
+        _ => return Vec::new(),
+    };
+    calls
+        .iter()
+        .filter_map(|call| {
+            let object = call.as_object()?;
+            let function = object.get("function")?.as_object()?;
+            let name = function.get("name")?.as_str()?.to_string();
+            Some(Gemma4ToolCall {
+                id: object.get("id").and_then(Value::as_str).map(str::to_string),
+                name,
+                arguments: normalize_tool_arguments(function.get("arguments")),
+            })
+        })
+        .collect()
+}
+
+fn render_following_gemma4_tool_responses(
+    messages: &[OpenAiChatMessage],
+    mut index: usize,
+    tool_names_by_id: &BTreeMap<String, String>,
+    prompt: &mut String,
+) -> Result<(usize, usize), HttpErrorResponse> {
+    let mut count = 0usize;
+    while index < messages.len() {
+        let message = &messages[index];
+        let role = chat::normalize_role(&message.role).map_err(chat_error_response)?;
+        if !matches!(role, "tool" | "function") {
+            break;
+        }
+        let tool_name = message
+            ._tool_call_id
+            .as_ref()
+            .and_then(|id| tool_names_by_id.get(id))
+            .or(message._name.as_ref())
+            .map(String::as_str)
+            .unwrap_or("unknown");
+        let content = render_openai_chat_content(message.content.as_ref())?;
+        prompt.push_str("<|tool_response>response:");
+        prompt.push_str(tool_name);
+        prompt.push_str("{value:");
+        prompt.push_str(&format_gemma4_argument(&Value::String(content), false));
+        prompt.push_str("}<tool_response|>");
+        count += 1;
+        index += 1;
+    }
+    Ok((count, index))
+}
+
+fn render_gemma4_tool_declarations(tools: &Value) -> Vec<String> {
+    match tools {
+        Value::Array(items) => items
+            .iter()
+            .filter_map(render_gemma4_tool_declaration)
+            .collect(),
+        value => render_gemma4_tool_declaration(value).into_iter().collect(),
+    }
+}
+
+fn render_gemma4_tool_declaration(tool: &Value) -> Option<String> {
+    let function = tool.get("function").and_then(Value::as_object)?;
+    let name = function.get("name")?.as_str()?;
+    let description = function
+        .get("description")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let mut rendered = String::new();
+    rendered.push_str("declaration:");
+    rendered.push_str(name);
+    rendered.push_str("{description:");
+    rendered.push_str(&format_gemma4_argument(
+        &Value::String(description.to_string()),
+        true,
+    ));
+    if let Some(parameters) = function.get("parameters").and_then(Value::as_object) {
+        rendered.push_str(",parameters:{");
+        if let Some(properties) = parameters.get("properties").and_then(Value::as_object) {
+            rendered.push_str("properties:{ ");
+            rendered.push_str(&format_gemma4_parameters(properties));
+            rendered.push_str(" },");
+        }
+        if let Some(required) = parameters.get("required") {
+            rendered.push_str("required:");
+            rendered.push_str(&format_gemma4_argument(required, true));
+            rendered.push(',');
+        }
+        if let Some(param_type) = parameters.get("type") {
+            rendered.push_str("type:");
+            rendered.push_str(&format_gemma4_upper_type_argument(param_type));
+            rendered.push('}');
+        } else {
+            rendered.push('}');
+        }
+    }
+    rendered.push('}');
+    Some(rendered)
+}
+
+fn format_gemma4_parameters(properties: &serde_json::Map<String, Value>) -> String {
+    let standard_keys = ["description", "type", "properties", "required", "nullable"];
+    let mut rendered = Vec::new();
+    let mut keys = properties.keys().collect::<Vec<_>>();
+    keys.sort();
+    for key in keys {
+        if standard_keys.contains(&key.as_str()) {
+            continue;
+        }
+        let Some(value) = properties.get(key).and_then(Value::as_object) else {
+            continue;
+        };
+        let mut fields = Vec::new();
+        if let Some(description) = value.get("description").and_then(Value::as_str) {
+            fields.push(format!(
+                "description:{}",
+                format_gemma4_argument(&Value::String(description.to_string()), true)
+            ));
+        }
+        if value.get("nullable").and_then(Value::as_bool) == Some(true) {
+            fields.push("nullable:true".to_string());
+        }
+        if let Some(enum_values) = value.get("enum") {
+            fields.push(format!(
+                "enum:{}",
+                format_gemma4_argument(enum_values, true)
+            ));
+        }
+        if let Some(nested) = value.get("properties").and_then(Value::as_object) {
+            fields.push(format!(
+                "properties:{{{}}}",
+                format_gemma4_parameters(nested)
+            ));
+        }
+        if let Some(required) = value.get("required") {
+            fields.push(format!(
+                "required:{}",
+                format_gemma4_argument(required, true)
+            ));
+        }
+        if let Some(items) = value.get("items") {
+            fields.push(format!("items:{}", format_gemma4_argument(items, false)));
+        }
+        if let Some(param_type) = value.get("type") {
+            fields.push(format!(
+                "type:{}",
+                format_gemma4_upper_type_argument(param_type)
+            ));
+        }
+        rendered.push(format!("{key}:{{{}}}", fields.join(",")));
+    }
+    rendered.join(",")
+}
+
+fn format_gemma4_arguments_object(arguments: &Value) -> String {
+    match arguments {
+        Value::Object(object) => {
+            let mut keys = object.keys().collect::<Vec<_>>();
+            keys.sort();
+            keys.into_iter()
+                .filter_map(|key| {
+                    object
+                        .get(key)
+                        .map(|value| format!("{key}:{}", format_gemma4_argument(value, false)))
+                })
+                .collect::<Vec<_>>()
+                .join(",")
+        }
+        Value::String(value) => value.clone(),
+        _ => String::new(),
+    }
+}
+
+fn format_gemma4_upper_type_argument(value: &Value) -> String {
+    match value {
+        Value::String(value) => {
+            format_gemma4_argument(&Value::String(value.to_ascii_uppercase()), true)
+        }
+        Value::Array(values) => {
+            let upper = Value::Array(
+                values
+                    .iter()
+                    .map(|value| match value {
+                        Value::String(value) => Value::String(value.to_ascii_uppercase()),
+                        value => value.clone(),
+                    })
+                    .collect(),
+            );
+            format_gemma4_argument(&upper, true)
+        }
+        value => format_gemma4_argument(value, true),
+    }
+}
+
+fn format_gemma4_argument(value: &Value, escape_keys: bool) -> String {
+    match value {
+        Value::String(value) => format!("<|\"|>{value}<|\"|>"),
+        Value::Bool(value) => value.to_string(),
+        Value::Number(value) => value.to_string(),
+        Value::Null => "null".to_string(),
+        Value::Array(values) => format!(
+            "[{}]",
+            values
+                .iter()
+                .map(|value| format_gemma4_argument(value, escape_keys))
+                .collect::<Vec<_>>()
+                .join(",")
+        ),
+        Value::Object(object) => {
+            let mut keys = object.keys().collect::<Vec<_>>();
+            keys.sort();
+            let fields = keys
+                .into_iter()
+                .filter_map(|key| {
+                    object.get(key).map(|value| {
+                        let rendered_key = if escape_keys {
+                            format!("<|\"|>{key}<|\"|>")
+                        } else {
+                            key.to_string()
+                        };
+                        format!(
+                            "{rendered_key}:{}",
+                            format_gemma4_argument(value, escape_keys)
+                        )
+                    })
+                })
+                .collect::<Vec<_>>()
+                .join(",");
+            format!("{{{fields}}}")
+        }
+    }
+}
+
+fn strip_gemma4_thinking_from_history(content: &str) -> String {
+    let mut remaining = content;
+    let mut rendered = String::new();
+    while let Some(start) = remaining.find("<|channel>") {
+        rendered.push_str(&remaining[..start]);
+        let body_start = start + "<|channel>".len();
+        let Some(relative_end) = remaining[body_start..].find("<channel|>") else {
+            remaining = "";
+            break;
+        };
+        remaining = &remaining[body_start + relative_end + "<channel|>".len()..];
+    }
+    rendered.push_str(remaining);
+    rendered.trim().to_string()
+}
+
+fn prepend_qwen_tool_contract(
+    model_id: &str,
+    mut messages: ChatMessagePairs,
+    tools: Option<&Value>,
+    tool_choice: Option<&Value>,
+) -> ChatMessagePairs {
+    if !matches!(
+        chat::ChatPromptTemplate::for_model_id(model_id),
+        chat::ChatPromptTemplate::QwenChatMl
+    ) {
+        return messages;
+    }
+    let style = qwen_tool_contract_style(model_id);
+    let Some(contract) = render_tool_contract_system_message(tools, tool_choice, style) else {
+        return messages;
+    };
+    if let Some((role, content)) = messages.first_mut()
+        && role == "system"
+    {
+        content.push_str("\n\n");
+        content.push_str(&contract);
+    } else {
+        let content = if style == QwenToolContractStyle::CoderXml {
+            format!(
+                "You are Qwen, a helpful AI assistant that can interact with a computer to solve tasks.\n\n{contract}"
+            )
+        } else {
+            contract
+        };
+        messages.insert(0, ("system".to_string(), content));
+    }
+    messages
+}
+
+fn render_tool_contract_system_message(
+    tools: Option<&Value>,
+    tool_choice: Option<&Value>,
+    style: QwenToolContractStyle,
+) -> Option<String> {
+    let tools = tools?;
+    if !openai_value_is_present(tools) {
+        return None;
+    }
+
+    match style {
+        QwenToolContractStyle::JsonTools => {
+            render_json_tool_contract_system_message(tools, tool_choice)
+        }
+        QwenToolContractStyle::FunctionXml => {
+            render_qwen_function_tool_contract_system_message(tools, tool_choice)
+        }
+        QwenToolContractStyle::CoderXml => {
+            render_qwen_coder_tool_contract_system_message(tools, tool_choice)
+        }
+    }
+}
+
+fn render_json_tool_contract_system_message(
+    tools: &Value,
+    tool_choice: Option<&Value>,
+) -> Option<String> {
+    let mut message = String::from(
+        "# Tools\n\n\
+         You may call one or more functions to assist with the user query.\n\n\
+         You are provided with function signatures within <tools></tools> XML tags:\n\
+         <tools>\n",
+    );
+    for line in render_json_tool_lines(tools) {
+        message.push_str(&line);
+        message.push('\n');
+    }
+    message.push_str(
+        "</tools>\n\n\
+         For each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:\n\
+         <tool_call>\n\
+         {\"name\": <function-name>, \"arguments\": <args-json-object>}\n\
+         </tool_call>",
+    );
+
+    if let Some(choice) = tool_choice
+        && tool_choice_forces_tool_call(choice)
+    {
+        message.push_str(
+            "\nThe current tool_choice requires using a tool when a matching function is available.",
+        );
+    }
+
+    Some(message)
+}
+
+fn render_qwen_function_tool_contract_system_message(
+    tools: &Value,
+    tool_choice: Option<&Value>,
+) -> Option<String> {
+    let mut message = String::from(
+        "# Tools\n\n\
+         You have access to the following functions:\n\n\
+         <tools>",
+    );
+    for line in render_json_tool_lines(tools) {
+        message.push('\n');
+        message.push_str(&line);
+    }
+    message.push_str("\n</tools>");
+    message.push_str(
+        "\n\nIf you choose to call a function ONLY reply in the following format with NO suffix:\n\n\
+         <tool_call>\n\
+         <function=example_function_name>\n\
+         <parameter=example_parameter_1>\n\
+         value_1\n\
+         </parameter>\n\
+         <parameter=example_parameter_2>\n\
+         This is the value for the second parameter\n\
+         that can span\n\
+         multiple lines\n\
+         </parameter>\n\
+         </function>\n\
+         </tool_call>\n\n\
+         <IMPORTANT>\n\
+         Reminder:\n\
+         - Function calls MUST follow the specified format: an inner <function=...></function> block must be nested within <tool_call></tool_call> XML tags\n\
+         - Required parameters MUST be specified\n\
+         - You may provide optional reasoning for your function call in natural language BEFORE the function call, but NOT after\n\
+         - If there is no function call available, answer the question like normal with your current knowledge and do not tell the user about function calls\n\
+         </IMPORTANT>",
+    );
+
+    if let Some(choice) = tool_choice
+        && tool_choice_forces_tool_call(choice)
+    {
+        message.push_str(
+            "\nThe current tool_choice requires using a tool when a matching function is available.",
+        );
+    }
+
+    Some(message)
+}
+
+fn render_qwen_coder_tool_contract_system_message(
+    tools: &Value,
+    tool_choice: Option<&Value>,
+) -> Option<String> {
+    let mut message = String::from("# Tools\n\nYou have access to the following tools:\n\n<tools>");
+    for line in render_qwen_tool_declarations(tools) {
+        message.push('\n');
+        message.push_str(&line);
+    }
+    message.push_str("\n</tools>");
+    message.push_str(
+        "\n\nIf you choose to call a tool ONLY reply in the following format with NO suffix:\n\n\
+         <tool_call>\n\
+         <function=example_function_name>\n\
+         <parameter=example_parameter_1>\n\
+         value_1\n\
+         </parameter>\n\
+         <parameter=example_parameter_2>\n\
+         value_2\n\
+         </parameter>\n\
+         </function>\n\
+         </tool_call>\n\n\
+         <IMPORTANT>\n\
+         Reminder:\n\
+         - Function calls MUST follow the specified format: the tool calling block MUST begin with an opening <tool_call> tag and end with a closing </tool_call> tag.\n\
+         - Required parameters MUST be specified\n\
+         - You may provide optional reasoning for your function call in natural language BEFORE the function call, but NOT after\n\
+         - If there is no function call available, answer the question like normal with your current knowledge and do not tell the user about function calls\n\
+         </IMPORTANT>",
+    );
+
+    if let Some(choice) = tool_choice
+        && tool_choice_forces_tool_call(choice)
+    {
+        message.push_str(
+            "\nThe current tool_choice requires using a tool when a matching function is available.",
+        );
+    }
+
+    Some(message)
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum QwenToolContractStyle {
+    JsonTools,
+    FunctionXml,
+    CoderXml,
+}
+
+impl QwenToolContractStyle {
+    fn uses_xml_tool_calls(self) -> bool {
+        matches!(self, Self::FunctionXml | Self::CoderXml)
+    }
+}
+
+fn qwen_tool_contract_style(model_id: &str) -> QwenToolContractStyle {
+    let normalized = normalize_model_id_token(model_id);
+    if chat::is_qwen_non_thinking_only_model(model_id) {
+        QwenToolContractStyle::CoderXml
+    } else if normalized.contains("qwen3-next")
+        || normalized.contains("qwen3-5")
+        || normalized.contains("qwen35")
+        || normalized.contains("qwen3-6")
+        || normalized.contains("qwen36")
+    {
+        QwenToolContractStyle::FunctionXml
+    } else {
+        QwenToolContractStyle::JsonTools
+    }
+}
+
+fn normalize_model_id_token(model_id: &str) -> String {
+    model_id
+        .to_ascii_lowercase()
+        .chars()
+        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '-' })
+        .collect()
+}
+
+fn render_json_tool_lines(tools: &Value) -> Vec<String> {
+    match tools {
+        Value::Array(items) => items.iter().map(compact_json).collect(),
+        value => vec![compact_json(value)],
+    }
+}
+
+fn render_qwen_tool_declarations(tools: &Value) -> Vec<String> {
+    match tools {
+        Value::Array(items) => items
+            .iter()
+            .filter_map(render_qwen_tool_declaration)
+            .collect(),
+        value => render_qwen_tool_declaration(value).into_iter().collect(),
+    }
+}
+
+fn render_qwen_tool_declaration(tool: &Value) -> Option<String> {
+    let function = openai_tool_function(tool)?;
+    let name = function.get("name")?.as_str()?;
+    let mut rendered = String::new();
+    rendered.push_str("<function>\n<name>");
+    rendered.push_str(&escape_xml_text(name));
+    rendered.push_str("</name>");
+    if let Some(description) = function.get("description").and_then(Value::as_str) {
+        let description = description.trim();
+        if !description.is_empty() {
+            rendered.push_str("\n<description>");
+            rendered.push_str(&escape_xml_text(description));
+            rendered.push_str("</description>");
+        }
+    }
+
+    rendered.push_str("\n<parameters>");
+    if let Some(parameters) = function.get("parameters").and_then(Value::as_object) {
+        if let Some(properties) = parameters.get("properties").and_then(Value::as_object) {
+            for (parameter_name, parameter_fields) in properties {
+                rendered.push_str("\n<parameter>\n<name>");
+                rendered.push_str(&escape_xml_text(parameter_name));
+                rendered.push_str("</name>");
+                if let Some(parameter_type) = parameter_fields.get("type") {
+                    rendered.push_str("\n<type>");
+                    rendered.push_str(&escape_xml_text(&stringify_json_scalar(parameter_type)));
+                    rendered.push_str("</type>");
+                }
+                if let Some(description) =
+                    parameter_fields.get("description").and_then(Value::as_str)
+                {
+                    let description = description.trim();
+                    if !description.is_empty() {
+                        rendered.push_str("\n<description>");
+                        rendered.push_str(&escape_xml_text(description));
+                        rendered.push_str("</description>");
+                    }
+                }
+                render_schema_extra(&mut rendered, parameter_fields, &["type", "description"]);
+                rendered.push_str("\n</parameter>");
+            }
+        }
+        render_schema_extra(
+            &mut rendered,
+            &Value::Object(parameters.clone()),
+            &["type", "properties"],
+        );
+    }
+    rendered.push_str("\n</parameters>\n</function>");
+    Some(rendered)
+}
+
+fn render_schema_extra(rendered: &mut String, value: &Value, handled_keys: &[&str]) {
+    let Some(object) = value.as_object() else {
+        return;
+    };
+    for (key, value) in object {
+        if handled_keys.iter().any(|handled| *handled == key) {
+            continue;
+        }
+        rendered.push('\n');
+        rendered.push('<');
+        rendered.push_str(&escape_xml_text(key));
+        rendered.push('>');
+        rendered.push_str(&escape_xml_text(&stringify_json_scalar(value)));
+        rendered.push_str("</");
+        rendered.push_str(&escape_xml_text(key));
+        rendered.push('>');
+    }
+}
+
+fn openai_tool_function(tool: &Value) -> Option<&Map<String, Value>> {
+    let object = tool.as_object()?;
+    object
+        .get("function")
+        .and_then(Value::as_object)
+        .or_else(|| object.get("name").is_some().then_some(object))
+}
+
+fn render_assistant_tool_calls(value: &Value, style: QwenToolContractStyle) -> Option<String> {
+    let calls = match value {
+        Value::Array(calls) => calls.as_slice(),
+        Value::Object(_) => std::slice::from_ref(value),
+        _ => return None,
+    };
+
+    let rendered = calls
+        .iter()
+        .filter_map(|call| render_assistant_tool_call(call, style))
+        .collect::<Vec<_>>();
+    (!rendered.is_empty()).then(|| rendered.join("\n"))
+}
+
+fn render_assistant_tool_call(value: &Value, style: QwenToolContractStyle) -> Option<String> {
+    let object = value.as_object()?;
+    let function = object.get("function").and_then(Value::as_object)?;
+    let name = function.get("name")?.as_str()?;
+    let arguments = normalize_tool_arguments(function.get("arguments"));
+    match style {
+        QwenToolContractStyle::JsonTools => {
+            let name_json = serde_json::to_string(name).ok()?;
+            Some(format!(
+                "<tool_call>\n{{\"name\": {name_json}, \"arguments\": {}}}\n</tool_call>",
+                compact_json(&arguments)
+            ))
+        }
+        QwenToolContractStyle::FunctionXml | QwenToolContractStyle::CoderXml => {
+            Some(render_qwen_xml_tool_call(name, &arguments))
+        }
+    }
+}
+
+fn normalize_tool_arguments(value: Option<&Value>) -> Value {
+    match value {
+        Some(Value::String(value)) => {
+            serde_json::from_str(value).unwrap_or_else(|_| Value::String(value.clone()))
+        }
+        Some(value) => value.clone(),
+        None => serde_json::json!({}),
+    }
+}
+
+fn tool_choice_forces_tool_call(value: &Value) -> bool {
+    match value {
+        Value::Null => false,
+        Value::Bool(value) => *value,
+        Value::String(value) => {
+            let value = value.trim().to_ascii_lowercase();
+            !matches!(value.as_str(), "" | "auto" | "none" | "false" | "off")
+        }
+        Value::Array(values) => !values.is_empty(),
+        Value::Object(object) => !object.is_empty(),
+        Value::Number(value) => json_number_is_nonzero(value),
+    }
+}
+
+fn openai_value_is_present(value: &Value) -> bool {
+    match value {
+        Value::Null => false,
+        Value::Bool(value) => *value,
+        Value::String(value) => !value.trim().is_empty(),
+        Value::Array(values) => !values.is_empty(),
+        Value::Object(object) => !object.is_empty(),
+        Value::Number(value) => json_number_is_nonzero(value),
+    }
+}
+
+fn json_number_is_nonzero(value: &serde_json::Number) -> bool {
+    value
+        .as_i64()
+        .map(|value| value != 0)
+        .or_else(|| value.as_u64().map(|value| value != 0))
+        .or_else(|| value.as_f64().map(|value| value != 0.0))
+        .unwrap_or(true)
+}
+
+fn compact_json(value: &Value) -> String {
+    serde_json::to_string(value).unwrap_or_else(|_| "null".to_string())
+}
+
+fn render_qwen_xml_tool_call(name: &str, arguments: &Value) -> String {
+    let mut rendered = String::new();
+    rendered.push_str("<tool_call>\n<function=");
+    rendered.push_str(&escape_xml_text(name));
+    rendered.push('>');
+    if let Some(args) = arguments.as_object() {
+        for (key, value) in args {
+            rendered.push_str("\n<parameter=");
+            rendered.push_str(&escape_xml_text(key));
+            rendered.push_str(">\n");
+            rendered.push_str(&escape_xml_text(&stringify_json_scalar(value)));
+            rendered.push_str("\n</parameter>");
+        }
+    }
+    rendered.push_str("\n</function>\n</tool_call>");
+    rendered
+}
+
+fn stringify_json_scalar(value: &Value) -> String {
+    match value {
+        Value::String(value) => value.clone(),
+        value => compact_json(value),
+    }
+}
+
+fn escape_xml_text(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -227,8 +1072,8 @@ fn openai_media_part_error(
 /// True when any message carries an inline media content part (image/audio/video).
 pub(crate) fn messages_contain_inline_media(messages: &[OpenAiChatMessage]) -> bool {
     messages.iter().any(|message| match &message.content {
-        OpenAiChatContent::Text(_) => false,
-        OpenAiChatContent::Parts(parts) => parts.iter().any(|part| {
+        Some(OpenAiChatContent::Text(_)) | None => false,
+        Some(OpenAiChatContent::Parts(parts)) => parts.iter().any(|part| {
             matches!(
                 chat_content_part_kind(part),
                 OpenAiChatContentPartKind::Media(_)
@@ -287,7 +1132,7 @@ pub(crate) fn render_gemma4_unified_chat_with_media(
     for message in messages {
         let role = chat::normalize_role(&message.role).map_err(chat_error_response)?;
         let content = render_content_collecting_media(
-            &message.content,
+            message.content.as_ref(),
             &image_placeholder,
             &audio_placeholder,
             video_placeholder.as_deref(),
@@ -412,12 +1257,15 @@ fn placeholder_string(
 }
 
 fn render_content_collecting_media(
-    content: &OpenAiChatContent,
+    content: Option<&OpenAiChatContent>,
     image_placeholder: &str,
     audio_placeholder: &str,
     video_placeholder: Option<&str>,
     collected: &mut CollectedMedia,
 ) -> Result<String, HttpErrorResponse> {
+    let Some(content) = content else {
+        return Ok(String::new());
+    };
     match content {
         OpenAiChatContent::Text(text) => Ok(text.clone()),
         OpenAiChatContent::Parts(parts) => {
@@ -887,5 +1735,15 @@ mod media_tests {
         .expect_err("mismatch should fail");
         assert_eq!(error.0, StatusCode::BAD_REQUEST);
         assert!(error.1.error.message.contains("image placeholder"));
+    }
+
+    #[test]
+    fn openai_tool_presence_treats_numeric_zero_as_false() {
+        assert!(!openai_value_is_present(&json!(0)));
+        assert!(!openai_value_is_present(&json!(0.0)));
+        assert!(!tool_choice_forces_tool_call(&json!(0)));
+        assert!(!tool_choice_forces_tool_call(&json!(0.0)));
+        assert!(openai_value_is_present(&json!(-1)));
+        assert!(tool_choice_forces_tool_call(&json!(0.5)));
     }
 }

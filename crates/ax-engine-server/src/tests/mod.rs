@@ -8,6 +8,7 @@ mod grpc;
 mod lifecycle;
 mod metadata;
 mod metrics;
+mod ollama;
 mod openai_chat;
 mod openai_compat;
 mod openai_completions;

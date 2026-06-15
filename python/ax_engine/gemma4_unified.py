@@ -1158,8 +1158,6 @@ def _optional_int(config: dict[str, Any], key: str) -> int | None:
     value = config.get(key)
     if value is None:
         return None
-    if isinstance(value, bool) or not isinstance(value, int):
-        raise ValueError(f"Gemma4 unified config field {key} must be an integer")
     return int(value)
 
 

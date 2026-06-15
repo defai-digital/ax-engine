@@ -7,8 +7,8 @@ use super::super::profile::{
     prefill_profile_enabled,
 };
 use super::super::shared::{
-    ffn_swiglu, linear_attention_forward, moe_experts_forward, moe_router_qwen3, rms_norm_opt,
-    shared_expert_forward,
+    ffn_swiglu, linear_attention_forward, moe_experts_forward, moe_experts_forward_with_shared,
+    moe_router_qwen3, rms_norm_opt, shared_expert_forward,
 };
 use crate::kv_cache::MlxKVCache;
 use crate::weights::LayerWeights;
@@ -50,12 +50,54 @@ pub(crate) fn layer_forward(
 
     let ffn_started = profile_forward_layer.then(Instant::now);
     let out = if w.router_proj.is_some() {
+        let router_started = profile_forward_layer.then(Instant::now);
         let (top_k_indices, top_k_weights) = moe_router_qwen3(cfg, w, &normed2);
-        let mut moe_out = moe_experts_forward(cfg, w, &normed2, &top_k_indices, &top_k_weights);
-        if w.shared_gate_proj.is_some() {
-            moe_out = add(&moe_out, &shared_expert_forward(cfg, w, &normed2), None);
+        if let Some(started) = router_started {
+            forward_profile_eval_elapsed(
+                profile_decode_layer,
+                profile_prefill_layer,
+                DecodeProfileStage::MoeRouter,
+                started,
+                &[&top_k_indices, &top_k_weights],
+            );
         }
-        moe_out
+        let shared_started = profile_forward_layer.then(Instant::now);
+        let shared_out = if w.shared_gate_proj.is_some() {
+            Some(shared_expert_forward(cfg, w, &normed2))
+        } else {
+            None
+        };
+        if let Some(started) = shared_started {
+            if let Some(shared) = &shared_out {
+                forward_profile_eval_elapsed(
+                    profile_decode_layer,
+                    profile_prefill_layer,
+                    DecodeProfileStage::MoeSharedExpert,
+                    started,
+                    &[shared],
+                );
+            } else {
+                forward_profile_eval_elapsed(
+                    profile_decode_layer,
+                    profile_prefill_layer,
+                    DecodeProfileStage::MoeSharedExpert,
+                    started,
+                    &[],
+                );
+            }
+        }
+        if let Some(shared) = &shared_out {
+            moe_experts_forward_with_shared(
+                cfg,
+                w,
+                &normed2,
+                &top_k_indices,
+                &top_k_weights,
+                shared,
+            )
+        } else {
+            moe_experts_forward(cfg, w, &normed2, &top_k_indices, &top_k_weights)
+        }
     } else {
         ffn_swiglu(cfg, w, &normed2, None)
     };

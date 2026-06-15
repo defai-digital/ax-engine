@@ -147,17 +147,17 @@ mod tests {
 
         let coder = render_grpc_chat_prompt("Qwen3-Coder-Next-4bit", &user("hi")).expect("render");
         assert!(
-            coder.ends_with("<|im_start|>assistant\n<think>\n\n</think>\n\n"),
-            "Coder-Next must also pre-close the think block: {coder}"
+            coder.ends_with("<|im_start|>assistant\n"),
+            "Coder-Next follows its non-thinking-only template without pre-closing a think block: {coder}"
         );
     }
 
     #[test]
-    fn grpc_chat_prompt_keeps_no_thinking_for_older_qwen() {
+    fn grpc_chat_prompt_keeps_no_think_suffix_for_ax_qwen3_alias() {
         let prompt = render_grpc_chat_prompt("qwen3", &user("hi")).expect("render");
         assert!(
-            prompt.ends_with("<|im_start|>assistant\n<think>\n\n</think>\n\n"),
-            "non-thinking Qwen must keep the pre-closed think block: {prompt}"
+            prompt.ends_with("<|im_start|>assistant\n"),
+            "the ax qwen3 alias follows Qwen3-Coder-Next's no-think template: {prompt}"
         );
     }
 

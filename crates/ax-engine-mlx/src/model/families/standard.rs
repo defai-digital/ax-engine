@@ -11,10 +11,11 @@ use super::super::profile::{
 use super::super::shared::{
     add_then_multiply_scalar, attention_mask_array, attention_output_projection,
     direct_qk_norm_rope_route_enabled_for_family, ffn_swiglu, flatten_attention_output_bhsd,
-    full_precision_attention, moe_experts_forward, moe_experts_forward_gemma4, moe_router_gemma4,
-    moe_router_glm, moe_router_qwen3, per_layer_input_gate_project, prepare_value_bhsd_from_proj,
-    qk_norm_bhsd_from_proj, qk_norm_rope_bhsd_from_proj_with_route, qkv_project, qw, rms_norm_opt,
-    shape_element_count, shared_expert_forward, turboquant_decode_attention_experimental,
+    full_precision_attention, moe_experts_forward, moe_experts_forward_gemma4,
+    moe_experts_forward_with_shared, moe_router_gemma4, moe_router_glm, moe_router_qwen3,
+    per_layer_input_gate_project, prepare_value_bhsd_from_proj, qk_norm_bhsd_from_proj,
+    qk_norm_rope_bhsd_from_proj_with_route, qkv_project, qw, rms_norm_opt, shape_element_count,
+    shared_expert_forward, turboquant_decode_attention_experimental,
 };
 use super::super::turboquant_context::{
     TurboQuantModelDecodeCandidate, TurboQuantModelDecodeCandidateStatus,
@@ -570,16 +571,61 @@ pub(crate) fn layer_forward(
             }
             out
         } else {
+            let router_started = profile_forward_layer.then(Instant::now);
             let (top_k_indices, top_k_weights) = if cfg.glm_router.is_some() {
                 moe_router_glm(cfg, w, &normed2)
             } else {
                 // Qwen3 MoE: router (proj → softmax → top-k) + expert forward.
                 moe_router_qwen3(cfg, w, &normed2)
             };
-            let mut out = moe_experts_forward(cfg, w, &normed2, &top_k_indices, &top_k_weights);
-            if w.shared_gate_proj.is_some() {
-                out = add(&out, &shared_expert_forward(cfg, w, &normed2), None);
+            if let Some(started) = router_started {
+                forward_profile_eval_elapsed(
+                    profile_decode_layer,
+                    profile_prefill_layer,
+                    DecodeProfileStage::MoeRouter,
+                    started,
+                    &[&top_k_indices, &top_k_weights],
+                );
             }
+            // Compute shared expert before the expert forward so the weighted-sum
+            // kernel can optionally fuse the shared-expert add (Phase 1A).
+            let shared_started = profile_forward_layer.then(Instant::now);
+            let shared_out = if w.shared_gate_proj.is_some() {
+                Some(shared_expert_forward(cfg, w, &normed2))
+            } else {
+                None
+            };
+            if let Some(started) = shared_started {
+                if let Some(shared) = &shared_out {
+                    forward_profile_eval_elapsed(
+                        profile_decode_layer,
+                        profile_prefill_layer,
+                        DecodeProfileStage::MoeSharedExpert,
+                        started,
+                        &[shared],
+                    );
+                } else {
+                    forward_profile_eval_elapsed(
+                        profile_decode_layer,
+                        profile_prefill_layer,
+                        DecodeProfileStage::MoeSharedExpert,
+                        started,
+                        &[],
+                    );
+                }
+            }
+            let out = if let Some(shared) = &shared_out {
+                moe_experts_forward_with_shared(
+                    cfg,
+                    w,
+                    &normed2,
+                    &top_k_indices,
+                    &top_k_weights,
+                    shared,
+                )
+            } else {
+                moe_experts_forward(cfg, w, &normed2, &top_k_indices, &top_k_weights)
+            };
             rms_norm_opt(&out, w.ffn_post_norm.as_ref(), cfg.rms_norm_eps)
         }
     } else {

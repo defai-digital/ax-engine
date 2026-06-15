@@ -146,7 +146,10 @@ impl AnthropicMessagesRequest {
             if !content.trim().is_empty() {
                 messages.push(OpenAiChatMessage {
                     role: "system".to_string(),
-                    content: OpenAiChatContent::Text(content),
+                    content: Some(OpenAiChatContent::Text(content)),
+                    tool_calls: None,
+                    _tool_call_id: None,
+                    _name: None,
                 });
             }
         }
@@ -162,7 +165,12 @@ impl AnthropicMessagesRequest {
             };
             messages.push(OpenAiChatMessage {
                 role,
-                content: OpenAiChatContent::Text(message.content.into_text("messages[].content")?),
+                content: Some(OpenAiChatContent::Text(
+                    message.content.into_text("messages[].content")?,
+                )),
+                tool_calls: None,
+                _tool_call_id: None,
+                _name: None,
             });
         }
 

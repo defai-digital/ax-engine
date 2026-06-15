@@ -327,6 +327,50 @@ env_flag_default_on!(
 );
 
 env_flag!(
+    /// `AX_MLX_DIRECT_CPP_GEMMA4_POST_ATTN_FFN` — opt-in direct C++ route for
+    /// Gemma4 dense post-attention residual + FFN + layer-scalar orchestration.
+    ///
+    /// **Default: OFF — real-model A/B rejected promotion (2026-06-11).** The P0
+    /// clean microbench artifact showed this large-block boundary beating the
+    /// portable Rust/`mlx-c` composition, but the full A/B on the two models that
+    /// can engage the route (Gemma 4 31B and 12B 4-bit, `all_hits`) regressed
+    /// decode to 0.89-0.97x and prefill to 0.91-0.98x;
+    /// `check_direct_gemma4_ffn_route_promotion.py` decision: `not_promoted`.
+    /// E2B/E4B (per-layer-embedding weights) and 26B-A4B (MoE router) cannot take
+    /// the route at all. Artifacts:
+    /// `benchmarks/results/mlx-inference/2026-06-11-gemma4-ffn-route-ab/`.
+    /// The production route is guarded to dense packed-quantized Gemma4 layers
+    /// without per-layer input gating, profiling, last-position slicing, or
+    /// active weight rotation.
+    direct_cpp_gemma4_post_attn_ffn_enabled,
+    "AX_MLX_DIRECT_CPP_GEMMA4_POST_ATTN_FFN"
+);
+
+env_flag!(
+    /// `AX_MLX_DENSE_ADD_RMS_NORM_PAIR` — fuse the attention residual-add and
+    /// pre-FFN RMSNorm into one C++ call for dense-layer decode.
+    ///
+    /// **Default: OFF**. A/B on Gemma 4 31B showed this shim regresses by
+    /// ~0.1% on that model. The C++ function call overhead (2 output arrays,
+    /// extra parameter marshaling) exceeds the savings from one fewer Rust→C
+    /// FFI crossing. Left as opt-in for future re-evaluation.
+    dense_add_rms_norm_pair_enabled,
+    "AX_MLX_DENSE_ADD_RMS_NORM_PAIR"
+);
+
+env_flag!(
+    /// `AX_MLX_DENSE_QMATMUL_RMS_NORM` — fuse the dense FFN down-projection
+    /// and post-FFN RMSNorm into one C++ call.
+    ///
+    /// **Default: OFF**. A/B on Gemma 4 31B showed ~0.45% regression. The
+    /// C++ wrapper overhead (10 parameters, optional biases conversion) exceeds
+    /// the savings from one fewer Rust→C FFI crossing. MLX graph node count is
+    /// unchanged either way. Left as opt-in for future re-evaluation.
+    dense_qmatmul_rms_norm_enabled,
+    "AX_MLX_DENSE_QMATMUL_RMS_NORM"
+);
+
+env_flag!(
     /// `AX_MLX_DIRECT_CPP_QK_NORM_ROPE` — opt-in direct C++ probe route for
     /// standard attention Q/K `as_strided -> rms_norm -> rope`.
     ///
@@ -460,6 +504,46 @@ env_flag_default_on!(
     /// MLX operation chain.
     linear_attention_rms_norm_gate_metal_enabled,
     "AX_MLX_LINEAR_ATTENTION_RMS_NORM_GATE_METAL"
+);
+
+env_flag_default_on!(
+    /// `AX_MLX_MOE_FUSE_SHARED_EXPERT_ADD` — fuse the shared-expert add
+    /// into the Qwen3 MoE weighted-sum Metal kernel.
+    ///
+    /// **Default: ON** (kill-switch via
+    /// `AX_MLX_MOE_FUSE_SHARED_EXPERT_ADD=0`).
+    ///
+    /// When the shared expert is present and the weighted-sum Metal kernel
+    /// is eligible, the shared-expert output is added inside the same kernel
+    /// that combines the top-k expert outputs — eliminating one `add`
+    /// dispatch per MoE layer. **Decode-only (seq==1):** at prefill the
+    /// weighted-sum is bandwidth-bound, where the fused kernel's extra input
+    /// read costs more than the dispatch it saves, so prefill falls back to
+    /// the separate `add`. Also falls back when the kernel is ineligible
+    /// (dtype or shape mismatch) or the flag is off.
+    moe_fuse_shared_expert_add_enabled,
+    "AX_MLX_MOE_FUSE_SHARED_EXPERT_ADD"
+);
+
+env_flag_default_on!(
+    /// `AX_MLX_MOE_SWIGLU_PACKED_METAL` — route the MoE expert SwiGLU
+    /// activation through the same packed Metal kernel used by the dense
+    /// FFN path.
+    ///
+    /// **Default: ON** (kill-switch via
+    /// `AX_MLX_MOE_SWIGLU_PACKED_METAL=0`).
+    ///
+    /// When the MoE expert gate_up projection is packed (the common Qwen3
+    /// path), the gather_qmm output is passed directly to the packed
+    /// `ax_qwen_packed_swiglu_v1` kernel, which fuses the last-dim split,
+    /// SiLU, and multiply into one dispatch instead of slice + slice +
+    /// silu_mul. **Decode-only (seq==1):** at prefill the tensor is large
+    /// and bandwidth-bound, where the separate slice+silu_mul ops are
+    /// faster than the single packed dispatch, so prefill uses the split
+    /// path. Also falls back when the kernel is ineligible or the flag is
+    /// off.
+    moe_swiglu_packed_metal_enabled,
+    "AX_MLX_MOE_SWIGLU_PACKED_METAL"
 );
 
 /// Tuning override for the MLA prefill chunk size. Smaller chunks let
@@ -763,6 +847,21 @@ mod tests {
         ));
         assert!(probe_default_on(
             "AX_FASTPATH_TEST_QWEN_DIRECT_CPP_QK_NORM_ROPE_ENABLED",
+            "1"
+        ));
+    }
+
+    #[test]
+    fn direct_cpp_gemma4_post_attn_ffn_uses_opt_in_contract() {
+        assert!(!parse_bool_env(
+            "AX_FASTPATH_TEST_DIRECT_GEMMA4_POST_ATTN_FFN_UNSET"
+        ));
+        assert!(!probe(
+            "AX_FASTPATH_TEST_DIRECT_GEMMA4_POST_ATTN_FFN_DISABLED",
+            "0"
+        ));
+        assert!(probe(
+            "AX_FASTPATH_TEST_DIRECT_GEMMA4_POST_ATTN_FFN_ENABLED",
             "1"
         ));
     }

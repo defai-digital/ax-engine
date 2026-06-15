@@ -6,9 +6,11 @@ use serde::Serialize;
 use serde_json::{Value, json};
 
 use crate::app_state::{AppState, LiveState};
+use crate::chat::ChatPromptTemplate;
 use crate::errors::{ErrorResponse, error_response};
 
 pub(crate) const MODEL_OWNER: &str = "ax-engine";
+const OPENAI_SAFE_MAX_OUTPUT_TOKENS: u32 = 512;
 
 #[derive(Debug, Serialize)]
 pub(crate) struct ServerInfoResponse {
@@ -132,20 +134,25 @@ pub(crate) async fn models(State(state): State<AppState>) -> Json<ModelsResponse
     let max_output_tokens = max_output_tokens_live(&live, context_length);
     let openai_text = openai_text_supported_live(&live);
     let native_multimodal = native_processed_multimodal_support_live(&live);
+    let openai_tool_calling = openai_tool_calling_supported_live(&live, openai_text);
     Json(ModelsResponse {
         object: "list",
         data: vec![ModelCard {
             id: live.model_id.to_string(),
             object: "model",
             owned_by: MODEL_OWNER,
-            capabilities: model_capabilities(openai_text, native_multimodal),
+            capabilities: model_capabilities(openai_text, native_multimodal, openai_tool_calling),
             limit: ModelLimit {
                 context: context_length,
                 output: max_output_tokens,
             },
             context_length,
             max_output_tokens,
-            ax_engine: ax_engine_model_metadata(openai_text, native_multimodal),
+            ax_engine: ax_engine_model_metadata(
+                openai_text,
+                native_multimodal,
+                openai_tool_calling,
+            ),
             runtime: live.runtime_report.clone(),
         }],
     })
@@ -165,12 +172,13 @@ fn server_info_response(live: &LiveState) -> ServerInfoResponse {
 fn model_capabilities(
     openai_text: bool,
     native_multimodal: NativeProcessedMultimodalSupport,
+    openai_tool_calling: bool,
 ) -> ModelCapabilities {
     ModelCapabilities {
         temperature: openai_text,
         reasoning: false,
         attachment: native_multimodal.any(),
-        toolcall: false,
+        toolcall: openai_tool_calling,
         input: ModelModalities {
             text: openai_text,
             audio: native_multimodal.audio,
@@ -192,18 +200,28 @@ fn model_capabilities(
 fn ax_engine_model_metadata(
     openai_text: bool,
     native_multimodal: NativeProcessedMultimodalSupport,
+    openai_tool_calling: bool,
 ) -> AxEngineModelMetadata {
     let native_multimodal_input = native_multimodal.any();
     AxEngineModelMetadata {
         native_generate_supported: true,
         openai_completions_supported: openai_text,
         openai_chat_completions_supported: openai_text,
-        openai_tool_calling_supported: false,
+        openai_tool_calling_supported: openai_tool_calling,
         openai_text_input_supported: openai_text,
         native_multimodal_input_supported: native_multimodal_input,
         gemma4_unified_multimodal_input_supported: native_multimodal_input,
         openai_tokenized_multimodal_input_supported: native_multimodal_input,
     }
+}
+
+fn openai_tool_calling_supported_live(live: &LiveState, openai_text: bool) -> bool {
+    openai_text
+        && live.runtime_report.selected_backend == SelectedBackend::Mlx
+        && matches!(
+            ChatPromptTemplate::for_model_id(live.model_id.as_ref()),
+            ChatPromptTemplate::QwenChatMl | ChatPromptTemplate::Gemma4
+        )
 }
 
 fn native_processed_multimodal_support_live(live: &LiveState) -> NativeProcessedMultimodalSupport {
@@ -283,5 +301,5 @@ fn max_output_tokens_live(live: &LiveState, context_length: u32) -> u32 {
     live.session_config
         .max_batch_tokens
         .min(context_length)
-        .max(1)
+        .clamp(1, OPENAI_SAFE_MAX_OUTPUT_TOKENS)
 }

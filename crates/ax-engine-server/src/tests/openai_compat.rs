@@ -25,6 +25,32 @@ async fn apply_template_endpoint_renders_openai_messages() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(
         body.get("prompt").and_then(Value::as_str),
+        Some("<|im_start|>user\nhello<|im_end|>\n<|im_start|>assistant\n")
+    );
+
+    std::fs::remove_dir_all(artifact_dir).expect("artifact dir should clean up");
+}
+
+#[tokio::test]
+async fn apply_template_endpoint_preserves_qwen36_preclosed_think_prompt() {
+    let artifact_dir = minimal_tokenizer_artifact("compat-apply-template-qwen36");
+    let app = build_router(native_mlx_openai_builder_state(
+        "Qwen3.6-35B-A3B-4bit",
+        &artifact_dir,
+    ));
+    let request = Request::post("/apply-template")
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(json_request_body(&json!({
+            "model": "Qwen3.6-35B-A3B-4bit",
+            "messages": [{"role": "user", "content": "hello"}]
+        }))))
+        .expect("request should build");
+
+    let (status, body) = json_response(&app, request).await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        body.get("prompt").and_then(Value::as_str),
         Some("<|im_start|>user\nhello<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n")
     );
 
@@ -104,6 +130,58 @@ async fn tokenize_endpoint_rejects_model_mismatch() {
         .body(Body::from(json_request_body(&json!({
             "model": "other",
             "content": "hello"
+        }))))
+        .expect("request should build");
+
+    let (status, body) = json_response(&app, request).await;
+
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        body.get("error")
+            .and_then(|error| error.get("code"))
+            .and_then(Value::as_str),
+        Some("model_mismatch")
+    );
+    assert!(
+        body.get("error")
+            .and_then(|error| error.get("message"))
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .contains("does not match configured preview model")
+    );
+
+    std::fs::remove_dir_all(artifact_dir).expect("artifact dir should clean up");
+}
+
+#[tokio::test]
+async fn detokenize_endpoint_returns_content() {
+    let artifact_dir = minimal_tokenizer_artifact("compat-detokenize");
+    let app = build_router(native_mlx_openai_builder_state("qwen3", &artifact_dir));
+    let request = Request::post("/detokenize")
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(json_request_body(&json!({
+            "model": "qwen3",
+            "tokens": [1, 5, 6]
+        }))))
+        .expect("request should build");
+
+    let (status, body) = json_response(&app, request).await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body.get("content"), Some(&json!("hello openai chat")));
+
+    std::fs::remove_dir_all(artifact_dir).expect("artifact dir should clean up");
+}
+
+#[tokio::test]
+async fn detokenize_endpoint_rejects_model_mismatch() {
+    let artifact_dir = minimal_tokenizer_artifact("compat-detokenize-model-mismatch");
+    let app = build_router(native_mlx_openai_builder_state("qwen3", &artifact_dir));
+    let request = Request::post("/v1/detokenize")
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(json_request_body(&json!({
+            "model": "other",
+            "tokens": [1]
         }))))
         .expect("request should build");
 

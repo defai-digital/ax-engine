@@ -17,6 +17,9 @@ The current preview server is intentionally narrow:
   integration
 - OpenAI-shaped `/v1/embeddings` response envelopes for embedding-capable
   repo-owned MLX sessions
+- Ollama-shaped `/api/tags`, `/api/show`, `/api/ps`, `/api/version`,
+  `/api/chat`, and `/api/generate` adapters for local clients that expect
+  Ollama HTTP envelopes
 - stepwise request lifecycle endpoints that mirror the SDK preview contract for
   repo-owned MLX sessions plus the llama.cpp delegated path
 - optional API key authentication for HTTP API routes
@@ -36,6 +39,12 @@ Current preview endpoints:
 - `GET /metrics`
 - `GET /v1/runtime`
 - `GET /v1/models`
+- `GET /api/tags`
+- `POST /api/show`
+- `GET /api/ps`
+- `GET /api/version`
+- `POST /api/chat`
+- `POST /api/generate`
 - `POST /v1/embeddings`
 - `POST /v1/completions`
 - `POST /v1/chat/completions`
@@ -112,12 +121,66 @@ than silently dropped.
   responses are validated server-side; output that is not a JSON object
   returns `502 invalid_output`. This is post-hoc validation, not constrained
   decoding — JSON schema enforcement is not supported yet.
-- **`tools` / `tool_choice`** (chat): experimental. When tools are present,
-  explicit `<tool_call>{…}</tool_call>` spans in the model output are parsed
-  into `message.tool_calls`. Bare JSON answers are never reinterpreted as tool
-  calls. `/v1/models` continues to report
-  `openai_tool_calling_supported: false` until prompt-side tool rendering,
-  streaming deltas, and continuation handling land end-to-end.
+- **`tools` / `tool_choice`** (chat): experimental. Native Qwen ChatML and
+  native Gemma 4 text sessions render tool schemas into the prompt, replay
+  assistant `tool_calls` history, and parse generated spans back into
+  `message.tool_calls` with `finish_reason=tool_calls`. Native Qwen ChatML tool
+  prompting follows the matching Ollama template for the selected model family:
+  Qwen3 dense uses the JSON
+  `<tool_call>{"name": ..., "arguments": ...}</tool_call>` contract,
+  Qwen3.5/Qwen3.6 use the function-XML contract, and Qwen3-Coder-Next uses the
+  Qwen3-Coder XML contract. AX mirrors the selected Ollama-family template
+  shape: Qwen3.5/Qwen3.6 render tool schemas as OpenAI tool JSON lines before
+  asking for function-XML calls, while Qwen3-Coder renders XML tool
+  declarations.
+  Gemma 4 text chat uses the Ollama/Gemma 4 `<|tool>`, `<|tool_call>`, and
+  `<|tool_response>` DSL. Gemma 4 tools still fail closed for delegated,
+  pre-tokenized, and inline-media chat requests because AX cannot safely inject
+  the model-specific tool DSL into those prompt paths yet.
+  Streaming requests return buffered SSE chunks with `delta.tool_calls` once the
+  tool call is complete. Bare JSON answers are never reinterpreted as tool
+  calls.
+- **Context limit preflight** (native MLX OpenAI text/chat): AX tokenizes the
+  rendered prompt before generation and rejects
+  `prompt_tokens + max_tokens > context_length` with
+  `400 context_length_exceeded`. This catches oversized tool prompts before they
+  reach the runtime terminate guard.
+
+## Ollama Surface
+
+AX also exposes a focused Ollama-shaped adapter for the loaded local model:
+
+- `GET /api/tags` returns an Ollama-style `models` list containing the current
+  AX model.
+- `POST /api/show`, `GET /api/ps`, and `GET /api/version` provide the
+  Ollama-style metadata/readiness probes common clients use before issuing a
+  chat request. `/api/show` accepts `verbose=false` as a probe shape, but
+  `verbose=true` fails closed until AX can return the larger verbose Ollama
+  metadata payload.
+- `POST /api/chat` accepts Ollama text `messages`, `tools`, `format`, `stream`,
+  and common `options` fields. It maps them onto the same chat builder used by
+  `/v1/chat/completions`, so supported Qwen/Gemma templates and tool-call
+  parsing stay identical across the OpenAI and Ollama surfaces.
+- `POST /api/generate` accepts Ollama `prompt`, optional `system`, `format`,
+  `stream`, `raw`, and common `options` fields, then maps them onto the same
+  completion builder used by `/v1/completions`. When `raw=true`, AX sends the
+  prompt without its simple system-prefix wrapper.
+
+OpenAI-compatible `/v1/*` remains the recommended baseline for coder engines
+and provider-neutral applications. The Ollama `/api/*` surface is a
+runtime-specific adapter for existing local clients; it must not own agent
+state, tool execution, file editing, approval policy, memory, or planning.
+
+Ollama `stream` defaults to `true`, matching Ollama's API. AX returns
+newline-delimited JSON with `application/x-ndjson`; the first chunk carries the
+buffered text or tool-call message and the final chunk carries `done=true` plus
+available token counts. This is an Ollama envelope compatibility layer, not a
+full Ollama daemon: model pull/push/create/copy/delete, arbitrary Modelfile
+templates, stateful prompt context replay, `/api/generate` images, Ollama
+thinking/logprob controls, and other unsupported fields fail closed with
+`400 unsupported_parameter` instead of being ignored. Harmless Ollama lifecycle
+fields such as `keep_alive` are accepted as no-ops, and empty `/api/generate`
+prompts return Ollama-style load/unload no-op responses.
 
 ## Examples
 
@@ -407,6 +470,26 @@ real HTTP:
 ```text
 bash scripts/check-server-preview.sh
 ```
+
+To run a direct native-MLX model compatibility smoke for the coder-facing
+Qwen3-Coder-Next, Qwen3.6 35B-A3B, and Gemma 4 routes, provide local AX model
+artifacts and run:
+
+```text
+AX_ENGINE_QWEN_CODER_NEXT_ARTIFACTS_DIR=/absolute/path/to/qwen3-coder-next-artifacts \
+AX_ENGINE_QWEN36_35B_ARTIFACTS_DIR=/absolute/path/to/qwen3.6-35b-a3b-artifacts \
+AX_ENGINE_GEMMA4_ARTIFACTS_DIR=/absolute/path/to/gemma4-artifacts \
+python3 scripts/check_direct_model_compat_smoke.py
+```
+
+The check starts `ax-engine-server` with `--mlx`, verifies `/health` selected the
+native MLX backend, verifies `/v1/models` advertises tool-call support, then
+sends equivalent tool-enabled requests through OpenAI
+`/v1/chat/completions` and Ollama `/api/chat`. It fails if either surface leaks
+raw tool-call markup instead of returning a normal response envelope. Add
+`--expect-tool-call` when the local model/configuration is expected to choose an
+actual parsed tool call for the smoke prompt. Without configured artifacts the
+script prints a JSON `skipped` result and exits zero.
 
 To run the optional OpenWebUI integration smoke, start or provide an
 OpenAI-compatible AX endpoint, then opt in explicitly:

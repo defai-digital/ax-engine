@@ -219,6 +219,12 @@ enum LinearAttentionProjectionRowSource {
 /// When `scales` is `Some`, the weight tensor contains packed affine-quantized
 /// integers and must be multiplied via `mlx_quantized_matmul` rather than
 /// regular matmul.
+///
+/// `Clone` is implemented because `MlxArray` clones are cheap refcount bumps
+/// (`mlx_array_set`), and per-layer compiled closures (e.g. the compiled
+/// shared-expert forward) need to capture cloned `QuantizedWeight`s as graph
+/// constants.
+#[derive(Clone)]
 pub struct QuantizedWeight {
     pub weight: MlxArray,
     pub scales: Option<MlxArray>,

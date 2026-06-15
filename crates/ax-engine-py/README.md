@@ -4,26 +4,42 @@ High-performance local inference engine for Apple Silicon — Python bindings.
 
 ## Installation
 
+This package README describes the current `6.4.x` Python package. If your
+package index only shows older `ax-engine` versions, those wheels may not expose
+the top-level `ax-engine` CLI commands shown below.
+
 ### Python (pip)
 
 ```bash
-pip install ax-engine
+python3 -m pip install "ax-engine[download]>=6.4.1,<7"
 ```
 
 Requires macOS 14+, Apple Silicon (M2 Max or newer), Python 3.10+.
+The current macOS arm64 wheel includes the `ax-engine` orchestration CLI plus
+bundled `ax-engine-server` and `ax-engine-bench` binaries.
+
+Verify the installed command surface:
+
+```bash
+ax-engine doctor
+ax-engine-server --help
+```
 
 ### Command-line tools (Homebrew)
 
-To install the `ax-engine` orchestration CLI, `ax-engine-server` HTTP adapter,
-and `ax-engine-bench` CLI:
+Homebrew is the native binary channel for tagged macOS arm64 releases, but the
+tap may lag behind the Python package. Check the formula version first:
 
 ```bash
+brew info defai-digital/ax-engine/ax-engine
 brew install defai-digital/ax-engine/ax-engine
 ```
 
-Then verify:
+Use Homebrew for the `ax-engine` orchestration CLI only when the formula is
+`6.4.1` or newer. Then verify:
 
 ```bash
+ax-engine doctor
 ax-engine-server --help
 ax-engine-bench doctor
 ```
@@ -53,8 +69,8 @@ Then point any OpenAI client at `http://127.0.0.1:8080`.
 ## Optional dependencies
 
 ```bash
-pip install "ax-engine[openai]"   # FastAPI + uvicorn for the OpenAI shim
-pip install "ax-engine[download]" # mlx-lm for model downloading helpers
+python3 -m pip install "ax-engine[openai]>=6.4.1,<7"     # FastAPI + uvicorn
+python3 -m pip install "ax-engine[multimodal]>=6.4.1,<7" # image/audio helpers
 ```
 
 ## Requirements

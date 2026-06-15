@@ -25,6 +25,7 @@ pub(crate) const QWEN_CHATML_ASSISTANT_GENERATION_PROMPT: &str =
     "<|im_start|>assistant\n<think>\n\n</think>\n\n";
 pub(crate) const QWEN_CHATML_ASSISTANT_GENERATION_PROMPT_THINKING: &str =
     "<|im_start|>assistant\n<think>\n";
+pub(crate) const QWEN_CHATML_ASSISTANT_GENERATION_PROMPT_NO_THINK: &str = "<|im_start|>assistant\n";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ChatPromptTemplate {
@@ -207,14 +208,17 @@ pub(crate) fn is_qwen_thinking_model(model_id: &str) -> bool {
     if !m.contains("qwen") {
         return false;
     }
-    if m.contains("3.6") || m.contains("3_6") {
+    if m.contains("3.6") || m.contains("3_6") || m.contains("qwen36") {
         return true;
+    }
+    if m.contains("qwen3-coder-next") || m.contains("qwen3-coder") {
+        return false;
     }
     let normalized: String = m
         .chars()
         .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '-' })
         .collect();
-    normalized.contains("qwen3-next") || normalized.contains("qwen3-coder-next")
+    normalized.contains("qwen3-next")
 }
 
 pub(crate) fn stop_sequences(model_id: &str, mut user_stops: Vec<String>) -> Vec<String> {
@@ -257,15 +261,46 @@ pub(crate) fn render_prompt(
         ));
     }
 
-    render_prompt_with_template(template, messages, false)
+    render_prompt_with_template_for_model(model_id, template, messages, false)
 }
 
+fn render_prompt_with_template_for_model(
+    model_id: &str,
+    template: ChatPromptTemplate,
+    messages: &[(String, String)],
+    qwen_thinking_enabled: bool,
+) -> Result<String, String> {
+    render_prompt_internal(
+        template,
+        messages,
+        qwen_assistant_generation_prompt(model_id, qwen_thinking_enabled),
+    )
+}
+
+#[cfg(test)]
 pub(crate) fn render_prompt_with_template(
     template: ChatPromptTemplate,
     messages: &[(String, String)],
     qwen_thinking_enabled: bool,
 ) -> Result<String, String> {
+    render_prompt_internal(
+        template,
+        messages,
+        if qwen_thinking_enabled {
+            QWEN_CHATML_ASSISTANT_GENERATION_PROMPT_THINKING
+        } else {
+            QWEN_CHATML_ASSISTANT_GENERATION_PROMPT
+        },
+    )
+}
+
+fn render_prompt_internal(
+    template: ChatPromptTemplate,
+    messages: &[(String, String)],
+    qwen_generation_prompt: &str,
+) -> Result<String, String> {
     let mut prompt = String::new();
+    let mut qwen_tool_response_open = false;
     match template {
         ChatPromptTemplate::Llama3 => prompt.push_str("<|begin_of_text|>"),
         ChatPromptTemplate::Gemma4 => prompt.push_str("<bos>"),
@@ -282,11 +317,25 @@ pub(crate) fn render_prompt_with_template(
         let role = normalize_role(role)?;
         match template {
             ChatPromptTemplate::QwenChatMl => {
-                prompt.push_str("<|im_start|>");
-                prompt.push_str(role);
-                prompt.push('\n');
-                prompt.push_str(content);
-                prompt.push_str("<|im_end|>\n");
+                if matches!(role, "tool" | "function") {
+                    if !qwen_tool_response_open {
+                        prompt.push_str("<|im_start|>user\n");
+                        qwen_tool_response_open = true;
+                    }
+                    prompt.push_str("<tool_response>\n");
+                    prompt.push_str(content);
+                    prompt.push_str("\n</tool_response>\n");
+                } else {
+                    if qwen_tool_response_open {
+                        prompt.push_str("<|im_end|>\n");
+                        qwen_tool_response_open = false;
+                    }
+                    prompt.push_str("<|im_start|>");
+                    prompt.push_str(role);
+                    prompt.push('\n');
+                    prompt.push_str(content);
+                    prompt.push_str("<|im_end|>\n");
+                }
             }
             ChatPromptTemplate::Llama3 => {
                 prompt.push_str("<|start_header_id|>");
@@ -334,13 +383,12 @@ pub(crate) fn render_prompt_with_template(
             }
         }
     }
+    if qwen_tool_response_open {
+        prompt.push_str("<|im_end|>\n");
+    }
     match template {
         ChatPromptTemplate::QwenChatMl => {
-            if qwen_thinking_enabled {
-                prompt.push_str(QWEN_CHATML_ASSISTANT_GENERATION_PROMPT_THINKING);
-            } else {
-                prompt.push_str(QWEN_CHATML_ASSISTANT_GENERATION_PROMPT);
-            }
+            prompt.push_str(qwen_generation_prompt);
         }
         ChatPromptTemplate::Llama3 => {
             prompt.push_str("<|start_header_id|>assistant<|end_header_id|>\n\n");
@@ -355,6 +403,23 @@ pub(crate) fn render_prompt_with_template(
         }
     }
     Ok(prompt)
+}
+
+fn qwen_assistant_generation_prompt(model_id: &str, thinking_enabled: bool) -> &'static str {
+    if thinking_enabled {
+        return QWEN_CHATML_ASSISTANT_GENERATION_PROMPT_THINKING;
+    }
+    if is_qwen_non_thinking_only_model(model_id) {
+        return QWEN_CHATML_ASSISTANT_GENERATION_PROMPT_NO_THINK;
+    }
+    QWEN_CHATML_ASSISTANT_GENERATION_PROMPT
+}
+
+pub(crate) fn is_qwen_non_thinking_only_model(model_id: &str) -> bool {
+    let normalized = model_id.to_ascii_lowercase();
+    normalized == "qwen3"
+        || normalized.contains("qwen3-coder-next")
+        || normalized.contains("qwen3-coder")
 }
 
 /// Token ids of the Gemma 4 channel markers, looked up from the model's
@@ -660,12 +725,16 @@ mod tests {
             "qwen3_6-35b-a3b-4bit",
             "Qwen3.6-35B-A3B-4bit",
             "mlx-community/Qwen3-Next-80B-A3B-Instruct-4bit",
-            "Qwen3-Coder-Next-4bit",
         ] {
             assert!(is_qwen_thinking_model(model_id), "{model_id}");
         }
 
-        for model_id in ["qwen-nextgen-v2", "qwen2.5-next-demo", "qwen4-next"] {
+        for model_id in [
+            "Qwen3-Coder-Next-4bit",
+            "qwen-nextgen-v2",
+            "qwen2.5-next-demo",
+            "qwen4-next",
+        ] {
             assert!(!is_qwen_thinking_model(model_id), "{model_id}");
             assert_eq!(
                 template_kwargs_for_model_id(model_id),

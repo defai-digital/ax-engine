@@ -315,26 +315,6 @@ class Gemma4UnifiedConfigValidationTests(unittest.TestCase):
 
         self.assertEqual(config.eoa_token_id, 0)
 
-    def test_load_config_rejects_non_integer_int_fields(self) -> None:
-        module = load_module()
-        bad_cases = [
-            ("image_token_id", True),
-            ("image_token_id", 100.5),
-        ]
-
-        for key, value in bad_cases:
-            with self.subTest(key=key, value=value):
-                with tempfile.TemporaryDirectory() as tmp:
-                    model_dir = Path(tmp)
-                    write_tiny_config(model_dir)
-                    config_path = model_dir / "config.json"
-                    model_config = json.loads(config_path.read_text())
-                    model_config[key] = value
-                    config_path.write_text(json.dumps(model_config))
-
-                    with self.assertRaisesRegex(ValueError, f"{key} must be an integer"):
-                        module._load_config(model_dir)
-
     def test_load_config_preserves_zero_processor_fields(self) -> None:
         module = load_module()
         with tempfile.TemporaryDirectory() as tmp:

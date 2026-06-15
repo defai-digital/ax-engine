@@ -116,9 +116,7 @@ class FakeNativeSession:
         self.closed = True
 
     def runtime(self) -> dict[str, object]:
-        selected_backend = (
-            "llama_cpp" if self.support_tier == "llama_cpp" else "mlx"
-        )
+        selected_backend = "llama_cpp" if self.support_tier == "llama_cpp" else "mlx"
         resolution_policy = (
             "allow_llama_cpp" if self.support_tier == "llama_cpp" else "mlx_only"
         )
@@ -175,7 +173,9 @@ class FakeNativeSession:
             }
         return runtime
 
-    def generate(self, input_tokens: list[int] | None = None, **kwargs: object) -> dict[str, object]:
+    def generate(
+        self, input_tokens: list[int] | None = None, **kwargs: object
+    ) -> dict[str, object]:
         tokens = list(input_tokens or [])
         self.generate_calls.append((tokens, kwargs))
         prompt_text = kwargs.get("input_text")
@@ -308,10 +308,14 @@ class FakeNativeSession:
                         "request_id": 11,
                         "model_id": self.model_id,
                         "prompt_tokens": tokens,
-                        "prompt_text": prompt_text if isinstance(prompt_text, str) else None,
+                        "prompt_text": prompt_text
+                        if isinstance(prompt_text, str)
+                        else None,
                         "output_tokens": [4, 5],
                         "output_text": (
-                            f"llama::{prompt_text}" if isinstance(prompt_text, str) else "llama::stream"
+                            f"llama::{prompt_text}"
+                            if isinstance(prompt_text, str)
+                            else "llama::stream"
                         ),
                         "status": "finished",
                         "finish_reason": "max_output_tokens",
@@ -645,7 +649,9 @@ class HungNativeSession(FakeNativeSession):
         raise RuntimeError("request 11 did not terminate within 258 steps")
 
 
-def import_wrapper_module(session_cls: type[FakeNativeSession] = FakeNativeSession) -> types.ModuleType:
+def import_wrapper_module(
+    session_cls: type[FakeNativeSession] = FakeNativeSession,
+) -> types.ModuleType:
     sys.path.insert(0, str(SOURCE_ROOT))
     for name in list(sys.modules):
         if name == "ax_engine" or name.startswith("ax_engine."):
@@ -769,7 +775,9 @@ class WrapperContractTests(unittest.TestCase):
             )
 
         native = FakeNativeSession.instances[-1]
-        self.assertIs(native.generate_calls[0][1]["multimodal_inputs"], multimodal_inputs)
+        self.assertIs(
+            native.generate_calls[0][1]["multimodal_inputs"], multimodal_inputs
+        )
 
     def test_generate_supports_server_backed_llama_cpp_surface(self) -> None:
         with self.ax_engine.Session(
@@ -823,11 +831,15 @@ class WrapperContractTests(unittest.TestCase):
         self.assertEqual(runtime.selected_backend, "mlx")
 
     def test_mlx_session_requires_model_artifact_dir_or_env(self) -> None:
-        with self.assertRaisesRegex(ValueError, "mlx=True requires mlx_model_artifacts_dir"):
+        with self.assertRaisesRegex(
+            ValueError, "mlx=True requires mlx_model_artifacts_dir"
+        ):
             self.ax_engine.Session(model_id="qwen3_dense", mlx=True)
 
     def test_download_model_rejects_embedding_repos(self) -> None:
-        with self.assertRaisesRegex(RuntimeError, "embedding model downloads are not managed"):
+        with self.assertRaisesRegex(
+            RuntimeError, "embedding model downloads are not managed"
+        ):
             self.ax_engine.download_model("mlx-community/Qwen3-Embedding-0.6B-8bit")
 
     def test_download_model_rejects_incomplete_existing_dest(self) -> None:
@@ -857,14 +869,19 @@ class WrapperContractTests(unittest.TestCase):
                 (snapshot / "model.safetensors").write_bytes(b"placeholder")
                 return snapshot
 
-            with patch.object(
-                self.ax_engine, "_run_hf_snapshot_download", fake_download
-            ), patch.object(
-                self.ax_engine,
-                "_try_generate_manifest",
-                return_value=True,
+            with (
+                patch.object(
+                    self.ax_engine, "_run_hf_snapshot_download", fake_download
+                ),
+                patch.object(
+                    self.ax_engine,
+                    "_try_generate_manifest",
+                    return_value=True,
+                ),
             ):
-                resolved = self.ax_engine.download_model("mlx-community/gemma-4-12B-it-4bit")
+                resolved = self.ax_engine.download_model(
+                    "mlx-community/gemma-4-12B-it-4bit"
+                )
 
         self.assertEqual(calls, ["mlx-community/gemma-4-12B-it-4bit"])
         self.assertEqual(resolved, snapshot)
@@ -881,10 +898,13 @@ class WrapperContractTests(unittest.TestCase):
                 (snapshot / "model.safetensors").write_bytes(b"placeholder")
                 return snapshot
 
-            with patch.object(
-                self.ax_engine, "_run_hf_snapshot_download", fake_download
-            ), patch.object(
-                self.ax_engine, "_try_generate_manifest", return_value=False
+            with (
+                patch.object(
+                    self.ax_engine, "_run_hf_snapshot_download", fake_download
+                ),
+                patch.object(
+                    self.ax_engine, "_try_generate_manifest", return_value=False
+                ),
             ):
                 with self.assertRaisesRegex(RuntimeError, "not AX-ready"):
                     self.ax_engine.download_model("mlx-community/gemma-4-12B-it-4bit")
@@ -911,15 +931,19 @@ class WrapperContractTests(unittest.TestCase):
                 (Path(target) / "model-manifest.json").write_text('{"fresh":true}')
                 return True
 
-            with patch.object(
-                self.ax_engine, "_run_hf_snapshot_download", fake_download
-            ), patch.object(
-                self.ax_engine, "_try_generate_manifest", side_effect=fake_generate
-            ), patch.object(
-                # Keep the force-rmtree off the user's real Hugging Face cache.
-                self.ax_engine,
-                "_default_mlx_lm_cache_root",
-                return_value=Path(tmp) / "cache",
+            with (
+                patch.object(
+                    self.ax_engine, "_run_hf_snapshot_download", fake_download
+                ),
+                patch.object(
+                    self.ax_engine, "_try_generate_manifest", side_effect=fake_generate
+                ),
+                patch.object(
+                    # Keep the force-rmtree off the user's real Hugging Face cache.
+                    self.ax_engine,
+                    "_default_mlx_lm_cache_root",
+                    return_value=Path(tmp) / "cache",
+                ),
             ):
                 resolved = self.ax_engine.download_model(
                     "mlx-community/Qwen3-4B-4bit", dest=dest, force=True
@@ -928,7 +952,9 @@ class WrapperContractTests(unittest.TestCase):
             self.assertEqual(resolved, dest)
             # The stale manifest is invalidated and regenerated against the new weights.
             self.assertEqual(manifest_calls, [dest])
-            self.assertEqual((dest / "model-manifest.json").read_text(), '{"fresh":true}')
+            self.assertEqual(
+                (dest / "model-manifest.json").read_text(), '{"fresh":true}'
+            )
 
     def test_try_generate_manifest_prefers_bundled_binary_over_path(self) -> None:
         import subprocess
@@ -943,15 +969,17 @@ class WrapperContractTests(unittest.TestCase):
                 calls.append(command)
                 return subprocess.CompletedProcess(command, 0, stdout="ok\n", stderr="")
 
-            with patch.object(
-                self.ax_engine, "_bundled_binary", return_value=bundled
-            ), patch("shutil.which", return_value="/usr/bin/ax-engine-bench"), patch(
-                "subprocess.run", fake_run
+            with (
+                patch.object(self.ax_engine, "_bundled_binary", return_value=bundled),
+                patch("shutil.which", return_value="/usr/bin/ax-engine-bench"),
+                patch("subprocess.run", fake_run),
             ):
                 self.assertTrue(self.ax_engine._try_generate_manifest(model_dir))
 
             # The bundled binary is used; the stale PATH binary is never invoked.
-            self.assertEqual(calls, [[str(bundled), "generate-manifest", str(model_dir)]])
+            self.assertEqual(
+                calls, [[str(bundled), "generate-manifest", str(model_dir)]]
+            )
 
     def test_openai_mlx_shim_helpers_tokenize_and_render_chat_prompt(self) -> None:
         openai_server = importlib.import_module("ax_engine.openai_server")
@@ -986,6 +1014,18 @@ class WrapperContractTests(unittest.TestCase):
             openai_server.render_chat_prompt(
                 [
                     {"role": "system", "content": "You are AX"},
+                    {"role": "user", "content": [{"type": "text", "text": "Say hi"}]},
+                ],
+                "qwen3",
+            ),
+            "<|im_start|>system\nYou are AX<|im_end|>\n"
+            "<|im_start|>user\nSay hi<|im_end|>\n"
+            "<|im_start|>assistant\n",
+        )
+        self.assertEqual(
+            openai_server.render_chat_prompt(
+                [
+                    {"role": "system", "content": "You are AX"},
                     {"role": "user", "content": "Say hi"},
                 ],
                 "Meta-Llama-3.1-8B-Instruct",
@@ -1002,28 +1042,150 @@ class WrapperContractTests(unittest.TestCase):
             ),
             "user: Line 1\\nLine 2\nassistant:",
         )
+        qwen_tool_prompt = openai_server.render_chat_prompt(
+            [{"role": "user", "content": "Read README.md"}],
+            "mlx-community/Qwen3-Coder-Next-4bit",
+            tools=[
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "read_file",
+                        "description": "Read a workspace file",
+                        "parameters": {"type": "object"},
+                    },
+                }
+            ],
+            tool_choice="auto",
+        )
+        self.assertIn(
+            "<|im_start|>system\nYou are Qwen, a helpful AI assistant that can interact with a computer to solve tasks.\n\n# Tools\n\nYou have access to the following tools:",
+            qwen_tool_prompt,
+        )
+        self.assertIn("<tools>", qwen_tool_prompt)
+        self.assertIn("<function>\n<name>read_file</name>", qwen_tool_prompt)
+        self.assertIn("If you choose to call a tool ONLY reply", qwen_tool_prompt)
+        self.assertIn("<function=example_function_name>", qwen_tool_prompt)
+        self.assertIn(
+            "the tool calling block MUST begin with an opening <tool_call> tag",
+            qwen_tool_prompt,
+        )
+        self.assertTrue(qwen_tool_prompt.endswith("<|im_start|>assistant\n"))
 
-    def test_openai_mlx_shim_rejects_boolean_prompt_tokens(self) -> None:
-        openai_server = importlib.import_module("ax_engine.openai_server")
+        qwen_custom_system_prompt = openai_server.render_chat_prompt(
+            [
+                {"role": "system", "content": "Use the project coding conventions."},
+                {"role": "user", "content": "Read README.md"},
+            ],
+            "mlx-community/Qwen3-Coder-Next-4bit",
+            tools=[
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "read_file",
+                        "description": "Read a workspace file",
+                        "parameters": {"type": "object"},
+                    },
+                }
+            ],
+            tool_choice="auto",
+        )
+        self.assertIn(
+            "<|im_start|>system\nUse the project coding conventions.\n\n# Tools",
+            qwen_custom_system_prompt,
+        )
+        self.assertNotIn(
+            "You are Qwen, a helpful AI assistant",
+            qwen_custom_system_prompt,
+        )
 
-        class FakeTokenizer:
-            def encode(self, text: str) -> object:
-                return types.SimpleNamespace(ids=[ord(ch) for ch in text])
+        qwen36_tool_prompt = openai_server.render_chat_prompt(
+            [{"role": "user", "content": "Read README.md"}],
+            "mlx-community/Qwen3.6-35B-A3B-4bit",
+            tools=[
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "read_file",
+                        "description": "Read a workspace file",
+                        "parameters": {"type": "object"},
+                    },
+                }
+            ],
+            tool_choice="auto",
+        )
+        self.assertIn("You have access to the following functions:", qwen36_tool_prompt)
+        self.assertIn('"name":"read_file"', qwen36_tool_prompt)
+        self.assertNotIn("<function>\n<name>read_file</name>", qwen36_tool_prompt)
+        self.assertIn("If you choose to call a function ONLY reply", qwen36_tool_prompt)
+        self.assertIn("<function=example_function_name>", qwen36_tool_prompt)
+        self.assertIn(
+            "an inner <function=...></function> block must be nested",
+            qwen36_tool_prompt,
+        )
+        self.assertTrue(
+            qwen36_tool_prompt.endswith(
+                openai_server.QWEN_CHATML_ASSISTANT_GENERATION_PROMPT
+            )
+        )
 
-        with self.assertRaisesRegex(openai_server.OpenAiShimError, "token id array"):
-            openai_server.prompt_to_tokens([True], FakeTokenizer())
-        with self.assertRaisesRegex(openai_server.OpenAiShimError, "token id array"):
-            openai_server.prompt_to_tokens([1, False], FakeTokenizer())
+        qwen3_dense_tool_prompt = openai_server.render_chat_prompt(
+            [{"role": "user", "content": "Read README.md"}],
+            "mlx-community/Qwen3-4B-4bit",
+            tools=[
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "read_file",
+                        "description": "Read a workspace file",
+                        "parameters": {"type": "object"},
+                    },
+                }
+            ],
+            tool_choice="auto",
+        )
+        self.assertIn(
+            "You may call one or more functions to assist with the user query.",
+            qwen3_dense_tool_prompt,
+        )
+        self.assertIn(
+            "You are provided with function signatures within <tools></tools> XML tags:",
+            qwen3_dense_tool_prompt,
+        )
+        self.assertIn('"name":"read_file"', qwen3_dense_tool_prompt)
+        self.assertIn(
+            '{"name": <function-name>, "arguments": <args-json-object>}',
+            qwen3_dense_tool_prompt,
+        )
+        self.assertNotIn("<function>\n<name>read_file</name>", qwen3_dense_tool_prompt)
 
-    def test_openai_mlx_shim_rejects_malformed_chat_messages(self) -> None:
-        openai_server = importlib.import_module("ax_engine.openai_server")
-
-        with self.assertRaisesRegex(
-            openai_server.OpenAiShimError, "messages must be a list"
-        ):
-            openai_server.render_chat_prompt("not-a-list", "qwen3_dense")
-        with self.assertRaisesRegex(openai_server.OpenAiShimError, "message entries"):
-            openai_server.render_chat_prompt([1], "qwen3_dense")
+        replay_prompt = openai_server.render_chat_prompt(
+            [
+                {"role": "user", "content": "Read README.md"},
+                {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": "call_123",
+                            "type": "function",
+                            "function": {
+                                "name": "read_file",
+                                "arguments": '{"path":"README.md"}',
+                            },
+                        }
+                    ],
+                },
+                {"role": "tool", "tool_call_id": "call_123", "content": "AX Engine"},
+            ],
+            "mlx-community/Qwen3-Coder-Next-4bit",
+        )
+        self.assertIn("<tool_call>", replay_prompt)
+        self.assertIn("<function=read_file>", replay_prompt)
+        self.assertIn("<parameter=path>\nREADME.md\n</parameter>", replay_prompt)
+        self.assertIn(
+            "<|im_start|>user\n<tool_response>\nAX Engine\n</tool_response>\n<|im_end|>",
+            replay_prompt,
+        )
 
     def test_openai_mlx_shim_rejects_boolean_max_tokens(self) -> None:
         openai_server = importlib.import_module("ax_engine.openai_server")
@@ -1038,67 +1200,147 @@ class WrapperContractTests(unittest.TestCase):
             (400, "OpenAI-compatible MLX shim requires max_tokens > 0"),
         )
 
-    def test_openai_mlx_shim_rejects_malformed_sampling_params(self) -> None:
-        openai_server = importlib.import_module("ax_engine.openai_server")
-
-        self.assertIsNone(
-            openai_server.validate_sampling_params(
-                {
-                    "temperature": 0.0,
-                    "top_p": 1.0,
-                    "repetition_penalty": 1,
-                    "top_k": 0,
-                    "seed": 42,
-                }
-            )
-        )
-        self.assertEqual(
-            openai_server.validate_sampling_params({"temperature": "cold"}),
-            (400, "OpenAI-compatible MLX shim requires temperature to be numeric"),
-        )
-        self.assertEqual(
-            openai_server.validate_sampling_params({"top_p": True}),
-            (400, "OpenAI-compatible MLX shim requires top_p to be numeric"),
-        )
-        self.assertEqual(
-            openai_server.validate_sampling_params({"top_k": 1.5}),
-            (400, "OpenAI-compatible MLX shim requires top_k to be an integer"),
-        )
-        self.assertEqual(
-            openai_server.validate_sampling_params({"seed": False}),
-            (400, "OpenAI-compatible MLX shim requires seed to be an integer"),
-        )
-
-    def test_openai_mlx_shim_rejects_non_object_payloads(self) -> None:
-        openai_server = importlib.import_module("ax_engine.openai_server")
-
-        self.assertIsNone(openai_server.validate_payload_object({"max_tokens": 1}))
-        self.assertEqual(
-            openai_server.validate_payload_object([]),
-            (
-                400,
-                "OpenAI-compatible MLX shim request body must be a JSON object",
-            ),
-        )
-        self.assertEqual(
-            openai_server.validate_payload_object("not-an-object"),
-            (
-                400,
-                "OpenAI-compatible MLX shim request body must be a JSON object",
-            ),
-        )
-
     def test_openai_mlx_shim_finish_reason_maps_terminal_reasons(self) -> None:
         openai_server = importlib.import_module("ax_engine.openai_server")
 
         self.assertEqual(openai_server.finish_reason("stop"), "stop")
         self.assertEqual(openai_server.finish_reason("max_output_tokens"), "length")
-        self.assertEqual(openai_server.finish_reason("content_filter"), "content_filter")
+        self.assertEqual(
+            openai_server.finish_reason("content_filter"), "content_filter"
+        )
         self.assertEqual(openai_server.finish_reason("cancelled"), "cancel")
         self.assertIsNone(openai_server.finish_reason("error"))
         self.assertIsNone(openai_server.finish_reason(None))
 
-    def test_qwen_chat_prompt_matches_real_tokenizer_enable_thinking_false(self) -> None:
+    def test_openai_mlx_shim_extracts_tool_calls(self) -> None:
+        openai_server = importlib.import_module("ax_engine.openai_server")
+
+        content, tool_calls = openai_server.extract_tool_calls(
+            'Before <tool_call>{"name":"lookup","arguments":{"query":"ax"}}</tool_call> after'
+        )
+
+        self.assertEqual(content, "Before  after")
+        self.assertEqual(
+            tool_calls,
+            [
+                {
+                    "id": "call_0",
+                    "type": "function",
+                    "function": {
+                        "name": "lookup",
+                        "arguments": '{"query":"ax"}',
+                    },
+                }
+            ],
+        )
+
+    def test_openai_mlx_shim_extracts_qwen_function_parameter_tool_calls(self) -> None:
+        openai_server = importlib.import_module("ax_engine.openai_server")
+
+        content, tool_calls = openai_server.extract_tool_calls(
+            """<tool_call><function=todo_write>
+<parameter=todos>
+[{"content":"create index.html","status":"pending"}]
+</parameter>
+</function></tool_call>"""
+        )
+
+        self.assertEqual(content, "")
+        self.assertEqual(
+            tool_calls,
+            [
+                {
+                    "id": "call_0",
+                    "type": "function",
+                    "function": {
+                        "name": "todo_write",
+                        "arguments": '{"todos":[{"content":"create index.html","status":"pending"}]}',
+                    },
+                }
+            ],
+        )
+
+    def test_openai_mlx_shim_recovers_qwen_function_tool_calls_without_closing_tags(
+        self,
+    ) -> None:
+        openai_server = importlib.import_module("ax_engine.openai_server")
+
+        content, tool_calls = openai_server.extract_tool_calls(
+            """I'll create it now.
+
+<tool_call>
+<function=todo_write>
+{"explanation":"Creating a responsive coffee shop website in Traditional Chinese","tasks":[{"file_path":"index.html","status":"in_progress"}]}"""
+        )
+
+        self.assertEqual(content, "I'll create it now.")
+        self.assertEqual(
+            tool_calls,
+            [
+                {
+                    "id": "call_0",
+                    "type": "function",
+                    "function": {
+                        "name": "todo_write",
+                        "arguments": '{"explanation":"Creating a responsive coffee shop website in Traditional Chinese","tasks":[{"file_path":"index.html","status":"in_progress"}]}',
+                    },
+                }
+            ],
+        )
+
+    def test_openai_mlx_shim_recovers_qwen_tool_call_when_parameter_close_truncated(
+        self,
+    ) -> None:
+        # Qwen3-Coder models frequently truncate the closing </parameter> tag.
+        # The reference qwen3_coder_xml parser terminates the value at
+        # </function>; AX must do the same instead of dropping the whole tool
+        # call onto the plain-text path that the guard then blocks as
+        # `unexecutable_tool_text`.
+        openai_server = importlib.import_module("ax_engine.openai_server")
+
+        content, tool_calls = openai_server.extract_tool_calls(
+            """<tool_call><function=todo_write>
+<parameter=todos>
+[{"content":"create index.html","status":"pending"}]
+</function></tool_call>"""
+        )
+
+        self.assertEqual(content, "")
+        self.assertEqual(
+            tool_calls,
+            [
+                {
+                    "id": "call_0",
+                    "type": "function",
+                    "function": {
+                        "name": "todo_write",
+                        "arguments": '{"todos":[{"content":"create index.html","status":"pending"}]}',
+                    },
+                }
+            ],
+        )
+
+    def test_openai_mlx_shim_streams_buffered_tool_call_chunks(self) -> None:
+        openai_server = importlib.import_module("ax_engine.openai_server")
+
+        body = "".join(
+            openai_server.stream_buffered_tool_chat_chunks(
+                "qwen3",
+                7,
+                '<tool_call>{"name":"lookup","arguments":{"query":"ax"}}</tool_call>',
+                "stop",
+            )
+        )
+
+        self.assertIn('"tool_calls":[{"index":0,"id":"call_0"', body)
+        self.assertIn('"name":"lookup"', body)
+        self.assertIn('"arguments":"{\\"query\\":\\"ax\\"}"', body)
+        self.assertIn('"finish_reason":"tool_calls"', body)
+        self.assertIn("data: [DONE]", body)
+
+    def test_qwen_chat_prompt_matches_real_tokenizer_enable_thinking_false(
+        self,
+    ) -> None:
         openai_server = importlib.import_module("ax_engine.openai_server")
         try:
             from transformers import AutoTokenizer
@@ -1289,9 +1531,13 @@ class WrapperContractTests(unittest.TestCase):
         self.assertTrue(step.metal_dispatch.execution_model_bound_ffn_decode)
         self.assertTrue(step.metal_dispatch.execution_real_model_forward_completed)
         self.assertEqual(step.metal_dispatch.execution_prefix_native_dispatch_count, 35)
-        self.assertEqual(step.metal_dispatch.execution_prefix_cpu_reference_dispatch_count, 1)
+        self.assertEqual(
+            step.metal_dispatch.execution_prefix_cpu_reference_dispatch_count, 1
+        )
         self.assertEqual(step.metal_dispatch.execution_qkv_projection_token_count, 72)
-        self.assertEqual(step.metal_dispatch.execution_layer_continuation_token_count, 37)
+        self.assertEqual(
+            step.metal_dispatch.execution_layer_continuation_token_count, 37
+        )
         self.assertEqual(step.metal_dispatch.execution_logits_projection_token_count, 1)
         self.assertEqual(
             step.metal_dispatch.execution_logits_vocab_scan_row_count, 151936
@@ -1360,19 +1606,32 @@ class WrapperContractTests(unittest.TestCase):
         self.assertEqual(events[1].delta_tokens, [])
         self.assertEqual(events[1].delta_token_logprobs, [])
         self.assertEqual(events[1].step.ttft_events, 0)
-        self.assertEqual(events[1].step.route.execution_plan, "phase1.qwen3_dense.dense_prefill")
+        self.assertEqual(
+            events[1].step.route.execution_plan, "phase1.qwen3_dense.dense_prefill"
+        )
         self.assertEqual(events[2].delta_tokens, [4])
         self.assertEqual(events[2].delta_token_logprobs, [-0.25])
         self.assertEqual(events[2].step.ttft_events, 1)
         self.assertTrue(events[2].step.metal_dispatch.runtime_model_conditioned_inputs)
-        self.assertTrue(events[2].step.metal_dispatch.runtime_complete_model_forward_supported)
-        self.assertEqual(events[2].step.metal_dispatch.runtime_model_family, "qwen3_dense")
-        self.assertEqual(events[2].step.metal_dispatch.execution_direct_decode_token_count, 1)
-        self.assertEqual(events[2].step.metal_dispatch.execution_logits_output_count, 1)
-        self.assertTrue(events[2].step.metal_dispatch.execution_real_model_forward_completed)
-        self.assertEqual(events[2].step.metal_dispatch.execution_prefix_native_dispatch_count, 35)
+        self.assertTrue(
+            events[2].step.metal_dispatch.runtime_complete_model_forward_supported
+        )
         self.assertEqual(
-            events[2].step.metal_dispatch.execution_prefix_cpu_reference_dispatch_count, 1
+            events[2].step.metal_dispatch.runtime_model_family, "qwen3_dense"
+        )
+        self.assertEqual(
+            events[2].step.metal_dispatch.execution_direct_decode_token_count, 1
+        )
+        self.assertEqual(events[2].step.metal_dispatch.execution_logits_output_count, 1)
+        self.assertTrue(
+            events[2].step.metal_dispatch.execution_real_model_forward_completed
+        )
+        self.assertEqual(
+            events[2].step.metal_dispatch.execution_prefix_native_dispatch_count, 35
+        )
+        self.assertEqual(
+            events[2].step.metal_dispatch.execution_prefix_cpu_reference_dispatch_count,
+            1,
         )
         self.assertEqual(
             events[2].step.metal_dispatch.execution_qkv_projection_token_count, 72
@@ -1435,7 +1694,9 @@ class WrapperContractTests(unittest.TestCase):
             )
 
         native = FakeNativeSession.instances[-1]
-        self.assertIs(native.generate_calls[0][1]["multimodal_inputs"], multimodal_inputs)
+        self.assertIs(
+            native.generate_calls[0][1]["multimodal_inputs"], multimodal_inputs
+        )
 
     def test_stream_generate_raises_when_request_never_terminates(self) -> None:
         self.ax_engine = import_wrapper_module(HungNativeSession)
@@ -1490,7 +1751,9 @@ class WrapperContractTests(unittest.TestCase):
             support_tier="llama_cpp",
             llama_server_url="http://127.0.0.1:8081",
         ) as session:
-            events = list(session.stream_text("hello streamed text", max_output_tokens=2))
+            events = list(
+                session.stream_text("hello streamed text", max_output_tokens=2)
+            )
 
         native = FakeNativeSession.instances[-1]
         self.assertEqual(
@@ -1524,7 +1787,9 @@ class WrapperContractTests(unittest.TestCase):
 
     def test_chat_convenience_rejects_empty_messages(self) -> None:
         with self.ax_engine.Session(model_id="qwen3_dense") as session:
-            with self.assertRaisesRegex(ValueError, "chat requires at least one message"):
+            with self.assertRaisesRegex(
+                ValueError, "chat requires at least one message"
+            ):
                 session.chat([], max_output_tokens=2)
 
 

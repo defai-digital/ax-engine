@@ -5,12 +5,15 @@ use ax_engine_sdk::{
 use axum::Json;
 use axum::http::StatusCode;
 use serde_json::{Map, Value};
+use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::app_state::LiveState;
 use crate::chat;
 use crate::errors::{ErrorResponse, error_response};
+use crate::metadata::context_length;
 use crate::openai::chat_requests::{build_llama_cpp_chat_messages, build_mlx_lm_chat_messages};
 use crate::openai::schema::{
     OpenAiChatCompletionHttpRequest, OpenAiCompletionHttpRequest, OpenAiPromptInput,
@@ -18,13 +21,15 @@ use crate::openai::schema::{
 };
 
 pub(crate) const DEFAULT_OPENAI_MAX_TOKENS: u32 = 256;
+const OPENAI_SAFE_MAX_TOKENS: u32 = 512;
 static OPENAI_SEED_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 pub(crate) use crate::openai::chat_requests::{
-    chat_template_kwargs_for_model_id, openai_chat_stop_sequences, render_openai_chat_prompt,
+    chat_template_kwargs_for_model_id, openai_chat_stop_sequences,
 };
 use crate::openai::chat_requests::{
     messages_contain_inline_media, render_gemma4_unified_chat_with_media,
+    render_openai_chat_prompt_with_tools,
 };
 use crate::tasks::run_blocking_http_task;
 
@@ -64,12 +69,119 @@ pub(crate) struct OpenAiBuiltLlamaCppChatRequest {
     pub(crate) response_options: OpenAiResponseOptions,
 }
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub(crate) struct OpenAiResponseOptions {
     pub(crate) include_logprobs: bool,
     pub(crate) include_reasoning: bool,
     pub(crate) validate_json_object: bool,
     pub(crate) parse_tool_calls: bool,
+    pub(crate) tool_contract: Option<Arc<OpenAiToolContract>>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct OpenAiToolContract {
+    tools: BTreeMap<String, OpenAiToolShape>,
+}
+
+#[derive(Clone, Debug, Default)]
+struct OpenAiToolShape {
+    properties: BTreeSet<String>,
+}
+
+impl OpenAiToolContract {
+    pub(crate) fn from_tools(value: Option<&Value>) -> Option<Self> {
+        let tools = value.and_then(Value::as_array)?;
+        let mut contract = OpenAiToolContract::default();
+        for tool in tools {
+            let Some(function) = tool.get("function").and_then(Value::as_object) else {
+                continue;
+            };
+            let Some(name) = function.get("name").and_then(Value::as_str) else {
+                continue;
+            };
+            let properties = function
+                .get("parameters")
+                .and_then(|parameters| parameters.get("properties"))
+                .and_then(Value::as_object)
+                .map(|properties| properties.keys().cloned().collect())
+                .unwrap_or_default();
+            contract
+                .tools
+                .insert(name.to_string(), OpenAiToolShape { properties });
+        }
+        (!contract.tools.is_empty()).then_some(contract)
+    }
+
+    pub(crate) fn canonical_tool_name(&self, name: &str) -> String {
+        if self.tools.contains_key(name) {
+            return name.to_string();
+        }
+        let normalized = normalize_tool_name(name);
+        self.tools
+            .keys()
+            .find(|candidate| normalize_tool_name(candidate) == normalized)
+            .cloned()
+            .or_else(|| {
+                common_tool_alias(name)
+                    .and_then(|alias| self.tools.contains_key(alias).then(|| alias.to_string()))
+            })
+            .unwrap_or_else(|| name.to_string())
+    }
+
+    pub(crate) fn canonical_arguments(&self, tool_name: &str, arguments: String) -> String {
+        let Some(shape) = self.tools.get(tool_name) else {
+            return arguments;
+        };
+        let Ok(Value::Object(mut object)) = serde_json::from_str::<Value>(&arguments) else {
+            return arguments;
+        };
+        let mut changed = false;
+        for canonical in &shape.properties {
+            if object.contains_key(canonical) {
+                continue;
+            }
+            if let Some(alias) = argument_aliases(canonical)
+                .iter()
+                .find(|alias| object.contains_key(**alias))
+            {
+                if let Some(value) = object.remove(*alias) {
+                    object.insert(canonical.clone(), value);
+                    changed = true;
+                }
+            }
+        }
+        if !changed {
+            return arguments;
+        }
+        serde_json::to_string(&Value::Object(object)).unwrap_or(arguments)
+    }
+}
+
+fn normalize_tool_name(name: &str) -> String {
+    name.chars()
+        .filter(|ch| *ch != '_' && *ch != '-')
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
+fn common_tool_alias(name: &str) -> Option<&'static str> {
+    match name {
+        "edit_file" => Some("edit"),
+        "list_files" => Some("glob"),
+        "read_file" => Some("read"),
+        "write_file" => Some("write"),
+        _ => None,
+    }
+}
+
+fn argument_aliases(canonical: &str) -> &'static [&'static str] {
+    match canonical {
+        "filePath" => &["file_path", "filepath", "path", "filename"],
+        "newString" => &["new_string", "new"],
+        "oldString" => &["old_string", "old"],
+        "replaceAll" => &["replace_all"],
+        _ => &[],
+    }
 }
 
 impl OpenAiResponseOptions {
@@ -85,6 +197,7 @@ impl OpenAiResponseOptions {
                 request.response_format.as_ref(),
             ),
             parse_tool_calls: false,
+            tool_contract: None,
         })
     }
 
@@ -102,6 +215,7 @@ impl OpenAiResponseOptions {
                 request.tools.as_ref(),
                 request.tool_choice.as_ref(),
             ),
+            tool_contract: OpenAiToolContract::from_tools(request.tools.as_ref()).map(Arc::new),
         })
     }
 
@@ -109,7 +223,7 @@ impl OpenAiResponseOptions {
     /// JSON-object payloads yet; fail closed instead of silently dropping a
     /// contract the caller asked for.
     pub(crate) fn reject_unsupported_streaming_contract(
-        self,
+        &self,
         stream: bool,
     ) -> Result<(), (StatusCode, Json<ErrorResponse>)> {
         if !stream {
@@ -270,6 +384,12 @@ pub(crate) fn build_openai_chat_request(
     response_options.reject_unsupported_streaming_contract(request.stream)?;
     let mut input_tokens = request.input_tokens;
     let mut multimodal_inputs = request.multimodal_inputs;
+    reject_gemma4_tools_when_ax_cannot_render_them(
+        live.model_id.as_ref(),
+        request.tools.as_ref(),
+        request.tool_choice.as_ref(),
+        !input_tokens.is_empty() || messages_contain_inline_media(&request.messages),
+    )?;
     reject_openai_multimodal_inputs_without_native_mlx(live, "OpenAI chat", &multimodal_inputs)?;
     reject_openai_multimodal_inputs_without_tokens(
         "OpenAI chat",
@@ -310,9 +430,11 @@ pub(crate) fn build_openai_chat_request(
                 multimodal_inputs.gemma4_unified = Some(prompt.runtime_inputs);
                 None
             }
-            None => Some(render_openai_chat_prompt(
+            None => Some(render_openai_chat_prompt_with_tools(
                 live.model_id.as_ref(),
                 &request.messages,
+                request.tools.as_ref(),
+                request.tool_choice.as_ref(),
             )?),
         }
     };
@@ -356,6 +478,12 @@ pub(crate) fn build_openai_mlx_lm_chat_request(
     let max_output_tokens = openai_max_tokens(request.max_tokens);
     let sampling_params = OpenAiSamplingParams::from_chat_request(&request);
     let response_options = OpenAiResponseOptions::from_chat_request(&request)?;
+    reject_gemma4_tools_when_ax_cannot_render_them(
+        live.model_id.as_ref(),
+        request.tools.as_ref(),
+        request.tool_choice.as_ref(),
+        true,
+    )?;
     response_options.reject_unsupported_streaming_contract(request.stream)?;
     let messages = build_mlx_lm_chat_messages(&request.messages)?;
     let sampling = build_openai_sampling_with_default_repetition_penalty(sampling_params, 1.0);
@@ -387,6 +515,12 @@ pub(crate) fn build_openai_llama_cpp_chat_request(
     let max_output_tokens = openai_max_tokens(request.max_tokens);
     let sampling_params = OpenAiSamplingParams::from_chat_request(&request);
     let response_options = OpenAiResponseOptions::from_chat_request(&request)?;
+    reject_gemma4_tools_when_ax_cannot_render_them(
+        live.model_id.as_ref(),
+        request.tools.as_ref(),
+        request.tool_choice.as_ref(),
+        true,
+    )?;
     response_options.reject_unsupported_streaming_contract(request.stream)?;
     let messages = build_llama_cpp_chat_messages(&request.messages)?;
     let sampling = build_openai_sampling_with_default_repetition_penalty(sampling_params, 1.0);
@@ -419,6 +553,8 @@ fn build_openai_generate_request(
 ) -> Result<OpenAiBuiltRequest, (StatusCode, Json<ErrorResponse>)> {
     let (input_tokens, input_text) =
         tokenize_native_mlx_text_input(live, input_tokens, input_text)?;
+    let max_output_tokens =
+        fit_openai_max_output_tokens_to_context(live, &input_tokens, max_output_tokens)?;
 
     Ok(OpenAiBuiltRequest {
         generate_request: build_generate_request_internal(
@@ -436,6 +572,35 @@ fn build_openai_generate_request(
         stream: payload.stream,
         response_options,
     })
+}
+
+fn fit_openai_max_output_tokens_to_context(
+    live: &LiveState,
+    input_tokens: &[u32],
+    max_output_tokens: u32,
+) -> Result<u32, (StatusCode, Json<ErrorResponse>)> {
+    if input_tokens.is_empty() {
+        return Ok(max_output_tokens);
+    }
+    let context_length = context_length(live);
+    let prompt_tokens = input_tokens.len();
+    if prompt_tokens >= context_length as usize {
+        return Err(error_response(
+            StatusCode::BAD_REQUEST,
+            "context_length_exceeded",
+            format!(
+                "request prompt requires {prompt_tokens} tokens, leaving no room for output within model context length {context_length}",
+            ),
+        ));
+    }
+
+    let requested_tokens = prompt_tokens.saturating_add(max_output_tokens as usize);
+    if requested_tokens <= context_length as usize {
+        return Ok(max_output_tokens);
+    }
+
+    let remaining_output = context_length.saturating_sub(prompt_tokens as u32);
+    Ok(remaining_output.max(1))
 }
 
 /// `(tokens, optional decoded text)` on success, or an HTTP error response.
@@ -660,13 +825,36 @@ fn openai_tools_are_enabled(tools: Option<&Value>, tool_choice: Option<&Value>) 
             .unwrap_or(false)
 }
 
+fn reject_gemma4_tools_when_ax_cannot_render_them(
+    model_id: &str,
+    tools: Option<&Value>,
+    tool_choice: Option<&Value>,
+    cannot_render_ax_gemma4_dsl: bool,
+) -> Result<(), (StatusCode, Json<ErrorResponse>)> {
+    if !matches!(
+        chat::ChatPromptTemplate::for_model_id(model_id),
+        chat::ChatPromptTemplate::Gemma4
+    ) || !openai_tools_are_enabled(tools, tool_choice)
+        || !cannot_render_ax_gemma4_dsl
+    {
+        return Ok(());
+    }
+
+    Err(error_response(
+        StatusCode::BAD_REQUEST,
+        "unsupported_parameter",
+        "Gemma 4 OpenAI tool calling requires AX to render the Ollama/Gemma 4 <|tool>/<|tool_call>/<|tool_response> DSL. It is supported only on AX-rendered native text chat prompts; omit tools for delegated, pre-tokenized, or inline-media Gemma 4 chat requests."
+            .to_string(),
+    ))
+}
+
 fn openai_tool_choice_enables_tool_call(value: &Value) -> bool {
     match value {
         Value::Null => false,
         Value::Bool(value) => *value,
         Value::String(value) => {
             let value = value.trim().to_ascii_lowercase();
-            !matches!(value.as_str(), "" | "none" | "false" | "off")
+            !matches!(value.as_str(), "" | "auto" | "none" | "false" | "off")
         }
         Value::Array(values) => !values.is_empty(),
         Value::Object(object) => !object.is_empty(),
@@ -785,7 +973,9 @@ fn openai_reasoning_is_enabled(reasoning: Option<&Value>) -> bool {
 }
 
 fn openai_max_tokens(max_tokens: Option<u32>) -> u32 {
-    max_tokens.unwrap_or(DEFAULT_OPENAI_MAX_TOKENS)
+    max_tokens
+        .unwrap_or(DEFAULT_OPENAI_MAX_TOKENS)
+        .min(OPENAI_SAFE_MAX_TOKENS)
 }
 
 #[cfg(test)]
