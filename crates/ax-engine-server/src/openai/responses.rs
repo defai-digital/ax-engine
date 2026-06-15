@@ -221,6 +221,18 @@ fn extract_tool_calls(content: &mut String) -> Option<Vec<OpenAiToolCall>> {
 }
 
 fn extract_tool_call_payload(content: &str) -> Option<(OpenAiFunctionCall, String)> {
+    match (
+        content.find("<tool_call>"),
+        content.find("<|tool_call>call:"),
+    ) {
+        (Some(xml), Some(gemma)) if xml <= gemma => extract_xml_tool_call_payload(content),
+        (Some(_), None) => extract_xml_tool_call_payload(content),
+        (Some(_), Some(_)) | (None, Some(_)) => extract_gemma4_tool_call_payload(content),
+        (None, None) => None,
+    }
+}
+
+fn extract_xml_tool_call_payload(content: &str) -> Option<(OpenAiFunctionCall, String)> {
     let start = content.find("<tool_call>")?;
     let body_start = start + "<tool_call>".len();
     let relative_end = content[body_start..].find("</tool_call>");
@@ -233,6 +245,56 @@ fn extract_tool_call_payload(content: &str) -> Option<(OpenAiFunctionCall, Strin
         .unwrap_or(content.len());
     let remaining = format!("{}{}", &content[..start], &content[suffix_start..]);
     Some((function, remaining))
+}
+
+fn extract_gemma4_tool_call_payload(content: &str) -> Option<(OpenAiFunctionCall, String)> {
+    let start = content.find("<|tool_call>call:")?;
+    let name_start = start + "<|tool_call>call:".len();
+    let name_end = name_start + content[name_start..].find('{')?;
+    let name = content[name_start..name_end].trim().to_string();
+    if name.is_empty() {
+        return None;
+    }
+    let body_start = name_end + 1;
+    let body_end = find_matching_gemma4_object_end(content, body_start)?;
+    let marker_start = body_end + 1;
+    let marker = "<tool_call|>";
+    if !content[marker_start..].starts_with(marker) {
+        return None;
+    }
+    let arguments = parse_gemma4_arguments(&content[body_start..body_end])?;
+    let remaining = format!(
+        "{}{}",
+        &content[..start],
+        &content[marker_start + marker.len()..]
+    );
+    Some((OpenAiFunctionCall { name, arguments }, remaining))
+}
+
+fn find_matching_gemma4_object_end(content: &str, body_start: usize) -> Option<usize> {
+    let mut depth = 1usize;
+    let mut index = body_start;
+    while index < content.len() {
+        if content[index..].starts_with("<|\"|>") {
+            index += "<|\"|>".len();
+            let relative_end = content[index..].find("<|\"|>")?;
+            index += relative_end + "<|\"|>".len();
+            continue;
+        }
+        let ch = content[index..].chars().next()?;
+        match ch {
+            '{' => depth += 1,
+            '}' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return Some(index);
+                }
+            }
+            _ => {}
+        }
+        index += ch.len_utf8();
+    }
+    None
 }
 
 fn parse_tool_call_body(body: &str) -> Option<OpenAiFunctionCall> {
@@ -279,6 +341,174 @@ fn parse_qwen_function_tool_call(body: &str) -> Option<OpenAiFunctionCall> {
         serde_json::to_string(&Value::Object(parameters)).ok()?
     };
     Some(OpenAiFunctionCall { name, arguments })
+}
+
+fn parse_gemma4_arguments(body: &str) -> Option<String> {
+    let mut parser = Gemma4DslParser::new(body);
+    let value = parser.parse_object_body()?;
+    serde_json::to_string(&value).ok()
+}
+
+struct Gemma4DslParser<'a> {
+    input: &'a str,
+    index: usize,
+}
+
+impl<'a> Gemma4DslParser<'a> {
+    fn new(input: &'a str) -> Self {
+        Self { input, index: 0 }
+    }
+
+    fn parse_object_body(&mut self) -> Option<Value> {
+        let mut object = serde_json::Map::new();
+        loop {
+            self.skip_ws();
+            if self.index >= self.input.len() {
+                break;
+            }
+            let key = self.parse_key()?;
+            self.skip_ws();
+            self.consume_char(':')?;
+            let value = self.parse_value()?;
+            object.insert(key, value);
+            self.skip_ws();
+            if self.peek_char() == Some(',') {
+                self.index += 1;
+            }
+        }
+        Some(Value::Object(object))
+    }
+
+    fn parse_value(&mut self) -> Option<Value> {
+        self.skip_ws();
+        if self.input[self.index..].starts_with("<|\"|>") {
+            return self.parse_quoted_string().map(Value::String);
+        }
+        match self.peek_char()? {
+            '{' => {
+                self.index += 1;
+                let value = self.parse_braced_object()?;
+                self.consume_char('}')?;
+                Some(value)
+            }
+            '[' => {
+                self.index += 1;
+                let mut values = Vec::new();
+                loop {
+                    self.skip_ws();
+                    if self.peek_char() == Some(']') {
+                        self.index += 1;
+                        break;
+                    }
+                    values.push(self.parse_value()?);
+                    self.skip_ws();
+                    match self.peek_char()? {
+                        ',' => self.index += 1,
+                        ']' => {
+                            self.index += 1;
+                            break;
+                        }
+                        _ => return None,
+                    }
+                }
+                Some(Value::Array(values))
+            }
+            _ => self.parse_atom(),
+        }
+    }
+
+    fn parse_braced_object(&mut self) -> Option<Value> {
+        let mut object = serde_json::Map::new();
+        loop {
+            self.skip_ws();
+            if self.peek_char() == Some('}') {
+                break;
+            }
+            let key = self.parse_key()?;
+            self.skip_ws();
+            self.consume_char(':')?;
+            let value = self.parse_value()?;
+            object.insert(key, value);
+            self.skip_ws();
+            match self.peek_char()? {
+                ',' => self.index += 1,
+                '}' => break,
+                _ => return None,
+            }
+        }
+        Some(Value::Object(object))
+    }
+
+    fn parse_key(&mut self) -> Option<String> {
+        self.skip_ws();
+        if self.input[self.index..].starts_with("<|\"|>") {
+            return self.parse_quoted_string();
+        }
+        let start = self.index;
+        while let Some(ch) = self.peek_char() {
+            if matches!(ch, ':' | ',' | '}' | ']') || ch.is_whitespace() {
+                break;
+            }
+            self.index += ch.len_utf8();
+        }
+        (self.index > start).then(|| self.input[start..self.index].to_string())
+    }
+
+    fn parse_quoted_string(&mut self) -> Option<String> {
+        let marker = "<|\"|>";
+        if !self.input[self.index..].starts_with(marker) {
+            return None;
+        }
+        self.index += marker.len();
+        let relative_end = self.input[self.index..].find(marker)?;
+        let value = self.input[self.index..self.index + relative_end].to_string();
+        self.index += relative_end + marker.len();
+        Some(value)
+    }
+
+    fn parse_atom(&mut self) -> Option<Value> {
+        let start = self.index;
+        while let Some(ch) = self.peek_char() {
+            if matches!(ch, ',' | '}' | ']') {
+                break;
+            }
+            self.index += ch.len_utf8();
+        }
+        let atom = self.input[start..self.index].trim();
+        if atom.is_empty() {
+            return None;
+        }
+        match atom {
+            "true" => Some(Value::Bool(true)),
+            "false" => Some(Value::Bool(false)),
+            "null" => Some(Value::Null),
+            value => serde_json::from_str::<Value>(value)
+                .ok()
+                .or_else(|| Some(Value::String(value.to_string()))),
+        }
+    }
+
+    fn skip_ws(&mut self) {
+        while let Some(ch) = self.peek_char() {
+            if !ch.is_whitespace() {
+                break;
+            }
+            self.index += ch.len_utf8();
+        }
+    }
+
+    fn consume_char(&mut self, expected: char) -> Option<()> {
+        self.skip_ws();
+        if self.peek_char()? != expected {
+            return None;
+        }
+        self.index += expected.len_utf8();
+        Some(())
+    }
+
+    fn peek_char(&self) -> Option<char> {
+        self.input[self.index..].chars().next()
+    }
 }
 
 fn parse_qwen_tool_parameters(body: &str) -> serde_json::Map<String, Value> {

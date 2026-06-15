@@ -1014,6 +1014,18 @@ class WrapperContractTests(unittest.TestCase):
             openai_server.render_chat_prompt(
                 [
                     {"role": "system", "content": "You are AX"},
+                    {"role": "user", "content": [{"type": "text", "text": "Say hi"}]},
+                ],
+                "qwen3",
+            ),
+            "<|im_start|>system\nYou are AX<|im_end|>\n"
+            "<|im_start|>user\nSay hi<|im_end|>\n"
+            "<|im_start|>assistant\n",
+        )
+        self.assertEqual(
+            openai_server.render_chat_prompt(
+                [
+                    {"role": "system", "content": "You are AX"},
                     {"role": "user", "content": "Say hi"},
                 ],
                 "Meta-Llama-3.1-8B-Instruct",
@@ -1045,10 +1057,75 @@ class WrapperContractTests(unittest.TestCase):
             ],
             tool_choice="auto",
         )
-        self.assertIn("You have access to the following functions.", qwen_tool_prompt)
+        self.assertIn(
+            "<|im_start|>system\n# Tools\n\nYou have access to the following tools:",
+            qwen_tool_prompt,
+        )
+        self.assertIn("You have access to the following tools:", qwen_tool_prompt)
         self.assertIn("<tools>", qwen_tool_prompt)
-        self.assertIn("<tool_call>...</tool_call>", qwen_tool_prompt)
-        self.assertIn('"name":"read_file"', qwen_tool_prompt)
+        self.assertIn("<function>\n<name>read_file</name>", qwen_tool_prompt)
+        self.assertIn("If you choose to call a tool ONLY reply", qwen_tool_prompt)
+        self.assertIn("<function=example_function_name>", qwen_tool_prompt)
+        self.assertTrue(qwen_tool_prompt.endswith("<|im_start|>assistant\n"))
+
+        qwen36_tool_prompt = openai_server.render_chat_prompt(
+            [{"role": "user", "content": "Read README.md"}],
+            "mlx-community/Qwen3.6-35B-A3B-4bit",
+            tools=[
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "read_file",
+                        "description": "Read a workspace file",
+                        "parameters": {"type": "object"},
+                    },
+                }
+            ],
+            tool_choice="auto",
+        )
+        self.assertIn("You have access to the following functions:", qwen36_tool_prompt)
+        self.assertIn("<function>\n<name>read_file</name>", qwen36_tool_prompt)
+        self.assertIn("If you choose to call a function ONLY reply", qwen36_tool_prompt)
+        self.assertIn("<function=example_function_name>", qwen36_tool_prompt)
+        self.assertIn(
+            "an inner <function=...></function> block must be nested",
+            qwen36_tool_prompt,
+        )
+        self.assertTrue(
+            qwen36_tool_prompt.endswith(
+                openai_server.QWEN_CHATML_ASSISTANT_GENERATION_PROMPT
+            )
+        )
+
+        qwen3_dense_tool_prompt = openai_server.render_chat_prompt(
+            [{"role": "user", "content": "Read README.md"}],
+            "mlx-community/Qwen3-4B-4bit",
+            tools=[
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "read_file",
+                        "description": "Read a workspace file",
+                        "parameters": {"type": "object"},
+                    },
+                }
+            ],
+            tool_choice="auto",
+        )
+        self.assertIn(
+            "You may call one or more functions to assist with the user query.",
+            qwen3_dense_tool_prompt,
+        )
+        self.assertIn(
+            "You are provided with function signatures within <tools></tools> XML tags:",
+            qwen3_dense_tool_prompt,
+        )
+        self.assertIn('"name":"read_file"', qwen3_dense_tool_prompt)
+        self.assertIn(
+            '{"name": <function-name>, "arguments": <args-json-object>}',
+            qwen3_dense_tool_prompt,
+        )
+        self.assertNotIn("<function>\n<name>read_file</name>", qwen3_dense_tool_prompt)
 
         replay_prompt = openai_server.render_chat_prompt(
             [
@@ -1072,8 +1149,12 @@ class WrapperContractTests(unittest.TestCase):
             "mlx-community/Qwen3-Coder-Next-4bit",
         )
         self.assertIn("<tool_call>", replay_prompt)
-        self.assertIn('"arguments":{"path":"README.md"}', replay_prompt)
-        self.assertIn("<|im_start|>tool\nAX Engine<|im_end|>", replay_prompt)
+        self.assertIn("<function=read_file>", replay_prompt)
+        self.assertIn("<parameter=path>\nREADME.md\n</parameter>", replay_prompt)
+        self.assertIn(
+            "<|im_start|>user\n<tool_response>\nAX Engine\n</tool_response>\n<|im_end|>",
+            replay_prompt,
+        )
 
     def test_openai_mlx_shim_rejects_boolean_max_tokens(self) -> None:
         openai_server = importlib.import_module("ax_engine.openai_server")

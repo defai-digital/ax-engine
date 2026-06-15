@@ -10,6 +10,7 @@ ALLOWED_CHAT_ROLES = {"system", "user", "assistant", "tool", "function"}
 QWEN_CHATML_ASSISTANT_GENERATION_PROMPT = (
     "<|im_start|>assistant\n<think>\n\n</think>\n\n"
 )
+QWEN_CHATML_ASSISTANT_GENERATION_PROMPT_NO_THINK = "<|im_start|>assistant\n"
 MODEL_OWNER = "ax-engine"
 
 
@@ -31,11 +32,8 @@ def render_chat_prompt(
     if template == "llama3":
         prompt_parts.append("<|begin_of_text|>")
 
-    if template == "qwen_chatml":
-        tool_contract = render_tool_contract_system_message(tools, tool_choice)
-        if tool_contract is not None:
-            prompt_parts.append(f"<|im_start|>system\n{tool_contract}<|im_end|>\n")
-
+    qwen_tool_style = qwen_tool_contract_style(model_id)
+    rendered_messages: list[tuple[str, str]] = []
     for message in messages:
         role = str(message.get("role", "")).strip()
         if role not in ALLOWED_CHAT_ROLES:
@@ -44,13 +42,46 @@ def render_chat_prompt(
             )
         content = render_chat_content(message.get("content"))
         if role == "assistant":
-            rendered_tool_calls = render_assistant_tool_calls(message.get("tool_calls"))
+            rendered_tool_calls = render_assistant_tool_calls(
+                message.get("tool_calls"), qwen_tool_style
+            )
             if rendered_tool_calls:
                 if content.strip():
-                    content += "\n"
+                    content += (
+                        "\n\n"
+                        if qwen_tool_style in {"function_xml", "coder_xml"}
+                        else "\n"
+                    )
                 content += rendered_tool_calls
+        rendered_messages.append((role, content))
+
+    if template == "qwen_chatml":
+        tool_contract = render_tool_contract_system_message(
+            tools, tool_choice, qwen_tool_style
+        )
+        if tool_contract is not None:
+            if rendered_messages and rendered_messages[0][0] == "system":
+                role, content = rendered_messages[0]
+                rendered_messages[0] = (role, f"{content}\n\n{tool_contract}")
+            else:
+                rendered_messages.insert(
+                    0,
+                    ("system", tool_contract),
+                )
+
+    qwen_tool_response_open = False
+    for role, content in rendered_messages:
         if template == "qwen_chatml":
-            prompt_parts.append(f"<|im_start|>{role}\n{content}<|im_end|>\n")
+            if role in {"tool", "function"}:
+                if not qwen_tool_response_open:
+                    prompt_parts.append("<|im_start|>user\n")
+                    qwen_tool_response_open = True
+                prompt_parts.append(f"<tool_response>\n{content}\n</tool_response>\n")
+            else:
+                if qwen_tool_response_open:
+                    prompt_parts.append("<|im_end|>\n")
+                    qwen_tool_response_open = False
+                prompt_parts.append(f"<|im_start|>{role}\n{content}<|im_end|>\n")
         elif template == "llama3":
             prompt_parts.append(
                 f"<|start_header_id|>{role}<|end_header_id|>\n\n{content}<|eot_id|>"
@@ -59,8 +90,11 @@ def render_chat_prompt(
             safe_content = content.replace("\\", "\\\\").replace("\n", "\\n")
             prompt_parts.append(f"{role}: {safe_content}\n")
 
+    if qwen_tool_response_open:
+        prompt_parts.append("<|im_end|>\n")
+
     if template == "qwen_chatml":
-        prompt_parts.append(QWEN_CHATML_ASSISTANT_GENERATION_PROMPT)
+        prompt_parts.append(qwen_assistant_generation_prompt(model_id))
     elif template == "llama3":
         prompt_parts.append("<|start_header_id|>assistant<|end_header_id|>\n\n")
     else:
@@ -97,22 +131,72 @@ def render_chat_content(content: Any) -> str:
     raise OpenAiShimError("chat message content must be a string or text parts")
 
 
-def render_tool_contract_system_message(tools: Any, tool_choice: Any) -> str | None:
+def qwen_assistant_generation_prompt(model_id: str) -> str:
+    if is_qwen_non_thinking_only_model(model_id):
+        return QWEN_CHATML_ASSISTANT_GENERATION_PROMPT_NO_THINK
+    return QWEN_CHATML_ASSISTANT_GENERATION_PROMPT
+
+
+def is_qwen_non_thinking_only_model(model_id: str) -> bool:
+    normalized = model_id.lower()
+    return (
+        normalized == "qwen3"
+        or "qwen3-coder-next" in normalized
+        or "qwen3-coder" in normalized
+    )
+
+
+def qwen_tool_contract_style(model_id: str) -> str:
+    normalized = normalize_model_id_token(model_id)
+    if is_qwen_non_thinking_only_model(model_id):
+        return "coder_xml"
+    if any(
+        marker in normalized
+        for marker in ("qwen3-next", "qwen3-5", "qwen35", "qwen3-6", "qwen36")
+    ):
+        return "function_xml"
+    return "json_tools"
+
+
+def normalize_model_id_token(model_id: str) -> str:
+    return "".join(ch if ch.isalnum() else "-" for ch in model_id.lower())
+
+
+def render_tool_contract_system_message(
+    tools: Any, tool_choice: Any, style: str = "json_tools"
+) -> str | None:
     if not openai_value_is_present(tools):
         return None
+    if style == "function_xml":
+        return render_qwen_function_tool_contract_system_message(tools, tool_choice)
+    if style == "coder_xml":
+        return render_qwen_coder_tool_contract_system_message(tools, tool_choice)
+    return render_json_tool_contract_system_message(tools, tool_choice)
+
+
+def render_json_tool_contract_system_message(tools: Any, tool_choice: Any) -> str:
     lines = [
-        "You have access to the following functions.",
-        "When you need to call a function, respond with exactly one or more "
-        "<tool_call>...</tool_call> blocks and no surrounding prose.",
-        'The JSON inside each block must be {"name":"function_name","arguments":{...}}.',
-        "After a tool result is provided, continue the answer normally.",
+        "# Tools",
+        "",
+        "You may call one or more functions to assist with the user query.",
+        "",
+        "You are provided with function signatures within <tools></tools> XML tags:",
         "<tools>",
     ]
     if isinstance(tools, list):
         lines.extend(json.dumps(tool, separators=(",", ":")) for tool in tools)
     else:
         lines.append(json.dumps(tools, separators=(",", ":")))
-    lines.append("</tools>")
+    lines.extend(
+        [
+            "</tools>",
+            "",
+            "For each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:",
+            "<tool_call>",
+            '{"name": <function-name>, "arguments": <args-json-object>}',
+            "</tool_call>",
+        ]
+    )
     if tool_choice_forces_tool_call(tool_choice):
         lines.append(
             "The current tool_choice requires using a tool when a matching function is available."
@@ -120,7 +204,149 @@ def render_tool_contract_system_message(tools: Any, tool_choice: Any) -> str | N
     return "\n".join(lines)
 
 
-def render_assistant_tool_calls(tool_calls: Any) -> str | None:
+def render_qwen_function_tool_contract_system_message(tools: Any, tool_choice: Any) -> str:
+    lines = [
+        "# Tools",
+        "",
+        "You have access to the following functions:",
+        "",
+        "<tools>",
+    ]
+    lines.extend(render_xml_tool_blocks(tools))
+    lines.extend(
+        [
+            "</tools>",
+            "",
+            "If you choose to call a function ONLY reply in the following format with NO suffix:",
+            "",
+            "<tool_call>",
+            "<function=example_function_name>",
+            "<parameter=example_parameter_1>",
+            "value_1",
+            "</parameter>",
+            "<parameter=example_parameter_2>",
+            "This is the value for the second parameter",
+            "that can span",
+            "multiple lines",
+            "</parameter>",
+            "</function>",
+            "</tool_call>",
+            "",
+            "<IMPORTANT>",
+            "Reminder:",
+            "- Function calls MUST follow the specified format: an inner <function=...></function> block must be nested within <tool_call></tool_call> XML tags",
+            "- Required parameters MUST be specified",
+            "- You may provide optional reasoning for your function call in natural language BEFORE the function call, but NOT after",
+            "- If there is no function call available, answer the question like normal with your current knowledge and do not tell the user about function calls",
+            "</IMPORTANT>",
+        ]
+    )
+    if tool_choice_forces_tool_call(tool_choice):
+        lines.append(
+            "The current tool_choice requires using a tool when a matching function is available."
+        )
+    return "\n".join(lines)
+
+
+def render_qwen_coder_tool_contract_system_message(tools: Any, tool_choice: Any) -> str:
+    lines = [
+        "# Tools",
+        "",
+        "You have access to the following tools:",
+        "",
+        "<tools>",
+    ]
+    lines.extend(render_xml_tool_blocks(tools))
+    lines.extend(
+        [
+            "</tools>",
+            "",
+            "If you choose to call a tool ONLY reply in the following format with NO suffix:",
+            "",
+            "<tool_call>",
+            "<function=example_function_name>",
+            "<parameter=example_parameter_1>",
+            "value_1",
+            "</parameter>",
+            "<parameter=example_parameter_2>",
+            "value_2",
+            "</parameter>",
+            "</function>",
+            "</tool_call>",
+            "",
+            "<IMPORTANT>",
+            "Reminder:",
+            "- Function calls MUST follow the specified format: the tool calling block MUST begin with an opening <tool_call> tag and end with a closing </tool_call> tag.",
+            "- Required parameters MUST be specified",
+            "- You may provide optional reasoning for your function call in natural language BEFORE the function call, but NOT after",
+            "- If there is no function call available, answer the question like normal with your current knowledge and do not tell the user about function calls",
+            "</IMPORTANT>",
+        ]
+    )
+    if tool_choice_forces_tool_call(tool_choice):
+        lines.append(
+            "The current tool_choice requires using a tool when a matching function is available."
+        )
+    return "\n".join(lines)
+
+
+def render_xml_tool_blocks(tools: Any) -> list[str]:
+    if isinstance(tools, list):
+        return [block for tool in tools if (block := render_xml_tool_block(tool))]
+    block = render_xml_tool_block(tools)
+    return [block] if block else []
+
+
+def render_xml_tool_block(tool: Any) -> str | None:
+    if not isinstance(tool, dict):
+        return None
+    function = tool.get("function") if isinstance(tool.get("function"), dict) else tool
+    name = function.get("name")
+    if not isinstance(name, str):
+        return None
+
+    lines = ["<function>", f"<name>{escape_xml_text(name)}</name>"]
+    description = function.get("description")
+    if isinstance(description, str):
+        lines.append(f"<description>{escape_xml_text(description.strip())}</description>")
+    lines.append("<parameters>")
+    parameters = function.get("parameters")
+    if isinstance(parameters, dict):
+        properties = parameters.get("properties")
+        if isinstance(properties, dict):
+            for param_name, param_fields in properties.items():
+                if not isinstance(param_fields, dict):
+                    param_fields = {}
+                lines.append("<parameter>")
+                lines.append(f"<name>{escape_xml_text(str(param_name))}</name>")
+                if "type" in param_fields:
+                    lines.append(
+                        f"<type>{escape_xml_text(stringify_json_scalar(param_fields['type']))}</type>"
+                    )
+                param_description = param_fields.get("description")
+                if isinstance(param_description, str):
+                    lines.append(
+                        f"<description>{escape_xml_text(param_description.strip())}</description>"
+                    )
+                for key, value in param_fields.items():
+                    if key in {"name", "type", "description"}:
+                        continue
+                    lines.append(render_extra_xml_field(key, value))
+                lines.append("</parameter>")
+        for key, value in parameters.items():
+            if key in {"type", "properties"}:
+                continue
+            lines.append(render_extra_xml_field(key, value))
+    lines.append("</parameters>")
+    for key, value in function.items():
+        if key in {"type", "name", "description", "parameters"}:
+            continue
+        lines.append(render_extra_xml_field(key, value))
+    lines.append("</function>")
+    return "\n".join(lines)
+
+
+def render_assistant_tool_calls(tool_calls: Any, style: str = "json_tools") -> str | None:
     if isinstance(tool_calls, dict):
         calls = [tool_calls]
     elif isinstance(tool_calls, list):
@@ -130,22 +356,49 @@ def render_assistant_tool_calls(tool_calls: Any) -> str | None:
     rendered = [
         rendered
         for call in calls
-        if (rendered := render_assistant_tool_call(call)) is not None
+        if (rendered := render_assistant_tool_call(call, style)) is not None
     ]
     return "\n".join(rendered) if rendered else None
 
 
-def render_assistant_tool_call(tool_call: Any) -> str | None:
+def render_assistant_tool_call(tool_call: Any, style: str = "json_tools") -> str | None:
     if not isinstance(tool_call, dict):
         return None
     function = tool_call.get("function")
     if not isinstance(function, dict) or not isinstance(function.get("name"), str):
         return None
-    payload = {
-        "name": function["name"],
-        "arguments": normalize_tool_arguments(function.get("arguments")),
-    }
-    return f"<tool_call>{json.dumps(payload, separators=(',', ':'))}</tool_call>"
+    arguments = normalize_tool_arguments(function.get("arguments"))
+    if style in {"function_xml", "coder_xml"}:
+        return render_qwen_xml_tool_call(function["name"], arguments)
+    name = json.dumps(function["name"])
+    arguments_json = json.dumps(arguments, separators=(",", ":"))
+    return f'<tool_call>\n{{"name": {name}, "arguments": {arguments_json}}}\n</tool_call>'
+
+
+def render_qwen_xml_tool_call(name: str, arguments: Any) -> str:
+    lines = ["<tool_call>", f"<function={escape_xml_text(name)}>"]
+    if isinstance(arguments, dict):
+        for key, value in arguments.items():
+            lines.append(f"<parameter={escape_xml_text(str(key))}>")
+            lines.append(escape_xml_text(stringify_json_scalar(value)))
+            lines.append("</parameter>")
+    lines.extend(["</function>", "</tool_call>"])
+    return "\n".join(lines)
+
+
+def render_extra_xml_field(key: str, value: Any) -> str:
+    escaped_key = escape_xml_text(str(key))
+    return f"<{escaped_key}>{escape_xml_text(stringify_json_scalar(value))}</{escaped_key}>"
+
+
+def stringify_json_scalar(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    return json.dumps(value, separators=(",", ":"))
+
+
+def escape_xml_text(value: str) -> str:
+    return value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
 def normalize_tool_arguments(arguments: Any) -> Any:

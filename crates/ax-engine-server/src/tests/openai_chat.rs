@@ -87,7 +87,9 @@ fn openai_chat_prompt_renderer_injects_qwen_tool_contract() {
     )
     .expect("qwen tool prompt should render");
 
-    assert!(prompt.contains("<|im_start|>system\nYou are Qwen, a helpful AI assistant"));
+    assert!(
+        prompt.contains("<|im_start|>system\n# Tools\n\nYou have access to the following tools:")
+    );
     assert!(prompt.contains("# Tools\n\nYou have access to the following tools:"));
     assert!(prompt.contains("<function>\n<name>read_file</name>"));
     assert!(prompt.contains("<description>Read a workspace file</description>"));
@@ -99,7 +101,7 @@ fn openai_chat_prompt_renderer_injects_qwen_tool_contract() {
 }
 
 #[test]
-fn openai_chat_prompt_renderer_uses_qwen36_json_tool_contract() {
+fn openai_chat_prompt_renderer_uses_qwen36_function_xml_tool_contract() {
     let messages: Vec<OpenAiChatMessage> = serde_json::from_value(json!([
         {"role": "user", "content": "Read README.md"}
     ]))
@@ -126,16 +128,110 @@ fn openai_chat_prompt_renderer_uses_qwen36_json_tool_contract() {
     )
     .expect("qwen3.6 tool prompt should render");
 
-    assert!(prompt.contains("You have access to the following functions."));
-    assert!(prompt.contains("<tools>\n{"));
-    assert!(prompt.contains("\"function\""));
-    assert!(prompt.contains("\"name\":\"read_file\""));
-    assert!(prompt.contains("\"parameters\""));
-    assert!(!prompt.contains("<function>\n<name>read_file</name>"));
-    assert!(prompt.contains("The JSON inside each block must be"));
-    assert!(!prompt.contains("<function=example_function_name>"));
+    assert!(prompt.contains("# Tools\n\nYou have access to the following functions:"));
+    assert!(prompt.contains("<function>\n<name>read_file</name>"));
+    assert!(prompt.contains("<description>Read a workspace file</description>"));
+    assert!(prompt.contains("<parameter>\n<name>path</name>\n<type>string</type>"));
+    assert!(prompt.contains("If you choose to call a function ONLY reply"));
+    assert!(prompt.contains("<function=example_function_name>"));
+    assert!(prompt.contains("an inner <function=...></function> block must be nested"));
     assert!(prompt.contains("<|im_start|>user\nRead README.md<|im_end|>"));
     assert!(prompt.ends_with(chat::QWEN_CHATML_ASSISTANT_GENERATION_PROMPT));
+}
+
+#[test]
+fn openai_chat_prompt_renderer_uses_qwen3_dense_json_tool_contract() {
+    let messages: Vec<OpenAiChatMessage> = serde_json::from_value(json!([
+        {"role": "user", "content": "Read README.md"}
+    ]))
+    .expect("sample messages should deserialize");
+
+    let prompt = render_openai_chat_prompt_with_tools(
+        "mlx-community/Qwen3-4B-4bit",
+        &messages,
+        Some(&json!([
+            {
+                "type": "function",
+                "function": {
+                    "name": "read_file",
+                    "description": "Read a workspace file",
+                    "parameters": {"type": "object"}
+                }
+            }
+        ])),
+        Some(&json!("auto")),
+    )
+    .expect("qwen3 dense tool prompt should render");
+
+    assert!(prompt.contains("# Tools\n\nYou may call one or more functions"));
+    assert!(
+        prompt
+            .contains("You are provided with function signatures within <tools></tools> XML tags:")
+    );
+    assert!(prompt.contains("\"name\":\"read_file\""));
+    assert!(prompt.contains("For each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:"));
+    assert!(prompt.contains("{\"name\": <function-name>, \"arguments\": <args-json-object>}"));
+    assert!(!prompt.contains("<function>\n<name>read_file</name>"));
+    assert!(prompt.ends_with(chat::QWEN_CHATML_ASSISTANT_GENERATION_PROMPT));
+}
+
+#[test]
+fn openai_chat_prompt_renderer_uses_gemma4_ollama_tool_dsl() {
+    let messages: Vec<OpenAiChatMessage> = serde_json::from_value(json!([
+        {"role": "user", "content": "Look up AX"},
+        {
+            "role": "assistant",
+            "content": null,
+            "tool_calls": [{
+                "id": "call_123",
+                "type": "function",
+                "function": {
+                    "name": "lookup",
+                    "arguments": {"query": "AX", "limit": 2}
+                }
+            }]
+        },
+        {"role": "tool", "tool_call_id": "call_123", "content": "AX Engine"}
+    ]))
+    .expect("sample messages should deserialize");
+
+    let prompt = render_openai_chat_prompt_with_tools(
+        "gemma4-e2b",
+        &messages,
+        Some(&json!([
+            {
+                "type": "function",
+                "function": {
+                    "name": "lookup",
+                    "description": "Lookup docs",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "query": {"type": "string", "description": "Search query"},
+                            "limit": {"type": "integer"}
+                        },
+                        "required": ["query"]
+                    }
+                }
+            }
+        ])),
+        Some(&json!("auto")),
+    )
+    .expect("gemma4 tool prompt should render");
+
+    assert!(prompt.starts_with("<bos><|turn>system\n<|tool>declaration:lookup"));
+    assert!(prompt.contains("description:<|\"|>Lookup docs<|\"|>"));
+    assert!(
+        prompt.contains("query:{description:<|\"|>Search query<|\"|>,type:<|\"|>STRING<|\"|>}")
+    );
+    assert!(prompt.contains("required:[<|\"|>query<|\"|>]"));
+    assert!(prompt.contains("<tool|><turn|>\n<|turn>user\nLook up AX<turn|>\n"));
+    assert!(prompt.contains("<|tool_call>call:lookup{limit:2,query:<|\"|>AX<|\"|>}<tool_call|>"));
+    assert!(
+        prompt.contains(
+            "<|tool_response>response:lookup{value:<|\"|>AX Engine<|\"|>}<tool_response|>"
+        )
+    );
 }
 
 #[test]
@@ -379,10 +475,8 @@ async fn openai_chat_request_applies_gemma4_default_stop_to_native_generate() {
 
 #[tokio::test]
 async fn openai_chat_request_marks_tool_and_structured_workload_metadata() {
-    let state = test_app_state(|args| {
-        args.model_id = "gemma4-e2b".to_string();
-        args.llama_server_url = Some("http://127.0.0.1:1".to_string());
-    });
+    let artifact_dir = minimal_tokenizer_artifact("native-openai-chat-tool-metadata");
+    let state = native_mlx_openai_builder_state("qwen3", &artifact_dir);
     let live = state.snapshot();
     let request: OpenAiChatCompletionHttpRequest = serde_json::from_value(json!({
         "messages": [{"role": "user", "content": "Call a tool and return JSON"}],
@@ -402,6 +496,48 @@ async fn openai_chat_request_marks_tool_and_structured_workload_metadata() {
 
     assert!(hints.tool_call);
     assert!(hints.structured_output);
+    fs::remove_dir_all(artifact_dir).expect("artifact dir should clean up");
+}
+
+#[tokio::test]
+async fn openai_chat_request_rejects_gemma4_tools_when_prompt_is_pre_tokenized() {
+    let state = test_app_state(|args| {
+        args.model_id = "gemma4-e2b".to_string();
+        args.llama_server_url = Some("http://127.0.0.1:1".to_string());
+    });
+    let live = state.snapshot();
+    let request: OpenAiChatCompletionHttpRequest = serde_json::from_value(json!({
+        "messages": [{"role": "user", "content": "Call a tool"}],
+        "input_tokens": [1, 2, 3],
+        "max_tokens": 8,
+        "tools": [
+            {
+                "type": "function",
+                "function": {"name": "lookup", "parameters": {"type": "object"}}
+            }
+        ]
+    }))
+    .expect("sample chat request should deserialize");
+
+    let error = match build_openai_chat_request(&live, request) {
+        Ok(_) => panic!("pre-tokenized Gemma4 tools should fail closed"),
+        Err(error) => error,
+    };
+
+    assert_eq!(error.0, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        error.1.0.error.code.as_deref(),
+        Some("unsupported_parameter")
+    );
+    assert!(
+        error
+            .1
+            .0
+            .error
+            .message
+            .contains("Gemma 4 OpenAI tool calling requires AX to render")
+            && error.1.0.error.message.contains("<|tool_call>")
+    );
 }
 
 #[tokio::test]
@@ -522,10 +658,8 @@ async fn openai_chat_request_rejects_streaming_logprobs_and_reasoning() {
 
 #[tokio::test]
 async fn openai_chat_request_preserves_text_metadata_when_adding_workload_hints() {
-    let state = test_app_state(|args| {
-        args.model_id = "gemma4-e2b".to_string();
-        args.llama_server_url = Some("http://127.0.0.1:1".to_string());
-    });
+    let artifact_dir = minimal_tokenizer_artifact("native-openai-chat-text-metadata");
+    let state = native_mlx_openai_builder_state("qwen3", &artifact_dir);
     let live = state.snapshot();
     let request: OpenAiChatCompletionHttpRequest = serde_json::from_value(json!({
         "messages": [{"role": "user", "content": "Call a tool"}],
@@ -546,6 +680,7 @@ async fn openai_chat_request_preserves_text_metadata_when_adding_workload_hints(
     assert!(metadata.contains("tenant=bench"));
     assert!(hints.tool_call);
     assert!(!hints.structured_output);
+    fs::remove_dir_all(artifact_dir).expect("artifact dir should clean up");
 }
 
 #[tokio::test]

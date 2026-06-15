@@ -271,6 +271,12 @@ pub(crate) fn build_openai_chat_request(
     response_options.reject_unsupported_streaming_contract(request.stream)?;
     let mut input_tokens = request.input_tokens;
     let mut multimodal_inputs = request.multimodal_inputs;
+    reject_gemma4_tools_when_ax_cannot_render_them(
+        live.model_id.as_ref(),
+        request.tools.as_ref(),
+        request.tool_choice.as_ref(),
+        !input_tokens.is_empty() || messages_contain_inline_media(&request.messages),
+    )?;
     reject_openai_multimodal_inputs_without_native_mlx(live, "OpenAI chat", &multimodal_inputs)?;
     reject_openai_multimodal_inputs_without_tokens(
         "OpenAI chat",
@@ -359,6 +365,12 @@ pub(crate) fn build_openai_mlx_lm_chat_request(
     let max_output_tokens = openai_max_tokens(request.max_tokens);
     let sampling_params = OpenAiSamplingParams::from_chat_request(&request);
     let response_options = OpenAiResponseOptions::from_chat_request(&request)?;
+    reject_gemma4_tools_when_ax_cannot_render_them(
+        live.model_id.as_ref(),
+        request.tools.as_ref(),
+        request.tool_choice.as_ref(),
+        true,
+    )?;
     response_options.reject_unsupported_streaming_contract(request.stream)?;
     let messages = build_mlx_lm_chat_messages(&request.messages)?;
     let sampling = build_openai_sampling_with_default_repetition_penalty(sampling_params, 1.0);
@@ -390,6 +402,12 @@ pub(crate) fn build_openai_llama_cpp_chat_request(
     let max_output_tokens = openai_max_tokens(request.max_tokens);
     let sampling_params = OpenAiSamplingParams::from_chat_request(&request);
     let response_options = OpenAiResponseOptions::from_chat_request(&request)?;
+    reject_gemma4_tools_when_ax_cannot_render_them(
+        live.model_id.as_ref(),
+        request.tools.as_ref(),
+        request.tool_choice.as_ref(),
+        true,
+    )?;
     response_options.reject_unsupported_streaming_contract(request.stream)?;
     let messages = build_llama_cpp_chat_messages(&request.messages)?;
     let sampling = build_openai_sampling_with_default_repetition_penalty(sampling_params, 1.0);
@@ -663,13 +681,36 @@ fn openai_tools_are_enabled(tools: Option<&Value>, tool_choice: Option<&Value>) 
             .unwrap_or(false)
 }
 
+fn reject_gemma4_tools_when_ax_cannot_render_them(
+    model_id: &str,
+    tools: Option<&Value>,
+    tool_choice: Option<&Value>,
+    cannot_render_ax_gemma4_dsl: bool,
+) -> Result<(), (StatusCode, Json<ErrorResponse>)> {
+    if !matches!(
+        chat::ChatPromptTemplate::for_model_id(model_id),
+        chat::ChatPromptTemplate::Gemma4
+    ) || !openai_tools_are_enabled(tools, tool_choice)
+        || !cannot_render_ax_gemma4_dsl
+    {
+        return Ok(());
+    }
+
+    Err(error_response(
+        StatusCode::BAD_REQUEST,
+        "unsupported_parameter",
+        "Gemma 4 OpenAI tool calling requires AX to render the Ollama/Gemma 4 <|tool>/<|tool_call>/<|tool_response> DSL. It is supported only on AX-rendered native text chat prompts; omit tools for delegated, pre-tokenized, or inline-media Gemma 4 chat requests."
+            .to_string(),
+    ))
+}
+
 fn openai_tool_choice_enables_tool_call(value: &Value) -> bool {
     match value {
         Value::Null => false,
         Value::Bool(value) => *value,
         Value::String(value) => {
             let value = value.trim().to_ascii_lowercase();
-            !matches!(value.as_str(), "" | "none" | "false" | "off")
+            !matches!(value.as_str(), "" | "auto" | "none" | "false" | "off")
         }
         Value::Array(values) => !values.is_empty(),
         Value::Object(object) => !object.is_empty(),

@@ -239,7 +239,7 @@ fn streaming_delegated_tool_calls_error() -> (StatusCode, Json<ErrorResponse>) {
     error_response(
         StatusCode::BAD_REQUEST,
         "unsupported_parameter",
-        "streaming tool calls require native Qwen ChatML rendering; delegated text backends do not expose structured tool-call deltas yet".to_string(),
+        "streaming tool calls require native AX-rendered model-family tool prompts; delegated text backends do not expose structured tool-call deltas yet".to_string(),
     )
 }
 

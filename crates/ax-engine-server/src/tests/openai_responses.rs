@@ -199,6 +199,39 @@ fn chat_response_extracts_tool_call_when_tool_contract_requested() {
 }
 
 #[test]
+fn chat_response_extracts_gemma4_tool_call_from_ollama_dsl() {
+    let response = sample_generate_response(
+        r#"Before <|tool_call>call:lookup{limit:2,query:<|"|>AX<|"|>,exact:true}<tool_call|> after"#,
+        Vec::new(),
+        Vec::new(),
+    );
+
+    let openai = openai_chat_completion_response(
+        &response,
+        "chatcmpl-test".to_string(),
+        OpenAiResponseOptions {
+            parse_tool_calls: true,
+            ..Default::default()
+        },
+        None,
+    );
+
+    let message = &openai.choices[0].message;
+    assert_eq!(message.content, "Before  after");
+    let tool_call = &message
+        .tool_calls
+        .as_ref()
+        .expect("Gemma4 tool call should be parsed")[0];
+    assert_eq!(tool_call.function.name, "lookup");
+    let arguments: serde_json::Value =
+        serde_json::from_str(&tool_call.function.arguments).expect("arguments are JSON");
+    assert_eq!(arguments["query"], "AX");
+    assert_eq!(arguments["limit"], 2);
+    assert_eq!(arguments["exact"], true);
+    assert_eq!(openai.choices[0].finish_reason, Some("tool_calls"));
+}
+
+#[test]
 fn chat_response_extracts_multiple_tool_calls() {
     let response = sample_generate_response(
         r#"<tool_call>{"name":"read_file","arguments":{"path":"README.md"}}</tool_call>

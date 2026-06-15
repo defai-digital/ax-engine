@@ -112,13 +112,22 @@ than silently dropped.
   responses are validated server-side; output that is not a JSON object
   returns `502 invalid_output`. This is post-hoc validation, not constrained
   decoding — JSON schema enforcement is not supported yet.
-- **`tools` / `tool_choice`** (chat): experimental. Native
-  Qwen ChatML sessions render tool schemas into the prompt, replay assistant
-  `tool_calls` history as explicit `<tool_call>{...}</tool_call>` spans, and
-  parse generated spans back into `message.tool_calls` with
-  `finish_reason=tool_calls`. Streaming requests return buffered SSE chunks
-  with `delta.tool_calls` once the tool call is complete. Bare JSON answers are
-  never reinterpreted as tool calls.
+- **`tools` / `tool_choice`** (chat): experimental. Native Qwen ChatML and
+  native Gemma 4 text sessions render tool schemas into the prompt, replay
+  assistant `tool_calls` history, and parse generated spans back into
+  `message.tool_calls` with `finish_reason=tool_calls`. Native Qwen ChatML tool
+  prompting follows the matching Ollama template for the selected model family:
+  Qwen3 dense uses the JSON
+  `<tool_call>{"name": ..., "arguments": ...}</tool_call>` contract,
+  Qwen3.5/Qwen3.6 use the function-XML contract, and Qwen3-Coder-Next uses the
+  Qwen3-Coder XML contract.
+  Gemma 4 text chat uses the Ollama/Gemma 4 `<|tool>`, `<|tool_call>`, and
+  `<|tool_response>` DSL. Gemma 4 tools still fail closed for delegated,
+  pre-tokenized, and inline-media chat requests because AX cannot safely inject
+  the model-specific tool DSL into those prompt paths yet.
+  Streaming requests return buffered SSE chunks with `delta.tool_calls` once the
+  tool call is complete. Bare JSON answers are never reinterpreted as tool
+  calls.
 
 ## Examples
 

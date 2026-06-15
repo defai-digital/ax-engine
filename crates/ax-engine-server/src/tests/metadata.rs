@@ -164,7 +164,12 @@ async fn models_advertises_processed_gemma4_unified_modalities_for_native_mlx() 
     assert_eq!(model["capabilities"]["output"]["image"], json!(false));
     assert_eq!(model["capabilities"]["output"]["video"], json!(false));
     assert_eq!(model["capabilities"]["attachment"], json!(true));
+    assert_eq!(model["capabilities"]["toolcall"], json!(true));
     assert_eq!(model["capabilities"]["interleaved"], json!(true));
+    assert_eq!(
+        model["ax_engine"]["openai_tool_calling_supported"],
+        json!(true)
+    );
     assert_eq!(
         model["ax_engine"]["native_multimodal_input_supported"],
         json!(true)

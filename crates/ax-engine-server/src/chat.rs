@@ -208,10 +208,10 @@ pub(crate) fn is_qwen_thinking_model(model_id: &str) -> bool {
     if !m.contains("qwen") {
         return false;
     }
-    if m.contains("3.6") || m.contains("3_6") {
+    if m.contains("3.6") || m.contains("3_6") || m.contains("qwen36") {
         return true;
     }
-    if m.contains("qwen3-coder-next") {
+    if m.contains("qwen3-coder-next") || m.contains("qwen3-coder") {
         return false;
     }
     let normalized: String = m
@@ -416,7 +416,9 @@ fn qwen_assistant_generation_prompt(model_id: &str, thinking_enabled: bool) -> &
 
 pub(crate) fn is_qwen_non_thinking_only_model(model_id: &str) -> bool {
     let normalized = model_id.to_ascii_lowercase();
-    normalized == "qwen3" || normalized.contains("qwen3-coder-next")
+    normalized == "qwen3"
+        || normalized.contains("qwen3-coder-next")
+        || normalized.contains("qwen3-coder")
 }
 
 /// Token ids of the Gemma 4 channel markers, looked up from the model's
