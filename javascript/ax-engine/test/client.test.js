@@ -1,8 +1,20 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import http from "node:http";
 
 import { AxEngineClient, AxEngineHttpError } from "../index.js";
+
+test("type declarations expose loadModel", async () => {
+  const declarations = await readFile(new URL("../index.d.ts", import.meta.url), "utf8");
+
+  assert.match(declarations, /interface LoadModelRequest/);
+  assert.match(declarations, /interface LoadModelResponse/);
+  assert.match(
+    declarations,
+    /loadModel\(request: LoadModelRequest\): Promise<LoadModelResponse>/,
+  );
+});
 
 async function withServer(handler, run) {
   const server = http.createServer(handler);
