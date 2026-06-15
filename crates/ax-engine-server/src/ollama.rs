@@ -452,13 +452,22 @@ fn ollama_generate_lifecycle_response(
 
 fn keep_alive_requests_unload(value: Option<&Value>) -> bool {
     match value {
-        Some(Value::Number(number)) => number.as_i64() == Some(0) || number.as_u64() == Some(0),
+        Some(Value::Number(number)) => json_number_is_zero(number),
         Some(Value::String(value)) => matches!(
             value.trim().to_ascii_lowercase().as_str(),
             "0" | "0s" | "0m" | "0h"
         ),
         _ => false,
     }
+}
+
+fn json_number_is_zero(value: &serde_json::Number) -> bool {
+    value
+        .as_i64()
+        .map(|value| value == 0)
+        .or_else(|| value.as_u64().map(|value| value == 0))
+        .or_else(|| value.as_f64().map(|value| value == 0.0))
+        .unwrap_or(false)
 }
 
 fn reject_ollama_tools_without_support(
@@ -483,8 +492,17 @@ fn ollama_value_is_present(value: Option<&Value>) -> bool {
         Some(Value::Array(values)) => !values.is_empty(),
         Some(Value::Object(object)) => !object.is_empty(),
         Some(Value::Bool(value)) => *value,
-        Some(Value::Number(number)) => number.as_u64().unwrap_or(1) != 0,
+        Some(Value::Number(number)) => json_number_is_nonzero(number),
     }
+}
+
+fn json_number_is_nonzero(value: &serde_json::Number) -> bool {
+    value
+        .as_i64()
+        .map(|value| value != 0)
+        .or_else(|| value.as_u64().map(|value| value != 0))
+        .or_else(|| value.as_f64().map(|value| value != 0.0))
+        .unwrap_or(true)
 }
 
 fn ollama_message_to_openai_message(
@@ -1047,5 +1065,23 @@ mod tests {
         assert_eq!(ollama_model_family("ax-engine/qwen3-coder-next"), "qwen");
         assert_eq!(ollama_model_family("google-gemma-4-it"), "gemma");
         assert_eq!(ollama_model_family("glm-4.7"), "glm");
+    }
+
+    #[test]
+    fn ollama_value_presence_treats_numeric_zero_as_false() {
+        assert!(!ollama_value_is_present(Some(&json!(0))));
+        assert!(!ollama_value_is_present(Some(&json!(0.0))));
+        assert!(ollama_value_is_present(Some(&json!(1))));
+        assert!(ollama_value_is_present(Some(&json!(-1))));
+        assert!(ollama_value_is_present(Some(&json!(0.5))));
+    }
+
+    #[test]
+    fn keep_alive_unload_treats_numeric_zero_as_unload() {
+        assert!(keep_alive_requests_unload(Some(&json!(0))));
+        assert!(keep_alive_requests_unload(Some(&json!(0.0))));
+        assert!(keep_alive_requests_unload(Some(&json!("0s"))));
+        assert!(!keep_alive_requests_unload(Some(&json!(1))));
+        assert!(!keep_alive_requests_unload(Some(&json!(0.5))));
     }
 }

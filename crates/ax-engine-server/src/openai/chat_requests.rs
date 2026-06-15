@@ -940,7 +940,7 @@ fn tool_choice_forces_tool_call(value: &Value) -> bool {
         }
         Value::Array(values) => !values.is_empty(),
         Value::Object(object) => !object.is_empty(),
-        Value::Number(value) => value.as_u64().unwrap_or(1) != 0,
+        Value::Number(value) => json_number_is_nonzero(value),
     }
 }
 
@@ -951,8 +951,17 @@ fn openai_value_is_present(value: &Value) -> bool {
         Value::String(value) => !value.trim().is_empty(),
         Value::Array(values) => !values.is_empty(),
         Value::Object(object) => !object.is_empty(),
-        Value::Number(value) => value.as_u64().unwrap_or(1) != 0,
+        Value::Number(value) => json_number_is_nonzero(value),
     }
+}
+
+fn json_number_is_nonzero(value: &serde_json::Number) -> bool {
+    value
+        .as_i64()
+        .map(|value| value != 0)
+        .or_else(|| value.as_u64().map(|value| value != 0))
+        .or_else(|| value.as_f64().map(|value| value != 0.0))
+        .unwrap_or(true)
 }
 
 fn compact_json(value: &Value) -> String {
@@ -1726,5 +1735,15 @@ mod media_tests {
         .expect_err("mismatch should fail");
         assert_eq!(error.0, StatusCode::BAD_REQUEST);
         assert!(error.1.error.message.contains("image placeholder"));
+    }
+
+    #[test]
+    fn openai_tool_presence_treats_numeric_zero_as_false() {
+        assert!(!openai_value_is_present(&json!(0)));
+        assert!(!openai_value_is_present(&json!(0.0)));
+        assert!(!tool_choice_forces_tool_call(&json!(0)));
+        assert!(!tool_choice_forces_tool_call(&json!(0.0)));
+        assert!(openai_value_is_present(&json!(-1)));
+        assert!(tool_choice_forces_tool_call(&json!(0.5)));
     }
 }

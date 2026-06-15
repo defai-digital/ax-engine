@@ -858,7 +858,7 @@ fn openai_tool_choice_enables_tool_call(value: &Value) -> bool {
         }
         Value::Array(values) => !values.is_empty(),
         Value::Object(object) => !object.is_empty(),
-        Value::Number(value) => value.as_u64().unwrap_or(1) != 0,
+        Value::Number(value) => json_number_is_nonzero(value),
     }
 }
 
@@ -906,8 +906,17 @@ fn openai_value_is_present(value: &Value) -> bool {
         Value::String(value) => !value.trim().is_empty(),
         Value::Array(values) => !values.is_empty(),
         Value::Object(object) => !object.is_empty(),
-        Value::Number(value) => value.as_u64().unwrap_or(1) != 0,
+        Value::Number(value) => json_number_is_nonzero(value),
     }
+}
+
+fn json_number_is_nonzero(value: &serde_json::Number) -> bool {
+    value
+        .as_i64()
+        .map(|value| value != 0)
+        .or_else(|| value.as_u64().map(|value| value != 0))
+        .or_else(|| value.as_f64().map(|value| value != 0.0))
+        .unwrap_or(true)
 }
 
 fn reject_unsupported_top_logprobs(
@@ -967,4 +976,23 @@ fn openai_max_tokens(max_tokens: Option<u32>) -> u32 {
     max_tokens
         .unwrap_or(DEFAULT_OPENAI_MAX_TOKENS)
         .min(OPENAI_SAFE_MAX_TOKENS)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn openai_value_presence_treats_numeric_zero_as_false() {
+        assert!(!openai_value_is_present(&json!(0)));
+        assert!(!openai_value_is_present(&json!(0.0)));
+        assert!(!openai_tool_choice_enables_tool_call(&json!(0)));
+        assert!(!openai_tool_choice_enables_tool_call(&json!(0.0)));
+        assert!(openai_value_is_present(&json!(1)));
+        assert!(openai_value_is_present(&json!(-1)));
+        assert!(openai_value_is_present(&json!(0.5)));
+        assert!(openai_tool_choice_enables_tool_call(&json!(-1)));
+        assert!(openai_tool_choice_enables_tool_call(&json!(0.5)));
+    }
 }
