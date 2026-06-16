@@ -1071,6 +1071,25 @@ class WrapperContractTests(unittest.TestCase):
         )
         self.assertTrue(qwen_tool_prompt.endswith("<|im_start|>assistant\n"))
 
+        qwen_underscore_tool_prompt = openai_server.render_chat_prompt(
+            [{"role": "user", "content": "Read README.md"}],
+            "mlx-community/Qwen3_Coder_Next_4bit",
+            tools=[
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "read_file",
+                        "parameters": {"type": "object"},
+                    },
+                }
+            ],
+            tool_choice="auto",
+        )
+        self.assertIn("You have access to the following tools:", qwen_underscore_tool_prompt)
+        self.assertIn("<function>\n<name>read_file</name>", qwen_underscore_tool_prompt)
+        self.assertIn("<function=example_function_name>", qwen_underscore_tool_prompt)
+        self.assertTrue(qwen_underscore_tool_prompt.endswith("<|im_start|>assistant\n"))
+
         qwen_custom_system_prompt = openai_server.render_chat_prompt(
             [
                 {"role": "system", "content": "Use the project coding conventions."},

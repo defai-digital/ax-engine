@@ -417,9 +417,20 @@ fn qwen_assistant_generation_prompt(model_id: &str, thinking_enabled: bool) -> &
 
 pub(crate) fn is_qwen_non_thinking_only_model(model_id: &str) -> bool {
     let normalized = model_id.to_ascii_lowercase();
-    normalized == "qwen3"
-        || normalized.contains("qwen3-coder-next")
-        || normalized.contains("qwen3-coder")
+    normalized == "qwen3" || is_qwen_coder_model(model_id)
+}
+
+pub(crate) fn is_qwen_coder_model(model_id: &str) -> bool {
+    let normalized = normalize_model_id_token(model_id);
+    normalized.contains("qwen3-coder-next") || normalized.contains("qwen3-coder")
+}
+
+pub(crate) fn normalize_model_id_token(model_id: &str) -> String {
+    model_id
+        .to_ascii_lowercase()
+        .chars()
+        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '-' })
+        .collect()
 }
 
 pub(crate) fn uses_qwen_coder_xml_tool_contract(model_id: &str) -> bool {

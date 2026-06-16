@@ -149,11 +149,12 @@ def qwen_assistant_generation_prompt(model_id: str) -> str:
 
 def is_qwen_non_thinking_only_model(model_id: str) -> bool:
     normalized = model_id.lower()
-    return (
-        normalized == "qwen3"
-        or "qwen3-coder-next" in normalized
-        or "qwen3-coder" in normalized
-    )
+    return normalized == "qwen3" or is_qwen_coder_model(model_id)
+
+
+def is_qwen_coder_model(model_id: str) -> bool:
+    normalized = normalize_model_id_token(model_id)
+    return "qwen3-coder-next" in normalized or "qwen3-coder" in normalized
 
 
 def uses_qwen_coder_xml_tool_contract(model_id: str) -> bool:

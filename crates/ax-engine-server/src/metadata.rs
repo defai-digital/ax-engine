@@ -6,7 +6,7 @@ use serde::Serialize;
 use serde_json::{Value, json};
 
 use crate::app_state::{AppState, LiveState};
-use crate::chat::ChatPromptTemplate;
+use crate::chat::{self, ChatPromptTemplate};
 use crate::errors::{ErrorResponse, error_response};
 
 pub(crate) const MODEL_OWNER: &str = "ax-engine";
@@ -209,7 +209,7 @@ fn ax_engine_model_metadata(
     openai_tool_calling: bool,
 ) -> AxEngineModelMetadata {
     let native_multimodal_input = native_multimodal.any();
-    let coding_only = model_is_qwen_coder(model_id);
+    let coding_only = chat::is_qwen_coder_model(model_id);
     let coding_supported = openai_tool_calling
         && matches!(
             ChatPromptTemplate::for_model_id(model_id),
@@ -229,11 +229,6 @@ fn ax_engine_model_metadata(
         coding_supported,
         coding_only,
     }
-}
-
-fn model_is_qwen_coder(model_id: &str) -> bool {
-    let normalized = model_id.to_ascii_lowercase();
-    normalized.contains("qwen3-coder-next") || normalized.contains("qwen3-coder")
 }
 
 fn openai_tool_calling_supported_live(live: &LiveState, openai_text: bool) -> bool {

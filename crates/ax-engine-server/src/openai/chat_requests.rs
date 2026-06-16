@@ -768,7 +768,7 @@ impl QwenToolContractStyle {
 }
 
 fn qwen_tool_contract_style(model_id: &str) -> QwenToolContractStyle {
-    let normalized = normalize_model_id_token(model_id);
+    let normalized = chat::normalize_model_id_token(model_id);
     if chat::uses_qwen_coder_xml_tool_contract(model_id) {
         QwenToolContractStyle::CoderXml
     } else if normalized.contains("qwen3-next")
@@ -779,14 +779,6 @@ fn qwen_tool_contract_style(model_id: &str) -> QwenToolContractStyle {
     } else {
         QwenToolContractStyle::JsonTools
     }
-}
-
-fn normalize_model_id_token(model_id: &str) -> String {
-    model_id
-        .to_ascii_lowercase()
-        .chars()
-        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '-' })
-        .collect()
 }
 
 fn render_json_tool_lines(tools: &Value) -> Vec<String> {

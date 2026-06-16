@@ -103,6 +103,35 @@ fn openai_chat_prompt_renderer_injects_qwen_tool_contract() {
 }
 
 #[test]
+fn openai_chat_prompt_renderer_treats_underscore_qwen_coder_as_coding_model() {
+    let messages: Vec<OpenAiChatMessage> = serde_json::from_value(json!([
+        {"role": "user", "content": "Read README.md"}
+    ]))
+    .expect("sample messages should deserialize");
+
+    let prompt = render_openai_chat_prompt_with_tools(
+        "mlx-community/Qwen3_Coder_Next_4bit",
+        &messages,
+        Some(&json!([
+            {
+                "type": "function",
+                "function": {
+                    "name": "read_file",
+                    "parameters": {"type": "object"}
+                }
+            }
+        ])),
+        Some(&json!("auto")),
+    )
+    .expect("underscore qwen coder prompt should render");
+
+    assert!(prompt.contains("# Tools\n\nYou have access to the following tools:"));
+    assert!(prompt.contains("<function>\n<name>read_file</name>"));
+    assert!(prompt.contains("<function=example_function_name>"));
+    assert!(prompt.ends_with(chat::QWEN_CHATML_ASSISTANT_GENERATION_PROMPT_NO_THINK));
+}
+
+#[test]
 fn openai_chat_prompt_renderer_preserves_qwen_coder_user_system_with_tool_contract() {
     let messages: Vec<OpenAiChatMessage> = serde_json::from_value(json!([
         {"role": "system", "content": "Use the project coding conventions."},

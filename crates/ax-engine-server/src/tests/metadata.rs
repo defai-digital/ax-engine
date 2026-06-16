@@ -108,7 +108,7 @@ async fn models_advertises_openai_text_support_for_native_mlx() {
 async fn models_advertises_tool_calls_for_ax_code_qwen_coder_next_id() {
     let artifact_dir = minimal_tokenizer_artifact("qwen3-coder-next-metadata-tokenizer");
     let app = build_router(native_mlx_openai_builder_state(
-        "ax-engine/qwen3-coder-next",
+        "ax-engine/qwen3_coder_next",
         &artifact_dir,
     ));
     let (status, json) = json_response(
@@ -123,7 +123,7 @@ async fn models_advertises_tool_calls_for_ax_code_qwen_coder_next_id() {
 
     assert_eq!(status, StatusCode::OK);
     let model = &json["data"][0];
-    assert_eq!(model["id"], json!("ax-engine/qwen3-coder-next"));
+    assert_eq!(model["id"], json!("ax-engine/qwen3_coder_next"));
     assert_eq!(model["capabilities"]["toolcall"], json!(true));
     assert_eq!(
         model["ax_engine"]["openai_tool_calling_supported"],
