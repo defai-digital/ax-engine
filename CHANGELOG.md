@@ -6,6 +6,37 @@ tracked via Git tags and GitHub Releases.
 
 ## [Unreleased]
 
+## [6.4.6] - 2026-06-16
+
+### Added
+
+- **Go SDK `Models()` and Swift `HealthResponse` optional fields** — the Go SDK
+  gained a `Models()` helper and the Swift SDK now marks `HealthResponse` fields
+  optional so partial health payloads decode cleanly.
+
+### Changed
+
+- **Last-position-only prefill extended to linear-attention layers** — the
+  last-position-only prefill optimization now applies to linear-attention
+  layers in addition to standard attention paths.
+- **Qwen3 MoE attention and fusion tuning** — added a Qwen3 MoE narrow-softmax
+  flag and relaxed the MoE shared-expert fusion gate for better routing.
+
+### Fixed
+
+- **API protocol conformance bugs** — the Anthropic adapter now emits a non-null
+  `stop_reason`, the OpenAI adapter no longer returns a null `content` field when
+  `tool_calls` are present, and the Ollama streaming adapter carries the request
+  context through correctly.
+- **Ruby SDK trailing SSE event drop** — the Ruby SSE reader no longer drops the
+  final event of a stream.
+- **OpenWebUI and LangChain integration bugs** — fixed a doubled `/v1` path
+  prefix for OpenWebUI and a stream-error crash in the LangChain integration.
+- **Punctuation detection gap** — closed a gap in punctuation detection that
+  affected streaming token boundaries.
+- **JavaScript LangChain seed/metadata forwarding** — the JS LangChain adapter
+  now correctly forwards seed and metadata to the server.
+
 ## [6.4.5] - 2026-06-16
 
 ### Added
