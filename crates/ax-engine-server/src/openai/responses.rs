@@ -1,8 +1,8 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use ax_engine_sdk::{GenerateFinishReason, GenerateResponse};
-use axum::response::IntoResponse;
 use axum::Json;
+use axum::response::IntoResponse;
 use serde_json::Value;
 
 use super::requests::{OpenAiResponseOptions, OpenAiToolContract};
