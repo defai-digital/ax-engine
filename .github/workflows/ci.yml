@@ -132,7 +132,7 @@ jobs:
 
       - name: Upload script smoke logs
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ci-script-smoke-logs
           path: ${{ github.workspace }}/ax-ci-logs
@@ -178,7 +178,7 @@ jobs:
 
       - name: Upload Python package smoke logs
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ci-python-package-logs
           path: ${{ github.workspace }}/ax-ci-logs
@@ -196,7 +196,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v6
         with:
-          node-version: "20"
+          node-version: "24"
 
       - name: Set up Go
         uses: actions/setup-go@v6
@@ -318,7 +318,7 @@ jobs:
 
       - name: Upload model smoke logs
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ci-model-smoke-logs
           path: ${{ github.workspace }}/ax-ci-logs

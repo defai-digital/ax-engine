@@ -110,7 +110,7 @@ jobs:
           AX_ENGINE_RUN_INSTALLED_TESTS=1 python -m unittest discover -s python/tests -v
 
       - name: Upload wheel artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ax-engine-pypi-wheel
           path: target/wheels/delocated/ax_engine-*.whl
@@ -139,7 +139,7 @@ jobs:
 
     steps:
       - name: Download wheel artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: ax-engine-pypi-wheel
           path: dist

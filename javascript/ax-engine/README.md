@@ -3,7 +3,7 @@
 JavaScript and TypeScript SDK for AX Engine v6 — local HTTP inference server.
 
 - zero runtime dependencies
-- built on standard `fetch` (Node.js 20+, browser, Deno, Bun)
+- built on standard `fetch` (Node.js 24+, browser, Deno, Bun)
 - full TypeScript types for all request/response shapes
 - OpenAI-compatible endpoints
 - LangChain integration via `@ax-engine/sdk/langchain`
