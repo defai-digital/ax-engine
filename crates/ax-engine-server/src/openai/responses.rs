@@ -554,20 +554,29 @@ fn parse_qwen_tool_parameters(body: &str) -> serde_json::Map<String, Value> {
 /// not bare JSON, the whole tool call) — surfacing it as plain text that the
 /// guard then blocks as `unexecutable_tool_text`.
 fn qwen_parameter_value_end(body: &str, value_start: usize) -> usize {
-    if let Some(relative) = body[value_start..].find("</parameter>") {
-        return value_start + relative;
-    }
     let next_param = body[value_start..]
         .find("<parameter=")
         .map(|relative| value_start + relative);
     let function_end = body[value_start..]
         .find("</function>")
         .map(|relative| value_start + relative);
-    match (next_param, function_end) {
+    let next_implicit = match (next_param, function_end) {
         (Some(param), Some(func)) => param.min(func),
         (Some(only), None) | (None, Some(only)) => only,
         (None, None) => body.len(),
+    };
+    // Prefer the explicit `</parameter>` close only when it belongs to *this*
+    // parameter, i.e. it precedes the next parameter / function close. An
+    // explicit close that lands past the next delimiter belongs to a later
+    // parameter, so this one was truncated and must end at the implicit
+    // delimiter instead of greedily absorbing the following parameter.
+    if let Some(relative) = body[value_start..].find("</parameter>") {
+        let explicit = value_start + relative;
+        if explicit <= next_implicit {
+            return explicit;
+        }
     }
+    next_implicit
 }
 
 fn serialize_tool_arguments(value: Option<&Value>) -> String {

@@ -423,6 +423,48 @@ fn chat_response_recovers_qwen_tool_call_when_parameter_close_missing_and_functi
 }
 
 #[test]
+fn chat_response_recovers_qwen_tool_call_when_inner_parameter_close_is_truncated() {
+    // A parameter whose own </parameter> close is missing must not greedily
+    // absorb a *later* parameter that does carry a close tag: the unbounded
+    // find of </parameter> previously swallowed `content` into `path` and
+    // dropped `content` entirely.
+    let response = sample_generate_response(
+        r#"<tool_call><function=edit>
+<parameter=path>
+/tmp/a.txt
+<parameter=content>
+hello
+</parameter>
+</function></tool_call>"#,
+        Vec::new(),
+        Vec::new(),
+    );
+
+    let openai = openai_chat_completion_response(
+        &response,
+        "chatcmpl-test".to_string(),
+        OpenAiResponseOptions {
+            parse_tool_calls: true,
+            ..Default::default()
+        },
+        None,
+    );
+
+    let message = &openai.choices[0].message;
+    let tool_calls = message
+        .tool_calls
+        .as_ref()
+        .expect("tool call with an inner truncated </parameter> should still parse");
+    assert_eq!(tool_calls.len(), 1);
+    assert_eq!(tool_calls[0].function.name, "edit");
+    let args: serde_json::Value =
+        serde_json::from_str(&tool_calls[0].function.arguments).expect("arguments are JSON");
+    assert_eq!(args["path"], "/tmp/a.txt");
+    assert_eq!(args["content"], "hello");
+    assert_eq!(message.content, "");
+}
+
+#[test]
 fn chat_response_canonicalizes_qwen_tool_calls_against_openai_tools_contract() {
     let response = sample_generate_response(
         r#"<tool_call><function=write_file>

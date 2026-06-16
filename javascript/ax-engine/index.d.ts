@@ -514,6 +514,11 @@ export class AxEngineHttpError extends Error {
   payload: unknown;
 }
 
+export class AxEngineStreamError extends Error {
+  constructor(message: string, options?: { payload?: unknown });
+  payload: unknown;
+}
+
 export class AxEngineClient {
   constructor(options?: AxEngineClientOptions);
   readonly baseUrl: string;

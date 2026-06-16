@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import http from "node:http";
 
-import { AxEngineClient, AxEngineHttpError } from "../index.js";
+import { AxEngineClient, AxEngineHttpError, AxEngineStreamError } from "../index.js";
 
 test("type declarations expose loadModel", async () => {
   const declarations = await readFile(new URL("../index.d.ts", import.meta.url), "utf8");
@@ -282,6 +282,44 @@ test("streamCompletion stops on OpenAI [DONE] sentinel", async () => {
           choices: [{ text: "Hello" }],
         },
       },
+    ]);
+  });
+});
+
+test("mid-stream error event raises AxEngineStreamError", async () => {
+  await withServer((req, res) => {
+    res.writeHead(200, {
+      "content-type": "text/event-stream",
+      "cache-control": "no-cache",
+      connection: "keep-alive",
+    });
+    res.write('data: {"id":"cmpl-1","choices":[{"text":"Hel"}]}\n\n');
+    res.write(
+      'event: error\ndata: {"error":{"type":"server_error","code":"engine_error","message":"decode failed"}}\n\n',
+    );
+    res.end("data: [DONE]\n\n");
+  }, async (baseUrl) => {
+    const client = new AxEngineClient({ baseUrl });
+    const events = [];
+    await assert.rejects(
+      async () => {
+        for await (const event of client.streamCompletion({
+          prompt: "Hello",
+          model: "qwen3_dense",
+        })) {
+          events.push(event);
+        }
+      },
+      (err) => {
+        assert.ok(err instanceof AxEngineStreamError);
+        assert.equal(err.message, "decode failed");
+        assert.equal(err.payload.error.code, "engine_error");
+        return true;
+      },
+    );
+    // The chunks emitted before the error are still delivered to the consumer.
+    assert.deepEqual(events, [
+      { event: "message", data: { id: "cmpl-1", choices: [{ text: "Hel" }] } },
     ]);
   });
 });

@@ -1411,6 +1411,40 @@ class WrapperContractTests(unittest.TestCase):
             ],
         )
 
+    def test_openai_mlx_shim_recovers_qwen_tool_call_when_inner_parameter_close_truncated(
+        self,
+    ) -> None:
+        # A parameter whose own </parameter> close is missing must not greedily
+        # absorb a *later* parameter that does carry a close tag. Previously the
+        # unbounded find of </parameter> swallowed `content` into `path` and
+        # dropped `content` entirely.
+        openai_server = importlib.import_module("ax_engine.openai_server")
+
+        content, tool_calls = openai_server.extract_tool_calls(
+            """<tool_call><function=edit>
+<parameter=path>
+/tmp/a.txt
+<parameter=content>
+hello
+</parameter>
+</function></tool_call>"""
+        )
+
+        self.assertEqual(content, "")
+        self.assertEqual(
+            tool_calls,
+            [
+                {
+                    "id": "call_0",
+                    "type": "function",
+                    "function": {
+                        "name": "edit",
+                        "arguments": '{"path":"/tmp/a.txt","content":"hello"}',
+                    },
+                }
+            ],
+        )
+
     def test_openai_mlx_shim_streams_buffered_tool_call_chunks(self) -> None:
         openai_server = importlib.import_module("ax_engine.openai_server")
 

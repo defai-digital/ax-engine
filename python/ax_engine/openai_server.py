@@ -583,14 +583,19 @@ def _qwen_parameter_value_end(body: str, value_start: int) -> int:
     frequently truncate or omit the closing tag; the earlier `break`-on-missing
     dropped the whole tool call onto the plain-text path.
     """
-    explicit = body.find("</parameter>", value_start)
-    if explicit >= 0:
-        return explicit
     candidates = [
         body.find(marker, value_start) for marker in ("<parameter=", "</function>")
     ]
-    next_implicit = min((idx for idx in candidates if idx >= 0), default=-1)
-    return next_implicit if next_implicit >= 0 else len(body)
+    next_implicit = min((idx for idx in candidates if idx >= 0), default=len(body))
+    explicit = body.find("</parameter>", value_start)
+    # Prefer the explicit close only when it belongs to *this* parameter, i.e.
+    # it precedes the next parameter / function close. An explicit close that
+    # lands past the next delimiter belongs to a later parameter, so this one
+    # was truncated and must end at the implicit delimiter instead of greedily
+    # absorbing the following parameter.
+    if 0 <= explicit <= next_implicit:
+        return explicit
+    return next_implicit
 
 
 def prompt_to_tokens(prompt: Any, tokenizer: Any) -> tuple[list[int], str | None]:

@@ -106,6 +106,24 @@ export class AxEngineHttpError extends Error {
   }
 }
 
+export class AxEngineStreamError extends Error {
+  constructor(message, options = {}) {
+    super(message);
+    this.name = "AxEngineStreamError";
+    this.payload = options.payload ?? null;
+  }
+}
+
+function streamErrorFrom(data) {
+  const message =
+    data && typeof data === "object" && data.error && data.error.message
+      ? data.error.message
+      : typeof data === "string"
+        ? data
+        : "stream error";
+  return new AxEngineStreamError(message, { payload: data });
+}
+
 export class AxEngineClient {
   constructor(options = {}) {
     const {
@@ -275,6 +293,9 @@ export class AxEngineClient {
           }
 
           const decoded = decodeSseData(parsed.data);
+          if (parsed.event === "error") {
+            throw streamErrorFrom(decoded.data);
+          }
           if (decoded.done) {
             return;
           }
@@ -290,6 +311,9 @@ export class AxEngineClient {
       const trailing = parseSseBlock(buffer.trim());
       if (trailing) {
         const decoded = decodeSseData(trailing.data);
+        if (trailing.event === "error") {
+          throw streamErrorFrom(decoded.data);
+        }
         if (!decoded.done) {
           yield {
             event: trailing.event,
