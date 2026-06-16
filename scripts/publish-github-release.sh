@@ -183,7 +183,9 @@ fi
 python3 - "$TAG" <<'PY'
 from __future__ import annotations
 
+import json
 import pathlib
+import re
 import sys
 import tomllib
 
@@ -193,15 +195,36 @@ root = pathlib.Path.cwd()
 cargo_version = tomllib.loads((root / "Cargo.toml").read_text())["workspace"]["package"]["version"]
 pyproject_version = tomllib.loads((root / "pyproject.toml").read_text())["project"]["version"]
 
-if len({version, cargo_version, pyproject_version}) != 1:
+# Check all independently-versioned artifacts stay in sync.
+checks: dict[str, str] = {
+    "Cargo.toml": cargo_version,
+    "pyproject.toml": pyproject_version,
+    "javascript/ax-engine/package.json": json.loads(
+        (root / "javascript/ax-engine/package.json").read_text()
+    )["version"],
+}
+version_rb = (root / "sdk/ruby/lib/ax_engine/version.rb").read_text()
+m = re.search(r'VERSION\s*=\s*"([^"]+)"', version_rb)
+if m:
+    checks["sdk/ruby/lib/ax_engine/version.rb"] = m.group(1)
+
+mismatches = {f: v for f, v in checks.items() if v != version}
+if mismatches:
+    for f, v in mismatches.items():
+        print(f"Version mismatch: tag={version}, {f}={v}", file=sys.stderr)
+    raise SystemExit(1)
+
+# Ensure CHANGELOG has an entry for this release.
+changelog = (root / "CHANGELOG.md").read_text()
+if f"## [{version}]" not in changelog:
     print(
-        "Version mismatch: "
-        f"tag={version}, workspace={cargo_version}, pyproject={pyproject_version}",
+        f"CHANGELOG.md has no entry for version {version}; "
+        "add a '## [{version}]' section before publishing.",
         file=sys.stderr,
     )
     raise SystemExit(1)
 
-print(f"Version verified: {version}")
+print(f"Version verified: {version} (across {len(checks)} files + CHANGELOG)")
 PY
 
 head_commit="$(git rev-parse HEAD)"

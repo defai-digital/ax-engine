@@ -43,6 +43,28 @@ jobs:
       - name: Install native build dependencies
         run: brew install mlx-c protobuf
 
+      - name: Verify version consistency
+        run: |
+          python3 - <<'PY'
+          import pathlib, tomllib, json, re, sys
+          root = pathlib.Path.cwd()
+          v = tomllib.loads((root / "Cargo.toml").read_text())["workspace"]["package"]["version"]
+          checks = {
+              "pyproject.toml": tomllib.loads((root / "pyproject.toml").read_text())["project"]["version"],
+              "javascript/ax-engine/package.json": json.loads((root / "javascript/ax-engine/package.json").read_text())["version"],
+          }
+          version_rb = (root / "sdk/ruby/lib/ax_engine/version.rb").read_text()
+          m = re.search(r'VERSION\s*=\s*"([^"]+)"', version_rb)
+          if m:
+              checks["sdk/ruby/lib/ax_engine/version.rb"] = m.group(1)
+          mismatches = {f: ver for f, ver in checks.items() if ver != v}
+          if mismatches:
+              for f, ver in mismatches.items():
+                  print(f"Version mismatch: Cargo.toml={v}, {f}={ver}", file=sys.stderr)
+              raise SystemExit(1)
+          print(f"All versions aligned: {v}")
+          PY
+
       - name: Check formatting
         run: cargo fmt --check
 

@@ -501,6 +501,35 @@ class Gemma4UnifiedConfigValidationTests(unittest.TestCase):
             self.assertEqual(config.image_std, (0.5, 0.5, 0.5))
             self.assertAlmostEqual(config.rescale_factor, 1 / 255)
 
+    def test_load_config_preserves_explicit_zero_float_fields(self) -> None:
+        # Explicit zero values must NOT be silently replaced with defaults.
+        # The `or` truthy pattern treats 0/0.0 the same as None; the correct
+        # `is not None` pattern preserves explicit zero.
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            model_dir = Path(tmp)
+            write_tiny_config(model_dir)
+            processor_path = model_dir / "processor_config.json"
+            processor = json.loads(processor_path.read_text())
+            # Explicit zero rescale_factor must be preserved
+            processor["image_processor"]["rescale_factor"] = 0.0
+            processor["audio_ms_per_token"] = 0
+            # Override config.json audio_config so _first_optional_int_or_default
+            # falls through to the computed value from audio_ms_per_token=0
+            config_json = json.loads((model_dir / "config.json").read_text())
+            config_json["audio_config"]["audio_samples_per_token"] = 0
+            config_json["audio_config"]["audio_embed_dim"] = 0
+            (model_dir / "config.json").write_text(json.dumps(config_json))
+            # Also clear the feature_extractor override in processor_config
+            if "feature_extractor" in processor:
+                processor["feature_extractor"].pop("audio_samples_per_token", None)
+                processor["feature_extractor"].pop("feature_size", None)
+            processor_path.write_text(json.dumps(processor))
+            config = module._load_config(model_dir)
+            self.assertEqual(config.rescale_factor, 0.0)
+            # audio_ms_per_token=0 → computed=0 → audio_samples_per_token=0
+            self.assertEqual(config.audio_samples_per_token, 0)
+
     def test_resized_dimensions_extreme_aspect_ratios_stay_nonzero(self) -> None:
         # Regression pin for the resize-extreme-aspect-zero report: the
         # single-axis fallback only runs when the floored width/height ratio

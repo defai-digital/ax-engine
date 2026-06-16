@@ -314,7 +314,11 @@ def _load_config(model_dir: Path) -> _Gemma4UnifiedConfig:
     computed_audio_samples_per_token = int(
         round(
             sampling_rate
-            * float(processor_config.get("audio_ms_per_token") or 40)
+            * float(
+                processor_config["audio_ms_per_token"]
+                if processor_config.get("audio_ms_per_token") is not None
+                else 40
+            )
             / 1000
         )
     )
@@ -329,7 +333,8 @@ def _load_config(model_dir: Path) -> _Gemma4UnifiedConfig:
     )
 
     do_normalize = bool(image_config.get("do_normalize", False))
-    image_std = _triple(image_config.get("image_std") or [0.5, 0.5, 0.5])
+    image_std_raw = image_config.get("image_std")
+    image_std = _triple(image_std_raw if image_std_raw is not None else [0.5, 0.5, 0.5])
     if do_normalize and not all(
         _is_positive_normal_f32(channel) for channel in image_std
     ):
@@ -358,9 +363,17 @@ def _load_config(model_dir: Path) -> _Gemma4UnifiedConfig:
         do_convert_rgb=bool(image_config.get("do_convert_rgb", True)),
         do_resize=bool(image_config.get("do_resize", True)),
         do_rescale=bool(image_config.get("do_rescale", True)),
-        rescale_factor=float(image_config.get("rescale_factor") or (1 / 255)),
+        rescale_factor=float(
+            image_config["rescale_factor"]
+            if image_config.get("rescale_factor") is not None
+            else (1 / 255)
+        ),
         do_normalize=do_normalize,
-        image_mean=_triple(image_config.get("image_mean") or [0.5, 0.5, 0.5]),
+        image_mean=_triple(
+            image_config["image_mean"]
+            if image_config.get("image_mean") is not None
+            else [0.5, 0.5, 0.5]
+        ),
         image_std=image_std,
         patch_size=_first_optional_int_or_required(
             ((image_config, "patch_size"),),
