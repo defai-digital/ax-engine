@@ -1103,8 +1103,10 @@ mod tests {
             eval_duration: 70,
         };
         let chunk = ollama_generate_final_chunk(&response);
-        assert!(chunk.get("context").is_none(),
-            "streaming final chunk must not include context field");
+        assert!(
+            chunk.get("context").is_none(),
+            "streaming final chunk must not include context field"
+        );
         assert_eq!(chunk["done"], json!(true));
     }
 }

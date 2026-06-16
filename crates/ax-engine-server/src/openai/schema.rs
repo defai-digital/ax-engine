@@ -431,8 +431,11 @@ mod tests {
             }]),
         };
         let json: serde_json::Value = serde_json::to_value(&msg).unwrap();
-        assert_eq!(json["content"], serde_json::Value::Null,
-            "empty content must serialize as null when tool_calls are present");
+        assert_eq!(
+            json["content"],
+            serde_json::Value::Null,
+            "empty content must serialize as null when tool_calls are present"
+        );
         assert!(json["tool_calls"].is_array());
     }
 

@@ -426,12 +426,27 @@ mod feature_gate_tests {
         // The Anthropic Messages API requires stop_reason to be a non-null
         // string ("end_turn", "max_tokens", "stop_sequence", or "tool_use").
         use ax_engine_sdk::GenerateFinishReason;
-        assert_eq!(anthropic_stop_reason(Some(GenerateFinishReason::Stop)), "end_turn");
-        assert_eq!(anthropic_stop_reason(Some(GenerateFinishReason::MaxOutputTokens)), "max_tokens");
-        assert_eq!(anthropic_stop_reason(Some(GenerateFinishReason::ContentFilter)), "refusal");
+        assert_eq!(
+            anthropic_stop_reason(Some(GenerateFinishReason::Stop)),
+            "end_turn"
+        );
+        assert_eq!(
+            anthropic_stop_reason(Some(GenerateFinishReason::MaxOutputTokens)),
+            "max_tokens"
+        );
+        assert_eq!(
+            anthropic_stop_reason(Some(GenerateFinishReason::ContentFilter)),
+            "refusal"
+        );
         // Cancelled, Error, and None must NOT produce null.
-        assert_eq!(anthropic_stop_reason(Some(GenerateFinishReason::Cancelled)), "end_turn");
-        assert_eq!(anthropic_stop_reason(Some(GenerateFinishReason::Error)), "end_turn");
+        assert_eq!(
+            anthropic_stop_reason(Some(GenerateFinishReason::Cancelled)),
+            "end_turn"
+        );
+        assert_eq!(
+            anthropic_stop_reason(Some(GenerateFinishReason::Error)),
+            "end_turn"
+        );
         assert_eq!(anthropic_stop_reason(None), "end_turn");
     }
 }
