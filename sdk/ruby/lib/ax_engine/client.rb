@@ -144,6 +144,14 @@ module AxEngine
               yield event
             end
           end
+          # Flush any trailing event not terminated by a blank line.
+          reader.flush do |event|
+            if event["event"] == "error"
+              message = extract_error_message(event["data"])
+              raise StreamError.new(message, payload: event["data"])
+            end
+            yield event
+          end
         end
       end
     end

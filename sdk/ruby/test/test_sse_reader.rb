@@ -72,4 +72,31 @@ class TestSseReader < Minitest::Test
     assert_equal 1, events.length
     assert_equal "not-json", events[0]["data"]
   end
+
+  def test_flush_yields_trailing_event_without_separator
+    r = reader
+    events = []
+    # Feed an event without a trailing \n\n (simulates server closing connection).
+    r.feed("event: response\ndata: {\"final\":true}") { |e| events << e }
+    assert_equal 0, events.length  # not yet parsed
+    r.flush { |e| events << e }
+    assert_equal 1, events.length
+    assert_equal "response", events[0]["event"]
+    assert_equal({ "final" => true }, events[0]["data"])
+  end
+
+  def test_flush_empty_buffer_yields_nothing
+    r = reader
+    events = []
+    r.flush { |e| events << e }
+    assert_equal 0, events.length
+  end
+
+  def test_flush_done_sentinel_skipped
+    r = reader
+    events = []
+    r.feed("data: [DONE]") { |e| events << e }
+    r.flush { |e| events << e }
+    assert_equal 0, events.length
+  end
 end

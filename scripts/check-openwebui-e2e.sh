@@ -33,7 +33,7 @@ else
 fi
 OPENWEBUI_REPORT="${AX_OPENWEBUI_REPORT:-$(ax_tmp_file ax-openwebui-e2e .json)}"
 
-AX_BASE_URL="${AX_OPENWEBUI_AX_BASE_URL:-http://127.0.0.1:8080/v1}"
+AX_BASE_URL="${AX_OPENWEBUI_AX_BASE_URL:-http://127.0.0.1:8080}"
 MODEL_ID="${AX_OPENWEBUI_MODEL_ID:-ax-engine-openwebui-smoke}"
 PROMPT="${AX_OPENWEBUI_PROMPT:-what is agi ?}"
 MAX_TOKENS="${AX_OPENWEBUI_MAX_TOKENS:-96}"
@@ -61,7 +61,7 @@ if [[ "${AX_OPENWEBUI_START_AX_SHIM:-0}" == "1" ]]; then
     : "${AX_ENGINE_MLX_MODEL_ARTIFACTS_DIR:?AX_ENGINE_MLX_MODEL_ARTIFACTS_DIR is required when AX_OPENWEBUI_START_AX_SHIM=1}"
     : "${AX_OPENWEBUI_TOKENIZER:?AX_OPENWEBUI_TOKENIZER is required when AX_OPENWEBUI_START_AX_SHIM=1}"
     AX_SHIM_PORT="${AX_OPENWEBUI_AX_PORT:-$(ax_allocate_port)}"
-    AX_BASE_URL="http://127.0.0.1:${AX_SHIM_PORT}/v1"
+    AX_BASE_URL="http://127.0.0.1:${AX_SHIM_PORT}"
     AX_SHIM_LOG="$(ax_tmp_file ax-openwebui-ax-shim .log)"
     "$PYTHON_BIN" -m ax_engine.openai_server \
         --model-id "$MODEL_ID" \

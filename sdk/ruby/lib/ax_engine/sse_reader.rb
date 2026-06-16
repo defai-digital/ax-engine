@@ -37,6 +37,27 @@ module AxEngine
       end
     end
 
+    # Flush any trailing event not terminated by a blank line.
+    # Servers may close the connection without a final \n\n separator,
+    # leaving the last event in the buffer.
+    def flush
+      return if @buffer.empty?
+
+      block  = @buffer
+      @buffer = +""
+      event, data = parse_block(block)
+      return if data.nil?
+      return if data == DONE_SENTINEL
+
+      parsed = begin
+        JSON.parse(data)
+      rescue JSON::ParserError
+        data
+      end
+
+      yield({ "event" => event, "data" => parsed })
+    end
+
     private
 
     def parse_block(block)

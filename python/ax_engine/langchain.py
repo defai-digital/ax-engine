@@ -132,12 +132,16 @@ def _stream_sse(url: str, payload: dict, timeout: int) -> Iterator[dict]:
                 if event_type == "error":
                     try:
                         error_data = json.loads(raw_data)
-                        message = (
-                            error_data.get("error", {}).get("message", "")
-                            if isinstance(error_data, dict)
-                            else str(error_data)
-                        )
-                    except json.JSONDecodeError:
+                        if isinstance(error_data, dict):
+                            err = error_data.get("error")
+                            message = (
+                                err.get("message", "")
+                                if isinstance(err, dict)
+                                else str(err) if err else ""
+                            )
+                        else:
+                            message = str(error_data)
+                    except (json.JSONDecodeError, AttributeError):
                         message = raw_data
                     raise RuntimeError(
                         f"ax-engine stream error: {message or 'unknown error'}"

@@ -63,19 +63,31 @@ def openwebui_url(base_url: str, path: str) -> str:
 
 
 def docker_openai_base_url(base_url: str) -> str:
-    """Rewrite loopback AX URLs so the OpenWebUI container can reach the host."""
+    """Rewrite loopback AX URLs so the OpenWebUI container can reach the host.
+
+    OpenWebUI expects OPENAI_API_BASE_URL to include the /v1 prefix (it
+    appends /chat/completions directly).  If the caller supplies a bare
+    host:port base URL, append /v1 so OpenWebUI can reach the endpoints.
+    """
 
     parsed = urllib.parse.urlparse(base_url)
     if parsed.hostname not in {"127.0.0.1", "localhost"}:
-        return base_url
+        # Non-loopback: still ensure /v1 suffix for OpenWebUI.
+        path = parsed.path.rstrip("/")
+        if not path.endswith("/v1"):
+            parsed = parsed._replace(path=path + "/v1")
+        return urllib.parse.urlunparse(parsed)
 
     host = "host.docker.internal"
     netloc = host if parsed.port is None else f"{host}:{parsed.port}"
+    path = parsed.path.rstrip("/")
+    if not path.endswith("/v1"):
+        path = path + "/v1"
     return urllib.parse.urlunparse(
         (
             parsed.scheme,
             netloc,
-            parsed.path,
+            path,
             parsed.params,
             parsed.query,
             parsed.fragment,
@@ -202,7 +214,7 @@ def detect_corruption(text: str, prompt: str) -> list[str]:
     if re.search(r"([!`*_#=\-.])\s*(?:\n\s*\1\s*){3,}", text):
         reasons.append("repeated punctuation token pattern")
     if len(text) >= 80:
-        punctuation = sum(1 for char in text if char in "!`*_#=-")
+        punctuation = sum(1 for char in text if char in "!`*_#=-.")
         if punctuation / max(1, len(text)) > 0.20:
             reasons.append("high punctuation ratio")
 
