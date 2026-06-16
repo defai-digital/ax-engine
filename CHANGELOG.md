@@ -6,6 +6,18 @@ tracked via Git tags and GitHub Releases.
 
 ## [Unreleased]
 
+### Added
+
+- **Hardened minisign release signing** — `scripts/minisign-artifact.sh` now
+  supports optional pinned-public-key enforcement
+  (`AX_MINISIGN_PINNED_PUBLIC_KEY` / `--pinned-public-key`, fail-closed on
+  mismatch), `--dry-run`, `--untrusted-comment`, portable SHA-256
+  (`sha256sum`/`shasum`), and a UTC timestamp in the default trusted comment.
+  Added `scripts/minisign-keygen.sh` to generate the shared ax-code keypair,
+  `scripts/test_minisign_artifact.py` contract tests (wired into
+  `check-scripts.sh`), and `docs/MINISIGN.md`. Existing callers and the
+  `AX_MINISIGN_*` env contract are unchanged.
+
 ## [6.4.4] - 2026-06-16
 
 ### Added

@@ -159,7 +159,8 @@ bash -n scripts/*.sh scripts/lib/common.sh
   scripts/check_quantization_quality_gate.py \
   scripts/test_check_quantization_quality_gate.py \
   scripts/bench_direct_telemetry_pass.py \
-  scripts/test_bench_direct_telemetry_pass.py
+  scripts/test_bench_direct_telemetry_pass.py \
+  scripts/test_minisign_artifact.py
 "$PYTHON_BIN" -m unittest \
   scripts/test_bench_ax_serving.py \
   scripts/test_embedding_server_ports.py \
@@ -201,7 +202,8 @@ bash -n scripts/*.sh scripts/lib/common.sh
   scripts/test_report_quantization_recipe_inventory.py \
   scripts/test_generate_candidate_quantization_manifests.py \
   scripts/test_check_quantization_quality_gate.py \
-  scripts/test_bench_direct_telemetry_pass.py
+  scripts/test_bench_direct_telemetry_pass.py \
+  scripts/test_minisign_artifact.py
 bash scripts/check-bench-inference-stack.sh
 bash scripts/check-turboquant-quality-gate.sh
 bash scripts/check-turboquant-microbench-gate.sh

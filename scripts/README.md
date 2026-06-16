@@ -65,18 +65,28 @@ throughput baselines.
 - `brew-release.sh`: local Homebrew release publisher. It packages
   `ax-engine-server` and `ax-engine-bench`; with `--sign-identity`, it
   codesigns and notarizes all packaged binaries before upload. With
-  `--minisign`, it signs the release tarball with
-  `~/signkey/ax-engine.minisign.key`, verifies it with
-  `~/signkey/ax-engine.minisign.pub`, and uploads the matching `.minisig`
-  beside the archive. Without `--sign-identity`, binaries are intentionally
-  left unsigned.
+  `--minisign`, it signs the release tarball with the shared ax-code signing
+  key (`~/signkey/ax-code.sec`), verifies it with `~/signkey/ax-code.pub`, and
+  uploads the matching `.minisig` beside the archive. Without
+  `--sign-identity`, binaries are intentionally left unsigned.
+- `minisign-keygen.sh`: generates the minisign keypair for signing release
+  artifacts. Defaults to the shared ax-code key paths (`~/signkey/ax-code.sec`
+  / `~/signkey/ax-code.pub`), sets a private `700` directory and `600` secret
+  key, and refuses to overwrite an existing keypair unless passed `--force`.
+  Supports `--allow-unencrypted-test-key` (short-lived tests only) and
+  `--dry-run`.
 - `minisign-artifact.sh`: signs one or more release artifacts with minisign.
   The default key is the shared ax-code signing key at `~/signkey/ax-code.sec`
   / `~/signkey/ax-code.pub` (Keychain service `ax-code-minisign`, account
   `ax-code-release`). If the passphrase is already stored in the ax-code
   Keychain entry, the release path needs no password prompt. Override key
   paths via `AX_MINISIGN_SECRET_KEY` / `AX_MINISIGN_PUBLIC_KEY` or Keychain
-  lookup via `--keychain-service` / `--keychain-account`.
+  lookup via `--keychain-service` / `--keychain-account`. Set
+  `AX_MINISIGN_PINNED_PUBLIC_KEY` (or `--pinned-public-key`) to fail closed
+  unless the local public key matches the expected release key. Also supports
+  `--dry-run`, `--untrusted-comment`, and `--signature-dir`. See
+  `docs/MINISIGN.md` for the full operator guide and the
+  `scripts/test_minisign_artifact.py` contract tests.
 - `publish-github-release.sh`: full local GitHub Release publisher for the
   macOS arm64 CLI assets. It verifies tag/version consistency, requires a clean
   tree by default, runs release gates, builds `ax-engine-server` and
