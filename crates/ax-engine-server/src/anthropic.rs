@@ -78,7 +78,7 @@ pub(crate) struct AnthropicMessageResponse {
     role: &'static str,
     content: Vec<AnthropicResponseContentBlock>,
     model: String,
-    stop_reason: Option<&'static str>,
+    stop_reason: &'static str,
     stop_sequence: Option<String>,
     usage: AnthropicUsage,
 }
@@ -313,12 +313,14 @@ fn anthropic_message_response(
     }
 }
 
-fn anthropic_stop_reason(finish_reason: Option<GenerateFinishReason>) -> Option<&'static str> {
+fn anthropic_stop_reason(finish_reason: Option<GenerateFinishReason>) -> &'static str {
     match finish_reason {
-        Some(GenerateFinishReason::MaxOutputTokens) => Some("max_tokens"),
-        Some(GenerateFinishReason::ContentFilter) => Some("refusal"),
-        Some(GenerateFinishReason::Stop) => Some("end_turn"),
-        Some(GenerateFinishReason::Cancelled) | Some(GenerateFinishReason::Error) | None => None,
+        Some(GenerateFinishReason::MaxOutputTokens) => "max_tokens",
+        Some(GenerateFinishReason::ContentFilter) => "refusal",
+        Some(GenerateFinishReason::Stop)
+        | Some(GenerateFinishReason::Cancelled)
+        | Some(GenerateFinishReason::Error)
+        | None => "end_turn",
     }
 }
 
@@ -417,5 +419,19 @@ mod feature_gate_tests {
         assert!(!tools_in_use(Some(&json!([]))));
         assert!(tools_in_use(Some(&json!([{"name": "bash"}]))));
         assert!(tools_in_use(Some(&json!(0))));
+    }
+
+    #[test]
+    fn anthropic_stop_reason_never_returns_null() {
+        // The Anthropic Messages API requires stop_reason to be a non-null
+        // string ("end_turn", "max_tokens", "stop_sequence", or "tool_use").
+        use ax_engine_sdk::GenerateFinishReason;
+        assert_eq!(anthropic_stop_reason(Some(GenerateFinishReason::Stop)), "end_turn");
+        assert_eq!(anthropic_stop_reason(Some(GenerateFinishReason::MaxOutputTokens)), "max_tokens");
+        assert_eq!(anthropic_stop_reason(Some(GenerateFinishReason::ContentFilter)), "refusal");
+        // Cancelled, Error, and None must NOT produce null.
+        assert_eq!(anthropic_stop_reason(Some(GenerateFinishReason::Cancelled)), "end_turn");
+        assert_eq!(anthropic_stop_reason(Some(GenerateFinishReason::Error)), "end_turn");
+        assert_eq!(anthropic_stop_reason(None), "end_turn");
     }
 }

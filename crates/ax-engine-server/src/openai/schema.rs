@@ -283,11 +283,26 @@ pub(crate) struct OpenAiChatCompletionChoice {
 #[derive(Debug, Serialize)]
 pub(crate) struct OpenAiChatMessageResponse {
     pub(crate) role: &'static str,
+    #[serde(serialize_with = "serialize_empty_as_null")]
     pub(crate) content: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) reasoning_content: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) tool_calls: Option<Vec<OpenAiToolCall>>,
+}
+
+/// Serializes an empty string as JSON `null` so tool-call-only responses emit
+/// `"content": null` rather than `"content": ""`, matching the OpenAI API
+/// contract where `content` is `string | null`.
+fn serialize_empty_as_null<S: serde::Serializer>(
+    value: &str,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    if value.is_empty() {
+        serializer.serialize_none()
+    } else {
+        serializer.serialize_str(value)
+    }
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -391,4 +406,45 @@ pub(crate) struct OpenAiUsage {
 pub(crate) enum OpenAiStreamKind {
     Completion,
     ChatCompletion,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn chat_message_response_serializes_empty_content_as_null() {
+        // OpenAI API contract: when content is empty (tool-call-only response),
+        // the JSON must emit "content": null, not "content": "".
+        let msg = OpenAiChatMessageResponse {
+            role: "assistant",
+            content: String::new(),
+            reasoning_content: None,
+            tool_calls: Some(vec![OpenAiToolCall {
+                id: "call_0".to_string(),
+                tool_type: "function",
+                function: OpenAiFunctionCall {
+                    name: "lookup".to_string(),
+                    arguments: r#"{"q":"hello"}"#.to_string(),
+                },
+            }]),
+        };
+        let json: serde_json::Value = serde_json::to_value(&msg).unwrap();
+        assert_eq!(json["content"], serde_json::Value::Null,
+            "empty content must serialize as null when tool_calls are present");
+        assert!(json["tool_calls"].is_array());
+    }
+
+    #[test]
+    fn chat_message_response_serializes_nonempty_content_as_string() {
+        let msg = OpenAiChatMessageResponse {
+            role: "assistant",
+            content: "Hello!".to_string(),
+            reasoning_content: None,
+            tool_calls: None,
+        };
+        let json: serde_json::Value = serde_json::to_value(&msg).unwrap();
+        assert_eq!(json["content"], json!("Hello!"));
+    }
 }

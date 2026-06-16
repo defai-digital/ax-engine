@@ -747,7 +747,6 @@ fn ollama_generate_final_chunk(response: &OllamaGenerateResponse) -> Value {
         "created_at": response.created_at,
         "done": true,
         "done_reason": response.done_reason,
-        "context": response.context,
         "total_duration": response.total_duration,
         "load_duration": response.load_duration,
         "prompt_eval_count": response.prompt_eval_count,
@@ -1083,5 +1082,29 @@ mod tests {
         assert!(keep_alive_requests_unload(Some(&json!("0s"))));
         assert!(!keep_alive_requests_unload(Some(&json!(1))));
         assert!(!keep_alive_requests_unload(Some(&json!(0.5))));
+    }
+
+    #[test]
+    fn generate_stream_final_chunk_omits_context() {
+        // Per the Ollama API spec, the context field is only present in
+        // non-streaming responses, not in streaming final chunks.
+        let response = OllamaGenerateResponse {
+            model: "test".to_string(),
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+            response: String::new(),
+            done: true,
+            done_reason: Some("stop"),
+            context: vec![1, 2, 3],
+            total_duration: 100,
+            load_duration: 10,
+            prompt_eval_count: 3,
+            prompt_eval_duration: 20,
+            eval_count: 5,
+            eval_duration: 70,
+        };
+        let chunk = ollama_generate_final_chunk(&response);
+        assert!(chunk.get("context").is_none(),
+            "streaming final chunk must not include context field");
+        assert_eq!(chunk["done"], json!(true));
     }
 }
