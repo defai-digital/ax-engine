@@ -1,4 +1,4 @@
-use mlx_sys::{MlxArray, add, rms_norm};
+use mlx_sys::{MlxArray, add, rms_norm, slice};
 use std::time::Instant;
 
 use super::super::ModelConfig;
@@ -19,12 +19,19 @@ use crate::weights::LayerWeights;
 /// covers the common case (e.g. Qwen3.5 9B). MoE-only variants such as
 /// Qwen3.6 35B A3B pair linear attention with sparse FFN (router + experts +
 /// optional shared expert), so the FFN dispatch mirrors `standard::layer_forward`.
+///
+/// `last_position_only`: when `true` and `seq > 1`, slice `hidden` to the last
+/// position after the attention-residual add, so the FFN / MoE steps run on
+/// `[1, 1, hidden]` instead of `[1, seq, hidden]`. The linear-attention state
+/// (conv1d + recurrent) is already written to `cache` inside
+/// `linear_attention_forward` before this slice, so the optimization is safe.
 pub(crate) fn layer_forward(
     cfg: &ModelConfig,
     w: &LayerWeights,
     hidden: &MlxArray,
     cache: &mut MlxKVCache,
     layer_idx: usize,
+    last_position_only: bool,
 ) -> MlxArray {
     let seq = hidden.shape()[1] as usize;
     let profile_decode_layer = seq == 1 && decode_profile_enabled();
@@ -37,6 +44,18 @@ pub(crate) fn layer_forward(
 
     let residual_norm_started = profile_forward_layer.then(Instant::now);
     let hidden = add(hidden, &attn_proj, None);
+    // Last-position-only: after the attention-residual add, the linear-attention
+    // state has been committed to `cache`. The FFN is position-wise, so slicing
+    // to the last position is safe and avoids redundant compute on preceding
+    // positions whose output will be discarded by the post-loop slice.
+    let last_only_active = last_position_only && seq > 1;
+    let hidden = if last_only_active {
+        let last = (seq - 1) as i32;
+        let hs = cfg.hidden_size as i32;
+        slice(&hidden, &[0, last, 0], &[1, last + 1, hs], &[1, 1, 1], None)
+    } else {
+        hidden
+    };
     let normed2 = rms_norm(&hidden, Some(&w.ffn_norm), cfg.rms_norm_eps, None);
     if let Some(started) = residual_norm_started {
         forward_profile_eval_elapsed(

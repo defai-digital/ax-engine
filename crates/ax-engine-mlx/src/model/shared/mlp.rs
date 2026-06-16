@@ -23,6 +23,12 @@ use super::utils::{
 
 static GELU_MUL_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
 
+/// Maximum sequence length for which the fused MoE shared-expert weighted-sum
+/// Metal kernel is attempted. Beyond this threshold, the weighted-sum is
+/// bandwidth-bound on a large tensor, where the fused kernel's extra input read
+/// costs more than the dispatch it saves.
+const MOE_SHARED_FUSION_SEQ_THRESHOLD: usize = 64;
+
 const GELU_MUL_KERNEL_SOURCE: &str = r#"
     uint idx = thread_position_in_grid.x;
     if (idx >= ElementCount) {
@@ -1242,6 +1248,11 @@ pub(crate) fn moe_router_gemma4(
 }
 
 /// Qwen3 MoE router: proj → softmax → pick top-k by weight value (no rms_norm).
+///
+/// When `AX_MLX_QWEN3_MOE_NARROW_SOFTMAX=1`, uses the Gemma4-style argpartition-
+/// first pattern: argpartition on raw logits (monotonic with softmax → same top-k
+/// for well-separated experts), then softmax only on the selected top-k subset.
+/// This eliminates the full-width `softmax_precise` over all 128–256 experts.
 pub(crate) fn moe_router_qwen3(
     cfg: &ModelConfig,
     w: &LayerWeights,
@@ -1253,8 +1264,30 @@ pub(crate) fn moe_router_qwen3(
         .expect("Qwen3 MoE layer must have router_proj");
     let logits = qw(normed, router_proj);
     let last_axis = logits.ndim() as i32 - 1;
-    // mlx-lm uses mx.softmax(..., precise=True) for all MoE routers; with bf16 logits and
-    // many experts (e.g. 256) the tiny round-off can flip top-k rankings and corrupt output.
+
+    // Opt-in narrow softmax: argpartition on raw logits, then softmax only on
+    // the top-k subset. Matches the Gemma4 router pattern. Default OFF pending
+    // validation against mlx-lm's precise=True reference.
+    if fastpath::qwen3_moe_narrow_softmax_enabled() {
+        let (top_k_indices, top_k_weights) = top_k_by_argpartition(
+            &logits,
+            cfg.moe_expert_count,
+            cfg.moe_experts_per_token,
+            true, // resoftmax only the top-k subset
+        );
+        let top_k_weights = if cfg.moe_norm_topk_prob {
+            let sum = sum_axis(&top_k_weights, last_axis, true, None);
+            mlx_sys::ops::divide(&top_k_weights, &sum, None)
+        } else {
+            top_k_weights
+        };
+        return (top_k_indices, top_k_weights);
+    }
+
+    // Default: full-width softmax_precise over all experts, then argpartition.
+    // mlx-lm uses mx.softmax(..., precise=True) for all MoE routers; with bf16
+    // logits and many experts (e.g. 256) the tiny round-off can flip top-k
+    // rankings and corrupt output.
     let weights_all = softmax_precise(&logits, last_axis, None);
     let (top_k_indices, top_k_weights) = top_k_by_argpartition(
         &weights_all,
@@ -1760,10 +1793,11 @@ fn moe_experts_forward_impl(
 
     // Phase 1A: when shared_expert_out is provided, try the fused weighted-sum
     // kernel that adds the shared expert inside the same dispatch. Decode-only
-    // (seq==1): at prefill the weighted-sum is bandwidth-bound on a large tensor,
-    // where the fused kernel's extra input read costs more than the dispatch it
-    // saves. Falls back to the separate `add` in the branches below at prefill.
-    if seq == 1
+    // and short prefill tail chunks (seq <= threshold): at long prefill the
+    // weighted-sum is bandwidth-bound on a large tensor, where the fused
+    // kernel's extra input read costs more than the dispatch it saves. Falls
+    // back to the separate `add` in the branches below at long prefill.
+    if seq <= MOE_SHARED_FUSION_SEQ_THRESHOLD
         && let Some(shared) = shared_expert_out
         && fastpath::moe_fuse_shared_expert_add_enabled()
         && let Some(out) =

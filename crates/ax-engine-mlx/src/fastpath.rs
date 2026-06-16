@@ -525,6 +525,22 @@ env_flag_default_on!(
     "AX_MLX_MOE_FUSE_SHARED_EXPERT_ADD"
 );
 
+env_flag!(
+    /// `AX_MLX_QWEN3_MOE_NARROW_SOFTMAX` — opt-in narrow softmax for the Qwen3
+    /// MoE router. When enabled, the router does argpartition on raw logits to
+    /// find top-k indices, then applies `softmax_precise` only to the selected
+    /// top-k subset (matching the Gemma4 router pattern). This eliminates the
+    /// full-width softmax over all experts (128–256), reducing per-layer router
+    /// overhead on decode.
+    ///
+    /// **Default: OFF**. With bf16 logits and many experts, tiny round-off in
+    /// bf16 can flip argpartition rankings vs softmax-then-argpartition
+    /// rankings. Validation against mlx-lm's `precise=True` reference is
+    /// required before default-on promotion.
+    qwen3_moe_narrow_softmax_enabled,
+    "AX_MLX_QWEN3_MOE_NARROW_SOFTMAX"
+);
+
 env_flag_default_on!(
     /// `AX_MLX_MOE_SWIGLU_PACKED_METAL` — route the MoE expert SwiGLU
     /// activation through the same packed Metal kernel used by the dense

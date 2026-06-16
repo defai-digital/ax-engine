@@ -124,7 +124,7 @@ pub fn layer_forward_with_turboquant_context(
     // model (qwen3_5 / qwen3_next) has both linear and full-attention layers
     // and the family string alone is not enough to disambiguate per-layer type.
     if cfg.is_linear_attention_layer(layer_idx) {
-        return families::qwen3_linear::layer_forward(cfg, w, hidden, cache, layer_idx);
+        return families::qwen3_linear::layer_forward(cfg, w, hidden, cache, layer_idx, false);
     }
 
     match cfg.model_family.as_str() {
@@ -213,11 +213,12 @@ pub fn layer_forward_with_turboquant_context(
 /// longer align with `token_offset`).
 ///
 /// Supported families: `gemma4`, `gemma3`, `qwen3`, `llama3`, `qwen3_5`,
-/// `qwen3_next` (full-attention layers only). Linear-attention layers
-/// and other families fall back to the normal `layer_forward` path; the
-/// post-loop slice in [`forward_with_turboquant_context`] keeps
-/// correctness while losing this specific perf win until those families
-/// pick up the same optimization.
+/// `qwen3_next` (both full-attention and linear-attention layers). Linear-
+/// attention layers slice to the last position after the attention-residual
+/// add (the recurrent state is already committed to cache). Other families
+/// fall back to the normal `layer_forward` path; the post-loop slice in
+/// [`forward_with_turboquant_context`] keeps correctness while losing this
+/// specific perf win until those families pick up the same optimization.
 #[allow(clippy::too_many_arguments)]
 pub fn layer_forward_with_turboquant_context_last_only(
     cfg: &ModelConfig,
@@ -231,10 +232,10 @@ pub fn layer_forward_with_turboquant_context_last_only(
     turboquant_context: Option<&TurboQuantModelDecodeContext<'_>>,
 ) -> MlxArray {
     if cfg.is_linear_attention_layer(layer_idx) {
-        // qwen3_linear layers haven't been extended yet; fall back to the
-        // normal path. The outer post-loop slice in `forward()` still
-        // ensures correctness for the final returned hidden tensor.
-        return families::qwen3_linear::layer_forward(cfg, w, hidden, cache, layer_idx);
+        // Linear-attention layers now support the last-position-only
+        // optimization: the recurrent state is committed to cache before the
+        // FFN slice, so the FFN / MoE steps can safely run on [1, 1, hidden].
+        return families::qwen3_linear::layer_forward(cfg, w, hidden, cache, layer_idx, true);
     }
     match cfg.model_family.as_str() {
         "gemma4" | "gemma3" | "qwen3" | "llama3" | "qwen3_5" | "qwen3_next" => {
