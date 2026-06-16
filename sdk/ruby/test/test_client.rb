@@ -238,4 +238,27 @@ class TestClient < Minitest::Test
     text = collected.map { |e| e.dig("data", "choices", 0, "text") }.join
     assert_equal "Once", text
   end
+
+  # --- stream error handling ---
+
+  def test_stream_error_event_raises
+    sse_body = "event: error\ndata: {\"error\":{\"message\":\"model crashed\"}}\n\n"
+    @srv.set_response(content_type: "text/event-stream", body: sse_body)
+
+    err = assert_raises(AxEngine::StreamError) do
+      @client.stream_completion(prompt: "test") { |_e| }
+    end
+    assert_equal "model crashed", err.message
+    assert_equal({ "error" => { "message" => "model crashed" } }, err.payload)
+  end
+
+  def test_stream_error_event_fallback_message
+    sse_body = "event: error\ndata: something went wrong\n\n"
+    @srv.set_response(content_type: "text/event-stream", body: sse_body)
+
+    err = assert_raises(AxEngine::StreamError) do
+      @client.stream_completion(prompt: "test") { |_e| }
+    end
+    assert_equal "something went wrong", err.message
+  end
 end

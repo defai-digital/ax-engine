@@ -136,7 +136,13 @@ module AxEngine
         http.request(req) do |response|
           raise_on_error(response, path)
           response.read_body do |chunk|
-            reader.feed(chunk) { |event| yield event }
+            reader.feed(chunk) do |event|
+              if event["event"] == "error"
+                message = extract_error_message(event["data"])
+                raise StreamError.new(message, payload: event["data"])
+              end
+              yield event
+            end
           end
         end
       end
@@ -153,6 +159,18 @@ module AxEngine
 
     def apply_headers(req)
       @headers.each { |k, v| req[k.to_s] = v }
+    end
+
+    def extract_error_message(data)
+      return "unknown error" if data.nil?
+
+      if data.is_a?(Hash) && data["error"].is_a?(Hash) && data["error"]["message"]
+        data["error"]["message"]
+      elsif data.is_a?(String)
+        data
+      else
+        "unknown error"
+      end
     end
 
     def raise_on_error(response, path)

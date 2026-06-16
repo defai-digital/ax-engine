@@ -334,6 +334,39 @@ final class AxEngineClientTests: XCTestCase {
         XCTAssertEqual(events[2].event, "response")
         XCTAssertEqual(events[2].response?.response.finishReason, "stop")
     }
+
+    func testStreamErrorEventThrows() async throws {
+        let sse = """
+        event: error
+        data: {"error":{"message":"model crashed"}}
+
+        """
+        MockURLProtocol.handler = { _ in sseResponse(sse) }
+
+        do {
+            for try await _ in makeClient().streamCompletion(.init(prompt: "test")) {}
+            XCTFail("Expected AxEngineStreamError")
+        } catch let err as AxEngineStreamError {
+            XCTAssertEqual(err.message, "model crashed")
+            XCTAssertEqual(err.payload, #"{"error":{"message":"model crashed"}}"#)
+        }
+    }
+
+    func testStreamErrorEventFallbackMessage() async throws {
+        let sse = """
+        event: error
+        data: something went wrong
+
+        """
+        MockURLProtocol.handler = { _ in sseResponse(sse) }
+
+        do {
+            for try await _ in makeClient().streamCompletion(.init(prompt: "test")) {}
+            XCTFail("Expected AxEngineStreamError")
+        } catch let err as AxEngineStreamError {
+            XCTAssertEqual(err.message, "something went wrong")
+        }
+    }
 }
 
 #endif  // canImport(XCTest)

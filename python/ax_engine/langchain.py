@@ -37,7 +37,12 @@ try:
         SystemMessage,
         HumanMessage,
     )
-    from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult, GenerationChunk
+    from langchain_core.outputs import (
+        ChatGeneration,
+        ChatGenerationChunk,
+        ChatResult,
+        GenerationChunk,
+    )
     from langchain_core.callbacks.manager import CallbackManagerForLLMRun
 except ImportError as _e:
     raise ImportError(
@@ -102,7 +107,7 @@ def _stream_sse(url: str, payload: dict, timeout: int) -> Iterator[dict]:
                 for sep in (b"\r\n\r\n", b"\n\n"):
                     idx = buffer.find(sep)
                     if idx != -1:
-                        block, buffer = buffer[:idx], buffer[idx + len(sep):]
+                        block, buffer = buffer[:idx], buffer[idx + len(sep) :]
                         break
                 else:
                     break
@@ -110,15 +115,33 @@ def _stream_sse(url: str, payload: dict, timeout: int) -> Iterator[dict]:
                 # that are concatenated with a newline; keeping only the last
                 # one would drop content from spec-compliant servers.
                 data_lines = []
+                event_type = None
                 for line in block.splitlines():
                     line = line.decode()
                     if line.startswith("data:"):
-                        data_lines.append(line[len("data:"):].lstrip())
+                        data_lines.append(line[len("data:") :].lstrip())
+                    elif line.startswith("event:"):
+                        event_type = line[len("event:") :].lstrip()
                 if not data_lines:
                     continue
                 raw_data = "\n".join(data_lines)
                 if raw_data == "[DONE]":
                     return
+                # Surface mid-stream error events to the caller, matching the
+                # JavaScript SDK's AxEngineStreamError behavior.
+                if event_type == "error":
+                    try:
+                        error_data = json.loads(raw_data)
+                        message = (
+                            error_data.get("error", {}).get("message", "")
+                            if isinstance(error_data, dict)
+                            else str(error_data)
+                        )
+                    except json.JSONDecodeError:
+                        message = raw_data
+                    raise RuntimeError(
+                        f"ax-engine stream error: {message or 'unknown error'}"
+                    )
                 try:
                     yield json.loads(raw_data)
                 except json.JSONDecodeError:
@@ -164,7 +187,9 @@ class AXEngineChatModel(BaseChatModel):
     def _llm_type(self) -> str:
         return "ax-engine"
 
-    def _build_request(self, messages: List[BaseMessage], stop: Optional[List[str]] = None) -> dict:
+    def _build_request(
+        self, messages: List[BaseMessage], stop: Optional[List[str]] = None
+    ) -> dict:
         req: dict = {"messages": [_message_to_openai(m) for m in messages]}
         if self.model is not None:
             req["model"] = self.model
