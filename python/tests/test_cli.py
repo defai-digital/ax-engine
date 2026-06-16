@@ -181,6 +181,38 @@ class AxEngineCliTests(unittest.TestCase):
                 return subprocess.CompletedProcess(command, 0, json.dumps(bench_report), "")
             if command[1:] == ["--help"]:
                 return subprocess.CompletedProcess(command, 0, "", "")
+            if command == ["sw_vers", "-productVersion"]:
+                return subprocess.CompletedProcess(command, 0, "15.5\n", "")
+            if command == ["sw_vers", "-buildVersion"]:
+                return subprocess.CompletedProcess(command, 0, "24F74\n", "")
+            if command == ["sysctl", "-n", "hw.memsize"]:
+                return subprocess.CompletedProcess(command, 0, str(64 * 1024 * 1024 * 1024), "")
+            if command == ["sysctl", "-n", "hw.physicalcpu"]:
+                return subprocess.CompletedProcess(command, 0, "16\n", "")
+            if command == ["sysctl", "-n", "hw.perflevel0.name"]:
+                return subprocess.CompletedProcess(command, 0, "Performance\n", "")
+            if command == ["sysctl", "-n", "hw.perflevel0.physicalcpu"]:
+                return subprocess.CompletedProcess(command, 0, "12\n", "")
+            if command == ["sysctl", "-n", "hw.perflevel1.name"]:
+                return subprocess.CompletedProcess(command, 0, "Efficiency\n", "")
+            if command == ["sysctl", "-n", "hw.perflevel1.physicalcpu"]:
+                return subprocess.CompletedProcess(command, 0, "4\n", "")
+            if command[0:2] == ["sysctl", "-n"] and command[2].startswith("hw.perflevel"):
+                return subprocess.CompletedProcess(command, 1, "", "unknown oid")
+            if command == ["system_profiler", "SPDisplaysDataType"]:
+                return subprocess.CompletedProcess(
+                    command,
+                    0,
+                    "Graphics/Displays:\n\n    Apple M3 Max:\n\n      Total Number of Cores: 40\n",
+                    "",
+                )
+            if command == ["system_profiler", "SPHardwareDataType"]:
+                return subprocess.CompletedProcess(
+                    command,
+                    0,
+                    "Hardware:\n\n    Hardware Overview:\n\n      Total Number of Cores: 16 (4 Efficiency and 12 Performance)\n      Memory: 64 GB\n",
+                    "",
+                )
             raise AssertionError(f"unexpected command: {command}")
 
         with mock.patch.object(
@@ -206,6 +238,12 @@ class AxEngineCliTests(unittest.TestCase):
         self.assertEqual(payload["schema_version"], "ax.engine.doctor.v1")
         self.assertEqual(payload["result"], "ready")
         self.assertEqual(payload["install"]["version"], "6.4.3")
+        self.assertEqual(payload["host"]["os_version"], "15.5")
+        self.assertEqual(payload["host"]["os_build"], "24F74")
+        self.assertEqual(payload["host"]["ram_gib"], 64)
+        self.assertEqual(payload["host"]["cpu_cores"]["performance"], 12)
+        self.assertEqual(payload["host"]["cpu_cores"]["efficiency"], 4)
+        self.assertEqual(payload["host"]["gpu_cores"], 40)
         self.assertEqual(payload["ready_for"], ["serve", "python_sdk", "model_checks"])
         self.assertEqual(payload["checks"][0]["id"], "server_binary")
         self.assertEqual(payload["checks"][1]["id"], "bench_binary")

@@ -6,6 +6,7 @@ import importlib.metadata
 import json
 import os
 import pathlib
+import platform
 import re
 import shutil
 import subprocess
@@ -548,6 +549,199 @@ def _package_version() -> str:
         return "unknown"
 
 
+def _command_stdout(command: list[str]) -> str | None:
+    try:
+        result = _run_capture(command)
+    except OSError:
+        return None
+    if result.returncode != 0:
+        return None
+    value = result.stdout.strip()
+    return value or None
+
+
+def _sysctl_u64(name: str) -> int | None:
+    value = _command_stdout(["sysctl", "-n", name])
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except ValueError:
+        return None
+
+
+def _host_os_version() -> str | None:
+    if sys.platform == "darwin":
+        return _command_stdout(["sw_vers", "-productVersion"])
+    return platform.release() or None
+
+
+def _host_os_build() -> str | None:
+    if sys.platform == "darwin":
+        return _command_stdout(["sw_vers", "-buildVersion"])
+    return None
+
+
+def _host_hardware_profile() -> str | None:
+    if sys.platform != "darwin":
+        return None
+    return _command_stdout(["system_profiler", "SPHardwareDataType"])
+
+
+def _parse_memory_bytes(output: str | None) -> int | None:
+    if output is None:
+        return None
+    for line in output.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("Memory:"):
+            continue
+        parts = stripped.split(":", 1)[1].strip().split()
+        if len(parts) < 2:
+            return None
+        try:
+            amount = int(parts[0])
+        except ValueError:
+            return None
+        unit = parts[1].lower()
+        if unit in {"gb", "gib"}:
+            return amount * 1024 * 1024 * 1024
+        if unit in {"mb", "mib"}:
+            return amount * 1024 * 1024
+    return None
+
+
+def _parse_cpu_core_summary(output: str | None) -> str | None:
+    if output is None:
+        return None
+    for line in output.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("Total Number of Cores:"):
+            return stripped.split(":", 1)[1].strip()
+    return None
+
+
+def _parse_physical_cpu_cores(output: str | None) -> int | None:
+    summary = _parse_cpu_core_summary(output)
+    if summary is None:
+        return None
+    try:
+        return int(summary.split()[0])
+    except (IndexError, ValueError):
+        return None
+
+
+def _parse_cpu_core_types(summary: str | None) -> dict[str, int]:
+    if summary is None or "(" not in summary or ")" not in summary:
+        return {}
+    inside = summary.split("(", 1)[1].split(")", 1)[0]
+    types: dict[str, int] = {}
+    for part in inside.split(" and "):
+        words = part.split()
+        if len(words) < 2:
+            continue
+        try:
+            cores = int(words[0])
+        except ValueError:
+            continue
+        label = "_".join(word.lower() for word in words[1:])
+        types[label] = cores
+    return types
+
+
+def _host_ram_bytes(hardware_profile: str | None) -> int | None:
+    if sys.platform == "darwin":
+        return _sysctl_u64("hw.memsize") or _parse_memory_bytes(hardware_profile)
+    return None
+
+
+def _host_cpu_cores(hardware_profile: str | None) -> dict:
+    performance: int | None = None
+    efficiency: int | None = None
+    types: dict[str, int] = {}
+    if sys.platform == "darwin":
+        for level in range(4):
+            name = _command_stdout(["sysctl", "-n", f"hw.perflevel{level}.name"])
+            cores = _sysctl_u64(f"hw.perflevel{level}.physicalcpu")
+            normalized = (name or "").lower()
+            if "performance" in normalized:
+                performance = cores
+            elif "efficiency" in normalized:
+                efficiency = cores
+            if name and cores is not None:
+                types[normalized.replace(" ", "_")] = cores
+    summary = _parse_cpu_core_summary(hardware_profile)
+    if not types:
+        types = _parse_cpu_core_types(summary)
+        performance = performance or types.get("performance")
+        efficiency = efficiency or types.get("efficiency")
+    return {
+        "physical": (
+            _sysctl_u64("hw.physicalcpu") or _parse_physical_cpu_cores(hardware_profile)
+            if sys.platform == "darwin"
+            else os.cpu_count()
+        ),
+        "logical": os.cpu_count(),
+        "performance": performance,
+        "efficiency": efficiency,
+        "summary": summary,
+        "types": types,
+    }
+
+
+def _host_gpu_cores() -> int | None:
+    if sys.platform != "darwin":
+        return None
+    output = _command_stdout(["system_profiler", "SPDisplaysDataType"])
+    if output is None:
+        return None
+    for line in output.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("Total Number of Cores:"):
+            try:
+                return int(stripped.split(":", 1)[1].strip())
+            except ValueError:
+                return None
+    return None
+
+
+def _host_system_summary() -> dict:
+    hardware_profile = _host_hardware_profile()
+    ram_bytes = _host_ram_bytes(hardware_profile)
+    return {
+        "os": sys.platform,
+        "arch": platform.machine() or "unknown",
+        "os_version": _host_os_version(),
+        "os_build": _host_os_build(),
+        "ram_bytes": ram_bytes,
+        "ram_gib": ram_bytes // (1024 * 1024 * 1024) if ram_bytes is not None else None,
+        "cpu_cores": _host_cpu_cores(hardware_profile),
+        "gpu_cores": _host_gpu_cores(),
+    }
+
+
+def _format_cpu_cores(cpu_cores: dict | None) -> str:
+    if not isinstance(cpu_cores, dict):
+        return "unknown"
+    summary = cpu_cores.get("summary")
+    if isinstance(summary, str) and summary:
+        return summary
+    physical = cpu_cores.get("physical")
+    logical = cpu_cores.get("logical")
+    performance = cpu_cores.get("performance")
+    efficiency = cpu_cores.get("efficiency")
+    if all(isinstance(value, int) for value in [physical, logical, performance, efficiency]):
+        return f"{physical} physical / {logical} logical ({performance}P+{efficiency}E)"
+    if isinstance(physical, int) and isinstance(logical, int):
+        return f"{physical} physical / {logical} logical"
+    if isinstance(physical, int):
+        return f"{physical} physical"
+    return "unknown"
+
+
+def _format_ram_gib(value: object) -> str:
+    return f"{value} GiB" if isinstance(value, int) else "unknown"
+
+
 def _probe_binary(label: str, bin_path: pathlib.Path | str) -> dict:
     path = str(bin_path)
     try:
@@ -584,6 +778,14 @@ def _format_doctor_text(report: dict) -> str:
         "Install:",
         f"  version: {report.get('install', {}).get('version', 'unknown')}",
         f"  mode: {report.get('install', {}).get('mode', 'unknown')}",
+        (
+            f"  host: {report.get('host', {}).get('os', 'unknown')} "
+            f"{report.get('host', {}).get('os_version') or 'unknown'} "
+            f"({report.get('host', {}).get('arch', 'unknown')})"
+        ),
+        f"  RAM: {_format_ram_gib(report.get('host', {}).get('ram_gib'))}",
+        f"  CPU cores: {_format_cpu_cores(report.get('host', {}).get('cpu_cores'))}",
+        f"  GPU cores: {report.get('host', {}).get('gpu_cores') or 'unknown'}",
         "",
         "Checks:",
     ]
@@ -668,6 +870,7 @@ def _user_doctor_report(bench_report: dict) -> dict:
             "mode": _value_str(bench_report, ("workflow", "mode")),
             "cwd": _value_str(bench_report, ("workflow", "cwd")),
         },
+        "host": _host_system_summary(),
         "checks": [
             server_check,
             bench_check,

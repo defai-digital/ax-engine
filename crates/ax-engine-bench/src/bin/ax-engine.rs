@@ -300,6 +300,7 @@ fn run_bench_doctor_json(args: &[OsString]) -> Result<(u8, Value, String), Strin
 fn user_doctor_report(bench: &Value) -> Value {
     let server = probe_binary("ax-engine-server");
     let bench_bin = probe_binary("ax-engine-bench");
+    let host_system = host_system_summary();
     let bench_status = value_str(bench, &["status"]).unwrap_or("unknown");
     let mlx_ready = value_bool(bench, &["mlx_runtime_ready"]).unwrap_or(false);
     let model_status = value_str(bench, &["model_artifacts", "status"]).unwrap_or("unknown");
@@ -359,6 +360,7 @@ fn user_doctor_report(bench: &Value) -> Value {
             "mode": value_str(bench, &["workflow", "mode"]).unwrap_or("unknown"),
             "cwd": value_str(bench, &["workflow", "cwd"]).unwrap_or("unknown"),
         },
+        "host": host_system,
         "checks": [
             check("server_binary", server.available, server.detail),
             check("bench_binary", bench_bin.available, bench_bin.detail),
@@ -411,6 +413,194 @@ fn probe_binary(name: &str) -> BinaryProbe {
             detail: format!("{}: {err}", bin.display()),
         },
     }
+}
+
+fn host_system_summary() -> Value {
+    let os = value_or_unknown(env::consts::OS);
+    let arch = value_or_unknown(env::consts::ARCH);
+    let hardware_profile = command_stdout("system_profiler", &["SPHardwareDataType"]);
+    let os_version = detect_os_version();
+    let os_build = detect_os_build();
+    let ram_bytes =
+        detect_memory_bytes().or_else(|| hardware_profile.as_deref().and_then(parse_memory_bytes));
+    let cpu_cores = detect_cpu_cores(hardware_profile.as_deref());
+    json!({
+        "os": os,
+        "arch": arch,
+        "os_version": os_version,
+        "os_build": os_build,
+        "ram_bytes": ram_bytes,
+        "ram_gib": ram_bytes.map(bytes_to_gib),
+        "cpu_cores": cpu_cores,
+        "gpu_cores": detect_gpu_cores(),
+    })
+}
+
+fn value_or_unknown(value: &str) -> &str {
+    if value.is_empty() { "unknown" } else { value }
+}
+
+fn detect_os_version() -> Option<String> {
+    match env::consts::OS {
+        "macos" => command_stdout("sw_vers", &["-productVersion"]),
+        _ => None,
+    }
+}
+
+fn detect_os_build() -> Option<String> {
+    match env::consts::OS {
+        "macos" => command_stdout("sw_vers", &["-buildVersion"]),
+        _ => None,
+    }
+}
+
+fn detect_memory_bytes() -> Option<u64> {
+    match env::consts::OS {
+        "macos" => command_stdout("sysctl", &["-n", "hw.memsize"])
+            .and_then(|value| value.parse::<u64>().ok()),
+        _ => None,
+    }
+}
+
+fn detect_cpu_cores(hardware_profile: Option<&str>) -> Value {
+    let physical = command_stdout("sysctl", &["-n", "hw.physicalcpu"])
+        .and_then(|value| value.parse::<u64>().ok())
+        .or_else(|| hardware_profile.and_then(parse_physical_cpu_cores));
+    let logical = command_stdout("sysctl", &["-n", "hw.logicalcpu"])
+        .and_then(|value| value.parse::<u64>().ok());
+    let mut performance = None;
+    let mut efficiency = None;
+    let mut types = serde_json::Map::new();
+
+    for level in ["0", "1", "2", "3"] {
+        let name_key = format!("hw.perflevel{level}.name");
+        let cpu_key = format!("hw.perflevel{level}.physicalcpu");
+        let Some(name) = command_stdout("sysctl", &["-n", &name_key]) else {
+            continue;
+        };
+        let cores =
+            command_stdout("sysctl", &["-n", &cpu_key]).and_then(|value| value.parse::<u64>().ok());
+        let normalized = name.to_ascii_lowercase();
+        if normalized.contains("performance") {
+            performance = cores;
+        } else if normalized.contains("efficiency") {
+            efficiency = cores;
+        }
+        if let Some(cores) = cores {
+            types.insert(normalized.replace(' ', "_"), json!(cores));
+        }
+    }
+
+    let summary = hardware_profile.and_then(parse_cpu_core_summary);
+    if types.is_empty() {
+        if let Some(summary) = summary.as_deref() {
+            for (label, cores) in parse_cpu_core_types(summary) {
+                let normalized = label.to_ascii_lowercase().replace(' ', "_");
+                if normalized.contains("performance") && performance.is_none() {
+                    performance = Some(cores);
+                } else if normalized.contains("efficiency") && efficiency.is_none() {
+                    efficiency = Some(cores);
+                }
+                types.insert(normalized, json!(cores));
+            }
+        }
+    }
+
+    json!({
+        "physical": physical,
+        "logical": logical,
+        "performance": performance,
+        "efficiency": efficiency,
+        "summary": summary,
+        "types": types,
+    })
+}
+
+fn parse_memory_bytes(output: &str) -> Option<u64> {
+    for line in output.lines() {
+        let trimmed = line.trim();
+        let Some(value) = trimmed.strip_prefix("Memory:") else {
+            continue;
+        };
+        let mut parts = value.split_whitespace();
+        let amount = parts.next()?.parse::<u64>().ok()?;
+        let unit = parts.next()?.to_ascii_lowercase();
+        return match unit.as_str() {
+            "gb" | "gib" => amount.checked_mul(1024 * 1024 * 1024),
+            "mb" | "mib" => amount.checked_mul(1024 * 1024),
+            _ => None,
+        };
+    }
+    None
+}
+
+fn parse_physical_cpu_cores(output: &str) -> Option<u64> {
+    let summary = parse_cpu_core_summary(output)?;
+    summary
+        .split_whitespace()
+        .next()
+        .and_then(|value| value.parse::<u64>().ok())
+}
+
+fn parse_cpu_core_summary(output: &str) -> Option<String> {
+    for line in output.lines() {
+        let trimmed = line.trim();
+        if let Some(value) = trimmed.strip_prefix("Total Number of Cores:") {
+            return Some(value.trim().to_string());
+        }
+    }
+    None
+}
+
+fn parse_cpu_core_types(summary: &str) -> Vec<(String, u64)> {
+    let Some(start) = summary.find('(') else {
+        return Vec::new();
+    };
+    let Some(end) = summary[start + 1..].find(')') else {
+        return Vec::new();
+    };
+    let inside = &summary[start + 1..start + 1 + end];
+    inside
+        .split(" and ")
+        .filter_map(|part| {
+            let mut words = part.split_whitespace();
+            let cores = words.next()?.parse::<u64>().ok()?;
+            let label = words.collect::<Vec<_>>().join(" ");
+            if label.is_empty() {
+                None
+            } else {
+                Some((label, cores))
+            }
+        })
+        .collect()
+}
+
+fn detect_gpu_cores() -> Option<u64> {
+    let output = command_stdout("system_profiler", &["SPDisplaysDataType"])?;
+    for line in output.lines() {
+        let trimmed = line.trim();
+        if let Some(value) = trimmed.strip_prefix("Total Number of Cores:") {
+            return value.trim().parse::<u64>().ok();
+        }
+    }
+    None
+}
+
+fn command_stdout(program: &str, args: &[&str]) -> Option<String> {
+    let output = Command::new(program).args(args).output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8(output.stdout).ok()?;
+    let trimmed = stdout.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    Some(trimmed.to_string())
+}
+
+fn bytes_to_gib(bytes: u64) -> u64 {
+    bytes / (1024 * 1024 * 1024)
 }
 
 fn ready_for(result: &str, model_status: &str) -> Vec<&'static str> {
@@ -486,6 +676,34 @@ fn format_user_doctor_report(report: &Value) -> String {
             "  mode: {}",
             value_str(report, &["install", "mode"]).unwrap_or("unknown")
         ),
+        format!(
+            "  host: {} {} ({})",
+            value_str(report, &["host", "os"]).unwrap_or("unknown"),
+            value_str(report, &["host", "os_version"]).unwrap_or("unknown"),
+            value_str(report, &["host", "arch"]).unwrap_or("unknown")
+        ),
+        format!(
+            "  RAM: {}",
+            report
+                .get("host")
+                .and_then(|host| host.get("ram_gib"))
+                .and_then(Value::as_u64)
+                .map(|gib| format!("{gib} GiB"))
+                .unwrap_or_else(|| "unknown".to_string())
+        ),
+        format!(
+            "  CPU cores: {}",
+            format_cpu_cores(report.get("host").and_then(|host| host.get("cpu_cores")))
+        ),
+        format!(
+            "  GPU cores: {}",
+            report
+                .get("host")
+                .and_then(|host| host.get("gpu_cores"))
+                .and_then(Value::as_u64)
+                .map(|cores| cores.to_string())
+                .unwrap_or_else(|| "unknown".to_string())
+        ),
         String::new(),
         "Checks:".to_string(),
     ];
@@ -535,6 +753,27 @@ fn format_user_doctor_report(report: &Value) -> String {
             .unwrap_or("ax-engine-bench doctor")
     ));
     lines.join("\n")
+}
+
+fn format_cpu_cores(cpu_cores: Option<&Value>) -> String {
+    let Some(cpu_cores) = cpu_cores else {
+        return "unknown".to_string();
+    };
+    if let Some(summary) = cpu_cores.get("summary").and_then(Value::as_str) {
+        return summary.to_string();
+    }
+    let physical = cpu_cores.get("physical").and_then(Value::as_u64);
+    let logical = cpu_cores.get("logical").and_then(Value::as_u64);
+    let performance = cpu_cores.get("performance").and_then(Value::as_u64);
+    let efficiency = cpu_cores.get("efficiency").and_then(Value::as_u64);
+    match (physical, logical, performance, efficiency) {
+        (Some(physical), Some(logical), Some(performance), Some(efficiency)) => {
+            format!("{physical} physical / {logical} logical ({performance}P+{efficiency}E)")
+        }
+        (Some(physical), Some(logical), _, _) => format!("{physical} physical / {logical} logical"),
+        (Some(physical), _, _, _) => format!("{physical} physical"),
+        _ => "unknown".to_string(),
+    }
 }
 
 fn append_string_array(lines: &mut Vec<String>, values: Option<&Vec<Value>>) {
@@ -1848,6 +2087,24 @@ mod tests {
         let report = json!({
             "result": "ready",
             "install": {"version": "6.4.3", "mode": "installed_tools"},
+            "host": {
+                "os": "macos",
+                "arch": "aarch64",
+                "os_version": "15.5",
+                "ram_gib": 64,
+                "cpu_cores": {
+                    "physical": 16,
+                    "logical": 16,
+                    "performance": 12,
+                    "efficiency": 4,
+                    "summary": "16 (4 Efficiency and 12 Performance)",
+                    "types": {
+                        "efficiency": 4,
+                        "performance": 12
+                    }
+                },
+                "gpu_cores": 40
+            },
             "checks": [
                 {"id": "server_binary", "status": "pass", "detail": "ax-engine-server ok"},
                 {"id": "model", "status": "not_selected", "selected": false, "path": null}
@@ -1860,6 +2117,10 @@ mod tests {
         let output = format_user_doctor_report(&report);
         assert!(output.contains("AX Engine doctor"));
         assert!(output.contains("Result: ready"));
+        assert!(output.contains("host: macos 15.5 (aarch64)"));
+        assert!(output.contains("RAM: 64 GiB"));
+        assert!(output.contains("CPU cores: 16 (4 Efficiency and 12 Performance)"));
+        assert!(output.contains("GPU cores: 40"));
         assert!(output.contains("server_binary: pass - ax-engine-server ok"));
         assert!(output.contains("model: not_selected"));
         assert!(output.contains("ax-engine serve qwen36-35b --download --port 8080"));
