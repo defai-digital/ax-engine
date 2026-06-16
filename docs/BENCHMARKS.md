@@ -940,7 +940,7 @@ unsupported until a separate route and artifact contract exists.
 
 Decision-grade repo-owned MLX benchmark claims require:
 
-- Apple Silicon M2 Max-or-newer macOS 14+ aarch64 host with 32 GB RAM minimum.
+- Apple Silicon M2 Max-or-newer macOS 26+ aarch64 host with 32 GB RAM minimum.
 - MLX runtime availability.
 - Stable model, tokenizer, prompt shape, and sampling parameters.
 - Prompt-token provenance matching the `mlx_lm.benchmark` random-token

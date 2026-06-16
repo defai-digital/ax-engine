@@ -93,7 +93,7 @@ maturin develop
 ```
 
 The preview package requires a local Apple M2 Max-or-newer host running
-macOS 14 (Sonoma) or later with 32 GB RAM minimum.
+macOS 26 (Tahoe) or later with 32 GB RAM minimum.
 Constructing `Session(...)` on an M1 Mac or unsupported configuration now
 fails closed instead of pretending native or delegated support exists.
 

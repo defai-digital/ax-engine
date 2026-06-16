@@ -175,7 +175,7 @@ For the current crate layering and dependency-boundary guidance, see
 
 ## Requirements
 
-- macOS 14 (Sonoma) or later
+- macOS 26 (Tahoe) or later
 - Apple Silicon M2 Max or newer with 32 GB RAM minimum
 - Rust 1.85+ for source builds
 - `mlx-c` for source-built MLX runtime binaries

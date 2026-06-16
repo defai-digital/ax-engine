@@ -222,7 +222,7 @@ if [[ -n "$SIGN_IDENTITY" ]]; then
     done
 else
     echo "⚠️  no --sign-identity provided — binaries will remain unsigned"
-    echo "   users on macOS 14+ may see a Gatekeeper warning on first launch"
+    echo "   users on macOS 26+ may see a Gatekeeper warning on first launch"
     echo "   pass --sign-identity \"Developer ID Application: ...\" to notarize"
 fi
 

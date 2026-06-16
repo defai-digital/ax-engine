@@ -2,7 +2,7 @@
 
 ## What hardware does AX Engine support?
 
-AX Engine targets high-memory Apple Silicon Macs running macOS 14 (Sonoma) or
+AX Engine targets high-memory Apple Silicon Macs running macOS 26 (Tahoe) or
 later.
 
 | Machine | Minimum spec | Suggested spec |
@@ -78,8 +78,8 @@ roadmap and evidence gates live in
 
 The repo-owned MLX runtime is a supported performance contract, not only a
 best-effort code path. AX fails closed on M1 and base M2 Apple Silicon because
-current runtime, benchmark, and support claims are scoped to macOS 14
-(Sonoma) or later on Apple M2 Max or newer hosts with 32 GB RAM minimum.
+current runtime, benchmark, and support claims are scoped to macOS 26
+(Tahoe) or later on Apple M2 Max or newer hosts with 32 GB RAM minimum.
 `AX_ALLOW_UNSUPPORTED_HOST=1` is only for internal development or CI bring-up;
 it does not make the host supported and should not be used for published
 benchmark numbers.

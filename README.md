@@ -42,10 +42,11 @@ AX Engine is for developers who want a local OpenAI-compatible model server on A
 
 ## Quick Start
 
-**Install:**
+**Install** (macOS 26 Tahoe or later, Apple Silicon only — see [Typical Hardware](#typical-hardware)):
 
 ```bash
-python3 -m pip install "ax-engine[download]>=6.4.1,<7"
+python3 -m pip install --upgrade pip               # pip 23+ is required to find the wheel
+python3 -m pip install -U "ax-engine[download]<7"  # keep the quotes — zsh treats [ ] as a glob
 ```
 
 **Download a small model and start the server:**
@@ -88,68 +89,79 @@ with Session(mlx=True, mlx_model_artifacts_dir=str(path)) as s:
     print(s.generate([1, 2, 3], max_output_tokens=8).output_tokens)
 ```
 
-> Quick Start requires **macOS 14 (Sonoma) or later** on **Apple Silicon M2 Max or newer** with **32 GB unified memory or more**. Larger models such as Qwen3.6 35B-A3B and Gemma 4 12B need the memory tiers listed in [Typical Hardware](#typical-hardware).
+> Quick Start requires **macOS 26 (Tahoe) or later** on **Apple Silicon M2 Max or newer** with **32 GB unified memory or more**. Earlier macOS releases are not supported — there is no wheel or binary for them. Larger models such as Qwen3.6 35B-A3B and Gemma 4 12B need the memory tiers listed in [Typical Hardware](#typical-hardware).
 
 ## Installation
 
-### Match this README
+### Requirements
 
-This README documents the current `6.4.x` command surface, including the
-top-level `ax-engine` orchestration CLI. Before using a released package, verify
-that the package channel has caught up to this version:
+The published wheel and Homebrew formula are macOS-arm64-only native builds.
+Before installing, confirm your machine matches:
+
+- **macOS 26 (Tahoe) or later.** Earlier macOS versions are not supported — there
+  is no wheel or formula for them.
+- **Apple Silicon (M2 Max or newer), arm64.** Intel Macs are not supported.
+- **Python 3.10 or later** for the pip install.
+- **pip 23 or later.** Older pip cannot read the wheel's platform tag and will
+  report `No matching distribution found`. Always run the upgrade step first.
 
 ```bash
-python3 -m pip index versions ax-engine
-brew info defai-digital/ax-engine/ax-engine
+# Check before installing — should print a version >= 26 and "arm64":
+python3 -c "import platform; print(platform.mac_ver()[0], platform.machine())"
 ```
-
-If either channel reports an older version, use the source install below for the
-commands in this README. Older PyPI wheels and older Homebrew formulae may
-install successfully while missing `ax-engine download`, `ax-engine serve`, or
-the current bundled binaries.
 
 ### Python wheel
 
 ```bash
-python3 -m pip install "ax-engine[download]>=6.4.1,<7"
+python3 -m pip install --upgrade pip
+python3 -m pip install -U "ax-engine[download]<7"
 ax-engine doctor
 ```
 
-Requires macOS 14+, Apple Silicon (M2 Max or newer), Python 3.10+. The current
-macOS arm64 wheel includes the `ax-engine` orchestration CLI plus bundled
-`ax-engine-server` and `ax-engine-bench` binaries, so all three are available
-through the installed Python environment. If pip says no matching distribution
-exists for `>=6.4.1`, the current wheel has not been published for your platform
-yet; use [Source](#source) instead of accepting an older resolver result.
+Keep the quotes around the spec — `zsh` otherwise treats `[download]` as a glob.
+The wheel bundles the `ax-engine` orchestration CLI plus the `ax-engine-server`
+and `ax-engine-bench` binaries, so all three are on your `PATH` after install.
+There is no source distribution and no wheel for other platforms; if pip reports
+`No matching distribution found`, see [Troubleshooting](#troubleshooting).
 
 Optional extras:
 
 ```bash
-python3 -m pip install "ax-engine[openai]>=6.4.1,<7"      # FastAPI OpenAI shim
-python3 -m pip install "ax-engine[multimodal]>=6.4.1,<7"  # image/audio helpers
+python3 -m pip install -U "ax-engine[openai]<7"      # FastAPI OpenAI shim
+python3 -m pip install -U "ax-engine[multimodal]<7"  # image/audio helpers
 ```
 
 ### Homebrew
 
-Homebrew is the native binary channel for tagged macOS arm64 releases, but the
-tap can lag behind the README. Check the formula version first:
-
-```bash
-brew info defai-digital/ax-engine/ax-engine
-```
-
-Install only when the formula is `6.4.1` or newer:
+Homebrew is the native binary channel for tagged macOS arm64 releases. The
+one-liner auto-taps `defai-digital/homebrew-ax-engine`:
 
 ```bash
 brew install defai-digital/ax-engine/ax-engine
 ax-engine doctor
-ax-engine-server --help
-ax-engine-bench doctor
 ```
 
-If the formula is older, use [Source](#source) for this README's commands. If
-`doctor` fails with `Library not loaded: libmlxc.dylib`, run:
-`brew install mlx-c && brew reinstall defai-digital/ax-engine/ax-engine`.
+`ax-engine-server` and `ax-engine-bench` are installed alongside the CLI. If
+`doctor` fails with `Library not loaded: libmlxc.dylib`, the `mlx-c` dependency
+is missing or stale — reinstall it:
+
+```bash
+brew install mlx-c && brew reinstall defai-digital/ax-engine/ax-engine
+```
+
+### Troubleshooting
+
+- **`No matching distribution found for ax-engine`** — your machine is not macOS 26+
+  Apple Silicon, or your pip is too old. Run `python3 -m pip install --upgrade pip`,
+  then re-check with the [Requirements](#requirements) command above. There is no
+  wheel for Intel, Linux, Windows, or macOS earlier than 26.
+- **`zsh: no matches found: ax-engine[download]`** — quote the spec:
+  `pip install "ax-engine[download]<7"`.
+- **An old version installs** — make sure you used `-U`, then confirm the channel
+  is current with `python3 -m pip index versions ax-engine` or
+  `brew info defai-digital/ax-engine/ax-engine`.
+- **Anything still off** — build from [Source](#source), which works on any
+  supported macOS and rebuilds the native binaries locally.
 
 ### Source
 

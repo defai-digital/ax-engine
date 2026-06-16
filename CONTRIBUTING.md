@@ -87,7 +87,7 @@ These commands are useful for maintainers and for invited changes:
 
 - Rust stable toolchain with Rust 1.85 or newer
 - Python 3.10+ (for Python bindings, optional)
-- macOS 14 (Sonoma) or later with Apple M2 Max-or-newer Silicon and 32 GB RAM minimum (for full runtime testing)
+- macOS 26 (Tahoe) or later with Apple M2 Max-or-newer Silicon and 32 GB RAM minimum (for full runtime testing)
 
 ```bash
 cargo test --quiet

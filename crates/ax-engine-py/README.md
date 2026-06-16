@@ -14,7 +14,7 @@ the top-level `ax-engine` CLI commands shown below.
 python3 -m pip install "ax-engine[download]>=6.4.1,<7"
 ```
 
-Requires macOS 14+, Apple Silicon (M2 Max or newer), Python 3.10+.
+Requires macOS 26+, Apple Silicon (M2 Max or newer), Python 3.10+.
 The current macOS arm64 wheel includes the `ax-engine` orchestration CLI plus
 bundled `ax-engine-server` and `ax-engine-bench` binaries.
 
@@ -75,7 +75,7 @@ python3 -m pip install "ax-engine[multimodal]>=6.4.1,<7" # image/audio helpers
 
 ## Requirements
 
-- macOS 14 (Sonoma) or later
+- macOS 26 (Tahoe) or later
 - Apple Silicon — M2 Max / M2 Ultra / M3 / M4 family (32 GB RAM minimum)
 - Python 3.10+
 
