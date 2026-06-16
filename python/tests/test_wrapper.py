@@ -1464,6 +1464,58 @@ class WrapperContractTests(unittest.TestCase):
             expected,
         )
 
+    def test_sdk_render_chat_prompt_uses_no_think_prompt_for_non_thinking_qwen_models(
+        self,
+    ) -> None:
+        messages = [
+            {"role": "system", "content": "You are AX"},
+            {"role": "user", "content": "Say hi"},
+        ]
+        no_think_suffix = "<|im_start|>assistant\n"
+        think_suffix = "<|im_start|>assistant\n<think>\n\n</think>\n\n"
+
+        # Exact "qwen3" should get no-think prompt
+        qwen3_prompt = self.ax_engine._render_chat_prompt(messages, "qwen3")
+        self.assertTrue(
+            qwen3_prompt.endswith(no_think_suffix),
+            f"qwen3 should use no-think prompt, got: {qwen3_prompt!r}",
+        )
+        self.assertNotIn("<think>", qwen3_prompt)
+
+        # Qwen3-Coder (hyphenated) should get no-think prompt
+        coder_prompt = self.ax_engine._render_chat_prompt(
+            messages, "mlx-community/Qwen3-Coder-Next-4bit"
+        )
+        self.assertTrue(
+            coder_prompt.endswith(no_think_suffix),
+            f"Qwen3-Coder-Next should use no-think prompt, got: {coder_prompt!r}",
+        )
+        self.assertNotIn("<think>", coder_prompt)
+
+        # Qwen3-Coder (underscore-normalized) should also get no-think prompt
+        coder_us_prompt = self.ax_engine._render_chat_prompt(
+            messages, "mlx-community/Qwen3_Coder_Next_4bit"
+        )
+        self.assertTrue(
+            coder_us_prompt.endswith(no_think_suffix),
+            f"Qwen3_Coder_Next should use no-think prompt, got: {coder_us_prompt!r}",
+        )
+        self.assertNotIn("<think>", coder_us_prompt)
+
+        # Regular Qwen models should still get the thinking-enabled prompt
+        dense_prompt = self.ax_engine._render_chat_prompt(messages, "qwen3_dense")
+        self.assertTrue(
+            dense_prompt.endswith(think_suffix),
+            f"qwen3_dense should use thinking prompt, got: {dense_prompt!r}",
+        )
+        qwen4_prompt = self.ax_engine._render_chat_prompt(
+            messages, "mlx-community/Qwen3-4B-4bit"
+        )
+        self.assertTrue(
+            qwen4_prompt.endswith(think_suffix),
+            f"Qwen3-4B should use thinking prompt, got: {qwen4_prompt!r}",
+        )
+
     def test_openai_mlx_shim_builds_mlx_session_with_artifacts_dir(self) -> None:
         openai_server = importlib.import_module("ax_engine.openai_server")
 

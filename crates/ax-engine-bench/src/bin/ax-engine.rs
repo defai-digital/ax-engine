@@ -492,17 +492,17 @@ fn detect_cpu_cores(hardware_profile: Option<&str>) -> Value {
     }
 
     let summary = hardware_profile.and_then(parse_cpu_core_summary);
-    if types.is_empty() {
-        if let Some(summary) = summary.as_deref() {
-            for (label, cores) in parse_cpu_core_types(summary) {
-                let normalized = label.to_ascii_lowercase().replace(' ', "_");
-                if normalized.contains("performance") && performance.is_none() {
-                    performance = Some(cores);
-                } else if normalized.contains("efficiency") && efficiency.is_none() {
-                    efficiency = Some(cores);
-                }
-                types.insert(normalized, json!(cores));
+    if types.is_empty()
+        && let Some(summary) = summary.as_deref()
+    {
+        for (label, cores) in parse_cpu_core_types(summary) {
+            let normalized = label.to_ascii_lowercase().replace(' ', "_");
+            if normalized.contains("performance") && performance.is_none() {
+                performance = Some(cores);
+            } else if normalized.contains("efficiency") && efficiency.is_none() {
+                efficiency = Some(cores);
             }
+            types.insert(normalized, json!(cores));
         }
     }
 

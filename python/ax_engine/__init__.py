@@ -117,6 +117,7 @@ from .gemma4_unified import (
 _QWEN_CHATML_ASSISTANT_GENERATION_PROMPT = (
     "<|im_start|>assistant\n<think>\n\n</think>\n\n"
 )
+_QWEN_CHATML_ASSISTANT_GENERATION_PROMPT_NO_THINK = "<|im_start|>assistant\n"
 
 
 @dataclass(frozen=True)
@@ -1245,7 +1246,7 @@ def _render_chat_prompt(messages: list[ChatMessage | dict[str, str]], model_id: 
             prompt_parts.append(f"{role}: {safe_content}\n")
 
     if template == "qwen_chatml":
-        prompt_parts.append(_QWEN_CHATML_ASSISTANT_GENERATION_PROMPT)
+        prompt_parts.append(_qwen_assistant_generation_prompt(model_id))
     elif template == "llama3":
         prompt_parts.append("<|start_header_id|>assistant<|end_header_id|>\n\n")
     else:
@@ -1260,6 +1261,26 @@ def _chat_prompt_template(model_id: str) -> str:
     if "llama-3" in normalized or "llama3" in normalized or "llama_3" in normalized:
         return "llama3"
     return "plain_role_prefix"
+
+
+def _qwen_assistant_generation_prompt(model_id: str) -> str:
+    if _is_qwen_non_thinking_only_model(model_id):
+        return _QWEN_CHATML_ASSISTANT_GENERATION_PROMPT_NO_THINK
+    return _QWEN_CHATML_ASSISTANT_GENERATION_PROMPT
+
+
+def _is_qwen_non_thinking_only_model(model_id: str) -> bool:
+    normalized = model_id.lower()
+    return normalized == "qwen3" or _is_qwen_coder_model(model_id)
+
+
+def _is_qwen_coder_model(model_id: str) -> bool:
+    normalized = _normalize_model_id_token(model_id)
+    return "qwen3-coder-next" in normalized or "qwen3-coder" in normalized
+
+
+def _normalize_model_id_token(model_id: str) -> str:
+    return "".join(ch if ch.isalnum() else "-" for ch in model_id.lower())
 
 
 def _normalize_chat_role(role: str) -> str:
