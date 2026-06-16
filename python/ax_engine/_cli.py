@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass
+import importlib.metadata
 import json
 import os
 import pathlib
@@ -516,6 +517,190 @@ def _run_capture(command: list[str]) -> subprocess.CompletedProcess[str]:
     return subprocess.run(command, capture_output=True, text=True)
 
 
+def _value_at(value: dict, path: tuple[str, ...]) -> object | None:
+    current: object = value
+    for key in path:
+        if not isinstance(current, dict):
+            return None
+        current = current.get(key)
+    return current
+
+
+def _value_str(value: dict, path: tuple[str, ...], default: str = "unknown") -> str:
+    current = _value_at(value, path)
+    return current if isinstance(current, str) else default
+
+
+def _value_bool(value: dict, path: tuple[str, ...], default: bool = False) -> bool:
+    current = _value_at(value, path)
+    return current if isinstance(current, bool) else default
+
+
+def _value_list(value: dict, path: tuple[str, ...]) -> list:
+    current = _value_at(value, path)
+    return current if isinstance(current, list) else []
+
+
+def _package_version() -> str:
+    try:
+        return importlib.metadata.version("ax-engine")
+    except importlib.metadata.PackageNotFoundError:
+        return "unknown"
+
+
+def _probe_binary(label: str, bin_path: pathlib.Path | str) -> dict:
+    path = str(bin_path)
+    try:
+        result = _run_capture([path, "--help"])
+    except OSError as exc:
+        return {"id": label, "status": "fail", "detail": f"{path}: {exc}"}
+    if result.returncode == 0:
+        return {"id": label, "status": "pass", "detail": f"{path} ok"}
+    return {
+        "id": label,
+        "status": "fail",
+        "detail": f"{path} exited with status {result.returncode}",
+    }
+
+
+def _doctor_check(check_id: str, passed: bool, detail: str) -> dict:
+    return {"id": check_id, "status": "pass" if passed else "fail", "detail": detail}
+
+
+def _doctor_ready_for(result: str, model_status: str) -> list[str]:
+    if result == "not_ready":
+        return []
+    if model_status == "ready":
+        return ["serve", "python_sdk", "model_checks"]
+    return ["serve", "python_sdk"]
+
+
+def _format_doctor_text(report: dict) -> str:
+    lines = [
+        "AX Engine doctor",
+        "",
+        f"Result: {str(report.get('result', 'unknown')).replace('_', ' ')}",
+        "",
+        "Install:",
+        f"  version: {report.get('install', {}).get('version', 'unknown')}",
+        f"  mode: {report.get('install', {}).get('mode', 'unknown')}",
+        "",
+        "Checks:",
+    ]
+    for check in report.get("checks", []):
+        check_id = check.get("id", "unknown")
+        status = check.get("status", "unknown")
+        detail = check.get("detail")
+        if isinstance(detail, str):
+            lines.append(f"  {check_id}: {status} - {detail}")
+        else:
+            selected = check.get("selected", False)
+            path = check.get("path") or "none"
+            lines.append(f"  {check_id}: {status} (selected: {selected}, path: {path})")
+
+    def append_section(title: str, values: list) -> None:
+        lines.extend(["", f"{title}:"])
+        if not values:
+            lines.append("  none")
+            return
+        for value in values:
+            if isinstance(value, str):
+                lines.append(f"  {value}")
+
+    append_section("Issues", report.get("issues", []))
+    append_section("Model issues", report.get("model_issues", []))
+    append_section("Next", report.get("next_actions", []))
+    lines.extend(["", f"More details: {report.get('details_command', 'ax-engine-bench doctor')}"])
+    return "\n".join(lines)
+
+
+def _user_doctor_report(bench_report: dict) -> dict:
+    server_check = _probe_binary("server_binary", _server_bin())
+    bench_check = _probe_binary("bench_binary", _bench_bin())
+    bench_status = _value_str(bench_report, ("status",))
+    mlx_ready = _value_bool(bench_report, ("mlx_runtime_ready",))
+    model_status = _value_str(bench_report, ("model_artifacts", "status"))
+    model_selected = _value_bool(bench_report, ("model_artifacts", "selected"))
+    model_path = _value_at(bench_report, ("model_artifacts", "path"))
+    model_path = model_path if isinstance(model_path, str) else None
+
+    if server_check["status"] != "pass" or bench_check["status"] != "pass" or bench_status == "not_ready":
+        result = "not_ready"
+    elif bench_status == "bringup_only":
+        result = "degraded"
+    else:
+        result = "ready"
+
+    next_actions: list[str] = []
+    if server_check["status"] != "pass":
+        next_actions.append("Reinstall ax-engine so ax-engine-server is on PATH.")
+    elif bench_check["status"] != "pass":
+        next_actions.append("Reinstall ax-engine so ax-engine-bench is on PATH.")
+    elif not mlx_ready:
+        next_actions.append("Fix the host or Metal runtime issues listed below.")
+    elif model_status == "not_ready":
+        if model_path:
+            next_actions.append(f"ax-engine-bench generate-manifest {model_path} --json")
+            next_actions.append(f"ax-engine doctor --mlx-model-artifacts-dir {model_path}")
+        else:
+            next_actions.append("Pass --mlx-model-artifacts-dir <model-dir> to inspect a model.")
+    elif model_selected:
+        next_actions.append(f"ax-engine serve {model_path or '<model-dir>'} --port 8080")
+    else:
+        next_actions.append("ax-engine serve qwen36-35b --download --port 8080")
+        next_actions.append("ax-engine models list")
+
+    host_detail = (
+        f"{_value_str(bench_report, ('host', 'detected_soc'), 'unknown Apple Silicon')} "
+        f"({_value_str(bench_report, ('host', 'os'))}/{_value_str(bench_report, ('host', 'arch'))})"
+    )
+    metal_detail = (
+        "Metal compiler and metallib available"
+        if _value_bool(bench_report, ("metal_toolchain", "fully_available"))
+        else "Metal compiler or metallib missing"
+    )
+    return {
+        "schema_version": "ax.engine.doctor.v1",
+        "result": result,
+        "ready_for": _doctor_ready_for(result, model_status),
+        "install": {
+            "version": _package_version(),
+            "mode": _value_str(bench_report, ("workflow", "mode")),
+            "cwd": _value_str(bench_report, ("workflow", "cwd")),
+        },
+        "checks": [
+            server_check,
+            bench_check,
+            _doctor_check(
+                "host",
+                _value_bool(bench_report, ("host", "supported_mlx_runtime")),
+                host_detail,
+            ),
+            _doctor_check(
+                "metal_toolchain",
+                _value_bool(bench_report, ("metal_toolchain", "fully_available")),
+                metal_detail,
+            ),
+            _doctor_check("mlx_runtime", mlx_ready, bench_status),
+            {
+                "id": "model",
+                "status": model_status,
+                "selected": model_selected,
+                "path": model_path,
+            },
+        ],
+        "issues": _value_list(bench_report, ("issues",)),
+        "model_issues": _value_list(bench_report, ("model_artifacts", "issues")),
+        "next_actions": next_actions,
+        "details_command": "ax-engine-bench doctor",
+        "source": {
+            "schema_version": _value_str(bench_report, ("schema_version",)),
+            "status": bench_status,
+            "details_command": "ax-engine-bench doctor --json",
+        },
+    }
+
+
 def _default_mtp_depth_max(base_model: str, mtp_source: str) -> int:
     label = f"{base_model} {mtp_source}".lower()
     if "qwen3.6-27b" in label or "qwen3-6-27b" in label:
@@ -604,12 +789,31 @@ def _cmd_convert_mtplx(args: argparse.Namespace) -> int:
 def _cmd_doctor(args: argparse.Namespace) -> int:
     bench_bin = str(_bench_bin())
     argv = [bench_bin, "doctor"]
-    if args.json:
+    if args.verbose and args.json:
         argv.append("--json")
     if args.mlx_model_artifacts_dir:
         argv.extend(["--mlx-model-artifacts-dir", args.mlx_model_artifacts_dir])
-    os.execvp(argv[0], argv)
-    return 0
+    if args.verbose:
+        os.execvp(argv[0], argv)
+        return 0
+
+    argv.append("--json")
+    result = _run_capture(argv)
+    sys.stderr.write(result.stderr)
+    if result.returncode != 0:
+        sys.stdout.write(result.stdout)
+        return result.returncode
+    try:
+        bench_report = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"ax-engine-bench doctor did not emit valid JSON: {exc}") from exc
+
+    report = _user_doctor_report(bench_report)
+    if args.json:
+        _json_dump(report)
+    else:
+        print(_format_doctor_text(report))
+    return 1 if report.get("result") == "not_ready" else 0
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -650,6 +854,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Check AX Engine system readiness (host, Metal toolchain, model artifacts)",
     )
     doctor_parser.add_argument("--json", action="store_true")
+    doctor_parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Show the detailed ax-engine-bench doctor report",
+    )
     doctor_parser.add_argument(
         "--mlx-model-artifacts-dir",
         default=None,

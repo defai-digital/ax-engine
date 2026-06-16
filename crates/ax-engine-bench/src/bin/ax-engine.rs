@@ -183,14 +183,374 @@ fn run(args: Vec<OsString>) -> Result<u8, String> {
 
 fn print_usage() {
     println!(
-        "Usage:\n  ax-engine serve <model-dir-or-alias> [--host <host>] [--port <port>] [--download] [--dry-run] [--json] [-- <ax-engine-server args>]\n  ax-engine download [<alias-or-repo-id>] [--dest <path>] [--force] [--list] [--json]\n  ax-engine models list [--models-dir <path>] [--json]\n  ax-engine models info <alias-or-path> [--json]\n  ax-engine models rm <path> [--dry-run] [--yes] [--json]\n  ax-engine doctor [--json] [--mlx-model-artifacts-dir <path>]\n  ax-engine convert-mtplx <base-model> --mtp-source <repo> [--output <dir>] [--quantize 4|8] [--mtp-depth-max <n>] [--group-size <n>] [--fair-base-only] [--json]"
+        "Usage:\n  ax-engine serve <model-dir-or-alias> [--host <host>] [--port <port>] [--download] [--dry-run] [--json] [-- <ax-engine-server args>]\n  ax-engine download [<alias-or-repo-id>] [--dest <path>] [--force] [--list] [--json]\n  ax-engine models list [--models-dir <path>] [--json]\n  ax-engine models info <alias-or-path> [--json]\n  ax-engine models rm <path> [--dry-run] [--yes] [--json]\n  ax-engine doctor [--json] [--verbose] [--mlx-model-artifacts-dir <path>]\n  ax-engine convert-mtplx <base-model> --mtp-source <repo> [--output <dir>] [--quantize 4|8] [--mtp-depth-max <n>] [--group-size <n>] [--fair-base-only] [--json]"
     );
 }
 
 fn cmd_doctor(args: &[OsString]) -> Result<u8, String> {
-    let mut argv = vec![OsString::from("doctor")];
-    argv.extend(args.iter().cloned());
-    exec_or_status(find_executable("ax-engine-bench"), &argv)
+    let args = parse_doctor_args(args)?;
+    if args.help {
+        return Ok(0);
+    }
+    let mut bench_args = vec![OsString::from("doctor")];
+    if args.verbose {
+        if args.json {
+            bench_args.push(OsString::from("--json"));
+        }
+        bench_args.extend(args.bench_args);
+        return exec_or_status(find_executable("ax-engine-bench"), &bench_args);
+    }
+    bench_args.push(OsString::from("--json"));
+    bench_args.extend(args.bench_args);
+    let (code, bench_report, stderr) = run_bench_doctor_json(&bench_args)?;
+    if !stderr.is_empty() {
+        eprint!("{stderr}");
+    }
+    if code != 0 {
+        return Ok(code);
+    }
+    let report = user_doctor_report(&bench_report);
+    if args.json {
+        print_json(&report);
+    } else {
+        println!("{}", format_user_doctor_report(&report));
+    }
+    Ok(
+        if report.get("result").and_then(Value::as_str) == Some("not_ready") {
+            1
+        } else {
+            0
+        },
+    )
+}
+
+#[derive(Debug)]
+struct DoctorArgs {
+    json: bool,
+    verbose: bool,
+    help: bool,
+    bench_args: Vec<OsString>,
+}
+
+fn parse_doctor_args(args: &[OsString]) -> Result<DoctorArgs, String> {
+    let mut json = false;
+    let mut verbose = false;
+    let mut bench_args = Vec::new();
+    let mut index = 0;
+    while index < args.len() {
+        let arg = args[index].to_string_lossy();
+        match arg.as_ref() {
+            "--json" => json = true,
+            "--verbose" => verbose = true,
+            "--mlx-model-artifacts-dir" => {
+                index += 1;
+                let value = args
+                    .get(index)
+                    .ok_or_else(|| "--mlx-model-artifacts-dir requires a value".to_string())?
+                    .clone();
+                bench_args.push(OsString::from("--mlx-model-artifacts-dir"));
+                bench_args.push(value);
+            }
+            "--help" | "-h" => {
+                println!(
+                    "Usage:\n  ax-engine doctor [--json] [--verbose] [--mlx-model-artifacts-dir <path>]\n\nDefault output is an end-user readiness summary. Use --verbose for the detailed ax-engine-bench doctor report."
+                );
+                return Ok(DoctorArgs {
+                    json,
+                    verbose,
+                    help: true,
+                    bench_args,
+                });
+            }
+            flag if flag.starts_with('-') => return Err(format!("unknown doctor option: {flag}")),
+            _ => return Err("doctor does not accept positional arguments".into()),
+        }
+        index += 1;
+    }
+    Ok(DoctorArgs {
+        json,
+        verbose,
+        help: false,
+        bench_args,
+    })
+}
+
+fn run_bench_doctor_json(args: &[OsString]) -> Result<(u8, Value, String), String> {
+    let bench = find_executable("ax-engine-bench");
+    let output = Command::new(&bench)
+        .args(args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .map_err(|err| format!("failed to run {}: {err}", bench.display()))?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let report = serde_json::from_str::<Value>(stdout.trim()).map_err(|err| {
+        format!(
+            "ax-engine-bench doctor did not emit valid JSON: {err}\nstdout:\n{}",
+            stdout.trim()
+        )
+    })?;
+    Ok((
+        output.status.code().unwrap_or(1).try_into().unwrap_or(1),
+        report,
+        String::from_utf8_lossy(&output.stderr).into_owned(),
+    ))
+}
+
+fn user_doctor_report(bench: &Value) -> Value {
+    let server = probe_binary("ax-engine-server");
+    let bench_bin = probe_binary("ax-engine-bench");
+    let bench_status = value_str(bench, &["status"]).unwrap_or("unknown");
+    let mlx_ready = value_bool(bench, &["mlx_runtime_ready"]).unwrap_or(false);
+    let model_status = value_str(bench, &["model_artifacts", "status"]).unwrap_or("unknown");
+    let model_selected = value_bool(bench, &["model_artifacts", "selected"]).unwrap_or(false);
+    let model_path = value_str(bench, &["model_artifacts", "path"]);
+    let issues = bench
+        .get("issues")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let model_issues = bench
+        .get("model_artifacts")
+        .and_then(|value| value.get("issues"))
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let result = if !server.available || !bench_bin.available || bench_status == "not_ready" {
+        "not_ready"
+    } else if bench_status == "bringup_only" {
+        "degraded"
+    } else {
+        "ready"
+    };
+
+    let mut next_actions = Vec::new();
+    if !server.available {
+        next_actions.push("Reinstall ax-engine so ax-engine-server is on PATH.".to_string());
+    } else if !bench_bin.available {
+        next_actions.push("Reinstall ax-engine so ax-engine-bench is on PATH.".to_string());
+    } else if !mlx_ready {
+        next_actions.push("Fix the host or Metal runtime issues listed below.".to_string());
+    } else if model_status == "not_ready" {
+        if let Some(path) = model_path {
+            next_actions.push(format!("ax-engine-bench generate-manifest {path} --json"));
+            next_actions.push(format!("ax-engine doctor --mlx-model-artifacts-dir {path}"));
+        } else {
+            next_actions
+                .push("Pass --mlx-model-artifacts-dir <model-dir> to inspect a model.".to_string());
+        }
+    } else if model_selected {
+        if let Some(path) = model_path {
+            next_actions.push(format!("ax-engine serve {path} --port 8080"));
+        } else {
+            next_actions.push("ax-engine serve <model-dir> --port 8080".to_string());
+        }
+    } else {
+        next_actions.push("ax-engine serve qwen36-35b --download --port 8080".to_string());
+        next_actions.push("ax-engine models list".to_string());
+    }
+
+    json!({
+        "schema_version": "ax.engine.doctor.v1",
+        "result": result,
+        "ready_for": ready_for(result, model_status),
+        "install": {
+            "version": env!("CARGO_PKG_VERSION"),
+            "mode": value_str(bench, &["workflow", "mode"]).unwrap_or("unknown"),
+            "cwd": value_str(bench, &["workflow", "cwd"]).unwrap_or("unknown"),
+        },
+        "checks": [
+            check("server_binary", server.available, server.detail),
+            check("bench_binary", bench_bin.available, bench_bin.detail),
+            check("host", value_bool(bench, &["host", "supported_mlx_runtime"]).unwrap_or(false), host_detail(bench)),
+            check("metal_toolchain", value_bool(bench, &["metal_toolchain", "fully_available"]).unwrap_or(false), metal_detail(bench)),
+            check("mlx_runtime", mlx_ready, bench_status.to_string()),
+            json!({
+                "id": "model",
+                "status": model_status,
+                "selected": model_selected,
+                "path": model_path,
+            }),
+        ],
+        "issues": issues,
+        "model_issues": model_issues,
+        "next_actions": next_actions,
+        "details_command": "ax-engine-bench doctor",
+        "source": {
+            "schema_version": value_str(bench, &["schema_version"]).unwrap_or("unknown"),
+            "status": bench_status,
+            "details_command": "ax-engine-bench doctor --json",
+        },
+    })
+}
+
+#[derive(Debug)]
+struct BinaryProbe {
+    available: bool,
+    detail: String,
+}
+
+fn probe_binary(name: &str) -> BinaryProbe {
+    let bin = find_executable(name);
+    match Command::new(&bin)
+        .arg("--help")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+    {
+        Ok(status) if status.success() => BinaryProbe {
+            available: true,
+            detail: format!("{} ok", bin.display()),
+        },
+        Ok(status) => BinaryProbe {
+            available: false,
+            detail: format!("{} exited with status {}", bin.display(), status),
+        },
+        Err(err) => BinaryProbe {
+            available: false,
+            detail: format!("{}: {err}", bin.display()),
+        },
+    }
+}
+
+fn ready_for(result: &str, model_status: &str) -> Vec<&'static str> {
+    if result == "not_ready" {
+        Vec::new()
+    } else if model_status == "ready" {
+        vec!["serve", "python_sdk", "model_checks"]
+    } else {
+        vec!["serve", "python_sdk"]
+    }
+}
+
+fn check(id: &str, pass: bool, detail: String) -> Value {
+    json!({
+        "id": id,
+        "status": if pass { "pass" } else { "fail" },
+        "detail": detail,
+    })
+}
+
+fn host_detail(report: &Value) -> String {
+    format!(
+        "{} ({}/{})",
+        value_str(report, &["host", "detected_soc"]).unwrap_or("unknown Apple Silicon"),
+        value_str(report, &["host", "os"]).unwrap_or("unknown"),
+        value_str(report, &["host", "arch"]).unwrap_or("unknown")
+    )
+}
+
+fn metal_detail(report: &Value) -> String {
+    if value_bool(report, &["metal_toolchain", "fully_available"]).unwrap_or(false) {
+        "Metal compiler and metallib available".to_string()
+    } else {
+        "Metal compiler or metallib missing".to_string()
+    }
+}
+
+fn value_at<'a>(value: &'a Value, path: &[&str]) -> Option<&'a Value> {
+    let mut current = value;
+    for key in path {
+        current = current.get(*key)?;
+    }
+    Some(current)
+}
+
+fn value_str<'a>(value: &'a Value, path: &[&str]) -> Option<&'a str> {
+    value_at(value, path)?.as_str()
+}
+
+fn value_bool(value: &Value, path: &[&str]) -> Option<bool> {
+    value_at(value, path)?.as_bool()
+}
+
+fn format_user_doctor_report(report: &Value) -> String {
+    let mut lines = vec![
+        "AX Engine doctor".to_string(),
+        String::new(),
+        format!(
+            "Result: {}",
+            report
+                .get("result")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown")
+                .replace('_', " ")
+        ),
+        String::new(),
+        "Install:".to_string(),
+        format!(
+            "  version: {}",
+            value_str(report, &["install", "version"]).unwrap_or("unknown")
+        ),
+        format!(
+            "  mode: {}",
+            value_str(report, &["install", "mode"]).unwrap_or("unknown")
+        ),
+        String::new(),
+        "Checks:".to_string(),
+    ];
+    if let Some(checks) = report.get("checks").and_then(Value::as_array) {
+        for check in checks {
+            let id = check.get("id").and_then(Value::as_str).unwrap_or("unknown");
+            let status = check
+                .get("status")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown");
+            let detail = check.get("detail").and_then(Value::as_str);
+            if let Some(detail) = detail {
+                lines.push(format!("  {id}: {status} - {detail}"));
+            } else {
+                let selected = check
+                    .get("selected")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                let path = check.get("path").and_then(Value::as_str).unwrap_or("none");
+                lines.push(format!(
+                    "  {id}: {status} (selected: {selected}, path: {path})"
+                ));
+            }
+        }
+    }
+    lines.push(String::new());
+    lines.push("Issues:".to_string());
+    append_string_array(&mut lines, report.get("issues").and_then(Value::as_array));
+    lines.push(String::new());
+    lines.push("Model issues:".to_string());
+    append_string_array(
+        &mut lines,
+        report.get("model_issues").and_then(Value::as_array),
+    );
+    lines.push(String::new());
+    lines.push("Next:".to_string());
+    append_string_array(
+        &mut lines,
+        report.get("next_actions").and_then(Value::as_array),
+    );
+    lines.push(String::new());
+    lines.push(format!(
+        "More details: {}",
+        report
+            .get("details_command")
+            .and_then(Value::as_str)
+            .unwrap_or("ax-engine-bench doctor")
+    ));
+    lines.join("\n")
+}
+
+fn append_string_array(lines: &mut Vec<String>, values: Option<&Vec<Value>>) {
+    let Some(values) = values else {
+        lines.push("  none".to_string());
+        return;
+    };
+    if values.is_empty() {
+        lines.push("  none".to_string());
+    } else {
+        for value in values {
+            if let Some(text) = value.as_str() {
+                lines.push(format!("  {text}"));
+            }
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -1457,6 +1817,53 @@ mod tests {
             parse_output_dir("Output dir: /tmp/other\n", None).as_deref(),
             Some("/tmp/other")
         );
+    }
+
+    #[test]
+    fn parse_doctor_args_preserves_summary_and_verbose_modes() {
+        let args = parse_doctor_args(&[
+            OsString::from("--json"),
+            OsString::from("--mlx-model-artifacts-dir"),
+            OsString::from("/models/gemma4-12b"),
+        ])
+        .unwrap();
+        assert!(args.json);
+        assert!(!args.verbose);
+        assert!(!args.help);
+        assert_eq!(
+            args.bench_args,
+            vec![
+                OsString::from("--mlx-model-artifacts-dir"),
+                OsString::from("/models/gemma4-12b")
+            ]
+        );
+
+        let args = parse_doctor_args(&[OsString::from("--verbose")]).unwrap();
+        assert!(!args.json);
+        assert!(args.verbose);
+    }
+
+    #[test]
+    fn user_doctor_text_highlights_status_checks_and_next_steps() {
+        let report = json!({
+            "result": "ready",
+            "install": {"version": "6.4.3", "mode": "installed_tools"},
+            "checks": [
+                {"id": "server_binary", "status": "pass", "detail": "ax-engine-server ok"},
+                {"id": "model", "status": "not_selected", "selected": false, "path": null}
+            ],
+            "issues": [],
+            "model_issues": [],
+            "next_actions": ["ax-engine serve qwen36-35b --download --port 8080"],
+            "details_command": "ax-engine-bench doctor"
+        });
+        let output = format_user_doctor_report(&report);
+        assert!(output.contains("AX Engine doctor"));
+        assert!(output.contains("Result: ready"));
+        assert!(output.contains("server_binary: pass - ax-engine-server ok"));
+        assert!(output.contains("model: not_selected"));
+        assert!(output.contains("ax-engine serve qwen36-35b --download --port 8080"));
+        assert!(output.contains("More details: ax-engine-bench doctor"));
     }
 
     fn unique_temp_dir(label: &str) -> PathBuf {

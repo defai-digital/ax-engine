@@ -5,6 +5,7 @@ import io
 import json
 import os
 import pathlib
+import subprocess
 import tempfile
 import textwrap
 import unittest
@@ -153,7 +154,77 @@ class AxEngineCliTests(unittest.TestCase):
             ],
         )
 
-    def test_doctor_wraps_bench_doctor(self) -> None:
+    def test_doctor_json_summarizes_bench_doctor(self) -> None:
+        bench_report = {
+            "schema_version": "ax.engine_bench.doctor.v1",
+            "status": "ready",
+            "mlx_runtime_ready": True,
+            "workflow": {"mode": "installed_tools", "cwd": "/tmp"},
+            "host": {
+                "supported_mlx_runtime": True,
+                "detected_soc": "Apple M3 Max",
+                "os": "macos",
+                "arch": "aarch64",
+            },
+            "metal_toolchain": {"fully_available": True},
+            "model_artifacts": {
+                "selected": True,
+                "status": "ready",
+                "path": "/models/gemma4-12b",
+                "issues": [],
+            },
+            "issues": [],
+        }
+
+        def run_capture(command: list[str]) -> subprocess.CompletedProcess[str]:
+            if command[:2] == ["/opt/bin/ax-engine-bench", "doctor"]:
+                return subprocess.CompletedProcess(command, 0, json.dumps(bench_report), "")
+            if command[1:] == ["--help"]:
+                return subprocess.CompletedProcess(command, 0, "", "")
+            raise AssertionError(f"unexpected command: {command}")
+
+        with mock.patch.object(
+            _cli, "_bench_bin", return_value="/opt/bin/ax-engine-bench"
+        ), mock.patch.object(
+            _cli, "_server_bin", return_value="/opt/bin/ax-engine-server"
+        ), mock.patch.object(
+            _cli, "_package_version", return_value="6.4.3"
+        ), mock.patch.object(
+            _cli, "_run_capture", side_effect=run_capture
+        ) as run_capture_mock:
+            code, stdout = self.capture_main(
+                [
+                    "doctor",
+                    "--json",
+                    "--mlx-model-artifacts-dir",
+                    "/models/gemma4-12b",
+                ]
+            )
+
+        self.assertEqual(code, 0)
+        payload = json.loads(stdout)
+        self.assertEqual(payload["schema_version"], "ax.engine.doctor.v1")
+        self.assertEqual(payload["result"], "ready")
+        self.assertEqual(payload["install"]["version"], "6.4.3")
+        self.assertEqual(payload["ready_for"], ["serve", "python_sdk", "model_checks"])
+        self.assertEqual(payload["checks"][0]["id"], "server_binary")
+        self.assertEqual(payload["checks"][1]["id"], "bench_binary")
+        self.assertEqual(payload["checks"][-1]["status"], "ready")
+        self.assertEqual(payload["source"]["schema_version"], "ax.engine_bench.doctor.v1")
+        self.assertEqual(payload["next_actions"], ["ax-engine serve /models/gemma4-12b --port 8080"])
+        self.assertNotIn("bench_doctor", payload)
+        self.assertEqual(
+            run_capture_mock.call_args_list[0].args[0],
+            [
+                "/opt/bin/ax-engine-bench",
+                "doctor",
+                "--mlx-model-artifacts-dir",
+                "/models/gemma4-12b",
+                "--json",
+            ],
+        )
+
+    def test_doctor_verbose_wraps_bench_doctor(self) -> None:
         with mock.patch.object(
             _cli, "_bench_bin", return_value="/opt/bin/ax-engine-bench"
         ), mock.patch.object(os, "execvp", side_effect=RuntimeError("stop")) as execvp:
@@ -161,6 +232,7 @@ class AxEngineCliTests(unittest.TestCase):
                 self.capture_main(
                     [
                         "doctor",
+                        "--verbose",
                         "--json",
                         "--mlx-model-artifacts-dir",
                         "/models/gemma4-12b",
