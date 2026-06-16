@@ -190,6 +190,11 @@ func (c *Client) LoadModel(ctx context.Context, req LoadModelRequest) (LoadModel
 	return requestJSON[LoadModelResponse](c, ctx, http.MethodPost, "/v1/model/load", req)
 }
 
+// Models calls GET /v1/models to list available models.
+func (c *Client) Models(ctx context.Context) (ModelsResponse, error) {
+	return requestJSON[ModelsResponse](c, ctx, http.MethodGet, "/v1/models", nil)
+}
+
 // StreamCompletion streams POST /v1/completions with stream=true. The caller
 // receives chunks over the returned channel; when the channel is closed the
 // stream is done. The errCh channel delivers at most one error.

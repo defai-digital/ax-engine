@@ -410,8 +410,8 @@ public struct OpenAiEmbeddingResponse: Decodable, Sendable {
 
 public struct HealthResponse: Decodable, Sendable {
     public var status: String
-    public var service: String
-    public var modelId: String
+    public var service: String?
+    public var modelId: String?
 }
 
 public struct ModelCard: Decodable, Sendable {

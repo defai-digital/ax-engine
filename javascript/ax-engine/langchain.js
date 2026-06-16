@@ -72,8 +72,8 @@ export class ChatAXEngine extends BaseChatModel {
       min_p: options?.minP ?? this.minP,
       repetition_penalty: options?.repetitionPenalty ?? this.repetitionPenalty,
       stop: options?.stop ?? this.stop,
-      seed: this.seed,
-      metadata: this.metadata,
+      seed: options?.seed ?? this.seed,
+      metadata: options?.metadata ?? this.metadata,
     };
   }
 
@@ -156,8 +156,8 @@ export class AXEngineLLM extends LLM {
       min_p: options?.minP ?? this.minP,
       repetition_penalty: options?.repetitionPenalty ?? this.repetitionPenalty,
       stop: options?.stop ?? this.stop,
-      seed: this.seed,
-      metadata: this.metadata,
+      seed: options?.seed ?? this.seed,
+      metadata: options?.metadata ?? this.metadata,
     };
   }
 

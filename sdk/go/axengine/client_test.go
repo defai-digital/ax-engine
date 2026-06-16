@@ -408,3 +408,35 @@ func TestContextCancellation(t *testing.T) {
 		<-errCh
 	})
 }
+
+func TestModelsOK(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/models", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Errorf("method: got %s want GET", r.Method)
+		}
+		writeJSON(w, ModelsResponse{
+			Object: "list",
+			Data: []ModelCard{
+				{ID: "qwen3_dense", Object: "model", OwnedBy: "ax-engine"},
+				{ID: "gemma4", Object: "model", OwnedBy: "ax-engine"},
+			},
+		})
+	})
+	startServer(t, mux, func(baseURL string) {
+		client := NewClient(&ClientOptions{BaseURL: baseURL})
+		resp, err := client.Models(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if resp.Object != "list" {
+			t.Errorf("object: got %q", resp.Object)
+		}
+		if len(resp.Data) != 2 {
+			t.Fatalf("data: got %d want 2", len(resp.Data))
+		}
+		if resp.Data[0].ID != "qwen3_dense" {
+			t.Errorf("data[0].id: got %q", resp.Data[0].ID)
+		}
+	})
+}

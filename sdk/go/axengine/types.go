@@ -336,3 +336,16 @@ type LoadModelResponse struct {
 	State         string `json:"state"`
 	ContextLength uint32 `json:"context_length"`
 }
+
+// ModelCard describes a single model served by ax-engine-server.
+type ModelCard struct {
+	ID      string `json:"id"`
+	Object  string `json:"object"`
+	OwnedBy string `json:"owned_by"`
+}
+
+// ModelsResponse is the response from GET /v1/models.
+type ModelsResponse struct {
+	Object string      `json:"object"`
+	Data   []ModelCard `json:"data"`
+}

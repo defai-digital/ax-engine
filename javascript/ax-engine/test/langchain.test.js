@@ -49,3 +49,17 @@ test("AXEngineLLM rejects empty choices with a clear error", skipIfNoLangChain, 
     /completions response contained no choices/,
   );
 });
+
+test("ChatAXEngine forwards seed and metadata from per-call options", skipIfNoLangChain, async () => {
+  const chat = new ChatAXEngine({ seed: 1, metadata: "default" });
+  const req = chat._buildChatRequest([new HumanMessage("hi")], { seed: 42, metadata: "override" });
+  assert.equal(req.seed, 42);
+  assert.equal(req.metadata, "override");
+});
+
+test("ChatAXEngine falls back to constructor seed and metadata", skipIfNoLangChain, async () => {
+  const chat = new ChatAXEngine({ seed: 7, metadata: "ctor" });
+  const req = chat._buildChatRequest([new HumanMessage("hi")], {});
+  assert.equal(req.seed, 7);
+  assert.equal(req.metadata, "ctor");
+});
