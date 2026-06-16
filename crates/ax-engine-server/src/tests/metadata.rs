@@ -129,6 +129,41 @@ async fn models_advertises_tool_calls_for_ax_code_qwen_coder_next_id() {
         model["ax_engine"]["openai_tool_calling_supported"],
         json!(true)
     );
+    assert_eq!(model["ax_engine"]["primary_use"], json!("coding"));
+    assert_eq!(model["ax_engine"]["chat_default"], json!(false));
+    assert_eq!(model["ax_engine"]["coding_supported"], json!(true));
+    assert_eq!(model["ax_engine"]["coding_only"], json!(true));
+}
+
+#[tokio::test]
+async fn models_advertises_qwen36_as_general_chat_with_coding_support() {
+    let artifact_dir = minimal_tokenizer_artifact("qwen36-metadata-tokenizer");
+    let app = build_router(native_mlx_openai_builder_state(
+        "Qwen3.6-35B-A3B-4bit",
+        &artifact_dir,
+    ));
+    let (status, json) = json_response(
+        &app,
+        Request::builder()
+            .method("GET")
+            .uri("/v1/models")
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK);
+    let model = &json["data"][0];
+    assert_eq!(model["id"], json!("Qwen3.6-35B-A3B-4bit"));
+    assert_eq!(model["capabilities"]["toolcall"], json!(true));
+    assert_eq!(
+        model["ax_engine"]["openai_tool_calling_supported"],
+        json!(true)
+    );
+    assert_eq!(model["ax_engine"]["primary_use"], json!("general"));
+    assert_eq!(model["ax_engine"]["chat_default"], json!(true));
+    assert_eq!(model["ax_engine"]["coding_supported"], json!(true));
+    assert_eq!(model["ax_engine"]["coding_only"], json!(false));
 }
 
 #[tokio::test]

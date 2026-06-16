@@ -88,6 +88,11 @@ where prompt-side rendering and response parsing are both present: Qwen ChatML
 and Gemma 4 text chat. Gemma 4 tool calling fails closed for delegated,
 pre-tokenized, or inline-media chat requests because AX cannot safely inject the
 Ollama/Gemma 4 tool DSL into those prompt paths yet.
+The `ax_engine` metadata also reports routing intent for clients: Qwen3-Coder
+models set `primary_use="coding"`, `coding_only=true`, and `chat_default=false`;
+Qwen3.6 models set `primary_use="general"`, `coding_supported=true`, and
+`chat_default=true`, so they can remain default chat/general-agent choices while
+still using the coding tool contract when tools are requested.
 Streaming requests with `tools` on native AX-rendered tool-call paths return
 buffered OpenAI-shaped SSE chunks with `delta.tool_calls`; they do not stream
 the tool call token-by-token yet. Integrations such as `ax-code` should treat

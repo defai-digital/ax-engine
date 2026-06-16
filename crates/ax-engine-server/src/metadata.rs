@@ -79,6 +79,10 @@ struct AxEngineModelMetadata {
     native_multimodal_input_supported: bool,
     gemma4_unified_multimodal_input_supported: bool,
     openai_tokenized_multimodal_input_supported: bool,
+    primary_use: &'static str,
+    chat_default: bool,
+    coding_supported: bool,
+    coding_only: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -149,6 +153,7 @@ pub(crate) async fn models(State(state): State<AppState>) -> Json<ModelsResponse
             context_length,
             max_output_tokens,
             ax_engine: ax_engine_model_metadata(
+                live.model_id.as_ref(),
                 openai_text,
                 native_multimodal,
                 openai_tool_calling,
@@ -198,11 +203,18 @@ fn model_capabilities(
 }
 
 fn ax_engine_model_metadata(
+    model_id: &str,
     openai_text: bool,
     native_multimodal: NativeProcessedMultimodalSupport,
     openai_tool_calling: bool,
 ) -> AxEngineModelMetadata {
     let native_multimodal_input = native_multimodal.any();
+    let coding_only = model_is_qwen_coder(model_id);
+    let coding_supported = openai_tool_calling
+        && matches!(
+            ChatPromptTemplate::for_model_id(model_id),
+            ChatPromptTemplate::QwenChatMl
+        );
     AxEngineModelMetadata {
         native_generate_supported: true,
         openai_completions_supported: openai_text,
@@ -212,7 +224,16 @@ fn ax_engine_model_metadata(
         native_multimodal_input_supported: native_multimodal_input,
         gemma4_unified_multimodal_input_supported: native_multimodal_input,
         openai_tokenized_multimodal_input_supported: native_multimodal_input,
+        primary_use: if coding_only { "coding" } else { "general" },
+        chat_default: openai_text && !coding_only,
+        coding_supported,
+        coding_only,
     }
+}
+
+fn model_is_qwen_coder(model_id: &str) -> bool {
+    let normalized = model_id.to_ascii_lowercase();
+    normalized.contains("qwen3-coder-next") || normalized.contains("qwen3-coder")
 }
 
 fn openai_tool_calling_supported_live(live: &LiveState, openai_text: bool) -> bool {

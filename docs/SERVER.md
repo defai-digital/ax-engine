@@ -137,6 +137,10 @@ than silently dropped.
   `<|tool_response>` DSL. Gemma 4 tools still fail closed for delegated,
   pre-tokenized, and inline-media chat requests because AX cannot safely inject
   the model-specific tool DSL into those prompt paths yet.
+  `/v1/models` exposes the intended routing metadata in `ax_engine`: Qwen3-Coder
+  models report `primary_use="coding"`, `coding_only=true`, and
+  `chat_default=false`; Qwen3.6 models report `primary_use="general"`,
+  `coding_supported=true`, and `chat_default=true`.
   Streaming requests return buffered SSE chunks with `delta.tool_calls` once the
   tool call is complete. Bare JSON answers are never reinterpreted as tool
   calls.

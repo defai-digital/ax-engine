@@ -114,6 +114,10 @@ test("models fetches ax-code-safe capability metadata", async () => {
               native_multimodal_input_supported: false,
               gemma4_unified_multimodal_input_supported: false,
               openai_tokenized_multimodal_input_supported: false,
+              primary_use: "general",
+              chat_default: true,
+              coding_supported: false,
+              coding_only: false,
             },
             runtime: {
               selected_backend: "llama_cpp",
@@ -130,6 +134,10 @@ test("models fetches ax-code-safe capability metadata", async () => {
     assert.equal(models.data[0].limit.context, 16384);
     assert.equal(models.data[0].ax_engine.openai_tool_calling_supported, false);
     assert.equal(models.data[0].ax_engine.native_multimodal_input_supported, false);
+    assert.equal(models.data[0].ax_engine.primary_use, "general");
+    assert.equal(models.data[0].ax_engine.chat_default, true);
+    assert.equal(models.data[0].ax_engine.coding_supported, false);
+    assert.equal(models.data[0].ax_engine.coding_only, false);
   });
 });
 

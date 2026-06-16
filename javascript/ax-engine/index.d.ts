@@ -351,6 +351,10 @@ export interface AxEngineModelMetadata {
   native_multimodal_input_supported: boolean;
   gemma4_unified_multimodal_input_supported: boolean;
   openai_tokenized_multimodal_input_supported: boolean;
+  primary_use: "general" | "coding" | string;
+  chat_default: boolean;
+  coding_supported: boolean;
+  coding_only: boolean;
 }
 
 export interface ModelsResponse {
