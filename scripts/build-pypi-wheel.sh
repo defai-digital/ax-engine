@@ -29,6 +29,15 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 cd "$REPO_ROOT"
 
+# ── macOS floor ────────────────────────────────────────────────────────────
+# The bundled Homebrew MLX dylibs are built minos 26.0, so the wheel must declare
+# a macOS 26 (Tahoe) floor. Exporting the deployment target makes maturin tag the
+# wheel macosx_26_0_arm64 — pip then refuses it on macOS < 26 instead of installing
+# a wheel whose libs fail to load at runtime. Override only if the MLX libs' minos
+# changes (and update the docs' macOS requirement to match).
+export MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-26.0}"
+EXPECTED_PLAT_TAG="macosx_${MACOSX_DEPLOYMENT_TARGET//./_}_arm64"
+
 verify_wheel_member() {
     local wheel="$1"
     local member="$2"
@@ -103,7 +112,7 @@ cp -f "$MLX_METALLIB" "$METALLIB_DIR/mlx.metallib"
 echo "    staged: $METALLIB_DIR/mlx.metallib ($(wc -c < "$METALLIB_DIR/mlx.metallib" | tr -d ' ') bytes)"
 
 # ── 4. Build the wheel ─────────────────────────────────────────────────────
-echo "==> Building wheel (release, stripped)..."
+echo "==> Building wheel (release, stripped, target $EXPECTED_PLAT_TAG)..."
 maturin build --release --strip --out "$WHEEL_OUT"
 
 # Use a glob expansion instead of ls+sort so we get exactly what was just built.
@@ -138,6 +147,19 @@ echo "==> Verifying bundled MLX runtime assets..."
 verify_wheel_member "$DELOCATED" "ax_engine.dylibs/mlx.metallib"
 verify_wheel_member "$DELOCATED" "ax_engine/_bin/ax-engine-server"
 verify_wheel_member "$DELOCATED" "ax_engine/_bin/ax-engine-bench"
+
+# ── 5b. Guard the platform tag ─────────────────────────────────────────────
+# Refuse to ship a wheel whose tag understates the macOS floor. The bundled MLX
+# dylibs are minos 26.0; a lower tag (e.g. macosx_14_0) lets pip install on
+# macOS < 26 where those libs fail to load at runtime ("installs but doesn't run").
+echo "==> Verifying wheel platform tag..."
+if [[ "$(basename "$DELOCATED")" != *"-${EXPECTED_PLAT_TAG}.whl" ]]; then
+    echo "error: wheel is not tagged ${EXPECTED_PLAT_TAG}: $(basename "$DELOCATED")"
+    echo "       the bundled MLX libs require macOS ${MACOSX_DEPLOYMENT_TARGET};"
+    echo "       refusing to publish a tag that lies about the macOS floor"
+    exit 1
+fi
+echo "    verified platform tag: ${EXPECTED_PLAT_TAG}"
 
 # ── 6. Optionally publish ──────────────────────────────────────────────────
 if [[ "${1:-}" == "--publish" ]]; then
