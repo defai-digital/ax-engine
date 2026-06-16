@@ -220,7 +220,7 @@ class AxEngineCliTests(unittest.TestCase):
         ), mock.patch.object(
             _cli, "_server_bin", return_value="/opt/bin/ax-engine-server"
         ), mock.patch.object(
-            _cli, "_package_version", return_value="6.4.3"
+            _cli, "_package_version", return_value="6.4.4"
         ), mock.patch.object(
             _cli, "_run_capture", side_effect=run_capture
         ) as run_capture_mock:
@@ -237,7 +237,7 @@ class AxEngineCliTests(unittest.TestCase):
         payload = json.loads(stdout)
         self.assertEqual(payload["schema_version"], "ax.engine.doctor.v1")
         self.assertEqual(payload["result"], "ready")
-        self.assertEqual(payload["install"]["version"], "6.4.3")
+        self.assertEqual(payload["install"]["version"], "6.4.4")
         self.assertEqual(payload["host"]["os_version"], "15.5")
         self.assertEqual(payload["host"]["os_build"], "24F74")
         self.assertEqual(payload["host"]["ram_gib"], 64)

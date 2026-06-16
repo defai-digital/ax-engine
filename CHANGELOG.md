@@ -6,6 +6,35 @@ tracked via Git tags and GitHub Releases.
 
 ## [Unreleased]
 
+## [6.4.4] - 2026-06-16
+
+### Added
+
+- **Host resources in `ax-engine doctor`** — the doctor report now surfaces host
+  resources (OS version and build, RAM in GiB, physical/logical and
+  performance/efficiency CPU core counts, and GPU core count) in both the
+  human-readable and `--json` outputs, alongside clearer per-check status,
+  detail, and next-step guidance.
+- **CI version-sync check and CHANGELOG release guard** — CI now verifies that
+  the workspace version in `Cargo.toml` stays aligned with `pyproject.toml`,
+  the JavaScript `package.json`, and the Ruby `version.rb` on every push, and
+  the publish script requires a matching `## [version]` CHANGELOG section
+  before it will tag a release.
+
+### Fixed
+
+- **Gemma4 config loader crash on JSON `null` values** — `null` fields in a
+  Gemma4 unified config no longer crash the loader; they are now treated as
+  absent, mirroring how missing keys are handled.
+- **SDK chat sending thinking tokens to non-thinking Qwen models** — the
+  Python SDK chat wrapper no longer injects thinking-mode prompt tokens for
+  Qwen models that do not advertise thinking support.
+
+### Changed
+
+- **macOS 26 (Tahoe) requirement** — documentation and install instructions
+  now reflect the macOS 26+ host requirement.
+
 ## [6.2.6] - 2026-06-10
 
 ### Added
