@@ -1445,6 +1445,30 @@ hello
             ],
         )
 
+
+    def test_openai_mlx_shim_unescapes_xml_entities_in_qwen_tool_parameters(
+        self,
+    ) -> None:
+        # Renderer escapes < > & to &lt; &gt; &amp; in parameter names and values.
+        # Parser must unescape them to preserve round-trip fidelity.
+        openai_server = importlib.import_module("ax_engine.openai_server")
+
+        # Render a tool call with special characters
+        rendered = openai_server.render_qwen_xml_tool_call(
+            "search", {"query": "SELECT * FROM users WHERE id < 100"}
+        )
+
+        # Parse it back
+        content, tool_calls = openai_server.extract_tool_calls(rendered)
+
+        self.assertEqual(content, "")
+        self.assertEqual(len(tool_calls), 1)
+        self.assertEqual(tool_calls[0]["function"]["name"], "search")
+
+        import json
+        args = json.loads(tool_calls[0]["function"]["arguments"])
+        # The < should be unescaped back to <
+        self.assertEqual(args["query"], "SELECT * FROM users WHERE id < 100")
     def test_openai_mlx_shim_streams_buffered_tool_call_chunks(self) -> None:
         openai_server = importlib.import_module("ax_engine.openai_server")
 

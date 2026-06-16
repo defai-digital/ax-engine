@@ -173,10 +173,7 @@ def qwen_tool_contract_style(model_id: str) -> str:
     normalized = normalize_model_id_token(model_id)
     if uses_qwen_coder_xml_tool_contract(model_id):
         return "coder_xml"
-    if any(
-        marker in normalized
-        for marker in ("qwen3-next", "qwen3-5", "qwen35")
-    ):
+    if any(marker in normalized for marker in ("qwen3-next", "qwen3-5", "qwen35")):
         return "function_xml"
     return "json_tools"
 
@@ -227,7 +224,9 @@ def render_json_tool_contract_system_message(tools: Any, tool_choice: Any) -> st
     return "\n".join(lines)
 
 
-def render_qwen_function_tool_contract_system_message(tools: Any, tool_choice: Any) -> str:
+def render_qwen_function_tool_contract_system_message(
+    tools: Any, tool_choice: Any
+) -> str:
     lines = [
         "# Tools",
         "",
@@ -334,7 +333,9 @@ def render_xml_tool_block(tool: Any) -> str | None:
     lines = ["<function>", f"<name>{escape_xml_text(name)}</name>"]
     description = function.get("description")
     if isinstance(description, str):
-        lines.append(f"<description>{escape_xml_text(description.strip())}</description>")
+        lines.append(
+            f"<description>{escape_xml_text(description.strip())}</description>"
+        )
     lines.append("<parameters>")
     parameters = function.get("parameters")
     if isinstance(parameters, dict):
@@ -372,7 +373,9 @@ def render_xml_tool_block(tool: Any) -> str | None:
     return "\n".join(lines)
 
 
-def render_assistant_tool_calls(tool_calls: Any, style: str = "json_tools") -> str | None:
+def render_assistant_tool_calls(
+    tool_calls: Any, style: str = "json_tools"
+) -> str | None:
     if isinstance(tool_calls, dict):
         calls = [tool_calls]
     elif isinstance(tool_calls, list):
@@ -398,7 +401,9 @@ def render_assistant_tool_call(tool_call: Any, style: str = "json_tools") -> str
         return render_qwen_xml_tool_call(function["name"], arguments)
     name = json.dumps(function["name"])
     arguments_json = json.dumps(arguments, separators=(",", ":"))
-    return f'<tool_call>\n{{"name": {name}, "arguments": {arguments_json}}}\n</tool_call>'
+    return (
+        f'<tool_call>\n{{"name": {name}, "arguments": {arguments_json}}}\n</tool_call>'
+    )
 
 
 def render_qwen_xml_tool_call(name: str, arguments: Any) -> str:
@@ -425,6 +430,11 @@ def stringify_json_scalar(value: Any) -> str:
 
 def escape_xml_text(value: str) -> str:
     return value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def unescape_xml_text(value: str) -> str:
+    """Reverse of escape_xml_text: restore &lt; &gt; &amp; to < > &."""
+    return value.replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&")
 
 
 def normalize_tool_arguments(arguments: Any) -> Any:
@@ -529,7 +539,7 @@ def parse_qwen_function_tool_call(body: str) -> dict[str, str] | None:
     name_end = body.find(">", name_start)
     if name_end < 0:
         return None
-    name = body[name_start:name_end].strip()
+    name = unescape_xml_text(body[name_start:name_end].strip())
     if not name:
         return None
 
@@ -559,13 +569,13 @@ def parse_qwen_tool_parameters(body: str) -> dict[str, Any]:
         name_end = body.find(">", name_start)
         if name_end < 0:
             break
-        name = body[name_start:name_end].strip()
+        name = unescape_xml_text(body[name_start:name_end].strip())
         if not name:
             offset = name_end + 1
             continue
         value_start = name_end + 1
         value_end = _qwen_parameter_value_end(body, value_start)
-        raw_value = body[value_start:value_end].strip()
+        raw_value = unescape_xml_text(body[value_start:value_end].strip())
         try:
             value = json.loads(raw_value)
         except json.JSONDecodeError:
@@ -899,7 +909,9 @@ def validate_sampling_params(payload: dict[str, Any]) -> tuple[int, str] | None:
             return 400, f"OpenAI-compatible MLX shim requires {key} to be numeric"
     for key in ("top_k", "seed"):
         value = payload.get(key)
-        if value is not None and (isinstance(value, bool) or not isinstance(value, int)):
+        if value is not None and (
+            isinstance(value, bool) or not isinstance(value, int)
+        ):
             return 400, f"OpenAI-compatible MLX shim requires {key} to be an integer"
     return None
 

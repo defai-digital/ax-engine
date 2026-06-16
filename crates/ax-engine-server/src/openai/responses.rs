@@ -1,8 +1,8 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use ax_engine_sdk::{GenerateFinishReason, GenerateResponse};
-use axum::Json;
 use axum::response::IntoResponse;
+use axum::Json;
 use serde_json::Value;
 
 use super::requests::{OpenAiResponseOptions, OpenAiToolContract};
@@ -328,7 +328,7 @@ fn parse_qwen_function_tool_call(body: &str) -> Option<OpenAiFunctionCall> {
     let function_start = body.find(function_marker)?;
     let name_start = function_start + function_marker.len();
     let name_end = name_start + body[name_start..].find('>')?;
-    let name = body[name_start..name_end].trim().to_string();
+    let name = unescape_xml_text(body[name_start..name_end].trim());
     if name.is_empty() {
         return None;
     }
@@ -518,6 +518,13 @@ impl<'a> Gemma4DslParser<'a> {
     }
 }
 
+fn unescape_xml_text(value: &str) -> String {
+    value
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&amp;", "&")
+}
+
 fn parse_qwen_tool_parameters(body: &str) -> serde_json::Map<String, Value> {
     let mut parameters = serde_json::Map::new();
     let parameter_marker = "<parameter=";
@@ -528,7 +535,7 @@ fn parse_qwen_tool_parameters(body: &str) -> serde_json::Map<String, Value> {
             break;
         };
         let name_end = name_start + relative_name_end;
-        let name = body[name_start..name_end].trim();
+        let name = unescape_xml_text(body[name_start..name_end].trim());
         if name.is_empty() {
             offset = name_end + 1;
             continue;
@@ -536,10 +543,10 @@ fn parse_qwen_tool_parameters(body: &str) -> serde_json::Map<String, Value> {
 
         let value_start = name_end + 1;
         let value_end = qwen_parameter_value_end(body, value_start);
-        let raw_value = body[value_start..value_end].trim();
-        let value = serde_json::from_str(raw_value)
-            .unwrap_or_else(|_| Value::String(raw_value.to_string()));
-        parameters.insert(name.to_string(), value);
+        let raw_value = unescape_xml_text(body[value_start..value_end].trim());
+        let value =
+            serde_json::from_str(&raw_value).unwrap_or_else(|_| Value::String(raw_value.clone()));
+        parameters.insert(name, value);
         offset = value_end;
     }
     parameters
