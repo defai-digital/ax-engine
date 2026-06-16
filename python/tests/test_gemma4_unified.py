@@ -479,6 +479,28 @@ class Gemma4UnifiedConfigValidationTests(unittest.TestCase):
             config = module._load_config(model_dir)
             self.assertFalse(config.do_normalize)
 
+    def test_load_config_handles_null_config_values(self) -> None:
+        # When a preprocessor_config.json has explicit JSON null for optional
+        # fields like image_mean, image_std, audio_ms_per_token, or
+        # rescale_factor, dict.get(key, default) returns None (not the
+        # default), which must not crash _load_config.
+        module = load_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            model_dir = Path(tmp)
+            write_tiny_config(model_dir)
+            processor_path = model_dir / "processor_config.json"
+            processor = json.loads(processor_path.read_text())
+            processor["image_processor"]["image_mean"] = None
+            processor["image_processor"]["image_std"] = None
+            processor["image_processor"]["rescale_factor"] = None
+            processor["audio_ms_per_token"] = None
+            processor_path.write_text(json.dumps(processor))
+            config = module._load_config(model_dir)
+            # Null values must fall back to defaults
+            self.assertEqual(config.image_mean, (0.5, 0.5, 0.5))
+            self.assertEqual(config.image_std, (0.5, 0.5, 0.5))
+            self.assertAlmostEqual(config.rescale_factor, 1 / 255)
+
     def test_resized_dimensions_extreme_aspect_ratios_stay_nonzero(self) -> None:
         # Regression pin for the resize-extreme-aspect-zero report: the
         # single-axis fallback only runs when the floored width/height ratio
