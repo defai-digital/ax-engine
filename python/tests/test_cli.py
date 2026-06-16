@@ -39,7 +39,9 @@ class AxEngineCliTests(unittest.TestCase):
         self.assertEqual(code, 0)
         payload = json.loads(stdout)
         self.assertEqual(payload["schema_version"], "ax.download_options.v1")
-        self.assertEqual(payload["default_destination"]["kind"], "huggingface_hub_cache")
+        self.assertEqual(
+            payload["default_destination"]["kind"], "huggingface_hub_cache"
+        )
         self.assertIn("HF_HUB_CACHE", payload["default_destination"]["env"])
         aliases = {target["alias"] for target in payload["targets"]}
         self.assertIn("qwen3.6-35b", aliases)
@@ -75,7 +77,9 @@ class AxEngineCliTests(unittest.TestCase):
         self.assertIn("gemma4-e2b-6bit", str(raised.exception))
 
     def test_serve_dry_run_json_uses_server_preset(self) -> None:
-        with mock.patch.object(_cli, "_server_bin", return_value="/opt/bin/ax-engine-server"):
+        with mock.patch.object(
+            _cli, "_server_bin", return_value="/opt/bin/ax-engine-server"
+        ):
             code, stdout = self.capture_main(
                 [
                     "serve",
@@ -117,7 +121,9 @@ class AxEngineCliTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             model_dir = pathlib.Path(tmp) / "model"
             model_dir.mkdir()
-            with mock.patch.object(_cli, "_server_bin", return_value="ax-engine-server"):
+            with mock.patch.object(
+                _cli, "_server_bin", return_value="ax-engine-server"
+            ):
                 code, stdout = self.capture_main(
                     ["serve", str(model_dir), "--dry-run", "--json"]
                 )
@@ -127,10 +133,14 @@ class AxEngineCliTests(unittest.TestCase):
         self.assertEqual(payload["resolved"]["kind"], "local_dir")
         self.assertIn("--mlx-model-artifacts-dir", payload["server"]["argv"])
         path_index = payload["server"]["argv"].index("--mlx-model-artifacts-dir") + 1
-        self.assertEqual(payload["server"]["argv"][path_index], str(model_dir.resolve()))
+        self.assertEqual(
+            payload["server"]["argv"][path_index], str(model_dir.resolve())
+        )
 
     def test_serve_dry_run_json_uses_gemma4_12b_server_preset(self) -> None:
-        with mock.patch.object(_cli, "_server_bin", return_value="/opt/bin/ax-engine-server"):
+        with mock.patch.object(
+            _cli, "_server_bin", return_value="/opt/bin/ax-engine-server"
+        ):
             code, stdout = self.capture_main(
                 ["serve", "gemma4-12b", "--port", "9010", "--dry-run", "--json"]
             )
@@ -178,7 +188,9 @@ class AxEngineCliTests(unittest.TestCase):
 
         def run_capture(command: list[str]) -> subprocess.CompletedProcess[str]:
             if command[:2] == ["/opt/bin/ax-engine-bench", "doctor"]:
-                return subprocess.CompletedProcess(command, 0, json.dumps(bench_report), "")
+                return subprocess.CompletedProcess(
+                    command, 0, json.dumps(bench_report), ""
+                )
             if command[1:] == ["--help"]:
                 return subprocess.CompletedProcess(command, 0, "", "")
             if command == ["sw_vers", "-productVersion"]:
@@ -186,7 +198,9 @@ class AxEngineCliTests(unittest.TestCase):
             if command == ["sw_vers", "-buildVersion"]:
                 return subprocess.CompletedProcess(command, 0, "24F74\n", "")
             if command == ["sysctl", "-n", "hw.memsize"]:
-                return subprocess.CompletedProcess(command, 0, str(64 * 1024 * 1024 * 1024), "")
+                return subprocess.CompletedProcess(
+                    command, 0, str(64 * 1024 * 1024 * 1024), ""
+                )
             if command == ["sysctl", "-n", "hw.physicalcpu"]:
                 return subprocess.CompletedProcess(command, 0, "16\n", "")
             if command == ["sysctl", "-n", "hw.perflevel0.name"]:
@@ -197,7 +211,9 @@ class AxEngineCliTests(unittest.TestCase):
                 return subprocess.CompletedProcess(command, 0, "Efficiency\n", "")
             if command == ["sysctl", "-n", "hw.perflevel1.physicalcpu"]:
                 return subprocess.CompletedProcess(command, 0, "4\n", "")
-            if command[0:2] == ["sysctl", "-n"] and command[2].startswith("hw.perflevel"):
+            if command[0:2] == ["sysctl", "-n"] and command[2].startswith(
+                "hw.perflevel"
+            ):
                 return subprocess.CompletedProcess(command, 1, "", "unknown oid")
             if command == ["system_profiler", "SPDisplaysDataType"]:
                 return subprocess.CompletedProcess(
@@ -215,15 +231,18 @@ class AxEngineCliTests(unittest.TestCase):
                 )
             raise AssertionError(f"unexpected command: {command}")
 
-        with mock.patch.object(
-            _cli, "_bench_bin", return_value="/opt/bin/ax-engine-bench"
-        ), mock.patch.object(
-            _cli, "_server_bin", return_value="/opt/bin/ax-engine-server"
-        ), mock.patch.object(
-            _cli, "_package_version", return_value="6.4.4"
-        ), mock.patch.object(
-            _cli, "_run_capture", side_effect=run_capture
-        ) as run_capture_mock:
+        with (
+            mock.patch.object(
+                _cli, "_bench_bin", return_value="/opt/bin/ax-engine-bench"
+            ),
+            mock.patch.object(
+                _cli, "_server_bin", return_value="/opt/bin/ax-engine-server"
+            ),
+            mock.patch.object(_cli, "_package_version", return_value="6.4.5"),
+            mock.patch.object(
+                _cli, "_run_capture", side_effect=run_capture
+            ) as run_capture_mock,
+        ):
             code, stdout = self.capture_main(
                 [
                     "doctor",
@@ -237,7 +256,7 @@ class AxEngineCliTests(unittest.TestCase):
         payload = json.loads(stdout)
         self.assertEqual(payload["schema_version"], "ax.engine.doctor.v1")
         self.assertEqual(payload["result"], "ready")
-        self.assertEqual(payload["install"]["version"], "6.4.4")
+        self.assertEqual(payload["install"]["version"], "6.4.5")
         self.assertEqual(payload["host"]["os_version"], "15.5")
         self.assertEqual(payload["host"]["os_build"], "24F74")
         self.assertEqual(payload["host"]["ram_gib"], 64)
@@ -248,8 +267,12 @@ class AxEngineCliTests(unittest.TestCase):
         self.assertEqual(payload["checks"][0]["id"], "server_binary")
         self.assertEqual(payload["checks"][1]["id"], "bench_binary")
         self.assertEqual(payload["checks"][-1]["status"], "ready")
-        self.assertEqual(payload["source"]["schema_version"], "ax.engine_bench.doctor.v1")
-        self.assertEqual(payload["next_actions"], ["ax-engine serve /models/gemma4-12b --port 8080"])
+        self.assertEqual(
+            payload["source"]["schema_version"], "ax.engine_bench.doctor.v1"
+        )
+        self.assertEqual(
+            payload["next_actions"], ["ax-engine serve /models/gemma4-12b --port 8080"]
+        )
         self.assertNotIn("bench_doctor", payload)
         self.assertEqual(
             run_capture_mock.call_args_list[0].args[0],
@@ -263,9 +286,12 @@ class AxEngineCliTests(unittest.TestCase):
         )
 
     def test_doctor_verbose_wraps_bench_doctor(self) -> None:
-        with mock.patch.object(
-            _cli, "_bench_bin", return_value="/opt/bin/ax-engine-bench"
-        ), mock.patch.object(os, "execvp", side_effect=RuntimeError("stop")) as execvp:
+        with (
+            mock.patch.object(
+                _cli, "_bench_bin", return_value="/opt/bin/ax-engine-bench"
+            ),
+            mock.patch.object(os, "execvp", side_effect=RuntimeError("stop")) as execvp,
+        ):
             with self.assertRaisesRegex(RuntimeError, "stop"):
                 self.capture_main(
                     [
@@ -374,7 +400,9 @@ class AxEngineCliTests(unittest.TestCase):
                 os.environ,
                 {"AX_ENGINE_REPO_ROOT": str(root), "FAKE_MODEL_DIR": str(model_dir)},
             ):
-                code, stdout = self.capture_main(["download", "qwen36-27b-8bit", "--json"])
+                code, stdout = self.capture_main(
+                    ["download", "qwen36-27b-8bit", "--json"]
+                )
 
         self.assertEqual(code, 0)
         payload = json.loads(stdout)
@@ -418,7 +446,9 @@ class AxEngineCliTests(unittest.TestCase):
                 os.environ,
                 {"AX_ENGINE_REPO_ROOT": str(root), "FAKE_MODEL_DIR": str(model_dir)},
             ):
-                code, stdout = self.capture_main(["download", "gemma4-e2b-6bit", "--json"])
+                code, stdout = self.capture_main(
+                    ["download", "gemma4-e2b-6bit", "--json"]
+                )
 
         self.assertEqual(code, 0)
         payload = json.loads(stdout)
@@ -474,7 +504,9 @@ class AxEngineCliTests(unittest.TestCase):
                 os.environ,
                 {"AX_ENGINE_REPO_ROOT": str(root), "FAKE_MODEL_DIR": str(model_dir)},
             ):
-                code, stdout = self.capture_main(["download", "gemma4-12b-6bit", "--json"])
+                code, stdout = self.capture_main(
+                    ["download", "gemma4-12b-6bit", "--json"]
+                )
 
             self.assertEqual(code, 0)
             payload = json.loads(stdout)
@@ -518,10 +550,18 @@ class AxEngineCliTests(unittest.TestCase):
                 )
             )
 
-            with mock.patch.dict(
-                os.environ,
-                {"AX_ENGINE_REPO_ROOT": str(root), "FAKE_MODEL_DIR": str(model_dir)},
-            ), mock.patch.object(_cli, "_server_bin", return_value="/opt/bin/ax-engine-server"):
+            with (
+                mock.patch.dict(
+                    os.environ,
+                    {
+                        "AX_ENGINE_REPO_ROOT": str(root),
+                        "FAKE_MODEL_DIR": str(model_dir),
+                    },
+                ),
+                mock.patch.object(
+                    _cli, "_server_bin", return_value="/opt/bin/ax-engine-server"
+                ),
+            ):
                 code, stdout = self.capture_main(
                     ["serve", "qwen36-35b", "--download", "--dry-run", "--json"]
                 )
@@ -532,12 +572,21 @@ class AxEngineCliTests(unittest.TestCase):
             self.assertEqual(payload["resolved"]["download"]["dry_run"], True)
             self.assertEqual(payload["server"]["argv"][0], "/opt/bin/ax-engine-server")
 
-            with mock.patch.dict(
-                os.environ,
-                {"AX_ENGINE_REPO_ROOT": str(root), "FAKE_MODEL_DIR": str(model_dir)},
-            ), mock.patch.object(
-                _cli, "_server_bin", return_value="/opt/bin/ax-engine-server"
-            ), mock.patch.object(os, "execvp", side_effect=RuntimeError("stop")) as execvp:
+            with (
+                mock.patch.dict(
+                    os.environ,
+                    {
+                        "AX_ENGINE_REPO_ROOT": str(root),
+                        "FAKE_MODEL_DIR": str(model_dir),
+                    },
+                ),
+                mock.patch.object(
+                    _cli, "_server_bin", return_value="/opt/bin/ax-engine-server"
+                ),
+                mock.patch.object(
+                    os, "execvp", side_effect=RuntimeError("stop")
+                ) as execvp,
+            ):
                 with self.assertRaisesRegex(RuntimeError, "stop"):
                     self.capture_main(["serve", "qwen36-35b", "--download"])
 

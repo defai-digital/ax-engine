@@ -92,7 +92,7 @@ By default each trusted comment includes the artifact basename, SHA-256 digest,
 and a UTC signing timestamp:
 
 ```text
-ax-engine artifact ax-engine-v6.4.4-macos-arm64.tar.gz sha256=<digest> signed=2026-06-16T12:00:00Z
+ax-engine artifact ax-engine-v6.4.5-macos-arm64.tar.gz sha256=<digest> signed=2026-06-16T12:00:00Z
 ```
 
 ## Verify an artifact
@@ -102,8 +102,8 @@ Users verify a downloaded artifact against the published public key:
 ```bash
 minisign -V \
   -P 'RWS...published ax-code public key...' \
-  -m ax-engine-v6.4.4-macos-arm64.tar.gz \
-  -x ax-engine-v6.4.4-macos-arm64.tar.gz.minisig
+  -m ax-engine-v6.4.5-macos-arm64.tar.gz \
+  -x ax-engine-v6.4.5-macos-arm64.tar.gz.minisig
 ```
 
 ## macOS Keychain for local signing

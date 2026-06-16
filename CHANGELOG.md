@@ -6,6 +6,8 @@ tracked via Git tags and GitHub Releases.
 
 ## [Unreleased]
 
+## [6.4.5] - 2026-06-16
+
 ### Added
 
 - **Hardened minisign release signing** — `scripts/minisign-artifact.sh` now
@@ -17,6 +19,24 @@ tracked via Git tags and GitHub Releases.
   `scripts/test_minisign_artifact.py` contract tests (wired into
   `check-scripts.sh`), and `docs/MINISIGN.md`. Existing callers and the
   `AX_MINISIGN_*` env contract are unchanged.
+
+### Fixed
+
+- **Stream error event handling in Python and Ruby SDKs** — the Python and Ruby
+  SDKs now correctly surface stream error events from the server instead of
+  silently swallowing them.
+- **XML entity unescaping in Qwen tool call parser** — the Qwen tool-call
+  parser now properly unescapes XML entities in tool call parameters.
+- **Qwen tool-call parameter drop and JS SDK silent stream errors** — the Qwen
+  tool-call parser no longer drops parameters, and the JavaScript SDK now
+  surfaces stream errors instead of silently ignoring them.
+
+### Changed
+
+- **Node.js 24+ standardization** — standardized on Node.js 24+ and fixed the
+  Node 20 GitHub Action deprecation.
+- **PyPI wheel macOS 26 floor** — pinned PyPI wheels to the macOS 26 platform
+  floor and guarded the platform tag.
 
 ## [6.4.4] - 2026-06-16
 
