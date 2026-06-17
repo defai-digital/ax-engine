@@ -1707,11 +1707,24 @@ fn moe_experts_forward_impl(
             &[&out],
         );
         let half = cfg.moe_expert_intermediate_size as i32;
-        if !cfg.uses_geglu
+        // Try fused packed activation Metal kernel (decode-only, seq==1).
+        // GeGLU path: Gemma4 MoE experts — fuses split+gelu_approx+mul.
+        // SwiGLU path: Qwen3 MoE experts — fuses split+silu+mul.
+        // Falls back to split slice + dense_ffn_activation otherwise.
+        let fused = if cfg.uses_geglu
+            && seq == 1
+            && fastpath::moe_geglu_packed_metal_enabled()
+        {
+            packed_geglu_metal_impl(&out, half)
+        } else if !cfg.uses_geglu
             && seq == 1
             && fastpath::moe_swiglu_packed_metal_enabled()
-            && let Some(fused) = packed_swiglu_metal_impl(&out, half)
         {
+            packed_swiglu_metal_impl(&out, half)
+        } else {
+            None
+        };
+        if let Some(fused) = fused {
             let activation_started = Instant::now();
             forward_profile_eval_elapsed(
                 profile_decode,

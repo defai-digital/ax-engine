@@ -562,6 +562,24 @@ env_flag_default_on!(
     "AX_MLX_MOE_SWIGLU_PACKED_METAL"
 );
 
+env_flag_default_on!(
+    /// `AX_MLX_MOE_GEGLU_PACKED_METAL` — route the MoE expert GEGLU
+    /// activation (Gemma4 MoE) through the packed Metal kernel used by the
+    /// dense FFN path.
+    ///
+    /// **Default: ON** (kill-switch via `AX_MLX_MOE_GEGLU_PACKED_METAL=0`).
+    ///
+    /// When the MoE expert gate_up projection is packed (Gemma4 MoE), the
+    /// gather_qmm output is passed directly to `packed_geglu_metal_impl`,
+    /// which fuses the last-dim split, GELU-approx, and multiply into one
+    /// dispatch instead of slice + slice + gelu_approx_mul. Saves 2 MLX
+    /// graph nodes per MoE layer per decode step (~48 nodes on Gemma4 27B
+    /// with 24 MoE layers). **Decode-only (seq==1):** prefill uses the
+    /// split path where separate ops are faster on large tensors.
+    moe_geglu_packed_metal_enabled,
+    "AX_MLX_MOE_GEGLU_PACKED_METAL"
+);
+
 /// Tuning override for the MLA prefill chunk size. Smaller chunks let
 /// cold and warm-extend prefill paths produce the same SDPA Q/K shape
 /// sequence over the same absolute positions, avoiding the reproduced
