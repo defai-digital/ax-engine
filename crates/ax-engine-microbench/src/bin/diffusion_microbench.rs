@@ -1,22 +1,24 @@
 //! DiffusionGemma denoise-step hotspot microbench.
 //!
-//! Profiles three CPU-side operations that run on every denoiser step,
-//! replicated with synthetic data at realistic DiffusionGemma dimensions.
+//! Profiles operations that run on every denoiser step at realistic
+//! DiffusionGemma / Gemma4 dimensions.
 //!
 //! Hotspots:
-//!   1. **Entropy-bound sampling** — sort canvas positions by per-position
-//!      entropy, greedily accept lowest-entropy positions within a budget.
+//!   1. **Entropy-bound sampling** — sort canvas positions by entropy,
+//!      accept confident positions, update uncertain ones via argmax.
 //!   2. **Bidirectional mask construction** — build the boolean attention
 //!      mask for canvas self-attention + cross-attention to cached prompt.
-//!   3. **Self-conditioning embedding** — probability-weighted average of
-//!      the full token embedding table (the heaviest CPU-side operation).
+//!   3. **Self-conditioning embedding (CPU)** — probability-weighted average
+//!      of the full token embedding table on CPU (the legacy approach).
+//!   4. **Self-conditioning embedding (GPU)** — same operation via MLX
+//!      matmul on GPU (the optimized approach).
 //!
 //! Run:
 //!   cargo run -p ax-engine-microbench --release --bin diffusion-microbench
-//!
-//! No model weights or MLX runtime required — all work is pure CPU.
 
 use std::time::{Duration, Instant};
+
+use mlx_sys::{MlxArray, MlxDtype, astype, eval, matmul};
 
 // ── Realistic DiffusionGemma / Gemma4 dimensions ──────────────────────
 const CANVAS_SIZE: usize = 256;
@@ -75,12 +77,13 @@ fn bench_entropy_sampling() {
             accept_mask[position_order[0]] = true;
         }
 
-        // Simulate renoise of rejected positions.
-        let mut rng_state: u64 = 0xDEAD_BEEF;
-        for &accepted in accept_mask.iter() {
+        // Accepted positions keep current tokens, rejected positions
+        // adopt the model's argmax prediction (preserves progress).
+        let mut tokens = vec![0_u32; CANVAS_SIZE];
+        for (pos, &accepted) in accept_mask.iter().enumerate() {
             if !accepted {
-                rng_state = rng_state.wrapping_mul(6364136223846793005).wrapping_add(1);
-                let _ = (rng_state % VOCAB_SIZE as u64) as u32;
+                // In production: new_tokens[pos] = argmax_data[pos]
+                tokens[pos] = pos as u32; // simulate argmax
             }
         }
 
@@ -210,6 +213,50 @@ fn bench_self_conditioning_embed() {
         elapsed.as_millis()
     );
     println!();
+
+    // GPU matmul benchmark (the optimized approach).
+    bench_gpu_matmul_self_cond();
+}
+
+fn bench_gpu_matmul_self_cond() {
+    println!("[4] Self-conditioning via GPU matmul ({CANVAS_SIZE} x {VOCAB_SIZE} x {HIDDEN_SIZE})");
+
+    // Build prob array on GPU: [1, canvas_size, vocab_size] (sparse top-1000).
+    let prob_data = build_sparse_prob(CANVAS_SIZE, VOCAB_SIZE, 1000);
+    let prob = MlxArray::from_raw_data(
+        prob_data.as_ptr() as *const u8,
+        prob_data.len() * std::mem::size_of::<f32>(),
+        &[1, CANVAS_SIZE as i32, VOCAB_SIZE as i32],
+        MlxDtype::Float32,
+    );
+    let prob = astype(&prob, MlxDtype::Bfloat16, None);
+
+    // Build embed table on GPU: [vocab_size, hidden_size].
+    let embed_data = build_embed_table(VOCAB_SIZE, HIDDEN_SIZE);
+    let embed = MlxArray::from_raw_data(
+        embed_data.as_ptr() as *const u8,
+        embed_data.len() * std::mem::size_of::<f32>(),
+        &[VOCAB_SIZE as i32, HIDDEN_SIZE as i32],
+        MlxDtype::Float32,
+    );
+    let embed = astype(&embed, MlxDtype::Bfloat16, None);
+
+    // Warmup: materialize both arrays.
+    eval(&[&prob, &embed]);
+    let warmup = matmul(&prob, &embed, None);
+    eval(&[&warmup]);
+
+    // Measure GPU matmul: prob [1, 256, 262144] x embed [262144, 3584]
+    // = [1, 256, 3584].
+    let run = || {
+        let result = matmul(&prob, &embed, None);
+        eval(&[&result]);
+        result.shape()[2] as usize // return hidden_size as checksum
+    };
+
+    let (warmup_result, median, all) = timed_bench(run);
+    println!("    result hidden dim (warmup): {warmup_result}");
+    print_timing(median, &all);
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────

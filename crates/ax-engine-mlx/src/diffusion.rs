@@ -13,8 +13,8 @@
 //! 5. Repeat from step 2 for the next block.
 
 use mlx_sys::{
-    MlxArray, MlxDtype, add, argmax, astype, divide, eval, log, multiply, negative, rms_norm,
-    softmax, sum_axis,
+    MlxArray, MlxDtype, add, argmax, astype, divide, eval, log, matmul, multiply, negative,
+    rms_norm, softmax, sum_axis,
 };
 
 use crate::kv_cache::MlxKVCache;
@@ -80,7 +80,7 @@ fn denoise_step(
     canvas: &mut DiffusionCanvas,
     step: usize,
     token_offset: usize,
-    rng: &mut Xorshift64,
+    embed_table: Option<&MlxArray>,
 ) {
     let canvas_size = canvas.canvas_size;
     let temperature = temperature_at_step(step, diff_cfg);
@@ -134,11 +134,14 @@ fn denoise_step(
         accept_mask[position_order[0]] = true;
     }
 
-    // Renoise rejected positions with fresh random tokens.
+    // Update tokens: accepted positions keep their current tokens, rejected
+    // positions adopt the model's argmax prediction. This preserves progress
+    // from previous steps — confident positions lock in while uncertain ones
+    // converge toward the model's best guess.
     let mut new_tokens = canvas.tokens.clone();
     for pos in 0..canvas_size {
         if !accept_mask[pos] {
-            new_tokens[pos] = (rng.next_u64() % cfg.vocab_size as u64) as u32;
+            new_tokens[pos] = argmax_data[pos];
         }
     }
 
@@ -159,71 +162,30 @@ fn denoise_step(
     canvas.step = step;
     canvas.converged = check_convergence(canvas, diff_cfg);
 
-    // Self-conditioning: compute probability-weighted token embeddings.
-    // weighted_embed = sum(prob * embed_tokens, axis=vocab)
-    // Shape: [1, canvas_size, hidden_size]
+    // Self-conditioning: GPU matmul of prob × embed_table.
+    // prob: [1, canvas_size, vocab_size]
+    // embed_table: [vocab_size, hidden_size]
+    // result: [1, canvas_size, hidden_size]
     //
     // This embedding is fed back through a gated MLP (when self-conditioning
     // weights are available in the checkpoint) and added to canvas embeddings
     // before the next denoise step. Without checkpoint-specific weights the
-    // feedback is stored but not applied — the structural path is ready for
-    // when DiffusionGemma weights ship.
-    if diff_cfg.self_conditioning {
-        canvas.prev_self_cond_embed = compute_self_conditioning_embed(&prob, weights, cfg);
+    // feedback is stored but not applied.
+    if diff_cfg.self_conditioning
+        && let Some(embed) = embed_table
+    {
+        canvas.prev_self_cond_embed = Some(matmul(&prob, embed, None));
     }
 }
 
-// Compute the self-conditioning embedding: probability-weighted average of
-// token embeddings.
+// Pre-compute the full embedding table once for reuse across all denoise steps.
 //
-// Returns `[1, canvas_size, hidden_size]` — the mean predicted embedding per
-// position. When self-conditioning gate MLP weights are available in the
-// checkpoint, the caller should pass this through the gate and add the result
-// to canvas embeddings before the next denoise step.
-fn compute_self_conditioning_embed(
-    prob: &MlxArray,
-    weights: &ModelWeights,
-    cfg: &ModelConfig,
-) -> Option<MlxArray> {
-    // prob: [1, canvas_size, vocab_size] (f32, materialized after softmax).
-    let canvas_size = prob.shape()[1] as usize;
-    let vocab_size = cfg.vocab_size;
-    let hidden_size = cfg.hidden_size;
-    let prob_data = prob.data_f32();
-
-    // Build full embedding table on CPU: [vocab_size, hidden_size].
-    let all_ids: Vec<u32> = (0..vocab_size as u32).collect();
-    let embed_all = embed_tokens(&all_ids, &weights.token_embedding, hidden_size);
-    let embed_all = astype(&embed_all, MlxDtype::Float32, None);
-    eval(&[&embed_all]);
-    let embed_data = embed_all.data_f32();
-    // embed_all shape: [1, vocab_size, hidden_size] → flatten to [vocab_size, hidden_size].
-    let embed_table = &embed_data[..vocab_size * hidden_size];
-
-    // Weighted sum: for each canvas position, sum_v(prob[v] * embed[v]).
-    let mut weighted = vec![0.0_f32; canvas_size * hidden_size];
-    for pos in 0..canvas_size {
-        let p_offset = pos * vocab_size;
-        let w_offset = pos * hidden_size;
-        for v in 0..vocab_size {
-            let p = prob_data[p_offset + v];
-            if p == 0.0 {
-                continue;
-            }
-            let e_offset = v * hidden_size;
-            for h in 0..hidden_size {
-                weighted[w_offset + h] += p * embed_table[e_offset + h];
-            }
-        }
-    }
-
-    let result = MlxArray::from_raw_data(
-        weighted.as_ptr() as *const u8,
-        weighted.len() * std::mem::size_of::<f32>(),
-        &[1, canvas_size as i32, hidden_size as i32],
-        MlxDtype::Float32,
-    );
-    Some(result)
+// Returns `[vocab_size, hidden_size]` as a bf16 MLX array on GPU.
+// This avoids re-dequantizing the ~3.5 GB embedding table on every step.
+fn compute_embed_table(weights: &ModelWeights, cfg: &ModelConfig) -> MlxArray {
+    let all_ids: Vec<u32> = (0..cfg.vocab_size as u32).collect();
+    let embed_all = embed_tokens(&all_ids, &weights.token_embedding, cfg.hidden_size);
+    astype(&embed_all, MlxDtype::Bfloat16, None)
 }
 
 // Commit the canvas via a causal encoder pass.
@@ -255,6 +217,14 @@ pub(crate) fn generate_diffusion_block(
 ) -> Vec<u32> {
     let mut canvas = init_canvas(diff_cfg.canvas_size, cfg.vocab_size, rng);
 
+    // Pre-compute embedding table once — reused across all denoise steps.
+    // Avoids re-dequantizing the full vocab embedding (~3.5 GB for Gemma4).
+    let embed_table = if diff_cfg.self_conditioning {
+        Some(compute_embed_table(weights, cfg))
+    } else {
+        None
+    };
+
     for step in 0..diff_cfg.max_denoise_steps {
         denoise_step(
             cfg,
@@ -264,7 +234,7 @@ pub(crate) fn generate_diffusion_block(
             &mut canvas,
             step,
             token_offset,
-            rng,
+            embed_table.as_ref(),
         );
         if canvas.converged {
             break;
