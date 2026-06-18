@@ -29,8 +29,8 @@ AX Engine is for developers who want a local OpenAI-compatible model server on A
     - [Gemma 4](#gemma-4)
     - [Qwen 3.6](#qwen-36)
   - [Direct Decode · Prefill · TTFT](#direct-decode--prefill--ttft)
+    - [DiffusionGemma](#diffusiongemma)
     - [Qwen3-Coder-Next](#qwen3-coder-next)
-  - [DiffusionGemma](#diffusiongemma)
 - [SDKs](#sdks)
 - [Server Usage](#server-usage)
 - [Workspace](#workspace)
@@ -698,6 +698,83 @@ python3 scripts/bench_qwen36_mtp_fair.py \
 
 ### Direct Decode · Prefill · TTFT
 
+#### DiffusionGemma
+
+DiffusionGemma uses **block-autoregressive discrete diffusion** on the Gemma4 26B backbone: instead of generating one token at a time, it generates a fixed-size canvas of 256 tokens per block via iterative bidirectional denoising, then commits them through a standard causal encoder pass. This replaces the standard autoregressive decode step with a fundamentally different generation paradigm.
+
+> [!NOTE]
+> No public DiffusionGemma checkpoint exists yet. The figures below are **microbench projections** measured on realistic Gemma4 26B dimensions (canvas=256, vocab=262,144, hidden=3,584, 46 layers, 8 denoise steps). End-to-end rates will be reported when weights become available.
+
+**Decode acceleration model — no MTP:**
+
+DiffusionGemma is its own form of parallel generation that replaces both autoregressive decoding and speculative decoding (MTP/n-gram). The two approaches are architecturally incompatible:
+
+| | MTP (speculative decoding) | DiffusionGemma (block diffusion) |
+|---|---|---|
+| Generation | Draft-then-verify, one token at a time | 256-token blocks via bidirectional denoising |
+| Forward pass | Causal only | Bidirectional (denoise) + causal (commit) |
+| Needs draft model / assistant head | Yes | No |
+| AX Engine decode path | `ngram_acceleration` / `mtp_head_only` | `diffusion` (early return, mutually exclusive) |
+
+In the runner's `decode_one`, the diffusion path returns before the MTP/n-gram code is reached. The `DiffusionConfig` has no MTP-related fields — it carries canvas size, denoise steps, entropy thresholds, and temperature schedule only.
+
+**Supported features:**
+
+- Block-autoregressive discrete diffusion decode (canvas=256, up to 8 denoise steps)
+- Entropy-bound position acceptance with argmax-based rejection
+- Self-conditioning via GPU matmul (prob × cached embedding table)
+- Linear temperature schedule (configurable start/end)
+- Convergence detection (stable argmax + mean entropy threshold)
+- Standard causal prefill (same Gemma4 encoder, up to 15,743 tok/s projected)
+- Causal commit pass (writes KV cache for subsequent blocks)
+- 6 SSE telemetry counters (`ax_mlx_diffusion_*`)
+- `diffusion` decode-route classification in benchmark harness
+
+**Not applicable:**
+
+- MTP / assistant-head speculative decoding (architecturally incompatible)
+- N-gram acceleration (diffusion replaces the autoregressive decode loop)
+- Direct pipeline double-buffering (not autoregressive)
+
+**Denoise-step optimization story:**
+
+The dominant cost per denoise step is the self-conditioning embedding: a probability-weighted sum over the full 262K×3,584 embedding table (~3.5 GB). The initial CPU implementation took **14.4 seconds per step** — three orders of magnitude slower than everything else. Replacing the CPU triple loop with a single GPU matmul (`prob [256×262K] × embed [262K×3,584]`) reduced it to **8.7 ms**, a **1,650× speedup**. Combined with a cached embedding table (avoids re-dequantizing 3.5 GB per step) and argmax-based rejection (preserves convergence progress instead of re-randomizing), the decode rate jumped from **2.2 to 831.5 tok/s**.
+
+| Component | Before (CPU) | After (GPU matmul) | Speedup |
+|---|---:|---:|---:|
+| Self-conditioning (per step) | 14,426 ms | 8.7 ms | 1,650× |
+| Decode rate (8 steps/block) | 2.2 tok/s | 831.5 tok/s | 372× |
+
+**Projected prefill rate** (QKV matmul proxy, 46 layers):
+
+DiffusionGemma uses the same Gemma4 causal encoder for prefill. Projected throughput scales with chunk size, reaching **15,743 tok/s** at chunk=2,048.
+
+| Chunk size | Projected prefill (tok/s) |
+|---:|---:|
+| 256 | 9,662 |
+| 512 | 12,764 |
+| 1,024 | 14,009 |
+| 2,048 | 15,743 |
+
+**Projected decode rate** (full block cycle, 8 denoise steps, canvas=256):
+
+Per denoise step: bidirectional forward (~26 ms, 46 layers) + self-conditioning matmul (~9 ms) + sampling/mask (~50 μs). Per block: ~308 ms for 256 tokens.
+
+| Metric | Value |
+|---|---:|
+| Decode rate (projected) | 831.5 tok/s |
+| Per-step overhead | 35 ms |
+| Per-block wall time | ~308 ms |
+| Tokens per block | 256 |
+
+**Telemetry:** 6 SSE-emitted counters (`ax_mlx_diffusion_blocks`, `diffusion_denoise_steps`, `diffusion_converged_blocks`, `diffusion_denoise_wall_us`, `diffusion_commit_wall_us`, `diffusion_block_wall_us`) plus `diffusion` decode-route classification in `bench_mlx_inference_stack.py`.
+
+Run the microbench:
+
+```bash
+cargo run -p ax-engine-microbench --release --bin diffusion-microbench
+```
+
 #### Qwen3-Coder-Next
 
 Qwen3-Coder-Next is the coding-specialist `qwen3_next` checkpoint, so it is reported separately from Qwen 3.6. It uses the same repo-owned AX MLX graph family, but its benchmark boundary is different: it does **not** ship MTP heads or a Qwen3.6 sidecar, so the public README path is direct decode only.
@@ -931,83 +1008,6 @@ The 2K `llama.cpp Metal*` prefill rows are long-context, GGUF-runtime-reference 
 |  |  | 512 | 162.7 | 320.1 | **195.5 (-38.9%)** |
 |  |  | 2048 | 578.2 | 583.0 | **553.4 (-5.1%)** |
 Embedding benchmarks are kept out of this README summary; see [`docs/EMBEDDINGS.md`](docs/EMBEDDINGS.md).
-
-### DiffusionGemma
-
-DiffusionGemma uses **block-autoregressive discrete diffusion** on the Gemma4 26B backbone: instead of generating one token at a time, it generates a fixed-size canvas of 256 tokens per block via iterative bidirectional denoising, then commits them through a standard causal encoder pass. This replaces the standard autoregressive decode step with a fundamentally different generation paradigm.
-
-> [!NOTE]
-> No public DiffusionGemma checkpoint exists yet. The figures below are **microbench projections** measured on realistic Gemma4 26B dimensions (canvas=256, vocab=262,144, hidden=3,584, 46 layers, 8 denoise steps). End-to-end rates will be reported when weights become available.
-
-**Decode acceleration model — no MTP:**
-
-DiffusionGemma is its own form of parallel generation that replaces both autoregressive decoding and speculative decoding (MTP/n-gram). The two approaches are architecturally incompatible:
-
-| | MTP (speculative decoding) | DiffusionGemma (block diffusion) |
-|---|---|---|
-| Generation | Draft-then-verify, one token at a time | 256-token blocks via bidirectional denoising |
-| Forward pass | Causal only | Bidirectional (denoise) + causal (commit) |
-| Needs draft model / assistant head | Yes | No |
-| AX Engine decode path | `ngram_acceleration` / `mtp_head_only` | `diffusion` (early return, mutually exclusive) |
-
-In the runner's `decode_one`, the diffusion path returns before the MTP/n-gram code is reached. The `DiffusionConfig` has no MTP-related fields — it carries canvas size, denoise steps, entropy thresholds, and temperature schedule only.
-
-**Supported features:**
-
-- Block-autoregressive discrete diffusion decode (canvas=256, up to 8 denoise steps)
-- Entropy-bound position acceptance with argmax-based rejection
-- Self-conditioning via GPU matmul (prob × cached embedding table)
-- Linear temperature schedule (configurable start/end)
-- Convergence detection (stable argmax + mean entropy threshold)
-- Standard causal prefill (same Gemma4 encoder, up to 15,743 tok/s projected)
-- Causal commit pass (writes KV cache for subsequent blocks)
-- 6 SSE telemetry counters (`ax_mlx_diffusion_*`)
-- `diffusion` decode-route classification in benchmark harness
-
-**Not applicable:**
-
-- MTP / assistant-head speculative decoding (architecturally incompatible)
-- N-gram acceleration (diffusion replaces the autoregressive decode loop)
-- Direct pipeline double-buffering (not autoregressive)
-
-**Denoise-step optimization story:**
-
-The dominant cost per denoise step is the self-conditioning embedding: a probability-weighted sum over the full 262K×3,584 embedding table (~3.5 GB). The initial CPU implementation took **14.4 seconds per step** — three orders of magnitude slower than everything else. Replacing the CPU triple loop with a single GPU matmul (`prob [256×262K] × embed [262K×3,584]`) reduced it to **8.7 ms**, a **1,650× speedup**. Combined with a cached embedding table (avoids re-dequantizing 3.5 GB per step) and argmax-based rejection (preserves convergence progress instead of re-randomizing), the decode rate jumped from **2.2 to 831.5 tok/s**.
-
-| Component | Before (CPU) | After (GPU matmul) | Speedup |
-|---|---:|---:|---:|
-| Self-conditioning (per step) | 14,426 ms | 8.7 ms | 1,650× |
-| Decode rate (8 steps/block) | 2.2 tok/s | 831.5 tok/s | 372× |
-
-**Projected prefill rate** (QKV matmul proxy, 46 layers):
-
-DiffusionGemma uses the same Gemma4 causal encoder for prefill. Projected throughput scales with chunk size, reaching **15,743 tok/s** at chunk=2,048.
-
-| Chunk size | Projected prefill (tok/s) |
-|---:|---:|
-| 256 | 9,662 |
-| 512 | 12,764 |
-| 1,024 | 14,009 |
-| 2,048 | 15,743 |
-
-**Projected decode rate** (full block cycle, 8 denoise steps, canvas=256):
-
-Per denoise step: bidirectional forward (~26 ms, 46 layers) + self-conditioning matmul (~9 ms) + sampling/mask (~50 μs). Per block: ~308 ms for 256 tokens.
-
-| Metric | Value |
-|---|---:|
-| Decode rate (projected) | 831.5 tok/s |
-| Per-step overhead | 35 ms |
-| Per-block wall time | ~308 ms |
-| Tokens per block | 256 |
-
-**Telemetry:** 6 SSE-emitted counters (`ax_mlx_diffusion_blocks`, `diffusion_denoise_steps`, `diffusion_converged_blocks`, `diffusion_denoise_wall_us`, `diffusion_commit_wall_us`, `diffusion_block_wall_us`) plus `diffusion` decode-route classification in `bench_mlx_inference_stack.py`.
-
-Run the microbench:
-
-```bash
-cargo run -p ax-engine-microbench --release --bin diffusion-microbench
-```
 
 ## SDKs
 
