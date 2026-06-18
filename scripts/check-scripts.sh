@@ -160,6 +160,7 @@ bash -n scripts/*.sh scripts/lib/common.sh
   scripts/test_check_quantization_quality_gate.py \
   scripts/bench_direct_telemetry_pass.py \
   scripts/test_bench_direct_telemetry_pass.py \
+  scripts/bench_diffusion_gemma_direct.py \
   scripts/test_minisign_artifact.py
 "$PYTHON_BIN" -m unittest \
   scripts/test_bench_ax_serving.py \
