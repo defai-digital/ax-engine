@@ -700,9 +700,9 @@ python3 scripts/bench_qwen36_mtp_fair.py \
 
 #### DiffusionGemma
 
-DiffusionGemma is a block-diffusion Gemma4 26B checkpoint, not an ordinary autoregressive decoder. AX runs it through the native MLX graph, but the benchmark boundary is different from the direct-decode families below: the first visible response comes from a **committed 256-token diffusion block**, not from one next-token step.
+DiffusionGemma is a block-diffusion Gemma4 26B checkpoint, not an ordinary autoregressive decoder. AX runs it with a native MLX graph, but the measurement boundary is different from the direct-decode families below: the first visible output comes from a **committed 256-token diffusion block**, not from a single next-token step.
 
-The charts use the same 128 / 512 / 2,048 prompt-token layout as the autoregressive model sections, but they should be read as AX first-block telemetry. Peer bars are intentionally omitted: current llama.cpp Metal fails to load the GGUF (`unknown model architecture: 'diffusion-gemma'`), and `mlx_lm` 0.31.3 fails to load the MLX snapshot (`Model type diffusion_gemma not supported.`).
+The charts keep the same 128 / 512 / 2,048 prompt-token layout as the autoregressive sections for readability, but the values are AX first-block telemetry. Peer bars are intentionally omitted rather than shown as zero: current llama.cpp Metal cannot load the GGUF (`unknown model architecture: 'diffusion-gemma'`), and `mlx_lm` 0.31.3 cannot load the MLX snapshot (`Model type diffusion_gemma not supported.`).
 
 <table>
 <tr>
@@ -726,7 +726,7 @@ The charts use the same 128 / 512 / 2,048 prompt-token layout as the autoregress
 | 512 | 3,005.3 tok/s | 6,138 ms | load blocked | load blocked |
 | 2048 | 3,978.1 tok/s | 6,132 ms | load blocked | load blocked |
 
-`time to first block` is prefill wall time plus the first 256-token denoise-and-commit block. `first-block decode` is computed as `256 / ax_mlx_diffusion_block_wall_us`. These values are useful for tracking AX's DiffusionGemma implementation, but they are not ordinary autoregressive TTFT or fixed-token decode throughput.
+`time to first block` is prefill wall time plus the first 256-token denoise-and-commit block. `first-block decode` is computed as `256 / ax_mlx_diffusion_block_wall_us`. Use these rows to track AX's DiffusionGemma path; do not compare them directly with ordinary autoregressive TTFT or fixed-token decode throughput.
 
 | Runtime path | Model artifact | Benchmark status |
 |---|---|---|
@@ -736,7 +736,7 @@ The charts use the same 128 / 512 / 2,048 prompt-token layout as the autoregress
 
 **Memory bandwidth share:**
 
-The bandwidth chart is an efficiency view, not a peer comparison. It estimates first-block traffic at block granularity: one block performs 48 denoise forwards plus one causal commit over a 16.54 GB MLX safetensors artifact, or about **810.6 GB** of weight traffic per committed block. The chart shows estimated bandwidth used versus the M5 Max theoretical ceiling; the table keeps the effective GB/s values.
+The bandwidth chart is an implementation-efficiency view, not a peer comparison. It estimates first-block traffic at block granularity: one block performs 48 denoise forwards plus one causal commit over a 16.54 GB MLX safetensors artifact, or about **810.6 GB** of weight traffic per committed block. The chart shows estimated bandwidth used versus the M5 Max theoretical ceiling; the table keeps the effective GB/s values.
 
 <img src="docs/assets/perf-diffusiongemma-direct-memory-bandwidth-share.svg" alt="100% stacked bar chart showing estimated AX direct DiffusionGemma memory bandwidth share used versus theoretical headroom at 128, 512, and 2048 prompt tokens">
 
@@ -746,23 +746,23 @@ The bandwidth chart is an efficiency view, not a peer comparison. It estimates f
 | 512 | 135.8 GB/s | 22.1% |
 | 2,048 | 144.5 GB/s | 23.5% |
 
-At these prompt lengths, the first-block path uses roughly 22-24% of theoretical M5 Max bandwidth. The bottleneck is therefore not raw memory bandwidth; the next optimization target is repeated denoise graph and dispatch efficiency.
+At these prompt lengths, the first-block path uses roughly 22-24% of theoretical M5 Max bandwidth. The current bottleneck is therefore not raw memory bandwidth; the next optimization target is denoise graph reuse, dispatch overhead, and convergence behavior.
 
 **Denoise loop optimization — GPU-native sampling:**
 
-`crates/ax-engine-mlx/src/diffusion.rs` keeps denoise state, entropy-bound acceptance, and self-conditioning on the GPU. Convergence checks materialize only scalar counters and run every `convergence_check_interval` steps (default 4), reducing per-block GPU/CPU syncs from 48 to about 12. The CPU no longer round-trips 256 token positions on every denoise step; sampling and acceptance stay inside lazy MLX graph nodes that can fuse with the forward evaluation.
+`crates/ax-engine-mlx/src/diffusion.rs` keeps denoise state, entropy-bound acceptance, and self-conditioning on the GPU. Convergence checks materialize only scalar counters and run every `convergence_check_interval` steps (default 4), reducing per-block GPU/CPU syncs from 48 to about 12. The CPU no longer round-trips 256 token positions on every denoise step; sampling and acceptance stay in lazy MLX graph nodes that can fuse with the forward evaluation.
 
 **Adaptive convergence detection:**
 
-The denoise loop now supports three convergence criteria, triggering early stop when ANY is met:
+The denoise loop can stop early when any configured convergence signal fires:
 
-1. **Strict criteria** (original): argmax unchanged for `convergence_steps` consecutive check steps AND mean entropy below `entropy_threshold` (default 0.005).
+1. **Strict stability:** argmax is unchanged for `convergence_steps` consecutive checks and mean entropy is below `entropy_threshold` (default 0.005).
 
-2. **Acceptance rate criteria** (adaptive): acceptance rate drops below `acceptance_rate_threshold` (default 1%). When almost no positions are being updated, the model has converged regardless of absolute entropy.
+2. **Low update rate:** the accepted-position update rate drops below `acceptance_rate_threshold` (default 1%), so another denoise pass is unlikely to change the block materially.
 
-3. **Entropy plateau criteria**: entropy has stopped decreasing significantly (delta < 0.001) after step 16, indicating diminishing returns.
+3. **Entropy plateau:** mean entropy stops decreasing materially after the early denoise phase, indicating diminishing returns from additional passes.
 
-This optimization enables earlier convergence detection when the model has "done its best" even if the strict entropy threshold hasn't been reached. If convergence triggers at step 32-36 instead of 48, time-to-first-block improves by 25-33%.
+The benchmark rows above still report the measured run as recorded in the artifact. Adaptive convergence is an implementation knob for future and local runs; when it exits before the 48-step cap, time to first block improves in proportion to the skipped denoise passes.
 
 Artifacts: AX direct rows are [`2026-06-18-direct-first-block/summary.json`](benchmarks/results/diffusion-gemma-direct/2026-06-18-direct-first-block/summary.json), with the human summary in [`summary.md`](benchmarks/results/diffusion-gemma-direct/2026-06-18-direct-first-block/summary.md). Peer runtime blockers are recorded as load failures, so there are no llama.cpp or `mlx_lm` result artifacts for this model family.
 
@@ -774,7 +774,7 @@ python3 scripts/bench_diffusion_gemma_direct.py --skip-benchmark
 
 **Decode acceleration model — no MTP:**
 
-DiffusionGemma's acceleration model is the diffusion block itself. It does not stack with MTP or n-gram acceleration, because those techniques assume an autoregressive next-token loop:
+DiffusionGemma's acceleration model is the diffusion block itself. It does not stack with MTP or n-gram acceleration because those techniques assume an autoregressive next-token loop:
 
 | | MTP (speculative decoding) | DiffusionGemma (block diffusion) |
 |---|---|---|
@@ -783,7 +783,7 @@ DiffusionGemma's acceleration model is the diffusion block itself. It does not s
 | Needs draft model / assistant head | Yes | No |
 | AX Engine decode path | `ngram_acceleration` / `mtp_head_only` | `diffusion` (early return, mutually exclusive) |
 
-In the runner's `decode_one`, the diffusion path returns before the MTP/n-gram branches are reached. `DiffusionConfig` carries canvas size, denoise steps, entropy thresholds, and temperature schedule only; it has no MTP fields.
+In the runner's `decode_one`, the diffusion path returns before the MTP/n-gram branches are reached. `DiffusionConfig` carries canvas size, denoise steps, entropy thresholds, convergence settings, and temperature schedule only; it has no MTP fields.
 
 **Supported features:**
 
@@ -791,7 +791,7 @@ In the runner's `decode_one`, the diffusion path returns before the MTP/n-gram b
 - Entropy-bound position acceptance with argmax-based rejection
 - Self-conditioning via GPU matmul (prob × cached embedding table)
 - Linear temperature schedule (configurable start/end)
-- Adaptive convergence detection (stable argmax + mean entropy threshold + acceptance rate + entropy plateau)
+- Adaptive convergence detection (stable argmax, mean entropy, low update rate, and entropy plateau)
 - Standard causal prefill (same Gemma4 encoder, 3,796.4 tok/s median at the 2,048-token row)
 - Causal commit pass (writes KV cache for subsequent blocks)
 - 6 SSE telemetry counters (`ax_mlx_diffusion_*`)
