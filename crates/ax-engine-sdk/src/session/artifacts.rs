@@ -81,7 +81,7 @@ mod tests {
         DeterministicSampler, ExecutionRunner, ExecutionStatus, KvManagerConfig, KvWriteSummary,
         MetalBuildDoctorReport, MetalBuildHostReport, MetalBuildReport, MetalBuildStatus,
         MetalBuildToolStatus, MetalBuildToolchainReport, MetalKernelManifest, MetalKernelSpec,
-        MetalKernelTier, NativeLinearAttentionConfig, NativeModelArtifacts,
+        MetalKernelTier, NativeDiffusionConfig, NativeLinearAttentionConfig, NativeModelArtifacts,
         NativeModelArtifactsSummary, NativeModelManifest, NativeTensorDataType, NativeTensorFormat,
         NativeTensorRole, NativeTensorSpec, PHASE1_METAL_BUILD_GATE,
         PHASE1_METAL_BUILD_REPORT_SCHEMA_VERSION, PHASE1_METAL_KERNEL_MANIFEST_SCHEMA_VERSION,
@@ -374,6 +374,7 @@ mod tests {
             weight_sanitize: ax_engine_core::WeightSanitize::None,
             think_start_token_id: None,
             think_end_token_id: None,
+            diffusion: NativeDiffusionConfig::default(),
             tensors: vec![
                 native_model_tensor(
                     "model.embed_tokens.weight",

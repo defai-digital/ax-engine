@@ -12,9 +12,9 @@ use std::path::{Path, PathBuf};
 use thiserror::Error;
 
 use crate::model::{
-    AX_NATIVE_MODEL_MANIFEST_SCHEMA_VERSION, NativeLinearAttentionConfig, NativeModelArtifacts,
-    NativeModelManifest, NativeMoeConfig, NativeRuntimeStatus, NativeTensorDataType,
-    NativeTensorFormat, NativeTensorRole, NativeTensorSpec, WeightSanitize,
+    AX_NATIVE_MODEL_MANIFEST_SCHEMA_VERSION, NativeDiffusionConfig, NativeLinearAttentionConfig,
+    NativeModelArtifacts, NativeModelManifest, NativeMoeConfig, NativeRuntimeStatus,
+    NativeTensorDataType, NativeTensorFormat, NativeTensorRole, NativeTensorSpec, WeightSanitize,
 };
 
 // ---------------------------------------------------------------------------
@@ -838,6 +838,7 @@ pub fn load_gguf(path: &Path) -> Result<NativeModelArtifacts, GgufError> {
         weight_sanitize: WeightSanitize::default(),
         think_start_token_id: None,
         think_end_token_id: None,
+        diffusion: NativeDiffusionConfig::default(),
         tensors,
     };
 

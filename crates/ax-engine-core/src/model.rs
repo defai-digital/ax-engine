@@ -475,6 +475,53 @@ impl WeightSanitize {
     }
 }
 
+/// Diffusion-specific generation parameters (DiffusionGemma).
+///
+/// DiffusionGemma generates tokens via block-autoregressive discrete diffusion:
+/// a 256-token canvas is initialized randomly, iteratively denoised with
+/// bidirectional attention, then committed with a causal encoder pass.
+/// All fields are optional; the runtime applies reference defaults when absent.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
+pub struct NativeDiffusionConfig {
+    /// Number of tokens generated per diffusion block (default 256).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub canvas_size: Option<u32>,
+    /// Maximum denoising steps per block before forced convergence (default 48).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_denoise_steps: Option<u32>,
+    /// Enable self-conditioning feedback between denoising steps (default true).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub self_conditioning: Option<bool>,
+    /// Entropy bound for position acceptance during denoising (default 0.1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entropy_bound: Option<f32>,
+    /// Mean entropy threshold for convergence detection (default 0.005).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entropy_threshold: Option<f32>,
+    /// Consecutive stable argmax steps required for convergence (default 2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub convergence_steps: Option<u32>,
+    /// Temperature schedule start (high, for exploration; default 0.8).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub temperature_start: Option<f32>,
+    /// Temperature schedule end (low, for locking final tokens; default 0.4).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub temperature_end: Option<f32>,
+}
+
+impl NativeDiffusionConfig {
+    pub fn is_enabled(&self) -> bool {
+        self.canvas_size.is_some()
+            || self.max_denoise_steps.is_some()
+            || self.self_conditioning.is_some()
+            || self.entropy_bound.is_some()
+    }
+
+    pub fn is_disabled(&self) -> bool {
+        !self.is_enabled()
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct NativeModelManifest {
     pub schema_version: String,
@@ -604,6 +651,10 @@ pub struct NativeModelManifest {
     /// Token ID for `</think>` (Qwen3 reasoning models: 151669).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub think_end_token_id: Option<u32>,
+    /// Diffusion generation parameters (DiffusionGemma).
+    /// Disabled for all non-diffusion model families.
+    #[serde(default, skip_serializing_if = "NativeDiffusionConfig::is_disabled")]
+    pub diffusion: NativeDiffusionConfig,
     pub tensors: Vec<NativeTensorSpec>,
 }
 
@@ -3434,6 +3485,7 @@ mod tests {
             weight_sanitize: WeightSanitize::default(),
             think_start_token_id: None,
             think_end_token_id: None,
+            diffusion: NativeDiffusionConfig::default(),
             tensors: vec![
                 tensor(
                     "model.embed_tokens.weight",

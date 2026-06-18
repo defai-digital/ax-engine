@@ -188,6 +188,46 @@ impl GlmRouterConfig {
     }
 }
 
+/// Diffusion decoding hyperparameters for DiffusionGemma.
+#[derive(Clone, Debug)]
+pub struct DiffusionConfig {
+    /// Number of tokens generated per diffusion block (default 256).
+    pub canvas_size: usize,
+    /// Maximum denoising steps per block before forced convergence (default 48).
+    pub max_denoise_steps: usize,
+    /// Entropy bound for position acceptance during denoising (default 0.1).
+    pub entropy_bound: f32,
+    /// Mean entropy threshold for convergence detection (default 0.005).
+    pub entropy_threshold: f32,
+    /// Consecutive stable argmax steps required for convergence (default 2).
+    pub convergence_steps: usize,
+    /// Temperature schedule start (high, for exploration; default 0.8).
+    pub temp_start: f32,
+    /// Temperature schedule end (low, for locking final tokens; default 0.4).
+    pub temp_end: f32,
+    /// Enable self-conditioning feedback between denoising steps (default true).
+    pub self_conditioning: bool,
+}
+
+impl DiffusionConfig {
+    pub(super) fn from_manifest(m: &NativeModelManifest) -> Option<Self> {
+        let cfg = &m.diffusion;
+        if !cfg.is_enabled() {
+            return None;
+        }
+        Some(Self {
+            canvas_size: cfg.canvas_size.unwrap_or(256) as usize,
+            max_denoise_steps: cfg.max_denoise_steps.unwrap_or(48) as usize,
+            entropy_bound: cfg.entropy_bound.unwrap_or(0.1),
+            entropy_threshold: cfg.entropy_threshold.unwrap_or(0.005),
+            convergence_steps: cfg.convergence_steps.unwrap_or(2) as usize,
+            temp_start: cfg.temperature_start.unwrap_or(0.8),
+            temp_end: cfg.temperature_end.unwrap_or(0.4),
+            self_conditioning: cfg.self_conditioning.unwrap_or(true),
+        })
+    }
+}
+
 /// Hyperparameters extracted from the manifest.
 #[derive(Clone, Debug)]
 pub struct ModelConfig {
@@ -267,6 +307,8 @@ pub struct ModelConfig {
     pub think_start_token_id: Option<u32>,
     /// Token ID that closes a `</think>` block (Qwen3 family: 151669).
     pub think_end_token_id: Option<u32>,
+    /// Diffusion decoding config (DiffusionGemma). `None` = standard AR decoding.
+    pub diffusion: Option<DiffusionConfig>,
 }
 
 impl ModelConfig {
@@ -283,10 +325,13 @@ impl ModelConfig {
         };
         let rope_theta = m.rope_theta.map(|t| t as f32).unwrap_or(10000.0);
         let layer_configs = build_layer_configs(m, head_dim, rope_theta, rope_dims);
-        let is_gemma4 = matches!(m.model_family.as_str(), "gemma4" | "gemma4_assistant");
+        let is_gemma4 = matches!(
+            m.model_family.as_str(),
+            "gemma4" | "gemma4_assistant" | "diffusion_gemma"
+        );
         let uses_geglu = matches!(
             m.model_family.as_str(),
-            "gemma4" | "gemma4_assistant" | "gemma3"
+            "gemma4" | "gemma4_assistant" | "diffusion_gemma" | "gemma3"
         );
         let query_scale = if is_gemma4 {
             1.0
@@ -373,6 +418,7 @@ impl ModelConfig {
             moe_topk_group: m.moe.topk_group.unwrap_or(1) as usize,
             think_start_token_id: think_token_ids_from_manifest(m).0,
             think_end_token_id: think_token_ids_from_manifest(m).1,
+            diffusion: DiffusionConfig::from_manifest(m),
         }
     }
 
@@ -433,7 +479,10 @@ fn think_token_ids_from_manifest(m: &NativeModelManifest) -> (Option<u32>, Optio
 }
 
 fn default_rms_norm_eps(model_family: &str) -> f32 {
-    if model_family.starts_with("qwen") || model_family.starts_with("gemma") {
+    if model_family.starts_with("qwen")
+        || model_family.starts_with("gemma")
+        || model_family == "diffusion_gemma"
+    {
         1e-6
     } else {
         1e-5
@@ -454,7 +503,10 @@ pub(super) fn build_layer_configs(
     // full-attention RoPE + full-width sliding RoPE). It attends to the target's
     // cached K, so its Q rotation must match the target's exactly — gate the
     // gemma4-specific RoPE on the whole family, not just the dense target.
-    let is_gemma4_family = matches!(m.model_family.as_str(), "gemma4" | "gemma4_assistant");
+    let is_gemma4_family = matches!(
+        m.model_family.as_str(),
+        "gemma4" | "gemma4_assistant" | "diffusion_gemma"
+    );
     let full_head_dim = m.global_head_dim.unwrap_or(m.attention_head_dim) as usize;
     let full_rope_dims = m
         .partial_rotary_factor

@@ -1711,15 +1711,9 @@ fn moe_experts_forward_impl(
         // GeGLU path: Gemma4 MoE experts — fuses split+gelu_approx+mul.
         // SwiGLU path: Qwen3 MoE experts — fuses split+silu+mul.
         // Falls back to split slice + dense_ffn_activation otherwise.
-        let fused = if cfg.uses_geglu
-            && seq == 1
-            && fastpath::moe_geglu_packed_metal_enabled()
-        {
+        let fused = if cfg.uses_geglu && seq == 1 && fastpath::moe_geglu_packed_metal_enabled() {
             packed_geglu_metal_impl(&out, half)
-        } else if !cfg.uses_geglu
-            && seq == 1
-            && fastpath::moe_swiglu_packed_metal_enabled()
-        {
+        } else if !cfg.uses_geglu && seq == 1 && fastpath::moe_swiglu_packed_metal_enabled() {
             packed_swiglu_metal_impl(&out, half)
         } else {
             None

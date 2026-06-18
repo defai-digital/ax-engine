@@ -1,5 +1,5 @@
 use mlx_sys::{
-    MlxArray, MlxDtype, ScaledDotProductAttentionMask, as_strided, astype, eval,
+    MlxArray, MlxDtype, ScaledDotProductAttentionMask, as_strided, astype, concatenate, eval,
     qk_norm_rope_bhsd_from_proj as direct_qk_norm_rope_bhsd_from_proj, reshape, rms_norm, rope,
     scaled_dot_product_attention_with_mask, transpose,
 };
@@ -304,6 +304,78 @@ pub(crate) fn full_precision_attention(
         None => ScaledDotProductAttentionMask::None,
     };
     scaled_dot_product_attention_with_mask(q_rope, cached_k, cached_v, query_scale, mask, None)
+}
+
+/// Bidirectional (non-causal) attention for DiffusionGemma denoiser.
+///
+/// Each canvas query attends bidirectionally to:
+/// - ALL cached prompt key/value entries (cross-attention, no window constraint)
+/// - ALL canvas key/value entries (self-attention), optionally limited by
+///   a symmetric sliding window of width `2 * window + 1`
+///
+/// `cached_k/v`: `[B, n_kv_heads, cached_seq, head_dim]` — read-only prompt KV.
+/// `canvas_q`: `[B, n_q_heads, canvas_size, head_dim]` — RoPE-applied queries.
+/// `canvas_k/v`: `[B, n_kv_heads, canvas_size, head_dim]` — RoPE-applied keys/values.
+pub(crate) fn bidirectional_attention(
+    canvas_q: &MlxArray,
+    cached_k: &MlxArray,
+    cached_v: &MlxArray,
+    canvas_k: &MlxArray,
+    canvas_v: &MlxArray,
+    query_scale: f32,
+    sliding_window: Option<usize>,
+) -> MlxArray {
+    let canvas_size = canvas_q.shape()[2] as usize;
+
+    // Concatenate prompt KV with canvas KV along sequence dimension (axis 2 in BHSD).
+    let full_k = concatenate(&[cached_k, canvas_k], 2, None);
+    let full_v = concatenate(&[cached_v, canvas_v], 2, None);
+
+    // Build mask only when a symmetric sliding window must be enforced.
+    // Without a window, every canvas position attends to every key (no mask).
+    let mask = sliding_window.map(|window| {
+        build_bidirectional_canvas_mask(canvas_size, cached_k.shape()[2] as usize, window)
+    });
+
+    let mask_arg = mask
+        .as_ref()
+        .map(ScaledDotProductAttentionMask::Array)
+        .unwrap_or(ScaledDotProductAttentionMask::None);
+    scaled_dot_product_attention_with_mask(canvas_q, &full_k, &full_v, query_scale, mask_arg, None)
+}
+
+/// Build a bidirectional mask for canvas self-attention with cross-attention
+/// to a cached prompt prefix.
+///
+/// Layout: `[canvas_size, cached_seq + canvas_size]`
+/// - Columns `0..cached_seq` (prompt): always `true` (unconstrained cross-attention).
+/// - Columns `cached_seq..` (canvas): `true` when `|i - (j - cached_seq)| < window`.
+fn build_bidirectional_canvas_mask(
+    canvas_size: usize,
+    cached_seq: usize,
+    window: usize,
+) -> MlxArray {
+    let total_keys = cached_seq + canvas_size;
+    let mut mask = vec![0_u8; canvas_size * total_keys];
+    for qi in 0..canvas_size {
+        // Prompt prefix: always allowed.
+        for ki in 0..cached_seq {
+            mask[qi * total_keys + ki] = 1;
+        }
+        // Canvas: symmetric window around query position.
+        for ki in 0..canvas_size {
+            let diff = qi.abs_diff(ki);
+            if diff < window {
+                mask[qi * total_keys + cached_seq + ki] = 1;
+            }
+        }
+    }
+    MlxArray::from_raw_data(
+        mask.as_ptr(),
+        mask.len(),
+        &[canvas_size as i32, total_keys as i32],
+        MlxDtype::Bool,
+    )
 }
 
 pub(crate) struct TurboQuantExperimentalDecodeOutput {
@@ -701,6 +773,7 @@ mod tests {
             moe_topk_group: 1,
             think_start_token_id: None,
             think_end_token_id: None,
+            diffusion: None,
         }
     }
 

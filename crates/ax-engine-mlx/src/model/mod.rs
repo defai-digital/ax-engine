@@ -29,8 +29,8 @@ pub use turboquant_context::{
 mod config;
 use config::layer_params;
 pub use config::{
-    Gemma4AssistantSharedKvLayers, GlmRouterConfig, LayerConfig, LinearAttentionConfig,
-    MlaAttentionConfig, ModelConfig,
+    DiffusionConfig, Gemma4AssistantSharedKvLayers, GlmRouterConfig, LayerConfig,
+    LinearAttentionConfig, MlaAttentionConfig, ModelConfig,
 };
 
 pub(crate) mod shared;
@@ -38,6 +38,8 @@ pub(crate) use shared::scale_hidden_pub;
 use shared::*;
 
 mod families;
+
+pub(crate) use families::standard::layer_forward_bidirectional;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum FinalLogitsMode {
@@ -1441,7 +1443,7 @@ fn forward_lazy_single_with_turboquant_context_and_logits_mode(
 
 // ── private helpers ──────────────────────────────────────────────────────────
 
-fn finalize_lm_head_logits(
+pub(crate) fn finalize_lm_head_logits(
     cfg: &ModelConfig,
     logits: &MlxArray,
     mode: FinalLogitsMode,
@@ -1466,7 +1468,7 @@ fn finalize_lm_head_logits(
 /// or `None` when the model does not use per-layer input gating.
 ///
 /// Reference: Gemma4TextModel._get_per_layer_inputs + _project_per_layer_inputs.
-fn compute_per_layer_inputs_arr(
+pub(crate) fn compute_per_layer_inputs_arr(
     cfg: &ModelConfig,
     weights: &ModelWeights,
     ids_1d: &MlxArray, // scalar/[seq]/[1, 1] u32, may be unevaluated
@@ -1550,7 +1552,8 @@ mod tests {
     use crate::weights::{GlmMlaAttentionWeights, LinearAttentionWeights};
     use ax_engine_core::model::{NativeGlmRouterConfig, NativeMlaAttentionConfig};
     use ax_engine_core::{
-        NativeLinearAttentionConfig, NativeMoeConfig, NativeRuntimeStatus, NativeTensorFormat,
+        NativeDiffusionConfig, NativeLinearAttentionConfig, NativeMoeConfig, NativeRuntimeStatus,
+        NativeTensorFormat,
     };
     use mlx_sys::{eval, zeros};
     use std::collections::BTreeMap;
@@ -1598,6 +1601,7 @@ mod tests {
             moe_topk_group: 1,
             think_start_token_id: None,
             think_end_token_id: None,
+            diffusion: None,
         }
     }
 
@@ -1985,6 +1989,7 @@ mod tests {
             weight_sanitize: ax_engine_core::WeightSanitize::None,
             think_start_token_id: None,
             think_end_token_id: None,
+            diffusion: NativeDiffusionConfig::default(),
             tensors: Vec::new(),
         }
     }
@@ -2045,6 +2050,7 @@ mod tests {
             weight_sanitize: ax_engine_core::WeightSanitize::None,
             think_start_token_id: None,
             think_end_token_id: None,
+            diffusion: NativeDiffusionConfig::default(),
             tensors: Vec::new(),
         }
     }
@@ -2127,6 +2133,7 @@ mod tests {
             weight_sanitize: ax_engine_core::WeightSanitize::None,
             think_start_token_id: None,
             think_end_token_id: None,
+            diffusion: NativeDiffusionConfig::default(),
             tensors: Vec::new(),
         }
     }

@@ -10,12 +10,12 @@ use super::super::profile::{
 };
 use super::super::shared::{
     add_then_multiply_scalar, attention_mask_array, attention_output_projection,
-    direct_qk_norm_rope_route_enabled_for_family, ffn_swiglu, flatten_attention_output_bhsd,
-    full_precision_attention, moe_experts_forward, moe_experts_forward_gemma4,
-    moe_experts_forward_with_shared, moe_router_gemma4, moe_router_glm, moe_router_qwen3,
-    per_layer_input_gate_project, prepare_value_bhsd_from_proj, qk_norm_bhsd_from_proj,
-    qk_norm_rope_bhsd_from_proj_with_route, qkv_project, qw, rms_norm_opt, shape_element_count,
-    shared_expert_forward, turboquant_decode_attention_experimental,
+    bidirectional_attention, direct_qk_norm_rope_route_enabled_for_family, ffn_swiglu,
+    flatten_attention_output_bhsd, full_precision_attention, moe_experts_forward,
+    moe_experts_forward_gemma4, moe_experts_forward_with_shared, moe_router_gemma4, moe_router_glm,
+    moe_router_qwen3, per_layer_input_gate_project, prepare_value_bhsd_from_proj,
+    qk_norm_bhsd_from_proj, qk_norm_rope_bhsd_from_proj_with_route, qkv_project, qw, rms_norm_opt,
+    shape_element_count, shared_expert_forward, turboquant_decode_attention_experimental,
 };
 use super::super::turboquant_context::{
     TurboQuantModelDecodeCandidate, TurboQuantModelDecodeCandidateStatus,
@@ -688,4 +688,197 @@ pub(crate) fn layer_forward(
         );
     }
     out
+}
+
+/// Bidirectional layer forward for DiffusionGemma denoiser.
+///
+/// Same QKV projections, QK-norm, MoE FFN, per-layer gating as [`layer_forward`],
+/// but:
+/// - **Bidirectional** (non-causal) attention over the canvas.
+/// - **Read-only** KV cache: attends to cached prompt KV without writing.
+/// - Canvas K/V are computed fresh from `hidden` each denoiser step.
+pub(crate) fn layer_forward_bidirectional(
+    cfg: &ModelConfig,
+    w: &LayerWeights,
+    hidden: &MlxArray,
+    cache: &MlxKVCache,
+    layer_idx: usize,
+    token_offset: usize,
+    per_layer_input: Option<&MlxArray>,
+) -> MlxArray {
+    let (
+        head_dim,
+        rope_theta,
+        rope_dims,
+        layer_rope_freqs,
+        sliding_window,
+        _kv_source,
+        v_norm_no_scale,
+    ) = layer_params(cfg, layer_idx);
+
+    let seq = hidden.shape()[1] as usize;
+
+    // 1. Attention norm.
+    let normed = rms_norm(hidden, Some(&w.attn_norm), cfg.rms_norm_eps, None);
+
+    // 2-6. QKV projections.
+    let (q_raw, k_raw, v_raw, attn_gate_raw) = qkv_project(cfg, w, &normed, head_dim);
+    let kv_heads = (k_raw.shape()[2] as usize)
+        .checked_div(head_dim)
+        .expect("k projection output must divide by head_dim");
+
+    let v = prepare_value_bhsd_from_proj(
+        &v_raw,
+        v_norm_no_scale,
+        kv_heads,
+        head_dim,
+        seq,
+        cfg.rms_norm_eps,
+    );
+
+    // QK norm (no RoPE yet — apply RoPE after).
+    let q = qk_norm_bhsd_from_proj(
+        &q_raw,
+        w.q_norm.as_ref(),
+        cfg.n_heads,
+        head_dim,
+        seq,
+        cfg.rms_norm_eps,
+    );
+    let k = qk_norm_bhsd_from_proj(
+        &k_raw,
+        w.k_norm.as_ref(),
+        kv_heads,
+        head_dim,
+        seq,
+        cfg.rms_norm_eps,
+    );
+
+    // Apply RoPE to Q and K using canvas positions.
+    let rope_freqs = layer_rope_freqs.or(cfg.rope_freqs.as_ref());
+    let (rope_base, rope_freqs_ref) = rope_freqs
+        .map(|f| (None, Some(f)))
+        .unwrap_or((Some(rope_theta), None));
+    let q_rope = rope(
+        &q,
+        rope_dims as i32,
+        false,
+        rope_base,
+        1.0,
+        token_offset as i32,
+        rope_freqs_ref,
+        None,
+    );
+    let k_rope = rope(
+        &k,
+        rope_dims as i32,
+        false,
+        rope_base,
+        1.0,
+        token_offset as i32,
+        rope_freqs_ref,
+        None,
+    );
+
+    // Read cached prompt K/V (no mutation).
+    let (cached_k, cached_v) = cache
+        .peek_layer_kv(layer_idx)
+        .expect("bidirectional layer requires cached prompt KV from prefill");
+
+    // Bidirectional attention: canvas Q attends to cached prompt KV + canvas KV.
+    let attn_sdpa = bidirectional_attention(
+        &q_rope,
+        &cached_k,
+        &cached_v,
+        &k_rope,
+        &v,
+        cfg.query_scale,
+        sliding_window,
+    );
+
+    let attn_flat = flatten_attention_output_bhsd(&attn_sdpa, seq, cfg.n_heads, head_dim);
+    let attn_proj = attention_output_projection(
+        &attn_flat,
+        attn_gate_raw.as_ref(),
+        w.o_proj
+            .as_ref()
+            .expect("bidirectional attention layer must have o_proj"),
+    );
+
+    // Optional post-attention layernorm (Gemma4).
+    let attn_proj = if let Some(post_norm) = &w.attn_post_norm {
+        rms_norm(&attn_proj, Some(post_norm), cfg.rms_norm_eps, None)
+    } else {
+        attn_proj
+    };
+
+    // Residual.
+    let hidden = add(hidden, &attn_proj, None);
+
+    // Pre-FFN norm.
+    let normed2 = rms_norm(&hidden, Some(&w.ffn_norm), cfg.rms_norm_eps, None);
+
+    // FFN: MoE or dense (identical to causal forward).
+    let ffn_out = if w.router_proj.is_some() {
+        if cfg.gemma4_moe_router {
+            let h1 = ffn_swiglu(cfg, w, &normed2, w.ffn_post_norm1.as_ref());
+            let h2_norm = w
+                .ffn_norm2
+                .as_ref()
+                .expect("validated Gemma4 MoE layer must include ffn_norm_2");
+            let h2_normed = rms_norm(&hidden, Some(h2_norm), cfg.rms_norm_eps, None);
+            let (top_k_indices, top_k_weights) = moe_router_gemma4(cfg, w, &hidden);
+            let h2 = moe_experts_forward_gemma4(cfg, w, &h2_normed, &top_k_indices, &top_k_weights);
+            let h2 = rms_norm_opt(&h2, w.ffn_post_norm2.as_ref(), cfg.rms_norm_eps);
+            let combined = add(&h1, &h2, None);
+            rms_norm_opt(&combined, w.ffn_post_norm.as_ref(), cfg.rms_norm_eps)
+        } else {
+            let (top_k_indices, top_k_weights) = if cfg.glm_router.is_some() {
+                moe_router_glm(cfg, w, &normed2)
+            } else {
+                moe_router_qwen3(cfg, w, &normed2)
+            };
+            let shared_out = if w.shared_gate_proj.is_some() {
+                Some(shared_expert_forward(cfg, w, &normed2))
+            } else {
+                None
+            };
+            let out = if let Some(shared) = &shared_out {
+                moe_experts_forward_with_shared(
+                    cfg,
+                    w,
+                    &normed2,
+                    &top_k_indices,
+                    &top_k_weights,
+                    shared,
+                )
+            } else {
+                moe_experts_forward(cfg, w, &normed2, &top_k_indices, &top_k_weights)
+            };
+            rms_norm_opt(&out, w.ffn_post_norm.as_ref(), cfg.rms_norm_eps)
+        }
+    } else {
+        ffn_swiglu(cfg, w, &normed2, w.ffn_post_norm.as_ref())
+    };
+
+    // Residual + per-layer input gating.
+    if let (Some(gate_w), Some(proj_w), Some(post_norm), Some(pli)) = (
+        w.per_layer_gate.as_ref(),
+        w.per_layer_proj_w.as_ref(),
+        w.per_layer_post_norm.as_ref(),
+        per_layer_input,
+    ) {
+        let residual = add(&hidden, &ffn_out, None);
+        let projected = per_layer_input_gate_project(&qw(&residual, gate_w), pli, proj_w);
+        let normed = rms_norm(&projected, Some(post_norm), cfg.rms_norm_eps, None);
+        if let Some(scalar) = &w.layer_scalar {
+            add_then_multiply_scalar(&residual, &normed, scalar)
+        } else {
+            add(&residual, &normed, None)
+        }
+    } else if let Some(scalar) = &w.layer_scalar {
+        add_then_multiply_scalar(&hidden, &ffn_out, scalar)
+    } else {
+        add(&hidden, &ffn_out, None)
+    }
 }

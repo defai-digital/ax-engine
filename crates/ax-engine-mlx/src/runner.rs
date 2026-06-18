@@ -4024,6 +4024,10 @@ struct RequestState {
     ngram_request_disable_reason: NgramRequestDisableReason,
     /// Pre-verified bonus tokens ready to serve without a model run.
     bonus_queue: VecDeque<u32>,
+    /// Buffered tokens from the most recent diffusion block commit.
+    /// DiffusionGemma generates `canvas_size` tokens per block; the runner
+    /// drains them one at a time through the standard decode path.
+    diffusion_block_queue: VecDeque<u32>,
     /// The token to use as `last_token` for the next model run.
     /// None on the very first decode step (use framework-supplied input instead).
     next_model_last_token: Option<u32>,
@@ -4144,6 +4148,7 @@ impl RequestState {
             ngram_acceleration_disabled_for_request: false,
             ngram_request_disable_reason: NgramRequestDisableReason::None,
             bonus_queue: VecDeque::new(),
+            diffusion_block_queue: VecDeque::new(),
             next_model_last_token: None,
             pending_direct: None,
             direct_pipeline_emitted_tokens: 0,
@@ -5717,7 +5722,15 @@ impl MlxRunner {
                         prefill_prefix_cache_wall_us,
                         prefill_generation_state_wall_us,
                     );
-                    prefill_completes_prompt.then_some(tok)
+                    // DiffusionGemma: prefill only warms the KV cache with
+                    // prompt KV. All tokens come from diffusion block commits
+                    // during decode. Suppressing the prefill token avoids a KV
+                    // cache position gap between prompt and first block.
+                    if self.cfg.diffusion.is_some() {
+                        None
+                    } else {
+                        prefill_completes_prompt.then_some(tok)
+                    }
                 }
             }
             ExecutionMode::Decode => {
@@ -6417,6 +6430,32 @@ impl MlxRunner {
         // never populates the bonus queue.)
         if let Some(tok) = state.bonus_queue.pop_front() {
             state.decode_telemetry.record_bonus_token();
+            return tok;
+        }
+
+        // Serve buffered diffusion block tokens. DiffusionGemma generates
+        // canvas_size tokens per block via bidirectional denoising; the runner
+        // drains them one at a time through the standard decode path.
+        if let Some(tok) = state.diffusion_block_queue.pop_front() {
+            return tok;
+        }
+
+        // Diffusion path: when the diffusion queue is exhausted, generate a
+        // new block via bidirectional denoising + causal commit. This replaces
+        // the standard AR decode step for DiffusionGemma models.
+        if let Some(diff_cfg) = self.cfg.diffusion.as_ref() {
+            let token_offset = state.prompt_prefix_tokens.len() + state.generated_tokens.len();
+            let block = crate::diffusion::generate_diffusion_block(
+                &self.cfg,
+                diff_cfg,
+                &self.weights,
+                &mut state.cache,
+                &mut state.rng,
+                token_offset,
+            );
+            let mut queue: VecDeque<u32> = block.into();
+            let tok = queue.pop_front().unwrap_or(0);
+            state.diffusion_block_queue = queue;
             return tok;
         }
 
@@ -9930,6 +9969,30 @@ fn validate_mlx_supported_manifest(artifacts: &NativeModelArtifacts) -> Result<(
     {
         validate_gemma4_interleaved_attention(manifest)?;
     }
+    if manifest.model_family == "diffusion_gemma" {
+        validate_diffusion_gemma_manifest(manifest)?;
+    }
+    Ok(())
+}
+
+/// Validate DiffusionGemma-specific manifest fields.
+///
+/// DiffusionGemma uses the Gemma4 MoE backbone with bidirectional denoiser
+/// attention over a fixed canvas. The diffusion config block must be present
+/// and carry at least `canvas_size`.
+fn validate_diffusion_gemma_manifest(manifest: &NativeModelManifest) -> Result<(), MlxRunnerError> {
+    if manifest.layer_types.is_empty() {
+        return Err(MlxRunnerError::UnsupportedFeature(
+            "diffusion_gemma requires layer_types for interleaved SWA/full attention".to_string(),
+        ));
+    }
+    // canvas_size is the primary signal; other fields use sensible defaults
+    // in DiffusionConfig::from_manifest().
+    if manifest.diffusion.canvas_size.is_none() {
+        return Err(MlxRunnerError::UnsupportedFeature(
+            "diffusion_gemma requires diffusion.canvas_size in the manifest".to_string(),
+        ));
+    }
     Ok(())
 }
 
@@ -10396,7 +10459,10 @@ fn validate_qwen_gated_delta_linear_attention(
 fn validate_gemma4_interleaved_attention(
     manifest: &NativeModelManifest,
 ) -> Result<(), MlxRunnerError> {
-    if !matches!(manifest.model_family.as_str(), "gemma4" | "gemma3") {
+    if !matches!(
+        manifest.model_family.as_str(),
+        "gemma4" | "gemma3" | "diffusion_gemma"
+    ) {
         return Err(MlxRunnerError::UnsupportedFeature(format!(
             "interleaved sliding/full attention is not implemented for {} manifests",
             manifest.model_family
@@ -10475,9 +10541,9 @@ mod tests {
     use ax_engine_core::model::{NativeGlmRouterConfig, NativeMlaAttentionConfig};
     use ax_engine_core::scheduler::PositionRange;
     use ax_engine_core::{
-        AX_NATIVE_MODEL_MANIFEST_FILE, NativeLinearAttentionConfig, NativeModelManifest,
-        NativeMoeConfig, NativeRuntimeStatus, NativeTensorDataType, NativeTensorFormat,
-        NativeTensorSpec,
+        AX_NATIVE_MODEL_MANIFEST_FILE, NativeDiffusionConfig, NativeLinearAttentionConfig,
+        NativeModelManifest, NativeMoeConfig, NativeRuntimeStatus, NativeTensorDataType,
+        NativeTensorFormat, NativeTensorSpec,
     };
     use std::fs;
     use std::path::{Path, PathBuf};
@@ -12604,6 +12670,7 @@ mod tests {
             weight_sanitize: ax_engine_core::WeightSanitize::None,
             think_start_token_id: None,
             think_end_token_id: None,
+            diffusion: NativeDiffusionConfig::default(),
             tensors: vec![
                 tensor(
                     "model.embed_tokens.weight",

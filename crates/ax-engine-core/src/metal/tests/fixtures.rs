@@ -71,6 +71,7 @@ pub(super) fn write_valid_native_model_fixture() -> PathBuf {
         weight_sanitize: crate::model::WeightSanitize::None,
         think_start_token_id: None,
         think_end_token_id: None,
+        diffusion: crate::model::NativeDiffusionConfig::default(),
         tensors: vec![
             native_model_tensor(
                 "model.embed_tokens.weight",
@@ -281,6 +282,7 @@ pub(super) fn write_projection_native_model_fixture() -> PathBuf {
         weight_sanitize: crate::model::WeightSanitize::None,
         think_start_token_id: None,
         think_end_token_id: None,
+        diffusion: crate::model::NativeDiffusionConfig::default(),
         tensors: vec![
             native_model_tensor_with_file(
                 "model.embed_tokens.weight",
@@ -757,6 +759,7 @@ pub(super) fn write_grouped_projection_native_model_fixture() -> PathBuf {
         weight_sanitize: crate::model::WeightSanitize::None,
         think_start_token_id: None,
         think_end_token_id: None,
+        diffusion: crate::model::NativeDiffusionConfig::default(),
         tensors: vec![
             native_model_tensor_with_file(
                 "model.embed_tokens.weight",
@@ -1071,6 +1074,7 @@ pub(super) fn write_wide_projection_native_model_fixture() -> PathBuf {
         weight_sanitize: crate::model::WeightSanitize::None,
         think_start_token_id: None,
         think_end_token_id: None,
+        diffusion: crate::model::NativeDiffusionConfig::default(),
         tensors: vec![
             native_model_tensor_with_file(
                 "model.embed_tokens.weight",
@@ -1272,6 +1276,7 @@ pub(super) fn write_wide_direct_decode_native_model_fixture() -> PathBuf {
         weight_sanitize: crate::model::WeightSanitize::None,
         think_start_token_id: None,
         think_end_token_id: None,
+        diffusion: crate::model::NativeDiffusionConfig::default(),
         tensors: vec![
             native_model_tensor_with_file(
                 "model.embed_tokens.weight",
@@ -1648,6 +1653,7 @@ pub(super) fn write_direct_decode_native_model_fixture_with_variant(
         weight_sanitize: crate::model::WeightSanitize::None,
         think_start_token_id: None,
         think_end_token_id: None,
+        diffusion: crate::model::NativeDiffusionConfig::default(),
         tensors,
     };
 

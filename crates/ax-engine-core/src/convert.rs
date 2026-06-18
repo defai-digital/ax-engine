@@ -13,10 +13,10 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 
 use crate::model::{
-    AX_NATIVE_MODEL_MANIFEST_SCHEMA_VERSION, NativeGlmRouterConfig, NativeLinearAttentionConfig,
-    NativeMlaAttentionConfig, NativeModelManifest, NativeMoeConfig, NativeRuntimeStatus,
-    NativeTensorDataType, NativeTensorFormat, NativeTensorQuantization, NativeTensorRole,
-    NativeTensorSpec, WeightSanitize,
+    AX_NATIVE_MODEL_MANIFEST_SCHEMA_VERSION, NativeDiffusionConfig, NativeGlmRouterConfig,
+    NativeLinearAttentionConfig, NativeMlaAttentionConfig, NativeModelManifest, NativeMoeConfig,
+    NativeRuntimeStatus, NativeTensorDataType, NativeTensorFormat, NativeTensorQuantization,
+    NativeTensorRole, NativeTensorSpec, WeightSanitize,
 };
 
 // ---------------------------------------------------------------------------
@@ -39,7 +39,7 @@ pub enum ConvertError {
         source: serde_json::Error,
     },
     #[error(
-        "unsupported model type {model_type}; supported: qwen3, qwen3_5, qwen3_next, gemma4, gemma4_unified, gemma4_assistant, glm4_moe_lite, llama3, mistral3, mixtral, deepseek_v3, llama4 draft manifests"
+        "unsupported model type {model_type}; supported: qwen3, qwen3_5, qwen3_next, gemma4, gemma4_unified, gemma4_assistant, diffusion_gemma, glm4_moe_lite, llama3, mistral3, mixtral, deepseek_v3, llama4 draft manifests"
     )]
     UnsupportedModelType { model_type: String },
     #[error("missing config field: {field}")]
@@ -215,6 +215,7 @@ pub fn convert_hf_model_dir(model_dir: &Path) -> Result<NativeModelManifest, Con
         weight_sanitize: WeightSanitize::None,
         think_start_token_id: None,
         think_end_token_id: None,
+        diffusion: parse_diffusion_config(&config, &model_type),
         tensors: mapped_tensors,
     };
 
@@ -903,6 +904,12 @@ fn model_family_for_type(
             extra_tensor_map: Some(GEMMA4_ASSISTANT_EXTRA_TENSOR_MAP),
             uses_language_model_prefix: false,
         }),
+        "diffusion_gemma" => Ok(ModelFamily {
+            family_name: "diffusion_gemma",
+            tensor_map: HF_STANDARD_TENSOR_MAP,
+            extra_tensor_map: None,
+            uses_language_model_prefix: true,
+        }),
         "glm4_moe_lite" => Ok(ModelFamily {
             family_name: "glm4_moe_lite",
             tensor_map: HF_STANDARD_TENSOR_MAP,
@@ -989,6 +996,7 @@ fn uses_text_config(model_type: &str) -> bool {
             | "gemma4_unified"
             | "gemma4_unified_text"
             | "gemma4_assistant"
+            | "diffusion_gemma"
             | "llama4"
             | "qwen3_5"
             | "qwen3_5_moe"
@@ -1014,7 +1022,7 @@ fn is_qwen_gated_delta_family(model_type: &str) -> bool {
 fn is_gemma4_target_model_type(model_type: &str) -> bool {
     matches!(
         model_type,
-        "gemma4" | "gemma4_unified" | "gemma4_unified_text"
+        "gemma4" | "gemma4_unified" | "gemma4_unified_text" | "diffusion_gemma"
     )
 }
 
@@ -1032,6 +1040,55 @@ fn is_qwen_family_model_type(model_type: &str) -> bool {
 
 fn is_glm4_moe_lite(model_type: &str) -> bool {
     model_type == "glm4_moe_lite"
+}
+
+/// Parse diffusion-specific config fields from config.json.
+///
+/// DiffusionGemma may expose these at the top level or nested under a
+/// `diffusion_config` key. This helper checks both locations.
+fn parse_diffusion_config(config: &serde_json::Value, model_type: &str) -> NativeDiffusionConfig {
+    if model_type != "diffusion_gemma" {
+        return NativeDiffusionConfig::default();
+    }
+
+    let diffusion = config
+        .get("diffusion_config")
+        .cloned()
+        .unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new()));
+
+    let get_u32 = |key: &str| -> Option<u32> {
+        diffusion
+            .get(key)
+            .and_then(|v| v.as_u64())
+            .and_then(u64_to_u32)
+            .or_else(|| arch_u64(config, model_type, key).and_then(u64_to_u32))
+    };
+
+    let get_f32 = |key: &str| -> Option<f32> {
+        diffusion
+            .get(key)
+            .and_then(|v| v.as_f64())
+            .map(|v| v as f32)
+            .or_else(|| arch_f64(config, model_type, key).map(|v| v as f32))
+    };
+
+    let get_bool = |key: &str| -> Option<bool> {
+        diffusion
+            .get(key)
+            .and_then(|v| v.as_bool())
+            .or_else(|| arch_bool(config, model_type, key))
+    };
+
+    NativeDiffusionConfig {
+        canvas_size: get_u32("canvas_size"),
+        max_denoise_steps: get_u32("max_denoise_steps"),
+        self_conditioning: get_bool("self_conditioning"),
+        entropy_bound: get_f32("entropy_bound"),
+        entropy_threshold: get_f32("entropy_threshold"),
+        convergence_steps: get_u32("convergence_steps"),
+        temperature_start: get_f32("temperature_start"),
+        temperature_end: get_f32("temperature_end"),
+    }
 }
 
 fn is_mla_family(model_type: &str) -> bool {

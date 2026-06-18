@@ -9923,11 +9923,27 @@ mod tests {
         );
     }
 
+    fn find_repo_root_from(start: &Path) -> Option<PathBuf> {
+        start.ancestors().find_map(|ancestor| {
+            (ancestor.join("Cargo.toml").is_file()
+                && ancestor.join("benchmarks/manifests").is_dir())
+            .then(|| ancestor.to_path_buf())
+        })
+    }
+
+    fn repo_root_path() -> PathBuf {
+        if let Ok(cwd) = std::env::current_dir()
+            && let Some(root) = find_repo_root_from(&cwd)
+        {
+            return root;
+        }
+
+        find_repo_root_from(Path::new(env!("CARGO_MANIFEST_DIR")))
+            .expect("workspace root should contain Cargo.toml and benchmarks/manifests")
+    }
+
     fn repo_manifest_path(relative: &str) -> String {
-        Path::new(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .and_then(|p| p.parent())
-            .expect("workspace root should be two levels above CARGO_MANIFEST_DIR")
+        repo_root_path()
             .join(relative)
             .to_string_lossy()
             .into_owned()
@@ -10214,11 +10230,7 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[allow(dead_code)]
     fn compiled_repo_metal_build_dir() -> Option<PathBuf> {
-        let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .parent()?
-            .parent()?
-            .to_path_buf();
-        let build_dir = repo_root.join("build/metal");
+        let build_dir = repo_root_path().join("build/metal");
         let build_report = load_json_value(&build_dir.join("build_report.json")).ok()?;
         (build_report.get("status").and_then(Value::as_str) == Some("compiled"))
             .then_some(build_dir)
@@ -10300,6 +10312,7 @@ mod tests {
             weight_sanitize: ax_engine_core::WeightSanitize::None,
             think_start_token_id: None,
             think_end_token_id: None,
+            diffusion: ax_engine_core::NativeDiffusionConfig::default(),
             tensors: vec![
                 native_model_tensor(
                     "model.embed_tokens.weight",
@@ -10495,6 +10508,7 @@ mod tests {
             weight_sanitize: ax_engine_core::WeightSanitize::None,
             think_start_token_id: None,
             think_end_token_id: None,
+            diffusion: ax_engine_core::NativeDiffusionConfig::default(),
             tensors: vec![
                 native_model_tensor_with_file(
                     "model.embed_tokens.weight",

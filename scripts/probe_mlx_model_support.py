@@ -36,6 +36,7 @@ REPO_OWNED_TYPES = {
     "gemma4",
     "gemma4_unified",
     "gemma4_unified_text",
+    "diffusion_gemma",
 }
 
 

@@ -11,6 +11,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 SCRIPT_PATH = Path(__file__).with_name("bench_rapid_mlx_prompt_suites.py")
+REPO_ROOT = SCRIPT_PATH.parent.parent
 MODULE_SPEC = importlib.util.spec_from_file_location(
     "bench_rapid_mlx_prompt_suites", SCRIPT_PATH
 )
@@ -232,9 +233,7 @@ class RunCaseStreamHandlingTests(unittest.TestCase):
 class CaptureLightningIdentityTests(unittest.TestCase):
     def test_captures_git_state_and_pyproject(self) -> None:
         # Smoke against the real lightning source — this is read-only.
-        source = Path(
-            "/Users/akiralam/code/ax-engine_v5/.internal/reference/lightning-mlx"
-        )
+        source = REPO_ROOT / ".internal" / "reference" / "lightning-mlx"
         if not source.is_dir():
             self.skipTest("lightning source not available")
         ident = rapid.capture_lightning_source_identity(source)

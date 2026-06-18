@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SERVER_BIN="${SERVER_BIN:-/Users/akiralam/code/ax-engine_v5/target/release/ax-engine-server}"
+QA_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$QA_DIR/.." && pwd)"
+SERVER_BIN="${SERVER_BIN:-$REPO_ROOT/target/release/ax-engine-server}"
 HF_CACHE="${HF_CACHE:-$HOME/.cache/huggingface/hub}"
-QA_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPORT_DIR="${REPORT_DIR:-$QA_DIR/reports}"
 PORT="${PORT:-8080}"
 TIMEOUT="${TIMEOUT:-120}"

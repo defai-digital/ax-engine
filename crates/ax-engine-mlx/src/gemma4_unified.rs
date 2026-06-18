@@ -546,6 +546,7 @@ mod tests {
             moe_topk_group: 1,
             think_start_token_id: None,
             think_end_token_id: None,
+            diffusion: None,
         }
     }
 

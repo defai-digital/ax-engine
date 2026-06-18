@@ -624,6 +624,7 @@ mod tests {
             weight_sanitize: ax_engine_core::WeightSanitize::None,
             think_start_token_id: None,
             think_end_token_id: None,
+            diffusion: ax_engine_core::NativeDiffusionConfig::default(),
             tensors: Vec::new(),
         }
     }
