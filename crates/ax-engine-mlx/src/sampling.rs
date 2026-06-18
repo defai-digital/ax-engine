@@ -494,27 +494,7 @@ pub fn indexed_token_logprob(
 }
 
 /// Sample one token with temperature / top-k / top-p filtering; also return its
-/// log-probability under the filtered distribution.
-///
-/// Used for MTP draft tokens so the caller can perform rejection-sampling
-/// acceptance: `accept_prob = min(1, p_target(d) / p_draft(d))`.
-///
-/// Returns `(token, log_prob)`.  When `temperature <= 0.0` (greedy), returns
-/// `(argmax, 0.0)` — the convention that log_prob=0 signals a point-mass draft
-/// that should fall back to greedy acceptance rather than rejection sampling.
-pub fn sample_categorical_with_logprob(
-    logits: &[f32],
-    sampling: MlxSamplingParams,
-    rng: &mut Xorshift64,
-) -> (u32, f32) {
-    let Some(distribution) = token_distribution(logits, sampling) else {
-        return (argmax_f32(logits), 0.0);
-    };
-    distribution
-        .sample_with_logprob(rng)
-        .unwrap_or((argmax_f32(logits), 0.0))
-}
-
+/// log-probability and the full filtered distribution.
 pub fn sample_categorical_with_logprob_and_distribution(
     logits: &[f32],
     sampling: MlxSamplingParams,
