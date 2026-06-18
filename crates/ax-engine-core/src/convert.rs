@@ -272,6 +272,8 @@ struct ModelFamily {
     tensor_map: &'static [(&'static str, TensorMapping)],
     extra_tensor_map: Option<&'static [(&'static str, TensorMapping)]>,
     uses_language_model_prefix: bool,
+    /// DiffusionGemma stores tensors under `model.decoder.*` instead of `model.*`.
+    uses_decoder_prefix: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -814,6 +816,23 @@ const GEMMA4_UNIFIED_EXTRA_TENSOR_MAP: &[(&str, TensorMapping)] = &[
     ),
 ];
 
+/// DiffusionGemma stores tensors under `model.decoder.*` instead of `model.*`.
+/// This map handles the global tensors with that prefix.
+const DECODER_PREFIX_TENSOR_MAP: &[(&str, TensorMapping)] = &[
+    (
+        "model.decoder.embed_tokens.weight",
+        TensorMapping::Global(NativeTensorRole::TokenEmbedding),
+    ),
+    (
+        "model.decoder.norm.weight",
+        TensorMapping::Global(NativeTensorRole::FinalNorm),
+    ),
+    (
+        "model.decoder.lm_head.weight",
+        TensorMapping::Global(NativeTensorRole::LmHead),
+    ),
+];
+
 /// Gemma4 and Qwen3.5+ wrap the text model under `language_model.model.`, so
 /// tensor names in safetensors appear as
 /// `language_model.model.layers.0.self_attn.q_proj.weight`.
@@ -863,6 +882,7 @@ fn model_family_for_type(
             tensor_map: HF_STANDARD_TENSOR_MAP,
             extra_tensor_map: None,
             uses_language_model_prefix: false,
+            uses_decoder_prefix: false,
         }),
         "qwen3_5" | "qwen3.5" | "qwen3_5_moe" | "qwen3_5_text" => Ok(ModelFamily {
             family_name: "qwen3_5",
@@ -875,18 +895,21 @@ fn model_family_for_type(
                 None
             },
             uses_language_model_prefix: true,
+            uses_decoder_prefix: false,
         }),
         "qwen3_next" | "qwen3.6" | "qwen3_6" => Ok(ModelFamily {
             family_name: "qwen3_next",
             tensor_map: HF_STANDARD_TENSOR_MAP,
             extra_tensor_map: Some(QWEN3_MOE_EXTRA_TENSOR_MAP),
             uses_language_model_prefix: true,
+            uses_decoder_prefix: false,
         }),
         "qwen3_moe" => Ok(ModelFamily {
             family_name: "qwen3",
             tensor_map: HF_STANDARD_TENSOR_MAP,
             extra_tensor_map: Some(QWEN3_MOE_EXTRA_TENSOR_MAP),
             uses_language_model_prefix: false,
+            uses_decoder_prefix: false,
         }),
         "gemma4" | "gemma4_unified" | "gemma4_unified_text" => Ok(ModelFamily {
             family_name: "gemma4",
@@ -897,54 +920,63 @@ fn model_family_for_type(
                 None
             },
             uses_language_model_prefix: true,
+            uses_decoder_prefix: false,
         }),
         "gemma4_assistant" => Ok(ModelFamily {
             family_name: "gemma4_assistant",
             tensor_map: HF_STANDARD_TENSOR_MAP,
             extra_tensor_map: Some(GEMMA4_ASSISTANT_EXTRA_TENSOR_MAP),
             uses_language_model_prefix: false,
+            uses_decoder_prefix: false,
         }),
         "diffusion_gemma" => Ok(ModelFamily {
             family_name: "diffusion_gemma",
             tensor_map: HF_STANDARD_TENSOR_MAP,
             extra_tensor_map: None,
             uses_language_model_prefix: true,
+            uses_decoder_prefix: true,
         }),
         "glm4_moe_lite" => Ok(ModelFamily {
             family_name: "glm4_moe_lite",
             tensor_map: HF_STANDARD_TENSOR_MAP,
             extra_tensor_map: Some(GLM4_MOE_LITE_EXTRA_TENSOR_MAP),
             uses_language_model_prefix: false,
+            uses_decoder_prefix: false,
         }),
         "llama" => Ok(ModelFamily {
             family_name: "llama3",
             tensor_map: HF_STANDARD_TENSOR_MAP,
             extra_tensor_map: None,
             uses_language_model_prefix: false,
+            uses_decoder_prefix: false,
         }),
         "mistral3" | "ministral3" => Ok(ModelFamily {
             family_name: "mistral3",
             tensor_map: HF_STANDARD_TENSOR_MAP,
             extra_tensor_map: None,
             uses_language_model_prefix: false,
+            uses_decoder_prefix: false,
         }),
         "mixtral" => Ok(ModelFamily {
             family_name: "mixtral",
             tensor_map: HF_STANDARD_TENSOR_MAP,
             extra_tensor_map: Some(MIXTRAL_EXTRA_TENSOR_MAP),
             uses_language_model_prefix: false,
+            uses_decoder_prefix: false,
         }),
         "deepseek_v3" | "deepseek_v32" => Ok(ModelFamily {
             family_name: "deepseek_v3",
             tensor_map: HF_STANDARD_TENSOR_MAP,
             extra_tensor_map: Some(DEEPSEEK_V3_EXTRA_TENSOR_MAP),
             uses_language_model_prefix: false,
+            uses_decoder_prefix: false,
         }),
         "llama4" => Ok(ModelFamily {
             family_name: "llama4",
             tensor_map: HF_STANDARD_TENSOR_MAP,
             extra_tensor_map: Some(LLAMA4_EXTRA_TENSOR_MAP),
             uses_language_model_prefix: true,
+            uses_decoder_prefix: false,
         }),
         other => Err(ConvertError::UnsupportedModelType {
             model_type: other.to_string(),
@@ -1044,8 +1076,9 @@ fn is_glm4_moe_lite(model_type: &str) -> bool {
 
 /// Parse diffusion-specific config fields from config.json.
 ///
-/// DiffusionGemma may expose these at the top level or nested under a
-/// `diffusion_config` key. This helper checks both locations.
+/// DiffusionGemma may expose these at the top level, nested under a
+/// `diffusion_config` key, under `text_config`, or under `generation_config`
+/// / `sampler_config`. This helper checks all relevant locations.
 fn parse_diffusion_config(config: &serde_json::Value, model_type: &str) -> NativeDiffusionConfig {
     if model_type != "diffusion_gemma" {
         return NativeDiffusionConfig::default();
@@ -1056,6 +1089,9 @@ fn parse_diffusion_config(config: &serde_json::Value, model_type: &str) -> Nativ
         .cloned()
         .unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new()));
 
+    let generation_config = config.get("generation_config");
+    let sampler_config = config.get("sampler_config");
+
     let get_u32 = |key: &str| -> Option<u32> {
         diffusion
             .get(key)
@@ -1064,12 +1100,29 @@ fn parse_diffusion_config(config: &serde_json::Value, model_type: &str) -> Nativ
             .or_else(|| arch_u64(config, model_type, key).and_then(u64_to_u32))
     };
 
-    let get_f32 = |key: &str| -> Option<f32> {
+    // Helper for u32 fields that may also be under generation_config.
+    let get_u32_gen = |key: &str| -> Option<u32> {
+        get_u32(key).or_else(|| {
+            generation_config
+                .and_then(|gc| gc.get(key))
+                .and_then(|v| v.as_u64())
+                .and_then(u64_to_u32)
+        })
+    };
+
+    // Helper for f32 fields that may also be under sampler_config.
+    let get_f32_sampler = |key: &str| -> Option<f32> {
         diffusion
             .get(key)
             .and_then(|v| v.as_f64())
             .map(|v| v as f32)
             .or_else(|| arch_f64(config, model_type, key).map(|v| v as f32))
+            .or_else(|| {
+                sampler_config
+                    .and_then(|sc| sc.get(key))
+                    .and_then(|v| v.as_f64())
+                    .map(|v| v as f32)
+            })
     };
 
     let get_bool = |key: &str| -> Option<bool> {
@@ -1079,15 +1132,19 @@ fn parse_diffusion_config(config: &serde_json::Value, model_type: &str) -> Nativ
             .or_else(|| arch_bool(config, model_type, key))
     };
 
+    // canvas_size: check both "canvas_size" and "canvas_length" (real config uses canvas_length).
+    let canvas_size = get_u32("canvas_size").or_else(|| get_u32("canvas_length"));
+
     NativeDiffusionConfig {
-        canvas_size: get_u32("canvas_size"),
-        max_denoise_steps: get_u32("max_denoise_steps"),
+        canvas_size,
+        max_denoise_steps: get_u32_gen("max_denoise_steps")
+            .or_else(|| get_u32_gen("max_denoising_steps")),
         self_conditioning: get_bool("self_conditioning"),
-        entropy_bound: get_f32("entropy_bound"),
-        entropy_threshold: get_f32("entropy_threshold"),
+        entropy_bound: get_f32_sampler("entropy_bound"),
+        entropy_threshold: get_f32_sampler("entropy_threshold"),
         convergence_steps: get_u32("convergence_steps"),
-        temperature_start: get_f32("temperature_start"),
-        temperature_end: get_f32("temperature_end"),
+        temperature_start: get_f32_sampler("temperature_start"),
+        temperature_end: get_f32_sampler("temperature_end"),
     }
 }
 
@@ -1212,6 +1269,8 @@ fn glm_router_config(config: &serde_json::Value, model_type: &str) -> NativeGlmR
 
 fn moe_config(config: &serde_json::Value, model_type: &str) -> NativeMoeConfig {
     let is_gemma4_moe = arch_bool(config, model_type, "enable_moe_block").unwrap_or(false);
+    let is_diffusion_gemma_moe =
+        model_type == "diffusion_gemma" && config_has_moe_experts(config, model_type);
     let is_qwen3_moe = matches!(model_type, "qwen3_moe" | "qwen3_5_moe" | "qwen3_5_text")
         || (is_qwen3_5_family(model_type) && config_has_moe_experts(config, model_type));
     let is_qwen3_next_moe = matches!(model_type, "qwen3_next" | "qwen3_6" | "qwen3.6");
@@ -1220,6 +1279,7 @@ fn moe_config(config: &serde_json::Value, model_type: &str) -> NativeMoeConfig {
     let is_deepseek_v3 = matches!(model_type, "deepseek_v3" | "deepseek_v32");
     let is_llama4 = model_type == "llama4";
     if !is_gemma4_moe
+        && !is_diffusion_gemma_moe
         && !is_qwen3_moe
         && !is_qwen3_next_moe
         && !is_glm_moe
@@ -1868,6 +1928,23 @@ fn match_tensor(name: &str, family: &ModelFamily) -> Option<(NativeTensorRole, O
             match_prefixed_per_layer(name, "model.layers.", QWEN35_LINEAR_TENSOR_MAP)
         {
             return Some(result);
+        }
+    }
+
+    // Try model.decoder.* prefix (DiffusionGemma)
+    if family.uses_decoder_prefix {
+        if let Some(result) = match_tensor_in_map(name, DECODER_PREFIX_TENSOR_MAP) {
+            return Some(result);
+        }
+        if let Some(result) =
+            match_prefixed_per_layer(name, "model.decoder.layers.", family.tensor_map)
+        {
+            return Some(result);
+        }
+        if let Some(extra) = family.extra_tensor_map {
+            if let Some(result) = match_prefixed_per_layer(name, "model.decoder.layers.", extra) {
+                return Some(result);
+            }
         }
     }
 
@@ -4563,6 +4640,181 @@ mod tests {
 
         write_manifest(&dir, &manifest).expect("write should succeed");
         crate::model::NativeModelArtifacts::from_dir(&dir).expect("moe manifest should validate");
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn converts_diffusion_gemma_with_decoder_prefix_and_moe() {
+        let dir = unique_test_dir("diffusion_gemma_decoder_prefix");
+        write_config(
+            &dir,
+            serde_json::json!({
+                "model_type": "diffusion_gemma",
+                "vocab_size": 262144,
+                "canvas_length": 256,
+                "generation_config": {
+                    "max_denoising_steps": 48
+                },
+                "sampler_config": {
+                    "entropy_bound": 0.1
+                },
+                "text_config": {
+                    "hidden_size": 3584,
+                    "num_attention_heads": 8,
+                    "num_key_value_heads": 2,
+                    "head_dim": 256,
+                    "num_hidden_layers": 1,
+                    "vocab_size": 262144,
+                    "num_experts": 128,
+                    "top_k_experts": 8,
+                    "moe_intermediate_size": 704
+                },
+                "quantization": {
+                    "group_size": 64,
+                    "bits": 4,
+                    "mode": "affine"
+                }
+            }),
+        );
+        write_fake_safetensors(
+            &dir,
+            "model.safetensors",
+            &[
+                ("model.decoder.embed_tokens.weight", "BF16", &[262144, 3584]),
+                ("model.decoder.norm.weight", "BF16", &[3584]),
+                ("lm_head.weight", "BF16", &[262144, 3584]),
+                (
+                    "model.decoder.layers.0.input_layernorm.weight",
+                    "BF16",
+                    &[3584],
+                ),
+                (
+                    "model.decoder.layers.0.self_attn.q_proj.weight",
+                    "BF16",
+                    &[2048, 3584],
+                ),
+                (
+                    "model.decoder.layers.0.self_attn.k_proj.weight",
+                    "BF16",
+                    &[512, 3584],
+                ),
+                (
+                    "model.decoder.layers.0.self_attn.v_proj.weight",
+                    "BF16",
+                    &[512, 3584],
+                ),
+                (
+                    "model.decoder.layers.0.self_attn.o_proj.weight",
+                    "BF16",
+                    &[3584, 2048],
+                ),
+                (
+                    "model.decoder.layers.0.post_attention_layernorm.weight",
+                    "BF16",
+                    &[3584],
+                ),
+                (
+                    "model.decoder.layers.0.pre_feedforward_layernorm.weight",
+                    "BF16",
+                    &[3584],
+                ),
+                (
+                    "model.decoder.layers.0.post_feedforward_layernorm.weight",
+                    "BF16",
+                    &[3584],
+                ),
+                (
+                    "model.decoder.layers.0.pre_feedforward_layernorm_2.weight",
+                    "BF16",
+                    &[3584],
+                ),
+                (
+                    "model.decoder.layers.0.post_feedforward_layernorm_1.weight",
+                    "BF16",
+                    &[3584],
+                ),
+                (
+                    "model.decoder.layers.0.post_feedforward_layernorm_2.weight",
+                    "BF16",
+                    &[3584],
+                ),
+                (
+                    "model.decoder.layers.0.router.proj.weight",
+                    "BF16",
+                    &[128, 3584],
+                ),
+                (
+                    "model.decoder.layers.0.experts.switch_glu.gate_proj.weight",
+                    "BF16",
+                    &[128, 704, 3584],
+                ),
+                (
+                    "model.decoder.layers.0.experts.switch_glu.up_proj.weight",
+                    "BF16",
+                    &[128, 704, 3584],
+                ),
+                (
+                    "model.decoder.layers.0.experts.switch_glu.down_proj.weight",
+                    "BF16",
+                    &[128, 3584, 704],
+                ),
+            ],
+        );
+
+        let manifest =
+            convert_hf_model_dir(&dir).expect("diffusion_gemma conversion should succeed");
+
+        // Model family.
+        assert_eq!(manifest.model_family, "diffusion_gemma");
+
+        // Diffusion config: canvas_length -> canvas_size, generation_config.max_denoising_steps.
+        assert_eq!(manifest.diffusion.canvas_size, Some(256));
+        assert_eq!(manifest.diffusion.max_denoise_steps, Some(48));
+        assert_eq!(manifest.diffusion.entropy_bound, Some(0.1));
+
+        // MoE config detected via text_config.num_experts.
+        assert_eq!(manifest.moe.expert_count, Some(128));
+        assert_eq!(manifest.moe.experts_per_token, Some(8));
+        assert_eq!(manifest.moe.expert_intermediate_size, Some(704));
+
+        // Tensors mapped from model.decoder.* prefix.
+        assert!(
+            !manifest.tensors.is_empty(),
+            "tensors must not be empty after mapping"
+        );
+        assert!(
+            manifest
+                .tensors
+                .iter()
+                .any(|t| t.role == NativeTensorRole::TokenEmbedding),
+            "embed_tokens must map via model.decoder.* prefix"
+        );
+        assert!(
+            manifest
+                .tensors
+                .iter()
+                .any(|t| t.role == NativeTensorRole::FinalNorm),
+            "norm must map via model.decoder.* prefix"
+        );
+        assert!(
+            manifest
+                .tensors
+                .iter()
+                .any(|t| t.role == NativeTensorRole::AttentionQ),
+            "q_proj must map via model.decoder.layers.* prefix"
+        );
+        assert!(
+            manifest
+                .tensors
+                .iter()
+                .any(|t| t.role == NativeTensorRole::FfnGateExps),
+            "expert gate must map via model.decoder.layers.* prefix"
+        );
+
+        write_manifest(&dir, &manifest).expect("write should succeed");
+        crate::model::NativeModelArtifacts::from_dir(&dir)
+            .expect("diffusion_gemma manifest should validate");
 
         let _ = fs::remove_dir_all(dir);
     }

@@ -207,6 +207,57 @@ class MlxModelSupportProbeTests(unittest.TestCase):
         self.assertTrue(report["checkpoint_features"]["attention_compressor"])
         self.assertIn("tid2eid", " ".join(report["blockers"]))
 
+    def test_known_family_manifest_ready_reports_manifest_features(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            model_dir = write_model(root, "qwen3_6", ["model.embed_tokens.weight"])
+            (model_dir / "model-manifest.json").write_text(
+                json.dumps(
+                    {
+                        "model_family": "qwen3_next",
+                        "runtime_status": {"ready": True},
+                        "tensors": [{"role": "token_embedding"}],
+                    }
+                )
+            )
+
+            report = probe.probe_model(model_dir)
+
+        self.assertEqual(report["support_decision"], "repo_owned_runtime_ready")
+        self.assertTrue(report["can_implement_repo_owned_runtime"])
+        self.assertEqual(report["blockers"], [])
+        self.assertEqual(
+            report["checkpoint_features"]["expected_model_family"], "qwen3_next"
+        )
+        self.assertEqual(
+            report["checkpoint_features"]["manifest_model_family"], "qwen3_next"
+        )
+        self.assertEqual(report["checkpoint_features"]["manifest_tensor_count"], 1)
+        self.assertTrue(report["checkpoint_features"]["manifest_runtime_ready"])
+
+    def test_known_family_manifest_family_mismatch_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            model_dir = write_model(root, "diffusion_gemma", ["model.decoder.norm.weight"])
+            (model_dir / "model-manifest.json").write_text(
+                json.dumps(
+                    {
+                        "model_family": "gemma4",
+                        "runtime_status": {"ready": True},
+                        "tensors": [{"role": "final_norm"}],
+                    }
+                )
+            )
+
+            report = probe.probe_model(model_dir)
+
+        self.assertEqual(report["support_decision"], "known_family_manifest_invalid")
+        self.assertFalse(report["can_implement_repo_owned_runtime"])
+        self.assertIn("does not match expected AX family", " ".join(report["blockers"]))
+        self.assertEqual(
+            report["checkpoint_features"]["expected_model_family"], "diffusion_gemma"
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

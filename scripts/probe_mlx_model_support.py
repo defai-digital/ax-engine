@@ -319,23 +319,100 @@ def probe_gemma4_unified(model_dir: Path, keys: list[str]) -> dict[str, Any]:
     }
 
 
+def _expected_ax_family(model_type: str) -> str:
+    if model_type in ("qwen3_5", "qwen3.5", "qwen3_5_moe", "qwen3_5_text"):
+        return "qwen3_5"
+    if model_type in ("qwen3_next", "qwen3_6", "qwen3.6"):
+        return "qwen3_next"
+    if model_type == "qwen3_moe":
+        return "qwen3"
+    return model_type
+
+
+def _validate_manifest(
+    model_dir: Path, expected_family: str
+) -> tuple[bool | None, list[str], dict[str, Any]]:
+    """Validate a model-manifest.json file.
+
+    Returns (ready, blockers, manifest_dict).
+    ready is None if manifest doesn't exist, False if invalid, True if valid.
+    """
+    manifest_path = model_dir / "model-manifest.json"
+    if not manifest_path.exists():
+        return None, ["AX model-manifest.json is absent for this artifact"], {}
+
+    try:
+        manifest = _read_json(manifest_path)
+    except Exception as e:
+        return False, [f"AX model-manifest.json failed to parse: {e}"], {}
+
+    blockers: list[str] = []
+
+    manifest_family = manifest.get("model_family")
+    if manifest_family and manifest_family != expected_family:
+        blockers.append(
+            f"AX model-manifest.json model_family {manifest_family!r} "
+            f"does not match expected AX family {expected_family!r}"
+        )
+
+    tensors = manifest.get("tensors")
+    if not tensors or not isinstance(tensors, list) or len(tensors) == 0:
+        blockers.append(
+            "AX model-manifest.json has empty or missing tensors array"
+        )
+
+    runtime_status = manifest.get("runtime_status")
+    if isinstance(runtime_status, dict) and not runtime_status.get("ready"):
+        blockers.append("AX model-manifest.json is not runtime-ready")
+
+    ready = len(blockers) == 0
+    return ready, blockers, manifest
+
+
 def generic_probe(model_dir: Path, model_type: str, keys: list[str]) -> dict[str, Any]:
-    manifest_exists = (model_dir / "model-manifest.json").exists()
+    expected_family = _expected_ax_family(model_type)
+    manifest_ready, manifest_blockers, manifest = _validate_manifest(
+        model_dir, expected_family
+    )
+    manifest_exists = manifest_ready is not None
+    tensors = manifest.get("tensors") if isinstance(manifest, dict) else None
+    runtime_status = manifest.get("runtime_status") if isinstance(manifest, dict) else None
+    manifest_runtime_ready = (
+        bool(runtime_status.get("ready")) if isinstance(runtime_status, dict) else None
+    )
+    manifest_features = {
+        "expected_model_family": expected_family,
+        "manifest_model_family": manifest.get("model_family"),
+        "manifest_tensor_count": len(tensors) if isinstance(tensors, list) else 0,
+        "manifest_runtime_ready": manifest_runtime_ready,
+    }
+
     if model_type in REPO_OWNED_TYPES:
+        if manifest_ready is True:
+            return {
+                "support_decision": "repo_owned_runtime_ready",
+                "can_implement_repo_owned_runtime": True,
+                "reference_support": "existing_ax_family",
+                "reference_files": [],
+                "checkpoint_features": manifest_features,
+                "blockers": [],
+                "next_steps": [],
+            }
+        blockers = manifest_blockers if manifest_exists else [
+            "AX model-manifest.json is absent for this artifact"
+        ]
         return {
-            "support_decision": "repo_owned_known_family"
+            "support_decision": "known_family_manifest_invalid"
             if manifest_exists
             else "known_family_manifest_missing",
-            "can_implement_repo_owned_runtime": manifest_exists,
+            "can_implement_repo_owned_runtime": False,
             "reference_support": "existing_ax_family",
             "reference_files": [],
-            "checkpoint_features": {},
-            "blockers": []
-            if manifest_exists
-            else ["AX model-manifest.json is absent for this artifact"],
-            "next_steps": []
-            if manifest_exists
-            else ["generate and validate model-manifest.json before runtime claims"],
+            "checkpoint_features": manifest_features if manifest_exists else {},
+            "blockers": blockers,
+            "next_steps": [
+                "regenerate and validate model-manifest.json before runtime claims"
+            ],
         }
     return {
         "support_decision": "unknown_model_type",
