@@ -1,5 +1,5 @@
 pub(crate) mod attention_mask;
-pub mod diffusion;
+pub(crate) mod diffusion;
 pub mod disk_prefix_cache;
 pub mod fastpath;
 pub mod gemma4_assistant_mtp;
