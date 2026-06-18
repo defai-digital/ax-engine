@@ -48,3 +48,7 @@ path = "src/bin/moe_downproj_fusion_probe.rs"
 [[bin]]
 name = "moe-fused-gather-qmm-probe"
 path = "src/bin/moe_fused_gather_qmm_probe.rs"
+
+[[bin]]
+name = "diffusion-microbench"
+path = "src/bin/diffusion_microbench.rs"
