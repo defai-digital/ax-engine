@@ -26,6 +26,7 @@ const VOCAB_SIZE: usize = 262_144; // Gemma4 SentencePiece
 const HIDDEN_SIZE: usize = 3584; // Gemma4 26B hidden dim
 const SLIDING_WINDOW: usize = 1024; // Gemma4 SWA half-window
 const ENTROPY_BOUND: f32 = 0.1;
+const MAX_DENOISE_STEPS: usize = 8; // DiffusionGemma default
 
 // Benchmark iteration counts (2 warmup + N measure, report median).
 const WARMUP: usize = 2;
@@ -43,6 +44,8 @@ fn main() {
     bench_entropy_sampling();
     bench_bidirectional_mask();
     bench_self_conditioning_embed();
+    bench_prefill_rate();
+    bench_decode_rate();
 }
 
 // ── 1. Entropy-bound sampling ─────────────────────────────────────────
@@ -257,6 +260,258 @@ fn bench_gpu_matmul_self_cond() {
     let (warmup_result, median, all) = timed_bench(run);
     println!("    result hidden dim (warmup): {warmup_result}");
     print_timing(median, &all);
+}
+
+// ── 5. Prefill rate projection ─────────────────────────────────────────
+
+fn bench_prefill_rate() {
+    // Prefill rate = tokens/sec through the causal encoder.
+    // DiffusionGemma uses the same Gemma4 causal forward for prefill.
+    //
+    // GPU forward pass cost is approximated by MLX matmul of the dominant
+    // operation: QKV projection [1, chunk_size, hidden] × [hidden, 3*hidden]
+    // plus FFN [1, chunk_size, hidden] × [hidden, 4*hidden].
+    //
+    // Measured overhead: embedding lookup, KV cache alloc, queue dispatch.
+    println!("[5] Prefill rate projection");
+    println!("    Simulating Gemma4 26B causal forward pass overhead");
+    println!();
+
+    // Test chunk sizes matching typical prefill chunks.
+    let chunk_sizes = [256, 512, 1024, 2048];
+
+    for &chunk in &chunk_sizes {
+        // Simulate GPU QKV projection: [1, chunk, hidden] x [hidden, 3*hidden].
+        let qkv_data = vec![0.0_f32; chunk * HIDDEN_SIZE];
+        let qkv = MlxArray::from_raw_data(
+            qkv_data.as_ptr() as *const u8,
+            qkv_data.len() * std::mem::size_of::<f32>(),
+            &[1, chunk as i32, HIDDEN_SIZE as i32],
+            MlxDtype::Float32,
+        );
+        let qkv = astype(&qkv, MlxDtype::Bfloat16, None);
+
+        let weight_data = vec![0.001_f32; HIDDEN_SIZE * 3 * HIDDEN_SIZE];
+        let weight = MlxArray::from_raw_data(
+            weight_data.as_ptr() as *const u8,
+            weight_data.len() * std::mem::size_of::<f32>(),
+            &[HIDDEN_SIZE as i32, (3 * HIDDEN_SIZE) as i32],
+            MlxDtype::Float32,
+        );
+        let weight = astype(&weight, MlxDtype::Bfloat16, None);
+
+        // Warmup.
+        eval(&[&qkv, &weight]);
+        let w = matmul(&qkv, &weight, None);
+        eval(&[&w]);
+
+        // Measure QKV projection (dominant per-layer GPU op).
+        let run = || {
+            let result = matmul(&qkv, &weight, None);
+            eval(&[&result]);
+            result.shape()[2] as usize
+        };
+
+        let (warmup_result, median, all) = timed_bench(run);
+
+        // Project: Gemma4 26B has ~46 layers.
+        // Total GPU time per chunk ≈ per-layer * num_layers.
+        // Prefill rate = chunk_tokens / total_time.
+        let per_layer_us = median.as_micros() as f64;
+        let num_layers = 46.0; // Gemma4 26B
+        let total_gpu_us = per_layer_us * num_layers;
+        let tokens_per_sec = chunk as f64 / (total_gpu_us / 1_000_000.0);
+
+        println!("    chunk={chunk:>5}: QKV proj median={per_layer_us:.0}us, ");
+        println!("    proj throughput: {tokens_per_sec:.0} tok/s ");
+        println!("    (estimated, {num_layers:.0} layers x {per_layer_us:.0}us/layer)");
+        let _ = warmup_result;
+        let _ = all;
+        println!();
+    }
+}
+
+// ── 6. Decode rate projection ─────────────────────────────────────────
+
+fn bench_decode_rate() {
+    // Decode rate = effective tokens/sec including full denoise cycle.
+    //
+    // One block generates CANVAS_SIZE tokens via:
+    //   - canvas init (random token gen)
+    //   - N denoise steps (bidirectional forward + sampling + self-cond)
+    //   - commit pass (causal forward over canvas)
+    //
+    // CPU overhead = canvas init + sampling + self-cond matmul + token clone.
+    // GPU cost = N x bidirectional forward + 1 x causal forward (projected).
+    //
+    // Before optimization: self-cond = 14.2s CPU (dominated everything).
+    // After optimization: self-cond = 9ms GPU matmul.
+    println!("[6] Decode rate projection (full block cycle)");
+    println!("    canvas_size = {CANVAS_SIZE}, max_denoise_steps = {MAX_DENOISE_STEPS}");
+    println!();
+
+    // Measure CPU-side overhead per denoise step.
+    // (1) Canvas init.
+    let run_init = || {
+        let tokens: Vec<u32> = (0..CANVAS_SIZE).map(|i| (i * 7) as u32).collect();
+        tokens.len()
+    };
+    let (_, init_median, _) = timed_bench(run_init);
+
+    // (2) Entropy sampling (from benchmark 1).
+    let entropy: Vec<f32> = (0..CANVAS_SIZE)
+        .map(|i| {
+            if i % 4 == 0 {
+                0.001 + (i as f32 * 0.0001)
+            } else {
+                2.0 + (i as f32 * 0.01)
+            }
+        })
+        .collect();
+    let run_sampling = || {
+        let mut position_order: Vec<usize> = (0..CANVAS_SIZE).collect();
+        position_order.sort_by(|&a, &b| entropy[a].total_cmp(&entropy[b]));
+        let mut accept_mask = vec![false; CANVAS_SIZE];
+        let mut cumulative_entropy = 0.0_f32;
+        for &pos in &position_order {
+            if cumulative_entropy + entropy[pos] > ENTROPY_BOUND {
+                break;
+            }
+            accept_mask[pos] = true;
+            cumulative_entropy += entropy[pos];
+        }
+        if !accept_mask.iter().any(|&v| v) {
+            accept_mask[position_order[0]] = true;
+        }
+        accept_mask.iter().filter(|&&v| v).count()
+    };
+    let (_, sampling_median, _) = timed_bench(run_sampling);
+
+    // (3) GPU self-conditioning matmul.
+    let prob_data = build_sparse_prob(CANVAS_SIZE, VOCAB_SIZE, 1000);
+    let prob = MlxArray::from_raw_data(
+        prob_data.as_ptr() as *const u8,
+        prob_data.len() * std::mem::size_of::<f32>(),
+        &[1, CANVAS_SIZE as i32, VOCAB_SIZE as i32],
+        MlxDtype::Float32,
+    );
+    let prob = astype(&prob, MlxDtype::Bfloat16, None);
+    let embed_data = build_embed_table(VOCAB_SIZE, HIDDEN_SIZE);
+    let embed = MlxArray::from_raw_data(
+        embed_data.as_ptr() as *const u8,
+        embed_data.len() * std::mem::size_of::<f32>(),
+        &[VOCAB_SIZE as i32, HIDDEN_SIZE as i32],
+        MlxDtype::Float32,
+    );
+    let embed = astype(&embed, MlxDtype::Bfloat16, None);
+    eval(&[&prob, &embed]);
+    let w = matmul(&prob, &embed, None);
+    eval(&[&w]);
+
+    let run_self_cond = || {
+        let result = matmul(&prob, &embed, None);
+        eval(&[&result]);
+        result.shape()[2] as usize
+    };
+    let (_, self_cond_median, _) = timed_bench(run_self_cond);
+
+    // (4) Bidirectional mask construction.
+    let cached_seq = 4096_usize;
+    let total_keys = cached_seq + CANVAS_SIZE;
+    let run_mask = || {
+        let mut mask = vec![0_u8; CANVAS_SIZE * total_keys];
+        for qi in 0..CANVAS_SIZE {
+            for ki in 0..cached_seq {
+                mask[qi * total_keys + ki] = 1;
+            }
+            for ki in 0..CANVAS_SIZE {
+                if qi.abs_diff(ki) < SLIDING_WINDOW {
+                    mask[qi * total_keys + cached_seq + ki] = 1;
+                }
+            }
+        }
+        mask.len()
+    };
+    let (_, mask_median, _) = timed_bench(run_mask);
+
+    // Compute per-step CPU overhead.
+    let per_step_cpu_us = sampling_median.as_micros() as f64
+        + self_cond_median.as_micros() as f64
+        + mask_median.as_micros() as f64;
+
+    // Project GPU forward pass: use QKV matmul as proxy.
+    // Bidirectional forward = ~same cost as causal forward per layer.
+    let qkv_data = vec![0.0_f32; CANVAS_SIZE * HIDDEN_SIZE];
+    let qkv = MlxArray::from_raw_data(
+        qkv_data.as_ptr() as *const u8,
+        qkv_data.len() * std::mem::size_of::<f32>(),
+        &[1, CANVAS_SIZE as i32, HIDDEN_SIZE as i32],
+        MlxDtype::Float32,
+    );
+    let qkv = astype(&qkv, MlxDtype::Bfloat16, None);
+    let weight_data = vec![0.001_f32; HIDDEN_SIZE * 3 * HIDDEN_SIZE];
+    let weight = MlxArray::from_raw_data(
+        weight_data.as_ptr() as *const u8,
+        weight_data.len() * std::mem::size_of::<f32>(),
+        &[HIDDEN_SIZE as i32, (3 * HIDDEN_SIZE) as i32],
+        MlxDtype::Float32,
+    );
+    let weight = astype(&weight, MlxDtype::Bfloat16, None);
+    eval(&[&qkv, &weight]);
+    let w2 = matmul(&qkv, &weight, None);
+    eval(&[&w2]);
+
+    let run_fwd = || {
+        let result = matmul(&qkv, &weight, None);
+        eval(&[&result]);
+        result.shape()[2] as usize
+    };
+    let (_, fwd_median, _) = timed_bench(run_fwd);
+
+    let num_layers = 46.0_f64;
+    let per_forward_us = fwd_median.as_micros() as f64 * num_layers;
+
+    // === BEFORE optimization (CPU self-cond was dominant) ===
+    // CPU self-cond per step (fully dense): 14,296ms
+    let cpu_self_cond_before_us = 14_296_000.0_f64;
+    let per_step_before_us =
+        per_step_cpu_us - self_cond_median.as_micros() as f64 + cpu_self_cond_before_us;
+    let block_before_us = init_median.as_micros() as f64
+        + MAX_DENOISE_STEPS as f64 * (per_step_before_us + per_forward_us)
+        + per_forward_us; // commit pass
+    let tokens_per_sec_before = CANVAS_SIZE as f64 / (block_before_us / 1_000_000.0);
+
+    // === AFTER optimization (GPU matmul self-cond) ===
+    let per_step_after_us = per_step_cpu_us + per_forward_us;
+    let block_after_us = init_median.as_micros() as f64
+        + MAX_DENOISE_STEPS as f64 * per_step_after_us
+        + per_forward_us; // commit pass
+    let tokens_per_sec_after = CANVAS_SIZE as f64 / (block_after_us / 1_000_000.0);
+
+    let speedup = tokens_per_sec_after / tokens_per_sec_before;
+
+    println!("    Per-step CPU overhead:");
+    println!("      canvas init:     {:>8}us", init_median.as_micros());
+    println!(
+        "      sampling:        {:>8}us",
+        sampling_median.as_micros()
+    );
+    println!(
+        "      self-cond (GPU): {:>8}us",
+        self_cond_median.as_micros()
+    );
+    println!("      bidi mask:       {:>8}us", mask_median.as_micros());
+    println!("      per-step total:  {:>8.0}us", per_step_cpu_us);
+    println!();
+    println!("    GPU forward pass (QKV proxy, {num_layers:.0} layers):");
+    println!("      per layer:       {:>8}us", fwd_median.as_micros());
+    println!("      per forward:     {:>8.0}us", per_forward_us);
+    println!();
+    println!("    Projected decode rate ({MAX_DENOISE_STEPS} denoise steps):");
+    println!("      BEFORE (CPU self-cond): {tokens_per_sec_before:>10.1} tok/s  ");
+    println!("      AFTER  (GPU matmul):    {tokens_per_sec_after:>10.1} tok/s  ");
+    println!("      Speedup:                {speedup:>10.1}x");
+    println!();
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────
