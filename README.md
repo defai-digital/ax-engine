@@ -939,6 +939,37 @@ DiffusionGemma uses **block-autoregressive discrete diffusion** on the Gemma4 26
 > [!NOTE]
 > No public DiffusionGemma checkpoint exists yet. The figures below are **microbench projections** measured on realistic Gemma4 26B dimensions (canvas=256, vocab=262,144, hidden=3,584, 46 layers, 8 denoise steps). End-to-end rates will be reported when weights become available.
 
+**Decode acceleration model — no MTP:**
+
+DiffusionGemma is its own form of parallel generation that replaces both autoregressive decoding and speculative decoding (MTP/n-gram). The two approaches are architecturally incompatible:
+
+| | MTP (speculative decoding) | DiffusionGemma (block diffusion) |
+|---|---|---|
+| Generation | Draft-then-verify, one token at a time | 256-token blocks via bidirectional denoising |
+| Forward pass | Causal only | Bidirectional (denoise) + causal (commit) |
+| Needs draft model / assistant head | Yes | No |
+| AX Engine decode path | `ngram_acceleration` / `mtp_head_only` | `diffusion` (early return, mutually exclusive) |
+
+In the runner's `decode_one`, the diffusion path returns before the MTP/n-gram code is reached. The `DiffusionConfig` has no MTP-related fields — it carries canvas size, denoise steps, entropy thresholds, and temperature schedule only.
+
+**Supported features:**
+
+- Block-autoregressive discrete diffusion decode (canvas=256, up to 8 denoise steps)
+- Entropy-bound position acceptance with argmax-based rejection
+- Self-conditioning via GPU matmul (prob × cached embedding table)
+- Linear temperature schedule (configurable start/end)
+- Convergence detection (stable argmax + mean entropy threshold)
+- Standard causal prefill (same Gemma4 encoder, up to 15,743 tok/s projected)
+- Causal commit pass (writes KV cache for subsequent blocks)
+- 6 SSE telemetry counters (`ax_mlx_diffusion_*`)
+- `diffusion` decode-route classification in benchmark harness
+
+**Not applicable:**
+
+- MTP / assistant-head speculative decoding (architecturally incompatible)
+- N-gram acceleration (diffusion replaces the autoregressive decode loop)
+- Direct pipeline double-buffering (not autoregressive)
+
 **Denoise-step optimization story:**
 
 The dominant cost per denoise step is the self-conditioning embedding: a probability-weighted sum over the full 262K×3,584 embedding table (~3.5 GB). The initial CPU implementation took **14.4 seconds per step** — three orders of magnitude slower than everything else. Replacing the CPU triple loop with a single GPU matmul (`prob [256×262K] × embed [262K×3,584]`) reduced it to **8.7 ms**, a **1,650× speedup**. Combined with a cached embedding table (avoids re-dequantizing 3.5 GB per step) and argmax-based rejection (preserves convergence progress instead of re-randomizing), the decode rate jumped from **2.2 to 831.5 tok/s**.
