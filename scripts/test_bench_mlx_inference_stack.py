@@ -2493,6 +2493,29 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         self.assertEqual(mixed["direct_pipeline_step_share_micros"], 700_000)
         self.assertEqual(mixed["single_decode_step_share_micros"], 300_000)
 
+    def test_ax_mlx_decode_route_summary_classifies_diffusion(self) -> None:
+        diffusion = bench.summarize_ax_mlx_decode_route(
+            {
+                "ax_mlx_decode_steps": 20,
+                "ax_mlx_decode_wall_us": 2000,
+                "ax_mlx_diffusion_blocks": 4,
+                "ax_mlx_diffusion_denoise_steps": 16,
+                "ax_mlx_diffusion_converged_blocks": 3,
+                "ax_mlx_diffusion_denoise_wall_us": 1200,
+                "ax_mlx_diffusion_commit_wall_us": 400,
+                "ax_mlx_diffusion_block_wall_us": 1800,
+            }
+        )
+        self.assertEqual(diffusion["classification"], "diffusion")
+        self.assertEqual(diffusion["diffusion_blocks"], 4)
+        self.assertEqual(diffusion["diffusion_denoise_steps"], 16)
+        self.assertEqual(diffusion["diffusion_converged_blocks"], 3)
+        self.assertEqual(diffusion["diffusion_denoise_wall_us"], 1200)
+        self.assertEqual(diffusion["diffusion_commit_wall_us"], 400)
+        self.assertEqual(diffusion["diffusion_block_wall_us"], 1800)
+        self.assertEqual(diffusion["diffusion_denoise_step_share_micros"], 800_000)
+        self.assertEqual(diffusion["diffusion_block_wall_share_micros"], 900_000)
+
     def test_scheduler_telemetry_is_extracted_and_summarized(self) -> None:
         telemetry = bench.extract_scheduler_telemetry(
             {

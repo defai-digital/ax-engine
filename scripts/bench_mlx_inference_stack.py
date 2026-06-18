@@ -359,6 +359,12 @@ AX_MLX_TELEMETRY_KEYS = [
     "ax_mlx_single_decode_wall_us",
     "ax_mlx_ngram_decode_steps",
     "ax_mlx_ngram_decode_wall_us",
+    "ax_mlx_diffusion_blocks",
+    "ax_mlx_diffusion_denoise_steps",
+    "ax_mlx_diffusion_converged_blocks",
+    "ax_mlx_diffusion_denoise_wall_us",
+    "ax_mlx_diffusion_commit_wall_us",
+    "ax_mlx_diffusion_block_wall_us",
     "ax_mlx_bonus_tokens",
     "ax_mlx_prefix_cache_hits",
     "ax_mlx_prefix_cache_misses",
@@ -2291,6 +2297,22 @@ def summarize_ax_mlx_decode_route(telemetry: dict[str, int]) -> dict[str, Any]:
     single_decode_wall_us = int(telemetry.get("ax_mlx_single_decode_wall_us", 0))
     ngram_decode_steps = int(telemetry.get("ax_mlx_ngram_decode_steps", 0))
     ngram_decode_wall_us = int(telemetry.get("ax_mlx_ngram_decode_wall_us", 0))
+    diffusion_blocks = int(telemetry.get("ax_mlx_diffusion_blocks", 0))
+    diffusion_denoise_steps = int(
+        telemetry.get("ax_mlx_diffusion_denoise_steps", 0)
+    )
+    diffusion_converged_blocks = int(
+        telemetry.get("ax_mlx_diffusion_converged_blocks", 0)
+    )
+    diffusion_denoise_wall_us = int(
+        telemetry.get("ax_mlx_diffusion_denoise_wall_us", 0)
+    )
+    diffusion_commit_wall_us = int(
+        telemetry.get("ax_mlx_diffusion_commit_wall_us", 0)
+    )
+    diffusion_block_wall_us = int(
+        telemetry.get("ax_mlx_diffusion_block_wall_us", 0)
+    )
 
     if decode_steps <= 0:
         classification = "no_decode_steps"
@@ -2312,6 +2334,8 @@ def summarize_ax_mlx_decode_route(telemetry: dict[str, int]) -> dict[str, Any]:
         and single_decode_steps == 0
     ):
         classification = "ngram"
+    elif diffusion_blocks > 0:
+        classification = "diffusion"
     else:
         classification = "mixed"
 
@@ -2422,6 +2446,20 @@ def summarize_ax_mlx_decode_route(telemetry: dict[str, int]) -> dict[str, Any]:
             decode_wall_us,
         ),
         "bonus_tokens": int(telemetry.get("ax_mlx_bonus_tokens", 0)),
+        "diffusion_blocks": diffusion_blocks,
+        "diffusion_denoise_steps": diffusion_denoise_steps,
+        "diffusion_converged_blocks": diffusion_converged_blocks,
+        "diffusion_denoise_wall_us": diffusion_denoise_wall_us,
+        "diffusion_commit_wall_us": diffusion_commit_wall_us,
+        "diffusion_block_wall_us": diffusion_block_wall_us,
+        "diffusion_denoise_step_share_micros": share_micros(
+            diffusion_denoise_steps,
+            decode_steps,
+        ),
+        "diffusion_block_wall_share_micros": share_micros(
+            diffusion_block_wall_us,
+            decode_wall_us,
+        ),
     }
 
 

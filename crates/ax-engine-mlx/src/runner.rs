@@ -2544,6 +2544,13 @@ struct DecodeTelemetry {
     production_decode_evals: u32,
     prefill_eval_barriers: u32,
     prefill_drain_async_evals: u32,
+    // DiffusionGemma block generation counters.
+    diffusion_blocks: u32,
+    diffusion_denoise_steps: u32,
+    diffusion_converged_blocks: u32,
+    diffusion_denoise_wall_us: u32,
+    diffusion_commit_wall_us: u32,
+    diffusion_block_wall_us: u32,
 }
 
 impl DecodeTelemetry {
@@ -2651,6 +2658,25 @@ impl DecodeTelemetry {
         self.prefill_drain_async_evals = self.prefill_drain_async_evals.saturating_add(count);
     }
 
+    fn record_diffusion_block(&mut self, result: &crate::diffusion::DiffusionBlockResult) {
+        self.diffusion_blocks = self.diffusion_blocks.saturating_add(1);
+        self.diffusion_denoise_steps = self
+            .diffusion_denoise_steps
+            .saturating_add(result.denoise_steps);
+        if result.converged {
+            self.diffusion_converged_blocks = self.diffusion_converged_blocks.saturating_add(1);
+        }
+        self.diffusion_denoise_wall_us = self
+            .diffusion_denoise_wall_us
+            .saturating_add(result.denoise_wall_us);
+        self.diffusion_commit_wall_us = self
+            .diffusion_commit_wall_us
+            .saturating_add(result.commit_wall_us);
+        self.diffusion_block_wall_us = self
+            .diffusion_block_wall_us
+            .saturating_add(result.block_wall_us);
+    }
+
     fn merge_from(&mut self, other: Self) {
         self.prefill_steps = self.prefill_steps.saturating_add(other.prefill_steps);
         self.prefill_wall_us = self.prefill_wall_us.saturating_add(other.prefill_wall_us);
@@ -2738,6 +2764,22 @@ impl DecodeTelemetry {
         self.prefill_drain_async_evals = self
             .prefill_drain_async_evals
             .saturating_add(other.prefill_drain_async_evals);
+        self.diffusion_blocks = self.diffusion_blocks.saturating_add(other.diffusion_blocks);
+        self.diffusion_denoise_steps = self
+            .diffusion_denoise_steps
+            .saturating_add(other.diffusion_denoise_steps);
+        self.diffusion_converged_blocks = self
+            .diffusion_converged_blocks
+            .saturating_add(other.diffusion_converged_blocks);
+        self.diffusion_denoise_wall_us = self
+            .diffusion_denoise_wall_us
+            .saturating_add(other.diffusion_denoise_wall_us);
+        self.diffusion_commit_wall_us = self
+            .diffusion_commit_wall_us
+            .saturating_add(other.diffusion_commit_wall_us);
+        self.diffusion_block_wall_us = self
+            .diffusion_block_wall_us
+            .saturating_add(other.diffusion_block_wall_us);
     }
 
     fn append_route_decisions(&self, decisions: &mut impl RouteDecisionSink) {
@@ -2833,6 +2875,27 @@ impl DecodeTelemetry {
             (
                 "ax_mlx_prefill_drain_async_evals",
                 self.prefill_drain_async_evals,
+            ),
+            ("ax_mlx_diffusion_blocks", self.diffusion_blocks),
+            (
+                "ax_mlx_diffusion_denoise_steps",
+                self.diffusion_denoise_steps,
+            ),
+            (
+                "ax_mlx_diffusion_converged_blocks",
+                self.diffusion_converged_blocks,
+            ),
+            (
+                "ax_mlx_diffusion_denoise_wall_us",
+                self.diffusion_denoise_wall_us,
+            ),
+            (
+                "ax_mlx_diffusion_commit_wall_us",
+                self.diffusion_commit_wall_us,
+            ),
+            (
+                "ax_mlx_diffusion_block_wall_us",
+                self.diffusion_block_wall_us,
             ),
         ];
 
@@ -6445,7 +6508,7 @@ impl MlxRunner {
         // the standard AR decode step for DiffusionGemma models.
         if let Some(diff_cfg) = self.cfg.diffusion.as_ref() {
             let token_offset = state.prompt_prefix_tokens.len() + state.generated_tokens.len();
-            let block = crate::diffusion::generate_diffusion_block(
+            let result = crate::diffusion::generate_diffusion_block(
                 &self.cfg,
                 diff_cfg,
                 &self.weights,
@@ -6453,7 +6516,8 @@ impl MlxRunner {
                 &mut state.rng,
                 token_offset,
             );
-            let mut queue: VecDeque<u32> = block.into();
+            state.decode_telemetry.record_diffusion_block(&result);
+            let mut queue: VecDeque<u32> = result.tokens.into();
             let tok = queue.pop_front().unwrap_or(0);
             state.diffusion_block_queue = queue;
             return tok;
@@ -14426,6 +14490,45 @@ mod tests {
         assert_eq!(decisions.get("ax_mlx_ngram_decode_wall_us"), Some(&17));
         assert_eq!(decisions.get("ax_mlx_bonus_tokens"), Some(&2));
         assert_eq!(decisions.get("other_counter"), Some(&3));
+    }
+
+    #[test]
+    fn decode_telemetry_records_diffusion_block() {
+        let mut telemetry = DecodeTelemetry::default();
+
+        // Record two diffusion blocks: one converged, one not.
+        telemetry.record_diffusion_block(&crate::diffusion::DiffusionBlockResult {
+            tokens: vec![1, 2, 3, 4],
+            denoise_steps: 4,
+            converged: true,
+            denoise_wall_us: 500,
+            commit_wall_us: 100,
+            block_wall_us: 700,
+        });
+        telemetry.record_diffusion_block(&crate::diffusion::DiffusionBlockResult {
+            tokens: vec![5, 6],
+            denoise_steps: 8,
+            converged: false,
+            denoise_wall_us: 900,
+            commit_wall_us: 200,
+            block_wall_us: 1300,
+        });
+
+        let mut decisions: Vec<(String, u32)> = Vec::new();
+        telemetry.append_route_decisions(&mut decisions);
+        let decisions = decisions
+            .into_iter()
+            .collect::<std::collections::BTreeMap<_, _>>();
+
+        assert_eq!(decisions.get("ax_mlx_diffusion_blocks"), Some(&2));
+        assert_eq!(decisions.get("ax_mlx_diffusion_denoise_steps"), Some(&12));
+        assert_eq!(decisions.get("ax_mlx_diffusion_converged_blocks"), Some(&1));
+        assert_eq!(
+            decisions.get("ax_mlx_diffusion_denoise_wall_us"),
+            Some(&1400)
+        );
+        assert_eq!(decisions.get("ax_mlx_diffusion_commit_wall_us"), Some(&300));
+        assert_eq!(decisions.get("ax_mlx_diffusion_block_wall_us"), Some(&2000));
     }
 
     #[test]

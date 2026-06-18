@@ -12,6 +12,8 @@
 //! 4. Commit: run causal encoder pass over canvas, write KV, emit tokens.
 //! 5. Repeat from step 2 for the next block.
 
+use std::time::Instant;
+
 use mlx_sys::{
     MlxArray, MlxDtype, add, argmax, astype, divide, eval, log, matmul, multiply, negative,
     rms_norm, softmax, sum_axis,
@@ -24,6 +26,22 @@ use crate::model::{
 };
 use crate::sampling::Xorshift64;
 use crate::weights::ModelWeights;
+
+/// Result of generating one diffusion block, including telemetry.
+pub(crate) struct DiffusionBlockResult {
+    /// The committed token IDs from this block.
+    pub tokens: Vec<u32>,
+    /// Number of denoise steps executed (may be < max if converged early).
+    pub denoise_steps: u32,
+    /// Whether the canvas converged before hitting max_denoise_steps.
+    pub converged: bool,
+    /// Total wall time spent in the denoise loop (microseconds).
+    pub denoise_wall_us: u32,
+    /// Wall time for the causal commit pass (microseconds).
+    pub commit_wall_us: u32,
+    /// Total wall time for the entire block generation (microseconds).
+    pub block_wall_us: u32,
+}
 
 // Mutable state of the canvas being denoised.
 struct DiffusionCanvas {
@@ -206,7 +224,7 @@ fn commit_block(
 /// Generate one diffusion block: denoise → commit.
 ///
 /// The prompt is assumed to be already prefilled into the cache.
-/// Returns the committed tokens from this block.
+/// Returns telemetry along with the committed tokens.
 pub(crate) fn generate_diffusion_block(
     cfg: &ModelConfig,
     diff_cfg: &DiffusionConfig,
@@ -214,7 +232,8 @@ pub(crate) fn generate_diffusion_block(
     cache: &mut MlxKVCache,
     rng: &mut Xorshift64,
     token_offset: usize,
-) -> Vec<u32> {
+) -> DiffusionBlockResult {
+    let block_start = Instant::now();
     let mut canvas = init_canvas(diff_cfg.canvas_size, cfg.vocab_size, rng);
 
     // Pre-compute embedding table once — reused across all denoise steps.
@@ -225,6 +244,8 @@ pub(crate) fn generate_diffusion_block(
         None
     };
 
+    let denoise_start = Instant::now();
+    let mut steps_executed = 0_u32;
     for step in 0..diff_cfg.max_denoise_steps {
         denoise_step(
             cfg,
@@ -236,12 +257,30 @@ pub(crate) fn generate_diffusion_block(
             token_offset,
             embed_table.as_ref(),
         );
+        steps_executed += 1;
         if canvas.converged {
             break;
         }
     }
+    let denoise_wall_us = elapsed_us(denoise_start);
 
-    commit_block(cfg, weights, cache, &canvas, token_offset)
+    let commit_start = Instant::now();
+    let tokens = commit_block(cfg, weights, cache, &canvas, token_offset);
+    let commit_wall_us = elapsed_us(commit_start);
+    let block_wall_us = elapsed_us(block_start);
+
+    DiffusionBlockResult {
+        tokens,
+        denoise_steps: steps_executed,
+        converged: canvas.converged,
+        denoise_wall_us,
+        commit_wall_us,
+        block_wall_us,
+    }
+}
+
+fn elapsed_us(started: Instant) -> u32 {
+    started.elapsed().as_micros().min(u32::MAX as u128) as u32
 }
 
 // Run the bidirectional forward pass over canvas tokens.
