@@ -63,7 +63,10 @@ impl ChatPromptTemplate {
         let normalized = model_id.to_ascii_lowercase();
         if normalized.contains("qwen") {
             Self::QwenChatMl
-        } else if normalized.contains("gemma-4") || normalized.contains("gemma4") {
+        } else if normalized.contains("gemma-4")
+            || normalized.contains("gemma4")
+            || normalized.contains("diffusiongemma")
+        {
             Self::Gemma4
         } else if normalized.contains("gemma-3") || normalized.contains("gemma3") {
             Self::Unsupported(ChatUnsupportedFamily::Gemma3)
@@ -652,6 +655,44 @@ mod tests {
         }
     }
 
+    #[test]
+    fn diffusiongemma_model_id_selects_gemma4_chat_template() {
+        // DiffusionGemma uses the Gemma4 turn-based chat format (<|turn>,
+        // <turn|>, <|channel>, <channel|>). The model ID must map to
+        // Gemma4 and NOT fall through to the gemma3 unsupported branch.
+        for model_id in [
+            "mlx-community/diffusiongemma-26B-A4B-it-4bit",
+            "DiffusionGemma-26B-A4B-it",
+        ] {
+            let template = ChatPromptTemplate::for_model_id(model_id);
+            assert_eq!(
+                template,
+                ChatPromptTemplate::Gemma4,
+                "{model_id} should use Gemma4 chat template"
+            );
+        }
+
+        // Stop sequences must include the Gemma4 turn terminator.
+        let stops = stop_sequences("diffusiongemma-26B-A4B-it-4bit", vec![]);
+        assert!(
+            stops.contains(&"<turn|>".to_string()),
+            "DiffusionGemma stop sequences must include <turn|>: {stops:?}"
+        );
+
+        // Rendered prompt must use Gemma4 turn format.
+        let messages = vec![("user".to_string(), "Hello".to_string())];
+        let prompt = render_prompt("diffusiongemma-26B-A4B-it-4bit", &messages).expect("render");
+        assert!(prompt.starts_with("<bos>"), "prompt must start with <bos>");
+        assert!(
+            prompt.contains("<|turn>user\n"),
+            "prompt must contain Gemma4 user turn marker"
+        );
+        assert!(
+            prompt.contains("<|turn>model\n"),
+            "prompt must contain Gemma4 model generation prompt"
+        );
+    }
+
     fn write_gemma4_tokenizer(artifact_dir: &Path) {
         // Minimal tokenizer.json that defines the `<turn|>` chat token at the
         // real Gemma 4 vocabulary id.
@@ -686,6 +727,8 @@ mod tests {
         .expect("generation_config.json should write");
         validate_native_chat_artifact("gemma4", Some(&artifact_dir))
             .expect("instruction-tuned Gemma4 artifact should pass");
+        validate_native_chat_artifact("diffusiongemma-26B-A4B-it-4bit", Some(&artifact_dir))
+            .expect("DiffusionGemma should share Gemma4 chat artifact validation");
         validate_native_chat_artifact("glm4_moe_lite", Some(&artifact_dir))
             .expect("non-Gemma families do not require Gemma4 template");
 
