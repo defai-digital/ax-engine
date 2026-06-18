@@ -1168,6 +1168,7 @@ fn parse_diffusion_config(config: &serde_json::Value, model_type: &str) -> Nativ
         convergence_steps,
         temperature_start,
         temperature_end,
+        convergence_check_interval: None,
     }
 }
 

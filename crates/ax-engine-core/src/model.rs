@@ -507,6 +507,10 @@ pub struct NativeDiffusionConfig {
     /// Temperature schedule end (low, for locking final tokens; default 0.4).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub temperature_end: Option<f32>,
+    /// Steps between convergence checks (default 4). Non-check steps skip
+    /// argmax stability and mean-entropy materialisation to reduce GPU→CPU syncs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub convergence_check_interval: Option<u32>,
 }
 
 impl NativeDiffusionConfig {
@@ -519,6 +523,7 @@ impl NativeDiffusionConfig {
             || self.convergence_steps.is_some()
             || self.temperature_start.is_some()
             || self.temperature_end.is_some()
+            || self.convergence_check_interval.is_some()
     }
 
     pub fn is_disabled(&self) -> bool {
