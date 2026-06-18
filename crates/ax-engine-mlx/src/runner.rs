@@ -8068,7 +8068,8 @@ impl MlxRunner {
         state.mtp_pending_draft_log_probs.clear();
         state.mtp_pending_draft_distributions.clear();
         state.mtp_pending_draft_sources.clear();
-        state.mtp_adaptive_max_depth = self.mtp_max_depth();
+        state.mtp_adaptive_max_depth =
+            mtp_initial_adaptive_depth(&self.cfg.model_family, self.mtp_max_depth());
         state.mtp_skip_logits = None;
         state.mtp_skip_hidden = None;
         state.mtp_decode_count = 0;
@@ -8414,6 +8415,25 @@ fn mtp_next_adaptive_depth(
 
     let floor = 2.min(max_depth);
     accept_count.clamp(floor, max_depth)
+}
+
+/// Model-specific starting depth for the adaptive depth controller.
+///
+/// The adaptive controller (`mtp_next_adaptive_depth`) adjusts draft depth
+/// per-request based on acceptance.  This helper sets the *initial* depth at
+/// generation start so the controller begins from a model-appropriate point
+/// rather than the hardware maximum.
+///
+/// `qwen3_next` (Qwen3.6 MoE + linear-attention) starts at depth 2: the
+/// hybrid architecture's linear-attention layers are recurrent scans that
+/// don't benefit from deeper drafts the way dense SDPA layers do, and the
+/// 35B-A3B variant has `native_depth=1` (the `.min(head_max_depth)` clamp
+/// keeps it safe).  All other families start at `head_max_depth`.
+fn mtp_initial_adaptive_depth(model_family: &str, head_max_depth: usize) -> usize {
+    match model_family {
+        "qwen3_next" => 2.min(head_max_depth),
+        _ => head_max_depth,
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
