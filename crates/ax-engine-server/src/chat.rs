@@ -66,6 +66,8 @@ impl ChatPromptTemplate {
         } else if normalized.contains("gemma-4")
             || normalized.contains("gemma4")
             || normalized.contains("diffusiongemma")
+            || normalized.contains("diffusion-gemma")
+            || normalized.contains("diffusion_gemma")
         {
             Self::Gemma4
         } else if normalized.contains("gemma-3") || normalized.contains("gemma3") {
@@ -662,6 +664,8 @@ mod tests {
         // Gemma4 and NOT fall through to the gemma3 unsupported branch.
         for model_id in [
             "mlx-community/diffusiongemma-26B-A4B-it-4bit",
+            "diffusion-gemma-26B-A4B-it",
+            "diffusion_gemma",
             "DiffusionGemma-26B-A4B-it",
         ] {
             let template = ChatPromptTemplate::for_model_id(model_id);

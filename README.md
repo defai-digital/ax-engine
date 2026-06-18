@@ -703,25 +703,43 @@ python3 scripts/bench_qwen36_mtp_fair.py \
 DiffusionGemma uses **block-autoregressive discrete diffusion** on the Gemma4 26B backbone: instead of generating one token at a time, it generates a fixed-size canvas of 256 tokens per block via iterative bidirectional denoising, then commits them through a standard causal encoder pass. This replaces the standard autoregressive decode step with a fundamentally different generation paradigm.
 
 > [!NOTE]
-> Public 4-bit MLX and GGUF artifacts now exist, but this README does **not** publish a direct peer benchmark for DiffusionGemma yet. The current peer runtimes cannot load the model family: llama.cpp Metal fails on the GGUF with `unknown model architecture: 'diffusion-gemma'`, and `mlx-lm` 0.31.3 fails on the MLX snapshot with `Model type diffusion_gemma not supported.` The figures below are therefore **AX microbench projections**, not end-to-end direct-mode engine comparisons.
+> Public 4-bit MLX and GGUF artifacts now exist, but the current peer runtimes still cannot load the model family: llama.cpp Metal fails on the GGUF with `unknown model architecture: 'diffusion-gemma'`, and `mlx-lm` 0.31.3 fails on the MLX snapshot with `Model type diffusion_gemma not supported.` The figures below are therefore **AX direct first-block measurements**, not peer-engine comparisons.
 
-**Direct decode / prefill / TTFT status:**
+**Direct decode / prefill / first-block status:**
 
 <table>
 <tr>
-<td><img width="100%" src="docs/assets/perf-diffusiongemma-direct-decode-tok-s.svg" alt="Bar chart showing DiffusionGemma projected AX block decode throughput while llama.cpp Metal and mlx-lm are blocked at model load"></td>
-<td><img width="100%" src="docs/assets/perf-diffusiongemma-direct-prefill-tok-s.svg" alt="Bar chart showing DiffusionGemma projected AX prefill throughput at 256, 512, 1024, and 2048 token chunks"></td>
-<td><img width="100%" src="docs/assets/perf-diffusiongemma-direct-ttft-ms.svg" alt="Status chart showing that DiffusionGemma TTFT is not available because there is no end-to-end benchmark row yet"></td>
+<td><img width="100%" src="docs/assets/perf-diffusiongemma-direct-decode-tok-s.svg" alt="Bar chart showing measured AX direct DiffusionGemma first-block decode throughput at 128, 512, and 2048 prompt tokens"></td>
+<td><img width="100%" src="docs/assets/perf-diffusiongemma-direct-prefill-tok-s.svg" alt="Bar chart showing measured AX direct DiffusionGemma prefill throughput at 128, 512, and 2048 prompt tokens"></td>
+<td><img width="100%" src="docs/assets/perf-diffusiongemma-direct-ttft-ms.svg" alt="Bar chart showing measured AX direct DiffusionGemma time to first committed block at 128, 512, and 2048 prompt tokens"></td>
 </tr>
 </table>
 
-| Runtime path | Direct/block decode | Prefill | TTFT | Benchmark status |
+| Prompt tokens | AX block decode | AX prefill | AX time to first block | Denoise steps | Peer rows |
+|---:|---:|---:|---:|---:|---|
+| 128 | 37.4 tok/s | 1,316.6 tok/s | 6,936 ms | 48 | llama.cpp / mlx-lm N/A |
+| 512 | 31.0 tok/s | 2,856.6 tok/s | 8,442 ms | 48 | llama.cpp / mlx-lm N/A |
+| 2,048 | 26.8 tok/s | 3,796.4 tok/s | 10,068 ms | 48 | llama.cpp / mlx-lm N/A |
+
+Methodology: `scripts/bench_diffusion_gemma_direct.py` runs AX native MLX direct against `mlx-community/diffusiongemma-26B-A4B-it-4bit` with **2 warmups + 5 measured runs** and reports medians from `benchmarks/results/diffusion-gemma-direct/2026-06-18-direct-first-block/summary.json`. For block diffusion, the latency row is **time to first committed block**: runner prefill wall time plus the first 256-token diffusion block wall time. It is not ordinary autoregressive TTFT, and the charts keep llama.cpp / mlx-lm as N/A because those runtimes fail before benchmarking can start.
+
+| Runtime path | Direct/block decode | Prefill | First response latency | Benchmark status |
 |---|---:|---:|---:|---|
-| AX microbench projection | 891.1 tok/s projected block cycle | 10,383-16,423 tok/s projected by chunk | N/A | Projection only; no peer-engine direct row |
+| AX direct MLX | measured above | measured above | time to first committed block | Real 4-bit MLX checkpoint, first-block telemetry |
 | llama.cpp Metal 9650 | N/A | N/A | N/A | GGUF load fails: `unknown model architecture: 'diffusion-gemma'` |
 | `mlx-lm` 0.31.3 | N/A | N/A | N/A | MLX load fails: `Model type diffusion_gemma not supported.` |
 
-TTFT is intentionally not inferred from the projection pieces. A publishable TTFT row needs a full end-to-end load, prefill, first block, and commit timing path against a real checkpoint. Until then, the comparable direct-mode table is limited to projected AX decode/prefill and explicit peer-runtime blockers.
+**Memory bandwidth utilization:**
+
+<img src="docs/assets/perf-diffusiongemma-direct-bandwidth-utilization.svg" alt="Bar chart showing estimated AX direct DiffusionGemma memory bandwidth utilization at 128, 512, and 2048 prompt tokens">
+
+The bandwidth view uses the local MLX safetensors size (**16.54 GB**) as the estimated weight bytes per model pass. A first block performs 48 denoise forwards plus one causal commit, so the estimated weight traffic is **810.6 GB per block**. Dividing by measured block wall time gives **118.5 / 98.2 / 85.0 GB/s**, or **20.5% / 17.0% / 14.7%** of the measured **577 GB/s** M5 Max peak at 128 / 512 / 2,048 prompt tokens. That means the current DiffusionGemma first-block path is not memory-bandwidth-saturated; the bottleneck is the repeated block-diffusion graph/dispatch work.
+
+| Prompt tokens | Estimated effective bandwidth | M5 Max peak utilization |
+|---:|---:|---:|
+| 128 | 118.5 GB/s | 20.5% |
+| 512 | 98.2 GB/s | 17.0% |
+| 2,048 | 85.0 GB/s | 14.7% |
 
 **Decode acceleration model — no MTP:**
 
@@ -738,12 +756,12 @@ In the runner's `decode_one`, the diffusion path returns before the MTP/n-gram c
 
 **Supported features:**
 
-- Block-autoregressive discrete diffusion decode (canvas=256, up to 8 denoise steps)
+- Block-autoregressive discrete diffusion decode (canvas=256, up to 48 denoise steps)
 - Entropy-bound position acceptance with argmax-based rejection
 - Self-conditioning via GPU matmul (prob × cached embedding table)
 - Linear temperature schedule (configurable start/end)
 - Convergence detection (stable argmax + mean entropy threshold)
-- Standard causal prefill (same Gemma4 encoder, up to 16,423 tok/s projected)
+- Standard causal prefill (same Gemma4 encoder, 3,796.4 tok/s median at the 2,048-token row)
 - Causal commit pass (writes KV cache for subsequent blocks)
 - 6 SSE telemetry counters (`ax_mlx_diffusion_*`)
 - `diffusion` decode-route classification in benchmark harness
@@ -754,45 +772,17 @@ In the runner's `decode_one`, the diffusion path returns before the MTP/n-gram c
 - N-gram acceleration (diffusion replaces the autoregressive decode loop)
 - Direct pipeline double-buffering (not autoregressive)
 
-**Denoise-step optimization story:**
+**Benchmark contract:**
 
-The dominant cost per denoise step is the self-conditioning embedding: a probability-weighted sum over the full 262K×3,584 embedding table (~3.5 GB). The initial CPU implementation took **14.5 seconds per step** — three orders of magnitude slower than everything else. Replacing the CPU triple loop with a single GPU matmul (`prob [256×262K] × embed [262K×3,584]`) reduced it to **8.8 ms**, a **1,650× speedup**. Combined with a cached embedding table (avoids re-dequantizing 3.5 GB per step) and argmax-based rejection (preserves convergence progress instead of re-randomizing), the decode rate jumped from **2.2 to 891.1 tok/s**.
+The published DiffusionGemma rows use first-block telemetry instead of the standard fixed-token autoregressive benchmark contract. `max_output_tokens=1` is enough to force prefill plus one diffusion block, and the block counters report the full 256-token denoise/commit cycle even though only the first token is emitted to the caller. The direct block throughput is therefore `256 / ax_mlx_diffusion_block_wall_us`, and time to first block is `ax_mlx_prefill_wall_us + ax_mlx_diffusion_block_wall_us`.
 
-| Component | Before (CPU) | After (GPU matmul) | Speedup |
-|---|---:|---:|---:|
-| Self-conditioning (per step) | 14,516 ms | 8.8 ms | 1,650× |
-| Decode rate (8 steps/block) | 2.2 tok/s | 891.1 tok/s | 398.9× |
+Telemetry: 6 SSE-emitted counters (`ax_mlx_diffusion_blocks`, `ax_mlx_diffusion_denoise_steps`, `ax_mlx_diffusion_converged_blocks`, `ax_mlx_diffusion_denoise_wall_us`, `ax_mlx_diffusion_commit_wall_us`, `ax_mlx_diffusion_block_wall_us`) plus `diffusion` decode-route classification in `bench_mlx_inference_stack.py`.
 
-**Projected prefill rate** (QKV matmul proxy, 46 layers):
-
-DiffusionGemma uses the same Gemma4 causal encoder for prefill. Projected throughput scales with chunk size, reaching **16,423 tok/s** at chunk=2,048.
-
-| Chunk size | Projected prefill (tok/s) |
-|---:|---:|
-| 256 | 10,383 |
-| 512 | 13,724 |
-| 1,024 | 15,206 |
-| 2,048 | 16,423 |
-
-**Projected decode rate** (full block cycle, 8 denoise steps, canvas=256):
-
-Per denoise step: bidirectional forward (~24 ms, 46 layers) + self-conditioning matmul (~8.7 ms) + sampling/mask (~55 μs). Per block: ~287 ms for 256 tokens.
-
-| Metric | Value |
-|---|---:|
-| Decode rate (projected) | 891.1 tok/s |
-| Per-step overhead | 32.9 ms |
-| Per-block wall time | ~287 ms |
-| Tokens per block | 256 |
-
-**Telemetry:** 6 SSE-emitted counters (`ax_mlx_diffusion_blocks`, `diffusion_denoise_steps`, `diffusion_converged_blocks`, `diffusion_denoise_wall_us`, `diffusion_commit_wall_us`, `diffusion_block_wall_us`) plus `diffusion` decode-route classification in `bench_mlx_inference_stack.py`.
-
-Run the microbench:
+Run the direct benchmark and regenerate the charts:
 
 ```bash
-cargo run -p ax-engine-microbench --release --bin diffusion-microbench
-cargo run -p ax-engine-microbench --release --bin diffusion-microbench -- \
-  --output benchmarks/results/diffusion-microbench/latest.json
+cargo build -p ax-engine-bench --bin ax-engine-bench
+python3 scripts/bench_diffusion_gemma_direct.py
 ```
 
 #### Qwen3-Coder-Next

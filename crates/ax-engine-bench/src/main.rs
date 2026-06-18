@@ -7411,7 +7411,7 @@ fn sampling_from_manifest(manifest: &BenchmarkManifest) -> Result<SamplingParams
         repetition_context_size: None,
         seed: manifest.sampling.seed,
         deterministic: manifest.runtime.deterministic,
-        ignore_eos: false,
+        ignore_eos: manifest.sampling.ignore_eos,
     })
 }
 
@@ -7434,7 +7434,7 @@ fn generate_request_from_spec(
             repetition_context_size: None,
             seed: manifest.sampling.seed,
             deterministic: Some(manifest.runtime.deterministic),
-            ignore_eos: false,
+            ignore_eos: manifest.sampling.ignore_eos,
         },
         stop_sequences: Vec::new(),
         metadata: spec.metadata.clone(),
@@ -8013,6 +8013,8 @@ struct SamplingManifest {
     top_k: u32,
     #[serde(default)]
     seed: u64,
+    #[serde(default)]
+    ignore_eos: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -12833,6 +12835,21 @@ mod tests {
     }
 
     #[test]
+    fn parse_inference_args_accepts_ignore_eos_for_fixed_token_benchmarks() {
+        let args = vec![
+            "--tokens".to_string(),
+            "1,2,3".to_string(),
+            "--ignore-eos".to_string(),
+        ];
+
+        let parsed = parse_inference_args(&args, "generate").expect("inference args should parse");
+        let request = parsed.generate_request();
+
+        assert!(parsed.sampling.ignore_eos);
+        assert!(request.sampling.ignore_eos);
+    }
+
+    #[test]
     fn parse_inference_args_preserves_gemma4_multimodal_inputs_json() {
         let args = vec![
             "--tokens".to_string(),
@@ -13107,6 +13124,29 @@ mod tests {
             }
         }))
         .expect("llama.cpp manifest should parse")
+    }
+
+    #[test]
+    fn scenario_sampling_manifest_preserves_ignore_eos() {
+        let mut manifest = llama_cpp_scenario_manifest("http://127.0.0.1:8081");
+        manifest.sampling.ignore_eos = true;
+
+        let sampling = sampling_from_manifest(&manifest).expect("sampling should load");
+        let specs = scenario_specs_from_manifest(&manifest).expect("scenario specs should build");
+        let request = generate_request_from_spec(
+            specs.first().expect("scenario should contain one spec"),
+            &manifest,
+        );
+
+        assert!(sampling.ignore_eos);
+        assert!(
+            specs
+                .first()
+                .expect("scenario should contain one spec")
+                .sampling_params
+                .ignore_eos
+        );
+        assert!(request.sampling.ignore_eos);
     }
 
     fn llama_cpp_shared_prefix_scenario_manifest(server_url: &str) -> BenchmarkManifest {

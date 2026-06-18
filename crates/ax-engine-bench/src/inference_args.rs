@@ -154,6 +154,7 @@ pub(crate) fn parse_inference_args(
                 parsed.sampling.seed =
                     parse_flag_value::<u64>(next_flag_value(&mut iter, "--seed")?, "--seed")?
             }
+            "--ignore-eos" => parsed.sampling.ignore_eos = true,
             "--metadata" => {
                 parsed.metadata = Some(next_flag_value(&mut iter, "--metadata")?.to_string())
             }

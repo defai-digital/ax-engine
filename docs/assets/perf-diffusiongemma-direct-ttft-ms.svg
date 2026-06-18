@@ -1,36 +1,39 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="800" height="430" viewBox="0 0 800 430" role="img" aria-labelledby="title desc">
-<title>DiffusionGemma 4-bit - TTFT status</title>
-<desc>Status chart showing no publishable TTFT data for DiffusionGemma because current peer runtimes cannot load the model and the AX row is only a microbench projection.</desc>
+<title>DiffusionGemma 4-bit - Time to first block</title>
+<desc>DiffusionGemma 4-bit - Time to first block; AX Engine direct first-block measurements at 128/512/2048 prompt tokens.</desc>
 <rect width="800" height="430" fill="#f8fafc"/>
-<text x="64" y="24" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="16" font-weight="700" fill="#111827">DiffusionGemma 4-bit - TTFT status</text>
-<text x="64" y="46" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#4b5563">No end-to-end TTFT row is published yet</text>
-<text x="64" y="62" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">TTFT requires a full load + prefill + first block/commit path, not just the microbench projection.</text>
-<rect x="707" y="13" width="59" height="22" rx="11" fill="#fef2f2" stroke="#fecaca"/>
-<text x="736.5" y="28" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#991b1b">N/A</text>
-
-<rect x="64" y="94" width="188" height="206" rx="6" fill="#ffffff" stroke="#dbe3ef"/>
-<text x="158" y="128" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="14" font-weight="700" fill="#111827">llama.cpp Metal</text>
-<circle cx="158" cy="178" r="42" fill="#fee2e2" stroke="#fca5a5"/>
-<text x="158" y="184" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="17" font-weight="700" fill="#991b1b">N/A</text>
-<text x="158" y="246" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#6b7280">GGUF load fails</text>
-<text x="158" y="264" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#991b1b">unknown architecture</text>
-
-<rect x="306" y="94" width="188" height="206" rx="6" fill="#ffffff" stroke="#dbe3ef"/>
-<text x="400" y="128" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="14" font-weight="700" fill="#111827">mlx-lm</text>
-<circle cx="400" cy="178" r="42" fill="#fee2e2" stroke="#fca5a5"/>
-<text x="400" y="184" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="17" font-weight="700" fill="#991b1b">N/A</text>
-<text x="400" y="246" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#6b7280">MLX load fails</text>
-<text x="400" y="264" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#991b1b">model type unsupported</text>
-
-<rect x="548" y="94" width="188" height="206" rx="6" fill="#ffffff" stroke="#dbe3ef"/>
-<text x="642" y="128" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="14" font-weight="700" fill="#111827">AX projection</text>
-<circle cx="642" cy="178" r="42" fill="#fef9c3" stroke="#fde047"/>
-<text x="642" y="184" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="17" font-weight="700" fill="#854d0e">N/A</text>
-<text x="642" y="246" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#6b7280">microbench only</text>
-<text x="642" y="264" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#854d0e">no end-to-end timing</text>
-
-<rect x="64" y="330" width="672" height="44" rx="6" fill="#ffffff" stroke="#dbe3ef"/>
-<text x="400" y="349" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#374151">Publication rule</text>
-<text x="400" y="366" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">Do not derive TTFT from projection pieces. Publish it only after a full runtime checkpoint row exists.</text>
-<text x="64" y="405" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#9ca3af">Checked 2026-06-18: llama.cpp 9650 and mlx-lm 0.31.3 cannot load DiffusionGemma 4-bit artifacts.</text>
+<text id="title" x="64" y="24" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="16" font-weight="700" fill="#111827">DiffusionGemma 4-bit - Time to first block</text>
+<text x="64" y="46" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#4b5563">median over reps | grouped by prompt tokens | first committed block</text>
+<text id="desc" x="64" y="62" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">AX-only DiffusionGemma direct telemetry; peer runtime blockers are documented in the README table</text>
+<text x="64" y="76" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="9" fill="#9ca3af">Runner time to first committed block: prefill wall plus first diffusion block wall.</text>
+<rect x="718" y="13" width="48" height="22" rx="11" fill="#eef2ff" stroke="#c7d2fe"/>
+<text x="742.0" y="28" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#3730a3">ms</text>
+<text x="766" y="52" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#dc2626">Lower is better</text>
+<rect x="64" y="86" width="576" height="230" rx="6" fill="#ffffff" stroke="#dbe3ef"/>
+<line x1="64" y1="316.0" x2="640" y2="316.0" stroke="#e5e7eb" stroke-width="1"/>
+<text x="56" y="319.0" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#6b7280">0.00</text>
+<line x1="64" y1="258.5" x2="640" y2="258.5" stroke="#e5e7eb" stroke-width="1"/>
+<text x="56" y="261.5" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#6b7280">3.8k</text>
+<line x1="64" y1="201.0" x2="640" y2="201.0" stroke="#e5e7eb" stroke-width="1"/>
+<text x="56" y="204.0" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#6b7280">7.5k</text>
+<line x1="64" y1="143.5" x2="640" y2="143.5" stroke="#e5e7eb" stroke-width="1"/>
+<text x="56" y="146.5" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#6b7280">11.2k</text>
+<line x1="64" y1="86.0" x2="640" y2="86.0" stroke="#e5e7eb" stroke-width="1"/>
+<text x="56" y="89.0" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#6b7280">15k</text>
+<line x1="64" y1="209.6" x2="640" y2="209.6" stroke="#dc2626" stroke-width="1.2" stroke-dasharray="1 4" stroke-linecap="round"/>
+<text x="648" y="204.6" text-anchor="start" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#dc2626">lowest: 6.9k</text>
+<rect x="143.0" y="209.6" width="34.0" height="106.4" rx="3" fill="#2eaf5f" fill-opacity="0.40" stroke="#176c37" stroke-width="1.8"/>
+<line x1="143.0" y1="209.6" x2="177.0" y2="209.6" stroke="#176c37" stroke-width="2.6"/>
+<text x="160.0" y="203.6" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">6.9k</text>
+<text x="160.0" y="346" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">128 tok</text>
+<rect x="335.0" y="186.6" width="34.0" height="129.4" rx="3" fill="#2eaf5f" fill-opacity="0.40" stroke="#176c37" stroke-width="1.8"/>
+<line x1="335.0" y1="186.6" x2="369.0" y2="186.6" stroke="#176c37" stroke-width="2.6"/>
+<text x="352.0" y="180.6" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">8.4k</text>
+<text x="352.0" y="346" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">512 tok</text>
+<rect x="527.0" y="161.6" width="34.0" height="154.4" rx="3" fill="#2eaf5f" fill-opacity="0.40" stroke="#176c37" stroke-width="1.8"/>
+<line x1="527.0" y1="161.6" x2="561.0" y2="161.6" stroke="#176c37" stroke-width="2.6"/>
+<text x="544.0" y="155.6" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">10.1k</text>
+<text x="544.0" y="346" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">2048 tok</text>
+<rect x="64.0" y="399" width="12" height="10" rx="2" fill="#2eaf5f" fill-opacity="0.40" stroke="#176c37" stroke-width="1.4"/>
+<text x="80.0" y="408" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#374151">AX Engine direct</text>
 </svg>
