@@ -6,6 +6,31 @@ tracked via Git tags and GitHub Releases.
 
 ## [Unreleased]
 
+## [6.5.0] - 2026-06-18
+
+### Added
+
+- **DiffusionGemma direct decode route** — native MLX support for DiffusionGemma
+  direct decoding, including chat routing through the Gemma4 turn-based template,
+  real manifest generation (tensor mapping, config parsing, MoE detection), and
+  telemetry/benchmark integration for the decode route.
+- **DiffusionGemma denoise optimization** — GPU matmul self-conditioning, cached
+  embed table, and argmax rejection sampling in the denoise loop, plus a
+  dedicated denoise-step microbench and prefill/decode rate projection
+  benchmarks.
+
+### Changed
+
+- **Stochastic MTP draft fused into single-eval lazy GPU graph** — the
+  stochastic draft path now evaluates in a single fused lazy GPU graph, removing
+  the dead `sample_categorical_with_logprob` host path.
+- **Model-specific MTP adaptive depth** — Qwen3-Next now uses model-specific
+  adaptive depth initialization for speculative decoding.
+- **Qwen MTP gate tuning** — lowered the Qwen MTP gate per workload and made the
+  auto-optimistic state sticky across requests.
+- **Gemma4 MoE packed GEGLU Metal kernel** — enabled the packed GEGLU Metal
+  kernel for Gemma4 MoE expert decode to reduce decode bandwidth.
+
 ## [6.4.6] - 2026-06-16
 
 ### Added
