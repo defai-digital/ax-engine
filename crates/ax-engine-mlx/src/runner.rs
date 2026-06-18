@@ -7119,12 +7119,12 @@ impl MlxRunner {
             == MtpModelAcceptanceMode::RejectionSampling
             && !pending.is_empty()
             && state.mtp_telemetry.mtp_only_accept_rate_ewma_samples
-                >= mtp_ngram_gate_min_samples();
+                >= mtp_auto_optimistic_min_samples();
         let ewma = state.mtp_telemetry.mtp_only_accept_rate_ewma;
         if can_auto_optimistic && !state.auto_optimistic_active && ewma >= 0.99 {
             state.auto_optimistic_active = true;
         }
-        if state.auto_optimistic_active && ewma < 0.95 {
+        if state.auto_optimistic_active && ewma < mtp_auto_optimistic_deactivate_threshold() {
             state.auto_optimistic_active = false;
         }
         let auto_optimistic = can_auto_optimistic && state.auto_optimistic_active;
@@ -9594,6 +9594,48 @@ fn mtp_ngram_gate_min_samples() -> u32 {
     static CACHED: OnceLock<u32> = OnceLock::new();
     *CACHED.get_or_init(|| {
         std::env::var("AX_MLX_MTP_NGRAM_GATE_SAMPLES")
+            .ok()
+            .and_then(|v| v.parse::<u32>().ok())
+            .unwrap_or(4)
+    })
+}
+
+/// Auto-optimistic EWMA deactivation threshold.
+///
+/// Once optimistic is active (activation at stochastic EWMA ≥0.99), the EWMA
+/// switches to argmax-based tracking which is strictly stricter.  The
+/// deactivation threshold sets the floor below which optimistic disengages.
+///
+/// Qwen3.6 native MTP heads achieve >85% acceptance, so lowering the
+/// deactivation threshold from the prior 0.95 to 0.85 makes optimistic mode
+/// stickier — it activates at 0.99 stochastic and stays active unless argmax
+/// acceptance drops below 0.85.  This eliminates the oscillation that
+/// previously caused optimistic to disengage on borderline acceptance rows
+/// where it was still beneficial.
+///
+/// Override with `AX_MLX_MTP_AUTO_OPTIMISTIC_DEACTIVATE_THRESHOLD` (default 0.85).
+fn mtp_auto_optimistic_deactivate_threshold() -> f32 {
+    static CACHED: OnceLock<f32> = OnceLock::new();
+    *CACHED.get_or_init(|| {
+        cached_env_f32(
+            "AX_MLX_MTP_AUTO_OPTIMISTIC_DEACTIVATE_THRESHOLD",
+            0.85,
+            0.0,
+            1.0,
+        )
+    })
+}
+
+/// Minimum EWMA samples before auto-optimistic can activate.
+///
+/// Separate from `mtp_ngram_gate_min_samples` (which controls n-gram saturation
+/// gating).  4 samples is sufficient for the stochastic EWMA to stabilize at
+/// high acceptance rates (all-accept × 4 → EWMA = 1.0 with ALPHA=0.05).
+/// Override with `AX_MLX_MTP_AUTO_OPTIMISTIC_MIN_SAMPLES` (default 4).
+fn mtp_auto_optimistic_min_samples() -> u32 {
+    static CACHED: OnceLock<u32> = OnceLock::new();
+    *CACHED.get_or_init(|| {
+        std::env::var("AX_MLX_MTP_AUTO_OPTIMISTIC_MIN_SAMPLES")
             .ok()
             .and_then(|v| v.parse::<u32>().ok())
             .unwrap_or(4)

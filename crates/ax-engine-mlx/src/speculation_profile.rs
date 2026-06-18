@@ -24,9 +24,11 @@
 //! ablation showed lowering the Gemma assistant gate does not add code throughput
 //! (the greedy drafter is so peaked that the shipped default and a lower gate
 //! propose the same drafts at the same accept). So `coding`/`agentic` DEFER to
-//! the shipped Gemma default rather than override it, and Qwen defers to its
-//! separately-validated 0.90 default. Only the diversity regime (`chatbot` /
-//! high-temperature `auto`) raises the gate, to preserve sampled-chat diversity.
+//! the shipped Gemma default rather than override it. For Qwen, the gate-throughput
+//! sweep (`docs/MTP-DRAFT-GATE-THROUGHPUT.md`) shows the optimum varies by
+//! workload: `coding` lowers to 0.85, `agentic` to 0.80 (vs the 0.90 default).
+//! Only the diversity regime (`chatbot` / high-temperature `auto`) raises the
+//! gate, to preserve sampled-chat diversity.
 
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU8, Ordering};
@@ -86,9 +88,13 @@ pub const AUTO_DIVERSITY_TEMPERATURE: f32 = 0.5;
 // MTP fire less and preserves more sampled diversity).
 const CHATBOT_GEMMA_FIRST_GATE: f32 = 0.999;
 const CHATBOT_GEMMA_DEEP_GATE: f32 = 0.999;
-/// Qwen's shipped default (0.90) is already the throughput sweet spot
-/// (`docs/MTP-DRAFT-GATE-THROUGHPUT.md`), so `coding`/`agentic` defer to it
-/// (return `None`); only the diversity regime raises it.
+/// Qwen's shipped default (0.90) is the throughput sweet spot for repetitive
+/// workloads (`docs/MTP-DRAFT-GATE-THROUGHPUT.md`). `coding` lowers the gate to
+/// 0.85 (the `python_modules_long` optimum, +13.6% tok/fwd); `agentic` lowers
+/// to 0.80 (the `long_code` optimum, +17.6% tok/fwd). Only the diversity regime
+/// raises the gate above 0.90.
+const CODING_QWEN_GATE: f32 = 0.85;
+const AGENTIC_QWEN_GATE: f32 = 0.80;
 const CHATBOT_QWEN_GATE: f32 = 0.99;
 
 impl SpeculationProfile {
@@ -160,11 +166,13 @@ impl SpeculationProfile {
     }
 
     /// Qwen fused MTP gate this profile prescribes, or `None` to keep the shipped
-    /// 0.90 default. `coding`/`agentic` defer (0.90 is already the sweet spot);
-    /// only the diversity regime raises it.
+    /// 0.90 default. `coding` lowers to 0.85 (`python_modules_long` optimum),
+    /// `agentic` lowers to 0.80 (`long_code` optimum); only the diversity regime
+    /// raises the gate above 0.90.
     pub fn qwen_gate(self, temperature: Option<f32>) -> Option<f32> {
         match self.effective(temperature)? {
-            Self::Coding | Self::Agentic => None,
+            Self::Coding => Some(CODING_QWEN_GATE),
+            Self::Agentic => Some(AGENTIC_QWEN_GATE),
             Self::Chatbot => Some(CHATBOT_QWEN_GATE),
             Self::Auto => None,
         }
@@ -316,9 +324,11 @@ mod tests {
     }
 
     #[test]
-    fn qwen_defers_for_coding_and_agentic() {
-        assert_eq!(SpeculationProfile::Coding.qwen_gate(Some(0.0)), None);
-        assert_eq!(SpeculationProfile::Agentic.qwen_gate(Some(0.0)), None);
+    fn qwen_workload_optimal_gates_for_coding_and_agentic() {
+        // `docs/MTP-DRAFT-GATE-THROUGHPUT.md`: coding → 0.85 (python_modules_long
+        // optimum), agentic → 0.80 (long_code optimum).
+        assert_eq!(SpeculationProfile::Coding.qwen_gate(Some(0.0)), Some(0.85));
+        assert_eq!(SpeculationProfile::Agentic.qwen_gate(Some(0.0)), Some(0.80));
         assert_eq!(SpeculationProfile::Chatbot.qwen_gate(Some(0.0)), Some(0.99));
     }
 
