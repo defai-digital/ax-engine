@@ -130,18 +130,20 @@ pub fn layer_forward_with_turboquant_context(
     }
 
     match cfg.model_family.as_str() {
-        "gemma4" | "gemma3" | "qwen3" | "llama3" => families::standard::layer_forward(
-            cfg,
-            w,
-            hidden,
-            cache,
-            layer_idx,
-            token_offset,
-            per_layer_input,
-            shared_mask,
-            turboquant_context,
-            false,
-        ),
+        "gemma4" | "gemma3" | "qwen3" | "llama3" | "diffusion_gemma" => {
+            families::standard::layer_forward(
+                cfg,
+                w,
+                hidden,
+                cache,
+                layer_idx,
+                token_offset,
+                per_layer_input,
+                shared_mask,
+                turboquant_context,
+                false,
+            )
+        }
         "llama4" => families::llama4::layer_forward(
             cfg,
             w,
@@ -240,7 +242,7 @@ pub fn layer_forward_with_turboquant_context_last_only(
         return families::qwen3_linear::layer_forward(cfg, w, hidden, cache, layer_idx, true);
     }
     match cfg.model_family.as_str() {
-        "gemma4" | "gemma3" | "qwen3" | "llama3" | "qwen3_5" | "qwen3_next" => {
+        "gemma4" | "gemma3" | "qwen3" | "llama3" | "qwen3_5" | "qwen3_next" | "diffusion_gemma" => {
             families::standard::layer_forward(
                 cfg,
                 w,

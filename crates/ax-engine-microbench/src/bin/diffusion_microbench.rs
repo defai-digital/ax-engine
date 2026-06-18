@@ -15,10 +15,15 @@
 //!
 //! Run:
 //!   cargo run -p ax-engine-microbench --release --bin diffusion-microbench
+//!   cargo run -p ax-engine-microbench --release --bin diffusion-microbench -- --output benchmarks/results/diffusion-microbench/latest.json
 
+use std::env;
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use mlx_sys::{MlxArray, MlxDtype, astype, eval, matmul};
+use serde_json::{Value, json};
 
 // ── Realistic DiffusionGemma / Gemma4 dimensions ──────────────────────
 const CANVAS_SIZE: usize = 256;
@@ -33,6 +38,15 @@ const WARMUP: usize = 2;
 const MEASURE: usize = 5;
 
 fn main() {
+    if let Err(err) = run() {
+        eprintln!("error: {err}");
+        std::process::exit(2);
+    }
+}
+
+fn run() -> Result<(), String> {
+    let output = parse_output_arg()?;
+
     println!("DiffusionGemma Denoise-Step Microbench");
     println!("  canvas_size  = {CANVAS_SIZE}");
     println!("  vocab_size   = {VOCAB_SIZE}");
@@ -41,16 +55,46 @@ fn main() {
     println!("  entropy_bound  = {ENTROPY_BOUND}");
     println!();
 
-    bench_entropy_sampling();
-    bench_bidirectional_mask();
-    bench_self_conditioning_embed();
-    bench_prefill_rate();
-    bench_decode_rate();
+    let entropy_sampling = bench_entropy_sampling();
+    let bidirectional_mask = bench_bidirectional_mask();
+    let self_conditioning = bench_self_conditioning_embed();
+    let prefill_rate = bench_prefill_rate();
+    let decode_rate = bench_decode_rate();
+
+    if let Some(path) = output {
+        let artifact = json!({
+            "schema_version": "ax.diffusion_microbench.v1",
+            "dimensions": {
+                "canvas_size": CANVAS_SIZE,
+                "vocab_size": VOCAB_SIZE,
+                "hidden_size": HIDDEN_SIZE,
+                "sliding_window": SLIDING_WINDOW,
+                "entropy_bound": ENTROPY_BOUND,
+                "max_denoise_steps": MAX_DENOISE_STEPS,
+            },
+            "methodology": {
+                "warmup_runs": WARMUP,
+                "measure_runs": MEASURE,
+                "summary": "2 warmup + 5 measured runs, report median",
+            },
+            "results": {
+                "entropy_sampling": entropy_sampling,
+                "bidirectional_mask": bidirectional_mask,
+                "self_conditioning": self_conditioning,
+                "prefill_rate": prefill_rate,
+                "decode_rate": decode_rate,
+            }
+        });
+        write_json_artifact(&path, &artifact)?;
+        println!("Saved JSON artifact to {}", path.display());
+    }
+
+    Ok(())
 }
 
 // ── 1. Entropy-bound sampling ─────────────────────────────────────────
 
-fn bench_entropy_sampling() {
+fn bench_entropy_sampling() -> Value {
     // Synthetic per-position entropy: mix of low (confident) and high
     // (uncertain) values to exercise the sort + greedy accept path.
     let entropy: Vec<f32> = (0..CANVAS_SIZE)
@@ -97,13 +141,18 @@ fn bench_entropy_sampling() {
     println!("[1] Entropy-bound sampling ({CANVAS_SIZE} positions)");
     println!("    accepted positions (warmup): {warmup_result}");
     print_timing(median, &all);
+    json!({
+        "accepted_positions_warmup": warmup_result,
+        "timing": timing_json(median, &all),
+    })
 }
 
 // ── 2. Bidirectional mask construction ────────────────────────────────
 
-fn bench_bidirectional_mask() {
+fn bench_bidirectional_mask() -> Vec<Value> {
     // Simulate a growing cached prompt (1K, 4K, 16K tokens).
     let cached_seqs = [1024, 4096, 16384];
+    let mut rows = Vec::new();
 
     for &cached_seq in &cached_seqs {
         let run = || {
@@ -133,12 +182,20 @@ fn bench_bidirectional_mask() {
             warmup_result.0, warmup_result.1
         );
         print_timing(median, &all);
+        rows.push(json!({
+            "cached_seq": cached_seq,
+            "total_keys": cached_seq + CANVAS_SIZE,
+            "mask_ones_warmup": warmup_result.0,
+            "mask_entries": warmup_result.1,
+            "timing": timing_json(median, &all),
+        }));
     }
+    rows
 }
 
 // ── 3. Self-conditioning embedding ────────────────────────────────────
 
-fn bench_self_conditioning_embed() {
+fn bench_self_conditioning_embed() -> Value {
     // Test with two sparsity levels:
     //   - Sparse (top-10): simulates aggressive pruning / low temperature
     //   - Dense (top-1000): more realistic softmax output at moderate temperature
@@ -154,6 +211,7 @@ fn bench_self_conditioning_embed() {
         mem_gb = (VOCAB_SIZE * HIDDEN_SIZE * 4) as f64 / (1024.0 * 1024.0 * 1024.0)
     );
     let embed_table = build_embed_table(VOCAB_SIZE, HIDDEN_SIZE);
+    let mut cpu_rows = Vec::new();
 
     for (top_k, label) in configs {
         let prob = build_sparse_prob(CANVAS_SIZE, VOCAB_SIZE, top_k);
@@ -184,6 +242,13 @@ fn bench_self_conditioning_embed() {
             warmup_result.0
         );
         print_timing(median, &all);
+        cpu_rows.push(json!({
+            "label": label,
+            "top_k": top_k,
+            "checksum_warmup": warmup_result.0,
+            "weighted_len": warmup_result.1,
+            "timing": timing_json(median, &all),
+        }));
     }
 
     // Also benchmark the fully dense case (all vocab entries non-zero).
@@ -218,10 +283,18 @@ fn bench_self_conditioning_embed() {
     println!();
 
     // GPU matmul benchmark (the optimized approach).
-    bench_gpu_matmul_self_cond();
+    let gpu = bench_gpu_matmul_self_cond();
+    json!({
+        "cpu_sparse_rows": cpu_rows,
+        "cpu_dense_single_run": {
+            "checksum": checksum,
+            "elapsed_ms": elapsed.as_millis() as u64,
+        },
+        "gpu_matmul": gpu,
+    })
 }
 
-fn bench_gpu_matmul_self_cond() {
+fn bench_gpu_matmul_self_cond() -> Value {
     println!("[4] Self-conditioning via GPU matmul ({CANVAS_SIZE} x {VOCAB_SIZE} x {HIDDEN_SIZE})");
 
     // Build prob array on GPU: [1, canvas_size, vocab_size] (sparse top-1000).
@@ -260,11 +333,15 @@ fn bench_gpu_matmul_self_cond() {
     let (warmup_result, median, all) = timed_bench(run);
     println!("    result hidden dim (warmup): {warmup_result}");
     print_timing(median, &all);
+    json!({
+        "result_hidden_dim_warmup": warmup_result,
+        "timing": timing_json(median, &all),
+    })
 }
 
 // ── 5. Prefill rate projection ─────────────────────────────────────────
 
-fn bench_prefill_rate() {
+fn bench_prefill_rate() -> Vec<Value> {
     // Prefill rate = tokens/sec through the causal encoder.
     // DiffusionGemma uses the same Gemma4 causal forward for prefill.
     //
@@ -279,6 +356,7 @@ fn bench_prefill_rate() {
 
     // Test chunk sizes matching typical prefill chunks.
     let chunk_sizes = [256, 512, 1024, 2048];
+    let mut rows = Vec::new();
 
     for &chunk in &chunk_sizes {
         // Simulate GPU QKV projection: [1, chunk, hidden] x [hidden, 3*hidden].
@@ -326,14 +404,21 @@ fn bench_prefill_rate() {
         println!("    proj throughput: {tokens_per_sec:.0} tok/s ");
         println!("    (estimated, {num_layers:.0} layers x {per_layer_us:.0}us/layer)");
         let _ = warmup_result;
-        let _ = all;
         println!();
+        rows.push(json!({
+            "chunk_size": chunk,
+            "qkv_projection": timing_json(median, &all),
+            "projected_tokens_per_sec": tokens_per_sec,
+            "num_layers": num_layers,
+            "projected_total_gpu_us": total_gpu_us,
+        }));
     }
+    rows
 }
 
 // ── 6. Decode rate projection ─────────────────────────────────────────
 
-fn bench_decode_rate() {
+fn bench_decode_rate() -> Value {
     // Decode rate = effective tokens/sec including full denoise cycle.
     //
     // One block generates CANVAS_SIZE tokens via:
@@ -512,9 +597,75 @@ fn bench_decode_rate() {
     println!("      AFTER  (GPU matmul):    {tokens_per_sec_after:>10.1} tok/s  ");
     println!("      Speedup:                {speedup:>10.1}x");
     println!();
+    json!({
+        "canvas_init_us": init_median.as_micros() as u64,
+        "sampling_us": sampling_median.as_micros() as u64,
+        "self_conditioning_gpu_us": self_cond_median.as_micros() as u64,
+        "bidirectional_mask_us": mask_median.as_micros() as u64,
+        "per_step_cpu_overhead_us": per_step_cpu_us,
+        "qkv_forward_per_layer_us": fwd_median.as_micros() as u64,
+        "projected_forward_us": per_forward_us,
+        "projected_before_tokens_per_sec": tokens_per_sec_before,
+        "projected_after_tokens_per_sec": tokens_per_sec_after,
+        "projected_speedup": speedup,
+        "projected_block_before_us": block_before_us,
+        "projected_block_after_us": block_after_us,
+    })
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────
+
+fn parse_output_arg() -> Result<Option<PathBuf>, String> {
+    let mut output = None;
+    let mut args = env::args_os().skip(1);
+    while let Some(arg) = args.next() {
+        if arg == "--output" {
+            let path = args
+                .next()
+                .ok_or_else(|| "--output requires a path".to_string())?;
+            output = Some(PathBuf::from(path));
+        } else {
+            return Err(format!(
+                "unrecognized argument {}; usage: diffusion-microbench [--output path.json]",
+                arg.to_string_lossy()
+            ));
+        }
+    }
+    Ok(output)
+}
+
+fn write_json_artifact(path: &Path, artifact: &Value) -> Result<(), String> {
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        fs::create_dir_all(parent).map_err(|err| {
+            format!(
+                "failed to create output directory {}: {err}",
+                parent.display()
+            )
+        })?;
+    }
+    let payload = serde_json::to_string_pretty(artifact)
+        .map_err(|err| format!("failed to serialize benchmark artifact: {err}"))?
+        + "\n";
+    fs::write(path, payload).map_err(|err| format!("failed to write {}: {err}", path.display()))
+}
+
+fn timing_json(median: Duration, all: &[Duration]) -> Value {
+    let min = all.iter().min().copied().unwrap_or_default();
+    let max = all.iter().max().copied().unwrap_or_default();
+    json!({
+        "min_us": duration_us(min),
+        "median_us": duration_us(median),
+        "max_us": duration_us(max),
+        "runs": MEASURE,
+        "all_us": all.iter().copied().map(duration_us).collect::<Vec<_>>(),
+    })
+}
+
+fn duration_us(duration: Duration) -> u64 {
+    duration.as_micros().min(u64::MAX as u128) as u64
+}
 
 fn build_sparse_prob(canvas_size: usize, vocab_size: usize, top_k: usize) -> Vec<f32> {
     // Each row has `top_k` non-zero entries that sum to 1.0.

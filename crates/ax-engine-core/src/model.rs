@@ -515,6 +515,10 @@ impl NativeDiffusionConfig {
             || self.max_denoise_steps.is_some()
             || self.self_conditioning.is_some()
             || self.entropy_bound.is_some()
+            || self.entropy_threshold.is_some()
+            || self.convergence_steps.is_some()
+            || self.temperature_start.is_some()
+            || self.temperature_end.is_some()
     }
 
     pub fn is_disabled(&self) -> bool {
@@ -3434,6 +3438,40 @@ mod tests {
         )
         .expect("manifest should write");
         (dir, manifest)
+    }
+
+    #[test]
+    fn native_diffusion_config_is_enabled_by_any_field() {
+        assert!(NativeDiffusionConfig::default().is_disabled());
+
+        assert!(
+            NativeDiffusionConfig {
+                entropy_threshold: Some(0.005),
+                ..Default::default()
+            }
+            .is_enabled()
+        );
+        assert!(
+            NativeDiffusionConfig {
+                convergence_steps: Some(2),
+                ..Default::default()
+            }
+            .is_enabled()
+        );
+        assert!(
+            NativeDiffusionConfig {
+                temperature_start: Some(0.8),
+                ..Default::default()
+            }
+            .is_enabled()
+        );
+        assert!(
+            NativeDiffusionConfig {
+                temperature_end: Some(0.4),
+                ..Default::default()
+            }
+            .is_enabled()
+        );
     }
 
     fn packed_layer_manifest() -> NativeModelManifest {

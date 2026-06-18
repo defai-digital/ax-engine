@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="430" viewBox="0 0 800 430" role="img" aria-labelledby="title desc">
+<title>DiffusionGemma 4-bit - Prefill projection</title>
+<desc>Bar chart showing AX microbench projected prefill throughput for DiffusionGemma at 256, 512, 1024, and 2048 token chunks.</desc>
+<rect width="800" height="430" fill="#f8fafc"/>
+<text x="64" y="24" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="16" font-weight="700" fill="#111827">DiffusionGemma 4-bit - Prefill projection</text>
+<text x="64" y="46" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#4b5563">QKV matmul proxy over Gemma4 26B dimensions | 46 layers | AX microbench projection</text>
+<text x="64" y="62" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">Peer prefill rows are not published because llama.cpp and mlx-lm cannot load DiffusionGemma.</text>
+<rect x="707" y="13" width="59" height="22" rx="11" fill="#eef2ff" stroke="#c7d2fe"/>
+<text x="736.5" y="28" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#3730a3">tok/s</text>
+<text x="766" y="52" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#374151">Higher is better</text>
+
+<rect x="64" y="86" width="576" height="230" rx="6" fill="#ffffff" stroke="#dbe3ef"/>
+<line x1="64" y1="316" x2="640" y2="316" stroke="#e5e7eb"/>
+<text x="56" y="319" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#6b7280">0</text>
+<line x1="64" y1="265" x2="640" y2="265" stroke="#e5e7eb"/>
+<text x="56" y="268" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#6b7280">4K</text>
+<line x1="64" y1="214" x2="640" y2="214" stroke="#e5e7eb"/>
+<text x="56" y="217" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#6b7280">8K</text>
+<line x1="64" y1="163" x2="640" y2="163" stroke="#e5e7eb"/>
+<text x="56" y="166" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#6b7280">12K</text>
+<line x1="64" y1="112" x2="640" y2="112" stroke="#e5e7eb"/>
+<text x="56" y="115" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#6b7280">16K</text>
+<line x1="64" y1="86" x2="640" y2="86" stroke="#e5e7eb"/>
+<text x="56" y="89" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#6b7280">18K</text>
+
+<rect x="108" y="183.3" width="74" height="132.7" rx="4" fill="#2eaf5f" fill-opacity="0.40" stroke="#176c37" stroke-width="1.8"/>
+<line x1="108" y1="183.3" x2="182" y2="183.3" stroke="#176c37" stroke-width="2.6"/>
+<text x="145" y="177.3" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">10,383</text>
+<text x="145" y="346" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">256</text>
+
+<rect x="230" y="140.6" width="74" height="175.4" rx="4" fill="#2eaf5f" fill-opacity="0.48" stroke="#176c37" stroke-width="1.8"/>
+<line x1="230" y1="140.6" x2="304" y2="140.6" stroke="#176c37" stroke-width="2.6"/>
+<text x="267" y="134.6" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">13,724</text>
+<text x="267" y="346" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">512</text>
+
+<rect x="352" y="121.7" width="74" height="194.3" rx="4" fill="#2eaf5f" fill-opacity="0.56" stroke="#176c37" stroke-width="1.8"/>
+<line x1="352" y1="121.7" x2="426" y2="121.7" stroke="#176c37" stroke-width="2.6"/>
+<text x="389" y="115.7" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">15,206</text>
+<text x="389" y="346" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">1024</text>
+
+<rect x="474" y="106.2" width="74" height="209.8" rx="4" fill="#2eaf5f" fill-opacity="0.64" stroke="#176c37" stroke-width="1.8"/>
+<line x1="474" y1="106.2" x2="548" y2="106.2" stroke="#176c37" stroke-width="2.6"/>
+<text x="511" y="100.2" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">16,423</text>
+<text x="511" y="346" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">2048</text>
+
+<text x="328" y="376" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#4b5563">Chunk tokens</text>
+<text x="64" y="405" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#9ca3af">Source: .internal/benchmark-results/diffusion-microbench-2026-06-18-new.json; projection uses median QKV timings.</text>
+</svg>

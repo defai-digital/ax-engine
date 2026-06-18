@@ -498,7 +498,9 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
         };
         let router_scale =
             try_take_plain(specs, &mut name_map, NativeTensorRole::FfnGateInpScale, idx)?;
-        let router_combined_scale = if artifacts.manifest().model_family == "gemma4" {
+        let router_combined_scale = if artifacts.manifest().model_family == "gemma4"
+            || artifacts.manifest().model_family == "diffusion_gemma"
+        {
             router_scale
                 .as_ref()
                 .map(|scale| gemma4_router_combined_scale(artifacts.manifest().hidden_size, scale))

@@ -232,14 +232,16 @@ pub(crate) fn generate_diffusion_block(
     cache: &mut MlxKVCache,
     rng: &mut Xorshift64,
     token_offset: usize,
+    embed_table_cache: &mut Option<MlxArray>,
 ) -> DiffusionBlockResult {
     let block_start = Instant::now();
     let mut canvas = init_canvas(diff_cfg.canvas_size, cfg.vocab_size, rng);
 
-    // Pre-compute embedding table once — reused across all denoise steps.
-    // Avoids re-dequantizing the full vocab embedding (~3.5 GB for Gemma4).
+    if diff_cfg.self_conditioning && embed_table_cache.is_none() {
+        *embed_table_cache = Some(compute_embed_table(weights, cfg));
+    }
     let embed_table = if diff_cfg.self_conditioning {
-        Some(compute_embed_table(weights, cfg))
+        embed_table_cache.as_ref()
     } else {
         None
     };
@@ -255,7 +257,7 @@ pub(crate) fn generate_diffusion_block(
             &mut canvas,
             step,
             token_offset,
-            embed_table.as_ref(),
+            embed_table,
         );
         steps_executed += 1;
         if canvas.converged {

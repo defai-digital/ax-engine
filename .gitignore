@@ -26,6 +26,7 @@ npm-debug.log*
 
 # AI assistant configuration — not for publication
 .claude/
+.ax-code/
 .qoder/
 CLAUDE.md
 agents.md

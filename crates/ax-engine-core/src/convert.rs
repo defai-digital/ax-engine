@@ -1090,7 +1090,8 @@ fn parse_diffusion_config(config: &serde_json::Value, model_type: &str) -> Nativ
         .unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new()));
 
     let generation_config = config.get("generation_config");
-    let sampler_config = config.get("sampler_config");
+    let top_level_sampler_config = config.get("sampler_config");
+    let generation_sampler_config = generation_config.and_then(|gc| gc.get("sampler_config"));
 
     let get_u32 = |key: &str| -> Option<u32> {
         diffusion
@@ -1110,7 +1111,7 @@ fn parse_diffusion_config(config: &serde_json::Value, model_type: &str) -> Nativ
         })
     };
 
-    // Helper for f32 fields that may also be under sampler_config.
+    // Helper for f32 fields that may also be under sampler_config or generation_config.
     let get_f32_sampler = |key: &str| -> Option<f32> {
         diffusion
             .get(key)
@@ -1118,8 +1119,20 @@ fn parse_diffusion_config(config: &serde_json::Value, model_type: &str) -> Nativ
             .map(|v| v as f32)
             .or_else(|| arch_f64(config, model_type, key).map(|v| v as f32))
             .or_else(|| {
-                sampler_config
+                top_level_sampler_config
                     .and_then(|sc| sc.get(key))
+                    .and_then(|v| v.as_f64())
+                    .map(|v| v as f32)
+            })
+            .or_else(|| {
+                generation_sampler_config
+                    .and_then(|sc| sc.get(key))
+                    .and_then(|v| v.as_f64())
+                    .map(|v| v as f32)
+            })
+            .or_else(|| {
+                generation_config
+                    .and_then(|gc| gc.get(key))
                     .and_then(|v| v.as_f64())
                     .map(|v| v as f32)
             })
@@ -1135,16 +1148,26 @@ fn parse_diffusion_config(config: &serde_json::Value, model_type: &str) -> Nativ
     // canvas_size: check both "canvas_size" and "canvas_length" (real config uses canvas_length).
     let canvas_size = get_u32("canvas_size").or_else(|| get_u32("canvas_length"));
 
+    // Temperature schedule: real config uses t_max/t_min inside generation_config.
+    let temperature_start =
+        get_f32_sampler("temperature_start").or_else(|| get_f32_sampler("t_max"));
+    let temperature_end = get_f32_sampler("temperature_end").or_else(|| get_f32_sampler("t_min"));
+
+    // Convergence steps: real config uses stability_threshold (integer) inside generation_config.
+    let convergence_steps =
+        get_u32("convergence_steps").or_else(|| get_u32_gen("stability_threshold"));
+
     NativeDiffusionConfig {
         canvas_size,
         max_denoise_steps: get_u32_gen("max_denoise_steps")
             .or_else(|| get_u32_gen("max_denoising_steps")),
         self_conditioning: get_bool("self_conditioning"),
         entropy_bound: get_f32_sampler("entropy_bound"),
-        entropy_threshold: get_f32_sampler("entropy_threshold"),
-        convergence_steps: get_u32("convergence_steps"),
-        temperature_start: get_f32_sampler("temperature_start"),
-        temperature_end: get_f32_sampler("temperature_end"),
+        entropy_threshold: get_f32_sampler("entropy_threshold")
+            .or_else(|| get_f32_sampler("confidence_threshold")),
+        convergence_steps,
+        temperature_start,
+        temperature_end,
     }
 }
 
@@ -1558,9 +1581,11 @@ fn compute_attention_value_from_key_layers(
 ) -> Vec<u32> {
     // The reference config dataclasses default this field differently per model
     // type: standard gemma4 (27B) defaults False, while gemma4_unified (12B)
-    // defaults True. AX reads config.json directly without a dataclass to supply
+    // and diffusion_gemma default True (full attention layers share V from K).
+    // AX reads config.json directly without a dataclass to supply
     // the default, so we mirror the per-type default when the field is absent.
-    let default_k_eq_v = is_gemma4_unified_model_type(model_type);
+    let default_k_eq_v =
+        is_gemma4_unified_model_type(model_type) || model_type == "diffusion_gemma";
     if !is_gemma4_target_model_type(model_type)
         || !arch_bool(config, model_type, "attention_k_eq_v").unwrap_or(default_k_eq_v)
     {
@@ -3352,6 +3377,16 @@ mod tests {
             ),
             vec![1],
         );
+        assert_eq!(
+            compute_attention_value_from_key_layers(
+                &empty,
+                "diffusion_gemma",
+                &layer_types,
+                &no_shared,
+                2,
+            ),
+            vec![1],
+        );
         assert!(
             compute_attention_value_from_key_layers(&empty, "gemma4", &layer_types, &no_shared, 2,)
                 .is_empty(),
@@ -4654,7 +4689,13 @@ mod tests {
                 "vocab_size": 262144,
                 "canvas_length": 256,
                 "generation_config": {
-                    "max_denoising_steps": 48
+                    "max_denoising_steps": 48,
+                    "t_max": 0.8,
+                    "t_min": 0.4,
+                    "stability_threshold": 2,
+                    "sampler_config": {
+                        "confidence_threshold": 0.005
+                    }
                 },
                 "sampler_config": {
                     "entropy_bound": 0.1
@@ -4772,6 +4813,10 @@ mod tests {
         assert_eq!(manifest.diffusion.canvas_size, Some(256));
         assert_eq!(manifest.diffusion.max_denoise_steps, Some(48));
         assert_eq!(manifest.diffusion.entropy_bound, Some(0.1));
+        assert_eq!(manifest.diffusion.entropy_threshold, Some(0.005));
+        assert_eq!(manifest.diffusion.convergence_steps, Some(2));
+        assert_eq!(manifest.diffusion.temperature_start, Some(0.8));
+        assert_eq!(manifest.diffusion.temperature_end, Some(0.4));
 
         // MoE config detected via text_config.num_experts.
         assert_eq!(manifest.moe.expert_count, Some(128));

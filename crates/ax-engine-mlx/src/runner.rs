@@ -4091,6 +4091,9 @@ struct RequestState {
     /// DiffusionGemma generates `canvas_size` tokens per block; the runner
     /// drains them one at a time through the standard decode path.
     diffusion_block_queue: VecDeque<u32>,
+    /// Request-local DiffusionGemma embedding table reused across generated
+    /// blocks for self-conditioning.
+    diffusion_embed_table: Option<MlxArray>,
     /// The token to use as `last_token` for the next model run.
     /// None on the very first decode step (use framework-supplied input instead).
     next_model_last_token: Option<u32>,
@@ -4212,6 +4215,7 @@ impl RequestState {
             ngram_request_disable_reason: NgramRequestDisableReason::None,
             bonus_queue: VecDeque::new(),
             diffusion_block_queue: VecDeque::new(),
+            diffusion_embed_table: None,
             next_model_last_token: None,
             pending_direct: None,
             direct_pipeline_emitted_tokens: 0,
@@ -6515,6 +6519,7 @@ impl MlxRunner {
                 &mut state.cache,
                 &mut state.rng,
                 token_offset,
+                &mut state.diffusion_embed_table,
             );
             state.decode_telemetry.record_diffusion_block(&result);
             let mut queue: VecDeque<u32> = result.tokens.into();
