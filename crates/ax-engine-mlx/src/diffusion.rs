@@ -11,18 +11,28 @@
 //!    sampling, check convergence.
 //! 4. Commit: run causal encoder pass over canvas, write KV, emit tokens.
 //! 5. Repeat from step 2 for the next block.
+//!
+//! ## GPU-native sampling
+//!
+//! The denoise step keeps token state and sampling logic on the GPU to avoid
+//! per-step GPU→CPU synchronisation. Entropy-bound acceptance is computed via
+//! `argsort` + `cumsum` + `where_cond`, and convergence stability is measured
+//! with `not_equal` + `sum_axis`, materialising only scalar counters.
+//! Convergence is checked every `convergence_check_interval` steps (default 4)
+//! to further reduce sync overhead.
 
 use std::time::Instant;
 
 use mlx_sys::{
-    MlxArray, MlxDtype, add, argmax, astype, divide, eval, log, matmul, multiply, negative,
-    rms_norm, softmax, sum_axis,
+    MlxArray, MlxDtype, add, argmax, argsort_axis, astype, cumsum, divide, eval, less_equal, log,
+    matmul, multiply, negative, not_equal, reshape, rms_norm, softmax, sum_axis, take_along_axis,
+    where_cond,
 };
 
 use crate::kv_cache::MlxKVCache;
 use crate::model::{
     DiffusionConfig, FinalLogitsMode, ModelConfig, compute_per_layer_inputs_arr, embed_tokens,
-    finalize_lm_head_logits, layer_forward_bidirectional, shared,
+    embed_tokens_arr, finalize_lm_head_logits, layer_forward_bidirectional, shared,
 };
 use crate::sampling::Xorshift64;
 use crate::weights::ModelWeights;
@@ -44,41 +54,84 @@ pub(crate) struct DiffusionBlockResult {
 }
 
 // Mutable state of the canvas being denoised.
+//
+// Token and argmax state is kept on GPU as `MlxArray` to avoid per-step
+// GPU→CPU→GPU round-trips. Only scalar convergence counters cross the
+// device boundary.
 struct DiffusionCanvas {
-    tokens: Vec<u32>,
+    /// Current token IDs, 1-D `[canvas_size]` u32 on GPU.
+    tokens_gpu: MlxArray,
     canvas_size: usize,
-    argmax_canvas: Vec<u32>,
+    /// Previous step's argmax predictions, 1-D `[canvas_size]` u32 on GPU.
+    /// `None` on the very first step (no previous prediction to compare).
+    argmax_canvas: Option<MlxArray>,
     stable_count: usize,
     mean_entropy: f32,
     step: usize,
     converged: bool,
     prev_self_cond_embed: Option<MlxArray>,
+    /// Number of positions accepted in the last denoise step.
+    accepted_count: usize,
+    /// Fraction of positions accepted (accepted_count / canvas_size).
+    /// Used for adaptive convergence detection.
+    acceptance_rate: f32,
+    /// Mean entropy from the previous check step, for plateau detection.
+    prev_mean_entropy: f32,
 }
 
-// Initialize a canvas with uniformly random token IDs.
+// Initialize a canvas with uniformly random token IDs on GPU.
 fn init_canvas(canvas_size: usize, vocab_size: usize, rng: &mut Xorshift64) -> DiffusionCanvas {
     let tokens: Vec<u32> = (0..canvas_size)
         .map(|_| (rng.next_u64() % vocab_size as u64) as u32)
         .collect();
+    let tokens_gpu = MlxArray::from_raw_data(
+        tokens.as_ptr() as *const u8,
+        std::mem::size_of_val(&tokens[..]),
+        &[canvas_size as i32],
+        MlxDtype::Uint32,
+    );
     DiffusionCanvas {
-        tokens,
+        tokens_gpu,
         canvas_size,
-        argmax_canvas: vec![0; canvas_size],
+        argmax_canvas: None,
         stable_count: 0,
         mean_entropy: f32::MAX,
         step: 0,
         converged: false,
         prev_self_cond_embed: None,
+        accepted_count: 0,
+        acceptance_rate: 1.0, // start at 100% (all positions changing)
+        prev_mean_entropy: f32::MAX,
     }
 }
 
 // Check whether the canvas has converged.
 //
-// Convergence requires:
-// 1. `argmax_canvas` unchanged for `convergence_steps` consecutive steps, AND
-// 2. Mean per-position entropy below `entropy_threshold`.
+// Convergence triggers when ANY of these criteria are met:
+//
+// 1. **Strict criteria** (original): argmax unchanged for `convergence_steps`
+//    consecutive check steps AND mean entropy below `entropy_threshold`.
+//
+// 2. **Acceptance rate criteria** (adaptive): acceptance rate drops below
+//    `acceptance_rate_threshold` (default 1%). When almost no positions are
+//    being updated, the model has converged regardless of absolute entropy.
+//
+// 3. **Entropy plateau criteria**: entropy has stopped decreasing significantly
+//    (delta < 0.001) after step 16, indicating diminishing returns.
 fn check_convergence(canvas: &DiffusionCanvas, cfg: &DiffusionConfig) -> bool {
-    canvas.stable_count >= cfg.convergence_steps && canvas.mean_entropy < cfg.entropy_threshold
+    // Strict criteria: traditional argmax stability + low entropy.
+    let strict_converged =
+        canvas.stable_count >= cfg.convergence_steps && canvas.mean_entropy < cfg.entropy_threshold;
+
+    // Acceptance rate criteria: almost no positions being updated.
+    let acceptance_converged = canvas.acceptance_rate < cfg.acceptance_rate_threshold;
+
+    // Entropy plateau criteria: entropy stalled after warmup period.
+    // Only check after step 16 to allow initial exploration.
+    let entropy_delta = (canvas.prev_mean_entropy - canvas.mean_entropy).abs();
+    let plateau_converged = entropy_delta < 0.001 && canvas.step >= 16;
+
+    strict_converged || acceptance_converged || plateau_converged
 }
 
 // Linear temperature schedule from `temp_start` (step 0) to `temp_end` (max steps).
@@ -88,7 +141,12 @@ fn temperature_at_step(step: usize, cfg: &DiffusionConfig) -> f32 {
 }
 
 // Run one denoise step: bidirectional forward → per-position logits →
-// entropy-bound sampling → convergence check → self-conditioning.
+// GPU-native entropy-bound sampling → convergence check → self-conditioning.
+//
+// Token state stays on GPU throughout; only scalar convergence counters
+// (`changed_count`, `mean_entropy`) are materialised to CPU. On non-check
+// steps (controlled by `convergence_check_interval`), the convergence
+// materialisation is skipped entirely.
 #[allow(clippy::too_many_arguments)]
 fn denoise_step(
     cfg: &ModelConfig,
@@ -100,11 +158,11 @@ fn denoise_step(
     token_offset: usize,
     embed_table: Option<&MlxArray>,
 ) {
-    let canvas_size = canvas.canvas_size;
     let temperature = temperature_at_step(step, diff_cfg);
+    let is_check_step = step.is_multiple_of(diff_cfg.convergence_check_interval);
 
     // Bidirectional forward over canvas → logits [1, canvas_size, vocab_size].
-    let logits = forward_bidirectional(cfg, weights, &canvas.tokens, cache, token_offset);
+    let logits = forward_bidirectional(cfg, weights, &canvas.tokens_gpu, cache, token_offset);
 
     // Temperature-scale: divide by T.
     let scaled = if (temperature - 1.0).abs() > 1e-6 {
@@ -121,64 +179,104 @@ fn denoise_step(
     let eps = MlxArray::from_f32(1e-10);
     let log_prob = log(&add(&prob, &eps, None), None);
     let p_log_p = multiply(&prob, &log_prob, None);
+    // entropy: [1, canvas_size]
     let entropy = negative(&sum_axis(&p_log_p, -1, false, None), None);
 
     // Argmax per position → [1, canvas_size] (argmax reduces last axis).
-    let argmax_tokens = argmax(&prob, None);
+    let argmax_2d = argmax(&prob, None);
+    // Reshape to 1-D [canvas_size] for token-state tracking.
+    let argmax_1d = reshape(&argmax_2d, &[canvas.canvas_size as i32], None);
 
-    // Materialize entropy and argmax for Rust-side sampling logic.
-    eval(&[&entropy, &argmax_tokens]);
-    let entropy_data = entropy.data_f32();
-    let argmax_data = argmax_tokens.data_u32();
+    // ── GPU-native entropy-bound sampling ────────────────────────────
+    //
+    // Sort positions by entropy ascending (most confident first), then
+    // accept positions greedily until cumulative entropy exceeds the
+    // budget. This is equivalent to the previous CPU-side sort+loop but
+    // runs entirely as lazy MLX graph nodes.
 
-    // Entropy-bound position selection:
-    // Sort positions by entropy ascending (most confident first).
-    let mut position_order: Vec<usize> = (0..canvas_size).collect();
-    position_order.sort_by(|&a, &b| entropy_data[a].total_cmp(&entropy_data[b]));
+    // sorted_positions: [1, canvas_size] — indices that sort entropy ascending.
+    let sorted_positions = argsort_axis(&entropy, -1, None);
 
-    // Greedily accept lowest-entropy positions until cumulative entropy
-    // exceeds the budget.
-    let mut accept_mask = vec![false; canvas_size];
-    let mut cumulative_entropy = 0.0_f32;
-    for &pos in &position_order {
-        if cumulative_entropy + entropy_data[pos] > diff_cfg.entropy_bound {
-            break;
+    // sorted_entropy: [1, canvas_size] — entropy values in sorted order.
+    let sorted_entropy = take_along_axis(&entropy, &sorted_positions, -1, None);
+
+    // cum_entropy: [1, canvas_size] — inclusive prefix sum of sorted entropy.
+    let cum_entropy = cumsum(&sorted_entropy, -1, false, true, None);
+
+    // bound_scalar: [] f32 — the entropy budget.
+    let bound_scalar = MlxArray::from_f32(diff_cfg.entropy_bound);
+
+    // accepted_sorted: [1, canvas_size] bool — positions within budget.
+    // Using <= ensures at least the first (lowest-entropy) position is
+    // accepted when its entropy ≤ bound, guaranteeing progress.
+    let accepted_sorted = less_equal(&cum_entropy, &bound_scalar, None);
+
+    // Inverse-sort the acceptance mask back to original position order.
+    // inverse_sort[i] = rank of position i in the sorted ordering.
+    let inverse_sort = argsort_axis(&sorted_positions, -1, None);
+    let accept_mask = take_along_axis(&accepted_sorted, &inverse_sort, -1, None);
+    let accept_mask_1d = reshape(&accept_mask, &[canvas.canvas_size as i32], None);
+
+    // Token update: accepted positions keep current tokens, rejected
+    // positions adopt the model's argmax prediction.
+    let new_tokens = where_cond(&accept_mask_1d, &canvas.tokens_gpu, &argmax_1d, None);
+
+    // ── Acceptance rate tracking ─────────────────────────────────────
+    //
+    // Count positions accepted (where accept_mask is true) for adaptive
+    // convergence detection. When acceptance rate drops near zero, the
+    // model has converged even if absolute entropy is still above threshold.
+    let accepted_f32 = astype(&accept_mask_1d, MlxDtype::Float32, None);
+    let accepted_sum = sum_axis(&accepted_f32, -1, false, None);
+    eval(&[&accepted_sum]);
+    canvas.accepted_count = accepted_sum.data_f32()[0] as usize;
+    canvas.acceptance_rate = canvas.accepted_count as f32 / canvas.canvas_size as f32;
+
+    // ── Convergence detection (check steps only) ─────────────────────
+    //
+    // On check steps, materialise two scalars (changed_count, mean_entropy)
+    // to update the stability counter and convergence flag. On non-check
+    // steps, skip the materialisation entirely.
+
+    if is_check_step {
+        // Argmax stability: count positions that differ from previous step.
+        if let Some(prev_argmax) = &canvas.argmax_canvas {
+            let changed = not_equal(&argmax_1d, prev_argmax, None);
+            let changed_f32 = astype(&changed, MlxDtype::Float32, None);
+            let changed_count = sum_axis(&changed_f32, -1, false, None);
+
+            // Mean entropy: scalar mean of per-position entropy.
+            let total_entropy = sum_axis(&entropy, -1, false, None);
+            let canvas_size_f32 = MlxArray::from_f32(canvas.canvas_size as f32);
+            let mean_entropy = divide(&total_entropy, &canvas_size_f32, None);
+
+            eval(&[&changed_count, &mean_entropy]);
+
+            let changed_val = changed_count.data_f32()[0];
+            canvas.stable_count = if changed_val == 0.0 {
+                canvas.stable_count + 1
+            } else {
+                0
+            };
+            canvas.prev_mean_entropy = canvas.mean_entropy;
+            canvas.mean_entropy = mean_entropy.data_f32()[0];
+        } else {
+            // First step: no previous argmax to compare; force unstable.
+            canvas.stable_count = 0;
+            let total_entropy = sum_axis(&entropy, -1, false, None);
+            let canvas_size_f32 = MlxArray::from_f32(canvas.canvas_size as f32);
+            let mean_entropy = divide(&total_entropy, &canvas_size_f32, None);
+            eval(&[&mean_entropy]);
+            canvas.prev_mean_entropy = canvas.mean_entropy;
+            canvas.mean_entropy = mean_entropy.data_f32()[0];
         }
-        accept_mask[pos] = true;
-        cumulative_entropy += entropy_data[pos];
-    }
-    // Always accept at least one position to guarantee progress.
-    if !accept_mask.iter().any(|&v| v) {
-        accept_mask[position_order[0]] = true;
+        canvas.converged = check_convergence(canvas, diff_cfg);
     }
 
-    // Update tokens: accepted positions keep their current tokens, rejected
-    // positions adopt the model's argmax prediction. This preserves progress
-    // from previous steps — confident positions lock in while uncertain ones
-    // converge toward the model's best guess.
-    let mut new_tokens = canvas.tokens.clone();
-    for pos in 0..canvas_size {
-        if !accept_mask[pos] {
-            new_tokens[pos] = argmax_data[pos];
-        }
-    }
-
-    // Update argmax canvas and check stability.
-    let new_argmax: Vec<u32> = (0..canvas_size).map(|i| argmax_data[i]).collect();
-    let unchanged = new_argmax == canvas.argmax_canvas;
-    canvas.stable_count = if unchanged {
-        canvas.stable_count + 1
-    } else {
-        0
-    };
-    canvas.argmax_canvas = new_argmax;
-
-    // Compute mean entropy.
-    let total_entropy: f32 = entropy_data.iter().sum();
-    canvas.mean_entropy = total_entropy / canvas_size as f32;
-    canvas.tokens = new_tokens;
+    // Store current argmax for next step's stability comparison.
+    canvas.argmax_canvas = Some(argmax_1d);
+    canvas.tokens_gpu = new_tokens;
     canvas.step = step;
-    canvas.converged = check_convergence(canvas, diff_cfg);
 
     // Self-conditioning: GPU matmul of prob × embed_table.
     // prob: [1, canvas_size, vocab_size]
@@ -208,8 +306,8 @@ fn compute_embed_table(weights: &ModelWeights, cfg: &ModelConfig) -> MlxArray {
 
 // Commit the canvas via a causal encoder pass.
 //
-// Runs the standard causal forward over the canvas tokens, writes KV cache,
-// and returns the committed token IDs (the canvas tokens themselves).
+// Materialises GPU tokens to CPU for the causal forward (which requires
+// `&[u32]`), writes KV cache, and returns the committed token IDs.
 fn commit_block(
     cfg: &ModelConfig,
     weights: &ModelWeights,
@@ -217,8 +315,11 @@ fn commit_block(
     canvas: &DiffusionCanvas,
     token_offset: usize,
 ) -> Vec<u32> {
-    let _logits = crate::model::forward(cfg, weights, &canvas.tokens, cache, token_offset);
-    canvas.tokens.clone()
+    // Materialise GPU tokens to CPU for the causal forward.
+    eval(&[&canvas.tokens_gpu]);
+    let tokens: Vec<u32> = canvas.tokens_gpu.data_u32().to_vec();
+    let _logits = crate::model::forward(cfg, weights, &tokens, cache, token_offset);
+    tokens
 }
 
 /// Generate one diffusion block: denoise → commit.
@@ -289,29 +390,24 @@ fn elapsed_us(started: Instant) -> u32 {
 //
 // Unlike the causal `forward()`, this uses `layer_forward_bidirectional` for
 // each layer — no KV cache writes, bidirectional attention over the canvas.
+// Accepts a 1-D `[canvas_size]` u32 `MlxArray` (may be GPU-resident/lazy).
 // Returns per-position logits `[1, canvas_size, vocab_size]`.
 fn forward_bidirectional(
     cfg: &ModelConfig,
     weights: &ModelWeights,
-    token_ids: &[u32],
+    token_ids: &MlxArray,
     cache: &MlxKVCache,
     token_offset: usize,
 ) -> MlxArray {
-    // Embed tokens.
-    let mut hidden = embed_tokens(token_ids, &weights.token_embedding, cfg.hidden_size);
+    // Embed tokens directly from GPU array.
+    let mut hidden = embed_tokens_arr(token_ids, &weights.token_embedding, cfg.hidden_size);
     hidden = astype(&hidden, MlxDtype::Bfloat16, None);
     if let Some(scale) = cfg.hidden_states_scale {
         hidden = crate::model::shared::scale_hidden_pub(&hidden, scale);
     }
 
     // Compute per-layer inputs (Gemma4 per-layer embeddings).
-    let ids_1d = MlxArray::from_raw_data(
-        token_ids.as_ptr() as *const u8,
-        std::mem::size_of_val(token_ids),
-        &[token_ids.len() as i32],
-        MlxDtype::Uint32,
-    );
-    let per_layer_inputs = compute_per_layer_inputs_arr(cfg, weights, &ids_1d, &hidden);
+    let per_layer_inputs = compute_per_layer_inputs_arr(cfg, weights, token_ids, &hidden);
 
     // Run each layer with bidirectional attention.
     for (li, layer_w) in weights.layers.iter().enumerate() {

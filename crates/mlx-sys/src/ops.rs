@@ -199,10 +199,13 @@ binary_op!(multiply, mlx_multiply);
 binary_op!(matmul, mlx_matmul);
 binary_op!(greater_equal, mlx_greater_equal);
 binary_op!(less, mlx_less);
+binary_op!(less_equal, mlx_less_equal);
 binary_op!(logical_and, mlx_logical_and);
 binary_op!(maximum, mlx_maximum);
 binary_op!(minimum, mlx_minimum);
 binary_op!(power, mlx_power);
+binary_op!(equal, mlx_equal);
+binary_op!(not_equal, mlx_not_equal);
 
 unary_op!(sigmoid, mlx_sigmoid);
 unary_op!(tanh, mlx_tanh);
@@ -1308,6 +1311,27 @@ pub fn sum_axis(a: &MlxArray, axis: i32, keepdims: bool, s: Option<&MlxStream>) 
         let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
         let mut res = MlxArray::empty();
         ffi::mlx_sum_axis(&mut res.inner, a.inner, axis, keepdims, stream);
+        res
+    }
+}
+
+/// Cumulative sum along `axis`.
+///
+/// `reverse` computes the cumsum in reverse order; `inclusive` includes the
+/// current element in the running sum (standard inclusive prefix sum when
+/// both are default/false/true respectively).
+pub fn cumsum(
+    a: &MlxArray,
+    axis: i32,
+    reverse: bool,
+    inclusive: bool,
+    s: Option<&MlxStream>,
+) -> MlxArray {
+    crate::op_count::bump();
+    unsafe {
+        let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
+        let mut res = MlxArray::empty();
+        ffi::mlx_cumsum(&mut res.inner, a.inner, axis, reverse, inclusive, stream);
         res
     }
 }

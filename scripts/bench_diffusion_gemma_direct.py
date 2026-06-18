@@ -44,7 +44,7 @@ DEFAULT_OUTPUT_ROOT = (
 )
 DEFAULT_ASSETS_DIR = REPO_ROOT / "docs" / "assets"
 BENCH_SCHEMA = "ax.diffusion_gemma_direct_first_block.v1"
-M5_MAX_PEAK_GB_S = 577.0
+M5_MAX_THEORETICAL_MEMORY_BANDWIDTH_GB_S = 614.4
 FONT = "Inter,Segoe UI,Arial,sans-serif"
 WIDTH = 800
 HEIGHT = 430
@@ -182,11 +182,11 @@ def add_bandwidth_estimates(rows: list[dict[str, Any]], *, model_weight_bytes: i
         }
         row["effective_bandwidth_gb_s"] = {
             "median": effective_gb_s,
-            "peak_gb_s": M5_MAX_PEAK_GB_S,
+            "theoretical_peak_gb_s": M5_MAX_THEORETICAL_MEMORY_BANDWIDTH_GB_S,
         }
         row["memory_bandwidth_utilization_pct"] = {
-            "median": effective_gb_s / M5_MAX_PEAK_GB_S * 100.0,
-            "peak_gb_s": M5_MAX_PEAK_GB_S,
+            "median": effective_gb_s / M5_MAX_THEORETICAL_MEMORY_BANDWIDTH_GB_S * 100.0,
+            "theoretical_peak_gb_s": M5_MAX_THEORETICAL_MEMORY_BANDWIDTH_GB_S,
         }
 
 
@@ -458,6 +458,98 @@ def render_chart(
     return "\n".join(parts)
 
 
+def render_bandwidth_share_chart(rows: list[dict[str, Any]]) -> str:
+    plot_left = LEFT + 78
+    plot_right = RIGHT
+    plot_width = plot_right - plot_left
+    panel_y = TOP
+    panel_h = BOTTOM - TOP
+    bar_h = 24.0
+    row_gap = 58.0
+    first_y = TOP + 32.0
+    header_right = WIDTH - 34
+    headroom_color = "#e5e7eb"
+    headroom_stroke = "#cbd5e1"
+
+    parts = [
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{WIDTH}" height="{HEIGHT}" '
+        f'viewBox="0 0 {WIDTH} {HEIGHT}" role="img" aria-labelledby="title desc">',
+        "<title>DiffusionGemma 4-bit - Memory bandwidth share</title>",
+        "<desc>DiffusionGemma 4-bit - Memory bandwidth share; 100% stacked bars show "
+        "effective bandwidth used versus theoretical headroom at 128/512/2048 prompt tokens.</desc>",
+        f'<rect width="{WIDTH}" height="{HEIGHT}" fill="#f8fafc"/>',
+        f'<text id="title" x="{LEFT}" y="24" font-family="{FONT}" font-size="16" '
+        f'font-weight="700" fill="#111827">DiffusionGemma 4-bit - Memory bandwidth share</text>',
+        f'<text x="{LEFT}" y="46" font-family="{FONT}" font-size="11" fill="#4b5563">'
+        f"median over reps | grouped by prompt tokens | first committed block</text>",
+        f'<text id="desc" x="{LEFT}" y="62" font-family="{FONT}" font-size="10" fill="#6b7280">'
+        f"AX-only DiffusionGemma direct telemetry; peer runtime blockers are documented in the README table</text>",
+        f'<text x="{LEFT}" y="76" font-family="{FONT}" font-size="9" fill="#9ca3af">'
+        f"100% = M5 Max theoretical unified-memory bandwidth</text>",
+        f'<rect x="{header_right - 48}" y="13" width="48" height="22" rx="11" '
+        f'fill="#eef2ff" stroke="#c7d2fe"/>',
+        f'<text x="{header_right - 24}" y="28" text-anchor="middle" font-family="{FONT}" '
+        f'font-size="10" font-weight="700" fill="#3730a3">%</text>',
+        f'<text x="{header_right}" y="52" text-anchor="end" font-family="{FONT}" '
+        f'font-size="10" font-weight="700" fill="#374151">Used vs headroom</text>',
+        f'<rect x="{LEFT}" y="{panel_y}" width="{RIGHT - LEFT}" height="{panel_h}" '
+        f'rx="6" fill="#ffffff" stroke="#dbe3ef"/>',
+    ]
+
+    for percent in (0, 25, 50, 75, 100):
+        x = plot_left + plot_width * percent / 100.0
+        parts.append(
+            f'<line x1="{x:.1f}" y1="{panel_y}" x2="{x:.1f}" y2="{BOTTOM}" '
+            f'stroke="#e5e7eb" stroke-width="1"/>'
+        )
+        parts.append(
+            f'<text x="{x:.1f}" y="{BOTTOM + 18}" text-anchor="middle" '
+            f'font-family="{FONT}" font-size="10" fill="#6b7280">{percent}%</text>'
+        )
+
+    for index, row in enumerate(rows):
+        prompt = int(row["prompt_tokens"])
+        used_pct = float(row["memory_bandwidth_utilization_pct"]["median"])
+        used_w = plot_width * used_pct / 100.0
+        y = first_y + index * row_gap
+        label_x = max(plot_left + 33.0, plot_left + used_w - 8.0)
+        parts.extend(
+            [
+                f'<text x="{LEFT + 8}" y="{y + bar_h / 2 + 4:.1f}" '
+                f'font-family="{FONT}" font-size="11" font-weight="700" '
+                f'fill="#111827">{prompt} tok</text>',
+                f'<rect x="{plot_left:.1f}" y="{y:.1f}" width="{plot_width:.1f}" '
+                f'height="{bar_h:.1f}" rx="5" fill="{headroom_color}" '
+                f'stroke="{headroom_stroke}" stroke-width="1.2"/>',
+                f'<rect x="{plot_left:.1f}" y="{y:.1f}" width="{used_w:.1f}" '
+                f'height="{bar_h:.1f}" rx="5" fill="{AX_COLOR}" fill-opacity="0.76"/>',
+                f'<line x1="{plot_left + used_w:.1f}" y1="{y:.1f}" '
+                f'x2="{plot_left + used_w:.1f}" y2="{y + bar_h:.1f}" '
+                f'stroke="{AX_DARK}" stroke-width="1.4"/>',
+                f'<text x="{label_x:.1f}" y="{y + bar_h / 2 + 4:.1f}" '
+                f'text-anchor="end" font-family="{FONT}" font-size="10" '
+                f'font-weight="700" fill="#ffffff">{used_pct:.1f}%</text>',
+            ]
+        )
+
+    legend_y = HEIGHT - 22
+    legend_x = LEFT
+    parts.extend(
+        [
+            f'<rect x="{legend_x:.1f}" y="{legend_y - 9}" width="12" height="10" rx="2" '
+            f'fill="{AX_COLOR}" fill-opacity="0.76"/>',
+            f'<text x="{legend_x + 16:.1f}" y="{legend_y}" font-family="{FONT}" '
+            f'font-size="10" fill="#374151">Used bandwidth</text>',
+            f'<rect x="{legend_x + 128:.1f}" y="{legend_y - 9}" width="12" height="10" rx="2" '
+            f'fill="{headroom_color}" stroke="{headroom_stroke}" stroke-width="1"/>',
+            f'<text x="{legend_x + 144:.1f}" y="{legend_y}" font-family="{FONT}" '
+            f'font-size="10" fill="#374151">Theoretical headroom</text>',
+            "</svg>",
+        ]
+    )
+    return "\n".join(parts)
+
+
 def write_summary(output_dir: Path, rows: list[dict[str, Any]]) -> None:
     lines = [
         "# DiffusionGemma Direct First-Block Benchmark",
@@ -485,7 +577,7 @@ def write_summary(output_dir: Path, rows: list[dict[str, Any]]) -> None:
     lines.extend(
         [
             "",
-            "| Prompt tokens | Estimated effective bandwidth | M5 Max peak utilization |",
+            "| Prompt tokens | Estimated effective bandwidth | % of 614.4 GB/s M5 Max theoretical bandwidth |",
             "|---:|---:|---:|",
         ]
     )
@@ -499,9 +591,9 @@ def write_summary(output_dir: Path, rows: list[dict[str, Any]]) -> None:
     lines.extend(
         [
             "",
-            "Bandwidth utilization estimates use local safetensors bytes times "
+            "Effective bandwidth estimates use local safetensors bytes times "
             "`denoise_steps + 1 commit` per block, divided by measured block wall time, "
-            "against a 577 GB/s M5 Max peak.",
+            "against the 614.4 GB/s M5 Max theoretical unified-memory bandwidth.",
             "",
             "Peer runtimes are intentionally N/A: current llama.cpp and mlx-lm releases "
             "cannot load DiffusionGemma model artifacts.",
@@ -603,7 +695,7 @@ def main() -> None:
             "bandwidth_model": {
                 "schema": "ax.estimated_weight_bandwidth.v1",
                 "model_weight_bytes": model_weight_bytes,
-                "peak_gb_s": M5_MAX_PEAK_GB_S,
+                "theoretical_peak_gb_s": M5_MAX_THEORETICAL_MEMORY_BANDWIDTH_GB_S,
                 "estimated_bytes_per_block": "model_weight_bytes * (diffusion_denoise_steps + 1 commit)",
                 "effective_bandwidth_gb_s": "estimated_bytes_per_block / measured_diffusion_block_wall_s",
             },
@@ -628,7 +720,7 @@ def main() -> None:
         artifact["bandwidth_model"] = {
             "schema": "ax.estimated_weight_bandwidth.v1",
             "model_weight_bytes": model_weight_bytes,
-            "peak_gb_s": M5_MAX_PEAK_GB_S,
+            "theoretical_peak_gb_s": M5_MAX_THEORETICAL_MEMORY_BANDWIDTH_GB_S,
             "estimated_bytes_per_block": "model_weight_bytes * (diffusion_denoise_steps + 1 commit)",
             "effective_bandwidth_gb_s": "estimated_bytes_per_block / measured_diffusion_block_wall_s",
         }
@@ -663,17 +755,16 @@ def main() -> None:
             "perf-diffusiongemma-direct-ttft-ms.svg",
             None,
         ),
-        (
-            "DiffusionGemma 4-bit - Memory bandwidth utilization",
-            "memory_bandwidth_utilization_pct",
-            "%",
-            False,
-            "Estimated from safetensors bytes × 49 passes per block over measured block wall time.",
-            "perf-diffusiongemma-direct-bandwidth-utilization.svg",
-            "Peak share",
-        ),
     ]
-    for title, metric_key, unit, lower_is_better, note, filename, direction_label in chart_specs:
+    for (
+        title,
+        metric_key,
+        unit,
+        lower_is_better,
+        note,
+        filename,
+        direction_label,
+    ) in chart_specs:
         svg = render_chart(
             title=title,
             metric_key=metric_key,
@@ -685,6 +776,11 @@ def main() -> None:
         )
         (args.assets_dir / filename).write_text(svg + "\n", encoding="utf-8")
         log(f"wrote {args.assets_dir / filename}")
+
+    bandwidth_svg = render_bandwidth_share_chart(rows)
+    bandwidth_filename = args.assets_dir / "perf-diffusiongemma-direct-memory-bandwidth-share.svg"
+    bandwidth_filename.write_text(bandwidth_svg + "\n", encoding="utf-8")
+    log(f"wrote {bandwidth_filename}")
 
 
 if __name__ == "__main__":

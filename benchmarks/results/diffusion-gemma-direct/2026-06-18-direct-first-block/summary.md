@@ -8,16 +8,16 @@
 
 | Prompt tokens | Block decode | Prefill | Time to first block | Denoise steps |
 |---:|---:|---:|---:|---:|
-| 128 | 37.4 tok/s | 1,316.6 tok/s | 6,936 ms | 48 |
-| 512 | 31.0 tok/s | 2,856.6 tok/s | 8,442 ms | 48 |
-| 2048 | 26.8 tok/s | 3,796.4 tok/s | 10,068 ms | 48 |
+| 128 | 45.2 tok/s | 1,348.4 tok/s | 5,757 ms | 48 |
+| 512 | 42.9 tok/s | 3,005.3 tok/s | 6,138 ms | 48 |
+| 2048 | 45.6 tok/s | 3,978.1 tok/s | 6,132 ms | 48 |
 
-| Prompt tokens | Estimated effective bandwidth | M5 Max peak utilization |
+| Prompt tokens | Estimated effective bandwidth | % of 614.4 GB/s M5 Max theoretical bandwidth |
 |---:|---:|---:|
-| 128 | 118.5 GB/s | 20.5% |
-| 512 | 98.2 GB/s | 17.0% |
-| 2048 | 85.0 GB/s | 14.7% |
+| 128 | 143.2 GB/s | 23.3% |
+| 512 | 135.8 GB/s | 22.1% |
+| 2048 | 144.5 GB/s | 23.5% |
 
-Bandwidth utilization estimates use local safetensors bytes times `denoise_steps + 1 commit` per block, divided by measured block wall time, against a 577 GB/s M5 Max peak.
+Effective bandwidth estimates use local safetensors bytes times `denoise_steps + 1 commit` per block, divided by measured block wall time, against the 614.4 GB/s M5 Max theoretical unified-memory bandwidth.
 
 Peer runtimes are intentionally N/A: current llama.cpp and mlx-lm releases cannot load DiffusionGemma model artifacts.

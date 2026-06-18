@@ -207,6 +207,13 @@ pub struct DiffusionConfig {
     pub temp_end: f32,
     /// Enable self-conditioning feedback between denoising steps (default true).
     pub self_conditioning: bool,
+    /// Steps between convergence checks (default 4). Non-check steps skip
+    /// argmax stability and mean-entropy materialisation to reduce GPU→CPU syncs.
+    pub convergence_check_interval: usize,
+    /// Acceptance rate threshold for adaptive convergence (default 0.01 = 1%).
+    /// When the fraction of accepted positions drops below this, the model
+    /// has converged regardless of absolute entropy.
+    pub acceptance_rate_threshold: f32,
 }
 
 impl DiffusionConfig {
@@ -224,6 +231,8 @@ impl DiffusionConfig {
             temp_start: cfg.temperature_start.unwrap_or(0.8),
             temp_end: cfg.temperature_end.unwrap_or(0.4),
             self_conditioning: cfg.self_conditioning.unwrap_or(true),
+            convergence_check_interval: cfg.convergence_check_interval.unwrap_or(4) as usize,
+            acceptance_rate_threshold: cfg.acceptance_rate_threshold.unwrap_or(0.01),
         })
     }
 }
