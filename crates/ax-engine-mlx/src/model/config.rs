@@ -226,16 +226,41 @@ impl DiffusionConfig {
         if !cfg.is_enabled() {
             return None;
         }
+        // Reject canvas_size=0 — a malformed manifest must not reach MLX execution.
+        // Treat explicit Some(0) as disabled diffusion rather than crashing later
+        // when argmax is called on a zero-length canvas tensor.
+        let canvas_size = cfg.canvas_size.unwrap_or(256) as usize;
+        if canvas_size == 0 {
+            return None;
+        }
+        // Reject convergence_check_interval=0 — used as divisor in
+        // `step.is_multiple_of(convergence_check_interval)` which panics on 0.
+        let convergence_check_interval = cfg.convergence_check_interval.unwrap_or(4) as usize;
+        if convergence_check_interval == 0 {
+            return None;
+        }
+        // Reject max_denoise_steps=0 — a denoise loop with zero iterations
+        // produces degenerate output (empty canvas committed as tokens).
+        let max_denoise_steps = cfg.max_denoise_steps.unwrap_or(48) as usize;
+        if max_denoise_steps == 0 {
+            return None;
+        }
+        // Reject convergence_steps=0 — would cause instant convergence trigger
+        // (stable_count >= 0 is trivially true), producing incorrect output.
+        let convergence_steps = cfg.convergence_steps.unwrap_or(2) as usize;
+        if convergence_steps == 0 {
+            return None;
+        }
         let mut dc = Self {
-            canvas_size: cfg.canvas_size.unwrap_or(256) as usize,
-            max_denoise_steps: cfg.max_denoise_steps.unwrap_or(48) as usize,
+            canvas_size,
+            max_denoise_steps,
             entropy_bound: cfg.entropy_bound.unwrap_or(0.1),
             entropy_threshold: cfg.entropy_threshold.unwrap_or(0.005),
-            convergence_steps: cfg.convergence_steps.unwrap_or(2) as usize,
+            convergence_steps,
             temp_start: cfg.temperature_start.unwrap_or(0.8),
             temp_end: cfg.temperature_end.unwrap_or(0.4),
             self_conditioning: cfg.self_conditioning.unwrap_or(true),
-            convergence_check_interval: cfg.convergence_check_interval.unwrap_or(4) as usize,
+            convergence_check_interval,
             acceptance_rate_threshold: cfg.acceptance_rate_threshold.unwrap_or(0.01),
             entropy_plateau_delta: 0.001,
         };

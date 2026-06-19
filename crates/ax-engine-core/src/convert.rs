@@ -1146,7 +1146,10 @@ fn parse_diffusion_config(config: &serde_json::Value, model_type: &str) -> Nativ
     };
 
     // canvas_size: check both "canvas_size" and "canvas_length" (real config uses canvas_length).
-    let canvas_size = get_u32("canvas_size").or_else(|| get_u32("canvas_length"));
+    // Reject canvas_size=0 (malformed manifest) — treat as not specified.
+    let canvas_size = get_u32("canvas_size")
+        .or_else(|| get_u32("canvas_length"))
+        .filter(|&v| v > 0);
 
     // Temperature schedule: real config uses t_max/t_min inside generation_config.
     let temperature_start =
@@ -1154,13 +1157,18 @@ fn parse_diffusion_config(config: &serde_json::Value, model_type: &str) -> Nativ
     let temperature_end = get_f32_sampler("temperature_end").or_else(|| get_f32_sampler("t_min"));
 
     // Convergence steps: real config uses stability_threshold (integer) inside generation_config.
-    let convergence_steps =
-        get_u32("convergence_steps").or_else(|| get_u32_gen("stability_threshold"));
+    // Reject 0 — would cause instant convergence trigger in the denoise loop.
+    let convergence_steps = get_u32("convergence_steps")
+        .or_else(|| get_u32_gen("stability_threshold"))
+        .filter(|&v| v > 0);
 
     NativeDiffusionConfig {
         canvas_size,
+        // Reject max_denoise_steps=0 — a denoise loop with zero iterations
+        // produces degenerate output.
         max_denoise_steps: get_u32_gen("max_denoise_steps")
-            .or_else(|| get_u32_gen("max_denoising_steps")),
+            .or_else(|| get_u32_gen("max_denoising_steps"))
+            .filter(|&v| v > 0),
         self_conditioning: get_bool("self_conditioning"),
         entropy_bound: get_f32_sampler("entropy_bound"),
         entropy_threshold: get_f32_sampler("entropy_threshold")
@@ -5421,6 +5429,116 @@ mod tests {
         assert!(matches!(error, ConvertError::UnsupportedModelType { .. }));
 
         let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn diffusion_gemma_canvas_size_zero_is_rejected() {
+        // A malformed manifest with canvas_size=0 must not pass through
+        // to NativeDiffusionConfig.canvas_size as Some(0). Regression
+        // test for https://github.com/defai-digital/ax-engine/issues/44.
+        //
+        // We only test parse_diffusion_config directly because the full
+        // convert_hf_model_dir path requires many other fields to succeed.
+        let config_with_zero = serde_json::json!({
+            "model_type": "diffusion_gemma",
+            "canvas_size": 0,
+            "generation_config": {
+                "max_denoising_steps": 48,
+                "t_max": 0.8,
+                "t_min": 0.4
+            }
+        });
+        let parsed = super::parse_diffusion_config(&config_with_zero, "diffusion_gemma");
+        assert_ne!(
+            parsed.canvas_size,
+            Some(0),
+            "canvas_size=0 must be filtered to None by parse_diffusion_config"
+        );
+
+        // Also test canvas_length=0 (the alternate key used by real configs).
+        let config_with_length_zero = serde_json::json!({
+            "model_type": "diffusion_gemma",
+            "canvas_length": 0,
+            "generation_config": {
+                "max_denoising_steps": 48,
+                "t_max": 0.8,
+                "t_min": 0.4
+            }
+        });
+        let parsed2 = super::parse_diffusion_config(&config_with_length_zero, "diffusion_gemma");
+        assert_ne!(
+            parsed2.canvas_size,
+            Some(0),
+            "canvas_length=0 must be filtered to None by parse_diffusion_config"
+        );
+
+        // Verify that a valid canvas_size is preserved.
+        let config_with_valid = serde_json::json!({
+            "model_type": "diffusion_gemma",
+            "canvas_length": 256,
+            "generation_config": {
+                "max_denoising_steps": 48,
+                "t_max": 0.8,
+                "t_min": 0.4
+            }
+        });
+        let parsed3 = super::parse_diffusion_config(&config_with_valid, "diffusion_gemma");
+        assert_eq!(
+            parsed3.canvas_size,
+            Some(256),
+            "valid canvas_size=256 must be preserved"
+        );
+
+        // max_denoise_steps=0 must be filtered to None.
+        let config_steps_zero = serde_json::json!({
+            "model_type": "diffusion_gemma",
+            "canvas_length": 256,
+            "generation_config": {
+                "max_denoising_steps": 0,
+                "t_max": 0.8,
+                "t_min": 0.4
+            }
+        });
+        let parsed4 = super::parse_diffusion_config(&config_steps_zero, "diffusion_gemma");
+        assert_ne!(
+            parsed4.max_denoise_steps,
+            Some(0),
+            "max_denoise_steps=0 must be filtered to None"
+        );
+
+        // convergence_steps=0 (via stability_threshold) must be filtered to None.
+        let config_conv_zero = serde_json::json!({
+            "model_type": "diffusion_gemma",
+            "canvas_length": 256,
+            "generation_config": {
+                "max_denoising_steps": 48,
+                "t_max": 0.8,
+                "t_min": 0.4,
+                "stability_threshold": 0
+            }
+        });
+        let parsed5 = super::parse_diffusion_config(&config_conv_zero, "diffusion_gemma");
+        assert_ne!(
+            parsed5.convergence_steps,
+            Some(0),
+            "convergence_steps=0 must be filtered to None"
+        );
+
+        // Valid non-zero values must be preserved.
+        let config_valid_all = serde_json::json!({
+            "model_type": "diffusion_gemma",
+            "canvas_length": 256,
+            "convergence_steps": 3,
+            "generation_config": {
+                "max_denoising_steps": 64,
+                "t_max": 0.8,
+                "t_min": 0.4
+            }
+        });
+        let parsed6 = super::parse_diffusion_config(&config_valid_all, "diffusion_gemma");
+        assert_eq!(parsed6.canvas_size, Some(256));
+        assert_eq!(parsed6.max_denoise_steps, Some(64));
+        assert_eq!(parsed6.convergence_steps, Some(3));
     }
 
     #[test]
