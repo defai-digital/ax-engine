@@ -790,6 +790,28 @@ The denoise loop can stop early when any configured convergence signal fires:
 
 The benchmark rows above report the measured adaptive-convergence run as recorded in the artifact. This run exits after one denoise step on all measured prompt lengths, so time to first block tracks the skipped denoise passes rather than the 48-step cap.
 
+**Experimental denoise optimizations (opt-in):**
+
+The default path above uses no optional optimizations. The following environment variables enable experimental fast paths for benchmarking and development. All are **off by default** and should be considered preview/experimental until they are validated across prompt lengths, multi-block generation, and token-equivalence against the default imperative path.
+
+| Environment variable | What it does | Status |
+|---|---|---|
+| `AX_DIFFUSION_COMPILED_FORWARD=1` | Compiles the bidirectional denoise forward pass into an `MlxClosure` per block, collapsing ~250 per-step MLX C-API calls into one dispatched graph. | Experimental / benchmarking |
+| `AX_DIFFUSION_FULL_PIPELINE=1` | Compiles the entire denoise step (forward + softmax + entropy + argmax + sampling + acceptance) into a single `MlxClosure`. Supersedes `AX_DIFFUSION_COMPILED_FORWARD` when both are set. | Experimental / benchmarking |
+| `AX_DIFFUSION_KV_CONCAT_BUFFER=1` | Pre-allocates per-layer KV concatenation buffers on the first denoise step and updates only the canvas slice on subsequent steps, avoiding re-copying the cached prompt prefix. Most beneficial when multiple denoise steps are needed. | Experimental / benchmarking |
+| `AX_DIFFUSION_EMBEDDING_CACHE=1` | Caches per-layer embedding inputs across denoise steps when token IDs are unchanged, using a GPU-side sum fingerprint to detect changes. | Experimental / benchmarking |
+| `AX_DIFFUSION_SKIP_COMMIT_ON_CONVERGE=1` | Skips the causal commit forward pass when the denoise loop converges at step 1 with near-perfect acceptance (≥ 99%). | Experimental / benchmarking |
+
+Example usage for a single benchmark run:
+
+```bash
+AX_DIFFUSION_FULL_PIPELINE=1 \
+AX_DIFFUSION_KV_CONCAT_BUFFER=1 \
+python3 scripts/bench_diffusion_gemma_direct.py --bench-bin target/release/ax-engine-bench
+```
+
+These flags are read once per process. Do not enable them in production serving without first verifying output token equivalence against the default path on your target prompts.
+
 Artifacts: AX direct rows are [`2026-06-18-direct-first-block/summary.json`](benchmarks/results/diffusion-gemma-direct/2026-06-18-direct-first-block/summary.json), with the human summary in [`summary.md`](benchmarks/results/diffusion-gemma-direct/2026-06-18-direct-first-block/summary.md). Peer runtime blockers are recorded as load failures, so there are no llama.cpp or `mlx_lm` result artifacts for this model family.
 
 Render charts with:
