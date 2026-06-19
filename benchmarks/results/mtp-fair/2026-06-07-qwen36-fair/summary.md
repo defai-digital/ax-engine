@@ -19,30 +19,44 @@ Fairness rules:
 
 | Model | Suite | Depth | MTPLX tok/s | MTPLX accept | AX MTP tok/s | AX MTP accept | AX MTP+n-gram tok/s | AX MTP+n-gram accept |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| Qwen3.6 27B 4-bit | flappy | 3 | 56.1 | 100.0% | 60.6 | 99.9% | 57.4 | 99.1% |
-| Qwen3.6 27B 4-bit | long_code | 3 | 57.9 | 99.7% | 54.9 | 99.9% | 59.3 | 99.1% |
-| Qwen3.6 27B 4-bit | python_modules_long | 3 | 52.7 | 87.6% | 47.8 | 97.6% | 50.2 | 97.2% |
-| Qwen3.6 35B-A3B 4-bit | flappy | 1 | 104.3 | 49.5% | 180.6 | 100.0% | 182.3 | 99.6% |
-| Qwen3.6 35B-A3B 4-bit | long_code | 1 | 105.6 | 51.4% | 179.1 | 100.0% | 224.2 | 99.8% |
-| Qwen3.6 35B-A3B 4-bit | python_modules_long | 1 | 98.2 | 42.6% | 182.4 | 99.3% | 169.4 | 97.6% |
+| Qwen3.6 27B 4-bit | flappy | 3 | 56.1 | 100.0% | 62.9 | 99.7% | 62.2 | 99.7% |
+| Qwen3.6 27B 4-bit | long_code | 3 | 57.9 | 99.7% | 58.6 | 99.6% | 60.9 | 99.6% |
+| Qwen3.6 27B 4-bit | python_modules_long | 3 | 52.7 | 87.6% | 51.0 | 97.5% | 50.8 | 97.5% |
+| Qwen3.6 35B-A3B 4-bit | flappy | 1 | 104.3 | 49.5% | 176.0 | 100.0% | 174.2 | 100.0% |
+| Qwen3.6 35B-A3B 4-bit | long_code | 1 | 105.6 | 51.4% | 174.7 | 100.0% | 174.2 | 100.0% |
+| Qwen3.6 35B-A3B 4-bit | python_modules_long | 1 | 98.2 | 42.6% | 177.5 | 98.6% | 177.3 | 98.6% |
+
+## Same-artifact AX survival comparison
+
+AX direct is the same sidecar package decoded without MTP or n-gram. Use this table to decide whether AX MTP should be a default and whether AX MTP+n-gram should remain opt-in.
+
+| Model | Engine | Baseline | Decode tok/s | Baseline tok/s | Δ vs baseline | Worst suite Δ | Drafted | Classification |
+|---|---|---|---:|---:|---:|---:|:---:|---|
+| 27b-4bit | AX MTP+n-gram | AX MTP | 60.9 | 58.6 | +3.9% | -1.1% | — | keep-default |
+| 35b-a3b-4bit | AX MTP+n-gram | AX MTP | 174.2 | 176.0 | -1.0% | -1.0% | — | remove-claim |
+
+### Warnings
+
+- 27b-4bit: no AX direct row; AX MTP survival cannot be judged against same-artifact direct decode.
+- 35b-a3b-4bit: no AX direct row; AX MTP survival cannot be judged against same-artifact direct decode.
 
 Artifacts:
 
-- 27b-4bit / flappy / mtplx: `ok` validation `4/4` `/Users/akiralam/code/ax-engine_v5/benchmarks/results/mtp-fair/2026-06-07-qwen36-fair/27b-4bit/flappy/mtplx.json`
-- 27b-4bit / flappy / ax_engine: `ok` `/Users/akiralam/code/ax-engine_v5/benchmarks/results/mtp-fair/2026-06-07-qwen36-fair/27b-4bit/flappy/ax_engine.json`
-- 27b-4bit / flappy / ax_engine_ngram: `ok` `/Users/akiralam/code/ax-engine_v5/benchmarks/results/mtp-fair/2026-06-07-qwen36-fair/27b-4bit/flappy/ax_engine_ngram.json`
-- 27b-4bit / long_code / mtplx: `ok_validation_warnings` validation `4/8` `/Users/akiralam/code/ax-engine_v5/benchmarks/results/mtp-fair/2026-06-07-qwen36-fair/27b-4bit/long_code/mtplx.json`
-- 27b-4bit / long_code / ax_engine: `ok` `/Users/akiralam/code/ax-engine_v5/benchmarks/results/mtp-fair/2026-06-07-qwen36-fair/27b-4bit/long_code/ax_engine.json`
-- 27b-4bit / long_code / ax_engine_ngram: `ok` `/Users/akiralam/code/ax-engine_v5/benchmarks/results/mtp-fair/2026-06-07-qwen36-fair/27b-4bit/long_code/ax_engine_ngram.json`
-- 27b-4bit / python_modules_long / mtplx: `ok` validation `3/3` `/Users/akiralam/code/ax-engine_v5/benchmarks/results/mtp-fair/2026-06-07-qwen36-fair/27b-4bit/python_modules_long/mtplx.json`
-- 27b-4bit / python_modules_long / ax_engine: `ok` `/Users/akiralam/code/ax-engine_v5/benchmarks/results/mtp-fair/2026-06-07-qwen36-fair/27b-4bit/python_modules_long/ax_engine.json`
-- 27b-4bit / python_modules_long / ax_engine_ngram: `ok` `/Users/akiralam/code/ax-engine_v5/benchmarks/results/mtp-fair/2026-06-07-qwen36-fair/27b-4bit/python_modules_long/ax_engine_ngram.json`
-- 35b-a3b-4bit / flappy / mtplx: `ok` validation `4/4` `/Users/akiralam/code/ax-engine_v5/benchmarks/results/mtp-fair/2026-06-07-qwen36-fair/35b-a3b-4bit/flappy/mtplx.json`
-- 35b-a3b-4bit / flappy / ax_engine: `ok` `/Users/akiralam/code/ax-engine_v5/benchmarks/results/mtp-fair/2026-06-07-qwen36-fair/35b-a3b-4bit/flappy/ax_engine.json`
-- 35b-a3b-4bit / flappy / ax_engine_ngram: `ok` `/Users/akiralam/code/ax-engine_v5/benchmarks/results/mtp-fair/2026-06-07-qwen36-fair/35b-a3b-4bit/flappy/ax_engine_ngram.json`
-- 35b-a3b-4bit / long_code / mtplx: `ok_validation_warnings` validation `4/8` `/Users/akiralam/code/ax-engine_v5/benchmarks/results/mtp-fair/2026-06-07-qwen36-fair/35b-a3b-4bit/long_code/mtplx.json`
-- 35b-a3b-4bit / long_code / ax_engine: `ok` `/Users/akiralam/code/ax-engine_v5/benchmarks/results/mtp-fair/2026-06-07-qwen36-fair/35b-a3b-4bit/long_code/ax_engine.json`
-- 35b-a3b-4bit / long_code / ax_engine_ngram: `ok` `/Users/akiralam/code/ax-engine_v5/benchmarks/results/mtp-fair/2026-06-07-qwen36-fair/35b-a3b-4bit/long_code/ax_engine_ngram.json`
-- 35b-a3b-4bit / python_modules_long / mtplx: `ok` validation `3/3` `/Users/akiralam/code/ax-engine_v5/benchmarks/results/mtp-fair/2026-06-07-qwen36-fair/35b-a3b-4bit/python_modules_long/mtplx.json`
-- 35b-a3b-4bit / python_modules_long / ax_engine: `ok` `/Users/akiralam/code/ax-engine_v5/benchmarks/results/mtp-fair/2026-06-07-qwen36-fair/35b-a3b-4bit/python_modules_long/ax_engine.json`
-- 35b-a3b-4bit / python_modules_long / ax_engine_ngram: `ok` `/Users/akiralam/code/ax-engine_v5/benchmarks/results/mtp-fair/2026-06-07-qwen36-fair/35b-a3b-4bit/python_modules_long/ax_engine_ngram.json`
+- 27b-4bit / flappy / mtplx: `ok` validation `4/4` `benchmarks/results/mtp-fair/2026-06-07-qwen36-fair/27b-4bit/flappy/mtplx.json`
+- 27b-4bit / flappy / ax_engine: `ok` `benchmarks/results/mtp-fair/2026-06-07-qwen36-fair/27b-4bit/flappy/ax_engine.json`
+- 27b-4bit / flappy / ax_engine_ngram: `ok` `benchmarks/results/mtp-fair/2026-06-07-qwen36-fair/27b-4bit/flappy/ax_engine_ngram.json`
+- 27b-4bit / long_code / mtplx: `ok_validation_warnings` validation `4/8` `benchmarks/results/mtp-fair/2026-06-07-qwen36-fair/27b-4bit/long_code/mtplx.json`
+- 27b-4bit / long_code / ax_engine: `ok` `benchmarks/results/mtp-fair/2026-06-07-qwen36-fair/27b-4bit/long_code/ax_engine.json`
+- 27b-4bit / long_code / ax_engine_ngram: `ok` `benchmarks/results/mtp-fair/2026-06-07-qwen36-fair/27b-4bit/long_code/ax_engine_ngram.json`
+- 27b-4bit / python_modules_long / mtplx: `ok` validation `3/3` `benchmarks/results/mtp-fair/2026-06-07-qwen36-fair/27b-4bit/python_modules_long/mtplx.json`
+- 27b-4bit / python_modules_long / ax_engine: `ok` `benchmarks/results/mtp-fair/2026-06-07-qwen36-fair/27b-4bit/python_modules_long/ax_engine.json`
+- 27b-4bit / python_modules_long / ax_engine_ngram: `ok` `benchmarks/results/mtp-fair/2026-06-07-qwen36-fair/27b-4bit/python_modules_long/ax_engine_ngram.json`
+- 35b-a3b-4bit / flappy / mtplx: `ok` validation `4/4` `benchmarks/results/mtp-fair/2026-06-07-qwen36-fair/35b-a3b-4bit/flappy/mtplx.json`
+- 35b-a3b-4bit / flappy / ax_engine: `ok` `benchmarks/results/mtp-fair/2026-06-07-qwen36-fair/35b-a3b-4bit/flappy/ax_engine.json`
+- 35b-a3b-4bit / flappy / ax_engine_ngram: `ok` `benchmarks/results/mtp-fair/2026-06-07-qwen36-fair/35b-a3b-4bit/flappy/ax_engine_ngram.json`
+- 35b-a3b-4bit / long_code / mtplx: `ok_validation_warnings` validation `4/8` `benchmarks/results/mtp-fair/2026-06-07-qwen36-fair/35b-a3b-4bit/long_code/mtplx.json`
+- 35b-a3b-4bit / long_code / ax_engine: `ok` `benchmarks/results/mtp-fair/2026-06-07-qwen36-fair/35b-a3b-4bit/long_code/ax_engine.json`
+- 35b-a3b-4bit / long_code / ax_engine_ngram: `ok` `benchmarks/results/mtp-fair/2026-06-07-qwen36-fair/35b-a3b-4bit/long_code/ax_engine_ngram.json`
+- 35b-a3b-4bit / python_modules_long / mtplx: `ok` validation `3/3` `benchmarks/results/mtp-fair/2026-06-07-qwen36-fair/35b-a3b-4bit/python_modules_long/mtplx.json`
+- 35b-a3b-4bit / python_modules_long / ax_engine: `ok` `benchmarks/results/mtp-fair/2026-06-07-qwen36-fair/35b-a3b-4bit/python_modules_long/ax_engine.json`
+- 35b-a3b-4bit / python_modules_long / ax_engine_ngram: `ok` `benchmarks/results/mtp-fair/2026-06-07-qwen36-fair/35b-a3b-4bit/python_modules_long/ax_engine_ngram.json`

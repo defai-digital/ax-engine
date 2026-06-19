@@ -17,19 +17,19 @@
 <text x="64" y="86.0" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#6b7280">100%</text>
 <line x1="72" y1="258.4" x2="866" y2="258.4" stroke="#111827" stroke-opacity="0.45" stroke-width="1.2"/>
 <text x="270.5" y="306" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" font-weight="700" fill="#111827">27B</text>
-<rect x="194.5" y="258.4" width="44.0" height="2.4" rx="3" fill="#dc2626" fill-opacity="0.78"/>
-<text x="216.5" y="274.8" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827" stroke="#ffffff" stroke-width="3" paint-order="stroke">-1.4%</text>
-<rect x="248.5" y="254.6" width="44.0" height="3.7" rx="3" fill="#eab308" fill-opacity="0.78"/>
-<text x="270.5" y="248.6" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827" stroke="#ffffff" stroke-width="3" paint-order="stroke">2.1%</text>
-<rect x="302.5" y="252.2" width="44.0" height="6.2" rx="3" fill="#7c3aed" fill-opacity="0.78"/>
-<text x="324.5" y="246.2" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827" stroke="#ffffff" stroke-width="3" paint-order="stroke">3.5%</text>
+<rect x="194.5" y="251.3" width="44.0" height="7.0" rx="3" fill="#f97316" fill-opacity="0.78"/>
+<text x="216.5" y="245.3" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827" stroke="#ffffff" stroke-width="3" paint-order="stroke">4.0%</text>
+<rect x="248.5" y="246.8" width="44.0" height="11.6" rx="3" fill="#eab308" fill-opacity="0.78"/>
+<text x="270.5" y="240.8" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827" stroke="#ffffff" stroke-width="3" paint-order="stroke">6.6%</text>
+<rect x="302.5" y="254.0" width="44.0" height="4.4" rx="3" fill="#7c3aed" fill-opacity="0.78"/>
+<text x="324.5" y="248.0" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827" stroke="#ffffff" stroke-width="3" paint-order="stroke">2.5%</text>
 <text x="667.5" y="306" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" font-weight="700" fill="#111827">35B-A3B</text>
-<rect x="591.5" y="123.7" width="44.0" height="134.7" rx="3" fill="#f97316" fill-opacity="0.78"/>
-<text x="613.5" y="117.7" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827" stroke="#ffffff" stroke-width="3" paint-order="stroke">76.4%</text>
-<rect x="645.5" y="121.8" width="44.0" height="136.6" rx="3" fill="#eab308" fill-opacity="0.78"/>
-<text x="667.5" y="115.8" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827" stroke="#ffffff" stroke-width="3" paint-order="stroke">77.5%</text>
-<rect x="699.5" y="257.3" width="44.0" height="1.1" rx="3" fill="#7c3aed" fill-opacity="0.78"/>
-<text x="721.5" y="251.3" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827" stroke="#ffffff" stroke-width="3" paint-order="stroke">0.6%</text>
+<rect x="591.5" y="130.9" width="44.0" height="127.4" rx="3" fill="#f97316" fill-opacity="0.78"/>
+<text x="613.5" y="124.9" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827" stroke="#ffffff" stroke-width="3" paint-order="stroke">72.3%</text>
+<rect x="645.5" y="133.8" width="44.0" height="124.6" rx="3" fill="#eab308" fill-opacity="0.78"/>
+<text x="667.5" y="127.8" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827" stroke="#ffffff" stroke-width="3" paint-order="stroke">70.6%</text>
+<rect x="699.5" y="258.4" width="44.0" height="1.7" rx="3" fill="#dc2626" fill-opacity="0.78"/>
+<text x="721.5" y="274.0" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827" stroke="#ffffff" stroke-width="3" paint-order="stroke">-0.9%</text>
 <rect x="72.0" y="333" width="10" height="10" rx="2" fill="#f97316" fill-opacity="0.78"/>
 <text x="86.0" y="342" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#374151">AX MTP vs MTPLX</text>
 <rect x="282.0" y="333" width="10" height="10" rx="2" fill="#eab308" fill-opacity="0.78"/>

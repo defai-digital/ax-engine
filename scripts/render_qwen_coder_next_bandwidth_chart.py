@@ -23,7 +23,7 @@ decode tok/s is essentially depth-independent for this model):
     (other_bytes + routed_bytes * 10/512) from the MLX model-manifest.
   - llama.cpp 2.8275 GB/token: same formula over the GGUF tensor table
     (`llama-gguf <model> r`).
-  - decode tok/s: AX 117.7 / mlx-lm 99.2 / llama.cpp 86.2 (prompt=128 rows).
+  - decode tok/s: AX 117.7 / mlx-lm 99.2 / llama.cpp 85.5 (prompt=128 rows).
 
 Usage:
   python3 scripts/render_qwen_coder_next_bandwidth_chart.py [--assets-dir docs/assets]
@@ -44,7 +44,7 @@ PEAK_GBS = 577.0
 POINTS = [
     ("ax", "AX Engine 6.4.0", "MLX 4-bit", 1.9648, 117.7, "#2eaf5f", "#176c37"),
     ("mlx", "mlx-lm 0.31.3", "MLX 4-bit", 1.9648, 99.2, "#f2b705", "#9a6a00"),
-    ("llama", "llama.cpp b9620", "Q4_K_M", 2.8275, 86.2, "#f97316", "#c2410c"),
+    ("llama", "llama.cpp b9700", "Q4_K_M", 2.8275, 85.5, "#f97316", "#c2410c"),
 ]
 
 # Axis domains
@@ -70,7 +70,7 @@ NOTE = (
     "not bandwidth-bound; the room above each point is headroom"
 )
 FOOTNOTE = (
-    "AX 6.4.0 · mlx-lm 0.31.3 · llama.cpp b9620 · M5 Max · peak via MLX reduction "
+    "AX 6.4.0 · mlx-lm 0.31.3 · llama.cpp b9700 · M5 Max · peak via MLX reduction "
     "probe · llama bytes/token from GGUF tensor table"
 )
 
@@ -98,7 +98,7 @@ def render() -> str:
         f" bandwidth ceiling (tok/s = 577 / bytes). AX and mlx-lm share x = 1.96"
         f" GB/token (identical MLX weights) so the vertical gap between them is kernel"
         f" efficiency: AX 117.7 tok/s vs mlx-lm 99.2 tok/s. llama.cpp reads 2.83"
-        f" GB/token (1.44x more, Q4_K_M) and decodes slowest at 86.2 tok/s. All three"
+        f" GB/token (1.44x more, Q4_K_M) and decodes slowest at 85.5 tok/s. All three"
         f" sit far below the ceiling, so decode is gather-bound, not bandwidth-bound.</desc>",
         f'<rect width="{WIDTH}" height="{HEIGHT}" fill="#f8fafc"/>',
         f'<text x="20" y="28" font-family="{FONT}" font-size="15" font-weight="700"'
