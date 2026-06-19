@@ -43,6 +43,9 @@ DEFAULT_OUTPUT_ROOT = (
     / "2026-06-18-direct-first-block"
 )
 DEFAULT_ASSETS_DIR = REPO_ROOT / "docs" / "assets"
+DEFAULT_WARMUP_ITERS = 1
+DEFAULT_MEASURE_ITERS = 5
+DEFAULT_COOLDOWN_S = 15.0
 BENCH_SCHEMA = "ax.diffusion_gemma_direct_first_block.v1"
 M5_MAX_THEORETICAL_MEMORY_BANDWIDTH_GB_S = 614.4
 FONT = "Inter,Segoe UI,Arial,sans-serif"
@@ -80,6 +83,13 @@ class TrialMetrics:
 
 def log(message: str) -> None:
     print(f"[diffusion-gemma-direct] {message}", flush=True)
+
+
+def cooldown(seconds: float) -> None:
+    if seconds <= 0:
+        return
+    log(f"cooldown {seconds:g}s")
+    time.sleep(seconds)
 
 
 def parse_prompt_tokens(raw: str) -> list[int]:
@@ -550,14 +560,22 @@ def render_bandwidth_share_chart(rows: list[dict[str, Any]]) -> str:
     return "\n".join(parts)
 
 
-def write_summary(output_dir: Path, rows: list[dict[str, Any]]) -> None:
+def write_summary(
+    output_dir: Path,
+    rows: list[dict[str, Any]],
+    *,
+    warmup_iters: int,
+    measure_iters: int,
+    cooldown_s: float,
+) -> None:
     lines = [
         "# DiffusionGemma Direct First-Block Benchmark",
         "",
         f"- schema: `{BENCH_SCHEMA}`",
         "- runtime: AX Engine native MLX direct",
         "- model: `mlx-community/diffusiongemma-26B-A4B-it-4bit`",
-        "- method: 2 warmup + 5 measure runs, median reported",
+        f"- method: {warmup_iters} warmup + {measure_iters} measured repetitions, "
+        f"{cooldown_s:g} s cooldown, median reported",
         "- metric boundary: first committed diffusion block, not fixed-token autoregressive TTFT",
         "",
         "| Prompt tokens | Block decode | Prefill | Time to first block | Denoise steps |",
@@ -610,12 +628,20 @@ def main() -> None:
     parser.add_argument("--output-root", type=Path, default=DEFAULT_OUTPUT_ROOT)
     parser.add_argument("--assets-dir", type=Path, default=DEFAULT_ASSETS_DIR)
     parser.add_argument("--prompt-tokens", default="128,512,2048")
-    parser.add_argument("--warmup-iters", type=int, default=2)
-    parser.add_argument("--measure-iters", type=int, default=5)
+    parser.add_argument("--warmup-iters", type=int, default=DEFAULT_WARMUP_ITERS)
+    parser.add_argument("--measure-iters", type=int, default=DEFAULT_MEASURE_ITERS)
+    parser.add_argument("--cooldown", type=float, default=DEFAULT_COOLDOWN_S)
     parser.add_argument("--max-output-tokens", type=int, default=1)
     parser.add_argument("--canvas-size", type=int, default=256)
     parser.add_argument("--skip-benchmark", action="store_true")
     args = parser.parse_args()
+
+    if args.cooldown < 0:
+        raise SystemExit("--cooldown must be >= 0")
+    if args.warmup_iters < 0:
+        raise SystemExit("--warmup-iters must be >= 0")
+    if args.measure_iters <= 0:
+        raise SystemExit("--measure-iters must be > 0")
 
     prompt_sizes = parse_prompt_tokens(args.prompt_tokens)
     output_dir = args.output_root
@@ -651,6 +677,8 @@ def main() -> None:
                 )
                 warmups.append(trial)
                 all_trials.append(trial_to_json(trial, phase="warmup", index=index))
+            if args.cooldown > 0 and args.warmup_iters > 0:
+                cooldown(args.cooldown)
             for index in range(1, args.measure_iters + 1):
                 trial = run_one(
                     bench_bin=args.bench_bin,
@@ -664,6 +692,8 @@ def main() -> None:
                 )
                 measures.append(trial)
                 all_trials.append(trial_to_json(trial, phase="measure", index=index))
+                if args.cooldown > 0 and index < args.measure_iters:
+                    cooldown(args.cooldown)
             row = summarize_trials(prompt_tokens, measures)
             row["prompt_sha256"] = token_hash(tokens)
             row["warmup_runs"] = len(warmups)
@@ -688,7 +718,9 @@ def main() -> None:
             "methodology": {
                 "warmup_iters": args.warmup_iters,
                 "measure_iters": args.measure_iters,
+                "cooldown_s": args.cooldown,
                 "reported_stat": "median",
+                "frequency_contract": "direct-mode standard: measured repetitions separated by cooldown",
                 "max_output_tokens": args.max_output_tokens,
                 "prompt_token_generator": "1000 + ((prompt_tokens * 9973 + i * 37) % 120000)",
             },
@@ -707,7 +739,13 @@ def main() -> None:
             },
         }
         (output_dir / "summary.json").write_text(json.dumps(artifact, indent=2) + "\n", encoding="utf-8")
-        write_summary(output_dir, rows)
+        write_summary(
+            output_dir,
+            rows,
+            warmup_iters=args.warmup_iters,
+            measure_iters=args.measure_iters,
+            cooldown_s=args.cooldown,
+        )
     else:
         artifact = json.loads((output_dir / "summary.json").read_text(encoding="utf-8"))
         model_dir = Path(artifact["model"].get("model_dir", str(args.model_dir)))
@@ -725,7 +763,17 @@ def main() -> None:
             "effective_bandwidth_gb_s": "estimated_bytes_per_block / measured_diffusion_block_wall_s",
         }
         (output_dir / "summary.json").write_text(json.dumps(artifact, indent=2) + "\n", encoding="utf-8")
-        write_summary(output_dir, rows)
+        methodology = artifact.get("methodology") or {}
+        cooldown_s = float(methodology.get("cooldown_s", args.cooldown))
+        warmup_iters = int(methodology.get("warmup_iters", args.warmup_iters))
+        measure_iters = int(methodology.get("measure_iters", args.measure_iters))
+        write_summary(
+            output_dir,
+            rows,
+            warmup_iters=warmup_iters,
+            measure_iters=measure_iters,
+            cooldown_s=cooldown_s,
+        )
 
     chart_specs = [
         (

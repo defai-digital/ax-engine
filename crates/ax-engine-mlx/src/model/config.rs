@@ -214,6 +214,10 @@ pub struct DiffusionConfig {
     /// When the fraction of accepted positions drops below this, the model
     /// has converged regardless of absolute entropy.
     pub acceptance_rate_threshold: f32,
+    /// Entropy plateau delta for convergence detection (default 0.001).
+    /// When the absolute change in mean entropy between consecutive check
+    /// steps falls below this value after step 16, plateau convergence fires.
+    pub entropy_plateau_delta: f32,
 }
 
 impl DiffusionConfig {
@@ -222,7 +226,7 @@ impl DiffusionConfig {
         if !cfg.is_enabled() {
             return None;
         }
-        Some(Self {
+        let mut dc = Self {
             canvas_size: cfg.canvas_size.unwrap_or(256) as usize,
             max_denoise_steps: cfg.max_denoise_steps.unwrap_or(48) as usize,
             entropy_bound: cfg.entropy_bound.unwrap_or(0.1),
@@ -233,7 +237,22 @@ impl DiffusionConfig {
             self_conditioning: cfg.self_conditioning.unwrap_or(true),
             convergence_check_interval: cfg.convergence_check_interval.unwrap_or(4) as usize,
             acceptance_rate_threshold: cfg.acceptance_rate_threshold.unwrap_or(0.01),
-        })
+            entropy_plateau_delta: 0.001,
+        };
+        // Apply env-var overrides for benchmark sweep campaigns.
+        if let Some(v) = crate::fastpath::diffusion_entropy_threshold() {
+            dc.entropy_threshold = v;
+        }
+        if let Some(v) = crate::fastpath::diffusion_acceptance_rate_threshold() {
+            dc.acceptance_rate_threshold = v;
+        }
+        if let Some(v) = crate::fastpath::diffusion_entropy_plateau_delta() {
+            dc.entropy_plateau_delta = v;
+        }
+        if let Some(v) = crate::fastpath::diffusion_max_steps() {
+            dc.max_denoise_steps = v;
+        }
+        Some(dc)
     }
 }
 

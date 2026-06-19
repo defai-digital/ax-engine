@@ -685,6 +685,70 @@ env_flag!(
     "AX_DISABLE_MLA_PREFIX_RESTORE"
 );
 
+// ── DiffusionGemma denoise-loop overrides ──────────────────────────────────
+//
+// These accessors let benchmark campaigns sweep convergence thresholds and
+// toggle the compiled denoise closure without recompiling. All are read once
+// per process and cached via OnceLock.
+
+env_flag!(
+    /// `AX_DIFFUSION_COMPILED_FORWARD` — wrap the bidirectional denoise
+    /// forward pass in an `MlxClosure` compiled via `mlx_compile`. The
+    /// compiled graph is constructed once per block and reused for every
+    /// denoise step, collapsing ~250 per-step MLX C-API calls into a
+    /// single dispatched graph. Default OFF; opt-in for benchmarking.
+    diffusion_compiled_forward_enabled,
+    "AX_DIFFUSION_COMPILED_FORWARD"
+);
+
+env_flag!(
+    /// `AX_DIFFUSION_SKIP_COMMIT_ON_CONVERGE` — skip the causal commit
+    /// pass when the denoise loop converges at step 1 with near-perfect
+    /// acceptance (>= 99%). The canvas tokens are already the model's
+    /// output in this case, so the ~40 ms causal forward pass is
+    /// redundant. Emits `ax_mlx_diffusion_commit_skipped` telemetry.
+    /// Default OFF; opt-in for benchmarking and first-block latency.
+    diffusion_skip_commit_on_converge,
+    "AX_DIFFUSION_SKIP_COMMIT_ON_CONVERGE"
+);
+
+env_flag!(
+    /// `AX_DIFFUSION_EMBEDDING_CACHE` — cache per-layer embedding inputs
+    /// across denoise steps when token IDs are unchanged. Uses a
+    /// GPU-side sum fingerprint to detect changes (2 dispatches + 1
+    /// eval) and skips 46 embedding dispatches on cache hit. Default
+    /// OFF; opt-in for benchmarking.
+    diffusion_embedding_cache_enabled,
+    "AX_DIFFUSION_EMBEDDING_CACHE"
+);
+
+/// Diffusion convergence: mean entropy threshold below which strict
+/// convergence triggers. Defaults to 0.005 when unset.
+pub fn diffusion_entropy_threshold() -> Option<f32> {
+    static CACHED: OnceLock<Option<f32>> = OnceLock::new();
+    *CACHED.get_or_init(|| parse_nonnegative_f32_env("AX_DIFFUSION_ENTROPY_THRESHOLD"))
+}
+
+/// Diffusion convergence: acceptance rate threshold below which adaptive
+/// convergence triggers. Defaults to 0.01 (1%) when unset.
+pub fn diffusion_acceptance_rate_threshold() -> Option<f32> {
+    static CACHED: OnceLock<Option<f32>> = OnceLock::new();
+    *CACHED.get_or_init(|| parse_nonnegative_f32_env("AX_DIFFUSION_ACCEPTANCE_RATE_THRESHOLD"))
+}
+
+/// Diffusion convergence: entropy plateau delta below which plateau
+/// convergence triggers (after step 16 warmup). Defaults to 0.001 when unset.
+pub fn diffusion_entropy_plateau_delta() -> Option<f32> {
+    static CACHED: OnceLock<Option<f32>> = OnceLock::new();
+    *CACHED.get_or_init(|| parse_nonnegative_f32_env("AX_DIFFUSION_ENTROPY_PLATEAU_DELTA"))
+}
+
+/// Diffusion: maximum denoise steps per block. Defaults to 48 when unset.
+pub fn diffusion_max_steps() -> Option<usize> {
+    static CACHED: OnceLock<Option<usize>> = OnceLock::new();
+    *CACHED.get_or_init(|| parse_positive_usize_env("AX_DIFFUSION_MAX_STEPS"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -332,14 +332,21 @@ Full list: [`docs/SUPPORTED-MODELS.md`](docs/SUPPORTED-MODELS.md).
 Full result tables and interpretation live in [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md). Benchmark methodology, test setup, and reproduction details live in [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md).
 ### Gemma 4 12B
 
-Gemma 4 12B (`model_type: gemma4_unified`) is a different implementation from the per-layer-embedding E2B/E4B and the MoE 26B/31B. **Upstream `mlx_lm` 0.31.3 cannot load it** — it fails with `ValueError: Model type gemma4_unified not supported`. The external reference here is **llama.cpp Metal** on a shape-compatible GGUF.
+Gemma 4 12B (`model_type: gemma4_unified`) is reported separately from the per-layer-embedding E2B/E4B and MoE 26B/31B checkpoints because it has a distinct graph, multimodal tensor contract, and benchmark boundary. **Upstream `mlx_lm` 0.31.3 cannot load it** (`ValueError: Model type gemma4_unified not supported`), so the direct peer here is **llama.cpp Metal** on a shape-compatible GGUF.
 
 > [!NOTE]
 > **AX Engine's repo-owned native MLX route supports Gemma 4 12B text plus inline base64 image/audio/video chat.** Delegated compatibility routes remain text-first; `/v1/generate` accepts the processed `multimodal_inputs.gemma4_unified` tensor contract.
 
-**AX beats llama.cpp Metal on this model in both modes.** In **direct** decode, AX runs **65.6-69.3 tok/s** on a bit-comparable 4-bit-FFN artifact vs llama.cpp's **52.5-60.2** depth-matched tok/s, and the margin grows with context (+15% at 128 tokens -> +25% at 2,048). On top of that, **depth-2 assistant-MTP** -- which `mlx_lm` can't run and llama.cpp doesn't have -- holds **99.4-105.0 tok/s** on code-like prompt suites, a same-artifact **2.83-2.92x** speedup over direct decode. The earlier story (llama.cpp ahead by ~34%) was an artifact handicap: the upstream snapshot keeps the FFN at 8-bit and so reads ~1.65x the weight bytes; decode is bandwidth-bound, so matching the quantization closes the gap (see the bandwidth table below).
+**At a glance:**
 
-**Direct decode — AX native MLX vs llama.cpp Metal (mlx_lm N/A):**
+- **Direct decode:** AX native MLX reaches **65.6-69.3 tok/s** on the bit-comparable 4-bit-FFN artifact versus llama.cpp Metal's **52.5-60.2 tok/s** depth-matched range.
+- **Context depth:** AX's direct margin grows with prompt length: **+15% / +17% / +25%** versus llama.cpp matched-depth decode at 128 / 512 / 2,048 prompt tokens.
+- **Assistant-MTP:** depth-2 assistant-MTP reaches **99.4-105.0 tok/s** on code-like prompt suites, a **2.83-2.92x** same-artifact speedup over AX direct decode.
+- **Why the earlier result flipped:** the upstream MLX snapshot keeps FFN weights at 8-bit, so it reads about **1.65x** the bytes of the re-quantized 4-bit-FFN artifact. Decode is bandwidth-bound; matching quantization closes the gap.
+
+**Direct Decode**
+
+AX direct rows use the 4-bit-FFN MLX artifact and random-token prompts. `mlx_lm` is absent because it has no `gemma4_unified` graph. The llama.cpp rows are shape-compatible external GGUF references, not prompt-hash-parity MLX rows.
 
 <table>
 <tr>
@@ -355,15 +362,19 @@ Gemma 4 12B (`model_type: gemma4_unified`) is a different implementation from th
 | 512 | 67.9 | 60.2 | 57.9 | 1,888 | 1,757 | 271 | 291 |
 | 2048 | 65.6 | 60.4 | 52.5 | 2,069 | 1,690 | 990 | 1,212 |
 
-AX wins decode at every prompt size, and the margin widens with context (+15% / +17% / +25% vs the matched-depth column). The two llama.cpp decode columns matter: plain `llama-bench tg` decodes from an **empty context** (depth 0 -- its best case), while AX decodes *after* the prompt prefill; the **matched-depth** column (`-d {prompt} -n 128`) is the apples-to-apples figure, and llama.cpp slows more with depth (60.2 -> 52.5 at 2,048). AX prefill also leads at 512 and 2,048. The `llama.cpp Metal` columns are a **shape-compatible external GGUF baseline** (ggml-org Q4_K_M); `mlx_lm` is **absent because it cannot load `gemma4_unified`**.
+Read the two llama.cpp decode columns carefully:
 
-> This table uses the bit-comparable **4-bit-FFN** AX artifact (`scripts/requantize_gemma4_12b_ffn_4bit.py`), ~4.5 bpw vs the Q4_K_M GGUF's ~4.8 bpw. The upstream `mlx-community/gemma-4-12B-it-4bit` snapshot keeps the FFN at **8-bit** (~10.98 GB, ~1.65× the bytes of the re-quantized 4-bit-FFN artifact) and trails llama.cpp at ~46 tok/s — that's a *bytes-read* handicap, not a runtime one; see the memory-bandwidth analysis next.
+- `depth 0` is plain `llama-bench tg`, decoding from an empty context and representing llama.cpp's best case.
+- `matched depth` uses `-d {prompt} -n 128`, so decode happens after the same prompt depth AX has already prefetched.
+- AX wins the matched-depth comparison at every prompt size, and prefill also leads at 512 and 2,048 tokens.
 
-**Memory bandwidth utilization:**
+The table uses the bit-comparable **4-bit-FFN** AX artifact (`scripts/requantize_gemma4_12b_ffn_4bit.py`), about 4.5 bpw versus the Q4_K_M GGUF's about 4.8 bpw. The upstream `mlx-community/gemma-4-12B-it-4bit` snapshot keeps the FFN at **8-bit** (~10.98 GB) and trails llama.cpp at about 46 tok/s. That is a bytes-read handicap, not an AX runtime result.
+
+**Memory bandwidth share:**
 
 Decode is memory-bandwidth-bound on Apple Silicon: each token reads the model weights once, so decode tok/s is set by bytes-read and how close the engine gets to the memory ceiling. Measured M5 Max GPU peak read bandwidth ≈ 577 GB/s (MLX reduction over a 6 GB array).
 
-<img src="docs/assets/perf-gemma4-12b-bandwidth.svg" alt="Horizontal bar chart showing percentage of M5 Max GPU peak memory bandwidth consumed per decode token for AX 8-bit FFN (86%), AX 4-bit FFN (80%), llama.cpp depth-0 (77%), and llama.cpp depth-512 (72%)">
+<img src="docs/assets/perf-gemma4-12b-bandwidth.svg" alt="100% stacked bar chart showing Gemma 4 12B effective decode bandwidth used versus theoretical headroom for AX 8-bit FFN (86%), AX 4-bit FFN (80%), llama.cpp depth-0 (77%), and llama.cpp depth-512 (72%)">
 
 | Engine / quantization | Weights/token | Decode tok/s | Effective BW | % of 577 GB/s peak |
 |---|---:|---:|---:|---:|
@@ -372,13 +383,13 @@ Decode is memory-bandwidth-bound on Apple Silicon: each token reads the model we
 | llama.cpp Q4_K_M — decode @ depth 512 | 7.38 GB | 56.6 | 418 GB/s | 72% |
 | llama.cpp Q4_K_M — decode @ depth 0 (`tg`) | 7.38 GB | 60.4 | 446 GB/s | 77% |
 
-AX sustains **as much or more memory bandwidth than llama.cpp** (459 vs 418 GB/s at matched depth) — both near the hardware ceiling, so neither is bandwidth-starved and AX is not under-utilizing memory. The direct-decode gap is purely *bytes read*: the upstream snapshot keeps the FFN at 8-bit (~10.98 GB, ~1.5× the Q4_K_M GGUF). Re-quantizing to uniform 4-bit group-64 (~6.74 GB, ~4.5 bpw, bit-comparable to Q4_K_M's ~4.8 bpw) makes AX direct decode **68.1 vs 56.6 tok/s — beating llama.cpp** at a fair, depth-matched comparison, with output verified coherent. Build it with `scripts/requantize_gemma4_12b_ffn_4bit.py`. (8-bit weights saturate bandwidth slightly better — 86% vs 80% of peak — because 4-bit needs more dequant compute per byte; that ~6% headroom lives in MLX's `quantized_matmul` kernel, not AX's runtime.)
+The bandwidth view is the key explanation: AX is not under-utilizing memory. The re-quantized AX row sustains **459 GB/s** versus llama.cpp's **418 GB/s** at matched depth. The remaining direct-decode difference is bytes read per token: uniform 4-bit group-64 reduces AX to **6.74 GB/token**, while Q4_K_M reads **7.38 GB/token**. The 8-bit-FFN upstream snapshot has higher bus utilization (86%) but worse speed because it reads far more data.
 
 **Assistant-MTP speculative decode (depth 2):**
 
-On top of the 4-bit-FFN direct win, the assistant-MTP path (depth-2 draft, default first-token confidence gate `0.90`, deep-token gate `0.999`, GPU-exact confidence) runs on the assistant bundle and adds a second speculative lever `mlx_lm` and llama.cpp don't have. Pure assistant-MTP is the default; MTP+n-gram stacking remains available as an opt-in because it is workload-dependent and did not beat pure MTP on every suite.
+The assistant-MTP path runs on the assistant bundle and adds a second speculative lever that neither `mlx_lm` nor llama.cpp has for this model. The published rows use depth-2 draft, first-token confidence gate `0.90`, deep-token gate `0.999`, and GPU-exact confidence.
 
-No runnable peer benchmark currently covers **Gemma 4 12B assistant-MTP** in this matrix: `mlx_lm` cannot load `gemma4_unified`, llama.cpp does not expose a Gemma assistant-MTP path, and the available MTP peer tools target different sidecar contracts. To keep the 12B MTP chart reviewable, the yellow row uses AX direct decode from the same MTP harness prompts, artifact, and sampler as a reference baseline. This has a real limitation: it is **not** a peer-engine MTP comparison, and it does not measure another implementation's speculative overhead. It only answers the narrower question that matters for keeping the feature: how much AX assistant-MTP and AX MTP+n-gram improve over AX direct decode under matched 12B conditions. The random-token direct/llama.cpp comparison remains in the separate chart above.
+Pure assistant-MTP is the default. MTP+n-gram stacking remains opt-in because it is workload-dependent and did not beat pure MTP on every suite.
 
 <table>
 <tr>
@@ -397,7 +408,9 @@ No runnable peer benchmark currently covers **Gemma 4 12B assistant-MTP** in thi
 | long_code | 2 | 35.0 | 99.4 | 95.2% | 101.0 | 94.5% | 71.7% | 39 |
 | python_modules_long | 2 | 35.9 | 105.0 | 93.5% | 103.5 | 93.3% | 81.4% | 73 |
 
-**Prefill and TTFT — same run:**
+No runnable peer benchmark covers **Gemma 4 12B assistant-MTP** in this matrix: `mlx_lm` cannot load `gemma4_unified`, llama.cpp does not expose a Gemma assistant-MTP path, and available MTP peer tools target different sidecar contracts. The yellow baseline in the chart is therefore AX direct decode from the same MTP harness prompts, artifact, and sampler. It is a same-artifact AX improvement view, not a peer-engine MTP comparison.
+
+**MTP prefill and TTFT — same run:**
 
 | Suite | AX MTP prefill | AX MTP+ngram prefill | AX MTP ttft ms | AX MTP+ngram ttft ms |
 |---|---:|---:|---:|---:|
@@ -405,7 +418,9 @@ No runnable peer benchmark currently covers **Gemma 4 12B assistant-MTP** in thi
 | long_code | 2,076 | 2,076 | 383 | 383 |
 | python_modules_long | 1,910 | 1,897 | 189 | 189 |
 
-Direct rows: 4-bit-FFN artifact, greedy-equivalent sampler, 128 generated tokens, 5 repetitions, 15 s cooldown, random-token prompts (mlx_lm.benchmark contract); llama.cpp decode shown at depth 0 (`tg`) and at matched context depth (`-d {prompt}`). MTP rows: same 4-bit-FFN assistant-MTP artifact, depth-2 draft, temperature=0.6, top_p=0.95, top_k=20; 512 generated tokens, 3 repetitions, 5 s / 2 s cooldowns. Apple M5 Max · AX Engine v6.1.1 · llama.cpp b9430 (Metal) · mlx_lm 0.31.3 (no `gemma4_unified` support).
+**Methodology and artifacts:**
+
+Direct rows use the 4-bit-FFN artifact, greedy-equivalent sampler, 128 generated tokens, 5 repetitions, 15 s cooldown, and random-token prompts following the `mlx_lm.benchmark` contract. llama.cpp decode is shown both at depth 0 (`tg`) and at matched context depth (`-d {prompt}`). MTP rows use the same 4-bit-FFN assistant-MTP artifact, depth-2 draft, temperature=0.6, top_p=0.95, top_k=20, 512 generated tokens, 3 repetitions, and 5 s / 2 s cooldowns. Host/runtime: Apple M5 Max · AX Engine v6.1.1 · llama.cpp b9430 (Metal) · mlx_lm 0.31.3 (no `gemma4_unified` support).
 
 Full artifacts: [`2026-06-09-gemma-4-12b-it-4bit-direct`](benchmarks/results/mlx-inference/2026-06-09-gemma-4-12b-it-4bit-direct/gemma-4-12b-it-4bit.json) (direct; llama.cpp GGUF provenance in [`llama_cpp_gguf_provenance.json`](benchmarks/results/mlx-inference/2026-06-09-gemma-4-12b-it-4bit-direct/llama_cpp_gguf_provenance.json)) · [`2026-06-09-gemma4-12b-ffn4-mtp-phase4-focused`](benchmarks/results/gemma4-assistant-mtp/2026-06-09-gemma4-12b-ffn4-mtp-phase4-focused/summary.json) (assistant-MTP).
 
@@ -702,6 +717,17 @@ python3 scripts/bench_qwen36_mtp_fair.py \
 
 DiffusionGemma is a block-diffusion Gemma4 26B checkpoint, not an ordinary autoregressive decoder. AX runs it with a native MLX graph, but the measurement boundary is different from the direct-decode families below: the first visible output comes from a **committed 256-token diffusion block**, not from a single next-token step.
 
+Because of that generation shape, the rows below intentionally do **not** use the
+plain `decode tok/s` or `TTFT` labels used for autoregressive models. In Qwen,
+Gemma 4 text, and other next-token decoders, `TTFT` means prompt prefill plus the
+first single-token decode step, and `decode tok/s` means the steady
+token-by-token autoregressive loop. DiffusionGemma instead runs a bidirectional
+denoise pass over a 256-token canvas, then performs a causal commit for that
+block. The comparable boundary inside this runtime is therefore **time to first
+block** and **first-block decode**. Treating these as ordinary TTFT/decode rows
+would make the result look directly comparable to autoregressive throughput even
+though the work per visible output boundary is different.
+
 The charts keep the same 128 / 512 / 2,048 prompt-token layout as the autoregressive sections for readability, but the values are AX first-block telemetry. Peer bars are intentionally omitted rather than shown as zero: current llama.cpp Metal cannot load the GGUF (`unknown model architecture: 'diffusion-gemma'`), and `mlx_lm` 0.31.3 cannot load the MLX snapshot (`Model type diffusion_gemma not supported.`).
 
 <table>
@@ -714,39 +740,39 @@ The charts keep the same 128 / 512 / 2,048 prompt-token layout as the autoregres
 
 | Prompt tokens | AX first-block decode | Denoise steps | Committed block |
 |---:|---:|---:|---:|
-| 128 | 45.2 tok/s | 48 | 256 tokens |
-| 512 | 42.9 tok/s | 48 | 256 tokens |
-| 2048 | 45.6 tok/s | 48 | 256 tokens |
+| 128 | 2,127.7 tok/s | 1 | 256 tokens |
+| 512 | 2,166.7 tok/s | 1 | 256 tokens |
+| 2048 | 2,118.8 tok/s | 1 | 256 tokens |
 
 **Prefill and first-block latency:**
 
 | Prompt tokens | AX direct prefill | AX time to first block | llama.cpp Metal 9650 | `mlx_lm` 0.31.3 |
 |---:|---:|---:|---|---|
-| 128 | 1,348.4 tok/s | 5,757 ms | load blocked | load blocked |
-| 512 | 3,005.3 tok/s | 6,138 ms | load blocked | load blocked |
-| 2048 | 3,978.1 tok/s | 6,132 ms | load blocked | load blocked |
+| 128 | 1,377.3 tok/s | 212 ms | load blocked | load blocked |
+| 512 | 3,043.0 tok/s | 286 ms | load blocked | load blocked |
+| 2048 | 4,073.3 tok/s | 624 ms | load blocked | load blocked |
 
 `time to first block` is prefill wall time plus the first 256-token denoise-and-commit block. `first-block decode` is computed as `256 / ax_mlx_diffusion_block_wall_us`. Use these rows to track AX's DiffusionGemma path; do not compare them directly with ordinary autoregressive TTFT or fixed-token decode throughput.
 
 | Runtime path | Model artifact | Benchmark status |
 |---|---|---|
-| AX direct MLX | `mlx-community/diffusiongemma-26B-A4B-it-4bit` | Measured: 2 warmups + 5 runs, medians reported |
+| AX direct MLX | `mlx-community/diffusiongemma-26B-A4B-it-4bit` | Measured: 1 warmup + 5 measured repetitions, 15 s cooldown, medians reported |
 | llama.cpp Metal 9650 | 4-bit GGUF | Blocked at load: `unknown model architecture: 'diffusion-gemma'` |
 | `mlx_lm` 0.31.3 | 4-bit MLX snapshot | Blocked at load: `Model type diffusion_gemma not supported.` |
 
 **Memory bandwidth share:**
 
-The bandwidth chart is an implementation-efficiency view, not a peer comparison. It estimates first-block traffic at block granularity: one block performs 48 denoise forwards plus one causal commit over a 16.54 GB MLX safetensors artifact, or about **810.6 GB** of weight traffic per committed block. The chart shows estimated bandwidth used versus the M5 Max theoretical ceiling; the table keeps the effective GB/s values.
+The bandwidth chart is an implementation-efficiency view, not a peer comparison. It estimates first-block traffic at block granularity: this run converged after 1 denoise forward plus one causal commit over a 16.54 GB MLX safetensors artifact, or about **33.1 GB** of estimated weight traffic per committed block. The chart shows estimated bandwidth used versus the M5 Max theoretical ceiling; the table keeps the effective GB/s values.
 
 <img src="docs/assets/perf-diffusiongemma-direct-memory-bandwidth-share.svg" alt="100% stacked bar chart showing estimated AX direct DiffusionGemma memory bandwidth share used versus theoretical headroom at 128, 512, and 2048 prompt tokens">
 
 | Prompt tokens | Estimated effective bandwidth | % of 614.4 GB/s M5 Max theoretical bandwidth |
 |---:|---:|---:|
-| 128 | 143.2 GB/s | 23.3% |
-| 512 | 135.8 GB/s | 22.1% |
-| 2,048 | 144.5 GB/s | 23.5% |
+| 128 | 275.0 GB/s | 44.8% |
+| 512 | 280.0 GB/s | 45.6% |
+| 2,048 | 273.8 GB/s | 44.6% |
 
-At these prompt lengths, the first-block path uses roughly 22-24% of theoretical M5 Max bandwidth. The current bottleneck is therefore not raw memory bandwidth; the next optimization target is denoise graph reuse, dispatch overhead, and convergence behavior.
+At these prompt lengths, the first-block path uses roughly 45% of theoretical M5 Max bandwidth. The current bottleneck is therefore not only raw memory bandwidth; the next optimization target is denoise graph reuse, dispatch overhead, and convergence behavior under stricter quality gates.
 
 **Denoise loop optimization — GPU-native sampling:**
 
@@ -762,7 +788,7 @@ The denoise loop can stop early when any configured convergence signal fires:
 
 3. **Entropy plateau:** mean entropy stops decreasing materially after the early denoise phase, indicating diminishing returns from additional passes.
 
-The benchmark rows above still report the measured run as recorded in the artifact. Adaptive convergence is an implementation knob for future and local runs; when it exits before the 48-step cap, time to first block improves in proportion to the skipped denoise passes.
+The benchmark rows above report the measured adaptive-convergence run as recorded in the artifact. This run exits after one denoise step on all measured prompt lengths, so time to first block tracks the skipped denoise passes rather than the 48-step cap.
 
 Artifacts: AX direct rows are [`2026-06-18-direct-first-block/summary.json`](benchmarks/results/diffusion-gemma-direct/2026-06-18-direct-first-block/summary.json), with the human summary in [`summary.md`](benchmarks/results/diffusion-gemma-direct/2026-06-18-direct-first-block/summary.md). Peer runtime blockers are recorded as load failures, so there are no llama.cpp or `mlx_lm` result artifacts for this model family.
 
@@ -792,9 +818,9 @@ In the runner's `decode_one`, the diffusion path returns before the MTP/n-gram b
 - Self-conditioning via GPU matmul (prob × cached embedding table)
 - Linear temperature schedule (configurable start/end)
 - Adaptive convergence detection (stable argmax, mean entropy, low update rate, and entropy plateau)
-- Standard causal prefill (same Gemma4 encoder, 3,796.4 tok/s median at the 2,048-token row)
+- Standard causal prefill (same Gemma4 encoder, 4,073.3 tok/s median at the 2,048-token row)
 - Causal commit pass (writes KV cache for subsequent blocks)
-- 6 SSE telemetry counters (`ax_mlx_diffusion_*`)
+- SSE telemetry counters for diffusion block timing, denoise steps, convergence signals, and near-miss entropy/update-rate diagnostics (`ax_mlx_diffusion_*`)
 - `diffusion` decode-route classification in benchmark harness
 
 **Not applicable:**
@@ -807,7 +833,7 @@ In the runner's `decode_one`, the diffusion path returns before the MTP/n-gram b
 
 The published rows use first-block telemetry instead of the standard fixed-token autoregressive benchmark contract. `max_output_tokens=1` is enough to force prefill plus one diffusion block, and the block counters still report the full 256-token denoise/commit cycle even though the caller receives only the first emitted token.
 
-Telemetry: 6 SSE-emitted counters (`ax_mlx_diffusion_blocks`, `ax_mlx_diffusion_denoise_steps`, `ax_mlx_diffusion_converged_blocks`, `ax_mlx_diffusion_denoise_wall_us`, `ax_mlx_diffusion_commit_wall_us`, `ax_mlx_diffusion_block_wall_us`) plus `diffusion` decode-route classification in `bench_mlx_inference_stack.py`.
+Telemetry: SSE-emitted `ax_mlx_diffusion_*` counters cover block count, denoise steps, convergence count, per-criterion convergence signals, near-miss entropy/update-rate diagnostics, denoise wall time, commit wall time, and block wall time, plus `diffusion` decode-route classification in `bench_mlx_inference_stack.py`.
 
 Run the full direct benchmark and regenerate the charts:
 

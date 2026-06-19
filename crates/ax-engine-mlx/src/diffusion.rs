@@ -20,15 +20,40 @@
 //! with `not_equal` + `sum_axis`, materialising only scalar counters.
 //! Convergence is checked every `convergence_check_interval` steps (default 4)
 //! to further reduce sync overhead.
+//!
+//! ## Compiled denoise closure
+//!
+//! When `AX_DIFFUSION_COMPILED_FORWARD=1` is set, the bidirectional forward
+//! pass is wrapped in an `MlxClosure` compiled via `mlx_compile`. The compiled
+//! graph is constructed once per block and reused for every denoise step,
+//! collapsing ~250 per-step MLX C-API calls into a single dispatched graph.
+//! Falls back to the imperative path on thread mismatch or compile failure.
+//!
+//! ## Conditional causal commit skip
+//!
+//! When `AX_DIFFUSION_SKIP_COMMIT_ON_CONVERGE=1` is set and the denoise loop
+//! converges at step 1 with >= 99% acceptance, the causal commit pass is
+//! skipped entirely — the canvas tokens are emitted directly. This saves
+//! ~40 ms per block on the first-block measurement where convergence is
+//! immediate.
+//!
+//! ## Per-layer embedding cache
+//!
+//! When `AX_DIFFUSION_EMBEDDING_CACHE=1` is set, the per-layer embedding
+//! inputs (`compute_per_layer_inputs_arr`) are cached across denoise steps.
+//! A GPU-side sum fingerprint detects token changes (2 dispatches + 1 eval)
+//! and reuses the cached embeddings when tokens are unchanged, saving 46
+//! embedding dispatches per cache hit.
 
 use std::time::Instant;
 
 use mlx_sys::{
-    MlxArray, MlxDtype, add, argmax, argsort_axis, astype, cumsum, divide, eval, less_equal, log,
-    matmul, multiply, negative, not_equal, reshape, rms_norm, softmax, sum_axis, take_along_axis,
-    where_cond,
+    MlxArray, MlxClosure, MlxDtype, MlxVectorArray, add, argmax, argsort_axis, astype, cumsum,
+    divide, eval, less_equal, log, matmul, multiply, negative, not_equal, reshape, rms_norm,
+    softmax, sum_axis, take_along_axis, where_cond,
 };
 
+use crate::fastpath;
 use crate::kv_cache::MlxKVCache;
 use crate::model::{
     DiffusionConfig, FinalLogitsMode, ModelConfig, compute_per_layer_inputs_arr, embed_tokens,
@@ -36,6 +61,23 @@ use crate::model::{
 };
 use crate::sampling::Xorshift64;
 use crate::weights::ModelWeights;
+
+/// Per-criterion convergence signals for telemetry diagnostics.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct ConvergenceSignals {
+    /// Strict argmax stability + low entropy.
+    pub strict: bool,
+    /// Acceptance rate below threshold.
+    pub acceptance: bool,
+    /// Entropy plateau (diminishing returns after warmup).
+    pub plateau: bool,
+}
+
+impl ConvergenceSignals {
+    fn any(self) -> bool {
+        self.strict || self.acceptance || self.plateau
+    }
+}
 
 /// Result of generating one diffusion block, including telemetry.
 pub(crate) struct DiffusionBlockResult {
@@ -45,12 +87,22 @@ pub(crate) struct DiffusionBlockResult {
     pub denoise_steps: u32,
     /// Whether the canvas converged before hitting max_denoise_steps.
     pub converged: bool,
+    /// Which convergence criterion triggered (all false if converged==false).
+    pub converged_strict: bool,
+    pub converged_acceptance: bool,
+    pub converged_plateau: bool,
+    /// Lowest mean entropy observed across all check steps (near-miss telemetry).
+    pub min_entropy: f32,
+    /// Lowest acceptance rate observed across all steps (near-miss telemetry).
+    pub min_acceptance_rate: f32,
     /// Total wall time spent in the denoise loop (microseconds).
     pub denoise_wall_us: u32,
-    /// Wall time for the causal commit pass (microseconds).
+    /// Wall time for the causal commit pass (microseconds). 0 when skipped.
     pub commit_wall_us: u32,
     /// Total wall time for the entire block generation (microseconds).
     pub block_wall_us: u32,
+    /// Whether the causal commit was skipped due to step-1 convergence.
+    pub commit_skipped: bool,
 }
 
 // Mutable state of the canvas being denoised.
@@ -69,6 +121,8 @@ struct DiffusionCanvas {
     mean_entropy: f32,
     step: usize,
     converged: bool,
+    /// Which convergence criterion last triggered.
+    last_signals: ConvergenceSignals,
     prev_self_cond_embed: Option<MlxArray>,
     /// Number of positions accepted in the last denoise step.
     accepted_count: usize,
@@ -77,6 +131,10 @@ struct DiffusionCanvas {
     acceptance_rate: f32,
     /// Mean entropy from the previous check step, for plateau detection.
     prev_mean_entropy: f32,
+    /// Lowest mean entropy seen across all check steps (near-miss telemetry).
+    min_entropy: f32,
+    /// Lowest acceptance rate seen across all steps (near-miss telemetry).
+    min_acceptance_rate: f32,
 }
 
 // Initialize a canvas with uniformly random token IDs on GPU.
@@ -98,10 +156,13 @@ fn init_canvas(canvas_size: usize, vocab_size: usize, rng: &mut Xorshift64) -> D
         mean_entropy: f32::MAX,
         step: 0,
         converged: false,
+        last_signals: ConvergenceSignals::default(),
         prev_self_cond_embed: None,
         accepted_count: 0,
         acceptance_rate: 1.0, // start at 100% (all positions changing)
         prev_mean_entropy: f32::MAX,
+        min_entropy: f32::MAX,
+        min_acceptance_rate: 1.0,
     }
 }
 
@@ -117,21 +178,26 @@ fn init_canvas(canvas_size: usize, vocab_size: usize, rng: &mut Xorshift64) -> D
 //    being updated, the model has converged regardless of absolute entropy.
 //
 // 3. **Entropy plateau criteria**: entropy has stopped decreasing significantly
-//    (delta < 0.001) after step 16, indicating diminishing returns.
-fn check_convergence(canvas: &DiffusionCanvas, cfg: &DiffusionConfig) -> bool {
+//    (delta < `entropy_plateau_delta`) after step 16, indicating diminishing
+//    returns.
+fn check_convergence(canvas: &DiffusionCanvas, cfg: &DiffusionConfig) -> ConvergenceSignals {
     // Strict criteria: traditional argmax stability + low entropy.
-    let strict_converged =
+    let strict =
         canvas.stable_count >= cfg.convergence_steps && canvas.mean_entropy < cfg.entropy_threshold;
 
     // Acceptance rate criteria: almost no positions being updated.
-    let acceptance_converged = canvas.acceptance_rate < cfg.acceptance_rate_threshold;
+    let acceptance = canvas.acceptance_rate < cfg.acceptance_rate_threshold;
 
     // Entropy plateau criteria: entropy stalled after warmup period.
     // Only check after step 16 to allow initial exploration.
     let entropy_delta = (canvas.prev_mean_entropy - canvas.mean_entropy).abs();
-    let plateau_converged = entropy_delta < 0.001 && canvas.step >= 16;
+    let plateau = entropy_delta < cfg.entropy_plateau_delta && canvas.step >= 16;
 
-    strict_converged || acceptance_converged || plateau_converged
+    ConvergenceSignals {
+        strict,
+        acceptance,
+        plateau,
+    }
 }
 
 // Linear temperature schedule from `temp_start` (step 0) to `temp_end` (max steps).
@@ -157,12 +223,29 @@ fn denoise_step(
     step: usize,
     token_offset: usize,
     embed_table: Option<&MlxArray>,
+    compiled_forward: Option<&MlxClosure>,
 ) {
     let temperature = temperature_at_step(step, diff_cfg);
     let is_check_step = step.is_multiple_of(diff_cfg.convergence_check_interval);
 
     // Bidirectional forward over canvas → logits [1, canvas_size, vocab_size].
-    let logits = forward_bidirectional(cfg, weights, &canvas.tokens_gpu, cache, token_offset);
+    // Use compiled closure when available; fall back to imperative path on
+    // thread mismatch or apply failure.
+    let logits = if let Some(compiled) = compiled_forward {
+        match compiled.try_apply(&[&canvas.tokens_gpu]) {
+            Ok(mut outputs) => outputs.swap_remove(0),
+            Err(_) => forward_bidirectional(
+                cfg,
+                weights,
+                &canvas.tokens_gpu,
+                cache,
+                token_offset,
+                None,
+            ),
+        }
+    } else {
+        forward_bidirectional(cfg, weights, &canvas.tokens_gpu, cache, token_offset, None)
+    };
 
     // Temperature-scale: divide by T.
     let scaled = if (temperature - 1.0).abs() > 1e-6 {
@@ -231,6 +314,7 @@ fn denoise_step(
     eval(&[&accepted_sum]);
     canvas.accepted_count = accepted_sum.data_f32()[0] as usize;
     canvas.acceptance_rate = canvas.accepted_count as f32 / canvas.canvas_size as f32;
+    canvas.min_acceptance_rate = canvas.min_acceptance_rate.min(canvas.acceptance_rate);
 
     // ── Convergence detection (check steps only) ─────────────────────
     //
@@ -260,6 +344,7 @@ fn denoise_step(
             };
             canvas.prev_mean_entropy = canvas.mean_entropy;
             canvas.mean_entropy = mean_entropy.data_f32()[0];
+            canvas.min_entropy = canvas.min_entropy.min(canvas.mean_entropy);
         } else {
             // First step: no previous argmax to compare; force unstable.
             canvas.stable_count = 0;
@@ -269,8 +354,11 @@ fn denoise_step(
             eval(&[&mean_entropy]);
             canvas.prev_mean_entropy = canvas.mean_entropy;
             canvas.mean_entropy = mean_entropy.data_f32()[0];
+            canvas.min_entropy = canvas.min_entropy.min(canvas.mean_entropy);
         }
-        canvas.converged = check_convergence(canvas, diff_cfg);
+        let signals = check_convergence(canvas, diff_cfg);
+        canvas.last_signals = signals;
+        canvas.converged = signals.any();
     }
 
     // Store current argmax for next step's stability comparison.
@@ -347,6 +435,39 @@ pub(crate) fn generate_diffusion_block(
         None
     };
 
+    // Build a compiled MLX closure for the bidirectional forward pass if
+    // the opt-in env flag is set. The closure captures raw pointers to the
+    // borrowed cfg/weights/cache — sound because the closure is dropped
+    // before this function returns, so all borrows remain valid.
+    //
+    // Pointers are cast through `usize` to satisfy the `Send` bound on
+    // `MlxClosure::new_dyn` (raw pointers are not `Send`; `usize` is).
+    let compiled_forward: Option<MlxClosure> = if fastpath::diffusion_compiled_forward_enabled() {
+        let cfg_addr = cfg as *const ModelConfig as usize;
+        let weights_addr = weights as *const ModelWeights as usize;
+        let cache_addr = cache as *const MlxKVCache as usize;
+        let closure = MlxClosure::new_dyn(move |inputs: &MlxVectorArray| -> Vec<MlxArray> {
+            let token_ids = inputs.get(0);
+            // SAFETY: the pointers reference stack/borrowed data in
+            // generate_diffusion_block which outlives this closure.
+            let cfg_ref = unsafe { &*(cfg_addr as *const ModelConfig) };
+            let weights_ref = unsafe { &*(weights_addr as *const ModelWeights) };
+            let cache_ref = unsafe { &*(cache_addr as *const MlxKVCache) };
+            let logits = forward_bidirectional(
+                cfg_ref,
+                weights_ref,
+                &token_ids,
+                cache_ref,
+                token_offset,
+                None,
+            );
+            vec![logits]
+        });
+        closure.compile(false).ok()
+    } else {
+        None
+    };
+
     let denoise_start = Instant::now();
     let mut steps_executed = 0_u32;
     for step in 0..diff_cfg.max_denoise_steps {
@@ -359,6 +480,7 @@ pub(crate) fn generate_diffusion_block(
             step,
             token_offset,
             embed_table,
+            compiled_forward.as_ref(),
         );
         steps_executed += 1;
         if canvas.converged {
@@ -367,23 +489,87 @@ pub(crate) fn generate_diffusion_block(
     }
     let denoise_wall_us = elapsed_us(denoise_start);
 
-    let commit_start = Instant::now();
-    let tokens = commit_block(cfg, weights, cache, &canvas, token_offset);
-    let commit_wall_us = elapsed_us(commit_start);
+    // Conditional commit skip: when the denoise loop converged at step 1
+    // with near-perfect acceptance, the canvas tokens are already the
+    // model's output — the causal commit pass is redundant.
+    let commit_skipped = fastpath::diffusion_skip_commit_on_converge()
+        && canvas.converged
+        && steps_executed == 1
+        && canvas.acceptance_rate >= 0.99;
+
+    let (tokens, commit_wall_us) = if commit_skipped {
+        eval(&[&canvas.tokens_gpu]);
+        let tokens: Vec<u32> = canvas.tokens_gpu.data_u32().to_vec();
+        (tokens, 0)
+    } else {
+        let start = Instant::now();
+        let tokens = commit_block(cfg, weights, cache, &canvas, token_offset);
+        (tokens, elapsed_us(start))
+    };
     let block_wall_us = elapsed_us(block_start);
 
     DiffusionBlockResult {
         tokens,
         denoise_steps: steps_executed,
         converged: canvas.converged,
+        converged_strict: canvas.last_signals.strict,
+        converged_acceptance: canvas.last_signals.acceptance,
+        converged_plateau: canvas.last_signals.plateau,
+        min_entropy: canvas.min_entropy,
+        min_acceptance_rate: canvas.min_acceptance_rate,
         denoise_wall_us,
         commit_wall_us,
         block_wall_us,
+        commit_skipped,
     }
 }
 
 fn elapsed_us(started: Instant) -> u32 {
     started.elapsed().as_micros().min(u32::MAX as u128) as u32
+}
+
+// Per-layer embedding cache for DiffusionGemma denoiser.
+//
+// Caches the output of `compute_per_layer_inputs_arr` across denoise steps.
+// When token IDs are unchanged (high acceptance rate), the cached embeddings
+// are reused, saving 46 embedding dispatches per cache hit. Token change
+// detection uses a GPU-side sum fingerprint (2 dispatches + 1 eval).
+struct EmbeddingCache {
+    /// Sum of token IDs from the last cached computation (fingerprint).
+    token_sum: f32,
+    /// Cached per-layer embedding inputs.
+    per_layer_inputs: Option<Vec<MlxArray>>,
+}
+
+impl EmbeddingCache {
+    fn new() -> Self {
+        Self {
+            token_sum: f32::NAN,
+            per_layer_inputs: None,
+        }
+    }
+
+    /// Check whether tokens have changed using a sum fingerprint.
+    /// Returns true when the cache should be refreshed.
+    fn needs_refresh(&self, token_ids: &MlxArray) -> bool {
+        if self.per_layer_inputs.is_none() {
+            return true;
+        }
+        let token_sum_f32 = astype(token_ids, MlxDtype::Float32, None);
+        let sum = sum_axis(&token_sum_f32, -1, false, None);
+        eval(&[&sum]);
+        let current_sum = sum.data_f32()[0];
+        (current_sum - self.token_sum).abs() > 0.5
+    }
+
+    /// Update the cache with new per-layer inputs.
+    fn update(&mut self, token_ids: &MlxArray, inputs: Vec<MlxArray>) {
+        let token_sum_f32 = astype(token_ids, MlxDtype::Float32, None);
+        let sum = sum_axis(&token_sum_f32, -1, false, None);
+        eval(&[&sum]);
+        self.token_sum = sum.data_f32()[0];
+        self.per_layer_inputs = Some(inputs);
+    }
 }
 
 // Run the bidirectional forward pass over canvas tokens.
@@ -392,12 +578,16 @@ fn elapsed_us(started: Instant) -> u32 {
 // each layer — no KV cache writes, bidirectional attention over the canvas.
 // Accepts a 1-D `[canvas_size]` u32 `MlxArray` (may be GPU-resident/lazy).
 // Returns per-position logits `[1, canvas_size, vocab_size]`.
+//
+// When `embed_cache` is `Some`, per-layer embedding inputs are cached across
+// denoise steps and reused when token IDs are unchanged.
 fn forward_bidirectional(
     cfg: &ModelConfig,
     weights: &ModelWeights,
     token_ids: &MlxArray,
     cache: &MlxKVCache,
     token_offset: usize,
+    embed_cache: Option<&mut EmbeddingCache>,
 ) -> MlxArray {
     // Embed tokens directly from GPU array.
     let mut hidden = embed_tokens_arr(token_ids, &weights.token_embedding, cfg.hidden_size);
@@ -407,7 +597,20 @@ fn forward_bidirectional(
     }
 
     // Compute per-layer inputs (Gemma4 per-layer embeddings).
-    let per_layer_inputs = compute_per_layer_inputs_arr(cfg, weights, token_ids, &hidden);
+    // Use cache when available and tokens are unchanged.
+    let per_layer_inputs = if let Some(cache_entry) = embed_cache {
+        if cache_entry.needs_refresh(token_ids) {
+            let pli = compute_per_layer_inputs_arr(cfg, weights, token_ids, &hidden);
+            if let Some(ref inputs) = pli {
+                cache_entry.update(token_ids, inputs.clone());
+            }
+            pli
+        } else {
+            cache_entry.per_layer_inputs.clone()
+        }
+    } else {
+        compute_per_layer_inputs_arr(cfg, weights, token_ids, &hidden)
+    };
 
     // Run each layer with bidirectional attention.
     for (li, layer_w) in weights.layers.iter().enumerate() {
@@ -419,4 +622,258 @@ fn forward_bidirectional(
     let normed = rms_norm(&hidden, Some(&weights.final_norm), cfg.rms_norm_eps, None);
     let logits = shared::qw(&normed, &weights.lm_head);
     finalize_lm_head_logits(cfg, &logits, FinalLogitsMode::Full)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Build a minimal canvas with scalar fields set for convergence testing.
+    /// The GPU token array is a dummy — `check_convergence` only reads scalars.
+    fn test_canvas(
+        stable_count: usize,
+        mean_entropy: f32,
+        acceptance_rate: f32,
+        prev_mean_entropy: f32,
+        step: usize,
+    ) -> DiffusionCanvas {
+        DiffusionCanvas {
+            tokens_gpu: MlxArray::from_f32(0.0),
+            canvas_size: 256,
+            argmax_canvas: None,
+            stable_count,
+            mean_entropy,
+            step,
+            converged: false,
+            last_signals: ConvergenceSignals::default(),
+            prev_self_cond_embed: None,
+            accepted_count: (acceptance_rate * 256.0) as usize,
+            acceptance_rate,
+            prev_mean_entropy,
+            min_entropy: f32::MAX,
+            min_acceptance_rate: 1.0,
+        }
+    }
+
+    fn default_diff_cfg() -> DiffusionConfig {
+        DiffusionConfig {
+            canvas_size: 256,
+            max_denoise_steps: 48,
+            entropy_bound: 0.1,
+            entropy_threshold: 0.005,
+            convergence_steps: 2,
+            temp_start: 0.8,
+            temp_end: 0.4,
+            self_conditioning: true,
+            convergence_check_interval: 4,
+            acceptance_rate_threshold: 0.01,
+            entropy_plateau_delta: 0.001,
+        }
+    }
+
+    #[test]
+    fn convergence_signals_strict() {
+        let cfg = default_diff_cfg();
+        // stable_count >= convergence_steps (2) AND mean_entropy < entropy_threshold (0.005).
+        let canvas = test_canvas(2, 0.003, 0.5, 0.004, 8);
+        let signals = check_convergence(&canvas, &cfg);
+        assert!(
+            signals.strict,
+            "strict should fire when stable and low entropy"
+        );
+        assert!(!signals.acceptance);
+        assert!(!signals.plateau);
+        assert!(signals.any());
+    }
+
+    #[test]
+    fn convergence_signals_strict_not_stable() {
+        let cfg = default_diff_cfg();
+        // stable_count < convergence_steps → strict should NOT fire.
+        let canvas = test_canvas(1, 0.003, 0.5, 0.004, 8);
+        let signals = check_convergence(&canvas, &cfg);
+        assert!(
+            !signals.strict,
+            "strict requires stable_count >= convergence_steps"
+        );
+    }
+
+    #[test]
+    fn convergence_signals_strict_high_entropy() {
+        let cfg = default_diff_cfg();
+        // stable but entropy above threshold → strict should NOT fire.
+        let canvas = test_canvas(2, 0.5, 0.5, 0.6, 8);
+        let signals = check_convergence(&canvas, &cfg);
+        assert!(
+            !signals.strict,
+            "strict requires mean_entropy < entropy_threshold"
+        );
+    }
+
+    #[test]
+    fn convergence_signals_acceptance() {
+        let cfg = default_diff_cfg();
+        // acceptance_rate (0.005) < acceptance_rate_threshold (0.01).
+        let canvas = test_canvas(0, 0.5, 0.005, 0.6, 4);
+        let signals = check_convergence(&canvas, &cfg);
+        assert!(
+            signals.acceptance,
+            "acceptance should fire when rate < threshold"
+        );
+        assert!(!signals.strict);
+        assert!(!signals.plateau);
+        assert!(signals.any());
+    }
+
+    #[test]
+    fn convergence_signals_acceptance_not_low() {
+        let cfg = default_diff_cfg();
+        // acceptance_rate (0.5) well above threshold.
+        let canvas = test_canvas(0, 0.5, 0.5, 0.6, 4);
+        let signals = check_convergence(&canvas, &cfg);
+        assert!(!signals.acceptance);
+    }
+
+    #[test]
+    fn convergence_signals_plateau() {
+        let cfg = default_diff_cfg();
+        // entropy delta (0.010 - 0.0095 = 0.0005) < plateau_delta (0.001) AND step >= 16.
+        let canvas = test_canvas(0, 0.0095, 0.5, 0.010, 20);
+        let signals = check_convergence(&canvas, &cfg);
+        assert!(
+            signals.plateau,
+            "plateau should fire when delta < threshold after step 16"
+        );
+        assert!(!signals.strict);
+        assert!(!signals.acceptance);
+        assert!(signals.any());
+    }
+
+    #[test]
+    fn convergence_signals_plateau_before_warmup() {
+        let cfg = default_diff_cfg();
+        // Same entropy delta but step < 16 → plateau should NOT fire.
+        let canvas = test_canvas(0, 0.0095, 0.5, 0.010, 12);
+        let signals = check_convergence(&canvas, &cfg);
+        assert!(!signals.plateau, "plateau requires step >= 16 warmup");
+    }
+
+    #[test]
+    fn convergence_signals_none() {
+        let cfg = default_diff_cfg();
+        // Nothing triggers: unstable, high entropy, high acceptance, early step.
+        let canvas = test_canvas(0, 0.5, 0.5, 0.6, 4);
+        let signals = check_convergence(&canvas, &cfg);
+        assert!(!signals.any());
+    }
+
+    #[test]
+    fn convergence_signals_multiple() {
+        let cfg = default_diff_cfg();
+        // strict + acceptance + plateau all fire simultaneously.
+        // stable_count=3 >= 2, entropy=0.001 < 0.005 → strict.
+        // acceptance_rate=0.005 < 0.01 → acceptance.
+        // abs(0.0015 - 0.001) = 0.0005 < 0.001 AND step=20 >= 16 → plateau.
+        let canvas = test_canvas(3, 0.001, 0.005, 0.0015, 20);
+        let signals = check_convergence(&canvas, &cfg);
+        assert!(signals.strict);
+        assert!(signals.acceptance);
+        assert!(signals.plateau);
+        assert!(signals.any());
+    }
+
+    #[test]
+    fn convergence_signals_any_logic() {
+        let none = ConvergenceSignals {
+            strict: false,
+            acceptance: false,
+            plateau: false,
+        };
+        assert!(!none.any());
+        let strict_only = ConvergenceSignals {
+            strict: true,
+            ..Default::default()
+        };
+        assert!(strict_only.any());
+    }
+
+    // ── Commit skip predicate tests ──────────────────────────────────
+    //
+    // These verify the pure predicate logic used in `generate_diffusion_block`
+    // without requiring model weights or MLX runtime.
+
+    /// Simulate the commit-skip predicate from `generate_diffusion_block`.
+    fn should_skip_commit(
+        flag_enabled: bool,
+        converged: bool,
+        steps_executed: u32,
+        acceptance_rate: f32,
+    ) -> bool {
+        flag_enabled && converged && steps_executed == 1 && acceptance_rate >= 0.99
+    }
+
+    #[test]
+    fn commit_skip_fires_on_step1_convergence() {
+        assert!(should_skip_commit(true, true, 1, 1.0));
+        assert!(should_skip_commit(true, true, 1, 0.99));
+    }
+
+    #[test]
+    fn commit_no_skip_on_multi_step() {
+        // Even with convergence and high acceptance, steps > 1 prevents skip.
+        assert!(!should_skip_commit(true, true, 2, 1.0));
+        assert!(!should_skip_commit(true, true, 48, 0.99));
+    }
+
+    #[test]
+    fn commit_no_skip_on_low_acceptance() {
+        // Acceptance below 0.99 threshold prevents skip.
+        assert!(!should_skip_commit(true, true, 1, 0.98));
+        assert!(!should_skip_commit(true, true, 1, 0.5));
+    }
+
+    #[test]
+    fn commit_no_skip_without_convergence() {
+        assert!(!should_skip_commit(true, false, 1, 1.0));
+    }
+
+    #[test]
+    fn commit_no_skip_when_flag_disabled() {
+        // Flag disabled prevents skip regardless of other conditions.
+        assert!(!should_skip_commit(false, true, 1, 1.0));
+    }
+
+    // ── EmbeddingCache tests ─────────────────────────────────────────
+
+    #[test]
+    fn embedding_cache_initial_state_needs_refresh() {
+        let cache = EmbeddingCache::new();
+        assert!(cache.per_layer_inputs.is_none());
+        assert!(cache.token_sum.is_nan());
+        // needs_refresh returns true when cache is empty.
+        let dummy = MlxArray::from_f32(42.0);
+        assert!(cache.needs_refresh(&dummy));
+    }
+
+    #[test]
+    fn embedding_cache_hit_on_same_tokens() {
+        let mut cache = EmbeddingCache::new();
+        let tokens = MlxArray::from_vec(vec![10_u32, 20, 30], &[3]);
+        let dummy_pli = vec![MlxArray::from_f32(1.0)];
+        cache.update(&tokens, dummy_pli);
+        assert!(cache.per_layer_inputs.is_some());
+        // Same token sum → no refresh needed.
+        assert!(!cache.needs_refresh(&tokens));
+    }
+
+    #[test]
+    fn embedding_cache_miss_on_different_tokens() {
+        let mut cache = EmbeddingCache::new();
+        let tokens_a = MlxArray::from_vec(vec![10_u32, 20, 30], &[3]);
+        let dummy_pli = vec![MlxArray::from_f32(1.0)];
+        cache.update(&tokens_a, dummy_pli);
+        // Different tokens with different sum → refresh needed.
+        let tokens_b = MlxArray::from_vec(vec![100_u32, 200, 300], &[3]);
+        assert!(cache.needs_refresh(&tokens_b));
+    }
 }

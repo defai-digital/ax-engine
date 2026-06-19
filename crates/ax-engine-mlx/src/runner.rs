@@ -2551,6 +2551,14 @@ struct DecodeTelemetry {
     diffusion_denoise_wall_us: u32,
     diffusion_commit_wall_us: u32,
     diffusion_block_wall_us: u32,
+    // Per-criterion convergence signals (0 or 1 per block).
+    diffusion_converged_strict: u32,
+    diffusion_converged_acceptance: u32,
+    diffusion_converged_plateau: u32,
+    // Near-miss telemetry: lowest entropy/acceptance rate observed (×10000 fixed-point).
+    diffusion_min_entropy_bp: u32,
+    diffusion_min_acceptance_rate_bp: u32,
+    diffusion_commit_skipped: u32,
 }
 
 impl DecodeTelemetry {
@@ -2666,6 +2674,23 @@ impl DecodeTelemetry {
         if result.converged {
             self.diffusion_converged_blocks = self.diffusion_converged_blocks.saturating_add(1);
         }
+        if result.converged_strict {
+            self.diffusion_converged_strict = self.diffusion_converged_strict.saturating_add(1);
+        }
+        if result.converged_acceptance {
+            self.diffusion_converged_acceptance =
+                self.diffusion_converged_acceptance.saturating_add(1);
+        }
+        if result.converged_plateau {
+            self.diffusion_converged_plateau = self.diffusion_converged_plateau.saturating_add(1);
+        }
+        // Near-miss telemetry: encode floats as basis points (×10000).
+        let entropy_bp = (result.min_entropy * 10000.0).round().min(u32::MAX as f32) as u32;
+        self.diffusion_min_entropy_bp = self.diffusion_min_entropy_bp.min(entropy_bp);
+        let rate_bp = (result.min_acceptance_rate * 10000.0)
+            .round()
+            .min(u32::MAX as f32) as u32;
+        self.diffusion_min_acceptance_rate_bp = self.diffusion_min_acceptance_rate_bp.min(rate_bp);
         self.diffusion_denoise_wall_us = self
             .diffusion_denoise_wall_us
             .saturating_add(result.denoise_wall_us);
@@ -2675,6 +2700,10 @@ impl DecodeTelemetry {
         self.diffusion_block_wall_us = self
             .diffusion_block_wall_us
             .saturating_add(result.block_wall_us);
+        if result.commit_skipped {
+            self.diffusion_commit_skipped =
+                self.diffusion_commit_skipped.saturating_add(1);
+        }
     }
 
     fn merge_from(&mut self, other: Self) {
@@ -2780,6 +2809,24 @@ impl DecodeTelemetry {
         self.diffusion_block_wall_us = self
             .diffusion_block_wall_us
             .saturating_add(other.diffusion_block_wall_us);
+        self.diffusion_converged_strict = self
+            .diffusion_converged_strict
+            .saturating_add(other.diffusion_converged_strict);
+        self.diffusion_converged_acceptance = self
+            .diffusion_converged_acceptance
+            .saturating_add(other.diffusion_converged_acceptance);
+        self.diffusion_converged_plateau = self
+            .diffusion_converged_plateau
+            .saturating_add(other.diffusion_converged_plateau);
+        self.diffusion_min_entropy_bp = self
+            .diffusion_min_entropy_bp
+            .min(other.diffusion_min_entropy_bp);
+        self.diffusion_min_acceptance_rate_bp = self
+            .diffusion_min_acceptance_rate_bp
+            .min(other.diffusion_min_acceptance_rate_bp);
+        self.diffusion_commit_skipped = self
+            .diffusion_commit_skipped
+            .saturating_add(other.diffusion_commit_skipped);
     }
 
     fn append_route_decisions(&self, decisions: &mut impl RouteDecisionSink) {
@@ -2896,6 +2943,30 @@ impl DecodeTelemetry {
             (
                 "ax_mlx_diffusion_block_wall_us",
                 self.diffusion_block_wall_us,
+            ),
+            (
+                "ax_mlx_diffusion_converged_strict",
+                self.diffusion_converged_strict,
+            ),
+            (
+                "ax_mlx_diffusion_converged_acceptance",
+                self.diffusion_converged_acceptance,
+            ),
+            (
+                "ax_mlx_diffusion_converged_plateau",
+                self.diffusion_converged_plateau,
+            ),
+            (
+                "ax_mlx_diffusion_min_entropy_bp",
+                self.diffusion_min_entropy_bp,
+            ),
+            (
+                "ax_mlx_diffusion_min_acceptance_rate_bp",
+                self.diffusion_min_acceptance_rate_bp,
+            ),
+            (
+                "ax_mlx_diffusion_commit_skipped",
+                self.diffusion_commit_skipped,
             ),
         ];
 
@@ -14526,17 +14597,29 @@ mod tests {
             tokens: vec![1, 2, 3, 4],
             denoise_steps: 4,
             converged: true,
+            converged_strict: true,
+            converged_acceptance: false,
+            converged_plateau: false,
+            min_entropy: 0.003,
+            min_acceptance_rate: 0.05,
             denoise_wall_us: 500,
             commit_wall_us: 100,
             block_wall_us: 700,
+            commit_skipped: false,
         });
         telemetry.record_diffusion_block(&crate::diffusion::DiffusionBlockResult {
             tokens: vec![5, 6],
             denoise_steps: 8,
             converged: false,
+            converged_strict: false,
+            converged_acceptance: false,
+            converged_plateau: false,
+            min_entropy: 0.020,
+            min_acceptance_rate: 0.15,
             denoise_wall_us: 900,
             commit_wall_us: 200,
             block_wall_us: 1300,
+            commit_skipped: true,
         });
 
         let mut decisions: Vec<(String, u32)> = Vec::new();
@@ -14554,6 +14637,7 @@ mod tests {
         );
         assert_eq!(decisions.get("ax_mlx_diffusion_commit_wall_us"), Some(&300));
         assert_eq!(decisions.get("ax_mlx_diffusion_block_wall_us"), Some(&2000));
+        assert_eq!(decisions.get("ax_mlx_diffusion_commit_skipped"), Some(&1));
     }
 
     #[test]

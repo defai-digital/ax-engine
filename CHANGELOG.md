@@ -6,6 +6,14 @@ tracked via Git tags and GitHub Releases.
 
 ## [Unreleased]
 
+## [6.5.1] - 2026-06-18
+
+### Changed
+
+- **DiffusionGemma direct decode performance** — optimized the denoise loop with
+  GPU matmul self-conditioning, cached embed table, and argmax rejection sampling,
+  improving decode throughput and memory bandwidth utilization.
+
 ## [6.5.0] - 2026-06-18
 
 ### Added
