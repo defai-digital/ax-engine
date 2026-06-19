@@ -32,7 +32,7 @@ RED = "#dc2626"
 PROMPT_TOKENS = (128, 512, 2048)
 
 # Fallbacks used only when a version cannot be recovered from the artifacts.
-AX_ENGINE_VERSION_FALLBACK = "6.5.1"
+AX_ENGINE_VERSION_FALLBACK = "6.5.2"
 MLX_LM_VERSION_FALLBACK = "0.31.3"
 
 WIDTH = 800
