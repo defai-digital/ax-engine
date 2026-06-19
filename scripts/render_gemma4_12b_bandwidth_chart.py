@@ -50,7 +50,8 @@ BAR_PAD = (BAR_STEP - BAR_H) / 2
 HEADROOM_COLOR = "#e5e7eb"
 HEADROOM_STROKE = "#cbd5e1"
 SUBTITLE = "Used bandwidth vs theoretical headroom · 100% = 577 GB/s M5 Max peak"
-FOOTNOTE = "AX Engine v6.0.1 · llama.cpp b9700 · M5 Max · peak measured via MLX reduction probe"
+TITLE = "Gemma 4 12B - Memory bandwidth share · AX Engine v6.5.1"
+FOOTNOTE = "AX direct artifact d8bcc66 · llama.cpp b9700 · M5 Max · peak measured via MLX reduction probe"
 
 
 def fx(pct: float) -> float:
@@ -70,14 +71,14 @@ def render() -> str:
     parts += [
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{WIDTH}" height="{HEIGHT}"'
         f' viewBox="0 0 {WIDTH} {HEIGHT}" role="img" aria-labelledby="title desc">',
-        '<title>Gemma 4 12B - Memory bandwidth share</title>',
+        f"<title>{e(TITLE)}</title>",
         f'<desc>100% stacked bars showing effective bandwidth used versus theoretical'
         f' headroom for Gemma 4 12B decode. AX 8-bit FFN uses 86%, AX 4-bit FFN'
         f' 80%, llama.cpp depth 0 76%, and llama.cpp depth 512 75% of the'
         f' {PEAK_GBS:.0f} GB/s M5 Max peak.</desc>',
         f'<rect width="{WIDTH}" height="{HEIGHT}" fill="#f8fafc"/>',
         f'<text id="title" x="{LEFT}" y="24" font-family="{FONT}" font-size="16"'
-        f' font-weight="700" fill="#111827">Gemma 4 12B - Memory bandwidth share</text>',
+        f' font-weight="700" fill="#111827">{e(TITLE)}</text>',
         f'<text x="{LEFT}" y="46" font-family="{FONT}" font-size="11" fill="#4b5563">'
         f'{e(SUBTITLE)}</text>',
         f'<text id="desc" x="{LEFT}" y="62" font-family="{FONT}" font-size="10" fill="#6b7280">'
