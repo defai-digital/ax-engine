@@ -83,9 +83,10 @@ use crate::generate::{
 use crate::kv_cache::{MlxKVCache, MlxKVCacheUsage};
 use crate::model::{
     DecodeProfileSnapshot, Gemma4MoeProfileSnapshot, LinearAttentionProfileSnapshot, ModelConfig,
-    PrefillProfileSnapshot, TurboQuantModelDecodeContext, forward_all_positions_with_post_norm,
-    take_decode_profile_snapshot, take_gemma4_moe_profile_snapshot,
-    take_linear_attention_profile_snapshot, take_prefill_profile_snapshot,
+    MoeProfileSnapshot, PrefillProfileSnapshot, TurboQuantModelDecodeContext,
+    forward_all_positions_with_post_norm, take_decode_profile_snapshot,
+    take_gemma4_moe_profile_snapshot, take_linear_attention_profile_snapshot,
+    take_moe_profile_snapshot, take_prefill_profile_snapshot,
 };
 use crate::mtp::{mtp_draft_tokens, mtp_draft_tokens_after_forced_prefix};
 use crate::ngram_accel::{
@@ -3065,6 +3066,52 @@ impl Gemma4MoeProfileSnapshot {
     }
 }
 
+impl MoeProfileSnapshot {
+    fn merge_from(&mut self, other: Self) {
+        self.enabled = self.enabled.max(other.enabled);
+        self.moe_layers = self.moe_layers.saturating_add(other.moe_layers);
+        self.router_us = self.router_us.saturating_add(other.router_us);
+        self.expert_gate_up_us = self
+            .expert_gate_up_us
+            .saturating_add(other.expert_gate_up_us);
+        self.expert_activation_us = self
+            .expert_activation_us
+            .saturating_add(other.expert_activation_us);
+        self.expert_down_us = self.expert_down_us.saturating_add(other.expert_down_us);
+        self.weighted_sum_us = self.weighted_sum_us.saturating_add(other.weighted_sum_us);
+        self.shared_expert_us = self.shared_expert_us.saturating_add(other.shared_expert_us);
+        self.total_us = self.total_us.saturating_add(other.total_us);
+    }
+
+    fn append_route_decisions(&self, decisions: &mut impl RouteDecisionSink) {
+        if self.enabled == 0 {
+            return;
+        }
+
+        let entries = [
+            ("ax_mlx_moe_profile_enabled", self.enabled),
+            ("ax_mlx_moe_profile_moe_layers", self.moe_layers),
+            ("ax_mlx_moe_profile_router_us", self.router_us),
+            (
+                "ax_mlx_moe_profile_expert_gate_up_us",
+                self.expert_gate_up_us,
+            ),
+            (
+                "ax_mlx_moe_profile_expert_activation_us",
+                self.expert_activation_us,
+            ),
+            ("ax_mlx_moe_profile_expert_down_us", self.expert_down_us),
+            ("ax_mlx_moe_profile_weighted_sum_us", self.weighted_sum_us),
+            ("ax_mlx_moe_profile_shared_expert_us", self.shared_expert_us),
+            ("ax_mlx_moe_profile_total_us", self.total_us),
+        ];
+
+        for (key, value) in entries {
+            decisions.upsert_route_decision(key, value);
+        }
+    }
+}
+
 impl LinearAttentionProfileSnapshot {
     fn merge_from(&mut self, other: Self) {
         self.enabled = self.enabled.max(other.enabled);
@@ -4855,6 +4902,7 @@ impl MlxRunner {
             }
         }
         let _ = take_gemma4_moe_profile_snapshot();
+        let _ = take_moe_profile_snapshot();
         let _ = take_linear_attention_profile_snapshot();
         let _ = take_prefill_profile_snapshot();
         let _ = take_decode_profile_snapshot();
@@ -4956,6 +5004,7 @@ impl ExecutionRunner for MlxRunner {
         let mut gemma4_unified_multimodal_telemetry = Gemma4UnifiedMultimodalTelemetry::default();
         let mut decode_telemetry = DecodeTelemetry::default();
         let mut gemma4_moe_profile = Gemma4MoeProfileSnapshot::default();
+        let mut moe_profile = MoeProfileSnapshot::default();
         let mut linear_attention_profile = LinearAttentionProfileSnapshot::default();
         let mut prefill_profile = PrefillProfileSnapshot::default();
         let mut decode_profile = DecodeProfileSnapshot::default();
@@ -4982,6 +5031,7 @@ impl ExecutionRunner for MlxRunner {
                 .merge_from(result.gemma4_unified_multimodal_telemetry);
             decode_telemetry.merge_from(result.decode_telemetry);
             gemma4_moe_profile.merge_from(result.gemma4_moe_profile);
+            moe_profile.merge_from(result.moe_profile);
             linear_attention_profile.merge_from(result.linear_attention_profile);
             prefill_profile.merge_from(result.prefill_profile);
             decode_profile.merge_from(result.decode_profile);
@@ -4999,6 +5049,7 @@ impl ExecutionRunner for MlxRunner {
             mtp_telemetry.append_route_decisions(&mut route_decisions);
             decode_telemetry.append_route_decisions(&mut route_decisions);
             gemma4_moe_profile.append_route_decisions(&mut route_decisions);
+            moe_profile.append_route_decisions(&mut route_decisions);
             linear_attention_profile.append_route_decisions(&mut route_decisions);
             prefill_profile.append_route_decisions(&mut route_decisions);
             decode_profile.append_route_decisions(&mut route_decisions);
@@ -5557,6 +5608,7 @@ impl MlxRunner {
                 gemma4_unified_multimodal_telemetry: Gemma4UnifiedMultimodalTelemetry::default(),
                 decode_telemetry: DecodeTelemetry::default(),
                 gemma4_moe_profile: Gemma4MoeProfileSnapshot::default(),
+                moe_profile: MoeProfileSnapshot::default(),
                 linear_attention_profile: LinearAttentionProfileSnapshot::default(),
                 prefill_profile: PrefillProfileSnapshot::default(),
                 decode_profile: DecodeProfileSnapshot::default(),
@@ -5957,6 +6009,7 @@ impl MlxRunner {
         let gemma4_assistant_mtp_telemetry = state.gemma4_assistant_mtp_telemetry;
         let decode_telemetry = state.decode_telemetry;
         let gemma4_moe_profile = take_gemma4_moe_profile_snapshot();
+        let moe_profile = take_moe_profile_snapshot();
         let linear_attention_profile = take_linear_attention_profile_snapshot();
         state
             .prefill_profile
@@ -6014,6 +6067,7 @@ impl MlxRunner {
             gemma4_unified_multimodal_telemetry,
             decode_telemetry,
             gemma4_moe_profile,
+            moe_profile,
             linear_attention_profile,
             prefill_profile,
             decode_profile,
@@ -9575,6 +9629,7 @@ struct MlxItemRun {
     gemma4_unified_multimodal_telemetry: Gemma4UnifiedMultimodalTelemetry,
     decode_telemetry: DecodeTelemetry,
     gemma4_moe_profile: Gemma4MoeProfileSnapshot,
+    moe_profile: MoeProfileSnapshot,
     linear_attention_profile: LinearAttentionProfileSnapshot,
     prefill_profile: PrefillProfileSnapshot,
     decode_profile: DecodeProfileSnapshot,
@@ -9598,6 +9653,7 @@ fn errored_item_run(request_id: RequestId, error: impl Into<String>) -> MlxItemR
         gemma4_unified_multimodal_telemetry: Gemma4UnifiedMultimodalTelemetry::default(),
         decode_telemetry: DecodeTelemetry::default(),
         gemma4_moe_profile: Gemma4MoeProfileSnapshot::default(),
+        moe_profile: MoeProfileSnapshot::default(),
         linear_attention_profile: LinearAttentionProfileSnapshot::default(),
         prefill_profile: PrefillProfileSnapshot::default(),
         decode_profile: DecodeProfileSnapshot::default(),

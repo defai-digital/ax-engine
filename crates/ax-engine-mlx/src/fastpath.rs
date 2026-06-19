@@ -525,20 +525,74 @@ env_flag_default_on!(
     "AX_MLX_MOE_FUSE_SHARED_EXPERT_ADD"
 );
 
-env_flag!(
-    /// `AX_MLX_QWEN3_MOE_NARROW_SOFTMAX` — opt-in narrow softmax for the Qwen3
-    /// MoE router. When enabled, the router does argpartition on raw logits to
-    /// find top-k indices, then applies `softmax_precise` only to the selected
-    /// top-k subset (matching the Gemma4 router pattern). This eliminates the
-    /// full-width softmax over all experts (128–256), reducing per-layer router
-    /// overhead on decode.
+env_flag_default_on!(
+    /// `AX_MLX_QWEN3_MOE_NARROW_SOFTMAX` — narrow softmax for the Qwen3
+    /// MoE router. The router does argpartition on raw logits to find top-k
+    /// indices, then applies `softmax_precise` only to the selected top-k
+    /// subset (matching the Gemma4 router pattern). This eliminates the
+    /// full-width softmax over all experts (128–512), reducing per-layer
+    /// router overhead on decode.
     ///
-    /// **Default: OFF**. With bf16 logits and many experts, tiny round-off in
-    /// bf16 can flip argpartition rankings vs softmax-then-argpartition
-    /// rankings. Validation against mlx-lm's `precise=True` reference is
-    /// required before default-on promotion.
+    /// **Default: ON** (kill-switch via `AX_MLX_QWEN3_MOE_NARROW_SOFTMAX=0`).
+    /// Promoted from opt-in after validation confirmed token-for-token
+    /// equivalence with the `precise=True` reference path.
     qwen3_moe_narrow_softmax_enabled,
     "AX_MLX_QWEN3_MOE_NARROW_SOFTMAX"
+);
+
+env_flag!(
+    /// `AX_MLX_MOE_PROFILE` — family-neutral MoE sub-stage profiling.
+    ///
+    /// **Default: OFF** (opt-in diagnostic). When enabled, the MoE expert
+    /// forward path records per-sub-stage wall times (router, gate_up,
+    /// activation, down, weighted_sum, shared_expert) into a dedicated
+    /// `MoeProfileSnapshot`. Unlike `AX_MLX_DECODE_PROFILE` which forces
+    /// blocking `eval()` at every stage and disables decode pipelining,
+    /// this flag records lightweight wall-clock deltas without forcing
+    /// evaluation barriers. Use for MoE-specific hotspot diagnosis.
+    moe_profile_enabled,
+    "AX_MLX_MOE_PROFILE"
+);
+
+env_flag_default_on!(
+    /// `AX_MLX_MOE_LAYER_COMPILE` — enable per-layer compiled MoE decode
+    /// closure.
+    ///
+    /// **Default: ON** (kill-switch via `AX_MLX_MOE_LAYER_COMPILE=0`).
+    /// Each MoE layer's decode forward path is wrapped in an `MlxClosure`
+    /// compiled via `mlx_compile` with `shapeless=true`. The compiled
+    /// closure is cached per `(layer_index, thread_id)` and reused across
+    /// decode steps, collapsing ~10 per-layer MLX dispatches into a single
+    /// compiled graph. Only engages for `seq == 1` (decode). Falls back to
+    /// the uncompiled path on compilation failure.
+    moe_layer_compile_enabled,
+    "AX_MLX_MOE_LAYER_COMPILE"
+);
+
+env_flag!(
+    /// `AX_MLX_MOE_FUSED_EXPERT_BLOCK` — enable fused MoE expert block
+    /// Metal kernel for decode.
+    ///
+    /// **Default: OFF** (opt-in). When the model is eligible (seq==1,
+    /// compatible dtype, unsorted gather), the activation + squeeze +
+    /// unsort chain is routed through a fused Metal kernel, reducing
+    /// dispatch count per MoE layer. Falls back to the standard dispatch
+    /// sequence when ineligible.
+    moe_fused_expert_block_enabled,
+    "AX_MLX_MOE_FUSED_EXPERT_BLOCK"
+);
+
+env_flag!(
+    /// `AX_MLX_MOE_EXPERT_PARALLEL` — enable expert-parallel Metal dispatch
+    /// for MoE prefill.
+    ///
+    /// **Default: OFF** (opt-in). When enabled and the prefill sequence
+    /// length is > 1, expert tokens are binned per-expert and the load-
+    /// balance is checked. Falls back to sequential `gather_qmm` when
+    /// the token distribution is highly skewed (max_bin > 2x mean_bin)
+    /// or the parallel kernel is not yet available.
+    moe_expert_parallel_enabled,
+    "AX_MLX_MOE_EXPERT_PARALLEL"
 );
 
 env_flag_default_on!(

@@ -75,6 +75,26 @@ pub struct PrefillProfileSnapshot {
     pub moe_shared_expert_wall_us: u32,
 }
 
+/// Family-neutral MoE sub-stage profiling snapshot.
+///
+/// Enabled via `AX_MLX_MOE_PROFILE=1`. Unlike `DecodeProfileSnapshot` which
+/// forces blocking `eval()` barriers at every stage, this snapshot records
+/// lightweight wall-clock deltas between existing evaluation points inside
+/// `moe_experts_forward_impl`. The ratios between sub-stages indicate where
+/// dispatch overhead dominates.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct MoeProfileSnapshot {
+    pub enabled: u32,
+    pub moe_layers: u32,
+    pub router_us: u32,
+    pub expert_gate_up_us: u32,
+    pub expert_activation_us: u32,
+    pub expert_down_us: u32,
+    pub weighted_sum_us: u32,
+    pub shared_expert_us: u32,
+    pub total_us: u32,
+}
+
 /// Per-section wall time for the single-token lazy decode path.
 ///
 /// Enabled via `AX_MLX_DECODE_PROFILE=1`.  Each stage timing forces a blocking
@@ -212,10 +232,12 @@ static GEMMA4_MOE_PROFILE: OnceLock<Mutex<Gemma4MoeProfileSnapshot>> = OnceLock:
 static LINEAR_ATTENTION_PROFILE: OnceLock<Mutex<LinearAttentionProfileSnapshot>> = OnceLock::new();
 static PREFILL_PROFILE: OnceLock<Mutex<PrefillProfileSnapshot>> = OnceLock::new();
 static DECODE_PROFILE: OnceLock<Mutex<DecodeProfileSnapshot>> = OnceLock::new();
+static MOE_PROFILE: OnceLock<Mutex<MoeProfileSnapshot>> = OnceLock::new();
 static GEMMA4_MOE_PROFILE_ENABLED: OnceLock<bool> = OnceLock::new();
 static LINEAR_ATTENTION_PROFILE_ENABLED: OnceLock<bool> = OnceLock::new();
 static PREFILL_PROFILE_ENABLED: OnceLock<bool> = OnceLock::new();
 static DECODE_PROFILE_ENABLED: OnceLock<bool> = OnceLock::new();
+static MOE_PROFILE_ENABLED: OnceLock<bool> = OnceLock::new();
 
 fn profile_env_enabled(cache: &'static OnceLock<bool>, name: &'static str) -> bool {
     *cache.get_or_init(|| {
@@ -245,6 +267,10 @@ pub(crate) fn decode_profile_enabled() -> bool {
     profile_env_enabled(&DECODE_PROFILE_ENABLED, "AX_MLX_DECODE_PROFILE")
 }
 
+pub(crate) fn moe_profile_enabled() -> bool {
+    profile_env_enabled(&MOE_PROFILE_ENABLED, "AX_MLX_MOE_PROFILE")
+}
+
 fn gemma4_moe_profile() -> &'static Mutex<Gemma4MoeProfileSnapshot> {
     GEMMA4_MOE_PROFILE.get_or_init(|| Mutex::new(Gemma4MoeProfileSnapshot::default()))
 }
@@ -259,6 +285,10 @@ fn prefill_profile() -> &'static Mutex<PrefillProfileSnapshot> {
 
 fn decode_profile() -> &'static Mutex<DecodeProfileSnapshot> {
     DECODE_PROFILE.get_or_init(|| Mutex::new(DecodeProfileSnapshot::default()))
+}
+
+fn moe_profile() -> &'static Mutex<MoeProfileSnapshot> {
+    MOE_PROFILE.get_or_init(|| Mutex::new(MoeProfileSnapshot::default()))
 }
 
 pub(super) fn saturating_profile_us(started: Instant) -> u32 {
@@ -463,6 +493,42 @@ pub(super) fn record_decode_profile_step(layers: u32) {
     profile.layers = profile.layers.saturating_add(layers);
 }
 
+#[derive(Clone, Copy)]
+#[allow(dead_code)]
+pub(crate) enum MoeProfileStage {
+    Router,
+    ExpertGateUp,
+    ExpertActivation,
+    ExpertDown,
+    WeightedSum,
+    SharedExpert,
+}
+
+pub(crate) fn record_moe_profile_layer() {
+    let mut profile = moe_profile().lock().unwrap();
+    profile.enabled = 1;
+    profile.moe_layers = profile.moe_layers.saturating_add(1);
+}
+
+pub(crate) fn record_moe_profile_stage(stage: MoeProfileStage, wall_us: u32) {
+    let mut profile = moe_profile().lock().unwrap();
+    profile.enabled = 1;
+    let target = match stage {
+        MoeProfileStage::Router => &mut profile.router_us,
+        MoeProfileStage::ExpertGateUp => &mut profile.expert_gate_up_us,
+        MoeProfileStage::ExpertActivation => &mut profile.expert_activation_us,
+        MoeProfileStage::ExpertDown => &mut profile.expert_down_us,
+        MoeProfileStage::WeightedSum => &mut profile.weighted_sum_us,
+        MoeProfileStage::SharedExpert => &mut profile.shared_expert_us,
+    };
+    *target = target.saturating_add(wall_us);
+}
+
+pub(crate) fn record_moe_profile_total(wall_us: u32) {
+    let mut profile = moe_profile().lock().unwrap();
+    profile.total_us = profile.total_us.saturating_add(wall_us);
+}
+
 pub(super) fn profile_eval_elapsed(
     enabled: bool,
     stage: Gemma4MoeProfileStage,
@@ -540,5 +606,12 @@ pub fn take_decode_profile_snapshot() -> DecodeProfileSnapshot {
     let mut profile = decode_profile().lock().unwrap();
     let snapshot = *profile;
     *profile = DecodeProfileSnapshot::default();
+    snapshot
+}
+
+pub fn take_moe_profile_snapshot() -> MoeProfileSnapshot {
+    let mut profile = moe_profile().lock().unwrap();
+    let snapshot = *profile;
+    *profile = MoeProfileSnapshot::default();
     snapshot
 }

@@ -6,6 +6,22 @@ tracked via Git tags and GitHub Releases.
 
 ## [Unreleased]
 
+## [6.5.2] - 2026-06-19
+
+### Added
+
+- **Qwen3-Coder-Next direct route** — native MLX inference support with narrow
+  softmax, per-layer compile, and fused MLP optimizations for the Qwen3 linear
+  attention family.
+
+### Changed
+
+- **Per-layer compile and fastpath improvements** — expanded fastpath coverage
+  and refined per-layer compile heuristics for better decode throughput across
+  supported model families.
+- **Benchmark charts** — added Qwen3-Coder-Next bandwidth, decode, prefill, and
+  TTFT charts with AX version annotations.
+
 ## [6.5.1] - 2026-06-18
 
 ### Changed

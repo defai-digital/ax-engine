@@ -31,6 +31,7 @@ AX Engine is for developers who want a local OpenAI-compatible model server on A
   - [Direct Decode · Prefill · TTFT](#direct-decode--prefill--ttft)
     - [DiffusionGemma](#diffusiongemma)
     - [Qwen3-Coder-Next](#qwen3-coder-next)
+      - [MoE Decode Optimizations](#moe-decode-optimizations)
 - [SDKs](#sdks)
 - [Server Usage](#server-usage)
 - [Workspace](#workspace)
@@ -304,7 +305,7 @@ AX Engine's public performance claims are scoped to benchmark artifacts that pre
 | Gemma 4 26B/31B assistant-MTP | 98.4%-99.5% accept rate; MTP+n-gram adds +1.0%-1.3% over pure MTP in the current matrix | Scoped; no public direct-speedup claim yet |
 | Qwen3.6 35B-A3B MTP | AX MTP is +76.4% vs MTPLX, and AX MTP+n-gram is +77.5% vs MTPLX on the sidecar-fair aggregate | Announcement-ready |
 | Qwen3.6 27B MTP | Mixed pure-MTP result; MTP+n-gram recovers to +2.1% vs MTPLX and +3.5% vs pure AX MTP | Opt-in / workload-dependent |
-| Qwen3-Coder-Next direct | AX direct decode is +16.3%-18.6% vs `mlx_lm` and +33.9%-37.7% vs shape-compatible llama.cpp Metal (`b9700`, flash-attn) at 128/512/2048 tokens | Scoped; direct-only |
+| Qwen3-Coder-Next direct | AX direct decode is +10.6%-13.1% vs `mlx_lm` and +27.6%-31.2% vs shape-compatible llama.cpp Metal (`b9700`, flash-attn) at 128/512/2048 tokens | Scoped; direct-only |
 | N-gram acceleration | Up to 3.1x `mlx_lm` decode throughput on high-hit benchmark rows without a second draft model | Workload-dependent |
 
 ## Supported Models
@@ -868,7 +869,7 @@ python3 scripts/bench_diffusion_gemma_direct.py
 
 Qwen3-Coder-Next is the coding-specialist `qwen3_next` checkpoint, so it is reported separately from Qwen 3.6. It uses the same repo-owned AX MLX graph family, but its benchmark boundary is different: it does **not** ship MTP heads or a Qwen3.6 sidecar, so the public README path is direct decode only.
 
-The direct comparison below uses grouped bar charts at 128/512/2048 prompt tokens. Each engine's version is printed on the charts: AX native MLX (`6.4.0`) and `mlx_lm` (`0.31.3`) use the MLX artifact and prompt-hash parity; llama.cpp Metal (`b9700`, ggml `0.15.2`, flash-attn on) is a shape-compatible external GGUF reference run on one consistent build across all three prompt sizes. AX direct decode is +18.6% / +16.3% / +18.1% versus `mlx_lm`, and +37.7% / +35.8% / +33.9% versus llama.cpp.
+The direct comparison below uses grouped bar charts at 128/512/2048 prompt tokens. Each engine's version is printed on the charts: AX native MLX (`6.5.1`) and `mlx_lm` (`0.31.3`) use the MLX artifact and prompt-hash parity; llama.cpp Metal (`b9700`, ggml `0.15.2`, flash-attn on) is a shape-compatible external GGUF reference run on one consistent build across all three prompt sizes. The AX rerun explicitly enables `AX_MLX_QWEN3_MOE_NARROW_SOFTMAX=1` and disables the experimental compiled-MoE path with `AX_MLX_MOE_LAYER_COMPILE=0`. AX direct decode is +13.1% / +10.6% / +12.7% versus `mlx_lm`, and +31.2% / +29.2% / +27.6% versus llama.cpp.
 
 <table>
 <tr>
@@ -880,31 +881,31 @@ The direct comparison below uses grouped bar charts at 128/512/2048 prompt token
 
 | Prompt tokens | llama.cpp decode | mlx_lm decode | AX direct decode | AX vs mlx_lm | AX vs llama.cpp |
 |---:|---:|---:|---:|---:|---:|
-| 128 | 85.5 | 99.2 | 117.7 | +18.6% | +37.7% |
-| 512 | 86.0 | 100.4 | 116.8 | +16.3% | +35.8% |
-| 2048 | 85.5 | 96.9 | 114.5 | +18.1% | +33.9% |
+| 128 | 85.5 | 99.2 | 112.2 | +13.1% | +31.2% |
+| 512 | 86.0 | 100.4 | 111.1 | +10.6% | +29.2% |
+| 2048 | 85.5 | 96.9 | 109.2 | +12.7% | +27.6% |
 
 **Prefill and TTFT peers — same run:**
 
 | Prompt tokens | llama.cpp prefill | mlx_lm prefill | AX direct prefill | llama.cpp TTFT | mlx_lm TTFT | AX direct TTFT |
 |---:|---:|---:|---:|---:|---:|---:|
-| 128 | 1,248.7 | 301.8 | 796.7 | 103 ms | 426 ms | 161 ms |
-| 512 | 2,148.3 | 897.2 | 1,753.9 | 238 ms | 574 ms | 292 ms |
-| 2048 | 2,555.1 | 2,226.9 | 2,542.1 | 802 ms | 920 ms | 806 ms |
+| 128 | 1,248.7 | 301.8 | 794.1 | 103 ms | 426 ms | 161 ms |
+| 512 | 2,148.3 | 897.2 | 1,748.4 | 238 ms | 574 ms | 293 ms |
+| 2048 | 2,555.1 | 2,226.9 | 2,539.9 | 802 ms | 920 ms | 806 ms |
 
-> llama.cpp leads prefill/TTFT at every prompt size (flash-attn GGUF prompt ingestion). v6.4.0's MoE decode optimization traded a little prefill/TTFT (−1% to −3% vs v6.3.4), so AX no longer edges llama at 2048 — the two now converge there (AX 2,542 vs llama 2,555 tok/s prefill; 806 vs 802 ms TTFT, within ~1%). The AX decode advantage still holds at every size.
+> llama.cpp leads prefill/TTFT at every prompt size (flash-attn GGUF prompt ingestion). The v6.5.1 AX rerun stays close at 2048 (AX 2,540 vs llama 2,555 tok/s prefill; 806 vs 802 ms TTFT, within ~1%) while keeping the AX decode advantage at every size.
 
-> **What drives the decode gap (it is not bandwidth saturation).** This is a runtime shootout at each engine's standard 4-bit, not a controlled kernel test. Qwen3-Coder-Next is MoE, so each decode token reads only the dense backbone plus the 10-of-512 active experts — and at that footprint **none of the three engines is bandwidth-bound** (all sit at 34–42% of the 577 GB/s M5 Max peak; see the bandwidth table below). The gap splits cleanly: **AX beats llama.cpp on bytes-read** — Q4_K_M reads **~1.44× the bytes/token** (2.83 vs 1.96 GB) because its dense backbone (linear-attention/SSM, embeddings, output head) stays at higher precision; llama.cpp actually sustains the *most* bandwidth (~42%) yet is slowest. **AX beats mlx_lm on kernel efficiency** — identical 1.96 GB/token MLX weights, but AX extracts ~40% of peak vs mlx-lm's ~34% (the MoE gather-GEMV win). The parity-controlled claim is **AX vs mlx_lm** (identical weights, prompt-hash parity): +16.3%–18.6%; llama-bench consumes its own internal tokens (no prompt-hash parity), so the llama.cpp column is a shape-compatible external reference only.
+> **What drives the decode gap (it is not bandwidth saturation).** This is a runtime shootout at each engine's standard 4-bit, not a controlled kernel test. Qwen3-Coder-Next is MoE, so each decode token reads only the dense backbone plus the 10-of-512 active experts — and at that footprint **none of the three engines is bandwidth-bound** (all sit at 34–42% of the 577 GB/s M5 Max peak; see the bandwidth table below). The gap splits cleanly: **AX beats llama.cpp on bytes-read** — Q4_K_M reads **~1.44× the bytes/token** (2.83 vs 1.96 GB) because its dense backbone (linear-attention/SSM, embeddings, output head) stays at higher precision; llama.cpp actually sustains the *most* bandwidth (~42%) yet is slowest. **AX beats mlx_lm on kernel efficiency** — identical 1.96 GB/token MLX weights, but AX extracts ~38% of peak vs mlx-lm's ~34% (the MoE gather-GEMV win). The parity-controlled claim is **AX vs mlx_lm** (identical weights, prompt-hash parity): +10.6%–13.1%; llama-bench consumes its own internal tokens (no prompt-hash parity), so the llama.cpp column is a shape-compatible external reference only.
 
 **Memory bandwidth utilization:**
 
-Decode speed follows one identity: **tok/s = effective bandwidth ÷ bytes read per token**. The chart below plots decode throughput (y) against weight bytes read per token (x), with the measured M5 Max peak (≈577 GB/s, MLX reduction probe) drawn as the ceiling curve `tok/s = 577 / bytes`. It reads in one view: AX and mlx-lm share the same x (identical MLX 4-bit weights), so the vertical gap between them is **pure kernel efficiency** (+19%, AX's MoE gather-GEMV); llama.cpp is pushed right because **Q4_K_M reads 1.44× the bytes/token**, which is why it decodes slowest even though it sustains the most raw bandwidth; and every point sits far below the ceiling, so **decode is gather/dispatch-bound, not bandwidth-bound** — the room up to the curve is headroom.
+Decode speed follows one identity: **tok/s = effective bandwidth ÷ bytes read per token**. The chart below plots decode throughput (y) against weight bytes read per token (x), with the measured M5 Max peak (≈577 GB/s, MLX reduction probe) drawn as the ceiling curve `tok/s = 577 / bytes`. It reads in one view: AX and mlx-lm share the same x (identical MLX 4-bit weights), so the vertical gap between them is **pure kernel efficiency** (+13%, AX's MoE gather-GEMV); llama.cpp is pushed right because **Q4_K_M reads 1.44× the bytes/token**, which is why it decodes slowest even though it sustains the most raw bandwidth; and every point sits far below the ceiling, so **decode is gather/dispatch-bound, not bandwidth-bound** — the room up to the curve is headroom.
 
-<img src="docs/assets/perf-qwen-coder-next-bandwidth.svg" alt="Scatter plot of Qwen3-Coder-Next 4-bit MoE decode: x-axis is weight bytes read per token, y-axis is decode tok/s, with the 577 GB/s bandwidth ceiling as a curve. AX (1.96 GB/token, 117.7 tok/s, 40% of peak) and mlx-lm (1.96 GB/token, 99.2 tok/s, 34%) share the same x, so the vertical gap is kernel efficiency; llama.cpp (2.83 GB/token, 85.5 tok/s, 42%) is shifted right because Q4_K_M reads 1.44x the bytes per token and decodes slowest. All three sit far below the ceiling, so decode is gather-bound, not bandwidth-bound.">
+<img src="docs/assets/perf-qwen-coder-next-bandwidth.svg" alt="Scatter plot of Qwen3-Coder-Next 4-bit MoE decode: x-axis is weight bytes read per token, y-axis is decode tok/s, with the 577 GB/s bandwidth ceiling as a curve. AX (1.96 GB/token, 112.2 tok/s, 38% of peak) and mlx-lm (1.96 GB/token, 99.2 tok/s, 34%) share the same x, so the vertical gap is kernel efficiency; llama.cpp (2.83 GB/token, 85.5 tok/s, 42%) is shifted right because Q4_K_M reads 1.44x the bytes per token and decodes slowest. All three sit far below the ceiling, so decode is gather-bound, not bandwidth-bound.">
 
 | Engine / quantization | Dense backbone | Active experts | Weights/token | Decode tok/s | Effective BW | % of 577 GB/s peak (used) |
 |---|---:|---:|---:|---:|---:|---:|
-| AX — MLX 4-bit | 1.21 GB (25%) | 0.76 GB (15%) | 1.96 GB | 117.7 | 231 GB/s | 40% |
+| AX — MLX 4-bit | 1.21 GB (24%) | 0.76 GB (15%) | 1.96 GB | 112.2 | 220 GB/s | 38% |
 | mlx-lm — MLX 4-bit | 1.21 GB (21%) | 0.76 GB (13%) | 1.96 GB | 99.2 | 195 GB/s | 34% |
 | llama.cpp — Q4_K_M | 1.91 GB (28%) | 0.91 GB (14%) | 2.83 GB | 85.5 | 242 GB/s | 42% |
 
@@ -912,14 +913,15 @@ Decode speed follows one identity: **tok/s = effective bandwidth ÷ bytes read p
 
 AX and mlx-lm read the **same** 1.96 GB of active weights per token (identical MLX 4-bit artifact); AX is faster because it extracts more of the available bandwidth — a runtime/kernel win, not a quant difference. llama.cpp reads **1.44× more** (2.83 GB) because Q4_K_M keeps the dense backbone — Qwen3-Next's linear-attention/SSM weights, token embeddings, and output head — at higher precision; that bytes-read overhead, not bandwidth starvation, is why its decode trails. Active-byte figures: MLX from the harness `bandwidth_accounting` (`moe_active_estimate`), llama.cpp computed from the GGUF tensor table (`dense + routed × 10/512`, the same formula). Rows are prompt=128; decode tok/s is essentially depth-independent for this model.
 
-The same chart also shows the remaining AX headroom. If AX kept the 1.96 GB/token footprint and merely matched llama.cpp's 42% effective-bandwidth row, decode would land around 124 tok/s (+8%); on **dense** models on this same M5 Max hardware AX reaches **78–86% of peak**, so the ~40-point gap here is specific to batch-1 MoE decode, where each token gathers only 10-of-512 experts and fixed routing, gather setup, dispatch, dequant, and expert weighted-sum overhead dominate costs that do not scale with bytes read (the bus idles while dispatch runs). The next lever is therefore **kernel/dispatch engineering** — fewer and larger fused MoE operations such as batched expert dispatch and deeper gather+GEMV+weighted-sum fusion — **not** pushing quantization lower (AX already reads the fewest bytes of the three; going lower would cost model quality). This is an upper bound, not a commitment: single-token MoE decode is latency-bound at its core.
+The same chart also shows the remaining AX headroom. If AX kept the 1.96 GB/token footprint and merely matched llama.cpp's 42% effective-bandwidth row, decode would land around 124 tok/s (+10%); on **dense** models on this same M5 Max hardware AX reaches **78–86% of peak**, so the ~40-point gap here is specific to batch-1 MoE decode, where each token gathers only 10-of-512 experts and fixed routing, gather setup, dispatch, dequant, and expert weighted-sum overhead dominate costs that do not scale with bytes read (the bus idles while dispatch runs). The next lever is therefore **kernel/dispatch engineering** — fewer and larger fused MoE operations such as batched expert dispatch and deeper gather+GEMV+weighted-sum fusion — **not** pushing quantization lower (AX already reads the fewest bytes of the three; going lower would cost model quality). This is an upper bound, not a commitment: single-token MoE decode is latency-bound at its core.
 
-Artifacts: AX direct rows are the v6.4.0 (`29af647f`) rerun [`2026-06-14-qwen3-coder-next-29af647f-ax-direct/qwen3-coder-next-4bit-ax-direct.json`](benchmarks/results/mlx-inference/2026-06-14-qwen3-coder-next-29af647f-ax-direct/qwen3-coder-next-4bit-ax-direct.json); `mlx_lm` reference rows are [`qwen3-coder-next-4bit-p128-p2048-step4096.json`](benchmarks/results/mlx-inference/2026-06-13-qwen3-coder-next-prefill-probe/qwen3-coder-next-4bit-p128-p2048-step4096.json) and [`qwen3-coder-next-4bit-p512-step4096.json`](benchmarks/results/mlx-inference/2026-06-13-qwen3-coder-next-prefill-probe/qwen3-coder-next-4bit-p512-step4096.json); llama.cpp is [`2026-06-19-qwen3-coder-next-9700-fa/qwen3-coder-next-4bit.json`](benchmarks/results/llama-cpp-metal/2026-06-19-qwen3-coder-next-9700-fa/qwen3-coder-next-4bit.json) (`b9700` / ggml `0.15.2` / flash-attn, one build across 128/512/2048).
+Artifacts: AX direct rows are the v6.5.1 rerun [`2026-06-19-qwen3-coder-next-ax-only/qwen3-coder-next-4bit-ax-direct.json`](benchmarks/results/mlx-inference/2026-06-19-qwen3-coder-next-ax-only/qwen3-coder-next-4bit-ax-direct.json), with `AX_MLX_QWEN3_MOE_NARROW_SOFTMAX=1` and `AX_MLX_MOE_LAYER_COMPILE=0`; `mlx_lm` reference rows are [`qwen3-coder-next-4bit-p128-p2048-step4096.json`](benchmarks/results/mlx-inference/2026-06-13-qwen3-coder-next-prefill-probe/qwen3-coder-next-4bit-p128-p2048-step4096.json) and [`qwen3-coder-next-4bit-p512-step4096.json`](benchmarks/results/mlx-inference/2026-06-13-qwen3-coder-next-prefill-probe/qwen3-coder-next-4bit-p512-step4096.json); llama.cpp is [`2026-06-19-qwen3-coder-next-9700-fa/qwen3-coder-next-4bit.json`](benchmarks/results/llama-cpp-metal/2026-06-19-qwen3-coder-next-9700-fa/qwen3-coder-next-4bit.json) (`b9700` / ggml `0.15.2` / flash-attn, one build across 128/512/2048).
 
 Render charts with:
 
 ```bash
 python3 scripts/render_qwen_coder_next_charts.py \
+  --artifact benchmarks/results/mlx-inference/2026-06-19-qwen3-coder-next-ax-only/qwen3-coder-next-4bit-ax-direct.json \
   --artifact benchmarks/results/mlx-inference/2026-06-14-qwen3-coder-next-29af647f-ax-direct/qwen3-coder-next-4bit-ax-direct.json \
   --artifact benchmarks/results/mlx-inference/2026-06-13-qwen3-coder-next-prefill-probe/qwen3-coder-next-4bit-p128-p2048-step4096.json \
   --artifact benchmarks/results/mlx-inference/2026-06-13-qwen3-coder-next-prefill-probe/qwen3-coder-next-4bit-p512-step4096.json \
@@ -929,6 +931,36 @@ python3 scripts/render_qwen_coder_next_charts.py \
 # Memory-bandwidth utilization chart (static data; see script header for provenance)
 python3 scripts/render_qwen_coder_next_bandwidth_chart.py --assets-dir docs/assets
 ```
+
+**<a id="moe-decode-optimizations"></a>MoE decode optimizations:**
+
+Qwen3-Coder-Next uses a sparse top-10-of-512 MoE architecture, so each decode token reads only the dense backbone plus 10 active experts. The optimizations below reduce the per-layer dispatch overhead in the MoE expert forward path. Two are **on by default** (with kill-switches); the others are opt-in for benchmarking and development.
+
+| Environment variable | What it does | Default |
+|---|---|---|
+| `AX_MLX_QWEN3_MOE_NARROW_SOFTMAX` | Routes MoE expert selection through `argpartition` on raw logits instead of full `softmax_precise` over all 512 experts. Mathematically equivalent (argpartition preserves top-k order since softmax is monotonic). | **ON** |
+| `AX_MLX_MOE_LAYER_COMPILE` | Wraps each MoE layer's decode forward path in a compiled `MlxClosure` (`shapeless=true`), collapsing ~10 per-layer MLX dispatches into a single compiled graph. Cached per `(layer_index, thread_id)`. Only engages for decode (`seq == 1`). Falls back to the uncompiled path on failure. | **ON** |
+| `AX_MLX_MOE_PROFILE` | Records wall-clock timing for each MoE sub-stage (router, gate-up, activation, down-projection, weighted-sum, total) without `eval()` barriers. Data surfaces in route metadata and batch summaries. Diagnostic tool, not a performance optimization. | OFF |
+| `AX_MLX_MOE_FUSED_EXPERT_BLOCK` | Routes the activation + squeeze + unsort chain through a single fused Metal kernel for decode (unsorted gather path only). Reduces dispatch count per MoE layer. Falls back to the standard dispatch when ineligible. | OFF |
+| `AX_MLX_MOE_EXPERT_PARALLEL` | Bins expert tokens per-expert for parallel Metal dispatch during prefill. Checks load-balance before engaging (falls back to sequential `gather_qmm` when `max_bin > 2x mean_bin`). Infrastructure only — parallel kernel not yet implemented. | OFF |
+
+To disable a default-on optimization (e.g. for debugging or comparison):
+
+```bash
+# Disable compiled closure for a single run
+AX_MLX_MOE_LAYER_COMPILE=0 ax-engine serve qwen3-coder-next --download --port 8080
+```
+
+To enable all experimental optimizations for benchmarking:
+
+```bash
+AX_MLX_MOE_PROFILE=1 \
+AX_MLX_MOE_FUSED_EXPERT_BLOCK=1 \
+AX_MLX_MOE_EXPERT_PARALLEL=1 \
+ax-engine serve qwen3-coder-next --download --port 8080
+```
+
+These flags are read once per process at startup. Do not enable the opt-in flags in production serving without first verifying output token equivalence against the default path on your target prompts.
 
 <!-- readme-performance-artifacts: reference=benchmarks/results/mlx-inference/2026-05-26-direct-mode-clean-refresh/; ax-overlay=benchmarks/results/mlx-inference/2026-06-04-ax-direct-ngram-readme-rerun/ -->
 

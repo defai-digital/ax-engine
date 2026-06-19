@@ -1,4 +1,4 @@
-use mlx_sys::{MlxArray, add, rms_norm, slice};
+use mlx_sys::{MlxArray, MlxVectorArray, add, rms_norm, slice};
 use std::time::Instant;
 
 use super::super::ModelConfig;
@@ -7,10 +7,12 @@ use super::super::profile::{
     prefill_profile_enabled,
 };
 use super::super::shared::{
-    ffn_swiglu, linear_attention_forward, moe_experts_forward, moe_experts_forward_with_shared,
-    moe_router_qwen3, rms_norm_opt, shared_expert_forward,
+    ffn_swiglu, linear_attention_forward, moe_experts_forward,
+    moe_experts_forward_with_cloned_weights, moe_experts_forward_with_shared, moe_router_qwen3,
+    rms_norm_opt, shared_expert_forward,
 };
 use crate::kv_cache::MlxKVCache;
+use crate::per_layer_compile::apply_layer_moe_decode;
 use crate::weights::LayerWeights;
 
 /// Full layer forward for Qwen3.5/Qwen3Next linear-attention layers.
@@ -105,7 +107,46 @@ pub(crate) fn layer_forward(
                 );
             }
         }
-        if let Some(shared) = &shared_out {
+        // Try compiled MoE decode closure (gated by AX_MLX_MOE_LAYER_COMPILE=1).
+        // The closure captures only the expert weight tensors (cheap MlxArray
+        // refcount clones) and compiles the entire MoE expert forward into a
+        // single graph, collapsing ~10 dispatches per layer into one.
+        let compiled_result = if seq == 1 {
+            let cfg_clone = cfg.clone();
+            let gu_packed = w.gate_up_exps_packed.clone();
+            let g_exps = w.gate_exps.clone();
+            let u_exps = w.up_exps.clone();
+            let d_exps = w.down_exps.clone();
+            let shared_clone = shared_out.clone();
+            apply_layer_moe_decode(
+                layer_idx,
+                &normed2,
+                &top_k_indices,
+                &top_k_weights,
+                move |inputs: &MlxVectorArray| {
+                    let hidden = inputs.get(0);
+                    let indices = inputs.get(1);
+                    let weights = inputs.get(2);
+                    vec![moe_experts_forward_with_cloned_weights(
+                        &cfg_clone,
+                        &hidden,
+                        &indices,
+                        &weights,
+                        gu_packed.clone(),
+                        g_exps.clone(),
+                        u_exps.clone(),
+                        d_exps.clone(),
+                        shared_clone.clone(),
+                    )]
+                },
+            )
+        } else {
+            None
+        };
+
+        if let Some(result) = compiled_result {
+            result.into_iter().next().unwrap()
+        } else if let Some(shared) = &shared_out {
             moe_experts_forward_with_shared(
                 cfg,
                 w,

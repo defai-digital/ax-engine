@@ -41,6 +41,14 @@ use mlx_sys::{MlxArray, MlxClosure, MlxVectorArray};
 static LAYER_DECODE_CACHE: OnceLock<Mutex<HashMap<(usize, ThreadId), MlxClosure>>> =
     OnceLock::new();
 
+/// Per-layer MoE decode closure cache.
+///
+/// Maps `(layer_index, thread_id)` to a compiled closure that performs
+/// a single MoE layer's decode step (router output → expert forward →
+/// weighted sum). Inputs are `(hidden, top_k_indices, top_k_weights)`.
+static LAYER_MOE_DECODE_CACHE: OnceLock<Mutex<HashMap<(usize, ThreadId), MlxClosure>>> =
+    OnceLock::new();
+
 /// Apply a per-layer decode closure, compiling it on first use.
 ///
 /// The closure takes:
@@ -96,6 +104,68 @@ pub fn clear_layer_decode_cache() {
     }
 }
 
+/// Apply a compiled MoE decode closure for a single layer.
+///
+/// The closure takes:
+/// - `inputs[0]`: hidden state `[1, 1, hidden_dim]`
+/// - `inputs[1]`: top_k_indices `[1, 1, top_k]` (u32)
+/// - `inputs[2]`: top_k_weights `[1, 1, top_k]` (bf16/f16)
+///
+/// And returns:
+/// - `outputs[0]`: updated hidden state `[1, 1, hidden_dim]`
+///
+/// The compiled closure is cached per `(layer_index, thread_id)` and reused
+/// across decode steps. `shapeless=true` is safe because hidden dim and top_k
+/// are constant per model; the only varying dimension (seq) is always 1 in
+/// decode.
+///
+/// Gated by `AX_MLX_MOE_LAYER_COMPILE=1`. Returns `None` when the flag is
+/// off, compilation fails, or the closure cannot be applied.
+pub fn apply_layer_moe_decode(
+    layer_index: usize,
+    hidden: &MlxArray,
+    top_k_indices: &MlxArray,
+    top_k_weights: &MlxArray,
+    moe_fn: impl Fn(&MlxVectorArray) -> Vec<MlxArray> + Send + 'static,
+) -> Option<Vec<MlxArray>> {
+    if !crate::fastpath::moe_layer_compile_enabled() {
+        return None;
+    }
+    let cache = LAYER_MOE_DECODE_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let tid = std::thread::current().id();
+
+    let guard = cache.lock().ok()?;
+    if let Some(closure) = guard.get(&(layer_index, tid)) {
+        return closure
+            .try_apply(&[hidden, top_k_indices, top_k_weights])
+            .ok();
+    }
+    drop(guard);
+
+    let mut guard = cache.lock().ok()?;
+    if let std::collections::hash_map::Entry::Vacant(slot) = guard.entry((layer_index, tid)) {
+        let closure = MlxClosure::new_dyn(moe_fn);
+        if let Ok(compiled) = closure.compile(true) {
+            let result = compiled
+                .try_apply(&[hidden, top_k_indices, top_k_weights])
+                .ok();
+            slot.insert(compiled);
+            return result;
+        }
+    }
+
+    None
+}
+
+/// Clear the per-layer MoE decode closure cache.
+pub fn clear_layer_moe_decode_cache() {
+    if let Some(cache) = LAYER_MOE_DECODE_CACHE.get()
+        && let Ok(mut guard) = cache.lock()
+    {
+        guard.clear();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -103,5 +173,10 @@ mod tests {
     #[test]
     fn test_clear_cache_does_not_panic() {
         clear_layer_decode_cache();
+    }
+
+    #[test]
+    fn test_clear_moe_cache_does_not_panic() {
+        clear_layer_moe_decode_cache();
     }
 }

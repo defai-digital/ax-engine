@@ -20,8 +20,9 @@ pub(crate) use mla::glm_mla_attention_forward;
 pub(crate) use mlp::per_layer_input_gate;
 pub(crate) use mlp::{
     attention_output_projection, ffn_swiglu, moe_experts_forward, moe_experts_forward_gemma4,
-    moe_experts_forward_with_shared, moe_router_deepseek_v3, moe_router_gemma4, moe_router_glm,
-    moe_router_qwen3, per_layer_input_gate_project, qkv_project, shared_expert_forward,
+    moe_experts_forward_with_cloned_weights, moe_experts_forward_with_shared,
+    moe_router_deepseek_v3, moe_router_gemma4, moe_router_glm, moe_router_qwen3,
+    per_layer_input_gate_project, qkv_project, shared_expert_forward,
 };
 pub(crate) use norm::rms_norm_opt;
 pub(super) use rope::build_llama3_rope_freqs;

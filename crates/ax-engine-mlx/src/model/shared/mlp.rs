@@ -13,8 +13,9 @@ use crate::weights::{LayerWeights, QuantizedWeight};
 
 use super::super::config::{GlmRouterConfig, ModelConfig};
 use super::super::profile::{
-    DecodeProfileStage, decode_profile_enabled, forward_profile_eval_elapsed,
-    prefill_profile_enabled,
+    DecodeProfileStage, MoeProfileStage, decode_profile_enabled, forward_profile_eval_elapsed,
+    moe_profile_enabled, prefill_profile_enabled, record_moe_profile_layer,
+    record_moe_profile_stage, record_moe_profile_total, saturating_profile_us,
 };
 use super::utils::{
     mlx_slice_last_dim, qkv_slices, qw, qw_gather, scalar_like, scale_hidden, shape_element_count,
@@ -708,6 +709,130 @@ fn packed_glu_metal_impl(
             KernelTemplateArg::Int {
                 name: "ElementCount",
                 value: element_count,
+            },
+        ],
+        (element_count, 1, 1),
+        (256, 1, 1),
+        None,
+    );
+    outputs.pop()
+}
+
+// ---------------------------------------------------------------------------
+// D2: Fused MoE expert block kernel — decode-only.
+//
+// Fuses activation (SwiGLU/GeGLU) + squeeze + unsort into a single Metal
+// dispatch.  Replaces the chain: packed_swiglu_metal_impl →
+// squeeze_switch_singleton → gather_inputs.unsort() with one kernel call.
+// The output is the hidden tensor in original (unsorted) expert order,
+// ready for the down-projection gather_qmm or the weighted-sum kernel.
+// ---------------------------------------------------------------------------
+
+static MOE_FUSED_ACTIVATION_UNSORT_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
+
+const MOE_FUSED_ACTIVATION_UNSORT_KERNEL_SOURCE: &str = r#"
+    uint idx = thread_position_in_grid.x;
+    if (idx >= ElementCount) {
+        return;
+    }
+
+    // Layout: out[original_k][d] where idx = original_k * HiddenDim + d.
+    uint hidden_idx = idx % HiddenDim;
+    uint orig_k = idx / HiddenDim;
+
+    // Map original expert position → sorted position via inv_order.
+    uint sorted_k = inv_order[orig_k];
+
+    // Read gate and up from the packed gate_up output at sorted position.
+    uint gate_up_base = sorted_k * TwoExpertSize;
+    float gate_v = static_cast<float>(gate_up[gate_up_base + hidden_idx]);
+    float up_v = static_cast<float>(gate_up[gate_up_base + HiddenDim + hidden_idx]);
+
+    float activated;
+#if USE_GEGLU
+    // GeGLU: gelu_approx(gate) * up.
+    float gate2 = gate_v * gate_v;
+    float gate3 = gate2 * gate_v;
+    float cubic = 0.044715f * gate3;
+    float inner = gate_v + cubic;
+    float scaled = 0.7978846f * inner;
+    float t = tanh(scaled);
+    activated = (0.5f * gate_v * (1.0f + t)) * up_v;
+#else
+    // SwiGLU: silu(gate) * up.
+    float sigmoid = 1.0f / (1.0f + exp(-gate_v));
+    activated = (gate_v * sigmoid) * up_v;
+#endif
+
+    out[idx] = static_cast<OutT>(activated);
+"#;
+
+/// Fused activation + squeeze + unsort for MoE decode (seq==1).
+///
+/// Takes the packed gate_up output `[1, 1, TopK_sorted, 2*ExpertSize]` and
+/// produces the hidden state `[1, 1, TopK_original, ExpertSize]` with the
+/// activation (SwiGLU or GeGLU) applied and the expert positions unsorted
+/// back to their original order. Eliminates 3 separate dispatches.
+fn moe_fused_activation_unsort_metal(
+    gate_up_out: &MlxArray,
+    inv_order: &MlxArray,
+    hidden_dim: i32,
+    top_k: i32,
+    output_dtype: MlxDtype,
+    uses_geglu: bool,
+) -> Option<MlxArray> {
+    if !matches!(
+        gate_up_out.dtype(),
+        MlxDtype::Bfloat16 | MlxDtype::Float16 | MlxDtype::Float32
+    ) || !matches!(
+        output_dtype,
+        MlxDtype::Bfloat16 | MlxDtype::Float16 | MlxDtype::Float32
+    ) {
+        return None;
+    }
+    if hidden_dim <= 0 || top_k <= 0 {
+        return None;
+    }
+    let element_count = top_k.checked_mul(hidden_dim)?;
+
+    let two_expert_size = hidden_dim.checked_mul(2)?;
+
+    let kernel = MOE_FUSED_ACTIVATION_UNSORT_KERNEL.get_or_init(|| {
+        MlxMetalKernel::new(
+            "ax_moe_fused_activation_unsort_v1",
+            &["gate_up", "inv_order"],
+            &["out"],
+            MOE_FUSED_ACTIVATION_UNSORT_KERNEL_SOURCE,
+            "",
+            true,
+        )
+    });
+    let mut outputs = kernel.apply_with_template(
+        &[gate_up_out, inv_order],
+        &[KernelOutputSpec {
+            shape: vec![1, 1, top_k, hidden_dim],
+            dtype: output_dtype,
+        }],
+        &[
+            KernelTemplateArg::Dtype {
+                name: "OutT",
+                dtype: output_dtype,
+            },
+            KernelTemplateArg::Int {
+                name: "HiddenDim",
+                value: hidden_dim,
+            },
+            KernelTemplateArg::Int {
+                name: "TwoExpertSize",
+                value: two_expert_size,
+            },
+            KernelTemplateArg::Int {
+                name: "ElementCount",
+                value: element_count,
+            },
+            KernelTemplateArg::Bool {
+                name: "USE_GEGLU",
+                value: uses_geglu,
             },
         ],
         (element_count, 1, 1),
@@ -1665,6 +1790,167 @@ pub(crate) fn moe_experts_forward_gemma4(
     )
 }
 
+/// Standalone MoE expert forward using individually captured weight tensors.
+///
+/// Used by the per-layer MoE compiled closure (`apply_layer_moe_decode`) where
+/// full `LayerWeights` cannot be captured (it is not `Clone`). The caller
+/// clones only the expert weight tensors into this function.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn moe_experts_forward_with_cloned_weights(
+    cfg: &ModelConfig,
+    x: &MlxArray,
+    top_k_indices: &MlxArray,
+    top_k_weights: &MlxArray,
+    gate_up_exps_packed: Option<QuantizedWeight>,
+    gate_exps: Option<QuantizedWeight>,
+    up_exps: Option<QuantizedWeight>,
+    down_exps: Option<QuantizedWeight>,
+    shared_expert_out: Option<MlxArray>,
+) -> MlxArray {
+    let w = LayerWeights {
+        attn_norm: x.clone(),
+        attn_post_norm: None,
+        q_norm: None,
+        k_norm: None,
+        q_proj: None,
+        k_proj: None,
+        v_proj: None,
+        qkv_packed: None,
+        o_proj: None,
+        linear_attn: None,
+        glm_mla_attn: None,
+        ffn_norm: x.clone(),
+        ffn_post_norm: None,
+        gate_proj: None,
+        up_proj: None,
+        gate_up_packed: None,
+        down_proj: None,
+        ffn_norm2: None,
+        ffn_post_norm1: None,
+        ffn_post_norm2: None,
+        router_proj: None,
+        router_correction_bias: None,
+        router_scale: None,
+        router_combined_scale: None,
+        router_expert_scale: None,
+        layer_scalar: None,
+        per_layer_gate: None,
+        per_layer_proj_w: None,
+        per_layer_post_norm: None,
+        shared_expert_gate: None,
+        shared_gate_up_proj: None,
+        shared_gate_proj: None,
+        shared_up_proj: None,
+        shared_down_proj: None,
+        gate_up_exps_packed,
+        gate_exps,
+        up_exps,
+        down_exps,
+        rotation_smoothing_inverse: None,
+    };
+    moe_experts_forward_impl(
+        cfg,
+        &w,
+        x,
+        top_k_indices,
+        top_k_weights,
+        None,
+        shared_expert_out.as_ref(),
+    )
+}
+
+// ---------------------------------------------------------------------------
+// D3: Expert-Parallel dispatch infrastructure for MoE prefill.
+//
+// Pre-computes a per-expert token assignment (bin plan) so the expert FFN
+// can be dispatched in parallel across GPU threadgroups instead of
+// sequentially through gather_qmm.
+// ---------------------------------------------------------------------------
+
+/// Per-expert token assignment for parallel MoE dispatch.
+#[allow(dead_code)]
+struct ExpertBinPlan {
+    /// Number of tokens assigned to each expert.
+    bin_sizes: Vec<usize>,
+    /// Maximum tokens assigned to any single expert.
+    max_bin_size: usize,
+    /// Mean tokens per active expert (total_assignments / active_experts).
+    mean_bin_size: f64,
+    /// Number of experts that received at least one token.
+    active_experts: usize,
+}
+
+/// Build a per-expert token bin plan from the MoE routing output.
+///
+/// For each token, `top_k_indices` specifies which experts are selected.
+/// This function counts how many tokens are assigned to each expert and
+/// computes load-balance statistics.
+fn build_expert_bins(top_k_indices: &MlxArray, n_experts: usize) -> Option<ExpertBinPlan> {
+    let shape = top_k_indices.shape();
+    let total_tokens = shape
+        .iter()
+        .take(shape.len().saturating_sub(1))
+        .product::<i32>() as usize;
+    let top_k = *shape.last()? as usize;
+    if total_tokens == 0 || top_k == 0 || n_experts == 0 {
+        return None;
+    }
+    let flat_size = total_tokens * top_k;
+    // Ensure the array is Uint32 before calling data_u32(); convert if needed.
+    let u32_indices: MlxArray;
+    let indices_ref: &MlxArray = if top_k_indices.dtype() == MlxDtype::Uint32 {
+        top_k_indices
+    } else {
+        u32_indices = astype(top_k_indices, MlxDtype::Uint32, None);
+        &u32_indices
+    };
+    let indices = indices_ref.data_u32();
+    if indices.len() < flat_size {
+        return None;
+    }
+    let mut bin_sizes = vec![0_usize; n_experts];
+    for &expert_id in &indices[..flat_size] {
+        let eid = expert_id as usize;
+        if eid < n_experts {
+            bin_sizes[eid] += 1;
+        }
+    }
+    let active_experts = bin_sizes.iter().filter(|&&s| s > 0).count();
+    let max_bin_size = *bin_sizes.iter().max().unwrap_or(&0);
+    let total_assignments = total_tokens * top_k;
+    let mean_bin_size = if active_experts > 0 {
+        total_assignments as f64 / active_experts as f64
+    } else {
+        0.0
+    };
+    Some(ExpertBinPlan {
+        bin_sizes,
+        max_bin_size,
+        mean_bin_size,
+        active_experts,
+    })
+}
+
+/// Check whether the expert-parallel dispatch should be used for this prefill.
+///
+/// Returns true when the flag is on, seq > 1, and the token distribution
+/// is balanced enough for parallel dispatch (max_bin <= 2x mean_bin).
+fn expert_parallel_eligible(
+    seq: usize,
+    top_k_indices: &MlxArray,
+    n_experts: usize,
+) -> Option<ExpertBinPlan> {
+    if seq <= 1 || !fastpath::moe_expert_parallel_enabled() {
+        return None;
+    }
+    let plan = build_expert_bins(top_k_indices, n_experts)?;
+    // Load-balance check: fall back to sequential gather_qmm when skewed.
+    if plan.max_bin_size as f64 > 2.0 * plan.mean_bin_size {
+        return None;
+    }
+    Some(plan)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn moe_experts_forward_impl(
     cfg: &ModelConfig,
@@ -1678,6 +1964,17 @@ fn moe_experts_forward_impl(
     let seq = x.shape().get(1).copied().unwrap_or(1) as usize;
     let profile_decode = seq == 1 && decode_profile_enabled();
     let profile_prefill = seq > 1 && prefill_profile_enabled();
+    let profile_moe = moe_profile_enabled();
+    let moe_total_started = profile_moe.then(Instant::now);
+    if profile_moe {
+        record_moe_profile_layer();
+    }
+
+    // D3: check expert-parallel eligibility for prefill. When the plan is
+    // available and the parallel Metal kernel is implemented, this will
+    // dispatch experts in parallel across GPU threadgroups. Currently falls
+    // through to the sequential gather_qmm path.
+    let _ep_plan = expert_parallel_eligible(seq, top_k_indices, cfg.moe_expert_count);
 
     // Match MLX SwitchGLU: [batch, seq, hidden] → [batch, seq, 1, 1, hidden].
     // The extra singleton before top_k is required by gather_mm/gather_qmm broadcasting.
@@ -1706,15 +2003,36 @@ fn moe_experts_forward_impl(
             gate_up_started,
             &[&out],
         );
+        if profile_moe {
+            record_moe_profile_stage(
+                MoeProfileStage::ExpertGateUp,
+                saturating_profile_us(gate_up_started),
+            );
+        }
         let half = cfg.moe_expert_intermediate_size as i32;
         // Try fused packed activation Metal kernel (decode-only, seq==1).
         // GeGLU path: Gemma4 MoE experts — fuses split+gelu_approx+mul.
         // SwiGLU path: Qwen3 MoE experts — fuses split+silu+mul.
+        // D2 fused-expert-block path: when the flag is on and the gather is
+        // unsorted, fuses activation + squeeze + unsort in a single dispatch.
         // Falls back to split slice + dense_ffn_activation otherwise.
         let fused = if cfg.uses_geglu && seq == 1 && fastpath::moe_geglu_packed_metal_enabled() {
             packed_geglu_metal_impl(&out, half)
         } else if !cfg.uses_geglu && seq == 1 && fastpath::moe_swiglu_packed_metal_enabled() {
             packed_swiglu_metal_impl(&out, half)
+        } else if seq == 1
+            && !gather_inputs.sorted_indices
+            && fastpath::moe_fused_expert_block_enabled()
+        {
+            let top_k = top_k_indices.shape().last().copied().unwrap_or(0);
+            moe_fused_activation_unsort_metal(
+                &out,
+                gather_inputs.inv_order.as_ref().unwrap_or(top_k_indices),
+                half,
+                top_k,
+                out.dtype(),
+                cfg.uses_geglu,
+            )
         } else {
             None
         };
@@ -1727,6 +2045,12 @@ fn moe_experts_forward_impl(
                 activation_started,
                 &[&fused],
             );
+            if profile_moe {
+                record_moe_profile_stage(
+                    MoeProfileStage::ExpertActivation,
+                    saturating_profile_us(activation_started),
+                );
+            }
             fused
         } else {
             let gate = mlx_slice_last_dim(&out, 0, half);
@@ -1740,6 +2064,12 @@ fn moe_experts_forward_impl(
                 activation_started,
                 &[&h],
             );
+            if profile_moe {
+                record_moe_profile_stage(
+                    MoeProfileStage::ExpertActivation,
+                    saturating_profile_us(activation_started),
+                );
+            }
             h
         }
     } else {
@@ -1765,6 +2095,12 @@ fn moe_experts_forward_impl(
             gate_up_started,
             &[&gate_out, &up_out],
         );
+        if profile_moe {
+            record_moe_profile_stage(
+                MoeProfileStage::ExpertGateUp,
+                saturating_profile_us(gate_up_started),
+            );
+        }
         let activation_started = Instant::now();
         let h = dense_ffn_activation(cfg, &gate_out, &up_out);
         forward_profile_eval_elapsed(
@@ -1774,6 +2110,12 @@ fn moe_experts_forward_impl(
             activation_started,
             &[&h],
         );
+        if profile_moe {
+            record_moe_profile_stage(
+                MoeProfileStage::ExpertActivation,
+                saturating_profile_us(activation_started),
+            );
+        }
         h
     };
 
@@ -1793,6 +2135,12 @@ fn moe_experts_forward_impl(
         down_started,
         &[&down_out],
     );
+    if profile_moe {
+        record_moe_profile_stage(
+            MoeProfileStage::ExpertDown,
+            saturating_profile_us(down_started),
+        );
+    }
 
     // Fresh timer for the weighted-sum stage so it does not include the down
     // projection time (which is already recorded under MoeExpertDown).
@@ -1817,6 +2165,15 @@ fn moe_experts_forward_impl(
             weighted_sum_started,
             &[&out],
         );
+        if profile_moe {
+            record_moe_profile_stage(
+                MoeProfileStage::WeightedSum,
+                saturating_profile_us(weighted_sum_started),
+            );
+            if let Some(started) = moe_total_started {
+                record_moe_profile_total(saturating_profile_us(started));
+            }
+        }
         return out;
     }
 
@@ -1844,6 +2201,15 @@ fn moe_experts_forward_impl(
                     weighted_sum_started,
                     &[&out],
                 );
+                if profile_moe {
+                    record_moe_profile_stage(
+                        MoeProfileStage::WeightedSum,
+                        saturating_profile_us(weighted_sum_started),
+                    );
+                    if let Some(started) = moe_total_started {
+                        record_moe_profile_total(saturating_profile_us(started));
+                    }
+                }
                 return out;
             }
         } else if let Some(expert_sum) =
@@ -1861,6 +2227,15 @@ fn moe_experts_forward_impl(
                 weighted_sum_started,
                 &[&out],
             );
+            if profile_moe {
+                record_moe_profile_stage(
+                    MoeProfileStage::WeightedSum,
+                    saturating_profile_us(weighted_sum_started),
+                );
+                if let Some(started) = moe_total_started {
+                    record_moe_profile_total(saturating_profile_us(started));
+                }
+            }
             return out;
         }
     } else if let Some(expert_sum) =
@@ -1881,6 +2256,15 @@ fn moe_experts_forward_impl(
             weighted_sum_started,
             &[&out],
         );
+        if profile_moe {
+            record_moe_profile_stage(
+                MoeProfileStage::WeightedSum,
+                saturating_profile_us(weighted_sum_started),
+            );
+            if let Some(started) = moe_total_started {
+                record_moe_profile_total(saturating_profile_us(started));
+            }
+        }
         return out;
     }
     let scaled_weights;
@@ -1914,6 +2298,15 @@ fn moe_experts_forward_impl(
         weighted_sum_started,
         &[&out],
     );
+    if profile_moe {
+        record_moe_profile_stage(
+            MoeProfileStage::WeightedSum,
+            saturating_profile_us(weighted_sum_started),
+        );
+        if let Some(started) = moe_total_started {
+            record_moe_profile_total(saturating_profile_us(started));
+        }
+    }
     out
 }
 

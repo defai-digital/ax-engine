@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="840" height="470" viewBox="0 0 840 470" role="img" aria-labelledby="title desc">
 <title>Qwen3-Coder-Next 4-bit — MoE Decode Efficiency: speed = bandwidth ÷ bytes/token</title>
-<desc>Scatter plot of Qwen3-Coder-Next 4-bit MoE decode. X axis is weight bytes read per token, Y axis is decode tok/s; the curve is the 577 GB/s bandwidth ceiling (tok/s = 577 / bytes). AX and mlx-lm share x = 1.96 GB/token (identical MLX weights) so the vertical gap between them is kernel efficiency: AX 117.7 tok/s vs mlx-lm 99.2 tok/s. llama.cpp reads 2.83 GB/token (1.44x more, Q4_K_M) and decodes slowest at 85.5 tok/s. All three sit far below the ceiling, so decode is gather-bound, not bandwidth-bound.</desc>
+<desc>Scatter plot of Qwen3-Coder-Next 4-bit MoE decode. X axis is weight bytes read per token, Y axis is decode tok/s; the curve is the 577 GB/s bandwidth ceiling (tok/s = 577 / bytes). AX and mlx-lm share x = 1.96 GB/token (identical MLX weights) so the vertical gap between them is kernel efficiency: AX 112.2 tok/s vs mlx-lm 99.2 tok/s. llama.cpp reads 2.83 GB/token (1.44x more, Q4_K_M) and decodes slowest at 85.5 tok/s. All three sit far below the ceiling, so decode is gather-bound, not bandwidth-bound.</desc>
 <rect width="840" height="470" fill="#f8fafc"/>
 <text x="20" y="28" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="15" font-weight="700" fill="#111827">Qwen3-Coder-Next 4-bit — MoE Decode Efficiency: speed = bandwidth ÷ bytes/token</text>
 <text x="20" y="48" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#4b5563">decode throughput vs weight bytes read per token · the curve is the 577 GB/s M5 Max bandwidth ceiling</text>
@@ -42,22 +42,22 @@
 <text x="546.8" y="208.2" text-anchor="start" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#dc2626">577 GB/s ceiling</text>
 <text x="546.8" y="220.2" text-anchor="start" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="9" fill="#dc2626" fill-opacity="0.8">max speed if saturated</text>
 <defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#c2410c"/></marker></defs>
-<line x1="226.8" y1="286.1" x2="226.8" y2="131.7" stroke="#94a3b8" stroke-width="1.2" stroke-dasharray="2 3"/>
+<line x1="226.8" y1="291.0" x2="226.8" y2="131.7" stroke="#94a3b8" stroke-width="1.2" stroke-dasharray="2 3"/>
 <text x="234.8" y="149.7" text-anchor="start" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#64748b">60% idle</text>
 <text x="234.8" y="162.7" text-anchor="start" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#64748b">headroom</text>
 <line x1="230.8" y1="257.0" x2="501.4" y2="257.0" stroke="#c2410c" stroke-width="1.4" marker-end="url(#arrow)"/>
 <text x="368.6" y="251.0" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#c2410c">Q4_K_M reads 1.44× the bytes/token</text>
-<path d="M 218.8 286.1 H 212.8 V 302.7 H 218.8" fill="none" stroke="#176c37" stroke-width="1.4"/>
-<text x="208.8" y="291.4" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#176c37">+19% decode</text>
-<text x="208.8" y="303.4" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="9" fill="#176c37">same weights, AX kernels</text>
-<circle cx="226.8" cy="286.1" r="7.5" fill="#2eaf5f" fill-opacity="0.92" stroke="#176c37" stroke-width="2"/>
-<text x="239.8" y="275.1" text-anchor="start" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">AX Engine 6.4.0</text>
-<text x="239.8" y="287.1" text-anchor="start" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#4b5563">117.7 tok/s · 1.96 GB/tok · 40% of peak</text>
+<path d="M 218.8 291.0 H 212.8 V 302.7 H 218.8" fill="none" stroke="#176c37" stroke-width="1.4"/>
+<text x="208.8" y="293.9" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#176c37">+13% decode</text>
+<text x="208.8" y="305.9" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="9" fill="#176c37">same weights, AX kernels</text>
+<circle cx="226.8" cy="291.0" r="7.5" fill="#2eaf5f" fill-opacity="0.92" stroke="#176c37" stroke-width="2"/>
+<text x="239.8" y="280.0" text-anchor="start" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">AX Engine 6.5.1</text>
+<text x="239.8" y="292.0" text-anchor="start" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#4b5563">112.2 tok/s · 1.96 GB/tok · 38% of peak</text>
 <circle cx="226.8" cy="302.7" r="7.5" fill="#f2b705" fill-opacity="0.92" stroke="#9a6a00" stroke-width="2"/>
 <text x="239.8" y="317.7" text-anchor="start" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">mlx-lm 0.31.3</text>
 <text x="239.8" y="329.7" text-anchor="start" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#4b5563">99.2 tok/s · 1.96 GB/tok · 34% of peak</text>
 <circle cx="510.4" cy="315.1" r="7.5" fill="#f97316" fill-opacity="0.92" stroke="#c2410c" stroke-width="2"/>
 <text x="524.4" y="311.1" text-anchor="start" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">llama.cpp b9700</text>
 <text x="524.4" y="324.1" text-anchor="start" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#4b5563">85.5 tok/s · 2.83 GB/tok · 42% of peak</text>
-<text x="20" y="456" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="9" fill="#9ca3af">AX 6.4.0 · mlx-lm 0.31.3 · llama.cpp b9700 · M5 Max · peak via MLX reduction probe · llama bytes/token from GGUF tensor table</text>
+<text x="20" y="456" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="9" fill="#9ca3af">AX 6.5.1 · mlx-lm 0.31.3 · llama.cpp b9700 · M5 Max · peak via MLX reduction probe · llama bytes/token from GGUF tensor table</text>
 </svg>
