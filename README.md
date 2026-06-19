@@ -956,11 +956,13 @@ AX_MLX_MOE_SWIGLU_PACKED_METAL=0 ax-engine serve qwen3-coder-next --download --p
 To enable selected experimental diagnostics/fast paths for benchmarking:
 
 ```bash
+AX_MLX_MOE_LAYER_COMPILE=1 \
 AX_MLX_MOE_PROFILE=1 \
 AX_MLX_MOE_FUSED_EXPERT_BLOCK=1 \
-AX_MLX_MOE_EXPERT_PARALLEL=1 \
 ax-engine serve qwen3-coder-next --download --port 8080
 ```
+
+> **Note:** `AX_MLX_MOE_LAYER_COMPILE` wraps each MoE layer's decode forward in a compiled `MlxClosure`. It is opt-in because it may panic in long-running processes due to MLX thread-local stream registry invalidation. If you encounter crashes, disable it with `AX_MLX_MOE_LAYER_COMPILE=0`. `AX_MLX_MOE_EXPERT_PARALLEL` is infrastructure-only (parallel kernel not yet implemented).
 
 These flags are read once per process at startup. Do not enable the opt-in flags in production serving without first verifying output token equivalence against the default path on your target prompts.
 
