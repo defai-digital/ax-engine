@@ -51,7 +51,7 @@ HEADROOM_COLOR = "#e5e7eb"
 HEADROOM_STROKE = "#cbd5e1"
 SUBTITLE = "Used bandwidth vs theoretical headroom · 100% = 577 GB/s M5 Max peak"
 TITLE = "Gemma 4 12B - Memory bandwidth share · AX Engine v6.5.1"
-FOOTNOTE = "AX direct artifact d8bcc66 · llama.cpp b9700 · M5 Max · peak measured via MLX reduction probe"
+FOOTNOTE = "AX Engine v6.5.1 · llama.cpp b9700 · M5 Max · peak measured via MLX reduction probe"
 
 
 def fx(pct: float) -> float:
