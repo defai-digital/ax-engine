@@ -1,10 +1,10 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="720" height="400" viewBox="0 0 720 400" role="img" aria-labelledby="title desc">
 <title>Gemma 4 12B 4-bit — Direct decode</title>
-<desc>Grouped bar chart of median tok/s comparing llama.cpp Metal, AX Engine (native MLX) for Gemma 4 12B 4-bit at 128/512/2048 prompt tokens. mlx_lm is absent because it has no graph for the gemma4_unified architecture.</desc>
+<desc>Grouped bar chart of median tok/s comparing llama.cpp Metal, AX Engine (native MLX) for Gemma 4 12B 4-bit at 128/512/2048 prompt tokens. mlx_lm is absent because it has no graph for the gemma4_unified architecture. AX Engine v6.5.1 is compared with llama.cpp Metal b9700.</desc>
 <rect width="100%" height="100%" fill="#f8fafc"/>
 <text x="64" y="26" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="16" font-weight="700" fill="#111827">Gemma 4 12B 4-bit — Direct decode</text>
 <text x="64" y="46" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#4b5563">median over reps · grouped by prompt tokens · mlx_lm N/A (no gemma4_unified graph)</text>
-<text x="64" y="62" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">llama.cpp Metal vs AX Engine native MLX (ggml-org Q4_K_M, shape-compatible)</text>
+<text x="64" y="62" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">AX Engine v6.5.1 vs llama.cpp Metal b9700 (ggml-org Q4_K_M, shape-compatible)</text>
 <rect x="627" y="13" width="59" height="22" rx="11" fill="#eef2ff" stroke="#c7d2fe"/>
 <text x="656.5" y="28" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#3730a3">tok/s</text>
 <text x="686" y="52" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#374151">Higher is better</text>

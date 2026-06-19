@@ -34,6 +34,8 @@ from typing import Any
 REPO_ROOT = Path(__file__).resolve().parents[1]
 FONT = "Inter,Segoe UI,Arial,sans-serif"
 PROMPT_TOKENS = (128, 512, 2048)
+AX_ENGINE_VERSION = "v6.5.1"
+LLAMA_CPP_VERSION = "b9700"
 
 # (engine key in artifact, legend label, fill, stroke) — palette matches the
 # existing direct-comparison section in render_readme_performance_charts.py.
@@ -135,14 +137,17 @@ def render_chart(
         f"<desc>Grouped bar chart of median {html.escape(unit)} comparing "
         f"{html.escape(engine_desc)} for Gemma 4 12B 4-bit at "
         f"{'/'.join(str(p) for p in PROMPT_TOKENS)} prompt tokens. mlx_lm is absent "
-        f"because it has no graph for the gemma4_unified architecture.</desc>",
+        f"because it has no graph for the gemma4_unified architecture. "
+        f"AX Engine {html.escape(AX_ENGINE_VERSION)} is compared with llama.cpp Metal "
+        f"{html.escape(LLAMA_CPP_VERSION)}.</desc>",
         f'<rect width="100%" height="100%" fill="#f8fafc"/>',
         f'<text x="{left}" y="26" font-family="{FONT}" font-size="16" font-weight="700" '
         f'fill="#111827">{html.escape(title)}</text>',
         f'<text x="{left}" y="46" font-family="{FONT}" font-size="11" fill="#4b5563">'
         f"median over reps · grouped by prompt tokens · mlx_lm N/A (no gemma4_unified graph)</text>",
         f'<text x="{left}" y="62" font-family="{FONT}" font-size="10" fill="#6b7280">'
-        f"llama.cpp Metal vs AX Engine native MLX (ggml-org Q4_K_M, shape-compatible)</text>",
+        f"AX Engine {html.escape(AX_ENGINE_VERSION)} vs llama.cpp Metal "
+        f"{html.escape(LLAMA_CPP_VERSION)} (ggml-org Q4_K_M, shape-compatible)</text>",
         f'<rect x="{width - 34 - unit_w}" y="13" width="{unit_w}" height="22" rx="11" '
         f'fill="#eef2ff" stroke="#c7d2fe"/>',
         f'<text x="{width - 34 - unit_w / 2:.1f}" y="28" text-anchor="middle" '
