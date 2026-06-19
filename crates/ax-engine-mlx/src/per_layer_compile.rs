@@ -29,6 +29,7 @@
 //! This avoids aliasing issues with compiled graphs.
 
 use std::collections::HashMap;
+use std::panic::AssertUnwindSafe;
 use std::sync::{Mutex, OnceLock};
 use std::thread::ThreadId;
 
@@ -136,9 +137,17 @@ pub fn apply_layer_moe_decode(
 
     let guard = cache.lock().ok()?;
     if let Some(closure) = guard.get(&(layer_index, tid)) {
-        return closure
-            .try_apply(&[hidden, top_k_indices, top_k_weights])
-            .ok();
+        // Use catch_unwind to handle panics from the compiled closure
+        // gracefully. MLX's thread-local stream registry can become
+        // invalid in long-running processes, causing abort inside
+        // mlx_closure_apply.
+        return std::panic::catch_unwind(AssertUnwindSafe(|| {
+            closure
+                .try_apply(&[hidden, top_k_indices, top_k_weights])
+                .ok()
+        }))
+        .ok()
+        .flatten();
     }
     drop(guard);
 
@@ -146,9 +155,15 @@ pub fn apply_layer_moe_decode(
     if let std::collections::hash_map::Entry::Vacant(slot) = guard.entry((layer_index, tid)) {
         let closure = MlxClosure::new_dyn(moe_fn);
         if let Ok(compiled) = closure.compile(true) {
-            let result = compiled
-                .try_apply(&[hidden, top_k_indices, top_k_weights])
-                .ok();
+            // Use catch_unwind for the first apply as well — compilation
+            // tracing may leave MLX in a state that panics on first apply.
+            let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+                compiled
+                    .try_apply(&[hidden, top_k_indices, top_k_weights])
+                    .ok()
+            }))
+            .ok()
+            .flatten();
             slot.insert(compiled);
             return result;
         }
