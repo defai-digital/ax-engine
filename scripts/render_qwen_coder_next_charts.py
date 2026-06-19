@@ -32,6 +32,7 @@ RED = "#dc2626"
 PROMPT_TOKENS = (128, 512, 2048)
 
 # Fallbacks used only when a version cannot be recovered from the artifacts.
+AX_ENGINE_VERSION_FALLBACK = "6.5.1"
 MLX_LM_VERSION_FALLBACK = "0.31.3"
 
 WIDTH = 800
@@ -314,16 +315,6 @@ def rows_of(payloads: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return rows
 
 
-def cargo_workspace_version() -> str | None:
-    cargo = REPO_ROOT / "Cargo.toml"
-    try:
-        text = cargo.read_text()
-    except OSError:
-        return None
-    match = re.search(r'^version\s*=\s*"([^"]+)"', text, flags=re.MULTILINE)
-    return match.group(1) if match else None
-
-
 @dataclass(frozen=True)
 class Versions:
     ax_version: str | None
@@ -342,7 +333,8 @@ def _llama_ggml_from_evidence(evidence: str) -> str | None:
 def extract_versions(
     mlx_payloads: list[dict[str, Any]], llama_payloads: list[dict[str, Any]]
 ) -> Versions:
-    # AX Engine: release version from the workspace, build commit from the MLX artifact.
+    # AX Engine: this README chart is tied to a fixed historical artifact; do not
+    # let later workspace version bumps relabel the old benchmark.
     ax_commit = None
     for payload in mlx_payloads:
         commit = (payload.get("build") or {}).get("commit")
@@ -376,7 +368,7 @@ def extract_versions(
             llama_fa = True
 
     return Versions(
-        ax_version=cargo_workspace_version(),
+        ax_version=AX_ENGINE_VERSION_FALLBACK,
         ax_commit=ax_commit,
         mlx_lm=mlx_lm,
         llama_build=llama_build,
