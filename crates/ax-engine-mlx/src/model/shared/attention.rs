@@ -1,7 +1,7 @@
 use mlx_sys::{
     MlxArray, MlxDtype, ScaledDotProductAttentionMask, as_strided, astype, concatenate, eval,
     qk_norm_rope_bhsd_from_proj as direct_qk_norm_rope_bhsd_from_proj, reshape, rms_norm, rope,
-    scaled_dot_product_attention_with_mask, transpose,
+    scaled_dot_product_attention_with_mask, slice_update, transpose,
 };
 use std::time::Instant;
 
@@ -306,6 +306,31 @@ pub(crate) fn full_precision_attention(
     scaled_dot_product_attention_with_mask(q_rope, cached_k, cached_v, query_scale, mask, None)
 }
 
+/// Pre-allocated KV concatenation buffer for bidirectional attention.
+///
+/// On the first denoise step, the full `[cached_k, canvas_k]` and
+/// `[cached_v, canvas_v]` concatenations are built via `concatenate`.
+/// On subsequent steps, only the canvas slice is updated via
+/// `slice_update`, avoiding re-copying the cached prompt prefix.
+pub(crate) struct KVConcatBuffer {
+    /// Full K buffer: `[B, H, cached_seq + canvas_size, D]`.
+    pub full_k: Option<MlxArray>,
+    /// Full V buffer: `[B, H, cached_seq + canvas_size, D]`.
+    pub full_v: Option<MlxArray>,
+    /// Length of the cached (prompt) sequence along axis 2.
+    pub cached_seq: usize,
+}
+
+impl KVConcatBuffer {
+    pub fn new() -> Self {
+        Self {
+            full_k: None,
+            full_v: None,
+            cached_seq: 0,
+        }
+    }
+}
+
 /// Bidirectional (non-causal) attention for DiffusionGemma denoiser.
 ///
 /// Each canvas query attends bidirectionally to:
@@ -316,6 +341,7 @@ pub(crate) fn full_precision_attention(
 /// `cached_k/v`: `[B, n_kv_heads, cached_seq, head_dim]` — read-only prompt KV.
 /// `canvas_q`: `[B, n_q_heads, canvas_size, head_dim]` — RoPE-applied queries.
 /// `canvas_k/v`: `[B, n_kv_heads, canvas_size, head_dim]` — RoPE-applied keys/values.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn bidirectional_attention(
     canvas_q: &MlxArray,
     cached_k: &MlxArray,
@@ -324,12 +350,57 @@ pub(crate) fn bidirectional_attention(
     canvas_v: &MlxArray,
     query_scale: f32,
     sliding_window: Option<usize>,
+    kv_buffer: Option<&mut KVConcatBuffer>,
 ) -> MlxArray {
     let canvas_size = canvas_q.shape()[2] as usize;
 
-    // Concatenate prompt KV with canvas KV along sequence dimension (axis 2 in BHSD).
-    let full_k = concatenate(&[cached_k, canvas_k], 2, None);
-    let full_v = concatenate(&[cached_v, canvas_v], 2, None);
+    // Build full KV: either via slice_update (buffer path) or concatenate.
+    let (full_k, full_v) = if let Some(buf) = kv_buffer {
+        if buf.full_k.is_none() {
+            // First step: build buffer via concatenate.
+            let fk = concatenate(&[cached_k, canvas_k], 2, None);
+            let fv = concatenate(&[cached_v, canvas_v], 2, None);
+            buf.cached_seq = cached_k.shape()[2] as usize;
+            buf.full_k = Some(fk.clone());
+            buf.full_v = Some(fv.clone());
+            (fk, fv)
+        } else {
+            // Subsequent steps: update only the canvas slice.
+            let total = buf.cached_seq + canvas_size;
+            let start = [0, 0, buf.cached_seq as i32, 0];
+            let stop = [
+                canvas_k.shape()[0],
+                canvas_k.shape()[1],
+                total as i32,
+                canvas_k.shape()[3],
+            ];
+            let strides = [1, 1, 1, 1];
+            let fk = slice_update(
+                buf.full_k.as_ref().unwrap(),
+                canvas_k,
+                &start,
+                &stop,
+                &strides,
+                None,
+            );
+            let fv = slice_update(
+                buf.full_v.as_ref().unwrap(),
+                canvas_v,
+                &start,
+                &stop,
+                &strides,
+                None,
+            );
+            buf.full_k = Some(fk.clone());
+            buf.full_v = Some(fv.clone());
+            (fk, fv)
+        }
+    } else {
+        // Standard path: concatenate every time.
+        let full_k = concatenate(&[cached_k, canvas_k], 2, None);
+        let full_v = concatenate(&[cached_v, canvas_v], 2, None);
+        (full_k, full_v)
+    };
 
     // Build mask only when a symmetric sliding window must be enforced.
     // Without a window, every canvas position attends to every key (no mask).

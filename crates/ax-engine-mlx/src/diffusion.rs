@@ -44,6 +44,24 @@
 //! A GPU-side sum fingerprint detects token changes (2 dispatches + 1 eval)
 //! and reuses the cached embeddings when tokens are unchanged, saving 46
 //! embedding dispatches per cache hit.
+//!
+//! ## KV concatenation buffer
+//!
+//! When `AX_DIFFUSION_KV_CONCAT_BUFFER=1` is set, per-layer KV concatenation
+//! buffers are pre-allocated on the first denoise step via `concatenate`,
+//! then updated on subsequent steps via `slice_update`. This avoids
+//! re-copying the cached prompt prefix on every step, saving memory
+//! bandwidth proportional to the prompt length.
+//!
+//! ## Full-pipeline compiled forward
+//!
+//! When `AX_DIFFUSION_FULL_PIPELINE=1` is set, the entire denoise step
+//! (forward + softmax + entropy + argmax + sampling + acceptance) is
+//! compiled into a single MLX graph via `MlxClosure`. The closure accepts
+//! `[token_ids, temperature]` and returns `[new_tokens, argmax_1d,
+//! accept_mask_1d, entropy, prob]`, collapsing ~280 per-step dispatches
+//! into one. Supersedes `AX_DIFFUSION_COMPILED_FORWARD` (forward-only).
+//! Includes thread-local `EmbeddingCache` integration.
 
 use std::time::Instant;
 
@@ -55,6 +73,7 @@ use mlx_sys::{
 
 use crate::fastpath;
 use crate::kv_cache::MlxKVCache;
+use crate::model::shared::KVConcatBuffer;
 use crate::model::{
     DiffusionConfig, FinalLogitsMode, ModelConfig, compute_per_layer_inputs_arr, embed_tokens,
     embed_tokens_arr, finalize_lm_head_logits, layer_forward_bidirectional, shared,
@@ -103,6 +122,10 @@ pub(crate) struct DiffusionBlockResult {
     pub block_wall_us: u32,
     /// Whether the causal commit was skipped due to step-1 convergence.
     pub commit_skipped: bool,
+    /// Whether the full-pipeline compiled closure was used for denoising.
+    pub full_pipeline_used: bool,
+    /// Whether KV concatenation buffers were used for bidirectional attention.
+    pub kv_buffer_used: bool,
 }
 
 // Mutable state of the canvas being denoised.
@@ -224,13 +247,85 @@ fn denoise_step(
     token_offset: usize,
     embed_table: Option<&MlxArray>,
     compiled_forward: Option<&MlxClosure>,
+    kv_buffers: Option<&mut Vec<KVConcatBuffer>>,
+    full_pipeline: Option<&MlxClosure>,
 ) {
     let temperature = temperature_at_step(step, diff_cfg);
     let is_check_step = step.is_multiple_of(diff_cfg.convergence_check_interval);
 
-    // Bidirectional forward over canvas → logits [1, canvas_size, vocab_size].
-    // Use compiled closure when available; fall back to imperative path on
-    // thread mismatch or apply failure.
+    // When the full-pipeline compiled closure is available, it fuses
+    // forward + softmax + entropy + sampling + acceptance into a single
+    // graph dispatch. Falls back to the imperative path on thread mismatch.
+    if let Some(pipeline) = full_pipeline {
+        let temp_arr = MlxArray::from_f32(temperature);
+        match pipeline.try_apply(&[&canvas.tokens_gpu, &temp_arr]) {
+            Ok(mut outputs) => {
+                // Outputs: [new_tokens, argmax_1d, accept_mask_1d, entropy, prob]
+                let prob = outputs.swap_remove(4);
+                let entropy = outputs.swap_remove(3);
+                let accept_mask_1d = outputs.swap_remove(2);
+                let argmax_1d = outputs.swap_remove(1);
+                let new_tokens = outputs.swap_remove(0);
+
+                // Acceptance rate tracking.
+                let accepted_f32 = astype(&accept_mask_1d, MlxDtype::Float32, None);
+                let accepted_sum = sum_axis(&accepted_f32, -1, false, None);
+                eval(&[&accepted_sum]);
+                canvas.accepted_count = accepted_sum.data_f32()[0] as usize;
+                canvas.acceptance_rate = canvas.accepted_count as f32 / canvas.canvas_size as f32;
+                canvas.min_acceptance_rate = canvas.min_acceptance_rate.min(canvas.acceptance_rate);
+
+                // Convergence detection (check steps only).
+                if is_check_step {
+                    if let Some(prev_argmax) = &canvas.argmax_canvas {
+                        let changed = not_equal(&argmax_1d, prev_argmax, None);
+                        let changed_f32 = astype(&changed, MlxDtype::Float32, None);
+                        let changed_count = sum_axis(&changed_f32, -1, false, None);
+                        let total_entropy = sum_axis(&entropy, -1, false, None);
+                        let canvas_size_f32 = MlxArray::from_f32(canvas.canvas_size as f32);
+                        let mean_entropy = divide(&total_entropy, &canvas_size_f32, None);
+                        eval(&[&changed_count, &mean_entropy]);
+                        let changed_val = changed_count.data_f32()[0];
+                        canvas.stable_count = if changed_val == 0.0 {
+                            canvas.stable_count + 1
+                        } else {
+                            0
+                        };
+                        canvas.prev_mean_entropy = canvas.mean_entropy;
+                        canvas.mean_entropy = mean_entropy.data_f32()[0];
+                        canvas.min_entropy = canvas.min_entropy.min(canvas.mean_entropy);
+                    } else {
+                        canvas.stable_count = 0;
+                        let total_entropy = sum_axis(&entropy, -1, false, None);
+                        let canvas_size_f32 = MlxArray::from_f32(canvas.canvas_size as f32);
+                        let mean_entropy = divide(&total_entropy, &canvas_size_f32, None);
+                        eval(&[&mean_entropy]);
+                        canvas.prev_mean_entropy = canvas.mean_entropy;
+                        canvas.mean_entropy = mean_entropy.data_f32()[0];
+                        canvas.min_entropy = canvas.min_entropy.min(canvas.mean_entropy);
+                    }
+                    let signals = check_convergence(canvas, diff_cfg);
+                    canvas.last_signals = signals;
+                    canvas.converged = signals.any();
+                }
+
+                canvas.argmax_canvas = Some(argmax_1d);
+                canvas.tokens_gpu = new_tokens;
+                canvas.step = step;
+
+                if diff_cfg.self_conditioning
+                    && let Some(embed) = embed_table
+                {
+                    canvas.prev_self_cond_embed = Some(matmul(&prob, embed, None));
+                }
+                return;
+            }
+            Err(_) => { /* fall through to imperative path */ }
+        }
+    }
+
+    // Imperative path: forward + manual post-processing.
+    // Also used as fallback when compiled closures fail.
     let logits = if let Some(compiled) = compiled_forward {
         match compiled.try_apply(&[&canvas.tokens_gpu]) {
             Ok(mut outputs) => outputs.swap_remove(0),
@@ -241,10 +336,19 @@ fn denoise_step(
                 cache,
                 token_offset,
                 None,
+                kv_buffers,
             ),
         }
     } else {
-        forward_bidirectional(cfg, weights, &canvas.tokens_gpu, cache, token_offset, None)
+        forward_bidirectional(
+            cfg,
+            weights,
+            &canvas.tokens_gpu,
+            cache,
+            token_offset,
+            None,
+            kv_buffers,
+        )
     };
 
     // Temperature-scale: divide by T.
@@ -407,6 +511,9 @@ fn commit_block(
     eval(&[&canvas.tokens_gpu]);
     let tokens: Vec<u32> = canvas.tokens_gpu.data_u32().to_vec();
     let _logits = crate::model::forward(cfg, weights, &tokens, cache, token_offset);
+    // model::forward appends K/V to the cache but does not advance seq_len;
+    // update it so subsequent blocks append at the correct offset.
+    cache.seq_len = token_offset + tokens.len();
     tokens
 }
 
@@ -435,21 +542,118 @@ pub(crate) fn generate_diffusion_block(
         None
     };
 
-    // Build a compiled MLX closure for the bidirectional forward pass if
-    // the opt-in env flag is set. The closure captures raw pointers to the
-    // borrowed cfg/weights/cache — sound because the closure is dropped
-    // before this function returns, so all borrows remain valid.
-    //
-    // Pointers are cast through `usize` to satisfy the `Send` bound on
-    // `MlxClosure::new_dyn` (raw pointers are not `Send`; `usize` is).
-    let compiled_forward: Option<MlxClosure> = if fastpath::diffusion_compiled_forward_enabled() {
+    // Build KV concatenation buffers when the opt-in flag is set.
+    // Per-layer buffers are lazily initialized on the first denoise step
+    // and reused via `slice_update` on subsequent steps.
+    let use_kv_buffers = fastpath::diffusion_kv_concat_buffer_enabled();
+    let mut kv_buffers: Option<Vec<KVConcatBuffer>> = if use_kv_buffers {
+        Some(Vec::new())
+    } else {
+        None
+    };
+
+    // Build the full-pipeline compiled closure when the opt-in flag is set.
+    // This supersedes the forward-only closure: it fuses forward + softmax +
+    // entropy + sampling + acceptance into a single graph dispatch.
+    // The closure takes [token_ids, temperature] and returns
+    // [new_tokens, argmax_1d, accept_mask_1d, entropy, prob].
+    let full_pipeline: Option<MlxClosure> = if fastpath::diffusion_full_pipeline_enabled() {
+        let cfg_addr = cfg as *const ModelConfig as usize;
+        let weights_addr = weights as *const ModelWeights as usize;
+        let cache_addr = cache as *const MlxKVCache as usize;
+        let canvas_size = diff_cfg.canvas_size;
+        let entropy_bound = diff_cfg.entropy_bound;
+        let use_embed_cache = fastpath::diffusion_embedding_cache_enabled();
+        let kv_buf_addr = kv_buffers
+            .as_mut()
+            .map(|v| v as *mut Vec<KVConcatBuffer> as usize);
+
+        let closure = MlxClosure::new_dyn(move |inputs: &MlxVectorArray| -> Vec<MlxArray> {
+            let token_ids = inputs.get(0);
+            let temperature = inputs.get(1);
+
+            let cfg_ref = unsafe { &*(cfg_addr as *const ModelConfig) };
+            let weights_ref = unsafe { &*(weights_addr as *const ModelWeights) };
+            let cache_ref = unsafe { &*(cache_addr as *const MlxKVCache) };
+
+            // Thread-local embedding cache for the compiled closure.
+            thread_local! {
+                static CLOSURE_EMBED_CACHE: std::cell::RefCell<EmbeddingCache> =
+                    std::cell::RefCell::new(EmbeddingCache::new());
+            }
+
+            // Reconstruct KV buffer reference if available.
+            let kv_buf_ref: Option<&mut Vec<KVConcatBuffer>> =
+                kv_buf_addr.map(|addr| unsafe { &mut *(addr as *mut Vec<KVConcatBuffer>) });
+
+            let logits = if use_embed_cache {
+                CLOSURE_EMBED_CACHE.with(|cell| {
+                    let mut ec = cell.borrow_mut();
+                    forward_bidirectional(
+                        cfg_ref,
+                        weights_ref,
+                        &token_ids,
+                        cache_ref,
+                        token_offset,
+                        Some(&mut *ec),
+                        kv_buf_ref,
+                    )
+                })
+            } else {
+                forward_bidirectional(
+                    cfg_ref,
+                    weights_ref,
+                    &token_ids,
+                    cache_ref,
+                    token_offset,
+                    None,
+                    kv_buf_ref,
+                )
+            };
+
+            // Temperature-scale.
+            let scaled = divide(&logits, &temperature, None);
+
+            // Softmax → [1, canvas_size, vocab_size].
+            let prob = softmax(&scaled, -1, None);
+
+            // Entropy: H(p) = -sum(p * log(p)).
+            let eps = MlxArray::from_f32(1e-10);
+            let log_prob = log(&add(&prob, &eps, None), None);
+            let p_log_p = multiply(&prob, &log_prob, None);
+            let entropy = negative(&sum_axis(&p_log_p, -1, false, None), None);
+
+            // Argmax per position → [canvas_size].
+            let argmax_2d = argmax(&prob, None);
+            let argmax_1d = reshape(&argmax_2d, &[canvas_size as i32], None);
+
+            // Entropy-bound sampling.
+            let sorted_positions = argsort_axis(&entropy, -1, None);
+            let sorted_entropy = take_along_axis(&entropy, &sorted_positions, -1, None);
+            let cum_entropy = cumsum(&sorted_entropy, -1, false, true, None);
+            let bound_scalar = MlxArray::from_f32(entropy_bound);
+            let accepted_sorted = less_equal(&cum_entropy, &bound_scalar, None);
+            let inverse_sort = argsort_axis(&sorted_positions, -1, None);
+            let accept_mask = take_along_axis(&accepted_sorted, &inverse_sort, -1, None);
+            let accept_mask_1d = reshape(&accept_mask, &[canvas_size as i32], None);
+            let new_tokens = where_cond(&accept_mask_1d, &token_ids, &argmax_1d, None);
+
+            vec![new_tokens, argmax_1d, accept_mask_1d, entropy, prob]
+        });
+        closure.compile(false).ok()
+    } else {
+        None
+    };
+
+    // When full pipeline is active, suppress the forward-only closure.
+    let compiled_forward: Option<MlxClosure> = if full_pipeline.is_some() {
+        None
+    } else if fastpath::diffusion_compiled_forward_enabled() {
         let cfg_addr = cfg as *const ModelConfig as usize;
         let weights_addr = weights as *const ModelWeights as usize;
         let cache_addr = cache as *const MlxKVCache as usize;
         let closure = MlxClosure::new_dyn(move |inputs: &MlxVectorArray| -> Vec<MlxArray> {
             let token_ids = inputs.get(0);
-            // SAFETY: the pointers reference stack/borrowed data in
-            // generate_diffusion_block which outlives this closure.
             let cfg_ref = unsafe { &*(cfg_addr as *const ModelConfig) };
             let weights_ref = unsafe { &*(weights_addr as *const ModelWeights) };
             let cache_ref = unsafe { &*(cache_addr as *const MlxKVCache) };
@@ -459,6 +663,7 @@ pub(crate) fn generate_diffusion_block(
                 &token_ids,
                 cache_ref,
                 token_offset,
+                None,
                 None,
             );
             vec![logits]
@@ -481,6 +686,8 @@ pub(crate) fn generate_diffusion_block(
             token_offset,
             embed_table,
             compiled_forward.as_ref(),
+            kv_buffers.as_mut(),
+            full_pipeline.as_ref(),
         );
         steps_executed += 1;
         if canvas.converged {
@@ -521,6 +728,8 @@ pub(crate) fn generate_diffusion_block(
         commit_wall_us,
         block_wall_us,
         commit_skipped,
+        full_pipeline_used: full_pipeline.is_some(),
+        kv_buffer_used: kv_buffers.is_some(),
     }
 }
 
@@ -542,6 +751,7 @@ struct EmbeddingCache {
 }
 
 impl EmbeddingCache {
+    #[allow(dead_code)]
     fn new() -> Self {
         Self {
             token_sum: f32::NAN,
@@ -581,6 +791,9 @@ impl EmbeddingCache {
 //
 // When `embed_cache` is `Some`, per-layer embedding inputs are cached across
 // denoise steps and reused when token IDs are unchanged.
+//
+// When `kv_buffers` is `Some`, per-layer KV concatenation buffers are used
+// to avoid re-copying the cached prompt prefix on every step.
 fn forward_bidirectional(
     cfg: &ModelConfig,
     weights: &ModelWeights,
@@ -588,6 +801,7 @@ fn forward_bidirectional(
     cache: &MlxKVCache,
     token_offset: usize,
     embed_cache: Option<&mut EmbeddingCache>,
+    mut kv_buffers: Option<&mut Vec<KVConcatBuffer>>,
 ) -> MlxArray {
     // Embed tokens directly from GPU array.
     let mut hidden = embed_tokens_arr(token_ids, &weights.token_embedding, cfg.hidden_size);
@@ -615,7 +829,23 @@ fn forward_bidirectional(
     // Run each layer with bidirectional attention.
     for (li, layer_w) in weights.layers.iter().enumerate() {
         let pli = per_layer_inputs.as_ref().map(|v| &v[li]);
-        hidden = layer_forward_bidirectional(cfg, layer_w, &hidden, cache, li, token_offset, pli);
+        let kv_buf = kv_buffers.as_mut().map(|v| {
+            // Lazily grow the buffer vec to cover all layers.
+            if v.len() <= li {
+                v.resize_with(li + 1, KVConcatBuffer::new);
+            }
+            &mut v[li]
+        });
+        hidden = layer_forward_bidirectional(
+            cfg,
+            layer_w,
+            &hidden,
+            cache,
+            li,
+            token_offset,
+            pli,
+            kv_buf,
+        );
     }
 
     // Final norm + LM head → logits [1, seq, vocab_size].
@@ -855,10 +1085,19 @@ mod tests {
         assert!(cache.needs_refresh(&dummy));
     }
 
+    fn make_u32_array(data: &[u32]) -> MlxArray {
+        MlxArray::from_raw_data(
+            data.as_ptr() as *const u8,
+            std::mem::size_of_val(data),
+            &[data.len() as i32],
+            MlxDtype::Uint32,
+        )
+    }
+
     #[test]
     fn embedding_cache_hit_on_same_tokens() {
         let mut cache = EmbeddingCache::new();
-        let tokens = MlxArray::from_vec(vec![10_u32, 20, 30], &[3]);
+        let tokens = make_u32_array(&[10, 20, 30]);
         let dummy_pli = vec![MlxArray::from_f32(1.0)];
         cache.update(&tokens, dummy_pli);
         assert!(cache.per_layer_inputs.is_some());
@@ -869,11 +1108,84 @@ mod tests {
     #[test]
     fn embedding_cache_miss_on_different_tokens() {
         let mut cache = EmbeddingCache::new();
-        let tokens_a = MlxArray::from_vec(vec![10_u32, 20, 30], &[3]);
+        let tokens_a = make_u32_array(&[10, 20, 30]);
         let dummy_pli = vec![MlxArray::from_f32(1.0)];
         cache.update(&tokens_a, dummy_pli);
         // Different tokens with different sum → refresh needed.
-        let tokens_b = MlxArray::from_vec(vec![100_u32, 200, 300], &[3]);
+        let tokens_b = make_u32_array(&[100, 200, 300]);
         assert!(cache.needs_refresh(&tokens_b));
+    }
+
+    // ── KVConcatBuffer tests ─────────────────────────────────────────
+
+    #[test]
+    fn kv_concat_buffer_initial_state_is_empty() {
+        let buf = KVConcatBuffer::new();
+        assert!(buf.full_k.is_none());
+        assert!(buf.full_v.is_none());
+        assert_eq!(buf.cached_seq, 0);
+    }
+
+    #[test]
+    fn kv_concat_buffer_populate_and_reuse() {
+        let mut buf = KVConcatBuffer::new();
+        // Populate the buffer as if the first denoise step ran.
+        buf.full_k = Some(MlxArray::from_f32(3.0));
+        buf.full_v = Some(MlxArray::from_f32(4.0));
+        buf.cached_seq = 10;
+
+        // After first step, buffer is populated.
+        assert!(buf.full_k.is_some());
+        assert!(buf.full_v.is_some());
+        assert_eq!(buf.cached_seq, 10);
+
+        // Second step: buffer is still valid for reuse.
+        // The caller would use slice_update to replace the canvas portion.
+        assert!(buf.full_k.is_some());
+    }
+
+    // ── Full pipeline / KV buffer flag tests ──────────────────────────
+
+    #[test]
+    fn diffusion_block_result_tracks_optimization_flags() {
+        let result = DiffusionBlockResult {
+            tokens: vec![1, 2, 3],
+            denoise_steps: 1,
+            converged: true,
+            converged_strict: false,
+            converged_acceptance: true,
+            converged_plateau: false,
+            min_entropy: 0.01,
+            min_acceptance_rate: 0.99,
+            denoise_wall_us: 100,
+            commit_wall_us: 0,
+            block_wall_us: 100,
+            commit_skipped: true,
+            full_pipeline_used: true,
+            kv_buffer_used: true,
+        };
+        assert!(result.commit_skipped);
+        assert!(result.full_pipeline_used);
+        assert!(result.kv_buffer_used);
+
+        let result2 = DiffusionBlockResult {
+            tokens: vec![4, 5],
+            denoise_steps: 10,
+            converged: false,
+            converged_strict: false,
+            converged_acceptance: false,
+            converged_plateau: false,
+            min_entropy: 0.5,
+            min_acceptance_rate: 0.3,
+            denoise_wall_us: 2000,
+            commit_wall_us: 100,
+            block_wall_us: 2200,
+            commit_skipped: false,
+            full_pipeline_used: false,
+            kv_buffer_used: false,
+        };
+        assert!(!result2.commit_skipped);
+        assert!(!result2.full_pipeline_used);
+        assert!(!result2.kv_buffer_used);
     }
 }

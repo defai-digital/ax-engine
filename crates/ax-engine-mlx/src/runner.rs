@@ -2559,6 +2559,8 @@ struct DecodeTelemetry {
     diffusion_min_entropy_bp: u32,
     diffusion_min_acceptance_rate_bp: u32,
     diffusion_commit_skipped: u32,
+    diffusion_full_pipeline_used: u32,
+    diffusion_kv_buffer_used: u32,
 }
 
 impl DecodeTelemetry {
@@ -2701,8 +2703,13 @@ impl DecodeTelemetry {
             .diffusion_block_wall_us
             .saturating_add(result.block_wall_us);
         if result.commit_skipped {
-            self.diffusion_commit_skipped =
-                self.diffusion_commit_skipped.saturating_add(1);
+            self.diffusion_commit_skipped = self.diffusion_commit_skipped.saturating_add(1);
+        }
+        if result.full_pipeline_used {
+            self.diffusion_full_pipeline_used = self.diffusion_full_pipeline_used.saturating_add(1);
+        }
+        if result.kv_buffer_used {
+            self.diffusion_kv_buffer_used = self.diffusion_kv_buffer_used.saturating_add(1);
         }
     }
 
@@ -2827,6 +2834,12 @@ impl DecodeTelemetry {
         self.diffusion_commit_skipped = self
             .diffusion_commit_skipped
             .saturating_add(other.diffusion_commit_skipped);
+        self.diffusion_full_pipeline_used = self
+            .diffusion_full_pipeline_used
+            .saturating_add(other.diffusion_full_pipeline_used);
+        self.diffusion_kv_buffer_used = self
+            .diffusion_kv_buffer_used
+            .saturating_add(other.diffusion_kv_buffer_used);
     }
 
     fn append_route_decisions(&self, decisions: &mut impl RouteDecisionSink) {
@@ -2967,6 +2980,14 @@ impl DecodeTelemetry {
             (
                 "ax_mlx_diffusion_commit_skipped",
                 self.diffusion_commit_skipped,
+            ),
+            (
+                "ax_mlx_diffusion_full_pipeline_used",
+                self.diffusion_full_pipeline_used,
+            ),
+            (
+                "ax_mlx_diffusion_kv_buffer_used",
+                self.diffusion_kv_buffer_used,
             ),
         ];
 
@@ -14606,6 +14627,8 @@ mod tests {
             commit_wall_us: 100,
             block_wall_us: 700,
             commit_skipped: false,
+            full_pipeline_used: false,
+            kv_buffer_used: true,
         });
         telemetry.record_diffusion_block(&crate::diffusion::DiffusionBlockResult {
             tokens: vec![5, 6],
@@ -14620,6 +14643,8 @@ mod tests {
             commit_wall_us: 200,
             block_wall_us: 1300,
             commit_skipped: true,
+            full_pipeline_used: true,
+            kv_buffer_used: true,
         });
 
         let mut decisions: Vec<(String, u32)> = Vec::new();
@@ -14638,6 +14663,11 @@ mod tests {
         assert_eq!(decisions.get("ax_mlx_diffusion_commit_wall_us"), Some(&300));
         assert_eq!(decisions.get("ax_mlx_diffusion_block_wall_us"), Some(&2000));
         assert_eq!(decisions.get("ax_mlx_diffusion_commit_skipped"), Some(&1));
+        assert_eq!(
+            decisions.get("ax_mlx_diffusion_full_pipeline_used"),
+            Some(&1)
+        );
+        assert_eq!(decisions.get("ax_mlx_diffusion_kv_buffer_used"), Some(&2));
     }
 
     #[test]

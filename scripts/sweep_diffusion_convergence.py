@@ -119,23 +119,29 @@ def parse_trial(response: dict[str, Any]) -> SweepTrial:
             raise ValueError(f"missing integer counter {key}")
         return value
 
+    def int_counter_or(key: str, default: int) -> int:
+        value = counters.get(key)
+        return value if isinstance(value, int) else default
+
     def bp_to_f32(key: str) -> float:
         return int_counter(key) / 10000.0
 
-    output_tokens = int_counter("output_tokens")
-    block_wall_us = int_counter("diffusion_block_wall_us")
-    denoise_wall_us = int_counter("diffusion_denoise_wall_us")
+    block_wall_us = int_counter("ax_mlx_diffusion_block_wall_us")
+    denoise_wall_us = int_counter("ax_mlx_diffusion_denoise_wall_us")
+    diffusion_blocks = int_counter_or("ax_mlx_diffusion_blocks", 0)
 
+    # max-output-tokens is 1 per bench invocation; use diffusion_blocks as proxy
+    output_tokens = diffusion_blocks if diffusion_blocks > 0 else 1
     block_decode_tok_s = output_tokens / (block_wall_us / 1_000_000.0) if block_wall_us > 0 else 0.0
 
     return SweepTrial(
-        denoise_steps=int_counter("diffusion_denoise_steps"),
-        converged=int_counter("diffusion_converged") > 0,
-        converged_strict=int_counter("diffusion_converged_strict") > 0,
-        converged_acceptance=int_counter("diffusion_converged_acceptance") > 0,
-        converged_plateau=int_counter("diffusion_converged_plateau") > 0,
-        min_entropy=bp_to_f32("diffusion_min_entropy_bp"),
-        min_acceptance_rate=bp_to_f32("diffusion_min_acceptance_rate_bp"),
+        denoise_steps=int_counter("ax_mlx_diffusion_denoise_steps"),
+        converged=int_counter_or("ax_mlx_diffusion_converged_blocks", 0) > 0,
+        converged_strict=int_counter("ax_mlx_diffusion_converged_strict") > 0,
+        converged_acceptance=int_counter("ax_mlx_diffusion_converged_acceptance") > 0,
+        converged_plateau=int_counter("ax_mlx_diffusion_converged_plateau") > 0,
+        min_entropy=bp_to_f32("ax_mlx_diffusion_min_entropy_bp"),
+        min_acceptance_rate=bp_to_f32("ax_mlx_diffusion_min_acceptance_rate_bp"),
         block_decode_tok_s=block_decode_tok_s,
         denoise_wall_us=denoise_wall_us,
         block_wall_us=block_wall_us,
@@ -301,11 +307,46 @@ def main() -> None:
     log_dir = args.output_dir / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
 
+    output_path = args.output_dir / "sweep_results.json"
+    partial_path = args.output_dir / "sweep_results.partial.json"
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Resume from partial results if available (crash recovery).
+    completed_keys: set[str] = set()
     results: list[dict[str, Any]] = []
+    if partial_path.exists():
+        try:
+            partial = json.loads(partial_path.read_text(encoding="utf-8"))
+            for row in partial.get("results", []):
+                key = (
+                    f"p{row['prompt_tokens']}_"
+                    f"e{row['entropy_threshold']}_"
+                    f"a{row['acceptance_rate_threshold']}_"
+                    f"d{row['entropy_plateau_delta']}"
+                )
+                completed_keys.add(key)
+            results = partial["results"]
+            log(f"resumed: {len(completed_keys)} configs already done")
+        except (json.JSONDecodeError, KeyError):
+            results = []
+
+    def _result_key(prompt_tokens: int, grid: GridPoint) -> str:
+        return (
+            f"p{prompt_tokens}_"
+            f"e{grid.entropy_threshold}_"
+            f"a{grid.acceptance_rate_threshold}_"
+            f"d{grid.entropy_plateau_delta}"
+        )
+
     config_index = 0
     for prompt_tokens in args.prompt_tokens:
         for grid in grid_points:
             config_index += 1
+            if _result_key(prompt_tokens, grid) in completed_keys:
+                log(
+                    f"[{config_index}/{total}] SKIP (done) p{prompt_tokens} {grid.label()}"
+                )
+                continue
             log(
                 f"[{config_index}/{total}] p{prompt_tokens} {grid.label()}"
             )
@@ -327,6 +368,24 @@ def main() -> None:
                 f"  → steps={steps:.0f} conv={conv:.0%} tok/s={tok_s:.1f}"
             )
 
+            # Flush partial results after every config for crash recovery.
+            partial_artifact = {
+                "schema": SWEEP_SCHEMA,
+                "model_dir": str(args.model_dir),
+                "prompt_tokens": args.prompt_tokens,
+                "grid_dimensions": {
+                    "entropy_threshold": ENTROPY_THRESHOLDS,
+                    "acceptance_rate_threshold": ACCEPTANCE_RATE_THRESHOLDS,
+                    "entropy_plateau_delta": ENTROPY_PLATEAU_DELTAS,
+                },
+                "warmup_runs": WARMUP_RUNS,
+                "measure_runs": MEASURE_RUNS,
+                "results": results,
+            }
+            partial_path.write_text(
+                json.dumps(partial_artifact, indent=2), encoding="utf-8"
+            )
+
     artifact = {
         "schema": SWEEP_SCHEMA,
         "model_dir": str(args.model_dir),
@@ -341,10 +400,12 @@ def main() -> None:
         "results": results,
     }
 
-    output_path = args.output_dir / "sweep_results.json"
-    output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(json.dumps(artifact, indent=2), encoding="utf-8")
     log(f"wrote {len(results)} results to {output_path}")
+
+    # Remove partial file once final artifact is written.
+    if partial_path.exists():
+        partial_path.unlink()
 
     # Print best configurations per prompt length.
     for pt in args.prompt_tokens:

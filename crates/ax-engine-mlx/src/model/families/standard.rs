@@ -9,7 +9,7 @@ use super::super::profile::{
     profile_eval_elapsed, record_gemma4_moe_decode_layer,
 };
 use super::super::shared::{
-    add_then_multiply_scalar, attention_mask_array, attention_output_projection,
+    KVConcatBuffer, add_then_multiply_scalar, attention_mask_array, attention_output_projection,
     bidirectional_attention, direct_qk_norm_rope_route_enabled_for_family, ffn_swiglu,
     flatten_attention_output_bhsd, full_precision_attention, moe_experts_forward,
     moe_experts_forward_gemma4, moe_experts_forward_with_shared, moe_router_gemma4, moe_router_glm,
@@ -697,6 +697,7 @@ pub(crate) fn layer_forward(
 /// - **Bidirectional** (non-causal) attention over the canvas.
 /// - **Read-only** KV cache: attends to cached prompt KV without writing.
 /// - Canvas K/V are computed fresh from `hidden` each denoiser step.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn layer_forward_bidirectional(
     cfg: &ModelConfig,
     w: &LayerWeights,
@@ -705,6 +706,7 @@ pub(crate) fn layer_forward_bidirectional(
     layer_idx: usize,
     token_offset: usize,
     per_layer_input: Option<&MlxArray>,
+    kv_buffer: Option<&mut KVConcatBuffer>,
 ) -> MlxArray {
     let (
         head_dim,
@@ -794,6 +796,7 @@ pub(crate) fn layer_forward_bidirectional(
         &v,
         cfg.query_scale,
         sliding_window,
+        kv_buffer,
     );
 
     let attn_flat = flatten_attention_output_bhsd(&attn_sdpa, seq, cfg.n_heads, head_dim);

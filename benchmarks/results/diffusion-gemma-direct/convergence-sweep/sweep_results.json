@@ -1,0 +1,6754 @@
+{
+  "schema": "ax.diffusion_convergence_sweep.v1",
+  "model_dir": "/Users/akiralam/.cache/huggingface/hub/models--mlx-community--diffusiongemma-26B-A4B-it-4bit/snapshots/252183330817f96e9cba0b20cc400b2947a575cf",
+  "prompt_tokens": [
+    128,
+    512,
+    2048
+  ],
+  "grid_dimensions": {
+    "entropy_threshold": [
+      0.005,
+      0.01,
+      0.05,
+      0.1,
+      0.5
+    ],
+    "acceptance_rate_threshold": [
+      0.01,
+      0.05,
+      0.1,
+      0.2
+    ],
+    "entropy_plateau_delta": [
+      0.001,
+      0.005,
+      0.01,
+      0.05
+    ]
+  },
+  "warmup_runs": 2,
+  "measure_runs": 5,
+  "results": [
+    {
+      "entropy_threshold": 0.005,
+      "acceptance_rate_threshold": 0.01,
+      "entropy_plateau_delta": 0.001,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.306268741018847
+      },
+      "block_wall_us": {
+        "median": 120391.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 128
+    },
+    {
+      "entropy_threshold": 0.005,
+      "acceptance_rate_threshold": 0.01,
+      "entropy_plateau_delta": 0.005,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.21537425137402
+      },
+      "block_wall_us": {
+        "median": 121723.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 128
+    },
+    {
+      "entropy_threshold": 0.005,
+      "acceptance_rate_threshold": 0.01,
+      "entropy_plateau_delta": 0.01,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.268904783561418
+      },
+      "block_wall_us": {
+        "median": 120935.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 128
+    },
+    {
+      "entropy_threshold": 0.005,
+      "acceptance_rate_threshold": 0.01,
+      "entropy_plateau_delta": 0.05,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.221588246417443
+      },
+      "block_wall_us": {
+        "median": 121631.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 128
+    },
+    {
+      "entropy_threshold": 0.005,
+      "acceptance_rate_threshold": 0.05,
+      "entropy_plateau_delta": 0.001,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.355265906337468
+      },
+      "block_wall_us": {
+        "median": 119685.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 128
+    },
+    {
+      "entropy_threshold": 0.005,
+      "acceptance_rate_threshold": 0.05,
+      "entropy_plateau_delta": 0.005,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.206811653672549
+      },
+      "block_wall_us": {
+        "median": 121850.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 128
+    },
+    {
+      "entropy_threshold": 0.005,
+      "acceptance_rate_threshold": 0.05,
+      "entropy_plateau_delta": 0.01,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.254025901133279
+      },
+      "block_wall_us": {
+        "median": 121153.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 128
+    },
+    {
+      "entropy_threshold": 0.005,
+      "acceptance_rate_threshold": 0.05,
+      "entropy_plateau_delta": 0.05,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.313795912937929
+      },
+      "block_wall_us": {
+        "median": 120282.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 128
+    },
+    {
+      "entropy_threshold": 0.005,
+      "acceptance_rate_threshold": 0.1,
+      "entropy_plateau_delta": 0.001,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.231604422017895
+      },
+      "block_wall_us": {
+        "median": 121483.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 128
+    },
+    {
+      "entropy_threshold": 0.005,
+      "acceptance_rate_threshold": 0.1,
+      "entropy_plateau_delta": 0.005,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.253617147714985
+      },
+      "block_wall_us": {
+        "median": 121159.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 128
+    },
+    {
+      "entropy_threshold": 0.005,
+      "acceptance_rate_threshold": 0.1,
+      "entropy_plateau_delta": 0.01,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.359596398685872
+      },
+      "block_wall_us": {
+        "median": 119623.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 128
+    },
+    {
+      "entropy_threshold": 0.005,
+      "acceptance_rate_threshold": 0.1,
+      "entropy_plateau_delta": 0.05,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.291186468783684
+      },
+      "block_wall_us": {
+        "median": 120610.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 128
+    },
+    {
+      "entropy_threshold": 0.005,
+      "acceptance_rate_threshold": 0.2,
+      "entropy_plateau_delta": 0.001,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.201696110755703
+      },
+      "block_wall_us": {
+        "median": 121926.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 128
+    },
+    {
+      "entropy_threshold": 0.005,
+      "acceptance_rate_threshold": 0.2,
+      "entropy_plateau_delta": 0.005,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.257433754737702
+      },
+      "block_wall_us": {
+        "median": 121103.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 128
+    },
+    {
+      "entropy_threshold": 0.005,
+      "acceptance_rate_threshold": 0.2,
+      "entropy_plateau_delta": 0.01,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.259343382201115
+      },
+      "block_wall_us": {
+        "median": 121075.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 128
+    },
+    {
+      "entropy_threshold": 0.005,
+      "acceptance_rate_threshold": 0.2,
+      "entropy_plateau_delta": 0.05,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.320367427425595
+      },
+      "block_wall_us": {
+        "median": 120187.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 128
+    },
+    {
+      "entropy_threshold": 0.01,
+      "acceptance_rate_threshold": 0.01,
+      "entropy_plateau_delta": 0.001,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.326048041297199
+      },
+      "block_wall_us": {
+        "median": 120105.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 128
+    },
+    {
+      "entropy_threshold": 0.01,
+      "acceptance_rate_threshold": 0.01,
+      "entropy_plateau_delta": 0.005,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.324661810613945
+      },
+      "block_wall_us": {
+        "median": 120125.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 128
+    },
+    {
+      "entropy_threshold": 0.01,
+      "acceptance_rate_threshold": 0.01,
+      "entropy_plateau_delta": 0.01,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.263848143526515
+      },
+      "block_wall_us": {
+        "median": 121009.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 128
+    },
+    {
+      "entropy_threshold": 0.01,
+      "acceptance_rate_threshold": 0.01,
+      "entropy_plateau_delta": 0.05,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.280407727276492
+      },
+      "block_wall_us": {
+        "median": 120767.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 128
+    },
+    {
+      "entropy_threshold": 0.01,
+      "acceptance_rate_threshold": 0.05,
+      "entropy_plateau_delta": 0.001,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.17541163197567
+      },
+      "block_wall_us": {
+        "median": 122318.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 128
+    },
+    {
+      "entropy_threshold": 0.01,
+      "acceptance_rate_threshold": 0.05,
+      "entropy_plateau_delta": 0.005,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.276569858387889
+      },
+      "block_wall_us": {
+        "median": 120823.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 128
+    },
+    {
+      "entropy_threshold": 0.01,
+      "acceptance_rate_threshold": 0.05,
+      "entropy_plateau_delta": 0.01,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.261868173631422
+      },
+      "block_wall_us": {
+        "median": 121038.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 128
+    },
+    {
+      "entropy_threshold": 0.01,
+      "acceptance_rate_threshold": 0.05,
+      "entropy_plateau_delta": 0.05,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.226457934007355
+      },
+      "block_wall_us": {
+        "median": 121559.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 128
+    },
+    {
+      "entropy_threshold": 0.01,
+      "acceptance_rate_threshold": 0.1,
+      "entropy_plateau_delta": 0.001,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.280270599243183
+      },
+      "block_wall_us": {
+        "median": 120769.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 128
+    },
+    {
+      "entropy_threshold": 0.01,
+      "acceptance_rate_threshold": 0.1,
+      "entropy_plateau_delta": 0.005,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.267674220565013
+      },
+      "block_wall_us": {
+        "median": 120953.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 128
+    },
+    {
+      "entropy_threshold": 0.01,
+      "acceptance_rate_threshold": 0.1,
+      "entropy_plateau_delta": 0.01,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.229843056892905
+      },
+      "block_wall_us": {
+        "median": 121509.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 128
+    },
+    {
+      "entropy_threshold": 0.01,
+      "acceptance_rate_threshold": 0.1,
+      "entropy_plateau_delta": 0.05,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.331250520703158
+      },
+      "block_wall_us": {
+        "median": 120030.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 128
+    },
+    {
+      "entropy_threshold": 0.01,
+      "acceptance_rate_threshold": 0.2,
+      "entropy_plateau_delta": 0.001,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.356802019003368
+      },
+      "block_wall_us": {
+        "median": 119663.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 128
+    },
+    {
+      "entropy_threshold": 0.01,
+      "acceptance_rate_threshold": 0.2,
+      "entropy_plateau_delta": 0.005,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.33750208437552
+      },
+      "block_wall_us": {
+        "median": 119940.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 128
+    },
+    {
+      "entropy_threshold": 0.01,
+      "acceptance_rate_threshold": 0.2,
+      "entropy_plateau_delta": 0.01,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.4011728037234
+      },
+      "block_wall_us": {
+        "median": 119031.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 128
+    },
+    {
+      "entropy_threshold": 0.01,
+      "acceptance_rate_threshold": 0.2,
+      "entropy_plateau_delta": 0.05,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.355196096452383
+      },
+      "block_wall_us": {
+        "median": 119686.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 128
+    },
+    {
+      "entropy_threshold": 0.05,
+      "acceptance_rate_threshold": 0.01,
+      "entropy_plateau_delta": 0.001,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.350312301680082
+      },
+      "block_wall_us": {
+        "median": 119756.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 128
+    },
+    {
+      "entropy_threshold": 0.05,
+      "acceptance_rate_threshold": 0.01,
+      "entropy_plateau_delta": 0.005,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.378928670180231
+      },
+      "block_wall_us": {
+        "median": 119347.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 128
+    },
+    {
+      "entropy_threshold": 0.05,
+      "acceptance_rate_threshold": 0.01,
+      "entropy_plateau_delta": 0.01,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.415808254224736
+      },
+      "block_wall_us": {
+        "median": 118824.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 128
+    },
+    {
+      "entropy_threshold": 0.05,
+      "acceptance_rate_threshold": 0.01,
+      "entropy_plateau_delta": 0.05,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.404844552400004
+      },
+      "block_wall_us": {
+        "median": 118979.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 128
+    },
+    {
+      "entropy_threshold": 0.05,
+      "acceptance_rate_threshold": 0.05,
+      "entropy_plateau_delta": 0.001,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.397645300257807
+      },
+      "block_wall_us": {
+        "median": 119081.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 128
+    },
+    {
+      "entropy_threshold": 0.05,
+      "acceptance_rate_threshold": 0.05,
+      "entropy_plateau_delta": 0.005,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.285759265550299
+      },
+      "block_wall_us": {
+        "median": 120689.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 128
+    },
+    {
+      "entropy_threshold": 0.05,
+      "acceptance_rate_threshold": 0.05,
+      "entropy_plateau_delta": 0.01,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.353032568473985
+      },
+      "block_wall_us": {
+        "median": 119717.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 128
+    },
+    {
+      "entropy_threshold": 0.05,
+      "acceptance_rate_threshold": 0.05,
+      "entropy_plateau_delta": 0.05,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.379069085424609
+      },
+      "block_wall_us": {
+        "median": 119345.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 128
+    },
+    {
+      "entropy_threshold": 0.05,
+      "acceptance_rate_threshold": 0.1,
+      "entropy_plateau_delta": 0.001,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.338683988892873
+      },
+      "block_wall_us": {
+        "median": 119923.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 128
+    },
+    {
+      "entropy_threshold": 0.05,
+      "acceptance_rate_threshold": 0.1,
+      "entropy_plateau_delta": 0.005,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.426800596617483
+      },
+      "block_wall_us": {
+        "median": 118669.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 128
+    },
+    {
+      "entropy_threshold": 0.05,
+      "acceptance_rate_threshold": 0.1,
+      "entropy_plateau_delta": 0.01,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.312621052544078
+      },
+      "block_wall_us": {
+        "median": 120299.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 128
+    },
+    {
+      "entropy_threshold": 0.05,
+      "acceptance_rate_threshold": 0.1,
+      "entropy_plateau_delta": 0.05,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.41998905401423
+      },
+      "block_wall_us": {
+        "median": 118765.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 128
+    },
+    {
+      "entropy_threshold": 0.05,
+      "acceptance_rate_threshold": 0.2,
+      "entropy_plateau_delta": 0.001,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.32389958047546
+      },
+      "block_wall_us": {
+        "median": 120136.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 128
+    },
+    {
+      "entropy_threshold": 0.05,
+      "acceptance_rate_threshold": 0.2,
+      "entropy_plateau_delta": 0.005,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.350103123773579
+      },
+      "block_wall_us": {
+        "median": 119759.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 128
+    },
+    {
+      "entropy_threshold": 0.05,
+      "acceptance_rate_threshold": 0.2,
+      "entropy_plateau_delta": 0.01,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.337432571014082
+      },
+      "block_wall_us": {
+        "median": 119941.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 128
+    },
+    {
+      "entropy_threshold": 0.05,
+      "acceptance_rate_threshold": 0.2,
+      "entropy_plateau_delta": 0.05,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.322306277515626
+      },
+      "block_wall_us": {
+        "median": 120159.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 128
+    },
+    {
+      "entropy_threshold": 0.1,
+      "acceptance_rate_threshold": 0.01,
+      "entropy_plateau_delta": 0.001,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.324246031415704
+      },
+      "block_wall_us": {
+        "median": 120131.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 128
+    },
+    {
+      "entropy_threshold": 0.1,
+      "acceptance_rate_threshold": 0.01,
+      "entropy_plateau_delta": 0.005,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.380403265005112
+      },
+      "block_wall_us": {
+        "median": 119326.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 128
+    },
+    {
+      "entropy_threshold": 0.1,
+      "acceptance_rate_threshold": 0.01,
+      "entropy_plateau_delta": 0.01,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.36617055275289
+      },
+      "block_wall_us": {
+        "median": 119529.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 128
+    },
+    {
+      "entropy_threshold": 0.1,
+      "acceptance_rate_threshold": 0.01,
+      "entropy_plateau_delta": 0.05,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.339518476203184
+      },
+      "block_wall_us": {
+        "median": 119911.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 128
+    },
+    {
+      "entropy_threshold": 0.1,
+      "acceptance_rate_threshold": 0.05,
+      "entropy_plateau_delta": 0.001,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.39870324021971
+      },
+      "block_wall_us": {
+        "median": 119066.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 128
+    },
+    {
+      "entropy_threshold": 0.1,
+      "acceptance_rate_threshold": 0.05,
+      "entropy_plateau_delta": 0.005,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.358967500334359
+      },
+      "block_wall_us": {
+        "median": 119632.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 128
+    },
+    {
+      "entropy_threshold": 0.1,
+      "acceptance_rate_threshold": 0.05,
+      "entropy_plateau_delta": 0.01,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.366730532709733
+      },
+      "block_wall_us": {
+        "median": 119521.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 128
+    },
+    {
+      "entropy_threshold": 0.1,
+      "acceptance_rate_threshold": 0.05,
+      "entropy_plateau_delta": 0.05,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.338336335134413
+      },
+      "block_wall_us": {
+        "median": 119928.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 128
+    },
+    {
+      "entropy_threshold": 0.1,
+      "acceptance_rate_threshold": 0.1,
+      "entropy_plateau_delta": 0.001,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.347245409015025
+      },
+      "block_wall_us": {
+        "median": 119800.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 128
+    },
+    {
+      "entropy_threshold": 0.1,
+      "acceptance_rate_threshold": 0.1,
+      "entropy_plateau_delta": 0.005,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.37949035939634
+      },
+      "block_wall_us": {
+        "median": 119339.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 128
+    },
+    {
+      "entropy_threshold": 0.1,
+      "acceptance_rate_threshold": 0.1,
+      "entropy_plateau_delta": 0.01,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.282602393672093
+      },
+      "block_wall_us": {
+        "median": 120735.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 128
+    },
+    {
+      "entropy_threshold": 0.1,
+      "acceptance_rate_threshold": 0.1,
+      "entropy_plateau_delta": 0.05,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.349754517217194
+      },
+      "block_wall_us": {
+        "median": 119764.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 128
+    },
+    {
+      "entropy_threshold": 0.1,
+      "acceptance_rate_threshold": 0.2,
+      "entropy_plateau_delta": 0.001,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.328128253175098
+      },
+      "block_wall_us": {
+        "median": 120075.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 128
+    },
+    {
+      "entropy_threshold": 0.1,
+      "acceptance_rate_threshold": 0.2,
+      "entropy_plateau_delta": 0.005,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.36470096194061
+      },
+      "block_wall_us": {
+        "median": 119550.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 128
+    },
+    {
+      "entropy_threshold": 0.1,
+      "acceptance_rate_threshold": 0.2,
+      "entropy_plateau_delta": 0.01,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.286583193151968
+      },
+      "block_wall_us": {
+        "median": 120677.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 128
+    },
+    {
+      "entropy_threshold": 0.1,
+      "acceptance_rate_threshold": 0.2,
+      "entropy_plateau_delta": 0.05,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.28850632827458
+      },
+      "block_wall_us": {
+        "median": 120649.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 128
+    },
+    {
+      "entropy_threshold": 0.5,
+      "acceptance_rate_threshold": 0.01,
+      "entropy_plateau_delta": 0.001,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.356732183446985
+      },
+      "block_wall_us": {
+        "median": 119664.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 128
+    },
+    {
+      "entropy_threshold": 0.5,
+      "acceptance_rate_threshold": 0.01,
+      "entropy_plateau_delta": 0.005,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.325840077263795
+      },
+      "block_wall_us": {
+        "median": 120108.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 128
+    },
+    {
+      "entropy_threshold": 0.5,
+      "acceptance_rate_threshold": 0.01,
+      "entropy_plateau_delta": 0.01,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.381527114240214
+      },
+      "block_wall_us": {
+        "median": 119310.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 128
+    },
+    {
+      "entropy_threshold": 0.5,
+      "acceptance_rate_threshold": 0.01,
+      "entropy_plateau_delta": 0.05,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.268562923763849
+      },
+      "block_wall_us": {
+        "median": 120940.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 128
+    },
+    {
+      "entropy_threshold": 0.5,
+      "acceptance_rate_threshold": 0.05,
+      "entropy_plateau_delta": 0.001,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.332291796858726
+      },
+      "block_wall_us": {
+        "median": 120015.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 128
+    },
+    {
+      "entropy_threshold": 0.5,
+      "acceptance_rate_threshold": 0.05,
+      "entropy_plateau_delta": 0.005,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.399267583866687
+      },
+      "block_wall_us": {
+        "median": 119058.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 128
+    },
+    {
+      "entropy_threshold": 0.5,
+      "acceptance_rate_threshold": 0.05,
+      "entropy_plateau_delta": 0.01,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.407529783674258
+      },
+      "block_wall_us": {
+        "median": 118941.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 128
+    },
+    {
+      "entropy_threshold": 0.5,
+      "acceptance_rate_threshold": 0.05,
+      "entropy_plateau_delta": 0.05,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.307579835842223
+      },
+      "block_wall_us": {
+        "median": 120372.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 128
+    },
+    {
+      "entropy_threshold": 0.5,
+      "acceptance_rate_threshold": 0.1,
+      "entropy_plateau_delta": 0.001,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.310203267571925
+      },
+      "block_wall_us": {
+        "median": 120334.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 128
+    },
+    {
+      "entropy_threshold": 0.5,
+      "acceptance_rate_threshold": 0.1,
+      "entropy_plateau_delta": 0.005,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.328475056217206
+      },
+      "block_wall_us": {
+        "median": 120070.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 128
+    },
+    {
+      "entropy_threshold": 0.5,
+      "acceptance_rate_threshold": 0.1,
+      "entropy_plateau_delta": 0.01,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.351497841137808
+      },
+      "block_wall_us": {
+        "median": 119739.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 128
+    },
+    {
+      "entropy_threshold": 0.5,
+      "acceptance_rate_threshold": 0.1,
+      "entropy_plateau_delta": 0.05,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.34188376419163
+      },
+      "block_wall_us": {
+        "median": 119877.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 128
+    },
+    {
+      "entropy_threshold": 0.5,
+      "acceptance_rate_threshold": 0.2,
+      "entropy_plateau_delta": 0.001,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.368060785593547
+      },
+      "block_wall_us": {
+        "median": 119502.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 128
+    },
+    {
+      "entropy_threshold": 0.5,
+      "acceptance_rate_threshold": 0.2,
+      "entropy_plateau_delta": 0.005,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.353241893178742
+      },
+      "block_wall_us": {
+        "median": 119714.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 128
+    },
+    {
+      "entropy_threshold": 0.5,
+      "acceptance_rate_threshold": 0.2,
+      "entropy_plateau_delta": 0.01,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.381808123648433
+      },
+      "block_wall_us": {
+        "median": 119306.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 128
+    },
+    {
+      "entropy_threshold": 0.5,
+      "acceptance_rate_threshold": 0.2,
+      "entropy_plateau_delta": 0.05,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.361693410149423
+      },
+      "block_wall_us": {
+        "median": 119593.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 128
+    },
+    {
+      "entropy_threshold": 0.005,
+      "acceptance_rate_threshold": 0.01,
+      "entropy_plateau_delta": 0.001,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.364630994303687
+      },
+      "block_wall_us": {
+        "median": 119551.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 512
+    },
+    {
+      "entropy_threshold": 0.005,
+      "acceptance_rate_threshold": 0.01,
+      "entropy_plateau_delta": 0.005,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.43518823122538
+      },
+      "block_wall_us": {
+        "median": 118551.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 512
+    },
+    {
+      "entropy_threshold": 0.005,
+      "acceptance_rate_threshold": 0.01,
+      "entropy_plateau_delta": 0.01,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.377173876620983
+      },
+      "block_wall_us": {
+        "median": 119372.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 512
+    },
+    {
+      "entropy_threshold": 0.005,
+      "acceptance_rate_threshold": 0.01,
+      "entropy_plateau_delta": 0.05,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.462456312569287
+      },
+      "block_wall_us": {
+        "median": 118169.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 512
+    },
+    {
+      "entropy_threshold": 0.005,
+      "acceptance_rate_threshold": 0.05,
+      "entropy_plateau_delta": 0.001,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.404138197648523
+      },
+      "block_wall_us": {
+        "median": 118989.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 512
+    },
+    {
+      "entropy_threshold": 0.005,
+      "acceptance_rate_threshold": 0.05,
+      "entropy_plateau_delta": 0.005,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.409863087428937
+      },
+      "block_wall_us": {
+        "median": 118908.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 512
+    },
+    {
+      "entropy_threshold": 0.005,
+      "acceptance_rate_threshold": 0.05,
+      "entropy_plateau_delta": 0.01,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.414250374434141
+      },
+      "block_wall_us": {
+        "median": 118846.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 512
+    },
+    {
+      "entropy_threshold": 0.005,
+      "acceptance_rate_threshold": 0.05,
+      "entropy_plateau_delta": 0.05,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.410358197155617
+      },
+      "block_wall_us": {
+        "median": 118901.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 512
+    },
+    {
+      "entropy_threshold": 0.005,
+      "acceptance_rate_threshold": 0.1,
+      "entropy_plateau_delta": 0.001,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.431703204047217
+      },
+      "block_wall_us": {
+        "median": 118600.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 512
+    },
+    {
+      "entropy_threshold": 0.005,
+      "acceptance_rate_threshold": 0.1,
+      "entropy_plateau_delta": 0.005,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.428292090890702
+      },
+      "block_wall_us": {
+        "median": 118648.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 512
+    },
+    {
+      "entropy_threshold": 0.005,
+      "acceptance_rate_threshold": 0.1,
+      "entropy_plateau_delta": 0.01,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.38841727342885
+      },
+      "block_wall_us": {
+        "median": 119212.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 512
+    },
+    {
+      "entropy_threshold": 0.005,
+      "acceptance_rate_threshold": 0.1,
+      "entropy_plateau_delta": 0.05,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.410146000134562
+      },
+      "block_wall_us": {
+        "median": 118904.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 512
+    },
+    {
+      "entropy_threshold": 0.005,
+      "acceptance_rate_threshold": 0.2,
+      "entropy_plateau_delta": 0.001,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.396658130064234
+      },
+      "block_wall_us": {
+        "median": 119095.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 512
+    },
+    {
+      "entropy_threshold": 0.005,
+      "acceptance_rate_threshold": 0.2,
+      "entropy_plateau_delta": 0.005,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.390387971539804
+      },
+      "block_wall_us": {
+        "median": 119184.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 512
+    },
+    {
+      "entropy_threshold": 0.005,
+      "acceptance_rate_threshold": 0.2,
+      "entropy_plateau_delta": 0.01,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.387361923054343
+      },
+      "block_wall_us": {
+        "median": 119227.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 512
+    },
+    {
+      "entropy_threshold": 0.005,
+      "acceptance_rate_threshold": 0.2,
+      "entropy_plateau_delta": 0.05,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.393557105565769
+      },
+      "block_wall_us": {
+        "median": 119139.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 512
+    },
+    {
+      "entropy_threshold": 0.01,
+      "acceptance_rate_threshold": 0.01,
+      "entropy_plateau_delta": 0.001,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.397292712829383
+      },
+      "block_wall_us": {
+        "median": 119086.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 512
+    },
+    {
+      "entropy_threshold": 0.01,
+      "acceptance_rate_threshold": 0.01,
+      "entropy_plateau_delta": 0.005,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.416445734966123
+      },
+      "block_wall_us": {
+        "median": 118815.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 512
+    },
+    {
+      "entropy_threshold": 0.01,
+      "acceptance_rate_threshold": 0.01,
+      "entropy_plateau_delta": 0.01,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.41998905401423
+      },
+      "block_wall_us": {
+        "median": 118765.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 512
+    },
+    {
+      "entropy_threshold": 0.01,
+      "acceptance_rate_threshold": 0.01,
+      "entropy_plateau_delta": 0.05,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.387150884844418
+      },
+      "block_wall_us": {
+        "median": 119230.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 512
+    },
+    {
+      "entropy_threshold": 0.01,
+      "acceptance_rate_threshold": 0.05,
+      "entropy_plateau_delta": 0.001,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.356732183446985
+      },
+      "block_wall_us": {
+        "median": 119664.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 512
+    },
+    {
+      "entropy_threshold": 0.01,
+      "acceptance_rate_threshold": 0.05,
+      "entropy_plateau_delta": 0.005,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.404773911581778
+      },
+      "block_wall_us": {
+        "median": 118980.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 512
+    },
+    {
+      "entropy_threshold": 0.01,
+      "acceptance_rate_threshold": 0.05,
+      "entropy_plateau_delta": 0.01,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.399690891375197
+      },
+      "block_wall_us": {
+        "median": 119052.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 512
+    },
+    {
+      "entropy_threshold": 0.01,
+      "acceptance_rate_threshold": 0.05,
+      "entropy_plateau_delta": 0.05,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.39137366786943
+      },
+      "block_wall_us": {
+        "median": 119170.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 512
+    },
+    {
+      "entropy_threshold": 0.01,
+      "acceptance_rate_threshold": 0.1,
+      "entropy_plateau_delta": 0.001,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.341953351796857
+      },
+      "block_wall_us": {
+        "median": 119876.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 512
+    },
+    {
+      "entropy_threshold": 0.01,
+      "acceptance_rate_threshold": 0.1,
+      "entropy_plateau_delta": 0.005,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.401878660068391
+      },
+      "block_wall_us": {
+        "median": 119021.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 512
+    },
+    {
+      "entropy_threshold": 0.01,
+      "acceptance_rate_threshold": 0.1,
+      "entropy_plateau_delta": 0.01,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.435045928825081
+      },
+      "block_wall_us": {
+        "median": 118553.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 512
+    },
+    {
+      "entropy_threshold": 0.01,
+      "acceptance_rate_threshold": 0.1,
+      "entropy_plateau_delta": 0.05,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.356243367231828
+      },
+      "block_wall_us": {
+        "median": 119671.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 512
+    },
+    {
+      "entropy_threshold": 0.01,
+      "acceptance_rate_threshold": 0.2,
+      "entropy_plateau_delta": 0.001,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.470556346140816
+      },
+      "block_wall_us": {
+        "median": 118056.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 512
+    },
+    {
+      "entropy_threshold": 0.01,
+      "acceptance_rate_threshold": 0.2,
+      "entropy_plateau_delta": 0.005,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.377314233056882
+      },
+      "block_wall_us": {
+        "median": 119370.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 512
+    },
+    {
+      "entropy_threshold": 0.01,
+      "acceptance_rate_threshold": 0.2,
+      "entropy_plateau_delta": 0.01,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.38349457587901
+      },
+      "block_wall_us": {
+        "median": 119282.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 512
+    },
+    {
+      "entropy_threshold": 0.01,
+      "acceptance_rate_threshold": 0.2,
+      "entropy_plateau_delta": 0.05,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.405409721696884
+      },
+      "block_wall_us": {
+        "median": 118971.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 512
+    },
+    {
+      "entropy_threshold": 0.05,
+      "acceptance_rate_threshold": 0.01,
+      "entropy_plateau_delta": 0.001,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.352962795903707
+      },
+      "block_wall_us": {
+        "median": 119718.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 512
+    },
+    {
+      "entropy_threshold": 0.05,
+      "acceptance_rate_threshold": 0.01,
+      "entropy_plateau_delta": 0.005,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.428434165500732
+      },
+      "block_wall_us": {
+        "median": 118646.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 512
+    },
+    {
+      "entropy_threshold": 0.05,
+      "acceptance_rate_threshold": 0.01,
+      "entropy_plateau_delta": 0.01,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.377314233056882
+      },
+      "block_wall_us": {
+        "median": 119370.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 512
+    },
+    {
+      "entropy_threshold": 0.05,
+      "acceptance_rate_threshold": 0.01,
+      "entropy_plateau_delta": 0.05,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.452871017641142
+      },
+      "block_wall_us": {
+        "median": 118303.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 512
+    },
+    {
+      "entropy_threshold": 0.05,
+      "acceptance_rate_threshold": 0.05,
+      "entropy_plateau_delta": 0.001,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.363022061652199
+      },
+      "block_wall_us": {
+        "median": 119574.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 512
+    },
+    {
+      "entropy_threshold": 0.05,
+      "acceptance_rate_threshold": 0.05,
+      "entropy_plateau_delta": 0.005,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.363861427543869
+      },
+      "block_wall_us": {
+        "median": 119562.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 512
+    },
+    {
+      "entropy_threshold": 0.05,
+      "acceptance_rate_threshold": 0.05,
+      "entropy_plateau_delta": 0.01,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.383635144198525
+      },
+      "block_wall_us": {
+        "median": 119280.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 512
+    },
+    {
+      "entropy_threshold": 0.05,
+      "acceptance_rate_threshold": 0.05,
+      "entropy_plateau_delta": 0.05,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.44787240333522
+      },
+      "block_wall_us": {
+        "median": 118373.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 512
+    },
+    {
+      "entropy_threshold": 0.05,
+      "acceptance_rate_threshold": 0.1,
+      "entropy_plateau_delta": 0.001,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.42701363490806
+      },
+      "block_wall_us": {
+        "median": 118666.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 512
+    },
+    {
+      "entropy_threshold": 0.05,
+      "acceptance_rate_threshold": 0.1,
+      "entropy_plateau_delta": 0.005,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.342022940563087
+      },
+      "block_wall_us": {
+        "median": 119875.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 512
+    },
+    {
+      "entropy_threshold": 0.05,
+      "acceptance_rate_threshold": 0.1,
+      "entropy_plateau_delta": 0.01,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.442095665828084
+      },
+      "block_wall_us": {
+        "median": 118454.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 512
+    },
+    {
+      "entropy_threshold": 0.05,
+      "acceptance_rate_threshold": 0.1,
+      "entropy_plateau_delta": 0.05,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.435259384226065
+      },
+      "block_wall_us": {
+        "median": 118550.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 512
+    },
+    {
+      "entropy_threshold": 0.05,
+      "acceptance_rate_threshold": 0.2,
+      "entropy_plateau_delta": 0.001,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.499715259538805
+      },
+      "block_wall_us": {
+        "median": 117651.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 512
+    },
+    {
+      "entropy_threshold": 0.05,
+      "acceptance_rate_threshold": 0.2,
+      "entropy_plateau_delta": 0.005,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.365400702693659
+      },
+      "block_wall_us": {
+        "median": 119540.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 512
+    },
+    {
+      "entropy_threshold": 0.05,
+      "acceptance_rate_threshold": 0.2,
+      "entropy_plateau_delta": 0.01,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.39835056394924
+      },
+      "block_wall_us": {
+        "median": 119071.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 512
+    },
+    {
+      "entropy_threshold": 0.05,
+      "acceptance_rate_threshold": 0.2,
+      "entropy_plateau_delta": 0.05,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.420130848833391
+      },
+      "block_wall_us": {
+        "median": 118763.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 512
+    },
+    {
+      "entropy_threshold": 0.1,
+      "acceptance_rate_threshold": 0.01,
+      "entropy_plateau_delta": 0.001,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.381878378944721
+      },
+      "block_wall_us": {
+        "median": 119305.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 512
+    },
+    {
+      "entropy_threshold": 0.1,
+      "acceptance_rate_threshold": 0.01,
+      "entropy_plateau_delta": 0.005,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.431987588114271
+      },
+      "block_wall_us": {
+        "median": 118596.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 512
+    },
+    {
+      "entropy_threshold": 0.1,
+      "acceptance_rate_threshold": 0.01,
+      "entropy_plateau_delta": 0.01,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.431774298265584
+      },
+      "block_wall_us": {
+        "median": 118599.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 512
+    },
+    {
+      "entropy_threshold": 0.1,
+      "acceptance_rate_threshold": 0.01,
+      "entropy_plateau_delta": 0.05,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.376823006106704
+      },
+      "block_wall_us": {
+        "median": 119377.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 512
+    },
+    {
+      "entropy_threshold": 0.1,
+      "acceptance_rate_threshold": 0.05,
+      "entropy_plateau_delta": 0.001,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.390387971539804
+      },
+      "block_wall_us": {
+        "median": 119184.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 512
+    },
+    {
+      "entropy_threshold": 0.1,
+      "acceptance_rate_threshold": 0.05,
+      "entropy_plateau_delta": 0.005,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.396164631996104
+      },
+      "block_wall_us": {
+        "median": 119102.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 512
+    },
+    {
+      "entropy_threshold": 0.1,
+      "acceptance_rate_threshold": 0.05,
+      "entropy_plateau_delta": 0.01,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.388839487945237
+      },
+      "block_wall_us": {
+        "median": 119206.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 512
+    },
+    {
+      "entropy_threshold": 0.1,
+      "acceptance_rate_threshold": 0.05,
+      "entropy_plateau_delta": 0.05,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.373175694345594
+      },
+      "block_wall_us": {
+        "median": 119429.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 512
+    },
+    {
+      "entropy_threshold": 0.1,
+      "acceptance_rate_threshold": 0.1,
+      "entropy_plateau_delta": 0.001,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.392852646686082
+      },
+      "block_wall_us": {
+        "median": 119149.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 512
+    },
+    {
+      "entropy_threshold": 0.1,
+      "acceptance_rate_threshold": 0.1,
+      "entropy_plateau_delta": 0.005,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.387221229734376
+      },
+      "block_wall_us": {
+        "median": 119229.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 512
+    },
+    {
+      "entropy_threshold": 0.1,
+      "acceptance_rate_threshold": 0.1,
+      "entropy_plateau_delta": 0.01,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.381386616601851
+      },
+      "block_wall_us": {
+        "median": 119312.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 512
+    },
+    {
+      "entropy_threshold": 0.1,
+      "acceptance_rate_threshold": 0.1,
+      "entropy_plateau_delta": 0.05,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.315800853201168
+      },
+      "block_wall_us": {
+        "median": 120253.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 512
+    },
+    {
+      "entropy_threshold": 0.1,
+      "acceptance_rate_threshold": 0.2,
+      "entropy_plateau_delta": 0.001,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.3870101986044
+      },
+      "block_wall_us": {
+        "median": 119232.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 512
+    },
+    {
+      "entropy_threshold": 0.1,
+      "acceptance_rate_threshold": 0.2,
+      "entropy_plateau_delta": 0.005,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.348430077723885
+      },
+      "block_wall_us": {
+        "median": 119783.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 512
+    },
+    {
+      "entropy_threshold": 0.1,
+      "acceptance_rate_threshold": 0.2,
+      "entropy_plateau_delta": 0.01,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.273419983618629
+      },
+      "block_wall_us": {
+        "median": 120869.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 512
+    },
+    {
+      "entropy_threshold": 0.1,
+      "acceptance_rate_threshold": 0.2,
+      "entropy_plateau_delta": 0.05,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.323137489908195
+      },
+      "block_wall_us": {
+        "median": 120147.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 512
+    },
+    {
+      "entropy_threshold": 0.5,
+      "acceptance_rate_threshold": 0.01,
+      "entropy_plateau_delta": 0.001,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.333263889467588
+      },
+      "block_wall_us": {
+        "median": 120001.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 512
+    },
+    {
+      "entropy_threshold": 0.5,
+      "acceptance_rate_threshold": 0.01,
+      "entropy_plateau_delta": 0.005,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.357221056854176
+      },
+      "block_wall_us": {
+        "median": 119657.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 512
+    },
+    {
+      "entropy_threshold": 0.5,
+      "acceptance_rate_threshold": 0.01,
+      "entropy_plateau_delta": 0.01,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.328891257995735
+      },
+      "block_wall_us": {
+        "median": 120064.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 512
+    },
+    {
+      "entropy_threshold": 0.5,
+      "acceptance_rate_threshold": 0.01,
+      "entropy_plateau_delta": 0.05,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.32674132978059
+      },
+      "block_wall_us": {
+        "median": 120095.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 512
+    },
+    {
+      "entropy_threshold": 0.5,
+      "acceptance_rate_threshold": 0.05,
+      "entropy_plateau_delta": 0.001,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.46503517222114
+      },
+      "block_wall_us": {
+        "median": 118133.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 512
+    },
+    {
+      "entropy_threshold": 0.5,
+      "acceptance_rate_threshold": 0.05,
+      "entropy_plateau_delta": 0.005,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.429215661482699
+      },
+      "block_wall_us": {
+        "median": 118635.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 512
+    },
+    {
+      "entropy_threshold": 0.5,
+      "acceptance_rate_threshold": 0.05,
+      "entropy_plateau_delta": 0.01,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.333888925928395
+      },
+      "block_wall_us": {
+        "median": 119992.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 512
+    },
+    {
+      "entropy_threshold": 0.5,
+      "acceptance_rate_threshold": 0.05,
+      "entropy_plateau_delta": 0.05,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.293455634159084
+      },
+      "block_wall_us": {
+        "median": 120577.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 512
+    },
+    {
+      "entropy_threshold": 0.5,
+      "acceptance_rate_threshold": 0.1,
+      "entropy_plateau_delta": 0.001,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.350800424220662
+      },
+      "block_wall_us": {
+        "median": 119749.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 512
+    },
+    {
+      "entropy_threshold": 0.5,
+      "acceptance_rate_threshold": 0.1,
+      "entropy_plateau_delta": 0.005,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.310341388824254
+      },
+      "block_wall_us": {
+        "median": 120332.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 512
+    },
+    {
+      "entropy_threshold": 0.5,
+      "acceptance_rate_threshold": 0.1,
+      "entropy_plateau_delta": 0.01,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.316215789167297
+      },
+      "block_wall_us": {
+        "median": 120247.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 512
+    },
+    {
+      "entropy_threshold": 0.5,
+      "acceptance_rate_threshold": 0.1,
+      "entropy_plateau_delta": 0.05,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.38229993545629
+      },
+      "block_wall_us": {
+        "median": 119299.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 512
+    },
+    {
+      "entropy_threshold": 0.5,
+      "acceptance_rate_threshold": 0.2,
+      "entropy_plateau_delta": 0.001,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.329030001166064
+      },
+      "block_wall_us": {
+        "median": 120062.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 512
+    },
+    {
+      "entropy_threshold": 0.5,
+      "acceptance_rate_threshold": 0.2,
+      "entropy_plateau_delta": 0.005,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.27561094697816
+      },
+      "block_wall_us": {
+        "median": 120837.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 512
+    },
+    {
+      "entropy_threshold": 0.5,
+      "acceptance_rate_threshold": 0.2,
+      "entropy_plateau_delta": 0.01,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.407953924412494
+      },
+      "block_wall_us": {
+        "median": 118935.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 512
+    },
+    {
+      "entropy_threshold": 0.5,
+      "acceptance_rate_threshold": 0.2,
+      "entropy_plateau_delta": 0.05,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.37492881310509
+      },
+      "block_wall_us": {
+        "median": 119404.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 512
+    },
+    {
+      "entropy_threshold": 0.005,
+      "acceptance_rate_threshold": 0.01,
+      "entropy_plateau_delta": 0.001,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 7.711408257375963
+      },
+      "block_wall_us": {
+        "median": 129678.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 2048
+    },
+    {
+      "entropy_threshold": 0.005,
+      "acceptance_rate_threshold": 0.01,
+      "entropy_plateau_delta": 0.005,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 7.6686528477542355
+      },
+      "block_wall_us": {
+        "median": 130401.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 2048
+    },
+    {
+      "entropy_threshold": 0.005,
+      "acceptance_rate_threshold": 0.01,
+      "entropy_plateau_delta": 0.01,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 7.725050019698877
+      },
+      "block_wall_us": {
+        "median": 129449.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 2048
+    },
+    {
+      "entropy_threshold": 0.005,
+      "acceptance_rate_threshold": 0.01,
+      "entropy_plateau_delta": 0.05,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 7.681730540256109
+      },
+      "block_wall_us": {
+        "median": 130179.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 2048
+    },
+    {
+      "entropy_threshold": 0.005,
+      "acceptance_rate_threshold": 0.05,
+      "entropy_plateau_delta": 0.001,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 7.682969928855699
+      },
+      "block_wall_us": {
+        "median": 130158.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 2048
+    },
+    {
+      "entropy_threshold": 0.005,
+      "acceptance_rate_threshold": 0.05,
+      "entropy_plateau_delta": 0.005,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 7.714263673532361
+      },
+      "block_wall_us": {
+        "median": 129630.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 2048
+    },
+    {
+      "entropy_threshold": 0.005,
+      "acceptance_rate_threshold": 0.05,
+      "entropy_plateau_delta": 0.01,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 7.7708530842515895
+      },
+      "block_wall_us": {
+        "median": 128686.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 2048
+    },
+    {
+      "entropy_threshold": 0.005,
+      "acceptance_rate_threshold": 0.05,
+      "entropy_plateau_delta": 0.05,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.278762490582908
+      },
+      "block_wall_us": {
+        "median": 120791.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 2048
+    },
+    {
+      "entropy_threshold": 0.005,
+      "acceptance_rate_threshold": 0.1,
+      "entropy_plateau_delta": 0.001,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.17547846987745
+      },
+      "block_wall_us": {
+        "median": 122317.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 2048
+    },
+    {
+      "entropy_threshold": 0.005,
+      "acceptance_rate_threshold": 0.1,
+      "entropy_plateau_delta": 0.005,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 7.745753390703547
+      },
+      "block_wall_us": {
+        "median": 129103.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 2048
+    },
+    {
+      "entropy_threshold": 0.005,
+      "acceptance_rate_threshold": 0.1,
+      "entropy_plateau_delta": 0.01,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 7.657436902719921
+      },
+      "block_wall_us": {
+        "median": 130592.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 2048
+    },
+    {
+      "entropy_threshold": 0.005,
+      "acceptance_rate_threshold": 0.1,
+      "entropy_plateau_delta": 0.05,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 7.752358655120821
+      },
+      "block_wall_us": {
+        "median": 128993.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 2048
+    },
+    {
+      "entropy_threshold": 0.005,
+      "acceptance_rate_threshold": 0.2,
+      "entropy_plateau_delta": 0.001,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 7.7326961591698185
+      },
+      "block_wall_us": {
+        "median": 129321.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 2048
+    },
+    {
+      "entropy_threshold": 0.005,
+      "acceptance_rate_threshold": 0.2,
+      "entropy_plateau_delta": 0.005,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 7.76343267939352
+      },
+      "block_wall_us": {
+        "median": 128809.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 2048
+    },
+    {
+      "entropy_threshold": 0.005,
+      "acceptance_rate_threshold": 0.2,
+      "entropy_plateau_delta": 0.01,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.235943303766296
+      },
+      "block_wall_us": {
+        "median": 121419.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 2048
+    },
+    {
+      "entropy_threshold": 0.005,
+      "acceptance_rate_threshold": 0.2,
+      "entropy_plateau_delta": 0.05,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.112339679887077
+      },
+      "block_wall_us": {
+        "median": 123269.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 2048
+    },
+    {
+      "entropy_threshold": 0.01,
+      "acceptance_rate_threshold": 0.01,
+      "entropy_plateau_delta": 0.001,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 7.717359428298014
+      },
+      "block_wall_us": {
+        "median": 129578.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 2048
+    },
+    {
+      "entropy_threshold": 0.01,
+      "acceptance_rate_threshold": 0.01,
+      "entropy_plateau_delta": 0.005,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 7.757470444037608
+      },
+      "block_wall_us": {
+        "median": 128908.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 2048
+    },
+    {
+      "entropy_threshold": 0.01,
+      "acceptance_rate_threshold": 0.01,
+      "entropy_plateau_delta": 0.01,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.046800189904484
+      },
+      "block_wall_us": {
+        "median": 124273.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 2048
+    },
+    {
+      "entropy_threshold": 0.01,
+      "acceptance_rate_threshold": 0.01,
+      "entropy_plateau_delta": 0.05,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 7.682969928855699
+      },
+      "block_wall_us": {
+        "median": 130158.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 2048
+    },
+    {
+      "entropy_threshold": 0.01,
+      "acceptance_rate_threshold": 0.05,
+      "entropy_plateau_delta": 0.001,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 7.7061194294389175
+      },
+      "block_wall_us": {
+        "median": 129767.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 2048
+    },
+    {
+      "entropy_threshold": 0.01,
+      "acceptance_rate_threshold": 0.05,
+      "entropy_plateau_delta": 0.005,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 7.668770466031182
+      },
+      "block_wall_us": {
+        "median": 130399.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 2048
+    },
+    {
+      "entropy_threshold": 0.01,
+      "acceptance_rate_threshold": 0.05,
+      "entropy_plateau_delta": 0.01,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 7.588808025923369
+      },
+      "block_wall_us": {
+        "median": 131773.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 2048
+    },
+    {
+      "entropy_threshold": 0.01,
+      "acceptance_rate_threshold": 0.05,
+      "entropy_plateau_delta": 0.05,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 7.751998077504477
+      },
+      "block_wall_us": {
+        "median": 128999.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 2048
+    },
+    {
+      "entropy_threshold": 0.01,
+      "acceptance_rate_threshold": 0.1,
+      "entropy_plateau_delta": 0.001,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 7.718133755257978
+      },
+      "block_wall_us": {
+        "median": 129565.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 2048
+    },
+    {
+      "entropy_threshold": 0.01,
+      "acceptance_rate_threshold": 0.1,
+      "entropy_plateau_delta": 0.005,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 7.650055845407671
+      },
+      "block_wall_us": {
+        "median": 130718.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 2048
+    },
+    {
+      "entropy_threshold": 0.01,
+      "acceptance_rate_threshold": 0.1,
+      "entropy_plateau_delta": 0.01,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 7.708970929470625
+      },
+      "block_wall_us": {
+        "median": 129719.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 2048
+    },
+    {
+      "entropy_threshold": 0.01,
+      "acceptance_rate_threshold": 0.1,
+      "entropy_plateau_delta": 0.05,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 7.614058597794968
+      },
+      "block_wall_us": {
+        "median": 131336.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 2048
+    },
+    {
+      "entropy_threshold": 0.01,
+      "acceptance_rate_threshold": 0.2,
+      "entropy_plateau_delta": 0.001,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 7.678781223844151
+      },
+      "block_wall_us": {
+        "median": 130229.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 2048
+    },
+    {
+      "entropy_threshold": 0.01,
+      "acceptance_rate_threshold": 0.2,
+      "entropy_plateau_delta": 0.005,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 7.7059412807274414
+      },
+      "block_wall_us": {
+        "median": 129770.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 2048
+    },
+    {
+      "entropy_threshold": 0.01,
+      "acceptance_rate_threshold": 0.2,
+      "entropy_plateau_delta": 0.01,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 7.759276214714692
+      },
+      "block_wall_us": {
+        "median": 128878.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 2048
+    },
+    {
+      "entropy_threshold": 0.01,
+      "acceptance_rate_threshold": 0.2,
+      "entropy_plateau_delta": 0.05,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 7.682143625357219
+      },
+      "block_wall_us": {
+        "median": 130172.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 2048
+    },
+    {
+      "entropy_threshold": 0.05,
+      "acceptance_rate_threshold": 0.01,
+      "entropy_plateau_delta": 0.001,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 7.678427458056591
+      },
+      "block_wall_us": {
+        "median": 130235.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 2048
+    },
+    {
+      "entropy_threshold": 0.05,
+      "acceptance_rate_threshold": 0.01,
+      "entropy_plateau_delta": 0.005,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 7.760058976448221
+      },
+      "block_wall_us": {
+        "median": 128865.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 2048
+    },
+    {
+      "entropy_threshold": 0.05,
+      "acceptance_rate_threshold": 0.01,
+      "entropy_plateau_delta": 0.01,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 7.709921898491167
+      },
+      "block_wall_us": {
+        "median": 129703.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 2048
+    },
+    {
+      "entropy_threshold": 0.05,
+      "acceptance_rate_threshold": 0.01,
+      "entropy_plateau_delta": 0.05,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 7.695030549271282
+      },
+      "block_wall_us": {
+        "median": 129954.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 2048
+    },
+    {
+      "entropy_threshold": 0.05,
+      "acceptance_rate_threshold": 0.05,
+      "entropy_plateau_delta": 0.001,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 7.767231603311948
+      },
+      "block_wall_us": {
+        "median": 128746.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 2048
+    },
+    {
+      "entropy_threshold": 0.05,
+      "acceptance_rate_threshold": 0.05,
+      "entropy_plateau_delta": 0.005,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 7.7184911893423065
+      },
+      "block_wall_us": {
+        "median": 129559.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 2048
+    },
+    {
+      "entropy_threshold": 0.05,
+      "acceptance_rate_threshold": 0.05,
+      "entropy_plateau_delta": 0.01,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 7.713430625404954
+      },
+      "block_wall_us": {
+        "median": 129644.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 2048
+    },
+    {
+      "entropy_threshold": 0.05,
+      "acceptance_rate_threshold": 0.05,
+      "entropy_plateau_delta": 0.05,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 7.695089763222088
+      },
+      "block_wall_us": {
+        "median": 129953.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 2048
+    },
+    {
+      "entropy_threshold": 0.05,
+      "acceptance_rate_threshold": 0.1,
+      "entropy_plateau_delta": 0.001,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 7.690828686791002
+      },
+      "block_wall_us": {
+        "median": 130025.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 2048
+    },
+    {
+      "entropy_threshold": 0.05,
+      "acceptance_rate_threshold": 0.1,
+      "entropy_plateau_delta": 0.005,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 7.75277937140465
+      },
+      "block_wall_us": {
+        "median": 128986.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 2048
+    },
+    {
+      "entropy_threshold": 0.05,
+      "acceptance_rate_threshold": 0.1,
+      "entropy_plateau_delta": 0.01,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 7.703804138483583
+      },
+      "block_wall_us": {
+        "median": 129806.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 2048
+    },
+    {
+      "entropy_threshold": 0.05,
+      "acceptance_rate_threshold": 0.1,
+      "entropy_plateau_delta": 0.05,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 7.687576875768758
+      },
+      "block_wall_us": {
+        "median": 130080.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 2048
+    },
+    {
+      "entropy_threshold": 0.05,
+      "acceptance_rate_threshold": 0.2,
+      "entropy_plateau_delta": 0.001,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 7.69455687046983
+      },
+      "block_wall_us": {
+        "median": 129962.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 2048
+    },
+    {
+      "entropy_threshold": 0.05,
+      "acceptance_rate_threshold": 0.2,
+      "entropy_plateau_delta": 0.005,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 7.729767334003245
+      },
+      "block_wall_us": {
+        "median": 129370.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 2048
+    },
+    {
+      "entropy_threshold": 0.05,
+      "acceptance_rate_threshold": 0.2,
+      "entropy_plateau_delta": 0.01,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 7.72248478670497
+      },
+      "block_wall_us": {
+        "median": 129492.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 2048
+    },
+    {
+      "entropy_threshold": 0.05,
+      "acceptance_rate_threshold": 0.2,
+      "entropy_plateau_delta": 0.05,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 7.756628038659033
+      },
+      "block_wall_us": {
+        "median": 128922.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 2048
+    },
+    {
+      "entropy_threshold": 0.1,
+      "acceptance_rate_threshold": 0.01,
+      "entropy_plateau_delta": 0.001,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 7.797210158205394
+      },
+      "block_wall_us": {
+        "median": 128251.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 2048
+    },
+    {
+      "entropy_threshold": 0.1,
+      "acceptance_rate_threshold": 0.01,
+      "entropy_plateau_delta": 0.005,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 7.704516387506357
+      },
+      "block_wall_us": {
+        "median": 129794.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 2048
+    },
+    {
+      "entropy_threshold": 0.1,
+      "acceptance_rate_threshold": 0.01,
+      "entropy_plateau_delta": 0.01,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 7.764336847989814
+      },
+      "block_wall_us": {
+        "median": 128794.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 2048
+    },
+    {
+      "entropy_threshold": 0.1,
+      "acceptance_rate_threshold": 0.01,
+      "entropy_plateau_delta": 0.05,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 7.711705597927093
+      },
+      "block_wall_us": {
+        "median": 129673.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 2048
+    },
+    {
+      "entropy_threshold": 0.1,
+      "acceptance_rate_threshold": 0.05,
+      "entropy_plateau_delta": 0.001,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 7.723916334538265
+      },
+      "block_wall_us": {
+        "median": 129468.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 2048
+    },
+    {
+      "entropy_threshold": 0.1,
+      "acceptance_rate_threshold": 0.05,
+      "entropy_plateau_delta": 0.005,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 7.7206364892721755
+      },
+      "block_wall_us": {
+        "median": 129523.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 2048
+    },
+    {
+      "entropy_threshold": 0.1,
+      "acceptance_rate_threshold": 0.05,
+      "entropy_plateau_delta": 0.01,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 7.704100892905293
+      },
+      "block_wall_us": {
+        "median": 129801.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 2048
+    },
+    {
+      "entropy_threshold": 0.1,
+      "acceptance_rate_threshold": 0.05,
+      "entropy_plateau_delta": 0.05,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 7.761805706479555
+      },
+      "block_wall_us": {
+        "median": 128836.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 2048
+    },
+    {
+      "entropy_threshold": 0.1,
+      "acceptance_rate_threshold": 0.1,
+      "entropy_plateau_delta": 0.001,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 7.69337292855934
+      },
+      "block_wall_us": {
+        "median": 129982.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 2048
+    },
+    {
+      "entropy_threshold": 0.1,
+      "acceptance_rate_threshold": 0.1,
+      "entropy_plateau_delta": 0.005,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 7.7287517293081995
+      },
+      "block_wall_us": {
+        "median": 129387.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 2048
+    },
+    {
+      "entropy_threshold": 0.1,
+      "acceptance_rate_threshold": 0.1,
+      "entropy_plateau_delta": 0.01,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 7.642864239802508
+      },
+      "block_wall_us": {
+        "median": 130841.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 2048
+    },
+    {
+      "entropy_threshold": 0.1,
+      "acceptance_rate_threshold": 0.1,
+      "entropy_plateau_delta": 0.05,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 7.715692174744996
+      },
+      "block_wall_us": {
+        "median": 129606.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 2048
+    },
+    {
+      "entropy_threshold": 0.1,
+      "acceptance_rate_threshold": 0.2,
+      "entropy_plateau_delta": 0.001,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 7.733473566987348
+      },
+      "block_wall_us": {
+        "median": 129308.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 2048
+    },
+    {
+      "entropy_threshold": 0.1,
+      "acceptance_rate_threshold": 0.2,
+      "entropy_plateau_delta": 0.005,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 7.795265155944279
+      },
+      "block_wall_us": {
+        "median": 128283.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 2048
+    },
+    {
+      "entropy_threshold": 0.1,
+      "acceptance_rate_threshold": 0.2,
+      "entropy_plateau_delta": 0.01,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 7.723916334538265
+      },
+      "block_wall_us": {
+        "median": 129468.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 2048
+    },
+    {
+      "entropy_threshold": 0.1,
+      "acceptance_rate_threshold": 0.2,
+      "entropy_plateau_delta": 0.05,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 7.7131331518176
+      },
+      "block_wall_us": {
+        "median": 129649.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 2048
+    },
+    {
+      "entropy_threshold": 0.5,
+      "acceptance_rate_threshold": 0.01,
+      "entropy_plateau_delta": 0.001,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 7.730424632225048
+      },
+      "block_wall_us": {
+        "median": 129359.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 2048
+    },
+    {
+      "entropy_threshold": 0.5,
+      "acceptance_rate_threshold": 0.01,
+      "entropy_plateau_delta": 0.005,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 7.718372040969118
+      },
+      "block_wall_us": {
+        "median": 129561.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 2048
+    },
+    {
+      "entropy_threshold": 0.5,
+      "acceptance_rate_threshold": 0.01,
+      "entropy_plateau_delta": 0.01,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 7.717895484259353
+      },
+      "block_wall_us": {
+        "median": 129569.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 2048
+    },
+    {
+      "entropy_threshold": 0.5,
+      "acceptance_rate_threshold": 0.01,
+      "entropy_plateau_delta": 0.05,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 7.694675284702986
+      },
+      "block_wall_us": {
+        "median": 129960.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 2048
+    },
+    {
+      "entropy_threshold": 0.5,
+      "acceptance_rate_threshold": 0.05,
+      "entropy_plateau_delta": 0.001,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 7.71718075952493
+      },
+      "block_wall_us": {
+        "median": 129581.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 2048
+    },
+    {
+      "entropy_threshold": 0.5,
+      "acceptance_rate_threshold": 0.05,
+      "entropy_plateau_delta": 0.005,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 7.718610341394135
+      },
+      "block_wall_us": {
+        "median": 129557.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 2048
+    },
+    {
+      "entropy_threshold": 0.5,
+      "acceptance_rate_threshold": 0.05,
+      "entropy_plateau_delta": 0.01,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 7.73132112815438
+      },
+      "block_wall_us": {
+        "median": 129344.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 2048
+    },
+    {
+      "entropy_threshold": 0.5,
+      "acceptance_rate_threshold": 0.05,
+      "entropy_plateau_delta": 0.05,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 7.658257899493023
+      },
+      "block_wall_us": {
+        "median": 130578.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 2048
+    },
+    {
+      "entropy_threshold": 0.5,
+      "acceptance_rate_threshold": 0.1,
+      "entropy_plateau_delta": 0.001,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 7.715215948894409
+      },
+      "block_wall_us": {
+        "median": 129614.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 2048
+    },
+    {
+      "entropy_threshold": 0.5,
+      "acceptance_rate_threshold": 0.1,
+      "entropy_plateau_delta": 0.005,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.054383195334902
+      },
+      "block_wall_us": {
+        "median": 124156.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 2048
+    },
+    {
+      "entropy_threshold": 0.5,
+      "acceptance_rate_threshold": 0.1,
+      "entropy_plateau_delta": 0.01,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 7.976644385240017
+      },
+      "block_wall_us": {
+        "median": 125366.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 2048
+    },
+    {
+      "entropy_threshold": 0.5,
+      "acceptance_rate_threshold": 0.1,
+      "entropy_plateau_delta": 0.05,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.042981694173664
+      },
+      "block_wall_us": {
+        "median": 124332.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 2048
+    },
+    {
+      "entropy_threshold": 0.5,
+      "acceptance_rate_threshold": 0.2,
+      "entropy_plateau_delta": 0.001,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 7.99488327470419
+      },
+      "block_wall_us": {
+        "median": 125080.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 2048
+    },
+    {
+      "entropy_threshold": 0.5,
+      "acceptance_rate_threshold": 0.2,
+      "entropy_plateau_delta": 0.005,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 7.979954354661091
+      },
+      "block_wall_us": {
+        "median": 125314.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 2048
+    },
+    {
+      "entropy_threshold": 0.5,
+      "acceptance_rate_threshold": 0.2,
+      "entropy_plateau_delta": 0.01,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 8.027357233451603
+      },
+      "block_wall_us": {
+        "median": 124574.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 2048
+    },
+    {
+      "entropy_threshold": 0.5,
+      "acceptance_rate_threshold": 0.2,
+      "entropy_plateau_delta": 0.05,
+      "denoise_steps": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "convergence_rate": 1.0,
+      "converged_strict_count": 0,
+      "converged_acceptance_count": 5,
+      "converged_plateau_count": 0,
+      "min_entropy": {
+        "median": 0.0
+      },
+      "min_acceptance_rate": {
+        "median": 0.0
+      },
+      "block_decode_tok_s": {
+        "median": 7.988496564946476
+      },
+      "block_wall_us": {
+        "median": 125180.0
+      },
+      "measure_runs": 5,
+      "prompt_tokens": 2048
+    }
+  ]
+}

@@ -722,6 +722,24 @@ env_flag!(
     "AX_DIFFUSION_EMBEDDING_CACHE"
 );
 
+env_flag!(
+    /// `AX_DIFFUSION_KV_CONCAT_BUFFER` — pre-allocate KV concatenation
+    /// buffers on the first denoise step and use `slice_update` for
+    /// subsequent steps, avoiding re-copying the cached prompt prefix.
+    /// Saves memory bandwidth per layer per step. Default OFF; opt-in.
+    diffusion_kv_concat_buffer_enabled,
+    "AX_DIFFUSION_KV_CONCAT_BUFFER"
+);
+
+env_flag!(
+    /// `AX_DIFFUSION_FULL_PIPELINE` — compile the full denoise pipeline
+    /// (forward + softmax + entropy + sampling + acceptance) into a single
+    /// MLX graph, collapsing ~280 per-step dispatches into one. Supersedes
+    /// `AX_DIFFUSION_COMPILED_FORWARD` (forward-only). Default OFF; opt-in.
+    diffusion_full_pipeline_enabled,
+    "AX_DIFFUSION_FULL_PIPELINE"
+);
+
 /// Diffusion convergence: mean entropy threshold below which strict
 /// convergence triggers. Defaults to 0.005 when unset.
 pub fn diffusion_entropy_threshold() -> Option<f32> {
