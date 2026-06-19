@@ -313,7 +313,10 @@ fn denoise_step(
                 canvas.tokens_gpu = new_tokens;
                 canvas.step = step;
 
+                // Skip self-conditioning when the block has converged: the
+                // embedding is only needed for the next denoise step.
                 if diff_cfg.self_conditioning
+                    && !canvas.converged
                     && let Some(embed) = embed_table
                 {
                     canvas.prev_self_cond_embed = Some(matmul(&prob, embed, None));
@@ -479,7 +482,11 @@ fn denoise_step(
     // weights are available in the checkpoint) and added to canvas embeddings
     // before the next denoise step. Without checkpoint-specific weights the
     // feedback is stored but not applied.
+    //
+    // Skip when the block has already converged: the embedding is only needed
+    // for a subsequent denoise step, and convergence means this is the last one.
     if diff_cfg.self_conditioning
+        && !canvas.converged
         && let Some(embed) = embed_table
     {
         canvas.prev_self_cond_embed = Some(matmul(&prob, embed, None));
