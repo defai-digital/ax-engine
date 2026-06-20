@@ -54,7 +54,6 @@ MODEL_CASES = [
     ModelCase("qwen3-6-27b-8bit", "mlx-community/Qwen3.6-27B-8bit", "mlx-community--Qwen3.6-27B-8bit"),
     ModelCase("qwen3-6-35b-a3b-4bit", "mlx-community/Qwen3.6-35B-A3B-4bit", "mlx-community--Qwen3.6-35B-A3B-4bit"),
     ModelCase("qwen3-coder-next-4bit", "mlx-community/Qwen3-Coder-Next-4bit", "mlx-community--Qwen3-Coder-Next-4bit"),
-    ModelCase("glm-4-7-flash-4bit", "mlx-community/GLM-4.7-Flash-4bit", "mlx-community--GLM-4.7-Flash-4bit"),
 ]
 
 

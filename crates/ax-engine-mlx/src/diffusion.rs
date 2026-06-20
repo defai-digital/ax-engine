@@ -353,28 +353,28 @@ fn denoise_step(
     let logits = if let Some(compiled) = compiled_forward {
         match compiled.try_apply(&[&canvas.tokens_gpu]) {
             Ok(mut outputs) => outputs.swap_remove(0),
-            Err(_) => forward_bidirectional(
+            Err(_) => forward_bidirectional(BidirectionalForward {
                 cfg,
                 weights,
-                &canvas.tokens_gpu,
+                token_ids: &canvas.tokens_gpu,
                 cache,
                 token_offset,
-                canvas.prev_self_cond_embed.as_ref(),
-                None,
+                self_conditioning_signal: canvas.prev_self_cond_embed.as_ref(),
+                embed_cache: None,
                 kv_buffers,
-            ),
+            }),
         }
     } else {
-        forward_bidirectional(
+        forward_bidirectional(BidirectionalForward {
             cfg,
             weights,
-            &canvas.tokens_gpu,
+            token_ids: &canvas.tokens_gpu,
             cache,
             token_offset,
-            canvas.prev_self_cond_embed.as_ref(),
-            None,
+            self_conditioning_signal: canvas.prev_self_cond_embed.as_ref(),
+            embed_cache: None,
             kv_buffers,
-        )
+        })
     };
 
     // Temperature-scale: divide by T.
@@ -614,16 +614,16 @@ pub(crate) fn generate_diffusion_block(
             let cfg_ref = unsafe { &*(cfg_addr as *const ModelConfig) };
             let weights_ref = unsafe { &*(weights_addr as *const ModelWeights) };
             let cache_ref = unsafe { &*(cache_addr as *const MlxKVCache) };
-            let logits = forward_bidirectional(
-                cfg_ref,
-                weights_ref,
-                &token_ids,
-                cache_ref,
+            let logits = forward_bidirectional(BidirectionalForward {
+                cfg: cfg_ref,
+                weights: weights_ref,
+                token_ids: &token_ids,
+                cache: cache_ref,
                 token_offset,
-                None,
-                None,
-                None,
-            );
+                self_conditioning_signal: None,
+                embed_cache: None,
+                kv_buffers: None,
+            });
             vec![logits]
         });
         closure.compile(false).ok()
@@ -742,6 +742,17 @@ impl EmbeddingCache {
     }
 }
 
+struct BidirectionalForward<'a> {
+    cfg: &'a ModelConfig,
+    weights: &'a ModelWeights,
+    token_ids: &'a MlxArray,
+    cache: &'a MlxKVCache,
+    token_offset: usize,
+    self_conditioning_signal: Option<&'a MlxArray>,
+    embed_cache: Option<&'a mut EmbeddingCache>,
+    kv_buffers: Option<&'a mut Vec<KVConcatBuffer>>,
+}
+
 // Run the bidirectional forward pass over canvas tokens.
 //
 // Unlike the causal `forward()`, this uses `layer_forward_bidirectional` for
@@ -754,24 +765,17 @@ impl EmbeddingCache {
 //
 // When `kv_buffers` is `Some`, per-layer KV concatenation buffers are used
 // to avoid re-copying the cached prompt prefix on every step.
-fn forward_bidirectional(
-    cfg: &ModelConfig,
-    weights: &ModelWeights,
-    token_ids: &MlxArray,
-    cache: &MlxKVCache,
-    token_offset: usize,
-    self_conditioning_signal: Option<&MlxArray>,
-    embed_cache: Option<&mut EmbeddingCache>,
-    mut kv_buffers: Option<&mut Vec<KVConcatBuffer>>,
-) -> MlxArray {
+fn forward_bidirectional(mut ctx: BidirectionalForward<'_>) -> MlxArray {
+    let cfg = ctx.cfg;
+    let weights = ctx.weights;
     // Embed tokens directly from GPU array.
-    let mut hidden = embed_tokens_arr(token_ids, &weights.token_embedding, cfg.hidden_size);
+    let mut hidden = embed_tokens_arr(ctx.token_ids, &weights.token_embedding, cfg.hidden_size);
     hidden = astype(&hidden, MlxDtype::Bfloat16, None);
     if let Some(scale) = cfg.hidden_states_scale {
         hidden = crate::model::shared::scale_hidden_pub(&hidden, scale);
     }
     if let Some(self_conditioning) = weights.diffusion_self_conditioning.as_ref() {
-        if let Some(signal) = self_conditioning_signal {
+        if let Some(signal) = ctx.self_conditioning_signal {
             let normed = rms_norm(
                 signal,
                 Some(&self_conditioning.pre_norm),
@@ -789,24 +793,24 @@ fn forward_bidirectional(
 
     // Compute per-layer inputs (Gemma4 per-layer embeddings).
     // Use cache when available and tokens are unchanged.
-    let per_layer_inputs = if let Some(cache_entry) = embed_cache {
-        if cache_entry.needs_refresh(token_ids) {
-            let pli = compute_per_layer_inputs_arr(cfg, weights, token_ids, &hidden);
+    let per_layer_inputs = if let Some(cache_entry) = ctx.embed_cache {
+        if cache_entry.needs_refresh(ctx.token_ids) {
+            let pli = compute_per_layer_inputs_arr(cfg, weights, ctx.token_ids, &hidden);
             if let Some(ref inputs) = pli {
-                cache_entry.update(token_ids, inputs.clone());
+                cache_entry.update(ctx.token_ids, inputs.clone());
             }
             pli
         } else {
             cache_entry.per_layer_inputs.clone()
         }
     } else {
-        compute_per_layer_inputs_arr(cfg, weights, token_ids, &hidden)
+        compute_per_layer_inputs_arr(cfg, weights, ctx.token_ids, &hidden)
     };
 
     // Run each layer with bidirectional attention.
     for (li, layer_w) in weights.layers.iter().enumerate() {
         let pli = per_layer_inputs.as_ref().map(|v| &v[li]);
-        let kv_buf = kv_buffers.as_mut().map(|v| {
+        let kv_buf = ctx.kv_buffers.as_mut().map(|v| {
             // Lazily grow the buffer vec to cover all layers.
             if v.len() <= li {
                 v.resize_with(li + 1, KVConcatBuffer::new);
@@ -817,9 +821,9 @@ fn forward_bidirectional(
             cfg,
             layer_w,
             &hidden,
-            cache,
+            ctx.cache,
             li,
-            token_offset,
+            ctx.token_offset,
             pli,
             kv_buf,
         );

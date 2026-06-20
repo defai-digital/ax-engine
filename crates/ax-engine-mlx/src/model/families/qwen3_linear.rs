@@ -144,8 +144,8 @@ pub(crate) fn layer_forward(
             None
         };
 
-        if let Some(result) = compiled_result {
-            result.into_iter().next().unwrap()
+        if let Some(result) = compiled_result.and_then(|result| result.into_iter().next()) {
+            result
         } else if let Some(shared) = &shared_out {
             moe_experts_forward_with_shared(
                 cfg,
