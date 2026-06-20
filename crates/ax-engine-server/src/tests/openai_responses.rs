@@ -191,7 +191,7 @@ fn chat_response_extracts_tool_call_when_tool_contract_requested() {
     );
 
     let message = &openai.choices[0].message;
-    assert_eq!(message.content, "Before  after");
+    assert_eq!(message.content, "");
     assert_eq!(openai.choices[0].finish_reason, Some("tool_calls"));
     let tool_call = &message
         .tool_calls
@@ -220,7 +220,7 @@ fn chat_response_extracts_gemma4_tool_call_from_ollama_dsl() {
     );
 
     let message = &openai.choices[0].message;
-    assert_eq!(message.content, "Before  after");
+    assert_eq!(message.content, "");
     let tool_call = &message
         .tool_calls
         .as_ref()
@@ -332,7 +332,7 @@ fn chat_response_recovers_qwen_function_tool_call_without_closing_tags() {
         .tool_calls
         .as_ref()
         .expect("partial qwen function tool call should be parsed")[0];
-    assert_eq!(message.content, "I'll create it now.");
+    assert_eq!(message.content, "");
     assert_eq!(openai.choices[0].finish_reason, Some("tool_calls"));
     assert_eq!(tool_call.function.name, "todo_write");
     assert_eq!(
@@ -418,8 +418,9 @@ fn chat_response_recovers_qwen_tool_call_when_parameter_close_missing_and_functi
     // path terminates at the next <parameter=; content runs to end of body.
     assert_eq!(args["path"], "index.html");
     assert_eq!(args["content"], "<!DOCTYPE html><html></html>");
-    // The prose before <tool_call> survives as content.
-    assert_eq!(message.content, "I haven't done it yet.");
+    // Tool-call turns suppress prose preambles so coding clients receive a
+    // tool-call-only assistant message.
+    assert_eq!(message.content, "");
 }
 
 #[test]

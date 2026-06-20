@@ -91,6 +91,9 @@ pub(crate) fn openai_chat_completion_response(
     } else {
         None
     };
+    if tool_calls.as_ref().is_some_and(|calls| !calls.is_empty()) {
+        content.clear();
+    }
     let finish_reason = if tool_calls.as_ref().is_some_and(|calls| !calls.is_empty()) {
         Some("tool_calls")
     } else {
