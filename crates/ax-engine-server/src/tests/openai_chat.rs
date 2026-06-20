@@ -4,8 +4,9 @@ use crate::openai::chat_requests::{
 };
 use crate::openai::requests::{
     DEFAULT_OPENAI_MAX_TOKENS, build_openai_chat_request,
-    build_openai_chat_request_offloading_media, build_openai_mlx_lm_chat_request,
-    chat_template_kwargs_for_model_id, openai_chat_stop_sequences,
+    build_openai_chat_request_offloading_media, build_openai_llama_cpp_chat_request,
+    build_openai_mlx_lm_chat_request, chat_template_kwargs_for_model_id,
+    openai_chat_stop_sequences,
 };
 use crate::openai::schema::{OpenAiChatCompletionHttpRequest, OpenAiChatMessage, OpenAiStopInput};
 use crate::openai::validation::validate_openai_request;
@@ -1430,6 +1431,80 @@ async fn delegated_openai_chat_rejects_gemma4_multimodal_inputs() {
             .error
             .message
             .contains("OpenAI chat multimodal_inputs require native MLX backend"),
+        "unexpected error: {}",
+        error.1.error.message
+    );
+}
+
+#[tokio::test]
+async fn delegated_openai_chat_rejects_tools_on_mlx_lm_backend() {
+    let state = mlx_lm_delegated_state("http://127.0.0.1:1".to_string());
+    let live = state.snapshot();
+    let request: OpenAiChatCompletionHttpRequest = serde_json::from_value(json!({
+        "model": "glm4_moe_lite",
+        "messages": [{"role": "user", "content": "Use read_file to inspect README.md"}],
+        "tools": [{
+            "type": "function",
+            "function": {
+                "name": "read_file",
+                "description": "Read a file",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"path": {"type": "string"}},
+                    "required": ["path"]
+                }
+            }
+        }],
+        "tool_choice": "auto",
+        "max_tokens": 8
+    }))
+    .expect("sample chat request should deserialize");
+
+    let error = match build_openai_mlx_lm_chat_request(&live, request) {
+        Ok(_) => panic!("delegated mlx-lm text backends should reject tool requests"),
+        Err(error) => error,
+    };
+
+    assert_eq!(error.0, StatusCode::BAD_REQUEST);
+    assert!(
+        error.1.error.message.contains("delegated text backends"),
+        "unexpected error: {}",
+        error.1.error.message
+    );
+}
+
+#[tokio::test]
+async fn delegated_openai_chat_rejects_tools_on_llama_cpp_backend() {
+    let state = llama_cpp_server_state("http://127.0.0.1:1".to_string());
+    let live = state.snapshot();
+    let request: OpenAiChatCompletionHttpRequest = serde_json::from_value(json!({
+        "model": "local-gguf",
+        "messages": [{"role": "user", "content": "Use read_file to inspect README.md"}],
+        "tools": [{
+            "type": "function",
+            "function": {
+                "name": "read_file",
+                "description": "Read a file",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"path": {"type": "string"}},
+                    "required": ["path"]
+                }
+            }
+        }],
+        "tool_choice": {"type": "function", "function": {"name": "read_file"}},
+        "max_tokens": 8
+    }))
+    .expect("sample chat request should deserialize");
+
+    let error = match build_openai_llama_cpp_chat_request(&live, request) {
+        Ok(_) => panic!("delegated llama.cpp text backends should reject tool requests"),
+        Err(error) => error,
+    };
+
+    assert_eq!(error.0, StatusCode::BAD_REQUEST);
+    assert!(
+        error.1.error.message.contains("delegated text backends"),
         "unexpected error: {}",
         error.1.error.message
     );

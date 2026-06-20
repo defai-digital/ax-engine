@@ -484,6 +484,7 @@ pub(crate) fn build_openai_mlx_lm_chat_request(
         request.tool_choice.as_ref(),
         true,
     )?;
+    reject_delegated_chat_tools(request.tools.as_ref(), request.tool_choice.as_ref())?;
     response_options.reject_unsupported_streaming_contract(request.stream)?;
     let messages = build_mlx_lm_chat_messages(&request.messages)?;
     let sampling = build_openai_sampling_with_default_repetition_penalty(sampling_params, 1.0);
@@ -521,6 +522,7 @@ pub(crate) fn build_openai_llama_cpp_chat_request(
         request.tool_choice.as_ref(),
         true,
     )?;
+    reject_delegated_chat_tools(request.tools.as_ref(), request.tool_choice.as_ref())?;
     response_options.reject_unsupported_streaming_contract(request.stream)?;
     let messages = build_llama_cpp_chat_messages(&request.messages)?;
     let sampling = build_openai_sampling_with_default_repetition_penalty(sampling_params, 1.0);
@@ -704,6 +706,21 @@ fn reject_delegated_chat_extensions(
         ));
     }
     Ok(())
+}
+
+fn reject_delegated_chat_tools(
+    tools: Option<&Value>,
+    tool_choice: Option<&Value>,
+) -> Result<(), (StatusCode, Json<ErrorResponse>)> {
+    if !openai_tools_are_enabled(tools, tool_choice) {
+        return Ok(());
+    }
+    Err(error_response(
+        StatusCode::BAD_REQUEST,
+        "unsupported_parameter",
+        "OpenAI chat tools require native AX-rendered model-family tool prompts; delegated text backends do not receive tool schemas or expose structured tool-call output."
+            .to_string(),
+    ))
 }
 
 pub(crate) fn build_generate_request_internal(
