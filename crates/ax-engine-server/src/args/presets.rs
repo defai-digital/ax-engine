@@ -18,6 +18,8 @@ pub enum ServerPreset {
         alias = "glm4-moe-lite"
     )]
     Glm47Flash4bit,
+    #[value(name = "qwen3.6-27b", alias = "qwen36-27b")]
+    Qwen36_27b,
     #[value(name = "qwen3.6-35b", alias = "qwen36-35b")]
     Qwen36_35b,
 }
@@ -105,6 +107,21 @@ impl ServerPreset {
                 support_tier: PreviewSupportTier::MlxLmDelegated,
                 max_batch_tokens: 2048,
             },
+            Self::Qwen36_27b => PresetDefinition {
+                preset: self,
+                label: "qwen3.6-27b",
+                model_id: "qwen36-27b",
+                aliases: &[
+                    "qwen3.6-27b",
+                    "qwen36-27b",
+                    "qwen3-6-27b",
+                    "qwen3.6-27b-4bit",
+                    "qwen36-27b-4bit",
+                ],
+                model_types: &["qwen3_next", "qwen3_6", "qwen3.6", "qwen3_5"],
+                support_tier: PreviewSupportTier::MlxPreview,
+                max_batch_tokens: 2048,
+            },
             Self::Qwen36_35b => PresetDefinition {
                 preset: self,
                 label: "qwen3.6-35b",
@@ -131,6 +148,7 @@ pub fn render_presets() -> String {
         ServerPreset::Gemma4_26b,
         ServerPreset::Gemma4_31b,
         ServerPreset::Glm47Flash4bit,
+        ServerPreset::Qwen36_27b,
         ServerPreset::Qwen36_35b,
     ]
     .into_iter()
