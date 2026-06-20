@@ -450,7 +450,7 @@ fn build_mlx_lm_completion_request<'a>(
     stream: bool,
 ) -> MlxLmCompletionRequest<'a> {
     MlxLmCompletionRequest {
-        model: &request.model_id,
+        model: None,
         prompt,
         max_tokens: request.max_output_tokens,
         temperature: request.sampling.temperature,
@@ -480,7 +480,7 @@ fn build_mlx_lm_chat_completion_request(
     stream: bool,
 ) -> MlxLmChatCompletionRequest<'_> {
     MlxLmChatCompletionRequest {
-        model: &request.model_id,
+        model: None,
         messages: &request.messages,
         max_tokens: request.max_output_tokens,
         temperature: request.sampling.temperature,
@@ -532,7 +532,8 @@ struct MlxLmStreamChunk {
 
 #[derive(Debug, Serialize)]
 struct MlxLmCompletionRequest<'a> {
-    model: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    model: Option<&'a str>,
     prompt: &'a str,
     max_tokens: u32,
     temperature: f32,
@@ -551,7 +552,8 @@ struct MlxLmCompletionRequest<'a> {
 
 #[derive(Debug, Serialize)]
 struct MlxLmChatCompletionRequest<'a> {
-    model: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    model: Option<&'a str>,
     messages: &'a [MlxLmChatMessage],
     max_tokens: u32,
     temperature: f32,
@@ -647,7 +649,10 @@ mod tests {
     fn blocking_generate_calls_mlx_lm_completions_contract() {
         let response_body = r#"{"choices":[{"text":" world","finish_reason":"length"}],"usage":{"prompt_tokens":2,"completion_tokens":1}}"#.to_string();
         let (server_url, handle) = spawn_completion_server(response_body, |payload| {
-            assert_eq!(payload["model"], "qwen3");
+            assert!(
+                payload.get("model").is_none(),
+                "mlx-lm server requests should use the model already loaded upstream"
+            );
             assert_eq!(payload["prompt"], "hello");
             assert_eq!(payload["max_tokens"], 3);
             assert_eq!(payload["temperature"], 0.25);
@@ -688,7 +693,10 @@ mod tests {
     fn blocking_chat_generate_calls_mlx_lm_chat_completions_contract() {
         let response_body = r#"{"choices":[{"message":{"content":"bonjour"},"finish_reason":"stop"}],"usage":{"prompt_tokens":8,"completion_tokens":1}}"#.to_string();
         let (server_url, handle) = spawn_completion_server(response_body, |payload| {
-            assert_eq!(payload["model"], "qwen3");
+            assert!(
+                payload.get("model").is_none(),
+                "mlx-lm server requests should use the model already loaded upstream"
+            );
             assert_eq!(payload["messages"][0]["role"], "system");
             assert_eq!(payload["messages"][0]["content"], "Be concise.");
             assert_eq!(payload["messages"][1]["role"], "user");
