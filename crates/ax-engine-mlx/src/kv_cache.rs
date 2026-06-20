@@ -3116,6 +3116,32 @@ impl MlxKVCache {
         Some((k_view, v_view))
     }
 
+    /// Read a fresh full-prefix K/V view for `layer`.
+    ///
+    /// Unlike `peek_layer_kv`, this intentionally ignores cached retained views
+    /// from the most recent append. Diffusion denoising attends against the
+    /// committed prompt prefix, so its bidirectional mask must match exactly
+    /// `self.seq_len` cached keys.
+    pub fn peek_layer_full_kv(&self, layer: usize) -> Option<(MlxArray, MlxArray)> {
+        let lkv = self.layers.get(layer)?.as_ref()?;
+        let end = self.seq_len as i32;
+        let k = slice(
+            &lkv.k,
+            &[0, 0, 0, 0],
+            &[1, lkv.n_kv_heads, end, lkv.head_dim],
+            &[1, 1, 1, 1],
+            None,
+        );
+        let v = slice(
+            &lkv.v,
+            &[0, 0, 0, 0],
+            &[1, lkv.n_kv_heads, end, lkv.head_dim],
+            &[1, 1, 1, 1],
+            None,
+        );
+        Some((k, v))
+    }
+
     /// Reset cache entirely (e.g., between requests).
     pub fn reset(&mut self) {
         for entry in &mut self.layers {
@@ -3412,6 +3438,21 @@ mod tests {
         assert_eq!(usage.logical_bytes, 96);
         assert_eq!(usage.capacity_bytes, 8192);
         assert_eq!(usage.growth_count, 1);
+    }
+
+    #[test]
+    fn peek_layer_full_kv_ignores_retained_last_view() {
+        let mut cache = MlxKVCache::new(1);
+        let k = zeros(&[1, 2, 5, 4], MlxDtype::Bfloat16, None);
+        let v = zeros(&[1, 2, 5, 4], MlxDtype::Bfloat16, None);
+
+        cache.append_with_retained_window(0, k, v, Some(3));
+        cache.seq_len = 5;
+
+        let (retained_k, _) = cache.peek_layer_kv(0).expect("retained view");
+        let (full_k, _) = cache.peek_layer_full_kv(0).expect("full view");
+        assert_eq!(retained_k.shape(), vec![1, 2, 3, 4]);
+        assert_eq!(full_k.shape(), vec![1, 2, 5, 4]);
     }
 
     #[test]

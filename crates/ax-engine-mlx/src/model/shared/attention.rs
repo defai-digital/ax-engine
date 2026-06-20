@@ -405,7 +405,9 @@ pub(crate) fn bidirectional_attention(
     // Build mask only when a symmetric sliding window must be enforced.
     // Without a window, every canvas position attends to every key (no mask).
     let mask = sliding_window.map(|window| {
-        build_bidirectional_canvas_mask(canvas_size, cached_k.shape()[2] as usize, window)
+        let full_key_len = full_k.shape()[2] as usize;
+        let cached_seq = full_key_len.saturating_sub(canvas_size);
+        build_bidirectional_canvas_mask(canvas_size, cached_seq, window)
     });
 
     let mask_arg = mask
@@ -715,8 +717,8 @@ fn media_prefix_mask_array(
 #[cfg(test)]
 mod tests {
     use super::{
-        build_layer_masks_with_media_ranges, media_prefix_mask_array,
-        qwen_direct_qk_norm_rope_default_family,
+        build_bidirectional_canvas_mask, build_layer_masks_with_media_ranges,
+        media_prefix_mask_array, qwen_direct_qk_norm_rope_default_family,
     };
     use crate::model::{LayerConfig, ModelConfig};
     use mlx_sys::{MlxArray, eval};
@@ -735,6 +737,22 @@ mod tests {
         assert!(qwen_direct_qk_norm_rope_default_family("qwen3_next"));
         assert!(!qwen_direct_qk_norm_rope_default_family("gemma4"));
         assert!(!qwen_direct_qk_norm_rope_default_family("llama3"));
+    }
+
+    #[test]
+    fn bidirectional_canvas_mask_matches_cached_prefix_plus_canvas_width() {
+        let mask = build_bidirectional_canvas_mask(4, 3, 2);
+
+        assert_eq!(mask.shape(), vec![4, 7]);
+        assert_eq!(
+            mask_data(&mask),
+            vec![
+                1, 1, 1, 1, 1, 0, 0, //
+                1, 1, 1, 1, 1, 1, 0, //
+                1, 1, 1, 0, 1, 1, 1, //
+                1, 1, 1, 0, 0, 1, 1,
+            ]
+        );
     }
 
     #[test]

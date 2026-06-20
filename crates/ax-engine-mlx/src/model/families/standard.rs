@@ -784,7 +784,7 @@ pub(crate) fn layer_forward_bidirectional(
 
     // Read cached prompt K/V (no mutation).
     let (cached_k, cached_v) = cache
-        .peek_layer_kv(layer_idx)
+        .peek_layer_full_kv(layer_idx)
         .expect("bidirectional layer requires cached prompt KV from prefill");
 
     // Bidirectional attention: canvas Q attends to cached prompt KV + canvas KV.

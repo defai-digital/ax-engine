@@ -5,7 +5,7 @@
 //!
 //! Hotspots:
 //!   1. **Entropy-bound sampling** — sort canvas positions by entropy,
-//!      accept confident positions, update uncertain ones via argmax.
+//!      keep accepted positions fixed and denoise rejected positions via argmax.
 //!   2. **Bidirectional mask construction** — build the boolean attention
 //!      mask for canvas self-attention + cross-attention to cached prompt.
 //!   3. **Self-conditioning embedding (CPU)** — probability-weighted average
@@ -124,8 +124,8 @@ fn bench_entropy_sampling() -> Value {
             accept_mask[position_order[0]] = true;
         }
 
-        // Accepted positions keep current tokens, rejected positions
-        // adopt the model's argmax prediction (preserves progress).
+        // Accepted positions stay fixed; rejected positions adopt the model's
+        // argmax prediction.
         let mut tokens = vec![0_u32; CANVAS_SIZE];
         for (pos, &accepted) in accept_mask.iter().enumerate() {
             if !accepted {

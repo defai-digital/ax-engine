@@ -6720,7 +6720,7 @@ impl MlxRunner {
         // new block via bidirectional denoising + causal commit. This replaces
         // the standard AR decode step for DiffusionGemma models.
         if let Some(diff_cfg) = self.cfg.diffusion.as_ref() {
-            let token_offset = state.prompt_prefix_tokens.len() + state.generated_tokens.len();
+            let token_offset = state.cache.seq_len;
             let result = crate::diffusion::generate_diffusion_block(
                 &self.cfg,
                 diff_cfg,
@@ -10644,6 +10644,7 @@ fn binding_summary_from_specs(
 fn resolve_terminal_token_ids(artifacts: &NativeModelArtifacts) -> Vec<u32> {
     let mut token_ids = BTreeSet::new();
     let mut token_strings = BTreeSet::new();
+    let stop_on_pad = artifacts.manifest().model_family != "diffusion_gemma";
 
     for file_name in ["config.json", "tokenizer_config.json"] {
         let Some(value) = read_json_file(&artifacts.root_dir().join(file_name)) else {
@@ -10651,9 +10652,11 @@ fn resolve_terminal_token_ids(artifacts: &NativeModelArtifacts) -> Vec<u32> {
         };
         collect_token_ids(value.get("eos_token_id"), &mut token_ids);
         collect_token_ids(value.get("eos_token_ids"), &mut token_ids);
-        collect_token_ids(value.get("pad_token_id"), &mut token_ids);
         collect_token_strings(value.get("eos_token"), &mut token_strings);
-        collect_token_strings(value.get("pad_token"), &mut token_strings);
+        if stop_on_pad {
+            collect_token_ids(value.get("pad_token_id"), &mut token_ids);
+            collect_token_strings(value.get("pad_token"), &mut token_strings);
+        }
     }
 
     for token in COMMON_EOT_TOKEN_STRINGS {
@@ -13126,6 +13129,45 @@ mod tests {
         .expect("config should write");
 
         assert_eq!(resolve_terminal_token_ids(&artifacts), vec![1, 106]);
+    }
+
+    #[test]
+    fn terminal_token_ids_resolve_pad_for_standard_models() {
+        let mut manifest = dense_manifest();
+        set_vocab_size(&mut manifest, 128);
+        let artifacts = write_artifacts(manifest);
+        fs::write(
+            artifacts.root_dir().join("config.json"),
+            r#"{"eos_token_id":1,"pad_token_id":0}"#,
+        )
+        .expect("config should write");
+
+        assert_eq!(resolve_terminal_token_ids(&artifacts), vec![0, 1]);
+    }
+
+    #[test]
+    fn terminal_token_ids_ignore_pad_for_diffusion_gemma() {
+        let mut manifest = dense_manifest();
+        manifest.model_family = "diffusion_gemma".to_string();
+        set_vocab_size(&mut manifest, 128);
+        let artifacts = write_artifacts(manifest);
+        fs::write(
+            artifacts.root_dir().join("config.json"),
+            r#"{"eos_token_id":[1,106,50],"pad_token_id":0}"#,
+        )
+        .expect("config should write");
+        fs::write(
+            artifacts.root_dir().join("tokenizer_config.json"),
+            r#"{"pad_token":"<pad>"}"#,
+        )
+        .expect("tokenizer config should write");
+        fs::write(
+            artifacts.root_dir().join("tokenizer.json"),
+            r#"{"added_tokens":[{"id":0,"content":"<pad>"},{"id":106,"content":"<turn|>"}]}"#,
+        )
+        .expect("tokenizer should write");
+
+        assert_eq!(resolve_terminal_token_ids(&artifacts), vec![1, 50, 106]);
     }
 
     #[test]

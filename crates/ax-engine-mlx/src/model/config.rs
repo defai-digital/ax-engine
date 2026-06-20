@@ -210,9 +210,9 @@ pub struct DiffusionConfig {
     /// Steps between convergence checks (default 4). Non-check steps skip
     /// argmax stability and mean-entropy materialisation to reduce GPU→CPU syncs.
     pub convergence_check_interval: usize,
-    /// Acceptance rate threshold for adaptive convergence (default 0.01 = 1%).
-    /// When the fraction of accepted positions drops below this, the model
-    /// has converged regardless of absolute entropy.
+    /// Update-rate threshold for adaptive convergence (default 0.01 = 1%).
+    /// `acceptance_rate` tracks positions kept from the current canvas, so
+    /// convergence fires when fewer than this fraction still update.
     pub acceptance_rate_threshold: f32,
     /// Entropy plateau delta for convergence detection (default 0.001).
     /// When the absolute change in mean entropy between consecutive check

@@ -196,9 +196,10 @@ fn init_canvas(canvas_size: usize, vocab_size: usize, rng: &mut Xorshift64) -> D
 // 1. **Strict criteria** (original): argmax unchanged for `convergence_steps`
 //    consecutive check steps AND mean entropy below `entropy_threshold`.
 //
-// 2. **Acceptance rate criteria** (adaptive): acceptance rate drops below
-//    `acceptance_rate_threshold` (default 1%). When almost no positions are
-//    being updated, the model has converged regardless of absolute entropy.
+// 2. **Acceptance rate criteria** (adaptive): the update rate drops below
+//    `acceptance_rate_threshold` (default 1%). `acceptance_rate` measures
+//    positions kept from the current canvas, so convergence requires almost
+//    all positions to be accepted.
 //
 // 3. **Entropy plateau criteria**: entropy has stopped decreasing significantly
 //    (delta < `entropy_plateau_delta`) after step 16, indicating diminishing
@@ -209,7 +210,8 @@ fn check_convergence(canvas: &DiffusionCanvas, cfg: &DiffusionConfig) -> Converg
         canvas.stable_count >= cfg.convergence_steps && canvas.mean_entropy < cfg.entropy_threshold;
 
     // Acceptance rate criteria: almost no positions being updated.
-    let acceptance = canvas.step > 0 && canvas.acceptance_rate < cfg.acceptance_rate_threshold;
+    let update_rate = 1.0 - canvas.acceptance_rate;
+    let acceptance = canvas.step > 0 && update_rate < cfg.acceptance_rate_threshold;
 
     // Entropy plateau criteria: entropy stalled after warmup period.
     // Only check after step 16 to allow initial exploration.
@@ -431,8 +433,8 @@ fn denoise_step(
     let accept_mask = take_along_axis(&accepted_sorted, &inverse_sort, -1, None);
     let accept_mask_1d = reshape(&accept_mask, &[canvas.canvas_size as i32], None);
 
-    // Token update: accepted positions keep current tokens, rejected
-    // positions adopt the model's argmax prediction.
+    // Token update: accepted low-entropy positions stay fixed; rejected
+    // positions are denoised with the model's argmax prediction.
     let new_tokens = where_cond(&accept_mask_1d, &canvas.tokens_gpu, &argmax_1d, None);
 
     // ── Acceptance rate tracking ─────────────────────────────────────
@@ -977,12 +979,12 @@ mod tests {
     #[test]
     fn convergence_signals_acceptance() {
         let cfg = default_diff_cfg();
-        // acceptance_rate (0.005) < acceptance_rate_threshold (0.01).
-        let canvas = test_canvas(0, 0.5, 0.005, 0.6, 4);
+        // update_rate (1.0 - 0.995 = 0.005) < acceptance_rate_threshold (0.01).
+        let canvas = test_canvas(0, 0.5, 0.995, 0.6, 4);
         let signals = check_convergence(&canvas, &cfg);
         assert!(
             signals.acceptance,
-            "acceptance should fire when rate < threshold"
+            "acceptance should fire when update rate < threshold"
         );
         assert!(!signals.strict);
         assert!(!signals.plateau);
@@ -1004,10 +1006,21 @@ mod tests {
     #[test]
     fn convergence_signals_acceptance_not_low() {
         let cfg = default_diff_cfg();
-        // acceptance_rate (0.5) well above threshold.
+        // update_rate (0.5) well above threshold.
         let canvas = test_canvas(0, 0.5, 0.5, 0.6, 4);
         let signals = check_convergence(&canvas, &cfg);
         assert!(!signals.acceptance);
+    }
+
+    #[test]
+    fn convergence_signals_low_acceptance_means_canvas_still_updating() {
+        let cfg = default_diff_cfg();
+        let canvas = test_canvas(0, 0.5, 0.005, 0.6, 4);
+        let signals = check_convergence(&canvas, &cfg);
+        assert!(
+            !signals.acceptance,
+            "low acceptance means most positions are still updating"
+        );
     }
 
     #[test]
@@ -1048,9 +1061,9 @@ mod tests {
         let cfg = default_diff_cfg();
         // strict + acceptance + plateau all fire simultaneously.
         // stable_count=3 >= 2, entropy=0.001 < 0.005 → strict.
-        // acceptance_rate=0.005 < 0.01 → acceptance.
+        // update_rate=1.0 - 0.995 < 0.01 → acceptance.
         // abs(0.0015 - 0.001) = 0.0005 < 0.001 AND step=20 >= 16 → plateau.
-        let canvas = test_canvas(3, 0.001, 0.005, 0.0015, 20);
+        let canvas = test_canvas(3, 0.001, 0.995, 0.0015, 20);
         let signals = check_convergence(&canvas, &cfg);
         assert!(signals.strict);
         assert!(signals.acceptance);
