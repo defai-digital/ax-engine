@@ -133,7 +133,7 @@ impl ServerPreset {
                     "qwen3.6-35b-a3b",
                     "qwen36-35b-a3b",
                 ],
-                model_types: &["qwen3_next", "qwen3_6", "qwen3.6"],
+                model_types: &["qwen3_next", "qwen3_6", "qwen3.6", "qwen3_5_moe"],
                 support_tier: PreviewSupportTier::MlxPreview,
                 max_batch_tokens: 2048,
             },

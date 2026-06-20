@@ -468,6 +468,33 @@ fn qwen36_27b_preset_selects_mlx_preview_defaults() {
 }
 
 #[test]
+fn qwen36_35b_preset_selects_mlx_preview_defaults() {
+    let mlx_model_artifacts_dir = PathBuf::from("/tmp/Qwen3.6-35B-A3B-4bit");
+    let args = ServerArgs {
+        preset: Some(ServerPreset::Qwen36_35b),
+        mlx_model_artifacts_dir: Some(mlx_model_artifacts_dir.clone()),
+        ..base_args()
+    };
+
+    let actual = args.session_config().expect("session config should build");
+
+    assert_eq!(args.effective_model_id(), "qwen3.6-35b");
+    assert_eq!(
+        args.effective_support_tier(),
+        PreviewSupportTier::MlxPreview
+    );
+    assert_eq!(
+        actual.resolved_backend.selected_backend,
+        SelectedBackend::Mlx
+    );
+    assert_eq!(
+        actual.mlx_model_artifacts_dir.as_deref(),
+        Some(mlx_model_artifacts_dir.as_path())
+    );
+    assert!(!actual.mlx_disable_ngram_acceleration);
+}
+
+#[test]
 fn glm_preset_selects_mlx_lm_delegated_defaults() {
     // GLM 4.7 Flash is a passby model: the preset selects the delegated tier
     // and routes to an external mlx-lm server rather than the native MLX graph.
@@ -567,6 +594,31 @@ fn qwen36_27b_preset_hf_cache_resolution_accepts_cached_snapshot() {
     );
     let args = ServerArgs {
         preset: Some(ServerPreset::Qwen36_27b),
+        resolve_model_artifacts: ModelArtifactResolution::HfCache,
+        hf_cache_root: Some(root.clone()),
+        ..base_args()
+    };
+
+    let actual = args.session_config().expect("session config should build");
+
+    assert_eq!(
+        actual.mlx_model_artifacts_dir.as_deref(),
+        Some(expected.as_path())
+    );
+    fs::remove_dir_all(root).expect("test dir should clean up");
+}
+
+#[test]
+fn qwen36_35b_preset_hf_cache_resolution_accepts_cached_snapshot() {
+    let root = unique_test_dir("hf-cache-qwen36-35b");
+    let expected = write_hf_snapshot(
+        &root,
+        "models--mlx-community--Qwen3.6-35B-A3B-4bit",
+        "abc123",
+        "qwen3_5_moe",
+    );
+    let args = ServerArgs {
+        preset: Some(ServerPreset::Qwen36_35b),
         resolve_model_artifacts: ModelArtifactResolution::HfCache,
         hf_cache_root: Some(root.clone()),
         ..base_args()
