@@ -23,7 +23,7 @@ decode tok/s is essentially depth-independent for this model):
     (other_bytes + routed_bytes * 10/512) from the MLX model-manifest.
   - llama.cpp 2.8275 GB/token: same formula over the GGUF tensor table
     (`llama-gguf <model> r`).
-  - decode tok/s: AX 108.2 / mlx-lm 99.2 / llama.cpp 85.5 (prompt=128 rows).
+  - decode tok/s: AX 107.1 / mlx-lm 99.2 / llama.cpp 85.5 (prompt=128 rows).
 
 Usage:
   python3 scripts/render_qwen_coder_next_bandwidth_chart.py [--assets-dir docs/assets]
@@ -42,7 +42,7 @@ PEAK_GBS = 577.0
 
 # (key, label, quant, bytes_per_token_gb, decode_tok_s, fill, stroke)
 POINTS = [
-    ("ax", "AX Engine 6.5.2", "MLX 4-bit", 1.9648, 108.2, "#2eaf5f", "#176c37"),
+    ("ax", "AX Engine 6.5.2", "MLX 4-bit + fused expert block", 1.9648, 107.1, "#2eaf5f", "#176c37"),
     ("mlx", "mlx-lm 0.31.3", "MLX 4-bit", 1.9648, 99.2, "#f2b705", "#9a6a00"),
     ("llama", "llama.cpp b9700", "Q4_K_M", 2.8275, 85.5, "#f97316", "#c2410c"),
 ]
@@ -97,7 +97,7 @@ def render() -> str:
         f" bytes read per token, Y axis is decode tok/s; the curve is the 577 GB/s"
         f" bandwidth ceiling (tok/s = 577 / bytes). AX and mlx-lm share x = 1.96"
         f" GB/token (identical MLX weights) so the vertical gap between them is kernel"
-        f" efficiency: AX 108.2 tok/s vs mlx-lm 99.2 tok/s. llama.cpp reads 2.83"
+        f" efficiency: AX 107.1 tok/s vs mlx-lm 99.2 tok/s. llama.cpp reads 2.83"
         f" GB/token (1.44x more, Q4_K_M) and decodes slowest at 85.5 tok/s. All three"
         f" sit far below the ceiling, so decode is gather-bound, not bandwidth-bound.</desc>",
         f'<rect width="{WIDTH}" height="{HEIGHT}" fill="#f8fafc"/>',
@@ -196,7 +196,7 @@ def render() -> str:
     parts.append(
         f'<text x="{mlx_x + 8:.1f}" y="{fy(ceil_at_mlx) + 22:.1f}"'
         f' text-anchor="start" font-family="{FONT}" font-size="10" font-weight="700"'
-        f' fill="#64748b">60% idle</text>'
+        f' fill="#64748b">64% idle</text>'
     )
     parts.append(
         f'<text x="{mlx_x + 8:.1f}" y="{fy(ceil_at_mlx) + 35:.1f}"'
@@ -226,7 +226,7 @@ def render() -> str:
     parts.append(
         f'<text x="{bx - 4:.1f}" y="{midy - 3:.1f}" text-anchor="end"'
         f' font-family="{FONT}" font-size="10" font-weight="700" fill="#176c37">'
-        f"+9% decode</text>"
+        f"+8% decode</text>"
     )
     parts.append(
         f'<text x="{bx - 4:.1f}" y="{midy + 9:.1f}" text-anchor="end"'
