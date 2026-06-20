@@ -139,6 +139,10 @@ pub enum NativeTensorRole {
     Gemma4UnifiedVisionProjection,
     /// Gemma4 Unified audio multimodal projection into LM hidden space.
     Gemma4UnifiedAudioProjection,
+    DiffusionSelfConditionPreNorm,
+    DiffusionSelfConditionGate,
+    DiffusionSelfConditionUp,
+    DiffusionSelfConditionDown,
     FinalNorm,
     LmHead,
     RopeFreqs,

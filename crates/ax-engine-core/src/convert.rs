@@ -831,6 +831,22 @@ const DECODER_PREFIX_TENSOR_MAP: &[(&str, TensorMapping)] = &[
         "model.decoder.lm_head.weight",
         TensorMapping::Global(NativeTensorRole::LmHead),
     ),
+    (
+        "model.decoder.self_conditioning.pre_norm.weight",
+        TensorMapping::Global(NativeTensorRole::DiffusionSelfConditionPreNorm),
+    ),
+    (
+        "model.decoder.self_conditioning.gate_proj.weight",
+        TensorMapping::Global(NativeTensorRole::DiffusionSelfConditionGate),
+    ),
+    (
+        "model.decoder.self_conditioning.up_proj.weight",
+        TensorMapping::Global(NativeTensorRole::DiffusionSelfConditionUp),
+    ),
+    (
+        "model.decoder.self_conditioning.down_proj.weight",
+        TensorMapping::Global(NativeTensorRole::DiffusionSelfConditionDown),
+    ),
 ];
 
 /// Gemma4 and Qwen3.5+ wrap the text model under `language_model.model.`, so
@@ -4810,6 +4826,56 @@ mod tests {
                     "BF16",
                     &[128, 3584, 704],
                 ),
+                (
+                    "model.decoder.self_conditioning.pre_norm.weight",
+                    "BF16",
+                    &[3584],
+                ),
+                (
+                    "model.decoder.self_conditioning.gate_proj.weight",
+                    "U32",
+                    &[2816, 56],
+                ),
+                (
+                    "model.decoder.self_conditioning.gate_proj.scales",
+                    "BF16",
+                    &[2816, 56],
+                ),
+                (
+                    "model.decoder.self_conditioning.gate_proj.biases",
+                    "BF16",
+                    &[2816, 56],
+                ),
+                (
+                    "model.decoder.self_conditioning.up_proj.weight",
+                    "U32",
+                    &[2816, 56],
+                ),
+                (
+                    "model.decoder.self_conditioning.up_proj.scales",
+                    "BF16",
+                    &[2816, 56],
+                ),
+                (
+                    "model.decoder.self_conditioning.up_proj.biases",
+                    "BF16",
+                    &[2816, 56],
+                ),
+                (
+                    "model.decoder.self_conditioning.down_proj.weight",
+                    "U32",
+                    &[3584, 44],
+                ),
+                (
+                    "model.decoder.self_conditioning.down_proj.scales",
+                    "BF16",
+                    &[3584, 44],
+                ),
+                (
+                    "model.decoder.self_conditioning.down_proj.biases",
+                    "BF16",
+                    &[3584, 44],
+                ),
             ],
         );
 
@@ -4865,6 +4931,25 @@ mod tests {
                 .iter()
                 .any(|t| t.role == NativeTensorRole::FfnGateExps),
             "expert gate must map via model.decoder.layers.* prefix"
+        );
+        assert!(
+            manifest
+                .tensors
+                .iter()
+                .any(|t| t.role == NativeTensorRole::DiffusionSelfConditionPreNorm),
+            "self-conditioning pre-norm must map via model.decoder.* prefix"
+        );
+        assert!(
+            manifest.tensors.iter().any(|t| {
+                t.role == NativeTensorRole::DiffusionSelfConditionGate && t.source_quantized
+            }),
+            "self-conditioning gate projection must map as quantized weight"
+        );
+        assert!(
+            manifest.tensors.iter().any(|t| {
+                t.role == NativeTensorRole::DiffusionSelfConditionDown && t.source_quantized
+            }),
+            "self-conditioning down projection must map as quantized weight"
         );
 
         write_manifest(&dir, &manifest).expect("write should succeed");

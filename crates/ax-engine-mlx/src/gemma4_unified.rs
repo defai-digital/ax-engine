@@ -500,6 +500,7 @@ mod tests {
             assistant_post_projection: None,
             gemma4_unified_vision: None,
             gemma4_unified_audio: None,
+            diffusion_self_conditioning: None,
         }
     }
 

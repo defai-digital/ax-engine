@@ -55,20 +55,17 @@
 //!
 //! ## Full-pipeline compiled forward
 //!
-//! When `AX_DIFFUSION_FULL_PIPELINE=1` is set, the entire denoise step
-//! (forward + softmax + entropy + argmax + sampling + acceptance) is
-//! compiled into a single MLX graph via `MlxClosure`. The closure accepts
-//! `[token_ids, temperature]` and returns `[new_tokens, argmax_1d,
-//! accept_mask_1d, entropy, prob]`, collapsing ~280 per-step dispatches
-//! into one. Supersedes `AX_DIFFUSION_COMPILED_FORWARD` (forward-only).
-//! Includes thread-local `EmbeddingCache` integration.
+//! The previous full-pipeline closure is disabled until it can carry the
+//! dynamic self-conditioning signal and per-step renoise tokens. The
+//! forward-only closure remains available for configurations without
+//! self-conditioning.
 
 use std::time::Instant;
 
 use mlx_sys::{
     MlxArray, MlxClosure, MlxDtype, MlxVectorArray, add, arange, argmax, argsort_axis, astype,
-    cumsum, divide, equal, eval, greater_equal, less_equal, log, matmul, multiply, negative,
-    not_equal, reshape, rms_norm, softmax, sum_axis, take_along_axis, where_cond,
+    cumsum, divide, equal, eval, gelu_approx, greater_equal, less_equal, log, matmul, multiply,
+    negative, not_equal, reshape, rms_norm, softmax, sum_axis, take_along_axis, where_cond,
 };
 
 use crate::fastpath;
@@ -266,6 +263,7 @@ fn denoise_step(
     weights: &ModelWeights,
     cache: &MlxKVCache,
     canvas: &mut DiffusionCanvas,
+    rng: &mut Xorshift64,
     step: usize,
     token_offset: usize,
     embed_table: Option<&MlxArray>,
@@ -361,6 +359,7 @@ fn denoise_step(
                 &canvas.tokens_gpu,
                 cache,
                 token_offset,
+                canvas.prev_self_cond_embed.as_ref(),
                 None,
                 kv_buffers,
             ),
@@ -372,6 +371,7 @@ fn denoise_step(
             &canvas.tokens_gpu,
             cache,
             token_offset,
+            canvas.prev_self_cond_embed.as_ref(),
             None,
             kv_buffers,
         )
@@ -433,9 +433,19 @@ fn denoise_step(
     let accept_mask = take_along_axis(&accepted_sorted, &inverse_sort, -1, None);
     let accept_mask_1d = reshape(&accept_mask, &[canvas.canvas_size as i32], None);
 
-    // Token update: accepted low-entropy positions stay fixed; rejected
-    // positions are denoised with the model's argmax prediction.
-    let new_tokens = where_cond(&accept_mask_1d, &canvas.tokens_gpu, &argmax_1d, None);
+    let random_tokens: Vec<u32> = (0..canvas.canvas_size)
+        .map(|_| (rng.next_u64() % cfg.vocab_size as u64) as u32)
+        .collect();
+    let random_tokens_gpu = MlxArray::from_raw_data(
+        random_tokens.as_ptr() as *const u8,
+        std::mem::size_of_val(&random_tokens[..]),
+        &[canvas.canvas_size as i32],
+        MlxDtype::Uint32,
+    );
+
+    // Token update: accepted low-entropy positions adopt the denoiser draft;
+    // rejected positions are renoised for the next denoise step.
+    let new_tokens = where_cond(&accept_mask_1d, &argmax_1d, &random_tokens_gpu, None);
 
     // ── Acceptance rate tracking ─────────────────────────────────────
     //
@@ -525,7 +535,10 @@ fn denoise_step(
 // This avoids re-dequantizing the ~3.5 GB embedding table on every step.
 fn compute_embed_table(weights: &ModelWeights, cfg: &ModelConfig) -> MlxArray {
     let all_ids: Vec<u32> = (0..cfg.vocab_size as u32).collect();
-    let embed_all = embed_tokens(&all_ids, &weights.token_embedding, cfg.hidden_size);
+    let mut embed_all = embed_tokens(&all_ids, &weights.token_embedding, cfg.hidden_size);
+    if let Some(scale) = cfg.hidden_states_scale {
+        embed_all = crate::model::shared::scale_hidden_pub(&embed_all, scale);
+    }
     astype(&embed_all, MlxDtype::Bfloat16, None)
 }
 
@@ -540,9 +553,11 @@ fn commit_block(
     canvas: &DiffusionCanvas,
     token_offset: usize,
 ) -> Vec<u32> {
+    let output_tokens = canvas.argmax_canvas.as_ref().unwrap_or(&canvas.tokens_gpu);
+
     // Materialise GPU tokens to CPU for the causal forward.
-    eval(&[&canvas.tokens_gpu]);
-    let tokens: Vec<u32> = canvas.tokens_gpu.data_u32().to_vec();
+    eval(&[output_tokens]);
+    let tokens: Vec<u32> = output_tokens.data_u32().to_vec();
     let _logits = crate::model::forward(cfg, weights, &tokens, cache, token_offset);
     // model::forward appends K/V to the cache but does not advance seq_len;
     // update it so subsequent blocks append at the correct offset.
@@ -585,106 +600,12 @@ pub(crate) fn generate_diffusion_block(
         None
     };
 
-    // Build the full-pipeline compiled closure when the opt-in flag is set.
-    // This supersedes the forward-only closure: it fuses forward + softmax +
-    // entropy + sampling + acceptance into a single graph dispatch.
-    // The closure takes [token_ids, temperature] and returns
-    // [new_tokens, argmax_1d, accept_mask_1d, entropy, prob].
-    let full_pipeline: Option<MlxClosure> = if fastpath::diffusion_full_pipeline_enabled() {
-        let cfg_addr = cfg as *const ModelConfig as usize;
-        let weights_addr = weights as *const ModelWeights as usize;
-        let cache_addr = cache as *const MlxKVCache as usize;
-        let canvas_size = diff_cfg.canvas_size;
-        let entropy_bound = diff_cfg.entropy_bound;
-        let use_embed_cache = fastpath::diffusion_embedding_cache_enabled();
-        let kv_buf_addr = kv_buffers
-            .as_mut()
-            .map(|v| v as *mut Vec<KVConcatBuffer> as usize);
-
-        let closure = MlxClosure::new_dyn(move |inputs: &MlxVectorArray| -> Vec<MlxArray> {
-            let token_ids = inputs.get(0);
-            let temperature = inputs.get(1);
-
-            let cfg_ref = unsafe { &*(cfg_addr as *const ModelConfig) };
-            let weights_ref = unsafe { &*(weights_addr as *const ModelWeights) };
-            let cache_ref = unsafe { &*(cache_addr as *const MlxKVCache) };
-
-            // Thread-local embedding cache for the compiled closure.
-            thread_local! {
-                static CLOSURE_EMBED_CACHE: std::cell::RefCell<EmbeddingCache> =
-                    std::cell::RefCell::new(EmbeddingCache::new());
-            }
-
-            // Reconstruct KV buffer reference if available.
-            let kv_buf_ref: Option<&mut Vec<KVConcatBuffer>> =
-                kv_buf_addr.map(|addr| unsafe { &mut *(addr as *mut Vec<KVConcatBuffer>) });
-
-            let logits = if use_embed_cache {
-                CLOSURE_EMBED_CACHE.with(|cell| {
-                    let mut ec = cell.borrow_mut();
-                    forward_bidirectional(
-                        cfg_ref,
-                        weights_ref,
-                        &token_ids,
-                        cache_ref,
-                        token_offset,
-                        Some(&mut *ec),
-                        kv_buf_ref,
-                    )
-                })
-            } else {
-                forward_bidirectional(
-                    cfg_ref,
-                    weights_ref,
-                    &token_ids,
-                    cache_ref,
-                    token_offset,
-                    None,
-                    kv_buf_ref,
-                )
-            };
-
-            // Temperature-scale.
-            let scaled = divide(&logits, &temperature, None);
-
-            // Softmax → [1, canvas_size, vocab_size].
-            let prob = softmax(&scaled, -1, None);
-
-            // Entropy: H(p) = -sum(p * log(p)).
-            let eps = MlxArray::from_f32(1e-10);
-            let log_prob = log(&add(&prob, &eps, None), None);
-            let p_log_p = multiply(&prob, &log_prob, None);
-            let entropy = negative(&sum_axis(&p_log_p, -1, false, None), None);
-
-            // Argmax per position → [canvas_size].
-            let argmax_2d = argmax(&prob, None);
-            let argmax_1d = reshape(&argmax_2d, &[canvas_size as i32], None);
-
-            // Entropy-bound sampling.
-            let sorted_positions = argsort_axis(&entropy, -1, None);
-            let sorted_entropy = take_along_axis(&entropy, &sorted_positions, -1, None);
-            let cum_entropy = cumsum(&sorted_entropy, -1, false, true, None);
-            let bound_scalar = MlxArray::from_f32(entropy_bound);
-            let accepted_sorted = include_lowest_entropy_position(
-                &less_equal(&cum_entropy, &bound_scalar, None),
-                canvas_size,
-            );
-            let inverse_sort = argsort_axis(&sorted_positions, -1, None);
-            let accept_mask = take_along_axis(&accepted_sorted, &inverse_sort, -1, None);
-            let accept_mask_1d = reshape(&accept_mask, &[canvas_size as i32], None);
-            let new_tokens = where_cond(&accept_mask_1d, &token_ids, &argmax_1d, None);
-
-            vec![new_tokens, argmax_1d, accept_mask_1d, entropy, prob]
-        });
-        closure.compile(false).ok()
-    } else {
-        None
-    };
+    let full_pipeline: Option<MlxClosure> = None;
 
     // When full pipeline is active, suppress the forward-only closure.
     let compiled_forward: Option<MlxClosure> = if full_pipeline.is_some() {
         None
-    } else if fastpath::diffusion_compiled_forward_enabled() {
+    } else if !diff_cfg.self_conditioning && fastpath::diffusion_compiled_forward_enabled() {
         let cfg_addr = cfg as *const ModelConfig as usize;
         let weights_addr = weights as *const ModelWeights as usize;
         let cache_addr = cache as *const MlxKVCache as usize;
@@ -699,6 +620,7 @@ pub(crate) fn generate_diffusion_block(
                 &token_ids,
                 cache_ref,
                 token_offset,
+                None,
                 None,
                 None,
             );
@@ -718,6 +640,7 @@ pub(crate) fn generate_diffusion_block(
             weights,
             cache,
             &mut canvas,
+            rng,
             step,
             token_offset,
             embed_table,
@@ -741,8 +664,9 @@ pub(crate) fn generate_diffusion_block(
         && canvas.acceptance_rate >= 0.99;
 
     let (tokens, commit_wall_us) = if commit_skipped {
-        eval(&[&canvas.tokens_gpu]);
-        let tokens: Vec<u32> = canvas.tokens_gpu.data_u32().to_vec();
+        let output_tokens = canvas.argmax_canvas.as_ref().unwrap_or(&canvas.tokens_gpu);
+        eval(&[output_tokens]);
+        let tokens: Vec<u32> = output_tokens.data_u32().to_vec();
         (tokens, 0)
     } else {
         let start = Instant::now();
@@ -836,6 +760,7 @@ fn forward_bidirectional(
     token_ids: &MlxArray,
     cache: &MlxKVCache,
     token_offset: usize,
+    self_conditioning_signal: Option<&MlxArray>,
     embed_cache: Option<&mut EmbeddingCache>,
     mut kv_buffers: Option<&mut Vec<KVConcatBuffer>>,
 ) -> MlxArray {
@@ -844,6 +769,27 @@ fn forward_bidirectional(
     hidden = astype(&hidden, MlxDtype::Bfloat16, None);
     if let Some(scale) = cfg.hidden_states_scale {
         hidden = crate::model::shared::scale_hidden_pub(&hidden, scale);
+    }
+    if let (Some(self_conditioning), Some(signal)) = (
+        weights.diffusion_self_conditioning.as_ref(),
+        self_conditioning_signal,
+    ) {
+        let normed = rms_norm(
+            signal,
+            Some(&self_conditioning.pre_norm),
+            cfg.rms_norm_eps,
+            None,
+        );
+        let gate = shared::qw(&normed, &self_conditioning.gate_proj);
+        let up = shared::qw(&normed, &self_conditioning.up_proj);
+        let activated = multiply(&gelu_approx(&gate, None), &up, None);
+        let sc_signal = shared::qw(&activated, &self_conditioning.down_proj);
+        hidden = rms_norm(
+            &add(&hidden, &sc_signal, None),
+            None,
+            cfg.rms_norm_eps,
+            None,
+        );
     }
 
     // Compute per-layer inputs (Gemma4 per-layer embeddings).

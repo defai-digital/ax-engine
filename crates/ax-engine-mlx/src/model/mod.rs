@@ -2222,6 +2222,7 @@ mod tests {
             assistant_post_projection: None,
             gemma4_unified_vision: None,
             gemma4_unified_audio: None,
+            diffusion_self_conditioning: None,
         };
 
         let per_layer = compute_per_layer_inputs_arr(&cfg, &weights, &ids_scalar, &hidden)
@@ -3480,6 +3481,7 @@ mod tests {
             assistant_post_projection: None,
             gemma4_unified_vision: None,
             gemma4_unified_audio: None,
+            diffusion_self_conditioning: None,
         };
         let mut cache = MlxKVCache::new(cfg.layer_count);
 

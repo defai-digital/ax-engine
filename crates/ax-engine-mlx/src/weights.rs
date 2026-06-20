@@ -45,6 +45,7 @@ pub struct ModelWeights {
     pub gemma4_unified_vision: Option<Gemma4UnifiedVisionWeights>,
     /// Gemma4 Unified encoder-free audio connector.
     pub gemma4_unified_audio: Option<Gemma4UnifiedAudioWeights>,
+    pub diffusion_self_conditioning: Option<DiffusionSelfConditioningWeights>,
 }
 
 /// Gemma4 Unified vision path, matching vLLM's
@@ -66,6 +67,13 @@ pub struct Gemma4UnifiedVisionWeights {
 /// `Gemma4MultimodalEmbedder` projection.
 pub struct Gemma4UnifiedAudioWeights {
     pub projection: QuantizedWeight,
+}
+
+pub struct DiffusionSelfConditioningWeights {
+    pub pre_norm: MlxArray,
+    pub gate_proj: QuantizedWeight,
+    pub up_proj: QuantizedWeight,
+    pub down_proj: QuantizedWeight,
 }
 
 /// Weights for a recurrent MTP (Multi-Token Prediction) draft head.
@@ -422,6 +430,8 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
         };
     let gemma4_unified_vision = load_gemma4_unified_vision_weights(specs, &mut name_map)?;
     let gemma4_unified_audio = load_gemma4_unified_audio_weights(specs, &mut name_map)?;
+    let diffusion_self_conditioning =
+        load_diffusion_self_conditioning_weights(specs, &mut name_map)?;
 
     let mut layers = Vec::with_capacity(layer_count);
     for li in 0..layer_count {
@@ -872,11 +882,52 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
         assistant_post_projection,
         gemma4_unified_vision,
         gemma4_unified_audio,
+        diffusion_self_conditioning,
     };
 
     apply_rotated_checkpoint(&mut model, artifacts)?;
 
     Ok(model)
+}
+
+fn load_diffusion_self_conditioning_weights(
+    specs: &[NativeTensorSpec],
+    name_map: &mut HashMap<String, MlxArray>,
+) -> Result<Option<DiffusionSelfConditioningWeights>, WeightLoadError> {
+    if !has_role(specs, NativeTensorRole::DiffusionSelfConditionPreNorm, None) {
+        return Ok(None);
+    }
+
+    Ok(Some(DiffusionSelfConditioningWeights {
+        pre_norm: take_plain_required(
+            specs,
+            name_map,
+            NativeTensorRole::DiffusionSelfConditionPreNorm,
+            None,
+            "diffusion_self_conditioning.pre_norm",
+        )?,
+        gate_proj: take_weight(
+            specs,
+            name_map,
+            NativeTensorRole::DiffusionSelfConditionGate,
+            None,
+            "diffusion_self_conditioning.gate_proj",
+        )?,
+        up_proj: take_weight(
+            specs,
+            name_map,
+            NativeTensorRole::DiffusionSelfConditionUp,
+            None,
+            "diffusion_self_conditioning.up_proj",
+        )?,
+        down_proj: take_weight(
+            specs,
+            name_map,
+            NativeTensorRole::DiffusionSelfConditionDown,
+            None,
+            "diffusion_self_conditioning.down_proj",
+        )?,
+    }))
 }
 
 fn load_gemma4_unified_vision_weights(
@@ -1617,6 +1668,7 @@ fn is_hf_rmsnorm_lift_role(role: NativeTensorRole) -> bool {
             | NativeTensorRole::FfnPostNorm2
             | NativeTensorRole::PerLayerProjectionNorm
             | NativeTensorRole::PerLayerInputPostNorm
+            | NativeTensorRole::DiffusionSelfConditionPreNorm
             | NativeTensorRole::FinalNorm
     )
 }
