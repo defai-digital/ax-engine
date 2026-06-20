@@ -30,13 +30,14 @@ class DirectModelIoMatrixTests(unittest.TestCase):
         self.assertIn("qwen3-6-27b-4bit", slugs)
         self.assertIn("qwen3-6-35b-a3b-4bit", slugs)
         self.assertIn("qwen3-coder-next-4bit", slugs)
+        self.assertIn("glm-4-7-flash-4bit", slugs)
 
-    def test_delegated_glm_is_not_a_direct_model_io_case(self) -> None:
+    def test_glm_is_a_direct_model_io_case(self) -> None:
         slugs = {case.slug for case in check_direct_model_io.MODEL_CASES}
         model_ids = {case.model_id for case in check_direct_model_io.MODEL_CASES}
 
-        self.assertNotIn("glm-4-7-flash-4bit", slugs)
-        self.assertNotIn("mlx-community/GLM-4.7-Flash-4bit", model_ids)
+        self.assertIn("glm-4-7-flash-4bit", slugs)
+        self.assertIn("mlx-community/GLM-4.7-Flash-4bit", model_ids)
 
 
 if __name__ == "__main__":

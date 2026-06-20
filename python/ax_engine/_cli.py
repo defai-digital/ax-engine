@@ -91,7 +91,6 @@ MODEL_PROFILES = (
             "glm-4.7-flash-4bit",
             "glm-4-7-flash-4bit",
         ),
-        downloadable=False,
     ),
     ModelProfile(
         label="qwen3.6-27b",
