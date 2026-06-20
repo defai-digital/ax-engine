@@ -2508,7 +2508,7 @@ impl MtpTelemetry {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct DecodeTelemetry {
     prefill_steps: u32,
     prefill_wall_us: u32,
@@ -2562,6 +2562,59 @@ struct DecodeTelemetry {
     diffusion_commit_skipped: u32,
     diffusion_full_pipeline_used: u32,
     diffusion_kv_buffer_used: u32,
+}
+
+impl Default for DecodeTelemetry {
+    fn default() -> Self {
+        Self {
+            prefill_steps: 0,
+            prefill_wall_us: 0,
+            prefill_forward_wall_us: 0,
+            prefill_prefix_cache_wall_us: 0,
+            prefill_generation_state_wall_us: 0,
+            decode_steps: 0,
+            decode_wall_us: 0,
+            direct_bootstrap_steps: 0,
+            direct_bootstrap_wall_us: 0,
+            direct_pipeline_steps: 0,
+            direct_pipeline_wall_us: 0,
+            direct_pipeline_forward_wall_us: 0,
+            direct_pipeline_forward_layer_loop_wall_us: 0,
+            direct_pipeline_forward_head_wall_us: 0,
+            direct_pipeline_argmax_wall_us: 0,
+            direct_pipeline_async_eval_wall_us: 0,
+            direct_pipeline_next_complete_wall_us: 0,
+            direct_pipeline_pending_eval_wall_us: 0,
+            direct_pipeline_pending_read_wall_us: 0,
+            direct_pipeline_op_count: 0,
+            direct_pipeline_linear_attention_layer_ops: 0,
+            direct_pipeline_linear_attention_layer_count: 0,
+            direct_pipeline_full_attention_layer_ops: 0,
+            direct_pipeline_full_attention_layer_count: 0,
+            single_decode_steps: 0,
+            single_decode_wall_us: 0,
+            ngram_decode_steps: 0,
+            ngram_decode_wall_us: 0,
+            bonus_tokens: 0,
+            production_decode_evals: 0,
+            prefill_eval_barriers: 0,
+            prefill_drain_async_evals: 0,
+            diffusion_blocks: 0,
+            diffusion_denoise_steps: 0,
+            diffusion_converged_blocks: 0,
+            diffusion_denoise_wall_us: 0,
+            diffusion_commit_wall_us: 0,
+            diffusion_block_wall_us: 0,
+            diffusion_converged_strict: 0,
+            diffusion_converged_acceptance: 0,
+            diffusion_converged_plateau: 0,
+            diffusion_min_entropy_bp: u32::MAX,
+            diffusion_min_acceptance_rate_bp: u32::MAX,
+            diffusion_commit_skipped: 0,
+            diffusion_full_pipeline_used: 0,
+            diffusion_kv_buffer_used: 0,
+        }
+    }
 }
 
 impl DecodeTelemetry {
@@ -2826,12 +2879,14 @@ impl DecodeTelemetry {
         self.diffusion_converged_plateau = self
             .diffusion_converged_plateau
             .saturating_add(other.diffusion_converged_plateau);
-        self.diffusion_min_entropy_bp = self
-            .diffusion_min_entropy_bp
-            .min(other.diffusion_min_entropy_bp);
-        self.diffusion_min_acceptance_rate_bp = self
-            .diffusion_min_acceptance_rate_bp
-            .min(other.diffusion_min_acceptance_rate_bp);
+        if other.diffusion_blocks > 0 {
+            self.diffusion_min_entropy_bp = self
+                .diffusion_min_entropy_bp
+                .min(other.diffusion_min_entropy_bp);
+            self.diffusion_min_acceptance_rate_bp = self
+                .diffusion_min_acceptance_rate_bp
+                .min(other.diffusion_min_acceptance_rate_bp);
+        }
         self.diffusion_commit_skipped = self
             .diffusion_commit_skipped
             .saturating_add(other.diffusion_commit_skipped);
@@ -2972,11 +3027,19 @@ impl DecodeTelemetry {
             ),
             (
                 "ax_mlx_diffusion_min_entropy_bp",
-                self.diffusion_min_entropy_bp,
+                if self.diffusion_blocks == 0 {
+                    0
+                } else {
+                    self.diffusion_min_entropy_bp
+                },
             ),
             (
                 "ax_mlx_diffusion_min_acceptance_rate_bp",
-                self.diffusion_min_acceptance_rate_bp,
+                if self.diffusion_blocks == 0 {
+                    0
+                } else {
+                    self.diffusion_min_acceptance_rate_bp
+                },
             ),
             (
                 "ax_mlx_diffusion_commit_skipped",
@@ -14718,12 +14781,34 @@ mod tests {
         );
         assert_eq!(decisions.get("ax_mlx_diffusion_commit_wall_us"), Some(&300));
         assert_eq!(decisions.get("ax_mlx_diffusion_block_wall_us"), Some(&2000));
+        assert_eq!(decisions.get("ax_mlx_diffusion_min_entropy_bp"), Some(&30));
+        assert_eq!(
+            decisions.get("ax_mlx_diffusion_min_acceptance_rate_bp"),
+            Some(&500)
+        );
         assert_eq!(decisions.get("ax_mlx_diffusion_commit_skipped"), Some(&1));
         assert_eq!(
             decisions.get("ax_mlx_diffusion_full_pipeline_used"),
             Some(&1)
         );
         assert_eq!(decisions.get("ax_mlx_diffusion_kv_buffer_used"), Some(&2));
+    }
+
+    #[test]
+    fn decode_telemetry_emits_zero_diffusion_minima_without_blocks() {
+        let telemetry = DecodeTelemetry::default();
+        let mut decisions: Vec<(String, u32)> = Vec::new();
+        telemetry.append_route_decisions(&mut decisions);
+        let decisions = decisions
+            .into_iter()
+            .collect::<std::collections::BTreeMap<_, _>>();
+
+        assert_eq!(decisions.get("ax_mlx_diffusion_blocks"), Some(&0));
+        assert_eq!(decisions.get("ax_mlx_diffusion_min_entropy_bp"), Some(&0));
+        assert_eq!(
+            decisions.get("ax_mlx_diffusion_min_acceptance_rate_bp"),
+            Some(&0)
+        );
     }
 
     #[test]

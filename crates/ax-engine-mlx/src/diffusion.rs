@@ -66,9 +66,9 @@
 use std::time::Instant;
 
 use mlx_sys::{
-    MlxArray, MlxClosure, MlxDtype, MlxVectorArray, add, argmax, argsort_axis, astype, cumsum,
-    divide, eval, less_equal, log, matmul, multiply, negative, not_equal, reshape, rms_norm,
-    softmax, sum_axis, take_along_axis, where_cond,
+    MlxArray, MlxClosure, MlxDtype, MlxVectorArray, add, arange, argmax, argsort_axis, astype,
+    cumsum, divide, equal, eval, greater_equal, less_equal, log, matmul, multiply, negative,
+    not_equal, reshape, rms_norm, softmax, sum_axis, take_along_axis, where_cond,
 };
 
 use crate::fastpath;
@@ -209,7 +209,7 @@ fn check_convergence(canvas: &DiffusionCanvas, cfg: &DiffusionConfig) -> Converg
         canvas.stable_count >= cfg.convergence_steps && canvas.mean_entropy < cfg.entropy_threshold;
 
     // Acceptance rate criteria: almost no positions being updated.
-    let acceptance = canvas.acceptance_rate < cfg.acceptance_rate_threshold;
+    let acceptance = canvas.step > 0 && canvas.acceptance_rate < cfg.acceptance_rate_threshold;
 
     // Entropy plateau criteria: entropy stalled after warmup period.
     // Only check after step 16 to allow initial exploration.
@@ -227,6 +227,27 @@ fn check_convergence(canvas: &DiffusionCanvas, cfg: &DiffusionConfig) -> Converg
 fn temperature_at_step(step: usize, cfg: &DiffusionConfig) -> f32 {
     let t = step as f32 / cfg.max_denoise_steps.max(1) as f32;
     cfg.temp_start + (cfg.temp_end - cfg.temp_start) * t
+}
+
+fn mlx_scalar_u32(value: u32) -> MlxArray {
+    MlxArray::from_raw_data(
+        &value as *const u32 as *const u8,
+        std::mem::size_of::<u32>(),
+        &[],
+        MlxDtype::Uint32,
+    )
+}
+
+fn include_lowest_entropy_position(accepted_sorted: &MlxArray, canvas_size: usize) -> MlxArray {
+    let ranks = arange(0.0, canvas_size as f64, 1.0, MlxDtype::Uint32, None);
+    let ranks_2d = reshape(&ranks, &[1, canvas_size as i32], None);
+    let first_sorted = equal(&ranks_2d, &mlx_scalar_u32(0), None);
+    let accepted_count = add(
+        &astype(accepted_sorted, MlxDtype::Uint32, None),
+        &astype(&first_sorted, MlxDtype::Uint32, None),
+        None,
+    );
+    greater_equal(&accepted_count, &mlx_scalar_u32(1), None)
 }
 
 // Run one denoise step: bidirectional forward → per-position logits →
@@ -397,9 +418,12 @@ fn denoise_step(
     let bound_scalar = MlxArray::from_f32(diff_cfg.entropy_bound);
 
     // accepted_sorted: [1, canvas_size] bool — positions within budget.
-    // Using <= ensures at least the first (lowest-entropy) position is
-    // accepted when its entropy ≤ bound, guaranteeing progress.
-    let accepted_sorted = less_equal(&cum_entropy, &bound_scalar, None);
+    // Always include the lowest-entropy position to match the CPU reference
+    // fallback when every position exceeds the entropy budget.
+    let accepted_sorted = include_lowest_entropy_position(
+        &less_equal(&cum_entropy, &bound_scalar, None),
+        canvas.canvas_size,
+    );
 
     // Inverse-sort the acceptance mask back to original position order.
     // inverse_sort[i] = rank of position i in the sorted ordering.
@@ -639,7 +663,10 @@ pub(crate) fn generate_diffusion_block(
             let sorted_entropy = take_along_axis(&entropy, &sorted_positions, -1, None);
             let cum_entropy = cumsum(&sorted_entropy, -1, false, true, None);
             let bound_scalar = MlxArray::from_f32(entropy_bound);
-            let accepted_sorted = less_equal(&cum_entropy, &bound_scalar, None);
+            let accepted_sorted = include_lowest_entropy_position(
+                &less_equal(&cum_entropy, &bound_scalar, None),
+                canvas_size,
+            );
             let inverse_sort = argsort_axis(&sorted_positions, -1, None);
             let accept_mask = take_along_axis(&accepted_sorted, &inverse_sort, -1, None);
             let accept_mask_1d = reshape(&accept_mask, &[canvas_size as i32], None);
@@ -963,6 +990,18 @@ mod tests {
     }
 
     #[test]
+    fn convergence_signals_acceptance_ignores_initial_step() {
+        let cfg = default_diff_cfg();
+        let canvas = test_canvas(0, 0.5, 0.0, f32::MAX, 0);
+        let signals = check_convergence(&canvas, &cfg);
+        assert!(
+            !signals.acceptance,
+            "acceptance convergence must not fire before a previous denoise step exists"
+        );
+        assert!(!signals.any());
+    }
+
+    #[test]
     fn convergence_signals_acceptance_not_low() {
         let cfg = default_diff_cfg();
         // acceptance_rate (0.5) well above threshold.
@@ -1032,6 +1071,16 @@ mod tests {
             ..Default::default()
         };
         assert!(strict_only.any());
+    }
+
+    #[test]
+    fn include_lowest_entropy_position_accepts_one_when_budget_accepts_none() {
+        let accepted_sorted = mlx_sys::zeros(&[1, 4], MlxDtype::Bool, None);
+        let with_fallback = include_lowest_entropy_position(&accepted_sorted, 4);
+        let accepted_f32 = astype(&with_fallback, MlxDtype::Float32, None);
+        let accepted_sum = sum_axis(&accepted_f32, -1, false, None);
+        eval(&[&accepted_sum]);
+        assert_eq!(accepted_sum.data_f32(), &[1.0]);
     }
 
     // ── Commit skip predicate tests ──────────────────────────────────
