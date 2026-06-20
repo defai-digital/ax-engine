@@ -234,11 +234,15 @@ fn extract_tool_call_payload(content: &str) -> Option<(OpenAiFunctionCall, Strin
     match (
         content.find("<tool_call>"),
         content.find("<|tool_call>call:"),
+        find_bare_gemma4_call(content),
     ) {
-        (Some(xml), Some(gemma)) if xml <= gemma => extract_xml_tool_call_payload(content),
-        (Some(_), None) => extract_xml_tool_call_payload(content),
-        (Some(_), Some(_)) | (None, Some(_)) => extract_gemma4_tool_call_payload(content),
-        (None, None) => None,
+        (Some(xml), Some(gemma), _) if xml <= gemma => extract_xml_tool_call_payload(content),
+        (Some(xml), None, Some(bare)) if xml <= bare => extract_xml_tool_call_payload(content),
+        (Some(_), None, Some(_)) => extract_bare_gemma4_tool_call_payload(content),
+        (Some(_), None, None) => extract_xml_tool_call_payload(content),
+        (Some(_), Some(_), _) | (None, Some(_), _) => extract_gemma4_tool_call_payload(content),
+        (None, None, Some(_)) => extract_bare_gemma4_tool_call_payload(content),
+        (None, None, None) => None,
     }
 }
 
@@ -278,6 +282,30 @@ fn extract_gemma4_tool_call_payload(content: &str) -> Option<(OpenAiFunctionCall
         &content[..start],
         &content[marker_start + marker.len()..]
     );
+    Some((OpenAiFunctionCall { name, arguments }, remaining))
+}
+
+fn find_bare_gemma4_call(content: &str) -> Option<usize> {
+    let start = content.find("call:")?;
+    if content[..start].trim().is_empty() {
+        Some(start)
+    } else {
+        None
+    }
+}
+
+fn extract_bare_gemma4_tool_call_payload(content: &str) -> Option<(OpenAiFunctionCall, String)> {
+    let start = find_bare_gemma4_call(content)?;
+    let name_start = start + "call:".len();
+    let name_end = name_start + content[name_start..].find('{')?;
+    let name = content[name_start..name_end].trim().to_string();
+    if name.is_empty() {
+        return None;
+    }
+    let body_start = name_end + 1;
+    let body_end = find_matching_gemma4_object_end(content, body_start)?;
+    let arguments = parse_gemma4_arguments(&content[body_start..body_end])?;
+    let remaining = format!("{}{}", &content[..start], &content[body_end + 1..]);
     Some((OpenAiFunctionCall { name, arguments }, remaining))
 }
 

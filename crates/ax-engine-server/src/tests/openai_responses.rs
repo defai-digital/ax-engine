@@ -235,6 +235,34 @@ fn chat_response_extracts_gemma4_tool_call_from_ollama_dsl() {
 }
 
 #[test]
+fn chat_response_extracts_bare_gemma4_tool_call_from_live_output() {
+    let response =
+        sample_generate_response(r#"call:read_file{path:README.md}"#, Vec::new(), Vec::new());
+
+    let openai = openai_chat_completion_response(
+        &response,
+        "chatcmpl-test".to_string(),
+        OpenAiResponseOptions {
+            parse_tool_calls: true,
+            ..Default::default()
+        },
+        None,
+    );
+
+    let message = &openai.choices[0].message;
+    assert_eq!(message.content, "");
+    let tool_call = &message
+        .tool_calls
+        .as_ref()
+        .expect("bare Gemma4 tool call should be parsed")[0];
+    assert_eq!(tool_call.function.name, "read_file");
+    let arguments: serde_json::Value =
+        serde_json::from_str(&tool_call.function.arguments).expect("arguments are JSON");
+    assert_eq!(arguments["path"], "README.md");
+    assert_eq!(openai.choices[0].finish_reason, Some("tool_calls"));
+}
+
+#[test]
 fn chat_response_extracts_multiple_tool_calls() {
     let response = sample_generate_response(
         r#"<tool_call>{"name":"read_file","arguments":{"path":"README.md"}}</tool_call>
