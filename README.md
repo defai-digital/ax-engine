@@ -319,8 +319,7 @@ Direct support means AX has a repo-owned `ax-engine-mlx` graph for the model fam
 | Qwen 3.5 | `Qwen3.5-9B-MLX-4bit` | Repo-owned MLX runtime | Linear attention + MoE FFN; `attn_output_gate` per-head interleaving |
 | Qwen 3.6 | `Qwen3.6-35B-A3B` 4-bit, `Qwen3.6-27B` 4/5/6/8-bit | Repo-owned MLX runtime; fused sidecar-MTP benchmark path | `qwen3_next`: GatedDelta linear attention, full attention with per-head sigmoid gate, sparse top-k MoE |
 | Qwen3-Coder-Next | `Qwen3-Coder-Next-4bit` | Repo-owned MLX runtime; direct coding-agent path | `qwen3_next` coding-specialist checkpoint; hybrid linear/full attention, sparse top-10-of-512 MoE, shared expert, 8-bit router/shared-expert gates |
-
-> GLM 4.7 Flash (`glm4_moe_lite`) was demoted from direct support to the `mlx_lm_delegated` passby route: native decode only reaches `mlx_lm` parity and the 4-bit export has no MTP head. The `glm4.7-flash-4bit` preset now selects the delegated tier and requires `--mlx-lm-server-url`. See [`docs/SUPPORTED-MODELS.md`](docs/SUPPORTED-MODELS.md).
+| GLM 4.7 Flash | `glm4_moe_lite` / `glm4.7-flash-4bit` | Repo-owned MLX runtime; MLX affine 4-bit weights | Flash MLA attention, sigmoid-routed MoE with dense+MoE layer split, shared expert; post-attention RMS norm |
 
 Adding a new architecture means implementing the model graph in `ax-engine-mlx`, not wiring up a generic loader. Architecture code alone is not a direct-support claim — a model requires a repo-owned graph, manifest, smoke coverage, and benchmark evidence before promotion here. LLaMA, Mistral, Mixtral, DeepSeek, and unlisted Gemma/Qwen variants should use the explicit delegated route.
 

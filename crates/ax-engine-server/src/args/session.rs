@@ -68,11 +68,8 @@ impl ServerArgs {
         let preset = self.preset.map(ServerPreset::definition);
         // A preset fully specifies its backend tier (it conflicts with
         // --model-id and --support-tier), so the preset's tier — not the --mlx
-        // flag — decides whether the native MLX path runs. A delegated preset
-        // (e.g. GLM 4.7 Flash -> mlx-lm passby) therefore routes to the
-        // delegated backend even when --mlx is also passed, instead of silently
-        // falling back to native. Without a preset, --mlx selects native as
-        // before.
+        // flag — decides whether the native MLX path runs. Without a preset,
+        // --mlx selects native as before.
         let effective_mlx = match preset {
             Some(definition) => matches!(
                 definition.support_tier,

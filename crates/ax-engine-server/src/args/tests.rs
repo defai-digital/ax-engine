@@ -495,12 +495,11 @@ fn qwen36_35b_preset_selects_mlx_preview_defaults() {
 }
 
 #[test]
-fn glm_preset_selects_mlx_lm_delegated_defaults() {
-    // GLM 4.7 Flash is a passby model: the preset selects the delegated tier
-    // and routes to an external mlx-lm server rather than the native MLX graph.
+fn glm_preset_selects_native_mlx_by_default() {
+    // GLM 4.7 Flash is a direct-support model: the preset selects the native
+    // MLX tier by default. It can still be routed to mlx-lm via --mlx-lm-server-url.
     let args = ServerArgs {
         preset: Some(ServerPreset::Glm47Flash4bit),
-        mlx_lm_server_url: Some("http://127.0.0.1:8090".to_string()),
         ..base_args()
     };
 
@@ -509,44 +508,9 @@ fn glm_preset_selects_mlx_lm_delegated_defaults() {
     assert_eq!(args.effective_model_id(), "glm4_moe_lite");
     assert_eq!(
         args.effective_support_tier(),
-        PreviewSupportTier::MlxLmDelegated
-    );
-    assert_eq!(
-        actual.resolved_backend.selected_backend,
-        SelectedBackend::MlxLmDelegated
+        PreviewSupportTier::MlxPreview
     );
     assert_eq!(actual.max_batch_tokens, 2048);
-}
-
-#[test]
-fn glm_preset_requires_mlx_lm_server_url() {
-    // Without an mlx-lm server URL the delegated GLM preset must fail closed
-    // rather than silently falling back to a native MLX route.
-    let args = ServerArgs {
-        preset: Some(ServerPreset::Glm47Flash4bit),
-        ..base_args()
-    };
-
-    assert!(args.session_config().is_err());
-}
-
-#[test]
-fn delegated_preset_is_not_forced_native_by_mlx_flag() {
-    // The preset's tier is authoritative: passing --mlx must not silently
-    // override the GLM passby preset back onto the native MLX path.
-    let args = ServerArgs {
-        preset: Some(ServerPreset::Glm47Flash4bit),
-        mlx: true,
-        mlx_lm_server_url: Some("http://127.0.0.1:8090".to_string()),
-        ..base_args()
-    };
-
-    let actual = args.session_config().expect("session config should build");
-
-    assert_eq!(
-        actual.resolved_backend.selected_backend,
-        SelectedBackend::MlxLmDelegated
-    );
 }
 
 #[test]

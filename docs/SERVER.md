@@ -289,13 +289,12 @@ cargo run -p ax-engine-server -- \
 weights and do not silently scan local caches. If the model directory is already
 available through `AX_ENGINE_MLX_MODEL_ARTIFACTS_DIR`, the explicit path flag can
 be omitted. Current native MLX built-ins are `gemma4-e2b`, `gemma4-12b`,
-`gemma4-31b`, and `qwen3.6-35b`.
+`gemma4-31b`, `glm4.7-flash-4bit`, and `qwen3.6-35b`.
 
-The `glm4.7-flash-4bit` preset (GLM-4.7 Flash, `glm4_moe_lite`) is a passby
-preset: it reports the `mlx_lm_delegated` runtime tier and requires
-`--mlx-lm-server-url` instead of a local artifacts dir. GLM is no longer a
-direct-support model — see
-[`SUPPORTED-MODELS.md`](SUPPORTED-MODELS.md).
+The `glm4.7-flash-4bit` preset (GLM-4.7 Flash, `glm4_moe_lite`) uses the
+repo-owned native MLX graph with Flash MLA attention and sigmoid-routed MoE.
+It can optionally be served through `mlx_lm_delegated` by passing
+`--mlx-lm-server-url`; see [`SUPPORTED-MODELS.md`](SUPPORTED-MODELS.md).
 
 Hugging Face cache discovery is opt-in:
 
