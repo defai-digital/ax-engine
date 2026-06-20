@@ -770,26 +770,21 @@ fn forward_bidirectional(
     if let Some(scale) = cfg.hidden_states_scale {
         hidden = crate::model::shared::scale_hidden_pub(&hidden, scale);
     }
-    if let (Some(self_conditioning), Some(signal)) = (
-        weights.diffusion_self_conditioning.as_ref(),
-        self_conditioning_signal,
-    ) {
-        let normed = rms_norm(
-            signal,
-            Some(&self_conditioning.pre_norm),
-            cfg.rms_norm_eps,
-            None,
-        );
-        let gate = shared::qw(&normed, &self_conditioning.gate_proj);
-        let up = shared::qw(&normed, &self_conditioning.up_proj);
-        let activated = multiply(&gelu_approx(&gate, None), &up, None);
-        let sc_signal = shared::qw(&activated, &self_conditioning.down_proj);
-        hidden = rms_norm(
-            &add(&hidden, &sc_signal, None),
-            None,
-            cfg.rms_norm_eps,
-            None,
-        );
+    if let Some(self_conditioning) = weights.diffusion_self_conditioning.as_ref() {
+        if let Some(signal) = self_conditioning_signal {
+            let normed = rms_norm(
+                signal,
+                Some(&self_conditioning.pre_norm),
+                cfg.rms_norm_eps,
+                None,
+            );
+            let gate = shared::qw(&normed, &self_conditioning.gate_proj);
+            let up = shared::qw(&normed, &self_conditioning.up_proj);
+            let activated = multiply(&gelu_approx(&gate, None), &up, None);
+            let sc_signal = shared::qw(&activated, &self_conditioning.down_proj);
+            hidden = add(&hidden, &sc_signal, None);
+        }
+        hidden = rms_norm(&hidden, None, cfg.rms_norm_eps, None);
     }
 
     // Compute per-layer inputs (Gemma4 per-layer embeddings).

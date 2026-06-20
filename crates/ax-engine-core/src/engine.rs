@@ -741,6 +741,7 @@ impl EngineCore {
                     processed_prompt_tokens: record.processed_prompt_tokens,
                     generated_len: record.generated_tokens.len() as u32,
                     max_output_tokens: record.max_output_tokens,
+                    seed: record.sampling_params.seed,
                     deterministic_argmax_sampling:
                         sampling_params_allow_deterministic_argmax_fast_path(
                             &record.sampling_params,

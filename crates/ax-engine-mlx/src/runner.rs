@@ -4262,8 +4262,8 @@ struct RequestState {
     generated_tokens: Vec<u32>,
     cached_prefill_output_token: Option<u32>,
     ngram: NgramTable,
-    /// Per-request PRNG for temperature sampling.  Seeded from request_id so
-    /// deterministic seeds produce reproducible outputs.
+    /// Per-request PRNG for sampling-capable paths. Seeded from the request's
+    /// sampling seed so repeated deterministic requests are reproducible.
     rng: Xorshift64,
     sampling_probs_buf: Vec<f32>,
     sampling_logits_buf: Vec<f32>,
@@ -4397,14 +4397,14 @@ enum NgramRequestDisableReason {
 }
 
 impl RequestState {
-    fn new(num_layers: usize, request_id: RequestId) -> Self {
+    fn new(num_layers: usize, seed: u64) -> Self {
         Self {
             cache: MlxKVCache::new(num_layers),
             prompt_prefix_tokens: Vec::new(),
             generated_tokens: Vec::new(),
             cached_prefill_output_token: None,
             ngram: NgramTable::new(),
-            rng: Xorshift64::new(request_id.0),
+            rng: Xorshift64::new(seed),
             sampling_probs_buf: Vec::new(),
             sampling_logits_buf: Vec::new(),
             sampling_candidates_buf: Vec::new(),
@@ -5718,9 +5718,12 @@ impl MlxRunner {
         // empty state from None while the other holds the extracted state.
         let mut state = {
             let mut states = self.states.lock().unwrap_or_else(|p| p.into_inner());
-            states
-                .remove(&item.request_id)
-                .unwrap_or_else(|| RequestState::new(self.cfg.layer_count, item.request_id))
+            states.remove(&item.request_id).unwrap_or_else(|| {
+                RequestState::new(
+                    self.cfg.layer_count,
+                    ctx.map(|c| c.seed).unwrap_or(item.request_id.0),
+                )
+            })
         };
         let mut prefix_cache = if has_gemma4_unified_multimodal_prefill {
             MlxPrefixCacheTelemetry::default()
@@ -10900,6 +10903,7 @@ mod tests {
             processed_prompt_tokens: 0,
             generated_len: 0,
             max_output_tokens: 16,
+            seed: 0,
             deterministic_argmax_sampling,
             temperature: 0.0,
             top_p: 1.0,
@@ -10950,8 +10954,12 @@ mod tests {
 
         // Extract A from the map (simulates the lock-brief-remove step).
         // While A is extracted, B's slot is accessible without contention.
-        let state_a = states.remove(&a).unwrap_or_else(|| RequestState::new(2, a));
-        let state_b = states.remove(&b).unwrap_or_else(|| RequestState::new(2, b));
+        let state_a = states
+            .remove(&a)
+            .unwrap_or_else(|| RequestState::new(2, a.0));
+        let state_b = states
+            .remove(&b)
+            .unwrap_or_else(|| RequestState::new(2, b.0));
 
         // GPU work would run here with state_a / state_b outside the map.
         // Verify B can be reinserted independently of A.
@@ -10967,7 +10975,7 @@ mod tests {
     fn completed_request_state_is_not_reinserted() {
         let mut states: HashMap<RequestId, RequestState> = HashMap::new();
         let id = RequestId(42);
-        states.insert(id, RequestState::new(2, id));
+        states.insert(id, RequestState::new(2, id.0));
 
         // Extract and simulate a completed request (stop_reason.is_some()).
         // The state should not be reinserted, mirroring the run_item control flow.
@@ -12143,7 +12151,7 @@ mod tests {
             prefix_tokens_reused: 4,
             prefix_blocks_reused: 1,
         };
-        let state = RequestState::new(2, RequestId(21));
+        let state = RequestState::new(2, 21);
         let telemetry = MlxPrefixCacheTelemetry {
             misses: 1,
             warmup_tokens: 4,
@@ -12177,7 +12185,7 @@ mod tests {
             prefix_tokens_reused: 4,
             prefix_blocks_reused: 1,
         };
-        let state = RequestState::new(2, RequestId(22));
+        let state = RequestState::new(2, 22);
         let hit_telemetry = MlxPrefixCacheTelemetry {
             hits: 1,
             reused_tokens: 4,
@@ -12215,7 +12223,7 @@ mod tests {
 
     #[test]
     fn prefill_clears_bonus_and_last_token() {
-        let mut state = RequestState::new(2, RequestId(0));
+        let mut state = RequestState::new(2, 0);
         state.bonus_queue.push_back(99);
         state.bonus_queue.push_back(100);
         state.next_model_last_token = Some(5);
@@ -12245,7 +12253,7 @@ mod tests {
 
     #[test]
     fn generation_ngram_seed_uses_reconstructed_prompt_after_prefix_warmup() {
-        let mut warm = RequestState::new(2, RequestId(11));
+        let mut warm = RequestState::new(2, 11);
         warm.prompt_prefix_tokens = vec![10, 11, 12, 13, 10, 11, 12];
 
         seed_generation_ngram_from_prompt(&mut warm, false);
@@ -12256,7 +12264,7 @@ mod tests {
             "warm prefix+suffix prefill must seed n-grams from the reconstructed full prompt",
         );
 
-        let mut suffix_only = RequestState::new(2, RequestId(12));
+        let mut suffix_only = RequestState::new(2, 12);
         suffix_only.prompt_prefix_tokens = vec![10, 11, 12];
         seed_generation_ngram_from_prompt(&mut suffix_only, false);
 
@@ -12268,7 +12276,7 @@ mod tests {
 
     #[test]
     fn generation_ngram_seed_includes_prefill_output_token() {
-        let mut state = RequestState::new(2, RequestId(13));
+        let mut state = RequestState::new(2, 13);
         state.prompt_prefix_tokens = vec![1, 2, 3, 1, 2, 3];
 
         seed_generation_ngram_from_prompt(&mut state, false);
@@ -12289,7 +12297,7 @@ mod tests {
     #[test]
     fn generation_ngram_seed_extends_window_for_repeating_prompts() {
         let block: Vec<u32> = (1..=70).collect();
-        let mut state = RequestState::new(2, RequestId(14));
+        let mut state = RequestState::new(2, 14);
         state.prompt_prefix_tokens.extend_from_slice(&block);
         state.prompt_prefix_tokens.extend_from_slice(&block);
         state.prompt_prefix_tokens.extend_from_slice(&block);
@@ -12305,7 +12313,7 @@ mod tests {
 
     #[test]
     fn generation_ngram_seed_keeps_random_prompts_on_short_tail() {
-        let mut state = RequestState::new(2, RequestId(15));
+        let mut state = RequestState::new(2, 15);
         state.prompt_prefix_tokens = (1..=210).collect();
         state
             .prompt_prefix_tokens
@@ -12321,7 +12329,7 @@ mod tests {
 
     #[test]
     fn ngram_decode_result_keeps_correction_token_in_output_queue() {
-        let mut state = RequestState::new(2, RequestId(7));
+        let mut state = RequestState::new(2, 7);
 
         let output = apply_decode_result(&mut state, &[11, 12], &[]);
 
@@ -12336,7 +12344,7 @@ mod tests {
 
     #[test]
     fn ngram_decode_result_queues_full_accept_tail_and_bonus() {
-        let mut state = RequestState::new(2, RequestId(8));
+        let mut state = RequestState::new(2, 8);
 
         let output = apply_decode_result(&mut state, &[21, 22, 23, 24], &[]);
 
@@ -12373,7 +12381,7 @@ mod tests {
 
     #[test]
     fn ngram_decode_result_truncates_bonus_queue_at_eos() {
-        let mut state = RequestState::new(2, RequestId(9));
+        let mut state = RequestState::new(2, 9);
 
         let output = apply_decode_result(&mut state, &[31, 32, 151645, 33], &[151645]);
 
@@ -12408,6 +12416,7 @@ mod tests {
             processed_prompt_tokens: 0,
             generated_len: 0,
             max_output_tokens: 24,
+            seed: 0,
             deterministic_argmax_sampling: true,
             temperature: 0.0,
             top_p: 1.0,
@@ -14427,7 +14436,7 @@ mod tests {
 
     #[test]
     fn linear_attention_direct_fallback_reenables_when_output_builds_draft() {
-        let mut state = RequestState::new(1, RequestId(7));
+        let mut state = RequestState::new(1, 7);
         state.ngram_acceleration_disabled_for_request = true;
         state.ngram_request_disable_reason = NgramRequestDisableReason::LinearNoDraft;
         state.linear_ngram_no_draft_streak = LINEAR_NGRAM_NO_DRAFT_DISABLE_THRESHOLD;
@@ -14482,7 +14491,7 @@ mod tests {
 
     #[test]
     fn linear_attention_reenable_keeps_short_output_disable_closed() {
-        let mut state = RequestState::new(1, RequestId(7));
+        let mut state = RequestState::new(1, 7);
         state.ngram_acceleration_disabled_for_request = true;
         state.ngram_request_disable_reason = NgramRequestDisableReason::ShortOutputBudget;
         state
@@ -14504,7 +14513,7 @@ mod tests {
 
     #[test]
     fn linear_attention_initial_no_draft_stays_on_direct_fallback() {
-        let mut state = RequestState::new(1, RequestId(7));
+        let mut state = RequestState::new(1, 7);
         state.ngram_acceleration_disabled_for_request = true;
         state.ngram_request_disable_reason = NgramRequestDisableReason::LinearInitialNoDraft;
         state
@@ -14589,7 +14598,7 @@ mod tests {
 
     #[test]
     fn linear_attention_reenable_requires_greedy_exact_decode() {
-        let mut state = RequestState::new(1, RequestId(7));
+        let mut state = RequestState::new(1, 7);
         state.ngram_acceleration_disabled_for_request = true;
         state.ngram_request_disable_reason = NgramRequestDisableReason::LinearNoDraft;
         state

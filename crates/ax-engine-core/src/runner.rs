@@ -31,6 +31,7 @@ pub struct RunnerRequestContext {
     pub processed_prompt_tokens: u32,
     pub generated_len: u32,
     pub max_output_tokens: u32,
+    pub seed: u64,
     pub deterministic_argmax_sampling: bool,
     /// Temperature for token sampling. 0.0 means greedy argmax (same as
     /// `deterministic_argmax_sampling = true`). Runners that support
@@ -584,6 +585,7 @@ mod tests {
                     processed_prompt_tokens: 0,
                     generated_len: 0,
                     max_output_tokens: 4,
+                    seed: 0,
                     deterministic_argmax_sampling: true,
                     temperature: 0.0,
                     top_p: 1.0,
@@ -600,6 +602,7 @@ mod tests {
                     processed_prompt_tokens: 4,
                     generated_len: 0,
                     max_output_tokens: 4,
+                    seed: 0,
                     deterministic_argmax_sampling: true,
                     temperature: 0.0,
                     top_p: 1.0,
@@ -733,6 +736,7 @@ mod tests {
                 processed_prompt_tokens: 0,
                 generated_len: 0,
                 max_output_tokens: 2,
+                seed: 0,
                 deterministic_argmax_sampling: true,
                 temperature: 0.0,
                 top_p: 1.0,
