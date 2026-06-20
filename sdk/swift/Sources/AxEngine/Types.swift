@@ -238,7 +238,7 @@ public struct OpenAiUsage: Decodable, Sendable {
 
 public struct OpenAiChatMessageResponse: Decodable, Sendable {
     public var role: String
-    public var content: String
+    public var content: String?
 }
 
 public struct OpenAiChatCompletionChoice: Decodable, Sendable {

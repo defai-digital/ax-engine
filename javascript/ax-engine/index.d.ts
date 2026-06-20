@@ -155,7 +155,7 @@ export interface OpenAiCompletionChunk {
 
 export interface OpenAiChatMessageResponse {
   role: "assistant";
-  content: string;
+  content: string | null;
 }
 
 export interface OpenAiChatCompletionChoice {

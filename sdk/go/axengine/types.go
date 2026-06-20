@@ -154,8 +154,8 @@ type OpenAiChatCompletionRequest struct {
 
 // OpenAiChatMessageResponse is the assistant message in a chat completion response.
 type OpenAiChatMessageResponse struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role    string  `json:"role"`
+	Content *string `json:"content"` // nil when tool_calls are present (server emits null)
 }
 
 // OpenAiChatCompletionChoice is a single chat completion choice.

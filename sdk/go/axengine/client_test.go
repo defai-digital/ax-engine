@@ -109,7 +109,7 @@ func TestChatCompletionOK(t *testing.T) {
 			Choices: []OpenAiChatCompletionChoice{
 				{
 					Index:        0,
-					Message:      OpenAiChatMessageResponse{Role: "assistant", Content: "Hi there!"},
+					Message:      OpenAiChatMessageResponse{Role: "assistant", Content: Ptr("Hi there!")},
 					FinishReason: Ptr("stop"),
 				},
 			},
@@ -125,8 +125,8 @@ func TestChatCompletionOK(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if resp.Choices[0].Message.Content != "Hi there!" {
-			t.Errorf("content: got %q", resp.Choices[0].Message.Content)
+		if resp.Choices[0].Message.Content == nil || *resp.Choices[0].Message.Content != "Hi there!" {
+			t.Errorf("content: got %v", resp.Choices[0].Message.Content)
 		}
 		if resp.Usage.CompletionTokens != 3 {
 			t.Errorf("completion_tokens: got %d want 3", resp.Usage.CompletionTokens)
@@ -187,7 +187,7 @@ func TestChatCompletionEncodesGemma4MultimodalInputs(t *testing.T) {
 			Model:  "gemma-4-12b-it",
 			Choices: []OpenAiChatCompletionChoice{{
 				Index:        0,
-				Message:      OpenAiChatMessageResponse{Role: "assistant", Content: "ok"},
+				Message:      OpenAiChatMessageResponse{Role: "assistant", Content: Ptr("ok")},
 				FinishReason: Ptr("stop"),
 			}},
 		})

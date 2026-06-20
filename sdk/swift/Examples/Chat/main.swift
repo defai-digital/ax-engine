@@ -22,4 +22,4 @@ let response = try await client.chatCompletion(.init(
     maxTokens: 64,
     temperature: 0.7
 ))
-print("chat:", response.choices[0].message.content)
+print("chat:", response.choices[0].message.content ?? "")
