@@ -19,7 +19,7 @@ cleanup() {
     ax_rm_rf "$TMP_DIR" "$UPSTREAM_LOG_FILE" "$UPSTREAM_REQUEST_LOG_FILE"
 }
 
-trap cleanup EXIT
+trap 'ax_run_cleanup "$?" cleanup' EXIT
 
 cd "$ROOT_DIR"
 

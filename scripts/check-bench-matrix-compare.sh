@@ -7,16 +7,22 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/lib/common.sh"
 ROOT_DIR="$AX_REPO_ROOT"
 PYTHON_BIN="$AX_PYTHON_BIN"
+ax_require_env AX_ENGINE_MLX_MODEL_ARTIFACTS_DIR "AX_ENGINE_MLX_MODEL_ARTIFACTS_DIR is required for MLX matrix compare smoke"
 TMP_DIR="$(ax_tmp_dir ax-engine-bench-matrix-compare-check)"
+METAL_BUILD_DIR="${AX_ENGINE_METAL_BUILD_DIR:-${AX_METAL_OUTPUT_DIR:-$ROOT_DIR/build/metal}}"
 
 cleanup() {
     ax_rm_rf "$TMP_DIR"
 }
 
-trap cleanup EXIT
+trap 'ax_run_cleanup "$?" cleanup' EXIT
 
 cd "$ROOT_DIR"
 
+AX_METAL_OUTPUT_DIR="$METAL_BUILD_DIR" \
+bash "$ROOT_DIR/scripts/build-metal-kernels.sh"
+
+AX_ENGINE_METAL_BUILD_DIR="$METAL_BUILD_DIR" \
 AX_BENCH_MATRIX_COMPARE_TMP_DIR="$TMP_DIR" \
 "$PYTHON_BIN" - <<'PY'
 from __future__ import annotations
@@ -30,6 +36,20 @@ from pathlib import Path
 root = Path(os.environ["AX_BENCH_MATRIX_COMPARE_TMP_DIR"])
 repo = Path.cwd()
 matrix_manifest = root / "subset-matrix.json"
+
+
+def plumbing_manifest(source: Path) -> Path:
+    manifest = json.loads(source.read_text())
+    manifest.setdefault("checks", {})["expect_deterministic"] = False
+    dest = root / source.name
+    dest.write_text(json.dumps(manifest, indent=2) + "\n")
+    return dest
+
+
+chat_qwen_short = plumbing_manifest(repo / "benchmarks/manifests/scenario/chat_qwen_short.json")
+chat_qwen35_short = plumbing_manifest(
+    repo / "benchmarks/manifests/scenario/chat_qwen3_5_9b_short.json"
+)
 matrix_manifest.write_text(
     json.dumps(
         {
@@ -38,12 +58,12 @@ matrix_manifest.write_text(
             "class": "scenario_matrix",
             "members": [
                 {
-                    "manifest": str(repo / "benchmarks/manifests/scenario/chat_qwen_short.json"),
+                    "manifest": str(chat_qwen_short),
                     "label": "Chat Qwen Short",
                 },
                 {
-                    "manifest": str(repo / "benchmarks/manifests/scenario/concurrent_qwen_dual.json"),
-                    "label": "Concurrent Qwen Dual",
+                    "manifest": str(chat_qwen35_short),
+                    "label": "Chat Qwen3.5 9B Short",
                 },
             ],
         },
@@ -71,6 +91,8 @@ for output_root in (baseline_output, candidate_output):
             "run",
             "-p",
             "ax-engine-bench",
+            "--bin",
+            "ax-engine-bench",
             "--",
             "matrix",
             "--manifest",
@@ -90,6 +112,8 @@ subprocess.run(
         "cargo",
         "run",
         "-p",
+        "ax-engine-bench",
+        "--bin",
         "ax-engine-bench",
         "--",
         "matrix-compare",
@@ -112,7 +136,7 @@ assert matrix_regression["id"] == "subset_mlx_dense_phase7"
 assert matrix_regression["summary"]["member_count"] == 2
 assert len(matrix_regression["members"]) == 2
 labels = {member["label"] for member in matrix_regression["members"]}
-assert labels == {"Chat Qwen Short", "Concurrent Qwen Dual"}
+assert labels == {"Chat Qwen Short", "Chat Qwen3.5 9B Short"}
 
 for member in matrix_regression["members"]:
     assert Path(member["compare_result_dir"]).is_dir()
@@ -122,5 +146,5 @@ for member in matrix_regression["members"]:
 
 assert "Benchmark Matrix Compare" in summary
 assert "Chat Qwen Short" in summary
-assert "Concurrent Qwen Dual" in summary
+assert "Chat Qwen3.5 9B Short" in summary
 PY

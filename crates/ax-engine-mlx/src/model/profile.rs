@@ -505,12 +505,18 @@ pub(crate) enum MoeProfileStage {
 }
 
 pub(crate) fn record_moe_profile_layer() {
+    if !moe_profile_enabled() {
+        return;
+    }
     let mut profile = moe_profile().lock().unwrap();
     profile.enabled = 1;
     profile.moe_layers = profile.moe_layers.saturating_add(1);
 }
 
 pub(crate) fn record_moe_profile_stage(stage: MoeProfileStage, wall_us: u32) {
+    if !moe_profile_enabled() {
+        return;
+    }
     let mut profile = moe_profile().lock().unwrap();
     profile.enabled = 1;
     let target = match stage {
@@ -525,6 +531,9 @@ pub(crate) fn record_moe_profile_stage(stage: MoeProfileStage, wall_us: u32) {
 }
 
 pub(crate) fn record_moe_profile_total(wall_us: u32) {
+    if !moe_profile_enabled() {
+        return;
+    }
     let mut profile = moe_profile().lock().unwrap();
     profile.total_us = profile.total_us.saturating_add(wall_us);
 }
@@ -582,6 +591,9 @@ pub(crate) fn forward_profile_eval_elapsed(
 }
 
 pub fn take_gemma4_moe_profile_snapshot() -> Gemma4MoeProfileSnapshot {
+    if !gemma4_moe_profile_enabled() {
+        return Gemma4MoeProfileSnapshot::default();
+    }
     let mut profile = gemma4_moe_profile().lock().unwrap();
     let snapshot = *profile;
     *profile = Gemma4MoeProfileSnapshot::default();
@@ -596,6 +608,9 @@ pub fn take_linear_attention_profile_snapshot() -> LinearAttentionProfileSnapsho
 }
 
 pub fn take_prefill_profile_snapshot() -> PrefillProfileSnapshot {
+    if !prefill_profile_enabled() {
+        return PrefillProfileSnapshot::default();
+    }
     let mut profile = prefill_profile().lock().unwrap();
     let snapshot = *profile;
     *profile = PrefillProfileSnapshot::default();
@@ -603,6 +618,9 @@ pub fn take_prefill_profile_snapshot() -> PrefillProfileSnapshot {
 }
 
 pub fn take_decode_profile_snapshot() -> DecodeProfileSnapshot {
+    if !decode_profile_enabled() {
+        return DecodeProfileSnapshot::default();
+    }
     let mut profile = decode_profile().lock().unwrap();
     let snapshot = *profile;
     *profile = DecodeProfileSnapshot::default();
@@ -610,6 +628,9 @@ pub fn take_decode_profile_snapshot() -> DecodeProfileSnapshot {
 }
 
 pub fn take_moe_profile_snapshot() -> MoeProfileSnapshot {
+    if !moe_profile_enabled() {
+        return MoeProfileSnapshot::default();
+    }
     let mut profile = moe_profile().lock().unwrap();
     let snapshot = *profile;
     *profile = MoeProfileSnapshot::default();

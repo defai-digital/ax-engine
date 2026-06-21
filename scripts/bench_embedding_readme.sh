@@ -59,7 +59,7 @@ cleanup() {
     fi
     server_pid=""
 }
-trap cleanup EXIT
+trap 'status=$?; set +e; cleanup; cleanup_status=$?; if [[ "$status" -ne 0 ]]; then exit "$status"; fi; exit "$cleanup_status"' EXIT
 
 # Ensure the binaries we need are built. Build is a no-op when fresh.
 echo "[bench] building release binaries…"

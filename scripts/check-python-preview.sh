@@ -13,7 +13,7 @@ cleanup() {
     ax_rm_rf "$VENV_DIR"
 }
 
-trap cleanup EXIT
+trap 'ax_run_cleanup "$?" cleanup' EXIT
 
 "$PYTHON_BIN" -m venv "$VENV_DIR"
 source "$VENV_DIR/bin/activate"

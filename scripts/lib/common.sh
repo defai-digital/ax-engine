@@ -39,6 +39,35 @@ ax_rm_rf() {
     done
 }
 
+ax_run_cleanup() {
+    local status="$1"
+    local cleanup_status
+    local had_errexit=0
+    shift
+    if [[ "$-" == *e* ]]; then
+        had_errexit=1
+        set +e
+    fi
+    "$@"
+    cleanup_status=$?
+    if [[ "$had_errexit" == "1" ]]; then
+        set -e
+    fi
+    if [[ "$status" -ne 0 ]]; then
+        return "$status"
+    fi
+    return "$cleanup_status"
+}
+
+ax_require_env() {
+    local name="$1"
+    local message="$2"
+    if [[ -z "${!name:-}" ]]; then
+        printf "error: %s\n" "$message" >&2
+        return 2
+    fi
+}
+
 ax_kill_pid() {
     local pid="${1:-}"
     if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then

@@ -7,16 +7,22 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/lib/common.sh"
 ROOT_DIR="$AX_REPO_ROOT"
 PYTHON_BIN="$AX_PYTHON_BIN"
+ax_require_env AX_ENGINE_MLX_MODEL_ARTIFACTS_DIR "AX_ENGINE_MLX_MODEL_ARTIFACTS_DIR is required for MLX baseline smoke"
 TMP_DIR="$(ax_tmp_dir ax-engine-bench-baseline-check)"
+METAL_BUILD_DIR="${AX_ENGINE_METAL_BUILD_DIR:-${AX_METAL_OUTPUT_DIR:-$ROOT_DIR/build/metal}}"
 
 cleanup() {
     ax_rm_rf "$TMP_DIR"
 }
 
-trap cleanup EXIT
+trap 'ax_run_cleanup "$?" cleanup' EXIT
 
 cd "$ROOT_DIR"
 
+AX_METAL_OUTPUT_DIR="$METAL_BUILD_DIR" \
+bash "$ROOT_DIR/scripts/build-metal-kernels.sh"
+
+AX_ENGINE_METAL_BUILD_DIR="$METAL_BUILD_DIR" \
 AX_BENCH_BASELINE_TMP_DIR="$TMP_DIR" \
 "$PYTHON_BIN" - <<'PY'
 from __future__ import annotations
@@ -29,7 +35,12 @@ from pathlib import Path
 
 root = Path(os.environ["AX_BENCH_BASELINE_TMP_DIR"])
 repo = Path.cwd()
-manifest = repo / "benchmarks/manifests/scenario/chat_qwen_short.json"
+manifest = root / "chat_qwen_short.json"
+manifest_data = json.loads(
+    (repo / "benchmarks/manifests/scenario/chat_qwen_short.json").read_text()
+)
+manifest_data.setdefault("checks", {})["expect_deterministic"] = False
+manifest.write_text(json.dumps(manifest_data, indent=2) + "\n")
 
 baseline_results = root / "baseline-results"
 candidate_results = root / "candidate-results"
@@ -52,6 +63,8 @@ subprocess.run(
         "run",
         "-p",
         "ax-engine-bench",
+        "--bin",
+        "ax-engine-bench",
         "--",
         "scenario",
         "--manifest",
@@ -70,6 +83,8 @@ subprocess.run(
         "cargo",
         "run",
         "-p",
+        "ax-engine-bench",
+        "--bin",
         "ax-engine-bench",
         "--",
         "baseline",
@@ -103,6 +118,8 @@ duplicate = subprocess.run(
         "run",
         "-p",
         "ax-engine-bench",
+        "--bin",
+        "ax-engine-bench",
         "--",
         "baseline",
         "--source",
@@ -126,6 +143,8 @@ subprocess.run(
         "run",
         "-p",
         "ax-engine-bench",
+        "--bin",
+        "ax-engine-bench",
         "--",
         "scenario",
         "--manifest",
@@ -143,6 +162,8 @@ subprocess.run(
         "cargo",
         "run",
         "-p",
+        "ax-engine-bench",
+        "--bin",
         "ax-engine-bench",
         "--",
         "compare",

@@ -12,9 +12,29 @@ cleanup() {
     ax_rm_rf "$ROOT_DIR/scripts/__pycache__"
 }
 
-trap cleanup EXIT
+trap 'ax_run_cleanup "$?" cleanup' EXIT
 
 cd "$ROOT_DIR"
+
+assert_exit_status() {
+    local expected="$1"
+    local status
+    shift
+
+    set +e
+    "$@"
+    status=$?
+    set -e
+
+    if [[ "$status" != "$expected" ]]; then
+        echo "expected exit $expected, got $status: $*" >&2
+        return 1
+    fi
+}
+
+assert_exit_status 1 bash -c 'set -euo pipefail; source scripts/lib/common.sh; cleanup(){ :; }; trap '\''ax_run_cleanup "$?" cleanup'\'' EXIT; false'
+assert_exit_status 7 bash -c 'set -euo pipefail; source scripts/lib/common.sh; cleanup(){ return 7; }; trap '\''ax_run_cleanup "$?" cleanup'\'' EXIT; true'
+assert_exit_status 1 bash -c 'set -euo pipefail; source scripts/lib/common.sh; cleanup(){ return 7; }; trap '\''ax_run_cleanup "$?" cleanup'\'' EXIT; false'
 
 bash -n scripts/*.sh scripts/lib/common.sh
 "$PYTHON_BIN" -m py_compile \

@@ -526,7 +526,7 @@ AX Engine's key Mac advantage is **dual-family speculative decoding** — it sup
 
 Unlike Qwen's fused `mtp.*` sidecar, Gemma 4's multi-token prediction uses a small **assistant drafter** that shares the target's tokenizer and embedding table, drafts tokens from the target's last-layer hidden state, and attends to the target's own KV cache. Draft depth is configurable: 26B/31B benchmarks use depth 1 (one draft token per step); 12B uses depth 2 (two draft tokens per step, with the second conditioned on the first). AX runs it assistant-MTP-only (`mtp`, default) and with n-gram stacked on top (`mtp-ngram`, opt-in).
 
-A **draft confidence gate** (`AX_MLX_GEMMA4_ASSISTANT_MTP_DRAFT_MIN_CONFIDENCE`, default `0.90` for the first draft token; deep draft default `0.999`) only proposes a draft when the drafter's top-token probability clears the threshold, keeping accept high while remaining correctness-preserving. Lower the gate toward `0` for more speculation on predictable content; raise it for flatter sampled chat.
+A **draft confidence gate** (`AX_MLX_GEMMA4_ASSISTANT_MTP_DRAFT_MIN_CONFIDENCE`, default `0.85` for the first draft token; deep draft default `0.999`) only proposes a draft when the drafter's top-token probability clears the threshold, keeping accept high while remaining correctness-preserving. Lower the gate toward `0` for more speculation on predictable content; raise it for flatter sampled chat.
 
 > **The gate is a speed knob, not a quality knob -- lowering it does not corrupt output (e.g. code).** Every drafted token is verified by the target model before it is emitted (rejection sampling when draft log-probs exist, greedy argmax-match otherwise), so a mismatched draft is discarded and replaced by the target's own token. Relaxing the gate only lets the drafter propose *more* speculative tokens; it lowers the accept rate and shifts throughput, but the emitted sequence is still the verified target sequence. Output-altering approximations are separate, explicit opt-ins such as top-k target softmax, never the confidence gate.
 
@@ -534,13 +534,13 @@ A **draft confidence gate** (`AX_MLX_GEMMA4_ASSISTANT_MTP_DRAFT_MIN_CONFIDENCE`,
 
 | Workload | Suggested gate | Expected accept¹ | Why |
 |---|---|---|---|
-| **Coding** | `~0.90` (aggressive) | high (~93–96% on 12B code suites) | Sharply peaked output makes the first draft token useful even with a looser gate. Deterministic, so no diversity cost -- tune purely for speed. |
-| **Agentic** (tools / JSON / reasoning) | `~0.90–0.95` | high (~93–96% expected on code-like templates) | Templated and low-temperature like code; output is verified, so no correctness risk. Keep n-gram stacking opt-in unless the workload is measured. |
+| **Coding** | `~0.85` (aggressive) | high (~93–96% on 12B code suites) | Sharply peaked output makes the first draft token useful even with a looser gate. Deterministic, so no diversity cost -- tune purely for speed. |
+| **Agentic** (tools / JSON / reasoning) | `~0.85–0.95` | high (~93–96% expected on code-like templates) | Templated and low-temperature like code; output is verified, so no correctness risk. Keep n-gram stacking opt-in unless the workload is measured. |
 | **Chatbot** | `~0.99–0.999` if sampling for variety; lower at low temperature | drops on flat text | Natural language is flatter, so accept falls faster; at temperature > 0 a low gate makes replies follow the greedy token and feel less varied. Here a high gate protects *diversity*, not correctness. |
 
 > ¹ Only the code-like benchmark suites below (`flappy`, `long_code`, `python_modules_long`) are measured for 12B at the Phase 4 default -- they sit at 97.5-99.1% assistant accept and still deliver 2.34-2.73x same-artifact speedup over direct decode. The agentic and chatbot figures are expected ranges, and the suggested gates are starting points, not universal optima. The `assistant_mtp_gate*` ablation profiles lock the exact per-workload sweet spot.
 
-**One flag instead of the env vars.** Rather than hand-set the gate knobs, the server accepts `--speculation-profile {auto,coding,agentic,chatbot}` (short `-s`, alias `--spec`; or env `AX_MLX_SPECULATION_PROFILE`), which bundles the MTP and n-gram configuration into one posture. `auto` (default) is temperature-driven: it keeps the shipped gate at low/zero temperature and raises it for higher-temperature sampled chat to protect reply diversity. `coding`/`agentic` keep the shipped gate defaults — the 12B ablation found lowering the Gemma gate does not add code throughput, so the default already is the throughput setting — while `chatbot` raises the gate and prefers the n-gram utility gate. Any explicit per-knob env var (e.g. `AX_MLX_GEMMA4_ASSISTANT_MTP_DRAFT_MIN_CONFIDENCE`) still overrides the profile. The resolved posture is recorded in route metadata as `ax_mlx_speculation_profile`.
+**One flag instead of the env vars.** Rather than hand-set the gate knobs, the server accepts `--speculation-profile {auto,coding,agentic,chatbot}` (short `-s`, alias `--spec`; or env `AX_MLX_SPECULATION_PROFILE`), which bundles the MTP and n-gram configuration into one posture. `auto` (default) is temperature-driven: it keeps the shipped gate at low/zero temperature and raises it for higher-temperature sampled chat to protect reply diversity. `coding`/`agentic` keep the shipped Gemma gate default, while `chatbot` raises the gate and prefers the n-gram utility gate. Any explicit per-knob env var (e.g. `AX_MLX_GEMMA4_ASSISTANT_MTP_DRAFT_MIN_CONFIDENCE`) still overrides the profile. The resolved posture is recorded in route metadata as `ax_mlx_speculation_profile`.
 
 No peer engine (MTPLX, Rapid-MLX, lightning-mlx) exposes a runnable Gemma 4 assistant-MTP path, so this benchmark has no peer comparison rows.
 
@@ -609,7 +609,7 @@ python3 scripts/render_gemma4_assistant_mtp_charts.py \
   --results-dir benchmarks/results/gemma4-assistant-mtp/<run-dir>
 ```
 
-Artifacts land under `benchmarks/results/gemma4-assistant-mtp/`; SVGs render into `docs/assets/`. Tune the accept/throughput trade-off with `AX_MLX_GEMMA4_ASSISTANT_MTP_DRAFT_MIN_CONFIDENCE` (default `0.90`; `0` disables the first-position gate) and `AX_MLX_GEMMA4_ASSISTANT_MTP_DEEP_DRAFT_MIN_CONFIDENCE` (default `0.999`). MTP+n-gram stacking is opt-in: use `--mlx-mtp-enable-ngram-stacking` through the server/SDK path, or set `AX_MLX_MTP_DISABLE_NGRAM_STACKING=0` for low-level benchmark runs.
+Artifacts land under `benchmarks/results/gemma4-assistant-mtp/`; SVGs render into `docs/assets/`. Tune the accept/throughput trade-off with `AX_MLX_GEMMA4_ASSISTANT_MTP_DRAFT_MIN_CONFIDENCE` (default `0.85`; `0` disables the first-position gate) and `AX_MLX_GEMMA4_ASSISTANT_MTP_DEEP_DRAFT_MIN_CONFIDENCE` (default `0.999`). MTP+n-gram stacking is opt-in: use `--mlx-mtp-enable-ngram-stacking` through the server/SDK path, or set `AX_MLX_MTP_DISABLE_NGRAM_STACKING=0` for low-level benchmark runs.
 </details>
 
 #### Qwen 3.6

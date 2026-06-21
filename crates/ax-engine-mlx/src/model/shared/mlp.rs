@@ -1374,10 +1374,11 @@ pub(crate) fn moe_router_gemma4(
 
 /// Qwen3 MoE router: proj → softmax → pick top-k by weight value (no rms_norm).
 ///
-/// When `AX_MLX_QWEN3_MOE_NARROW_SOFTMAX=1`, uses the Gemma4-style argpartition-
-/// first pattern: argpartition on raw logits (monotonic with softmax → same top-k
-/// for well-separated experts), then softmax only on the selected top-k subset.
-/// This eliminates the full-width `softmax_precise` over all 128–256 experts.
+/// By default (kill-switch via `AX_MLX_QWEN3_MOE_NARROW_SOFTMAX=0`), uses the
+/// Gemma4-style argpartition-first pattern: argpartition on raw logits
+/// (monotonic with softmax → same top-k for well-separated experts), then
+/// softmax only on the selected top-k subset. This eliminates the full-width
+/// `softmax_precise` over all 128–256 experts.
 pub(crate) fn moe_router_qwen3(
     cfg: &ModelConfig,
     w: &LayerWeights,
@@ -1390,9 +1391,10 @@ pub(crate) fn moe_router_qwen3(
     let logits = qw(normed, router_proj);
     let last_axis = logits.ndim() as i32 - 1;
 
-    // Opt-in narrow softmax: argpartition on raw logits, then softmax only on
-    // the top-k subset. Matches the Gemma4 router pattern. Default OFF pending
-    // validation against mlx-lm's precise=True reference.
+    // Narrow softmax: argpartition on raw logits, then softmax only on the
+    // top-k subset. Matches the Gemma4 router pattern. Default ON after
+    // validation confirmed token-for-token equivalence with mlx-lm's
+    // precise=True reference.
     if fastpath::qwen3_moe_narrow_softmax_enabled() {
         let (top_k_indices, top_k_weights) = top_k_by_argpartition(
             &logits,
@@ -1857,6 +1859,143 @@ pub(crate) fn moe_experts_forward_with_cloned_weights(
         None,
         shared_expert_out.as_ref(),
     )
+}
+
+/// Index layout for one quantized expert weight threaded through the compiled
+/// MoE decode closure as explicit inputs.
+///
+/// MLX-C 0.6.0 rejects compiling a function with *uncaptured inputs* — every
+/// MLX array the traced graph depends on must be an explicit function input,
+/// not a value captured from the enclosing Rust closure. The expert weights
+/// (and the optional shared-expert output) are therefore passed positionally
+/// in the input vector. `group_size`/`bits` are plain scalars and stay
+/// captured in the schema.
+#[derive(Clone, Copy)]
+pub(crate) struct QuantInputSlot {
+    weight: usize,
+    scales: Option<usize>,
+    biases: Option<usize>,
+    group_size: i32,
+    bits: i32,
+}
+
+impl QuantInputSlot {
+    fn rebuild(&self, inputs: &MlxVectorArray) -> QuantizedWeight {
+        QuantizedWeight {
+            weight: inputs.get(self.weight),
+            scales: self.scales.map(|i| inputs.get(i)),
+            biases: self.biases.map(|i| inputs.get(i)),
+            group_size: self.group_size,
+            bits: self.bits,
+        }
+    }
+}
+
+/// Positional layout of the compiled MoE decode closure's input vector.
+///
+/// Inputs `0..=2` are always `(hidden, top_k_indices, top_k_weights)`. The
+/// expert weights and the optional shared-expert output follow, in the order
+/// they were pushed by [`flatten_compiled_moe_inputs`]. The schema holds only
+/// `Copy` index/scalar metadata, so it is cheap to capture by the closure.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct CompiledMoeSchema {
+    gate_up: Option<QuantInputSlot>,
+    gate: Option<QuantInputSlot>,
+    up: Option<QuantInputSlot>,
+    down: Option<QuantInputSlot>,
+    shared: Option<usize>,
+}
+
+fn push_optional_input(inputs: &mut Vec<MlxArray>, arr: Option<&MlxArray>) -> Option<usize> {
+    arr.map(|a| {
+        let i = inputs.len();
+        inputs.push(a.clone());
+        i
+    })
+}
+
+fn push_quant_inputs(
+    inputs: &mut Vec<MlxArray>,
+    q: Option<&QuantizedWeight>,
+) -> Option<QuantInputSlot> {
+    let q = q?;
+    let weight = inputs.len();
+    inputs.push(q.weight.clone());
+    let scales = push_optional_input(inputs, q.scales.as_ref());
+    let biases = push_optional_input(inputs, q.biases.as_ref());
+    Some(QuantInputSlot {
+        weight,
+        scales,
+        biases,
+        group_size: q.group_size,
+        bits: q.bits,
+    })
+}
+
+/// Flatten every MLX array the MoE expert forward depends on into an explicit
+/// input vector, returning the vector plus a [`CompiledMoeSchema`] that records
+/// where each tensor landed. The compiled closure rebuilds its weights from the
+/// schema via [`CompiledMoeSchema::rebuild`], guaranteeing the traced graph has
+/// no uncaptured inputs.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn flatten_compiled_moe_inputs(
+    hidden: &MlxArray,
+    top_k_indices: &MlxArray,
+    top_k_weights: &MlxArray,
+    gate_up_exps_packed: Option<&QuantizedWeight>,
+    gate_exps: Option<&QuantizedWeight>,
+    up_exps: Option<&QuantizedWeight>,
+    down_exps: Option<&QuantizedWeight>,
+    shared_expert_out: Option<&MlxArray>,
+) -> (Vec<MlxArray>, CompiledMoeSchema) {
+    let mut inputs: Vec<MlxArray> =
+        vec![hidden.clone(), top_k_indices.clone(), top_k_weights.clone()];
+    let gate_up = push_quant_inputs(&mut inputs, gate_up_exps_packed);
+    let gate = push_quant_inputs(&mut inputs, gate_exps);
+    let up = push_quant_inputs(&mut inputs, up_exps);
+    let down = push_quant_inputs(&mut inputs, down_exps);
+    let shared = push_optional_input(&mut inputs, shared_expert_out);
+    (
+        inputs,
+        CompiledMoeSchema {
+            gate_up,
+            gate,
+            up,
+            down,
+            shared,
+        },
+    )
+}
+
+impl CompiledMoeSchema {
+    /// Rebuild the expert weights and shared-expert output from the closure's
+    /// input vector, in the same layout produced by
+    /// [`flatten_compiled_moe_inputs`].
+    #[allow(clippy::type_complexity)]
+    pub(crate) fn rebuild(
+        &self,
+        inputs: &MlxVectorArray,
+    ) -> (
+        MlxArray,
+        MlxArray,
+        MlxArray,
+        Option<QuantizedWeight>,
+        Option<QuantizedWeight>,
+        Option<QuantizedWeight>,
+        Option<QuantizedWeight>,
+        Option<MlxArray>,
+    ) {
+        (
+            inputs.get(0),
+            inputs.get(1),
+            inputs.get(2),
+            self.gate_up.map(|s| s.rebuild(inputs)),
+            self.gate.map(|s| s.rebuild(inputs)),
+            self.up.map(|s| s.rebuild(inputs)),
+            self.down.map(|s| s.rebuild(inputs)),
+            self.shared.map(|i| inputs.get(i)),
+        )
+    }
 }
 
 // ---------------------------------------------------------------------------

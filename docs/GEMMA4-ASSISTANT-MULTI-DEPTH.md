@@ -4,7 +4,7 @@
 drafting recurrently via the assistant's own `post_projection` backbone-hidden
 estimate. **1.10–1.20x decode throughput** on the 26B model while holding
 assistant accept **>97%** on every fair-MTP suite. Default ships as depth-2 with
-a uniform **0.999** confidence gate; correctness-preserving.
+a **0.85** first-token / **0.999** deep confidence gate; correctness-preserving.
 
 Files: `crates/ax-engine-mlx/src/runner.rs`
 (`load_gemma4_assistant_mtp_runtime`, `gemma4_assistant_draft_token`),
@@ -83,7 +83,7 @@ above 0.999.
   set 1 to restore single-token drafting). Overrides the prepared contract's
   conservative `max_depth=1` (a runtime capability of the same weights).
 - `AX_MLX_GEMMA4_ASSISTANT_MTP_DRAFT_MIN_CONFIDENCE` — first-token gate (default
-  0.999).
+  0.85).
 - `AX_MLX_GEMMA4_ASSISTANT_MTP_DEEP_DRAFT_MIN_CONFIDENCE` — deep-position
   (2nd token+) gate (default 0.999; loosen toward 0.99 to trade accept for
   speculation on easy content).

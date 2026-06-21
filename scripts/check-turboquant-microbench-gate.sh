@@ -13,7 +13,7 @@ cleanup() {
     ax_rm_rf "$TMP_DIR" "$ROOT_DIR/scripts/__pycache__"
 }
 
-trap cleanup EXIT
+trap 'ax_run_cleanup "$?" cleanup' EXIT
 
 cd "$ROOT_DIR"
 

@@ -232,7 +232,10 @@ ARCHIVE="ax-engine-${TAG}-macos-arm64.tar.gz"
 ARCHIVE_PATH="/tmp/${ARCHIVE}"
 STAGING_DIR="$(mktemp -d /tmp/ax-engine-release-payload.XXXXXX)"
 TAP_DIR=""
-trap 'rm -rf "${TAP_DIR:-}" "$STAGING_DIR"' EXIT
+release_payload_cleanup() {
+    rm -rf "${TAP_DIR:-}" "$STAGING_DIR"
+}
+trap 'status=$?; set +e; release_payload_cleanup; cleanup_status=$?; if [[ "$status" -ne 0 ]]; then exit "$status"; fi; exit "$cleanup_status"' EXIT
 
 echo "▶ packaging ${ARCHIVE}…"
 release_payload=()
@@ -361,7 +364,7 @@ cleanup_tap_dir() {
     fi
     rm -rf "$TAP_DIR" "$STAGING_DIR"
 }
-trap cleanup_tap_dir EXIT
+trap 'status=$?; set +e; cleanup_tap_dir; cleanup_status=$?; if [[ "$status" -ne 0 ]]; then exit "$status"; fi; exit "$cleanup_status"' EXIT
 
 echo "▶ cloning tap ${TAP_REPO}…"
 gh repo clone "$TAP_REPO" "$TAP_DIR" -- --depth=1 --quiet
