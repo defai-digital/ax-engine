@@ -10,7 +10,6 @@ use crate::chat::{self, ChatPromptTemplate};
 use crate::errors::{ErrorResponse, error_response};
 
 pub(crate) const MODEL_OWNER: &str = "ax-engine";
-const OPENAI_SAFE_MAX_OUTPUT_TOKENS: u32 = 512;
 
 #[derive(Debug, Serialize)]
 pub(crate) struct ServerInfoResponse {
@@ -314,8 +313,12 @@ pub(crate) fn context_length(live: &LiveState) -> u32 {
 }
 
 fn max_output_tokens_live(live: &LiveState, context_length: u32) -> u32 {
+    // Advertise the per-request output budget bounded by the scheduler batch
+    // width and the model context window. A previous fixed `512` ceiling
+    // under-reported the real capacity (the model can generate up to its full
+    // context), so it was removed.
     live.session_config
         .max_batch_tokens
         .min(context_length)
-        .clamp(1, OPENAI_SAFE_MAX_OUTPUT_TOKENS)
+        .max(1)
 }

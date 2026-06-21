@@ -658,8 +658,10 @@ async fn openai_chat_request_rejects_context_length_exceeded_before_generation()
 }
 
 #[tokio::test]
-async fn openai_chat_request_caps_large_openai_max_tokens() {
-    let artifact_dir = minimal_tokenizer_artifact("native-openai-chat-max-token-cap");
+async fn openai_chat_request_honors_explicit_openai_max_tokens() {
+    // An explicit max_tokens that fits within the model context is honored
+    // verbatim — it must not be silently truncated to a fixed ceiling.
+    let artifact_dir = minimal_tokenizer_artifact("native-openai-chat-max-token-honor");
     let state = native_mlx_openai_builder_state("qwen3", &artifact_dir);
     let live = state.snapshot();
     let request: OpenAiChatCompletionHttpRequest = serde_json::from_value(json!({
@@ -671,7 +673,7 @@ async fn openai_chat_request_caps_large_openai_max_tokens() {
 
     let built = build_openai_chat_request(&live, request).expect("chat request should build");
 
-    assert_eq!(built.generate_request.max_output_tokens, 512);
+    assert_eq!(built.generate_request.max_output_tokens, 2048);
     fs::remove_dir_all(artifact_dir).expect("artifact dir should clean up");
 }
 
@@ -697,7 +699,7 @@ async fn openai_chat_request_rejects_prompt_plus_max_tokens_over_context() {
         error.1.0.error.code.as_deref(),
         Some("context_length_exceeded")
     );
-    assert!(error.1.0.error.message.contains("prompt + 512 output"));
+    assert!(error.1.0.error.message.contains("prompt + 2048 output"));
     assert!(error.1.0.error.message.contains("context length 16384"));
     fs::remove_dir_all(artifact_dir).expect("artifact dir should clean up");
 }

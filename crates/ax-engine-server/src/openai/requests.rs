@@ -21,7 +21,6 @@ use crate::openai::schema::{
 };
 
 pub(crate) const DEFAULT_OPENAI_MAX_TOKENS: u32 = 256;
-const OPENAI_SAFE_MAX_TOKENS: u32 = 512;
 static OPENAI_SEED_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 pub(crate) use crate::openai::chat_requests::{
@@ -994,10 +993,17 @@ fn openai_reasoning_is_enabled(reasoning: Option<&Value>) -> bool {
     }
 }
 
+/// Resolve the requested output-token budget for an OpenAI-shaped request.
+///
+/// An explicit `max_tokens` is honored as-is; the real upper bound is the
+/// model's context window, enforced downstream by
+/// [`fit_openai_max_output_tokens_to_context`] (native MLX) or by the upstream
+/// server (delegated routes). When unset, fall back to the conservative
+/// [`DEFAULT_OPENAI_MAX_TOKENS`]. A previous fixed `512` ceiling silently
+/// truncated longer chat/coding completions even though the model can generate
+/// up to its full context, so it was removed.
 fn openai_max_tokens(max_tokens: Option<u32>) -> u32 {
-    max_tokens
-        .unwrap_or(DEFAULT_OPENAI_MAX_TOKENS)
-        .min(OPENAI_SAFE_MAX_TOKENS)
+    max_tokens.unwrap_or(DEFAULT_OPENAI_MAX_TOKENS)
 }
 
 #[cfg(test)]
