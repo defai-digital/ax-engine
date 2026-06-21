@@ -570,6 +570,55 @@ pub(crate) fn decode_gemma4_chat_output_with_reasoning(
     Ok((content, reasoning))
 }
 
+/// GLM 4.x structural tool-call markers. They are *special* tokens in GLM's
+/// tokenizer, so a plain `skip_special_tokens` decode drops them and the
+/// tool-call parser never sees the call (it surfaces as `nameKeyValue` text).
+/// This list lets the decoder re-emit them as literal text while still skipping
+/// unrelated control tokens (BOS/EOS/turn markers).
+const GLM_TOOL_MARKERS: &[&str] = &[
+    "<tool_call>",
+    "</tool_call>",
+    "<arg_key>",
+    "</arg_key>",
+    "<arg_value>",
+    "</arg_value>",
+];
+
+/// Decode GLM chat output while preserving the structural tool-call markers as
+/// literal text. Token runs between markers are decoded with
+/// `skip_special_tokens = true` (so EOS/turn tokens stay stripped), and each
+/// marker token is re-emitted as its text form. Falls back to a plain decode
+/// when the output contains no tool-call markers.
+pub(crate) fn decode_glm_chat_output(
+    tokenizer: &EngineTokenizer,
+    output_tokens: &[u32],
+) -> Result<String, EngineTokenizerError> {
+    let marker_ids: std::collections::HashMap<u32, &'static str> = GLM_TOOL_MARKERS
+        .iter()
+        .filter_map(|marker| tokenizer.token_to_id(marker).map(|id| (id, *marker)))
+        .collect();
+    if marker_ids.is_empty() || !output_tokens.iter().any(|tok| marker_ids.contains_key(tok)) {
+        return tokenizer.decode(output_tokens, true);
+    }
+    let mut decoded = String::new();
+    let mut run: Vec<u32> = Vec::new();
+    for &token in output_tokens {
+        if let Some(marker) = marker_ids.get(&token) {
+            if !run.is_empty() {
+                decoded.push_str(&tokenizer.decode(&run, true)?);
+                run.clear();
+            }
+            decoded.push_str(marker);
+        } else {
+            run.push(token);
+        }
+    }
+    if !run.is_empty() {
+        decoded.push_str(&tokenizer.decode(&run, true)?);
+    }
+    Ok(decoded)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
