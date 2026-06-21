@@ -11,6 +11,7 @@ use super::super::shared::{
     moe_experts_forward_with_cloned_weights, moe_experts_forward_with_shared, moe_router_qwen3,
     rms_norm_opt, shared_expert_forward,
 };
+use crate::fastpath;
 use crate::kv_cache::MlxKVCache;
 use crate::per_layer_compile::apply_layer_moe_decode;
 use crate::weights::LayerWeights;
@@ -111,7 +112,9 @@ pub(crate) fn layer_forward(
         // The closure captures only the expert weight tensors (cheap MlxArray
         // refcount clones) and compiles the entire MoE expert forward into a
         // single graph, collapsing ~10 dispatches per layer into one.
-        let compiled_result = if seq == 1 {
+        // Guard the flag first to avoid cloning cfg/weights on every decode step
+        // when the opt-in compile path is disabled (the default).
+        let compiled_result = if seq == 1 && fastpath::moe_layer_compile_enabled() {
             let cfg_clone = cfg.clone();
             let gu_packed = w.gate_up_exps_packed.clone();
             let g_exps = w.gate_exps.clone();

@@ -1390,9 +1390,10 @@ pub(crate) fn moe_router_qwen3(
     let logits = qw(normed, router_proj);
     let last_axis = logits.ndim() as i32 - 1;
 
-    // Opt-in narrow softmax: argpartition on raw logits, then softmax only on
-    // the top-k subset. Matches the Gemma4 router pattern. Default OFF pending
-    // validation against mlx-lm's precise=True reference.
+    // Narrow softmax: argpartition on raw logits, then softmax only on the
+    // top-k subset. Matches the Gemma4 router pattern. Default ON after
+    // validation confirmed token-for-token equivalence with mlx-lm's
+    // precise=True reference.
     if fastpath::qwen3_moe_narrow_softmax_enabled() {
         let (top_k_indices, top_k_weights) = top_k_by_argpartition(
             &logits,
