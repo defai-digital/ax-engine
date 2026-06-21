@@ -1905,6 +1905,14 @@ pub(crate) struct CompiledMoeSchema {
     shared: Option<usize>,
 }
 
+fn push_optional_input(inputs: &mut Vec<MlxArray>, arr: Option<&MlxArray>) -> Option<usize> {
+    arr.map(|a| {
+        let i = inputs.len();
+        inputs.push(a.clone());
+        i
+    })
+}
+
 fn push_quant_inputs(
     inputs: &mut Vec<MlxArray>,
     q: Option<&QuantizedWeight>,
@@ -1912,16 +1920,8 @@ fn push_quant_inputs(
     let q = q?;
     let weight = inputs.len();
     inputs.push(q.weight.clone());
-    let scales = q.scales.as_ref().map(|s| {
-        let i = inputs.len();
-        inputs.push(s.clone());
-        i
-    });
-    let biases = q.biases.as_ref().map(|b| {
-        let i = inputs.len();
-        inputs.push(b.clone());
-        i
-    });
+    let scales = push_optional_input(inputs, q.scales.as_ref());
+    let biases = push_optional_input(inputs, q.biases.as_ref());
     Some(QuantInputSlot {
         weight,
         scales,
@@ -1953,11 +1953,7 @@ pub(crate) fn flatten_compiled_moe_inputs(
     let gate = push_quant_inputs(&mut inputs, gate_exps);
     let up = push_quant_inputs(&mut inputs, up_exps);
     let down = push_quant_inputs(&mut inputs, down_exps);
-    let shared = shared_expert_out.map(|s| {
-        let i = inputs.len();
-        inputs.push(s.clone());
-        i
-    });
+    let shared = push_optional_input(&mut inputs, shared_expert_out);
     (
         inputs,
         CompiledMoeSchema {

@@ -575,6 +575,22 @@ mod tests {
         path
     }
 
+    #[test]
+    fn default_first_gate_is_runtime_default() {
+        let (gate, source) = crate::speculation_profile::resolve_gate(
+            None,
+            None,
+            DEFAULT_GEMMA4_ASSISTANT_MTP_DRAFT_MIN_CONFIDENCE,
+        );
+
+        assert_eq!(DEFAULT_GEMMA4_ASSISTANT_MTP_DRAFT_MIN_CONFIDENCE, 0.85);
+        assert_eq!(gate, 0.85);
+        assert_eq!(
+            source,
+            crate::speculation_profile::ResolutionSource::Default
+        );
+    }
+
     fn manifest(family: &str) -> NativeModelManifest {
         NativeModelManifest {
             schema_version: ax_engine_core::AX_NATIVE_MODEL_MANIFEST_SCHEMA_VERSION.to_string(),
