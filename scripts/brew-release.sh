@@ -233,11 +233,9 @@ ARCHIVE_PATH="/tmp/${ARCHIVE}"
 STAGING_DIR="$(mktemp -d /tmp/ax-engine-release-payload.XXXXXX)"
 TAP_DIR=""
 release_payload_cleanup() {
-    local status=$?
     rm -rf "${TAP_DIR:-}" "$STAGING_DIR"
-    return "$status"
 }
-trap 'status=$?; release_payload_cleanup; exit "$status"' EXIT
+trap 'status=$?; set +e; release_payload_cleanup; cleanup_status=$?; if [[ "$status" -ne 0 ]]; then exit "$status"; fi; exit "$cleanup_status"' EXIT
 
 echo "▶ packaging ${ARCHIVE}…"
 release_payload=()
@@ -354,7 +352,6 @@ TAP_DIR="$(mktemp -d /tmp/ax-engine-tap.XXXXXX)"
 # TAP_DIR, repoint any installed tap whose origin matches TAP_DIR to the
 # canonical GitHub URL so the developer's `brew update` keeps working.
 cleanup_tap_dir() {
-    local status=$?
     local installed_tap_dir
     installed_tap_dir="$(brew --repository defai-digital/ax-engine 2>/dev/null || true)"
     if [[ -n "$installed_tap_dir" && -d "$installed_tap_dir/.git" ]]; then
@@ -366,9 +363,8 @@ cleanup_tap_dir() {
         fi
     fi
     rm -rf "$TAP_DIR" "$STAGING_DIR"
-    return "$status"
 }
-trap 'status=$?; cleanup_tap_dir; exit "$status"' EXIT
+trap 'status=$?; set +e; cleanup_tap_dir; cleanup_status=$?; if [[ "$status" -ne 0 ]]; then exit "$status"; fi; exit "$cleanup_status"' EXIT
 
 echo "▶ cloning tap ${TAP_REPO}…"
 gh repo clone "$TAP_REPO" "$TAP_DIR" -- --depth=1 --quiet

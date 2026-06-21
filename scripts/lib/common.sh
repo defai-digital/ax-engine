@@ -41,9 +41,18 @@ ax_rm_rf() {
 
 ax_run_cleanup() {
     local status="$1"
+    local cleanup_status
+    local had_errexit=0
     shift
+    if [[ "$-" == *e* ]]; then
+        had_errexit=1
+        set +e
+    fi
     "$@"
-    local cleanup_status=$?
+    cleanup_status=$?
+    if [[ "$had_errexit" == "1" ]]; then
+        set -e
+    fi
     if [[ "$status" -ne 0 ]]; then
         return "$status"
     fi

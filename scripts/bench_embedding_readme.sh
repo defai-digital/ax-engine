@@ -53,15 +53,13 @@ PY
 }
 
 cleanup() {
-    local status=$?
     if [[ -n "${server_pid:-}" ]] && kill -0 "$server_pid" >/dev/null 2>&1; then
         kill "$server_pid" >/dev/null 2>&1 || true
         wait "$server_pid" >/dev/null 2>&1 || true
     fi
     server_pid=""
-    return "$status"
 }
-trap 'status=$?; cleanup; exit "$status"' EXIT
+trap 'status=$?; set +e; cleanup; cleanup_status=$?; if [[ "$status" -ne 0 ]]; then exit "$status"; fi; exit "$cleanup_status"' EXIT
 
 # Ensure the binaries we need are built. Build is a no-op when fresh.
 echo "[bench] building release binaries…"
