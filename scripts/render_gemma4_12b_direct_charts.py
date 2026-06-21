@@ -34,7 +34,7 @@ from typing import Any
 REPO_ROOT = Path(__file__).resolve().parents[1]
 FONT = "Inter,Segoe UI,Arial,sans-serif"
 PROMPT_TOKENS = (128, 512, 2048)
-AX_ENGINE_VERSION = "v6.5.1"
+AX_ENGINE_VERSION = "v6.5.2"
 LLAMA_CPP_VERSION = "b9700"
 
 # (engine key in artifact, legend label, fill, stroke) — palette matches the

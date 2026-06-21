@@ -1,0 +1,566 @@
+{
+  "schema_version": "ax.diffusion_gemma_direct_first_block.v1",
+  "model": {
+    "id": "mlx-community/diffusiongemma-26B-A4B-it-4bit",
+    "family": "diffusion_gemma",
+    "quant": "4bit",
+    "canvas_size": 256,
+    "model_dir": "/Users/akiralam/.cache/huggingface/hub/models--mlx-community--diffusiongemma-26B-A4B-it-4bit/snapshots/252183330817f96e9cba0b20cc400b2947a575cf",
+    "safetensors_weight_bytes": 16543055405
+  },
+  "runtime": {
+    "engine": "ax_engine_native_mlx",
+    "bench_bin": "target/release/ax-engine-bench",
+    "benchmark_contract": "first_committed_diffusion_block",
+    "fixed_token_ignore_eos": "not_used"
+  },
+  "methodology": {
+    "warmup_iters": 1,
+    "measure_iters": 5,
+    "cooldown_s": 15.0,
+    "reported_stat": "median",
+    "frequency_contract": "direct-mode standard: measured repetitions separated by cooldown",
+    "max_output_tokens": 1,
+    "prompt_token_generator": "1000 + ((prompt_tokens * 9973 + i * 37) % 120000)"
+  },
+  "bandwidth_model": {
+    "schema": "ax.estimated_weight_bandwidth.v1",
+    "model_weight_bytes": 16543055405,
+    "theoretical_peak_gb_s": 614.4,
+    "estimated_bytes_per_block": "model_weight_bytes * (diffusion_denoise_steps + 1 commit)",
+    "effective_bandwidth_gb_s": "estimated_bytes_per_block / measured_diffusion_block_wall_s"
+  },
+  "rows": [
+    {
+      "prompt_tokens": 128,
+      "measure_runs": 5,
+      "prefill_tok_s": {
+        "median": 1351.7652152791711,
+        "mean": 1357.522949175212,
+        "stdev": 13.1223785175516
+      },
+      "block_decode_tok_s": {
+        "median": 30.72169337973909,
+        "mean": 30.69835258461348,
+        "stdev": 0.08298197823937462
+      },
+      "time_to_first_block_ms": {
+        "median": 8427.849,
+        "mean": 8433.555,
+        "stdev": 22.962915701191005
+      },
+      "diffusion_denoise_steps": {
+        "median": 48.0,
+        "min": 48,
+        "max": 48
+      },
+      "diffusion_commit_ms": {
+        "median": 2.066,
+        "mean": 2.187
+      },
+      "output_tokens": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "prompt_sha256": "d2bd00379b448a1cc2e47000d51c143bdfb15f3f57d25d8cd00971cdef3653cc",
+      "warmup_runs": 1,
+      "estimated_weight_bytes": {
+        "model_weight_bytes": 16543055405,
+        "model_weight_gb": 16.543055405,
+        "passes_per_block": 49.0,
+        "estimated_gb_per_block": 810.609714845
+      },
+      "effective_bandwidth_gb_s": {
+        "median": 97.27852777385088,
+        "theoretical_peak_gb_s": 614.4
+      },
+      "memory_bandwidth_utilization_pct": {
+        "median": 15.833093713191875,
+        "theoretical_peak_gb_s": 614.4
+      }
+    },
+    {
+      "prompt_tokens": 512,
+      "measure_runs": 5,
+      "prefill_tok_s": {
+        "median": 3002.104991585897,
+        "mean": 3010.778277401159,
+        "stdev": 51.88923664807138
+      },
+      "block_decode_tok_s": {
+        "median": 58.8534835629807,
+        "mean": 58.7518505767566,
+        "stdev": 0.49011680061974483
+      },
+      "time_to_first_block_ms": {
+        "median": 4517.682,
+        "mean": 4527.6498,
+        "stdev": 37.46916478519381
+      },
+      "diffusion_denoise_steps": {
+        "median": 25.0,
+        "min": 25,
+        "max": 25
+      },
+      "diffusion_commit_ms": {
+        "median": 1.28,
+        "mean": 1.4982
+      },
+      "output_tokens": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "prompt_sha256": "bec1e3eae074b321de8073671941411abd19ffb7af34b3a767cb2c98e0a51d48",
+      "warmup_runs": 1,
+      "estimated_weight_bytes": {
+        "model_weight_bytes": 16543055405,
+        "model_weight_gb": 16.543055405,
+        "passes_per_block": 26.0,
+        "estimated_gb_per_block": 430.11944053
+      },
+      "effective_bandwidth_gb_s": {
+        "median": 98.88291962246412,
+        "theoretical_peak_gb_s": 614.4
+      },
+      "memory_bandwidth_utilization_pct": {
+        "median": 16.094225198968772,
+        "theoretical_peak_gb_s": 614.4
+      }
+    },
+    {
+      "prompt_tokens": 2048,
+      "measure_runs": 5,
+      "prefill_tok_s": {
+        "median": 4031.3690907372998,
+        "mean": 4027.471081437773,
+        "stdev": 15.090784418119478
+      },
+      "block_decode_tok_s": {
+        "median": 32.13437390126488,
+        "mean": 32.1925136836597,
+        "stdev": 0.27529354274836315
+      },
+      "time_to_first_block_ms": {
+        "median": 8474.563,
+        "mean": 8461.137400000001,
+        "stdev": 67.99824404571079
+      },
+      "diffusion_denoise_steps": {
+        "median": 48.0,
+        "min": 48,
+        "max": 48
+      },
+      "diffusion_commit_ms": {
+        "median": 2.185,
+        "mean": 2.19
+      },
+      "output_tokens": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "prompt_sha256": "1755c1380862c5271f0afed8bab318005a83662577607b7925ec1a6a01833a8d",
+      "warmup_runs": 1,
+      "estimated_weight_bytes": {
+        "model_weight_bytes": 16543055405,
+        "model_weight_gb": 16.543055405,
+        "passes_per_block": 49.0,
+        "estimated_gb_per_block": 810.609714845
+      },
+      "effective_bandwidth_gb_s": {
+        "median": 101.75170181573021,
+        "theoretical_peak_gb_s": 614.4
+      },
+      "memory_bandwidth_utilization_pct": {
+        "median": 16.561149384070674,
+        "theoretical_peak_gb_s": 614.4
+      }
+    }
+  ],
+  "trials": [
+    {
+      "phase": "warmup",
+      "index": 1,
+      "prompt_tokens": 128,
+      "output_tokens": 1,
+      "prefill_wall_us": 98709,
+      "prefill_forward_wall_us": 88105,
+      "decode_wall_us": 8587340,
+      "diffusion_block_wall_us": 8587337,
+      "diffusion_denoise_wall_us": 8585085,
+      "diffusion_commit_wall_us": 2078,
+      "diffusion_denoise_steps": 48,
+      "diffusion_converged_blocks": 0,
+      "diffusion_blocks": 1,
+      "step_count": 2,
+      "ttft_step": 2,
+      "finish_reason": "max_output_tokens",
+      "prefill_tok_s": 1296.7409253462197,
+      "block_decode_tok_s": 29.81133732145367,
+      "time_to_first_block_ms": 8686.046
+    },
+    {
+      "phase": "measure",
+      "index": 1,
+      "prompt_tokens": 128,
+      "output_tokens": 1,
+      "prefill_wall_us": 93031,
+      "prefill_forward_wall_us": 82811,
+      "decode_wall_us": 8338853,
+      "diffusion_block_wall_us": 8338851,
+      "diffusion_denoise_wall_us": 8336632,
+      "diffusion_commit_wall_us": 2066,
+      "diffusion_denoise_steps": 48,
+      "diffusion_converged_blocks": 0,
+      "diffusion_blocks": 1,
+      "step_count": 2,
+      "ttft_step": 2,
+      "finish_reason": "max_output_tokens",
+      "prefill_tok_s": 1375.8854575356602,
+      "block_decode_tok_s": 30.69967313242556,
+      "time_to_first_block_ms": 8431.882
+    },
+    {
+      "phase": "measure",
+      "index": 2,
+      "prompt_tokens": 128,
+      "output_tokens": 1,
+      "prefill_wall_us": 93665,
+      "prefill_forward_wall_us": 83242,
+      "decode_wall_us": 8324331,
+      "diffusion_block_wall_us": 8324328,
+      "diffusion_denoise_wall_us": 8322117,
+      "diffusion_commit_wall_us": 2062,
+      "diffusion_denoise_steps": 48,
+      "diffusion_converged_blocks": 0,
+      "diffusion_blocks": 1,
+      "step_count": 2,
+      "ttft_step": 2,
+      "finish_reason": "max_output_tokens",
+      "prefill_tok_s": 1366.5723589387712,
+      "block_decode_tok_s": 30.75323317389704,
+      "time_to_first_block_ms": 8417.993
+    },
+    {
+      "phase": "measure",
+      "index": 3,
+      "prompt_tokens": 128,
+      "output_tokens": 1,
+      "prefill_wall_us": 94691,
+      "prefill_forward_wall_us": 84103,
+      "decode_wall_us": 8322332,
+      "diffusion_block_wall_us": 8322330,
+      "diffusion_denoise_wall_us": 8319978,
+      "diffusion_commit_wall_us": 2197,
+      "diffusion_denoise_steps": 48,
+      "diffusion_converged_blocks": 0,
+      "diffusion_blocks": 1,
+      "step_count": 2,
+      "ttft_step": 2,
+      "finish_reason": "max_output_tokens",
+      "prefill_tok_s": 1351.7652152791711,
+      "block_decode_tok_s": 30.760616317786006,
+      "time_to_first_block_ms": 8417.021
+    },
+    {
+      "phase": "measure",
+      "index": 4,
+      "prompt_tokens": 128,
+      "output_tokens": 1,
+      "prefill_wall_us": 94975,
+      "prefill_forward_wall_us": 84605,
+      "decode_wall_us": 8332877,
+      "diffusion_block_wall_us": 8332874,
+      "diffusion_denoise_wall_us": 8330672,
+      "diffusion_commit_wall_us": 2036,
+      "diffusion_denoise_steps": 48,
+      "diffusion_converged_blocks": 0,
+      "diffusion_blocks": 1,
+      "step_count": 2,
+      "ttft_step": 2,
+      "finish_reason": "max_output_tokens",
+      "prefill_tok_s": 1347.7230850223743,
+      "block_decode_tok_s": 30.72169337973909,
+      "time_to_first_block_ms": 8427.849
+    },
+    {
+      "phase": "measure",
+      "index": 5,
+      "prompt_tokens": 128,
+      "output_tokens": 1,
+      "prefill_wall_us": 95120,
+      "prefill_forward_wall_us": 84824,
+      "decode_wall_us": 8377914,
+      "diffusion_block_wall_us": 8377910,
+      "diffusion_denoise_wall_us": 8375149,
+      "diffusion_commit_wall_us": 2574,
+      "diffusion_denoise_steps": 48,
+      "diffusion_converged_blocks": 0,
+      "diffusion_blocks": 1,
+      "step_count": 2,
+      "ttft_step": 2,
+      "finish_reason": "max_output_tokens",
+      "prefill_tok_s": 1345.6686291000842,
+      "block_decode_tok_s": 30.55654691921971,
+      "time_to_first_block_ms": 8473.03
+    },
+    {
+      "phase": "warmup",
+      "index": 1,
+      "prompt_tokens": 512,
+      "output_tokens": 1,
+      "prefill_wall_us": 175344,
+      "prefill_forward_wall_us": 155018,
+      "decode_wall_us": 4493494,
+      "diffusion_block_wall_us": 4493492,
+      "diffusion_denoise_wall_us": 4491805,
+      "diffusion_commit_wall_us": 1250,
+      "diffusion_denoise_steps": 25,
+      "diffusion_converged_blocks": 1,
+      "diffusion_blocks": 1,
+      "step_count": 2,
+      "ttft_step": 2,
+      "finish_reason": "max_output_tokens",
+      "prefill_tok_s": 2919.9744502235603,
+      "block_decode_tok_s": 56.97128202297901,
+      "time_to_first_block_ms": 4668.836
+    },
+    {
+      "phase": "measure",
+      "index": 1,
+      "prompt_tokens": 512,
+      "output_tokens": 1,
+      "prefill_wall_us": 172907,
+      "prefill_forward_wall_us": 151301,
+      "decode_wall_us": 4356182,
+      "diffusion_block_wall_us": 4356180,
+      "diffusion_denoise_wall_us": 4354496,
+      "diffusion_commit_wall_us": 1277,
+      "diffusion_denoise_steps": 25,
+      "diffusion_converged_blocks": 1,
+      "diffusion_blocks": 1,
+      "step_count": 2,
+      "ttft_step": 2,
+      "finish_reason": "max_output_tokens",
+      "prefill_tok_s": 2961.1293932576473,
+      "block_decode_tok_s": 58.76708492302889,
+      "time_to_first_block_ms": 4529.087
+    },
+    {
+      "phase": "measure",
+      "index": 2,
+      "prompt_tokens": 512,
+      "output_tokens": 1,
+      "prefill_wall_us": 172839,
+      "prefill_forward_wall_us": 152397,
+      "decode_wall_us": 4344846,
+      "diffusion_block_wall_us": 4344843,
+      "diffusion_denoise_wall_us": 4342637,
+      "diffusion_commit_wall_us": 1972,
+      "diffusion_denoise_steps": 25,
+      "diffusion_converged_blocks": 1,
+      "diffusion_blocks": 1,
+      "step_count": 2,
+      "ttft_step": 2,
+      "finish_reason": "max_output_tokens",
+      "prefill_tok_s": 2962.2943895764265,
+      "block_decode_tok_s": 58.92042589340973,
+      "time_to_first_block_ms": 4517.682
+    },
+    {
+      "phase": "measure",
+      "index": 3,
+      "prompt_tokens": 512,
+      "output_tokens": 1,
+      "prefill_wall_us": 166583,
+      "prefill_forward_wall_us": 148190,
+      "decode_wall_us": 4349789,
+      "diffusion_block_wall_us": 4349785,
+      "diffusion_denoise_wall_us": 4347788,
+      "diffusion_commit_wall_us": 1690,
+      "diffusion_denoise_steps": 25,
+      "diffusion_converged_blocks": 1,
+      "diffusion_blocks": 1,
+      "step_count": 2,
+      "ttft_step": 2,
+      "finish_reason": "max_output_tokens",
+      "prefill_tok_s": 3073.54291854511,
+      "block_decode_tok_s": 58.8534835629807,
+      "time_to_first_block_ms": 4516.368
+    },
+    {
+      "phase": "measure",
+      "index": 4,
+      "prompt_tokens": 512,
+      "output_tokens": 1,
+      "prefill_wall_us": 170547,
+      "prefill_forward_wall_us": 151258,
+      "decode_wall_us": 4417957,
+      "diffusion_block_wall_us": 4417954,
+      "diffusion_denoise_wall_us": 4416320,
+      "diffusion_commit_wall_us": 1272,
+      "diffusion_denoise_steps": 25,
+      "diffusion_converged_blocks": 1,
+      "diffusion_blocks": 1,
+      "step_count": 2,
+      "ttft_step": 2,
+      "finish_reason": "max_output_tokens",
+      "prefill_tok_s": 3002.104991585897,
+      "block_decode_tok_s": 57.945374714177646,
+      "time_to_first_block_ms": 4588.501
+    },
+    {
+      "phase": "measure",
+      "index": 5,
+      "prompt_tokens": 512,
+      "output_tokens": 1,
+      "prefill_wall_us": 167604,
+      "prefill_forward_wall_us": 148068,
+      "decode_wall_us": 4319009,
+      "diffusion_block_wall_us": 4319007,
+      "diffusion_denoise_wall_us": 4317478,
+      "diffusion_commit_wall_us": 1280,
+      "diffusion_denoise_steps": 25,
+      "diffusion_converged_blocks": 1,
+      "diffusion_blocks": 1,
+      "step_count": 2,
+      "ttft_step": 2,
+      "finish_reason": "max_output_tokens",
+      "prefill_tok_s": 3054.819694040715,
+      "block_decode_tok_s": 59.27288379018603,
+      "time_to_first_block_ms": 4486.611
+    },
+    {
+      "phase": "warmup",
+      "index": 1,
+      "prompt_tokens": 2048,
+      "output_tokens": 1,
+      "prefill_wall_us": 512558,
+      "prefill_forward_wall_us": 438204,
+      "decode_wall_us": 7924290,
+      "diffusion_block_wall_us": 7924288,
+      "diffusion_denoise_wall_us": 7921972,
+      "diffusion_commit_wall_us": 1957,
+      "diffusion_denoise_steps": 48,
+      "diffusion_converged_blocks": 0,
+      "diffusion_blocks": 1,
+      "step_count": 2,
+      "ttft_step": 2,
+      "finish_reason": "max_output_tokens",
+      "prefill_tok_s": 3995.645370865346,
+      "block_decode_tok_s": 32.30574153791483,
+      "time_to_first_block_ms": 8436.846
+    },
+    {
+      "phase": "measure",
+      "index": 1,
+      "prompt_tokens": 2048,
+      "output_tokens": 1,
+      "prefill_wall_us": 507887,
+      "prefill_forward_wall_us": 436307,
+      "decode_wall_us": 7894702,
+      "diffusion_block_wall_us": 7894699,
+      "diffusion_denoise_wall_us": 7892295,
+      "diffusion_commit_wall_us": 2060,
+      "diffusion_denoise_steps": 48,
+      "diffusion_converged_blocks": 0,
+      "diffusion_blocks": 1,
+      "step_count": 2,
+      "ttft_step": 2,
+      "finish_reason": "max_output_tokens",
+      "prefill_tok_s": 4032.3930323083678,
+      "block_decode_tok_s": 32.42682209923393,
+      "time_to_first_block_ms": 8402.586
+    },
+    {
+      "phase": "measure",
+      "index": 2,
+      "prompt_tokens": 2048,
+      "output_tokens": 1,
+      "prefill_wall_us": 509491,
+      "prefill_forward_wall_us": 436736,
+      "decode_wall_us": 7870676,
+      "diffusion_block_wall_us": 7870673,
+      "diffusion_denoise_wall_us": 7868028,
+      "diffusion_commit_wall_us": 2284,
+      "diffusion_denoise_steps": 48,
+      "diffusion_converged_blocks": 0,
+      "diffusion_blocks": 1,
+      "step_count": 2,
+      "ttft_step": 2,
+      "finish_reason": "max_output_tokens",
+      "prefill_tok_s": 4019.6980908396813,
+      "block_decode_tok_s": 32.525808148807606,
+      "time_to_first_block_ms": 8380.164
+    },
+    {
+      "phase": "measure",
+      "index": 3,
+      "prompt_tokens": 2048,
+      "output_tokens": 1,
+      "prefill_wall_us": 511129,
+      "prefill_forward_wall_us": 441230,
+      "decode_wall_us": 8026832,
+      "diffusion_block_wall_us": 8026830,
+      "diffusion_denoise_wall_us": 8024607,
+      "diffusion_commit_wall_us": 1939,
+      "diffusion_denoise_steps": 48,
+      "diffusion_converged_blocks": 0,
+      "diffusion_blocks": 1,
+      "step_count": 2,
+      "ttft_step": 2,
+      "finish_reason": "max_output_tokens",
+      "prefill_tok_s": 4006.8162831692193,
+      "block_decode_tok_s": 31.893038721388145,
+      "time_to_first_block_ms": 8537.959
+    },
+    {
+      "phase": "measure",
+      "index": 4,
+      "prompt_tokens": 2048,
+      "output_tokens": 1,
+      "prefill_wall_us": 508016,
+      "prefill_forward_wall_us": 438396,
+      "decode_wall_us": 7966549,
+      "diffusion_block_wall_us": 7966547,
+      "diffusion_denoise_wall_us": 7964184,
+      "diffusion_commit_wall_us": 2185,
+      "diffusion_denoise_steps": 48,
+      "diffusion_converged_blocks": 0,
+      "diffusion_blocks": 1,
+      "step_count": 2,
+      "ttft_step": 2,
+      "finish_reason": "max_output_tokens",
+      "prefill_tok_s": 4031.3690907372998,
+      "block_decode_tok_s": 32.13437390126488,
+      "time_to_first_block_ms": 8474.563
+    },
+    {
+      "phase": "measure",
+      "index": 5,
+      "prompt_tokens": 2048,
+      "output_tokens": 1,
+      "prefill_wall_us": 506044,
+      "prefill_forward_wall_us": 435835,
+      "decode_wall_us": 8004373,
+      "diffusion_block_wall_us": 8004371,
+      "diffusion_denoise_wall_us": 8001707,
+      "diffusion_commit_wall_us": 2482,
+      "diffusion_denoise_steps": 48,
+      "diffusion_converged_blocks": 0,
+      "diffusion_blocks": 1,
+      "step_count": 2,
+      "ttft_step": 2,
+      "finish_reason": "max_output_tokens",
+      "prefill_tok_s": 4047.0789101342966,
+      "block_decode_tok_s": 31.982525547603927,
+      "time_to_first_block_ms": 8510.415
+    }
+  ],
+  "peer_runtime_status": {
+    "llama_cpp_metal": "N/A: GGUF load fails with unknown model architecture diffusion-gemma",
+    "mlx_lm": "N/A: mlx-lm 0.31.3 does not support model type diffusion_gemma"
+  }
+}

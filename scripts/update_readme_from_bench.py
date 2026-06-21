@@ -129,9 +129,9 @@ def find_anchor_line(lines: list[str], model_name: str, quant: str, section_head
     """Find the pt=128 table row for (model_name, quant) within the named section."""
     in_target = False
     for i, line in enumerate(lines):
-        if line.startswith("### ") and section_header in line:
+        if line.startswith("#") and section_header in line:
             in_target = True
-        elif line.startswith("### ") and in_target:
+        elif line.startswith("#") and in_target:
             break
         if not in_target:
             continue
@@ -154,10 +154,10 @@ def _join_cells(cells: list[str]) -> str:
 def _table_column_count(lines: list[str], section_header: str) -> int:
     in_target = False
     for line in lines:
-        if line.startswith("### ") and section_header in line:
+        if line.startswith("#") and section_header in line:
             in_target = True
             continue
-        if line.startswith("### ") and in_target:
+        if line.startswith("#") and in_target:
             break
         if in_target and line.startswith("| Model |"):
             return len(_split_cells(line))
@@ -167,10 +167,10 @@ def _table_column_count(lines: list[str], section_header: str) -> int:
 def _table_header_cells(lines: list[str], section_header: str) -> list[str]:
     in_target = False
     for line in lines:
-        if line.startswith("### ") and section_header in line:
+        if line.startswith("#") and section_header in line:
             in_target = True
             continue
-        if line.startswith("### ") and in_target:
+        if line.startswith("#") and in_target:
             break
         if in_target and line.startswith("| Model |"):
             return _split_cells(line)
@@ -182,10 +182,10 @@ def find_insert_line(lines: list[str], section_header: str, model_name: str) -> 
     in_target = False
     fallback = -1
     for i, line in enumerate(lines):
-        if line.startswith("### ") and section_header in line:
+        if line.startswith("#") and section_header in line:
             in_target = True
             continue
-        if line.startswith("### ") and in_target:
+        if line.startswith("#") and in_target:
             return fallback if fallback >= 0 else i
         if not in_target:
             continue
