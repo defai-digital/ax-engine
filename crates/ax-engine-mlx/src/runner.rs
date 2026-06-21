@@ -7228,7 +7228,7 @@ impl MlxRunner {
         // sweep confirmed is enough to hold ~97-100% accept on the 2nd token.
         //
         // A position is proposed only when its T=1.0 argmax confidence clears the
-        // gate — tight 0.999 on the first token, 0.99 on deeper positions (a wrong
+        // gate — 0.85 on the first token, tight 0.999 on deeper positions (a wrong
         // deep draft costs a full target recompute, so the deep gate stays tight).
         // A miss stops drafting. Suppression is correctness-preserving: a short or
         // empty draft just verifies fewer speculative positions, never changing the

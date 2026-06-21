@@ -1374,10 +1374,11 @@ pub(crate) fn moe_router_gemma4(
 
 /// Qwen3 MoE router: proj → softmax → pick top-k by weight value (no rms_norm).
 ///
-/// When `AX_MLX_QWEN3_MOE_NARROW_SOFTMAX=1`, uses the Gemma4-style argpartition-
-/// first pattern: argpartition on raw logits (monotonic with softmax → same top-k
-/// for well-separated experts), then softmax only on the selected top-k subset.
-/// This eliminates the full-width `softmax_precise` over all 128–256 experts.
+/// By default (kill-switch via `AX_MLX_QWEN3_MOE_NARROW_SOFTMAX=0`), uses the
+/// Gemma4-style argpartition-first pattern: argpartition on raw logits
+/// (monotonic with softmax → same top-k for well-separated experts), then
+/// softmax only on the selected top-k subset. This eliminates the full-width
+/// `softmax_precise` over all 128–256 experts.
 pub(crate) fn moe_router_qwen3(
     cfg: &ModelConfig,
     w: &LayerWeights,
