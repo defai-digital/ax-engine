@@ -441,6 +441,33 @@ fn gemma4_12b_preset_selects_mlx_preview_defaults() {
 }
 
 #[test]
+fn qwen35_9b_preset_selects_mlx_preview_defaults() {
+    let mlx_model_artifacts_dir = PathBuf::from("/tmp/Qwen3.5-9B-MLX-4bit");
+    let args = ServerArgs {
+        preset: Some(ServerPreset::Qwen35_9b),
+        mlx_model_artifacts_dir: Some(mlx_model_artifacts_dir.clone()),
+        ..base_args()
+    };
+
+    let actual = args.session_config().expect("session config should build");
+
+    assert_eq!(args.effective_model_id(), "qwen3.5-9b");
+    assert_eq!(
+        args.effective_support_tier(),
+        PreviewSupportTier::MlxPreview
+    );
+    assert_eq!(
+        actual.resolved_backend.selected_backend,
+        SelectedBackend::Mlx
+    );
+    assert_eq!(
+        actual.mlx_model_artifacts_dir.as_deref(),
+        Some(mlx_model_artifacts_dir.as_path())
+    );
+    assert!(!actual.mlx_disable_ngram_acceleration);
+}
+
+#[test]
 fn qwen36_27b_preset_selects_mlx_preview_defaults() {
     let mlx_model_artifacts_dir = PathBuf::from("/tmp/Qwen3.6-27B-4bit");
     let args = ServerArgs {
@@ -518,6 +545,7 @@ fn render_presets_lists_glm_preset() {
     let presets = render_presets();
 
     assert!(presets.contains("gemma4-12b\tmodel_id=gemma4-12b"));
+    assert!(presets.contains("qwen3.5-9b\tmodel_id=qwen3.5-9b"));
     assert!(presets.contains("qwen3.6-27b\tmodel_id=qwen36-27b"));
     assert!(presets.contains("glm4.7-flash-4bit\tmodel_id=glm4_moe_lite"));
 }

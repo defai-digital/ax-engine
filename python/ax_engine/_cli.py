@@ -93,6 +93,18 @@ MODEL_PROFILES = (
         ),
     ),
     ModelProfile(
+        label="qwen3.5-9b",
+        preset="qwen3.5-9b",
+        repo_id="mlx-community/Qwen3.5-9B-MLX-4bit",
+        aliases=(
+            "qwen3.5-9b",
+            "qwen35-9b",
+            "qwen3-5-9b",
+            "qwen3.5-9b-4bit",
+            "qwen3-5-9b-mlx-4bit",
+        ),
+    ),
+    ModelProfile(
         label="qwen3.6-27b",
         preset=None,
         repo_id="mlx-community/Qwen3.6-27B-4bit",
@@ -217,7 +229,7 @@ def _download_options_payload() -> dict:
 
 def _format_download_options() -> str:
     lines = [
-        "Available Qwen3.6 and Gemma 4 MLX download targets:",
+        "Available Qwen3.5/3.6 and Gemma 4 MLX download targets:",
     ]
     for profile in _downloadable_profiles():
         lines.append(f"  {profile.label:<20} {profile.repo_id}")

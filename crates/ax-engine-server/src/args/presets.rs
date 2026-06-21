@@ -18,6 +18,8 @@ pub enum ServerPreset {
         alias = "glm4-moe-lite"
     )]
     Glm47Flash4bit,
+    #[value(name = "qwen3.5-9b", alias = "qwen35-9b")]
+    Qwen35_9b,
     #[value(name = "qwen3.6-27b", alias = "qwen36-27b")]
     Qwen36_27b,
     #[value(name = "qwen3.6-35b", alias = "qwen36-35b")]
@@ -103,6 +105,24 @@ impl ServerPreset {
                 support_tier: PreviewSupportTier::MlxPreview,
                 max_batch_tokens: 2048,
             },
+            // Qwen3.5 9B direct-support preset: dense GatedDeltaNet linear-
+            // attention backbone (qwen3_5 family) served natively by the MLX
+            // runner.
+            Self::Qwen35_9b => PresetDefinition {
+                preset: self,
+                label: "qwen3.5-9b",
+                model_id: "qwen3.5-9b",
+                aliases: &[
+                    "qwen3.5-9b",
+                    "qwen35-9b",
+                    "qwen3-5-9b",
+                    "qwen3.5-9b-4bit",
+                    "qwen3-5-9b-mlx-4bit",
+                ],
+                model_types: &["qwen3_5", "qwen3.5"],
+                support_tier: PreviewSupportTier::MlxPreview,
+                max_batch_tokens: 2048,
+            },
             Self::Qwen36_27b => PresetDefinition {
                 preset: self,
                 label: "qwen3.6-27b",
@@ -144,6 +164,7 @@ pub fn render_presets() -> String {
         ServerPreset::Gemma4_26b,
         ServerPreset::Gemma4_31b,
         ServerPreset::Glm47Flash4bit,
+        ServerPreset::Qwen35_9b,
         ServerPreset::Qwen36_27b,
         ServerPreset::Qwen36_35b,
     ]
