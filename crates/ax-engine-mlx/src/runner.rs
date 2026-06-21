@@ -9869,7 +9869,9 @@ fn maybe_reenable_linear_ngram_from_fallback_output(
 
 /// Disables n-gram drafting inside `run_mtp_decode` so the MTP verify loop
 /// always sources its draft from the MTP head. Set
-/// `AX_MLX_MTP_DISABLE_NGRAM_STACKING=0` to opt back into ADR-008 stacking.
+/// `AX_MLX_MTP_DISABLE_NGRAM_STACKING=0` to opt back into ADR-008 stacking in
+/// low-level runner construction; server and SDK sessions pass this option
+/// explicitly.
 ///
 /// Other decode paths (non-MTP `ngram_accel_decode_step`, prefill seeding) are
 /// unaffected — only the n-gram-first branch inside `run_mtp_decode` is gated.

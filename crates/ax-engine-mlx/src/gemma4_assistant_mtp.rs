@@ -444,11 +444,11 @@ pub fn gemma4_assistant_mtp_debug_enabled() -> bool {
 /// Suppression is correctness-preserving: it never changes the committed token,
 /// only whether a step speculates.
 ///
-/// The 2026-06-09 Gemma 4 12B Phase 4 sweep found that `0.90` plus GPU-exact
+/// The 2026-06-09 Gemma 4 12B Phase 4 sweep found that `0.85` plus GPU-exact
 /// confidence preserves code-suite assistant accept at roughly 93-96% while
 /// raising depth-2 decode to about 99-105 tok/s. The deep-position gate stays
 /// tight at 0.999 because wrong deep drafts still pay a larger recompute cost.
-pub const DEFAULT_GEMMA4_ASSISTANT_MTP_DRAFT_MIN_CONFIDENCE: f32 = 0.90;
+pub const DEFAULT_GEMMA4_ASSISTANT_MTP_DRAFT_MIN_CONFIDENCE: f32 = 0.85;
 
 /// Read the assistant draft confidence gate from
 /// `AX_MLX_GEMMA4_ASSISTANT_MTP_DRAFT_MIN_CONFIDENCE`; valid range `[0.0, 1.0)`.
