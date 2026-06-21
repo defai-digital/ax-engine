@@ -26,7 +26,7 @@ source "$SCRIPT_DIR/lib/common.sh"
 ROOT_DIR="$AX_REPO_ROOT"
 PYTHON_BIN="$AX_PYTHON_BIN"
 
-: "${AX_ENGINE_MLX_MODEL_ARTIFACTS_DIR:?AX_ENGINE_MLX_MODEL_ARTIFACTS_DIR is required}"
+ax_require_env AX_ENGINE_MLX_MODEL_ARTIFACTS_DIR "AX_ENGINE_MLX_MODEL_ARTIFACTS_DIR is required"
 
 PROMPT="${AX_MTP_E2E_PROMPT:-what is agi ?}"
 MAX_TOKENS="${AX_MTP_E2E_MAX_TOKENS:-96}"
@@ -53,7 +53,7 @@ cleanup() {
     ax_kill_pid "$AX_PID"
     ax_rm_rf "$AX_LOG"
 }
-trap cleanup EXIT
+trap 'ax_run_cleanup "$?" cleanup' EXIT
 
 cd "$ROOT_DIR"
 

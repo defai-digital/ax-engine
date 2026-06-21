@@ -31,7 +31,7 @@ cleanup() {
     ax_kill_pid "$SERVER_PID"
 }
 
-trap cleanup EXIT
+trap 'ax_run_cleanup "$?" cleanup' EXIT
 
 echo "[diag] launching ax-engine-server (stderr → $SERVER_STDERR)" | tee -a "$DIAG_LOG"
 RUST_LOG=info AX_BENCH_LOG=1 \

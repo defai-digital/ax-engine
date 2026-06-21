@@ -8,6 +8,7 @@ source "$SCRIPT_DIR/lib/common.sh"
 ROOT_DIR="$AX_REPO_ROOT"
 PYTHON_BIN="$AX_PYTHON_BIN"
 HOST="${HOST:-127.0.0.1}"
+ax_require_env AX_ENGINE_MLX_MODEL_ARTIFACTS_DIR "AX_ENGINE_MLX_MODEL_ARTIFACTS_DIR is required for MLX server preview smoke"
 LOG_FILE="$(ax_tmp_file ax-engine-server-check .log)"
 UPSTREAM_LOG_FILE="$(ax_tmp_file ax-engine-upstream-check .log)"
 METAL_OUTPUT_DIR="$(ax_tmp_dir ax-metal-server-preview)"
@@ -25,11 +26,10 @@ cleanup() {
     ax_rm_rf "$LOG_FILE" "$UPSTREAM_LOG_FILE" "$METAL_OUTPUT_DIR"
 }
 
-trap cleanup EXIT
+trap 'ax_run_cleanup "$?" cleanup' EXIT
 
 cd "$ROOT_DIR"
 
-: "${AX_ENGINE_MLX_MODEL_ARTIFACTS_DIR:?AX_ENGINE_MLX_MODEL_ARTIFACTS_DIR is required for MLX server preview smoke}"
 AX_METAL_OUTPUT_DIR="$METAL_OUTPUT_DIR" bash scripts/build-metal-kernels.sh >/dev/null
 AX_ENGINE_METAL_BUILD_DIR="$METAL_OUTPUT_DIR" cargo run -p ax-engine-server -- --host "$HOST" --port "$PORT" --model-id qwen3_5_9b_q4 --mlx --mlx-model-artifacts-dir "$AX_ENGINE_MLX_MODEL_ARTIFACTS_DIR" >"$LOG_FILE" 2>&1 &
 SERVER_PID="$!"

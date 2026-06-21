@@ -7,16 +7,22 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/lib/common.sh"
 ROOT_DIR="$AX_REPO_ROOT"
 PYTHON_BIN="$AX_PYTHON_BIN"
+ax_require_env AX_ENGINE_MLX_MODEL_ARTIFACTS_DIR "AX_ENGINE_MLX_MODEL_ARTIFACTS_DIR is required for MLX matrix compare smoke"
 TMP_DIR="$(ax_tmp_dir ax-engine-bench-matrix-compare-check)"
+METAL_BUILD_DIR="${AX_ENGINE_METAL_BUILD_DIR:-${AX_METAL_OUTPUT_DIR:-$ROOT_DIR/build/metal}}"
 
 cleanup() {
     ax_rm_rf "$TMP_DIR"
 }
 
-trap cleanup EXIT
+trap 'ax_run_cleanup "$?" cleanup' EXIT
 
 cd "$ROOT_DIR"
 
+AX_METAL_OUTPUT_DIR="$METAL_BUILD_DIR" \
+bash "$ROOT_DIR/scripts/build-metal-kernels.sh"
+
+AX_ENGINE_METAL_BUILD_DIR="$METAL_BUILD_DIR" \
 AX_BENCH_MATRIX_COMPARE_TMP_DIR="$TMP_DIR" \
 "$PYTHON_BIN" - <<'PY'
 from __future__ import annotations

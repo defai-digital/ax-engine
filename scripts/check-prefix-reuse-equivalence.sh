@@ -32,7 +32,7 @@ source "$SCRIPT_DIR/lib/common.sh"
 ROOT_DIR="$AX_REPO_ROOT"
 PYTHON_BIN="$AX_PYTHON_BIN"
 
-: "${AX_ENGINE_MLX_MODEL_ARTIFACTS_DIR:?AX_ENGINE_MLX_MODEL_ARTIFACTS_DIR is required}"
+ax_require_env AX_ENGINE_MLX_MODEL_ARTIFACTS_DIR "AX_ENGINE_MLX_MODEL_ARTIFACTS_DIR is required"
 if [[ ! -d "$AX_ENGINE_MLX_MODEL_ARTIFACTS_DIR" ]]; then
     echo "error: AX_ENGINE_MLX_MODEL_ARTIFACTS_DIR='$AX_ENGINE_MLX_MODEL_ARTIFACTS_DIR' is not a directory" >&2
     exit 2
@@ -53,7 +53,7 @@ cleanup() {
         ax_rm_rf "$AX_PREFIX_REUSE_OUTPUT_DIR"
     fi
 }
-trap cleanup EXIT
+trap 'ax_run_cleanup "$?" cleanup' EXIT
 
 # Use a dedicated venv so the system Python isn't polluted and the maturin
 # build picks up a clean ABI3 wheel for this run.
