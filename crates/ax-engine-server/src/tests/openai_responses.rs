@@ -236,6 +236,38 @@ fn chat_response_extracts_glm_tool_call() {
 }
 
 #[test]
+fn chat_response_extracts_glm_tool_call_with_no_arguments() {
+    // A GLM call to a zero-argument function is just the bare name inside the
+    // shared <tool_call> markers, with no <arg_key> blocks. It must still parse
+    // as a tool call rather than being dropped as plain content.
+    let response = sample_generate_response(
+        "<tool_call>get_current_time</tool_call>",
+        Vec::new(),
+        Vec::new(),
+    );
+
+    let openai = openai_chat_completion_response(
+        &response,
+        "chatcmpl-test".to_string(),
+        OpenAiResponseOptions {
+            parse_tool_calls: true,
+            ..Default::default()
+        },
+        None,
+    );
+
+    let message = &openai.choices[0].message;
+    assert_eq!(message.content, "");
+    assert_eq!(openai.choices[0].finish_reason, Some("tool_calls"));
+    let tool_call = &message
+        .tool_calls
+        .as_ref()
+        .expect("no-arg glm tool call should be parsed")[0];
+    assert_eq!(tool_call.function.name, "get_current_time");
+    assert_eq!(tool_call.function.arguments, "{}");
+}
+
+#[test]
 fn chat_response_extracts_gemma4_tool_call_from_ollama_dsl() {
     let response = sample_generate_response(
         r#"Before <|tool_call>call:lookup{limit:2,query:<|"|>AX<|"|>,exact:true}<tool_call|> after"#,

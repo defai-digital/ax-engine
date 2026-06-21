@@ -339,13 +339,17 @@ fn parse_tool_call_body(body: &str) -> Option<OpenAiFunctionCall> {
     if let Ok(value) = serde_json::from_str::<Value>(body) {
         return parse_tool_call_function(&value);
     }
+    // Qwen emits `<function=NAME>...</function>` inside the `<tool_call>` markers.
+    if body.contains("<function=") {
+        return parse_qwen_function_tool_call(body);
+    }
     // GLM 4.x emits `NAME<arg_key>k</arg_key><arg_value>v</arg_value>...` inside
     // the shared `<tool_call>` delimiters (see its `chat_template.jinja`), which
-    // is neither JSON nor the Qwen `<function=>` form.
-    if body.contains("<arg_key>") {
-        return parse_glm_tool_call_body(body);
-    }
-    parse_qwen_function_tool_call(body)
+    // is neither JSON nor the Qwen `<function=>` form. A GLM call with no
+    // arguments is just the bare `NAME` (no `<arg_key>` blocks), so route any
+    // remaining non-JSON, non-Qwen body here rather than gating on `<arg_key>`;
+    // `parse_glm_tool_call_body` handles both the no-arg and with-args shapes.
+    parse_glm_tool_call_body(body)
 }
 
 /// Parse a GLM tool-call body of the form
