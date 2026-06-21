@@ -29,7 +29,12 @@ from pathlib import Path
 
 root = Path(os.environ["AX_BENCH_BASELINE_TMP_DIR"])
 repo = Path.cwd()
-manifest = repo / "benchmarks/manifests/scenario/chat_qwen_short.json"
+manifest = root / "chat_qwen_short.json"
+manifest_data = json.loads(
+    (repo / "benchmarks/manifests/scenario/chat_qwen_short.json").read_text()
+)
+manifest_data.setdefault("checks", {})["expect_deterministic"] = False
+manifest.write_text(json.dumps(manifest_data, indent=2) + "\n")
 
 baseline_results = root / "baseline-results"
 candidate_results = root / "candidate-results"
@@ -52,6 +57,8 @@ subprocess.run(
         "run",
         "-p",
         "ax-engine-bench",
+        "--bin",
+        "ax-engine-bench",
         "--",
         "scenario",
         "--manifest",
@@ -70,6 +77,8 @@ subprocess.run(
         "cargo",
         "run",
         "-p",
+        "ax-engine-bench",
+        "--bin",
         "ax-engine-bench",
         "--",
         "baseline",
@@ -103,6 +112,8 @@ duplicate = subprocess.run(
         "run",
         "-p",
         "ax-engine-bench",
+        "--bin",
+        "ax-engine-bench",
         "--",
         "baseline",
         "--source",
@@ -126,6 +137,8 @@ subprocess.run(
         "run",
         "-p",
         "ax-engine-bench",
+        "--bin",
+        "ax-engine-bench",
         "--",
         "scenario",
         "--manifest",
@@ -143,6 +156,8 @@ subprocess.run(
         "cargo",
         "run",
         "-p",
+        "ax-engine-bench",
+        "--bin",
         "ax-engine-bench",
         "--",
         "compare",

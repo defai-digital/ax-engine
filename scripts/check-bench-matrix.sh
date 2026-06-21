@@ -45,6 +45,8 @@ subprocess.run(
         "run",
         "-p",
         "ax-engine-bench",
+        "--bin",
+        "ax-engine-bench",
         "--",
         "matrix",
         "--manifest",
