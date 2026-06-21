@@ -505,12 +505,18 @@ pub(crate) enum MoeProfileStage {
 }
 
 pub(crate) fn record_moe_profile_layer() {
+    if !moe_profile_enabled() {
+        return;
+    }
     let mut profile = moe_profile().lock().unwrap();
     profile.enabled = 1;
     profile.moe_layers = profile.moe_layers.saturating_add(1);
 }
 
 pub(crate) fn record_moe_profile_stage(stage: MoeProfileStage, wall_us: u32) {
+    if !moe_profile_enabled() {
+        return;
+    }
     let mut profile = moe_profile().lock().unwrap();
     profile.enabled = 1;
     let target = match stage {
@@ -525,6 +531,9 @@ pub(crate) fn record_moe_profile_stage(stage: MoeProfileStage, wall_us: u32) {
 }
 
 pub(crate) fn record_moe_profile_total(wall_us: u32) {
+    if !moe_profile_enabled() {
+        return;
+    }
     let mut profile = moe_profile().lock().unwrap();
     profile.total_us = profile.total_us.saturating_add(wall_us);
 }

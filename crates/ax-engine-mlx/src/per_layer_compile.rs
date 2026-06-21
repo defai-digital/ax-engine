@@ -107,13 +107,16 @@ pub fn clear_layer_decode_cache() {
 
 /// Apply a compiled MoE decode closure for a single layer.
 ///
-/// The closure takes:
-/// - `inputs[0]`: hidden state `[1, 1, hidden_dim]`
-/// - `inputs[1]`: top_k_indices `[1, 1, top_k]` (u32)
-/// - `inputs[2]`: top_k_weights `[1, 1, top_k]` (bf16/f16)
+/// `inputs` is the full positional input vector the compiled function depends
+/// on. By contract `inputs[0..=2]` are `(hidden, top_k_indices, top_k_weights)`
+/// and the remaining entries are the expert weights and optional shared-expert
+/// output (see `flatten_compiled_moe_inputs`). Passing every dependency
+/// explicitly is required: MLX-C 0.6.0 rejects compiling a function that
+/// references arrays captured from the closure environment ("uncaptured
+/// inputs is not allowed"), which previously made this path abort on the first
+/// decode step.
 ///
-/// And returns:
-/// - `outputs[0]`: updated hidden state `[1, 1, hidden_dim]`
+/// The closure returns `outputs[0]`: the MoE block output `[1, 1, hidden_dim]`.
 ///
 /// The compiled closure is cached per `(layer_index, thread_id)` and reused
 /// across decode steps. `shapeless=true` is safe because hidden dim and top_k
@@ -124,9 +127,7 @@ pub fn clear_layer_decode_cache() {
 /// off, compilation fails, or the closure cannot be applied.
 pub fn apply_layer_moe_decode(
     layer_index: usize,
-    hidden: &MlxArray,
-    top_k_indices: &MlxArray,
-    top_k_weights: &MlxArray,
+    inputs: &[&MlxArray],
     moe_fn: impl Fn(&MlxVectorArray) -> Vec<MlxArray> + Send + 'static,
 ) -> Option<Vec<MlxArray>> {
     if !crate::fastpath::moe_layer_compile_enabled() {
@@ -141,13 +142,9 @@ pub fn apply_layer_moe_decode(
         // gracefully. MLX's thread-local stream registry can become
         // invalid in long-running processes, causing abort inside
         // mlx_closure_apply.
-        return std::panic::catch_unwind(AssertUnwindSafe(|| {
-            closure
-                .try_apply(&[hidden, top_k_indices, top_k_weights])
-                .ok()
-        }))
-        .ok()
-        .flatten();
+        return std::panic::catch_unwind(AssertUnwindSafe(|| closure.try_apply(inputs).ok()))
+            .ok()
+            .flatten();
     }
     drop(guard);
 
@@ -157,13 +154,10 @@ pub fn apply_layer_moe_decode(
         if let Ok(compiled) = closure.compile(true) {
             // Use catch_unwind for the first apply as well — compilation
             // tracing may leave MLX in a state that panics on first apply.
-            let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
-                compiled
-                    .try_apply(&[hidden, top_k_indices, top_k_weights])
+            let result =
+                std::panic::catch_unwind(AssertUnwindSafe(|| compiled.try_apply(inputs).ok()))
                     .ok()
-            }))
-            .ok()
-            .flatten();
+                    .flatten();
             slot.insert(compiled);
             return result;
         }
