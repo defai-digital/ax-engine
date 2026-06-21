@@ -10,6 +10,7 @@ PYTHON_BIN="$AX_PYTHON_BIN"
 HOST="${HOST:-127.0.0.1}"
 LOG_FILE="$(ax_tmp_file ax-engine-server-check .log)"
 UPSTREAM_LOG_FILE="$(ax_tmp_file ax-engine-upstream-check .log)"
+METAL_OUTPUT_DIR="$(ax_tmp_dir ax-metal-server-preview)"
 
 PORT="$(ax_allocate_port)"
 COMPAT_PORT="$(ax_allocate_port)"
@@ -21,7 +22,7 @@ UPSTREAM_PID=""
 cleanup() {
     ax_kill_pid "$SERVER_PID"
     ax_kill_pid "$UPSTREAM_PID"
-    ax_rm_rf "$LOG_FILE" "$UPSTREAM_LOG_FILE"
+    ax_rm_rf "$LOG_FILE" "$UPSTREAM_LOG_FILE" "$METAL_OUTPUT_DIR"
 }
 
 trap cleanup EXIT
@@ -29,7 +30,8 @@ trap cleanup EXIT
 cd "$ROOT_DIR"
 
 : "${AX_ENGINE_MLX_MODEL_ARTIFACTS_DIR:?AX_ENGINE_MLX_MODEL_ARTIFACTS_DIR is required for MLX server preview smoke}"
-cargo run -p ax-engine-server -- --host "$HOST" --port "$PORT" --model-id qwen3_5_9b_q4 --mlx --mlx-model-artifacts-dir "$AX_ENGINE_MLX_MODEL_ARTIFACTS_DIR" >"$LOG_FILE" 2>&1 &
+AX_METAL_OUTPUT_DIR="$METAL_OUTPUT_DIR" bash scripts/build-metal-kernels.sh >/dev/null
+AX_ENGINE_METAL_BUILD_DIR="$METAL_OUTPUT_DIR" cargo run -p ax-engine-server -- --host "$HOST" --port "$PORT" --model-id qwen3_5_9b_q4 --mlx --mlx-model-artifacts-dir "$AX_ENGINE_MLX_MODEL_ARTIFACTS_DIR" >"$LOG_FILE" 2>&1 &
 SERVER_PID="$!"
 
 AX_ENGINE_SERVER_URL="http://${HOST}:${PORT}" "$PYTHON_BIN" - <<'PY'
@@ -57,8 +59,12 @@ def request_json(method: str, path: str, payload: dict | None = None) -> dict:
         headers=headers,
         method=method,
     )
-    with urllib.request.urlopen(request, timeout=10) as response:
-        return json.loads(response.read().decode("utf-8"))
+    try:
+        with urllib.request.urlopen(request, timeout=10) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as error:
+        body = error.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"{method} {path} failed with HTTP {error.code}: {body}") from error
 
 
 def request_text(method: str, path: str, payload: dict | None = None) -> str:
@@ -73,8 +79,12 @@ def request_text(method: str, path: str, payload: dict | None = None) -> str:
         headers=headers,
         method=method,
     )
-    with urllib.request.urlopen(request, timeout=10) as response:
-        return response.read().decode("utf-8")
+    try:
+        with urllib.request.urlopen(request, timeout=10) as response:
+            return response.read().decode("utf-8")
+    except urllib.error.HTTPError as error:
+        body = error.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"{method} {path} failed with HTTP {error.code}: {body}") from error
 
 
 def parse_openai_sse_payloads(body: str) -> list[dict]:
@@ -95,7 +105,7 @@ def parse_openai_sse_payloads(body: str) -> list[dict]:
     return payloads
 
 
-for _ in range(100):
+for _ in range(300):
     try:
         health = request_json("GET", "/health")
         break
@@ -180,9 +190,16 @@ for line in sse_body.splitlines():
 if current_name is not None:
     events.append((current_name, json.loads("\n".join(current_data))))
 
-assert [name for name, _ in events] == ["request", "step", "step", "step", "response"]
+event_names = [name for name, _ in events]
+assert event_names[0] == "request"
+assert event_names[-1] == "response"
+assert all(name == "step" for name in event_names[1:-1])
 assert events[0][1]["request"]["state"] == "waiting"
 assert events[-1][1]["response"]["output_tokens"] == [4, 5]
+stream_delta_tokens: list[int] = []
+for _, event in events[1:-1]:
+    stream_delta_tokens.extend(event.get("delta_tokens", []))
+assert stream_delta_tokens == [4, 5]
 PY
 
 kill "$SERVER_PID" 2>/dev/null || true
@@ -202,12 +219,58 @@ PORT = int(os.environ["AX_ENGINE_LLAMA_CPP_UPSTREAM_PORT"])
 
 class Handler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802
+        length = int(self.headers.get("content-length", "0"))
+        payload = json.loads(self.rfile.read(length).decode("utf-8"))
+
+        if self.path == "/v1/chat/completions":
+            if payload.get("stream"):
+                body = (
+                    'data: {"choices":[{"delta":{"role":"assistant"},"finish_reason":null}],"usage":null}\n\n'
+                    'data: {"choices":[{"delta":{"content":"llama"},"finish_reason":null}],"usage":null}\n\n'
+                    'data: {"choices":[{"delta":{"content":" stream"},"finish_reason":"length"}],"usage":{"prompt_tokens":3,"completion_tokens":2}}\n\n'
+                    'data: [DONE]\n\n'
+                ).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
+
+            messages = payload.get("messages", [])
+            content_parts = []
+            for message in messages:
+                role = message.get("role", "")
+                content = message.get("content", "")
+                content_parts.append(f"{role}: {content}")
+            content_parts.append("assistant:")
+            body = json.dumps(
+                {
+                    "choices": [
+                        {
+                            "message": {
+                                "role": "assistant",
+                                "content": f"llama::{chr(10).join(content_parts)}",
+                            },
+                            "finish_reason": "length",
+                        }
+                    ],
+                    "usage": {
+                        "prompt_tokens": 3,
+                        "completion_tokens": 2,
+                    },
+                }
+            ).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+
         if self.path != "/completion":
             self.send_error(404)
             return
-
-        length = int(self.headers.get("content-length", "0"))
-        payload = json.loads(self.rfile.read(length).decode("utf-8"))
 
         if payload.get("stream"):
             body = (
@@ -253,10 +316,28 @@ server.serve_forever()
 PY
 UPSTREAM_PID="$!"
 
+AX_ENGINE_LLAMA_CPP_UPSTREAM_PORT="$UPSTREAM_PORT" "$PYTHON_BIN" - <<'PY'
+from __future__ import annotations
+
+import os
+import socket
+import time
+
+port = int(os.environ["AX_ENGINE_LLAMA_CPP_UPSTREAM_PORT"])
+for _ in range(300):
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=0.2):
+            break
+    except OSError:
+        time.sleep(0.1)
+else:
+    raise RuntimeError("llama.cpp upstream preview fixture did not become ready in time")
+PY
+
 cargo run -p ax-engine-server -- \
   --host "$HOST" \
   --port "$COMPAT_PORT" \
-  --support-tier llama_cpp \
+  --support-tier llama-cpp \
   --llama-server-url "http://${HOST}:${UPSTREAM_PORT}" >"$LOG_FILE" 2>&1 &
 SERVER_PID="$!"
 
@@ -285,8 +366,12 @@ def request_json(method: str, path: str, payload: dict | None = None) -> dict:
         headers=headers,
         method=method,
     )
-    with urllib.request.urlopen(request, timeout=10) as response:
-        return json.loads(response.read().decode("utf-8"))
+    try:
+        with urllib.request.urlopen(request, timeout=10) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as error:
+        body = error.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"{method} {path} failed with HTTP {error.code}: {body}") from error
 
 
 def request_text(method: str, path: str, payload: dict | None = None) -> str:
@@ -301,8 +386,12 @@ def request_text(method: str, path: str, payload: dict | None = None) -> str:
         headers=headers,
         method=method,
     )
-    with urllib.request.urlopen(request, timeout=10) as response:
-        return response.read().decode("utf-8")
+    try:
+        with urllib.request.urlopen(request, timeout=10) as response:
+            return response.read().decode("utf-8")
+    except urllib.error.HTTPError as error:
+        body = error.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"{method} {path} failed with HTTP {error.code}: {body}") from error
 
 
 def parse_openai_sse_payloads(body: str) -> list[dict]:
@@ -323,7 +412,7 @@ def parse_openai_sse_payloads(body: str) -> list[dict]:
     return payloads
 
 
-for _ in range(100):
+for _ in range(300):
     try:
         health = request_json("GET", "/health")
         break
@@ -522,66 +611,5 @@ SERVER_PID=""
 kill "$UPSTREAM_PID" 2>/dev/null || true
 wait "$UPSTREAM_PID" 2>/dev/null || true
 UPSTREAM_PID=""
-
-OPENAI_UPSTREAM_PORT="$(ax_allocate_port)"
-
-AX_ENGINE_LLAMA_CPP_UPSTREAM_PORT="$OPENAI_UPSTREAM_PORT" "$PYTHON_BIN" - <<'PY' >"$UPSTREAM_LOG_FILE" 2>&1 &
-from __future__ import annotations
-
-import json
-import os
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-
-
-PORT = int(os.environ["AX_ENGINE_LLAMA_CPP_UPSTREAM_PORT"])
-
-
-class Handler(BaseHTTPRequestHandler):
-    def do_POST(self) -> None:  # noqa: N802
-        if self.path != "/v1/completions":
-            self.send_error(404)
-            return
-
-        length = int(self.headers.get("content-length", "0"))
-        payload = json.loads(self.rfile.read(length).decode("utf-8"))
-        prompt = payload.get("prompt", "")
-
-        if payload.get("stream"):
-            body = (
-                'data: {"choices":[{"text":"llama","finish_reason":null}]}\n\n'
-                'data: {"choices":[{"text":" stream","finish_reason":"length"}]}\n\n'
-                'data: [DONE]\n\n'
-            ).encode("utf-8")
-            self.send_response(200)
-            self.send_header("Content-Type", "text/event-stream")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-            return
-
-        body = json.dumps(
-            {
-                "choices": [
-                    {
-                        "text": f"llama::{prompt}",
-                        "finish_reason": "length",
-                    }
-                ]
-            }
-        ).encode("utf-8")
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
-
-    def log_message(self, format: str, *args: object) -> None:  # noqa: A003
-        return
-
-
-server = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
-server.serve_forever()
-PY
-UPSTREAM_PID="$!"
 
 printf "Retired llama.cpp backends are no longer launched by the preview smoke check; non-MLX inference routes through llama.cpp only.\n"

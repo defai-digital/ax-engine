@@ -1,7 +1,7 @@
 {
   "schema_version": "ax.metal.build_report.v1",
-  "manifest_path": "/Users/akiralam/code/ax-engine_v5/metal/phase1-kernels.json",
-  "source_file": "/Users/akiralam/code/ax-engine_v5/metal/kernels/phase1_dense_path.metal",
+  "manifest_path": "/Users/akiralam/code/ax-engine/metal/phase1-kernels.json",
+  "source_file": "/Users/akiralam/code/ax-engine/metal/kernels/phase1_dense_path.metal",
   "mlx_target": "apple_m2_or_newer_macos_aarch64",
   "metal_language_standard": "metal3.1",
   "library_name": "ax_phase1_dense_path",
@@ -29,7 +29,7 @@
       "fully_available": true,
       "metal": {
         "available": true,
-        "version": "Apple metal version 32023.883 (metalfe-32023.883)\nTarget: air64-apple-darwin25.5.0\nThread model: posix\nInstalledDir: /private/var/run/com.apple.security.cryptexd/mnt/com.apple.MobileAsset.MetalToolchain-v17.6.42.0.uSNir1/Metal.xctoolchain/usr/metal/current/bin"
+        "version": "Apple metal version 32023.883 (metalfe-32023.883)\nTarget: air64-apple-darwin25.5.0\nThread model: posix\nInstalledDir: /private/var/run/com.apple.security.cryptexd/mnt/com.apple.MobileAsset.MetalToolchain-v17.6.42.0.zhgTXs/Metal.xctoolchain/usr/metal/current/bin"
       },
       "metallib": {
         "available": true,
@@ -278,14 +278,14 @@
       "purpose": "single-step recurrent linear-attention update over AX-native dense states"
     }
   ],
-  "source_sha256": "178e69d60a8707d76dbfc65cb9e3ec8b5cfc2793dd77ee4343403d892a2733cf",
+  "source_sha256": "546d43105efd90e1581d4530e77508af9bfd6d5cce3429b4b5795c352b1a50f0",
   "outputs": {
-    "air": "/Users/akiralam/code/ax-engine_v5/build/metal/ax_phase1_dense_path.air",
-    "metalar": "/Users/akiralam/code/ax-engine_v5/build/metal/ax_phase1_dense_path.metalar",
-    "metallib": "/Users/akiralam/code/ax-engine_v5/build/metal/ax_phase1_dense_path.metallib",
-    "air_sha256": "08bc5a48123de39c9b35036698ea8cd0c95e65e2083420ad31e932235972b000",
-    "metalar_sha256": "89a81c60f536ca87e05bb94e3a488a05d2c1f966dea6ecff84d9a3f5fe4f4660",
-    "metallib_sha256": "51ea9ded8a3944f02e9869dd4e6fcbe45a2fc62e0dec261d7f481c74c82f23ea"
+    "air": "/Users/akiralam/code/ax-engine/build/metal/ax_phase1_dense_path.air",
+    "metalar": "/Users/akiralam/code/ax-engine/build/metal/ax_phase1_dense_path.metalar",
+    "metallib": "/Users/akiralam/code/ax-engine/build/metal/ax_phase1_dense_path.metallib",
+    "air_sha256": "e2c16dde46ed31976042bcbb9b4a0f60199c64c0c91c5edaca65184819eb4830",
+    "metalar_sha256": "361b6a85189823d292154b4b8bf2358cdb2ba3b371bbe58b7daea5af4b05258c",
+    "metallib_sha256": "96543661c42f16137b991b03af1aa7318bcd791adc6d90e75b2c9b5ce8d8d00e"
   },
   "compile_commands": [
     [
@@ -298,9 +298,9 @@
       "-Wall",
       "-Wextra",
       "-c",
-      "/Users/akiralam/code/ax-engine_v5/metal/kernels/phase1_dense_path.metal",
+      "/Users/akiralam/code/ax-engine/metal/kernels/phase1_dense_path.metal",
       "-o",
-      "/Users/akiralam/code/ax-engine_v5/build/metal/ax_phase1_dense_path.air"
+      "/Users/akiralam/code/ax-engine/build/metal/ax_phase1_dense_path.air"
     ],
     [
       "xcrun",
@@ -308,17 +308,17 @@
       "macosx",
       "metal-ar",
       "-q",
-      "/Users/akiralam/code/ax-engine_v5/build/metal/ax_phase1_dense_path.metalar",
-      "/Users/akiralam/code/ax-engine_v5/build/metal/ax_phase1_dense_path.air"
+      "/Users/akiralam/code/ax-engine/build/metal/ax_phase1_dense_path.metalar",
+      "/Users/akiralam/code/ax-engine/build/metal/ax_phase1_dense_path.air"
     ],
     [
       "xcrun",
       "--sdk",
       "macosx",
       "metallib",
-      "/Users/akiralam/code/ax-engine_v5/build/metal/ax_phase1_dense_path.metalar",
+      "/Users/akiralam/code/ax-engine/build/metal/ax_phase1_dense_path.metalar",
       "-o",
-      "/Users/akiralam/code/ax-engine_v5/build/metal/ax_phase1_dense_path.metallib"
+      "/Users/akiralam/code/ax-engine/build/metal/ax_phase1_dense_path.metallib"
     ]
   ],
   "status": "compiled",
