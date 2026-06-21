@@ -41,7 +41,7 @@ async fn models_reports_ax_code_safe_capabilities() {
         json!(true)
     );
     assert_eq!(model["context_length"], json!(16 * 1024u32));
-    assert_eq!(model["limit"]["output"], json!(512u32));
+    assert_eq!(model["limit"]["output"], json!(2048u32));
 }
 
 #[tokio::test]
