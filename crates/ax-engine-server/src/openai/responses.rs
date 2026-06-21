@@ -339,7 +339,46 @@ fn parse_tool_call_body(body: &str) -> Option<OpenAiFunctionCall> {
     if let Ok(value) = serde_json::from_str::<Value>(body) {
         return parse_tool_call_function(&value);
     }
+    // GLM 4.x emits `NAME<arg_key>k</arg_key><arg_value>v</arg_value>...` inside
+    // the shared `<tool_call>` delimiters (see its `chat_template.jinja`), which
+    // is neither JSON nor the Qwen `<function=>` form.
+    if body.contains("<arg_key>") {
+        return parse_glm_tool_call_body(body);
+    }
     parse_qwen_function_tool_call(body)
+}
+
+/// Parse a GLM tool-call body of the form
+/// `NAME<arg_key>k1</arg_key><arg_value>v1</arg_value><arg_key>k2</arg_key>...`.
+/// Each argument value is JSON-decoded when it parses as JSON (numbers, bools,
+/// objects, arrays); otherwise it is kept as a raw string, matching GLM's
+/// `tojson if not string else raw` encoding.
+fn parse_glm_tool_call_body(body: &str) -> Option<OpenAiFunctionCall> {
+    let name_end = body.find("<arg_key>").unwrap_or(body.len());
+    let name = body[..name_end].trim().to_string();
+    if name.is_empty() {
+        return None;
+    }
+    let mut arguments = serde_json::Map::new();
+    let mut rest = &body[name_end..];
+    while let Some(key_open) = rest.find("<arg_key>") {
+        let key_start = key_open + "<arg_key>".len();
+        let key_len = rest[key_start..].find("</arg_key>")?;
+        let key = rest[key_start..key_start + key_len].trim().to_string();
+        let after_key = key_start + key_len + "</arg_key>".len();
+        let value_rel = rest[after_key..].find("<arg_value>")?;
+        let value_start = after_key + value_rel + "<arg_value>".len();
+        let value_len = rest[value_start..].find("</arg_value>")?;
+        let raw = rest[value_start..value_start + value_len].trim();
+        let value =
+            serde_json::from_str::<Value>(raw).unwrap_or_else(|_| Value::String(raw.to_string()));
+        if !key.is_empty() {
+            arguments.insert(key, value);
+        }
+        rest = &rest[value_start + value_len + "</arg_value>".len()..];
+    }
+    let arguments = serde_json::to_string(&Value::Object(arguments)).ok()?;
+    Some(OpenAiFunctionCall { name, arguments })
 }
 
 fn parse_tool_call_function(value: &Value) -> Option<OpenAiFunctionCall> {

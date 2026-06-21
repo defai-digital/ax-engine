@@ -10,7 +10,10 @@ use tokio::sync::mpsc;
 
 use crate::app_state::{AppState, LiveState};
 use crate::backends::{llama_cpp, mlx_lm};
-use crate::chat::{decode_gemma4_chat_output, decode_gemma4_chat_output_with_reasoning};
+use crate::chat::{
+    ChatPromptTemplate, decode_gemma4_chat_output, decode_gemma4_chat_output_with_reasoning,
+    decode_glm_chat_output,
+};
 use crate::errors::{ErrorResponse, error_response, map_session_error};
 use crate::generation::native::run_stateless_generate_request;
 use crate::generation::streaming::{StreamEvent, build_keep_alive_stream};
@@ -303,17 +306,29 @@ pub(crate) fn populate_native_mlx_output_text(
     // Chat responses strip Gemma 4 thinking-channel framing (the markers are
     // model-specific control tokens that must not surface as content); raw
     // completions keep the verbatim decode.
-    let (output_text, reasoning) = match kind {
-        OpenAiStreamKind::ChatCompletion if include_reasoning => {
-            decode_gemma4_chat_output_with_reasoning(&tokenizer, &response.output_tokens)
+    // GLM 4.x encodes tool calls with special tokens that a plain decode strips,
+    // so chat output is decoded with those markers preserved for the tool-call
+    // parser. GLM does not use Gemma 4 reasoning channels.
+    let is_glm_chat = matches!(kind, OpenAiStreamKind::ChatCompletion)
+        && matches!(
+            ChatPromptTemplate::for_model_id(live.model_id.as_ref()),
+            ChatPromptTemplate::Glm47
+        );
+    let (output_text, reasoning) = if is_glm_chat {
+        decode_glm_chat_output(&tokenizer, &response.output_tokens).map(|content| (content, None))
+    } else {
+        match kind {
+            OpenAiStreamKind::ChatCompletion if include_reasoning => {
+                decode_gemma4_chat_output_with_reasoning(&tokenizer, &response.output_tokens)
+            }
+            OpenAiStreamKind::ChatCompletion => {
+                decode_gemma4_chat_output(&tokenizer, &response.output_tokens)
+                    .map(|content| (content, None))
+            }
+            OpenAiStreamKind::Completion => tokenizer
+                .decode(&response.output_tokens, true)
+                .map(|content| (content, None)),
         }
-        OpenAiStreamKind::ChatCompletion => {
-            decode_gemma4_chat_output(&tokenizer, &response.output_tokens)
-                .map(|content| (content, None))
-        }
-        OpenAiStreamKind::Completion => tokenizer
-            .decode(&response.output_tokens, true)
-            .map(|content| (content, None)),
     }
     .map_err(|error| {
         error_response(

@@ -236,7 +236,7 @@ fn openai_tool_calling_supported_live(live: &LiveState, openai_text: bool) -> bo
         && live.runtime_report.selected_backend == SelectedBackend::Mlx
         && matches!(
             ChatPromptTemplate::for_model_id(live.model_id.as_ref()),
-            ChatPromptTemplate::QwenChatMl | ChatPromptTemplate::Gemma4
+            ChatPromptTemplate::QwenChatMl | ChatPromptTemplate::Gemma4 | ChatPromptTemplate::Glm47
         )
 }
 

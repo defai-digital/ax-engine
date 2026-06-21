@@ -52,11 +52,153 @@ pub(crate) fn render_openai_chat_prompt_with_tools(
     {
         return render_gemma4_openai_chat_prompt(messages, tools);
     }
+    if matches!(
+        chat::ChatPromptTemplate::for_model_id(model_id),
+        chat::ChatPromptTemplate::Glm47
+    ) {
+        return render_glm_openai_chat_prompt(model_id, messages, tools, tool_choice);
+    }
     let tool_contract_style = qwen_tool_contract_style(model_id);
     let rendered_messages = render_openai_chat_message_pairs(messages, tool_contract_style)?;
     let rendered_messages =
         prepend_qwen_tool_contract(model_id, rendered_messages, tools, tool_choice);
     chat::render_prompt(model_id, &rendered_messages).map_err(chat_error_response)
+}
+
+/// Render an OpenAI chat request for the GLM 4.x family, including native GLM
+/// tool calling. GLM declares tool signatures in a leading `<|system|>` block
+/// and emits/consumes calls as
+/// `<tool_call>NAME<arg_key>k</arg_key><arg_value>v</arg_value>...</tool_call>`
+/// (see the model's `chat_template.jinja`). String argument values are emitted
+/// raw; non-string values are JSON-encoded. Used for every GLM chat request:
+/// with no tools the contract is omitted, so output matches the plain GLM chat
+/// rendering.
+fn render_glm_openai_chat_prompt(
+    model_id: &str,
+    messages: &[OpenAiChatMessage],
+    tools: Option<&Value>,
+    tool_choice: Option<&Value>,
+) -> Result<String, HttpErrorResponse> {
+    let rendered_messages = render_glm_chat_message_pairs(messages)?;
+    let rendered_messages = prepend_glm_tool_contract(rendered_messages, tools, tool_choice);
+    chat::render_prompt(model_id, &rendered_messages).map_err(chat_error_response)
+}
+
+fn render_glm_chat_message_pairs(
+    messages: &[OpenAiChatMessage],
+) -> Result<ChatMessagePairs, HttpErrorResponse> {
+    if messages.is_empty() {
+        return Err(empty_chat_messages_error());
+    }
+    messages
+        .iter()
+        .map(|message| {
+            let role = chat::normalize_role(&message.role).map_err(chat_error_response)?;
+            let mut content = render_openai_chat_content(message.content.as_ref())?;
+            if role == "assistant"
+                && let Some(tool_calls) = message.tool_calls.as_ref()
+                && let Some(rendered_tool_calls) = render_glm_assistant_tool_calls(tool_calls)
+            {
+                content.push_str(&rendered_tool_calls);
+            }
+            Ok((role.to_string(), content))
+        })
+        .collect()
+}
+
+fn prepend_glm_tool_contract(
+    mut messages: ChatMessagePairs,
+    tools: Option<&Value>,
+    tool_choice: Option<&Value>,
+) -> ChatMessagePairs {
+    let Some(contract) = render_glm_tool_contract_system_message(tools, tool_choice) else {
+        return messages;
+    };
+    // GLM emits a dedicated leading `<|system|># Tools` block, separate from any
+    // user-provided system message, so insert it at the front rather than
+    // merging into an existing system turn.
+    messages.insert(0, ("system".to_string(), contract));
+    messages
+}
+
+fn render_glm_tool_contract_system_message(
+    tools: Option<&Value>,
+    tool_choice: Option<&Value>,
+) -> Option<String> {
+    let tools = tools?;
+    if !openai_value_is_present(tools) {
+        return None;
+    }
+    let mut message = String::from(
+        "# Tools\n\n\
+         You may call one or more functions to assist with the user query.\n\n\
+         You are provided with function signatures within <tools></tools> XML tags:\n\
+         <tools>\n",
+    );
+    for line in render_json_tool_lines(tools) {
+        message.push_str(&line);
+        message.push('\n');
+    }
+    message.push_str(
+        "</tools>\n\n\
+         For each function call, output the function name and arguments within the following XML format:\n\
+         <tool_call>{function-name}<arg_key>{arg-key-1}</arg_key><arg_value>{arg-value-1}</arg_value><arg_key>{arg-key-2}</arg_key><arg_value>{arg-value-2}</arg_value>...</tool_call>",
+    );
+    if let Some(choice) = tool_choice
+        && tool_choice_forces_tool_call(choice)
+    {
+        message.push_str(
+            "\nThe current tool_choice requires using a tool when a matching function is available.",
+        );
+    }
+    Some(message)
+}
+
+fn render_glm_assistant_tool_calls(value: &Value) -> Option<String> {
+    let calls = match value {
+        Value::Array(calls) => calls.as_slice(),
+        Value::Object(_) => std::slice::from_ref(value),
+        _ => return None,
+    };
+    let rendered = calls
+        .iter()
+        .filter_map(render_glm_assistant_tool_call)
+        .collect::<Vec<_>>();
+    (!rendered.is_empty()).then(|| rendered.join(""))
+}
+
+fn render_glm_assistant_tool_call(value: &Value) -> Option<String> {
+    let object = value.as_object()?;
+    let function = object.get("function").and_then(Value::as_object)?;
+    let name = function.get("name")?.as_str()?;
+    let arguments = normalize_tool_arguments(function.get("arguments"));
+    Some(render_glm_xml_tool_call(name, &arguments))
+}
+
+/// Render a single GLM `<tool_call>` block. Mirrors the model's
+/// `chat_template.jinja`: string values are emitted verbatim, non-string values
+/// are JSON-encoded.
+fn render_glm_xml_tool_call(name: &str, arguments: &Value) -> String {
+    let mut rendered = String::from("<tool_call>");
+    rendered.push_str(name);
+    if let Some(args) = arguments.as_object() {
+        for (key, value) in args {
+            rendered.push_str("<arg_key>");
+            rendered.push_str(key);
+            rendered.push_str("</arg_key><arg_value>");
+            rendered.push_str(&glm_tool_arg_value(value));
+            rendered.push_str("</arg_value>");
+        }
+    }
+    rendered.push_str("</tool_call>");
+    rendered
+}
+
+fn glm_tool_arg_value(value: &Value) -> String {
+    match value {
+        Value::String(value) => value.clone(),
+        other => compact_json(other),
+    }
 }
 
 pub(crate) fn build_mlx_lm_chat_messages(

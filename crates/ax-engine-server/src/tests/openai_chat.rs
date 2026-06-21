@@ -104,6 +104,80 @@ fn openai_chat_prompt_renderer_injects_qwen_tool_contract() {
 }
 
 #[test]
+fn openai_chat_prompt_renderer_injects_glm_tool_contract() {
+    let messages: Vec<OpenAiChatMessage> = serde_json::from_value(json!([
+        {"role": "user", "content": "What is the weather in Tokyo?"}
+    ]))
+    .expect("sample messages should deserialize");
+
+    let prompt = render_openai_chat_prompt_with_tools(
+        "glm4_moe_lite",
+        &messages,
+        Some(&json!([
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_weather",
+                    "description": "Get the current weather",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"city": {"type": "string"}},
+                        "required": ["city"]
+                    }
+                }
+            }
+        ])),
+        Some(&json!("auto")),
+    )
+    .expect("glm tool prompt should render");
+
+    // GLM declares tool signatures in a leading <|system|> block. The tool
+    // schema is emitted as compact JSON (serde sorts object keys, which is
+    // immaterial to the model since JSON objects are unordered).
+    assert!(prompt.starts_with("[gMASK]<sop><|system|># Tools"));
+    assert!(prompt.contains("<tools>\n{"));
+    assert!(prompt.contains("\"name\":\"get_weather\""));
+    assert!(prompt.contains("\"description\":\"Get the current weather\""));
+    assert!(prompt.contains("</tools>"));
+    assert!(prompt.contains(
+        "<tool_call>{function-name}<arg_key>{arg-key-1}</arg_key><arg_value>{arg-value-1}</arg_value>"
+    ));
+    assert!(prompt.contains("<|user|>What is the weather in Tokyo?"));
+    assert!(prompt.ends_with("<|assistant|></think>"));
+}
+
+#[test]
+fn openai_chat_prompt_renderer_renders_glm_assistant_tool_call_history() {
+    let messages: Vec<OpenAiChatMessage> = serde_json::from_value(json!([
+        {"role": "user", "content": "Weather in Tokyo?"},
+        {"role": "assistant", "content": null, "tool_calls": [
+            {"id": "call_0", "type": "function",
+             "function": {"name": "get_weather", "arguments": "{\"city\":\"Tokyo\"}"}}
+        ]},
+        {"role": "tool", "tool_call_id": "call_0", "content": "{\"temp_c\":18}"}
+    ]))
+    .expect("sample messages should deserialize");
+
+    let prompt = render_openai_chat_prompt_with_tools(
+        "glm4_moe_lite",
+        &messages,
+        Some(&json!([
+            {"type": "function", "function": {"name": "get_weather",
+             "parameters": {"type": "object", "properties": {"city": {"type": "string"}}}}}
+        ])),
+        Some(&json!("auto")),
+    )
+    .expect("glm tool history prompt should render");
+
+    // Prior assistant call rendered in GLM arg_key/arg_value form.
+    assert!(prompt.contains(
+        "<tool_call>get_weather<arg_key>city</arg_key><arg_value>Tokyo</arg_value></tool_call>"
+    ));
+    // Tool result rendered as a GLM observation block.
+    assert!(prompt.contains("<|observation|><tool_response>{\"temp_c\":18}</tool_response>"));
+}
+
+#[test]
 fn openai_chat_prompt_renderer_treats_underscore_qwen_coder_as_coding_model() {
     let messages: Vec<OpenAiChatMessage> = serde_json::from_value(json!([
         {"role": "user", "content": "Read README.md"}
