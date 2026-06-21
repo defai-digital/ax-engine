@@ -46,13 +46,25 @@ impl AppState {
     /// Clone all live-model fields atomically. The read lock is held only for
     /// the duration of the Arc clones — never across an await point.
     pub(crate) fn snapshot(&self) -> LiveState {
-        self.live.read().unwrap().clone()
+        match self.live.read() {
+            Ok(live) => live.clone(),
+            Err(poisoned) => {
+                tracing::error!("live model state lock was poisoned; recovering snapshot");
+                poisoned.into_inner().clone()
+            }
+        }
     }
 
     /// Replace the live model state. Called by the load endpoint after
     /// successfully building a new session outside the lock.
     pub(crate) fn swap_live(&self, new: LiveState) {
-        *self.live.write().unwrap() = new;
+        match self.live.write() {
+            Ok(mut live) => *live = new,
+            Err(poisoned) => {
+                tracing::error!("live model state lock was poisoned; recovering model swap");
+                *poisoned.into_inner() = new;
+            }
+        }
     }
 
     pub(crate) fn allocate_request_id(&self) -> u64 {
@@ -161,6 +173,64 @@ pub(crate) fn build_app_state(
 ) -> Result<AppState, EngineSessionError> {
     let live = build_live_state(model_id, session)?;
     Ok(AppState::new(live))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::panic::{self, AssertUnwindSafe};
+    use std::path::PathBuf;
+
+    use ax_engine_sdk::{PreviewBackendRequest, PreviewSessionConfigRequest, SupportTier};
+
+    use super::*;
+
+    fn test_state(model_id: &str) -> AppState {
+        let config = EngineSessionConfig::from_preview_request(PreviewSessionConfigRequest {
+            backend_request: PreviewBackendRequest {
+                support_tier: SupportTier::LlamaCpp,
+                llama_model_path: Some(PathBuf::from("fake-model.gguf")),
+                ..PreviewBackendRequest::default()
+            },
+            ..PreviewSessionConfigRequest::default()
+        })
+        .expect("preview session config should build");
+        let session = EngineSession::new(config).expect("session should build");
+        build_app_state(model_id.to_string(), session).expect("app state should build")
+    }
+
+    #[tokio::test]
+    async fn snapshot_recovers_poisoned_live_lock() {
+        let state = test_state("first");
+        let result = panic::catch_unwind(AssertUnwindSafe({
+            let state = state.clone();
+            move || {
+                let _live = state.live.write().expect("live lock should be available");
+                panic!("poison live lock");
+            }
+        }));
+        assert!(result.is_err());
+
+        let live = state.snapshot();
+        assert_eq!(live.model_id.as_ref().as_str(), "first");
+    }
+
+    #[tokio::test]
+    async fn swap_live_recovers_poisoned_live_lock() {
+        let state = test_state("first");
+        let replacement = test_state("second").snapshot();
+        let result = panic::catch_unwind(AssertUnwindSafe({
+            let state = state.clone();
+            move || {
+                let _live = state.live.write().expect("live lock should be available");
+                panic!("poison live lock");
+            }
+        }));
+        assert!(result.is_err());
+
+        state.swap_live(replacement);
+        let live = state.snapshot();
+        assert_eq!(live.model_id.as_ref().as_str(), "second");
+    }
 }
 
 #[derive(Clone)]
