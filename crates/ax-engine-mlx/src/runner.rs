@@ -10299,6 +10299,12 @@ pub enum MlxRunnerError {
 
 fn validate_mlx_supported_manifest(artifacts: &NativeModelArtifacts) -> Result<(), MlxRunnerError> {
     let manifest = artifacts.manifest();
+    if !is_mlx_supported_model_family(&manifest.model_family) {
+        return Err(MlxRunnerError::UnsupportedFeature(format!(
+            "model_family {:?} is not supported by the MLX runner",
+            manifest.model_family
+        )));
+    }
     if manifest.model_family == "glm4_moe_lite" || has_glm_mla_tensors(artifacts) {
         validate_mla_moe_manifest(manifest)?;
     }
@@ -10320,6 +10326,25 @@ fn validate_mlx_supported_manifest(artifacts: &NativeModelArtifacts) -> Result<(
         validate_diffusion_gemma_manifest(manifest)?;
     }
     Ok(())
+}
+
+fn is_mlx_supported_model_family(model_family: &str) -> bool {
+    matches!(
+        model_family,
+        "gemma4"
+            | "gemma3"
+            | "qwen3"
+            | "llama3"
+            | "diffusion_gemma"
+            | "llama4"
+            | "qwen3_5"
+            | "qwen3_next"
+            | "glm4_moe_lite"
+            | "deepseek_v3"
+            | "deepseek_v32"
+            | "mistral3"
+            | "mixtral"
+    )
 }
 
 /// Validate DiffusionGemma-specific manifest fields.
@@ -13419,6 +13444,7 @@ mod tests {
     #[test]
     fn mlx_manifest_validation_rejects_linear_attention_for_non_qwen35() {
         let mut manifest = dense_manifest();
+        manifest.model_family = "gemma4".to_string();
         manifest.linear_attention = NativeLinearAttentionConfig {
             full_attention_interval: Some(4),
             num_value_heads: Some(1),
@@ -13433,6 +13459,20 @@ mod tests {
             .expect_err("linear attention should fail closed");
 
         assert!(error.to_string().contains("qwen3_5/qwen3_next"));
+    }
+
+    #[test]
+    fn mlx_manifest_validation_rejects_unknown_model_family() {
+        let artifacts = write_artifacts(dense_manifest());
+
+        let error =
+            validate_mlx_supported_manifest(&artifacts).expect_err("unknown family should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("not supported by the MLX runner")
+        );
     }
 
     #[test]
@@ -15646,6 +15686,7 @@ mod tests {
     #[test]
     fn mlx_manifest_validation_allows_attn_output_gate() {
         let mut manifest = dense_manifest();
+        manifest.model_family = "qwen3".to_string();
         manifest.attn_output_gate = true;
         manifest
             .tensors
@@ -15675,6 +15716,7 @@ mod tests {
     #[test]
     fn mlx_manifest_validation_rejects_unknown_interleaved_attention() {
         let mut manifest = dense_manifest();
+        manifest.model_family = "qwen3".to_string();
         manifest.sliding_window_size = Some(1024);
         manifest.layer_types = vec!["sliding_attention".to_string()];
         manifest.global_head_dim = Some(8);
