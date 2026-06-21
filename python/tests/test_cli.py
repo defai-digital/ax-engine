@@ -44,6 +44,7 @@ class AxEngineCliTests(unittest.TestCase):
         )
         self.assertIn("HF_HUB_CACHE", payload["default_destination"]["env"])
         aliases = {target["alias"] for target in payload["targets"]}
+        self.assertIn("qwen3.5-9b", aliases)
         self.assertIn("qwen3.6-35b", aliases)
         self.assertIn("qwen3.6-27b-8bit", aliases)
         self.assertIn("gemma4-e2b-6bit", aliases)

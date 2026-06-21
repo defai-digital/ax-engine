@@ -191,6 +191,7 @@ AX Engine requires pre-sanitized MLX weights. The recommended source is [mlx-com
 ax-engine download --list
 
 # Download by alias
+ax-engine download qwen3.5-9b --json
 ax-engine download qwen36-35b --json
 ax-engine download qwen36-27b --json
 ax-engine download gemma4-e2b --json

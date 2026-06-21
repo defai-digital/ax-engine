@@ -37,6 +37,7 @@ Use `download` when you want model acquisition as a separate step:
 
 ```text
 ax-engine download --list
+ax-engine download qwen3.5-9b
 ax-engine download qwen36-35b
 ax-engine download qwen36-27b
 ax-engine download qwen36-27b-5bit
