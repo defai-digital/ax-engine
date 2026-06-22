@@ -21,14 +21,12 @@ from typing import Any
 
 SLUG_TO_README = {
     "gemma-4-e2b-it-4bit":     ("Gemma 4 E2B",      "4-bit"),
-    "gemma-4-e2b-it-5bit":     ("Gemma 4 E2B",      "5-bit"),
     "gemma-4-e2b-it-6bit":     ("Gemma 4 E2B",      "6-bit"),
     "gemma-4-e2b-it-8bit":     ("Gemma 4 E2B",      "8-bit"),
     "gemma-4-e4b-it-4bit":     ("Gemma 4 E4B",      "4-bit"),
     "gemma-4-26b-a4b-it-4bit": ("Gemma 4 26B A4B",  "4-bit"),
     "gemma-4-31b-it-4bit":     ("Gemma 4 31B",      "4-bit"),
     "qwen3_6-27b-4bit":        ("Qwen 3.6 27B",     "4-bit"),
-    "qwen3_6-27b-5bit":        ("Qwen 3.6 27B",     "5-bit"),
     "qwen3_6-27b-6bit":        ("Qwen 3.6 27B",     "6-bit"),
     "qwen3_6-27b-8bit":        ("Qwen 3.6 27B",     "8-bit"),
     "qwen3_6-35b-a3b-4bit":    ("Qwen 3.6 35B A3B", "4-bit"),

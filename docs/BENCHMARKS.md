@@ -19,6 +19,22 @@ README is rolled back to those artifacts.
 A result is useful only when the workload, runtime route, reference engine,
 host, model, sampling policy, and artifact schema are explicit.
 
+## Model Source Policy
+
+Repo-owned MLX benchmark and download paths use Hugging Face `mlx-community/*`
+repos and resolve them through the local Hugging Face hub snapshot cache
+(`~/.cache/huggingface/hub/models--mlx-community--.../snapshots/<revision>`).
+Shape-compatible GGUF baseline rows use Hugging Face `unsloth/*` repos and the
+same hub snapshot layout. Do not add new GGUF benchmark inventory rows from
+`bartowski/*`, `ggml-org/*`, or ad-hoc local model directories.
+
+For llama.cpp Metal baseline rows, prefer standard root-level Unsloth K-quants
+(`Q4_K_M`, `Q6_K`, `Q8_0`). Use Unsloth Dynamic `UD-*` files only when
+the manifest explicitly says that Unsloth does not publish a standard
+root-level K-quant for that model. Historical artifacts keep their recorded
+provenance until the benchmark is rerun; do not rewrite old result JSON or
+charts to imply a different model source.
+
 ## Which Tool To Use
 
 | Question | Use | Evidence produced |
@@ -31,7 +47,7 @@ host, model, sampling policy, and artifact schema are explicit.
 | Does the non-MLX delegated route still behave correctly? | llama.cpp manifests through `ax-engine-bench` | Delegated route-contract evidence only |
 | Does upstream `mlx-lm` delegated text compatibility still behave correctly? | Explicit `mlx_lm_delegated` checks through SDK/server/CLI surfaces | Delegated route-contract evidence only |
 | Which AX runtime path is best for a product endpoint on this host? | `scripts/bench_ax_engine_three_modes.py` against already-running AX servers | End-to-end AX API latency by mode; not raw model throughput |
-| How do the three MTP engines compare (MTPLX, AX MTP, AX MTP+n-gram)? | `scripts/bench_qwen36_mtp_fair.py` | `ax.qwen36_mtp_fair.v1` artifact with per-engine decode tok/s, MTP accept rate, and n-gram accept rate |
+| How does AX MTP perform on the supported 6-bit local-agent targets? | Prepare models with `ax-engine download-mtp`; run the MTP harness in `mtp` mode only | MTP-only artifact with per-model decode tok/s, prefill tok/s, TTFT, MTP accept rate, and model/package provenance |
 | What are the prefill rates and TTFT across MTP engines? | `scripts/bench_mtp_prefill_ttft_report.py --result-dir <fair-output-dir>` | `ax.mtp_prefill_ttft_report.v1` artifact with per-engine prefill tok/s and TTFT ms; generates `prefill-tok-s.svg`, `ttft-ms.svg`, and `prefill-ttft-report.md` |
 
 Do not merge these rows into one unlabeled throughput table. Repo-owned
@@ -74,40 +90,42 @@ harness validation corpus, not a production claim. Public serving claims should
 use a larger corpus with a published prompt-mix table. See
 `docs/SERVING-BENCHMARKS.md` for the full contract and rollout plan.
 
-## Cross-Engine MTP Fair Comparison
+## MTP 6-Bit Matrix
 
-Use the fair benchmark when the question is how AX Engine MTP throughput and acceptance
-compares against MTPLX on the same real prompt suites.
+Use the MTP benchmark when the question is how AX Engine MTP throughput and
+acceptance behaves on the supported local-agent targets. The current benchmark
+design is AX-owned and intentionally limited to five 6-bit `download-mtp`
+targets:
 
-Pass `--engines` (vendor names: `mtplx`, `ax`) and `--modes` (`mtp`, `mtp-ngram`)
-to select what to run. The script resolves the combination against an internal support matrix and
-skips any vendor/mode pair not yet implemented (e.g. MTPLX does not support mtp-ngram yet).
-By default all vendors and all modes are included.
+| Target | Preparation command | Benchmark mode |
+|---|---|---|
+| `qwen3-coder-next` | `ax-engine download-mtp qwen3-coder-next` | MTP |
+| `qwen3.6-35b-a3b` | `ax-engine download-mtp qwen3.6-35b-a3b` | MTP |
+| `gemma-4-12b` | `ax-engine download-mtp gemma-4-12b` | assistant-MTP |
+| `gemma-4-31b` | `ax-engine download-mtp gemma-4-31b` | assistant-MTP |
+| `glm-4.7-flash` | `ax-engine download-mtp glm-4.7-flash` | GLM built-in MTP sidecar |
+
+Rules for the current matrix:
+
+- Use 6-bit artifacts only.
+- Use `mtp` mode only.
+- Do not run, render, or promote `mtp-ngram` rows.
+- Do not include Qwen3.6 27B, Gemma 4 26B, 4-bit, 5-bit, 8-bit, FFN-only, or GGUF
+  variants in the current MTP benchmark matrix.
+- Direct rows are allowed only as local diagnostics; they are not headline MTP
+  rows.
 
 ```text
-# Full three-engine comparison (default)
-python3 scripts/bench_qwen36_mtp_fair.py \
-  --models 27b-4bit 35b-a3b-4bit \
-  --suites flappy long_code \
-  --output-dir benchmarks/results/mtp-fair/$(date +%F)-qwen36-fair
-
-# AX only, both modes
-python3 scripts/bench_qwen36_mtp_fair.py \
-  --engines ax \
-  --models 27b-4bit \
-  --suites flappy long_code \
-  --output-dir benchmarks/results/mtp-fair/$(date +%F)-qwen36-fair-ax-only
-
-# MTP-only across all vendors (no n-gram)
-python3 scripts/bench_qwen36_mtp_fair.py \
-  --modes mtp \
-  --output-dir benchmarks/results/mtp-fair/$(date +%F)-qwen36-fair-mtp-only
+ax-engine download-mtp qwen3-coder-next
+ax-engine download-mtp qwen3.6-35b-a3b
+ax-engine download-mtp gemma-4-12b
+ax-engine download-mtp gemma-4-31b
+ax-engine download-mtp glm-4.7-flash
 ```
 
-The output artifact uses schema `ax.qwen36_mtp_fair.v1`. It records per-engine
-decode tok/s, MTP accept rate, and (for AX MTP+n-gram) n-gram accept rate.
-Saved under `benchmarks/results/mtp-fair/`. Use `--skip-existing` to resume a
-partial run after adding a new engine.
+Saved artifacts should live under `benchmarks/results/mtp-6bit/` and must record
+the prepared model path returned by `download-mtp`. A preparation run must
+return an MTP-ready package before it can be promoted into this matrix.
 
 > **Note on Lightning-MLX**: Lightning rows were removed from this matrix on
 > 2026-06-03 after discovery of a silent-thinking pathology that produced
@@ -121,22 +139,22 @@ output directory:
 
 ```bash
 python3 scripts/bench_mtp_prefill_ttft_report.py \
-  --result-dir benchmarks/results/mtp-fair/$(date +%F)-qwen36-fair
+  --result-dir benchmarks/results/mtp-6bit/<run-dir>
 ```
 
 This reads the existing per-engine artifact JSON files (no new inference required) and
-emits `prefill-ttft-report.md`, `prefill-tok-s.svg`, `ttft-ms.svg`, and per-model charts
-into the same directory, using schema `ax.mtp_prefill_ttft_report.v1`.
+emits `prefill-ttft-report.md`, `prefill-tok-s.svg`, `ttft-ms.svg`, and
+per-model charts into the same directory, using schema
+`ax.mtp_prefill_ttft_report.v1`.
 
 **Measurement provenance**: MTPLX and AX Engine prefill rates and TTFT values are
 runner-level measurements of pure GPU compute time (`prompt_eval_time_s` for MTPLX,
 `ttft_source: ax_engine_runner_prefill_time` for AX).
 
-Do not merge these rows with `bench_mlx_inference_stack.py` MLX throughput tables.
-The fair benchmark uses real prompt suites, not the `mlx_lm.benchmark` random-token
-contract, and its engines each use their own MTP infrastructure rather than
-AX-owned repo MLX. It is cross-engine comparison evidence, not a repo-owned
-MLX throughput claim.
+Do not merge these rows with `bench_mlx_inference_stack.py` MLX throughput
+tables. The MTP benchmark uses real prompt suites, not the `mlx_lm.benchmark`
+random-token contract. It is MTP evidence, not a repo-owned MLX throughput
+claim.
 
 ## AX Runtime-Mode Comparison
 

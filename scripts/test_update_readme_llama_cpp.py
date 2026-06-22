@@ -88,16 +88,16 @@ class UpdateReadmeLlamaCppTests(unittest.TestCase):
     def test_render_section_includes_qwen36_27b_sweep_rows(self) -> None:
         doc = _make_sweep_doc([
             _ok_row(
-                "qwen3_6-27b-5bit",
+                "qwen3_6-27b-6bit",
                 "Qwen 3.6 27B",
-                "5-bit",
-                quant_target="Q5_K_M",
+                "6-bit",
+                quant_target="Q6_K",
             )
         ])
         out = upd.render_section(doc)
         self.assertIn("Qwen 3.6 27B", out)
-        self.assertIn("5-bit", out)
-        self.assertIn("Q5_K_M", out)
+        self.assertIn("6-bit", out)
+        self.assertIn("Q6_K", out)
 
     def test_splice_section_inserts_before_embedding_header(self) -> None:
         readme = (

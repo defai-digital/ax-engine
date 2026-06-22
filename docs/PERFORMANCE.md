@@ -197,162 +197,46 @@ should not be read as a complete inference-serving proof. In particular:
 
 ## MTP Mode
 
-AX MTP is benchmarked against standard Qwen3.6 sidecars, not
-`Youssofal/*MTPLX*` bundles. The sidecar builder combines the ordinary
-`mlx-community/*-4bit` MLX base with the official `Qwen/Qwen3.6-*` MTP shard
-weights and writes `ax_mtp_sidecar_manifest.json` so every row records the base
-snapshot, source shard hashes, MTP output hash, transform policy, and supported
-depth.
+The current MTP publication contract is the 6-bit local-agent matrix. Every row
+must start from `ax-engine download-mtp` output, and every promoted benchmark row
+must run MTP only.
 
-**Sidecar naming constraint**: `prepare_qwen36_mtp_sidecar.py` writes `mtp.safetensors`
-only (not `model-mtp.safetensors`). mlx_lm loads all `model*.safetensors` files in a
-directory via glob (`utils.py` line 316); a file named `model-mtp.safetensors` would
-cause `TextModel.sanitize` to see `has_mtp_weights=True` and apply a second +1.0 shift
-to the already-shifted base model norms, producing garbage output from any mlx_lm-based
-inference path (MTPLX, direct `mlx_lm.generate`). AX Engine is unaffected
-because it uses its own loader. Always keep the MTP sidecar file named `mtp.safetensors`.
+| Target | Required preparation | Promoted MTP mode |
+|---|---|---|
+| `qwen3-coder-next` | `ax-engine download-mtp qwen3-coder-next` | Qwen fused sidecar MTP |
+| `qwen3.6-35b-a3b` | `ax-engine download-mtp qwen3.6-35b-a3b` | Qwen fused sidecar MTP |
+| `gemma-4-12b` | `ax-engine download-mtp gemma-4-12b` | Gemma assistant-MTP |
+| `gemma-4-31b` | `ax-engine download-mtp gemma-4-31b` | Gemma assistant-MTP |
+| `glm-4.7-flash` | `ax-engine download-mtp glm-4.7-flash` | GLM built-in MTP sidecar |
 
-The fair harness is `scripts/bench_qwen36_mtp_fair.py`. It runs the same
-prompt suite files, max-token cap, sampler, warmup count, measured repetitions,
-and cooldown across MTPLX and AX Engine. The comparison uses native depth: 27B
-at depth 3, 35B-A3B at depth 1.
+Rules:
 
-### Corrected 2026-05-30 run
+- Quantization is fixed at 6-bit.
+- `mtp-ngram` is out of scope for MTP publication and must not be run in the
+  MTP matrix.
+- Historical 4-bit Qwen3.6/MTPLX rows and historical MTP+n-gram artifacts remain
+  diagnostic only. Do not use them for current README/PERFORMANCE claims.
+- Direct rows may be kept as local same-artifact diagnostics, but they are not
+  part of the headline MTP matrix.
+- Artifacts should live under `benchmarks/results/mtp-6bit/<run-dir>/` and record
+  the exact `download-mtp` output path, model snapshot, sidecar or assistant
+  package provenance, route identity, sampler, prompt suite, repetitions, and
+  cooldown.
 
-The initial 2026-05-30 stable-profile re-run showed MTPLX at ~2% accept rate.
-Root-cause investigation identified:
-
-1. **MTPLX base-model corruption** (fixed). The sidecar directory contained a
-   `model-mtp.safetensors` hard-link alias that matched `mlx_lm`'s
-   `model*.safetensors` glob, causing `TextModel.sanitize` to apply a second
-   +1.0 shift to already-shifted norm weights. The alias has been removed from
-   `prepare_qwen36_mtp_sidecar.py`. After this fix, MTPLX accept rate rose from
-   ~2% to ~99.9% on standard Qwen3.6 sidecars.
-
-### Accept rate improvement (2026-05-30 → 2026-05-31)
-
-Three rounds of fixes improved AX Engine's MTP accept rate:
-
-1. **Depth policy cap removed** (2026-05-30). `default_mtp_depth_without_env()`
-   capped all models to depth 1 even when the sidecar specified
-   `mtp_depth_max: 3`. Now removed — models use their configured native depth.
-
-2. **Filtered lm_head rejection sampling** (2026-05-30). The filtered candidate
-   path skipped computing draft log-probs, which forced greedy argmax
-   acceptance. Now computes temperature-scaled softmax over the top-4096
-   candidate logits for rejection sampling acceptance.
-
-3. **Full-vocab target softmax** (2026-05-31). The previous target distribution
-   path extracted top-k=20 tokens from verify logits and normalized within that
-   set, zeroing `p_target` for any draft token ranked below 20th — guaranteeing
-   rejection. The new path computes full-vocab softmax (matching MTPLX's
-   approach) and gathers only the per-draft-token probability. Additionally,
-   the draft candidate set is no longer halved at each depth, giving the draft
-   model the full candidate set at all depths.
-
-35B-A3B results (native depth=1, 1000 gen tokens):
-
-| Engine | flappy | long_code | python_modules_long |
-|---|---:|---:|---:|
-| MTPLX 0.3.7 (tok/s) | 107.3 | 106.4 | 102.7 |
-| MTPLX 0.3.7 (accept) | 50.8% | 50.5% | 42.6% |
-| AX MTP (tok/s) | 182.5 | 180.7 | 178.1 |
-| AX MTP (accept) | 99.9% | 99.8% | 92.8% |
-| AX MTP+n-gram (tok/s) | 261.7 | 277.3 | 196.3 |
-| AX MTP+n-gram (accept) | 88.8% | 92.0% | 83.5% |
-| AX+ngram/MTPLX ratio | 2.439 | 2.605 | 1.912 |
-| AX+ngram/AX ratio | 1.434 | 1.534 | 1.103 |
-
-27B results (native depth=3, 1000 gen tokens):
-
-| Engine | flappy | long_code | python_modules_long |
-|---|---:|---:|---:|
-| MTPLX 0.3.7 (tok/s) | 51.5 | 53.5 | 51.6 |
-| MTPLX 0.3.7 (accept) | 100.0% | 99.7% | 87.6% |
-| AX MTP (tok/s) | 65.9 | 65.6 | 53.8 |
-| AX MTP (accept) | 99.5% | 98.4% | 74.8% |
-| AX MTP+n-gram (tok/s) | 62.1 | 62.2 | 53.5 |
-| AX MTP+n-gram (accept) | 80.2% | 90.0% | 78.2% |
-| AX+ngram/MTPLX ratio | 1.206 | 1.163 | 1.037 |
-
-Note: For 27B (depth=3), pure MTP already achieves 98–99% accept on flappy/long_code, leaving
-little room for n-gram to improve throughput. For 35B-A3B (depth=1), n-gram stacking provides
-substantial speedup (+43–54%) by drafting additional tokens cheaply beyond the single MTP step.
-
-Artifacts: `benchmarks/results/mtp-fair/2026-06-01-qwen36-fair-ax-ngram3/`
-(historical three-engine snapshot: MTPLX, AX MTP, AX MTP+n-gram; pending
-replacement by a fresh full run).
-
-#### Chart data table
-
-<!-- This table is consumed by scripts/render_mtp_flappy_charts.py -->
-
-| Model bundle | Suite | AX depth cap | AX MTP tok/s | AX accept % | MTPLX tok/s | MTPLX depth | MTPLX accept % | AX/MTPLX |
-|---|---|---:|---:|---:|---:|---:|---:|---:|
-| Speed (Qwen3.6 35B-A3B 4-bit) | flappy | 1 | 84.2 | 99.9% | 88.1 | 1 | 48.8% | 0.956 |
-| Speed (Qwen3.6 35B-A3B 4-bit) | long_code | 1 | 81.5 | 99.8% | 105.2 | 1 | 52.3% | 0.775 |
-| Quality (Qwen3.6 27B 4-bit) | flappy | 3 | 37.2 | 99.1% | 39.2 | 3 | 100.0% | 0.949 |
-| Quality (Qwen3.6 27B 4-bit) | long_code | 3 | 27.6 | 98.3% | 44.3 | 3 | 99.7% | 0.625 |
-
-### Current publication contract
-
-- Models: `27b-4bit` and `35b-a3b-4bit`.
-- Provenance: standard `Qwen/Qwen3.6-27B` or `Qwen/Qwen3.6-35B-A3B` MTP shards
-  plus `mlx-community/Qwen3.6-27B-4bit` or
-  `mlx-community/Qwen3.6-35B-A3B-4bit`.
-- Suites: `flappy` and `long_code` from `benchmarks/prompts/mtp-suites/`.
-- Sampler: sampled decode, temperature=0.6, top_p=0.95, top_k=20.
-- Publication shape: max_tokens=1000, 1 warmup repetition, 5 measured
-  repetitions, 15 second cooldown.
-- Native depth: 27B `3`, 35B-A3B `1`.
-
-Prepare the sidecars:
+Prepare the matrix:
 
 ```bash
-python3 scripts/prepare_qwen36_mtp_sidecar.py --model 27b
-python3 scripts/prepare_qwen36_mtp_sidecar.py --model 35b
+ax-engine download-mtp qwen3-coder-next
+ax-engine download-mtp qwen3.6-35b-a3b
+ax-engine download-mtp gemma-4-12b
+ax-engine download-mtp gemma-4-31b
+ax-engine download-mtp glm-4.7-flash
 ```
 
-Run the full three-engine fair comparison at native depth:
-
-```bash
-python3 scripts/bench_qwen36_mtp_fair.py \
-  --engines mtplx ax \
-  --modes mtp mtp-ngram \
-  --models 27b-4bit 35b-a3b-4bit \
-  --suites flappy long_code python_modules_long \
-  --depth-policy native \
-  --max-tokens 1000 \
-  --repetitions 5 \
-  --cooldown 15
-```
-
-Run tuned best-of rows separately when comparing user-default performance. This
-calls the MTPLX public tune command before the MTPLX row and sweeps AX direct,
-n-gram, MTP d=1..native depth, and MTP+n-gram d=1..native depth before the AX
-row:
-
-```bash
-python3 scripts/bench_qwen36_mtp_fair.py \
-  --engines mtplx ax \
-  --modes tuned \
-  --models 27b-4bit 35b-a3b-4bit \
-  --suites flappy long_code python_modules_long \
-  --depth-policy native \
-  --max-tokens 1000 \
-  --repetitions 5 \
-  --cooldown 15
-```
-
-Do not mix a tuned MTPLX row with a fixed-depth AX row as a headline comparison.
-The harness labels the summary contract as `fixed-depth`, `tuned-best-of`, or
-`mixed-fixed-and-tuned`; only rows with the same contract should be compared as
-the primary result.
-
-The harness writes `summary.json`, `summary.md`, and `decode-tok-s.svg` under
-`benchmarks/results/mtp-fair/<date>-qwen36-fair/`. A row with `status=error` is
-kept in the summary instead of silently dropping a backend; that is deliberate
-so MTPLX loader incompatibilities (e.g. 35B-A3B MoE) stay visible.
+Benchmark rows use the existing MTP prompt suites
+`flappy`, `long_code`, and `python_modules_long`, sampled decode with
+temperature `0.6`, top-p `0.95`, top-k `20`, `1000` generated tokens,
+`5` measured repetitions, and cooldowns recorded in the artifact.
 
 ### Draft confidence gate (throughput knob)
 

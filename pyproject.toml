@@ -53,6 +53,8 @@ include = [
     # Top-level orchestration CLI wraps source-compatible download and MTP tools.
     { path = "scripts/download_model.py", format = ["wheel"] },
     { path = "scripts/prepare_mtp_sidecar.py", format = ["wheel"] },
+    { path = "scripts/prepare_gemma4_assistant_mtp.py", format = ["wheel"] },
+    { path = "scripts/prepare_glm_mtp_sidecar.py", format = ["wheel"] },
     { path = "scripts/check_mtp_sidecar_provenance.py", format = ["wheel"] },
 ]
 # Explicitly exclude internal and developer-only paths from both wheel and sdist.

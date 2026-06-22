@@ -24,22 +24,30 @@ verification, route identity, prefix reuse, replay determinism, and regression
 review. Merging these rows into one unlabeled table would make the evidence
 unauditable.
 
-A third tool handles cross-engine MTP comparison on real prompt suites:
+A third benchmark class handles MTP comparison on real prompt suites:
 
 ```
-bench_qwen36_mtp_fair.py               ←  cross-engine MTP comparison
-  Produces: ax.qwen36_mtp_fair.v1 artifacts (tok/s + accept rates per engine per suite)
-  Answers:  "How does AX Engine MTP compare against MTPLX?"
+MTP 6-bit matrix                      ←  five download-mtp targets
+  Produces: MTP-only artifacts (tok/s + accept rates per model per suite)
+  Answers:  "How does AX Engine MTP perform on the supported 6-bit local-agent targets?"
 ```
 
-This tool runs MTPLX and AX Engine against the same real prompt suites with matched
-warmup, repetitions, cooldown, and sampling. Pass `--engines` (vendor names: `mtplx`,
-`ax`) and `--modes` (`mtp`, `mtp-ngram`) to select combinations; the script resolves
-each pair against an internal support matrix and skips unsupported ones with a warning
-(e.g. MTPLX does not yet support mtp-ngram). Its artifacts record per-engine decode
-throughput and MTP (and n-gram) accept rates, but they are cross-engine comparison
-evidence, not repo-owned MLX throughput claims. Do not cite `bench_qwen36_mtp_fair.py`
-rows as `mlx_lm.benchmark` baseline comparisons; the two evidence types are separate.
+The current MTP benchmark design is intentionally narrow:
+
+- Models: `qwen3-coder-next`, `qwen3.6-35b-a3b`, `gemma-4-12b`, `gemma-4-31b`,
+  and `glm-4.7-flash`.
+- Setup: every model must be prepared through `ax-engine download-mtp <model>`.
+- Quantization: 6-bit only. Do not mix 4-bit, 5-bit, 8-bit, FFN-only, or GGUF
+  variants into the MTP benchmark matrix.
+- Mode: MTP only. Do not run or report `mtp-ngram` rows in the MTP matrix.
+- Baselines: direct rows may be run only as same-artifact diagnostic baselines;
+  they are not part of the headline MTP matrix.
+
+Artifacts record decode throughput, prefill throughput, TTFT, MTP accept rate,
+route identity, model snapshot, MTP package provenance, prompt suite, sampler,
+warmup, repetitions, and cooldown. These rows are real-prompt MTP evidence, not
+`mlx_lm.benchmark` random-token throughput evidence. Do not cite MTP rows as
+repo-owned MLX throughput claims; the two evidence types are separate.
 
 > Lightning-MLX rows were removed from this matrix on 2026-06-03. The runner
 > (`scripts/bench_rapid_mlx_prompt_suites.py`) and reference source

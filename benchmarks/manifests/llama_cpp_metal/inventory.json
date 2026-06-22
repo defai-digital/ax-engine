@@ -2,8 +2,9 @@
   "schema_version": "ax.llama_cpp_metal_inventory.v1",
   "purpose": "Map each row in the README MLX-inference performance table to a candidate GGUF + llama.cpp Metal architecture for shape-compatible external baseline benchmarking.",
   "claim_boundary": "Rows produced from this manifest are shape-compatible external GGUF baselines only. llama-bench does not consume the ax/MLX prompt-token JSON, so the resulting numbers are NOT prompt-hash parity evidence. They may be shown side-by-side in README only with an explicit shape-compatible disclaimer, no llama.cpp percentage deltas, and no claim that the llama.cpp column is repo-owned MLX throughput evidence.",
-  "required_gguf_publisher": "bartowski",
-  "quant_mapping_policy": "MLX bit-width is mapped to the closest standard bartowski GGUF K-quant: 4-bit -> Q4_K_M, 5-bit -> Q5_K_M, 6-bit -> Q6_K, 8-bit -> Q8_0. bartowski is the required GGUF publisher for this inventory so llama.cpp rows stay on standard imatrix K-quants instead of Unsloth Dynamic UD variants. Architectural bit-for-bit equivalence is NOT claimed.",
+  "required_gguf_publisher": "unsloth",
+  "required_mlx_publisher": "mlx-community",
+  "quant_mapping_policy": "MLX bit-width is mapped to the closest Unsloth GGUF quant: 4-bit -> Q4_K_M, 6-bit -> Q6_K, 8-bit -> Q8_0. Standard root-level K-quants are preferred when Unsloth publishes them; rows explicitly marked UD-* use Unsloth Dynamic quants because no standard root-level K-quant is published for that model. Unsloth is the required GGUF publisher for this inventory. Architectural bit-for-bit equivalence is NOT claimed.",
   "resolution_policy": "Each row lists candidate (repo, filename_pattern) pairs in priority order. The sweep driver resolves the first candidate whose pattern matches a file via huggingface_hub.list_repo_files. Status 'candidate' means unresolved; the driver flips it to 'resolved' or 'unresolved' at sweep time. Rows where llama.cpp architecture support is unknown stay 'candidate' until the driver attempts a load.",
   "rows": [
     {
@@ -17,21 +18,7 @@
       "multimodal_note": "Source MLX is multimodal (Gemma4 + audio). GGUF candidates must be text-only conversions.",
       "gguf_quant_target": "Q4_K_M",
       "gguf_candidates": [
-        {"repo": "bartowski/google_gemma-4-E2B-it-GGUF", "filename_pattern": "*Q4_K_M*.gguf"}
-      ],
-      "status": "candidate"
-    },
-    {
-      "slug": "gemma-4-e2b-it-5bit",
-      "readme_model": "Gemma 4 E2B",
-      "readme_quant": "5-bit",
-      "mlx_local_dir": ".internal/models/gemma-4-e2b-it-5bit",
-      "mlx_repo_id": "mlx-community/gemma-4-e2b-it-5bit",
-      "hf_arch": "Gemma4ForConditionalGeneration",
-      "llama_cpp_arch": "gemma4",
-      "gguf_quant_target": "Q5_K_M",
-      "gguf_candidates": [
-        {"repo": "bartowski/google_gemma-4-E2B-it-GGUF", "filename_pattern": "*Q5_K_M*.gguf"}
+        {"repo": "unsloth/gemma-4-E2B-it-GGUF", "filename_pattern": "*Q4_K_M*.gguf"}
       ],
       "status": "candidate"
     },
@@ -45,7 +32,7 @@
       "llama_cpp_arch": "gemma4",
       "gguf_quant_target": "Q6_K",
       "gguf_candidates": [
-        {"repo": "bartowski/google_gemma-4-E2B-it-GGUF", "filename_pattern": "*Q6_K*.gguf"}
+        {"repo": "unsloth/gemma-4-E2B-it-GGUF", "filename_pattern": "*Q6_K*.gguf"}
       ],
       "status": "candidate"
     },
@@ -59,7 +46,7 @@
       "llama_cpp_arch": "gemma4",
       "gguf_quant_target": "Q8_0",
       "gguf_candidates": [
-        {"repo": "bartowski/google_gemma-4-E2B-it-GGUF", "filename_pattern": "*Q8_0*.gguf"}
+        {"repo": "unsloth/gemma-4-E2B-it-GGUF", "filename_pattern": "*Q8_0*.gguf"}
       ],
       "status": "candidate"
     },
@@ -73,7 +60,7 @@
       "llama_cpp_arch": "gemma4",
       "gguf_quant_target": "Q4_K_M",
       "gguf_candidates": [
-        {"repo": "bartowski/google_gemma-4-E4B-it-GGUF", "filename_pattern": "*Q4_K_M*.gguf"}
+        {"repo": "unsloth/gemma-4-E4B-it-GGUF", "filename_pattern": "*Q4_K_M*.gguf"}
       ],
       "status": "candidate"
     },
@@ -85,9 +72,10 @@
       "mlx_repo_id": "mlx-community/gemma-4-26b-a4b-it-4bit",
       "hf_arch": "Gemma4ForConditionalGeneration",
       "llama_cpp_arch": "gemma4",
-      "gguf_quant_target": "Q4_K_M",
+      "prompt_source_note": "Prompt-token source is mlx-community/gemma-4-26b-a4b-it-4bit. GGUF side benches the Unsloth Dynamic UD-Q4_K_M quant because Unsloth does not publish a standard root-level Q4_K_M file for this model. Injected into the README '4-bit' row as a shape-compatible reference only.",
+      "gguf_quant_target": "UD-Q4_K_M",
       "gguf_candidates": [
-        {"repo": "bartowski/google_gemma-4-26B-A4B-it-GGUF", "filename_pattern": "*Q4_K_M*.gguf"}
+        {"repo": "unsloth/gemma-4-26B-A4B-it-GGUF", "filename_pattern": "gemma-4-26B-A4B-it-UD-Q4_K_M.gguf"}
       ],
       "status": "candidate"
     },
@@ -99,9 +87,10 @@
       "mlx_repo_id": "mlx-community/gemma-4-26b-a4b-it-6bit",
       "hf_arch": "Gemma4ForConditionalGeneration",
       "llama_cpp_arch": "gemma4",
-      "gguf_quant_target": "Q6_K",
+      "prompt_source_note": "Prompt-token source is mlx-community/gemma-4-26b-a4b-it-6bit. GGUF side benches the Unsloth Dynamic UD-Q6_K quant because Unsloth does not publish a standard root-level Q6_K file for this model. Injected into the README '6-bit' row as a shape-compatible reference only.",
+      "gguf_quant_target": "UD-Q6_K",
       "gguf_candidates": [
-        {"repo": "bartowski/google_gemma-4-26B-A4B-it-GGUF", "filename_pattern": "*Q6_K.gguf"}
+        {"repo": "unsloth/gemma-4-26B-A4B-it-GGUF", "filename_pattern": "gemma-4-26B-A4B-it-UD-Q6_K.gguf"}
       ],
       "status": "candidate"
     },
@@ -115,7 +104,7 @@
       "llama_cpp_arch": "gemma4",
       "gguf_quant_target": "Q4_K_M",
       "gguf_candidates": [
-        {"repo": "bartowski/google_gemma-4-31B-it-GGUF", "filename_pattern": "*Q4_K_M*.gguf"}
+        {"repo": "unsloth/gemma-4-31B-it-GGUF", "filename_pattern": "*Q4_K_M*.gguf"}
       ],
       "status": "candidate"
     },
@@ -129,7 +118,7 @@
       "llama_cpp_arch": "gemma4",
       "gguf_quant_target": "Q6_K",
       "gguf_candidates": [
-        {"repo": "bartowski/google_gemma-4-31B-it-GGUF", "filename_pattern": "*Q6_K.gguf"}
+        {"repo": "unsloth/gemma-4-31B-it-GGUF", "filename_pattern": "*Q6_K.gguf"}
       ],
       "status": "candidate"
     },
@@ -143,21 +132,7 @@
       "llama_cpp_arch": "qwen35",
       "gguf_quant_target": "Q4_K_M",
       "gguf_candidates": [
-        {"repo": "bartowski/Qwen_Qwen3.6-27B-GGUF", "filename_pattern": "*Q4_K_M*.gguf"}
-      ],
-      "status": "candidate"
-    },
-    {
-      "slug": "qwen3_6-27b-5bit",
-      "readme_model": "Qwen 3.6 27B",
-      "readme_quant": "5-bit",
-      "mlx_local_dir": ".internal/models/Qwen3.6-27B-5bit",
-      "mlx_repo_id": "mlx-community/Qwen3.6-27B-5bit",
-      "hf_arch": "Qwen3_5ForConditionalGeneration",
-      "llama_cpp_arch": "qwen35",
-      "gguf_quant_target": "Q5_K_M",
-      "gguf_candidates": [
-        {"repo": "bartowski/Qwen_Qwen3.6-27B-GGUF", "filename_pattern": "*Q5_K_M*.gguf"}
+        {"repo": "unsloth/Qwen3.6-27B-GGUF", "filename_pattern": "*Q4_K_M*.gguf"}
       ],
       "status": "candidate"
     },
@@ -171,7 +146,7 @@
       "llama_cpp_arch": "qwen35",
       "gguf_quant_target": "Q6_K",
       "gguf_candidates": [
-        {"repo": "bartowski/Qwen_Qwen3.6-27B-GGUF", "filename_pattern": "*Q6_K*.gguf"}
+        {"repo": "unsloth/Qwen3.6-27B-GGUF", "filename_pattern": "*Q6_K*.gguf"}
       ],
       "status": "candidate"
     },
@@ -185,7 +160,7 @@
       "llama_cpp_arch": "qwen35",
       "gguf_quant_target": "Q8_0",
       "gguf_candidates": [
-        {"repo": "bartowski/Qwen_Qwen3.6-27B-GGUF", "filename_pattern": "*Q8_0*.gguf"}
+        {"repo": "unsloth/Qwen3.6-27B-GGUF", "filename_pattern": "*Q8_0*.gguf"}
       ],
       "status": "candidate"
     },
@@ -197,10 +172,10 @@
       "mlx_repo_id": "mlx-community/Qwen3.6-35B-A3B-4bit",
       "hf_arch": "Qwen3_5MoeForConditionalGeneration",
       "llama_cpp_arch": "qwen35moe",
-      "prompt_source_note": "Prompt-token source is mlx-community/Qwen3.6-35B-A3B-4bit. GGUF side benches the bartowski standard Q4_K_M imatrix quant. Injected into the README '4-bit' row as a shape-compatible reference only.",
-      "gguf_quant_target": "Q4_K_M",
+      "prompt_source_note": "Prompt-token source is mlx-community/Qwen3.6-35B-A3B-4bit. GGUF side benches the Unsloth Dynamic UD-Q4_K_M imatrix quant because Unsloth does not publish a standard root-level Q4_K_M file for this model. Injected into the README '4-bit' row as a shape-compatible reference only.",
+      "gguf_quant_target": "UD-Q4_K_M",
       "gguf_candidates": [
-        {"repo": "bartowski/Qwen_Qwen3.6-35B-A3B-GGUF", "filename_pattern": "*Q4_K_M*.gguf"}
+        {"repo": "unsloth/Qwen3.6-35B-A3B-GGUF", "filename_pattern": "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf"}
       ],
       "status": "candidate"
     },
@@ -212,10 +187,10 @@
       "mlx_repo_id": "mlx-community/Qwen3.6-35B-A3B-6bit",
       "hf_arch": "Qwen3_5MoeForConditionalGeneration",
       "llama_cpp_arch": "qwen35moe",
-      "prompt_source_note": "Prompt-token source is mlx-community/Qwen3.6-35B-A3B-6bit. GGUF side benches the bartowski standard Q6_K imatrix quant. Injected into the README '6-bit' row as a shape-compatible reference only.",
-      "gguf_quant_target": "Q6_K",
+      "prompt_source_note": "Prompt-token source is mlx-community/Qwen3.6-35B-A3B-6bit. GGUF side benches the Unsloth Dynamic UD-Q6_K imatrix quant because Unsloth does not publish a standard root-level Q6_K file for this model. Injected into the README '6-bit' row as a shape-compatible reference only.",
+      "gguf_quant_target": "UD-Q6_K",
       "gguf_candidates": [
-        {"repo": "bartowski/Qwen_Qwen3.6-35B-A3B-GGUF", "filename_pattern": "*Q6_K.gguf"}
+        {"repo": "unsloth/Qwen3.6-35B-A3B-GGUF", "filename_pattern": "Qwen3.6-35B-A3B-UD-Q6_K.gguf"}
       ],
       "status": "candidate"
     }

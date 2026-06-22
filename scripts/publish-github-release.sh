@@ -11,6 +11,8 @@ RELEASE_BINS=(ax-engine ax-engine-server ax-engine-bench)
 RELEASE_HELPER_SOURCES=(
     "scripts/download_model.py:ax-engine-download-model.py"
     "scripts/prepare_mtp_sidecar.py:ax-engine-prepare-mtp-sidecar.py"
+    "scripts/prepare_gemma4_assistant_mtp.py:ax-engine-prepare-gemma4-assistant-mtp.py"
+    "scripts/prepare_glm_mtp_sidecar.py:ax-engine-prepare-glm-mtp-sidecar.py"
     "scripts/check_mtp_sidecar_provenance.py:ax-engine-check-mtp-sidecar-provenance.py"
 )
 

@@ -125,6 +125,12 @@ throughput baselines.
   every rule the runtime (`crates/ax-engine-mlx/src/gemma4_assistant_mtp.rs`)
   enforces — known pair, vocab/hidden match, full KV-sharing, no
   per-layer-input/MoE/double-wide MLP — so failures surface at prep time.
+- `prepare_glm_mtp_sidecar.py`: extracts GLM-4.7-Flash's built-in MTP layer
+  from the upstream `zai-org/GLM-4.7-Flash` checkpoint and writes the AX runtime
+  sidecar files (`glm_mtp.safetensors`, `glm_mtp_runtime.json`, and
+  `ax_glm_mtp_manifest.json`) beside a copied MLX 6-bit base snapshot. This is
+  not an external draft model; it repackages the GLM `model.layers.47.*` MTP
+  tensors into the layout loaded by `crates/ax-engine-mlx/src/weights.rs`.
 - `prepare_qwen36_mtp_sidecar.py`: the Qwen3.6-specific predecessor used to
   build the published fair-benchmark sidecars (fixed `--model {27b,35b}` table).
   Kept for provenance reproducibility; prefer `prepare_mtp_sidecar.py` for new

@@ -147,7 +147,7 @@ def render_chart(
         f"median over reps · grouped by prompt tokens · mlx_lm N/A (no gemma4_unified graph)</text>",
         f'<text x="{left}" y="62" font-family="{FONT}" font-size="10" fill="#6b7280">'
         f"AX Engine {html.escape(AX_ENGINE_VERSION)} vs llama.cpp Metal "
-        f"{html.escape(LLAMA_CPP_VERSION)} (ggml-org Q4_K_M, shape-compatible)</text>",
+        f"{html.escape(LLAMA_CPP_VERSION)} (Unsloth Q4_K_M, shape-compatible)</text>",
         f'<rect x="{width - 34 - unit_w}" y="13" width="{unit_w}" height="22" rx="11" '
         f'fill="#eef2ff" stroke="#c7d2fe"/>',
         f'<text x="{width - 34 - unit_w / 2:.1f}" y="28" text-anchor="middle" '

@@ -1004,6 +1004,46 @@ def _cmd_convert_mtplx(args: argparse.Namespace) -> int:
     return 0
 
 
+def _download_mtp_helper_env() -> dict[str, str]:
+    helpers = {
+        "AX_ENGINE_DOWNLOAD_HELPER": "download_model.py",
+        "AX_ENGINE_PREPARE_MTP_SIDECAR_HELPER": "prepare_mtp_sidecar.py",
+        "AX_ENGINE_PREPARE_GEMMA4_ASSISTANT_MTP_HELPER": "prepare_gemma4_assistant_mtp.py",
+        "AX_ENGINE_PREPARE_GLM_MTP_SIDECAR_HELPER": "prepare_glm_mtp_sidecar.py",
+        "AX_ENGINE_CHECK_MTP_SIDECAR_HELPER": "check_mtp_sidecar_provenance.py",
+    }
+    env: dict[str, str] = {}
+    for env_name, script_name in helpers.items():
+        script = _find_repo_script(script_name)
+        if script is not None:
+            env[env_name] = str(script)
+    return env
+
+
+def _cmd_download_mtp(args: argparse.Namespace) -> int:
+    bench_bin = str(_bench_bin())
+    argv = [bench_bin, "download-mtp", args.model]
+    if args.output:
+        argv.extend(["--output", args.output])
+    if args.force:
+        argv.append("--force")
+    if args.quantize:
+        argv.extend(["--quantize", args.quantize])
+    if args.mtp_depth_max:
+        argv.extend(["--mtp-depth-max", args.mtp_depth_max])
+    if args.group_size:
+        argv.extend(["--group-size", args.group_size])
+    if args.fair_base_only:
+        argv.append("--fair-base-only")
+    if args.json:
+        argv.append("--json")
+
+    env = os.environ.copy()
+    env.update(_download_mtp_helper_env())
+    os.execvpe(argv[0], argv, env)
+    return 0
+
+
 def _cmd_doctor(args: argparse.Namespace) -> int:
     bench_bin = str(_bench_bin())
     argv = [bench_bin, "doctor"]
@@ -1066,6 +1106,20 @@ def build_parser() -> argparse.ArgumentParser:
     download_parser.add_argument("--list", action="store_true", help="Show supported download targets")
     download_parser.add_argument("--json", action="store_true")
     download_parser.set_defaults(func=_cmd_download)
+
+    download_mtp_parser = subparsers.add_parser(
+        "download-mtp",
+        help="Download a supported 6-bit target and prepare AX MTP artifacts",
+    )
+    download_mtp_parser.add_argument("model", help="Supported MTP target alias")
+    download_mtp_parser.add_argument("--output", default=None)
+    download_mtp_parser.add_argument("--force", action="store_true")
+    download_mtp_parser.add_argument("--quantize", choices=("4", "8"), default=None)
+    download_mtp_parser.add_argument("--mtp-depth-max", default=None)
+    download_mtp_parser.add_argument("--group-size", default=None)
+    download_mtp_parser.add_argument("--fair-base-only", action="store_true")
+    download_mtp_parser.add_argument("--json", action="store_true")
+    download_mtp_parser.set_defaults(func=_cmd_download_mtp)
 
     doctor_parser = subparsers.add_parser(
         "doctor",

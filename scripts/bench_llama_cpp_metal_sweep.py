@@ -42,7 +42,8 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_MANIFEST = REPO_ROOT / "benchmarks" / "manifests" / "llama_cpp_metal" / "inventory.json"
 DEFAULT_BENCH_SCRIPT = REPO_ROOT / "scripts" / "bench_mlx_inference_stack.py"
 DEFAULT_LLAMA_BENCH = Path("/opt/homebrew/bin/llama-bench")
-REQUIRED_GGUF_PUBLISHER = "bartowski"
+DEFAULT_REQUIRED_GGUF_PUBLISHER = "unsloth"
+DEFAULT_REQUIRED_MLX_PUBLISHER = "mlx-community"
 
 
 class LlamaCppMetalSweepError(RuntimeError):
@@ -111,15 +112,15 @@ def filter_manifest_rows(
     return selected
 
 
-def validate_bartowski_inventory(manifest: dict[str, Any], rows: list[dict[str, Any]]) -> None:
-    publisher = manifest.get("required_gguf_publisher", REQUIRED_GGUF_PUBLISHER)
-    if publisher != REQUIRED_GGUF_PUBLISHER:
+def validate_gguf_publisher_inventory(manifest: dict[str, Any], rows: list[dict[str, Any]]) -> None:
+    publisher = manifest.get("required_gguf_publisher", DEFAULT_REQUIRED_GGUF_PUBLISHER)
+    if not isinstance(publisher, str) or not publisher:
         raise RuntimeError(
-            f"unsupported required_gguf_publisher={publisher!r}; expected {REQUIRED_GGUF_PUBLISHER!r}"
+            f"required_gguf_publisher must be a non-empty string, got {publisher!r}"
         )
 
     bad: list[str] = []
-    prefix = f"{REQUIRED_GGUF_PUBLISHER}/"
+    prefix = f"{publisher}/"
     for row in rows:
         for candidate in row.get("gguf_candidates", []):
             repo = candidate.get("repo", "")
@@ -129,13 +130,35 @@ def validate_bartowski_inventory(manifest: dict[str, Any], rows: list[dict[str, 
     if bad:
         details = "; ".join(bad)
         raise RuntimeError(
-            "llama.cpp Metal sweep inventory must use bartowski GGUF repos only: "
+            f"llama.cpp Metal sweep inventory must use {publisher} GGUF repos only: "
+            f"{details}"
+        )
+
+
+def validate_mlx_publisher_inventory(manifest: dict[str, Any], rows: list[dict[str, Any]]) -> None:
+    publisher = manifest.get("required_mlx_publisher", DEFAULT_REQUIRED_MLX_PUBLISHER)
+    if not isinstance(publisher, str) or not publisher:
+        raise RuntimeError(
+            f"required_mlx_publisher must be a non-empty string, got {publisher!r}"
+        )
+
+    bad: list[str] = []
+    prefix = f"{publisher}/"
+    for row in rows:
+        repo = row.get("mlx_repo_id", "")
+        if not isinstance(repo, str) or not repo.startswith(prefix):
+            bad.append(f"{row.get('slug', '<unknown>')} -> {repo}")
+
+    if bad:
+        details = "; ".join(bad)
+        raise RuntimeError(
+            f"llama.cpp Metal sweep inventory must use {publisher} MLX repos only: "
             f"{details}"
         )
 
 
 def resolve_gguf_candidate(
-    candidates: list[dict[str, str]],
+    candidates: list[dict[str, Any]],
     *,
     cache_dir: Path,
     hf_token: str | None,
@@ -147,6 +170,7 @@ def resolve_gguf_candidate(
     for candidate in candidates:
         repo = candidate["repo"]
         pattern = candidate["filename_pattern"]
+        allow_dynamic = candidate_allows_dynamic_quant(candidate)
         entry: dict[str, Any] = {"repo": repo, "filename_pattern": pattern}
 
         cached_match = resolve_cached_hf_file(repo, pattern, cache_dir)
@@ -185,15 +209,48 @@ def resolve_gguf_candidate(
             entry["sample_files"] = [f for f in files if f.endswith(".gguf")][:5]
             probe_log.append(entry)
             continue
-        # If the GGUF is split into shards (e.g. *-00001-of-00002.gguf), prefer
-        # the first shard; hf_hub_download will fetch the matching shard and
-        # llama-bench can read split files when pointed at the first one.
-        matches.sort()
+        # Prefer root-level standard K-quants over Unsloth Dynamic (UD-*) and
+        # auxiliary MTP/projector files that can share the same quant marker.
+        matches.sort(key=gguf_candidate_sort_key)
+        if not is_allowed_root_gguf(matches[0], allow_dynamic=allow_dynamic):
+            entry["result"] = "no_standard_root_match"
+            entry["sample_files"] = matches[:5]
+            probe_log.append(entry)
+            continue
         entry["result"] = "resolved"
         entry["filename"] = matches[0]
         probe_log.append(entry)
         return repo, matches[0], probe_log
     return None
+
+
+def gguf_candidate_sort_key(filename: str) -> tuple[bool, bool, bool, str]:
+    basename = Path(filename).name
+    return (
+        "/" in filename,
+        "UD-" in basename,
+        "MTP" in filename or "mtp" in filename,
+        filename,
+    )
+
+
+def is_standard_root_gguf(filename: str) -> bool:
+    return is_allowed_root_gguf(filename, allow_dynamic=False)
+
+
+def is_allowed_root_gguf(filename: str, *, allow_dynamic: bool) -> bool:
+    basename = Path(filename).name
+    return (
+        "/" not in filename
+        and "MTP" not in filename
+        and "mtp" not in filename
+        and (allow_dynamic or "UD-" not in basename)
+    )
+
+
+def candidate_allows_dynamic_quant(candidate: dict[str, Any]) -> bool:
+    pattern = str(candidate.get("filename_pattern", ""))
+    return bool(candidate.get("allow_dynamic_quant")) or "UD-" in pattern
 
 
 _SHARD_RE = __import__("re").compile(r"-(\d{5})-of-(\d{5})\.gguf$")
@@ -215,11 +272,20 @@ def resolve_cached_hf_file(repo: str, filename_pattern: str, cache_dir: Path) ->
     snapshot = latest_hf_cache_snapshot(repo, cache_dir)
     if snapshot is None:
         return None
+    allow_dynamic = "UD-" in filename_pattern
     matches = sorted(
-        path
-        for path in snapshot.rglob("*.gguf")
-        if fnmatch.fnmatch(path.name, filename_pattern) or fnmatch.fnmatch(str(path.relative_to(snapshot)), filename_pattern)
+        (
+            path
+            for path in snapshot.rglob("*.gguf")
+            if fnmatch.fnmatch(path.name, filename_pattern) or fnmatch.fnmatch(str(path.relative_to(snapshot)), filename_pattern)
+        ),
+        key=lambda path: gguf_candidate_sort_key(str(path.relative_to(snapshot))),
     )
+    if matches and not is_allowed_root_gguf(
+        str(matches[0].relative_to(snapshot)),
+        allow_dynamic=allow_dynamic,
+    ):
+        return None
     return matches[0] if matches else None
 
 
@@ -750,6 +816,14 @@ def main() -> None:
         help="Resolve candidates and print plan; do not download or benchmark.",
     )
     parser.add_argument(
+        "--download-only",
+        action="store_true",
+        help=(
+            "Resolve and download GGUF candidates into the Hugging Face cache, "
+            "then write sweep_results.json without running llama-bench."
+        ),
+    )
+    parser.add_argument(
         "--hf-token",
         default=os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN"),
         help="HF token for gated repos. Defaults to $HF_TOKEN or $HUGGING_FACE_HUB_TOKEN.",
@@ -765,12 +839,13 @@ def main() -> None:
         if not isinstance(raw_rows, list):
             raise LlamaCppMetalSweepError("manifest.rows must be an array")
         rows = filter_manifest_rows(raw_rows, args.rows_filter)
-        validate_bartowski_inventory(manifest, rows)
+        validate_gguf_publisher_inventory(manifest, rows)
+        validate_mlx_publisher_inventory(manifest, rows)
     except (json.JSONDecodeError, LlamaCppMetalSweepError, RuntimeError) as exc:
         log(f"ERROR: {exc}")
         sys.exit(2)
 
-    if not args.dry_run and not args.llama_bench.exists():
+    if not args.dry_run and not args.download_only and not args.llama_bench.exists():
         log(f"ERROR: llama-bench binary not found: {args.llama_bench}")
         sys.exit(2)
 
@@ -826,13 +901,15 @@ def main() -> None:
             log(f"  -> dry-run resolved: {repo} :: {filename}")
             continue
 
-        model_args, missing_model_note = resolve_mlx_model_args(row, cache_dir=args.cache_dir)
-        if model_args is None:
-            record["status"] = "mlx_model_dir_missing"
-            record["note"] = f"{missing_model_note} Cannot generate prompt artifact."
-            summary_rows.append(record)
-            log(f"  -> skipped: {record['note']}")
-            continue
+        model_args: list[str] | None = None
+        if not args.download_only:
+            model_args, missing_model_note = resolve_mlx_model_args(row, cache_dir=args.cache_dir)
+            if model_args is None:
+                record["status"] = "mlx_model_dir_missing"
+                record["note"] = f"{missing_model_note} Cannot generate prompt artifact."
+                summary_rows.append(record)
+                log(f"  -> skipped: {record['note']}")
+                continue
 
         try:
             gguf_path = download_gguf(
@@ -855,6 +932,11 @@ def main() -> None:
         total_bytes_downloaded += size_bytes
         log(f"  -> GGUF ready ({size_bytes / 1e9:.2f} GB)")
 
+        if args.download_only:
+            record["status"] = "downloaded"
+            summary_rows.append(record)
+            continue
+
         bench_result = run_bench_for_row(
             row,
             gguf_path,
@@ -869,7 +951,7 @@ def main() -> None:
             extra_args=args.extra_args,
             flash_attn=args.llama_cpp_flash_attn,
             decode_at_depth=args.llama_cpp_decode_at_depth,
-            model_args=model_args,
+            model_args=model_args or [],
             full_stack=args.full_stack,
             build_ax_engine=not args.no_build_ax_engine,
             skip_mlx_lm=args.skip_mlx_lm,
@@ -901,6 +983,7 @@ def main() -> None:
         "llama_cpp_decode_at_depth": args.llama_cpp_decode_at_depth,
         "full_stack": args.full_stack,
         "skip_mlx_lm": args.skip_mlx_lm,
+        "download_only": args.download_only,
         "started_at": time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(started)),
         "elapsed_seconds": round(elapsed, 1),
         "total_bytes_downloaded": total_bytes_downloaded,

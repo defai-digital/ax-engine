@@ -14,8 +14,10 @@ AX Engine currently exposes four command surfaces:
 ## `ax-engine`
 
 `ax-engine` is the product-level orchestration CLI. It wraps existing AX Engine
-components but does not replace them: `serve` launches `ax-engine-server`, and
-`convert-mtplx` wraps the sidecar packaging/provenance tools.
+components but does not replace them: `serve` launches `ax-engine-server`,
+`download-mtp` downloads a supported 6-bit target and prepares AX MTP artifacts
+when that model family has an AX MTP packager, and `convert-mtplx` wraps the
+lower-level sidecar packaging/provenance tools.
 
 Use `serve` as the normal local-server entrypoint:
 
@@ -69,23 +71,48 @@ cache is shared with `mlx-lm` and `huggingface_hub`, and its location is
 controlled by `HF_HUB_CACHE`, `HF_HOME`, or `XDG_CACHE_HOME`. Use `--dest` only
 when you need an explicit copied model directory outside the shared cache.
 
-Use `convert-mtplx` to package standard Qwen3.6 MTP source shards with a
-quantized MLX serving base:
+Use `download-mtp` to fetch a supported 6-bit target and package its MTP
+artifact in one step. Use `convert-mtplx` when you need explicit source control:
 
 ```text
+ax-engine download-mtp qwen3-coder-next
+ax-engine download-mtp qwen3.6-35b-a3b --json
+ax-engine download-mtp gemma-4-12b
+ax-engine download-mtp gemma-4-31b
+ax-engine download-mtp glm-4.7-flash
+
 ax-engine convert-mtplx mlx-community/Qwen3.6-27B-4bit \
   --mtp-source Qwen/Qwen3.6-27B \
   --fair-base-only \
   --json
 ```
 
-`convert-mtplx` writes `mtp.safetensors`, `mtplx_runtime.json`, patched
-`config.json`, and `ax_mtp_sidecar_manifest.json`, then runs the provenance
-checker before reporting success. Optional knobs use model-specific defaults
-when omitted: Qwen3.6 27B uses MTP depth 3, and Qwen3.6 35B-A3B uses depth 1.
-The current `--mtp-source` contract is a Hugging Face repo id that ships `mtp.*`
-tensors; local MTP source directories must fail closed unless local shard
-discovery is implemented.
+`download-mtp` is the normal path for the 6-bit local-agent targets:
+
+| Target | Base repo | Result |
+|---|---|---|
+| `qwen3-coder-next` | `mlx-community/Qwen3-Coder-Next-6bit` | Qwen fused `mtp.safetensors` sidecar from `Qwen/Qwen3-Next-80B-A3B-Instruct` |
+| `qwen3.6-35b-a3b` | `mlx-community/Qwen3.6-35B-A3B-6bit` | Qwen fused `mtp.safetensors` sidecar from `Qwen/Qwen3.6-35B-A3B` |
+| `gemma-4-12b` | `mlx-community/gemma-4-12B-it-6bit` | Gemma assistant-MTP package with `mlx-community/gemma-4-12B-it-assistant-6bit` |
+| `gemma-4-31b` | `mlx-community/gemma-4-31b-it-6bit` | Gemma assistant-MTP package with `google/gemma-4-31b-it-assistant` |
+| `glm-4.7-flash` | `mlx-community/GLM-4.7-Flash-6bit` | GLM built-in MTP layer extracted from `zai-org/GLM-4.7-Flash` into `glm_mtp.safetensors` |
+
+For Qwen3.6 it downloads the MLX base through the standard `download` pipeline,
+infers the official `Qwen/Qwen3.6-*` MTP source, writes the AX MTP sidecar, and
+validates provenance. For Gemma 4 it downloads the target and assistant, then
+uses the Gemma assistant-MTP packager to create a self-contained model directory.
+For GLM-4.7-Flash it downloads the 6-bit MLX base, extracts the built-in MTP
+layer from the upstream `zai-org/GLM-4.7-Flash` checkpoint, and writes a
+`glm_mtp.safetensors` sidecar plus runtime/provenance metadata.
+
+`convert-mtplx` is the lower-level path when the base is already cached or you
+need an explicit source repo. It writes `mtp.safetensors`, `mtplx_runtime.json`,
+patched `config.json`, and `ax_mtp_sidecar_manifest.json`, then runs the
+provenance checker before reporting success. Optional knobs use model-specific
+defaults when omitted: Qwen3.6 27B uses MTP depth 3, and Qwen3.6 35B-A3B uses
+depth 1. The current `--mtp-source` contract is a Hugging Face repo id that
+ships `mtp.*` tensors; local MTP source directories must fail closed unless
+local shard discovery is implemented.
 
 ## `ax-engine-bench`
 

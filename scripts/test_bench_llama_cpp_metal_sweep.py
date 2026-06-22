@@ -219,18 +219,18 @@ class BenchLlamaCppMetalSweepTests(unittest.TestCase):
             cache = Path(tmp)
             snapshot = (
                 cache
-                / "models--bartowski--Qwen_Qwen3.6-27B-GGUF"
+                / "models--unsloth--Qwen3.6-27B-GGUF"
                 / "snapshots"
                 / "abc"
             )
             snapshot.mkdir(parents=True)
-            (snapshot / "Qwen_Qwen3.6-27B-Q5_K_M.gguf").write_text("fake")
+            (snapshot / "Qwen3.6-27B-Q6_K.gguf").write_text("fake")
 
             resolved = sweep.resolve_gguf_candidate(
                 [
                     {
-                        "repo": "bartowski/Qwen_Qwen3.6-27B-GGUF",
-                        "filename_pattern": "*Q5_K_M*.gguf",
+                        "repo": "unsloth/Qwen3.6-27B-GGUF",
+                        "filename_pattern": "*Q6_K*.gguf",
                     }
                 ],
                 cache_dir=cache,
@@ -240,16 +240,83 @@ class BenchLlamaCppMetalSweepTests(unittest.TestCase):
 
         self.assertIsNotNone(resolved)
         repo, filename, probe_log = resolved
-        self.assertEqual(repo, "bartowski/Qwen_Qwen3.6-27B-GGUF")
-        self.assertEqual(filename, "Qwen_Qwen3.6-27B-Q5_K_M.gguf")
+        self.assertEqual(repo, "unsloth/Qwen3.6-27B-GGUF")
+        self.assertEqual(filename, "Qwen3.6-27B-Q6_K.gguf")
         self.assertEqual(probe_log[0]["result"], "resolved_from_cache")
+
+    def test_gguf_candidate_sort_prefers_standard_root_quant(self) -> None:
+        candidates = [
+            "MTP/gemma-4-E2B-it-Q8_0-MTP.gguf",
+            "gemma-4-26B-A4B-it-UD-Q4_K_M.gguf",
+            "gemma-4-26B-A4B-it-Q4_K_M.gguf",
+        ]
+
+        self.assertEqual(
+            sorted(candidates, key=sweep.gguf_candidate_sort_key)[0],
+            "gemma-4-26B-A4B-it-Q4_K_M.gguf",
+        )
+
+    def test_resolve_gguf_candidate_allows_explicit_dynamic_quant(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = Path(tmp)
+            snapshot = (
+                cache
+                / "models--unsloth--Qwen3.6-35B-A3B-GGUF"
+                / "snapshots"
+                / "abc"
+            )
+            snapshot.mkdir(parents=True)
+            (snapshot / "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf").write_text("fake")
+
+            resolved = sweep.resolve_gguf_candidate(
+                [
+                    {
+                        "repo": "unsloth/Qwen3.6-35B-A3B-GGUF",
+                        "filename_pattern": "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf",
+                    }
+                ],
+                cache_dir=cache,
+                hf_token=None,
+                cache_only=True,
+            )
+
+        self.assertIsNotNone(resolved)
+        assert resolved is not None
+        self.assertEqual(resolved[1], "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf")
+
+    def test_resolve_gguf_candidate_rejects_mtp_cache_match(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = Path(tmp)
+            snapshot = (
+                cache
+                / "models--unsloth--gemma-4-E2B-it-GGUF"
+                / "snapshots"
+                / "abc"
+                / "MTP"
+            )
+            snapshot.mkdir(parents=True)
+            (snapshot / "gemma-4-E2B-it-Q8_0-MTP.gguf").write_text("fake")
+
+            resolved = sweep.resolve_gguf_candidate(
+                [
+                    {
+                        "repo": "unsloth/gemma-4-E2B-it-GGUF",
+                        "filename_pattern": "*Q8_0*.gguf",
+                    }
+                ],
+                cache_dir=cache,
+                hf_token=None,
+                cache_only=True,
+            )
+
+        self.assertIsNone(resolved)
 
     def test_download_gguf_cache_only_refuses_missing_shard(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             with self.assertRaises(FileNotFoundError):
                 sweep.download_gguf(
-                    "bartowski/Qwen_Qwen3.6-27B-GGUF",
-                    "Qwen_Qwen3.6-27B-Q5_K_M.gguf",
+                    "unsloth/Qwen3.6-27B-GGUF",
+                    "Qwen3.6-27B-Q6_K.gguf",
                     cache_dir=Path(tmp),
                     hf_token=None,
                     cache_only=True,

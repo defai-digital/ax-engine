@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
 """Benchmark Gemma 4 assistant-MTP on AX Engine.
 
-This is the Gemma-specific companion to the Qwen3.6 fair MTP harness. Gemma 4
-uses an assistant drafter model instead of a fused ``mtp.safetensors`` sidecar,
-so this script prepares or locates ``ax_gemma4_assistant_mtp.json`` model
-directories and runs AX Engine in direct, assistant-MTP-only, and assistant
-MTP+n-gram modes. The default matrix includes same-artifact direct decode so
-every Gemma model produces a survival verdict for the speculative modes.
+Gemma 4 uses an assistant drafter model instead of a fused ``mtp.safetensors``
+sidecar, so this script prepares or locates ``ax_gemma4_assistant_mtp.json``
+model directories and runs AX Engine assistant-MTP rows. Historical direct and
+MTP+n-gram profiles remain available for ad-hoc probes, but the default is MTP
+only to match the current benchmark design.
 """
 
 from __future__ import annotations
@@ -1126,11 +1125,11 @@ def main() -> None:
     )
     parser.add_argument(
         "--modes",
-        default="direct,mtp,mtp-ngram",
+        default="mtp",
         help=(
-            "Comma-separated legacy modes used when --profiles is omitted: "
-            "direct, mtp, mtp-ngram. Keep direct in optimized-scenario runs so "
-            "the summary can classify MTP survival against same-artifact decode."
+            "Comma-separated legacy modes used when --profiles is omitted. "
+            "Default is mtp only. Other legacy modes are historical/ad-hoc "
+            "probes outside the current MTP design."
         ),
     )
     parser.add_argument(

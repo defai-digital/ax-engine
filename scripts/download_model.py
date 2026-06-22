@@ -162,7 +162,10 @@ def _run_hf_snapshot_download(
         if progress_json:
             done, message = _download_progress_message(repo_id, started_at)
             _emit_progress(done, 100, message)
-        snapshot = Path(snapshot_download(repo_id=repo_id))
+        kwargs = {"repo_id": repo_id}
+        if max_workers := os.environ.get("AX_ENGINE_HF_MAX_WORKERS"):
+            kwargs["max_workers"] = int(max_workers)
+        snapshot = Path(snapshot_download(**kwargs))
         if progress_json:
             _emit_progress(85, 100, "Downloaded Hugging Face Hub snapshot")
         return snapshot

@@ -8,8 +8,8 @@ AX Engine is for developers who want a local OpenAI-compatible model server on A
 
 - OpenAI-compatible local text endpoints for common chat and completion flows, with SDKs for Python, TypeScript/JavaScript, Go, Ruby, and Mojo.
 - Repo-owned MLX runtime paths for direct-support Gemma and Qwen families, with delegated routes kept explicit.
-- Announcement-ready benchmark claims where evidence is complete: Gemma 4 12B assistant-MTP is 2.34-2.73x faster than same-artifact direct decode, and Qwen3.6 35B-A3B AX MTP is +59.8% faster than the retained MTPLX reference on the public sidecar-fair matrix.
-- Dedicated Qwen3-Coder-Next direct-support path for local coding agents, called out separately from Qwen3.6 because it has no MTP sidecar but carries its own coding-first architecture and benchmark boundary.
+- MTP benchmarking is scoped to the five 6-bit `download-mtp` targets: Qwen3-Coder-Next, Qwen3.6 35B-A3B, Gemma 4 12B, Gemma 4 31B, and GLM 4.7 Flash. MTP+n-gram is no longer part of the MTP benchmark design.
+- Dedicated Qwen3-Coder-Next direct-support path for local coding agents, called out separately from Qwen3.6 because it carries its own coding-first architecture and benchmark boundary; the 6-bit `download-mtp` path also packages its Qwen3-Next sidecar.
 - Workload-contract benchmark tooling records route identity, artifacts, prompt suite, sampler, cooldowns, accept rate, and dirty-state provenance.
 
 ## Table of Contents
@@ -219,13 +219,35 @@ Built-in download aliases:
 | Alias | Repo |
 |---|---|
 | `qwen36-35b` | `mlx-community/Qwen3.6-35B-A3B-4bit` |
-| `qwen36-27b`, `qwen36-27b-5bit`, `qwen36-27b-6bit`, `qwen36-27b-8bit` | `mlx-community/Qwen3.6-27B-{4,5,6,8}bit` |
-| `gemma4-e2b`, `gemma4-e2b-5bit`, `gemma4-e2b-6bit`, `gemma4-e2b-8bit` | `mlx-community/gemma-4-e2b-it-{4,5,6,8}bit` |
+| `qwen36-27b`, `qwen36-27b-6bit`, `qwen36-27b-8bit` | `mlx-community/Qwen3.6-27B-{4,6,8}bit` |
+| `gemma4-e2b`, `gemma4-e2b-6bit`, `gemma4-e2b-8bit` | `mlx-community/gemma-4-e2b-it-{4,6,8}bit` |
 | `gemma4-12b`, `gemma4-12b-6bit` | `mlx-community/gemma-4-12B-it-{4,6}bit` |
 | `gemma4-26b` | `mlx-community/gemma-4-26b-a4b-it-4bit` |
 | `gemma4-31b` | `mlx-community/gemma-4-31b-it-4bit` |
 
 Leave downloads in the Hugging Face Hub cache by default — it's shared with `mlx_lm` and other HF-aware tools, avoiding duplicate copies of large weights. Use `--dest` only when you want an explicit copy outside the shared cache.
+
+### 6-bit MTP downloads
+
+`ax-engine download-mtp` is the one-command path for the local-agent 6-bit targets. It downloads the base model and prepares AX MTP artifacts when the model family has a repo-owned MTP packaging path:
+
+```bash
+ax-engine download-mtp qwen3-coder-next
+ax-engine download-mtp qwen3.6-35b-a3b
+ax-engine download-mtp gemma-4-12b
+ax-engine download-mtp gemma-4-31b
+ax-engine download-mtp glm-4.7-flash
+```
+
+| Target | 6-bit base | Result |
+|---|---|---|
+| `qwen3-coder-next` | `mlx-community/Qwen3-Coder-Next-6bit` | Qwen fused MTP sidecar from `Qwen/Qwen3-Next-80B-A3B-Instruct` |
+| `qwen3.6-35b-a3b` | `mlx-community/Qwen3.6-35B-A3B-6bit` | Qwen fused MTP sidecar from `Qwen/Qwen3.6-35B-A3B` |
+| `gemma-4-12b` | `mlx-community/gemma-4-12B-it-6bit` | Gemma assistant-MTP package with `mlx-community/gemma-4-12B-it-assistant-6bit` |
+| `gemma-4-31b` | `mlx-community/gemma-4-31b-it-6bit` | Gemma assistant-MTP package with `google/gemma-4-31b-it-assistant` |
+| `glm-4.7-flash` | `mlx-community/GLM-4.7-Flash-6bit` | GLM built-in MTP layer extracted from `zai-org/GLM-4.7-Flash` into `glm_mtp.safetensors` |
+
+For Qwen3.6, `download-mtp` wraps the standard download plus `convert-mtplx` provenance flow. For Gemma 4, it downloads the target and assistant and runs the Gemma assistant-MTP packager. For GLM-4.7-Flash, it uses the GLM built-in MTP tensors from the upstream `zai-org/GLM-4.7-Flash` checkpoint because the MLX 6-bit package does not expose the MTP layer tensors directly.
 
 If you already have `mlx_lm` installed, its downloads land in the same cache and AX Engine can auto-discover them:
 
@@ -268,15 +290,15 @@ For local agent and chatbot workloads, AX Engine is a better fit for a small mod
 | Role | Recommended model | Setup | App | Why |
 |---|---|---|---|---|
 | Default chatbot | Gemma 4 26B-A4B / 31B | 4-bit or 6-bit, 16K-32K | [ax-studio](https://github.com/defai-digital/ax-studio) | General assistant path for reasoning, chat, JSON/function calling, and on-device agent workflows |
-| General agentic model | Qwen3.6-35B-A3B / Qwen3.6-27B | 35B A3B 4-bit; 27B 4/5/6/8-bit, 16K-32K | AX server / SDK | Strong general agent and coding balance; sparse MoE keeps active compute low |
-| Coding specialist | Qwen3-Coder-Next | 6-bit + 16K default; 4-bit/5-bit + 32K when needed | [ax-code](https://github.com/defai-digital/ax-code) | Dedicated local coding-agent path for repo editing, tool use, and long coding sessions |
+| General agentic model | Qwen3.6-35B-A3B / Qwen3.6-27B | 35B A3B 4-bit; 27B 4/6/8-bit, 16K-32K | AX server / SDK | Strong general agent and coding balance; sparse MoE keeps active compute low |
+| Coding specialist | Qwen3-Coder-Next | 6-bit + 16K default; 4-bit + 32K when needed | [ax-code](https://github.com/defai-digital/ax-code) | Dedicated local coding-agent path for repo editing, tool use, and long coding sessions |
 
 ## What AX Engine Does
 
 AX Engine gives local inference work a stable runtime contract:
 
 - **Repo-owned MLX execution** tracks [direct-support model families](#supported-models) separately from delegated routes — delegated results are not AX-owned throughput claims.
-- **Dual-family speculative decoding** supports both Qwen3.6's fused MTP sidecar and Gemma 4's separate assistant-drafter contract in the same repo-owned runtime and benchmark tooling.
+- **Speculative decoding packages** support Qwen fused MTP sidecars, Gemma 4 assistant drafters, and GLM built-in MTP sidecars in the same repo-owned runtime and benchmark tooling.
 - **N-gram acceleration** reaches up to 3.1× mlx_lm decode throughput on high-hit benchmark rows with no second draft model.
 - **Long-session prefix reuse** restores physical MLX KV snapshots on validated cache layouts, so long-running chat and agent loops avoid repeatedly pre-filling accumulated context. See [`docs/LONG-CONTEXT.md`](docs/LONG-CONTEXT.md).
 - **Workload-contract tooling** (`ax-engine-bench`) validates correctness, determinism, route identity, and regression across checked-in manifests.
@@ -302,11 +324,9 @@ AX Engine's public performance claims are scoped to benchmark artifacts that pre
 
 | Area | Public claim | Status |
 |---|---|---|
-| Gemma 4 12B assistant-MTP | 2.34-2.73x faster than same-artifact AX direct decode on the 12B MTP prompt suites | Announcement-ready |
-| Gemma 4 26B/31B assistant-MTP | 97.3%-99.2% accept rate; MTP+n-gram is workload-dependent (+5.2% for 26B, -0.7% for 31B) in the current matrix | Scoped; no public direct-speedup claim yet |
-| Qwen3.6 35B-A3B MTP | AX MTP is +59.8% vs the retained MTPLX reference, and AX MTP+n-gram is +59.9% vs MTPLX on the sidecar-fair aggregate | Announcement-ready |
-| Qwen3.6 27B MTP | AX MTP is +7.8% vs the retained MTPLX reference; MTP+n-gram is +8.7% vs MTPLX and +0.8% vs pure AX MTP | Opt-in / workload-dependent |
-| Qwen3-Coder-Next direct | AX direct decode is +3.3%-6.6% vs `mlx_lm` and +17.1%-23.6% vs shape-compatible llama.cpp Metal (`b9700`, flash-attn) at 128/512/2048 tokens with the opt-in fused expert block enabled | Scoped; direct-only |
+| 6-bit MTP matrix | Current benchmark design covers only `qwen3-coder-next`, `qwen3.6-35b-a3b`, `gemma-4-12b`, `gemma-4-31b`, and `glm-4.7-flash` prepared by `ax-engine download-mtp` | Current design |
+| MTP+n-gram | Removed from the MTP benchmark matrix; historical rows are diagnostic only and should not be promoted as current MTP evidence | Out of scope |
+| Qwen3-Coder-Next direct | AX direct decode is +3.3%-6.6% vs `mlx_lm` and +17.1%-23.6% vs shape-compatible llama.cpp Metal (`b9700`, flash-attn) at 128/512/2048 tokens with the opt-in fused expert block enabled | Scoped; direct-decode benchmark |
 | N-gram acceleration | Up to 3.1x `mlx_lm` decode throughput on high-hit benchmark rows without a second draft model | Workload-dependent |
 
 ## Supported Models
@@ -388,36 +408,27 @@ The bandwidth view is the key explanation: AX is not under-utilizing memory. The
 
 **Assistant-MTP speculative decode (depth 2):**
 
-The assistant-MTP path runs on the assistant bundle and adds a second speculative lever that neither `mlx_lm` nor llama.cpp has for this model. The published rows use depth-2 draft, first-token confidence gate `0.90`, deep-token gate `0.999`, and GPU-exact confidence.
+The assistant-MTP path runs on the assistant bundle and adds a second
+speculative lever that neither `mlx_lm` nor llama.cpp has for this model. The
+historical 4-bit rows below are retained as background only; the current MTP
+benchmark design uses the 6-bit `download-mtp` package and does not run
+MTP+n-gram.
 
-Pure assistant-MTP is the default. MTP+n-gram stacking remains opt-in because it is workload-dependent and did not beat pure MTP on every suite.
-
-<table>
-<tr>
-<td><img width="100%" src="docs/assets/perf-gemma4-assistant-mtp-12b-decode-tok-s.svg" alt="Grouped box-and-whisker plot comparing Gemma 4 12B 4-bit assistant-MTP and assistant MTP+n-gram decode throughput across flappy, long_code, and python_modules_long prompt suites"></td>
-<td><img width="100%" src="docs/assets/perf-gemma4-assistant-mtp-12b-accept-rate.svg" alt="Grouped box-and-whisker plot comparing Gemma 4 12B 4-bit assistant-MTP and assistant MTP+n-gram accept rate across flappy, long_code, and python_modules_long prompt suites"></td>
-</tr>
-<tr>
-<td><img width="100%" src="docs/assets/perf-gemma4-assistant-mtp-12b-prefill-tok-s.svg" alt="Grouped box-and-whisker plot comparing Gemma 4 12B 4-bit assistant-MTP and assistant MTP+n-gram prefill throughput across flappy, long_code, and python_modules_long prompt suites"></td>
-<td><img width="100%" src="docs/assets/perf-gemma4-assistant-mtp-12b-ttft-ms.svg" alt="Grouped box-and-whisker plot comparing Gemma 4 12B 4-bit assistant-MTP and assistant MTP+n-gram time-to-first-token across flappy, long_code, and python_modules_long prompt suites"></td>
-</tr>
-</table>
-
-| Suite | Depth | AX direct tok/s | AX MTP tok/s | AX MTP accept | AX MTP+ngram tok/s | AX MTP+ngram accept | n-gram status |
-|---|---:|---:|---:|---:|---:|---:|---|
-| flappy | 2 | 35.5 | 96.8 | 98.7% | 95.0 | 98.7% | no observed draft path |
-| long_code | 2 | 35.8 | 92.3 | 99.1% | 95.2 | 99.1% | no observed draft path |
-| python_modules_long | 2 | 35.4 | 82.9 | 97.5% | 82.5 | 97.5% | no observed draft path |
+| Suite | Depth | AX direct tok/s | AX MTP tok/s | AX MTP accept |
+|---|---:|---:|---:|---:|
+| flappy | 2 | 35.5 | 96.8 | 98.7% |
+| long_code | 2 | 35.8 | 92.3 | 99.1% |
+| python_modules_long | 2 | 35.4 | 82.9 | 97.5% |
 
 No runnable peer benchmark covers **Gemma 4 12B assistant-MTP** in this matrix: `mlx_lm` cannot load `gemma4_unified`, llama.cpp does not expose a Gemma assistant-MTP path, and available MTP peer tools target different sidecar contracts. The AX direct column is retained as a same-prompt baseline from the MTP harness prompts, artifact, and sampler. It is a same-artifact AX improvement view, not a peer-engine MTP comparison.
 
 **MTP prefill and TTFT — same run:**
 
-| Suite | AX MTP prefill | AX MTP+ngram prefill | AX MTP ttft ms | AX MTP+ngram ttft ms |
-|---|---:|---:|---:|---:|
-| flappy | 1,928 | 1,952 | 187 | 187 |
-| long_code | 2,040 | 2,024 | 390 | 394 |
-| python_modules_long | 1,831 | 1,812 | 195 | 198 |
+| Suite | AX MTP prefill | AX MTP ttft ms |
+|---|---:|---:|
+| flappy | 1,928 | 187 |
+| long_code | 2,040 | 390 |
+| python_modules_long | 1,831 | 195 |
 
 **Methodology and artifacts:**
 
@@ -521,196 +532,69 @@ ax-engine-bench generate-manifest \
 
 ### Speculative Decoding (MTP)
 
-AX Engine's key Mac advantage is **dual-family speculative decoding** — it supports both Gemma 4's separate assistant-drafter contract and Qwen3.6's fused sidecar contract in one repo-owned runtime and benchmark surface. A single benchmark surface records route identity, sampler, prompt suite, cooldown, accept behavior, and artifact provenance so the two MTP families are comparable without pretending they use the same architecture.
+AX Engine supports three MTP packaging contracts in the repo-owned runtime: Qwen
+fused sidecars, Gemma assistant drafters, and GLM built-in MTP sidecars. The
+current benchmark design is intentionally narrower than the historical MTP
+artifact set: benchmark only the five 6-bit `download-mtp` targets, and
+benchmark them in MTP mode only.
 
-#### Gemma 4
+| Target | Preparation command | Benchmark mode |
+|---|---|---|
+| `qwen3-coder-next` | `ax-engine download-mtp qwen3-coder-next` | Qwen fused sidecar MTP |
+| `qwen3.6-35b-a3b` | `ax-engine download-mtp qwen3.6-35b-a3b` | Qwen fused sidecar MTP |
+| `gemma-4-12b` | `ax-engine download-mtp gemma-4-12b` | Gemma assistant-MTP |
+| `gemma-4-31b` | `ax-engine download-mtp gemma-4-31b` | Gemma assistant-MTP |
+| `glm-4.7-flash` | `ax-engine download-mtp glm-4.7-flash` | GLM built-in MTP sidecar |
 
-Unlike Qwen's fused `mtp.*` sidecar, Gemma 4's multi-token prediction uses a small **assistant drafter** that shares the target's tokenizer and embedding table, drafts tokens from the target's last-layer hidden state, and attends to the target's own KV cache. Draft depth is configurable: 26B/31B benchmarks use depth 1 (one draft token per step); 12B uses depth 2 (two draft tokens per step, with the second conditioned on the first). AX runs it assistant-MTP-only (`mtp`, default) and with n-gram stacked on top (`mtp-ngram`, opt-in).
+Rules for current MTP benchmark artifacts:
 
-A **draft confidence gate** (`AX_MLX_GEMMA4_ASSISTANT_MTP_DRAFT_MIN_CONFIDENCE`, default `0.85` for the first draft token; deep draft default `0.999`) only proposes a draft when the drafter's top-token probability clears the threshold, keeping accept high while remaining correctness-preserving. Lower the gate toward `0` for more speculation on predictable content; raise it for flatter sampled chat.
+- Use 6-bit model packages only.
+- Use the prepared path returned by `ax-engine download-mtp`.
+- Run and report `mtp` only. Do not run or promote `mtp-ngram` rows.
+- Do not include Qwen3.6 27B, Gemma 4 26B, 4-bit, 5-bit, 8-bit, FFN-only, or
+  GGUF variants in the MTP matrix.
+- Direct rows may be kept as local same-artifact diagnostics, but they are not
+  headline MTP rows.
 
-> **The gate is a speed knob, not a quality knob -- lowering it does not corrupt output (e.g. code).** Every drafted token is verified by the target model before it is emitted (rejection sampling when draft log-probs exist, greedy argmax-match otherwise), so a mismatched draft is discarded and replaced by the target's own token. Relaxing the gate only lets the drafter propose *more* speculative tokens; it lowers the accept rate and shifts throughput, but the emitted sequence is still the verified target sequence. Output-altering approximations are separate, explicit opt-ins such as top-k target softmax, never the confidence gate.
+The benchmark prompt suites remain `flappy`, `long_code`, and
+`python_modules_long`, with sampled decode (`temperature=0.6`, `top_p=0.95`,
+`top_k=20`), `1000` generated tokens, `5` measured repetitions, and recorded
+cooldown. Artifacts should live under `benchmarks/results/mtp-6bit/` and record
+the exact model snapshot, MTP package provenance, route identity, accept rate,
+prefill throughput, decode throughput, TTFT, sampler, prompt suite, repetitions,
+and cooldown.
 
-**Choosing the gate by workload.** Because the output is verified either way, the gate is a throughput dial, not a safety one — pick it by how *predictable* your content is, and (only for temperature-sampled chat) how much reply diversity you want. Lower gate = more speculation = lower accept rate but more multi-token runs. Starting points:
+Historical 4-bit Qwen3.6/MTPLX and Gemma MTP+n-gram artifacts remain useful for
+debugging regressions, but they are no longer the README/PERFORMANCE benchmark
+design and should not be promoted as current MTP evidence.
 
-| Workload | Suggested gate | Expected accept¹ | Why |
-|---|---|---|---|
-| **Coding** | `~0.85` (aggressive) | high (~93–96% on 12B code suites) | Sharply peaked output makes the first draft token useful even with a looser gate. Deterministic, so no diversity cost -- tune purely for speed. |
-| **Agentic** (tools / JSON / reasoning) | `~0.85–0.95` | high (~93–96% expected on code-like templates) | Templated and low-temperature like code; output is verified, so no correctness risk. Keep n-gram stacking opt-in unless the workload is measured. |
-| **Chatbot** | `~0.99–0.999` if sampling for variety; lower at low temperature | drops on flat text | Natural language is flatter, so accept falls faster; at temperature > 0 a low gate makes replies follow the greedy token and feel less varied. Here a high gate protects *diversity*, not correctness. |
+#### GLM-4.7 Flash MTP validation session
 
-> ¹ Only the code-like benchmark suites below (`flappy`, `long_code`, `python_modules_long`) are measured for 12B at the Phase 4 default -- they sit at 97.5-99.1% assistant accept and still deliver 2.34-2.73x same-artifact speedup over direct decode. The agentic and chatbot figures are expected ranges, and the suggested gates are starting points, not universal optima. The `assistant_mtp_gate*` ablation profiles lock the exact per-workload sweet spot.
+GLM-4.7 Flash uses the built-in MTP tensors from `zai-org/GLM-4.7-Flash`.
+`ax-engine download-mtp glm-4.7-flash` downloads the 6-bit MLX base
+(`mlx-community/GLM-4.7-Flash-6bit`), extracts the built-in MTP layer into
+`glm_mtp.safetensors`, and writes a self-contained AX package.
 
-**One flag instead of the env vars.** Rather than hand-set the gate knobs, the server accepts `--speculation-profile {auto,coding,agentic,chatbot}` (short `-s`, alias `--spec`; or env `AX_MLX_SPECULATION_PROFILE`), which bundles the MTP and n-gram configuration into one posture. `auto` (default) is temperature-driven: it keeps the shipped gate at low/zero temperature and raises it for higher-temperature sampled chat to protect reply diversity. `coding`/`agentic` keep the shipped Gemma gate default, while `chatbot` raises the gate and prefers the n-gram utility gate. Any explicit per-knob env var (e.g. `AX_MLX_GEMMA4_ASSISTANT_MTP_DRAFT_MIN_CONFIDENCE`) still overrides the profile. The resolved posture is recorded in route metadata as `ax_mlx_speculation_profile`.
+The first local validation session used the prepared package returned by
+`download-mtp` and the `flappy` real-prompt suite. This is a smoke session, not
+the promoted 5-repetition MTP matrix row: it used 32 generated tokens, 1 measured
+repetition, no cooldown, sampled decode (`temperature=0.6`, `top_p=0.95`,
+`top_k=20`), MTP depth 1, and no MTP+n-gram stacking. The direct baseline uses
+the same package and prompt suite with MTP disabled.
 
-No peer engine (MTPLX, Rapid-MLX, lightning-mlx) exposes a runnable Gemma 4 assistant-MTP path, so this benchmark has no peer comparison rows.
+| Mode | Route | Decode median | Prefill median | TTFT median | MTP evidence |
+|---|---|---:|---:|---:|---|
+| Direct baseline | `direct_single_decode_baseline` | 58.7 tok/s | 1,670 tok/s | 166 ms | no drafts |
+| GLM built-in MTP | `mtp_head_only_verify_loop` | 90.3 tok/s | 1,690 tok/s | 163 ms | 54 drafted, 46 accepted, 85.2% accept |
 
-**Gemma 4 speculative decoding holds draft accept ≥97% on every cell below** (97.3–99.2% across 26B / 31B × {MTP, MTP+n-gram} × {flappy, long_code, python_modules_long}).
+In this smoke session, GLM built-in MTP was **1.54x** faster than direct decode
+on median decode throughput. Treat this as path validation and a same-artifact
+diagnostic comparison until the full 6-bit MTP matrix is rerun with 1,000
+generated tokens, 5 measured repetitions, and recorded cooldown.
 
-The 26B/31B public run below is the promotion-grade assistant-MTP matrix only; unpublished retry fragments and failed direct-baseline attempts are excluded from this artifact set. Without a complete same-artifact direct row for these two models, the public verdict is scoped to MTP+n-gram versus pure assistant-MTP. In that scope n-gram is **keep-opt-in**: +5.2% median decode for 26B and -0.7% for 31B, with workload-specific regressions still present.
-
-
-<table>
-<tr>
-<td align="center"><strong>Gemma 4 26B A4B 4-bit</strong></td>
-<td align="center"><strong>Gemma 4 31B 4-bit</strong></td>
-</tr>
-<tr>
-<td><img width="100%" src="docs/assets/perf-gemma4-assistant-mtp-26b-decode-tok-s.svg" alt="Grouped box-and-whisker plot comparing Gemma 4 26B A4B 4-bit assistant-MTP and assistant MTP+n-gram decode throughput across flappy, long_code, and python_modules_long prompt suites"></td>
-<td><img width="100%" src="docs/assets/perf-gemma4-assistant-mtp-31b-decode-tok-s.svg" alt="Grouped box-and-whisker plot comparing Gemma 4 31B 4-bit assistant-MTP and assistant MTP+n-gram decode throughput across flappy, long_code, and python_modules_long prompt suites"></td>
-</tr>
-<tr>
-<td><img width="100%" src="docs/assets/perf-gemma4-assistant-mtp-26b-accept-rate.svg" alt="Grouped box-and-whisker plot comparing Gemma 4 26B A4B 4-bit assistant-MTP and assistant MTP+n-gram accept rate across flappy, long_code, and python_modules_long prompt suites"></td>
-<td><img width="100%" src="docs/assets/perf-gemma4-assistant-mtp-31b-accept-rate.svg" alt="Grouped box-and-whisker plot comparing Gemma 4 31B 4-bit assistant-MTP and assistant MTP+n-gram accept rate across flappy, long_code, and python_modules_long prompt suites"></td>
-</tr>
-<tr>
-<td><img width="100%" src="docs/assets/perf-gemma4-assistant-mtp-26b-prefill-tok-s.svg" alt="Grouped box-and-whisker plot comparing Gemma 4 26B A4B 4-bit assistant-MTP and assistant MTP+n-gram prefill throughput across flappy, long_code, and python_modules_long prompt suites"></td>
-<td><img width="100%" src="docs/assets/perf-gemma4-assistant-mtp-31b-prefill-tok-s.svg" alt="Grouped box-and-whisker plot comparing Gemma 4 31B 4-bit assistant-MTP and assistant MTP+n-gram prefill throughput across flappy, long_code, and python_modules_long prompt suites"></td>
-</tr>
-<tr>
-<td><img width="100%" src="docs/assets/perf-gemma4-assistant-mtp-26b-ttft-ms.svg" alt="Grouped box-and-whisker plot comparing Gemma 4 26B A4B 4-bit assistant-MTP and assistant MTP+n-gram time-to-first-token across flappy, long_code, and python_modules_long prompt suites"></td>
-<td><img width="100%" src="docs/assets/perf-gemma4-assistant-mtp-31b-ttft-ms.svg" alt="Grouped box-and-whisker plot comparing Gemma 4 31B 4-bit assistant-MTP and assistant MTP+n-gram time-to-first-token across flappy, long_code, and python_modules_long prompt suites"></td>
-</tr>
-</table>
-
-| Model | Suite | Depth | AX MTP tok/s | AX MTP accept | AX MTP+ngram tok/s | AX MTP+ngram accept |
-|---|---|---:|---:|---:|---:|---:|
-| Gemma 4 26B A4B 4-bit | flappy | 1 | 128.8 | 99.2% | 137.3 | 99.2% |
-| Gemma 4 26B A4B 4-bit | long_code | 1 | 136.7 | 99.0% | 136.9 | 99.0% |
-| Gemma 4 26B A4B 4-bit | python_modules_long | 1 | 130.1 | 98.7% | 125.3 | 98.7% |
-| Gemma 4 31B 4-bit | flappy | 1 | 39.4 | 99.2% | 39.1 | 99.2% |
-| Gemma 4 31B 4-bit | long_code | 1 | 40.0 | 99.1% | 40.4 | 99.1% |
-| Gemma 4 31B 4-bit | python_modules_long | 1 | 37.4 | 97.3% | 37.1 | 97.3% |
-
-**Prefill and TTFT — same run:**
-
-| Model | Suite | AX MTP prefill | AX MTP+ngram prefill | AX MTP ttft ms | AX MTP+ngram ttft ms |
-|---|---|---:|---:|---:|---:|
-| Gemma 4 26B A4B 4-bit | flappy | 2,690 | 2,711 | 131 | 130 |
-| Gemma 4 26B A4B 4-bit | long_code | 4,026 | 4,034 | 202 | 202 |
-| Gemma 4 26B A4B 4-bit | python_modules_long | 2,923 | 2,854 | 130 | 132 |
-| Gemma 4 31B 4-bit | flappy | 723 | 750 | 487 | 478 |
-| Gemma 4 31B 4-bit | long_code | 807 | 809 | 987 | 980 |
-| Gemma 4 31B 4-bit | python_modules_long | 741 | 743 | 472 | 472 |
-
-The gated assistant already captures most of the speculation, so stacking n-gram on top stays opt-in. Sampler: temperature=0.6, top_p=0.95, top_k=20; 1,000 generated tokens, 5 repetitions, 30 s cooldown, 10 s inter-case cooldown. Apple M5 Max · AX Engine v6.5.2.
-
-Full artifacts: [`2026-06-20-gemma4-assistant-mtp-ax-mtp-only`](benchmarks/results/gemma4-assistant-mtp/2026-06-20-gemma4-assistant-mtp-ax-mtp-only/summary.json).
-
-<details>
-<summary>Reproduce this benchmark</summary>
-
-```bash
-python3 scripts/bench_gemma4_assistant_mtp.py \
-  --models 26b-a4b-4bit,31b-4bit \
-  --modes mtp,mtp-ngram \
-  --suites flappy,long_code,python_modules_long \
-  --max-tokens 1000 --repetitions 5
-python3 scripts/render_gemma4_assistant_mtp_charts.py \
-  --results-dir benchmarks/results/gemma4-assistant-mtp/<run-dir>
-```
-
-Artifacts land under `benchmarks/results/gemma4-assistant-mtp/`; SVGs render into `docs/assets/`. Tune the accept/throughput trade-off with `AX_MLX_GEMMA4_ASSISTANT_MTP_DRAFT_MIN_CONFIDENCE` (default `0.85`; `0` disables the first-position gate) and `AX_MLX_GEMMA4_ASSISTANT_MTP_DEEP_DRAFT_MIN_CONFIDENCE` (default `0.999`). MTP+n-gram stacking is opt-in: use `--mlx-mtp-enable-ngram-stacking` through the server/SDK path, or set `AX_MLX_MTP_DISABLE_NGRAM_STACKING=0` for low-level benchmark runs.
-</details>
-
-#### Qwen 3.6
-
-Three-engine MTP comparison (MTPLX 0.3.7, AX Engine MTP, AX Engine MTP+n-gram) using standard `Qwen/Qwen3.6-*` sidecars plus matching `mlx-community/*-4bit` MLX bases. No `Youssofal/*MTPLX*` bundles are used. All three engines run on the same prompt suites, token caps, sampler, warmup, repetition count, and cooldown.
-
-AX MTP runs the shipped default draft confidence gate (`AX_MLX_MTP_DRAFT_MIN_CONFIDENCE`, default `0.90`). The accept columns below come from the same default-gate rerun as the throughput rows; use `docs/MTP-DRAFT-GATE-THROUGHPUT.md` when tuning the accept/throughput trade-off for a specific workload.
-
-The aggregate improvement view below uses sample medians across all three suites. The 35B-A3B sidecar is the clear public win: AX MTP is **+59.8%** vs the retained MTPLX reference, while AX MTP+n-gram is **+59.9%** vs MTPLX and **+0.1%** vs pure AX MTP. The 27B row is workload-dependent but positive in this rerun: pure AX MTP is **+7.8%** vs MTPLX, and AX MTP+n-gram is **+8.7%** vs MTPLX and **+0.8%** vs pure AX MTP. Stacking remains opt-in because the per-suite win is not uniform.
-
-The latency view follows the same boundary. On **Qwen3.6 35B-A3B**, AX wins every listed MTPLX prefill and TTFT row because the sidecar path stays inside the repo-owned MLX runner and records the target-model prefill separately from speculative verification. On **Qwen3.6 27B**, prefill and TTFT are intentionally called mixed: AX is close, but the 27B sidecar does not show a clean latency win on every suite. Treat the 35B-A3B rows as the public MTP latency advantage and the 27B rows as workload-dependent.
-
-<p><img width="100%" src="docs/assets/perf-mtp-fair-decode-improvement.svg" alt="Bar chart comparing Qwen3.6 aggregate decode improvement for AX MTP versus MTPLX, AX MTP+n-gram versus MTPLX, and MTP+n-gram versus pure AX MTP"></p>
-
-<table>
-<tr>
-<td align="center"><strong>Qwen3.6 27B 4-bit</strong></td>
-<td align="center"><strong>Qwen3.6 35B-A3B 4-bit</strong></td>
-</tr>
-<tr>
-<td><img width="100%" src="docs/assets/perf-mtp-fair-27b-decode-tok-s.svg" alt="Grouped box-and-whisker plot comparing Qwen3.6 27B 4-bit fair MTP decode throughput for MTPLX, AX Engine MTP, and AX Engine MTP+n-gram with flappy, long_code, and python_modules_long combined"></td>
-<td><img width="100%" src="docs/assets/perf-mtp-fair-35b-a3b-decode-tok-s.svg" alt="Grouped box-and-whisker plot comparing Qwen3.6 35B-A3B 4-bit fair MTP decode throughput for MTPLX, AX Engine MTP, and AX Engine MTP+n-gram with flappy, long_code, and python_modules_long combined"></td>
-</tr>
-<tr>
-<td><img width="100%" src="docs/assets/perf-mtp-fair-27b-accept-rate.svg" alt="Grouped box-and-whisker plot comparing Qwen3.6 27B 4-bit fair MTP accept rate for MTPLX, AX Engine MTP, and AX Engine MTP+n-gram with flappy, long_code, and python_modules_long combined"></td>
-<td><img width="100%" src="docs/assets/perf-mtp-fair-35b-a3b-accept-rate.svg" alt="Grouped box-and-whisker plot comparing Qwen3.6 35B-A3B 4-bit fair MTP accept rate for MTPLX, AX Engine MTP, and AX Engine MTP+n-gram with flappy, long_code, and python_modules_long combined"></td>
-</tr>
-<tr>
-<td><img width="100%" src="docs/assets/perf-mtp-fair-27b-prefill-tok-s.svg" alt="Grouped box-and-whisker plot comparing Qwen3.6 27B 4-bit fair MTP prefill throughput for MTPLX, AX Engine MTP, and AX Engine MTP+n-gram with flappy, long_code, and python_modules_long combined"></td>
-<td><img width="100%" src="docs/assets/perf-mtp-fair-35b-a3b-prefill-tok-s.svg" alt="Grouped box-and-whisker plot comparing Qwen3.6 35B-A3B 4-bit fair MTP prefill throughput for MTPLX, AX Engine MTP, and AX Engine MTP+n-gram with flappy, long_code, and python_modules_long combined"></td>
-</tr>
-<tr>
-<td><img width="100%" src="docs/assets/perf-mtp-fair-27b-ttft-ms.svg" alt="Grouped box-and-whisker plot comparing Qwen3.6 27B 4-bit fair MTP time-to-first-token for MTPLX, AX Engine MTP, and AX Engine MTP+n-gram with flappy, long_code, and python_modules_long combined"></td>
-<td><img width="100%" src="docs/assets/perf-mtp-fair-35b-a3b-ttft-ms.svg" alt="Grouped box-and-whisker plot comparing Qwen3.6 35B-A3B 4-bit fair MTP time-to-first-token for MTPLX, AX Engine MTP, and AX Engine MTP+n-gram with flappy, long_code, and python_modules_long combined"></td>
-</tr>
-</table>
-
-| Model | Suite | Depth | MTPLX tok/s | MTPLX accept | AX tok/s | AX accept | AX+ngram tok/s | AX+ngram accept |
-|---|---|---:|---:|---:|---:|---:|---:|---:|
-| Qwen3.6 27B 4-bit | flappy | 3 | 56.1 | 100.0% (96.0-100.0) | 61.4 | 99.7% (97.3-100.0) | 61.6 | 99.7% (97.3-100.0) |
-| Qwen3.6 27B 4-bit | long_code | 3 | 57.9 | 99.7% (98.4-100.0) | 60.5 | 99.6% (98.9-100.0) | 61.0 | 99.6% (98.9-100.0) |
-| Qwen3.6 27B 4-bit | python_modules_long | 3 | 52.7 | 87.6% (81.2-95.0) | 52.0 | 97.8% (97.1-98.4) | 51.6 | 97.8% (97.1-98.4) |
-| Qwen3.6 35B-A3B 4-bit | flappy | 1 | 104.3 | 49.5% (42.3-60.6) | 169.0 | 100.0% (99.4-100.0) | 168.8 | 100.0% (99.4-100.0) |
-| Qwen3.6 35B-A3B 4-bit | long_code | 1 | 105.6 | 51.4% (43.1-66.7) | 164.7 | 99.9% (99.6-100.0) | 166.8 | 99.9% (99.6-100.0) |
-| Qwen3.6 35B-A3B 4-bit | python_modules_long | 1 | 98.2 | 42.6% (37.0-46.1) | 166.7 | 97.9% (97.7-99.3) | 163.3 | 97.9% (97.7-99.3) |
-
-Accept cells show median with `(min–max)` range across the suite's cases × 5 reps, so the run-to-run spread on the borderline `python_modules_long` suite is visible rather than hidden behind a single point.
-
-**Prefill throughput (tok/s) — same run:**
-
-MTPLX prefill is derived from `prompt_tokens / prompt_eval_time_s` (runner-level). AX prefill is measured at runner level. Both are pure GPU compute measurements.
-
-| Model | Suite | Depth | MTPLX tok/s | AX MTP tok/s | AX MTP+ngram tok/s |
-|---|---|---:|---:|---:|---:|
-| Qwen3.6 27B 4-bit | flappy | 3 | 657 | 678 | 683 |
-| Qwen3.6 27B 4-bit | long_code | 3 | 793 | 789 | 790 |
-| Qwen3.6 27B 4-bit | python_modules_long | 3 | 680 | 692 | 693 |
-| Qwen3.6 35B-A3B 4-bit | flappy | 1 | 1,520 | 1,795 | 1,803 |
-| Qwen3.6 35B-A3B 4-bit | long_code | 1 | 2,431 | 2,673 | 2,706 |
-| Qwen3.6 35B-A3B 4-bit | python_modules_long | 1 | 1,654 | 1,973 | 1,935 |
-
-**Time to first token (ms) — same run:**
-
-MTPLX TTFT is derived from `prompt_eval_time_s`. AX TTFT is a runner-time measurement. Both are pure prefill measurements.
-
-| Model | Suite | Depth | MTPLX ms | AX MTP ms | AX MTP+ngram ms |
-|---|---|---:|---:|---:|---:|
-| Qwen3.6 27B 4-bit | flappy | 3 | 489 | 474 | 470 |
-| Qwen3.6 27B 4-bit | long_code | 3 | 905 | 909 | 909 |
-| Qwen3.6 27B 4-bit | python_modules_long | 3 | 509 | 506 | 505 |
-| Qwen3.6 35B-A3B 4-bit | flappy | 1 | 213 | 179 | 178 |
-| Qwen3.6 35B-A3B 4-bit | long_code | 1 | 295 | 269 | 265 |
-| Qwen3.6 35B-A3B 4-bit | python_modules_long | 1 | 206 | 174 | 179 |
-
-Sampler: temperature=0.6, top_p=0.95, top_k=20; 1,000 gen tokens, 5 repetitions, 30 s cooldown, 10 s inter-case cooldown. MTPLX 0.3.7 reference rows are retained from the full 2026-06-07 run; AX Engine rows are refreshed on v6.5.2.
-
-Full artifacts: [`2026-06-20-qwen36-ax-mtp-only`](benchmarks/results/mtp-fair/2026-06-20-qwen36-ax-mtp-only/summary.json) (AX-only rerun) · [`2026-06-20-qwen36-merged-ax-refresh`](benchmarks/results/mtp-fair/2026-06-20-qwen36-merged-ax-refresh/summary.json) (README chart artifact with retained MTPLX reference rows).
-
-<details>
-<summary>Reproduce this benchmark</summary>
-
-```bash
-ax-engine convert-mtplx mlx-community/Qwen3.6-27B-4bit \
-  --mtp-source Qwen/Qwen3.6-27B \
-  --fair-base-only
-ax-engine convert-mtplx mlx-community/Qwen3.6-35B-A3B-4bit \
-  --mtp-source Qwen/Qwen3.6-35B-A3B \
-  --fair-base-only
-python3 scripts/bench_qwen36_mtp_fair.py \
-  --engines mtplx ax \
-  --modes mtp mtp-ngram \
-  --models 27b-4bit 35b-a3b-4bit \
-  --suites flappy long_code python_modules_long \
-  --max-tokens 1000 \
-  --repetitions 5 \
-  --cooldown 30
-```
-
-`convert-mtplx` wraps the generic sidecar packager, applies model-specific defaults when optional knobs are omitted (Qwen3.6 27B depth 3; 35B-A3B depth 1), and validates `ax_mtp_sidecar_manifest.json` before reporting success. The generated `summary.md`, `summary.json`, and `decode-tok-s.svg` live under `benchmarks/results/mtp-fair/`. Full methodology and caveats in [`docs/PERFORMANCE.md#mtp-mode`](docs/PERFORMANCE.md#mtp-mode).
-</details>
+Artifacts: [`flappy-after-activation-fix.json`](benchmarks/results/mtp-6bit/2026-06-22-glm47-flash-mtp-smoke/flappy-after-activation-fix.json)
+(MTP) and [`flappy-direct-baseline.json`](benchmarks/results/mtp-6bit/2026-06-22-glm47-flash-mtp-smoke/flappy-direct-baseline.json)
+(direct baseline).
 
 ### Direct Decode · Prefill · TTFT
 
@@ -791,27 +675,30 @@ The denoise loop can stop early when any configured convergence signal fires:
 
 The benchmark rows above report the measured adaptive-convergence run as recorded in the artifact. This rerun did **not** converge after one denoise step: it used 48 / 25 / 48 denoise steps at 128 / 512 / 2,048 prompt tokens. Time to first block therefore tracks the full measured denoise work for the 128- and 2,048-token rows and a mid-run early exit for the 512-token row.
 
-**Experimental denoise optimizations (opt-in):**
+**Denoise performance optimizations (enabled by default):**
 
-The default path above uses no optional optimizations. The following environment variables enable experimental fast paths for benchmarking and development. All are **off by default** and should be considered preview/experimental until they are validated across prompt lengths, multi-block generation, and token-equivalence against the default imperative path.
+The following optimizations are enabled by default for DiffusionGemma to maximize memory bandwidth utilization and reduce per-step overhead. Each can be individually disabled via opt-out environment variables.
+
+| Optimization | What it does | Opt-out |
+|---|---|---|
+| KV concat buffer | Pre-allocates per-layer KV concatenation buffers on the first denoise step and updates only the canvas slice on subsequent steps via `slice_update`, avoiding re-copying the cached prompt prefix. Also caches the bidirectional attention mask per layer. | `AX_DIFFUSION_NO_KV_CONCAT_BUFFER=1` |
+| Embedding cache | Caches per-layer embedding inputs across denoise steps when token IDs are unchanged, using a GPU-side sum fingerprint to detect changes. | `AX_DIFFUSION_NO_EMBEDDING_CACHE=1` |
+| Compiled forward | Compiles the bidirectional denoise forward pass into an `MlxClosure` per block (when self-conditioning is off), collapsing ~250 per-step MLX C-API calls into one dispatched graph. | `AX_DIFFUSION_NO_COMPILED_FORWARD=1` |
+| Commit skip on converge | Skips the causal commit forward pass (~40 ms) when the denoise loop converges with near-perfect acceptance (≥ 99%). | `AX_DIFFUSION_NO_SKIP_COMMIT=1` |
+
+**Experimental opt-in optimizations:**
 
 | Environment variable | What it does | Status |
 |---|---|---|
-| `AX_DIFFUSION_COMPILED_FORWARD=1` | Compiles the bidirectional denoise forward pass into an `MlxClosure` per block, collapsing ~250 per-step MLX C-API calls into one dispatched graph. | Experimental / benchmarking |
-| `AX_DIFFUSION_FULL_PIPELINE=1` | Compiles the entire denoise step (forward + softmax + entropy + argmax + sampling + acceptance) into a single `MlxClosure`. Supersedes `AX_DIFFUSION_COMPILED_FORWARD` when both are set. | Experimental / benchmarking |
-| `AX_DIFFUSION_KV_CONCAT_BUFFER=1` | Pre-allocates per-layer KV concatenation buffers on the first denoise step and updates only the canvas slice on subsequent steps, avoiding re-copying the cached prompt prefix. Most beneficial when multiple denoise steps are needed. | Experimental / benchmarking |
-| `AX_DIFFUSION_EMBEDDING_CACHE=1` | Caches per-layer embedding inputs across denoise steps when token IDs are unchanged, using a GPU-side sum fingerprint to detect changes. | Experimental / benchmarking |
-| `AX_DIFFUSION_SKIP_COMMIT_ON_CONVERGE=1` | Skips the causal commit forward pass when the denoise loop converges at step 1 with near-perfect acceptance (≥ 99%). | Experimental / benchmarking |
+| `AX_DIFFUSION_FULL_PIPELINE=1` | Compiles the entire denoise step (forward + softmax + entropy + argmax + sampling + acceptance) into a single `MlxClosure`. Supersedes the forward-only compiled closure when both are set. | Experimental / benchmarking |
 
-Example usage for a single benchmark run:
+Example usage for a single benchmark run with all optimizations:
 
 ```bash
-AX_DIFFUSION_FULL_PIPELINE=1 \
-AX_DIFFUSION_KV_CONCAT_BUFFER=1 \
 python3 scripts/bench_diffusion_gemma_direct.py --bench-bin target/release/ax-engine-bench
 ```
 
-These flags are read once per process. Do not enable them in production serving without first verifying output token equivalence against the default path on your target prompts.
+These flags are read once per process. The default-on optimizations have been validated for token equivalence against the imperative path.
 
 Artifacts: AX direct rows are [`2026-06-20-direct-first-block-rerun/summary.json`](benchmarks/results/diffusion-gemma-direct/2026-06-20-direct-first-block-rerun/summary.json), with the human summary in [`summary.md`](benchmarks/results/diffusion-gemma-direct/2026-06-20-direct-first-block-rerun/summary.md). Peer runtime blockers are recorded as load failures, so there are no llama.cpp or `mlx_lm` result artifacts for this model family.
 
@@ -867,7 +754,7 @@ python3 scripts/bench_diffusion_gemma_direct.py
 
 #### Qwen3-Coder-Next
 
-Qwen3-Coder-Next is the coding-specialist `qwen3_next` checkpoint, so it is reported separately from Qwen 3.6. It uses the same repo-owned AX MLX graph family, but its benchmark boundary is different: it does **not** ship MTP heads or a Qwen3.6 sidecar, so the public README path is direct decode only.
+Qwen3-Coder-Next is the coding-specialist `qwen3_next` checkpoint, so it is reported separately from Qwen 3.6. It uses the same repo-owned AX MLX graph family, but its published benchmark boundary is direct decode; the separate 6-bit `download-mtp` path packages the Qwen3-Next sidecar from `Qwen/Qwen3-Next-80B-A3B-Instruct`.
 
 The direct comparison below uses grouped bar charts at 128/512/2048 prompt tokens. Each engine's version is printed on the charts: AX native MLX (`6.5.2`) and `mlx_lm` (`0.31.3`) use the MLX artifact and prompt-hash parity; llama.cpp Metal (`b9700`, ggml `0.15.2`, flash-attn on) is a shape-compatible external GGUF reference run on one consistent build across all three prompt sizes. The AX rerun uses the default-on Qwen MoE fast paths (`AX_MLX_QWEN3_MOE_NARROW_SOFTMAX`, `AX_MLX_MOE_FUSE_SHARED_EXPERT_ADD`, and `AX_MLX_MOE_SWIGLU_PACKED_METAL`) plus the opt-in fused expert block (`AX_MLX_MOE_FUSED_EXPERT_BLOCK=1`). AX direct decode is +6.6% / +3.3% / +3.4% versus `mlx_lm`, and +23.6% / +20.6% / +17.1% versus llama.cpp.
 
@@ -996,12 +883,12 @@ The prefill and TTFT advantage is the practical direct-mode story. AX is ahead o
 </tr>
 </table>
 
-> **`llama.cpp Metal*` column** — Shape-compatible reference produced by Metal-enabled `llama-bench`. `llama-bench` generates its own internal synthetic prompt tokens and does not consume the harness prompt JSON, so these numbers are **not** prompt-hash parity with the other columns. No percentage delta is shown. MLX bit-widths are mapped to the nearest standard GGUF K-quant (4→Q4_K_M, 5→Q5_K_M, 6→Q6_K, 8→Q8_0). Source: `benchmarks/manifests/llama_cpp_metal/inventory.json`, `scripts/bench_llama_cpp_metal_sweep.py`.
+> **`llama.cpp Metal*` column** — Shape-compatible reference produced by Metal-enabled `llama-bench`. `llama-bench` generates its own internal synthetic prompt tokens and does not consume the harness prompt JSON, so these numbers are **not** prompt-hash parity with the other columns. No percentage delta is shown. MLX bit-widths are mapped to the nearest Unsloth GGUF quant (4→Q4_K_M, 6→Q6_K, 8→Q8_0), with explicit UD-* Unsloth Dynamic rows only when no standard root-level K-quant is published. Source: `benchmarks/manifests/llama_cpp_metal/inventory.json`, `scripts/bench_llama_cpp_metal_sweep.py`.
 
 <details>
 <summary>Benchmark provenance and methodology</summary>
 
-The `mlx_lm` reference rows for the 12 Gemma 4 and Qwen 3.6 rows shown below come from `benchmarks/results/mlx-inference/2026-05-26-direct-mode-clean-refresh/`. The AX direct-mode cells come from the full 12-model AX-only rerun in `benchmarks/results/mlx-inference/2026-06-20-ax-direct-readme/` (v6.5.2). Qwen3-Coder-Next is intentionally handled as the opening direct-mode subsection because it has a direct-only benchmark boundary; its MLX/AX and llama.cpp Metal rows now cover 128/512/2048 prompt tokens. The `llama.cpp Metal*` column is injected from `benchmarks/manifests/llama_cpp_metal/inventory.json` and the `2026-05-18-llama-cpp-metal-gemma-e2b-4bit-depth-fa/` Gemma 4 E2B 4-bit recheck.
+The `mlx_lm` reference rows for the 12 Gemma 4 and Qwen 3.6 rows shown below come from `benchmarks/results/mlx-inference/2026-05-26-direct-mode-clean-refresh/`. The AX direct-mode cells come from the full 12-model AX-only rerun in `benchmarks/results/mlx-inference/2026-06-20-ax-direct-readme/` (v6.5.2). Qwen3-Coder-Next is intentionally handled as the opening direct-mode subsection because this chart reports its direct-decode benchmark boundary; its MLX/AX and llama.cpp Metal rows now cover 128/512/2048 prompt tokens. The `llama.cpp Metal*` column is injected from `benchmarks/manifests/llama_cpp_metal/inventory.json` and the `2026-05-18-llama-cpp-metal-gemma-e2b-4bit-depth-fa/` Gemma 4 E2B 4-bit recheck.
 
 Setup: generation=128, 5 measured repetitions, 15-second cooldown, AX prefix cache disabled for cold prefill and TTFT measurement, production-build binaries, matching prompt SHA checks. Long-greedy AX prefill rows are runner-time measurements of the cache-state prefix plus final prompt-token boundary — not full-logits prompt scoring throughput. Percentages are versus `mlx_lm`.
 
@@ -1015,9 +902,6 @@ The 2K `llama.cpp Metal*` prefill rows are long-context, GGUF-runtime-reference 
 | Gemma 4 E2B | 4-bit | 128 | 3,481.7 | 2,338.1 | **5,720.2 (+144.6%)** |
 |         |         | 512 | 6,846.0 | 7,870.0 | **16,076.9 (+104.3%)** |
 |         |         | 2048 | 7,643.1 | 18,014.7 | **23,346.2 (+29.6%)** |
-| Gemma 4 E2B | 5-bit | 128 | 3,398.4 | 2,238.5 | **5,436.4 (+142.9%)** |
-|         |         | 512 | 6,860.3 | 7,469.9 | **15,526.9 (+107.9%)** |
-|         |         | 2048 | 7,288.1 | 16,664.1 | **22,798.4 (+36.8%)** |
 | Gemma 4 E2B | 6-bit | 128 | 3,539.7 | 1,823.5 | **5,330.0 (+192.3%)** |
 |         |         | 512 | 7,274.0 | 6,046.6 | **14,814.0 (+145.0%)** |
 |         |         | 2048 | 7,623.2 | 15,332.1 | **22,280.0 (+45.3%)** |
@@ -1036,9 +920,6 @@ The 2K `llama.cpp Metal*` prefill rows are long-context, GGUF-runtime-reference 
 | Qwen 3.6 27B | 4-bit | 128 | 539.6 | 378.8 | **570.4 (+50.6%)** |
 |  |  | 512 | 759.7 | 705.7 | **826.6 (+17.1%)** |
 |  |  | 2048 | 664.3 | 895.2 | **922.0 (+3.0%)** |
-| Qwen 3.6 27B | 5-bit | 128 | 520.8 | 278.8 | **520.4 (+86.6%)** |
-|  |  | 512 | 733.4 | 599.5 | **760.4 (+26.8%)** |
-|  |  | 2048 | 667.0 | 827.5 | **848.1 (+2.5%)** |
 | Qwen 3.6 27B | 6-bit | 128 | 537.7 | 270.5 | **485.1 (+79.3%)** |
 |  |  | 512 | 756.1 | 577.6 | **736.0 (+27.4%)** |
 |  |  | 2048 | 689.3 | 798.2 | **841.0 (+5.4%)** |
@@ -1056,9 +937,6 @@ The 2K `llama.cpp Metal*` prefill rows are long-context, GGUF-runtime-reference 
 | Gemma 4 E2B | 4-bit | 128 | 174.6 | 214.0 | **224.1 (+4.7%)** |
 |  |  | 512 | 165.2 | 210.3 | **215.1 (+2.3%)** |
 |  |  | 2048 | 171.9 | 200.9 | **205.4 (+2.2%)** |
-| Gemma 4 E2B | 5-bit | 128 | 154.8 | 195.2 | **200.6 (+2.8%)** |
-|  |  | 512 | 154.3 | 182.0 | **194.5 (+6.8%)** |
-|  |  | 2048 | 154.3 | 181.9 | **185.7 (+2.1%)** |
 | Gemma 4 E2B | 6-bit | 128 | 152.1 | 172.2 | **178.0 (+3.4%)** |
 |  |  | 512 | 152.0 | 166.3 | **171.7 (+3.2%)** |
 |  |  | 2048 | 152.2 | 162.5 | **164.7 (+1.4%)** |
@@ -1077,9 +955,6 @@ The 2K `llama.cpp Metal*` prefill rows are long-context, GGUF-runtime-reference 
 | Qwen 3.6 27B | 4-bit | 128 | 26.0 | 34.0 | 33.9 (-0.3%) |
 |  |  | 512 | 26.0 | 33.9 | 33.6 (-0.8%) |
 |  |  | 2048 | 18.8 | 33.4 | 33.3 (-0.4%) |
-| Qwen 3.6 27B | 5-bit | 128 | 23.5 | 21.6 | **27.2 (+26.1%)** |
-|  |  | 512 | 23.3 | 28.1 | 26.9 (-4.2%) |
-|  |  | 2048 | 17.8 | 27.8 | 26.1 (-6.3%) |
 | Qwen 3.6 27B | 6-bit | 128 | 21.3 | 24.0 | **24.0 (+0.2%)** |
 |  |  | 512 | 21.3 | 24.8 | 24.0 (-3.0%) |
 |  |  | 2048 | 15.4 | 24.6 | 23.7 (-3.8%) |
@@ -1100,9 +975,6 @@ The 2K `llama.cpp Metal*` prefill rows are long-context, GGUF-runtime-reference 
 | Gemma 4 E2B | 4-bit | 128 | 36.8 | 54.7 | **22.4 (-59.1%)** |
 |         |         | 512 | 74.8 | 65.1 | **31.8 (-51.0%)** |
 |         |         | 2048 | 268.0 | 113.7 | **87.7 (-22.8%)** |
-| Gemma 4 E2B | 5-bit | 128 | 37.7 | 57.2 | **23.5 (-58.8%)** |
-|         |         | 512 | 74.6 | 68.5 | **33.0 (-51.9%)** |
-|         |         | 2048 | 281.0 | 122.9 | **89.8 (-26.9%)** |
 | Gemma 4 E2B | 6-bit | 128 | 36.2 | 70.2 | **24.0 (-65.8%)** |
 |         |         | 512 | 70.4 | 84.7 | **34.6 (-59.2%)** |
 |         |         | 2048 | 268.7 | 133.6 | **91.9 (-31.2%)** |
@@ -1121,9 +993,6 @@ The 2K `llama.cpp Metal*` prefill rows are long-context, GGUF-runtime-reference 
 | Qwen 3.6 27B | 4-bit | 128 | 237.2 | 337.9 | **224.4 (-33.6%)** |
 |  |  | 512 | 673.9 | 725.6 | **619.4 (-14.6%)** |
 |  |  | 2048 | 3,083.1 | 2,287.7 | **2,221.3 (-2.9%)** |
-| Qwen 3.6 27B | 5-bit | 128 | 245.8 | 459.0 | **246.0 (-46.4%)** |
-|  |  | 512 | 698.1 | 854.1 | **673.3 (-21.2%)** |
-|  |  | 2048 | 3,070.5 | 2,474.9 | **2,414.7 (-2.4%)** |
 | Qwen 3.6 27B | 6-bit | 128 | 238.1 | 473.2 | **263.9 (-44.2%)** |
 |  |  | 512 | 677.2 | 886.5 | **695.6 (-21.5%)** |
 |  |  | 2048 | 2,971.2 | 2,565.6 | **2,435.2 (-5.1%)** |

@@ -65,7 +65,6 @@ def get_ttft(row):
 README_MODELS = [
     # (readme_label, slug, quant_label, mlx_lm_engine)
     ("Gemma 4 E2B",        "gemma-4-e2b-it-4bit",         "4-bit",        "mlx_lm"),
-    ("Gemma 4 E2B",        "gemma-4-e2b-it-5bit",         "5-bit",        "mlx_lm"),
     ("Gemma 4 E2B",        "gemma-4-e2b-it-6bit",         "6-bit",        "mlx_lm"),
     ("Gemma 4 E2B",        "gemma-4-e2b-it-8bit",         "8-bit",        "mlx_lm"),
     ("Gemma 4 E4B",        "gemma-4-e4b-it-4bit",         "4-bit",        "mlx_lm"),
@@ -73,7 +72,6 @@ README_MODELS = [
     ("Gemma 4 31B",        "gemma-4-31b-it-4bit",         "4-bit",        "mlx_lm"),
     ("Qwen 3.5 9B",        "qwen3_5-9b-mlx-4bit",         "4-bit",        "mlx_lm"),
     ("Qwen 3.6 27B",       "qwen3_6-27b-4bit",            "4-bit",        "mlx_lm"),
-    ("Qwen 3.6 27B",       "qwen3_6-27b-5bit",            "5-bit",        "mlx_lm"),
     ("Qwen 3.6 27B",       "qwen3_6-27b-6bit",            "6-bit",        "mlx_lm"),
     ("Qwen 3.6 27B",       "qwen3_6-27b-8bit",            "8-bit",        "mlx_lm"),
     ("Qwen 3.6 35B A3B",   "qwen3_6-35b-a3b-4bit",        "4-bit",        "mlx_lm"),

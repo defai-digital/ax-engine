@@ -266,6 +266,19 @@ def _assemble_model_tree(src_dir: Path, out_dir: Path, *, copy_config: bool) -> 
             _link_or_copy(item, dest)
 
 
+def _reset_output_dir(out_dir: Path, *, target_dir: Path, assistant_dir: Path) -> None:
+    """Remove a previous generated package so stale shards cannot mix in."""
+    if out_dir == target_dir or out_dir == assistant_dir:
+        sys.exit(f"ERROR: refusing to use source model dir as output: {out_dir}")
+    if target_dir in out_dir.parents or assistant_dir in out_dir.parents:
+        sys.exit(f"ERROR: refusing to write output inside a source model dir: {out_dir}")
+    if out_dir == Path("/") or out_dir == Path.home() or out_dir == HF_CACHE:
+        sys.exit(f"ERROR: refusing unsafe output dir: {out_dir}")
+    if out_dir.exists():
+        shutil.rmtree(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+
 def _safe_copy(src: str, dst: str) -> None:
     try:
         os.link(os.path.realpath(src), dst)
@@ -395,7 +408,7 @@ def prepare(
     else:
         output_target_id = _derive_output_target_id(target, target_id)
         out_dir = HF_CACHE / f"models--ax-local--{output_target_id}-assistant-mtp" / "snapshots" / "v1"
-    out_dir.mkdir(parents=True, exist_ok=True)
+    _reset_output_dir(out_dir, target_dir=target_dir, assistant_dir=assistant_dir)
     print(f"Output dir:      {out_dir}", flush=True)
 
     print("\nAssembling target tree...", flush=True)

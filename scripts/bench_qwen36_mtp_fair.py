@@ -2251,11 +2251,11 @@ def parse_args() -> argparse.Namespace:
         "--modes",
         nargs="+",
         choices=ENGINE_MODES,
-        default=["direct", "mtp", "mtp-ngram"],
+        default=["mtp"],
         help=(
-            "Decode modes to include. Default: direct, fixed-depth mtp, and "
-            "mtp-ngram so AX rows get a same-artifact survival verdict. Add "
-            "'tuned' to run MTPLX tune and AX best-of policy sweep rows."
+            "Decode modes to include. Default: fixed-depth mtp only. "
+            "mtp-ngram is preserved for historical/ad-hoc probes but is not "
+            "part of the current MTP benchmark design."
         ),
     )
     parser.add_argument("--suites", nargs="+", default=["flappy", "long_code"])
@@ -2357,10 +2357,11 @@ def parse_args() -> argparse.Namespace:
         "--ax-tune-policies",
         nargs="+",
         choices=["direct", "ngram", "mtp", "mtp-ngram"],
-        default=["direct", "ngram", "mtp", "mtp-ngram"],
+        default=["mtp"],
         help=(
-            "AX policies swept for the tuned-best-of row. Depth-bearing policies "
-            "sweep d=1..native depth; ngram uses d=0."
+            "AX policies swept for the tuned-best-of row. Default: mtp only. "
+            "Direct, ngram, and mtp-ngram are historical/ad-hoc probes outside "
+            "the current MTP benchmark design."
         ),
     )
     parser.add_argument(

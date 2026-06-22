@@ -14,7 +14,7 @@ cd "$(dirname "$0")/.."
 DATE=2026-06-09
 PY=python3
 LLAMA_BENCH=/opt/homebrew/bin/llama-bench
-GGUF=$(ls "$HOME"/.cache/huggingface/hub/models--ggml-org--gemma-4-12B-it-GGUF/snapshots/*/gemma-4-12B-it-Q4_K_M.gguf | head -1)
+GGUF=$(ls "$HOME"/.cache/huggingface/hub/models--unsloth--gemma-4-12b-it-GGUF/snapshots/*/gemma-4-12b-it-Q4_K_M.gguf | head -1)
 # AX-ready base snapshot (the one carrying model-manifest.json).
 BASE_DIR=$(dirname "$(ls "$HOME"/.cache/huggingface/hub/models--mlx-community--gemma-4-12B-it-4bit/snapshots/*/model-manifest.json | head -1)")
 
@@ -52,21 +52,19 @@ fi
 echo "===== GGUF: $GGUF"
 echo "===== BASE_DIR: $BASE_DIR"
 
-# Record llama.cpp GGUF provenance next to the direct artifact (this 12B GGUF
-# is not in the bartowski-only llama_cpp_metal inventory because bartowski has
-# not published a Gemma 4 12B GGUF).
+# Record llama.cpp GGUF provenance next to the direct artifact.
 cat > "$DIRECT_DIR/llama_cpp_gguf_provenance.json" <<JSON
 {
   "schema": "ax.gemma4_12b_llama_cpp_provenance.v1",
   "model": "Gemma 4 12B",
   "mlx_repo_id": "ax-local/gemma-4-12B-it-4bit-ffn4 (FFN re-quantized 8->4 bit from mlx-community/gemma-4-12B-it-4bit)",
   "ax_quant_note": "Upstream mlx-community 4bit keeps FFN at 8-bit (~10.4 GiB); re-quantized to uniform 4-bit group-64 (~6.3 GiB, ~4.5 bpw) for bit-comparable fairness vs Q4_K_M (~6.87 GiB, ~4.8 bpw). See scripts/requantize_gemma4_12b_ffn_4bit.py.",
-  "gguf_repo": "ggml-org/gemma-4-12B-it-GGUF",
-  "gguf_file": "gemma-4-12B-it-Q4_K_M.gguf",
+  "gguf_repo": "unsloth/gemma-4-12b-it-GGUF",
+  "gguf_file": "gemma-4-12b-it-Q4_K_M.gguf",
   "gguf_quant_target": "Q4_K_M",
   "decode_comparison_contract": "llama.cpp decode measured at matched context depth (--llama-cpp-decode-at-depth: llama-bench -n GEN -d PROMPT), not depth-0 tg, to match AX's prompt-context decode.",
   "llama_cpp_arch": "gemma4",
-  "publisher_deviation_note": "bartowski has not published a Gemma 4 12B GGUF (404 at bartowski/google_gemma-4-12B-it-GGUF as of 2026-06-09). Uses the official ggml-org conversion, the same publisher as the on-disk 26B/31B/E2B/E4B GGUFs. Shape-compatible external baseline only; not prompt-hash parity.",
+  "publisher_note": "Uses the Unsloth Gemma 4 12B standard Q4_K_M GGUF for the shape-compatible external llama.cpp baseline. Not prompt-hash parity.",
   "mlx_lm_baseline": "absent_unsupported_architecture",
   "mlx_lm_note": "mlx_lm 0.31.3 has no graph for model_type gemma4_unified (ValueError: Model type gemma4_unified not supported); the MLX-side reference is AX Engine's repo-owned native runtime."
 }
