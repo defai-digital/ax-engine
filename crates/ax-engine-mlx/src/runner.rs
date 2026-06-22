@@ -4716,18 +4716,21 @@ fn load_gemma4_assistant_mtp_runtime(
 
 impl MlxRunner {
     fn has_mtp(&self) -> bool {
-        self.weights.mtp.is_some() || self.gemma4_assistant_mtp.is_some()
+        self.weights.mtp.is_some()
+            || self.weights.glm_mtp.is_some()
+            || self.gemma4_assistant_mtp.is_some()
     }
 
     fn mtp_max_depth(&self) -> usize {
-        self.weights.mtp.as_ref().map_or_else(
-            || {
-                self.gemma4_assistant_mtp
-                    .as_ref()
-                    .map_or(0, |runtime| runtime.status.max_depth)
-            },
-            |head| head.max_depth,
-        )
+        if let Some(head) = &self.weights.mtp {
+            head.max_depth
+        } else if let Some(head) = &self.weights.glm_mtp {
+            head.max_depth
+        } else {
+            self.gemma4_assistant_mtp
+                .as_ref()
+                .map_or(0, |runtime| runtime.status.max_depth)
+        }
     }
 
     fn gemma4_assistant_mtp_status(&self) -> &Gemma4AssistantMtpStatus {

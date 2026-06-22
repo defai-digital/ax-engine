@@ -1299,6 +1299,9 @@ fn load_glm_mtp_sidecar(
 
     let p = "glm_mtp";
 
+    // Resolve MLA attention config from the manifest.
+    let mla_config = MlaAttentionConfig::from_manifest(manifest)?;
+
     // Scalar norms for the MTP head.
     let enorm = mtp_take_plain(name_map, &format!("{p}.enorm.weight"))?;
     let hnorm = mtp_take_plain(name_map, &format!("{p}.hnorm.weight"))?;
@@ -1318,7 +1321,14 @@ fn load_glm_mtp_sidecar(
 
     // MLA attention projections.
     let q_a_proj = mtp_take_weight(name_map, &format!("{p}.layer.self_attn.q_a_proj"), None)?;
-    let kv_a_proj = mtp_take_weight(name_map, &format!("{p}.layer.self_attn.kv_a_proj"), None)?;
+    let kv_a_proj = mtp_take_weight(name_map, &format!("{p}.layer.self_attn.kv_a_proj"), None)
+        .or_else(|| {
+            mtp_take_weight(
+                name_map,
+                &format!("{p}.layer.self_attn.kv_a_proj_with_mqa"),
+                None,
+            )
+        })?;
     let q_a_norm = mtp_take_plain(
         name_map,
         &format!("{p}.layer.self_attn.q_a_layernorm.weight"),
@@ -1328,8 +1338,17 @@ fn load_glm_mtp_sidecar(
         &format!("{p}.layer.self_attn.kv_a_layernorm.weight"),
     )?;
     let q_b_proj = mtp_take_weight(name_map, &format!("{p}.layer.self_attn.q_b_proj"), None)?;
-    let embed_q = mtp_take_weight(name_map, &format!("{p}.layer.self_attn.embed_q"), None)?;
-    let unembed_out = mtp_take_weight(name_map, &format!("{p}.layer.self_attn.unembed_out"), None)?;
+    let (embed_q, unembed_out) = if let Some(kv_b) =
+        mtp_take_weight(name_map, &format!("{p}.layer.self_attn.kv_b_proj"), None)
+    {
+        split_deepseek_kv_b_projection(kv_b, &manifest.mla_attention, manifest.attention_head_count)
+            .ok()?
+    } else {
+        (
+            mtp_take_weight(name_map, &format!("{p}.layer.self_attn.embed_q"), None)?,
+            mtp_take_weight(name_map, &format!("{p}.layer.self_attn.unembed_out"), None)?,
+        )
+    };
     let o_proj = mtp_take_weight(name_map, &format!("{p}.layer.self_attn.o_proj"), None)?;
 
     // Fuse q_a_proj + kv_a_proj into a single matmul weight.
@@ -1346,21 +1365,44 @@ fn load_glm_mtp_sidecar(
 
     // MoE FFN: router + expert stacks.
     let router_proj = mtp_take_weight(name_map, &format!("{p}.layer.mlp.gate"), None);
+    let router_correction_bias =
+        mtp_take_plain(name_map, &format!("{p}.layer.mlp.gate.e_score_correction_bias"));
     let shared_gate_proj = mtp_take_weight(
         name_map,
         &format!("{p}.layer.mlp.shared_expert.gate_proj"),
         None,
-    );
+    )
+    .or_else(|| {
+        mtp_take_weight(
+            name_map,
+            &format!("{p}.layer.mlp.shared_experts.gate_proj"),
+            None,
+        )
+    });
     let shared_up_proj = mtp_take_weight(
         name_map,
         &format!("{p}.layer.mlp.shared_expert.up_proj"),
         None,
-    );
+    )
+    .or_else(|| {
+        mtp_take_weight(
+            name_map,
+            &format!("{p}.layer.mlp.shared_experts.up_proj"),
+            None,
+        )
+    });
     let shared_down_proj = mtp_take_weight(
         name_map,
         &format!("{p}.layer.mlp.shared_expert.down_proj"),
         None,
-    );
+    )
+    .or_else(|| {
+        mtp_take_weight(
+            name_map,
+            &format!("{p}.layer.mlp.shared_experts.down_proj"),
+            None,
+        )
+    });
     let gate_exps = mtp_take_weight(name_map, &format!("{p}.layer.mlp.gate_proj"), None);
     let up_exps = mtp_take_weight(name_map, &format!("{p}.layer.mlp.up_proj"), None);
     let down_exps = mtp_take_weight(name_map, &format!("{p}.layer.mlp.down_proj"), None);
@@ -1380,9 +1422,6 @@ fn load_glm_mtp_sidecar(
         );
         return None;
     }
-
-    // Resolve MLA attention config from the manifest.
-    let mla_config = MlaAttentionConfig::from_manifest(manifest)?;
 
     let layer = LayerWeights {
         attn_norm,
@@ -1406,7 +1445,7 @@ fn load_glm_mtp_sidecar(
         ffn_post_norm1: None,
         ffn_post_norm2: None,
         router_proj,
-        router_correction_bias: None,
+        router_correction_bias,
         router_scale: None,
         router_combined_scale: None,
         router_expert_scale: None,
