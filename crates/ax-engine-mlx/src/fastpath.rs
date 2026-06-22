@@ -794,6 +794,38 @@ env_flag!(
     "AX_DIFFUSION_FULL_PIPELINE"
 );
 
+env_flag!(
+    /// `AX_DIFFUSION_NO_KV_CONCAT_BUFFER` — opt-out of the KV concat
+    /// buffer that is enabled by default. When set to `1`, per-layer KV
+    /// concatenation is rebuilt from scratch on every denoise step.
+    diffusion_no_kv_concat_buffer,
+    "AX_DIFFUSION_NO_KV_CONCAT_BUFFER"
+);
+
+env_flag!(
+    /// `AX_DIFFUSION_NO_EMBEDDING_CACHE` — opt-out of the per-layer
+    /// embedding cache that is enabled by default. When set to `1`,
+    /// per-layer embeddings are recomputed on every denoise step.
+    diffusion_no_embedding_cache,
+    "AX_DIFFUSION_NO_EMBEDDING_CACHE"
+);
+
+env_flag!(
+    /// `AX_DIFFUSION_NO_COMPILED_FORWARD` — opt-out of the compiled
+    /// forward closure that is enabled by default when self-conditioning
+    /// is off. When set to `1`, the imperative forward path is used.
+    diffusion_no_compiled_forward,
+    "AX_DIFFUSION_NO_COMPILED_FORWARD"
+);
+
+env_flag!(
+    /// `AX_DIFFUSION_NO_SKIP_COMMIT` — opt-out of the causal commit
+    /// skip that is enabled by default on convergence with high
+    /// acceptance. When set to `1`, the causal commit pass always runs.
+    diffusion_no_skip_commit,
+    "AX_DIFFUSION_NO_SKIP_COMMIT"
+);
+
 /// Diffusion convergence: mean entropy threshold below which strict
 /// convergence triggers. Defaults to 0.005 when unset.
 pub fn diffusion_entropy_threshold() -> Option<f32> {

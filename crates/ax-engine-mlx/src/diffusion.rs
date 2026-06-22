@@ -21,37 +21,28 @@
 //! Convergence is checked every `convergence_check_interval` steps (default 4)
 //! to further reduce sync overhead.
 //!
-//! ## Compiled denoise closure
+//! ## Default-on performance optimizations
 //!
-//! When `AX_DIFFUSION_COMPILED_FORWARD=1` is set, the bidirectional forward
-//! pass is wrapped in an `MlxClosure` compiled via `mlx_compile`. The compiled
-//! graph is constructed once per block and reused for every denoise step,
-//! collapsing ~250 per-step MLX C-API calls into a single dispatched graph.
-//! Falls back to the imperative path on thread mismatch or compile failure.
+//! The following optimizations are enabled by default (opt-out via env vars):
 //!
-//! ## Conditional causal commit skip
+//! - **KV concatenation buffer** (opt-out: `AX_DIFFUSION_NO_KV_CONCAT_BUFFER=1`):
+//!   Per-layer KV buffers are pre-allocated on the first denoise step via
+//!   `concatenate`, then updated via `slice_update` on subsequent steps.
+//!   The bidirectional attention mask is also cached per-layer per block.
 //!
-//! When `AX_DIFFUSION_SKIP_COMMIT_ON_CONVERGE=1` is set and the denoise loop
-//! converges at step 1 with >= 99% acceptance, the causal commit pass is
-//! skipped entirely — the canvas tokens are emitted directly. This saves
-//! ~40 ms per block on the first-block measurement where convergence is
-//! immediate.
+//! - **Per-layer embedding cache** (opt-out: `AX_DIFFUSION_NO_EMBEDDING_CACHE=1`):
+//!   The output of `compute_per_layer_inputs_arr` is cached across denoise
+//!   steps. A GPU-side sum fingerprint detects token changes and reuses the
+//!   cached embeddings when tokens are unchanged.
 //!
-//! ## Per-layer embedding cache
+//! - **Compiled forward closure** (opt-out: `AX_DIFFUSION_NO_COMPILED_FORWARD=1`):
+//!   When self-conditioning is off, the bidirectional forward pass is wrapped
+//!   in an `MlxClosure` compiled via `mlx_compile`, collapsing ~250 per-step
+//!   MLX C-API calls into a single dispatched graph.
 //!
-//! When `AX_DIFFUSION_EMBEDDING_CACHE=1` is set, the per-layer embedding
-//! inputs (`compute_per_layer_inputs_arr`) are cached across denoise steps.
-//! A GPU-side sum fingerprint detects token changes (2 dispatches + 1 eval)
-//! and reuses the cached embeddings when tokens are unchanged, saving 46
-//! embedding dispatches per cache hit.
-//!
-//! ## KV concatenation buffer
-//!
-//! When `AX_DIFFUSION_KV_CONCAT_BUFFER=1` is set, per-layer KV concatenation
-//! buffers are pre-allocated on the first denoise step via `concatenate`,
-//! then updated on subsequent steps via `slice_update`. This avoids
-//! re-copying the cached prompt prefix on every step, saving memory
-//! bandwidth proportional to the prompt length.
+//! - **Conditional causal commit skip** (opt-out: `AX_DIFFUSION_NO_SKIP_COMMIT=1`):
+//!   When the denoise loop converges with >= 99% acceptance, the causal commit
+//!   pass is skipped — the canvas tokens are emitted directly, saving ~40 ms.
 //!
 //! ## Full-pipeline compiled forward
 //!
@@ -270,6 +261,7 @@ fn denoise_step(
     compiled_forward: Option<&MlxClosure>,
     kv_buffers: Option<&mut Vec<KVConcatBuffer>>,
     full_pipeline: Option<&MlxClosure>,
+    embed_cache: Option<&mut EmbeddingCache>,
 ) {
     let temperature = temperature_at_step(step, diff_cfg);
     let is_check_step = step.is_multiple_of(diff_cfg.convergence_check_interval);
@@ -360,7 +352,7 @@ fn denoise_step(
                 cache,
                 token_offset,
                 self_conditioning_signal: canvas.prev_self_cond_embed.as_ref(),
-                embed_cache: None,
+                embed_cache,
                 kv_buffers,
             }),
         }
@@ -372,7 +364,7 @@ fn denoise_step(
             cache,
             token_offset,
             self_conditioning_signal: canvas.prev_self_cond_embed.as_ref(),
-            embed_cache: None,
+            embed_cache,
             kv_buffers,
         })
     };
@@ -590,22 +582,39 @@ pub(crate) fn generate_diffusion_block(
         None
     };
 
-    // Build KV concatenation buffers when the opt-in flag is set.
-    // Per-layer buffers are lazily initialized on the first denoise step
-    // and reused via `slice_update` on subsequent steps.
-    let use_kv_buffers = fastpath::diffusion_kv_concat_buffer_enabled();
+    // KV concatenation buffers: enabled by default. Per-layer buffers are
+    // lazily initialized on the first denoise step and reused via
+    // `slice_update` on subsequent steps, avoiding re-copying the cached
+    // prompt prefix. Opt-out via `AX_DIFFUSION_NO_KV_CONCAT_BUFFER=1`.
+    let use_kv_buffers = !fastpath::diffusion_no_kv_concat_buffer();
     let mut kv_buffers: Option<Vec<KVConcatBuffer>> = if use_kv_buffers {
         Some(Vec::new())
     } else {
         None
     };
 
+    // Per-layer embedding cache: enabled by default. Caches the output of
+    // `compute_per_layer_inputs_arr` across denoise steps when token IDs
+    // are unchanged, saving ~46 embedding dispatches per cache hit.
+    // Opt-out via `AX_DIFFUSION_NO_EMBEDDING_CACHE=1`.
+    let use_embed_cache = !fastpath::diffusion_no_embedding_cache();
+    let mut embed_cache: Option<EmbeddingCache> = if use_embed_cache {
+        Some(EmbeddingCache::new())
+    } else {
+        None
+    };
+
     let full_pipeline: Option<MlxClosure> = None;
 
-    // When full pipeline is active, suppress the forward-only closure.
+    // Compiled forward: enabled by default when self-conditioning is off
+    // (the closure captures pointers and cannot track the dynamic
+    // self-conditioning signal). Wraps the bidirectional forward pass in
+    // an `MlxClosure` compiled via `mlx_compile`, collapsing ~250 per-step
+    // MLX C-API calls into a single dispatched graph.
+    // Opt-out via `AX_DIFFUSION_NO_COMPILED_FORWARD=1`.
     let compiled_forward: Option<MlxClosure> = if full_pipeline.is_some() {
         None
-    } else if !diff_cfg.self_conditioning && fastpath::diffusion_compiled_forward_enabled() {
+    } else if !diff_cfg.self_conditioning && !fastpath::diffusion_no_compiled_forward() {
         let cfg_addr = cfg as *const ModelConfig as usize;
         let weights_addr = weights as *const ModelWeights as usize;
         let cache_addr = cache as *const MlxKVCache as usize;
@@ -647,6 +656,7 @@ pub(crate) fn generate_diffusion_block(
             compiled_forward.as_ref(),
             kv_buffers.as_mut(),
             full_pipeline.as_ref(),
+            embed_cache.as_mut(),
         );
         steps_executed += 1;
         if canvas.converged {
@@ -655,13 +665,16 @@ pub(crate) fn generate_diffusion_block(
     }
     let denoise_wall_us = elapsed_us(denoise_start);
 
-    // Conditional commit skip: when the denoise loop converged at step 1
-    // with near-perfect acceptance, the canvas tokens are already the
-    // model's output — the causal commit pass is redundant.
-    let commit_skipped = fastpath::diffusion_skip_commit_on_converge()
-        && canvas.converged
-        && steps_executed == 1
-        && canvas.acceptance_rate >= 0.99;
+    // Conditional commit skip: when the denoise loop converged with
+    // near-perfect acceptance, the canvas tokens are already the model's
+    // output — the causal commit pass (~40 ms) is redundant. Enabled by
+    // default; opt-out via `AX_DIFFUSION_NO_SKIP_COMMIT=1`.
+    //
+    // Previously restricted to step-1 convergence only; now fires on any
+    // convergence with high acceptance, since the argmax canvas is always
+    // the model's best prediction regardless of step count.
+    let commit_skipped =
+        !fastpath::diffusion_no_skip_commit() && canvas.converged && canvas.acceptance_rate >= 0.99;
 
     let (tokens, commit_wall_us) = if commit_skipped {
         let output_tokens = canvas.argmax_canvas.as_ref().unwrap_or(&canvas.tokens_gpu);
@@ -711,7 +724,6 @@ struct EmbeddingCache {
 }
 
 impl EmbeddingCache {
-    #[allow(dead_code)]
     fn new() -> Self {
         Self {
             token_sum: f32::NAN,
@@ -1047,26 +1059,27 @@ mod tests {
     // without requiring model weights or MLX runtime.
 
     /// Simulate the commit-skip predicate from `generate_diffusion_block`.
+    /// Skip fires on any convergence (not just step 1) with high acceptance.
     fn should_skip_commit(
         flag_enabled: bool,
         converged: bool,
-        steps_executed: u32,
+        _steps_executed: u32,
         acceptance_rate: f32,
     ) -> bool {
-        flag_enabled && converged && steps_executed == 1 && acceptance_rate >= 0.99
+        flag_enabled && converged && acceptance_rate >= 0.99
     }
 
     #[test]
-    fn commit_skip_fires_on_step1_convergence() {
+    fn commit_skip_fires_on_convergence() {
         assert!(should_skip_commit(true, true, 1, 1.0));
         assert!(should_skip_commit(true, true, 1, 0.99));
     }
 
     #[test]
-    fn commit_no_skip_on_multi_step() {
-        // Even with convergence and high acceptance, steps > 1 prevents skip.
-        assert!(!should_skip_commit(true, true, 2, 1.0));
-        assert!(!should_skip_commit(true, true, 48, 0.99));
+    fn commit_skip_fires_on_multi_step_convergence() {
+        // Multi-step convergence with high acceptance now skips commit.
+        assert!(should_skip_commit(true, true, 2, 1.0));
+        assert!(should_skip_commit(true, true, 48, 0.99));
     }
 
     #[test]
