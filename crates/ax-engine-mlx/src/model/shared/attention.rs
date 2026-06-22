@@ -1,7 +1,8 @@
 use mlx_sys::{
-    MlxArray, MlxDtype, ScaledDotProductAttentionMask, as_strided, astype, concatenate, eval,
+    MlxArray, MlxDtype, ScaledDotProductAttentionMask, as_strided, astype, broadcast_to,
+    concatenate, eval, matmul, multiply,
     qk_norm_rope_bhsd_from_proj as direct_qk_norm_rope_bhsd_from_proj, reshape, rms_norm, rope,
-    scaled_dot_product_attention_with_mask, slice_update, transpose,
+    scaled_dot_product_attention_with_mask, slice, slice_update, softmax_precise, transpose,
 };
 use std::time::Instant;
 
@@ -306,12 +307,106 @@ pub(crate) fn full_precision_attention(
     scaled_dot_product_attention_with_mask(q_rope, cached_k, cached_v, query_scale, mask, None)
 }
 
+/// Attention with per-head learned sinks (GPT-OSS).
+///
+/// Computes standard scaled dot-product attention but appends a virtual "sink"
+/// score per head before softmax. The sink absorbs probability mass that would
+/// otherwise be distributed across real tokens, improving long-context
+/// coherence. After softmax the sink column is excluded from the value
+/// weighted sum.
+///
+/// `q`: `[B, n_q_heads, seq, head_dim]`
+/// `k`: `[B, n_kv_heads, key_len, head_dim]`
+/// `v`: `[B, n_kv_heads, key_len, head_dim]`
+/// `sinks`: `[n_q_heads]` — per-head additive sink bias
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn attention_with_sinks(
+    q: &MlxArray,
+    k: &MlxArray,
+    v: &MlxArray,
+    sinks: &MlxArray,
+    query_scale: f32,
+    seq: usize,
+    mask_opt: &Option<MlxArray>,
+) -> MlxArray {
+    // scores = Q @ K^T * scale → [B, n_q_heads, seq, key_len]
+    let k_t = transpose(k, &[0, 1, 3, 2], None);
+    let scores = multiply(&matmul(q, &k_t, None), &scalar_array(query_scale), None);
+
+    // Append sink scores as an extra column → [B, n_q_heads, seq, key_len + 1]
+    // Broadcast sinks from [n_q_heads] → [1, n_q_heads, 1, 1] → [B, n_q_heads, seq, 1]
+    let batch = scores.shape()[0];
+    let n_heads = scores.shape()[1];
+    let sink_broad = broadcast_to(
+        &reshape(sinks, &[1, n_heads, 1, 1], None),
+        &[batch, n_heads, seq as i32, 1],
+        None,
+    );
+    let scores_with_sink = concatenate(&[&scores, &sink_broad], 3, None);
+
+    // Apply causal/sliding mask extended for the sink column.
+    // The sink position is always visible (unmasked), so pad the mask with
+    // ones along the last axis for the extra column.
+    let true_val = scalar_array(1.0);
+    let masked_scores = if let Some(mask) = mask_opt.as_ref() {
+        let extended_mask = mlx_sys::pad(mask, &[3], &[0], &[1], &true_val, None);
+        let neg_inf = scalar_array(f32::NEG_INFINITY);
+        let zero = scalar_array(0.0);
+        let penalty = mlx_sys::where_cond(&extended_mask, &zero, &neg_inf, None);
+        mlx_sys::add(&scores_with_sink, &penalty, None)
+    } else if seq > 1 {
+        let key_len = k.shape()[2] as usize;
+        let causal = create_causal_mask(seq, key_len.saturating_sub(seq), None);
+        let extended_mask = mlx_sys::pad(&causal, &[3], &[0], &[1], &true_val, None);
+        let neg_inf = scalar_array(f32::NEG_INFINITY);
+        let zero = scalar_array(0.0);
+        let penalty = mlx_sys::where_cond(&extended_mask, &zero, &neg_inf, None);
+        mlx_sys::add(&scores_with_sink, &penalty, None)
+    } else {
+        scores_with_sink
+    };
+
+    // Softmax over the last axis (real tokens + sink).
+    let weights = softmax_precise(&masked_scores, -1, None);
+
+    // Exclude the sink column from value weighting.
+    // weights[:, :, :, :-1] @ V
+    let weights_real = slice(
+        &weights,
+        &[0, 0, 0, 0],
+        &[
+            weights.shape()[0],
+            weights.shape()[1],
+            weights.shape()[2],
+            weights.shape()[3] - 1,
+        ],
+        &[1, 1, 1, 1],
+        None,
+    );
+
+    matmul(&weights_real, v, None)
+}
+
+/// Create a scalar MlxArray from a single f32 value.
+fn scalar_array(val: f32) -> MlxArray {
+    MlxArray::from_raw_data(
+        &val as *const f32 as *const u8,
+        std::mem::size_of::<f32>(),
+        &[1_i32],
+        MlxDtype::Float32,
+    )
+}
+
 /// Pre-allocated KV concatenation buffer for bidirectional attention.
 ///
 /// On the first denoise step, the full `[cached_k, canvas_k]` and
 /// `[cached_v, canvas_v]` concatenations are built via `concatenate`.
 /// On subsequent steps, only the canvas slice is updated via
 /// `slice_update`, avoiding re-copying the cached prompt prefix.
+///
+/// The attention mask for canvas self-attention is also cached here,
+/// since it depends only on `cached_seq`, `canvas_size`, and `window`,
+/// all of which are constant within a diffusion block.
 pub(crate) struct KVConcatBuffer {
     /// Full K buffer: `[B, H, cached_seq + canvas_size, D]`.
     pub full_k: Option<MlxArray>,
@@ -319,6 +414,13 @@ pub(crate) struct KVConcatBuffer {
     pub full_v: Option<MlxArray>,
     /// Length of the cached (prompt) sequence along axis 2.
     pub cached_seq: usize,
+    /// Cached attention mask for bidirectional canvas self-attention.
+    /// Keyed by `cached_seq` (constant within a block); rebuilt when the
+    /// buffer is first populated or when the cached sequence length changes
+    /// (new block committed).
+    pub cached_mask: Option<MlxArray>,
+    /// The `cached_seq` for which `cached_mask` was built.
+    cached_mask_seq: usize,
 }
 
 impl KVConcatBuffer {
@@ -327,6 +429,8 @@ impl KVConcatBuffer {
             full_k: None,
             full_v: None,
             cached_seq: 0,
+            cached_mask: None,
+            cached_mask_seq: usize::MAX,
         }
     }
 }
@@ -350,12 +454,12 @@ pub(crate) fn bidirectional_attention(
     canvas_v: &MlxArray,
     query_scale: f32,
     sliding_window: Option<usize>,
-    kv_buffer: Option<&mut KVConcatBuffer>,
+    mut kv_buffer: Option<&mut KVConcatBuffer>,
 ) -> MlxArray {
     let canvas_size = canvas_q.shape()[2] as usize;
 
     // Build full KV: either via slice_update (buffer path) or concatenate.
-    let (full_k, full_v) = if let Some(buf) = kv_buffer {
+    let (full_k, full_v) = if let Some(ref mut buf) = kv_buffer {
         if buf.full_k.is_none() {
             // First step: build buffer via concatenate.
             let fk = concatenate(&[cached_k, canvas_k], 2, None);
@@ -404,10 +508,23 @@ pub(crate) fn bidirectional_attention(
 
     // Build mask only when a symmetric sliding window must be enforced.
     // Without a window, every canvas position attends to every key (no mask).
+    // When a KV buffer is available, cache the mask since it depends only on
+    // (canvas_size, cached_seq, window), all constant within a diffusion block.
     let mask = sliding_window.map(|window| {
         let full_key_len = full_k.shape()[2] as usize;
         let cached_seq = full_key_len.saturating_sub(canvas_size);
-        build_bidirectional_canvas_mask(canvas_size, cached_seq, window)
+        if let Some(buf) = kv_buffer {
+            if buf.cached_mask.is_none() {
+                let m = build_bidirectional_canvas_mask(canvas_size, cached_seq, window);
+                buf.cached_mask = Some(m.clone());
+                buf.cached_mask_seq = cached_seq;
+                m
+            } else {
+                buf.cached_mask.clone().unwrap()
+            }
+        } else {
+            build_bidirectional_canvas_mask(canvas_size, cached_seq, window)
+        }
     });
 
     let mask_arg = mask
@@ -863,6 +980,7 @@ mod tests {
             think_start_token_id: None,
             think_end_token_id: None,
             diffusion: None,
+            gpt_oss_uses_mxfp4_experts: false,
         }
     }
 

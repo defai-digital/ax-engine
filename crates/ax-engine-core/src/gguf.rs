@@ -516,6 +516,7 @@ pub fn load_gguf(path: &Path) -> Result<NativeModelArtifacts, GgufError> {
         "qwen35" | "qwen3.5" | "qwen3_5" | "qwen3_5_text" | "qwen3_5_moe" => "qwen3_5",
         "qwen3next" | "qwen3.6" | "qwen3_6" => "qwen3_next",
         "gemma4" => "gemma4",
+        "gpt_oss" => "gpt_oss",
         _ => return Err(GgufError::UnknownArch(arch.clone())),
     };
 

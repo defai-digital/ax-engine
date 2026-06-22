@@ -1661,7 +1661,45 @@ pub(crate) fn moe_router_deepseek_v3(
     (top_k_indices, top_k_weights)
 }
 
-/// Zero out experts belonging to the worst (n_group - topk_group) groups.
+/// GPT-OSS MoE router: proj → softmax over ALL experts → top-k → renormalize.
+///
+/// This differs from Qwen3 (argpartition-first, then softmax on top-k subset)
+/// and Gemma4 (rms_norm → proj → argpartition → softmax). GPT-OSS always
+/// computes full softmax first, then selects the top-k by weight magnitude,
+/// then renormalizes the selected weights to sum to 1.
+pub(crate) fn moe_router_gpt_oss(
+    cfg: &ModelConfig,
+    w: &LayerWeights,
+    normed: &MlxArray,
+) -> (MlxArray, MlxArray) {
+    let router_proj = w
+        .router_proj
+        .as_ref()
+        .expect("GPT-OSS MoE layer must have router_proj");
+    let logits = qw(normed, router_proj);
+    let last_axis = logits.ndim() as i32 - 1;
+
+    // Full softmax over all 128 experts.
+    let weights_all = softmax_precise(&logits, last_axis, None);
+
+    // Select top-k by weight magnitude.
+    let (top_k_indices, top_k_raw) = top_k_by_argpartition(
+        &weights_all,
+        cfg.moe_expert_count,
+        cfg.moe_experts_per_token,
+        false,
+    );
+
+    // Renormalize top-k weights to sum to 1.
+    let top_k_weights = if cfg.moe_experts_per_token > 1 {
+        let sum = sum_axis(&top_k_raw, last_axis, true, None);
+        divide(&top_k_raw, &sum, None)
+    } else {
+        top_k_raw
+    };
+
+    (top_k_indices, top_k_weights)
+}
 ///
 /// Matches `group_expert_select` in mlx-lm deepseek_v3.py lines 206–216:
 ///   scores reshaped → top-2 per group → sum → argpartition worst groups → zero them.
@@ -1848,6 +1886,9 @@ pub(crate) fn moe_experts_forward_with_cloned_weights(
         gate_exps,
         up_exps,
         down_exps,
+        mxfp4_gate_up_exps: None,
+        mxfp4_down_exps: None,
+        attn_sink: None,
         rotation_smoothing_inverse: None,
     };
     moe_experts_forward_impl(

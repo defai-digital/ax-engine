@@ -8,11 +8,12 @@ pub(super) mod utils;
 
 // Re-exports for model/mod.rs and families/ modules.
 pub(crate) use attention::{
-    KVConcatBuffer, attention_mask_array, bidirectional_attention, build_layer_masks,
-    build_layer_masks_with_media_ranges, direct_qk_norm_rope_route_enabled_for_family,
-    flatten_attention_output_bhsd, full_precision_attention, prepare_value_bhsd,
-    prepare_value_bhsd_from_proj, qk_norm_bhsd_from_proj, qk_norm_rope_bhsd_from_proj,
-    qk_norm_rope_bhsd_from_proj_with_route, turboquant_decode_attention_experimental,
+    KVConcatBuffer, attention_mask_array, attention_with_sinks, bidirectional_attention,
+    build_layer_masks, build_layer_masks_with_media_ranges,
+    direct_qk_norm_rope_route_enabled_for_family, flatten_attention_output_bhsd,
+    full_precision_attention, prepare_value_bhsd, prepare_value_bhsd_from_proj,
+    qk_norm_bhsd_from_proj, qk_norm_rope_bhsd_from_proj, qk_norm_rope_bhsd_from_proj_with_route,
+    turboquant_decode_attention_experimental,
 };
 pub(crate) use linear_attention::linear_attention_forward;
 pub(crate) use mla::glm_mla_attention_forward;
@@ -22,7 +23,8 @@ pub(crate) use mlp::{
     attention_output_projection, ffn_swiglu, flatten_compiled_moe_inputs, moe_experts_forward,
     moe_experts_forward_gemma4, moe_experts_forward_with_cloned_weights,
     moe_experts_forward_with_shared, moe_router_deepseek_v3, moe_router_gemma4, moe_router_glm,
-    moe_router_qwen3, per_layer_input_gate_project, qkv_project, shared_expert_forward,
+    moe_router_gpt_oss, moe_router_qwen3, per_layer_input_gate_project, qkv_project,
+    shared_expert_forward,
 };
 pub(crate) use norm::rms_norm_opt;
 pub(super) use rope::build_llama3_rope_freqs;

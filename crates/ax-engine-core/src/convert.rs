@@ -510,6 +510,37 @@ const LLAMA4_EXTRA_TENSOR_MAP: &[(&str, TensorMapping)] = &[
     ),
 ];
 
+/// Per-layer tensor patterns for GPT-OSS MoE layers.
+///
+/// GPT-OSS stores MoE expert weights as MXFP4 block+scale pairs rather than
+/// single quantized tensors. The attention sink is a per-head learned bias.
+const GPT_OSS_EXTRA_TENSOR_MAP: &[(&str, TensorMapping)] = &[
+    (
+        "self_attn.attn_sink.weight",
+        TensorMapping::PerLayer(NativeTensorRole::AttnSink),
+    ),
+    (
+        "mlp.router.weight",
+        TensorMapping::PerLayer(NativeTensorRole::FfnGateInp),
+    ),
+    (
+        "mlp.experts.gate_up_proj.blocks",
+        TensorMapping::PerLayer(NativeTensorRole::FfnGateUpExpsMxfp4Blocks),
+    ),
+    (
+        "mlp.experts.gate_up_proj.scales",
+        TensorMapping::PerLayer(NativeTensorRole::FfnGateUpExpsMxfp4Scales),
+    ),
+    (
+        "mlp.experts.down_proj.blocks",
+        TensorMapping::PerLayer(NativeTensorRole::FfnDownExpsMxfp4Blocks),
+    ),
+    (
+        "mlp.experts.down_proj.scales",
+        TensorMapping::PerLayer(NativeTensorRole::FfnDownExpsMxfp4Scales),
+    ),
+];
+
 /// HuggingFace tensor name patterns shared by Qwen3/Gemma4.
 ///
 /// The HuggingFace convention is:
@@ -992,6 +1023,13 @@ fn model_family_for_type(
             tensor_map: HF_STANDARD_TENSOR_MAP,
             extra_tensor_map: Some(LLAMA4_EXTRA_TENSOR_MAP),
             uses_language_model_prefix: true,
+            uses_decoder_prefix: false,
+        }),
+        "gpt_oss" => Ok(ModelFamily {
+            family_name: "gpt_oss",
+            tensor_map: HF_STANDARD_TENSOR_MAP,
+            extra_tensor_map: Some(GPT_OSS_EXTRA_TENSOR_MAP),
+            uses_language_model_prefix: false,
             uses_decoder_prefix: false,
         }),
         other => Err(ConvertError::UnsupportedModelType {

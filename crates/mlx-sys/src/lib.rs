@@ -71,7 +71,7 @@ pub use ops::{
     qwen_linear_attention_post_input, random_categorical, repeat, repeat_axis, reshape, sigmoid,
     silu_mul, sin, slice, slice_last_dim, slice_update, softmax, softmax_precise, split, stack,
     stop_gradient, subtract, sum_axis, take, take_along_axis, tanh, to_fp8, topk, topk_axis,
-    transpose, unflatten, where_cond, zeros,
+    transpose, unflatten, view, where_cond, zeros,
 };
 pub use stream::MlxStream;
 pub use transforms::{

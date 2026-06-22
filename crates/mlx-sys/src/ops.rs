@@ -880,6 +880,21 @@ pub fn astype(a: &MlxArray, dtype: MlxDtype, s: Option<&MlxStream>) -> MlxArray 
     }
 }
 
+/// Reinterpret the bytes of `a` as `dtype` without converting values.
+///
+/// Unlike [`astype`] which converts element values, `view` reinterprets the
+/// underlying memory. For example, viewing a u8 array of length 4N as u32
+/// produces an array of length N where each element packs 4 original bytes.
+pub fn view(a: &MlxArray, dtype: MlxDtype, s: Option<&MlxStream>) -> MlxArray {
+    crate::op_count::bump();
+    unsafe {
+        let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
+        let mut res = MlxArray::empty();
+        ffi::mlx_view(&mut res.inner, a.inner, dtype.to_ffi(), stream);
+        res
+    }
+}
+
 pub fn arange(
     start: f64,
     stop: f64,

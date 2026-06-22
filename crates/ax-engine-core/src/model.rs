@@ -100,6 +100,16 @@ pub enum NativeTensorRole {
     FfnDown,
     FfnDownExps,
     FfnDownExpsScale,
+    /// GPT-OSS per-head learned attention sink weight.
+    AttnSink,
+    /// GPT-OSS MXFP4 gate-up expert weight blocks (u8 packed).
+    FfnGateUpExpsMxfp4Blocks,
+    /// GPT-OSS MXFP4 gate-up expert weight scales (E8M0).
+    FfnGateUpExpsMxfp4Scales,
+    /// GPT-OSS MXFP4 down expert weight blocks (u8 packed).
+    FfnDownExpsMxfp4Blocks,
+    /// GPT-OSS MXFP4 down expert weight scales (E8M0).
+    FfnDownExpsMxfp4Scales,
     LayerScalar,
     /// Global embedding table for per-layer token inputs (Gemma4 2B/4B).
     PerLayerEmbedding,
@@ -205,6 +215,11 @@ impl NativeTensorRole {
                 | Self::FfnDown
                 | Self::FfnDownExps
                 | Self::FfnDownExpsScale
+                | Self::AttnSink
+                | Self::FfnGateUpExpsMxfp4Blocks
+                | Self::FfnGateUpExpsMxfp4Scales
+                | Self::FfnDownExpsMxfp4Blocks
+                | Self::FfnDownExpsMxfp4Scales
                 | Self::LayerScalar
                 | Self::PerLayerInputGate
                 | Self::PerLayerInputProjection

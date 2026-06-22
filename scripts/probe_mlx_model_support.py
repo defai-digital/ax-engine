@@ -37,6 +37,7 @@ REPO_OWNED_TYPES = {
     "gemma4_unified",
     "gemma4_unified_text",
     "diffusion_gemma",
+    "gpt_oss",
 }
 
 
