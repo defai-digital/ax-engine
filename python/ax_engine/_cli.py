@@ -917,9 +917,13 @@ def _user_doctor_report(bench_report: dict) -> dict:
 
 def _default_mtp_depth_max(base_model: str, mtp_source: str) -> int:
     label = f"{base_model} {mtp_source}".lower()
+    if "glm-4.7-flash" in label or "glm4.7-flash" in label or "glm47" in label:
+        return 1
     if "qwen3.6-27b" in label or "qwen3-6-27b" in label:
         return 3
     if "qwen3.6-35b" in label or "qwen3-6-35b" in label or "35b-a3b" in label:
+        return 1
+    if "qwen3-coder-next" in label or "qwen3-next-80b" in label or "qwen3-next-80b-a3b" in label:
         return 1
     return 1
 

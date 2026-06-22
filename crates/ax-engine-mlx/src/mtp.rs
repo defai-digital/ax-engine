@@ -6,13 +6,14 @@ use mlx_sys::{
 
 use crate::kv_cache::MlxKVCache;
 use crate::model::shared::{
-    apply_final_logit_softcap, ffn_swiglu, flatten_attention_output_bhsd, moe_experts_forward,
-    moe_router_deepseek_v3, moe_router_glm, moe_router_qwen3, prepare_value_bhsd_from_proj,
-    qk_norm_rope_bhsd_from_proj, qw, shared_expert_forward,
+    apply_final_logit_softcap, ffn_swiglu, flatten_attention_output_bhsd,
+    glm_mla_attention_forward, moe_experts_forward, moe_router_deepseek_v3, moe_router_glm,
+    moe_router_qwen3, prepare_value_bhsd_from_proj, qk_norm_rope_bhsd_from_proj, qw, rms_norm_opt,
+    shared_expert_forward,
 };
 use crate::model::{ModelConfig, embed_tokens_arr};
 use crate::sampling::{TokenDistribution, Xorshift64};
-use crate::weights::{ModelWeights, MtpWeights};
+use crate::weights::{GlmMtpWeights, ModelWeights, MtpWeights};
 use std::sync::OnceLock;
 
 /// Draft sampling mode for MTP speculative decoding.
@@ -980,6 +981,301 @@ fn mtp_draft_tokens_stochastic(
     let draft_tokens: Vec<u32> = lazy_tokens.iter().map(|a| a.data_u32()[0]).collect();
     let draft_log_probs: Vec<f32> = lazy_log_probs.iter().map(|a| a.data_f32()[0]).collect();
 
+    let added = draft_tokens.len();
+    (draft_tokens, draft_log_probs, vec![], added, [0.0f32; 3])
+}
+
+// -------------------------------------------------------------------------
+// GLM 4.7 Flash MTP forward
+// -------------------------------------------------------------------------
+
+/// Run one recurrent GLM MTP head forward pass for a single decode step.
+///
+/// Returns new hidden state `[1, 1, hidden_size]`.
+///
+/// * `head`           — GLM MTP weights.
+/// * `main_hidden`    — post-norm hidden from the main model (shape `[1, 1, hidden_size]`).
+/// * `prev_token_arr` — token ID as a GPU uint32 array, shape `[1]`.
+/// * `weights`        — main model weights (for the shared token embedding).
+/// * `cache`          — 1-layer GLM MLA KV cache for this head.
+/// * `cfg`            — main model config (provides rms_norm_eps, rope_theta, mla_attention, etc.).
+/// * `rope_offset_override` — explicit RoPE offset (capped warmup); `None` to use `cache.seq_len`.
+pub fn glm_mtp_head_forward(
+    head: &GlmMtpWeights,
+    main_hidden: &MlxArray,
+    prev_token_arr: &MlxArray,
+    weights: &ModelWeights,
+    cache: &mut MlxKVCache,
+    cfg: &ModelConfig,
+    rope_offset_override: Option<usize>,
+) -> MlxArray {
+    let token_offset = rope_offset_override.unwrap_or(cache.seq_len + cache.rope_offset);
+
+    // 1. embed prev_token → [1, 1, hidden_size] in bf16.
+    let embed = embed_tokens_arr(prev_token_arr, &weights.token_embedding, cfg.hidden_size);
+    let embed = astype(&embed, MlxDtype::Bfloat16, None);
+
+    // 2. Fused input: eh_proj(cat([enorm(embed), hnorm(main_hidden)]))
+    let enormed = rms_norm(&embed, Some(&head.enorm), cfg.rms_norm_eps, None);
+    let hnormed = rms_norm(main_hidden, Some(&head.hnorm), cfg.rms_norm_eps, None);
+    let combined = concatenate(&[&enormed, &hnormed], -1, None);
+    let h = qw(&combined, &head.eh_proj);
+
+    // 3. GLM transformer layer (MLA attention + MoE FFN), same pattern as glm4_moe_lite::layer_forward.
+    let normed = rms_norm(&h, Some(&head.layer.attn_norm), cfg.rms_norm_eps, None);
+    let attn_proj = glm_mla_attention_forward(cfg, &head.layer, &normed, cache, 0, token_offset);
+    let attn_proj = if let Some(post_norm) = &head.layer.attn_post_norm {
+        rms_norm(&attn_proj, Some(post_norm), cfg.rms_norm_eps, None)
+    } else {
+        attn_proj
+    };
+    cache.seq_len += 1;
+    let hidden = add(&h, &attn_proj, None);
+
+    let normed2 = rms_norm(&hidden, Some(&head.layer.ffn_norm), cfg.rms_norm_eps, None);
+    let ffn_out = if head.layer.router_proj.is_some() {
+        let (top_k_indices, top_k_weights) = moe_router_glm(cfg, &head.layer, &normed2);
+        let mut out =
+            moe_experts_forward(cfg, &head.layer, &normed2, &top_k_indices, &top_k_weights);
+        if head.layer.shared_gate_proj.is_some() {
+            out = add(
+                &out,
+                &shared_expert_forward(cfg, &head.layer, &normed2),
+                None,
+            );
+        }
+        rms_norm_opt(&out, head.layer.ffn_post_norm.as_ref(), cfg.rms_norm_eps)
+    } else {
+        ffn_swiglu(
+            cfg,
+            &head.layer,
+            &normed2,
+            head.layer.ffn_post_norm.as_ref(),
+        )
+    };
+
+    add(&hidden, &ffn_out, None)
+}
+
+/// Apply `shared_head.head(rms_norm(hidden, shared_head_norm))` to produce draft logits.
+///
+/// Returns f32 logits `[vocab_size]` ready for argmax / sampling.
+pub fn glm_mtp_hidden_to_logits(
+    hidden: &MlxArray,
+    head: &GlmMtpWeights,
+    cfg: &ModelConfig,
+) -> MlxArray {
+    let normed = rms_norm(hidden, Some(&head.shared_head_norm), cfg.rms_norm_eps, None);
+    let logits = qw(&normed, &head.shared_head);
+    let logits_f32 = astype(&logits, MlxDtype::Float32, None);
+    // [1, 1, vocab] → [vocab]
+    reshape(&logits_f32, &[cfg.vocab_size as i32], None)
+}
+
+/// Draft up to `head.max_depth` tokens using the GLM MTP head.
+///
+/// Returns `(draft_tokens, draft_log_probs, draft_distributions, added, top2_margins)`.
+/// Mirrors `mtp_draft_tokens` but calls `glm_mtp_head_forward` + `glm_mtp_hidden_to_logits`.
+/// Returns empty when `weights.glm_mtp` is `None`.
+#[allow(clippy::too_many_arguments)]
+pub fn glm_mtp_draft_tokens(
+    weights: &ModelWeights,
+    cfg: &ModelConfig,
+    first_hidden: &MlxArray,
+    first_token: u32,
+    cache: &mut MlxKVCache,
+    max_depth_cap: Option<usize>,
+    rng: &mut Xorshift64,
+) -> (Vec<u32>, Vec<f32>, Vec<TokenDistribution>, usize, [f32; 3]) {
+    glm_mtp_draft_tokens_gated(
+        weights,
+        cfg,
+        first_hidden,
+        first_token,
+        cache,
+        max_depth_cap,
+        rng,
+        resolve_mtp_draft_min_confidence(
+            crate::speculation_profile::speculation_profile_from_env(),
+            None,
+        ),
+    )
+}
+
+/// Like [`glm_mtp_draft_tokens`] but with an explicit draft-confidence gate.
+#[allow(clippy::too_many_arguments)]
+pub fn glm_mtp_draft_tokens_gated(
+    weights: &ModelWeights,
+    cfg: &ModelConfig,
+    first_hidden: &MlxArray,
+    first_token: u32,
+    cache: &mut MlxKVCache,
+    max_depth_cap: Option<usize>,
+    _rng: &mut Xorshift64,
+    min_confidence: f32,
+) -> (Vec<u32>, Vec<f32>, Vec<TokenDistribution>, usize, [f32; 3]) {
+    let Some(head) = weights.glm_mtp.as_ref() else {
+        return (vec![], vec![], vec![], 0, [0.0; 3]);
+    };
+    let max_depth = max_depth_cap.unwrap_or(head.max_depth).min(head.max_depth);
+    if max_depth == 0 {
+        return (vec![], vec![], vec![], 0, [0.0; 3]);
+    }
+
+    let vocab = cfg.vocab_size as i32;
+    let draft_mode = mtp_draft_mode_from_env();
+    let gate_forces_greedy = min_confidence > 0.0 && draft_mode != MtpDraftMode::Stochastic;
+
+    let result = if gate_forces_greedy || draft_mode == MtpDraftMode::Greedy {
+        glm_mtp_draft_tokens_greedy(
+            head,
+            weights,
+            cfg,
+            first_hidden,
+            first_token,
+            cache,
+            max_depth,
+            vocab,
+        )
+    } else {
+        // Stochastic path.
+        glm_mtp_draft_tokens_stochastic(
+            head,
+            weights,
+            cfg,
+            first_hidden,
+            first_token,
+            cache,
+            max_depth,
+            vocab,
+        )
+    };
+
+    let appended = result.3;
+    let gated = apply_draft_confidence_gate(result, min_confidence);
+    let dropped = appended.saturating_sub(gated.3);
+    if dropped > 0 {
+        let target = cache.seq_len.saturating_sub(dropped);
+        let _ = cache.trim_to(target);
+    }
+    gated
+}
+
+/// Greedy GLM MTP draft: lazy argmax across all depths, single batch eval.
+#[allow(clippy::too_many_arguments)]
+fn glm_mtp_draft_tokens_greedy(
+    head: &GlmMtpWeights,
+    weights: &ModelWeights,
+    cfg: &ModelConfig,
+    first_hidden: &MlxArray,
+    first_token: u32,
+    cache: &mut MlxKVCache,
+    max_depth: usize,
+    vocab: i32,
+) -> (Vec<u32>, Vec<f32>, Vec<TokenDistribution>, usize, [f32; 3]) {
+    let mut lazy_tokens: Vec<MlxArray> = Vec::with_capacity(max_depth);
+    let mut lazy_log_probs: Vec<MlxArray> = Vec::with_capacity(max_depth);
+    let mut prev_hidden = first_hidden.clone();
+    let first_token_data = [first_token];
+    let mut prev_token_arr = MlxArray::from_raw_data(
+        first_token_data.as_ptr() as *const u8,
+        4,
+        &[1_i32],
+        MlxDtype::Uint32,
+    );
+
+    for _ in 0..max_depth {
+        let new_hidden = glm_mtp_head_forward(
+            head,
+            &prev_hidden,
+            &prev_token_arr,
+            weights,
+            cache,
+            cfg,
+            None,
+        );
+        let logits = glm_mtp_hidden_to_logits(&new_hidden, head, cfg);
+        let lazy_tok = lazy_argmax_logits(&logits);
+        let lazy_lp = gpu_draft_log_prob_lazy(&logits, &lazy_tok, 1.0, vocab);
+        lazy_tokens.push(lazy_tok.clone());
+        lazy_log_probs.push(lazy_lp);
+        prev_hidden = new_hidden;
+        prev_token_arr = lazy_tok;
+    }
+
+    let mut all_refs: Vec<&MlxArray> = Vec::with_capacity(max_depth * 2);
+    for t in &lazy_tokens {
+        all_refs.push(t);
+    }
+    for lp in &lazy_log_probs {
+        all_refs.push(lp);
+    }
+    eval(&all_refs);
+
+    let draft_tokens: Vec<u32> = lazy_tokens.iter().map(|a| a.data_u32()[0]).collect();
+    let draft_log_probs: Vec<f32> = lazy_log_probs.iter().map(|a| a.data_f32()[0]).collect();
+    let added = draft_tokens.len();
+    (draft_tokens, draft_log_probs, vec![], added, [0.0f32; 3])
+}
+
+/// Stochastic GLM MTP draft: GPU-side `random_categorical` sampling.
+#[allow(clippy::too_many_arguments)]
+fn glm_mtp_draft_tokens_stochastic(
+    head: &GlmMtpWeights,
+    weights: &ModelWeights,
+    cfg: &ModelConfig,
+    first_hidden: &MlxArray,
+    first_token: u32,
+    cache: &mut MlxKVCache,
+    max_depth: usize,
+    vocab: i32,
+) -> (Vec<u32>, Vec<f32>, Vec<TokenDistribution>, usize, [f32; 3]) {
+    let temperature = head.draft_sampling.temperature;
+    let mut lazy_tokens: Vec<MlxArray> = Vec::with_capacity(max_depth);
+    let mut lazy_log_probs: Vec<MlxArray> = Vec::with_capacity(max_depth);
+    let mut prev_hidden = first_hidden.clone();
+    let first_token_data = [first_token];
+    let mut prev_token_arr = MlxArray::from_raw_data(
+        first_token_data.as_ptr() as *const u8,
+        4,
+        &[1_i32],
+        MlxDtype::Uint32,
+    );
+
+    for _ in 0..max_depth {
+        let new_hidden = glm_mtp_head_forward(
+            head,
+            &prev_hidden,
+            &prev_token_arr,
+            weights,
+            cache,
+            cfg,
+            None,
+        );
+        let logits = glm_mtp_hidden_to_logits(&new_hidden, head, cfg);
+        let lazy_tok = if temperature > 0.0 {
+            lazy_random_sample(&logits, temperature, vocab)
+        } else {
+            lazy_argmax_logits(&logits)
+        };
+        lazy_tokens.push(lazy_tok.clone());
+        let lazy_lp = gpu_draft_log_prob_lazy(&logits, &lazy_tok, temperature.max(1.0), vocab);
+        lazy_log_probs.push(lazy_lp);
+        prev_hidden = new_hidden;
+        prev_token_arr = lazy_tok;
+    }
+
+    let mut all_refs: Vec<&MlxArray> = Vec::with_capacity(max_depth * 2);
+    for t in &lazy_tokens {
+        all_refs.push(t);
+    }
+    for lp in &lazy_log_probs {
+        all_refs.push(lp);
+    }
+    eval(&all_refs);
+
+    let draft_tokens: Vec<u32> = lazy_tokens.iter().map(|a| a.data_u32()[0]).collect();
+    let draft_log_probs: Vec<f32> = lazy_log_probs.iter().map(|a| a.data_f32()[0]).collect();
     let added = draft_tokens.len();
     (draft_tokens, draft_log_probs, vec![], added, [0.0f32; 3])
 }

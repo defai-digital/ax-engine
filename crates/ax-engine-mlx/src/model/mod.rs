@@ -199,6 +199,9 @@ pub fn layer_forward_with_turboquant_context(
             shared_mask,
             turboquant_context,
         ),
+        "gpt_oss" => {
+            families::gpt_oss::layer_forward(cfg, w, hidden, cache, layer_idx, token_offset)
+        }
         f => panic!("unknown model_family in layer_forward: {f}"),
     }
 }
@@ -1605,6 +1608,7 @@ mod tests {
             think_start_token_id: None,
             think_end_token_id: None,
             diffusion: None,
+            gpt_oss_uses_mxfp4_experts: false,
         }
     }
 
@@ -2217,6 +2221,7 @@ mod tests {
             per_layer_model_proj: Some(dense_weight(&[4, 2])),
             per_layer_proj_norm: Some(zeros(&[2], MlxDtype::Float32, None)),
             mtp: None,
+            glm_mtp: None,
             gemma4_assistant_mtp: Default::default(),
             assistant_pre_projection: None,
             assistant_post_projection: None,
@@ -2295,6 +2300,9 @@ mod tests {
             gate_exps: None,
             up_exps: None,
             down_exps: None,
+            mxfp4_gate_up_exps: None,
+            mxfp4_down_exps: None,
+            attn_sink: None,
             rotation_smoothing_inverse: None,
         }
     }
@@ -2362,6 +2370,9 @@ mod tests {
             gate_exps: None,
             up_exps: None,
             down_exps: None,
+            mxfp4_gate_up_exps: None,
+            mxfp4_down_exps: None,
+            attn_sink: None,
             rotation_smoothing_inverse: None,
         }
     }
@@ -2555,6 +2566,9 @@ mod tests {
             gate_exps: None,
             up_exps: None,
             down_exps: None,
+            mxfp4_gate_up_exps: None,
+            mxfp4_down_exps: None,
+            attn_sink: None,
             rotation_smoothing_inverse: None,
         }
     }
@@ -2694,6 +2708,9 @@ mod tests {
             gate_exps: None,
             up_exps: None,
             down_exps: None,
+            mxfp4_gate_up_exps: None,
+            mxfp4_down_exps: None,
+            attn_sink: None,
             rotation_smoothing_inverse: None,
         };
         let x = zeros(&[1, 2, 4], MlxDtype::Float32, None);
@@ -3476,6 +3493,7 @@ mod tests {
             per_layer_model_proj: None,
             per_layer_proj_norm: None,
             mtp: None,
+            glm_mtp: None,
             gemma4_assistant_mtp: Default::default(),
             assistant_pre_projection: None,
             assistant_post_projection: None,
@@ -3567,6 +3585,9 @@ mod tests {
             gate_exps: None,
             up_exps: None,
             down_exps: Some(dense_weight(&[2, 4, 3])),
+            mxfp4_gate_up_exps: None,
+            mxfp4_down_exps: None,
+            attn_sink: None,
             rotation_smoothing_inverse: None,
         };
         let x = zeros(&[1, 2, 4], MlxDtype::Float32, None);
@@ -3661,6 +3682,9 @@ mod tests {
             gate_exps: None,
             up_exps: None,
             down_exps: Some(dense_weight(&[2, 4, 3])),
+            mxfp4_gate_up_exps: None,
+            mxfp4_down_exps: None,
+            attn_sink: None,
             rotation_smoothing_inverse: None,
         };
         let x = zeros(&[1, 2, 4], MlxDtype::Float32, None);
@@ -3731,6 +3755,9 @@ mod tests {
             gate_exps: Some(dense_weight(&[2, 3, 4])),
             up_exps: Some(dense_weight(&[2, 3, 4])),
             down_exps: Some(dense_weight(&[2, 4, 3])),
+            mxfp4_gate_up_exps: None,
+            mxfp4_down_exps: None,
+            attn_sink: None,
             rotation_smoothing_inverse: None,
         };
         let x = zeros(&[1, 2, 4], MlxDtype::Float32, None);
@@ -3801,6 +3828,9 @@ mod tests {
             gate_exps: Some(dense_weight(&[4, 3, 4])),
             up_exps: Some(dense_weight(&[4, 3, 4])),
             down_exps: Some(dense_weight(&[4, 4, 3])),
+            mxfp4_gate_up_exps: None,
+            mxfp4_down_exps: None,
+            attn_sink: None,
             rotation_smoothing_inverse: None,
         };
         let x = zeros(&[1, 2, 4], MlxDtype::Float32, None);
@@ -3871,6 +3901,9 @@ mod tests {
             gate_exps: None,
             up_exps: None,
             down_exps: Some(dense_weight(&[4, 4, 3])),
+            mxfp4_gate_up_exps: None,
+            mxfp4_down_exps: None,
+            attn_sink: None,
             rotation_smoothing_inverse: None,
         };
         let x = zeros(&[1, 16, 4], MlxDtype::Float32, None);
@@ -3984,6 +4017,9 @@ mod tests {
             gate_exps: Some(dense_weight(&[4, 3, 4])),
             up_exps: Some(dense_weight(&[4, 3, 4])),
             down_exps: Some(dense_weight(&[4, 4, 3])),
+            mxfp4_gate_up_exps: None,
+            mxfp4_down_exps: None,
+            attn_sink: None,
             rotation_smoothing_inverse: None,
         };
         let x = zeros(&[1, 1, 4], MlxDtype::Float32, None);

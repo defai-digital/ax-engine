@@ -495,6 +495,7 @@ mod tests {
             per_layer_model_proj: None,
             per_layer_proj_norm: None,
             mtp: None,
+            glm_mtp: None,
             gemma4_assistant_mtp: Gemma4AssistantMtpStatus::default(),
             assistant_pre_projection: None,
             assistant_post_projection: None,
@@ -548,6 +549,7 @@ mod tests {
             think_start_token_id: None,
             think_end_token_id: None,
             diffusion: None,
+            gpt_oss_uses_mxfp4_experts: false,
         }
     }
 

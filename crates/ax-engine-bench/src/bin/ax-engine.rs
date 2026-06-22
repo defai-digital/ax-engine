@@ -14,6 +14,35 @@ struct ModelProfile {
     downloadable: bool,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum MtpDownloadKind {
+    QwenSidecar {
+        mtp_source: &'static str,
+    },
+    GemmaAssistant {
+        assistant_repo_id: &'static str,
+        target_model_id: &'static str,
+        assistant_model_id: &'static str,
+        max_depth: u32,
+    },
+    GlmSidecar {
+        mtp_source: &'static str,
+    },
+    /// Fallback for models where no MTP sidecar or assistant packager is available.
+    #[allow(dead_code)]
+    DirectOnly {
+        reason: &'static str,
+    },
+}
+
+#[derive(Clone, Copy, Debug)]
+struct MtpDownloadTarget {
+    label: &'static str,
+    repo_id: &'static str,
+    aliases: &'static [&'static str],
+    kind: MtpDownloadKind,
+}
+
 const MODEL_PROFILES: &[ModelProfile] = &[
     ModelProfile {
         label: "gemma4-e2b",
@@ -154,6 +183,84 @@ const MODEL_PROFILES: &[ModelProfile] = &[
     },
 ];
 
+const MTP_DOWNLOAD_TARGETS: &[MtpDownloadTarget] = &[
+    MtpDownloadTarget {
+        label: "qwen3-coder-next",
+        repo_id: "mlx-community/Qwen3-Coder-Next-6bit",
+        aliases: &[
+            "qwen3-coder-next",
+            "qwen3-coder-next-6bit",
+            "qwen-coder-next",
+            "qwen-coder-next-6bit",
+        ],
+        kind: MtpDownloadKind::QwenSidecar {
+            mtp_source: "Qwen/Qwen3-Next-80B-A3B-Instruct",
+        },
+    },
+    MtpDownloadTarget {
+        label: "qwen3.6-35b-a3b",
+        repo_id: "mlx-community/Qwen3.6-35B-A3B-6bit",
+        aliases: &[
+            "qwen3.6-35b-a3b",
+            "qwen3.6-35b-a3b-6bit",
+            "qwen36-35b-a3b",
+            "qwen36-35b",
+            "qwen3.6-35b",
+        ],
+        kind: MtpDownloadKind::QwenSidecar {
+            mtp_source: "Qwen/Qwen3.6-35B-A3B",
+        },
+    },
+    MtpDownloadTarget {
+        label: "gemma-4-12b",
+        repo_id: "mlx-community/gemma-4-12B-it-6bit",
+        aliases: &[
+            "gemma-4-12b",
+            "gemma-4-12b-it",
+            "gemma-4-12b-6bit",
+            "gemma4-12b",
+            "gemma4-12b-6bit",
+        ],
+        kind: MtpDownloadKind::GemmaAssistant {
+            assistant_repo_id: "mlx-community/gemma-4-12B-it-assistant-6bit",
+            target_model_id: "gemma-4-12b-it",
+            assistant_model_id: "gemma-4-12b-it-assistant",
+            max_depth: 2,
+        },
+    },
+    MtpDownloadTarget {
+        label: "gemma-4-31b",
+        repo_id: "mlx-community/gemma-4-31b-it-6bit",
+        aliases: &[
+            "gemma-4-31b",
+            "gemma-4-31b-it",
+            "gemma-4-31b-6bit",
+            "gemma4-31b",
+            "gemma4-31b-6bit",
+        ],
+        kind: MtpDownloadKind::GemmaAssistant {
+            assistant_repo_id: "google/gemma-4-31b-it-assistant",
+            target_model_id: "gemma-4-31b-it",
+            assistant_model_id: "gemma-4-31b-it-assistant",
+            max_depth: 1,
+        },
+    },
+    MtpDownloadTarget {
+        label: "glm-4.7-flash",
+        repo_id: "mlx-community/GLM-4.7-Flash-6bit",
+        aliases: &[
+            "glm-4.7-flash",
+            "glm-4.7-flash-6bit",
+            "glm4.7-flash",
+            "glm47-flash",
+            "glm-4-7-flash",
+        ],
+        kind: MtpDownloadKind::GlmSidecar {
+            mtp_source: "zai-org/GLM-4.7-Flash",
+        },
+    },
+];
+
 fn main() -> ExitCode {
     match run(env::args_os().skip(1).collect()) {
         Ok(code) => ExitCode::from(code),
@@ -172,6 +279,7 @@ fn run(args: Vec<OsString>) -> Result<u8, String> {
     match args[0].to_string_lossy().as_ref() {
         "serve" => cmd_serve(&args[1..]),
         "download" => cmd_download(&args[1..]),
+        "download-mtp" => cmd_download_mtp(&args[1..]),
         "models" => cmd_models(&args[1..]),
         "doctor" => cmd_doctor(&args[1..]),
         "convert-mtplx" => cmd_convert_mtplx(&args[1..]),
@@ -183,7 +291,7 @@ fn run(args: Vec<OsString>) -> Result<u8, String> {
 
 fn print_usage() {
     println!(
-        "Usage:\n  ax-engine serve <model-dir-or-alias> [--host <host>] [--port <port>] [--download] [--dry-run] [--json] [-- <ax-engine-server args>]\n  ax-engine download [<alias-or-repo-id>] [--dest <path>] [--force] [--list] [--json]\n  ax-engine models list [--models-dir <path>] [--json]\n  ax-engine models info <alias-or-path> [--json]\n  ax-engine models rm <path> [--dry-run] [--yes] [--json]\n  ax-engine doctor [--json] [--verbose] [--mlx-model-artifacts-dir <path>]\n  ax-engine convert-mtplx <base-model> --mtp-source <repo> [--output <dir>] [--quantize 4|8] [--mtp-depth-max <n>] [--group-size <n>] [--fair-base-only] [--json]"
+        "Usage:\n  ax-engine serve <model-dir-or-alias> [--host <host>] [--port <port>] [--download] [--dry-run] [--json] [-- <ax-engine-server args>]\n  ax-engine download [<alias-or-repo-id>] [--dest <path>] [--force] [--list] [--json]\n  ax-engine download-mtp <6bit-mtp-target> [--output <dir>] [--force] [--quantize 4|8] [--mtp-depth-max <n>] [--group-size <n>] [--fair-base-only] [--json]\n  ax-engine models list [--models-dir <path>] [--json]\n  ax-engine models info <alias-or-path> [--json]\n  ax-engine models rm <path> [--dry-run] [--yes] [--json]\n  ax-engine doctor [--json] [--verbose] [--mlx-model-artifacts-dir <path>]\n  ax-engine convert-mtplx <base-model> --mtp-source <repo> [--output <dir>] [--quantize 4|8] [--mtp-depth-max <n>] [--group-size <n>] [--fair-base-only] [--json]"
     );
 }
 
@@ -1383,6 +1491,18 @@ struct DownloadArgs {
     json: bool,
 }
 
+#[derive(Debug)]
+struct DownloadMtpArgs {
+    model: String,
+    output: Option<String>,
+    force: bool,
+    quantize: Option<String>,
+    mtp_depth_max: Option<String>,
+    group_size: String,
+    fair_base_only: bool,
+    json: bool,
+}
+
 fn cmd_download(args: &[OsString]) -> Result<u8, String> {
     let args = parse_download_args(args)?;
     if args.list {
@@ -1425,6 +1545,99 @@ fn cmd_download(args: &[OsString]) -> Result<u8, String> {
     Ok(code)
 }
 
+fn cmd_download_mtp(args: &[OsString]) -> Result<u8, String> {
+    let args = parse_download_mtp_args(args)?;
+    let target = mtp_download_target_for_model(&args.model)
+        .ok_or_else(|| format_unknown_download_mtp_target(&args.model))?;
+    let (download_code, download_summary, download_stderr) =
+        run_download_summary(target.repo_id, None, args.force, None)?;
+    if !download_stderr.is_empty() {
+        eprint!("{download_stderr}");
+    }
+    if download_code != 0 || download_summary.get("status").and_then(Value::as_str) != Some("ready")
+    {
+        if args.json && !download_summary.is_null() {
+            print_json(&json!({
+                "schema_version": "ax.download_mtp.v1",
+                "command": "download-mtp",
+                "base_model": args.model,
+                "repo_id": target.repo_id,
+                "download": download_summary,
+                "status": "download_failed",
+            }));
+            return Ok(download_code);
+        }
+        if !download_summary.is_null() {
+            print_download_summary(&download_summary);
+        }
+        return Err(format!(
+            "base model download did not produce ready AX artifacts; run: ax-engine download {}",
+            args.model
+        ));
+    }
+    let Some(base_dir) = download_summary
+        .get("dest")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+    else {
+        return Err("download helper returned ready status without a dest".into());
+    };
+    if !args.json {
+        print_download_summary(&download_summary);
+    }
+
+    match target.kind {
+        MtpDownloadKind::QwenSidecar { mtp_source } => {
+            let convert_args = ConvertArgs {
+                base_model: base_dir.clone(),
+                mtp_source: mtp_source.to_string(),
+                output: args.output.clone(),
+                quantize: args.quantize.clone(),
+                mtp_depth_max: args.mtp_depth_max.clone(),
+                group_size: args.group_size.clone(),
+                fair_base_only: args.fair_base_only,
+                json: args.json,
+            };
+            run_convert_mtplx(
+                &convert_args,
+                "download-mtp",
+                "ax.download_mtp.v1",
+                Some(download_summary),
+            )
+        }
+        MtpDownloadKind::GemmaAssistant { .. } => run_download_gemma_assistant_mtp(
+            target,
+            &args,
+            &base_dir,
+            target.kind,
+            download_summary,
+        ),
+        MtpDownloadKind::GlmSidecar { mtp_source } => {
+            run_download_glm_mtp_sidecar(target, &args, &base_dir, mtp_source, download_summary)
+        }
+        MtpDownloadKind::DirectOnly { reason } => {
+            if args.json {
+                print_json(&json!({
+                    "schema_version": "ax.download_mtp.v1",
+                    "command": "download-mtp",
+                    "status": "direct_only",
+                    "base_model": &args.model,
+                    "repo_id": target.repo_id,
+                    "output_dir": base_dir,
+                    "reason": reason,
+                    "download": download_summary,
+                }));
+            } else {
+                println!("MTP status: direct-only");
+                println!("{reason}");
+                println!("Next:");
+                println!("  ax-engine serve {base_dir}");
+            }
+            Ok(0)
+        }
+    }
+}
+
 fn parse_download_args(args: &[OsString]) -> Result<DownloadArgs, String> {
     let mut model = None;
     let mut dest = None;
@@ -1458,6 +1671,65 @@ fn parse_download_args(args: &[OsString]) -> Result<DownloadArgs, String> {
         dest,
         force,
         list,
+        json,
+    })
+}
+
+fn parse_download_mtp_args(args: &[OsString]) -> Result<DownloadMtpArgs, String> {
+    let mut model = None;
+    let mut output = None;
+    let mut force = false;
+    let mut quantize = None;
+    let mut mtp_depth_max = None;
+    let mut group_size = "64".to_string();
+    let mut fair_base_only = false;
+    let mut json = false;
+    let mut index = 0;
+    while index < args.len() {
+        let arg = args[index].to_string_lossy();
+        match arg.as_ref() {
+            "--output" => {
+                index += 1;
+                output = Some(require_value(args, index, "--output")?);
+            }
+            "--force" => force = true,
+            "--quantize" => {
+                index += 1;
+                let value = require_value(args, index, "--quantize")?;
+                if value != "4" && value != "8" {
+                    return Err("--quantize must be 4 or 8".into());
+                }
+                quantize = Some(value);
+            }
+            "--mtp-depth-max" => {
+                index += 1;
+                mtp_depth_max = Some(require_value(args, index, "--mtp-depth-max")?);
+            }
+            "--group-size" => {
+                index += 1;
+                group_size = require_value(args, index, "--group-size")?;
+            }
+            "--fair-base-only" => fair_base_only = true,
+            "--json" => json = true,
+            flag if flag.starts_with('-') => {
+                return Err(format!("unknown download-mtp option: {flag}"));
+            }
+            _ => {
+                if model.replace(arg.to_string()).is_some() {
+                    return Err("download-mtp accepts exactly one model argument".into());
+                }
+            }
+        }
+        index += 1;
+    }
+    Ok(DownloadMtpArgs {
+        model: model.ok_or_else(|| "download-mtp requires a model".to_string())?,
+        output,
+        force,
+        quantize,
+        mtp_depth_max,
+        group_size,
+        fair_base_only,
         json,
     })
 }
@@ -1505,6 +1777,210 @@ fn run_download_summary(
     ))
 }
 
+fn run_download_gemma_assistant_mtp(
+    target: MtpDownloadTarget,
+    args: &DownloadMtpArgs,
+    base_dir: &str,
+    kind: MtpDownloadKind,
+    target_download: Value,
+) -> Result<u8, String> {
+    let MtpDownloadKind::GemmaAssistant {
+        assistant_repo_id,
+        target_model_id,
+        assistant_model_id,
+        max_depth,
+    } = kind
+    else {
+        return Err("internal error: expected Gemma assistant MTP target".into());
+    };
+    let (assistant_code, assistant_summary, assistant_stderr) =
+        run_download_summary(assistant_repo_id, None, args.force, None)?;
+    if !assistant_stderr.is_empty() {
+        eprint!("{assistant_stderr}");
+    }
+    if !assistant_download_usable(assistant_code, &assistant_summary) {
+        if args.json && !assistant_summary.is_null() {
+            print_json(&json!({
+                "schema_version": "ax.download_mtp.v1",
+                "command": "download-mtp",
+                "status": "assistant_download_failed",
+                "base_model": &args.model,
+                "repo_id": target.repo_id,
+                "assistant_repo_id": assistant_repo_id,
+                "download": target_download,
+                "assistant_download": assistant_summary,
+            }));
+            return Ok(assistant_code);
+        }
+        if !assistant_summary.is_null() {
+            print_download_summary(&assistant_summary);
+        }
+        return Err(format!(
+            "assistant model download did not produce ready AX artifacts; run: ax-engine download {assistant_repo_id}"
+        ));
+    }
+    let Some(assistant_dir) = assistant_summary.get("dest").and_then(Value::as_str) else {
+        return Err("assistant download helper returned ready status without a dest".into());
+    };
+    if !args.json {
+        print_download_summary(&assistant_summary);
+    }
+
+    let helper = find_helper(
+        "AX_ENGINE_PREPARE_GEMMA4_ASSISTANT_MTP_HELPER",
+        "ax-engine-prepare-gemma4-assistant-mtp.py",
+        "prepare_gemma4_assistant_mtp.py",
+    )?;
+    let depth = args.mtp_depth_max.as_deref().unwrap_or(match target.label {
+        "gemma-4-31b" => "1",
+        _ => "2",
+    });
+    let mut prepare_cmd = Command::new(python());
+    prepare_cmd
+        .arg(&helper)
+        .args(["--target", base_dir, "--assistant", assistant_dir])
+        .args(["--target-model-id", target_model_id])
+        .args(["--assistant-model-id", assistant_model_id])
+        .args(["--max-depth", depth]);
+    if let Some(output) = &args.output {
+        prepare_cmd.args(["--output", output]);
+    }
+    let prepare_output = prepare_cmd
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .map_err(|err| format!("failed to run prepare_gemma4_assistant_mtp helper: {err}"))?;
+    let prepare_stdout = String::from_utf8_lossy(&prepare_output.stdout).into_owned();
+    let prepare_stderr = String::from_utf8_lossy(&prepare_output.stderr).into_owned();
+    if !args.json {
+        print!("{prepare_stdout}");
+        eprint!("{prepare_stderr}");
+    }
+    if !prepare_output.status.success() {
+        if args.json {
+            eprint!("{prepare_stderr}");
+        }
+        return Ok(prepare_output
+            .status
+            .code()
+            .unwrap_or(1)
+            .try_into()
+            .unwrap_or(1));
+    }
+    let output_dir =
+        parse_output_dir(&prepare_stdout, args.output.as_deref()).ok_or_else(|| {
+            "prepare_gemma4_assistant_mtp.py succeeded but output dir could not be determined"
+                .to_string()
+        })?;
+
+    if args.json {
+        print_json(&json!({
+            "schema_version": "ax.download_mtp.v1",
+            "command": "download-mtp",
+            "status": "ready",
+            "kind": "gemma_assistant_mtp",
+            "base_model": &args.model,
+            "repo_id": target.repo_id,
+            "assistant_repo_id": assistant_repo_id,
+            "target_model_id": target_model_id,
+            "assistant_model_id": assistant_model_id,
+            "max_depth": depth.parse::<u32>().unwrap_or(max_depth),
+            "output_dir": output_dir,
+            "download": target_download,
+            "assistant_download": assistant_summary,
+        }));
+    }
+    Ok(0)
+}
+
+fn run_download_glm_mtp_sidecar(
+    target: MtpDownloadTarget,
+    args: &DownloadMtpArgs,
+    base_dir: &str,
+    mtp_source: &str,
+    target_download: Value,
+) -> Result<u8, String> {
+    let helper = find_helper(
+        "AX_ENGINE_PREPARE_GLM_MTP_SIDECAR_HELPER",
+        "ax-engine-prepare-glm-mtp-sidecar.py",
+        "prepare_glm_mtp_sidecar.py",
+    )?;
+    let depth = args.mtp_depth_max.as_deref().unwrap_or("1");
+    let mut prepare_cmd = Command::new(python());
+    prepare_cmd
+        .arg(&helper)
+        .args(["--hf-repo", mtp_source])
+        .args(["--base", base_dir])
+        .args(["--mtp-depth-max", depth])
+        .args(["--group-size", &args.group_size]);
+    if let Some(output) = &args.output {
+        prepare_cmd.args(["--output", output]);
+    }
+    if let Some(quantize) = &args.quantize {
+        prepare_cmd.args(["--quantize", quantize]);
+    }
+    let prepare_output = prepare_cmd
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .map_err(|err| format!("failed to run prepare_glm_mtp_sidecar helper: {err}"))?;
+    let prepare_stdout = String::from_utf8_lossy(&prepare_output.stdout).into_owned();
+    let prepare_stderr = String::from_utf8_lossy(&prepare_output.stderr).into_owned();
+    if !args.json {
+        print!("{prepare_stdout}");
+        eprint!("{prepare_stderr}");
+    }
+    if !prepare_output.status.success() {
+        if args.json {
+            eprint!("{prepare_stderr}");
+        }
+        return Ok(prepare_output
+            .status
+            .code()
+            .unwrap_or(1)
+            .try_into()
+            .unwrap_or(1));
+    }
+    let output_dir =
+        parse_output_dir(&prepare_stdout, args.output.as_deref()).ok_or_else(|| {
+            "prepare_glm_mtp_sidecar.py succeeded but output dir could not be determined"
+                .to_string()
+        })?;
+
+    if args.json {
+        print_json(&json!({
+            "schema_version": "ax.download_mtp.v1",
+            "command": "download-mtp",
+            "status": "ready",
+            "kind": "glm_sidecar_mtp",
+            "base_model": &args.model,
+            "repo_id": target.repo_id,
+            "mtp_source": mtp_source,
+            "mtp_depth_max": depth.parse::<u32>().unwrap_or(1),
+            "output_dir": output_dir,
+            "download": target_download,
+        }));
+    }
+    Ok(0)
+}
+
+fn assistant_download_usable(code: u8, summary: &Value) -> bool {
+    let status = summary.get("status").and_then(Value::as_str);
+    if code == 0 && status == Some("ready") {
+        return true;
+    }
+    status == Some("manifest_missing")
+        && summary
+            .get("config_present")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        && summary
+            .get("safetensors_count")
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+            > 0
+}
+
 #[derive(Debug)]
 struct ConvertArgs {
     base_model: String,
@@ -1519,6 +1995,15 @@ struct ConvertArgs {
 
 fn cmd_convert_mtplx(args: &[OsString]) -> Result<u8, String> {
     let args = parse_convert_args(args)?;
+    run_convert_mtplx(&args, "convert-mtplx", "ax.convert_mtplx.v1", None)
+}
+
+fn run_convert_mtplx(
+    args: &ConvertArgs,
+    command_name: &str,
+    schema_version: &str,
+    download_summary: Option<Value>,
+) -> Result<u8, String> {
     let prepare = find_helper(
         "AX_ENGINE_PREPARE_MTP_SIDECAR_HELPER",
         "ax-engine-prepare-mtp-sidecar.py",
@@ -1531,6 +2016,7 @@ fn cmd_convert_mtplx(args: &[OsString]) -> Result<u8, String> {
     )?;
     let depth = args
         .mtp_depth_max
+        .clone()
         .unwrap_or_else(|| default_mtp_depth_max(&args.base_model, &args.mtp_source).to_string());
 
     let mut prepare_cmd = Command::new(python());
@@ -1608,15 +2094,19 @@ fn cmd_convert_mtplx(args: &[OsString]) -> Result<u8, String> {
     if args.json {
         let provenance_summary = serde_json::from_str::<Value>(&provenance_stdout)
             .unwrap_or_else(|_| json!({ "raw": provenance_stdout }));
-        print_json(&json!({
-            "schema_version": "ax.convert_mtplx.v1",
-            "command": "convert-mtplx",
-            "base_model": args.base_model,
-            "mtp_source": args.mtp_source,
+        let mut summary = json!({
+            "schema_version": schema_version,
+            "command": command_name,
+            "base_model": &args.base_model,
+            "mtp_source": &args.mtp_source,
             "mtp_depth_max": depth.parse::<u32>().unwrap_or(1),
             "output_dir": output_dir,
             "provenance": provenance_summary,
-        }));
+        });
+        if let Some(download_summary) = download_summary {
+            summary["download"] = download_summary;
+        }
+        print_json(&summary);
     }
     Ok(0)
 }
@@ -1706,6 +2196,43 @@ fn download_repo_id(
             format_download_options()
         ))
     }
+}
+
+fn mtp_download_target_for_model(value: &str) -> Option<MtpDownloadTarget> {
+    let normalized = normalize_alias(value);
+    MTP_DOWNLOAD_TARGETS.iter().copied().find(|target| {
+        target
+            .aliases
+            .iter()
+            .any(|alias| normalize_alias(alias) == normalized)
+            || normalize_alias(target.repo_id) == normalized
+    })
+}
+
+fn format_unknown_download_mtp_target(value: &str) -> String {
+    format!(
+        "unknown download-mtp target: {value:?}; use one of these 6-bit targets:\n{}",
+        format_download_mtp_targets()
+    )
+}
+
+fn format_download_mtp_targets() -> String {
+    let mut lines = Vec::new();
+    for target in MTP_DOWNLOAD_TARGETS {
+        let kind = match target.kind {
+            MtpDownloadKind::QwenSidecar { .. } => "qwen-sidecar-mtp",
+            MtpDownloadKind::GemmaAssistant { .. } => "gemma-assistant-mtp",
+            MtpDownloadKind::GlmSidecar { .. } => "glm-sidecar-mtp",
+            MtpDownloadKind::DirectOnly { .. } => "direct-only",
+        };
+        lines.push(format!(
+            "  - {} -> {} ({kind}; aliases: {})",
+            target.label,
+            target.repo_id,
+            target.aliases.join(", ")
+        ));
+    }
+    lines.join("\n")
 }
 
 fn download_options_payload() -> Value {
@@ -1983,6 +2510,86 @@ mod tests {
         assert_eq!(profile.repo_id, "mlx-community/Qwen3.6-35B-A3B-4bit");
         let profile = profile_for_model("gemma-4-12b-it").unwrap();
         assert_eq!(profile.preset, Some("gemma4-12b"));
+    }
+
+    #[test]
+    fn download_mtp_targets_cover_requested_6bit_models() {
+        let cases = [
+            (
+                "qwen3-coder-next",
+                "mlx-community/Qwen3-Coder-Next-6bit",
+                MtpDownloadKind::QwenSidecar {
+                    mtp_source: "Qwen/Qwen3-Next-80B-A3B-Instruct",
+                },
+            ),
+            (
+                "qwen3.6-35b-a3b",
+                "mlx-community/Qwen3.6-35B-A3B-6bit",
+                MtpDownloadKind::QwenSidecar {
+                    mtp_source: "Qwen/Qwen3.6-35B-A3B",
+                },
+            ),
+            (
+                "gemma-4-12b",
+                "mlx-community/gemma-4-12B-it-6bit",
+                MtpDownloadKind::GemmaAssistant {
+                    assistant_repo_id: "mlx-community/gemma-4-12B-it-assistant-6bit",
+                    target_model_id: "gemma-4-12b-it",
+                    assistant_model_id: "gemma-4-12b-it-assistant",
+                    max_depth: 2,
+                },
+            ),
+            (
+                "gemma-4-31b",
+                "mlx-community/gemma-4-31b-it-6bit",
+                MtpDownloadKind::GemmaAssistant {
+                    assistant_repo_id: "google/gemma-4-31b-it-assistant",
+                    target_model_id: "gemma-4-31b-it",
+                    assistant_model_id: "gemma-4-31b-it-assistant",
+                    max_depth: 1,
+                },
+            ),
+            (
+                "glm-4.7-flash",
+                "mlx-community/GLM-4.7-Flash-6bit",
+                MtpDownloadKind::GlmSidecar {
+                    mtp_source: "zai-org/GLM-4.7-Flash",
+                },
+            ),
+        ];
+        for (alias, repo_id, kind) in cases {
+            let target = mtp_download_target_for_model(alias).unwrap();
+            assert_eq!(target.repo_id, repo_id);
+            assert!(target.repo_id.ends_with("6bit"));
+            assert_eq!(target.kind, kind);
+        }
+    }
+
+    #[test]
+    fn parse_download_mtp_args_matches_convert_knobs() {
+        let args = parse_download_mtp_args(&[
+            OsString::from("qwen36-35b"),
+            OsString::from("--output"),
+            OsString::from("/tmp/qwen-mtp"),
+            OsString::from("--force"),
+            OsString::from("--quantize"),
+            OsString::from("4"),
+            OsString::from("--mtp-depth-max"),
+            OsString::from("1"),
+            OsString::from("--group-size"),
+            OsString::from("128"),
+            OsString::from("--fair-base-only"),
+            OsString::from("--json"),
+        ])
+        .unwrap();
+        assert_eq!(args.model, "qwen36-35b");
+        assert_eq!(args.output.as_deref(), Some("/tmp/qwen-mtp"));
+        assert!(args.force);
+        assert_eq!(args.quantize.as_deref(), Some("4"));
+        assert_eq!(args.mtp_depth_max.as_deref(), Some("1"));
+        assert_eq!(args.group_size, "128");
+        assert!(args.fair_base_only);
+        assert!(args.json);
     }
 
     #[test]

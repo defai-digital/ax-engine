@@ -106,7 +106,7 @@ pub struct MlaAttentionConfig {
 }
 
 impl MlaAttentionConfig {
-    pub(super) fn from_manifest(m: &NativeModelManifest) -> Option<Self> {
+    pub(crate) fn from_manifest(m: &NativeModelManifest) -> Option<Self> {
         let cfg = &m.mla_attention;
         if !cfg.is_enabled() {
             return None;
@@ -362,6 +362,10 @@ pub struct ModelConfig {
     pub think_end_token_id: Option<u32>,
     /// Diffusion decoding config (DiffusionGemma). `None` = standard AR decoding.
     pub diffusion: Option<DiffusionConfig>,
+    /// GPT-OSS uses MXFP4 quantized expert weights (dequantized to BF16 at load time).
+    /// When true, the MoE forward path uses `mxfp4_gate_up_exps` / `mxfp4_down_exps` instead
+    /// of the standard `gate_exps`/`up_exps`/`down_exps` QuantizedWeight path.
+    pub gpt_oss_uses_mxfp4_experts: bool,
 }
 
 impl ModelConfig {
@@ -472,6 +476,7 @@ impl ModelConfig {
             think_start_token_id: think_token_ids_from_manifest(m).0,
             think_end_token_id: think_token_ids_from_manifest(m).1,
             diffusion: DiffusionConfig::from_manifest(m),
+            gpt_oss_uses_mxfp4_experts: m.model_family == "gpt_oss" && m.moe.is_enabled(),
         }
     }
 

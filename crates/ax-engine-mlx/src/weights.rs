@@ -4,7 +4,8 @@ use std::path::PathBuf;
 
 use mlx_sys::{
     MlxArray, MlxDtype, MlxQuantizationMode, add, astype, concatenate, contiguous, dequantize,
-    eval, load_safetensors, multiply, quantize, reshape, slice, transpose,
+    dequantize_with_mode, eval, flatten, load_safetensors, multiply, quantize, reshape, slice,
+    transpose, view,
 };
 
 use ax_engine_core::{
@@ -17,6 +18,7 @@ use crate::fastpath::{
     linear_attention_projection_packing_enabled,
 };
 use crate::gemma4_assistant_mtp::{Gemma4AssistantMtpStatus, load_gemma4_assistant_mtp_status};
+use crate::model::MlaAttentionConfig;
 use crate::sampling::MlxSamplingParams;
 
 /// All weight arrays for one model.
@@ -46,6 +48,8 @@ pub struct ModelWeights {
     /// Gemma4 Unified encoder-free audio connector.
     pub gemma4_unified_audio: Option<Gemma4UnifiedAudioWeights>,
     pub diffusion_self_conditioning: Option<DiffusionSelfConditioningWeights>,
+    /// MTP weights for GLM 4.7 Flash: separate sidecar with MLA-based head.
+    pub glm_mtp: Option<GlmMtpWeights>,
 }
 
 /// Gemma4 Unified vision path, matching vLLM's
@@ -120,6 +124,32 @@ pub struct MtpWeights {
     pub draft_sampling: MlxSamplingParams,
 }
 
+/// Weights for GLM 4.7 Flash MTP head.
+///
+/// Layout diverges from `MtpWeights` (Qwen3): uses GLM MLA attention (not
+/// standard q/k/v/o), fuses tokens via `eh_proj` (not `mtp.fc`), and projects
+/// draft logits through a private `shared_head` rather than the shared `lm_head`.
+pub struct GlmMtpWeights {
+    /// enorm: RMSNorm applied to embedded prev token before concat.
+    pub enorm: MlxArray,
+    /// hnorm: RMSNorm applied to main hidden state before concat.
+    pub hnorm: MlxArray,
+    /// eh_proj: [2*hidden → hidden] linear projection.
+    pub eh_proj: QuantizedWeight,
+    /// shared_head.norm: RMSNorm before draft logit projection.
+    pub shared_head_norm: MlxArray,
+    /// shared_head.head: [hidden → vocab] draft logit projection.
+    pub shared_head: QuantizedWeight,
+    /// Full GLM transformer layer (MLA attention + MoE FFN).
+    pub layer: LayerWeights,
+    /// MLA attention config cloned from main model config at load time.
+    pub mla_config: MlaAttentionConfig,
+    /// Maximum speculative depth (from `glm_mtp_runtime.json` or default 1).
+    pub max_depth: usize,
+    /// Draft sampling parameters.
+    pub draft_sampling: MlxSamplingParams,
+}
+
 /// Weights (and optional quantization data) for one transformer layer.
 pub struct LayerWeights {
     pub attn_norm: MlxArray,
@@ -177,6 +207,14 @@ pub struct LayerWeights {
     pub gate_exps: Option<QuantizedWeight>,
     pub up_exps: Option<QuantizedWeight>,
     pub down_exps: Option<QuantizedWeight>,
+    /// GPT-OSS MXFP4 gate-up expert weights dequantized to BF16 at load time.
+    /// Shape: `[num_experts, 2 * intermediate, hidden]` (gate and up interleaved per expert).
+    pub mxfp4_gate_up_exps: Option<MlxArray>,
+    /// GPT-OSS MXFP4 down expert weights dequantized to BF16 at load time.
+    /// Shape: `[num_experts, hidden, intermediate]`.
+    pub mxfp4_down_exps: Option<MlxArray>,
+    /// GPT-OSS per-head learned attention sink weight. Shape: `[num_attention_heads]`.
+    pub attn_sink: Option<MlxArray>,
     /// Per-layer AWQ-lite smoothing reciprocal `1/s` of shape `[hidden_size]`.
     /// Populated by `apply_rotated_checkpoint` when the rotated checkpoint was
     /// generated with `--smoothing weight_mag`. The forward path multiplies
@@ -652,6 +690,33 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
             None
         };
 
+        // GPT-OSS MXFP4 expert weights: dequantize blocks+scales → BF16 at load time.
+        let (mxfp4_gate_up_exps, mxfp4_down_exps) =
+            if has_role(specs, NativeTensorRole::FfnGateUpExpsMxfp4Blocks, idx) {
+                let gate_up = load_mxfp4_expert_weights(
+                    specs,
+                    &mut name_map,
+                    idx,
+                    NativeTensorRole::FfnGateUpExpsMxfp4Blocks,
+                    NativeTensorRole::FfnGateUpExpsMxfp4Scales,
+                    "gate_up_exps",
+                )?;
+                let down = load_mxfp4_expert_weights(
+                    specs,
+                    &mut name_map,
+                    idx,
+                    NativeTensorRole::FfnDownExpsMxfp4Blocks,
+                    NativeTensorRole::FfnDownExpsMxfp4Scales,
+                    "down_exps",
+                )?;
+                (Some(gate_up), Some(down))
+            } else {
+                (None, None)
+            };
+
+        // GPT-OSS per-head attention sink.
+        let attn_sink = try_take_plain(specs, &mut name_map, NativeTensorRole::AttnSink, idx)?;
+
         let q_norm = try_take_plain(specs, &mut name_map, NativeTensorRole::AttentionQNorm, idx)?;
         let k_norm = try_take_plain(specs, &mut name_map, NativeTensorRole::AttentionKNorm, idx)?;
 
@@ -841,6 +906,9 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
             gate_exps,
             up_exps,
             down_exps,
+            mxfp4_gate_up_exps,
+            mxfp4_down_exps,
+            attn_sink,
             rotation_smoothing_inverse: None,
         });
     }
@@ -867,6 +935,7 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
         mtp_sidecar_bits,
     );
     let gemma4_assistant_mtp = load_gemma4_assistant_mtp_status(&root, artifacts.manifest());
+    let glm_mtp = load_glm_mtp_sidecar(&root, &mut name_map, artifacts.manifest());
 
     let mut model = ModelWeights {
         token_embedding,
@@ -883,6 +952,7 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
         gemma4_unified_vision,
         gemma4_unified_audio,
         diffusion_self_conditioning,
+        glm_mtp,
     };
 
     apply_rotated_checkpoint(&mut model, artifacts)?;
@@ -1170,6 +1240,208 @@ fn load_mtp_sidecar(
     )
 }
 
+/// Load the GLM MTP sidecar (`glm_mtp.safetensors`) if present alongside the main model.
+///
+/// Returns `Some(GlmMtpWeights)` when the sidecar is found and all required tensors are present.
+/// Returns `None` gracefully (no MTP head active) when the sidecar is absent or incomplete.
+fn load_glm_mtp_sidecar(
+    root: &std::path::Path,
+    name_map: &mut HashMap<String, MlxArray>,
+    manifest: &ax_engine_core::NativeModelManifest,
+) -> Option<GlmMtpWeights> {
+    let default_draft = MlxSamplingParams::new(0.7, 0.95, 20);
+
+    let sidecar = root.join("glm_mtp.safetensors");
+    if !sidecar.exists() {
+        return None;
+    }
+    let tensors = match load_safetensors(&sidecar, None) {
+        Ok(t) => t,
+        Err(_) => return None,
+    };
+    if !tensors.is_empty() {
+        let refs: Vec<&MlxArray> = tensors.values().collect();
+        eval(&refs);
+    }
+    name_map.extend(tensors);
+
+    // Parse depth and draft sampling from runtime config.
+    let runtime_path = root.join("glm_mtp_runtime.json");
+    let (max_depth, draft_sampling) = if let Ok(bytes) = std::fs::read(&runtime_path)
+        && let Ok(v) = serde_json::from_slice::<serde_json::Value>(&bytes)
+    {
+        let raw_depth = v.get("mtp_depth_max").and_then(|x| x.as_u64()).unwrap_or(1) as usize;
+        let draft_sampling = if let Some(ds) = v.get("recommended_draft_sampler") {
+            let temp = ds
+                .get("temperature")
+                .and_then(|x| x.as_f64())
+                .unwrap_or(0.7) as f32;
+            let top_k = ds.get("top_k").and_then(|x| x.as_u64()).unwrap_or(20) as u32;
+            let top_p = ds.get("top_p").and_then(|x| x.as_f64()).unwrap_or(0.95) as f32;
+            MlxSamplingParams::new(temp, top_p, top_k)
+        } else {
+            default_draft
+        };
+        (
+            apply_mtp_max_depth_cap(raw_depth),
+            apply_draft_temperature_override(draft_sampling),
+        )
+    } else {
+        (
+            apply_mtp_max_depth_cap(1),
+            apply_draft_temperature_override(default_draft),
+        )
+    };
+
+    if max_depth == 0 {
+        return None;
+    }
+
+    let p = "glm_mtp";
+
+    // Scalar norms for the MTP head.
+    let enorm = mtp_take_plain(name_map, &format!("{p}.enorm.weight"))?;
+    let hnorm = mtp_take_plain(name_map, &format!("{p}.hnorm.weight"))?;
+    let shared_head_norm = mtp_take_plain(name_map, &format!("{p}.shared_head.norm.weight"))?;
+
+    // eh_proj: [2*hidden → hidden] linear.
+    let eh_proj = mtp_take_weight(name_map, &format!("{p}.eh_proj"), None)?;
+    // shared_head.head: [hidden → vocab] draft logit projection.
+    let shared_head = mtp_take_weight(name_map, &format!("{p}.shared_head.head"), None)?;
+
+    // Layer norms for the transformer block.
+    let attn_norm = mtp_take_plain(name_map, &format!("{p}.layer.input_layernorm.weight"))?;
+    let ffn_norm = mtp_take_plain(
+        name_map,
+        &format!("{p}.layer.post_attention_layernorm.weight"),
+    )?;
+
+    // MLA attention projections.
+    let q_a_proj = mtp_take_weight(name_map, &format!("{p}.layer.self_attn.q_a_proj"), None)?;
+    let kv_a_proj = mtp_take_weight(name_map, &format!("{p}.layer.self_attn.kv_a_proj"), None)?;
+    let q_a_norm = mtp_take_plain(
+        name_map,
+        &format!("{p}.layer.self_attn.q_a_layernorm.weight"),
+    )?;
+    let kv_a_norm = mtp_take_plain(
+        name_map,
+        &format!("{p}.layer.self_attn.kv_a_layernorm.weight"),
+    )?;
+    let q_b_proj = mtp_take_weight(name_map, &format!("{p}.layer.self_attn.q_b_proj"), None)?;
+    let embed_q = mtp_take_weight(name_map, &format!("{p}.layer.self_attn.embed_q"), None)?;
+    let unembed_out = mtp_take_weight(name_map, &format!("{p}.layer.self_attn.unembed_out"), None)?;
+    let o_proj = mtp_take_weight(name_map, &format!("{p}.layer.self_attn.o_proj"), None)?;
+
+    // Fuse q_a_proj + kv_a_proj into a single matmul weight.
+    let qa_kva_fused = pack_glm_mla_qa_kva_projection(&q_a_proj, &kv_a_proj).ok()?;
+
+    let glm_mla_attn = Some(GlmMlaAttentionWeights {
+        qa_kva_fused,
+        q_a_norm,
+        q_b_proj,
+        kv_a_norm,
+        embed_q,
+        unembed_out,
+    });
+
+    // MoE FFN: router + expert stacks.
+    let router_proj = mtp_take_weight(name_map, &format!("{p}.layer.mlp.gate"), None);
+    let shared_gate_proj = mtp_take_weight(
+        name_map,
+        &format!("{p}.layer.mlp.shared_expert.gate_proj"),
+        None,
+    );
+    let shared_up_proj = mtp_take_weight(
+        name_map,
+        &format!("{p}.layer.mlp.shared_expert.up_proj"),
+        None,
+    );
+    let shared_down_proj = mtp_take_weight(
+        name_map,
+        &format!("{p}.layer.mlp.shared_expert.down_proj"),
+        None,
+    );
+    let gate_exps = mtp_take_weight(name_map, &format!("{p}.layer.mlp.gate_proj"), None);
+    let up_exps = mtp_take_weight(name_map, &format!("{p}.layer.mlp.up_proj"), None);
+    let down_exps = mtp_take_weight(name_map, &format!("{p}.layer.mlp.down_proj"), None);
+
+    let has_moe_ffn = router_proj.is_some();
+    if has_moe_ffn
+        && (gate_exps.is_none()
+            || up_exps.is_none()
+            || down_exps.is_none()
+            || shared_gate_proj.is_none()
+            || shared_up_proj.is_none()
+            || shared_down_proj.is_none())
+    {
+        tracing::warn!(
+            target: "ax_mlx::weights",
+            "GLM MTP sidecar: found router but missing MoE expert tensors — skipping MTP"
+        );
+        return None;
+    }
+
+    // Resolve MLA attention config from the manifest.
+    let mla_config = MlaAttentionConfig::from_manifest(manifest)?;
+
+    let layer = LayerWeights {
+        attn_norm,
+        attn_post_norm: None,
+        q_norm: None,
+        k_norm: None,
+        q_proj: None,
+        k_proj: None,
+        v_proj: None,
+        qkv_packed: None,
+        o_proj: Some(o_proj),
+        linear_attn: None,
+        glm_mla_attn,
+        ffn_norm,
+        ffn_post_norm: None,
+        gate_proj: None,
+        up_proj: None,
+        gate_up_packed: None,
+        down_proj: None,
+        ffn_norm2: None,
+        ffn_post_norm1: None,
+        ffn_post_norm2: None,
+        router_proj,
+        router_correction_bias: None,
+        router_scale: None,
+        router_combined_scale: None,
+        router_expert_scale: None,
+        layer_scalar: None,
+        per_layer_gate: None,
+        per_layer_proj_w: None,
+        per_layer_post_norm: None,
+        shared_expert_gate: None,
+        shared_gate_up_proj: None,
+        shared_gate_proj,
+        shared_up_proj,
+        shared_down_proj,
+        gate_up_exps_packed: None,
+        gate_exps,
+        up_exps,
+        down_exps,
+        mxfp4_gate_up_exps: None,
+        mxfp4_down_exps: None,
+        attn_sink: None,
+        rotation_smoothing_inverse: None,
+    };
+
+    Some(GlmMtpWeights {
+        enorm,
+        hnorm,
+        eh_proj,
+        shared_head_norm,
+        shared_head,
+        layer,
+        mla_config,
+        max_depth,
+        draft_sampling,
+    })
+}
+
 /// Override the MTP draft sampling temperature from `AX_MLX_MTP_DRAFT_TEMPERATURE`.
 ///
 /// Lightning-MLX defaults to draft temperature 0.5 for code/tool-call workloads
@@ -1397,6 +1669,9 @@ fn load_mtp(
         gate_exps,
         up_exps,
         down_exps,
+        mxfp4_gate_up_exps: None,
+        mxfp4_down_exps: None,
+        attn_sink: None,
         rotation_smoothing_inverse: None,
     };
 
@@ -2866,6 +3141,60 @@ fn try_take_plain(
     Ok(name_map.remove(&name))
 }
 
+/// Load GPT-OSS MXFP4 expert weights and dequantize to BF16.
+///
+/// MXFP4 weights are stored as separate `blocks` (u8) and `scales` (u8 E8M0)
+/// tensors. The sanitize transform reinterprets blocks as u32 (packing 4 bytes
+/// per element) and flattens the last two dimensions before calling
+/// `dequantize_with_mode` in `Mxfp4` mode.
+fn load_mxfp4_expert_weights(
+    specs: &[NativeTensorSpec],
+    name_map: &mut HashMap<String, MlxArray>,
+    layer_index: Option<u32>,
+    blocks_role: NativeTensorRole,
+    scales_role: NativeTensorRole,
+    label: &str,
+) -> Result<MlxArray, WeightLoadError> {
+    let blocks_name = specs
+        .iter()
+        .find(|s| s.role == blocks_role && s.layer_index == layer_index)
+        .map(|s| s.name.clone())
+        .ok_or_else(|| WeightLoadError::RoleMissing(format!("{label}_blocks[{layer_index:?}]")))?;
+    let scales_name = specs
+        .iter()
+        .find(|s| s.role == scales_role && s.layer_index == layer_index)
+        .map(|s| s.name.clone())
+        .ok_or_else(|| WeightLoadError::RoleMissing(format!("{label}_scales[{layer_index:?}]")))?;
+
+    let blocks = name_map
+        .remove(&blocks_name)
+        .ok_or(WeightLoadError::TensorMissing(blocks_name))?;
+    let scales = name_map
+        .remove(&scales_name)
+        .ok_or(WeightLoadError::TensorMissing(scales_name))?;
+
+    // Sanitize: reinterpret u8 blocks as u32 (4 bytes packed per element).
+    let blocks_u32 = view(&blocks, MlxDtype::Uint32, None);
+    // Flatten the last two dimensions to merge the packed trailing axis.
+    let ndim = blocks_u32.ndim();
+    let blocks_flat = flatten(&blocks_u32, (ndim - 2) as i32, (ndim - 1) as i32, None);
+
+    // Dequantize MXFP4 → BF16 (group_size=32, bits=4).
+    let dequantized = dequantize_with_mode(
+        &blocks_flat,
+        &scales,
+        None,
+        Some(32),
+        Some(4),
+        MlxQuantizationMode::Mxfp4,
+        None,
+        Some(MlxDtype::Bfloat16),
+        None,
+    );
+    eval(&[&dequantized]);
+    Ok(dequantized)
+}
+
 fn take_layer_norms(
     specs: &[NativeTensorSpec],
     name_map: &mut HashMap<String, MlxArray>,
@@ -4157,5 +4486,40 @@ mod tests {
                 .is_some(),
             "Qwen3.5 layer 0 should load linear-attention weights"
         );
+    }
+
+    #[test]
+    fn load_glm_mtp_sidecar_returns_none_when_no_sidecar_file() {
+        // When glm_mtp.safetensors is absent the loader must return None without
+        // panicking.  We use a temp dir that contains no glm_mtp.* files.
+        let tmp = std::env::temp_dir().join(format!(
+            "ax-weights-test-glm-mtp-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .subsec_nanos()
+        ));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let manifest: ax_engine_core::NativeModelManifest =
+            serde_json::from_value(serde_json::json!({
+                "schema_version": "ax.native_model.v1",
+                "model_family": "glm4_moe_lite",
+                "tensor_format": "safetensors",
+                "layer_count": 1,
+                "hidden_size": 1,
+                "attention_head_count": 1,
+                "attention_head_dim": 1,
+                "kv_head_count": 1,
+                "vocab_size": 1,
+                "tensors": []
+            }))
+            .expect("minimal manifest fixture should deserialize");
+        let mut name_map = HashMap::new();
+        let result = load_glm_mtp_sidecar(&tmp, &mut name_map, &manifest);
+        assert!(
+            result.is_none(),
+            "expected None when glm_mtp.safetensors is absent"
+        );
+        std::fs::remove_dir_all(&tmp).ok();
     }
 }
