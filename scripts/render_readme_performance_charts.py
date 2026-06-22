@@ -724,7 +724,7 @@ def load_mtp_rows(performance_doc: Path) -> list[MtpBenchmarkRow]:
             start = index
             break
     if start is None:
-        raise ChartError(f"could not find MTP results table in {performance_doc}")
+        return []
 
     table_lines: list[str] = []
     for line in lines[start:]:
@@ -1628,14 +1628,15 @@ def main() -> int:
 
     mismatches: list[Path] = []
     mtp_rows = load_mtp_rows(args.performance_doc)
-    for (row_key, metric), output_name in MTP_CHART_OUTPUTS.items():
-        rows = [row for row in mtp_rows if mtp_row_key(row) == row_key]
-        if not rows:
-            raise ChartError(f"MTP performance table has no {row_key!r} rows")
-        mtp_output_path = args.output_dir / output_name
-        mtp_content = render_mtp_metric_chart(rows, metric)
-        if not write_chart(mtp_output_path, mtp_content, args.check):
-            mismatches.append(mtp_output_path)
+    if mtp_rows:
+        for (row_key, metric), output_name in MTP_CHART_OUTPUTS.items():
+            rows = [row for row in mtp_rows if mtp_row_key(row) == row_key]
+            if not rows:
+                raise ChartError(f"MTP performance table has no {row_key!r} rows")
+            mtp_output_path = args.output_dir / output_name
+            mtp_content = render_mtp_metric_chart(rows, metric)
+            if not write_chart(mtp_output_path, mtp_content, args.check):
+                mismatches.append(mtp_output_path)
 
     for spec in CHARTS:
         if args.results_dir:

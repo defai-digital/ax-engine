@@ -50,6 +50,11 @@ def main() -> int:
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
     mtp_rows = load_mtp_rows(args.performance_doc)
+    if not mtp_rows:
+        if args.check:
+            print("MTP README charts skipped: no historical MTP results table")
+        return 0
+
     mismatches: list[Path] = []
 
     for (row_key, metric), output_name in MTP_CHART_OUTPUTS.items():

@@ -206,6 +206,50 @@ def _normalize_passthrough(tensors: dict[str, Any]) -> dict[str, Any]:
     return dict(tensors)
 
 
+def _normalize_qwen_moe_per_expert(tensors: dict[str, Any]) -> dict[str, Any]:
+    """Qwen3-Next MoE: stack per-expert tensors into [E, D, in] expert arrays.
+
+    The Qwen3-Next-80B-A3B checkpoints ship MTP MoE experts as separate tensors
+    keyed by expert index (e.g. mtp.layers.0.mlp.experts.0.gate_proj.weight,
+    mtp.layers.0.mlp.experts.1.gate_proj.weight, …).  The ax-engine loader
+    expects stacked expert arrays mtp.layers.0.mlp.{gate,up,down}_proj.weight
+    of shape [E, D, in] (same contract as the Qwen3.6-35B-A3B sidecar path).
+    """
+    import re
+    import mlx.core as mx
+
+    # Collect per-expert tensors keyed by (layer_prefix, role, expert_idx).
+    # role is one of gate_proj / up_proj / down_proj.
+    per_expert: dict[tuple[str, str], dict[int, Any]] = {}
+    passthrough: dict[str, Any] = {}
+
+    expert_pat = re.compile(
+        r"^(mtp\.layers\.\d+\.mlp)\.experts\.(\d+)\.(gate_proj|up_proj|down_proj)\.weight$"
+    )
+    for k, v in tensors.items():
+        m = expert_pat.match(k)
+        if m:
+            prefix, idx_str, role = m.group(1), m.group(2), m.group(3)
+            key = (prefix, role)
+            if key not in per_expert:
+                per_expert[key] = {}
+            per_expert[key][int(idx_str)] = v
+        else:
+            passthrough[k] = v
+
+    out: dict[str, Any] = dict(passthrough)
+    for (prefix, role), expert_map in per_expert.items():
+        if not expert_map:
+            continue
+        n_experts = max(expert_map) + 1
+        # Stack in order 0..n_experts-1 along axis 0 → [E, D, in].
+        stacked = mx.stack([expert_map[i] for i in range(n_experts)], 0)
+        mx.eval(stacked)
+        out[f"{prefix}.{role}.weight"] = stacked
+
+    return out
+
+
 # Registry: (detector, normalizer, is_moe). First matching entry wins.
 ArchNormalizer = Callable[[dict[str, Any]], dict[str, Any]]
 
@@ -216,6 +260,13 @@ def _detect_arch(tensors: dict[str, Any], config: dict[str, Any]) -> tuple[str, 
     if "mtp.layers.0.mlp.experts.down_proj" in tensors:
         # Experts present but not gate-up-packed — still MoE, pass through rename.
         return "qwen-moe", _normalize_qwen_moe_packed, True
+    # Per-expert format: mtp.layers.0.mlp.experts.0.gate_proj.weight etc.
+    if any(
+        k.startswith("mtp.layers.0.mlp.experts.0.")
+        and (k.endswith(".gate_proj.weight") or k.endswith(".down_proj.weight"))
+        for k in tensors
+    ):
+        return "qwen-moe-per-expert", _normalize_qwen_moe_per_expert, True
     if "mtp.layers.0.mlp.gate_proj.weight" in tensors:
         return "qwen-dense", _normalize_passthrough, False
     sys.exit(

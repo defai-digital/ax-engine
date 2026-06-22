@@ -37,7 +37,12 @@ class FakeArray:
     def __init__(self, values):
         self.values = values
         self.dtype = "fake"
-        self.ndim = 1 if not isinstance(values[0], list) else 2
+        if isinstance(values, tuple):
+            self.shape = values
+            self.ndim = len(values)
+        else:
+            self.ndim = 1 if not isinstance(values[0], list) else 2
+            self.shape = (len(values),) if self.ndim == 1 else (len(values), len(values[0]))
 
     def __add__(self, other: float):
         if self.ndim == 1:
@@ -49,6 +54,30 @@ class FakeArray:
 
     def tolist(self):
         return self.values
+
+
+class FakeMx:
+    bfloat16 = "bfloat16"
+
+    @staticmethod
+    def zeros(shape):
+        return FakeArray(shape)
+
+    @staticmethod
+    def ones(shape):
+        return FakeArray(shape)
+
+    @staticmethod
+    def stack(arrays, axis=0):
+        if axis != 0:
+            raise AssertionError("test fake only supports axis 0")
+        if not arrays:
+            raise AssertionError("cannot stack empty arrays")
+        return FakeArray((len(arrays), *arrays[0].shape))
+
+    @staticmethod
+    def eval(*_arrays):
+        return None
 
 
 class SliceFake:
@@ -138,6 +167,38 @@ class TransformTests(unittest.TestCase):
         )
         self.assertEqual(dense_id, "qwen-dense")
         self.assertFalse(dense_moe)
+
+    def test_detect_arch_dispatch_per_expert(self) -> None:
+        # Qwen3-Next 80B per-expert format.
+        tensors = {
+            "mtp.layers.0.mlp.experts.0.gate_proj.weight": "g",
+            "mtp.layers.0.mlp.experts.0.down_proj.weight": "d",
+            "mtp.layers.0.mlp.gate.weight": "router",
+        }
+        arch_id, normalizer, is_moe = prepare._detect_arch(tensors, {})
+        self.assertEqual(arch_id, "qwen-moe-per-expert")
+        self.assertTrue(is_moe)
+
+    def test_moe_per_expert_stacks_experts(self) -> None:
+        import unittest.mock
+
+        raw = {
+            "mtp.layers.0.mlp.experts.0.gate_proj.weight": FakeMx.zeros((8, 4)),
+            "mtp.layers.0.mlp.experts.1.gate_proj.weight": FakeMx.ones((8, 4)),
+            "mtp.layers.0.mlp.experts.0.down_proj.weight": FakeMx.zeros((4, 8)),
+            "mtp.layers.0.mlp.experts.1.down_proj.weight": FakeMx.ones((4, 8)),
+            "mtp.layers.0.mlp.gate.weight": FakeMx.zeros((2, 8)),
+        }
+        with unittest.mock.patch.dict(sys.modules, {"mlx.core": FakeMx}):
+            out = prepare._normalize_qwen_moe_per_expert(raw)
+        # Per-expert keys must be gone; stacked arrays present.
+        self.assertFalse(any(".experts." in k for k in out))
+        self.assertIn("mtp.layers.0.mlp.gate_proj.weight", out)
+        self.assertIn("mtp.layers.0.mlp.down_proj.weight", out)
+        # Stacked shape: [E, D, in].
+        self.assertEqual(list(out["mtp.layers.0.mlp.gate_proj.weight"].shape), [2, 8, 4])
+        # Router gate passes through.
+        self.assertIn("mtp.layers.0.mlp.gate.weight", out)
 
 
 class RuntimeContractTests(unittest.TestCase):
