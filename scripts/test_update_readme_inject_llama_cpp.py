@@ -107,12 +107,11 @@ class InjectorTests(unittest.TestCase):
         doc = {
             "rows": [
                 _row("qwen3_6-27b-6bit", 1400.0, 2400.0, 90.0, 90.0, 215.0),
-                _row("qwen3_6-27b-8bit", 1300.0, 2300.0, 85.0, 95.0, 225.0),
             ],
         }
         lookup = inj.build_llama_lookup(doc)
         self.assertEqual(lookup[("Qwen 3.6 27B", "6-bit", 512)]["prefill"], 2400.0)
-        self.assertEqual(lookup[("Qwen 3.6 27B", "8-bit", 512)]["ttft"], 225.0)
+        self.assertNotIn(("Qwen 3.6 27B", "8-bit", 512), lookup)
 
     def test_lookup_prefers_llama_cpp_decode_at_depth_when_present(self) -> None:
         doc = {

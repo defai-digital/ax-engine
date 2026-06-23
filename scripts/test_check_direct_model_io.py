@@ -29,7 +29,7 @@ class DirectModelIoMatrixTests(unittest.TestCase):
         self.assertIn("qwen3-5-9b-mlx-4bit", slugs)
         self.assertIn("qwen3-6-27b-4bit", slugs)
         self.assertIn("qwen3-6-35b-a3b-4bit", slugs)
-        self.assertIn("qwen3-coder-next-4bit", slugs)
+        self.assertIn("qwen3-coder-next-6bit", slugs)
         self.assertIn("glm-4-7-flash-4bit", slugs)
 
     def test_glm_is_a_direct_model_io_case(self) -> None:

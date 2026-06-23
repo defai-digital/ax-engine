@@ -1,0 +1,39 @@
+
+=== AX Engine MLX inference stack ===
+  model: /Volumes/Ext4T/models/hub/models--ax-local--mlx-community--Qwen3.6-27B-6bit-MTP/snapshots/v1
+  model_repo_id: ax-local/mlx-community--Qwen3.6-27B-6bit-MTP
+  model_dir: /Volumes/Ext4T/models/hub/models--ax-local--mlx-community--Qwen3.6-27B-6bit-MTP/snapshots/v1
+  prompt_tokens: [128, 512, 2048]
+  generation_tokens: 1000
+  repetitions: 5 + 1 warmup for AX
+  ax_prefix_cache: disabled_for_cold_prefill_benchmark
+  prompt_artifact_root: /Users/akiralam/code/ax-engine/benchmarks/results/mtp-6bit/2026-06-22-six-model-mtp-full-three-suite-ax-gain/qwen3.6-27b-6bit/long_code/ax_direct-prompts
+  [prompt] real suite=long_code case=long_code_c_audit tokens=719 text_sha256=5ffae1f63827 path=/Users/akiralam/code/ax-engine/benchmarks/results/mtp-6bit/2026-06-22-six-model-mtp-full-three-suite-ax-gain/qwen3.6-27b-6bit/long_code/ax_direct-prompts/real-long_code-long_code_c_audit-gen-1000-a51717a1ab98.json
+  [prompt] real suite=long_code case=long_code_api_audit tokens=850 text_sha256=062e3300154f path=/Users/akiralam/code/ax-engine/benchmarks/results/mtp-6bit/2026-06-22-six-model-mtp-full-three-suite-ax-gain/qwen3.6-27b-6bit/long_code/ax_direct-prompts/real-long_code-long_code_api_audit-gen-1000-ec8b6d437ca0.json
+  [prompt] real suite=long_code case=long_code_test_stubs tokens=712 text_sha256=3b400dabcce9 path=/Users/akiralam/code/ax-engine/benchmarks/results/mtp-6bit/2026-06-22-six-model-mtp-full-three-suite-ax-gain/qwen3.6-27b-6bit/long_code/ax_direct-prompts/real-long_code-long_code_test_stubs-gen-1000-c0a1a4b4a68a.json
+  [prompt] real suite=long_code case=long_code_sql_schema tokens=449 text_sha256=3c6cb4d67cc3 path=/Users/akiralam/code/ax-engine/benchmarks/results/mtp-6bit/2026-06-22-six-model-mtp-full-three-suite-ax-gain/qwen3.6-27b-6bit/long_code/ax_direct-prompts/real-long_code-long_code_sql_schema-gen-1000-08a02b17a1b2.json
+  [ax-engine] /Users/akiralam/code/ax-engine/target/release/ax-engine-server --mlx --mlx-model-artifacts-dir /Volumes/Ext4T/models/hub/models--ax-local--mlx-community--Qwen3.6-27B-6bit-MTP/snapshots/v1 --port 60840 --disable-ngram-acceleration --prefill-chunk 2048 --max-batch-tokens 2048
+  [ax-engine] prefix cache disabled for cold prefill/TTFT measurement
+  [ax-engine/ax_engine_mlx] prompt=719 generation=1000 policy=direct_no_ngram_acceleration kv_compression=disabled
+    rep 1: prefill=736.8 tok/s decode=18.6 tok/s out=1000
+    rep 2: prefill=736.3 tok/s decode=18.6 tok/s out=1000
+    rep 3: prefill=736.7 tok/s decode=18.6 tok/s out=1000
+    rep 4: prefill=736.6 tok/s decode=18.6 tok/s out=1000
+    rep 5: prefill=735.3 tok/s decode=18.6 tok/s out=1000
+  [ax-engine] inter-case cooldown 10s
+  [ax-engine/ax_engine_mlx] prompt=850 generation=1000 policy=direct_no_ngram_acceleration kv_compression=disabled
+    rep 1: prefill=756.5 tok/s decode=18.5 tok/s out=1000
+    rep 2: prefill=757.0 tok/s decode=18.5 tok/s out=1000
+    rep 3: prefill=758.2 tok/s decode=18.5 tok/s out=1000
+    rep 4: prefill=756.4 tok/s decode=18.5 tok/s out=1000
+    rep 5: prefill=758.0 tok/s decode=18.5 tok/s out=1000
+  [ax-engine] inter-case cooldown 10s
+  [ax-engine/ax_engine_mlx] prompt=712 generation=1000 policy=direct_no_ngram_acceleration kv_compression=disabled
+    rep 1: prefill=730.4 tok/s decode=18.4 tok/s out=1000
+    rep 2: prefill=731.1 tok/s decode=18.4 tok/s out=1000
+    rep 3: prefill=732.0 tok/s decode=18.4 tok/s out=1000
+    rep 4: prefill=732.9 tok/s decode=18.1 tok/s out=1000
+    rep 5: prefill=733.1 tok/s decode=18.1 tok/s out=1000
+  [ax-engine] inter-case cooldown 10s
+  [ax-engine/ax_engine_mlx] prompt=449 generation=1000 policy=direct_no_ngram_acceleration kv_compression=disabled
+    rep 1: prefill=632.6 tok/s decode=17.7 tok/s out=1000

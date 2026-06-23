@@ -28,13 +28,11 @@ from typing import Any
 SLUG_TO_README = {
     "gemma-4-e2b-it-4bit":     ("Gemma 4 E2B",      "4-bit"),
     "gemma-4-e2b-it-6bit":     ("Gemma 4 E2B",      "6-bit"),
-    "gemma-4-e2b-it-8bit":     ("Gemma 4 E2B",      "8-bit"),
     "gemma-4-e4b-it-4bit":     ("Gemma 4 E4B",      "4-bit"),
     "gemma-4-26b-a4b-it-4bit": ("Gemma 4 26B A4B",  "4-bit"),
     "gemma-4-31b-it-4bit":     ("Gemma 4 31B",      "4-bit"),
     "qwen3_6-27b-4bit":        ("Qwen 3.6 27B",     "4-bit"),
     "qwen3_6-27b-6bit":        ("Qwen 3.6 27B",     "6-bit"),
-    "qwen3_6-27b-8bit":        ("Qwen 3.6 27B",     "8-bit"),
     "qwen3_6-35b-a3b-4bit":    ("Qwen 3.6 35B A3B", "4-bit"),
 }
 
@@ -51,7 +49,7 @@ DISCLAIMER_PARAGRAPH = (
     "intent is rough side-by-side context against a well-known third-party "
     "Metal runtime, not head-to-head comparison. MLX bit-widths are mapped "
     "to the nearest Unsloth GGUF quant "
-    "(4→Q4_K_M, 6→Q6_K, 8→Q8_0), with explicit UD-* Unsloth "
+    "(4→Q4_K_M, 6→Q6_K), with explicit UD-* Unsloth "
     "Dynamic rows only when no standard root-level K-quant is published. No "
     "percentage delta is shown for this column because the prompt is not "
     "shared. Source: `benchmarks/manifests/llama_cpp_metal/inventory.json`, "

@@ -26,13 +26,11 @@ from typing import Any
 SLUG_ORDER = [
     "gemma-4-e2b-it-4bit",
     "gemma-4-e2b-it-6bit",
-    "gemma-4-e2b-it-8bit",
     "gemma-4-e4b-it-4bit",
     "gemma-4-26b-a4b-it-4bit",
     "gemma-4-31b-it-4bit",
     "qwen3_6-27b-4bit",
     "qwen3_6-27b-6bit",
-    "qwen3_6-27b-8bit",
     "qwen3_6-35b-a3b-4bit",
 ]
 
@@ -104,7 +102,7 @@ def render_section(sweep_doc: dict[str, Any]) -> str:
         "intent of this section is one of context (is the MLX engine in the same "
         "neighborhood as a well-known third-party Metal runtime?), not head-to-head "
         "comparison. MLX bit-widths are mapped to the nearest Unsloth GGUF "
-        "quant (4→Q4_K_M, 6→Q6_K, 8→Q8_0), with explicit UD-* "
+        "quant (4→Q4_K_M, 6→Q6_K), with explicit UD-* "
         "Unsloth Dynamic rows only when no standard root-level K-quant is "
         "published. Architectural bit-for-bit equivalence is not claimed."
     )

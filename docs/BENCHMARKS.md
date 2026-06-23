@@ -94,14 +94,15 @@ use a larger corpus with a published prompt-mix table. See
 
 Use the MTP benchmark when the question is how AX Engine MTP throughput and
 acceptance behaves on the supported local-agent targets. The current benchmark
-design is AX-owned and intentionally limited to five 6-bit `download-mtp`
+design is AX-owned and intentionally limited to six 6-bit `download-mtp`
 targets:
 
 | Target | Preparation command | Benchmark mode |
 |---|---|---|
-| `qwen3-coder-next` | `ax-engine download-mtp qwen3-coder-next` | MTP |
+| `qwen3.6-27b-6bit` | `ax-engine download-mtp qwen3.6-27b-6bit` | MTP |
 | `qwen3.6-35b-a3b` | `ax-engine download-mtp qwen3.6-35b-a3b` | MTP |
 | `gemma-4-12b` | `ax-engine download-mtp gemma-4-12b` | assistant-MTP |
+| `gemma-4-26b` | `ax-engine download-mtp gemma-4-26b` | assistant-MTP |
 | `gemma-4-31b` | `ax-engine download-mtp gemma-4-31b` | assistant-MTP |
 | `glm-4.7-flash` | `ax-engine download-mtp glm-4.7-flash` | GLM built-in MTP sidecar |
 
@@ -110,15 +111,16 @@ Rules for the current matrix:
 - Use 6-bit artifacts only.
 - Use `mtp` mode only.
 - Do not run, render, or promote `mtp-ngram` rows.
-- Do not include Qwen3.6 27B, Gemma 4 26B, 4-bit, 5-bit, 8-bit, FFN-only, or GGUF
+- Do not include Qwen3-Coder-Next, 4-bit, 5-bit, 8-bit, FFN-only, or GGUF
   variants in the current MTP benchmark matrix.
 - Direct rows are allowed only as local diagnostics; they are not headline MTP
   rows.
 
 ```text
-ax-engine download-mtp qwen3-coder-next
+ax-engine download-mtp qwen3.6-27b-6bit
 ax-engine download-mtp qwen3.6-35b-a3b
 ax-engine download-mtp gemma-4-12b
+ax-engine download-mtp gemma-4-26b
 ax-engine download-mtp gemma-4-31b
 ax-engine download-mtp glm-4.7-flash
 ```

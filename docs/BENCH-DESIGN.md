@@ -27,15 +27,15 @@ unauditable.
 A third benchmark class handles MTP comparison on real prompt suites:
 
 ```
-MTP 6-bit matrix                      ←  five download-mtp targets
+MTP 6-bit matrix                      ←  six download-mtp targets
   Produces: MTP-only artifacts (tok/s + accept rates per model per suite)
   Answers:  "How does AX Engine MTP perform on the supported 6-bit local-agent targets?"
 ```
 
 The current MTP benchmark design is intentionally narrow:
 
-- Models: `qwen3-coder-next`, `qwen3.6-35b-a3b`, `gemma-4-12b`, `gemma-4-31b`,
-  and `glm-4.7-flash`.
+- Models: `qwen3.6-27b-6bit`, `qwen3.6-35b-a3b`, `gemma-4-12b`,
+  `gemma-4-26b`, `gemma-4-31b`, and `glm-4.7-flash`.
 - Setup: every model must be prepared through `ax-engine download-mtp <model>`.
 - Quantization: 6-bit only. Do not mix 4-bit, 5-bit, 8-bit, FFN-only, or GGUF
   variants into the MTP benchmark matrix.

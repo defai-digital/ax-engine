@@ -1,0 +1,61 @@
+
+=== AX Engine MLX inference stack ===
+  model: mlx-community/Qwen3-Coder-Next-6bit
+  model_repo_id: mlx-community/Qwen3-Coder-Next-6bit
+  model_dir: /Users/akiralam/.cache/huggingface/hub/models--mlx-community--Qwen3-Coder-Next-6bit/snapshots/9d12cc36cc6c386ffd04f7c8f0de6ccb29c5927e
+  prompt_tokens: [128, 512, 2048]
+  generation_tokens: 128
+  repetitions: 5 + 1 warmup for AX
+  ax_prefix_cache: disabled_for_cold_prefill_benchmark
+  prompt_artifact_root: benchmarks/results/mlx-inference/2026-06-22-qwen3-coder-next-6bit-full/prompts
+  llama_cpp_bench: /Users/akiralam/code/ax-engine/.internal/reference/llama.cpp/build-ax/bin/llama-bench
+  llama_cpp_gguf: /Users/akiralam/.cache/huggingface/hub/models--unsloth--Qwen3-Coder-Next-GGUF/snapshots/ce09c67b53bc8739eef83fe67b2f5d293c270632/Q6_K/Qwen3-Coder-Next-Q6_K-00001-of-00003.gguf
+  [build] cargo build -p ax-engine-server --release
+    Finished `release` profile [optimized] target(s) in 0.20s
+warning: the following packages contain code that will be rejected by a future version of Rust: block v0.1.6
+note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
+  [prompt] prompt_tokens=128 sha256=3b05f6bc7d91 path=benchmarks/results/mlx-inference/2026-06-22-qwen3-coder-next-6bit-full/prompts/prompt-128-gen-128-3b05f6bc7d91.json
+  [prompt] prompt_tokens=512 sha256=e46d8899eb1d path=benchmarks/results/mlx-inference/2026-06-22-qwen3-coder-next-6bit-full/prompts/prompt-512-gen-128-e46d8899eb1d.json
+  [prompt] prompt_tokens=2048 sha256=85035698524c path=benchmarks/results/mlx-inference/2026-06-22-qwen3-coder-next-6bit-full/prompts/prompt-2048-gen-128-85035698524c.json
+  [mlx_lm] python3 -m mlx_lm.benchmark --model mlx-community/Qwen3-Coder-Next-6bit --batch-size 1 --prompt-tokens 128 --generation-tokens 128 --num-trials 5 --delay 15 --prefill-step-size 4096
+  [mlx_lm] python3 -m mlx_lm.benchmark --model mlx-community/Qwen3-Coder-Next-6bit --batch-size 1 --prompt-tokens 512 --generation-tokens 128 --num-trials 5 --delay 15 --prefill-step-size 4096
+  [mlx_lm] python3 -m mlx_lm.benchmark --model mlx-community/Qwen3-Coder-Next-6bit --batch-size 1 --prompt-tokens 2048 --generation-tokens 128 --num-trials 5 --delay 15 --prefill-step-size 4096
+  [llama.cpp/metal] /Users/akiralam/code/ax-engine/.internal/reference/llama.cpp/build-ax/bin/llama-bench -m /Users/akiralam/.cache/huggingface/hub/models--unsloth--Qwen3-Coder-Next-GGUF/snapshots/ce09c67b53bc8739eef83fe67b2f5d293c270632/Q6_K/Qwen3-Coder-Next-Q6_K-00001-of-00003.gguf -p 128 -n 128 -r 5 --delay 15 -ngl 99 -b 2048 -ub 512 -o json -fa 1
+  [llama.cpp/metal] /Users/akiralam/code/ax-engine/.internal/reference/llama.cpp/build-ax/bin/llama-bench -m /Users/akiralam/.cache/huggingface/hub/models--unsloth--Qwen3-Coder-Next-GGUF/snapshots/ce09c67b53bc8739eef83fe67b2f5d293c270632/Q6_K/Qwen3-Coder-Next-Q6_K-00001-of-00003.gguf -p 512 -n 128 -r 5 --delay 15 -ngl 99 -b 2048 -ub 512 -o json -fa 1
+  [llama.cpp/metal] /Users/akiralam/code/ax-engine/.internal/reference/llama.cpp/build-ax/bin/llama-bench -m /Users/akiralam/.cache/huggingface/hub/models--unsloth--Qwen3-Coder-Next-GGUF/snapshots/ce09c67b53bc8739eef83fe67b2f5d293c270632/Q6_K/Qwen3-Coder-Next-Q6_K-00001-of-00003.gguf -p 2048 -n 128 -r 5 --delay 15 -ngl 99 -b 2048 -ub 2048 -o json -fa 1
+  [ax-engine] /Users/akiralam/code/ax-engine/target/release/ax-engine-server --mlx --mlx-model-artifacts-dir /Users/akiralam/.cache/huggingface/hub/models--mlx-community--Qwen3-Coder-Next-6bit/snapshots/9d12cc36cc6c386ffd04f7c8f0de6ccb29c5927e --port 63960 --disable-ngram-acceleration --prefill-chunk 4096 --max-batch-tokens 4096
+  [ax-engine] prefix cache disabled for cold prefill/TTFT measurement
+  [ax-engine/ax_engine_mlx] prompt=128 generation=128 policy=direct_no_ngram_acceleration kv_compression=disabled
+Traceback (most recent call last):
+  File "/Users/akiralam/code/ax-engine/scripts/bench_mlx_inference_stack.py", line 5256, in <module>
+    main()
+    ~~~~^^
+  File "/Users/akiralam/code/ax-engine/scripts/bench_mlx_inference_stack.py", line 4989, in main
+    bench_axengine(
+    ~~~~~~~~~~~~~~^
+        args.axengine_port,
+        ^^^^^^^^^^^^^^^^^^^
+    ...<13 lines>...
+        gemma4_assistant_mtp=gemma4_assistant_mtp,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/Users/akiralam/code/ax-engine/scripts/bench_mlx_inference_stack.py", line 3250, in bench_axengine
+    axengine_one_run(
+    ~~~~~~~~~~~~~~~~^
+        port, tokens, generation_tokens, server_pid=server_pid, sampler=sampler
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/Users/akiralam/code/ax-engine/scripts/bench_mlx_inference_stack.py", line 3016, in axengine_one_run
+    response = conn.getresponse()
+  File "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/lib/python3.14/http/client.py", line 1459, in getresponse
+    response.begin()
+    ~~~~~~~~~~~~~~^^
+  File "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/lib/python3.14/http/client.py", line 336, in begin
+    version, status, reason = self._read_status()
+                              ~~~~~~~~~~~~~~~~~^^
+  File "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/lib/python3.14/http/client.py", line 305, in _read_status
+    raise RemoteDisconnected("Remote end closed connection without"
+                             " response")
+http.client.RemoteDisconnected: Remote end closed connection without response

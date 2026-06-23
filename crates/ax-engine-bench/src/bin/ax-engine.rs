@@ -185,16 +185,17 @@ const MODEL_PROFILES: &[ModelProfile] = &[
 
 const MTP_DOWNLOAD_TARGETS: &[MtpDownloadTarget] = &[
     MtpDownloadTarget {
-        label: "qwen3-coder-next",
-        repo_id: "mlx-community/Qwen3-Coder-Next-6bit",
+        label: "qwen3.6-27b-6bit",
+        repo_id: "mlx-community/Qwen3.6-27B-6bit",
         aliases: &[
-            "qwen3-coder-next",
-            "qwen3-coder-next-6bit",
-            "qwen-coder-next",
-            "qwen-coder-next-6bit",
+            "qwen3.6-27b-6bit",
+            "qwen36-27b-6bit",
+            "qwen3-6-27b-6bit",
+            "qwen3.6-27b",
+            "qwen36-27b",
         ],
         kind: MtpDownloadKind::QwenSidecar {
-            mtp_source: "Qwen/Qwen3-Next-80B-A3B-Instruct",
+            mtp_source: "Qwen/Qwen3.6-27B",
         },
     },
     MtpDownloadTarget {
@@ -226,6 +227,24 @@ const MTP_DOWNLOAD_TARGETS: &[MtpDownloadTarget] = &[
             target_model_id: "gemma-4-12b-it",
             assistant_model_id: "gemma-4-12b-it-assistant",
             max_depth: 2,
+        },
+    },
+    MtpDownloadTarget {
+        label: "gemma-4-26b",
+        repo_id: "mlx-community/gemma-4-26b-a4b-it-6bit",
+        aliases: &[
+            "gemma-4-26b",
+            "gemma-4-26b-a4b",
+            "gemma-4-26b-a4b-it",
+            "gemma-4-26b-6bit",
+            "gemma4-26b",
+            "gemma4-26b-6bit",
+        ],
+        kind: MtpDownloadKind::GemmaAssistant {
+            assistant_repo_id: "google/gemma-4-26b-a4b-it-assistant",
+            target_model_id: "gemma-4-26b-a4b-it",
+            assistant_model_id: "gemma-4-26b-a4b-it-assistant",
+            max_depth: 1,
         },
     },
     MtpDownloadTarget {
@@ -1831,10 +1850,8 @@ fn run_download_gemma_assistant_mtp(
         "ax-engine-prepare-gemma4-assistant-mtp.py",
         "prepare_gemma4_assistant_mtp.py",
     )?;
-    let depth = args.mtp_depth_max.as_deref().unwrap_or(match target.label {
-        "gemma-4-31b" => "1",
-        _ => "2",
-    });
+    let default_depth = max_depth.to_string();
+    let depth = args.mtp_depth_max.as_deref().unwrap_or(&default_depth);
     let mut prepare_cmd = Command::new(python());
     prepare_cmd
         .arg(&helper)
@@ -2516,10 +2533,10 @@ mod tests {
     fn download_mtp_targets_cover_requested_6bit_models() {
         let cases = [
             (
-                "qwen3-coder-next",
-                "mlx-community/Qwen3-Coder-Next-6bit",
+                "qwen3.6-27b-6bit",
+                "mlx-community/Qwen3.6-27B-6bit",
                 MtpDownloadKind::QwenSidecar {
-                    mtp_source: "Qwen/Qwen3-Next-80B-A3B-Instruct",
+                    mtp_source: "Qwen/Qwen3.6-27B",
                 },
             ),
             (
@@ -2537,6 +2554,16 @@ mod tests {
                     target_model_id: "gemma-4-12b-it",
                     assistant_model_id: "gemma-4-12b-it-assistant",
                     max_depth: 2,
+                },
+            ),
+            (
+                "gemma-4-26b",
+                "mlx-community/gemma-4-26b-a4b-it-6bit",
+                MtpDownloadKind::GemmaAssistant {
+                    assistant_repo_id: "google/gemma-4-26b-a4b-it-assistant",
+                    target_model_id: "gemma-4-26b-a4b-it",
+                    assistant_model_id: "gemma-4-26b-a4b-it-assistant",
+                    max_depth: 1,
                 },
             ),
             (
@@ -2563,6 +2590,7 @@ mod tests {
             assert!(target.repo_id.ends_with("6bit"));
             assert_eq!(target.kind, kind);
         }
+        assert!(mtp_download_target_for_model("qwen3-coder-next").is_none());
     }
 
     #[test]

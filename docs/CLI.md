@@ -75,13 +75,14 @@ Use `download-mtp` to fetch a supported 6-bit target and package its MTP
 artifact in one step. Use `convert-mtplx` when you need explicit source control:
 
 ```text
-ax-engine download-mtp qwen3-coder-next
+ax-engine download-mtp qwen3.6-27b-6bit
 ax-engine download-mtp qwen3.6-35b-a3b --json
 ax-engine download-mtp gemma-4-12b
+ax-engine download-mtp gemma-4-26b
 ax-engine download-mtp gemma-4-31b
 ax-engine download-mtp glm-4.7-flash
 
-ax-engine convert-mtplx mlx-community/Qwen3.6-27B-4bit \
+ax-engine convert-mtplx mlx-community/Qwen3.6-27B-6bit \
   --mtp-source Qwen/Qwen3.6-27B \
   --fair-base-only \
   --json
@@ -91,9 +92,10 @@ ax-engine convert-mtplx mlx-community/Qwen3.6-27B-4bit \
 
 | Target | Base repo | Result |
 |---|---|---|
-| `qwen3-coder-next` | `mlx-community/Qwen3-Coder-Next-6bit` | Qwen fused `mtp.safetensors` sidecar from `Qwen/Qwen3-Next-80B-A3B-Instruct` |
+| `qwen3.6-27b-6bit` | `mlx-community/Qwen3.6-27B-6bit` | Qwen fused `mtp.safetensors` sidecar from `Qwen/Qwen3.6-27B` |
 | `qwen3.6-35b-a3b` | `mlx-community/Qwen3.6-35B-A3B-6bit` | Qwen fused `mtp.safetensors` sidecar from `Qwen/Qwen3.6-35B-A3B` |
 | `gemma-4-12b` | `mlx-community/gemma-4-12B-it-6bit` | Gemma assistant-MTP package with `mlx-community/gemma-4-12B-it-assistant-6bit` |
+| `gemma-4-26b` | `mlx-community/gemma-4-26b-a4b-it-6bit` | Gemma assistant-MTP package with `google/gemma-4-26b-a4b-it-assistant` |
 | `gemma-4-31b` | `mlx-community/gemma-4-31b-it-6bit` | Gemma assistant-MTP package with `google/gemma-4-31b-it-assistant` |
 | `glm-4.7-flash` | `mlx-community/GLM-4.7-Flash-6bit` | GLM built-in MTP layer extracted from `zai-org/GLM-4.7-Flash` into `glm_mtp.safetensors` |
 

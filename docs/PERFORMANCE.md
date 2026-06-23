@@ -203,9 +203,10 @@ must run MTP only.
 
 | Target | Required preparation | Promoted MTP mode |
 |---|---|---|
-| `qwen3-coder-next` | `ax-engine download-mtp qwen3-coder-next` | Qwen fused sidecar MTP |
+| `qwen3.6-27b-6bit` | `ax-engine download-mtp qwen3.6-27b-6bit` | Qwen fused sidecar MTP |
 | `qwen3.6-35b-a3b` | `ax-engine download-mtp qwen3.6-35b-a3b` | Qwen fused sidecar MTP |
 | `gemma-4-12b` | `ax-engine download-mtp gemma-4-12b` | Gemma assistant-MTP |
+| `gemma-4-26b` | `ax-engine download-mtp gemma-4-26b` | Gemma assistant-MTP |
 | `gemma-4-31b` | `ax-engine download-mtp gemma-4-31b` | Gemma assistant-MTP |
 | `glm-4.7-flash` | `ax-engine download-mtp glm-4.7-flash` | GLM built-in MTP sidecar |
 
@@ -226,9 +227,10 @@ Rules:
 Prepare the matrix:
 
 ```bash
-ax-engine download-mtp qwen3-coder-next
+ax-engine download-mtp qwen3.6-27b-6bit
 ax-engine download-mtp qwen3.6-35b-a3b
 ax-engine download-mtp gemma-4-12b
+ax-engine download-mtp gemma-4-26b
 ax-engine download-mtp gemma-4-31b
 ax-engine download-mtp glm-4.7-flash
 ```
@@ -449,7 +451,7 @@ positive:
 
 | Model family | Direct AX vs `mlx_lm` | AX n-gram vs `mlx_lm` | Interpretation |
 |---|---:|---:|---|
-| Gemma 4 E2B 4/5/6/8-bit | -12.3% to -9.4% | +135.9% to +207.2% | Direct decode is still the weak path; user-default n-gram hides it for draftable outputs |
+| Gemma 4 E2B 4/5/6-bit | -12.3% to -9.4% | +135.9% to +207.2% | Direct decode is still the weak path; user-default n-gram hides it for draftable outputs |
 | Gemma 4 E4B 4-bit | -10.8% to -10.7% | +158.6% to +165.6% | Similar direct gap at the next small dense size |
 | Gemma 4 26B A4B | -5.7% to -5.6% | +88.4% to +114.1% | MoE direct gap is smaller than E2B/E4B, but still below `mlx_lm` |
 | Gemma 4 31B | -4.0% to -3.9% | +125.2% to +125.6% | Large dense Gemma is close enough that smaller overheads matter |
@@ -500,7 +502,7 @@ Qwen Coder Next uses MLX affine 4-bit globally, with 8-bit overrides for router
 and shared-expert gate tensors.
 
 Qwen 3.6 35B A3B uses the MLX-community 4-bit checkpoint in the README GGUF
-comparison set. Qwen 3.6 27B carries the 4/5/6/8-bit sweep coverage.
+comparison set. Qwen 3.6 27B carries the 4/5/6-bit sweep coverage.
 
 Gemma 4 26B A4B is the public Gemma 4 MoE MLX model. Its checkpoint uses affine
 4-bit globally, with 8-bit overrides for dense MLP and router projections. The
@@ -513,7 +515,7 @@ For the remaining Gemma 4 26B A4B direct-decode gap, rerun AX direct rows with
 counters under `ax_mlx_gemma4_moe_profile` and intentionally insert eval
 barriers, so compare their bottleneck split rather than their headline tok/s.
 
-Gemma 4 E2B 5/6/8-bit checkpoints use affine quantization at their respective
+Gemma 4 E2B 5/6-bit checkpoints use affine quantization at their respective
 bit depths globally. These rows verify AX Engine's higher-bit quantization
 support; the 4-bit row is the primary decode performance reference.
 

@@ -1,0 +1,64 @@
+
+=== AX Engine MLX inference stack ===
+  model: /Volumes/Ext4T/models/hub/models--ax-local--mlx-community--Qwen3.6-27B-6bit-MTP/snapshots/v1
+  model_repo_id: ax-local/mlx-community--Qwen3.6-27B-6bit-MTP
+  model_dir: /Volumes/Ext4T/models/hub/models--ax-local--mlx-community--Qwen3.6-27B-6bit-MTP/snapshots/v1
+  prompt_tokens: [128, 512, 2048]
+  generation_tokens: 1000
+  repetitions: 5 + 1 warmup for AX
+  ax_prefix_cache: disabled_for_cold_prefill_benchmark
+  prompt_artifact_root: /Users/akiralam/code/ax-engine/benchmarks/results/mtp-6bit/2026-06-22-six-model-mtp-full-three-suite/qwen3.6-27b-6bit/long_code/ax_engine-prompts
+  [prompt] real suite=long_code case=long_code_c_audit tokens=719 text_sha256=5ffae1f63827 path=/Users/akiralam/code/ax-engine/benchmarks/results/mtp-6bit/2026-06-22-six-model-mtp-full-three-suite/qwen3.6-27b-6bit/long_code/ax_engine-prompts/real-long_code-long_code_c_audit-gen-1000-a51717a1ab98.json
+  [prompt] real suite=long_code case=long_code_api_audit tokens=850 text_sha256=062e3300154f path=/Users/akiralam/code/ax-engine/benchmarks/results/mtp-6bit/2026-06-22-six-model-mtp-full-three-suite/qwen3.6-27b-6bit/long_code/ax_engine-prompts/real-long_code-long_code_api_audit-gen-1000-ec8b6d437ca0.json
+  [prompt] real suite=long_code case=long_code_test_stubs tokens=712 text_sha256=3b400dabcce9 path=/Users/akiralam/code/ax-engine/benchmarks/results/mtp-6bit/2026-06-22-six-model-mtp-full-three-suite/qwen3.6-27b-6bit/long_code/ax_engine-prompts/real-long_code-long_code_test_stubs-gen-1000-c0a1a4b4a68a.json
+  [prompt] real suite=long_code case=long_code_sql_schema tokens=449 text_sha256=3c6cb4d67cc3 path=/Users/akiralam/code/ax-engine/benchmarks/results/mtp-6bit/2026-06-22-six-model-mtp-full-three-suite/qwen3.6-27b-6bit/long_code/ax_engine-prompts/real-long_code-long_code_sql_schema-gen-1000-08a02b17a1b2.json
+  [ax-engine] /Users/akiralam/code/ax-engine/target/release/ax-engine-server --mlx --mlx-model-artifacts-dir /Volumes/Ext4T/models/hub/models--ax-local--mlx-community--Qwen3.6-27B-6bit-MTP/snapshots/v1 --port 59602 --disable-ngram-acceleration --prefill-chunk 2048 --max-batch-tokens 2048
+  [ax-engine] AX_MLX_MTP_MAX_DEPTH=3
+  [ax-engine] prefix cache disabled for cold prefill/TTFT measurement
+  [ax-engine/ax_engine_mlx] prompt=719 generation=1000 policy=direct_no_ngram_acceleration kv_compression=disabled
+    rep 1: prefill=736.6 tok/s decode=18.4 tok/s out=1000
+Traceback (most recent call last):
+  File "/Users/akiralam/code/ax-engine/scripts/bench_mlx_inference_stack.py", line 5256, in <module>
+    main()
+    ~~~~^^
+  File "/Users/akiralam/code/ax-engine/scripts/bench_mlx_inference_stack.py", line 4989, in main
+    bench_axengine(
+    ~~~~~~~~~~~~~~^
+        args.axengine_port,
+        ^^^^^^^^^^^^^^^^^^^
+    ...<13 lines>...
+        gemma4_assistant_mtp=gemma4_assistant_mtp,
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/Users/akiralam/code/ax-engine/scripts/bench_mlx_inference_stack.py", line 3258, in bench_axengine
+    run = axengine_one_run(
+        port,
+    ...<4 lines>...
+        sampler=sampler,
+    )
+  File "/Users/akiralam/code/ax-engine/scripts/bench_mlx_inference_stack.py", line 3032, in axengine_one_run
+    for current_event, obj in iter_sse_json_events_from_lines(decoded_lines):
+                              ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^
+  File "/Users/akiralam/code/ax-engine/scripts/bench_mlx_inference_stack.py", line 2963, in iter_sse_json_events_from_lines
+    for raw_line in lines:
+                    ^^^^^
+  File "/Users/akiralam/code/ax-engine/scripts/bench_mlx_inference_stack.py", line 3031, in <genexpr>
+    decoded_lines = (raw.decode("utf-8", errors="replace") for raw in response)
+                                                                      ^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/lib/python3.14/http/client.py", line 708, in readline
+    return super().readline(limit)
+           ~~~~~~~~~~~~~~~~^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/lib/python3.14/http/client.py", line 700, in peek
+    return self._peek_chunked(n)
+           ~~~~~~~~~~~~~~~~~~^^^
+  File "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/lib/python3.14/http/client.py", line 738, in _peek_chunked
+    chunk_left = self._get_chunk_left()
+  File "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/lib/python3.14/http/client.py", line 584, in _get_chunk_left
+    chunk_left = self._read_next_chunk_size()
+  File "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/lib/python3.14/http/client.py", line 544, in _read_next_chunk_size
+    line = self.fp.readline(_MAXLINE + 1)
+  File "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/lib/python3.14/socket.py", line 729, in readinto
+    return self._sock.recv_into(b)
+           ~~~~~~~~~~~~~~~~~~~~^^^
+KeyboardInterrupt

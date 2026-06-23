@@ -41,7 +41,6 @@ class AxMode:
 MODEL_CASES = [
     ModelCase("gemma-4-e2b-it-4bit", "mlx-community/gemma-4-e2b-it-4bit", "mlx-community--gemma-4-e2b-it-4bit"),
     ModelCase("gemma-4-e2b-it-6bit", "mlx-community/gemma-4-e2b-it-6bit", "mlx-community--gemma-4-e2b-it-6bit"),
-    ModelCase("gemma-4-e2b-it-8bit", "mlx-community/gemma-4-e2b-it-8bit", "mlx-community--gemma-4-e2b-it-8bit"),
     ModelCase("gemma-4-e4b-it-4bit", "mlx-community/gemma-4-e4b-it-4bit", "mlx-community--gemma-4-e4b-it-4bit"),
     ModelCase("gemma-4-26b-a4b-it-4bit", "mlx-community/gemma-4-26b-a4b-it-4bit", "mlx-community--gemma-4-26b-a4b-it-4bit"),
     ModelCase("gemma-4-31b-it-4bit", "mlx-community/gemma-4-31b-it-4bit", "mlx-community--gemma-4-31b-it-4bit"),
@@ -49,9 +48,8 @@ MODEL_CASES = [
     ModelCase("qwen3-5-9b-mlx-4bit", "mlx-community/Qwen3.5-9B-MLX-4bit", "mlx-community--Qwen3.5-9B-MLX-4bit"),
     ModelCase("qwen3-6-27b-4bit", "mlx-community/Qwen3.6-27B-4bit", "mlx-community--Qwen3.6-27B-4bit"),
     ModelCase("qwen3-6-27b-6bit", "mlx-community/Qwen3.6-27B-6bit", "mlx-community--Qwen3.6-27B-6bit"),
-    ModelCase("qwen3-6-27b-8bit", "mlx-community/Qwen3.6-27B-8bit", "mlx-community--Qwen3.6-27B-8bit"),
     ModelCase("qwen3-6-35b-a3b-4bit", "mlx-community/Qwen3.6-35B-A3B-4bit", "mlx-community--Qwen3.6-35B-A3B-4bit"),
-    ModelCase("qwen3-coder-next-4bit", "mlx-community/Qwen3-Coder-Next-4bit", "mlx-community--Qwen3-Coder-Next-4bit"),
+    ModelCase("qwen3-coder-next-6bit", "mlx-community/Qwen3-Coder-Next-6bit", "mlx-community--Qwen3-Coder-Next-6bit"),
     ModelCase("glm-4-7-flash-4bit", "mlx-community/GLM-4.7-Flash-4bit", "mlx-community--GLM-4.7-Flash-4bit"),
 ]
 
