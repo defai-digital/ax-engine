@@ -546,6 +546,17 @@ def _cmd_ui_downloader(args: argparse.Namespace) -> int:
     return _run_interactive_download(args.force)
 
 
+def _cmd_tui(args: argparse.Namespace) -> int:
+    try:
+        from . import _tui
+    except ImportError:
+        raise SystemExit(
+            "The TUI requires the 'textual' package.  Install it with:\n"
+            "  pip install ax-engine[tui]"
+        )
+    return _tui.run(force=args.force)
+
+
 def _serve_argv(args: argparse.Namespace) -> tuple[list[str], dict]:
     server_bin = str(_server_bin())
     target = args.model
@@ -1303,9 +1314,16 @@ def build_parser() -> argparse.ArgumentParser:
     download_parser.add_argument("--json", action="store_true")
     download_parser.set_defaults(func=_cmd_download)
 
+    tui_parser = subparsers.add_parser(
+        "tui",
+        help="Launch the terminal UI for model download and serving",
+    )
+    tui_parser.add_argument("--force", action="store_true")
+    tui_parser.set_defaults(func=_cmd_tui)
+
     ui_downloader_parser = subparsers.add_parser(
         "ui-downloader",
-        help="Interactive model downloader wizard with a live progress bar",
+        help="Deprecated: use 'ax-engine tui' instead",
     )
     ui_downloader_parser.add_argument("--force", action="store_true")
     ui_downloader_parser.set_defaults(func=_cmd_ui_downloader)
