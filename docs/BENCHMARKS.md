@@ -5,6 +5,9 @@ tools to run, how tests are configured, what artifacts are produced, and how AX
 classifies evidence across repo-owned MLX, delegated `mlx_lm`, delegated
 llama.cpp, serving, and workload-contract paths.
 
+For the performance docs map and public claim-boundary policy, start with
+[`performance/README.md`](performance/README.md).
+
 The root `README.md` summarizes the high-traffic Gemma 4 and Qwen 3.6 rows
 under the **Performance** section. The full public result tables and result
 interpretation live in `docs/PERFORMANCE.md`. The current README snapshot is
@@ -109,12 +112,12 @@ targets:
 Rules for the current matrix:
 
 - Use 6-bit artifacts only.
-- Use `mtp` mode only.
+- Use MTP mode for promoted runtime rows; direct rows are allowed only as
+  same-package denominators for AX MTP acceleration charts.
 - Do not run, render, or promote `mtp-ngram` rows.
 - Do not include Qwen3-Coder-Next, 4-bit, 5-bit, 8-bit, FFN-only, or GGUF
   variants in the current MTP benchmark matrix.
-- Direct rows are allowed only as local diagnostics; they are not headline MTP
-  rows.
+- Direct rows are not cross-model speed evidence.
 
 ```text
 ax-engine download-mtp qwen3.6-27b-6bit

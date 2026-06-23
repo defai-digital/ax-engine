@@ -25,24 +25,8 @@ ax-engine doctor
 ax-engine-server --help
 ```
 
-### Command-line tools (Homebrew)
-
-Homebrew is the native binary channel for tagged macOS arm64 releases, but the
-tap may lag behind the Python package. Check the formula version first:
-
-```bash
-brew info defai-digital/ax-engine/ax-engine
-brew install defai-digital/ax-engine/ax-engine
-```
-
-Use Homebrew for the `ax-engine` orchestration CLI only when the formula is
-`6.4.1` or newer. Then verify:
-
-```bash
-ax-engine doctor
-ax-engine-server --help
-ax-engine-bench doctor
-```
+Homebrew, source-build, and release-archive details are documented in the
+[Getting Started installation guide](https://github.com/defai-digital/ax-engine/blob/main/docs/GETTING-STARTED.md#installation).
 
 ## Quick start
 
@@ -68,9 +52,11 @@ Then point any OpenAI client at `http://127.0.0.1:8080`.
 
 ## Optional dependencies
 
+Install the OpenAI shim or image/audio helpers with the matching extra:
+
 ```bash
-python3 -m pip install "ax-engine[openai]>=6.4.1,<7"     # FastAPI + uvicorn
-python3 -m pip install "ax-engine[multimodal]>=6.4.1,<7" # image/audio helpers
+python3 -m pip install "ax-engine[openai]>=6.4.1,<7"
+python3 -m pip install "ax-engine[multimodal]>=6.4.1,<7"
 ```
 
 ## Requirements
@@ -79,6 +65,6 @@ python3 -m pip install "ax-engine[multimodal]>=6.4.1,<7" # image/audio helpers
 - Apple Silicon — M2 Max / M2 Ultra / M3 / M4 family (32 GB RAM minimum)
 - Python 3.10+
 
-## Source
+## Project
 
 [github.com/defai-digital/ax-engine](https://github.com/defai-digital/ax-engine)

@@ -230,6 +230,17 @@ const MTP_DOWNLOAD_TARGETS: &[MtpDownloadTarget] = &[
         },
     },
     MtpDownloadTarget {
+        label: "gemma-4-12b-4bit",
+        repo_id: "mlx-community/gemma-4-12B-it-4bit",
+        aliases: &["gemma-4-12b-4bit", "gemma-4-12b-it-4bit", "gemma4-12b-4bit"],
+        kind: MtpDownloadKind::GemmaAssistant {
+            assistant_repo_id: "mlx-community/gemma-4-12B-it-assistant-4bit",
+            target_model_id: "gemma-4-12b-it",
+            assistant_model_id: "gemma-4-12b-it-assistant",
+            max_depth: 2,
+        },
+    },
+    MtpDownloadTarget {
         label: "gemma-4-26b",
         repo_id: "mlx-community/gemma-4-26b-a4b-it-6bit",
         aliases: &[
@@ -310,7 +321,7 @@ fn run(args: Vec<OsString>) -> Result<u8, String> {
 
 fn print_usage() {
     println!(
-        "Usage:\n  ax-engine serve <model-dir-or-alias> [--host <host>] [--port <port>] [--download] [--dry-run] [--json] [-- <ax-engine-server args>]\n  ax-engine download [<alias-or-repo-id>] [--dest <path>] [--force] [--list] [--json]\n  ax-engine download-mtp <6bit-mtp-target> [--output <dir>] [--force] [--quantize 4|8] [--mtp-depth-max <n>] [--group-size <n>] [--fair-base-only] [--json]\n  ax-engine models list [--models-dir <path>] [--json]\n  ax-engine models info <alias-or-path> [--json]\n  ax-engine models rm <path> [--dry-run] [--yes] [--json]\n  ax-engine doctor [--json] [--verbose] [--mlx-model-artifacts-dir <path>]\n  ax-engine convert-mtplx <base-model> --mtp-source <repo> [--output <dir>] [--quantize 4|8] [--mtp-depth-max <n>] [--group-size <n>] [--fair-base-only] [--json]"
+        "Usage:\n  ax-engine serve <model-dir-or-alias> [--host <host>] [--port <port>] [--download] [--dry-run] [--json] [-- <ax-engine-server args>]\n  ax-engine download [<alias-or-repo-id>] [--dest <path>] [--force] [--list] [--json]\n  ax-engine download-mtp <mtp-target> [--output <dir>] [--force] [--quantize 4|8] [--mtp-depth-max <n>] [--group-size <n>] [--fair-base-only] [--json]\n  ax-engine models list [--models-dir <path>] [--json]\n  ax-engine models info <alias-or-path> [--json]\n  ax-engine models rm <path> [--dry-run] [--yes] [--json]\n  ax-engine doctor [--json] [--verbose] [--mlx-model-artifacts-dir <path>]\n  ax-engine convert-mtplx <base-model> --mtp-source <repo> [--output <dir>] [--quantize 4|8] [--mtp-depth-max <n>] [--group-size <n>] [--fair-base-only] [--json]"
     );
 }
 
@@ -1861,6 +1872,9 @@ fn run_download_gemma_assistant_mtp(
         .args(["--max-depth", depth]);
     if let Some(output) = &args.output {
         prepare_cmd.args(["--output", output]);
+    } else {
+        let output = default_gemma_assistant_mtp_output(target.repo_id);
+        prepare_cmd.arg("--output").arg(output);
     }
     let prepare_output = prepare_cmd
         .stdout(Stdio::piped())
@@ -2228,7 +2242,7 @@ fn mtp_download_target_for_model(value: &str) -> Option<MtpDownloadTarget> {
 
 fn format_unknown_download_mtp_target(value: &str) -> String {
     format!(
-        "unknown download-mtp target: {value:?}; use one of these 6-bit targets:\n{}",
+        "unknown download-mtp target: {value:?}; use one of these targets:\n{}",
         format_download_mtp_targets()
     )
 }
@@ -2430,6 +2444,32 @@ fn expand_home(value: &str) -> PathBuf {
     PathBuf::from(value)
 }
 
+fn default_hf_cache_root() -> PathBuf {
+    if let Some(root) = env::var_os("HF_HUB_CACHE") {
+        return expand_home(&root.to_string_lossy());
+    }
+    if let Some(home) = env::var_os("HF_HOME") {
+        return expand_home(&home.to_string_lossy()).join("hub");
+    }
+    let cache_home = env::var_os("XDG_CACHE_HOME")
+        .map(|value| expand_home(&value.to_string_lossy()))
+        .or_else(|| env::var_os("HOME").map(|home| PathBuf::from(home).join(".cache")))
+        .unwrap_or_else(|| PathBuf::from(".cache"));
+    cache_home.join("huggingface").join("hub")
+}
+
+fn default_gemma_assistant_mtp_output(repo_id: &str) -> PathBuf {
+    let leaf = repo_id
+        .rsplit('/')
+        .next()
+        .unwrap_or(repo_id)
+        .to_ascii_lowercase();
+    default_hf_cache_root()
+        .join(format!("models--ax-local--{leaf}-assistant-mtp"))
+        .join("snapshots")
+        .join("v1")
+}
+
 fn absolute_path(path: &Path) -> PathBuf {
     path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
 }
@@ -2591,6 +2631,38 @@ mod tests {
             assert_eq!(target.kind, kind);
         }
         assert!(mtp_download_target_for_model("qwen3-coder-next").is_none());
+    }
+
+    #[test]
+    fn download_mtp_supports_gemma4_12b_4bit_quickstart_target() {
+        let target = mtp_download_target_for_model("gemma-4-12b-4bit").unwrap();
+        assert_eq!(target.label, "gemma-4-12b-4bit");
+        assert_eq!(target.repo_id, "mlx-community/gemma-4-12B-it-4bit");
+        assert_eq!(
+            target.kind,
+            MtpDownloadKind::GemmaAssistant {
+                assistant_repo_id: "mlx-community/gemma-4-12B-it-assistant-4bit",
+                target_model_id: "gemma-4-12b-it",
+                assistant_model_id: "gemma-4-12b-it-assistant",
+                max_depth: 2,
+            }
+        );
+        assert_eq!(
+            mtp_download_target_for_model("gemma4-12b-4bit")
+                .unwrap()
+                .label,
+            "gemma-4-12b-4bit"
+        );
+        assert_eq!(
+            mtp_download_target_for_model("gemma-4-12b")
+                .unwrap()
+                .repo_id,
+            "mlx-community/gemma-4-12B-it-6bit"
+        );
+        assert!(
+            default_gemma_assistant_mtp_output(target.repo_id)
+                .ends_with("models--ax-local--gemma-4-12b-it-4bit-assistant-mtp/snapshots/v1")
+        );
     }
 
     #[test]

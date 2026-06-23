@@ -16,6 +16,8 @@ Start here:
   `mlx_lm_delegated`, `llama_cpp`, and unsupported requests
 - `FAQ.md`: hardware support, model-stack guidance, runtime paths,
   limitations, and performance-boundary questions
+- `performance/README.md`: performance and benchmark docs map, public claim
+  boundaries, and promotion rules
 - `PERFORMANCE.md`: current performance results, result tables, artifact
   summaries, and interpretation
 - `LONG-CONTEXT.md`: long-context evidence, prefix-reuse boundaries, and
@@ -26,6 +28,8 @@ Start here:
   compatibility boundaries
 - `SERVER.md`: local HTTP server routes and backend behavior
 - `CLI.md`: `ax-engine-bench` and server command surfaces
+- `sdk/README.md`: SDK docs hub for Rust, Python, JavaScript/TypeScript, Go,
+  Ruby, and Mojo
 - `ROADMAP.md`: current serving runtime direction and evidence gates for future
   claims
 - `BENCHMARKS.md`: benchmark methodology, test setup, commands, evidence
@@ -33,21 +37,17 @@ Start here:
 - `SERVING-BENCHMARKS.md`: online serving benchmark contract for prompt-mix,
   concurrency, request-rate, latency percentile, throughput, and SLO-goodput
   evidence
-- `PYTHON.md`: Python binding scope, examples, and LangChain integration
-- `JAVASCRIPT.md`: TypeScript/JS SDK usage and LangChain integration
-- `GO.md`: Go SDK usage and examples
-- `RUBY.md`: Ruby SDK usage and examples
-- `MOJO.md`: Mojo SDK usage and examples
 - `ARCHITECTURE.md`: crate boundaries and dependency rules
 
-Start with `PERFORMANCE.md` when you want the current public results in table
-form. Use `BENCHMARKS.md` when you need to understand how the tests are set up,
-which commands produce the artifacts, and how evidence is classified. Use
-`LONG-CONTEXT.md` when the claim is about long prompts, long-running sessions,
-or prefix reuse. Use
-`SERVING-BENCHMARKS.md` when the claim is market-style online serving behavior
-over a prompt mix. `BENCHMARKS.md` defines the project split between
-`ax-engine-bench` workload-contract artifacts,
+Start with `performance/README.md` when you need the performance docs map or
+public claim-boundary policy. Use `PERFORMANCE.md` when you want the current
+public results in table form. Use `BENCHMARKS.md` when you need to understand
+how the tests are set up, which commands produce the artifacts, and how
+evidence is classified. Use `LONG-CONTEXT.md` when the claim is about long
+prompts, long-running sessions, or prefix reuse. Use `SERVING-BENCHMARKS.md`
+when the claim is market-style online serving behavior over a prompt mix.
+`BENCHMARKS.md` defines the project split between `ax-engine-bench`
+workload-contract artifacts,
 `scripts/bench_mlx_inference_stack.py` repo-owned MLX model-inference
 comparisons with a required matching `mlx_lm.benchmark` primary baseline,
 optional `mlx-swift-lm` secondary baseline adapter rows, delegated

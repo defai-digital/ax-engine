@@ -498,7 +498,7 @@ python examples/python/stepwise.py
 python examples/python/streaming.py
 ```
 
-See `docs/PYTHON.md` for the current Python preview scope.
+See `docs/sdk/python.md` for the current Python preview scope.
 
 ## Stability Note
 

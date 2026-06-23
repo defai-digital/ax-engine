@@ -1,9 +1,12 @@
 # Performance
 
 This page is the public performance-results reference. It keeps the result
-tables, artifact summaries, interpretation, and claim boundaries for the
-current public snapshot. The root `README.md` intentionally keeps only the
-common Gemma 4 and Qwen 3.6 rows.
+tables, artifact summaries, and interpretation for the current public snapshot.
+The root `README.md` intentionally keeps only the common Gemma 4 and Qwen 3.6
+rows.
+
+For the public claim-boundary policy, see
+[`performance/README.md`](performance/README.md).
 
 For benchmark methodology, test setup, commands, reproduction details, and
 evidence classification, see [`docs/BENCHMARKS.md`](BENCHMARKS.md).
@@ -198,8 +201,9 @@ should not be read as a complete inference-serving proof. In particular:
 ## MTP Mode
 
 The current MTP publication contract is the 6-bit local-agent matrix. Every row
-must start from `ax-engine download-mtp` output, and every promoted benchmark row
-must run MTP only.
+must start from `ax-engine download-mtp` output. Promoted runtime rows run MTP;
+same-package direct rows may be reported only as denominators for AX MTP
+acceleration charts.
 
 | Target | Required preparation | Promoted MTP mode |
 |---|---|---|
@@ -217,8 +221,8 @@ Rules:
   MTP matrix.
 - Historical 4-bit Qwen3.6/MTPLX rows and historical MTP+n-gram artifacts remain
   diagnostic only. Do not use them for current README/PERFORMANCE claims.
-- Direct rows may be kept as local same-artifact diagnostics, but they are not
-  part of the headline MTP matrix.
+- Direct rows may be reported only as same-artifact denominators for
+  `AX MTP / AX direct` acceleration, not as a cross-model speed leaderboard.
 - Artifacts should live under `benchmarks/results/mtp-6bit/<run-dir>/` and record
   the exact `download-mtp` output path, model snapshot, sidecar or assistant
   package provenance, route identity, sampler, prompt suite, repetitions, and

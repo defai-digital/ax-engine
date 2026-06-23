@@ -3,7 +3,7 @@
 AX Engine currently exposes four command surfaces:
 
 - `ax-engine` for common local serving workflows. It is the recommended entrypoint
-  for starting a local server and preparing Qwen3.6 MTP sidecars.
+  for starting a local server and preparing supported MTP artifacts.
 - `ax-engine-server` for the backward-compatible low-level HTTP/gRPC server
   process when callers need explicit runtime flags.
 - `ax-engine-bench` for workload contracts, readiness, bounded autotune, Metal
@@ -71,10 +71,11 @@ cache is shared with `mlx-lm` and `huggingface_hub`, and its location is
 controlled by `HF_HUB_CACHE`, `HF_HOME`, or `XDG_CACHE_HOME`. Use `--dest` only
 when you need an explicit copied model directory outside the shared cache.
 
-Use `download-mtp` to fetch a supported 6-bit target and package its MTP
-artifact in one step. Use `convert-mtplx` when you need explicit source control:
+Use `download-mtp` to fetch a supported target and package its MTP artifact in
+one step. Use `convert-mtplx` when you need explicit source control:
 
 ```text
+ax-engine download-mtp gemma-4-12b-4bit --json
 ax-engine download-mtp qwen3.6-27b-6bit
 ax-engine download-mtp qwen3.6-35b-a3b --json
 ax-engine download-mtp gemma-4-12b
@@ -88,10 +89,25 @@ ax-engine convert-mtplx mlx-community/Qwen3.6-27B-6bit \
   --json
 ```
 
-`download-mtp` is the normal path for the 6-bit local-agent targets:
+`download-mtp` is the normal path for supported local-agent MTP targets. The
+six 6-bit rows are the promoted benchmark matrix; `gemma-4-12b-4bit` is the
+Quick Start target.
+
+Without `--output`, generated MTP packages are written as synthetic Hugging
+Face Hub cache snapshots under the active HF cache root. For example,
+`gemma-4-12b-4bit` defaults to:
+
+```text
+~/.cache/huggingface/hub/models--ax-local--gemma-4-12b-it-4bit-assistant-mtp/snapshots/v1
+```
+
+The command prints the prepared path and a matching `ax-engine serve ...`
+command. Use `--output <dir>` only when you need an explicit location outside
+the shared cache.
 
 | Target | Base repo | Result |
 |---|---|---|
+| `gemma-4-12b-4bit` | `mlx-community/gemma-4-12B-it-4bit` | Gemma assistant-MTP package with `mlx-community/gemma-4-12B-it-assistant-4bit` |
 | `qwen3.6-27b-6bit` | `mlx-community/Qwen3.6-27B-6bit` | Qwen fused `mtp.safetensors` sidecar from `Qwen/Qwen3.6-27B` |
 | `qwen3.6-35b-a3b` | `mlx-community/Qwen3.6-35B-A3B-6bit` | Qwen fused `mtp.safetensors` sidecar from `Qwen/Qwen3.6-35B-A3B` |
 | `gemma-4-12b` | `mlx-community/gemma-4-12B-it-6bit` | Gemma assistant-MTP package with `mlx-community/gemma-4-12B-it-assistant-6bit` |
