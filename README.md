@@ -40,7 +40,7 @@ tracked separately, with peer rows and model-specific boundaries kept visible.
 - [What AX Engine Does](#what-ax-engine-does)
 - [Performance](#performance)
   - [Speculative Decoding (MTP)](#speculative-decoding-mtp)
-    - [4-bit MTP comparison lane (2026-06-20)](#4-bit-mtp-comparison-lane-2026-06-20)
+    - [4-bit MTP comparison lane (2026-06-23)](#4-bit-mtp-comparison-lane-2026-06-23)
     - [6-bit MTP acceleration refresh (2026-06-23)](#6-bit-mtp-acceleration-refresh-2026-06-23)
   - [Direct Decode · Prefill · TTFT](#direct-decode--prefill--ttft)
     - [Gemma 4 12B](#gemma-4-12b)
@@ -267,7 +267,7 @@ published to make comparison with other MTP engines easier because many peer
 benchmarks use 4-bit models. Historical MTP+n-gram artifacts remain useful for
 debugging regressions, but they are not current README/PERFORMANCE MTP evidence.
 
-#### 4-bit MTP comparison lane (2026-06-20)
+#### 4-bit MTP comparison lane (2026-06-23)
 
 The 4-bit lane is not the recommended AX Engine deployment setting. It is kept
 in the MTP section because peer engines commonly publish 4-bit MTP results, so
@@ -279,12 +279,12 @@ sampler, 1,000 generated tokens, 5 measured repetitions, and cooldown contract:
 
 | Model | Suite | Depth | AX MTP decode | MTPLX decode | AX / MTPLX | AX MTP prefill | AX MTP TTFT | AX accept |
 |---|---|---:|---:|---:|---:|---:|---:|---:|
-| Qwen3.6 27B 4-bit | `flappy` | 3 | 61.4 tok/s | 56.1 tok/s | 1.09x | 677.7 tok/s | 474 ms | 99.7% |
-| Qwen3.6 27B 4-bit | `long_code` | 3 | 60.5 tok/s | 57.9 tok/s | 1.04x | 789.4 tok/s | 909 ms | 99.6% |
-| Qwen3.6 27B 4-bit | `python_modules_long` | 3 | 52.0 tok/s | 52.7 tok/s | 0.99x | 692.1 tok/s | 506 ms | 97.8% |
-| Qwen3.6 35B-A3B 4-bit | `flappy` | 1 | 169.0 tok/s | 104.3 tok/s | 1.62x | 1,795.1 tok/s | 179 ms | 100.0% |
-| Qwen3.6 35B-A3B 4-bit | `long_code` | 1 | 164.7 tok/s | 105.6 tok/s | 1.56x | 2,672.7 tok/s | 269 ms | 99.9% |
-| Qwen3.6 35B-A3B 4-bit | `python_modules_long` | 1 | 166.7 tok/s | 98.2 tok/s | 1.70x | 1,973.5 tok/s | 174 ms | 97.9% |
+| Qwen3.6 27B 4-bit | `flappy` | 3 | 61.9 tok/s | 57.8 tok/s | 1.07x | 672.9 tok/s | 478 ms | 99.7% |
+| Qwen3.6 27B 4-bit | `long_code` | 3 | 57.1 tok/s | 55.7 tok/s | 1.02x | 780.9 tok/s | 919 ms | 99.6% |
+| Qwen3.6 27B 4-bit | `python_modules_long` | 3 | 48.6 tok/s | 50.5 tok/s | 0.96x | 681.2 tok/s | 514 ms | 97.8% |
+| Qwen3.6 35B-A3B 4-bit | `flappy` | 1 | 156.8 tok/s | 98.4 tok/s | 1.59x | 1,766.7 tok/s | 183 ms | 100.0% |
+| Qwen3.6 35B-A3B 4-bit | `long_code` | 1 | 154.9 tok/s | 91.4 tok/s | 1.70x | 2,679.3 tok/s | 268 ms | 99.9% |
+| Qwen3.6 35B-A3B 4-bit | `python_modules_long` | 1 | 157.6 tok/s | 90.3 tok/s | 1.75x | 1,968.1 tok/s | 178 ms | 97.9% |
 
 Gemma rows are AX assistant-MTP comparison artifacts. No runnable peer benchmark
 covers the same Gemma assistant-MTP contract: `mlx_lm` cannot load
@@ -304,8 +304,8 @@ available MTP peer tools target different sidecar contracts.
 | Gemma 4 31B 4-bit | `python_modules_long` | 1 | 37.4 tok/s | 741.4 tok/s | 472 ms | 97.5% | N/A |
 
 Artifacts:
-[`Qwen3.6 4-bit fair summary`](benchmarks/results/mtp-fair/2026-06-20-qwen36-merged-ax-refresh/summary.md),
-[`Qwen3.6 prefill/TTFT report`](benchmarks/results/mtp-fair/2026-06-20-qwen36-merged-ax-refresh/prefill-ttft-report.json),
+[`Qwen3.6 4-bit fair summary`](benchmarks/results/mtp-fair/2026-06-23-qwen36-4bit-mtp-rerun/summary.md),
+[`Qwen3.6 prefill/TTFT report`](benchmarks/results/mtp-fair/2026-06-23-qwen36-4bit-mtp-rerun/prefill-ttft-report.json),
 and
 [`Gemma 4 assistant-MTP summary`](benchmarks/results/gemma4-assistant-mtp/2026-06-20-gemma4-assistant-mtp-ax-mtp-only/summary.md).
 

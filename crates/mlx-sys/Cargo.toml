@@ -11,6 +11,7 @@ unsafe_code = "allow"
 [build-dependencies]
 bindgen = "0.72"
 cc = "1.2.60"
+cmake = "0.1"
 regex = "1"
 
 [dependencies]

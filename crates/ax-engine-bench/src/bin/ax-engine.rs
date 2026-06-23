@@ -5,6 +5,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
 
+#[path = "../tui_app.rs"]
+mod tui;
+
 #[derive(Clone, Copy)]
 struct ModelProfile {
     label: &'static str,
@@ -313,6 +316,7 @@ fn run(args: Vec<OsString>) -> Result<u8, String> {
         "models" => cmd_models(&args[1..]),
         "doctor" => cmd_doctor(&args[1..]),
         "convert-mtplx" => cmd_convert_mtplx(&args[1..]),
+        "tui" => tui::cmd_tui(&args[1..]),
         unknown => Err(format!(
             "unknown command: {unknown}\n\nRun `ax-engine --help` for usage."
         )),
@@ -321,7 +325,7 @@ fn run(args: Vec<OsString>) -> Result<u8, String> {
 
 fn print_usage() {
     println!(
-        "Usage:\n  ax-engine serve <model-dir-or-alias> [--host <host>] [--port <port>] [--download] [--dry-run] [--json] [-- <ax-engine-server args>]\n  ax-engine download [<alias-or-repo-id>] [--dest <path>] [--force] [--list] [--json]\n  ax-engine download-mtp <mtp-target> [--output <dir>] [--force] [--quantize 4|8] [--mtp-depth-max <n>] [--group-size <n>] [--fair-base-only] [--json]\n  ax-engine models list [--models-dir <path>] [--json]\n  ax-engine models info <alias-or-path> [--json]\n  ax-engine models rm <path> [--dry-run] [--yes] [--json]\n  ax-engine doctor [--json] [--verbose] [--mlx-model-artifacts-dir <path>]\n  ax-engine convert-mtplx <base-model> --mtp-source <repo> [--output <dir>] [--quantize 4|8] [--mtp-depth-max <n>] [--group-size <n>] [--fair-base-only] [--json]"
+        "Usage:\n  ax-engine serve <model-dir-or-alias> [--host <host>] [--port <port>] [--download] [--dry-run] [--json] [-- <ax-engine-server args>]\n  ax-engine download [<alias-or-repo-id>] [--dest <path>] [--force] [--list] [--json]\n  ax-engine download-mtp <mtp-target> [--output <dir>] [--force] [--quantize 4|8] [--mtp-depth-max <n>] [--group-size <n>] [--fair-base-only] [--json]\n  ax-engine models list [--models-dir <path>] [--json]\n  ax-engine models info <alias-or-path> [--json]\n  ax-engine models rm <path> [--dry-run] [--yes] [--json]\n  ax-engine doctor [--json] [--verbose] [--mlx-model-artifacts-dir <path>]\n  ax-engine convert-mtplx <base-model> --mtp-source <repo> [--output <dir>] [--quantize 4|8] [--mtp-depth-max <n>] [--group-size <n>] [--fair-base-only] [--json]\n  ax-engine tui"
     );
 }
 

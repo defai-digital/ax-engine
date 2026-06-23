@@ -187,6 +187,33 @@ def _bench_bin() -> pathlib.Path | str:
     return shutil.which("ax-engine-bench") or "ax-engine-bench"
 
 
+def _native_bin() -> str | None:
+    """Locate the native Rust ``ax-engine`` binary (it hosts the ``tui`` subcommand).
+
+    Resolution order: ``AX_ENGINE_NATIVE_BIN`` override, the binary bundled in the
+    installed wheel, then a source-checkout ``target/{release,debug}`` build.  It
+    deliberately never falls back to a bare ``ax-engine`` on ``PATH`` — that name
+    resolves to this very Python console script, which would recurse.
+    """
+    override = os.environ.get("AX_ENGINE_NATIVE_BIN")
+    if override and pathlib.Path(override).is_file():
+        return override
+    bundled = _bundled_binary("ax-engine")
+    if bundled is not None:
+        return str(bundled)
+    roots: list[pathlib.Path] = []
+    repo_env = os.environ.get("AX_ENGINE_REPO_ROOT")
+    if repo_env:
+        roots.append(pathlib.Path(repo_env))
+    roots.append(pathlib.Path(__file__).resolve().parents[2])
+    for root in roots:
+        for profile in ("release", "debug"):
+            candidate = root / "target" / profile / "ax-engine"
+            if candidate.is_file():
+                return str(candidate)
+    return None
+
+
 def server() -> None:
     bin_path = _server_bin()
     os.execvp(str(bin_path), [str(bin_path)] + sys.argv[1:])
@@ -210,6 +237,68 @@ def _profile_for_model(value: str) -> ModelProfile | None:
 
 def _downloadable_profiles() -> list[ModelProfile]:
     return [profile for profile in MODEL_PROFILES if profile.downloadable]
+
+
+# ---------------------------------------------------------------------------
+# Grouped catalog view (model family -> precision variants)
+#
+# MODEL_PROFILES is a flat list where each precision is its own row.  The
+# interactive picker presents a model-first wizard, so we derive a grouped view
+# from the flat list rather than duplicating the catalog.  These helpers are
+# pure functions of MODEL_PROFILES and do not change the download/JSON contract.
+# ---------------------------------------------------------------------------
+
+_QUANT_RE = re.compile(r"(\d+)bit", re.IGNORECASE)
+_FAMILY_SUFFIX_RE = re.compile(r"-\d+bit$", re.IGNORECASE)
+
+
+def _profile_quant_bits(profile: ModelProfile) -> int | None:
+    """Quantization bit-width parsed from a profile's repo_id (e.g. 4, 8)."""
+    match = _QUANT_RE.search(profile.repo_id)
+    return int(match.group(1)) if match else None
+
+
+def _profile_family_key(profile: ModelProfile) -> str:
+    """Family identifier: the label with any trailing ``-Nbit`` suffix removed."""
+    return _FAMILY_SUFFIX_RE.sub("", profile.label)
+
+
+@dataclass(frozen=True)
+class ModelFamily:
+    """A model and the set of precision variants it is published in."""
+
+    key: str
+    variants: tuple[ModelProfile, ...]  # ascending by bit-width
+
+    @property
+    def label(self) -> str:
+        return self.key
+
+    @property
+    def has_mtp(self) -> bool:
+        return any(variant.mtp_target for variant in self.variants)
+
+    @property
+    def quant_summary(self) -> str:
+        bits = [b for b in (_profile_quant_bits(v) for v in self.variants) if b is not None]
+        return ", ".join(f"{b}-bit" for b in bits) if bits else "--"
+
+
+def _model_families() -> list[ModelFamily]:
+    """Group downloadable profiles by family, variants sorted by bit-width."""
+    groups: dict[str, list[ModelProfile]] = {}
+    order: list[str] = []
+    for profile in _downloadable_profiles():
+        key = _profile_family_key(profile)
+        if key not in groups:
+            groups[key] = []
+            order.append(key)
+        groups[key].append(profile)
+    families: list[ModelFamily] = []
+    for key in order:
+        variants = sorted(groups[key], key=lambda p: (_profile_quant_bits(p) or 99))
+        families.append(ModelFamily(key=key, variants=tuple(variants)))
+    return families
 
 
 def _download_options_payload() -> dict:
@@ -547,14 +636,16 @@ def _cmd_ui_downloader(args: argparse.Namespace) -> int:
 
 
 def _cmd_tui(args: argparse.Namespace) -> int:
-    try:
-        from . import _tui
-    except ImportError:
+    native = _native_bin()
+    if native is None:
         raise SystemExit(
-            "The TUI requires the 'textual' package.  Install it with:\n"
-            "  pip install ax-engine[tui]"
+            "ax-engine tui requires the native ax-engine binary, which was not found.\n"
+            "Reinstall ax-engine, or build it from a source checkout:\n"
+            "  cargo build --release -p ax-engine-bench --bin ax-engine"
         )
-    return _tui.run(force=args.force)
+    argv = [native, "tui", *args.tui_args]
+    os.execvp(argv[0], argv)
+    return 0
 
 
 def _serve_argv(args: argparse.Namespace) -> tuple[list[str], dict]:
@@ -1318,7 +1409,11 @@ def build_parser() -> argparse.ArgumentParser:
         "tui",
         help="Launch the terminal UI for model download and serving",
     )
-    tui_parser.add_argument("--force", action="store_true")
+    tui_parser.add_argument(
+        "tui_args",
+        nargs=argparse.REMAINDER,
+        help="Arguments forwarded to the native ax-engine tui (e.g. --help)",
+    )
     tui_parser.set_defaults(func=_cmd_tui)
 
     ui_downloader_parser = subparsers.add_parser(

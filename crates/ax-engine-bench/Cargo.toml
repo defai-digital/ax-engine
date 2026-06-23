@@ -9,6 +9,7 @@ ax-engine-core = { path = "../ax-engine-core" }
 ax-engine-mlx = { path = "../ax-engine-mlx" }
 ax-engine-sdk = { path = "../ax-engine-sdk", features = ["mlx-native", "tokenizer"] }
 mlx-sys = { path = "../mlx-sys" }
+ratatui.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

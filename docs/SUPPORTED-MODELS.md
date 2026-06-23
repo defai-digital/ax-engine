@@ -5,7 +5,7 @@ because it defines who runs the model graph, which API features are available,
 and what benchmark claims are allowed.
 
 | Path | Use it for | Who runs the model | What the result means |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | Direct support | Model families with a repo-owned `ax-engine-mlx` graph | AX Engine on MLX | AX-owned token/KV/runtime behavior; performance claims still require benchmark artifacts |
 | `mlx_lm_delegated` | MLX text models that upstream `mlx-lm` supports before AX has a repo-owned graph | A user-provided `mlx_lm.server` | AX server/SDK compatibility over delegated text generation; not AX-owned MLX throughput |
 | `llama_cpp` | GGUF models and non-MLX local inference | llama.cpp server or CLI | Delegated route-contract evidence; not AX-owned MLX throughput |
@@ -71,7 +71,7 @@ path = download_model("mlx-community/Qwen3.6-35B-A3B-4bit")
 Built-in direct-download aliases:
 
 | Alias | Repo |
-|---|---|
+| --- | --- |
 | `qwen36-35b` | `mlx-community/Qwen3.6-35B-A3B-4bit` |
 | `qwen36-27b`, `qwen36-27b-6bit` | `mlx-community/Qwen3.6-27B-{4,6}bit` |
 | `gemma4-e2b`, `gemma4-e2b-6bit` | `mlx-community/gemma-4-e2b-it-{4,6}bit` |
@@ -116,7 +116,7 @@ command. Use `--output <dir>` only when you need an explicit copy outside the
 shared Hugging Face cache.
 
 | Target | Base repo | Result |
-|---|---|---|
+| --- | --- | --- |
 | `gemma-4-12b-4bit` | `mlx-community/gemma-4-12B-it-4bit` | Quick-start Gemma assistant-MTP package with `mlx-community/gemma-4-12B-it-assistant-4bit` |
 | `qwen3.6-27b-6bit` | `mlx-community/Qwen3.6-27B-6bit` | Qwen fused MTP sidecar from `Qwen/Qwen3.6-27B` |
 | `qwen3.6-35b-a3b` | `mlx-community/Qwen3.6-35B-A3B-6bit` | Qwen fused MTP sidecar from `Qwen/Qwen3.6-35B-A3B` |
@@ -190,7 +190,7 @@ evidence with a matching `mlx_lm.benchmark` baseline.
 Current direct-support LLM families:
 
 | Family | Direct model IDs | Current scope | Notes |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | Gemma 4 | `gemma-4-e2b-it`, `gemma-4-e4b-it`, `gemma-4-12b-it`, `gemma-4-26b-a4b-it`, `gemma-4-31b-it` | Repo-owned MLX runtime; MLX affine 4/5/6-bit weights where available; assistant-MTP packaging for matched `*-assistant` drafters; processed/token-aligned Gemma4 unified media tensors on native generate and OpenAI token-array routes when the manifest contains unified media roles | Dense, unified 12B, per-layer embedding, and MoE variants; sliding-window + full attention; K=V full-attention layers; logit softcapping |
 | Qwen 3 | `Qwen3-4B-4bit` and manifest-backed Qwen 3 dense checkpoints | Repo-owned MLX runtime | SwiGLU dense FFN; per-head QK norm; optional MoE variants require manifest evidence |
 | Qwen 3.5 | `Qwen3.5-9B-MLX-4bit` / `qwen3.5-9b` preset | Repo-owned MLX runtime; MLX affine 4-bit weights | GatedDeltaNet linear attention + dense SwiGLU FFN; `attn_output_gate` per-head interleaving |
@@ -304,7 +304,7 @@ runtime.
 ## Choosing A Path
 
 | Situation | Choose | Why |
-|---|---|---|
+| --- | --- | --- |
 | You want AX-owned performance and token/KV behavior for a listed family | Direct support | AX owns the MLX graph and runtime policy |
 | You have an MLX text model that `mlx-lm` already serves but AX does not own | `mlx_lm_delegated` | Keeps AX API surfaces while upstream runs the model |
 | You have GGUF weights or a non-MLX local model | `llama_cpp` | llama.cpp is the delegated local inference route |
@@ -319,7 +319,7 @@ Do not merge the three paths into one unlabeled model-support or throughput
 table.
 
 | Evidence type | Supports | Does not support |
-|---|---|---|
+| --- | --- | --- |
 | MLX inference-stack artifacts from `scripts/bench_mlx_inference_stack.py` | Direct-support AX-vs-reference performance claims with matching `mlx_lm.benchmark` rows | Broad serving, concurrency, or unsupported-model claims |
 | `ax-engine-bench` scenario/replay/matrix artifacts | Route, correctness, determinism, replay, regression, and delegated contract evidence | Raw model-inference throughput unless explicitly designed for that metric |
 | `mlx_lm_delegated` checks | AX API compatibility with upstream `mlx_lm.server` | AX-owned token IDs, KV state, or MLX throughput |

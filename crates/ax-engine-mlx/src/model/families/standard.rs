@@ -1,4 +1,4 @@
-use mlx_sys::{MlxArray, add, rms_norm, rope, slice};
+use mlx_sys::{MlxArray, MlxVectorArray, add, rms_norm, rope, slice};
 use std::time::Instant;
 
 use super::super::ModelConfig;
@@ -11,17 +11,20 @@ use super::super::profile::{
 use super::super::shared::{
     KVConcatBuffer, add_then_multiply_scalar, attention_mask_array, attention_output_projection,
     bidirectional_attention, direct_qk_norm_rope_route_enabled_for_family, ffn_swiglu,
-    flatten_attention_output_bhsd, full_precision_attention, moe_experts_forward,
-    moe_experts_forward_gemma4, moe_experts_forward_with_shared, moe_router_gemma4, moe_router_glm,
-    moe_router_qwen3, per_layer_input_gate_project, prepare_value_bhsd_from_proj,
-    qk_norm_bhsd_from_proj, qk_norm_rope_bhsd_from_proj_with_route, qkv_project, qw, rms_norm_opt,
-    shape_element_count, shared_expert_forward, turboquant_decode_attention_experimental,
+    flatten_attention_output_bhsd, flatten_compiled_moe_inputs, full_precision_attention,
+    moe_experts_forward, moe_experts_forward_gemma4, moe_experts_forward_with_cloned_weights,
+    moe_experts_forward_with_shared, moe_router_gemma4, moe_router_glm, moe_router_qwen3,
+    per_layer_input_gate_project, prepare_value_bhsd_from_proj, qk_norm_bhsd_from_proj,
+    qk_norm_rope_bhsd_from_proj_with_route, qkv_project, qw, rms_norm_opt, shape_element_count,
+    shared_expert_forward, turboquant_decode_attention_experimental,
 };
 use super::super::turboquant_context::{
     TurboQuantModelDecodeCandidate, TurboQuantModelDecodeCandidateStatus,
     TurboQuantModelDecodeContext,
 };
+use crate::fastpath;
 use crate::kv_cache::{MlxKVCache, MlxKvCompressionDecodeOutcome};
+use crate::per_layer_compile::apply_layer_moe_decode;
 use crate::weights::LayerWeights;
 
 /// Minimum top-k selection count above which the sort path is taken in Gemma4 MoE.
@@ -614,7 +617,35 @@ pub(crate) fn layer_forward(
                     );
                 }
             }
-            let out = if let Some(shared) = &shared_out {
+            // Try compiled MoE decode closure (gated by AX_MLX_MOE_LAYER_COMPILE).
+            // Mirrors the pattern in qwen3_linear.rs: flatten all weight tensors as
+            // explicit inputs, compile, and fall back to the uncompiled path on None.
+            let compiled_result = if seq == 1 && fastpath::moe_layer_compile_enabled() {
+                let cfg_clone = cfg.clone();
+                let (inputs, schema) = flatten_compiled_moe_inputs(
+                    &normed2,
+                    &top_k_indices,
+                    &top_k_weights,
+                    w.gate_up_exps_packed.as_ref(),
+                    w.gate_exps.as_ref(),
+                    w.up_exps.as_ref(),
+                    w.down_exps.as_ref(),
+                    shared_out.as_ref(),
+                );
+                let input_refs: Vec<&MlxArray> = inputs.iter().collect();
+                apply_layer_moe_decode(layer_idx, &input_refs, move |inputs: &MlxVectorArray| {
+                    let (x, indices, weights, gate_up, gate, up, down, shared) =
+                        schema.rebuild(inputs);
+                    vec![moe_experts_forward_with_cloned_weights(
+                        &cfg_clone, &x, &indices, &weights, gate_up, gate, up, down, shared,
+                    )]
+                })
+            } else {
+                None
+            };
+            let out = if let Some(result) = compiled_result.and_then(|r| r.into_iter().next()) {
+                result
+            } else if let Some(shared) = &shared_out {
                 moe_experts_forward_with_shared(
                     cfg,
                     w,

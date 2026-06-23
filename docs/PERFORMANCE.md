@@ -61,7 +61,7 @@ The public README table is intentionally short/mid-prompt evidence. The latest
 checked-in heavy real-model validation is separate:
 
 | Artifact | Model | Shape | Key result | Interpretation |
-|---|---|---|---|---|
+| --- | --- | --- | --- | --- |
 | [P1 prefill scaling](../benchmarks/results/mlx-inference/2026-05-15-long-context/qwen3-4b-4bit-prefill-scaling/prefill-scaling.md) | `mlx-community/Qwen3-4B-4bit` | 1k/2k/4k/8k context, generation=1, repetitions=3 | AX/MLX prefill ratio moves from 1.190x at 1k to 1.154x at 8k, with every measured context above `mlx_lm` | AX now has a positive Qwen3-4B cold-prefill boundary on this host; keep it separate from family-wide and serving-concurrency claims |
 | [P2 startup and concurrency](../benchmarks/results/mlx-inference/2026-05-07-real-p2/qwen3-4b-4bit-p2-latency/p2-latency.md) | `mlx-community/Qwen3-4B-4bit` | 8k context; startup generation=128; concurrent generation=1; concurrency 1/2/4 | 8k warm TTFT 2509.7 ms; 4-request concurrent prefill TTFT 8318.7 ms and overlap classified serialized | This does not support a continuous-batching or concurrent-prefill-overlap claim yet |
 
@@ -90,7 +90,7 @@ the L2 `.axkv` store, and keep it unset for the historical in-memory-only path.
 Current checked-in evidence covers correctness and cache primitive safety:
 
 | Artifact | Coverage | Key result | Interpretation |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | `benchmarks/results/disk-prefix-cache-cross-restart/gemma4-e2b-2026-05-14.json` | Gemma 4 E2B, standard FA + sliding window | PASS, 2/2 token-exact, 2 phase-B disk hits | Cross-restart restore works for the Gemma tier |
 | `benchmarks/results/disk-prefix-cache-cross-restart/qwen35-9b-2026-05-14.json` | Qwen3.5-9B, hybrid MLA + linear attention | PASS, 2/2 token-exact, 2 phase-B disk hits | Cross-restart restore works for the hybrid tier |
 | `benchmarks/results/disk-prefix-cache-cross-restart/glm47-flash-2026-05-14.json` | GLM-4.7-Flash, pure MLA | PASS, 2/2 token-exact, 2 phase-B disk hits | Cross-restart restore works for the pure-MLA tier |
@@ -109,7 +109,7 @@ The current public table has been reviewed as a scoped MLX model-inference
 claim, not as a general production-serving benchmark. The review covers:
 
 | Review dimension | Current evidence | What it supports |
-|---|---|---|
+| --- | --- | --- |
 | Reference parity | Matching `mlx_lm.benchmark` seed-0 prompt/decode shapes, plus admitted `mlx_swift_lm` secondary rows where available | Same-shape comparisons against named MLX references |
 | Prompt provenance | Prompt-token JSON artifacts with fixed token IDs, vocabulary size, seed, and hash | Reproducible prompt input across AX and reference rows |
 | Decode policy separation | Direct AX rows run with n-gram acceleration disabled; default AX rows report n-gram effective throughput | Clear separation between same-policy decode and AX user-default acceleration |
@@ -208,7 +208,7 @@ runtime rows run MTP; same-package direct rows may be reported only as
 denominators for AX MTP acceleration charts.
 
 | Target | Required preparation | Promoted MTP mode |
-|---|---|---|
+| --- | --- | --- |
 | `qwen3.6-27b-6bit` | `ax-engine download-mtp qwen3.6-27b-6bit` | Qwen fused sidecar MTP |
 | `qwen3.6-35b-a3b` | `ax-engine download-mtp qwen3.6-35b-a3b` | Qwen fused sidecar MTP |
 | `gemma-4-12b` | `ax-engine download-mtp gemma-4-12b` | Gemma assistant-MTP |
@@ -256,9 +256,9 @@ is a throughput lever, not just an accept-rate guard: a looser gate proposes
 slightly longer drafts that are still almost always accepted. Measured +8-18%
 tokens/forward on Qwen3.6 27B (looser is better on harder workloads). Per-workload
 best-practice values and the full sweep are in
-[`docs/MTP-DRAFT-GATE-THROUGHPUT.md`](MTP-DRAFT-GATE-THROUGHPUT.md). Tree
+[`docs/mtp/draft-gate-throughput.md`](mtp/draft-gate-throughput.md). Tree
 speculative decoding is not an option on the linear-attention models — see
-[`docs/TREE-DRAFT-PHASE-A.md`](TREE-DRAFT-PHASE-A.md).
+[`docs/mtp/tree-draft-phase-a.md`](mtp/tree-draft-phase-a.md).
 
 ## Additional Testing Plan
 
@@ -266,7 +266,7 @@ More testing is needed before making production-serving or long-context claims.
 The recommended sequence is:
 
 | Priority | Test | Shape | Acceptance evidence |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | P0 | Public claim gate | For every README row, verify matching reference row, prompt hash, AX decode policy, route identity, and median/repetition metadata | A small script or CI check that fails closed when any public table row lacks matching artifact provenance |
 | P1 | Prefill scaling curve | Run representative Gemma, Qwen, and GLM rows at 1k, 2k, 4k, 8k, 16k, and the largest supported context on the host | `ax.mlx_prefill_scaling.v1` artifact with prefill tok/s, TTFT, peak memory, prompt hash, direct AX policy, and ratios vs `mlx_lm`; explicitly mark the context where throughput bends |
 | P1 | TTFT under long context | Use real chat-shaped prompts at 8k/16k/32k where supported, generation=1 and generation=128 | Median and p75 TTFT, first-token route telemetry, and output correctness/determinism checks |
@@ -459,7 +459,7 @@ The current 2026-05-13 README artifact keeps Gemma 4 direct decode below
 positive:
 
 | Model family | Direct AX vs `mlx_lm` | AX n-gram vs `mlx_lm` | Interpretation |
-|---|---:|---:|---|
+| --- | ---: | ---: | --- |
 | Gemma 4 E2B 4/5/6-bit | -12.3% to -9.4% | +135.9% to +207.2% | Direct decode is still the weak path; user-default n-gram hides it for draftable outputs |
 | Gemma 4 E4B 4-bit | -10.8% to -10.7% | +158.6% to +165.6% | Similar direct gap at the next small dense size |
 | Gemma 4 26B A4B | -5.7% to -5.6% | +88.4% to +114.1% | MoE direct gap is smaller than E2B/E4B, but still below `mlx_lm` |

@@ -14,7 +14,7 @@ benchmarking, or writing claims:
 ## Start By Task
 
 | Need | Start here | Then read |
-|---|---|---|
+| --- | --- | --- |
 | Install AX Engine and run the first request | [Getting Started](GETTING-STARTED.md) | [CLI](CLI.md), [Server](SERVER.md) |
 | Choose, download, or prepare a model | [Supported Models](SUPPORTED-MODELS.md) | [CLI](CLI.md#ax-engine) |
 | Use MTP or understand 4-bit vs 6-bit MTP results | [MTP Docs](mtp/README.md) | [Performance](PERFORMANCE.md#mtp-mode), [Benchmarks](BENCHMARKS.md#mtp-matrix) |
@@ -118,12 +118,12 @@ diagnostic history, or out of scope for a claim.
 Use these as historical or diagnostic context unless a current result page links
 to a fresh artifact.
 
-- [MTP Draft Gate Throughput](MTP-DRAFT-GATE-THROUGHPUT.md)
-- [Gemma 4 Assistant MTP Multi-Depth](GEMMA4-ASSISTANT-MULTI-DEPTH.md)
-- [Tree Draft Phase A](TREE-DRAFT-PHASE-A.md)
-- [Performance Decode Gap](PERFORMANCE-DECODE-GAP.md)
-- [Performance MoE Bandwidth Gap](PERFORMANCE-MOE-BANDWIDTH-GAP.md)
-- [Performance MoE Fused Downprojection](PERFORMANCE-MOE-FUSED-DOWNPROJ.md)
+- [MTP Draft Gate Throughput](mtp/draft-gate-throughput.md)
+- [Gemma 4 Assistant MTP Multi-Depth](mtp/gemma4-assistant-multi-depth.md)
+- [Tree Draft Phase A](mtp/tree-draft-phase-a.md)
+- [Performance Decode Gap](performance/decode-gap.md)
+- [Performance MoE Bandwidth Gap](performance/moe-bandwidth-gap.md)
+- [Performance MoE Fused Downprojection](performance/moe-fused-downproj.md)
 
 ## What Stays Out Of Public Docs
 

@@ -554,17 +554,17 @@ env_flag!(
     "AX_MLX_MOE_PROFILE"
 );
 
-env_flag!(
+env_flag_default_on!(
     /// `AX_MLX_MOE_LAYER_COMPILE` — enable per-layer compiled MoE decode
     /// closure.
     ///
-    /// **Default: OFF** (opt-in). Each MoE layer's decode forward path is
-    /// wrapped in an `MlxClosure` compiled via `mlx_compile` with
-    /// `shapeless=true`. The compiled closure is cached per
-    /// `(layer_index, thread_id)` and reused across decode steps,
-    /// collapsing ~10 per-layer MLX dispatches into a single compiled
-    /// graph. Only engages for `seq == 1` (decode). Falls back to the
-    /// uncompiled path on compilation failure.
+    /// **Default: ON** (kill-switch via `AX_MLX_MOE_LAYER_COMPILE=0`).
+    /// Each MoE layer's decode forward path is wrapped in an `MlxClosure`
+    /// compiled via `mlx_compile` with `shapeless=true`. The compiled
+    /// closure is cached per `(layer_index, thread_id)` and reused across
+    /// decode steps, collapsing ~10 per-layer MLX dispatches into a single
+    /// compiled graph. Only engages for `seq == 1` (decode). Falls back to
+    /// the uncompiled path on compilation failure.
     moe_layer_compile_enabled,
     "AX_MLX_MOE_LAYER_COMPILE"
 );

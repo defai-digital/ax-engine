@@ -17,14 +17,14 @@ validation, or MTP tuning reports.
 ## Where To Go
 
 | Need | Read |
-|---|---|
+| --- | --- |
 | Download or prepare an MTP package | [Supported Models: MTP Downloads](../SUPPORTED-MODELS.md#mtp-downloads), [CLI](../CLI.md#ax-engine) |
 | Read current MTP result tables | [README MTP section](../../README.md#speculative-decoding-mtp), [Performance: MTP Mode](../PERFORMANCE.md#mtp-mode) |
 | Reproduce or review MTP benchmarks | [Benchmarks: MTP Matrix](../BENCHMARKS.md#mtp-matrix), [Benchmark Design](../BENCH-DESIGN.md) |
 | Check GLM-4.7 Flash package validation | [GLM-4.7 Flash MTP validation session](glm-4.7-flash-validation.md) |
-| Tune the MTP draft confidence gate | [MTP draft gate throughput](../MTP-DRAFT-GATE-THROUGHPUT.md) |
-| Review Gemma assistant-MTP depth work | [Gemma 4 assistant MTP multi-depth drafting](../GEMMA4-ASSISTANT-MULTI-DEPTH.md) |
-| Review tree-draft investigation history | [Tree draft phase A](../TREE-DRAFT-PHASE-A.md) |
+| Tune the MTP draft confidence gate | [MTP draft gate throughput](draft-gate-throughput.md) |
+| Review Gemma assistant-MTP depth work | [Gemma 4 assistant MTP multi-depth drafting](gemma4-assistant-multi-depth.md) |
+| Review tree-draft investigation history | [Tree draft phase A](tree-draft-phase-a.md) |
 
 ## Publication Lanes
 

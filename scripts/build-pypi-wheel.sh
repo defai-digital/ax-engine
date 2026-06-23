@@ -86,6 +86,14 @@ if [[ ! -f "$BENCH_BIN" ]]; then
     exit 1
 fi
 
+# The native `ax-engine` binary (second bin of the ax-engine-bench crate) hosts
+# the `ax-engine tui` subcommand, which the Python CLI execs.
+NATIVE_BIN="$REPO_ROOT/target/release/ax-engine"
+if [[ ! -f "$NATIVE_BIN" ]]; then
+    echo "error: expected binary at $NATIVE_BIN after cargo build"
+    exit 1
+fi
+
 SCRIPTS_DIR="$REPO_ROOT/python/ax_engine/_bin"
 mkdir -p "$SCRIPTS_DIR"
 cp "$SERVER_BIN" "$SCRIPTS_DIR/ax-engine-server"
@@ -94,6 +102,9 @@ echo "    staged: $SCRIPTS_DIR/ax-engine-server"
 cp "$BENCH_BIN" "$SCRIPTS_DIR/ax-engine-bench"
 chmod +x "$SCRIPTS_DIR/ax-engine-bench"
 echo "    staged: $SCRIPTS_DIR/ax-engine-bench"
+cp "$NATIVE_BIN" "$SCRIPTS_DIR/ax-engine"
+chmod +x "$SCRIPTS_DIR/ax-engine"
+echo "    staged: $SCRIPTS_DIR/ax-engine"
 
 # ── 3b. Stage mlx.metallib so the wheel ships MLX's Metal shader library. ──
 # pyproject.toml includes python/ax_engine.dylibs/mlx.metallib in the wheel and
@@ -147,6 +158,7 @@ echo "==> Verifying bundled MLX runtime assets..."
 verify_wheel_member "$DELOCATED" "ax_engine.dylibs/mlx.metallib"
 verify_wheel_member "$DELOCATED" "ax_engine/_bin/ax-engine-server"
 verify_wheel_member "$DELOCATED" "ax_engine/_bin/ax-engine-bench"
+verify_wheel_member "$DELOCATED" "ax_engine/_bin/ax-engine"
 
 # ── 5b. Guard the platform tag ─────────────────────────────────────────────
 # Refuse to ship a wheel whose tag understates the macOS floor. The bundled MLX

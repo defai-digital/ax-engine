@@ -33,7 +33,7 @@ confirms that is enough to keep the 2nd token at ~97% accept.
 
 Gemma is **dense** attention (sliding + full), so a partial-reject rollback is a
 cheap recompute of the committed prefix — unlike the 27B linear-attention path
-that made tree-draft non-viable (`docs/TREE-DRAFT-PHASE-A.md`).
+that made tree-draft non-viable (`docs/mtp/tree-draft-phase-a.md`).
 
 ## The gate is mandatory and must stay tight
 

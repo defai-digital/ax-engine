@@ -17,13 +17,13 @@ bandwidth utilization on this MoE footprint, decode would roughly double.
 
 This document records *why* the bus is idle, *what* the leverage points
 are, and *what* must be measured first. It is a companion to
-[`PERFORMANCE-DECODE-GAP.md`](PERFORMANCE-DECODE-GAP.md), which covers the
+[`decode-gap.md`](decode-gap.md), which covers the
 separate (and largely closed) 1–6% dense-decode gap to `mlx_lm`.
 
 ## The measured state
 
 | Engine / quantization | Weights/token | Decode tok/s | Effective BW | % of 577 GB/s peak |
-|---|---:|---:|---:|---:|
+| --- | ---: | ---: | ---: | ---: |
 | AX — MLX 4-bit (v6.4.0) | 1.96 GB | 117.7 | 231 GB/s | 40% |
 | mlx-lm — MLX 4-bit | 1.96 GB | 99.2 | 195 GB/s | 34% |
 | llama.cpp — Q4_K_M | 2.83 GB | 86.2 | 244 GB/s | 42% |
@@ -125,7 +125,7 @@ and `AX_MLX_MOE_SWIGLU_PACKED_METAL` (default ON, decode-only).
 **Benchmarked result vs v6.3.4 baseline (correct build):**
 
 | prompt | decode Δ | prefill Δ | TTFT Δ |
-|---|---:|---:|---:|
+| --- | ---: | ---: | ---: |
 | 128 | **+2.0%** | −1.0% | +1.0% |
 | 512 | +0.6% (flat) | −1.8% | +1.9% |
 | 2048 | **+3.8%** | −2.8% | +2.9% |
@@ -136,12 +136,12 @@ regression grows with context. This is why the kernels are now gated to
 `seq == 1` (decode-only); prefill falls back to the unfused MLX path.
 The Tier 1 estimate in the original study (+5–10%) was optimistic;
 measured reality is +2–3.8% decode. Single-op fusion alone, as
-`PERFORMANCE-DECODE-GAP.md` predicted for dense, has a low ceiling even on
+`decode-gap.md` predicted for dense, has a low ceiling even on
 MoE — but unlike dense it IS positive.
 
 **decode-trace wall breakdown (Qwen3-Coder-Next, 64 steps):**
 
-```
+```text
 total wall                8503.6 µs/tok
 forward (host graph)      1545.7 µs/tok  (18% — graph construction)
 async_eval (GPU submit)   6954.6 µs/tok  (82% — actual Metal work)
@@ -171,6 +171,7 @@ cleanest Tier 3A candidate: fully static-shape (no dynamic top-k indices),
 48 layers. A compiled closure would collapse ~288–336 host graph ops/tok.
 
 **Blockers for a focused implementation session:**
+
 1. `ModelWeights.layers` is `Vec<LayerWeights>` (owned, `weights.rs:27`), not
    `Arc`-wrapped. Per-layer compiled closures must capture that layer's
    `QuantizedWeight`s. `QuantizedWeight` does not derive `Clone`; either add
@@ -214,7 +215,7 @@ change.
 
 ### Tier 1 — Fuse within the MoE block (low–medium effort, incremental)
 
-Each of these eliminates real dispatches. Per `PERFORMANCE-DECODE-GAP.md`,
+Each of these eliminates real dispatches. Per `decode-gap.md`,
 single-op fusion on the *dense* path showed ~0.2% gains because dense ops
 are already bandwidth-bound. **The MoE path is dispatch-bound, not
 bandwidth-bound, so that prior ceiling does not apply here** — eliminating
@@ -241,8 +242,7 @@ Effort: medium. Risk: low–medium (new Metal kernel, needs correctness tests
 against the current `silu_mul` reference).
 
 **1C — Fuse router softmax + top-k + renorm.**
-Currently 6–7 dispatches (quantized_matmul + softmax_precise + argpartition
-+ take_along_axis + sum + divide). A single Metal kernel could do the full
+Currently 6–7 dispatches (quantized_matmul + softmax_precise + argpartition + take_along_axis + sum + divide). A single Metal kernel could do the full
 router in one dispatch. Eliminates ~5 dispatches × 48 = ~240/token.
 Effort: medium–high (GPU argpartition / top-k selection is non-trivial).
 Risk: medium (ranking correctness is output-corrupting if wrong). This is
@@ -283,7 +283,7 @@ utilization, because it attacks the dispatch density directly.
 MoE block (router + experts + shared + weighted-sum + add + norm) in a
 compiled MLX graph so per-op dispatch is amortized into a single compiled
 dispatch at first call. This is item 1 of "what might still work" in
-`PERFORMANCE-DECODE-GAP.md`. MLX's compiler can fuse elementwise ops and
+`decode-gap.md`. MLX's compiler can fuse elementwise ops and
 optimize the dispatch schedule without hand-written kernels.
 
 Blockers: requires `mlx-sys` exposure of `mlx_compile` (the FFI does not
@@ -296,13 +296,13 @@ Impact: potentially closes most of the dispatch-overhead gap across *all*
 layers, not just the MoE block. This is the most leveraged single investment.
 
 **3B — Whole-layer Metal kernel.** Item 2 of
-`PERFORMANCE-DECODE-GAP.md`. One kernel for the entire post-attention FFN.
+`decode-gap.md`. One kernel for the entire post-attention FFN.
 Effort: extreme. Risk: very high (maintainability, correctness drift).
 Not recommended unless 3A proves insufficient.
 
 ## What prior art rules out (and what does not apply here)
 
-`PERFORMANCE-DECODE-GAP.md` closed the dense-decode gap investigation with
+`decode-gap.md` closed the dense-decode gap investigation with
 these negative results, which are **binding for the dense path** but **may
 not apply to MoE**:
 
@@ -355,5 +355,5 @@ ground truth.
 - Weighted-sum kernel: `crates/ax-engine-mlx/src/model/shared/mlp.rs:403-501`
 - Packed SwiGLU kernel (dense only): `crates/ax-engine-mlx/src/model/shared/mlp.rs:342-356,528-535`
 - Profiler (Gemma4-gated): `crates/ax-engine-mlx/src/model/profile.rs:209-278`
-- Prior dense-gap investigation: `docs/PERFORMANCE-DECODE-GAP.md`
+- Prior dense-gap investigation: `docs/performance/decode-gap.md`
 - Roadmap MoE track: `docs/ROADMAP.md:24`
