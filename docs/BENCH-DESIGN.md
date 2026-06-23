@@ -27,9 +27,9 @@ unauditable.
 A third benchmark class handles MTP comparison on real prompt suites:
 
 ```
-MTP 6-bit matrix                      ←  six download-mtp targets
+MTP matrix                            ←  recommended 6-bit targets plus 4-bit comparison rows
   Produces: MTP-only artifacts (tok/s + accept rates per model per suite)
-  Answers:  "How does AX Engine MTP perform on the supported 6-bit local-agent targets?"
+  Answers:  "How does AX Engine MTP perform on the recommended targets and peer-aligned 4-bit comparisons?"
 ```
 
 The current MTP benchmark design is intentionally narrow:
@@ -37,8 +37,9 @@ The current MTP benchmark design is intentionally narrow:
 - Models: `qwen3.6-27b-6bit`, `qwen3.6-35b-a3b`, `gemma-4-12b`,
   `gemma-4-26b`, `gemma-4-31b`, and `glm-4.7-flash`.
 - Setup: every model must be prepared through `ax-engine download-mtp <model>`.
-- Quantization: 6-bit only. Do not mix 4-bit, 5-bit, 8-bit, FFN-only, or GGUF
-  variants into the MTP benchmark matrix.
+- Quantization: 6-bit is the recommended practical lane. 4-bit rows are allowed
+  only as clearly labeled peer-alignment comparisons; do not mix 5-bit, 8-bit,
+  FFN-only, or GGUF variants into the MTP benchmark matrix.
 - Mode: MTP only. Do not run or report `mtp-ngram` rows in the MTP matrix.
 - Baselines: direct rows may be run only as same-artifact diagnostic baselines;
   they are not part of the headline MTP matrix.

@@ -40,9 +40,8 @@ tracked separately, with peer rows and model-specific boundaries kept visible.
 - [What AX Engine Does](#what-ax-engine-does)
 - [Performance](#performance)
   - [Speculative Decoding (MTP)](#speculative-decoding-mtp)
-    - [6-bit MTP acceleration refresh (2026-06-23)](#6-bit-mtp-acceleration-refresh-2026-06-23)
     - [4-bit MTP comparison lane (2026-06-20)](#4-bit-mtp-comparison-lane-2026-06-20)
-    - [GLM-4.7 Flash MTP validation session](#glm-47-flash-mtp-validation-session)
+    - [6-bit MTP acceleration refresh (2026-06-23)](#6-bit-mtp-acceleration-refresh-2026-06-23)
   - [Direct Decode · Prefill · TTFT](#direct-decode--prefill--ttft)
     - [Gemma 4 12B](#gemma-4-12b)
       - [Gemma 4 12B Multimodal](#gemma-4-12b-multimodal)
@@ -50,6 +49,7 @@ tracked separately, with peer rows and model-specific boundaries kept visible.
     - [Gemma 4 and Qwen 3.6](#gemma-4-and-qwen-36)
 - [SDKs](#sdks)
 - [Server Usage](#server-usage)
+- [Documentation](#documentation)
 - [Workspace](#workspace)
 - [Development](#development)
 - [Benchmark Reference Projects](#benchmark-reference-projects)
@@ -255,6 +255,48 @@ published to make comparison with other MTP engines easier because many peer
 benchmarks use 4-bit models. Historical MTP+n-gram artifacts remain useful for
 debugging regressions, but they are not current README/PERFORMANCE MTP evidence.
 
+#### 4-bit MTP comparison lane (2026-06-20)
+
+The 4-bit lane is not the recommended AX Engine deployment setting. It is kept
+in the MTP section because peer engines commonly publish 4-bit MTP results, so
+these rows make comparison easier. Use the 6-bit `download-mtp` packages in the
+next section for practical AX Engine usage.
+
+Qwen3.6 rows compare against MTPLX on the same 4-bit base family, prompt suites,
+sampler, 1,000 generated tokens, 5 measured repetitions, and cooldown contract:
+
+| Model | Suite | Depth | AX MTP decode | MTPLX decode | AX / MTPLX | AX MTP prefill | AX MTP TTFT | AX accept |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+| Qwen3.6 27B 4-bit | `flappy` | 3 | 61.4 tok/s | 56.1 tok/s | 1.09x | 677.7 tok/s | 474 ms | 99.7% |
+| Qwen3.6 27B 4-bit | `long_code` | 3 | 60.5 tok/s | 57.9 tok/s | 1.04x | 789.4 tok/s | 909 ms | 99.6% |
+| Qwen3.6 27B 4-bit | `python_modules_long` | 3 | 52.0 tok/s | 52.7 tok/s | 0.99x | 692.1 tok/s | 506 ms | 97.8% |
+| Qwen3.6 35B-A3B 4-bit | `flappy` | 1 | 169.0 tok/s | 104.3 tok/s | 1.62x | 1,795.1 tok/s | 179 ms | 100.0% |
+| Qwen3.6 35B-A3B 4-bit | `long_code` | 1 | 164.7 tok/s | 105.6 tok/s | 1.56x | 2,672.7 tok/s | 269 ms | 99.9% |
+| Qwen3.6 35B-A3B 4-bit | `python_modules_long` | 1 | 166.7 tok/s | 98.2 tok/s | 1.70x | 1,973.5 tok/s | 174 ms | 97.9% |
+
+Gemma rows are AX assistant-MTP comparison artifacts. No runnable peer benchmark
+covers the same Gemma assistant-MTP contract: `mlx_lm` cannot load
+`gemma4_unified`, llama.cpp does not expose a Gemma assistant-MTP path, and
+available MTP peer tools target different sidecar contracts.
+
+| Model | Suite | Depth | AX MTP decode | AX MTP prefill | AX MTP TTFT | AX accept | Peer MTP |
+|---|---|---:|---:|---:|---:|---:|---|
+| Gemma 4 12B 4-bit-FFN | `flappy` | 2 | 96.8 tok/s | 1,928.3 tok/s | 187 ms | 98.8% | N/A |
+| Gemma 4 12B 4-bit-FFN | `long_code` | 2 | 92.3 tok/s | 2,040.5 tok/s | 390 ms | 99.4% | N/A |
+| Gemma 4 12B 4-bit-FFN | `python_modules_long` | 2 | 82.9 tok/s | 1,830.5 tok/s | 195 ms | 97.9% | N/A |
+| Gemma 4 26B A4B 4-bit | `flappy` | 1 | 128.8 tok/s | 2,690.0 tok/s | 131 ms | 99.4% | N/A |
+| Gemma 4 26B A4B 4-bit | `long_code` | 1 | 136.7 tok/s | 4,026.1 tok/s | 202 ms | 99.2% | N/A |
+| Gemma 4 26B A4B 4-bit | `python_modules_long` | 1 | 130.1 tok/s | 2,923.0 tok/s | 130 ms | 98.8% | N/A |
+| Gemma 4 31B 4-bit | `flappy` | 1 | 39.4 tok/s | 723.5 tok/s | 487 ms | 99.4% | N/A |
+| Gemma 4 31B 4-bit | `long_code` | 1 | 40.0 tok/s | 806.8 tok/s | 987 ms | 99.4% | N/A |
+| Gemma 4 31B 4-bit | `python_modules_long` | 1 | 37.4 tok/s | 741.4 tok/s | 472 ms | 97.5% | N/A |
+
+Artifacts:
+[`Qwen3.6 4-bit fair summary`](benchmarks/results/mtp-fair/2026-06-20-qwen36-merged-ax-refresh/summary.md),
+[`Qwen3.6 prefill/TTFT report`](benchmarks/results/mtp-fair/2026-06-20-qwen36-merged-ax-refresh/prefill-ttft-report.json),
+and
+[`Gemma 4 assistant-MTP summary`](benchmarks/results/gemma4-assistant-mtp/2026-06-20-gemma4-assistant-mtp-ax-mtp-only/summary.md).
+
 #### 6-bit MTP acceleration refresh (2026-06-23)
 
 This refresh covers all six 6-bit `download-mtp` targets across the three real
@@ -303,76 +345,8 @@ proposed, submitted, and hit-step telemetry. Summary artifacts:
 [`summary.md`](benchmarks/results/mtp-6bit/2026-06-22-six-model-mtp-full-three-suite-ax-gain/summary.md)
 and
 [`summary.json`](benchmarks/results/mtp-6bit/2026-06-22-six-model-mtp-full-three-suite-ax-gain/summary.json).
-
-#### 4-bit MTP comparison lane (2026-06-20)
-
-The 4-bit lane is not the recommended AX Engine deployment setting. It is kept
-in the MTP section because peer engines commonly publish 4-bit MTP results, so
-these rows make comparison easier. Use the 6-bit `download-mtp` packages above
-for practical AX Engine usage.
-
-Qwen3.6 rows compare against MTPLX on the same 4-bit base family, prompt suites,
-sampler, 1,000 generated tokens, 5 measured repetitions, and cooldown contract:
-
-| Model | Suite | Depth | AX MTP decode | MTPLX decode | AX / MTPLX | AX MTP prefill | AX MTP TTFT | AX accept |
-|---|---|---:|---:|---:|---:|---:|---:|---:|
-| Qwen3.6 27B 4-bit | `flappy` | 3 | 61.4 tok/s | 56.1 tok/s | 1.09x | 677.7 tok/s | 474 ms | 99.7% |
-| Qwen3.6 27B 4-bit | `long_code` | 3 | 60.5 tok/s | 57.9 tok/s | 1.04x | 789.4 tok/s | 909 ms | 99.6% |
-| Qwen3.6 27B 4-bit | `python_modules_long` | 3 | 52.0 tok/s | 52.7 tok/s | 0.99x | 692.1 tok/s | 506 ms | 97.8% |
-| Qwen3.6 35B-A3B 4-bit | `flappy` | 1 | 169.0 tok/s | 104.3 tok/s | 1.62x | 1,795.1 tok/s | 179 ms | 100.0% |
-| Qwen3.6 35B-A3B 4-bit | `long_code` | 1 | 164.7 tok/s | 105.6 tok/s | 1.56x | 2,672.7 tok/s | 269 ms | 99.9% |
-| Qwen3.6 35B-A3B 4-bit | `python_modules_long` | 1 | 166.7 tok/s | 98.2 tok/s | 1.70x | 1,973.5 tok/s | 174 ms | 97.9% |
-
-Gemma rows are AX assistant-MTP comparison artifacts. No runnable peer benchmark
-covers the same Gemma assistant-MTP contract: `mlx_lm` cannot load
-`gemma4_unified`, llama.cpp does not expose a Gemma assistant-MTP path, and
-available MTP peer tools target different sidecar contracts.
-
-| Model | Suite | Depth | AX MTP decode | AX MTP prefill | AX MTP TTFT | AX accept | Peer MTP |
-|---|---|---:|---:|---:|---:|---:|---|
-| Gemma 4 12B 4-bit-FFN | `flappy` | 2 | 96.8 tok/s | 1,928.3 tok/s | 187 ms | 98.8% | N/A |
-| Gemma 4 12B 4-bit-FFN | `long_code` | 2 | 92.3 tok/s | 2,040.5 tok/s | 390 ms | 99.4% | N/A |
-| Gemma 4 12B 4-bit-FFN | `python_modules_long` | 2 | 82.9 tok/s | 1,830.5 tok/s | 195 ms | 97.9% | N/A |
-| Gemma 4 26B A4B 4-bit | `flappy` | 1 | 128.8 tok/s | 2,690.0 tok/s | 131 ms | 99.4% | N/A |
-| Gemma 4 26B A4B 4-bit | `long_code` | 1 | 136.7 tok/s | 4,026.1 tok/s | 202 ms | 99.2% | N/A |
-| Gemma 4 26B A4B 4-bit | `python_modules_long` | 1 | 130.1 tok/s | 2,923.0 tok/s | 130 ms | 98.8% | N/A |
-| Gemma 4 31B 4-bit | `flappy` | 1 | 39.4 tok/s | 723.5 tok/s | 487 ms | 99.4% | N/A |
-| Gemma 4 31B 4-bit | `long_code` | 1 | 40.0 tok/s | 806.8 tok/s | 987 ms | 99.4% | N/A |
-| Gemma 4 31B 4-bit | `python_modules_long` | 1 | 37.4 tok/s | 741.4 tok/s | 472 ms | 97.5% | N/A |
-
-Artifacts:
-[`Qwen3.6 4-bit fair summary`](benchmarks/results/mtp-fair/2026-06-20-qwen36-merged-ax-refresh/summary.md),
-[`Qwen3.6 prefill/TTFT report`](benchmarks/results/mtp-fair/2026-06-20-qwen36-merged-ax-refresh/prefill-ttft-report.json),
-and
-[`Gemma 4 assistant-MTP summary`](benchmarks/results/gemma4-assistant-mtp/2026-06-20-gemma4-assistant-mtp-ax-mtp-only/summary.md).
-
-#### GLM-4.7 Flash MTP validation session
-
-GLM-4.7 Flash uses the built-in MTP tensors from `zai-org/GLM-4.7-Flash`.
-`ax-engine download-mtp glm-4.7-flash` downloads the 6-bit MLX base
-(`mlx-community/GLM-4.7-Flash-6bit`), extracts the built-in MTP layer into
-`glm_mtp.safetensors`, and writes a self-contained AX package.
-
-The first local validation session used the prepared package returned by
-`download-mtp` and the `flappy` real-prompt suite. This is a smoke session, not
-the promoted 5-repetition MTP matrix row: it used 32 generated tokens, 1 measured
-repetition, no cooldown, sampled decode (`temperature=0.6`, `top_p=0.95`,
-`top_k=20`), MTP depth 1, and no MTP+n-gram stacking. The direct baseline uses
-the same package and prompt suite with MTP disabled.
-
-| Mode | Route | Decode median | Prefill median | TTFT median | MTP evidence |
-|---|---|---:|---:|---:|---|
-| Direct baseline | `direct_single_decode_baseline` | 58.7 tok/s | 1,670 tok/s | 166 ms | no drafts |
-| GLM built-in MTP | `mtp_head_only_verify_loop` | 90.3 tok/s | 1,690 tok/s | 163 ms | 54 drafted, 46 accepted, 85.2% accept |
-
-In this smoke session, GLM built-in MTP was **1.54x** faster than direct decode
-on median decode throughput. Treat this as path validation and a same-artifact
-diagnostic comparison until the full 6-bit MTP matrix is rerun with 1,000
-generated tokens, 5 measured repetitions, and recorded cooldown.
-
-Artifacts: [`flappy-after-activation-fix.json`](benchmarks/results/mtp-6bit/2026-06-22-glm47-flash-mtp-smoke/flappy-after-activation-fix.json)
-(MTP) and [`flappy-direct-baseline.json`](benchmarks/results/mtp-6bit/2026-06-22-glm47-flash-mtp-smoke/flappy-direct-baseline.json)
-(direct baseline).
+Detailed MTP notes, including the GLM-4.7 Flash smoke validation session, live in
+[`docs/mtp/`](docs/mtp/).
 
 ### Direct Decode · Prefill · TTFT
 
@@ -859,6 +833,20 @@ delegated `mlx_lm` routes, and server preview checks live in
 Benchmark commands live with the performance docs instead of this usage
 section.
 
+## Documentation
+
+Start with the task-based docs hub at [`docs/README.md`](docs/README.md).
+
+| Need | Read |
+|---|---|
+| Install and run the first request | [Getting Started](docs/GETTING-STARTED.md) |
+| Choose or download a model | [Supported Models](docs/SUPPORTED-MODELS.md) |
+| Prepare MTP packages or compare 4-bit and 6-bit MTP rows | [MTP Docs](docs/mtp/README.md) |
+| Interpret public performance numbers | [Performance Docs Map](docs/performance/README.md) |
+| Reproduce or review benchmarks | [Benchmarks](docs/BENCHMARKS.md) |
+| Integrate through HTTP or SDKs | [Server](docs/SERVER.md), [SDK Docs](docs/sdk/README.md) |
+| Understand runtime internals | [Architecture](docs/ARCHITECTURE.md) |
+
 ## Workspace
 
 ```
@@ -893,12 +881,8 @@ For Gemma/AX MLX telemetry and decode-profile changes, prefer the targeted `scri
 
 Coverage is collected by the report-only GitHub Actions workflow in `.github/workflows/coverage.yml`. It publishes Rust `cargo llvm-cov` and Python `coverage.py` artifacts without enforcing a percentage threshold yet.
 
-Public documentation is in `docs/`. Canonical benchmark manifests are in `benchmarks/manifests/`. Key design docs:
-[SDKs](docs/sdk/README.md) ·
-[Scheduler](docs/SCHEDULER.md) ·
-[KV Cache](docs/KV-CACHE.md) ·
-[Benchmarking](docs/BENCH-DESIGN.md) ·
-[Serving Benchmarks](docs/SERVING-BENCHMARKS.md)
+Public documentation starts at [docs/README.md](docs/README.md). Canonical
+benchmark manifests are in `benchmarks/manifests/`.
 
 ## Benchmark Reference Projects
 

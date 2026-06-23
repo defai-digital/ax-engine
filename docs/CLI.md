@@ -15,7 +15,7 @@ AX Engine currently exposes four command surfaces:
 
 `ax-engine` is the product-level orchestration CLI. It wraps existing AX Engine
 components but does not replace them: `serve` launches `ax-engine-server`,
-`download-mtp` downloads a supported 6-bit target and prepares AX MTP artifacts
+`download-mtp` downloads a supported MTP target and prepares AX MTP artifacts
 when that model family has an AX MTP packager, and `convert-mtplx` wraps the
 lower-level sidecar packaging/provenance tools.
 
@@ -90,7 +90,8 @@ ax-engine convert-mtplx mlx-community/Qwen3.6-27B-6bit \
 ```
 
 `download-mtp` is the normal path for supported local-agent MTP targets. The
-six 6-bit rows are the promoted benchmark matrix; `gemma-4-12b-4bit` is the
+six 6-bit rows are the recommended practical benchmark matrix; 4-bit rows are
+kept only for peer-aligned MTP comparison, and `gemma-4-12b-4bit` remains the
 Quick Start target.
 
 Without `--output`, generated MTP packages are written as synthetic Hugging

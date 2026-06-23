@@ -1,73 +1,132 @@
-# AX Engine Public Docs
+# AX Engine Docs
 
-This directory is the public documentation hub for AX Engine.
+This is the public documentation hub for AX Engine. The docs are organized by
+task first, then by runtime area, so readers do not have to know the repository
+layout before choosing the right page.
 
-AX Engine has three runtime paths, and most docs are organized around keeping
-those paths explicit:
+AX Engine has three runtime paths. Keep the path explicit when reading,
+benchmarking, or writing claims:
 
 - repo-owned MLX runtime for supported Apple Silicon model families
 - delegated `mlx_lm.server` compatibility for unsupported MLX text models
 - delegated `llama.cpp` compatibility for GGUF and non-MLX local inference
 
-Start here:
+## Start By Task
 
-- `GETTING-STARTED.md`: installation, first commands, and runtime-path choice
-- `SUPPORTED-MODELS.md`: supported LLM model paths: direct support,
-  `mlx_lm_delegated`, `llama_cpp`, and unsupported requests
-- `FAQ.md`: hardware support, model-stack guidance, runtime paths,
+| Need | Start here | Then read |
+|---|---|---|
+| Install AX Engine and run the first request | [Getting Started](GETTING-STARTED.md) | [CLI](CLI.md), [Server](SERVER.md) |
+| Choose, download, or prepare a model | [Supported Models](SUPPORTED-MODELS.md) | [CLI](CLI.md#ax-engine) |
+| Use MTP or understand 4-bit vs 6-bit MTP results | [MTP Docs](mtp/README.md) | [Performance](PERFORMANCE.md#mtp-mode), [Benchmarks](BENCHMARKS.md#mtp-matrix) |
+| Interpret public performance numbers | [Performance Docs Map](performance/README.md) | [Performance](PERFORMANCE.md), [Benchmarks](BENCHMARKS.md) |
+| Run or review benchmarks | [Benchmarks](BENCHMARKS.md) | [Benchmark Design](BENCH-DESIGN.md), [Serving Benchmarks](SERVING-BENCHMARKS.md) |
+| Serve OpenAI-compatible or Ollama-shaped APIs | [Server](SERVER.md) | [API Compatibility](API-COMPATIBILITY.md) |
+| Use a language SDK | [SDK Docs](sdk/README.md) | The SDK page for your language |
+| Debug long context, prefix reuse, or KV behavior | [Long Context](LONG-CONTEXT.md) | [KV Cache](KV-CACHE.md), [Scheduler](SCHEDULER.md) |
+| Understand crate boundaries before changing code | [Architecture](ARCHITECTURE.md) | [Scheduler](SCHEDULER.md), [KV Cache](KV-CACHE.md) |
+
+## Recommended Paths
+
+### New User
+
+1. [Getting Started](GETTING-STARTED.md)
+2. [Supported Models](SUPPORTED-MODELS.md)
+3. [Server](SERVER.md)
+4. [SDK Docs](sdk/README.md), if you are integrating from an application
+
+### MTP User Or Reviewer
+
+1. [Supported Models: MTP Downloads](SUPPORTED-MODELS.md#mtp-downloads)
+2. [MTP Docs](mtp/README.md)
+3. [Performance: MTP Mode](PERFORMANCE.md#mtp-mode)
+4. [Benchmarks: MTP Matrix](BENCHMARKS.md#mtp-matrix)
+
+The practical AX Engine recommendation is the 6-bit `download-mtp` lane. The
+4-bit lane is kept as clearly labeled comparison evidence because peer MTP
+engines often publish 4-bit benchmark rows.
+
+### Benchmark Reviewer
+
+1. [Performance Docs Map](performance/README.md)
+2. [Performance](PERFORMANCE.md)
+3. [Benchmarks](BENCHMARKS.md)
+4. [Benchmark Design](BENCH-DESIGN.md)
+
+Use this path when deciding whether a result is current public evidence,
+diagnostic history, or out of scope for a claim.
+
+### API Or SDK Integrator
+
+1. [Server](SERVER.md)
+2. [API Compatibility](API-COMPATIBILITY.md)
+3. [SDK Docs](sdk/README.md)
+4. [Getting Started](GETTING-STARTED.md#installation), for install and release
+   channel details
+
+## Docs By Area
+
+### Setup And Models
+
+- [Getting Started](GETTING-STARTED.md): installation, first commands, source
+  builds, and runtime-path choice
+- [Supported Models](SUPPORTED-MODELS.md): direct support, delegated paths,
+  aliases, `download-mtp`, and unsupported requests
+- [FAQ](FAQ.md): hardware support, model-stack guidance, runtime paths,
   limitations, and performance-boundary questions
-- `performance/README.md`: performance and benchmark docs map, public claim
-  boundaries, and promotion rules
-- `PERFORMANCE.md`: current performance results, result tables, artifact
-  summaries, and interpretation
-- `LONG-CONTEXT.md`: long-context evidence, prefix-reuse boundaries, and
-  current cold-prefill/concurrency limitations
-- `KV-CACHE.md`: logical KV ledger, MLX physical snapshots, opt-in
-  disk-durable prefix cache, and memory-pressure invariants
-- `API-COMPATIBILITY.md`: current OpenAI-compatible endpoint contract and
-  compatibility boundaries
-- `SERVER.md`: local HTTP server routes and backend behavior
-- `CLI.md`: `ax-engine-bench` and server command surfaces
-- `sdk/README.md`: SDK docs hub for Rust, Python, JavaScript/TypeScript, Go,
-  Ruby, and Mojo
-- `ROADMAP.md`: current serving runtime direction and evidence gates for future
-  claims
-- `BENCHMARKS.md`: benchmark methodology, test setup, commands, evidence
+- [CLI](CLI.md): `ax-engine`, `ax-engine-server`, and `ax-engine-bench`
+  command surfaces
+
+### Serving And SDKs
+
+- [Server](SERVER.md): local HTTP server routes, streaming, auth, embeddings,
+  and backend behavior
+- [API Compatibility](API-COMPATIBILITY.md): OpenAI-compatible endpoint
+  contract and compatibility boundaries
+- [SDK Docs](sdk/README.md): Rust, Python, JavaScript/TypeScript, Go, Ruby, and
+  Mojo SDKs
+
+### Performance And Benchmarks
+
+- [Performance Docs Map](performance/README.md): performance navigation,
+  public claim boundaries, and promotion rules
+- [Performance](PERFORMANCE.md): current public result tables, artifact
+  summaries, MTP mode, and interpretation
+- [Benchmarks](BENCHMARKS.md): benchmark methodology, commands, evidence
   contracts, and reproduction details
-- `SERVING-BENCHMARKS.md`: online serving benchmark contract for prompt-mix,
-  concurrency, request-rate, latency percentile, throughput, and SLO-goodput
-  evidence
-- `ARCHITECTURE.md`: crate boundaries and dependency rules
+- [Benchmark Design](BENCH-DESIGN.md): workload-contract CLI and artifact
+  design
+- [Serving Benchmarks](SERVING-BENCHMARKS.md): online serving prompt-mix,
+  concurrency, latency, throughput, and SLO-goodput evidence
+- [Long Context](LONG-CONTEXT.md): long-context evidence, prefix-reuse
+  boundaries, and current cold-prefill/concurrency limits
+- [MTP Docs](mtp/README.md): MTP-specific navigation, validation notes, and
+  tuning reports
+- [N-gram Acceleration](NGRAM-ACCELERATION.md): n-gram acceleration claim
+  taxonomy and evidence rules
 
-Start with `performance/README.md` when you need the performance docs map or
-public claim-boundary policy. Use `PERFORMANCE.md` when you want the current
-public results in table form. Use `BENCHMARKS.md` when you need to understand
-how the tests are set up, which commands produce the artifacts, and how
-evidence is classified. Use `LONG-CONTEXT.md` when the claim is about long
-prompts, long-running sessions, or prefix reuse. Use `SERVING-BENCHMARKS.md`
-when the claim is market-style online serving behavior over a prompt mix.
-`BENCHMARKS.md` defines the project split between `ax-engine-bench`
-workload-contract artifacts,
-`scripts/bench_mlx_inference_stack.py` repo-owned MLX model-inference
-comparisons with a required matching `mlx_lm.benchmark` primary baseline,
-optional `mlx-swift-lm` secondary baseline adapter rows, delegated
-`mlx_lm_delegated` compatibility checks, delegated non-MLX route checks, and
-serving latency artifacts.
+### Runtime Architecture
 
-Experimental MLX KV compression, including `turboquant-shadow` and
-`turboquant-fused-experimental`, is off by default and is not a production
-support claim. Treat TurboQuant results as evidence artifacts only until a
-long-context, model-level quality artifact and decode-throughput promotion gate
-both pass.
+- [Architecture](ARCHITECTURE.md): crate boundaries and dependency rules
+- [Scheduler](SCHEDULER.md): batching, routing, and execution planning
+- [KV Cache](KV-CACHE.md): logical KV ledger, MLX snapshots, disk-durable
+  prefix cache, and memory-pressure invariants
+- [Roadmap](ROADMAP.md): serving runtime direction and evidence gates for
+  future claims
 
-Public docs should not contain:
+### Focused Reports
 
-- PRDs
-- ADRs
-- tech specs
-- implementation plans
-- internal rewrite notes
-- engineering best-practice memos
+Use these as historical or diagnostic context unless a current result page links
+to a fresh artifact.
 
-Internal planning records live under `.internal/adr`, `.internal/prd`, and
-`.internal/tech-spec`.
+- [MTP Draft Gate Throughput](MTP-DRAFT-GATE-THROUGHPUT.md)
+- [Gemma 4 Assistant MTP Multi-Depth](GEMMA4-ASSISTANT-MULTI-DEPTH.md)
+- [Tree Draft Phase A](TREE-DRAFT-PHASE-A.md)
+- [Performance Decode Gap](PERFORMANCE-DECODE-GAP.md)
+- [Performance MoE Bandwidth Gap](PERFORMANCE-MOE-BANDWIDTH-GAP.md)
+- [Performance MoE Fused Downprojection](PERFORMANCE-MOE-FUSED-DOWNPROJ.md)
+
+## What Stays Out Of Public Docs
+
+Public docs should not contain PRDs, ADRs, tech specs, implementation plans,
+internal rewrite notes, or engineering best-practice memos. Internal planning
+records live under `.internal/adr`, `.internal/prd`, and `.internal/tech-spec`.

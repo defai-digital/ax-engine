@@ -62,7 +62,7 @@ path = download_model("mlx-community/Qwen3-4B-4bit")
 ```
 
 Install `mlx-lm` first, or install the current Python package with the download
-extra: `python3 -m pip install "ax-engine[download]>=6.4.1,<7"`.
+extra: `python3 -m pip install "ax-engine[download]>=6.5.2,<7"`.
 
 The source-tree script uses the same `mlx-lm` download path and can emit a
 machine-readable summary for automation:

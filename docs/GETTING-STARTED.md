@@ -44,7 +44,7 @@ paths validate compatibility and route behavior.
 
 ### Match this guide
 
-This guide documents the current `6.4.x` command surface. Released install
+This guide documents the current `6.5.x` command surface. Released install
 channels can lag behind the repository, so check the version before assuming the
 examples below apply:
 
@@ -62,12 +62,12 @@ guide. Older packages may install successfully while missing the top-level
 For the Python SDK plus the top-level orchestration CLI:
 
 ```bash
-python3 -m pip install "ax-engine[download]>=6.4.1,<7"
+python3 -m pip install "ax-engine[download]>=6.5.2,<7"
 ax-engine doctor
 ```
 
 The current macOS arm64 wheel bundles `ax-engine-server` and `ax-engine-bench`
-behind the Python entrypoints. If pip cannot find `>=6.4.1` for your platform,
+behind the Python entrypoints. If pip cannot find `>=6.5.2` for your platform,
 use the source build below instead of silently accepting an older release.
 
 ### Homebrew
@@ -79,7 +79,7 @@ brew info defai-digital/ax-engine/ax-engine
 brew install defai-digital/ax-engine/ax-engine
 ```
 
-Use Homebrew for this guide only when the formula reports `6.4.1` or newer.
+Use Homebrew for this guide only when the formula reports `6.5.2` or newer.
 The current formula should install `ax-engine`, `ax-engine-server`, and
 `ax-engine-bench`; older formulae may install only the lower-level tools. The
 formula also installs the `mlx-c` runtime dependency used by the released
@@ -209,7 +209,7 @@ path = download_model("mlx-community/Qwen3-4B-4bit")
 ```
 
 Install `mlx-lm` first, or install the current Python package with
-`python3 -m pip install "ax-engine[download]>=6.4.1,<7"`.
+`python3 -m pip install "ax-engine[download]>=6.5.2,<7"`.
 
 Or via the script (also uses `mlx-lm` and generates the manifest automatically):
 

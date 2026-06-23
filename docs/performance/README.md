@@ -9,6 +9,7 @@ note applies to the claim you are making.
 | Need | Read |
 |---|---|
 | Current public result tables and interpretation | [`../PERFORMANCE.md`](../PERFORMANCE.md) |
+| MTP result lanes, package validation, and 4-bit vs 6-bit guidance | [`../mtp/README.md`](../mtp/README.md) |
 | Benchmark methodology, command contracts, artifact schemas, and reproduction | [`../BENCHMARKS.md`](../BENCHMARKS.md) |
 | Benchmark-system design and workload-contract details | [`../BENCH-DESIGN.md`](../BENCH-DESIGN.md) |
 | Online serving prompt-mix, concurrency, latency, throughput, and SLO evidence | [`../SERVING-BENCHMARKS.md`](../SERVING-BENCHMARKS.md) |
@@ -23,7 +24,7 @@ claim.
 
 | Area | Public claim | Status |
 |---|---|---|
-| 6-bit MTP matrix | Current benchmark design covers only `qwen3.6-27b-6bit`, `qwen3.6-35b-a3b`, `gemma-4-12b`, `gemma-4-26b`, `gemma-4-31b`, and `glm-4.7-flash` prepared by `ax-engine download-mtp` | Current design |
+| MTP matrix | Current benchmark design recommends the 6-bit `download-mtp` targets for practical AX Engine usage and keeps clearly labeled 4-bit rows for peer-aligned comparison | Current design |
 | MTP+n-gram | Removed from the MTP benchmark matrix; historical rows are diagnostic only and should not be promoted as current MTP evidence | Out of scope |
 | N-gram acceleration | Up to 3.1x `mlx_lm` decode throughput on high-hit benchmark rows without a second draft model | Workload-dependent |
 
@@ -34,9 +35,10 @@ claim.
   the model family.
 - Delegated `mlx_lm_delegated` and `llama_cpp` rows are route-compatibility
   evidence, not AX-owned MLX token/KV throughput.
-- MTP publication rows use the six 6-bit `download-mtp` targets only. Same-model
-  AX direct rows may be used as denominators for MTP acceleration, not as a
-  cross-model speed leaderboard.
+- MTP publication rows use the six 6-bit `download-mtp` targets as the
+  recommended practical lane. Clearly labeled 4-bit rows may be used for
+  peer-engine comparison only. Same-model AX direct rows may be used as
+  denominators for MTP acceleration, not as a cross-model speed leaderboard.
 - TTFT, prefill, decode, accept rate, sampler settings, prompt suite, cooldown,
   repetition count, model snapshot, and sidecar or assistant provenance must stay
   attached to the artifact used for a public claim.
@@ -46,6 +48,7 @@ claim.
 | Surface | Scope | Notes |
 |---|---|---|
 | [`../PERFORMANCE.md`](../PERFORMANCE.md) | Current public performance report | Result tables, latest artifact summaries, interpretation, MTP mode, and reproduction notes |
+| [`../mtp/README.md`](../mtp/README.md) | MTP-specific navigation | `download-mtp`, recommended 6-bit lane, 4-bit comparison lane, and MTP validation notes |
 | [`../LONG-CONTEXT.md`](../LONG-CONTEXT.md) | Long-context and prefix-reuse behavior | Separate from short/mid-prompt README result claims |
 | [`../NGRAM-ACCELERATION.md`](../NGRAM-ACCELERATION.md) | N-gram acceleration claim taxonomy | Use for n-gram correctness, promotion gates, and required artifact fields |
 | [`../MTP-DRAFT-GATE-THROUGHPUT.md`](../MTP-DRAFT-GATE-THROUGHPUT.md) | MTP draft confidence gate tuning | Diagnostic tuning report; not the current six-model MTP publication matrix |

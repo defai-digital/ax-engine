@@ -14,10 +14,10 @@ interpretation live in `docs/PERFORMANCE.md`. The current README snapshot is
 backed by
 `benchmarks/results/mlx-inference/2026-05-26-direct-mode-clean-refresh/`
 (`mlx_lm` reference rows) plus
-`benchmarks/results/mlx-inference/2026-06-04-ax-direct-ngram-readme-rerun/`
-(AX direct/n-gram overlay rows). Older result sets remain useful diagnostic
-history, but they should not be described as the current public table unless
-README is rolled back to those artifacts.
+`benchmarks/results/mlx-inference/2026-06-22-ax-direct-readme-direct-only/`
+(AX direct-only overlay rows). Older result sets, including n-gram overlay
+runs, remain useful diagnostic history, but they should not be described as the
+current public README table unless README is rolled back to those artifacts.
 
 A result is useful only when the workload, runtime route, reference engine,
 host, model, sampling policy, and artifact schema are explicit.
@@ -50,7 +50,7 @@ charts to imply a different model source.
 | Does the non-MLX delegated route still behave correctly? | llama.cpp manifests through `ax-engine-bench` | Delegated route-contract evidence only |
 | Does upstream `mlx-lm` delegated text compatibility still behave correctly? | Explicit `mlx_lm_delegated` checks through SDK/server/CLI surfaces | Delegated route-contract evidence only |
 | Which AX runtime path is best for a product endpoint on this host? | `scripts/bench_ax_engine_three_modes.py` against already-running AX servers | End-to-end AX API latency by mode; not raw model throughput |
-| How does AX MTP perform on the supported 6-bit local-agent targets? | Prepare models with `ax-engine download-mtp`; run the MTP harness in `mtp` mode only | MTP-only artifact with per-model decode tok/s, prefill tok/s, TTFT, MTP accept rate, and model/package provenance |
+| How does AX MTP perform on the recommended local-agent targets and against 4-bit peer comparisons? | Prepare models with `ax-engine download-mtp`; run the MTP harness in `mtp` mode only | MTP-only artifact with per-model decode tok/s, prefill tok/s, TTFT, MTP accept rate, quantization lane, and model/package provenance |
 | What are the prefill rates and TTFT across MTP engines? | `scripts/bench_mtp_prefill_ttft_report.py --result-dir <fair-output-dir>` | `ax.mtp_prefill_ttft_report.v1` artifact with per-engine prefill tok/s and TTFT ms; generates `prefill-tok-s.svg`, `ttft-ms.svg`, and `prefill-ttft-report.md` |
 
 Do not merge these rows into one unlabeled throughput table. Repo-owned
@@ -93,12 +93,13 @@ harness validation corpus, not a production claim. Public serving claims should
 use a larger corpus with a published prompt-mix table. See
 `docs/SERVING-BENCHMARKS.md` for the full contract and rollout plan.
 
-## MTP 6-Bit Matrix
+## MTP Matrix
 
 Use the MTP benchmark when the question is how AX Engine MTP throughput and
 acceptance behaves on the supported local-agent targets. The current benchmark
-design is AX-owned and intentionally limited to six 6-bit `download-mtp`
-targets:
+design is AX-owned and has two labeled lanes: the recommended 6-bit
+`download-mtp` matrix for practical AX Engine usage, and 4-bit comparison rows
+for alignment with peer MTP engines that publish 4-bit results.
 
 | Target | Preparation command | Benchmark mode |
 |---|---|---|
@@ -111,12 +112,14 @@ targets:
 
 Rules for the current matrix:
 
-- Use 6-bit artifacts only.
+- Use 6-bit artifacts for the recommended AX Engine practice lane.
+- Use 4-bit artifacts only as clearly labeled comparison rows for peer-engine
+  alignment.
 - Use MTP mode for promoted runtime rows; direct rows are allowed only as
   same-package denominators for AX MTP acceleration charts.
 - Do not run, render, or promote `mtp-ngram` rows.
-- Do not include Qwen3-Coder-Next, 4-bit, 5-bit, 8-bit, FFN-only, or GGUF
-  variants in the current MTP benchmark matrix.
+- Do not include Qwen3-Coder-Next, 5-bit, 8-bit, FFN-only, or GGUF variants in
+  the recommended 6-bit MTP matrix.
 - Direct rows are not cross-model speed evidence.
 
 ```text
@@ -128,9 +131,11 @@ ax-engine download-mtp gemma-4-31b
 ax-engine download-mtp glm-4.7-flash
 ```
 
-Saved artifacts should live under `benchmarks/results/mtp-6bit/` and must record
-the prepared model path returned by `download-mtp`. A preparation run must
-return an MTP-ready package before it can be promoted into this matrix.
+Recommended 6-bit artifacts should live under `benchmarks/results/mtp-6bit/`;
+4-bit comparison artifacts must stay in clearly labeled comparison directories.
+Every artifact must record the prepared model path returned by `download-mtp`
+where applicable. A preparation run must return an MTP-ready package before it
+can be promoted into the recommended matrix or comparison lane.
 
 > **Note on Lightning-MLX**: Lightning rows were removed from this matrix on
 > 2026-06-03 after discovery of a silent-thinking pathology that produced

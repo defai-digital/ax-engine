@@ -198,6 +198,22 @@ MTP_CHART_OUTPUTS = {
     ("quality", "accept_rate"): "perf-mtp-quality-accept-rate.svg",
 }
 
+MTP_6BIT_CHART_OUTPUT = "perf-mtp-6bit-ax-acceleration.svg"
+MTP_6BIT_WIDTH = 1080
+MTP_6BIT_HEIGHT = 844
+MTP_6BIT_LEFT = 210.0
+MTP_6BIT_RIGHT = 1008.0
+MTP_6BIT_TOP = 68.0
+MTP_6BIT_BOTTOM = 768.0
+MTP_6BIT_LABEL_X = 72
+MTP_6BIT_DIRECT_COLOR = "#2eaf5f"
+MTP_6BIT_DIRECT_TEXT = "#176c37"
+MTP_6BIT_MTP_COLOR = RED
+MTP_6BIT_MTP_TEXT = "#991b1b"
+MTP_6BIT_ROW_GAP = 32.0
+MTP_6BIT_GROUP_GAP = 18.0
+MTP_6BIT_GROUP_SIZE = 3
+
 # ---------------------------------------------------------------------------
 # N-gram chart constants (shared by all three ngram charts)
 # ---------------------------------------------------------------------------
@@ -895,6 +911,173 @@ def render_mtp_metric_chart(rows: list[MtpBenchmarkRow], metric: str) -> str:
 
     lines.append("</svg>")
     return "".join(lines) + "\n"
+
+
+def find_mtp_6bit_summary(readme: Path) -> Path | None:
+    text = readme.read_text()
+    match = re.search(
+        r"\]\((benchmarks/results/mtp-6bit/[^)]+/summary\.json)\)", text
+    )
+    if match is None:
+        return None
+    summary_path = readme.parent / match.group(1)
+    if not summary_path.exists():
+        raise ChartError(f"README references missing MTP summary: {summary_path}")
+    return summary_path
+
+
+def load_mtp_6bit_rows(summary_path: Path) -> list[dict[str, Any]]:
+    summary = json.loads(summary_path.read_text())
+    rows = summary.get("rows")
+    if not isinstance(rows, list) or not rows:
+        raise ChartError(f"MTP 6-bit summary has no rows: {summary_path}")
+    for row in rows:
+        if not isinstance(row, dict):
+            raise ChartError(f"MTP 6-bit summary row is not an object: {summary_path}")
+        for key in (
+            "model",
+            "suite_id",
+            "ax_direct_decode_tok_s",
+            "ax_mtp_decode_tok_s",
+            "ax_mtp_speedup_x",
+        ):
+            if key not in row:
+                raise ChartError(f"MTP 6-bit summary row missing {key}: {summary_path}")
+    return rows
+
+
+def mtp_6bit_suite_label(suite_id: str) -> str:
+    if suite_id == "python_modules_long":
+        return "python_modules"
+    return suite_id
+
+
+def mtp_6bit_axis_max(rows: list[dict[str, Any]]) -> float:
+    max_value = max(
+        max(
+            float(row["ax_direct_decode_tok_s"]),
+            float(row["ax_mtp_decode_tok_s"]),
+        )
+        for row in rows
+    )
+    return max(40.0, math.ceil(max_value * 1.1 / 40.0) * 40.0)
+
+
+def mtp_6bit_x_scale(value: float, axis_max: float) -> float:
+    width = MTP_6BIT_RIGHT - MTP_6BIT_LEFT
+    return (max(0.0, value) / axis_max) * width
+
+
+def render_mtp_6bit_ax_acceleration_chart(
+    rows: list[dict[str, Any]], summary_path: Path
+) -> str:
+    axis_max = mtp_6bit_axis_max(rows)
+    tick_step = axis_max / 4.0
+    lines = [
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{MTP_6BIT_WIDTH}" height="{MTP_6BIT_HEIGHT}" viewBox="0 0 {MTP_6BIT_WIDTH} {MTP_6BIT_HEIGHT}" role="img" aria-labelledby="title desc">',
+        '<title id="title">AX MTP decode throughput with and without MTP</title>',
+        (
+            '<desc id="desc">Horizontal grouped bar chart comparing AX direct '
+            "decode throughput with MTP off against AX MTP decode throughput "
+            "with MTP on for each supported 6-bit MTP model and prompt suite. "
+            "Labels show the resulting same-package speedup.</desc>"
+        ),
+        f'<rect width="{MTP_6BIT_WIDTH}" height="{MTP_6BIT_HEIGHT}" fill="#ffffff"/>',
+        f'<text x="{MTP_6BIT_LABEL_X}" y="32" font-family="{FONT}" font-size="20" font-weight="700" fill="#111827">AX MTP decode: MTP off vs MTP on</text>',
+        f'<text x="{MTP_6BIT_LABEL_X}" y="54" font-family="{FONT}" font-size="12" fill="#4b5563">Each row compares the same 6-bit package and prompt suite: AX direct has MTP off; AX MTP has MTP on.</text>',
+        f'<text x="{MTP_6BIT_RIGHT:.0f}" y="54" text-anchor="end" font-family="{FONT}" font-size="11" font-weight="700" fill="#374151">Decode throughput, tok/s</text>',
+    ]
+
+    for tick_index in range(5):
+        value = tick_step * tick_index
+        x = MTP_6BIT_LEFT + mtp_6bit_x_scale(value, axis_max)
+        stroke = "#9ca3af" if tick_index == 0 else "#d1d5db"
+        width = "1.4" if tick_index == 0 else "1.2"
+        lines.extend(
+            [
+                f'<line x1="{x:.1f}" y1="{MTP_6BIT_TOP:.0f}" x2="{x:.1f}" y2="{MTP_6BIT_BOTTOM:.0f}" stroke="{stroke}" stroke-width="{width}"/>',
+                f'<text x="{x:.1f}" y="786" text-anchor="middle" font-family="{FONT}" font-size="11" fill="#4b5563">{short_number(value)}</text>',
+            ]
+        )
+    lines.extend(
+        [
+            f'<text x="{(MTP_6BIT_LEFT + MTP_6BIT_RIGHT) / 2:.1f}" y="808" text-anchor="middle" font-family="{FONT}" font-size="11" fill="#6b7280">Higher is better</text>',
+            f'<rect x="{MTP_6BIT_LABEL_X}" y="70" width="12" height="12" rx="2" fill="{MTP_6BIT_DIRECT_COLOR}"/>',
+            f'<text x="90" y="80" font-family="{FONT}" font-size="12" fill="#374151">MTP off / AX direct</text>',
+            f'<rect x="232" y="70" width="12" height="12" rx="2" fill="{MTP_6BIT_MTP_COLOR}"/>',
+            f'<text x="250" y="80" font-family="{FONT}" font-size="12" fill="#374151">MTP on / AX MTP</text>',
+            f'<text x="414" y="80" font-family="{FONT}" font-size="12" fill="#6b7280">Speedup label = MTP on / MTP off</text>',
+        ]
+    )
+
+    previous_model: str | None = None
+    group_index = -1
+    row_in_group = 0
+    for row in rows:
+        model = str(row["model"])
+        if model != previous_model:
+            if previous_model is not None:
+                separator_y = (
+                    106.0
+                    + group_index
+                    * (
+                        MTP_6BIT_GROUP_SIZE * MTP_6BIT_ROW_GAP
+                        + MTP_6BIT_GROUP_GAP
+                    )
+                    + (MTP_6BIT_GROUP_SIZE - 1) * MTP_6BIT_ROW_GAP
+                    + 20.0
+                )
+                lines.append(
+                    f'<line x1="{MTP_6BIT_LABEL_X}" y1="{separator_y:.1f}" x2="{MTP_6BIT_RIGHT:.0f}" y2="{separator_y:.1f}" stroke="#eef2f7" stroke-width="1"/>'
+                )
+            previous_model = model
+            group_index += 1
+            row_in_group = 0
+
+        label_y = (
+            106.0
+            + group_index
+            * (MTP_6BIT_GROUP_SIZE * MTP_6BIT_ROW_GAP + MTP_6BIT_GROUP_GAP)
+            + row_in_group * MTP_6BIT_ROW_GAP
+        )
+        row_in_group += 1
+
+        suite = mtp_6bit_suite_label(str(row["suite_id"]))
+        direct = float(row["ax_direct_decode_tok_s"])
+        mtp = float(row["ax_mtp_decode_tok_s"])
+        speedup = float(row["ax_mtp_speedup_x"])
+        direct_width = mtp_6bit_x_scale(direct, axis_max)
+        mtp_width = mtp_6bit_x_scale(mtp, axis_max)
+        direct_end = MTP_6BIT_LEFT + direct_width
+        mtp_end = MTP_6BIT_LEFT + mtp_width
+
+        lines.extend(
+            [
+                (
+                    f'<text x="{MTP_6BIT_LABEL_X}" y="{label_y - 6.0:.1f}"'
+                    f' font-family="{FONT}" font-size="11" fill="#111827">'
+                    f'<tspan x="{MTP_6BIT_LABEL_X}" y="{label_y - 6.0:.1f}"'
+                    f' font-weight="700">{escape(model)}</tspan>'
+                    f'<tspan x="{MTP_6BIT_LABEL_X}" y="{label_y + 8.0:.1f}"'
+                    f' font-size="10" fill="#4b5563">{escape(suite)}</tspan></text>'
+                ),
+                f'<rect x="{MTP_6BIT_LEFT:.0f}" y="{label_y - 15.0:.1f}" width="{direct_width:.1f}" height="10" rx="2" fill="{MTP_6BIT_DIRECT_COLOR}"/>',
+                f'<rect x="{MTP_6BIT_LEFT:.0f}" y="{label_y - 2.0:.1f}" width="{mtp_width:.1f}" height="10" rx="2" fill="{MTP_6BIT_MTP_COLOR}"/>',
+                f'<text x="{direct_end + 5.0:.1f}" y="{label_y - 7.0:.1f}" font-family="{FONT}" font-size="10" font-weight="700" fill="{MTP_6BIT_DIRECT_TEXT}">{direct:.1f}</text>',
+                f'<text x="{mtp_end + 5.0:.1f}" y="{label_y + 6.0:.1f}" font-family="{FONT}" font-size="10" font-weight="700" fill="{MTP_6BIT_MTP_TEXT}">{mtp:.1f}</text>',
+                f'<text x="{mtp_end + 52.0:.1f}" y="{label_y:.1f}" font-family="{FONT}" font-size="11" font-weight="700" fill="#111827">{speedup:.2f}x</text>',
+            ]
+        )
+
+    source_label = (
+        f"Source: {summary_path.parent.as_posix()} / summary.json. "
+        "Pure MTP; no MTP+n-gram stacking."
+    )
+    lines.append(
+        f'<text x="{MTP_6BIT_LABEL_X}" y="820" font-family="{FONT}" font-size="10" fill="#6b7280">{escape(source_label)}</text>'
+    )
+    lines.append("</svg>")
+    return "\n".join(lines) + "\n"
 
 
 def infer_results_dir_from_readme(readme: Path) -> Path:
@@ -1625,6 +1808,15 @@ def main() -> int:
             mtp_content = render_mtp_metric_chart(rows, metric)
             if not write_chart(mtp_output_path, mtp_content, args.check):
                 mismatches.append(mtp_output_path)
+
+    mtp_6bit_summary_path = find_mtp_6bit_summary(args.readme)
+    if mtp_6bit_summary_path is not None:
+        mtp_6bit_output_path = args.output_dir / MTP_6BIT_CHART_OUTPUT
+        mtp_6bit_content = render_mtp_6bit_ax_acceleration_chart(
+            load_mtp_6bit_rows(mtp_6bit_summary_path), mtp_6bit_summary_path
+        )
+        if not write_chart(mtp_6bit_output_path, mtp_6bit_content, args.check):
+            mismatches.append(mtp_6bit_output_path)
 
     for spec in CHARTS:
         if args.results_dir:

@@ -14,8 +14,8 @@ evidence classification, see [`docs/BENCHMARKS.md`](BENCHMARKS.md).
 ## Current Result Set
 
 The current README generation-model table is a provenance-tracked composite:
-`mlx_lm` reference rows were refreshed on 2026-05-26, and the AX direct/n-gram
-overlay was refreshed on 2026-06-04 on:
+`mlx_lm` reference rows were refreshed on 2026-05-26, and the AX direct-only
+overlay was refreshed on 2026-06-22 on:
 
 - Apple M5 Max
 - 128 GB memory
@@ -35,12 +35,12 @@ The current README generation-model snapshot is backed by:
 
 ```text
 benchmarks/results/mlx-inference/2026-05-26-direct-mode-clean-refresh/
-benchmarks/results/mlx-inference/2026-06-04-ax-direct-ngram-readme-rerun/
+benchmarks/results/mlx-inference/2026-06-22-ax-direct-readme-direct-only/
 ```
 
 The reference directory supplies the 12 Gemma 4 and Qwen 3.6 `mlx_lm` rows in
-the README table. The AX overlay directory reruns the matching direct and
-n-gram AX rows with generation=128, 5 measured repetitions, a 15-second
+the README table. The AX overlay directory reruns the matching direct AX rows
+with generation=128, 5 measured repetitions, a 15-second
 cooldown, AX prefix cache disabled for cold prefill and TTFT measurement, and
 production-build server binaries. All MLX and AX rows use the same prompt-token
 contract and prompt SHA checks. The `llama.cpp Metal*` column is injected from
@@ -49,10 +49,11 @@ shape-compatible external context, not prompt-hash parity evidence.
 
 `ax direct baseline` is the direct same-policy comparison against `mlx_lm`; the
 benchmark starts the AX server with n-gram acceleration disabled for this row.
-`ax default n-gram` reports observed effective throughput from AX's default
-n-gram acceleration policy. It is not raw model-kernel decode speed.
-The README prefill table uses the direct AX row, because n-gram acceleration is
-a decode policy and should not be credited as a prefill optimization.
+N-gram results remain documented as workload-dependent acceleration evidence,
+but they are not part of the current README Gemma 4 / Qwen 3.6 direct-mode
+snapshot. The README prefill table uses direct AX rows because n-gram
+acceleration is a decode policy and should not be credited as a prefill
+optimization.
 
 ## Latest Long-Context Artifacts
 
@@ -119,12 +120,13 @@ claim, not as a general production-serving benchmark. The review covers:
 | Scope disclosure | Methodology states host, batch size, generated-token count, temperature, and `prefill_step_size` | Readers can see that current public rows are batch=1, short/mid-prompt evidence |
 
 This review intentionally rejects broader conclusions that the current table
-does not prove. The rows support row-by-row claims about AX direct or AX n-gram
-throughput against named MLX references on matching Apple Silicon benchmark
-shapes; they do not say every AX policy wins every row. They also cannot, by
-themselves, support claims about 32k/128k context scaling, cold-start latency,
-multi-user serving throughput, KV eviction behavior, or parity with CUDA server
-systems such as vLLM or TensorRT-LLM.
+does not prove. The current README rows support row-by-row claims about AX
+direct throughput against named MLX references on matching Apple Silicon
+benchmark shapes; they do not say every AX policy wins every row. N-gram rows
+are separate workload-dependent acceleration evidence. Neither direct nor
+n-gram rows, by themselves, support claims about 32k/128k context scaling,
+cold-start latency, multi-user serving throughput, KV eviction behavior, or
+parity with CUDA server systems such as vLLM or TensorRT-LLM.
 
 ## Interpretation
 
@@ -137,14 +139,11 @@ default AX user path.
 
 N-gram acceleration is the default AX user/server path and is the better
 headline row for decode-throughput expectations when the workload produces
-draftable local repetition. In the README snapshot, the n-gram column spans
-+86.7% to +207.2% versus `mlx_lm`; across the full artifact set it spans +0.0%
-to +207.2%. Artifact claim status is explicit: 26 of 28 n-gram rows are labeled
-`ngram_acceleration_effective_throughput`; the two no-draft rows are labeled
-`ngram_no_draft_direct_fallback`. Those no-draft rows are Qwen Coder Next at
-128 prompt tokens and Qwen 3.5 9B at 512 prompt tokens, which are outside the
-concise README snapshot. Public docs should keep direct baseline rows visible
-beside the default n-gram row.
+draftable local repetition. It is intentionally separate from the current
+README direct-mode snapshot. Historical n-gram artifacts still report
+workload-dependent effective throughput and explicit fallback status, and
+public docs should keep direct baseline rows visible whenever an n-gram row is
+shown.
 
 The high end of the n-gram column is sensitive to a second regime worth
 naming explicitly: random-token benchmark prompts at greedy decode can
@@ -169,8 +168,9 @@ the direct path.
 
 Qwen-family linear-attention n-gram rows use a rollback-safe branch/recompute
 path for SSM state. Acceleration is prompt/output-pattern dependent. Benchmark
-JSON artifacts include fixed-schema n-gram telemetry fields, and the README
-table uses median AX runner timing plus output-token count.
+JSON artifacts include fixed-schema n-gram telemetry fields, and current public
+tables should state whether a row is direct, n-gram, or MTP before comparing
+throughput.
 
 ## Evidence Boundaries
 
@@ -200,10 +200,12 @@ should not be read as a complete inference-serving proof. In particular:
 
 ## MTP Mode
 
-The current MTP publication contract is the 6-bit local-agent matrix. Every row
-must start from `ax-engine download-mtp` output. Promoted runtime rows run MTP;
-same-package direct rows may be reported only as denominators for AX MTP
-acceleration charts.
+The current MTP publication contract has two labeled lanes. The recommended
+AX Engine practice lane is the 6-bit local-agent matrix, and those rows must
+start from `ax-engine download-mtp` output. A 4-bit comparison lane may be
+published when it aligns with peer MTP-engine benchmark results. Promoted
+runtime rows run MTP; same-package direct rows may be reported only as
+denominators for AX MTP acceleration charts.
 
 | Target | Required preparation | Promoted MTP mode |
 |---|---|---|
@@ -216,17 +218,20 @@ acceleration charts.
 
 Rules:
 
-- Quantization is fixed at 6-bit.
+- Quantization is 6-bit for the recommended practical lane.
+- 4-bit rows are comparison evidence only; use 6-bit packages for practical
+  AX Engine deployments.
 - `mtp-ngram` is out of scope for MTP publication and must not be run in the
   MTP matrix.
-- Historical 4-bit Qwen3.6/MTPLX rows and historical MTP+n-gram artifacts remain
-  diagnostic only. Do not use them for current README/PERFORMANCE claims.
+- Historical MTP+n-gram artifacts remain diagnostic only. Do not use them for
+  current README/PERFORMANCE claims.
 - Direct rows may be reported only as same-artifact denominators for
   `AX MTP / AX direct` acceleration, not as a cross-model speed leaderboard.
-- Artifacts should live under `benchmarks/results/mtp-6bit/<run-dir>/` and record
-  the exact `download-mtp` output path, model snapshot, sidecar or assistant
-  package provenance, route identity, sampler, prompt suite, repetitions, and
-  cooldown.
+- Recommended 6-bit artifacts should live under
+  `benchmarks/results/mtp-6bit/<run-dir>/`; 4-bit comparison artifacts must stay
+  clearly labeled. Every artifact records the exact `download-mtp` output path
+  where applicable, model snapshot, sidecar or assistant package provenance,
+  route identity, sampler, prompt suite, repetitions, and cooldown.
 
 Prepare the matrix:
 
