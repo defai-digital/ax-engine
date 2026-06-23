@@ -56,6 +56,22 @@ ax-engine download mlx-community/Qwen3.6-35B-A3B-4bit --json
 ax-engine download qwen36-35b --dest /path/to/explicit-copy
 ```
 
+For an interactive flow, run `ax-engine ui-downloader` (or just `ax-engine
+download` with no model argument in a terminal). The wizard lists the
+downloadable models with their MTP-lane availability, shows the default
+Hugging Face Hub cache destination and lets you override it, then downloads with
+a live progress bar (downloaded/total bytes, transfer speed, and ETA). It is
+TTY-gated: when stdout is not a terminal, or with `--no-interactive`, `download`
+keeps its non-interactive behavior and machine-readable summary unchanged. Power
+users can get the same bar on the helper directly with
+`scripts/download_model.py <repo> --progress-bar`.
+
+```text
+ax-engine ui-downloader
+ax-engine download                 # no model + terminal -> same wizard
+ax-engine download --interactive   # force the wizard
+```
+
 `download` wraps the same workflow as `scripts/download_model.py`: download
 through Hugging Face Hub, validate `config.json` and safetensors, and run
 `ax-engine-bench generate-manifest` when available. The JSON output is the

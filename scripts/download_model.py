@@ -23,6 +23,7 @@ import os
 import shutil
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -134,6 +135,137 @@ def _download_progress_message(repo_id: str, started_at: float) -> tuple[int, st
     )
 
 
+def _format_bytes(num: float | None) -> str:
+    if num is None:
+        return "?"
+    value = float(num)
+    for unit in ("B", "KiB", "MiB", "GiB", "TiB"):
+        if value < 1024.0 or unit == "TiB":
+            return f"{int(value)} B" if unit == "B" else f"{value:.1f} {unit}"
+        value /= 1024.0
+    return f"{value:.1f} TiB"
+
+
+def _dir_size_bytes(path: Path) -> int:
+    total = 0
+    if not path.exists():
+        return 0
+    for root, _dirs, files in os.walk(path):
+        for name in files:
+            try:
+                total += os.path.getsize(os.path.join(root, name))
+            except OSError:
+                pass
+    return total
+
+
+def _total_repo_bytes(repo_id: str) -> int | None:
+    """Best-effort total download size from the Hub, summed across all repo files."""
+    try:
+        from huggingface_hub import HfApi
+    except ImportError:
+        return None
+    try:
+        info = HfApi().repo_info(repo_id, files_metadata=True)
+    except Exception:
+        return None
+    total = 0
+    for sibling in getattr(info, "siblings", None) or []:
+        size = getattr(sibling, "size", None)
+        if isinstance(size, int):
+            total += size
+    return total or None
+
+
+def _render_progress_bar(
+    downloaded: int,
+    total: int | None,
+    speed: float | None,
+    eta: float | None,
+    width: int = 24,
+) -> str:
+    speed_text = f"{_format_bytes(speed)}/s" if speed else "-- B/s"
+    if total and total > 0:
+        ratio = min(downloaded / total, 1.0)
+        filled = int(ratio * width)
+        bar = "#" * filled + "-" * (width - filled)
+        return (
+            f"[{bar}] {ratio * 100:4.0f}%  "
+            f"{_format_bytes(downloaded)}/{_format_bytes(total)}  "
+            f"{speed_text}  ETA {_format_duration(eta)}"
+        )
+    return f"{_format_bytes(downloaded)} downloaded  {speed_text}"
+
+
+class _ProgressBarReporter:
+    """Poll the Hugging Face cache directory and render a live progress bar to a stream.
+
+    Disk polling is deliberately independent of huggingface_hub internals so it keeps
+    working across hub versions. It owns no download state; it only observes bytes on disk.
+    """
+
+    def __init__(self, repo_id: str, total: int | None, stream, *, interval: float = 0.4) -> None:
+        self._repo_dir = default_mlx_lm_repo_cache_dir(repo_id)
+        self._total = total
+        self._stream = stream
+        self._interval = interval
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._last_time: float | None = None
+        self._last_bytes = 0
+        self._speed_ema: float | None = None
+
+    def __enter__(self) -> "_ProgressBarReporter":
+        self._stream.write(f"Downloading {os.path.basename(str(self._repo_dir))}\n")
+        self._stream.flush()
+        self._thread = threading.Thread(
+            target=self._run, name="ax-download-progress", daemon=True
+        )
+        self._thread.start()
+        return self
+
+    def __exit__(self, *_exc) -> None:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=2.0)
+        self._render(final=True)
+
+    def _measure(self) -> tuple[int, float | None, float | None]:
+        downloaded = _dir_size_bytes(self._repo_dir)
+        now = time.monotonic()
+        speed = None
+        if self._last_time is not None:
+            dt = now - self._last_time
+            if dt > 0:
+                inst = max(downloaded - self._last_bytes, 0) / dt
+                self._speed_ema = (
+                    inst if self._speed_ema is None else 0.6 * self._speed_ema + 0.4 * inst
+                )
+                speed = self._speed_ema
+        self._last_time = now
+        self._last_bytes = downloaded
+        eta = None
+        if self._total and speed and speed > 0:
+            eta = max(self._total - downloaded, 0) / speed
+        return downloaded, speed, eta
+
+    def _render(self, *, final: bool = False) -> None:
+        downloaded, speed, eta = self._measure()
+        if final and self._total:
+            downloaded = max(downloaded, self._total)
+            eta = 0.0
+        line = _render_progress_bar(downloaded, self._total, speed, eta)
+        self._stream.write("\r\033[K" + line)
+        if final:
+            self._stream.write("\n")
+        self._stream.flush()
+
+    def _run(self) -> None:
+        while not self._stop.is_set():
+            self._render()
+            self._stop.wait(self._interval)
+
+
 def _emit_progress(done: int, total: int, file: str) -> None:
     print(json.dumps({"event": "progress", "done": done, "total": total, "file": file}), flush=True)
 
@@ -143,6 +275,7 @@ def _run_hf_snapshot_download(
     *,
     quiet: bool = False,
     progress_json: bool = False,
+    progress_bar: bool = False,
 ) -> Path:
     try:
         from huggingface_hub import snapshot_download
@@ -154,8 +287,10 @@ def _run_hf_snapshot_download(
             "  pip install 'ax-engine[download]'"
         ) from error
 
+    show_bar = progress_bar and sys.stderr.isatty()
     previous_progress = os.environ.get("HF_HUB_DISABLE_PROGRESS_BARS")
-    if quiet:
+    # When rendering our own bar, silence hub's stacked per-file bars to avoid double output.
+    if quiet or show_bar:
         os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
     started_at = time.monotonic()
     try:
@@ -165,14 +300,19 @@ def _run_hf_snapshot_download(
         kwargs = {"repo_id": repo_id}
         if max_workers := os.environ.get("AX_ENGINE_HF_MAX_WORKERS"):
             kwargs["max_workers"] = int(max_workers)
-        snapshot = Path(snapshot_download(**kwargs))
+        if show_bar:
+            total = _total_repo_bytes(repo_id)
+            with _ProgressBarReporter(repo_id, total, sys.stderr):
+                snapshot = Path(snapshot_download(**kwargs))
+        else:
+            snapshot = Path(snapshot_download(**kwargs))
         if progress_json:
             _emit_progress(85, 100, "Downloaded Hugging Face Hub snapshot")
         return snapshot
     except Exception as error:
         raise RuntimeError(f"Hugging Face Hub download failed for {repo_id}: {error}") from error
     finally:
-        if quiet:
+        if quiet or show_bar:
             if previous_progress is None:
                 os.environ.pop("HF_HUB_DISABLE_PROGRESS_BARS", None)
             else:
@@ -198,6 +338,7 @@ def download(
     *,
     quiet: bool = False,
     progress_json: bool = False,
+    progress_bar: bool = False,
 ) -> Path:
     _reject_non_llm_repo(repo_id)
 
@@ -240,7 +381,9 @@ def download(
             else f"{dest} via Hugging Face Hub cache"
         )
         print(f"  downloading {repo_id} -> {destination}")
-    snapshot = _run_hf_snapshot_download(repo_id, quiet=quiet, progress_json=progress_json)
+    snapshot = _run_hf_snapshot_download(
+        repo_id, quiet=quiet, progress_json=progress_json, progress_bar=progress_bar
+    )
 
     if dest is None:
         return snapshot
@@ -413,6 +556,11 @@ def main() -> int:
         action="store_true",
         help="Emit newline-delimited progress JSON before the final summary",
     )
+    parser.add_argument(
+        "--progress-bar",
+        action="store_true",
+        help="Render a live progress bar (bytes, speed, ETA) to stderr while downloading",
+    )
     args = parser.parse_args()
 
     dest = args.dest
@@ -428,6 +576,7 @@ def main() -> int:
             force=args.force,
             quiet=args.json,
             progress_json=args.progress_json,
+            progress_bar=args.progress_bar,
         )
     except RuntimeError as error:
         if args.json:
