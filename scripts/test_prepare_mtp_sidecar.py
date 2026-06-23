@@ -180,6 +180,7 @@ class TransformTests(unittest.TestCase):
         self.assertTrue(is_moe)
 
     def test_moe_per_expert_stacks_experts(self) -> None:
+        import types
         import unittest.mock
 
         raw = {
@@ -189,7 +190,9 @@ class TransformTests(unittest.TestCase):
             "mtp.layers.0.mlp.experts.1.down_proj.weight": FakeMx.ones((4, 8)),
             "mtp.layers.0.mlp.gate.weight": FakeMx.zeros((2, 8)),
         }
-        with unittest.mock.patch.dict(sys.modules, {"mlx.core": FakeMx}):
+        fake_mlx = types.ModuleType("mlx")
+        fake_mlx.core = FakeMx
+        with unittest.mock.patch.dict(sys.modules, {"mlx": fake_mlx, "mlx.core": FakeMx}):
             out = prepare._normalize_qwen_moe_per_expert(raw)
         # Per-expert keys must be gone; stacked arrays present.
         self.assertFalse(any(".experts." in k for k in out))

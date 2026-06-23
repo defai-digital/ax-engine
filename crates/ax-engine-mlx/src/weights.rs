@@ -1365,8 +1365,10 @@ fn load_glm_mtp_sidecar(
 
     // MoE FFN: router + expert stacks.
     let router_proj = mtp_take_weight(name_map, &format!("{p}.layer.mlp.gate"), None);
-    let router_correction_bias =
-        mtp_take_plain(name_map, &format!("{p}.layer.mlp.gate.e_score_correction_bias"));
+    let router_correction_bias = mtp_take_plain(
+        name_map,
+        &format!("{p}.layer.mlp.gate.e_score_correction_bias"),
+    );
     let shared_gate_proj = mtp_take_weight(
         name_map,
         &format!("{p}.layer.mlp.shared_expert.gate_proj"),
