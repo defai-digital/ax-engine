@@ -783,5 +783,96 @@ class AxEngineCliTests(unittest.TestCase):
         self.assertEqual(payload["prepare_command"][depth_index], "3")
 
 
+class AxEngineInteractiveDownloadTests(unittest.TestCase):
+    def capture_main(self, argv: list[str]) -> tuple[int, str]:
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = _cli.main(argv)
+        return code, out.getvalue()
+
+    def test_download_list_json_includes_mtp_lane(self) -> None:
+        code, stdout = self.capture_main(["download", "--list", "--json"])
+
+        self.assertEqual(code, 0)
+        payload = json.loads(stdout)
+        targets = {target["alias"]: target for target in payload["targets"]}
+        self.assertIn("mtp_lane", targets["gemma4-12b"])
+        self.assertEqual(targets["gemma4-12b"]["mtp_lane"], "gemma-assistant")
+        self.assertEqual(targets["qwen3.6-35b"]["mtp_lane"], "qwen-sidecar")
+        self.assertIsNone(targets["gemma4-e2b"]["mtp_lane"])
+
+    def test_no_model_non_tty_is_not_interactive(self) -> None:
+        # stdout is redirected (not a TTY), so the wizard must not engage.
+        with mock.patch.object(_cli, "_run_interactive_download") as wizard:
+            code, stdout = self.capture_main(["download"])
+
+        wizard.assert_not_called()
+        self.assertEqual(code, 2)
+        self.assertIn("missing model alias or repo id", stdout)
+
+    def test_no_interactive_flag_blocks_wizard_even_on_tty(self) -> None:
+        with (
+            mock.patch.object(_cli, "_supports_interactive", return_value=True),
+            mock.patch.object(_cli, "_run_interactive_download") as wizard,
+        ):
+            code, _ = self.capture_main(["download", "--no-interactive"])
+
+        wizard.assert_not_called()
+        self.assertEqual(code, 2)
+
+    def test_bare_download_on_tty_runs_wizard(self) -> None:
+        with (
+            mock.patch.object(_cli, "_supports_interactive", return_value=True),
+            mock.patch.object(_cli, "_run_interactive_download", return_value=0) as wizard,
+        ):
+            code, _ = self.capture_main(["download"])
+
+        wizard.assert_called_once()
+        self.assertEqual(code, 0)
+
+    def test_ui_downloader_requires_tty(self) -> None:
+        with mock.patch.object(_cli, "_supports_interactive", return_value=False):
+            with self.assertRaises(SystemExit) as raised:
+                self.capture_main(["ui-downloader"])
+
+        self.assertIn("interactive terminal", str(raised.exception))
+
+    def test_wizard_flow_invokes_download_with_progress(self) -> None:
+        summary = {
+            "schema_version": "ax.download_model.v1",
+            "status": "ready",
+            "repo_id": "mlx-community/gemma-4-e2b-it-4bit",
+            "dest": "/tmp/model",
+        }
+        inputs = iter(["1", "", "y"])  # select first model, default path, confirm
+        with (
+            mock.patch.object(_cli, "_supports_interactive", return_value=True),
+            mock.patch.object(_cli, "_wizard_input", side_effect=lambda _p: next(inputs)),
+            mock.patch.object(
+                _cli, "_download_summary", return_value=(0, summary, "")
+            ) as download,
+        ):
+            code, stdout = self.capture_main(["ui-downloader"])
+
+        self.assertEqual(code, 0)
+        download.assert_called_once()
+        _, kwargs = download.call_args
+        self.assertTrue(kwargs["progress"])
+        self.assertIsNone(kwargs["dest"])
+        self.assertIn("Status: ready", stdout)
+
+    def test_wizard_cancel_returns_130(self) -> None:
+        with (
+            mock.patch.object(_cli, "_supports_interactive", return_value=True),
+            mock.patch.object(_cli, "_wizard_input", return_value="q"),
+            mock.patch.object(_cli, "_download_summary") as download,
+        ):
+            code, stdout = self.capture_main(["ui-downloader"])
+
+        download.assert_not_called()
+        self.assertEqual(code, 130)
+        self.assertIn("Cancelled.", stdout)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -23,6 +23,9 @@ class ModelProfile:
     repo_id: str
     aliases: tuple[str, ...]
     downloadable: bool = True
+    # Informational: the model family also has an MTP acceleration lane reachable
+    # via `ax-engine download-mtp`. Surfaced in the interactive picker and --list.
+    mtp_lane: str | None = None
 
 
 MODEL_PROFILES = (
@@ -55,6 +58,7 @@ MODEL_PROFILES = (
         preset="gemma4-12b",
         repo_id="mlx-community/gemma-4-12B-it-4bit",
         aliases=("gemma4-12b", "gemma-4-12b", "gemma-4-12b-it", "gemma4-12b-4bit"),
+        mtp_lane="gemma-assistant",
     ),
     ModelProfile(
         label="gemma4-12b-6bit",
@@ -91,6 +95,7 @@ MODEL_PROFILES = (
             "glm-4.7-flash-4bit",
             "glm-4-7-flash-4bit",
         ),
+        mtp_lane="glm-sidecar",
     ),
     ModelProfile(
         label="qwen3.5-9b",
@@ -115,6 +120,7 @@ MODEL_PROFILES = (
             "qwen3.6-27b-4bit",
             "qwen36-27b-4bit",
         ),
+        mtp_lane="qwen-sidecar",
     ),
     ModelProfile(
         label="qwen3.6-27b-5bit",
@@ -157,6 +163,7 @@ MODEL_PROFILES = (
             "qwen3.6-35b-a3b",
             "qwen36-35b-a3b",
         ),
+        mtp_lane="qwen-sidecar",
     ),
 )
 
@@ -214,6 +221,7 @@ def _download_options_payload() -> dict:
                 "repo_id": profile.repo_id,
                 "preset": profile.preset,
                 "aliases": list(profile.aliases),
+                "mtp_lane": profile.mtp_lane,
             }
             for profile in _downloadable_profiles()
         ],
@@ -232,7 +240,8 @@ def _format_download_options() -> str:
         "Available Qwen3.5/3.6 and Gemma 4 MLX download targets:",
     ]
     for profile in _downloadable_profiles():
-        lines.append(f"  {profile.label:<20} {profile.repo_id}")
+        mtp = "  [MTP lane]" if profile.mtp_lane else ""
+        lines.append(f"  {profile.label:<20} {profile.repo_id}{mtp}")
     lines.extend(
         [
             "",
@@ -330,6 +339,7 @@ def _download_summary(
     *,
     dest: str | None = None,
     force: bool = False,
+    progress: bool = False,
 ) -> tuple[int, dict | None, str]:
     repo_id, profile = _download_repo_id(model)
     download_script = _find_repo_script("download_model.py")
@@ -344,7 +354,13 @@ def _download_summary(
     if force:
         command.append("--force")
 
-    result = _run_capture(command)
+    if progress:
+        # Let the helper render its live progress bar straight to our stderr while we
+        # still capture the stdout JSON summary.
+        command.append("--progress-bar")
+        result = _run_capture_stdout(command)
+    else:
+        result = _run_capture(command)
     summary = _parse_download_summary(result.stdout)
     if summary is not None:
         summary["input"] = model
@@ -352,7 +368,7 @@ def _download_summary(
             summary["alias"] = profile.label
             if profile.preset is not None:
                 summary["preset"] = profile.preset
-    return result.returncode, summary, result.stderr
+    return result.returncode, summary, result.stderr or ""
 
 
 def _print_download_summary(summary: dict) -> None:
@@ -372,6 +388,114 @@ def _print_download_summary(summary: dict) -> None:
     elif dest:
         print("Next:")
         print(f"  ax-engine-bench generate-manifest {dest}")
+
+
+def _supports_interactive() -> bool:
+    """Interactive prompts are only safe when both stdin and stdout are a TTY."""
+    try:
+        return sys.stdin.isatty() and sys.stdout.isatty()
+    except (ValueError, OSError):
+        return False
+
+
+def _default_download_root() -> pathlib.Path:
+    """Mirror download_model.default_mlx_lm_cache_root for display in the wizard."""
+    if hub := os.environ.get("HF_HUB_CACHE"):
+        return pathlib.Path(hub).expanduser()
+    if home := os.environ.get("HF_HOME"):
+        return pathlib.Path(home).expanduser() / "hub"
+    base = os.environ.get("XDG_CACHE_HOME") or (pathlib.Path.home() / ".cache")
+    return pathlib.Path(base).expanduser() / "huggingface" / "hub"
+
+
+def _wizard_input(prompt: str) -> str:
+    return input(prompt)
+
+
+def _select_profile_interactive() -> ModelProfile | None:
+    profiles = _downloadable_profiles()
+    print("AX Engine — download a model\n")
+    print(f"  {'#':>2}  {'Model':<22} {'MTP':<5} Repo")
+    for index, profile in enumerate(profiles, start=1):
+        mtp = "yes" if profile.mtp_lane else "—"
+        print(f"  {index:>2}  {profile.label:<22} {mtp:<5} {profile.repo_id}")
+    print()
+    while True:
+        raw = _wizard_input(f"Select a model [1-{len(profiles)}] (q to cancel): ").strip().lower()
+        if raw in {"", "q", "quit", "exit"}:
+            return None
+        if raw.isdigit():
+            choice = int(raw)
+            if 1 <= choice <= len(profiles):
+                return profiles[choice - 1]
+        print("  invalid selection; enter a number from the list or q to cancel")
+
+
+def _select_dest_interactive() -> str | None:
+    default_root = _default_download_root()
+    print(f"\nDefault download location: {default_root}")
+    print("  (shared Hugging Face Hub cache; reused by mlx-lm and huggingface_hub)")
+    raw = _wizard_input("Download path (Enter to accept default): ").strip()
+    if not raw:
+        return None
+    return str(pathlib.Path(raw).expanduser())
+
+
+def _validate_dest_writable(dest: str) -> None:
+    probe = pathlib.Path(dest)
+    while not probe.exists():
+        parent = probe.parent
+        if parent == probe:
+            break
+        probe = parent
+    if not os.access(probe, os.W_OK):
+        raise SystemExit(f"destination is not writable: {dest}")
+
+
+def _confirm_interactive(prompt: str) -> bool:
+    raw = _wizard_input(f"{prompt} [Y/n]: ").strip().lower()
+    return raw in {"", "y", "yes"}
+
+
+def _run_interactive_download(force: bool) -> int:
+    profile = _select_profile_interactive()
+    if profile is None:
+        print("Cancelled.")
+        return 130
+
+    dest = _select_dest_interactive()
+    if dest is not None:
+        _validate_dest_writable(dest)
+
+    target = dest if dest is not None else f"{_default_download_root()} (shared cache)"
+    if profile.mtp_lane:
+        print(
+            f"\nNote: {profile.label} also has an MTP acceleration lane. "
+            "For MTP serving artifacts, see: ax-engine download-mtp --help"
+        )
+    if not _confirm_interactive(f"\nDownload {profile.label} ({profile.repo_id}) to {target}?"):
+        print("Cancelled.")
+        return 130
+
+    print()
+    code, summary, stderr = _download_summary(
+        profile.label, dest=dest, force=force, progress=True
+    )
+    if stderr:
+        sys.stderr.write(stderr)
+    if summary is None:
+        raise SystemExit("download helper did not emit an ax.download_model.v1 summary")
+    _print_download_summary(summary)
+    return code
+
+
+def _cmd_ui_downloader(args: argparse.Namespace) -> int:
+    if not _supports_interactive():
+        raise SystemExit(
+            "ax-engine ui-downloader needs an interactive terminal. "
+            "Use: ax-engine download <model>"
+        )
+    return _run_interactive_download(args.force)
 
 
 def _serve_argv(args: argparse.Namespace) -> tuple[list[str], dict]:
@@ -485,6 +609,15 @@ def _cmd_download(args: argparse.Namespace) -> int:
             print(_format_download_options())
         return 0
 
+    interactive = args.interactive or (
+        not args.model
+        and not args.no_interactive
+        and not args.json
+        and _supports_interactive()
+    )
+    if interactive:
+        return _run_interactive_download(args.force)
+
     if not args.model:
         if args.json:
             _json_dump(_download_options_payload())
@@ -527,6 +660,11 @@ def _parse_output_dir(stdout: str, explicit_output: str | None) -> str | None:
 
 def _run_capture(command: list[str]) -> subprocess.CompletedProcess[str]:
     return subprocess.run(command, capture_output=True, text=True)
+
+
+def _run_capture_stdout(command: list[str]) -> subprocess.CompletedProcess[str]:
+    """Capture stdout but let stderr pass through to the terminal (live progress)."""
+    return subprocess.run(command, stdout=subprocess.PIPE, stderr=None, text=True)
 
 
 def _value_at(value: dict, path: tuple[str, ...]) -> object | None:
@@ -1104,8 +1242,25 @@ def build_parser() -> argparse.ArgumentParser:
     )
     download_parser.add_argument("--force", action="store_true")
     download_parser.add_argument("--list", action="store_true", help="Show supported download targets")
+    download_parser.add_argument(
+        "--interactive",
+        action="store_true",
+        help="Pick a model and destination interactively with a live progress bar",
+    )
+    download_parser.add_argument(
+        "--no-interactive",
+        action="store_true",
+        help="Never prompt; require a model argument",
+    )
     download_parser.add_argument("--json", action="store_true")
     download_parser.set_defaults(func=_cmd_download)
+
+    ui_downloader_parser = subparsers.add_parser(
+        "ui-downloader",
+        help="Interactive model downloader wizard with a live progress bar",
+    )
+    ui_downloader_parser.add_argument("--force", action="store_true")
+    ui_downloader_parser.set_defaults(func=_cmd_ui_downloader)
 
     download_mtp_parser = subparsers.add_parser(
         "download-mtp",

@@ -99,15 +99,19 @@ builds, and release-channel diagnostics, see the
 ## Getting a Model
 
 AX Engine loads pre-sanitized MLX safetensors plus an AX
-`model-manifest.json`. Use `ax-engine download --list` for direct-decode
-aliases, `ax-engine serve <alias> --download` for one-command serving, and
-`ax-engine download-mtp <target>` for supported MTP packages.
+`model-manifest.json`. Use `ax-engine ui-downloader` for an interactive picker,
+`ax-engine download --list` for direct-decode aliases, `ax-engine serve <alias>
+--download` for one-command serving, and `ax-engine download-mtp <target>` for
+supported MTP packages.
 Detailed aliases, MTP targets, raw checkpoint conversion, cache behavior, and
 manifest commands live in
 [Supported Models](docs/SUPPORTED-MODELS.md#getting-model-artifacts) and the
 [CLI reference](docs/CLI.md#ax-engine).
 
 ```bash
+# Pick a model interactively, choose a destination, watch a live progress bar.
+ax-engine ui-downloader
+
 # Serve a direct model in one command.
 ax-engine serve qwen36-35b --download --port 8080
 
@@ -118,6 +122,12 @@ ax-engine download qwen36-35b --json
 # Prepare a Gemma 4 12B MTP package.
 ax-engine download-mtp gemma-4-12b-4bit
 ```
+
+`ax-engine ui-downloader` (or bare `ax-engine download` in a terminal) lists the
+downloadable models with their MTP-lane availability, shows the default
+Hugging Face Hub cache path with an override prompt, and reports a live progress
+bar with transfer speed and ETA. It is terminal-only; scripts and CI keep the
+non-interactive `download` behavior and JSON output.
 
 Common acquisition paths:
 
