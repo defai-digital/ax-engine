@@ -123,8 +123,8 @@ pub fn clear_layer_decode_cache() {
 /// are constant per model; the only varying dimension (seq) is always 1 in
 /// decode.
 ///
-/// Gated by `AX_MLX_MOE_LAYER_COMPILE=1`. Returns `None` when the flag is
-/// off, compilation fails, or the closure cannot be applied.
+/// Gated by `AX_MLX_MOE_LAYER_COMPILE` (default ON). Returns `None` when the
+/// flag is off, compilation fails, or the closure cannot be applied.
 pub fn apply_layer_moe_decode(
     layer_index: usize,
     inputs: &[&MlxArray],
