@@ -13,7 +13,7 @@
 //! logic untouched.
 
 use std::ffi::OsString;
-use std::io::{self, BufRead, BufReader};
+use std::io::{self, BufRead, BufReader, IsTerminal};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::{self, Receiver};
@@ -41,6 +41,9 @@ pub(crate) fn cmd_tui(args: &[OsString]) -> Result<u8, String> {
              download.  Keys: ↑↓ move · → enter · ← back · Enter confirm · q quit."
         );
         return Ok(0);
+    }
+    if !io::stdout().is_terminal() {
+        return Err("ax-engine tui needs an interactive terminal".into());
     }
     let mut terminal = ratatui::init();
     let result = App::new().run(&mut terminal);
