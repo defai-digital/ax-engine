@@ -124,10 +124,12 @@ ax-engine download-mtp gemma-4-12b-4bit
 ```
 
 `ax-engine ui-downloader` (or bare `ax-engine download` in a terminal) lists the
-downloadable models with their MTP-lane availability, shows the default
-Hugging Face Hub cache path with an override prompt, and reports a live progress
-bar with transfer speed and ETA. It is terminal-only; scripts and CI keep the
-non-interactive `download` behavior and JSON output.
+downloadable models; for a model with an MTP acceleration package it offers a
+Direct-vs-MTP choice (the MTP path runs `ax-engine download-mtp <target>`). A
+direct download shows the default Hugging Face Hub cache path with an override
+prompt and reports a live progress bar with transfer speed and ETA. It is
+terminal-only; scripts and CI keep the non-interactive `download` behavior and
+JSON output.
 
 Common acquisition paths:
 

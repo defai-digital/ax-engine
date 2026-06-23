@@ -58,9 +58,11 @@ ax-engine download qwen36-35b --dest /path/to/explicit-copy
 
 For an interactive flow, run `ax-engine ui-downloader` (or just `ax-engine
 download` with no model argument in a terminal). The wizard lists the
-downloadable models with their MTP-lane availability, shows the default
-Hugging Face Hub cache destination and lets you override it, then downloads with
-a live progress bar (downloaded/total bytes, transfer speed, and ETA). It is
+downloadable models, and for a model that has an MTP acceleration package it
+offers a Direct-vs-MTP choice (the MTP path runs `ax-engine download-mtp
+<target>`). For a direct download it shows the default Hugging Face Hub cache
+destination and lets you override it, then downloads with a live progress bar
+(downloaded/total bytes, transfer speed, and ETA). It is
 TTY-gated: when stdout is not a terminal, or with `--no-interactive`, `download`
 keeps its non-interactive behavior and machine-readable summary unchanged. Power
 users can get the same bar on the helper directly with

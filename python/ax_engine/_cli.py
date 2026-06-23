@@ -23,9 +23,10 @@ class ModelProfile:
     repo_id: str
     aliases: tuple[str, ...]
     downloadable: bool = True
-    # Informational: the model family also has an MTP acceleration lane reachable
-    # via `ax-engine download-mtp`. Surfaced in the interactive picker and --list.
-    mtp_lane: str | None = None
+    # When set, the model family has an MTP acceleration package reachable via
+    # `ax-engine download-mtp <mtp_target>`. The interactive picker offers a
+    # Direct-vs-MTP choice for these; --list flags them.
+    mtp_target: str | None = None
 
 
 MODEL_PROFILES = (
@@ -58,13 +59,14 @@ MODEL_PROFILES = (
         preset="gemma4-12b",
         repo_id="mlx-community/gemma-4-12B-it-4bit",
         aliases=("gemma4-12b", "gemma-4-12b", "gemma-4-12b-it", "gemma4-12b-4bit"),
-        mtp_lane="gemma-assistant",
+        mtp_target="gemma-4-12b-4bit",
     ),
     ModelProfile(
         label="gemma4-12b-6bit",
         preset=None,
         repo_id="mlx-community/gemma-4-12B-it-6bit",
         aliases=("gemma4-12b-6bit", "gemma-4-12b-6bit", "gemma-4-12b-it-6bit"),
+        mtp_target="gemma-4-12b",
     ),
     ModelProfile(
         label="gemma4-26b",
@@ -76,12 +78,14 @@ MODEL_PROFILES = (
             "gemma-4-26b-a4b-it",
             "gemma4-26b-4bit",
         ),
+        mtp_target="gemma-4-26b",
     ),
     ModelProfile(
         label="gemma4-31b",
         preset="gemma4-31b",
         repo_id="mlx-community/gemma-4-31b-it-4bit",
         aliases=("gemma4-31b", "gemma-4-31b", "gemma-4-31b-it", "gemma4-31b-4bit"),
+        mtp_target="gemma-4-31b",
     ),
     ModelProfile(
         label="glm4.7-flash-4bit",
@@ -95,7 +99,7 @@ MODEL_PROFILES = (
             "glm-4.7-flash-4bit",
             "glm-4-7-flash-4bit",
         ),
-        mtp_lane="glm-sidecar",
+        mtp_target="glm-4.7-flash",
     ),
     ModelProfile(
         label="qwen3.5-9b",
@@ -120,7 +124,7 @@ MODEL_PROFILES = (
             "qwen3.6-27b-4bit",
             "qwen36-27b-4bit",
         ),
-        mtp_lane="qwen-sidecar",
+        mtp_target="qwen3.6-27b-6bit",
     ),
     ModelProfile(
         label="qwen3.6-27b-5bit",
@@ -141,6 +145,7 @@ MODEL_PROFILES = (
             "qwen36-27b-6bit",
             "qwen3-6-27b-6bit",
         ),
+        mtp_target="qwen3.6-27b-6bit",
     ),
     ModelProfile(
         label="qwen3.6-27b-8bit",
@@ -163,7 +168,7 @@ MODEL_PROFILES = (
             "qwen3.6-35b-a3b",
             "qwen36-35b-a3b",
         ),
-        mtp_lane="qwen-sidecar",
+        mtp_target="qwen3.6-35b-a3b",
     ),
 )
 
@@ -221,7 +226,7 @@ def _download_options_payload() -> dict:
                 "repo_id": profile.repo_id,
                 "preset": profile.preset,
                 "aliases": list(profile.aliases),
-                "mtp_lane": profile.mtp_lane,
+                "mtp_target": profile.mtp_target,
             }
             for profile in _downloadable_profiles()
         ],
@@ -240,7 +245,7 @@ def _format_download_options() -> str:
         "Available Qwen3.5/3.6 and Gemma 4 MLX download targets:",
     ]
     for profile in _downloadable_profiles():
-        mtp = "  [MTP lane]" if profile.mtp_lane else ""
+        mtp = f"  [MTP: download-mtp {profile.mtp_target}]" if profile.mtp_target else ""
         lines.append(f"  {profile.label:<20} {profile.repo_id}{mtp}")
     lines.extend(
         [
@@ -417,7 +422,7 @@ def _select_profile_interactive() -> ModelProfile | None:
     print("AX Engine — download a model\n")
     print(f"  {'#':>2}  {'Model':<22} {'MTP':<5} Repo")
     for index, profile in enumerate(profiles, start=1):
-        mtp = "yes" if profile.mtp_lane else "—"
+        mtp = "yes" if profile.mtp_target else "—"
         print(f"  {index:>2}  {profile.label:<22} {mtp:<5} {profile.repo_id}")
     print()
     while True:
@@ -457,22 +462,29 @@ def _confirm_interactive(prompt: str) -> bool:
     return raw in {"", "y", "yes"}
 
 
-def _run_interactive_download(force: bool) -> int:
-    profile = _select_profile_interactive()
-    if profile is None:
-        print("Cancelled.")
-        return 130
+def _select_variant_interactive(profile: ModelProfile) -> str | None:
+    """For an MTP-capable model, choose 'direct' or 'mtp'. None means cancel."""
+    print(f"\n{profile.label} has an MTP acceleration package.")
+    print("Download which variant?")
+    print(f"  1  Direct download   {profile.repo_id}")
+    print(f"  2  MTP package       ax-engine download-mtp {profile.mtp_target}")
+    while True:
+        raw = _wizard_input("Select [1-2] (q to cancel): ").strip().lower()
+        if raw in {"q", "quit", "exit"}:
+            return None
+        if raw == "1":
+            return "direct"
+        if raw == "2":
+            return "mtp"
+        print("  invalid selection; enter 1, 2, or q to cancel")
 
+
+def _run_interactive_direct_download(profile: ModelProfile, force: bool) -> int:
     dest = _select_dest_interactive()
     if dest is not None:
         _validate_dest_writable(dest)
 
     target = dest if dest is not None else f"{_default_download_root()} (shared cache)"
-    if profile.mtp_lane:
-        print(
-            f"\nNote: {profile.label} also has an MTP acceleration lane. "
-            "For MTP serving artifacts, see: ax-engine download-mtp --help"
-        )
     if not _confirm_interactive(f"\nDownload {profile.label} ({profile.repo_id}) to {target}?"):
         print("Cancelled.")
         return 130
@@ -487,6 +499,42 @@ def _run_interactive_download(force: bool) -> int:
         raise SystemExit("download helper did not emit an ax.download_model.v1 summary")
     _print_download_summary(summary)
     return code
+
+
+def _run_interactive_mtp_download(profile: ModelProfile, force: bool) -> int:
+    if not _confirm_interactive(
+        f"\nPrepare MTP package for {profile.label} "
+        f"(ax-engine download-mtp {profile.mtp_target})?"
+    ):
+        print("Cancelled.")
+        return 130
+
+    bench_bin = str(_bench_bin())
+    argv = [bench_bin, "download-mtp", profile.mtp_target]
+    if force:
+        argv.append("--force")
+    env = os.environ.copy()
+    env.update(_download_mtp_helper_env())
+    print(f"\nPreparing MTP package: ax-engine download-mtp {profile.mtp_target}\n")
+    # Inherit stdio so the bench binary's own progress/output is shown live.
+    return subprocess.run(argv, env=env).returncode
+
+
+def _run_interactive_download(force: bool) -> int:
+    profile = _select_profile_interactive()
+    if profile is None:
+        print("Cancelled.")
+        return 130
+
+    if profile.mtp_target:
+        variant = _select_variant_interactive(profile)
+        if variant is None:
+            print("Cancelled.")
+            return 130
+        if variant == "mtp":
+            return _run_interactive_mtp_download(profile, force)
+
+    return _run_interactive_direct_download(profile, force)
 
 
 def _cmd_ui_downloader(args: argparse.Namespace) -> int:

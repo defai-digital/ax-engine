@@ -790,16 +790,16 @@ class AxEngineInteractiveDownloadTests(unittest.TestCase):
             code = _cli.main(argv)
         return code, out.getvalue()
 
-    def test_download_list_json_includes_mtp_lane(self) -> None:
+    def test_download_list_json_includes_mtp_target(self) -> None:
         code, stdout = self.capture_main(["download", "--list", "--json"])
 
         self.assertEqual(code, 0)
         payload = json.loads(stdout)
         targets = {target["alias"]: target for target in payload["targets"]}
-        self.assertIn("mtp_lane", targets["gemma4-12b"])
-        self.assertEqual(targets["gemma4-12b"]["mtp_lane"], "gemma-assistant")
-        self.assertEqual(targets["qwen3.6-35b"]["mtp_lane"], "qwen-sidecar")
-        self.assertIsNone(targets["gemma4-e2b"]["mtp_lane"])
+        self.assertEqual(targets["gemma4-12b"]["mtp_target"], "gemma-4-12b-4bit")
+        self.assertEqual(targets["qwen3.6-35b"]["mtp_target"], "qwen3.6-35b-a3b")
+        self.assertEqual(targets["glm4.7-flash-4bit"]["mtp_target"], "glm-4.7-flash")
+        self.assertIsNone(targets["gemma4-e2b"]["mtp_target"])
 
     def test_no_model_non_tty_is_not_interactive(self) -> None:
         # stdout is redirected (not a TTY), so the wizard must not engage.
@@ -859,6 +859,55 @@ class AxEngineInteractiveDownloadTests(unittest.TestCase):
         _, kwargs = download.call_args
         self.assertTrue(kwargs["progress"])
         self.assertIsNone(kwargs["dest"])
+        self.assertIn("Status: ready", stdout)
+
+    def _index_of(self, label: str) -> int:
+        for index, profile in enumerate(_cli._downloadable_profiles(), start=1):
+            if profile.label == label:
+                return index
+        raise AssertionError(f"profile not found: {label}")
+
+    def test_wizard_mtp_variant_runs_download_mtp(self) -> None:
+        idx = self._index_of("gemma4-12b")
+        inputs = iter([str(idx), "2", "y"])  # select gemma4-12b, MTP variant, confirm
+        completed = mock.Mock(returncode=0)
+        with (
+            mock.patch.object(_cli, "_supports_interactive", return_value=True),
+            mock.patch.object(_cli, "_wizard_input", side_effect=lambda _p: next(inputs)),
+            mock.patch.object(_cli, "_bench_bin", return_value="/fake/ax-engine-bench"),
+            mock.patch.object(_cli.subprocess, "run", return_value=completed) as run,
+        ):
+            code, _ = self.capture_main(["ui-downloader"])
+
+        self.assertEqual(code, 0)
+        run.assert_called_once()
+        argv = run.call_args[0][0]
+        self.assertEqual(
+            argv[:3], ["/fake/ax-engine-bench", "download-mtp", "gemma-4-12b-4bit"]
+        )
+
+    def test_wizard_direct_variant_on_mtp_model(self) -> None:
+        summary = {
+            "schema_version": "ax.download_model.v1",
+            "status": "ready",
+            "repo_id": "mlx-community/gemma-4-12B-it-4bit",
+            "dest": "/tmp/model",
+        }
+        idx = self._index_of("gemma4-12b")
+        inputs = iter([str(idx), "1", "", "y"])  # select, Direct variant, default path, confirm
+        with (
+            mock.patch.object(_cli, "_supports_interactive", return_value=True),
+            mock.patch.object(_cli, "_wizard_input", side_effect=lambda _p: next(inputs)),
+            mock.patch.object(
+                _cli, "_download_summary", return_value=(0, summary, "")
+            ) as download,
+        ):
+            code, stdout = self.capture_main(["ui-downloader"])
+
+        self.assertEqual(code, 0)
+        download.assert_called_once()
+        _, kwargs = download.call_args
+        self.assertTrue(kwargs["progress"])
         self.assertIn("Status: ready", stdout)
 
     def test_wizard_cancel_returns_130(self) -> None:
