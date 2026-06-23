@@ -15,7 +15,7 @@ tracked separately, with peer rows and model-specific boundaries kept visible.
 
 - **First-class MTP:** one-command MTP package preparation through
   `ax-engine download-mtp`, including the Gemma 4 12B 4-bit quick-start target
-  and the six-model 6-bit MTP benchmark matrix.
+  plus recommended 6-bit MTP benchmarking and 4-bit comparison lanes.
 - **Simple local serving:** install the wheel, download or prepare a model, then
   run the printed `ax-engine serve ...` command for OpenAI-compatible local
   endpoints.
@@ -39,11 +39,13 @@ tracked separately, with peer rows and model-specific boundaries kept visible.
 - [Typical Hardware](#typical-hardware)
 - [What AX Engine Does](#what-ax-engine-does)
 - [Performance](#performance)
-  - [Gemma 4 12B](#gemma-4-12b)
-    - [Gemma 4 12B Multimodal](#gemma-4-12b-multimodal)
   - [Speculative Decoding (MTP)](#speculative-decoding-mtp)
-    - [GLM-4.7](#glm-47-flash-mtp-validation-session)
+    - [6-bit MTP acceleration refresh (2026-06-23)](#6-bit-mtp-acceleration-refresh-2026-06-23)
+    - [4-bit MTP comparison lane (2026-06-20)](#4-bit-mtp-comparison-lane-2026-06-20)
+    - [GLM-4.7 Flash MTP validation session](#glm-47-flash-mtp-validation-session)
   - [Direct Decode · Prefill · TTFT](#direct-decode--prefill--ttft)
+    - [Gemma 4 12B](#gemma-4-12b)
+      - [Gemma 4 12B Multimodal](#gemma-4-12b-multimodal)
     - [DiffusionGemma](#diffusiongemma)
     - [Gemma 4 and Qwen 3.6](#gemma-4-and-qwen-36)
 - [SDKs](#sdks)
@@ -207,7 +209,174 @@ Full result tables and interpretation live in
 methodology, test setup, and reproduction details live in
 [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md).
 
-### Gemma 4 12B
+### Speculative Decoding (MTP)
+
+AX Engine supports three MTP packaging contracts in the repo-owned runtime: Qwen
+fused sidecars, Gemma assistant drafters, and GLM built-in MTP sidecars. The
+current benchmark design has two clearly labeled lanes: the recommended 6-bit
+`download-mtp` matrix for practical AX Engine usage, and 4-bit comparison rows
+for alignment with peer MTP-engine results. Same-package direct baselines are
+used only to report AX MTP acceleration.
+
+| Target | Preparation command | Benchmark mode |
+|---|---|---|
+| `qwen3.6-27b-6bit` | `ax-engine download-mtp qwen3.6-27b-6bit` | Qwen fused sidecar MTP |
+| `qwen3.6-35b-a3b` | `ax-engine download-mtp qwen3.6-35b-a3b` | Qwen fused sidecar MTP |
+| `gemma-4-12b` | `ax-engine download-mtp gemma-4-12b` | Gemma assistant-MTP |
+| `gemma-4-26b` | `ax-engine download-mtp gemma-4-26b` | Gemma assistant-MTP |
+| `gemma-4-31b` | `ax-engine download-mtp gemma-4-31b` | Gemma assistant-MTP |
+| `glm-4.7-flash` | `ax-engine download-mtp glm-4.7-flash` | GLM built-in MTP sidecar |
+
+Rules for current MTP benchmark artifacts:
+
+- Use 6-bit `download-mtp` model packages for the recommended practical AX
+  Engine lane.
+- Use 4-bit MTP rows only as a clearly labeled comparison lane for alignment
+  with other MTP-engine benchmark results.
+- Use the prepared path returned by `ax-engine download-mtp`.
+- Report `mtp` rows plus same-package direct baselines for AX acceleration.
+  Do not run or promote `mtp-ngram` rows.
+- Do not include Qwen3-Coder-Next, 5-bit, 8-bit, FFN-only, or GGUF variants in
+  the recommended 6-bit MTP matrix.
+- Direct rows are same-artifact denominators for `AX MTP / AX direct` decode
+  acceleration, not a cross-model speed leaderboard.
+
+The benchmark prompt suites remain `flappy`, `long_code`, and
+`python_modules_long`, with sampled decode (`temperature=0.6`, `top_p=0.95`,
+`top_k=20`), `1000` generated tokens, `5` measured repetitions, and recorded
+cooldown. Recommended 6-bit artifacts should live under
+`benchmarks/results/mtp-6bit/`; 4-bit comparison artifacts must stay clearly
+labeled as comparison results. Every artifact records the exact model snapshot,
+MTP package provenance, route identity, accept rate, prefill throughput, decode
+throughput, TTFT, sampler, prompt suite, repetitions, and cooldown.
+
+For production-like AX Engine guidance, use the 6-bit lane. The 4-bit lane is
+published to make comparison with other MTP engines easier because many peer
+benchmarks use 4-bit models. Historical MTP+n-gram artifacts remain useful for
+debugging regressions, but they are not current README/PERFORMANCE MTP evidence.
+
+#### 6-bit MTP acceleration refresh (2026-06-23)
+
+This refresh covers all six 6-bit `download-mtp` targets across the three real
+prompt suites. The chart compares each model and prompt suite with **MTP off**
+(`AX direct`) and **MTP on** (`AX MTP`) side by side, using decode median tok/s
+from the same prepared package. The speedup labels are `AX MTP decode median /
+AX direct decode median`; they are same-package acceleration ratios, not a
+cross-model speed leaderboard. For Gemma 4 12B's shape-compatible direct peer
+comparison, see [Gemma 4 12B](#gemma-4-12b).
+
+![AX MTP decode throughput with MTP off and MTP on](docs/assets/perf-mtp-6bit-ax-acceleration.svg)
+
+| Target | Suite | AX direct decode | AX MTP decode | AX speedup | AX MTP prefill | AX MTP TTFT | AX accept | MTPLX | lightning-mlx |
+|---|---|---:|---:|---:|---:|---:|---:|---|---|
+| `qwen3.6-27b-6bit` | `flappy` | 18.6 tok/s | 42.1 tok/s | 2.26x | 632.7 tok/s | 508 ms | 99.5% | N/A | N/A |
+| `qwen3.6-27b-6bit` | `long_code` | 18.5 tok/s | 34.1 tok/s | 1.85x | 693.7 tok/s | 1031 ms | 97.7% | N/A | N/A |
+| `qwen3.6-27b-6bit` | `python_modules_long` | 17.5 tok/s | 33.7 tok/s | 1.92x | 614.6 tok/s | 566 ms | 96.7% | N/A | N/A |
+| `qwen3.6-35b-a3b` | `flappy` | 46.2 tok/s | 141.5 tok/s | 3.06x | 1561.8 tok/s | 212 ms | 99.8% | N/A | N/A |
+| `qwen3.6-35b-a3b` | `long_code` | 46.3 tok/s | 140.1 tok/s | 3.02x | 2381.1 tok/s | 301 ms | 98.5% | N/A | N/A |
+| `qwen3.6-35b-a3b` | `python_modules_long` | 46.0 tok/s | 142.3 tok/s | 3.09x | 1690.4 tok/s | 205 ms | 98.9% | N/A | N/A |
+| `gemma-4-12b` | `flappy` | 26.7 tok/s | 62.2 tok/s | 2.33x | 1701.7 tok/s | 214 ms | 99.3% | N/A | N/A |
+| `gemma-4-12b` | `long_code` | 26.6 tok/s | 70.5 tok/s | 2.65x | 1951.6 tok/s | 409 ms | 99.1% | N/A | N/A |
+| `gemma-4-12b` | `python_modules_long` | 27.1 tok/s | 63.2 tok/s | 2.33x | 1753.3 tok/s | 205 ms | 98.0% | N/A | N/A |
+| `gemma-4-26b` | `flappy` | 45.7 tok/s | 112.9 tok/s | 2.47x | 2395.0 tok/s | 148 ms | 99.8% | N/A | N/A |
+| `gemma-4-26b` | `long_code` | 46.8 tok/s | 113.6 tok/s | 2.43x | 3754.7 tok/s | 219 ms | 99.3% | N/A | N/A |
+| `gemma-4-26b` | `python_modules_long` | 45.9 tok/s | 107.2 tok/s | 2.34x | 2597.7 tok/s | 147 ms | 98.9% | N/A | N/A |
+| `gemma-4-31b` | `flappy` | 15.4 tok/s | 28.1 tok/s | 1.82x | 701.9 tok/s | 516 ms | 99.6% | N/A | N/A |
+| `gemma-4-31b` | `long_code` | 15.3 tok/s | 27.3 tok/s | 1.78x | 747.8 tok/s | 1067 ms | 99.5% | N/A | N/A |
+| `gemma-4-31b` | `python_modules_long` | 15.0 tok/s | 25.5 tok/s | 1.70x | 678.5 tok/s | 512 ms | 98.9% | N/A | N/A |
+| `glm-4.7-flash` | `flappy` | 52.6 tok/s | 91.5 tok/s | 1.74x | 1694.5 tok/s | 163 ms | 98.2% | N/A | N/A |
+| `glm-4.7-flash` | `long_code` | 51.9 tok/s | 77.9 tok/s | 1.50x | 2727.6 tok/s | 250 ms | 98.2% | N/A | N/A |
+| `glm-4.7-flash` | `python_modules_long` | 52.4 tok/s | 72.9 tok/s | 1.39x | 1948.2 tok/s | 174 ms | 97.7% | N/A | N/A |
+
+Methodology: `1000` generated tokens, `5` measured repetitions per prompt case
+after the AX warmup pass, 30 s cooldown, 10 s inter-case cooldown, sampled
+decode (`temperature=0.6`, `top_p=0.95`, `top_k=20`), pure MTP, and no
+MTP+n-gram stacking. Peer rows are `N/A` when the peer runner cannot run the
+same prepared 6-bit `download-mtp` package under a comparable prompt-suite
+contract. MTPLX 0.3.7 rejects the Qwen dense runtime contract and has no Gemma
+assistant-MTP or GLM built-in sidecar runner. Lightning-MLX remains
+diagnostic-only under current policy after the silent-thinking pathology and
+does not provide a comparable promoted row for these prepared packages.
+
+Pure-MTP verification: all listed AX MTP artifacts record zero n-gram accepted,
+proposed, submitted, and hit-step telemetry. Summary artifacts:
+[`summary.md`](benchmarks/results/mtp-6bit/2026-06-22-six-model-mtp-full-three-suite-ax-gain/summary.md)
+and
+[`summary.json`](benchmarks/results/mtp-6bit/2026-06-22-six-model-mtp-full-three-suite-ax-gain/summary.json).
+
+#### 4-bit MTP comparison lane (2026-06-20)
+
+The 4-bit lane is not the recommended AX Engine deployment setting. It is kept
+in the MTP section because peer engines commonly publish 4-bit MTP results, so
+these rows make comparison easier. Use the 6-bit `download-mtp` packages above
+for practical AX Engine usage.
+
+Qwen3.6 rows compare against MTPLX on the same 4-bit base family, prompt suites,
+sampler, 1,000 generated tokens, 5 measured repetitions, and cooldown contract:
+
+| Model | Suite | Depth | AX MTP decode | MTPLX decode | AX / MTPLX | AX MTP prefill | AX MTP TTFT | AX accept |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+| Qwen3.6 27B 4-bit | `flappy` | 3 | 61.4 tok/s | 56.1 tok/s | 1.09x | 677.7 tok/s | 474 ms | 99.7% |
+| Qwen3.6 27B 4-bit | `long_code` | 3 | 60.5 tok/s | 57.9 tok/s | 1.04x | 789.4 tok/s | 909 ms | 99.6% |
+| Qwen3.6 27B 4-bit | `python_modules_long` | 3 | 52.0 tok/s | 52.7 tok/s | 0.99x | 692.1 tok/s | 506 ms | 97.8% |
+| Qwen3.6 35B-A3B 4-bit | `flappy` | 1 | 169.0 tok/s | 104.3 tok/s | 1.62x | 1,795.1 tok/s | 179 ms | 100.0% |
+| Qwen3.6 35B-A3B 4-bit | `long_code` | 1 | 164.7 tok/s | 105.6 tok/s | 1.56x | 2,672.7 tok/s | 269 ms | 99.9% |
+| Qwen3.6 35B-A3B 4-bit | `python_modules_long` | 1 | 166.7 tok/s | 98.2 tok/s | 1.70x | 1,973.5 tok/s | 174 ms | 97.9% |
+
+Gemma rows are AX assistant-MTP comparison artifacts. No runnable peer benchmark
+covers the same Gemma assistant-MTP contract: `mlx_lm` cannot load
+`gemma4_unified`, llama.cpp does not expose a Gemma assistant-MTP path, and
+available MTP peer tools target different sidecar contracts.
+
+| Model | Suite | Depth | AX MTP decode | AX MTP prefill | AX MTP TTFT | AX accept | Peer MTP |
+|---|---|---:|---:|---:|---:|---:|---|
+| Gemma 4 12B 4-bit-FFN | `flappy` | 2 | 96.8 tok/s | 1,928.3 tok/s | 187 ms | 98.8% | N/A |
+| Gemma 4 12B 4-bit-FFN | `long_code` | 2 | 92.3 tok/s | 2,040.5 tok/s | 390 ms | 99.4% | N/A |
+| Gemma 4 12B 4-bit-FFN | `python_modules_long` | 2 | 82.9 tok/s | 1,830.5 tok/s | 195 ms | 97.9% | N/A |
+| Gemma 4 26B A4B 4-bit | `flappy` | 1 | 128.8 tok/s | 2,690.0 tok/s | 131 ms | 99.4% | N/A |
+| Gemma 4 26B A4B 4-bit | `long_code` | 1 | 136.7 tok/s | 4,026.1 tok/s | 202 ms | 99.2% | N/A |
+| Gemma 4 26B A4B 4-bit | `python_modules_long` | 1 | 130.1 tok/s | 2,923.0 tok/s | 130 ms | 98.8% | N/A |
+| Gemma 4 31B 4-bit | `flappy` | 1 | 39.4 tok/s | 723.5 tok/s | 487 ms | 99.4% | N/A |
+| Gemma 4 31B 4-bit | `long_code` | 1 | 40.0 tok/s | 806.8 tok/s | 987 ms | 99.4% | N/A |
+| Gemma 4 31B 4-bit | `python_modules_long` | 1 | 37.4 tok/s | 741.4 tok/s | 472 ms | 97.5% | N/A |
+
+Artifacts:
+[`Qwen3.6 4-bit fair summary`](benchmarks/results/mtp-fair/2026-06-20-qwen36-merged-ax-refresh/summary.md),
+[`Qwen3.6 prefill/TTFT report`](benchmarks/results/mtp-fair/2026-06-20-qwen36-merged-ax-refresh/prefill-ttft-report.json),
+and
+[`Gemma 4 assistant-MTP summary`](benchmarks/results/gemma4-assistant-mtp/2026-06-20-gemma4-assistant-mtp-ax-mtp-only/summary.md).
+
+#### GLM-4.7 Flash MTP validation session
+
+GLM-4.7 Flash uses the built-in MTP tensors from `zai-org/GLM-4.7-Flash`.
+`ax-engine download-mtp glm-4.7-flash` downloads the 6-bit MLX base
+(`mlx-community/GLM-4.7-Flash-6bit`), extracts the built-in MTP layer into
+`glm_mtp.safetensors`, and writes a self-contained AX package.
+
+The first local validation session used the prepared package returned by
+`download-mtp` and the `flappy` real-prompt suite. This is a smoke session, not
+the promoted 5-repetition MTP matrix row: it used 32 generated tokens, 1 measured
+repetition, no cooldown, sampled decode (`temperature=0.6`, `top_p=0.95`,
+`top_k=20`), MTP depth 1, and no MTP+n-gram stacking. The direct baseline uses
+the same package and prompt suite with MTP disabled.
+
+| Mode | Route | Decode median | Prefill median | TTFT median | MTP evidence |
+|---|---|---:|---:|---:|---|
+| Direct baseline | `direct_single_decode_baseline` | 58.7 tok/s | 1,670 tok/s | 166 ms | no drafts |
+| GLM built-in MTP | `mtp_head_only_verify_loop` | 90.3 tok/s | 1,690 tok/s | 163 ms | 54 drafted, 46 accepted, 85.2% accept |
+
+In this smoke session, GLM built-in MTP was **1.54x** faster than direct decode
+on median decode throughput. Treat this as path validation and a same-artifact
+diagnostic comparison until the full 6-bit MTP matrix is rerun with 1,000
+generated tokens, 5 measured repetitions, and recorded cooldown.
+
+Artifacts: [`flappy-after-activation-fix.json`](benchmarks/results/mtp-6bit/2026-06-22-glm47-flash-mtp-smoke/flappy-after-activation-fix.json)
+(MTP) and [`flappy-direct-baseline.json`](benchmarks/results/mtp-6bit/2026-06-22-glm47-flash-mtp-smoke/flappy-direct-baseline.json)
+(direct baseline).
+
+### Direct Decode · Prefill · TTFT
+
+#### Gemma 4 12B
 
 Gemma 4 12B (`model_type: gemma4_unified`) is reported separately from the per-layer-embedding E2B/E4B and MoE 26B/31B checkpoints because it has a distinct graph, multimodal tensor contract, and benchmark boundary. **Upstream `mlx_lm` 0.31.3 cannot load it** (`ValueError: Model type gemma4_unified not supported`), so the direct peer here is **llama.cpp Metal** on a shape-compatible GGUF.
 
@@ -218,10 +387,10 @@ Gemma 4 12B (`model_type: gemma4_unified`) is reported separately from the per-l
 
 - **Direct decode:** AX native MLX reaches **61.7-66.0 tok/s** on the bit-comparable 4-bit-FFN artifact versus llama.cpp Metal's **56.9-59.2 tok/s** depth-matched range.
 - **Context depth:** AX's direct margin is **+11% / +11% / +8%** versus llama.cpp matched-depth decode at 128 / 512 / 2,048 prompt tokens.
-- **Assistant-MTP:** depth-2 assistant-MTP reaches **82.9-96.8 tok/s** on code-like prompt suites, a **2.34-2.73x** same-artifact speedup over AX direct decode.
+- **Assistant-MTP:** current `gemma-4-12b` MTP benchmarking lives in the [6-bit MTP acceleration refresh](#6-bit-mtp-acceleration-refresh-2026-06-23), where the 6-bit `download-mtp` package reaches **62.2-70.5 tok/s** and **2.33-2.65x** same-package speedup over MTP-off decode.
 - **Why the earlier result flipped:** the upstream MLX snapshot keeps FFN weights at 8-bit, so it reads about **1.65x** the bytes of the re-quantized 4-bit-FFN artifact. Decode is bandwidth-bound; matching quantization closes the gap.
 
-**Direct Decode**
+**Direct decode peer comparison:**
 
 AX direct rows use the 4-bit-FFN MLX artifact and random-token prompts. `mlx_lm` is absent because it has no `gemma4_unified` graph. The llama.cpp rows are shape-compatible external GGUF references, not prompt-hash-parity MLX rows.
 
@@ -262,37 +431,13 @@ Decode is memory-bandwidth-bound on Apple Silicon: each token reads the model we
 
 The bandwidth view is the key explanation: AX is not under-utilizing memory. The re-quantized AX row sustains **434 GB/s**, in the same band as llama.cpp's **435 GB/s** at matched depth. The remaining direct-decode difference is bytes read per token: uniform 4-bit group-64 reduces AX to **6.74 GB/token**, while Q4_K_M reads **7.38 GB/token**. The 8-bit-FFN upstream snapshot has higher bus utilization (86%) but worse speed because it reads far more data.
 
-**Assistant-MTP speculative decode (depth 2):**
-
-The assistant-MTP path runs on the assistant bundle and adds a second
-speculative lever that neither `mlx_lm` nor llama.cpp has for this model. The
-historical 4-bit rows below are retained as background only; the current MTP
-benchmark design uses the 6-bit `download-mtp` package and does not run
-MTP+n-gram.
-
-| Suite | Depth | AX direct tok/s | AX MTP tok/s | AX MTP accept |
-|---|---:|---:|---:|---:|
-| flappy | 2 | 35.5 | 96.8 | 98.7% |
-| long_code | 2 | 35.8 | 92.3 | 99.1% |
-| python_modules_long | 2 | 35.4 | 82.9 | 97.5% |
-
-No runnable peer benchmark covers **Gemma 4 12B assistant-MTP** in this matrix: `mlx_lm` cannot load `gemma4_unified`, llama.cpp does not expose a Gemma assistant-MTP path, and available MTP peer tools target different sidecar contracts. The AX direct column is retained as a same-prompt baseline from the MTP harness prompts, artifact, and sampler. It is a same-artifact AX improvement view, not a peer-engine MTP comparison.
-
-**MTP prefill and TTFT — same run:**
-
-| Suite | AX MTP prefill | AX MTP ttft ms |
-|---|---:|---:|
-| flappy | 1,928 | 187 |
-| long_code | 2,040 | 390 |
-| python_modules_long | 1,831 | 195 |
-
 **Methodology and artifacts:**
 
-Direct rows use the 4-bit-FFN artifact, greedy-equivalent sampler, 128 generated tokens, 5 repetitions, 15 s cooldown, and random-token prompts following the `mlx_lm.benchmark` contract. llama.cpp decode is shown both at depth 0 (`tg`) and at matched context depth (`-d {prompt}`). MTP rows use the same 4-bit-FFN assistant-MTP artifact, depth-2 draft, temperature=0.6, top_p=0.95, top_k=20, 1,000 generated tokens, 5 repetitions, 30 s cooldown, and 10 s inter-case cooldown. Host/runtime for the latest direct llama.cpp peer rerun: Apple M5 Max · llama.cpp b9700 / ggml 0.15.2 (Metal, flash-attn) · `mlx_lm` 0.31.3 has no `gemma4_unified` support.
+Direct rows use the 4-bit-FFN artifact, greedy-equivalent sampler, 128 generated tokens, 5 repetitions, 15 s cooldown, and random-token prompts following the `mlx_lm.benchmark` contract. llama.cpp decode is shown both at depth 0 (`tg`) and at matched context depth (`-d {prompt}`). Host/runtime for the latest direct llama.cpp peer rerun: Apple M5 Max · llama.cpp b9700 / ggml 0.15.2 (Metal, flash-attn) · `mlx_lm` 0.31.3 has no `gemma4_unified` support. MTP methodology and artifacts live with [Speculative Decoding (MTP)](#speculative-decoding-mtp).
 
-Full artifacts: [`2026-06-20-gemma-4-12b-it-4bit-direct`](benchmarks/results/mlx-inference/2026-06-20-gemma-4-12b-it-4bit-direct/gemma-4-12b-it-4bit.json) (AX direct rerun; chart artifact with retained llama.cpp reference rows in [`gemma-4-12b-it-4bit-with-llama-reference.json`](benchmarks/results/mlx-inference/2026-06-20-gemma-4-12b-it-4bit-direct/gemma-4-12b-it-4bit-with-llama-reference.json); llama.cpp GGUF provenance in [`llama_cpp_gguf_provenance.json`](benchmarks/results/mlx-inference/2026-06-09-gemma-4-12b-it-4bit-direct/llama_cpp_gguf_provenance.json)) · [`2026-06-20-gemma4-assistant-mtp-ax-mtp-only`](benchmarks/results/gemma4-assistant-mtp/2026-06-20-gemma4-assistant-mtp-ax-mtp-only/summary.json) (AX-only assistant-MTP refresh).
+Full artifacts: [`2026-06-20-gemma-4-12b-it-4bit-direct`](benchmarks/results/mlx-inference/2026-06-20-gemma-4-12b-it-4bit-direct/gemma-4-12b-it-4bit.json) (AX direct rerun; chart artifact with retained llama.cpp reference rows in [`gemma-4-12b-it-4bit-with-llama-reference.json`](benchmarks/results/mlx-inference/2026-06-20-gemma-4-12b-it-4bit-direct/gemma-4-12b-it-4bit-with-llama-reference.json); llama.cpp GGUF provenance in [`llama_cpp_gguf_provenance.json`](benchmarks/results/mlx-inference/2026-06-09-gemma-4-12b-it-4bit-direct/llama_cpp_gguf_provenance.json)).
 
-#### Gemma 4 12B Multimodal
+##### Gemma 4 12B Multimodal
 
 Gemma 4 12B multimodal timing is reported separately from the text benchmark above because media inputs expand into validated Gemma4 unified soft-token spans before the MLX graph runs. The publication-grade timing artifact covers all **17 AX Engine image/audio/video cases** through both the native `/v1/generate/stream` prefill path and the OpenAI-compatible `/v1/chat/completions` path. The llama.cpp Metal peer rows are cold OpenAI chat endpoint rows for the supported image/audio cases, with prompt cache, slot prompt reuse, and context checkpoints disabled and raw llama.cpp timing/cache metadata recorded.
 
@@ -356,125 +501,6 @@ For a fair llama.cpp peer rerun, launch `llama-server` with prompt cache, slot p
 
 Gemma assistant-MTP package layout and cache-location details live in
 [Supported Models](docs/SUPPORTED-MODELS.md#mtp-downloads).
-
-
-### Speculative Decoding (MTP)
-
-AX Engine supports three MTP packaging contracts in the repo-owned runtime: Qwen
-fused sidecars, Gemma assistant drafters, and GLM built-in MTP sidecars. The
-current benchmark design is intentionally narrower than the historical MTP
-artifact set: benchmark only the six 6-bit `download-mtp` targets, with
-same-package direct baselines used only to report AX MTP acceleration.
-
-| Target | Preparation command | Benchmark mode |
-|---|---|---|
-| `qwen3.6-27b-6bit` | `ax-engine download-mtp qwen3.6-27b-6bit` | Qwen fused sidecar MTP |
-| `qwen3.6-35b-a3b` | `ax-engine download-mtp qwen3.6-35b-a3b` | Qwen fused sidecar MTP |
-| `gemma-4-12b` | `ax-engine download-mtp gemma-4-12b` | Gemma assistant-MTP |
-| `gemma-4-26b` | `ax-engine download-mtp gemma-4-26b` | Gemma assistant-MTP |
-| `gemma-4-31b` | `ax-engine download-mtp gemma-4-31b` | Gemma assistant-MTP |
-| `glm-4.7-flash` | `ax-engine download-mtp glm-4.7-flash` | GLM built-in MTP sidecar |
-
-Rules for current MTP benchmark artifacts:
-
-- Use 6-bit model packages only.
-- Use the prepared path returned by `ax-engine download-mtp`.
-- Report `mtp` rows plus same-package direct baselines for AX acceleration.
-  Do not run or promote `mtp-ngram` rows.
-- Do not include Qwen3-Coder-Next, 4-bit, 5-bit, 8-bit, FFN-only, or GGUF
-  variants in the MTP matrix.
-- Direct rows are same-artifact denominators for `AX MTP / AX direct` decode
-  acceleration, not a cross-model speed leaderboard.
-
-The benchmark prompt suites remain `flappy`, `long_code`, and
-`python_modules_long`, with sampled decode (`temperature=0.6`, `top_p=0.95`,
-`top_k=20`), `1000` generated tokens, `5` measured repetitions, and recorded
-cooldown. Artifacts should live under `benchmarks/results/mtp-6bit/` and record
-the exact model snapshot, MTP package provenance, route identity, accept rate,
-prefill throughput, decode throughput, TTFT, sampler, prompt suite, repetitions,
-and cooldown.
-
-Historical 4-bit Qwen3.6/MTPLX and Gemma MTP+n-gram artifacts remain useful for
-debugging regressions, but they are no longer the README/PERFORMANCE benchmark
-design and should not be promoted as current MTP evidence.
-
-#### 6-bit MTP acceleration refresh (2026-06-23)
-
-This refresh covers all six 6-bit `download-mtp` targets across the three real
-prompt suites. The chart compares each model and prompt suite with **MTP off**
-(`AX direct`) and **MTP on** (`AX MTP`) side by side, using decode median tok/s
-from the same prepared package. The speedup labels are `AX MTP decode median /
-AX direct decode median`; they are same-package acceleration ratios, not a
-cross-model speed leaderboard.
-
-![AX MTP decode throughput with MTP off and MTP on](docs/assets/perf-mtp-6bit-ax-acceleration.svg)
-
-| Target | Suite | AX direct decode | AX MTP decode | AX speedup | AX MTP prefill | AX MTP TTFT | AX accept | MTPLX | lightning-mlx |
-|---|---|---:|---:|---:|---:|---:|---:|---|---|
-| `qwen3.6-27b-6bit` | `flappy` | 18.6 tok/s | 42.1 tok/s | 2.26x | 632.7 tok/s | 508 ms | 99.5% | N/A | N/A |
-| `qwen3.6-27b-6bit` | `long_code` | 18.5 tok/s | 34.1 tok/s | 1.85x | 693.7 tok/s | 1031 ms | 97.7% | N/A | N/A |
-| `qwen3.6-27b-6bit` | `python_modules_long` | 17.5 tok/s | 33.7 tok/s | 1.92x | 614.6 tok/s | 566 ms | 96.7% | N/A | N/A |
-| `qwen3.6-35b-a3b` | `flappy` | 46.2 tok/s | 141.5 tok/s | 3.06x | 1561.8 tok/s | 212 ms | 99.8% | N/A | N/A |
-| `qwen3.6-35b-a3b` | `long_code` | 46.3 tok/s | 140.1 tok/s | 3.02x | 2381.1 tok/s | 301 ms | 98.5% | N/A | N/A |
-| `qwen3.6-35b-a3b` | `python_modules_long` | 46.0 tok/s | 142.3 tok/s | 3.09x | 1690.4 tok/s | 205 ms | 98.9% | N/A | N/A |
-| `gemma-4-12b` | `flappy` | 26.7 tok/s | 62.2 tok/s | 2.33x | 1701.7 tok/s | 214 ms | 99.3% | N/A | N/A |
-| `gemma-4-12b` | `long_code` | 26.6 tok/s | 70.5 tok/s | 2.65x | 1951.6 tok/s | 409 ms | 99.1% | N/A | N/A |
-| `gemma-4-12b` | `python_modules_long` | 27.1 tok/s | 63.2 tok/s | 2.33x | 1753.3 tok/s | 205 ms | 98.0% | N/A | N/A |
-| `gemma-4-26b` | `flappy` | 45.7 tok/s | 112.9 tok/s | 2.47x | 2395.0 tok/s | 148 ms | 99.8% | N/A | N/A |
-| `gemma-4-26b` | `long_code` | 46.8 tok/s | 113.6 tok/s | 2.43x | 3754.7 tok/s | 219 ms | 99.3% | N/A | N/A |
-| `gemma-4-26b` | `python_modules_long` | 45.9 tok/s | 107.2 tok/s | 2.34x | 2597.7 tok/s | 147 ms | 98.9% | N/A | N/A |
-| `gemma-4-31b` | `flappy` | 15.4 tok/s | 28.1 tok/s | 1.82x | 701.9 tok/s | 516 ms | 99.6% | N/A | N/A |
-| `gemma-4-31b` | `long_code` | 15.3 tok/s | 27.3 tok/s | 1.78x | 747.8 tok/s | 1067 ms | 99.5% | N/A | N/A |
-| `gemma-4-31b` | `python_modules_long` | 15.0 tok/s | 25.5 tok/s | 1.70x | 678.5 tok/s | 512 ms | 98.9% | N/A | N/A |
-| `glm-4.7-flash` | `flappy` | 52.6 tok/s | 91.5 tok/s | 1.74x | 1694.5 tok/s | 163 ms | 98.2% | N/A | N/A |
-| `glm-4.7-flash` | `long_code` | 51.9 tok/s | 77.9 tok/s | 1.50x | 2727.6 tok/s | 250 ms | 98.2% | N/A | N/A |
-| `glm-4.7-flash` | `python_modules_long` | 52.4 tok/s | 72.9 tok/s | 1.39x | 1948.2 tok/s | 174 ms | 97.7% | N/A | N/A |
-
-Methodology: `1000` generated tokens, `5` measured repetitions per prompt case
-after the AX warmup pass, 30 s cooldown, 10 s inter-case cooldown, sampled
-decode (`temperature=0.6`, `top_p=0.95`, `top_k=20`), pure MTP, and no
-MTP+n-gram stacking. Peer rows are `N/A` when the peer runner cannot run the
-same prepared 6-bit `download-mtp` package under a comparable prompt-suite
-contract. MTPLX 0.3.7 rejects the Qwen dense runtime contract and has no Gemma
-assistant-MTP or GLM built-in sidecar runner. Lightning-MLX remains
-diagnostic-only under current policy after the silent-thinking pathology and
-does not provide a comparable promoted row for these prepared packages.
-
-Pure-MTP verification: all listed AX MTP artifacts record zero n-gram accepted,
-proposed, submitted, and hit-step telemetry. Summary artifacts:
-[`summary.md`](benchmarks/results/mtp-6bit/2026-06-22-six-model-mtp-full-three-suite-ax-gain/summary.md)
-and
-[`summary.json`](benchmarks/results/mtp-6bit/2026-06-22-six-model-mtp-full-three-suite-ax-gain/summary.json).
-
-#### GLM-4.7 Flash MTP validation session
-
-GLM-4.7 Flash uses the built-in MTP tensors from `zai-org/GLM-4.7-Flash`.
-`ax-engine download-mtp glm-4.7-flash` downloads the 6-bit MLX base
-(`mlx-community/GLM-4.7-Flash-6bit`), extracts the built-in MTP layer into
-`glm_mtp.safetensors`, and writes a self-contained AX package.
-
-The first local validation session used the prepared package returned by
-`download-mtp` and the `flappy` real-prompt suite. This is a smoke session, not
-the promoted 5-repetition MTP matrix row: it used 32 generated tokens, 1 measured
-repetition, no cooldown, sampled decode (`temperature=0.6`, `top_p=0.95`,
-`top_k=20`), MTP depth 1, and no MTP+n-gram stacking. The direct baseline uses
-the same package and prompt suite with MTP disabled.
-
-| Mode | Route | Decode median | Prefill median | TTFT median | MTP evidence |
-|---|---|---:|---:|---:|---|
-| Direct baseline | `direct_single_decode_baseline` | 58.7 tok/s | 1,670 tok/s | 166 ms | no drafts |
-| GLM built-in MTP | `mtp_head_only_verify_loop` | 90.3 tok/s | 1,690 tok/s | 163 ms | 54 drafted, 46 accepted, 85.2% accept |
-
-In this smoke session, GLM built-in MTP was **1.54x** faster than direct decode
-on median decode throughput. Treat this as path validation and a same-artifact
-diagnostic comparison until the full 6-bit MTP matrix is rerun with 1,000
-generated tokens, 5 measured repetitions, and recorded cooldown.
-
-Artifacts: [`flappy-after-activation-fix.json`](benchmarks/results/mtp-6bit/2026-06-22-glm47-flash-mtp-smoke/flappy-after-activation-fix.json)
-(MTP) and [`flappy-direct-baseline.json`](benchmarks/results/mtp-6bit/2026-06-22-glm47-flash-mtp-smoke/flappy-direct-baseline.json)
-(direct baseline).
-
-### Direct Decode · Prefill · TTFT
 
 #### DiffusionGemma
 
