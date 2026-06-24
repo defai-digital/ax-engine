@@ -1,54 +1,10 @@
-#include "ax_shim.h"
+#include "ax_shim_internal.h"
 
-#include <exception>
-#include <optional>
-#include <stdexcept>
-#include <string>
 #include <tuple>
-#include <utility>
 
 #include "mlx/fast.h"
-#include "mlx/ops.h"
-#include "mlx/stream.h"
-#include "mlx/utils.h"
 
 namespace {
-namespace mx = mlx::core;
-
-const mx::array& array_ref(mlx_array arr) {
-  if (!arr.ctx) {
-    throw std::runtime_error("expected a non-empty mlx_array");
-  }
-  // mlx_array is a public C handle whose ctx points at the owning MLX C++
-  // array. Keeping this shim in mlx-sys confines that ABI assumption to one
-  // internal boundary instead of spreading it through runtime code.
-  return *static_cast<mx::array*>(arr.ctx);
-}
-
-mx::StreamOrDevice stream_or_default(mlx_stream stream) {
-  if (!stream.ctx) {
-    return {};
-  }
-  return *static_cast<mx::Stream*>(stream.ctx);
-}
-
-std::optional<mx::array> optional_array(mlx_array arr) {
-  if (!arr.ctx) {
-    return std::nullopt;
-  }
-  return array_ref(arr);
-}
-
-void set_array(mlx_array* dst, mx::array&& value) {
-  if (dst == nullptr) {
-    throw std::runtime_error("expected a non-null mlx_array output");
-  }
-  if (dst->ctx) {
-    *static_cast<mx::array*>(dst->ctx) = std::move(value);
-  } else {
-    dst->ctx = new mx::array(std::move(value));
-  }
-}
 
 mx::array gelu_approx_mul_impl(
     const mx::array& gate,
@@ -475,14 +431,12 @@ extern "C" int ax_mlx_gelu_approx_mul(
     const mlx_array gate,
     const mlx_array x,
     const mlx_stream stream) {
-  try {
-    set_array(
+  AX_TRY {
+    aset(
         res,
-        gelu_approx_mul_impl(array_ref(gate), array_ref(x), stream_or_default(stream)));
+        gelu_approx_mul_impl(aref(gate), aref(x), sd(stream)));
     return 0;
-  } catch (...) {
-    return 1;
-  }
+  } AX_CATCH
 }
 
 extern "C" int ax_mlx_silu_mul(
@@ -490,14 +444,12 @@ extern "C" int ax_mlx_silu_mul(
     const mlx_array gate,
     const mlx_array x,
     const mlx_stream stream) {
-  try {
-    set_array(
+  AX_TRY {
+    aset(
         res,
-        silu_mul_impl(array_ref(gate), array_ref(x), stream_or_default(stream)));
+        silu_mul_impl(aref(gate), aref(x), sd(stream)));
     return 0;
-  } catch (...) {
-    return 1;
-  }
+  } AX_CATCH
 }
 
 extern "C" int ax_mlx_gelu_approx_mul_matmul(
@@ -506,14 +458,12 @@ extern "C" int ax_mlx_gelu_approx_mul_matmul(
     const mlx_array x,
     const mlx_array weight,
     const mlx_stream stream) {
-  try {
-    auto s = stream_or_default(stream);
-    auto hidden = gelu_approx_mul_impl(array_ref(gate), array_ref(x), s);
-    set_array(res, mx::matmul(hidden, array_ref(weight), s));
+  AX_TRY {
+    auto s = sd(stream);
+    auto hidden = gelu_approx_mul_impl(aref(gate), aref(x), s);
+    aset(res, mx::matmul(hidden, aref(weight), s));
     return 0;
-  } catch (...) {
-    return 1;
-  }
+  } AX_CATCH
 }
 
 extern "C" int ax_mlx_gelu_approx_mul_quantized_matmul(
@@ -526,23 +476,21 @@ extern "C" int ax_mlx_gelu_approx_mul_quantized_matmul(
     int group_size,
     int bits,
     const mlx_stream stream) {
-  try {
-    auto s = stream_or_default(stream);
-    auto hidden = gelu_approx_mul_impl(array_ref(gate), array_ref(x), s);
-    set_array(
+  AX_TRY {
+    auto s = sd(stream);
+    auto hidden = gelu_approx_mul_impl(aref(gate), aref(x), s);
+    aset(
         res,
         quantized_matmul_affine_impl(
             hidden,
-            array_ref(weight),
-            array_ref(scales),
-            optional_array(biases),
+            aref(weight),
+            aref(scales),
+            opt_arr(biases),
             group_size,
             bits,
             s));
     return 0;
-  } catch (...) {
-    return 1;
-  }
+  } AX_CATCH
 }
 
 extern "C" int ax_mlx_add_rms_norm_pair(
@@ -553,19 +501,17 @@ extern "C" int ax_mlx_add_rms_norm_pair(
     const mlx_array norm_weight,
     float eps,
     const mlx_stream stream) {
-  try {
+  AX_TRY {
     auto [residual, normed] = add_rms_norm_pair_impl(
-        array_ref(x),
-        array_ref(y),
-        array_ref(norm_weight),
+        aref(x),
+        aref(y),
+        aref(norm_weight),
         eps,
-        stream_or_default(stream));
-    set_array(residual_res, std::move(residual));
-    set_array(normed_res, std::move(normed));
+        sd(stream));
+    aset(residual_res, std::move(residual));
+    aset(normed_res, std::move(normed));
     return 0;
-  } catch (...) {
-    return 1;
-  }
+  } AX_CATCH
 }
 
 extern "C" int ax_mlx_quantized_matmul_rms_norm(
@@ -579,23 +525,21 @@ extern "C" int ax_mlx_quantized_matmul_rms_norm(
     const mlx_array norm_weight,
     float eps,
     const mlx_stream stream) {
-  try {
-    set_array(
+  AX_TRY {
+    aset(
         res,
         quantized_matmul_rms_norm_impl(
-            array_ref(x),
-            array_ref(weight),
-            array_ref(scales),
-            optional_array(biases),
+            aref(x),
+            aref(weight),
+            aref(scales),
+            opt_arr(biases),
             group_size,
             bits,
-            array_ref(norm_weight),
+            aref(norm_weight),
             eps,
-            stream_or_default(stream)));
+            sd(stream)));
     return 0;
-  } catch (...) {
-    return 1;
-  }
+  } AX_CATCH
 }
 
 extern "C" int ax_mlx_gelu_approx_quantized_ffn(
@@ -610,13 +554,13 @@ extern "C" int ax_mlx_gelu_approx_quantized_ffn(
     int group_size,
     int bits,
     const mlx_stream stream) {
-  try {
-    auto s = stream_or_default(stream);
+  AX_TRY {
+    auto s = sd(stream);
     auto gate_up = quantized_matmul_affine_impl(
-        array_ref(x),
-        array_ref(gate_up_weight),
-        array_ref(gate_up_scales),
-        optional_array(gate_up_biases),
+        aref(x),
+        aref(gate_up_weight),
+        aref(gate_up_scales),
+        opt_arr(gate_up_biases),
         group_size,
         bits,
         s);
@@ -625,20 +569,18 @@ extern "C" int ax_mlx_gelu_approx_quantized_ffn(
       throw std::runtime_error("expected gate_up split to produce two arrays");
     }
     auto hidden = gelu_approx_mul_impl(parts[0], parts[1], s);
-    set_array(
+    aset(
         res,
         quantized_matmul_affine_impl(
             hidden,
-            array_ref(down_weight),
-            array_ref(down_scales),
-            optional_array(down_biases),
+            aref(down_weight),
+            aref(down_scales),
+            opt_arr(down_biases),
             group_size,
             bits,
             s));
     return 0;
-  } catch (...) {
-    return 1;
-  }
+  } AX_CATCH
 }
 
 extern "C" int ax_mlx_qwen_linear_attention_inputs_packed(
@@ -660,30 +602,28 @@ extern "C" int ax_mlx_qwen_linear_attention_inputs_packed(
     int group_size,
     int bits,
     const mlx_stream stream) {
-  try {
+  AX_TRY {
     auto [qkv, z, a, b] = qwen_linear_attention_inputs_packed_impl(
-        array_ref(x),
-        array_ref(qkvz_weight),
-        optional_array(qkvz_scales),
-        optional_array(qkvz_biases),
-        array_ref(ba_weight),
-        optional_array(ba_scales),
-        optional_array(ba_biases),
+        aref(x),
+        aref(qkvz_weight),
+        opt_arr(qkvz_scales),
+        opt_arr(qkvz_biases),
+        aref(ba_weight),
+        opt_arr(ba_scales),
+        opt_arr(ba_biases),
         num_key_heads,
         num_value_heads,
         key_head_dim,
         value_head_dim,
         group_size,
         bits,
-        stream_or_default(stream));
-    set_array(qkv_res, std::move(qkv));
-    set_array(z_res, std::move(z));
-    set_array(a_res, std::move(a));
-    set_array(b_res, std::move(b));
+        sd(stream));
+    aset(qkv_res, std::move(qkv));
+    aset(z_res, std::move(z));
+    aset(a_res, std::move(a));
+    aset(b_res, std::move(b));
     return 0;
-  } catch (...) {
-    return 1;
-  }
+  } AX_CATCH
 }
 
 extern "C" int ax_mlx_qwen_linear_attention_post_input(
@@ -703,11 +643,11 @@ extern "C" int ax_mlx_qwen_linear_attention_post_input(
     float k_scale,
     float rms_norm_eps,
     const mlx_stream stream) {
-  try {
+  AX_TRY {
     auto [q, k, v, new_conv_state] = qwen_linear_attention_post_input_impl(
-        array_ref(qkv),
-        array_ref(conv_weight),
-        optional_array(cached_conv_state),
+        aref(qkv),
+        aref(conv_weight),
+        opt_arr(cached_conv_state),
         num_key_heads,
         key_head_dim,
         num_value_heads,
@@ -716,15 +656,13 @@ extern "C" int ax_mlx_qwen_linear_attention_post_input(
         q_scale,
         k_scale,
         rms_norm_eps,
-        stream_or_default(stream));
-    set_array(q_res, std::move(q));
-    set_array(k_res, std::move(k));
-    set_array(v_res, std::move(v));
-    set_array(new_conv_state_res, std::move(new_conv_state));
+        sd(stream));
+    aset(q_res, std::move(q));
+    aset(k_res, std::move(k));
+    aset(v_res, std::move(v));
+    aset(new_conv_state_res, std::move(new_conv_state));
     return 0;
-  } catch (...) {
-    return 1;
-  }
+  } AX_CATCH
 }
 
 extern "C" int ax_mlx_qk_norm_rope_bhsd_from_proj(
@@ -741,12 +679,12 @@ extern "C" int ax_mlx_qk_norm_rope_bhsd_from_proj(
     int offset,
     const mlx_array freqs,
     const mlx_stream stream) {
-  try {
-    set_array(
+  AX_TRY {
+    aset(
         res,
         qk_norm_rope_bhsd_from_proj_impl(
-            array_ref(proj),
-            optional_array(norm),
+            aref(proj),
+            opt_arr(norm),
             n_heads,
             head_dim,
             eps,
@@ -755,12 +693,10 @@ extern "C" int ax_mlx_qk_norm_rope_bhsd_from_proj(
             has_base != 0,
             base,
             offset,
-            optional_array(freqs),
-            stream_or_default(stream)));
+            opt_arr(freqs),
+            sd(stream)));
     return 0;
-  } catch (...) {
-    return 1;
-  }
+  } AX_CATCH
 }
 
 extern "C" int ax_mlx_gemma4_post_attn_ffn_block(
@@ -780,27 +716,25 @@ extern "C" int ax_mlx_gemma4_post_attn_ffn_block(
     int bits,
     float eps,
     const mlx_stream stream) {
-  try {
-    set_array(
+  AX_TRY {
+    aset(
         res,
         gemma4_post_attn_ffn_block_impl(
-            array_ref(hidden),
-            array_ref(attn_out),
-            array_ref(ffn_norm),
-            optional_array(ffn_post_norm),
-            optional_array(layer_scalar),
-            array_ref(gate_up_weight),
-            array_ref(gate_up_scales),
-            optional_array(gate_up_biases),
-            array_ref(down_weight),
-            array_ref(down_scales),
-            optional_array(down_biases),
+            aref(hidden),
+            aref(attn_out),
+            aref(ffn_norm),
+            opt_arr(ffn_post_norm),
+            opt_arr(layer_scalar),
+            aref(gate_up_weight),
+            aref(gate_up_scales),
+            opt_arr(gate_up_biases),
+            aref(down_weight),
+            aref(down_scales),
+            opt_arr(down_biases),
             group_size,
             bits,
             eps,
-            stream_or_default(stream)));
+            sd(stream)));
     return 0;
-  } catch (...) {
-    return 1;
-  }
+  } AX_CATCH
 }

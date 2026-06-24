@@ -90,6 +90,7 @@ fn main() {
     // --- Rerun triggers ---
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=native/ax_shim.h");
+    println!("cargo:rerun-if-changed=native/ax_shim_internal.h");
     println!("cargo:rerun-if-changed=native/ax_shim.cpp");
     println!("cargo:rerun-if-changed=native/activation.cpp");
     println!("cargo:rerun-if-env-changed=MLX_LIB_DIR");
