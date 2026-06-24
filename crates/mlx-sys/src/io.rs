@@ -7,7 +7,7 @@ use std::sync::Arc;
 use memmap2::Mmap;
 
 use crate::array::{MlxArray, MlxDtype};
-use crate::error::{last_error_message, panic_on_status, prepare_error_capture};
+use crate::error::{last_error_message, prepare_error_capture};
 use crate::ffi;
 use crate::stream::MlxStream;
 
@@ -59,19 +59,34 @@ pub fn load_safetensors(
             ffi::mlx_map_string_to_string_free(meta);
         }
 
-        // Iterate the map into a Rust HashMap.
+        // Iterate the map into a Rust HashMap. The C iterator returns 0 when it
+        // writes an entry, 1 at end-of-iteration, and 2 when an MLX exception is
+        // caught while materializing the value. Treat 2 as a genuine load
+        // failure rather than reading it as a short map.
         let mut result = HashMap::new();
         let it = ffi::mlx_map_string_to_array_iterator_new(map);
         loop {
             let mut key: *const std::os::raw::c_char = ptr::null();
             let mut val = MlxArray::empty();
             let rc = ffi::mlx_map_string_to_array_iterator_next(&mut key, &mut val.inner, it);
-            if rc != 0 || key.is_null() {
+            if rc == 0 && !key.is_null() {
+                let name = std::ffi::CStr::from_ptr(key).to_string_lossy().into_owned();
+                result.insert(name, val);
+                continue;
+            }
+            if rc <= 1 {
+                // 1 (or 0 with a null key) signals normal end-of-iteration.
                 break;
             }
-            panic_on_status("mlx_map_string_to_array_iterator_next", rc);
-            let name = std::ffi::CStr::from_ptr(key).to_string_lossy().into_owned();
-            result.insert(name, val);
+            // rc > 1: a genuine MLX error surfaced mid-iteration.
+            let message = last_error_message("mlx_map_string_to_array_iterator_next");
+            ffi::mlx_map_string_to_array_iterator_free(it);
+            ffi::mlx_map_string_to_array_free(map);
+            return Err(format!(
+                "failed to load safetensors {}: {}",
+                path.display(),
+                message
+            ));
         }
         ffi::mlx_map_string_to_array_iterator_free(it);
         ffi::mlx_map_string_to_array_free(map);
