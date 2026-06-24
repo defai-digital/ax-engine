@@ -672,9 +672,10 @@ type DraftTokens = (Vec<u32>, Vec<f32>, Vec<TokenDistribution>, usize, [f32; 3])
 /// `temperature.max(1.0)` for stochastic.
 ///
 /// On success returns `Some` with the standard draft tuple and advances
-/// `cache.seq_len` by the number of drafted tokens.  On apply failure it
-/// restores `cache.seq_len` and returns `None` so the caller falls back to the
-/// imperative path.
+/// `cache.seq_len` by the number of drafted tokens.  On apply failure it rolls
+/// the layer-0 KV state and `seq_len` back to their pre-apply snapshot (the
+/// traced closure may have partially appended) and returns `None` so the caller
+/// falls back to the imperative path from a clean state.
 fn run_compiled_mtp_draft(
     compiled: Option<MlxClosure>,
     first_hidden: &MlxArray,
@@ -686,6 +687,11 @@ fn run_compiled_mtp_draft(
 ) -> Option<DraftTokens> {
     let compiled = compiled?;
     let seq_len_before = cache.seq_len;
+    // Snapshot layer-0 KV + seq_len before the closure traces: the first
+    // try_apply runs the body, which appends KV and bumps seq_len as side
+    // effects.  If apply aborts mid-trace those partial writes persist, so on
+    // failure we roll back fully before the imperative fallback double-appends.
+    let rollback = cache.snapshot_mtp_draft_state();
     let first_token_data = [first_token];
     let first_token_arr = MlxArray::from_raw_data(
         first_token_data.as_ptr() as *const u8,
@@ -722,7 +728,7 @@ fn run_compiled_mtp_draft(
             Some((draft_tokens, draft_log_probs, vec![], added, [0.0f32; 3]))
         }
         Err(_) => {
-            cache.seq_len = seq_len_before;
+            cache.restore_mtp_draft_state(rollback);
             None
         }
     }

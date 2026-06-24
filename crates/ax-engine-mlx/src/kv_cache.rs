@@ -951,6 +951,16 @@ pub struct GlmMlaLayerStateView<'a> {
 /// The next `append` overwrites from `prefix_len`, restoring correctness.
 /// TurboQuant shadow storage is truncated separately because it serializes its
 /// compressed runtime buffer.
+/// Opaque rollback token for the layer-0 state a compiled MTP draft closure
+/// mutates.  Produced by [`MlxKVCache::snapshot_mtp_draft_state`] and consumed
+/// by [`MlxKVCache::restore_mtp_draft_state`]; its fields are private so callers
+/// treat it purely as a handle.
+pub struct MtpDraftCacheSnapshot {
+    seq_len: usize,
+    layer0: Option<LayerKV>,
+    glm_mla_layer0: Option<GlmMlaLayerCache>,
+}
+
 pub struct MlxKVCache {
     layers: Vec<Option<LayerKV>>,
     glm_mla_layers: Vec<Option<GlmMlaLayerCache>>,
@@ -2040,25 +2050,37 @@ impl MlxKVCache {
         valid
     }
 
-    /// Replace a standard KV layer's backing arrays directly.
+    /// Capture the layer-0 state that a compiled MTP draft closure can mutate
+    /// (standard `layers[0]`, GLM-MLA `glm_mla_layers[0]`, and `seq_len`).
     ///
-    /// Used by the compiled MTP head path to sync cache state after a compiled
-    /// closure replay: the compiled graph internally computes the correct
-    /// concatenated K/V, but the Rust-level `LayerKV` struct is not updated
-    /// during replay.  This method writes the replay outputs back into the
-    /// cache so subsequent imperative calls see the correct state.
+    /// The compiled MTP head closure appends KV entries and bumps `seq_len` as
+    /// a side effect while MLX traces it on the first `try_apply`.  If that
+    /// apply then aborts (e.g. an FFI failure mid-trace), those partial
+    /// mutations persist in the Rust-level cache.  Callers take a snapshot
+    /// before applying and call [`restore_mtp_draft_state`] on failure so the
+    /// imperative fallback starts from a clean state instead of double-appending
+    /// on top of the partial writes.
     ///
-    /// Panics if the layer does not exist or is a non-standard layer type.
-    pub fn update_layer_kv(&mut self, layer: usize, new_k: MlxArray, new_v: MlxArray) {
-        let entry = self
-            .layers
-            .get_mut(layer)
-            .expect("update_layer_kv: layer index out of bounds");
-        if let Some(lkv) = entry {
-            lkv.k = new_k;
-            lkv.v = new_v;
-            lkv.last_k_view = None;
-            lkv.last_v_view = None;
+    /// `MlxArray` clones are cheap refcount bumps, so the snapshot is light.
+    pub fn snapshot_mtp_draft_state(&self) -> MtpDraftCacheSnapshot {
+        MtpDraftCacheSnapshot {
+            seq_len: self.seq_len,
+            layer0: self.layers.first().cloned().flatten(),
+            glm_mla_layer0: self.glm_mla_layers.first().cloned().flatten(),
+        }
+    }
+
+    /// Roll the layer-0 KV state and `seq_len` back to a snapshot taken by
+    /// [`snapshot_mtp_draft_state`].  Restores the slots to their exact prior
+    /// value, including the `None` (fresh-layer) case that a plain setter could
+    /// not represent.
+    pub fn restore_mtp_draft_state(&mut self, snapshot: MtpDraftCacheSnapshot) {
+        self.seq_len = snapshot.seq_len;
+        if let Some(slot) = self.layers.first_mut() {
+            *slot = snapshot.layer0;
+        }
+        if let Some(slot) = self.glm_mla_layers.first_mut() {
+            *slot = snapshot.glm_mla_layer0;
         }
     }
 
