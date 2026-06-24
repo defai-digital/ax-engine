@@ -824,25 +824,24 @@ env_flag!(
     ///
     /// **Default: OFF** (opt-in via `AX_MTP_COMPILED_HEAD=1`).
     ///
-    /// Wraps the full multi-depth MTP head recurrence (forward + post-norm +
-    /// logits across all D draft depths) in one `MlxClosure::compile` call.
-    /// The intent is to fuse ops across the chain, but the closure body is
-    /// **not pure**: `mtp_head_forward` / `glm_mtp_head_forward` mutate the KV
-    /// cache (append + `seq_len += 1`) as a side effect during tracing, which
-    /// violates `mlx_compile`'s pure-function contract (see
-    /// `MlxClosure::new_dyn`).  In practice this aborts decode on real MTP
-    /// models: the compiled closure's extracted outputs are disconnected from a
-    /// graph primitive, so eval'ing them panics with
-    /// `[eval] Attempting to eval an array without a primitive`
-    /// (reproduced on Qwen3.6-27B-6bit-MTP, first draft step).  Because the
-    /// workspace builds with `panic = "abort"`, that is a hard process death
-    /// the `try_apply` fallback cannot catch.
+    /// Wraps the full multi-depth Qwen MTP head recurrence (forward + post-norm
+    /// + logits across all D draft depths) in one `MlxClosure::compile` call to
+    /// fuse ops across the chain.  The closure is **pure**: it captures only
+    /// model constants (cfg/weights/head), receives the existing context as the
+    /// explicit inputs `init_k`/`init_v`, threads the new per-depth K/V
+    /// functionally (concat, no cache mutation), and emits the final K/V as
+    /// outputs for the caller to commit.  This satisfies `mlx_compile`'s
+    /// pure-function contract (see `MlxClosure::new_dyn`).
     ///
-    /// Kept behind a default-off flag (not removed) so the path can be fixed
-    /// and re-validated: a correct version must keep the closure pure (capture
-    /// the KV writes as outputs and apply them outside the trace, or drop the
-    /// in-closure cache mutation) and compile/cache once per (model, depth,
-    /// shape) for reuse instead of recompiling every draft call.
+    /// On `Qwen3.6-27B-6bit-MTP` (greedy, depth 3) the output is byte-identical
+    /// to the imperative path, but throughput is within noise of it
+    /// (-1.0%..+0.4%): the closure is recompiled every draft step because the
+    /// per-step RoPE offset bakes into the trace, and decode on such models is
+    /// memory-bandwidth bound, so fusing the small MTP head wins nothing.  Kept
+    /// default-off until cross-step compile caching lands (needs the RoPE offset
+    /// as a runtime input rather than a baked constant) and shows a measured
+    /// gain.  Applies to the Qwen MTP head only; GLM (MLA latent cache) and
+    /// Gemma assistant-MTP use other paths and ignore this flag.
     mtp_compiled_head_enabled,
     "AX_MTP_COMPILED_HEAD"
 );
