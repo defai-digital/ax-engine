@@ -92,7 +92,7 @@ repo-owned MLX throughput claims.
 ## Is AX faster because it replaces MLX kernels?
 
 No. The repo-owned MLX path uses MLX directly for tensor operations through the
-official `mlx-c` C API. Matrix multiply, quantized matmul, attention, RMSNorm,
+repo-owned `ax_shim` C ABI over MLX C++. Matrix multiply, quantized matmul, attention, RMSNorm,
 and RoPE go through MLX's Apple-maintained Metal kernels. AX owns the runtime
 behavior above that graph.
 

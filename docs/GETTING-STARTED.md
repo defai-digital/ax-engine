@@ -82,7 +82,7 @@ brew install defai-digital/ax-engine/ax-engine
 Use Homebrew for this guide only when the formula reports `6.5.2` or newer.
 The current formula should install `ax-engine`, `ax-engine-server`, and
 `ax-engine-bench`; older formulae may install only the lower-level tools. The
-formula also installs the `mlx-c` runtime dependency used by the released
+formula also installs the `mlx` runtime dependency used by the released
 binaries.
 
 ```bash
@@ -92,17 +92,17 @@ ax-engine-bench doctor
 ```
 
 If `ax-engine-bench doctor` exits before printing a report with
-`Library not loaded: /opt/homebrew/opt/mlx-c/lib/libmlxc.dylib`, repair the
+`Library not loaded: /opt/homebrew/opt/mlx/lib/libmlx.dylib`, repair the
 runtime dependency with:
 
 ```bash
-brew install mlx-c
+brew install mlx
 brew reinstall defai-digital/ax-engine/ax-engine
 ```
 
 The GitHub release archive is the Homebrew formula payload, not a standalone
 installer with bundled dynamic libraries. Prefer Homebrew for released binaries
-so `mlx-c` is installed, upgraded, and linked by the package manager.
+so `mlx` is installed, upgraded, and linked by the package manager.
 
 #### Gatekeeper warning on first launch
 
@@ -131,8 +131,8 @@ sudo xattr -dr com.apple.quarantine "$(which ax-engine-bench)"
 
 Run this once after `brew install`. No Apple Developer account is required.
 
-**Note on dependencies:** `mlx-c` and `mlx` install from pre-built Homebrew
-bottles. They do not trigger an Xcode install prompt or require an Apple
+**Note on dependencies:** `mlx` installs from pre-built Homebrew bottles. It
+does not trigger an Xcode install prompt or require an Apple
 Developer account at install time.
 
 ### Source
@@ -141,7 +141,7 @@ Use source builds for development, Python bindings, local examples, or changes
 that have not been tagged yet:
 
 ```text
-brew install mlx mlx-c protobuf
+brew install mlx protobuf
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip maturin
@@ -178,7 +178,7 @@ For the current crate layering and dependency-boundary guidance, see
 - macOS 26 (Tahoe) or later
 - Apple Silicon M2 Max or newer with 32 GB RAM minimum
 - Rust 1.85+ for source builds
-- `mlx-c` for source-built MLX runtime binaries
+- `mlx` for source-built MLX runtime binaries
 - a running `mlx_lm.server` for `mlx_lm_delegated`
 - a llama.cpp server or CLI target for `llama_cpp`
 

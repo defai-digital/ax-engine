@@ -1087,7 +1087,7 @@ pub fn build_embedding_forward_closure(
     cfg: Arc<ModelConfig>,
     weights: Arc<ModelWeights>,
     target_position: Option<usize>,
-) -> Result<MlxClosure, &'static str> {
+) -> Result<MlxClosure, String> {
     let body_closure = MlxClosure::new_dyn(move |inputs: &MlxVectorArray| {
         if inputs.is_empty() {
             return vec![];
@@ -1252,7 +1252,7 @@ pub fn build_embedding_batch_forward_closure(
     cfg: Arc<ModelConfig>,
     weights: Arc<ModelWeights>,
     target_positions: Option<Vec<usize>>,
-) -> Result<MlxClosure, &'static str> {
+) -> Result<MlxClosure, String> {
     let body_closure = MlxClosure::new_dyn(move |inputs: &MlxVectorArray| {
         if inputs.is_empty() {
             return vec![];

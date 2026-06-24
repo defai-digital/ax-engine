@@ -865,7 +865,7 @@ Start with the task-based docs hub at [`docs/README.md`](docs/README.md).
 ```
 crates/ax-engine-core    Engine state machine, scheduler, KV manager, sampler
 crates/ax-engine-mlx     MLX model graph, n-gram acceleration, KV cache, runner
-crates/mlx-sys           bindgen FFI over mlx-c; safe MlxArray RAII wrappers
+crates/mlx-sys           bindgen FFI over ax_shim.h to MLX C++; safe MlxArray RAII wrappers
 crates/ax-engine-sdk     Session API, backend resolution (MLX, mlx-lm delegated, or llama.cpp)
 crates/ax-engine-server  Axum HTTP/SSE adapter (OpenAI-compatible routes)
 crates/ax-engine-bench   Manifest-driven workload-contract CLI
@@ -908,7 +908,6 @@ AX Engine's benchmark design and compatibility checks are informed by local refe
 | llama.cpp | [ggml-org/llama.cpp](https://github.com/ggml-org/llama.cpp) |
 | mistral.rs | [EricLBuehler/mistral.rs](https://github.com/EricLBuehler/mistral.rs) |
 | MLX | [ml-explore/mlx](https://github.com/ml-explore/mlx) |
-| mlx-c | [ml-explore/mlx-c](https://github.com/ml-explore/mlx-c) |
 | mlx-engine | [lmstudio-ai/mlx-engine](https://github.com/lmstudio-ai/mlx-engine) |
 | mlx-lm | [ml-explore/mlx-lm](https://github.com/ml-explore/mlx-lm) |
 | mlx-turboquant | [rachittshah/mlx-turboquant](https://github.com/rachittshah/mlx-turboquant) |

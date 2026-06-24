@@ -49,7 +49,7 @@ jobs:
           cache-on-failure: true
 
       - name: Install native build dependencies
-        run: brew install mlx-c protobuf
+        run: brew install mlx protobuf
 
       - name: Install Python build dependencies
         run: |

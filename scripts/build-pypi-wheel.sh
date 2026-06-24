@@ -1,21 +1,18 @@
 #!/usr/bin/env bash
 # Build the ax-engine PyPI wheel for macOS arm64.
 #
-# The resulting wheel is self-contained: libmlxc.dylib and libmlx.dylib are
+# The resulting wheel is self-contained: libmlx.dylib is
 # bundled by delocate so the user does not need Homebrew at install time.
 #
 # Prerequisites (one-time):
 #   pip install maturin delocate
-#   brew install mlx mlx-c       # provides libmlx and libmlxc for the build
+#   brew install mlx             # provides libmlx and headers for the build
 #
 # Environment variables (optional):
-#   MLX_LIB_DIR          — path to dir containing libmlxc.dylib
-#                           (default: resolved from `brew --prefix mlx-c`)
-#   MLX_INCLUDE_DIR      — path to dir containing mlx/c/mlx.h
+#   MLX_LIB_DIR          — path to dir containing libmlx.dylib
+#                           (default: resolved from `brew --prefix mlx`)
+#   MLX_INCLUDE_DIR      — path to dir containing mlx/*.h
 #                           (default: <MLX_LIB_DIR>/../include)
-#   MLX_CPP_INCLUDE_DIR  — path to dir containing mlx/fast.h (C++ headers)
-#                           (default: same as MLX_INCLUDE_DIR; override when
-#                            mlx and mlx-c are installed under separate prefixes)
 #
 # Usage:
 #   bash scripts/build-pypi-wheel.sh            # build only
@@ -136,7 +133,7 @@ fi
 WHEEL="${wheels[0]}"
 echo "    built: $WHEEL"
 
-# ── 5. Delocalize — bundle libmlxc + libmlx into the wheel ────────────────
+# ── 5. Delocalize — bundle libmlx into the wheel ──────────────────────────
 echo "==> Delocalizing wheel (bundling dylibs)..."
 # --require-archs ensures we only accept arm64 (Apple Silicon only)
 delocate-wheel --require-archs arm64 -w "$DELOCATED_OUT" "$WHEEL"

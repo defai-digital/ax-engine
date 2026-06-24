@@ -16,8 +16,8 @@ are not shipping peer inference routes.
 
 ## Backend Design
 
-The repo-owned MLX runtime uses a direct Rust ↔ MLX C++ integration via the
-official `mlx-c` C API. This mirrors the SwiftLM lesson that high-throughput Mac
+The repo-owned MLX runtime uses a direct Rust ↔ MLX C++ integration through the
+repo-owned `ax_shim` C ABI over `libmlx`. This mirrors the SwiftLM lesson that high-throughput Mac
 inference needs direct MLX tensor execution, explicit GPU queue control, and an
 AX-owned scheduler layer for batching and prefix reuse rather than a delegated
 subprocess wrapper.
@@ -34,7 +34,7 @@ ax-engine-sdk (Rust)
         │     ├── ngram_accel.rs — n-gram acceleration + EMA gating
         │     └── weights.rs     — NativeTensorSpec → MlxArray loader
         └── mlx-sys (Rust FFI)
-              ├── bindgen over /opt/homebrew/include/mlx/c/mlx.h
+              ├── bindgen over crates/mlx-sys/native/ax_shim.h
               └── safe wrappers: MlxArray, MlxStream, ops, fast, transforms
 ```
 
@@ -207,7 +207,7 @@ Interpretation rule:
 ## Implementation phases
 
 ### Phase 1 — mlx-sys crate
-- `bindgen` over mlx-c headers, linked against `/opt/homebrew/lib/libmlxc.dylib`
+- `bindgen` over `crates/mlx-sys/native/ax_shim.h`, linked against Homebrew `libmlx`
 - Safe `MlxArray` (RAII, `Drop` calls `mlx_array_free`)
 - Core ops: matmul, add, multiply, softmax, reshape, transpose, astype, take,
   slice, slice_update, zeros, as_strided, repeat_axis, concatenate, argmax
@@ -243,7 +243,7 @@ Interpretation rule:
 ## MLX Stream / Thread Ownership Contract (I-3)
 
 `mlx_stream` is the FFI handle for an MLX GPU compute stream. Upstream MLX
-0.31 (`mlx-c` 0.6) treats GPU streams as **thread-local** in two distinct
+0.31 treats GPU streams as **thread-local** in two distinct
 ways that AX Engine call sites must respect:
 
 1. **One default stream per device per OS thread.**

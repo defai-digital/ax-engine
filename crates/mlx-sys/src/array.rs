@@ -1,6 +1,7 @@
 use std::fmt;
 use std::ptr;
 
+use crate::error::{last_error_message, panic_on_status, prepare_error_capture};
 use crate::ffi;
 
 #[inline]
@@ -48,12 +49,14 @@ impl MlxArray {
     pub fn from_f32_slice(data: &[f32]) -> Self {
         unsafe {
             let shape = [data.len() as i32];
+            prepare_error_capture();
             let arr = ffi::mlx_array_new_data(
                 data.as_ptr() as *const _,
                 shape.as_ptr(),
                 1,
                 ffi::mlx_dtype_::MLX_FLOAT32,
             );
+            panic_on_null_array("mlx_array_new_data", arr);
             Self::from_raw(arr)
         }
     }
@@ -61,12 +64,14 @@ impl MlxArray {
     /// Create a scalar f32 array (shape `[]`).
     pub fn from_f32(value: f32) -> Self {
         unsafe {
+            prepare_error_capture();
             let arr = ffi::mlx_array_new_data(
                 &value as *const f32 as *const _,
                 ptr::null(),
                 0,
                 ffi::mlx_dtype_::MLX_FLOAT32,
             );
+            panic_on_null_array("mlx_array_new_data", arr);
             Self::from_raw(arr)
         }
     }
@@ -80,12 +85,14 @@ impl MlxArray {
         let len = data.len() / 2;
         unsafe {
             let shape = [len as i32];
+            prepare_error_capture();
             let arr = ffi::mlx_array_new_data(
                 data.as_ptr() as *const _,
                 shape.as_ptr(),
                 1,
                 ffi::mlx_dtype_::MLX_FLOAT16,
             );
+            panic_on_null_array("mlx_array_new_data", arr);
             Self::from_raw(arr)
         }
     }
@@ -125,6 +132,7 @@ impl MlxArray {
             "managed data byte length {byte_len} is smaller than required {required_bytes}"
         );
         unsafe {
+            prepare_error_capture();
             let arr = ffi::mlx_array_new_data_managed_payload(
                 data as *mut _,
                 shape.as_ptr(),
@@ -133,6 +141,7 @@ impl MlxArray {
                 payload,
                 Some(dtor),
             );
+            panic_on_null_array("mlx_array_new_data_managed_payload", arr);
             Self::from_raw(arr)
         }
     }
@@ -155,12 +164,14 @@ impl MlxArray {
             "raw data byte length {byte_len} is smaller than required {required_bytes}"
         );
         unsafe {
+            prepare_error_capture();
             let arr = ffi::mlx_array_new_data(
                 data as *const _,
                 shape.as_ptr(),
                 shape.len() as i32,
                 dtype.to_ffi(),
             );
+            panic_on_null_array("mlx_array_new_data", arr);
             Self::from_raw(arr)
         }
     }
@@ -248,9 +259,17 @@ impl Clone for MlxArray {
         }
         unsafe {
             let mut dst = ffi::mlx_array_new();
-            ffi::mlx_array_set(&mut dst, self.inner);
+            prepare_error_capture();
+            let rc = ffi::mlx_array_set(&mut dst, self.inner);
+            panic_on_status("mlx_array_set", rc);
             Self { inner: dst }
         }
+    }
+}
+
+fn panic_on_null_array(operation: &str, arr: ffi::mlx_array) {
+    if arr.ctx.is_null() {
+        panic!("{}", last_error_message(operation));
     }
 }
 
@@ -346,5 +365,224 @@ impl MlxDtype {
             Self::Uint32 | Self::Int32 | Self::Float32 => 4,
             Self::Uint64 | Self::Int64 | Self::Float64 | Self::Complex64 => 8,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ops::astype;
+    use crate::transforms::eval;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// Round-trip `from_raw_data` -> `astype(f32)` -> `eval` -> `data_f32`
+    /// for every dtype the shim supports.  This guards against the critical
+    /// bug class where the C++ layer casts `data` to the wrong typed pointer,
+    /// silently corrupting multi-byte elements.
+    #[test]
+    fn roundtrip_all_integer_dtypes_via_astype_f32() {
+        // -- uint8 --
+        let vals_u8: Vec<u8> = vec![0, 1, 127, 255];
+        let a = MlxArray::from_raw_data(
+            vals_u8.as_ptr(),
+            std::mem::size_of_val(&vals_u8[..]),
+            &[4],
+            MlxDtype::Uint8,
+        );
+        assert_eq!(a.dtype(), MlxDtype::Uint8);
+        let f = astype(&a, MlxDtype::Float32, None);
+        eval(&[&f]);
+        assert_eq!(f.data_f32(), &[0.0, 1.0, 127.0, 255.0]);
+
+        // -- uint16 --
+        let vals_u16: Vec<u16> = vec![0, 1, 1000, 65535];
+        let a = MlxArray::from_raw_data(
+            vals_u16.as_ptr() as *const u8,
+            std::mem::size_of_val(&vals_u16[..]),
+            &[4],
+            MlxDtype::Uint16,
+        );
+        let f = astype(&a, MlxDtype::Float32, None);
+        eval(&[&f]);
+        assert_eq!(f.data_f32(), &[0.0, 1.0, 1000.0, 65535.0]);
+
+        // -- uint32 --
+        let vals_u32: Vec<u32> = vec![0, 1, 100_000, 4_000_000_000];
+        let a = MlxArray::from_raw_data(
+            vals_u32.as_ptr() as *const u8,
+            std::mem::size_of_val(&vals_u32[..]),
+            &[4],
+            MlxDtype::Uint32,
+        );
+        let f = astype(&a, MlxDtype::Float32, None);
+        eval(&[&f]);
+        assert_eq!(f.data_f32(), &[0.0, 1.0, 100_000.0, 4_000_000_000.0]);
+
+        // -- uint64 --
+        let vals_u64: Vec<u64> = vec![0, 1, 100_000, 4_000_000_000];
+        let a = MlxArray::from_raw_data(
+            vals_u64.as_ptr() as *const u8,
+            std::mem::size_of_val(&vals_u64[..]),
+            &[4],
+            MlxDtype::Uint64,
+        );
+        let f = astype(&a, MlxDtype::Float32, None);
+        eval(&[&f]);
+        assert_eq!(f.data_f32(), &[0.0, 1.0, 100_000.0, 4_000_000_000.0]);
+
+        // -- int8 --
+        let vals_i8: Vec<i8> = vec![-128, -1, 0, 127];
+        let a = MlxArray::from_raw_data(
+            vals_i8.as_ptr() as *const u8,
+            std::mem::size_of_val(&vals_i8[..]),
+            &[4],
+            MlxDtype::Int8,
+        );
+        let f = astype(&a, MlxDtype::Float32, None);
+        eval(&[&f]);
+        assert_eq!(f.data_f32(), &[-128.0, -1.0, 0.0, 127.0]);
+
+        // -- int16 --
+        let vals_i16: Vec<i16> = vec![-32768, -1, 0, 32767];
+        let a = MlxArray::from_raw_data(
+            vals_i16.as_ptr() as *const u8,
+            std::mem::size_of_val(&vals_i16[..]),
+            &[4],
+            MlxDtype::Int16,
+        );
+        let f = astype(&a, MlxDtype::Float32, None);
+        eval(&[&f]);
+        assert_eq!(f.data_f32(), &[-32768.0, -1.0, 0.0, 32767.0]);
+
+        // -- int32 --
+        let vals_i32: Vec<i32> = vec![-1_000_000, -1, 0, 1_000_000];
+        let a = MlxArray::from_raw_data(
+            vals_i32.as_ptr() as *const u8,
+            std::mem::size_of_val(&vals_i32[..]),
+            &[4],
+            MlxDtype::Int32,
+        );
+        let f = astype(&a, MlxDtype::Float32, None);
+        eval(&[&f]);
+        assert_eq!(f.data_f32(), &[-1_000_000.0, -1.0, 0.0, 1_000_000.0]);
+
+        // -- int64 --
+        let vals_i64: Vec<i64> = vec![-1_000_000, -1, 0, 1_000_000];
+        let a = MlxArray::from_raw_data(
+            vals_i64.as_ptr() as *const u8,
+            std::mem::size_of_val(&vals_i64[..]),
+            &[4],
+            MlxDtype::Int64,
+        );
+        let f = astype(&a, MlxDtype::Float32, None);
+        eval(&[&f]);
+        assert_eq!(f.data_f32(), &[-1_000_000.0, -1.0, 0.0, 1_000_000.0]);
+    }
+
+    #[test]
+    fn roundtrip_float_dtypes_via_astype_f32() {
+        // -- float32 --
+        let vals_f32: Vec<f32> = vec![-2.5, 0.0, 1.0, 2.75];
+        let a = MlxArray::from_raw_data(
+            vals_f32.as_ptr() as *const u8,
+            std::mem::size_of_val(&vals_f32[..]),
+            &[4],
+            MlxDtype::Float32,
+        );
+        eval(&[&a]);
+        assert_eq!(a.data_f32(), &[-2.5, 0.0, 1.0, 2.75]);
+
+        // -- float64 --
+        // MLX Metal does not support float64 dispatch; just verify array
+        // creation and metadata round-trip.
+        let vals_f64: Vec<f64> = vec![-2.5, 0.0, 1.0, 2.75];
+        let a = MlxArray::from_raw_data(
+            vals_f64.as_ptr() as *const u8,
+            std::mem::size_of_val(&vals_f64[..]),
+            &[4],
+            MlxDtype::Float64,
+        );
+        assert_eq!(a.dtype(), MlxDtype::Float64);
+        assert_eq!(a.shape(), vec![4]);
+        assert_eq!(a.nbytes(), 32);
+    }
+
+    #[test]
+    fn roundtrip_bool_dtype() {
+        let vals_bool: Vec<u8> = vec![0, 1, 1, 0];
+        let a = MlxArray::from_raw_data(vals_bool.as_ptr(), vals_bool.len(), &[4], MlxDtype::Bool);
+        assert_eq!(a.dtype(), MlxDtype::Bool);
+        let f = astype(&a, MlxDtype::Float32, None);
+        eval(&[&f]);
+        assert_eq!(f.data_f32(), &[0.0, 1.0, 1.0, 0.0]);
+    }
+
+    #[test]
+    fn managed_payload_deleter_fires_on_drop() {
+        let counter: Arc<AtomicUsize> = Arc::new(AtomicUsize::new(0));
+
+        unsafe extern "C" fn test_deleter(payload: *mut std::ffi::c_void) {
+            let arc = unsafe { Arc::from_raw(payload as *const AtomicUsize) };
+            arc.fetch_add(1, Ordering::SeqCst);
+        }
+
+        {
+            let counter_clone = counter.clone();
+            let payload_ptr = Arc::into_raw(counter_clone) as *mut std::ffi::c_void;
+            let vals: Vec<f32> = vec![1.0, 2.0, 3.0, 4.0];
+            let _arr = unsafe {
+                MlxArray::from_managed_data(
+                    vals.as_ptr() as *const u8,
+                    std::mem::size_of_val(&vals[..]),
+                    &[4],
+                    MlxDtype::Float32,
+                    payload_ptr,
+                    test_deleter,
+                )
+            };
+            // Evaluate so MLX actually materializes the array and can release the buffer.
+            eval(&[&_arr]);
+            // Array drops here.
+        }
+
+        // The deleter may fire lazily; force MLX to flush.
+        crate::transforms::clear_cache();
+        assert!(
+            counter.load(Ordering::SeqCst) >= 1,
+            "managed payload deleter must fire when array is released"
+        );
+    }
+
+    #[test]
+    fn array_metadata_matches_input() {
+        let vals: Vec<f32> = (0..24).map(|i| i as f32).collect();
+        let a = MlxArray::from_raw_data(
+            vals.as_ptr() as *const u8,
+            std::mem::size_of_val(&vals[..]),
+            &[2, 3, 4],
+            MlxDtype::Float32,
+        );
+        assert_eq!(a.shape(), vec![2, 3, 4]);
+        assert_eq!(a.ndim(), 3);
+        assert_eq!(a.dtype(), MlxDtype::Float32);
+        assert_eq!(a.nbytes(), 24 * 4);
+    }
+
+    #[test]
+    fn scalar_array_has_empty_shape() {
+        let s = MlxArray::from_f32(42.0);
+        eval(&[&s]);
+        assert_eq!(s.shape(), Vec::<i32>::new());
+        assert_eq!(s.ndim(), 0);
+        assert_eq!(s.data_f32(), &[42.0]);
+    }
+
+    #[test]
+    fn clone_produces_independent_copy() {
+        let a = MlxArray::from_f32_slice(&[1.0, 2.0, 3.0]);
+        let b = a.clone();
+        eval(&[&a, &b]);
+        assert_eq!(a.data_f32(), b.data_f32());
     }
 }

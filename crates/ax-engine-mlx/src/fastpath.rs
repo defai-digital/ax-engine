@@ -332,7 +332,7 @@ env_flag!(
     ///
     /// **Default: OFF — real-model A/B rejected promotion (2026-06-11).** The P0
     /// clean microbench artifact showed this large-block boundary beating the
-    /// portable Rust/`mlx-c` composition, but the full A/B on the two models that
+    /// portable Rust/MLX FFI composition, but the full A/B on the two models that
     /// can engage the route (Gemma 4 31B and 12B 4-bit, `all_hits`) regressed
     /// decode to 0.89-0.97x and prefill to 0.91-0.98x;
     /// `check_direct_gemma4_ffn_route_promotion.py` decision: `not_promoted`.
@@ -413,7 +413,7 @@ env_flag_default_on!(
     ///
     /// **Default: ON for Qwen3.5/Qwen3Next only** (kill-switch via
     /// `AX_MLX_QWEN_DIRECT_CPP_LINEAR_ATTENTION_INPUTS=0`). The route skips
-    /// per-op `mlx-c` dispatches for packed projection, reshape, slice, and
+    /// per-op MLX FFI dispatches for packed projection, reshape, slice, and
     /// concat staging before the Qwen gated-delta block. It is family-scoped
     /// because the verified win is on Qwen linear-attention decode when paired
     /// with the post-input route.

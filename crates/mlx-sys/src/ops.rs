@@ -1,4 +1,5 @@
 use crate::array::{MlxArray, MlxDtype, null_ffi_array};
+use crate::error::{panic_on_status, prepare_error_capture};
 use crate::ffi;
 use crate::stream::{MlxStream, default_gpu_raw};
 
@@ -171,7 +172,9 @@ macro_rules! unary_op {
             unsafe {
                 let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
                 let mut res = MlxArray::empty();
-                ffi::$ffi_fn(&mut res.inner, a.inner, stream);
+                prepare_error_capture();
+                let rc = ffi::$ffi_fn(&mut res.inner, a.inner, stream);
+                panic_on_status(stringify!($ffi_fn), rc);
                 res
             }
         }
@@ -185,11 +188,21 @@ macro_rules! binary_op {
             unsafe {
                 let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
                 let mut res = MlxArray::empty();
-                ffi::$ffi_fn(&mut res.inner, a.inner, b.inner, stream);
+                prepare_error_capture();
+                let rc = ffi::$ffi_fn(&mut res.inner, a.inner, b.inner, stream);
+                panic_on_status(stringify!($ffi_fn), rc);
                 res
             }
         }
     };
+}
+
+macro_rules! checked_ffi {
+    ($operation:literal, $call:expr) => {{
+        prepare_error_capture();
+        let rc = $call;
+        panic_on_status($operation, rc);
+    }};
 }
 
 binary_op!(add, mlx_add);
@@ -254,7 +267,7 @@ pub fn gelu_approx(x: &MlxArray, s: Option<&MlxStream>) -> MlxArray {
 /// Compute `gelu_approx(gate) * x` through AX's direct MLX C++ shim.
 ///
 /// This keeps the exact mlx-lm Gemma-family math but collapses the Rust ->
-/// `mlx-c` call boundary for the scalar-heavy activation chain to one FFI call.
+/// C++ FFI boundary for the scalar-heavy activation chain to one call.
 /// If the direct shim reports an error, fall back to the portable wrapper
 /// composition rather than surfacing a hard runtime failure.
 pub fn gelu_approx_mul(gate: &MlxArray, x: &MlxArray, s: Option<&MlxStream>) -> MlxArray {
@@ -694,7 +707,7 @@ pub fn qwen_linear_attention_inputs_packed(
 ///
 /// This is everything between `qwen_linear_attention_inputs_packed` and the
 /// `qwen35_gated_delta_v3` custom Metal kernel, fused into one Rust→C++ FFI
-/// round-trip. The per-decode-token mlx-c dispatch count for a Qwen 3.6 27B
+/// round-trip. The per-decode-token FFI dispatch count for a Qwen 3.6 27B
 /// linear-attention layer drops from ~14 to 1 — the savings are bounded by the
 /// AX-vs-mlx-python marshalling delta (~250ns/op), not by GPU work.
 ///
@@ -765,13 +778,16 @@ pub fn layer_norm(
     unsafe {
         let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
         let mut res = MlxArray::empty();
-        ffi::mlx_fast_layer_norm(
-            &mut res.inner,
-            x.inner,
-            weight.inner,
-            bias.inner,
-            eps,
-            stream,
+        checked_ffi!(
+            "mlx_fast_layer_norm",
+            ffi::mlx_fast_layer_norm(
+                &mut res.inner,
+                x.inner,
+                weight.inner,
+                bias.inner,
+                eps,
+                stream,
+            )
         );
         res
     }
@@ -875,7 +891,10 @@ pub fn astype(a: &MlxArray, dtype: MlxDtype, s: Option<&MlxStream>) -> MlxArray 
     unsafe {
         let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
         let mut res = MlxArray::empty();
-        ffi::mlx_astype(&mut res.inner, a.inner, dtype.to_ffi(), stream);
+        checked_ffi!(
+            "mlx_astype",
+            ffi::mlx_astype(&mut res.inner, a.inner, dtype.to_ffi(), stream)
+        );
         res
     }
 }
@@ -890,7 +909,10 @@ pub fn view(a: &MlxArray, dtype: MlxDtype, s: Option<&MlxStream>) -> MlxArray {
     unsafe {
         let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
         let mut res = MlxArray::empty();
-        ffi::mlx_view(&mut res.inner, a.inner, dtype.to_ffi(), stream);
+        checked_ffi!(
+            "mlx_view",
+            ffi::mlx_view(&mut res.inner, a.inner, dtype.to_ffi(), stream)
+        );
         res
     }
 }
@@ -906,7 +928,10 @@ pub fn arange(
     unsafe {
         let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
         let mut res = MlxArray::empty();
-        ffi::mlx_arange(&mut res.inner, start, stop, step, dtype.to_ffi(), stream);
+        checked_ffi!(
+            "mlx_arange",
+            ffi::mlx_arange(&mut res.inner, start, stop, step, dtype.to_ffi(), stream)
+        );
         res
     }
 }
@@ -916,7 +941,10 @@ pub fn reshape(a: &MlxArray, shape: &[i32], s: Option<&MlxStream>) -> MlxArray {
     unsafe {
         let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
         let mut res = MlxArray::empty();
-        ffi::mlx_reshape(&mut res.inner, a.inner, shape.as_ptr(), shape.len(), stream);
+        checked_ffi!(
+            "mlx_reshape",
+            ffi::mlx_reshape(&mut res.inner, a.inner, shape.as_ptr(), shape.len(), stream)
+        );
         res
     }
 }
@@ -926,7 +954,10 @@ pub fn broadcast_to(a: &MlxArray, shape: &[i32], s: Option<&MlxStream>) -> MlxAr
     unsafe {
         let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
         let mut res = MlxArray::empty();
-        ffi::mlx_broadcast_to(&mut res.inner, a.inner, shape.as_ptr(), shape.len(), stream);
+        checked_ffi!(
+            "mlx_broadcast_to",
+            ffi::mlx_broadcast_to(&mut res.inner, a.inner, shape.as_ptr(), shape.len(), stream)
+        );
         res
     }
 }
@@ -936,7 +967,10 @@ pub fn transpose(a: &MlxArray, axes: &[i32], s: Option<&MlxStream>) -> MlxArray 
     unsafe {
         let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
         let mut res = MlxArray::empty();
-        ffi::mlx_transpose_axes(&mut res.inner, a.inner, axes.as_ptr(), axes.len(), stream);
+        checked_ffi!(
+            "mlx_transpose_axes",
+            ffi::mlx_transpose_axes(&mut res.inner, a.inner, axes.as_ptr(), axes.len(), stream)
+        );
         res
     }
 }
@@ -946,7 +980,10 @@ pub fn expand_dims(a: &MlxArray, axis: i32, s: Option<&MlxStream>) -> MlxArray {
     unsafe {
         let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
         let mut res = MlxArray::empty();
-        ffi::mlx_expand_dims(&mut res.inner, a.inner, axis, stream);
+        checked_ffi!(
+            "mlx_expand_dims",
+            ffi::mlx_expand_dims(&mut res.inner, a.inner, axis, stream)
+        );
         res
     }
 }
@@ -956,7 +993,10 @@ pub fn expand_dims_axes(a: &MlxArray, axes: &[i32], s: Option<&MlxStream>) -> Ml
     unsafe {
         let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
         let mut res = MlxArray::empty();
-        ffi::mlx_expand_dims_axes(&mut res.inner, a.inner, axes.as_ptr(), axes.len(), stream);
+        checked_ffi!(
+            "mlx_expand_dims_axes",
+            ffi::mlx_expand_dims_axes(&mut res.inner, a.inner, axes.as_ptr(), axes.len(), stream)
+        );
         res
     }
 }
@@ -966,7 +1006,10 @@ pub fn softmax(a: &MlxArray, axis: i32, s: Option<&MlxStream>) -> MlxArray {
     unsafe {
         let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
         let mut res = MlxArray::empty();
-        ffi::mlx_softmax_axis(&mut res.inner, a.inner, axis, false, stream);
+        checked_ffi!(
+            "mlx_softmax_axis",
+            ffi::mlx_softmax_axis(&mut res.inner, a.inner, axis, false, stream)
+        );
         res
     }
 }
@@ -976,7 +1019,10 @@ pub fn softmax_precise(a: &MlxArray, axis: i32, s: Option<&MlxStream>) -> MlxArr
     unsafe {
         let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
         let mut res = MlxArray::empty();
-        ffi::mlx_softmax_axis(&mut res.inner, a.inner, axis, true, stream);
+        checked_ffi!(
+            "mlx_softmax_axis",
+            ffi::mlx_softmax_axis(&mut res.inner, a.inner, axis, true, stream)
+        );
         res
     }
 }
@@ -987,10 +1033,16 @@ pub fn concatenate(arrays: &[&MlxArray], axis: i32, s: Option<&MlxStream>) -> Ml
         let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
         let vec = ffi::mlx_vector_array_new();
         for arr in arrays {
-            ffi::mlx_vector_array_append_value(vec, arr.inner);
+            checked_ffi!(
+                "mlx_vector_array_append_value",
+                ffi::mlx_vector_array_append_value(vec, arr.inner)
+            );
         }
         let mut res = MlxArray::empty();
-        ffi::mlx_concatenate_axis(&mut res.inner, vec, axis, stream);
+        checked_ffi!(
+            "mlx_concatenate_axis",
+            ffi::mlx_concatenate_axis(&mut res.inner, vec, axis, stream)
+        );
         ffi::mlx_vector_array_free(vec);
         res
     }
@@ -1002,10 +1054,16 @@ pub fn stack(arrays: &[&MlxArray], axis: i32, s: Option<&MlxStream>) -> MlxArray
         let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
         let vec = ffi::mlx_vector_array_new();
         for arr in arrays {
-            ffi::mlx_vector_array_append_value(vec, arr.inner);
+            checked_ffi!(
+                "mlx_vector_array_append_value",
+                ffi::mlx_vector_array_append_value(vec, arr.inner)
+            );
         }
         let mut res = MlxArray::empty();
-        ffi::mlx_stack_axis(&mut res.inner, vec, axis, stream);
+        checked_ffi!(
+            "mlx_stack_axis",
+            ffi::mlx_stack_axis(&mut res.inner, vec, axis, stream)
+        );
         ffi::mlx_vector_array_free(vec);
         res
     }
@@ -1017,7 +1075,10 @@ pub fn take(a: &MlxArray, indices: &MlxArray, axis: i32, s: Option<&MlxStream>) 
     unsafe {
         let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
         let mut res = MlxArray::empty();
-        ffi::mlx_take_axis(&mut res.inner, a.inner, indices.inner, axis, stream);
+        checked_ffi!(
+            "mlx_take_axis",
+            ffi::mlx_take_axis(&mut res.inner, a.inner, indices.inner, axis, stream)
+        );
         res
     }
 }
@@ -1032,7 +1093,10 @@ pub fn repeat_axis(a: &MlxArray, repeats: i32, axis: i32, s: Option<&MlxStream>)
     unsafe {
         let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
         let mut res = MlxArray::empty();
-        ffi::mlx_repeat_axis(&mut res.inner, a.inner, repeats, axis, stream);
+        checked_ffi!(
+            "mlx_repeat_axis",
+            ffi::mlx_repeat_axis(&mut res.inner, a.inner, repeats, axis, stream)
+        );
         res
     }
 }
@@ -1051,16 +1115,19 @@ pub fn slice(
     unsafe {
         let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
         let mut res = MlxArray::empty();
-        ffi::mlx_slice(
-            &mut res.inner,
-            a.inner,
-            start.as_ptr(),
-            start.len(),
-            stop.as_ptr(),
-            stop.len(),
-            strides.as_ptr(),
-            strides.len(),
-            stream,
+        checked_ffi!(
+            "mlx_slice",
+            ffi::mlx_slice(
+                &mut res.inner,
+                a.inner,
+                start.as_ptr(),
+                start.len(),
+                stop.as_ptr(),
+                stop.len(),
+                strides.as_ptr(),
+                strides.len(),
+                stream,
+            )
         );
         res
     }
@@ -1084,15 +1151,18 @@ pub fn as_strided(
     unsafe {
         let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
         let mut res = MlxArray::empty();
-        ffi::mlx_as_strided(
-            &mut res.inner,
-            a.inner,
-            shape.as_ptr(),
-            shape.len(),
-            strides.as_ptr(),
-            strides.len(),
-            offset,
-            stream,
+        checked_ffi!(
+            "mlx_as_strided",
+            ffi::mlx_as_strided(
+                &mut res.inner,
+                a.inner,
+                shape.as_ptr(),
+                shape.len(),
+                strides.as_ptr(),
+                strides.len(),
+                offset,
+                stream,
+            )
         );
         res
     }
@@ -1107,12 +1177,18 @@ pub fn split(a: &MlxArray, num_splits: i32, axis: i32, s: Option<&MlxStream>) ->
     unsafe {
         let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
         let mut out_vec = ffi::mlx_vector_array_new();
-        ffi::mlx_split(&mut out_vec, a.inner, num_splits, axis, stream);
+        checked_ffi!(
+            "mlx_split",
+            ffi::mlx_split(&mut out_vec, a.inner, num_splits, axis, stream)
+        );
         let n = ffi::mlx_vector_array_size(out_vec);
         let mut result = Vec::with_capacity(n);
         for i in 0..n {
             let mut arr = MlxArray::empty();
-            ffi::mlx_vector_array_get(&mut arr.inner, out_vec, i);
+            checked_ffi!(
+                "mlx_vector_array_get",
+                ffi::mlx_vector_array_get(&mut arr.inner, out_vec, i)
+            );
             result.push(arr);
         }
         ffi::mlx_vector_array_free(out_vec);
@@ -1142,12 +1218,15 @@ pub fn zeros(shape: &[i32], dtype: MlxDtype, s: Option<&MlxStream>) -> MlxArray 
     unsafe {
         let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
         let mut res = MlxArray::empty();
-        ffi::mlx_zeros(
-            &mut res.inner,
-            shape.as_ptr(),
-            shape.len(),
-            dtype.to_ffi(),
-            stream,
+        checked_ffi!(
+            "mlx_zeros",
+            ffi::mlx_zeros(
+                &mut res.inner,
+                shape.as_ptr(),
+                shape.len(),
+                dtype.to_ffi(),
+                stream,
+            )
         );
         res
     }
@@ -1169,17 +1248,20 @@ pub fn slice_update(
     unsafe {
         let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
         let mut res = MlxArray::empty();
-        ffi::mlx_slice_update(
-            &mut res.inner,
-            src.inner,
-            update.inner,
-            start.as_ptr(),
-            start.len(),
-            stop.as_ptr(),
-            stop.len(),
-            strides.as_ptr(),
-            strides.len(),
-            stream,
+        checked_ffi!(
+            "mlx_slice_update",
+            ffi::mlx_slice_update(
+                &mut res.inner,
+                src.inner,
+                update.inner,
+                start.as_ptr(),
+                start.len(),
+                stop.as_ptr(),
+                stop.len(),
+                strides.as_ptr(),
+                strides.len(),
+                stream,
+            )
         );
         res
     }
@@ -1190,7 +1272,10 @@ pub fn contiguous(a: &MlxArray, s: Option<&MlxStream>) -> MlxArray {
     unsafe {
         let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
         let mut res = MlxArray::empty();
-        ffi::mlx_contiguous(&mut res.inner, a.inner, false, stream);
+        checked_ffi!(
+            "mlx_contiguous",
+            ffi::mlx_contiguous(&mut res.inner, a.inner, false, stream)
+        );
         res
     }
 }
@@ -1200,7 +1285,10 @@ pub fn clip(a: &MlxArray, min: &MlxArray, max: &MlxArray, s: Option<&MlxStream>)
     unsafe {
         let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
         let mut res = MlxArray::empty();
-        ffi::mlx_clip(&mut res.inner, a.inner, min.inner, max.inner, stream);
+        checked_ffi!(
+            "mlx_clip",
+            ffi::mlx_clip(&mut res.inner, a.inner, min.inner, max.inner, stream)
+        );
         res
     }
 }
@@ -1215,7 +1303,10 @@ pub fn where_cond(
     unsafe {
         let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
         let mut res = MlxArray::empty();
-        ffi::mlx_where(&mut res.inner, condition.inner, x.inner, y.inner, stream);
+        checked_ffi!(
+            "mlx_where",
+            ffi::mlx_where(&mut res.inner, condition.inner, x.inner, y.inner, stream)
+        );
         res
     }
 }
@@ -1233,15 +1324,18 @@ pub fn conv1d(
     unsafe {
         let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
         let mut res = MlxArray::empty();
-        ffi::mlx_conv1d(
-            &mut res.inner,
-            input.inner,
-            weight.inner,
-            stride,
-            padding,
-            dilation,
-            groups,
-            stream,
+        checked_ffi!(
+            "mlx_conv1d",
+            ffi::mlx_conv1d(
+                &mut res.inner,
+                input.inner,
+                weight.inner,
+                stride,
+                padding,
+                dilation,
+                groups,
+                stream,
+            )
         );
         res
     }
@@ -1255,7 +1349,10 @@ pub fn argmax(a: &MlxArray, s: Option<&MlxStream>) -> MlxArray {
         assert!(ndim > 0, "argmax requires at least 1-dimensional array");
         let axis = ndim as i32 - 1;
         let mut res = MlxArray::empty();
-        ffi::mlx_argmax_axis(&mut res.inner, a.inner, axis, false, stream);
+        checked_ffi!(
+            "mlx_argmax_axis",
+            ffi::mlx_argmax_axis(&mut res.inner, a.inner, axis, false, stream)
+        );
         res
     }
 }
@@ -1265,7 +1362,10 @@ pub fn argsort_axis(a: &MlxArray, axis: i32, s: Option<&MlxStream>) -> MlxArray 
     unsafe {
         let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
         let mut res = MlxArray::empty();
-        ffi::mlx_argsort_axis(&mut res.inner, a.inner, axis, stream);
+        checked_ffi!(
+            "mlx_argsort_axis",
+            ffi::mlx_argsort_axis(&mut res.inner, a.inner, axis, stream)
+        );
         res
     }
 }
@@ -1277,7 +1377,10 @@ pub fn argpartition_axis(a: &MlxArray, kth: i32, axis: i32, s: Option<&MlxStream
     unsafe {
         let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
         let mut res = MlxArray::empty();
-        ffi::mlx_argpartition_axis(&mut res.inner, a.inner, kth, axis, stream);
+        checked_ffi!(
+            "mlx_argpartition_axis",
+            ffi::mlx_argpartition_axis(&mut res.inner, a.inner, kth, axis, stream)
+        );
         res
     }
 }
@@ -1292,7 +1395,10 @@ pub fn take_along_axis(
     unsafe {
         let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
         let mut res = MlxArray::empty();
-        ffi::mlx_take_along_axis(&mut res.inner, a.inner, indices.inner, axis, stream);
+        checked_ffi!(
+            "mlx_take_along_axis",
+            ffi::mlx_take_along_axis(&mut res.inner, a.inner, indices.inner, axis, stream)
+        );
         res
     }
 }
@@ -1308,13 +1414,16 @@ pub fn put_along_axis(
     unsafe {
         let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
         let mut res = MlxArray::empty();
-        ffi::mlx_put_along_axis(
-            &mut res.inner,
-            a.inner,
-            indices.inner,
-            values.inner,
-            axis,
-            stream,
+        checked_ffi!(
+            "mlx_put_along_axis",
+            ffi::mlx_put_along_axis(
+                &mut res.inner,
+                a.inner,
+                indices.inner,
+                values.inner,
+                axis,
+                stream,
+            )
         );
         res
     }
@@ -1325,7 +1434,10 @@ pub fn sum_axis(a: &MlxArray, axis: i32, keepdims: bool, s: Option<&MlxStream>) 
     unsafe {
         let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
         let mut res = MlxArray::empty();
-        ffi::mlx_sum_axis(&mut res.inner, a.inner, axis, keepdims, stream);
+        checked_ffi!(
+            "mlx_sum_axis",
+            ffi::mlx_sum_axis(&mut res.inner, a.inner, axis, keepdims, stream)
+        );
         res
     }
 }
@@ -1346,7 +1458,10 @@ pub fn cumsum(
     unsafe {
         let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
         let mut res = MlxArray::empty();
-        ffi::mlx_cumsum(&mut res.inner, a.inner, axis, reverse, inclusive, stream);
+        checked_ffi!(
+            "mlx_cumsum",
+            ffi::mlx_cumsum(&mut res.inner, a.inner, axis, reverse, inclusive, stream)
+        );
         res
     }
 }
@@ -1367,14 +1482,17 @@ pub fn gather_mm(
         let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
         let null_arr = null_ffi_array();
         let mut res = MlxArray::empty();
-        ffi::mlx_gather_mm(
-            &mut res.inner,
-            a.inner,
-            b.inner,
-            null_arr,
-            rhs_indices.inner,
-            sorted_indices,
-            stream,
+        checked_ffi!(
+            "mlx_gather_mm",
+            ffi::mlx_gather_mm(
+                &mut res.inner,
+                a.inner,
+                b.inner,
+                null_arr,
+                rhs_indices.inner,
+                sorted_indices,
+                stream,
+            )
         );
         res
     }
@@ -1411,20 +1529,23 @@ pub fn gather_qmm(
             value: bits.unwrap_or(4),
         };
         let mut res = MlxArray::empty();
-        ffi::mlx_gather_qmm(
-            &mut res.inner,
-            x.inner,
-            w.inner,
-            scales.inner,
-            biases_raw,
-            null_arr,
-            rhs_indices.inner,
-            transpose,
-            gs,
-            bs,
-            c"affine".as_ptr(),
-            sorted_indices,
-            stream,
+        checked_ffi!(
+            "mlx_gather_qmm",
+            ffi::mlx_gather_qmm(
+                &mut res.inner,
+                x.inner,
+                w.inner,
+                scales.inner,
+                biases_raw,
+                null_arr,
+                rhs_indices.inner,
+                transpose,
+                gs,
+                bs,
+                c"affine".as_ptr(),
+                sorted_indices,
+                stream,
+            )
         );
         res
     }
@@ -1459,17 +1580,20 @@ pub fn dequantize(
             value: ffi::mlx_dtype_::MLX_FLOAT32,
         };
         let mut res = MlxArray::empty();
-        ffi::mlx_dequantize(
-            &mut res.inner,
-            w.inner,
-            scales.inner,
-            biases_raw,
-            gs,
-            bs,
-            c"affine".as_ptr(),
-            null_ffi_array(),
-            no_dtype,
-            stream,
+        checked_ffi!(
+            "mlx_dequantize",
+            ffi::mlx_dequantize(
+                &mut res.inner,
+                w.inner,
+                scales.inner,
+                biases_raw,
+                gs,
+                bs,
+                c"affine".as_ptr(),
+                null_ffi_array(),
+                no_dtype,
+                stream,
+            )
         );
         res
     }
@@ -1533,20 +1657,26 @@ pub fn quantize(
         let mut raw = ffi::mlx_vector_array {
             ctx: std::ptr::null_mut(),
         };
-        ffi::mlx_quantize(
-            &mut raw,
-            w.inner,
-            gs,
-            bs,
-            mode.as_ptr(),
-            global_scale,
-            stream,
+        checked_ffi!(
+            "mlx_quantize",
+            ffi::mlx_quantize(
+                &mut raw,
+                w.inner,
+                gs,
+                bs,
+                mode.as_ptr(),
+                global_scale,
+                stream,
+            )
         );
         let len = ffi::mlx_vector_array_size(raw);
         let mut result = Vec::with_capacity(len);
         for idx in 0..len {
             let mut arr = null_ffi_array();
-            ffi::mlx_vector_array_get(&mut arr, raw, idx);
+            checked_ffi!(
+                "mlx_vector_array_get",
+                ffi::mlx_vector_array_get(&mut arr, raw, idx)
+            );
             result.push(MlxArray::from_raw(arr));
         }
         ffi::mlx_vector_array_free(raw);
@@ -1581,17 +1711,20 @@ pub fn dequantize_with_mode(
         let bs = optional_int(bits, mode.default_bits());
         let dtype = optional_dtype(dtype, MlxDtype::Float32);
         let mut res = MlxArray::empty();
-        ffi::mlx_dequantize(
-            &mut res.inner,
-            w.inner,
-            scales.inner,
-            biases_raw,
-            gs,
-            bs,
-            mode.as_ptr(),
-            global_scale,
-            dtype,
-            stream,
+        checked_ffi!(
+            "mlx_dequantize",
+            ffi::mlx_dequantize(
+                &mut res.inner,
+                w.inner,
+                scales.inner,
+                biases_raw,
+                gs,
+                bs,
+                mode.as_ptr(),
+                global_scale,
+                dtype,
+                stream,
+            )
         );
         res
     }
@@ -1603,7 +1736,10 @@ pub fn to_fp8(x: &MlxArray, s: Option<&MlxStream>) -> MlxArray {
     unsafe {
         let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
         let mut res = MlxArray::empty();
-        ffi::mlx_to_fp8(&mut res.inner, x.inner, stream);
+        checked_ffi!(
+            "mlx_to_fp8",
+            ffi::mlx_to_fp8(&mut res.inner, x.inner, stream)
+        );
         res
     }
 }
@@ -1614,7 +1750,10 @@ pub fn from_fp8(x: &MlxArray, dtype: MlxDtype, s: Option<&MlxStream>) -> MlxArra
     unsafe {
         let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
         let mut res = MlxArray::empty();
-        ffi::mlx_from_fp8(&mut res.inner, x.inner, dtype.to_ffi(), stream);
+        checked_ffi!(
+            "mlx_from_fp8",
+            ffi::mlx_from_fp8(&mut res.inner, x.inner, dtype.to_ffi(), stream)
+        );
         res
     }
 }
@@ -1648,17 +1787,20 @@ pub fn quantized_matmul(
         };
 
         let mut res = MlxArray::empty();
-        ffi::mlx_quantized_matmul(
-            &mut res.inner,
-            x.inner,
-            w.inner,
-            scales.inner,
-            biases_raw,
-            transpose,
-            gs,
-            bs,
-            c"affine".as_ptr(),
-            stream,
+        checked_ffi!(
+            "mlx_quantized_matmul",
+            ffi::mlx_quantized_matmul(
+                &mut res.inner,
+                x.inner,
+                w.inner,
+                scales.inner,
+                biases_raw,
+                transpose,
+                gs,
+                bs,
+                c"affine".as_ptr(),
+                stream,
+            )
         );
         res
     }
@@ -1705,7 +1847,10 @@ pub fn topk(a: &MlxArray, k: i32, s: Option<&MlxStream>) -> MlxArray {
     unsafe {
         let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
         let mut res = MlxArray::empty();
-        ffi::mlx_topk(&mut res.inner, a.inner, k, stream);
+        checked_ffi!(
+            "mlx_topk",
+            ffi::mlx_topk(&mut res.inner, a.inner, k, stream)
+        );
         res
     }
 }
@@ -1716,7 +1861,10 @@ pub fn topk_axis(a: &MlxArray, k: i32, axis: i32, s: Option<&MlxStream>) -> MlxA
     unsafe {
         let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
         let mut res = MlxArray::empty();
-        ffi::mlx_topk_axis(&mut res.inner, a.inner, k, axis, stream);
+        checked_ffi!(
+            "mlx_topk_axis",
+            ffi::mlx_topk_axis(&mut res.inner, a.inner, k, axis, stream)
+        );
         res
     }
 }
@@ -1727,7 +1875,10 @@ pub fn flatten(a: &MlxArray, start_axis: i32, end_axis: i32, s: Option<&MlxStrea
     unsafe {
         let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
         let mut res = MlxArray::empty();
-        ffi::mlx_flatten(&mut res.inner, a.inner, start_axis, end_axis, stream);
+        checked_ffi!(
+            "mlx_flatten",
+            ffi::mlx_flatten(&mut res.inner, a.inner, start_axis, end_axis, stream)
+        );
         res
     }
 }
@@ -1740,7 +1891,10 @@ pub fn repeat(a: &MlxArray, repeats: i32, s: Option<&MlxStream>) -> MlxArray {
     unsafe {
         let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
         let mut res = MlxArray::empty();
-        ffi::mlx_repeat(&mut res.inner, a.inner, repeats, stream);
+        checked_ffi!(
+            "mlx_repeat",
+            ffi::mlx_repeat(&mut res.inner, a.inner, repeats, stream)
+        );
         res
     }
 }
@@ -1764,18 +1918,21 @@ pub fn pad(
     unsafe {
         let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
         let mut res = MlxArray::empty();
-        ffi::mlx_pad(
-            &mut res.inner,
-            a.inner,
-            axes.as_ptr(),
-            axes.len(),
-            low_pad.as_ptr(),
-            low_pad.len(),
-            high_pad.as_ptr(),
-            high_pad.len(),
-            pad_value.inner,
-            c"constant".as_ptr(),
-            stream,
+        checked_ffi!(
+            "mlx_pad",
+            ffi::mlx_pad(
+                &mut res.inner,
+                a.inner,
+                axes.as_ptr(),
+                axes.len(),
+                low_pad.as_ptr(),
+                low_pad.len(),
+                high_pad.as_ptr(),
+                high_pad.len(),
+                pad_value.inner,
+                c"constant".as_ptr(),
+                stream,
+            )
         );
         res
     }
@@ -1787,13 +1944,16 @@ pub fn unflatten(a: &MlxArray, axis: i32, shape: &[i32], s: Option<&MlxStream>) 
     unsafe {
         let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
         let mut res = MlxArray::empty();
-        ffi::mlx_unflatten(
-            &mut res.inner,
-            a.inner,
-            axis,
-            shape.as_ptr(),
-            shape.len(),
-            stream,
+        checked_ffi!(
+            "mlx_unflatten",
+            ffi::mlx_unflatten(
+                &mut res.inner,
+                a.inner,
+                axis,
+                shape.as_ptr(),
+                shape.len(),
+                stream,
+            )
         );
         res
     }
@@ -1812,7 +1972,10 @@ pub fn random_categorical(logits: &MlxArray, s: Option<&MlxStream>) -> MlxArray 
     unsafe {
         let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
         let mut res = MlxArray::empty();
-        ffi::mlx_random_categorical(&mut res.inner, logits.inner, -1, null_ffi_array(), stream);
+        checked_ffi!(
+            "mlx_random_categorical",
+            ffi::mlx_random_categorical(&mut res.inner, logits.inner, -1, null_ffi_array(), stream)
+        );
         res
     }
 }
@@ -1820,7 +1983,7 @@ pub fn random_categorical(logits: &MlxArray, s: Option<&MlxStream>) -> MlxArray 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::transforms::eval;
+    use crate::transforms::{eval, eval_first_u32};
 
     #[test]
     fn conv1d_depthwise_reports_reference_shape() {
@@ -2805,6 +2968,472 @@ mod tests {
                 delta <= tolerance,
                 "mismatch at {idx}: actual={a}, expected={e}, delta={delta}, tolerance={tolerance}"
             );
+        }
+    }
+
+    // ── Task 2: Shape / structural ops ──────────────────────────────
+
+    #[test]
+    fn as_strided_preserves_data_under_valid_strides() {
+        // Create a [2,3] array and reshape via as_strided with identity strides.
+        let data: Vec<f32> = (0..6).map(|i| i as f32).collect();
+        let a = MlxArray::from_raw_data(
+            data.as_ptr() as *const u8,
+            std::mem::size_of_val(&data[..]),
+            &[2, 3],
+            MlxDtype::Float32,
+        );
+        // Reshape [2,3] -> [3,2] with row-major strides [2,1].
+        let b = as_strided(&a, &[3, 2], &[2, 1], 0, None);
+        eval(&[&b]);
+        assert_eq!(b.shape(), vec![3, 2]);
+        assert_eq!(b.data_f32().len(), 6);
+    }
+
+    #[test]
+    fn broadcast_to_expands_dims() {
+        let a = MlxArray::from_f32_slice(&[1.0, 2.0, 3.0]);
+        let b = broadcast_to(&a, &[4, 3], None);
+        eval(&[&b]);
+        assert_eq!(b.shape(), vec![4, 3]);
+    }
+
+    #[test]
+    fn expand_dims_inserts_singleton() {
+        let a = MlxArray::from_f32_slice(&[1.0, 2.0, 3.0]);
+        let b = expand_dims(&a, 0, None);
+        eval(&[&b]);
+        assert_eq!(b.shape(), vec![1, 3]);
+    }
+
+    #[test]
+    fn expand_dims_axes_inserts_multiple() {
+        let a = MlxArray::from_f32_slice(&[1.0, 2.0, 3.0]);
+        let b = expand_dims_axes(&a, &[0, 2], None);
+        eval(&[&b]);
+        assert_eq!(b.shape(), vec![1, 3, 1]);
+    }
+
+    #[test]
+    fn flatten_collapses_dims() {
+        let a = zeros(&[2, 3, 4], MlxDtype::Float32, None);
+        let b = flatten(&a, 0, -1, None);
+        eval(&[&b]);
+        assert_eq!(b.shape(), vec![24]);
+    }
+
+    #[test]
+    fn pad_extends_with_value() {
+        let a = MlxArray::from_f32_slice(&[1.0, 2.0, 3.0]);
+        let pad_val = MlxArray::from_f32(0.0);
+        let b = pad(&a, &[0], &[2], &[1], &pad_val, None);
+        eval(&[&b]);
+        assert_eq!(b.shape(), vec![6]);
+        assert_eq!(b.data_f32(), &[0.0, 0.0, 1.0, 2.0, 3.0, 0.0]);
+    }
+
+    #[test]
+    fn repeat_along_axis() {
+        let a = MlxArray::from_f32_slice(&[1.0, 2.0, 3.0]);
+        let b = repeat(&a, 2, None);
+        eval(&[&b]);
+        assert_eq!(b.shape(), vec![6]);
+        assert_eq!(b.data_f32(), &[1.0, 1.0, 2.0, 2.0, 3.0, 3.0]);
+    }
+
+    #[test]
+    fn repeat_axis_explicit() {
+        let a = zeros(&[2, 3], MlxDtype::Float32, None);
+        let b = repeat_axis(&a, 4, 1, None);
+        eval(&[&b]);
+        assert_eq!(b.shape(), vec![2, 12]);
+    }
+
+    #[test]
+    fn unflatten_splits_one_dim() {
+        let a = zeros(&[24], MlxDtype::Float32, None);
+        let b = unflatten(&a, 0, &[2, 3, 4], None);
+        eval(&[&b]);
+        assert_eq!(b.shape(), vec![2, 3, 4]);
+    }
+
+    #[test]
+    fn transpose_with_axes() {
+        let a = zeros(&[2, 3, 4], MlxDtype::Float32, None);
+        let b = transpose(&a, &[2, 0, 1], None);
+        eval(&[&b]);
+        assert_eq!(b.shape(), vec![4, 2, 3]);
+    }
+
+    #[test]
+    fn slice_update_replaces_region() {
+        let src = MlxArray::from_f32_slice(&[0.0, 1.0, 2.0, 3.0, 4.0]);
+        let upd = MlxArray::from_f32_slice(&[99.0, 98.0]);
+        let b = slice_update(&src, &upd, &[1], &[3], &[1], None);
+        eval(&[&b]);
+        assert_eq!(b.shape(), vec![5]);
+        assert_eq!(b.data_f32(), &[0.0, 99.0, 98.0, 3.0, 4.0]);
+    }
+
+    #[test]
+    fn contiguous_makes_non_contiguous_contiguous() {
+        // transpose produces a non-contiguous view
+        let a = zeros(&[2, 3], MlxDtype::Float32, None);
+        let t = transpose(&a, &[1, 0], None);
+        let c = contiguous(&t, None);
+        eval(&[&c]);
+        assert_eq!(c.shape(), vec![3, 2]);
+    }
+
+    #[test]
+    fn view_reinterprets_dtype() {
+        let data: Vec<u32> = vec![0x3F800000, 0x40000000]; // 1.0f32, 2.0f32 bit patterns
+        let a = MlxArray::from_raw_data(
+            data.as_ptr() as *const u8,
+            std::mem::size_of_val(&data[..]),
+            &[2],
+            MlxDtype::Uint32,
+        );
+        let b = view(&a, MlxDtype::Float32, None);
+        eval(&[&b]);
+        assert_eq!(b.dtype(), MlxDtype::Float32);
+        assert_eq!(b.data_f32(), &[1.0, 2.0]);
+    }
+
+    // ── Task 3: Reduction / sort ops ───────────────────────────────
+
+    #[test]
+    fn argmax_returns_correct_index() {
+        let a = MlxArray::from_f32_slice(&[0.1, 0.5, 0.3, 0.9]);
+        let idx = argmax(&a, None);
+        assert_eq!(eval_first_u32(&idx), 3);
+    }
+
+    #[test]
+    fn argpartition_splits_at_kth() {
+        let a = MlxArray::from_f32_slice(&[3.0, 1.0, 4.0, 1.5, 2.0]);
+        let idx = argpartition_axis(&a, 2, 0, None);
+        let idx_f = astype(&idx, MlxDtype::Float32, None);
+        eval(&[&idx_f]);
+        assert_eq!(idx.shape(), vec![5]);
+    }
+
+    #[test]
+    fn argsort_produces_sorted_indices() {
+        let a = MlxArray::from_f32_slice(&[3.0, 1.0, 2.0]);
+        let idx = argsort_axis(&a, 0, None);
+        let idx_f = astype(&idx, MlxDtype::Float32, None);
+        eval(&[&idx_f]);
+        assert_eq!(idx_f.data_f32(), &[1.0, 2.0, 0.0]);
+    }
+
+    #[test]
+    fn cumsum_inclusive_and_exclusive() {
+        let a = MlxArray::from_f32_slice(&[1.0, 2.0, 3.0, 4.0]);
+        let inc = cumsum(&a, 0, false, true, None);
+        let exc = cumsum(&a, 0, false, false, None);
+        eval(&[&inc, &exc]);
+        assert_eq!(inc.data_f32(), &[1.0, 3.0, 6.0, 10.0]);
+        assert_eq!(exc.data_f32(), &[0.0, 1.0, 3.0, 6.0]);
+    }
+
+    #[test]
+    fn softmax_sums_to_one() {
+        let a = MlxArray::from_f32_slice(&[1.0, 2.0, 3.0]);
+        let s = softmax(&a, 0, None);
+        let total = sum_axis(&s, 0, false, None);
+        eval(&[&total]);
+        assert_close_f32(total.data_f32(), &[1.0], 1e-5);
+    }
+
+    #[test]
+    fn sum_along_axis() {
+        let data: Vec<f32> = (0..6).map(|i| i as f32).collect();
+        let a = MlxArray::from_raw_data(
+            data.as_ptr() as *const u8,
+            std::mem::size_of_val(&data[..]),
+            &[2, 3],
+            MlxDtype::Float32,
+        );
+        let s0 = sum_axis(&a, 0, false, None);
+        let s1 = sum_axis(&a, 1, false, None);
+        eval(&[&s0, &s1]);
+        assert_eq!(s0.data_f32(), &[3.0, 5.0, 7.0]); // sum over rows
+        assert_eq!(s1.data_f32(), &[3.0, 12.0]); // sum over cols
+    }
+
+    #[test]
+    fn topk_returns_top_k_values_and_indices() {
+        let a = MlxArray::from_f32_slice(&[1.0, 5.0, 3.0, 4.0, 2.0]);
+        let result = topk(&a, 3, None);
+        eval(&[&result]);
+        assert_eq!(result.shape(), vec![3]);
+        // MLX topk returns values in ascending order
+        assert_eq!(result.data_f32(), &[3.0, 4.0, 5.0]);
+    }
+
+    #[test]
+    fn topk_axis_works_on_non_last() {
+        let data: Vec<f32> = (0..6).map(|i| i as f32).collect();
+        let a = MlxArray::from_raw_data(
+            data.as_ptr() as *const u8,
+            std::mem::size_of_val(&data[..]),
+            &[3, 2],
+            MlxDtype::Float32,
+        );
+        let result = topk_axis(&a, 2, 0, None);
+        eval(&[&result]);
+        assert_eq!(result.shape(), vec![2, 2]);
+    }
+
+    #[test]
+    fn take_along_axis_gathers() {
+        let a = MlxArray::from_f32_slice(&[10.0, 20.0, 30.0, 40.0]);
+        let indices = MlxArray::from_raw_data(
+            &[2u32, 0u32] as *const u32 as *const u8,
+            std::mem::size_of::<u32>() * 2,
+            &[2],
+            MlxDtype::Uint32,
+        );
+        let result = take_along_axis(&a, &indices, 0, None);
+        eval(&[&result]);
+        assert_eq!(result.data_f32(), &[30.0, 10.0]);
+    }
+
+    #[test]
+    fn take_axis_gathers_single_axis() {
+        let a = MlxArray::from_f32_slice(&[10.0, 20.0, 30.0, 40.0]);
+        let indices = MlxArray::from_raw_data(
+            &[3u32, 1u32] as *const u32 as *const u8,
+            std::mem::size_of::<u32>() * 2,
+            &[2],
+            MlxDtype::Uint32,
+        );
+        let result = take(&a, &indices, 0, None);
+        eval(&[&result]);
+        assert_eq!(result.data_f32(), &[40.0, 20.0]);
+    }
+
+    #[test]
+    fn put_along_axis_scatters() {
+        let a = MlxArray::from_f32_slice(&[0.0, 0.0, 0.0, 0.0]);
+        let indices = MlxArray::from_raw_data(
+            &[1u32, 3u32] as *const u32 as *const u8,
+            std::mem::size_of::<u32>() * 2,
+            &[2],
+            MlxDtype::Uint32,
+        );
+        let values = MlxArray::from_f32_slice(&[99.0, 88.0]);
+        let result = put_along_axis(&a, &indices, &values, 0, None);
+        eval(&[&result]);
+        assert_eq!(result.data_f32(), &[0.0, 99.0, 0.0, 88.0]);
+    }
+
+    // ── Task 4: Creation + binary/unary ops ──────────────────────
+
+    #[test]
+    fn zeros_creates_all_zero_array() {
+        let a = zeros(&[3, 4], MlxDtype::Float32, None);
+        eval(&[&a]);
+        assert_eq!(a.shape(), vec![3, 4]);
+        assert!(a.data_f32().iter().all(|&v| v == 0.0));
+
+        let b = zeros(&[5], MlxDtype::Int32, None);
+        let bf = astype(&b, MlxDtype::Float32, None);
+        eval(&[&bf]);
+        assert!(bf.data_f32().iter().all(|&v| v == 0.0));
+    }
+
+    #[test]
+    fn arange_produces_sequence() {
+        let a = arange(0.0, 5.0, 1.0, MlxDtype::Float32, None);
+        eval(&[&a]);
+        assert_eq!(a.data_f32(), &[0.0, 1.0, 2.0, 3.0, 4.0]);
+    }
+
+    #[test]
+    fn random_categorical_produces_valid_indices() {
+        let logits = MlxArray::from_f32_slice(&[0.0, 10.0, 0.0, 0.0]);
+        let token = random_categorical(&logits, None);
+        assert_eq!(eval_first_u32(&token), 1); // heavily biased toward index 1
+    }
+
+    #[test]
+    fn binary_ops_shape_and_value_correctness() {
+        let a = MlxArray::from_f32_slice(&[4.0, 6.0, 8.0]);
+        let b = MlxArray::from_f32_slice(&[2.0, 3.0, 4.0]);
+
+        let d = divide(&a, &b, None);
+        eval(&[&d]);
+        assert_eq!(d.data_f32(), &[2.0, 2.0, 2.0]);
+
+        let s = subtract(&a, &b, None);
+        eval(&[&s]);
+        assert_eq!(s.data_f32(), &[2.0, 3.0, 4.0]);
+
+        let p = power(&b, &MlxArray::from_f32(2.0), None);
+        eval(&[&p]);
+        assert_eq!(p.data_f32(), &[4.0, 9.0, 16.0]);
+
+        let mx = maximum(&a, &b, None);
+        eval(&[&mx]);
+        assert_eq!(mx.data_f32(), &[4.0, 6.0, 8.0]);
+
+        let mn = minimum(&a, &b, None);
+        eval(&[&mn]);
+        assert_eq!(mn.data_f32(), &[2.0, 3.0, 4.0]);
+    }
+
+    #[test]
+    fn comparison_ops_return_bool() {
+        let a = MlxArray::from_f32_slice(&[1.0, 2.0, 3.0]);
+        let b = MlxArray::from_f32_slice(&[2.0, 2.0, 1.0]);
+
+        let lt = less(&a, &b, None);
+        eval(&[&lt]);
+        assert_eq!(lt.dtype(), MlxDtype::Bool);
+        let lt_f = astype(&lt, MlxDtype::Float32, None);
+        eval(&[&lt_f]);
+        assert_eq!(lt_f.data_f32(), &[1.0, 0.0, 0.0]);
+
+        let eq = equal(&a, &b, None);
+        let eq_f = astype(&eq, MlxDtype::Float32, None);
+        eval(&[&eq_f]);
+        assert_eq!(eq_f.data_f32(), &[0.0, 1.0, 0.0]);
+
+        let ne = not_equal(&a, &b, None);
+        let ne_f = astype(&ne, MlxDtype::Float32, None);
+        eval(&[&ne_f]);
+        assert_eq!(ne_f.data_f32(), &[1.0, 0.0, 1.0]);
+
+        let ge = greater_equal(&a, &b, None);
+        let ge_f = astype(&ge, MlxDtype::Float32, None);
+        eval(&[&ge_f]);
+        assert_eq!(ge_f.data_f32(), &[0.0, 1.0, 1.0]);
+
+        let le = less_equal(&a, &b, None);
+        let le_f = astype(&le, MlxDtype::Float32, None);
+        eval(&[&le_f]);
+        assert_eq!(le_f.data_f32(), &[1.0, 1.0, 0.0]);
+    }
+
+    #[test]
+    fn logical_and_on_bool_arrays() {
+        let t: Vec<u8> = vec![1, 1, 0, 0];
+        let f: Vec<u8> = vec![1, 0, 1, 0];
+        let a = MlxArray::from_raw_data(t.as_ptr(), 4, &[4], MlxDtype::Bool);
+        let b = MlxArray::from_raw_data(f.as_ptr(), 4, &[4], MlxDtype::Bool);
+        let r = logical_and(&a, &b, None);
+        let rf = astype(&r, MlxDtype::Float32, None);
+        eval(&[&rf]);
+        assert_eq!(rf.data_f32(), &[1.0, 0.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn outer_product_shape_and_values() {
+        let a = MlxArray::from_f32_slice(&[1.0, 2.0, 3.0]);
+        let b = MlxArray::from_f32_slice(&[10.0, 20.0]);
+        let r = outer(&a, &b, None);
+        eval(&[&r]);
+        assert_eq!(r.shape(), vec![3, 2]);
+        assert_eq!(r.data_f32(), &[10.0, 20.0, 20.0, 40.0, 30.0, 60.0]);
+    }
+
+    #[test]
+    fn unary_ops_correctness() {
+        let a = MlxArray::from_f32_slice(&[1.0, 2.0, 3.0]);
+
+        let n = negative(&a, None);
+        eval(&[&n]);
+        assert_eq!(n.data_f32(), &[-1.0, -2.0, -3.0]);
+
+        let e = exp(&MlxArray::from_f32(0.0), None);
+        eval(&[&e]);
+        assert_eq!(e.data_f32(), &[1.0]);
+
+        let l = log(&MlxArray::from_f32(1.0), None);
+        eval(&[&l]);
+        assert_eq!(l.data_f32(), &[0.0]);
+
+        let lp = log1p(&MlxArray::from_f32(0.0), None);
+        eval(&[&lp]);
+        assert_eq!(lp.data_f32(), &[0.0]);
+
+        let c = cos(&MlxArray::from_f32(0.0), None);
+        eval(&[&c]);
+        assert_close_f32(c.data_f32(), &[1.0], 1e-6);
+
+        let s = sin(&MlxArray::from_f32(0.0), None);
+        eval(&[&s]);
+        assert_close_f32(s.data_f32(), &[0.0], 1e-6);
+
+        let fl = floor(&MlxArray::from_f32(2.7), None);
+        eval(&[&fl]);
+        assert_eq!(fl.data_f32(), &[2.0]);
+    }
+
+    #[test]
+    fn clip_clamps_values() {
+        let a = MlxArray::from_f32_slice(&[-5.0, 0.5, 1.5, 5.0]);
+        let lo = MlxArray::from_f32(0.0);
+        let hi = MlxArray::from_f32(1.0);
+        let r = clip(&a, &lo, &hi, None);
+        eval(&[&r]);
+        assert_eq!(r.data_f32(), &[0.0, 0.5, 1.0, 1.0]);
+    }
+
+    // ── Task 9: Integration smoke test ───────────────────────────
+
+    #[test]
+    fn mini_transformer_forward_pass_chains_many_ops() {
+        // Simulate a mini transformer step:
+        // input -> reshape -> matmul -> softmax -> topk -> take_along_axis
+        let batch: i32 = 2;
+        let seq: i32 = 4;
+        let dim: i32 = 8;
+        let vocab: i32 = 16;
+
+        // Input embeddings [batch, seq, dim]
+        let input_data: Vec<f32> = (0..batch * seq * dim).map(|i| (i as f32) * 0.01).collect();
+        let input = MlxArray::from_raw_data(
+            input_data.as_ptr() as *const u8,
+            std::mem::size_of_val(&input_data[..]),
+            &[batch, seq, dim],
+            MlxDtype::Float32,
+        );
+
+        // Weight matrix [dim, vocab]
+        let w_data: Vec<f32> = (0..dim * vocab)
+            .map(|i| ((i as f32) - 64.0) * 0.01)
+            .collect();
+        let weight = MlxArray::from_raw_data(
+            w_data.as_ptr() as *const u8,
+            std::mem::size_of_val(&w_data[..]),
+            &[dim, vocab],
+            MlxDtype::Float32,
+        );
+
+        // flatten batch*seq for matmul -> [batch*seq, dim]
+        let flat = reshape(&input, &[batch * seq, dim], None);
+        // logits = flat @ weight -> [batch*seq, vocab]
+        let logits = matmul(&flat, &weight, None);
+        // softmax over vocab dim
+        let probs = softmax(&logits, -1, None);
+        // topk=3 from logits along last axis
+        let top_vals = topk_axis(&logits, 3, -1, None);
+        // argmax for greedy decode
+        let token = argmax(&logits, None);
+
+        eval(&[&probs, &top_vals, &token]);
+
+        assert_eq!(probs.shape(), vec![batch * seq, vocab]);
+        assert_eq!(top_vals.shape(), vec![batch * seq, 3]);
+
+        // Verify softmax sums to ~1 for each row
+        let row_sum = sum_axis(&probs, -1, false, None);
+        eval(&[&row_sum]);
+        for &s in row_sum.data_f32() {
+            assert_close_f32(&[s], &[1.0], 1e-4);
         }
     }
 }

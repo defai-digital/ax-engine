@@ -1,3 +1,5 @@
+#include "ax_shim.h"
+
 #include <exception>
 #include <optional>
 #include <stdexcept>
@@ -5,8 +7,6 @@
 #include <tuple>
 #include <utility>
 
-#include "mlx/c/array.h"
-#include "mlx/c/stream.h"
 #include "mlx/fast.h"
 #include "mlx/ops.h"
 #include "mlx/stream.h"

@@ -7,6 +7,7 @@ use std::sync::Arc;
 use memmap2::Mmap;
 
 use crate::array::{MlxArray, MlxDtype};
+use crate::error::{last_error_message, panic_on_status, prepare_error_capture};
 use crate::ffi;
 use crate::stream::MlxStream;
 
@@ -24,7 +25,7 @@ pub fn load_safetensors(
     let c_path = CString::new(path_str.as_ref()).expect("path must not contain null bytes");
 
     // When no stream is provided, create a CPU stream RAII wrapper so the
-    // mlx-c wrapper object is freed on drop.  Previously `mlx_default_cpu_stream_new()`
+    // wrapper object is freed on drop.  Previously `mlx_default_cpu_stream_new()`
     // was called and stored in a raw `ffi::mlx_stream` local — that raw handle was
     // never passed to `mlx_stream_free`, leaking the wrapper on every call.
     let _cpu_stream_guard;
@@ -41,6 +42,7 @@ pub fn load_safetensors(
             ctx: ptr::null_mut(),
         };
 
+        prepare_error_capture();
         let rc = ffi::mlx_load_safetensors(&mut map, &mut meta, c_path.as_ptr(), stream);
         if rc != 0 {
             ffi::mlx_map_string_to_array_free(map);
@@ -48,9 +50,9 @@ pub fn load_safetensors(
                 ffi::mlx_map_string_to_string_free(meta);
             }
             return Err(format!(
-                "failed to load safetensors {}: error code {}",
+                "failed to load safetensors {}: {}",
                 path.display(),
-                rc
+                last_error_message("mlx_load_safetensors")
             ));
         }
         if !meta.ctx.is_null() {
@@ -67,6 +69,7 @@ pub fn load_safetensors(
             if rc != 0 || key.is_null() {
                 break;
             }
+            panic_on_status("mlx_map_string_to_array_iterator_next", rc);
             let name = std::ffi::CStr::from_ptr(key).to_string_lossy().into_owned();
             result.insert(name, val);
         }
@@ -219,4 +222,88 @@ fn parse_safetensors_dtype(s: &str) -> Option<MlxDtype> {
         "BOOL" => MlxDtype::Bool,
         _ => return None,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::transforms::eval;
+
+    /// Build a minimal safetensors file in a temp dir, load it back, and
+    /// verify the tensor data round-trips correctly.
+    #[test]
+    fn safetensors_write_and_load_round_trip() {
+        let dir = std::env::temp_dir().join("ax_shim_io_test");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("test_tensors.safetensors");
+
+        // Two float32 tensors: "a" shape [2,3] and "b" shape [4]
+        let a_data: Vec<f32> = (0..6).map(|i| i as f32 * 0.5).collect();
+        let b_data: Vec<f32> = vec![10.0, 20.0, 30.0, 40.0];
+        let a_bytes: &[u8] =
+            unsafe { std::slice::from_raw_parts(a_data.as_ptr() as *const u8, a_data.len() * 4) };
+        let b_bytes: &[u8] =
+            unsafe { std::slice::from_raw_parts(b_data.as_ptr() as *const u8, b_data.len() * 4) };
+
+        // Safetensors format: 8-byte LE header length, JSON header, then raw data.
+        let a_start = 0usize;
+        let a_end = a_bytes.len();
+        let b_start = a_end;
+        let b_end = b_start + b_bytes.len();
+
+        let header = serde_json::json!({
+            "a": {
+                "dtype": "F32",
+                "shape": [2, 3],
+                "data_offsets": [a_start, a_end]
+            },
+            "b": {
+                "dtype": "F32",
+                "shape": [4],
+                "data_offsets": [b_start, b_end]
+            }
+        });
+        let header_str = serde_json::to_string(&header).unwrap();
+        let header_bytes = header_str.as_bytes();
+        let header_len = header_bytes.len() as u64;
+
+        let mut file = std::fs::File::create(&path).unwrap();
+        std::io::Write::write_all(&mut file, &header_len.to_le_bytes()).unwrap();
+        std::io::Write::write_all(&mut file, header_bytes).unwrap();
+        std::io::Write::write_all(&mut file, a_bytes).unwrap();
+        std::io::Write::write_all(&mut file, b_bytes).unwrap();
+        drop(file);
+
+        // Load via FFI path
+        let tensors = load_safetensors(&path, None).expect("load_safetensors should succeed");
+        assert!(
+            tensors.contains_key("a"),
+            "loaded tensors should contain 'a'"
+        );
+        assert!(
+            tensors.contains_key("b"),
+            "loaded tensors should contain 'b'"
+        );
+
+        let ta = tensors.get("a").unwrap();
+        let tb = tensors.get("b").unwrap();
+        assert_eq!(ta.shape(), vec![2, 3]);
+        assert_eq!(ta.dtype(), MlxDtype::Float32);
+        assert_eq!(tb.shape(), vec![4]);
+
+        eval(&[ta, tb]);
+        assert_eq!(ta.data_f32(), &[0.0, 0.5, 1.0, 1.5, 2.0, 2.5]);
+        assert_eq!(tb.data_f32(), &[10.0, 20.0, 30.0, 40.0]);
+
+        // Load via mmap path
+        let mmap_tensors = load_safetensors_mmap(&path).expect("mmap load should succeed");
+        let ma = mmap_tensors.get("a").unwrap();
+        let mb = mmap_tensors.get("b").unwrap();
+        eval(&[ma, mb]);
+        assert_eq!(ma.data_f32(), &[0.0, 0.5, 1.0, 1.5, 2.0, 2.5]);
+        assert_eq!(mb.data_f32(), &[10.0, 20.0, 30.0, 40.0]);
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

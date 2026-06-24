@@ -2,7 +2,7 @@ use std::ffi::CString;
 use std::ptr;
 
 use crate::array::{MlxArray, MlxDtype};
-use crate::error::{install_recoverable_error_handler, last_error_message, take_last_error};
+use crate::error::{last_error_message, panic_on_status, prepare_error_capture, status_to_result};
 use crate::ffi;
 use crate::stream::{MlxStream, default_gpu_raw};
 
@@ -27,7 +27,7 @@ impl MlxMetalKernel {
         header: &str,
         ensure_row_contiguous: bool,
     ) -> Self {
-        install_recoverable_error_handler();
+        prepare_error_capture();
         unsafe {
             let c_name = CString::new(name).expect("Metal kernel name must not contain NUL bytes");
             let c_source =
@@ -50,6 +50,10 @@ impl MlxMetalKernel {
 
             ffi::mlx_vector_string_free(inputs);
             ffi::mlx_vector_string_free(outputs);
+
+            if inner.ctx.is_null() {
+                panic!("{}", last_error_message("mlx_fast_metal_kernel_new"));
+            }
 
             Self {
                 inner,
@@ -94,9 +98,8 @@ impl MlxMetalKernel {
     }
 
     /// Call the kernel with template arguments, surfacing MLX errors as `Err`
-    /// instead of killing the process (mlx-c's default error handler calls
-    /// `exit(-1)`; the recording handler installed by this crate keeps the
-    /// process alive so the status code can be checked).
+    /// instead of killing the process (the recording handler installed by this
+    /// crate keeps the process alive so the status code can be checked).
     ///
     /// Note that MLX evaluation is lazy: kernel-source compile errors only
     /// surface when the returned arrays are evaluated, so callers must pair
@@ -110,26 +113,39 @@ impl MlxMetalKernel {
         thread_group: (i32, i32, i32),
         s: Option<&MlxStream>,
     ) -> Result<Vec<MlxArray>, String> {
-        install_recoverable_error_handler();
-        let _ = take_last_error();
+        prepare_error_capture();
         unsafe {
             let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
 
             // Build input vector.
             let in_vec = ffi::mlx_vector_array_new();
             for arr in inputs {
-                ffi::mlx_vector_array_append_value(in_vec, arr.inner);
+                prepare_error_capture();
+                let rc = ffi::mlx_vector_array_append_value(in_vec, arr.inner);
+                panic_on_status("mlx_vector_array_append_value", rc);
             }
 
             // Build config.
             let config = ffi::mlx_fast_metal_kernel_config_new();
+            if config.ctx.is_null() {
+                ffi::mlx_vector_array_free(in_vec);
+                return Err(last_error_message("mlx_fast_metal_kernel_config_new"));
+            }
             for spec in output_specs {
-                ffi::mlx_fast_metal_kernel_config_add_output_arg(
+                prepare_error_capture();
+                let rc = ffi::mlx_fast_metal_kernel_config_add_output_arg(
                     config,
                     spec.shape.as_ptr(),
                     spec.shape.len(),
                     spec.dtype.to_ffi(),
                 );
+                if let Err(message) =
+                    status_to_result("mlx_fast_metal_kernel_config_add_output_arg", rc)
+                {
+                    ffi::mlx_vector_array_free(in_vec);
+                    ffi::mlx_fast_metal_kernel_config_free(config);
+                    return Err(message);
+                }
             }
             let mut template_names = Vec::with_capacity(template_args.len());
             for arg in template_args {
@@ -137,38 +153,80 @@ impl MlxMetalKernel {
                     .expect("Metal kernel template argument names must not contain NUL bytes");
                 match *arg {
                     KernelTemplateArg::Dtype { dtype, .. } => {
-                        ffi::mlx_fast_metal_kernel_config_add_template_arg_dtype(
+                        prepare_error_capture();
+                        let rc = ffi::mlx_fast_metal_kernel_config_add_template_arg_dtype(
                             config,
                             name.as_ptr(),
                             dtype.to_ffi(),
                         );
+                        if let Err(message) = status_to_result(
+                            "mlx_fast_metal_kernel_config_add_template_arg_dtype",
+                            rc,
+                        ) {
+                            ffi::mlx_vector_array_free(in_vec);
+                            ffi::mlx_fast_metal_kernel_config_free(config);
+                            return Err(message);
+                        }
                     }
                     KernelTemplateArg::Int { value, .. } => {
-                        ffi::mlx_fast_metal_kernel_config_add_template_arg_int(
+                        prepare_error_capture();
+                        let rc = ffi::mlx_fast_metal_kernel_config_add_template_arg_int(
                             config,
                             name.as_ptr(),
                             value,
                         );
+                        if let Err(message) = status_to_result(
+                            "mlx_fast_metal_kernel_config_add_template_arg_int",
+                            rc,
+                        ) {
+                            ffi::mlx_vector_array_free(in_vec);
+                            ffi::mlx_fast_metal_kernel_config_free(config);
+                            return Err(message);
+                        }
                     }
                     KernelTemplateArg::Bool { value, .. } => {
-                        ffi::mlx_fast_metal_kernel_config_add_template_arg_bool(
+                        prepare_error_capture();
+                        let rc = ffi::mlx_fast_metal_kernel_config_add_template_arg_bool(
                             config,
                             name.as_ptr(),
                             value,
                         );
+                        if let Err(message) = status_to_result(
+                            "mlx_fast_metal_kernel_config_add_template_arg_bool",
+                            rc,
+                        ) {
+                            ffi::mlx_vector_array_free(in_vec);
+                            ffi::mlx_fast_metal_kernel_config_free(config);
+                            return Err(message);
+                        }
                     }
                 }
                 template_names.push(name);
             }
-            ffi::mlx_fast_metal_kernel_config_set_grid(config, grid.0, grid.1, grid.2);
-            ffi::mlx_fast_metal_kernel_config_set_thread_group(
+            prepare_error_capture();
+            let rc = ffi::mlx_fast_metal_kernel_config_set_grid(config, grid.0, grid.1, grid.2);
+            if let Err(message) = status_to_result("mlx_fast_metal_kernel_config_set_grid", rc) {
+                ffi::mlx_vector_array_free(in_vec);
+                ffi::mlx_fast_metal_kernel_config_free(config);
+                return Err(message);
+            }
+            prepare_error_capture();
+            let rc = ffi::mlx_fast_metal_kernel_config_set_thread_group(
                 config,
                 thread_group.0,
                 thread_group.1,
                 thread_group.2,
             );
+            if let Err(message) =
+                status_to_result("mlx_fast_metal_kernel_config_set_thread_group", rc)
+            {
+                ffi::mlx_vector_array_free(in_vec);
+                ffi::mlx_fast_metal_kernel_config_free(config);
+                return Err(message);
+            }
 
             let mut out_vec = ffi::mlx_vector_array_new();
+            prepare_error_capture();
             let rc =
                 ffi::mlx_fast_metal_kernel_apply(&mut out_vec, self.inner, in_vec, config, stream);
 
@@ -188,7 +246,12 @@ impl MlxMetalKernel {
             let mut result = Vec::with_capacity(n);
             for i in 0..n {
                 let mut arr = MlxArray::empty();
-                ffi::mlx_vector_array_get(&mut arr.inner, out_vec, i);
+                prepare_error_capture();
+                let rc = ffi::mlx_vector_array_get(&mut arr.inner, out_vec, i);
+                if let Err(message) = status_to_result("mlx_vector_array_get", rc) {
+                    ffi::mlx_vector_array_free(out_vec);
+                    return Err(message);
+                }
                 result.push(arr);
             }
             ffi::mlx_vector_array_free(out_vec);
@@ -232,7 +295,9 @@ fn build_string_vec(strs: &[&str]) -> ffi::mlx_vector_string {
         for s in strs {
             let cs =
                 CString::new(*s).expect("Metal kernel argument names must not contain NUL bytes");
-            ffi::mlx_vector_string_append_value(vec, cs.as_ptr());
+            prepare_error_capture();
+            let rc = ffi::mlx_vector_string_append_value(vec, cs.as_ptr());
+            panic_on_status("mlx_vector_string_append_value", rc);
         }
         vec
     }
@@ -245,7 +310,7 @@ mod tests {
 
     #[test]
     fn broken_kernel_source_surfaces_err_and_leaves_mlx_usable() {
-        // A kernel with an MSL syntax error. With mlx-c's default error
+        // A kernel with an MSL syntax error. Without the recording error
         // handler this would exit(-1) the whole process at eval time; the
         // recording handler turns it into an Err from try_eval.
         let kernel = MlxMetalKernel::new(
