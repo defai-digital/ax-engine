@@ -9,6 +9,7 @@ use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 
 use crate::fastpath;
+use crate::per_layer_compile::apply_layer_dense_ffn_decode;
 use crate::weights::{LayerWeights, QuantizedWeight};
 
 use super::super::config::{GlmRouterConfig, ModelConfig};
@@ -1019,6 +1020,7 @@ pub(crate) fn ffn_swiglu(
     w: &LayerWeights,
     x: &MlxArray,
     post_norm: Option<&MlxArray>,
+    layer_idx: usize,
 ) -> MlxArray {
     let seq = x.shape().get(1).copied().unwrap_or(1);
     let profile_decode = seq == 1 && decode_profile_enabled();
@@ -1038,6 +1040,56 @@ pub(crate) fn ffn_swiglu(
         rotated
     };
     let x = &smoothed;
+
+    // Try compiled dense FFN decode closure (gated by AX_MLX_DENSE_FFN_COMPILE).
+    // Only for SwiGLU with packed gate_up: GEGLU's `gelu_approx` tree aborts
+    // under MLX compilation, and the split gate/up path needs two separate
+    // quantized matmuls that don't fit the single-projection closure design.
+    // The packed gate_up → split → SiLU → down chain is compiled into a
+    // single graph, collapsing ~6 dispatches per layer into one. Every MLX
+    // array the graph depends on is threaded through as an explicit input.
+    if seq == 1
+        && !cfg.uses_geglu
+        && fastpath::dense_ffn_compile_enabled()
+        && let Some(packed) = &w.gate_up_packed
+    {
+        let packed_dim = packed
+            .weight
+            .shape()
+            .last()
+            .copied()
+            .expect("packed FFN weight must have a last dimension");
+        let half_dim = packed_dim / 2;
+        let down_qw = w.down_proj.as_ref();
+        let (inputs, schema) = flatten_dense_ffn_inputs(x, Some(packed), down_qw, post_norm);
+        let input_refs: Vec<&MlxArray> = inputs.iter().collect();
+        let eps = cfg.rms_norm_eps;
+        let compiled_result =
+            apply_layer_dense_ffn_decode(layer_idx, &input_refs, move |inputs: &MlxVectorArray| {
+                let x = inputs.get(0);
+                let (gate_up_qw, down_qw, post_norm) = schema.rebuild(inputs);
+                let gate_up = gate_up_qw
+                    .as_ref()
+                    .expect("dense FFN compile: gate_up weight required");
+                let gate_up_out = qw(&x, gate_up);
+                let gate = slice_last_dim(&gate_up_out, 0, half_dim, None);
+                let up = slice_last_dim(&gate_up_out, half_dim, half_dim * 2, None);
+                let ffn_hidden = silu_mul(&gate, &up, None);
+                let down = down_qw
+                    .as_ref()
+                    .expect("dense FFN compile: down weight required");
+                let out = qw(&ffn_hidden, down);
+                if let Some(norm_w) = post_norm {
+                    vec![rms_norm(&out, Some(&norm_w), eps, None)]
+                } else {
+                    vec![out]
+                }
+            });
+        if let Some(result) = compiled_result.and_then(|r| r.into_iter().next()) {
+            return result;
+        }
+    }
+
     let gate_up_started = Instant::now();
     let packed_gate_up: Option<MlxArray>;
     let mut gate_up_profile_recorded = false;
@@ -2037,6 +2089,66 @@ impl CompiledMoeSchema {
             self.shared.map(|i| inputs.get(i)),
         )
     }
+}
+
+// ---------------------------------------------------------------------------
+// Dense FFN compile schema (mirrors CompiledMoeSchema for MoE layers).
+//
+// All MLX arrays the compiled dense FFN closure depends on are threaded
+// through as explicit inputs. `group_size` / `bits` / `half_dim` are
+// plain scalars and stay captured in the closure.
+// ---------------------------------------------------------------------------
+
+/// Index layout for one dense FFN's weight tensors threaded through the
+/// compiled closure as explicit inputs.
+///
+/// Mirrors [`CompiledMoeSchema`]: the gate_up and down quantized weights
+/// plus the optional post-norm are passed positionally in the input vector.
+pub(crate) struct CompiledDenseFfnSchema {
+    gate_up: Option<QuantInputSlot>,
+    down: Option<QuantInputSlot>,
+    post_norm: Option<usize>,
+}
+
+impl CompiledDenseFfnSchema {
+    /// Rebuild the dense FFN weights from the closure's input vector.
+    pub(crate) fn rebuild(
+        &self,
+        inputs: &MlxVectorArray,
+    ) -> (
+        Option<QuantizedWeight>,
+        Option<QuantizedWeight>,
+        Option<MlxArray>,
+    ) {
+        (
+            self.gate_up.map(|s| s.rebuild(inputs)),
+            self.down.map(|s| s.rebuild(inputs)),
+            self.post_norm.map(|i| inputs.get(i)),
+        )
+    }
+}
+
+/// Flatten every MLX array the dense FFN forward depends on into an explicit
+/// input vector, returning the vector plus a [`CompiledDenseFfnSchema`] that
+/// records where each tensor landed.
+pub(crate) fn flatten_dense_ffn_inputs(
+    x: &MlxArray,
+    gate_up: Option<&QuantizedWeight>,
+    down: Option<&QuantizedWeight>,
+    post_norm: Option<&MlxArray>,
+) -> (Vec<MlxArray>, CompiledDenseFfnSchema) {
+    let mut inputs: Vec<MlxArray> = vec![x.clone()];
+    let gate_up_slot = push_quant_inputs(&mut inputs, gate_up);
+    let down_slot = push_quant_inputs(&mut inputs, down);
+    let post_norm_idx = push_optional_input(&mut inputs, post_norm);
+    (
+        inputs,
+        CompiledDenseFfnSchema {
+            gate_up: gate_up_slot,
+            down: down_slot,
+            post_norm: post_norm_idx,
+        },
+    )
 }
 
 // ---------------------------------------------------------------------------

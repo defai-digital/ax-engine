@@ -156,7 +156,7 @@ pub(crate) fn layer_forward(
             moe_experts_forward(cfg, w, &normed2, &top_k_indices, &top_k_weights)
         }
     } else {
-        ffn_swiglu(cfg, w, &normed2, None)
+        ffn_swiglu(cfg, w, &normed2, None, layer_idx)
     };
     let ffn_out = rms_norm_opt(&out, w.ffn_post_norm.as_ref(), cfg.rms_norm_eps);
     if let Some(started) = ffn_started {

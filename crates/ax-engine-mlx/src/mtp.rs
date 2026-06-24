@@ -483,7 +483,7 @@ fn mtp_head_forward_inner(
             }
             out
         } else {
-            ffn_swiglu(cfg, &head.ffn_layer, &normed, None)
+            ffn_swiglu(cfg, &head.ffn_layer, &normed, None, 0)
         };
         h = add(&h, &ffn_out, None);
     }
@@ -1368,6 +1368,7 @@ pub fn glm_mtp_head_forward(
             &head.layer,
             &normed2,
             head.layer.ffn_post_norm.as_ref(),
+            0,
         )
     };
 

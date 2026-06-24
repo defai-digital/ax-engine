@@ -50,6 +50,15 @@ static LAYER_DECODE_CACHE: OnceLock<Mutex<HashMap<(usize, ThreadId), MlxClosure>
 static LAYER_MOE_DECODE_CACHE: OnceLock<Mutex<HashMap<(usize, ThreadId), MlxClosure>>> =
     OnceLock::new();
 
+/// Per-layer dense FFN decode closure cache.
+///
+/// Maps `(layer_index, thread_id)` to a compiled closure that performs
+/// a single dense FFN layer's decode step (gate_up → split → activation →
+/// down → optional post-norm). All weight tensors are passed as explicit
+/// inputs to satisfy MLX's no-uncaptured-inputs contract.
+static LAYER_DENSE_FFN_DECODE_CACHE: OnceLock<Mutex<HashMap<(usize, ThreadId), MlxClosure>>> =
+    OnceLock::new();
+
 /// Apply a per-layer decode closure, compiling it on first use.
 ///
 /// The closure takes:
@@ -166,6 +175,70 @@ pub fn apply_layer_moe_decode(
     None
 }
 
+/// Apply a compiled dense FFN decode closure for a single layer.
+///
+/// `inputs` is the full positional input vector the compiled function
+/// depends on. By contract `inputs[0]` is the post-norm hidden state and
+/// the remaining entries are the FFN weight tensors (gate_up, down,
+/// optional post-norm) plus any captured scales/biases. Passing every
+/// dependency explicitly is required: MLX rejects compiling a function
+/// that references arrays captured from the closure environment.
+///
+/// The closure returns `outputs[0]`: the dense FFN output
+/// `[1, 1, hidden_dim]`.
+///
+/// The compiled closure is cached per `(layer_index, thread_id)` and
+/// reused across decode steps. `shapeless=true` is safe because hidden
+/// dim is constant per model; the only varying dimension (seq) is always
+/// 1 in decode.
+///
+/// Gated by `AX_MLX_DENSE_FFN_COMPILE` (default OFF). Returns `None`
+/// when the flag is off, compilation fails, or the closure cannot be
+/// applied.
+pub fn apply_layer_dense_ffn_decode(
+    layer_index: usize,
+    inputs: &[&MlxArray],
+    ffn_fn: impl Fn(&MlxVectorArray) -> Vec<MlxArray> + Send + 'static,
+) -> Option<Vec<MlxArray>> {
+    if !crate::fastpath::dense_ffn_compile_enabled() {
+        return None;
+    }
+    let cache = LAYER_DENSE_FFN_DECODE_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let tid = std::thread::current().id();
+
+    let guard = cache.lock().ok()?;
+    if let Some(closure) = guard.get(&(layer_index, tid)) {
+        return std::panic::catch_unwind(AssertUnwindSafe(|| closure.try_apply(inputs).ok()))
+            .ok()
+            .flatten();
+    }
+    drop(guard);
+
+    let mut guard = cache.lock().ok()?;
+    if let std::collections::hash_map::Entry::Vacant(slot) = guard.entry((layer_index, tid)) {
+        let closure = MlxClosure::new_dyn(ffn_fn);
+        if let Ok(compiled) = closure.compile(true) {
+            let result =
+                std::panic::catch_unwind(AssertUnwindSafe(|| compiled.try_apply(inputs).ok()))
+                    .ok()
+                    .flatten();
+            slot.insert(compiled);
+            return result;
+        }
+    }
+
+    None
+}
+
+/// Clear the per-layer dense FFN decode closure cache.
+pub fn clear_layer_dense_ffn_decode_cache() {
+    if let Some(cache) = LAYER_DENSE_FFN_DECODE_CACHE.get()
+        && let Ok(mut guard) = cache.lock()
+    {
+        guard.clear();
+    }
+}
+
 /// Clear the per-layer MoE decode closure cache.
 pub fn clear_layer_moe_decode_cache() {
     if let Some(cache) = LAYER_MOE_DECODE_CACHE.get()
@@ -187,5 +260,10 @@ mod tests {
     #[test]
     fn test_clear_moe_cache_does_not_panic() {
         clear_layer_moe_decode_cache();
+    }
+
+    #[test]
+    fn test_clear_dense_ffn_cache_does_not_panic() {
+        clear_layer_dense_ffn_decode_cache();
     }
 }

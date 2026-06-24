@@ -910,7 +910,7 @@ fn gemma4_assistant_layer_forward(
     // target's dense layers, so mirror families::standard::layer_forward here.
     // Dropping either drifts the hidden state across the 4 assistant layers and
     // tanks the draft accept rate.
-    let ffn = ffn_swiglu(cfg, w, &normed2, w.ffn_post_norm.as_ref());
+    let ffn = ffn_swiglu(cfg, w, &normed2, w.ffn_post_norm.as_ref(), layer_idx);
     Ok(if let Some(scalar) = &w.layer_scalar {
         add_then_multiply_scalar(&hidden, &ffn, scalar)
     } else {
@@ -1011,7 +1011,7 @@ fn layer_forward_dense_embed(
 
     // 14-17. Pre-FFN norm, dense SwiGLU, residual.
     let normed2 = rms_norm(&hidden, Some(&w.ffn_norm), cfg.rms_norm_eps, None);
-    let ffn_out = ffn_swiglu(cfg, w, &normed2, None);
+    let ffn_out = ffn_swiglu(cfg, w, &normed2, None, layer_idx);
     add(&hidden, &ffn_out, None)
 }
 
@@ -2733,7 +2733,7 @@ mod tests {
         weights.down_proj = Some(dense_weight(&[cfg.hidden_size as i32, 6]));
         let x = zeros(&[1, 2, cfg.hidden_size as i32], MlxDtype::Float32, None);
 
-        let out = ffn_swiglu(&cfg, &weights, &x, None);
+        let out = ffn_swiglu(&cfg, &weights, &x, None, 0);
 
         eval(&[&out]);
         assert_eq!(out.shape(), vec![1, 2, cfg.hidden_size as i32]);

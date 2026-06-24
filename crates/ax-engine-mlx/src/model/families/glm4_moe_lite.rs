@@ -63,7 +63,7 @@ pub(crate) fn layer_forward(
         rms_norm_opt(&out, w.ffn_post_norm.as_ref(), cfg.rms_norm_eps)
     } else {
         // Dense FFN (first_dense_layer_count layers).
-        ffn_swiglu(cfg, w, &normed2, w.ffn_post_norm.as_ref())
+        ffn_swiglu(cfg, w, &normed2, w.ffn_post_norm.as_ref(), layer_idx)
     };
     if let Some(started) = ffn_started {
         forward_profile_eval_elapsed(

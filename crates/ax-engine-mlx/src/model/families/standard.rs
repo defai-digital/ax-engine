@@ -517,7 +517,7 @@ pub(crate) fn layer_forward(
         if cfg.gemma4_moe_router {
             // Gemma4 dual-path: dense sub-block + expert sub-block.
             let dense_started = profile_gemma4_moe_decode.then(Instant::now);
-            let h1 = ffn_swiglu(cfg, w, &normed2, w.ffn_post_norm1.as_ref());
+            let h1 = ffn_swiglu(cfg, w, &normed2, w.ffn_post_norm1.as_ref(), layer_idx);
             if let Some(started) = dense_started {
                 profile_eval_elapsed(
                     profile_gemma4_moe_decode,
@@ -661,7 +661,7 @@ pub(crate) fn layer_forward(
         }
     } else {
         // Dense path (Qwen3, Gemma4 non-MoE layers).
-        ffn_swiglu(cfg, w, &normed2, w.ffn_post_norm.as_ref())
+        ffn_swiglu(cfg, w, &normed2, w.ffn_post_norm.as_ref(), layer_idx)
     };
     if let Some(started) = ffn_started {
         forward_profile_eval_elapsed(
@@ -855,7 +855,7 @@ pub(crate) fn layer_forward_bidirectional(
     // FFN: MoE or dense (identical to causal forward).
     let ffn_out = if w.router_proj.is_some() {
         if cfg.gemma4_moe_router {
-            let h1 = ffn_swiglu(cfg, w, &normed2, w.ffn_post_norm1.as_ref());
+            let h1 = ffn_swiglu(cfg, w, &normed2, w.ffn_post_norm1.as_ref(), layer_idx);
             let h2_norm = w
                 .ffn_norm2
                 .as_ref()
@@ -892,7 +892,7 @@ pub(crate) fn layer_forward_bidirectional(
             rms_norm_opt(&out, w.ffn_post_norm.as_ref(), cfg.rms_norm_eps)
         }
     } else {
-        ffn_swiglu(cfg, w, &normed2, w.ffn_post_norm.as_ref())
+        ffn_swiglu(cfg, w, &normed2, w.ffn_post_norm.as_ref(), layer_idx)
     };
 
     // Residual + per-layer input gating.

@@ -570,6 +570,22 @@ env_flag_default_on!(
 );
 
 env_flag!(
+    /// `AX_MLX_DENSE_FFN_COMPILE` — enable per-layer compiled dense FFN
+    /// decode closure.
+    ///
+    /// **Default: OFF** (opt-in). Each dense FFN layer's decode forward is
+    /// wrapped in an `MlxClosure` compiled via `mlx_compile` with
+    /// `shapeless=true`, collapsing the gate_up projection + split + SwiGLU
+    /// activation + down projection + optional post-norm into a single
+    /// compiled graph. Only engages for `seq == 1` (decode) and SwiGLU
+    /// activation families (GEGLU's `gelu_approx` tree is known to abort
+    /// under MLX compilation). Falls back to the uncompiled path on
+    /// compilation failure.
+    dense_ffn_compile_enabled,
+    "AX_MLX_DENSE_FFN_COMPILE"
+);
+
+env_flag!(
     /// `AX_MLX_MOE_FUSED_EXPERT_BLOCK` — enable fused MoE expert block
     /// Metal kernel for decode.
     ///
