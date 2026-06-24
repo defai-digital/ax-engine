@@ -62,8 +62,13 @@
 //! and a follow-up ADR can propose the type change once we have AX-
 //! specific evidence of a regression that the audit alone cannot catch.
 //!
-//! See `.internal/audit/PHASE3-MLX-STREAM-OWNERSHIP-AUDIT.md` for the
-//! call-site inventory and blast-radius estimate.
+//! The call-site inventory and `!Send` blast-radius estimate live in the
+//! "Audit and probe coverage" section of `docs/MLX-BACKEND.md`. In short:
+//! the only runtime owner is `MlxRunner`, which constructs exactly one
+//! stream (`crates/ax-engine-mlx/src/runner.rs`, `MlxStream::new_gpu()`
+//! followed by `set_as_default()`) on its build thread, holds it as a
+//! liveness-only `_stream` field, and never re-dispatches or sends it
+//! across threads.
 
 use std::cell::RefCell;
 use std::ptr;
