@@ -47,8 +47,12 @@ static LAYER_DECODE_CACHE: OnceLock<Mutex<HashMap<(usize, ThreadId), MlxClosure>
 /// Maps `(layer_index, thread_id)` to a compiled closure that performs
 /// a single MoE layer's decode step (router output → expert forward →
 /// weighted sum). Inputs are `(hidden, top_k_indices, top_k_weights)`.
-static LAYER_MOE_DECODE_CACHE: OnceLock<Mutex<HashMap<(usize, ThreadId), MlxClosure>>> =
-    OnceLock::new();
+// Value is `Option<MlxClosure>`: `Some` is a working compiled closure reused
+// across decode steps; `None` records a layer whose compiled MoE closure failed
+// to compile or apply, so we fall back to the imperative path permanently
+// instead of retrying (and re-flooding MLX errors) on every step.
+type MoeDecodeCache = OnceLock<Mutex<HashMap<(usize, ThreadId), Option<MlxClosure>>>>;
+static LAYER_MOE_DECODE_CACHE: MoeDecodeCache = OnceLock::new();
 
 /// Per-layer dense FFN decode closure cache.
 ///
@@ -146,14 +150,21 @@ pub fn apply_layer_moe_decode(
     let tid = std::thread::current().id();
 
     let guard = cache.lock().ok()?;
-    if let Some(closure) = guard.get(&(layer_index, tid)) {
-        // Use catch_unwind to handle panics from the compiled closure
-        // gracefully. MLX's thread-local stream registry can become
-        // invalid in long-running processes, causing abort inside
-        // mlx_closure_apply.
-        return std::panic::catch_unwind(AssertUnwindSafe(|| closure.try_apply(inputs).ok()))
-            .ok()
-            .flatten();
+    if let Some(entry) = guard.get(&(layer_index, tid)) {
+        return match entry {
+            // Use catch_unwind to handle panics from the compiled closure
+            // gracefully. MLX's thread-local stream registry can become
+            // invalid in long-running processes, causing abort inside
+            // mlx_closure_apply.
+            Some(closure) => {
+                std::panic::catch_unwind(AssertUnwindSafe(|| closure.try_apply(inputs).ok()))
+                    .ok()
+                    .flatten()
+            }
+            // Known-incompatible for this layer: skip straight to the
+            // imperative fallback instead of re-attempting every decode step.
+            None => None,
+        };
     }
     drop(guard);
 
@@ -167,9 +178,16 @@ pub fn apply_layer_moe_decode(
                 std::panic::catch_unwind(AssertUnwindSafe(|| compiled.try_apply(inputs).ok()))
                     .ok()
                     .flatten();
-            slot.insert(compiled);
+            // Cache the compiled closure only if its first apply produced
+            // output. If it failed (e.g. a model whose MoE graph the compiled
+            // path cannot shape-infer), record `None` so later steps fall back
+            // to the imperative path without retrying and re-flooding errors.
+            slot.insert(result.is_some().then_some(compiled));
             return result;
         }
+        // Compilation itself failed: record incompatible so we do not recompile
+        // on every decode step.
+        slot.insert(None);
     }
 
     None
