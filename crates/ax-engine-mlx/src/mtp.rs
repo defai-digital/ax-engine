@@ -1,9 +1,10 @@
 use mlx_sys::{
-    MlxArray, MlxDtype, ScaledDotProductAttentionMask, add, argmax, astype, concatenate, eval,
-    multiply, random_categorical, reshape, rms_norm, scaled_dot_product_attention_with_mask,
-    sigmoid, slice, softmax, take,
+    MlxArray, MlxClosure, MlxDtype, MlxVectorArray, ScaledDotProductAttentionMask, add, argmax,
+    astype, concatenate, eval, multiply, random_categorical, reshape, rms_norm,
+    scaled_dot_product_attention_with_mask, sigmoid, slice, softmax, take,
 };
 
+use crate::fastpath;
 use crate::kv_cache::MlxKVCache;
 use crate::model::shared::{
     apply_final_logit_softcap, ffn_swiglu, flatten_attention_output_bhsd,
@@ -490,6 +491,147 @@ pub fn mtp_head_step(
     Some((post_norm_hidden, logits))
 }
 
+// ---------------------------------------------------------------------------
+// Compiled MTP draft head
+// ---------------------------------------------------------------------------
+
+/// Build a compiled closure that runs the full multi-depth Qwen MTP draft
+/// chain in a single `mlx_compile`-fused dispatch.
+///
+/// The closure body traces D iterations of `mtp_head_forward` +
+/// `mtp_hidden_post_norm` + `mtp_post_norm_to_logits`, chaining hidden state
+/// and token (via lazy argmax or `random_categorical`) across depths.  The
+/// compiled graph replays the full chain in one dispatch, reducing ~25 × D
+/// MLX C-API calls to a single compiled-graph apply.
+///
+/// `temperature`: when > 0, token chaining uses `random_categorical` (GPU
+/// sampling); when ≤ 0, uses lazy argmax (greedy / sampled paths).
+///
+/// Returns `None` when the kill switch `AX_MTP_COMPILED_HEAD=0` is set or
+/// compilation fails.
+fn build_compiled_mtp_draft(
+    head: &MtpWeights,
+    weights: &ModelWeights,
+    cfg: &ModelConfig,
+    cache: &mut MlxKVCache,
+    max_depth: usize,
+    temperature: f32,
+) -> Option<MlxClosure> {
+    if !fastpath::mtp_compiled_head_enabled() {
+        return None;
+    }
+    let cfg_addr = cfg as *const ModelConfig as usize;
+    let weights_addr = weights as *const ModelWeights as usize;
+    let head_addr = head as *const MtpWeights as usize;
+    let cache_addr = cache as *mut MlxKVCache as usize;
+    let vocab = cfg.vocab_size as i32;
+
+    let closure = MlxClosure::new_dyn(move |inputs: &MlxVectorArray| -> Vec<MlxArray> {
+        let cfg_ref = unsafe { &*(cfg_addr as *const ModelConfig) };
+        let weights_ref = unsafe { &*(weights_addr as *const ModelWeights) };
+        let head_ref = unsafe { &*(head_addr as *const MtpWeights) };
+        let cache_ref = unsafe { &mut *(cache_addr as *mut MlxKVCache) };
+
+        let mut prev_hidden = inputs.get(0);
+        let mut prev_token_arr = inputs.get(1);
+        let base_offset = cache_ref.seq_len + cache_ref.rope_offset;
+
+        let mut outputs: Vec<MlxArray> = Vec::with_capacity(max_depth * 2);
+        for d in 0..max_depth {
+            let new_hidden = mtp_head_forward(
+                head_ref,
+                &prev_hidden,
+                &prev_token_arr,
+                weights_ref,
+                cache_ref,
+                cfg_ref,
+                Some(base_offset + d),
+            );
+            let post_norm = mtp_hidden_post_norm(&new_hidden, head_ref, cfg_ref);
+            let logits = mtp_post_norm_to_logits(&post_norm, weights_ref, cfg_ref);
+
+            let tok = if temperature > 0.0 {
+                let logits_2d = reshape(&logits, &[1_i32, vocab], None);
+                let inv_temp = MlxArray::from_f32(1.0 / temperature);
+                let scaled = multiply(&logits_2d, &inv_temp, None);
+                random_categorical(&scaled, None)
+            } else {
+                lazy_argmax_logits(&logits)
+            };
+
+            outputs.push(post_norm.clone());
+            outputs.push(logits);
+            prev_hidden = post_norm;
+            prev_token_arr = tok;
+        }
+        outputs
+    });
+    closure.compile(false).ok()
+}
+
+/// Build a compiled closure for the full multi-depth GLM MTP draft chain.
+///
+/// Same pattern as [`build_compiled_mtp_draft`] but uses
+/// `glm_mtp_head_forward` + `glm_mtp_hidden_to_logits`.
+fn build_compiled_glm_mtp_draft(
+    head: &GlmMtpWeights,
+    weights: &ModelWeights,
+    cfg: &ModelConfig,
+    cache: &mut MlxKVCache,
+    max_depth: usize,
+    temperature: f32,
+) -> Option<MlxClosure> {
+    if !fastpath::mtp_compiled_head_enabled() {
+        return None;
+    }
+    let cfg_addr = cfg as *const ModelConfig as usize;
+    let weights_addr = weights as *const ModelWeights as usize;
+    let head_addr = head as *const GlmMtpWeights as usize;
+    let cache_addr = cache as *mut MlxKVCache as usize;
+    let vocab = cfg.vocab_size as i32;
+
+    let closure = MlxClosure::new_dyn(move |inputs: &MlxVectorArray| -> Vec<MlxArray> {
+        let cfg_ref = unsafe { &*(cfg_addr as *const ModelConfig) };
+        let weights_ref = unsafe { &*(weights_addr as *const ModelWeights) };
+        let head_ref = unsafe { &*(head_addr as *const GlmMtpWeights) };
+        let cache_ref = unsafe { &mut *(cache_addr as *mut MlxKVCache) };
+
+        let mut prev_hidden = inputs.get(0);
+        let mut prev_token_arr = inputs.get(1);
+        let base_offset = cache_ref.seq_len + cache_ref.rope_offset;
+
+        let mut outputs: Vec<MlxArray> = Vec::with_capacity(max_depth * 2);
+        for d in 0..max_depth {
+            let new_hidden = glm_mtp_head_forward(
+                head_ref,
+                &prev_hidden,
+                &prev_token_arr,
+                weights_ref,
+                cache_ref,
+                cfg_ref,
+                Some(base_offset + d),
+            );
+            let logits = glm_mtp_hidden_to_logits(&new_hidden, head_ref, cfg_ref);
+
+            let tok = if temperature > 0.0 {
+                let logits_2d = reshape(&logits, &[1_i32, vocab], None);
+                let inv_temp = MlxArray::from_f32(1.0 / temperature);
+                let scaled = multiply(&logits_2d, &inv_temp, None);
+                random_categorical(&scaled, None)
+            } else {
+                lazy_argmax_logits(&logits)
+            };
+
+            outputs.push(new_hidden.clone());
+            outputs.push(logits);
+            prev_hidden = new_hidden;
+            prev_token_arr = tok;
+        }
+        outputs
+    });
+    closure.compile(false).ok()
+}
+
 /// Draft up to `head.max_depth` tokens by applying the MTP head recurrently.
 ///
 /// Returns `(draft_tokens, draft_log_probs, draft_distributions, added, top2_margins)`.
@@ -764,6 +906,50 @@ fn mtp_draft_tokens_greedy(
     max_depth: usize,
     vocab: i32,
 ) -> (Vec<u32>, Vec<f32>, Vec<TokenDistribution>, usize, [f32; 3]) {
+    // ── Compiled path ───────────────────────────────────────────────
+    if let Some(compiled) = build_compiled_mtp_draft(head, weights, cfg, cache, max_depth, 0.0) {
+        let seq_len_before = cache.seq_len;
+        let first_token_data = [first_token];
+        let first_token_arr = MlxArray::from_raw_data(
+            first_token_data.as_ptr() as *const u8,
+            4,
+            &[1_i32],
+            MlxDtype::Uint32,
+        );
+        match compiled.try_apply(&[first_hidden, &first_token_arr]) {
+            Ok(closure_outputs) => {
+                // closure_outputs = [post_norm_0, logits_0, post_norm_1, logits_1, ...]
+                let mut lazy_tokens: Vec<MlxArray> = Vec::with_capacity(max_depth);
+                let mut lazy_log_probs: Vec<MlxArray> = Vec::with_capacity(max_depth);
+                for d in 0..max_depth {
+                    let logits = &closure_outputs[d * 2 + 1];
+                    let lazy_tok = lazy_argmax_logits(logits);
+                    let lazy_lp = gpu_draft_log_prob_lazy(logits, &lazy_tok, 1.0, vocab);
+                    lazy_tokens.push(lazy_tok);
+                    lazy_log_probs.push(lazy_lp);
+                }
+                let mut all_refs: Vec<&MlxArray> = Vec::with_capacity(max_depth * 2);
+                for t in &lazy_tokens {
+                    all_refs.push(t);
+                }
+                for lp in &lazy_log_probs {
+                    all_refs.push(lp);
+                }
+                eval(&all_refs);
+                let draft_tokens: Vec<u32> = lazy_tokens.iter().map(|a| a.data_u32()[0]).collect();
+                let draft_log_probs: Vec<f32> =
+                    lazy_log_probs.iter().map(|a| a.data_f32()[0]).collect();
+                let added = draft_tokens.len();
+                cache.seq_len = seq_len_before + added;
+                return (draft_tokens, draft_log_probs, vec![], added, [0.0f32; 3]);
+            }
+            Err(_) => {
+                cache.seq_len = seq_len_before;
+            }
+        }
+    }
+
+    // ── Imperative fallback ─────────────────────────────────────────
     let mut lazy_tokens: Vec<MlxArray> = Vec::with_capacity(max_depth);
     let mut lazy_log_probs: Vec<MlxArray> = Vec::with_capacity(max_depth);
     let mut prev_hidden = first_hidden.clone();
@@ -791,7 +977,7 @@ fn mtp_draft_tokens_greedy(
 
         // Lazy argmax — NOT evaluated yet.
         let lazy_tok = lazy_argmax_logits(&logits);
-        // Compute draft log-prob at T=1.0 (model's own confidence in its argmax
+        // Compute draft log-prob at T=1.0 (model’s own confidence in its argmax
         // choice), staying in the lazy graph alongside the token selection.
         let lazy_lp = gpu_draft_log_prob_lazy(&logits, &lazy_tok, 1.0, vocab);
         lazy_tokens.push(lazy_tok.clone());
@@ -849,6 +1035,52 @@ fn mtp_draft_tokens_sampled(
     _rng: &mut Xorshift64,
 ) -> (Vec<u32>, Vec<f32>, Vec<TokenDistribution>, usize, [f32; 3]) {
     let temperature = head.draft_sampling.temperature;
+
+    // ── Compiled path ───────────────────────────────────────────────
+    // Sampled uses argmax for token selection (T=0 in closure), then
+    // temperature-scaled log-prob outside.
+    if let Some(compiled) = build_compiled_mtp_draft(head, weights, cfg, cache, max_depth, 0.0) {
+        let seq_len_before = cache.seq_len;
+        let first_token_data = [first_token];
+        let first_token_arr = MlxArray::from_raw_data(
+            first_token_data.as_ptr() as *const u8,
+            4,
+            &[1_i32],
+            MlxDtype::Uint32,
+        );
+        match compiled.try_apply(&[first_hidden, &first_token_arr]) {
+            Ok(closure_outputs) => {
+                let mut lazy_tokens: Vec<MlxArray> = Vec::with_capacity(max_depth);
+                let mut lazy_log_probs: Vec<MlxArray> = Vec::with_capacity(max_depth);
+                for d in 0..max_depth {
+                    let logits = &closure_outputs[d * 2 + 1];
+                    let lazy_tok = lazy_argmax_logits(logits);
+                    let lazy_lp = gpu_draft_log_prob_lazy(logits, &lazy_tok, temperature, vocab);
+                    lazy_tokens.push(lazy_tok);
+                    lazy_log_probs.push(lazy_lp);
+                }
+                let mut all_refs: Vec<&MlxArray> = Vec::with_capacity(max_depth * 2);
+                for t in &lazy_tokens {
+                    all_refs.push(t);
+                }
+                for lp in &lazy_log_probs {
+                    all_refs.push(lp);
+                }
+                eval(&all_refs);
+                let draft_tokens: Vec<u32> = lazy_tokens.iter().map(|a| a.data_u32()[0]).collect();
+                let draft_log_probs: Vec<f32> =
+                    lazy_log_probs.iter().map(|a| a.data_f32()[0]).collect();
+                let added = draft_tokens.len();
+                cache.seq_len = seq_len_before + added;
+                return (draft_tokens, draft_log_probs, vec![], added, [0.0f32; 3]);
+            }
+            Err(_) => {
+                cache.seq_len = seq_len_before;
+            }
+        }
+    }
+
+    // ── Imperative fallback ─────────────────────────────────────────
     let mut lazy_tokens: Vec<MlxArray> = Vec::with_capacity(max_depth);
     let mut lazy_log_probs: Vec<MlxArray> = Vec::with_capacity(max_depth);
 
@@ -928,6 +1160,61 @@ fn mtp_draft_tokens_stochastic(
     _rng: &mut Xorshift64,
 ) -> (Vec<u32>, Vec<f32>, Vec<TokenDistribution>, usize, [f32; 3]) {
     let temperature = head.draft_sampling.temperature;
+
+    // ── Compiled path ───────────────────────────────────────────────
+    // Stochastic uses random_categorical inside the closure (temperature > 0).
+    if let Some(compiled) =
+        build_compiled_mtp_draft(head, weights, cfg, cache, max_depth, temperature)
+    {
+        let seq_len_before = cache.seq_len;
+        let first_token_data = [first_token];
+        let first_token_arr = MlxArray::from_raw_data(
+            first_token_data.as_ptr() as *const u8,
+            4,
+            &[1_i32],
+            MlxDtype::Uint32,
+        );
+        match compiled.try_apply(&[first_hidden, &first_token_arr]) {
+            Ok(closure_outputs) => {
+                // closure_outputs has logits at odd indices; we need to
+                // re-derive tokens from logits via lazy_random_sample for
+                // log-prob consistency with the imperative path.
+                let mut lazy_tokens: Vec<MlxArray> = Vec::with_capacity(max_depth);
+                let mut lazy_log_probs: Vec<MlxArray> = Vec::with_capacity(max_depth);
+                for d in 0..max_depth {
+                    let logits = &closure_outputs[d * 2 + 1];
+                    let lazy_tok = if temperature > 0.0 {
+                        lazy_random_sample(logits, temperature, vocab)
+                    } else {
+                        lazy_argmax_logits(logits)
+                    };
+                    let lazy_lp =
+                        gpu_draft_log_prob_lazy(logits, &lazy_tok, temperature.max(1.0), vocab);
+                    lazy_tokens.push(lazy_tok);
+                    lazy_log_probs.push(lazy_lp);
+                }
+                let mut all_refs: Vec<&MlxArray> = Vec::with_capacity(max_depth * 2);
+                for t in &lazy_tokens {
+                    all_refs.push(t);
+                }
+                for lp in &lazy_log_probs {
+                    all_refs.push(lp);
+                }
+                eval(&all_refs);
+                let draft_tokens: Vec<u32> = lazy_tokens.iter().map(|a| a.data_u32()[0]).collect();
+                let draft_log_probs: Vec<f32> =
+                    lazy_log_probs.iter().map(|a| a.data_f32()[0]).collect();
+                let added = draft_tokens.len();
+                cache.seq_len = seq_len_before + added;
+                return (draft_tokens, draft_log_probs, vec![], added, [0.0f32; 3]);
+            }
+            Err(_) => {
+                cache.seq_len = seq_len_before;
+            }
+        }
+    }
+
+    // ── Imperative fallback ─────────────────────────────────────────
     let mut lazy_tokens: Vec<MlxArray> = Vec::with_capacity(max_depth);
     let mut lazy_log_probs: Vec<MlxArray> = Vec::with_capacity(max_depth);
 
@@ -1173,6 +1460,50 @@ fn glm_mtp_draft_tokens_greedy(
     max_depth: usize,
     vocab: i32,
 ) -> (Vec<u32>, Vec<f32>, Vec<TokenDistribution>, usize, [f32; 3]) {
+    // ── Compiled path ───────────────────────────────────────────────
+    if let Some(compiled) = build_compiled_glm_mtp_draft(head, weights, cfg, cache, max_depth, 0.0)
+    {
+        let seq_len_before = cache.seq_len;
+        let first_token_data = [first_token];
+        let first_token_arr = MlxArray::from_raw_data(
+            first_token_data.as_ptr() as *const u8,
+            4,
+            &[1_i32],
+            MlxDtype::Uint32,
+        );
+        match compiled.try_apply(&[first_hidden, &first_token_arr]) {
+            Ok(closure_outputs) => {
+                let mut lazy_tokens: Vec<MlxArray> = Vec::with_capacity(max_depth);
+                let mut lazy_log_probs: Vec<MlxArray> = Vec::with_capacity(max_depth);
+                for d in 0..max_depth {
+                    let logits = &closure_outputs[d * 2 + 1];
+                    let lazy_tok = lazy_argmax_logits(logits);
+                    let lazy_lp = gpu_draft_log_prob_lazy(logits, &lazy_tok, 1.0, vocab);
+                    lazy_tokens.push(lazy_tok);
+                    lazy_log_probs.push(lazy_lp);
+                }
+                let mut all_refs: Vec<&MlxArray> = Vec::with_capacity(max_depth * 2);
+                for t in &lazy_tokens {
+                    all_refs.push(t);
+                }
+                for lp in &lazy_log_probs {
+                    all_refs.push(lp);
+                }
+                eval(&all_refs);
+                let draft_tokens: Vec<u32> = lazy_tokens.iter().map(|a| a.data_u32()[0]).collect();
+                let draft_log_probs: Vec<f32> =
+                    lazy_log_probs.iter().map(|a| a.data_f32()[0]).collect();
+                let added = draft_tokens.len();
+                cache.seq_len = seq_len_before + added;
+                return (draft_tokens, draft_log_probs, vec![], added, [0.0f32; 3]);
+            }
+            Err(_) => {
+                cache.seq_len = seq_len_before;
+            }
+        }
+    }
+
+    // ── Imperative fallback ─────────────────────────────────────────
     let mut lazy_tokens: Vec<MlxArray> = Vec::with_capacity(max_depth);
     let mut lazy_log_probs: Vec<MlxArray> = Vec::with_capacity(max_depth);
     let mut prev_hidden = first_hidden.clone();
@@ -1231,6 +1562,57 @@ fn glm_mtp_draft_tokens_stochastic(
     vocab: i32,
 ) -> (Vec<u32>, Vec<f32>, Vec<TokenDistribution>, usize, [f32; 3]) {
     let temperature = head.draft_sampling.temperature;
+
+    // ── Compiled path ───────────────────────────────────────────────
+    if let Some(compiled) =
+        build_compiled_glm_mtp_draft(head, weights, cfg, cache, max_depth, temperature)
+    {
+        let seq_len_before = cache.seq_len;
+        let first_token_data = [first_token];
+        let first_token_arr = MlxArray::from_raw_data(
+            first_token_data.as_ptr() as *const u8,
+            4,
+            &[1_i32],
+            MlxDtype::Uint32,
+        );
+        match compiled.try_apply(&[first_hidden, &first_token_arr]) {
+            Ok(closure_outputs) => {
+                let mut lazy_tokens: Vec<MlxArray> = Vec::with_capacity(max_depth);
+                let mut lazy_log_probs: Vec<MlxArray> = Vec::with_capacity(max_depth);
+                for d in 0..max_depth {
+                    let logits = &closure_outputs[d * 2 + 1];
+                    let lazy_tok = if temperature > 0.0 {
+                        lazy_random_sample(logits, temperature, vocab)
+                    } else {
+                        lazy_argmax_logits(logits)
+                    };
+                    let lazy_lp =
+                        gpu_draft_log_prob_lazy(logits, &lazy_tok, temperature.max(1.0), vocab);
+                    lazy_tokens.push(lazy_tok);
+                    lazy_log_probs.push(lazy_lp);
+                }
+                let mut all_refs: Vec<&MlxArray> = Vec::with_capacity(max_depth * 2);
+                for t in &lazy_tokens {
+                    all_refs.push(t);
+                }
+                for lp in &lazy_log_probs {
+                    all_refs.push(lp);
+                }
+                eval(&all_refs);
+                let draft_tokens: Vec<u32> = lazy_tokens.iter().map(|a| a.data_u32()[0]).collect();
+                let draft_log_probs: Vec<f32> =
+                    lazy_log_probs.iter().map(|a| a.data_f32()[0]).collect();
+                let added = draft_tokens.len();
+                cache.seq_len = seq_len_before + added;
+                return (draft_tokens, draft_log_probs, vec![], added, [0.0f32; 3]);
+            }
+            Err(_) => {
+                cache.seq_len = seq_len_before;
+            }
+        }
+    }
+
+    // ── Imperative fallback ─────────────────────────────────────────
     let mut lazy_tokens: Vec<MlxArray> = Vec::with_capacity(max_depth);
     let mut lazy_log_probs: Vec<MlxArray> = Vec::with_capacity(max_depth);
     let mut prev_hidden = first_hidden.clone();

@@ -818,6 +818,23 @@ env_flag!(
     "AX_DIFFUSION_NO_COMPILED_FORWARD"
 );
 
+env_flag_default_on!(
+    /// `AX_MTP_COMPILED_HEAD` — compile the multi-depth MTP draft chain
+    /// into a single `mlx_compile`-fused closure dispatch.
+    ///
+    /// **Default: ON** (kill-switch via `AX_MTP_COMPILED_HEAD=0`).
+    ///
+    /// Wraps the full multi-depth MTP head recurrence (forward + post-norm +
+    /// logits across all D draft depths) in one `MlxClosure::compile` call,
+    /// reducing ~25 × D MLX C-API dispatch calls to a single compiled graph
+    /// dispatch and enabling cross-op kernel fusion.  The RoPE offset is
+    /// per-depth-correct during tracing (baked into the compiled graph); for
+    /// typical `rope_theta` values (≥ 500 000) the inter-depth offset error is
+    /// negligible and output correctness is preserved by target-model verify.
+    mtp_compiled_head_enabled,
+    "AX_MTP_COMPILED_HEAD"
+);
+
 env_flag!(
     /// `AX_DIFFUSION_NO_SKIP_COMMIT` — opt-out of the causal commit
     /// skip that is enabled by default on convergence with high

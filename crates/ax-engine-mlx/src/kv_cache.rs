@@ -2040,6 +2040,28 @@ impl MlxKVCache {
         valid
     }
 
+    /// Replace a standard KV layer's backing arrays directly.
+    ///
+    /// Used by the compiled MTP head path to sync cache state after a compiled
+    /// closure replay: the compiled graph internally computes the correct
+    /// concatenated K/V, but the Rust-level `LayerKV` struct is not updated
+    /// during replay.  This method writes the replay outputs back into the
+    /// cache so subsequent imperative calls see the correct state.
+    ///
+    /// Panics if the layer does not exist or is a non-standard layer type.
+    pub fn update_layer_kv(&mut self, layer: usize, new_k: MlxArray, new_v: MlxArray) {
+        let entry = self
+            .layers
+            .get_mut(layer)
+            .expect("update_layer_kv: layer index out of bounds");
+        if let Some(lkv) = entry {
+            lkv.k = new_k;
+            lkv.v = new_v;
+            lkv.last_k_view = None;
+            lkv.last_v_view = None;
+        }
+    }
+
     pub fn sync_turboquant_shadow_storage(
         &mut self,
         layer_windows: &[Option<usize>],
