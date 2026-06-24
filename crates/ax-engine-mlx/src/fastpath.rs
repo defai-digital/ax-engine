@@ -840,8 +840,11 @@ env_flag!(
     /// memory-bandwidth bound, so fusing the small MTP head wins nothing.  Kept
     /// default-off until cross-step compile caching lands (needs the RoPE offset
     /// as a runtime input rather than a baked constant) and shows a measured
-    /// gain.  Applies to the Qwen MTP head only; GLM (MLA latent cache) and
-    /// Gemma assistant-MTP use other paths and ignore this flag.
+    /// gain.  Applies to the Qwen MTP head only.  GLM (MLA latent cache)
+    /// deliberately stays on the imperative path — a pure MLA variant is real
+    /// complexity for the same ~0% bandwidth-bound payoff, so it is not
+    /// implemented by design, not pending.  Gemma assistant-MTP is a separate
+    /// path and also ignores this flag.
     mtp_compiled_head_enabled,
     "AX_MTP_COMPILED_HEAD"
 );

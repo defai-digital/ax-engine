@@ -1490,9 +1490,12 @@ fn glm_mtp_draft_tokens_greedy(
     max_depth: usize,
     vocab: i32,
 ) -> (Vec<u32>, Vec<f32>, Vec<TokenDistribution>, usize, [f32; 3]) {
-    // GLM uses the MLA latent KV cache (glm_mla_layers), which the pure
-    // threaded compiled path does not yet support, so GLM always runs the
-    // imperative path here.
+    // GLM intentionally runs the imperative path (no compiled head).  GLM uses
+    // the MLA latent KV cache (glm_mla_layers, two latent tensors), and the
+    // compiled head's only payoff is fusing the tiny MTP-head dispatches — which
+    // the Qwen A/B showed wins nothing on these large, memory-bandwidth-bound
+    // models (±1%).  A pure threaded MLA variant would add real complexity and
+    // risk for ~0% gain, so it is deliberately not implemented, not a TODO.
     let mut lazy_tokens: Vec<MlxArray> = Vec::with_capacity(max_depth);
     let mut lazy_log_probs: Vec<MlxArray> = Vec::with_capacity(max_depth);
     let mut prev_hidden = first_hidden.clone();
@@ -1552,9 +1555,12 @@ fn glm_mtp_draft_tokens_stochastic(
 ) -> (Vec<u32>, Vec<f32>, Vec<TokenDistribution>, usize, [f32; 3]) {
     let temperature = head.draft_sampling.temperature;
 
-    // GLM uses the MLA latent KV cache (glm_mla_layers), which the pure
-    // threaded compiled path does not yet support, so GLM always runs the
-    // imperative path here.
+    // GLM intentionally runs the imperative path (no compiled head).  GLM uses
+    // the MLA latent KV cache (glm_mla_layers, two latent tensors), and the
+    // compiled head's only payoff is fusing the tiny MTP-head dispatches — which
+    // the Qwen A/B showed wins nothing on these large, memory-bandwidth-bound
+    // models (±1%).  A pure threaded MLA variant would add real complexity and
+    // risk for ~0% gain, so it is deliberately not implemented, not a TODO.
     let mut lazy_tokens: Vec<MlxArray> = Vec::with_capacity(max_depth);
     let mut lazy_log_probs: Vec<MlxArray> = Vec::with_capacity(max_depth);
     let mut prev_hidden = first_hidden.clone();
