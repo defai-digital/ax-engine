@@ -2084,6 +2084,52 @@ impl MlxKVCache {
         }
     }
 
+    /// Logical K/V view for `layer`, sliced to the current `seq_len`, or `None`
+    /// if the layer has no entry yet.
+    ///
+    /// Used to seed a **pure** compiled MTP draft closure: the existing context
+    /// is passed in as explicit closure inputs rather than read by capturing the
+    /// mutable cache, which would make the compiled graph impure (the captured
+    /// lazy KV would enter the trace as an un-passed constant and abort eval
+    /// with "Attempting to eval an array without a primitive").
+    pub fn logical_layer_kv(&self, layer: usize) -> Option<(MlxArray, MlxArray)> {
+        let lkv = self.layers.get(layer)?.as_ref()?;
+        let end = self.seq_len as i32;
+        let stop = [1, lkv.n_kv_heads, end, lkv.head_dim];
+        let k = slice(&lkv.k, &[0, 0, 0, 0], &stop, &[1, 1, 1, 1], None);
+        let v = slice(&lkv.v, &[0, 0, 0, 0], &stop, &[1, 1, 1, 1], None);
+        Some((k, v))
+    }
+
+    /// Commit a pure compiled MTP draft closure's threaded K/V back into the
+    /// cache as a tight logical buffer (`capacity == length`) and set `seq_len`.
+    ///
+    /// `k`/`v` are the closure's final concatenated `[1, n_kv_heads, length,
+    /// head_dim]` outputs (already evaluated).  Storing them tight is correct:
+    /// the next imperative `append` sees `write_end > capacity` and grows via
+    /// its normal chunk path, copying this buffer forward.  Replacing the layer
+    /// entry also drops any stale views.
+    pub fn set_layer_kv_logical(&mut self, layer: usize, k: MlxArray, v: MlxArray, seq_len: usize) {
+        let shape = k.shape();
+        debug_assert_eq!(shape.len(), 4, "set_layer_kv_logical expects a 4D K array");
+        let n_kv_heads = shape[1];
+        let length = shape[2] as usize;
+        let head_dim = shape[3];
+        let dtype = k.dtype();
+        self.layers[layer] = Some(LayerKV {
+            last_k_view: Some(k.clone()),
+            last_v_view: Some(v.clone()),
+            k,
+            v,
+            n_kv_heads,
+            head_dim,
+            capacity: length,
+            rotating_window: None,
+            dtype,
+        });
+        self.seq_len = seq_len;
+    }
+
     pub fn sync_turboquant_shadow_storage(
         &mut self,
         layer_windows: &[Option<usize>],
