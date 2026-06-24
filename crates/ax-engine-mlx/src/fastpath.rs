@@ -819,6 +819,37 @@ env_flag!(
 );
 
 env_flag!(
+    /// `AX_MTP_COMPILED_HEAD` — compile the multi-depth MTP draft chain
+    /// into a single `mlx_compile`-fused closure dispatch.
+    ///
+    /// **Default: OFF** (opt-in via `AX_MTP_COMPILED_HEAD=1`).
+    ///
+    /// Wraps the full multi-depth Qwen MTP head recurrence (forward + post-norm
+    /// + logits across all D draft depths) in one `MlxClosure::compile` call to
+    /// fuse ops across the chain.  The closure is **pure**: it captures only
+    /// model constants (cfg/weights/head), receives the existing context as the
+    /// explicit inputs `init_k`/`init_v`, threads the new per-depth K/V
+    /// functionally (concat, no cache mutation), and emits the final K/V as
+    /// outputs for the caller to commit.  This satisfies `mlx_compile`'s
+    /// pure-function contract (see `MlxClosure::new_dyn`).
+    ///
+    /// On `Qwen3.6-27B-6bit-MTP` (greedy, depth 3) the output is byte-identical
+    /// to the imperative path, but throughput is within noise of it
+    /// (-1.0%..+0.4%): the closure is recompiled every draft step because the
+    /// per-step RoPE offset bakes into the trace, and decode on such models is
+    /// memory-bandwidth bound, so fusing the small MTP head wins nothing.  Kept
+    /// default-off until cross-step compile caching lands (needs the RoPE offset
+    /// as a runtime input rather than a baked constant) and shows a measured
+    /// gain.  Applies to the Qwen MTP head only.  GLM (MLA latent cache)
+    /// deliberately stays on the imperative path — a pure MLA variant is real
+    /// complexity for the same ~0% bandwidth-bound payoff, so it is not
+    /// implemented by design, not pending.  Gemma assistant-MTP is a separate
+    /// path and also ignores this flag.
+    mtp_compiled_head_enabled,
+    "AX_MTP_COMPILED_HEAD"
+);
+
+env_flag!(
     /// `AX_DIFFUSION_NO_SKIP_COMMIT` — opt-out of the causal commit
     /// skip that is enabled by default on convergence with high
     /// acceptance. When set to `1`, the causal commit pass always runs.

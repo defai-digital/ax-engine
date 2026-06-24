@@ -1,9 +1,10 @@
 use mlx_sys::{
-    MlxArray, MlxDtype, ScaledDotProductAttentionMask, add, argmax, astype, concatenate, eval,
-    multiply, random_categorical, reshape, rms_norm, scaled_dot_product_attention_with_mask,
-    sigmoid, slice, softmax, take,
+    MlxArray, MlxClosure, MlxDtype, MlxVectorArray, ScaledDotProductAttentionMask, add, argmax,
+    astype, concatenate, eval, multiply, random_categorical, reshape, rms_norm,
+    scaled_dot_product_attention_with_mask, sigmoid, slice, softmax, take,
 };
 
+use crate::fastpath;
 use crate::kv_cache::MlxKVCache;
 use crate::model::shared::{
     apply_final_logit_softcap, ffn_swiglu, flatten_attention_output_bhsd,
@@ -242,6 +243,53 @@ fn lazy_random_sample(logits: &MlxArray, temperature: f32, vocab: i32) -> MlxArr
 /// KV entries start at buffer position 0 but represent tokens at higher
 /// prompt positions.  Callers must NOT pass absolute sequence positions
 /// unless using `rope_offset_override`.
+/// How a single MTP head step sources and advances its K/V context.
+///
+/// The imperative path uses [`MtpKvStep::Cache`], which appends into the real
+/// KV cache and bumps `seq_len` (a side effect).  The **compiled** path uses
+/// [`MtpKvStep::Threaded`], which carries the running K/V purely as MLX arrays
+/// and concatenates the new token — no cache mutation — so the closure body is
+/// pure and safe to `mlx_compile`.  The caller seeds `Threaded` with the
+/// cache's existing logical K/V (passed as explicit closure inputs) and reads
+/// the final K/V back out after the chain to commit to the cache.
+enum MtpKvStep<'a> {
+    Cache(&'a mut MlxKVCache),
+    Threaded { k: MlxArray, v: MlxArray },
+}
+
+impl MtpKvStep<'_> {
+    /// RoPE base offset used when no explicit override is supplied.  Only valid
+    /// for `Cache`; `Threaded` callers always pass `rope_offset_override`.
+    fn rope_base_offset(&self) -> usize {
+        match self {
+            MtpKvStep::Cache(cache) => cache.seq_len + cache.rope_offset,
+            MtpKvStep::Threaded { .. } => {
+                unreachable!("threaded MTP step requires an explicit rope_offset_override")
+            }
+        }
+    }
+
+    /// Append this step's `k_rope`/`v` and return the K/V to feed SDPA
+    /// (the full context including the new token).
+    fn append(&mut self, k_rope: MlxArray, v: MlxArray) -> (MlxArray, MlxArray) {
+        match self {
+            MtpKvStep::Cache(cache) => {
+                let cached = cache.append(0, k_rope, v);
+                cache.seq_len += 1;
+                cached
+            }
+            MtpKvStep::Threaded { k, v: running_v } => {
+                // Sequence axis is dim 2 of [1, n_kv_heads, S, head_dim].
+                let new_k = concatenate(&[k, &k_rope], 2, None);
+                let new_v = concatenate(&[running_v, &v], 2, None);
+                *k = new_k.clone();
+                *running_v = new_v.clone();
+                (new_k, new_v)
+            }
+        }
+    }
+}
+
 pub fn mtp_head_forward(
     head: &MtpWeights,
     main_hidden: &MlxArray,
@@ -251,12 +299,33 @@ pub fn mtp_head_forward(
     cfg: &ModelConfig,
     rope_offset_override: Option<usize>,
 ) -> MlxArray {
+    let mut kv = MtpKvStep::Cache(cache);
+    mtp_head_forward_inner(
+        head,
+        main_hidden,
+        prev_token_arr,
+        weights,
+        &mut kv,
+        cfg,
+        rope_offset_override,
+    )
+}
+
+fn mtp_head_forward_inner(
+    head: &MtpWeights,
+    main_hidden: &MlxArray,
+    prev_token_arr: &MlxArray,
+    weights: &ModelWeights,
+    kv: &mut MtpKvStep,
+    cfg: &ModelConfig,
+    rope_offset_override: Option<usize>,
+) -> MlxArray {
     // Use the explicit RoPE offset when provided (e.g. during capped warmup
     // where KV entries start at buffer position 0 but represent prompt tokens
     // at higher positions).  Otherwise use the MTP KV-cache seq_len + rope_offset
     // as the RoPE offset (matches mlx-lm cache.offset, with rope_offset accounting
     // for physical-vs-logical position differences after capped warmup).
-    let token_offset = rope_offset_override.unwrap_or(cache.seq_len + cache.rope_offset);
+    let token_offset = rope_offset_override.unwrap_or_else(|| kv.rope_base_offset());
     // 1. Embed prev_token → [1, 1, hidden_size] in bf16.
     let embed = embed_tokens_arr(prev_token_arr, &weights.token_embedding, cfg.hidden_size);
     let embed = astype(&embed, MlxDtype::Bfloat16, None);
@@ -362,8 +431,7 @@ pub fn mtp_head_forward(
             rope_freqs_ref,
         );
 
-        let (cached_k, cached_v) = cache.append(0, k_rope, v);
-        cache.seq_len += 1;
+        let (cached_k, cached_v) = kv.append(k_rope, v);
 
         let query_scale = 1.0 / (head.head_dim as f32).sqrt();
         let attn_out = scaled_dot_product_attention_with_mask(
@@ -488,6 +556,197 @@ pub fn mtp_head_step(
     let post_norm_hidden = mtp_hidden_post_norm(&new_hidden, head, cfg);
     let logits = mtp_post_norm_to_logits(&post_norm_hidden, weights, cfg);
     Some((post_norm_hidden, logits))
+}
+
+// ---------------------------------------------------------------------------
+// Compiled MTP draft head
+// ---------------------------------------------------------------------------
+
+/// Build a compiled closure that runs the full multi-depth Qwen MTP draft
+/// chain in a single `mlx_compile`-fused dispatch.
+///
+/// The closure body traces D iterations of `mtp_head_forward` +
+/// `mtp_hidden_post_norm` + `mtp_post_norm_to_logits`, chaining hidden state
+/// and token (via lazy argmax or `random_categorical`) across depths.  The
+/// compiled graph replays the full chain in one dispatch, reducing ~25 × D
+/// MLX C-API calls to a single compiled-graph apply.
+///
+/// `temperature`: when > 0, token chaining uses `random_categorical` (GPU
+/// sampling); when ≤ 0, uses lazy argmax (greedy / sampled paths).
+///
+/// **Pure:** the closure does NOT capture or mutate the KV cache.  The existing
+/// context is supplied as the explicit inputs `init_k` / `init_v`, and the new
+/// per-depth K/V is threaded functionally via [`MtpKvStep::Threaded`] (concat,
+/// no cache write).  This satisfies `mlx_compile`'s pure-function contract; the
+/// earlier impure version aborted decode with `[eval] Attempting to eval an
+/// array without a primitive` because the captured lazy KV entered the trace as
+/// an un-passed constant.  `base_offset` (the cache's `seq_len + rope_offset` at
+/// call time) is baked per-depth as the RoPE position.
+///
+/// Inputs:  `[first_hidden, first_token, init_k, init_v]`.
+/// Outputs: `[hidden_0, logits_0, tok_0, …, hidden_{D-1}, logits_{D-1},
+/// tok_{D-1}, final_k, final_v]` — 3 arrays per depth plus the final threaded
+/// K/V (so the caller can commit it to the cache).  Callers use the `tok`
+/// output directly rather than re-sampling, so the output token always matches
+/// the chained token.
+///
+/// Returns `None` when the kill switch `AX_MTP_COMPILED_HEAD=0` is set or
+/// compilation fails.
+fn build_compiled_mtp_draft(
+    head: &MtpWeights,
+    weights: &ModelWeights,
+    cfg: &ModelConfig,
+    base_offset: usize,
+    max_depth: usize,
+    temperature: f32,
+) -> Option<MlxClosure> {
+    if !fastpath::mtp_compiled_head_enabled() {
+        return None;
+    }
+    let cfg_addr = cfg as *const ModelConfig as usize;
+    let weights_addr = weights as *const ModelWeights as usize;
+    let head_addr = head as *const MtpWeights as usize;
+    let vocab = cfg.vocab_size as i32;
+
+    let closure = MlxClosure::new_dyn(move |inputs: &MlxVectorArray| -> Vec<MlxArray> {
+        let cfg_ref = unsafe { &*(cfg_addr as *const ModelConfig) };
+        let weights_ref = unsafe { &*(weights_addr as *const ModelWeights) };
+        let head_ref = unsafe { &*(head_addr as *const MtpWeights) };
+
+        let mut prev_hidden = inputs.get(0);
+        let mut prev_token_arr = inputs.get(1);
+        let mut kv = MtpKvStep::Threaded {
+            k: inputs.get(2),
+            v: inputs.get(3),
+        };
+
+        let mut outputs: Vec<MlxArray> = Vec::with_capacity(max_depth * 3 + 2);
+        for d in 0..max_depth {
+            let new_hidden = mtp_head_forward_inner(
+                head_ref,
+                &prev_hidden,
+                &prev_token_arr,
+                weights_ref,
+                &mut kv,
+                cfg_ref,
+                Some(base_offset + d),
+            );
+            let post_norm = mtp_hidden_post_norm(&new_hidden, head_ref, cfg_ref);
+            let logits = mtp_post_norm_to_logits(&post_norm, weights_ref, cfg_ref);
+
+            let tok = if temperature > 0.0 {
+                let logits_2d = reshape(&logits, &[1_i32, vocab], None);
+                let inv_temp = MlxArray::from_f32(1.0 / temperature);
+                let scaled = multiply(&logits_2d, &inv_temp, None);
+                random_categorical(&scaled, None)
+            } else {
+                lazy_argmax_logits(&logits)
+            };
+
+            outputs.push(post_norm.clone());
+            outputs.push(logits);
+            outputs.push(tok.clone());
+            prev_hidden = post_norm;
+            prev_token_arr = tok;
+        }
+        // Emit the final threaded K/V so the caller can commit it to the cache
+        // (the closure never touched the cache itself).
+        if let MtpKvStep::Threaded { k, v } = kv {
+            outputs.push(k);
+            outputs.push(v);
+        }
+        outputs
+    });
+    closure.compile(false).ok()
+}
+
+/// Standard draft result: `(draft_tokens, draft_log_probs, draft_distributions,
+/// added, top2_margins)`.  `top2_margins` is always `[0.0; 3]` on the compiled
+/// path (retained for API compatibility with the imperative path).
+type DraftTokens = (Vec<u32>, Vec<f32>, Vec<TokenDistribution>, usize, [f32; 3]);
+
+/// Build and apply the pure compiled Qwen MTP draft closure for one draft call,
+/// then commit the threaded K/V back to the cache.
+///
+/// Shared path for the three Qwen compiled entry points (greedy / sampled /
+/// stochastic).  Returns `None` — falling back to the imperative path — when:
+/// the kill switch is off / compile fails; the MTP layer has no existing KV yet
+/// (the first decode step of a sequence, handled imperatively so the closure
+/// always receives a non-empty `init_k`/`init_v`); or the apply errors.
+///
+/// `logprob_temperature` is the temperature applied to the draft log-prob (the
+/// in-closure token-sampling temperature is baked in at build time): `1.0` for
+/// greedy, the sampling temperature for sampled, and `temperature.max(1.0)` for
+/// stochastic.
+#[allow(clippy::too_many_arguments)]
+fn run_compiled_mtp_draft(
+    head: &MtpWeights,
+    weights: &ModelWeights,
+    cfg: &ModelConfig,
+    first_hidden: &MlxArray,
+    first_token: u32,
+    cache: &mut MlxKVCache,
+    max_depth: usize,
+    vocab: i32,
+    sample_temperature: f32,
+    logprob_temperature: f32,
+) -> Option<DraftTokens> {
+    if !fastpath::mtp_compiled_head_enabled() {
+        return None;
+    }
+    // Seed the closure with the existing logical KV as explicit inputs.  When
+    // the layer is empty (first step) fall back to the imperative path so the
+    // pure closure never has to special-case a zero-length context.
+    let (init_k, init_v) = cache.logical_layer_kv(0)?;
+    let seq_len_before = cache.seq_len;
+    let base_offset = seq_len_before + cache.rope_offset;
+    let compiled = build_compiled_mtp_draft(
+        head,
+        weights,
+        cfg,
+        base_offset,
+        max_depth,
+        sample_temperature,
+    )?;
+
+    let first_token_data = [first_token];
+    let first_token_arr = MlxArray::from_raw_data(
+        first_token_data.as_ptr() as *const u8,
+        4,
+        &[1_i32],
+        MlxDtype::Uint32,
+    );
+    let outputs = compiled
+        .try_apply(&[first_hidden, &first_token_arr, &init_k, &init_v])
+        .ok()?;
+
+    // outputs = [hidden_d, logits_d, tok_d, ...]*D, final_k, final_v.
+    let mut lazy_tokens: Vec<MlxArray> = Vec::with_capacity(max_depth);
+    let mut lazy_log_probs: Vec<MlxArray> = Vec::with_capacity(max_depth);
+    for d in 0..max_depth {
+        let logits = &outputs[d * 3 + 1];
+        let lazy_tok = outputs[d * 3 + 2].clone();
+        let lazy_lp = gpu_draft_log_prob_lazy(logits, &lazy_tok, logprob_temperature, vocab);
+        lazy_tokens.push(lazy_tok);
+        lazy_log_probs.push(lazy_lp);
+    }
+    let final_k = &outputs[max_depth * 3];
+    let final_v = &outputs[max_depth * 3 + 1];
+
+    let mut all_refs: Vec<&MlxArray> = Vec::with_capacity(max_depth * 2 + 2);
+    all_refs.extend(lazy_tokens.iter());
+    all_refs.extend(lazy_log_probs.iter());
+    all_refs.push(final_k);
+    all_refs.push(final_v);
+    eval(&all_refs);
+
+    let draft_tokens: Vec<u32> = lazy_tokens.iter().map(|a| a.data_u32()[0]).collect();
+    let draft_log_probs: Vec<f32> = lazy_log_probs.iter().map(|a| a.data_f32()[0]).collect();
+    let added = draft_tokens.len();
+    // Commit the threaded K/V + advanced seq_len into the cache so the verify
+    // step and subsequent imperative appends see the correct state.
+    cache.set_layer_kv_logical(0, final_k.clone(), final_v.clone(), seq_len_before + added);
+    Some((draft_tokens, draft_log_probs, vec![], added, [0.0f32; 3]))
 }
 
 /// Draft up to `head.max_depth` tokens by applying the MTP head recurrently.
@@ -764,6 +1023,23 @@ fn mtp_draft_tokens_greedy(
     max_depth: usize,
     vocab: i32,
 ) -> (Vec<u32>, Vec<f32>, Vec<TokenDistribution>, usize, [f32; 3]) {
+    // ── Compiled path ───────────────────────────────────────────────
+    if let Some(result) = run_compiled_mtp_draft(
+        head,
+        weights,
+        cfg,
+        first_hidden,
+        first_token,
+        cache,
+        max_depth,
+        vocab,
+        0.0,
+        1.0,
+    ) {
+        return result;
+    }
+
+    // ── Imperative fallback ─────────────────────────────────────────
     let mut lazy_tokens: Vec<MlxArray> = Vec::with_capacity(max_depth);
     let mut lazy_log_probs: Vec<MlxArray> = Vec::with_capacity(max_depth);
     let mut prev_hidden = first_hidden.clone();
@@ -791,7 +1067,7 @@ fn mtp_draft_tokens_greedy(
 
         // Lazy argmax — NOT evaluated yet.
         let lazy_tok = lazy_argmax_logits(&logits);
-        // Compute draft log-prob at T=1.0 (model's own confidence in its argmax
+        // Compute draft log-prob at T=1.0 (model’s own confidence in its argmax
         // choice), staying in the lazy graph alongside the token selection.
         let lazy_lp = gpu_draft_log_prob_lazy(&logits, &lazy_tok, 1.0, vocab);
         lazy_tokens.push(lazy_tok.clone());
@@ -849,6 +1125,26 @@ fn mtp_draft_tokens_sampled(
     _rng: &mut Xorshift64,
 ) -> (Vec<u32>, Vec<f32>, Vec<TokenDistribution>, usize, [f32; 3]) {
     let temperature = head.draft_sampling.temperature;
+
+    // ── Compiled path ───────────────────────────────────────────────
+    // Sampled uses argmax for token selection (T=0 in closure), then
+    // temperature-scaled log-prob outside.
+    if let Some(result) = run_compiled_mtp_draft(
+        head,
+        weights,
+        cfg,
+        first_hidden,
+        first_token,
+        cache,
+        max_depth,
+        vocab,
+        0.0,
+        temperature,
+    ) {
+        return result;
+    }
+
+    // ── Imperative fallback ─────────────────────────────────────────
     let mut lazy_tokens: Vec<MlxArray> = Vec::with_capacity(max_depth);
     let mut lazy_log_probs: Vec<MlxArray> = Vec::with_capacity(max_depth);
 
@@ -928,6 +1224,27 @@ fn mtp_draft_tokens_stochastic(
     _rng: &mut Xorshift64,
 ) -> (Vec<u32>, Vec<f32>, Vec<TokenDistribution>, usize, [f32; 3]) {
     let temperature = head.draft_sampling.temperature;
+
+    // ── Compiled path ───────────────────────────────────────────────
+    // Stochastic uses random_categorical inside the closure (temperature > 0);
+    // the chained tok output is used directly so the output token matches the
+    // token used to compute subsequent depths (avoid a second random draw).
+    if let Some(result) = run_compiled_mtp_draft(
+        head,
+        weights,
+        cfg,
+        first_hidden,
+        first_token,
+        cache,
+        max_depth,
+        vocab,
+        temperature,
+        temperature.max(1.0),
+    ) {
+        return result;
+    }
+
+    // ── Imperative fallback ─────────────────────────────────────────
     let mut lazy_tokens: Vec<MlxArray> = Vec::with_capacity(max_depth);
     let mut lazy_log_probs: Vec<MlxArray> = Vec::with_capacity(max_depth);
 
@@ -1173,6 +1490,12 @@ fn glm_mtp_draft_tokens_greedy(
     max_depth: usize,
     vocab: i32,
 ) -> (Vec<u32>, Vec<f32>, Vec<TokenDistribution>, usize, [f32; 3]) {
+    // GLM intentionally runs the imperative path (no compiled head).  GLM uses
+    // the MLA latent KV cache (glm_mla_layers, two latent tensors), and the
+    // compiled head's only payoff is fusing the tiny MTP-head dispatches — which
+    // the Qwen A/B showed wins nothing on these large, memory-bandwidth-bound
+    // models (±1%).  A pure threaded MLA variant would add real complexity and
+    // risk for ~0% gain, so it is deliberately not implemented, not a TODO.
     let mut lazy_tokens: Vec<MlxArray> = Vec::with_capacity(max_depth);
     let mut lazy_log_probs: Vec<MlxArray> = Vec::with_capacity(max_depth);
     let mut prev_hidden = first_hidden.clone();
@@ -1231,6 +1554,13 @@ fn glm_mtp_draft_tokens_stochastic(
     vocab: i32,
 ) -> (Vec<u32>, Vec<f32>, Vec<TokenDistribution>, usize, [f32; 3]) {
     let temperature = head.draft_sampling.temperature;
+
+    // GLM intentionally runs the imperative path (no compiled head).  GLM uses
+    // the MLA latent KV cache (glm_mla_layers, two latent tensors), and the
+    // compiled head's only payoff is fusing the tiny MTP-head dispatches — which
+    // the Qwen A/B showed wins nothing on these large, memory-bandwidth-bound
+    // models (±1%).  A pure threaded MLA variant would add real complexity and
+    // risk for ~0% gain, so it is deliberately not implemented, not a TODO.
     let mut lazy_tokens: Vec<MlxArray> = Vec::with_capacity(max_depth);
     let mut lazy_log_probs: Vec<MlxArray> = Vec::with_capacity(max_depth);
     let mut prev_hidden = first_hidden.clone();
