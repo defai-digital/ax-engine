@@ -1,5 +1,5 @@
 use crate::array::{MlxArray, MlxDtype, null_ffi_array};
-use crate::error::{panic_on_status, prepare_error_capture};
+use crate::error::{ensure_error_handler, panic_on_status};
 use crate::ffi;
 use crate::stream::{MlxStream, default_gpu_raw};
 
@@ -172,7 +172,7 @@ macro_rules! unary_op {
             unsafe {
                 let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
                 let mut res = MlxArray::empty();
-                prepare_error_capture();
+                ensure_error_handler();
                 let rc = ffi::$ffi_fn(&mut res.inner, a.inner, stream);
                 panic_on_status(stringify!($ffi_fn), rc);
                 res
@@ -188,7 +188,7 @@ macro_rules! binary_op {
             unsafe {
                 let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
                 let mut res = MlxArray::empty();
-                prepare_error_capture();
+                ensure_error_handler();
                 let rc = ffi::$ffi_fn(&mut res.inner, a.inner, b.inner, stream);
                 panic_on_status(stringify!($ffi_fn), rc);
                 res
@@ -199,7 +199,7 @@ macro_rules! binary_op {
 
 macro_rules! checked_ffi {
     ($operation:literal, $call:expr) => {{
-        prepare_error_capture();
+        ensure_error_handler();
         let rc = $call;
         panic_on_status($operation, rc);
     }};

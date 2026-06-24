@@ -480,16 +480,27 @@ extern "C" int mlx_map_string_to_array_iterator_free(mlx_map_string_to_array_ite
  * AX_TRY/CATCH also prevents a throwing `aset` from unwinding across the C ABI. */
 extern "C" int mlx_map_string_to_array_iterator_next(
     const char** key, mlx_array* val, mlx_map_string_to_array_iterator it) {
+  // Captured before the risky materialization so the catch can name the tensor
+  // that failed to load (the most useful diagnostic for a blocked model).
+  const char* current_key = nullptr;
   AX_TRY {
     auto& mit = *static_cast<str_arr_map::iterator*>(it.ctx);
     auto& m = *static_cast<str_arr_map*>(it.map_ctx);
     if (mit == m.end()) return 1;
-    *key = mit->first.c_str();
+    current_key = mit->first.c_str();
+    *key = current_key;
     aset(val, mit->second);
     ++mit;
     return 0;
-  } catch (const std::exception& e) { ax_set_error(e.what()); return 2; }
-  catch (...) { ax_set_error("unknown MLX exception"); return 2; }
+  } catch (const std::exception& e) {
+    if (current_key) ax_set_error((std::string("tensor '") + current_key + "': " + e.what()).c_str());
+    else ax_set_error(e.what());
+    return 2;
+  } catch (...) {
+    if (current_key) ax_set_error((std::string("tensor '") + current_key + "' raised an unknown MLX exception").c_str());
+    else ax_set_error("unknown MLX exception");
+    return 2;
+  }
 }
 
 extern "C" mlx_map_string_to_string mlx_map_string_to_string_new(void) { return {new str_str_map()}; }

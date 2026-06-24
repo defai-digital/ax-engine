@@ -1,13 +1,13 @@
 use std::ffi::CString;
 
 use crate::array::{MlxArray, null_ffi_array};
-use crate::error::{panic_on_status, prepare_error_capture};
+use crate::error::{ensure_error_handler, panic_on_status};
 use crate::ffi;
 use crate::stream::{MlxStream, default_gpu_raw};
 
 macro_rules! checked_ffi {
     ($operation:literal, $call:expr) => {{
-        prepare_error_capture();
+        ensure_error_handler();
         let rc = $call;
         panic_on_status($operation, rc);
     }};

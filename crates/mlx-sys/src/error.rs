@@ -46,7 +46,26 @@ pub fn install_recoverable_error_handler() {
     });
 }
 
-/// Prepare the current thread to capture the next recoverable MLX error.
+/// Ensure the recording error handler is installed, *without* clearing the slot.
+///
+/// Hot per-op call sites (the `ops`/`fast` FFI macros) use this instead of
+/// [`prepare_error_capture`]. The error slot is read-and-cleared (`take`) on
+/// every non-zero status, and the C++ handler writes it synchronously on
+/// failure, so a success-path op never reads the slot — the pre-clear in
+/// `prepare_error_capture` is redundant there. Skipping it removes a
+/// thread-local `RefCell` access from the decode hot path (one per op, and a
+/// decode token issues hundreds of ops).
+#[inline]
+pub(crate) fn ensure_error_handler() {
+    install_recoverable_error_handler();
+}
+
+/// Prepare the current thread to capture the next recoverable MLX error,
+/// clearing any stale message first.
+///
+/// Used by coarse-grained, latency-insensitive call sites (eval, weight load,
+/// kernel compile, closures, stream setup) where a clean capture window is
+/// worth the thread-local clear. Hot per-op paths use [`ensure_error_handler`].
 pub(crate) fn prepare_error_capture() {
     install_recoverable_error_handler();
     let _ = take_last_error();
