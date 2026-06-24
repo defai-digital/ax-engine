@@ -206,11 +206,16 @@ def _native_bin() -> str | None:
     if repo_env:
         roots.append(pathlib.Path(repo_env))
     roots.append(pathlib.Path(__file__).resolve().parents[2])
-    for root in roots:
-        for profile in ("release", "debug"):
-            candidate = root / "target" / profile / "ax-engine"
-            if candidate.is_file():
-                return str(candidate)
+    candidates = [
+        candidate
+        for root in roots
+        for profile in ("release", "debug")
+        if (candidate := root / "target" / profile / "ax-engine").is_file()
+    ]
+    if candidates:
+        # Newest build wins, so a fresh `cargo build` is preferred over a stale
+        # release (or vice versa) without guessing a fixed profile order.
+        return str(max(candidates, key=lambda p: p.stat().st_mtime))
     return None
 
 
