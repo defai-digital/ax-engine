@@ -285,12 +285,23 @@ for that stream's index.
   inline so readers reaching the FFI boundary see the constraint before
   using `MlxStream`.
 - A regression probe in `crates/mlx-sys/src/stream.rs` (test
-  `cross_thread_default_streams_are_distinct`) verifies the
-  one-default-per-thread property holds against the live MLX runtime.
-  The probe is self-contained and runs without an MLX model.
-- The full call-site inventory and a blast-radius estimate for a future
-  `!Send` migration live at
-  `.internal/audit/PHASE3-MLX-STREAM-OWNERSHIP-AUDIT.md`.
+  `cached_default_stream_wrappers_are_thread_local`) spawns a worker
+  thread and asserts the default stream wrapper differs across OS threads,
+  verifying the one-default-per-thread property holds against the live MLX
+  runtime. The probe is self-contained and runs without an MLX model.
+- **Call-site inventory.** The only runtime owner of a non-default stream
+  is `MlxRunner`. It constructs exactly one stream at
+  `crates/ax-engine-mlx/src/runner.rs` (`MlxStream::new_gpu()` followed by
+  `set_as_default()`) on the thread that builds the runner, stores it as a
+  liveness-only `_stream` field, and never re-dispatches or sends it across
+  threads. No `thread::spawn`/tokio/rayon path touches the GPU stream — the
+  only spawned threads in `ax-engine-mlx` perform disk-prefix-cache I/O
+  (`disk_prefix_cache.rs`). The handle therefore never legitimately crosses
+  a thread at runtime today.
+- **`!Send` blast radius.** With a single owner and a single construction
+  site, a future `!Send`/owner-token migration touches just that one field
+  and constructor. The cost is in re-proving the single-threaded execution
+  assumption at the type level, not in chasing scattered call sites.
 
 ### Why no type-level migration yet
 
