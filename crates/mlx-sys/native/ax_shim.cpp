@@ -151,7 +151,12 @@ extern "C" mlx_array mlx_array_new_data_managed_payload(
   AX_TRY {
     auto cpp_dtype = to_dtype(dtype);
     auto cpp_shape = mx::Shape(shape, shape + dim);
-    std::function<void(void*)> cpp_deleter = [dtor, payload](void*) { dtor(payload); };
+    // The deleter receives the caller's lifetime `payload` handle, NOT the
+    // `data` pointer. This is intentional: `data` may be an interior pointer
+    // into `payload`'s allocation (e.g. an mmap offset into an Arc<Mmap>).
+    // The shared_ptr's void* argument is unused; the captured payload is the
+    // resource the caller asked us to release.
+    auto cpp_deleter = [dtor, payload](void*) { dtor(payload); };
     return mlx_array{new mx::array(data, std::move(cpp_shape), cpp_dtype, cpp_deleter)};
   } AX_CATCH_NULL
 }
@@ -530,12 +535,16 @@ extern "C" mlx_closure mlx_closure_new_func_payload(
       ? std::shared_ptr<void>(payload, dtor)
       : std::shared_ptr<void>(payload, [](void*) {});
     auto fn = [fun, payload_holder](const std::vector<mx::array>& inputs) -> std::vector<mx::array> {
+      // Use a scope guard so both vectors are freed even if fun() throws
+      // or varef() throws.  The original code leaked on either exception path.
       mlx_vector_array in{new std::vector<mx::array>(inputs)};
       mlx_vector_array out{new std::vector<mx::array>()};
+      struct VecGuard {
+        mlx_vector_array v;
+        ~VecGuard() { delete static_cast<std::vector<mx::array>*>(v.ctx); }
+      } in_guard{in}, out_guard{out};
       int rc = fun(&out, in, payload_holder.get());
       auto result = varef(out);
-      delete static_cast<std::vector<mx::array>*>(in.ctx);
-      delete static_cast<std::vector<mx::array>*>(out.ctx);
       if (rc != 0) throw std::runtime_error("closure callback failed");
       return result;
     };

@@ -78,10 +78,14 @@ inline void vaset(mlx_vector_array* dst, std::vector<mx::array>&& v) {
 }
 
 inline std::vector<std::string>& vsref(mlx_vector_string v) {
+  if (!v.ctx) throw std::runtime_error("expected a non-empty mlx_vector_string");
   return *static_cast<std::vector<std::string>*>(v.ctx);
 }
 
-inline mx::Device& dref(mlx_device d) { return *static_cast<mx::Device*>(d.ctx); }
+inline mx::Device& dref(mlx_device d) {
+  if (!d.ctx) throw std::runtime_error("expected a non-empty mlx_device");
+  return *static_cast<mx::Device*>(d.ctx);
+}
 
 inline std::optional<mx::array> opt_arr(mlx_array a) {
   return a.ctx ? std::make_optional(aref(a)) : std::nullopt;
