@@ -71,7 +71,11 @@ inline mx::Dtype to_dtype(mlx_dtype d) {
     mx::bool_, mx::uint8, mx::uint16, mx::uint32, mx::uint64,
     mx::int8, mx::int16, mx::int32, mx::int64,
     mx::float16, mx::float32, mx::float64, mx::bfloat16, mx::complex64};
-  return m[(int)d];
+  int idx = (int)d;
+  if (idx < 0 || idx >= (int)(sizeof(m) / sizeof(m[0]))) {
+    throw std::runtime_error("invalid mlx_dtype value");
+  }
+  return m[idx];
 }
 
 /* Create an mx::array from raw data + shape + dtype.
@@ -513,15 +517,23 @@ extern "C" mlx_map_string_to_array_iterator mlx_map_string_to_array_iterator_new
 extern "C" int mlx_map_string_to_array_iterator_free(mlx_map_string_to_array_iterator it) {
   if (it.ctx) delete static_cast<str_arr_map::iterator*>(it.ctx); return 0;
 }
+/* Returns 0 when an entry is written, 1 at end-of-iteration, and 2 when an
+ * MLX exception is caught while materializing the value. Distinguishing the
+ * error case (2) from normal termination (1) lets the Rust caller surface a
+ * genuine load failure instead of silently treating it as a short map. The
+ * TRY/CATCH also prevents a throwing `aset` from unwinding across the C ABI. */
 extern "C" int mlx_map_string_to_array_iterator_next(
     const char** key, mlx_array* val, mlx_map_string_to_array_iterator it) {
-  auto& mit = *static_cast<str_arr_map::iterator*>(it.ctx);
-  auto& m = *static_cast<str_arr_map*>(it.map_ctx);
-  if (mit == m.end()) return 1;
-  *key = mit->first.c_str();
-  aset(val, mit->second);
-  ++mit;
-  return 0;
+  TRY {
+    auto& mit = *static_cast<str_arr_map::iterator*>(it.ctx);
+    auto& m = *static_cast<str_arr_map*>(it.map_ctx);
+    if (mit == m.end()) return 1;
+    *key = mit->first.c_str();
+    aset(val, mit->second);
+    ++mit;
+    return 0;
+  } catch (const std::exception& e) { ax_set_error(e.what()); return 2; }
+  catch (...) { ax_set_error("unknown MLX exception"); return 2; }
 }
 
 extern "C" mlx_map_string_to_string mlx_map_string_to_string_new(void) { return {new str_str_map()}; }

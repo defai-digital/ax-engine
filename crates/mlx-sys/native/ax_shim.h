@@ -275,6 +275,7 @@ mlx_map_string_to_array mlx_map_string_to_array_new(void);
 int mlx_map_string_to_array_free(mlx_map_string_to_array map);
 mlx_map_string_to_array_iterator mlx_map_string_to_array_iterator_new(mlx_map_string_to_array map);
 int mlx_map_string_to_array_iterator_free(mlx_map_string_to_array_iterator it);
+/* 0 = entry written, 1 = end of iteration, 2 = MLX error (see error handler). */
 int mlx_map_string_to_array_iterator_next(
     const char** key, mlx_array* value, mlx_map_string_to_array_iterator it);
 

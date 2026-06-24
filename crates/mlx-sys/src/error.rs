@@ -22,7 +22,7 @@ static INSTALL: Once = Once::new();
 // slot would let a concurrent failing op on another thread overwrite or clear
 // this thread's not-yet-read error message.
 thread_local! {
-    static LAST_ERROR: RefCell<Option<String>> = RefCell::new(None);
+    static LAST_ERROR: RefCell<Option<String>> = const { RefCell::new(None) };
 }
 
 unsafe extern "C" fn recording_error_handler(msg: *const c_char, _data: *mut c_void) {
