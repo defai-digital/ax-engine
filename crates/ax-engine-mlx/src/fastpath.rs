@@ -818,19 +818,31 @@ env_flag!(
     "AX_DIFFUSION_NO_COMPILED_FORWARD"
 );
 
-env_flag_default_on!(
+env_flag!(
     /// `AX_MTP_COMPILED_HEAD` — compile the multi-depth MTP draft chain
     /// into a single `mlx_compile`-fused closure dispatch.
     ///
-    /// **Default: ON** (kill-switch via `AX_MTP_COMPILED_HEAD=0`).
+    /// **Default: OFF** (opt-in via `AX_MTP_COMPILED_HEAD=1`).
     ///
     /// Wraps the full multi-depth MTP head recurrence (forward + post-norm +
-    /// logits across all D draft depths) in one `MlxClosure::compile` call,
-    /// reducing ~25 × D MLX C-API dispatch calls to a single compiled graph
-    /// dispatch and enabling cross-op kernel fusion.  The RoPE offset is
-    /// per-depth-correct during tracing (baked into the compiled graph); for
-    /// typical `rope_theta` values (≥ 500 000) the inter-depth offset error is
-    /// negligible and output correctness is preserved by target-model verify.
+    /// logits across all D draft depths) in one `MlxClosure::compile` call.
+    /// The intent is to fuse ops across the chain, but the closure body is
+    /// **not pure**: `mtp_head_forward` / `glm_mtp_head_forward` mutate the KV
+    /// cache (append + `seq_len += 1`) as a side effect during tracing, which
+    /// violates `mlx_compile`'s pure-function contract (see
+    /// `MlxClosure::new_dyn`).  In practice this aborts decode on real MTP
+    /// models: the compiled closure's extracted outputs are disconnected from a
+    /// graph primitive, so eval'ing them panics with
+    /// `[eval] Attempting to eval an array without a primitive`
+    /// (reproduced on Qwen3.6-27B-6bit-MTP, first draft step).  Because the
+    /// workspace builds with `panic = "abort"`, that is a hard process death
+    /// the `try_apply` fallback cannot catch.
+    ///
+    /// Kept behind a default-off flag (not removed) so the path can be fixed
+    /// and re-validated: a correct version must keep the closure pure (capture
+    /// the KV writes as outputs and apply them outside the trace, or drop the
+    /// in-closure cache mutation) and compile/cache once per (model, depth,
+    /// shape) for reuse instead of recompiling every draft call.
     mtp_compiled_head_enabled,
     "AX_MTP_COMPILED_HEAD"
 );
