@@ -56,20 +56,25 @@ ax-engine download mlx-community/Qwen3.6-35B-A3B-4bit --json
 ax-engine download qwen36-35b --dest /path/to/explicit-copy
 ```
 
-For an interactive flow, run `ax-engine ui-downloader` (or just `ax-engine
-download` with no model argument in a terminal). The wizard lists the
-downloadable models with their MTP-lane availability, shows the default
-Hugging Face Hub cache destination and lets you override it, then downloads with
-a live progress bar (downloaded/total bytes, transfer speed, and ETA). It is
-TTY-gated: when stdout is not a terminal, or with `--no-interactive`, `download`
-keeps its non-interactive behavior and machine-readable summary unchanged. Power
-users can get the same bar on the helper directly with
+For an interactive flow, run `ax-engine tui`. The TUI lists downloadable model
+families, groups precision variants, and offers a Direct-vs-MTP choice for
+models with an acceleration package. Downloads are added to a background queue,
+so a long model transfer does not block browsing the catalog. The destination
+picker defaults to the shared Hugging Face Hub cache and can also select a
+parent directory from a terminal directory tree; direct downloads use `--dest`,
+and MTP packages use `--output`. The Downloads tab shows live bytes/s and logs,
+and a ready item can be served directly from the TUI.
+
+The older `ax-engine ui-downloader` and `ax-engine download --interactive`
+prompts remain available for compatibility. TTY-gated non-interactive behavior
+and machine-readable `download --json` output are unchanged. Power users can get
+a standalone progress bar on the helper directly with
 `scripts/download_model.py <repo> --progress-bar`.
 
 ```text
-ax-engine ui-downloader
-ax-engine download                 # no model + terminal -> same wizard
-ax-engine download --interactive   # force the wizard
+ax-engine tui
+ax-engine ui-downloader            # compatibility prompt
+ax-engine download --interactive   # compatibility prompt
 ```
 
 `download` wraps the same workflow as `scripts/download_model.py`: download

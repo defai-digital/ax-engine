@@ -108,7 +108,7 @@ pub(crate) fn layer_forward(
                 );
             }
         }
-        // Try compiled MoE decode closure (gated by AX_MLX_MOE_LAYER_COMPILE=1).
+        // Try compiled MoE decode closure (gated by AX_MLX_MOE_LAYER_COMPILE).
         // The entire MoE expert forward is compiled into a single graph,
         // collapsing ~10 dispatches per layer into one. Every MLX array the
         // graph depends on (expert weights + optional shared-expert output) is
@@ -117,7 +117,7 @@ pub(crate) fn layer_forward(
         // the closure aborts on the first decode. Only `cfg` (no MoE-relevant
         // MlxArray fields) and the Copy index schema are captured.
         // Guard the flag first to avoid building the input vector on every
-        // decode step when the opt-in compile path is disabled (the default).
+        // decode step when the compile path is disabled.
         let compiled_result = if seq == 1 && fastpath::moe_layer_compile_enabled() {
             let cfg_clone = cfg.clone();
             let (inputs, schema) = flatten_compiled_moe_inputs(

@@ -32,7 +32,7 @@ The investigation ruled out the following candidates with measured
 evidence:
 
 - **QKVZ projection fastpath** (`AX_MLX_DIRECT_CPP_LINEAR_ATTENTION_INPUTS`).
-  Fusing the packed QKVZ + reshape + slice + concat into one mlx-c call.
+  Fusing the packed QKVZ + reshape + slice + concat into one FFI call.
   Result: neutral within ±0.3% — confirmed at
   `benchmarks/results/mlx-inference/ab-direct-cpp-linear-inputs/`
   (commits `7ddd0ca` → `9a054da`). The flag stays opt-in.

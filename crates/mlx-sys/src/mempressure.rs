@@ -75,6 +75,30 @@ pub fn device_active_bytes() -> Option<u64> {
     Some(bytes as u64)
 }
 
+/// Peak bytes used by MLX since program start or last reset.
+///
+/// Calls `mlx_get_peak_memory`. Returns `None` if the FFI call fails.
+pub fn device_peak_bytes() -> Option<u64> {
+    let mut bytes: usize = 0;
+    let rc = unsafe { ffi::mlx_get_peak_memory(&mut bytes as *mut usize) };
+    if rc != 0 {
+        return None;
+    }
+    Some(bytes as u64)
+}
+
+/// Cache bytes held by MLX's allocator (not actively used, not returned to OS).
+///
+/// Calls `mlx_get_cache_memory`. Returns `None` if the FFI call fails.
+pub fn device_cache_bytes() -> Option<u64> {
+    let mut bytes: usize = 0;
+    let rc = unsafe { ffi::mlx_get_cache_memory(&mut bytes as *mut usize) };
+    if rc != 0 {
+        return None;
+    }
+    Some(bytes as u64)
+}
+
 /// Recommended Metal working-set bytes for the active device.
 ///
 /// This is the conservative budget callers should compare `device_active_bytes`
@@ -125,5 +149,15 @@ mod tests {
         if let Some(v) = device_recommended_working_set_bytes() {
             assert!(v > 0, "expected positive working-set budget, got 0");
         }
+    }
+
+    #[test]
+    fn device_peak_bytes_reports_or_skips_gracefully() {
+        let _ = device_peak_bytes();
+    }
+
+    #[test]
+    fn device_cache_bytes_reports_or_skips_gracefully() {
+        let _ = device_cache_bytes();
     }
 }

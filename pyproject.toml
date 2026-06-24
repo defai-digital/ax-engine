@@ -50,6 +50,9 @@ include = [
     # console_scripts; ax-engine-bench is invoked by `ax-engine doctor` and friends.
     { path = "python/ax_engine/_bin/ax-engine-server", format = ["wheel"] },
     { path = "python/ax_engine/_bin/ax-engine-bench", format = ["wheel"] },
+    # Native `ax-engine` binary — hosts the `ax-engine tui` subcommand that the
+    # Python CLI execs. Staged alongside the others by build-pypi-wheel.sh.
+    { path = "python/ax_engine/_bin/ax-engine", format = ["wheel"] },
     # Top-level orchestration CLI wraps source-compatible download and MTP tools.
     { path = "scripts/download_model.py", format = ["wheel"] },
     { path = "scripts/prepare_mtp_sidecar.py", format = ["wheel"] },

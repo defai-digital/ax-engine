@@ -10,10 +10,12 @@
 
 use std::fmt;
 use std::os::raw::{c_int, c_void};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::ptr;
 use std::thread::{self, ThreadId};
 
 use crate::array::{MlxArray, null_ffi_array};
+use crate::error::{panic_on_status, prepare_error_capture, status_to_result};
 use crate::ffi;
 
 fn null_vector_array() -> ffi::mlx_vector_array {
@@ -49,7 +51,9 @@ impl MlxVectorArray {
         let v = Self::new();
         for arr in arrays {
             unsafe {
-                ffi::mlx_vector_array_append_value(v.inner, arr.inner);
+                prepare_error_capture();
+                let rc = ffi::mlx_vector_array_append_value(v.inner, arr.inner);
+                panic_on_status("mlx_vector_array_append_value", rc);
             }
         }
         v
@@ -75,7 +79,9 @@ impl MlxVectorArray {
     pub fn get(&self, idx: usize) -> MlxArray {
         let mut raw = null_ffi_array();
         unsafe {
-            ffi::mlx_vector_array_get(&mut raw, self.inner, idx);
+            prepare_error_capture();
+            let rc = ffi::mlx_vector_array_get(&mut raw, self.inner, idx);
+            panic_on_status("mlx_vector_array_get", rc);
         }
         // SAFETY: mlx_vector_array_get returns an owned array reference
         // (refcounted internally); MlxArray::Drop will free it.
@@ -123,12 +129,17 @@ unsafe extern "C" fn closure_trampoline(
     let body: &mut Box<DynClosureBody> = unsafe { &mut *(payload as *mut Box<DynClosureBody>) };
 
     let inputs_wrapped = MlxVectorArray::from_borrowed(inputs);
-    let outputs = body(&inputs_wrapped);
+    let outputs = match catch_unwind(AssertUnwindSafe(|| body(&inputs_wrapped))) {
+        Ok(outputs) => outputs,
+        Err(_) => return 1,
+    };
 
     let out_vec = MlxVectorArray::new();
     for arr in &outputs {
         unsafe {
-            ffi::mlx_vector_array_append_value(out_vec.inner, arr.inner);
+            if ffi::mlx_vector_array_append_value(out_vec.inner, arr.inner) != 0 {
+                return 1;
+            }
         }
     }
 
@@ -160,11 +171,15 @@ pub struct MlxClosure {
     compiled_on: Option<ThreadId>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum MlxClosureApplyError {
     CompiledClosureThreadMismatch {
         compiled_on: ThreadId,
         current: ThreadId,
+    },
+    FfiFailure {
+        operation: &'static str,
+        message: String,
     },
 }
 
@@ -178,6 +193,7 @@ impl fmt::Display for MlxClosureApplyError {
                 f,
                 "compiled MLX closure cannot be applied on thread {current:?}; it was compiled on {compiled_on:?}"
             ),
+            Self::FfiFailure { message, .. } => write!(f, "{message}"),
         }
     }
 }
@@ -218,12 +234,11 @@ impl MlxClosure {
     /// `shapeless=true` lets the compiled closure accept different shapes
     /// without recompiling, at some cost in fusion aggressiveness. Use
     /// `false` when the input shape is stable across calls.
-    pub fn compile(&self, shapeless: bool) -> Result<Self, &'static str> {
+    pub fn compile(&self, shapeless: bool) -> Result<Self, String> {
         let mut out = null_closure();
+        prepare_error_capture();
         let rc = unsafe { ffi::mlx_compile(&mut out, self.inner, shapeless) };
-        if rc != 0 {
-            return Err("mlx_compile failed");
-        }
+        status_to_result("mlx_compile", rc)?;
         Ok(Self {
             inner: out,
             compiled_on: Some(thread::current().id()),
@@ -264,8 +279,16 @@ impl MlxClosure {
         crate::op_count::bump();
         let in_vec = MlxVectorArray::from_arrays(inputs);
         let mut out_raw = null_vector_array();
-        unsafe {
-            ffi::mlx_closure_apply(&mut out_raw, self.inner, in_vec.inner);
+        prepare_error_capture();
+        let rc = unsafe { ffi::mlx_closure_apply(&mut out_raw, self.inner, in_vec.inner) };
+        if let Err(message) = status_to_result("mlx_closure_apply", rc) {
+            if !out_raw.ctx.is_null() {
+                unsafe { ffi::mlx_vector_array_free(out_raw) };
+            }
+            return Err(MlxClosureApplyError::FfiFailure {
+                operation: "mlx_closure_apply",
+                message,
+            });
         }
         let out_vec = MlxVectorArray {
             inner: out_raw,
@@ -305,6 +328,8 @@ mod tests {
     use crate::array::MlxDtype;
     use crate::ops::add;
     use crate::transforms::eval;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     fn const_f32_1d(values: &[f32]) -> MlxArray {
         MlxArray::from_raw_data(
@@ -375,5 +400,31 @@ mod tests {
             err,
             MlxClosureApplyError::CompiledClosureThreadMismatch { .. }
         ));
+    }
+
+    #[test]
+    fn closure_drop_releases_rust_payload() {
+        struct DropProbe(Arc<AtomicUsize>);
+
+        impl Drop for DropProbe {
+            fn drop(&mut self) {
+                self.0.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+
+        let drops = Arc::new(AtomicUsize::new(0));
+        {
+            let probe = DropProbe(Arc::clone(&drops));
+            let _closure = MlxClosure::new_dyn(move |_| {
+                let _keep_probe_alive = &probe;
+                Vec::new()
+            });
+        }
+
+        assert_eq!(
+            drops.load(Ordering::SeqCst),
+            1,
+            "dropping MlxClosure must run the C payload dtor"
+        );
     }
 }

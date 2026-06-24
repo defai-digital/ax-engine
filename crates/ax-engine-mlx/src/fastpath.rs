@@ -332,7 +332,7 @@ env_flag!(
     ///
     /// **Default: OFF — real-model A/B rejected promotion (2026-06-11).** The P0
     /// clean microbench artifact showed this large-block boundary beating the
-    /// portable Rust/`mlx-c` composition, but the full A/B on the two models that
+    /// portable Rust/MLX FFI composition, but the full A/B on the two models that
     /// can engage the route (Gemma 4 31B and 12B 4-bit, `all_hits`) regressed
     /// decode to 0.89-0.97x and prefill to 0.91-0.98x;
     /// `check_direct_gemma4_ffn_route_promotion.py` decision: `not_promoted`.
@@ -413,7 +413,7 @@ env_flag_default_on!(
     ///
     /// **Default: ON for Qwen3.5/Qwen3Next only** (kill-switch via
     /// `AX_MLX_QWEN_DIRECT_CPP_LINEAR_ATTENTION_INPUTS=0`). The route skips
-    /// per-op `mlx-c` dispatches for packed projection, reshape, slice, and
+    /// per-op MLX FFI dispatches for packed projection, reshape, slice, and
     /// concat staging before the Qwen gated-delta block. It is family-scoped
     /// because the verified win is on Qwen linear-attention decode when paired
     /// with the post-input route.
@@ -554,17 +554,17 @@ env_flag!(
     "AX_MLX_MOE_PROFILE"
 );
 
-env_flag!(
+env_flag_default_on!(
     /// `AX_MLX_MOE_LAYER_COMPILE` — enable per-layer compiled MoE decode
     /// closure.
     ///
-    /// **Default: OFF** (opt-in). Each MoE layer's decode forward path is
-    /// wrapped in an `MlxClosure` compiled via `mlx_compile` with
-    /// `shapeless=true`. The compiled closure is cached per
-    /// `(layer_index, thread_id)` and reused across decode steps,
-    /// collapsing ~10 per-layer MLX dispatches into a single compiled
-    /// graph. Only engages for `seq == 1` (decode). Falls back to the
-    /// uncompiled path on compilation failure.
+    /// **Default: ON** (kill-switch via `AX_MLX_MOE_LAYER_COMPILE=0`).
+    /// Each MoE layer's decode forward path is wrapped in an `MlxClosure`
+    /// compiled via `mlx_compile` with `shapeless=true`. The compiled
+    /// closure is cached per `(layer_index, thread_id)` and reused across
+    /// decode steps, collapsing ~10 per-layer MLX dispatches into a single
+    /// compiled graph. Only engages for `seq == 1` (decode). Falls back to
+    /// the uncompiled path on compilation failure.
     moe_layer_compile_enabled,
     "AX_MLX_MOE_LAYER_COMPILE"
 );

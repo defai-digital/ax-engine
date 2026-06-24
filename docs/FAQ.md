@@ -6,7 +6,7 @@ AX Engine targets high-memory Apple Silicon Macs running macOS 26 (Tahoe) or
 later.
 
 | Machine | Minimum spec | Suggested spec |
-|---|---|---|
+| --- | --- | --- |
 | Mac Mini | M4 Pro, 32 GB | M4 Pro, 64 GB |
 | MacBook Pro 14" / 16" | M2 Pro / M2 Max, 32 GB | M3 Max, 96 GB |
 | Mac Studio | M2 Max / M2 Ultra, 32 GB | M4 Max, 96 GB |
@@ -19,7 +19,7 @@ For a typical local model stack, start with one of these higher-memory
 configurations:
 
 | Hardware | Recommended memory | Best fit |
-|---|---:|---|
+| --- | ---: | --- |
 | Mac mini M4 Pro | 64 GB RAM | Compact always-on local chatbot and agent server |
 | MacBook Pro M5 Max | 128 GB RAM | Portable high-throughput chatbot, agent, and coding stack |
 | Mac Studio M3 Ultra | 256 GB RAM | Larger local model portfolio, longer contexts, and heavier parallel workloads |
@@ -30,7 +30,7 @@ Use a three-model stack when memory allows it. One model can serve every task,
 but the better local setup is to match the model to the workflow.
 
 | Role | Recommended model | Setup | App | Why |
-|---|---|---|---|---|
+| --- | --- | --- | --- | --- |
 | Default chatbot | Gemma 4 26B-A4B / 31B | 4-bit or 6-bit, 16K-32K | [ax-studio](https://github.com/defai-digital/ax-studio) | General assistant path for reasoning, chat, JSON/function calling, and on-device agent workflows |
 | General agentic model | Qwen3.6-35B-A3B / Qwen3.6-27B | 35B A3B 4-bit; 27B 4/5/6-bit, 16K-32K | AX server / SDK | Strong general agent and coding balance; sparse MoE keeps active compute low |
 | Coding specialist | Qwen3-Coder-Next | 6-bit + 16K default; 4-bit/5-bit + 32K when needed | [ax-code](https://github.com/defai-digital/ax-code) | Dedicated local coding-agent path for repo editing, tool use, and long coding sessions |
@@ -49,7 +49,7 @@ Qwen3-Coder-Next 6-bit + 16K
 ```
 
 | Use case | Best pick |
-|---|---|
+| --- | --- |
 | Daily chatbot | Gemma 4 |
 | Business/technical assistant | Qwen3.6-35B-A3B |
 | Repo editing / coding agent | Qwen3-Coder-Next |
@@ -92,7 +92,7 @@ repo-owned MLX throughput claims.
 ## Is AX faster because it replaces MLX kernels?
 
 No. The repo-owned MLX path uses MLX directly for tensor operations through the
-official `mlx-c` C API. Matrix multiply, quantized matmul, attention, RMSNorm,
+repo-owned `ax_shim` C ABI over MLX C++. Matrix multiply, quantized matmul, attention, RMSNorm,
 and RoPE go through MLX's Apple-maintained Metal kernels. AX owns the runtime
 behavior above that graph.
 

@@ -2,9 +2,9 @@
 //!
 //! # Ownership and thread-local behavior (invariant I-3)
 //!
-//! Upstream MLX 0.31 (`mlx-c` 0.6) keeps **one default GPU stream per device
-//! per OS thread**. The stream index returned by `mlx_default_gpu_stream_new`
-//! is the index of the thread-local default; calling it from a different
+//! Upstream MLX 0.31 keeps **one default GPU stream per device
+//! per OS thread**. The stream returned by `mlx_default_gpu_stream_new`
+//! is the thread-local default; calling it from a different
 //! thread lazily creates a fresh default for *that* thread. Two threads
 //! never share the same default stream — they cannot, because MLX's Metal
 //! command encoder for a stream index is registered on the thread that
@@ -33,10 +33,10 @@
 //!
 //! # What this module guarantees
 //!
-//! - Drop reclaims an owned stream wrapper exactly once. `mlx-c` represents
-//!   even default streams as heap-allocated wrapper objects around the
-//!   scheduler-owned `mlx::core::Stream`, so wrapper ownership is separate from
-//!   stream-index ownership.
+//! - Drop reclaims an owned stream wrapper exactly once. The ax_shim
+//!   layer represents even default streams as heap-allocated wrapper objects
+//!   around the scheduler-owned `mlx::core::Stream`, so wrapper ownership is
+//!   separate from stream-index ownership.
 //! - `Send`/`Sync` are correct in the narrow technical sense: the wrapper
 //!   is a pointer pair (`ffi::mlx_stream`, `bool owns`) with no
 //!   thread-affine Rust state. The thread-affinity lives inside MLX, not
@@ -50,7 +50,7 @@
 //! - That `clear_cache` on a worker thread affects another thread's
 //!   in-flight evaluation.
 //! - That a stream created on thread A and freed on thread B is safe in
-//!   every MLX release. mlx-c 0.6 tolerates this for the GPU stream type
+//!   every MLX release. The current shim tolerates this for the GPU stream type
 //!   used here, but stricter releases may change that.
 //!
 //! # Migration to `!Send` is a separate ADR
@@ -68,6 +68,7 @@
 use std::cell::RefCell;
 use std::ptr;
 
+use crate::error::{last_error_message, panic_on_status, prepare_error_capture};
 use crate::ffi;
 
 struct CachedDefaultGpuStream {
@@ -85,14 +86,18 @@ impl CachedDefaultGpuStream {
 
     fn get_or_init(&mut self) -> ffi::mlx_stream {
         if self.inner.ctx.is_null() {
+            prepare_error_capture();
             self.inner = unsafe { ffi::mlx_default_gpu_stream_new() };
+            panic_on_null_stream("mlx_default_gpu_stream_new", self.inner);
         }
         self.inner
     }
 
     fn refresh(&mut self) -> ffi::mlx_stream {
         self.free();
+        prepare_error_capture();
         self.inner = unsafe { ffi::mlx_default_gpu_stream_new() };
+        panic_on_null_stream("mlx_default_gpu_stream_new", self.inner);
         self.inner
     }
 
@@ -116,7 +121,10 @@ thread_local! {
 }
 
 fn fresh_default_gpu_stream() -> ffi::mlx_stream {
-    unsafe { ffi::mlx_default_gpu_stream_new() }
+    prepare_error_capture();
+    let stream = unsafe { ffi::mlx_default_gpu_stream_new() };
+    panic_on_null_stream("mlx_default_gpu_stream_new", stream);
+    stream
 }
 
 fn refresh_default_gpu_raw() -> ffi::mlx_stream {
@@ -129,7 +137,7 @@ fn refresh_default_gpu_raw() -> ffi::mlx_stream {
 /// thread has no GPU default yet, this call lazily creates and registers one
 /// for this thread.
 ///
-/// `mlx-c` allocates a wrapper object even for default-stream handles (see
+/// ax_shim allocates a wrapper object even for default-stream handles (see
 /// `.internal/reference/SwiftLM/mlx-swift/Source/Cmlx/mlx-c/mlx/c/private/stream.h`).
 /// The hot path calls this helper for every MLX op, so cache one wrapper per
 /// OS thread instead of allocating and leaking a wrapper on every dispatch.
@@ -164,16 +172,16 @@ impl MlxStream {
         }
     }
 
-    /// The default CPU stream. Owns the mlx-c wrapper and frees it on drop.
+    /// The default CPU stream. Owns the ax_shim wrapper and frees it on drop.
     ///
     /// Use this instead of calling `ffi::mlx_default_cpu_stream_new()` directly
-    /// to avoid leaking the wrapper object. mlx-c allocates a heap wrapper even
+    /// to avoid leaking the wrapper object. ax_shim allocates a heap wrapper even
     /// for default streams; callers are responsible for freeing it.
     pub fn default_cpu() -> Self {
-        Self {
-            inner: unsafe { ffi::mlx_default_cpu_stream_new() },
-            owns: true,
-        }
+        prepare_error_capture();
+        let inner = unsafe { ffi::mlx_default_cpu_stream_new() };
+        panic_on_null_stream("mlx_default_cpu_stream_new", inner);
+        Self { inner, owns: true }
     }
 
     /// Create a new dedicated GPU stream.
@@ -186,13 +194,18 @@ impl MlxStream {
     /// Upstream MLX registers the Metal command encoder for a newly created GPU
     /// stream only in the thread that created the stream. Passing the stream to
     /// another thread and calling `set_as_default()` there does not register that
-    /// stream index's encoder in MLX 0.31 / mlx-c 0.6.
+    /// stream index's encoder in MLX 0.31.
     pub fn new_gpu() -> Self {
         unsafe {
             // MLX_GPU = 1 (enum mlx_device_type_: MLX_CPU=0, MLX_GPU=1)
+            prepare_error_capture();
             let dev = ffi::mlx_device_new_type(1, 0);
+            if dev.ctx.is_null() {
+                panic!("{}", last_error_message("mlx_device_new_type"));
+            }
             let stream = ffi::mlx_stream_new_device(dev);
             ffi::mlx_device_free(dev);
+            panic_on_null_stream("mlx_stream_new_device", stream);
             Self {
                 inner: stream,
                 owns: true,
@@ -207,9 +220,17 @@ impl MlxStream {
     /// for an existing stream index on a different thread.
     pub fn set_as_default(&self) {
         unsafe {
-            ffi::mlx_set_default_stream(self.inner);
+            prepare_error_capture();
+            let rc = ffi::mlx_set_default_stream(self.inner);
+            panic_on_status("mlx_set_default_stream", rc);
         }
         refresh_default_gpu_raw();
+    }
+}
+
+fn panic_on_null_stream(operation: &str, stream: ffi::mlx_stream) {
+    if stream.ctx.is_null() {
+        panic!("{}", last_error_message(operation));
     }
 }
 
@@ -234,7 +255,7 @@ mod tests {
     use std::thread;
 
     /// The cached raw default handle is thread-local. `inner.ctx` is the
-    /// mlx-c wrapper pointer, not the upstream stream identity; this test
+    /// ax_shim wrapper pointer, not the upstream stream identity; this test
     /// protects the wrapper cache from accidentally becoming process-global.
     #[test]
     fn cached_default_stream_wrappers_are_thread_local() {
@@ -254,16 +275,16 @@ mod tests {
         );
     }
 
-    /// `mlx-c` allocates wrapper objects for both default and dedicated streams.
+    /// ax_shim allocates wrapper objects for both default and dedicated streams.
     /// Dropping either Rust wrapper must free only that wrapper object, not the
     /// scheduler-owned default stream itself.
     #[test]
     fn stream_wrappers_own_their_handles() {
         let default = MlxStream::default_gpu();
         let owned = MlxStream::new_gpu();
-        assert!(default.owns, "default_gpu must own its mlx-c wrapper");
+        assert!(default.owns, "default_gpu must own its ax_shim wrapper");
         assert!(owned.owns, "new_gpu must claim ownership");
-        // Pointers should differ because each handle is a distinct mlx-c wrapper.
+        // Pointers should differ because each handle is a distinct ax_shim wrapper.
         assert_ne!(
             default.inner.ctx as usize, owned.inner.ctx as usize,
             "new_gpu must allocate a distinct stream wrapper from the thread default"
@@ -276,7 +297,7 @@ mod tests {
         let second = default_gpu_raw();
         assert_eq!(
             first.ctx as usize, second.ctx as usize,
-            "hot-path default_gpu_raw should reuse the thread-local mlx-c wrapper"
+            "hot-path default_gpu_raw should reuse the thread-local ax_shim wrapper"
         );
     }
 

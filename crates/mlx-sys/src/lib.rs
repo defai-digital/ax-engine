@@ -1,10 +1,11 @@
 //! Internal MLX runtime boundary for AX Engine.
 //!
-//! This crate intentionally contains both the raw bindgen output for `mlx-c`
-//! and the safe Rust wrappers used by the rest of the workspace. That is a
-//! pragmatic internal layout: the `-sys` suffix normally means raw FFI only,
-//! but AX Engine currently keeps the safe layer here to avoid an extra crate
-//! boundary around code that is not published as an independent API.
+//! This crate intentionally contains both the raw bindgen output from
+//! `ax_shim.h` and the safe Rust wrappers used by the rest of the workspace.
+//! That is a pragmatic internal layout: the `-sys` suffix normally means raw
+//! FFI only, but AX Engine currently keeps the safe layer here to avoid an
+//! extra crate boundary around code that is not published as an independent
+//! API.
 //!
 //! Callers should use the safe modules and re-exports such as [`MlxArray`],
 //! [`MlxStream`], ops, transforms, safetensors loading, and Metal kernel
@@ -33,7 +34,7 @@ pub mod transforms;
 /// Raw auto-generated FFI bindings.
 ///
 /// Prefer the safe modules above. This module remains public so wrappers can
-/// cover new `mlx-c` APIs incrementally without changing crate boundaries.
+/// cover new MLX APIs incrementally without changing crate boundaries.
 #[doc(hidden)]
 #[allow(
     non_camel_case_types,
@@ -55,7 +56,8 @@ pub use fast::{
 };
 pub use io::{load_safetensors, load_safetensors_mmap};
 pub use mempressure::{
-    device_active_bytes, device_recommended_working_set_bytes, host_resident_bytes,
+    device_active_bytes, device_cache_bytes, device_peak_bytes,
+    device_recommended_working_set_bytes, host_resident_bytes,
 };
 pub use metal::{KernelOutputSpec, KernelTemplateArg, MlxMetalKernel};
 pub use op_count::{op_count_snapshot, op_count_take};
@@ -75,6 +77,7 @@ pub use ops::{
 };
 pub use stream::MlxStream;
 pub use transforms::{
-    async_eval, clear_cache, enable_compile, eval, eval_first_u32,
-    max_recommended_working_set_size, set_wired_limit, try_eval,
+    async_eval, clear_cache, enable_compile, eval, eval_first_u32, get_cache_memory,
+    get_peak_memory, max_recommended_working_set_size, reset_peak_memory, set_cache_limit,
+    set_memory_limit, set_wired_limit, try_eval,
 };

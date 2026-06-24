@@ -16,7 +16,7 @@ ruled out first, then the live lever was found:
    *mask*, but the linear/gated-delta layers are recurrent scans that ignore
    masks and process tokens sequentially — they cannot verify branching paths in
    one forward. The Phase-A prototype (`src/bin/tree_draft_probe.rs`,
-   `docs/TREE-DRAFT-PHASE-A.md`) also showed the acceptance ceiling is already
+   `docs/mtp/tree-draft-phase-a.md`) also showed the acceptance ceiling is already
    near-saturated in the realistic regime (≤1.14x projected, saturating at 8
    leaves), so even where a tree *is* possible it isn't worth it.
 
@@ -50,10 +50,10 @@ AX_PROBE_HEAD_MAX_DEPTH=6 AX_DEPTH_SWEEP="2,3,4" ./target/release/tree_draft_pro
 Best tok/s per suite (gate 0.98 vs 0.90), with `fwds/step` (recompute pressure):
 
 | suite                | gate 0.98 best | gate 0.90 best | gain | fwds/step @0.90 |
-|----------------------|---------------:|---------------:|-----:|----------------:|
-| flappy               |  39.0 (d2)     |  40.9 (d2)     | +5%  | 1.04 |
-| python_modules_long  |  39.8 (d2)     |  41.5 (d3)     | +4%  | 1.01 |
-| long_code            |  34.8 (d2)     |  39.4 (d2)     | +13% | 1.03 |
+| -------------------- | -------------- | -------------- | ---- | --------------- |
+| flappy               | 39.0 (d2)      | 40.9 (d2)      | +5%  | 1.04            |
+| python_modules_long  | 39.8 (d2)      | 41.5 (d3)      | +4%  | 1.01            |
+| long_code            | 34.8 (d2)      | 39.4 (d2)      | +13% | 1.03            |
 
 `tok/fwd` (deterministic, thermal-noise-free) confirms the mechanism: at fixed
 depth 2 on flappy it rises 1.633 → 1.749 (0.98 → 0.90), +7%. Headline candidate
@@ -74,7 +74,7 @@ wall-clock — see below). Depth 2 is the throughput optimum on every suite.
 Best `tok/fwd` at depth 2, gate 0.98 vs each suite's optimal gate:
 
 | suite                | gate 0.98 | optimal gate | tok/fwd @opt | Δ tok/fwd |
-|----------------------|----------:|:------------:|-------------:|----------:|
+| -------------------- | --------: | :----------: | -----------: | --------: |
 | flappy               |     1.647 |   **0.90**   |        1.779 |     +8.0% |
 | python_modules_long  |     1.571 |   **0.85**   |        1.785 |    +13.6% |
 | long_code            |     1.369 |   **0.80**   |        1.610 |    +17.6% |
@@ -118,7 +118,7 @@ shippable knob is the gate, not a fixed depth.
   adaptive in the runner, and past depth ~3 extra head forwards cost more than
   they return. The gate, not the depth, is the throughput lever.
 - **Linear-attention models only get the gate lever**, not tree speculation — see
-  `docs/TREE-DRAFT-PHASE-A.md`.
+  `docs/mtp/tree-draft-phase-a.md`
 - **Per-request tuning** is available in code via `mtp::mtp_draft_tokens_gated`
   (an explicit-gate variant of `mtp_draft_tokens`); the runner still defaults to
   the env value. Wire it through the request/session API if a single deployment
@@ -133,11 +133,11 @@ on a deterministic throughput proxy `committed / (target_forwards + steps*depth*
 
 Result (proxy; deterministic, so thermal-noise-free):
 
-| suite                | best fixed | ADAPTIVE | verdict        |
-|----------------------|-----------:|---------:|----------------|
-| flappy               | 1.453 (0.90) | 1.453  | matched        |
-| python_modules_long  | 1.383 (0.80) | 1.328  | −4%, mis-tuned |
-| long_code            | 1.337 (0.85) | 1.282  | −4%            |
+| suite                 | best fixed   | ADAPTIVE   | verdict         |
+| --------------------- | ------------ | ---------- | --------------- |
+| flappy                | 1.453 (0.90) | 1.453      | matched         |
+| python_modules_long   | 1.383 (0.80) | 1.328      | −4%, mis-tuned  |
+| long_code             | 1.337 (0.85) | 1.282      | −4%             |
 
 It matched the optimum on easy/repetitive content but **mis-tuned on the harder
 suites** — short hill-climb windows have enough per-region variance that the

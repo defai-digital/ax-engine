@@ -8,7 +8,8 @@ use std::time::Instant;
 use mlx_sys::{
     MlxArray, MlxDtype, MlxStream, add, argmax, argpartition_axis, astype, clear_cache, divide,
     enable_compile, eval, max_recommended_working_set_size, multiply, power, reshape,
-    set_wired_limit, slice, softmax, stack, sum_axis, take, take_along_axis,
+    set_cache_limit, set_memory_limit, set_wired_limit, slice, softmax, stack, sum_axis, take,
+    take_along_axis,
 };
 
 use ax_engine_core::runner::RunnerRequestContext;
@@ -4832,10 +4833,39 @@ impl MlxRunner {
         stream.set_as_default();
 
         // Wire weights into GPU memory to prevent paging between requests.
-        // Use Metal's recommendedMaxWorkingSetSize — values above this are rejected.
+        // Scale to 90% of Metal's recommended working set to avoid macOS kernel
+        // panics caused by wiring the full max (documented in mlx-lm#883).
+        // Override via AX_MLX_WIRED_LIMIT_SCALE (0.0-1.0).
         let wired_cap = max_recommended_working_set_size();
         if wired_cap > 0 {
-            set_wired_limit(wired_cap);
+            let scale: f64 = std::env::var("AX_MLX_WIRED_LIMIT_SCALE")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0.9);
+            let scaled = (wired_cap as f64 * scale.clamp(0.0, 1.0)) as usize;
+            set_wired_limit(scaled);
+        }
+
+        // Disable MLX's internal graph/array cache to prevent unbounded memory
+        // growth during long inference sessions. The community consensus
+        // (mlx-lm#828) is that set_cache_limit(0) eliminates memory pressure
+        // with no measurable performance impact. Override via
+        // AX_MLX_CACHE_LIMIT (bytes); 0 = disabled (default).
+        let cache_limit: usize = std::env::var("AX_MLX_CACHE_LIMIT")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
+        set_cache_limit(cache_limit);
+
+        // Set MLX memory limit. Defaults to wired_cap (same as wired working
+        // set), which is more conservative than MLX's default 1.5x. Override
+        // via AX_MLX_MEMORY_LIMIT (bytes); 0 = use MLX default.
+        let memory_limit: usize = std::env::var("AX_MLX_MEMORY_LIMIT")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(wired_cap);
+        if memory_limit > 0 {
+            set_memory_limit(memory_limit);
         }
 
         validate_mlx_supported_manifest(artifacts)?;

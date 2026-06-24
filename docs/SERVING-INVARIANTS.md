@@ -42,9 +42,9 @@ Any mismatch falls back to recomputation; partial trust is forbidden.
 - **Note**: this fixture is session-free; it runs without
   `AX_ENGINE_MLX_MODEL_ARTIFACTS_DIR`.
 
-## I-3 — MLX / `mlx-c` stream and thread ownership is an explicit contract
+## I-3 — MLX / `ax_shim` stream and thread ownership is an explicit contract
 
-FFI calls into `mlx-c` carry assumptions about which stream is active and
+FFI calls into MLX through `ax_shim` carry assumptions about which stream is active and
 which thread owns the in-flight evaluation. AX Engine documents and audits
 those assumptions in `crates/mlx-sys/src/stream.rs` and `docs/MLX-BACKEND.md`,
 and adds regression probes for the known cross-thread `eval` /

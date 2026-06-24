@@ -1,8 +1,17 @@
 use std::ffi::CString;
 
 use crate::array::{MlxArray, null_ffi_array};
+use crate::error::{panic_on_status, prepare_error_capture};
 use crate::ffi;
 use crate::stream::{MlxStream, default_gpu_raw};
+
+macro_rules! checked_ffi {
+    ($operation:literal, $call:expr) => {{
+        prepare_error_capture();
+        let rc = $call;
+        panic_on_status($operation, rc);
+    }};
+}
 
 /// Attention mask accepted by MLX fast SDPA.
 pub enum ScaledDotProductAttentionMask<'a> {
@@ -23,7 +32,10 @@ pub fn rms_norm(
         let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
         let weight_raw = weight.map(|w| w.inner).unwrap_or_else(null_ffi_array);
         let mut res = MlxArray::empty();
-        ffi::mlx_fast_rms_norm(&mut res.inner, x.inner, weight_raw, eps, stream);
+        checked_ffi!(
+            "mlx_fast_rms_norm",
+            ffi::mlx_fast_rms_norm(&mut res.inner, x.inner, weight_raw, eps, stream)
+        );
         res
     }
 }
@@ -49,16 +61,19 @@ pub fn rope(
         };
         let freqs_raw = freqs.map(|f| f.inner).unwrap_or_else(null_ffi_array);
         let mut res = MlxArray::empty();
-        ffi::mlx_fast_rope(
-            &mut res.inner,
-            x.inner,
-            dims,
-            traditional,
-            base_opt,
-            scale,
-            offset,
-            freqs_raw,
-            stream,
+        checked_ffi!(
+            "mlx_fast_rope",
+            ffi::mlx_fast_rope(
+                &mut res.inner,
+                x.inner,
+                dims,
+                traditional,
+                base_opt,
+                scale,
+                offset,
+                freqs_raw,
+                stream,
+            )
         );
         res
     }
@@ -108,16 +123,19 @@ pub fn scaled_dot_product_attention_with_mask(
             ScaledDotProductAttentionMask::None | ScaledDotProductAttentionMask::Causal => null_arr,
         };
         let mut res = MlxArray::empty();
-        ffi::mlx_fast_scaled_dot_product_attention(
-            &mut res.inner,
-            queries.inner,
-            keys.inner,
-            values.inner,
-            scale,
-            mask_mode.as_ptr(),
-            mask_arr,
-            null_arr, // sinks
-            stream,
+        checked_ffi!(
+            "mlx_fast_scaled_dot_product_attention",
+            ffi::mlx_fast_scaled_dot_product_attention(
+                &mut res.inner,
+                queries.inner,
+                keys.inner,
+                values.inner,
+                scale,
+                mask_mode.as_ptr(),
+                mask_arr,
+                null_arr, // sinks
+                stream,
+            )
         );
         res
     }

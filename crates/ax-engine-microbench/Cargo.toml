@@ -10,8 +10,8 @@ ax-engine-mlx = { path = "../ax-engine-mlx" }
 mlx-sys = { path = "../mlx-sys" }
 serde_json.workspace = true
 
-[lints.rust]
-unsafe_code = "allow"
+[lints]
+workspace = true
 
 [[bin]]
 name = "turboquant-microbench"

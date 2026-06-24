@@ -10,22 +10,23 @@ fn homebrew_prefix() -> String {
         .unwrap_or_else(|| "/opt/homebrew".to_string())
 }
 
-// Resolve (lib_dir, include_dir, mlx_cpp_include_dir) for MLX.
-//
-// activation.cpp includes both mlx-c C wrapper headers (mlx/c/*.h) and the
-// underlying MLX C++ headers (mlx/fast.h, mlx/ops.h, …).  We therefore need
-// two include roots: one for mlx-c and one for the MLX C++ library itself.
-//
-// Priority:
-//   1. MLX_LIB_DIR env var (set in CI wheel builds to point at the mlx-c
-//      library; MLX_INCLUDE_DIR can optionally override the header location;
-//      MLX_CPP_INCLUDE_DIR can override the C++ header location)
-//   2. `brew --prefix mlx-c` for the wrapper + `brew --prefix mlx` for C++
-//   3. General Homebrew prefix — fallback for environments where both are
-//      installed under the top-level Homebrew tree
-// Returns (mlxc_lib_dir, mlxc_include_dir, mlx_cpp_include_dir, mlx_lib_dir).
-// mlx_lib_dir may equal mlxc_lib_dir when both live under the same prefix.
-fn find_mlx_dirs() -> (String, String, String, String) {
+/// Resolve the MLX C++ include and library directories.
+///
+/// ax_shim.cpp and activation.cpp include MLX C++ headers (`mlx/fast.h`,
+/// `mlx/ops.h`, …) and link against `libmlx`. The C wrapper layer (mlx-c /
+/// libmlxc) is no longer needed — our shim replaces it.
+///
+/// Priority:
+///   1. `MLX_LIB_DIR` env var (CI wheel builds)
+///   2. `brew --prefix mlx` for the C++ library
+///   3. General Homebrew prefix fallback
+struct MlxDirs {
+    mlx_include_dir: String,
+    mlx_lib_dir: String,
+}
+
+fn find_mlx_dirs() -> MlxDirs {
+    // --- Priority 1: MLX_LIB_DIR env var ---
     if let Ok(lib_dir) = std::env::var("MLX_LIB_DIR") {
         let include_dir = std::env::var("MLX_INCLUDE_DIR").unwrap_or_else(|_| {
             PathBuf::from(&lib_dir)
@@ -33,20 +34,13 @@ fn find_mlx_dirs() -> (String, String, String, String) {
                 .map(|p| p.join("include").display().to_string())
                 .unwrap_or_else(|| format!("{lib_dir}/../include"))
         });
-        let cpp_include_dir =
-            std::env::var("MLX_CPP_INCLUDE_DIR").unwrap_or_else(|_| include_dir.clone());
-        return (lib_dir.clone(), include_dir, cpp_include_dir, lib_dir);
+        return MlxDirs {
+            mlx_include_dir: include_dir,
+            mlx_lib_dir: lib_dir,
+        };
     }
 
-    let mlxc_prefix = std::process::Command::new("brew")
-        .args(["--prefix", "mlx-c"])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .and_then(|o| String::from_utf8(o.stdout).ok())
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty());
-
+    // --- Priority 2: brew --prefix mlx ---
     let mlx_prefix = std::process::Command::new("brew")
         .args(["--prefix", "mlx"])
         .output()
@@ -56,61 +50,56 @@ fn find_mlx_dirs() -> (String, String, String, String) {
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty());
 
-    if let Some(mlxc) = mlxc_prefix {
-        let lib_dir = format!("{mlxc}/lib");
-        let include_dir = format!("{mlxc}/include");
-        // Use mlx C++ headers and lib from its own prefix if available,
-        // otherwise fall back to the general Homebrew prefix.
-        let (cpp_include_dir, mlx_lib_dir) = mlx_prefix
-            .map(|p| (format!("{p}/include"), format!("{p}/lib")))
-            .unwrap_or_else(|| {
-                let prefix = homebrew_prefix();
-                (format!("{prefix}/include"), format!("{prefix}/lib"))
-            });
-        return (lib_dir, include_dir, cpp_include_dir, mlx_lib_dir);
+    if let Some(p) = mlx_prefix {
+        return MlxDirs {
+            mlx_include_dir: format!("{p}/include"),
+            mlx_lib_dir: format!("{p}/lib"),
+        };
     }
 
+    // --- Priority 3: general Homebrew fallback ---
     let prefix = homebrew_prefix();
-    (
-        format!("{prefix}/lib"),
-        format!("{prefix}/include"),
-        format!("{prefix}/include"),
-        format!("{prefix}/lib"),
-    )
+    MlxDirs {
+        mlx_include_dir: format!("{prefix}/include"),
+        mlx_lib_dir: format!("{prefix}/lib"),
+    }
 }
 
 fn main() {
-    let (lib_dir, include_dir, cpp_include_dir, mlx_lib_dir) = find_mlx_dirs();
+    let dirs = find_mlx_dirs();
+    let native_dir = PathBuf::from("native");
 
+    // --- Compile native C++ shims (ax_shim.cpp + activation.cpp) ---
+    // Both files include MLX C++ headers and call mlx::core directly.
+    // ax_shim.cpp provides the C ABI entry points; activation.cpp provides
+    // fused multi-op shims for performance-critical paths.
     cc::Build::new()
         .cpp(true)
-        .std("c++17")
+        .std("c++20")
         .warnings(false)
-        .include(&include_dir)
-        .include(&cpp_include_dir)
+        .include(&native_dir)
+        .include(&dirs.mlx_include_dir)
+        .file("native/ax_shim.cpp")
         .file("native/activation.cpp")
-        .compile("ax_mlx_direct");
+        .compile("ax_shim");
 
+    // --- Link MLX C++ library ---
     println!("cargo:rustc-link-lib=mlx");
-    println!("cargo:rustc-link-lib=mlxc");
-    println!("cargo:rustc-link-search=native={lib_dir}");
-    println!("cargo:rustc-link-search=native={mlx_lib_dir}");
+    println!("cargo:rustc-link-search=native={}", dirs.mlx_lib_dir);
+
+    // --- Rerun triggers ---
     println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-changed=native/ax_shim.h");
+    println!("cargo:rerun-if-changed=native/ax_shim.cpp");
     println!("cargo:rerun-if-changed=native/activation.cpp");
-    println!("cargo:rerun-if-changed={include_dir}/mlx/c/mlx.h");
-    println!("cargo:rerun-if-changed={include_dir}/mlx/c");
     println!("cargo:rerun-if-env-changed=MLX_LIB_DIR");
     println!("cargo:rerun-if-env-changed=MLX_INCLUDE_DIR");
-    println!("cargo:rerun-if-env-changed=MLX_CPP_INCLUDE_DIR");
-    println!("cargo:rerun-if-env-changed=HOMEBREW_PREFIX");
 
-    let mlx_c_header_pattern = format!(r".*{}/mlx/c/.*\.h", regex::escape(&include_dir));
-
+    // --- Generate bindgen FFI bindings from ax_shim.h ---
     let bindings = bindgen::Builder::default()
-        .header(format!("{include_dir}/mlx/c/mlx.h"))
-        .clang_arg(format!("-I{include_dir}"))
-        // Only generate bindings for mlx/c headers
-        .allowlist_file(mlx_c_header_pattern)
+        .header("native/ax_shim.h")
+        .clang_arg(format!("-I{}", native_dir.display()))
+        .allowlist_file(r".*native/ax_shim\.h")
         // Represent C enums as Rust enums
         .rustified_enum("mlx_dtype_")
         // Don't derive Default for opaque types that need explicit init
@@ -122,7 +111,7 @@ fn main() {
         .no_default("mlx_fast_metal_kernel_")
         .no_default("mlx_fast_metal_kernel_config_")
         .generate()
-        .expect("Unable to generate mlx-c bindings");
+        .expect("Unable to generate ax_shim bindings");
 
     let out_path = PathBuf::from(std::env::var("OUT_DIR").unwrap());
     bindings

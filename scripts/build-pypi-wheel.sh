@@ -1,21 +1,18 @@
 #!/usr/bin/env bash
 # Build the ax-engine PyPI wheel for macOS arm64.
 #
-# The resulting wheel is self-contained: libmlxc.dylib and libmlx.dylib are
+# The resulting wheel is self-contained: libmlx.dylib is
 # bundled by delocate so the user does not need Homebrew at install time.
 #
 # Prerequisites (one-time):
 #   pip install maturin delocate
-#   brew install mlx mlx-c       # provides libmlx and libmlxc for the build
+#   brew install mlx             # provides libmlx and headers for the build
 #
 # Environment variables (optional):
-#   MLX_LIB_DIR          — path to dir containing libmlxc.dylib
-#                           (default: resolved from `brew --prefix mlx-c`)
-#   MLX_INCLUDE_DIR      — path to dir containing mlx/c/mlx.h
+#   MLX_LIB_DIR          — path to dir containing libmlx.dylib
+#                           (default: resolved from `brew --prefix mlx`)
+#   MLX_INCLUDE_DIR      — path to dir containing mlx/*.h
 #                           (default: <MLX_LIB_DIR>/../include)
-#   MLX_CPP_INCLUDE_DIR  — path to dir containing mlx/fast.h (C++ headers)
-#                           (default: same as MLX_INCLUDE_DIR; override when
-#                            mlx and mlx-c are installed under separate prefixes)
 #
 # Usage:
 #   bash scripts/build-pypi-wheel.sh            # build only
@@ -86,6 +83,14 @@ if [[ ! -f "$BENCH_BIN" ]]; then
     exit 1
 fi
 
+# The native `ax-engine` binary (second bin of the ax-engine-bench crate) hosts
+# the `ax-engine tui` subcommand, which the Python CLI execs.
+NATIVE_BIN="$REPO_ROOT/target/release/ax-engine"
+if [[ ! -f "$NATIVE_BIN" ]]; then
+    echo "error: expected binary at $NATIVE_BIN after cargo build"
+    exit 1
+fi
+
 SCRIPTS_DIR="$REPO_ROOT/python/ax_engine/_bin"
 mkdir -p "$SCRIPTS_DIR"
 cp "$SERVER_BIN" "$SCRIPTS_DIR/ax-engine-server"
@@ -94,6 +99,9 @@ echo "    staged: $SCRIPTS_DIR/ax-engine-server"
 cp "$BENCH_BIN" "$SCRIPTS_DIR/ax-engine-bench"
 chmod +x "$SCRIPTS_DIR/ax-engine-bench"
 echo "    staged: $SCRIPTS_DIR/ax-engine-bench"
+cp "$NATIVE_BIN" "$SCRIPTS_DIR/ax-engine"
+chmod +x "$SCRIPTS_DIR/ax-engine"
+echo "    staged: $SCRIPTS_DIR/ax-engine"
 
 # ── 3b. Stage mlx.metallib so the wheel ships MLX's Metal shader library. ──
 # pyproject.toml includes python/ax_engine.dylibs/mlx.metallib in the wheel and
@@ -125,7 +133,7 @@ fi
 WHEEL="${wheels[0]}"
 echo "    built: $WHEEL"
 
-# ── 5. Delocalize — bundle libmlxc + libmlx into the wheel ────────────────
+# ── 5. Delocalize — bundle libmlx into the wheel ──────────────────────────
 echo "==> Delocalizing wheel (bundling dylibs)..."
 # --require-archs ensures we only accept arm64 (Apple Silicon only)
 delocate-wheel --require-archs arm64 -w "$DELOCATED_OUT" "$WHEEL"
@@ -147,6 +155,7 @@ echo "==> Verifying bundled MLX runtime assets..."
 verify_wheel_member "$DELOCATED" "ax_engine.dylibs/mlx.metallib"
 verify_wheel_member "$DELOCATED" "ax_engine/_bin/ax-engine-server"
 verify_wheel_member "$DELOCATED" "ax_engine/_bin/ax-engine-bench"
+verify_wheel_member "$DELOCATED" "ax_engine/_bin/ax-engine"
 
 # ── 5b. Guard the platform tag ─────────────────────────────────────────────
 # Refuse to ship a wheel whose tag understates the macOS floor. The bundled MLX

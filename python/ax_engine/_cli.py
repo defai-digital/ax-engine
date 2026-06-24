@@ -23,9 +23,10 @@ class ModelProfile:
     repo_id: str
     aliases: tuple[str, ...]
     downloadable: bool = True
-    # Informational: the model family also has an MTP acceleration lane reachable
-    # via `ax-engine download-mtp`. Surfaced in the interactive picker and --list.
-    mtp_lane: str | None = None
+    # When set, the model family has an MTP acceleration package reachable via
+    # `ax-engine download-mtp <mtp_target>`. The interactive picker offers a
+    # Direct-vs-MTP choice for these; --list flags them.
+    mtp_target: str | None = None
 
 
 MODEL_PROFILES = (
@@ -58,13 +59,14 @@ MODEL_PROFILES = (
         preset="gemma4-12b",
         repo_id="mlx-community/gemma-4-12B-it-4bit",
         aliases=("gemma4-12b", "gemma-4-12b", "gemma-4-12b-it", "gemma4-12b-4bit"),
-        mtp_lane="gemma-assistant",
+        mtp_target="gemma-4-12b-4bit",
     ),
     ModelProfile(
         label="gemma4-12b-6bit",
         preset=None,
         repo_id="mlx-community/gemma-4-12B-it-6bit",
         aliases=("gemma4-12b-6bit", "gemma-4-12b-6bit", "gemma-4-12b-it-6bit"),
+        mtp_target="gemma-4-12b",
     ),
     ModelProfile(
         label="gemma4-26b",
@@ -76,12 +78,14 @@ MODEL_PROFILES = (
             "gemma-4-26b-a4b-it",
             "gemma4-26b-4bit",
         ),
+        mtp_target="gemma-4-26b",
     ),
     ModelProfile(
         label="gemma4-31b",
         preset="gemma4-31b",
         repo_id="mlx-community/gemma-4-31b-it-4bit",
         aliases=("gemma4-31b", "gemma-4-31b", "gemma-4-31b-it", "gemma4-31b-4bit"),
+        mtp_target="gemma-4-31b",
     ),
     ModelProfile(
         label="glm4.7-flash-4bit",
@@ -95,7 +99,7 @@ MODEL_PROFILES = (
             "glm-4.7-flash-4bit",
             "glm-4-7-flash-4bit",
         ),
-        mtp_lane="glm-sidecar",
+        mtp_target="glm-4.7-flash",
     ),
     ModelProfile(
         label="qwen3.5-9b",
@@ -120,7 +124,7 @@ MODEL_PROFILES = (
             "qwen3.6-27b-4bit",
             "qwen36-27b-4bit",
         ),
-        mtp_lane="qwen-sidecar",
+        mtp_target="qwen3.6-27b-6bit",
     ),
     ModelProfile(
         label="qwen3.6-27b-5bit",
@@ -141,6 +145,7 @@ MODEL_PROFILES = (
             "qwen36-27b-6bit",
             "qwen3-6-27b-6bit",
         ),
+        mtp_target="qwen3.6-27b-6bit",
     ),
     ModelProfile(
         label="qwen3.6-27b-8bit",
@@ -163,7 +168,7 @@ MODEL_PROFILES = (
             "qwen3.6-35b-a3b",
             "qwen36-35b-a3b",
         ),
-        mtp_lane="qwen-sidecar",
+        mtp_target="qwen3.6-35b-a3b",
     ),
 )
 
@@ -180,6 +185,38 @@ def _bench_bin() -> pathlib.Path | str:
     if bundled is not None:
         return bundled
     return shutil.which("ax-engine-bench") or "ax-engine-bench"
+
+
+def _native_bin() -> str | None:
+    """Locate the native Rust ``ax-engine`` binary (it hosts the ``tui`` subcommand).
+
+    Resolution order: ``AX_ENGINE_NATIVE_BIN`` override, the binary bundled in the
+    installed wheel, then a source-checkout ``target/{release,debug}`` build.  It
+    deliberately never falls back to a bare ``ax-engine`` on ``PATH`` — that name
+    resolves to this very Python console script, which would recurse.
+    """
+    override = os.environ.get("AX_ENGINE_NATIVE_BIN")
+    if override and pathlib.Path(override).is_file():
+        return override
+    bundled = _bundled_binary("ax-engine")
+    if bundled is not None:
+        return str(bundled)
+    roots: list[pathlib.Path] = []
+    repo_env = os.environ.get("AX_ENGINE_REPO_ROOT")
+    if repo_env:
+        roots.append(pathlib.Path(repo_env))
+    roots.append(pathlib.Path(__file__).resolve().parents[2])
+    candidates = [
+        candidate
+        for root in roots
+        for profile in ("release", "debug")
+        if (candidate := root / "target" / profile / "ax-engine").is_file()
+    ]
+    if candidates:
+        # Newest build wins, so a fresh `cargo build` is preferred over a stale
+        # release (or vice versa) without guessing a fixed profile order.
+        return str(max(candidates, key=lambda p: p.stat().st_mtime))
+    return None
 
 
 def server() -> None:
@@ -207,6 +244,68 @@ def _downloadable_profiles() -> list[ModelProfile]:
     return [profile for profile in MODEL_PROFILES if profile.downloadable]
 
 
+# ---------------------------------------------------------------------------
+# Grouped catalog view (model family -> precision variants)
+#
+# MODEL_PROFILES is a flat list where each precision is its own row.  The
+# interactive picker presents a model-first wizard, so we derive a grouped view
+# from the flat list rather than duplicating the catalog.  These helpers are
+# pure functions of MODEL_PROFILES and do not change the download/JSON contract.
+# ---------------------------------------------------------------------------
+
+_QUANT_RE = re.compile(r"(\d+)bit", re.IGNORECASE)
+_FAMILY_SUFFIX_RE = re.compile(r"-\d+bit$", re.IGNORECASE)
+
+
+def _profile_quant_bits(profile: ModelProfile) -> int | None:
+    """Quantization bit-width parsed from a profile's repo_id (e.g. 4, 8)."""
+    match = _QUANT_RE.search(profile.repo_id)
+    return int(match.group(1)) if match else None
+
+
+def _profile_family_key(profile: ModelProfile) -> str:
+    """Family identifier: the label with any trailing ``-Nbit`` suffix removed."""
+    return _FAMILY_SUFFIX_RE.sub("", profile.label)
+
+
+@dataclass(frozen=True)
+class ModelFamily:
+    """A model and the set of precision variants it is published in."""
+
+    key: str
+    variants: tuple[ModelProfile, ...]  # ascending by bit-width
+
+    @property
+    def label(self) -> str:
+        return self.key
+
+    @property
+    def has_mtp(self) -> bool:
+        return any(variant.mtp_target for variant in self.variants)
+
+    @property
+    def quant_summary(self) -> str:
+        bits = [b for b in (_profile_quant_bits(v) for v in self.variants) if b is not None]
+        return ", ".join(f"{b}-bit" for b in bits) if bits else "--"
+
+
+def _model_families() -> list[ModelFamily]:
+    """Group downloadable profiles by family, variants sorted by bit-width."""
+    groups: dict[str, list[ModelProfile]] = {}
+    order: list[str] = []
+    for profile in _downloadable_profiles():
+        key = _profile_family_key(profile)
+        if key not in groups:
+            groups[key] = []
+            order.append(key)
+        groups[key].append(profile)
+    families: list[ModelFamily] = []
+    for key in order:
+        variants = sorted(groups[key], key=lambda p: (_profile_quant_bits(p) or 99))
+        families.append(ModelFamily(key=key, variants=tuple(variants)))
+    return families
+
+
 def _download_options_payload() -> dict:
     return {
         "schema_version": "ax.download_options.v1",
@@ -221,7 +320,7 @@ def _download_options_payload() -> dict:
                 "repo_id": profile.repo_id,
                 "preset": profile.preset,
                 "aliases": list(profile.aliases),
-                "mtp_lane": profile.mtp_lane,
+                "mtp_target": profile.mtp_target,
             }
             for profile in _downloadable_profiles()
         ],
@@ -240,7 +339,7 @@ def _format_download_options() -> str:
         "Available Qwen3.5/3.6 and Gemma 4 MLX download targets:",
     ]
     for profile in _downloadable_profiles():
-        mtp = "  [MTP lane]" if profile.mtp_lane else ""
+        mtp = f"  [MTP: download-mtp {profile.mtp_target}]" if profile.mtp_target else ""
         lines.append(f"  {profile.label:<20} {profile.repo_id}{mtp}")
     lines.extend(
         [
@@ -417,7 +516,7 @@ def _select_profile_interactive() -> ModelProfile | None:
     print("AX Engine — download a model\n")
     print(f"  {'#':>2}  {'Model':<22} {'MTP':<5} Repo")
     for index, profile in enumerate(profiles, start=1):
-        mtp = "yes" if profile.mtp_lane else "—"
+        mtp = "yes" if profile.mtp_target else "—"
         print(f"  {index:>2}  {profile.label:<22} {mtp:<5} {profile.repo_id}")
     print()
     while True:
@@ -457,22 +556,29 @@ def _confirm_interactive(prompt: str) -> bool:
     return raw in {"", "y", "yes"}
 
 
-def _run_interactive_download(force: bool) -> int:
-    profile = _select_profile_interactive()
-    if profile is None:
-        print("Cancelled.")
-        return 130
+def _select_variant_interactive(profile: ModelProfile) -> str | None:
+    """For an MTP-capable model, choose 'direct' or 'mtp'. None means cancel."""
+    print(f"\n{profile.label} has an MTP acceleration package.")
+    print("Download which variant?")
+    print(f"  1  Direct download   {profile.repo_id}")
+    print(f"  2  MTP package       ax-engine download-mtp {profile.mtp_target}")
+    while True:
+        raw = _wizard_input("Select [1-2] (q to cancel): ").strip().lower()
+        if raw in {"q", "quit", "exit"}:
+            return None
+        if raw == "1":
+            return "direct"
+        if raw == "2":
+            return "mtp"
+        print("  invalid selection; enter 1, 2, or q to cancel")
 
+
+def _run_interactive_direct_download(profile: ModelProfile, force: bool) -> int:
     dest = _select_dest_interactive()
     if dest is not None:
         _validate_dest_writable(dest)
 
     target = dest if dest is not None else f"{_default_download_root()} (shared cache)"
-    if profile.mtp_lane:
-        print(
-            f"\nNote: {profile.label} also has an MTP acceleration lane. "
-            "For MTP serving artifacts, see: ax-engine download-mtp --help"
-        )
     if not _confirm_interactive(f"\nDownload {profile.label} ({profile.repo_id}) to {target}?"):
         print("Cancelled.")
         return 130
@@ -489,6 +595,42 @@ def _run_interactive_download(force: bool) -> int:
     return code
 
 
+def _run_interactive_mtp_download(profile: ModelProfile, force: bool) -> int:
+    if not _confirm_interactive(
+        f"\nPrepare MTP package for {profile.label} "
+        f"(ax-engine download-mtp {profile.mtp_target})?"
+    ):
+        print("Cancelled.")
+        return 130
+
+    bench_bin = str(_bench_bin())
+    argv = [bench_bin, "download-mtp", profile.mtp_target]
+    if force:
+        argv.append("--force")
+    env = os.environ.copy()
+    env.update(_download_mtp_helper_env())
+    print(f"\nPreparing MTP package: ax-engine download-mtp {profile.mtp_target}\n")
+    # Inherit stdio so the bench binary's own progress/output is shown live.
+    return subprocess.run(argv, env=env).returncode
+
+
+def _run_interactive_download(force: bool) -> int:
+    profile = _select_profile_interactive()
+    if profile is None:
+        print("Cancelled.")
+        return 130
+
+    if profile.mtp_target:
+        variant = _select_variant_interactive(profile)
+        if variant is None:
+            print("Cancelled.")
+            return 130
+        if variant == "mtp":
+            return _run_interactive_mtp_download(profile, force)
+
+    return _run_interactive_direct_download(profile, force)
+
+
 def _cmd_ui_downloader(args: argparse.Namespace) -> int:
     if not _supports_interactive():
         raise SystemExit(
@@ -496,6 +638,19 @@ def _cmd_ui_downloader(args: argparse.Namespace) -> int:
             "Use: ax-engine download <model>"
         )
     return _run_interactive_download(args.force)
+
+
+def _cmd_tui(args: argparse.Namespace) -> int:
+    native = _native_bin()
+    if native is None:
+        raise SystemExit(
+            "ax-engine tui requires the native ax-engine binary, which was not found.\n"
+            "Reinstall ax-engine, or build it from a source checkout:\n"
+            "  cargo build --release -p ax-engine-bench --bin ax-engine"
+        )
+    argv = [native, "tui", *args.tui_args]
+    os.execvp(argv[0], argv)
+    return 0
 
 
 def _serve_argv(args: argparse.Namespace) -> tuple[list[str], dict]:
@@ -1255,9 +1410,20 @@ def build_parser() -> argparse.ArgumentParser:
     download_parser.add_argument("--json", action="store_true")
     download_parser.set_defaults(func=_cmd_download)
 
+    tui_parser = subparsers.add_parser(
+        "tui",
+        help="Launch the terminal UI for model download and serving",
+    )
+    tui_parser.add_argument(
+        "tui_args",
+        nargs=argparse.REMAINDER,
+        help="Arguments forwarded to the native ax-engine tui (e.g. --help)",
+    )
+    tui_parser.set_defaults(func=_cmd_tui)
+
     ui_downloader_parser = subparsers.add_parser(
         "ui-downloader",
-        help="Interactive model downloader wizard with a live progress bar",
+        help="Deprecated: use 'ax-engine tui' instead",
     )
     ui_downloader_parser.add_argument("--force", action="store_true")
     ui_downloader_parser.set_defaults(func=_cmd_ui_downloader)
