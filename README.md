@@ -99,7 +99,7 @@ builds, and release-channel diagnostics, see the
 ## Getting a Model
 
 AX Engine loads pre-sanitized MLX safetensors plus an AX
-`model-manifest.json`. Use `ax-engine ui-downloader` for an interactive picker,
+`model-manifest.json`. Use `ax-engine tui` for an interactive picker,
 `ax-engine download --list` for direct-decode aliases, `ax-engine serve <alias>
 --download` for one-command serving, and `ax-engine download-mtp <target>` for
 supported MTP packages.
@@ -109,8 +109,8 @@ manifest commands live in
 [CLI reference](docs/CLI.md#ax-engine).
 
 ```bash
-# Pick a model interactively, choose a destination, watch a live progress bar.
-ax-engine ui-downloader
+# Browse models, queue downloads, choose destinations, and launch serving.
+ax-engine tui
 
 # Serve a direct model in one command.
 ax-engine serve qwen36-35b --download --port 8080
@@ -123,13 +123,14 @@ ax-engine download qwen36-35b --json
 ax-engine download-mtp gemma-4-12b-4bit
 ```
 
-`ax-engine ui-downloader` (or bare `ax-engine download` in a terminal) lists the
-downloadable models; for a model with an MTP acceleration package it offers a
-Direct-vs-MTP choice (the MTP path runs `ax-engine download-mtp <target>`). A
-direct download shows the default Hugging Face Hub cache path with an override
-prompt and reports a live progress bar with transfer speed and ETA. It is
-terminal-only; scripts and CI keep the non-interactive `download` behavior and
-JSON output.
+`ax-engine tui` lists downloadable model families, groups precision variants,
+offers Direct-vs-MTP choices, and sends long downloads to a background queue so
+you can keep browsing other models. The destination picker defaults to the
+shared Hugging Face Hub cache and can also select a parent directory from a
+terminal directory tree; direct downloads use `--dest`, and MTP packages use
+`--output`. The Downloads tab shows live bytes/s and logs, and a ready item can
+be served directly from the TUI. Scripts and CI keep the non-interactive
+`download` behavior and JSON output.
 
 Common acquisition paths:
 
