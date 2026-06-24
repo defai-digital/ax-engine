@@ -7,14 +7,23 @@
 //! codes that wrappers such as [`crate::transforms::try_eval`] and
 //! [`crate::metal::MlxMetalKernel::try_apply_with_template`] check.
 
+use std::cell::RefCell;
 use std::ffi::CStr;
 use std::os::raw::{c_char, c_void};
-use std::sync::{Mutex, Once};
+use std::sync::Once;
 
 use crate::ffi;
 
 static INSTALL: Once = Once::new();
-static LAST_ERROR: Mutex<Option<String>> = Mutex::new(None);
+
+// Per-thread error slot. The ax_shim C++ layer stores its last error in a
+// `thread_local std::string` and invokes the handler synchronously on the
+// calling thread, so the Rust slot must be thread-local too. A process-global
+// slot would let a concurrent failing op on another thread overwrite or clear
+// this thread's not-yet-read error message.
+thread_local! {
+    static LAST_ERROR: RefCell<Option<String>> = RefCell::new(None);
+}
 
 unsafe extern "C" fn recording_error_handler(msg: *const c_char, _data: *mut c_void) {
     // This callback runs inside C++ frames; it must never unwind.
@@ -27,9 +36,7 @@ unsafe extern "C" fn recording_error_handler(msg: *const c_char, _data: *mut c_v
     };
     // Keep the message visible like the default handler did, minus the exit.
     eprintln!("mlx error: {message}");
-    if let Ok(mut slot) = LAST_ERROR.lock() {
-        *slot = Some(message);
-    }
+    LAST_ERROR.with(|slot| *slot.borrow_mut() = Some(message));
 }
 
 /// Install the recording error handler. Idempotent.
@@ -51,7 +58,7 @@ pub(crate) fn prepare_error_capture() {
 /// error immediately after observing a non-zero status code on the same
 /// thread.
 pub fn take_last_error() -> Option<String> {
-    LAST_ERROR.lock().ok().and_then(|mut slot| slot.take())
+    LAST_ERROR.with(|slot| slot.borrow_mut().take())
 }
 
 /// Format a failure message for a named MLX operation from the captured
@@ -83,9 +90,7 @@ mod tests {
 
     #[test]
     fn take_last_error_clears_slot() {
-        if let Ok(mut slot) = LAST_ERROR.lock() {
-            *slot = Some("synthetic".to_string());
-        }
+        LAST_ERROR.with(|slot| *slot.borrow_mut() = Some("synthetic".to_string()));
         assert_eq!(take_last_error().as_deref(), Some("synthetic"));
         assert_eq!(take_last_error(), None);
     }
