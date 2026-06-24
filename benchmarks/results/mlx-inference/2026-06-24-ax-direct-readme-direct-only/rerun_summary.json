@@ -1,0 +1,341 @@
+{
+  "schema_version": "ax.ax_direct_readme_rerun_summary.v1",
+  "created_at": "2026-06-24T13:01:28-0400",
+  "root": "benchmarks/results/mlx-inference/2026-06-24-ax-direct-readme-direct-only",
+  "reference_root": "benchmarks/results/mlx-inference/2026-05-26-direct-mode-clean-refresh",
+  "command_contract": {
+    "script": "scripts/bench_mlx_inference_stack.py",
+    "mode": "--ax-direct",
+    "prompt_tokens": [
+      128,
+      512,
+      2048
+    ],
+    "generation_tokens": 128,
+    "repetitions": 5,
+    "cooldown_seconds": 15,
+    "reference_rows": "reused existing mlx_lm rows",
+    "prefix_cache": "disabled_for_cold_prefill_benchmark"
+  },
+  "completed_rows": 7,
+  "requested_rows": 8,
+  "rows": [
+    {
+      "slug": "gemma-4-e2b-it-4bit",
+      "repo": "mlx-community/gemma-4-e2b-it-4bit",
+      "status": "ok",
+      "output_path": "benchmarks/results/mlx-inference/2026-06-24-ax-direct-readme-direct-only/gemma-4-e2b-it-4bit.json",
+      "model_dir": "/Volumes/Ext4T/models/hub/models--mlx-community--gemma-4-e2b-it-4bit/snapshots/2c3e507453b4f218d05fe3cc97bea5c5a654257e",
+      "build": {
+        "commit": "b4fa6138ed6f6b9031dfe9c303bb0bc1a04f491f",
+        "build_profile": "release",
+        "server_binary": "/Users/akiralam/code/ax-engine/target/release/ax-engine-server",
+        "git_tracked_dirty": true,
+        "git_tracked_status": [
+          " M crates/mlx-sys/build.rs",
+          " M crates/mlx-sys/native/activation.cpp",
+          " M crates/mlx-sys/native/ax_shim.cpp",
+          " M crates/mlx-sys/src/stream.rs",
+          " M docs/MLX-BACKEND.md"
+        ]
+      },
+      "metrics": [
+        {
+          "prompt_tokens": 128,
+          "prefill_tok_s_median": 5230.253749029543,
+          "decode_tok_s_median": 233.98654577361802,
+          "ttft_ms_median": 24.473000000000003,
+          "output_tokens_min": null,
+          "output_tokens_median": null
+        },
+        {
+          "prompt_tokens": 512,
+          "prefill_tok_s_median": 14149.509465248031,
+          "decode_tok_s_median": 226.19436811366268,
+          "ttft_ms_median": 36.185,
+          "output_tokens_min": null,
+          "output_tokens_median": null
+        },
+        {
+          "prompt_tokens": 2048,
+          "prefill_tok_s_median": 23988.28696925329,
+          "decode_tok_s_median": 216.82383571529,
+          "ttft_ms_median": 85.375,
+          "output_tokens_min": null,
+          "output_tokens_median": null
+        }
+      ]
+    },
+    {
+      "slug": "gemma-4-e2b-it-6bit",
+      "repo": "mlx-community/gemma-4-e2b-it-6bit",
+      "status": "ok",
+      "output_path": "benchmarks/results/mlx-inference/2026-06-24-ax-direct-readme-direct-only/gemma-4-e2b-it-6bit.json",
+      "model_dir": "/Volumes/Ext4T/models/hub/models--mlx-community--gemma-4-e2b-it-6bit/snapshots/40d43b05f94ee798c0e40fe19fcd9ef49928486b",
+      "build": {
+        "commit": "b4fa6138ed6f6b9031dfe9c303bb0bc1a04f491f",
+        "build_profile": "release",
+        "server_binary": "/Users/akiralam/code/ax-engine/target/release/ax-engine-server",
+        "git_tracked_dirty": true,
+        "git_tracked_status": [
+          " M crates/mlx-sys/build.rs",
+          " M crates/mlx-sys/native/activation.cpp",
+          " M crates/mlx-sys/native/ax_shim.cpp",
+          " M crates/mlx-sys/src/stream.rs",
+          " M docs/MLX-BACKEND.md"
+        ]
+      },
+      "metrics": [
+        {
+          "prompt_tokens": 128,
+          "prefill_tok_s_median": 5156.7158166142935,
+          "decode_tok_s_median": 186.11468154033162,
+          "ttft_ms_median": 24.822,
+          "output_tokens_min": null,
+          "output_tokens_median": null
+        },
+        {
+          "prompt_tokens": 512,
+          "prefill_tok_s_median": 15512.33109131673,
+          "decode_tok_s_median": 179.8864466805329,
+          "ttft_ms_median": 33.006,
+          "output_tokens_min": null,
+          "output_tokens_median": null
+        },
+        {
+          "prompt_tokens": 2048,
+          "prefill_tok_s_median": 23063.3227851665,
+          "decode_tok_s_median": 173.5819171037857,
+          "ttft_ms_median": 88.799,
+          "output_tokens_min": null,
+          "output_tokens_median": null
+        }
+      ]
+    },
+    {
+      "slug": "gemma-4-e4b-it-4bit",
+      "repo": "mlx-community/gemma-4-e4b-it-4bit",
+      "status": "ok",
+      "output_path": "benchmarks/results/mlx-inference/2026-06-24-ax-direct-readme-direct-only/gemma-4-e4b-it-4bit.json",
+      "model_dir": "/Volumes/Ext4T/models/hub/models--mlx-community--gemma-4-e4b-it-4bit/snapshots/deb1db712068b1c9f83fb1c97f08c1204b9459a1",
+      "build": {
+        "commit": "b4fa6138ed6f6b9031dfe9c303bb0bc1a04f491f",
+        "build_profile": "release",
+        "server_binary": "/Users/akiralam/code/ax-engine/target/release/ax-engine-server",
+        "git_tracked_dirty": true,
+        "git_tracked_status": [
+          " M crates/mlx-sys/build.rs",
+          " M crates/mlx-sys/native/activation.cpp",
+          " M crates/mlx-sys/native/ax_shim.cpp",
+          " M crates/mlx-sys/src/stream.rs",
+          " M docs/MLX-BACKEND.md"
+        ]
+      },
+      "metrics": [
+        {
+          "prompt_tokens": 128,
+          "prefill_tok_s_median": 3516.0971321832767,
+          "decode_tok_s_median": 143.3497476260498,
+          "ttft_ms_median": 36.403999999999996,
+          "output_tokens_min": null,
+          "output_tokens_median": null
+        },
+        {
+          "prompt_tokens": 512,
+          "prefill_tok_s_median": 7070.84656815357,
+          "decode_tok_s_median": 140.32010524007893,
+          "ttft_ms_median": 72.41,
+          "output_tokens_min": null,
+          "output_tokens_median": null
+        },
+        {
+          "prompt_tokens": 2048,
+          "prefill_tok_s_median": 8789.209185753585,
+          "decode_tok_s_median": 135.0609884776094,
+          "ttft_ms_median": 233.013,
+          "output_tokens_min": null,
+          "output_tokens_median": null
+        }
+      ]
+    },
+    {
+      "slug": "gemma-4-26b-a4b-it-4bit",
+      "repo": "mlx-community/gemma-4-26b-a4b-it-4bit",
+      "status": "ok",
+      "output_path": "benchmarks/results/mlx-inference/2026-06-24-ax-direct-readme-direct-only/gemma-4-26b-a4b-it-4bit.json",
+      "model_dir": "/Volumes/Ext4T/models/hub/models--mlx-community--gemma-4-26b-a4b-it-4bit/snapshots/efbeee6e582ebfd06abc9d65e90839c4b5d2116b",
+      "build": {
+        "commit": "332c42e5a8c6107f658a705eb85fa088de503dda",
+        "build_profile": "release",
+        "server_binary": "/Users/akiralam/code/ax-engine/target/release/ax-engine-server",
+        "git_tracked_dirty": true,
+        "git_tracked_status": [
+          " M crates/mlx-sys/src/stream.rs",
+          " M docs/MLX-BACKEND.md"
+        ]
+      },
+      "metrics": [
+        {
+          "prompt_tokens": 128,
+          "prefill_tok_s_median": 1332.1676866075518,
+          "decode_tok_s_median": 129.11647011710258,
+          "ttft_ms_median": 96.084,
+          "output_tokens_min": null,
+          "output_tokens_median": null
+        },
+        {
+          "prompt_tokens": 512,
+          "prefill_tok_s_median": 3021.7007689992383,
+          "decode_tok_s_median": 130.98944102302752,
+          "ttft_ms_median": 169.441,
+          "output_tokens_min": null,
+          "output_tokens_median": null
+        },
+        {
+          "prompt_tokens": 2048,
+          "prefill_tok_s_median": 3295.0466503308726,
+          "decode_tok_s_median": 125.3361063946873,
+          "ttft_ms_median": 621.539,
+          "output_tokens_min": null,
+          "output_tokens_median": null
+        }
+      ]
+    },
+    {
+      "slug": "gemma-4-31b-it-4bit",
+      "repo": "mlx-community/gemma-4-31b-it-4bit",
+      "status": "ok",
+      "output_path": "benchmarks/results/mlx-inference/2026-06-24-ax-direct-readme-direct-only/gemma-4-31b-it-4bit.json",
+      "model_dir": "/Volumes/Ext4T/models/hub/models--mlx-community--gemma-4-31b-it-4bit/snapshots/0d17175ead577037577f24963de2f0f5fafb72a5",
+      "build": {
+        "commit": "332c42e5a8c6107f658a705eb85fa088de503dda",
+        "build_profile": "release",
+        "server_binary": "/Users/akiralam/code/ax-engine/target/release/ax-engine-server",
+        "git_tracked_dirty": true,
+        "git_tracked_status": [
+          " M crates/mlx-sys/src/stream.rs",
+          " M docs/MLX-BACKEND.md"
+        ]
+      },
+      "metrics": [
+        {
+          "prompt_tokens": 128,
+          "prefill_tok_s_median": 509.11028999399406,
+          "decode_tok_s_median": 28.90684475691941,
+          "ttft_ms_median": 251.419,
+          "output_tokens_min": null,
+          "output_tokens_median": null
+        },
+        {
+          "prompt_tokens": 512,
+          "prefill_tok_s_median": 735.3300224333105,
+          "decode_tok_s_median": 28.393531687292278,
+          "ttft_ms_median": 696.286,
+          "output_tokens_min": null,
+          "output_tokens_median": null
+        },
+        {
+          "prompt_tokens": 2048,
+          "prefill_tok_s_median": 768.8902788316021,
+          "decode_tok_s_median": 27.135022813558436,
+          "ttft_ms_median": 2663.5789999999997,
+          "output_tokens_min": null,
+          "output_tokens_median": null
+        }
+      ]
+    },
+    {
+      "slug": "qwen3_6-27b-4bit",
+      "repo": "mlx-community/Qwen3.6-27B-4bit",
+      "status": "ok",
+      "output_path": "benchmarks/results/mlx-inference/2026-06-24-ax-direct-readme-direct-only/qwen3_6-27b-4bit.json",
+      "model_dir": "/Volumes/Ext4T/models/hub/models--mlx-community--Qwen3.6-27B-4bit/snapshots/c000ac2c2057d94be3fa931000c31723aac53282",
+      "build": {
+        "commit": "332c42e5a8c6107f658a705eb85fa088de503dda",
+        "build_profile": "release",
+        "server_binary": "/Users/akiralam/code/ax-engine/target/release/ax-engine-server",
+        "git_tracked_dirty": true,
+        "git_tracked_status": [
+          " M crates/mlx-sys/src/stream.rs",
+          " M docs/MLX-BACKEND.md"
+        ]
+      },
+      "metrics": [
+        {
+          "prompt_tokens": 128,
+          "prefill_tok_s_median": 581.6912673598488,
+          "decode_tok_s_median": 34.08925365573955,
+          "ttft_ms_median": 220.048,
+          "output_tokens_min": null,
+          "output_tokens_median": null
+        },
+        {
+          "prompt_tokens": 512,
+          "prefill_tok_s_median": 835.1779565218101,
+          "decode_tok_s_median": 33.98264071136287,
+          "ttft_ms_median": 613.043,
+          "output_tokens_min": null,
+          "output_tokens_median": null
+        },
+        {
+          "prompt_tokens": 2048,
+          "prefill_tok_s_median": 932.4586676768303,
+          "decode_tok_s_median": 33.41866406279576,
+          "ttft_ms_median": 2196.344,
+          "output_tokens_min": null,
+          "output_tokens_median": null
+        }
+      ]
+    },
+    {
+      "slug": "qwen3_6-27b-6bit",
+      "repo": "mlx-community/Qwen3.6-27B-6bit",
+      "status": "ok",
+      "output_path": "benchmarks/results/mlx-inference/2026-06-24-ax-direct-readme-direct-only/qwen3_6-27b-6bit.json",
+      "model_dir": "/Volumes/Ext4T/models/hub/models--mlx-community--Qwen3.6-27B-6bit/snapshots/9bf976157e09080fbc11ccd971d4e9c57554889d",
+      "build": {
+        "commit": "332c42e5a8c6107f658a705eb85fa088de503dda",
+        "build_profile": "release",
+        "server_binary": "/Users/akiralam/code/ax-engine/target/release/ax-engine-server",
+        "git_tracked_dirty": true,
+        "git_tracked_status": [
+          " M crates/mlx-sys/src/stream.rs",
+          " M docs/MLX-BACKEND.md"
+        ]
+      },
+      "metrics": [
+        {
+          "prompt_tokens": 128,
+          "prefill_tok_s_median": 508.7379721227489,
+          "decode_tok_s_median": 25.09945659676468,
+          "ttft_ms_median": 251.603,
+          "output_tokens_min": null,
+          "output_tokens_median": null
+        },
+        {
+          "prompt_tokens": 512,
+          "prefill_tok_s_median": 759.7735518671584,
+          "decode_tok_s_median": 25.047114993066057,
+          "ttft_ms_median": 673.885,
+          "output_tokens_min": null,
+          "output_tokens_median": null
+        },
+        {
+          "prompt_tokens": 2048,
+          "prefill_tok_s_median": 866.3630729661302,
+          "decode_tok_s_median": 24.865850678235503,
+          "ttft_ms_median": 2363.9049999999997,
+          "output_tokens_min": null,
+          "output_tokens_median": null
+        }
+      ]
+    },
+    {
+      "slug": "qwen3_6-35b-a3b-4bit",
+      "repo": "mlx-community/Qwen3.6-35B-A3B-4bit",
+      "status": "blocked_stalled_before_first_measured_rep",
+      "output_path": null,
+      "note": "Two attempts reached the first AX prompt case, then blocked waiting for SSE/generate output before rep 1. /health stayed responsive; both attempts were interrupted."
+    }
+  ]
+}
