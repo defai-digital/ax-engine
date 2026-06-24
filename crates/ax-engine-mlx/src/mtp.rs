@@ -1,7 +1,7 @@
 use mlx_sys::{
-    MlxArray, MlxClosure, MlxDtype, MlxVectorArray, ScaledDotProductAttentionMask, add, argmax,
-    astype, concatenate, eval, multiply, random_categorical, reshape, rms_norm,
-    scaled_dot_product_attention_with_mask, sigmoid, slice, softmax, take,
+    add, argmax, astype, concatenate, eval, multiply, random_categorical, reshape, rms_norm,
+    scaled_dot_product_attention_with_mask, sigmoid, slice, softmax, take, MlxArray, MlxClosure,
+    MlxDtype, MlxVectorArray, ScaledDotProductAttentionMask,
 };
 
 use crate::fastpath;
@@ -12,7 +12,7 @@ use crate::model::shared::{
     moe_router_qwen3, prepare_value_bhsd_from_proj, qk_norm_rope_bhsd_from_proj, qw, rms_norm_opt,
     shared_expert_forward,
 };
-use crate::model::{ModelConfig, embed_tokens_arr};
+use crate::model::{embed_tokens_arr, ModelConfig};
 use crate::sampling::{TokenDistribution, Xorshift64};
 use crate::weights::{GlmMtpWeights, ModelWeights, MtpWeights};
 use std::sync::OnceLock;
@@ -507,8 +507,17 @@ pub fn mtp_head_step(
 /// `temperature`: when > 0, token chaining uses `random_categorical` (GPU
 /// sampling); when ≤ 0, uses lazy argmax (greedy / sampled paths).
 ///
+/// **Single-shot:** the closure body mutates the KV cache (`cache.append` +
+/// `seq_len += 1`), so the compiled closure MUST be applied exactly once.
+/// MLX traces on the first `try_apply`, which fires the side effects; a
+/// second apply would skip retracing and leave the cache stale.
+///
 /// Returns `None` when the kill switch `AX_MTP_COMPILED_HEAD=0` is set or
 /// compilation fails.
+///
+/// Output layout: `[hidden_0, logits_0, tok_0, hidden_1, logits_1, tok_1, …]`
+/// (3 arrays per depth).  Callers use the `tok` output directly rather than
+/// re-sampling, so the output token always matches the chained token.
 fn build_compiled_mtp_draft(
     head: &MtpWeights,
     weights: &ModelWeights,
@@ -536,7 +545,7 @@ fn build_compiled_mtp_draft(
         let mut prev_token_arr = inputs.get(1);
         let base_offset = cache_ref.seq_len + cache_ref.rope_offset;
 
-        let mut outputs: Vec<MlxArray> = Vec::with_capacity(max_depth * 2);
+        let mut outputs: Vec<MlxArray> = Vec::with_capacity(max_depth * 3);
         for d in 0..max_depth {
             let new_hidden = mtp_head_forward(
                 head_ref,
@@ -559,8 +568,9 @@ fn build_compiled_mtp_draft(
                 lazy_argmax_logits(&logits)
             };
 
-            outputs.push(post_norm.clone());
+            outputs.push(post_norm);
             outputs.push(logits);
+            outputs.push(tok.clone());
             prev_hidden = post_norm;
             prev_token_arr = tok;
         }
@@ -573,6 +583,12 @@ fn build_compiled_mtp_draft(
 ///
 /// Same pattern as [`build_compiled_mtp_draft`] but uses
 /// `glm_mtp_head_forward` + `glm_mtp_hidden_to_logits`.
+///
+/// **Single-shot:** the closure body mutates the KV cache, so the compiled
+/// closure MUST be applied exactly once (see `build_compiled_mtp_draft`).
+///
+/// Output layout: `[hidden_0, logits_0, tok_0, hidden_1, logits_1, tok_1, …]`
+/// (3 arrays per depth).
 fn build_compiled_glm_mtp_draft(
     head: &GlmMtpWeights,
     weights: &ModelWeights,
@@ -600,7 +616,7 @@ fn build_compiled_glm_mtp_draft(
         let mut prev_token_arr = inputs.get(1);
         let base_offset = cache_ref.seq_len + cache_ref.rope_offset;
 
-        let mut outputs: Vec<MlxArray> = Vec::with_capacity(max_depth * 2);
+        let mut outputs: Vec<MlxArray> = Vec::with_capacity(max_depth * 3);
         for d in 0..max_depth {
             let new_hidden = glm_mtp_head_forward(
                 head_ref,
@@ -624,6 +640,7 @@ fn build_compiled_glm_mtp_draft(
 
             outputs.push(new_hidden.clone());
             outputs.push(logits);
+            outputs.push(tok.clone());
             prev_hidden = new_hidden;
             prev_token_arr = tok;
         }
@@ -922,8 +939,8 @@ fn mtp_draft_tokens_greedy(
                 let mut lazy_tokens: Vec<MlxArray> = Vec::with_capacity(max_depth);
                 let mut lazy_log_probs: Vec<MlxArray> = Vec::with_capacity(max_depth);
                 for d in 0..max_depth {
-                    let logits = &closure_outputs[d * 2 + 1];
-                    let lazy_tok = lazy_argmax_logits(logits);
+                    let logits = &closure_outputs[d * 3 + 1];
+                    let lazy_tok = closure_outputs[d * 3 + 2].clone();
                     let lazy_lp = gpu_draft_log_prob_lazy(logits, &lazy_tok, 1.0, vocab);
                     lazy_tokens.push(lazy_tok);
                     lazy_log_probs.push(lazy_lp);
@@ -1053,8 +1070,8 @@ fn mtp_draft_tokens_sampled(
                 let mut lazy_tokens: Vec<MlxArray> = Vec::with_capacity(max_depth);
                 let mut lazy_log_probs: Vec<MlxArray> = Vec::with_capacity(max_depth);
                 for d in 0..max_depth {
-                    let logits = &closure_outputs[d * 2 + 1];
-                    let lazy_tok = lazy_argmax_logits(logits);
+                    let logits = &closure_outputs[d * 3 + 1];
+                    let lazy_tok = closure_outputs[d * 3 + 2].clone();
                     let lazy_lp = gpu_draft_log_prob_lazy(logits, &lazy_tok, temperature, vocab);
                     lazy_tokens.push(lazy_tok);
                     lazy_log_probs.push(lazy_lp);
@@ -1176,18 +1193,14 @@ fn mtp_draft_tokens_stochastic(
         );
         match compiled.try_apply(&[first_hidden, &first_token_arr]) {
             Ok(closure_outputs) => {
-                // closure_outputs has logits at odd indices; we need to
-                // re-derive tokens from logits via lazy_random_sample for
-                // log-prob consistency with the imperative path.
+                // closure_outputs = [hidden_d, logits_d, tok_d, ...]; use the
+                // tok output directly so the output token matches the chained
+                // token (avoid a second independent random draw).
                 let mut lazy_tokens: Vec<MlxArray> = Vec::with_capacity(max_depth);
                 let mut lazy_log_probs: Vec<MlxArray> = Vec::with_capacity(max_depth);
                 for d in 0..max_depth {
-                    let logits = &closure_outputs[d * 2 + 1];
-                    let lazy_tok = if temperature > 0.0 {
-                        lazy_random_sample(logits, temperature, vocab)
-                    } else {
-                        lazy_argmax_logits(logits)
-                    };
+                    let logits = &closure_outputs[d * 3 + 1];
+                    let lazy_tok = closure_outputs[d * 3 + 2].clone();
                     let lazy_lp =
                         gpu_draft_log_prob_lazy(logits, &lazy_tok, temperature.max(1.0), vocab);
                     lazy_tokens.push(lazy_tok);
@@ -1476,8 +1489,8 @@ fn glm_mtp_draft_tokens_greedy(
                 let mut lazy_tokens: Vec<MlxArray> = Vec::with_capacity(max_depth);
                 let mut lazy_log_probs: Vec<MlxArray> = Vec::with_capacity(max_depth);
                 for d in 0..max_depth {
-                    let logits = &closure_outputs[d * 2 + 1];
-                    let lazy_tok = lazy_argmax_logits(logits);
+                    let logits = &closure_outputs[d * 3 + 1];
+                    let lazy_tok = closure_outputs[d * 3 + 2].clone();
                     let lazy_lp = gpu_draft_log_prob_lazy(logits, &lazy_tok, 1.0, vocab);
                     lazy_tokens.push(lazy_tok);
                     lazy_log_probs.push(lazy_lp);
@@ -1580,12 +1593,8 @@ fn glm_mtp_draft_tokens_stochastic(
                 let mut lazy_tokens: Vec<MlxArray> = Vec::with_capacity(max_depth);
                 let mut lazy_log_probs: Vec<MlxArray> = Vec::with_capacity(max_depth);
                 for d in 0..max_depth {
-                    let logits = &closure_outputs[d * 2 + 1];
-                    let lazy_tok = if temperature > 0.0 {
-                        lazy_random_sample(logits, temperature, vocab)
-                    } else {
-                        lazy_argmax_logits(logits)
-                    };
+                    let logits = &closure_outputs[d * 3 + 1];
+                    let lazy_tok = closure_outputs[d * 3 + 2].clone();
                     let lazy_lp =
                         gpu_draft_log_prob_lazy(logits, &lazy_tok, temperature.max(1.0), vocab);
                     lazy_tokens.push(lazy_tok);
