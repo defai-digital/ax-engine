@@ -32,6 +32,11 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 wait-timeout = "0.2"
 
+[patch.crates-io]
+# `metal 0.33.0` still depends on `block 0.1.6`, whose upstream package uses
+# an uninhabited extern static type that Rust reports as future-incompatible.
+block = { path = "vendor/block-0.1.6" }
+
 [workspace.lints.rust]
 unsafe_code = "forbid"
 
