@@ -40,6 +40,12 @@ unsafe extern "C" fn recording_error_handler(msg: *const c_char, _data: *mut c_v
 }
 
 /// Install the recording error handler. Idempotent.
+///
+/// `#[inline]` so the `Once::is_completed` fast-path check folds into hot
+/// per-op call sites (via [`ensure_error_handler`]); after the one-time
+/// install this is a single relaxed-acquire atomic load and a
+/// predicted-not-taken branch, with no out-of-line call.
+#[inline]
 pub fn install_recoverable_error_handler() {
     INSTALL.call_once(|| unsafe {
         ffi::mlx_set_error_handler(Some(recording_error_handler), std::ptr::null_mut(), None);
@@ -97,10 +103,23 @@ pub(crate) fn status_to_result(operation: &str, rc: libc::c_int) -> Result<(), S
     }
 }
 
+/// Panic if `rc` is non-zero, reporting the captured MLX error for `operation`.
+///
+/// Hot path: called once per op wrapper in `ops`/`fast`. `#[inline]` keeps the
+/// success case (the overwhelming majority of calls) a single
+/// predicted-not-taken `rc != 0` branch at the call site, with the formatting
+/// and panic machinery pushed out of line into the `#[cold]` slow path.
+#[inline]
 pub(crate) fn panic_on_status(operation: &str, rc: libc::c_int) {
-    if let Err(message) = status_to_result(operation, rc) {
-        panic!("{message}");
+    if rc != 0 {
+        panic_on_failure(operation);
     }
+}
+
+#[cold]
+#[inline(never)]
+fn panic_on_failure(operation: &str) -> ! {
+    panic!("{}", last_error_message(operation));
 }
 
 #[cfg(test)]
