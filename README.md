@@ -784,7 +784,7 @@ Most SDKs target the OpenAI-compatible HTTP server; Python can also use the
 in-process session API.
 
 | SDK | Docs | Package / path |
-|----------|---------------|-----------|
+| --- | --- | --- |
 | **Rust** | [docs/sdk/rust.md](docs/sdk/rust.md) | `crates/ax-engine-sdk` |
 | **Python** | [docs/sdk/python.md](docs/sdk/python.md) | `python/ax_engine` |
 | **JavaScript / TypeScript** | [docs/sdk/javascript.md](docs/sdk/javascript.md) | `javascript/ax-engine` / `@ax-engine/sdk` |
@@ -862,7 +862,7 @@ Start with the task-based docs hub at [`docs/README.md`](docs/README.md).
 
 ## Workspace
 
-```
+```text
 crates/ax-engine-core    Engine state machine, scheduler, KV manager, sampler
 crates/ax-engine-mlx     MLX model graph, n-gram acceleration, KV cache, runner
 crates/mlx-sys           bindgen FFI over ax_shim.h to MLX C++; safe MlxArray RAII wrappers
