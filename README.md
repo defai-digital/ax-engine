@@ -135,7 +135,7 @@ be served directly from the TUI. Scripts and CI keep the non-interactive
 Common acquisition paths:
 
 | Model/package | Command | Runtime path |
-|---|---|---|
+| --- | --- | --- |
 | Direct MLX models | `ax-engine download <alias-or-mlx-community-repo>` | Repo-owned MLX graph |
 | Gemma 4 12B quick-start MTP | `ax-engine download-mtp gemma-4-12b-4bit` | Gemma assistant-MTP |
 | Qwen3.6 27B / 35B-A3B MTP | `ax-engine download-mtp qwen3.6-27b-6bit` or `qwen3.6-35b-a3b` | Qwen fused MTP sidecar |
@@ -146,7 +146,7 @@ Common acquisition paths:
 Direct-support model families:
 
 | Family | Direct model IDs | Notes |
-|---|---|---|
+| --- | --- | --- |
 | Gemma 4 | `gemma-4-e2b-it`, `gemma-4-e4b-it`, `gemma-4-12b-it`, `gemma-4-26b-a4b-it`, `gemma-4-31b-it` | MLX affine 4/5/6-bit weights; assistant-MTP paths |
 | Qwen 3 | `Qwen3-4B-4bit` and manifest-backed dense checkpoints | Dense SwiGLU graph |
 | Qwen 3.5 | `Qwen3.5-9B-MLX-4bit` | GatedDeltaNet linear attention |
@@ -204,7 +204,7 @@ Design details: [Architecture](docs/ARCHITECTURE.md) ·
 ### Runtime Paths
 
 | Path | Use it for | What AX owns |
-|---|---|---|
+| --- | --- | --- |
 | Repo-owned MLX runtime | Direct-support model families and AX-owned performance claims | Model graph, token/KV runtime, scheduling, acceleration policy, server/SDK route behavior |
 | `mlx_lm_delegated` | MLX text models supported upstream before AX has a graph | AX route compatibility over a user-provided `mlx_lm.server`; not AX token/KV throughput |
 | `llama_cpp` | GGUF and non-MLX local inference | AX route compatibility over llama.cpp server/CLI behavior; not AX MLX throughput |
@@ -232,7 +232,7 @@ for alignment with peer MTP-engine results. Same-package direct baselines are
 used only to report AX MTP acceleration.
 
 | Target | Preparation command | Benchmark mode |
-|---|---|---|
+| --- | --- | --- |
 | `qwen3.6-27b-6bit` | `ax-engine download-mtp qwen3.6-27b-6bit` | Qwen fused sidecar MTP |
 | `qwen3.6-35b-a3b` | `ax-engine download-mtp qwen3.6-35b-a3b` | Qwen fused sidecar MTP |
 | `gemma-4-12b` | `ax-engine download-mtp gemma-4-12b` | Gemma assistant-MTP |
@@ -279,7 +279,7 @@ Qwen3.6 rows compare against MTPLX on the same 4-bit base family, prompt suites,
 sampler, 1,000 generated tokens, 5 measured repetitions, and cooldown contract:
 
 | Model | Suite | Depth | AX MTP decode | MTPLX decode | AX / MTPLX | AX MTP prefill | AX MTP TTFT | AX accept |
-|---|---|---:|---:|---:|---:|---:|---:|---:|
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | Qwen3.6 27B 4-bit | `flappy` | 3 | 61.9 tok/s | 57.8 tok/s | 1.07x | 672.9 tok/s | 478 ms | 99.7% |
 | Qwen3.6 27B 4-bit | `long_code` | 3 | 57.1 tok/s | 55.7 tok/s | 1.02x | 780.9 tok/s | 919 ms | 99.6% |
 | Qwen3.6 27B 4-bit | `python_modules_long` | 3 | 48.6 tok/s | 50.5 tok/s | 0.96x | 681.2 tok/s | 514 ms | 97.8% |
@@ -293,7 +293,7 @@ covers the same Gemma assistant-MTP contract: `mlx_lm` cannot load
 available MTP peer tools target different sidecar contracts.
 
 | Model | Suite | Depth | AX MTP decode | AX MTP prefill | AX MTP TTFT | AX accept | Peer MTP |
-|---|---|---:|---:|---:|---:|---:|---|
+| --- | --- | ---: | ---: | ---: | ---: | ---: | --- |
 | Gemma 4 12B 4-bit-FFN | `flappy` | 2 | 96.8 tok/s | 1,928.3 tok/s | 187 ms | 98.8% | N/A |
 | Gemma 4 12B 4-bit-FFN | `long_code` | 2 | 92.3 tok/s | 2,040.5 tok/s | 390 ms | 99.4% | N/A |
 | Gemma 4 12B 4-bit-FFN | `python_modules_long` | 2 | 82.9 tok/s | 1,830.5 tok/s | 195 ms | 97.9% | N/A |
@@ -323,7 +323,7 @@ comparison, see [Gemma 4 12B](#gemma-4-12b).
 ![AX MTP decode throughput with MTP off and MTP on](docs/assets/perf-mtp-6bit-ax-acceleration.svg)
 
 | Target | Suite | AX direct decode | AX MTP decode | AX speedup | AX MTP prefill | AX MTP TTFT | AX accept | MTPLX | lightning-mlx |
-|---|---|---:|---:|---:|---:|---:|---:|---|---|
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |
 | `qwen3.6-27b-6bit` | `flappy` | 18.6 tok/s | 42.1 tok/s | 2.26x | 632.7 tok/s | 508 ms | 99.5% | N/A | N/A |
 | `qwen3.6-27b-6bit` | `long_code` | 18.5 tok/s | 34.1 tok/s | 1.85x | 693.7 tok/s | 1031 ms | 97.7% | N/A | N/A |
 | `qwen3.6-27b-6bit` | `python_modules_long` | 17.5 tok/s | 33.7 tok/s | 1.92x | 614.6 tok/s | 566 ms | 96.7% | N/A | N/A |
@@ -390,7 +390,7 @@ AX direct rows use the 4-bit-FFN MLX artifact and random-token prompts. `mlx_lm`
 </table>
 
 | Prompt tokens | AX decode | llama.cpp decode (depth 0) | llama.cpp decode (matched depth) | AX prefill | llama.cpp prefill | AX TTFT (ms) | llama.cpp TTFT (ms) |
-|---:|---:|---:|---:|---:|---:|---:|---:|
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | 128 | 66.0 | 59.8 | 59.2 | 1,171 | 1,252 | 109 | 102 |
 | 512 | 65.6 | 59.6 | 58.9 | 1,839 | 1,745 | 278 | 293 |
 | 2048 | 61.7 | 59.7 | 56.9 | 2,004 | 1,690 | 1,022 | 1,212 |
@@ -410,7 +410,7 @@ Decode is memory-bandwidth-bound on Apple Silicon: each token reads the model we
 <img src="docs/assets/perf-gemma4-12b-bandwidth.svg" alt="100% stacked bar chart showing Gemma 4 12B effective decode bandwidth used versus theoretical headroom for AX 8-bit FFN (86%), AX 4-bit FFN (75%), llama.cpp depth-0 (76%), and llama.cpp depth-512 (75%)">
 
 | Engine / quantization | Weights/token | Decode tok/s | Effective BW | % of 577 GB/s peak |
-|---|---:|---:|---:|---:|
+| --- | ---: | ---: | ---: | ---: |
 | AX — 8-bit FFN (upstream 4bit snapshot) | 10.98 GB | 45.0 | 494 GB/s | 86% |
 | AX — 4-bit FFN (re-quantized) | 6.74 GB | 64.4 | 434 GB/s | 75% |
 | llama.cpp Q4_K_M — decode @ depth 512 | 7.38 GB | 58.9 | 435 GB/s | 75% |
@@ -437,7 +437,7 @@ Gemma 4 12B multimodal timing is reported separately from the text benchmark abo
 </table>
 
 | Coverage | AX cases measured | Expanded input | Median runner prefill TTFT | Median prefill | Median AX chat E2E | llama.cpp peer endpoint |
-|---|---:|---:|---:|---:|---:|---|
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
 | Image | 5 | 275-535 tokens | 189.4-316.2 ms | 1,447.8-1,692.1 tok/s | 1,440.8-1,704.8 ms | 5 measured, 401.6-518.7 ms cold chat endpoint |
 | Audio | 4 | 32-771 tokens | 75.8-419.4 ms | 422.1-1,838.4 tok/s | 1,466.5-1,819.2 ms | 3 measured, 338.0-464.5 ms cold chat endpoint; 1 skipped: llama.cpp audio cap unstable |
 | Video | 4 | 92-2,355 tokens | 106.1-2,973.5 ms | 792.0-1,681.0 tok/s | 1,500.2-4,441.7 ms | 4 skipped: llama.cpp video path unsupported |
@@ -515,7 +515,7 @@ The charts keep the same 128 / 512 / 2,048 prompt-token layout as the autoregres
 </table>
 
 | Prompt tokens | AX first-block decode | Denoise steps | Committed block |
-|---:|---:|---:|---:|
+| ---: | ---: | ---: | ---: |
 | 128 | 30.7 tok/s | 48 | 256 tokens |
 | 512 | 58.9 tok/s | 25 | 256 tokens |
 | 2048 | 32.1 tok/s | 48 | 256 tokens |
@@ -523,7 +523,7 @@ The charts keep the same 128 / 512 / 2,048 prompt-token layout as the autoregres
 **Prefill and first-block latency:**
 
 | Prompt tokens | AX direct prefill | AX time to first block | llama.cpp Metal 9650 | `mlx_lm` 0.31.3 |
-|---:|---:|---:|---|---|
+| ---: | ---: | ---: | --- | --- |
 | 128 | 1,351.8 tok/s | 8,428 ms | load blocked | load blocked |
 | 512 | 3,002.1 tok/s | 4,518 ms | load blocked | load blocked |
 | 2048 | 4,031.4 tok/s | 8,475 ms | load blocked | load blocked |
@@ -531,7 +531,7 @@ The charts keep the same 128 / 512 / 2,048 prompt-token layout as the autoregres
 `time to first block` is prefill wall time plus the first 256-token denoise-and-commit block. `first-block decode` is computed as `256 / ax_mlx_diffusion_block_wall_us`. Use these rows to track AX's DiffusionGemma path; do not compare them directly with ordinary autoregressive TTFT or fixed-token decode throughput.
 
 | Runtime path | Model artifact | Benchmark status |
-|---|---|---|
+| --- | --- | --- |
 | AX direct MLX | `mlx-community/diffusiongemma-26B-A4B-it-4bit` | Measured: 1 warmup + 5 measured repetitions, 15 s cooldown, medians reported |
 | llama.cpp Metal 9650 | 4-bit GGUF | Blocked at load: `unknown model architecture: 'diffusion-gemma'` |
 | `mlx_lm` 0.31.3 | 4-bit MLX snapshot | Blocked at load: `Model type diffusion_gemma not supported.` |
@@ -543,7 +543,7 @@ The bandwidth chart is an implementation-efficiency view, not a peer comparison.
 <img src="docs/assets/perf-diffusiongemma-direct-memory-bandwidth-share.svg" alt="100% stacked bar chart showing estimated AX direct DiffusionGemma memory bandwidth share used versus theoretical headroom at 128, 512, and 2048 prompt tokens">
 
 | Prompt tokens | Estimated effective bandwidth | % of 614.4 GB/s M5 Max theoretical bandwidth |
-|---:|---:|---:|
+| ---: | ---: | ---: |
 | 128 | 97.3 GB/s | 15.8% |
 | 512 | 98.9 GB/s | 16.1% |
 | 2,048 | 101.8 GB/s | 16.6% |
@@ -571,7 +571,7 @@ The benchmark rows above report the measured adaptive-convergence run as recorde
 The following optimizations are enabled by default for DiffusionGemma to maximize memory bandwidth utilization and reduce per-step overhead. Each can be individually disabled via opt-out environment variables.
 
 | Optimization | What it does | Opt-out |
-|---|---|---|
+| --- | --- | --- |
 | KV concat buffer | Pre-allocates per-layer KV concatenation buffers on the first denoise step and updates only the canvas slice on subsequent steps via `slice_update`, avoiding re-copying the cached prompt prefix. Also caches the bidirectional attention mask per layer. | `AX_DIFFUSION_NO_KV_CONCAT_BUFFER=1` |
 | Embedding cache | Caches per-layer embedding inputs across denoise steps when token IDs are unchanged, using a GPU-side sum fingerprint to detect changes. | `AX_DIFFUSION_NO_EMBEDDING_CACHE=1` |
 | Compiled forward | Compiles the bidirectional denoise forward pass into an `MlxClosure` per block (when self-conditioning is off), collapsing ~250 per-step MLX C-API calls into one dispatched graph. | `AX_DIFFUSION_NO_COMPILED_FORWARD=1` |
@@ -580,7 +580,7 @@ The following optimizations are enabled by default for DiffusionGemma to maximiz
 **Experimental opt-in optimizations:**
 
 | Environment variable | What it does | Status |
-|---|---|---|
+| --- | --- | --- |
 | `AX_DIFFUSION_FULL_PIPELINE=1` | Compiles the entire denoise step (forward + softmax + entropy + argmax + sampling + acceptance) into a single `MlxClosure`. Supersedes the forward-only compiled closure when both are set. | Experimental / benchmarking |
 
 Example usage for a single benchmark run with all optimizations:
@@ -604,7 +604,7 @@ python3 scripts/bench_diffusion_gemma_direct.py --skip-benchmark
 DiffusionGemma's acceleration model is the diffusion block itself. It does not stack with MTP or n-gram acceleration because those techniques assume an autoregressive next-token loop:
 
 | | MTP (speculative decoding) | DiffusionGemma (block diffusion) |
-|---|---|---|
+| --- | --- | --- |
 | Generation | Draft-then-verify, one token at a time | 256-token blocks via bidirectional denoising |
 | Forward pass | Causal only | Bidirectional (denoise) + causal (commit) |
 | Needs draft model / assistant head | Yes | No |
@@ -689,22 +689,22 @@ The 2K `llama.cpp Metal*` prefill rows are long-context, GGUF-runtime-reference 
 #### Prefill throughput (tok/s) — percentages vs mlx_lm
 
 | Model | MLX quantization | Prompt tok | llama.cpp Metal* | mlx_lm | ax engine |
-|---|---|---:| ---: |---:|---:|
+| --- | --- | ---: | ---: | ---: | ---: |
 | Gemma 4 E2B | 4-bit | 128 | 3,481.7 | 2,338.1 | **6,047.1 (+158.6%)** |
-|         |         | 512 | 6,846.0 | 7,870.0 | **16,880.4 (+114.5%)** |
-|         |         | 2048 | 7,643.1 | 18,014.7 | **25,168.4 (+39.7%)** |
+|  |  | 512 | 6,846.0 | 7,870.0 | **16,880.4 (+114.5%)** |
+|  |  | 2048 | 7,643.1 | 18,014.7 | **25,168.4 (+39.7%)** |
 | Gemma 4 E2B | 6-bit | 128 | 3,539.7 | 1,823.5 | **5,595.1 (+206.8%)** |
-|         |         | 512 | 7,274.0 | 6,046.6 | **15,912.0 (+163.2%)** |
-|         |         | 2048 | 7,623.2 | 15,332.1 | **22,676.9 (+47.9%)** |
+|  |  | 512 | 7,274.0 | 6,046.6 | **15,912.0 (+163.2%)** |
+|  |  | 2048 | 7,623.2 | 15,332.1 | **22,676.9 (+47.9%)** |
 | Gemma 4 E4B | 4-bit | 128 | 2,194.0 | 1,513.2 | **3,444.8 (+127.7%)** |
-|         |         | 512 | 4,454.2 | 4,195.5 | **7,027.8 (+67.5%)** |
-|         |         | 2048 | 4,426.6 | 7,325.4 | **8,800.8 (+20.1%)** |
+|  |  | 512 | 4,454.2 | 4,195.5 | **7,027.8 (+67.5%)** |
+|  |  | 2048 | 4,426.6 | 7,325.4 | **8,800.8 (+20.1%)** |
 | Gemma 4 26B A4B | 4-bit | 128 | 1,911.4 | 496.4 | **1,345.5 (+171.0%)** |
-|         |         | 512 | 3,484.5 | 1,621.0 | **3,047.3 (+88.0%)** |
-|         |         | 2048 | 3,604.8 | 3,300.1 | **4,642.8 (+40.7%)** |
+|  |  | 512 | 3,484.5 | 1,621.0 | **3,047.3 (+88.0%)** |
+|  |  | 2048 | 3,604.8 | 3,300.1 | **4,642.8 (+40.7%)** |
 | Gemma 4 31B | 4-bit | 128 | 522.6 | 283.1 | **513.2 (+81.3%)** |
-|         |         | 512 | 665.3 | 619.9 | **738.6 (+19.2%)** |
-|         |         | 2048 | 560.3 | 733.9 | **774.5 (+5.5%)** |
+|  |  | 512 | 665.3 | 619.9 | **738.6 (+19.2%)** |
+|  |  | 2048 | 560.3 | 733.9 | **774.5 (+5.5%)** |
 | Qwen 3.6 27B | 4-bit | 128 | 539.6 | 378.8 | **580.3 (+53.2%)** |
 |  |  | 512 | 759.7 | 705.7 | **833.0 (+18.0%)** |
 |  |  | 2048 | 664.3 | 895.2 | **931.6 (+4.1%)** |
@@ -718,7 +718,7 @@ The 2K `llama.cpp Metal*` prefill rows are long-context, GGUF-runtime-reference 
 #### Decode throughput (tok/s) — generation=128 tokens, temp=0
 
 | Model | MLX quantization | Prompt tok | llama.cpp Metal* | mlx_lm | ax direct baseline |
-|---|---|---:| ---: |---:|---:|
+| --- | --- | ---: | ---: | ---: | ---: |
 | Gemma 4 E2B | 4-bit | 128 | 174.6 | 214.0 | **236.0 (+10.3%)** |
 |  |  | 512 | 165.2 | 210.3 | **226.7 (+7.8%)** |
 |  |  | 2048 | 171.9 | 200.9 | **216.7 (+7.9%)** |
@@ -750,7 +750,7 @@ The 2K `llama.cpp Metal*` prefill rows are long-context, GGUF-runtime-reference 
 **Lower is better.** `mlx_lm` values are derived from reported prefill throughput. AX values are measured directly from per-step runner timing in the SSE event stream.
 
 | Model | MLX quantization | Prompt tok | llama.cpp Metal* | mlx_lm | ax engine |
-|---|---|---:| ---: |---:|---:|
+| --- | --- | ---: | ---: | ---: | ---: |
 | Gemma 4 E2B | 4-bit | 128 | 36.8 | 54.7 | **21.2 (-61.3%)** |
 |         |         | 512 | 74.8 | 65.1 | **30.3 (-53.4%)** |
 |         |         | 2048 | 268.0 | 113.7 | **81.4 (-28.4%)** |
@@ -851,7 +851,7 @@ section.
 Start with the task-based docs hub at [`docs/README.md`](docs/README.md).
 
 | Need | Read |
-|---|---|
+| --- | --- |
 | Install and run the first request | [Getting Started](docs/GETTING-STARTED.md) |
 | Choose or download a model | [Supported Models](docs/SUPPORTED-MODELS.md) |
 | Prepare MTP packages or compare 4-bit and 6-bit MTP rows | [MTP Docs](docs/mtp/README.md) |
@@ -902,7 +902,7 @@ benchmark manifests are in `benchmarks/manifests/`.
 AX Engine's benchmark design and compatibility checks are informed by local reference checkouts of related open-source projects. A row is published only when it fits the benchmark contract for the specific workload: comparable model artifacts, prompt and sampling policy, prefill/decode/TTFT definitions, repeatability, host/runtime metadata, and provenance.
 
 | Project | Repository |
-|---|---|
+| --- | --- |
 | ds4 | [antirez/ds4](https://github.com/antirez/ds4) |
 | lightning-mlx | [samuelfaj/lightning-mlx](https://github.com/samuelfaj/lightning-mlx) |
 | llama.cpp | [ggml-org/llama.cpp](https://github.com/ggml-org/llama.cpp) |
