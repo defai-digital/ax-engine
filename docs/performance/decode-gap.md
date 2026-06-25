@@ -13,7 +13,7 @@ investigators do not relitigate the same experiments.
 From `benchmarks/results/mlx-inference/2026-05-20-qwen-1024-tier-sweep/`:
 
 | family | decode rate | Δ vs mlx_lm | per-step extra µs |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | Gemma 4 E2B 4-bit | 198 t/s | −5.7% | +288 µs |
 | Gemma 4 E2B 8-bit | 142 t/s | −4.7% | +330 µs |
 | Gemma 4 26B-A4B | 121 t/s | −3.3% | +271 µs |

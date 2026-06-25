@@ -689,7 +689,7 @@ The 2K `llama.cpp Metal*` prefill rows are long-context, GGUF-runtime-reference 
 #### Prefill throughput (tok/s) — percentages vs mlx_lm
 
 | Model | MLX quantization | Prompt tok | llama.cpp Metal* | mlx_lm | ax engine |
-|---|---|---:| ---: |---:|---:|
+| --- | --- | ---: | ---: | ---: | ---: |
 | Gemma 4 E2B | 4-bit | 128 | 3,481.7 | 2,338.1 | **6,047.1 (+158.6%)** |
 |         |         | 512 | 6,846.0 | 7,870.0 | **16,880.4 (+114.5%)** |
 |         |         | 2048 | 7,643.1 | 18,014.7 | **25,168.4 (+39.7%)** |
@@ -718,7 +718,7 @@ The 2K `llama.cpp Metal*` prefill rows are long-context, GGUF-runtime-reference 
 #### Decode throughput (tok/s) — generation=128 tokens, temp=0
 
 | Model | MLX quantization | Prompt tok | llama.cpp Metal* | mlx_lm | ax direct baseline |
-|---|---|---:| ---: |---:|---:|
+| --- | --- | ---: | ---: | ---: | ---: |
 | Gemma 4 E2B | 4-bit | 128 | 174.6 | 214.0 | **236.0 (+10.3%)** |
 |  |  | 512 | 165.2 | 210.3 | **226.7 (+7.8%)** |
 |  |  | 2048 | 171.9 | 200.9 | **216.7 (+7.9%)** |
@@ -750,7 +750,7 @@ The 2K `llama.cpp Metal*` prefill rows are long-context, GGUF-runtime-reference 
 **Lower is better.** `mlx_lm` values are derived from reported prefill throughput. AX values are measured directly from per-step runner timing in the SSE event stream.
 
 | Model | MLX quantization | Prompt tok | llama.cpp Metal* | mlx_lm | ax engine |
-|---|---|---:| ---: |---:|---:|
+| --- | --- | ---: | ---: | ---: | ---: |
 | Gemma 4 E2B | 4-bit | 128 | 36.8 | 54.7 | **21.2 (-61.3%)** |
 |         |         | 512 | 74.8 | 65.1 | **30.3 (-53.4%)** |
 |         |         | 2048 | 268.0 | 113.7 | **81.4 (-28.4%)** |
