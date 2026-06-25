@@ -12,13 +12,11 @@
 
 #include "ax_shim.h"
 
-#include <exception>
 #include <optional>
 #include <stdexcept>
 #include <string>
 #include <utility>
 
-#include "mlx/ops.h"
 #include "mlx/stream.h"
 #include "mlx/utils.h"
 
