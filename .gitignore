@@ -13,6 +13,11 @@ venv/
 node_modules/
 npm-debug.log*
 
+# Local C/C++ tooling artifacts (clangd language server + compile DB)
+.clangd
+compile_commands.json
+.cache/
+
 # Local environment and credential files
 .env
 .env.*
