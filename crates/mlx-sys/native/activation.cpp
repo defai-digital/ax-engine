@@ -3,6 +3,7 @@
 #include <tuple>
 
 #include "mlx/fast.h"
+#include "mlx/ops.h"
 
 namespace {
 

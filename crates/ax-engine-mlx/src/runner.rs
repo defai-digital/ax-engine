@@ -4846,16 +4846,31 @@ impl MlxRunner {
             set_wired_limit(scaled);
         }
 
-        // Disable MLX's internal graph/array cache to prevent unbounded memory
-        // growth during long inference sessions. The community consensus
-        // (mlx-lm#828) is that set_cache_limit(0) eliminates memory pressure
-        // with no measurable performance impact. Override via
-        // AX_MLX_CACHE_LIMIT (bytes); 0 = disabled (default).
-        let cache_limit: usize = std::env::var("AX_MLX_CACHE_LIMIT")
+        // Bound — but do NOT disable — MLX's internal buffer cache. The cache
+        // recycles freed GPU buffers; with it off, every transient allocation
+        // goes through the system/IOGPU allocator. mlx-lm#828's claim that
+        // set_cache_limit(0) has "no measurable performance impact" holds for
+        // dense models but is badly wrong for high-allocation MoE decode:
+        // disabling it regressed Qwen3.6-35B-A3B decode ~40% (169 -> 100 tok/s),
+        // because each expert's transient buffers were re-allocated from IOGPU
+        // every step instead of recycled. Default the cache to the wired working
+        // set so recycling stays on while total memory remains bounded by the
+        // memory limit below. Override via AX_MLX_CACHE_LIMIT (bytes); set 0 to
+        // disable explicitly.
+        match std::env::var("AX_MLX_CACHE_LIMIT")
             .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(0);
-        set_cache_limit(cache_limit);
+            .and_then(|s| s.parse::<usize>().ok())
+        {
+            Some(limit) => {
+                set_cache_limit(limit);
+            }
+            // Only set an explicit bound when the working set is known; otherwise
+            // leave MLX's own default in place rather than risk disabling it.
+            None if wired_cap > 0 => {
+                set_cache_limit(wired_cap);
+            }
+            None => {}
+        }
 
         // Set MLX memory limit. Defaults to wired_cap (same as wired working
         // set), which is more conservative than MLX's default 1.5x. Override

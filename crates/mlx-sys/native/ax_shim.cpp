@@ -16,6 +16,7 @@
 #include "mlx/fast.h"
 #include "mlx/io.h"
 #include "mlx/memory.h"
+#include "mlx/ops.h"
 #include "mlx/random.h"
 #include "mlx/transforms.h"
 #include "mlx/compile.h"
@@ -535,18 +536,25 @@ extern "C" mlx_closure mlx_closure_new_func_payload(
       ? std::shared_ptr<void>(payload, dtor)
       : std::shared_ptr<void>(payload, [](void*) {});
     auto fn = [fun, payload_holder](const std::vector<mx::array>& inputs) -> std::vector<mx::array> {
-      // Use a scope guard so both vectors are freed even if fun() throws
-      // or varef() throws.  The original code leaked on either exception path.
-      mlx_vector_array in{new std::vector<mx::array>(inputs)};
-      mlx_vector_array out{new std::vector<mx::array>()};
-      struct VecGuard {
-        mlx_vector_array v;
-        ~VecGuard() { delete static_cast<std::vector<mx::array>*>(v.ctx); }
-      } in_guard{in}, out_guard{out};
+      // Ownership contract with the Rust trampoline (closure_trampoline in
+      // mlx-sys/src/closure.rs): it *borrows* the input vector (from_borrowed,
+      // never frees it) and *overwrites* `out.ctx` with a freshly heap-allocated
+      // output vector that it does not own either (into_raw). So this side owns
+      // both allocations and must free them on every exit path. Note the real
+      // outputs live at `out.ctx` after the call, not in any vector we passed in
+      // — earlier versions read/moved the wrong (empty) vector and/or leaked the
+      // output vector, pinning every output mx::array handle in unified memory.
+      auto in_vec = std::make_unique<std::vector<mx::array>>(inputs);
+      mlx_vector_array in{in_vec.get()};
+      mlx_vector_array out{nullptr};
       int rc = fun(&out, in, payload_holder.get());
-      auto result = varef(out);
+      // Adopt the callback's output vector so it is freed even on the error
+      // paths below.
+      std::unique_ptr<std::vector<mx::array>> out_vec(
+          static_cast<std::vector<mx::array>*>(out.ctx));
       if (rc != 0) throw std::runtime_error("closure callback failed");
-      return result;
+      if (!out_vec) throw std::runtime_error("closure callback produced no output vector");
+      return std::move(*out_vec);
     };
     return mlx_closure{new closure_fn(std::move(fn))};
   } AX_CATCH_NULL
