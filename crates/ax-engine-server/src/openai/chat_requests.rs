@@ -45,6 +45,7 @@ pub(crate) fn render_openai_chat_prompt_with_tools(
     tools: Option<&Value>,
     tool_choice: Option<&Value>,
 ) -> Result<String, HttpErrorResponse> {
+    validate_openai_tool_names(messages, tools, tool_choice)?;
     if matches!(
         chat::ChatPromptTemplate::for_model_id(model_id),
         chat::ChatPromptTemplate::Gemma4
@@ -290,6 +291,85 @@ fn empty_chat_messages_error() -> HttpErrorResponse {
 
 fn chat_error_response(message: String) -> HttpErrorResponse {
     error_response(StatusCode::BAD_REQUEST, "invalid_request", message)
+}
+
+fn validate_openai_tool_names(
+    messages: &[OpenAiChatMessage],
+    tools: Option<&Value>,
+    tool_choice: Option<&Value>,
+) -> Result<(), HttpErrorResponse> {
+    if let Some(tools) = tools {
+        for (index, tool) in openai_tool_items(tools).iter().enumerate() {
+            if let Some(function) = openai_tool_function(tool)
+                && let Some(name) = function.get("name").and_then(Value::as_str)
+            {
+                validate_openai_tool_name(name, format!("tools[{index}].function.name"))?;
+            }
+        }
+    }
+
+    if let Some(name) = forced_tool_choice_name(tool_choice) {
+        validate_openai_tool_name(name, "tool_choice.function.name")?;
+    }
+
+    for (message_index, message) in messages.iter().enumerate() {
+        if matches!(message.role.as_str(), "tool" | "function")
+            && let Some(name) = message._name.as_deref()
+        {
+            validate_openai_tool_name(name, format!("messages[{message_index}].name"))?;
+        }
+        if let Some(tool_calls) = message.tool_calls.as_ref() {
+            for (call_index, call) in openai_tool_items(tool_calls).iter().enumerate() {
+                let Some(function) = call.get("function").and_then(Value::as_object) else {
+                    continue;
+                };
+                if let Some(name) = function.get("name").and_then(Value::as_str) {
+                    validate_openai_tool_name(
+                        name,
+                        format!("messages[{message_index}].tool_calls[{call_index}].function.name"),
+                    )?;
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn openai_tool_items(value: &Value) -> Vec<&Value> {
+    match value {
+        Value::Array(items) => items.iter().collect(),
+        Value::Object(_) => vec![value],
+        _ => Vec::new(),
+    }
+}
+
+fn forced_tool_choice_name(tool_choice: Option<&Value>) -> Option<&str> {
+    tool_choice?
+        .get("function")
+        .and_then(|function| function.get("name"))
+        .and_then(Value::as_str)
+}
+
+fn validate_openai_tool_name(name: &str, field: impl AsRef<str>) -> Result<(), HttpErrorResponse> {
+    if valid_openai_tool_name(name) {
+        return Ok(());
+    }
+    Err(error_response(
+        StatusCode::BAD_REQUEST,
+        "invalid_request",
+        format!(
+            "{} must be a non-empty tool identifier containing only ASCII letters, digits, '_', '-', or '.'",
+            field.as_ref()
+        ),
+    ))
+}
+
+fn valid_openai_tool_name(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.'))
 }
 
 fn render_openai_chat_content(
