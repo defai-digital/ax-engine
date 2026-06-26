@@ -15,3 +15,4 @@ mod openai_compat;
 mod openai_completions;
 mod openai_responses;
 mod openai_streaming;
+mod openai_tool_names;

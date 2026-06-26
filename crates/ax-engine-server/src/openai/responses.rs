@@ -12,6 +12,7 @@ use super::schema::{
     OpenAiCompletionLogprobs, OpenAiCompletionResponse, OpenAiFunctionCall, OpenAiStreamKind,
     OpenAiToolCall, OpenAiUsage,
 };
+use super::tool_names;
 
 impl OpenAiStreamKind {
     pub(crate) fn response_id(self, request_id: u64) -> String {
@@ -304,7 +305,7 @@ fn extract_gemma4_tool_call_payload_at(
     let name_start = start + "<|tool_call>call:".len();
     let name_end = name_start + content[name_start..].find('{')?;
     let name = content[name_start..name_end].trim().to_string();
-    if !valid_text_tool_name(&name) {
+    if !tool_names::is_valid(&name) {
         return None;
     }
     let body_start = name_end + 1;
@@ -342,7 +343,7 @@ fn extract_bare_gemma4_tool_call_payload_at(
     let name_start = start + "call:".len();
     let name_end = name_start + content[name_start..].find('{')?;
     let name = content[name_start..name_end].trim().to_string();
-    if !valid_text_tool_name(&name) {
+    if !tool_names::is_valid(&name) {
         return None;
     }
     let body_start = name_end + 1;
@@ -350,13 +351,6 @@ fn extract_bare_gemma4_tool_call_payload_at(
     let arguments = parse_gemma4_arguments(&content[body_start..body_end])?;
     let remaining = format!("{}{}", &content[..start], &content[body_end + 1..]);
     Some((OpenAiFunctionCall { name, arguments }, remaining))
-}
-
-fn valid_text_tool_name(name: &str) -> bool {
-    !name.is_empty()
-        && name
-            .chars()
-            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.'))
 }
 
 fn find_matching_gemma4_object_end(content: &str, body_start: usize) -> Option<usize> {
@@ -410,7 +404,7 @@ fn parse_tool_call_body(body: &str) -> Option<OpenAiFunctionCall> {
 fn parse_glm_tool_call_body(body: &str) -> Option<OpenAiFunctionCall> {
     let name_end = body.find("<arg_key>").unwrap_or(body.len());
     let name = body[..name_end].trim().to_string();
-    if !valid_text_tool_name(&name) {
+    if !tool_names::is_valid(&name) {
         return None;
     }
     let mut arguments = serde_json::Map::new();
@@ -439,14 +433,14 @@ fn parse_tool_call_function(value: &Value) -> Option<OpenAiFunctionCall> {
     let object = value.as_object()?;
     if let Some(function) = object.get("function").and_then(Value::as_object) {
         let name = function.get("name")?.as_str()?.to_string();
-        if !valid_text_tool_name(&name) {
+        if !tool_names::is_valid(&name) {
             return None;
         }
         let arguments = serialize_tool_arguments(function.get("arguments"));
         return Some(OpenAiFunctionCall { name, arguments });
     }
     let name = object.get("name")?.as_str()?.to_string();
-    if !valid_text_tool_name(&name) {
+    if !tool_names::is_valid(&name) {
         return None;
     }
     let arguments = serialize_tool_arguments(object.get("arguments"));
@@ -459,7 +453,7 @@ fn parse_qwen_function_tool_call(body: &str) -> Option<OpenAiFunctionCall> {
     let name_start = function_start + function_marker.len();
     let name_end = name_start + body[name_start..].find('>')?;
     let name = unescape_xml_text(body[name_start..name_end].trim());
-    if !valid_text_tool_name(&name) {
+    if !tool_names::is_valid(&name) {
         return None;
     }
 

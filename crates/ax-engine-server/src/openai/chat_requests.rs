@@ -21,6 +21,7 @@ use crate::multimodal::{
 use crate::openai::schema::{
     OpenAiChatContent, OpenAiChatContentPart, OpenAiChatMessage, OpenAiStopInput,
 };
+use crate::openai::tool_names;
 
 type HttpErrorResponse = (StatusCode, Json<ErrorResponse>);
 type ChatMessagePairs = Vec<(String, String)>;
@@ -352,7 +353,7 @@ fn forced_tool_choice_name(tool_choice: Option<&Value>) -> Option<&str> {
 }
 
 fn validate_openai_tool_name(name: &str, field: impl AsRef<str>) -> Result<(), HttpErrorResponse> {
-    if valid_openai_tool_name(name) {
+    if tool_names::is_valid(name) {
         return Ok(());
     }
     Err(error_response(
@@ -363,13 +364,6 @@ fn validate_openai_tool_name(name: &str, field: impl AsRef<str>) -> Result<(), H
             field.as_ref()
         ),
     ))
-}
-
-fn valid_openai_tool_name(name: &str) -> bool {
-    !name.is_empty()
-        && name
-            .chars()
-            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.'))
 }
 
 fn render_openai_chat_content(
