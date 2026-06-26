@@ -1587,6 +1587,71 @@ async fn delegated_openai_chat_rejects_tools_on_llama_cpp_backend() {
 }
 
 #[tokio::test]
+async fn delegated_openai_chat_rejects_assistant_tool_call_history() {
+    let state = mlx_lm_delegated_state("http://127.0.0.1:1".to_string());
+    let live = state.snapshot();
+    let request: OpenAiChatCompletionHttpRequest = serde_json::from_value(json!({
+        "model": "glm4_moe_lite",
+        "messages": [
+            {"role": "user", "content": "Read README.md"},
+            {
+                "role": "assistant",
+                "content": null,
+                "tool_calls": [{
+                    "id": "call_0",
+                    "type": "function",
+                    "function": {
+                        "name": "read_file",
+                        "arguments": "{\"path\":\"README.md\"}"
+                    }
+                }]
+            }
+        ],
+        "max_tokens": 8
+    }))
+    .expect("sample chat request should deserialize");
+
+    let error = match build_openai_mlx_lm_chat_request(&live, request) {
+        Ok(_) => panic!("delegated mlx-lm text backends should reject tool-call history"),
+        Err(error) => error,
+    };
+
+    assert_eq!(error.0, StatusCode::BAD_REQUEST);
+    assert!(
+        error.1.error.message.contains("delegated text backends"),
+        "unexpected error: {}",
+        error.1.error.message
+    );
+}
+
+#[tokio::test]
+async fn delegated_openai_chat_rejects_tool_result_history() {
+    let state = llama_cpp_server_state("http://127.0.0.1:1".to_string());
+    let live = state.snapshot();
+    let request: OpenAiChatCompletionHttpRequest = serde_json::from_value(json!({
+        "model": "local-gguf",
+        "messages": [
+            {"role": "user", "content": "Read README.md"},
+            {"role": "tool", "tool_call_id": "call_0", "content": "{\"ok\":true}"}
+        ],
+        "max_tokens": 8
+    }))
+    .expect("sample chat request should deserialize");
+
+    let error = match build_openai_llama_cpp_chat_request(&live, request) {
+        Ok(_) => panic!("delegated llama.cpp text backends should reject tool-result history"),
+        Err(error) => error,
+    };
+
+    assert_eq!(error.0, StatusCode::BAD_REQUEST);
+    assert!(
+        error.1.error.message.contains("delegated text backends"),
+        "unexpected error: {}",
+        error.1.error.message
+    );
+}
+
+#[tokio::test]
 async fn openai_qwen_chat_uses_greedy_repetition_penalty_default() {
     let artifact_dir = minimal_tokenizer_artifact("native-openai-qwen-rp-tokenizer");
     let state = native_mlx_openai_builder_state("Qwen3.6-35B-A3B-4bit", &artifact_dir);

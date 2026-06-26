@@ -16,8 +16,8 @@ use crate::errors::{ErrorResponse, error_response};
 use crate::metadata::context_length;
 use crate::openai::chat_requests::{build_llama_cpp_chat_messages, build_mlx_lm_chat_messages};
 use crate::openai::schema::{
-    OpenAiChatCompletionHttpRequest, OpenAiCompletionHttpRequest, OpenAiPromptInput,
-    OpenAiStopInput,
+    OpenAiChatCompletionHttpRequest, OpenAiChatMessage, OpenAiCompletionHttpRequest,
+    OpenAiPromptInput, OpenAiStopInput,
 };
 
 pub(crate) const DEFAULT_OPENAI_MAX_TOKENS: u32 = 256;
@@ -483,7 +483,11 @@ pub(crate) fn build_openai_mlx_lm_chat_request(
         request.tool_choice.as_ref(),
         true,
     )?;
-    reject_delegated_chat_tools(request.tools.as_ref(), request.tool_choice.as_ref())?;
+    reject_delegated_chat_tools(
+        &request.messages,
+        request.tools.as_ref(),
+        request.tool_choice.as_ref(),
+    )?;
     response_options.reject_unsupported_streaming_contract(request.stream)?;
     let messages = build_mlx_lm_chat_messages(&request.messages)?;
     let sampling = build_openai_sampling_with_default_repetition_penalty(sampling_params, 1.0);
@@ -521,7 +525,11 @@ pub(crate) fn build_openai_llama_cpp_chat_request(
         request.tool_choice.as_ref(),
         true,
     )?;
-    reject_delegated_chat_tools(request.tools.as_ref(), request.tool_choice.as_ref())?;
+    reject_delegated_chat_tools(
+        &request.messages,
+        request.tools.as_ref(),
+        request.tool_choice.as_ref(),
+    )?;
     response_options.reject_unsupported_streaming_contract(request.stream)?;
     let messages = build_llama_cpp_chat_messages(&request.messages)?;
     let sampling = build_openai_sampling_with_default_repetition_penalty(sampling_params, 1.0);
@@ -708,10 +716,11 @@ fn reject_delegated_chat_extensions(
 }
 
 fn reject_delegated_chat_tools(
+    messages: &[OpenAiChatMessage],
     tools: Option<&Value>,
     tool_choice: Option<&Value>,
 ) -> Result<(), (StatusCode, Json<ErrorResponse>)> {
-    if !openai_tools_are_enabled(tools, tool_choice) {
+    if !openai_tools_are_enabled(tools, tool_choice) && !openai_tool_history_is_present(messages) {
         return Ok(());
     }
     Err(error_response(
@@ -720,6 +729,16 @@ fn reject_delegated_chat_tools(
         "OpenAI chat tools require native AX-rendered model-family tool prompts; delegated text backends do not receive tool schemas or expose structured tool-call output."
             .to_string(),
     ))
+}
+
+fn openai_tool_history_is_present(messages: &[OpenAiChatMessage]) -> bool {
+    messages.iter().any(|message| {
+        matches!(message.role.trim(), "tool" | "function")
+            || message
+                .tool_calls
+                .as_ref()
+                .is_some_and(openai_value_is_present)
+    })
 }
 
 pub(crate) fn build_generate_request_internal(
