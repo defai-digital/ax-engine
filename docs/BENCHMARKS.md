@@ -52,6 +52,7 @@ charts to imply a different model source.
 | Which AX runtime path is best for a product endpoint on this host? | `scripts/bench_ax_engine_three_modes.py` against already-running AX servers | End-to-end AX API latency by mode; not raw model throughput |
 | How does AX MTP perform on the recommended local-agent targets and against 4-bit peer comparisons? | Prepare models with `ax-engine download-mtp`; run the MTP harness in `mtp` mode only | MTP-only artifact with per-model decode tok/s, prefill tok/s, TTFT, MTP accept rate, quantization lane, and model/package provenance |
 | What are the prefill rates and TTFT across MTP engines? | `scripts/bench_mtp_prefill_ttft_report.py --result-dir <fair-output-dir>` | `ax.mtp_prefill_ttft_report.v1` artifact with per-engine prefill tok/s and TTFT ms; generates `prefill-tok-s.svg`, `ttft-ms.svg`, and `prefill-ttft-report.md` |
+| How does Gemma 4 12B handle image/audio/video inputs? | `scripts/bench_gemma4_multimodal.py` plus `scripts/check_gemma4_multimodal_benchmark_artifact.py` | `ax.gemma4_multimodal_benchmark.v1` artifacts with native runtime prefill, OpenAI chat E2E latency, modality coverage, and fail-closed llama.cpp peer rows |
 
 Do not merge these rows into one unlabeled throughput table. Repo-owned
 model-inference claims come from the MLX inference stack, and every such claim
@@ -851,6 +852,123 @@ The older SwiftLM application-server benchmark is retired for current AX Engine
 decisions. It measures application/server behavior around MLX, not the
 `mlx-swift-lm` library benchmark contract. Keep it as historical design input
 only.
+
+## Gemma 4 12B Multimodal Benchmark
+
+Gemma 4 12B multimodal timing is reported separately from text direct-decode
+benchmarks because media inputs expand into validated Gemma4 unified soft-token
+spans before the MLX graph runs. The publication-grade timing artifact covers
+all **17 AX Engine image/audio/video cases** through both the native
+`/v1/generate/stream` prefill path and the OpenAI-compatible
+`/v1/chat/completions` path. The llama.cpp Metal peer rows are cold OpenAI chat
+endpoint rows for the supported image/audio cases, with prompt cache, slot
+prompt reuse, and context checkpoints disabled and raw llama.cpp timing/cache
+metadata recorded.
+
+<table>
+<tr>
+<td>
+<img width="100%"
+  src="assets/perf-gemma4-12b-multimodal-ttft-ms.svg"
+  alt="Gemma 4 12B multimodal prefill time to first token for AX MLX">
+</td>
+<td>
+<img width="100%"
+  src="assets/perf-gemma4-12b-multimodal-prefill-tok-s.svg"
+  alt="Gemma 4 12B multimodal prefill throughput for AX MLX">
+</td>
+<td>
+<img width="100%"
+  src="assets/perf-gemma4-12b-multimodal-peer-chat-ms.svg"
+  alt="Gemma 4 12B multimodal cold chat latency: AX MLX vs llama.cpp Metal">
+</td>
+</tr>
+</table>
+
+| Coverage | AX cases measured | Expanded input | Median runner prefill TTFT | Median prefill | Median AX chat E2E | llama.cpp peer endpoint |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| Image | 5 | 275-535 tokens | 189.4-316.2 ms | 1,447.8-1,692.1 tok/s | 1,440.8-1,704.8 ms | 5 measured, 401.6-518.7 ms cold chat endpoint |
+| Audio | 4 | 32-771 tokens | 75.8-419.4 ms | 422.1-1,838.4 tok/s | 1,466.5-1,819.2 ms | 3 measured, 338.0-464.5 ms cold chat endpoint; 1 skipped: llama.cpp audio cap unstable |
+| Video | 4 | 92-2,355 tokens | 106.1-2,973.5 ms | 792.0-1,681.0 tok/s | 1,500.2-4,441.7 ms | 4 skipped: llama.cpp video path unsupported |
+| Combined | 4 | 181-442 tokens | 133.2-256.7 ms | 1,359.1-1,721.6 tok/s | 1,532.4-1,771.6 ms | 1 measured, 507.9 ms cold chat endpoint; 3 skipped: video unsupported |
+
+Rows use `/v1/generate/stream` with processed `multimodal_inputs.gemma4_unified`
+for runner-time prefill and `/v1/chat/completions` with inline media for
+client-wall E2E latency. This run used `max_output_tokens=8`, 1 warmup, 3
+measured repetitions, `--max-batch-tokens 4096`, a release server binary, 128 GB
+unified memory, and a clean tracked worktree at
+`67ce2675a469cf5eecba687f348c649e663011b8`.
+
+The llama.cpp peer rows use reference llama.cpp `19bba67c1` with Metal,
+`gemma-4-12B-it-Q4_K_M.gguf`, and `mmproj-gemma-4-12B-it-Q8_0.gguf`. They are
+OpenAI chat endpoint-latency rows for supported image/audio inputs, not native
+prefill rows and not a throughput comparison. The fair-peer launch contract is
+`--cache-ram 0 --no-cache-idle-slots --slot-prompt-similarity 0 --ctx-checkpoints 0`
+plus `--llama-cache-policy prompt_cache_disabled`; the artifact records raw
+llama.cpp `timings`, `prompt_tokens_details.cached_tokens`, server prompt token
+counts, and cache counts.
+
+Published peer rows require zero reported cached prompt tokens and server
+prompt-eval token counts at least as large as the cold request's reported prompt
+tokens. Video-containing peer rows are explicit skips because the local
+llama.cpp Gemma 4 path does not expose a like-for-like video contract, and
+`audio_cap` is skipped because this llama.cpp Gemma 4 audio path fails the
+warmup-plus-three-repetition contract on the largest audio fixture. The peer
+chart excludes one measured image case whose AX and llama.cpp output token
+counts differ, so chart bars compare matched-output rows only. For this Gemma 4
+llama.cpp build, most peer text appears in `reasoning_content` rather than
+`message.content`, so the benchmark validates positive `response_chars`.
+
+Full artifact:
+[`2026-06-09-gemma4-12b-multimodal-cold-peer-matrix`](../benchmarks/results/gemma4-multimodal/2026-06-09-gemma4-12b-multimodal-cold-peer-matrix.json).
+Render charts with:
+
+```bash
+python3 scripts/render_gemma4_multimodal_charts.py \
+  --artifact benchmarks/results/gemma4-multimodal/2026-06-09-gemma4-12b-multimodal-cold-peer-matrix.json \
+  --assets-dir docs/assets
+```
+
+To reproduce the supported-case image/audio/video timing matrix from a Gemma 4
+12B AX Engine server, use the matrix runner and validate the resulting artifact
+before publishing charts:
+
+```bash
+python3 scripts/bench_gemma4_multimodal.py \
+  --url http://127.0.0.1:18080 \
+  --model gemma-4-12B-it \
+  --model-dir /path/to/gemma-4-12B-it-4bit \
+  --cases all \
+  --layers native_runtime_prefill,openai_chat_e2e \
+  --warmup 1 \
+  --repetitions 3 \
+  --cooldown 1 \
+  --max-output-tokens 8 \
+  --server-command "target/release/ax-engine-server --model-id gemma-4-12B-it --mlx --mlx-model-artifacts-dir /path/to/gemma-4-12B-it-4bit --max-batch-tokens 4096 --port 18080" \
+  --llama-url http://127.0.0.1:<peer-port> \
+  --llama-binary /path/to/llama-server \
+  --llama-gguf <path-to-gemma-4-12B-it-Q4_K_M.gguf> \
+  --llama-mmproj <path-to-mmproj-gemma-4-12B-it-Q8_0.gguf> \
+  --llama-cache-policy prompt_cache_disabled \
+  --output benchmarks/results/gemma4-multimodal/gemma4-12b-multimodal-cold-peer-matrix.json
+
+python3 scripts/check_gemma4_multimodal_benchmark_artifact.py \
+  benchmarks/results/gemma4-multimodal/gemma4-12b-multimodal-cold-peer-matrix.json \
+  --min-repetitions 3 \
+  --require-modalities image,audio,video \
+  --require-build-provenance \
+  --readme-ready
+```
+
+For a fair llama.cpp peer rerun, launch `llama-server` with prompt cache, slot
+prompt reuse, and context checkpoints disabled for the peer server, for example
+`--cache-ram 0 --no-cache-idle-slots --slot-prompt-similarity 0 --ctx-checkpoints 0`,
+then validate with `--readme-ready`. Peer rows with unknown cache policy,
+reported cached prompt tokens, or server prompt-eval token counts that are too
+low for a cold prompt are rejected by the artifact checker. Without a matching
+Gemma 4 12B GGUF and multimodal projector, peer rows are explicit skips. Video
+rows remain explicit skips until the peer server exposes a like-for-like video
+path for Gemma 4 12B.
 
 ## AX Workload Contracts
 

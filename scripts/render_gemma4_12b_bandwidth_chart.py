@@ -21,10 +21,10 @@ PEAK_GBS = 577.0
 
 # (label, weights_gb, decode_tok_s, effective_bw_gbs, pct_peak, fill, stroke)
 ROWS = [
-    ("AX 8-bit FFN", 10.98, 45.0, 494, 86, "#2eaf5f", "#176c37"),
-    ("AX 4-bit FFN", 6.74, 67.3, 454, 79, "#2eaf5f", "#176c37"),
-    ("llama.cpp depth 0", 7.38, 59.8, 441, 76, "#f97316", "#c2410c"),
+    ("AX upstream artifact", 10.98, 45.4, 498, 86, "#64748b", "#334155"),
+    ("AX re-quantized FFN", 6.74, 67.3, 454, 79, "#2eaf5f", "#176c37"),
     ("llama.cpp depth 512", 7.38, 58.9, 435, 75, "#f97316", "#c2410c"),
+    ("llama.cpp depth 0", 7.38, 59.8, 441, 76, "#f97316", "#c2410c"),
 ]
 
 # Chart dimensions
@@ -49,9 +49,9 @@ BAR_PAD = (BAR_STEP - BAR_H) / 2
 
 HEADROOM_COLOR = "#e5e7eb"
 HEADROOM_STROKE = "#cbd5e1"
-SUBTITLE = "Used bandwidth vs theoretical headroom · 100% = 577 GB/s M5 Max peak"
-TITLE = "Gemma 4 12B - Memory bandwidth share · AX Engine v6.5.2"
-FOOTNOTE = "AX Engine v6.5.2 · llama.cpp b9700 · M5 Max · peak measured via MLX reduction probe"
+SUBTITLE = "Why the upstream 4bit snapshot was slower: bytes read per decoded token"
+TITLE = "Gemma 4 12B - Decode bandwidth diagnostic · AX Engine v6.5.2"
+FOOTNOTE = "Gray row is diagnostic only: upstream 4bit snapshot keeps FFN tensors at 8-bit"
 
 
 def fx(pct: float) -> float:
@@ -72,17 +72,18 @@ def render() -> str:
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{WIDTH}" height="{HEIGHT}"'
         f' viewBox="0 0 {WIDTH} {HEIGHT}" role="img" aria-labelledby="title desc">',
         f"<title>{e(TITLE)}</title>",
-        f'<desc>100% stacked bars showing effective bandwidth used versus theoretical'
-        f' headroom for Gemma 4 12B decode. AX 8-bit FFN uses 86%, AX 4-bit FFN'
-        f' 79%, llama.cpp depth 0 76%, and llama.cpp depth 512 75% of the'
-        f' {PEAK_GBS:.0f} GB/s M5 Max peak.</desc>',
+        f'<desc>Diagnostic bandwidth chart for Gemma 4 12B decode. The gray'
+        f' upstream-artifact row is not a recommended runtime tier; it explains'
+        f' the public 4bit snapshot handicap because FFN tensors remain 8-bit.'
+        f' AX re-quantized FFN uses 79%, llama.cpp depth 0 uses 76%, and'
+        f' llama.cpp depth 512 uses 75% of the {PEAK_GBS:.0f} GB/s M5 Max peak.</desc>',
         f'<rect width="{WIDTH}" height="{HEIGHT}" fill="#f8fafc"/>',
         f'<text id="title" x="{LEFT}" y="24" font-family="{FONT}" font-size="16"'
         f' font-weight="700" fill="#111827">{e(TITLE)}</text>',
         f'<text x="{LEFT}" y="46" font-family="{FONT}" font-size="11" fill="#4b5563">'
         f'{e(SUBTITLE)}</text>',
         f'<text id="desc" x="{LEFT}" y="62" font-family="{FONT}" font-size="10" fill="#6b7280">'
-        f'Decode is bandwidth-bound; each generated token reads model weights once.</text>',
+        f'100% = {PEAK_GBS:.0f} GB/s M5 Max peak; each generated token reads model weights once.</text>',
         f'<text x="{LEFT}" y="76" font-family="{FONT}" font-size="9" fill="#9ca3af">'
         f'{e(FOOTNOTE)}</text>',
         f'<rect x="{PLOT_LEFT}" y="{TOP}" width="{PLOT_W}" height="{PLOT_H}"'
@@ -140,7 +141,8 @@ def render() -> str:
     legend_y = HEIGHT - 22
     legend_x = LEFT
     for lbl, clr, stroke in (
-        ("AX Engine used bandwidth", "#2eaf5f", "#176c37"),
+        ("diagnostic upstream artifact", "#64748b", "#334155"),
+        ("AX re-quantized artifact", "#2eaf5f", "#176c37"),
         ("llama.cpp used bandwidth", "#f97316", "#c2410c"),
     ):
         parts += [
@@ -149,7 +151,7 @@ def render() -> str:
             f'<text x="{legend_x + 14}" y="{legend_y}" font-family="{FONT}"'
             f' font-size="10" fill="#374151">{e(lbl)}</text>',
         ]
-        legend_x += 170
+        legend_x += max(170, len(lbl) * 7 + 30)
     parts += [
         f'<rect x="{legend_x}" y="{legend_y - 9}" width="10" height="10" rx="2"'
         f' fill="{HEADROOM_COLOR}" stroke="{HEADROOM_STROKE}" stroke-width="1"/>',
