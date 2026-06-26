@@ -231,23 +231,56 @@ fn extract_tool_calls(
 }
 
 fn extract_tool_call_payload(content: &str) -> Option<(OpenAiFunctionCall, String)> {
-    match (
-        content.find("<tool_call>"),
-        content.find("<|tool_call>call:"),
-        find_bare_gemma4_call(content),
-    ) {
-        (Some(xml), Some(gemma), _) if xml <= gemma => extract_xml_tool_call_payload(content),
-        (Some(xml), None, Some(bare)) if xml <= bare => extract_xml_tool_call_payload(content),
-        (Some(_), None, Some(_)) => extract_bare_gemma4_tool_call_payload(content),
-        (Some(_), None, None) => extract_xml_tool_call_payload(content),
-        (Some(_), Some(_), _) | (None, Some(_), _) => extract_gemma4_tool_call_payload(content),
-        (None, None, Some(_)) => extract_bare_gemma4_tool_call_payload(content),
-        (None, None, None) => None,
+    #[derive(Clone, Copy)]
+    enum ToolCallSyntax {
+        Xml,
+        Gemma4,
+        BareGemma4,
+    }
+
+    let mut candidates = Vec::new();
+    collect_tool_call_markers(content, "<tool_call>", ToolCallSyntax::Xml, &mut candidates);
+    collect_tool_call_markers(
+        content,
+        "<|tool_call>call:",
+        ToolCallSyntax::Gemma4,
+        &mut candidates,
+    );
+    if let Some(index) = find_bare_gemma4_call(content) {
+        candidates.push((index, ToolCallSyntax::BareGemma4));
+    }
+    candidates.sort_by_key(|(index, _)| *index);
+
+    candidates
+        .into_iter()
+        .find_map(|(index, syntax)| match syntax {
+            ToolCallSyntax::Xml => extract_xml_tool_call_payload_at(content, index),
+            ToolCallSyntax::Gemma4 => extract_gemma4_tool_call_payload_at(content, index),
+            ToolCallSyntax::BareGemma4 => extract_bare_gemma4_tool_call_payload_at(content, index),
+        })
+}
+
+fn collect_tool_call_markers<T: Copy>(
+    content: &str,
+    marker: &str,
+    syntax: T,
+    candidates: &mut Vec<(usize, T)>,
+) {
+    let mut offset = 0usize;
+    while let Some(relative) = content[offset..].find(marker) {
+        let index = offset + relative;
+        candidates.push((index, syntax));
+        offset = index + marker.len();
     }
 }
 
-fn extract_xml_tool_call_payload(content: &str) -> Option<(OpenAiFunctionCall, String)> {
-    let start = content.find("<tool_call>")?;
+fn extract_xml_tool_call_payload_at(
+    content: &str,
+    start: usize,
+) -> Option<(OpenAiFunctionCall, String)> {
+    if !content[start..].starts_with("<tool_call>") {
+        return None;
+    }
     let body_start = start + "<tool_call>".len();
     let relative_end = content[body_start..].find("</tool_call>");
     let end = relative_end
@@ -261,12 +294,17 @@ fn extract_xml_tool_call_payload(content: &str) -> Option<(OpenAiFunctionCall, S
     Some((function, remaining))
 }
 
-fn extract_gemma4_tool_call_payload(content: &str) -> Option<(OpenAiFunctionCall, String)> {
-    let start = content.find("<|tool_call>call:")?;
+fn extract_gemma4_tool_call_payload_at(
+    content: &str,
+    start: usize,
+) -> Option<(OpenAiFunctionCall, String)> {
+    if !content[start..].starts_with("<|tool_call>call:") {
+        return None;
+    }
     let name_start = start + "<|tool_call>call:".len();
     let name_end = name_start + content[name_start..].find('{')?;
     let name = content[name_start..name_end].trim().to_string();
-    if name.is_empty() {
+    if !valid_text_tool_name(&name) {
         return None;
     }
     let body_start = name_end + 1;
@@ -294,12 +332,17 @@ fn find_bare_gemma4_call(content: &str) -> Option<usize> {
     }
 }
 
-fn extract_bare_gemma4_tool_call_payload(content: &str) -> Option<(OpenAiFunctionCall, String)> {
-    let start = find_bare_gemma4_call(content)?;
+fn extract_bare_gemma4_tool_call_payload_at(
+    content: &str,
+    start: usize,
+) -> Option<(OpenAiFunctionCall, String)> {
+    if find_bare_gemma4_call(content)? != start {
+        return None;
+    }
     let name_start = start + "call:".len();
     let name_end = name_start + content[name_start..].find('{')?;
     let name = content[name_start..name_end].trim().to_string();
-    if name.is_empty() {
+    if !valid_text_tool_name(&name) {
         return None;
     }
     let body_start = name_end + 1;
@@ -307,6 +350,13 @@ fn extract_bare_gemma4_tool_call_payload(content: &str) -> Option<(OpenAiFunctio
     let arguments = parse_gemma4_arguments(&content[body_start..body_end])?;
     let remaining = format!("{}{}", &content[..start], &content[body_end + 1..]);
     Some((OpenAiFunctionCall { name, arguments }, remaining))
+}
+
+fn valid_text_tool_name(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.'))
 }
 
 fn find_matching_gemma4_object_end(content: &str, body_start: usize) -> Option<usize> {
@@ -360,7 +410,7 @@ fn parse_tool_call_body(body: &str) -> Option<OpenAiFunctionCall> {
 fn parse_glm_tool_call_body(body: &str) -> Option<OpenAiFunctionCall> {
     let name_end = body.find("<arg_key>").unwrap_or(body.len());
     let name = body[..name_end].trim().to_string();
-    if name.is_empty() {
+    if !valid_text_tool_name(&name) {
         return None;
     }
     let mut arguments = serde_json::Map::new();
@@ -389,10 +439,16 @@ fn parse_tool_call_function(value: &Value) -> Option<OpenAiFunctionCall> {
     let object = value.as_object()?;
     if let Some(function) = object.get("function").and_then(Value::as_object) {
         let name = function.get("name")?.as_str()?.to_string();
+        if !valid_text_tool_name(&name) {
+            return None;
+        }
         let arguments = serialize_tool_arguments(function.get("arguments"));
         return Some(OpenAiFunctionCall { name, arguments });
     }
     let name = object.get("name")?.as_str()?.to_string();
+    if !valid_text_tool_name(&name) {
+        return None;
+    }
     let arguments = serialize_tool_arguments(object.get("arguments"));
     Some(OpenAiFunctionCall { name, arguments })
 }
@@ -403,7 +459,7 @@ fn parse_qwen_function_tool_call(body: &str) -> Option<OpenAiFunctionCall> {
     let name_start = function_start + function_marker.len();
     let name_end = name_start + body[name_start..].find('>')?;
     let name = unescape_xml_text(body[name_start..name_end].trim());
-    if name.is_empty() {
+    if !valid_text_tool_name(&name) {
         return None;
     }
 

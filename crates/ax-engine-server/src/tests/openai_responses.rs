@@ -364,6 +364,135 @@ fn chat_response_extracts_multiple_tool_calls() {
 }
 
 #[test]
+fn chat_response_extracts_mixed_tool_calls_in_source_order() {
+    let response = sample_generate_response(
+        r#"call:read_file{path:README.md}
+<tool_call>{"name":"run_command","arguments":{"cmd":"cargo test"}}</tool_call>
+<|tool_call>call:lookup{query:<|"|>AX<|"|>}<tool_call|>"#,
+        Vec::new(),
+        Vec::new(),
+    );
+
+    let openai = openai_chat_completion_response(
+        &response,
+        "chatcmpl-test".to_string(),
+        OpenAiResponseOptions {
+            parse_tool_calls: true,
+            ..Default::default()
+        },
+        None,
+    );
+
+    let message = &openai.choices[0].message;
+    let tool_calls = message
+        .tool_calls
+        .as_ref()
+        .expect("mixed tool calls should be parsed");
+    assert_eq!(message.content, "");
+    assert_eq!(tool_calls.len(), 3);
+    assert_eq!(tool_calls[0].id, "call_0");
+    assert_eq!(tool_calls[0].function.name, "read_file");
+    assert_eq!(tool_calls[0].function.arguments, r#"{"path":"README.md"}"#);
+    assert_eq!(tool_calls[1].id, "call_1");
+    assert_eq!(tool_calls[1].function.name, "run_command");
+    assert_eq!(tool_calls[1].function.arguments, r#"{"cmd":"cargo test"}"#);
+    assert_eq!(tool_calls[2].id, "call_2");
+    assert_eq!(tool_calls[2].function.name, "lookup");
+    assert_eq!(tool_calls[2].function.arguments, r#"{"query":"AX"}"#);
+    assert_eq!(openai.choices[0].finish_reason, Some("tool_calls"));
+}
+
+#[test]
+fn chat_response_skips_invalid_bare_call_prefix_before_explicit_tool_call() {
+    let response = sample_generate_response(
+        r#"call: use the explicit block below
+<tool_call>{"name":"lookup","arguments":{"query":"ax"}}</tool_call>"#,
+        Vec::new(),
+        Vec::new(),
+    );
+
+    let openai = openai_chat_completion_response(
+        &response,
+        "chatcmpl-test".to_string(),
+        OpenAiResponseOptions {
+            parse_tool_calls: true,
+            ..Default::default()
+        },
+        None,
+    );
+
+    let message = &openai.choices[0].message;
+    let tool_call = &message
+        .tool_calls
+        .as_ref()
+        .expect("explicit tool call should still be parsed")[0];
+    assert_eq!(message.content, "");
+    assert_eq!(tool_call.function.name, "lookup");
+    assert_eq!(tool_call.function.arguments, r#"{"query":"ax"}"#);
+    assert_eq!(openai.choices[0].finish_reason, Some("tool_calls"));
+}
+
+#[test]
+fn chat_response_skips_invalid_xml_tool_call_before_later_explicit_tool_call() {
+    let response = sample_generate_response(
+        r#"<tool_call>not a valid tool name</tool_call>
+<tool_call>{"name":"lookup","arguments":{"query":"ax"}}</tool_call>"#,
+        Vec::new(),
+        Vec::new(),
+    );
+
+    let openai = openai_chat_completion_response(
+        &response,
+        "chatcmpl-test".to_string(),
+        OpenAiResponseOptions {
+            parse_tool_calls: true,
+            ..Default::default()
+        },
+        None,
+    );
+
+    let message = &openai.choices[0].message;
+    let tool_call = &message
+        .tool_calls
+        .as_ref()
+        .expect("later explicit tool call should be parsed")[0];
+    assert_eq!(message.content, "");
+    assert_eq!(tool_call.function.name, "lookup");
+    assert_eq!(tool_call.function.arguments, r#"{"query":"ax"}"#);
+    assert_eq!(openai.choices[0].finish_reason, Some("tool_calls"));
+}
+
+#[test]
+fn chat_response_skips_invalid_json_tool_call_name_before_later_explicit_tool_call() {
+    let response = sample_generate_response(
+        r#"<tool_call>{"name":"not a valid tool name","arguments":{}}</tool_call>
+<tool_call>{"name":"lookup","arguments":{"query":"ax"}}</tool_call>"#,
+        Vec::new(),
+        Vec::new(),
+    );
+
+    let openai = openai_chat_completion_response(
+        &response,
+        "chatcmpl-test".to_string(),
+        OpenAiResponseOptions {
+            parse_tool_calls: true,
+            ..Default::default()
+        },
+        None,
+    );
+
+    let message = &openai.choices[0].message;
+    let tool_call = &message
+        .tool_calls
+        .as_ref()
+        .expect("later valid JSON tool call should be parsed")[0];
+    assert_eq!(message.content, "");
+    assert_eq!(tool_call.function.name, "lookup");
+    assert_eq!(tool_call.function.arguments, r#"{"query":"ax"}"#);
+    assert_eq!(openai.choices[0].finish_reason, Some("tool_calls"));
+}
+
+#[test]
 fn chat_response_extracts_qwen_function_parameter_tool_call() {
     let response = sample_generate_response(
         r#"<tool_call><function=todo_write>
