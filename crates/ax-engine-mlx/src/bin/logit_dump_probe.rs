@@ -10,9 +10,16 @@
 //! Compares by token id (decode externally), so no tokenizer is needed here.
 //!
 //! Usage:
-//!   cargo run --release --bin logit_dump_probe -- <model_dir> <id,id,...> [topk]
+//!   cargo run --release --bin logit_dump_probe -- <model_dir> <id,id,...> [topk] [--dump=PATH]
+//!
+//! `--dump=PATH` additionally writes the FULL last-position logit vector to
+//! `PATH` as raw little-endian f32 (one f32 per vocab entry, no header). This
+//! is what `scripts/probe_qwen3_5_logit_parity.py` reads to diff AX's logits
+//! against an `mlx_lm` reference for the same token ids.
 
 use std::env;
+use std::fs::File;
+use std::io::{BufWriter, Write};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -25,19 +32,32 @@ use ax_engine_mlx::{
 use mlx_sys::eval;
 
 fn main() {
-    let model_dir = env::args()
-        .nth(1)
-        .expect("usage: logit_dump_probe <model_dir> <id,id,...> [topk]");
-    let ids: Vec<u32> = env::args()
-        .nth(2)
-        .expect("usage: logit_dump_probe <model_dir> <id,id,...> [topk]")
+    // Separate `--dump=PATH` from the positional args so the existing
+    // <model_dir> <ids> [topk] ordering is preserved.
+    let mut dump_path: Option<String> = None;
+    let positional: Vec<String> = env::args()
+        .skip(1)
+        .filter(|a| {
+            if let Some(p) = a.strip_prefix("--dump=") {
+                dump_path = Some(p.to_string());
+                false
+            } else {
+                true
+            }
+        })
+        .collect();
+
+    let model_dir = positional
+        .first()
+        .cloned()
+        .expect("usage: logit_dump_probe <model_dir> <id,id,...> [topk] [--dump=PATH]");
+    let ids: Vec<u32> = positional
+        .get(1)
+        .expect("usage: logit_dump_probe <model_dir> <id,id,...> [topk] [--dump=PATH]")
         .split(|c: char| c == ',' || c.is_whitespace())
         .filter_map(|t| t.trim().parse::<u32>().ok())
         .collect();
-    let topk: usize = env::args()
-        .nth(3)
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(10);
+    let topk: usize = positional.get(2).and_then(|s| s.parse().ok()).unwrap_or(10);
     assert!(!ids.is_empty(), "empty token ids");
 
     println!("Loading model from {model_dir} ...");
@@ -75,5 +95,15 @@ fn main() {
     for &i in idx.iter().take(topk) {
         let logp = lg[i] as f64 - lse;
         println!("  {logp:8.4}  id={i:>6}  logit={:8.4}", lg[i]);
+    }
+
+    if let Some(path) = dump_path {
+        let f = File::create(&path).expect("create dump file");
+        let mut w = BufWriter::new(f);
+        for &v in lg {
+            w.write_all(&v.to_le_bytes()).expect("write logit");
+        }
+        w.flush().expect("flush dump file");
+        println!("Wrote {} f32 logits to {path}", lg.len());
     }
 }
