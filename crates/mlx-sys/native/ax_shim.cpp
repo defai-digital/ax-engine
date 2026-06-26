@@ -96,7 +96,10 @@ inline mx::array make_array(const void* data, mx::Shape shape, mx::Dtype dtype) 
 }
 
 using device_info_t = std::unordered_map<std::string, std::variant<std::string, size_t>>;
-inline device_info_t& diref(mlx_device_info d) { return *static_cast<device_info_t*>(d.ctx); }
+inline device_info_t& diref(mlx_device_info d) {
+  if (!d.ctx) throw std::runtime_error("expected a non-empty mlx_device_info");
+  return *static_cast<device_info_t*>(d.ctx);
+}
 
 inline std::optional<int> opt_int(mlx_optional_int o) {
   return o.has_value ? std::make_optional(o.value) : std::nullopt;
@@ -106,7 +109,10 @@ inline std::optional<mx::Dtype> opt_dtype(mlx_optional_dtype o) {
 }
 
 using closure_fn = std::function<std::vector<mx::array>(const std::vector<mx::array>&)>;
-inline closure_fn& cref(mlx_closure c) { return *static_cast<closure_fn*>(c.ctx); }
+inline closure_fn& cref(mlx_closure c) {
+  if (!c.ctx) throw std::runtime_error("expected a non-empty mlx_closure");
+  return *static_cast<closure_fn*>(c.ctx);
+}
 
 struct metal_cfg_cpp {
   std::vector<mx::Shape> out_shapes;
@@ -118,9 +124,14 @@ struct metal_cfg_cpp {
   bool verbose = false;
 };
 inline metal_cfg_cpp& mcfgref(mlx_fast_metal_kernel_config c) {
+  if (!c.ctx) throw std::runtime_error("expected a non-empty mlx_fast_metal_kernel_config");
   return *static_cast<metal_cfg_cpp*>(c.ctx);
 }
 struct metal_kern_cpp { mx::fast::CustomKernelFunction fn; metal_kern_cpp(mx::fast::CustomKernelFunction f) : fn(f) {} };
+inline metal_kern_cpp& mkref(mlx_fast_metal_kernel k) {
+  if (!k.ctx) throw std::runtime_error("expected a non-empty mlx_fast_metal_kernel");
+  return *static_cast<metal_kern_cpp*>(k.ctx);
+}
 
 } // anonymous namespace
 
@@ -442,7 +453,7 @@ extern "C" int mlx_fast_metal_kernel_apply(mlx_vector_array* out, mlx_fast_metal
     const mlx_vector_array inp, const mlx_fast_metal_kernel_config cfg, const mlx_stream s) {
   AX_TRY {
     auto& c = mcfgref(cfg);
-    vaset(out, static_cast<metal_kern_cpp*>(k.ctx)->fn(
+    vaset(out, mkref(k).fn(
       varef(inp), c.out_shapes, c.out_dtypes, c.grid, c.thread_group,
       c.template_args, c.init_value, c.verbose, sd(s)));
     return 0;

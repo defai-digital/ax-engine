@@ -71,6 +71,7 @@ inline std::vector<mx::array>& varef(mlx_vector_array v) {
 }
 
 inline void vaset(mlx_vector_array* dst, std::vector<mx::array>&& v) {
+  if (!dst) throw std::runtime_error("expected a non-null mlx_vector_array output");
   if (dst->ctx) *static_cast<std::vector<mx::array>*>(dst->ctx) = std::move(v);
   else dst->ctx = new std::vector<mx::array>(std::move(v));
 }

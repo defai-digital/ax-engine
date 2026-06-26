@@ -88,7 +88,10 @@ curl http://127.0.0.1:8080/v1/chat/completions \
 For model choices, SDK examples, Homebrew, and source builds, see the
 [Getting Started guide](docs/GETTING-STARTED.md) and [SDK docs](docs/sdk/README.md).
 
-> Quick Start requires **macOS 26 (Tahoe) or later** on **Apple Silicon M2 Max or newer**. The Gemma 4 12B MTP path is intended for high-memory machines; use the memory tiers listed in [Typical Hardware](#typical-hardware). Earlier macOS releases are not supported — there is no wheel or binary for them.
+> Quick Start requires **macOS 26 (Tahoe) or later** on **Apple Silicon M2 Max or newer**.
+> The Gemma 4 12B MTP path is intended for high-memory machines; use the memory tiers
+> listed in [Typical Hardware](#typical-hardware). Earlier macOS releases are not supported —
+> there is no wheel or binary for them.
 
 ## Installation
 
@@ -365,27 +368,53 @@ Detailed MTP notes, including the GLM-4.7 Flash smoke validation session, live i
 
 #### Gemma 4 12B
 
-Gemma 4 12B (`model_type: gemma4_unified`) is reported separately from the per-layer-embedding E2B/E4B and MoE 26B/31B checkpoints because it has a distinct graph, multimodal tensor contract, and benchmark boundary. **Upstream `mlx_lm` 0.31.3 cannot load it** (`ValueError: Model type gemma4_unified not supported`), so the direct peer here is **llama.cpp Metal** on a shape-compatible GGUF.
+Gemma 4 12B (`model_type: gemma4_unified`) is reported separately from the per-layer-embedding
+E2B/E4B and MoE 26B/31B checkpoints because it has a distinct graph, multimodal tensor contract,
+and benchmark boundary. **Upstream `mlx_lm` 0.31.3 cannot load it**
+(`ValueError: Model type gemma4_unified not supported`), so the direct peer here is
+**llama.cpp Metal** on a shape-compatible GGUF.
 
 > [!NOTE]
-> **AX Engine's repo-owned native MLX route supports Gemma 4 12B text plus inline base64 image/audio/video chat.** Delegated compatibility routes remain text-first; `/v1/generate` accepts the processed `multimodal_inputs.gemma4_unified` tensor contract.
+> **AX Engine's repo-owned native MLX route supports Gemma 4 12B text plus inline base64
+> image/audio/video chat.** Delegated compatibility routes remain text-first;
+> `/v1/generate` accepts the processed `multimodal_inputs.gemma4_unified` tensor contract.
 
 **At a glance:**
 
-- **Direct decode:** AX native MLX reaches **61.7-66.0 tok/s** on the bit-comparable 4-bit-FFN artifact versus llama.cpp Metal's **56.9-59.2 tok/s** depth-matched range.
+- **Direct decode:** AX native MLX reaches **61.7-66.0 tok/s** on the bit-comparable
+  4-bit-FFN artifact versus llama.cpp Metal's **56.9-59.2 tok/s** depth-matched range.
 - **Context depth:** AX's direct margin is **+11% / +11% / +8%** versus llama.cpp matched-depth decode at 128 / 512 / 2,048 prompt tokens.
-- **Assistant-MTP:** current `gemma-4-12b` MTP benchmarking lives in the [6-bit MTP acceleration refresh](#6-bit-mtp-acceleration-refresh-2026-06-23), where the 6-bit `download-mtp` package reaches **62.2-70.5 tok/s** and **2.33-2.65x** same-package speedup over MTP-off decode.
-- **Why the earlier result flipped:** the upstream MLX snapshot keeps FFN weights at 8-bit, so it reads about **1.65x** the bytes of the re-quantized 4-bit-FFN artifact. Decode is bandwidth-bound; matching quantization closes the gap.
+- **Assistant-MTP:** current `gemma-4-12b` MTP benchmarking lives in the
+  [6-bit MTP acceleration refresh](#6-bit-mtp-acceleration-refresh-2026-06-23),
+  where the 6-bit `download-mtp` package reaches **62.2-70.5 tok/s** and
+  **2.33-2.65x** same-package speedup over MTP-off decode.
+- **Why the earlier result flipped:** the upstream MLX snapshot keeps FFN weights at
+  8-bit, so it reads about **1.65x** the bytes of the re-quantized 4-bit-FFN artifact.
+  Decode is bandwidth-bound; matching quantization closes the gap.
 
 **Direct decode peer comparison:**
 
-AX direct rows use the 4-bit-FFN MLX artifact and random-token prompts. `mlx_lm` is absent because it has no `gemma4_unified` graph. The llama.cpp rows are shape-compatible external GGUF references, not prompt-hash-parity MLX rows.
+AX direct rows use the 4-bit-FFN MLX artifact and random-token prompts. `mlx_lm` is absent
+because it has no `gemma4_unified` graph. The llama.cpp rows are shape-compatible external
+GGUF references, not prompt-hash-parity MLX rows.
 
 <table>
 <tr>
-<td><img width="100%" src="docs/assets/perf-gemma4-12b-direct-decode-tok-s.svg" alt="Grouped bar chart comparing Gemma 4 12B 4-bit median direct decode throughput for AX Engine native MLX and llama.cpp Metal at 128/512/2048 prompt tokens; mlx_lm is not available because it has no gemma4_unified graph"></td>
-<td><img width="100%" src="docs/assets/perf-gemma4-12b-direct-prefill-tok-s.svg" alt="Grouped bar chart comparing Gemma 4 12B 4-bit median prefill throughput for AX Engine native MLX and llama.cpp Metal at 128/512/2048 prompt tokens"></td>
-<td><img width="100%" src="docs/assets/perf-gemma4-12b-direct-ttft-ms.svg" alt="Grouped bar chart comparing Gemma 4 12B 4-bit median time to first token for AX Engine native MLX and llama.cpp Metal at 128/512/2048 prompt tokens"></td>
+<td>
+<img width="100%"
+  src="docs/assets/perf-gemma4-12b-direct-decode-tok-s.svg"
+  alt="Gemma 4 12B direct decode throughput: AX MLX vs llama.cpp Metal">
+</td>
+<td>
+<img width="100%"
+  src="docs/assets/perf-gemma4-12b-direct-prefill-tok-s.svg"
+  alt="Gemma 4 12B direct prefill throughput: AX MLX vs llama.cpp Metal">
+</td>
+<td>
+<img width="100%"
+  src="docs/assets/perf-gemma4-12b-direct-ttft-ms.svg"
+  alt="Gemma 4 12B direct time to first token: AX MLX vs llama.cpp Metal">
+</td>
 </tr>
 </table>
 
@@ -401,13 +430,19 @@ Read the two llama.cpp decode columns carefully:
 - `matched depth` uses `-d {prompt} -n 128`, so decode happens after the same prompt depth AX has already prefetched.
 - AX wins the matched-depth comparison at every prompt size, and prefill also leads at 512 and 2,048 tokens.
 
-The table uses the bit-comparable **4-bit-FFN** AX artifact (`scripts/requantize_gemma4_12b_ffn_4bit.py`), about 4.5 bpw versus the Q4_K_M GGUF's about 4.8 bpw. The upstream `mlx-community/gemma-4-12B-it-4bit` snapshot keeps the FFN at **8-bit** (~10.98 GB) and trails llama.cpp at about 46 tok/s. That is a bytes-read handicap, not an AX runtime result.
+The table uses the bit-comparable **4-bit-FFN** AX artifact
+(`scripts/requantize_gemma4_12b_ffn_4bit.py`), about 4.5 bpw versus the Q4_K_M GGUF's
+about 4.8 bpw. The upstream `mlx-community/gemma-4-12B-it-4bit` snapshot keeps the FFN at
+**8-bit** (~10.98 GB) and trails llama.cpp at about 46 tok/s. That is a bytes-read handicap,
+not an AX runtime result.
 
 **Memory bandwidth share:**
 
-Decode is memory-bandwidth-bound on Apple Silicon: each token reads the model weights once, so decode tok/s is set by bytes-read and how close the engine gets to the memory ceiling. Measured M5 Max GPU peak read bandwidth ≈ 577 GB/s (MLX reduction over a 6 GB array).
+Decode is memory-bandwidth-bound on Apple Silicon: each token reads the model weights once,
+so decode tok/s is set by bytes-read and how close the engine gets to the memory ceiling.
+Measured M5 Max GPU peak read bandwidth ≈ 577 GB/s (MLX reduction over a 6 GB array).
 
-<img src="docs/assets/perf-gemma4-12b-bandwidth.svg" alt="100% stacked bar chart showing Gemma 4 12B effective decode bandwidth used versus theoretical headroom for AX 8-bit FFN (86%), AX 4-bit FFN (75%), llama.cpp depth-0 (76%), and llama.cpp depth-512 (75%)">
+<img src="docs/assets/perf-gemma4-12b-bandwidth.svg" alt="Gemma 4 12B effective decode bandwidth vs theoretical peak for AX and llama.cpp">
 
 | Engine / quantization | Weights/token | Decode tok/s | Effective BW | % of 577 GB/s peak |
 | --- | ---: | ---: | ---: | ---: |
@@ -416,23 +451,56 @@ Decode is memory-bandwidth-bound on Apple Silicon: each token reads the model we
 | llama.cpp Q4_K_M — decode @ depth 512 | 7.38 GB | 58.9 | 435 GB/s | 75% |
 | llama.cpp Q4_K_M — decode @ depth 0 (`tg`) | 7.38 GB | 59.8 | 441 GB/s | 76% |
 
-The bandwidth view is the key explanation: AX is not under-utilizing memory. The re-quantized AX row sustains **434 GB/s**, in the same band as llama.cpp's **435 GB/s** at matched depth. The remaining direct-decode difference is bytes read per token: uniform 4-bit group-64 reduces AX to **6.74 GB/token**, while Q4_K_M reads **7.38 GB/token**. The 8-bit-FFN upstream snapshot has higher bus utilization (86%) but worse speed because it reads far more data.
+The bandwidth view is the key explanation: AX is not under-utilizing memory. The re-quantized
+AX row sustains **434 GB/s**, in the same band as llama.cpp's **435 GB/s** at matched depth.
+The remaining direct-decode difference is bytes read per token: uniform 4-bit group-64 reduces
+AX to **6.74 GB/token**, while Q4_K_M reads **7.38 GB/token**. The 8-bit-FFN upstream snapshot
+has higher bus utilization (86%) but worse speed because it reads far more data.
 
 **Methodology and artifacts:**
 
-Direct rows use the 4-bit-FFN artifact, greedy-equivalent sampler, 128 generated tokens, 5 repetitions, 15 s cooldown, and random-token prompts following the `mlx_lm.benchmark` contract. llama.cpp decode is shown both at depth 0 (`tg`) and at matched context depth (`-d {prompt}`). Host/runtime for the latest direct llama.cpp peer rerun: Apple M5 Max · llama.cpp b9700 / ggml 0.15.2 (Metal, flash-attn) · `mlx_lm` 0.31.3 has no `gemma4_unified` support. MTP methodology and artifacts live with [Speculative Decoding (MTP)](#speculative-decoding-mtp).
+Direct rows use the 4-bit-FFN artifact, greedy-equivalent sampler, 128 generated tokens,
+5 repetitions, 15 s cooldown, and random-token prompts following the `mlx_lm.benchmark`
+contract. llama.cpp decode is shown both at depth 0 (`tg`) and at matched context depth
+(`-d {prompt}`). Host/runtime for the latest direct llama.cpp peer rerun: Apple M5 Max ·
+llama.cpp b9700 / ggml 0.15.2 (Metal, flash-attn) · `mlx_lm` 0.31.3 has no `gemma4_unified`
+support. MTP methodology and artifacts live with
+[Speculative Decoding (MTP)](#speculative-decoding-mtp).
 
-Full artifacts: [`2026-06-20-gemma-4-12b-it-4bit-direct`](benchmarks/results/mlx-inference/2026-06-20-gemma-4-12b-it-4bit-direct/gemma-4-12b-it-4bit.json) (AX direct rerun; chart artifact with retained llama.cpp reference rows in [`gemma-4-12b-it-4bit-with-llama-reference.json`](benchmarks/results/mlx-inference/2026-06-20-gemma-4-12b-it-4bit-direct/gemma-4-12b-it-4bit-with-llama-reference.json); llama.cpp GGUF provenance in [`llama_cpp_gguf_provenance.json`](benchmarks/results/mlx-inference/2026-06-09-gemma-4-12b-it-4bit-direct/llama_cpp_gguf_provenance.json)).
+Full artifacts:
+[`2026-06-20-gemma-4-12b-it-4bit-direct`](benchmarks/results/mlx-inference/2026-06-20-gemma-4-12b-it-4bit-direct/gemma-4-12b-it-4bit.json)
+(AX direct rerun; chart artifact with retained llama.cpp reference rows in
+[`gemma-4-12b-it-4bit-with-llama-reference.json`][ref-json];
+llama.cpp GGUF provenance in
+[`llama_cpp_gguf_provenance.json`](benchmarks/results/mlx-inference/2026-06-09-gemma-4-12b-it-4bit-direct/llama_cpp_gguf_provenance.json)).
 
 ##### Gemma 4 12B Multimodal
 
-Gemma 4 12B multimodal timing is reported separately from the text benchmark above because media inputs expand into validated Gemma4 unified soft-token spans before the MLX graph runs. The publication-grade timing artifact covers all **17 AX Engine image/audio/video cases** through both the native `/v1/generate/stream` prefill path and the OpenAI-compatible `/v1/chat/completions` path. The llama.cpp Metal peer rows are cold OpenAI chat endpoint rows for the supported image/audio cases, with prompt cache, slot prompt reuse, and context checkpoints disabled and raw llama.cpp timing/cache metadata recorded.
+Gemma 4 12B multimodal timing is reported separately from the text benchmark above because
+media inputs expand into validated Gemma4 unified soft-token spans before the MLX graph runs.
+The publication-grade timing artifact covers all **17 AX Engine image/audio/video cases**
+through both the native `/v1/generate/stream` prefill path and the OpenAI-compatible
+`/v1/chat/completions` path. The llama.cpp Metal peer rows are cold OpenAI chat endpoint rows
+for the supported image/audio cases, with prompt cache, slot prompt reuse, and context
+checkpoints disabled and raw llama.cpp timing/cache metadata recorded.
 
 <table>
 <tr>
-<td><img width="100%" src="docs/assets/perf-gemma4-12b-multimodal-ttft-ms.svg" alt="Bar chart showing Gemma 4 12B multimodal prefill time to first token for AX Engine native MLX"></td>
-<td><img width="100%" src="docs/assets/perf-gemma4-12b-multimodal-prefill-tok-s.svg" alt="Bar chart showing Gemma 4 12B multimodal prefill throughput for AX Engine native MLX"></td>
-<td><img width="100%" src="docs/assets/perf-gemma4-12b-multimodal-peer-chat-ms.svg" alt="Grouped bar chart comparing Gemma 4 12B multimodal cold chat endpoint latency for llama.cpp Metal on the left and AX Engine on the right"></td>
+<td>
+<img width="100%"
+  src="docs/assets/perf-gemma4-12b-multimodal-ttft-ms.svg"
+  alt="Gemma 4 12B multimodal prefill time to first token for AX MLX">
+</td>
+<td>
+<img width="100%"
+  src="docs/assets/perf-gemma4-12b-multimodal-prefill-tok-s.svg"
+  alt="Gemma 4 12B multimodal prefill throughput for AX MLX">
+</td>
+<td>
+<img width="100%"
+  src="docs/assets/perf-gemma4-12b-multimodal-peer-chat-ms.svg"
+  alt="Gemma 4 12B multimodal cold chat latency: AX MLX vs llama.cpp Metal">
+</td>
 </tr>
 </table>
 
@@ -443,11 +511,33 @@ Gemma 4 12B multimodal timing is reported separately from the text benchmark abo
 | Video | 4 | 92-2,355 tokens | 106.1-2,973.5 ms | 792.0-1,681.0 tok/s | 1,500.2-4,441.7 ms | 4 skipped: llama.cpp video path unsupported |
 | Combined | 4 | 181-442 tokens | 133.2-256.7 ms | 1,359.1-1,721.6 tok/s | 1,532.4-1,771.6 ms | 1 measured, 507.9 ms cold chat endpoint; 3 skipped: video unsupported |
 
-Rows use `/v1/generate/stream` with processed `multimodal_inputs.gemma4_unified` for runner-time prefill and `/v1/chat/completions` with inline media for client-wall E2E latency. This run used `max_output_tokens=8`, 1 warmup, 3 measured repetitions, `--max-batch-tokens 4096`, a release server binary, 128 GB unified memory, and a clean tracked worktree at `67ce2675a469cf5eecba687f348c649e663011b8`.
+Rows use `/v1/generate/stream` with processed `multimodal_inputs.gemma4_unified` for
+runner-time prefill and `/v1/chat/completions` with inline media for client-wall E2E latency.
+This run used `max_output_tokens=8`, 1 warmup, 3 measured repetitions,
+`--max-batch-tokens 4096`, a release server binary, 128 GB unified memory, and a clean
+tracked worktree at `67ce2675a469cf5eecba687f348c649e663011b8`.
 
-The llama.cpp peer rows use reference llama.cpp `19bba67c1` with Metal, `gemma-4-12B-it-Q4_K_M.gguf`, and `mmproj-gemma-4-12B-it-Q8_0.gguf`. They are OpenAI chat endpoint-latency rows for supported image/audio inputs, not native prefill rows and not a throughput comparison. The fair-peer launch contract is `--cache-ram 0 --no-cache-idle-slots --slot-prompt-similarity 0 --ctx-checkpoints 0` plus `--llama-cache-policy prompt_cache_disabled`; the artifact records raw llama.cpp `timings`, `prompt_tokens_details.cached_tokens`, server prompt token counts, and cache counts. Published peer rows require zero reported cached prompt tokens and server prompt-eval token counts at least as large as the cold request's reported prompt tokens. Video-containing peer rows are explicit skips because the local llama.cpp Gemma 4 path does not expose a like-for-like video contract, and `audio_cap` is skipped because this llama.cpp Gemma 4 audio path fails the warmup-plus-three-repetition contract on the largest audio fixture. The peer chart excludes one measured image case whose AX and llama.cpp output token counts differ, so chart bars compare matched-output rows only. For this Gemma 4 llama.cpp build, most peer text appears in `reasoning_content` rather than `message.content`, so the benchmark validates positive `response_chars`.
+The llama.cpp peer rows use reference llama.cpp `19bba67c1` with Metal,
+`gemma-4-12B-it-Q4_K_M.gguf`, and `mmproj-gemma-4-12B-it-Q8_0.gguf`. They are OpenAI chat
+endpoint-latency rows for supported image/audio inputs, not native prefill rows and not a
+throughput comparison. The fair-peer launch contract is
+`--cache-ram 0 --no-cache-idle-slots --slot-prompt-similarity 0 --ctx-checkpoints 0`
+plus
+`--llama-cache-policy prompt_cache_disabled`; the artifact records raw llama.cpp `timings`,
+`prompt_tokens_details.cached_tokens`, server prompt token counts, and cache counts.
+Published peer rows require zero reported cached prompt tokens and server prompt-eval token
+counts at least as large as the cold request's reported prompt tokens. Video-containing peer
+rows are explicit skips because the local llama.cpp Gemma 4 path does not expose a
+like-for-like video contract, and `audio_cap` is skipped because this llama.cpp Gemma 4
+audio path fails the warmup-plus-three-repetition contract on the largest audio fixture.
+The peer chart excludes one measured image case whose AX and llama.cpp output token counts
+differ, so chart bars compare matched-output rows only. For this Gemma 4 llama.cpp build,
+most peer text appears in `reasoning_content` rather than `message.content`, so the
+benchmark validates positive `response_chars`.
 
-Full artifact: [`2026-06-09-gemma4-12b-multimodal-cold-peer-matrix`](benchmarks/results/gemma4-multimodal/2026-06-09-gemma4-12b-multimodal-cold-peer-matrix.json). Render charts with:
+Full artifact:
+[`2026-06-09-gemma4-12b-multimodal-cold-peer-matrix`][multimodal-matrix].
+Render charts with:
 
 ```bash
 python3 scripts/render_gemma4_multimodal_charts.py \
@@ -455,7 +545,9 @@ python3 scripts/render_gemma4_multimodal_charts.py \
   --assets-dir docs/assets
 ```
 
-To reproduce the supported-case image/audio/video timing matrix from a Gemma 4 12B AX Engine server, use the matrix runner and validate the resulting artifact before publishing charts:
+To reproduce the supported-case image/audio/video timing matrix from a Gemma 4 12B
+AX Engine server, use the matrix runner and validate the resulting artifact before
+publishing charts:
 
 ```bash
 python3 scripts/bench_gemma4_multimodal.py \
@@ -484,14 +576,25 @@ python3 scripts/check_gemma4_multimodal_benchmark_artifact.py \
   --readme-ready
 ```
 
-For a fair llama.cpp peer rerun, launch `llama-server` with prompt cache, slot prompt reuse, and context checkpoints disabled for the peer server, for example `--cache-ram 0 --no-cache-idle-slots --slot-prompt-similarity 0 --ctx-checkpoints 0`, then validate with `--readme-ready`. Peer rows with unknown cache policy, reported cached prompt tokens, or server prompt-eval token counts that are too low for a cold prompt are rejected by the artifact checker. Without a matching Gemma 4 12B GGUF and multimodal projector, peer rows are explicit skips. Video rows remain explicit skips until the peer server exposes a like-for-like video path for Gemma 4 12B.
+For a fair llama.cpp peer rerun, launch `llama-server` with prompt cache, slot prompt
+reuse, and context checkpoints disabled for the peer server, for example
+`--cache-ram 0 --no-cache-idle-slots --slot-prompt-similarity 0 --ctx-checkpoints 0`,
+then validate with
+`--readme-ready`. Peer rows with unknown cache policy, reported cached prompt tokens, or
+server prompt-eval token counts that are too low for a cold prompt are rejected by the
+artifact checker. Without a matching Gemma 4 12B GGUF and multimodal projector, peer rows
+are explicit skips. Video rows remain explicit skips until the peer server exposes a
+like-for-like video path for Gemma 4 12B.
 
 Gemma assistant-MTP package layout and cache-location details live in
 [Supported Models](docs/SUPPORTED-MODELS.md#mtp-downloads).
 
 #### DiffusionGemma
 
-DiffusionGemma is a block-diffusion Gemma4 26B checkpoint, not an ordinary autoregressive decoder. AX runs it with a native MLX graph, but the measurement boundary is different from the direct-decode families below: the first visible output comes from a **committed 256-token diffusion block**, not from a single next-token step.
+DiffusionGemma is a block-diffusion Gemma4 26B checkpoint, not an ordinary autoregressive
+decoder. AX runs it with a native MLX graph, but the measurement boundary is different from
+the direct-decode families below: the first visible output comes from a **committed 256-token
+diffusion block**, not from a single next-token step.
 
 Because of that generation shape, the rows below intentionally do **not** use the
 plain `decode tok/s` or `TTFT` labels used for autoregressive models. In Qwen,
@@ -504,13 +607,29 @@ block** and **first-block decode**. Treating these as ordinary TTFT/decode rows
 would make the result look directly comparable to autoregressive throughput even
 though the work per visible output boundary is different.
 
-The charts keep the same 128 / 512 / 2,048 prompt-token layout as the autoregressive sections for readability, but the values are AX first-block telemetry. Peer bars are intentionally omitted rather than shown as zero: current llama.cpp Metal cannot load the GGUF (`unknown model architecture: 'diffusion-gemma'`), and `mlx_lm` 0.31.3 cannot load the MLX snapshot (`Model type diffusion_gemma not supported.`).
+The charts keep the same 128 / 512 / 2,048 prompt-token layout as the autoregressive sections
+for readability, but the values are AX first-block telemetry. Peer bars are intentionally
+omitted rather than shown as zero: current llama.cpp Metal cannot load the GGUF
+(`unknown model architecture: 'diffusion-gemma'`), and `mlx_lm` 0.31.3 cannot load the
+MLX snapshot (`Model type diffusion_gemma not supported.`).
 
 <table>
 <tr>
-<td><img width="100%" src="docs/assets/perf-diffusiongemma-direct-decode-tok-s.svg" alt="Bar chart showing measured AX direct DiffusionGemma first-block decode throughput at 128, 512, and 2048 prompt tokens"></td>
-<td><img width="100%" src="docs/assets/perf-diffusiongemma-direct-prefill-tok-s.svg" alt="Bar chart showing measured AX direct DiffusionGemma prefill throughput at 128, 512, and 2048 prompt tokens"></td>
-<td><img width="100%" src="docs/assets/perf-diffusiongemma-direct-ttft-ms.svg" alt="Bar chart showing measured AX direct DiffusionGemma time to first committed block at 128, 512, and 2048 prompt tokens"></td>
+<td>
+<img width="100%"
+  src="docs/assets/perf-diffusiongemma-direct-decode-tok-s.svg"
+  alt="AX direct DiffusionGemma first-block decode throughput">
+</td>
+<td>
+<img width="100%"
+  src="docs/assets/perf-diffusiongemma-direct-prefill-tok-s.svg"
+  alt="AX direct DiffusionGemma prefill throughput">
+</td>
+<td>
+<img width="100%"
+  src="docs/assets/perf-diffusiongemma-direct-ttft-ms.svg"
+  alt="AX direct DiffusionGemma time to first committed block">
+</td>
 </tr>
 </table>
 
@@ -528,7 +647,10 @@ The charts keep the same 128 / 512 / 2,048 prompt-token layout as the autoregres
 | 512 | 3,002.1 tok/s | 4,518 ms | load blocked | load blocked |
 | 2048 | 4,031.4 tok/s | 8,475 ms | load blocked | load blocked |
 
-`time to first block` is prefill wall time plus the first 256-token denoise-and-commit block. `first-block decode` is computed as `256 / ax_mlx_diffusion_block_wall_us`. Use these rows to track AX's DiffusionGemma path; do not compare them directly with ordinary autoregressive TTFT or fixed-token decode throughput.
+`time to first block` is prefill wall time plus the first 256-token denoise-and-commit
+block. `first-block decode` is computed as `256 / ax_mlx_diffusion_block_wall_us`.
+Use these rows to track AX's DiffusionGemma path; do not compare them directly with
+ordinary autoregressive TTFT or fixed-token decode throughput.
 
 | Runtime path | Model artifact | Benchmark status |
 | --- | --- | --- |
@@ -538,9 +660,15 @@ The charts keep the same 128 / 512 / 2,048 prompt-token layout as the autoregres
 
 **Memory bandwidth share:**
 
-The bandwidth chart is an implementation-efficiency view, not a peer comparison. It estimates first-block traffic at block granularity from the measured denoise-step count plus one causal commit over the 16.54 GB MLX safetensors artifact. This rerun used **48 / 25 / 48** denoise steps at 128 / 512 / 2,048 prompt tokens, so the estimated traffic is much larger than a one-step early-exit block. The chart shows estimated bandwidth used versus the M5 Max theoretical ceiling; the table keeps the effective GB/s values.
+The bandwidth chart is an implementation-efficiency view, not a peer comparison. It estimates
+first-block traffic at block granularity from the measured denoise-step count plus one causal
+commit over the 16.54 GB MLX safetensors artifact. This rerun used **48 / 25 / 48** denoise
+steps at 128 / 512 / 2,048 prompt tokens, so the estimated traffic is much larger than a
+one-step early-exit block. The chart shows estimated bandwidth used versus the M5 Max
+theoretical ceiling; the table keeps the effective GB/s values.
 
-<img src="docs/assets/perf-diffusiongemma-direct-memory-bandwidth-share.svg" alt="100% stacked bar chart showing estimated AX direct DiffusionGemma memory bandwidth share used versus theoretical headroom at 128, 512, and 2048 prompt tokens">
+<img src="docs/assets/perf-diffusiongemma-direct-memory-bandwidth-share.svg"
+  alt="DiffusionGemma memory bandwidth share vs theoretical peak">
 
 | Prompt tokens | Estimated effective bandwidth | % of 614.4 GB/s M5 Max theoretical bandwidth |
 | ---: | ---: | ---: |
@@ -938,6 +1066,9 @@ Performance tuning is tightly coupled: a local speedup can regress correctness, 
 - Website: [automatosx.com](https://automatosx.com)
 - Discord: [Join us](https://discord.gg/aDhhburqJg)
 - Email: enquiry@defai.digital
+
+[ref-json]: benchmarks/results/mlx-inference/2026-06-20-gemma-4-12b-it-4bit-direct/gemma-4-12b-it-4bit-with-llama-reference.json
+[multimodal-matrix]: benchmarks/results/gemma4-multimodal/2026-06-09-gemma4-12b-multimodal-cold-peer-matrix.json
 
 ## License
 
