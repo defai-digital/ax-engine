@@ -18,7 +18,9 @@ ARTIFACT_LABELS = {
     "gemma-4-e2b-it-6bit": ("Gemma 4 E2B", "6-bit"),
     "gemma-4-e4b-it-4bit": ("Gemma 4 E4B", "4-bit"),
     "gemma-4-26b-a4b-it-4bit": ("Gemma 4 26B A4B", "4-bit"),
+    "gemma-4-26b-a4b-it-6bit": ("Gemma 4 26B A4B", "6-bit"),
     "gemma-4-31b-it-4bit": ("Gemma 4 31B", "4-bit"),
+    "gemma-4-31b-it-6bit": ("Gemma 4 31B", "6-bit"),
     "qwen3_5-9b-mlx-4bit": ("Qwen 3.5 9B", "4-bit"),
     "qwen3_6-27b-4bit": ("Qwen 3.6 27B", "4-bit"),
     "qwen3_6-27b-6bit": (
@@ -1823,7 +1825,7 @@ def check_readme_performance(
     repo_root: Path,
     readme_path: Path,
     artifact_dir: Path | None = None,
-    expected_metric_count: int | None = 162,
+    expected_metric_count: int | None = 180,
 ) -> list[str]:
     return check_readme_performance_summary(
         repo_root=repo_root,
@@ -1838,7 +1840,7 @@ def check_readme_performance_summary(
     repo_root: Path,
     readme_path: Path,
     artifact_dir: Path | None = None,
-    expected_metric_count: int | None = 162,
+    expected_metric_count: int | None = 180,
 ) -> ReadmeCheckResult:
     resolved_readme = readme_path.resolve()
     artifact_sources = (

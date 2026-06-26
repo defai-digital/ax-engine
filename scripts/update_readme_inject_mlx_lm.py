@@ -23,8 +23,11 @@ SLUG_TO_README = {
     "gemma-4-e2b-it-4bit":     ("Gemma 4 E2B",      "4-bit"),
     "gemma-4-e2b-it-6bit":     ("Gemma 4 E2B",      "6-bit"),
     "gemma-4-e4b-it-4bit":     ("Gemma 4 E4B",      "4-bit"),
+    "gemma-4-e4b-it-6bit":     ("Gemma 4 E4B",      "6-bit"),
     "gemma-4-26b-a4b-it-4bit": ("Gemma 4 26B A4B",  "4-bit"),
+    "gemma-4-26b-a4b-it-6bit": ("Gemma 4 26B A4B",  "6-bit"),
     "gemma-4-31b-it-4bit":     ("Gemma 4 31B",      "4-bit"),
+    "gemma-4-31b-it-6bit":     ("Gemma 4 31B",      "6-bit"),
     "qwen3_6-27b-4bit":        ("Qwen 3.6 27B",     "4-bit"),
     "qwen3_6-27b-6bit":        ("Qwen 3.6 27B",     "6-bit"),
     "qwen3_6-35b-a3b-4bit":    ("Qwen 3.6 35B A3B", "4-bit"),
@@ -32,9 +35,9 @@ SLUG_TO_README = {
 }
 
 TABLE_TARGETS = [
-    ("### Prefill throughput", "prefill"),
-    ("### Decode throughput", "decode"),
-    ("### Time to first token", "ttft"),
+    ("Prefill throughput", "prefill"),
+    ("Decode throughput", "decode"),
+    ("Time to first token", "ttft"),
 ]
 
 MLX_HEADER_CELL = "mlx_lm"
@@ -42,6 +45,15 @@ MLX_HEADER_CELL = "mlx_lm"
 _ROW_PT_RE = re.compile(r"^\s*\|.*?\|.*?\|\s*(128|512|2048)\s*\|")
 _HEADER_RE = re.compile(r"^\s*\|\s*Model\s*\|")
 _SEPARATOR_RE = re.compile(r"^\s*\|[\s\-:|]+\|\s*$")
+_SECTION_HEADING_RE = re.compile(r"^#{2,6}\s+")
+
+
+def _is_section_heading(line: str, title_prefix: str) -> bool:
+    return re.match(rf"^#{{2,6}}\s+{re.escape(title_prefix)}\b", line) is not None
+
+
+def _is_any_section_heading(line: str) -> bool:
+    return _SECTION_HEADING_RE.match(line) is not None
 
 
 def fmt_num(val: float | None) -> str:
@@ -123,7 +135,7 @@ def update_table(
 
     while i < n:
         line = lines[i]
-        if not line.startswith(section_header_prefix):
+        if not _is_section_heading(line, section_header_prefix):
             out.append(line)
             i += 1
             continue
@@ -136,7 +148,7 @@ def update_table(
 
         while i < n:
             row = lines[i]
-            if row.startswith("### ") or row.startswith("## "):
+            if _is_any_section_heading(row):
                 break
 
             if _HEADER_RE.match(row):
