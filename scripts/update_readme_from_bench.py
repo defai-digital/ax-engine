@@ -22,6 +22,7 @@ SLUG_TO_README = {
     "gemma-4-e2b-it-4bit":         ("Gemma 4 E2B",      "4-bit"),
     "gemma-4-e2b-it-6bit":         ("Gemma 4 E2B",      "6-bit"),
     "gemma-4-e4b-it-4bit":         ("Gemma 4 E4B",      "4-bit"),
+    "gemma-4-e4b-it-6bit":         ("Gemma 4 E4B",      "6-bit"),
     "gemma-4-26b-a4b-it-4bit":     ("Gemma 4 26B A4B",  "4-bit"),
     "gemma-4-26b-a4b-it-6bit":     ("Gemma 4 26B A4B",  "6-bit"),
     "gemma-4-31b-it-4bit":         ("Gemma 4 31B",      "4-bit"),

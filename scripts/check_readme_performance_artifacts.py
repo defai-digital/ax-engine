@@ -17,6 +17,7 @@ ARTIFACT_LABELS = {
     "gemma-4-e2b-it-4bit": ("Gemma 4 E2B", "4-bit"),
     "gemma-4-e2b-it-6bit": ("Gemma 4 E2B", "6-bit"),
     "gemma-4-e4b-it-4bit": ("Gemma 4 E4B", "4-bit"),
+    "gemma-4-e4b-it-6bit": ("Gemma 4 E4B", "6-bit"),
     "gemma-4-26b-a4b-it-4bit": ("Gemma 4 26B A4B", "4-bit"),
     "gemma-4-26b-a4b-it-6bit": ("Gemma 4 26B A4B", "6-bit"),
     "gemma-4-31b-it-4bit": ("Gemma 4 31B", "4-bit"),
@@ -1751,7 +1752,8 @@ def collect_artifact_rows(
                     row=row,
                 )
         missing_references = set(prompt_hashes) - seen_reference_shapes
-        if missing_references:
+        requires_reference_rows = include_engines is None or "mlx_lm" in include_engines
+        if requires_reference_rows and missing_references:
             raise ArtifactCheckError(
                 f"{path} lacks mlx_lm rows for {sorted(missing_references)}"
             )
@@ -1825,7 +1827,7 @@ def check_readme_performance(
     repo_root: Path,
     readme_path: Path,
     artifact_dir: Path | None = None,
-    expected_metric_count: int | None = 180,
+    expected_metric_count: int | None = 207,
 ) -> list[str]:
     return check_readme_performance_summary(
         repo_root=repo_root,
@@ -1840,7 +1842,7 @@ def check_readme_performance_summary(
     repo_root: Path,
     readme_path: Path,
     artifact_dir: Path | None = None,
-    expected_metric_count: int | None = 180,
+    expected_metric_count: int | None = 207,
 ) -> ReadmeCheckResult:
     resolved_readme = readme_path.resolve()
     artifact_sources = (

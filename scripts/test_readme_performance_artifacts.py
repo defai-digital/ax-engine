@@ -567,6 +567,39 @@ class ReadmePerformanceArtifactTests(unittest.TestCase):
 
         self.assertEqual(len(checked), 6)
 
+    def test_ax_overlay_allows_ax_only_artifact_without_mlx_lm_rows(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.write_fixture(root)
+            reference_path = root / "benchmarks/results/mlx-inference/local/gemma-4-e2b-it-4bit.json"
+            overlay_path = (
+                root
+                / "benchmarks/results/mlx-inference/local-ax/gemma-4-e2b-it-4bit.json"
+            )
+            overlay_path.parent.mkdir(parents=True)
+            overlay = json.loads(reference_path.read_text())
+            overlay["results"] = [
+                row for row in overlay["results"] if row["engine"] == "ax_engine_mlx"
+            ]
+            overlay_path.write_text(json.dumps(overlay, indent=2) + "\n")
+            readme_path = root / "README.md"
+            readme_path.write_text(
+                readme_path.read_text().replace(
+                    "`benchmarks/results/mlx-inference/local/`",
+                    "<!-- readme-performance-artifacts: "
+                    "reference=benchmarks/results/mlx-inference/local/; "
+                    "ax-overlay=benchmarks/results/mlx-inference/local-ax/ -->",
+                )
+            )
+
+            checked = checker.check_readme_performance(
+                repo_root=root,
+                readme_path=readme_path,
+                expected_metric_count=6,
+            )
+
+        self.assertEqual(len(checked), 6)
+
     def test_phase0_ax_row_rejects_stale_long_prefill_work_contract(self) -> None:
         row = {
             "engine": "ax_engine_mlx",
