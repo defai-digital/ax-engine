@@ -217,37 +217,6 @@ scripts/probe_mlx_model_support.py --model-dir <model-dir>
 A model should report `repo_owned_runtime_ready` only when its manifest, local
 reference files, and runtime path are all present.
 
-### Pending Verification
-
-These checkpoints route to an existing direct-support family by `model_type`
-but are **not yet promoted** because a load-bearing numerical behavior is
-unverified. They are documented here so a passing benchmark is not mistaken for
-validated support.
-
-| Model | Routes to | Status | Blocker |
-| --- | --- | --- | --- |
-| `Qwen/Qwen-AgentWorld-35B-A3B` | `qwen3_5` (text decoder) | text-only, pending parity | Vision-language checkpoint (`Qwen3_5MoeForConditionalGeneration`): the vision tower is unsupported, and the text decoder uses multimodal M-RoPE (`mrope_section`, `mrope_interleaved`) that the AX graph does not implement. For text-only input M-RoPE should collapse to 1-D RoPE, but this is unconfirmed. |
-
-The text decoder is structurally `qwen3_5_moe` — 3-linear/1-full hybrid
-attention, 256-expert MoE with shared expert, `partial_rotary_factor` 0.25 —
-which the `qwen3_5` family already handles. Loading drops the vision tower via
-the `language_model.*` prefix, so text-only inference can load; image input
-cannot. Before any text-only support claim, confirm AX's first-token logits
-match the `mlx_lm` text decoder for the same token ids:
-
-```text
-python scripts/probe_qwen3_5_logit_parity.py \
-  --ax-model-dir  <ax-native-dir> \
-  --ref-model-dir <mlx-or-hf-dir> \
-  --token-ids "9707,11,358,1079" \
-  --build
-```
-
-Run both sides on the same (ideally bf16/unquantized) artifact so quant drift
-does not mask a real RoPE divergence. A first-token top-1 mismatch or large
-`KL(P_ref‖P_ax)` means the M-RoPE gap corrupts text-only logits and the text
-path must be fixed before promotion.
-
 ## `mlx_lm_delegated`
 
 Use `mlx_lm_delegated` when upstream `mlx-lm` can serve an MLX text model but

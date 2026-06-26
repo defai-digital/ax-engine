@@ -13,9 +13,8 @@
 //!   cargo run --release --bin logit_dump_probe -- <model_dir> <id,id,...> [topk] [--dump=PATH]
 //!
 //! `--dump=PATH` additionally writes the FULL last-position logit vector to
-//! `PATH` as raw little-endian f32 (one f32 per vocab entry, no header). This
-//! is what `scripts/probe_qwen3_5_logit_parity.py` reads to diff AX's logits
-//! against an `mlx_lm` reference for the same token ids.
+//! `PATH` as raw little-endian f32 (one f32 per vocab entry, no header) for
+//! offline comparison against an external reference.
 
 use std::env;
 use std::fs::File;
