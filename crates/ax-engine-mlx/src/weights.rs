@@ -2703,7 +2703,10 @@ fn dense_ffn_gate_up_packing_supported(
 ) -> bool {
     // Keep these families/encodings on split projections until their packed
     // gate/up path is token-exact against mlx_lm across correctness prompts.
-    if model_family == "glm4_moe_lite" {
+    // Qwen3.6 dense FFNs currently fail MLX quantized_matmul shape validation
+    // after row-concatenating gate/up projections; MoE expert packing uses a
+    // separate path and is not affected by this guard.
+    if matches!(model_family, "glm4_moe_lite" | "qwen3_5") {
         return false;
     }
     gate.bits != 5 && up.bits != 5
@@ -4107,13 +4110,13 @@ mod tests {
     }
 
     #[test]
-    fn dense_ffn_gate_up_packing_support_rejects_glm_and_five_bit() {
+    fn dense_ffn_gate_up_packing_support_rejects_glm_qwen_and_five_bit() {
         let q4_gate = glm_quantized_weight(64, 4, true);
         let q4_up = glm_quantized_weight(64, 4, true);
         let q5_gate = glm_quantized_weight(64, 5, true);
         let q5_up = glm_quantized_weight(64, 5, true);
 
-        assert!(dense_ffn_gate_up_packing_supported(
+        assert!(!dense_ffn_gate_up_packing_supported(
             "qwen3_5", &q4_gate, &q4_up
         ));
         assert!(!dense_ffn_gate_up_packing_supported(
