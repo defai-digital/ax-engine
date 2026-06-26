@@ -230,7 +230,7 @@ class InjectorTests(unittest.TestCase):
         self.assertEqual(stripped[3], "n/a")
         self.assertEqual(stripped[4], "968.2")
 
-    def test_partial_update_clears_missing_llama_cells(self) -> None:
+    def test_partial_update_preserves_missing_llama_cells(self) -> None:
         full, _ = inj.apply(SAMPLE_README, self.sweep_doc)
         partial = {"rows": [_row("gemma-4-e2b-it-4bit", 3600.0, 7100.0, 170.0, 35.0, 72.0)]}
 
@@ -242,7 +242,7 @@ class InjectorTests(unittest.TestCase):
 
         qwen_128_line = next(l for l in out.splitlines() if "968.2" in l)
         qwen_128 = [c.strip() for c in qwen_128_line.split("|")[1:-1]]
-        self.assertEqual(qwen_128[3], "n/a")
+        self.assertEqual(qwen_128[3], "1,800.0")
 
 
 if __name__ == "__main__":

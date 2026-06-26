@@ -26,6 +26,7 @@ ARTIFACT_LABELS = {
         "6-bit",
     ),
     "qwen3_6-35b-a3b-4bit": ("Qwen 3.6 35B A3B", "4-bit"),
+    "qwen3_6-35b-a3b-6bit": ("Qwen 3.6 35B A3B", "6-bit"),
     "qwen3-coder-next-4bit": ("Qwen Coder Next", "4-bit"),
     "glm-4.7-flash-4bit": ("GLM 4.7 Flash", "4-bit"),
 }
@@ -1822,7 +1823,7 @@ def check_readme_performance(
     repo_root: Path,
     readme_path: Path,
     artifact_dir: Path | None = None,
-    expected_metric_count: int | None = 144,
+    expected_metric_count: int | None = 162,
 ) -> list[str]:
     return check_readme_performance_summary(
         repo_root=repo_root,
@@ -1837,7 +1838,7 @@ def check_readme_performance_summary(
     repo_root: Path,
     readme_path: Path,
     artifact_dir: Path | None = None,
-    expected_metric_count: int | None = 144,
+    expected_metric_count: int | None = 162,
 ) -> ReadmeCheckResult:
     resolved_readme = readme_path.resolve()
     artifact_sources = (

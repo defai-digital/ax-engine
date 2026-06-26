@@ -40,6 +40,7 @@ FAMILY_SLUGS: dict[str, list[str]] = {
         "qwen3_6-27b-4bit",
         "qwen3_6-27b-6bit",
         "qwen3_6-35b-a3b-4bit",
+        "qwen3_6-35b-a3b-6bit",
     ],
 }
 
@@ -418,6 +419,38 @@ def load_composite_rows(
             ] = row
 
     return list(merged.values())
+
+
+def load_llama_rows_from_readme(readme: Path) -> list[dict[str, Any]]:
+    rows: dict[tuple[str, int], dict[str, Any]] = {}
+    table_specs = [
+        ("#### Prefill throughput", "prefill", "prefill_tok_s"),
+        ("#### Decode throughput", "decode", "decode_tok_s"),
+        ("#### Time to first token", "ttft", "ttft_ms"),
+    ]
+    text = readme.read_text()
+    for heading_prefix, table_name, metric_key in table_specs:
+        for metric in readme_artifacts.parse_readme_table(
+            text,
+            heading_prefix=heading_prefix,
+            table_name=table_name,
+            column_map={"llama.cpp metal*": "llama_cpp_metal"},
+        ):
+            slug = LABEL_TO_SLUG.get((metric.model, metric.quantization))
+            if slug is None:
+                continue
+            key = (slug, metric.prompt_tokens)
+            row = rows.setdefault(
+                key,
+                {
+                    "_slug": slug,
+                    "engine": "llama_cpp_metal",
+                    "prompt_tokens": metric.prompt_tokens,
+                    "generation_tokens": metric.generation_tokens or 128,
+                },
+            )
+            row[metric_key] = {"median": metric.displayed_value}
+    return list(rows.values())
 
 
 def series_for_chart(spec: ChartSpec) -> list[tuple[str, str, str, str]]:
@@ -1791,10 +1824,11 @@ def main() -> int:
 
     readme_slugs = readme_model_slugs(args.readme)
     results_dir = args.results_dir or infer_results_dir_from_readme(args.readme)
-    llama_results_dir = args.llama_results_dir or infer_llama_results_dir(
-        args.readme.parent
+    llama_rows = (
+        load_rows(args.llama_results_dir, readme_slugs, required=True)
+        if args.llama_results_dir
+        else load_llama_rows_from_readme(args.readme)
     )
-    llama_rows = load_rows(llama_results_dir, readme_slugs, required=True)
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
     mismatches: list[Path] = []
@@ -1872,7 +1906,7 @@ def main() -> int:
         )
         print(
             f"Rendered README performance charts from {benchmark_source} "
-            f"and {llama_results_dir}"
+            f"and {'README llama.cpp cells' if args.llama_results_dir is None else args.llama_results_dir}"
         )
     return 0
 

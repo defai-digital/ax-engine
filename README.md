@@ -47,6 +47,7 @@ tracked separately, with peer rows and model-specific boundaries kept visible.
       - [Gemma 4 12B Multimodal](#gemma-4-12b-multimodal)
     - [DiffusionGemma](#diffusiongemma)
     - [Gemma 4 and Qwen 3.6](#gemma-4-and-qwen-36)
+    - [Embedding throughput (tok/s)](#embedding-throughput-toks)
 - [SDKs](#sdks)
 - [Server Usage](#server-usage)
 - [Documentation](#documentation)
@@ -153,7 +154,7 @@ Direct-support model families:
 | Gemma 4 | `gemma-4-e2b-it`, `gemma-4-e4b-it`, `gemma-4-12b-it`, `gemma-4-26b-a4b-it`, `gemma-4-31b-it` | MLX affine 4/5/6-bit weights; assistant-MTP paths |
 | Qwen 3 | `Qwen3-4B-4bit` and manifest-backed dense checkpoints | Dense SwiGLU graph |
 | Qwen 3.5 | `Qwen3.5-9B-MLX-4bit` | GatedDeltaNet linear attention |
-| Qwen 3.6 | `Qwen3.6-35B-A3B` 4-bit, `Qwen3.6-27B` 4/5/6-bit | `qwen3_next`; fused sidecar-MTP paths |
+| Qwen 3.6 | `Qwen3.6-35B-A3B` 4/6-bit, `Qwen3.6-27B` 4/5/6-bit | `qwen3_next`; fused sidecar-MTP paths |
 | Qwen3-Coder-Next | `Qwen3-Coder-Next-4bit` | Direct coding-agent path |
 | GLM 4.7 Flash | `glm4_moe_lite` / `glm4.7-flash-4bit` | Flash MLA + MoE graph |
 
@@ -771,7 +772,7 @@ cargo build -p ax-engine-bench --bin ax-engine-bench
 python3 scripts/bench_diffusion_gemma_direct.py
 ```
 
-<!-- readme-performance-artifacts: reference=benchmarks/results/mlx-inference/2026-05-26-direct-mode-clean-refresh/; ax-base=benchmarks/results/mlx-inference/2026-06-22-ax-direct-readme-direct-only/; ax-overlay=benchmarks/results/mlx-inference/2026-06-26-qwen36-readme-refresh/ -->
+<!-- readme-performance-artifacts: reference=benchmarks/results/mlx-inference/2026-05-26-direct-mode-clean-refresh/; reference=benchmarks/results/mlx-inference/2026-06-26-qwen36-35b-6bit-readme/; ax-base=benchmarks/results/mlx-inference/2026-06-22-ax-direct-readme-direct-only/; ax-overlay=benchmarks/results/mlx-inference/2026-06-26-qwen36-readme-refresh/; ax-overlay=benchmarks/results/mlx-inference/2026-06-26-qwen36-35b-6bit-readme/ -->
 
 #### Gemma 4 and Qwen 3.6
 
@@ -807,7 +808,7 @@ The prefill and TTFT advantage is the practical direct-mode story. AX is ahead o
 <details>
 <summary>Benchmark provenance and methodology</summary>
 
-The `mlx_lm` reference rows for the Gemma 4 and Qwen 3.6 rows shown below come from `benchmarks/results/mlx-inference/2026-05-26-direct-mode-clean-refresh/`. The Gemma 4 AX direct-mode cells come from the direct-only AX rerun in `benchmarks/results/mlx-inference/2026-06-22-ax-direct-readme-direct-only/` (v6.5.2). The Qwen 3.6 AX direct-mode cells come from `benchmarks/results/mlx-inference/2026-06-26-qwen36-readme-refresh/`. The `llama.cpp Metal*` column is injected from `benchmarks/manifests/llama_cpp_metal/inventory.json` and the `2026-05-18-llama-cpp-metal-gemma-e2b-4bit-depth-fa/` Gemma 4 E2B 4-bit recheck.
+The `mlx_lm` reference rows for the Gemma 4 and Qwen 3.6 rows shown below come from `benchmarks/results/mlx-inference/2026-05-26-direct-mode-clean-refresh/`. The Gemma 4 AX direct-mode cells come from the direct-only AX rerun in `benchmarks/results/mlx-inference/2026-06-22-ax-direct-readme-direct-only/` (v6.5.2). The Qwen 3.6 AX direct-mode cells come from `benchmarks/results/mlx-inference/2026-06-26-qwen36-readme-refresh/`, with the Qwen 3.6 35B-A3B 6-bit row sourced from `benchmarks/results/mlx-inference/2026-06-26-qwen36-35b-6bit-readme/`. The `llama.cpp Metal*` column is injected from `benchmarks/manifests/llama_cpp_metal/inventory.json`, `benchmarks/results/llama-cpp-metal/2026-05-18-llama-cpp-only-fa/`, and the Qwen 3.6 35B-A3B 6-bit rerun in `benchmarks/results/llama-cpp-metal/2026-06-26-qwen36-35b-6bit/`.
 
 Setup: generation=128, 5 measured repetitions, 15-second cooldown, AX prefix cache disabled for cold prefill and TTFT measurement, production-build binaries, matching prompt SHA checks. Long-greedy AX prefill rows are runner-time measurements of the cache-state prefix plus final prompt-token boundary — not full-logits prompt scoring throughput. Percentages are versus `mlx_lm`.
 
@@ -818,59 +819,65 @@ The 2K `llama.cpp Metal*` prefill rows are long-context, GGUF-runtime-reference 
 
 | Model | MLX quantization | Prompt tok | llama.cpp Metal* | mlx_lm | ax engine |
 | --- | --- | ---: | ---: | ---: | ---: |
-| Gemma 4 E2B | 4-bit | 128 | 3,481.7 | 2,338.1 | **6,047.1 (+158.6%)** |
-|  |  | 512 | 6,846.0 | 7,870.0 | **16,880.4 (+114.5%)** |
-|  |  | 2048 | 7,643.1 | 18,014.7 | **25,168.4 (+39.7%)** |
-| Gemma 4 E2B | 6-bit | 128 | 3,539.7 | 1,823.5 | **5,595.1 (+206.8%)** |
-|  |  | 512 | 7,274.0 | 6,046.6 | **15,912.0 (+163.2%)** |
-|  |  | 2048 | 7,623.2 | 15,332.1 | **22,676.9 (+47.9%)** |
-| Gemma 4 E4B | 4-bit | 128 | 2,194.0 | 1,513.2 | **3,444.8 (+127.7%)** |
-|  |  | 512 | 4,454.2 | 4,195.5 | **7,027.8 (+67.5%)** |
-|  |  | 2048 | 4,426.6 | 7,325.4 | **8,800.8 (+20.1%)** |
-| Gemma 4 26B A4B | 4-bit | 128 | 1,911.4 | 496.4 | **1,345.5 (+171.0%)** |
-|  |  | 512 | 3,484.5 | 1,621.0 | **3,047.3 (+88.0%)** |
-|  |  | 2048 | 3,604.8 | 3,300.1 | **4,642.8 (+40.7%)** |
-| Gemma 4 31B | 4-bit | 128 | 522.6 | 283.1 | **513.2 (+81.3%)** |
-|  |  | 512 | 665.3 | 619.9 | **738.6 (+19.2%)** |
-|  |  | 2048 | 560.3 | 733.9 | **774.5 (+5.5%)** |
-| Qwen 3.6 27B | 4-bit | 128 | 539.6 | 378.8 | **561.0 (+48.1%)** |
-|  |  | 512 | 759.7 | 705.7 | **829.5 (+17.5%)** |
-|  |  | 2048 | 664.3 | 895.2 | **923.9 (+3.2%)** |
-| Qwen 3.6 27B | 6-bit | 128 | 537.7 | 270.5 | **503.5 (+86.2%)** |
-|  |  | 512 | 756.1 | 577.6 | **755.0 (+30.7%)** |
-|  |  | 2048 | 689.3 | 798.2 | **833.6 (+4.4%)** |
-| Qwen 3.6 35B A3B | 4-bit | 128 | 1,706.9 | 539.4 | **1,103.4 (+104.6%)** |
-|  |  | 512 | 3,146.6 | 1,599.5 | **2,498.8 (+56.2%)** |
-|  |  | 2048 | 3,542.3 | 3,513.1 | **3,610.9 (+2.8%)** |
+| Gemma 4 E2B | 4-bit | 128 | 3,795.5 | 2,338.1 | **6,047.1 (+158.6%)** |
+|  |  | 512 | 7,271.0 | 7,870.0 | **16,880.4 (+114.5%)** |
+|  |  | 2048 | 7,653.3 | 18,014.7 | **25,168.4 (+39.7%)** |
+| Gemma 4 E2B | 6-bit | 128 | 3,690.8 | 1,823.5 | **5,595.1 (+206.8%)** |
+|  |  | 512 | 7,318.4 | 6,046.6 | **15,912.0 (+163.2%)** |
+|  |  | 2048 | 7,659.5 | 15,332.1 | **22,676.9 (+47.9%)** |
+| Gemma 4 E4B | 4-bit | 128 | 2,319.0 | 1,513.2 | **3,444.8 (+127.7%)** |
+|  |  | 512 | 4,439.2 | 4,195.5 | **7,027.8 (+67.5%)** |
+|  |  | 2048 | 4,421.0 | 7,325.4 | **8,800.8 (+20.1%)** |
+| Gemma 4 26B A4B | 4-bit | 128 | 1,947.0 | 496.4 | **1,345.5 (+171.0%)** |
+|  |  | 512 | 3,484.9 | 1,621.0 | **3,047.3 (+88.0%)** |
+|  |  | 2048 | 3,607.8 | 3,300.1 | **4,642.8 (+40.7%)** |
+| Gemma 4 31B | 4-bit | 128 | 527.3 | 283.1 | **513.2 (+81.3%)** |
+|  |  | 512 | 668.7 | 619.9 | **738.6 (+19.2%)** |
+|  |  | 2048 | 525.4 | 733.9 | **774.5 (+5.5%)** |
+| Qwen 3.6 27B | 4-bit | 128 | 527.8 | 378.8 | **561.0 (+48.1%)** |
+|  |  | 512 | 538.0 | 705.7 | **829.5 (+17.5%)** |
+|  |  | 2048 | 679.9 | 895.2 | **923.9 (+3.2%)** |
+| Qwen 3.6 27B | 6-bit | 128 | 542.4 | 270.5 | **503.5 (+86.2%)** |
+|  |  | 512 | 607.9 | 577.6 | **755.0 (+30.7%)** |
+|  |  | 2048 | 576.6 | 798.2 | **833.6 (+4.4%)** |
+| Qwen 3.6 35B A3B | 4-bit | 128 | 1,744.6 | 539.4 | **1,103.4 (+104.6%)** |
+|  |  | 512 | 3,208.3 | 1,599.5 | **2,498.8 (+56.2%)** |
+|  |  | 2048 | 3,576.6 | 3,513.1 | **3,610.9 (+2.8%)** |
+| Qwen 3.6 35B A3B | 6-bit | 128 | 1,556.7 | 412.8 | **866.4 (+109.9%)** |
+|  |  | 512 | 2,838.6 | 1,364.8 | **2,371.9 (+73.8%)** |
+|  |  | 2048 | 3,273.5 | 3,165.1 | **3,435.7 (+8.5%)** |
 
 #### Decode throughput (tok/s) — generation=128 tokens, temp=0
 
 | Model | MLX quantization | Prompt tok | llama.cpp Metal* | mlx_lm | ax direct baseline |
 | --- | --- | ---: | ---: | ---: | ---: |
-| Gemma 4 E2B | 4-bit | 128 | 174.6 | 214.0 | **236.0 (+10.3%)** |
-|  |  | 512 | 165.2 | 210.3 | **226.7 (+7.8%)** |
-|  |  | 2048 | 171.9 | 200.9 | **216.7 (+7.9%)** |
-| Gemma 4 E2B | 6-bit | 128 | 152.1 | 172.2 | **186.0 (+8.0%)** |
-|  |  | 512 | 152.0 | 166.3 | **180.2 (+8.4%)** |
-|  |  | 2048 | 152.2 | 162.5 | **173.9 (+7.0%)** |
-| Gemma 4 E4B | 4-bit | 128 | 110.7 | 137.1 | **143.4 (+4.6%)** |
-|  |  | 512 | 110.8 | 133.6 | **140.4 (+5.1%)** |
+| Gemma 4 E2B | 4-bit | 128 | 170.1 | 214.0 | **236.0 (+10.3%)** |
+|  |  | 512 | 171.5 | 210.3 | **226.7 (+7.8%)** |
+|  |  | 2048 | 171.8 | 200.9 | **216.7 (+7.9%)** |
+| Gemma 4 E2B | 6-bit | 128 | 154.0 | 172.2 | **186.0 (+8.0%)** |
+|  |  | 512 | 153.0 | 166.3 | **180.2 (+8.4%)** |
+|  |  | 2048 | 154.2 | 162.5 | **173.9 (+7.0%)** |
+| Gemma 4 E4B | 4-bit | 128 | 110.5 | 137.1 | **143.4 (+4.6%)** |
+|  |  | 512 | 110.3 | 133.6 | **140.4 (+5.1%)** |
 |  |  | 2048 | 110.7 | 130.6 | **137.6 (+5.4%)** |
-| Gemma 4 26B A4B | 4-bit | 128 | 112.6 | 127.9 | **134.9 (+5.5%)** |
-|  |  | 512 | 112.9 | 125.0 | **131.7 (+5.3%)** |
-|  |  | 2048 | 112.9 | 119.3 | **127.2 (+6.6%)** |
-| Gemma 4 31B | 4-bit | 128 | 25.0 | 28.9 | **29.1 (+0.7%)** |
-|  |  | 512 | 25.5 | 28.3 | **28.5 (+0.7%)** |
-|  |  | 2048 | 25.3 | 27.0 | **27.3 (+1.0%)** |
-| Qwen 3.6 27B | 4-bit | 128 | 26.0 | 34.0 | 33.2 (-2.2%) |
-|  |  | 512 | 26.0 | 33.9 | **34.3 (+1.3%)** |
-|  |  | 2048 | 18.8 | 33.4 | **33.8 (+1.1%)** |
-| Qwen 3.6 27B | 6-bit | 128 | 21.3 | 24.0 | **25.2 (+5.0%)** |
-|  |  | 512 | 21.3 | 24.8 | **25.2 (+1.5%)** |
-|  |  | 2048 | 15.4 | 24.6 | 23.6 (-4.2%) |
-| Qwen 3.6 35B A3B | 4-bit | 128 | 108.1 | 140.1 | **148.8 (+6.2%)** |
-|  |  | 512 | 108.2 | 136.5 | **148.9 (+9.1%)** |
-|  |  | 2048 | 105.7 | 134.5 | **147.8 (+9.9%)** |
+| Gemma 4 26B A4B | 4-bit | 128 | 112.8 | 127.9 | **134.9 (+5.5%)** |
+|  |  | 512 | 112.6 | 125.0 | **131.7 (+5.3%)** |
+|  |  | 2048 | 112.5 | 119.3 | **127.2 (+6.6%)** |
+| Gemma 4 31B | 4-bit | 128 | 25.5 | 28.9 | **29.1 (+0.7%)** |
+|  |  | 512 | 24.6 | 28.3 | **28.5 (+0.7%)** |
+|  |  | 2048 | 24.0 | 27.0 | **27.3 (+1.0%)** |
+| Qwen 3.6 27B | 4-bit | 128 | 19.4 | 34.0 | 33.2 (-2.2%) |
+|  |  | 512 | 21.6 | 33.9 | **34.3 (+1.3%)** |
+|  |  | 2048 | 24.7 | 33.4 | **33.8 (+1.1%)** |
+| Qwen 3.6 27B | 6-bit | 128 | 19.4 | 24.0 | **25.2 (+5.0%)** |
+|  |  | 512 | 19.4 | 24.8 | **25.2 (+1.5%)** |
+|  |  | 2048 | 19.4 | 24.6 | 23.6 (-4.2%) |
+| Qwen 3.6 35B A3B | 4-bit | 128 | 107.8 | 140.1 | **148.8 (+6.2%)** |
+|  |  | 512 | 107.8 | 136.5 | **148.9 (+9.1%)** |
+|  |  | 2048 | 107.5 | 134.5 | **147.8 (+9.9%)** |
+| Qwen 3.6 35B A3B | 6-bit | 128 | 81.9 | 111.5 | **124.0 (+11.2%)** |
+|  |  | 512 | 79.9 | 110.9 | **122.1 (+10.2%)** |
+|  |  | 2048 | 82.2 | 110.1 | **121.5 (+10.4%)** |
 > Qwen 3.6 27B 4-bit at prompt=2,048 originally produced zero decode tokens because 4-bit quantization noise pushed an EOS token to argmax at decode step 0 on the `mlx_lm.benchmark` random-token contract. The benchmark harness now sends `sampling.ignore_eos=true` for AX throughput runs, matching how `mlx_lm.benchmark` measures fixed `gen=N` throughput. Production requests default to `ignore_eos=false`. Source: `benchmarks/results/mlx-inference/2026-05-20-qwen27-4to5-direct-ngram-directcpp-r2/qwen3_6-27b-4bit.json`.
 
 #### Time to first token (ms) — generation=128 tokens, temp=0
@@ -879,31 +886,52 @@ The 2K `llama.cpp Metal*` prefill rows are long-context, GGUF-runtime-reference 
 
 | Model | MLX quantization | Prompt tok | llama.cpp Metal* | mlx_lm | ax engine |
 | --- | --- | ---: | ---: | ---: | ---: |
-| Gemma 4 E2B | 4-bit | 128 | 36.8 | 54.7 | **21.2 (-61.3%)** |
-|         |         | 512 | 74.8 | 65.1 | **30.3 (-53.4%)** |
-|         |         | 2048 | 268.0 | 113.7 | **81.4 (-28.4%)** |
-| Gemma 4 E2B | 6-bit | 128 | 36.2 | 70.2 | **22.9 (-67.4%)** |
-|         |         | 512 | 70.4 | 84.7 | **32.2 (-62.0%)** |
-|         |         | 2048 | 268.7 | 133.6 | **90.3 (-32.4%)** |
-| Gemma 4 E4B | 4-bit | 128 | 58.3 | 84.6 | **37.2 (-56.1%)** |
-|         |         | 512 | 114.9 | 122.0 | **72.9 (-40.3%)** |
-|         |         | 2048 | 462.7 | 279.6 | **232.7 (-16.8%)** |
-| Gemma 4 26B A4B | 4-bit | 128 | 67.0 | 257.8 | **95.1 (-63.1%)** |
+| Gemma 4 E2B | 4-bit | 128 | 33.7 | 54.7 | **21.2 (-61.3%)** |
+|         |         | 512 | 70.4 | 65.1 | **30.3 (-53.4%)** |
+|         |         | 2048 | 267.6 | 113.7 | **81.4 (-28.4%)** |
+| Gemma 4 E2B | 6-bit | 128 | 34.7 | 70.2 | **22.9 (-67.4%)** |
+|         |         | 512 | 70.0 | 84.7 | **32.2 (-62.0%)** |
+|         |         | 2048 | 267.4 | 133.6 | **90.3 (-32.4%)** |
+| Gemma 4 E4B | 4-bit | 128 | 55.2 | 84.6 | **37.2 (-56.1%)** |
+|         |         | 512 | 115.3 | 122.0 | **72.9 (-40.3%)** |
+|         |         | 2048 | 463.2 | 279.6 | **232.7 (-16.8%)** |
+| Gemma 4 26B A4B | 4-bit | 128 | 65.7 | 257.8 | **95.1 (-63.1%)** |
 |         |         | 512 | 146.9 | 315.8 | **168.0 (-46.8%)** |
-|         |         | 2048 | 568.1 | 620.6 | **441.1 (-28.9%)** |
-| Gemma 4 31B | 4-bit | 128 | 244.9 | 452.2 | **249.4 (-44.8%)** |
-|         |         | 512 | 769.5 | 826.0 | **693.2 (-16.1%)** |
-|         |         | 2048 | 3,655.2 | 2,790.6 | **2,644.3 (-5.2%)** |
-| Qwen 3.6 27B | 4-bit | 128 | 237.2 | 337.9 | **228.2 (-32.5%)** |
-|  |  | 512 | 673.9 | 725.6 | **617.2 (-14.9%)** |
-|  |  | 2048 | 3,083.1 | 2,287.7 | **2,216.8 (-3.1%)** |
-| Qwen 3.6 27B | 6-bit | 128 | 238.1 | 473.2 | **254.2 (-46.3%)** |
-|  |  | 512 | 677.2 | 886.5 | **678.2 (-23.5%)** |
-|  |  | 2048 | 2,971.2 | 2,565.6 | **2,456.8 (-4.2%)** |
-| Qwen 3.6 35B A3B | 4-bit | 128 | 75.0 | 237.3 | **116.0 (-51.1%)** |
-|  |  | 512 | 162.7 | 320.1 | **204.9 (-36.0%)** |
-|  |  | 2048 | 578.2 | 583.0 | **567.2 (-2.7%)** |
-Embedding benchmarks are kept out of this README summary; see [`docs/EMBEDDINGS.md`](docs/EMBEDDINGS.md).
+|         |         | 2048 | 567.7 | 620.6 | **441.1 (-28.9%)** |
+| Gemma 4 31B | 4-bit | 128 | 242.7 | 452.2 | **249.4 (-44.8%)** |
+|         |         | 512 | 765.6 | 826.0 | **693.2 (-16.1%)** |
+|         |         | 2048 | 3,898.3 | 2,790.6 | **2,644.3 (-5.2%)** |
+| Qwen 3.6 27B | 4-bit | 128 | 242.5 | 337.9 | **228.2 (-32.5%)** |
+|  |  | 512 | 951.7 | 725.6 | **617.2 (-14.9%)** |
+|  |  | 2048 | 3,012.3 | 2,287.7 | **2,216.8 (-3.1%)** |
+| Qwen 3.6 27B | 6-bit | 128 | 236.0 | 473.2 | **254.2 (-46.3%)** |
+|  |  | 512 | 842.2 | 886.5 | **678.2 (-23.5%)** |
+|  |  | 2048 | 3,551.7 | 2,565.6 | **2,456.8 (-4.2%)** |
+| Qwen 3.6 35B A3B | 4-bit | 128 | 73.4 | 237.3 | **116.0 (-51.1%)** |
+|  |  | 512 | 159.6 | 320.1 | **204.9 (-36.0%)** |
+|  |  | 2048 | 572.6 | 583.0 | **567.2 (-2.7%)** |
+| Qwen 3.6 35B A3B | 6-bit | 128 | 82.2 | 310.1 | **147.7 (-52.4%)** |
+|  |  | 512 | 180.4 | 375.2 | **215.9 (-42.5%)** |
+|  |  | 2048 | 625.6 | 647.1 | **596.1 (-7.9%)** |
+
+#### Embedding throughput (tok/s)
+
+Embedding models use a separate pooling route from text generation. The batched
+numbers are the relevant path for ingestion and worker pools; loop rows show the
+cost of issuing one sentence at a time.
+
+| Model | Workload | mlx-lm | ax-engine-py | AX vs mlx-lm |
+| --- | --- | ---: | ---: | ---: |
+| Qwen3-Embedding 0.6B 8-bit | single sentence | 1,478 | 1,386 | -6.2% |
+|  | 10-sentence batch | 2,805 | 2,620 | -6.6% |
+| Qwen3-Embedding 4B 4-bit | single sentence | 477 | 537 | +12.6% |
+|  | 10-sentence batch | 1,434 | 1,484 | +3.5% |
+| Qwen3-Embedding 8B 4-bit DWQ | single sentence | 319 | 303 | -5.0% |
+|  | 10-sentence batch | 872 | 868 | -0.5% |
+
+Source: `benchmarks/results/embedding/2026-05-12-full-fresh-readme-refresh/`.
+API semantics, pooling modes, micro-batching behavior, and cooldown profiles are
+documented in [`docs/EMBEDDINGS.md`](docs/EMBEDDINGS.md).
 
 ## SDKs
 

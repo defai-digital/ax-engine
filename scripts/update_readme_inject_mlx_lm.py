@@ -28,6 +28,7 @@ SLUG_TO_README = {
     "qwen3_6-27b-4bit":        ("Qwen 3.6 27B",     "4-bit"),
     "qwen3_6-27b-6bit":        ("Qwen 3.6 27B",     "6-bit"),
     "qwen3_6-35b-a3b-4bit":    ("Qwen 3.6 35B A3B", "4-bit"),
+    "qwen3_6-35b-a3b-6bit":    ("Qwen 3.6 35B A3B", "6-bit"),
 }
 
 TABLE_TARGETS = [

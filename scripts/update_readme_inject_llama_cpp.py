@@ -34,6 +34,7 @@ SLUG_TO_README = {
     "qwen3_6-27b-4bit":        ("Qwen 3.6 27B",     "4-bit"),
     "qwen3_6-27b-6bit":        ("Qwen 3.6 27B",     "6-bit"),
     "qwen3_6-35b-a3b-4bit":    ("Qwen 3.6 35B A3B", "4-bit"),
+    "qwen3_6-35b-a3b-6bit":    ("Qwen 3.6 35B A3B", "6-bit"),
 }
 
 LLAMA_HEADER_CELL = "llama.cpp Metal*"
@@ -60,9 +61,9 @@ STANDALONE_HEADER = "### External GGUF baseline — llama.cpp Metal"
 
 # Tables to inject into: (section header substring, metric key in cell dict).
 TABLE_TARGETS = [
-    ("### Prefill throughput", "prefill"),
-    ("### Decode throughput", "decode"),
-    ("### Time to first token", "ttft"),
+    ("Prefill throughput", "prefill"),
+    ("Decode throughput", "decode"),
+    ("Time to first token", "ttft"),
 ]
 
 
@@ -137,20 +138,29 @@ def remove_standalone_section(lines: list[str]) -> tuple[list[str], bool]:
 def ensure_disclaimer(lines: list[str]) -> tuple[list[str], bool]:
     # Skip insertion if disclaimer already present (idempotent).
     for line in lines:
-        if DISCLAIMER_MARK in line:
+        if DISCLAIMER_MARK in line or "**`llama.cpp Metal*` column**" in line:
             return lines, False
 
     # Insert directly above the first targeted table section.
     for i, line in enumerate(lines):
-        if line.startswith(TABLE_TARGETS[0][0]):
+        if _is_section_heading(line, TABLE_TARGETS[0][0]):
             insertion = DISCLAIMER_PARAGRAPH.splitlines() + [""]
             return lines[:i] + insertion + lines[i:], True
-    raise RuntimeError("Could not locate '### Prefill throughput' section to anchor disclaimer.")
+    raise RuntimeError("Could not locate 'Prefill throughput' section to anchor disclaimer.")
 
 
 _ROW_PT_RE = re.compile(r"^\s*\|.*?\|.*?\|\s*(128|512|2048)\s*\|")
 _HEADER_RE = re.compile(r"^\s*\|\s*Model\s*\|")
 _SEPARATOR_RE = re.compile(r"^\s*\|[\s\-:|]+\|\s*$")
+_SECTION_HEADING_RE = re.compile(r"^#{2,6}\s+")
+
+
+def _is_section_heading(line: str, title_prefix: str) -> bool:
+    return re.match(rf"^#{{2,6}}\s+{re.escape(title_prefix)}\b", line) is not None
+
+
+def _is_any_section_heading(line: str) -> bool:
+    return _SECTION_HEADING_RE.match(line) is not None
 
 
 def _split_cells(line: str) -> list[str]:
@@ -205,7 +215,7 @@ def inject_column(
     n = len(lines)
     while i < n:
         line = lines[i]
-        if not line.startswith(section_header_prefix):
+        if not _is_section_heading(line, section_header_prefix):
             out.append(line)
             i += 1
             continue
@@ -222,7 +232,7 @@ def inject_column(
 
         while i < n:
             row = lines[i]
-            if row.startswith("### ") or row.startswith("## "):
+            if _is_any_section_heading(row):
                 break  # next section, table is done
 
             if _HEADER_RE.match(row):
@@ -251,7 +261,7 @@ def inject_column(
             if pt_match:
                 pt = int(pt_match.group(1))
                 cells = _split_cells(row)
-                _pop_existing_llama_cell(cells, strip_position)
+                existing_llama_cell = _pop_existing_llama_cell(cells, strip_position)
                 if cells[0].strip():
                     current_model = cells[0].strip()
                 if cells[1].strip():
@@ -259,6 +269,8 @@ def inject_column(
                 value = lookup.get((current_model, current_quant, pt))
                 if value:
                     cell_text = fmt_num(value[metric_key])
+                elif existing_llama_cell:
+                    cell_text = existing_llama_cell
                 else:
                     cell_text = fmt_num(None)
                 cells.insert(_LLAMA_COL_INDEX, f" {cell_text} ")
