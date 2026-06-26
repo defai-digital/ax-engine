@@ -2474,7 +2474,7 @@ impl CompiledGemma4DualPathSchema {
         // Dense sub-block
         let dense_gate_up = self.dense_gate_up.rebuild(inputs);
         let gate_up_out = qw(&normed2, &dense_gate_up);
-        let h1_hidden = packed_geglu_metal_impl(&gate_up_out, self.packed_dim)
+        let h1_hidden = packed_geglu_metal_impl(&gate_up_out, self.packed_dim / 2)
             .expect("dual-path compile: packed_geglu_metal required");
         let dense_down = self.dense_down.rebuild(inputs);
         let h1 = qw(&h1_hidden, &dense_down);
