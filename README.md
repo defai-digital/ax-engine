@@ -322,17 +322,19 @@ from the same prepared package. The speedup labels are `AX MTP decode median /
 AX direct decode median`; they are same-package acceleration ratios, not a
 cross-model speed leaderboard. For Gemma 4 12B's shape-compatible direct peer
 comparison, see [Gemma 4 12B](#gemma-4-12b).
+The Qwen rows were refreshed AX-only on 2026-06-26; non-Qwen rows remain from
+the prior full six-model refresh.
 
 ![AX MTP decode throughput with MTP off and MTP on](docs/assets/perf-mtp-6bit-ax-acceleration.svg)
 
 | Target | Suite | AX direct decode | AX MTP decode | AX speedup | AX MTP prefill | AX MTP TTFT | AX accept | MTPLX | lightning-mlx |
-| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |
-| `qwen3.6-27b-6bit` | `flappy` | 18.6 tok/s | 42.1 tok/s | 2.26x | 632.7 tok/s | 508 ms | 99.5% | N/A | N/A |
-| `qwen3.6-27b-6bit` | `long_code` | 18.5 tok/s | 34.1 tok/s | 1.85x | 693.7 tok/s | 1031 ms | 97.7% | N/A | N/A |
-| `qwen3.6-27b-6bit` | `python_modules_long` | 17.5 tok/s | 33.7 tok/s | 1.92x | 614.6 tok/s | 566 ms | 96.7% | N/A | N/A |
-| `qwen3.6-35b-a3b` | `flappy` | 46.2 tok/s | 141.5 tok/s | 3.06x | 1561.8 tok/s | 212 ms | 99.8% | N/A | N/A |
-| `qwen3.6-35b-a3b` | `long_code` | 46.3 tok/s | 140.1 tok/s | 3.02x | 2381.1 tok/s | 301 ms | 98.5% | N/A | N/A |
-| `qwen3.6-35b-a3b` | `python_modules_long` | 46.0 tok/s | 142.3 tok/s | 3.09x | 1690.4 tok/s | 205 ms | 98.9% | N/A | N/A |
+|---|---|---:|---:|---:|---:|---:|---:|---|---|
+| `qwen3.6-27b-6bit` | `flappy` | 18.3 tok/s | 38.2 tok/s | 2.09x | 615.3 tok/s | 523 ms | 99.1% | N/A | N/A |
+| `qwen3.6-27b-6bit` | `long_code` | 18.1 tok/s | 40.5 tok/s | 2.24x | 729.6 tok/s | 983 ms | 99.6% | N/A | N/A |
+| `qwen3.6-27b-6bit` | `python_modules_long` | 18.5 tok/s | 34.7 tok/s | 1.87x | 642.8 tok/s | 543 ms | 96.7% | N/A | N/A |
+| `qwen3.6-35b-a3b` | `flappy` | 40.3 tok/s | 138.3 tok/s | 3.44x | 1552.6 tok/s | 208 ms | 99.8% | N/A | N/A |
+| `qwen3.6-35b-a3b` | `long_code` | 38.9 tok/s | 130.4 tok/s | 3.35x | 2366.3 tok/s | 303 ms | 99.8% | N/A | N/A |
+| `qwen3.6-35b-a3b` | `python_modules_long` | 37.8 tok/s | 128.5 tok/s | 3.40x | 1683.9 tok/s | 207 ms | 98.4% | N/A | N/A |
 | `gemma-4-12b` | `flappy` | 26.7 tok/s | 62.2 tok/s | 2.33x | 1701.7 tok/s | 214 ms | 99.3% | N/A | N/A |
 | `gemma-4-12b` | `long_code` | 26.6 tok/s | 70.5 tok/s | 2.65x | 1951.6 tok/s | 409 ms | 99.1% | N/A | N/A |
 | `gemma-4-12b` | `python_modules_long` | 27.1 tok/s | 63.2 tok/s | 2.33x | 1753.3 tok/s | 205 ms | 98.0% | N/A | N/A |
@@ -358,9 +360,9 @@ does not provide a comparable promoted row for these prepared packages.
 
 Pure-MTP verification: all listed AX MTP artifacts record zero n-gram accepted,
 proposed, submitted, and hit-step telemetry. Summary artifacts:
-[`summary.md`](benchmarks/results/mtp-6bit/2026-06-22-six-model-mtp-full-three-suite-ax-gain/summary.md)
+[`summary.md`](benchmarks/results/mtp-6bit/2026-06-26-six-model-mtp-ax-only-refresh/summary.md)
 and
-[`summary.json`](benchmarks/results/mtp-6bit/2026-06-22-six-model-mtp-full-three-suite-ax-gain/summary.json).
+[`summary.json`](benchmarks/results/mtp-6bit/2026-06-26-six-model-mtp-ax-only-refresh/summary.json).
 Detailed MTP notes, including the GLM-4.7 Flash smoke validation session, live in
 [`docs/mtp/`](docs/mtp/).
 
