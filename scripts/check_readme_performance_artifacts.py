@@ -1179,10 +1179,17 @@ def validate_direct_hotpath_no_hidden_fallbacks(
             f"{artifact_path} direct AX row lacks AX MLX telemetry"
         )
 
-    # 5-bit gate/up weights intentionally skip the packed path (packing not yet
-    # validated against mlx_lm for 5-bit). dense_ffn_split_gate_up_layers is
-    # therefore expected to be non-zero and is not a hotpath fallback for these models.
-    ffn_pack_intentionally_disabled = "5bit" in model_repo_id or "5-bit" in model_repo_id
+    # Some dense FFN gate/up encodings intentionally stay split: 5-bit packing
+    # is not validated against mlx_lm, and Qwen3 dense FFNs are guarded in
+    # weights.rs until their packed path is token-exact. A non-zero split
+    # counter is expected for those models, not a hidden fallback.
+    normalized_model_repo_id = model_repo_id.lower()
+    ffn_pack_intentionally_disabled = (
+        "5bit" in normalized_model_repo_id
+        or "5-bit" in normalized_model_repo_id
+        or "qwen3.5" in normalized_model_repo_id
+        or "qwen3.6-27b" in normalized_model_repo_id
+    )
 
     fallback_counts = []
     for key, label in AX_DIRECT_HOTPATH_FALLBACK_COUNTERS.items():

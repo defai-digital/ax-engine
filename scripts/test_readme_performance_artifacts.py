@@ -818,6 +818,39 @@ class ReadmePerformanceArtifactTests(unittest.TestCase):
                     model_repo_id="mlx-community/gemma-4-e2b-it-5bit",
                 )
 
+    def test_direct_ax_row_allows_split_ffn_for_qwen3_dense_model(self) -> None:
+        # Qwen3 dense FFN gate/up packing is intentionally guarded in weights.rs
+        # until the packed path is token-exact against mlx_lm.
+        row = {
+            "ax_mlx_telemetry": {
+                "ax_mlx_dense_ffn_split_gate_up_layers": 64,
+                "ax_mlx_dense_ffn_gate_up_packed_layers": 0,
+            }
+        }
+        checker.validate_direct_hotpath_no_hidden_fallbacks(
+            artifact_path=Path("artifact.json"),
+            row=row,
+            require_phase0=True,
+            model_repo_id="mlx-community/Qwen3.6-27B-4bit",
+        )
+
+        bad_row = {
+            "ax_mlx_telemetry": {
+                "ax_mlx_dense_ffn_split_gate_up_layers": 64,
+                "ax_mlx_direct_cpp_linear_attention_inputs_fallbacks": 1,
+            }
+        }
+        with self.assertRaisesRegex(
+            checker.ArtifactCheckError,
+            "hidden hotpath fallback counters",
+        ):
+            checker.validate_direct_hotpath_no_hidden_fallbacks(
+                artifact_path=Path("artifact.json"),
+                row=bad_row,
+                require_phase0=True,
+                model_repo_id="mlx-community/Qwen3.6-27B-4bit",
+            )
+
     def test_direct_ax_variant_rows_reject_hidden_hotpath_fallback_counters(
         self,
     ) -> None:

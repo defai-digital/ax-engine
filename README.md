@@ -772,7 +772,7 @@ cargo build -p ax-engine-bench --bin ax-engine-bench
 python3 scripts/bench_diffusion_gemma_direct.py
 ```
 
-<!-- readme-performance-artifacts: reference=benchmarks/results/mlx-inference/2026-05-26-direct-mode-clean-refresh/; reference=benchmarks/results/mlx-inference/2026-06-26-qwen36-35b-6bit-readme/; reference=benchmarks/results/mlx-inference/2026-06-26-gemma4-6bit-mlx-lm-only/; ax-base=benchmarks/results/mlx-inference/2026-06-22-ax-direct-readme-direct-only/; ax-overlay=benchmarks/results/mlx-inference/2026-06-26-qwen36-readme-refresh/; ax-overlay=benchmarks/results/mlx-inference/2026-06-26-qwen36-35b-6bit-readme/; ax-overlay=benchmarks/results/mlx-inference/2026-06-26-gemma4-6bit-ax-direct-only/ -->
+<!-- readme-performance-artifacts: reference=benchmarks/results/mlx-inference/2026-05-26-direct-mode-clean-refresh/; reference=benchmarks/results/mlx-inference/2026-06-26-qwen36-direct-refresh/; reference=benchmarks/results/mlx-inference/2026-06-26-gemma4-6bit-mlx-lm-only/; ax-base=benchmarks/results/mlx-inference/2026-06-22-ax-direct-readme-direct-only/; ax-overlay=benchmarks/results/mlx-inference/2026-06-26-qwen36-direct-refresh/; ax-overlay=benchmarks/results/mlx-inference/2026-06-26-gemma4-6bit-ax-direct-only/ -->
 
 #### Gemma 4 and Qwen 3.6
 
@@ -808,7 +808,7 @@ The prefill and TTFT advantage is the practical direct-mode story. AX is ahead o
 <details>
 <summary>Benchmark provenance and methodology</summary>
 
-The `mlx_lm` reference rows for the Gemma 4 and Qwen 3.6 rows shown below come from `benchmarks/results/mlx-inference/2026-05-26-direct-mode-clean-refresh/`. The Gemma 4 26B A4B and 31B 6-bit `mlx_lm` spot rows come from `benchmarks/results/mlx-inference/2026-06-26-gemma4-6bit-mlx-lm-only/`. The Gemma 4 AX direct-mode cells come from the direct-only AX rerun in `benchmarks/results/mlx-inference/2026-06-22-ax-direct-readme-direct-only/` (v6.5.2), with the Gemma 4 E4B, 26B A4B, and 31B 6-bit rows sourced from `benchmarks/results/mlx-inference/2026-06-26-gemma4-6bit-ax-direct-only/`. The Qwen 3.6 AX direct-mode cells come from `benchmarks/results/mlx-inference/2026-06-26-qwen36-readme-refresh/`, with the Qwen 3.6 35B-A3B 6-bit row sourced from `benchmarks/results/mlx-inference/2026-06-26-qwen36-35b-6bit-readme/`. The `llama.cpp Metal*` column is injected from `benchmarks/manifests/llama_cpp_metal/inventory.json`, `benchmarks/results/llama-cpp-metal/2026-05-18-llama-cpp-only-fa/`, the Qwen 3.6 35B-A3B 6-bit rerun in `benchmarks/results/llama-cpp-metal/2026-06-26-qwen36-35b-6bit/`, and the Gemma 4 6-bit llama.cpp-only rerun in `benchmarks/results/llama-cpp-metal/2026-06-26-gemma4-6bit-llama/`.
+The `mlx_lm` reference rows for the Gemma 4 rows shown below come from `benchmarks/results/mlx-inference/2026-05-26-direct-mode-clean-refresh/`. The Gemma 4 26B A4B and 31B 6-bit `mlx_lm` spot rows come from `benchmarks/results/mlx-inference/2026-06-26-gemma4-6bit-mlx-lm-only/`. The Gemma 4 AX direct-mode cells come from the direct-only AX rerun in `benchmarks/results/mlx-inference/2026-06-22-ax-direct-readme-direct-only/` (v6.5.2), with the Gemma 4 E4B, 26B A4B, and 31B 6-bit rows sourced from `benchmarks/results/mlx-inference/2026-06-26-gemma4-6bit-ax-direct-only/`. The Qwen 3.6 `mlx_lm` and AX direct-mode cells come from `benchmarks/results/mlx-inference/2026-06-26-qwen36-direct-refresh/`. The `llama.cpp Metal*` column is injected from `benchmarks/manifests/llama_cpp_metal/inventory.json`, `benchmarks/results/llama-cpp-metal/2026-05-18-llama-cpp-only-fa/`, the Qwen 3.6 35B-A3B 6-bit rerun in `benchmarks/results/llama-cpp-metal/2026-06-26-qwen36-35b-6bit/`, and the Gemma 4 6-bit llama.cpp-only rerun in `benchmarks/results/llama-cpp-metal/2026-06-26-gemma4-6bit-llama/`.
 
 Gemma 4 E4B 6-bit keeps the `mlx_lm` cells blank because `mlx_lm.benchmark` cannot load `mlx-community/gemma-4-e4b-it-6bit` with `mlx-lm` 0.31.3. The checkpoint config declares 42 language layers and `num_kv_shared_layers=18`, so the upstream Gemma4 text model builds K/V projections only for layers 0..23 and treats layers 24..41 as shared-KV layers. The MLX snapshot still contains 126 per-layer K/V tensors for layers 24..41 (`k_norm`, `k_proj`, and `v_proj` quantized weights), causing strict weight loading to fail with `Received 126 parameters not in model`. Source: `benchmarks/results/mlx-inference/2026-06-26-gemma4-6bit-mlx-lm-only/summary.md`.
 
@@ -816,6 +816,8 @@ Setup: generation=128, 5 measured repetitions, 15-second cooldown, AX prefix cac
 
 The 2K `llama.cpp Metal*` prefill rows are long-context, GGUF-runtime-reference rows. The Gemma 4 E2B 4-bit row was produced with llama.cpp b9110 and rechecked on b9200 with Metal offload, `-b/-ub 2048`, and flash attention enabled. The b9200 recheck improved 2K prefill only slightly — this is our benchmark boundary, not an upstream llama.cpp official bug statement.
 </details>
+
+Qwen 3.6 direct-mode verdict: AX is faster overall against `mlx_lm` across the refreshed 27B and 35B-A3B 4/6-bit rows. The 35B-A3B rows are faster in every listed prefill, decode, and TTFT cell; the dense 27B rows are faster at 128/512 prompt tokens and roughly flat to slightly slower at 2,048 prompt tokens.
 
 #### Prefill throughput (tok/s) — percentages vs mlx_lm
 
@@ -845,18 +847,18 @@ The 2K `llama.cpp Metal*` prefill rows are long-context, GGUF-runtime-reference 
 | Gemma 4 31B | 6-bit | 128 | 496.8 | 259.6 | **427.7 (+64.7%)** |
 |  |  | 512 | 494.4 | 548.6 | **652.1 (+18.9%)** |
 |  |  | 2048 | 426.2 | 675.0 | **706.5 (+4.7%)** |
-| Qwen 3.6 27B | 4-bit | 128 | 527.8 | 378.8 | **561.0 (+48.1%)** |
-|  |  | 512 | 538.0 | 705.7 | **829.5 (+17.5%)** |
-|  |  | 2048 | 679.9 | 895.2 | **923.9 (+3.2%)** |
-| Qwen 3.6 27B | 6-bit | 128 | 542.4 | 270.5 | **503.5 (+86.2%)** |
-|  |  | 512 | 607.9 | 577.6 | **755.0 (+30.7%)** |
-|  |  | 2048 | 576.6 | 798.2 | **833.6 (+4.4%)** |
-| Qwen 3.6 35B A3B | 4-bit | 128 | 1,744.6 | 539.4 | **1,103.4 (+104.6%)** |
-|  |  | 512 | 3,208.3 | 1,599.5 | **2,498.8 (+56.2%)** |
-|  |  | 2048 | 3,576.6 | 3,513.1 | **3,610.9 (+2.8%)** |
-| Qwen 3.6 35B A3B | 6-bit | 128 | 1,556.7 | 412.8 | **866.4 (+109.9%)** |
-|  |  | 512 | 2,838.6 | 1,364.8 | **2,371.9 (+73.8%)** |
-|  |  | 2048 | 3,273.5 | 3,165.1 | **3,435.7 (+8.5%)** |
+| Qwen 3.6 27B | 4-bit | 128 | 527.8 | 424.7 | **572.3 (+34.8%)** |
+|  |  | 512 | 538.0 | 739.0 | **804.4 (+8.9%)** |
+|  |  | 2048 | 679.9 | 914.9 | 910.2 (-0.5%) |
+| Qwen 3.6 27B | 6-bit | 128 | 542.4 | 348.0 | **492.5 (+41.5%)** |
+|  |  | 512 | 607.9 | 655.1 | **735.3 (+12.3%)** |
+|  |  | 2048 | 576.6 | 832.1 | 825.5 (-0.8%) |
+| Qwen 3.6 35B A3B | 4-bit | 128 | 1,744.6 | 562.4 | **1,097.6 (+95.2%)** |
+|  |  | 512 | 3,208.3 | 1,613.6 | **2,530.1 (+56.8%)** |
+|  |  | 2048 | 3,576.6 | 3,455.1 | **3,639.5 (+5.3%)** |
+| Qwen 3.6 35B A3B | 6-bit | 128 | 1,556.7 | 431.6 | **858.6 (+98.9%)** |
+|  |  | 512 | 2,838.6 | 1,394.4 | **2,372.5 (+70.1%)** |
+|  |  | 2048 | 3,273.5 | 2,494.3 | **3,394.2 (+36.1%)** |
 
 #### Decode throughput (tok/s) — generation=128 tokens, temp=0
 
@@ -886,18 +888,18 @@ The 2K `llama.cpp Metal*` prefill rows are long-context, GGUF-runtime-reference 
 | Gemma 4 31B | 6-bit | 128 | 16.2 | 19.6 | **20.0 (+2.2%)** |
 |  |  | 512 | 17.8 | 19.3 | **19.7 (+1.9%)** |
 |  |  | 2048 | 16.4 | 18.6 | **18.8 (+1.1%)** |
-| Qwen 3.6 27B | 4-bit | 128 | 19.4 | 34.0 | 33.2 (-2.2%) |
-|  |  | 512 | 21.6 | 33.9 | **34.3 (+1.3%)** |
-|  |  | 2048 | 24.7 | 33.4 | **33.8 (+1.1%)** |
-| Qwen 3.6 27B | 6-bit | 128 | 19.4 | 24.0 | **25.2 (+5.0%)** |
-|  |  | 512 | 19.4 | 24.8 | **25.2 (+1.5%)** |
-|  |  | 2048 | 19.4 | 24.6 | 23.6 (-4.2%) |
-| Qwen 3.6 35B A3B | 4-bit | 128 | 107.8 | 140.1 | **148.8 (+6.2%)** |
-|  |  | 512 | 107.8 | 136.5 | **148.9 (+9.1%)** |
-|  |  | 2048 | 107.5 | 134.5 | **147.8 (+9.9%)** |
-| Qwen 3.6 35B A3B | 6-bit | 128 | 81.9 | 111.5 | **124.0 (+11.2%)** |
-|  |  | 512 | 79.9 | 110.9 | **122.1 (+10.2%)** |
-|  |  | 2048 | 82.2 | 110.1 | **121.5 (+10.4%)** |
+| Qwen 3.6 27B | 4-bit | 128 | 19.4 | 33.2 | **34.1 (+2.6%)** |
+|  |  | 512 | 21.6 | 33.1 | 32.3 (-2.4%) |
+|  |  | 2048 | 24.7 | 32.6 | 32.5 (-0.5%) |
+| Qwen 3.6 27B | 6-bit | 128 | 19.4 | 24.3 | **24.9 (+2.5%)** |
+|  |  | 512 | 19.4 | 24.3 | 23.9 (-1.5%) |
+|  |  | 2048 | 19.4 | 24.1 | 23.9 (-0.9%) |
+| Qwen 3.6 35B A3B | 4-bit | 128 | 107.8 | 129.7 | **149.0 (+14.9%)** |
+|  |  | 512 | 107.8 | 128.3 | **138.6 (+8.0%)** |
+|  |  | 2048 | 107.5 | 125.2 | **141.2 (+12.8%)** |
+| Qwen 3.6 35B A3B | 6-bit | 128 | 81.9 | 111.3 | **119.6 (+7.4%)** |
+|  |  | 512 | 79.9 | 110.4 | **122.9 (+11.3%)** |
+|  |  | 2048 | 82.2 | 105.8 | **121.7 (+15.0%)** |
 > Qwen 3.6 27B 4-bit at prompt=2,048 originally produced zero decode tokens because 4-bit quantization noise pushed an EOS token to argmax at decode step 0 on the `mlx_lm.benchmark` random-token contract. The benchmark harness now sends `sampling.ignore_eos=true` for AX throughput runs, matching how `mlx_lm.benchmark` measures fixed `gen=N` throughput. Production requests default to `ignore_eos=false`. Source: `benchmarks/results/mlx-inference/2026-05-20-qwen27-4to5-direct-ngram-directcpp-r2/qwen3_6-27b-4bit.json`.
 
 #### Time to first token (ms) — generation=128 tokens, temp=0
@@ -930,18 +932,18 @@ The 2K `llama.cpp Metal*` prefill rows are long-context, GGUF-runtime-reference 
 | Gemma 4 31B | 6-bit | 128 | 257.7 | 493.1 | **299.3 (-39.3%)** |
 |         |         | 512 | 1,035.7 | 933.3 | **785.2 (-15.9%)** |
 |         |         | 2048 | 4,804.7 | 3,033.9 | **2,898.7 (-4.5%)** |
-| Qwen 3.6 27B | 4-bit | 128 | 242.5 | 337.9 | **228.2 (-32.5%)** |
-|  |  | 512 | 951.7 | 725.6 | **617.2 (-14.9%)** |
-|  |  | 2048 | 3,012.3 | 2,287.7 | **2,216.8 (-3.1%)** |
-| Qwen 3.6 27B | 6-bit | 128 | 236.0 | 473.2 | **254.2 (-46.3%)** |
-|  |  | 512 | 842.2 | 886.5 | **678.2 (-23.5%)** |
-|  |  | 2048 | 3,551.7 | 2,565.6 | **2,456.8 (-4.2%)** |
-| Qwen 3.6 35B A3B | 4-bit | 128 | 73.4 | 237.3 | **116.0 (-51.1%)** |
-|  |  | 512 | 159.6 | 320.1 | **204.9 (-36.0%)** |
-|  |  | 2048 | 572.6 | 583.0 | **567.2 (-2.7%)** |
-| Qwen 3.6 35B A3B | 6-bit | 128 | 82.2 | 310.1 | **147.7 (-52.4%)** |
-|  |  | 512 | 180.4 | 375.2 | **215.9 (-42.5%)** |
-|  |  | 2048 | 625.6 | 647.1 | **596.1 (-7.9%)** |
+| Qwen 3.6 27B | 4-bit | 128 | 242.5 | 301.4 | **223.7 (-25.8%)** |
+|  |  | 512 | 951.7 | 692.8 | **636.5 (-8.1%)** |
+|  |  | 2048 | 3,012.3 | 2,238.6 | 2,249.9 (+0.5%) |
+| Qwen 3.6 27B | 6-bit | 128 | 236.0 | 367.8 | **259.9 (-29.3%)** |
+|  |  | 512 | 842.2 | 781.6 | **696.3 (-10.9%)** |
+|  |  | 2048 | 3,551.7 | 2,461.1 | 2,481.0 (+0.8%) |
+| Qwen 3.6 35B A3B | 4-bit | 128 | 73.4 | 227.6 | **116.6 (-48.8%)** |
+|  |  | 512 | 159.6 | 317.3 | **202.4 (-36.2%)** |
+|  |  | 2048 | 572.6 | 592.7 | **562.7 (-5.1%)** |
+| Qwen 3.6 35B A3B | 6-bit | 128 | 82.2 | 296.6 | **149.1 (-49.7%)** |
+|  |  | 512 | 180.4 | 367.2 | **215.8 (-41.2%)** |
+|  |  | 2048 | 625.6 | 821.1 | **603.4 (-26.5%)** |
 
 #### Embedding throughput (tok/s)
 
