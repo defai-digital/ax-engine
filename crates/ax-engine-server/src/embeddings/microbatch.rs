@@ -14,10 +14,12 @@ use crate::app_state::{
 
 const DEFAULT_EMBEDDING_MICROBATCH_WINDOW_MS: u64 = 2;
 const DEFAULT_EMBEDDING_MICROBATCH_MAX_BATCH: usize = 32;
+const DEFAULT_EMBEDDING_MICROBATCH_QUEUE_CAPACITY: usize = 1024;
 
 impl EmbeddingMicroBatcher {
     pub(crate) fn spawn(request_session: Arc<Mutex<EngineSession>>) -> Arc<Self> {
-        let (sender, receiver) = mpsc::unbounded_channel();
+        let capacity = embedding_microbatch_queue_capacity();
+        let (sender, receiver) = mpsc::channel(capacity);
         let batch_window = embedding_microbatch_window();
         let max_batch = embedding_microbatch_max_batch();
         tokio::spawn(run_embedding_microbatch_worker(
@@ -43,6 +45,7 @@ impl EmbeddingMicroBatcher {
                 normalize,
                 response_tx,
             })
+            .await
             .map_err(|_| EngineSessionError::EmbeddingFailed {
                 message: "embedding microbatch queue is unavailable",
             })?;
@@ -56,7 +59,7 @@ impl EmbeddingMicroBatcher {
 }
 
 async fn run_embedding_microbatch_worker(
-    mut receiver: mpsc::UnboundedReceiver<EmbeddingBatchItem>,
+    mut receiver: mpsc::Receiver<EmbeddingBatchItem>,
     request_session: Arc<Mutex<EngineSession>>,
     batch_window: Duration,
     max_batch: usize,
@@ -80,7 +83,7 @@ async fn run_embedding_microbatch_worker(
 }
 
 async fn collect_embedding_microbatch(
-    receiver: &mut mpsc::UnboundedReceiver<EmbeddingBatchItem>,
+    receiver: &mut mpsc::Receiver<EmbeddingBatchItem>,
     first: EmbeddingBatchItem,
     batch_window: Duration,
     max_batch: usize,
@@ -239,4 +242,12 @@ fn embedding_microbatch_max_batch() -> usize {
         .and_then(|raw| raw.parse::<usize>().ok())
         .unwrap_or(DEFAULT_EMBEDDING_MICROBATCH_MAX_BATCH)
         .clamp(1, 512)
+}
+
+fn embedding_microbatch_queue_capacity() -> usize {
+    env::var("AX_ENGINE_EMBED_MICROBATCH_QUEUE_CAPACITY")
+        .ok()
+        .and_then(|raw| raw.parse::<usize>().ok())
+        .unwrap_or(DEFAULT_EMBEDDING_MICROBATCH_QUEUE_CAPACITY)
+        .clamp(64, 8192)
 }

@@ -24,7 +24,7 @@ pub(crate) struct LiveState {
 #[derive(Clone)]
 pub(crate) struct AppState {
     /// Swappable model state — take a snapshot at the start of each handler.
-    pub(crate) live: Arc<std::sync::RwLock<LiveState>>,
+    pub(crate) live: Arc<parking_lot::RwLock<LiveState>>,
     pub(crate) api_key: Option<Arc<String>>,
     pub(crate) metrics: Arc<ServerMetrics>,
     /// Set to true while a model load is in progress; prevents concurrent loads.
@@ -35,7 +35,7 @@ pub(crate) struct AppState {
 impl AppState {
     pub(crate) fn new(live: LiveState) -> Self {
         Self {
-            live: Arc::new(std::sync::RwLock::new(live)),
+            live: Arc::new(parking_lot::RwLock::new(live)),
             api_key: None,
             metrics: Arc::new(ServerMetrics::default()),
             loading: Arc::new(AtomicBool::new(false)),
@@ -46,25 +46,13 @@ impl AppState {
     /// Clone all live-model fields atomically. The read lock is held only for
     /// the duration of the Arc clones — never across an await point.
     pub(crate) fn snapshot(&self) -> LiveState {
-        match self.live.read() {
-            Ok(live) => live.clone(),
-            Err(poisoned) => {
-                tracing::error!("live model state lock was poisoned; recovering snapshot");
-                poisoned.into_inner().clone()
-            }
-        }
+        self.live.read().clone()
     }
 
     /// Replace the live model state. Called by the load endpoint after
     /// successfully building a new session outside the lock.
     pub(crate) fn swap_live(&self, new: LiveState) {
-        match self.live.write() {
-            Ok(mut live) => *live = new,
-            Err(poisoned) => {
-                tracing::error!("live model state lock was poisoned; recovering model swap");
-                *poisoned.into_inner() = new;
-            }
-        }
+        *self.live.write() = new;
     }
 
     pub(crate) fn allocate_request_id(&self) -> u64 {
@@ -177,7 +165,6 @@ pub(crate) fn build_app_state(
 
 #[cfg(test)]
 mod tests {
-    use std::panic::{self, AssertUnwindSafe};
     use std::path::PathBuf;
 
     use ax_engine_sdk::{PreviewBackendRequest, PreviewSessionConfigRequest, SupportTier};
@@ -199,34 +186,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn snapshot_recovers_poisoned_live_lock() {
+    async fn snapshot_reads_live_state() {
         let state = test_state("first");
-        let result = panic::catch_unwind(AssertUnwindSafe({
-            let state = state.clone();
-            move || {
-                let _live = state.live.write().expect("live lock should be available");
-                panic!("poison live lock");
-            }
-        }));
-        assert!(result.is_err());
-
         let live = state.snapshot();
         assert_eq!(live.model_id.as_ref().as_str(), "first");
     }
 
     #[tokio::test]
-    async fn swap_live_recovers_poisoned_live_lock() {
+    async fn swap_live_replaces_state() {
         let state = test_state("first");
         let replacement = test_state("second").snapshot();
-        let result = panic::catch_unwind(AssertUnwindSafe({
-            let state = state.clone();
-            move || {
-                let _live = state.live.write().expect("live lock should be available");
-                panic!("poison live lock");
-            }
-        }));
-        assert!(result.is_err());
-
         state.swap_live(replacement);
         let live = state.snapshot();
         assert_eq!(live.model_id.as_ref().as_str(), "second");
@@ -235,7 +204,7 @@ mod tests {
 
 #[derive(Clone)]
 pub(crate) struct EmbeddingMicroBatcher {
-    pub(crate) sender: mpsc::UnboundedSender<EmbeddingBatchItem>,
+    pub(crate) sender: mpsc::Sender<EmbeddingBatchItem>,
 }
 
 pub(crate) struct EmbeddingBatchItem {

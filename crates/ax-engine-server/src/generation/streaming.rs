@@ -1,5 +1,6 @@
 use std::convert::Infallible;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use ax_engine_sdk::{
@@ -25,6 +26,9 @@ pub(crate) type StreamEvent = Result<Event, Infallible>;
 pub(crate) type StreamEventSender = mpsc::Sender<StreamEvent>;
 type StreamEventReceiver = mpsc::Receiver<StreamEvent>;
 
+/// Shared flag set when the SSE client disconnects (all receivers dropped).
+pub(crate) type StreamCancelFlag = Arc<AtomicBool>;
+
 pub(crate) async fn generate_stream(
     State(state): State<AppState>,
     Json(request): Json<GenerateHttpRequest>,
@@ -39,14 +43,14 @@ pub(crate) async fn generate_stream(
     spawn_stream_task(
         tx,
         stream_state,
-        move |stream_state, tx| match stream_context {
+        move |stream_state, tx, cancel| match stream_context {
             StreamStateSource::Stateless(context) => {
-                drive_generate_stream_state(stream_state, tx, |state| {
+                drive_generate_stream_state(stream_state, tx, cancel, |state| {
                     context.next_stream_event(state)
                 });
             }
             StreamStateSource::Stateful(mut session) => {
-                drive_generate_stream_state(stream_state, tx, |state| {
+                drive_generate_stream_state(stream_state, tx, cancel, |state| {
                     session.next_stream_event(state)
                 });
             }
@@ -103,18 +107,29 @@ pub(crate) fn spawn_stream_task<F>(
     stream_state: GenerateStreamState,
     driver: F,
 ) where
-    F: FnOnce(&mut GenerateStreamState, StreamEventSender) + Send + 'static,
+    F: FnOnce(&mut GenerateStreamState, StreamEventSender, StreamCancelFlag) + Send + 'static,
 {
+    let cancel = Arc::new(AtomicBool::new(false));
+    let cancel_monitor = Arc::clone(&cancel);
     let monitor_tx = tx.clone();
+    let error_monitor_tx = monitor_tx.clone();
+    // Detect client disconnect: when all receivers are dropped the
+    // channel closes and we flip the cancel flag for the blocking task.
+    let cancel_monitor_handle = tokio::spawn(async move {
+        monitor_tx.closed().await;
+        cancel_monitor.store(true, Ordering::Relaxed);
+    });
     let handle = tokio::task::spawn_blocking(move || {
         let mut stream_state = stream_state;
-        driver(&mut stream_state, tx);
+        driver(&mut stream_state, tx, cancel);
     });
     tokio::spawn(async move {
-        if let Err(error) = handle.await {
+        let result = handle.await;
+        cancel_monitor_handle.abort();
+        if let Err(error) = result {
             tracing::error!(%error, "generate stream task failed");
             send_stream_error_async(
-                &monitor_tx,
+                &error_monitor_tx,
                 ErrorResponse::server_error(format!("generate stream task failed: {error}")),
             )
             .await;
@@ -127,15 +142,24 @@ pub(crate) fn spawn_sse_blocking_stream_task<F>(
     task_name: &'static str,
     driver: F,
 ) where
-    F: FnOnce(StreamEventSender) + Send + 'static,
+    F: FnOnce(StreamEventSender, StreamCancelFlag) + Send + 'static,
 {
+    let cancel = Arc::new(AtomicBool::new(false));
+    let cancel_monitor = Arc::clone(&cancel);
     let monitor_tx = tx.clone();
-    let handle = tokio::task::spawn_blocking(move || driver(tx));
+    let error_monitor_tx = monitor_tx.clone();
+    let cancel_monitor_handle = tokio::spawn(async move {
+        monitor_tx.closed().await;
+        cancel_monitor.store(true, Ordering::Relaxed);
+    });
+    let handle = tokio::task::spawn_blocking(move || driver(tx, cancel));
     tokio::spawn(async move {
-        if let Err(error) = handle.await {
+        let result = handle.await;
+        cancel_monitor_handle.abort();
+        if let Err(error) = result {
             tracing::error!(%error, task = task_name, "SSE stream task failed");
             send_stream_error_async(
-                &monitor_tx,
+                &error_monitor_tx,
                 ErrorResponse::server_error(format!("{task_name} task failed: {error}")),
             )
             .await;
@@ -146,6 +170,7 @@ pub(crate) fn spawn_sse_blocking_stream_task<F>(
 fn drive_generate_stream_state<N>(
     state: &mut GenerateStreamState,
     tx: StreamEventSender,
+    cancel: StreamCancelFlag,
     next_event: N,
 ) where
     N: FnMut(&mut GenerateStreamState) -> Result<Option<GenerateStreamEvent>, EngineSessionError>,
@@ -153,6 +178,7 @@ fn drive_generate_stream_state<N>(
     drive_stream_events(
         state,
         &tx,
+        &cancel,
         next_event,
         |event| send_sdk_stream_event(&tx, event),
         || {},
@@ -162,6 +188,7 @@ fn drive_generate_stream_state<N>(
 pub(crate) fn drive_stream_events<N, E, D>(
     state: &mut GenerateStreamState,
     tx: &StreamEventSender,
+    cancel: &AtomicBool,
     mut next_event: N,
     mut emit_event: E,
     mut on_done: D,
@@ -171,6 +198,10 @@ pub(crate) fn drive_stream_events<N, E, D>(
     D: FnMut(),
 {
     loop {
+        if cancel.load(Ordering::Relaxed) {
+            tracing::debug!("stream cancelled: client disconnected");
+            return;
+        }
         match next_event(state) {
             Ok(Some(event)) => {
                 if !emit_event(event) {

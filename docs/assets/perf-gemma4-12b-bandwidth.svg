@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="800" height="430" viewBox="0 0 800 430" role="img" aria-labelledby="title desc">
 <title>Gemma 4 12B - Memory bandwidth share · AX Engine v6.5.2</title>
-<desc>100% stacked bars showing effective bandwidth used versus theoretical headroom for Gemma 4 12B decode. AX 8-bit FFN uses 86%, AX 4-bit FFN 75%, llama.cpp depth 0 76%, and llama.cpp depth 512 75% of the 577 GB/s M5 Max peak.</desc>
+<desc>100% stacked bars showing effective bandwidth used versus theoretical headroom for Gemma 4 12B decode. AX 8-bit FFN uses 86%, AX 4-bit FFN 79%, llama.cpp depth 0 76%, and llama.cpp depth 512 75% of the 577 GB/s M5 Max peak.</desc>
 <rect width="800" height="430" fill="#f8fafc"/>
 <text id="title" x="64" y="24" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="16" font-weight="700" fill="#111827">Gemma 4 12B - Memory bandwidth share · AX Engine v6.5.2</text>
 <text x="64" y="46" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#4b5563">Used bandwidth vs theoretical headroom · 100% = 577 GB/s M5 Max peak</text>
@@ -25,10 +25,10 @@
 <text x="652" y="120.8" text-anchor="start" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">494 GB/s · 45.0 tok/s</text>
 <text x="210" y="178.2" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">AX 4-bit FFN</text>
 <rect x="222" y="162.2" width="418.0" height="24" rx="5" fill="#e5e7eb" stroke="#cbd5e1" stroke-width="1.2"/>
-<rect x="222" y="162.2" width="313.5" height="24" rx="5" fill="#2eaf5f" fill-opacity="0.76"/>
-<line x1="535.5" y1="162.2" x2="535.5" y2="186.2" stroke="#176c37" stroke-width="1.4"/>
-<text x="527.5" y="178.2" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#ffffff">75%</text>
-<text x="652" y="178.2" text-anchor="start" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">434 GB/s · 64.4 tok/s</text>
+<rect x="222" y="162.2" width="330.2" height="24" rx="5" fill="#2eaf5f" fill-opacity="0.76"/>
+<line x1="552.2" y1="162.2" x2="552.2" y2="186.2" stroke="#176c37" stroke-width="1.4"/>
+<text x="544.2" y="178.2" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#ffffff">79%</text>
+<text x="652" y="178.2" text-anchor="start" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">454 GB/s · 67.3 tok/s</text>
 <text x="210" y="235.8" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">llama.cpp depth 0</text>
 <rect x="222" y="219.8" width="418.0" height="24" rx="5" fill="#e5e7eb" stroke="#cbd5e1" stroke-width="1.2"/>
 <rect x="222" y="219.8" width="317.7" height="24" rx="5" fill="#f97316" fill-opacity="0.76"/>

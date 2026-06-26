@@ -382,9 +382,9 @@ and benchmark boundary. **Upstream `mlx_lm` 0.31.3 cannot load it**
 
 **At a glance:**
 
-- **Direct decode:** AX native MLX reaches **61.7-66.0 tok/s** on the bit-comparable
+- **Direct decode:** AX native MLX reaches **65.3-69.1 tok/s** on the bit-comparable
   4-bit-FFN artifact versus llama.cpp Metal's **56.9-59.2 tok/s** depth-matched range.
-- **Context depth:** AX's direct margin is **+11% / +11% / +8%** versus llama.cpp matched-depth decode at 128 / 512 / 2,048 prompt tokens.
+- **Context depth:** AX's direct margin is **+17% / +15% / +15%** versus llama.cpp matched-depth decode at 128 / 512 / 2,048 prompt tokens.
 - **Assistant-MTP:** current `gemma-4-12b` MTP benchmarking lives in the
   [6-bit MTP acceleration refresh](#6-bit-mtp-acceleration-refresh-2026-06-23),
   where the 6-bit `download-mtp` package reaches **62.2-70.5 tok/s** and
@@ -421,9 +421,9 @@ GGUF references, not prompt-hash-parity MLX rows.
 
 | Prompt tokens | AX decode | llama.cpp decode (depth 0) | llama.cpp decode (matched depth) | AX prefill | llama.cpp prefill | AX TTFT (ms) | llama.cpp TTFT (ms) |
 | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| 128 | 66.0 | 59.8 | 59.2 | 1,171 | 1,252 | 109 | 102 |
-| 512 | 65.6 | 59.6 | 58.9 | 1,839 | 1,745 | 278 | 293 |
-| 2048 | 61.7 | 59.7 | 56.9 | 2,004 | 1,690 | 1,022 | 1,212 |
+| 128 | 69.1 | 59.8 | 59.2 | 1,180 | 1,252 | 108 | 102 |
+| 512 | 67.5 | 59.6 | 58.9 | 1,883 | 1,745 | 272 | 293 |
+| 2048 | 65.3 | 59.7 | 56.9 | 2,062 | 1,690 | 993 | 1,212 |
 
 Read the two llama.cpp decode columns carefully:
 
@@ -448,12 +448,12 @@ Measured M5 Max GPU peak read bandwidth ≈ 577 GB/s (MLX reduction over a 6 GB 
 | Engine / quantization | Weights/token | Decode tok/s | Effective BW | % of 577 GB/s peak |
 | --- | ---: | ---: | ---: | ---: |
 | AX — 8-bit FFN (upstream 4bit snapshot) | 10.98 GB | 45.0 | 494 GB/s | 86% |
-| AX — 4-bit FFN (re-quantized) | 6.74 GB | 64.4 | 434 GB/s | 75% |
+| AX — 4-bit FFN (re-quantized) | 6.74 GB | 67.3 | 454 GB/s | 79% |
 | llama.cpp Q4_K_M — decode @ depth 512 | 7.38 GB | 58.9 | 435 GB/s | 75% |
 | llama.cpp Q4_K_M — decode @ depth 0 (`tg`) | 7.38 GB | 59.8 | 441 GB/s | 76% |
 
 The bandwidth view is the key explanation: AX is not under-utilizing memory. The re-quantized
-AX row sustains **434 GB/s**, in the same band as llama.cpp's **435 GB/s** at matched depth.
+AX row sustains **454 GB/s**, in the same band as llama.cpp's **435 GB/s** at matched depth.
 The remaining direct-decode difference is bytes read per token: uniform 4-bit group-64 reduces
 AX to **6.74 GB/token**, while Q4_K_M reads **7.38 GB/token**. The 8-bit-FFN upstream snapshot
 has higher bus utilization (86%) but worse speed because it reads far more data.
@@ -469,11 +469,11 @@ support. MTP methodology and artifacts live with
 [Speculative Decoding (MTP)](#speculative-decoding-mtp).
 
 Full artifacts:
-[`2026-06-20-gemma-4-12b-it-4bit-direct`](benchmarks/results/mlx-inference/2026-06-20-gemma-4-12b-it-4bit-direct/gemma-4-12b-it-4bit.json)
+[`2026-06-26-gemma4-12b-4bit-ax-direct-only`](benchmarks/results/mlx-inference/2026-06-26-gemma4-12b-4bit-ax-direct-only/gemma-4-12b-it-4bit.json)
 (AX direct rerun; chart artifact with retained llama.cpp reference rows in
 [`gemma-4-12b-it-4bit-with-llama-reference.json`][ref-json];
 llama.cpp GGUF provenance in
-[`llama_cpp_gguf_provenance.json`](benchmarks/results/mlx-inference/2026-06-09-gemma-4-12b-it-4bit-direct/llama_cpp_gguf_provenance.json)).
+[`llama_cpp_gguf_provenance.json`](benchmarks/results/mlx-inference/2026-06-26-gemma4-12b-4bit-ax-direct-only/llama_cpp_gguf_provenance.json)).
 
 ##### Gemma 4 12B Multimodal
 
@@ -1126,7 +1126,7 @@ Performance tuning is tightly coupled: a local speedup can regress correctness, 
 - Discord: [Join us](https://discord.gg/aDhhburqJg)
 - Email: enquiry@defai.digital
 
-[ref-json]: benchmarks/results/mlx-inference/2026-06-20-gemma-4-12b-it-4bit-direct/gemma-4-12b-it-4bit-with-llama-reference.json
+[ref-json]: benchmarks/results/mlx-inference/2026-06-26-gemma4-12b-4bit-ax-direct-only/gemma-4-12b-it-4bit-with-llama-reference.json
 [multimodal-matrix]: benchmarks/results/gemma4-multimodal/2026-06-09-gemma4-12b-multimodal-cold-peer-matrix.json
 
 ## License

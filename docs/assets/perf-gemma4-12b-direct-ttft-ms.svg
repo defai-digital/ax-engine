@@ -4,7 +4,7 @@
 <rect width="100%" height="100%" fill="#f8fafc"/>
 <text x="64" y="26" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="16" font-weight="700" fill="#111827">Gemma 4 12B 4-bit — Time to first token</text>
 <text x="64" y="46" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#4b5563">median over reps · grouped by prompt tokens · mlx_lm N/A (no gemma4_unified graph)</text>
-<text x="64" y="62" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">AX Engine v6.5.2 vs llama.cpp Metal b9700 (ggml-org Q4_K_M, shape-compatible)</text>
+<text x="64" y="62" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">AX Engine v6.5.2 vs llama.cpp Metal b9700 (Unsloth Q4_K_M, shape-compatible)</text>
 <rect x="638" y="13" width="48" height="22" rx="11" fill="#eef2ff" stroke="#c7d2fe"/>
 <text x="662.0" y="28" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#3730a3">ms</text>
 <text x="686" y="52" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#dc2626">Lower is better</text>
@@ -24,23 +24,23 @@
 <rect x="89.1" y="292.3" width="43.6" height="15.7" rx="3" fill="#f97316" fill-opacity="0.26" stroke="#c2410c" stroke-width="1.8"/>
 <line x1="89.1" y1="292.3" x2="132.7" y2="292.3" stroke="#c2410c" stroke-width="2.6"/>
 <text x="110.9" y="286.3" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">102.2</text>
-<rect x="140.6" y="291.2" width="43.6" height="16.8" rx="3" fill="#2eaf5f" fill-opacity="0.26" stroke="#176c37" stroke-width="1.8"/>
-<line x1="140.6" y1="291.2" x2="184.2" y2="291.2" stroke="#176c37" stroke-width="2.6"/>
-<text x="162.4" y="285.2" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">109.3</text>
+<rect x="140.6" y="291.4" width="43.6" height="16.6" rx="3" fill="#2eaf5f" fill-opacity="0.26" stroke="#176c37" stroke-width="1.8"/>
+<line x1="140.6" y1="291.4" x2="184.2" y2="291.4" stroke="#176c37" stroke-width="2.6"/>
+<text x="162.4" y="285.4" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">108.5</text>
 <text x="136.7" y="328.0" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">128 tok</text>
 <rect x="234.5" y="263.0" width="43.6" height="45.0" rx="3" fill="#f97316" fill-opacity="0.26" stroke="#c2410c" stroke-width="1.8"/>
 <line x1="234.5" y1="263.0" x2="278.1" y2="263.0" stroke="#c2410c" stroke-width="2.6"/>
 <text x="256.3" y="257.0" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">293.4</text>
-<rect x="285.9" y="265.3" width="43.6" height="42.7" rx="3" fill="#2eaf5f" fill-opacity="0.26" stroke="#176c37" stroke-width="1.8"/>
-<line x1="285.9" y1="265.3" x2="329.5" y2="265.3" stroke="#176c37" stroke-width="2.6"/>
-<text x="307.7" y="259.3" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">278.4</text>
+<rect x="285.9" y="266.3" width="43.6" height="41.7" rx="3" fill="#2eaf5f" fill-opacity="0.26" stroke="#176c37" stroke-width="1.8"/>
+<line x1="285.9" y1="266.3" x2="329.5" y2="266.3" stroke="#176c37" stroke-width="2.6"/>
+<text x="307.7" y="260.3" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">272.0</text>
 <text x="282.0" y="328.0" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">512 tok</text>
 <rect x="379.8" y="122.2" width="43.6" height="185.8" rx="3" fill="#f97316" fill-opacity="0.26" stroke="#c2410c" stroke-width="1.8"/>
 <line x1="379.8" y1="122.2" x2="423.4" y2="122.2" stroke="#c2410c" stroke-width="2.6"/>
 <text x="401.6" y="116.2" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">1.2k</text>
-<rect x="431.3" y="151.3" width="43.6" height="156.7" rx="3" fill="#2eaf5f" fill-opacity="0.26" stroke="#176c37" stroke-width="1.8"/>
-<line x1="431.3" y1="151.3" x2="474.9" y2="151.3" stroke="#176c37" stroke-width="2.6"/>
-<text x="453.1" y="145.3" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">1.0k</text>
+<rect x="431.3" y="155.7" width="43.6" height="152.3" rx="3" fill="#2eaf5f" fill-opacity="0.26" stroke="#176c37" stroke-width="1.8"/>
+<line x1="431.3" y1="155.7" x2="474.9" y2="155.7" stroke="#176c37" stroke-width="2.6"/>
+<text x="453.1" y="149.7" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">993.1</text>
 <text x="427.3" y="328.0" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">2048 tok</text>
 <rect x="64.0" y="369" width="10" height="10" rx="2" fill="#f97316" fill-opacity="0.5" stroke="#c2410c" stroke-width="1.4"/>
 <text x="78.0" y="378" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#374151">llama.cpp Metal</text>

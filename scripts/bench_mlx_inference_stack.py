@@ -1852,6 +1852,7 @@ def start_axengine(
     model_dir: Path,
     port: int,
     *,
+    model_id: str,
     direct_mode: bool,
     kv_compression: str = "disabled",
     kv_compression_hot_window_tokens: int | None = None,
@@ -1878,6 +1879,8 @@ def start_axengine(
         "--mlx",
         "--mlx-model-artifacts-dir",
         str(model_dir),
+        "--model-id",
+        model_id,
         "--port",
         str(port),
     ]
@@ -4938,6 +4941,7 @@ def main() -> None:
                     AX_ENGINE_SERVER,
                     args.model_dir,
                     args.axengine_port,
+                    model_id=args.model,
                     direct_mode=direct_mode,
                     kv_compression=args.experimental_mlx_kv_compression,
                     kv_compression_hot_window_tokens=(

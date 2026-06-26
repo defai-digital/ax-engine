@@ -236,6 +236,7 @@ dependencies = [
  "clap",
  "hound",
  "image",
+ "parking_lot",
  "prost",
  "serde",
  "serde_json",

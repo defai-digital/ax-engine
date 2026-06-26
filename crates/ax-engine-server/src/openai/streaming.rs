@@ -1,3 +1,5 @@
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use ax_engine_sdk::{
     EngineSessionError, EngineTokenizer, EngineTokenizerError, GenerateFinishReason,
     GenerateRequest, GenerateStreamEvent, GenerateStreamState, LlamaCppChatGenerateRequest,
@@ -15,8 +17,9 @@ use crate::backends::{llama_cpp, mlx_lm};
 use crate::chat::{Gemma4ChannelIds, strip_gemma4_channel_name_header};
 use crate::errors::{ErrorResponse, error_response, map_session_error};
 use crate::generation::streaming::{
-    StreamEventSender, StreamStateSource, build_keep_alive_stream, build_stream_state,
-    drive_stream_events, send_stream_error, spawn_sse_blocking_stream_task, spawn_stream_task,
+    StreamCancelFlag, StreamEventSender, StreamStateSource, build_keep_alive_stream,
+    build_stream_state, drive_stream_events, send_stream_error, spawn_sse_blocking_stream_task,
+    spawn_stream_task,
 };
 use crate::openai::chunks::{
     chat_delta_chunk, chat_final_chunk, completion_delta_chunk, completion_final_chunk,
@@ -42,11 +45,12 @@ pub(crate) async fn stream_openai_request(
     spawn_stream_task(
         tx,
         stream_state,
-        move |stream_state, tx| match stream_context {
+        move |stream_state, tx, cancel| match stream_context {
             StreamStateSource::Stateless(context) => {
                 drive_openai_stream_state(
                     stream_state,
                     tx,
+                    cancel,
                     stream_kind,
                     |state| context.next_stream_event(state),
                     tokenizer,
@@ -56,6 +60,7 @@ pub(crate) async fn stream_openai_request(
                 drive_openai_stream_state(
                     stream_state,
                     tx,
+                    cancel,
                     stream_kind,
                     |state| session.next_stream_event(state),
                     tokenizer,
@@ -82,8 +87,8 @@ pub(crate) async fn stream_openai_mlx_lm_chat_request(
     .await?;
 
     let (tx, rx) = mpsc::channel(STREAM_CHANNEL_CAPACITY);
-    spawn_sse_blocking_stream_task(tx, "openai mlx_lm chat stream", move |tx| {
-        drive_openai_mlx_lm_chat_stream(tx, request_id, model_id, stream);
+    spawn_sse_blocking_stream_task(tx, "openai mlx_lm chat stream", move |tx, cancel| {
+        drive_openai_mlx_lm_chat_stream(tx, &cancel, request_id, model_id, stream);
     });
 
     Ok(build_keep_alive_stream(rx).into_response())
@@ -104,8 +109,8 @@ pub(crate) async fn stream_openai_llama_cpp_chat_request(
     .await?;
 
     let (tx, rx) = mpsc::channel(STREAM_CHANNEL_CAPACITY);
-    spawn_sse_blocking_stream_task(tx, "openai llama.cpp chat stream", move |tx| {
-        drive_openai_llama_cpp_chat_stream(tx, request_id, model_id, stream);
+    spawn_sse_blocking_stream_task(tx, "openai llama.cpp chat stream", move |tx, cancel| {
+        drive_openai_llama_cpp_chat_stream(tx, &cancel, request_id, model_id, stream);
     });
 
     Ok(build_keep_alive_stream(rx).into_response())
@@ -114,6 +119,7 @@ pub(crate) async fn stream_openai_llama_cpp_chat_request(
 fn drive_openai_stream_state<N>(
     state: &mut GenerateStreamState,
     tx: StreamEventSender,
+    cancel: StreamCancelFlag,
     stream_kind: OpenAiStreamKind,
     next_event: N,
     tokenizer: Option<EngineTokenizer>,
@@ -138,6 +144,7 @@ fn drive_openai_stream_state<N>(
     drive_stream_events(
         state,
         &tx,
+        &cancel,
         next_event,
         |event| {
             send_openai_stream_event(
@@ -495,12 +502,17 @@ fn incremental_delta(prefix: &str, whole: &str) -> Option<String> {
 
 fn drive_openai_mlx_lm_chat_stream(
     tx: StreamEventSender,
+    cancel: &AtomicBool,
     request_id: u64,
     model_id: String,
     mut stream: MlxLmStreamHandle,
 ) {
     let mut chat_role_emitted = false;
     loop {
+        if cancel.load(Ordering::Relaxed) {
+            tracing::debug!("stream cancelled: client disconnected");
+            return;
+        }
         match stream.next_chunk() {
             Ok(Some(chunk)) => {
                 if !chunk.text.is_empty() {
@@ -538,12 +550,17 @@ fn drive_openai_mlx_lm_chat_stream(
 
 fn drive_openai_llama_cpp_chat_stream(
     tx: StreamEventSender,
+    cancel: &AtomicBool,
     request_id: u64,
     model_id: String,
     mut stream: LlamaCppStreamHandle,
 ) {
     let mut chat_role_emitted = false;
     loop {
+        if cancel.load(Ordering::Relaxed) {
+            tracing::debug!("stream cancelled: client disconnected");
+            return;
+        }
         match stream.next_chunk() {
             Ok(Some(chunk)) => {
                 if !chunk.content.is_empty() {

@@ -22,7 +22,7 @@ PEAK_GBS = 577.0
 # (label, weights_gb, decode_tok_s, effective_bw_gbs, pct_peak, fill, stroke)
 ROWS = [
     ("AX 8-bit FFN", 10.98, 45.0, 494, 86, "#2eaf5f", "#176c37"),
-    ("AX 4-bit FFN", 6.74, 64.4, 434, 75, "#2eaf5f", "#176c37"),
+    ("AX 4-bit FFN", 6.74, 67.3, 454, 79, "#2eaf5f", "#176c37"),
     ("llama.cpp depth 0", 7.38, 59.8, 441, 76, "#f97316", "#c2410c"),
     ("llama.cpp depth 512", 7.38, 58.9, 435, 75, "#f97316", "#c2410c"),
 ]
@@ -74,7 +74,7 @@ def render() -> str:
         f"<title>{e(TITLE)}</title>",
         f'<desc>100% stacked bars showing effective bandwidth used versus theoretical'
         f' headroom for Gemma 4 12B decode. AX 8-bit FFN uses 86%, AX 4-bit FFN'
-        f' 75%, llama.cpp depth 0 76%, and llama.cpp depth 512 75% of the'
+        f' 79%, llama.cpp depth 0 76%, and llama.cpp depth 512 75% of the'
         f' {PEAK_GBS:.0f} GB/s M5 Max peak.</desc>',
         f'<rect width="{WIDTH}" height="{HEIGHT}" fill="#f8fafc"/>',
         f'<text id="title" x="{LEFT}" y="24" font-family="{FONT}" font-size="16"'
