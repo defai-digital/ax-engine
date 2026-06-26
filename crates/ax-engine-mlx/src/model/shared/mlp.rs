@@ -1424,6 +1424,200 @@ pub(crate) fn moe_router_gemma4(
     (top_k_indices, top_k_weights)
 }
 
+// ---------------------------------------------------------------------------
+// Tier 1C: Fused MoE router kernel — decode-only.
+//
+// Fuses argpartition + take_along_axis + softmax + renormalize into a single
+// Metal dispatch, eliminating 4-5 MLX ops per MoE layer in the narrow-softmax
+// router path. Takes f32 router logits, outputs (top_k_indices, top_k_weights).
+// ---------------------------------------------------------------------------
+
+static MOE_ROUTER_FUSED_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
+
+const MOE_ROUTER_FUSED_KERNEL_SOURCE: &str = r#"
+    uint tid = thread_position_in_threadgroup.x;
+
+    // Load logits into threadgroup memory.
+    if (tid < NumExperts) {
+        logits_shared[tid] = logits_in[tid];
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    // Iterative top-k selection: find the maximum among unselected experts
+    // for TopK rounds. Selected experts are masked to -1e38.
+    uint selected_idx[TopK];
+    for (uint k = 0; k < TopK; k++) {
+        float local_max = -1e38f;
+        uint local_max_idx = 0;
+        if (tid < NumExperts) {
+            local_max = logits_shared[tid];
+            local_max_idx = tid;
+        }
+
+        // Threadgroup-wide max reduction via shared memory.
+        float_reduce[tid] = local_max;
+        uint idx_reduce[tid] = local_max_idx;
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        for (uint stride = ThreadgroupSize / 2; stride > 0; stride >>= 1) {
+            if (tid < stride) {
+                float other = float_reduce[tid + stride];
+                if (other > float_reduce[tid] ||
+                    (other == float_reduce[tid] && idx_reduce[tid + stride] < idx_reduce[tid])) {
+                    float_reduce[tid] = other;
+                    idx_reduce[tid] = idx_reduce[tid + stride];
+                }
+            }
+            threadgroup_barrier(mem_flags::mem_threadgroup);
+        }
+
+        selected_idx[k] = idx_reduce[0];
+
+        // Mask the selected expert so it is not picked again.
+        if (tid == idx_reduce[0]) {
+            logits_shared[tid] = -1e38f;
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+
+    // Compute softmax over only the top-k selected logits.
+    float sel_logit = -1e38f;
+    if (tid < TopK) {
+        sel_logit = logits_in[selected_idx[tid]];
+    }
+
+    float max_val = sel_logit;
+    float_reduce[tid] = max_val;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    for (uint stride = ThreadgroupSize / 2; stride > 0; stride >>= 1) {
+        if (tid < stride) {
+            float_reduce[tid] = max(float_reduce[tid], float_reduce[tid + stride]);
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+    max_val = float_reduce[0];
+
+    float exp_val = (tid < TopK) ? exp(sel_logit - max_val) : 0.0f;
+    float_reduce[tid] = exp_val;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    float sum_exp = 0.0f;
+    for (uint stride = ThreadgroupSize / 2; stride > 0; stride >>= 1) {
+        if (tid < stride) {
+            float_reduce[tid] += float_reduce[tid + stride];
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+    sum_exp = float_reduce[0];
+
+    // Write outputs.
+    if (tid < TopK) {
+        indices_out[tid] = selected_idx[tid];
+        weights_out[tid] = (NormTopK == 1) ? (exp_val / sum_exp) : exp_val;
+    }
+"#;
+
+/// Fused MoE router post-matmul kernel: argpartition + softmax + renormalize
+/// in one Metal dispatch.
+///
+/// Takes f32 router logits `[1, 1, num_experts]` and returns:
+/// - `top_k_indices`: `[1, 1, top_k]` (uint32)
+/// - `top_k_weights`: `[1, 1, top_k]` (f32)
+///
+/// Decode-only (seq==1). Returns `None` if the kernel is ineligible.
+fn moe_router_fused_metal(
+    logits_f32: &MlxArray,
+    num_experts: usize,
+    top_k: usize,
+    norm_topk: bool,
+) -> Option<(MlxArray, MlxArray)> {
+    if !fastpath::moe_router_fused_metal_enabled() {
+        return None;
+    }
+    if logits_f32.dtype() != MlxDtype::Float32 {
+        return None;
+    }
+    let shape = logits_f32.shape();
+    if shape.len() < 2 || shape[0] != 1 || shape[1] != 1 {
+        return None;
+    }
+    if num_experts == 0 || top_k == 0 || top_k > num_experts {
+        return None;
+    }
+    if num_experts > 1024 {
+        return None;
+    }
+
+    let tg_size: i32 = if num_experts <= 32 {
+        32
+    } else if num_experts <= 64 {
+        64
+    } else if num_experts <= 128 {
+        128
+    } else if num_experts <= 256 {
+        256
+    } else if num_experts <= 512 {
+        512
+    } else {
+        1024
+    };
+
+    let kernel = MOE_ROUTER_FUSED_KERNEL.get_or_init(|| {
+        MlxMetalKernel::new(
+            "ax_qwen3_moe_router_fused_v1",
+            &["logits_in"],
+            &["indices_out", "weights_out"],
+            MOE_ROUTER_FUSED_KERNEL_SOURCE,
+            "#include <metal_stdlib>\nusing namespace metal;",
+            false,
+        )
+    });
+
+    let out_shape = vec![1, 1, top_k as i32];
+    let mut outputs = kernel
+        .try_apply_with_template(
+            &[logits_f32],
+            &[
+                KernelOutputSpec {
+                    shape: out_shape.clone(),
+                    dtype: MlxDtype::Uint32,
+                },
+                KernelOutputSpec {
+                    shape: out_shape,
+                    dtype: MlxDtype::Float32,
+                },
+            ],
+            &[
+                KernelTemplateArg::Int {
+                    name: "NumExperts",
+                    value: num_experts as i32,
+                },
+                KernelTemplateArg::Int {
+                    name: "TopK",
+                    value: top_k as i32,
+                },
+                KernelTemplateArg::Int {
+                    name: "ThreadgroupSize",
+                    value: tg_size,
+                },
+                KernelTemplateArg::Int {
+                    name: "NormTopK",
+                    value: if norm_topk { 1 } else { 0 },
+                },
+            ],
+            (tg_size, 1, 1),
+            (tg_size, 1, 1),
+            None,
+        )
+        .ok()?;
+
+    if outputs.len() != 2 {
+        return None;
+    }
+    let weights = outputs.pop()?;
+    let indices = outputs.pop()?;
+    Some((indices, weights))
+}
+
 /// Qwen3 MoE router: proj → softmax → pick top-k by weight value (no rms_norm).
 ///
 /// By default (kill-switch via `AX_MLX_QWEN3_MOE_NARROW_SOFTMAX=0`), uses the
@@ -1448,6 +1642,23 @@ pub(crate) fn moe_router_qwen3(
     // validation confirmed token-for-token equivalence with mlx-lm's
     // precise=True reference.
     if fastpath::qwen3_moe_narrow_softmax_enabled() {
+        // Try fused Metal router (Tier 1C): collapses argpartition +
+        // take_along_axis + softmax + renormalize into one dispatch.
+        // Decode-only (seq==1); falls back to the MLX op path below.
+        let logits_f32 = if logits.dtype() == MlxDtype::Float32 {
+            logits.clone()
+        } else {
+            astype(&logits, MlxDtype::Float32, None)
+        };
+        if let Some((indices, weights)) = moe_router_fused_metal(
+            &logits_f32,
+            cfg.moe_expert_count,
+            cfg.moe_experts_per_token,
+            cfg.moe_norm_topk_prob,
+        ) {
+            return (indices, weights);
+        }
+
         let (top_k_indices, top_k_weights) = top_k_by_argpartition(
             &logits,
             cfg.moe_expert_count,
@@ -2243,6 +2454,58 @@ fn expert_parallel_eligible(
     Some(plan)
 }
 
+// ---------------------------------------------------------------------------
+// Tier 2A: Deep expert-block fusion — decode-only.
+//
+// Fuses gather_qmm(gate_up) + SwiGLU + gather_qmm(down) + weighted-sum into
+// a single Metal kernel dispatch, achieving dense-class bandwidth utilization
+// for MoE layers. Each expert’s weights are streamed through registers,
+// with activation applied inline, emitting only the final weighted-sum output.
+//
+// Status: scaffold — the kernel body requires multi-week Metal engineering.
+// The dispatch function and fastpath flag
+// (`AX_MLX_MOE_DEEP_EXPERT_BLOCK_METAL`) are in place; the kernel source
+// needs to be authored.
+// ---------------------------------------------------------------------------
+
+/// Attempt deep expert-block fusion for MoE decode.
+///
+/// Returns `Some(output)` if the fused kernel succeeds, `None` to fall back
+/// to the standard multi-dispatch path.
+///
+/// Gated by `AX_MLX_MOE_DEEP_EXPERT_BLOCK_METAL` (default OFF).
+fn try_moe_deep_expert_block_metal(
+    _cfg: &ModelConfig,
+    _w: &LayerWeights,
+    _x: &MlxArray,
+    _top_k_indices: &MlxArray,
+    _top_k_weights: &MlxArray,
+) -> Option<MlxArray> {
+    if !fastpath::moe_deep_expert_block_metal_enabled() {
+        return None;
+    }
+    // TODO(kernel): implement deep expert-block fusion Metal kernel.
+    // The kernel must fuse:
+    //   1. gather_qmm for packed gate_up (4-bit dequant + scatter-gather)
+    //   2. Inline SwiGLU activation (split + silu + multiply)
+    //   3. gather_qmm for down projection
+    //   4. Inline weighted-sum with top-k weights
+    //
+    // Key parameters (Qwen3-Coder-Next):
+    //   - hidden_dim: 2048
+    //   - expert_intermediate_size: 512
+    //   - num_experts: 256
+    //   - top_k: 10
+    //   - quantization: 4-bit affine, group_size=32
+    //
+    // Key challenges:
+    //   - Must beat MLX's general gather_qmm for fixed top_k=10
+    //   - 4-bit affine dequant + scatter-gather + activation in one kernel
+    //   - Down projection gather_qmm requires separate weight layout
+    //   - Weighted-sum across top_k experts with float32 accumulation
+    None
+}
+
 #[allow(clippy::too_many_arguments)]
 fn moe_experts_forward_impl(
     cfg: &ModelConfig,
@@ -2267,6 +2530,15 @@ fn moe_experts_forward_impl(
     // dispatch experts in parallel across GPU threadgroups. Currently falls
     // through to the sequential gather_qmm path.
     let _ep_plan = expert_parallel_eligible(seq, top_k_indices, cfg.moe_expert_count);
+
+    // Tier 2A: try deep expert-block fusion (decode-only). Fuses gather_qmm
+    // gate_up + SwiGLU + gather_qmm down + weighted-sum into one dispatch.
+    // Falls back to the standard multi-dispatch path when ineligible.
+    if seq == 1
+        && let Some(out) = try_moe_deep_expert_block_metal(cfg, w, x, top_k_indices, top_k_weights)
+    {
+        return out;
+    }
 
     // Match MLX SwitchGLU: [batch, seq, hidden] → [batch, seq, 1, 1, hidden].
     // The extra singleton before top_k is required by gather_mm/gather_qmm broadcasting.

@@ -47,6 +47,16 @@ pub(crate) fn linear_attention_forward(
         .as_ref()
         .expect("linear attention layer requires linear attention weights");
     let seq = x.shape()[1];
+
+    // Try whole-layer Metal kernel for decode (single-token step).
+    // Falls back to the standard multi-dispatch path on failure or when
+    // the fastpath flag is disabled.
+    if seq == 1
+        && let Some(out) = try_linear_attention_whole_layer_metal(cfg, w, x, cache, layer_idx)
+    {
+        return out;
+    }
+
     let profile_enabled = linear_attention_profile_enabled();
     if profile_enabled {
         record_linear_attention_profile_layer(seq);
@@ -479,6 +489,54 @@ fn linear_attention_inputs_packed_direct(
             && a.shape() == vec![1, x.shape()[1], cfg.num_value_heads as i32]
             && b.shape() == vec![1, x.shape()[1], cfg.num_value_heads as i32]
     })
+}
+
+// ---------------------------------------------------------------------------
+// Tier 3A: Whole-layer Metal kernel for linear-attention decode.
+//
+// Fuses the entire linear-attention decode path into one Metal dispatch:
+// RMSNorm + packed QKVZ/BA projection + conv1d + SiLU + per-head RMSNorm +
+// gated-delta recurrent update + output projection.
+//
+// Status: scaffold — the kernel body requires multi-week Metal engineering
+// combining quantized matmul dequantization, conv1d state update, and
+// recurrent state management in one kernel. The dispatch function and
+// fastpath flag (`AX_MLX_LINEAR_ATTENTION_WHOLE_LAYER_METAL`) are in place;
+// the kernel source needs to be authored.
+// ---------------------------------------------------------------------------
+
+/// Attempt whole-layer Metal dispatch for linear-attention decode.
+///
+/// Returns `Some(output)` if the fused kernel succeeds, `None` to fall back
+/// to the standard multi-dispatch path.
+///
+/// Gated by `AX_MLX_LINEAR_ATTENTION_WHOLE_LAYER_METAL` (default OFF).
+pub(crate) fn try_linear_attention_whole_layer_metal(
+    _cfg: &ModelConfig,
+    _w: &LayerWeights,
+    _x: &MlxArray,
+    _cache: &mut MlxKVCache,
+    _layer_idx: usize,
+) -> Option<MlxArray> {
+    if !fastpath::linear_attention_whole_layer_metal_enabled() {
+        return None;
+    }
+    // TODO(kernel): implement whole-layer Metal kernel for linear-attention
+    // decode. The kernel must fuse:
+    //   1. RMSNorm on input
+    //   2. Packed QKVZ/BA quantized matmul projection
+    //   3. Conv1d state update + SiLU activation
+    //   4. Split QKVZ into q, k, v, z
+    //   5. Per-head RMSNorm on q, k
+    //   6. GatedDelta recurrent update (reuse qwen35_gated_delta_decode_v1)
+    //   7. Output projection (quantized matmul)
+    //
+    // Key challenges:
+    //   - Quantized matmul dequantization (4/5/8-bit) inside Metal kernel
+    //   - Recurrent state update requires float32 accumulation
+    //   - Conv1d state must be updated before the recurrent step
+    //   - Output projection is a separate quantized matmul
+    None
 }
 
 #[cfg(test)]

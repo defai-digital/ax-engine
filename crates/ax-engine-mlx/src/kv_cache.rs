@@ -3188,6 +3188,23 @@ impl MlxKVCache {
         Some((k, v))
     }
 
+    /// Replace the backing K/V arrays for a layer.
+    ///
+    /// Used by the whole-layer compiled decode path to update the cache
+    /// with new arrays returned from the compiled closure. Unlike `append`,
+    /// this replaces the full backing buffer rather than writing new tokens
+    /// to the existing one. The `seq_len` is not incremented; callers must
+    /// manage `seq_len` separately.
+    pub fn replace_layer_kv(&mut self, layer: usize, new_k: MlxArray, new_v: MlxArray) {
+        let Some(Some(lkv)) = self.layers.get_mut(layer) else {
+            return;
+        };
+        lkv.k = new_k;
+        lkv.v = new_v;
+        lkv.last_k_view = None;
+        lkv.last_v_view = None;
+    }
+
     /// Reset cache entirely (e.g., between requests).
     pub fn reset(&mut self) {
         for entry in &mut self.layers {

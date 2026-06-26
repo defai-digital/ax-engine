@@ -39,8 +39,12 @@ use mlx_sys::{MlxArray, MlxClosure, MlxVectorArray};
 ///
 /// Maps `(layer_index, thread_id)` to a compiled closure that performs
 /// a single transformer layer's decode step including KV-cache update.
-static LAYER_DECODE_CACHE: OnceLock<Mutex<HashMap<(usize, ThreadId), MlxClosure>>> =
-    OnceLock::new();
+/// Value is `Option<MlxClosure>`: `Some` is a working compiled closure reused
+/// across decode steps; `None` records a layer whose compiled closure failed
+/// to compile or apply, so we fall back to the imperative path permanently
+/// instead of retrying on every step.
+type LayerDecodeCache = OnceLock<Mutex<HashMap<(usize, ThreadId), Option<MlxClosure>>>>;
+static LAYER_DECODE_CACHE: LayerDecodeCache = OnceLock::new();
 
 /// Per-layer MoE decode closure cache.
 ///
@@ -63,21 +67,26 @@ static LAYER_MOE_DECODE_CACHE: MoeDecodeCache = OnceLock::new();
 static LAYER_DENSE_FFN_DECODE_CACHE: OnceLock<Mutex<HashMap<(usize, ThreadId), MlxClosure>>> =
     OnceLock::new();
 
-/// Apply a per-layer decode closure, compiling it on first use.
+/// Apply a whole-layer decode closure, compiling it on first use.
 ///
 /// The closure takes:
 /// - `inputs[0]`: hidden state `[1, 1, hidden_dim]`
-/// - `inputs[1]`: KV cache key `[1, seq_len, kv_heads, kv_dim]`
-/// - `inputs[2]`: KV cache value `[1, seq_len, kv_heads, kv_dim]`
+/// - `inputs[1]`: KV cache key `[1, n_kv_heads, seq_len, head_dim]`
+/// - `inputs[2]`: KV cache value `[1, n_kv_heads, seq_len, head_dim]`
 ///
 /// And returns:
 /// - `outputs[0]`: updated hidden state `[1, 1, hidden_dim]`
-/// - `outputs[1]`: updated KV cache key `[1, seq_len+1, kv_heads, kv_dim]`
-/// - `outputs[2]`: updated KV cache value `[1, seq_len+1, kv_heads, kv_dim]`
+/// - `outputs[1]`: updated KV cache key `[1, n_kv_heads, seq_len+1, head_dim]`
+/// - `outputs[2]`: updated KV cache value `[1, n_kv_heads, seq_len+1, head_dim]`
 ///
 /// The compiled closure is cached per `(layer_index, thread_id)` and reused
 /// across decode steps. `shapeless=true` allows the closure to accept
 /// different sequence lengths without recompilation.
+///
+/// Gated by `AX_MLX_WHOLE_LAYER_DECODE_COMPILE` (default ON, kill-switch).
+/// Panics from the compiled closure are caught via `catch_unwind` and
+/// treated as a fallback to the imperative path. Failed layers are recorded
+/// as `None` so subsequent decode steps skip the compiled path permanently.
 pub fn apply_layer_decode(
     layer_index: usize,
     hidden: &MlxArray,
@@ -85,12 +94,22 @@ pub fn apply_layer_decode(
     kv_value: &MlxArray,
     layer_fn: impl Fn(&MlxVectorArray) -> Vec<MlxArray> + Send + 'static,
 ) -> Option<Vec<MlxArray>> {
+    if !crate::fastpath::whole_layer_decode_compile_enabled() {
+        return None;
+    }
     let cache = LAYER_DECODE_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
     let tid = std::thread::current().id();
 
     let guard = cache.lock().ok()?;
-    if let Some(closure) = guard.get(&(layer_index, tid)) {
-        return closure.try_apply(&[hidden, kv_key, kv_value]).ok();
+    if let Some(entry) = guard.get(&(layer_index, tid)) {
+        return match entry {
+            Some(closure) => std::panic::catch_unwind(AssertUnwindSafe(|| {
+                closure.try_apply(&[hidden, kv_key, kv_value]).ok()
+            }))
+            .ok()
+            .flatten(),
+            None => None,
+        };
     }
     drop(guard);
 
@@ -98,10 +117,15 @@ pub fn apply_layer_decode(
     if let std::collections::hash_map::Entry::Vacant(slot) = guard.entry((layer_index, tid)) {
         let closure = MlxClosure::new_dyn(layer_fn);
         if let Ok(compiled) = closure.compile(true) {
-            let result = compiled.try_apply(&[hidden, kv_key, kv_value]).ok();
-            slot.insert(compiled);
+            let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+                compiled.try_apply(&[hidden, kv_key, kv_value]).ok()
+            }))
+            .ok()
+            .flatten();
+            slot.insert(result.is_some().then_some(compiled));
             return result;
         }
+        slot.insert(None);
     }
 
     None
@@ -210,8 +234,8 @@ pub fn apply_layer_moe_decode(
 /// dim is constant per model; the only varying dimension (seq) is always
 /// 1 in decode.
 ///
-/// Gated by `AX_MLX_DENSE_FFN_COMPILE` (default OFF). Returns `None`
-/// when the flag is off, compilation fails, or the closure cannot be
+/// Gated by `AX_MLX_DENSE_FFN_COMPILE` (default ON, kill-switch). Returns
+/// `None` when the flag is off, compilation fails, or the closure cannot be
 /// applied.
 pub fn apply_layer_dense_ffn_decode(
     layer_index: usize,

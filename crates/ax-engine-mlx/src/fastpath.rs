@@ -569,20 +569,78 @@ env_flag_default_on!(
     "AX_MLX_MOE_LAYER_COMPILE"
 );
 
-env_flag!(
+env_flag_default_on!(
+    /// `AX_MLX_WHOLE_LAYER_DECODE_COMPILE` — enable whole-layer compiled
+    /// decode closure for standard-attention layers.
+    ///
+    /// **Default: ON** (kill-switch via `AX_MLX_WHOLE_LAYER_DECODE_COMPILE=0`).
+    /// When eligible (seq==1, standard attention, no TurboQuant context, no
+    /// profiling, no linear attention, no per-layer input), the entire layer
+    /// forward (QKV + SDPA + FFN + residual) is wrapped in a compiled
+    /// closure, collapsing the full layer dispatch into one graph. The
+    /// compiled closure takes `(hidden, kv_key, kv_value)` and returns
+    /// updated arrays. Falls back to the imperative path on compilation
+    /// failure. Set to 0 to disable.
+    whole_layer_decode_compile_enabled,
+    "AX_MLX_WHOLE_LAYER_DECODE_COMPILE"
+);
+
+env_flag_default_on!(
     /// `AX_MLX_DENSE_FFN_COMPILE` — enable per-layer compiled dense FFN
     /// decode closure.
     ///
-    /// **Default: OFF** (opt-in). Each dense FFN layer's decode forward is
-    /// wrapped in an `MlxClosure` compiled via `mlx_compile` with
+    /// **Default: ON** (kill-switch). Each dense FFN layer's decode forward
+    /// is wrapped in an `MlxClosure` compiled via `mlx_compile` with
     /// `shapeless=true`, collapsing the gate_up projection + split + SwiGLU
     /// activation + down projection + optional post-norm into a single
     /// compiled graph. Only engages for `seq == 1` (decode) and SwiGLU
     /// activation families (GEGLU's `gelu_approx` tree is known to abort
     /// under MLX compilation). Falls back to the uncompiled path on
-    /// compilation failure.
+    /// compilation failure. Set `AX_MLX_DENSE_FFN_COMPILE=0` to disable.
     dense_ffn_compile_enabled,
     "AX_MLX_DENSE_FFN_COMPILE"
+);
+
+env_flag!(
+    /// `AX_MLX_MOE_ROUTER_FUSED_METAL` — enable fused MoE router Metal
+    /// kernel for decode.
+    ///
+    /// **Default: OFF** (opt-in). When the model uses the Qwen3 narrow-softmax
+    /// router path and the logits are castable to f32, the post-matmul router
+    /// chain (argpartition + take_along_axis + softmax + renormalize) is
+    /// collapsed into a single Metal kernel dispatch. Decode-only (seq==1).
+    /// Falls back to the MLX op path when ineligible.
+    moe_router_fused_metal_enabled,
+    "AX_MLX_MOE_ROUTER_FUSED_METAL"
+);
+
+env_flag!(
+    /// `AX_MLX_LINEAR_ATTENTION_WHOLE_LAYER_METAL` — enable whole-layer
+    /// Metal kernel for linear-attention decode.
+    ///
+    /// **Default: OFF** (opt-in). When eligible (seq==1, qwen3_5/qwen3_next
+    /// family), the entire linear-attention decode path (RMSNorm + QKVZ/BA
+    /// projection + conv1d + SiLU + per-head RMSNorm + gated-delta + output
+    /// projection) is fused into a single Metal kernel dispatch. Decode-only.
+    /// Falls back to the multi-dispatch path when ineligible.
+    ///
+    /// Status: scaffold — kernel body requires multi-week Metal engineering.
+    linear_attention_whole_layer_metal_enabled,
+    "AX_MLX_LINEAR_ATTENTION_WHOLE_LAYER_METAL"
+);
+
+env_flag!(
+    /// `AX_MLX_MOE_DEEP_EXPERT_BLOCK_METAL` — enable deep expert-block
+    /// fusion Metal kernel for MoE decode.
+    ///
+    /// **Default: OFF** (opt-in). Fuses gather_qmm(gate_up) + SwiGLU +
+    /// gather_qmm(down) + weighted-sum into a single Metal kernel dispatch,
+    /// achieving dense-class bandwidth utilization for MoE layers. Decode-only.
+    /// Falls back to the standard multi-dispatch path when ineligible.
+    ///
+    /// Status: scaffold — kernel body requires multi-week Metal engineering.
+    moe_deep_expert_block_metal_enabled,
+    "AX_MLX_MOE_DEEP_EXPERT_BLOCK_METAL"
 );
 
 env_flag!(
@@ -1126,6 +1184,81 @@ mod tests {
         ));
         assert!(probe_default_on(
             "AX_FASTPATH_TEST_DENSE_SWIGLU_PACKED_METAL_ENABLED",
+            "1"
+        ));
+    }
+
+    #[test]
+    fn dense_ffn_compile_uses_default_on_kill_switch_contract() {
+        assert!(parse_bool_env_default_on(
+            "AX_FASTPATH_TEST_DENSE_FFN_COMPILE_UNSET"
+        ));
+        assert!(!probe_default_on(
+            "AX_FASTPATH_TEST_DENSE_FFN_COMPILE_DISABLED",
+            "0"
+        ));
+        assert!(probe_default_on(
+            "AX_FASTPATH_TEST_DENSE_FFN_COMPILE_ENABLED",
+            "1"
+        ));
+    }
+
+    #[test]
+    fn whole_layer_decode_compile_uses_default_on_kill_switch_contract() {
+        assert!(parse_bool_env_default_on(
+            "AX_FASTPATH_TEST_WHOLE_LAYER_DECODE_COMPILE_UNSET"
+        ));
+        assert!(!probe_default_on(
+            "AX_FASTPATH_TEST_WHOLE_LAYER_DECODE_COMPILE_DISABLED",
+            "0"
+        ));
+        assert!(probe_default_on(
+            "AX_FASTPATH_TEST_WHOLE_LAYER_DECODE_COMPILE_ENABLED",
+            "1"
+        ));
+    }
+
+    #[test]
+    fn moe_router_fused_metal_uses_opt_in_contract() {
+        assert!(!parse_bool_env(
+            "AX_FASTPATH_TEST_MOE_ROUTER_FUSED_METAL_UNSET"
+        ));
+        assert!(!probe(
+            "AX_FASTPATH_TEST_MOE_ROUTER_FUSED_METAL_DISABLED",
+            "0"
+        ));
+        assert!(probe(
+            "AX_FASTPATH_TEST_MOE_ROUTER_FUSED_METAL_ENABLED",
+            "1"
+        ));
+    }
+
+    #[test]
+    fn linear_attention_whole_layer_metal_uses_opt_in_contract() {
+        assert!(!parse_bool_env(
+            "AX_FASTPATH_TEST_LINEAR_ATTENTION_WHOLE_LAYER_METAL_UNSET"
+        ));
+        assert!(!probe(
+            "AX_FASTPATH_TEST_LINEAR_ATTENTION_WHOLE_LAYER_METAL_DISABLED",
+            "0"
+        ));
+        assert!(probe(
+            "AX_FASTPATH_TEST_LINEAR_ATTENTION_WHOLE_LAYER_METAL_ENABLED",
+            "1"
+        ));
+    }
+
+    #[test]
+    fn moe_deep_expert_block_metal_uses_opt_in_contract() {
+        assert!(!parse_bool_env(
+            "AX_FASTPATH_TEST_MOE_DEEP_EXPERT_BLOCK_METAL_UNSET"
+        ));
+        assert!(!probe(
+            "AX_FASTPATH_TEST_MOE_DEEP_EXPERT_BLOCK_METAL_DISABLED",
+            "0"
+        ));
+        assert!(probe(
+            "AX_FASTPATH_TEST_MOE_DEEP_EXPERT_BLOCK_METAL_ENABLED",
             "1"
         ));
     }
