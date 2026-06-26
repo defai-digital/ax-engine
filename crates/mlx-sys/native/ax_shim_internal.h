@@ -12,6 +12,8 @@
 
 #include "ax_shim.h"
 
+#include <array>
+#include <cstring>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -88,6 +90,31 @@ inline mx::Device& dref(mlx_device d) {
 
 inline std::optional<mx::array> opt_arr(mlx_array a) {
   return a.ctx ? std::make_optional(aref(a)) : std::nullopt;
+}
+
+/* ================================================================
+ * Small helpers
+ * ================================================================ */
+
+/// Construct a std::string from a possibly-null C pointer.  Passing a null
+/// const char* to std::string is undefined behaviour; this helper returns an
+/// empty string instead, turning a potential crash into a caught exception
+/// from the downstream MLX API.
+inline std::string safe_str(const char* s) {
+  return s ? std::string(s) : std::string();
+}
+
+/// Build an mx::Shape from a raw int pointer + count.  For shapes with ≤ 4
+/// dimensions (the overwhelming majority of LLM ops: scalars, vectors,
+/// matrices, [B,S,H,D] tensors) a stack-allocated std::array avoids a
+/// heap round-trip on every reshape / transpose / slice.
+inline mx::Shape make_shape(const int* p, size_t n) {
+  if (n <= 4 && p) {
+    std::array<int, 4> buf{};
+    std::memcpy(buf.data(), p, n * sizeof(int));
+    return mx::Shape(buf.data(), buf.data() + n);
+  }
+  return mx::Shape(p, p + n);
 }
 
 /* ================================================================

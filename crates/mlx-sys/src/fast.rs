@@ -1,4 +1,5 @@
 use std::ffi::CString;
+use std::sync::LazyLock;
 
 use crate::array::{MlxArray, null_ffi_array};
 use crate::error::{ensure_error_handler, panic_on_status};
@@ -19,6 +20,12 @@ pub enum ScaledDotProductAttentionMask<'a> {
     Causal,
     Array(&'a MlxArray),
 }
+
+// Pre-allocated CStrings for the two SDPA mask modes.  These are on the
+// decode hot path (one allocation per attention layer per token), so caching
+// them as process-global statics eliminates a heap alloc+free round-trip.
+static MASK_CAUSAL: LazyLock<CString> = LazyLock::new(|| CString::new("causal").unwrap());
+static MASK_EMPTY: LazyLock<CString> = LazyLock::new(|| CString::new("").unwrap());
 
 /// RMS layer normalization.
 pub fn rms_norm(
@@ -112,9 +119,9 @@ pub fn scaled_dot_product_attention_with_mask(
     unsafe {
         let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
         let mask_mode = match mask {
-            ScaledDotProductAttentionMask::Causal => CString::new("causal").unwrap(),
+            ScaledDotProductAttentionMask::Causal => &*MASK_CAUSAL,
             ScaledDotProductAttentionMask::None | ScaledDotProductAttentionMask::Array(_) => {
-                CString::new("").unwrap()
+                &*MASK_EMPTY
             }
         };
         let null_arr = null_ffi_array();

@@ -11,12 +11,12 @@ use super::super::profile::{
 use super::super::shared::{
     KVConcatBuffer, add_then_multiply_scalar, attention_mask_array, attention_output_projection,
     bidirectional_attention, direct_qk_norm_rope_route_enabled_for_family, ffn_swiglu,
-    flatten_attention_output_bhsd, flatten_compiled_moe_inputs, full_precision_attention,
-    moe_experts_forward, moe_experts_forward_gemma4, moe_experts_forward_with_cloned_weights,
-    moe_experts_forward_with_shared, moe_router_gemma4, moe_router_glm, moe_router_qwen3,
-    per_layer_input_gate_project, prepare_value_bhsd_from_proj, qk_norm_bhsd_from_proj,
-    qk_norm_rope_bhsd_from_proj_with_route, qkv_project, qw, rms_norm_opt, shape_element_count,
-    shared_expert_forward, turboquant_decode_attention_experimental,
+    flatten_attention_output_bhsd, flatten_compiled_moe_inputs, flatten_gemma4_dual_path_inputs,
+    full_precision_attention, moe_experts_forward, moe_experts_forward_gemma4,
+    moe_experts_forward_with_cloned_weights, moe_experts_forward_with_shared, moe_router_gemma4,
+    moe_router_glm, moe_router_qwen3, per_layer_input_gate_project, prepare_value_bhsd_from_proj,
+    qk_norm_bhsd_from_proj, qk_norm_rope_bhsd_from_proj_with_route, qkv_project, qw, rms_norm_opt,
+    shape_element_count, shared_expert_forward, turboquant_decode_attention_experimental,
 };
 use super::super::turboquant_context::{
     TurboQuantModelDecodeCandidate, TurboQuantModelDecodeCandidateStatus,
@@ -24,7 +24,7 @@ use super::super::turboquant_context::{
 };
 use crate::fastpath;
 use crate::kv_cache::{MlxKVCache, MlxKvCompressionDecodeOutcome};
-use crate::per_layer_compile::apply_layer_moe_decode;
+use crate::per_layer_compile::{apply_layer_gemma4_dual_path_decode, apply_layer_moe_decode};
 use crate::weights::LayerWeights;
 
 /// Minimum top-k selection count above which the sort path is taken in Gemma4 MoE.
@@ -515,64 +515,84 @@ pub(crate) fn layer_forward(
     let ffn_started = profile_forward_layer.then(Instant::now);
     let ffn_out = if w.router_proj.is_some() {
         if cfg.gemma4_moe_router {
-            // Gemma4 dual-path: dense sub-block + expert sub-block.
-            let dense_started = profile_gemma4_moe_decode.then(Instant::now);
-            let h1 = ffn_swiglu(cfg, w, &normed2, w.ffn_post_norm1.as_ref(), layer_idx);
-            if let Some(started) = dense_started {
-                profile_eval_elapsed(
-                    profile_gemma4_moe_decode,
-                    Gemma4MoeProfileStage::Dense,
-                    started,
-                    &[&h1],
-                );
+            // Try compiled dual-path decode closure (gated by AX_MLX_MOE_LAYER_COMPILE).
+            let compiled_result = if seq == 1 && fastpath::moe_layer_compile_enabled() {
+                let cfg_clone = cfg.clone();
+                let (inputs, mut schema) = flatten_gemma4_dual_path_inputs(&normed2, &hidden, w);
+                schema.moe_expert_count = cfg.moe_expert_count;
+                schema.moe_experts_per_token = cfg.moe_experts_per_token;
+                let input_refs: Vec<&MlxArray> = inputs.iter().collect();
+                apply_layer_gemma4_dual_path_decode(
+                    layer_idx,
+                    &input_refs,
+                    move |inputs: &MlxVectorArray| vec![schema.forward(inputs, &cfg_clone)],
+                )
+            } else {
+                None
+            };
+            if let Some(result) = compiled_result.and_then(|r| r.into_iter().next()) {
+                result
+            } else {
+                // Gemma4 dual-path: dense sub-block + expert sub-block.
+                let dense_started = profile_gemma4_moe_decode.then(Instant::now);
+                let h1 = ffn_swiglu(cfg, w, &normed2, w.ffn_post_norm1.as_ref(), layer_idx);
+                if let Some(started) = dense_started {
+                    profile_eval_elapsed(
+                        profile_gemma4_moe_decode,
+                        Gemma4MoeProfileStage::Dense,
+                        started,
+                        &[&h1],
+                    );
+                }
+                let h2_norm = w
+                    .ffn_norm2
+                    .as_ref()
+                    .expect("validated Gemma4 MoE layer must include ffn_norm_2");
+                let h2_normed = rms_norm(&hidden, Some(h2_norm), cfg.rms_norm_eps, None);
+                let router_started = profile_gemma4_moe_decode.then(Instant::now);
+                // Gemma4 intentionally routes from raw hidden through its own combined-scale
+                // RMSNorm, while experts consume the separately normalized h2 input.
+                let (top_k_indices, top_k_weights) = moe_router_gemma4(cfg, w, &hidden);
+                if let Some(started) = router_started {
+                    profile_eval_elapsed(
+                        profile_gemma4_moe_decode,
+                        Gemma4MoeProfileStage::Router,
+                        started,
+                        &[&top_k_indices, &top_k_weights],
+                    );
+                }
+                if profile_gemma4_moe_decode {
+                    let topk_selections = shape_element_count(&top_k_indices.shape());
+                    record_gemma4_moe_decode_layer(
+                        topk_selections,
+                        topk_selections >= SWITCH_GLU_SORT_THRESHOLD,
+                    );
+                }
+                let expert_started = profile_gemma4_moe_decode.then(Instant::now);
+                let h2 =
+                    moe_experts_forward_gemma4(cfg, w, &h2_normed, &top_k_indices, &top_k_weights);
+                if let Some(started) = expert_started {
+                    profile_eval_elapsed(
+                        profile_gemma4_moe_decode,
+                        Gemma4MoeProfileStage::Expert,
+                        started,
+                        &[&h2],
+                    );
+                }
+                let post_started = profile_gemma4_moe_decode.then(Instant::now);
+                let h2 = rms_norm_opt(&h2, w.ffn_post_norm2.as_ref(), cfg.rms_norm_eps);
+                let combined = add(&h1, &h2, None);
+                let out = rms_norm_opt(&combined, w.ffn_post_norm.as_ref(), cfg.rms_norm_eps);
+                if let Some(started) = post_started {
+                    profile_eval_elapsed(
+                        profile_gemma4_moe_decode,
+                        Gemma4MoeProfileStage::Post,
+                        started,
+                        &[&out],
+                    );
+                }
+                out
             }
-            let h2_norm = w
-                .ffn_norm2
-                .as_ref()
-                .expect("validated Gemma4 MoE layer must include ffn_norm_2");
-            let h2_normed = rms_norm(&hidden, Some(h2_norm), cfg.rms_norm_eps, None);
-            let router_started = profile_gemma4_moe_decode.then(Instant::now);
-            // Gemma4 intentionally routes from raw hidden through its own combined-scale
-            // RMSNorm, while experts consume the separately normalized h2 input.
-            let (top_k_indices, top_k_weights) = moe_router_gemma4(cfg, w, &hidden);
-            if let Some(started) = router_started {
-                profile_eval_elapsed(
-                    profile_gemma4_moe_decode,
-                    Gemma4MoeProfileStage::Router,
-                    started,
-                    &[&top_k_indices, &top_k_weights],
-                );
-            }
-            if profile_gemma4_moe_decode {
-                let topk_selections = shape_element_count(&top_k_indices.shape());
-                record_gemma4_moe_decode_layer(
-                    topk_selections,
-                    topk_selections >= SWITCH_GLU_SORT_THRESHOLD,
-                );
-            }
-            let expert_started = profile_gemma4_moe_decode.then(Instant::now);
-            let h2 = moe_experts_forward_gemma4(cfg, w, &h2_normed, &top_k_indices, &top_k_weights);
-            if let Some(started) = expert_started {
-                profile_eval_elapsed(
-                    profile_gemma4_moe_decode,
-                    Gemma4MoeProfileStage::Expert,
-                    started,
-                    &[&h2],
-                );
-            }
-            let post_started = profile_gemma4_moe_decode.then(Instant::now);
-            let h2 = rms_norm_opt(&h2, w.ffn_post_norm2.as_ref(), cfg.rms_norm_eps);
-            let combined = add(&h1, &h2, None);
-            let out = rms_norm_opt(&combined, w.ffn_post_norm.as_ref(), cfg.rms_norm_eps);
-            if let Some(started) = post_started {
-                profile_eval_elapsed(
-                    profile_gemma4_moe_decode,
-                    Gemma4MoeProfileStage::Post,
-                    started,
-                    &[&out],
-                );
-            }
-            out
         } else {
             let router_started = profile_forward_layer.then(Instant::now);
             let (top_k_indices, top_k_weights) = if cfg.glm_router.is_some() {
@@ -637,7 +657,7 @@ pub(crate) fn layer_forward(
                     let (x, indices, weights, gate_up, gate, up, down, shared) =
                         schema.rebuild(inputs);
                     vec![moe_experts_forward_with_cloned_weights(
-                        &cfg_clone, &x, &indices, &weights, gate_up, gate, up, down, shared,
+                        &cfg_clone, &x, &indices, &weights, gate_up, gate, up, down, shared, None,
                     )]
                 })
             } else {

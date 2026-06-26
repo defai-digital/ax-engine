@@ -6,6 +6,7 @@
 
 #include <cstdint>
 #include <cstring>
+#include <exception>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -42,7 +43,13 @@ static void ax_set_error(const char* msg) {
 }
 
 void ax_set_current_error() {
-  try { throw; }
+  // Use std::current_exception() to safely check whether an exception is
+  // active before rethrowing.  A bare `throw;` outside a catch block calls
+  // std::terminate — this guard turns a future programming error into a
+  // recoverable error message instead of a hard crash.
+  auto ex = std::current_exception();
+  if (!ex) { ax_set_error("unknown error (no active exception)"); return; }
+  try { std::rethrow_exception(ex); }
   catch (const std::exception& e) { ax_set_error(e.what()); }
   catch (...) { ax_set_error("unknown MLX exception"); }
 }
@@ -152,8 +159,7 @@ extern "C" int mlx_array_free(mlx_array a) { if (a.ctx) delete static_cast<mx::a
 
 extern "C" mlx_array mlx_array_new_data(
     const void* data, const int* shape, int dim, mlx_dtype dtype) {
-  AX_TRY {
-    return mlx_array{new mx::array(make_array(data, mx::Shape(shape, shape + dim), to_dtype(dtype)))};
+  AX_TRY { return mlx_array{new mx::array(make_array(data, make_shape(shape, dim), to_dtype(dtype)))};
   } AX_CATCH_NULL
 }
 
@@ -230,10 +236,16 @@ extern "C" int mlx_device_info_get(mlx_device_info* info, mlx_device dev) {
     const auto& props = mx::device_info(d);
     device_info_t m;
     for (auto& [k,v] : props) {
-      if (std::holds_alternative<std::string>(v))
-        m[k] = std::get<std::string>(v);
-      else
-        m[k] = std::get<size_t>(v);
+      std::visit([&](const auto& val) {
+        using T = std::decay_t<decltype(val)>;
+        if constexpr (std::is_same_v<T, std::string>)
+          m[k] = val;
+        else if constexpr (std::is_same_v<T, size_t>)
+          m[k] = val;
+        // Ignore unknown variant alternatives silently — future MLX
+        // versions may add bool/int alternatives that device_info_get_size
+        // does not need.
+      }, v);
     }
     if (info->ctx) *static_cast<device_info_t*>(info->ctx) = std::move(m);
     else info->ctx = new device_info_t(std::move(m));
@@ -259,7 +271,7 @@ extern "C" int mlx_astype(mlx_array* r, const mlx_array a, mlx_dtype dt, const m
 extern "C" int mlx_view(mlx_array* r, const mlx_array a, mlx_dtype dt, const mlx_stream s) {
   AX_TRY { aset(r, mx::view(aref(a), to_dtype(dt), sd(s))); return 0; } AX_CATCH }
 extern "C" int mlx_reshape(mlx_array* r, const mlx_array a, const int* sh, size_t n, const mlx_stream s) {
-  AX_TRY { aset(r, mx::reshape(aref(a), mx::Shape(sh, sh+n), sd(s))); return 0; } AX_CATCH }
+  AX_TRY { aset(r, mx::reshape(aref(a), make_shape(sh, n), sd(s))); return 0; } AX_CATCH }
 extern "C" int mlx_transpose_axes(mlx_array* r, const mlx_array a, const int* ax, size_t n, const mlx_stream s) {
   AX_TRY { aset(r, mx::transpose(aref(a), std::vector<int>(ax, ax+n), sd(s))); return 0; } AX_CATCH }
 extern "C" int mlx_expand_dims(mlx_array* r, const mlx_array a, int ax, const mlx_stream s) {
@@ -267,14 +279,14 @@ extern "C" int mlx_expand_dims(mlx_array* r, const mlx_array a, int ax, const ml
 extern "C" int mlx_expand_dims_axes(mlx_array* r, const mlx_array a, const int* ax, size_t n, const mlx_stream s) {
   AX_TRY { aset(r, mx::expand_dims(aref(a), std::vector<int>(ax, ax+n), sd(s))); return 0; } AX_CATCH }
 extern "C" int mlx_broadcast_to(mlx_array* r, const mlx_array a, const int* sh, size_t n, const mlx_stream s) {
-  AX_TRY { aset(r, mx::broadcast_to(aref(a), mx::Shape(sh, sh+n), sd(s))); return 0; } AX_CATCH }
+  AX_TRY { aset(r, mx::broadcast_to(aref(a), make_shape(sh, n), sd(s))); return 0; } AX_CATCH }
 extern "C" int mlx_flatten(mlx_array* r, const mlx_array a, int sa, int ea, const mlx_stream s) {
   AX_TRY { aset(r, mx::flatten(aref(a), sa, ea, sd(s))); return 0; } AX_CATCH }
 extern "C" int mlx_unflatten(mlx_array* r, const mlx_array a, int ax, const int* sh, size_t n, const mlx_stream s) {
-  AX_TRY { aset(r, mx::unflatten(aref(a), ax, mx::Shape(sh, sh+n), sd(s))); return 0; } AX_CATCH }
+  AX_TRY { aset(r, mx::unflatten(aref(a), ax, make_shape(sh, n), sd(s))); return 0; } AX_CATCH }
 extern "C" int mlx_as_strided(mlx_array* r, const mlx_array a, const int* sh, size_t sn,
     const int64_t* st, size_t stn, size_t off, const mlx_stream s) {
-  AX_TRY { aset(r, mx::as_strided(aref(a), mx::Shape(sh, sh+sn), mx::Strides(st, st+stn), off, sd(s))); return 0; } AX_CATCH }
+  AX_TRY { aset(r, mx::as_strided(aref(a), make_shape(sh, sn), mx::Strides(st, st+stn), off, sd(s))); return 0; } AX_CATCH }
 extern "C" int mlx_concatenate_axis(mlx_array* r, const mlx_vector_array arrs, int ax, const mlx_stream s) {
   AX_TRY { aset(r, mx::concatenate(varef(arrs), ax, sd(s))); return 0; } AX_CATCH }
 extern "C" int mlx_split(mlx_vector_array* r, const mlx_array a, int n, int ax, const mlx_stream s) {
@@ -284,10 +296,10 @@ extern "C" int mlx_stack_axis(mlx_array* r, const mlx_vector_array arrs, int ax,
 /* NOTE: slice/slice_update strides use Shape (int), not Strides (int64_t) */
 extern "C" int mlx_slice(mlx_array* r, const mlx_array a, const int* st, size_t sn,
     const int* sp, size_t spn, const int* str, size_t strn, const mlx_stream s) {
-  AX_TRY { aset(r, mx::slice(aref(a), mx::Shape(st,st+sn), mx::Shape(sp,sp+spn), mx::Shape(str,str+strn), sd(s))); return 0; } AX_CATCH }
+  AX_TRY { aset(r, mx::slice(aref(a), make_shape(st,sn), make_shape(sp,spn), make_shape(str,strn), sd(s))); return 0; } AX_CATCH }
 extern "C" int mlx_slice_update(mlx_array* r, const mlx_array src, const mlx_array upd,
     const int* st, size_t sn, const int* sp, size_t spn, const int* str, size_t strn, const mlx_stream s) {
-  AX_TRY { aset(r, mx::slice_update(aref(src), aref(upd), mx::Shape(st,st+sn), mx::Shape(sp,sp+spn), mx::Shape(str,str+strn), sd(s))); return 0; } AX_CATCH }
+  AX_TRY { aset(r, mx::slice_update(aref(src), aref(upd), make_shape(st,sn), make_shape(sp,spn), make_shape(str,strn), sd(s))); return 0; } AX_CATCH }
 extern "C" int mlx_repeat(mlx_array* r, const mlx_array a, int rep, const mlx_stream s) {
   AX_TRY { aset(r, mx::repeat(aref(a), rep, sd(s))); return 0; } AX_CATCH }
 extern "C" int mlx_repeat_axis(mlx_array* r, const mlx_array a, int rep, int ax, const mlx_stream s) {
@@ -296,9 +308,9 @@ extern "C" int mlx_pad(mlx_array* r, const mlx_array a, const int* axes, size_t 
     const int* lo, size_t lon, const int* hi, size_t hin,
     const mlx_array pv, const char* mode, const mlx_stream s) {
   AX_TRY {
-    auto m = std::string(mode);
+    auto m = safe_str(mode);
     aset(r, mx::pad(aref(a), std::vector<int>(axes,axes+an),
-      mx::Shape(lo,lo+lon), mx::Shape(hi,hi+hin),
+      make_shape(lo,lon), make_shape(hi,hin),
       aref(pv), m, sd(s)));
     return 0;
   } AX_CATCH
@@ -351,7 +363,7 @@ extern "C" int mlx_softmax_axis(mlx_array* r, const mlx_array a, int ax, bool pr
 
 /* Creation */
 extern "C" int mlx_zeros(mlx_array* r, const int* sh, size_t n, mlx_dtype dt, const mlx_stream s) {
-  AX_TRY { aset(r, mx::zeros(mx::Shape(sh,sh+n), to_dtype(dt), sd(s))); return 0; } AX_CATCH }
+  AX_TRY { aset(r, mx::zeros(make_shape(sh, n), to_dtype(dt), sd(s))); return 0; } AX_CATCH }
 extern "C" int mlx_arange(mlx_array* r, double start, double stop, double step, mlx_dtype dt, const mlx_stream s) {
   AX_TRY { aset(r, mx::arange(start, stop, step, to_dtype(dt), sd(s))); return 0; } AX_CATCH }
 extern "C" int mlx_random_categorical(mlx_array* r, const mlx_array logits, int ax, const mlx_array key, const mlx_stream s) {
@@ -372,15 +384,15 @@ extern "C" int mlx_clip(mlx_array* r, const mlx_array a, const mlx_array mn, con
  * ================================================================ */
 extern "C" int mlx_quantize(mlx_vector_array* r, const mlx_array w, mlx_optional_int gs, mlx_optional_int bits,
     const char* mode, const mlx_array gscale, const mlx_stream s) {
-  AX_TRY { vaset(r, mx::quantize(aref(w), opt_int(gs), opt_int(bits), std::string(mode), opt_arr(gscale), sd(s))); return 0; } AX_CATCH }
+  AX_TRY { vaset(r, mx::quantize(aref(w), opt_int(gs), opt_int(bits), safe_str(mode), opt_arr(gscale), sd(s))); return 0; } AX_CATCH }
 
 extern "C" int mlx_dequantize(mlx_array* r, const mlx_array w, const mlx_array scales, const mlx_array biases,
     mlx_optional_int gs, mlx_optional_int bits, const char* mode, const mlx_array gscale, mlx_optional_dtype dt, const mlx_stream s) {
-  AX_TRY { aset(r, mx::dequantize(aref(w), aref(scales), opt_arr(biases), opt_int(gs), opt_int(bits), std::string(mode), opt_arr(gscale), opt_dtype(dt), sd(s))); return 0; } AX_CATCH }
+  AX_TRY { aset(r, mx::dequantize(aref(w), aref(scales), opt_arr(biases), opt_int(gs), opt_int(bits), safe_str(mode), opt_arr(gscale), opt_dtype(dt), sd(s))); return 0; } AX_CATCH }
 
 extern "C" int mlx_quantized_matmul(mlx_array* r, const mlx_array x, const mlx_array w, const mlx_array scales,
     const mlx_array biases, bool tr, mlx_optional_int gs, mlx_optional_int bits, const char* mode, const mlx_stream s) {
-  AX_TRY { aset(r, mx::quantized_matmul(aref(x), aref(w), aref(scales), opt_arr(biases), tr, opt_int(gs), opt_int(bits), std::string(mode), sd(s))); return 0; } AX_CATCH }
+  AX_TRY { aset(r, mx::quantized_matmul(aref(x), aref(w), aref(scales), opt_arr(biases), tr, opt_int(gs), opt_int(bits), safe_str(mode), sd(s))); return 0; } AX_CATCH }
 
 extern "C" int mlx_gather_mm(mlx_array* r, const mlx_array a, const mlx_array b,
     const mlx_array li, const mlx_array ri, bool sorted, const mlx_stream s) {
@@ -389,7 +401,7 @@ extern "C" int mlx_gather_mm(mlx_array* r, const mlx_array a, const mlx_array b,
 extern "C" int mlx_gather_qmm(mlx_array* r, const mlx_array x, const mlx_array w, const mlx_array scales,
     const mlx_array biases, const mlx_array li, const mlx_array ri, bool tr,
     mlx_optional_int gs, mlx_optional_int bits, const char* mode, bool sorted, const mlx_stream s) {
-  AX_TRY { aset(r, mx::gather_qmm(aref(x), aref(w), aref(scales), opt_arr(biases), opt_arr(li), opt_arr(ri), tr, opt_int(gs), opt_int(bits), std::string(mode), sorted, sd(s))); return 0; } AX_CATCH }
+  AX_TRY { aset(r, mx::gather_qmm(aref(x), aref(w), aref(scales), opt_arr(biases), opt_arr(li), opt_arr(ri), tr, opt_int(gs), opt_int(bits), safe_str(mode), sorted, sd(s))); return 0; } AX_CATCH }
 
 extern "C" int mlx_to_fp8(mlx_array* r, const mlx_array x, const mlx_stream s) {
   AX_TRY { aset(r, mx::to_fp8(aref(x), sd(s))); return 0; } AX_CATCH }
@@ -412,7 +424,7 @@ extern "C" int mlx_fast_rope(mlx_array* r, const mlx_array x, int dims, bool tra
 extern "C" int mlx_fast_scaled_dot_product_attention(mlx_array* r,
     const mlx_array q, const mlx_array k, const mlx_array v,
     float scale, const char* mask_mode, const mlx_array mask_arr, const mlx_array sinks, const mlx_stream s) {
-  AX_TRY { aset(r, mx::fast::scaled_dot_product_attention(aref(q), aref(k), aref(v), scale, std::string(mask_mode), opt_arr(mask_arr), opt_arr(sinks), sd(s))); return 0; } AX_CATCH }
+  AX_TRY { aset(r, mx::fast::scaled_dot_product_attention(aref(q), aref(k), aref(v), scale, safe_str(mask_mode), opt_arr(mask_arr), opt_arr(sinks), sd(s))); return 0; } AX_CATCH }
 extern "C" int mlx_fast_layer_norm(mlx_array* r, const mlx_array x, const mlx_array w, const mlx_array b, float eps, const mlx_stream s) {
   AX_TRY { aset(r, mx::fast::layer_norm(aref(x), opt_arr(w), opt_arr(b), eps, sd(s))); return 0; } AX_CATCH }
 
@@ -432,11 +444,11 @@ extern "C" int mlx_fast_metal_kernel_config_set_grid(mlx_fast_metal_kernel_confi
 extern "C" int mlx_fast_metal_kernel_config_set_thread_group(mlx_fast_metal_kernel_config c, int t1, int t2, int t3) {
   AX_TRY { mcfgref(c).thread_group = {t1,t2,t3}; return 0; } AX_CATCH }
 extern "C" int mlx_fast_metal_kernel_config_add_template_arg_dtype(mlx_fast_metal_kernel_config c, const char* name, mlx_dtype dt) {
-  AX_TRY { mcfgref(c).template_args.push_back({std::string(name), to_dtype(dt)}); return 0; } AX_CATCH }
+  AX_TRY { mcfgref(c).template_args.push_back({safe_str(name), to_dtype(dt)}); return 0; } AX_CATCH }
 extern "C" int mlx_fast_metal_kernel_config_add_template_arg_int(mlx_fast_metal_kernel_config c, const char* name, int v) {
-  AX_TRY { mcfgref(c).template_args.push_back({std::string(name), v}); return 0; } AX_CATCH }
+  AX_TRY { mcfgref(c).template_args.push_back({safe_str(name), v}); return 0; } AX_CATCH }
 extern "C" int mlx_fast_metal_kernel_config_add_template_arg_bool(mlx_fast_metal_kernel_config c, const char* name, bool v) {
-  AX_TRY { mcfgref(c).template_args.push_back({std::string(name), v}); return 0; } AX_CATCH }
+  AX_TRY { mcfgref(c).template_args.push_back({safe_str(name), v}); return 0; } AX_CATCH }
 
 extern "C" mlx_fast_metal_kernel mlx_fast_metal_kernel_new(
     const char* name, const mlx_vector_string inp, const mlx_vector_string out,
@@ -466,7 +478,7 @@ extern "C" int mlx_fast_metal_kernel_apply(mlx_vector_array* out, mlx_fast_metal
 extern "C" int mlx_load_safetensors(mlx_map_string_to_array* r0, mlx_map_string_to_string* r1,
     const char* file, const mlx_stream s) {
   AX_TRY {
-    auto result = mx::load_safetensors(std::string(file), sd(s));
+    auto result = mx::load_safetensors(safe_str(file), sd(s));
     auto& tensors = result.first;
     auto& metadata = result.second;
     if (r0->ctx) *static_cast<std::unordered_map<std::string, mx::array>*>(r0->ctx) = std::move(tensors);
@@ -534,7 +546,7 @@ extern "C" int mlx_vector_array_get(mlx_array* r, const mlx_vector_array v, size
 extern "C" mlx_vector_string mlx_vector_string_new(void) { return {new std::vector<std::string>()}; }
 extern "C" int mlx_vector_string_free(mlx_vector_string v) { if (v.ctx) delete static_cast<std::vector<std::string>*>(v.ctx); return 0; }
 extern "C" int mlx_vector_string_append_value(mlx_vector_string v, const char* val) {
-  AX_TRY { vsref(v).push_back(std::string(val)); return 0; } AX_CATCH }
+  AX_TRY { vsref(v).push_back(safe_str(val)); return 0; } AX_CATCH }
 
 /* ================================================================
  * Closure + compile

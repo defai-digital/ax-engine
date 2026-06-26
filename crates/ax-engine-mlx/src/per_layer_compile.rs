@@ -67,17 +67,30 @@ static LAYER_MOE_DECODE_CACHE: MoeDecodeCache = OnceLock::new();
 static LAYER_DENSE_FFN_DECODE_CACHE: OnceLock<Mutex<HashMap<(usize, ThreadId), MlxClosure>>> =
     OnceLock::new();
 
+/// Per-layer Gemma4 dual-path (dense + expert) decode closure cache.
+///
+/// Maps `(layer_index, thread_id)` to a compiled closure that performs the
+/// entire dual-path MoE block: dense sub-block + expert sub-block + combine.
+#[allow(clippy::type_complexity)]
+static LAYER_GEMMA4_DUAL_PATH_CACHE: OnceLock<
+    Mutex<HashMap<(usize, ThreadId), Option<MlxClosure>>>,
+> = OnceLock::new();
+
 /// Apply a whole-layer decode closure, compiling it on first use.
 ///
-/// The closure takes:
-/// - `inputs[0]`: hidden state `[1, 1, hidden_dim]`
-/// - `inputs[1]`: KV cache key `[1, n_kv_heads, seq_len, head_dim]`
-/// - `inputs[2]`: KV cache value `[1, n_kv_heads, seq_len, head_dim]`
+/// `inputs` is the full positional input vector the compiled function depends
+/// on. By convention `inputs[0]` is the post-norm hidden state
+/// `[1, 1, hidden_dim]`, `inputs[1]` is the cached key
+/// `[1, n_kv_heads, seq_len, head_dim]`, `inputs[2]` is the cached value
+/// (same shape), and the remaining entries are weight tensors passed as
+/// explicit inputs. Passing every dependency explicitly is required: MLX-C
+/// rejects compiling a function that references arrays captured from the
+/// closure environment.
 ///
-/// And returns:
-/// - `outputs[0]`: updated hidden state `[1, 1, hidden_dim]`
-/// - `outputs[1]`: updated KV cache key `[1, n_kv_heads, seq_len+1, head_dim]`
-/// - `outputs[2]`: updated KV cache value `[1, n_kv_heads, seq_len+1, head_dim]`
+/// The compiled closure should return:
+/// - `outputs[0]`: attention output `[1, 1, hidden_dim]`
+/// - `outputs[1]`: updated full key `[1, n_kv_heads, seq_len+1, head_dim]`
+/// - `outputs[2]`: updated full value `[1, n_kv_heads, seq_len+1, head_dim]`
 ///
 /// The compiled closure is cached per `(layer_index, thread_id)` and reused
 /// across decode steps. `shapeless=true` allows the closure to accept
@@ -89,9 +102,7 @@ static LAYER_DENSE_FFN_DECODE_CACHE: OnceLock<Mutex<HashMap<(usize, ThreadId), M
 /// as `None` so subsequent decode steps skip the compiled path permanently.
 pub fn apply_layer_decode(
     layer_index: usize,
-    hidden: &MlxArray,
-    kv_key: &MlxArray,
-    kv_value: &MlxArray,
+    inputs: &[&MlxArray],
     layer_fn: impl Fn(&MlxVectorArray) -> Vec<MlxArray> + Send + 'static,
 ) -> Option<Vec<MlxArray>> {
     if !crate::fastpath::whole_layer_decode_compile_enabled() {
@@ -103,11 +114,11 @@ pub fn apply_layer_decode(
     let guard = cache.lock().ok()?;
     if let Some(entry) = guard.get(&(layer_index, tid)) {
         return match entry {
-            Some(closure) => std::panic::catch_unwind(AssertUnwindSafe(|| {
-                closure.try_apply(&[hidden, kv_key, kv_value]).ok()
-            }))
-            .ok()
-            .flatten(),
+            Some(closure) => {
+                std::panic::catch_unwind(AssertUnwindSafe(|| closure.try_apply(inputs).ok()))
+                    .ok()
+                    .flatten()
+            }
             None => None,
         };
     }
@@ -117,11 +128,10 @@ pub fn apply_layer_decode(
     if let std::collections::hash_map::Entry::Vacant(slot) = guard.entry((layer_index, tid)) {
         let closure = MlxClosure::new_dyn(layer_fn);
         if let Ok(compiled) = closure.compile(true) {
-            let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
-                compiled.try_apply(&[hidden, kv_key, kv_value]).ok()
-            }))
-            .ok()
-            .flatten();
+            let result =
+                std::panic::catch_unwind(AssertUnwindSafe(|| compiled.try_apply(inputs).ok()))
+                    .ok()
+                    .flatten();
             slot.insert(result.is_some().then_some(compiled));
             return result;
         }
@@ -290,6 +300,69 @@ pub fn clear_layer_moe_decode_cache() {
     }
 }
 
+/// Apply a compiled Gemma4 dual-path decode closure for a single layer.
+///
+/// `inputs` is the full positional input vector the compiled function depends
+/// on: `[normed2, hidden, ...weights]`. Passing every dependency explicitly is
+/// required: MLX rejects compiling a function that references arrays captured
+/// from the closure environment.
+///
+/// The closure returns `outputs[0]`: the combined dual-path output
+/// `[1, 1, hidden_dim]`.
+///
+/// Gated by `AX_MLX_MOE_LAYER_COMPILE` (reuses the MoE compile flag since the
+/// optimization is analogous). Returns `None` when the flag is off, compilation
+/// fails, or the closure cannot be applied.
+pub fn apply_layer_gemma4_dual_path_decode(
+    layer_index: usize,
+    inputs: &[&MlxArray],
+    dual_path_fn: impl Fn(&MlxVectorArray) -> Vec<MlxArray> + Send + 'static,
+) -> Option<Vec<MlxArray>> {
+    if !crate::fastpath::moe_layer_compile_enabled() {
+        return None;
+    }
+    let cache = LAYER_GEMMA4_DUAL_PATH_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let tid = std::thread::current().id();
+
+    let guard = cache.lock().ok()?;
+    if let Some(entry) = guard.get(&(layer_index, tid)) {
+        return match entry {
+            Some(closure) => {
+                std::panic::catch_unwind(AssertUnwindSafe(|| closure.try_apply(inputs).ok()))
+                    .ok()
+                    .flatten()
+            }
+            None => None,
+        };
+    }
+    drop(guard);
+
+    let mut guard = cache.lock().ok()?;
+    if let std::collections::hash_map::Entry::Vacant(slot) = guard.entry((layer_index, tid)) {
+        let closure = MlxClosure::new_dyn(dual_path_fn);
+        if let Ok(compiled) = closure.compile(true) {
+            let result =
+                std::panic::catch_unwind(AssertUnwindSafe(|| compiled.try_apply(inputs).ok()))
+                    .ok()
+                    .flatten();
+            slot.insert(result.is_some().then_some(compiled));
+            return result;
+        }
+        slot.insert(None);
+    }
+
+    None
+}
+
+/// Clear the per-layer Gemma4 dual-path decode closure cache.
+pub fn clear_layer_gemma4_dual_path_cache() {
+    if let Some(cache) = LAYER_GEMMA4_DUAL_PATH_CACHE.get()
+        && let Ok(mut guard) = cache.lock()
+    {
+        guard.clear();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -307,5 +380,10 @@ mod tests {
     #[test]
     fn test_clear_dense_ffn_cache_does_not_panic() {
         clear_layer_dense_ffn_decode_cache();
+    }
+
+    #[test]
+    fn test_clear_gemma4_dual_path_cache_does_not_panic() {
+        clear_layer_gemma4_dual_path_cache();
     }
 }

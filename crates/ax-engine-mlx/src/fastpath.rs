@@ -554,17 +554,22 @@ env_flag!(
     "AX_MLX_MOE_PROFILE"
 );
 
-env_flag_default_on!(
+env_flag!(
     /// `AX_MLX_MOE_LAYER_COMPILE` — enable per-layer compiled MoE decode
     /// closure.
     ///
-    /// **Default: ON** (kill-switch via `AX_MLX_MOE_LAYER_COMPILE=0`).
+    /// **Default: OFF** (opt-in via `AX_MLX_MOE_LAYER_COMPILE=1`).
     /// Each MoE layer's decode forward path is wrapped in an `MlxClosure`
     /// compiled via `mlx_compile` with `shapeless=true`. The compiled
     /// closure is cached per `(layer_index, thread_id)` and reused across
     /// decode steps, collapsing ~10 per-layer MLX dispatches into a single
     /// compiled graph. Only engages for `seq == 1` (decode). Falls back to
     /// the uncompiled path on compilation failure.
+    ///
+    /// Previously default-on; reverted to opt-in because the compiled MoE
+    /// closure can crash in long-running processes when MLX's thread-local
+    /// stream registry becomes invalid. `catch_unwind` does not protect
+    /// against Rust panics under `panic = "abort"` (release profile).
     moe_layer_compile_enabled,
     "AX_MLX_MOE_LAYER_COMPILE"
 );
@@ -585,18 +590,23 @@ env_flag_default_on!(
     "AX_MLX_WHOLE_LAYER_DECODE_COMPILE"
 );
 
-env_flag_default_on!(
+env_flag!(
     /// `AX_MLX_DENSE_FFN_COMPILE` — enable per-layer compiled dense FFN
     /// decode closure.
     ///
-    /// **Default: ON** (kill-switch). Each dense FFN layer's decode forward
-    /// is wrapped in an `MlxClosure` compiled via `mlx_compile` with
-    /// `shapeless=true`, collapsing the gate_up projection + split + SwiGLU
-    /// activation + down projection + optional post-norm into a single
-    /// compiled graph. Only engages for `seq == 1` (decode) and SwiGLU
-    /// activation families (GEGLU's `gelu_approx` tree is known to abort
-    /// under MLX compilation). Falls back to the uncompiled path on
-    /// compilation failure. Set `AX_MLX_DENSE_FFN_COMPILE=0` to disable.
+    /// **Default: OFF** (opt-in via `AX_MLX_DENSE_FFN_COMPILE=1`).
+    /// Each dense FFN layer's decode forward is wrapped in an `MlxClosure`
+    /// compiled via `mlx_compile` with `shapeless=true`, collapsing the
+    /// gate_up projection + split + SwiGLU activation + down projection +
+    /// optional post-norm into a single compiled graph. Only engages for
+    /// `seq == 1` (decode) and SwiGLU activation families (GEGLU's
+    /// `gelu_approx` tree is known to abort under MLX compilation). Falls
+    /// back to the uncompiled path on compilation failure.
+    ///
+    /// Previously default-on; reverted to opt-in for stability. The compiled
+    /// closure can crash when MLX's internal stream registry is invalidated
+    /// in long-running processes, and `catch_unwind` is ineffective under
+    /// `panic = "abort"` (release profile).
     dense_ffn_compile_enabled,
     "AX_MLX_DENSE_FFN_COMPILE"
 );

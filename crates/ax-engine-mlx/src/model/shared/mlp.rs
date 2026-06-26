@@ -2109,6 +2109,7 @@ pub(crate) fn moe_experts_forward_with_cloned_weights(
     up_exps: Option<QuantizedWeight>,
     down_exps: Option<QuantizedWeight>,
     shared_expert_out: Option<MlxArray>,
+    router_expert_scale: Option<MlxArray>,
 ) -> MlxArray {
     let w = LayerWeights {
         attn_norm: x.clone(),
@@ -2135,7 +2136,7 @@ pub(crate) fn moe_experts_forward_with_cloned_weights(
         router_correction_bias: None,
         router_scale: None,
         router_combined_scale: None,
-        router_expert_scale: None,
+        router_expert_scale,
         layer_scalar: None,
         per_layer_gate: None,
         per_layer_proj_w: None,
@@ -2360,6 +2361,166 @@ pub(crate) fn flatten_dense_ffn_inputs(
             post_norm: post_norm_idx,
         },
     )
+}
+
+// ---------------------------------------------------------------------------
+// Gemma4 dual-path (dense + expert) compile schema.
+//
+// Wraps the entire dual-path MoE block (dense sub-block + expert sub-block
+// + combine) into a single compiled closure.  All weight tensors are explicit
+// inputs; only `cfg`, `eps`, `packed_dim`, and index metadata are captured.
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Copy)]
+pub(crate) struct CompiledGemma4DualPathSchema {
+    // Dense sub-block
+    dense_gate_up: QuantInputSlot,
+    dense_down: QuantInputSlot,
+    dense_post_norm1: Option<usize>,
+    // Expert sub-block
+    h2_norm: usize,
+    router_proj: QuantInputSlot,
+    router_combined_scale: usize,
+    router_expert_scale: Option<usize>,
+    expert_gate_up: Option<QuantInputSlot>,
+    expert_gate: Option<QuantInputSlot>,
+    expert_up: Option<QuantInputSlot>,
+    expert_down: QuantInputSlot,
+    expert_post_norm2: Option<usize>,
+    // Combine
+    ffn_post_norm: Option<usize>,
+    // Scalars
+    packed_dim: i32,
+    _expert_packed_dim: i32,
+    pub(crate) moe_expert_count: usize,
+    pub(crate) moe_experts_per_token: usize,
+}
+
+/// Flatten every MLX array the Gemma4 dual-path forward depends on into an
+/// explicit input vector, returning the vector plus a
+/// [`CompiledGemma4DualPathSchema`] that records where each tensor landed.
+pub(crate) fn flatten_gemma4_dual_path_inputs(
+    normed2: &MlxArray,
+    hidden: &MlxArray,
+    w: &LayerWeights,
+) -> (Vec<MlxArray>, CompiledGemma4DualPathSchema) {
+    let mut inputs: Vec<MlxArray> = vec![normed2.clone(), hidden.clone()];
+    let dense_gate_up = push_quant_inputs(&mut inputs, w.gate_up_packed.as_ref())
+        .expect("dual-path: dense gate_up_packed required");
+    let dense_down = push_quant_inputs(&mut inputs, w.down_proj.as_ref())
+        .expect("dual-path: dense down_proj required");
+    let dense_post_norm1 = push_optional_input(&mut inputs, w.ffn_post_norm1.as_ref());
+    let h2_norm = push_optional_input(&mut inputs, w.ffn_norm2.as_ref())
+        .expect("dual-path: ffn_norm2 required");
+    let router_proj = push_quant_inputs(&mut inputs, w.router_proj.as_ref())
+        .expect("dual-path: router_proj required");
+    let router_combined_scale = push_optional_input(&mut inputs, w.router_combined_scale.as_ref())
+        .expect("dual-path: router_combined_scale required");
+    let router_expert_scale = push_optional_input(&mut inputs, w.router_expert_scale.as_ref());
+    let expert_gate_up = push_quant_inputs(&mut inputs, w.gate_up_exps_packed.as_ref());
+    let expert_gate = push_quant_inputs(&mut inputs, w.gate_exps.as_ref());
+    let expert_up = push_quant_inputs(&mut inputs, w.up_exps.as_ref());
+    let expert_down = push_quant_inputs(&mut inputs, w.down_exps.as_ref())
+        .expect("dual-path: expert down_exps required");
+    let expert_post_norm2 = push_optional_input(&mut inputs, w.ffn_post_norm2.as_ref());
+    let ffn_post_norm = push_optional_input(&mut inputs, w.ffn_post_norm.as_ref());
+    let packed_dim = w
+        .gate_up_packed
+        .as_ref()
+        .expect("dual-path: dense gate_up_packed required")
+        .weight
+        .shape()
+        .last()
+        .copied()
+        .expect("packed weight must have last dim");
+    let expert_packed_dim = w
+        .gate_up_exps_packed
+        .as_ref()
+        .expect("dual-path: expert gate_up_exps_packed required")
+        .weight
+        .shape()
+        .last()
+        .copied()
+        .expect("expert packed weight must have last dim");
+    let schema = CompiledGemma4DualPathSchema {
+        dense_gate_up,
+        dense_down,
+        dense_post_norm1,
+        h2_norm,
+        router_proj,
+        router_combined_scale,
+        router_expert_scale,
+        expert_gate_up,
+        expert_gate,
+        expert_up,
+        expert_down,
+        expert_post_norm2,
+        ffn_post_norm,
+        packed_dim,
+        _expert_packed_dim: expert_packed_dim,
+        moe_expert_count: 0,
+        moe_experts_per_token: 0,
+    };
+    (inputs, schema)
+}
+
+impl CompiledGemma4DualPathSchema {
+    /// Execute the dual-path forward pass from the compiled closure's input
+    /// vector, rebuilding all weight tensors from the schema indices.
+    pub(crate) fn forward(&self, inputs: &MlxVectorArray, cfg: &ModelConfig) -> MlxArray {
+        let normed2 = inputs.get(0);
+        let hidden = inputs.get(1);
+        let eps = cfg.rms_norm_eps;
+        // Dense sub-block
+        let dense_gate_up = self.dense_gate_up.rebuild(inputs);
+        let gate_up_out = qw(&normed2, &dense_gate_up);
+        let h1_hidden = packed_geglu_metal_impl(&gate_up_out, self.packed_dim)
+            .expect("dual-path compile: packed_geglu_metal required");
+        let dense_down = self.dense_down.rebuild(inputs);
+        let h1 = qw(&h1_hidden, &dense_down);
+        let h1 = crate::model::shared::rms_norm_opt(
+            &h1,
+            self.dense_post_norm1.map(|i| inputs.get(i)).as_ref(),
+            eps,
+        );
+        // Expert sub-block
+        let h2_norm_w = inputs.get(self.h2_norm);
+        let h2_normed = rms_norm(&hidden, Some(&h2_norm_w), eps, None);
+        let router_proj = self.router_proj.rebuild(inputs);
+        let combined_scale = inputs.get(self.router_combined_scale);
+        let normed_router = rms_norm(&hidden, Some(&combined_scale), eps, None);
+        let expert_scores = qw(&normed_router, &router_proj);
+        let (top_k_indices, top_k_weights) = top_k_by_argpartition(
+            &expert_scores,
+            self.moe_expert_count,
+            self.moe_experts_per_token,
+            true,
+        );
+        let h2 = moe_experts_forward_with_cloned_weights(
+            cfg,
+            &h2_normed,
+            &top_k_indices,
+            &top_k_weights,
+            self.expert_gate_up.map(|s| s.rebuild(inputs)),
+            self.expert_gate.map(|s| s.rebuild(inputs)),
+            self.expert_up.map(|s| s.rebuild(inputs)),
+            Some(self.expert_down.rebuild(inputs)),
+            None,
+            self.router_expert_scale.map(|i| inputs.get(i)),
+        );
+        let h2 = crate::model::shared::rms_norm_opt(
+            &h2,
+            self.expert_post_norm2.map(|i| inputs.get(i)).as_ref(),
+            eps,
+        );
+        // Combine
+        let combined = add(&h1, &h2, None);
+        crate::model::shared::rms_norm_opt(
+            &combined,
+            self.ffn_post_norm.map(|i| inputs.get(i)).as_ref(),
+            eps,
+        )
+    }
 }
 
 // ---------------------------------------------------------------------------

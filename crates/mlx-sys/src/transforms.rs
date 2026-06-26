@@ -1,4 +1,5 @@
 use std::ffi::CString;
+use std::sync::LazyLock;
 
 use crate::array::MlxArray;
 use crate::error::{panic_on_status, prepare_error_capture, status_to_result};
@@ -197,8 +198,9 @@ pub fn max_recommended_working_set_size() -> usize {
 
         let mut size = 0usize;
         if ok {
-            let key = CString::new("max_recommended_working_set_size").unwrap();
-            ffi::mlx_device_info_get_size(&mut size, info, key.as_ptr());
+            static KEY: LazyLock<CString> =
+                LazyLock::new(|| CString::new("max_recommended_working_set_size").unwrap());
+            ffi::mlx_device_info_get_size(&mut size, info, KEY.as_ptr());
         }
         ffi::mlx_device_info_free(info);
         size
