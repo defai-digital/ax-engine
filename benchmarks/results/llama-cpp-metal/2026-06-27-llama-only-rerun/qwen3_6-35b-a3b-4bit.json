@@ -10,7 +10,7 @@
    "prompt_tokens": 128,
    "generation_tokens": 128,
    "batch_size": 1,
-   "gguf_model": "/private/tmp/claude-502/-Users-akiralam-code-ax-engine/190092a3-9e4c-4daf-8a5f-957b75255faa/scratchpad/ggufs/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf",
+   "gguf_model": "~/.cache/huggingface/hub/models--unsloth--Qwen3.6-35B-A3B-GGUF/snapshots/a483e9e6cbd595906af30beda3187c2663a1118c/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf",
    "n_gpu_layers": 99,
    "prefill_tok_s": {
     "mean": 1674.538,
@@ -45,7 +45,7 @@
    "prompt_tokens": 512,
    "generation_tokens": 128,
    "batch_size": 1,
-   "gguf_model": "/private/tmp/claude-502/-Users-akiralam-code-ax-engine/190092a3-9e4c-4daf-8a5f-957b75255faa/scratchpad/ggufs/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf",
+   "gguf_model": "~/.cache/huggingface/hub/models--unsloth--Qwen3.6-35B-A3B-GGUF/snapshots/a483e9e6cbd595906af30beda3187c2663a1118c/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf",
    "n_gpu_layers": 99,
    "prefill_tok_s": {
     "mean": 3061.886,
@@ -80,7 +80,7 @@
    "prompt_tokens": 2048,
    "generation_tokens": 128,
    "batch_size": 1,
-   "gguf_model": "/private/tmp/claude-502/-Users-akiralam-code-ax-engine/190092a3-9e4c-4daf-8a5f-957b75255faa/scratchpad/ggufs/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf",
+   "gguf_model": "~/.cache/huggingface/hub/models--unsloth--Qwen3.6-35B-A3B-GGUF/snapshots/a483e9e6cbd595906af30beda3187c2663a1118c/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf",
    "n_gpu_layers": 99,
    "prefill_tok_s": {
     "mean": 3510.624,

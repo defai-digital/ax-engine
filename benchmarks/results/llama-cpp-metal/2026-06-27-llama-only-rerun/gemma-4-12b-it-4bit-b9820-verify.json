@@ -1,0 +1,134 @@
+{
+ "schema_version": "ax.gemma4_12b_llama_cpp_b9820_verify.v1",
+ "purpose": "Verification re-bench of the Gemma 4 12B llama.cpp peer on build 9820, confirming parity with the committed b9700 numbers used in the README direct-comparison table. README 12B table/charts are intentionally KEPT at the original same-session b9700 run; this artifact documents that a current-build re-measurement reproduces them within run-to-run noise.",
+ "model": "Gemma 4 12B",
+ "gguf_repo": "ggml-org/gemma-4-12B-it-GGUF",
+ "gguf_file": "gemma-4-12B-it-Q4_K_M.gguf",
+ "host": "Apple M5 Max",
+ "llama_bench": "/opt/homebrew/bin/llama-bench",
+ "build": "9820 (3fc4e1052)",
+ "ggml": "0.15.3",
+ "method": "llama-bench -p N -n 128 -r 5 --delay 6 -ngl 99 -b/-ub matched -fa 1 (+ -d N matched-depth pass); 30s pre-cooldown",
+ "thermal_recheck_p128_decode_d0": {
+  "mean": 59.80608,
+  "median": 60.4343,
+  "min": 57.2399,
+  "max": 60.473,
+  "stddev": 1.283293479138736
+ },
+ "claim_boundary": "Shape-compatible external GGUF baseline; llama-bench internal tokens; not prompt-hash parity. AX rows in the README are from a separate session and are not re-measured here (MLX artifacts unavailable in this environment).",
+ "verdict": "PARITY within run-to-run noise: decode@matched-depth 56.9/58.7/57.5 vs committed 59.2/58.9/56.9 (512 & 2048 dead-on, 128 within ~6% session variance shown by the 57.1->60.4 recheck spread); prefill 128/512 identical, 2048 ~9% lower (long-context variance).",
+ "results": [
+  {
+   "prompt_tokens": 128,
+   "engine": "llama_cpp_metal",
+   "build": "9820 (3fc4e1052)",
+   "ggml": "0.15.3",
+   "gguf_model": "~/.cache/huggingface/hub/models--ggml-org--gemma-4-12B-it-GGUF/snapshots/44ee90c4b61e888ac5b318a54ec7a94df61e9cd7/gemma-4-12B-it-Q4_K_M.gguf",
+   "prefill_tok_s": {
+    "mean": 1243.548,
+    "median": 1244.49,
+    "min": 1238.59,
+    "max": 1248.07,
+    "stddev": 3.5907681629422945
+   },
+   "decode_depth0_tok_s": {
+    "mean": 57.51488,
+    "median": 57.1208,
+    "min": 56.9636,
+    "max": 58.3576,
+    "stddev": 0.5820016989665914
+   },
+   "decode_at_depth_tok_s": {
+    "mean": 56.13084,
+    "median": 56.864,
+    "min": 52.0311,
+    "max": 57.7071,
+    "stddev": 2.076483251654102
+   },
+   "ttft_ms": {
+    "median": 102.85337768885246
+   },
+   "committed_b9700_reference": {
+    "prefill": 1252,
+    "decode_d0": 59.8,
+    "decode_matched": 59.2,
+    "ttft": 102
+   }
+  },
+  {
+   "prompt_tokens": 512,
+   "engine": "llama_cpp_metal",
+   "build": "9820 (3fc4e1052)",
+   "ggml": "0.15.3",
+   "gguf_model": "~/.cache/huggingface/hub/models--ggml-org--gemma-4-12B-it-GGUF/snapshots/44ee90c4b61e888ac5b318a54ec7a94df61e9cd7/gemma-4-12B-it-Q4_K_M.gguf",
+   "prefill_tok_s": {
+    "mean": 1737.006,
+    "median": 1739.45,
+    "min": 1729.6,
+    "max": 1741.21,
+    "stddev": 4.290550547424009
+   },
+   "decode_depth0_tok_s": {
+    "mean": 57.26516,
+    "median": 57.2711,
+    "min": 56.3311,
+    "max": 57.8923,
+    "stddev": 0.5730324374762737
+   },
+   "decode_at_depth_tok_s": {
+    "mean": 58.72228,
+    "median": 58.7317,
+    "min": 58.5198,
+    "max": 58.9082,
+    "stddev": 0.13267918299416953
+   },
+   "ttft_ms": {
+    "median": 294.34591393831386
+   },
+   "committed_b9700_reference": {
+    "prefill": 1745,
+    "decode_d0": 59.6,
+    "decode_matched": 58.9,
+    "ttft": 293
+   }
+  },
+  {
+   "prompt_tokens": 2048,
+   "engine": "llama_cpp_metal",
+   "build": "9820 (3fc4e1052)",
+   "ggml": "0.15.3",
+   "gguf_model": "~/.cache/huggingface/hub/models--ggml-org--gemma-4-12B-it-GGUF/snapshots/44ee90c4b61e888ac5b318a54ec7a94df61e9cd7/gemma-4-12B-it-Q4_K_M.gguf",
+   "prefill_tok_s": {
+    "mean": 1554.454,
+    "median": 1543.56,
+    "min": 1485.89,
+    "max": 1632.79,
+    "stddev": 52.76182354695483
+   },
+   "decode_depth0_tok_s": {
+    "mean": 55.8639,
+    "median": 55.9525,
+    "min": 55.4867,
+    "max": 56.1212,
+    "stddev": 0.23296865883633447
+   },
+   "decode_at_depth_tok_s": {
+    "mean": 57.28828,
+    "median": 57.4918,
+    "min": 56.4923,
+    "max": 57.5299,
+    "stddev": 0.4009158385496881
+   },
+   "ttft_ms": {
+    "median": 1326.8029749410455
+   },
+   "committed_b9700_reference": {
+    "prefill": 1690,
+    "decode_d0": 59.7,
+    "decode_matched": 56.9,
+    "ttft": 1212
+   }
+  }
+ ]
+}

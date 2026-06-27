@@ -27,7 +27,7 @@
       "prompt_tokens": 128,
       "generation_tokens": 128,
       "batch_size": 1,
-      "gguf_model": "/private/tmp/claude-502/-Users-akiralam-code-ax-engine/190092a3-9e4c-4daf-8a5f-957b75255faa/scratchpad/hf/hub/models--unsloth--gemma-4-E2B-it-GGUF/snapshots/ecc8b33b2c50598815e4b0f7cea6088e3ae7adb8/gemma-4-E2B-it-Q4_K_M.gguf",
+      "gguf_model": "~/.cache/huggingface/hub/models--unsloth--gemma-4-E2B-it-GGUF/snapshots/ecc8b33b2c50598815e4b0f7cea6088e3ae7adb8/gemma-4-E2B-it-Q4_K_M.gguf",
       "n_gpu_layers": 99,
       "prefill_tok_s": {
        "mean": 3697.742,
@@ -62,7 +62,7 @@
       "prompt_tokens": 512,
       "generation_tokens": 128,
       "batch_size": 1,
-      "gguf_model": "/private/tmp/claude-502/-Users-akiralam-code-ax-engine/190092a3-9e4c-4daf-8a5f-957b75255faa/scratchpad/hf/hub/models--unsloth--gemma-4-E2B-it-GGUF/snapshots/ecc8b33b2c50598815e4b0f7cea6088e3ae7adb8/gemma-4-E2B-it-Q4_K_M.gguf",
+      "gguf_model": "~/.cache/huggingface/hub/models--unsloth--gemma-4-E2B-it-GGUF/snapshots/ecc8b33b2c50598815e4b0f7cea6088e3ae7adb8/gemma-4-E2B-it-Q4_K_M.gguf",
       "n_gpu_layers": 99,
       "prefill_tok_s": {
        "mean": 7173.464,
@@ -97,7 +97,7 @@
       "prompt_tokens": 2048,
       "generation_tokens": 128,
       "batch_size": 1,
-      "gguf_model": "/private/tmp/claude-502/-Users-akiralam-code-ax-engine/190092a3-9e4c-4daf-8a5f-957b75255faa/scratchpad/hf/hub/models--unsloth--gemma-4-E2B-it-GGUF/snapshots/ecc8b33b2c50598815e4b0f7cea6088e3ae7adb8/gemma-4-E2B-it-Q4_K_M.gguf",
+      "gguf_model": "~/.cache/huggingface/hub/models--unsloth--gemma-4-E2B-it-GGUF/snapshots/ecc8b33b2c50598815e4b0f7cea6088e3ae7adb8/gemma-4-E2B-it-Q4_K_M.gguf",
       "n_gpu_layers": 99,
       "prefill_tok_s": {
        "mean": 7371.866,
@@ -144,7 +144,7 @@
       "prompt_tokens": 128,
       "generation_tokens": 128,
       "batch_size": 1,
-      "gguf_model": "/private/tmp/claude-502/-Users-akiralam-code-ax-engine/190092a3-9e4c-4daf-8a5f-957b75255faa/scratchpad/hf/hub/models--unsloth--gemma-4-E2B-it-GGUF/snapshots/ecc8b33b2c50598815e4b0f7cea6088e3ae7adb8/gemma-4-E2B-it-Q6_K.gguf",
+      "gguf_model": "~/.cache/huggingface/hub/models--unsloth--gemma-4-E2B-it-GGUF/snapshots/ecc8b33b2c50598815e4b0f7cea6088e3ae7adb8/gemma-4-E2B-it-Q6_K.gguf",
       "n_gpu_layers": 99,
       "prefill_tok_s": {
        "mean": 3595.234,
@@ -179,7 +179,7 @@
       "prompt_tokens": 512,
       "generation_tokens": 128,
       "batch_size": 1,
-      "gguf_model": "/private/tmp/claude-502/-Users-akiralam-code-ax-engine/190092a3-9e4c-4daf-8a5f-957b75255faa/scratchpad/hf/hub/models--unsloth--gemma-4-E2B-it-GGUF/snapshots/ecc8b33b2c50598815e4b0f7cea6088e3ae7adb8/gemma-4-E2B-it-Q6_K.gguf",
+      "gguf_model": "~/.cache/huggingface/hub/models--unsloth--gemma-4-E2B-it-GGUF/snapshots/ecc8b33b2c50598815e4b0f7cea6088e3ae7adb8/gemma-4-E2B-it-Q6_K.gguf",
       "n_gpu_layers": 99,
       "prefill_tok_s": {
        "mean": 7221.436,
@@ -214,7 +214,7 @@
       "prompt_tokens": 2048,
       "generation_tokens": 128,
       "batch_size": 1,
-      "gguf_model": "/private/tmp/claude-502/-Users-akiralam-code-ax-engine/190092a3-9e4c-4daf-8a5f-957b75255faa/scratchpad/hf/hub/models--unsloth--gemma-4-E2B-it-GGUF/snapshots/ecc8b33b2c50598815e4b0f7cea6088e3ae7adb8/gemma-4-E2B-it-Q6_K.gguf",
+      "gguf_model": "~/.cache/huggingface/hub/models--unsloth--gemma-4-E2B-it-GGUF/snapshots/ecc8b33b2c50598815e4b0f7cea6088e3ae7adb8/gemma-4-E2B-it-Q6_K.gguf",
       "n_gpu_layers": 99,
       "prefill_tok_s": {
        "mean": 7461.852,
@@ -261,7 +261,7 @@
       "prompt_tokens": 128,
       "generation_tokens": 128,
       "batch_size": 1,
-      "gguf_model": "/private/tmp/claude-502/-Users-akiralam-code-ax-engine/190092a3-9e4c-4daf-8a5f-957b75255faa/scratchpad/hf/hub/models--unsloth--gemma-4-E4B-it-GGUF/snapshots/e1d90e5fb9f61d8dc71ef016580784a054e5c787/gemma-4-E4B-it-Q4_K_M.gguf",
+      "gguf_model": "~/.cache/huggingface/hub/models--unsloth--gemma-4-E4B-it-GGUF/snapshots/e1d90e5fb9f61d8dc71ef016580784a054e5c787/gemma-4-E4B-it-Q4_K_M.gguf",
       "n_gpu_layers": 99,
       "prefill_tok_s": {
        "mean": 2300.812,
@@ -296,7 +296,7 @@
       "prompt_tokens": 512,
       "generation_tokens": 128,
       "batch_size": 1,
-      "gguf_model": "/private/tmp/claude-502/-Users-akiralam-code-ax-engine/190092a3-9e4c-4daf-8a5f-957b75255faa/scratchpad/hf/hub/models--unsloth--gemma-4-E4B-it-GGUF/snapshots/e1d90e5fb9f61d8dc71ef016580784a054e5c787/gemma-4-E4B-it-Q4_K_M.gguf",
+      "gguf_model": "~/.cache/huggingface/hub/models--unsloth--gemma-4-E4B-it-GGUF/snapshots/e1d90e5fb9f61d8dc71ef016580784a054e5c787/gemma-4-E4B-it-Q4_K_M.gguf",
       "n_gpu_layers": 99,
       "prefill_tok_s": {
        "mean": 4340.996,
@@ -331,7 +331,7 @@
       "prompt_tokens": 2048,
       "generation_tokens": 128,
       "batch_size": 1,
-      "gguf_model": "/private/tmp/claude-502/-Users-akiralam-code-ax-engine/190092a3-9e4c-4daf-8a5f-957b75255faa/scratchpad/hf/hub/models--unsloth--gemma-4-E4B-it-GGUF/snapshots/e1d90e5fb9f61d8dc71ef016580784a054e5c787/gemma-4-E4B-it-Q4_K_M.gguf",
+      "gguf_model": "~/.cache/huggingface/hub/models--unsloth--gemma-4-E4B-it-GGUF/snapshots/e1d90e5fb9f61d8dc71ef016580784a054e5c787/gemma-4-E4B-it-Q4_K_M.gguf",
       "n_gpu_layers": 99,
       "prefill_tok_s": {
        "mean": 4302.36,
@@ -378,7 +378,7 @@
       "prompt_tokens": 128,
       "generation_tokens": 128,
       "batch_size": 1,
-      "gguf_model": "/private/tmp/claude-502/-Users-akiralam-code-ax-engine/190092a3-9e4c-4daf-8a5f-957b75255faa/scratchpad/hf/hub/models--unsloth--gemma-4-E4B-it-GGUF/snapshots/e1d90e5fb9f61d8dc71ef016580784a054e5c787/gemma-4-E4B-it-Q6_K.gguf",
+      "gguf_model": "~/.cache/huggingface/hub/models--unsloth--gemma-4-E4B-it-GGUF/snapshots/e1d90e5fb9f61d8dc71ef016580784a054e5c787/gemma-4-E4B-it-Q6_K.gguf",
       "n_gpu_layers": 99,
       "prefill_tok_s": {
        "mean": 2280.966,
@@ -413,7 +413,7 @@
       "prompt_tokens": 512,
       "generation_tokens": 128,
       "batch_size": 1,
-      "gguf_model": "/private/tmp/claude-502/-Users-akiralam-code-ax-engine/190092a3-9e4c-4daf-8a5f-957b75255faa/scratchpad/hf/hub/models--unsloth--gemma-4-E4B-it-GGUF/snapshots/e1d90e5fb9f61d8dc71ef016580784a054e5c787/gemma-4-E4B-it-Q6_K.gguf",
+      "gguf_model": "~/.cache/huggingface/hub/models--unsloth--gemma-4-E4B-it-GGUF/snapshots/e1d90e5fb9f61d8dc71ef016580784a054e5c787/gemma-4-E4B-it-Q6_K.gguf",
       "n_gpu_layers": 99,
       "prefill_tok_s": {
        "mean": 4300.25,
@@ -448,7 +448,7 @@
       "prompt_tokens": 2048,
       "generation_tokens": 128,
       "batch_size": 1,
-      "gguf_model": "/private/tmp/claude-502/-Users-akiralam-code-ax-engine/190092a3-9e4c-4daf-8a5f-957b75255faa/scratchpad/hf/hub/models--unsloth--gemma-4-E4B-it-GGUF/snapshots/e1d90e5fb9f61d8dc71ef016580784a054e5c787/gemma-4-E4B-it-Q6_K.gguf",
+      "gguf_model": "~/.cache/huggingface/hub/models--unsloth--gemma-4-E4B-it-GGUF/snapshots/e1d90e5fb9f61d8dc71ef016580784a054e5c787/gemma-4-E4B-it-Q6_K.gguf",
       "n_gpu_layers": 99,
       "prefill_tok_s": {
        "mean": 4135.668,
@@ -495,7 +495,7 @@
       "prompt_tokens": 128,
       "generation_tokens": 128,
       "batch_size": 1,
-      "gguf_model": "/private/tmp/claude-502/-Users-akiralam-code-ax-engine/190092a3-9e4c-4daf-8a5f-957b75255faa/scratchpad/hf/hub/models--unsloth--gemma-4-26B-A4B-it-GGUF/snapshots/3bb10d594514ef4edb7f3a65d41a7e4eb8c5767a/gemma-4-26B-A4B-it-UD-Q4_K_M.gguf",
+      "gguf_model": "~/.cache/huggingface/hub/models--unsloth--gemma-4-26B-A4B-it-GGUF/snapshots/3bb10d594514ef4edb7f3a65d41a7e4eb8c5767a/gemma-4-26B-A4B-it-UD-Q4_K_M.gguf",
       "n_gpu_layers": 99,
       "prefill_tok_s": {
        "mean": 1890.918,
@@ -530,7 +530,7 @@
       "prompt_tokens": 512,
       "generation_tokens": 128,
       "batch_size": 1,
-      "gguf_model": "/private/tmp/claude-502/-Users-akiralam-code-ax-engine/190092a3-9e4c-4daf-8a5f-957b75255faa/scratchpad/hf/hub/models--unsloth--gemma-4-26B-A4B-it-GGUF/snapshots/3bb10d594514ef4edb7f3a65d41a7e4eb8c5767a/gemma-4-26B-A4B-it-UD-Q4_K_M.gguf",
+      "gguf_model": "~/.cache/huggingface/hub/models--unsloth--gemma-4-26B-A4B-it-GGUF/snapshots/3bb10d594514ef4edb7f3a65d41a7e4eb8c5767a/gemma-4-26B-A4B-it-UD-Q4_K_M.gguf",
       "n_gpu_layers": 99,
       "prefill_tok_s": {
        "mean": 3396.32,
@@ -565,7 +565,7 @@
       "prompt_tokens": 2048,
       "generation_tokens": 128,
       "batch_size": 1,
-      "gguf_model": "/private/tmp/claude-502/-Users-akiralam-code-ax-engine/190092a3-9e4c-4daf-8a5f-957b75255faa/scratchpad/hf/hub/models--unsloth--gemma-4-26B-A4B-it-GGUF/snapshots/3bb10d594514ef4edb7f3a65d41a7e4eb8c5767a/gemma-4-26B-A4B-it-UD-Q4_K_M.gguf",
+      "gguf_model": "~/.cache/huggingface/hub/models--unsloth--gemma-4-26B-A4B-it-GGUF/snapshots/3bb10d594514ef4edb7f3a65d41a7e4eb8c5767a/gemma-4-26B-A4B-it-UD-Q4_K_M.gguf",
       "n_gpu_layers": 99,
       "prefill_tok_s": {
        "mean": 3546.99,
@@ -612,7 +612,7 @@
       "prompt_tokens": 128,
       "generation_tokens": 128,
       "batch_size": 1,
-      "gguf_model": "/private/tmp/claude-502/-Users-akiralam-code-ax-engine/190092a3-9e4c-4daf-8a5f-957b75255faa/scratchpad/hf/hub/models--unsloth--gemma-4-26B-A4B-it-GGUF/snapshots/3bb10d594514ef4edb7f3a65d41a7e4eb8c5767a/gemma-4-26B-A4B-it-UD-Q6_K.gguf",
+      "gguf_model": "~/.cache/huggingface/hub/models--unsloth--gemma-4-26B-A4B-it-GGUF/snapshots/3bb10d594514ef4edb7f3a65d41a7e4eb8c5767a/gemma-4-26B-A4B-it-UD-Q6_K.gguf",
       "n_gpu_layers": 99,
       "prefill_tok_s": {
        "mean": 1683.596,
@@ -647,7 +647,7 @@
       "prompt_tokens": 512,
       "generation_tokens": 128,
       "batch_size": 1,
-      "gguf_model": "/private/tmp/claude-502/-Users-akiralam-code-ax-engine/190092a3-9e4c-4daf-8a5f-957b75255faa/scratchpad/hf/hub/models--unsloth--gemma-4-26B-A4B-it-GGUF/snapshots/3bb10d594514ef4edb7f3a65d41a7e4eb8c5767a/gemma-4-26B-A4B-it-UD-Q6_K.gguf",
+      "gguf_model": "~/.cache/huggingface/hub/models--unsloth--gemma-4-26B-A4B-it-GGUF/snapshots/3bb10d594514ef4edb7f3a65d41a7e4eb8c5767a/gemma-4-26B-A4B-it-UD-Q6_K.gguf",
       "n_gpu_layers": 99,
       "prefill_tok_s": {
        "mean": 3170.246,
@@ -682,7 +682,7 @@
       "prompt_tokens": 2048,
       "generation_tokens": 128,
       "batch_size": 1,
-      "gguf_model": "/private/tmp/claude-502/-Users-akiralam-code-ax-engine/190092a3-9e4c-4daf-8a5f-957b75255faa/scratchpad/hf/hub/models--unsloth--gemma-4-26B-A4B-it-GGUF/snapshots/3bb10d594514ef4edb7f3a65d41a7e4eb8c5767a/gemma-4-26B-A4B-it-UD-Q6_K.gguf",
+      "gguf_model": "~/.cache/huggingface/hub/models--unsloth--gemma-4-26B-A4B-it-GGUF/snapshots/3bb10d594514ef4edb7f3a65d41a7e4eb8c5767a/gemma-4-26B-A4B-it-UD-Q6_K.gguf",
       "n_gpu_layers": 99,
       "prefill_tok_s": {
        "mean": 3174.83,
@@ -729,7 +729,7 @@
       "prompt_tokens": 128,
       "generation_tokens": 128,
       "batch_size": 1,
-      "gguf_model": "/private/tmp/claude-502/-Users-akiralam-code-ax-engine/190092a3-9e4c-4daf-8a5f-957b75255faa/scratchpad/hf/hub/models--unsloth--gemma-4-31B-it-GGUF/snapshots/8906b3db2e669a0b1d6293c315d3f9fbf934a86d/gemma-4-31B-it-Q4_K_M.gguf",
+      "gguf_model": "~/.cache/huggingface/hub/models--unsloth--gemma-4-31B-it-GGUF/snapshots/8906b3db2e669a0b1d6293c315d3f9fbf934a86d/gemma-4-31B-it-Q4_K_M.gguf",
       "n_gpu_layers": 99,
       "prefill_tok_s": {
        "mean": 529.7236,
@@ -764,7 +764,7 @@
       "prompt_tokens": 512,
       "generation_tokens": 128,
       "batch_size": 1,
-      "gguf_model": "/private/tmp/claude-502/-Users-akiralam-code-ax-engine/190092a3-9e4c-4daf-8a5f-957b75255faa/scratchpad/hf/hub/models--unsloth--gemma-4-31B-it-GGUF/snapshots/8906b3db2e669a0b1d6293c315d3f9fbf934a86d/gemma-4-31B-it-Q4_K_M.gguf",
+      "gguf_model": "~/.cache/huggingface/hub/models--unsloth--gemma-4-31B-it-GGUF/snapshots/8906b3db2e669a0b1d6293c315d3f9fbf934a86d/gemma-4-31B-it-Q4_K_M.gguf",
       "n_gpu_layers": 99,
       "prefill_tok_s": {
        "mean": 636.4088,
@@ -799,7 +799,7 @@
       "prompt_tokens": 2048,
       "generation_tokens": 128,
       "batch_size": 1,
-      "gguf_model": "/private/tmp/claude-502/-Users-akiralam-code-ax-engine/190092a3-9e4c-4daf-8a5f-957b75255faa/scratchpad/hf/hub/models--unsloth--gemma-4-31B-it-GGUF/snapshots/8906b3db2e669a0b1d6293c315d3f9fbf934a86d/gemma-4-31B-it-Q4_K_M.gguf",
+      "gguf_model": "~/.cache/huggingface/hub/models--unsloth--gemma-4-31B-it-GGUF/snapshots/8906b3db2e669a0b1d6293c315d3f9fbf934a86d/gemma-4-31B-it-Q4_K_M.gguf",
       "n_gpu_layers": 99,
       "prefill_tok_s": {
        "mean": 562.875,
@@ -846,7 +846,7 @@
       "prompt_tokens": 128,
       "generation_tokens": 128,
       "batch_size": 1,
-      "gguf_model": "/private/tmp/claude-502/-Users-akiralam-code-ax-engine/190092a3-9e4c-4daf-8a5f-957b75255faa/scratchpad/hf/hub/models--unsloth--gemma-4-31B-it-GGUF/snapshots/8906b3db2e669a0b1d6293c315d3f9fbf934a86d/gemma-4-31B-it-Q6_K.gguf",
+      "gguf_model": "~/.cache/huggingface/hub/models--unsloth--gemma-4-31B-it-GGUF/snapshots/8906b3db2e669a0b1d6293c315d3f9fbf934a86d/gemma-4-31B-it-Q6_K.gguf",
       "n_gpu_layers": 99,
       "prefill_tok_s": {
        "mean": 503.8594,
@@ -881,7 +881,7 @@
       "prompt_tokens": 512,
       "generation_tokens": 128,
       "batch_size": 1,
-      "gguf_model": "/private/tmp/claude-502/-Users-akiralam-code-ax-engine/190092a3-9e4c-4daf-8a5f-957b75255faa/scratchpad/hf/hub/models--unsloth--gemma-4-31B-it-GGUF/snapshots/8906b3db2e669a0b1d6293c315d3f9fbf934a86d/gemma-4-31B-it-Q6_K.gguf",
+      "gguf_model": "~/.cache/huggingface/hub/models--unsloth--gemma-4-31B-it-GGUF/snapshots/8906b3db2e669a0b1d6293c315d3f9fbf934a86d/gemma-4-31B-it-Q6_K.gguf",
       "n_gpu_layers": 99,
       "prefill_tok_s": {
        "mean": 653.4780000000001,
@@ -916,7 +916,7 @@
       "prompt_tokens": 2048,
       "generation_tokens": 128,
       "batch_size": 1,
-      "gguf_model": "/private/tmp/claude-502/-Users-akiralam-code-ax-engine/190092a3-9e4c-4daf-8a5f-957b75255faa/scratchpad/hf/hub/models--unsloth--gemma-4-31B-it-GGUF/snapshots/8906b3db2e669a0b1d6293c315d3f9fbf934a86d/gemma-4-31B-it-Q6_K.gguf",
+      "gguf_model": "~/.cache/huggingface/hub/models--unsloth--gemma-4-31B-it-GGUF/snapshots/8906b3db2e669a0b1d6293c315d3f9fbf934a86d/gemma-4-31B-it-Q6_K.gguf",
       "n_gpu_layers": 99,
       "prefill_tok_s": {
        "mean": 563.847,
@@ -963,7 +963,7 @@
       "prompt_tokens": 128,
       "generation_tokens": 128,
       "batch_size": 1,
-      "gguf_model": "/private/tmp/claude-502/-Users-akiralam-code-ax-engine/190092a3-9e4c-4daf-8a5f-957b75255faa/scratchpad/hf/hub/models--unsloth--Qwen3.6-27B-GGUF/snapshots/82d411acf4a06cfb8d9b073a5211bf410bfc29bf/Qwen3.6-27B-Q4_K_M.gguf",
+      "gguf_model": "~/.cache/huggingface/hub/models--unsloth--Qwen3.6-27B-GGUF/snapshots/82d411acf4a06cfb8d9b073a5211bf410bfc29bf/Qwen3.6-27B-Q4_K_M.gguf",
       "n_gpu_layers": 99,
       "prefill_tok_s": {
        "mean": 534.4186,
@@ -998,7 +998,7 @@
       "prompt_tokens": 512,
       "generation_tokens": 128,
       "batch_size": 1,
-      "gguf_model": "/private/tmp/claude-502/-Users-akiralam-code-ax-engine/190092a3-9e4c-4daf-8a5f-957b75255faa/scratchpad/hf/hub/models--unsloth--Qwen3.6-27B-GGUF/snapshots/82d411acf4a06cfb8d9b073a5211bf410bfc29bf/Qwen3.6-27B-Q4_K_M.gguf",
+      "gguf_model": "~/.cache/huggingface/hub/models--unsloth--Qwen3.6-27B-GGUF/snapshots/82d411acf4a06cfb8d9b073a5211bf410bfc29bf/Qwen3.6-27B-Q4_K_M.gguf",
       "n_gpu_layers": 99,
       "prefill_tok_s": {
        "mean": 714.6676,
@@ -1033,7 +1033,7 @@
       "prompt_tokens": 2048,
       "generation_tokens": 128,
       "batch_size": 1,
-      "gguf_model": "/private/tmp/claude-502/-Users-akiralam-code-ax-engine/190092a3-9e4c-4daf-8a5f-957b75255faa/scratchpad/hf/hub/models--unsloth--Qwen3.6-27B-GGUF/snapshots/82d411acf4a06cfb8d9b073a5211bf410bfc29bf/Qwen3.6-27B-Q4_K_M.gguf",
+      "gguf_model": "~/.cache/huggingface/hub/models--unsloth--Qwen3.6-27B-GGUF/snapshots/82d411acf4a06cfb8d9b073a5211bf410bfc29bf/Qwen3.6-27B-Q4_K_M.gguf",
       "n_gpu_layers": 99,
       "prefill_tok_s": {
        "mean": 647.0044,
@@ -1068,7 +1068,7 @@
    "readme_model": "Qwen 3.6 27B",
    "readme_quant": "6-bit",
    "status": "ok",
-   "gguf_path": "/private/tmp/claude-502/-Users-akiralam-code-ax-engine/190092a3-9e4c-4daf-8a5f-957b75255faa/scratchpad/ggufs/Qwen3.6-27B-Q6_K.gguf",
+   "gguf_path": "~/.cache/huggingface/hub/models--unsloth--Qwen3.6-27B-GGUF/snapshots/82d411acf4a06cfb8d9b073a5211bf410bfc29bf/Qwen3.6-27B-Q6_K.gguf",
    "result_doc": {
     "schema_version": "ax.mlx_inference_stack.v2",
     "model": "Qwen 3.6 27B",
@@ -1081,7 +1081,7 @@
       "prompt_tokens": 128,
       "generation_tokens": 128,
       "batch_size": 1,
-      "gguf_model": "/private/tmp/claude-502/-Users-akiralam-code-ax-engine/190092a3-9e4c-4daf-8a5f-957b75255faa/scratchpad/ggufs/Qwen3.6-27B-Q6_K.gguf",
+      "gguf_model": "~/.cache/huggingface/hub/models--unsloth--Qwen3.6-27B-GGUF/snapshots/82d411acf4a06cfb8d9b073a5211bf410bfc29bf/Qwen3.6-27B-Q6_K.gguf",
       "n_gpu_layers": 99,
       "prefill_tok_s": {
        "mean": 534.3752,
@@ -1116,7 +1116,7 @@
       "prompt_tokens": 512,
       "generation_tokens": 128,
       "batch_size": 1,
-      "gguf_model": "/private/tmp/claude-502/-Users-akiralam-code-ax-engine/190092a3-9e4c-4daf-8a5f-957b75255faa/scratchpad/ggufs/Qwen3.6-27B-Q6_K.gguf",
+      "gguf_model": "~/.cache/huggingface/hub/models--unsloth--Qwen3.6-27B-GGUF/snapshots/82d411acf4a06cfb8d9b073a5211bf410bfc29bf/Qwen3.6-27B-Q6_K.gguf",
       "n_gpu_layers": 99,
       "prefill_tok_s": {
        "mean": 449.082,
@@ -1151,7 +1151,7 @@
       "prompt_tokens": 2048,
       "generation_tokens": 128,
       "batch_size": 1,
-      "gguf_model": "/private/tmp/claude-502/-Users-akiralam-code-ax-engine/190092a3-9e4c-4daf-8a5f-957b75255faa/scratchpad/ggufs/Qwen3.6-27B-Q6_K.gguf",
+      "gguf_model": "~/.cache/huggingface/hub/models--unsloth--Qwen3.6-27B-GGUF/snapshots/82d411acf4a06cfb8d9b073a5211bf410bfc29bf/Qwen3.6-27B-Q6_K.gguf",
       "n_gpu_layers": 99,
       "prefill_tok_s": {
        "mean": 618.625,
@@ -1186,7 +1186,7 @@
    "readme_model": "Qwen 3.6 35B A3B",
    "readme_quant": "4-bit",
    "status": "ok",
-   "gguf_path": "/private/tmp/claude-502/-Users-akiralam-code-ax-engine/190092a3-9e4c-4daf-8a5f-957b75255faa/scratchpad/ggufs/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf",
+   "gguf_path": "~/.cache/huggingface/hub/models--unsloth--Qwen3.6-35B-A3B-GGUF/snapshots/a483e9e6cbd595906af30beda3187c2663a1118c/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf",
    "result_doc": {
     "schema_version": "ax.mlx_inference_stack.v2",
     "model": "Qwen 3.6 35B A3B",
@@ -1199,7 +1199,7 @@
       "prompt_tokens": 128,
       "generation_tokens": 128,
       "batch_size": 1,
-      "gguf_model": "/private/tmp/claude-502/-Users-akiralam-code-ax-engine/190092a3-9e4c-4daf-8a5f-957b75255faa/scratchpad/ggufs/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf",
+      "gguf_model": "~/.cache/huggingface/hub/models--unsloth--Qwen3.6-35B-A3B-GGUF/snapshots/a483e9e6cbd595906af30beda3187c2663a1118c/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf",
       "n_gpu_layers": 99,
       "prefill_tok_s": {
        "mean": 1674.538,
@@ -1234,7 +1234,7 @@
       "prompt_tokens": 512,
       "generation_tokens": 128,
       "batch_size": 1,
-      "gguf_model": "/private/tmp/claude-502/-Users-akiralam-code-ax-engine/190092a3-9e4c-4daf-8a5f-957b75255faa/scratchpad/ggufs/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf",
+      "gguf_model": "~/.cache/huggingface/hub/models--unsloth--Qwen3.6-35B-A3B-GGUF/snapshots/a483e9e6cbd595906af30beda3187c2663a1118c/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf",
       "n_gpu_layers": 99,
       "prefill_tok_s": {
        "mean": 3061.886,
@@ -1269,7 +1269,7 @@
       "prompt_tokens": 2048,
       "generation_tokens": 128,
       "batch_size": 1,
-      "gguf_model": "/private/tmp/claude-502/-Users-akiralam-code-ax-engine/190092a3-9e4c-4daf-8a5f-957b75255faa/scratchpad/ggufs/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf",
+      "gguf_model": "~/.cache/huggingface/hub/models--unsloth--Qwen3.6-35B-A3B-GGUF/snapshots/a483e9e6cbd595906af30beda3187c2663a1118c/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf",
       "n_gpu_layers": 99,
       "prefill_tok_s": {
        "mean": 3510.624,
@@ -1304,7 +1304,7 @@
    "readme_model": "Qwen 3.6 35B A3B",
    "readme_quant": "6-bit",
    "status": "ok",
-   "gguf_path": "/private/tmp/claude-502/-Users-akiralam-code-ax-engine/190092a3-9e4c-4daf-8a5f-957b75255faa/scratchpad/ggufs/Qwen3.6-35B-A3B-UD-Q6_K.gguf",
+   "gguf_path": "~/.cache/huggingface/hub/models--unsloth--Qwen3.6-35B-A3B-GGUF/snapshots/a483e9e6cbd595906af30beda3187c2663a1118c/Qwen3.6-35B-A3B-UD-Q6_K.gguf",
    "result_doc": {
     "schema_version": "ax.mlx_inference_stack.v2",
     "model": "Qwen 3.6 35B A3B",
@@ -1317,7 +1317,7 @@
       "prompt_tokens": 128,
       "generation_tokens": 128,
       "batch_size": 1,
-      "gguf_model": "/private/tmp/claude-502/-Users-akiralam-code-ax-engine/190092a3-9e4c-4daf-8a5f-957b75255faa/scratchpad/ggufs/Qwen3.6-35B-A3B-UD-Q6_K.gguf",
+      "gguf_model": "~/.cache/huggingface/hub/models--unsloth--Qwen3.6-35B-A3B-GGUF/snapshots/a483e9e6cbd595906af30beda3187c2663a1118c/Qwen3.6-35B-A3B-UD-Q6_K.gguf",
       "n_gpu_layers": 99,
       "prefill_tok_s": {
        "mean": 1560.346,
@@ -1352,7 +1352,7 @@
       "prompt_tokens": 512,
       "generation_tokens": 128,
       "batch_size": 1,
-      "gguf_model": "/private/tmp/claude-502/-Users-akiralam-code-ax-engine/190092a3-9e4c-4daf-8a5f-957b75255faa/scratchpad/ggufs/Qwen3.6-35B-A3B-UD-Q6_K.gguf",
+      "gguf_model": "~/.cache/huggingface/hub/models--unsloth--Qwen3.6-35B-A3B-GGUF/snapshots/a483e9e6cbd595906af30beda3187c2663a1118c/Qwen3.6-35B-A3B-UD-Q6_K.gguf",
       "n_gpu_layers": 99,
       "prefill_tok_s": {
        "mean": 2223.842,
@@ -1387,7 +1387,7 @@
       "prompt_tokens": 2048,
       "generation_tokens": 128,
       "batch_size": 1,
-      "gguf_model": "/private/tmp/claude-502/-Users-akiralam-code-ax-engine/190092a3-9e4c-4daf-8a5f-957b75255faa/scratchpad/ggufs/Qwen3.6-35B-A3B-UD-Q6_K.gguf",
+      "gguf_model": "~/.cache/huggingface/hub/models--unsloth--Qwen3.6-35B-A3B-GGUF/snapshots/a483e9e6cbd595906af30beda3187c2663a1118c/Qwen3.6-35B-A3B-UD-Q6_K.gguf",
       "n_gpu_layers": 99,
       "prefill_tok_s": {
        "mean": 2557.0299999999997,

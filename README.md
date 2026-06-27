@@ -475,6 +475,13 @@ llama.cpp b9700 / ggml 0.15.2 (Metal, flash-attn) · `mlx_lm` 0.31.3 has no `gem
 support. MTP methodology and artifacts live with
 [Speculative Decoding (MTP)](#speculative-decoding-mtp).
 
+A current-build re-bench (llama.cpp b9820 / ggml 0.15.3, same Metal flash-attn settings)
+reproduced these llama.cpp peer numbers within run-to-run noise — decode at matched depth
+**56.9 / 58.7 / 57.5 tok/s** versus the b9700 table's 59.2 / 58.9 / 56.9 (512 and 2,048 are
+dead-on; the 128 gap sits inside the ~6% session variance shown by a 57.1 → 60.4 re-measure)
+— so the table above is kept on the original same-session b9700 run. Verification artifact:
+[`gemma-4-12b-it-4bit-b9820-verify.json`](benchmarks/results/llama-cpp-metal/2026-06-27-llama-only-rerun/gemma-4-12b-it-4bit-b9820-verify.json).
+
 Full artifacts:
 [`2026-06-26-gemma4-12b-4bit-ax-direct-only`](benchmarks/results/mlx-inference/2026-06-26-gemma4-12b-4bit-ax-direct-only/gemma-4-12b-it-4bit.json)
 (AX direct rerun; chart artifact with retained llama.cpp reference rows in
