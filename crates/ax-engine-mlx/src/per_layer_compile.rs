@@ -35,6 +35,35 @@ use std::thread::ThreadId;
 
 use mlx_sys::{MlxArray, MlxClosure, MlxVectorArray};
 
+/// Try applying a compiled closure, returning `Some(outputs)` on success.
+///
+/// This wraps `try_apply` with two layers of failure detection:
+///
+/// 1. **`catch_unwind`** (debug builds only): catches Rust panics from MLX
+///    stream-registry invalidation. Ineffective under `panic = "abort"`.
+/// 2. **MLX error slot check** (abort-safe): after a successful `try_apply`,
+///    drains the MLX error capture slot. If MLX recorded a lazy error during
+///    the apply (e.g. Metal command buffer failure that did not surface as
+///    a non-zero FFI status), the result is treated as a failure so the
+///    caller falls back to the imperative path.
+///
+/// The `catch_unwind` layer is kept because it provides defense-in-depth in
+/// debug/test profiles. The error-slot check is the production safety net.
+fn try_apply_with_abort_safety(
+    closure: &MlxClosure,
+    inputs: &[&MlxArray],
+) -> Option<Vec<MlxArray>> {
+    // Drain any stale error from the slot so we only see errors from *this* apply.
+    let _ = mlx_sys::take_last_error();
+    let result = std::panic::catch_unwind(AssertUnwindSafe(|| closure.try_apply(inputs).ok()))
+        .ok()
+        .flatten();
+    // Abort-safe: filter out results where MLX recorded a lazy error during
+    // the apply (e.g. Metal command buffer failure that did not surface as
+    // a non-zero FFI status), so the caller falls back to the imperative path.
+    result.filter(|_| mlx_sys::take_last_error().is_none())
+}
+
 /// Per-layer decode closure cache.
 ///
 /// Maps `(layer_index, thread_id)` to a compiled closure that performs
@@ -114,11 +143,7 @@ pub fn apply_layer_decode(
     let guard = cache.lock().ok()?;
     if let Some(entry) = guard.get(&(layer_index, tid)) {
         return match entry {
-            Some(closure) => {
-                std::panic::catch_unwind(AssertUnwindSafe(|| closure.try_apply(inputs).ok()))
-                    .ok()
-                    .flatten()
-            }
+            Some(closure) => try_apply_with_abort_safety(closure, inputs),
             None => None,
         };
     }
@@ -128,10 +153,7 @@ pub fn apply_layer_decode(
     if let std::collections::hash_map::Entry::Vacant(slot) = guard.entry((layer_index, tid)) {
         let closure = MlxClosure::new_dyn(layer_fn);
         if let Ok(compiled) = closure.compile(true) {
-            let result =
-                std::panic::catch_unwind(AssertUnwindSafe(|| compiled.try_apply(inputs).ok()))
-                    .ok()
-                    .flatten();
+            let result = try_apply_with_abort_safety(&compiled, inputs);
             slot.insert(result.is_some().then_some(compiled));
             return result;
         }
@@ -190,11 +212,7 @@ pub fn apply_layer_moe_decode(
             // gracefully. MLX's thread-local stream registry can become
             // invalid in long-running processes, causing abort inside
             // mlx_closure_apply.
-            Some(closure) => {
-                std::panic::catch_unwind(AssertUnwindSafe(|| closure.try_apply(inputs).ok()))
-                    .ok()
-                    .flatten()
-            }
+            Some(closure) => try_apply_with_abort_safety(closure, inputs),
             // Known-incompatible for this layer: skip straight to the
             // imperative fallback instead of re-attempting every decode step.
             None => None,
@@ -208,10 +226,7 @@ pub fn apply_layer_moe_decode(
         if let Ok(compiled) = closure.compile(true) {
             // Use catch_unwind for the first apply as well — compilation
             // tracing may leave MLX in a state that panics on first apply.
-            let result =
-                std::panic::catch_unwind(AssertUnwindSafe(|| compiled.try_apply(inputs).ok()))
-                    .ok()
-                    .flatten();
+            let result = try_apply_with_abort_safety(&compiled, inputs);
             // Cache the compiled closure only if its first apply produced
             // output. If it failed (e.g. a model whose MoE graph the compiled
             // path cannot shape-infer), record `None` so later steps fall back
@@ -260,9 +275,7 @@ pub fn apply_layer_dense_ffn_decode(
 
     let guard = cache.lock().ok()?;
     if let Some(closure) = guard.get(&(layer_index, tid)) {
-        return std::panic::catch_unwind(AssertUnwindSafe(|| closure.try_apply(inputs).ok()))
-            .ok()
-            .flatten();
+        return try_apply_with_abort_safety(closure, inputs);
     }
     drop(guard);
 
@@ -270,10 +283,7 @@ pub fn apply_layer_dense_ffn_decode(
     if let std::collections::hash_map::Entry::Vacant(slot) = guard.entry((layer_index, tid)) {
         let closure = MlxClosure::new_dyn(ffn_fn);
         if let Ok(compiled) = closure.compile(true) {
-            let result =
-                std::panic::catch_unwind(AssertUnwindSafe(|| compiled.try_apply(inputs).ok()))
-                    .ok()
-                    .flatten();
+            let result = try_apply_with_abort_safety(&compiled, inputs);
             slot.insert(compiled);
             return result;
         }
@@ -327,11 +337,7 @@ pub fn apply_layer_gemma4_dual_path_decode(
     let guard = cache.lock().ok()?;
     if let Some(entry) = guard.get(&(layer_index, tid)) {
         return match entry {
-            Some(closure) => {
-                std::panic::catch_unwind(AssertUnwindSafe(|| closure.try_apply(inputs).ok()))
-                    .ok()
-                    .flatten()
-            }
+            Some(closure) => try_apply_with_abort_safety(closure, inputs),
             None => None,
         };
     }
@@ -341,10 +347,7 @@ pub fn apply_layer_gemma4_dual_path_decode(
     if let std::collections::hash_map::Entry::Vacant(slot) = guard.entry((layer_index, tid)) {
         let closure = MlxClosure::new_dyn(dual_path_fn);
         if let Ok(compiled) = closure.compile(true) {
-            let result =
-                std::panic::catch_unwind(AssertUnwindSafe(|| compiled.try_apply(inputs).ok()))
-                    .ok()
-                    .flatten();
+            let result = try_apply_with_abort_safety(&compiled, inputs);
             slot.insert(result.is_some().then_some(compiled));
             return result;
         }

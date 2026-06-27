@@ -275,8 +275,10 @@ pub(crate) fn swiglu(gate: &MlxArray, up: &MlxArray) -> MlxArray {
 
     let cache = SWIGLU_COMPILE_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
     let tid = std::thread::current().id();
-    let outputs = {
-        let mut guard = cache.lock().expect("swiglu compile cache mutex poisoned");
+    // Graceful degradation on mutex poison: skip the compiled path and fall
+    // through to the uncached `silu_mul` below. Under `panic = "abort"` a
+    // poisoned mutex would otherwise crash the process.
+    let outputs = if let Ok(mut guard) = cache.lock() {
         if let Entry::Vacant(slot) = guard.entry(tid)
             && let Ok(compiled) = MlxClosure::new_dyn(|inputs: &MlxVectorArray| {
                 let gate = inputs.get(0);
@@ -290,6 +292,8 @@ pub(crate) fn swiglu(gate: &MlxArray, up: &MlxArray) -> MlxArray {
         guard
             .get(&tid)
             .and_then(|cls| cls.try_apply(&[gate, up]).ok())
+    } else {
+        None
     };
 
     if let Some(mut outputs) = outputs

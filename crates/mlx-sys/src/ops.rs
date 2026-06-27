@@ -1822,23 +1822,31 @@ pub fn cached_scalar(value: f32, dtype: MlxDtype) -> MlxArray {
     static CACHE: OnceLock<Mutex<HashMap<(u32, MlxDtype), MlxArray>>> = OnceLock::new();
     let key = (value.to_bits(), dtype);
     let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-    let mut map = cache.lock().expect("cached_scalar cache poisoned");
+    // Graceful degradation on mutex poison: fall through to uncached compute.
+    // Under `panic = "abort"` a poisoned mutex would otherwise crash the process.
+    let Some(mut map) = cache.lock().ok() else {
+        return make_scalar_array(value, dtype);
+    };
     if let Some(arr) = map.get(&key) {
         return arr.clone();
     }
+    let out = make_scalar_array(value, dtype);
+    map.insert(key, out.clone());
+    out
+}
+
+fn make_scalar_array(value: f32, dtype: MlxDtype) -> MlxArray {
     let f32_arr = MlxArray::from_raw_data(
         &value as *const f32 as *const u8,
         std::mem::size_of::<f32>(),
         &[1_i32],
         MlxDtype::Float32,
     );
-    let out = if dtype == MlxDtype::Float32 {
+    if dtype == MlxDtype::Float32 {
         f32_arr
     } else {
         astype(&f32_arr, dtype, None)
-    };
-    map.insert(key, out.clone());
-    out
+    }
 }
 
 /// Top-k values along the last axis.

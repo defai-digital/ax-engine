@@ -949,7 +949,14 @@ fn layer_forward_dense_embed(
     let (q_raw, k_raw, v_raw, _attn_gate) = qkv_project(cfg, w, &normed, head_dim);
     let kv_heads = (k_raw.shape()[2] as usize)
         .checked_div(head_dim)
-        .expect("k projection output must divide by head_dim");
+        .unwrap_or_else(|| {
+            tracing::warn!(
+                k_shape_dim = k_raw.shape()[2],
+                head_dim,
+                "k projection output does not divide evenly by head_dim; defaulting to 1 kv head"
+            );
+            1
+        });
 
     let v = prepare_value_bhsd_from_proj(
         &v_raw,
@@ -1003,9 +1010,13 @@ fn layer_forward_dense_embed(
     let attn_proj = attention_output_projection(
         &attn_flat,
         None,
-        w.o_proj
-            .as_ref()
-            .expect("dense embed layer must have o_proj"),
+        w.o_proj.as_ref().unwrap_or_else(|| {
+            tracing::error!(
+                layer_idx,
+                "dense embed layer missing o_proj weight; inference will produce garbage output"
+            );
+            panic!("dense embed layer must have o_proj");
+        }),
     );
     let hidden = add(hidden, &attn_proj, None);
 
@@ -1139,7 +1150,7 @@ pub fn forward_for_embedding_batch(
     target_positions: Option<&[usize]>,
 ) -> (MlxArray, Vec<usize>) {
     let actual_lens: Vec<usize> = batch_token_ids.iter().map(Vec::len).collect();
-    let max_len = *actual_lens.iter().max().expect("non-empty batch");
+    let max_len = actual_lens.iter().copied().max().unwrap_or(0);
     let batch = batch_token_ids.len();
 
     let hidden = build_embedding_batch_hidden(cfg, weights, batch_token_ids, batch, max_len);
@@ -1274,7 +1285,7 @@ pub(crate) fn build_embedding_batch_hidden_pub(
     batch_token_ids: &[Vec<u32>],
 ) -> (MlxArray, usize, usize, Vec<usize>) {
     let actual_lens: Vec<usize> = batch_token_ids.iter().map(Vec::len).collect();
-    let max_len = *actual_lens.iter().max().expect("non-empty batch");
+    let max_len = actual_lens.iter().copied().max().unwrap_or(0);
     let batch = batch_token_ids.len();
     let hidden = build_embedding_batch_hidden(cfg, weights, batch_token_ids, batch, max_len);
     (hidden, batch, max_len, actual_lens)

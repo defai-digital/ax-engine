@@ -5617,14 +5617,28 @@ impl MlxRunner {
     ) -> u32 {
         let tok = match direct_pipeline_action(state.pending_direct.is_some(), final_by_max_output)
         {
-            DirectPipelineAction::FinishPending => {
-                let pending = state
-                    .pending_direct
-                    .take()
-                    .expect("direct pipeline final step requires pending_direct");
-                self.run_direct_pipeline_finish_pending(state, pending)
-            }
-            DirectPipelineAction::ContinuePending => self.run_direct_pipeline_continue(state),
+            DirectPipelineAction::FinishPending => match state.pending_direct.take() {
+                Some(pending) => self.run_direct_pipeline_finish_pending(state, pending),
+                None => {
+                    tracing::error!(
+                        "direct pipeline state machine invariant violated: \
+                             FinishPending called without pending_direct; \
+                             falling back to bootstrap"
+                    );
+                    self.run_direct_pipeline_bootstrap(state, last_token)
+                }
+            },
+            DirectPipelineAction::ContinuePending => match state.pending_direct.take() {
+                Some(bootstrap_token) => self.run_direct_pipeline_once(state, bootstrap_token),
+                None => {
+                    tracing::error!(
+                        "direct pipeline state machine invariant violated: \
+                             ContinuePending called without pending_direct; \
+                             re-bootstrapping from last_token"
+                    );
+                    self.run_direct_pipeline_bootstrap(state, last_token)
+                }
+            },
             DirectPipelineAction::BootstrapFinal => {
                 self.run_direct_pipeline_bootstrap_final(state, last_token)
             }
@@ -5636,14 +5650,6 @@ impl MlxRunner {
             state.ngram.feed(&[tok]);
         }
         tok
-    }
-
-    fn run_direct_pipeline_continue(&self, state: &mut RequestState) -> u32 {
-        let bootstrap_token = state
-            .pending_direct
-            .take()
-            .expect("direct pipeline continue requires pending_direct to be initialized");
-        self.run_direct_pipeline_once(state, bootstrap_token)
     }
 
     fn run_direct_pipeline_bootstrap(&self, state: &mut RequestState, last_token: u32) -> u32 {
@@ -5837,10 +5843,15 @@ impl MlxRunner {
     }
 
     fn finish_pending_direct_for_ngram_transition(&self, state: &mut RequestState) -> Vec<u32> {
-        let pending = state
-            .pending_direct
-            .take()
-            .expect("pending direct token must exist before n-gram transition drain");
+        let Some(pending) = state.pending_direct.take() else {
+            tracing::error!(
+                "direct pipeline state machine invariant violated: \
+                 n-gram transition drain called without pending_direct; \
+                 returning empty token list"
+            );
+            state.direct_pipeline_emitted_tokens = 0;
+            return vec![];
+        };
         let tok = self.run_direct_pipeline_finish_pending(state, pending);
         state.ngram.feed(&[tok]);
         state.direct_pipeline_emitted_tokens = 0;
