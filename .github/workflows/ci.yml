@@ -227,6 +227,7 @@ jobs:
     env:
       AX_CI_LOG_DIR: ${{ github.workspace }}/ax-ci-logs
       AX_ENGINE_MLX_MODEL_ARTIFACTS_DIR: ${{ inputs.mlx_model_artifacts_dir || vars.AX_ENGINE_MLX_MODEL_ARTIFACTS_DIR }}
+      AX_MODEL_SMOKE_REQUIRED: ${{ (github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/release/'))) || (github.event_name == 'workflow_dispatch' && inputs.mlx_model_artifacts_dir != '') || vars.AX_REQUIRE_MODEL_SMOKE == '1' }}
 
     steps:
       - name: Check out repository
@@ -245,11 +246,22 @@ jobs:
             } >> "$GITHUB_STEP_SUMMARY"
           else
             echo "available=false" >>"$GITHUB_OUTPUT"
-            echo "MLX model artifacts not mounted; skipping real-model smoke checks."
+            if [[ "$AX_MODEL_SMOKE_REQUIRED" == "true" ]]; then
+              echo "MLX model artifacts are required for this ref/event but were not mounted." >&2
+              {
+                echo "## Model Smoke"
+                echo
+                echo "MLX model artifacts: missing"
+                echo
+                echo "Real-model smoke checks are required for this ref/event."
+              } >> "$GITHUB_STEP_SUMMARY"
+              exit 1
+            fi
+            echo "MLX model artifacts not mounted; skipping optional real-model smoke checks."
             {
               echo "## Model Smoke"
               echo
-              echo "MLX model artifacts: not mounted, model-dependent smoke checks skipped."
+              echo "MLX model artifacts: not mounted, optional model-dependent smoke checks skipped."
             } >> "$GITHUB_STEP_SUMMARY"
           fi
 

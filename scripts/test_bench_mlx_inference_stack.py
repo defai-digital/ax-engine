@@ -3171,6 +3171,7 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
                 Path("/tmp/ax-engine-server"),
                 Path("/tmp/model"),
                 19091,
+                model_id="test-model",
                 direct_mode=True,
                 kv_compression="turboquant-shadow",
                 kv_compression_hot_window_tokens=128,
@@ -3196,6 +3197,7 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
                 Path("/tmp/ax-engine-server"),
                 Path("/tmp/model"),
                 19091,
+                model_id="test-model",
                 direct_mode=True,
                 kv_compression="turboquant-fused-experimental",
             )
@@ -3213,6 +3215,7 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
                 Path("/tmp/ax-engine-server"),
                 Path("/tmp/model"),
                 19091,
+                model_id="test-model",
                 direct_mode=True,
                 gemma4_moe_profile=True,
             )
@@ -3229,6 +3232,7 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
                 Path("/tmp/ax-engine-server"),
                 Path("/tmp/model"),
                 19091,
+                model_id="test-model",
                 direct_mode=True,
                 linear_attention_profile=True,
             )
@@ -3245,6 +3249,7 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
                 Path("/tmp/ax-engine-server"),
                 Path("/tmp/model"),
                 19091,
+                model_id="test-model",
                 direct_mode=True,
                 decode_profile=True,
             )
@@ -3261,6 +3266,7 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
                 Path("/tmp/ax-engine-server"),
                 Path("/tmp/model"),
                 19091,
+                model_id="test-model",
                 direct_mode=True,
                 pack_linear_attention_projections=True,
             )
@@ -3277,6 +3283,7 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
                 Path("/tmp/ax-engine-server"),
                 Path("/tmp/model"),
                 19091,
+                model_id="test-model",
                 direct_mode=False,
                 gemma4_assistant_mtp=True,
                 mtp_max_depth=1,
@@ -3295,6 +3302,7 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
                 Path("/tmp/ax-engine-server"),
                 Path("/tmp/model"),
                 19091,
+                model_id="test-model",
                 direct_mode=True,
                 direct_linear_attention_inputs_route=True,
                 direct_linear_attention_post_input_route=True,
@@ -3410,6 +3418,7 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
                 Path("/tmp/ax-engine-server"),
                 Path("/tmp/model"),
                 19091,
+                model_id="test-model",
                 direct_mode=True,
             )
 
@@ -3429,6 +3438,7 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
                 Path("/tmp/ax-engine-server"),
                 Path("/tmp/model"),
                 19091,
+                model_id="test-model",
                 direct_mode=True,
                 prefix_cache_enabled=True,
             )
