@@ -44,6 +44,17 @@ class CiWorkflowPolicyTests(unittest.TestCase):
             workflow,
         )
 
+    def test_aggregate_ci_gate_fails_on_non_successful_needs(self) -> None:
+        workflow = CI_WORKFLOW.read_text()
+
+        self.assertIn("contains(needs.*.result, 'failure')", workflow)
+        self.assertIn("contains(needs.*.result, 'cancelled')", workflow)
+        self.assertIn("contains(needs.*.result, 'skipped')", workflow)
+        self.assertIn(
+            "One or more CI gates failed, were cancelled, or were skipped.",
+            workflow,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
