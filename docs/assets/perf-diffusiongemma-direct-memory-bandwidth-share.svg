@@ -22,19 +22,19 @@
 <text x="640.0" y="334" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">100%</text>
 <text x="72" y="134.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">128 tok</text>
 <rect x="142.0" y="118.0" width="498.0" height="24.0" rx="5" fill="#e5e7eb" stroke="#cbd5e1" stroke-width="1.2"/>
-<rect x="142.0" y="118.0" width="78.2" height="24.0" rx="5" fill="#2eaf5f" fill-opacity="0.76"/>
-<line x1="220.2" y1="118.0" x2="220.2" y2="142.0" stroke="#176c37" stroke-width="1.4"/>
-<text x="212.2" y="134.0" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#ffffff">15.7%</text>
+<rect x="142.0" y="118.0" width="80.5" height="24.0" rx="5" fill="#2eaf5f" fill-opacity="0.76"/>
+<line x1="222.5" y1="118.0" x2="222.5" y2="142.0" stroke="#176c37" stroke-width="1.4"/>
+<text x="214.5" y="134.0" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#ffffff">16.2%</text>
 <text x="72" y="192.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">512 tok</text>
 <rect x="142.0" y="176.0" width="498.0" height="24.0" rx="5" fill="#e5e7eb" stroke="#cbd5e1" stroke-width="1.2"/>
-<rect x="142.0" y="176.0" width="63.6" height="24.0" rx="5" fill="#2eaf5f" fill-opacity="0.76"/>
-<line x1="205.6" y1="176.0" x2="205.6" y2="200.0" stroke="#176c37" stroke-width="1.4"/>
-<text x="197.6" y="192.0" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#ffffff">12.8%</text>
+<rect x="142.0" y="176.0" width="78.4" height="24.0" rx="5" fill="#2eaf5f" fill-opacity="0.76"/>
+<line x1="220.4" y1="176.0" x2="220.4" y2="200.0" stroke="#176c37" stroke-width="1.4"/>
+<text x="212.4" y="192.0" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#ffffff">15.7%</text>
 <text x="72" y="250.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">2048 tok</text>
 <rect x="142.0" y="234.0" width="498.0" height="24.0" rx="5" fill="#e5e7eb" stroke="#cbd5e1" stroke-width="1.2"/>
-<rect x="142.0" y="234.0" width="67.8" height="24.0" rx="5" fill="#2eaf5f" fill-opacity="0.76"/>
-<line x1="209.8" y1="234.0" x2="209.8" y2="258.0" stroke="#176c37" stroke-width="1.4"/>
-<text x="201.8" y="250.0" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#ffffff">13.6%</text>
+<rect x="142.0" y="234.0" width="76.2" height="24.0" rx="5" fill="#2eaf5f" fill-opacity="0.76"/>
+<line x1="218.2" y1="234.0" x2="218.2" y2="258.0" stroke="#176c37" stroke-width="1.4"/>
+<text x="210.2" y="250.0" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#ffffff">15.3%</text>
 <rect x="64.0" y="399" width="12" height="10" rx="2" fill="#2eaf5f" fill-opacity="0.76"/>
 <text x="80.0" y="408" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#374151">Used bandwidth</text>
 <rect x="192.0" y="399" width="12" height="10" rx="2" fill="#e5e7eb" stroke="#cbd5e1" stroke-width="1"/>

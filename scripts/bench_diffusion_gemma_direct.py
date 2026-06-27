@@ -101,10 +101,114 @@ def parse_prompt_tokens(raw: str) -> list[int]:
     return values
 
 
-def synthetic_tokens(prompt_tokens: int) -> list[int]:
-    # Stay away from common low special-token IDs while keeping the prompt fully
-    # deterministic and tokenizer-free.
-    return [1000 + ((prompt_tokens * 9973 + i * 37) % 120000) for i in range(prompt_tokens)]
+# Realistic, coherent in-distribution prompt context. DiffusionGemma decode is
+# *convergence-gated*: the denoiser iterates until the canvas stabilises, so
+# decode throughput depends on the prompt being real text. Synthetic random
+# token ids (the prior generator) never converge — they hit the denoise-step
+# cap and measure the failure mode, not realistic throughput. We therefore
+# tokenize a coherent technical document with the model's own tokenizer and use
+# its prefixes at each target length.
+DIFFUSION_PROMPT_TEXT = (
+    "You are a senior backend engineer reviewing the design of a distributed "
+    "order-processing service for an e-commerce platform. The service ingests "
+    "orders from a web storefront and a mobile application, validates them, "
+    "reserves inventory, charges payment, and emits events that downstream "
+    "fulfillment and analytics systems consume. Evaluate the architecture for "
+    "correctness, scalability, and operational resilience, and recommend "
+    "concrete improvements. The current system is built around a single "
+    "PostgreSQL database that stores orders, line items, inventory counts, and "
+    "payment records. A fleet of stateless application servers behind a load "
+    "balancer handles incoming HTTP requests. When an order arrives, the server "
+    "opens a database transaction, checks that each requested item has "
+    "sufficient inventory, decrements the inventory counters, inserts the order "
+    "and its line items, and then calls an external payment gateway over HTTPS. "
+    "If the payment succeeds, the transaction commits and the server returns a "
+    "confirmation; if the payment fails, the transaction rolls back and the "
+    "inventory is released. After commit, the server publishes an order-created "
+    "event to a message broker so the warehouse service can begin picking and "
+    "packing. This design is simple but has weaknesses that appear under load. "
+    "Holding a database transaction open across a synchronous call to the "
+    "external payment gateway means connections and row locks are held for the "
+    "full network round trip to a third party. During traffic spikes or when "
+    "the provider is slow, the connection pool is exhausted, lock contention on "
+    "popular inventory rows rises, and unrelated requests time out. The "
+    "order-created event is published after the transaction commits but is not "
+    "part of it, so a crash between commit and publish loses the event and the "
+    "warehouse never learns about a paid order. Retries from impatient clients "
+    "can produce duplicate charges because there is no idempotency mechanism "
+    "keyed on a client-supplied request identifier. A more resilient approach "
+    "decouples the synchronous request path from the slow and failure-prone "
+    "steps. The server should perform only fast local work inside the "
+    "transaction: validate the request, reserve inventory by recording a "
+    "reservation row rather than mutating a shared counter, persist the order "
+    "in a pending state, and write an outbox record describing the event to "
+    "publish. The transaction commits atomically, guaranteeing the order and "
+    "its intended side effects are durable together. A separate background "
+    "worker reads unpublished outbox records and delivers them to the broker, "
+    "marking each as sent only after the broker acknowledges. This "
+    "transactional outbox pattern ensures every committed order eventually "
+    "produces exactly one event, even across crashes. Payment should move out "
+    "of the request path as well: a payment worker picks up the pending order, "
+    "calls the gateway with an idempotency key, and transitions the order to "
+    "confirmed or failed, while the client receives an immediate acknowledgment "
+    "and learns the final outcome through a status endpoint. Inventory deserves "
+    "attention because it is the most contended resource; modeling it as "
+    "reservation rows that are later confirmed or expired spreads contention "
+    "and makes oversell conditions explicit and auditable. Operationally, each "
+    "request should carry a correlation identifier that flows through logs, "
+    "metrics, and traces so a single order can be followed end to end, and "
+    "alerts should fire on growing backlogs and rising error rates rather than "
+    "raw resource utilization. Please answer in detail: explain why holding a "
+    "transaction open across the payment call is harmful and how the outbox "
+    "pattern removes that coupling; describe the exact failure window in the "
+    "publish-after-commit approach; discuss how idempotency keys prevent "
+    "duplicate charges; compare the shared-counter and reservation-row models "
+    "for inventory; and propose a concrete set of metrics and alerts an on-call "
+    "engineer would need."
+)
+
+# Cache of tokenized prompt ids per model dir (tokenization is not free).
+_PROMPT_TOKEN_CACHE: dict[str, list[int]] = {}
+
+
+def realistic_tokens(prompt_tokens: int, model_dir: Path) -> list[int]:
+    """Coherent in-distribution prompt prefix of exactly ``prompt_tokens`` ids.
+
+    Tokenizes :data:`DIFFUSION_PROMPT_TEXT` with the model's own tokenizer and
+    returns the first ``prompt_tokens`` ids, extending with coherent repetition
+    when a longer prompt is requested. Unlike the old synthetic generator the
+    result is real text, so the diffusion denoiser converges and the measured
+    throughput reflects realistic usage rather than the non-converging failure
+    mode. Requires the ``tokenizers`` package and ``tokenizer.json`` in the
+    model dir (both present whenever the model-dependent benchmark runs).
+    """
+    key = str(model_dir)
+    base = _PROMPT_TOKEN_CACHE.get(key)
+    if base is None:
+        try:
+            from tokenizers import Tokenizer
+        except ImportError as exc:  # pragma: no cover - environment guard
+            raise SystemExit(
+                "realistic diffusion prompts require the `tokenizers` package; "
+                "install it (pip install tokenizers) to run this benchmark"
+            ) from exc
+        tokenizer_path = model_dir / "tokenizer.json"
+        if not tokenizer_path.is_file():
+            raise SystemExit(f"tokenizer.json not found in model dir: {model_dir}")
+        tokenizer = Tokenizer.from_file(str(tokenizer_path))
+        wrapped = (
+            f"<start_of_turn>user\n{DIFFUSION_PROMPT_TEXT}<end_of_turn>\n"
+            "<start_of_turn>model\n"
+        )
+        # Prepend <bos> (id 2) to match the served chat format.
+        base = [2] + tokenizer.encode(wrapped, add_special_tokens=False).ids
+        _PROMPT_TOKEN_CACHE[key] = base
+    if len(base) >= prompt_tokens:
+        return base[:prompt_tokens]
+    extended = list(base)
+    while len(extended) < prompt_tokens:
+        extended.extend(base[1:])
+    return extended[:prompt_tokens]
 
 
 def median(values: list[float]) -> float:
@@ -319,7 +423,7 @@ def run_one(
     index: int,
     log_dir: Path,
 ) -> TrialMetrics:
-    tokens = synthetic_tokens(prompt_tokens)
+    tokens = realistic_tokens(prompt_tokens, model_dir)
     command = [
         str(bench_bin),
         "generate",
@@ -660,7 +764,7 @@ def main() -> None:
         rows: list[dict[str, Any]] = []
         all_trials: list[dict[str, Any]] = []
         for prompt_tokens in prompt_sizes:
-            tokens = synthetic_tokens(prompt_tokens)
+            tokens = realistic_tokens(prompt_tokens, args.model_dir)
             warmups: list[TrialMetrics] = []
             measures: list[TrialMetrics] = []
             log(f"prompt={prompt_tokens}: warmup={args.warmup_iters} measure={args.measure_iters}")
@@ -722,7 +826,14 @@ def main() -> None:
                 "reported_stat": "median",
                 "frequency_contract": "direct-mode standard: measured repetitions separated by cooldown",
                 "max_output_tokens": args.max_output_tokens,
-                "prompt_token_generator": "1000 + ((prompt_tokens * 9973 + i * 37) % 120000)",
+                "prompt_source": (
+                    "realistic in-distribution prompt: prefixes of a coherent "
+                    "technical document tokenized with the model tokenizer "
+                    "(DIFFUSION_PROMPT_TEXT). Diffusion decode is "
+                    "convergence-gated, so realistic prompts converge and "
+                    "measure real throughput; the prior synthetic random-id "
+                    "generator never converged and measured the failure mode."
+                ),
             },
             "bandwidth_model": {
                 "schema": "ax.estimated_weight_bandwidth.v1",

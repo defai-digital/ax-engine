@@ -329,7 +329,7 @@ non-Qwen rows remain from the prior full six-model refresh.
 ![AX MTP decode throughput with MTP off and MTP on](docs/assets/perf-mtp-6bit-ax-acceleration.svg)
 
 | Target | Suite | AX direct decode | AX MTP decode | AX speedup | AX MTP prefill | AX MTP TTFT | AX accept | MTPLX | lightning-mlx |
-|---|---|---:|---:|---:|---:|---:|---:|---|---|
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |
 | `qwen3.6-27b-6bit` | `flappy` | 17.6 tok/s | 39.6 tok/s | 2.25x | 628.2 tok/s | 514 ms | 99.4% | N/A | N/A |
 | `qwen3.6-27b-6bit` | `long_code` | 17.5 tok/s | 38.2 tok/s | 2.18x | 726.0 tok/s | 988 ms | 99.5% | N/A | N/A |
 | `qwen3.6-27b-6bit` | `python_modules_long` | 17.4 tok/s | 33.2 tok/s | 1.91x | 635.2 tok/s | 551 ms | 96.7% | N/A | N/A |
@@ -514,6 +514,17 @@ omitted rather than shown as zero: current llama.cpp Metal cannot load the GGUF
 (`unknown model architecture: 'diffusion-gemma'`), and `mlx_lm` 0.31.3 cannot load the
 MLX snapshot (`Model type diffusion_gemma not supported.`).
 
+> **Prompt realism matters for diffusion.** First-block decode is
+> *convergence-gated*: the denoiser iterates until the canvas stabilises, so its
+> throughput depends on the prompt being real, in-distribution text. These rows
+> use prefixes of a coherent technical document tokenized with the model's own
+> tokenizer (`DIFFUSION_PROMPT_TEXT` in `scripts/bench_diffusion_gemma_direct.py`),
+> which converge in **13–17 denoise steps**. Earlier revisions of this benchmark
+> fed synthetic random token ids; those never converge, hit the denoise-step cap,
+> and measured the failure mode (~25–35 tok/s at 41–48 steps) rather than realistic
+> throughput. Decode throughput is input-dependent, so it does not scale cleanly
+> with prompt length the way prefill does.
+
 <table>
 <tr>
 <td>
@@ -536,17 +547,17 @@ MLX snapshot (`Model type diffusion_gemma not supported.`).
 
 | Prompt tokens | AX first-block decode | Denoise steps | Committed block |
 | ---: | ---: | ---: | ---: |
-| 128 | 35.5 tok/s | 41 | 256 tokens |
-| 512 | 24.8 tok/s | 48 | 256 tokens |
-| 2048 | 30.8 tok/s | 41 | 256 tokens |
+| 128 | 109.8 tok/s | 13 | 256 tokens |
+| 512 | 83.2 tok/s | 17 | 256 tokens |
+| 2048 | 103.9 tok/s | 13 | 256 tokens |
 
 **Prefill and first-block latency:**
 
 | Prompt tokens | AX direct prefill | AX time to first block | llama.cpp Metal 9650 | `mlx_lm` 0.31.3 |
 | ---: | ---: | ---: | --- | --- |
-| 128 | 1,340.6 tok/s | 7,299 ms | load blocked | load blocked |
-| 512 | 3,000.6 tok/s | 10,498 ms | load blocked | load blocked |
-| 2048 | 3,968.4 tok/s | 8,821 ms | load blocked | load blocked |
+| 128 | 1,142.8 tok/s | 2,445 ms | load blocked | load blocked |
+| 512 | 2,707.9 tok/s | 3,266 ms | load blocked | load blocked |
+| 2048 | 3,834.4 tok/s | 2,999 ms | load blocked | load blocked |
 
 `time to first block` is prefill wall time plus the first 256-token denoise-and-commit
 block. `first-block decode` is computed as `256 / ax_mlx_diffusion_block_wall_us`.
@@ -563,21 +574,20 @@ ordinary autoregressive TTFT or fixed-token decode throughput.
 
 The bandwidth chart is an implementation-efficiency view, not a peer comparison. It estimates
 first-block traffic at block granularity from the measured denoise-step count plus one causal
-commit over the 16.54 GB MLX safetensors artifact. This rerun used **41 / 48 / 41** denoise
-steps at 128 / 512 / 2,048 prompt tokens, so the estimated traffic is much larger than a
-one-step early-exit block. The chart shows estimated bandwidth used versus the M5 Max
-theoretical ceiling; the table keeps the effective GB/s values.
+commit over the 16.54 GB MLX safetensors artifact. This run used **13 / 17 / 13** denoise
+steps at 128 / 512 / 2,048 prompt tokens on realistic prompts. The chart shows estimated
+bandwidth used versus the M5 Max theoretical ceiling; the table keeps the effective GB/s values.
 
 <img src="docs/assets/perf-diffusiongemma-direct-memory-bandwidth-share.svg"
   alt="DiffusionGemma memory bandwidth share vs theoretical peak">
 
 | Prompt tokens | Estimated effective bandwidth | % of 614.4 GB/s M5 Max theoretical bandwidth |
 | ---: | ---: | ---: |
-| 128 | 96.5 GB/s | 15.7% |
-| 512 | 78.5 GB/s | 12.8% |
-| 2,048 | 83.7 GB/s | 13.6% |
+| 128 | 99.4 GB/s | 16.2% |
+| 512 | 96.8 GB/s | 15.7% |
+| 2,048 | 94.0 GB/s | 15.3% |
 
-At these prompt lengths, the first-block path uses roughly 13-16% of theoretical M5 Max bandwidth. The current bottleneck is therefore not raw memory bandwidth alone; the next optimization target is denoise graph reuse, dispatch overhead, and convergence behavior under stricter quality gates.
+At these prompt lengths, the first-block path uses roughly 15-16% of theoretical M5 Max bandwidth. The bottleneck is therefore not raw memory bandwidth alone: per-step cost is broadly distributed across attention, the MoE and dense FFN blocks, the router, and the vocab-projection LM head (no single component dominates), so it is dispatch- and occupancy-bound rather than saturated. Further per-step gains require kernel-level MoE/attention work; the practical wins are realistic prompts that converge quickly (above) and the block-diffusion structure itself.
 
 **Denoise loop optimization — GPU-native sampling:**
 
@@ -593,7 +603,7 @@ The denoise loop can stop early when any configured convergence signal fires:
 
 3. **Entropy plateau:** mean entropy stops decreasing materially after the early denoise phase, indicating diminishing returns from additional passes.
 
-The benchmark rows above report the measured adaptive-convergence run as recorded in the artifact. This rerun did **not** converge after one denoise step: it used 41 / 48 / 41 denoise steps at 128 / 512 / 2,048 prompt tokens. Time to first block therefore tracks the full measured denoise work for the 512-token row and earlier exits for the 128- and 2,048-token rows.
+The benchmark rows above report the measured adaptive-convergence run as recorded in the artifact. On realistic prompts the denoiser converges in 13 / 17 / 13 denoise steps at 128 / 512 / 2,048 prompt tokens — far short of the 48-step cap — which is why time to first block is now 2.4–3.3 s rather than the 7–10 s seen when synthetic prompts forced the loop to run to the cap.
 
 **Denoise performance optimizations (enabled by default):**
 
@@ -620,7 +630,7 @@ python3 scripts/bench_diffusion_gemma_direct.py --bench-bin target/release/ax-en
 
 These flags are read once per process. The default-on optimizations have been validated for token equivalence against the imperative path.
 
-Artifacts: AX direct rows are [`2026-06-26-direct-first-block-rerun-2/summary.json`](benchmarks/results/diffusion-gemma-direct/2026-06-26-direct-first-block-rerun-2/summary.json), with the human summary in [`summary.md`](benchmarks/results/diffusion-gemma-direct/2026-06-26-direct-first-block-rerun-2/summary.md). Peer runtime blockers are recorded as load failures, so there are no llama.cpp or `mlx_lm` result artifacts for this model family.
+Artifacts: AX direct rows are [`2026-06-27-realistic-prompts/summary.json`](benchmarks/results/diffusion-gemma-direct/2026-06-27-realistic-prompts/summary.json), with the human summary in [`summary.md`](benchmarks/results/diffusion-gemma-direct/2026-06-27-realistic-prompts/summary.md). Peer runtime blockers are recorded as load failures, so there are no llama.cpp or `mlx_lm` result artifacts for this model family.
 
 Render charts with:
 
@@ -800,6 +810,7 @@ Qwen 3.6 direct-mode verdict: AX is faster overall against `mlx_lm` across the r
 | Qwen 3.6 35B A3B | 6-bit | 128 | 81.9 | 111.3 | **119.6 (+7.4%)** |
 |  |  | 512 | 79.9 | 110.4 | **122.9 (+11.3%)** |
 |  |  | 2048 | 82.2 | 105.8 | **121.7 (+15.0%)** |
+
 > Qwen 3.6 27B 4-bit at prompt=2,048 originally produced zero decode tokens because 4-bit quantization noise pushed an EOS token to argmax at decode step 0 on the `mlx_lm.benchmark` random-token contract. The benchmark harness now sends `sampling.ignore_eos=true` for AX throughput runs, matching how `mlx_lm.benchmark` measures fixed `gen=N` throughput. Production requests default to `ignore_eos=false`. Source: `benchmarks/results/mlx-inference/2026-05-20-qwen27-4to5-direct-ngram-directcpp-r2/qwen3_6-27b-4bit.json`.
 
 #### Time to first token (ms) — generation=128 tokens, temp=0
@@ -1024,7 +1035,7 @@ Performance tuning is tightly coupled: a local speedup can regress correctness, 
 
 - Website: [automatosx.com](https://automatosx.com)
 - Discord: [Join us](https://discord.gg/aDhhburqJg)
-- Email: enquiry@defai.digital
+- Email: [enquiry@defai.digital](mailto:enquiry@defai.digital)
 
 [ref-json]: benchmarks/results/mlx-inference/2026-06-26-gemma4-12b-4bit-ax-direct-only/gemma-4-12b-it-4bit-with-llama-reference.json
 
