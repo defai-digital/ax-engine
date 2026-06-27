@@ -1,0 +1,111 @@
+{
+ "schema_version": "ax.mlx_inference_stack.v2",
+ "model": "Gemma 4 E4B",
+ "results": [
+  {
+   "engine": "llama_cpp_metal",
+   "method": "llama-bench",
+   "timing_scope": "external_llama_cpp_kernel_benchmark",
+   "prompt_source": "llama_bench_internal_random",
+   "prompt_tokens": 128,
+   "generation_tokens": 128,
+   "batch_size": 1,
+   "gguf_model": "/private/tmp/claude-502/-Users-akiralam-code-ax-engine/190092a3-9e4c-4daf-8a5f-957b75255faa/scratchpad/hf/hub/models--unsloth--gemma-4-E4B-it-GGUF/snapshots/e1d90e5fb9f61d8dc71ef016580784a054e5c787/gemma-4-E4B-it-Q6_K.gguf",
+   "n_gpu_layers": 99,
+   "prefill_tok_s": {
+    "mean": 2280.966,
+    "median": 2284.33,
+    "min": 2269.33,
+    "max": 2289.56,
+    "stddev": 7.680100520175513
+   },
+   "decode_tok_s": {
+    "mean": 90.59156,
+    "median": 90.6517,
+    "min": 90.3736,
+    "max": 90.7074,
+    "stddev": 0.12817929005888734
+   },
+   "decode_at_depth_tok_s": {
+    "mean": 87.37046,
+    "median": 89.9834,
+    "min": 76.6745,
+    "max": 90.3314,
+    "stddev": 5.350657613639657
+   },
+   "ttft_ms": {
+    "median": 56.033935552218814
+   }
+  },
+  {
+   "engine": "llama_cpp_metal",
+   "method": "llama-bench",
+   "timing_scope": "external_llama_cpp_kernel_benchmark",
+   "prompt_source": "llama_bench_internal_random",
+   "prompt_tokens": 512,
+   "generation_tokens": 128,
+   "batch_size": 1,
+   "gguf_model": "/private/tmp/claude-502/-Users-akiralam-code-ax-engine/190092a3-9e4c-4daf-8a5f-957b75255faa/scratchpad/hf/hub/models--unsloth--gemma-4-E4B-it-GGUF/snapshots/e1d90e5fb9f61d8dc71ef016580784a054e5c787/gemma-4-E4B-it-Q6_K.gguf",
+   "n_gpu_layers": 99,
+   "prefill_tok_s": {
+    "mean": 4300.25,
+    "median": 4299.6,
+    "min": 4279.86,
+    "max": 4317.85,
+    "stddev": 14.66336523448843
+   },
+   "decode_tok_s": {
+    "mean": 90.37462000000001,
+    "median": 90.2245,
+    "min": 90.1567,
+    "max": 90.7017,
+    "stddev": 0.23339702140344357
+   },
+   "decode_at_depth_tok_s": {
+    "mean": 89.71736,
+    "median": 89.8244,
+    "min": 89.3709,
+    "max": 89.9678,
+    "stddev": 0.2116218948974765
+   },
+   "ttft_ms": {
+    "median": 119.08084472974228
+   }
+  },
+  {
+   "engine": "llama_cpp_metal",
+   "method": "llama-bench",
+   "timing_scope": "external_llama_cpp_kernel_benchmark",
+   "prompt_source": "llama_bench_internal_random",
+   "prompt_tokens": 2048,
+   "generation_tokens": 128,
+   "batch_size": 1,
+   "gguf_model": "/private/tmp/claude-502/-Users-akiralam-code-ax-engine/190092a3-9e4c-4daf-8a5f-957b75255faa/scratchpad/hf/hub/models--unsloth--gemma-4-E4B-it-GGUF/snapshots/e1d90e5fb9f61d8dc71ef016580784a054e5c787/gemma-4-E4B-it-Q6_K.gguf",
+   "n_gpu_layers": 99,
+   "prefill_tok_s": {
+    "mean": 4135.668,
+    "median": 4119.17,
+    "min": 4028.42,
+    "max": 4260.72,
+    "stddev": 80.19666711279226
+   },
+   "decode_tok_s": {
+    "mean": 88.07858,
+    "median": 90.1278,
+    "min": 78.8645,
+    "max": 90.9295,
+    "stddev": 4.618057862521861
+   },
+   "decode_at_depth_tok_s": {
+    "mean": 88.26888,
+    "median": 88.2625,
+    "min": 87.8314,
+    "max": 88.626,
+    "stddev": 0.3014844964504814
+   },
+   "ttft_ms": {
+    "median": 497.1875402083429
+   }
+  }
+ ]
+}
