@@ -322,19 +322,20 @@ from the same prepared package. The speedup labels are `AX MTP decode median /
 AX direct decode median`; they are same-package acceleration ratios, not a
 cross-model speed leaderboard. For Gemma 4 12B's shape-compatible direct peer
 comparison, see [Gemma 4 12B](#gemma-4-12b).
-The Qwen rows were refreshed AX-only on 2026-06-26; non-Qwen rows remain from
-the prior full six-model refresh.
+The Qwen rows were refreshed AX-only on 2026-06-26 in
+`benchmarks/results/mtp-6bit/2026-06-26-qwen-mtp-ax-only-rerun-2/`;
+non-Qwen rows remain from the prior full six-model refresh.
 
 ![AX MTP decode throughput with MTP off and MTP on](docs/assets/perf-mtp-6bit-ax-acceleration.svg)
 
 | Target | Suite | AX direct decode | AX MTP decode | AX speedup | AX MTP prefill | AX MTP TTFT | AX accept | MTPLX | lightning-mlx |
 |---|---|---:|---:|---:|---:|---:|---:|---|---|
-| `qwen3.6-27b-6bit` | `flappy` | 18.3 tok/s | 38.2 tok/s | 2.09x | 615.3 tok/s | 523 ms | 99.1% | N/A | N/A |
-| `qwen3.6-27b-6bit` | `long_code` | 18.1 tok/s | 40.5 tok/s | 2.24x | 729.6 tok/s | 983 ms | 99.6% | N/A | N/A |
-| `qwen3.6-27b-6bit` | `python_modules_long` | 18.5 tok/s | 34.7 tok/s | 1.87x | 642.8 tok/s | 543 ms | 96.7% | N/A | N/A |
-| `qwen3.6-35b-a3b` | `flappy` | 40.3 tok/s | 138.3 tok/s | 3.44x | 1552.6 tok/s | 208 ms | 99.8% | N/A | N/A |
-| `qwen3.6-35b-a3b` | `long_code` | 38.9 tok/s | 130.4 tok/s | 3.35x | 2366.3 tok/s | 303 ms | 99.8% | N/A | N/A |
-| `qwen3.6-35b-a3b` | `python_modules_long` | 37.8 tok/s | 128.5 tok/s | 3.40x | 1683.9 tok/s | 207 ms | 98.4% | N/A | N/A |
+| `qwen3.6-27b-6bit` | `flappy` | 17.6 tok/s | 39.6 tok/s | 2.25x | 628.2 tok/s | 514 ms | 99.4% | N/A | N/A |
+| `qwen3.6-27b-6bit` | `long_code` | 17.5 tok/s | 38.2 tok/s | 2.18x | 726.0 tok/s | 988 ms | 99.5% | N/A | N/A |
+| `qwen3.6-27b-6bit` | `python_modules_long` | 17.4 tok/s | 33.2 tok/s | 1.91x | 635.2 tok/s | 551 ms | 96.7% | N/A | N/A |
+| `qwen3.6-35b-a3b` | `flappy` | 38.4 tok/s | 118.2 tok/s | 3.08x | 1477.9 tok/s | 218 ms | 99.8% | N/A | N/A |
+| `qwen3.6-35b-a3b` | `long_code` | 38.1 tok/s | 118.1 tok/s | 3.10x | 2318.4 tok/s | 310 ms | 99.8% | N/A | N/A |
+| `qwen3.6-35b-a3b` | `python_modules_long` | 38.0 tok/s | 118.9 tok/s | 3.13x | 1637.0 tok/s | 210 ms | 98.4% | N/A | N/A |
 | `gemma-4-12b` | `flappy` | 26.7 tok/s | 62.2 tok/s | 2.33x | 1701.7 tok/s | 214 ms | 99.3% | N/A | N/A |
 | `gemma-4-12b` | `long_code` | 26.6 tok/s | 70.5 tok/s | 2.65x | 1951.6 tok/s | 409 ms | 99.1% | N/A | N/A |
 | `gemma-4-12b` | `python_modules_long` | 27.1 tok/s | 63.2 tok/s | 2.33x | 1753.3 tok/s | 205 ms | 98.0% | N/A | N/A |
@@ -360,9 +361,9 @@ does not provide a comparable promoted row for these prepared packages.
 
 Pure-MTP verification: all listed AX MTP artifacts record zero n-gram accepted,
 proposed, submitted, and hit-step telemetry. Summary artifacts:
-[`summary.md`](benchmarks/results/mtp-6bit/2026-06-26-six-model-mtp-ax-only-refresh/summary.md)
+[`summary.md`](benchmarks/results/mtp-6bit/2026-06-26-qwen-mtp-ax-only-rerun-2/summary.md)
 and
-[`summary.json`](benchmarks/results/mtp-6bit/2026-06-26-six-model-mtp-ax-only-refresh/summary.json).
+[`summary.json`](benchmarks/results/mtp-6bit/2026-06-26-qwen-mtp-ax-only-rerun-2/summary.json).
 Detailed MTP notes, including the GLM-4.7 Flash smoke validation session, live in
 [`docs/mtp/`](docs/mtp/).
 
@@ -535,17 +536,17 @@ MLX snapshot (`Model type diffusion_gemma not supported.`).
 
 | Prompt tokens | AX first-block decode | Denoise steps | Committed block |
 | ---: | ---: | ---: | ---: |
-| 128 | 30.7 tok/s | 48 | 256 tokens |
-| 512 | 58.9 tok/s | 25 | 256 tokens |
-| 2048 | 32.1 tok/s | 48 | 256 tokens |
+| 128 | 35.5 tok/s | 41 | 256 tokens |
+| 512 | 24.8 tok/s | 48 | 256 tokens |
+| 2048 | 30.8 tok/s | 41 | 256 tokens |
 
 **Prefill and first-block latency:**
 
 | Prompt tokens | AX direct prefill | AX time to first block | llama.cpp Metal 9650 | `mlx_lm` 0.31.3 |
 | ---: | ---: | ---: | --- | --- |
-| 128 | 1,351.8 tok/s | 8,428 ms | load blocked | load blocked |
-| 512 | 3,002.1 tok/s | 4,518 ms | load blocked | load blocked |
-| 2048 | 4,031.4 tok/s | 8,475 ms | load blocked | load blocked |
+| 128 | 1,340.6 tok/s | 7,299 ms | load blocked | load blocked |
+| 512 | 3,000.6 tok/s | 10,498 ms | load blocked | load blocked |
+| 2048 | 3,968.4 tok/s | 8,821 ms | load blocked | load blocked |
 
 `time to first block` is prefill wall time plus the first 256-token denoise-and-commit
 block. `first-block decode` is computed as `256 / ax_mlx_diffusion_block_wall_us`.
@@ -554,7 +555,7 @@ ordinary autoregressive TTFT or fixed-token decode throughput.
 
 | Runtime path | Model artifact | Benchmark status |
 | --- | --- | --- |
-| AX direct MLX | `mlx-community/diffusiongemma-26B-A4B-it-4bit` | Measured: 1 warmup + 5 measured repetitions, 15 s cooldown, medians reported |
+| AX direct MLX | `mlx-community/diffusiongemma-26B-A4B-it-4bit` | Measured: 2 warmup + 5 measured repetitions, 15 s cooldown, medians reported |
 | llama.cpp Metal 9650 | 4-bit GGUF | Blocked at load: `unknown model architecture: 'diffusion-gemma'` |
 | `mlx_lm` 0.31.3 | 4-bit MLX snapshot | Blocked at load: `Model type diffusion_gemma not supported.` |
 
@@ -562,7 +563,7 @@ ordinary autoregressive TTFT or fixed-token decode throughput.
 
 The bandwidth chart is an implementation-efficiency view, not a peer comparison. It estimates
 first-block traffic at block granularity from the measured denoise-step count plus one causal
-commit over the 16.54 GB MLX safetensors artifact. This rerun used **48 / 25 / 48** denoise
+commit over the 16.54 GB MLX safetensors artifact. This rerun used **41 / 48 / 41** denoise
 steps at 128 / 512 / 2,048 prompt tokens, so the estimated traffic is much larger than a
 one-step early-exit block. The chart shows estimated bandwidth used versus the M5 Max
 theoretical ceiling; the table keeps the effective GB/s values.
@@ -572,11 +573,11 @@ theoretical ceiling; the table keeps the effective GB/s values.
 
 | Prompt tokens | Estimated effective bandwidth | % of 614.4 GB/s M5 Max theoretical bandwidth |
 | ---: | ---: | ---: |
-| 128 | 97.3 GB/s | 15.8% |
-| 512 | 98.9 GB/s | 16.1% |
-| 2,048 | 101.8 GB/s | 16.6% |
+| 128 | 96.5 GB/s | 15.7% |
+| 512 | 78.5 GB/s | 12.8% |
+| 2,048 | 83.7 GB/s | 13.6% |
 
-At these prompt lengths, the first-block path uses roughly 16% of theoretical M5 Max bandwidth. The current bottleneck is therefore not raw memory bandwidth alone; the next optimization target is denoise graph reuse, dispatch overhead, and convergence behavior under stricter quality gates.
+At these prompt lengths, the first-block path uses roughly 13-16% of theoretical M5 Max bandwidth. The current bottleneck is therefore not raw memory bandwidth alone; the next optimization target is denoise graph reuse, dispatch overhead, and convergence behavior under stricter quality gates.
 
 **Denoise loop optimization — GPU-native sampling:**
 
@@ -592,7 +593,7 @@ The denoise loop can stop early when any configured convergence signal fires:
 
 3. **Entropy plateau:** mean entropy stops decreasing materially after the early denoise phase, indicating diminishing returns from additional passes.
 
-The benchmark rows above report the measured adaptive-convergence run as recorded in the artifact. This rerun did **not** converge after one denoise step: it used 48 / 25 / 48 denoise steps at 128 / 512 / 2,048 prompt tokens. Time to first block therefore tracks the full measured denoise work for the 128- and 2,048-token rows and a mid-run early exit for the 512-token row.
+The benchmark rows above report the measured adaptive-convergence run as recorded in the artifact. This rerun did **not** converge after one denoise step: it used 41 / 48 / 41 denoise steps at 128 / 512 / 2,048 prompt tokens. Time to first block therefore tracks the full measured denoise work for the 512-token row and earlier exits for the 128- and 2,048-token rows.
 
 **Denoise performance optimizations (enabled by default):**
 
@@ -619,7 +620,7 @@ python3 scripts/bench_diffusion_gemma_direct.py --bench-bin target/release/ax-en
 
 These flags are read once per process. The default-on optimizations have been validated for token equivalence against the imperative path.
 
-Artifacts: AX direct rows are [`2026-06-20-direct-first-block-rerun/summary.json`](benchmarks/results/diffusion-gemma-direct/2026-06-20-direct-first-block-rerun/summary.json), with the human summary in [`summary.md`](benchmarks/results/diffusion-gemma-direct/2026-06-20-direct-first-block-rerun/summary.md). Peer runtime blockers are recorded as load failures, so there are no llama.cpp or `mlx_lm` result artifacts for this model family.
+Artifacts: AX direct rows are [`2026-06-26-direct-first-block-rerun-2/summary.json`](benchmarks/results/diffusion-gemma-direct/2026-06-26-direct-first-block-rerun-2/summary.json), with the human summary in [`summary.md`](benchmarks/results/diffusion-gemma-direct/2026-06-26-direct-first-block-rerun-2/summary.md). Peer runtime blockers are recorded as load failures, so there are no llama.cpp or `mlx_lm` result artifacts for this model family.
 
 Render charts with:
 
