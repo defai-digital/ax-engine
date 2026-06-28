@@ -943,6 +943,7 @@ fn layer_forward_dense_embed(
     ) = layer_params(cfg, layer_idx);
     let batch = hidden.shape()[0] as usize;
     let seq = hidden.shape()[1] as usize;
+    let flat_attention_shape = seq > 1;
     // AX_MLX_EMBED_PROFILE per-stage timers. Each `embed_profile_eval_elapsed`
     // forces an `eval()` barrier, so the breakdown is for ratio analysis only
     // (it disables forward pipelining and inflates absolute time).
@@ -978,14 +979,25 @@ fn layer_forward_dense_embed(
         });
 
     let value_prep_started = profile.then(Instant::now);
-    let v = prepare_value_bhsd_from_proj(
-        &v_raw,
-        v_norm_no_scale,
-        kv_heads,
-        head_dim,
-        seq,
-        cfg.rms_norm_eps,
-    );
+    let v = if flat_attention_shape {
+        prepare_value_bhsd_from_proj_flat(
+            &v_raw,
+            v_norm_no_scale,
+            kv_heads,
+            head_dim,
+            seq,
+            cfg.rms_norm_eps,
+        )
+    } else {
+        prepare_value_bhsd_from_proj(
+            &v_raw,
+            v_norm_no_scale,
+            kv_heads,
+            head_dim,
+            seq,
+            cfg.rms_norm_eps,
+        )
+    };
     if let Some(started) = value_prep_started {
         embed_profile_eval_elapsed(profile, EmbedProfileStage::ValuePrep, started, &[&v]);
     }
@@ -995,30 +1007,60 @@ fn layer_forward_dense_embed(
         .map(|f| (None, Some(f)))
         .unwrap_or((Some(rope_theta), None));
     let qk_norm_rope_started = profile.then(Instant::now);
-    let q_rope = qk_norm_rope_bhsd_from_proj(
-        &q_raw,
-        w.q_norm.as_ref(),
-        cfg.n_heads,
-        head_dim,
-        seq,
-        cfg.rms_norm_eps,
-        rope_dims,
-        rope_base,
-        0,
-        rope_freqs_ref,
-    );
-    let k_rope = qk_norm_rope_bhsd_from_proj(
-        &k_raw,
-        w.k_norm.as_ref(),
-        kv_heads,
-        head_dim,
-        seq,
-        cfg.rms_norm_eps,
-        rope_dims,
-        rope_base,
-        0,
-        rope_freqs_ref,
-    );
+    let q_rope = if flat_attention_shape {
+        qk_norm_rope_bhsd_from_proj_flat(
+            &q_raw,
+            w.q_norm.as_ref(),
+            cfg.n_heads,
+            head_dim,
+            seq,
+            cfg.rms_norm_eps,
+            rope_dims,
+            rope_base,
+            0,
+            rope_freqs_ref,
+        )
+    } else {
+        qk_norm_rope_bhsd_from_proj(
+            &q_raw,
+            w.q_norm.as_ref(),
+            cfg.n_heads,
+            head_dim,
+            seq,
+            cfg.rms_norm_eps,
+            rope_dims,
+            rope_base,
+            0,
+            rope_freqs_ref,
+        )
+    };
+    let k_rope = if flat_attention_shape {
+        qk_norm_rope_bhsd_from_proj_flat(
+            &k_raw,
+            w.k_norm.as_ref(),
+            kv_heads,
+            head_dim,
+            seq,
+            cfg.rms_norm_eps,
+            rope_dims,
+            rope_base,
+            0,
+            rope_freqs_ref,
+        )
+    } else {
+        qk_norm_rope_bhsd_from_proj(
+            &k_raw,
+            w.k_norm.as_ref(),
+            kv_heads,
+            head_dim,
+            seq,
+            cfg.rms_norm_eps,
+            rope_dims,
+            rope_base,
+            0,
+            rope_freqs_ref,
+        )
+    };
     if let Some(started) = qk_norm_rope_started {
         embed_profile_eval_elapsed(
             profile,
@@ -1090,22 +1132,15 @@ pub fn forward_for_embedding(
     target_position: Option<usize>,
 ) -> MlxArray {
     let mut hidden = embed_tokens(token_ids, &weights.token_embedding, cfg.hidden_size);
-    // `dequantize` produces bf16 for bf16-scales quantized embeddings; only
-    // insert the cast when the embed_tokens output is not already bf16
-    // (e.g. unquantized fp16/fp32 embeddings). Skipping the redundant graph
-    // node avoids one MLX FFI hop per call.
-    if hidden.dtype() != MlxDtype::Bfloat16 {
-        hidden = astype(&hidden, MlxDtype::Bfloat16, None);
-    }
     if let Some(scale) = cfg.hidden_states_scale {
         hidden = scale_hidden(&hidden, scale);
     }
     forward_for_embedding_body(cfg, weights, hidden, target_position)
 }
 
-/// Body of `forward_for_embedding` starting from a pre-embedded bf16 hidden
-/// state. Split out so the same logic can be wrapped in an `mlx_compile`
-/// closure that fuses the per-layer dispatches into a single compiled graph.
+/// Body of `forward_for_embedding` starting from pre-embedded hidden states.
+/// Split out so the same logic can be wrapped in an `mlx_compile` closure that
+/// fuses the per-layer dispatches into a single compiled graph.
 fn forward_for_embedding_body(
     cfg: &ModelConfig,
     weights: &ModelWeights,
@@ -1132,8 +1167,8 @@ fn forward_for_embedding_body(
     rms_norm(&to_norm, Some(&weights.final_norm), cfg.rms_norm_eps, None)
 }
 
-/// Build an `mlx_compile`-wrapped closure that takes the pre-embedded bf16
-/// hidden state and returns the final norm-output for Last/Cls pooling.
+/// Build an `mlx_compile`-wrapped closure that takes the pre-embedded hidden
+/// state and returns the final norm-output for Last/Cls pooling.
 ///
 /// The closure captures `Arc<ModelWeights>` and `ModelConfig` by value so the
 /// caller can drop them safely. The compiled graph is shape-specific (the
@@ -1423,9 +1458,10 @@ pub fn forward_for_embedding_batch(
     (out, actual_lens)
 }
 
-/// Pre-embed a token-id batch + bf16 cast + (optional) hidden states scale.
-/// Returns `[batch, max_len, hidden]` bf16. Split out so the same prelude
-/// can be used by the imperative and compiled-closure batch paths.
+/// Pre-embed a token-id batch plus optional hidden-states scale.
+/// Returns `[batch, max_len, hidden]` in the model embedding dtype. Split out
+/// so the same prelude can be used by the imperative and compiled-closure batch
+/// paths.
 fn build_embedding_batch_hidden(
     cfg: &ModelConfig,
     weights: &ModelWeights,
@@ -1452,9 +1488,6 @@ fn build_embedding_batch_hidden(
         batch,
         max_len,
     );
-    if cfg.model_family != "embeddinggemma" && hidden.dtype() != MlxDtype::Bfloat16 {
-        hidden = astype(&hidden, MlxDtype::Bfloat16, None);
-    }
     if let Some(scale) = cfg.hidden_states_scale {
         hidden = scale_hidden(&hidden, scale);
     }
@@ -1530,7 +1563,7 @@ fn forward_for_embedding_batch_body(
 }
 
 /// Build an `mlx_compile`-wrapped closure for the batched embedding forward.
-/// The closure takes the pre-embedded `[B, max_seq, H]` bf16 hidden state and
+/// The closure takes the pre-embedded `[B, max_seq, H]` hidden state and
 /// returns the final norm output. `target_positions` is baked into the trace,
 /// so callers must cache one closure per `(batch_size, max_seq,
 /// target_positions)` shape combination.
@@ -4663,6 +4696,68 @@ mod tests {
     }
 
     #[test]
+    fn qk_norm_rope_bhsd_from_proj_flat_matches_bshd_reference_path() {
+        let batch = 2_usize;
+        let n_heads = 2_usize;
+        let head_dim = 4_usize;
+        let seq = 3_usize;
+        let proj_data: Vec<f32> = (0..(batch * seq * n_heads * head_dim))
+            .map(|i| ((i as f32) - 23.0) * 0.03125)
+            .collect();
+        let norm_data: Vec<f32> = (0..head_dim).map(|i| 0.75 + (i as f32) * 0.125).collect();
+        let proj = array_f32(
+            &proj_data,
+            &[batch as i32, seq as i32, (n_heads * head_dim) as i32],
+        );
+        let norm = array_f32(&norm_data, &[head_dim as i32]);
+
+        let reference_bshd = reshape(
+            &proj,
+            &[batch as i32, seq as i32, n_heads as i32, head_dim as i32],
+            None,
+        );
+        let reference_normed = rms_norm(&reference_bshd, Some(&norm), 1.0e-6, None);
+        let reference_bhsd = transpose(&reference_normed, &[0, 2, 1, 3], None);
+        let reference = mlx_sys::rope(
+            &reference_bhsd,
+            head_dim as i32,
+            false,
+            Some(10_000.0),
+            1.0,
+            2,
+            None,
+            None,
+        );
+        let candidate = qk_norm_rope_bhsd_from_proj_flat(
+            &proj,
+            Some(&norm),
+            n_heads,
+            head_dim,
+            seq,
+            1.0e-6,
+            head_dim,
+            Some(10_000.0),
+            2,
+            None,
+        );
+
+        let reference_contig = mlx_sys::ops::contiguous(&reference, None);
+        let candidate_contig = mlx_sys::ops::contiguous(&candidate, None);
+        eval(&[&reference_contig, &candidate_contig]);
+
+        assert_eq!(
+            reference_contig.shape(),
+            vec![batch as i32, n_heads as i32, seq as i32, head_dim as i32]
+        );
+        assert_eq!(candidate_contig.shape(), reference_contig.shape());
+        assert_close(
+            candidate_contig.data_f32(),
+            reference_contig.data_f32(),
+            1.0e-6,
+        );
+    }
+
+    #[test]
     fn prepare_value_bhsd_from_proj_matches_bshd_reference_path() {
         let n_heads = 2_usize;
         let head_dim = 4_usize;
@@ -4687,6 +4782,45 @@ mod tests {
         assert_eq!(
             reference_contig.shape(),
             vec![1, n_heads as i32, seq as i32, head_dim as i32]
+        );
+        assert_eq!(candidate_contig.shape(), reference_contig.shape());
+        assert_close(
+            candidate_contig.data_f32(),
+            reference_contig.data_f32(),
+            1.0e-6,
+        );
+    }
+
+    #[test]
+    fn prepare_value_bhsd_from_proj_flat_matches_bshd_reference_path() {
+        let batch = 2_usize;
+        let n_heads = 2_usize;
+        let head_dim = 4_usize;
+        let seq = 3_usize;
+        let proj_data: Vec<f32> = (0..(batch * seq * n_heads * head_dim))
+            .map(|i| ((i as f32) - 19.0) * 0.0625)
+            .collect();
+        let proj = array_f32(
+            &proj_data,
+            &[batch as i32, seq as i32, (n_heads * head_dim) as i32],
+        );
+
+        let reference_bshd = reshape(
+            &proj,
+            &[batch as i32, seq as i32, n_heads as i32, head_dim as i32],
+            None,
+        );
+        let reference = prepare_value_bhsd(reference_bshd, true, n_heads, head_dim, seq, 1.0e-6);
+        let candidate =
+            prepare_value_bhsd_from_proj_flat(&proj, true, n_heads, head_dim, seq, 1.0e-6);
+
+        let reference_contig = mlx_sys::ops::contiguous(&reference, None);
+        let candidate_contig = mlx_sys::ops::contiguous(&candidate, None);
+        eval(&[&reference_contig, &candidate_contig]);
+
+        assert_eq!(
+            reference_contig.shape(),
+            vec![batch as i32, n_heads as i32, seq as i32, head_dim as i32]
         );
         assert_eq!(candidate_contig.shape(), reference_contig.shape());
         assert_close(

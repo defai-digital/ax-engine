@@ -110,6 +110,43 @@ pub(crate) fn qk_norm_rope_bhsd_from_proj(
 }
 
 #[allow(clippy::too_many_arguments)]
+pub(crate) fn qk_norm_rope_bhsd_from_proj_flat(
+    qw_out: &MlxArray,
+    norm: Option<&MlxArray>,
+    n_heads: usize,
+    head_dim: usize,
+    seq: usize,
+    eps: f32,
+    rope_dims: usize,
+    rope_base: Option<f32>,
+    token_offset: usize,
+    rope_freqs: Option<&MlxArray>,
+) -> MlxArray {
+    let batch = qw_out.shape()[0] as usize;
+    let bshd = reshape(
+        qw_out,
+        &[batch as i32, seq as i32, n_heads as i32, head_dim as i32],
+        None,
+    );
+    let normed = if let Some(n) = norm {
+        rms_norm(&bshd, Some(n), eps, None)
+    } else {
+        bshd
+    };
+    let bhsd = transpose(&normed, &[0, 2, 1, 3], None);
+    rope(
+        &bhsd,
+        rope_dims as i32,
+        false,
+        rope_base,
+        1.0,
+        token_offset as i32,
+        rope_freqs,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn qk_norm_rope_bhsd_from_proj_with_route(
     qw_out: &MlxArray,
     norm: Option<&MlxArray>,
@@ -199,6 +236,23 @@ pub(crate) fn prepare_value_bhsd_from_proj(
     } else {
         bhsd
     }
+}
+
+pub(crate) fn prepare_value_bhsd_from_proj_flat(
+    v_raw: &MlxArray,
+    v_norm_no_scale: bool,
+    n_heads: usize,
+    head_dim: usize,
+    seq: usize,
+    eps: f32,
+) -> MlxArray {
+    let batch = v_raw.shape()[0] as usize;
+    let bshd = reshape(
+        v_raw,
+        &[batch as i32, seq as i32, n_heads as i32, head_dim as i32],
+        None,
+    );
+    prepare_value_bhsd(bshd, v_norm_no_scale, n_heads, head_dim, seq, eps)
 }
 
 /// Apply optional V RMSNorm in BSHD, then convert to BHSD for attention/KV cache.

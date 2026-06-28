@@ -63,7 +63,9 @@ pub(crate) fn qkv_project(
     head_dim: usize,
 ) -> (MlxArray, MlxArray, MlxArray, Option<MlxArray>) {
     let slices = qkv_slices(cfg, head_dim);
-    if let Some(packed) = &w.qkv_packed {
+    let prefer_split =
+        x.shape().first().copied().unwrap_or(1) > 1 && w.q_proj.is_some() && w.k_proj.is_some();
+    if !prefer_split && let Some(packed) = &w.qkv_packed {
         let out = qw(x, packed);
         let (q, gate) = if let Some((gate_start, gate_end)) = slices.gate {
             // attn_output_gate=true: the q section of the packed output preserves
@@ -1097,7 +1099,9 @@ pub(crate) fn ffn_swiglu(
     let gate_up_started = Instant::now();
     let packed_gate_up: Option<MlxArray>;
     let mut gate_up_profile_recorded = false;
-    let (gate_out, up_out) = if let Some(packed) = &w.gate_up_packed {
+    let prefer_split_gate_up =
+        x.shape().first().copied().unwrap_or(1) > 1 && w.gate_proj.is_some() && w.up_proj.is_some();
+    let (gate_out, up_out) = if !prefer_split_gate_up && let Some(packed) = &w.gate_up_packed {
         let out = qw(x, packed);
         let packed_dim = out
             .shape()

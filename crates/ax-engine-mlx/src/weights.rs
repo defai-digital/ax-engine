@@ -830,20 +830,18 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
                         "v_proj",
                     )?;
                     // W6 (mlx-lm-prefill-parity PRD §7): materialize a packed
-                    // QKV at load time so the runtime dispatches one quantized
-                    // matmul + last-dim slice instead of three separate
-                    // matmuls. Mirrors the FFN gate/up packing flow in W4a.
-                    // Fail-soft: if Q/K/V have asymmetric quantization metadata
-                    // (group_size / bits / bias presence / dtype),
-                    // `concat_quantized_weight_rows` errors out and we keep
-                    // the split path. Kill switch:
-                    // `AX_MLX_PACK_QKV_PROJECTIONS=0`.
+                    // QKV at load time so single-request runtime paths dispatch
+                    // one quantized matmul + last-dim slice instead of three
+                    // separate matmuls. Keep the split weights too: batched
+                    // embedding workloads can select the mlx-lm-shaped split
+                    // projections, which are faster for B > 1 on Qwen3
+                    // embedding models.
                     if dense_attention_qkv_packing_enabled() {
                         if let Ok(qk) = concat_quantized_weight_rows(&q, &k)
                             && let Ok(qkv) = concat_quantized_weight_rows(&qk, &v)
                         {
                             eval_packed_projection(&qkv);
-                            (Some(qkv), None, None, None, None)
+                            (Some(qkv), Some(q), Some(k), Some(v), None)
                         } else {
                             (None, Some(q), Some(k), Some(v), None)
                         }
@@ -887,7 +885,7 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
                     )
                 {
                     let packed = pack_dense_ffn_gate_up_projection(&g, &u)?;
-                    (Some(packed), None, None)
+                    (Some(packed), Some(g), Some(u))
                 } else {
                     (None, Some(g), Some(u))
                 }
@@ -1920,6 +1918,11 @@ fn apply_rotated_checkpoint(
                 target.biases = None;
             }
             replaced += 1;
+        }
+        if layer.gate_up_packed.is_some()
+            && let (Some(gate), Some(up)) = (&layer.gate_proj, &layer.up_proj)
+        {
+            layer.gate_up_packed = Some(pack_dense_ffn_gate_up_projection(gate, up)?);
         }
     }
 
