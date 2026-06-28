@@ -81,15 +81,19 @@ Why the loop is slow:
   itself runs over a right-padded `[B, max_seq, H]` tensor and one GPU
   sync; per-sentence wall time is divided by B.
 
-The current README Qwen fair-comparison snapshot is
+The current README reference-comparison snapshot for Qwen is
 `benchmarks/results/embedding-fair/2026-06-28-qwen-after-batch-fix/2026-06-28-051508/`.
-The current README EmbeddingGemma fair-comparison snapshot is
+The current README reference-comparison snapshot for EmbeddingGemma is
 `benchmarks/results/embedding-fair/2026-06-28-embeddinggemma-after-batch-fix/2026-06-28-051549/`.
-Both use 2 warmup + 5 measured trials, report medians, and keep the complete
-short-query plus 16/64/256-token matrix in `summary.md`. The Qwen comparison
-uses `mlx-lm` as the reference backend. EmbeddingGemma uses `mlx-embeddings`
-with mean pooling because `mlx-lm` does not provide the comparable
-EmbeddingGemma route used by this harness.
+The current README AX-only refresh snapshots are
+`benchmarks/results/embedding-fair/2026-06-28-qwen-ax-only-refresh/2026-06-28-130425/`
+and
+`benchmarks/results/embedding-fair/2026-06-28-embeddinggemma-ax-only-refresh/2026-06-28-130452/`.
+All use 2 warmup + 5 measured trials, report medians, and keep the complete
+short-query plus 16/64/256-token matrix in `summary.md`. The Qwen reference
+comparison uses `mlx-lm` as the baseline backend. EmbeddingGemma uses
+`mlx-embeddings` with mean pooling because `mlx-lm` does not provide the
+comparable EmbeddingGemma route used by this harness.
 
 ## Sustained vs intermittent profiles
 
@@ -178,6 +182,7 @@ Use the fair in-process harness for README throughput claims:
 
 ```bash
 .venv/bin/python scripts/bench_embedding_fair.py \
+  --ax-only \
   --model qwen3-embedding-0.6b-8bit=/path/to/Qwen3-Embedding-0.6B-8bit/snapshots/<sha> \
   --model qwen3-embedding-4b-4bit-dwq=/path/to/Qwen3-Embedding-4B-4bit-DWQ/snapshots/<sha> \
   --model qwen3-embedding-8b-4bit-dwq=/path/to/Qwen3-Embedding-8B-4bit-DWQ/snapshots/<sha> \
@@ -192,6 +197,7 @@ For EmbeddingGemma, use the same output contract with the embeddinggemma route:
 
 ```bash
 .venv/bin/python scripts/bench_embedding_fair.py \
+  --ax-only \
   --reference mlx_embeddings --pooling mean \
   --model embeddinggemma-300m-8bit=/path/to/embeddinggemma-300m-8bit/snapshots/<sha> \
   --batch-sizes 1,8 \

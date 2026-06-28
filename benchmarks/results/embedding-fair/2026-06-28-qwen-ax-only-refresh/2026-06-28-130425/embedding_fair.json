@@ -1,0 +1,1685 @@
+{
+  "schema_version": "ax.embedding_fair.v1",
+  "timestamp": "2026-06-28T13:04:25.980620",
+  "output_contract": "contiguous_cpu_f32_batch_hidden",
+  "warmup": 2,
+  "trials": 5,
+  "cooldown_s": 0.0,
+  "batch_sizes": [
+    1,
+    8
+  ],
+  "synthetic_lengths": [
+    16,
+    64,
+    256
+  ],
+  "include_short_query": true,
+  "reference": "mlx_lm",
+  "pooling": "last",
+  "ax_only": true,
+  "models": [
+    {
+      "model_label": "qwen3-embedding-0.6b-8bit",
+      "model_dir": "/Volumes/Ext4T/models/hub/models--mlx-community--Qwen3-Embedding-0.6B-8bit/snapshots/b8d7100604f51da6d14eab4dd1805f596fa1ce3f",
+      "rows": [
+        {
+          "workload": "short_query_b1",
+          "input_kind": "short_query_text",
+          "batch_size": 1,
+          "token_counts": [
+            10
+          ],
+          "total_tokens": 10,
+          "max_tokens": 10,
+          "results": {
+            "ax_engine_py": {
+              "engine": "ax-engine-py",
+              "median_ms_per_batch": 4.360582970548421,
+              "mean_ms_per_batch": 4.485891805961728,
+              "stddev_ms_per_batch": 0.5059957665625836,
+              "median_tokens_per_sec": 2293.271350996062,
+              "mean_tokens_per_sec": 2256.3800572927926,
+              "median_items_per_sec": 229.3271350996062,
+              "mean_items_per_sec": 225.63800572927926,
+              "trials": [
+                {
+                  "ms_per_batch": 5.323291989043355,
+                  "ms_per_item": 5.323291989043355,
+                  "tokens_per_sec": 1878.5368190552879,
+                  "items_per_sec": 187.8536819055288,
+                  "hidden_size": 1024.0,
+                  "output_bytes": 4096.0
+                },
+                {
+                  "ms_per_batch": 4.760999989230186,
+                  "ms_per_item": 4.760999989230186,
+                  "tokens_per_sec": 2100.3990805757,
+                  "items_per_sec": 210.03990805757002,
+                  "hidden_size": 1024.0,
+                  "output_bytes": 4096.0
+                },
+                {
+                  "ms_per_batch": 3.9810840389691293,
+                  "ms_per_item": 3.9810840389691293,
+                  "tokens_per_sec": 2511.8786496628245,
+                  "items_per_sec": 251.18786496628246,
+                  "hidden_size": 1024.0,
+                  "output_bytes": 4096.0
+                },
+                {
+                  "ms_per_batch": 4.003500042017549,
+                  "ms_per_item": 4.003500042017549,
+                  "tokens_per_sec": 2497.8143861740878,
+                  "items_per_sec": 249.78143861740878,
+                  "hidden_size": 1024.0,
+                  "output_bytes": 4096.0
+                },
+                {
+                  "ms_per_batch": 4.360582970548421,
+                  "ms_per_item": 4.360582970548421,
+                  "tokens_per_sec": 2293.271350996062,
+                  "items_per_sec": 229.3271350996062,
+                  "hidden_size": 1024.0,
+                  "output_bytes": 4096.0
+                }
+              ]
+            }
+          },
+          "comparison": {}
+        },
+        {
+          "workload": "short_query_b8",
+          "input_kind": "short_query_text",
+          "batch_size": 8,
+          "token_counts": [
+            10,
+            15,
+            13,
+            8,
+            3,
+            8,
+            10,
+            8
+          ],
+          "total_tokens": 75,
+          "max_tokens": 15,
+          "results": {
+            "ax_engine_py": {
+              "engine": "ax-engine-py",
+              "median_ms_per_batch": 8.755541988648474,
+              "mean_ms_per_batch": 8.788558188825846,
+              "stddev_ms_per_batch": 0.20588901023739528,
+              "median_tokens_per_sec": 8566.003120907559,
+              "mean_tokens_per_sec": 8538.45776277894,
+              "median_items_per_sec": 913.7069995634729,
+              "mean_items_per_sec": 910.7688280297535,
+              "trials": [
+                {
+                  "ms_per_batch": 8.566832984797657,
+                  "ms_per_item": 1.070854123099707,
+                  "tokens_per_sec": 8754.693844632184,
+                  "items_per_sec": 933.8340100940995,
+                  "hidden_size": 1024.0,
+                  "output_bytes": 32768.0
+                },
+                {
+                  "ms_per_batch": 8.899082953575999,
+                  "ms_per_item": 1.1123853691969998,
+                  "tokens_per_sec": 8427.834687153027,
+                  "items_per_sec": 898.9690332963228,
+                  "hidden_size": 1024.0,
+                  "output_bytes": 32768.0
+                },
+                {
+                  "ms_per_batch": 8.596958010457456,
+                  "ms_per_item": 1.074619751307182,
+                  "tokens_per_sec": 8724.01608903626,
+                  "items_per_sec": 930.5617161638677,
+                  "hidden_size": 1024.0,
+                  "output_bytes": 32768.0
+                },
+                {
+                  "ms_per_batch": 9.124375006649643,
+                  "ms_per_item": 1.1405468758312054,
+                  "tokens_per_sec": 8219.741072165672,
+                  "items_per_sec": 876.772381031005,
+                  "hidden_size": 1024.0,
+                  "output_bytes": 32768.0
+                },
+                {
+                  "ms_per_batch": 8.755541988648474,
+                  "ms_per_item": 1.0944427485810593,
+                  "tokens_per_sec": 8566.003120907559,
+                  "items_per_sec": 913.7069995634729,
+                  "hidden_size": 1024.0,
+                  "output_bytes": 32768.0
+                }
+              ]
+            }
+          },
+          "comparison": {}
+        },
+        {
+          "workload": "fixed_16_b1",
+          "input_kind": "synthetic_token_ids",
+          "batch_size": 1,
+          "token_counts": [
+            16
+          ],
+          "total_tokens": 16,
+          "max_tokens": 16,
+          "results": {
+            "ax_engine_py": {
+              "engine": "ax-engine-py",
+              "median_ms_per_batch": 4.366750014014542,
+              "mean_ms_per_batch": 4.457566817291081,
+              "stddev_ms_per_batch": 0.22960726837395526,
+              "median_tokens_per_sec": 3664.052200984711,
+              "mean_tokens_per_sec": 3598.3509138227955,
+              "median_items_per_sec": 229.00326256154443,
+              "mean_items_per_sec": 224.89693211392472,
+              "trials": [
+                {
+                  "ms_per_batch": 4.366750014014542,
+                  "ms_per_item": 4.366750014014542,
+                  "tokens_per_sec": 3664.052200984711,
+                  "items_per_sec": 229.00326256154443,
+                  "hidden_size": 1024.0,
+                  "output_bytes": 4096.0
+                },
+                {
+                  "ms_per_batch": 4.905792011413723,
+                  "ms_per_item": 4.905792011413723,
+                  "tokens_per_sec": 3261.450946712519,
+                  "items_per_sec": 203.84068416953244,
+                  "hidden_size": 1024.0,
+                  "output_bytes": 4096.0
+                },
+                {
+                  "ms_per_batch": 4.362833045888692,
+                  "ms_per_item": 4.362833045888692,
+                  "tokens_per_sec": 3667.3418010064747,
+                  "items_per_sec": 229.20886256290467,
+                  "hidden_size": 1024.0,
+                  "output_bytes": 4096.0
+                },
+                {
+                  "ms_per_batch": 4.252167011145502,
+                  "ms_per_item": 4.252167011145502,
+                  "tokens_per_sec": 3762.7872936462386,
+                  "items_per_sec": 235.1742058528899,
+                  "hidden_size": 1024.0,
+                  "output_bytes": 4096.0
+                },
+                {
+                  "ms_per_batch": 4.400292003992945,
+                  "ms_per_item": 4.400292003992945,
+                  "tokens_per_sec": 3636.122326764034,
+                  "items_per_sec": 227.25764542275212,
+                  "hidden_size": 1024.0,
+                  "output_bytes": 4096.0
+                }
+              ]
+            }
+          },
+          "comparison": {}
+        },
+        {
+          "workload": "fixed_16_b8",
+          "input_kind": "synthetic_token_ids",
+          "batch_size": 8,
+          "token_counts": [
+            16,
+            16,
+            16,
+            16,
+            16,
+            16,
+            16,
+            16
+          ],
+          "total_tokens": 128,
+          "max_tokens": 16,
+          "results": {
+            "ax_engine_py": {
+              "engine": "ax-engine-py",
+              "median_ms_per_batch": 8.405125001445413,
+              "mean_ms_per_batch": 8.44177519902587,
+              "stddev_ms_per_batch": 0.12411191606535256,
+              "median_tokens_per_sec": 15228.803852172108,
+              "mean_tokens_per_sec": 15165.969493400107,
+              "median_items_per_sec": 951.8002407607568,
+              "mean_items_per_sec": 947.8730933375067,
+              "trials": [
+                {
+                  "ms_per_batch": 8.25999997323379,
+                  "ms_per_item": 1.0324999966542237,
+                  "tokens_per_sec": 15496.368088956302,
+                  "items_per_sec": 968.5230055597689,
+                  "hidden_size": 1024.0,
+                  "output_bytes": 32768.0
+                },
+                {
+                  "ms_per_batch": 8.598249987699091,
+                  "ms_per_item": 1.0747812484623864,
+                  "tokens_per_sec": 14886.75023209613,
+                  "items_per_sec": 930.4218895060081,
+                  "hidden_size": 1024.0,
+                  "output_bytes": 32768.0
+                },
+                {
+                  "ms_per_batch": 8.405125001445413,
+                  "ms_per_item": 1.0506406251806766,
+                  "tokens_per_sec": 15228.803852172108,
+                  "items_per_sec": 951.8002407607568,
+                  "hidden_size": 1024.0,
+                  "output_bytes": 32768.0
+                },
+                {
+                  "ms_per_batch": 8.56283400207758,
+                  "ms_per_item": 1.0703542502596974,
+                  "tokens_per_sec": 14948.32201219172,
+                  "items_per_sec": 934.2701257619825,
+                  "hidden_size": 1024.0,
+                  "output_bytes": 32768.0
+                },
+                {
+                  "ms_per_batch": 8.382667030673474,
+                  "ms_per_item": 1.0478333788341843,
+                  "tokens_per_sec": 15269.603281584275,
+                  "items_per_sec": 954.3502050990172,
+                  "hidden_size": 1024.0,
+                  "output_bytes": 32768.0
+                }
+              ]
+            }
+          },
+          "comparison": {}
+        },
+        {
+          "workload": "fixed_64_b1",
+          "input_kind": "synthetic_token_ids",
+          "batch_size": 1,
+          "token_counts": [
+            64
+          ],
+          "total_tokens": 64,
+          "max_tokens": 64,
+          "results": {
+            "ax_engine_py": {
+              "engine": "ax-engine-py",
+              "median_ms_per_batch": 5.327290971763432,
+              "mean_ms_per_batch": 5.330391402821988,
+              "stddev_ms_per_batch": 0.08321280579845002,
+              "median_tokens_per_sec": 12013.610733714966,
+              "mean_tokens_per_sec": 12009.538571454501,
+              "median_items_per_sec": 187.71266771429634,
+              "mean_items_per_sec": 187.64904017897658,
+              "trials": [
+                {
+                  "ms_per_batch": 5.2259580115787685,
+                  "ms_per_item": 5.2259580115787685,
+                  "tokens_per_sec": 12246.558402918648,
+                  "items_per_sec": 191.35247504560388,
+                  "hidden_size": 1024.0,
+                  "output_bytes": 4096.0
+                },
+                {
+                  "ms_per_batch": 5.379750044085085,
+                  "ms_per_item": 5.379750044085085,
+                  "tokens_per_sec": 11896.463492828363,
+                  "items_per_sec": 185.88224207544317,
+                  "hidden_size": 1024.0,
+                  "output_bytes": 4096.0
+                },
+                {
+                  "ms_per_batch": 5.260540987364948,
+                  "ms_per_item": 5.260540987364948,
+                  "tokens_per_sec": 12166.04911048477,
+                  "items_per_sec": 190.09451735132453,
+                  "hidden_size": 1024.0,
+                  "output_bytes": 4096.0
+                },
+                {
+                  "ms_per_batch": 5.327290971763432,
+                  "ms_per_item": 5.327290971763432,
+                  "tokens_per_sec": 12013.610733714966,
+                  "items_per_sec": 187.71266771429634,
+                  "hidden_size": 1024.0,
+                  "output_bytes": 4096.0
+                },
+                {
+                  "ms_per_batch": 5.458416999317706,
+                  "ms_per_item": 5.458416999317706,
+                  "tokens_per_sec": 11725.011117325757,
+                  "items_per_sec": 183.20329870821496,
+                  "hidden_size": 1024.0,
+                  "output_bytes": 4096.0
+                }
+              ]
+            }
+          },
+          "comparison": {}
+        },
+        {
+          "workload": "fixed_64_b8",
+          "input_kind": "synthetic_token_ids",
+          "batch_size": 8,
+          "token_counts": [
+            64,
+            64,
+            64,
+            64,
+            64,
+            64,
+            64,
+            64
+          ],
+          "total_tokens": 512,
+          "max_tokens": 64,
+          "results": {
+            "ax_engine_py": {
+              "engine": "ax-engine-py",
+              "median_ms_per_batch": 12.550125014968216,
+              "mean_ms_per_batch": 12.58262499468401,
+              "stddev_ms_per_batch": 0.2352954727089776,
+              "median_tokens_per_sec": 40796.40636163788,
+              "mean_tokens_per_sec": 40705.22684540244,
+              "median_items_per_sec": 637.4438494005918,
+              "mean_items_per_sec": 636.0191694594131,
+              "trials": [
+                {
+                  "ms_per_batch": 12.899249966721982,
+                  "ms_per_item": 1.6124062458402477,
+                  "tokens_per_sec": 39692.2302708203,
+                  "items_per_sec": 620.1910979815672,
+                  "hidden_size": 1024.0,
+                  "output_bytes": 32768.0
+                },
+                {
+                  "ms_per_batch": 12.802375014871359,
+                  "ms_per_item": 1.6002968768589199,
+                  "tokens_per_sec": 39992.57945539449,
+                  "items_per_sec": 624.8840539905389,
+                  "hidden_size": 1024.0,
+                  "output_bytes": 32768.0
+                },
+                {
+                  "ms_per_batch": 12.31891696806997,
+                  "ms_per_item": 1.5398646210087463,
+                  "tokens_per_sec": 41562.095217223956,
+                  "items_per_sec": 649.4077377691243,
+                  "hidden_size": 1024.0,
+                  "output_bytes": 32768.0
+                },
+                {
+                  "ms_per_batch": 12.550125014968216,
+                  "ms_per_item": 1.568765626871027,
+                  "tokens_per_sec": 40796.40636163788,
+                  "items_per_sec": 637.4438494005918,
+                  "hidden_size": 1024.0,
+                  "output_bytes": 32768.0
+                },
+                {
+                  "ms_per_batch": 12.342458008788526,
+                  "ms_per_item": 1.5428072510985658,
+                  "tokens_per_sec": 41482.82292193558,
+                  "items_per_sec": 648.1691081552434,
+                  "hidden_size": 1024.0,
+                  "output_bytes": 32768.0
+                }
+              ]
+            }
+          },
+          "comparison": {}
+        },
+        {
+          "workload": "fixed_256_b1",
+          "input_kind": "synthetic_token_ids",
+          "batch_size": 1,
+          "token_counts": [
+            256
+          ],
+          "total_tokens": 256,
+          "max_tokens": 256,
+          "results": {
+            "ax_engine_py": {
+              "engine": "ax-engine-py",
+              "median_ms_per_batch": 11.460499954409897,
+              "mean_ms_per_batch": 11.603116593323648,
+              "stddev_ms_per_batch": 0.30093353847157,
+              "median_tokens_per_sec": 22337.59443465584,
+              "mean_tokens_per_sec": 22077.77884438231,
+              "median_items_per_sec": 87.25622826037437,
+              "mean_items_per_sec": 86.24132361086839,
+              "trials": [
+                {
+                  "ms_per_batch": 11.270749964751303,
+                  "ms_per_item": 11.270749964751303,
+                  "tokens_per_sec": 22713.66153988217,
+                  "items_per_sec": 88.72524039016473,
+                  "hidden_size": 1024.0,
+                  "output_bytes": 4096.0
+                },
+                {
+                  "ms_per_batch": 11.973333021160215,
+                  "ms_per_item": 11.973333021160215,
+                  "tokens_per_sec": 21380.846882616283,
+                  "items_per_sec": 83.51893313521985,
+                  "hidden_size": 1024.0,
+                  "output_bytes": 4096.0
+                },
+                {
+                  "ms_per_batch": 11.460499954409897,
+                  "ms_per_item": 11.460499954409897,
+                  "tokens_per_sec": 22337.59443465584,
+                  "items_per_sec": 87.25622826037437,
+                  "hidden_size": 1024.0,
+                  "output_bytes": 4096.0
+                },
+                {
+                  "ms_per_batch": 11.35595899540931,
+                  "ms_per_item": 11.35595899540931,
+                  "tokens_per_sec": 22543.23039590835,
+                  "items_per_sec": 88.059493734017,
+                  "hidden_size": 1024.0,
+                  "output_bytes": 4096.0
+                },
+                {
+                  "ms_per_batch": 11.955041030887514,
+                  "ms_per_item": 11.955041030887514,
+                  "tokens_per_sec": 21413.560968848902,
+                  "items_per_sec": 83.64672253456602,
+                  "hidden_size": 1024.0,
+                  "output_bytes": 4096.0
+                }
+              ]
+            }
+          },
+          "comparison": {}
+        },
+        {
+          "workload": "fixed_256_b8",
+          "input_kind": "synthetic_token_ids",
+          "batch_size": 8,
+          "token_counts": [
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256
+          ],
+          "total_tokens": 2048,
+          "max_tokens": 256,
+          "results": {
+            "ax_engine_py": {
+              "engine": "ax-engine-py",
+              "median_ms_per_batch": 42.28870803490281,
+              "mean_ms_per_batch": 42.48368360567838,
+              "stddev_ms_per_batch": 0.3522410852232213,
+              "median_tokens_per_sec": 48429.00374988263,
+              "mean_tokens_per_sec": 48210.05038617252,
+              "median_items_per_sec": 189.17579589797901,
+              "mean_items_per_sec": 188.32050932098642,
+              "trials": [
+                {
+                  "ms_per_batch": 42.936959012877196,
+                  "ms_per_item": 5.3671198766096495,
+                  "tokens_per_sec": 47697.8353167905,
+                  "items_per_sec": 186.3196692062129,
+                  "hidden_size": 1024.0,
+                  "output_bytes": 32768.0
+                },
+                {
+                  "ms_per_batch": 42.05016704509035,
+                  "ms_per_item": 5.256270880636293,
+                  "tokens_per_sec": 48703.73042285258,
+                  "items_per_sec": 190.2489469642679,
+                  "hidden_size": 1024.0,
+                  "output_bytes": 32768.0
+                },
+                {
+                  "ms_per_batch": 42.27666696533561,
+                  "ms_per_item": 5.284583370666951,
+                  "tokens_per_sec": 48442.797103168996,
+                  "items_per_sec": 189.2296761842539,
+                  "hidden_size": 1024.0,
+                  "output_bytes": 32768.0
+                },
+                {
+                  "ms_per_batch": 42.28870803490281,
+                  "ms_per_item": 5.286088504362851,
+                  "tokens_per_sec": 48429.00374988263,
+                  "items_per_sec": 189.17579589797901,
+                  "hidden_size": 1024.0,
+                  "output_bytes": 32768.0
+                },
+                {
+                  "ms_per_batch": 42.865916970185935,
+                  "ms_per_item": 5.358239621273242,
+                  "tokens_per_sec": 47776.88533816792,
+                  "items_per_sec": 186.62845835221844,
+                  "hidden_size": 1024.0,
+                  "output_bytes": 32768.0
+                }
+              ]
+            }
+          },
+          "comparison": {}
+        }
+      ]
+    },
+    {
+      "model_label": "qwen3-embedding-4b-4bit-dwq",
+      "model_dir": "/Volumes/Ext4T/models/hub/models--mlx-community--Qwen3-Embedding-4B-4bit-DWQ/snapshots/b5d88f1fe49b50d2ac01b4692ca2d387f14f9c72",
+      "rows": [
+        {
+          "workload": "short_query_b1",
+          "input_kind": "short_query_text",
+          "batch_size": 1,
+          "token_counts": [
+            10
+          ],
+          "total_tokens": 10,
+          "max_tokens": 10,
+          "results": {
+            "ax_engine_py": {
+              "engine": "ax-engine-py",
+              "median_ms_per_batch": 18.436541024129838,
+              "mean_ms_per_batch": 18.413474794942886,
+              "stddev_ms_per_batch": 0.1892923732280751,
+              "median_tokens_per_sec": 542.4010928574916,
+              "mean_tokens_per_sec": 543.1376849998945,
+              "median_items_per_sec": 54.24010928574915,
+              "mean_items_per_sec": 54.31376849998945,
+              "trials": [
+                {
+                  "ms_per_batch": 18.436541024129838,
+                  "ms_per_item": 18.436541024129838,
+                  "tokens_per_sec": 542.4010928574916,
+                  "items_per_sec": 54.24010928574915,
+                  "hidden_size": 2560.0,
+                  "output_bytes": 10240.0
+                },
+                {
+                  "ms_per_batch": 18.207749992143363,
+                  "ms_per_item": 18.207749992143363,
+                  "tokens_per_sec": 549.2166799475496,
+                  "items_per_sec": 54.92166799475496,
+                  "hidden_size": 2560.0,
+                  "output_bytes": 10240.0
+                },
+                {
+                  "ms_per_batch": 18.726125010289252,
+                  "ms_per_item": 18.726125010289252,
+                  "tokens_per_sec": 534.01330998834,
+                  "items_per_sec": 53.401330998834,
+                  "hidden_size": 2560.0,
+                  "output_bytes": 10240.0
+                },
+                {
+                  "ms_per_batch": 18.471165967639536,
+                  "ms_per_item": 18.471165967639536,
+                  "tokens_per_sec": 541.3843401937619,
+                  "items_per_sec": 54.13843401937619,
+                  "hidden_size": 2560.0,
+                  "output_bytes": 10240.0
+                },
+                {
+                  "ms_per_batch": 18.22579198051244,
+                  "ms_per_item": 18.22579198051244,
+                  "tokens_per_sec": 548.6730020123294,
+                  "items_per_sec": 54.86730020123294,
+                  "hidden_size": 2560.0,
+                  "output_bytes": 10240.0
+                }
+              ]
+            }
+          },
+          "comparison": {}
+        },
+        {
+          "workload": "short_query_b8",
+          "input_kind": "short_query_text",
+          "batch_size": 8,
+          "token_counts": [
+            10,
+            15,
+            13,
+            8,
+            3,
+            8,
+            10,
+            8
+          ],
+          "total_tokens": 75,
+          "max_tokens": 15,
+          "results": {
+            "ax_engine_py": {
+              "engine": "ax-engine-py",
+              "median_ms_per_batch": 33.59499998623505,
+              "mean_ms_per_batch": 33.55445839697495,
+              "stddev_ms_per_batch": 0.17530289366013008,
+              "median_tokens_per_sec": 2232.4750716097606,
+              "mean_tokens_per_sec": 2235.2334207248796,
+              "median_items_per_sec": 238.1306743050411,
+              "mean_items_per_sec": 238.42489821065382,
+              "trials": [
+                {
+                  "ms_per_batch": 33.44374999869615,
+                  "ms_per_item": 4.1804687498370185,
+                  "tokens_per_sec": 2242.5714820534176,
+                  "items_per_sec": 239.20762475236452,
+                  "hidden_size": 2560.0,
+                  "output_bytes": 81920.0
+                },
+                {
+                  "ms_per_batch": 33.59499998623505,
+                  "ms_per_item": 4.1993749982793815,
+                  "tokens_per_sec": 2232.4750716097606,
+                  "items_per_sec": 238.1306743050411,
+                  "hidden_size": 2560.0,
+                  "output_bytes": 81920.0
+                },
+                {
+                  "ms_per_batch": 33.820334007032216,
+                  "ms_per_item": 4.227541750879027,
+                  "tokens_per_sec": 2217.6008073842604,
+                  "items_per_sec": 236.54408612098777,
+                  "hidden_size": 2560.0,
+                  "output_bytes": 81920.0
+                },
+                {
+                  "ms_per_batch": 33.614583022426814,
+                  "ms_per_item": 4.201822877803352,
+                  "tokens_per_sec": 2231.174486084265,
+                  "items_per_sec": 237.9919451823216,
+                  "hidden_size": 2560.0,
+                  "output_bytes": 81920.0
+                },
+                {
+                  "ms_per_batch": 33.298624970484525,
+                  "ms_per_item": 4.162328121310566,
+                  "tokens_per_sec": 2252.3452564926943,
+                  "items_per_sec": 240.25016069255406,
+                  "hidden_size": 2560.0,
+                  "output_bytes": 81920.0
+                }
+              ]
+            }
+          },
+          "comparison": {}
+        },
+        {
+          "workload": "fixed_16_b1",
+          "input_kind": "synthetic_token_ids",
+          "batch_size": 1,
+          "token_counts": [
+            16
+          ],
+          "total_tokens": 16,
+          "max_tokens": 16,
+          "results": {
+            "ax_engine_py": {
+              "engine": "ax-engine-py",
+              "median_ms_per_batch": 19.259874999988824,
+              "mean_ms_per_batch": 19.14370838785544,
+              "stddev_ms_per_batch": 0.20406255868689743,
+              "median_tokens_per_sec": 830.7426709679728,
+              "mean_tokens_per_sec": 835.8795793472951,
+              "median_items_per_sec": 51.9214169354983,
+              "mean_items_per_sec": 52.242473709205946,
+              "trials": [
+                {
+                  "ms_per_batch": 19.30037495912984,
+                  "ms_per_item": 19.30037495912984,
+                  "tokens_per_sec": 828.9994382949212,
+                  "items_per_sec": 51.812464893432576,
+                  "hidden_size": 2560.0,
+                  "output_bytes": 10240.0
+                },
+                {
+                  "ms_per_batch": 18.78412498626858,
+                  "ms_per_item": 18.78412498626858,
+                  "tokens_per_sec": 851.7830887356314,
+                  "items_per_sec": 53.23644304597696,
+                  "hidden_size": 2560.0,
+                  "output_bytes": 10240.0
+                },
+                {
+                  "ms_per_batch": 19.323292013723403,
+                  "ms_per_item": 19.323292013723403,
+                  "tokens_per_sec": 828.0162608233006,
+                  "items_per_sec": 51.75101630145629,
+                  "hidden_size": 2560.0,
+                  "output_bytes": 10240.0
+                },
+                {
+                  "ms_per_batch": 19.050874980166554,
+                  "ms_per_item": 19.050874980166554,
+                  "tokens_per_sec": 839.8564379146494,
+                  "items_per_sec": 52.49102736966559,
+                  "hidden_size": 2560.0,
+                  "output_bytes": 10240.0
+                },
+                {
+                  "ms_per_batch": 19.259874999988824,
+                  "ms_per_item": 19.259874999988824,
+                  "tokens_per_sec": 830.7426709679728,
+                  "items_per_sec": 51.9214169354983,
+                  "hidden_size": 2560.0,
+                  "output_bytes": 10240.0
+                }
+              ]
+            }
+          },
+          "comparison": {}
+        },
+        {
+          "workload": "fixed_16_b8",
+          "input_kind": "synthetic_token_ids",
+          "batch_size": 8,
+          "token_counts": [
+            16,
+            16,
+            16,
+            16,
+            16,
+            16,
+            16,
+            16
+          ],
+          "total_tokens": 128,
+          "max_tokens": 16,
+          "results": {
+            "ax_engine_py": {
+              "engine": "ax-engine-py",
+              "median_ms_per_batch": 31.96258400566876,
+              "mean_ms_per_batch": 31.9447333808057,
+              "stddev_ms_per_batch": 0.1251874764649515,
+              "median_tokens_per_sec": 4004.68247427362,
+              "mean_tokens_per_sec": 4006.9820862721804,
+              "median_items_per_sec": 250.29265464210124,
+              "mean_items_per_sec": 250.43638039201127,
+              "trials": [
+                {
+                  "ms_per_batch": 31.707749993074685,
+                  "ms_per_item": 3.9634687491343357,
+                  "tokens_per_sec": 4036.8679590307283,
+                  "items_per_sec": 252.30424743942052,
+                  "hidden_size": 2560.0,
+                  "output_bytes": 81920.0
+                },
+                {
+                  "ms_per_batch": 31.96141595253721,
+                  "ms_per_item": 3.995176994067151,
+                  "tokens_per_sec": 4004.8288282997337,
+                  "items_per_sec": 250.30180176873336,
+                  "hidden_size": 2560.0,
+                  "output_bytes": 81920.0
+                },
+                {
+                  "ms_per_batch": 32.02241699909791,
+                  "ms_per_item": 4.002802124887239,
+                  "tokens_per_sec": 3997.1998367145684,
+                  "items_per_sec": 249.82498979466052,
+                  "hidden_size": 2560.0,
+                  "output_bytes": 81920.0
+                },
+                {
+                  "ms_per_batch": 32.06949995364994,
+                  "ms_per_item": 4.008687494206242,
+                  "tokens_per_sec": 3991.3313330422507,
+                  "items_per_sec": 249.45820831514067,
+                  "hidden_size": 2560.0,
+                  "output_bytes": 81920.0
+                },
+                {
+                  "ms_per_batch": 31.96258400566876,
+                  "ms_per_item": 3.995323000708595,
+                  "tokens_per_sec": 4004.68247427362,
+                  "items_per_sec": 250.29265464210124,
+                  "hidden_size": 2560.0,
+                  "output_bytes": 81920.0
+                }
+              ]
+            }
+          },
+          "comparison": {}
+        },
+        {
+          "workload": "fixed_64_b1",
+          "input_kind": "synthetic_token_ids",
+          "batch_size": 1,
+          "token_counts": [
+            64
+          ],
+          "total_tokens": 64,
+          "max_tokens": 64,
+          "results": {
+            "ax_engine_py": {
+              "engine": "ax-engine-py",
+              "median_ms_per_batch": 24.770334013737738,
+              "mean_ms_per_batch": 24.684191797859967,
+              "stddev_ms_per_batch": 0.318033155195086,
+              "median_tokens_per_sec": 2583.7358496863753,
+              "mean_tokens_per_sec": 2593.181659751105,
+              "median_items_per_sec": 40.370872651349615,
+              "mean_items_per_sec": 40.51846343361102,
+              "trials": [
+                {
+                  "ms_per_batch": 24.36420798767358,
+                  "ms_per_item": 24.36420798767358,
+                  "tokens_per_sec": 2626.804041090894,
+                  "items_per_sec": 41.04381314204522,
+                  "hidden_size": 2560.0,
+                  "output_bytes": 10240.0
+                },
+                {
+                  "ms_per_batch": 24.794334021862596,
+                  "ms_per_item": 24.794334021862596,
+                  "tokens_per_sec": 2581.234887921067,
+                  "items_per_sec": 40.331795123766675,
+                  "hidden_size": 2560.0,
+                  "output_bytes": 10240.0
+                },
+                {
+                  "ms_per_batch": 24.312374996952713,
+                  "ms_per_item": 24.312374996952713,
+                  "tokens_per_sec": 2632.404280043463,
+                  "items_per_sec": 41.13131687567911,
+                  "hidden_size": 2560.0,
+                  "output_bytes": 10240.0
+                },
+                {
+                  "ms_per_batch": 24.770334013737738,
+                  "ms_per_item": 24.770334013737738,
+                  "tokens_per_sec": 2583.7358496863753,
+                  "items_per_sec": 40.370872651349615,
+                  "hidden_size": 2560.0,
+                  "output_bytes": 10240.0
+                },
+                {
+                  "ms_per_batch": 25.179707969073206,
+                  "ms_per_item": 25.179707969073206,
+                  "tokens_per_sec": 2541.7292400137258,
+                  "items_per_sec": 39.714519375214465,
+                  "hidden_size": 2560.0,
+                  "output_bytes": 10240.0
+                }
+              ]
+            }
+          },
+          "comparison": {}
+        },
+        {
+          "workload": "fixed_64_b8",
+          "input_kind": "synthetic_token_ids",
+          "batch_size": 8,
+          "token_counts": [
+            64,
+            64,
+            64,
+            64,
+            64,
+            64,
+            64,
+            64
+          ],
+          "total_tokens": 512,
+          "max_tokens": 64,
+          "results": {
+            "ax_engine_py": {
+              "engine": "ax-engine-py",
+              "median_ms_per_batch": 79.2695420095697,
+              "mean_ms_per_batch": 79.31091701611876,
+              "stddev_ms_per_batch": 0.17526563433200013,
+              "median_tokens_per_sec": 6458.975124874438,
+              "mean_tokens_per_sec": 6455.6371192359575,
+              "median_items_per_sec": 100.92148632616309,
+              "mean_items_per_sec": 100.86932998806184,
+              "trials": [
+                {
+                  "ms_per_batch": 79.2695420095697,
+                  "ms_per_item": 9.908692751196213,
+                  "tokens_per_sec": 6458.975124874438,
+                  "items_per_sec": 100.92148632616309,
+                  "hidden_size": 2560.0,
+                  "output_bytes": 81920.0
+                },
+                {
+                  "ms_per_batch": 79.08450003014877,
+                  "ms_per_item": 9.885562503768597,
+                  "tokens_per_sec": 6474.087840282409,
+                  "items_per_sec": 101.15762250441264,
+                  "hidden_size": 2560.0,
+                  "output_bytes": 81920.0
+                },
+                {
+                  "ms_per_batch": 79.50312498724088,
+                  "ms_per_item": 9.93789062340511,
+                  "tokens_per_sec": 6439.998428768286,
+                  "items_per_sec": 100.62497544950448,
+                  "hidden_size": 2560.0,
+                  "output_bytes": 81920.0
+                },
+                {
+                  "ms_per_batch": 79.17433400871232,
+                  "ms_per_item": 9.89679175108904,
+                  "tokens_per_sec": 6466.742112963775,
+                  "items_per_sec": 101.04284551505899,
+                  "hidden_size": 2560.0,
+                  "output_bytes": 81920.0
+                },
+                {
+                  "ms_per_batch": 79.52308404492214,
+                  "ms_per_item": 9.940385505615268,
+                  "tokens_per_sec": 6438.382089290879,
+                  "items_per_sec": 100.59972014516998,
+                  "hidden_size": 2560.0,
+                  "output_bytes": 81920.0
+                }
+              ]
+            }
+          },
+          "comparison": {}
+        },
+        {
+          "workload": "fixed_256_b1",
+          "input_kind": "synthetic_token_ids",
+          "batch_size": 1,
+          "token_counts": [
+            256
+          ],
+          "total_tokens": 256,
+          "max_tokens": 256,
+          "results": {
+            "ax_engine_py": {
+              "engine": "ax-engine-py",
+              "median_ms_per_batch": 42.91145800380036,
+              "mean_ms_per_batch": 43.17943319911137,
+              "stddev_ms_per_batch": 0.4158866459160852,
+              "median_tokens_per_sec": 5965.772591025173,
+              "mean_tokens_per_sec": 5929.296174179599,
+              "median_items_per_sec": 23.30379918369208,
+              "mean_items_per_sec": 23.161313180389058,
+              "trials": [
+                {
+                  "ms_per_batch": 42.91145800380036,
+                  "ms_per_item": 42.91145800380036,
+                  "tokens_per_sec": 5965.772591025173,
+                  "items_per_sec": 23.30379918369208,
+                  "hidden_size": 2560.0,
+                  "output_bytes": 10240.0
+                },
+                {
+                  "ms_per_batch": 43.78820798592642,
+                  "ms_per_item": 43.78820798592642,
+                  "tokens_per_sec": 5846.322829248429,
+                  "items_per_sec": 22.837198551751676,
+                  "hidden_size": 2560.0,
+                  "output_bytes": 10240.0
+                },
+                {
+                  "ms_per_batch": 43.56829199241474,
+                  "ms_per_item": 43.56829199241474,
+                  "tokens_per_sec": 5875.832819991422,
+                  "items_per_sec": 22.952471953091493,
+                  "hidden_size": 2560.0,
+                  "output_bytes": 10240.0
+                },
+                {
+                  "ms_per_batch": 42.86450002109632,
+                  "ms_per_item": 42.86450002109632,
+                  "tokens_per_sec": 5972.308084172364,
+                  "items_per_sec": 23.329328453798297,
+                  "hidden_size": 2560.0,
+                  "output_bytes": 10240.0
+                },
+                {
+                  "ms_per_batch": 42.76470799231902,
+                  "ms_per_item": 42.76470799231902,
+                  "tokens_per_sec": 5986.244546460605,
+                  "items_per_sec": 23.38376775961174,
+                  "hidden_size": 2560.0,
+                  "output_bytes": 10240.0
+                }
+              ]
+            }
+          },
+          "comparison": {}
+        },
+        {
+          "workload": "fixed_256_b8",
+          "input_kind": "synthetic_token_ids",
+          "batch_size": 8,
+          "token_counts": [
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256
+          ],
+          "total_tokens": 2048,
+          "max_tokens": 256,
+          "results": {
+            "ax_engine_py": {
+              "engine": "ax-engine-py",
+              "median_ms_per_batch": 296.8130839872174,
+              "mean_ms_per_batch": 297.980841784738,
+              "stddev_ms_per_batch": 2.18919829457714,
+              "median_tokens_per_sec": 6899.965367053022,
+              "mean_tokens_per_sec": 6873.295194809422,
+              "median_items_per_sec": 26.95298971505087,
+              "mean_items_per_sec": 26.848809354724306,
+              "trials": [
+                {
+                  "ms_per_batch": 295.409791986458,
+                  "ms_per_item": 36.92622399830725,
+                  "tokens_per_sec": 6932.742432904469,
+                  "items_per_sec": 27.08102512853308,
+                  "hidden_size": 2560.0,
+                  "output_bytes": 81920.0
+                },
+                {
+                  "ms_per_batch": 296.5367080178112,
+                  "ms_per_item": 37.0670885022264,
+                  "tokens_per_sec": 6906.396222207299,
+                  "items_per_sec": 26.97811024299726,
+                  "hidden_size": 2560.0,
+                  "output_bytes": 81920.0
+                },
+                {
+                  "ms_per_batch": 300.0864999485202,
+                  "ms_per_item": 37.51081249356503,
+                  "tokens_per_sec": 6824.698879660811,
+                  "items_per_sec": 26.658979998675044,
+                  "hidden_size": 2560.0,
+                  "output_bytes": 81920.0
+                },
+                {
+                  "ms_per_batch": 296.8130839872174,
+                  "ms_per_item": 37.101635498402175,
+                  "tokens_per_sec": 6899.965367053022,
+                  "items_per_sec": 26.95298971505087,
+                  "hidden_size": 2560.0,
+                  "output_bytes": 81920.0
+                },
+                {
+                  "ms_per_batch": 301.05812498368323,
+                  "ms_per_item": 37.632265622960404,
+                  "tokens_per_sec": 6802.673072221511,
+                  "items_per_sec": 26.572941688365276,
+                  "hidden_size": 2560.0,
+                  "output_bytes": 81920.0
+                }
+              ]
+            }
+          },
+          "comparison": {}
+        }
+      ]
+    },
+    {
+      "model_label": "qwen3-embedding-8b-4bit-dwq",
+      "model_dir": "/Volumes/Ext4T/models/hub/models--mlx-community--Qwen3-Embedding-8B-4bit-DWQ/snapshots/885642d6b98742ea03b77a1673579c92ca961efd",
+      "rows": [
+        {
+          "workload": "short_query_b1",
+          "input_kind": "short_query_text",
+          "batch_size": 1,
+          "token_counts": [
+            10
+          ],
+          "total_tokens": 10,
+          "max_tokens": 10,
+          "results": {
+            "ax_engine_py": {
+              "engine": "ax-engine-py",
+              "median_ms_per_batch": 33.00162497907877,
+              "mean_ms_per_batch": 32.997741794679314,
+              "stddev_ms_per_batch": 0.057250367645882864,
+              "median_tokens_per_sec": 303.0153820104148,
+              "mean_tokens_per_sec": 303.05195364496456,
+              "median_items_per_sec": 30.301538201041478,
+              "mean_items_per_sec": 30.305195364496456,
+              "trials": [
+                {
+                  "ms_per_batch": 33.067959011532366,
+                  "ms_per_item": 33.067959011532366,
+                  "tokens_per_sec": 302.40753584194675,
+                  "items_per_sec": 30.240753584194675,
+                  "hidden_size": 4096.0,
+                  "output_bytes": 16384.0
+                },
+                {
+                  "ms_per_batch": 33.00162497907877,
+                  "ms_per_item": 33.00162497907877,
+                  "tokens_per_sec": 303.0153820104148,
+                  "items_per_sec": 30.301538201041478,
+                  "hidden_size": 4096.0,
+                  "output_bytes": 16384.0
+                },
+                {
+                  "ms_per_batch": 32.90920797735453,
+                  "ms_per_item": 32.90920797735453,
+                  "tokens_per_sec": 303.86632236428164,
+                  "items_per_sec": 30.386632236428166,
+                  "hidden_size": 4096.0,
+                  "output_bytes": 16384.0
+                },
+                {
+                  "ms_per_batch": 32.96312497695908,
+                  "ms_per_item": 32.96312497695908,
+                  "tokens_per_sec": 303.36929544725837,
+                  "items_per_sec": 30.336929544725834,
+                  "hidden_size": 4096.0,
+                  "output_bytes": 16384.0
+                },
+                {
+                  "ms_per_batch": 33.04679202847183,
+                  "ms_per_item": 33.04679202847183,
+                  "tokens_per_sec": 302.6012325609212,
+                  "items_per_sec": 30.26012325609212,
+                  "hidden_size": 4096.0,
+                  "output_bytes": 16384.0
+                }
+              ]
+            }
+          },
+          "comparison": {}
+        },
+        {
+          "workload": "short_query_b8",
+          "input_kind": "short_query_text",
+          "batch_size": 8,
+          "token_counts": [
+            10,
+            15,
+            13,
+            8,
+            3,
+            8,
+            10,
+            8
+          ],
+          "total_tokens": 75,
+          "max_tokens": 15,
+          "results": {
+            "ax_engine_py": {
+              "engine": "ax-engine-py",
+              "median_ms_per_batch": 53.53741702856496,
+              "mean_ms_per_batch": 53.465533594135195,
+              "stddev_ms_per_batch": 0.3054167571044449,
+              "median_tokens_per_sec": 1400.8893996507834,
+              "mean_tokens_per_sec": 1402.818740159468,
+              "median_items_per_sec": 149.42820262941692,
+              "mean_items_per_sec": 149.63399895034325,
+              "trials": [
+                {
+                  "ms_per_batch": 53.53741702856496,
+                  "ms_per_item": 6.69217712857062,
+                  "tokens_per_sec": 1400.8893996507834,
+                  "items_per_sec": 149.42820262941692,
+                  "hidden_size": 4096.0,
+                  "output_bytes": 131072.0
+                },
+                {
+                  "ms_per_batch": 53.84108400903642,
+                  "ms_per_item": 6.730135501129553,
+                  "tokens_per_sec": 1392.9882984416208,
+                  "items_per_sec": 148.58541850043954,
+                  "hidden_size": 4096.0,
+                  "output_bytes": 131072.0
+                },
+                {
+                  "ms_per_batch": 53.695541981142014,
+                  "ms_per_item": 6.711942747642752,
+                  "tokens_per_sec": 1396.764000004696,
+                  "items_per_sec": 148.9881600005009,
+                  "hidden_size": 4096.0,
+                  "output_bytes": 131072.0
+                },
+                {
+                  "ms_per_batch": 53.264332993421704,
+                  "ms_per_item": 6.658041624177713,
+                  "tokens_per_sec": 1408.0717017382478,
+                  "items_per_sec": 150.19431485207977,
+                  "hidden_size": 4096.0,
+                  "output_bytes": 131072.0
+                },
+                {
+                  "ms_per_batch": 52.989291958510876,
+                  "ms_per_item": 6.6236614948138595,
+                  "tokens_per_sec": 1415.3803009619924,
+                  "items_per_sec": 150.97389876927917,
+                  "hidden_size": 4096.0,
+                  "output_bytes": 131072.0
+                }
+              ]
+            }
+          },
+          "comparison": {}
+        },
+        {
+          "workload": "fixed_16_b1",
+          "input_kind": "synthetic_token_ids",
+          "batch_size": 1,
+          "token_counts": [
+            16
+          ],
+          "total_tokens": 16,
+          "max_tokens": 16,
+          "results": {
+            "ax_engine_py": {
+              "engine": "ax-engine-py",
+              "median_ms_per_batch": 34.312708012294024,
+              "mean_ms_per_batch": 34.32214979548007,
+              "stddev_ms_per_batch": 0.17530622056552642,
+              "median_tokens_per_sec": 466.29954109909664,
+              "mean_tokens_per_sec": 466.1834157824407,
+              "median_items_per_sec": 29.14372131869354,
+              "mean_items_per_sec": 29.136463486402544,
+              "trials": [
+                {
+                  "ms_per_batch": 34.06262502539903,
+                  "ms_per_item": 34.06262502539903,
+                  "tokens_per_sec": 469.7230465376491,
+                  "items_per_sec": 29.35769040860307,
+                  "hidden_size": 4096.0,
+                  "output_bytes": 16384.0
+                },
+                {
+                  "ms_per_batch": 34.26124999532476,
+                  "ms_per_item": 34.26124999532476,
+                  "tokens_per_sec": 466.9998906106268,
+                  "items_per_sec": 29.187493163164174,
+                  "hidden_size": 4096.0,
+                  "output_bytes": 16384.0
+                },
+                {
+                  "ms_per_batch": 34.312708012294024,
+                  "ms_per_item": 34.312708012294024,
+                  "tokens_per_sec": 466.29954109909664,
+                  "items_per_sec": 29.14372131869354,
+                  "hidden_size": 4096.0,
+                  "output_bytes": 16384.0
+                },
+                {
+                  "ms_per_batch": 34.368540975265205,
+                  "ms_per_item": 34.368540975265205,
+                  "tokens_per_sec": 465.542020288702,
+                  "items_per_sec": 29.096376268043876,
+                  "hidden_size": 4096.0,
+                  "output_bytes": 16384.0
+                },
+                {
+                  "ms_per_batch": 34.60562496911734,
+                  "ms_per_item": 34.60562496911734,
+                  "tokens_per_sec": 462.3525803761289,
+                  "items_per_sec": 28.897036273508057,
+                  "hidden_size": 4096.0,
+                  "output_bytes": 16384.0
+                }
+              ]
+            }
+          },
+          "comparison": {}
+        },
+        {
+          "workload": "fixed_16_b8",
+          "input_kind": "synthetic_token_ids",
+          "batch_size": 8,
+          "token_counts": [
+            16,
+            16,
+            16,
+            16,
+            16,
+            16,
+            16,
+            16
+          ],
+          "total_tokens": 128,
+          "max_tokens": 16,
+          "results": {
+            "ax_engine_py": {
+              "engine": "ax-engine-py",
+              "median_ms_per_batch": 51.350583031307906,
+              "mean_ms_per_batch": 51.41092480625957,
+              "stddev_ms_per_batch": 0.22599105662900631,
+              "median_tokens_per_sec": 2492.668874313652,
+              "mean_tokens_per_sec": 2489.791259543653,
+              "median_items_per_sec": 155.79180464460325,
+              "mean_items_per_sec": 155.6119537214783,
+              "trials": [
+                {
+                  "ms_per_batch": 51.350583031307906,
+                  "ms_per_item": 6.418822878913488,
+                  "tokens_per_sec": 2492.668874313652,
+                  "items_per_sec": 155.79180464460325,
+                  "hidden_size": 4096.0,
+                  "output_bytes": 131072.0
+                },
+                {
+                  "ms_per_batch": 51.27024999819696,
+                  "ms_per_item": 6.40878124977462,
+                  "tokens_per_sec": 2496.5745243001825,
+                  "items_per_sec": 156.0359077687614,
+                  "hidden_size": 4096.0,
+                  "output_bytes": 131072.0
+                },
+                {
+                  "ms_per_batch": 51.745417003985494,
+                  "ms_per_item": 6.468177125498187,
+                  "tokens_per_sec": 2473.6490188134203,
+                  "items_per_sec": 154.60306367583877,
+                  "hidden_size": 4096.0,
+                  "output_bytes": 131072.0
+                },
+                {
+                  "ms_per_batch": 51.10845796298236,
+                  "ms_per_item": 6.388557245372795,
+                  "tokens_per_sec": 2504.477832078398,
+                  "items_per_sec": 156.52986450489988,
+                  "hidden_size": 4096.0,
+                  "output_bytes": 131072.0
+                },
+                {
+                  "ms_per_batch": 51.579916034825146,
+                  "ms_per_item": 6.447489504353143,
+                  "tokens_per_sec": 2481.5860482126104,
+                  "items_per_sec": 155.09912801328815,
+                  "hidden_size": 4096.0,
+                  "output_bytes": 131072.0
+                }
+              ]
+            }
+          },
+          "comparison": {}
+        },
+        {
+          "workload": "fixed_64_b1",
+          "input_kind": "synthetic_token_ids",
+          "batch_size": 1,
+          "token_counts": [
+            64
+          ],
+          "total_tokens": 64,
+          "max_tokens": 64,
+          "results": {
+            "ax_engine_py": {
+              "engine": "ax-engine-py",
+              "median_ms_per_batch": 45.27216701535508,
+              "mean_ms_per_batch": 45.31255839392543,
+              "stddev_ms_per_batch": 0.23405783225425747,
+              "median_tokens_per_sec": 1413.6721128964944,
+              "mean_tokens_per_sec": 1412.4496646263797,
+              "median_items_per_sec": 22.088626764007724,
+              "mean_items_per_sec": 22.069526009787182,
+              "trials": [
+                {
+                  "ms_per_batch": 45.6405840232037,
+                  "ms_per_item": 45.6405840232037,
+                  "tokens_per_sec": 1402.2607591406447,
+                  "items_per_sec": 21.910324361572574,
+                  "hidden_size": 4096.0,
+                  "output_bytes": 16384.0
+                },
+                {
+                  "ms_per_batch": 45.49054196104407,
+                  "ms_per_item": 45.49054196104407,
+                  "tokens_per_sec": 1406.8858545322794,
+                  "items_per_sec": 21.982591477066865,
+                  "hidden_size": 4096.0,
+                  "output_bytes": 16384.0
+                },
+                {
+                  "ms_per_batch": 44.96883298270404,
+                  "ms_per_item": 44.96883298270404,
+                  "tokens_per_sec": 1423.2079365861182,
+                  "items_per_sec": 22.237624009158097,
+                  "hidden_size": 4096.0,
+                  "output_bytes": 16384.0
+                },
+                {
+                  "ms_per_batch": 45.190665987320244,
+                  "ms_per_item": 45.190665987320244,
+                  "tokens_per_sec": 1416.221659976362,
+                  "items_per_sec": 22.128463437130655,
+                  "hidden_size": 4096.0,
+                  "output_bytes": 16384.0
+                },
+                {
+                  "ms_per_batch": 45.27216701535508,
+                  "ms_per_item": 45.27216701535508,
+                  "tokens_per_sec": 1413.6721128964944,
+                  "items_per_sec": 22.088626764007724,
+                  "hidden_size": 4096.0,
+                  "output_bytes": 16384.0
+                }
+              ]
+            }
+          },
+          "comparison": {}
+        },
+        {
+          "workload": "fixed_64_b8",
+          "input_kind": "synthetic_token_ids",
+          "batch_size": 8,
+          "token_counts": [
+            64,
+            64,
+            64,
+            64,
+            64,
+            64,
+            64,
+            64
+          ],
+          "total_tokens": 512,
+          "max_tokens": 64,
+          "results": {
+            "ax_engine_py": {
+              "engine": "ax-engine-py",
+              "median_ms_per_batch": 147.06241700332612,
+              "mean_ms_per_batch": 147.12255840422586,
+              "stddev_ms_per_batch": 0.46614286453087234,
+              "median_tokens_per_sec": 3481.514927015106,
+              "mean_tokens_per_sec": 3480.126659648059,
+              "median_items_per_sec": 54.39867073461103,
+              "mean_items_per_sec": 54.37697905700092,
+              "trials": [
+                {
+                  "ms_per_batch": 146.4350000023842,
+                  "ms_per_item": 18.304375000298023,
+                  "tokens_per_sec": 3496.4318639100206,
+                  "items_per_sec": 54.63174787359407,
+                  "hidden_size": 4096.0,
+                  "output_bytes": 131072.0
+                },
+                {
+                  "ms_per_batch": 147.85462501458824,
+                  "ms_per_item": 18.48182812682353,
+                  "tokens_per_sec": 3462.860901033586,
+                  "items_per_sec": 54.10720157864978,
+                  "hidden_size": 4096.0,
+                  "output_bytes": 131072.0
+                },
+                {
+                  "ms_per_batch": 146.9379580230452,
+                  "ms_per_item": 18.36724475288065,
+                  "tokens_per_sec": 3484.4638300996385,
+                  "items_per_sec": 54.44474734530685,
+                  "hidden_size": 4096.0,
+                  "output_bytes": 131072.0
+                },
+                {
+                  "ms_per_batch": 147.32279197778553,
+                  "ms_per_item": 18.41534899722319,
+                  "tokens_per_sec": 3475.3617761819455,
+                  "items_per_sec": 54.3025277528429,
+                  "hidden_size": 4096.0,
+                  "output_bytes": 131072.0
+                },
+                {
+                  "ms_per_batch": 147.06241700332612,
+                  "ms_per_item": 18.382802125415765,
+                  "tokens_per_sec": 3481.514927015106,
+                  "items_per_sec": 54.39867073461103,
+                  "hidden_size": 4096.0,
+                  "output_bytes": 131072.0
+                }
+              ]
+            }
+          },
+          "comparison": {}
+        },
+        {
+          "workload": "fixed_256_b1",
+          "input_kind": "synthetic_token_ids",
+          "batch_size": 1,
+          "token_counts": [
+            256
+          ],
+          "total_tokens": 256,
+          "max_tokens": 256,
+          "results": {
+            "ax_engine_py": {
+              "engine": "ax-engine-py",
+              "median_ms_per_batch": 80.29462501872331,
+              "mean_ms_per_batch": 80.57351680472493,
+              "stddev_ms_per_batch": 0.5837259367235731,
+              "median_tokens_per_sec": 3188.2582419471446,
+              "mean_tokens_per_sec": 3177.3890059242053,
+              "median_items_per_sec": 12.454133757606034,
+              "mean_items_per_sec": 12.411675804391427,
+              "trials": [
+                {
+                  "ms_per_batch": 81.16508298553526,
+                  "ms_per_item": 81.16508298553526,
+                  "tokens_per_sec": 3154.0656472392534,
+                  "items_per_sec": 12.320568934528334,
+                  "hidden_size": 4096.0,
+                  "output_bytes": 16384.0
+                },
+                {
+                  "ms_per_batch": 80.12570900609717,
+                  "ms_per_item": 80.12570900609717,
+                  "tokens_per_sec": 3194.9795287367715,
+                  "items_per_sec": 12.480388784128014,
+                  "hidden_size": 4096.0,
+                  "output_bytes": 16384.0
+                },
+                {
+                  "ms_per_batch": 81.37125003850088,
+                  "ms_per_item": 81.37125003850088,
+                  "tokens_per_sec": 3146.0743183725626,
+                  "items_per_sec": 12.289352806142823,
+                  "hidden_size": 4096.0,
+                  "output_bytes": 16384.0
+                },
+                {
+                  "ms_per_batch": 79.91091697476804,
+                  "ms_per_item": 79.91091697476804,
+                  "tokens_per_sec": 3203.5672933252945,
+                  "items_per_sec": 12.513934739551932,
+                  "hidden_size": 4096.0,
+                  "output_bytes": 16384.0
+                },
+                {
+                  "ms_per_batch": 80.29462501872331,
+                  "ms_per_item": 80.29462501872331,
+                  "tokens_per_sec": 3188.2582419471446,
+                  "items_per_sec": 12.454133757606034,
+                  "hidden_size": 4096.0,
+                  "output_bytes": 16384.0
+                }
+              ]
+            }
+          },
+          "comparison": {}
+        },
+        {
+          "workload": "fixed_256_b8",
+          "input_kind": "synthetic_token_ids",
+          "batch_size": 8,
+          "token_counts": [
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256,
+            256
+          ],
+          "total_tokens": 2048,
+          "max_tokens": 256,
+          "results": {
+            "ax_engine_py": {
+              "engine": "ax-engine-py",
+              "median_ms_per_batch": 592.7245829952881,
+              "mean_ms_per_batch": 603.8572416058742,
+              "stddev_ms_per_batch": 23.683585765740645,
+              "median_tokens_per_sec": 3455.2304033866617,
+              "mean_tokens_per_sec": 3396.53281215264,
+              "median_items_per_sec": 13.496993763229147,
+              "mean_items_per_sec": 13.26770629747125,
+              "trials": [
+                {
+                  "ms_per_batch": 583.6971669923514,
+                  "ms_per_item": 72.96214587404393,
+                  "tokens_per_sec": 3508.6687340849066,
+                  "items_per_sec": 13.705737242519167,
+                  "hidden_size": 4096.0,
+                  "output_bytes": 131072.0
+                },
+                {
+                  "ms_per_batch": 587.7351670060307,
+                  "ms_per_item": 73.46689587575383,
+                  "tokens_per_sec": 3484.562631214793,
+                  "items_per_sec": 13.611572778182785,
+                  "hidden_size": 4096.0,
+                  "output_bytes": 131072.0
+                },
+                {
+                  "ms_per_batch": 592.7245829952881,
+                  "ms_per_item": 74.09057287441101,
+                  "tokens_per_sec": 3455.2304033866617,
+                  "items_per_sec": 13.496993763229147,
+                  "hidden_size": 4096.0,
+                  "output_bytes": 131072.0
+                },
+                {
+                  "ms_per_batch": 606.4673330402002,
+                  "ms_per_item": 75.80841663002502,
+                  "tokens_per_sec": 3376.933741399467,
+                  "items_per_sec": 13.191147427341669,
+                  "hidden_size": 4096.0,
+                  "output_bytes": 131072.0
+                },
+                {
+                  "ms_per_batch": 648.6619579955004,
+                  "ms_per_item": 81.08274474943755,
+                  "tokens_per_sec": 3157.268550677372,
+                  "items_per_sec": 12.333080276083484,
+                  "hidden_size": 4096.0,
+                  "output_bytes": 131072.0
+                }
+              ]
+            }
+          },
+          "comparison": {}
+        }
+      ]
+    }
+  ]
+}
