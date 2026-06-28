@@ -4393,7 +4393,14 @@ impl MlxRunner {
         target_positions: Option<&[usize]>,
     ) -> (MlxArray, Vec<usize>) {
         let disable_compile = std::env::var("AX_EMBED_NO_COMPILE").is_ok();
-        if disable_compile || target_positions.is_none() {
+        // AX_MLX_EMBED_PROFILE forces the imperative path: the per-stage eval
+        // barriers cannot live inside a single traced compiled closure, and
+        // compile on/off is throughput-neutral for this path, so the imperative
+        // breakdown is representative.
+        if disable_compile
+            || target_positions.is_none()
+            || crate::model::profile::embed_profile_enabled()
+        {
             // Mean pooling needs the full [B, max_seq, H] hidden; the closure
             // body is only built for the Last/Cls (extract-then-norm) shape.
             return crate::model::forward_for_embedding_batch(
