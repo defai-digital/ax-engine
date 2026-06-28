@@ -81,7 +81,9 @@ models).
 The discrepancy is most likely measurement-order dependent: when the C
 loader runs first and primes the OS page cache, the mmap loader inherits
 the hot cache and the absolute work it adds (Rust-side JSON header parse
+
 + per-tensor `mlx_array_new_data` copy) is what's measured. When the
+
 mmap loader runs first, MLX's parallel-`read()` C loader has to compete
 with cold disk and looks worse.
 

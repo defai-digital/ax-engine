@@ -3883,6 +3883,14 @@ impl MlxRunner {
     }
 }
 
+fn effective_embedding_pooling(model_family: &str, pooling: EmbeddingPooling) -> EmbeddingPooling {
+    if model_family == "embeddinggemma" {
+        EmbeddingPooling::Mean
+    } else {
+        pooling
+    }
+}
+
 impl ExecutionRunner for MlxRunner {
     fn run(&self, input: RunnerInput) -> RunnerOutput {
         let step_id = input.execution_batch.step_id;
@@ -3991,6 +3999,7 @@ impl ExecutionRunner for MlxRunner {
         if token_ids.is_empty() {
             return Err("token_ids must not be empty");
         }
+        let pooling = effective_embedding_pooling(&self.cfg.model_family, pooling);
         // For Last/Cls: tell the forward pass which position to extract before
         // the final norm, so we norm [1, 1, H] instead of [1, seq, H].
         let target_position = match pooling {
@@ -4014,6 +4023,7 @@ impl ExecutionRunner for MlxRunner {
             }
             EmbeddingPooling::Last | EmbeddingPooling::Cls => hidden,
         };
+        let pooled = crate::model::apply_embedding_dense_head(&self.weights, &pooled);
         let pool_us = elapsed_us(pool_started);
 
         let normalize_started = Instant::now();
@@ -4064,6 +4074,7 @@ impl ExecutionRunner for MlxRunner {
                 return Err("token_ids must not be empty");
             }
         }
+        let pooling = effective_embedding_pooling(&self.cfg.model_family, pooling);
         // For Last/Cls: compute per-sequence extraction positions before the
         // forward pass so the model can extract them before the final norm,
         // avoiding norming the full [B, max_seq, H] padded tensor.
@@ -4118,6 +4129,7 @@ impl ExecutionRunner for MlxRunner {
             }
             EmbeddingPooling::Last | EmbeddingPooling::Cls => hidden,
         };
+        let pooled = crate::model::apply_embedding_dense_head(&self.weights, &pooled);
         let pool_us = elapsed_us(pool_started);
 
         let normalize_started = Instant::now();
@@ -4181,14 +4193,7 @@ impl ExecutionRunner for MlxRunner {
                 return Err("token_ids must not be empty");
             }
         }
-        // EmbeddingGemma is a mean-pooled encoder whose Dense head + L2 norm only
-        // make sense on the mean-pooled vector; force Mean regardless of the
-        // requested pooling mode.
-        let pooling = if self.cfg.model_family == "embeddinggemma" {
-            EmbeddingPooling::Mean
-        } else {
-            pooling
-        };
+        let pooling = effective_embedding_pooling(&self.cfg.model_family, pooling);
         let target_positions: Option<Vec<usize>> = match pooling {
             EmbeddingPooling::Last => Some(batch.iter().map(|ids| ids.len() - 1).collect()),
             EmbeddingPooling::Cls => Some(vec![0; batch.len()]),
@@ -14923,6 +14928,22 @@ mod tests {
         assert_eq!(&mask_data[0..3], &[1.0, 1.0, 1.0]);
         // seq 1 (len 2): position 2 is padding
         assert_eq!(&mask_data[3..6], &[1.0, 1.0, 0.0]);
+    }
+
+    #[test]
+    fn embeddinggemma_forces_mean_pooling_across_embedding_apis() {
+        assert_eq!(
+            effective_embedding_pooling("embeddinggemma", EmbeddingPooling::Last),
+            EmbeddingPooling::Mean
+        );
+        assert_eq!(
+            effective_embedding_pooling("embeddinggemma", EmbeddingPooling::Cls),
+            EmbeddingPooling::Mean
+        );
+        assert_eq!(
+            effective_embedding_pooling("qwen3", EmbeddingPooling::Last),
+            EmbeddingPooling::Last
+        );
     }
 
     #[test]

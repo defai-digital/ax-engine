@@ -74,6 +74,7 @@ bottleneck in the real graph:
    model that concurrency, so the tail looks serial when it isn't.
 
 Two additional structural mismatches compounded the miss:
+
 - **Shape mismatch.** Probe used 128 experts / 768 in_dim; real model is 256 / 512.
   GEMV cost scales with in_dim, changing the tail-vs-matmul ratio.
 - **Baseline mismatch.** Probe extrapolated "% of a decode step" against a
@@ -98,6 +99,7 @@ Two additional structural mismatches compounded the miss:
 ## Code state after revert
 
 **Removed** (the failed optimization):
+
 - `AX_MLX_MOE_FUSED_DOWNPROJ` flag and its `fastpath` definition.
 - `fused_moe_downproj_gemv` function, its `FUSED_MOE_DOWNPROJ_GEMV_KERNEL_SOURCE`,
   the static kernel handle, the dispatch block, and the three unit tests.
@@ -106,6 +108,7 @@ Two additional structural mismatches compounded the miss:
   removed flag).
 
 **Kept** (on-pattern for this repo):
+
 - `crates/ax-engine-microbench/src/bin/moe_downproj_fusion_probe.rs` — ceiling
   probe (correctly frames the article's bandwidth point). One of 9 probes in the
   microbench crate, which is the established home for experimental diagnostics.

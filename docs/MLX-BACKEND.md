@@ -207,6 +207,7 @@ Interpretation rule:
 ## Implementation phases
 
 ### Phase 1 — mlx-sys crate
+
 - `bindgen` over `crates/mlx-sys/native/ax_shim.h`, linked against Homebrew `libmlx`
 - Safe `MlxArray` (RAII, `Drop` calls `mlx_array_free`)
 - Core ops: matmul, add, multiply, softmax, reshape, transpose, astype, take,
@@ -216,6 +217,7 @@ Interpretation rule:
 - IO: load_safetensors
 
 ### Phase 2 — ax-engine-mlx crate
+
 - Weight loader: reads `NativeTensorSpec` offsets from safetensors → `MlxArray`
 - Quantized weight binding: Q4_K_M → `mlx_quantized_matmul`
 - Model graph: Qwen3 dense (GQA + SwiGLU), Qwen3.5 MoE (linear attention + MoE FFN + attn_output_gate), Gemma4 (per-layer embeddings, per-layer input gating, sliding-window + full attention, KV sharing, logit softcapping, sorted SwitchGLU expert gather for large MoE prefill batches)
@@ -225,6 +227,7 @@ Interpretation rule:
 - `MlxRunner` implementing `ExecutionRunner`
 
 ### Phase 3 — integration
+
 - Both crates in workspace
 - `SelectedBackend::Mlx` variant in `ax-engine-sdk`
 - `SelectedBackend::MlxLmDelegated` for explicit upstream `mlx-lm` text
@@ -234,6 +237,7 @@ Interpretation rule:
 - Python binding: `mlx=True` routes to the repo-owned MLX runtime
 
 ### Phase 4 — future
+
 - Prompt-prefix reuse (LRU cache for shared prefixes across requests)
 - KV quantization and sliding-window cache layouts
 - Custom Metal kernel integration (after profiling confirms a hot-path target)

@@ -44,6 +44,7 @@ AX_TREE_SCHEDULES="2,2,1,1,1;2,2,2,1,1;2,2,2,2,1;3,2,2" \
 | `[2,2,2]`       |      8 |       1.825 |        2.825 |               1.105x (vs d3) |
 
 Key observations:
+
 - **Saturation:** widening from 8 → 16 leaves adds *zero* accept/step (2.157 =
   2.157). The branching headroom is exhausted by ~8 leaves.
 - **Going deeper-linear captures most of it:** `[3,2,2]`'s projected 2.981 tok/fwd
@@ -60,6 +61,7 @@ Key observations:
 
 The table credits the tree a single free verify forward/step. A real Phase B
 implementation would cost more:
+
 - **Per-token RoPE positions** (tree node position = depth, not flatten index)
   require extending the scalar-offset `mlx-sys` rope FFI — the dense attention
   path threads one `token_offset` and assumes sequential positions.

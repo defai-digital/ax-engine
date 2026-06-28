@@ -60,6 +60,7 @@ per row, greedy decode:
 | Real coding *generation*, repo_refactor (447t) | 193.5 | 189.0 | **−2.3%** | 51.4% | no |
 
 Evidence directories:
+
 - 2026-05-18 legacy random-token output-loop review
 - `benchmarks/results/mlx-inference/2026-05-18-real-prompt-coding/` — real coding **generation** prompts (not editing); every AX row labeled `ngram_acceleration_effective_throughput` with healthy decode
 

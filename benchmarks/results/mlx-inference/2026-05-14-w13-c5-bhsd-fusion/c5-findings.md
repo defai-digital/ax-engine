@@ -3,6 +3,7 @@
 PRD: `MLX-DECODE-SUBMIT-COST-PRD.md` W1.3
 Audit: `MLX-DECODE-W13-CAST-RESHAPE-AUDIT.md` C5
 Spike artifact: `crates/ax-engine-mlx/src/model.rs::bhsd_view_from_proj`
+
                 + `bhsd_view_from_proj_matches_reshape_transpose` unit test
 
 ## What was tried

@@ -468,6 +468,7 @@ for each shared layer (~0.5 ms/step at 42 shared layers).
 ### GLM MLA (compressed cross-attention)
 
 `GlmMlaLayerCache` stores:
+
 - `kv_latent`: `[1, 1, T, latent_dim]`
 - `k_pe`: `[1, 1, T, rope_dim]`
 
@@ -495,6 +496,7 @@ for a subset of layers. Cold tokens are those beyond a recency window;
 hot tokens remain in GPU memory uncompressed.
 
 Supported presets:
+
 - `K8V4`: 8-bit keys, 4-bit values (default research target)
 - `K4V4`: 4-bit keys, 4-bit values (aggressive)
 - `K3V4Research`: 3-bit keys, 4-bit values (research only)

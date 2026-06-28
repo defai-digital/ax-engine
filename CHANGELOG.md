@@ -296,6 +296,7 @@ layers, improves OpenAI API output postprocessing, and adds idempotent
 PyPI publish.
 
 ### Fixed
+
 - **Gemma 4 media block overlay** — multimodal PrefixLM mask was previously
   applied only to sliding-window layers, leaving full-attention layers with
   a plain causal mask. Vision tokens larger than the sliding window were
@@ -311,6 +312,7 @@ PyPI publish.
   consistent API output.
 
 ### Added
+
 - **Tokenizer token lookup** — exposed for debugging and inspection of
   tokenized inputs.
 - **Idempotent PyPI release publish** — re-publishing the same version
@@ -322,11 +324,13 @@ Patch release focused on multimodal peer benchmark methodology hardening,
 Gemma 4 benchmark artifact sanitization, and a new Homebrew CLI entrypoint.
 
 ### Added
+
 - **Homebrew CLI entrypoint** — `ax-engine` installable and runnable via Homebrew.
 - **Cold peer benchmark** — refreshed Gemma 4 multimodal cold peer benchmark
   with documented llama peer launch contract.
 
 ### Changed
+
 - **Atomic multimodal prefill scheduling** — prefill no longer split across
   scheduling boundaries, eliminating race conditions in peer benchmarks.
 - Peer benchmark methodology hardened with stricter validation and
@@ -334,6 +338,7 @@ Gemma 4 benchmark artifact sanitization, and a new Homebrew CLI entrypoint.
 - Gemma 4 peer chart styling adjusted for clarity.
 
 ### Fixed
+
 - **Benchmark preview smoke binary selection** — smoke test now selects the
   correct `ax-engine-bench` binary.
 - **`cargo run` disambiguation** — `ax-engine-bench` cargo run commands now
@@ -353,6 +358,7 @@ golden-validated preprocessing, introduces **speculation profile presets** for
 workload-tuned MTP gating, and ships benchmark hardening and download UX improvements.
 
 ### Added
+
 - **Gemma 4 multimodal chat** — inline video (GIF), image, and audio input in
   chat conversations.
 - **Golden-validated preprocessing** — Python SDK preprocessing matches the
@@ -367,6 +373,7 @@ workload-tuned MTP gating, and ships benchmark hardening and download UX improve
 - **Same-artifact direct-vs-MTP parity harness** for Gemma 4 12B.
 
 ### Changed
+
 - **`--force` flag** now invalidates stale manifests in download destination.
 - **Bundled benchmark binary** preferred; fails loudly on missing manifest.
 - Multimodal benchmark modality set validation prevents invalid configurations.
@@ -375,6 +382,7 @@ workload-tuned MTP gating, and ships benchmark hardening and download UX improve
 - README announcement flow productized.
 
 ### Fixed
+
 - **Embed mutex poison recovery** — embedding pipeline no longer panics on
   poisoned mutex.
 - **EWMA clamp** — exponential moving average clamped to prevent numerical drift.
@@ -392,6 +400,7 @@ Introduces speculation profile presets (`auto`, `coding`, `agentic`,
 configuration into named postures.
 
 ### Added
+
 - **Speculation profiles** — four presets (`auto`, `coding`, `agentic`,
   `chatbot`) with calibrated MTP draft-confidence gates and n-gram policies.
 - **CLI flag:** `--speculation-profile` / `-s` server flag with hidden alias
@@ -406,6 +415,7 @@ configuration into named postures.
 - **Gemma 4 12B MTP phase 4 results** published.
 
 ### Preset Behavior
+
 - **`auto`** (default) — temperature-driven: low temp defers to built-in
   defaults (never lowers Gemma 0.999 gate); high temp raises gates to protect
   sampling diversity.
@@ -420,6 +430,7 @@ Gemma 4 12B MTP vs direct decode, adds GPU-exact draft confidence mode,
 and fixes three latent bugs.
 
 ### Added
+
 - **Same-artifact direct-vs-MTP parity harness** — direct decode and MTP now
   run in the same prompt-suite harness with identical artifacts. Survival
   taxonomy classifies each profile (keep-default/keep-opt-in/retest/reject/
@@ -436,6 +447,7 @@ and fixes three latent bugs.
 - **`json_invoice_nested` QA prompt** — verifies correct invoice total computation.
 
 ### Fixed
+
 - **Embed mutex poison recovery** — extended to `embed_compile_stats`,
   `embed_compile_cache`, and `embed_batch_compile_cache` (5 call sites),
   eliminating cascade-panic risk in the embed JIT path.
@@ -451,10 +463,12 @@ Small patch release adding Hugging Face Hub download support and MTP norm
 sidecar validation.
 
 ### Added
+
 - **Hugging Face Hub download** — MLX model snapshots can now be downloaded
   directly via Hugging Face Hub.
 
 ### Changed
+
 - **Shifted MTP norm sidecar validation** — validates shifted MTP norm
   sidecar files to catch malformed or mismatched artifacts early.
 
@@ -465,6 +479,7 @@ speculative decoding (MTP depth-2), multimodal preprocessing infrastructure,
 and a ~34% GEMV decode kernel speedup.
 
 ### Added
+
 - **Gemma 4 12B (unified) model support.** Full text inference with preset
   aliases for quick model selection. Multimodal preprocessing routes (image,
   audio, video) are wired and validated; full multimodal chat arrives in v6.2.0.
@@ -479,6 +494,7 @@ and a ~34% GEMV decode kernel speedup.
 - **Memory-bandwidth utilization table** in README for Gemma 4 12B.
 
 ### Changed
+
 - **~34% faster `decode_projection_q4km` GEMV kernel** via vectorization and
   per-lane scale reuse.
 - README reorganized: TOC, install-first flow, collapsed repro blocks.
@@ -487,6 +503,7 @@ and a ~34% GEMV decode kernel speedup.
 - Bandwidth chart refreshed with corrected height and "Higher is better" annotation.
 
 ### Fixed
+
 - **Streaming lock scope** — tightened lock holding to prevent concurrent
   decode corruption.
 - **LangChain SSE parser** — choices guard now correctly accumulates multi-line
@@ -505,6 +522,7 @@ Release-pipeline fixes only. The engine, server, and SDK code is byte-for-byte
 identical to `6.0.0`; the benchmark numbers in the README carry over unchanged.
 
 ### Fixed
+
 - **PyPI wheel smoke test:** `python/tests/test_cli.py` prepended the source
   `python/` dir to `sys.path` unconditionally at import time, so during
   `unittest discover` the un-built source package shadowed the installed wheel
@@ -518,6 +536,7 @@ identical to `6.0.0`; the benchmark numbers in the README carry over unchanged.
   workflow now checks out with `persist-credentials: false`.
 
 ### Changed
+
 - **Brew release workflow no longer rebuilds the binary.** It previously built
   and uploaded its own tarball with `--clobber`, overwriting the minisign-signed
   artifact from `scripts/publish-github-release.sh` and breaking the signature
@@ -533,10 +552,12 @@ fixes across the MLX backend, server, and SDKs. All workspace crates and the
 Python/JS/Ruby SDKs are aligned to `6.0.0`.
 
 ### Added
+
 - `ax-engine serve` local CLI, now the primary documented entry point for
   running a local server, with model download options.
 
 ### Changed
+
 - MTP n-gram utility gating finalised for v6 (gaps closed across the n-gram
   acceleration path).
 - `--mtp-depth-max` now defaults per model instead of a flat `1`
@@ -549,6 +570,7 @@ Python/JS/Ruby SDKs are aligned to `6.0.0`.
 
 ### Fixed
 Six latent correctness bugs (see commit `82e270e4`):
+
 - **RoPE (llama3):** `build_llama3_rope_freqs` used the inverse-frequency
   convention instead of the wavelength divisor `mlx_fast_rope` expects,
   corrupting RoPE for any `rope_scaling_type="llama3"` model (LLaMA-3/4). Now
@@ -570,5 +592,6 @@ Six latent correctness bugs (see commit `82e270e4`):
   it now accumulates and joins per the SSE spec.
 
 ### Notes
+
 - No public Rust/Python API removals. The notable behavioural change to be aware
   of when upgrading is the model-aware `--mtp-depth-max` default.

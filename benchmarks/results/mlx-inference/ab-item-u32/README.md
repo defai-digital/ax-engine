@@ -25,6 +25,7 @@ Implemented `MlxArray::item_u32()` bound to `mlx_array_item_uint32` in
 | 2048 | 950.8 | 941.0 | −1.04% | 32.85 | 32.16 | **−2.11%** | 96.2% |
 
 Decode regressed across all prompt sizes; prefill regressed at 512 and
+
 2048. vs the `mlx_lm` baseline this fell from ~98% to ~96-97%.
 
 ## Why the fusion lost

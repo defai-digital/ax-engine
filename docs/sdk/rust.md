@@ -119,10 +119,12 @@ resolved config across process boundaries (e.g. bench replay).
 ### Artifact discovery
 
 Model weights (`mlx_model_artifacts_dir`) are found in priority order:
+
 1. `with_mlx_model_artifacts_dir()` call on the config.
 2. `AX_ENGINE_MLX_MODEL_ARTIFACTS_DIR` environment variable.
 
 Runtime Metal kernel artifacts (`mlx_runtime_artifacts_dir`) are found in priority order:
+
 1. `AX_ENGINE_METAL_BUILD_DIR` environment variable.
 2. Repo auto-detect: walks ancestor directories looking for
    `metal/phase1-kernels.json` + `build/metal/build_report.json` with a valid

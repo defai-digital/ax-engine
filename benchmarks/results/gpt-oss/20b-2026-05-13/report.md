@@ -164,7 +164,9 @@ This is not an ax-engine architectural gap.
 Per PRD §6 promotion criteria, the gap pattern matches "integration gap"
 literally (delegated routing is demonstrably broken), but the root cause
 is upstream/environment, not architectural. Phase B (native MXFP4 + sinks
+
 + YaRN) is the wrong response — it would be a large investment to work
+
 around an upstream bug that has cheaper remediations.
 
 **Unblock paths, in cost order**:

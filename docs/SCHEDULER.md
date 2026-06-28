@@ -250,6 +250,7 @@ Waiting ──────────────→ Runnable
 ```
 
 Key rules enforced by `transition_to()`:
+
 - Only `Runnable → Running` is valid for the scheduler to select a request.
 - `BlockedOnMemory` can only transition back to `Runnable`.
 - Terminal states (`Finished`, `Cancelled`, `Failed`) have no outgoing

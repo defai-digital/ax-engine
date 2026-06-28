@@ -7,12 +7,14 @@
 > Two concrete mismatches between MTPLX 0.3.7's MTP injection and the standard Qwen3.6
 > training convention:
 >
+
 > 1. **Reversed fc concat order.** `MTPContract` defaults to `concat_order="embedding_hidden"`
 >    (`[embed; hidden]`), but the standard model was trained with `[hidden; embed]`
 >    (`hidden_embedding`, as used by Rapid-MLX and the reference mlx-lm path). The fc
 >    projection receives its input halves in swapped positions → garbage MTP logits.
 > 2. **Wrong hidden-state variant.** MTPLX passes `post_norm` hidden states (after the base
 >    model's final RMSNorm) to the MTP head; the reference path passes `pre_norm` (before it).
+
 >
 > The Youssofal bundle is adapted to MTPLX's conventions (swapped fc halves, post-norm
 > inputs), which is why MTPLX only works with that bundle. The tok/s values above reflect

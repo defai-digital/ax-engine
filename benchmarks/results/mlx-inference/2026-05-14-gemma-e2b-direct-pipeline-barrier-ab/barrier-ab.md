@@ -88,6 +88,7 @@ token graph. The barrier A/B narrows it decisively:
   prize.
 
 **Next experiments to consider** (low → high effort):
+
 1. Cache / amortize the per-step graph: persist compiled forward via
    `mlx.compile` for the decode-1-token path, so `async_eval` stops re-encoding
    the same shapes every step. Single-shape decode is the easy case.

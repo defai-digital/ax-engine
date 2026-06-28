@@ -24,11 +24,13 @@ This document summarizes the comprehensive optimization work performed on Qwen3-
 **Description**: Custom Metal kernel that fuses multiply + reduce + cast operations for MoE expert output aggregation.
 
 **Impact**:
+
 - Decode throughput: **+7.7% improvement**
 - 128 tokens: 105.6 → 113.7 tok/s
 - 512 tokens: 104.7 → 112.8 tok/s
 
 **Technical Details**:
+
 - Eliminates intermediate tensor allocations
 - Reduces kernel launch overhead
 - Optimized memory access patterns for top-k=10
@@ -41,6 +43,7 @@ This document summarizes the comprehensive optimization work performed on Qwen3-
 **Description**: Packs split QKV/Z/A/B projections into unified tensors for better memory locality.
 
 **Impact**:
+
 - Reduces memory bandwidth usage
 - Improves cache efficiency
 - ~2% decode throughput improvement
@@ -51,6 +54,7 @@ This document summarizes the comprehensive optimization work performed on Qwen3-
 **Description**: Packs gate and up projections into single tensor for SwiGLU activation.
 
 **Impact**:
+
 - Reduces kernel launches
 - Better memory coalescing
 - ~1.6% decode throughput improvement
@@ -61,6 +65,7 @@ This document summarizes the comprehensive optimization work performed on Qwen3-
 **Description**: Uses 4-bit quantization with group_size=64 for optimal balance of speed and accuracy.
 
 **Impact**:
+
 - Reduces model size by ~75%
 - Enables larger batch sizes
 - Maintains output quality
@@ -80,6 +85,7 @@ This document summarizes the comprehensive optimization work performed on Qwen3-
 **Description**: Attempted to fuse softmax and top-k operations in MoE router into single Metal kernel.
 
 **Impact**:
+
 - Decode throughput: 115.1 → 88.1 tok/s (**-23% regression**)
 - 128 tokens: 115.1 → 88.1 tok/s
 - 512 tokens: 113.6 → 87.7 tok/s
@@ -124,6 +130,7 @@ This document summarizes the comprehensive optimization work performed on Qwen3-
 | TTFT (512) | 291.2 ms | 237.7 ms | +22.5% |
 
 **Key Insight**: AX Engine achieves **33% faster decode** than llama.cpp, but prefill and TTFT are slower. This is because:
+
 - Decode is memory-bandwidth bound, and AX Engine's Metal kernels are highly optimized
 - Prefill is compute-bound (MoE FFN), and llama.cpp has better compute optimizations
 - TTFT depends on prefill speed
@@ -141,6 +148,7 @@ sdpa:                        1.6%  (Attention computation)
 ```
 
 **Conclusion**: MoE FFN dominates prefill time (70%). Further optimization would require:
+
 - Better MoE expert batching strategies
 - Expert parallelism across GPU cores
 - Custom Metal kernels for MoE routing and computation
@@ -164,6 +172,7 @@ sdpa:                        1.6%  (Attention computation)
 **Status**: Tested but ineffective
 
 **Reason**: 
+
 - Random token prompts: No repeating patterns
 - Real coding prompts: Still 0 accepted tokens
 - Root cause: No MTP heads means ngram cannot predict next tokens
@@ -266,6 +275,7 @@ All optimization work has been committed to the repository:
 
 Benchmarked `mlx-community/gemma-4-12B-it-4bit` to verify the Gemma4 sorted
 weighted-sum kernels activate and produce correct output:
+
 - Prefill: 1155 tok/s (128tok), 1847 tok/s (512tok)
 - Decode: 66.5 tok/s
 - The sorted kernels work correctly on Gemma4 MoE models.
@@ -312,6 +322,7 @@ forced graph evaluation between stages. Scaling to production:
 | lm_head | 0.2 | <1% | ❌ Negligible |
 
 **Key findings**:
+
 1. 61% of prefill time is in MLX's `gather_qmm` (MoE expert matmul)
 2. The `last_position_only_after_attention` optimization IS active (layer 47
    is full-attention, correctly receives the slice)
@@ -322,6 +333,7 @@ forced graph evaluation between stages. Scaling to production:
 **Conclusion**: No further prefill optimization is actionable from the
 ax-engine Rust layer. The 18-36% gap vs llama.cpp is inside MLX's
 `gather_qmm` Metal kernel dispatch strategy. Closing it requires either:
+
 - Forking MLX to batch expert matmuls differently, or
 - A completely different MoE dispatch approach (multi-week project)
 
@@ -333,6 +345,7 @@ ax-engine Rust layer. The 18-36% gap vs llama.cpp is inside MLX's
 | 512    | 1781            | 115            | 288       |
 
 Compared to llama.cpp (Q4_K_M):
+
 - Decode: **33% faster** (115 vs 86.5 tok/s)
 - Prefill: **18-36% slower** (1781 vs 2150 tok/s at 512 tokens)
 - TTFT: **22-57% slower** (288 vs 186ms at 512 tokens)
