@@ -926,12 +926,20 @@ fn gemma4_assistant_layer_forward(
 /// skips all KV-cache writes (no `zeros` allocation, no `slice_update`).
 /// Only valid for Qwen3/Gemma dense layers — no linear attention, no MLA,
 /// no KV-source sharing, no MoE.
+///
+/// `pending_ffn` carries the previous layer's FFN output so its residual
+/// add can be fused with this layer's pre-attention RMSNorm via
+/// `add_rms_norm_pair`, saving one GPU kernel dispatch per layer boundary.
+/// Returns `(hidden, ffn_out)` where `ffn_out` is the current layer's FFN
+/// output — the caller is responsible for adding it as the residual for
+/// the next layer (or final norm).
 fn layer_forward_dense_embed(
     cfg: &ModelConfig,
     w: &LayerWeights,
     hidden: &MlxArray, // [batch, seq, hidden]
     layer_idx: usize,
-) -> MlxArray {
+    pending_ffn: Option<&MlxArray>,
+) -> (MlxArray, MlxArray) {
     let (
         head_dim,
         rope_theta,
@@ -949,9 +957,20 @@ fn layer_forward_dense_embed(
     // (it disables forward pipelining and inflates absolute time).
     let profile = embed_profile_enabled() && seq > 1;
 
-    // 1. Attention norm.
+    // 1. Fuse pending FFN residual from the previous layer with this layer's
+    // pre-attention RMSNorm via `add_rms_norm_pair`, saving one GPU kernel
+    // dispatch per layer boundary. When there is no pending FFN (first layer),
+    // fall back to a plain RMSNorm.
     let attn_norm_started = profile.then(Instant::now);
-    let normed = rms_norm(hidden, Some(&w.attn_norm), cfg.rms_norm_eps, None);
+    let (hidden, normed) = match pending_ffn {
+        Some(ffn_out) => {
+            mlx_sys::add_rms_norm_pair(hidden, ffn_out, &w.attn_norm, cfg.rms_norm_eps, None)
+        }
+        None => {
+            let normed = rms_norm(hidden, Some(&w.attn_norm), cfg.rms_norm_eps, None);
+            (hidden.clone(), normed)
+        }
+    };
     if let Some(started) = attn_norm_started {
         embed_profile_eval_elapsed(profile, EmbedProfileStage::AttnNorm, started, &[&normed]);
     }
@@ -1097,24 +1116,31 @@ fn layer_forward_dense_embed(
             panic!("dense embed layer must have o_proj");
         }),
     );
-    let hidden = add(hidden, &attn_proj, None);
+    // 14-17. Fuse residual-add and pre-FFN RMSNorm into one C++ call
+    // (`add_rms_norm_pair`), saving one MLX graph dispatch per layer.
+    let (hidden, normed2) =
+        mlx_sys::add_rms_norm_pair(&hidden, &attn_proj, &w.ffn_norm, cfg.rms_norm_eps, None);
     if let Some(started) = attn_out_proj_started {
-        embed_profile_eval_elapsed(profile, EmbedProfileStage::AttnOutProj, started, &[&hidden]);
+        embed_profile_eval_elapsed(
+            profile,
+            EmbedProfileStage::AttnOutProj,
+            started,
+            &[&hidden, &normed2],
+        );
     }
-
-    // 14-17. Pre-FFN norm, dense SwiGLU, residual.
-    let ffn_norm_started = profile.then(Instant::now);
-    let normed2 = rms_norm(&hidden, Some(&w.ffn_norm), cfg.rms_norm_eps, None);
-    if let Some(started) = ffn_norm_started {
+    // FfnNorm is fused into the add_rms_norm_pair above; record the stage
+    // as zero-cost so the profile snapshot ABI stays stable.
+    if let Some(started) = profile.then(Instant::now) {
         embed_profile_eval_elapsed(profile, EmbedProfileStage::FfnNorm, started, &[&normed2]);
     }
-    let ffn_started = profile.then(Instant::now);
     let ffn_out = ffn_swiglu(cfg, w, &normed2, None, layer_idx);
-    let out = add(&hidden, &ffn_out, None);
-    if let Some(started) = ffn_started {
-        embed_profile_eval_elapsed(profile, EmbedProfileStage::Ffn, started, &[&out]);
+    // Defer the FFN residual add: the caller (layer loop) will fuse it with
+    // the next layer's pre-attention RMSNorm via `add_rms_norm_pair`, saving
+    // one GPU kernel dispatch per layer boundary.
+    if let Some(started) = profile.then(Instant::now) {
+        embed_profile_eval_elapsed(profile, EmbedProfileStage::Ffn, started, &[&ffn_out]);
     }
-    out
+    (hidden, ffn_out)
 }
 
 /// Stateless forward pass for dense-embedding extraction.
@@ -1147,8 +1173,16 @@ fn forward_for_embedding_body(
     mut hidden: MlxArray,
     target_position: Option<usize>,
 ) -> MlxArray {
+    let mut pending_ffn: Option<MlxArray> = None;
     for (li, layer_w) in weights.layers.iter().enumerate() {
-        hidden = layer_forward_dense_embed(cfg, layer_w, &hidden, li);
+        let (h, ffn_out) =
+            layer_forward_dense_embed(cfg, layer_w, &hidden, li, pending_ffn.as_ref());
+        hidden = h;
+        pending_ffn = Some(ffn_out);
+    }
+    // Final FFN residual: no next layer to fuse with, so add directly.
+    if let Some(ffn_out) = &pending_ffn {
+        hidden = add(&hidden, ffn_out, None);
     }
     let to_norm = match target_position {
         Some(pos) => {
@@ -1226,7 +1260,7 @@ fn embed_tokens_batched(
 /// Always returns `Some` (all-zeros when there is no padding): `full_precision_
 /// attention` interprets a `None` mask as **causal** for seq>1, so an explicit
 /// mask is required to get bidirectional (full) attention.
-fn build_bidirectional_padding_mask(
+pub(crate) fn build_bidirectional_padding_mask(
     batch: usize,
     max_len: usize,
     actual_lens: &[usize],
@@ -1383,13 +1417,52 @@ fn forward_for_embedding_gemma3_batch(
     let max_len = actual_lens.iter().copied().max().unwrap_or(0);
     let batch = batch_token_ids.len();
 
-    let mut hidden = build_embedding_batch_hidden(cfg, weights, batch_token_ids, batch, max_len);
+    let hidden = build_embedding_batch_hidden(cfg, weights, batch_token_ids, batch, max_len);
     let bidir_mask = build_bidirectional_padding_mask(batch, max_len, &actual_lens, hidden.dtype());
-    for (li, layer_w) in weights.layers.iter().enumerate() {
-        hidden = layer_forward_embed_gemma3(cfg, layer_w, &hidden, li, &bidir_mask);
-    }
-    let out = rms_norm(&hidden, Some(&weights.final_norm), cfg.rms_norm_eps, None);
+    let out = forward_for_embedding_gemma3_batch_body(cfg, weights, hidden, &bidir_mask);
     (out, actual_lens)
+}
+
+/// Body of `forward_for_embedding_gemma3_batch` from the pre-embedded
+/// `[B, max_seq, H]` hidden state to the final norm output. Split out so the
+/// same logic can be wrapped in an `mlx_compile` closure that fuses the
+/// per-layer dispatches into a single compiled graph.
+fn forward_for_embedding_gemma3_batch_body(
+    cfg: &ModelConfig,
+    weights: &ModelWeights,
+    mut hidden: MlxArray,
+    bidir_mask: &Option<MlxArray>,
+) -> MlxArray {
+    for (li, layer_w) in weights.layers.iter().enumerate() {
+        hidden = layer_forward_embed_gemma3(cfg, layer_w, &hidden, li, bidir_mask);
+    }
+    rms_norm(&hidden, Some(&weights.final_norm), cfg.rms_norm_eps, None)
+}
+
+/// Build an `mlx_compile`-wrapped closure for the EmbeddingGemma batched
+/// forward. The closure captures the bidirectional padding mask (which is
+/// determined by `actual_lens` + `max_len`) and takes the pre-embedded
+/// `[B, max_seq, H]` hidden state as its only input. Returns the final
+/// norm output `[B, max_seq, H]`. The runner applies mean pooling + Dense
+/// head after the closure returns.
+///
+/// Cache key: `(batch_size, max_len, actual_lens)` — the mask is fully
+/// determined by these, so same-shape batches with the same real lengths
+/// hit the cache.
+pub fn build_embedding_gemma3_batch_forward_closure(
+    cfg: Arc<ModelConfig>,
+    weights: Arc<ModelWeights>,
+    bidir_mask: Option<MlxArray>,
+) -> Result<MlxClosure, String> {
+    let body_closure = MlxClosure::new_dyn(move |inputs: &MlxVectorArray| {
+        if inputs.is_empty() {
+            return vec![];
+        }
+        let hidden = inputs.get(0);
+        let out = forward_for_embedding_gemma3_batch_body(&cfg, &weights, hidden, &bidir_mask);
+        vec![out]
+    });
+    body_closure.compile(false)
 }
 
 /// Apply the EmbeddingGemma sentence-transformers Dense head to a pooled
@@ -1510,8 +1583,16 @@ fn forward_for_embedding_batch_body(
     // Under profiling the runner forces the imperative path, so the per-stage
     // eval barriers below only fire on a real imperative forward.
     let profile = embed_profile_enabled() && hidden.shape()[1] > 1;
+    let mut pending_ffn: Option<MlxArray> = None;
     for (li, layer_w) in weights.layers.iter().enumerate() {
-        hidden = layer_forward_dense_embed(cfg, layer_w, &hidden, li);
+        let (h, ffn_out) =
+            layer_forward_dense_embed(cfg, layer_w, &hidden, li, pending_ffn.as_ref());
+        hidden = h;
+        pending_ffn = Some(ffn_out);
+    }
+    // Final FFN residual: no next layer to fuse with, so add directly.
+    if let Some(ffn_out) = &pending_ffn {
+        hidden = add(&hidden, ffn_out, None);
     }
     let final_started = profile.then(Instant::now);
     // Extract per-sequence positions before the final norm when the caller only

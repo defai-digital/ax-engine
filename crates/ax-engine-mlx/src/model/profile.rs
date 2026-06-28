@@ -657,7 +657,8 @@ pub fn take_moe_profile_snapshot() -> MoeProfileSnapshot {
 /// - `embed_tokens_wall_us` — `build_embedding_batch_hidden` (token-id gather
 ///   from the quantized embedding table + bf16 cast + optional hidden scale).
 ///   Outside the layer loop; charged once per call.
-/// - `attn_norm_wall_us` — pre-attention RMSNorm.
+/// - `attn_norm_wall_us` — pre-attention RMSNorm, or fused FFN-residual-add +
+///   RMSNorm (`add_rms_norm_pair`) for layers after the first.
 /// - `qkv_proj_wall_us` — `qkv_project` (Q/K/V quantized matmuls + reshape).
 /// - `value_prep_wall_us` — `prepare_value_bhsd_from_proj` (V reshape +
 ///   optional V-norm to BHSD).
@@ -666,11 +667,14 @@ pub fn take_moe_profile_snapshot() -> MoeProfileSnapshot {
 ///   direct route default-OFF), unlike the tuned prefill `layer_forward`.
 /// - `sdpa_wall_us` — `full_precision_attention` (fused causal SDPA).
 /// - `attn_out_proj_wall_us` — transpose-back + reshape + attention output
-///   projection + attention residual add.
-/// - `ffn_norm_wall_us` — pre-FFN RMSNorm.
-/// - `ffn_wall_us` — `ffn_swiglu` + FFN residual add.
+///   projection + fused pre-FFN RMSNorm (`add_rms_norm_pair`).
+/// - `ffn_norm_wall_us` — pre-FFN RMSNorm (fused into `attn_out_proj_wall_us`
+///   via `add_rms_norm_pair`; recorded as zero-cost for ABI stability).
+/// - `ffn_wall_us` — `ffn_swiglu` (FFN residual add is deferred and fused into
+///   the next layer's `attn_norm_wall_us`).
 /// - `final_norm_pool_wall_us` — last-token/CLS extract (or full hidden for
-///   Mean) + final RMSNorm. Outside the layer loop; charged once per call.
+///   Mean) + final RMSNorm + final FFN residual add. Outside the layer loop;
+///   charged once per call.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct EmbedProfileSnapshot {
     pub enabled: u32,

@@ -3298,6 +3298,12 @@ type EmbedCompileKey = (ThreadId, usize, Option<usize>);
 /// positions hit distinct keys.
 type EmbedBatchCompileKey = (ThreadId, usize, usize, Option<Vec<usize>>);
 
+/// Cache key for the EmbeddingGemma batched compiled closure.
+/// The bidirectional padding mask is determined by `(batch, max_len,
+/// actual_lens)`, so same-shape batches with the same real lengths reuse the
+/// compiled graph.
+type EmbedGemmaBatchCompileKey = (ThreadId, usize, usize, Vec<usize>);
+
 /// ExecutionRunner backed by the MLX inference path.
 pub struct MlxRunner {
     cfg: ModelConfig,
@@ -3373,6 +3379,11 @@ pub struct MlxRunner {
     /// on `(thread_id, batch_size, max_len, target_positions)`; same kill
     /// switch as the single-call cache (`AX_EMBED_NO_COMPILE`).
     embed_batch_compile_cache: Mutex<HashMap<EmbedBatchCompileKey, mlx_sys::MlxClosure>>,
+    /// Per-thread/per-shape compiled EmbeddingGemma batched closures. Keyed
+    /// on `(thread_id, batch_size, max_len, actual_lens)`; the bidirectional
+    /// padding mask is captured at closure-build time and baked into the
+    /// trace. Same kill switch (`AX_EMBED_NO_COMPILE`).
+    embed_gemma_batch_compile_cache: Mutex<HashMap<EmbedGemmaBatchCompileKey, mlx_sys::MlxClosure>>,
     /// Cumulative hit / miss counters for the two embedding compile
     /// caches. Useful to confirm a workload is reusing compiled
     /// closures vs trashing the cache with shape variation. Exported
@@ -3821,6 +3832,7 @@ impl MlxRunner {
             affine_quant_telemetry,
             embed_compile_cache: Mutex::new(HashMap::new()),
             embed_batch_compile_cache: Mutex::new(HashMap::new()),
+            embed_gemma_batch_compile_cache: Mutex::new(HashMap::new()),
             embed_compile_stats: Mutex::new(EmbedCompileStats::default()),
         })
     }
@@ -3845,7 +3857,12 @@ impl MlxRunner {
             .embed_batch_compile_cache
             .lock()
             .map(|c| c.len())
-            .unwrap_or(0);
+            .unwrap_or(0)
+            + self
+                .embed_gemma_batch_compile_cache
+                .lock()
+                .map(|c| c.len())
+                .unwrap_or(0);
         EmbedCompileCacheStats {
             single_hits: stats.single_hits,
             single_misses: stats.single_misses,
@@ -4069,32 +4086,35 @@ impl ExecutionRunner for MlxRunner {
         let pooled = match pooling {
             EmbeddingPooling::Mean => {
                 let max_seq = hidden.shape()[1] as usize;
-                // Build a [B, max_seq, 1] mask (1.0 for real tokens, 0.0 for padding)
-                // so that right-padded positions are excluded from the mean.
-                let mut mask_data = vec![0.0f32; batch.len() * max_seq];
+                // Build the mask directly in bf16 (upper 16 bits of f32)
+                // to avoid an f32→bf16 `astype` dispatch.
+                let one_bf16: u16 = (1.0f32.to_bits() >> 16) as u16;
+                let zero_bf16: u16 = 0u16;
+                let mut mask_data = vec![zero_bf16; batch.len() * max_seq];
                 for (i, &l) in actual_lens.iter().enumerate() {
                     for j in 0..l {
-                        mask_data[i * max_seq + j] = 1.0;
+                        mask_data[i * max_seq + j] = one_bf16;
                     }
                 }
                 let mask_arr = MlxArray::from_raw_data(
                     mask_data.as_ptr() as *const u8,
-                    mask_data.len() * std::mem::size_of::<f32>(),
+                    mask_data.len() * std::mem::size_of::<u16>(),
                     &[batch_size, max_seq as i32, 1_i32],
-                    MlxDtype::Float32,
+                    MlxDtype::Bfloat16,
                 );
-                let mask_bf16 = astype(&mask_arr, MlxDtype::Bfloat16, None);
-                let masked = multiply(&hidden, &mask_bf16, None); // zero padding positions
-                let sums = sum_axis(&masked, 1, false, None); // [B, H] bf16
-                let scales: Vec<f32> = actual_lens.iter().map(|&l| 1.0 / l as f32).collect();
+                let masked = multiply(&hidden, &mask_arr, None);
+                let sums = sum_axis(&masked, 1, false, None);
+                let mut scale_data = vec![zero_bf16; batch.len()];
+                for (i, &l) in actual_lens.iter().enumerate() {
+                    scale_data[i] = ((1.0f32 / l as f32).to_bits() >> 16) as u16;
+                }
                 let scale_arr = MlxArray::from_raw_data(
-                    scales.as_ptr() as *const u8,
-                    scales.len() * std::mem::size_of::<f32>(),
+                    scale_data.as_ptr() as *const u8,
+                    scale_data.len() * std::mem::size_of::<u16>(),
                     &[batch_size, 1_i32],
-                    MlxDtype::Float32,
+                    MlxDtype::Bfloat16,
                 );
-                let scale_bf16 = astype(&scale_arr, MlxDtype::Bfloat16, None);
-                multiply(&sums, &scale_bf16, None)
+                multiply(&sums, &scale_arr, None)
             }
             EmbeddingPooling::Last | EmbeddingPooling::Cls => hidden,
         };
@@ -4181,33 +4201,36 @@ impl ExecutionRunner for MlxRunner {
         let pooled = match pooling {
             EmbeddingPooling::Mean => {
                 let max_seq = hidden.shape()[1] as usize;
-                let mut mask_data = vec![0.0f32; batch.len() * max_seq];
+                // Build the mask directly in bf16 (upper 16 bits of f32)
+                // to avoid an f32→bf16 `astype` dispatch.
+                let one_bf16: u16 = (1.0f32.to_bits() >> 16) as u16;
+                let zero_bf16: u16 = 0u16;
+                let mut mask_data = vec![zero_bf16; batch.len() * max_seq];
                 for (i, &l) in actual_lens.iter().enumerate() {
                     for j in 0..l {
-                        mask_data[i * max_seq + j] = 1.0;
+                        mask_data[i * max_seq + j] = one_bf16;
                     }
                 }
                 let mask_arr = MlxArray::from_raw_data(
                     mask_data.as_ptr() as *const u8,
-                    mask_data.len() * std::mem::size_of::<f32>(),
+                    mask_data.len() * std::mem::size_of::<u16>(),
                     &[batch_size, max_seq as i32, 1_i32],
-                    MlxDtype::Float32,
+                    MlxDtype::Bfloat16,
                 );
-                let mask_bf16 = astype(&mask_arr, MlxDtype::Bfloat16, None);
-                let masked = multiply(&hidden, &mask_bf16, None);
+                let masked = multiply(&hidden, &mask_arr, None);
                 let sums = sum_axis(&masked, 1, false, None);
-                let mut len_data = vec![0.0f32; batch.len()];
+                // Build the length-scale directly in bf16 too.
+                let mut scale_data = vec![zero_bf16; batch.len()];
                 for (i, &l) in actual_lens.iter().enumerate() {
-                    len_data[i] = l as f32;
+                    scale_data[i] = ((1.0f32 / l as f32).to_bits() >> 16) as u16;
                 }
-                let len_arr = MlxArray::from_raw_data(
-                    len_data.as_ptr() as *const u8,
-                    len_data.len() * std::mem::size_of::<f32>(),
+                let scale_arr = MlxArray::from_raw_data(
+                    scale_data.as_ptr() as *const u8,
+                    scale_data.len() * std::mem::size_of::<u16>(),
                     &[batch_size, 1_i32],
-                    MlxDtype::Float32,
+                    MlxDtype::Bfloat16,
                 );
-                let len_bf16 = astype(&len_arr, MlxDtype::Bfloat16, None);
-                divide(&sums, &len_bf16, None)
+                multiply(&sums, &scale_arr, None)
             }
             EmbeddingPooling::Last | EmbeddingPooling::Cls => hidden,
         };
@@ -4387,20 +4410,39 @@ impl MlxRunner {
     /// keyed on `(batch_size, max_len, target_positions)`. Mean pooling
     /// (`target_positions = None`) currently falls back to the imperative
     /// path because Mean pools after the closure result is materialized.
+    ///
+    /// EmbeddingGemma (bidirectional encoder with mean pooling) uses a
+    /// dedicated compiled-closure path: the transformer layers + final norm
+    /// are fused into one compiled graph; mean pooling + Dense head are
+    /// applied post-closure by the caller.
     fn embedding_batch_forward(
         &self,
         batch_token_ids: &[Vec<u32>],
         target_positions: Option<&[usize]>,
     ) -> (MlxArray, Vec<usize>) {
         let disable_compile = std::env::var("AX_EMBED_NO_COMPILE").is_ok();
+        let profile = crate::model::profile::embed_profile_enabled();
+
+        // EmbeddingGemma: bidirectional encoder with mean pooling — uses a
+        // dedicated compile cache keyed on (batch, max_len, actual_lens).
+        if self.cfg.model_family == "embeddinggemma" {
+            if disable_compile || profile {
+                return crate::model::forward_for_embedding_batch(
+                    &self.cfg,
+                    &self.weights,
+                    batch_token_ids,
+                    target_positions,
+                );
+            }
+            return self.embedding_gemma_batch_compiled_forward(batch_token_ids);
+        }
+
+        // Standard (Qwen3-style) embedding path.
         // AX_MLX_EMBED_PROFILE forces the imperative path: the per-stage eval
         // barriers cannot live inside a single traced compiled closure, and
         // compile on/off is throughput-neutral for this path, so the imperative
         // breakdown is representative.
-        if disable_compile
-            || target_positions.is_none()
-            || crate::model::profile::embed_profile_enabled()
-        {
+        if disable_compile || target_positions.is_none() || profile {
             // Mean pooling needs the full [B, max_seq, H] hidden; the closure
             // body is only built for the Last/Cls (extract-then-norm) shape.
             return crate::model::forward_for_embedding_batch(
@@ -4476,6 +4518,84 @@ impl MlxRunner {
             .into_iter()
             .next()
             .expect("compiled batched embedding closure must return one output");
+        (out, actual_lens)
+    }
+
+    /// EmbeddingGemma compiled-closure batch forward. Builds the pre-embedded
+    /// hidden state and bidirectional padding mask, then applies a compiled
+    /// closure that fuses the transformer layers + final norm into one graph.
+    /// Mean pooling + Dense head are applied by the caller (`embed_batch`).
+    fn embedding_gemma_batch_compiled_forward(
+        &self,
+        batch_token_ids: &[Vec<u32>],
+    ) -> (MlxArray, Vec<usize>) {
+        let (hidden, batch, max_len, actual_lens) = crate::model::build_embedding_batch_hidden_pub(
+            &self.cfg,
+            &self.weights,
+            batch_token_ids,
+        );
+        let bidir_mask = crate::model::build_bidirectional_padding_mask(
+            batch,
+            max_len,
+            &actual_lens,
+            hidden.dtype(),
+        );
+        let key: EmbedGemmaBatchCompileKey =
+            (thread::current().id(), batch, max_len, actual_lens.clone());
+        let mut cache = self
+            .embed_gemma_batch_compile_cache
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let was_present = cache.contains_key(&key);
+        if !was_present {
+            match crate::model::build_embedding_gemma3_batch_forward_closure(
+                Arc::clone(&self.cfg_arc),
+                Arc::clone(&self.weights),
+                bidir_mask,
+            ) {
+                Ok(cls) => {
+                    cache.insert(key.clone(), cls);
+                }
+                Err(_) => {
+                    drop(cache);
+                    return crate::model::forward_for_embedding_batch(
+                        &self.cfg,
+                        &self.weights,
+                        batch_token_ids,
+                        None,
+                    );
+                }
+            }
+        }
+        {
+            let mut stats = self
+                .embed_compile_stats
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            if was_present {
+                stats.batched_hits += 1;
+            } else {
+                stats.batched_misses += 1;
+            }
+        }
+        let cls = cache.get(&key).expect("just inserted");
+        let outputs = match cls.try_apply(&[&hidden]) {
+            Ok(outputs) => outputs,
+            Err(_) => {
+                cache.remove(&key);
+                drop(cache);
+                return crate::model::forward_for_embedding_batch(
+                    &self.cfg,
+                    &self.weights,
+                    batch_token_ids,
+                    None,
+                );
+            }
+        };
+        let out = outputs
+            .into_iter()
+            .next()
+            .expect("compiled EmbeddingGemma closure must return one output");
         (out, actual_lens)
     }
 
