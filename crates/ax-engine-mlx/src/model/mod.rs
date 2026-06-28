@@ -1164,7 +1164,12 @@ fn build_bidirectional_padding_mask(
         &[batch as i32, 1, max_len as i32, max_len as i32],
         MlxDtype::Float32,
     );
-    Some(astype(&mask, dtype, None))
+    let mask = astype(&mask, dtype, None);
+    // `mask` is consumed lazily across every layer's SDPA but `data` (its backing
+    // host buffer) is freed when this function returns. Force materialization now,
+    // while `data` is still alive, so the deferred graph never reads freed memory.
+    mlx_sys::eval(&[&mask]);
+    Some(mask)
 }
 
 fn gemma3_clip_residual(x: &MlxArray, y: &MlxArray) -> MlxArray {

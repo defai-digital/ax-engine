@@ -56,7 +56,6 @@ fn main() {
         weights.embedding_dense_0.is_some(),
         weights.embedding_dense_1.is_some(),
     );
-
     let stdin = std::io::stdin();
     let batch: Vec<Vec<u32>> = stdin
         .lock()
