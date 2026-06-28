@@ -3298,11 +3298,25 @@ type EmbedCompileKey = (ThreadId, usize, Option<usize>);
 /// positions hit distinct keys.
 type EmbedBatchCompileKey = (ThreadId, usize, usize, Option<Vec<usize>>);
 
+/// EmbeddingGemma compiled batch closure output contract.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+enum EmbedGemmaBatchCompileKind {
+    Encoder,
+    Pooled,
+}
+
 /// Cache key for the EmbeddingGemma batched compiled closure.
 /// The bidirectional padding mask is determined by `(batch, max_len,
 /// actual_lens)`, so same-shape batches with the same real lengths reuse the
-/// compiled graph.
-type EmbedGemmaBatchCompileKey = (ThreadId, usize, usize, Vec<usize>);
+/// compiled graph. The closure kind is part of the key because the encoder
+/// closure returns `[B, max_seq, H]` while the pooled closure returns `[B, H]`.
+type EmbedGemmaBatchCompileKey = (
+    ThreadId,
+    EmbedGemmaBatchCompileKind,
+    usize,
+    usize,
+    Vec<usize>,
+);
 
 /// ExecutionRunner backed by the MLX inference path.
 pub struct MlxRunner {
@@ -4083,6 +4097,32 @@ impl ExecutionRunner for MlxRunner {
             EmbeddingPooling::Cls => Some(vec![0; batch.len()]),
             EmbeddingPooling::Mean => None,
         };
+        if self.cfg.model_family == "embeddinggemma"
+            && pooling == EmbeddingPooling::Mean
+            && let Some(pooled) = self.embedding_gemma_batch_pooled_compiled_forward(batch)
+        {
+            let hidden_size = pooled.shape()[pooled.shape().len() - 1] as usize;
+            let pooled_f32 = astype(&pooled, MlxDtype::Float32, None);
+            let cpu_normalize = normalize
+                && std::env::var("AX_EMBED_GPU_NORMALIZE")
+                    .map(|v| v == "0" || v.is_empty())
+                    .unwrap_or(true);
+            let result = if normalize && !cpu_normalize {
+                l2_normalize_last_dim(&pooled_f32)
+            } else {
+                pooled_f32
+            };
+            mlx_sys::eval(&[&result]);
+            let mut flat = result.data_f32().to_vec();
+            if cpu_normalize {
+                l2_normalize_rows_in_place(&mut flat, hidden_size);
+            }
+            let data: &[f32] = &flat;
+            let vecs = (0..batch.len())
+                .map(|i| data[i * hidden_size..(i + 1) * hidden_size].to_vec())
+                .collect();
+            return Ok(vecs);
+        }
         let encode_started = Instant::now();
         let (hidden, actual_lens) =
             self.embedding_batch_forward(batch, target_positions.as_deref());
@@ -4199,6 +4239,32 @@ impl ExecutionRunner for MlxRunner {
             EmbeddingPooling::Cls => Some(vec![0; batch.len()]),
             EmbeddingPooling::Mean => None,
         };
+        if self.cfg.model_family == "embeddinggemma"
+            && pooling == EmbeddingPooling::Mean
+            && let Some(pooled) = self.embedding_gemma_batch_pooled_compiled_forward(batch)
+        {
+            let hidden_size = pooled.shape()[pooled.shape().len() - 1] as usize;
+            let pooled_f32 = astype(&pooled, MlxDtype::Float32, None);
+            let cpu_normalize = normalize
+                && std::env::var("AX_EMBED_GPU_NORMALIZE")
+                    .map(|v| v == "0" || v.is_empty())
+                    .unwrap_or(true);
+            let result = if normalize && !cpu_normalize {
+                l2_normalize_last_dim(&pooled_f32)
+            } else {
+                pooled_f32
+            };
+            mlx_sys::eval(&[&result]);
+            let mut data = result.data_f32().to_vec();
+            if cpu_normalize {
+                l2_normalize_rows_in_place(&mut data, hidden_size);
+            }
+            return Ok(ax_engine_core::EmbeddingMatrix {
+                data,
+                batch_size: batch.len(),
+                hidden_size,
+            });
+        }
         let (hidden, actual_lens) =
             self.embedding_batch_forward(batch, target_positions.as_deref());
         let batch_size = batch.len() as i32;
@@ -4545,8 +4611,13 @@ impl MlxRunner {
             &actual_lens,
             hidden.dtype(),
         );
-        let key: EmbedGemmaBatchCompileKey =
-            (thread::current().id(), batch, max_len, actual_lens.clone());
+        let key: EmbedGemmaBatchCompileKey = (
+            thread::current().id(),
+            EmbedGemmaBatchCompileKind::Encoder,
+            batch,
+            max_len,
+            actual_lens.clone(),
+        );
         let mut cache = self
             .embed_gemma_batch_compile_cache
             .lock()
@@ -4602,6 +4673,84 @@ impl MlxRunner {
             .next()
             .expect("compiled EmbeddingGemma closure must return one output");
         (out, actual_lens)
+    }
+
+    /// EmbeddingGemma compiled batch path that returns the pooled Dense-head
+    /// tensor `[B, H]`. This is the hot serving/benchmark path for
+    /// EmbeddingGemma mean pooling; it avoids returning the full
+    /// `[B, max_seq, H]` encoder output to the runner only to mask, sum, and
+    /// project it outside the compiled graph.
+    fn embedding_gemma_batch_pooled_compiled_forward(
+        &self,
+        batch_token_ids: &[Vec<u32>],
+    ) -> Option<MlxArray> {
+        let disable_compile = std::env::var("AX_EMBED_NO_COMPILE").is_ok();
+        let profile = crate::model::profile::embed_profile_enabled();
+        if disable_compile || profile {
+            return None;
+        }
+
+        let (hidden, batch, max_len, actual_lens) = crate::model::build_embedding_batch_hidden_pub(
+            &self.cfg,
+            &self.weights,
+            batch_token_ids,
+        );
+        let key: EmbedGemmaBatchCompileKey = (
+            thread::current().id(),
+            EmbedGemmaBatchCompileKind::Pooled,
+            batch,
+            max_len,
+            actual_lens.clone(),
+        );
+        let mut cache = self
+            .embed_gemma_batch_compile_cache
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let was_present = cache.contains_key(&key);
+        if !was_present {
+            let bidir_mask = crate::model::build_bidirectional_padding_mask(
+                batch,
+                max_len,
+                &actual_lens,
+                hidden.dtype(),
+            );
+            let (pool_mask, pool_scale) =
+                crate::model::build_embedding_mean_pool_inputs(batch, max_len, &actual_lens);
+            match crate::model::build_embedding_gemma3_pooled_batch_forward_closure(
+                Arc::clone(&self.cfg_arc),
+                Arc::clone(&self.weights),
+                bidir_mask,
+                pool_mask,
+                pool_scale,
+            ) {
+                Ok(cls) => {
+                    cache.insert(key.clone(), cls);
+                }
+                Err(_) => {
+                    return None;
+                }
+            }
+        }
+        {
+            let mut stats = self
+                .embed_compile_stats
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            if was_present {
+                stats.batched_hits += 1;
+            } else {
+                stats.batched_misses += 1;
+            }
+        }
+        let cls = cache.get(&key).expect("just inserted");
+        let outputs = match cls.try_apply(&[&hidden]) {
+            Ok(outputs) => outputs,
+            Err(_) => {
+                cache.remove(&key);
+                return None;
+            }
+        };
+        outputs.into_iter().next()
     }
 
     fn run_item(
@@ -14944,6 +15093,28 @@ mod tests {
             effective_embedding_pooling("qwen3", EmbeddingPooling::Last),
             EmbeddingPooling::Last
         );
+    }
+
+    #[test]
+    fn embeddinggemma_pooled_and_encoder_compile_keys_do_not_alias() {
+        let thread_id = thread::current().id();
+        let actual_lens = vec![3, 2];
+        let encoder_key: EmbedGemmaBatchCompileKey = (
+            thread_id,
+            EmbedGemmaBatchCompileKind::Encoder,
+            2,
+            3,
+            actual_lens.clone(),
+        );
+        let pooled_key: EmbedGemmaBatchCompileKey = (
+            thread_id,
+            EmbedGemmaBatchCompileKind::Pooled,
+            2,
+            3,
+            actual_lens,
+        );
+
+        assert_ne!(encoder_key, pooled_key);
     }
 
     #[test]

@@ -1,6 +1,7 @@
 use mlx_sys::{
     MlxArray, MlxClosure, MlxDtype, MlxVectorArray, add, astype, broadcast_to, concatenate,
-    dequantize, reshape, rms_norm, slice, split, take, take_along_axis, transpose,
+    dequantize, multiply, reshape, rms_norm, slice, split, sum_axis, take, take_along_axis,
+    transpose,
 };
 use std::sync::Arc;
 use std::time::Instant;
@@ -75,7 +76,7 @@ use ax_engine_core::{KvCompressionConfig, NativeModelManifest, TurboQuantPreset}
 use mlx_sys::expand_dims_axes;
 #[cfg(test)]
 use mlx_sys::{
-    ScaledDotProductAttentionMask, argmax, gelu_approx, matmul, multiply,
+    ScaledDotProductAttentionMask, argmax, gelu_approx, matmul,
     scaled_dot_product_attention_with_mask,
 };
 #[cfg(test)]
@@ -1290,6 +1291,47 @@ pub(crate) fn build_bidirectional_padding_mask(
     Some(mask)
 }
 
+/// Build EmbeddingGemma mean-pooling tensors captured by the compiled batch
+/// closure. Shapes are `[B, max_seq, 1]` for the token mask and `[B, 1]` for
+/// the reciprocal real-token counts.
+pub(crate) fn build_embedding_mean_pool_inputs(
+    batch: usize,
+    max_len: usize,
+    actual_lens: &[usize],
+) -> (MlxArray, MlxArray) {
+    let one_bf16: u16 = (1.0f32.to_bits() >> 16) as u16;
+    let zero_bf16: u16 = 0u16;
+
+    let mut mask_data = vec![zero_bf16; batch * max_len];
+    for (i, &len) in actual_lens.iter().enumerate() {
+        for j in 0..len {
+            mask_data[i * max_len + j] = one_bf16;
+        }
+    }
+    let mask = MlxArray::from_raw_data(
+        mask_data.as_ptr() as *const u8,
+        mask_data.len() * std::mem::size_of::<u16>(),
+        &[batch as i32, max_len as i32, 1_i32],
+        MlxDtype::Bfloat16,
+    );
+
+    let mut scale_data = vec![zero_bf16; batch];
+    for (i, &len) in actual_lens.iter().enumerate() {
+        scale_data[i] = ((1.0f32 / len as f32).to_bits() >> 16) as u16;
+    }
+    let scale = MlxArray::from_raw_data(
+        scale_data.as_ptr() as *const u8,
+        scale_data.len() * std::mem::size_of::<u16>(),
+        &[batch as i32, 1_i32],
+        MlxDtype::Bfloat16,
+    );
+
+    // The arrays are captured by a lazily executed compiled closure; materialize
+    // them while the host buffers are still alive.
+    mlx_sys::eval(&[&mask, &scale]);
+    (mask, scale)
+}
+
 fn gemma3_clip_residual(x: &MlxArray, y: &MlxArray) -> MlxArray {
     if x.dtype() != MlxDtype::Float16 {
         return add(x, y, None);
@@ -1498,6 +1540,31 @@ pub fn build_embedding_gemma3_batch_forward_closure(
         let hidden = inputs.get(0);
         let out = forward_for_embedding_gemma3_batch_body(&cfg, &weights, hidden, &bidir_mask);
         vec![out]
+    });
+    body_closure.compile(false)
+}
+
+/// Build an `mlx_compile`-wrapped EmbeddingGemma closure that returns the final
+/// sentence embedding tensor `[B, H]` instead of the full `[B, max_seq, H]`
+/// encoder output.
+pub fn build_embedding_gemma3_pooled_batch_forward_closure(
+    cfg: Arc<ModelConfig>,
+    weights: Arc<ModelWeights>,
+    bidir_mask: Option<MlxArray>,
+    pool_mask: MlxArray,
+    pool_scale: MlxArray,
+) -> Result<MlxClosure, String> {
+    let body_closure = MlxClosure::new_dyn(move |inputs: &MlxVectorArray| {
+        if inputs.is_empty() {
+            return vec![];
+        }
+        let hidden = inputs.get(0);
+        let out = forward_for_embedding_gemma3_batch_body(&cfg, &weights, hidden, &bidir_mask);
+        let masked = multiply(&out, &pool_mask, None);
+        let sums = sum_axis(&masked, 1, false, None);
+        let pooled = multiply(&sums, &pool_scale, None);
+        let pooled = apply_embedding_dense_head(&weights, &pooled);
+        vec![pooled]
     });
     body_closure.compile(false)
 }
