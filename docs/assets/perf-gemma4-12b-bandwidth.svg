@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="800" height="430" viewBox="0 0 800 430" role="img" aria-labelledby="title desc">
 <title>Gemma 4 12B - Decode bandwidth diagnostic · AX Engine v6.5.2</title>
-<desc>Diagnostic bandwidth chart for Gemma 4 12B decode. The gray upstream-artifact row is not a recommended runtime tier; it explains the public 4bit snapshot handicap because FFN tensors remain 8-bit. AX re-quantized FFN uses 79%, llama.cpp depth 0 uses 76%, and llama.cpp depth 512 uses 75% of the 577 GB/s M5 Max peak.</desc>
+<desc>Diagnostic bandwidth chart for Gemma 4 12B decode. The gray upstream-artifact row is not a recommended runtime tier; it explains the public 4bit snapshot handicap because FFN tensors remain 8-bit. AX re-quantized FFN uses 79%, llama.cpp depth 0 uses 73%, and llama.cpp depth 512 uses 75% of the 577 GB/s M5 Max peak.</desc>
 <rect width="800" height="430" fill="#f8fafc"/>
 <text id="title" x="64" y="24" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="16" font-weight="700" fill="#111827">Gemma 4 12B - Decode bandwidth diagnostic · AX Engine v6.5.2</text>
 <text x="64" y="46" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#4b5563">Why the upstream 4bit snapshot was slower: bytes read per decoded token</text>
@@ -34,13 +34,13 @@
 <rect x="222" y="219.8" width="313.5" height="24" rx="5" fill="#f97316" fill-opacity="0.76"/>
 <line x1="535.5" y1="219.8" x2="535.5" y2="243.8" stroke="#c2410c" stroke-width="1.4"/>
 <text x="527.5" y="235.8" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#ffffff">75%</text>
-<text x="652" y="235.8" text-anchor="start" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">435 GB/s · 58.9 tok/s</text>
+<text x="652" y="235.8" text-anchor="start" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">433 GB/s · 58.7 tok/s</text>
 <text x="210" y="293.2" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">llama.cpp depth 0</text>
 <rect x="222" y="277.2" width="418.0" height="24" rx="5" fill="#e5e7eb" stroke="#cbd5e1" stroke-width="1.2"/>
-<rect x="222" y="277.2" width="317.7" height="24" rx="5" fill="#f97316" fill-opacity="0.76"/>
-<line x1="539.7" y1="277.2" x2="539.7" y2="301.2" stroke="#c2410c" stroke-width="1.4"/>
-<text x="531.7" y="293.2" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#ffffff">76%</text>
-<text x="652" y="293.2" text-anchor="start" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">441 GB/s · 59.8 tok/s</text>
+<rect x="222" y="277.2" width="305.1" height="24" rx="5" fill="#f97316" fill-opacity="0.76"/>
+<line x1="527.1" y1="277.2" x2="527.1" y2="301.2" stroke="#c2410c" stroke-width="1.4"/>
+<text x="519.1" y="293.2" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#ffffff">73%</text>
+<text x="652" y="293.2" text-anchor="start" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">421 GB/s · 57.1 tok/s</text>
 <rect x="64" y="399" width="10" height="10" rx="2" fill="#64748b" fill-opacity="0.76" stroke="#334155" stroke-width="1.2"/>
 <text x="78" y="408" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#374151">diagnostic upstream artifact</text>
 <rect x="290" y="399" width="10" height="10" rx="2" fill="#2eaf5f" fill-opacity="0.76" stroke="#176c37" stroke-width="1.2"/>

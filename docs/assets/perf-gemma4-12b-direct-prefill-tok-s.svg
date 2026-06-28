@@ -21,23 +21,23 @@
 <text x="56" y="81.0" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#6b7280">2.5k</text>
 <line x1="64" y1="118.3" x2="500" y2="118.3" stroke="#dc2626" stroke-width="1.2" stroke-dasharray="1 4" stroke-linecap="round"/>
 <text x="508" y="113.3" text-anchor="start" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#dc2626">highest: 2.1k</text>
-<rect x="89.1" y="192.8" width="43.6" height="115.2" rx="3" fill="#f97316" fill-opacity="0.26" stroke="#c2410c" stroke-width="1.8"/>
-<line x1="89.1" y1="192.8" x2="132.7" y2="192.8" stroke="#c2410c" stroke-width="2.6"/>
-<text x="110.9" y="186.8" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">1.3k</text>
+<rect x="89.1" y="193.5" width="43.6" height="114.5" rx="3" fill="#f97316" fill-opacity="0.26" stroke="#c2410c" stroke-width="1.8"/>
+<line x1="89.1" y1="193.5" x2="132.7" y2="193.5" stroke="#c2410c" stroke-width="2.6"/>
+<text x="110.9" y="187.5" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">1.2k</text>
 <rect x="140.6" y="199.4" width="43.6" height="108.6" rx="3" fill="#2eaf5f" fill-opacity="0.26" stroke="#176c37" stroke-width="1.8"/>
 <line x1="140.6" y1="199.4" x2="184.2" y2="199.4" stroke="#176c37" stroke-width="2.6"/>
 <text x="162.4" y="193.4" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">1.2k</text>
 <text x="136.7" y="328.0" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">128 tok</text>
-<rect x="234.5" y="147.4" width="43.6" height="160.6" rx="3" fill="#f97316" fill-opacity="0.26" stroke="#c2410c" stroke-width="1.8"/>
-<line x1="234.5" y1="147.4" x2="278.1" y2="147.4" stroke="#c2410c" stroke-width="2.6"/>
-<text x="256.3" y="141.4" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">1.7k</text>
+<rect x="234.5" y="148.0" width="43.6" height="160.0" rx="3" fill="#f97316" fill-opacity="0.26" stroke="#c2410c" stroke-width="1.8"/>
+<line x1="234.5" y1="148.0" x2="278.1" y2="148.0" stroke="#c2410c" stroke-width="2.6"/>
+<text x="256.3" y="142.0" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">1.7k</text>
 <rect x="285.9" y="134.8" width="43.6" height="173.2" rx="3" fill="#2eaf5f" fill-opacity="0.26" stroke="#176c37" stroke-width="1.8"/>
 <line x1="285.9" y1="134.8" x2="329.5" y2="134.8" stroke="#176c37" stroke-width="2.6"/>
 <text x="307.7" y="128.8" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">1.9k</text>
 <text x="282.0" y="328.0" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">512 tok</text>
-<rect x="379.8" y="152.5" width="43.6" height="155.5" rx="3" fill="#f97316" fill-opacity="0.26" stroke="#c2410c" stroke-width="1.8"/>
-<line x1="379.8" y1="152.5" x2="423.4" y2="152.5" stroke="#c2410c" stroke-width="2.6"/>
-<text x="401.6" y="146.5" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">1.7k</text>
+<rect x="379.8" y="166.0" width="43.6" height="142.0" rx="3" fill="#f97316" fill-opacity="0.26" stroke="#c2410c" stroke-width="1.8"/>
+<line x1="379.8" y1="166.0" x2="423.4" y2="166.0" stroke="#c2410c" stroke-width="2.6"/>
+<text x="401.6" y="160.0" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">1.5k</text>
 <rect x="431.3" y="118.3" width="43.6" height="189.7" rx="3" fill="#2eaf5f" fill-opacity="0.26" stroke="#176c37" stroke-width="1.8"/>
 <line x1="431.3" y1="118.3" x2="474.9" y2="118.3" stroke="#176c37" stroke-width="2.6"/>
 <text x="453.1" y="112.3" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">2.1k</text>

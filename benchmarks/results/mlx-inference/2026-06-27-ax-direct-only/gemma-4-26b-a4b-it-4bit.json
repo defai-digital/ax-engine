@@ -24,31 +24,503 @@
   "platform": "darwin"
  },
  "build": {
-  "commit": "8518ea335067dbf44132a7a39755bcf108206837",
+  "commit": "0197681847729e657148e664b9e163ded0867a30",
   "build_profile": "release",
-  "server_binary": "/Users/akiralam/code/ax-engine/target/release/ax-engine-server",
-  "git_tracked_dirty": true,
-  "git_tracked_status": [
-   " M Cargo.lock",
-   " M crates/ax-engine-server/Cargo.toml",
-   " M crates/ax-engine-server/src/app_state.rs",
-   " M crates/ax-engine-server/src/embeddings/microbatch.rs",
-   " M crates/ax-engine-server/src/generation/streaming.rs",
-   " M crates/ax-engine-server/src/openai/streaming.rs",
-   " M scripts/bench_mlx_inference_stack.py"
-  ]
+  "server_binary": "/private/tmp/ax-engine-clean-bench/target/release/ax-engine-server",
+  "git_tracked_dirty": false,
+  "git_tracked_status": []
  },
- "model": "gemma-4-12b-it-ffn4",
- "model_repo_id": "ax-local/gemma-4-12B-it-4bit-ffn4",
- "model_dir": "/Volumes/Ext4T/models/hub/models--ax-local--gemma-4-12B-it-4bit-ffn4/snapshots/v1",
- "model_dir_source": "explicit",
- "hf_cache_root": "/Volumes/Ext4T/models/hub",
+ "model": "mlx-community/gemma-4-26b-a4b-it-4bit",
+ "model_repo_id": "mlx-community/gemma-4-26b-a4b-it-4bit",
+ "model_dir": "~/.cache/huggingface/hub/models--mlx-community--gemma-4-26b-a4b-it-4bit/snapshots/efbeee6e582ebfd06abc9d65e90839c4b5d2116b",
+ "model_dir_source": "huggingface_cache",
+ "hf_cache_root": "~/.cache/huggingface/hub",
  "model_config": {
-  "model_type": "gemma4_unified",
+  "model_type": "gemma4",
   "quantization": {
    "group_size": 64,
    "bits": 4,
-   "mode": "affine"
+   "mode": "affine",
+   "language_model.model.layers.0.mlp.gate_proj": {
+    "group_size": 64,
+    "bits": 8
+   },
+   "language_model.model.layers.0.mlp.down_proj": {
+    "group_size": 64,
+    "bits": 8
+   },
+   "language_model.model.layers.0.mlp.up_proj": {
+    "group_size": 64,
+    "bits": 8
+   },
+   "language_model.model.layers.0.router.proj": {
+    "group_size": 64,
+    "bits": 8
+   },
+   "language_model.model.layers.1.mlp.gate_proj": {
+    "group_size": 64,
+    "bits": 8
+   },
+   "language_model.model.layers.1.mlp.down_proj": {
+    "group_size": 64,
+    "bits": 8
+   },
+   "language_model.model.layers.1.mlp.up_proj": {
+    "group_size": 64,
+    "bits": 8
+   },
+   "language_model.model.layers.1.router.proj": {
+    "group_size": 64,
+    "bits": 8
+   },
+   "language_model.model.layers.2.mlp.gate_proj": {
+    "group_size": 64,
+    "bits": 8
+   },
+   "language_model.model.layers.2.mlp.down_proj": {
+    "group_size": 64,
+    "bits": 8
+   },
+   "language_model.model.layers.2.mlp.up_proj": {
+    "group_size": 64,
+    "bits": 8
+   },
+   "language_model.model.layers.2.router.proj": {
+    "group_size": 64,
+    "bits": 8
+   },
+   "language_model.model.layers.3.mlp.gate_proj": {
+    "group_size": 64,
+    "bits": 8
+   },
+   "language_model.model.layers.3.mlp.down_proj": {
+    "group_size": 64,
+    "bits": 8
+   },
+   "language_model.model.layers.3.mlp.up_proj": {
+    "group_size": 64,
+    "bits": 8
+   },
+   "language_model.model.layers.3.router.proj": {
+    "group_size": 64,
+    "bits": 8
+   },
+   "language_model.model.layers.4.mlp.gate_proj": {
+    "group_size": 64,
+    "bits": 8
+   },
+   "language_model.model.layers.4.mlp.down_proj": {
+    "group_size": 64,
+    "bits": 8
+   },
+   "language_model.model.layers.4.mlp.up_proj": {
+    "group_size": 64,
+    "bits": 8
+   },
+   "language_model.model.layers.4.router.proj": {
+    "group_size": 64,
+    "bits": 8
+   },
+   "language_model.model.layers.5.mlp.gate_proj": {
+    "group_size": 64,
+    "bits": 8
+   },
+   "language_model.model.layers.5.mlp.down_proj": {
+    "group_size": 64,
+    "bits": 8
+   },
+   "language_model.model.layers.5.mlp.up_proj": {
+    "group_size": 64,
+    "bits": 8
+   },
+   "language_model.model.layers.5.router.proj": {
+    "group_size": 64,
+    "bits": 8
+   },
+   "language_model.model.layers.6.mlp.gate_proj": {
+    "group_size": 64,
+    "bits": 8
+   },
+   "language_model.model.layers.6.mlp.down_proj": {
+    "group_size": 64,
+    "bits": 8
+   },
+   "language_model.model.layers.6.mlp.up_proj": {
+    "group_size": 64,
+    "bits": 8
+   },
+   "language_model.model.layers.6.router.proj": {
+    "group_size": 64,
+    "bits": 8
+   },
+   "language_model.model.layers.7.mlp.gate_proj": {
+    "group_size": 64,
+    "bits": 8
+   },
+   "language_model.model.layers.7.mlp.down_proj": {
+    "group_size": 64,
+    "bits": 8
+   },
+   "language_model.model.layers.7.mlp.up_proj": {
+    "group_size": 64,
+    "bits": 8
+   },
+   "language_model.model.layers.7.router.proj": {
+    "group_size": 64,
+    "bits": 8
+   },
+   "language_model.model.layers.8.mlp.gate_proj": {
+    "group_size": 64,
+    "bits": 8
+   },
+   "language_model.model.layers.8.mlp.down_proj": {
+    "group_size": 64,
+    "bits": 8
+   },
+   "language_model.model.layers.8.mlp.up_proj": {
+    "group_size": 64,
+    "bits": 8
+   },
+   "language_model.model.layers.8.router.proj": {
+    "group_size": 64,
+    "bits": 8
+   },
+   "language_model.model.layers.9.mlp.gate_proj": {
+    "group_size": 64,
+    "bits": 8
+   },
+   "language_model.model.layers.9.mlp.down_proj": {
+    "group_size": 64,
+    "bits": 8
+   },
+   "language_model.model.layers.9.mlp.up_proj": {
+    "group_size": 64,
+    "bits": 8
+   },
+   "language_model.model.layers.9.router.proj": {
+    "group_size": 64,
+    "bits": 8
+   },
+   "language_model.model.layers.10.mlp.gate_proj": {
+    "group_size": 64,
+    "bits": 8
+   },
+   "language_model.model.layers.10.mlp.down_proj": {
+    "group_size": 64,
+    "bits": 8
+   },
+   "language_model.model.layers.10.mlp.up_proj": {
+    "group_size": 64,
+    "bits": 8
+   },
+   "language_model.model.layers.10.router.proj": {
+    "group_size": 64,
+    "bits": 8
+   },
+   "language_model.model.layers.11.mlp.gate_proj": {
+    "group_size": 64,
+    "bits": 8
+   },
+   "language_model.model.layers.11.mlp.down_proj": {
+    "group_size": 64,
+    "bits": 8
+   },
+   "language_model.model.layers.11.mlp.up_proj": {
+    "group_size": 64,
+    "bits": 8
+   },
+   "language_model.model.layers.11.router.proj": {
+    "group_size": 64,
+    "bits": 8
+   },
+   "language_model.model.layers.12.mlp.gate_proj": {
+    "group_size": 64,
+    "bits": 8
+   },
+   "language_model.model.layers.12.mlp.down_proj": {
+    "group_size": 64,
+    "bits": 8
+   },
+   "language_model.model.layers.12.mlp.up_proj": {
+    "group_size": 64,
+    "bits": 8
+   },
+   "language_model.model.layers.12.router.proj": {
+    "group_size": 64,
+    "bits": 8
+   },
+   "language_model.model.layers.13.mlp.gate_proj": {
+    "group_size": 64,
+    "bits": 8
+   },
+   "language_model.model.layers.13.mlp.down_proj": {
+    "group_size": 64,
+    "bits": 8
+   },
+   "language_model.model.layers.13.mlp.up_proj": {
+    "group_size": 64,
+    "bits": 8
+   },
+   "language_model.model.layers.13.router.proj": {
+    "group_size": 64,
+    "bits": 8
+   },
+   "language_model.model.layers.14.mlp.gate_proj": {
+    "group_size": 64,
+    "bits": 8
+   },
+   "language_model.model.layers.14.mlp.down_proj": {
+    "group_size": 64,
+    "bits": 8
+   },
+   "language_model.model.layers.14.mlp.up_proj": {
+    "group_size": 64,
+    "bits": 8
+   },
+   "language_model.model.layers.14.router.proj": {
+    "group_size": 64,
+    "bits": 8
+   },
+   "language_model.model.layers.15.mlp.gate_proj": {
+    "group_size": 64,
+    "bits": 8
+   },
+   "language_model.model.layers.15.mlp.down_proj": {
+    "group_size": 64,
+    "bits": 8
+   },
+   "language_model.model.layers.15.mlp.up_proj": {
+    "group_size": 64,
+    "bits": 8
+   },
+   "language_model.model.layers.15.router.proj": {
+    "group_size": 64,
+    "bits": 8
+   },
+   "language_model.model.layers.16.mlp.gate_proj": {
+    "group_size": 64,
+    "bits": 8
+   },
+   "language_model.model.layers.16.mlp.down_proj": {
+    "group_size": 64,
+    "bits": 8
+   },
+   "language_model.model.layers.16.mlp.up_proj": {
+    "group_size": 64,
+    "bits": 8
+   },
+   "language_model.model.layers.16.router.proj": {
+    "group_size": 64,
+    "bits": 8
+   },
+   "language_model.model.layers.17.mlp.gate_proj": {
+    "group_size": 64,
+    "bits": 8
+   },
+   "language_model.model.layers.17.mlp.down_proj": {
+    "group_size": 64,
+    "bits": 8
+   },
+   "language_model.model.layers.17.mlp.up_proj": {
+    "group_size": 64,
+    "bits": 8
+   },
+   "language_model.model.layers.17.router.proj": {
+    "group_size": 64,
+    "bits": 8
+   },
+   "language_model.model.layers.18.mlp.gate_proj": {
+    "group_size": 64,
+    "bits": 8
+   },
+   "language_model.model.layers.18.mlp.down_proj": {
+    "group_size": 64,
+    "bits": 8
+   },
+   "language_model.model.layers.18.mlp.up_proj": {
+    "group_size": 64,
+    "bits": 8
+   },
+   "language_model.model.layers.18.router.proj": {
+    "group_size": 64,
+    "bits": 8
+   },
+   "language_model.model.layers.19.mlp.gate_proj": {
+    "group_size": 64,
+    "bits": 8
+   },
+   "language_model.model.layers.19.mlp.down_proj": {
+    "group_size": 64,
+    "bits": 8
+   },
+   "language_model.model.layers.19.mlp.up_proj": {
+    "group_size": 64,
+    "bits": 8
+   },
+   "language_model.model.layers.19.router.proj": {
+    "group_size": 64,
+    "bits": 8
+   },
+   "language_model.model.layers.20.mlp.gate_proj": {
+    "group_size": 64,
+    "bits": 8
+   },
+   "language_model.model.layers.20.mlp.down_proj": {
+    "group_size": 64,
+    "bits": 8
+   },
+   "language_model.model.layers.20.mlp.up_proj": {
+    "group_size": 64,
+    "bits": 8
+   },
+   "language_model.model.layers.20.router.proj": {
+    "group_size": 64,
+    "bits": 8
+   },
+   "language_model.model.layers.21.mlp.gate_proj": {
+    "group_size": 64,
+    "bits": 8
+   },
+   "language_model.model.layers.21.mlp.down_proj": {
+    "group_size": 64,
+    "bits": 8
+   },
+   "language_model.model.layers.21.mlp.up_proj": {
+    "group_size": 64,
+    "bits": 8
+   },
+   "language_model.model.layers.21.router.proj": {
+    "group_size": 64,
+    "bits": 8
+   },
+   "language_model.model.layers.22.mlp.gate_proj": {
+    "group_size": 64,
+    "bits": 8
+   },
+   "language_model.model.layers.22.mlp.down_proj": {
+    "group_size": 64,
+    "bits": 8
+   },
+   "language_model.model.layers.22.mlp.up_proj": {
+    "group_size": 64,
+    "bits": 8
+   },
+   "language_model.model.layers.22.router.proj": {
+    "group_size": 64,
+    "bits": 8
+   },
+   "language_model.model.layers.23.mlp.gate_proj": {
+    "group_size": 64,
+    "bits": 8
+   },
+   "language_model.model.layers.23.mlp.down_proj": {
+    "group_size": 64,
+    "bits": 8
+   },
+   "language_model.model.layers.23.mlp.up_proj": {
+    "group_size": 64,
+    "bits": 8
+   },
+   "language_model.model.layers.23.router.proj": {
+    "group_size": 64,
+    "bits": 8
+   },
+   "language_model.model.layers.24.mlp.gate_proj": {
+    "group_size": 64,
+    "bits": 8
+   },
+   "language_model.model.layers.24.mlp.down_proj": {
+    "group_size": 64,
+    "bits": 8
+   },
+   "language_model.model.layers.24.mlp.up_proj": {
+    "group_size": 64,
+    "bits": 8
+   },
+   "language_model.model.layers.24.router.proj": {
+    "group_size": 64,
+    "bits": 8
+   },
+   "language_model.model.layers.25.mlp.gate_proj": {
+    "group_size": 64,
+    "bits": 8
+   },
+   "language_model.model.layers.25.mlp.down_proj": {
+    "group_size": 64,
+    "bits": 8
+   },
+   "language_model.model.layers.25.mlp.up_proj": {
+    "group_size": 64,
+    "bits": 8
+   },
+   "language_model.model.layers.25.router.proj": {
+    "group_size": 64,
+    "bits": 8
+   },
+   "language_model.model.layers.26.mlp.gate_proj": {
+    "group_size": 64,
+    "bits": 8
+   },
+   "language_model.model.layers.26.mlp.down_proj": {
+    "group_size": 64,
+    "bits": 8
+   },
+   "language_model.model.layers.26.mlp.up_proj": {
+    "group_size": 64,
+    "bits": 8
+   },
+   "language_model.model.layers.26.router.proj": {
+    "group_size": 64,
+    "bits": 8
+   },
+   "language_model.model.layers.27.mlp.gate_proj": {
+    "group_size": 64,
+    "bits": 8
+   },
+   "language_model.model.layers.27.mlp.down_proj": {
+    "group_size": 64,
+    "bits": 8
+   },
+   "language_model.model.layers.27.mlp.up_proj": {
+    "group_size": 64,
+    "bits": 8
+   },
+   "language_model.model.layers.27.router.proj": {
+    "group_size": 64,
+    "bits": 8
+   },
+   "language_model.model.layers.28.mlp.gate_proj": {
+    "group_size": 64,
+    "bits": 8
+   },
+   "language_model.model.layers.28.mlp.down_proj": {
+    "group_size": 64,
+    "bits": 8
+   },
+   "language_model.model.layers.28.mlp.up_proj": {
+    "group_size": 64,
+    "bits": 8
+   },
+   "language_model.model.layers.28.router.proj": {
+    "group_size": 64,
+    "bits": 8
+   },
+   "language_model.model.layers.29.mlp.gate_proj": {
+    "group_size": 64,
+    "bits": 8
+   },
+   "language_model.model.layers.29.mlp.down_proj": {
+    "group_size": 64,
+    "bits": 8
+   },
+   "language_model.model.layers.29.mlp.up_proj": {
+    "group_size": 64,
+    "bits": 8
+   },
+   "language_model.model.layers.29.router.proj": {
+    "group_size": 64,
+    "bits": 8
+   }
   },
   "model_family": "gemma4",
   "linear_attention_enabled": false,
@@ -58,8 +530,8 @@
   "primary_reference": "mlx_lm.benchmark",
   "primary_reference_required": true,
   "external_gguf_reference": "llama.cpp Metal llama-bench",
-  "external_gguf_reference_present": true,
-  "external_gguf_reference_required": true,
+  "external_gguf_reference_present": false,
+  "external_gguf_reference_required": false,
   "retired_reference": "SwiftLM application server",
   "comparison_policy": "Every non-baseline row is compared against the matching mlx_lm.benchmark row for the same random-token prompt and generation shape. ax_engine_mlx is the direct same-policy comparison baseline; ax_engine_mlx_ngram_accel rows are AX default n-gram policy rows whose ax_decode_claim_status distinguishes effective acceleration from no-draft fallback. llama_cpp_metal rows are shape-compatible external GGUF rows, not prompt-hash parity or repo-owned MLX throughput evidence.",
   "prompt_contract": {
@@ -73,7 +545,7 @@
      "generation_tokens": 128,
      "vocab_size": 262144,
      "random_seed": 0,
-     "token_ids_path": "benchmarks/results/mlx-inference/2026-06-26-gemma4-12b-4bit-ax-direct-only/gemma-4-12b-it-4bit-prompts/prompt-128-gen-128-4ebdfdf02961.json",
+     "token_ids_path": "/Users/akiralam/code/ax-engine/benchmarks/results/mlx-inference/2026-06-27-ax-direct-only/gemma-4-26b-a4b-it-4bit-prompts/prompt-128-gen-128-4ebdfdf02961.json",
      "token_ids_sha256": "4ebdfdf02961b6ceebc2d3c9006dfa92d50d99bf8e5ee9617bfe668e5a868ee7",
      "token_count": 128,
      "prompt_source": "random"
@@ -83,7 +555,7 @@
      "generation_tokens": 128,
      "vocab_size": 262144,
      "random_seed": 0,
-     "token_ids_path": "benchmarks/results/mlx-inference/2026-06-26-gemma4-12b-4bit-ax-direct-only/gemma-4-12b-it-4bit-prompts/prompt-512-gen-128-846109be82df.json",
+     "token_ids_path": "/Users/akiralam/code/ax-engine/benchmarks/results/mlx-inference/2026-06-27-ax-direct-only/gemma-4-26b-a4b-it-4bit-prompts/prompt-512-gen-128-846109be82df.json",
      "token_ids_sha256": "846109be82dfecc447667199274cfcf9a20a1ea82c7a96da547d3e65de2af648",
      "token_count": 512,
      "prompt_source": "random"
@@ -93,16 +565,14 @@
      "generation_tokens": 128,
      "vocab_size": 262144,
      "random_seed": 0,
-     "token_ids_path": "benchmarks/results/mlx-inference/2026-06-26-gemma4-12b-4bit-ax-direct-only/gemma-4-12b-it-4bit-prompts/prompt-2048-gen-128-a7760438e4a5.json",
+     "token_ids_path": "/Users/akiralam/code/ax-engine/benchmarks/results/mlx-inference/2026-06-27-ax-direct-only/gemma-4-26b-a4b-it-4bit-prompts/prompt-2048-gen-128-a7760438e4a5.json",
      "token_ids_sha256": "a7760438e4a53f539ab0ec8f21583186bbad6a1973c58422b1bc373778924cb2",
      "token_count": 2048,
      "prompt_source": "random"
     }
    ]
   },
-  "strictness": "mlx_lm_prompt_algorithm_reproduced; llama_cpp_metal_shape_compatible_only",
-  "llama_cpp_rows_source": "benchmarks/results/mlx-inference/2026-06-20-gemma-4-12b-it-4bit-direct/gemma-4-12b-it-4bit-with-llama-reference.json",
-  "ax_rows_source": "benchmarks/results/mlx-inference/2026-06-26-gemma4-12b-4bit-ax-direct-only/gemma-4-12b-it-4bit.json"
+  "strictness": "mlx_lm_prompt_algorithm_reproduced; llama_cpp_metal_shape_compatible_only"
  },
  "prompt_tokens": [
   128,
@@ -161,738 +631,6 @@
  "ax_decode_profile": false,
  "results": [
   {
-   "engine": "llama_cpp_metal",
-   "method": "llama-bench",
-   "timing_scope": "external_llama_cpp_kernel_benchmark",
-   "runtime_identity": {
-    "selected_backend": "llama_cpp",
-    "route_identity": "external_llama_cpp_metal",
-    "resolution_policy": "external_gguf_baseline",
-    "benchmark_surface": "llama_cpp_bench"
-   },
-   "prompt_contract": "shape_compatible_llama_bench_internal_tokens",
-   "prompt_token_ids_origin": "not_applicable_llama_bench_internal_synthetic_tokens",
-   "prompt_token_ids_path": "benchmarks/results/mlx-inference/2026-06-19-llama-cpp-latest-direct/gemma-4-12b-it-q4km-llama-cpp-prompts/prompt-128-gen-128-4ebdfdf02961.json",
-   "prompt_token_ids_sha256": "4ebdfdf02961b6ceebc2d3c9006dfa92d50d99bf8e5ee9617bfe668e5a868ee7",
-   "prompt_source": "llama_bench_internal_random",
-   "prompt_tokens": 128,
-   "generation_tokens": 128,
-   "batch_size": 1,
-   "gguf_model": "/Users/akiralam/.cache/huggingface/hub/models--ggml-org--gemma-4-12B-it-GGUF/snapshots/44ee90c4b61e888ac5b318a54ec7a94df61e9cd7/gemma-4-12B-it-Q4_K_M.gguf",
-   "n_gpu_layers": 99,
-   "prefill_tok_s": {
-    "mean": 1243.548,
-    "median": 1244.49,
-    "min": 1238.59,
-    "max": 1248.07,
-    "stddev": 3.5907681629422945
-   },
-   "decode_tok_s": {
-    "mean": 57.51488,
-    "median": 57.1208,
-    "min": 56.9636,
-    "max": 58.3576,
-    "stddev": 0.5820016989665914
-   },
-   "prefill_trials": [
-    {
-     "trial": 1,
-     "prefill_tok_s": 1243.29,
-     "sample_ns": 102952334,
-     "ttft_ms": 102.95264982425661
-    },
-    {
-     "trial": 2,
-     "prefill_tok_s": 1252.16,
-     "sample_ns": 102223417,
-     "ttft_ms": 102.22335803731151
-    },
-    {
-     "trial": 3,
-     "prefill_tok_s": 1250.14,
-     "sample_ns": 102388791,
-     "ttft_ms": 102.38853248436175
-    },
-    {
-     "trial": 4,
-     "prefill_tok_s": 1252.16,
-     "sample_ns": 102223584,
-     "ttft_ms": 102.22335803731151
-    },
-    {
-     "trial": 5,
-     "prefill_tok_s": 1252.17,
-     "sample_ns": 102222792,
-     "ttft_ms": 102.22254166766493
-    }
-   ],
-   "decode_trials": [
-    {
-     "trial": 1,
-     "decode_tok_s": 59.0539,
-     "sample_ns": 2167509792
-    },
-    {
-     "trial": 2,
-     "decode_tok_s": 59.8694,
-     "sample_ns": 2137985708
-    },
-    {
-     "trial": 3,
-     "decode_tok_s": 59.8232,
-     "sample_ns": 2139638833
-    },
-    {
-     "trial": 4,
-     "decode_tok_s": 59.786,
-     "sample_ns": 2140970834
-    },
-    {
-     "trial": 5,
-     "decode_tok_s": 59.5032,
-     "sample_ns": 2151143416
-    }
-   ],
-   "trials_pairing_note": "llama-bench runs pp (prefill) and tg (decode) as independent test invocations. prefill_trials[i] and decode_trials[i] are NOT from the same end-to-end run; do not compute per-trial joint statistics.",
-   "llama_cpp": {
-    "build_commit": "9724f664e",
-    "build_number": 9700,
-    "backends": "BLAS,MTL",
-    "gpu_info": "Apple M5 Max",
-    "cpu_info": "Accelerate, Apple M5 Max",
-    "model_filename": "/Users/akiralam/.cache/huggingface/hub/models--ggml-org--gemma-4-12B-it-GGUF/snapshots/44ee90c4b61e888ac5b318a54ec7a94df61e9cd7/gemma-4-12B-it-Q4_K_M.gguf",
-    "model_type": "gemma4 ?B Q4_K - Medium",
-    "model_size": 7365558464,
-    "model_n_params": 11907350576,
-    "n_gpu_layers": 99,
-    "n_batch": 2048,
-    "n_ubatch": 512,
-    "type_k": "f16",
-    "type_v": "f16",
-    "flash_attn": 1,
-    "devices": "auto"
-   },
-   "external_baseline_role": "gguf_non_mlx_metal_reference",
-   "claim_boundary": "Shape-compatible external GGUF baseline. llama-bench does not consume the harness prompt-token JSON, so this row is not prompt-hash parity evidence for repo-owned MLX throughput.",
-   "llama_cpp_device_evidence": "Available devices:\n  BLAS: Accelerate (0 MiB, 0 MiB free)\n  MTL0: Apple M5 Max (110100 MiB, 110100 MiB free)\nload_backend: loaded BLAS backend from /opt/homebrew/Cellar/ggml/0.15.2/libexec/libggml-blas.so\nggml_metal_device_init: testing tensor API for f16 support\nggml_metal_library_compile_pipeline: compiling pipeline: base = 'dummy_kernel', name = 'dummy_kernel'\nggml_metal_library_compile_pipeline: loaded dummy_kernel                                  0x1026b0430 | th_max = 1024 | th_width =   32\nggml_metal_device_init: testing tensor API for bfloat support\nggml_metal_library_compile_pipeline: compiling pipeline: base = 'dummy_kernel', name = 'dummy_kernel'\nggml_metal_library_compile_pipeline: loaded dummy_kernel                                  0x1026b0430 | th_max = 1024 | th_width =   32\nggml_metal_library_init: using embedded metal library\nggml_metal_library_init: loaded in 0.007 sec\nggml_metal_rsets_init: creating a residency set collection (keep_alive = 180 s)\nggml_metal_device_init: GPU name:   MTL0 (Apple M5 Max)\nggml_metal_device_init: GPU family: MTLGPUFamilyApple10  (1010)\nggml_metal_device_init: GPU family: MTLGPUFamilyCommon3 (3003)\nggml_metal_device_init: GPU family: MTLGPUFamilyMetal4  (5002)\nggml_metal_device_init: simdgroup reduction   = true\nggml_metal_device_init: simdgroup matrix mul. = true\nggml_metal_device_init: has unified memory    = true\nggml_metal_device_init: has bfloat            = true\nggml_metal_device_init: has tensor            = true\nggml_metal_device_init: use residency sets    = true\nggml_metal_device_init: use shared buffers    = true\nggml_metal_device_init: recommendedMaxWorkingSetSize  = 115448.73 MB\nload_backend: loaded MTL backend from /opt/homebrew/Cellar/ggml/0.15.2/libexec/libggml-metal.so\nload_backend: loaded CPU backend from /opt/homebrew/Cellar/ggml/0.15.2/libexec/libggml-cpu-apple_m4.so",
-   "ttft_ms": {
-    "mean": 102.9312901472239,
-    "median": 102.85337768885246,
-    "min": 102.5583500925429,
-    "max": 103.34331780492334
-   },
-   "ttft_source": "derived_from_llama_cpp_pp_tok_s",
-   "context_depth_tokens": 128,
-   "decode_at_depth_contract": "llama_bench_n_depth",
-   "decode_at_depth_tok_s": {
-    "mean": 56.13084,
-    "median": 56.864,
-    "min": 52.0311,
-    "max": 57.7071,
-    "stddev": 2.076483251654102
-   },
-   "decode_at_depth_trials": [
-    {
-     "trial": 1,
-     "decode_at_depth_tok_s": 59.2481,
-     "sample_ns": 2160405500
-    },
-    {
-     "trial": 2,
-     "decode_at_depth_tok_s": 59.3719,
-     "sample_ns": 2155900375
-    },
-    {
-     "trial": 3,
-     "decode_at_depth_tok_s": 59.4963,
-     "sample_ns": 2151395334
-    },
-    {
-     "trial": 4,
-     "decode_at_depth_tok_s": 58.9998,
-     "sample_ns": 2169500667
-    },
-    {
-     "trial": 5,
-     "decode_at_depth_tok_s": 59.1249,
-     "sample_ns": 2164909500
-    }
-   ],
-   "llama_cpp_depth": {
-    "build_commit": "3fc4e1052",
-    "build_number": 9820,
-    "backends": "BLAS,MTL",
-    "gpu_info": "Apple M5 Max",
-    "cpu_info": "Accelerate, Apple M5 Max",
-    "model_filename": "/Users/akiralam/.cache/huggingface/hub/models--ggml-org--gemma-4-12B-it-GGUF/snapshots/44ee90c4b61e888ac5b318a54ec7a94df61e9cd7/gemma-4-12B-it-Q4_K_M.gguf",
-    "model_type": "gemma4 ?B Q4_K - Medium",
-    "model_size": 7365558464,
-    "model_n_params": 11907350576,
-    "n_gpu_layers": 99,
-    "n_batch": 2048,
-    "n_ubatch": 512,
-    "n_depth": 128,
-    "type_k": "f16",
-    "type_v": "f16",
-    "flash_attn": 1,
-    "devices": "auto"
-   },
-   "raw_depth_rows": [
-    {
-     "build_commit": "9724f664e",
-     "build_number": 9700,
-     "cpu_info": "Accelerate, Apple M5 Max",
-     "gpu_info": "Apple M5 Max",
-     "backends": "BLAS,MTL",
-     "model_filename": "/Users/akiralam/.cache/huggingface/hub/models--ggml-org--gemma-4-12B-it-GGUF/snapshots/44ee90c4b61e888ac5b318a54ec7a94df61e9cd7/gemma-4-12B-it-Q4_K_M.gguf",
-     "model_type": "gemma4 ?B Q4_K - Medium",
-     "model_size": 7365558464,
-     "model_n_params": 11907350576,
-     "n_batch": 2048,
-     "n_ubatch": 512,
-     "n_threads": 6,
-     "cpu_mask": "0x0",
-     "cpu_strict": false,
-     "poll": 50,
-     "type_k": "f16",
-     "type_v": "f16",
-     "n_gpu_layers": 99,
-     "n_cpu_moe": 0,
-     "split_mode": "layer",
-     "main_gpu": 0,
-     "no_kv_offload": false,
-     "flash_attn": 1,
-     "devices": "auto",
-     "tensor_split": "0.00",
-     "tensor_buft_overrides": "none",
-     "use_mmap": true,
-     "use_direct_io": false,
-     "embeddings": false,
-     "no_op_offload": 0,
-     "no_host": false,
-     "fit_target": 0,
-     "fit_min_ctx": 0,
-     "n_prompt": 0,
-     "n_gen": 128,
-     "n_depth": 128,
-     "test_time": "2026-06-19T14:09:24Z",
-     "avg_ns": 2160422275,
-     "stddev_ns": 7150004,
-     "avg_ts": 59.248196,
-     "stddev_ts": 0.196079,
-     "samples_ns": [
-      2160405500,
-      2155900375,
-      2151395334,
-      2169500667,
-      2164909500
-     ],
-     "samples_ts": [
-      59.2481,
-      59.3719,
-      59.4963,
-      58.9998,
-      59.1249
-     ]
-    }
-   ],
-   "decode_at_depth_claim_boundary": "Shape-compatible external GGUF decode-depth baseline. llama-bench uses n_depth to prefill synthetic KV state before timed generation; this row is not prompt-hash parity evidence.",
-   "baseline": {
-    "engine": "mlx_lm",
-    "method": "mlx_lm.benchmark",
-    "role": "absent_skipped_via_cli",
-    "note": "Row produced under --skip-mlx-lm; no in-run baseline attached."
-   }
-  },
-  {
-   "engine": "llama_cpp_metal",
-   "method": "llama-bench",
-   "timing_scope": "external_llama_cpp_kernel_benchmark",
-   "runtime_identity": {
-    "selected_backend": "llama_cpp",
-    "route_identity": "external_llama_cpp_metal",
-    "resolution_policy": "external_gguf_baseline",
-    "benchmark_surface": "llama_cpp_bench"
-   },
-   "prompt_contract": "shape_compatible_llama_bench_internal_tokens",
-   "prompt_token_ids_origin": "not_applicable_llama_bench_internal_synthetic_tokens",
-   "prompt_token_ids_path": "benchmarks/results/mlx-inference/2026-06-19-llama-cpp-latest-direct/gemma-4-12b-it-q4km-llama-cpp-prompts/prompt-512-gen-128-846109be82df.json",
-   "prompt_token_ids_sha256": "846109be82dfecc447667199274cfcf9a20a1ea82c7a96da547d3e65de2af648",
-   "prompt_source": "llama_bench_internal_random",
-   "prompt_tokens": 512,
-   "generation_tokens": 128,
-   "batch_size": 1,
-   "gguf_model": "/Users/akiralam/.cache/huggingface/hub/models--ggml-org--gemma-4-12B-it-GGUF/snapshots/44ee90c4b61e888ac5b318a54ec7a94df61e9cd7/gemma-4-12B-it-Q4_K_M.gguf",
-   "n_gpu_layers": 99,
-   "prefill_tok_s": {
-    "mean": 1737.006,
-    "median": 1739.45,
-    "min": 1729.6,
-    "max": 1741.21,
-    "stddev": 4.290550547424009
-   },
-   "decode_tok_s": {
-    "mean": 57.26516,
-    "median": 57.2711,
-    "min": 56.3311,
-    "max": 57.8923,
-    "stddev": 0.5730324374762737
-   },
-   "prefill_trials": [
-    {
-     "trial": 1,
-     "prefill_tok_s": 1745.35,
-     "sample_ns": 293351250,
-     "ttft_ms": 293.35090383017734
-    },
-    {
-     "trial": 2,
-     "prefill_tok_s": 1742.31,
-     "sample_ns": 293863000,
-     "ttft_ms": 293.86274543565725
-    },
-    {
-     "trial": 3,
-     "prefill_tok_s": 1741.68,
-     "sample_ns": 293969500,
-     "ttft_ms": 293.9690413853291
-    },
-    {
-     "trial": 4,
-     "prefill_tok_s": 1745.74,
-     "sample_ns": 293286167,
-     "ttft_ms": 293.28536895528543
-    },
-    {
-     "trial": 5,
-     "prefill_tok_s": 1749.42,
-     "sample_ns": 292667709,
-     "ttft_ms": 292.6684272501743
-    }
-   ],
-   "decode_trials": [
-    {
-     "trial": 1,
-     "decode_tok_s": 59.7986,
-     "sample_ns": 2140520125
-    },
-    {
-     "trial": 2,
-     "decode_tok_s": 59.7472,
-     "sample_ns": 2142358333
-    },
-    {
-     "trial": 3,
-     "decode_tok_s": 59.5133,
-     "sample_ns": 2150781500
-    },
-    {
-     "trial": 4,
-     "decode_tok_s": 59.5546,
-     "sample_ns": 2149286833
-    },
-    {
-     "trial": 5,
-     "decode_tok_s": 59.6068,
-     "sample_ns": 2147405166
-    }
-   ],
-   "trials_pairing_note": "llama-bench runs pp (prefill) and tg (decode) as independent test invocations. prefill_trials[i] and decode_trials[i] are NOT from the same end-to-end run; do not compute per-trial joint statistics.",
-   "llama_cpp": {
-    "build_commit": "9724f664e",
-    "build_number": 9700,
-    "backends": "BLAS,MTL",
-    "gpu_info": "Apple M5 Max",
-    "cpu_info": "Accelerate, Apple M5 Max",
-    "model_filename": "/Users/akiralam/.cache/huggingface/hub/models--ggml-org--gemma-4-12B-it-GGUF/snapshots/44ee90c4b61e888ac5b318a54ec7a94df61e9cd7/gemma-4-12B-it-Q4_K_M.gguf",
-    "model_type": "gemma4 ?B Q4_K - Medium",
-    "model_size": 7365558464,
-    "model_n_params": 11907350576,
-    "n_gpu_layers": 99,
-    "n_batch": 2048,
-    "n_ubatch": 512,
-    "type_k": "f16",
-    "type_v": "f16",
-    "flash_attn": 1,
-    "devices": "auto"
-   },
-   "external_baseline_role": "gguf_non_mlx_metal_reference",
-   "claim_boundary": "Shape-compatible external GGUF baseline. llama-bench does not consume the harness prompt-token JSON, so this row is not prompt-hash parity evidence for repo-owned MLX throughput.",
-   "llama_cpp_device_evidence": "Available devices:\n  BLAS: Accelerate (0 MiB, 0 MiB free)\n  MTL0: Apple M5 Max (110100 MiB, 110100 MiB free)\nload_backend: loaded BLAS backend from /opt/homebrew/Cellar/ggml/0.15.2/libexec/libggml-blas.so\nggml_metal_device_init: testing tensor API for f16 support\nggml_metal_library_compile_pipeline: compiling pipeline: base = 'dummy_kernel', name = 'dummy_kernel'\nggml_metal_library_compile_pipeline: loaded dummy_kernel                                  0x106848b90 | th_max = 1024 | th_width =   32\nggml_metal_device_init: testing tensor API for bfloat support\nggml_metal_library_compile_pipeline: compiling pipeline: base = 'dummy_kernel', name = 'dummy_kernel'\nggml_metal_library_compile_pipeline: loaded dummy_kernel                                  0x106846590 | th_max = 1024 | th_width =   32\nggml_metal_library_init: using embedded metal library\nggml_metal_library_init: loaded in 0.007 sec\nggml_metal_rsets_init: creating a residency set collection (keep_alive = 180 s)\nggml_metal_device_init: GPU name:   MTL0 (Apple M5 Max)\nggml_metal_device_init: GPU family: MTLGPUFamilyApple10  (1010)\nggml_metal_device_init: GPU family: MTLGPUFamilyCommon3 (3003)\nggml_metal_device_init: GPU family: MTLGPUFamilyMetal4  (5002)\nggml_metal_device_init: simdgroup reduction   = true\nggml_metal_device_init: simdgroup matrix mul. = true\nggml_metal_device_init: has unified memory    = true\nggml_metal_device_init: has bfloat            = true\nggml_metal_device_init: has tensor            = true\nggml_metal_device_init: use residency sets    = true\nggml_metal_device_init: use shared buffers    = true\nggml_metal_device_init: recommendedMaxWorkingSetSize  = 115448.73 MB\nload_backend: loaded MTL backend from /opt/homebrew/Cellar/ggml/0.15.2/libexec/libggml-metal.so\nload_backend: loaded CPU backend from /opt/homebrew/Cellar/ggml/0.15.2/libexec/libggml-cpu-apple_m4.so",
-   "ttft_ms": {
-    "mean": 294.76006415637016,
-    "median": 294.34591393831386,
-    "min": 294.04839163570165,
-    "max": 296.0222016651249
-   },
-   "ttft_source": "derived_from_llama_cpp_pp_tok_s",
-   "context_depth_tokens": 512,
-   "decode_at_depth_contract": "llama_bench_n_depth",
-   "decode_at_depth_tok_s": {
-    "mean": 58.72228,
-    "median": 58.7317,
-    "min": 58.5198,
-    "max": 58.9082,
-    "stddev": 0.13267918299416953
-   },
-   "decode_at_depth_trials": [
-    {
-     "trial": 1,
-     "decode_at_depth_tok_s": 58.979,
-     "sample_ns": 2170262500
-    },
-    {
-     "trial": 2,
-     "decode_at_depth_tok_s": 58.8235,
-     "sample_ns": 2175999500
-    },
-    {
-     "trial": 3,
-     "decode_at_depth_tok_s": 58.8802,
-     "sample_ns": 2173906875
-    },
-    {
-     "trial": 4,
-     "decode_at_depth_tok_s": 58.77,
-     "sample_ns": 2177982667
-    },
-    {
-     "trial": 5,
-     "decode_at_depth_tok_s": 58.9493,
-     "sample_ns": 2171359209
-    }
-   ],
-   "llama_cpp_depth": {
-    "build_commit": "3fc4e1052",
-    "build_number": 9820,
-    "backends": "BLAS,MTL",
-    "gpu_info": "Apple M5 Max",
-    "cpu_info": "Accelerate, Apple M5 Max",
-    "model_filename": "/Users/akiralam/.cache/huggingface/hub/models--ggml-org--gemma-4-12B-it-GGUF/snapshots/44ee90c4b61e888ac5b318a54ec7a94df61e9cd7/gemma-4-12B-it-Q4_K_M.gguf",
-    "model_type": "gemma4 ?B Q4_K - Medium",
-    "model_size": 7365558464,
-    "model_n_params": 11907350576,
-    "n_gpu_layers": 99,
-    "n_batch": 2048,
-    "n_ubatch": 512,
-    "n_depth": 512,
-    "type_k": "f16",
-    "type_v": "f16",
-    "flash_attn": 1,
-    "devices": "auto"
-   },
-   "raw_depth_rows": [
-    {
-     "build_commit": "9724f664e",
-     "build_number": 9700,
-     "cpu_info": "Accelerate, Apple M5 Max",
-     "gpu_info": "Apple M5 Max",
-     "backends": "BLAS,MTL",
-     "model_filename": "/Users/akiralam/.cache/huggingface/hub/models--ggml-org--gemma-4-12B-it-GGUF/snapshots/44ee90c4b61e888ac5b318a54ec7a94df61e9cd7/gemma-4-12B-it-Q4_K_M.gguf",
-     "model_type": "gemma4 ?B Q4_K - Medium",
-     "model_size": 7365558464,
-     "model_n_params": 11907350576,
-     "n_batch": 2048,
-     "n_ubatch": 512,
-     "n_threads": 6,
-     "cpu_mask": "0x0",
-     "cpu_strict": false,
-     "poll": 50,
-     "type_k": "f16",
-     "type_v": "f16",
-     "n_gpu_layers": 99,
-     "n_cpu_moe": 0,
-     "split_mode": "layer",
-     "main_gpu": 0,
-     "no_kv_offload": false,
-     "flash_attn": 1,
-     "devices": "auto",
-     "tensor_split": "0.00",
-     "tensor_buft_overrides": "none",
-     "use_mmap": true,
-     "use_direct_io": false,
-     "embeddings": false,
-     "no_op_offload": 0,
-     "no_host": false,
-     "fit_target": 0,
-     "fit_min_ctx": 0,
-     "n_prompt": 0,
-     "n_gen": 128,
-     "n_depth": 512,
-     "test_time": "2026-06-19T14:10:33Z",
-     "avg_ns": 2173902150,
-     "stddev_ns": 3192470,
-     "avg_ts": 58.880397,
-     "stddev_ts": 0.086452,
-     "samples_ns": [
-      2170262500,
-      2175999500,
-      2173906875,
-      2177982667,
-      2171359209
-     ],
-     "samples_ts": [
-      58.979,
-      58.8235,
-      58.8802,
-      58.77,
-      58.9493
-     ]
-    }
-   ],
-   "decode_at_depth_claim_boundary": "Shape-compatible external GGUF decode-depth baseline. llama-bench uses n_depth to prefill synthetic KV state before timed generation; this row is not prompt-hash parity evidence.",
-   "baseline": {
-    "engine": "mlx_lm",
-    "method": "mlx_lm.benchmark",
-    "role": "absent_skipped_via_cli",
-    "note": "Row produced under --skip-mlx-lm; no in-run baseline attached."
-   }
-  },
-  {
-   "engine": "llama_cpp_metal",
-   "method": "llama-bench",
-   "timing_scope": "external_llama_cpp_kernel_benchmark",
-   "runtime_identity": {
-    "selected_backend": "llama_cpp",
-    "route_identity": "external_llama_cpp_metal",
-    "resolution_policy": "external_gguf_baseline",
-    "benchmark_surface": "llama_cpp_bench"
-   },
-   "prompt_contract": "shape_compatible_llama_bench_internal_tokens",
-   "prompt_token_ids_origin": "not_applicable_llama_bench_internal_synthetic_tokens",
-   "prompt_token_ids_path": "benchmarks/results/mlx-inference/2026-06-19-llama-cpp-latest-direct/gemma-4-12b-it-q4km-llama-cpp-prompts/prompt-2048-gen-128-a7760438e4a5.json",
-   "prompt_token_ids_sha256": "a7760438e4a53f539ab0ec8f21583186bbad6a1973c58422b1bc373778924cb2",
-   "prompt_source": "llama_bench_internal_random",
-   "prompt_tokens": 2048,
-   "generation_tokens": 128,
-   "batch_size": 1,
-   "gguf_model": "/Users/akiralam/.cache/huggingface/hub/models--ggml-org--gemma-4-12B-it-GGUF/snapshots/44ee90c4b61e888ac5b318a54ec7a94df61e9cd7/gemma-4-12B-it-Q4_K_M.gguf",
-   "n_gpu_layers": 99,
-   "prefill_tok_s": {
-    "mean": 1554.454,
-    "median": 1543.56,
-    "min": 1485.89,
-    "max": 1632.79,
-    "stddev": 52.76182354695483
-   },
-   "decode_tok_s": {
-    "mean": 55.8639,
-    "median": 55.9525,
-    "min": 55.4867,
-    "max": 56.1212,
-    "stddev": 0.23296865883633447
-   },
-   "prefill_trials": [
-    {
-     "trial": 1,
-     "prefill_tok_s": 1690.78,
-     "sample_ns": 1211277750,
-     "ttft_ms": 1211.2752694022877
-    },
-    {
-     "trial": 2,
-     "prefill_tok_s": 1693.52,
-     "sample_ns": 1209313792,
-     "ttft_ms": 1209.3155085266192
-    },
-    {
-     "trial": 3,
-     "prefill_tok_s": 1690.1,
-     "sample_ns": 1211759459,
-     "ttft_ms": 1211.7626175965918
-    },
-    {
-     "trial": 4,
-     "prefill_tok_s": 1644.29,
-     "sample_ns": 1245525917,
-     "ttft_ms": 1245.522383521155
-    },
-    {
-     "trial": 5,
-     "prefill_tok_s": 1619.17,
-     "sample_ns": 1264847500,
-     "ttft_ms": 1264.845569026106
-    }
-   ],
-   "decode_trials": [
-    {
-     "trial": 1,
-     "decode_tok_s": 59.2766,
-     "sample_ns": 2159366750
-    },
-    {
-     "trial": 2,
-     "decode_tok_s": 59.6878,
-     "sample_ns": 2144492167
-    },
-    {
-     "trial": 3,
-     "decode_tok_s": 59.7498,
-     "sample_ns": 2142265875
-    },
-    {
-     "trial": 4,
-     "decode_tok_s": 59.7616,
-     "sample_ns": 2141842084
-    },
-    {
-     "trial": 5,
-     "decode_tok_s": 59.6435,
-     "sample_ns": 2146083250
-    }
-   ],
-   "trials_pairing_note": "llama-bench runs pp (prefill) and tg (decode) as independent test invocations. prefill_trials[i] and decode_trials[i] are NOT from the same end-to-end run; do not compute per-trial joint statistics.",
-   "llama_cpp": {
-    "build_commit": "9724f664e",
-    "build_number": 9700,
-    "backends": "BLAS,MTL",
-    "gpu_info": "Apple M5 Max",
-    "cpu_info": "Accelerate, Apple M5 Max",
-    "model_filename": "/Users/akiralam/.cache/huggingface/hub/models--ggml-org--gemma-4-12B-it-GGUF/snapshots/44ee90c4b61e888ac5b318a54ec7a94df61e9cd7/gemma-4-12B-it-Q4_K_M.gguf",
-    "model_type": "gemma4 ?B Q4_K - Medium",
-    "model_size": 7365558464,
-    "model_n_params": 11907350576,
-    "n_gpu_layers": 99,
-    "n_batch": 2048,
-    "n_ubatch": 2048,
-    "type_k": "f16",
-    "type_v": "f16",
-    "flash_attn": 1,
-    "devices": "auto"
-   },
-   "external_baseline_role": "gguf_non_mlx_metal_reference",
-   "claim_boundary": "Shape-compatible external GGUF baseline. llama-bench does not consume the harness prompt-token JSON, so this row is not prompt-hash parity evidence for repo-owned MLX throughput.",
-   "llama_cpp_device_evidence": "Available devices:\n  BLAS: Accelerate (0 MiB, 0 MiB free)\n  MTL0: Apple M5 Max (110100 MiB, 110100 MiB free)\nload_backend: loaded BLAS backend from /opt/homebrew/Cellar/ggml/0.15.2/libexec/libggml-blas.so\nggml_metal_device_init: testing tensor API for f16 support\nggml_metal_library_compile_pipeline: compiling pipeline: base = 'dummy_kernel', name = 'dummy_kernel'\nggml_metal_library_compile_pipeline: loaded dummy_kernel                                  0x103fd0e80 | th_max = 1024 | th_width =   32\nggml_metal_device_init: testing tensor API for bfloat support\nggml_metal_library_compile_pipeline: compiling pipeline: base = 'dummy_kernel', name = 'dummy_kernel'\nggml_metal_library_compile_pipeline: loaded dummy_kernel                                  0x103fce880 | th_max = 1024 | th_width =   32\nggml_metal_library_init: using embedded metal library\nggml_metal_library_init: loaded in 0.007 sec\nggml_metal_rsets_init: creating a residency set collection (keep_alive = 180 s)\nggml_metal_device_init: GPU name:   MTL0 (Apple M5 Max)\nggml_metal_device_init: GPU family: MTLGPUFamilyApple10  (1010)\nggml_metal_device_init: GPU family: MTLGPUFamilyCommon3 (3003)\nggml_metal_device_init: GPU family: MTLGPUFamilyMetal4  (5002)\nggml_metal_device_init: simdgroup reduction   = true\nggml_metal_device_init: simdgroup matrix mul. = true\nggml_metal_device_init: has unified memory    = true\nggml_metal_device_init: has bfloat            = true\nggml_metal_device_init: has tensor            = true\nggml_metal_device_init: use residency sets    = true\nggml_metal_device_init: use shared buffers    = true\nggml_metal_device_init: recommendedMaxWorkingSetSize  = 115448.73 MB\nload_backend: loaded MTL backend from /opt/homebrew/Cellar/ggml/0.15.2/libexec/libggml-metal.so\nload_backend: loaded CPU backend from /opt/homebrew/Cellar/ggml/0.15.2/libexec/libggml-cpu-apple_m4.so",
-   "ttft_ms": {
-    "mean": 1317.5044099085596,
-    "median": 1326.8029749410455,
-    "min": 1254.2947960239835,
-    "max": 1378.2985281548433
-   },
-   "ttft_source": "derived_from_llama_cpp_pp_tok_s",
-   "context_depth_tokens": 2048,
-   "decode_at_depth_contract": "llama_bench_n_depth",
-   "decode_at_depth_tok_s": {
-    "mean": 57.28828,
-    "median": 57.4918,
-    "min": 56.4923,
-    "max": 57.5299,
-    "stddev": 0.4009158385496881
-   },
-   "decode_at_depth_trials": [
-    {
-     "trial": 1,
-     "decode_at_depth_tok_s": 57.3963,
-     "sample_ns": 2230107083
-    },
-    {
-     "trial": 2,
-     "decode_at_depth_tok_s": 56.8554,
-     "sample_ns": 2251326000
-    },
-    {
-     "trial": 3,
-     "decode_at_depth_tok_s": 56.906,
-     "sample_ns": 2249323417
-    },
-    {
-     "trial": 4,
-     "decode_at_depth_tok_s": 56.9052,
-     "sample_ns": 2249354333
-    },
-    {
-     "trial": 5,
-     "decode_at_depth_tok_s": 56.8447,
-     "sample_ns": 2251750875
-    }
-   ],
-   "llama_cpp_depth": {
-    "build_commit": "3fc4e1052",
-    "build_number": 9820,
-    "backends": "BLAS,MTL",
-    "gpu_info": "Apple M5 Max",
-    "cpu_info": "Accelerate, Apple M5 Max",
-    "model_filename": "/Users/akiralam/.cache/huggingface/hub/models--ggml-org--gemma-4-12B-it-GGUF/snapshots/44ee90c4b61e888ac5b318a54ec7a94df61e9cd7/gemma-4-12B-it-Q4_K_M.gguf",
-    "model_type": "gemma4 ?B Q4_K - Medium",
-    "model_size": 7365558464,
-    "model_n_params": 11907350576,
-    "n_gpu_layers": 99,
-    "n_batch": 2048,
-    "n_ubatch": 2048,
-    "n_depth": 2048,
-    "type_k": "f16",
-    "type_v": "f16",
-    "flash_attn": 1,
-    "devices": "auto"
-   },
-   "raw_depth_rows": [
-    {
-     "build_commit": "9724f664e",
-     "build_number": 9700,
-     "cpu_info": "Accelerate, Apple M5 Max",
-     "gpu_info": "Apple M5 Max",
-     "backends": "BLAS,MTL",
-     "model_filename": "/Users/akiralam/.cache/huggingface/hub/models--ggml-org--gemma-4-12B-it-GGUF/snapshots/44ee90c4b61e888ac5b318a54ec7a94df61e9cd7/gemma-4-12B-it-Q4_K_M.gguf",
-     "model_type": "gemma4 ?B Q4_K - Medium",
-     "model_size": 7365558464,
-     "model_n_params": 11907350576,
-     "n_batch": 2048,
-     "n_ubatch": 2048,
-     "n_threads": 6,
-     "cpu_mask": "0x0",
-     "cpu_strict": false,
-     "poll": 50,
-     "type_k": "f16",
-     "type_v": "f16",
-     "n_gpu_layers": 99,
-     "n_cpu_moe": 0,
-     "split_mode": "layer",
-     "main_gpu": 0,
-     "no_kv_offload": false,
-     "flash_attn": 1,
-     "devices": "auto",
-     "tensor_split": "0.00",
-     "tensor_buft_overrides": "none",
-     "use_mmap": true,
-     "use_direct_io": false,
-     "embeddings": false,
-     "no_op_offload": 0,
-     "no_host": false,
-     "fit_target": 0,
-     "fit_min_ctx": 0,
-     "n_prompt": 0,
-     "n_gen": 128,
-     "n_depth": 2048,
-     "test_time": "2026-06-19T14:11:49Z",
-     "avg_ns": 2246372341,
-     "stddev_ns": 9160248,
-     "avg_ts": 56.981521,
-     "stddev_ts": 0.233586,
-     "samples_ns": [
-      2230107083,
-      2251326000,
-      2249323417,
-      2249354333,
-      2251750875
-     ],
-     "samples_ts": [
-      57.3963,
-      56.8554,
-      56.906,
-      56.9052,
-      56.8447
-     ]
-    }
-   ],
-   "decode_at_depth_claim_boundary": "Shape-compatible external GGUF decode-depth baseline. llama-bench uses n_depth to prefill synthetic KV state before timed generation; this row is not prompt-hash parity evidence.",
-   "baseline": {
-    "engine": "mlx_lm",
-    "method": "mlx_lm.benchmark",
-    "role": "absent_skipped_via_cli",
-    "note": "Row produced under --skip-mlx-lm; no in-run baseline attached."
-   }
-  },
-  {
    "engine": "ax_engine_mlx",
    "method": "server_sse_runner_time_us",
    "timing_scope": "ax_engine_runner_time_us",
@@ -917,48 +655,48 @@
    "prompt_tokens": 128,
    "generation_tokens": 128,
    "prefill_tok_s": {
-    "mean": 1156.5411600539876,
-    "median": 1180.1259415653265,
-    "min": 1094.1760768658694,
-    "max": 1182.9179258273496
+    "mean": 1151.0824310904088,
+    "median": 1254.9757828891895,
+    "min": 927.267458707621,
+    "max": 1283.9932189108126
    },
    "decode_tok_s": {
-    "mean": 69.18630730802515,
-    "median": 69.12880424450859,
-    "min": 69.08351008997047,
-    "max": 69.46947033870708
+    "mean": 121.2155233384394,
+    "median": 122.29330520587312,
+    "min": 109.49023740562882,
+    "max": 127.93948462377296
    },
    "ttft_ms": {
-    "mean": 110.7772,
-    "median": 108.46300000000001,
-    "min": 108.207,
-    "max": 116.983
+    "mean": 113.21979999999999,
+    "median": 101.994,
+    "min": 99.689,
+    "max": 138.04
    },
    "ttft_source": "ax_engine_runner_prefill_time",
    "client_wall_ttft_ms": {
-    "mean": 636.6354249999858,
-    "median": 636.2063339911401,
-    "min": 609.8805830115452,
-    "max": 651.7492500133812
+    "mean": 918.3517333935015,
+    "median": 923.0027499725111,
+    "min": 884.5119579927996,
+    "max": 940.1919579831883
    },
    "client_wall_ttft_source": "http_sse_first_output_token_observed_by_client",
    "client_wall_total_ms": {
-    "mean": 2504.9615999800153,
-    "median": 2506.856957974378,
-    "min": 2470.6678749644198,
-    "max": 2522.591457993258
+    "mean": 1997.5893916096538,
+    "median": 1980.8862910140306,
+    "min": 1958.5587920155376,
+    "max": 2075.29833301669
    },
    "prefill_s": {
-    "mean": 0.11077719999999999,
-    "median": 0.108463,
-    "min": 0.108207,
-    "max": 0.116983
+    "mean": 0.11321980000000001,
+    "median": 0.101994,
+    "min": 0.099689,
+    "max": 0.13804
    },
    "decode_s": {
-    "mean": 1.850085,
-    "median": 1.851616,
-    "min": 1.842536,
-    "max": 1.85283
+    "mean": 1.059036,
+    "median": 1.046664,
+    "min": 1.000473,
+    "max": 1.169054
    },
    "ngram_acceleration_telemetry": {
     "ax_mtp_accept_rate_depth0_x1000": 0,
@@ -1145,26 +883,26 @@
    "ax_mlx_telemetry": {
     "ax_mlx_speculation_profile": 0,
     "ax_mlx_prefill_steps": 5,
-    "ax_mlx_prefill_wall_us": 496427,
-    "ax_mlx_prefill_forward_wall_us": 496418,
+    "ax_mlx_prefill_wall_us": 526069,
+    "ax_mlx_prefill_forward_wall_us": 526059,
     "ax_mlx_prefill_prefix_cache_wall_us": 0,
-    "ax_mlx_prefill_generation_state_wall_us": 57097,
+    "ax_mlx_prefill_generation_state_wall_us": 39749,
     "ax_mlx_prefill_eval_barriers": 5,
     "ax_mlx_prefill_drain_async_evals": 0,
     "ax_mlx_decode_steps": 635,
-    "ax_mlx_decode_wall_us": 9215058,
+    "ax_mlx_decode_wall_us": 5259771,
     "ax_mlx_direct_bootstrap_steps": 5,
-    "ax_mlx_direct_bootstrap_wall_us": 56960,
+    "ax_mlx_direct_bootstrap_wall_us": 39630,
     "ax_mlx_direct_pipeline_steps": 635,
-    "ax_mlx_direct_pipeline_wall_us": 9214477,
-    "ax_mlx_direct_pipeline_forward_wall_us": 715754,
+    "ax_mlx_direct_pipeline_wall_us": 5258836,
+    "ax_mlx_direct_pipeline_forward_wall_us": 824931,
     "ax_mlx_direct_pipeline_forward_layer_loop_wall_us": 0,
     "ax_mlx_direct_pipeline_forward_head_wall_us": 0,
-    "ax_mlx_direct_pipeline_argmax_wall_us": 493,
-    "ax_mlx_direct_pipeline_async_eval_wall_us": 8467339,
+    "ax_mlx_direct_pipeline_argmax_wall_us": 1250,
+    "ax_mlx_direct_pipeline_async_eval_wall_us": 4414536,
     "ax_mlx_direct_pipeline_next_complete_wall_us": 0,
-    "ax_mlx_direct_pipeline_pending_eval_wall_us": 29091,
-    "ax_mlx_direct_pipeline_pending_read_wall_us": 58,
+    "ax_mlx_direct_pipeline_pending_eval_wall_us": 16320,
+    "ax_mlx_direct_pipeline_pending_read_wall_us": 184,
     "ax_mlx_direct_pipeline_op_count": 0,
     "ax_mlx_direct_pipeline_linear_attention_layer_ops": 0,
     "ax_mlx_direct_pipeline_linear_attention_layer_count": 0,
@@ -1193,10 +931,10 @@
     "ax_mlx_prefix_cache_warmup_tokens": 0,
     "ax_mlx_prefix_cache_entries": 0,
     "ax_mlx_prefix_cache_bytes_kib": 0,
-    "ax_mlx_dense_ffn_gate_up_packed_layers": 240,
+    "ax_mlx_dense_ffn_gate_up_packed_layers": 150,
     "ax_mlx_dense_ffn_split_gate_up_layers": 0,
-    "ax_mlx_dense_attention_qkv_packed_layers": 200,
-    "ax_mlx_dense_attention_split_qkv_layers": 40,
+    "ax_mlx_dense_attention_qkv_packed_layers": 125,
+    "ax_mlx_dense_attention_split_qkv_layers": 25,
     "ax_mlx_linear_attention_qkvz_ba_packed_layers": 0,
     "ax_mlx_linear_attention_split_qkvba_layers": 0,
     "ax_mlx_direct_cpp_linear_attention_inputs_attempts": 0,
@@ -1211,40 +949,40 @@
     "ax_mlx_qwen_linear_attention_decode_post_input_metal_hits": 0,
     "ax_mlx_qwen_linear_attention_decode_post_input_metal_fallbacks": 0,
     "ax_mlx_qwen_linear_attention_decode_post_input_metal_profile_blocked": 0,
-    "ax_mlx_affine_tensor_count": 332,
+    "ax_mlx_affine_tensor_count": 326,
     "ax_mlx_affine_min_bits": 4,
-    "ax_mlx_affine_max_bits": 4,
+    "ax_mlx_affine_max_bits": 8,
     "ax_mlx_affine_2bit_count": 0,
     "ax_mlx_affine_3bit_count": 0,
-    "ax_mlx_affine_4bit_count": 332,
+    "ax_mlx_affine_4bit_count": 206,
     "ax_mlx_affine_5bit_count": 0,
     "ax_mlx_affine_6bit_count": 0,
-    "ax_mlx_affine_8bit_count": 0,
+    "ax_mlx_affine_8bit_count": 120,
     "ax_mlx_experimental_3bit_gate": 0
    },
    "ax_mlx_decode_route": {
     "classification": "direct_pipeline",
     "decode_steps": 635,
-    "decode_wall_us": 9215058,
+    "decode_wall_us": 5259771,
     "direct_pipeline_steps": 635,
     "direct_pipeline_step_share_micros": 1000000,
-    "direct_pipeline_wall_share_micros": 999937,
-    "direct_pipeline_forward_wall_us": 715754,
-    "direct_pipeline_forward_wall_share_micros": 77677,
+    "direct_pipeline_wall_share_micros": 999822,
+    "direct_pipeline_forward_wall_us": 824931,
+    "direct_pipeline_forward_wall_share_micros": 156866,
     "direct_pipeline_forward_layer_loop_wall_us": 0,
     "direct_pipeline_forward_layer_loop_wall_share_micros": 0,
     "direct_pipeline_forward_head_wall_us": 0,
     "direct_pipeline_forward_head_wall_share_micros": 0,
-    "direct_pipeline_argmax_wall_us": 493,
-    "direct_pipeline_argmax_wall_share_micros": 54,
-    "direct_pipeline_async_eval_wall_us": 8467339,
-    "direct_pipeline_async_eval_wall_share_micros": 918917,
+    "direct_pipeline_argmax_wall_us": 1250,
+    "direct_pipeline_argmax_wall_share_micros": 238,
+    "direct_pipeline_async_eval_wall_us": 4414536,
+    "direct_pipeline_async_eval_wall_share_micros": 839451,
     "direct_pipeline_next_complete_wall_us": 0,
     "direct_pipeline_next_complete_wall_share_micros": 0,
-    "direct_pipeline_pending_eval_wall_us": 29091,
-    "direct_pipeline_pending_eval_wall_share_micros": 3157,
-    "direct_pipeline_pending_read_wall_us": 58,
-    "direct_pipeline_pending_read_wall_share_micros": 6,
+    "direct_pipeline_pending_eval_wall_us": 16320,
+    "direct_pipeline_pending_eval_wall_share_micros": 3103,
+    "direct_pipeline_pending_read_wall_us": 184,
+    "direct_pipeline_pending_read_wall_share_micros": 35,
     "direct_pipeline_op_count": 0,
     "direct_pipeline_op_count_per_step": 0,
     "direct_pipeline_linear_attention_layer_ops": 0,
@@ -1298,15 +1036,15 @@
    "ax_mlx_decode_profile": {},
    "trials": [
     {
-     "prefill_s": 0.108207,
-     "decode_s": 1.842536,
-     "ttft_ms": 108.207,
-     "prefill_tok_s": 1182.9179258273496,
-     "decode_tok_s": 69.46947033870708,
+     "prefill_s": 0.099689,
+     "decode_s": 1.046664,
+     "ttft_ms": 99.689,
+     "prefill_tok_s": 1283.9932189108126,
+     "decode_tok_s": 122.29330520587312,
      "output_tokens": 128.0,
-     "client_wall_total_ms": 2470.6678749644198,
-     "client_wall_ttft_ms": 609.8805830115452,
-     "peak_memory_gb": 5.7240142822265625,
+     "client_wall_total_ms": 1972.762875026092,
+     "client_wall_ttft_ms": 903.9483339875005,
+     "peak_memory_gb": 25.947296142578125,
      "ngram_acceleration_telemetry": {
       "ax_mtp_accept_rate_depth0_x1000": 0,
       "ax_mtp_accept_rate_depth1_x1000": 0,
@@ -1435,26 +1173,26 @@
      "ax_mlx_telemetry": {
       "ax_mlx_speculation_profile": 0,
       "ax_mlx_prefill_steps": 1,
-      "ax_mlx_prefill_wall_us": 96676,
-      "ax_mlx_prefill_forward_wall_us": 96675,
+      "ax_mlx_prefill_wall_us": 91691,
+      "ax_mlx_prefill_forward_wall_us": 91689,
       "ax_mlx_prefill_prefix_cache_wall_us": 0,
-      "ax_mlx_prefill_generation_state_wall_us": 11449,
+      "ax_mlx_prefill_generation_state_wall_us": 7943,
       "ax_mlx_prefill_eval_barriers": 1,
       "ax_mlx_prefill_drain_async_evals": 0,
       "ax_mlx_decode_steps": 127,
-      "ax_mlx_decode_wall_us": 1835406,
+      "ax_mlx_decode_wall_us": 1039157,
       "ax_mlx_direct_bootstrap_steps": 1,
-      "ax_mlx_direct_bootstrap_wall_us": 11422,
+      "ax_mlx_direct_bootstrap_wall_us": 7917,
       "ax_mlx_direct_pipeline_steps": 127,
-      "ax_mlx_direct_pipeline_wall_us": 1835293,
-      "ax_mlx_direct_pipeline_forward_wall_us": 144639,
+      "ax_mlx_direct_pipeline_wall_us": 1038913,
+      "ax_mlx_direct_pipeline_forward_wall_us": 179847,
       "ax_mlx_direct_pipeline_forward_layer_loop_wall_us": 0,
       "ax_mlx_direct_pipeline_forward_head_wall_us": 0,
-      "ax_mlx_direct_pipeline_argmax_wall_us": 93,
-      "ax_mlx_direct_pipeline_async_eval_wall_us": 1684318,
+      "ax_mlx_direct_pipeline_argmax_wall_us": 280,
+      "ax_mlx_direct_pipeline_async_eval_wall_us": 855191,
       "ax_mlx_direct_pipeline_next_complete_wall_us": 0,
-      "ax_mlx_direct_pipeline_pending_eval_wall_us": 5878,
-      "ax_mlx_direct_pipeline_pending_read_wall_us": 10,
+      "ax_mlx_direct_pipeline_pending_eval_wall_us": 3215,
+      "ax_mlx_direct_pipeline_pending_read_wall_us": 53,
       "ax_mlx_direct_pipeline_op_count": 0,
       "ax_mlx_direct_pipeline_linear_attention_layer_ops": 0,
       "ax_mlx_direct_pipeline_linear_attention_layer_count": 0,
@@ -1483,10 +1221,10 @@
       "ax_mlx_prefix_cache_warmup_tokens": 0,
       "ax_mlx_prefix_cache_entries": 0,
       "ax_mlx_prefix_cache_bytes_kib": 0,
-      "ax_mlx_dense_ffn_gate_up_packed_layers": 48,
+      "ax_mlx_dense_ffn_gate_up_packed_layers": 30,
       "ax_mlx_dense_ffn_split_gate_up_layers": 0,
-      "ax_mlx_dense_attention_qkv_packed_layers": 40,
-      "ax_mlx_dense_attention_split_qkv_layers": 8,
+      "ax_mlx_dense_attention_qkv_packed_layers": 25,
+      "ax_mlx_dense_attention_split_qkv_layers": 5,
       "ax_mlx_linear_attention_qkvz_ba_packed_layers": 0,
       "ax_mlx_linear_attention_split_qkvba_layers": 0,
       "ax_mlx_direct_cpp_linear_attention_inputs_attempts": 0,
@@ -1501,15 +1239,15 @@
       "ax_mlx_qwen_linear_attention_decode_post_input_metal_hits": 0,
       "ax_mlx_qwen_linear_attention_decode_post_input_metal_fallbacks": 0,
       "ax_mlx_qwen_linear_attention_decode_post_input_metal_profile_blocked": 0,
-      "ax_mlx_affine_tensor_count": 332,
+      "ax_mlx_affine_tensor_count": 326,
       "ax_mlx_affine_min_bits": 4,
-      "ax_mlx_affine_max_bits": 4,
+      "ax_mlx_affine_max_bits": 8,
       "ax_mlx_affine_2bit_count": 0,
       "ax_mlx_affine_3bit_count": 0,
-      "ax_mlx_affine_4bit_count": 332,
+      "ax_mlx_affine_4bit_count": 206,
       "ax_mlx_affine_5bit_count": 0,
       "ax_mlx_affine_6bit_count": 0,
-      "ax_mlx_affine_8bit_count": 0,
+      "ax_mlx_affine_8bit_count": 120,
       "ax_mlx_experimental_3bit_gate": 0
      },
      "scheduler_telemetry": {
@@ -1538,15 +1276,15 @@
      }
     },
     {
-     "prefill_s": 0.108463,
-     "decode_s": 1.85283,
-     "ttft_ms": 108.46300000000001,
-     "prefill_tok_s": 1180.1259415653265,
-     "decode_tok_s": 69.08351008997047,
+     "prefill_s": 0.13804,
+     "decode_s": 1.000473,
+     "ttft_ms": 138.04,
+     "prefill_tok_s": 927.267458707621,
+     "decode_tok_s": 127.93948462377296,
      "output_tokens": 128.0,
-     "client_wall_total_ms": 2506.856957974378,
-     "client_wall_ttft_ms": 635.932374978438,
-     "peak_memory_gb": 5.8750762939453125,
+     "client_wall_total_ms": 1958.5587920155376,
+     "client_wall_ttft_ms": 940.1036670315079,
+     "peak_memory_gb": 26.024337768554688,
      "ngram_acceleration_telemetry": {
       "ax_mtp_accept_rate_depth0_x1000": 0,
       "ax_mtp_accept_rate_depth1_x1000": 0,
@@ -1675,26 +1413,26 @@
      "ax_mlx_telemetry": {
       "ax_mlx_speculation_profile": 0,
       "ax_mlx_prefill_steps": 1,
-      "ax_mlx_prefill_wall_us": 97169,
-      "ax_mlx_prefill_forward_wall_us": 97167,
+      "ax_mlx_prefill_wall_us": 129984,
+      "ax_mlx_prefill_forward_wall_us": 129982,
       "ax_mlx_prefill_prefix_cache_wall_us": 0,
-      "ax_mlx_prefill_generation_state_wall_us": 11222,
+      "ax_mlx_prefill_generation_state_wall_us": 8001,
       "ax_mlx_prefill_eval_barriers": 1,
       "ax_mlx_prefill_drain_async_evals": 0,
       "ax_mlx_decode_steps": 127,
-      "ax_mlx_decode_wall_us": 1845808,
+      "ax_mlx_decode_wall_us": 993949,
       "ax_mlx_direct_bootstrap_steps": 1,
-      "ax_mlx_direct_bootstrap_wall_us": 11193,
+      "ax_mlx_direct_bootstrap_wall_us": 7978,
       "ax_mlx_direct_pipeline_steps": 127,
-      "ax_mlx_direct_pipeline_wall_us": 1845691,
-      "ax_mlx_direct_pipeline_forward_wall_us": 140433,
+      "ax_mlx_direct_pipeline_wall_us": 993776,
+      "ax_mlx_direct_pipeline_forward_wall_us": 153410,
       "ax_mlx_direct_pipeline_forward_layer_loop_wall_us": 0,
       "ax_mlx_direct_pipeline_forward_head_wall_us": 0,
-      "ax_mlx_direct_pipeline_argmax_wall_us": 101,
-      "ax_mlx_direct_pipeline_async_eval_wall_us": 1698914,
+      "ax_mlx_direct_pipeline_argmax_wall_us": 212,
+      "ax_mlx_direct_pipeline_async_eval_wall_us": 836484,
       "ax_mlx_direct_pipeline_next_complete_wall_us": 0,
-      "ax_mlx_direct_pipeline_pending_eval_wall_us": 5875,
-      "ax_mlx_direct_pipeline_pending_read_wall_us": 9,
+      "ax_mlx_direct_pipeline_pending_eval_wall_us": 3314,
+      "ax_mlx_direct_pipeline_pending_read_wall_us": 24,
       "ax_mlx_direct_pipeline_op_count": 0,
       "ax_mlx_direct_pipeline_linear_attention_layer_ops": 0,
       "ax_mlx_direct_pipeline_linear_attention_layer_count": 0,
@@ -1723,10 +1461,10 @@
       "ax_mlx_prefix_cache_warmup_tokens": 0,
       "ax_mlx_prefix_cache_entries": 0,
       "ax_mlx_prefix_cache_bytes_kib": 0,
-      "ax_mlx_dense_ffn_gate_up_packed_layers": 48,
+      "ax_mlx_dense_ffn_gate_up_packed_layers": 30,
       "ax_mlx_dense_ffn_split_gate_up_layers": 0,
-      "ax_mlx_dense_attention_qkv_packed_layers": 40,
-      "ax_mlx_dense_attention_split_qkv_layers": 8,
+      "ax_mlx_dense_attention_qkv_packed_layers": 25,
+      "ax_mlx_dense_attention_split_qkv_layers": 5,
       "ax_mlx_linear_attention_qkvz_ba_packed_layers": 0,
       "ax_mlx_linear_attention_split_qkvba_layers": 0,
       "ax_mlx_direct_cpp_linear_attention_inputs_attempts": 0,
@@ -1741,15 +1479,15 @@
       "ax_mlx_qwen_linear_attention_decode_post_input_metal_hits": 0,
       "ax_mlx_qwen_linear_attention_decode_post_input_metal_fallbacks": 0,
       "ax_mlx_qwen_linear_attention_decode_post_input_metal_profile_blocked": 0,
-      "ax_mlx_affine_tensor_count": 332,
+      "ax_mlx_affine_tensor_count": 326,
       "ax_mlx_affine_min_bits": 4,
-      "ax_mlx_affine_max_bits": 4,
+      "ax_mlx_affine_max_bits": 8,
       "ax_mlx_affine_2bit_count": 0,
       "ax_mlx_affine_3bit_count": 0,
-      "ax_mlx_affine_4bit_count": 332,
+      "ax_mlx_affine_4bit_count": 206,
       "ax_mlx_affine_5bit_count": 0,
       "ax_mlx_affine_6bit_count": 0,
-      "ax_mlx_affine_8bit_count": 0,
+      "ax_mlx_affine_8bit_count": 120,
       "ax_mlx_experimental_3bit_gate": 0
      },
      "scheduler_telemetry": {
@@ -1778,15 +1516,15 @@
      }
     },
     {
-     "prefill_s": 0.111993,
-     "decode_s": 1.852434,
-     "ttft_ms": 111.993,
-     "prefill_tok_s": 1142.9285758931362,
-     "decode_tok_s": 69.09827826524455,
+     "prefill_s": 0.125583,
+     "decode_s": 1.020641,
+     "ttft_ms": 125.583,
+     "prefill_tok_s": 1019.2462355573605,
+     "decode_tok_s": 125.4113836304832,
      "output_tokens": 128.0,
-     "client_wall_total_ms": 2522.591457993258,
-     "client_wall_ttft_ms": 651.7492500133812,
-     "peak_memory_gb": 5.987945556640625,
+     "client_wall_total_ms": 1980.8862910140306,
+     "client_wall_ttft_ms": 940.1919579831883,
+     "peak_memory_gb": 26.0750732421875,
      "ngram_acceleration_telemetry": {
       "ax_mtp_accept_rate_depth0_x1000": 0,
       "ax_mtp_accept_rate_depth1_x1000": 0,
@@ -1915,26 +1653,26 @@
      "ax_mlx_telemetry": {
       "ax_mlx_speculation_profile": 0,
       "ax_mlx_prefill_steps": 1,
-      "ax_mlx_prefill_wall_us": 100470,
-      "ax_mlx_prefill_forward_wall_us": 100468,
+      "ax_mlx_prefill_wall_us": 117539,
+      "ax_mlx_prefill_forward_wall_us": 117537,
       "ax_mlx_prefill_prefix_cache_wall_us": 0,
-      "ax_mlx_prefill_generation_state_wall_us": 11455,
+      "ax_mlx_prefill_generation_state_wall_us": 7989,
       "ax_mlx_prefill_eval_barriers": 1,
       "ax_mlx_prefill_drain_async_evals": 0,
       "ax_mlx_decode_steps": 127,
-      "ax_mlx_decode_wall_us": 1845319,
+      "ax_mlx_decode_wall_us": 1013526,
       "ax_mlx_direct_bootstrap_steps": 1,
-      "ax_mlx_direct_bootstrap_wall_us": 11429,
+      "ax_mlx_direct_bootstrap_wall_us": 7965,
       "ax_mlx_direct_pipeline_steps": 127,
-      "ax_mlx_direct_pipeline_wall_us": 1845200,
-      "ax_mlx_direct_pipeline_forward_wall_us": 143833,
+      "ax_mlx_direct_pipeline_wall_us": 1013346,
+      "ax_mlx_direct_pipeline_forward_wall_us": 167219,
       "ax_mlx_direct_pipeline_forward_layer_loop_wall_us": 0,
       "ax_mlx_direct_pipeline_forward_head_wall_us": 0,
-      "ax_mlx_direct_pipeline_argmax_wall_us": 102,
-      "ax_mlx_direct_pipeline_async_eval_wall_us": 1695220,
+      "ax_mlx_direct_pipeline_argmax_wall_us": 273,
+      "ax_mlx_direct_pipeline_async_eval_wall_us": 842280,
       "ax_mlx_direct_pipeline_next_complete_wall_us": 0,
-      "ax_mlx_direct_pipeline_pending_eval_wall_us": 5691,
-      "ax_mlx_direct_pipeline_pending_read_wall_us": 17,
+      "ax_mlx_direct_pipeline_pending_eval_wall_us": 3221,
+      "ax_mlx_direct_pipeline_pending_read_wall_us": 38,
       "ax_mlx_direct_pipeline_op_count": 0,
       "ax_mlx_direct_pipeline_linear_attention_layer_ops": 0,
       "ax_mlx_direct_pipeline_linear_attention_layer_count": 0,
@@ -1963,10 +1701,10 @@
       "ax_mlx_prefix_cache_warmup_tokens": 0,
       "ax_mlx_prefix_cache_entries": 0,
       "ax_mlx_prefix_cache_bytes_kib": 0,
-      "ax_mlx_dense_ffn_gate_up_packed_layers": 48,
+      "ax_mlx_dense_ffn_gate_up_packed_layers": 30,
       "ax_mlx_dense_ffn_split_gate_up_layers": 0,
-      "ax_mlx_dense_attention_qkv_packed_layers": 40,
-      "ax_mlx_dense_attention_split_qkv_layers": 8,
+      "ax_mlx_dense_attention_qkv_packed_layers": 25,
+      "ax_mlx_dense_attention_split_qkv_layers": 5,
       "ax_mlx_linear_attention_qkvz_ba_packed_layers": 0,
       "ax_mlx_linear_attention_split_qkvba_layers": 0,
       "ax_mlx_direct_cpp_linear_attention_inputs_attempts": 0,
@@ -1981,15 +1719,15 @@
       "ax_mlx_qwen_linear_attention_decode_post_input_metal_hits": 0,
       "ax_mlx_qwen_linear_attention_decode_post_input_metal_fallbacks": 0,
       "ax_mlx_qwen_linear_attention_decode_post_input_metal_profile_blocked": 0,
-      "ax_mlx_affine_tensor_count": 332,
+      "ax_mlx_affine_tensor_count": 326,
       "ax_mlx_affine_min_bits": 4,
-      "ax_mlx_affine_max_bits": 4,
+      "ax_mlx_affine_max_bits": 8,
       "ax_mlx_affine_2bit_count": 0,
       "ax_mlx_affine_3bit_count": 0,
-      "ax_mlx_affine_4bit_count": 332,
+      "ax_mlx_affine_4bit_count": 206,
       "ax_mlx_affine_5bit_count": 0,
       "ax_mlx_affine_6bit_count": 0,
-      "ax_mlx_affine_8bit_count": 0,
+      "ax_mlx_affine_8bit_count": 120,
       "ax_mlx_experimental_3bit_gate": 0
      },
      "scheduler_telemetry": {
@@ -2018,15 +1756,15 @@
      }
     },
     {
-     "prefill_s": 0.10824,
-     "decode_s": 1.851009,
-     "ttft_ms": 108.24000000000001,
-     "prefill_tok_s": 1182.5572801182557,
-     "decode_tok_s": 69.15147360169507,
+     "prefill_s": 0.100793,
+     "decode_s": 1.169054,
+     "ttft_ms": 100.79299999999999,
+     "prefill_tok_s": 1269.9294593870607,
+     "decode_tok_s": 109.49023740562882,
      "output_tokens": 128.0,
-     "client_wall_total_ms": 2505.2922089817002,
-     "client_wall_ttft_ms": 636.2063339911401,
-     "peak_memory_gb": 6.071533203125,
+     "client_wall_total_ms": 2075.29833301669,
+     "client_wall_ttft_ms": 884.5119579927996,
+     "peak_memory_gb": 26.10211181640625,
      "ngram_acceleration_telemetry": {
       "ax_mtp_accept_rate_depth0_x1000": 0,
       "ax_mtp_accept_rate_depth1_x1000": 0,
@@ -2155,26 +1893,26 @@
      "ax_mlx_telemetry": {
       "ax_mlx_speculation_profile": 0,
       "ax_mlx_prefill_steps": 1,
-      "ax_mlx_prefill_wall_us": 96741,
-      "ax_mlx_prefill_forward_wall_us": 96739,
+      "ax_mlx_prefill_wall_us": 92778,
+      "ax_mlx_prefill_forward_wall_us": 92776,
       "ax_mlx_prefill_prefix_cache_wall_us": 0,
-      "ax_mlx_prefill_generation_state_wall_us": 11430,
+      "ax_mlx_prefill_generation_state_wall_us": 7955,
       "ax_mlx_prefill_eval_barriers": 1,
       "ax_mlx_prefill_drain_async_evals": 0,
       "ax_mlx_decode_steps": 127,
-      "ax_mlx_decode_wall_us": 1844025,
+      "ax_mlx_decode_wall_us": 1161663,
       "ax_mlx_direct_bootstrap_steps": 1,
-      "ax_mlx_direct_bootstrap_wall_us": 11404,
+      "ax_mlx_direct_bootstrap_wall_us": 7933,
       "ax_mlx_direct_pipeline_steps": 127,
-      "ax_mlx_direct_pipeline_wall_us": 1843904,
-      "ax_mlx_direct_pipeline_forward_wall_us": 140229,
+      "ax_mlx_direct_pipeline_wall_us": 1161476,
+      "ax_mlx_direct_pipeline_forward_wall_us": 166958,
       "ax_mlx_direct_pipeline_forward_layer_loop_wall_us": 0,
       "ax_mlx_direct_pipeline_forward_head_wall_us": 0,
-      "ax_mlx_direct_pipeline_argmax_wall_us": 95,
-      "ax_mlx_direct_pipeline_async_eval_wall_us": 1697337,
+      "ax_mlx_direct_pipeline_argmax_wall_us": 254,
+      "ax_mlx_direct_pipeline_async_eval_wall_us": 990615,
       "ax_mlx_direct_pipeline_next_complete_wall_us": 0,
-      "ax_mlx_direct_pipeline_pending_eval_wall_us": 5888,
-      "ax_mlx_direct_pipeline_pending_read_wall_us": 10,
+      "ax_mlx_direct_pipeline_pending_eval_wall_us": 3297,
+      "ax_mlx_direct_pipeline_pending_read_wall_us": 32,
       "ax_mlx_direct_pipeline_op_count": 0,
       "ax_mlx_direct_pipeline_linear_attention_layer_ops": 0,
       "ax_mlx_direct_pipeline_linear_attention_layer_count": 0,
@@ -2203,10 +1941,10 @@
       "ax_mlx_prefix_cache_warmup_tokens": 0,
       "ax_mlx_prefix_cache_entries": 0,
       "ax_mlx_prefix_cache_bytes_kib": 0,
-      "ax_mlx_dense_ffn_gate_up_packed_layers": 48,
+      "ax_mlx_dense_ffn_gate_up_packed_layers": 30,
       "ax_mlx_dense_ffn_split_gate_up_layers": 0,
-      "ax_mlx_dense_attention_qkv_packed_layers": 40,
-      "ax_mlx_dense_attention_split_qkv_layers": 8,
+      "ax_mlx_dense_attention_qkv_packed_layers": 25,
+      "ax_mlx_dense_attention_split_qkv_layers": 5,
       "ax_mlx_linear_attention_qkvz_ba_packed_layers": 0,
       "ax_mlx_linear_attention_split_qkvba_layers": 0,
       "ax_mlx_direct_cpp_linear_attention_inputs_attempts": 0,
@@ -2221,15 +1959,15 @@
       "ax_mlx_qwen_linear_attention_decode_post_input_metal_hits": 0,
       "ax_mlx_qwen_linear_attention_decode_post_input_metal_fallbacks": 0,
       "ax_mlx_qwen_linear_attention_decode_post_input_metal_profile_blocked": 0,
-      "ax_mlx_affine_tensor_count": 332,
+      "ax_mlx_affine_tensor_count": 326,
       "ax_mlx_affine_min_bits": 4,
-      "ax_mlx_affine_max_bits": 4,
+      "ax_mlx_affine_max_bits": 8,
       "ax_mlx_affine_2bit_count": 0,
       "ax_mlx_affine_3bit_count": 0,
-      "ax_mlx_affine_4bit_count": 332,
+      "ax_mlx_affine_4bit_count": 206,
       "ax_mlx_affine_5bit_count": 0,
       "ax_mlx_affine_6bit_count": 0,
-      "ax_mlx_affine_8bit_count": 0,
+      "ax_mlx_affine_8bit_count": 120,
       "ax_mlx_experimental_3bit_gate": 0
      },
      "scheduler_telemetry": {
@@ -2258,15 +1996,15 @@
      }
     },
     {
-     "prefill_s": 0.116983,
-     "decode_s": 1.851616,
-     "ttft_ms": 116.983,
-     "prefill_tok_s": 1094.1760768658694,
-     "decode_tok_s": 69.12880424450859,
+     "prefill_s": 0.101994,
+     "decode_s": 1.058348,
+     "ttft_ms": 101.994,
+     "prefill_tok_s": 1254.9757828891895,
+     "decode_tok_s": 120.94320582643893,
      "output_tokens": 128.0,
-     "client_wall_total_ms": 2519.3994999863207,
-     "client_wall_ttft_ms": 649.4085830054246,
-     "peak_memory_gb": 6.150390625,
+     "client_wall_total_ms": 2000.4406669759192,
+     "client_wall_ttft_ms": 923.0027499725111,
+     "peak_memory_gb": 26.128341674804688,
      "ngram_acceleration_telemetry": {
       "ax_mtp_accept_rate_depth0_x1000": 0,
       "ax_mtp_accept_rate_depth1_x1000": 0,
@@ -2395,26 +2133,26 @@
      "ax_mlx_telemetry": {
       "ax_mlx_speculation_profile": 0,
       "ax_mlx_prefill_steps": 1,
-      "ax_mlx_prefill_wall_us": 105371,
-      "ax_mlx_prefill_forward_wall_us": 105369,
+      "ax_mlx_prefill_wall_us": 94077,
+      "ax_mlx_prefill_forward_wall_us": 94075,
       "ax_mlx_prefill_prefix_cache_wall_us": 0,
-      "ax_mlx_prefill_generation_state_wall_us": 11541,
+      "ax_mlx_prefill_generation_state_wall_us": 7861,
       "ax_mlx_prefill_eval_barriers": 1,
       "ax_mlx_prefill_drain_async_evals": 0,
       "ax_mlx_decode_steps": 127,
-      "ax_mlx_decode_wall_us": 1844500,
+      "ax_mlx_decode_wall_us": 1051476,
       "ax_mlx_direct_bootstrap_steps": 1,
-      "ax_mlx_direct_bootstrap_wall_us": 11512,
+      "ax_mlx_direct_bootstrap_wall_us": 7837,
       "ax_mlx_direct_pipeline_steps": 127,
-      "ax_mlx_direct_pipeline_wall_us": 1844389,
-      "ax_mlx_direct_pipeline_forward_wall_us": 146620,
+      "ax_mlx_direct_pipeline_wall_us": 1051325,
+      "ax_mlx_direct_pipeline_forward_wall_us": 157497,
       "ax_mlx_direct_pipeline_forward_layer_loop_wall_us": 0,
       "ax_mlx_direct_pipeline_forward_head_wall_us": 0,
-      "ax_mlx_direct_pipeline_argmax_wall_us": 102,
-      "ax_mlx_direct_pipeline_async_eval_wall_us": 1691550,
+      "ax_mlx_direct_pipeline_argmax_wall_us": 231,
+      "ax_mlx_direct_pipeline_async_eval_wall_us": 889966,
       "ax_mlx_direct_pipeline_next_complete_wall_us": 0,
-      "ax_mlx_direct_pipeline_pending_eval_wall_us": 5759,
-      "ax_mlx_direct_pipeline_pending_read_wall_us": 12,
+      "ax_mlx_direct_pipeline_pending_eval_wall_us": 3273,
+      "ax_mlx_direct_pipeline_pending_read_wall_us": 37,
       "ax_mlx_direct_pipeline_op_count": 0,
       "ax_mlx_direct_pipeline_linear_attention_layer_ops": 0,
       "ax_mlx_direct_pipeline_linear_attention_layer_count": 0,
@@ -2443,10 +2181,10 @@
       "ax_mlx_prefix_cache_warmup_tokens": 0,
       "ax_mlx_prefix_cache_entries": 0,
       "ax_mlx_prefix_cache_bytes_kib": 0,
-      "ax_mlx_dense_ffn_gate_up_packed_layers": 48,
+      "ax_mlx_dense_ffn_gate_up_packed_layers": 30,
       "ax_mlx_dense_ffn_split_gate_up_layers": 0,
-      "ax_mlx_dense_attention_qkv_packed_layers": 40,
-      "ax_mlx_dense_attention_split_qkv_layers": 8,
+      "ax_mlx_dense_attention_qkv_packed_layers": 25,
+      "ax_mlx_dense_attention_split_qkv_layers": 5,
       "ax_mlx_linear_attention_qkvz_ba_packed_layers": 0,
       "ax_mlx_linear_attention_split_qkvba_layers": 0,
       "ax_mlx_direct_cpp_linear_attention_inputs_attempts": 0,
@@ -2461,15 +2199,15 @@
       "ax_mlx_qwen_linear_attention_decode_post_input_metal_hits": 0,
       "ax_mlx_qwen_linear_attention_decode_post_input_metal_fallbacks": 0,
       "ax_mlx_qwen_linear_attention_decode_post_input_metal_profile_blocked": 0,
-      "ax_mlx_affine_tensor_count": 332,
+      "ax_mlx_affine_tensor_count": 326,
       "ax_mlx_affine_min_bits": 4,
-      "ax_mlx_affine_max_bits": 4,
+      "ax_mlx_affine_max_bits": 8,
       "ax_mlx_affine_2bit_count": 0,
       "ax_mlx_affine_3bit_count": 0,
-      "ax_mlx_affine_4bit_count": 332,
+      "ax_mlx_affine_4bit_count": 206,
       "ax_mlx_affine_5bit_count": 0,
       "ax_mlx_affine_6bit_count": 0,
-      "ax_mlx_affine_8bit_count": 0,
+      "ax_mlx_affine_8bit_count": 120,
       "ax_mlx_experimental_3bit_gate": 0
      },
      "scheduler_telemetry": {
@@ -2499,14 +2237,14 @@
     }
    ],
    "peak_memory_gb": {
-    "mean": 5.9617919921875,
-    "median": 5.987945556640625,
-    "min": 5.7240142822265625,
-    "max": 6.150390625
+    "mean": 26.05543212890625,
+    "median": 26.0750732421875,
+    "min": 25.947296142578125,
+    "max": 26.128341674804688
    },
    "memory_source": "server_process_rss_after_stream",
    "prefill_step_size": 2048,
-   "prompt_token_ids_path": "benchmarks/results/mlx-inference/2026-06-26-gemma4-12b-4bit-ax-direct-only/gemma-4-12b-it-4bit-prompts/prompt-128-gen-128-4ebdfdf02961.json",
+   "prompt_token_ids_path": "/Users/akiralam/code/ax-engine/benchmarks/results/mlx-inference/2026-06-27-ax-direct-only/gemma-4-26b-a4b-it-4bit-prompts/prompt-128-gen-128-4ebdfdf02961.json",
    "prompt_token_ids_sha256": "4ebdfdf02961b6ceebc2d3c9006dfa92d50d99bf8e5ee9617bfe668e5a868ee7",
    "prompt_source": "random",
    "ax_linear_attention_projection_pack": false,
@@ -2546,48 +2284,48 @@
    "prompt_tokens": 512,
    "generation_tokens": 128,
    "prefill_tok_s": {
-    "mean": 1882.7344820071817,
-    "median": 1882.6228760741428,
-    "min": 1880.2031500747305,
-    "max": 1887.439312559213
+    "mean": 2814.7831752522793,
+    "median": 2810.2684574809678,
+    "min": 2791.3011715832454,
+    "max": 2842.3127099120106
    },
    "decode_tok_s": {
-    "mean": 67.54518712843674,
-    "median": 67.53676532662467,
-    "min": 67.47481818699382,
-    "max": 67.61471655435405
+    "mean": 118.70023980549554,
+    "median": 118.35019823658205,
+    "min": 114.32358397290531,
+    "max": 124.08932492498897
    },
    "ttft_ms": {
-    "mean": 271.9454,
-    "median": 271.961,
-    "min": 271.267,
-    "max": 272.31100000000004
+    "mean": 181.905,
+    "median": 182.189,
+    "min": 180.135,
+    "max": 183.42700000000002
    },
    "ttft_source": "ax_engine_runner_prefill_time",
    "client_wall_ttft_ms": {
-    "mean": 812.4438999919221,
-    "median": 811.3100410555489,
-    "min": 804.811707988847,
-    "max": 828.2153749605641
+    "mean": 997.4542916053906,
+    "median": 1004.6375000383705,
+    "min": 964.5849579828791,
+    "max": 1011.2058329978026
    },
    "client_wall_ttft_source": "http_sse_first_output_token_observed_by_client",
    "client_wall_total_ms": {
-    "mean": 2727.1492333966307,
-    "median": 2727.4076249450445,
-    "min": 2718.662084022071,
-    "max": 2741.179333999753
+    "mean": 2096.5730163967237,
+    "median": 2106.5894580096938,
+    "min": 2014.4600829808041,
+    "max": 2148.215292021632
    },
    "prefill_s": {
-    "mean": 0.2719454,
-    "median": 0.271961,
-    "min": 0.271267,
-    "max": 0.272311
+    "mean": 0.181905,
+    "median": 0.182189,
+    "min": 0.180135,
+    "max": 0.183427
    },
    "decode_s": {
-    "mean": 1.8950292000000002,
-    "median": 1.895264,
-    "min": 1.893079,
-    "max": 1.897004
+    "mean": 1.0790922,
+    "median": 1.081536,
+    "min": 1.031515,
+    "max": 1.119629
    },
    "ngram_acceleration_telemetry": {
     "ax_mtp_accept_rate_depth0_x1000": 0,
@@ -2774,26 +2512,26 @@
    "ax_mlx_telemetry": {
     "ax_mlx_speculation_profile": 0,
     "ax_mlx_prefill_steps": 5,
-    "ax_mlx_prefill_wall_us": 1294966,
-    "ax_mlx_prefill_forward_wall_us": 1294955,
+    "ax_mlx_prefill_wall_us": 845985,
+    "ax_mlx_prefill_forward_wall_us": 845973,
     "ax_mlx_prefill_prefix_cache_wall_us": 0,
-    "ax_mlx_prefill_generation_state_wall_us": 64330,
+    "ax_mlx_prefill_generation_state_wall_us": 63137,
     "ax_mlx_prefill_eval_barriers": 5,
     "ax_mlx_prefill_drain_async_evals": 0,
     "ax_mlx_decode_steps": 635,
-    "ax_mlx_decode_wall_us": 9433266,
+    "ax_mlx_decode_wall_us": 5357603,
     "ax_mlx_direct_bootstrap_steps": 5,
-    "ax_mlx_direct_bootstrap_wall_us": 64174,
+    "ax_mlx_direct_bootstrap_wall_us": 62975,
     "ax_mlx_direct_pipeline_steps": 635,
-    "ax_mlx_direct_pipeline_wall_us": 9432704,
-    "ax_mlx_direct_pipeline_forward_wall_us": 766978,
+    "ax_mlx_direct_pipeline_wall_us": 5356764,
+    "ax_mlx_direct_pipeline_forward_wall_us": 823926,
     "ax_mlx_direct_pipeline_forward_layer_loop_wall_us": 0,
     "ax_mlx_direct_pipeline_forward_head_wall_us": 0,
-    "ax_mlx_direct_pipeline_argmax_wall_us": 567,
-    "ax_mlx_direct_pipeline_async_eval_wall_us": 8633630,
+    "ax_mlx_direct_pipeline_argmax_wall_us": 1115,
+    "ax_mlx_direct_pipeline_async_eval_wall_us": 4513549,
     "ax_mlx_direct_pipeline_next_complete_wall_us": 0,
-    "ax_mlx_direct_pipeline_pending_eval_wall_us": 29827,
-    "ax_mlx_direct_pipeline_pending_read_wall_us": 83,
+    "ax_mlx_direct_pipeline_pending_eval_wall_us": 16382,
+    "ax_mlx_direct_pipeline_pending_read_wall_us": 159,
     "ax_mlx_direct_pipeline_op_count": 0,
     "ax_mlx_direct_pipeline_linear_attention_layer_ops": 0,
     "ax_mlx_direct_pipeline_linear_attention_layer_count": 0,
@@ -2822,10 +2560,10 @@
     "ax_mlx_prefix_cache_warmup_tokens": 0,
     "ax_mlx_prefix_cache_entries": 0,
     "ax_mlx_prefix_cache_bytes_kib": 0,
-    "ax_mlx_dense_ffn_gate_up_packed_layers": 240,
+    "ax_mlx_dense_ffn_gate_up_packed_layers": 150,
     "ax_mlx_dense_ffn_split_gate_up_layers": 0,
-    "ax_mlx_dense_attention_qkv_packed_layers": 200,
-    "ax_mlx_dense_attention_split_qkv_layers": 40,
+    "ax_mlx_dense_attention_qkv_packed_layers": 125,
+    "ax_mlx_dense_attention_split_qkv_layers": 25,
     "ax_mlx_linear_attention_qkvz_ba_packed_layers": 0,
     "ax_mlx_linear_attention_split_qkvba_layers": 0,
     "ax_mlx_direct_cpp_linear_attention_inputs_attempts": 0,
@@ -2840,40 +2578,40 @@
     "ax_mlx_qwen_linear_attention_decode_post_input_metal_hits": 0,
     "ax_mlx_qwen_linear_attention_decode_post_input_metal_fallbacks": 0,
     "ax_mlx_qwen_linear_attention_decode_post_input_metal_profile_blocked": 0,
-    "ax_mlx_affine_tensor_count": 332,
+    "ax_mlx_affine_tensor_count": 326,
     "ax_mlx_affine_min_bits": 4,
-    "ax_mlx_affine_max_bits": 4,
+    "ax_mlx_affine_max_bits": 8,
     "ax_mlx_affine_2bit_count": 0,
     "ax_mlx_affine_3bit_count": 0,
-    "ax_mlx_affine_4bit_count": 332,
+    "ax_mlx_affine_4bit_count": 206,
     "ax_mlx_affine_5bit_count": 0,
     "ax_mlx_affine_6bit_count": 0,
-    "ax_mlx_affine_8bit_count": 0,
+    "ax_mlx_affine_8bit_count": 120,
     "ax_mlx_experimental_3bit_gate": 0
    },
    "ax_mlx_decode_route": {
     "classification": "direct_pipeline",
     "decode_steps": 635,
-    "decode_wall_us": 9433266,
+    "decode_wall_us": 5357603,
     "direct_pipeline_steps": 635,
     "direct_pipeline_step_share_micros": 1000000,
-    "direct_pipeline_wall_share_micros": 999940,
-    "direct_pipeline_forward_wall_us": 766978,
-    "direct_pipeline_forward_wall_share_micros": 81311,
+    "direct_pipeline_wall_share_micros": 999843,
+    "direct_pipeline_forward_wall_us": 823926,
+    "direct_pipeline_forward_wall_share_micros": 153810,
     "direct_pipeline_forward_layer_loop_wall_us": 0,
     "direct_pipeline_forward_layer_loop_wall_share_micros": 0,
     "direct_pipeline_forward_head_wall_us": 0,
     "direct_pipeline_forward_head_wall_share_micros": 0,
-    "direct_pipeline_argmax_wall_us": 567,
-    "direct_pipeline_argmax_wall_share_micros": 60,
-    "direct_pipeline_async_eval_wall_us": 8633630,
-    "direct_pipeline_async_eval_wall_share_micros": 915287,
+    "direct_pipeline_argmax_wall_us": 1115,
+    "direct_pipeline_argmax_wall_share_micros": 208,
+    "direct_pipeline_async_eval_wall_us": 4513549,
+    "direct_pipeline_async_eval_wall_share_micros": 842589,
     "direct_pipeline_next_complete_wall_us": 0,
     "direct_pipeline_next_complete_wall_share_micros": 0,
-    "direct_pipeline_pending_eval_wall_us": 29827,
-    "direct_pipeline_pending_eval_wall_share_micros": 3162,
-    "direct_pipeline_pending_read_wall_us": 83,
-    "direct_pipeline_pending_read_wall_share_micros": 9,
+    "direct_pipeline_pending_eval_wall_us": 16382,
+    "direct_pipeline_pending_eval_wall_share_micros": 3058,
+    "direct_pipeline_pending_read_wall_us": 159,
+    "direct_pipeline_pending_read_wall_share_micros": 30,
     "direct_pipeline_op_count": 0,
     "direct_pipeline_op_count_per_step": 0,
     "direct_pipeline_linear_attention_layer_ops": 0,
@@ -2927,15 +2665,15 @@
    "ax_mlx_decode_profile": {},
    "trials": [
     {
-     "prefill_s": 0.271961,
-     "decode_s": 1.893096,
-     "ttft_ms": 271.961,
-     "prefill_tok_s": 1882.6228760741428,
-     "decode_tok_s": 67.61410937427368,
+     "prefill_s": 0.180135,
+     "decode_s": 1.031515,
+     "ttft_ms": 180.135,
+     "prefill_tok_s": 2842.3127099120106,
+     "decode_tok_s": 124.08932492498897,
      "output_tokens": 128.0,
-     "client_wall_total_ms": 2718.662084022071,
-     "client_wall_ttft_ms": 805.9106669970788,
-     "peak_memory_gb": 6.241180419921875,
+     "client_wall_total_ms": 2014.4600829808041,
+     "client_wall_ttft_ms": 964.5849579828791,
+     "peak_memory_gb": 26.16656494140625,
      "ngram_acceleration_telemetry": {
       "ax_mtp_accept_rate_depth0_x1000": 0,
       "ax_mtp_accept_rate_depth1_x1000": 0,
@@ -3064,26 +2802,26 @@
      "ax_mlx_telemetry": {
       "ax_mlx_speculation_profile": 0,
       "ax_mlx_prefill_steps": 1,
-      "ax_mlx_prefill_wall_us": 258947,
-      "ax_mlx_prefill_forward_wall_us": 258945,
+      "ax_mlx_prefill_wall_us": 168708,
+      "ax_mlx_prefill_forward_wall_us": 168706,
       "ax_mlx_prefill_prefix_cache_wall_us": 0,
-      "ax_mlx_prefill_generation_state_wall_us": 12915,
+      "ax_mlx_prefill_generation_state_wall_us": 11355,
       "ax_mlx_prefill_eval_barriers": 1,
       "ax_mlx_prefill_drain_async_evals": 0,
       "ax_mlx_decode_steps": 127,
-      "ax_mlx_decode_wall_us": 1884772,
+      "ax_mlx_decode_wall_us": 1024309,
       "ax_mlx_direct_bootstrap_steps": 1,
-      "ax_mlx_direct_bootstrap_wall_us": 12884,
+      "ax_mlx_direct_bootstrap_wall_us": 11324,
       "ax_mlx_direct_pipeline_steps": 127,
-      "ax_mlx_direct_pipeline_wall_us": 1884664,
-      "ax_mlx_direct_pipeline_forward_wall_us": 157914,
+      "ax_mlx_direct_pipeline_wall_us": 1024166,
+      "ax_mlx_direct_pipeline_forward_wall_us": 151410,
       "ax_mlx_direct_pipeline_forward_layer_loop_wall_us": 0,
       "ax_mlx_direct_pipeline_forward_head_wall_us": 0,
-      "ax_mlx_direct_pipeline_argmax_wall_us": 120,
-      "ax_mlx_direct_pipeline_async_eval_wall_us": 1720378,
+      "ax_mlx_direct_pipeline_argmax_wall_us": 196,
+      "ax_mlx_direct_pipeline_async_eval_wall_us": 869045,
       "ax_mlx_direct_pipeline_next_complete_wall_us": 0,
-      "ax_mlx_direct_pipeline_pending_eval_wall_us": 5892,
-      "ax_mlx_direct_pipeline_pending_read_wall_us": 24,
+      "ax_mlx_direct_pipeline_pending_eval_wall_us": 3184,
+      "ax_mlx_direct_pipeline_pending_read_wall_us": 26,
       "ax_mlx_direct_pipeline_op_count": 0,
       "ax_mlx_direct_pipeline_linear_attention_layer_ops": 0,
       "ax_mlx_direct_pipeline_linear_attention_layer_count": 0,
@@ -3112,10 +2850,10 @@
       "ax_mlx_prefix_cache_warmup_tokens": 0,
       "ax_mlx_prefix_cache_entries": 0,
       "ax_mlx_prefix_cache_bytes_kib": 0,
-      "ax_mlx_dense_ffn_gate_up_packed_layers": 48,
+      "ax_mlx_dense_ffn_gate_up_packed_layers": 30,
       "ax_mlx_dense_ffn_split_gate_up_layers": 0,
-      "ax_mlx_dense_attention_qkv_packed_layers": 40,
-      "ax_mlx_dense_attention_split_qkv_layers": 8,
+      "ax_mlx_dense_attention_qkv_packed_layers": 25,
+      "ax_mlx_dense_attention_split_qkv_layers": 5,
       "ax_mlx_linear_attention_qkvz_ba_packed_layers": 0,
       "ax_mlx_linear_attention_split_qkvba_layers": 0,
       "ax_mlx_direct_cpp_linear_attention_inputs_attempts": 0,
@@ -3130,15 +2868,15 @@
       "ax_mlx_qwen_linear_attention_decode_post_input_metal_hits": 0,
       "ax_mlx_qwen_linear_attention_decode_post_input_metal_fallbacks": 0,
       "ax_mlx_qwen_linear_attention_decode_post_input_metal_profile_blocked": 0,
-      "ax_mlx_affine_tensor_count": 332,
+      "ax_mlx_affine_tensor_count": 326,
       "ax_mlx_affine_min_bits": 4,
-      "ax_mlx_affine_max_bits": 4,
+      "ax_mlx_affine_max_bits": 8,
       "ax_mlx_affine_2bit_count": 0,
       "ax_mlx_affine_3bit_count": 0,
-      "ax_mlx_affine_4bit_count": 332,
+      "ax_mlx_affine_4bit_count": 206,
       "ax_mlx_affine_5bit_count": 0,
       "ax_mlx_affine_6bit_count": 0,
-      "ax_mlx_affine_8bit_count": 0,
+      "ax_mlx_affine_8bit_count": 120,
       "ax_mlx_experimental_3bit_gate": 0
      },
      "scheduler_telemetry": {
@@ -3167,15 +2905,15 @@
      }
     },
     {
-     "prefill_s": 0.272281,
-     "decode_s": 1.896703,
-     "ttft_ms": 272.281,
-     "prefill_tok_s": 1880.4103114062311,
-     "decode_tok_s": 67.48552619993747,
+     "prefill_s": 0.180904,
+     "decode_s": 1.081536,
+     "ttft_ms": 180.904,
+     "prefill_tok_s": 2830.2303984433734,
+     "decode_tok_s": 118.35019823658205,
      "output_tokens": 128.0,
-     "client_wall_total_ms": 2720.8755830070004,
-     "client_wall_ttft_ms": 804.811707988847,
-     "peak_memory_gb": 6.2858428955078125,
+     "client_wall_total_ms": 2110.5847079888918,
+     "client_wall_ttft_ms": 1010.079667030368,
+     "peak_memory_gb": 26.166976928710938,
      "ngram_acceleration_telemetry": {
       "ax_mtp_accept_rate_depth0_x1000": 0,
       "ax_mtp_accept_rate_depth1_x1000": 0,
@@ -3304,26 +3042,26 @@
      "ax_mlx_telemetry": {
       "ax_mlx_speculation_profile": 0,
       "ax_mlx_prefill_steps": 1,
-      "ax_mlx_prefill_wall_us": 259335,
-      "ax_mlx_prefill_forward_wall_us": 259332,
+      "ax_mlx_prefill_wall_us": 169362,
+      "ax_mlx_prefill_forward_wall_us": 169360,
       "ax_mlx_prefill_prefix_cache_wall_us": 0,
-      "ax_mlx_prefill_generation_state_wall_us": 12855,
+      "ax_mlx_prefill_generation_state_wall_us": 11465,
       "ax_mlx_prefill_eval_barriers": 1,
       "ax_mlx_prefill_drain_async_evals": 0,
       "ax_mlx_decode_steps": 127,
-      "ax_mlx_decode_wall_us": 1888368,
+      "ax_mlx_decode_wall_us": 1074272,
       "ax_mlx_direct_bootstrap_steps": 1,
-      "ax_mlx_direct_bootstrap_wall_us": 12824,
+      "ax_mlx_direct_bootstrap_wall_us": 11431,
       "ax_mlx_direct_pipeline_steps": 127,
-      "ax_mlx_direct_pipeline_wall_us": 1888249,
-      "ax_mlx_direct_pipeline_forward_wall_us": 148159,
+      "ax_mlx_direct_pipeline_wall_us": 1074099,
+      "ax_mlx_direct_pipeline_forward_wall_us": 155294,
       "ax_mlx_direct_pipeline_forward_layer_loop_wall_us": 0,
       "ax_mlx_direct_pipeline_forward_head_wall_us": 0,
-      "ax_mlx_direct_pipeline_argmax_wall_us": 105,
-      "ax_mlx_direct_pipeline_async_eval_wall_us": 1733767,
+      "ax_mlx_direct_pipeline_argmax_wall_us": 215,
+      "ax_mlx_direct_pipeline_async_eval_wall_us": 914438,
       "ax_mlx_direct_pipeline_next_complete_wall_us": 0,
-      "ax_mlx_direct_pipeline_pending_eval_wall_us": 5888,
-      "ax_mlx_direct_pipeline_pending_read_wall_us": 18,
+      "ax_mlx_direct_pipeline_pending_eval_wall_us": 3794,
+      "ax_mlx_direct_pipeline_pending_read_wall_us": 35,
       "ax_mlx_direct_pipeline_op_count": 0,
       "ax_mlx_direct_pipeline_linear_attention_layer_ops": 0,
       "ax_mlx_direct_pipeline_linear_attention_layer_count": 0,
@@ -3352,10 +3090,10 @@
       "ax_mlx_prefix_cache_warmup_tokens": 0,
       "ax_mlx_prefix_cache_entries": 0,
       "ax_mlx_prefix_cache_bytes_kib": 0,
-      "ax_mlx_dense_ffn_gate_up_packed_layers": 48,
+      "ax_mlx_dense_ffn_gate_up_packed_layers": 30,
       "ax_mlx_dense_ffn_split_gate_up_layers": 0,
-      "ax_mlx_dense_attention_qkv_packed_layers": 40,
-      "ax_mlx_dense_attention_split_qkv_layers": 8,
+      "ax_mlx_dense_attention_qkv_packed_layers": 25,
+      "ax_mlx_dense_attention_split_qkv_layers": 5,
       "ax_mlx_linear_attention_qkvz_ba_packed_layers": 0,
       "ax_mlx_linear_attention_split_qkvba_layers": 0,
       "ax_mlx_direct_cpp_linear_attention_inputs_attempts": 0,
@@ -3370,15 +3108,15 @@
       "ax_mlx_qwen_linear_attention_decode_post_input_metal_hits": 0,
       "ax_mlx_qwen_linear_attention_decode_post_input_metal_fallbacks": 0,
       "ax_mlx_qwen_linear_attention_decode_post_input_metal_profile_blocked": 0,
-      "ax_mlx_affine_tensor_count": 332,
+      "ax_mlx_affine_tensor_count": 326,
       "ax_mlx_affine_min_bits": 4,
-      "ax_mlx_affine_max_bits": 4,
+      "ax_mlx_affine_max_bits": 8,
       "ax_mlx_affine_2bit_count": 0,
       "ax_mlx_affine_3bit_count": 0,
-      "ax_mlx_affine_4bit_count": 332,
+      "ax_mlx_affine_4bit_count": 206,
       "ax_mlx_affine_5bit_count": 0,
       "ax_mlx_affine_6bit_count": 0,
-      "ax_mlx_affine_8bit_count": 0,
+      "ax_mlx_affine_8bit_count": 120,
       "ax_mlx_experimental_3bit_gate": 0
      },
      "scheduler_telemetry": {
@@ -3407,15 +3145,15 @@
      }
     },
     {
-     "prefill_s": 0.272311,
-     "decode_s": 1.895264,
-     "ttft_ms": 272.31100000000004,
-     "prefill_tok_s": 1880.2031500747305,
-     "decode_tok_s": 67.53676532662467,
+     "prefill_s": 0.18287,
+     "decode_s": 1.086765,
+     "ttft_ms": 182.87,
+     "prefill_tok_s": 2799.8031388418003,
+     "decode_tok_s": 117.78075296867308,
      "output_tokens": 128.0,
-     "client_wall_total_ms": 2727.4076249450445,
-     "client_wall_ttft_ms": 811.9717089575715,
-     "peak_memory_gb": 6.301605224609375,
+     "client_wall_total_ms": 2103.0155409825966,
+     "client_wall_ttft_ms": 996.7634999775328,
+     "peak_memory_gb": 26.167327880859375,
      "ngram_acceleration_telemetry": {
       "ax_mtp_accept_rate_depth0_x1000": 0,
       "ax_mtp_accept_rate_depth1_x1000": 0,
@@ -3544,26 +3282,26 @@
      "ax_mlx_telemetry": {
       "ax_mlx_speculation_profile": 0,
       "ax_mlx_prefill_steps": 1,
-      "ax_mlx_prefill_wall_us": 259384,
-      "ax_mlx_prefill_forward_wall_us": 259382,
+      "ax_mlx_prefill_wall_us": 168958,
+      "ax_mlx_prefill_forward_wall_us": 168955,
       "ax_mlx_prefill_prefix_cache_wall_us": 0,
-      "ax_mlx_prefill_generation_state_wall_us": 12849,
+      "ax_mlx_prefill_generation_state_wall_us": 13828,
       "ax_mlx_prefill_eval_barriers": 1,
       "ax_mlx_prefill_drain_async_evals": 0,
       "ax_mlx_decode_steps": 127,
-      "ax_mlx_decode_wall_us": 1886714,
+      "ax_mlx_decode_wall_us": 1079296,
       "ax_mlx_direct_bootstrap_steps": 1,
-      "ax_mlx_direct_bootstrap_wall_us": 12818,
+      "ax_mlx_direct_bootstrap_wall_us": 13793,
       "ax_mlx_direct_pipeline_steps": 127,
-      "ax_mlx_direct_pipeline_wall_us": 1886597,
-      "ax_mlx_direct_pipeline_forward_wall_us": 156130,
+      "ax_mlx_direct_pipeline_wall_us": 1079134,
+      "ax_mlx_direct_pipeline_forward_wall_us": 154172,
       "ax_mlx_direct_pipeline_forward_layer_loop_wall_us": 0,
       "ax_mlx_direct_pipeline_forward_head_wall_us": 0,
-      "ax_mlx_direct_pipeline_argmax_wall_us": 108,
-      "ax_mlx_direct_pipeline_async_eval_wall_us": 1723868,
+      "ax_mlx_direct_pipeline_argmax_wall_us": 215,
+      "ax_mlx_direct_pipeline_async_eval_wall_us": 921090,
       "ax_mlx_direct_pipeline_next_complete_wall_us": 0,
-      "ax_mlx_direct_pipeline_pending_eval_wall_us": 6151,
-      "ax_mlx_direct_pipeline_pending_read_wall_us": 13,
+      "ax_mlx_direct_pipeline_pending_eval_wall_us": 3298,
+      "ax_mlx_direct_pipeline_pending_read_wall_us": 30,
       "ax_mlx_direct_pipeline_op_count": 0,
       "ax_mlx_direct_pipeline_linear_attention_layer_ops": 0,
       "ax_mlx_direct_pipeline_linear_attention_layer_count": 0,
@@ -3592,10 +3330,10 @@
       "ax_mlx_prefix_cache_warmup_tokens": 0,
       "ax_mlx_prefix_cache_entries": 0,
       "ax_mlx_prefix_cache_bytes_kib": 0,
-      "ax_mlx_dense_ffn_gate_up_packed_layers": 48,
+      "ax_mlx_dense_ffn_gate_up_packed_layers": 30,
       "ax_mlx_dense_ffn_split_gate_up_layers": 0,
-      "ax_mlx_dense_attention_qkv_packed_layers": 40,
-      "ax_mlx_dense_attention_split_qkv_layers": 8,
+      "ax_mlx_dense_attention_qkv_packed_layers": 25,
+      "ax_mlx_dense_attention_split_qkv_layers": 5,
       "ax_mlx_linear_attention_qkvz_ba_packed_layers": 0,
       "ax_mlx_linear_attention_split_qkvba_layers": 0,
       "ax_mlx_direct_cpp_linear_attention_inputs_attempts": 0,
@@ -3610,15 +3348,15 @@
       "ax_mlx_qwen_linear_attention_decode_post_input_metal_hits": 0,
       "ax_mlx_qwen_linear_attention_decode_post_input_metal_fallbacks": 0,
       "ax_mlx_qwen_linear_attention_decode_post_input_metal_profile_blocked": 0,
-      "ax_mlx_affine_tensor_count": 332,
+      "ax_mlx_affine_tensor_count": 326,
       "ax_mlx_affine_min_bits": 4,
-      "ax_mlx_affine_max_bits": 4,
+      "ax_mlx_affine_max_bits": 8,
       "ax_mlx_affine_2bit_count": 0,
       "ax_mlx_affine_3bit_count": 0,
-      "ax_mlx_affine_4bit_count": 332,
+      "ax_mlx_affine_4bit_count": 206,
       "ax_mlx_affine_5bit_count": 0,
       "ax_mlx_affine_6bit_count": 0,
-      "ax_mlx_affine_8bit_count": 0,
+      "ax_mlx_affine_8bit_count": 120,
       "ax_mlx_experimental_3bit_gate": 0
      },
      "scheduler_telemetry": {
@@ -3647,15 +3385,15 @@
      }
     },
     {
-     "prefill_s": 0.271907,
-     "decode_s": 1.897004,
-     "ttft_ms": 271.907,
-     "prefill_tok_s": 1882.9967599215909,
-     "decode_tok_s": 67.47481818699382,
+     "prefill_s": 0.182189,
+     "decode_s": 1.076016,
+     "ttft_ms": 182.189,
+     "prefill_tok_s": 2810.2684574809678,
+     "decode_tok_s": 118.95733892432825,
      "output_tokens": 128.0,
-     "client_wall_total_ms": 2727.6215410092846,
-     "client_wall_ttft_ms": 811.3100410555489,
-     "peak_memory_gb": 6.317047119140625,
+     "client_wall_total_ms": 2106.5894580096938,
+     "client_wall_ttft_ms": 1011.2058329978026,
+     "peak_memory_gb": 26.167678833007812,
      "ngram_acceleration_telemetry": {
       "ax_mtp_accept_rate_depth0_x1000": 0,
       "ax_mtp_accept_rate_depth1_x1000": 0,
@@ -3784,26 +3522,26 @@
      "ax_mlx_telemetry": {
       "ax_mlx_speculation_profile": 0,
       "ax_mlx_prefill_steps": 1,
-      "ax_mlx_prefill_wall_us": 259077,
-      "ax_mlx_prefill_forward_wall_us": 259075,
+      "ax_mlx_prefill_wall_us": 169523,
+      "ax_mlx_prefill_forward_wall_us": 169521,
       "ax_mlx_prefill_prefix_cache_wall_us": 0,
-      "ax_mlx_prefill_generation_state_wall_us": 12750,
+      "ax_mlx_prefill_generation_state_wall_us": 12594,
       "ax_mlx_prefill_eval_barriers": 1,
       "ax_mlx_prefill_drain_async_evals": 0,
       "ax_mlx_decode_steps": 127,
-      "ax_mlx_decode_wall_us": 1888785,
+      "ax_mlx_decode_wall_us": 1068695,
       "ax_mlx_direct_bootstrap_steps": 1,
-      "ax_mlx_direct_bootstrap_wall_us": 12719,
+      "ax_mlx_direct_bootstrap_wall_us": 12564,
       "ax_mlx_direct_pipeline_steps": 127,
-      "ax_mlx_direct_pipeline_wall_us": 1888680,
-      "ax_mlx_direct_pipeline_forward_wall_us": 148690,
+      "ax_mlx_direct_pipeline_wall_us": 1068539,
+      "ax_mlx_direct_pipeline_forward_wall_us": 155165,
       "ax_mlx_direct_pipeline_forward_layer_loop_wall_us": 0,
       "ax_mlx_direct_pipeline_forward_head_wall_us": 0,
-      "ax_mlx_direct_pipeline_argmax_wall_us": 123,
-      "ax_mlx_direct_pipeline_async_eval_wall_us": 1733484,
+      "ax_mlx_direct_pipeline_argmax_wall_us": 207,
+      "ax_mlx_direct_pipeline_async_eval_wall_us": 909599,
       "ax_mlx_direct_pipeline_next_complete_wall_us": 0,
-      "ax_mlx_direct_pipeline_pending_eval_wall_us": 6058,
-      "ax_mlx_direct_pipeline_pending_read_wall_us": 13,
+      "ax_mlx_direct_pipeline_pending_eval_wall_us": 3203,
+      "ax_mlx_direct_pipeline_pending_read_wall_us": 43,
       "ax_mlx_direct_pipeline_op_count": 0,
       "ax_mlx_direct_pipeline_linear_attention_layer_ops": 0,
       "ax_mlx_direct_pipeline_linear_attention_layer_count": 0,
@@ -3832,10 +3570,10 @@
       "ax_mlx_prefix_cache_warmup_tokens": 0,
       "ax_mlx_prefix_cache_entries": 0,
       "ax_mlx_prefix_cache_bytes_kib": 0,
-      "ax_mlx_dense_ffn_gate_up_packed_layers": 48,
+      "ax_mlx_dense_ffn_gate_up_packed_layers": 30,
       "ax_mlx_dense_ffn_split_gate_up_layers": 0,
-      "ax_mlx_dense_attention_qkv_packed_layers": 40,
-      "ax_mlx_dense_attention_split_qkv_layers": 8,
+      "ax_mlx_dense_attention_qkv_packed_layers": 25,
+      "ax_mlx_dense_attention_split_qkv_layers": 5,
       "ax_mlx_linear_attention_qkvz_ba_packed_layers": 0,
       "ax_mlx_linear_attention_split_qkvba_layers": 0,
       "ax_mlx_direct_cpp_linear_attention_inputs_attempts": 0,
@@ -3850,15 +3588,15 @@
       "ax_mlx_qwen_linear_attention_decode_post_input_metal_hits": 0,
       "ax_mlx_qwen_linear_attention_decode_post_input_metal_fallbacks": 0,
       "ax_mlx_qwen_linear_attention_decode_post_input_metal_profile_blocked": 0,
-      "ax_mlx_affine_tensor_count": 332,
+      "ax_mlx_affine_tensor_count": 326,
       "ax_mlx_affine_min_bits": 4,
-      "ax_mlx_affine_max_bits": 4,
+      "ax_mlx_affine_max_bits": 8,
       "ax_mlx_affine_2bit_count": 0,
       "ax_mlx_affine_3bit_count": 0,
-      "ax_mlx_affine_4bit_count": 332,
+      "ax_mlx_affine_4bit_count": 206,
       "ax_mlx_affine_5bit_count": 0,
       "ax_mlx_affine_6bit_count": 0,
-      "ax_mlx_affine_8bit_count": 0,
+      "ax_mlx_affine_8bit_count": 120,
       "ax_mlx_experimental_3bit_gate": 0
      },
      "scheduler_telemetry": {
@@ -3887,15 +3625,15 @@
      }
     },
     {
-     "prefill_s": 0.271267,
-     "decode_s": 1.893079,
-     "ttft_ms": 271.267,
-     "prefill_tok_s": 1887.439312559213,
-     "decode_tok_s": 67.61471655435405,
+     "prefill_s": 0.183427,
+     "decode_s": 1.119629,
+     "ttft_ms": 183.42700000000002,
+     "prefill_tok_s": 2791.3011715832454,
+     "decode_tok_s": 114.32358397290531,
      "output_tokens": 128.0,
-     "client_wall_total_ms": 2741.179333999753,
-     "client_wall_ttft_ms": 828.2153749605641,
-     "peak_memory_gb": 6.33245849609375,
+     "client_wall_total_ms": 2148.215292021632,
+     "client_wall_ttft_ms": 1004.6375000383705,
+     "peak_memory_gb": 26.168045043945312,
      "ngram_acceleration_telemetry": {
       "ax_mtp_accept_rate_depth0_x1000": 0,
       "ax_mtp_accept_rate_depth1_x1000": 0,
@@ -4024,26 +3762,26 @@
      "ax_mlx_telemetry": {
       "ax_mlx_speculation_profile": 0,
       "ax_mlx_prefill_steps": 1,
-      "ax_mlx_prefill_wall_us": 258223,
-      "ax_mlx_prefill_forward_wall_us": 258221,
+      "ax_mlx_prefill_wall_us": 169434,
+      "ax_mlx_prefill_forward_wall_us": 169431,
       "ax_mlx_prefill_prefix_cache_wall_us": 0,
-      "ax_mlx_prefill_generation_state_wall_us": 12961,
+      "ax_mlx_prefill_generation_state_wall_us": 13895,
       "ax_mlx_prefill_eval_barriers": 1,
       "ax_mlx_prefill_drain_async_evals": 0,
       "ax_mlx_decode_steps": 127,
-      "ax_mlx_decode_wall_us": 1884627,
+      "ax_mlx_decode_wall_us": 1111031,
       "ax_mlx_direct_bootstrap_steps": 1,
-      "ax_mlx_direct_bootstrap_wall_us": 12929,
+      "ax_mlx_direct_bootstrap_wall_us": 13863,
       "ax_mlx_direct_pipeline_steps": 127,
-      "ax_mlx_direct_pipeline_wall_us": 1884514,
-      "ax_mlx_direct_pipeline_forward_wall_us": 156085,
+      "ax_mlx_direct_pipeline_wall_us": 1110826,
+      "ax_mlx_direct_pipeline_forward_wall_us": 207885,
       "ax_mlx_direct_pipeline_forward_layer_loop_wall_us": 0,
       "ax_mlx_direct_pipeline_forward_head_wall_us": 0,
-      "ax_mlx_direct_pipeline_argmax_wall_us": 111,
-      "ax_mlx_direct_pipeline_async_eval_wall_us": 1722133,
+      "ax_mlx_direct_pipeline_argmax_wall_us": 282,
+      "ax_mlx_direct_pipeline_async_eval_wall_us": 899377,
       "ax_mlx_direct_pipeline_next_complete_wall_us": 0,
-      "ax_mlx_direct_pipeline_pending_eval_wall_us": 5838,
-      "ax_mlx_direct_pipeline_pending_read_wall_us": 15,
+      "ax_mlx_direct_pipeline_pending_eval_wall_us": 2903,
+      "ax_mlx_direct_pipeline_pending_read_wall_us": 25,
       "ax_mlx_direct_pipeline_op_count": 0,
       "ax_mlx_direct_pipeline_linear_attention_layer_ops": 0,
       "ax_mlx_direct_pipeline_linear_attention_layer_count": 0,
@@ -4072,10 +3810,10 @@
       "ax_mlx_prefix_cache_warmup_tokens": 0,
       "ax_mlx_prefix_cache_entries": 0,
       "ax_mlx_prefix_cache_bytes_kib": 0,
-      "ax_mlx_dense_ffn_gate_up_packed_layers": 48,
+      "ax_mlx_dense_ffn_gate_up_packed_layers": 30,
       "ax_mlx_dense_ffn_split_gate_up_layers": 0,
-      "ax_mlx_dense_attention_qkv_packed_layers": 40,
-      "ax_mlx_dense_attention_split_qkv_layers": 8,
+      "ax_mlx_dense_attention_qkv_packed_layers": 25,
+      "ax_mlx_dense_attention_split_qkv_layers": 5,
       "ax_mlx_linear_attention_qkvz_ba_packed_layers": 0,
       "ax_mlx_linear_attention_split_qkvba_layers": 0,
       "ax_mlx_direct_cpp_linear_attention_inputs_attempts": 0,
@@ -4090,15 +3828,15 @@
       "ax_mlx_qwen_linear_attention_decode_post_input_metal_hits": 0,
       "ax_mlx_qwen_linear_attention_decode_post_input_metal_fallbacks": 0,
       "ax_mlx_qwen_linear_attention_decode_post_input_metal_profile_blocked": 0,
-      "ax_mlx_affine_tensor_count": 332,
+      "ax_mlx_affine_tensor_count": 326,
       "ax_mlx_affine_min_bits": 4,
-      "ax_mlx_affine_max_bits": 4,
+      "ax_mlx_affine_max_bits": 8,
       "ax_mlx_affine_2bit_count": 0,
       "ax_mlx_affine_3bit_count": 0,
-      "ax_mlx_affine_4bit_count": 332,
+      "ax_mlx_affine_4bit_count": 206,
       "ax_mlx_affine_5bit_count": 0,
       "ax_mlx_affine_6bit_count": 0,
-      "ax_mlx_affine_8bit_count": 0,
+      "ax_mlx_affine_8bit_count": 120,
       "ax_mlx_experimental_3bit_gate": 0
      },
      "scheduler_telemetry": {
@@ -4128,14 +3866,14 @@
     }
    ],
    "peak_memory_gb": {
-    "mean": 6.295626831054688,
-    "median": 6.301605224609375,
-    "min": 6.241180419921875,
-    "max": 6.33245849609375
+    "mean": 26.167318725585936,
+    "median": 26.167327880859375,
+    "min": 26.16656494140625,
+    "max": 26.168045043945312
    },
    "memory_source": "server_process_rss_after_stream",
    "prefill_step_size": 2048,
-   "prompt_token_ids_path": "benchmarks/results/mlx-inference/2026-06-26-gemma4-12b-4bit-ax-direct-only/gemma-4-12b-it-4bit-prompts/prompt-512-gen-128-846109be82df.json",
+   "prompt_token_ids_path": "/Users/akiralam/code/ax-engine/benchmarks/results/mlx-inference/2026-06-27-ax-direct-only/gemma-4-26b-a4b-it-4bit-prompts/prompt-512-gen-128-846109be82df.json",
    "prompt_token_ids_sha256": "846109be82dfecc447667199274cfcf9a20a1ea82c7a96da547d3e65de2af648",
    "prompt_source": "random",
    "ax_linear_attention_projection_pack": false,
@@ -4175,48 +3913,48 @@
    "prompt_tokens": 2048,
    "generation_tokens": 128,
    "prefill_tok_s": {
-    "mean": 2060.6653562098754,
-    "median": 2062.287527993942,
-    "min": 2053.8884983246967,
-    "max": 2066.2428581950035
+    "mean": 4270.785817194546,
+    "median": 4274.663850286578,
+    "min": 4263.211688860486,
+    "max": 4275.654448622208
    },
    "decode_tok_s": {
-    "mean": 65.24248955027356,
-    "median": 65.26034032247784,
-    "min": 65.11970069357568,
-    "max": 65.3143200626201
+    "mean": 112.36417358535024,
+    "median": 112.49206843033137,
+    "min": 109.839094308018,
+    "max": 113.71126931981117
    },
    "ttft_ms": {
-    "mean": 993.8585999999999,
-    "median": 993.072,
-    "min": 991.171,
-    "max": 997.133
+    "mean": 479.53779999999995,
+    "median": 479.102,
+    "min": 478.991,
+    "max": 480.389
    },
    "ttft_source": "ax_engine_runner_prefill_time",
    "client_wall_ttft_ms": {
-    "mean": 1578.6655250005424,
-    "median": 1532.067583000753,
-    "min": 1518.1491249823011,
-    "max": 1780.789917043876
+    "mean": 1223.6934165935963,
+    "median": 1221.7647079960443,
+    "min": 1219.0324579714797,
+    "max": 1230.9240419999696
    },
    "client_wall_ttft_source": "http_sse_first_output_token_observed_by_client",
    "client_wall_total_ms": {
-    "mean": 3562.7671915921383,
-    "median": 3514.895666972734,
-    "min": 3500.6780839757994,
-    "max": 3764.6050000330433
+    "mean": 2384.301158413291,
+    "median": 2381.049624993466,
+    "min": 2367.1011250116862,
+    "max": 2411.499875015579
    },
    "prefill_s": {
-    "mean": 0.9938586,
-    "median": 0.993072,
-    "min": 0.991171,
-    "max": 0.997133
+    "mean": 0.47953779999999996,
+    "median": 0.479102,
+    "min": 0.478991,
+    "max": 0.480389
    },
    "decode_s": {
-    "mean": 1.9619136000000001,
-    "median": 1.961375,
-    "min": 1.959754,
-    "max": 1.965611
+    "mean": 1.139334,
+    "median": 1.137858,
+    "min": 1.125658,
+    "max": 1.165341
    },
    "ngram_acceleration_telemetry": {
     "ax_mtp_accept_rate_depth0_x1000": 0,
@@ -4403,26 +4141,26 @@
    "ax_mlx_telemetry": {
     "ax_mlx_speculation_profile": 0,
     "ax_mlx_prefill_steps": 5,
-    "ax_mlx_prefill_wall_us": 4906107,
-    "ax_mlx_prefill_forward_wall_us": 4906092,
+    "ax_mlx_prefill_wall_us": 2349503,
+    "ax_mlx_prefill_forward_wall_us": 2349490,
     "ax_mlx_prefill_prefix_cache_wall_us": 0,
-    "ax_mlx_prefill_generation_state_wall_us": 62196,
+    "ax_mlx_prefill_generation_state_wall_us": 47202,
     "ax_mlx_prefill_eval_barriers": 5,
     "ax_mlx_prefill_drain_async_evals": 0,
     "ax_mlx_decode_steps": 635,
-    "ax_mlx_decode_wall_us": 9770746,
+    "ax_mlx_decode_wall_us": 5657207,
     "ax_mlx_direct_bootstrap_steps": 5,
-    "ax_mlx_direct_bootstrap_wall_us": 61867,
+    "ax_mlx_direct_bootstrap_wall_us": 46862,
     "ax_mlx_direct_pipeline_steps": 635,
-    "ax_mlx_direct_pipeline_wall_us": 9770188,
-    "ax_mlx_direct_pipeline_forward_wall_us": 746413,
+    "ax_mlx_direct_pipeline_wall_us": 5656169,
+    "ax_mlx_direct_pipeline_forward_wall_us": 805212,
     "ax_mlx_direct_pipeline_forward_layer_loop_wall_us": 0,
     "ax_mlx_direct_pipeline_forward_head_wall_us": 0,
-    "ax_mlx_direct_pipeline_argmax_wall_us": 605,
-    "ax_mlx_direct_pipeline_async_eval_wall_us": 8991123,
+    "ax_mlx_direct_pipeline_argmax_wall_us": 1390,
+    "ax_mlx_direct_pipeline_async_eval_wall_us": 4834401,
     "ax_mlx_direct_pipeline_next_complete_wall_us": 0,
-    "ax_mlx_direct_pipeline_pending_eval_wall_us": 30280,
-    "ax_mlx_direct_pipeline_pending_read_wall_us": 45,
+    "ax_mlx_direct_pipeline_pending_eval_wall_us": 13250,
+    "ax_mlx_direct_pipeline_pending_read_wall_us": 220,
     "ax_mlx_direct_pipeline_op_count": 0,
     "ax_mlx_direct_pipeline_linear_attention_layer_ops": 0,
     "ax_mlx_direct_pipeline_linear_attention_layer_count": 0,
@@ -4451,10 +4189,10 @@
     "ax_mlx_prefix_cache_warmup_tokens": 0,
     "ax_mlx_prefix_cache_entries": 0,
     "ax_mlx_prefix_cache_bytes_kib": 0,
-    "ax_mlx_dense_ffn_gate_up_packed_layers": 240,
+    "ax_mlx_dense_ffn_gate_up_packed_layers": 150,
     "ax_mlx_dense_ffn_split_gate_up_layers": 0,
-    "ax_mlx_dense_attention_qkv_packed_layers": 200,
-    "ax_mlx_dense_attention_split_qkv_layers": 40,
+    "ax_mlx_dense_attention_qkv_packed_layers": 125,
+    "ax_mlx_dense_attention_split_qkv_layers": 25,
     "ax_mlx_linear_attention_qkvz_ba_packed_layers": 0,
     "ax_mlx_linear_attention_split_qkvba_layers": 0,
     "ax_mlx_direct_cpp_linear_attention_inputs_attempts": 0,
@@ -4469,40 +4207,40 @@
     "ax_mlx_qwen_linear_attention_decode_post_input_metal_hits": 0,
     "ax_mlx_qwen_linear_attention_decode_post_input_metal_fallbacks": 0,
     "ax_mlx_qwen_linear_attention_decode_post_input_metal_profile_blocked": 0,
-    "ax_mlx_affine_tensor_count": 332,
+    "ax_mlx_affine_tensor_count": 326,
     "ax_mlx_affine_min_bits": 4,
-    "ax_mlx_affine_max_bits": 4,
+    "ax_mlx_affine_max_bits": 8,
     "ax_mlx_affine_2bit_count": 0,
     "ax_mlx_affine_3bit_count": 0,
-    "ax_mlx_affine_4bit_count": 332,
+    "ax_mlx_affine_4bit_count": 206,
     "ax_mlx_affine_5bit_count": 0,
     "ax_mlx_affine_6bit_count": 0,
-    "ax_mlx_affine_8bit_count": 0,
+    "ax_mlx_affine_8bit_count": 120,
     "ax_mlx_experimental_3bit_gate": 0
    },
    "ax_mlx_decode_route": {
     "classification": "direct_pipeline",
     "decode_steps": 635,
-    "decode_wall_us": 9770746,
+    "decode_wall_us": 5657207,
     "direct_pipeline_steps": 635,
     "direct_pipeline_step_share_micros": 1000000,
-    "direct_pipeline_wall_share_micros": 999943,
-    "direct_pipeline_forward_wall_us": 746413,
-    "direct_pipeline_forward_wall_share_micros": 76397,
+    "direct_pipeline_wall_share_micros": 999817,
+    "direct_pipeline_forward_wall_us": 805212,
+    "direct_pipeline_forward_wall_share_micros": 142360,
     "direct_pipeline_forward_layer_loop_wall_us": 0,
     "direct_pipeline_forward_layer_loop_wall_share_micros": 0,
     "direct_pipeline_forward_head_wall_us": 0,
     "direct_pipeline_forward_head_wall_share_micros": 0,
-    "direct_pipeline_argmax_wall_us": 605,
-    "direct_pipeline_argmax_wall_share_micros": 62,
-    "direct_pipeline_async_eval_wall_us": 8991123,
-    "direct_pipeline_async_eval_wall_share_micros": 920261,
+    "direct_pipeline_argmax_wall_us": 1390,
+    "direct_pipeline_argmax_wall_share_micros": 246,
+    "direct_pipeline_async_eval_wall_us": 4834401,
+    "direct_pipeline_async_eval_wall_share_micros": 854713,
     "direct_pipeline_next_complete_wall_us": 0,
     "direct_pipeline_next_complete_wall_share_micros": 0,
-    "direct_pipeline_pending_eval_wall_us": 30280,
-    "direct_pipeline_pending_eval_wall_share_micros": 3099,
-    "direct_pipeline_pending_read_wall_us": 45,
-    "direct_pipeline_pending_read_wall_share_micros": 5,
+    "direct_pipeline_pending_eval_wall_us": 13250,
+    "direct_pipeline_pending_eval_wall_share_micros": 2343,
+    "direct_pipeline_pending_read_wall_us": 220,
+    "direct_pipeline_pending_read_wall_share_micros": 39,
     "direct_pipeline_op_count": 0,
     "direct_pipeline_op_count_per_step": 0,
     "direct_pipeline_linear_attention_layer_ops": 0,
@@ -4556,15 +4294,15 @@
    "ax_mlx_decode_profile": {},
    "trials": [
     {
-     "prefill_s": 0.992298,
-     "decode_s": 1.961222,
-     "ttft_ms": 992.298,
-     "prefill_tok_s": 2063.896127977684,
-     "decode_tok_s": 65.26543145039165,
+     "prefill_s": 0.480149,
+     "decode_s": 1.141551,
+     "ttft_ms": 480.149,
+     "prefill_tok_s": 4265.34263322427,
+     "decode_tok_s": 112.12814845766856,
      "output_tokens": 128.0,
-     "client_wall_total_ms": 3500.6780839757994,
-     "client_wall_ttft_ms": 1518.1491249823011,
-     "peak_memory_gb": 6.3637237548828125,
+     "client_wall_total_ms": 2381.049624993466,
+     "client_wall_ttft_ms": 1219.0324579714797,
+     "peak_memory_gb": 26.170150756835938,
      "ngram_acceleration_telemetry": {
       "ax_mtp_accept_rate_depth0_x1000": 0,
       "ax_mtp_accept_rate_depth1_x1000": 0,
@@ -4693,26 +4431,26 @@
      "ax_mlx_telemetry": {
       "ax_mlx_speculation_profile": 0,
       "ax_mlx_prefill_steps": 1,
-      "ax_mlx_prefill_wall_us": 979604,
-      "ax_mlx_prefill_forward_wall_us": 979601,
+      "ax_mlx_prefill_wall_us": 470874,
+      "ax_mlx_prefill_forward_wall_us": 470872,
       "ax_mlx_prefill_prefix_cache_wall_us": 0,
-      "ax_mlx_prefill_generation_state_wall_us": 12495,
+      "ax_mlx_prefill_generation_state_wall_us": 9077,
       "ax_mlx_prefill_eval_barriers": 1,
       "ax_mlx_prefill_drain_async_evals": 0,
       "ax_mlx_decode_steps": 127,
-      "ax_mlx_decode_wall_us": 1953695,
+      "ax_mlx_decode_wall_us": 1133829,
       "ax_mlx_direct_bootstrap_steps": 1,
-      "ax_mlx_direct_bootstrap_wall_us": 12427,
+      "ax_mlx_direct_bootstrap_wall_us": 9008,
       "ax_mlx_direct_pipeline_steps": 127,
-      "ax_mlx_direct_pipeline_wall_us": 1953587,
-      "ax_mlx_direct_pipeline_forward_wall_us": 147901,
+      "ax_mlx_direct_pipeline_wall_us": 1133595,
+      "ax_mlx_direct_pipeline_forward_wall_us": 157270,
       "ax_mlx_direct_pipeline_forward_layer_loop_wall_us": 0,
       "ax_mlx_direct_pipeline_forward_head_wall_us": 0,
-      "ax_mlx_direct_pipeline_argmax_wall_us": 107,
-      "ax_mlx_direct_pipeline_async_eval_wall_us": 1799160,
+      "ax_mlx_direct_pipeline_argmax_wall_us": 279,
+      "ax_mlx_direct_pipeline_async_eval_wall_us": 973017,
       "ax_mlx_direct_pipeline_next_complete_wall_us": 0,
-      "ax_mlx_direct_pipeline_pending_eval_wall_us": 6062,
-      "ax_mlx_direct_pipeline_pending_read_wall_us": 6,
+      "ax_mlx_direct_pipeline_pending_eval_wall_us": 2640,
+      "ax_mlx_direct_pipeline_pending_read_wall_us": 53,
       "ax_mlx_direct_pipeline_op_count": 0,
       "ax_mlx_direct_pipeline_linear_attention_layer_ops": 0,
       "ax_mlx_direct_pipeline_linear_attention_layer_count": 0,
@@ -4741,10 +4479,10 @@
       "ax_mlx_prefix_cache_warmup_tokens": 0,
       "ax_mlx_prefix_cache_entries": 0,
       "ax_mlx_prefix_cache_bytes_kib": 0,
-      "ax_mlx_dense_ffn_gate_up_packed_layers": 48,
+      "ax_mlx_dense_ffn_gate_up_packed_layers": 30,
       "ax_mlx_dense_ffn_split_gate_up_layers": 0,
-      "ax_mlx_dense_attention_qkv_packed_layers": 40,
-      "ax_mlx_dense_attention_split_qkv_layers": 8,
+      "ax_mlx_dense_attention_qkv_packed_layers": 25,
+      "ax_mlx_dense_attention_split_qkv_layers": 5,
       "ax_mlx_linear_attention_qkvz_ba_packed_layers": 0,
       "ax_mlx_linear_attention_split_qkvba_layers": 0,
       "ax_mlx_direct_cpp_linear_attention_inputs_attempts": 0,
@@ -4759,15 +4497,15 @@
       "ax_mlx_qwen_linear_attention_decode_post_input_metal_hits": 0,
       "ax_mlx_qwen_linear_attention_decode_post_input_metal_fallbacks": 0,
       "ax_mlx_qwen_linear_attention_decode_post_input_metal_profile_blocked": 0,
-      "ax_mlx_affine_tensor_count": 332,
+      "ax_mlx_affine_tensor_count": 326,
       "ax_mlx_affine_min_bits": 4,
-      "ax_mlx_affine_max_bits": 4,
+      "ax_mlx_affine_max_bits": 8,
       "ax_mlx_affine_2bit_count": 0,
       "ax_mlx_affine_3bit_count": 0,
-      "ax_mlx_affine_4bit_count": 332,
+      "ax_mlx_affine_4bit_count": 206,
       "ax_mlx_affine_5bit_count": 0,
       "ax_mlx_affine_6bit_count": 0,
-      "ax_mlx_affine_8bit_count": 0,
+      "ax_mlx_affine_8bit_count": 120,
       "ax_mlx_experimental_3bit_gate": 0
      },
      "scheduler_telemetry": {
@@ -4796,15 +4534,15 @@
      }
     },
     {
-     "prefill_s": 0.991171,
-     "decode_s": 1.959754,
-     "ttft_ms": 991.171,
-     "prefill_tok_s": 2066.2428581950035,
-     "decode_tok_s": 65.3143200626201,
+     "prefill_s": 0.480389,
+     "decode_s": 1.126262,
+     "ttft_ms": 480.389,
+     "prefill_tok_s": 4263.211688860486,
+     "decode_tok_s": 113.65028741092213,
      "output_tokens": 128.0,
-     "client_wall_total_ms": 3514.895666972734,
-     "client_wall_ttft_ms": 1532.2983340010978,
-     "peak_memory_gb": 6.3791351318359375,
+     "client_wall_total_ms": 2367.1011250116862,
+     "client_wall_ttft_ms": 1220.3630830044858,
+     "peak_memory_gb": 26.170196533203125,
      "ngram_acceleration_telemetry": {
       "ax_mtp_accept_rate_depth0_x1000": 0,
       "ax_mtp_accept_rate_depth1_x1000": 0,
@@ -4933,26 +4671,26 @@
      "ax_mlx_telemetry": {
       "ax_mlx_speculation_profile": 0,
       "ax_mlx_prefill_steps": 1,
-      "ax_mlx_prefill_wall_us": 978344,
-      "ax_mlx_prefill_forward_wall_us": 978341,
+      "ax_mlx_prefill_wall_us": 471020,
+      "ax_mlx_prefill_forward_wall_us": 471017,
       "ax_mlx_prefill_prefix_cache_wall_us": 0,
-      "ax_mlx_prefill_generation_state_wall_us": 12630,
+      "ax_mlx_prefill_generation_state_wall_us": 9174,
       "ax_mlx_prefill_eval_barriers": 1,
       "ax_mlx_prefill_drain_async_evals": 0,
       "ax_mlx_decode_steps": 127,
-      "ax_mlx_decode_wall_us": 1951810,
+      "ax_mlx_decode_wall_us": 1118401,
       "ax_mlx_direct_bootstrap_steps": 1,
-      "ax_mlx_direct_bootstrap_wall_us": 12569,
+      "ax_mlx_direct_bootstrap_wall_us": 9106,
       "ax_mlx_direct_pipeline_steps": 127,
-      "ax_mlx_direct_pipeline_wall_us": 1951699,
-      "ax_mlx_direct_pipeline_forward_wall_us": 156745,
+      "ax_mlx_direct_pipeline_wall_us": 1118184,
+      "ax_mlx_direct_pipeline_forward_wall_us": 155585,
       "ax_mlx_direct_pipeline_forward_layer_loop_wall_us": 0,
       "ax_mlx_direct_pipeline_forward_head_wall_us": 0,
-      "ax_mlx_direct_pipeline_argmax_wall_us": 130,
-      "ax_mlx_direct_pipeline_async_eval_wall_us": 1788572,
+      "ax_mlx_direct_pipeline_argmax_wall_us": 267,
+      "ax_mlx_direct_pipeline_async_eval_wall_us": 959283,
       "ax_mlx_direct_pipeline_next_complete_wall_us": 0,
-      "ax_mlx_direct_pipeline_pending_eval_wall_us": 5912,
-      "ax_mlx_direct_pipeline_pending_read_wall_us": 5,
+      "ax_mlx_direct_pipeline_pending_eval_wall_us": 2670,
+      "ax_mlx_direct_pipeline_pending_read_wall_us": 46,
       "ax_mlx_direct_pipeline_op_count": 0,
       "ax_mlx_direct_pipeline_linear_attention_layer_ops": 0,
       "ax_mlx_direct_pipeline_linear_attention_layer_count": 0,
@@ -4981,10 +4719,10 @@
       "ax_mlx_prefix_cache_warmup_tokens": 0,
       "ax_mlx_prefix_cache_entries": 0,
       "ax_mlx_prefix_cache_bytes_kib": 0,
-      "ax_mlx_dense_ffn_gate_up_packed_layers": 48,
+      "ax_mlx_dense_ffn_gate_up_packed_layers": 30,
       "ax_mlx_dense_ffn_split_gate_up_layers": 0,
-      "ax_mlx_dense_attention_qkv_packed_layers": 40,
-      "ax_mlx_dense_attention_split_qkv_layers": 8,
+      "ax_mlx_dense_attention_qkv_packed_layers": 25,
+      "ax_mlx_dense_attention_split_qkv_layers": 5,
       "ax_mlx_linear_attention_qkvz_ba_packed_layers": 0,
       "ax_mlx_linear_attention_split_qkvba_layers": 0,
       "ax_mlx_direct_cpp_linear_attention_inputs_attempts": 0,
@@ -4999,15 +4737,15 @@
       "ax_mlx_qwen_linear_attention_decode_post_input_metal_hits": 0,
       "ax_mlx_qwen_linear_attention_decode_post_input_metal_fallbacks": 0,
       "ax_mlx_qwen_linear_attention_decode_post_input_metal_profile_blocked": 0,
-      "ax_mlx_affine_tensor_count": 332,
+      "ax_mlx_affine_tensor_count": 326,
       "ax_mlx_affine_min_bits": 4,
-      "ax_mlx_affine_max_bits": 4,
+      "ax_mlx_affine_max_bits": 8,
       "ax_mlx_affine_2bit_count": 0,
       "ax_mlx_affine_3bit_count": 0,
-      "ax_mlx_affine_4bit_count": 332,
+      "ax_mlx_affine_4bit_count": 206,
       "ax_mlx_affine_5bit_count": 0,
       "ax_mlx_affine_6bit_count": 0,
-      "ax_mlx_affine_8bit_count": 0,
+      "ax_mlx_affine_8bit_count": 120,
       "ax_mlx_experimental_3bit_gate": 0
      },
      "scheduler_telemetry": {
@@ -5036,15 +4774,15 @@
      }
     },
     {
-     "prefill_s": 0.995619,
-     "decode_s": 1.965611,
-     "ttft_ms": 995.619,
-     "prefill_tok_s": 2057.0117685580526,
-     "decode_tok_s": 65.11970069357568,
+     "prefill_s": 0.479102,
+     "decode_s": 1.165341,
+     "ttft_ms": 479.102,
+     "prefill_tok_s": 4274.663850286578,
+     "decode_tok_s": 109.839094308018,
      "output_tokens": 128.0,
-     "client_wall_total_ms": 3519.7746659978293,
-     "client_wall_ttft_ms": 1532.067583000753,
-     "peak_memory_gb": 6.39453125,
+     "client_wall_total_ms": 2411.499875015579,
+     "client_wall_ttft_ms": 1221.7647079960443,
+     "peak_memory_gb": 26.1705322265625,
      "ngram_acceleration_telemetry": {
       "ax_mtp_accept_rate_depth0_x1000": 0,
       "ax_mtp_accept_rate_depth1_x1000": 0,
@@ -5173,26 +4911,26 @@
      "ax_mlx_telemetry": {
       "ax_mlx_speculation_profile": 0,
       "ax_mlx_prefill_steps": 1,
-      "ax_mlx_prefill_wall_us": 982784,
-      "ax_mlx_prefill_forward_wall_us": 982781,
+      "ax_mlx_prefill_wall_us": 469352,
+      "ax_mlx_prefill_forward_wall_us": 469350,
       "ax_mlx_prefill_prefix_cache_wall_us": 0,
-      "ax_mlx_prefill_generation_state_wall_us": 12636,
+      "ax_mlx_prefill_generation_state_wall_us": 9551,
       "ax_mlx_prefill_eval_barriers": 1,
       "ax_mlx_prefill_drain_async_evals": 0,
       "ax_mlx_decode_steps": 127,
-      "ax_mlx_decode_wall_us": 1957722,
+      "ax_mlx_decode_wall_us": 1156844,
       "ax_mlx_direct_bootstrap_steps": 1,
-      "ax_mlx_direct_bootstrap_wall_us": 12566,
+      "ax_mlx_direct_bootstrap_wall_us": 9485,
       "ax_mlx_direct_pipeline_steps": 127,
-      "ax_mlx_direct_pipeline_wall_us": 1957610,
-      "ax_mlx_direct_pipeline_forward_wall_us": 141925,
+      "ax_mlx_direct_pipeline_wall_us": 1156625,
+      "ax_mlx_direct_pipeline_forward_wall_us": 173802,
       "ax_mlx_direct_pipeline_forward_layer_loop_wall_us": 0,
       "ax_mlx_direct_pipeline_forward_head_wall_us": 0,
-      "ax_mlx_direct_pipeline_argmax_wall_us": 136,
-      "ax_mlx_direct_pipeline_async_eval_wall_us": 1808985,
+      "ax_mlx_direct_pipeline_argmax_wall_us": 291,
+      "ax_mlx_direct_pipeline_async_eval_wall_us": 979633,
       "ax_mlx_direct_pipeline_next_complete_wall_us": 0,
-      "ax_mlx_direct_pipeline_pending_eval_wall_us": 6211,
-      "ax_mlx_direct_pipeline_pending_read_wall_us": 12,
+      "ax_mlx_direct_pipeline_pending_eval_wall_us": 2516,
+      "ax_mlx_direct_pipeline_pending_read_wall_us": 57,
       "ax_mlx_direct_pipeline_op_count": 0,
       "ax_mlx_direct_pipeline_linear_attention_layer_ops": 0,
       "ax_mlx_direct_pipeline_linear_attention_layer_count": 0,
@@ -5221,10 +4959,10 @@
       "ax_mlx_prefix_cache_warmup_tokens": 0,
       "ax_mlx_prefix_cache_entries": 0,
       "ax_mlx_prefix_cache_bytes_kib": 0,
-      "ax_mlx_dense_ffn_gate_up_packed_layers": 48,
+      "ax_mlx_dense_ffn_gate_up_packed_layers": 30,
       "ax_mlx_dense_ffn_split_gate_up_layers": 0,
-      "ax_mlx_dense_attention_qkv_packed_layers": 40,
-      "ax_mlx_dense_attention_split_qkv_layers": 8,
+      "ax_mlx_dense_attention_qkv_packed_layers": 25,
+      "ax_mlx_dense_attention_split_qkv_layers": 5,
       "ax_mlx_linear_attention_qkvz_ba_packed_layers": 0,
       "ax_mlx_linear_attention_split_qkvba_layers": 0,
       "ax_mlx_direct_cpp_linear_attention_inputs_attempts": 0,
@@ -5239,15 +4977,15 @@
       "ax_mlx_qwen_linear_attention_decode_post_input_metal_hits": 0,
       "ax_mlx_qwen_linear_attention_decode_post_input_metal_fallbacks": 0,
       "ax_mlx_qwen_linear_attention_decode_post_input_metal_profile_blocked": 0,
-      "ax_mlx_affine_tensor_count": 332,
+      "ax_mlx_affine_tensor_count": 326,
       "ax_mlx_affine_min_bits": 4,
-      "ax_mlx_affine_max_bits": 4,
+      "ax_mlx_affine_max_bits": 8,
       "ax_mlx_affine_2bit_count": 0,
       "ax_mlx_affine_3bit_count": 0,
-      "ax_mlx_affine_4bit_count": 332,
+      "ax_mlx_affine_4bit_count": 206,
       "ax_mlx_affine_5bit_count": 0,
       "ax_mlx_affine_6bit_count": 0,
-      "ax_mlx_affine_8bit_count": 0,
+      "ax_mlx_affine_8bit_count": 120,
       "ax_mlx_experimental_3bit_gate": 0
      },
      "scheduler_telemetry": {
@@ -5276,15 +5014,15 @@
      }
     },
     {
-     "prefill_s": 0.997133,
-     "decode_s": 1.961375,
-     "ttft_ms": 997.133,
-     "prefill_tok_s": 2053.8884983246967,
-     "decode_tok_s": 65.26034032247784,
+     "prefill_s": 0.478991,
+     "decode_s": 1.137858,
+     "ttft_ms": 478.991,
+     "prefill_tok_s": 4275.654448622208,
+     "decode_tok_s": 112.49206843033137,
      "output_tokens": 128.0,
-     "client_wall_total_ms": 3764.6050000330433,
-     "client_wall_ttft_ms": 1780.789917043876,
-     "peak_memory_gb": 6.4116058349609375,
+     "client_wall_total_ms": 2389.327375043649,
+     "client_wall_ttft_ms": 1230.9240419999696,
+     "peak_memory_gb": 26.17059326171875,
      "ngram_acceleration_telemetry": {
       "ax_mtp_accept_rate_depth0_x1000": 0,
       "ax_mtp_accept_rate_depth1_x1000": 0,
@@ -5413,26 +5151,26 @@
      "ax_mlx_telemetry": {
       "ax_mlx_speculation_profile": 0,
       "ax_mlx_prefill_steps": 1,
-      "ax_mlx_prefill_wall_us": 984601,
-      "ax_mlx_prefill_forward_wall_us": 984598,
+      "ax_mlx_prefill_wall_us": 468577,
+      "ax_mlx_prefill_forward_wall_us": 468574,
       "ax_mlx_prefill_prefix_cache_wall_us": 0,
-      "ax_mlx_prefill_generation_state_wall_us": 12338,
+      "ax_mlx_prefill_generation_state_wall_us": 10214,
       "ax_mlx_prefill_eval_barriers": 1,
       "ax_mlx_prefill_drain_async_evals": 0,
       "ax_mlx_decode_steps": 127,
-      "ax_mlx_decode_wall_us": 1953613,
+      "ax_mlx_decode_wall_us": 1130486,
       "ax_mlx_direct_bootstrap_steps": 1,
-      "ax_mlx_direct_bootstrap_wall_us": 12276,
+      "ax_mlx_direct_bootstrap_wall_us": 10144,
       "ax_mlx_direct_pipeline_steps": 127,
-      "ax_mlx_direct_pipeline_wall_us": 1953498,
-      "ax_mlx_direct_pipeline_forward_wall_us": 149663,
+      "ax_mlx_direct_pipeline_wall_us": 1130297,
+      "ax_mlx_direct_pipeline_forward_wall_us": 160954,
       "ax_mlx_direct_pipeline_forward_layer_loop_wall_us": 0,
       "ax_mlx_direct_pipeline_forward_head_wall_us": 0,
-      "ax_mlx_direct_pipeline_argmax_wall_us": 121,
-      "ax_mlx_direct_pipeline_async_eval_wall_us": 1797445,
+      "ax_mlx_direct_pipeline_argmax_wall_us": 282,
+      "ax_mlx_direct_pipeline_async_eval_wall_us": 966005,
       "ax_mlx_direct_pipeline_next_complete_wall_us": 0,
-      "ax_mlx_direct_pipeline_pending_eval_wall_us": 5916,
-      "ax_mlx_direct_pipeline_pending_read_wall_us": 8,
+      "ax_mlx_direct_pipeline_pending_eval_wall_us": 2687,
+      "ax_mlx_direct_pipeline_pending_read_wall_us": 20,
       "ax_mlx_direct_pipeline_op_count": 0,
       "ax_mlx_direct_pipeline_linear_attention_layer_ops": 0,
       "ax_mlx_direct_pipeline_linear_attention_layer_count": 0,
@@ -5461,10 +5199,10 @@
       "ax_mlx_prefix_cache_warmup_tokens": 0,
       "ax_mlx_prefix_cache_entries": 0,
       "ax_mlx_prefix_cache_bytes_kib": 0,
-      "ax_mlx_dense_ffn_gate_up_packed_layers": 48,
+      "ax_mlx_dense_ffn_gate_up_packed_layers": 30,
       "ax_mlx_dense_ffn_split_gate_up_layers": 0,
-      "ax_mlx_dense_attention_qkv_packed_layers": 40,
-      "ax_mlx_dense_attention_split_qkv_layers": 8,
+      "ax_mlx_dense_attention_qkv_packed_layers": 25,
+      "ax_mlx_dense_attention_split_qkv_layers": 5,
       "ax_mlx_linear_attention_qkvz_ba_packed_layers": 0,
       "ax_mlx_linear_attention_split_qkvba_layers": 0,
       "ax_mlx_direct_cpp_linear_attention_inputs_attempts": 0,
@@ -5479,15 +5217,15 @@
       "ax_mlx_qwen_linear_attention_decode_post_input_metal_hits": 0,
       "ax_mlx_qwen_linear_attention_decode_post_input_metal_fallbacks": 0,
       "ax_mlx_qwen_linear_attention_decode_post_input_metal_profile_blocked": 0,
-      "ax_mlx_affine_tensor_count": 332,
+      "ax_mlx_affine_tensor_count": 326,
       "ax_mlx_affine_min_bits": 4,
-      "ax_mlx_affine_max_bits": 4,
+      "ax_mlx_affine_max_bits": 8,
       "ax_mlx_affine_2bit_count": 0,
       "ax_mlx_affine_3bit_count": 0,
-      "ax_mlx_affine_4bit_count": 332,
+      "ax_mlx_affine_4bit_count": 206,
       "ax_mlx_affine_5bit_count": 0,
       "ax_mlx_affine_6bit_count": 0,
-      "ax_mlx_affine_8bit_count": 0,
+      "ax_mlx_affine_8bit_count": 120,
       "ax_mlx_experimental_3bit_gate": 0
      },
      "scheduler_telemetry": {
@@ -5516,15 +5254,15 @@
      }
     },
     {
-     "prefill_s": 0.993072,
-     "decode_s": 1.961606,
-     "ttft_ms": 993.072,
-     "prefill_tok_s": 2062.287527993942,
-     "decode_tok_s": 65.25265522230254,
+     "prefill_s": 0.479058,
+     "decode_s": 1.125658,
+     "ttft_ms": 479.058,
+     "prefill_tok_s": 4275.056464979189,
+     "decode_tok_s": 113.71126931981117,
      "output_tokens": 128.0,
-     "client_wall_total_ms": 3513.8825409812853,
-     "client_wall_ttft_ms": 1530.022665974684,
-     "peak_memory_gb": 6.4269866943359375,
+     "client_wall_total_ms": 2372.5277920020744,
+     "client_wall_ttft_ms": 1226.3827919960022,
+     "peak_memory_gb": 26.170623779296875,
      "ngram_acceleration_telemetry": {
       "ax_mtp_accept_rate_depth0_x1000": 0,
       "ax_mtp_accept_rate_depth1_x1000": 0,
@@ -5653,26 +5391,26 @@
      "ax_mlx_telemetry": {
       "ax_mlx_speculation_profile": 0,
       "ax_mlx_prefill_steps": 1,
-      "ax_mlx_prefill_wall_us": 980774,
-      "ax_mlx_prefill_forward_wall_us": 980771,
+      "ax_mlx_prefill_wall_us": 469680,
+      "ax_mlx_prefill_forward_wall_us": 469677,
       "ax_mlx_prefill_prefix_cache_wall_us": 0,
-      "ax_mlx_prefill_generation_state_wall_us": 12097,
+      "ax_mlx_prefill_generation_state_wall_us": 9186,
       "ax_mlx_prefill_eval_barriers": 1,
       "ax_mlx_prefill_drain_async_evals": 0,
       "ax_mlx_decode_steps": 127,
-      "ax_mlx_decode_wall_us": 1953906,
+      "ax_mlx_decode_wall_us": 1117647,
       "ax_mlx_direct_bootstrap_steps": 1,
-      "ax_mlx_direct_bootstrap_wall_us": 12029,
+      "ax_mlx_direct_bootstrap_wall_us": 9119,
       "ax_mlx_direct_pipeline_steps": 127,
-      "ax_mlx_direct_pipeline_wall_us": 1953794,
-      "ax_mlx_direct_pipeline_forward_wall_us": 150179,
+      "ax_mlx_direct_pipeline_wall_us": 1117468,
+      "ax_mlx_direct_pipeline_forward_wall_us": 157601,
       "ax_mlx_direct_pipeline_forward_layer_loop_wall_us": 0,
       "ax_mlx_direct_pipeline_forward_head_wall_us": 0,
-      "ax_mlx_direct_pipeline_argmax_wall_us": 111,
-      "ax_mlx_direct_pipeline_async_eval_wall_us": 1796961,
+      "ax_mlx_direct_pipeline_argmax_wall_us": 271,
+      "ax_mlx_direct_pipeline_async_eval_wall_us": 956463,
       "ax_mlx_direct_pipeline_next_complete_wall_us": 0,
-      "ax_mlx_direct_pipeline_pending_eval_wall_us": 6179,
-      "ax_mlx_direct_pipeline_pending_read_wall_us": 14,
+      "ax_mlx_direct_pipeline_pending_eval_wall_us": 2737,
+      "ax_mlx_direct_pipeline_pending_read_wall_us": 44,
       "ax_mlx_direct_pipeline_op_count": 0,
       "ax_mlx_direct_pipeline_linear_attention_layer_ops": 0,
       "ax_mlx_direct_pipeline_linear_attention_layer_count": 0,
@@ -5701,10 +5439,10 @@
       "ax_mlx_prefix_cache_warmup_tokens": 0,
       "ax_mlx_prefix_cache_entries": 0,
       "ax_mlx_prefix_cache_bytes_kib": 0,
-      "ax_mlx_dense_ffn_gate_up_packed_layers": 48,
+      "ax_mlx_dense_ffn_gate_up_packed_layers": 30,
       "ax_mlx_dense_ffn_split_gate_up_layers": 0,
-      "ax_mlx_dense_attention_qkv_packed_layers": 40,
-      "ax_mlx_dense_attention_split_qkv_layers": 8,
+      "ax_mlx_dense_attention_qkv_packed_layers": 25,
+      "ax_mlx_dense_attention_split_qkv_layers": 5,
       "ax_mlx_linear_attention_qkvz_ba_packed_layers": 0,
       "ax_mlx_linear_attention_split_qkvba_layers": 0,
       "ax_mlx_direct_cpp_linear_attention_inputs_attempts": 0,
@@ -5719,15 +5457,15 @@
       "ax_mlx_qwen_linear_attention_decode_post_input_metal_hits": 0,
       "ax_mlx_qwen_linear_attention_decode_post_input_metal_fallbacks": 0,
       "ax_mlx_qwen_linear_attention_decode_post_input_metal_profile_blocked": 0,
-      "ax_mlx_affine_tensor_count": 332,
+      "ax_mlx_affine_tensor_count": 326,
       "ax_mlx_affine_min_bits": 4,
-      "ax_mlx_affine_max_bits": 4,
+      "ax_mlx_affine_max_bits": 8,
       "ax_mlx_affine_2bit_count": 0,
       "ax_mlx_affine_3bit_count": 0,
-      "ax_mlx_affine_4bit_count": 332,
+      "ax_mlx_affine_4bit_count": 206,
       "ax_mlx_affine_5bit_count": 0,
       "ax_mlx_affine_6bit_count": 0,
-      "ax_mlx_affine_8bit_count": 0,
+      "ax_mlx_affine_8bit_count": 120,
       "ax_mlx_experimental_3bit_gate": 0
      },
      "scheduler_telemetry": {
@@ -5757,14 +5495,14 @@
     }
    ],
    "peak_memory_gb": {
-    "mean": 6.395196533203125,
-    "median": 6.39453125,
-    "min": 6.3637237548828125,
-    "max": 6.4269866943359375
+    "mean": 26.17041931152344,
+    "median": 26.1705322265625,
+    "min": 26.170150756835938,
+    "max": 26.170623779296875
    },
    "memory_source": "server_process_rss_after_stream",
    "prefill_step_size": 2048,
-   "prompt_token_ids_path": "benchmarks/results/mlx-inference/2026-06-26-gemma4-12b-4bit-ax-direct-only/gemma-4-12b-it-4bit-prompts/prompt-2048-gen-128-a7760438e4a5.json",
+   "prompt_token_ids_path": "/Users/akiralam/code/ax-engine/benchmarks/results/mlx-inference/2026-06-27-ax-direct-only/gemma-4-26b-a4b-it-4bit-prompts/prompt-2048-gen-128-a7760438e4a5.json",
    "prompt_token_ids_sha256": "a7760438e4a53f539ab0ec8f21583186bbad6a1973c58422b1bc373778924cb2",
    "prompt_source": "random",
    "ax_linear_attention_projection_pack": false,
@@ -5781,11 +5519,16 @@
   }
  ],
  "bandwidth_accounting": {
-  "safetensor_bytes": 6741038722,
-  "moe_block": null,
-  "moe_active_bytes": null,
-  "bytes_used_for_estimate": 6741038722,
-  "estimate_kind": "dense_safetensor_total",
+  "safetensor_bytes": 15608838574,
+  "moe_block": {
+   "expert_count": 128,
+   "experts_per_token": 8,
+   "expert_intermediate_size": 704,
+   "sigmoid_routing": false
+  },
+  "moe_active_bytes": 2185355324,
+  "bytes_used_for_estimate": 2185355324,
+  "estimate_kind": "moe_active_estimate",
   "peak_bandwidth_gb_s": null,
   "peak_bandwidth_source": null,
   "ax_bandwidth_peak_source": null,
@@ -5794,29 +5537,30 @@
     "engine": "ax_engine_mlx",
     "prompt_tokens": 128,
     "generation_tokens": 128,
-    "decode_tok_s_median": 69.12880424450859,
-    "ax_effective_weight_bytes_per_token": 6741038722,
-    "ax_effective_bandwidth_gb_s": 466.0,
-    "ax_bandwidth_estimate_kind": "dense_safetensor_total"
+    "decode_tok_s_median": 122.29330520587312,
+    "ax_effective_weight_bytes_per_token": 2185355324,
+    "ax_effective_bandwidth_gb_s": 267.254,
+    "ax_bandwidth_estimate_kind": "moe_active_estimate"
    },
    {
     "engine": "ax_engine_mlx",
     "prompt_tokens": 512,
     "generation_tokens": 128,
-    "decode_tok_s_median": 67.53676532662467,
-    "ax_effective_weight_bytes_per_token": 6741038722,
-    "ax_effective_bandwidth_gb_s": 455.268,
-    "ax_bandwidth_estimate_kind": "dense_safetensor_total"
+    "decode_tok_s_median": 118.35019823658205,
+    "ax_effective_weight_bytes_per_token": 2185355324,
+    "ax_effective_bandwidth_gb_s": 258.637,
+    "ax_bandwidth_estimate_kind": "moe_active_estimate"
    },
    {
     "engine": "ax_engine_mlx",
     "prompt_tokens": 2048,
     "generation_tokens": 128,
-    "decode_tok_s_median": 65.26034032247784,
-    "ax_effective_weight_bytes_per_token": 6741038722,
-    "ax_effective_bandwidth_gb_s": 439.922,
-    "ax_bandwidth_estimate_kind": "dense_safetensor_total"
+    "decode_tok_s_median": 112.49206843033137,
+    "ax_effective_weight_bytes_per_token": 2185355324,
+    "ax_effective_bandwidth_gb_s": 245.835,
+    "ax_bandwidth_estimate_kind": "moe_active_estimate"
    }
   ]
- }
+ },
+ "model_dir_note": "Benched from a transient scratchpad re-download of this cached snapshot (sandbox could not read /Volumes/Ext4T-backed cache directly); path normalized to the canonical HF cache location."
 }
