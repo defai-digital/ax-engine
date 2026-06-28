@@ -203,10 +203,15 @@ message CompletionChunk {
 // ─── Embeddings ──────────────────────────────────────────────────────────────
 
 message EmbeddingsRequest {
-  string          model     = 1;
-  repeated uint32 input     = 2;
-  string          pooling   = 3;
-  bool            normalize = 4;
+  string                  model     = 1;
+  repeated uint32         input     = 2;
+  string                  pooling   = 3;
+  bool                    normalize = 4;
+  repeated EmbeddingInput inputs    = 5;
+}
+
+message EmbeddingInput {
+  repeated uint32 tokens = 1;
 }
 
 message EmbeddingData {

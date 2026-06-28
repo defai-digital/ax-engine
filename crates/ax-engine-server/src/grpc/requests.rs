@@ -101,8 +101,8 @@ pub(super) fn build_completion_generate_request(
     }
 }
 
-pub(super) fn grpc_embedding_prompt_tokens(input: &[u32]) -> u32 {
-    input.len() as u32
+pub(super) fn grpc_embedding_prompt_tokens(inputs: &[Vec<u32>]) -> u32 {
+    inputs.iter().map(Vec::len).sum::<usize>() as u32
 }
 
 #[cfg(test)]
@@ -200,9 +200,9 @@ mod tests {
 
     #[test]
     fn grpc_embedding_usage_counts_input_tokens() {
-        let input_tokens = [101, 102, 103];
+        let input_tokens = vec![vec![101, 102, 103], vec![201, 202]];
         let embedding_width = 768_u32;
-        assert_eq!(grpc_embedding_prompt_tokens(&input_tokens), 3);
+        assert_eq!(grpc_embedding_prompt_tokens(&input_tokens), 5);
         assert_ne!(grpc_embedding_prompt_tokens(&input_tokens), embedding_width);
     }
 

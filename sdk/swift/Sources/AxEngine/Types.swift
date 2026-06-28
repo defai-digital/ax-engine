@@ -372,9 +372,24 @@ public struct OpenAiCompletionChunk: Decodable, Sendable {
 
 // MARK: - Embeddings
 
+public enum OpenAiEmbeddingInput: Encodable, Sendable {
+    case tokens([Int])
+    case batch([[Int]])
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        switch self {
+        case .tokens(let tokens):
+            try container.encode(tokens)
+        case .batch(let batch):
+            try container.encode(batch)
+        }
+    }
+}
+
 public struct OpenAiEmbeddingRequest: Encodable, Sendable {
     public var model: String?
-    public var input: [Int]
+    public var input: OpenAiEmbeddingInput
     public var encodingFormat: String?
     public var pooling: String?
     public var normalize: Bool?
@@ -383,7 +398,15 @@ public struct OpenAiEmbeddingRequest: Encodable, Sendable {
         model: String? = nil, input: [Int],
         encodingFormat: String? = nil, pooling: String? = nil, normalize: Bool? = nil
     ) {
-        self.model = model; self.input = input; self.encodingFormat = encodingFormat
+        self.model = model; self.input = .tokens(input); self.encodingFormat = encodingFormat
+        self.pooling = pooling; self.normalize = normalize
+    }
+
+    public init(
+        model: String? = nil, input: [[Int]],
+        encodingFormat: String? = nil, pooling: String? = nil, normalize: Bool? = nil
+    ) {
+        self.model = model; self.input = .batch(input); self.encodingFormat = encodingFormat
         self.pooling = pooling; self.normalize = normalize
     }
 }

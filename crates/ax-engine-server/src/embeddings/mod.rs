@@ -1,4 +1,5 @@
 pub(crate) mod microbatch;
+pub(crate) mod records;
 
 use ax_engine_sdk::EmbeddingPooling;
 

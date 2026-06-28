@@ -169,3 +169,37 @@ async fn openai_embeddings_endpoint_rejects_unknown_pooling() {
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_invalid_request_response(&json, "unknown pooling strategy");
 }
+
+#[tokio::test]
+async fn embedding_records_endpoint_requires_tokenizer_artifacts() {
+    let app = build_router(llama_cpp_server_state("http://127.0.0.1:1".to_string()));
+    let body = serde_json::json!({
+        "model": super::fixtures::TEST_MODEL_ID,
+        "records": [{
+            "id": "doc-1",
+            "fields": {
+                "title": "Release notes",
+                "body": "AX Engine embedding ingestion"
+            },
+            "metadata": {"source": "unit-test"}
+        }],
+        "render_template": "title: {title}\nbody: {body}",
+        "chunking": {"max_tokens": 128, "overlap_tokens": 16}
+    });
+    let (status, json) = json_response(
+        &app,
+        Request::builder()
+            .method("POST")
+            .uri("/v1/embedding_records")
+            .header("content-type", "application/json")
+            .body(Body::from(json_request_body(&body)))
+            .unwrap(),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_invalid_request_response(
+        &json,
+        "embedding record ingestion requires mlx_model_artifacts_dir",
+    );
+}

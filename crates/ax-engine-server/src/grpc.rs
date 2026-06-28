@@ -244,20 +244,61 @@ impl AxEngine for AxEngineGrpcService {
             "cls" => EmbeddingPooling::Cls,
             _ => EmbeddingPooling::Last,
         };
-        let prompt_tokens = grpc_embedding_prompt_tokens(&req.input);
-        let embedding = live
-            .embedding_batcher
-            .embed(req.input, pooling, req.normalize)
+        let batch = if req.inputs.is_empty() {
+            vec![req.input]
+        } else {
+            req.inputs
+                .into_iter()
+                .map(|input| input.tokens)
+                .collect::<Vec<_>>()
+        };
+        if batch.is_empty() || batch.iter().any(Vec::is_empty) {
+            return Err(Status::invalid_argument(
+                "embedding input must not be empty",
+            ));
+        }
+        let prompt_tokens = grpc_embedding_prompt_tokens(&batch);
+        let embeddings = if batch.len() == 1 {
+            vec![
+                live.embedding_batcher
+                    .embed(
+                        batch
+                            .into_iter()
+                            .next()
+                            .expect("batch has one item after len check"),
+                        pooling,
+                        req.normalize,
+                    )
+                    .await
+                    .map_err(|e| Status::internal(e.to_string()))?,
+            ]
+        } else {
+            let session = live.request_session.clone();
+            tokio::task::spawn_blocking(move || {
+                let session = session.blocking_lock();
+                session.embed_batch_flat(&batch, pooling, req.normalize)
+            })
             .await
-            .map_err(|e| Status::internal(e.to_string()))?;
+            .map_err(|_| Status::internal("embedding worker join failed"))?
+            .map_err(|e| Status::internal(e.to_string()))
+            .map(|matrix| {
+                (0..matrix.batch_size)
+                    .map(|index| matrix.row(index).to_vec())
+                    .collect::<Vec<_>>()
+            })?
+        };
 
         Ok(Response::new(proto::EmbeddingsResponse {
             object: "list".to_string(),
-            data: vec![proto::EmbeddingData {
-                object: "embedding".to_string(),
-                embedding,
-                index: 0,
-            }],
+            data: embeddings
+                .into_iter()
+                .enumerate()
+                .map(|(index, embedding)| proto::EmbeddingData {
+                    object: "embedding".to_string(),
+                    embedding,
+                    index: index as u32,
+                })
+                .collect(),
             model: model_id,
             usage: Some(proto::EmbeddingUsage {
                 prompt_tokens,

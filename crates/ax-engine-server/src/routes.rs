@@ -11,6 +11,7 @@ use tokio::sync::Semaphore;
 use super::DEFAULT_MAX_REQUEST_BODY_BYTES;
 use super::anthropic::anthropic_messages;
 use super::app_state::AppState;
+use super::embeddings::records::embedding_records;
 use super::generation::lifecycle::{
     cancel_request, request_snapshot, step_request, submit_request,
 };
@@ -57,6 +58,7 @@ pub(crate) fn build_router(state: AppState) -> Router {
         .route("/v1/apply-template", post(apply_template))
         .route("/v1/model/load", post(load_model))
         .route("/v1/embeddings", post(openai_embeddings))
+        .route("/v1/embedding_records", post(embedding_records))
         .route("/v1/messages", post(anthropic_messages))
         .route("/v1/completions", post(openai_completions))
         .route("/v1/chat/completions", post(openai_chat_completions))

@@ -200,7 +200,8 @@ type OpenAiChatCompletionChunk struct {
 // OpenAiEmbeddingRequest is the /v1/embeddings request body.
 type OpenAiEmbeddingRequest struct {
 	Model          *string `json:"model,omitempty"`
-	Input          []int   `json:"input"`
+	// Input accepts []int for one sequence or [][]int for an explicit batch.
+	Input          any     `json:"input"`
 	EncodingFormat *string `json:"encoding_format,omitempty"`
 	Pooling        *string `json:"pooling,omitempty"`
 	Normalize      *bool   `json:"normalize,omitempty"`

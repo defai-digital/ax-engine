@@ -121,6 +121,37 @@ The README lists three contracts. Detailed semantics:
   `index` matching position in the request.
 - Validation: `input` must not be empty; no inner sequence may be empty.
 
+### `POST /v1/embedding_records` — structured RAG ingestion batch
+
+Use this AX-native endpoint when the caller owns document records rather
+than pre-tokenized prompt arrays. The request accepts `records[]` with a
+stable `id`, either `text` or structured `fields`, optional `metadata`,
+and optional fixed-token chunking:
+
+```json
+{
+  "records": [
+    {
+      "id": "doc-1",
+      "fields": {"title": "Release notes", "body": "AX Engine update"},
+      "metadata": {"source": "notion"}
+    }
+  ],
+  "render_template": "title: {title}\nbody: {body}",
+  "chunking": {"max_tokens": 512, "overlap_tokens": 64}
+}
+```
+
+The server renders fields deterministically, tokenizes with the model's
+`tokenizer.json`, chunks by token range, runs the chunks through the
+same contiguous batch path as `/v1/embeddings`, and returns one
+embedding per chunk with `id`, `record_index`, `chunk_index`,
+`token_start`, `token_end`, and `metadata`.
+
+Do not send arbitrary JSON dumps as embedding text. Keep searchable
+content in the rendered text and keep filter-only attributes in
+`metadata`.
+
 ### `{"input": [ids]}` — single sequence + microbatcher
 
 - Concurrent single-sequence requests are collected within a short
