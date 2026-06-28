@@ -1131,6 +1131,193 @@ fn embed_tokens_batched(
     )
 }
 
+/// Build a bidirectional key-padding mask for the EmbeddingGemma encoder.
+///
+/// Shape `[batch, 1, max_len, max_len]`, additive: `0.0` where key `j` is a real
+/// token (`j < len[b]`) and `-inf` where it is right-padding. Query rows are
+/// uniform (bidirectional: every position attends every real token); padded
+/// query rows produce junk hidden states that mean-pooling discards. Mirrors
+/// mlx-embeddings' `get_extended_attention_mask`.
+///
+/// Always returns `Some` (all-zeros when there is no padding): `full_precision_
+/// attention` interprets a `None` mask as **causal** for seq>1, so an explicit
+/// mask is required to get bidirectional (full) attention.
+fn build_bidirectional_padding_mask(
+    batch: usize,
+    max_len: usize,
+    actual_lens: &[usize],
+    dtype: MlxDtype,
+) -> Option<MlxArray> {
+    let neg_inf = f32::NEG_INFINITY;
+    let mut data = vec![0.0f32; batch * max_len * max_len];
+    for (b, &len) in actual_lens.iter().enumerate() {
+        for i in 0..max_len {
+            let row = (b * max_len + i) * max_len;
+            for cell in data[row + len..row + max_len].iter_mut() {
+                *cell = neg_inf;
+            }
+        }
+    }
+    let mask = MlxArray::from_raw_data(
+        data.as_ptr() as *const u8,
+        data.len() * std::mem::size_of::<f32>(),
+        &[batch as i32, 1, max_len as i32, max_len as i32],
+        MlxDtype::Float32,
+    );
+    Some(astype(&mask, dtype, None))
+}
+
+fn gemma3_clip_residual(x: &MlxArray, y: &MlxArray) -> MlxArray {
+    if x.dtype() != MlxDtype::Float16 {
+        return add(x, y, None);
+    }
+    let sum = add(
+        &astype(x, MlxDtype::Float32, None),
+        &astype(y, MlxDtype::Float32, None),
+        None,
+    );
+    let lower = mlx_sys::ops::cached_scalar(-65504.0, MlxDtype::Float32);
+    let upper = mlx_sys::ops::cached_scalar(65504.0, MlxDtype::Float32);
+    astype(
+        &mlx_sys::ops::clip(&sum, &lower, &upper, None),
+        MlxDtype::Float16,
+        None,
+    )
+}
+
+/// One EmbeddingGemma (Gemma3) bidirectional encoder layer: sandwich norms,
+/// q/k-norm + dual-RoPE (base selected per layer by `layer_params`), full
+/// bidirectional SDPA over real tokens, GeGLU FFN. Mirrors the Gemma block in
+/// `families::standard::layer_forward` but bidirectional and cache-free.
+fn layer_forward_embed_gemma3(
+    cfg: &ModelConfig,
+    w: &LayerWeights,
+    hidden: &MlxArray,
+    layer_idx: usize,
+    bidir_mask: &Option<MlxArray>,
+) -> MlxArray {
+    let (
+        head_dim,
+        rope_theta,
+        rope_dims,
+        layer_rope_freqs,
+        _sliding_window,
+        _kv_source,
+        v_norm_no_scale,
+    ) = layer_params(cfg, layer_idx);
+    let seq = hidden.shape()[1] as usize;
+
+    // 1. Attention norm.
+    let normed = rms_norm(hidden, Some(&w.attn_norm), cfg.rms_norm_eps, None);
+
+    // 2. QKV projections.
+    let (q_raw, k_raw, v_raw, _attn_gate) = qkv_project(cfg, w, &normed, head_dim);
+    let kv_heads = (k_raw.shape()[2] as usize)
+        .checked_div(head_dim)
+        .unwrap_or(1);
+    let v = prepare_value_bhsd_from_proj(
+        &v_raw,
+        v_norm_no_scale,
+        kv_heads,
+        head_dim,
+        seq,
+        cfg.rms_norm_eps,
+    );
+
+    // 3. Q/K norm + RoPE (dual base: sliding layers use rope_theta_swa, full
+    //    layers use rope_theta — resolved by `layer_params`).
+    let rope_freqs = layer_rope_freqs.or(cfg.rope_freqs.as_ref());
+    let (rope_base, rope_freqs_ref) = rope_freqs
+        .map(|f| (None, Some(f)))
+        .unwrap_or((Some(rope_theta), None));
+    let q_rope = qk_norm_rope_bhsd_from_proj(
+        &q_raw,
+        w.q_norm.as_ref(),
+        cfg.n_heads,
+        head_dim,
+        seq,
+        cfg.rms_norm_eps,
+        rope_dims,
+        rope_base,
+        0,
+        rope_freqs_ref,
+    );
+    let k_rope = qk_norm_rope_bhsd_from_proj(
+        &k_raw,
+        w.k_norm.as_ref(),
+        kv_heads,
+        head_dim,
+        seq,
+        cfg.rms_norm_eps,
+        rope_dims,
+        rope_base,
+        0,
+        rope_freqs_ref,
+    );
+
+    // 4. Bidirectional SDPA (full attention over real tokens; padding masked).
+    //    query_scale = query_pre_attn_scalar^-0.5 (set in ModelConfig).
+    let attn_sdpa =
+        full_precision_attention(&q_rope, &k_rope, &v, cfg.query_scale, seq, bidir_mask);
+
+    // 5. Output projection.
+    let attn_flat = flatten_attention_output_bhsd(&attn_sdpa, seq, cfg.n_heads, head_dim);
+    let attn_proj = attention_output_projection(
+        &attn_flat,
+        None,
+        w.o_proj
+            .as_ref()
+            .expect("embeddinggemma layer must have o_proj"),
+    );
+
+    // 6. Post-attention norm (Gemma sandwich) then residual.
+    let attn_proj = rms_norm_opt(&attn_proj, w.attn_post_norm.as_ref(), cfg.rms_norm_eps);
+    let hidden = gemma3_clip_residual(hidden, &attn_proj);
+
+    // 7. Pre-FFN norm → GeGLU FFN (post_feedforward_layernorm applied inside
+    //    ffn_swiglu when present) → residual.
+    let normed2 = rms_norm(&hidden, Some(&w.ffn_norm), cfg.rms_norm_eps, None);
+    let ffn_out = ffn_swiglu(cfg, w, &normed2, w.ffn_post_norm.as_ref(), layer_idx);
+    gemma3_clip_residual(&hidden, &ffn_out)
+}
+
+/// Full EmbeddingGemma encoder forward: token embed (× sqrt(hidden)) → 24
+/// bidirectional Gemma3 layers → final norm. Returns `[B, max_seq, H]` plus the
+/// per-sequence real lengths for masked mean pooling. The Dense head + L2 norm
+/// are applied by the runner after pooling.
+fn forward_for_embedding_gemma3_batch(
+    cfg: &ModelConfig,
+    weights: &ModelWeights,
+    batch_token_ids: &[Vec<u32>],
+) -> (MlxArray, Vec<usize>) {
+    let actual_lens: Vec<usize> = batch_token_ids.iter().map(Vec::len).collect();
+    let max_len = actual_lens.iter().copied().max().unwrap_or(0);
+    let batch = batch_token_ids.len();
+
+    let mut hidden = build_embedding_batch_hidden(cfg, weights, batch_token_ids, batch, max_len);
+    let bidir_mask = build_bidirectional_padding_mask(batch, max_len, &actual_lens, hidden.dtype());
+    for (li, layer_w) in weights.layers.iter().enumerate() {
+        hidden = layer_forward_embed_gemma3(cfg, layer_w, &hidden, li, &bidir_mask);
+    }
+    let out = rms_norm(&hidden, Some(&weights.final_norm), cfg.rms_norm_eps, None);
+    (out, actual_lens)
+}
+
+/// Apply the EmbeddingGemma sentence-transformers Dense head to a pooled
+/// `[B, hidden]` tensor: `dense.1(dense.0(x))` — two bias-free, identity-activation
+/// quantized linears (hidden → 4*hidden → hidden). Returns the input unchanged
+/// when the head is absent (non-embeddinggemma models). The caller applies L2
+/// normalization afterward.
+pub(crate) fn apply_embedding_dense_head(weights: &ModelWeights, pooled: &MlxArray) -> MlxArray {
+    match (&weights.embedding_dense_0, &weights.embedding_dense_1) {
+        (Some(d0), Some(d1)) => {
+            let h = qw(pooled, d0);
+            qw(&h, d1)
+        }
+        _ => pooled.clone(),
+    }
+}
+
 /// Batch stateless forward pass for dense-embedding extraction.
 ///
 /// Pads `batch_token_ids` to the longest sequence length, runs a single
@@ -1149,6 +1336,15 @@ pub fn forward_for_embedding_batch(
     batch_token_ids: &[Vec<u32>],
     target_positions: Option<&[usize]>,
 ) -> (MlxArray, Vec<usize>) {
+    // EmbeddingGemma (Gemma3 backbone) is a bidirectional encoder with mean
+    // pooling; it uses a dedicated forward (sandwich norms + bidirectional
+    // padding mask) and always returns the full [B, max_seq, H] hidden so the
+    // caller can masked-mean-pool. The Dense head is applied post-pooling by the
+    // runner.
+    if cfg.model_family == "embeddinggemma" {
+        return forward_for_embedding_gemma3_batch(cfg, weights, batch_token_ids);
+    }
+
     let actual_lens: Vec<usize> = batch_token_ids.iter().map(Vec::len).collect();
     let max_len = actual_lens.iter().copied().max().unwrap_or(0);
     let batch = batch_token_ids.len();
@@ -1187,7 +1383,7 @@ fn build_embedding_batch_hidden(
         batch,
         max_len,
     );
-    if hidden.dtype() != MlxDtype::Bfloat16 {
+    if cfg.model_family != "embeddinggemma" && hidden.dtype() != MlxDtype::Bfloat16 {
         hidden = astype(&hidden, MlxDtype::Bfloat16, None);
     }
     if let Some(scale) = cfg.hidden_states_scale {
@@ -2174,6 +2370,27 @@ mod tests {
     }
 
     #[test]
+    fn gemma3_clip_residual_matches_float16_reference_bound() {
+        let x = astype(
+            &array_f32(&[65_000.0, -65_000.0], &[1, 2]),
+            MlxDtype::Float16,
+            None,
+        );
+        let y = astype(
+            &array_f32(&[1_000.0, -1_000.0], &[1, 2]),
+            MlxDtype::Float16,
+            None,
+        );
+
+        let out = gemma3_clip_residual(&x, &y);
+        assert_eq!(out.dtype(), MlxDtype::Float16);
+        let out_f32 = astype(&out, MlxDtype::Float32, None);
+        eval(&[&out_f32]);
+
+        assert_close(out_f32.data_f32(), &[65_504.0, -65_504.0], 1.0);
+    }
+
+    #[test]
     fn embed_tokens_arr_accepts_singleton_matrix_token_ids() {
         let embedding = dense_weight_from_data(&[0.0, 1.0, 2.0, 3.0, 4.0, 5.0], &[3, 2]);
         let token_id = [2_u32];
@@ -2236,6 +2453,8 @@ mod tests {
             gemma4_assistant_mtp: Default::default(),
             assistant_pre_projection: None,
             assistant_post_projection: None,
+            embedding_dense_0: None,
+            embedding_dense_1: None,
             gemma4_unified_vision: None,
             gemma4_unified_audio: None,
             diffusion_self_conditioning: None,
@@ -3508,6 +3727,8 @@ mod tests {
             gemma4_assistant_mtp: Default::default(),
             assistant_pre_projection: None,
             assistant_post_projection: None,
+            embedding_dense_0: None,
+            embedding_dense_1: None,
             gemma4_unified_vision: None,
             gemma4_unified_audio: None,
             diffusion_self_conditioning: None,

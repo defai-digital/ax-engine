@@ -82,6 +82,14 @@ pub(crate) fn is_gemma4_unified_model_type(model_type: &str) -> bool {
     matches!(model_type, "gemma4_unified" | "gemma4_unified_text")
 }
 
+/// EmbeddingGemma (Gemma3 text backbone served as a bidirectional + mean-pooled
+/// embedding model). HF `model_type` is `gemma3_text`; the config is flat (no
+/// `text_config` wrapper), uses `rope_local_base_freq` for sliding layers, and
+/// ships a `layer_types` array.
+pub(crate) fn is_embeddinggemma_model_type(model_type: &str) -> bool {
+    matches!(model_type, "gemma3_text" | "embeddinggemma")
+}
+
 pub(crate) fn is_qwen_family_model_type(model_type: &str) -> bool {
     model_type.starts_with("qwen3")
 }
@@ -449,6 +457,17 @@ pub(crate) fn parse_rope_params(
         return (full_theta, sliding_theta, partial_rotary);
     }
 
+    if is_embeddinggemma_model_type(model_type) {
+        // Gemma3 dual-RoPE: global (full-attention) layers use `rope_theta`;
+        // sliding layers use `rope_local_base_freq`. Stored as rope_theta /
+        // rope_theta_swa respectively (same convention as gemma4).
+        let full_theta = arch_f64(config, model_type, "rope_theta").and_then(f64_to_u32);
+        let sliding_theta = arch_f64(config, model_type, "rope_local_base_freq")
+            .or_else(|| arch_f64(config, model_type, "rope_theta"))
+            .and_then(f64_to_u32);
+        return (full_theta, sliding_theta, None);
+    }
+
     let theta = arch_f64(config, model_type, "rope_theta")
         .or_else(|| {
             let text_config = config.get("text_config")?;
@@ -530,7 +549,7 @@ pub(crate) fn parse_layer_types(
     model_type: &str,
     layer_count: u32,
 ) -> Vec<String> {
-    if !is_gemma4_text_model_type(model_type) {
+    if !is_gemma4_text_model_type(model_type) && !is_embeddinggemma_model_type(model_type) {
         return Vec::new();
     }
     if let Some(layer_types) = config

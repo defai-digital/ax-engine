@@ -425,7 +425,7 @@ impl ModelConfig {
         );
         let uses_geglu = matches!(
             m.model_family.as_str(),
-            "gemma4" | "gemma4_assistant" | "diffusion_gemma" | "gemma3"
+            "gemma4" | "gemma4_assistant" | "diffusion_gemma" | "gemma3" | "embeddinggemma"
         );
         let query_scale = if is_gemma4 {
             1.0

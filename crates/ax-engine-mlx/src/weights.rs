@@ -43,6 +43,12 @@ pub struct ModelWeights {
     pub assistant_pre_projection: Option<QuantizedWeight>,
     /// Gemma4 Assistant post-projection from assistant hidden back to target hidden.
     pub assistant_post_projection: Option<QuantizedWeight>,
+    /// EmbeddingGemma sentence-transformers Dense head, projection 1 (hidden →
+    /// 4*hidden, no bias, identity). Applied after mean pooling, before L2 norm.
+    pub embedding_dense_0: Option<QuantizedWeight>,
+    /// EmbeddingGemma sentence-transformers Dense head, projection 2 (4*hidden →
+    /// hidden, no bias, identity). Applied after `embedding_dense_0`, before L2 norm.
+    pub embedding_dense_1: Option<QuantizedWeight>,
     /// Gemma4 Unified encoder-free vision embedder + connector.
     pub gemma4_unified_vision: Option<Gemma4UnifiedVisionWeights>,
     /// Gemma4 Unified encoder-free audio connector.
@@ -388,7 +394,12 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
         "final_norm",
     )?
     .weight;
-    let lm_head = if artifacts.manifest().tie_word_embeddings {
+    // EmbeddingGemma is an encoder with no LM head; reuse the token embedding as
+    // a placeholder `lm_head` (never consumed on the embedding-only forward path)
+    // so the shared ModelWeights shape stays non-optional.
+    let lm_head = if artifacts.manifest().tie_word_embeddings
+        || artifacts.manifest().model_family == "embeddinggemma"
+    {
         let mut tied = QuantizedWeight::new(
             token_embedding.weight.clone(),
             token_embedding.scales.clone(),
@@ -466,6 +477,28 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
         } else {
             None
         };
+    let embedding_dense_0 = if has_role(specs, NativeTensorRole::EmbeddingDense0, None) {
+        Some(take_weight(
+            specs,
+            &mut name_map,
+            NativeTensorRole::EmbeddingDense0,
+            None,
+            "embedding_dense_0",
+        )?)
+    } else {
+        None
+    };
+    let embedding_dense_1 = if has_role(specs, NativeTensorRole::EmbeddingDense1, None) {
+        Some(take_weight(
+            specs,
+            &mut name_map,
+            NativeTensorRole::EmbeddingDense1,
+            None,
+            "embedding_dense_1",
+        )?)
+    } else {
+        None
+    };
     let gemma4_unified_vision = load_gemma4_unified_vision_weights(specs, &mut name_map)?;
     let gemma4_unified_audio = load_gemma4_unified_audio_weights(specs, &mut name_map)?;
     let diffusion_self_conditioning =
@@ -949,6 +982,8 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
         gemma4_assistant_mtp,
         assistant_pre_projection,
         assistant_post_projection,
+        embedding_dense_0,
+        embedding_dense_1,
         gemma4_unified_vision,
         gemma4_unified_audio,
         diffusion_self_conditioning,

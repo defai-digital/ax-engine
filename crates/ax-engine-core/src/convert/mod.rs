@@ -196,7 +196,9 @@ pub fn convert_hf_model_dir(model_dir: &Path) -> Result<NativeModelManifest, Con
         layer_types,
         kv_shared_source_layers,
         final_logit_softcapping,
-        hidden_states_scale: if is_gemma4_target_model_type(&model_type) {
+        hidden_states_scale: if is_gemma4_target_model_type(&model_type)
+            || is_embeddinggemma_model_type(&model_type)
+        {
             Some((arch.hidden_size as f32).sqrt())
         } else {
             None
@@ -211,8 +213,14 @@ pub fn convert_hf_model_dir(model_dir: &Path) -> Result<NativeModelManifest, Con
         glm_router,
         // Converter assumes the on-disk weights are mlx-community pre-sanitized;
         // raw HuggingFace checkpoints need this set to `HfToMlx` by hand (or via
-        // the doctor command when REQ-L4 lands).
-        weight_sanitize: WeightSanitize::None,
+        // the doctor command when REQ-L4 lands). EmbeddingGemma's mlx-community
+        // weights store raw Gemma `gamma` norms (mlx-lm applies `1 + weight` at
+        // runtime), so lift the `+1` into the norm weights at load.
+        weight_sanitize: if is_embeddinggemma_model_type(&model_type) {
+            WeightSanitize::HfNormOnly
+        } else {
+            WeightSanitize::None
+        },
         think_start_token_id: None,
         think_end_token_id: None,
         diffusion: parse_diffusion_config(&config, &model_type),

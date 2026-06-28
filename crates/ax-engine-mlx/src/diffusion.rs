@@ -50,7 +50,7 @@
 //!
 //! The full-pipeline closure compiles the entire denoise step (forward + softmax
 //! + entropy + sampling + acceptance) into a single MLX graph, collapsing ~280
-//! per-step dispatches into one. **Default ON**; opt-out via `AX_DIFFUSION_NO_FULL_PIPELINE=1`.
+//!   per-step dispatches into one. **Default ON**; opt-out via `AX_DIFFUSION_NO_FULL_PIPELINE=1`.
 //!
 //! The closure accepts four inputs:
 //!   - `[0]` token_ids: `[canvas_size]` u32

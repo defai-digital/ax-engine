@@ -3727,7 +3727,10 @@ impl MlxRunner {
         ));
 
         // JIT warm-up: trigger Metal shader compilation for both decode and prefill paths.
-        {
+        // EmbeddingGemma is an embedding-only encoder with no generation (decode/
+        // prefill) path — skip the generation warmup (it would panic in the
+        // family dispatch); the bidirectional embed forward JITs on first embed.
+        if cfg.model_family != "embeddinggemma" {
             let mut dummy_cache = MlxKVCache::new(cfg.layer_count);
             let mut dummy_rng = Xorshift64::new(0);
             decode_step(
@@ -4158,6 +4161,14 @@ impl ExecutionRunner for MlxRunner {
                 return Err("token_ids must not be empty");
             }
         }
+        // EmbeddingGemma is a mean-pooled encoder whose Dense head + L2 norm only
+        // make sense on the mean-pooled vector; force Mean regardless of the
+        // requested pooling mode.
+        let pooling = if self.cfg.model_family == "embeddinggemma" {
+            EmbeddingPooling::Mean
+        } else {
+            pooling
+        };
         let target_positions: Option<Vec<usize>> = match pooling {
             EmbeddingPooling::Last => Some(batch.iter().map(|ids| ids.len() - 1).collect()),
             EmbeddingPooling::Cls => Some(vec![0; batch.len()]),
@@ -4200,6 +4211,10 @@ impl ExecutionRunner for MlxRunner {
             }
             EmbeddingPooling::Last | EmbeddingPooling::Cls => hidden,
         };
+        // EmbeddingGemma: apply the sentence-transformers Dense head (dense.0 →
+        // dense.1) to the pooled vector before L2 normalization. No-op for other
+        // models (head weights absent).
+        let pooled = crate::model::apply_embedding_dense_head(&self.weights, &pooled);
         let pooled_f32 = astype(&pooled, MlxDtype::Float32, None);
         // R3: when CPU normalize is enabled (default), skip the GPU
         // sqrt + sum + divide ops and l2-normalize the result on the host
@@ -9284,6 +9299,7 @@ fn is_mlx_supported_model_family(model_family: &str) -> bool {
         model_family,
         "gemma4"
             | "gemma3"
+            | "embeddinggemma"
             | "qwen3"
             | "llama3"
             | "diffusion_gemma"
@@ -9787,7 +9803,7 @@ fn validate_gemma4_interleaved_attention(
 ) -> Result<(), MlxRunnerError> {
     if !matches!(
         manifest.model_family.as_str(),
-        "gemma4" | "gemma3" | "diffusion_gemma"
+        "gemma4" | "gemma3" | "diffusion_gemma" | "embeddinggemma"
     ) {
         return Err(MlxRunnerError::UnsupportedFeature(format!(
             "interleaved sliding/full attention is not implemented for {} manifests",
@@ -11557,6 +11573,8 @@ mod tests {
             gemma4_assistant_mtp: Default::default(),
             assistant_pre_projection: None,
             assistant_post_projection: None,
+            embedding_dense_0: None,
+            embedding_dense_1: None,
             gemma4_unified_vision: None,
             gemma4_unified_audio: None,
             diffusion_self_conditioning: None,

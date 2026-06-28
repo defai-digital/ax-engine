@@ -153,6 +153,12 @@ pub enum NativeTensorRole {
     DiffusionSelfConditionGate,
     DiffusionSelfConditionUp,
     DiffusionSelfConditionDown,
+    /// EmbeddingGemma sentence-transformers Dense projection 1 (hidden → 4*hidden,
+    /// no bias, identity activation). Applied after mean pooling.
+    EmbeddingDense0,
+    /// EmbeddingGemma sentence-transformers Dense projection 2 (4*hidden → hidden,
+    /// no bias, identity activation). Applied after `EmbeddingDense0`, before L2 norm.
+    EmbeddingDense1,
     FinalNorm,
     LmHead,
     RopeFreqs,
@@ -1242,7 +1248,20 @@ fn validate_native_model_manifest(
         "token_embedding",
     )?;
     require_global_role(&global_roles, NativeTensorRole::FinalNorm, "final_norm")?;
-    if !manifest.tie_word_embeddings {
+    // EmbeddingGemma is a bidirectional encoder: no LM head (never produces
+    // logits), but it requires the two sentence-transformers Dense projections.
+    if manifest.model_family == "embeddinggemma" {
+        require_global_role(
+            &global_roles,
+            NativeTensorRole::EmbeddingDense0,
+            "embedding_dense0",
+        )?;
+        require_global_role(
+            &global_roles,
+            NativeTensorRole::EmbeddingDense1,
+            "embedding_dense1",
+        )?;
+    } else if !manifest.tie_word_embeddings {
         require_global_role(&global_roles, NativeTensorRole::LmHead, "lm_head")?;
     }
     if manifest.model_family == "gemma4_assistant" {
@@ -1658,7 +1677,22 @@ fn validate_native_model_tensor_shapes(
         required_global_tensor_spec(manifest, NativeTensorRole::FinalNorm, "final_norm")?;
     expect_vector_shape(final_norm, hidden_size, "final_norm")?;
 
-    if !manifest.tie_word_embeddings {
+    // EmbeddingGemma encoder: no LM head (see role-presence check above), so skip
+    // the lm_head shape validation; validate the Dense projection head instead.
+    if manifest.model_family == "embeddinggemma" {
+        let dense0 = required_global_tensor_spec(
+            manifest,
+            NativeTensorRole::EmbeddingDense0,
+            "embedding_dense0",
+        )?;
+        expect_matrix_shape(dense0, hidden_size * 4, hidden_size, "embedding_dense0")?;
+        let dense1 = required_global_tensor_spec(
+            manifest,
+            NativeTensorRole::EmbeddingDense1,
+            "embedding_dense1",
+        )?;
+        expect_matrix_shape(dense1, hidden_size, hidden_size * 4, "embedding_dense1")?;
+    } else if !manifest.tie_word_embeddings {
         let lm_head = required_global_tensor_spec(manifest, NativeTensorRole::LmHead, "lm_head")?;
         expect_matrix_shape(lm_head, vocab_size, hidden_size, "lm_head")?;
     }
