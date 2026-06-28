@@ -904,6 +904,54 @@ complete matrix is in the artifact summary.
 API semantics, pooling modes, micro-batching behavior, and cooldown profiles are
 documented in [`docs/EMBEDDINGS.md`](docs/EMBEDDINGS.md).
 
+#### EmbeddingGemma-300m (bidirectional encoder)
+
+EmbeddingGemma is a different shape from the Qwen embedders: a Gemma 3 backbone
+run as a **bidirectional encoder** with **mean pooling**, a two-layer Dense
+projection head, and L2 normalization (`model_type: gemma3_text`). It is served
+natively (`model_family: embeddinggemma`); point `Session` at the
+mlx-community 8-bit snapshot after `generate-manifest`.
+
+Correctness is verified against the `mlx-embeddings` reference (mlx-lm has no
+EmbeddingGemma embedding path) — cosine ≈ **0.9996–0.9999** on the 8-bit weights,
+batched with padding.
+
+Throughput vs `mlx-embeddings` (the apples-to-apples reference; mlx-lm has no
+EmbeddingGemma path). Both engines materialize the same contiguous CPU
+`float32 [B,H]` matrix:
+
+| Workload | Batch | Max tokens | mlx-embeddings tok/s | ax-engine-py tok/s | AX vs |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| short query | 1 | 10 | 1,697 | 1,540 | -9.3% |
+| short query | 8 | 15 | 7,886 | 8,701 | +10.3% |
+| 16-token | 1 | 16 | 2,765 | 2,747 | -0.6% |
+| 16-token | 8 | 16 | 15,654 | 16,255 | +3.8% |
+| 64-token | 1 | 64 | 10,797 | 10,091 | -6.5% |
+| 64-token | 8 | 64 | 49,153 | 56,022 | +14.0% |
+| 256-token | 1 | 256 | 32,253 | 36,775 | +14.0% |
+| 256-token | 8 | 256 | 129,621 | 109,241 | -15.7% |
+
+ax is competitive-to-favorable on the mid-length chunk shapes that dominate
+passage indexing — 64-token batches and single 256-token documents are both
+~+14%. The one consistent loss is **256-token batch=8 (−15.7%)**: the
+batch×long-sequence path, the same effect as Qwen 0.6B (milder here) and a known
+optimization target. Short-query / 16-token rows hover near parity and are the
+noisiest (tiny GPU work, so fixed per-call overhead dominates); across five clean
+back-to-back runs they ranged roughly ±5–10% around parity.
+
+Source: `benchmarks/results/embedding-fair/2026-06-28-032420/`.
+Method: `scripts/bench_embedding_fair.py --reference mlx_embeddings --pooling mean`,
+2 warmup and 7 measured trials, median tok/s, batch sizes 1/8, short-query plus
+16/64/256-token synthetic chunks, mean pooling + Dense head + l2-normalized
+output. Reproduce:
+
+```bash
+python scripts/bench_embedding_fair.py \
+  --model embeddinggemma-300m-8bit=/path/to/embeddinggemma-300m-8bit/snapshots/<sha> \
+  --reference mlx_embeddings --pooling mean \
+  --batch-sizes 1,8 --lengths 16,64,256 --warmup 3 --trials 7
+```
+
 ## SDKs
 
 AX Engine SDK docs are organized under [`docs/sdk/`](docs/sdk/README.md).

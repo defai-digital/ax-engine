@@ -285,39 +285,67 @@ def make_mlx_lm_step(model_dir: Path):
     return step
 
 
-def make_ax_engine_step(model_dir: Path):
+def make_mlx_embeddings_step(model_dir: Path):
+    """Reference step for EmbeddingGemma-style sentence-transformers models.
+
+    Uses `mlx-embeddings`, whose forward already applies mean pooling, the Dense
+    projection head, and L2 normalization (the full sentence-transformers
+    pipeline). mlx-lm has no EmbeddingGemma embedding path, so this is the
+    apples-to-apples reference for that family.
+    """
+    print(f"  [mlx-embeddings] loading {model_dir}", file=sys.stderr)
+    import mlx.core as mx
+    import numpy as np
+    import mlx_embeddings
+
+    model, _ = mlx_embeddings.load(str(model_dir))
+
+    def step(batch: list[list[int]]) -> tuple[bytes, int, int]:
+        max_len = max(len(ids) for ids in batch)
+        padded = [ids + [0] * (max_len - len(ids)) for ids in batch]
+        attention_mask = [[1] * len(ids) + [0] * (max_len - len(ids)) for ids in batch]
+        out = model(mx.array(padded), attention_mask=mx.array(attention_mask))
+        array = np.array(out.text_embeds, dtype=np.float32, copy=True)
+        if not array.flags.c_contiguous:
+            array = np.ascontiguousarray(array)
+        return array.tobytes(), int(array.shape[0]), int(array.shape[1])
+
+    return step
+
+
+def make_ax_engine_step(model_dir: Path, pooling: str = "last", model_id: str = "qwen3"):
     print(f"  [ax-engine-py] loading {model_dir}", file=sys.stderr)
     sys.path.insert(0, str(REPO_ROOT / "python"))
     import ax_engine
 
     session = ax_engine.Session(
-        model_id="qwen3",
+        model_id=model_id,
         mlx=True,
         support_tier="mlx_preview",
         mlx_model_artifacts_dir=str(model_dir),
     )
 
     def step(batch: list[list[int]]) -> tuple[bytes, int, int]:
-        return session.embed_batch_flat_bytes(batch, pooling="last", normalize=True)
+        return session.embed_batch_flat_bytes(batch, pooling=pooling, normalize=True)
 
     return step, session
 
 
-def compare_results(results: dict[str, Any]) -> dict[str, float]:
-    mlx = results.get("mlx_lm")
+def compare_results(results: dict[str, Any], reference_key: str = "mlx_lm") -> dict[str, float]:
+    ref = results.get(reference_key)
     ax = results.get("ax_engine_py")
-    if not mlx or not ax:
+    if not ref or not ax:
         return {}
-    mlx_tps = float(mlx["median_tokens_per_sec"])
+    ref_tps = float(ref["median_tokens_per_sec"])
     ax_tps = float(ax["median_tokens_per_sec"])
-    mlx_items = float(mlx["median_items_per_sec"])
+    ref_items = float(ref["median_items_per_sec"])
     ax_items = float(ax["median_items_per_sec"])
     return {
-        "ax_vs_mlx_lm_tokens_pct": ((ax_tps - mlx_tps) / mlx_tps * 100.0)
-        if mlx_tps
+        "ax_vs_reference_tokens_pct": ((ax_tps - ref_tps) / ref_tps * 100.0)
+        if ref_tps
         else 0.0,
-        "ax_vs_mlx_lm_items_pct": ((ax_items - mlx_items) / mlx_items * 100.0)
-        if mlx_items
+        "ax_vs_reference_items_pct": ((ax_items - ref_items) / ref_items * 100.0)
+        if ref_items
         else 0.0,
     }
 
@@ -330,6 +358,8 @@ def run_model(
     warmup: int,
     trials: int,
     cooldown: float,
+    reference: str = "mlx_lm",
+    pooling: str = "last",
 ) -> dict[str, Any]:
     model_dir = spec.path.resolve()
     manifest_path = model_dir / "model-manifest.json"
@@ -340,8 +370,13 @@ def run_model(
     if not workloads:
         raise ValueError("benchmark matrix has no workloads")
 
-    mlx_step = make_mlx_lm_step(model_dir)
-    ax_step, ax_session = make_ax_engine_step(model_dir)
+    if reference == "mlx_embeddings":
+        ref_step = make_mlx_embeddings_step(model_dir)
+        ref_label, ax_model_id = "mlx-embeddings", "embeddinggemma"
+    else:
+        ref_step = make_mlx_lm_step(model_dir)
+        ref_label, ax_model_id = "mlx-lm", "qwen3"
+    ax_step, ax_session = make_ax_engine_step(model_dir, pooling=pooling, model_id=ax_model_id)
     rows = []
     try:
         for workload in workloads:
@@ -350,7 +385,7 @@ def run_model(
                 file=sys.stderr,
             )
             results = {
-                "mlx_lm": run_trials("mlx-lm", workload, mlx_step, warmup, trials, cooldown),
+                reference: run_trials(ref_label, workload, ref_step, warmup, trials, cooldown),
                 "ax_engine_py": run_trials(
                     "ax-engine-py", workload, ax_step, warmup, trials, cooldown
                 ),
@@ -364,7 +399,7 @@ def run_model(
                     "total_tokens": workload.total_tokens,
                     "max_tokens": workload.max_tokens,
                     "results": results,
-                    "comparison": compare_results(results),
+                    "comparison": compare_results(results, reference),
                 }
             )
     finally:
@@ -386,22 +421,25 @@ def fmt(value: float, digits: int = 1) -> str:
 
 
 def render_summary(artifact: dict[str, Any]) -> str:
+    reference = artifact.get("reference", "mlx_lm")
+    ref_label = "mlx-embeddings" if reference == "mlx_embeddings" else "mlx-lm"
     lines = [
         "# Fair Embedding Benchmark",
         "",
-        f"Output contract: `{artifact['output_contract']}`.",
+        f"Output contract: `{artifact['output_contract']}`. "
+        f"Reference: `{ref_label}`, pooling: `{artifact.get('pooling', 'last')}`.",
         "",
-        "| Model | Workload | Batch | Max tokens | mlx-lm tok/s | AX tok/s | AX vs mlx-lm |",
+        f"| Model | Workload | Batch | Max tokens | {ref_label} tok/s | AX tok/s | AX vs {ref_label} |",
         "|---|---|---:|---:|---:|---:|---:|",
     ]
     for model in artifact["models"]:
         for row in model["rows"]:
-            mlx = row["results"]["mlx_lm"]["median_tokens_per_sec"]
+            ref = row["results"][reference]["median_tokens_per_sec"]
             ax = row["results"]["ax_engine_py"]["median_tokens_per_sec"]
-            delta = row["comparison"]["ax_vs_mlx_lm_tokens_pct"]
+            delta = row["comparison"]["ax_vs_reference_tokens_pct"]
             lines.append(
                 f"| {model['model_label']} | {row['workload']} | {row['batch_size']} | "
-                f"{row['max_tokens']} | {fmt(mlx)} | {fmt(ax)} | {delta:+.1f}% |"
+                f"{row['max_tokens']} | {fmt(ref)} | {fmt(ax)} | {delta:+.1f}% |"
             )
     lines.append("")
     return "\n".join(lines)
@@ -426,6 +464,19 @@ def build_parser() -> argparse.ArgumentParser:
         help="Comma-separated synthetic token lengths. Use '' for none.",
     )
     parser.add_argument("--skip-short-query", action="store_true")
+    parser.add_argument(
+        "--reference",
+        choices=["mlx_lm", "mlx_embeddings"],
+        default="mlx_lm",
+        help="Reference engine. mlx_lm (decoder, last-token) or mlx_embeddings "
+        "(EmbeddingGemma sentence-transformers: mean pool + Dense + L2).",
+    )
+    parser.add_argument(
+        "--pooling",
+        choices=["last", "cls", "mean"],
+        default="last",
+        help="ax-engine pooling mode. Use 'mean' for EmbeddingGemma.",
+    )
     parser.add_argument("--warmup", type=int, default=2)
     parser.add_argument("--trials", type=int, default=5)
     parser.add_argument("--cooldown", type=float, default=0.0)
@@ -459,6 +510,8 @@ def main() -> int:
         "batch_sizes": batch_sizes,
         "synthetic_lengths": fixed_lengths,
         "include_short_query": not args.skip_short_query,
+        "reference": args.reference,
+        "pooling": args.pooling,
         "models": [],
     }
 
@@ -472,6 +525,8 @@ def main() -> int:
                 args.warmup,
                 args.trials,
                 args.cooldown,
+                reference=args.reference,
+                pooling=args.pooling,
             )
         )
 

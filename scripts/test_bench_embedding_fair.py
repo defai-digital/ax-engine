@@ -85,8 +85,8 @@ class FairEmbeddingBenchmarkTests(unittest.TestCase):
                 },
             }
         )
-        self.assertAlmostEqual(comparison["ax_vs_mlx_lm_tokens_pct"], 25.0)
-        self.assertAlmostEqual(comparison["ax_vs_mlx_lm_items_pct"], -10.0)
+        self.assertAlmostEqual(comparison["ax_vs_reference_tokens_pct"], 25.0)
+        self.assertAlmostEqual(comparison["ax_vs_reference_items_pct"], -10.0)
 
     def test_render_summary_includes_contract_and_delta(self) -> None:
         summary = bench.render_summary(
@@ -104,7 +104,7 @@ class FairEmbeddingBenchmarkTests(unittest.TestCase):
                                     "mlx_lm": {"median_tokens_per_sec": 100.0},
                                     "ax_engine_py": {"median_tokens_per_sec": 125.0},
                                 },
-                                "comparison": {"ax_vs_mlx_lm_tokens_pct": 25.0},
+                                "comparison": {"ax_vs_reference_tokens_pct": 25.0},
                             }
                         ],
                     }
