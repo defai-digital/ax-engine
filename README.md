@@ -904,6 +904,41 @@ complete matrix is in the artifact summary.
 API semantics, pooling modes, micro-batching behavior, and cooldown profiles are
 documented in [`docs/EMBEDDINGS.md`](docs/EMBEDDINGS.md).
 
+#### EmbeddingGemma-300m (bidirectional encoder)
+
+EmbeddingGemma is a different shape from the Qwen embedders: a Gemma 3 backbone
+run as a **bidirectional encoder** with **mean pooling**, a two-layer Dense
+projection head, and L2 normalization (`model_type: gemma3_text`). It is served
+natively (`model_family: embeddinggemma`); point `Session` at the
+mlx-community 8-bit snapshot after `generate-manifest`.
+
+Correctness is verified against the `mlx-embeddings` reference (mlx-lm has no
+EmbeddingGemma embedding path) — cosine ≈ **0.9996–0.9999** on the 8-bit weights,
+batched with padding.
+
+Throughput vs `mlx-embeddings` is **roughly at parity** across short/mid shapes.
+Two signals are stable across runs:
+
+- single long documents (256-token, batch 1): ax ≈ **+10%**
+- batches of long documents (256-token, batch 8): ax ≈ **−15%** — the batch×long-
+  sequence gap tracked in the embedding optimization issue, the same effect seen
+  on Qwen 0.6B (milder here)
+
+Other cells (short queries, 16/64-token) sit within run-to-run variance and
+should not be read as a consistent win or loss. Reproduce (per-cell numbers are
+point-in-time; run on an idle machine for publication-grade figures):
+
+```bash
+python scripts/bench_embedding_fair.py \
+  --model embeddinggemma-300m-8bit=/path/to/embeddinggemma-300m-8bit/snapshots/<sha> \
+  --reference mlx_embeddings --pooling mean \
+  --batch-sizes 1,8 --lengths 16,64,256 --warmup 2 --trials 5
+```
+
+An example run is in
+`benchmarks/results/embedding-fair/2026-06-28-031536/` (reference: mlx-embeddings,
+mean pooling).
+
 ## SDKs
 
 AX Engine SDK docs are organized under [`docs/sdk/`](docs/sdk/README.md).
