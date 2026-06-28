@@ -3119,6 +3119,10 @@ struct RequestState {
     /// Number of consecutive decode steps where accept_count == 0.
     /// Used by `mtp_next_adaptive_depth` to progressively lower the depth floor.
     mtp_consecutive_misses: u32,
+    /// Per-request MTP bypass: once the acceptance EWMA drops below the bypass
+    /// threshold with sufficient samples, MTP is disabled for the rest of the
+    /// request and all decode steps use the direct single-token path.
+    mtp_bypassed: bool,
     /// Per-request latch: once auto-optimistic activates (stochastic EWMA ≥ 0.99),
     /// it stays latched until the argmax-based EWMA drops below 0.95.  This
     /// prevents oscillation because argmax acceptance is strictly stricter than
@@ -3196,6 +3200,7 @@ impl RequestState {
             mtp_telemetry: MtpTelemetry::default(),
             gemma4_assistant_mtp_telemetry: Gemma4AssistantMtpTelemetry::default(),
             mtp_consecutive_misses: 0,
+            mtp_bypassed: false,
             auto_optimistic_active: false,
             mtp_prefill_hidden: None,
             mtp_prefill_history_tokens: Vec::new(),
@@ -5540,6 +5545,15 @@ impl MlxRunner {
             );
             state.decode_telemetry.record_diffusion_block(&result);
             let mut queue: VecDeque<u32> = result.tokens.into();
+            // EOS early termination (dInfer evidence: 15–40% gain). If the
+            // committed block contains an EOS token, truncate the queue at
+            // that position so we never generate a follow-on block.
+            if let Some(eos_pos) = queue
+                .iter()
+                .position(|&tok| self.terminal_token_ids.contains(&tok))
+            {
+                queue.truncate(eos_pos + 1);
+            }
             let tok = queue.pop_front().unwrap_or(0);
             state.diffusion_block_queue = queue;
             return tok;
@@ -6715,360 +6729,397 @@ impl MlxRunner {
             state.mtp_consecutive_misses = 0;
         }
 
+        // Per-request MTP bypass: once MTP-only acceptance EWMA has enough
+        // samples and falls below the threshold, disable MTP for the remainder
+        // of this request.  The direct single-token decode path is cheaper
+        // when the MTP head itself is not paying for its overhead.  Bypass is
+        // latched — it stays active once set.
+        //
+        // IMPORTANT: use mtp_only_accept_rate_ewma (cascade-corrected), NOT
+        // the blended accept_rate_ewma.  The blended rate includes n-gram
+        // cascade rejections that deflate the EWMA when n-gram drafts have
+        // low acceptance — even when MTP-only acceptance is healthy.  Bypassing
+        // MTP on the basis of n-gram quality incorrectly disables a beneficial
+        // speculation source (observed as a uniform regression on 35B-A3B).
+        if !state.mtp_bypassed
+            && state.mtp_telemetry.mtp_only_accept_rate_ewma_samples >= mtp_bypass_min_samples()
+            && state.mtp_telemetry.mtp_only_accept_rate_ewma < mtp_bypass_threshold()
+        {
+            state.mtp_bypassed = true;
+            state.mtp_pending_draft.clear();
+            state.mtp_pending_draft_log_probs.clear();
+            state.mtp_pending_draft_distributions.clear();
+            state.mtp_pending_draft_sources.clear();
+            state.mtp_skip_logits = None;
+            state.mtp_skip_hidden = None;
+        }
+
         // Generate new draft tokens: attempt n-gram first, then let MTP fill
         // remaining depth slots when the n-gram prefix is shorter than the MTP
         // adaptive cap. If n-gram fills the whole useful window, skip MTP work
         // and reset the MTP cache so the next MTP miss starts with valid RoPE.
         //
-        // Post-think guarded mode: compute think-state AFTER result tokens to
-        // decide the NEXT draft policy.  Inside `<think>` use min_support=1;
-        // outside `<think>` on reasoning models require min_support=2 to suppress
-        // one-off guesses in free-form text while still drafting well-established
-        // repeating patterns (SQL keywords, JSON delimiters, code syntax).
-        let draft_started = Instant::now();
-        let think_state_after_result =
-            compute_think_state(&self.cfg, state.ngram_in_think, &result);
-        let mtp_post_think_guarded =
-            self.cfg.think_start_token_id.is_some() && !think_state_after_result;
-        // Pure-MTP override: when AX_MLX_MTP_DISABLE_NGRAM_STACKING=1, skip the
-        // ADR-008 n-gram-first draft branch entirely so the benchmark measures
-        // MTP acceptance in isolation.  The MTP verify loop, head forward, and
-        // telemetry are unchanged; only this draft-source branch is gated.
-        let mut ngram_max = if self.disable_mtp_ngram_stacking {
-            0
+        // When the per-request MTP bypass has fired, skip the entire draft
+        // generation: the MTP head forward and n-gram lookup would produce
+        // a draft that is never consumed (the next step falls through to
+        // direct decode).  This saves one MTP head forward on the bypass step.
+        if state.mtp_bypassed {
+            mtp_timings.draft_wall_us = 0;
         } else {
-            adaptive_ngram_draft_len(has_linear_attention, state.ngram_posterior_mean())
-        };
-        let safety_decision = if ngram_max > 0 {
-            mtp_ngram_speculative_safety_decision(ctx, mtp_post_think_guarded)
-        } else {
-            SpeculativeSafetyDecision::default()
-        };
-        if safety_decision.tighten_ngram {
-            state.mtp_telemetry.ngram_safety_tightened_steps = state
-                .mtp_telemetry
-                .ngram_safety_tightened_steps
-                .saturating_add(1);
-            state.mtp_telemetry.ngram_safety_reason = state
-                .mtp_telemetry
-                .ngram_safety_reason
-                .max(safety_decision.reason.route_code());
-            if safety_decision.reason == SpeculativeSafetyReason::ReasoningTrace {
-                state.mtp_telemetry.ngram_think_gated_steps = state
+            // Post-think guarded mode: compute think-state AFTER result tokens to
+            // decide the NEXT draft policy.  Inside `<think>` use min_support=1;
+            // outside `<think>` on reasoning models require min_support=2 to suppress
+            // one-off guesses in free-form text while still drafting well-established
+            // repeating patterns (SQL keywords, JSON delimiters, code syntax).
+            let draft_started = Instant::now();
+            let think_state_after_result =
+                compute_think_state(&self.cfg, state.ngram_in_think, &result);
+            let mtp_post_think_guarded =
+                self.cfg.think_start_token_id.is_some() && !think_state_after_result;
+            // Pure-MTP override: when AX_MLX_MTP_DISABLE_NGRAM_STACKING=1, skip the
+            // ADR-008 n-gram-first draft branch entirely so the benchmark measures
+            // MTP acceptance in isolation.  The MTP verify loop, head forward, and
+            // telemetry are unchanged; only this draft-source branch is gated.
+            let mut ngram_max = if self.disable_mtp_ngram_stacking {
+                0
+            } else {
+                adaptive_ngram_draft_len(has_linear_attention, state.ngram_posterior_mean())
+            };
+            let safety_decision = if ngram_max > 0 {
+                mtp_ngram_speculative_safety_decision(ctx, mtp_post_think_guarded)
+            } else {
+                SpeculativeSafetyDecision::default()
+            };
+            if safety_decision.tighten_ngram {
+                state.mtp_telemetry.ngram_safety_tightened_steps = state
                     .mtp_telemetry
-                    .ngram_think_gated_steps
+                    .ngram_safety_tightened_steps
+                    .saturating_add(1);
+                state.mtp_telemetry.ngram_safety_reason = state
+                    .mtp_telemetry
+                    .ngram_safety_reason
+                    .max(safety_decision.reason.route_code());
+                if safety_decision.reason == SpeculativeSafetyReason::ReasoningTrace {
+                    state.mtp_telemetry.ngram_think_gated_steps = state
+                        .mtp_telemetry
+                        .ngram_think_gated_steps
+                        .saturating_add(1);
+                }
+            }
+            if safety_decision.disable_ngram {
+                state.mtp_telemetry.ngram_safety_disabled_steps = state
+                    .mtp_telemetry
+                    .ngram_safety_disabled_steps
+                    .saturating_add(1);
+                state.mtp_telemetry.ngram_safety_reason = state
+                    .mtp_telemetry
+                    .ngram_safety_reason
+                    .max(safety_decision.reason.route_code());
+                ngram_max = 0;
+            }
+            let ngram_gate = mtp_ngram_gate_decision(
+                ngram_max,
+                mtp_max_depth,
+                state.mtp_telemetry.accept_rate_ewma,
+                state.mtp_telemetry.accept_rate_ewma_samples,
+                state.mtp_telemetry.mtp_only_accept_rate_ewma,
+                state.mtp_telemetry.mtp_only_accept_rate_ewma_samples,
+                state
+                    .mtp_telemetry
+                    .draft_source_mtp_tokens
+                    .saturating_add(state.mtp_telemetry.draft_source_hybrid_mtp_tokens),
+                state
+                    .mtp_telemetry
+                    .accepted_source_mtp_tokens
+                    .saturating_add(state.mtp_telemetry.accepted_source_hybrid_mtp_tokens),
+                state.mtp_telemetry.draft_source_ngram_tokens,
+                state.mtp_telemetry.accepted_source_ngram_tokens,
+                state.ngram_self_tune.disabled,
+                mtp_ngram_gate_min_samples(),
+                mtp_ngram_hurt_margin(),
+                MtpNgramAutoDisableConfig::from_env(),
+            );
+            let utility_cfg = MtpNgramUtilityGateConfig::from_env();
+            let utility_decision =
+                if mtp_ngram_gate_policy_from_env() == MtpNgramGatePolicy::Utility {
+                    mtp_ngram_utility_gate(
+                        ngram_max,
+                        state.mtp_telemetry.baseline_utility(),
+                        state.mtp_telemetry.stacked_utility(),
+                        utility_cfg,
+                        state.mtp_ngram_utility_hysteresis_remaining,
+                    )
+                } else {
+                    MtpNgramUtilityDecision::default()
+                };
+            if utility_decision.utility_hurt {
+                state.mtp_ngram_utility_hysteresis_remaining = utility_cfg.hysteresis_steps;
+            } else if state.mtp_ngram_utility_hysteresis_remaining > 0 {
+                state.mtp_ngram_utility_hysteresis_remaining -= 1;
+            }
+            if utility_decision.insufficient_samples {
+                state.mtp_telemetry.ngram_utility_insufficient_sample_steps = state
+                    .mtp_telemetry
+                    .ngram_utility_insufficient_sample_steps
                     .saturating_add(1);
             }
-        }
-        if safety_decision.disable_ngram {
-            state.mtp_telemetry.ngram_safety_disabled_steps = state
-                .mtp_telemetry
-                .ngram_safety_disabled_steps
-                .saturating_add(1);
-            state.mtp_telemetry.ngram_safety_reason = state
-                .mtp_telemetry
-                .ngram_safety_reason
-                .max(safety_decision.reason.route_code());
-            ngram_max = 0;
-        }
-        let ngram_gate = mtp_ngram_gate_decision(
-            ngram_max,
-            mtp_max_depth,
-            state.mtp_telemetry.accept_rate_ewma,
-            state.mtp_telemetry.accept_rate_ewma_samples,
-            state.mtp_telemetry.mtp_only_accept_rate_ewma,
-            state.mtp_telemetry.mtp_only_accept_rate_ewma_samples,
-            state
-                .mtp_telemetry
-                .draft_source_mtp_tokens
-                .saturating_add(state.mtp_telemetry.draft_source_hybrid_mtp_tokens),
-            state
-                .mtp_telemetry
-                .accepted_source_mtp_tokens
-                .saturating_add(state.mtp_telemetry.accepted_source_hybrid_mtp_tokens),
-            state.mtp_telemetry.draft_source_ngram_tokens,
-            state.mtp_telemetry.accepted_source_ngram_tokens,
-            state.ngram_self_tune.disabled,
-            mtp_ngram_gate_min_samples(),
-            mtp_ngram_hurt_margin(),
-            MtpNgramAutoDisableConfig::from_env(),
-        );
-        let utility_cfg = MtpNgramUtilityGateConfig::from_env();
-        let utility_decision = if mtp_ngram_gate_policy_from_env() == MtpNgramGatePolicy::Utility {
-            mtp_ngram_utility_gate(
-                ngram_max,
-                state.mtp_telemetry.baseline_utility(),
-                state.mtp_telemetry.stacked_utility(),
-                utility_cfg,
-                state.mtp_ngram_utility_hysteresis_remaining,
-            )
-        } else {
-            MtpNgramUtilityDecision::default()
-        };
-        if utility_decision.utility_hurt {
-            state.mtp_ngram_utility_hysteresis_remaining = utility_cfg.hysteresis_steps;
-        } else if state.mtp_ngram_utility_hysteresis_remaining > 0 {
-            state.mtp_ngram_utility_hysteresis_remaining -= 1;
-        }
-        if utility_decision.insufficient_samples {
-            state.mtp_telemetry.ngram_utility_insufficient_sample_steps = state
-                .mtp_telemetry
-                .ngram_utility_insufficient_sample_steps
-                .saturating_add(1);
-        }
-        if utility_decision.gated {
-            state.mtp_telemetry.ngram_utility_gated_steps = state
-                .mtp_telemetry
-                .ngram_utility_gated_steps
-                .saturating_add(1);
-        }
-        let ngram_max = if ngram_gate.gated || utility_decision.gated {
-            0
-        } else {
-            ngram_max
-        };
-        if ngram_gate.saturated {
-            state.mtp_telemetry.ngram_saturated_gated_steps = state
-                .mtp_telemetry
-                .ngram_saturated_gated_steps
-                .saturating_add(1);
-        }
-        if ngram_gate.hurt {
-            state.mtp_telemetry.ngram_hurt_gated_steps =
-                state.mtp_telemetry.ngram_hurt_gated_steps.saturating_add(1);
-            match mtp_ngram_hurt_gate_mode() {
-                HurtGateMode::SourceAware => {
-                    state.mtp_telemetry.ngram_source_hurt_gated_steps = state
-                        .mtp_telemetry
-                        .ngram_source_hurt_gated_steps
-                        .saturating_add(1);
-                }
-                HurtGateMode::LegacyEwma => {
-                    state.mtp_telemetry.ngram_legacy_hurt_gated_steps = state
-                        .mtp_telemetry
-                        .ngram_legacy_hurt_gated_steps
-                        .saturating_add(1);
+            if utility_decision.gated {
+                state.mtp_telemetry.ngram_utility_gated_steps = state
+                    .mtp_telemetry
+                    .ngram_utility_gated_steps
+                    .saturating_add(1);
+            }
+            let ngram_max = if ngram_gate.gated || utility_decision.gated {
+                0
+            } else {
+                ngram_max
+            };
+            if ngram_gate.saturated {
+                state.mtp_telemetry.ngram_saturated_gated_steps = state
+                    .mtp_telemetry
+                    .ngram_saturated_gated_steps
+                    .saturating_add(1);
+            }
+            if ngram_gate.hurt {
+                state.mtp_telemetry.ngram_hurt_gated_steps =
+                    state.mtp_telemetry.ngram_hurt_gated_steps.saturating_add(1);
+                match mtp_ngram_hurt_gate_mode() {
+                    HurtGateMode::SourceAware => {
+                        state.mtp_telemetry.ngram_source_hurt_gated_steps = state
+                            .mtp_telemetry
+                            .ngram_source_hurt_gated_steps
+                            .saturating_add(1);
+                    }
+                    HurtGateMode::LegacyEwma => {
+                        state.mtp_telemetry.ngram_legacy_hurt_gated_steps = state
+                            .mtp_telemetry
+                            .ngram_legacy_hurt_gated_steps
+                            .saturating_add(1);
+                    }
                 }
             }
-        }
-        if ngram_gate.auto_disabled {
-            state.mtp_telemetry.ngram_auto_disabled_steps = state
-                .mtp_telemetry
-                .ngram_auto_disabled_steps
-                .saturating_add(1);
-        }
-        if ngram_gate.self_tune_disabled {
-            state.mtp_telemetry.ngram_self_tune_disabled_steps = state
-                .mtp_telemetry
-                .ngram_self_tune_disabled_steps
-                .saturating_add(1);
-        }
-        let ngram_outcome = if ngram_max > 0 {
-            let ngram_lookup_started = Instant::now();
-            let outcome = state.ngram.predict_with_policy(NgramDraftPolicy {
-                variant: mtp_ngram_policy_variant(),
-                max_len: ngram_max,
-                min_support: mtp_ngram_min_support().max(if mtp_post_think_guarded {
-                    POST_THINK_MIN_NGRAM_SUPPORT
+            if ngram_gate.auto_disabled {
+                state.mtp_telemetry.ngram_auto_disabled_steps = state
+                    .mtp_telemetry
+                    .ngram_auto_disabled_steps
+                    .saturating_add(1);
+            }
+            if ngram_gate.self_tune_disabled {
+                state.mtp_telemetry.ngram_self_tune_disabled_steps = state
+                    .mtp_telemetry
+                    .ngram_self_tune_disabled_steps
+                    .saturating_add(1);
+            }
+            let ngram_outcome = if ngram_max > 0 {
+                let ngram_lookup_started = Instant::now();
+                let outcome = state.ngram.predict_with_policy(NgramDraftPolicy {
+                    variant: mtp_ngram_policy_variant(),
+                    max_len: ngram_max,
+                    min_support: mtp_ngram_min_support().max(if mtp_post_think_guarded {
+                        POST_THINK_MIN_NGRAM_SUPPORT
+                    } else {
+                        1
+                    }),
+                    confidence_threshold: mtp_ngram_confidence_threshold(),
+                    adaptive_match_len: true,
+                    bypass_prompt_min_support: true,
+                    min_context_len: mtp_ngram_min_context_len(),
+                });
+                mtp_timings.ngram_lookup_wall_us = mtp_timings
+                    .ngram_lookup_wall_us
+                    .saturating_add(elapsed_us(ngram_lookup_started));
+                outcome
+            } else {
+                NgramDraftOutcome {
+                    draft: vec![],
+                    confidence: vec![],
+                    rejection: None,
+                    requested_max_len: 0,
+                }
+            };
+            if ngram_max > 0 {
+                state
+                    .mtp_telemetry
+                    .record_ngram_attempt(ngram_outcome.rejection);
+                state
+                    .mtp_telemetry
+                    .record_ngram_proposed(ngram_outcome.draft.len());
+            }
+            let recent = &result[result.len().saturating_sub(8)..];
+            let ngram_cycle_guarded = !ngram_outcome.draft.is_empty()
+                && ngram_draft_is_cycle(&ngram_outcome.draft, recent);
+            if ngram_cycle_guarded {
+                state.mtp_telemetry.record_ngram_cycle_guard();
+            }
+            let (new_draft, new_log_probs, new_sources) = if !ngram_outcome.draft.is_empty()
+                && !ngram_cycle_guarded
+            {
+                let mut draft = ngram_outcome.draft;
+                let ngram_len = draft.len();
+                state.ngram_self_tune.record_submitted(ngram_len);
+                state.mtp_telemetry.record_ngram_submitted(ngram_len);
+                let mtp_tail_cap = state.mtp_adaptive_max_depth.saturating_sub(ngram_len);
+                let mut sources = vec![MtpDraftSource::Ngram; ngram_len];
+
+                let mut aligned_log_probs = mtp_ngram_pseudo_log_probs(
+                    &ngram_outcome.confidence,
+                    ngram_len,
+                    mtp_ngram_acceptance_mode_from_env(),
+                );
+
+                if mtp_tail_cap > 0
+                    && (self.weights.mtp.is_some() || self.weights.glm_mtp.is_some())
+                {
+                    let cache = state.mtp_cache.get_or_insert_with(|| MlxKVCache::new(1));
+                    let mtp_draft_started = Instant::now();
+                    let (tail, log_probs, distributions, added, _top2_margins) =
+                        if self.weights.glm_mtp.is_some() {
+                            glm_mtp_draft_tokens(
+                                &self.weights,
+                                &self.cfg,
+                                &draft_hidden,
+                                tail_tok,
+                                cache,
+                                Some(mtp_tail_cap),
+                                &mut state.rng,
+                            )
+                        } else {
+                            mtp_draft_tokens_after_forced_prefix(
+                                &self.weights,
+                                &self.cfg,
+                                &draft_hidden,
+                                tail_tok,
+                                &draft,
+                                cache,
+                                mtp_tail_cap,
+                                &mut state.rng,
+                            )
+                        };
+                    mtp_timings.mtp_draft_wall_us = mtp_timings
+                        .mtp_draft_wall_us
+                        .saturating_add(elapsed_us(mtp_draft_started));
+                    state.mtp_decode_count += added;
+                    state.mtp_pending_draft_distributions = distributions;
+                    state.mtp_telemetry.record_ngram_stack_hit(ngram_len, false);
+                    state.mtp_telemetry.record_ngram_hybrid_tail(tail.len());
+                    aligned_log_probs.extend(log_probs);
+                    sources.extend(std::iter::repeat_n(MtpDraftSource::HybridMtp, tail.len()));
+                    draft.extend(tail);
+                    (draft, aligned_log_probs, sources)
                 } else {
-                    1
-                }),
-                confidence_threshold: mtp_ngram_confidence_threshold(),
-                adaptive_match_len: true,
-                bypass_prompt_min_support: true,
-                min_context_len: mtp_ngram_min_context_len(),
-            });
-            mtp_timings.ngram_lookup_wall_us = mtp_timings
-                .ngram_lookup_wall_us
-                .saturating_add(elapsed_us(ngram_lookup_started));
-            outcome
-        } else {
-            NgramDraftOutcome {
-                draft: vec![],
-                confidence: vec![],
-                rejection: None,
-                requested_max_len: 0,
-            }
-        };
-        if ngram_max > 0 {
-            state
-                .mtp_telemetry
-                .record_ngram_attempt(ngram_outcome.rejection);
-            state
-                .mtp_telemetry
-                .record_ngram_proposed(ngram_outcome.draft.len());
-        }
-        let recent = &result[result.len().saturating_sub(8)..];
-        let ngram_cycle_guarded =
-            !ngram_outcome.draft.is_empty() && ngram_draft_is_cycle(&ngram_outcome.draft, recent);
-        if ngram_cycle_guarded {
-            state.mtp_telemetry.record_ngram_cycle_guard();
-        }
-        let (new_draft, new_log_probs, new_sources) = if !ngram_outcome.draft.is_empty()
-            && !ngram_cycle_guarded
-        {
-            let mut draft = ngram_outcome.draft;
-            let ngram_len = draft.len();
-            state.ngram_self_tune.record_submitted(ngram_len);
-            state.mtp_telemetry.record_ngram_submitted(ngram_len);
-            let mtp_tail_cap = state.mtp_adaptive_max_depth.saturating_sub(ngram_len);
-            let mut sources = vec![MtpDraftSource::Ngram; ngram_len];
-
-            let mut aligned_log_probs = mtp_ngram_pseudo_log_probs(
-                &ngram_outcome.confidence,
-                ngram_len,
-                mtp_ngram_acceptance_mode_from_env(),
-            );
-
-            if mtp_tail_cap > 0 && (self.weights.mtp.is_some() || self.weights.glm_mtp.is_some()) {
-                let cache = state.mtp_cache.get_or_insert_with(|| MlxKVCache::new(1));
-                let mtp_draft_started = Instant::now();
-                let (tail, log_probs, distributions, added, _top2_margins) =
-                    if self.weights.glm_mtp.is_some() {
+                    // N-gram filled the whole draft window — no MTP tail needed.
+                    // Preserve MTP cache and advance RoPE offset by ngram_len
+                    // instead of resetting to None (ADR-013 Phase 5). This keeps
+                    // accumulated positional context so the next MTP step starts
+                    // with correct RoPE offsets. Gated by env var; defaults to
+                    // the previous reset behavior for safety.
+                    let preserve_cache = std::env::var("AX_MLX_MTP_NGRAM_CACHE_POLICY")
+                        .map(|v| v != "reset")
+                        .unwrap_or(true);
+                    if preserve_cache {
+                        if let Some(ref mut cache) = state.mtp_cache {
+                            // N-gram tokens don't produce MTP KV entries, so advance
+                            // rope_offset (logical position) instead of seq_len
+                            // (physical entries).  This keeps the next MTP step's
+                            // RoPE correct without leaving a gap of uninitialized
+                            // KV entries that SDPA would attend over.
+                            cache.rope_offset += ngram_len;
+                        }
+                        // mtp_decode_count tracks physical MTP KV entries only.
+                        // N-gram tokens don't add entries, so don't increment here.
+                    } else {
+                        state.mtp_cache = None;
+                        state.mtp_decode_count = 0;
+                    }
+                    state.mtp_skip_logits = None;
+                    state.mtp_skip_hidden = None;
+                    state.mtp_pending_draft_distributions.clear();
+                    state.mtp_telemetry.record_ngram_stack_hit(ngram_len, true);
+                    (draft, aligned_log_probs, sources)
+                }
+            } else {
+                if self.weights.mtp.is_some() {
+                    // MTP head forward path (RoPE managed internally via cache.seq_len).
+                    let cache = state.mtp_cache.get_or_insert_with(|| MlxKVCache::new(1));
+                    let mtp_draft_started = Instant::now();
+                    let (draft, log_probs, distributions, added, _top2_margins) = mtp_draft_tokens(
+                        &self.weights,
+                        &self.cfg,
+                        &draft_hidden,
+                        tail_tok,
+                        cache,
+                        Some(state.mtp_adaptive_max_depth),
+                        &mut state.rng,
+                    );
+                    mtp_timings.mtp_draft_wall_us = mtp_timings
+                        .mtp_draft_wall_us
+                        .saturating_add(elapsed_us(mtp_draft_started));
+                    state.mtp_decode_count += added;
+                    state.mtp_pending_draft_distributions = distributions;
+                    let sources = vec![MtpDraftSource::Mtp; draft.len()];
+                    (draft, log_probs, sources)
+                } else if self.weights.glm_mtp.is_some() {
+                    // GLM MTP head forward path (GLM MLA attention, shared_head logits).
+                    let cache = state.mtp_cache.get_or_insert_with(|| MlxKVCache::new(1));
+                    let mtp_draft_started = Instant::now();
+                    let (draft, log_probs, distributions, added, _top2_margins) =
                         glm_mtp_draft_tokens(
                             &self.weights,
                             &self.cfg,
                             &draft_hidden,
                             tail_tok,
                             cache,
-                            Some(mtp_tail_cap),
+                            Some(state.mtp_adaptive_max_depth),
                             &mut state.rng,
-                        )
-                    } else {
-                        mtp_draft_tokens_after_forced_prefix(
-                            &self.weights,
-                            &self.cfg,
-                            &draft_hidden,
-                            tail_tok,
-                            &draft,
-                            cache,
-                            mtp_tail_cap,
-                            &mut state.rng,
-                        )
-                    };
-                mtp_timings.mtp_draft_wall_us = mtp_timings
-                    .mtp_draft_wall_us
-                    .saturating_add(elapsed_us(mtp_draft_started));
-                state.mtp_decode_count += added;
-                state.mtp_pending_draft_distributions = distributions;
-                state.mtp_telemetry.record_ngram_stack_hit(ngram_len, false);
-                state.mtp_telemetry.record_ngram_hybrid_tail(tail.len());
-                aligned_log_probs.extend(log_probs);
-                sources.extend(std::iter::repeat_n(MtpDraftSource::HybridMtp, tail.len()));
-                draft.extend(tail);
-                (draft, aligned_log_probs, sources)
-            } else {
-                // N-gram filled the whole draft window — no MTP tail needed.
-                // Preserve MTP cache and advance RoPE offset by ngram_len
-                // instead of resetting to None (ADR-013 Phase 5). This keeps
-                // accumulated positional context so the next MTP step starts
-                // with correct RoPE offsets. Gated by env var; defaults to
-                // the previous reset behavior for safety.
-                let preserve_cache = std::env::var("AX_MLX_MTP_NGRAM_CACHE_POLICY")
-                    .map(|v| v != "reset")
-                    .unwrap_or(true);
-                if preserve_cache {
-                    if let Some(ref mut cache) = state.mtp_cache {
-                        // N-gram tokens don't produce MTP KV entries, so advance
-                        // rope_offset (logical position) instead of seq_len
-                        // (physical entries).  This keeps the next MTP step's
-                        // RoPE correct without leaving a gap of uninitialized
-                        // KV entries that SDPA would attend over.
-                        cache.rope_offset += ngram_len;
-                    }
-                    // mtp_decode_count tracks physical MTP KV entries only.
-                    // N-gram tokens don't add entries, so don't increment here.
+                        );
+                    mtp_timings.mtp_draft_wall_us = mtp_timings
+                        .mtp_draft_wall_us
+                        .saturating_add(elapsed_us(mtp_draft_started));
+                    state.mtp_decode_count += added;
+                    state.mtp_pending_draft_distributions = distributions;
+                    let sources = vec![MtpDraftSource::Mtp; draft.len()];
+                    (draft, log_probs, sources)
                 } else {
-                    state.mtp_cache = None;
-                    state.mtp_decode_count = 0;
+                    let assistant_draft_started = Instant::now();
+                    let (draft, log_probs, distributions) =
+                        self.gemma4_assistant_draft_token(state, tail_tok, &draft_hidden, sampling);
+                    mtp_timings.assistant_draft_wall_us = mtp_timings
+                        .assistant_draft_wall_us
+                        .saturating_add(elapsed_us(assistant_draft_started));
+                    state.mtp_pending_draft_distributions = distributions;
+                    let sources = vec![MtpDraftSource::Gemma4Assistant; draft.len()];
+                    (draft, log_probs, sources)
                 }
-                state.mtp_skip_logits = None;
-                state.mtp_skip_hidden = None;
+            };
+            state.mtp_pending_draft = new_draft;
+            state.mtp_pending_draft_log_probs = new_log_probs;
+            state.mtp_pending_draft_sources = new_sources;
+            if state.mtp_pending_draft_log_probs.is_empty() {
                 state.mtp_pending_draft_distributions.clear();
-                state.mtp_telemetry.record_ngram_stack_hit(ngram_len, true);
-                (draft, aligned_log_probs, sources)
             }
-        } else {
-            if self.weights.mtp.is_some() {
-                // MTP head forward path (RoPE managed internally via cache.seq_len).
-                let cache = state.mtp_cache.get_or_insert_with(|| MlxKVCache::new(1));
-                let mtp_draft_started = Instant::now();
-                let (draft, log_probs, distributions, added, _top2_margins) = mtp_draft_tokens(
-                    &self.weights,
-                    &self.cfg,
-                    &draft_hidden,
-                    tail_tok,
-                    cache,
-                    Some(state.mtp_adaptive_max_depth),
-                    &mut state.rng,
-                );
-                mtp_timings.mtp_draft_wall_us = mtp_timings
-                    .mtp_draft_wall_us
-                    .saturating_add(elapsed_us(mtp_draft_started));
-                state.mtp_decode_count += added;
-                state.mtp_pending_draft_distributions = distributions;
-                let sources = vec![MtpDraftSource::Mtp; draft.len()];
-                (draft, log_probs, sources)
-            } else if self.weights.glm_mtp.is_some() {
-                // GLM MTP head forward path (GLM MLA attention, shared_head logits).
-                let cache = state.mtp_cache.get_or_insert_with(|| MlxKVCache::new(1));
-                let mtp_draft_started = Instant::now();
-                let (draft, log_probs, distributions, added, _top2_margins) = glm_mtp_draft_tokens(
-                    &self.weights,
-                    &self.cfg,
-                    &draft_hidden,
-                    tail_tok,
-                    cache,
-                    Some(state.mtp_adaptive_max_depth),
-                    &mut state.rng,
-                );
-                mtp_timings.mtp_draft_wall_us = mtp_timings
-                    .mtp_draft_wall_us
-                    .saturating_add(elapsed_us(mtp_draft_started));
-                state.mtp_decode_count += added;
-                state.mtp_pending_draft_distributions = distributions;
-                let sources = vec![MtpDraftSource::Mtp; draft.len()];
-                (draft, log_probs, sources)
-            } else {
-                let assistant_draft_started = Instant::now();
-                let (draft, log_probs, distributions) =
-                    self.gemma4_assistant_draft_token(state, tail_tok, &draft_hidden, sampling);
-                mtp_timings.assistant_draft_wall_us = mtp_timings
-                    .assistant_draft_wall_us
-                    .saturating_add(elapsed_us(assistant_draft_started));
-                state.mtp_pending_draft_distributions = distributions;
-                let sources = vec![MtpDraftSource::Gemma4Assistant; draft.len()];
-                (draft, log_probs, sources)
+            if state.mtp_pending_draft.is_empty() {
+                state.mtp_pending_draft_sources.clear();
             }
-        };
-        state.mtp_pending_draft = new_draft;
-        state.mtp_pending_draft_log_probs = new_log_probs;
-        state.mtp_pending_draft_sources = new_sources;
-        if state.mtp_pending_draft_log_probs.is_empty() {
-            state.mtp_pending_draft_distributions.clear();
-        }
-        if state.mtp_pending_draft.is_empty() {
-            state.mtp_pending_draft_sources.clear();
-        }
-        // Capture skip-state only when the next step will have no pending draft,
-        // making `can_skip` true.  When pending is non-empty (the common case)
-        // async_eval + slice work here is never consumed — so skip it entirely.
-        if self.mtp_skip_state
-            && (self.weights.mtp.is_some() || self.weights.glm_mtp.is_some())
-            && state.mtp_pending_draft.is_empty()
-        {
-            let sl = slice(
-                &logits_all,
-                &[accept_count as i32, 0],
-                &[(accept_count + 1) as i32, vocab],
-                &[1, 1],
-                None,
-            );
-            mlx_sys::async_eval(&[&sl, &draft_hidden]);
-            state.mtp_skip_logits = Some(sl);
-            state.mtp_skip_hidden = Some(draft_hidden);
-        }
-        mtp_timings.draft_wall_us = elapsed_us(draft_started);
+            // Capture skip-state only when the next step will have no pending draft,
+            // making `can_skip` true.  When pending is non-empty (the common case)
+            // async_eval + slice work here is never consumed — so skip it entirely.
+            if self.mtp_skip_state
+                && (self.weights.mtp.is_some() || self.weights.glm_mtp.is_some())
+                && state.mtp_pending_draft.is_empty()
+            {
+                let sl = slice(
+                    &logits_all,
+                    &[accept_count as i32, 0],
+                    &[(accept_count + 1) as i32, vocab],
+                    &[1, 1],
+                    None,
+                );
+                mlx_sys::async_eval(&[&sl, &draft_hidden]);
+                state.mtp_skip_logits = Some(sl);
+                state.mtp_skip_hidden = Some(draft_hidden);
+            }
+            mtp_timings.draft_wall_us = elapsed_us(draft_started);
+        } // end of !mtp_bypassed draft generation block
         let gemma4_assistant_submitted = state
             .mtp_pending_draft_sources
             .iter()
@@ -7142,6 +7193,7 @@ impl MlxRunner {
         state.mtp_skip_logits = None;
         state.mtp_skip_hidden = None;
         state.mtp_decode_count = 0;
+        state.mtp_bypassed = false;
         state.ngram_self_tune = NgramSelfTuneState::default();
         state.mtp_ngram_utility_hysteresis_remaining = 0;
         if let Some(ref mut c) = state.mtp_cache {
@@ -7290,7 +7342,12 @@ impl MlxRunner {
         // is incompatible with speculative decode and is excluded.
         // Acceptance uses rejection sampling when draft log-probs are available;
         // correction/bonus tokens are sampled with the request's temperature.
-        if self.has_mtp() && !self.disable_ngram_acceleration && !sampling.uses_repetition_penalty()
+        // The per-request bypass (state.mtp_bypassed) short-circuits MTP when
+        // the acceptance EWMA has shown MTP is not paying for itself.
+        if self.has_mtp()
+            && !self.disable_ngram_acceleration
+            && !sampling.uses_repetition_penalty()
+            && !state.mtp_bypassed
         {
             return self.run_mtp_decode(state, last_token, sampling, ctx);
         }
@@ -7493,14 +7550,18 @@ fn mtp_next_adaptive_depth(
 /// generation start so the controller begins from a model-appropriate point
 /// rather than the hardware maximum.
 ///
-/// `qwen3_next` (Qwen3.6 MoE + linear-attention) starts at depth 2: the
-/// hybrid architecture's linear-attention layers are recurrent scans that
-/// don't benefit from deeper drafts the way dense SDPA layers do, and the
+/// `qwen3_5` (Qwen3.6 dense 27B, linear-attention hybrid) and `qwen3_next`
+/// (Qwen3.6 MoE + linear-attention) both start at depth 2: the hybrid
+/// architecture's linear-attention layers are recurrent scans that don't
+/// benefit from deeper drafts the way dense SDPA layers do.  The gate-throughput
+/// sweep (`docs/mtp/draft-gate-throughput.md`) confirms depth 2 is the
+/// throughput optimum on all suites.  Starting at `head_max_depth` (8+) wastes
+/// 3–4 steps of deep head forwards before the controller converges.  The
 /// 35B-A3B variant has `native_depth=1` (the `.min(head_max_depth)` clamp
 /// keeps it safe).  All other families start at `head_max_depth`.
 fn mtp_initial_adaptive_depth(model_family: &str, head_max_depth: usize) -> usize {
     match model_family {
-        "qwen3_next" => 2.min(head_max_depth),
+        "qwen3_next" | "qwen3_5" => 2.min(head_max_depth),
         _ => head_max_depth,
     }
 }
@@ -8806,6 +8867,44 @@ fn cached_env_f32(name: &str, default: f32, min: f32, max: f32) -> f32 {
         .filter(|v| v.is_finite())
         .map(|v| v.clamp(min, max))
         .unwrap_or(default)
+}
+
+/// Minimum EWMA samples before the per-request MTP bypass can activate.
+///
+/// 8 samples lets the EWMA stabilize: with ALPHA=0.05 the first 8 samples
+/// weight recent history enough to reflect the true acceptance rate rather
+/// than the initial transient.  The bypass never fires during the warm-up
+/// window, so short bursts of low acceptance at the start of generation
+/// (e.g. the first few tokens before the MTP head is warmed up) do not
+/// permanently disable MTP.
+///
+/// Override with `AX_MLX_MTP_BYPASS_MIN_SAMPLES` (default 8).
+fn mtp_bypass_min_samples() -> u32 {
+    static CACHED: OnceLock<u32> = OnceLock::new();
+    *CACHED.get_or_init(|| {
+        std::env::var("AX_MLX_MTP_BYPASS_MIN_SAMPLES")
+            .ok()
+            .and_then(|v| v.parse::<u32>().ok())
+            .unwrap_or(8)
+    })
+}
+
+/// EWMA MTP-only acceptance rate below which the per-request MTP bypass fires.
+///
+/// When the MTP head's own acceptance (cascade-corrected, isolating MTP from
+/// n-gram quality) falls below this fraction, the per-step overhead (head
+/// forward + verify on the extended sequence + acceptance logic + potential
+/// rollback) exceeds the benefit.  The bypass latches for the remainder of
+/// the request and all subsequent decode steps use the n-gram speculation
+/// path without MTP.
+///
+/// 0.50 is calibrated against the benchmark matrix: when MTP-only acceptance
+/// stays above ~60% the speculation amortizes its overhead; below ~50% it is
+/// a net loss.  Override with `AX_MLX_MTP_BYPASS_THRESHOLD`
+/// (default 0.50, clamped to [0.0, 1.0]).
+fn mtp_bypass_threshold() -> f32 {
+    static CACHED: OnceLock<f32> = OnceLock::new();
+    *CACHED.get_or_init(|| cached_env_f32("AX_MLX_MTP_BYPASS_THRESHOLD", 0.50, 0.0, 1.0))
 }
 
 fn cached_env_u32(name: &str, default: u32) -> u32 {
@@ -11109,6 +11208,7 @@ mod tests {
         state.ngram_disabled_steps = 3;
         state.linear_ngram_no_draft_streak = 7;
         state.ngram_acceleration_disabled_for_request = true;
+        state.mtp_bypassed = true;
 
         // Simulate the prefill reset branch of run_item.
         state.bonus_queue.clear();
@@ -11116,6 +11216,7 @@ mod tests {
         state.ngram_disabled_steps = 0;
         state.linear_ngram_no_draft_streak = 0;
         state.ngram_acceleration_disabled_for_request = false;
+        state.mtp_bypassed = false;
 
         assert!(
             state.bonus_queue.is_empty(),
@@ -11128,6 +11229,10 @@ mod tests {
         assert_eq!(state.ngram_disabled_steps, 0);
         assert_eq!(state.linear_ngram_no_draft_streak, 0);
         assert!(!state.ngram_acceleration_disabled_for_request);
+        assert!(
+            !state.mtp_bypassed,
+            "MTP bypass must be cleared on prefill so the next request gets a fresh MTP attempt"
+        );
     }
 
     #[test]
@@ -15037,5 +15142,44 @@ mod tests {
         a.merge_from(b);
         assert_eq!(a.ngram_source_hurt_gated_steps, 17);
         assert_eq!(a.ngram_legacy_hurt_gated_steps, 8);
+    }
+
+    // ── MTP bypass and initial adaptive depth ──────────────────────────────
+
+    #[test]
+    fn mtp_initial_adaptive_depth_starts_qwen3_5_at_depth_2() {
+        // Qwen3.6 dense 27B (qwen3_5) has the same linear-attention hybrid
+        // architecture as qwen3_next; depth 2 is the throughput optimum.
+        assert_eq!(mtp_initial_adaptive_depth("qwen3_5", 8), 2);
+        assert_eq!(mtp_initial_adaptive_depth("qwen3_5", 1), 1);
+        // MoE variant still starts at 2.
+        assert_eq!(mtp_initial_adaptive_depth("qwen3_next", 8), 2);
+        assert_eq!(mtp_initial_adaptive_depth("qwen3_next", 1), 1);
+        // Other families start at head_max_depth.
+        assert_eq!(mtp_initial_adaptive_depth("standard", 8), 8);
+        assert_eq!(mtp_initial_adaptive_depth("qwen3", 4), 4);
+    }
+
+    #[test]
+    fn mtp_bypass_defaults_are_sane() {
+        // Default min_samples is 8: enough EWMA stabilization without
+        // excessive warm-up delay.
+        assert_eq!(mtp_bypass_min_samples(), 8);
+        // Default threshold is 0.50: MTP is bypassed only when acceptance
+        // is clearly worse than break-even.
+        let threshold = mtp_bypass_threshold();
+        assert!(
+            (threshold - 0.50).abs() < 1e-5,
+            "default bypass threshold must be 0.50; got {threshold}"
+        );
+    }
+
+    #[test]
+    fn request_state_starts_with_mtp_bypass_disabled() {
+        let state = RequestState::new(1, 7);
+        assert!(
+            !state.mtp_bypassed,
+            "MTP bypass must start disabled so MTP is attempted on every request"
+        );
     }
 }

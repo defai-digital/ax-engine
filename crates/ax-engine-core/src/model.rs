@@ -494,6 +494,27 @@ impl WeightSanitize {
     }
 }
 
+/// Sampling strategy for DiffusionGemma denoising steps.
+///
+/// Controls how canvas positions are accepted or renoised during the
+/// iterative denoise loop. The choice of sampler has a large impact on
+/// throughput: confidence-threshold is 4–5× faster than entropy-bound
+/// with equivalent output quality (per mlx-optiq benchmarks).
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NativeDiffusionSampler {
+    /// Entropy-bound sampling: sort positions by entropy ascending, accept
+    /// greedily until cumulative entropy exceeds the budget. Uses argsort +
+    /// cumsum + inverse-sort per step (the DiffusionGemma paper default).
+    EntropyBound,
+    /// Confidence-threshold sampling: accept a position when its peak
+    /// softmax probability exceeds a fixed threshold (default 0.9). Uses
+    /// only argmax + take_along_axis + one comparison — no sorting.
+    /// **Default: 4–5× faster with equivalent quality.**
+    #[default]
+    ConfidenceThreshold,
+}
+
 /// Diffusion-specific generation parameters (DiffusionGemma).
 ///
 /// DiffusionGemma generates tokens via block-autoregressive discrete diffusion:
@@ -514,7 +535,7 @@ pub struct NativeDiffusionConfig {
     /// Entropy bound for position acceptance during denoising (default 0.1).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub entropy_bound: Option<f32>,
-    /// Mean entropy threshold for convergence detection (default 0.005).
+    /// Mean entropy threshold for convergence detection (default 0.02).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub entropy_threshold: Option<f32>,
     /// Consecutive stable argmax steps required for convergence (default 2).
@@ -535,6 +556,15 @@ pub struct NativeDiffusionConfig {
     /// has converged regardless of absolute entropy.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub acceptance_rate_threshold: Option<f32>,
+    /// Sampling strategy for denoising steps (default: confidence_threshold).
+    /// `confidence_threshold` is 4–5× faster with equivalent quality.
+    /// Set to `entropy_bound` to use the original paper sampler.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sampler: Option<NativeDiffusionSampler>,
+    /// Confidence threshold for `confidence_threshold` sampler (default 0.9).
+    /// Positions with peak softmax probability >= this value are accepted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confidence_threshold: Option<f32>,
 }
 
 impl NativeDiffusionConfig {
@@ -549,6 +579,8 @@ impl NativeDiffusionConfig {
             || self.temperature_end.is_some()
             || self.convergence_check_interval.is_some()
             || self.acceptance_rate_threshold.is_some()
+            || self.sampler.is_some()
+            || self.confidence_threshold.is_some()
     }
 
     pub fn is_disabled(&self) -> bool {

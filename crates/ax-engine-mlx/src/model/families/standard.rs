@@ -834,11 +834,51 @@ pub(crate) fn layer_forward_bidirectional(
     );
 
     // Read cached prompt K/V (no mutation).
-    let (cached_k, cached_v) = cache
+    let (cached_k_full, cached_v_full) = cache
         .peek_layer_full_kv(layer_idx)
         .expect("bidirectional layer requires cached prompt KV from prefill");
 
+    // Symmetric SWA for bidirectional attention (vLLM evidence: ~1.3x).
+    // For SWA layers, canvas tokens only need prompt KV within the sliding
+    // window. Slice cached prompt KV to [token_offset - W, token_offset],
+    // reducing attention from O(canvas × full_prompt) to O(canvas × W).
+    // Non-SWA layers (full attention) use the full cached prompt KV.
+    let (cached_k, cached_v, swa_sliced) = if let Some(window) = sliding_window {
+        let cached_seq = cached_k_full.shape()[2] as usize;
+        let prompt_start = token_offset.saturating_sub(window);
+        if prompt_start > 0 && prompt_start < cached_seq {
+            // Slice the prompt KV along the sequence dimension (axis 2).
+            let b = cached_k_full.shape()[0] as i32;
+            let h = cached_k_full.shape()[1] as i32;
+            let d = cached_k_full.shape()[3] as i32;
+            let sliced_k = slice(
+                &cached_k_full,
+                &[0, 0, prompt_start as i32, 0],
+                &[b, h, cached_seq as i32, d],
+                &[1, 1, 1, 1],
+                None,
+            );
+            let sliced_v = slice(
+                &cached_v_full,
+                &[0, 0, prompt_start as i32, 0],
+                &[b, h, cached_seq as i32, d],
+                &[1, 1, 1, 1],
+                None,
+            );
+            (sliced_k, sliced_v, true)
+        } else {
+            // No slicing needed: entire prompt is within window.
+            (cached_k_full.clone(), cached_v_full.clone(), false)
+        }
+    } else {
+        (cached_k_full.clone(), cached_v_full.clone(), false)
+    };
+
     // Bidirectional attention: canvas Q attends to cached prompt KV + canvas KV.
+    // When SWA slicing is active, disable the KV buffer to avoid stale cached
+    // full KV across steps (the slice depends on token_offset which is constant
+    // within a block, but the buffer's cached_mask would be incorrect).
+    let kv_buf_for_attn = if swa_sliced { None } else { kv_buffer };
     let attn_sdpa = bidirectional_attention(
         &q_rope,
         &cached_k,
@@ -847,7 +887,7 @@ pub(crate) fn layer_forward_bidirectional(
         &v,
         cfg.query_scale,
         sliding_window,
-        kv_buffer,
+        kv_buf_for_attn,
     );
 
     let attn_flat = flatten_attention_output_bhsd(&attn_sdpa, seq, cfg.n_heads, head_dim);

@@ -36,9 +36,11 @@
 //!   cached embeddings when tokens are unchanged.
 //!
 //! - **Compiled forward closure** (opt-out: `AX_DIFFUSION_NO_COMPILED_FORWARD=1`):
-//!   When self-conditioning is off, the bidirectional forward pass is wrapped
-//!   in an `MlxClosure` compiled via `mlx_compile`, collapsing ~250 per-step
-//!   MLX C-API calls into a single dispatched graph.
+//!   The bidirectional forward pass is wrapped in an `MlxClosure` compiled via
+//!   `mlx_compile`, collapsing ~250 per-step MLX C-API calls into a single
+//!   dispatched graph. The self-conditioning signal is passed as an explicit
+//!   closure input (zero tensor on step 0), so the compiled graph works with
+//!   both self-conditioning and non-self-conditioning configurations.
 //!
 //! - **Conditional causal commit skip** (opt-out: `AX_DIFFUSION_NO_SKIP_COMMIT=1`):
 //!   When the denoise loop converges with >= 99% acceptance, the causal commit
@@ -46,10 +48,22 @@
 //!
 //! ## Full-pipeline compiled forward
 //!
-//! The previous full-pipeline closure is disabled until it can carry the
-//! dynamic self-conditioning signal and per-step renoise tokens. The
-//! forward-only closure remains available for configurations without
-//! self-conditioning.
+//! The full-pipeline closure compiles the entire denoise step (forward + softmax
+//! + entropy + sampling + acceptance) into a single MLX graph, collapsing ~280
+//! per-step dispatches into one. **Default ON**; opt-out via `AX_DIFFUSION_NO_FULL_PIPELINE=1`.
+//!
+//! The closure accepts four inputs:
+//!   - `[0]` token_ids: `[canvas_size]` u32
+//!   - `[1]` self_cond: `[1, canvas_size, hidden_size]` bf16 (zeros on step 0)
+//!   - `[2]` temperature: scalar f32
+//!   - `[3]` random_tokens: `[canvas_size]` u32 (for renoising rejected positions)
+//!
+//! And outputs five arrays:
+//!   - `[0]` new_tokens: `[canvas_size]` u32
+//!   - `[1]` argmax_1d: `[canvas_size]` u32
+//!   - `[2]` accept_mask_1d: `[canvas_size]` bool
+//!   - `[3]` entropy: `[1, canvas_size]` f32
+//!   - `[4]` prob: `[1, canvas_size, vocab_size]` f32
 
 use std::time::Instant;
 
@@ -202,9 +216,9 @@ fn check_convergence(canvas: &DiffusionCanvas, cfg: &DiffusionConfig) -> Converg
     let acceptance = canvas.step > 0 && update_rate < cfg.acceptance_rate_threshold;
 
     // Entropy plateau criteria: entropy stalled after warmup period.
-    // Only check after step 16 to allow initial exploration.
+    // Only check after step 8 to allow initial exploration.
     let entropy_delta = (canvas.prev_mean_entropy - canvas.mean_entropy).abs();
-    let plateau = entropy_delta < cfg.entropy_plateau_delta && canvas.step >= 16;
+    let plateau = entropy_delta < cfg.entropy_plateau_delta && canvas.step >= 8;
 
     ConvergenceSignals {
         strict,
@@ -270,8 +284,36 @@ fn denoise_step(
     // forward + softmax + entropy + sampling + acceptance into a single
     // graph dispatch. Falls back to the imperative path on thread mismatch.
     if let Some(pipeline) = full_pipeline {
+        // Build the self-conditioning input: either the previous step's
+        // embed or a zero placeholder (gated MLP maps zero → zero).
+        let zero_signal = if diff_cfg.self_conditioning && canvas.prev_self_cond_embed.is_none() {
+            Some(mlx_sys::zeros(
+                &[1, canvas.canvas_size as i32, cfg.hidden_size as i32],
+                MlxDtype::Bfloat16,
+                None,
+            ))
+        } else {
+            None
+        };
+        let sc_input: &MlxArray = canvas
+            .prev_self_cond_embed
+            .as_ref()
+            .or(zero_signal.as_ref())
+            .unwrap_or(&canvas.tokens_gpu);
+
+        // Generate random tokens on host for renoising rejected positions.
+        let random_tokens: Vec<u32> = (0..canvas.canvas_size)
+            .map(|_| (rng.next_u64() % cfg.vocab_size as u64) as u32)
+            .collect();
+        let random_tokens_gpu = MlxArray::from_raw_data(
+            random_tokens.as_ptr() as *const u8,
+            std::mem::size_of_val(&random_tokens[..]),
+            &[canvas.canvas_size as i32],
+            MlxDtype::Uint32,
+        );
+
         let temp_arr = MlxArray::from_f32(temperature);
-        match pipeline.try_apply(&[&canvas.tokens_gpu, &temp_arr]) {
+        match pipeline.try_apply(&[&canvas.tokens_gpu, sc_input, &temp_arr, &random_tokens_gpu]) {
             Ok(mut outputs) => {
                 // Outputs: [new_tokens, argmax_1d, accept_mask_1d, entropy, prob]
                 let prob = outputs.swap_remove(4);
@@ -280,15 +322,10 @@ fn denoise_step(
                 let argmax_1d = outputs.swap_remove(1);
                 let new_tokens = outputs.swap_remove(0);
 
-                // Acceptance rate tracking.
+                // Acceptance rate + convergence detection (batched evals).
                 let accepted_f32 = astype(&accept_mask_1d, MlxDtype::Float32, None);
                 let accepted_sum = sum_axis(&accepted_f32, -1, false, None);
-                eval(&[&accepted_sum]);
-                canvas.accepted_count = accepted_sum.data_f32()[0] as usize;
-                canvas.acceptance_rate = canvas.accepted_count as f32 / canvas.canvas_size as f32;
-                canvas.min_acceptance_rate = canvas.min_acceptance_rate.min(canvas.acceptance_rate);
 
-                // Convergence detection (check steps only).
                 if is_check_step {
                     if let Some(prev_argmax) = &canvas.argmax_canvas {
                         let changed = not_equal(&argmax_1d, prev_argmax, None);
@@ -297,7 +334,13 @@ fn denoise_step(
                         let total_entropy = sum_axis(&entropy, -1, false, None);
                         let canvas_size_f32 = MlxArray::from_f32(canvas.canvas_size as f32);
                         let mean_entropy = divide(&total_entropy, &canvas_size_f32, None);
-                        eval(&[&changed_count, &mean_entropy]);
+                        // Single batched eval.
+                        eval(&[&accepted_sum, &changed_count, &mean_entropy]);
+                        canvas.accepted_count = accepted_sum.data_f32()[0] as usize;
+                        canvas.acceptance_rate =
+                            canvas.accepted_count as f32 / canvas.canvas_size as f32;
+                        canvas.min_acceptance_rate =
+                            canvas.min_acceptance_rate.min(canvas.acceptance_rate);
                         let changed_val = changed_count.data_f32()[0];
                         canvas.stable_count = if changed_val == 0.0 {
                             canvas.stable_count + 1
@@ -308,11 +351,16 @@ fn denoise_step(
                         canvas.mean_entropy = mean_entropy.data_f32()[0];
                         canvas.min_entropy = canvas.min_entropy.min(canvas.mean_entropy);
                     } else {
-                        canvas.stable_count = 0;
                         let total_entropy = sum_axis(&entropy, -1, false, None);
                         let canvas_size_f32 = MlxArray::from_f32(canvas.canvas_size as f32);
                         let mean_entropy = divide(&total_entropy, &canvas_size_f32, None);
-                        eval(&[&mean_entropy]);
+                        eval(&[&accepted_sum, &mean_entropy]);
+                        canvas.accepted_count = accepted_sum.data_f32()[0] as usize;
+                        canvas.acceptance_rate =
+                            canvas.accepted_count as f32 / canvas.canvas_size as f32;
+                        canvas.min_acceptance_rate =
+                            canvas.min_acceptance_rate.min(canvas.acceptance_rate);
+                        canvas.stable_count = 0;
                         canvas.prev_mean_entropy = canvas.mean_entropy;
                         canvas.mean_entropy = mean_entropy.data_f32()[0];
                         canvas.min_entropy = canvas.min_entropy.min(canvas.mean_entropy);
@@ -343,7 +391,23 @@ fn denoise_step(
     // Imperative path: forward + manual post-processing.
     // Also used as fallback when compiled closures fail.
     let logits = if let Some(compiled) = compiled_forward {
-        match compiled.try_apply(&[&canvas.tokens_gpu]) {
+        // Build the self-conditioning input: either the previous step's
+        // embed or a zero placeholder (gated MLP maps zero → zero).
+        let zero_signal = if diff_cfg.self_conditioning && canvas.prev_self_cond_embed.is_none() {
+            Some(mlx_sys::zeros(
+                &[1, canvas.canvas_size as i32, cfg.hidden_size as i32],
+                MlxDtype::Bfloat16,
+                None,
+            ))
+        } else {
+            None
+        };
+        let sc_input: &MlxArray = canvas
+            .prev_self_cond_embed
+            .as_ref()
+            .or(zero_signal.as_ref())
+            .unwrap_or(&canvas.tokens_gpu);
+        match compiled.try_apply(&[&canvas.tokens_gpu, sc_input]) {
             Ok(mut outputs) => outputs.swap_remove(0),
             Err(_) => forward_bidirectional(BidirectionalForward {
                 cfg,
@@ -379,51 +443,67 @@ fn denoise_step(
     // Softmax over vocab (last axis) → [1, canvas_size, vocab_size].
     let prob = softmax(&scaled, -1, None);
 
-    // Per-position entropy: H(p) = -sum(p * log(p)) along vocab axis.
-    // Add epsilon before log to avoid log(0).
-    let eps = MlxArray::from_f32(1e-10);
-    let log_prob = log(&add(&prob, &eps, None), None);
-    let p_log_p = multiply(&prob, &log_prob, None);
-    // entropy: [1, canvas_size]
-    let entropy = negative(&sum_axis(&p_log_p, -1, false, None), None);
-
     // Argmax per position → [1, canvas_size] (argmax reduces last axis).
     let argmax_2d = argmax(&prob, None);
     // Reshape to 1-D [canvas_size] for token-state tracking.
     let argmax_1d = reshape(&argmax_2d, &[canvas.canvas_size as i32], None);
 
-    // ── GPU-native entropy-bound sampling ────────────────────────────
+    // ── Sampler-dependent acceptance mask ──────────────────────────────
     //
-    // Sort positions by entropy ascending (most confident first), then
-    // accept positions greedily until cumulative entropy exceeds the
-    // budget. This is equivalent to the previous CPU-side sort+loop but
-    // runs entirely as lazy MLX graph nodes.
+    // Two strategies are supported. The sampler choice dominates denoise
+    // throughput: confidence-threshold avoids argsort/cumsum/inverse-sort
+    // and is 4–5× faster with equivalent output quality (mlx-optiq evidence).
+    //
+    // Entropy is only needed for convergence detection (check steps). With
+    // the confidence-threshold sampler on non-check steps the expensive
+    // log/multiply/sum entropy computation is skipped entirely.
+    let entropy: Option<MlxArray>;
+    let accept_mask_1d: MlxArray;
 
-    // sorted_positions: [1, canvas_size] — indices that sort entropy ascending.
-    let sorted_positions = argsort_axis(&entropy, -1, None);
+    match diff_cfg.sampler {
+        crate::model::DiffusionSampler::EntropyBound => {
+            // Per-position entropy: H(p) = -sum(p * log(p)) along vocab axis.
+            let eps = MlxArray::from_f32(1e-10);
+            let log_prob = log(&add(&prob, &eps, None), None);
+            let p_log_p = multiply(&prob, &log_prob, None);
+            let ent = negative(&sum_axis(&p_log_p, -1, false, None), None);
 
-    // sorted_entropy: [1, canvas_size] — entropy values in sorted order.
-    let sorted_entropy = take_along_axis(&entropy, &sorted_positions, -1, None);
+            // Sort positions by entropy ascending (most confident first),
+            // accept greedily until cumulative entropy exceeds the budget.
+            let sorted_positions = argsort_axis(&ent, -1, None);
+            let sorted_entropy = take_along_axis(&ent, &sorted_positions, -1, None);
+            let cum_entropy = cumsum(&sorted_entropy, -1, false, true, None);
+            let bound_scalar = MlxArray::from_f32(diff_cfg.entropy_bound);
+            let accepted_sorted = include_lowest_entropy_position(
+                &less_equal(&cum_entropy, &bound_scalar, None),
+                canvas.canvas_size,
+            );
+            let inverse_sort = argsort_axis(&sorted_positions, -1, None);
+            let accept_mask = take_along_axis(&accepted_sorted, &inverse_sort, -1, None);
+            accept_mask_1d = reshape(&accept_mask, &[canvas.canvas_size as i32], None);
+            entropy = Some(ent);
+        }
+        crate::model::DiffusionSampler::ConfidenceThreshold => {
+            // Accept positions whose peak softmax probability >= threshold.
+            // No sorting required — just one comparison per position.
+            let argmax_3d = reshape(&argmax_2d, &[1, canvas.canvas_size as i32, 1], None);
+            let peak_prob = take_along_axis(&prob, &argmax_3d, -1, None);
+            let peak_2d = reshape(&peak_prob, &[1, canvas.canvas_size as i32], None);
+            let threshold = MlxArray::from_f32(diff_cfg.confidence_threshold);
+            let accept_mask = greater_equal(&peak_2d, &threshold, None);
+            accept_mask_1d = reshape(&accept_mask, &[canvas.canvas_size as i32], None);
 
-    // cum_entropy: [1, canvas_size] — inclusive prefix sum of sorted entropy.
-    let cum_entropy = cumsum(&sorted_entropy, -1, false, true, None);
-
-    // bound_scalar: [] f32 — the entropy budget.
-    let bound_scalar = MlxArray::from_f32(diff_cfg.entropy_bound);
-
-    // accepted_sorted: [1, canvas_size] bool — positions within budget.
-    // Always include the lowest-entropy position to match the CPU reference
-    // fallback when every position exceeds the entropy budget.
-    let accepted_sorted = include_lowest_entropy_position(
-        &less_equal(&cum_entropy, &bound_scalar, None),
-        canvas.canvas_size,
-    );
-
-    // Inverse-sort the acceptance mask back to original position order.
-    // inverse_sort[i] = rank of position i in the sorted ordering.
-    let inverse_sort = argsort_axis(&sorted_positions, -1, None);
-    let accept_mask = take_along_axis(&accepted_sorted, &inverse_sort, -1, None);
-    let accept_mask_1d = reshape(&accept_mask, &[canvas.canvas_size as i32], None);
+            // Entropy is only needed for convergence detection on check steps.
+            if is_check_step {
+                let eps = MlxArray::from_f32(1e-10);
+                let log_prob = log(&add(&prob, &eps, None), None);
+                let p_log_p = multiply(&prob, &log_prob, None);
+                entropy = Some(negative(&sum_axis(&p_log_p, -1, false, None), None));
+            } else {
+                entropy = None;
+            }
+        }
+    }
 
     let random_tokens: Vec<u32> = (0..canvas.canvas_size)
         .map(|_| (rng.next_u64() % cfg.vocab_size as u64) as u32)
@@ -439,25 +519,23 @@ fn denoise_step(
     // rejected positions are renoised for the next denoise step.
     let new_tokens = where_cond(&accept_mask_1d, &argmax_1d, &random_tokens_gpu, None);
 
-    // ── Acceptance rate tracking ─────────────────────────────────────
+    // ── Acceptance rate tracking + convergence detection ─────────────────
     //
-    // Count positions accepted (where accept_mask is true) for adaptive
-    // convergence detection. When acceptance rate drops near zero, the
-    // model has converged even if absolute entropy is still above threshold.
+    // Reduce host-side overhead (llama.cpp #24529 evidence: 10–20% gain):
+    // - On non-check steps: skip acceptance rate materialization entirely
+    //   (the value is only needed for convergence detection on check steps
+    //   and for the commit-skip decision after the denoise loop).
+    // - On check steps: batch accepted_sum with changed_count + mean_entropy
+    //   in a single eval() call to minimize GPU→CPU syncs.
+
     let accepted_f32 = astype(&accept_mask_1d, MlxDtype::Float32, None);
     let accepted_sum = sum_axis(&accepted_f32, -1, false, None);
-    eval(&[&accepted_sum]);
-    canvas.accepted_count = accepted_sum.data_f32()[0] as usize;
-    canvas.acceptance_rate = canvas.accepted_count as f32 / canvas.canvas_size as f32;
-    canvas.min_acceptance_rate = canvas.min_acceptance_rate.min(canvas.acceptance_rate);
-
-    // ── Convergence detection (check steps only) ─────────────────────
-    //
-    // On check steps, materialise two scalars (changed_count, mean_entropy)
-    // to update the stability counter and convergence flag. On non-check
-    // steps, skip the materialisation entirely.
 
     if is_check_step {
+        // Entropy is always computed on check steps (both samplers).
+        let ent = entropy
+            .as_ref()
+            .expect("entropy must be present on check steps");
         // Argmax stability: count positions that differ from previous step.
         if let Some(prev_argmax) = &canvas.argmax_canvas {
             let changed = not_equal(&argmax_1d, prev_argmax, None);
@@ -465,11 +543,16 @@ fn denoise_step(
             let changed_count = sum_axis(&changed_f32, -1, false, None);
 
             // Mean entropy: scalar mean of per-position entropy.
-            let total_entropy = sum_axis(&entropy, -1, false, None);
+            let total_entropy = sum_axis(ent, -1, false, None);
             let canvas_size_f32 = MlxArray::from_f32(canvas.canvas_size as f32);
             let mean_entropy = divide(&total_entropy, &canvas_size_f32, None);
 
-            eval(&[&changed_count, &mean_entropy]);
+            // Single batched eval for all three scalars.
+            eval(&[&accepted_sum, &changed_count, &mean_entropy]);
+
+            canvas.accepted_count = accepted_sum.data_f32()[0] as usize;
+            canvas.acceptance_rate = canvas.accepted_count as f32 / canvas.canvas_size as f32;
+            canvas.min_acceptance_rate = canvas.min_acceptance_rate.min(canvas.acceptance_rate);
 
             let changed_val = changed_count.data_f32()[0];
             canvas.stable_count = if changed_val == 0.0 {
@@ -482,11 +565,18 @@ fn denoise_step(
             canvas.min_entropy = canvas.min_entropy.min(canvas.mean_entropy);
         } else {
             // First step: no previous argmax to compare; force unstable.
-            canvas.stable_count = 0;
-            let total_entropy = sum_axis(&entropy, -1, false, None);
+            let total_entropy = sum_axis(ent, -1, false, None);
             let canvas_size_f32 = MlxArray::from_f32(canvas.canvas_size as f32);
             let mean_entropy = divide(&total_entropy, &canvas_size_f32, None);
-            eval(&[&mean_entropy]);
+
+            // Batch accepted_sum + mean_entropy eval.
+            eval(&[&accepted_sum, &mean_entropy]);
+
+            canvas.accepted_count = accepted_sum.data_f32()[0] as usize;
+            canvas.acceptance_rate = canvas.accepted_count as f32 / canvas.canvas_size as f32;
+            canvas.min_acceptance_rate = canvas.min_acceptance_rate.min(canvas.acceptance_rate);
+
+            canvas.stable_count = 0;
             canvas.prev_mean_entropy = canvas.mean_entropy;
             canvas.mean_entropy = mean_entropy.data_f32()[0];
             canvas.min_entropy = canvas.min_entropy.min(canvas.mean_entropy);
@@ -495,6 +585,10 @@ fn denoise_step(
         canvas.last_signals = signals;
         canvas.converged = signals.any();
     }
+    // On non-check steps: acceptance_rate is left unchanged from the last
+    // check step. This is safe because:
+    // - check_convergence() is only called on check steps
+    // - The commit-skip decision after the loop uses the final check step's value
 
     // Store current argmax for next step's stability comparison.
     canvas.argmax_canvas = Some(argmax_1d);
@@ -604,32 +698,145 @@ pub(crate) fn generate_diffusion_block(
         None
     };
 
-    let full_pipeline: Option<MlxClosure> = None;
-
-    // Compiled forward: enabled by default when self-conditioning is off
-    // (the closure captures pointers and cannot track the dynamic
-    // self-conditioning signal). Wraps the bidirectional forward pass in
-    // an `MlxClosure` compiled via `mlx_compile`, collapsing ~250 per-step
-    // MLX C-API calls into a single dispatched graph.
-    // Opt-out via `AX_DIFFUSION_NO_COMPILED_FORWARD=1`.
-    let compiled_forward: Option<MlxClosure> = if full_pipeline.is_some() {
-        None
-    } else if !diff_cfg.self_conditioning && !fastpath::diffusion_no_compiled_forward() {
+    // Full-pipeline compiled closure: fuses forward + softmax + entropy +
+    // sampling + acceptance into one compiled graph (~280 dispatches → 1).
+    // Default ON; opt-out via `AX_DIFFUSION_NO_FULL_PIPELINE=1`.
+    // Falls back to the forward-only closure when disabled.
+    //
+    // Inputs:  [tokens_gpu, self_cond_embed, temperature, random_tokens]
+    // Outputs: [new_tokens, argmax_1d, accept_mask_1d, entropy, prob]
+    let full_pipeline: Option<MlxClosure> = if !fastpath::diffusion_no_full_pipeline() {
         let cfg_addr = cfg as *const ModelConfig as usize;
         let weights_addr = weights as *const ModelWeights as usize;
         let cache_addr = cache as *const MlxKVCache as usize;
+        let canvas_size = canvas.canvas_size;
+        let has_self_cond = diff_cfg.self_conditioning;
+        let sampler = diff_cfg.sampler;
+        let entropy_bound = diff_cfg.entropy_bound;
+        let confidence_threshold = diff_cfg.confidence_threshold;
+
         let closure = MlxClosure::new_dyn(move |inputs: &MlxVectorArray| -> Vec<MlxArray> {
             let token_ids = inputs.get(0);
+            let self_cond_signal = inputs.get(1);
+            let temperature = inputs.get(2);
+            let random_tokens = inputs.get(3);
+
             let cfg_ref = unsafe { &*(cfg_addr as *const ModelConfig) };
             let weights_ref = unsafe { &*(weights_addr as *const ModelWeights) };
             let cache_ref = unsafe { &*(cache_addr as *const MlxKVCache) };
+            let signal_ref = if has_self_cond {
+                Some(&self_cond_signal)
+            } else {
+                None
+            };
+
+            // 1. Forward pass → logits [1, canvas_size, vocab_size]
             let logits = forward_bidirectional(BidirectionalForward {
                 cfg: cfg_ref,
                 weights: weights_ref,
                 token_ids: &token_ids,
                 cache: cache_ref,
                 token_offset,
-                self_conditioning_signal: None,
+                self_conditioning_signal: signal_ref,
+                embed_cache: None,
+                kv_buffers: None,
+            });
+
+            // 2. Temperature scale + softmax → prob
+            let scaled = divide(&logits, &temperature, None);
+            let prob = softmax(&scaled, -1, None);
+
+            // 3. Argmax → [1, canvas_size] → [canvas_size]
+            let argmax_2d = argmax(&prob, None);
+            let argmax_1d = reshape(&argmax_2d, &[canvas_size as i32], None);
+
+            // 4. Sampler-dependent acceptance mask + entropy
+            let (accept_mask_1d, entropy) = match sampler {
+                crate::model::DiffusionSampler::EntropyBound => {
+                    let eps = MlxArray::from_f32(1e-10);
+                    let log_prob = log(&add(&prob, &eps, None), None);
+                    let p_log_p = multiply(&prob, &log_prob, None);
+                    let ent = negative(&sum_axis(&p_log_p, -1, false, None), None);
+                    let sorted_positions = argsort_axis(&ent, -1, None);
+                    let sorted_entropy = take_along_axis(&ent, &sorted_positions, -1, None);
+                    let cum_entropy = cumsum(&sorted_entropy, -1, false, true, None);
+                    let bound_scalar = MlxArray::from_f32(entropy_bound);
+                    let accepted_sorted = include_lowest_entropy_position(
+                        &less_equal(&cum_entropy, &bound_scalar, None),
+                        canvas_size,
+                    );
+                    let inverse_sort = argsort_axis(&sorted_positions, -1, None);
+                    let accept_mask = take_along_axis(&accepted_sorted, &inverse_sort, -1, None);
+                    let mask_1d = reshape(&accept_mask, &[canvas_size as i32], None);
+                    (mask_1d, ent)
+                }
+                crate::model::DiffusionSampler::ConfidenceThreshold => {
+                    let argmax_3d = reshape(&argmax_2d, &[1, canvas_size as i32, 1], None);
+                    let peak_prob = take_along_axis(&prob, &argmax_3d, -1, None);
+                    let peak_2d = reshape(&peak_prob, &[1, canvas_size as i32], None);
+                    let threshold = MlxArray::from_f32(confidence_threshold);
+                    let accept_mask = greater_equal(&peak_2d, &threshold, None);
+                    let mask_1d = reshape(&accept_mask, &[canvas_size as i32], None);
+                    // Always compute entropy for convergence detection.
+                    let eps = MlxArray::from_f32(1e-10);
+                    let log_prob = log(&add(&prob, &eps, None), None);
+                    let p_log_p = multiply(&prob, &log_prob, None);
+                    let ent = negative(&sum_axis(&p_log_p, -1, false, None), None);
+                    (mask_1d, ent)
+                }
+            };
+
+            // 5. Token update: accepted → argmax, rejected → random
+            let new_tokens = where_cond(&accept_mask_1d, &argmax_1d, &random_tokens, None);
+
+            vec![new_tokens, argmax_1d, accept_mask_1d, entropy, prob]
+        });
+        closure.compile(false).ok()
+    } else {
+        None
+    };
+
+    // Compiled forward: enabled by default. Wraps the bidirectional forward
+    // pass in an `MlxClosure` compiled via `mlx_compile`, collapsing ~250
+    // per-step MLX C-API calls into a single dispatched graph.
+    //
+    // The closure accepts two inputs:
+    //   [0] token_ids:  [canvas_size] u32
+    //   [1] self_cond:  [1, canvas_size, hidden_size] bf16  (zeros on step 0)
+    //
+    // The self-conditioning signal is passed as an explicit input rather than
+    // a captured variable, so the compiled graph works with the dynamic
+    // per-step signal. On step 0 (no prior prediction), a zero tensor flows
+    // through the gated MLP producing zero output — identical to no signal.
+    //
+    // Opt-out via `AX_DIFFUSION_NO_COMPILED_FORWARD=1`.
+    let compiled_forward: Option<MlxClosure> = if full_pipeline.is_some() {
+        None
+    } else if !fastpath::diffusion_no_compiled_forward() {
+        let cfg_addr = cfg as *const ModelConfig as usize;
+        let weights_addr = weights as *const ModelWeights as usize;
+        let cache_addr = cache as *const MlxKVCache as usize;
+        let embed_table_addr = embed_table.map(|e| e as *const MlxArray as usize);
+        let has_self_cond = diff_cfg.self_conditioning;
+        let closure = MlxClosure::new_dyn(move |inputs: &MlxVectorArray| -> Vec<MlxArray> {
+            let token_ids = inputs.get(0);
+            let self_cond_signal = inputs.get(1);
+            let cfg_ref = unsafe { &*(cfg_addr as *const ModelConfig) };
+            let weights_ref = unsafe { &*(weights_addr as *const ModelWeights) };
+            let cache_ref = unsafe { &*(cache_addr as *const MlxKVCache) };
+            let signal_ref = if has_self_cond {
+                Some(&self_cond_signal)
+            } else {
+                None
+            };
+            let _ = embed_table_addr;
+            let logits = forward_bidirectional(BidirectionalForward {
+                cfg: cfg_ref,
+                weights: weights_ref,
+                token_ids: &token_ids,
+                cache: cache_ref,
+                token_offset,
+                self_conditioning_signal: signal_ref,
                 embed_cache: None,
                 kv_buffers: None,
             });
@@ -883,22 +1090,25 @@ mod tests {
             canvas_size: 256,
             max_denoise_steps: 48,
             entropy_bound: 0.1,
-            entropy_threshold: 0.005,
+            entropy_threshold: 0.02,
             convergence_steps: 2,
             temp_start: 0.8,
             temp_end: 0.4,
             self_conditioning: true,
-            convergence_check_interval: 4,
+            convergence_check_interval: 2,
             acceptance_rate_threshold: 0.01,
-            entropy_plateau_delta: 0.001,
+            entropy_plateau_delta: 0.005,
+            sampler: crate::model::DiffusionSampler::EntropyBound,
+            confidence_threshold: 0.9,
         }
     }
 
     #[test]
     fn convergence_signals_strict() {
         let cfg = default_diff_cfg();
-        // stable_count >= convergence_steps (2) AND mean_entropy < entropy_threshold (0.005).
-        let canvas = test_canvas(2, 0.003, 0.5, 0.004, 8);
+        // stable_count >= convergence_steps (2) AND mean_entropy < entropy_threshold (0.02).
+        // Use step=4 to stay below plateau warmup (step >= 8).
+        let canvas = test_canvas(2, 0.003, 0.5, 0.004, 4);
         let signals = check_convergence(&canvas, &cfg);
         assert!(
             signals.strict,
@@ -983,12 +1193,12 @@ mod tests {
     #[test]
     fn convergence_signals_plateau() {
         let cfg = default_diff_cfg();
-        // entropy delta (0.010 - 0.0095 = 0.0005) < plateau_delta (0.001) AND step >= 16.
+        // entropy delta (0.010 - 0.0095 = 0.0005) < plateau_delta (0.005) AND step >= 8.
         let canvas = test_canvas(0, 0.0095, 0.5, 0.010, 20);
         let signals = check_convergence(&canvas, &cfg);
         assert!(
             signals.plateau,
-            "plateau should fire when delta < threshold after step 16"
+            "plateau should fire when delta < threshold after step 8"
         );
         assert!(!signals.strict);
         assert!(!signals.acceptance);
@@ -998,10 +1208,10 @@ mod tests {
     #[test]
     fn convergence_signals_plateau_before_warmup() {
         let cfg = default_diff_cfg();
-        // Same entropy delta but step < 16 → plateau should NOT fire.
-        let canvas = test_canvas(0, 0.0095, 0.5, 0.010, 12);
+        // Same entropy delta but step < 8 → plateau should NOT fire.
+        let canvas = test_canvas(0, 0.0095, 0.5, 0.010, 4);
         let signals = check_convergence(&canvas, &cfg);
-        assert!(!signals.plateau, "plateau requires step >= 16 warmup");
+        assert!(!signals.plateau, "plateau requires step >= 8 warmup");
     }
 
     #[test]

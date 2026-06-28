@@ -197,6 +197,8 @@ pub(crate) fn parse_diffusion_config(
         temperature_end,
         convergence_check_interval: None,
         acceptance_rate_threshold: None,
+        sampler: None,
+        confidence_threshold: None,
     }
 }
 

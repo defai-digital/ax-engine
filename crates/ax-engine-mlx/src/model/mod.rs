@@ -30,7 +30,7 @@ pub use turboquant_context::{
 mod config;
 use config::layer_params;
 pub use config::{
-    DiffusionConfig, Gemma4AssistantSharedKvLayers, GlmRouterConfig, LayerConfig,
+    DiffusionConfig, DiffusionSampler, Gemma4AssistantSharedKvLayers, GlmRouterConfig, LayerConfig,
     LinearAttentionConfig, MlaAttentionConfig, ModelConfig,
 };
 

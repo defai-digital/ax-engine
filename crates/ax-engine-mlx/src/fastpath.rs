@@ -870,12 +870,12 @@ env_flag!(
 );
 
 env_flag!(
-    /// `AX_DIFFUSION_FULL_PIPELINE` — compile the full denoise pipeline
-    /// (forward + softmax + entropy + sampling + acceptance) into a single
-    /// MLX graph, collapsing ~280 per-step dispatches into one. Supersedes
-    /// `AX_DIFFUSION_COMPILED_FORWARD` (forward-only). Default OFF; opt-in.
-    diffusion_full_pipeline_enabled,
-    "AX_DIFFUSION_FULL_PIPELINE"
+    /// `AX_DIFFUSION_NO_FULL_PIPELINE` — opt-out of the full-pipeline compiled
+    /// closure that fuses forward + softmax + entropy + sampling + acceptance
+    /// into a single MLX graph (~280 dispatches → 1). Supersedes the
+    /// forward-only compiled closure. **Default ON** for best performance.
+    diffusion_no_full_pipeline,
+    "AX_DIFFUSION_NO_FULL_PIPELINE"
 );
 
 env_flag!(
@@ -966,6 +966,27 @@ pub fn diffusion_entropy_plateau_delta() -> Option<f32> {
 pub fn diffusion_max_steps() -> Option<usize> {
     static CACHED: OnceLock<Option<usize>> = OnceLock::new();
     *CACHED.get_or_init(|| parse_positive_usize_env("AX_DIFFUSION_MAX_STEPS"))
+}
+
+/// Diffusion sampler strategy override. Returns the raw env-var string when
+/// `AX_DIFFUSION_SAMPLER` is set (e.g. `"confidence_threshold"` or
+/// `"entropy_bound"`). The caller maps the string to `DiffusionSampler`.
+pub fn diffusion_sampler() -> Option<String> {
+    static CACHED: OnceLock<Option<String>> = OnceLock::new();
+    CACHED
+        .get_or_init(|| {
+            std::env::var("AX_DIFFUSION_SAMPLER")
+                .ok()
+                .map(|s| s.trim().to_lowercase())
+        })
+        .clone()
+}
+
+/// Diffusion confidence-threshold sampler: accept positions whose peak
+/// softmax probability exceeds this value. Defaults to 0.9 when unset.
+pub fn diffusion_confidence_threshold() -> Option<f32> {
+    static CACHED: OnceLock<Option<f32>> = OnceLock::new();
+    *CACHED.get_or_init(|| parse_nonnegative_f32_env("AX_DIFFUSION_CONFIDENCE_THRESHOLD"))
 }
 
 #[cfg(test)]

@@ -188,6 +188,19 @@ impl GlmRouterConfig {
     }
 }
 
+/// Sampling strategy for DiffusionGemma denoising steps.
+///
+/// The choice of sampler dominates denoise throughput: confidence-threshold
+/// avoids argsort/cumsum/inverse-sort and is 4–5× faster than entropy-bound
+/// with equivalent output quality (per mlx-optiq benchmarks on Apple Silicon).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum DiffusionSampler {
+    /// Entropy-bound: sort by entropy ascending, accept greedily within budget.
+    EntropyBound,
+    /// Confidence-threshold: accept when peak softmax prob >= threshold.
+    ConfidenceThreshold,
+}
+
 /// Diffusion decoding hyperparameters for DiffusionGemma.
 #[derive(Clone, Debug)]
 pub struct DiffusionConfig {
@@ -197,7 +210,7 @@ pub struct DiffusionConfig {
     pub max_denoise_steps: usize,
     /// Entropy bound for position acceptance during denoising (default 0.1).
     pub entropy_bound: f32,
-    /// Mean entropy threshold for convergence detection (default 0.005).
+    /// Mean entropy threshold for convergence detection (default 0.02).
     pub entropy_threshold: f32,
     /// Consecutive stable argmax steps required for convergence (default 2).
     pub convergence_steps: usize,
@@ -207,17 +220,21 @@ pub struct DiffusionConfig {
     pub temp_end: f32,
     /// Enable self-conditioning feedback between denoising steps (default true).
     pub self_conditioning: bool,
-    /// Steps between convergence checks (default 4). Non-check steps skip
+    /// Steps between convergence checks (default 2). Non-check steps skip
     /// argmax stability and mean-entropy materialisation to reduce GPU→CPU syncs.
     pub convergence_check_interval: usize,
     /// Update-rate threshold for adaptive convergence (default 0.01 = 1%).
     /// `acceptance_rate` tracks positions kept from the current canvas, so
     /// convergence fires when fewer than this fraction still update.
     pub acceptance_rate_threshold: f32,
-    /// Entropy plateau delta for convergence detection (default 0.001).
+    /// Entropy plateau delta for convergence detection (default 0.005).
     /// When the absolute change in mean entropy between consecutive check
-    /// steps falls below this value after step 16, plateau convergence fires.
+    /// steps falls below this value after step 8, plateau convergence fires.
     pub entropy_plateau_delta: f32,
+    /// Sampling strategy for denoising acceptance (default: ConfidenceThreshold).
+    pub sampler: DiffusionSampler,
+    /// Confidence threshold for ConfidenceThreshold sampler (default 0.9).
+    pub confidence_threshold: f32,
 }
 
 impl DiffusionConfig {
@@ -235,7 +252,7 @@ impl DiffusionConfig {
         }
         // Reject convergence_check_interval=0 — used as divisor in
         // `step.is_multiple_of(convergence_check_interval)` which panics on 0.
-        let convergence_check_interval = cfg.convergence_check_interval.unwrap_or(4) as usize;
+        let convergence_check_interval = cfg.convergence_check_interval.unwrap_or(2) as usize;
         if convergence_check_interval == 0 {
             return None;
         }
@@ -251,18 +268,28 @@ impl DiffusionConfig {
         if convergence_steps == 0 {
             return None;
         }
+        let sampler = match cfg.sampler.unwrap_or_default() {
+            ax_engine_core::model::NativeDiffusionSampler::EntropyBound => {
+                DiffusionSampler::EntropyBound
+            }
+            ax_engine_core::model::NativeDiffusionSampler::ConfidenceThreshold => {
+                DiffusionSampler::ConfidenceThreshold
+            }
+        };
         let mut dc = Self {
             canvas_size,
             max_denoise_steps,
             entropy_bound: cfg.entropy_bound.unwrap_or(0.1),
-            entropy_threshold: cfg.entropy_threshold.unwrap_or(0.005),
+            entropy_threshold: cfg.entropy_threshold.unwrap_or(0.02),
             convergence_steps,
             temp_start: cfg.temperature_start.unwrap_or(0.8),
             temp_end: cfg.temperature_end.unwrap_or(0.4),
             self_conditioning: cfg.self_conditioning.unwrap_or(true),
             convergence_check_interval,
             acceptance_rate_threshold: cfg.acceptance_rate_threshold.unwrap_or(0.01),
-            entropy_plateau_delta: 0.001,
+            entropy_plateau_delta: 0.005,
+            sampler,
+            confidence_threshold: cfg.confidence_threshold.unwrap_or(0.9),
         };
         // Apply env-var overrides for benchmark sweep campaigns.
         if let Some(v) = crate::fastpath::diffusion_entropy_threshold() {
@@ -276,6 +303,16 @@ impl DiffusionConfig {
         }
         if let Some(v) = crate::fastpath::diffusion_max_steps() {
             dc.max_denoise_steps = v;
+        }
+        // Env-var sampler override: AX_DIFFUSION_SAMPLER=confidence_threshold
+        if let Some(v) = crate::fastpath::diffusion_sampler() {
+            dc.sampler = match v.as_str() {
+                "confidence_threshold" | "confidence" => DiffusionSampler::ConfidenceThreshold,
+                _ => DiffusionSampler::EntropyBound,
+            };
+        }
+        if let Some(v) = crate::fastpath::diffusion_confidence_threshold() {
+            dc.confidence_threshold = v;
         }
         Some(dc)
     }
