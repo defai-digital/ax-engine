@@ -1267,27 +1267,58 @@ pub(crate) fn build_bidirectional_padding_mask(
     actual_lens: &[usize],
     dtype: MlxDtype,
 ) -> Option<MlxArray> {
-    let neg_inf = f32::NEG_INFINITY;
-    let mut data = vec![0.0f32; batch * max_len * max_len];
-    for (b, &len) in actual_lens.iter().enumerate() {
-        for i in 0..max_len {
-            let row = (b * max_len + i) * max_len;
-            for cell in data[row + len..row + max_len].iter_mut() {
-                *cell = neg_inf;
+    let n = batch * max_len * max_len;
+
+    // Build the mask directly in the target dtype to skip the f32→dtype astype
+    // dispatch and its eval() barrier. For bf16 (the common embedding dtype),
+    // this halves host memory usage and eliminates one GPU kernel dispatch.
+    let mask = if dtype == MlxDtype::Bfloat16 {
+        let neg_inf_bf16: u16 = (f32::NEG_INFINITY.to_bits() >> 16) as u16;
+        let mut data = vec![0u16; n];
+        for (b, &len) in actual_lens.iter().enumerate() {
+            for i in 0..max_len {
+                let row = (b * max_len + i) * max_len;
+                for cell in data[row + len..row + max_len].iter_mut() {
+                    *cell = neg_inf_bf16;
+                }
             }
         }
-    }
-    let mask = MlxArray::from_raw_data(
-        data.as_ptr() as *const u8,
-        data.len() * std::mem::size_of::<f32>(),
-        &[batch as i32, 1, max_len as i32, max_len as i32],
-        MlxDtype::Float32,
-    );
-    let mask = astype(&mask, dtype, None);
-    // `mask` is consumed lazily across every layer's SDPA but `data` (its backing
-    // host buffer) is freed when this function returns. Force materialization now,
-    // while `data` is still alive, so the deferred graph never reads freed memory.
-    mlx_sys::eval(&[&mask]);
+        let arr = MlxArray::from_raw_data(
+            data.as_ptr() as *const u8,
+            data.len() * std::mem::size_of::<u16>(),
+            &[batch as i32, 1, max_len as i32, max_len as i32],
+            MlxDtype::Bfloat16,
+        );
+        mlx_sys::eval(&[&arr]);
+        arr
+    } else {
+        let neg_inf = f32::NEG_INFINITY;
+        let mut data = vec![0.0f32; n];
+        for (b, &len) in actual_lens.iter().enumerate() {
+            for i in 0..max_len {
+                let row = (b * max_len + i) * max_len;
+                for cell in data[row + len..row + max_len].iter_mut() {
+                    *cell = neg_inf;
+                }
+            }
+        }
+        let arr = MlxArray::from_raw_data(
+            data.as_ptr() as *const u8,
+            data.len() * std::mem::size_of::<f32>(),
+            &[batch as i32, 1, max_len as i32, max_len as i32],
+            MlxDtype::Float32,
+        );
+        let arr = if dtype == MlxDtype::Float32 {
+            arr
+        } else {
+            astype(&arr, dtype, None)
+        };
+        mlx_sys::eval(&[&arr]);
+        arr
+    };
+    // `mask` is consumed lazily across every layer's SDPA but the host buffer
+    // is freed when this function returns. Force materialization above (eval),
+    // so the deferred graph never reads freed memory.
     Some(mask)
 }
 

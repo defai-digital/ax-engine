@@ -890,16 +890,16 @@ diagnosis.
 | Qwen3-Embedding 8B 4-bit DWQ | `mlx-lm` | last | short query | 8 | 15 | 1,394.6 | 1,441.0 | +3.3% |
 |  |  |  | 64-token chunks | 8 | 64 | 3,057.3 | 3,568.9 | +16.7% |
 |  |  |  | 256-token chunks | 8 | 256 | 2,850.1 | 3,512.5 | +23.2% |
-| EmbeddingGemma 300M 8-bit | `mlx-embeddings` | mean + Dense | short query | 8 | 15 | 9,373.9 | 13,128.1 | +40.0% |
-|  |  |  | 64-token chunks | 8 | 64 | 49,857.6 | 41,672.3 | -16.4% |
-|  |  |  | 256-token chunks | 8 | 256 | 122,935.6 | 113,091.6 | -8.0% |
+| EmbeddingGemma 300M 8-bit | `mlx-embeddings` | mean + Dense | short query | 8 | 15 | 9,373.9 | 9,856.8 | +5.2% |
+|  |  |  | 64-token chunks | 8 | 64 | 49,857.6 | 54,852.0 | +10.0% |
+|  |  |  | 256-token chunks | 8 | 256 | 122,935.6 | 128,960.5 | +4.9% |
 
 The current AX refresh is still workload-dependent rather than one-sided. Qwen
 0.6B, 4B, and 8B are faster than the retained `mlx-lm` reference baselines on
-the listed batch=8 rows. EmbeddingGemma is faster on the short-query batch in
-this AX-only refresh, but slower on 64-token and 256-token chunks against the
-retained `mlx-embeddings` baseline. It has a different shape from the Qwen
-embedders: a
+the listed batch=8 rows. EmbeddingGemma is also faster than the retained
+`mlx-embeddings` baseline on the listed batch=8 rows after fusing the pooled
+EmbeddingGemma batch path and building its bidirectional padding mask directly
+in bf16. It has a different shape from the Qwen embedders: a
 Gemma 3 bidirectional encoder with mean pooling, a two-layer Dense projection
 head, and L2 normalization (`model_family: embeddinggemma`). Its reference row
 uses `mlx-embeddings` because `mlx-lm` does not provide the comparable
@@ -913,7 +913,7 @@ and
 current AX-only refresh from
 `benchmarks/results/embedding-fair/2026-06-28-qwen-ax-only-refresh/2026-06-28-152458/`
 and
-`benchmarks/results/embedding-fair/2026-06-28-embeddinggemma-ax-only-refresh/2026-06-28-152523/`.
+`benchmarks/results/embedding-fair/2026-06-28-embeddinggemma-ax-only-mask-refresh/2026-06-28-155600/`.
 Method: `scripts/bench_embedding_fair.py --ax-only`, Hugging Face snapshot
 paths, 2 warmup and 5 measured trials, median tok/s, batch sizes 1/8,
 short-query plus 16/64/256 token synthetic chunks, l2-normalized output. Qwen

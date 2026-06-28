@@ -88,7 +88,7 @@ The current README reference-comparison snapshot for EmbeddingGemma is
 The current README AX-only refresh snapshots are
 `benchmarks/results/embedding-fair/2026-06-28-qwen-ax-only-refresh/2026-06-28-152458/`
 and
-`benchmarks/results/embedding-fair/2026-06-28-embeddinggemma-ax-only-refresh/2026-06-28-152523/`.
+`benchmarks/results/embedding-fair/2026-06-28-embeddinggemma-ax-only-mask-refresh/2026-06-28-155600/`.
 All use 2 warmup + 5 measured trials, report medians, and keep the complete
 short-query plus 16/64/256-token matrix in `summary.md`. The Qwen reference
 comparison uses `mlx-lm` as the baseline backend. EmbeddingGemma uses
