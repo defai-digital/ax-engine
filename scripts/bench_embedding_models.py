@@ -260,10 +260,9 @@ def bench_mlx_lm_batched(
             last = h[i, pos, :].astype(mx.float32)
             norm = mx.sqrt(mx.sum(last * last))
             outs.append(last / (norm + 1e-12))
-        # Apples-to-apples with ax-engine's `embed_batch_bytes` which
-        # materialises each sequence's f32 buffer back to Python. mlx-lm
-        # callers consume the embeddings as Python objects too — the bare
-        # `mx.eval(...)` form leaves results on GPU and hides this cost.
+        # Apples-to-apples with ax-engine's flat batched bytes path: callers
+        # can consume every embedding as CPU f32 data, and the bare
+        # `mx.eval(...)` form does not hide GPU-only output.
         return [o.tolist() for o in outs]
 
     print("  [mlx-lm/batched] warmup…", file=sys.stderr)
@@ -288,7 +287,7 @@ def bench_mlx_lm_batched(
 
 
 # ---------------------------------------------------------------------------
-# Backend: ax-engine-py batched (single embed_batch_bytes call per trial)
+# Backend: ax-engine-py batched (single flat buffer call per trial)
 # ---------------------------------------------------------------------------
 
 def bench_ax_engine_py_batched(
@@ -313,12 +312,21 @@ def bench_ax_engine_py_batched(
         mlx_model_artifacts_dir=str(model_dir),
     )
 
-    embed_batch_fast = getattr(session, "embed_batch_bytes", None)
-    if embed_batch_fast is None:
-        embed_batch_fast = lambda batch: session.embed_batch(batch, pooling="last", normalize=True)
+    embed_batch_flat = getattr(session, "embed_batch_flat_bytes", None)
+    if embed_batch_flat is not None:
+        embed_batch_fast = lambda batch: embed_batch_flat(
+            batch, pooling="last", normalize=True
+        )
     else:
-        _b_fn = embed_batch_fast
-        embed_batch_fast = lambda batch: _b_fn(batch, pooling="last", normalize=True)
+        embed_batch_bytes = getattr(session, "embed_batch_bytes", None)
+        if embed_batch_bytes is not None:
+            embed_batch_fast = lambda batch: embed_batch_bytes(
+                batch, pooling="last", normalize=True
+            )
+        else:
+            embed_batch_fast = lambda batch: session.embed_batch(
+                batch, pooling="last", normalize=True
+            )
 
     n = len(token_ids_list)
     total_tokens = sum(len(ids) for ids in token_ids_list)

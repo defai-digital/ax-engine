@@ -122,11 +122,11 @@ del model
 s = ax_engine.Session(mlx=True, model_id="qwen3", support_tier="mlx_preview",
                      mlx_model_artifacts_dir=model_dir)
 for _ in range(N_WARMUP):
-    s.embed_batch_bytes(batch, pooling="last", normalize=True)
+    s.embed_batch_flat_bytes(batch, pooling="last", normalize=True)
 ts_ax = []
 for _ in range(N_TRIALS):
     t0 = time.perf_counter()
-    s.embed_batch_bytes(batch, pooling="last", normalize=True)
+    s.embed_batch_flat_bytes(batch, pooling="last", normalize=True)
     ts_ax.append((time.perf_counter() - t0) * 1000.0)
 s.close()
 

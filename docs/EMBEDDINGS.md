@@ -35,8 +35,9 @@ read-back; comparisons without it under-count the cost.
 - `mlx-lm` path: `model.model(x)` → last-token slice → `astype(float32)`
   → l2-normalize → `.tolist()` (triggers eval + read-back).
 - `ax-engine-py` path: `session.embed_bytes(token_ids, ...)` or
-  `session.embed_batch_bytes(batch, ...)` (eval + `data_f32().to_vec()`
-  + `PyBytes` wrap).
+  `session.embed_batch_flat_bytes(batch, ...)` / `embed_batch_array(...)`
+  (eval + one contiguous `data_f32().to_vec()` + `PyBytes` wrap; NumPy
+  views the bytes without restacking).
 - `ax-engine` Rust path: `EngineSession::embed_batch_flat(...)` returns
   one contiguous `Vec<f32>` directly.
 
