@@ -35,6 +35,14 @@ workload matrix. The older `scripts/bench_embedding_models.py` remains useful
 for smoke coverage of single-call, HTTP, and optional Swift paths, but it mixes
 several API contracts and should not be the primary publication source.
 
+Use `scripts/bench_embedding_ingest_scale.py` when the question is sustained
+RAG/indexing throughput rather than one isolated batch. It reuses the fair
+backend adapters and output contract, then embeds a deterministic corpus such
+as 512 chunks split into repeated batches. That surfaces two effects the fair
+table intentionally keeps separate: whether throughput holds across many
+flushes, and how p95 batch latency rises as batch size grows. Do not use it as
+a replacement for the fair table; use it as the scale profile beside it.
+
 The README tables only count throughput where the caller can actually
 *consume* the embedding (Python `list[float]`, NumPy ndarray, raw f32
 bytes — not a GPU-only `MlxArray`). Both backends pay the GPU→CPU
@@ -107,6 +115,39 @@ each trial follows a GPU idle period.
 
 Both profiles are valid; choose the one that matches your workload's
 arrival pattern.
+
+## Large-corpus ingest scale
+
+The current README scale snapshot is:
+
+`benchmarks/results/embedding-scale/2026-06-28-qwen-ingest-scale/2026-06-28-184450/`
+
+It runs Qwen3-Embedding 0.6B 8-bit against `mlx-lm`, using last-token pooling
+and l2-normalized contiguous CPU `float32 [B,H]` output for both backends.
+Each trial embeds 512 deterministic chunks, with chunk lengths 256 and 512 and
+batch sizes 8, 32, and 64. The harness reports median tok/s, chunks/s,
+output MB/s, and per-batch p50/p95/max latency.
+
+Read the scale table differently from the fair table. The fair table answers
+"how fast is this batch shape when both engines return a caller-consumable
+matrix?" The scale table answers "does that rate hold when a RAG worker keeps
+feeding many batches, and what flush latency does the chosen batch size create?"
+For the current 0.6B snapshot, AX is behind `mlx-lm` by 2.4-6.5% on 256-token
+chunks, ahead by 3.5% at 512-token batch=8, behind by 3.9% at 512-token
+batch=32, and effectively tied at 512-token batch=64.
+
+Reproduce the scale snapshot with:
+
+```bash
+.venv/bin/python scripts/bench_embedding_ingest_scale.py \
+  --model qwen3-embedding-0.6b-8bit=/path/to/Qwen3-Embedding-0.6B-8bit/snapshots/<sha> \
+  --batch-sizes 8,32,64 \
+  --chunk-tokens 256,512 \
+  --total-chunks 512 \
+  --warmup 1 \
+  --trials 3 \
+  --output-dir benchmarks/results/embedding-scale/$(date +%Y-%m-%d)-qwen-ingest-scale
+```
 
 ## HTTP serving paths
 

@@ -117,6 +117,16 @@ class MtpBenchmarkRow:
     mtplx_accept_rate: float
 
 
+@dataclass(frozen=True)
+class EmbeddingDeltaRow:
+    label: str
+    detail: str
+    reference_label: str
+    reference_tok_s: float
+    ax_tok_s: float
+    delta_pct: float
+
+
 CHARTS = [
     ChartSpec(
         title="Gemma 4 — Prefill rate",
@@ -214,6 +224,44 @@ MTP_6BIT_MTP_TEXT = "#991b1b"
 MTP_6BIT_ROW_GAP = 32.0
 MTP_6BIT_GROUP_GAP = 18.0
 MTP_6BIT_GROUP_SIZE = 3
+
+EMBEDDING_FAIR_ARTIFACTS = (
+    Path(
+        "benchmarks/results/embedding-fair/2026-06-28-qwen-after-batch-fix/"
+        "2026-06-28-051508/embedding_fair.json"
+    ),
+    Path(
+        "benchmarks/results/embedding-fair/"
+        "2026-06-28-embeddinggemma-after-batch-fix/"
+        "2026-06-28-051549/embedding_fair.json"
+    ),
+)
+EMBEDDING_AX_REFRESH_ARTIFACTS = (
+    Path(
+        "benchmarks/results/embedding-fair/2026-06-28-qwen-ax-only-refresh/"
+        "2026-06-28-152458/embedding_fair.json"
+    ),
+    Path(
+        "benchmarks/results/embedding-fair/"
+        "2026-06-28-embeddinggemma-ax-only-mask-refresh/"
+        "2026-06-28-155600/embedding_fair.json"
+    ),
+)
+EMBEDDING_SCALE_ARTIFACT = Path(
+    "benchmarks/results/embedding-scale/2026-06-28-qwen-ingest-scale/"
+    "2026-06-28-184450/embedding_ingest_scale.json"
+)
+EMBEDDING_FAIR_CHART_OUTPUT = "perf-embedding-fair-ax-vs-reference.svg"
+EMBEDDING_SCALE_CHART_OUTPUT = "perf-embedding-ingest-scale-ax-vs-mlx-lm.svg"
+EMBEDDING_CHART_WIDTH = 1080
+EMBEDDING_CHART_LEFT = 360.0
+EMBEDDING_CHART_RIGHT = 1012.0
+EMBEDDING_CHART_TOP = 82.0
+EMBEDDING_CHART_ROW_GAP = 30.0
+EMBEDDING_CHART_POSITIVE = "#2eaf5f"
+EMBEDDING_CHART_POSITIVE_TEXT = "#176c37"
+EMBEDDING_CHART_NEGATIVE = "#dc2626"
+EMBEDDING_CHART_NEGATIVE_TEXT = "#991b1b"
 
 # ---------------------------------------------------------------------------
 # N-gram chart constants (shared by all three ngram charts)
@@ -1785,6 +1833,211 @@ def render_ngram_models_accept_chart(artifacts: dict[str, dict]) -> str:
     return "".join(lines) + "\n"
 
 
+def embedding_reference_key(artifact: dict[str, Any]) -> tuple[str, str]:
+    reference = artifact.get("reference", "mlx_lm")
+    if reference == "mlx_embeddings":
+        return "mlx_embeddings", "mlx-embeddings"
+    return "mlx_lm", "mlx-lm"
+
+
+def embedding_model_label(label: str) -> str:
+    return {
+        "qwen3-embedding-0.6b-8bit": "Qwen3 0.6B 8-bit",
+        "qwen3-embedding-4b-4bit-dwq": "Qwen3 4B 4-bit DWQ",
+        "qwen3-embedding-8b-4bit-dwq": "Qwen3 8B 4-bit DWQ",
+        "embeddinggemma-300m-8bit": "EmbeddingGemma 300M 8-bit",
+    }.get(label, label)
+
+
+def embedding_workload_label(workload: str) -> str:
+    return {
+        "short_query_b8": "short query",
+        "fixed_64_b8": "64-token chunks",
+        "fixed_256_b8": "256-token chunks",
+    }.get(workload, workload)
+
+
+def load_embedding_fair_delta_rows(repo_root: Path) -> list[EmbeddingDeltaRow]:
+    rows: list[EmbeddingDeltaRow] = []
+    wanted_workloads = ("short_query_b8", "fixed_64_b8", "fixed_256_b8")
+    for ref_relative_path, ax_relative_path in zip(
+        EMBEDDING_FAIR_ARTIFACTS, EMBEDDING_AX_REFRESH_ARTIFACTS, strict=True
+    ):
+        ref_path = repo_root / ref_relative_path
+        ax_path = repo_root / ax_relative_path
+        if not ref_path.exists():
+            raise ChartError(f"missing embedding fair artifact: {ref_path}")
+        if not ax_path.exists():
+            raise ChartError(f"missing embedding AX refresh artifact: {ax_path}")
+        ref_artifact = json.loads(ref_path.read_text())
+        ax_artifact = json.loads(ax_path.read_text())
+        ref_key, ref_label = embedding_reference_key(ref_artifact)
+        ax_by_model = {
+            str(model.get("model_label")): {
+                str(row.get("workload")): row for row in model.get("rows", [])
+            }
+            for model in ax_artifact.get("models", [])
+        }
+        for model in ref_artifact.get("models", []):
+            raw_model_label = str(model.get("model_label", ""))
+            model_label = embedding_model_label(raw_model_label)
+            ref_by_workload = {
+                str(row.get("workload")): row for row in model.get("rows", [])
+            }
+            ax_model_rows = ax_by_model.get(raw_model_label)
+            if ax_model_rows is None:
+                raise ChartError(f"{ax_path} missing model {raw_model_label}")
+            for workload in wanted_workloads:
+                ref_row = ref_by_workload.get(workload)
+                ax_row = ax_model_rows.get(workload)
+                if ref_row is None:
+                    raise ChartError(f"{ref_path} missing workload {workload}")
+                if ax_row is None:
+                    raise ChartError(f"{ax_path} missing workload {workload}")
+                ref_results = ref_row.get("results", {})
+                ax_results = ax_row.get("results", {})
+                ref = ref_results.get(ref_key)
+                ax = ax_results.get("ax_engine_py")
+                if not isinstance(ref, dict) or not isinstance(ax, dict):
+                    raise ChartError(
+                        f"missing embedding results for {raw_model_label} {workload}"
+                    )
+                ref_tps = float(ref["median_tokens_per_sec"])
+                ax_tps = float(ax["median_tokens_per_sec"])
+                delta = ((ax_tps - ref_tps) / ref_tps * 100.0) if ref_tps else 0.0
+                rows.append(
+                    EmbeddingDeltaRow(
+                        label=model_label,
+                        detail=embedding_workload_label(workload),
+                        reference_label=ref_label,
+                        reference_tok_s=ref_tps,
+                        ax_tok_s=ax_tps,
+                        delta_pct=delta,
+                    )
+                )
+    return rows
+
+
+def load_embedding_scale_delta_rows(repo_root: Path) -> list[EmbeddingDeltaRow]:
+    path = repo_root / EMBEDDING_SCALE_ARTIFACT
+    if not path.exists():
+        raise ChartError(f"missing embedding scale artifact: {path}")
+    artifact = json.loads(path.read_text())
+    ref_key, ref_label = embedding_reference_key(artifact)
+    rows: list[EmbeddingDeltaRow] = []
+    for model in artifact.get("models", []):
+        model_label = embedding_model_label(str(model.get("model_label", "")))
+        for row in model.get("rows", []):
+            results = row.get("results", {})
+            ref = results.get(ref_key)
+            ax = results.get("ax_engine_py")
+            if not isinstance(ref, dict) or not isinstance(ax, dict):
+                raise ChartError(f"{path} missing scale results for {row.get('workload')}")
+            ref_tps = float(ref["median_tokens_per_sec"])
+            ax_tps = float(ax["median_tokens_per_sec"])
+            delta = ((ax_tps - ref_tps) / ref_tps * 100.0) if ref_tps else 0.0
+            rows.append(
+                EmbeddingDeltaRow(
+                    label=model_label,
+                    detail=(
+                        f"{row['total_chunks']} x {row['chunk_tokens']} tok, "
+                        f"batch {row['batch_size']}"
+                    ),
+                    reference_label=ref_label,
+                    reference_tok_s=ref_tps,
+                    ax_tok_s=ax_tps,
+                    delta_pct=delta,
+                )
+            )
+    return rows
+
+
+def render_embedding_delta_chart(
+    rows: list[EmbeddingDeltaRow],
+    *,
+    title: str,
+    subtitle: str,
+    source_label: str,
+) -> str:
+    if not rows:
+        raise ChartError(f"{title} has no rows")
+    max_abs = max(abs(row.delta_pct) for row in rows)
+    axis_abs = max(5.0, math.ceil((max_abs + 1.0) / 5.0) * 5.0)
+    chart_height = int(EMBEDDING_CHART_TOP + len(rows) * EMBEDDING_CHART_ROW_GAP + 76)
+    plot_width = EMBEDDING_CHART_RIGHT - EMBEDDING_CHART_LEFT
+    zero_x = EMBEDDING_CHART_LEFT + plot_width / 2.0
+
+    def fx(delta_pct: float) -> float:
+        clamped = max(-axis_abs, min(delta_pct, axis_abs))
+        return EMBEDDING_CHART_LEFT + ((clamped + axis_abs) / (2.0 * axis_abs)) * plot_width
+
+    lines = [
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{EMBEDDING_CHART_WIDTH}"'
+        f' height="{chart_height}" viewBox="0 0 {EMBEDDING_CHART_WIDTH} {chart_height}"'
+        f' role="img" aria-labelledby="title desc">',
+        f"<title>{escape(title)}</title>",
+        f"<desc>{escape(subtitle)} Bars show AX Engine throughput percentage difference versus the reference backend; zero means parity.</desc>",
+        f'<rect width="{EMBEDDING_CHART_WIDTH}" height="{chart_height}" fill="#f8fafc"/>',
+        f'<text x="44" y="30" font-family="{FONT}" font-size="18" font-weight="700" fill="#111827">{escape(title)}</text>',
+        f'<text x="44" y="52" font-family="{FONT}" font-size="12" fill="#4b5563">{escape(subtitle)}</text>',
+        f'<text x="{EMBEDDING_CHART_RIGHT:.0f}" y="52" text-anchor="end" font-family="{FONT}" font-size="11" font-weight="700" fill="#374151">AX vs reference, tok/s delta</text>',
+    ]
+
+    for tick in (-axis_abs, -axis_abs / 2.0, 0.0, axis_abs / 2.0, axis_abs):
+        x = fx(tick)
+        stroke = "#cbd5e1" if tick == 0 else "#e5e7eb"
+        width = "1.6" if tick == 0 else "1"
+        lines.append(
+            f'<line x1="{x:.1f}" y1="68" x2="{x:.1f}" y2="{chart_height - 50}" stroke="{stroke}" stroke-width="{width}"/>'
+        )
+        lines.append(
+            f'<text x="{x:.1f}" y="{chart_height - 30}" text-anchor="middle" font-family="{FONT}" font-size="10" fill="#6b7280">{tick:+.0f}%</text>'
+        )
+
+    lines.append(
+        f'<text x="{zero_x:.1f}" y="{chart_height - 14}" text-anchor="middle" font-family="{FONT}" font-size="10" font-weight="700" fill="#6b7280">0% = reference backend</text>'
+    )
+
+    for idx, row in enumerate(rows):
+        y = EMBEDDING_CHART_TOP + idx * EMBEDDING_CHART_ROW_GAP
+        end_x = fx(row.delta_pct)
+        bar_x = min(zero_x, end_x)
+        bar_w = max(abs(end_x - zero_x), 1.0)
+        positive = row.delta_pct >= 0
+        color = EMBEDDING_CHART_POSITIVE if positive else EMBEDDING_CHART_NEGATIVE
+        text_color = (
+            EMBEDDING_CHART_POSITIVE_TEXT if positive else EMBEDDING_CHART_NEGATIVE_TEXT
+        )
+        label_x = end_x + 6 if positive else end_x - 6
+        anchor = "start" if positive else "end"
+        label_stroke = "#ffffff"
+        if positive and end_x > EMBEDDING_CHART_RIGHT - 92:
+            label_x = end_x - 6
+            anchor = "end"
+            text_color = "#ffffff"
+            label_stroke = EMBEDDING_CHART_POSITIVE_TEXT
+        elif not positive and end_x < EMBEDDING_CHART_LEFT + 92:
+            label_x = end_x + 6
+            anchor = "start"
+            text_color = "#ffffff"
+            label_stroke = EMBEDDING_CHART_NEGATIVE_TEXT
+        lines.extend(
+            [
+                f'<text x="44" y="{y + 4:.1f}" font-family="{FONT}" font-size="11" font-weight="700" fill="#111827">{escape(row.label)}</text>',
+                f'<text x="44" y="{y + 18:.1f}" font-family="{FONT}" font-size="10" fill="#6b7280">{escape(row.detail)} · ref {escape(row.reference_label)}</text>',
+                f'<rect x="{bar_x:.1f}" y="{y - 8:.1f}" width="{bar_w:.1f}" height="14" rx="3" fill="{color}"/>',
+                f'<text x="{label_x:.1f}" y="{y + 3.7:.1f}" text-anchor="{anchor}" font-family="{FONT}" font-size="10" font-weight="700" fill="{text_color}" stroke="{label_stroke}" stroke-width="3" paint-order="stroke">{row.delta_pct:+.1f}%</text>',
+                f'<text x="{EMBEDDING_CHART_RIGHT + 12:.1f}" y="{y + 3.7:.1f}" font-family="{FONT}" font-size="10" fill="#374151">{short_number(row.ax_tok_s)} tok/s</text>',
+            ]
+        )
+
+    lines.append(
+        f'<text x="44" y="{chart_height - 14}" font-family="{FONT}" font-size="10" fill="#6b7280">{escape(source_label)}</text>'
+    )
+    lines.append("</svg>")
+    return "".join(lines) + "\n"
+
+
 def write_chart(path: Path, content: str, check: bool) -> bool:
     if check:
         return path.exists() and path.read_text() == content
@@ -1851,6 +2104,26 @@ def main() -> int:
         )
         if not write_chart(mtp_6bit_output_path, mtp_6bit_content, args.check):
             mismatches.append(mtp_6bit_output_path)
+
+    embedding_fair_output_path = args.output_dir / EMBEDDING_FAIR_CHART_OUTPUT
+    embedding_fair_content = render_embedding_delta_chart(
+        load_embedding_fair_delta_rows(args.readme.parent),
+        title="Embedding throughput: AX vs reference",
+        subtitle="Batch=8, contiguous CPU float32 [B,H] output; higher delta means AX is faster.",
+        source_label="Sources: embedding-fair Qwen and EmbeddingGemma artifacts from 2026-06-28",
+    )
+    if not write_chart(embedding_fair_output_path, embedding_fair_content, args.check):
+        mismatches.append(embedding_fair_output_path)
+
+    embedding_scale_output_path = args.output_dir / EMBEDDING_SCALE_CHART_OUTPUT
+    embedding_scale_content = render_embedding_delta_chart(
+        load_embedding_scale_delta_rows(args.readme.parent),
+        title="Embedding ingest scale: AX vs mlx-lm",
+        subtitle="512 chunks per trial, repeated batches, contiguous CPU float32 [B,H] output.",
+        source_label="Source: embedding-scale Qwen3-Embedding 0.6B 8-bit artifact from 2026-06-28",
+    )
+    if not write_chart(embedding_scale_output_path, embedding_scale_content, args.check):
+        mismatches.append(embedding_scale_output_path)
 
     for spec in CHARTS:
         if args.results_dir:

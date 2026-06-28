@@ -42,8 +42,10 @@ bash -n scripts/*.sh scripts/lib/common.sh
   scripts/test_bench_ax_serving.py \
   scripts/bench_embedding_models.py \
   scripts/bench_embedding_fair.py \
+  scripts/bench_embedding_ingest_scale.py \
   scripts/verify_embedding_models.py \
   scripts/test_bench_embedding_fair.py \
+  scripts/test_bench_embedding_ingest_scale.py \
   scripts/test_embedding_server_ports.py \
   scripts/check_ax_serving_benchmark_artifact.py \
   scripts/test_ax_serving_benchmark_artifact.py \
@@ -189,6 +191,7 @@ bash -n scripts/*.sh scripts/lib/common.sh
 "$PYTHON_BIN" -m unittest \
   scripts/test_bench_ax_serving.py \
   scripts/test_embedding_server_ports.py \
+  scripts/test_bench_embedding_ingest_scale.py \
   scripts/test_ax_serving_benchmark_artifact.py \
   scripts/test_openwebui_e2e.py \
   scripts/test_qa_checkers.py \
