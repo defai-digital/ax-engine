@@ -360,6 +360,7 @@ def run_model(
     cooldown: float,
     reference: str = "mlx_lm",
     pooling: str = "last",
+    ax_only: bool = False,
 ) -> dict[str, Any]:
     model_dir = spec.path.resolve()
     manifest_path = model_dir / "model-manifest.json"
@@ -371,10 +372,10 @@ def run_model(
         raise ValueError("benchmark matrix has no workloads")
 
     if reference == "mlx_embeddings":
-        ref_step = make_mlx_embeddings_step(model_dir)
+        ref_step = None if ax_only else make_mlx_embeddings_step(model_dir)
         ref_label, ax_model_id = "mlx-embeddings", "embeddinggemma"
     else:
-        ref_step = make_mlx_lm_step(model_dir)
+        ref_step = None if ax_only else make_mlx_lm_step(model_dir)
         ref_label, ax_model_id = "mlx-lm", "qwen3"
     ax_step, ax_session = make_ax_engine_step(model_dir, pooling=pooling, model_id=ax_model_id)
     rows = []
@@ -384,12 +385,14 @@ def run_model(
                 f"  [workload] {workload.name} tokens={workload.token_counts}",
                 file=sys.stderr,
             )
-            results = {
-                reference: run_trials(ref_label, workload, ref_step, warmup, trials, cooldown),
-                "ax_engine_py": run_trials(
-                    "ax-engine-py", workload, ax_step, warmup, trials, cooldown
-                ),
-            }
+            results = {}
+            if ref_step is not None:
+                results[reference] = run_trials(
+                    ref_label, workload, ref_step, warmup, trials, cooldown
+                )
+            results["ax_engine_py"] = run_trials(
+                "ax-engine-py", workload, ax_step, warmup, trials, cooldown
+            )
             rows.append(
                 {
                     "workload": workload.name,
@@ -423,6 +426,27 @@ def fmt(value: float, digits: int = 1) -> str:
 def render_summary(artifact: dict[str, Any]) -> str:
     reference = artifact.get("reference", "mlx_lm")
     ref_label = "mlx-embeddings" if reference == "mlx_embeddings" else "mlx-lm"
+    if artifact.get("ax_only"):
+        lines = [
+            "# AX-Only Embedding Benchmark",
+            "",
+            f"Output contract: `{artifact['output_contract']}`. "
+            f"Engine: `ax-engine-py`, pooling: `{artifact.get('pooling', 'last')}`.",
+            "",
+            "| Model | Workload | Batch | Max tokens | AX tok/s | AX items/s |",
+            "|---|---|---:|---:|---:|---:|",
+        ]
+        for model in artifact["models"]:
+            for row in model["rows"]:
+                ax = row["results"]["ax_engine_py"]
+                lines.append(
+                    f"| {model['model_label']} | {row['workload']} | {row['batch_size']} | "
+                    f"{row['max_tokens']} | {fmt(ax['median_tokens_per_sec'])} | "
+                    f"{fmt(ax['median_items_per_sec'])} |"
+                )
+        lines.append("")
+        return "\n".join(lines)
+
     lines = [
         "# Fair Embedding Benchmark",
         "",
@@ -481,6 +505,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--trials", type=int, default=5)
     parser.add_argument("--cooldown", type=float, default=0.0)
     parser.add_argument(
+        "--ax-only",
+        action="store_true",
+        help="Benchmark only ax-engine-py and skip the reference engine.",
+    )
+    parser.add_argument(
         "--output-dir",
         type=Path,
         default=REPO_ROOT / "benchmarks" / "results" / "embedding-fair",
@@ -512,6 +541,7 @@ def main() -> int:
         "include_short_query": not args.skip_short_query,
         "reference": args.reference,
         "pooling": args.pooling,
+        "ax_only": args.ax_only,
         "models": [],
     }
 
@@ -527,6 +557,7 @@ def main() -> int:
                 args.cooldown,
                 reference=args.reference,
                 pooling=args.pooling,
+                ax_only=args.ax_only,
             )
         )
 

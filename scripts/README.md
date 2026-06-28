@@ -32,11 +32,12 @@ throughput, queue delay, and SLO goodput over a JSONL prompt corpus. It is
 serving evidence, not a raw model-runtime throughput baseline.
 
 Use `bench_embedding_fair.py` for published embedding comparisons between
-`mlx-lm` and ax-engine. That harness excludes HTTP/cold-start paths and forces
-both engines to materialize the same contiguous CPU `float32 [B,H]` output
-matrix, then reports batch-size and token-length scaling separately. Keep
-`bench_embedding_models.py` for legacy embedding smoke coverage across
-single-call, HTTP, and optional Swift paths.
+`mlx-lm` and ax-engine, or pass `--ax-only` for README-style AX-only refreshes.
+That harness excludes HTTP/cold-start paths and forces the measured engine(s) to
+materialize the same contiguous CPU `float32 [B,H]` output matrix, then reports
+batch-size and token-length scaling separately. Keep `bench_embedding_models.py`
+for legacy embedding smoke coverage across single-call, HTTP, and optional Swift
+paths.
 
 Do not use ad hoc server timing or llama.cpp route checks as AX-owned MLX
 throughput baselines.

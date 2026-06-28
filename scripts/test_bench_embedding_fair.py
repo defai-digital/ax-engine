@@ -114,6 +114,36 @@ class FairEmbeddingBenchmarkTests(unittest.TestCase):
         self.assertIn(bench.OUTPUT_CONTRACT, summary)
         self.assertIn("| qwen-test | fixed_16_b8 | 8 | 16 | 100.0 | 125.0 | +25.0% |", summary)
 
+    def test_render_summary_supports_ax_only(self) -> None:
+        summary = bench.render_summary(
+            {
+                "output_contract": bench.OUTPUT_CONTRACT,
+                "ax_only": True,
+                "pooling": "mean",
+                "models": [
+                    {
+                        "model_label": "embed-test",
+                        "rows": [
+                            {
+                                "workload": "fixed_64_b8",
+                                "batch_size": 8,
+                                "max_tokens": 64,
+                                "results": {
+                                    "ax_engine_py": {
+                                        "median_tokens_per_sec": 1234.0,
+                                        "median_items_per_sec": 19.3,
+                                    },
+                                },
+                            }
+                        ],
+                    }
+                ],
+            }
+        )
+        self.assertIn("# AX-Only Embedding Benchmark", summary)
+        self.assertIn("pooling: `mean`", summary)
+        self.assertIn("| embed-test | fixed_64_b8 | 8 | 64 | 1,234.0 | 19.3 |", summary)
+
 
 if __name__ == "__main__":
     unittest.main()

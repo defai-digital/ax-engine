@@ -1,10 +1,9 @@
 # Embeddings — detailed methodology and API reference
 
-This document is the deep version of the README's `### Embedding
-throughput` section. The README keeps three tables (in-process batched,
-HTTP serving, cold start) and the three-line "use the batched API"
-recommendation. Everything below — apples-to-apples wording, the
-anti-pattern discussion, per-API code samples, telemetry — lives here.
+This document is the deep version of the README's `### Embedding throughput`
+section. The README keeps the compact AX-only in-process table and reproduction
+commands; everything below — apples-to-apples wording, the anti-pattern
+discussion, per-API code samples, telemetry — lives here.
 
 ## TL;DR
 
@@ -27,10 +26,12 @@ anti-pattern discussion, per-API code samples, telemetry — lives here.
 
 ## Apples-to-apples methodology
 
-Published in-process comparisons should use `scripts/bench_embedding_fair.py`.
-That harness forces both `mlx-lm` and ax-engine to materialize the same
-contiguous CPU `float32 [B,H]` matrix, then reports batch-size and token-length
-scaling separately. The older `scripts/bench_embedding_models.py` remains useful
+Published in-process embedding numbers should use
+`scripts/bench_embedding_fair.py`. For comparison rows, that harness forces both
+the reference backend and ax-engine to materialize the same contiguous CPU
+`float32 [B,H]` matrix. For AX-only README refreshes, pass `--ax-only` to skip
+loading the reference backend while preserving the same output contract and
+workload matrix. The older `scripts/bench_embedding_models.py` remains useful
 for smoke coverage of single-call, HTTP, and optional Swift paths, but it mixes
 several API contracts and should not be the primary publication source.
 
@@ -78,9 +79,11 @@ Why the loop is slow:
   itself runs over a right-padded `[B, max_seq, H]` tensor and one GPU
   sync; per-sentence wall time is divided by B.
 
-The current Qwen fair snapshot is
-`benchmarks/results/embedding-fair/2026-06-28-qwen-hf-snapshot/2026-06-27-213439/`.
-It uses 2 warmup + 5 measured trials, reports medians, and keeps the complete
+The current AX-only README Qwen snapshot is
+`benchmarks/results/embedding-ax-only/2026-06-28-qwen-after-batch-fix/2026-06-28-050309/`.
+The current AX-only EmbeddingGemma snapshot is
+`benchmarks/results/embedding-ax-only/2026-06-28-embeddinggemma-after-batch-fix/2026-06-28-050338/`.
+Both use 2 warmup + 5 measured trials, report medians, and keep the complete
 short-query plus 16/64/256-token matrix in `summary.md`.
 
 ## Sustained vs intermittent profiles
@@ -166,10 +169,10 @@ Output is bit-exact with the C loader; opt in safely.
 
 ## Reproducing every README number
 
-Use the fair in-process harness for README throughput claims:
+Use the fair in-process harness in AX-only mode for README throughput claims:
 
 ```bash
-.venv/bin/python scripts/bench_embedding_fair.py \
+.venv/bin/python scripts/bench_embedding_fair.py --ax-only \
   --model qwen3-embedding-0.6b-8bit=/path/to/Qwen3-Embedding-0.6B-8bit/snapshots/<sha> \
   --model qwen3-embedding-4b-4bit-dwq=/path/to/Qwen3-Embedding-4B-4bit-DWQ/snapshots/<sha> \
   --model qwen3-embedding-8b-4bit-dwq=/path/to/Qwen3-Embedding-8B-4bit-DWQ/snapshots/<sha> \
@@ -177,9 +180,22 @@ Use the fair in-process harness for README throughput claims:
   --lengths 16,64,256 \
   --warmup 2 \
   --trials 5 \
-  --output-dir benchmarks/results/embedding-fair/$(date +%Y-%m-%d)-qwen
+  --output-dir benchmarks/results/embedding-ax-only/$(date +%Y-%m-%d)-qwen
+```
+
+For EmbeddingGemma, use the same output contract with the embeddinggemma route:
+
+```bash
+.venv/bin/python scripts/bench_embedding_fair.py --ax-only \
+  --reference mlx_embeddings --pooling mean \
+  --model embeddinggemma-300m-8bit=/path/to/embeddinggemma-300m-8bit/snapshots/<sha> \
+  --batch-sizes 1,8 \
+  --lengths 16,64,256 \
+  --warmup 2 \
+  --trials 5 \
+  --output-dir benchmarks/results/embedding-ax-only/$(date +%Y-%m-%d)-embeddinggemma
 ```
 
 The legacy `scripts/bench_embedding_readme.sh` still runs HTTP serving and
 cold-start paths. Use it for endpoint/cold-start evidence, not as the primary
-`mlx-lm` vs ax-engine in-process publication source.
+embedding in-process publication source.
