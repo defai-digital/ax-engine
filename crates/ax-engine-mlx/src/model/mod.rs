@@ -1312,13 +1312,22 @@ fn gemma3_clip_residual(x: &MlxArray, y: &MlxArray) -> MlxArray {
 /// q/k-norm + dual-RoPE (base selected per layer by `layer_params`), full
 /// bidirectional SDPA over real tokens, GeGLU FFN. Mirrors the Gemma block in
 /// `families::standard::layer_forward` but bidirectional and cache-free.
+///
+/// `pending_ffn` carries the previous layer's FFN output so its residual
+/// add can be fused with this layer's pre-attention RMSNorm via
+/// `add_rms_norm_pair`, saving one GPU kernel dispatch per layer boundary.
+/// For fp16 dtype, the clip-safe unfused path is used instead.
+/// Returns `(hidden, ffn_out)` where `ffn_out` is the current layer's FFN
+/// output — the caller is responsible for adding it as the residual for
+/// the next layer (or final norm).
 fn layer_forward_embed_gemma3(
     cfg: &ModelConfig,
     w: &LayerWeights,
     hidden: &MlxArray,
     layer_idx: usize,
     bidir_mask: &Option<MlxArray>,
-) -> MlxArray {
+    pending_ffn: Option<&MlxArray>,
+) -> (MlxArray, MlxArray) {
     let (
         head_dim,
         rope_theta,
@@ -1330,8 +1339,25 @@ fn layer_forward_embed_gemma3(
     ) = layer_params(cfg, layer_idx);
     let seq = hidden.shape()[1] as usize;
 
-    // 1. Attention norm.
-    let normed = rms_norm(hidden, Some(&w.attn_norm), cfg.rms_norm_eps, None);
+    // 1. Fuse pending FFN residual from the previous layer with this layer's
+    // pre-attention RMSNorm via `add_rms_norm_pair`, saving one GPU kernel
+    // dispatch per layer boundary. For fp16 (Gemma3 clip range), fall back
+    // to the unfused clip-safe path.
+    let (hidden, normed) = match pending_ffn {
+        Some(ffn_out) if hidden.dtype() != MlxDtype::Float16 => {
+            mlx_sys::add_rms_norm_pair(hidden, ffn_out, &w.attn_norm, cfg.rms_norm_eps, None)
+        }
+        Some(ffn_out) => {
+            // fp16: clip-safe residual then plain RMSNorm.
+            let h = gemma3_clip_residual(hidden, ffn_out);
+            let n = rms_norm(&h, Some(&w.attn_norm), cfg.rms_norm_eps, None);
+            (h, n)
+        }
+        None => {
+            let n = rms_norm(hidden, Some(&w.attn_norm), cfg.rms_norm_eps, None);
+            (hidden.clone(), n)
+        }
+    };
 
     // 2. QKV projections.
     let (q_raw, k_raw, v_raw, _attn_gate) = qkv_project(cfg, w, &normed, head_dim);
@@ -1395,13 +1421,16 @@ fn layer_forward_embed_gemma3(
 
     // 6. Post-attention norm (Gemma sandwich) then residual.
     let attn_proj = rms_norm_opt(&attn_proj, w.attn_post_norm.as_ref(), cfg.rms_norm_eps);
-    let hidden = gemma3_clip_residual(hidden, &attn_proj);
+    let hidden = gemma3_clip_residual(&hidden, &attn_proj);
 
     // 7. Pre-FFN norm → GeGLU FFN (post_feedforward_layernorm applied inside
-    //    ffn_swiglu when present) → residual.
+    //    ffn_swiglu when present).
+    // Defer the FFN residual add: the caller (layer loop) will fuse it with
+    // the next layer's pre-attention RMSNorm via `add_rms_norm_pair`, saving
+    // one GPU kernel dispatch per layer boundary.
     let normed2 = rms_norm(&hidden, Some(&w.ffn_norm), cfg.rms_norm_eps, None);
     let ffn_out = ffn_swiglu(cfg, w, &normed2, w.ffn_post_norm.as_ref(), layer_idx);
-    gemma3_clip_residual(&hidden, &ffn_out)
+    (hidden, ffn_out)
 }
 
 /// Full EmbeddingGemma encoder forward: token embed (× sqrt(hidden)) → 24
@@ -1433,8 +1462,16 @@ fn forward_for_embedding_gemma3_batch_body(
     mut hidden: MlxArray,
     bidir_mask: &Option<MlxArray>,
 ) -> MlxArray {
+    let mut pending_ffn: Option<MlxArray> = None;
     for (li, layer_w) in weights.layers.iter().enumerate() {
-        hidden = layer_forward_embed_gemma3(cfg, layer_w, &hidden, li, bidir_mask);
+        let (h, ffn_out) =
+            layer_forward_embed_gemma3(cfg, layer_w, &hidden, li, bidir_mask, pending_ffn.as_ref());
+        hidden = h;
+        pending_ffn = Some(ffn_out);
+    }
+    // Final FFN residual: no next layer to fuse with, so add directly.
+    if let Some(ffn_out) = &pending_ffn {
+        hidden = gemma3_clip_residual(&hidden, ffn_out);
     }
     rms_norm(&hidden, Some(&weights.final_norm), cfg.rms_norm_eps, None)
 }
