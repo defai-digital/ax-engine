@@ -867,11 +867,18 @@ Qwen 3.6 direct-mode verdict: AX is faster overall against `mlx_lm` across the r
 #### Embedding throughput (tok/s)
 
 Embedding models use a separate pooling route from text generation. The fair
-in-process benchmark below forces both `mlx-lm` and ax-engine to return the
-same contiguous CPU `float32 [B,H]` matrix, so the comparison includes the
-read-back/output materialization cost real ingestion pipelines consume.
+in-process benchmark uses the same Hugging Face snapshot for both engines and
+forces both `mlx-lm` and ax-engine to materialize the same contiguous CPU
+`float32 [B,H]` matrix. That keeps the comparison focused on real embedding
+ingestion work: model forward, pooling, normalization, GPU-to-CPU read-back,
+and the caller-consumable output buffer.
 
-| Model | Workload | Batch | mlx-lm | ax-engine-py | AX vs mlx-lm |
+Read the rows by workload shape, not as one universal winner. `short query`
+matches search/query fan-out. `64-token chunks` is a light passage-ingestion
+shape. `256-token chunks` is closer to document chunk indexing, where longer
+prefill and batch-shape behavior dominate.
+
+| Model | Workload | Batch | mlx-lm tok/s | ax-engine-py tok/s | AX vs mlx-lm |
 | --- | --- | ---: | ---: | ---: | ---: |
 | Qwen3-Embedding 0.6B 8-bit | short query | 8 | 6,289 | 8,083 | +28.5% |
 |  | 64-token chunks | 8 | 40,654 | 30,262 | -25.6% |
@@ -883,10 +890,17 @@ read-back/output materialization cost real ingestion pipelines consume.
 |  | 64-token chunks | 8 | 2,753 | 2,698 | -2.0% |
 |  | 256-token chunks | 8 | 2,718 | 2,761 | +1.6% |
 
+The practical takeaway is mixed: ax-engine is ahead on short-query batch rows
+and remains competitive on 4B/8B document chunks, but the 0.6B long-chunk batch
+path is still a clear optimization target. Single-item rows, batch=1/8 scaling,
+and 16-token rows are kept in the full artifact so regressions can be diagnosed
+without overloading the README table.
+
 Source: `benchmarks/results/embedding-fair/2026-06-28-qwen-hf-snapshot/2026-06-27-213439/`.
 Method: `scripts/bench_embedding_fair.py`, Hugging Face snapshot paths, 2 warmup
 and 5 measured trials, median tok/s, batch sizes 1/8, short-query plus
-16/64/256 token synthetic chunks. The full matrix is in the artifact summary.
+16/64/256 token synthetic chunks, last-token pooling, l2-normalized output. The
+complete matrix is in the artifact summary.
 API semantics, pooling modes, micro-batching behavior, and cooldown profiles are
 documented in [`docs/EMBEDDINGS.md`](docs/EMBEDDINGS.md).
 
