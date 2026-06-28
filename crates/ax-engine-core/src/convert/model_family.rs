@@ -73,6 +73,16 @@ pub(crate) fn model_family_for_type(
             uses_language_model_prefix: false,
             uses_decoder_prefix: false,
         }),
+        // EmbeddingGemma-300m: Gemma3 text backbone (model.layers.* standard map)
+        // with a sentence-transformers Dense head (dense.0/dense.1). Served as a
+        // bidirectional encoder + mean pooling embedding model.
+        "gemma3_text" | "embeddinggemma" => Ok(ModelFamily {
+            family_name: "embeddinggemma",
+            tensor_map: HF_STANDARD_TENSOR_MAP,
+            extra_tensor_map: Some(EMBEDDINGGEMMA_EXTRA_TENSOR_MAP),
+            uses_language_model_prefix: false,
+            uses_decoder_prefix: false,
+        }),
         "diffusion_gemma" => Ok(ModelFamily {
             family_name: "diffusion_gemma",
             tensor_map: HF_STANDARD_TENSOR_MAP,

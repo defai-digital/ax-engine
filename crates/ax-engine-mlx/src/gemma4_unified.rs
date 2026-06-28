@@ -499,6 +499,8 @@ mod tests {
             gemma4_assistant_mtp: Gemma4AssistantMtpStatus::default(),
             assistant_pre_projection: None,
             assistant_post_projection: None,
+            embedding_dense_0: None,
+            embedding_dense_1: None,
             gemma4_unified_vision: None,
             gemma4_unified_audio: None,
             diffusion_self_conditioning: None,

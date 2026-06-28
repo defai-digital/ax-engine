@@ -848,9 +848,9 @@ pub(crate) fn layer_forward_bidirectional(
         let prompt_start = token_offset.saturating_sub(window);
         if prompt_start > 0 && prompt_start < cached_seq {
             // Slice the prompt KV along the sequence dimension (axis 2).
-            let b = cached_k_full.shape()[0] as i32;
-            let h = cached_k_full.shape()[1] as i32;
-            let d = cached_k_full.shape()[3] as i32;
+            let b = cached_k_full.shape()[0];
+            let h = cached_k_full.shape()[1];
+            let d = cached_k_full.shape()[3];
             let sliced_k = slice(
                 &cached_k_full,
                 &[0, 0, prompt_start as i32, 0],

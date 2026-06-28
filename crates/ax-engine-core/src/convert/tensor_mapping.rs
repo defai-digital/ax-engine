@@ -518,6 +518,21 @@ pub(crate) const GEMMA4_ASSISTANT_EXTRA_TENSOR_MAP: &[(&str, TensorMapping)] = &
     ),
 ];
 
+/// EmbeddingGemma sentence-transformers Dense projection head (applied after
+/// mean pooling): `dense.0` (hidden → 4*hidden) then `dense.1` (4*hidden →
+/// hidden), both bias-free identity-activation linears. The backbone tensors
+/// use the standard `model.layers.*` map; these two are the only extras.
+pub(crate) const EMBEDDINGGEMMA_EXTRA_TENSOR_MAP: &[(&str, TensorMapping)] = &[
+    (
+        "dense.0.weight",
+        TensorMapping::Global(NativeTensorRole::EmbeddingDense0),
+    ),
+    (
+        "dense.1.weight",
+        TensorMapping::Global(NativeTensorRole::EmbeddingDense1),
+    ),
+];
+
 /// Extra global tensors for Gemma4 Unified's encoder-free multimodal path.
 ///
 /// This mirrors vLLM's `Gemma4UnifiedVisionEmbedder` plus
