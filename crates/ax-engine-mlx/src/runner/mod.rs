@@ -8,10 +8,10 @@ use std::thread::{self, ThreadId};
 use std::time::Instant;
 
 use mlx_sys::{
-    MlxArray, MlxDtype, MlxStream, add, argmax, argpartition_axis, astype, clear_cache, divide,
-    enable_compile, eval, max_recommended_working_set_size, multiply, power, reshape,
-    set_cache_limit, set_memory_limit, set_wired_limit, slice, softmax, stack, sum_axis, take,
-    take_along_axis,
+    MlxArray, MlxDtype, MlxStream, add, argmax, argpartition_axis, astype, broadcast_to,
+    clear_cache, divide, enable_compile, eval, max_recommended_working_set_size, multiply, power,
+    reshape, rms_norm, set_cache_limit, set_memory_limit, set_wired_limit, slice, softmax, stack,
+    sum_axis, take, take_along_axis,
 };
 
 use ax_engine_core::runner::RunnerRequestContext;
@@ -3295,10 +3295,10 @@ fn seed_generation_ngram_from_prefill_output(
 type EmbedCompileKey = (ThreadId, usize, Option<usize>);
 
 /// Cache key for the batched embedding-forward compiled closure.
-/// `target_positions` is baked into the trace, so two batches with the same
-/// `(thread_id, batch_size, max_len)` but different per-sequence target
-/// positions hit distinct keys.
-type EmbedBatchCompileKey = (ThreadId, usize, usize, Option<Vec<usize>>);
+/// The closure no longer bakes `target_positions` into the trace (position
+/// extraction and final norm are deferred to the runner), so the key is just
+/// `(thread_id, batch_size, max_len)`.
+type EmbedBatchCompileKey = (ThreadId, usize, usize);
 
 /// EmbeddingGemma compiled batch closure output contract.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -4526,26 +4526,23 @@ impl MlxRunner {
             &self.weights,
             batch_token_ids,
         );
-        let target_positions_vec: Vec<usize> = target_positions.expect("checked above").to_vec();
-        let key: EmbedBatchCompileKey = (
-            thread::current().id(),
-            batch,
-            max_len,
-            Some(target_positions_vec.clone()),
-        );
+        // The compiled closure runs only transformer layers + FFN residual.
+        // Position extraction and final RMS norm are applied lazily after the
+        // closure returns, keeping the Metal command buffer simpler and the
+        // cache key independent of target_positions.
+        let key: EmbedBatchCompileKey = (thread::current().id(), batch, max_len);
         let mut cache = self.embed_batch_compile_cache.lock();
         let was_present = cache.contains_key(&key);
         if !was_present {
-            match crate::model::build_embedding_batch_forward_closure(
+            match crate::model::build_embedding_batch_forward_closure_no_norm(
                 Arc::clone(&self.cfg_arc),
                 Arc::clone(&self.weights),
-                Some(target_positions_vec.clone()),
             ) {
                 Ok(cls) => {
                     if cache.len() >= EMBED_COMPILE_CACHE_MAX_ENTRIES {
                         cache.clear();
                     }
-                    cache.insert(key.clone(), cls);
+                    cache.insert(key, cls);
                 }
                 Err(_) => {
                     drop(cache);
@@ -4567,8 +4564,20 @@ impl MlxRunner {
             }
         }
         let cls = cache.get(&key).expect("just inserted");
-        let outputs = match cls.try_apply(&[&hidden]) {
-            Ok(outputs) => outputs,
+        let raw_out = match cls.try_apply(&[&hidden]) {
+            Ok(outputs) => match outputs.into_iter().next() {
+                Some(out) => out,
+                None => {
+                    cache.remove(&key);
+                    drop(cache);
+                    return crate::model::forward_for_embedding_batch(
+                        &self.cfg,
+                        &self.weights,
+                        batch_token_ids,
+                        target_positions,
+                    );
+                }
+            },
             Err(_) => {
                 cache.remove(&key);
                 drop(cache);
@@ -4580,19 +4589,45 @@ impl MlxRunner {
                 );
             }
         };
-        match outputs.into_iter().next() {
-            Some(out) => (out, actual_lens),
-            None => {
-                cache.remove(&key);
-                drop(cache);
-                crate::model::forward_for_embedding_batch(
-                    &self.cfg,
-                    &self.weights,
-                    batch_token_ids,
-                    target_positions,
-                )
-            }
-        }
+        // Post-closure: extract target positions via lazy slice, then apply
+        // final RMS norm on the small [B, H] tensor. Both ops are lazy — they
+        // fuse into the single eval() call in the caller.
+        let positions = target_positions.expect("checked above");
+        let batch_i32 = batch as i32;
+        let hidden_size = self.cfg.hidden_size as i32;
+        let common_pos = positions
+            .first()
+            .copied()
+            .filter(|&first| positions.iter().all(|&p| p == first));
+        let extracted = if let Some(pos) = common_pos {
+            let pos_i32 = pos as i32;
+            let sliced = slice(
+                &raw_out,
+                &[0, pos_i32, 0],
+                &[batch_i32, pos_i32 + 1, hidden_size],
+                &[1, 1, 1],
+                None,
+            );
+            reshape(&sliced, &[batch_i32, hidden_size], None)
+        } else {
+            let pos_u32: Vec<u32> = positions.iter().map(|&p| p as u32).collect();
+            let idx_b11 = MlxArray::from_raw_data(
+                pos_u32.as_ptr() as *const u8,
+                pos_u32.len() * std::mem::size_of::<u32>(),
+                &[batch_i32, 1_i32, 1_i32],
+                MlxDtype::Uint32,
+            );
+            let idx_broadcast = broadcast_to(&idx_b11, &[batch_i32, 1_i32, hidden_size], None);
+            let gathered = take_along_axis(&raw_out, &idx_broadcast, 1, None);
+            reshape(&gathered, &[batch_i32, hidden_size], None)
+        };
+        let normed = rms_norm(
+            &extracted,
+            Some(&self.weights.final_norm),
+            self.cfg.rms_norm_eps,
+            None,
+        );
+        (normed, actual_lens)
     }
 
     /// EmbeddingGemma compiled-closure batch forward. Builds the pre-embedded
