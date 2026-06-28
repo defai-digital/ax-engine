@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
@@ -9,6 +11,9 @@ use crate::openai::schema::{
     OpenAiEmbeddingObject, OpenAiEmbeddingRequest, OpenAiEmbeddingResponse, OpenAiEmbeddingUsage,
 };
 use crate::openai::validation::validate_model;
+
+const DEFAULT_EMBED_MAX_TOKENS: usize = 8192;
+const DEFAULT_EMBED_TIMEOUT_MS: u64 = 30_000;
 
 pub(crate) async fn openai_embeddings(
     State(state): State<AppState>,
@@ -43,7 +48,26 @@ pub(crate) async fn openai_embeddings(
             ));
         }
     }
+    let max_tokens = std::env::var("AX_ENGINE_EMBED_MAX_TOKENS")
+        .ok()
+        .and_then(|raw| raw.parse::<usize>().ok())
+        .unwrap_or(DEFAULT_EMBED_MAX_TOKENS);
     let token_count: usize = batch.iter().map(Vec::len).sum();
+    if token_count > max_tokens {
+        return Err(error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+            format!(
+                "input token count ({token_count}) exceeds maximum ({max_tokens}); \
+                 set AX_ENGINE_EMBED_MAX_TOKENS to override"
+            ),
+        ));
+    }
+    let embed_timeout = std::env::var("AX_ENGINE_EMBED_TIMEOUT_MS")
+        .ok()
+        .and_then(|raw| raw.parse::<u64>().ok())
+        .unwrap_or(DEFAULT_EMBED_TIMEOUT_MS);
+    let timeout = Duration::from_millis(embed_timeout);
 
     // Single input -> microbatcher (lets concurrent callers coalesce into
     // one batched runner call). Multi-input -> direct `embed_batch_flat`
@@ -55,18 +79,37 @@ pub(crate) async fn openai_embeddings(
             .next()
             .expect("batch.len() == 1 because input was Single");
         vec![
-            live.embedding_batcher
-                .embed(single, pooling, normalize)
-                .await
-                .map_err(map_session_error)?,
+            tokio::time::timeout(
+                timeout,
+                live.embedding_batcher.embed(single, pooling, normalize),
+            )
+            .await
+            .map_err(|_| {
+                error_response(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "service_unavailable",
+                    format!("embedding request timed out after {embed_timeout}ms"),
+                )
+            })?
+            .map_err(map_session_error)?,
         ]
     } else {
         let session = live.request_session.clone();
-        tokio::task::spawn_blocking(move || {
-            let s = session.blocking_lock();
-            s.embed_batch_flat(&batch, pooling, normalize)
-        })
+        tokio::time::timeout(
+            timeout,
+            tokio::task::spawn_blocking(move || {
+                let s = session.blocking_lock();
+                s.embed_batch_flat(&batch, pooling, normalize)
+            }),
+        )
         .await
+        .map_err(|_| {
+            error_response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "service_unavailable",
+                format!("embedding request timed out after {embed_timeout}ms"),
+            )
+        })?
         .map_err(|_| {
             error_response(
                 StatusCode::INTERNAL_SERVER_ERROR,

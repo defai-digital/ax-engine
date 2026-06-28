@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::time::Duration;
 
 use ax_engine_sdk::{EngineTokenizer, EngineTokenizerError};
 use axum::Json;
@@ -18,6 +19,7 @@ const DEFAULT_CHUNK_MAX_TOKENS: usize = 512;
 const DEFAULT_CHUNK_OVERLAP_TOKENS: usize = 0;
 const MAX_RECORDS_PER_REQUEST: usize = 2048;
 const MAX_CHUNKS_PER_REQUEST: usize = 8192;
+const DEFAULT_EMBED_RECORDS_TIMEOUT_MS: u64 = 60_000;
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct EmbeddingRecordsRequest {
@@ -129,12 +131,27 @@ pub(crate) async fn embedding_records(
         .collect::<Vec<_>>();
     let token_count = chunks.iter().map(|chunk| chunk.token_count).sum();
     let session = live.request_session.clone();
+    let timeout_ms = std::env::var("AX_ENGINE_EMBED_TIMEOUT_MS")
+        .ok()
+        .and_then(|raw| raw.parse::<u64>().ok())
+        .unwrap_or(DEFAULT_EMBED_RECORDS_TIMEOUT_MS);
+    let timeout = Duration::from_millis(timeout_ms);
 
-    let matrix = tokio::task::spawn_blocking(move || {
-        let session = session.blocking_lock();
-        session.embed_batch_flat(&batch, pooling, normalize)
-    })
+    let matrix = tokio::time::timeout(
+        timeout,
+        tokio::task::spawn_blocking(move || {
+            let session = session.blocking_lock();
+            session.embed_batch_flat(&batch, pooling, normalize)
+        }),
+    )
     .await
+    .map_err(|_| {
+        error_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "service_unavailable",
+            format!("embedding records timed out after {timeout_ms}ms"),
+        )
+    })?
     .map_err(|_| {
         error_response(
             StatusCode::INTERNAL_SERVER_ERROR,

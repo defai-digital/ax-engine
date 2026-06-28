@@ -1,7 +1,9 @@
 use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::fmt;
 use std::fs;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, OnceLock};
+
+use parking_lot::Mutex;
 use std::thread::{self, ThreadId};
 use std::time::Instant;
 
@@ -3426,6 +3428,11 @@ struct EmbedCompileStats {
     batched_misses: u64,
 }
 
+/// Maximum number of compiled closures retained per embed compile cache.
+/// When exceeded, the cache is cleared and rebuilt — prevents unbounded
+/// memory growth under workloads with many distinct input shapes.
+const EMBED_COMPILE_CACHE_MAX_ENTRIES: usize = 256;
+
 impl fmt::Debug for MlxRunner {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("MlxRunner")
@@ -3858,25 +3865,10 @@ impl MlxRunner {
     /// the workload's shape distribution is too wide; consider length-
     /// bucketing batches before submitting them.
     pub fn embed_compile_cache_stats(&self) -> EmbedCompileCacheStats {
-        let stats = self
-            .embed_compile_stats
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        let single_len = self
-            .embed_compile_cache
-            .lock()
-            .map(|c| c.len())
-            .unwrap_or(0);
-        let batched_len = self
-            .embed_batch_compile_cache
-            .lock()
-            .map(|c| c.len())
-            .unwrap_or(0)
-            + self
-                .embed_gemma_batch_compile_cache
-                .lock()
-                .map(|c| c.len())
-                .unwrap_or(0);
+        let stats = self.embed_compile_stats.lock();
+        let single_len = self.embed_compile_cache.lock().len();
+        let batched_len = self.embed_batch_compile_cache.lock().len()
+            + self.embed_gemma_batch_compile_cache.lock().len();
         EmbedCompileCacheStats {
             single_hits: stats.single_hits,
             single_misses: stats.single_misses,
@@ -4421,10 +4413,7 @@ impl MlxRunner {
         }
 
         let key: EmbedCompileKey = (thread::current().id(), token_ids.len(), target_position);
-        let mut cache = self
-            .embed_compile_cache
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
+        let mut cache = self.embed_compile_cache.lock();
         let was_present = cache.contains_key(&key);
         if !was_present {
             match crate::model::build_embedding_forward_closure(
@@ -4433,6 +4422,9 @@ impl MlxRunner {
                 target_position,
             ) {
                 Ok(cls) => {
+                    if cache.len() >= EMBED_COMPILE_CACHE_MAX_ENTRIES {
+                        cache.clear();
+                    }
                     cache.insert(key, cls);
                 }
                 Err(_) => {
@@ -4447,10 +4439,7 @@ impl MlxRunner {
             }
         }
         {
-            let mut stats = self
-                .embed_compile_stats
-                .lock()
-                .unwrap_or_else(|p| p.into_inner());
+            let mut stats = self.embed_compile_stats.lock();
             if was_present {
                 stats.single_hits += 1;
             } else {
@@ -4471,10 +4460,19 @@ impl MlxRunner {
                 );
             }
         };
-        outputs
-            .into_iter()
-            .next()
-            .expect("compiled embedding closure must return one output")
+        match outputs.into_iter().next() {
+            Some(out) => out,
+            None => {
+                cache.remove(&key);
+                drop(cache);
+                crate::model::forward_for_embedding(
+                    &self.cfg,
+                    &self.weights,
+                    token_ids,
+                    target_position,
+                )
+            }
+        }
     }
 
     /// Batched version of `embedding_forward`. Same compile-cache strategy,
@@ -4535,10 +4533,7 @@ impl MlxRunner {
             max_len,
             Some(target_positions_vec.clone()),
         );
-        let mut cache = self
-            .embed_batch_compile_cache
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
+        let mut cache = self.embed_batch_compile_cache.lock();
         let was_present = cache.contains_key(&key);
         if !was_present {
             match crate::model::build_embedding_batch_forward_closure(
@@ -4547,6 +4542,9 @@ impl MlxRunner {
                 Some(target_positions_vec.clone()),
             ) {
                 Ok(cls) => {
+                    if cache.len() >= EMBED_COMPILE_CACHE_MAX_ENTRIES {
+                        cache.clear();
+                    }
                     cache.insert(key.clone(), cls);
                 }
                 Err(_) => {
@@ -4561,10 +4559,7 @@ impl MlxRunner {
             }
         }
         {
-            let mut stats = self
-                .embed_compile_stats
-                .lock()
-                .unwrap_or_else(|p| p.into_inner());
+            let mut stats = self.embed_compile_stats.lock();
             if was_present {
                 stats.batched_hits += 1;
             } else {
@@ -4585,11 +4580,19 @@ impl MlxRunner {
                 );
             }
         };
-        let out = outputs
-            .into_iter()
-            .next()
-            .expect("compiled batched embedding closure must return one output");
-        (out, actual_lens)
+        match outputs.into_iter().next() {
+            Some(out) => (out, actual_lens),
+            None => {
+                cache.remove(&key);
+                drop(cache);
+                crate::model::forward_for_embedding_batch(
+                    &self.cfg,
+                    &self.weights,
+                    batch_token_ids,
+                    target_positions,
+                )
+            }
+        }
     }
 
     /// EmbeddingGemma compiled-closure batch forward. Builds the pre-embedded
@@ -4618,10 +4621,7 @@ impl MlxRunner {
             max_len,
             actual_lens.clone(),
         );
-        let mut cache = self
-            .embed_gemma_batch_compile_cache
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
+        let mut cache = self.embed_gemma_batch_compile_cache.lock();
         let was_present = cache.contains_key(&key);
         if !was_present {
             match crate::model::build_embedding_gemma3_batch_forward_closure(
@@ -4630,6 +4630,9 @@ impl MlxRunner {
                 bidir_mask,
             ) {
                 Ok(cls) => {
+                    if cache.len() >= EMBED_COMPILE_CACHE_MAX_ENTRIES {
+                        cache.clear();
+                    }
                     cache.insert(key.clone(), cls);
                 }
                 Err(_) => {
@@ -4644,10 +4647,7 @@ impl MlxRunner {
             }
         }
         {
-            let mut stats = self
-                .embed_compile_stats
-                .lock()
-                .unwrap_or_else(|p| p.into_inner());
+            let mut stats = self.embed_compile_stats.lock();
             if was_present {
                 stats.batched_hits += 1;
             } else {
@@ -4668,11 +4668,19 @@ impl MlxRunner {
                 );
             }
         };
-        let out = outputs
-            .into_iter()
-            .next()
-            .expect("compiled EmbeddingGemma closure must return one output");
-        (out, actual_lens)
+        match outputs.into_iter().next() {
+            Some(out) => (out, actual_lens),
+            None => {
+                cache.remove(&key);
+                drop(cache);
+                crate::model::forward_for_embedding_batch(
+                    &self.cfg,
+                    &self.weights,
+                    batch_token_ids,
+                    None,
+                )
+            }
+        }
     }
 
     /// EmbeddingGemma compiled batch path that returns the pooled Dense-head
@@ -4702,10 +4710,7 @@ impl MlxRunner {
             max_len,
             actual_lens.clone(),
         );
-        let mut cache = self
-            .embed_gemma_batch_compile_cache
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
+        let mut cache = self.embed_gemma_batch_compile_cache.lock();
         let was_present = cache.contains_key(&key);
         if !was_present {
             let bidir_mask = crate::model::build_bidirectional_padding_mask(
@@ -4724,6 +4729,9 @@ impl MlxRunner {
                 pool_scale,
             ) {
                 Ok(cls) => {
+                    if cache.len() >= EMBED_COMPILE_CACHE_MAX_ENTRIES {
+                        cache.clear();
+                    }
                     cache.insert(key.clone(), cls);
                 }
                 Err(_) => {
@@ -4732,17 +4740,14 @@ impl MlxRunner {
             }
         }
         {
-            let mut stats = self
-                .embed_compile_stats
-                .lock()
-                .unwrap_or_else(|p| p.into_inner());
+            let mut stats = self.embed_compile_stats.lock();
             if was_present {
                 stats.batched_hits += 1;
             } else {
                 stats.batched_misses += 1;
             }
         }
-        let cls = cache.get(&key).expect("just inserted");
+        let cls = cache.get(&key)?;
         let outputs = match cls.try_apply(&[&hidden]) {
             Ok(outputs) => outputs,
             Err(_) => {
@@ -4823,7 +4828,7 @@ impl MlxRunner {
         // to two concurrent run() calls — otherwise one call would create a fresh
         // empty state from None while the other holds the extracted state.
         let mut state = {
-            let mut states = self.states.lock().unwrap_or_else(|p| p.into_inner());
+            let mut states = self.states.lock();
             states.remove(&item.request_id).unwrap_or_else(|| {
                 RequestState::new(
                     self.cfg.layer_count,
@@ -5216,7 +5221,7 @@ impl MlxRunner {
             .kv_compression
             .apply_decode_usage(turboquant_decode_usage);
         if stop_reason.is_none() {
-            let mut states = self.states.lock().unwrap_or_else(|p| p.into_inner());
+            let mut states = self.states.lock();
             states.insert(item.request_id, state);
         } else {
             // Free MLX's intermediate graph and compute cache after each completed
@@ -5344,7 +5349,7 @@ impl MlxRunner {
         block_size_tokens: u32,
         input: &[u32],
     ) -> Option<Vec<u32>> {
-        let cache = self.prefix_cache.lock().unwrap_or_else(|p| p.into_inner());
+        let cache = self.prefix_cache.lock();
         Self::longest_block_aligned_prefix_by_probe(block_size_tokens, input, |prefix| {
             let key = self.prefix_cache_key(model_id, block_size_tokens, prefix);
             if cache.contains_exact_tokens(&key, prefix) {
@@ -5436,12 +5441,7 @@ impl MlxRunner {
             return telemetry;
         }
 
-        if !self
-            .prefix_cache
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .enabled()
-        {
+        if !self.prefix_cache.lock().enabled() {
             telemetry.record_blocked_policy_disabled();
             if !defer_prefill_warmup {
                 self.warm_reused_prefix_without_cache(
@@ -5460,7 +5460,7 @@ impl MlxRunner {
 
         let key = self.prefix_cache_key(model_id, block_size_tokens, reused_tokens);
         let hit = {
-            let mut cache = self.prefix_cache.lock().unwrap_or_else(|p| p.into_inner());
+            let mut cache = self.prefix_cache.lock();
             let hit = cache.get(&key, reused_tokens);
             telemetry.record_stats(cache.stats());
             hit
@@ -5661,12 +5661,7 @@ impl MlxRunner {
             telemetry.record_blocked_unsupported_layout();
             return telemetry;
         }
-        if !self
-            .prefix_cache
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .enabled()
-        {
+        if !self.prefix_cache.lock().enabled() {
             telemetry.record_blocked_policy_disabled();
             return telemetry;
         }
@@ -5740,7 +5735,7 @@ impl MlxRunner {
                 .then_some(greedy_prefill_output_token)
                 .flatten();
             let outcome = {
-                let mut cache = self.prefix_cache.lock().unwrap_or_else(|p| p.into_inner());
+                let mut cache = self.prefix_cache.lock();
                 let outcome = cache.insert(
                     key,
                     MlxPrefixSnapshot::from_serialized_cache(
@@ -11177,11 +11172,10 @@ mod tests {
         let outcome = store
             .prefix_cache
             .lock()
-            .unwrap()
             .insert(key.clone(), test_prefix_snapshot(1, 4, 128));
         assert!(outcome.stored);
 
-        let hit = cloned.prefix_cache.lock().unwrap().get(&key, &[1; 4]);
+        let hit = cloned.prefix_cache.lock().get(&key, &[1; 4]);
         assert!(hit.is_some(), "cloned store must see original L1 insert");
     }
 

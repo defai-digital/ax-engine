@@ -1549,6 +1549,101 @@ fn forward_for_embedding_gemma3_batch_body(
     rms_norm(&hidden, Some(&weights.final_norm), cfg.rms_norm_eps, None)
 }
 
+/// Layer-by-layer EmbeddingGemma depth probe.
+///
+/// Runs the encoder forward one layer at a time, returning the normalized
+/// mean-pooled hidden state after each layer (plus the post-final-norm
+/// checkpoint). Each element is `[B, H]` float32.
+///
+/// This is a diagnostic-only API used by `embed_gemma_depth_probe` to
+/// pinpoint the first transformer layer where AX drifts from the
+/// `mlx-embeddings` reference. Not used in production serving.
+pub fn forward_for_embedding_gemma3_depth_probe(
+    cfg: &ModelConfig,
+    weights: &ModelWeights,
+    batch_token_ids: &[Vec<u32>],
+) -> (Vec<MlxArray>, Vec<usize>) {
+    let actual_lens: Vec<usize> = batch_token_ids.iter().map(Vec::len).collect();
+    let max_len = actual_lens.iter().copied().max().unwrap_or(0);
+    let batch = batch_token_ids.len();
+    let hidden_size = cfg.hidden_size;
+
+    let mut hidden = build_embedding_batch_hidden(cfg, weights, batch_token_ids, batch, max_len);
+    let bidir_mask = build_bidirectional_padding_mask(batch, max_len, &actual_lens, hidden.dtype());
+
+    let mut checkpoints: Vec<MlxArray> = Vec::with_capacity(weights.layers.len() + 1);
+
+    let mut pending_ffn: Option<MlxArray> = None;
+    for (li, layer_w) in weights.layers.iter().enumerate() {
+        let (h, ffn_out) =
+            layer_forward_embed_gemma3(cfg, layer_w, &hidden, li, &bidir_mask, pending_ffn.as_ref());
+        // Apply FFN residual so the checkpoint reflects the complete layer.
+        hidden = gemma3_clip_residual(&h, &ffn_out);
+        pending_ffn = None;
+
+        let cp = normed_mean_pool_probe(&hidden, &actual_lens, hidden_size);
+        mlx_sys::eval(&[&cp]);
+        checkpoints.push(cp);
+    }
+
+    // Final checkpoint: post final-norm.
+    let final_out = rms_norm(&hidden, Some(&weights.final_norm), cfg.rms_norm_eps, None);
+    let cp = normed_mean_pool_probe(&final_out, &actual_lens, hidden_size);
+    mlx_sys::eval(&[&cp]);
+    checkpoints.push(cp);
+
+    (checkpoints, actual_lens)
+}
+
+/// Masked mean-pool + L2 normalize for the depth probe.
+///
+/// Returns `[B, H]` float32. Each row is the L2-normalized mean of the real
+/// (non-padding) positions in the corresponding sequence.
+fn normed_mean_pool_probe(
+    hidden: &MlxArray,       // [B, max_seq, H]
+    actual_lens: &[usize],
+    hidden_size: usize,
+) -> MlxArray {
+    let batch = actual_lens.len();
+    let mut rows: Vec<MlxArray> = Vec::with_capacity(batch);
+    for b in 0..batch {
+        let len = actual_lens[b];
+        let row = slice(
+            hidden,
+            &[b as i32, 0, 0],
+            &[b as i32 + 1, len as i32, hidden_size as i32],
+            &[1, 1, 1],
+            None,
+        );
+        let summed = sum_axis(&row, 1, false, None);
+        let scale = 1.0 / len as f32;
+        let scale_arr = MlxArray::from_raw_data(
+            &scale as *const f32 as *const u8,
+            std::mem::size_of::<f32>(),
+            &[1_i32, 1_i32],
+            MlxDtype::Float32,
+        );
+        let pooled = mlx_sys::divide(
+            &astype(&summed, MlxDtype::Float32, None),
+            &scale_arr,
+            None,
+        );
+        rows.push(reshape(&pooled, &[hidden_size as i32], None));
+    }
+    let row_refs: Vec<&MlxArray> = rows.iter().collect();
+    let stacked = mlx_sys::stack(&row_refs, 0, None);
+    l2_normalize_probe(&stacked)
+}
+
+/// L2 normalize a `[B, H]` float32 tensor along the hidden dimension.
+fn l2_normalize_probe(x: &MlxArray) -> MlxArray {
+    let sq = mlx_sys::ops::square(x, None);
+    let ss = sum_axis(&sq, 1, true, None);
+    let eps = mlx_sys::ops::cached_scalar(1e-12, MlxDtype::Float32);
+    let denom = mlx_sys::ops::sqrt(&add(&ss, &eps, None), None);
+    mlx_sys::divide(x, &denom, None)
+}
+
 /// Build an `mlx_compile`-wrapped closure for the EmbeddingGemma batched
 /// forward. The closure captures the bidirectional padding mask (which is
 /// determined by `actual_lens` + `max_len`) and takes the pre-embedded

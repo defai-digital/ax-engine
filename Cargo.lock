@@ -193,6 +193,7 @@ dependencies = [
  "ax-engine-core",
  "fs2",
  "mlx-sys",
+ "parking_lot",
  "serde_json",
  "sha2",
  "thiserror 2.0.18",
