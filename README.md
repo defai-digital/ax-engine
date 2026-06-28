@@ -915,12 +915,13 @@ EmbeddingGemma route used by this harness.
 
 For larger RAG ingest jobs, use the sustained scale harness instead of
 extrapolating from one isolated batch. The scale harness keeps the same
-contiguous CPU `float32 [B,H]` output contract but embeds a deterministic
-512-chunk corpus per trial, split into repeated batches. On the 0.6B Qwen row,
-AX is close to `mlx-lm` and workload-dependent: slightly behind on 256-token
-chunks, roughly tied or ahead on some 512-token rows. The p95 batch latency is
-included because higher batch sizes raise per-flush latency even when tok/s is
-similar.
+contiguous CPU `float32 [B,H]` output layout but embeds a fixed
+corpus of 512 chunks per trial, divided into batches. For
+Qwen3-Embedding 0.6B, AX is close to `mlx-lm`, though results are
+workload-dependent:
+2–7% behind on 256-token chunks, mixed on 512-token chunks (from
+-3.9% to +3.5%). p95 batch latency is shown because larger batches
+increase per-flush latency even when throughput (tok/s) is comparable.
 
 <img src="docs/assets/perf-embedding-ingest-scale-ax-vs-mlx-lm.svg" alt="Embedding ingest-scale chart showing AX Engine percentage delta versus mlx-lm for Qwen3-Embedding 0.6B 8-bit 512-chunk workloads">
 
