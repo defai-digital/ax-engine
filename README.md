@@ -866,20 +866,27 @@ Qwen 3.6 direct-mode verdict: AX is faster overall against `mlx_lm` across the r
 
 #### Embedding throughput (tok/s)
 
-Embedding models use a separate pooling route from text generation. The batched
-numbers are the relevant path for ingestion and worker pools; loop rows show the
-cost of issuing one sentence at a time.
+Embedding models use a separate pooling route from text generation. The fair
+in-process benchmark below forces both `mlx-lm` and ax-engine to return the
+same contiguous CPU `float32 [B,H]` matrix, so the comparison includes the
+read-back/output materialization cost real ingestion pipelines consume.
 
-| Model | Workload | mlx-lm | ax-engine-py | AX vs mlx-lm |
-| --- | --- | ---: | ---: | ---: |
-| Qwen3-Embedding 0.6B 8-bit | single sentence | 1,478 | 1,386 | -6.2% |
-|  | 10-sentence batch | 2,805 | 2,620 | -6.6% |
-| Qwen3-Embedding 4B 4-bit | single sentence | 477 | 537 | +12.6% |
-|  | 10-sentence batch | 1,434 | 1,484 | +3.5% |
-| Qwen3-Embedding 8B 4-bit DWQ | single sentence | 319 | 303 | -5.0% |
-|  | 10-sentence batch | 872 | 868 | -0.5% |
+| Model | Workload | Batch | mlx-lm | ax-engine-py | AX vs mlx-lm |
+| --- | --- | ---: | ---: | ---: | ---: |
+| Qwen3-Embedding 0.6B 8-bit | short query | 8 | 6,289 | 8,083 | +28.5% |
+|  | 64-token chunks | 8 | 40,654 | 30,262 | -25.6% |
+|  | 256-token chunks | 8 | 48,703 | 29,916 | -38.6% |
+| Qwen3-Embedding 4B 4-bit DWQ | short query | 8 | 2,240 | 2,498 | +11.5% |
+|  | 64-token chunks | 8 | 6,255 | 6,048 | -3.3% |
+|  | 256-token chunks | 8 | 5,997 | 5,528 | -7.8% |
+| Qwen3-Embedding 8B 4-bit DWQ | short query | 8 | 1,324 | 1,443 | +9.0% |
+|  | 64-token chunks | 8 | 2,753 | 2,698 | -2.0% |
+|  | 256-token chunks | 8 | 2,718 | 2,761 | +1.6% |
 
-Source: `benchmarks/results/embedding/2026-05-12-full-fresh-readme-refresh/`.
+Source: `benchmarks/results/embedding-fair/2026-06-28-qwen-hf-snapshot/2026-06-27-213439/`.
+Method: `scripts/bench_embedding_fair.py`, Hugging Face snapshot paths, 2 warmup
+and 5 measured trials, median tok/s, batch sizes 1/8, short-query plus
+16/64/256 token synthetic chunks. The full matrix is in the artifact summary.
 API semantics, pooling modes, micro-batching behavior, and cooldown profiles are
 documented in [`docs/EMBEDDINGS.md`](docs/EMBEDDINGS.md).
 

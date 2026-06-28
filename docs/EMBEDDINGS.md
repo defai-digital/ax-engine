@@ -27,6 +27,13 @@ anti-pattern discussion, per-API code samples, telemetry — lives here.
 
 ## Apples-to-apples methodology
 
+Published in-process comparisons should use `scripts/bench_embedding_fair.py`.
+That harness forces both `mlx-lm` and ax-engine to materialize the same
+contiguous CPU `float32 [B,H]` matrix, then reports batch-size and token-length
+scaling separately. The older `scripts/bench_embedding_models.py` remains useful
+for smoke coverage of single-call, HTTP, and optional Swift paths, but it mixes
+several API contracts and should not be the primary publication source.
+
 The README tables only count throughput where the caller can actually
 *consume* the embedding (Python `list[float]`, NumPy ndarray, raw f32
 bytes — not a GPU-only `MlxArray`). Both backends pay the GPU→CPU
@@ -41,9 +48,14 @@ read-back; comparisons without it under-count the cost.
 - `ax-engine` Rust path: `EngineSession::embed_batch_flat(...)` returns
   one contiguous `Vec<f32>` directly.
 
-The 10-sentence corpus used for every measurement has lengths
-`[10, 15, 13, 8, 3, 8, 10, 8, 10, 10]` (95 tokens total), `last` pooling,
-l2-normalized. The exact lengths are public so any reader can reproduce.
+The fair harness reports two workload families:
+
+- `short_query`: the canonical 10-sentence corpus with token lengths
+  `[10, 15, 13, 8, 3, 8, 10, 8, 10, 10]`, cycled to the requested batch size.
+- `fixed_N`: deterministic synthetic token IDs at fixed lengths such as
+  16, 64, and 256 tokens, so batch-size scaling is not hidden by mixed lengths.
+
+Both families use `last` pooling and l2-normalized output.
 
 ## The anti-pattern: one Python call per sentence
 
@@ -66,29 +78,20 @@ Why the loop is slow:
   itself runs over a right-padded `[B, max_seq, H]` tensor and one GPU
   sync; per-sentence wall time is divided by B.
 
-Measured on 2026-05-12 with a 10 s-cooldown bench profile:
-
-| Model | mlx-lm loop | mlx-lm batched | ax-py loop | ax-py batched | mlx-lm speedup | ax-py speedup |
-|---|---:|---:|---:|---:|---:|---:|
-| Qwen3-Embedding 0.6B 8-bit | 1,478 | 2,805 | 1,386 | 2,620 | 1.9× | 1.9× |
-| Qwen3-Embedding 4B 4-bit   |   477 | 1,434 |   537 | 1,484 | 3.0× | 2.8× |
-| Qwen3-Embedding 8B 4-bit DWQ |   319 |   872 |   303 |   868 | 2.7× | 2.9× |
-
-Source:
-`benchmarks/results/embedding/2026-05-12-full-fresh-readme-refresh/`.
+The current Qwen fair snapshot is
+`benchmarks/results/embedding-fair/2026-06-28-qwen-hf-snapshot/2026-06-27-213439/`.
+It uses 2 warmup + 5 measured trials, reports medians, and keeps the complete
+short-query plus 16/64/256-token matrix in `summary.md`.
 
 ## Sustained vs intermittent profiles
 
-The README's main throughput table is *sustained* — back-to-back batched
-calls in a hot loop with no cooldown. That matches workloads like
-vector-DB ingest, batch evaluation, or async worker pools running at
-steady state.
+The README's main throughput table is sustained: back-to-back batched calls
+with no cooldown. That matches workloads like vector-DB ingest, batch
+evaluation, or async worker pools running at steady state.
 
-A separate measurement profile in
-`benchmarks/results/embedding/2026-05-12-full-fresh-readme-refresh/`
-uses a **10 s cooldown** between trials to model intermittent calls
-(e.g. interactive search queries). Numbers there are 2–3× lower than
-sustained because each trial follows a GPU idle period.
+Use a non-zero `--cooldown` in `bench_embedding_fair.py` to model intermittent
+calls such as interactive search queries. Those numbers can be lower because
+each trial follows a GPU idle period.
 
 Both profiles are valid; choose the one that matches your workload's
 arrival pattern.
@@ -163,16 +166,20 @@ Output is bit-exact with the C loader; opt in safely.
 
 ## Reproducing every README number
 
-One script runs all three paths × all three models, writes a
-ready-to-paste `summary.md`:
+Use the fair in-process harness for README throughput claims:
 
 ```bash
-bash scripts/bench_embedding_readme.sh
+.venv/bin/python scripts/bench_embedding_fair.py \
+  --model qwen3-embedding-0.6b-8bit=/path/to/Qwen3-Embedding-0.6B-8bit/snapshots/<sha> \
+  --model qwen3-embedding-4b-4bit-dwq=/path/to/Qwen3-Embedding-4B-4bit-DWQ/snapshots/<sha> \
+  --model qwen3-embedding-8b-4bit-dwq=/path/to/Qwen3-Embedding-8B-4bit-DWQ/snapshots/<sha> \
+  --batch-sizes 1,8 \
+  --lengths 16,64,256 \
+  --warmup 2 \
+  --trials 5 \
+  --output-dir benchmarks/results/embedding-fair/$(date +%Y-%m-%d)-qwen
 ```
 
-Defaults to `benchmarks/results/embedding/$(date +%Y-%m-%d)-readme/`;
-override with `OUTDIR=/path/to/dir bash scripts/bench_embedding_readme.sh`.
-
-Per-trial artifacts (server logs, JSON timing dumps, per-path stderr)
-land in `inproc/<model>/`, `http/<model>/`, `coldstart/<model>/` so
-the numbers are auditable.
+The legacy `scripts/bench_embedding_readme.sh` still runs HTTP serving and
+cold-start paths. Use it for endpoint/cold-start evidence, not as the primary
+`mlx-lm` vs ax-engine in-process publication source.
