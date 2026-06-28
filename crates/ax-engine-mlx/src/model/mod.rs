@@ -1575,14 +1575,8 @@ pub fn forward_for_embedding_gemma3_depth_probe(
 
     let mut pending_ffn: Option<MlxArray> = None;
     for (li, layer_w) in weights.layers.iter().enumerate() {
-        let (h, ffn_out) = layer_forward_embed_gemma3(
-            cfg,
-            layer_w,
-            &hidden,
-            li,
-            &bidir_mask,
-            pending_ffn.as_ref(),
-        );
+        let (h, ffn_out) =
+            layer_forward_embed_gemma3(cfg, layer_w, &hidden, li, &bidir_mask, pending_ffn.as_ref());
         // Apply FFN residual so the checkpoint reflects the complete layer.
         hidden = gemma3_clip_residual(&h, &ffn_out);
         pending_ffn = None;
@@ -1601,19 +1595,19 @@ pub fn forward_for_embedding_gemma3_depth_probe(
     (checkpoints, actual_lens)
 }
 
-/// Masked mean-pool for the depth probe.
+/// Masked mean-pool + L2 normalize for the depth probe.
 ///
-/// Returns `[B, H]` float32. Each row is the mean of the real (non-padding)
-/// positions in the corresponding sequence. L2 normalization is omitted;
-/// the comparison script computes cosine similarity (which is scale-invariant).
+/// Returns `[B, H]` float32. Each row is the L2-normalized mean of the real
+/// (non-padding) positions in the corresponding sequence.
 fn normed_mean_pool_probe(
-    hidden: &MlxArray, // [B, max_seq, H]
+    hidden: &MlxArray,       // [B, max_seq, H]
     actual_lens: &[usize],
     hidden_size: usize,
 ) -> MlxArray {
     let batch = actual_lens.len();
     let mut rows: Vec<MlxArray> = Vec::with_capacity(batch);
-    for (b, &len) in actual_lens.iter().enumerate() {
+    for b in 0..batch {
+        let len = actual_lens[b];
         let row = slice(
             hidden,
             &[b as i32, 0, 0],
@@ -1629,11 +1623,25 @@ fn normed_mean_pool_probe(
             &[1_i32, 1_i32],
             MlxDtype::Float32,
         );
-        let pooled = mlx_sys::divide(&astype(&summed, MlxDtype::Float32, None), &scale_arr, None);
+        let pooled = mlx_sys::divide(
+            &astype(&summed, MlxDtype::Float32, None),
+            &scale_arr,
+            None,
+        );
         rows.push(reshape(&pooled, &[hidden_size as i32], None));
     }
     let row_refs: Vec<&MlxArray> = rows.iter().collect();
-    mlx_sys::stack(&row_refs, 0, None)
+    let stacked = mlx_sys::stack(&row_refs, 0, None);
+    l2_normalize_probe(&stacked)
+}
+
+/// L2 normalize a `[B, H]` float32 tensor along the hidden dimension.
+fn l2_normalize_probe(x: &MlxArray) -> MlxArray {
+    let sq = mlx_sys::ops::square(x, None);
+    let ss = sum_axis(&sq, 1, true, None);
+    let eps = mlx_sys::ops::cached_scalar(1e-12, MlxDtype::Float32);
+    let denom = mlx_sys::ops::sqrt(&add(&ss, &eps, None), None);
+    mlx_sys::divide(x, &denom, None)
 }
 
 /// Build an `mlx_compile`-wrapped closure for the EmbeddingGemma batched
@@ -1865,29 +1873,6 @@ fn forward_for_embedding_batch_body(
     out
 }
 
-/// Body of `forward_for_embedding_batch` that runs only the transformer layers
-/// and FFN residual — no position extraction and no final RMS norm. Used by the
-/// compiled-closure path that defers extract + norm to the runner so the Metal
-/// command buffer stays simpler and the compile cache key is independent of
-/// `target_positions`.
-fn forward_for_embedding_batch_body_no_norm(
-    cfg: &ModelConfig,
-    weights: &ModelWeights,
-    mut hidden: MlxArray,
-) -> MlxArray {
-    let mut pending_ffn: Option<MlxArray> = None;
-    for (li, layer_w) in weights.layers.iter().enumerate() {
-        let (h, ffn_out) =
-            layer_forward_dense_embed(cfg, layer_w, &hidden, li, pending_ffn.as_ref());
-        hidden = h;
-        pending_ffn = Some(ffn_out);
-    }
-    if let Some(ffn_out) = &pending_ffn {
-        hidden = add(&hidden, ffn_out, None);
-    }
-    hidden
-}
-
 /// Build an `mlx_compile`-wrapped closure for the batched embedding forward.
 /// The closure takes the pre-embedded `[B, max_seq, H]` hidden state and
 /// returns the final norm output. `target_positions` is baked into the trace,
@@ -1905,26 +1890,6 @@ pub fn build_embedding_batch_forward_closure(
         let hidden = inputs.get(0);
         let out =
             forward_for_embedding_batch_body(&cfg, &weights, hidden, target_positions.as_deref());
-        vec![out]
-    });
-    body_closure.compile(false)
-}
-
-/// Build an `mlx_compile`-wrapped closure that runs only the transformer layers
-/// and FFN residual — no position extraction and no final RMS norm. The runner
-/// applies extract + norm lazily after the closure returns, keeping the Metal
-/// command buffer simpler and allowing one compiled closure to serve all
-/// `(batch, max_len)` shapes regardless of pooling mode.
-pub fn build_embedding_batch_forward_closure_no_norm(
-    cfg: Arc<ModelConfig>,
-    weights: Arc<ModelWeights>,
-) -> Result<MlxClosure, String> {
-    let body_closure = MlxClosure::new_dyn(move |inputs: &MlxVectorArray| {
-        if inputs.is_empty() {
-            return vec![];
-        }
-        let hidden = inputs.get(0);
-        let out = forward_for_embedding_batch_body_no_norm(&cfg, &weights, hidden);
         vec![out]
     });
     body_closure.compile(false)
