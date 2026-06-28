@@ -10,14 +10,16 @@ use crate::weights::{LayerWeights, ModelWeights, QuantizedWeight};
 
 pub(crate) mod profile;
 pub use profile::{
-    DecodeProfileSnapshot, Gemma4MoeProfileSnapshot, LinearAttentionProfileSnapshot,
-    MoeProfileSnapshot, PrefillProfileSnapshot, take_decode_profile_snapshot,
-    take_gemma4_moe_profile_snapshot, take_linear_attention_profile_snapshot,
-    take_moe_profile_snapshot, take_prefill_profile_snapshot,
+    DecodeProfileSnapshot, EmbedProfileSnapshot, Gemma4MoeProfileSnapshot,
+    LinearAttentionProfileSnapshot, MoeProfileSnapshot, PrefillProfileSnapshot,
+    take_decode_profile_snapshot, take_embed_profile_snapshot, take_gemma4_moe_profile_snapshot,
+    take_linear_attention_profile_snapshot, take_moe_profile_snapshot,
+    take_prefill_profile_snapshot,
 };
 use profile::{
-    DecodeProfileStage, decode_profile_enabled, decode_profile_eval_elapsed,
-    forward_profile_eval_elapsed, prefill_profile_enabled, record_decode_profile_step,
+    DecodeProfileStage, EmbedProfileStage, decode_profile_enabled, decode_profile_eval_elapsed,
+    embed_profile_enabled, embed_profile_eval_elapsed, forward_profile_eval_elapsed,
+    prefill_profile_enabled, record_decode_profile_step, record_embed_profile_call,
     record_prefill_profile_step,
 };
 
@@ -941,12 +943,29 @@ fn layer_forward_dense_embed(
     ) = layer_params(cfg, layer_idx);
     let batch = hidden.shape()[0] as usize;
     let seq = hidden.shape()[1] as usize;
+    // AX_MLX_EMBED_PROFILE per-stage timers. Each `embed_profile_eval_elapsed`
+    // forces an `eval()` barrier, so the breakdown is for ratio analysis only
+    // (it disables forward pipelining and inflates absolute time).
+    let profile = embed_profile_enabled() && seq > 1;
 
     // 1. Attention norm.
+    let attn_norm_started = profile.then(Instant::now);
     let normed = rms_norm(hidden, Some(&w.attn_norm), cfg.rms_norm_eps, None);
+    if let Some(started) = attn_norm_started {
+        embed_profile_eval_elapsed(profile, EmbedProfileStage::AttnNorm, started, &[&normed]);
+    }
 
     // 2-7. QKV projections, reshape, QK-norm, transpose, RoPE.
+    let qkv_proj_started = profile.then(Instant::now);
     let (q_raw, k_raw, v_raw, _attn_gate) = qkv_project(cfg, w, &normed, head_dim);
+    if let Some(started) = qkv_proj_started {
+        embed_profile_eval_elapsed(
+            profile,
+            EmbedProfileStage::QkvProj,
+            started,
+            &[&q_raw, &k_raw, &v_raw],
+        );
+    }
     let kv_heads = (k_raw.shape()[2] as usize)
         .checked_div(head_dim)
         .unwrap_or_else(|| {
@@ -958,6 +977,7 @@ fn layer_forward_dense_embed(
             1
         });
 
+    let value_prep_started = profile.then(Instant::now);
     let v = prepare_value_bhsd_from_proj(
         &v_raw,
         v_norm_no_scale,
@@ -966,11 +986,15 @@ fn layer_forward_dense_embed(
         seq,
         cfg.rms_norm_eps,
     );
+    if let Some(started) = value_prep_started {
+        embed_profile_eval_elapsed(profile, EmbedProfileStage::ValuePrep, started, &[&v]);
+    }
 
     let rope_freqs = layer_rope_freqs.or(cfg.rope_freqs.as_ref());
     let (rope_base, rope_freqs_ref) = rope_freqs
         .map(|f| (None, Some(f)))
         .unwrap_or((Some(rope_theta), None));
+    let qk_norm_rope_started = profile.then(Instant::now);
     let q_rope = qk_norm_rope_bhsd_from_proj(
         &q_raw,
         w.q_norm.as_ref(),
@@ -995,12 +1019,25 @@ fn layer_forward_dense_embed(
         0,
         rope_freqs_ref,
     );
+    if let Some(started) = qk_norm_rope_started {
+        embed_profile_eval_elapsed(
+            profile,
+            EmbedProfileStage::QkNormRope,
+            started,
+            &[&q_rope, &k_rope],
+        );
+    }
 
     // 8. SDPA — k_rope/v used directly, no KV-cache writes.
     let mask_opt: Option<MlxArray> = None; // resolves to Causal in full_precision_attention
+    let sdpa_started = profile.then(Instant::now);
     let attn_sdpa = full_precision_attention(&q_rope, &k_rope, &v, cfg.query_scale, seq, &mask_opt);
+    if let Some(started) = sdpa_started {
+        embed_profile_eval_elapsed(profile, EmbedProfileStage::Sdpa, started, &[&attn_sdpa]);
+    }
 
     // 9-13. Transpose back, reshape, output projection, residual.
+    let attn_out_proj_started = profile.then(Instant::now);
     let attn_out = transpose(&attn_sdpa, &[0, 2, 1, 3], None);
     let attn_flat = reshape(
         &attn_out,
@@ -1019,11 +1056,23 @@ fn layer_forward_dense_embed(
         }),
     );
     let hidden = add(hidden, &attn_proj, None);
+    if let Some(started) = attn_out_proj_started {
+        embed_profile_eval_elapsed(profile, EmbedProfileStage::AttnOutProj, started, &[&hidden]);
+    }
 
     // 14-17. Pre-FFN norm, dense SwiGLU, residual.
+    let ffn_norm_started = profile.then(Instant::now);
     let normed2 = rms_norm(&hidden, Some(&w.ffn_norm), cfg.rms_norm_eps, None);
+    if let Some(started) = ffn_norm_started {
+        embed_profile_eval_elapsed(profile, EmbedProfileStage::FfnNorm, started, &[&normed2]);
+    }
+    let ffn_started = profile.then(Instant::now);
     let ffn_out = ffn_swiglu(cfg, w, &normed2, None, layer_idx);
-    add(&hidden, &ffn_out, None)
+    let out = add(&hidden, &ffn_out, None);
+    if let Some(started) = ffn_started {
+        embed_profile_eval_elapsed(profile, EmbedProfileStage::Ffn, started, &[&out]);
+    }
+    out
 }
 
 /// Stateless forward pass for dense-embedding extraction.
@@ -1153,8 +1202,23 @@ pub fn forward_for_embedding_batch(
     let max_len = actual_lens.iter().copied().max().unwrap_or(0);
     let batch = batch_token_ids.len();
 
+    // AX_MLX_EMBED_PROFILE: charge the token-embedding gather once per call,
+    // outside the per-layer loop. seq>1 keeps decode/single-token paths
+    // unprofiled (the breakdown is a batched-prefill diagnostic).
+    let profile = embed_profile_enabled() && max_len > 1;
+    let embed_started = profile.then(Instant::now);
     let hidden = build_embedding_batch_hidden(cfg, weights, batch_token_ids, batch, max_len);
+    if let Some(started) = embed_started {
+        embed_profile_eval_elapsed(profile, EmbedProfileStage::EmbedTokens, started, &[&hidden]);
+    }
     let out = forward_for_embedding_batch_body(cfg, weights, hidden, target_positions);
+    if profile {
+        record_embed_profile_call(
+            weights.layers.len() as u32,
+            batch as u32,
+            (batch * max_len) as u32,
+        );
+    }
     (out, actual_lens)
 }
 
@@ -1207,9 +1271,15 @@ fn forward_for_embedding_batch_body(
     target_positions: Option<&[usize]>,
 ) -> MlxArray {
     let batch = hidden.shape()[0];
+    // AX_MLX_EMBED_PROFILE: guard on seq>1 so the closure-builder trace (which
+    // invokes this body once at build time) and decode paths stay unprofiled.
+    // Under profiling the runner forces the imperative path, so the per-stage
+    // eval barriers below only fire on a real imperative forward.
+    let profile = embed_profile_enabled() && hidden.shape()[1] > 1;
     for (li, layer_w) in weights.layers.iter().enumerate() {
         hidden = layer_forward_dense_embed(cfg, layer_w, &hidden, li);
     }
+    let final_started = profile.then(Instant::now);
     // Extract per-sequence positions before the final norm when the caller only
     // needs one token per sequence (Last/Cls pooling). This avoids norming the
     // full padded [B, max_seq, H] tensor.
@@ -1251,7 +1321,11 @@ fn forward_for_embedding_batch_body(
         }
         None => hidden,
     };
-    rms_norm(&to_norm, Some(&weights.final_norm), cfg.rms_norm_eps, None)
+    let out = rms_norm(&to_norm, Some(&weights.final_norm), cfg.rms_norm_eps, None);
+    if let Some(started) = final_started {
+        embed_profile_eval_elapsed(profile, EmbedProfileStage::FinalNormPool, started, &[&out]);
+    }
+    out
 }
 
 /// Build an `mlx_compile`-wrapped closure for the batched embedding forward.

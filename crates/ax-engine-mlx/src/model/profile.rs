@@ -636,3 +636,130 @@ pub fn take_moe_profile_snapshot() -> MoeProfileSnapshot {
     *profile = MoeProfileSnapshot::default();
     snapshot
 }
+
+/// Per-stage wall time for the batched embedding forward
+/// (`forward_for_embedding_batch` → `layer_forward_dense_embed`).
+///
+/// Enabled via `AX_MLX_EMBED_PROFILE=1`. Like `DecodeProfileSnapshot`, each
+/// stage timer forces a blocking `eval()` to materialise the lazy graph at that
+/// point, so enabling the profile **disables forward pipelining** and inflates
+/// absolute wall time relative to production. The *ratios* between stages are
+/// the diagnostic signal — they localise where the batched embedding path
+/// spends its time (see `docs/EMBEDDINGS.md`).
+///
+/// Profiling forces the imperative path: the per-`(batch, max_len,
+/// target_positions)` compiled closure is skipped so the stage barriers can be
+/// inserted (a compiled closure is a single traced graph with no per-stage
+/// boundary). A/B of compile on/off is decode-neutral for this path, so the
+/// imperative breakdown is representative of the compiled one.
+///
+/// Stages mirror `layer_forward_dense_embed`:
+/// - `embed_tokens_wall_us` — `build_embedding_batch_hidden` (token-id gather
+///   from the quantized embedding table + bf16 cast + optional hidden scale).
+///   Outside the layer loop; charged once per call.
+/// - `attn_norm_wall_us` — pre-attention RMSNorm.
+/// - `qkv_proj_wall_us` — `qkv_project` (Q/K/V quantized matmuls + reshape).
+/// - `value_prep_wall_us` — `prepare_value_bhsd_from_proj` (V reshape +
+///   optional V-norm to BHSD).
+/// - `qk_norm_rope_wall_us` — Q/K RMSNorm + RoPE for both Q and K. NOTE the
+///   embed path uses the generic `qk_norm_rope_bhsd_from_proj` (Qwen-family
+///   direct route default-OFF), unlike the tuned prefill `layer_forward`.
+/// - `sdpa_wall_us` — `full_precision_attention` (fused causal SDPA).
+/// - `attn_out_proj_wall_us` — transpose-back + reshape + attention output
+///   projection + attention residual add.
+/// - `ffn_norm_wall_us` — pre-FFN RMSNorm.
+/// - `ffn_wall_us` — `ffn_swiglu` + FFN residual add.
+/// - `final_norm_pool_wall_us` — last-token/CLS extract (or full hidden for
+///   Mean) + final RMSNorm. Outside the layer loop; charged once per call.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct EmbedProfileSnapshot {
+    pub enabled: u32,
+    pub calls: u32,
+    pub layers: u32,
+    pub batch: u32,
+    pub tokens: u32,
+    pub embed_tokens_wall_us: u32,
+    pub attn_norm_wall_us: u32,
+    pub qkv_proj_wall_us: u32,
+    pub value_prep_wall_us: u32,
+    pub qk_norm_rope_wall_us: u32,
+    pub sdpa_wall_us: u32,
+    pub attn_out_proj_wall_us: u32,
+    pub ffn_norm_wall_us: u32,
+    pub ffn_wall_us: u32,
+    pub final_norm_pool_wall_us: u32,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum EmbedProfileStage {
+    EmbedTokens,
+    AttnNorm,
+    QkvProj,
+    ValuePrep,
+    QkNormRope,
+    Sdpa,
+    AttnOutProj,
+    FfnNorm,
+    Ffn,
+    FinalNormPool,
+}
+
+static EMBED_PROFILE: OnceLock<Mutex<EmbedProfileSnapshot>> = OnceLock::new();
+static EMBED_PROFILE_ENABLED: OnceLock<bool> = OnceLock::new();
+
+pub(crate) fn embed_profile_enabled() -> bool {
+    profile_env_enabled(&EMBED_PROFILE_ENABLED, "AX_MLX_EMBED_PROFILE")
+}
+
+fn embed_profile() -> &'static Mutex<EmbedProfileSnapshot> {
+    EMBED_PROFILE.get_or_init(|| Mutex::new(EmbedProfileSnapshot::default()))
+}
+
+pub(crate) fn record_embed_profile_stage(stage: EmbedProfileStage, wall_us: u32) {
+    let mut profile = embed_profile().lock().unwrap();
+    profile.enabled = 1;
+    let target = match stage {
+        EmbedProfileStage::EmbedTokens => &mut profile.embed_tokens_wall_us,
+        EmbedProfileStage::AttnNorm => &mut profile.attn_norm_wall_us,
+        EmbedProfileStage::QkvProj => &mut profile.qkv_proj_wall_us,
+        EmbedProfileStage::ValuePrep => &mut profile.value_prep_wall_us,
+        EmbedProfileStage::QkNormRope => &mut profile.qk_norm_rope_wall_us,
+        EmbedProfileStage::Sdpa => &mut profile.sdpa_wall_us,
+        EmbedProfileStage::AttnOutProj => &mut profile.attn_out_proj_wall_us,
+        EmbedProfileStage::FfnNorm => &mut profile.ffn_norm_wall_us,
+        EmbedProfileStage::Ffn => &mut profile.ffn_wall_us,
+        EmbedProfileStage::FinalNormPool => &mut profile.final_norm_pool_wall_us,
+    };
+    *target = target.saturating_add(wall_us);
+}
+
+pub(crate) fn record_embed_profile_call(layers: u32, batch: u32, tokens: u32) {
+    let mut profile = embed_profile().lock().unwrap();
+    profile.enabled = 1;
+    profile.calls = profile.calls.saturating_add(1);
+    profile.layers = profile.layers.saturating_add(layers);
+    profile.batch = profile.batch.saturating_add(batch);
+    profile.tokens = profile.tokens.saturating_add(tokens);
+}
+
+pub(crate) fn embed_profile_eval_elapsed(
+    enabled: bool,
+    stage: EmbedProfileStage,
+    started: Instant,
+    targets: &[&MlxArray],
+) {
+    if enabled {
+        eval(targets);
+        record_embed_profile_stage(stage, saturating_profile_us(started));
+    }
+}
+
+/// Snapshot the embedding profile counters and reset them. Unlike the prefill/
+/// decode takers this does not gate on the enable flag, so a probe can read the
+/// accumulated breakdown directly after driving the instrumented path.
+pub fn take_embed_profile_snapshot() -> EmbedProfileSnapshot {
+    let mut profile = embed_profile().lock().unwrap();
+    let snapshot = *profile;
+    *profile = EmbedProfileSnapshot::default();
+    snapshot
+}
