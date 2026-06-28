@@ -235,17 +235,19 @@ extern "C" int mlx_device_info_get(mlx_device_info* info, mlx_device dev) {
     auto& d = dref(dev);
     const auto& props = mx::device_info(d);
     device_info_t m;
-    for (auto& [k,v] : props) {
-      std::visit([&](const auto& val) {
+    for (const auto& prop : props) {
+      const auto& key = prop.first;
+      const auto& value = prop.second;
+      std::visit([&m, &key](const auto& val) {
         using T = std::decay_t<decltype(val)>;
         if constexpr (std::is_same_v<T, std::string>)
-          m[k] = val;
+          m[key] = val;
         else if constexpr (std::is_same_v<T, size_t>)
-          m[k] = val;
+          m[key] = val;
         // Ignore unknown variant alternatives silently — future MLX
         // versions may add bool/int alternatives that device_info_get_size
         // does not need.
-      }, v);
+      }, value);
     }
     if (info->ctx) *static_cast<device_info_t*>(info->ctx) = std::move(m);
     else info->ctx = new device_info_t(std::move(m));

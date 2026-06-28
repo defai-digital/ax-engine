@@ -227,7 +227,7 @@ jobs:
     env:
       AX_CI_LOG_DIR: ${{ github.workspace }}/ax-ci-logs
       AX_ENGINE_MLX_MODEL_ARTIFACTS_DIR: ${{ inputs.mlx_model_artifacts_dir || vars.AX_ENGINE_MLX_MODEL_ARTIFACTS_DIR }}
-      AX_MODEL_SMOKE_REQUIRED: ${{ (github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/release/'))) || (github.event_name == 'workflow_dispatch' && inputs.mlx_model_artifacts_dir != '') || vars.AX_REQUIRE_MODEL_SMOKE == '1' }}
+      AX_MODEL_SMOKE_REQUIRED: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/heads/release/')) || (github.event_name == 'workflow_dispatch' && inputs.mlx_model_artifacts_dir != '') || vars.AX_REQUIRE_MODEL_SMOKE == '1' }}
 
     steps:
       - name: Check out repository

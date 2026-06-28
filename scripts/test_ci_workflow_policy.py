@@ -11,15 +11,19 @@ CI_WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
 
 
 class CiWorkflowPolicyTests(unittest.TestCase):
-    def test_model_smoke_is_required_on_protected_refs(self) -> None:
+    def test_model_smoke_is_required_on_release_and_explicit_runs(self) -> None:
         workflow = CI_WORKFLOW.read_text()
 
         self.assertIn("AX_MODEL_SMOKE_REQUIRED", workflow)
-        self.assertIn("github.ref == 'refs/heads/main'", workflow)
         self.assertIn("startsWith(github.ref, 'refs/heads/release/')", workflow)
         self.assertIn("github.event_name == 'workflow_dispatch'", workflow)
         self.assertIn("inputs.mlx_model_artifacts_dir != ''", workflow)
         self.assertIn("vars.AX_REQUIRE_MODEL_SMOKE == '1'", workflow)
+
+    def test_main_pushes_do_not_require_unmounted_model_artifacts(self) -> None:
+        workflow = CI_WORKFLOW.read_text()
+
+        self.assertNotIn("github.ref == 'refs/heads/main'", workflow)
 
     def test_missing_required_model_artifacts_fail_closed(self) -> None:
         workflow = CI_WORKFLOW.read_text()
