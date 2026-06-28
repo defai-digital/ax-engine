@@ -23,8 +23,8 @@ PEAK_GBS = 577.0
 ROWS = [
     ("AX upstream artifact", 10.98, 45.4, 498, 86, "#64748b", "#334155"),
     ("AX re-quantized FFN", 6.74, 67.3, 454, 79, "#2eaf5f", "#176c37"),
-    ("llama.cpp depth 512", 7.38, 58.9, 435, 75, "#f97316", "#c2410c"),
-    ("llama.cpp depth 0", 7.38, 59.8, 441, 76, "#f97316", "#c2410c"),
+    ("llama.cpp depth 512", 7.38, 58.7, 433, 75, "#f97316", "#c2410c"),
+    ("llama.cpp depth 0", 7.38, 57.1, 421, 73, "#f97316", "#c2410c"),
 ]
 
 # Chart dimensions
@@ -75,7 +75,7 @@ def render() -> str:
         f'<desc>Diagnostic bandwidth chart for Gemma 4 12B decode. The gray'
         f' upstream-artifact row is not a recommended runtime tier; it explains'
         f' the public 4bit snapshot handicap because FFN tensors remain 8-bit.'
-        f' AX re-quantized FFN uses 79%, llama.cpp depth 0 uses 76%, and'
+        f' AX re-quantized FFN uses 79%, llama.cpp depth 0 uses 73%, and'
         f' llama.cpp depth 512 uses 75% of the {PEAK_GBS:.0f} GB/s M5 Max peak.</desc>',
         f'<rect width="{WIDTH}" height="{HEIGHT}" fill="#f8fafc"/>',
         f'<text id="title" x="{LEFT}" y="24" font-family="{FONT}" font-size="16"'
