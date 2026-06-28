@@ -1,9 +1,9 @@
 # Embeddings — detailed methodology and API reference
 
 This document is the deep version of the README's `### Embedding throughput`
-section. The README keeps the compact AX-only in-process table and reproduction
-commands; everything below — apples-to-apples wording, the anti-pattern
-discussion, per-API code samples, telemetry — lives here.
+section. The README keeps the compact fair in-process comparison table and
+reproduction commands; everything below — apples-to-apples wording, the
+anti-pattern discussion, per-API code samples, telemetry — lives here.
 
 ## TL;DR
 
@@ -29,7 +29,7 @@ discussion, per-API code samples, telemetry — lives here.
 Published in-process embedding numbers should use
 `scripts/bench_embedding_fair.py`. For comparison rows, that harness forces both
 the reference backend and ax-engine to materialize the same contiguous CPU
-`float32 [B,H]` matrix. For AX-only README refreshes, pass `--ax-only` to skip
+`float32 [B,H]` matrix. For AX-only refreshes, pass `--ax-only` to skip
 loading the reference backend while preserving the same output contract and
 workload matrix. The older `scripts/bench_embedding_models.py` remains useful
 for smoke coverage of single-call, HTTP, and optional Swift paths, but it mixes
@@ -56,7 +56,9 @@ The fair harness reports two workload families:
 - `fixed_N`: deterministic synthetic token IDs at fixed lengths such as
   16, 64, and 256 tokens, so batch-size scaling is not hidden by mixed lengths.
 
-Both families use `last` pooling and l2-normalized output.
+The default Qwen comparison uses `last` pooling and l2-normalized output.
+EmbeddingGemma uses `--pooling mean` so the reference and AX routes match that
+model family's mean-pooling contract.
 
 ## The anti-pattern: one Python call per sentence
 
@@ -79,12 +81,15 @@ Why the loop is slow:
   itself runs over a right-padded `[B, max_seq, H]` tensor and one GPU
   sync; per-sentence wall time is divided by B.
 
-The current AX-only README Qwen snapshot is
-`benchmarks/results/embedding-ax-only/2026-06-28-qwen-after-batch-fix/2026-06-28-050309/`.
-The current AX-only EmbeddingGemma snapshot is
-`benchmarks/results/embedding-ax-only/2026-06-28-embeddinggemma-after-batch-fix/2026-06-28-050338/`.
+The current README Qwen fair-comparison snapshot is
+`benchmarks/results/embedding-fair/2026-06-28-qwen-after-batch-fix/2026-06-28-051508/`.
+The current README EmbeddingGemma fair-comparison snapshot is
+`benchmarks/results/embedding-fair/2026-06-28-embeddinggemma-after-batch-fix/2026-06-28-051549/`.
 Both use 2 warmup + 5 measured trials, report medians, and keep the complete
-short-query plus 16/64/256-token matrix in `summary.md`.
+short-query plus 16/64/256-token matrix in `summary.md`. The Qwen comparison
+uses `mlx-lm` as the reference backend. EmbeddingGemma uses `mlx-embeddings`
+with mean pooling because `mlx-lm` does not provide the comparable
+EmbeddingGemma route used by this harness.
 
 ## Sustained vs intermittent profiles
 
@@ -169,10 +174,10 @@ Output is bit-exact with the C loader; opt in safely.
 
 ## Reproducing every README number
 
-Use the fair in-process harness in AX-only mode for README throughput claims:
+Use the fair in-process harness for README throughput claims:
 
 ```bash
-.venv/bin/python scripts/bench_embedding_fair.py --ax-only \
+.venv/bin/python scripts/bench_embedding_fair.py \
   --model qwen3-embedding-0.6b-8bit=/path/to/Qwen3-Embedding-0.6B-8bit/snapshots/<sha> \
   --model qwen3-embedding-4b-4bit-dwq=/path/to/Qwen3-Embedding-4B-4bit-DWQ/snapshots/<sha> \
   --model qwen3-embedding-8b-4bit-dwq=/path/to/Qwen3-Embedding-8B-4bit-DWQ/snapshots/<sha> \
@@ -180,21 +185,24 @@ Use the fair in-process harness in AX-only mode for README throughput claims:
   --lengths 16,64,256 \
   --warmup 2 \
   --trials 5 \
-  --output-dir benchmarks/results/embedding-ax-only/$(date +%Y-%m-%d)-qwen
+  --output-dir benchmarks/results/embedding-fair/$(date +%Y-%m-%d)-qwen
 ```
 
 For EmbeddingGemma, use the same output contract with the embeddinggemma route:
 
 ```bash
-.venv/bin/python scripts/bench_embedding_fair.py --ax-only \
+.venv/bin/python scripts/bench_embedding_fair.py \
   --reference mlx_embeddings --pooling mean \
   --model embeddinggemma-300m-8bit=/path/to/embeddinggemma-300m-8bit/snapshots/<sha> \
   --batch-sizes 1,8 \
   --lengths 16,64,256 \
   --warmup 2 \
   --trials 5 \
-  --output-dir benchmarks/results/embedding-ax-only/$(date +%Y-%m-%d)-embeddinggemma
+  --output-dir benchmarks/results/embedding-fair/$(date +%Y-%m-%d)-embeddinggemma
 ```
+
+Pass `--ax-only` when you want to refresh only the AX path without loading the
+reference backend; do not use that mode for README reference-comparison claims.
 
 The legacy `scripts/bench_embedding_readme.sh` still runs HTTP serving and
 cold-start paths. Use it for endpoint/cold-start evidence, not as the primary

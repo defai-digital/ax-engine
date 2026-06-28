@@ -866,9 +866,9 @@ Qwen 3.6 direct-mode verdict: AX is faster overall against `mlx_lm` across the r
 
 #### Embedding throughput (tok/s)
 
-Embedding models use a separate pooling route from text generation. The
-AX-only in-process benchmark reports the repo-owned Python session path and
-forces ax-engine to materialize the caller-consumable contiguous CPU
+Embedding models use a separate pooling route from text generation. The fair
+in-process benchmark compares AX against the nearest MLX reference path and
+forces both backends to materialize the caller-consumable contiguous CPU
 `float32 [B,H]` matrix. That keeps the number focused on real embedding
 ingestion work: model forward, pooling, normalization, GPU-to-CPU read-back,
 and output-buffer creation.
@@ -879,43 +879,45 @@ closer to document chunk indexing. The README table shows batch=8 throughput;
 the full artifacts also include batch=1 and 16-token rows for regression
 diagnosis.
 
-| Model | Pooling | Workload | Batch | Max tokens | AX tok/s | AX items/s |
-| --- | --- | --- | ---: | ---: | ---: | ---: |
-| Qwen3-Embedding 0.6B 8-bit | last | short query | 8 | 15 | 5,624 | 600 |
-|  |  | 64-token chunks | 8 | 64 | 41,214 | 644 |
-|  |  | 256-token chunks | 8 | 256 | 48,925 | 191 |
-| Qwen3-Embedding 4B 4-bit DWQ | last | short query | 8 | 15 | 2,276 | 243 |
-|  |  | 64-token chunks | 8 | 64 | 6,644 | 104 |
-|  |  | 256-token chunks | 8 | 256 | 7,029 | 27 |
-| Qwen3-Embedding 8B 4-bit DWQ | last | short query | 8 | 15 | 1,429 | 152 |
-|  |  | 64-token chunks | 8 | 64 | 3,490 | 55 |
-|  |  | 256-token chunks | 8 | 256 | 3,287 | 13 |
-| EmbeddingGemma 300M 8-bit | mean + Dense | short query | 8 | 15 | 7,141 | 772 |
-|  |  | 64-token chunks | 8 | 64 | 41,830 | 654 |
-|  |  | 256-token chunks | 8 | 256 | 102,634 | 401 |
+| Model | Reference | Pooling | Workload | Batch | Max tokens | Reference tok/s | AX tok/s | AX vs |
+| --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: |
+| Qwen3-Embedding 0.6B 8-bit | `mlx-lm` | last | short query | 8 | 15 | 8,343.2 | 8,747.8 | +4.8% |
+|  |  |  | 64-token chunks | 8 | 64 | 40,390.9 | 41,241.8 | +2.1% |
+|  |  |  | 256-token chunks | 8 | 256 | 47,269.0 | 48,600.5 | +2.8% |
+| Qwen3-Embedding 4B 4-bit DWQ | `mlx-lm` | last | short query | 8 | 15 | 2,227.1 | 2,229.4 | +0.1% |
+|  |  |  | 64-token chunks | 8 | 64 | 6,484.7 | 6,494.3 | +0.1% |
+|  |  |  | 256-token chunks | 8 | 256 | 6,719.9 | 5,957.1 | -11.4% |
+| Qwen3-Embedding 8B 4-bit DWQ | `mlx-lm` | last | short query | 8 | 15 | 1,394.6 | 1,393.8 | -0.1% |
+|  |  |  | 64-token chunks | 8 | 64 | 3,057.3 | 3,004.0 | -1.7% |
+|  |  |  | 256-token chunks | 8 | 256 | 2,850.1 | 2,741.3 | -3.8% |
+| EmbeddingGemma 300M 8-bit | `mlx-embeddings` | mean + Dense | short query | 8 | 15 | 9,373.9 | 9,084.7 | -3.1% |
+|  |  |  | 64-token chunks | 8 | 64 | 49,857.6 | 49,006.9 | -1.7% |
+|  |  |  | 256-token chunks | 8 | 256 | 122,935.6 | 112,710.4 | -8.3% |
 
-The refreshed Qwen 0.6B batch path is no longer the previous long-chunk
-outlier: it now reaches ~49k tok/s on 256-token batch=8 document chunks. Larger
-Qwen embedding models are primarily memory-bandwidth limited, so item/s drops
-with model size even when token/s remains useful for batched ingestion.
-EmbeddingGemma has a different shape from the Qwen embedders: a Gemma 3
-bidirectional encoder with mean pooling, a two-layer Dense projection head, and
-L2 normalization (`model_family: embeddinggemma`).
+The current result is workload-dependent rather than one-sided. Qwen 0.6B is
+faster than `mlx-lm` on the listed batch=8 rows; Qwen 4B is at parity for short
+and 64-token batches but slower on 256-token chunks; Qwen 8B is near parity on
+short queries and slower on longer batch=8 chunks. EmbeddingGemma has a
+different shape from the Qwen embedders: a Gemma 3 bidirectional encoder with
+mean pooling, a two-layer Dense projection head, and L2 normalization
+(`model_family: embeddinggemma`). Its reference row uses `mlx-embeddings`
+because `mlx-lm` does not provide the comparable EmbeddingGemma route used by
+this harness.
 
 Sources:
-`benchmarks/results/embedding-ax-only/2026-06-28-qwen-after-batch-fix/2026-06-28-050309/`
+`benchmarks/results/embedding-fair/2026-06-28-qwen-after-batch-fix/2026-06-28-051508/`
 and
-`benchmarks/results/embedding-ax-only/2026-06-28-embeddinggemma-after-batch-fix/2026-06-28-050338/`.
-Method: `scripts/bench_embedding_fair.py --ax-only`, Hugging Face snapshot
-paths, 2 warmup and 5 measured trials, median tok/s and items/s, batch sizes
-1/8, short-query plus 16/64/256 token synthetic chunks, l2-normalized output.
-Qwen uses last-token pooling; EmbeddingGemma uses mean pooling + Dense head. API
-semantics, pooling modes, micro-batching behavior, and cooldown profiles are
-documented in [`docs/EMBEDDINGS.md`](docs/EMBEDDINGS.md). Reproduce the Qwen
-table with:
+`benchmarks/results/embedding-fair/2026-06-28-embeddinggemma-after-batch-fix/2026-06-28-051549/`.
+Method: `scripts/bench_embedding_fair.py`, Hugging Face snapshot paths, 2
+warmup and 5 measured trials, median tok/s, batch sizes 1/8, short-query plus
+16/64/256 token synthetic chunks, l2-normalized output. Qwen uses `mlx-lm`
+reference with last-token pooling; EmbeddingGemma uses `mlx-embeddings`
+reference with mean pooling + Dense head. API semantics, pooling modes,
+micro-batching behavior, and cooldown profiles are documented in
+[`docs/EMBEDDINGS.md`](docs/EMBEDDINGS.md). Reproduce the Qwen table with:
 
 ```bash
-python scripts/bench_embedding_fair.py --ax-only \
+python scripts/bench_embedding_fair.py \
   --model qwen3-embedding-0.6b-8bit=/path/to/Qwen3-Embedding-0.6B-8bit/snapshots/<sha> \
   --model qwen3-embedding-4b-4bit-dwq=/path/to/Qwen3-Embedding-4B-4bit-DWQ/snapshots/<sha> \
   --model qwen3-embedding-8b-4bit-dwq=/path/to/Qwen3-Embedding-8B-4bit-DWQ/snapshots/<sha> \
@@ -925,7 +927,7 @@ python scripts/bench_embedding_fair.py --ax-only \
 Reproduce the EmbeddingGemma table with:
 
 ```bash
-python scripts/bench_embedding_fair.py --ax-only \
+python scripts/bench_embedding_fair.py \
   --model embeddinggemma-300m-8bit=/path/to/embeddinggemma-300m-8bit/snapshots/<sha> \
   --reference mlx_embeddings --pooling mean \
   --batch-sizes 1,8 --lengths 16,64,256 --warmup 2 --trials 5
