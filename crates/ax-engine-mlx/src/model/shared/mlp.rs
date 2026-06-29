@@ -73,7 +73,10 @@ pub(crate) fn qkv_project_embed(
     x: &MlxArray,
     head_dim: usize,
 ) -> (MlxArray, MlxArray, MlxArray, Option<MlxArray>) {
-    let force_packed = fastpath::embed_packed_qkv_enabled();
+    let batch = x.shape().first().copied().unwrap_or(1);
+    let seq = x.shape().get(1).copied().unwrap_or(1);
+    let auto_short_qwen = cfg.model_family.starts_with("qwen") && batch > 1 && seq > 0 && seq <= 16;
+    let force_packed = fastpath::embed_packed_qkv_enabled() || auto_short_qwen;
     qkv_project_inner(cfg, w, x, head_dim, force_packed)
 }
 

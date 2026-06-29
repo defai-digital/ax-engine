@@ -238,13 +238,13 @@ EMBEDDING_FAIR_ARTIFACTS = (
 )
 EMBEDDING_AX_REFRESH_ARTIFACTS = (
     Path(
-        "benchmarks/results/embedding-fair/2026-06-28-qwen-ax-only-rerun/"
-        "2026-06-28-203807/embedding_fair.json"
+        "benchmarks/results/embedding-fair/2026-06-28-qwen-auto-short-qkv-rerun/"
+        "2026-06-28-222210/embedding_fair.json"
     ),
     Path(
         "benchmarks/results/embedding-fair/"
-        "2026-06-28-embeddinggemma-ax-only-rerun/"
-        "2026-06-28-203835/embedding_fair.json"
+        "2026-06-28-embeddinggemma-ax-only-fixed-rerun/"
+        "2026-06-28-213354/embedding_fair.json"
     ),
 )
 EMBEDDING_SCALE_ARTIFACT = Path(
@@ -252,11 +252,23 @@ EMBEDDING_SCALE_ARTIFACT = Path(
     "2026-06-28-184450/embedding_ingest_scale.json"
 )
 EMBEDDING_SCALE_AX_REFRESH_ARTIFACT = Path(
-    "benchmarks/results/embedding-scale/2026-06-28-qwen-ingest-scale-ax-only-rerun/"
-    "2026-06-28-203846/embedding_ingest_scale.json"
+    "benchmarks/results/embedding-scale/2026-06-28-qwen-ingest-scale-ax-only-fixed-rerun/"
+    "2026-06-28-213404/embedding_ingest_scale.json"
+)
+EMBEDDINGGEMMA_SCALE_ARTIFACT = Path(
+    "benchmarks/results/embedding-scale/2026-06-28-embeddinggemma-ingest-scale/"
+    "2026-06-28-205210/embedding_ingest_scale.json"
+)
+EMBEDDINGGEMMA_SCALE_AX_REFRESH_ARTIFACT = Path(
+    "benchmarks/results/embedding-scale/"
+    "2026-06-28-embeddinggemma-ingest-scale-ax-only-fixed-rerun/"
+    "2026-06-28-213619/embedding_ingest_scale.json"
 )
 EMBEDDING_FAIR_CHART_OUTPUT = "perf-embedding-fair-ax-vs-reference.svg"
 EMBEDDING_SCALE_CHART_OUTPUT = "perf-embedding-ingest-scale-ax-vs-mlx-lm.svg"
+EMBEDDINGGEMMA_SCALE_CHART_OUTPUT = (
+    "perf-embeddinggemma-ingest-scale-ax-vs-mlx-embeddings.svg"
+)
 EMBEDDING_CHART_WIDTH = 1080
 EMBEDDING_CHART_LEFT = 360.0
 EMBEDDING_CHART_RIGHT = 1012.0
@@ -1922,9 +1934,11 @@ def load_embedding_fair_delta_rows(repo_root: Path) -> list[EmbeddingDeltaRow]:
     return rows
 
 
-def load_embedding_scale_delta_rows(repo_root: Path) -> list[EmbeddingDeltaRow]:
-    ref_path = repo_root / EMBEDDING_SCALE_ARTIFACT
-    ax_path = repo_root / EMBEDDING_SCALE_AX_REFRESH_ARTIFACT
+def load_embedding_merged_scale_delta_rows(
+    repo_root: Path, ref_relative_path: Path, ax_relative_path: Path
+) -> list[EmbeddingDeltaRow]:
+    ref_path = repo_root / ref_relative_path
+    ax_path = repo_root / ax_relative_path
     if not ref_path.exists():
         raise ChartError(f"missing embedding scale artifact: {ref_path}")
     if not ax_path.exists():
@@ -1973,6 +1987,12 @@ def load_embedding_scale_delta_rows(repo_root: Path) -> list[EmbeddingDeltaRow]:
                 )
             )
     return rows
+
+
+def load_embedding_scale_delta_rows(repo_root: Path) -> list[EmbeddingDeltaRow]:
+    return load_embedding_merged_scale_delta_rows(
+        repo_root, EMBEDDING_SCALE_ARTIFACT, EMBEDDING_SCALE_AX_REFRESH_ARTIFACT
+    )
 
 
 def render_embedding_delta_chart(
@@ -2147,6 +2167,22 @@ def main() -> int:
     )
     if not write_chart(embedding_scale_output_path, embedding_scale_content, args.check):
         mismatches.append(embedding_scale_output_path)
+
+    embeddinggemma_scale_output_path = args.output_dir / EMBEDDINGGEMMA_SCALE_CHART_OUTPUT
+    embeddinggemma_scale_content = render_embedding_delta_chart(
+        load_embedding_merged_scale_delta_rows(
+            args.readme.parent,
+            EMBEDDINGGEMMA_SCALE_ARTIFACT,
+            EMBEDDINGGEMMA_SCALE_AX_REFRESH_ARTIFACT,
+        ),
+        title="EmbeddingGemma ingest scale: AX vs mlx-embeddings",
+        subtitle="512 chunks per trial, repeated batches, contiguous CPU float32 [B,H] output.",
+        source_label="Sources: embedding-scale EmbeddingGemma 300M 8-bit baseline and AX-only artifacts from 2026-06-28",
+    )
+    if not write_chart(
+        embeddinggemma_scale_output_path, embeddinggemma_scale_content, args.check
+    ):
+        mismatches.append(embeddinggemma_scale_output_path)
 
     for spec in CHARTS:
         if args.results_dir:
