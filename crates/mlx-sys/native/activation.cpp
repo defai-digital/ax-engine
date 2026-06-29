@@ -7,23 +7,42 @@
 
 namespace {
 
+// Cached scalar constants for gelu_approx — avoids four mx::array heap
+// allocations per call per layer.  The dtype is typically float16 or
+// bfloat16 for inference and rarely changes within a session, so a
+// thread-local cache keyed by dtype amortises the construction cost.
+struct gelu_constants {
+  mx::array half, one, sqrt_2_over_pi, coeff;
+  mx::Dtype dtype;
+};
+static thread_local std::optional<gelu_constants> gelu_cache;
+
+// Static string avoids per-call std::string("affine") construction in every
+// quantized matmul dispatch.
+static const std::string kAffineMode("affine");
+
 mx::array gelu_approx_mul_impl(
     const mx::array& gate,
     const mx::array& x,
     mx::StreamOrDevice stream) {
   auto dtype = gate.dtype();
-  auto half = mx::array(0.5f, dtype);
-  auto one = mx::array(1.0f, dtype);
-  auto sqrt_2_over_pi = mx::array(0.7978846f, dtype);
-  auto coeff = mx::array(0.044715f, dtype);
+  if (!gelu_cache || gelu_cache->dtype != dtype) {
+    gelu_cache = gelu_constants{
+        mx::array(0.5f, dtype),
+        mx::array(1.0f, dtype),
+        mx::array(0.7978846f, dtype),
+        mx::array(0.044715f, dtype),
+        dtype};
+  }
+  auto& c = *gelu_cache;
 
   auto gate2 = mx::multiply(gate, gate, stream);
   auto gate3 = mx::multiply(gate2, gate, stream);
-  auto cubic = mx::multiply(coeff, gate3, stream);
+  auto cubic = mx::multiply(c.coeff, gate3, stream);
   auto inner = mx::add(gate, cubic, stream);
-  auto t = mx::tanh(mx::multiply(sqrt_2_over_pi, inner, stream), stream);
+  auto t = mx::tanh(mx::multiply(c.sqrt_2_over_pi, inner, stream), stream);
   auto activated = mx::multiply(
-      mx::multiply(half, gate, stream), mx::add(one, t, stream), stream);
+      mx::multiply(c.half, gate, stream), mx::add(c.one, t, stream), stream);
   return mx::multiply(activated, x, stream);
 }
 
@@ -51,7 +70,7 @@ mx::array quantized_matmul_affine_impl(
       true,
       std::make_optional<int>(group_size),
       std::make_optional<int>(bits),
-      "affine",
+      kAffineMode,
       stream);
 }
 

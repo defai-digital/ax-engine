@@ -168,7 +168,7 @@ extern "C" mlx_array mlx_array_new_data_managed_payload(
     void* payload, void (*dtor)(void*)) {
   AX_TRY {
     auto cpp_dtype = to_dtype(dtype);
-    auto cpp_shape = mx::Shape(shape, shape + dim);
+    auto cpp_shape = make_shape(shape, dim);
     // The deleter receives the caller's lifetime `payload` handle, NOT the
     // `data` pointer. This is intentional: `data` may be an interior pointer
     // into `payload`'s allocation (e.g. an mmap offset into an Arc<Mmap>).
@@ -183,18 +183,41 @@ extern "C" int mlx_array_set(mlx_array* dst, const mlx_array src) {
   AX_TRY { aset(dst, aref(src)); return 0; } AX_CATCH
 }
 
-extern "C" size_t mlx_array_ndim(const mlx_array a) { return aref(a).ndim(); }
-extern "C" const int* mlx_array_shape(const mlx_array a) { return aref(a).shape().data(); }
-extern "C" mlx_dtype mlx_array_dtype(const mlx_array a) {
-  static mlx_dtype m[] = { MLX_BOOL, MLX_UINT8, MLX_UINT16, MLX_UINT32, MLX_UINT64,
-    MLX_INT8, MLX_INT16, MLX_INT32, MLX_INT64, MLX_FLOAT16, MLX_FLOAT32,
-    MLX_FLOAT64, MLX_BFLOAT16, MLX_COMPLEX64 };
-  return m[(int)aref(a).dtype().val()];
+extern "C" size_t mlx_array_ndim(const mlx_array a) {
+  AX_TRY { return aref(a).ndim(); } AX_CATCH_SIZE_MAX
 }
-extern "C" size_t mlx_array_nbytes(const mlx_array a) { return aref(a).nbytes(); }
-extern "C" const float* mlx_array_data_float32(const mlx_array a) { return aref(a).data<float>(); }
-extern "C" const uint8_t* mlx_array_data_uint8(const mlx_array a) { return aref(a).data<uint8_t>(); }
-extern "C" const uint32_t* mlx_array_data_uint32(const mlx_array a) { return aref(a).data<uint32_t>(); }
+extern "C" const int* mlx_array_shape(const mlx_array a) {
+  AX_TRY { return aref(a).shape().data(); }
+  catch (const std::exception&) { ax_set_current_error(); return nullptr; }
+  catch (...) { ax_set_current_error(); return nullptr; }
+}
+extern "C" mlx_dtype mlx_array_dtype(const mlx_array a) {
+  static mlx_dtype m[] = {
+    MLX_BOOL, MLX_UINT8, MLX_UINT16, MLX_UINT32, MLX_UINT64,
+    MLX_INT8, MLX_INT16, MLX_INT32, MLX_INT64,
+    MLX_FLOAT16, MLX_FLOAT32, MLX_FLOAT64, MLX_BFLOAT16, MLX_COMPLEX64};
+  AX_TRY { return m[(int)aref(a).dtype().val()]; }
+  catch (const std::exception&) { ax_set_current_error(); return MLX_BOOL; }
+  catch (...) { ax_set_current_error(); return MLX_BOOL; }
+}
+extern "C" size_t mlx_array_nbytes(const mlx_array a) {
+  AX_TRY { return aref(a).nbytes(); } AX_CATCH_SIZE_MAX
+}
+extern "C" const float* mlx_array_data_float32(const mlx_array a) {
+  AX_TRY { return aref(a).data<float>(); }
+  catch (const std::exception&) { ax_set_current_error(); return nullptr; }
+  catch (...) { ax_set_current_error(); return nullptr; }
+}
+extern "C" const uint8_t* mlx_array_data_uint8(const mlx_array a) {
+  AX_TRY { return aref(a).data<uint8_t>(); }
+  catch (const std::exception&) { ax_set_current_error(); return nullptr; }
+  catch (...) { ax_set_current_error(); return nullptr; }
+}
+extern "C" const uint32_t* mlx_array_data_uint32(const mlx_array a) {
+  AX_TRY { return aref(a).data<uint32_t>(); }
+  catch (const std::exception&) { ax_set_current_error(); return nullptr; }
+  catch (...) { ax_set_current_error(); return nullptr; }
+}
 
 /* ================================================================
  * Stream
@@ -275,11 +298,11 @@ extern "C" int mlx_view(mlx_array* r, const mlx_array a, mlx_dtype dt, const mlx
 extern "C" int mlx_reshape(mlx_array* r, const mlx_array a, const int* sh, size_t n, const mlx_stream s) {
   AX_TRY { aset(r, mx::reshape(aref(a), make_shape(sh, n), sd(s))); return 0; } AX_CATCH }
 extern "C" int mlx_transpose_axes(mlx_array* r, const mlx_array a, const int* ax, size_t n, const mlx_stream s) {
-  AX_TRY { aset(r, mx::transpose(aref(a), std::vector<int>(ax, ax+n), sd(s))); return 0; } AX_CATCH }
+  AX_TRY { aset(r, mx::transpose(aref(a), make_small_vec(ax, n), sd(s))); return 0; } AX_CATCH }
 extern "C" int mlx_expand_dims(mlx_array* r, const mlx_array a, int ax, const mlx_stream s) {
   AX_TRY { aset(r, mx::expand_dims(aref(a), ax, sd(s))); return 0; } AX_CATCH }
 extern "C" int mlx_expand_dims_axes(mlx_array* r, const mlx_array a, const int* ax, size_t n, const mlx_stream s) {
-  AX_TRY { aset(r, mx::expand_dims(aref(a), std::vector<int>(ax, ax+n), sd(s))); return 0; } AX_CATCH }
+  AX_TRY { aset(r, mx::expand_dims(aref(a), make_small_vec(ax, n), sd(s))); return 0; } AX_CATCH }
 extern "C" int mlx_broadcast_to(mlx_array* r, const mlx_array a, const int* sh, size_t n, const mlx_stream s) {
   AX_TRY { aset(r, mx::broadcast_to(aref(a), make_shape(sh, n), sd(s))); return 0; } AX_CATCH }
 extern "C" int mlx_flatten(mlx_array* r, const mlx_array a, int sa, int ea, const mlx_stream s) {
@@ -311,7 +334,7 @@ extern "C" int mlx_pad(mlx_array* r, const mlx_array a, const int* axes, size_t 
     const mlx_array pv, const char* mode, const mlx_stream s) {
   AX_TRY {
     auto m = safe_str(mode);
-    aset(r, mx::pad(aref(a), std::vector<int>(axes,axes+an),
+    aset(r, mx::pad(aref(a), make_small_vec(axes, an),
       make_shape(lo,lon), make_shape(hi,hin),
       aref(pv), m, sd(s)));
     return 0;
@@ -541,7 +564,9 @@ extern "C" mlx_vector_array mlx_vector_array_new(void) { return {new std::vector
 extern "C" int mlx_vector_array_free(mlx_vector_array v) { if (v.ctx) delete static_cast<std::vector<mx::array>*>(v.ctx); return 0; }
 extern "C" int mlx_vector_array_append_value(mlx_vector_array v, const mlx_array a) {
   AX_TRY { varef(v).push_back(aref(a)); return 0; } AX_CATCH }
-extern "C" size_t mlx_vector_array_size(mlx_vector_array v) { return varef(v).size(); }
+extern "C" size_t mlx_vector_array_size(mlx_vector_array v) {
+  AX_TRY { return varef(v).size(); } AX_CATCH_SIZE_MAX
+}
 extern "C" int mlx_vector_array_get(mlx_array* r, const mlx_vector_array v, size_t idx) {
   AX_TRY { aset(r, varef(v).at(idx)); return 0; } AX_CATCH }
 

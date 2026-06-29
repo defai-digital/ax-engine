@@ -1,7 +1,10 @@
 use std::fmt;
 use std::ptr;
 
-use crate::error::{last_error_message, panic_on_status, prepare_error_capture};
+use crate::error::{
+    ensure_error_handler, last_error_message, panic_on_status, prepare_error_capture,
+    take_last_error,
+};
 use crate::ffi;
 
 #[inline]
@@ -177,12 +180,23 @@ impl MlxArray {
     }
 
     pub fn ndim(&self) -> usize {
-        unsafe { ffi::mlx_array_ndim(self.inner) }
+        unsafe {
+            ensure_error_handler();
+            let n = ffi::mlx_array_ndim(self.inner);
+            if n == usize::MAX {
+                panic!("{}", last_error_message("mlx_array_ndim"));
+            }
+            n
+        }
     }
 
     pub fn shape(&self) -> Vec<i32> {
         unsafe {
+            ensure_error_handler();
             let ndim = ffi::mlx_array_ndim(self.inner);
+            if ndim == usize::MAX {
+                panic!("{}", last_error_message("mlx_array_ndim"));
+            }
             let ptr = ffi::mlx_array_shape(self.inner);
             if ptr.is_null() || ndim == 0 {
                 return vec![];
@@ -192,11 +206,29 @@ impl MlxArray {
     }
 
     pub fn dtype(&self) -> MlxDtype {
-        unsafe { MlxDtype::from_ffi(ffi::mlx_array_dtype(self.inner)) }
+        unsafe {
+            ensure_error_handler();
+            let d = ffi::mlx_array_dtype(self.inner);
+            // The C++ shim returns MLX_BOOL as sentinel on error; check the
+            // error slot to distinguish a genuine bool dtype from a failure.
+            if d == ffi::mlx_dtype_::MLX_BOOL
+                && let Some(msg) = take_last_error()
+            {
+                panic!("mlx_array_dtype failed: {msg}");
+            }
+            MlxDtype::from_ffi(d)
+        }
     }
 
     pub fn nbytes(&self) -> usize {
-        unsafe { ffi::mlx_array_nbytes(self.inner) }
+        unsafe {
+            ensure_error_handler();
+            let n = ffi::mlx_array_nbytes(self.inner);
+            if n == usize::MAX {
+                panic!("{}", last_error_message("mlx_array_nbytes"));
+            }
+            n
+        }
     }
 
     /// Read data as f32. Array must have been eval'd first.
@@ -207,9 +239,16 @@ impl MlxArray {
             "data_f32 requires Float32 dtype"
         );
         unsafe {
+            ensure_error_handler();
             let ptr = ffi::mlx_array_data_float32(self.inner);
+            if ptr.is_null() {
+                if let Some(msg) = take_last_error() {
+                    panic!("mlx_array_data_float32 failed: {msg}");
+                }
+                return &[];
+            }
             let len = self.nbytes() / self.dtype().size_bytes();
-            if ptr.is_null() || len == 0 {
+            if len == 0 {
                 return &[];
             }
             std::slice::from_raw_parts(ptr, len)
@@ -224,9 +263,16 @@ impl MlxArray {
             "data_u32 requires Uint32 dtype"
         );
         unsafe {
+            ensure_error_handler();
             let ptr = ffi::mlx_array_data_uint32(self.inner);
+            if ptr.is_null() {
+                if let Some(msg) = take_last_error() {
+                    panic!("mlx_array_data_uint32 failed: {msg}");
+                }
+                return &[];
+            }
             let len = self.nbytes() / self.dtype().size_bytes();
-            if ptr.is_null() || len == 0 {
+            if len == 0 {
                 return &[];
             }
             std::slice::from_raw_parts(ptr, len)
@@ -246,6 +292,7 @@ impl MlxArray {
             "first_u32_unchecked requires Uint32 dtype"
         );
         unsafe {
+            ensure_error_handler();
             let ptr = ffi::mlx_array_data_uint32(self.inner);
             if ptr.is_null() { 0 } else { *ptr }
         }
@@ -285,7 +332,10 @@ impl Drop for MlxArray {
 impl MlxArray {
     /// Return raw byte pointer to evaluated CPU data.
     pub fn data_raw(&self) -> *const u8 {
-        unsafe { ffi::mlx_array_data_uint8(self.inner) }
+        unsafe {
+            ensure_error_handler();
+            ffi::mlx_array_data_uint8(self.inner)
+        }
     }
 }
 

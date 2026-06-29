@@ -1,5 +1,5 @@
 use crate::array::{MlxArray, MlxDtype, null_ffi_array};
-use crate::error::{ensure_error_handler, panic_on_status};
+use crate::error::{ensure_error_handler, last_error_message, panic_on_status};
 use crate::ffi;
 use crate::stream::{MlxStream, default_gpu_raw};
 
@@ -1181,7 +1181,12 @@ pub fn split(a: &MlxArray, num_splits: i32, axis: i32, s: Option<&MlxStream>) ->
             "mlx_split",
             ffi::mlx_split(&mut out_vec, a.inner, num_splits, axis, stream)
         );
+        ensure_error_handler();
         let n = ffi::mlx_vector_array_size(out_vec);
+        if n == usize::MAX {
+            ffi::mlx_vector_array_free(out_vec);
+            panic!("{}", last_error_message("mlx_vector_array_size"));
+        }
         let mut result = Vec::with_capacity(n);
         for i in 0..n {
             let mut arr = MlxArray::empty();

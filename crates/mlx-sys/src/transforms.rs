@@ -190,6 +190,7 @@ pub fn get_cache_memory() -> usize {
 /// in `ax-engine-mlx::runner` and the I-4 device-pressure probe.
 pub fn max_recommended_working_set_size() -> usize {
     unsafe {
+        prepare_error_capture();
         // MLX_GPU = 1 (enum mlx_device_type_: MLX_CPU=0, MLX_GPU=1).
         let dev = ffi::mlx_device_new_type(1, 0);
         let mut info = ffi::mlx_device_info_new();

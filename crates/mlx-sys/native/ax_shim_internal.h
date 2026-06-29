@@ -13,11 +13,13 @@
 #include "ax_shim.h"
 
 #include <array>
+#include <climits>
 #include <cstring>
 #include <optional>
 #include <stdexcept>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "mlx/stream.h"
 #include "mlx/utils.h"
@@ -104,17 +106,36 @@ inline std::string safe_str(const char* s) {
   return s ? std::string(s) : std::string();
 }
 
-/// Build an mx::Shape from a raw int pointer + count.  For shapes with ≤ 4
+/// Build an mx::Shape from a raw int pointer + count.  For shapes with ≤ 8
 /// dimensions (the overwhelming majority of LLM ops: scalars, vectors,
-/// matrices, [B,S,H,D] tensors) a stack-allocated std::array avoids a
-/// heap round-trip on every reshape / transpose / slice.
+/// matrices, [B,S,H,D] tensors, grouped-attention [B,G,H,S,D]) a stack-
+/// allocated std::array avoids a heap round-trip on every reshape /
+/// transpose / slice.
 inline mx::Shape make_shape(const int* p, size_t n) {
-  if (n <= 4 && p) {
-    std::array<int, 4> buf{};
+  if (n == 0 || !p) {
+    return mx::Shape{};
+  }
+  if (n <= 8) {
+    std::array<int, 8> buf{};
     std::memcpy(buf.data(), p, n * sizeof(int));
     return mx::Shape(buf.data(), buf.data() + n);
   }
   return mx::Shape(p, p + n);
+}
+
+/// Build a std::vector<int> from a raw pointer + count, using a small-buffer
+/// optimisation for ≤ 8 elements.  Avoids a heap alloc for the common
+/// transpose / expand-dims axes that are 1–4 elements.
+inline std::vector<int> make_small_vec(const int* p, size_t n) {
+  if (n == 0 || !p) {
+    return std::vector<int>{};
+  }
+  if (n <= 8) {
+    std::array<int, 8> buf{};
+    std::memcpy(buf.data(), p, n * sizeof(int));
+    return std::vector<int>(buf.data(), buf.data() + n);
+  }
+  return std::vector<int>(p, p + n);
 }
 
 /* ================================================================
@@ -128,5 +149,9 @@ inline mx::Shape make_shape(const int* p, size_t n) {
 #define AX_CATCH_NULL \
   catch (const std::exception&) { ax_set_current_error(); return {nullptr}; } \
   catch (...) { ax_set_current_error(); return {nullptr}; }
+/* Sentinel for size_t-returning accessors (ndim, nbytes, vector size). */
+#define AX_CATCH_SIZE_MAX \
+  catch (const std::exception&) { ax_set_current_error(); return SIZE_MAX; } \
+  catch (...) { ax_set_current_error(); return SIZE_MAX; }
 
 #endif /* AX_SHIM_INTERNAL_H */

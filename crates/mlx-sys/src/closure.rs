@@ -15,7 +15,10 @@ use std::ptr;
 use std::thread::{self, ThreadId};
 
 use crate::array::{MlxArray, null_ffi_array};
-use crate::error::{panic_on_status, prepare_error_capture, status_to_result};
+use crate::error::{
+    ensure_error_handler, last_error_message, panic_on_status, prepare_error_capture,
+    status_to_result,
+};
 use crate::ffi;
 
 fn null_vector_array() -> ffi::mlx_vector_array {
@@ -69,7 +72,14 @@ impl MlxVectorArray {
     }
 
     pub fn len(&self) -> usize {
-        unsafe { ffi::mlx_vector_array_size(self.inner) }
+        unsafe {
+            ensure_error_handler();
+            let n = ffi::mlx_vector_array_size(self.inner);
+            if n == usize::MAX {
+                panic!("{}", last_error_message("mlx_vector_array_size"));
+            }
+            n
+        }
     }
 
     pub fn is_empty(&self) -> bool {
