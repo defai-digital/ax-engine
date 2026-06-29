@@ -145,6 +145,7 @@ def run_suite(args: argparse.Namespace) -> dict[str, Any]:
             mtp_quant_bits=args.mtp_quant_bits,
             mtp_quant_group_size=args.mtp_quant_group_size,
             mtp_quant_mode=args.mtp_quant_mode,
+            mtp_quant_policy=args.mtp_quant_policy,
         ),
     )
     draft_lm_head_report = None
@@ -345,6 +346,7 @@ def main() -> int:
     parser.add_argument("--mtp-quant-bits", type=int)
     parser.add_argument("--mtp-quant-group-size", type=int, default=64)
     parser.add_argument("--mtp-quant-mode", default="affine")
+    parser.add_argument("--mtp-quant-policy")
     args = parser.parse_args()
 
     result = run_suite(args)

@@ -42,6 +42,7 @@ class ServerHandle:
     proc: subprocess.Popen
     base_url: str
     model: str
+    model_layout: dict[str, Any]
     log_path: Path
     command: list[str]
     compat_patch: dict[str, Any]
@@ -55,6 +56,38 @@ class ServerHandle:
         except subprocess.TimeoutExpired:
             self.proc.kill()
             self.proc.wait(timeout=20)
+
+
+def prepare_model_layout(model: str, output_dir: Path) -> tuple[str, dict[str, Any]]:
+    source = Path(model)
+    if not source.is_dir():
+        return model, {"mode": "unchanged", "model": model}
+    source = source.resolve()
+    nested_mtp = source / "mtp" / "weights.safetensors"
+    if (
+        (source / "model-mtp.safetensors").exists()
+        or (source / "mtp.safetensors").exists()
+        or not nested_mtp.exists()
+    ):
+        return str(source), {"mode": "unchanged", "model": str(source)}
+
+    layout_dir = (output_dir / "normalized-model-layout").resolve()
+    layout_dir.mkdir(parents=True, exist_ok=True)
+    for child in source.iterdir():
+        link = layout_dir / child.name
+        if link.exists() or link.is_symlink():
+            continue
+        link.symlink_to(child, target_is_directory=child.is_dir())
+    mtp_link = layout_dir / "mtp.safetensors"
+    if not mtp_link.exists() and not mtp_link.is_symlink():
+        mtp_link.symlink_to(nested_mtp)
+    return str(layout_dir), {
+        "mode": "symlink_view",
+        "source": str(source),
+        "runtime_model": str(layout_dir),
+        "added_sidecar": "mtp.safetensors",
+        "sidecar_source": str(nested_mtp.resolve()),
+    }
 
 
 def prepare_rapid_mtp_compat_site(
@@ -81,6 +114,7 @@ import importlib.util
 import json
 import os
 import sys
+import types
 from pathlib import Path
 
 PATCH_PATH = os.environ.get('AX_RAPID_MLX_QWEN3_NEXT_MTP_PATCH')
@@ -92,6 +126,39 @@ if PATCH_PATH:
     module = importlib.util.module_from_spec(spec)
     sys.modules[MODULE_NAME] = module
     spec.loader.exec_module(module)
+    _orig_infer_mtp_group_size = getattr(module, '_infer_quantized_mtp_group_size', None)
+
+    def _ax_infer_quantized_mtp_group_size(raw, bits, fallback):
+        if int(bits or 0) == 6:
+            for key, weight in raw.items():
+                if not key.endswith('.weight') or not key.startswith('mtp.'):
+                    continue
+                scales = raw.get(key.removesuffix('.weight') + '.scales')
+                if scales is None or len(weight.shape) != 2 or len(scales.shape) != 2:
+                    continue
+                packed_input_dim = int(weight.shape[1])
+                scale_groups = int(scales.shape[1])
+                if packed_input_dim <= 0 or scale_groups <= 0:
+                    continue
+                input_dim = packed_input_dim * 8
+                if input_dim % scale_groups == 0:
+                    return input_dim // scale_groups
+        if _orig_infer_mtp_group_size is not None:
+            return _orig_infer_mtp_group_size(raw, bits, fallback)
+        return fallback
+
+    module._infer_quantized_mtp_group_size = _ax_infer_quantized_mtp_group_size
+
+share_pkg = types.ModuleType('vllm_mlx.share')
+share_pkg.__path__ = []
+share_cli = types.ModuleType('vllm_mlx.share.cli')
+
+def _ax_noop_share_register(_subparsers):
+    return None
+
+share_cli.register = _ax_noop_share_register
+sys.modules.setdefault('vllm_mlx.share', share_pkg)
+sys.modules.setdefault('vllm_mlx.share.cli', share_cli)
 
 
 def _ax_patch_tokenizer_module(mod):
@@ -111,9 +178,14 @@ def _ax_patch_tokenizer_module(mod):
             return
         with open(config_path) as f:
             config = json.load(f)
+        text_config = config.get('text_config', {})
         num_mtp = config.get('num_nextn_predict_layers', 0)
         if num_mtp == 0:
-            num_mtp = config.get('text_config', {}).get('num_nextn_predict_layers', 0)
+            num_mtp = config.get('mtp_num_hidden_layers', 0)
+        if num_mtp == 0:
+            num_mtp = text_config.get('num_nextn_predict_layers', 0)
+        if num_mtp == 0:
+            num_mtp = text_config.get('mtp_num_hidden_layers', 0)
         if num_mtp > 0 and getattr(model, 'mtp', None) is None:
             mtp_file = model_path / 'model-mtp.safetensors'
             if not mtp_file.exists():
@@ -272,6 +344,7 @@ def start_server(
     # the first, and post-hoc audits can't tell which preset the first run used.
     log_suffix = f"-{log_tag}" if log_tag else ""
     log_path = output_dir / f"rapid-mlx-server{log_suffix}-{port}.log"
+    model_arg, model_layout = prepare_model_layout(model, output_dir)
     compat_patch = prepare_rapid_mtp_compat_site(
         output_dir=output_dir,
         lightning_source=lightning_source,
@@ -283,7 +356,7 @@ def start_server(
             "-m",
             "vllm_mlx.cli",
             "serve",
-            model,
+            model_arg,
             "--served-model-name",
             "local",
             "--port",
@@ -342,7 +415,7 @@ def start_server(
             "vllm_mlx.cli",
             "--no-telemetry",
             "serve",
-            model,
+            model_arg,
             "--port",
             str(port),
             "--disable-prefix-cache",
@@ -381,7 +454,8 @@ def start_server(
         handle = ServerHandle(
             proc=proc,
             base_url=f"http://127.0.0.1:{port}/v1",
-            model="local" if lightning_mode else model,
+            model="local" if lightning_mode else model_arg,
+            model_layout=model_layout,
             log_path=log_path,
             command=cmd,
             compat_patch=compat_patch,
@@ -882,6 +956,7 @@ def run_suite(args: argparse.Namespace) -> dict[str, Any]:
         "schema": "ax.rapid_mlx.prompt_suite_mtp.v2",
         "engine": "rapid_mlx",
         "model": args.model,
+        "runtime_model_layout": handle.model_layout,
         "rapid_source": str(args.rapid_source),
         "rapid_python": str(args.rapid_python),
         "rapid_mtp_patch": handle.compat_patch,

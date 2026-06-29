@@ -1,0 +1,141 @@
+{
+  "contract": {
+    "bits": [
+      4,
+      6
+    ],
+    "engines": [
+      "mtplx"
+    ],
+    "max_tokens": 16,
+    "metrics": [
+      "decode_tok_s",
+      "prefill_tok_s",
+      "ttft_ms",
+      "accept_rate"
+    ],
+    "mode": "mtp",
+    "models": [
+      "27b",
+      "35b-a3b"
+    ],
+    "repetitions": 1,
+    "sampling": {
+      "temperature": 0.6,
+      "top_k": 20,
+      "top_p": 0.95
+    },
+    "suites": [
+      "flappy"
+    ],
+    "warmup_repetitions": 0
+  },
+  "created_at": "2026-06-29",
+  "rows": [
+    {
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-29-mtplx-enabled-smoke/27b-4bit/flappy/mtplx.json",
+      "bits": 4,
+      "engine": "mtplx",
+      "metric_contract": {
+        "accept_rate": "measured",
+        "decode_tok_s": "measured",
+        "prefill_tok_s": "derived_from_prompt_eval_time_s",
+        "ttft_ms": "prompt_eval_time_s"
+      },
+      "metrics": {
+        "accept_rate": 1.0,
+        "accept_source": "mtplx_draft_stats",
+        "case_count": 4,
+        "decode_tok_s": 59.99391949429613,
+        "prefill_source": "prompt_tokens_over_prompt_eval_time_s",
+        "prefill_tok_s": 730.7049832413712,
+        "status": "ok",
+        "ttft_ms": 447.1743335016072,
+        "ttft_source": "prompt_eval_time_s"
+      },
+      "model": "27b",
+      "model_label": "Qwen3.6 27B 4-bit",
+      "reason": null,
+      "status": "supported",
+      "suite": "flappy",
+      "target": "27b-4bit"
+    },
+    {
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-29-mtplx-enabled-smoke/27b-6bit/flappy/mtplx.json",
+      "bits": 6,
+      "engine": "mtplx",
+      "metric_contract": {
+        "accept_rate": "measured",
+        "decode_tok_s": "measured",
+        "prefill_tok_s": "derived_from_prompt_eval_time_s",
+        "ttft_ms": "prompt_eval_time_s"
+      },
+      "metrics": {
+        "status": "unsupported"
+      },
+      "model": "27b",
+      "model_label": "Qwen3.6 27B 6-bit",
+      "reason": "MTPLX catalog has no official Qwen3.6 27B 6-bit MTP artifact.",
+      "status": "unsupported",
+      "suite": "flappy",
+      "target": "27b-6bit"
+    },
+    {
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-29-mtplx-enabled-smoke/35b-a3b-4bit/flappy/mtplx.json",
+      "bits": 4,
+      "engine": "mtplx",
+      "metric_contract": {
+        "accept_rate": "measured",
+        "decode_tok_s": "measured",
+        "prefill_tok_s": "derived_from_prompt_eval_time_s",
+        "ttft_ms": "prompt_eval_time_s"
+      },
+      "metrics": {
+        "accept_rate": 0.875,
+        "accept_source": "mtplx_draft_stats",
+        "case_count": 4,
+        "decode_tok_s": 130.49840345270064,
+        "prefill_source": "prompt_tokens_over_prompt_eval_time_s",
+        "prefill_tok_s": 1577.5930164550227,
+        "status": "ok",
+        "ttft_ms": 188.92085395054892,
+        "ttft_source": "prompt_eval_time_s"
+      },
+      "model": "35b-a3b",
+      "model_label": "Qwen3.6 35B-A3B 4-bit",
+      "reason": null,
+      "status": "supported",
+      "suite": "flappy",
+      "target": "35b-a3b-4bit"
+    },
+    {
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-29-mtplx-enabled-smoke/35b-a3b-6bit/flappy/mtplx.json",
+      "bits": 6,
+      "engine": "mtplx",
+      "metric_contract": {
+        "accept_rate": "measured",
+        "decode_tok_s": "measured",
+        "prefill_tok_s": "derived_from_prompt_eval_time_s",
+        "ttft_ms": "prompt_eval_time_s"
+      },
+      "metrics": {
+        "accept_rate": 0.875,
+        "accept_source": "mtplx_draft_stats",
+        "case_count": 4,
+        "decode_tok_s": 112.1667479260947,
+        "prefill_source": "prompt_tokens_over_prompt_eval_time_s",
+        "prefill_tok_s": 1650.190493791089,
+        "status": "ok",
+        "ttft_ms": 212.03506249003112,
+        "ttft_source": "prompt_eval_time_s"
+      },
+      "model": "35b-a3b",
+      "model_label": "Qwen3.6 35B-A3B 6-bit",
+      "reason": null,
+      "status": "supported",
+      "suite": "flappy",
+      "target": "35b-a3b-6bit"
+    }
+  ],
+  "schema": "ax.qwen36_mtp_matrix.summary.v1"
+}

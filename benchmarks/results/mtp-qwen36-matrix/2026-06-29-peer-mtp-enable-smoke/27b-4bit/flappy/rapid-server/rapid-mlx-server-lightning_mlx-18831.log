@@ -1,0 +1,12 @@
+
+  lightning-mlx
+  ─────────
+  Features: tools: qwen3_coder_xml, reasoning: qwen3, max-concurrent: 1, gc-control, idle-unload: 60s
+  Model: /Users/akiralam/code/ax-engine/benchmarks/results/mtp-qwen36-matrix/2026-06-29-peer-mtp-enable-smoke/27b-4bit/flappy/rapid-server/normalized-model-layout
+Mode: Continuous batching (for multiple concurrent users)
+MTP: enabled, draft_tokens=3, draft_temp=0.5
+Stream interval: 1 tokens
+Memory-aware cache: 20% of RAM
+
+  Ready: http://localhost:18831/v1
+  Docs:  http://localhost:18831/docs

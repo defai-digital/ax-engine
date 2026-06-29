@@ -24,7 +24,9 @@ DEFAULT_OUTPUT_BASE = REPO_ROOT / "benchmarks" / "results" / "mtp-qwen36-matrix"
 DEFAULT_SUITES_DIR = REPO_ROOT / "benchmarks" / "prompts" / "mtp-suites"
 DEFAULT_MTPLX_PYTHON = Path("/opt/homebrew/var/mtplx/venv-0.3.7/bin/python")
 DEFAULT_RAPID_PYTHON = Path("/opt/homebrew/var/mtplx/venv-0.3.7/bin/python")
+DEFAULT_RAPID_SOURCE = REPO_ROOT / ".internal" / "reference" / "Rapid-MLX"
 DEFAULT_LIGHTNING_SOURCE = REPO_ROOT / ".internal" / "reference" / "lightning-mlx"
+DEFAULT_MTPLX_SOURCE = REPO_ROOT / ".internal" / "reference" / "MTPLX"
 HF_CACHE = Path(
     os.environ.get("HF_HUB_CACHE")
     or (Path(os.environ.get("HF_HOME", Path.home() / ".cache" / "huggingface")) / "hub")
@@ -123,7 +125,12 @@ MTPLX_MODEL_IDS = {
     "35b-a3b-6bit": "Youssofal/Qwen3.6-35B-A3B-MTPLX-Optimized-Balance",
 }
 
-LIGHTNING_MODELS: dict[str, str] = {}
+MTPLX_QUANT_POLICIES = {
+    "27b-4bit": "prequantized-int4",
+}
+
+LIGHTNING_MODELS = dict(MTPLX_MODEL_IDS)
+RAPID_MODELS: dict[str, str] = {}
 
 
 def median(values: list[float]) -> float | None:
@@ -241,6 +248,13 @@ def summarize_mtplx_artifact(artifact: dict[str, Any]) -> dict[str, Any]:
 
 def summarize_lightning_artifact(artifact: dict[str, Any]) -> dict[str, Any]:
     cases = [case for case in artifact.get("results", []) if case.get("prompt_id")]
+    log_lines = [str(line) for line in artifact.get("server_log_tail", [])]
+    mtp_disabled = any(
+        "MTP install skipped" in line
+        or "model has no MTP head" in line
+        or "MTP validation failed" in line
+        for line in log_lines
+    )
     decode_values: list[float] = []
     accept_values: list[float] = []
     prefill_values: list[float] = []
@@ -257,7 +271,7 @@ def summarize_lightning_artifact(artifact: dict[str, Any]) -> dict[str, Any]:
                 if isinstance(prompt_tokens, int | float) and prompt_tokens > 0:
                     prefill_values.append(float(prompt_tokens) / float(ttft_s))
     return {
-        "status": "ok" if cases else "no_data",
+        "status": "mtp_disabled" if mtp_disabled else "ok" if cases else "no_data",
         "decode_tok_s": median(decode_values),
         "prefill_tok_s": median(prefill_values),
         "ttft_ms": median(ttft_values),
@@ -279,7 +293,7 @@ def summarize_artifact(engine: str, artifact_path: Path) -> dict[str, Any]:
         return summarize_ax_artifact(artifact, artifact_path)
     if engine == "mtplx":
         return summarize_mtplx_artifact(artifact)
-    if engine == "lightning_mlx":
+    if engine in {"lightning_mlx", "rapid_mlx"}:
         return summarize_lightning_artifact(artifact)
     return {"status": "unsupported"}
 
@@ -344,7 +358,7 @@ def mtplx_command(args: argparse.Namespace, target: Target, suite: str, output: 
         return None
     model_path = resolve_hf_snapshot(model, args.peer_caches)
     model_arg = str(model_path or model)
-    return [
+    cmd = [
         str(args.mtplx_python),
         str(MTPLX_BENCH_SCRIPT),
         "--model",
@@ -380,17 +394,22 @@ def mtplx_command(args: argparse.Namespace, target: Target, suite: str, output: 
         "--disable-thinking",
         "--allow-unverified-model",
     ]
+    if policy := MTPLX_QUANT_POLICIES.get(target.key):
+        cmd.extend(["--mtp-quant-policy", policy])
+    return cmd
 
 
 def lightning_command(args: argparse.Namespace, target: Target, suite: str, output: Path) -> list[str] | None:
     model = LIGHTNING_MODELS.get(target.key)
     if model is None:
         return None
+    model_path = resolve_hf_snapshot(model, args.peer_caches)
+    model_arg = str(model_path or model)
     return [
         str(args.rapid_python),
         str(RAPID_BENCH_SCRIPT),
         "--model",
-        model,
+        model_arg,
         "--suite",
         suite,
         "--prompts",
@@ -399,8 +418,10 @@ def lightning_command(args: argparse.Namespace, target: Target, suite: str, outp
         str(output),
         "--rapid-source",
         str(args.lightning_source),
+        "--lightning-source",
+        str(args.lightning_source),
         "--rapid-mtp-patch",
-        "none",
+        "lightning",
         "--lightning-mode",
         "--depth",
         str(target.mtp_depth),
@@ -428,15 +449,58 @@ def lightning_command(args: argparse.Namespace, target: Target, suite: str, outp
     ]
 
 
+def rapid_command(args: argparse.Namespace, target: Target, suite: str, output: Path) -> list[str] | None:
+    model = RAPID_MODELS.get(target.key)
+    if model is None:
+        return None
+    model_path = resolve_hf_snapshot(model, args.peer_caches)
+    model_arg = str(model_path or model)
+    return [
+        str(args.rapid_python),
+        str(RAPID_BENCH_SCRIPT),
+        "--model",
+        model_arg,
+        "--suite",
+        suite,
+        "--prompts",
+        str(suite_path(args, suite)),
+        "--output",
+        str(output),
+        "--rapid-source",
+        str(args.rapid_source),
+        "--lightning-source",
+        str(args.lightning_source),
+        "--rapid-mtp-patch",
+        "lightning",
+        "--depth",
+        str(target.mtp_depth),
+        "--temperature",
+        str(args.sampling["temperature"]),
+        "--top-p",
+        str(args.sampling["top_p"]),
+        "--top-k",
+        str(args.sampling["top_k"]),
+        "--max-tokens",
+        str(args.max_tokens),
+        "--repetitions",
+        str(args.repetitions),
+        "--warmup-repetitions",
+        str(args.warmup_repetitions),
+        "--cooldown",
+        str(args.cooldown),
+        "--inter-case-cooldown",
+        str(args.inter_case_cooldown),
+        "--port",
+        str(args.base_port),
+        "--disable-thinking",
+    ]
+
+
 def unsupported_reason(engine: str, target: Target) -> str:
-    if engine == "mtplx" and target.key == "27b-6bit":
-        return "MTPLX catalog has no official Qwen3.6 27B 6-bit MTP artifact."
-    if engine == "lightning_mlx" and target.bits == 6:
-        return "lightning-mlx 6-bit aliases do not map to a verified pure Qwen3.6 MTP head."
-    if engine == "lightning_mlx":
-        return "lightning-mlx Qwen3.6 aliases start, but runtime validation reports no MTP head and disables MTP."
+    if engine in {"mtplx", "lightning_mlx", "rapid_mlx"} and target.key == "27b-6bit":
+        return f"{engine} catalog has no official Qwen3.6 27B 6-bit MTP artifact."
     if engine == "rapid_mlx":
-        return "Rapid-MLX Qwen3.6 aliases advertise supports_spec_decode=false; MTP is not a supported Qwen3.6 benchmark lane."
+        return "Rapid-MLX starts with the shared Qwen3.6 artifacts, but its scheduler skips MTP install for this generation flow; running it would measure non-MTP decode."
     if engine == "omlx":
         return "oMLX has no repo-owned Qwen3.6 MTP prompt-suite adapter yet; native MTP needs prepared MTP weights and a dedicated runner."
     return "No matching pure-MTP runner/model artifact is configured for this lane."
@@ -482,7 +546,7 @@ def metric_contract(engine: str) -> dict[str, str]:
             "ttft_ms": "prompt_eval_time_s",
             "accept_rate": "measured",
         }
-    if engine == "lightning_mlx":
+    if engine in {"lightning_mlx", "rapid_mlx"}:
         return {
             "decode_tok_s": "measured",
             "prefill_tok_s": "approx_prompt_tokens_over_client_ttft_s",
@@ -587,9 +651,24 @@ def write_plan_markdown(path: Path, lanes: list[Lane]) -> None:
     path.write_text("\n".join(lines) + "\n")
 
 
-def run_logged(cmd: list[str], log_path: Path) -> None:
+def mtplx_env(args: argparse.Namespace) -> dict[str, str] | None:
+    if not args.mtplx_source.is_dir():
+        return None
+    env = os.environ.copy()
+    existing = env.get("PYTHONPATH")
+    env["PYTHONPATH"] = (
+        str(args.mtplx_source)
+        if not existing
+        else str(args.mtplx_source) + os.pathsep + existing
+    )
+    return env
+
+
+def run_logged(cmd: list[str], log_path: Path, *, env: dict[str, str] | None = None) -> None:
     log_path.parent.mkdir(parents=True, exist_ok=True)
     with log_path.open("w") as log:
+        if env and env.get("PYTHONPATH"):
+            log.write(f"PYTHONPATH={env['PYTHONPATH']}\n")
         log.write("$ " + shlex.join(cmd) + "\n\n")
         log.flush()
         started = time.perf_counter()
@@ -600,6 +679,7 @@ def run_logged(cmd: list[str], log_path: Path) -> None:
             stderr=subprocess.STDOUT,
             text=True,
             check=False,
+            env=env,
         )
         elapsed = time.perf_counter() - started
         log.write(f"\n[exit {result.returncode} after {elapsed:.1f}s]\n")
@@ -639,7 +719,8 @@ def execute_lanes(args: argparse.Namespace, lanes: list[Lane]) -> None:
         print(f"[run] {lane.target.key} {lane.suite} {lane.engine}", flush=True)
         log_path = lane.output_path.with_suffix(".log")
         try:
-            run_logged(lane.command, log_path)
+            env = mtplx_env(args) if lane.engine == "mtplx" else None
+            run_logged(lane.command, log_path, env=env)
         except Exception as exc:
             write_error_artifact(
                 lane.output_path,
@@ -773,7 +854,9 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         default=DEFAULT_RAPID_PYTHON if DEFAULT_RAPID_PYTHON.exists() else Path(sys.executable),
     )
+    parser.add_argument("--rapid-source", type=Path, default=DEFAULT_RAPID_SOURCE)
     parser.add_argument("--lightning-source", type=Path, default=DEFAULT_LIGHTNING_SOURCE)
+    parser.add_argument("--mtplx-source", type=Path, default=DEFAULT_MTPLX_SOURCE)
     parser.add_argument("--mtplx-profile", default="stable")
     parser.add_argument("--lightning-mtp-draft-temperature", type=float, default=0.5)
     parser.add_argument("--base-port", type=int, default=18765)

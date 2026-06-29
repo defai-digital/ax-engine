@@ -317,6 +317,21 @@ telemetry fail summary generation. Summary artifacts:
 [`summary.md`](benchmarks/results/mtp-qwen36-matrix/2026-06-29-qwen36-mtp-matrix/summary.md)
 and
 [`summary.json`](benchmarks/results/mtp-qwen36-matrix/2026-06-29-qwen36-mtp-matrix/summary.json).
+Follow-up MTPLX enablement smoke:
+[`summary.md`](benchmarks/results/mtp-qwen36-matrix/2026-06-29-mtplx-enabled-smoke/summary.md)
+verifies that the local reference MTPLX loader can attach and run the Qwen3.6
+27B 4-bit, 35B-A3B 4-bit, and 35B-A3B 6-bit MTP heads after loading the
+reference checkout and complete safetensor artifacts. That smoke uses 16
+generated tokens, one measured repetition, and no cooldown, so it is a loader
+validation artifact rather than a promoted throughput row.
+Peer enablement smoke:
+[`summary.md`](benchmarks/results/mtp-qwen36-matrix/2026-06-29-peer-mtp-enable-smoke/summary.md)
+verifies lightning-mlx on the same 27B 4-bit, 35B-A3B 4-bit, and 35B-A3B
+6-bit MTP artifacts after normalizing the local MTP sidecar layout and 6-bit
+MTP group-size inference in the benchmark adapter. Rapid-MLX is still listed as
+unsupported for these Qwen3.6 MTP rows because its scheduler starts with the
+shared artifacts but skips MTP installation for this generation flow, so running
+it would measure non-MTP decode.
 Detailed MTP notes, including the GLM-4.7 Flash smoke validation session, live in
 [`docs/mtp/`](docs/mtp/).
 

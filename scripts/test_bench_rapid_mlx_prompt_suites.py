@@ -22,6 +22,38 @@ MODULE_SPEC.loader.exec_module(rapid)
 
 
 class RapidMlxPromptSuiteTests(unittest.TestCase):
+    def test_prepare_model_layout_symlinks_nested_mtp_sidecar(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            model = root / "model"
+            (model / "mtp").mkdir(parents=True)
+            (model / "config.json").write_text("{}\n")
+            (model / "mtp" / "weights.safetensors").write_text("mtp\n")
+
+            runtime_model, layout = rapid.prepare_model_layout(model=str(model), output_dir=root / "out")
+
+            runtime = Path(runtime_model)
+            self.assertEqual(layout["mode"], "symlink_view")
+            self.assertTrue((runtime / "config.json").is_symlink())
+            self.assertTrue((runtime / "mtp.safetensors").is_symlink())
+            self.assertEqual(
+                (runtime / "mtp.safetensors").resolve(),
+                (model / "mtp" / "weights.safetensors").resolve(),
+            )
+
+    def test_prepare_model_layout_keeps_root_sidecar_unchanged(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            model = root / "model"
+            model.mkdir()
+            (model / "config.json").write_text("{}\n")
+            (model / "mtp.safetensors").write_text("mtp\n")
+
+            runtime_model, layout = rapid.prepare_model_layout(model=str(model), output_dir=root / "out")
+
+        self.assertEqual(Path(runtime_model), model.resolve())
+        self.assertEqual(layout["mode"], "unchanged")
+
     def test_prepare_rapid_mtp_compat_site_writes_sitecustomize(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -43,6 +75,7 @@ class RapidMlxPromptSuiteTests(unittest.TestCase):
             text = sitecustomize.read_text()
             self.assertIn("AX_RAPID_MLX_QWEN3_NEXT_MTP_PATCH", text)
             self.assertIn("vllm_mlx.patches.qwen3_next_mtp", text)
+            self.assertIn("vllm_mlx.share.cli", text)
 
     def test_prepare_rapid_mtp_compat_site_none_is_noop(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -130,6 +163,7 @@ class RunCaseStreamHandlingTests(unittest.TestCase):
             proc=_FakeProc(),  # type: ignore[arg-type]
             base_url="http://test/v1",
             model="local",
+            model_layout={"mode": "unchanged"},
             log_path=Path("/tmp/unused.log"),
             command=["fake"],
             compat_patch={"mode": "none"},

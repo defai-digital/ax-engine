@@ -39,7 +39,9 @@ def make_args(root: Path) -> Namespace:
         ax_python=Path("python3"),
         mtplx_python=Path("python3"),
         rapid_python=Path("python3"),
+        rapid_source=root / "Rapid-MLX",
         lightning_source=root / "lightning-mlx",
+        mtplx_source=root / "MTPLX",
         peer_caches=[root / "hf"],
         mtplx_profile="stable",
         lightning_mtp_draft_temperature=0.5,
@@ -58,11 +60,13 @@ class Qwen36MtpMatrixTests(unittest.TestCase):
         by_key = {(lane.target.key, lane.engine): lane.status for lane in lanes}
         self.assertEqual(by_key[("27b-4bit", "ax_engine")], "supported")
         self.assertEqual(by_key[("27b-4bit", "mtplx")], "supported")
-        self.assertEqual(by_key[("27b-4bit", "lightning_mlx")], "unsupported")
+        self.assertEqual(by_key[("27b-4bit", "lightning_mlx")], "supported")
         self.assertEqual(by_key[("35b-a3b-6bit", "mtplx")], "supported")
         self.assertEqual(by_key[("27b-6bit", "mtplx")], "unsupported")
-        self.assertEqual(by_key[("35b-a3b-6bit", "lightning_mlx")], "unsupported")
+        self.assertEqual(by_key[("35b-a3b-6bit", "lightning_mlx")], "supported")
+        self.assertEqual(by_key[("27b-6bit", "lightning_mlx")], "unsupported")
         self.assertEqual(by_key[("27b-4bit", "rapid_mlx")], "unsupported")
+        self.assertEqual(by_key[("27b-6bit", "rapid_mlx")], "unsupported")
         self.assertEqual(by_key[("27b-4bit", "omlx")], "unsupported")
 
     def test_ax_command_is_mtp_only_and_disables_ngram_stacking(self) -> None:
@@ -91,6 +95,51 @@ class Qwen36MtpMatrixTests(unittest.TestCase):
         assert cmd is not None
         self.assertIn("--allow-unverified-model", cmd)
         self.assertEqual(cmd[cmd.index("--mtp-quant-mode") + 1], "cyankiwi")
+        self.assertEqual(cmd[cmd.index("--mtp-quant-policy") + 1], "prequantized-int4")
+
+    def test_mtplx_env_prefers_reference_checkout(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            args = make_args(root)
+            args.mtplx_source.mkdir()
+
+            env = matrix.mtplx_env(args)
+
+        assert env is not None
+        self.assertEqual(env["PYTHONPATH"].split(":")[0], str(args.mtplx_source))
+
+    def test_rapid_command_uses_reference_source_and_lightning_patch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            args = make_args(Path(tmp))
+            matrix.RAPID_MODELS["35b-a3b-4bit"] = "local-model"
+            target = matrix.TARGETS["35b-a3b-4bit"]
+            try:
+                cmd = matrix.rapid_command(
+                    args,
+                    target,
+                    "flappy",
+                    args.output_dir / "rapid.json",
+                )
+            finally:
+                matrix.RAPID_MODELS.clear()
+
+        assert cmd is not None
+        self.assertEqual(cmd[cmd.index("--rapid-source") + 1], str(args.rapid_source))
+        self.assertEqual(cmd[cmd.index("--lightning-source") + 1], str(args.lightning_source))
+        self.assertEqual(cmd[cmd.index("--rapid-mtp-patch") + 1], "lightning")
+        self.assertNotIn("--lightning-mode", cmd)
+
+    def test_lightning_summary_flags_mtp_disabled_logs(self) -> None:
+        artifact = {
+            "server_log_tail": [
+                "WARNING:rapid_mlx.scheduler:[MTP] MTP install skipped; request continues normally without MTP."
+            ],
+            "results": [{"prompt_id": "case-1", "runs": []}],
+        }
+
+        summary = matrix.summarize_lightning_artifact(artifact)
+
+        self.assertEqual(summary["status"], "mtp_disabled")
 
     def test_summarize_ax_artifact_reports_all_required_metrics(self) -> None:
         artifact = {

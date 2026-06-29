@@ -1,0 +1,442 @@
+{
+  "build": {
+    "git_commit": "a3f997f0a60ceb554d4c9caf49e6aa34e09b8c22",
+    "git_tracked_dirty": true,
+    "host": "AKMBPM5MAX.local",
+    "platform": "macOS-26.5.1-arm64-arm-64bit-Mach-O"
+  },
+  "cooldown_s": 0.0,
+  "depth_effective_note": "Rapid-MLX reference MTP path is single-draft; requested depth may be capped by runtime.",
+  "depth_requested": 1,
+  "disable_thinking": true,
+  "engine": "rapid_mlx",
+  "lightning_settings": {
+    "completion_batch_size": 1,
+    "enable_thinking": false,
+    "max_num_seqs": 1,
+    "mtp_draft_temperature": 0.5,
+    "mtp_optimistic": false,
+    "ngram_acceptance_mode": null,
+    "ngram_auto_disable_min_ngram": 0.5,
+    "ngram_auto_disable_mtp_threshold": 0.85,
+    "ngram_enabled": false,
+    "ngram_hybrid_verify": null,
+    "ngram_min_occurrences": null,
+    "ngram_num_draft_tokens": null,
+    "ngram_only_in_think": null,
+    "ngram_self_tune": null,
+    "ngram_skip_tool_calls": null,
+    "prefill_batch_size": 1,
+    "prefix_cache": "enabled",
+    "source_profile": "lightning-mlx serve qwen3.6 MTPLX preset",
+    "stream_interval": 1
+  },
+  "lightning_source_identity": {
+    "diff_sha256": null,
+    "git_commit": "ec19b3d8b97ee002d706e06249163bf4347eb5df",
+    "git_describe": "v0.7.0-1-gec19b3d",
+    "is_dirty": false,
+    "modified_files": [],
+    "pyproject_version": "0.6.10",
+    "source_path": "/Users/akiralam/code/ax-engine/.internal/reference/lightning-mlx"
+  },
+  "max_tokens": 64,
+  "measurement_gates": {
+    "min_decode_time_s": 0.5,
+    "tps_ceiling": 500.0
+  },
+  "model": "/Users/akiralam/.cache/huggingface/hub/models--Youssofal--Qwen3.6-35B-A3B-MTPLX-Optimized-Speed/snapshots/f02bdf7908b6120a48a137e6a08d50f076a94101",
+  "prompt_suite": "/Users/akiralam/code/ax-engine/benchmarks/prompts/mtp-suites/flappy.jsonl",
+  "prompt_suite_sha256": "97e53df42f0b2b456d38164264a674bb2c657e59d68833e42d2c60312d7fd669",
+  "rapid_mtp_patch": {
+    "mode": "lightning",
+    "patch_path": "/Users/akiralam/code/ax-engine/.internal/reference/lightning-mlx/vllm_mlx/patches/qwen3_next_mtp.py",
+    "site_dir": "benchmarks/results/mtp-qwen36-matrix/2026-06-29-peer-mtp-enable-smoke/35b-a3b-4bit/flappy/rapid-server/rapid-compat-site",
+    "sitecustomize": "benchmarks/results/mtp-qwen36-matrix/2026-06-29-peer-mtp-enable-smoke/35b-a3b-4bit/flappy/rapid-server/rapid-compat-site/sitecustomize.py"
+  },
+  "rapid_python": "/opt/homebrew/var/mtplx/venv-0.3.7/bin/python",
+  "rapid_source": "/Users/akiralam/code/ax-engine/.internal/reference/lightning-mlx",
+  "repetitions": 1,
+  "results": [
+    {
+      "category": "game_code",
+      "max_tokens": 64,
+      "prompt_id": "flappy_pipes",
+      "prompt_sha256": "88a801ae372338af36ba5effaf538f6158d0e95fa72ad929dd9673bc5c286325",
+      "runs": [
+        {
+          "content_head": "    def spawn_pipe_3(self):\n        self.pipes[3] = Pipe(x=self.spawn_x, gap_y=random.randint(80, 380), gap_h=140)\n        self.active[3] = True\n        self.timers[3] = 0\n\n",
+          "content_tail": "",
+          "decode_elapsed_s": 0.6745164999738336,
+          "decode_tok_s": 94.88277900167415,
+          "elapsed_s": 0.8436963750282302,
+          "end_to_end_tok_s": 75.85667296230655,
+          "ended_at": 1782764396.830024,
+          "generated_tokens": 64,
+          "measured": true,
+          "mtp_acceptance_ratio": 1.0,
+          "prompt_tokens": 273,
+          "reasoning_head": "",
+          "reasoning_tail": "",
+          "reasoning_text_chars": 0,
+          "rejected_reason": null,
+          "repetition": 0,
+          "seed": 42,
+          "silent_thinking_suspected": false,
+          "started_at": 1782764395.986322,
+          "stream_chunk_stats": {
+            "empty_delta": 1,
+            "total": 65,
+            "with_content": 64,
+            "with_reasoning_content": 0,
+            "with_tool_calls": 0
+          },
+          "text": "    def spawn_pipe_3(self):\n        self.pipes[3] = Pipe(x=self.spawn_x, gap_y=random.randint(80, 380), gap_h=140)\n        self.active[3] = True\n        self.timers[3] = 0\n\n",
+          "ttft_content_s": 0.1691798750543967,
+          "ttft_reasoning_s": null,
+          "ttft_s": 0.1691798750543967,
+          "visible_text_chars": 173
+        }
+      ],
+      "summary": {
+        "accept_rate": 1.0,
+        "accepted_drafts": null,
+        "decode_tok_s": {
+          "median": 94.88277900167415,
+          "p10": 94.88277900167415,
+          "p90": 94.88277900167415,
+          "values": [
+            94.88277900167415
+          ]
+        },
+        "drafted_tokens": null,
+        "end_to_end_tok_s": {
+          "median": 75.85667296230655,
+          "p10": 75.85667296230655,
+          "p90": 75.85667296230655,
+          "values": [
+            75.85667296230655
+          ]
+        },
+        "generated_tokens": 64,
+        "ngram_accept_rate": null,
+        "runs": 1,
+        "valid_runs": 1
+      }
+    },
+    {
+      "category": "game_code",
+      "max_tokens": 64,
+      "prompt_id": "flappy_score_gates",
+      "prompt_sha256": "d30afc995170ca11cb9891f5006aae5aae46e5eb0bcdc192fb0abae884e9777a",
+      "runs": [
+        {
+          "content_head": "```python\ndef validate_gate_750(score: int) -> dict:\n    if score >= 750:\n        return {\"gate\": 750, \"passed\": True, \"rank\": \"Robin\", \"badge\": \"iron_wing\"}\n    return {\"gate\": ",
+          "content_tail": "",
+          "decode_elapsed_s": 0.6506882079411298,
+          "decode_tok_s": 98.35739947171491,
+          "elapsed_s": 0.960014040931128,
+          "end_to_end_tok_s": 66.66569161626606,
+          "ended_at": 1782764397.8250382,
+          "generated_tokens": 64,
+          "measured": true,
+          "mtp_acceptance_ratio": 1.0,
+          "prompt_tokens": 374,
+          "reasoning_head": "",
+          "reasoning_tail": "",
+          "reasoning_text_chars": 0,
+          "rejected_reason": null,
+          "repetition": 0,
+          "seed": 1042,
+          "silent_thinking_suspected": false,
+          "started_at": 1782764396.8650188,
+          "stream_chunk_stats": {
+            "empty_delta": 1,
+            "total": 65,
+            "with_content": 64,
+            "with_reasoning_content": 0,
+            "with_tool_calls": 0
+          },
+          "text": "```python\ndef validate_gate_750(score: int) -> dict:\n    if score >= 750:\n        return {\"gate\": 750, \"passed\": True, \"rank\": \"Robin\", \"badge\": \"iron_wing\"}\n    return {\"gate\": ",
+          "ttft_content_s": 0.30932583298999816,
+          "ttft_reasoning_s": null,
+          "ttft_s": 0.30932583298999816,
+          "visible_text_chars": 178
+        }
+      ],
+      "summary": {
+        "accept_rate": 1.0,
+        "accepted_drafts": null,
+        "decode_tok_s": {
+          "median": 98.35739947171491,
+          "p10": 98.35739947171491,
+          "p90": 98.35739947171491,
+          "values": [
+            98.35739947171491
+          ]
+        },
+        "drafted_tokens": null,
+        "end_to_end_tok_s": {
+          "median": 66.66569161626606,
+          "p10": 66.66569161626606,
+          "p90": 66.66569161626606,
+          "values": [
+            66.66569161626606
+          ]
+        },
+        "generated_tokens": 64,
+        "ngram_accept_rate": null,
+        "runs": 1,
+        "valid_runs": 1
+      }
+    },
+    {
+      "category": "game_code",
+      "max_tokens": 64,
+      "prompt_id": "flappy_collision_checks",
+      "prompt_sha256": "dc95f55539735dcc41f9b07a7ccb764207a474ec0e3876a88203cbf79232ae0e",
+      "runs": [
+        {
+          "content_head": "    def check_collision_pipe_3(self, bird_rect: pygame.Rect) -> bool:\n        if not self.active[3]:\n            return False\n        top_rect = pygame.Rect(self.pipes[3].x, 0, PIPE_WIDTH, self.pipes[3].gap_y)\n        bot",
+          "content_tail": "",
+          "decode_elapsed_s": 0.6376175410114229,
+          "decode_tok_s": 100.3736501641404,
+          "elapsed_s": 0.9261130830273032,
+          "end_to_end_tok_s": 69.10603162066893,
+          "ended_at": 1782764398.7800498,
+          "generated_tokens": 64,
+          "measured": true,
+          "mtp_acceptance_ratio": 1.0,
+          "prompt_tokens": 432,
+          "reasoning_head": "",
+          "reasoning_tail": "",
+          "reasoning_text_chars": 0,
+          "rejected_reason": null,
+          "repetition": 0,
+          "seed": 2042,
+          "silent_thinking_suspected": false,
+          "started_at": 1782764397.853915,
+          "stream_chunk_stats": {
+            "empty_delta": 1,
+            "total": 65,
+            "with_content": 64,
+            "with_reasoning_content": 0,
+            "with_tool_calls": 0
+          },
+          "text": "    def check_collision_pipe_3(self, bird_rect: pygame.Rect) -> bool:\n        if not self.active[3]:\n            return False\n        top_rect = pygame.Rect(self.pipes[3].x, 0, PIPE_WIDTH, self.pipes[3].gap_y)\n        bot",
+          "ttft_content_s": 0.28849554201588035,
+          "ttft_reasoning_s": null,
+          "ttft_s": 0.28849554201588035,
+          "visible_text_chars": 221
+        }
+      ],
+      "summary": {
+        "accept_rate": 1.0,
+        "accepted_drafts": null,
+        "decode_tok_s": {
+          "median": 100.3736501641404,
+          "p10": 100.3736501641404,
+          "p90": 100.3736501641404,
+          "values": [
+            100.3736501641404
+          ]
+        },
+        "drafted_tokens": null,
+        "end_to_end_tok_s": {
+          "median": 69.10603162066893,
+          "p10": 69.10603162066893,
+          "p90": 69.10603162066893,
+          "values": [
+            69.10603162066893
+          ]
+        },
+        "generated_tokens": 64,
+        "ngram_accept_rate": null,
+        "runs": 1,
+        "valid_runs": 1
+      }
+    },
+    {
+      "category": "game_code",
+      "max_tokens": 64,
+      "prompt_id": "flappy_sound_channels",
+      "prompt_sha256": "3510857fe86b1075ac5ef71629c9f75a407e891faf4911c91cfc69c73e6cccfa",
+      "runs": [
+        {
+          "content_head": "def setup_channel_3(self) -> None:\n        self.channels[3] = pygame.mixer.Channel(3)\n        self.channels[3].set_volume(self.master_vol * self.sfx_vol)\n        self.channel_busy[3] = False\n        self.channel_priority[3] = 0\n\n",
+          "content_tail": "",
+          "decode_elapsed_s": 0.661798374960199,
+          "decode_tok_s": 96.70619092083598,
+          "elapsed_s": 0.918259417056106,
+          "end_to_end_tok_s": 69.69707994411951,
+          "ended_at": 1782764399.728283,
+          "generated_tokens": 64,
+          "measured": true,
+          "mtp_acceptance_ratio": 1.0,
+          "prompt_tokens": 264,
+          "reasoning_head": "",
+          "reasoning_tail": "",
+          "reasoning_text_chars": 0,
+          "rejected_reason": null,
+          "repetition": 0,
+          "seed": 3042,
+          "silent_thinking_suspected": false,
+          "started_at": 1782764398.810019,
+          "stream_chunk_stats": {
+            "empty_delta": 1,
+            "total": 65,
+            "with_content": 64,
+            "with_reasoning_content": 0,
+            "with_tool_calls": 0
+          },
+          "text": "def setup_channel_3(self) -> None:\n        self.channels[3] = pygame.mixer.Channel(3)\n        self.channels[3].set_volume(self.master_vol * self.sfx_vol)\n        self.channel_busy[3] = False\n        self.channel_priority[3] = 0\n\n",
+          "ttft_content_s": 0.25646104209590703,
+          "ttft_reasoning_s": null,
+          "ttft_s": 0.25646104209590703,
+          "visible_text_chars": 229
+        }
+      ],
+      "summary": {
+        "accept_rate": 1.0,
+        "accepted_drafts": null,
+        "decode_tok_s": {
+          "median": 96.70619092083598,
+          "p10": 96.70619092083598,
+          "p90": 96.70619092083598,
+          "values": [
+            96.70619092083598
+          ]
+        },
+        "drafted_tokens": null,
+        "end_to_end_tok_s": {
+          "median": 69.69707994411951,
+          "p10": 69.69707994411951,
+          "p90": 69.69707994411951,
+          "values": [
+            69.69707994411951
+          ]
+        },
+        "generated_tokens": 64,
+        "ngram_accept_rate": null,
+        "runs": 1,
+        "valid_runs": 1
+      }
+    }
+  ],
+  "runtime_model_layout": {
+    "mode": "unchanged",
+    "model": "/Volumes/Ext4T/models/hub/models--Youssofal--Qwen3.6-35B-A3B-MTPLX-Optimized-Speed/snapshots/f02bdf7908b6120a48a137e6a08d50f076a94101"
+  },
+  "sampling": {
+    "temperature": 0.6,
+    "top_k": 20,
+    "top_p": 0.95
+  },
+  "schema": "ax.rapid_mlx.prompt_suite_mtp.v2",
+  "server_command": [
+    "/opt/homebrew/var/mtplx/venv-0.3.7/bin/python",
+    "-m",
+    "vllm_mlx.cli",
+    "serve",
+    "/Volumes/Ext4T/models/hub/models--Youssofal--Qwen3.6-35B-A3B-MTPLX-Optimized-Speed/snapshots/f02bdf7908b6120a48a137e6a08d50f076a94101",
+    "--served-model-name",
+    "local",
+    "--port",
+    "18831",
+    "--max-num-seqs",
+    "1",
+    "--prefill-batch-size",
+    "1",
+    "--completion-batch-size",
+    "1",
+    "--default-temperature",
+    "0.6",
+    "--default-top-p",
+    "0.95",
+    "--stream-interval",
+    "1",
+    "--enable-mtp",
+    "--mtp-num-draft-tokens",
+    "1",
+    "--log-level",
+    "WARNING",
+    "--no-thinking",
+    "--mtp-draft-temperature",
+    "0.5"
+  ],
+  "server_header_info": {
+    "alias_line": null,
+    "effective_mtp_depth": null,
+    "features_line": "Features: tools: qwen3_coder_xml, reasoning: qwen3, max-concurrent: 1, gc-control, idle-unload: 60s",
+    "model_line": "Model: /Volumes/Ext4T/models/hub/models--Youssofal--Qwen3.6-35B-A3B-MTPLX-Optimized-Speed/snapshots/f02bdf7908b6120a48a137e6a08d50f076a94101",
+    "mtp_depth_cap_warnings": 0,
+    "mtp_line": "MTP: enabled, draft_tokens=1, draft_temp=0.5",
+    "ngram_line": null
+  },
+  "server_log": "benchmarks/results/mtp-qwen36-matrix/2026-06-29-peer-mtp-enable-smoke/35b-a3b-4bit/flappy/rapid-server/rapid-mlx-server-lightning_mlx-18831.log",
+  "server_log_head": [
+    "",
+    "  lightning-mlx",
+    "  \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500",
+    "  Features: tools: qwen3_coder_xml, reasoning: qwen3, max-concurrent: 1, gc-control, idle-unload: 60s",
+    "  Model: /Volumes/Ext4T/models/hub/models--Youssofal--Qwen3.6-35B-A3B-MTPLX-Optimized-Speed/snapshots/f02bdf7908b6120a48a137e6a08d50f076a94101",
+    "Mode: Continuous batching (for multiple concurrent users)",
+    "MTP: enabled, draft_tokens=1, draft_temp=0.5",
+    "Stream interval: 1 tokens",
+    "Memory-aware cache: 20% of RAM",
+    "",
+    "  Ready: http://localhost:18831/v1",
+    "  Docs:  http://localhost:18831/docs",
+    ""
+  ],
+  "server_log_tail": [
+    "",
+    "  lightning-mlx",
+    "  \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500",
+    "  Features: tools: qwen3_coder_xml, reasoning: qwen3, max-concurrent: 1, gc-control, idle-unload: 60s",
+    "  Model: /Volumes/Ext4T/models/hub/models--Youssofal--Qwen3.6-35B-A3B-MTPLX-Optimized-Speed/snapshots/f02bdf7908b6120a48a137e6a08d50f076a94101",
+    "Mode: Continuous batching (for multiple concurrent users)",
+    "MTP: enabled, draft_tokens=1, draft_temp=0.5",
+    "Stream interval: 1 tokens",
+    "Memory-aware cache: 20% of RAM",
+    "",
+    "  Ready: http://localhost:18831/v1",
+    "  Docs:  http://localhost:18831/docs",
+    ""
+  ],
+  "server_profile": "lightning_serve_preset",
+  "suite": "flappy",
+  "summary": {
+    "accept_rate": 1.0,
+    "accepted_drafts": null,
+    "case_count": 4,
+    "decode_tok_s": {
+      "median": 97.53179519627545,
+      "p10": 94.88277900167415,
+      "p90": 100.3736501641404,
+      "values": [
+        94.88277900167415,
+        98.35739947171491,
+        100.3736501641404,
+        96.70619092083598
+      ]
+    },
+    "drafted_tokens": null,
+    "end_to_end_tok_s": {
+      "median": 69.40155578239421,
+      "p10": 66.66569161626606,
+      "p90": 75.85667296230655,
+      "values": [
+        75.85667296230655,
+        66.66569161626606,
+        69.10603162066893,
+        69.69707994411951
+      ]
+    },
+    "generated_tokens": 256,
+    "ngram_accept_rate": null,
+    "runs": 4,
+    "valid_runs": 4
+  },
+  "warmup_repetitions": 0
+}
