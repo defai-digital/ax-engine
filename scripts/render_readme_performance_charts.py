@@ -238,18 +238,22 @@ EMBEDDING_FAIR_ARTIFACTS = (
 )
 EMBEDDING_AX_REFRESH_ARTIFACTS = (
     Path(
-        "benchmarks/results/embedding-fair/2026-06-28-qwen-ax-only-refresh/"
-        "2026-06-28-152458/embedding_fair.json"
+        "benchmarks/results/embedding-fair/2026-06-28-qwen-ax-only-rerun/"
+        "2026-06-28-203807/embedding_fair.json"
     ),
     Path(
         "benchmarks/results/embedding-fair/"
-        "2026-06-28-embeddinggemma-ax-only-mask-refresh/"
-        "2026-06-28-155600/embedding_fair.json"
+        "2026-06-28-embeddinggemma-ax-only-rerun/"
+        "2026-06-28-203835/embedding_fair.json"
     ),
 )
 EMBEDDING_SCALE_ARTIFACT = Path(
     "benchmarks/results/embedding-scale/2026-06-28-qwen-ingest-scale/"
     "2026-06-28-184450/embedding_ingest_scale.json"
+)
+EMBEDDING_SCALE_AX_REFRESH_ARTIFACT = Path(
+    "benchmarks/results/embedding-scale/2026-06-28-qwen-ingest-scale-ax-only-rerun/"
+    "2026-06-28-203846/embedding_ingest_scale.json"
 )
 EMBEDDING_FAIR_CHART_OUTPUT = "perf-embedding-fair-ax-vs-reference.svg"
 EMBEDDING_SCALE_CHART_OUTPUT = "perf-embedding-ingest-scale-ax-vs-mlx-lm.svg"
@@ -1919,20 +1923,39 @@ def load_embedding_fair_delta_rows(repo_root: Path) -> list[EmbeddingDeltaRow]:
 
 
 def load_embedding_scale_delta_rows(repo_root: Path) -> list[EmbeddingDeltaRow]:
-    path = repo_root / EMBEDDING_SCALE_ARTIFACT
-    if not path.exists():
-        raise ChartError(f"missing embedding scale artifact: {path}")
-    artifact = json.loads(path.read_text())
+    ref_path = repo_root / EMBEDDING_SCALE_ARTIFACT
+    ax_path = repo_root / EMBEDDING_SCALE_AX_REFRESH_ARTIFACT
+    if not ref_path.exists():
+        raise ChartError(f"missing embedding scale artifact: {ref_path}")
+    if not ax_path.exists():
+        raise ChartError(f"missing embedding scale AX refresh artifact: {ax_path}")
+    artifact = json.loads(ref_path.read_text())
+    ax_artifact = json.loads(ax_path.read_text())
     ref_key, ref_label = embedding_reference_key(artifact)
     rows: list[EmbeddingDeltaRow] = []
+    ax_by_model = {
+        str(model.get("model_label")): {
+            str(row.get("workload")): row for row in model.get("rows", [])
+        }
+        for model in ax_artifact.get("models", [])
+    }
     for model in artifact.get("models", []):
-        model_label = embedding_model_label(str(model.get("model_label", "")))
+        raw_model_label = str(model.get("model_label", ""))
+        model_label = embedding_model_label(raw_model_label)
+        ax_model_rows = ax_by_model.get(raw_model_label)
+        if ax_model_rows is None:
+            raise ChartError(f"{ax_path} missing model {raw_model_label}")
         for row in model.get("rows", []):
+            workload = str(row.get("workload"))
+            ax_row = ax_model_rows.get(workload)
+            if ax_row is None:
+                raise ChartError(f"{ax_path} missing workload {workload}")
             results = row.get("results", {})
+            ax_results = ax_row.get("results", {})
             ref = results.get(ref_key)
-            ax = results.get("ax_engine_py")
+            ax = ax_results.get("ax_engine_py")
             if not isinstance(ref, dict) or not isinstance(ax, dict):
-                raise ChartError(f"{path} missing scale results for {row.get('workload')}")
+                raise ChartError(f"missing scale results for {raw_model_label} {workload}")
             ref_tps = float(ref["median_tokens_per_sec"])
             ax_tps = float(ax["median_tokens_per_sec"])
             delta = ((ax_tps - ref_tps) / ref_tps * 100.0) if ref_tps else 0.0
@@ -2120,7 +2143,7 @@ def main() -> int:
         load_embedding_scale_delta_rows(args.readme.parent),
         title="Embedding ingest scale: AX vs mlx-lm",
         subtitle="512 chunks per trial, repeated batches, contiguous CPU float32 [B,H] output.",
-        source_label="Source: embedding-scale Qwen3-Embedding 0.6B 8-bit artifact from 2026-06-28",
+        source_label="Sources: embedding-scale Qwen3-Embedding 0.6B baseline and AX-only artifacts from 2026-06-28",
     )
     if not write_chart(embedding_scale_output_path, embedding_scale_content, args.check):
         mismatches.append(embedding_scale_output_path)
