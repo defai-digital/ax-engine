@@ -978,7 +978,7 @@ fn layer_forward_dense_embed(
 
     // 2-7. QKV projections, reshape, QK-norm, transpose, RoPE.
     let qkv_proj_started = profile.then(Instant::now);
-    let (q_raw, k_raw, v_raw, _attn_gate) = qkv_project(cfg, w, &normed, head_dim);
+    let (q_raw, k_raw, v_raw, _attn_gate) = qkv_project_embed(cfg, w, &normed, head_dim);
     if let Some(started) = qkv_proj_started {
         embed_profile_eval_elapsed(
             profile,
@@ -1134,7 +1134,7 @@ fn layer_forward_dense_embed(
     if let Some(started) = profile.then(Instant::now) {
         embed_profile_eval_elapsed(profile, EmbedProfileStage::FfnNorm, started, &[&normed2]);
     }
-    let ffn_out = ffn_swiglu(cfg, w, &normed2, None, layer_idx);
+    let ffn_out = ffn_swiglu_embed(cfg, w, &normed2, None, layer_idx);
     // Defer the FFN residual add: the caller (layer loop) will fuse it with
     // the next layer's pre-attention RMSNorm via `add_rms_norm_pair`, saving
     // one GPU kernel dispatch per layer boundary.

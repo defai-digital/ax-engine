@@ -21,11 +21,12 @@ pub(crate) use mla::glm_mla_attention_forward;
 #[cfg(test)]
 pub(crate) use mlp::per_layer_input_gate;
 pub(crate) use mlp::{
-    attention_output_projection, ffn_swiglu, flatten_compiled_moe_inputs,
+    attention_output_projection, ffn_swiglu, ffn_swiglu_embed, flatten_compiled_moe_inputs,
     flatten_gemma4_dual_path_inputs, moe_experts_forward, moe_experts_forward_gemma4,
     moe_experts_forward_with_cloned_weights, moe_experts_forward_with_shared,
     moe_router_deepseek_v3, moe_router_gemma4, moe_router_glm, moe_router_gpt_oss,
-    moe_router_qwen3, per_layer_input_gate_project, qkv_project, shared_expert_forward,
+    moe_router_qwen3, per_layer_input_gate_project, qkv_project, qkv_project_embed,
+    shared_expert_forward,
 };
 pub(crate) use norm::rms_norm_opt;
 pub(super) use rope::build_llama3_rope_freqs;
