@@ -1,7 +1,7 @@
 use mlx_sys::{
     MlxArray, MlxClosure, MlxDtype, MlxVectorArray, add, astype, broadcast_to, concatenate,
-    dequantize, multiply, reshape, rms_norm, slice, split, sum_axis, take, take_along_axis,
-    transpose,
+    dequantize, divide, multiply, power, reshape, rms_norm, slice, split, stack, sum_axis, take,
+    take_along_axis, transpose,
 };
 use std::sync::Arc;
 use std::time::Instant;
@@ -1575,8 +1575,14 @@ pub fn forward_for_embedding_gemma3_depth_probe(
 
     let mut pending_ffn: Option<MlxArray> = None;
     for (li, layer_w) in weights.layers.iter().enumerate() {
-        let (h, ffn_out) =
-            layer_forward_embed_gemma3(cfg, layer_w, &hidden, li, &bidir_mask, pending_ffn.as_ref());
+        let (h, ffn_out) = layer_forward_embed_gemma3(
+            cfg,
+            layer_w,
+            &hidden,
+            li,
+            &bidir_mask,
+            pending_ffn.as_ref(),
+        );
         // Apply FFN residual so the checkpoint reflects the complete layer.
         hidden = gemma3_clip_residual(&h, &ffn_out);
         pending_ffn = None;
@@ -1600,14 +1606,13 @@ pub fn forward_for_embedding_gemma3_depth_probe(
 /// Returns `[B, H]` float32. Each row is the L2-normalized mean of the real
 /// (non-padding) positions in the corresponding sequence.
 fn normed_mean_pool_probe(
-    hidden: &MlxArray,       // [B, max_seq, H]
+    hidden: &MlxArray, // [B, max_seq, H]
     actual_lens: &[usize],
     hidden_size: usize,
 ) -> MlxArray {
     let batch = actual_lens.len();
     let mut rows: Vec<MlxArray> = Vec::with_capacity(batch);
-    for b in 0..batch {
-        let len = actual_lens[b];
+    for (b, &len) in actual_lens.iter().enumerate() {
         let row = slice(
             hidden,
             &[b as i32, 0, 0],
@@ -1623,25 +1628,31 @@ fn normed_mean_pool_probe(
             &[1_i32, 1_i32],
             MlxDtype::Float32,
         );
-        let pooled = mlx_sys::divide(
-            &astype(&summed, MlxDtype::Float32, None),
-            &scale_arr,
-            None,
-        );
+        let pooled = divide(&astype(&summed, MlxDtype::Float32, None), &scale_arr, None);
         rows.push(reshape(&pooled, &[hidden_size as i32], None));
     }
     let row_refs: Vec<&MlxArray> = rows.iter().collect();
-    let stacked = mlx_sys::stack(&row_refs, 0, None);
+    let stacked = stack(&row_refs, 0, None);
     l2_normalize_probe(&stacked)
 }
 
 /// L2 normalize a `[B, H]` float32 tensor along the hidden dimension.
 fn l2_normalize_probe(x: &MlxArray) -> MlxArray {
-    let sq = mlx_sys::ops::square(x, None);
-    let ss = sum_axis(&sq, 1, true, None);
-    let eps = mlx_sys::ops::cached_scalar(1e-12, MlxDtype::Float32);
-    let denom = mlx_sys::ops::sqrt(&add(&ss, &eps, None), None);
-    mlx_sys::divide(x, &denom, None)
+    fn scalar_f32(value: f32) -> MlxArray {
+        MlxArray::from_raw_data(
+            &value as *const f32 as *const u8,
+            std::mem::size_of::<f32>(),
+            &[],
+            MlxDtype::Float32,
+        )
+    }
+    let x_sq = multiply(x, x, None);
+    let sum_sq = sum_axis(&x_sq, 1, true, None);
+    let half = scalar_f32(0.5);
+    let norm = power(&sum_sq, &half, None);
+    let eps = scalar_f32(1e-12);
+    let norm_stable = add(&norm, &eps, None);
+    divide(x, &norm_stable, None)
 }
 
 /// Build an `mlx_compile`-wrapped closure for the EmbeddingGemma batched
