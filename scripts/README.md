@@ -40,6 +40,13 @@ batch-size and token-length scaling separately. Use
 large deterministic chunk corpus is split into repeated batches and p95 batch
 latency matters beside tok/s. Keep `bench_embedding_models.py` for legacy
 embedding smoke coverage across single-call, HTTP, and optional Swift paths.
+Before treating any embedding throughput row as publishable, run
+`verify_embedding_models.py` against the same model artifact. It checks
+family-specific numerical correctness against `mlx-lm` for Qwen3 embeddings and
+against `mlx-embeddings` for EmbeddingGemma, plus AX direct batch-vs-single
+stability. EmbeddingGemma intentionally compares against the reference
+single-row path because the upstream mixed-length batch path is not a stable
+correctness oracle.
 
 Do not use ad hoc server timing or llama.cpp route checks as AX-owned MLX
 throughput baselines.

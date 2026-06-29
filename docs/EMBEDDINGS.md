@@ -68,6 +68,37 @@ The default Qwen comparison uses `last` pooling and l2-normalized output.
 EmbeddingGemma uses `--pooling mean` so the reference and AX routes match that
 model family's mean-pooling contract.
 
+## Correctness QA contract
+
+Run `scripts/verify_embedding_models.py` before publishing embedding benchmark
+claims for a refreshed model artifact. It verifies caller-consumable normalized
+`float32 [B,H]` output, not just endpoint shape:
+
+```bash
+.venv/bin/python scripts/verify_embedding_models.py \
+  --model-dir /path/to/Qwen3-Embedding-0.6B-8bit/snapshots/<sha>
+
+.venv/bin/python scripts/verify_embedding_models.py \
+  --model-kind embeddinggemma \
+  --model-dir /path/to/embeddinggemma-300m-8bit/snapshots/<sha>
+```
+
+The verifier uses family-specific oracles:
+
+- Qwen3-Embedding: `mlx-lm` transformer body, last-token pooling, l2 norm.
+- EmbeddingGemma: `mlx-embeddings`, mean pooling + Dense head + l2 norm.
+
+For EmbeddingGemma, the correctness oracle is the `mlx-embeddings` **single-row**
+path for each input. Do not use its mixed-length batch output as a correctness
+oracle: the reference package is not batch-invariant for that case. AX still
+checks its own batch output against AX single-row output, so padding and
+batched pooling regressions remain covered.
+
+Qwen3 8B 4-bit DWQ uses a slightly looser default cosine threshold than the
+smaller Qwen rows because short text can show quantization drift while still
+remaining normalized and batch-stable. Override with `--cosine-threshold` when a
+specific release requires a stricter or looser gate.
+
 ## The anti-pattern: one Python call per sentence
 
 ```python
