@@ -18,7 +18,7 @@
 //! per-step GPU→CPU synchronisation. Entropy-bound acceptance is computed via
 //! `argsort` + `cumsum` + `where_cond`, and convergence stability is measured
 //! with `not_equal` + `sum_axis`, materialising only scalar counters.
-//! Convergence is checked every `convergence_check_interval` steps (default 4)
+//! Convergence is checked every `convergence_check_interval` steps (default 1)
 //! to further reduce sync overhead.
 //!
 //! ## Performance optimizations
@@ -674,6 +674,11 @@ pub(crate) fn generate_diffusion_block(
     embed_table_cache: &mut Option<MlxArray>,
 ) -> DiffusionBlockResult {
     let block_start = Instant::now();
+    let mut effective_diff_cfg = diff_cfg.clone();
+    if effective_diff_cfg.self_conditioning && weights.diffusion_self_conditioning.is_none() {
+        effective_diff_cfg.self_conditioning = false;
+    }
+    let diff_cfg = &effective_diff_cfg;
     let mut canvas = init_canvas(diff_cfg.canvas_size, cfg.vocab_size, rng);
 
     if diff_cfg.self_conditioning && embed_table_cache.is_none() {

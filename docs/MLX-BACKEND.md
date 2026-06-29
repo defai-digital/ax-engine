@@ -24,7 +24,7 @@ subprocess wrapper.
 
 ## Architecture
 
-```
+```text
 ax-engine-sdk (Rust)
   └── MlxRunner (ExecutionRunner)
         ├── ax-engine-mlx (Rust)
@@ -317,7 +317,7 @@ the tradeoff on AX-specific evidence rather than upstream comments.
 
 ## File map
 
-```
+```text
 crates/mlx-sys/
   Cargo.toml
   build.rs

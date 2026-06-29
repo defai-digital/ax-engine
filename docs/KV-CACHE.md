@@ -5,7 +5,7 @@ responsibilities and communicate through scheduling signals, not shared state.
 
 ## Architecture Overview
 
-```
+```text
 ax-engine-core (scheduling / logical)
 ┌──────────────────────────────────────────────────────────┐
 │  KvManager                                               │
@@ -41,7 +41,7 @@ which logical blocks and which blocks are shared or evictable.
 
 ### Block lifecycle
 
-```
+```text
 alloc_blocks(request_id, n)
   → assigns logical block IDs in BlockTable
 
@@ -129,7 +129,7 @@ buffers for a single request's key-value state.
 
 Buffers are pre-allocated in 256-token chunks (`KV_CHUNK_TOKENS = 256`):
 
-```
+```text
 capacity = ceil(seq_len / 256) * 256
 ```
 
@@ -422,7 +422,7 @@ Any change that loosens `prefix_cache_supported()`, modifies
 `store_prompt_prefix_snapshots`, or alters `restore_reused_prefix_state`
 must keep this gate green:
 
-```
+```bash
 AX_ENGINE_MLX_MODEL_ARTIFACTS_DIR=<model> \
   bash scripts/check-prefix-reuse-equivalence.sh
 ```

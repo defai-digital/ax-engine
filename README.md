@@ -282,67 +282,41 @@ published to make comparison with other MTP engines easier because many peer
 benchmarks use 4-bit models. Historical MTP+n-gram artifacts remain useful for
 debugging regressions, but they are not current README/PERFORMANCE MTP evidence.
 
-#### 4-bit MTP comparison lane (2026-06-23)
+#### Qwen3.6 MTP matrix refresh (2026-06-29)
 
-The 4-bit lane is not the recommended AX Engine deployment setting. It is kept
-in the MTP section because peer engines commonly publish 4-bit MTP results, so
-these rows make comparison easier. Use the 6-bit `download-mtp` packages in the
-next section for practical AX Engine usage.
+The current README MTP results are AX Engine pure-MTP rows only. Peer lanes are
+still recorded in the matrix plan and summary, but none produced a promoted
+same-contract result in this run: MTPLX 27B 4-bit failed its local artifact
+runtime contract, MTPLX 35B 4/6-bit failed with missing `config.json` in the
+advertised artifact ids, MTPLX has no official 27B 6-bit catalog artifact,
+lightning-mlx disabled MTP at runtime for the Qwen3.6 aliases checked here,
+Rapid-MLX marks Qwen3.6 aliases as `supports_spec_decode=false`, and oMLX still
+needs a repo-owned Qwen3.6 MTP prompt-suite adapter.
 
-Qwen3.6 rows compare against MTPLX on the same 4-bit base family, prompt suites,
-sampler, 1,000 generated tokens, 5 measured repetitions, and cooldown contract:
-
-| Model | Suite | Depth | AX MTP decode | MTPLX decode | AX / MTPLX | AX MTP prefill | AX MTP TTFT | AX accept |
-| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| Qwen3.6 27B 4-bit | `flappy` | 3 | 61.9 tok/s | 57.8 tok/s | 1.07x | 672.9 tok/s | 478 ms | 99.7% |
-| Qwen3.6 27B 4-bit | `long_code` | 3 | 57.1 tok/s | 55.7 tok/s | 1.02x | 780.9 tok/s | 919 ms | 99.6% |
-| Qwen3.6 27B 4-bit | `python_modules_long` | 3 | 48.6 tok/s | 50.5 tok/s | 0.96x | 681.2 tok/s | 514 ms | 97.8% |
-| Qwen3.6 35B-A3B 4-bit | `flappy` | 1 | 156.8 tok/s | 98.4 tok/s | 1.59x | 1,766.7 tok/s | 183 ms | 100.0% |
-| Qwen3.6 35B-A3B 4-bit | `long_code` | 1 | 154.9 tok/s | 91.4 tok/s | 1.70x | 2,679.3 tok/s | 268 ms | 99.9% |
-| Qwen3.6 35B-A3B 4-bit | `python_modules_long` | 1 | 157.6 tok/s | 90.3 tok/s | 1.75x | 1,968.1 tok/s | 178 ms | 97.9% |
-
-Artifacts:
-[`Qwen3.6 4-bit fair summary`](benchmarks/results/mtp-fair/2026-06-23-qwen36-4bit-mtp-rerun/summary.md),
-[`Qwen3.6 prefill/TTFT report`](benchmarks/results/mtp-fair/2026-06-23-qwen36-4bit-mtp-rerun/prefill-ttft-report.json).
-
-#### 6-bit MTP acceleration refresh (2026-06-23)
-
-This historical refresh now contributes only the Qwen 6-bit rows to the current
-MTP benchmark scope. The chart compares each model and prompt suite with **MTP off**
-(`AX direct`) and **MTP on** (`AX MTP`) side by side, using decode median tok/s
-from the same prepared package. The speedup labels are `AX MTP decode median /
-AX direct decode median`; they are same-package acceleration ratios, not a
-cross-model speed leaderboard.
-The Qwen rows were refreshed AX-only on 2026-06-26 in
-`benchmarks/results/mtp-6bit/2026-06-26-qwen-mtp-ax-only-rerun-2/`;
-non-Qwen rows were removed from the current benchmark scope.
-
-| Target | Suite | AX direct decode | AX MTP decode | AX speedup | AX MTP prefill | AX MTP TTFT | AX accept | MTPLX | lightning-mlx |
-| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |
-| `qwen3.6-27b-6bit` | `flappy` | 17.6 tok/s | 39.6 tok/s | 2.25x | 628.2 tok/s | 514 ms | 99.4% | N/A | N/A |
-| `qwen3.6-27b-6bit` | `long_code` | 17.5 tok/s | 38.2 tok/s | 2.18x | 726.0 tok/s | 988 ms | 99.5% | N/A | N/A |
-| `qwen3.6-27b-6bit` | `python_modules_long` | 17.4 tok/s | 33.2 tok/s | 1.91x | 635.2 tok/s | 551 ms | 96.7% | N/A | N/A |
-| `qwen3.6-35b-a3b` | `flappy` | 38.4 tok/s | 118.2 tok/s | 3.08x | 1477.9 tok/s | 218 ms | 99.8% | N/A | N/A |
-| `qwen3.6-35b-a3b` | `long_code` | 38.1 tok/s | 118.1 tok/s | 3.10x | 2318.4 tok/s | 310 ms | 99.8% | N/A | N/A |
-| `qwen3.6-35b-a3b` | `python_modules_long` | 38.0 tok/s | 118.9 tok/s | 3.13x | 1637.0 tok/s | 210 ms | 98.4% | N/A | N/A |
+| Target | Suite | Depth | AX MTP decode | AX MTP prefill | AX MTP TTFT | AX accept |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| Qwen3.6 27B 4-bit | `flappy` | 3 | 60.3 tok/s | 649.2 tok/s | 495 ms | 99.5% |
+| Qwen3.6 27B 4-bit | `long_code` | 3 | 60.3 tok/s | 782.5 tok/s | 917 ms | 99.4% |
+| Qwen3.6 27B 4-bit | `python_modules_long` | 3 | 49.4 tok/s | 660.7 tok/s | 522 ms | 97.2% |
+| Qwen3.6 27B 6-bit | `flappy` | 3 | 40.5 tok/s | 621.5 tok/s | 521 ms | 99.4% |
+| Qwen3.6 27B 6-bit | `long_code` | 3 | 38.9 tok/s | 718.4 tok/s | 999 ms | 99.5% |
+| Qwen3.6 27B 6-bit | `python_modules_long` | 3 | 33.3 tok/s | 623.8 tok/s | 560 ms | 96.7% |
+| Qwen3.6 35B-A3B 4-bit | `flappy` | 1 | 168.2 tok/s | 1,731.4 tok/s | 185 ms | 99.8% |
+| Qwen3.6 35B-A3B 4-bit | `long_code` | 1 | 167.5 tok/s | 2,558.8 tok/s | 280 ms | 99.8% |
+| Qwen3.6 35B-A3B 4-bit | `python_modules_long` | 1 | 160.8 tok/s | 1,843.2 tok/s | 185 ms | 98.3% |
+| Qwen3.6 35B-A3B 6-bit | `flappy` | 1 | 134.9 tok/s | 1,491.8 tok/s | 216 ms | 99.8% |
+| Qwen3.6 35B-A3B 6-bit | `long_code` | 1 | 133.6 tok/s | 2,281.8 tok/s | 314 ms | 99.8% |
+| Qwen3.6 35B-A3B 6-bit | `python_modules_long` | 1 | 135.5 tok/s | 1,631.2 tok/s | 210 ms | 98.4% |
 
 Methodology: `1000` generated tokens, `5` measured repetitions per prompt case
 after the AX warmup pass, 30 s cooldown, 10 s inter-case cooldown, sampled
 decode (`temperature=0.6`, `top_p=0.95`, `top_k=20`), pure MTP, and no
-MTP+n-gram stacking. Peer rows are `N/A` when the peer runner cannot run the
-same prepared 6-bit `download-mtp` package under a comparable prompt-suite
-contract. The new `bench_qwen36_mtp_matrix.py` plan keeps peer support status
-explicit: MTPLX has a 35B-A3B 6-bit balance artifact but no 27B 6-bit catalog
-artifact, lightning-mlx Qwen3.6 aliases currently start but runtime validation
-reports no MTP head and disables MTP, Rapid-MLX marks Qwen3.6 aliases as
-`supports_spec_decode=false`, and oMLX needs a dedicated Qwen MTP prompt-suite
-adapter before it can be promoted.
-
-Pure-MTP verification: all listed AX MTP artifacts record zero n-gram accepted,
-proposed, submitted, and hit-step telemetry. Summary artifacts:
-[`summary.md`](benchmarks/results/mtp-6bit/2026-06-26-qwen-mtp-ax-only-rerun-2/summary.md)
+MTP+n-gram stacking. Pure-MTP verification is enforced by the summary builder:
+AX MTP artifacts with non-zero n-gram accepted, proposed, submitted, or hit-step
+telemetry fail summary generation. Summary artifacts:
+[`summary.md`](benchmarks/results/mtp-qwen36-matrix/2026-06-29-qwen36-mtp-matrix/summary.md)
 and
-[`summary.json`](benchmarks/results/mtp-6bit/2026-06-26-qwen-mtp-ax-only-rerun-2/summary.json).
+[`summary.json`](benchmarks/results/mtp-qwen36-matrix/2026-06-29-qwen36-mtp-matrix/summary.json).
 Detailed MTP notes, including the GLM-4.7 Flash smoke validation session, live in
 [`docs/mtp/`](docs/mtp/).
 

@@ -547,3 +547,16 @@ class Session:
         ...
     def __enter__(self) -> "Session": ...
     def __exit__(self, exc_type: object | None, exc: object | None, traceback: object | None) -> None: ...
+
+
+def download_model(
+    repo_id: str,
+    dest: str | Path | None = None,
+    *,
+    force: bool = False,
+) -> Path:
+    """Download an MLX model through Hugging Face Hub and generate its ax-engine manifest.
+
+    Requires ``huggingface-hub`` (install via ``pip install ax-engine[download]``).
+    """
+    ...

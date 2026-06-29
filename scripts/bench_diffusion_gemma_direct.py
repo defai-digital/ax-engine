@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Benchmark AX direct DiffusionGemma first-block telemetry and render README charts.
+"""Benchmark AX direct DiffusionGemma first-block telemetry and render docs charts.
 
 DiffusionGemma is block-diffusion, not token-autoregressive. This script reports:
 
@@ -499,7 +499,7 @@ def render_chart(
         f'<text x="{LEFT}" y="46" font-family="{FONT}" font-size="11" fill="#4b5563">'
         f"median over reps | grouped by prompt tokens | first committed block</text>",
         f'<text id="desc" x="{LEFT}" y="62" font-family="{FONT}" font-size="10" fill="#6b7280">'
-        f"AX-only DiffusionGemma direct telemetry; peer runtime blockers are documented in the README table</text>",
+        f"AX-only DiffusionGemma direct telemetry; peer runtime blockers are documented in docs</text>",
         f'<text x="{LEFT}" y="76" font-family="{FONT}" font-size="9" fill="#9ca3af">'
         f"{escape(note)}</text>",
         f'<rect x="{header_right - unit_w}" y="13" width="{unit_w}" height="22" '
@@ -588,16 +588,17 @@ def render_bandwidth_share_chart(rows: list[dict[str, Any]]) -> str:
     parts = [
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{WIDTH}" height="{HEIGHT}" '
         f'viewBox="0 0 {WIDTH} {HEIGHT}" role="img" aria-labelledby="title desc">',
-        "<title>DiffusionGemma 4-bit - Memory bandwidth share</title>",
-        "<desc>DiffusionGemma 4-bit - Memory bandwidth share; 100% stacked bars show "
-        "effective bandwidth used versus theoretical headroom at 128/512/2048 prompt tokens.</desc>",
+        "<title>DiffusionGemma 4-bit - Estimated weight bandwidth</title>",
+        "<desc>DiffusionGemma 4-bit - Estimated weight bandwidth; 100% stacked bars show "
+        "estimated weight traffic versus theoretical headroom at 128/512/2048 prompt tokens. "
+        "This is not a measured GPU utilization counter.</desc>",
         f'<rect width="{WIDTH}" height="{HEIGHT}" fill="#f8fafc"/>',
         f'<text id="title" x="{LEFT}" y="24" font-family="{FONT}" font-size="16" '
-        f'font-weight="700" fill="#111827">DiffusionGemma 4-bit - Memory bandwidth share</text>',
+        f'font-weight="700" fill="#111827">DiffusionGemma 4-bit - Estimated weight bandwidth</text>',
         f'<text x="{LEFT}" y="46" font-family="{FONT}" font-size="11" fill="#4b5563">'
         f"median over reps | grouped by prompt tokens | first committed block</text>",
         f'<text id="desc" x="{LEFT}" y="62" font-family="{FONT}" font-size="10" fill="#6b7280">'
-        f"AX-only DiffusionGemma direct telemetry; peer runtime blockers are documented in the README table</text>",
+        f"Estimated weight traffic, not GPU utilization; peer runtime blockers are documented in docs</text>",
         f'<text x="{LEFT}" y="76" font-family="{FONT}" font-size="9" fill="#9ca3af">'
         f"100% = M5 Max theoretical unified-memory bandwidth</text>",
         f'<rect x="{header_right - 48}" y="13" width="48" height="22" rx="11" '
@@ -653,10 +654,10 @@ def render_bandwidth_share_chart(rows: list[dict[str, Any]]) -> str:
             f'<rect x="{legend_x:.1f}" y="{legend_y - 9}" width="12" height="10" rx="2" '
             f'fill="{AX_COLOR}" fill-opacity="0.76"/>',
             f'<text x="{legend_x + 16:.1f}" y="{legend_y}" font-family="{FONT}" '
-            f'font-size="10" fill="#374151">Used bandwidth</text>',
-            f'<rect x="{legend_x + 128:.1f}" y="{legend_y - 9}" width="12" height="10" rx="2" '
+            f'font-size="10" fill="#374151">Estimated weight bandwidth</text>',
+            f'<rect x="{legend_x + 228:.1f}" y="{legend_y - 9}" width="12" height="10" rx="2" '
             f'fill="{headroom_color}" stroke="{headroom_stroke}" stroke-width="1"/>',
-            f'<text x="{legend_x + 144:.1f}" y="{legend_y}" font-family="{FONT}" '
+            f'<text x="{legend_x + 244:.1f}" y="{legend_y}" font-family="{FONT}" '
             f'font-size="10" fill="#374151">Theoretical headroom</text>',
             "</svg>",
         ]

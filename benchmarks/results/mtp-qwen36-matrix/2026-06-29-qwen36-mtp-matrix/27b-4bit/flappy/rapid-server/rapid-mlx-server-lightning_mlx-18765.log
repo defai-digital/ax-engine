@@ -1,0 +1,69 @@
+  Alias: qwen3.6-27b → Youssofal/Qwen3.6-27B-MTPLX-Optimized-Speed
+
+  lightning-mlx
+  ─────────
+  Features: tools: qwen3_coder_xml, reasoning: qwen3, max-concurrent: 1, gc-control, idle-unload: 60s
+  Model: Youssofal/Qwen3.6-27B-MTPLX-Optimized-Speed
+Mode: Continuous batching (for multiple concurrent users)
+MTP: enabled, draft_tokens=3, draft_temp=0.5
+Stream interval: 1 tokens
+Memory-aware cache: 20% of RAM
+
+  Ready: http://localhost:18765/v1
+  Docs:  http://localhost:18765/docs
+
+Fetching 21 files:   0%|          | 0/21 [00:00<?, ?it/s]Fetching 21 files:  48%|████▊     | 10/21 [00:56<01:02,  5.65s/it]Fetching 21 files: 100%|██████████| 21/21 [00:56<00:00,  2.69s/it]
+Fetching 16 files:   0%|          | 0/16 [00:00<?, ?it/s]Fetching 16 files: 100%|██████████| 16/16 [00:00<00:00, 19027.18it/s]
+Fetching 16 files:   0%|          | 0/16 [00:00<?, ?it/s]Fetching 16 files: 100%|██████████| 16/16 [00:00<00:00, 27776.85it/s]
+WARNING:vllm_mlx.engine.batched:[MTP] MTP validation failed — --enable-mtp will be ignored. See warnings above for details.
+WARNING:vllm_mlx.scheduler:[MTP] --enable-mtp is set but model has no MTP head (model.mtp is None). MTP will be disabled.
+WARNING:vllm_mlx.scheduler:[MTP] --enable-mtp is set but model has no MTP head (model.mtp is None). MTP will be disabled.
+ERROR:    Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.13/3.13.14/Frameworks/Python.framework/Versions/3.13/lib/python3.13/asyncio/runners.py", line 196, in run
+    return runner.run(main)
+           ~~~~~~~~~~^^^^^^
+  File "/opt/homebrew/Cellar/python@3.13/3.13.14/Frameworks/Python.framework/Versions/3.13/lib/python3.13/asyncio/runners.py", line 119, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/opt/homebrew/Cellar/python@3.13/3.13.14/Frameworks/Python.framework/Versions/3.13/lib/python3.13/asyncio/base_events.py", line 712, in run_until_complete
+    self.run_forever()
+    ~~~~~~~~~~~~~~~~^^
+  File "/opt/homebrew/Cellar/python@3.13/3.13.14/Frameworks/Python.framework/Versions/3.13/lib/python3.13/asyncio/base_events.py", line 683, in run_forever
+    self._run_once()
+    ~~~~~~~~~~~~~~^^
+  File "/opt/homebrew/Cellar/python@3.13/3.13.14/Frameworks/Python.framework/Versions/3.13/lib/python3.13/asyncio/base_events.py", line 2060, in _run_once
+    handle._run()
+    ~~~~~~~~~~~^^
+  File "/opt/homebrew/Cellar/python@3.13/3.13.14/Frameworks/Python.framework/Versions/3.13/lib/python3.13/asyncio/events.py", line 89, in _run
+    self._context.run(self._callback, *self._args)
+    ~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/var/mtplx/venv-0.3.7/lib/python3.13/site-packages/uvicorn/server.py", line 78, in serve
+    with self.capture_signals():
+         ~~~~~~~~~~~~~~~~~~~~^^
+  File "/opt/homebrew/Cellar/python@3.13/3.13.14/Frameworks/Python.framework/Versions/3.13/lib/python3.13/contextlib.py", line 148, in __exit__
+    next(self.gen)
+    ~~~~^^^^^^^^^^
+  File "/opt/homebrew/var/mtplx/venv-0.3.7/lib/python3.13/site-packages/uvicorn/server.py", line 339, in capture_signals
+    signal.raise_signal(captured_signal)
+    ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.13/3.13.14/Frameworks/Python.framework/Versions/3.13/lib/python3.13/asyncio/runners.py", line 158, in _on_sigint
+    raise KeyboardInterrupt()
+KeyboardInterrupt
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/opt/homebrew/var/mtplx/venv-0.3.7/lib/python3.13/site-packages/starlette/routing.py", line 645, in lifespan
+    await receive()
+  File "/opt/homebrew/var/mtplx/venv-0.3.7/lib/python3.13/site-packages/uvicorn/lifespan/on.py", line 137, in receive
+    return await self.receive_queue.get()
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.13/3.13.14/Frameworks/Python.framework/Versions/3.13/lib/python3.13/asyncio/queues.py", line 186, in get
+    await getter
+asyncio.exceptions.CancelledError
+
+Exception ignored in: <function BatchGenerator.__del__ at 0x11b214fe0>
+Traceback (most recent call last):
+  File "/opt/homebrew/var/mtplx/venv-0.3.7/lib/python3.13/site-packages/mlx_lm/generate.py", line 1562, in __del__
+  File "/opt/homebrew/var/mtplx/venv-0.3.7/lib/python3.13/site-packages/mlx_lm/generate.py", line 1557, in close
+RuntimeError: There is no Stream(gpu, 0) in current thread.

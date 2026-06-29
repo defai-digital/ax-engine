@@ -31,7 +31,7 @@ the same public paths.
 
 ## Position in the Stack
 
-```
+```text
 ax-engine-server  ax-engine-py  ax-engine-bench
         \               |           /
          \              |          /
@@ -99,7 +99,7 @@ The default is `MlxOnly`. A `ResolvedBackend` with a non-MLX backend but an
 `EngineSessionConfig` is the single configuration struct passed to
 `EngineSession::new()`. The defaults target the repo-owned MLX path:
 
-```
+```text
 kv_config:                KvManagerConfig { block_size=16, total_blocks=1024 }
 deterministic:            true
 max_batch_tokens:         2048
@@ -359,7 +359,7 @@ produced. For prefill-heavy requests this is greater than 1.
 
 Three event variants in order:
 
-```
+```text
 Request  → emitted once at stream start; carries initial SessionRequestReport + RuntimeReport
 Step     → emitted once per engine step; carries delta_tokens and optional delta_text
 Response → emitted once at termination; carries the complete GenerateResponse

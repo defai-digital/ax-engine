@@ -1,0 +1,1348 @@
+{
+  "contract": {
+    "bits": [
+      4,
+      6
+    ],
+    "engines": [
+      "ax_engine",
+      "mtplx",
+      "lightning_mlx",
+      "rapid_mlx",
+      "omlx"
+    ],
+    "max_tokens": 1000,
+    "metrics": [
+      "decode_tok_s",
+      "prefill_tok_s",
+      "ttft_ms",
+      "accept_rate"
+    ],
+    "mode": "mtp",
+    "models": [
+      "27b",
+      "35b-a3b"
+    ],
+    "repetitions": 5,
+    "sampling": {
+      "temperature": 0.6,
+      "top_k": 20,
+      "top_p": 0.95
+    },
+    "suites": [
+      "flappy",
+      "long_code",
+      "python_modules_long"
+    ],
+    "warmup_repetitions": 1
+  },
+  "created_at": "2026-06-29",
+  "rows": [
+    {
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-29-qwen36-mtp-matrix/27b-4bit/flappy/ax_engine.json",
+      "bits": 4,
+      "engine": "ax_engine",
+      "metric_contract": {
+        "accept_rate": "measured",
+        "decode_tok_s": "measured",
+        "prefill_tok_s": "measured",
+        "ttft_ms": "measured"
+      },
+      "metrics": {
+        "accept_rate": 0.9948524365133836,
+        "accept_source": "ax_engine_mtp_telemetry",
+        "case_count": 4,
+        "decode_tok_s": 60.29742644728274,
+        "prefill_source": "ax_engine_runner_prefill_time",
+        "prefill_tok_s": 649.2146900071167,
+        "status": "ok",
+        "ttft_ms": 495.27,
+        "ttft_source": "ax_engine_runner_prefill_time"
+      },
+      "model": "27b",
+      "model_label": "Qwen3.6 27B 4-bit",
+      "reason": null,
+      "status": "supported",
+      "suite": "flappy",
+      "target": "27b-4bit"
+    },
+    {
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-29-qwen36-mtp-matrix/27b-4bit/flappy/mtplx.json",
+      "bits": 4,
+      "engine": "mtplx",
+      "metric_contract": {
+        "accept_rate": "measured",
+        "decode_tok_s": "measured",
+        "prefill_tok_s": "derived_from_prompt_eval_time_s",
+        "ttft_ms": "prompt_eval_time_s"
+      },
+      "metrics": {
+        "error": "command failed; see benchmarks/results/mtp-qwen36-matrix/2026-06-29-qwen36-mtp-matrix/27b-4bit/flappy/mtplx.log\n$ /opt/homebrew/var/mtplx/venv-0.3.7/bin/python /Users/akiralam/code/ax-engine/scripts/bench_mtplx_prompt_suites.py --model /Users/akiralam/.cache/huggingface/hub/models--Youssofal--Qwen3.6-27B-MTPLX-Optimized-Speed/snapshots/be5190f2349594ec941753efc90a4ca5641af174 --suite flappy --prompts /Users/akiralam/code/ax-engine/benchmarks/prompts/mtp-suites/flappy.jsonl --output benchmarks/results/mtp-qwen36-matrix/2026-06-29-qwen36-mtp-matrix/27b-4bit/flappy/mtplx.json --depth 3 --temperature 0.6 --top-p 0.95 --top-k 20 --max-tokens 1000 --repetitions 5 --warmup-repetitions 1 --cooldown 30.0 --inter-case-cooldown 10.0 --profile stable --mtp-quant-mode cyankiwi --disable-thinking --allow-unverified-model\n\nERROR: mtp_quant_policy must be None, 'all', or 'cyankiwi'\n\n[exit 1 after 6.7s]",
+        "status": "error"
+      },
+      "model": "27b",
+      "model_label": "Qwen3.6 27B 4-bit",
+      "reason": null,
+      "status": "supported",
+      "suite": "flappy",
+      "target": "27b-4bit"
+    },
+    {
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-29-qwen36-mtp-matrix/27b-4bit/flappy/lightning_mlx.json",
+      "bits": 4,
+      "engine": "lightning_mlx",
+      "metric_contract": {
+        "accept_rate": "measured_if_server_exposes_request_telemetry",
+        "decode_tok_s": "measured",
+        "prefill_tok_s": "approx_prompt_tokens_over_client_ttft_s",
+        "ttft_ms": "client_stream_ttft_s"
+      },
+      "metrics": {
+        "status": "unsupported"
+      },
+      "model": "27b",
+      "model_label": "Qwen3.6 27B 4-bit",
+      "reason": "lightning-mlx Qwen3.6 aliases start, but runtime validation reports no MTP head and disables MTP.",
+      "status": "unsupported",
+      "suite": "flappy",
+      "target": "27b-4bit"
+    },
+    {
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-29-qwen36-mtp-matrix/27b-4bit/flappy/rapid_mlx.json",
+      "bits": 4,
+      "engine": "rapid_mlx",
+      "metric_contract": {
+        "accept_rate": "unavailable",
+        "decode_tok_s": "unavailable",
+        "prefill_tok_s": "unavailable",
+        "ttft_ms": "unavailable"
+      },
+      "metrics": {
+        "status": "unsupported"
+      },
+      "model": "27b",
+      "model_label": "Qwen3.6 27B 4-bit",
+      "reason": "Rapid-MLX Qwen3.6 aliases advertise supports_spec_decode=false; MTP is not a supported Qwen3.6 benchmark lane.",
+      "status": "unsupported",
+      "suite": "flappy",
+      "target": "27b-4bit"
+    },
+    {
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-29-qwen36-mtp-matrix/27b-4bit/flappy/omlx.json",
+      "bits": 4,
+      "engine": "omlx",
+      "metric_contract": {
+        "accept_rate": "unavailable",
+        "decode_tok_s": "unavailable",
+        "prefill_tok_s": "unavailable",
+        "ttft_ms": "unavailable"
+      },
+      "metrics": {
+        "status": "unsupported"
+      },
+      "model": "27b",
+      "model_label": "Qwen3.6 27B 4-bit",
+      "reason": "oMLX has no repo-owned Qwen3.6 MTP prompt-suite adapter yet; native MTP needs prepared MTP weights and a dedicated runner.",
+      "status": "unsupported",
+      "suite": "flappy",
+      "target": "27b-4bit"
+    },
+    {
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-29-qwen36-mtp-matrix/27b-4bit/long_code/ax_engine.json",
+      "bits": 4,
+      "engine": "ax_engine",
+      "metric_contract": {
+        "accept_rate": "measured",
+        "decode_tok_s": "measured",
+        "prefill_tok_s": "measured",
+        "ttft_ms": "measured"
+      },
+      "metrics": {
+        "accept_rate": 0.9939780375487071,
+        "accept_source": "ax_engine_mtp_telemetry",
+        "case_count": 4,
+        "decode_tok_s": 60.320975972997616,
+        "prefill_source": "ax_engine_runner_prefill_time",
+        "prefill_tok_s": 782.4869103005842,
+        "status": "ok",
+        "ttft_ms": 916.943,
+        "ttft_source": "ax_engine_runner_prefill_time"
+      },
+      "model": "27b",
+      "model_label": "Qwen3.6 27B 4-bit",
+      "reason": null,
+      "status": "supported",
+      "suite": "long_code",
+      "target": "27b-4bit"
+    },
+    {
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-29-qwen36-mtp-matrix/27b-4bit/long_code/mtplx.json",
+      "bits": 4,
+      "engine": "mtplx",
+      "metric_contract": {
+        "accept_rate": "measured",
+        "decode_tok_s": "measured",
+        "prefill_tok_s": "derived_from_prompt_eval_time_s",
+        "ttft_ms": "prompt_eval_time_s"
+      },
+      "metrics": {
+        "error": "command failed; see benchmarks/results/mtp-qwen36-matrix/2026-06-29-qwen36-mtp-matrix/27b-4bit/long_code/mtplx.log\n$ /opt/homebrew/var/mtplx/venv-0.3.7/bin/python /Users/akiralam/code/ax-engine/scripts/bench_mtplx_prompt_suites.py --model /Users/akiralam/.cache/huggingface/hub/models--Youssofal--Qwen3.6-27B-MTPLX-Optimized-Speed/snapshots/be5190f2349594ec941753efc90a4ca5641af174 --suite long_code --prompts /Users/akiralam/code/ax-engine/benchmarks/prompts/mtp-suites/long_code.jsonl --output benchmarks/results/mtp-qwen36-matrix/2026-06-29-qwen36-mtp-matrix/27b-4bit/long_code/mtplx.json --depth 3 --temperature 0.6 --top-p 0.95 --top-k 20 --max-tokens 1000 --repetitions 5 --warmup-repetitions 1 --cooldown 30.0 --inter-case-cooldown 10.0 --profile stable --mtp-quant-mode cyankiwi --disable-thinking --allow-unverified-model\n\nERROR: mtp_quant_policy must be None, 'all', or 'cyankiwi'\n\n[exit 1 after 2.0s]",
+        "status": "error"
+      },
+      "model": "27b",
+      "model_label": "Qwen3.6 27B 4-bit",
+      "reason": null,
+      "status": "supported",
+      "suite": "long_code",
+      "target": "27b-4bit"
+    },
+    {
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-29-qwen36-mtp-matrix/27b-4bit/long_code/lightning_mlx.json",
+      "bits": 4,
+      "engine": "lightning_mlx",
+      "metric_contract": {
+        "accept_rate": "measured_if_server_exposes_request_telemetry",
+        "decode_tok_s": "measured",
+        "prefill_tok_s": "approx_prompt_tokens_over_client_ttft_s",
+        "ttft_ms": "client_stream_ttft_s"
+      },
+      "metrics": {
+        "status": "unsupported"
+      },
+      "model": "27b",
+      "model_label": "Qwen3.6 27B 4-bit",
+      "reason": "lightning-mlx Qwen3.6 aliases start, but runtime validation reports no MTP head and disables MTP.",
+      "status": "unsupported",
+      "suite": "long_code",
+      "target": "27b-4bit"
+    },
+    {
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-29-qwen36-mtp-matrix/27b-4bit/long_code/rapid_mlx.json",
+      "bits": 4,
+      "engine": "rapid_mlx",
+      "metric_contract": {
+        "accept_rate": "unavailable",
+        "decode_tok_s": "unavailable",
+        "prefill_tok_s": "unavailable",
+        "ttft_ms": "unavailable"
+      },
+      "metrics": {
+        "status": "unsupported"
+      },
+      "model": "27b",
+      "model_label": "Qwen3.6 27B 4-bit",
+      "reason": "Rapid-MLX Qwen3.6 aliases advertise supports_spec_decode=false; MTP is not a supported Qwen3.6 benchmark lane.",
+      "status": "unsupported",
+      "suite": "long_code",
+      "target": "27b-4bit"
+    },
+    {
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-29-qwen36-mtp-matrix/27b-4bit/long_code/omlx.json",
+      "bits": 4,
+      "engine": "omlx",
+      "metric_contract": {
+        "accept_rate": "unavailable",
+        "decode_tok_s": "unavailable",
+        "prefill_tok_s": "unavailable",
+        "ttft_ms": "unavailable"
+      },
+      "metrics": {
+        "status": "unsupported"
+      },
+      "model": "27b",
+      "model_label": "Qwen3.6 27B 4-bit",
+      "reason": "oMLX has no repo-owned Qwen3.6 MTP prompt-suite adapter yet; native MTP needs prepared MTP weights and a dedicated runner.",
+      "status": "unsupported",
+      "suite": "long_code",
+      "target": "27b-4bit"
+    },
+    {
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-29-qwen36-mtp-matrix/27b-4bit/python_modules_long/ax_engine.json",
+      "bits": 4,
+      "engine": "ax_engine",
+      "metric_contract": {
+        "accept_rate": "measured",
+        "decode_tok_s": "measured",
+        "prefill_tok_s": "measured",
+        "ttft_ms": "measured"
+      },
+      "metrics": {
+        "accept_rate": 0.9718654434250764,
+        "accept_source": "ax_engine_mtp_telemetry",
+        "case_count": 3,
+        "decode_tok_s": 49.37539142341551,
+        "prefill_source": "ax_engine_runner_prefill_time",
+        "prefill_tok_s": 660.6752856476788,
+        "status": "ok",
+        "ttft_ms": 521.836,
+        "ttft_source": "ax_engine_runner_prefill_time"
+      },
+      "model": "27b",
+      "model_label": "Qwen3.6 27B 4-bit",
+      "reason": null,
+      "status": "supported",
+      "suite": "python_modules_long",
+      "target": "27b-4bit"
+    },
+    {
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-29-qwen36-mtp-matrix/27b-4bit/python_modules_long/mtplx.json",
+      "bits": 4,
+      "engine": "mtplx",
+      "metric_contract": {
+        "accept_rate": "measured",
+        "decode_tok_s": "measured",
+        "prefill_tok_s": "derived_from_prompt_eval_time_s",
+        "ttft_ms": "prompt_eval_time_s"
+      },
+      "metrics": {
+        "error": "command failed; see benchmarks/results/mtp-qwen36-matrix/2026-06-29-qwen36-mtp-matrix/27b-4bit/python_modules_long/mtplx.log\n$ /opt/homebrew/var/mtplx/venv-0.3.7/bin/python /Users/akiralam/code/ax-engine/scripts/bench_mtplx_prompt_suites.py --model /Users/akiralam/.cache/huggingface/hub/models--Youssofal--Qwen3.6-27B-MTPLX-Optimized-Speed/snapshots/be5190f2349594ec941753efc90a4ca5641af174 --suite python_modules_long --prompts /Users/akiralam/code/ax-engine/benchmarks/prompts/mtp-suites/python_modules_long.jsonl --output benchmarks/results/mtp-qwen36-matrix/2026-06-29-qwen36-mtp-matrix/27b-4bit/python_modules_long/mtplx.json --depth 3 --temperature 0.6 --top-p 0.95 --top-k 20 --max-tokens 1000 --repetitions 5 --warmup-repetitions 1 --cooldown 30.0 --inter-case-cooldown 10.0 --profile stable --mtp-quant-mode cyankiwi --disable-thinking --allow-unverified-model\n\nERROR: mtp_quant_policy must be None, 'all', or 'cyankiwi'\n\n[exit 1 after 1.9s]",
+        "status": "error"
+      },
+      "model": "27b",
+      "model_label": "Qwen3.6 27B 4-bit",
+      "reason": null,
+      "status": "supported",
+      "suite": "python_modules_long",
+      "target": "27b-4bit"
+    },
+    {
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-29-qwen36-mtp-matrix/27b-4bit/python_modules_long/lightning_mlx.json",
+      "bits": 4,
+      "engine": "lightning_mlx",
+      "metric_contract": {
+        "accept_rate": "measured_if_server_exposes_request_telemetry",
+        "decode_tok_s": "measured",
+        "prefill_tok_s": "approx_prompt_tokens_over_client_ttft_s",
+        "ttft_ms": "client_stream_ttft_s"
+      },
+      "metrics": {
+        "status": "unsupported"
+      },
+      "model": "27b",
+      "model_label": "Qwen3.6 27B 4-bit",
+      "reason": "lightning-mlx Qwen3.6 aliases start, but runtime validation reports no MTP head and disables MTP.",
+      "status": "unsupported",
+      "suite": "python_modules_long",
+      "target": "27b-4bit"
+    },
+    {
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-29-qwen36-mtp-matrix/27b-4bit/python_modules_long/rapid_mlx.json",
+      "bits": 4,
+      "engine": "rapid_mlx",
+      "metric_contract": {
+        "accept_rate": "unavailable",
+        "decode_tok_s": "unavailable",
+        "prefill_tok_s": "unavailable",
+        "ttft_ms": "unavailable"
+      },
+      "metrics": {
+        "status": "unsupported"
+      },
+      "model": "27b",
+      "model_label": "Qwen3.6 27B 4-bit",
+      "reason": "Rapid-MLX Qwen3.6 aliases advertise supports_spec_decode=false; MTP is not a supported Qwen3.6 benchmark lane.",
+      "status": "unsupported",
+      "suite": "python_modules_long",
+      "target": "27b-4bit"
+    },
+    {
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-29-qwen36-mtp-matrix/27b-4bit/python_modules_long/omlx.json",
+      "bits": 4,
+      "engine": "omlx",
+      "metric_contract": {
+        "accept_rate": "unavailable",
+        "decode_tok_s": "unavailable",
+        "prefill_tok_s": "unavailable",
+        "ttft_ms": "unavailable"
+      },
+      "metrics": {
+        "status": "unsupported"
+      },
+      "model": "27b",
+      "model_label": "Qwen3.6 27B 4-bit",
+      "reason": "oMLX has no repo-owned Qwen3.6 MTP prompt-suite adapter yet; native MTP needs prepared MTP weights and a dedicated runner.",
+      "status": "unsupported",
+      "suite": "python_modules_long",
+      "target": "27b-4bit"
+    },
+    {
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-29-qwen36-mtp-matrix/27b-6bit/flappy/ax_engine.json",
+      "bits": 6,
+      "engine": "ax_engine",
+      "metric_contract": {
+        "accept_rate": "measured",
+        "decode_tok_s": "measured",
+        "prefill_tok_s": "measured",
+        "ttft_ms": "measured"
+      },
+      "metrics": {
+        "accept_rate": 0.9942038868053188,
+        "accept_source": "ax_engine_mtp_telemetry",
+        "case_count": 4,
+        "decode_tok_s": 40.53468524704023,
+        "prefill_source": "ax_engine_runner_prefill_time",
+        "prefill_tok_s": 621.5471832006506,
+        "status": "ok",
+        "ttft_ms": 520.7284999999999,
+        "ttft_source": "ax_engine_runner_prefill_time"
+      },
+      "model": "27b",
+      "model_label": "Qwen3.6 27B 6-bit",
+      "reason": null,
+      "status": "supported",
+      "suite": "flappy",
+      "target": "27b-6bit"
+    },
+    {
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-29-qwen36-mtp-matrix/27b-6bit/flappy/mtplx.json",
+      "bits": 6,
+      "engine": "mtplx",
+      "metric_contract": {
+        "accept_rate": "measured",
+        "decode_tok_s": "measured",
+        "prefill_tok_s": "derived_from_prompt_eval_time_s",
+        "ttft_ms": "prompt_eval_time_s"
+      },
+      "metrics": {
+        "status": "unsupported"
+      },
+      "model": "27b",
+      "model_label": "Qwen3.6 27B 6-bit",
+      "reason": "MTPLX catalog has no official Qwen3.6 27B 6-bit MTP artifact.",
+      "status": "unsupported",
+      "suite": "flappy",
+      "target": "27b-6bit"
+    },
+    {
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-29-qwen36-mtp-matrix/27b-6bit/flappy/lightning_mlx.json",
+      "bits": 6,
+      "engine": "lightning_mlx",
+      "metric_contract": {
+        "accept_rate": "measured_if_server_exposes_request_telemetry",
+        "decode_tok_s": "measured",
+        "prefill_tok_s": "approx_prompt_tokens_over_client_ttft_s",
+        "ttft_ms": "client_stream_ttft_s"
+      },
+      "metrics": {
+        "status": "unsupported"
+      },
+      "model": "27b",
+      "model_label": "Qwen3.6 27B 6-bit",
+      "reason": "lightning-mlx 6-bit aliases do not map to a verified pure Qwen3.6 MTP head.",
+      "status": "unsupported",
+      "suite": "flappy",
+      "target": "27b-6bit"
+    },
+    {
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-29-qwen36-mtp-matrix/27b-6bit/flappy/rapid_mlx.json",
+      "bits": 6,
+      "engine": "rapid_mlx",
+      "metric_contract": {
+        "accept_rate": "unavailable",
+        "decode_tok_s": "unavailable",
+        "prefill_tok_s": "unavailable",
+        "ttft_ms": "unavailable"
+      },
+      "metrics": {
+        "status": "unsupported"
+      },
+      "model": "27b",
+      "model_label": "Qwen3.6 27B 6-bit",
+      "reason": "Rapid-MLX Qwen3.6 aliases advertise supports_spec_decode=false; MTP is not a supported Qwen3.6 benchmark lane.",
+      "status": "unsupported",
+      "suite": "flappy",
+      "target": "27b-6bit"
+    },
+    {
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-29-qwen36-mtp-matrix/27b-6bit/flappy/omlx.json",
+      "bits": 6,
+      "engine": "omlx",
+      "metric_contract": {
+        "accept_rate": "unavailable",
+        "decode_tok_s": "unavailable",
+        "prefill_tok_s": "unavailable",
+        "ttft_ms": "unavailable"
+      },
+      "metrics": {
+        "status": "unsupported"
+      },
+      "model": "27b",
+      "model_label": "Qwen3.6 27B 6-bit",
+      "reason": "oMLX has no repo-owned Qwen3.6 MTP prompt-suite adapter yet; native MTP needs prepared MTP weights and a dedicated runner.",
+      "status": "unsupported",
+      "suite": "flappy",
+      "target": "27b-6bit"
+    },
+    {
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-29-qwen36-mtp-matrix/27b-6bit/long_code/ax_engine.json",
+      "bits": 6,
+      "engine": "ax_engine",
+      "metric_contract": {
+        "accept_rate": "measured",
+        "decode_tok_s": "measured",
+        "prefill_tok_s": "measured",
+        "ttft_ms": "measured"
+      },
+      "metrics": {
+        "accept_rate": 0.9954289732770746,
+        "accept_source": "ax_engine_mtp_telemetry",
+        "case_count": 4,
+        "decode_tok_s": 38.88942223388423,
+        "prefill_source": "ax_engine_runner_prefill_time",
+        "prefill_tok_s": 718.4324601443016,
+        "status": "ok",
+        "ttft_ms": 999.0474999999999,
+        "ttft_source": "ax_engine_runner_prefill_time"
+      },
+      "model": "27b",
+      "model_label": "Qwen3.6 27B 6-bit",
+      "reason": null,
+      "status": "supported",
+      "suite": "long_code",
+      "target": "27b-6bit"
+    },
+    {
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-29-qwen36-mtp-matrix/27b-6bit/long_code/mtplx.json",
+      "bits": 6,
+      "engine": "mtplx",
+      "metric_contract": {
+        "accept_rate": "measured",
+        "decode_tok_s": "measured",
+        "prefill_tok_s": "derived_from_prompt_eval_time_s",
+        "ttft_ms": "prompt_eval_time_s"
+      },
+      "metrics": {
+        "status": "unsupported"
+      },
+      "model": "27b",
+      "model_label": "Qwen3.6 27B 6-bit",
+      "reason": "MTPLX catalog has no official Qwen3.6 27B 6-bit MTP artifact.",
+      "status": "unsupported",
+      "suite": "long_code",
+      "target": "27b-6bit"
+    },
+    {
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-29-qwen36-mtp-matrix/27b-6bit/long_code/lightning_mlx.json",
+      "bits": 6,
+      "engine": "lightning_mlx",
+      "metric_contract": {
+        "accept_rate": "measured_if_server_exposes_request_telemetry",
+        "decode_tok_s": "measured",
+        "prefill_tok_s": "approx_prompt_tokens_over_client_ttft_s",
+        "ttft_ms": "client_stream_ttft_s"
+      },
+      "metrics": {
+        "status": "unsupported"
+      },
+      "model": "27b",
+      "model_label": "Qwen3.6 27B 6-bit",
+      "reason": "lightning-mlx 6-bit aliases do not map to a verified pure Qwen3.6 MTP head.",
+      "status": "unsupported",
+      "suite": "long_code",
+      "target": "27b-6bit"
+    },
+    {
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-29-qwen36-mtp-matrix/27b-6bit/long_code/rapid_mlx.json",
+      "bits": 6,
+      "engine": "rapid_mlx",
+      "metric_contract": {
+        "accept_rate": "unavailable",
+        "decode_tok_s": "unavailable",
+        "prefill_tok_s": "unavailable",
+        "ttft_ms": "unavailable"
+      },
+      "metrics": {
+        "status": "unsupported"
+      },
+      "model": "27b",
+      "model_label": "Qwen3.6 27B 6-bit",
+      "reason": "Rapid-MLX Qwen3.6 aliases advertise supports_spec_decode=false; MTP is not a supported Qwen3.6 benchmark lane.",
+      "status": "unsupported",
+      "suite": "long_code",
+      "target": "27b-6bit"
+    },
+    {
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-29-qwen36-mtp-matrix/27b-6bit/long_code/omlx.json",
+      "bits": 6,
+      "engine": "omlx",
+      "metric_contract": {
+        "accept_rate": "unavailable",
+        "decode_tok_s": "unavailable",
+        "prefill_tok_s": "unavailable",
+        "ttft_ms": "unavailable"
+      },
+      "metrics": {
+        "status": "unsupported"
+      },
+      "model": "27b",
+      "model_label": "Qwen3.6 27B 6-bit",
+      "reason": "oMLX has no repo-owned Qwen3.6 MTP prompt-suite adapter yet; native MTP needs prepared MTP weights and a dedicated runner.",
+      "status": "unsupported",
+      "suite": "long_code",
+      "target": "27b-6bit"
+    },
+    {
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-29-qwen36-mtp-matrix/27b-6bit/python_modules_long/ax_engine.json",
+      "bits": 6,
+      "engine": "ax_engine",
+      "metric_contract": {
+        "accept_rate": "measured",
+        "decode_tok_s": "measured",
+        "prefill_tok_s": "measured",
+        "ttft_ms": "measured"
+      },
+      "metrics": {
+        "accept_rate": 0.9671168526130358,
+        "accept_source": "ax_engine_mtp_telemetry",
+        "case_count": 3,
+        "decode_tok_s": 33.280221427956455,
+        "prefill_source": "ax_engine_runner_prefill_time",
+        "prefill_tok_s": 623.7702814451509,
+        "status": "ok",
+        "ttft_ms": 560.38,
+        "ttft_source": "ax_engine_runner_prefill_time"
+      },
+      "model": "27b",
+      "model_label": "Qwen3.6 27B 6-bit",
+      "reason": null,
+      "status": "supported",
+      "suite": "python_modules_long",
+      "target": "27b-6bit"
+    },
+    {
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-29-qwen36-mtp-matrix/27b-6bit/python_modules_long/mtplx.json",
+      "bits": 6,
+      "engine": "mtplx",
+      "metric_contract": {
+        "accept_rate": "measured",
+        "decode_tok_s": "measured",
+        "prefill_tok_s": "derived_from_prompt_eval_time_s",
+        "ttft_ms": "prompt_eval_time_s"
+      },
+      "metrics": {
+        "status": "unsupported"
+      },
+      "model": "27b",
+      "model_label": "Qwen3.6 27B 6-bit",
+      "reason": "MTPLX catalog has no official Qwen3.6 27B 6-bit MTP artifact.",
+      "status": "unsupported",
+      "suite": "python_modules_long",
+      "target": "27b-6bit"
+    },
+    {
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-29-qwen36-mtp-matrix/27b-6bit/python_modules_long/lightning_mlx.json",
+      "bits": 6,
+      "engine": "lightning_mlx",
+      "metric_contract": {
+        "accept_rate": "measured_if_server_exposes_request_telemetry",
+        "decode_tok_s": "measured",
+        "prefill_tok_s": "approx_prompt_tokens_over_client_ttft_s",
+        "ttft_ms": "client_stream_ttft_s"
+      },
+      "metrics": {
+        "status": "unsupported"
+      },
+      "model": "27b",
+      "model_label": "Qwen3.6 27B 6-bit",
+      "reason": "lightning-mlx 6-bit aliases do not map to a verified pure Qwen3.6 MTP head.",
+      "status": "unsupported",
+      "suite": "python_modules_long",
+      "target": "27b-6bit"
+    },
+    {
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-29-qwen36-mtp-matrix/27b-6bit/python_modules_long/rapid_mlx.json",
+      "bits": 6,
+      "engine": "rapid_mlx",
+      "metric_contract": {
+        "accept_rate": "unavailable",
+        "decode_tok_s": "unavailable",
+        "prefill_tok_s": "unavailable",
+        "ttft_ms": "unavailable"
+      },
+      "metrics": {
+        "status": "unsupported"
+      },
+      "model": "27b",
+      "model_label": "Qwen3.6 27B 6-bit",
+      "reason": "Rapid-MLX Qwen3.6 aliases advertise supports_spec_decode=false; MTP is not a supported Qwen3.6 benchmark lane.",
+      "status": "unsupported",
+      "suite": "python_modules_long",
+      "target": "27b-6bit"
+    },
+    {
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-29-qwen36-mtp-matrix/27b-6bit/python_modules_long/omlx.json",
+      "bits": 6,
+      "engine": "omlx",
+      "metric_contract": {
+        "accept_rate": "unavailable",
+        "decode_tok_s": "unavailable",
+        "prefill_tok_s": "unavailable",
+        "ttft_ms": "unavailable"
+      },
+      "metrics": {
+        "status": "unsupported"
+      },
+      "model": "27b",
+      "model_label": "Qwen3.6 27B 6-bit",
+      "reason": "oMLX has no repo-owned Qwen3.6 MTP prompt-suite adapter yet; native MTP needs prepared MTP weights and a dedicated runner.",
+      "status": "unsupported",
+      "suite": "python_modules_long",
+      "target": "27b-6bit"
+    },
+    {
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-29-qwen36-mtp-matrix/35b-a3b-4bit/flappy/ax_engine.json",
+      "bits": 4,
+      "engine": "ax_engine",
+      "metric_contract": {
+        "accept_rate": "measured",
+        "decode_tok_s": "measured",
+        "prefill_tok_s": "measured",
+        "ttft_ms": "measured"
+      },
+      "metrics": {
+        "accept_rate": 0.9984825493171472,
+        "accept_source": "ax_engine_mtp_telemetry",
+        "case_count": 4,
+        "decode_tok_s": 168.16687265960695,
+        "prefill_source": "ax_engine_runner_prefill_time",
+        "prefill_tok_s": 1731.3702267176077,
+        "status": "ok",
+        "ttft_ms": 185.27900000000002,
+        "ttft_source": "ax_engine_runner_prefill_time"
+      },
+      "model": "35b-a3b",
+      "model_label": "Qwen3.6 35B-A3B 4-bit",
+      "reason": null,
+      "status": "supported",
+      "suite": "flappy",
+      "target": "35b-a3b-4bit"
+    },
+    {
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-29-qwen36-mtp-matrix/35b-a3b-4bit/flappy/mtplx.json",
+      "bits": 4,
+      "engine": "mtplx",
+      "metric_contract": {
+        "accept_rate": "measured",
+        "decode_tok_s": "measured",
+        "prefill_tok_s": "derived_from_prompt_eval_time_s",
+        "ttft_ms": "prompt_eval_time_s"
+      },
+      "metrics": {
+        "error": "command failed; see benchmarks/results/mtp-qwen36-matrix/2026-06-29-qwen36-mtp-matrix/35b-a3b-4bit/flappy/mtplx.log\n$ /opt/homebrew/var/mtplx/venv-0.3.7/bin/python /Users/akiralam/code/ax-engine/scripts/bench_mtplx_prompt_suites.py --model Youssofal/Qwen3.6-35B-A3B-MTPLX-Optimized-Speed --suite flappy --prompts /Users/akiralam/code/ax-engine/benchmarks/prompts/mtp-suites/flappy.jsonl --output benchmarks/results/mtp-qwen36-matrix/2026-06-29-qwen36-mtp-matrix/35b-a3b-4bit/flappy/mtplx.json --depth 1 --temperature 0.6 --top-p 0.95 --top-k 20 --max-tokens 1000 --repetitions 5 --warmup-repetitions 1 --cooldown 30.0 --inter-case-cooldown 10.0 --profile stable --mtp-quant-mode cyankiwi --disable-thinking --allow-unverified-model\n\nERROR: Missing config.json in Youssofal/Qwen3.6-35B-A3B-MTPLX-Optimized-Speed\n\n[exit 1 after 2.1s]",
+        "status": "error"
+      },
+      "model": "35b-a3b",
+      "model_label": "Qwen3.6 35B-A3B 4-bit",
+      "reason": null,
+      "status": "supported",
+      "suite": "flappy",
+      "target": "35b-a3b-4bit"
+    },
+    {
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-29-qwen36-mtp-matrix/35b-a3b-4bit/flappy/lightning_mlx.json",
+      "bits": 4,
+      "engine": "lightning_mlx",
+      "metric_contract": {
+        "accept_rate": "measured_if_server_exposes_request_telemetry",
+        "decode_tok_s": "measured",
+        "prefill_tok_s": "approx_prompt_tokens_over_client_ttft_s",
+        "ttft_ms": "client_stream_ttft_s"
+      },
+      "metrics": {
+        "status": "unsupported"
+      },
+      "model": "35b-a3b",
+      "model_label": "Qwen3.6 35B-A3B 4-bit",
+      "reason": "lightning-mlx Qwen3.6 aliases start, but runtime validation reports no MTP head and disables MTP.",
+      "status": "unsupported",
+      "suite": "flappy",
+      "target": "35b-a3b-4bit"
+    },
+    {
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-29-qwen36-mtp-matrix/35b-a3b-4bit/flappy/rapid_mlx.json",
+      "bits": 4,
+      "engine": "rapid_mlx",
+      "metric_contract": {
+        "accept_rate": "unavailable",
+        "decode_tok_s": "unavailable",
+        "prefill_tok_s": "unavailable",
+        "ttft_ms": "unavailable"
+      },
+      "metrics": {
+        "status": "unsupported"
+      },
+      "model": "35b-a3b",
+      "model_label": "Qwen3.6 35B-A3B 4-bit",
+      "reason": "Rapid-MLX Qwen3.6 aliases advertise supports_spec_decode=false; MTP is not a supported Qwen3.6 benchmark lane.",
+      "status": "unsupported",
+      "suite": "flappy",
+      "target": "35b-a3b-4bit"
+    },
+    {
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-29-qwen36-mtp-matrix/35b-a3b-4bit/flappy/omlx.json",
+      "bits": 4,
+      "engine": "omlx",
+      "metric_contract": {
+        "accept_rate": "unavailable",
+        "decode_tok_s": "unavailable",
+        "prefill_tok_s": "unavailable",
+        "ttft_ms": "unavailable"
+      },
+      "metrics": {
+        "status": "unsupported"
+      },
+      "model": "35b-a3b",
+      "model_label": "Qwen3.6 35B-A3B 4-bit",
+      "reason": "oMLX has no repo-owned Qwen3.6 MTP prompt-suite adapter yet; native MTP needs prepared MTP weights and a dedicated runner.",
+      "status": "unsupported",
+      "suite": "flappy",
+      "target": "35b-a3b-4bit"
+    },
+    {
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-29-qwen36-mtp-matrix/35b-a3b-4bit/long_code/ax_engine.json",
+      "bits": 4,
+      "engine": "ax_engine",
+      "metric_contract": {
+        "accept_rate": "measured",
+        "decode_tok_s": "measured",
+        "prefill_tok_s": "measured",
+        "ttft_ms": "measured"
+      },
+      "metrics": {
+        "accept_rate": 0.9984771573604061,
+        "accept_source": "ax_engine_mtp_telemetry",
+        "case_count": 4,
+        "decode_tok_s": 167.52910810507916,
+        "prefill_source": "ax_engine_runner_prefill_time",
+        "prefill_tok_s": 2558.844113181871,
+        "status": "ok",
+        "ttft_ms": 280.419,
+        "ttft_source": "ax_engine_runner_prefill_time"
+      },
+      "model": "35b-a3b",
+      "model_label": "Qwen3.6 35B-A3B 4-bit",
+      "reason": null,
+      "status": "supported",
+      "suite": "long_code",
+      "target": "35b-a3b-4bit"
+    },
+    {
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-29-qwen36-mtp-matrix/35b-a3b-4bit/long_code/mtplx.json",
+      "bits": 4,
+      "engine": "mtplx",
+      "metric_contract": {
+        "accept_rate": "measured",
+        "decode_tok_s": "measured",
+        "prefill_tok_s": "derived_from_prompt_eval_time_s",
+        "ttft_ms": "prompt_eval_time_s"
+      },
+      "metrics": {
+        "error": "command failed; see benchmarks/results/mtp-qwen36-matrix/2026-06-29-qwen36-mtp-matrix/35b-a3b-4bit/long_code/mtplx.log\n$ /opt/homebrew/var/mtplx/venv-0.3.7/bin/python /Users/akiralam/code/ax-engine/scripts/bench_mtplx_prompt_suites.py --model Youssofal/Qwen3.6-35B-A3B-MTPLX-Optimized-Speed --suite long_code --prompts /Users/akiralam/code/ax-engine/benchmarks/prompts/mtp-suites/long_code.jsonl --output benchmarks/results/mtp-qwen36-matrix/2026-06-29-qwen36-mtp-matrix/35b-a3b-4bit/long_code/mtplx.json --depth 1 --temperature 0.6 --top-p 0.95 --top-k 20 --max-tokens 1000 --repetitions 5 --warmup-repetitions 1 --cooldown 30.0 --inter-case-cooldown 10.0 --profile stable --mtp-quant-mode cyankiwi --disable-thinking --allow-unverified-model\n\nERROR: Missing config.json in Youssofal/Qwen3.6-35B-A3B-MTPLX-Optimized-Speed\n\n[exit 1 after 1.3s]",
+        "status": "error"
+      },
+      "model": "35b-a3b",
+      "model_label": "Qwen3.6 35B-A3B 4-bit",
+      "reason": null,
+      "status": "supported",
+      "suite": "long_code",
+      "target": "35b-a3b-4bit"
+    },
+    {
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-29-qwen36-mtp-matrix/35b-a3b-4bit/long_code/lightning_mlx.json",
+      "bits": 4,
+      "engine": "lightning_mlx",
+      "metric_contract": {
+        "accept_rate": "measured_if_server_exposes_request_telemetry",
+        "decode_tok_s": "measured",
+        "prefill_tok_s": "approx_prompt_tokens_over_client_ttft_s",
+        "ttft_ms": "client_stream_ttft_s"
+      },
+      "metrics": {
+        "status": "unsupported"
+      },
+      "model": "35b-a3b",
+      "model_label": "Qwen3.6 35B-A3B 4-bit",
+      "reason": "lightning-mlx Qwen3.6 aliases start, but runtime validation reports no MTP head and disables MTP.",
+      "status": "unsupported",
+      "suite": "long_code",
+      "target": "35b-a3b-4bit"
+    },
+    {
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-29-qwen36-mtp-matrix/35b-a3b-4bit/long_code/rapid_mlx.json",
+      "bits": 4,
+      "engine": "rapid_mlx",
+      "metric_contract": {
+        "accept_rate": "unavailable",
+        "decode_tok_s": "unavailable",
+        "prefill_tok_s": "unavailable",
+        "ttft_ms": "unavailable"
+      },
+      "metrics": {
+        "status": "unsupported"
+      },
+      "model": "35b-a3b",
+      "model_label": "Qwen3.6 35B-A3B 4-bit",
+      "reason": "Rapid-MLX Qwen3.6 aliases advertise supports_spec_decode=false; MTP is not a supported Qwen3.6 benchmark lane.",
+      "status": "unsupported",
+      "suite": "long_code",
+      "target": "35b-a3b-4bit"
+    },
+    {
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-29-qwen36-mtp-matrix/35b-a3b-4bit/long_code/omlx.json",
+      "bits": 4,
+      "engine": "omlx",
+      "metric_contract": {
+        "accept_rate": "unavailable",
+        "decode_tok_s": "unavailable",
+        "prefill_tok_s": "unavailable",
+        "ttft_ms": "unavailable"
+      },
+      "metrics": {
+        "status": "unsupported"
+      },
+      "model": "35b-a3b",
+      "model_label": "Qwen3.6 35B-A3B 4-bit",
+      "reason": "oMLX has no repo-owned Qwen3.6 MTP prompt-suite adapter yet; native MTP needs prepared MTP weights and a dedicated runner.",
+      "status": "unsupported",
+      "suite": "long_code",
+      "target": "35b-a3b-4bit"
+    },
+    {
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-29-qwen36-mtp-matrix/35b-a3b-4bit/python_modules_long/ax_engine.json",
+      "bits": 4,
+      "engine": "ax_engine",
+      "metric_contract": {
+        "accept_rate": "measured",
+        "decode_tok_s": "measured",
+        "prefill_tok_s": "measured",
+        "ttft_ms": "measured"
+      },
+      "metrics": {
+        "accept_rate": 0.9831649831649831,
+        "accept_source": "ax_engine_mtp_telemetry",
+        "case_count": 3,
+        "decode_tok_s": 160.8456621533374,
+        "prefill_source": "ax_engine_runner_prefill_time",
+        "prefill_tok_s": 1843.2403111389644,
+        "status": "ok",
+        "ttft_ms": 184.801,
+        "ttft_source": "ax_engine_runner_prefill_time"
+      },
+      "model": "35b-a3b",
+      "model_label": "Qwen3.6 35B-A3B 4-bit",
+      "reason": null,
+      "status": "supported",
+      "suite": "python_modules_long",
+      "target": "35b-a3b-4bit"
+    },
+    {
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-29-qwen36-mtp-matrix/35b-a3b-4bit/python_modules_long/mtplx.json",
+      "bits": 4,
+      "engine": "mtplx",
+      "metric_contract": {
+        "accept_rate": "measured",
+        "decode_tok_s": "measured",
+        "prefill_tok_s": "derived_from_prompt_eval_time_s",
+        "ttft_ms": "prompt_eval_time_s"
+      },
+      "metrics": {
+        "error": "command failed; see benchmarks/results/mtp-qwen36-matrix/2026-06-29-qwen36-mtp-matrix/35b-a3b-4bit/python_modules_long/mtplx.log\n$ /opt/homebrew/var/mtplx/venv-0.3.7/bin/python /Users/akiralam/code/ax-engine/scripts/bench_mtplx_prompt_suites.py --model Youssofal/Qwen3.6-35B-A3B-MTPLX-Optimized-Speed --suite python_modules_long --prompts /Users/akiralam/code/ax-engine/benchmarks/prompts/mtp-suites/python_modules_long.jsonl --output benchmarks/results/mtp-qwen36-matrix/2026-06-29-qwen36-mtp-matrix/35b-a3b-4bit/python_modules_long/mtplx.json --depth 1 --temperature 0.6 --top-p 0.95 --top-k 20 --max-tokens 1000 --repetitions 5 --warmup-repetitions 1 --cooldown 30.0 --inter-case-cooldown 10.0 --profile stable --mtp-quant-mode cyankiwi --disable-thinking --allow-unverified-model\n\nERROR: Missing config.json in Youssofal/Qwen3.6-35B-A3B-MTPLX-Optimized-Speed\n\n[exit 1 after 1.1s]",
+        "status": "error"
+      },
+      "model": "35b-a3b",
+      "model_label": "Qwen3.6 35B-A3B 4-bit",
+      "reason": null,
+      "status": "supported",
+      "suite": "python_modules_long",
+      "target": "35b-a3b-4bit"
+    },
+    {
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-29-qwen36-mtp-matrix/35b-a3b-4bit/python_modules_long/lightning_mlx.json",
+      "bits": 4,
+      "engine": "lightning_mlx",
+      "metric_contract": {
+        "accept_rate": "measured_if_server_exposes_request_telemetry",
+        "decode_tok_s": "measured",
+        "prefill_tok_s": "approx_prompt_tokens_over_client_ttft_s",
+        "ttft_ms": "client_stream_ttft_s"
+      },
+      "metrics": {
+        "status": "unsupported"
+      },
+      "model": "35b-a3b",
+      "model_label": "Qwen3.6 35B-A3B 4-bit",
+      "reason": "lightning-mlx Qwen3.6 aliases start, but runtime validation reports no MTP head and disables MTP.",
+      "status": "unsupported",
+      "suite": "python_modules_long",
+      "target": "35b-a3b-4bit"
+    },
+    {
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-29-qwen36-mtp-matrix/35b-a3b-4bit/python_modules_long/rapid_mlx.json",
+      "bits": 4,
+      "engine": "rapid_mlx",
+      "metric_contract": {
+        "accept_rate": "unavailable",
+        "decode_tok_s": "unavailable",
+        "prefill_tok_s": "unavailable",
+        "ttft_ms": "unavailable"
+      },
+      "metrics": {
+        "status": "unsupported"
+      },
+      "model": "35b-a3b",
+      "model_label": "Qwen3.6 35B-A3B 4-bit",
+      "reason": "Rapid-MLX Qwen3.6 aliases advertise supports_spec_decode=false; MTP is not a supported Qwen3.6 benchmark lane.",
+      "status": "unsupported",
+      "suite": "python_modules_long",
+      "target": "35b-a3b-4bit"
+    },
+    {
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-29-qwen36-mtp-matrix/35b-a3b-4bit/python_modules_long/omlx.json",
+      "bits": 4,
+      "engine": "omlx",
+      "metric_contract": {
+        "accept_rate": "unavailable",
+        "decode_tok_s": "unavailable",
+        "prefill_tok_s": "unavailable",
+        "ttft_ms": "unavailable"
+      },
+      "metrics": {
+        "status": "unsupported"
+      },
+      "model": "35b-a3b",
+      "model_label": "Qwen3.6 35B-A3B 4-bit",
+      "reason": "oMLX has no repo-owned Qwen3.6 MTP prompt-suite adapter yet; native MTP needs prepared MTP weights and a dedicated runner.",
+      "status": "unsupported",
+      "suite": "python_modules_long",
+      "target": "35b-a3b-4bit"
+    },
+    {
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-29-qwen36-mtp-matrix/35b-a3b-6bit/flappy/ax_engine.json",
+      "bits": 6,
+      "engine": "ax_engine",
+      "metric_contract": {
+        "accept_rate": "measured",
+        "decode_tok_s": "measured",
+        "prefill_tok_s": "measured",
+        "ttft_ms": "measured"
+      },
+      "metrics": {
+        "accept_rate": 0.9984810126582279,
+        "accept_source": "ax_engine_mtp_telemetry",
+        "case_count": 4,
+        "decode_tok_s": 134.9241918695766,
+        "prefill_source": "ax_engine_runner_prefill_time",
+        "prefill_tok_s": 1491.8191288389357,
+        "status": "ok",
+        "ttft_ms": 215.6735,
+        "ttft_source": "ax_engine_runner_prefill_time"
+      },
+      "model": "35b-a3b",
+      "model_label": "Qwen3.6 35B-A3B 6-bit",
+      "reason": null,
+      "status": "supported",
+      "suite": "flappy",
+      "target": "35b-a3b-6bit"
+    },
+    {
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-29-qwen36-mtp-matrix/35b-a3b-6bit/flappy/mtplx.json",
+      "bits": 6,
+      "engine": "mtplx",
+      "metric_contract": {
+        "accept_rate": "measured",
+        "decode_tok_s": "measured",
+        "prefill_tok_s": "derived_from_prompt_eval_time_s",
+        "ttft_ms": "prompt_eval_time_s"
+      },
+      "metrics": {
+        "error": "command failed; see benchmarks/results/mtp-qwen36-matrix/2026-06-29-qwen36-mtp-matrix/35b-a3b-6bit/flappy/mtplx.log\n$ /opt/homebrew/var/mtplx/venv-0.3.7/bin/python /Users/akiralam/code/ax-engine/scripts/bench_mtplx_prompt_suites.py --model Youssofal/Qwen3.6-35B-A3B-MTPLX-Optimized-Balance --suite flappy --prompts /Users/akiralam/code/ax-engine/benchmarks/prompts/mtp-suites/flappy.jsonl --output benchmarks/results/mtp-qwen36-matrix/2026-06-29-qwen36-mtp-matrix/35b-a3b-6bit/flappy/mtplx.json --depth 1 --temperature 0.6 --top-p 0.95 --top-k 20 --max-tokens 1000 --repetitions 5 --warmup-repetitions 1 --cooldown 30.0 --inter-case-cooldown 10.0 --profile stable --mtp-quant-mode cyankiwi --disable-thinking --allow-unverified-model\n\nERROR: Missing config.json in Youssofal/Qwen3.6-35B-A3B-MTPLX-Optimized-Balance\n\n[exit 1 after 1.8s]",
+        "status": "error"
+      },
+      "model": "35b-a3b",
+      "model_label": "Qwen3.6 35B-A3B 6-bit",
+      "reason": null,
+      "status": "supported",
+      "suite": "flappy",
+      "target": "35b-a3b-6bit"
+    },
+    {
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-29-qwen36-mtp-matrix/35b-a3b-6bit/flappy/lightning_mlx.json",
+      "bits": 6,
+      "engine": "lightning_mlx",
+      "metric_contract": {
+        "accept_rate": "measured_if_server_exposes_request_telemetry",
+        "decode_tok_s": "measured",
+        "prefill_tok_s": "approx_prompt_tokens_over_client_ttft_s",
+        "ttft_ms": "client_stream_ttft_s"
+      },
+      "metrics": {
+        "status": "unsupported"
+      },
+      "model": "35b-a3b",
+      "model_label": "Qwen3.6 35B-A3B 6-bit",
+      "reason": "lightning-mlx 6-bit aliases do not map to a verified pure Qwen3.6 MTP head.",
+      "status": "unsupported",
+      "suite": "flappy",
+      "target": "35b-a3b-6bit"
+    },
+    {
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-29-qwen36-mtp-matrix/35b-a3b-6bit/flappy/rapid_mlx.json",
+      "bits": 6,
+      "engine": "rapid_mlx",
+      "metric_contract": {
+        "accept_rate": "unavailable",
+        "decode_tok_s": "unavailable",
+        "prefill_tok_s": "unavailable",
+        "ttft_ms": "unavailable"
+      },
+      "metrics": {
+        "status": "unsupported"
+      },
+      "model": "35b-a3b",
+      "model_label": "Qwen3.6 35B-A3B 6-bit",
+      "reason": "Rapid-MLX Qwen3.6 aliases advertise supports_spec_decode=false; MTP is not a supported Qwen3.6 benchmark lane.",
+      "status": "unsupported",
+      "suite": "flappy",
+      "target": "35b-a3b-6bit"
+    },
+    {
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-29-qwen36-mtp-matrix/35b-a3b-6bit/flappy/omlx.json",
+      "bits": 6,
+      "engine": "omlx",
+      "metric_contract": {
+        "accept_rate": "unavailable",
+        "decode_tok_s": "unavailable",
+        "prefill_tok_s": "unavailable",
+        "ttft_ms": "unavailable"
+      },
+      "metrics": {
+        "status": "unsupported"
+      },
+      "model": "35b-a3b",
+      "model_label": "Qwen3.6 35B-A3B 6-bit",
+      "reason": "oMLX has no repo-owned Qwen3.6 MTP prompt-suite adapter yet; native MTP needs prepared MTP weights and a dedicated runner.",
+      "status": "unsupported",
+      "suite": "flappy",
+      "target": "35b-a3b-6bit"
+    },
+    {
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-29-qwen36-mtp-matrix/35b-a3b-6bit/long_code/ax_engine.json",
+      "bits": 6,
+      "engine": "ax_engine",
+      "metric_contract": {
+        "accept_rate": "measured",
+        "decode_tok_s": "measured",
+        "prefill_tok_s": "measured",
+        "ttft_ms": "measured"
+      },
+      "metrics": {
+        "accept_rate": 0.9984756097560976,
+        "accept_source": "ax_engine_mtp_telemetry",
+        "case_count": 4,
+        "decode_tok_s": 133.5803642205995,
+        "prefill_source": "ax_engine_runner_prefill_time",
+        "prefill_tok_s": 2281.8047561254234,
+        "status": "ok",
+        "ttft_ms": 314.4835,
+        "ttft_source": "ax_engine_runner_prefill_time"
+      },
+      "model": "35b-a3b",
+      "model_label": "Qwen3.6 35B-A3B 6-bit",
+      "reason": null,
+      "status": "supported",
+      "suite": "long_code",
+      "target": "35b-a3b-6bit"
+    },
+    {
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-29-qwen36-mtp-matrix/35b-a3b-6bit/long_code/mtplx.json",
+      "bits": 6,
+      "engine": "mtplx",
+      "metric_contract": {
+        "accept_rate": "measured",
+        "decode_tok_s": "measured",
+        "prefill_tok_s": "derived_from_prompt_eval_time_s",
+        "ttft_ms": "prompt_eval_time_s"
+      },
+      "metrics": {
+        "error": "command failed; see benchmarks/results/mtp-qwen36-matrix/2026-06-29-qwen36-mtp-matrix/35b-a3b-6bit/long_code/mtplx.log\n$ /opt/homebrew/var/mtplx/venv-0.3.7/bin/python /Users/akiralam/code/ax-engine/scripts/bench_mtplx_prompt_suites.py --model Youssofal/Qwen3.6-35B-A3B-MTPLX-Optimized-Balance --suite long_code --prompts /Users/akiralam/code/ax-engine/benchmarks/prompts/mtp-suites/long_code.jsonl --output benchmarks/results/mtp-qwen36-matrix/2026-06-29-qwen36-mtp-matrix/35b-a3b-6bit/long_code/mtplx.json --depth 1 --temperature 0.6 --top-p 0.95 --top-k 20 --max-tokens 1000 --repetitions 5 --warmup-repetitions 1 --cooldown 30.0 --inter-case-cooldown 10.0 --profile stable --mtp-quant-mode cyankiwi --disable-thinking --allow-unverified-model\n\nERROR: Missing config.json in Youssofal/Qwen3.6-35B-A3B-MTPLX-Optimized-Balance\n\n[exit 1 after 3.2s]",
+        "status": "error"
+      },
+      "model": "35b-a3b",
+      "model_label": "Qwen3.6 35B-A3B 6-bit",
+      "reason": null,
+      "status": "supported",
+      "suite": "long_code",
+      "target": "35b-a3b-6bit"
+    },
+    {
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-29-qwen36-mtp-matrix/35b-a3b-6bit/long_code/lightning_mlx.json",
+      "bits": 6,
+      "engine": "lightning_mlx",
+      "metric_contract": {
+        "accept_rate": "measured_if_server_exposes_request_telemetry",
+        "decode_tok_s": "measured",
+        "prefill_tok_s": "approx_prompt_tokens_over_client_ttft_s",
+        "ttft_ms": "client_stream_ttft_s"
+      },
+      "metrics": {
+        "status": "unsupported"
+      },
+      "model": "35b-a3b",
+      "model_label": "Qwen3.6 35B-A3B 6-bit",
+      "reason": "lightning-mlx 6-bit aliases do not map to a verified pure Qwen3.6 MTP head.",
+      "status": "unsupported",
+      "suite": "long_code",
+      "target": "35b-a3b-6bit"
+    },
+    {
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-29-qwen36-mtp-matrix/35b-a3b-6bit/long_code/rapid_mlx.json",
+      "bits": 6,
+      "engine": "rapid_mlx",
+      "metric_contract": {
+        "accept_rate": "unavailable",
+        "decode_tok_s": "unavailable",
+        "prefill_tok_s": "unavailable",
+        "ttft_ms": "unavailable"
+      },
+      "metrics": {
+        "status": "unsupported"
+      },
+      "model": "35b-a3b",
+      "model_label": "Qwen3.6 35B-A3B 6-bit",
+      "reason": "Rapid-MLX Qwen3.6 aliases advertise supports_spec_decode=false; MTP is not a supported Qwen3.6 benchmark lane.",
+      "status": "unsupported",
+      "suite": "long_code",
+      "target": "35b-a3b-6bit"
+    },
+    {
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-29-qwen36-mtp-matrix/35b-a3b-6bit/long_code/omlx.json",
+      "bits": 6,
+      "engine": "omlx",
+      "metric_contract": {
+        "accept_rate": "unavailable",
+        "decode_tok_s": "unavailable",
+        "prefill_tok_s": "unavailable",
+        "ttft_ms": "unavailable"
+      },
+      "metrics": {
+        "status": "unsupported"
+      },
+      "model": "35b-a3b",
+      "model_label": "Qwen3.6 35B-A3B 6-bit",
+      "reason": "oMLX has no repo-owned Qwen3.6 MTP prompt-suite adapter yet; native MTP needs prepared MTP weights and a dedicated runner.",
+      "status": "unsupported",
+      "suite": "long_code",
+      "target": "35b-a3b-6bit"
+    },
+    {
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-29-qwen36-mtp-matrix/35b-a3b-6bit/python_modules_long/ax_engine.json",
+      "bits": 6,
+      "engine": "ax_engine",
+      "metric_contract": {
+        "accept_rate": "measured",
+        "decode_tok_s": "measured",
+        "prefill_tok_s": "measured",
+        "ttft_ms": "measured"
+      },
+      "metrics": {
+        "accept_rate": 0.9837793998377939,
+        "accept_source": "ax_engine_mtp_telemetry",
+        "case_count": 3,
+        "decode_tok_s": 135.52684434416662,
+        "prefill_source": "ax_engine_runner_prefill_time",
+        "prefill_tok_s": 1631.2377365877303,
+        "status": "ok",
+        "ttft_ms": 209.72199999999998,
+        "ttft_source": "ax_engine_runner_prefill_time"
+      },
+      "model": "35b-a3b",
+      "model_label": "Qwen3.6 35B-A3B 6-bit",
+      "reason": null,
+      "status": "supported",
+      "suite": "python_modules_long",
+      "target": "35b-a3b-6bit"
+    },
+    {
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-29-qwen36-mtp-matrix/35b-a3b-6bit/python_modules_long/mtplx.json",
+      "bits": 6,
+      "engine": "mtplx",
+      "metric_contract": {
+        "accept_rate": "measured",
+        "decode_tok_s": "measured",
+        "prefill_tok_s": "derived_from_prompt_eval_time_s",
+        "ttft_ms": "prompt_eval_time_s"
+      },
+      "metrics": {
+        "error": "command failed; see benchmarks/results/mtp-qwen36-matrix/2026-06-29-qwen36-mtp-matrix/35b-a3b-6bit/python_modules_long/mtplx.log\n$ /opt/homebrew/var/mtplx/venv-0.3.7/bin/python /Users/akiralam/code/ax-engine/scripts/bench_mtplx_prompt_suites.py --model Youssofal/Qwen3.6-35B-A3B-MTPLX-Optimized-Balance --suite python_modules_long --prompts /Users/akiralam/code/ax-engine/benchmarks/prompts/mtp-suites/python_modules_long.jsonl --output benchmarks/results/mtp-qwen36-matrix/2026-06-29-qwen36-mtp-matrix/35b-a3b-6bit/python_modules_long/mtplx.json --depth 1 --temperature 0.6 --top-p 0.95 --top-k 20 --max-tokens 1000 --repetitions 5 --warmup-repetitions 1 --cooldown 30.0 --inter-case-cooldown 10.0 --profile stable --mtp-quant-mode cyankiwi --disable-thinking --allow-unverified-model\n\nERROR: Missing config.json in Youssofal/Qwen3.6-35B-A3B-MTPLX-Optimized-Balance\n\n[exit 1 after 1.6s]",
+        "status": "error"
+      },
+      "model": "35b-a3b",
+      "model_label": "Qwen3.6 35B-A3B 6-bit",
+      "reason": null,
+      "status": "supported",
+      "suite": "python_modules_long",
+      "target": "35b-a3b-6bit"
+    },
+    {
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-29-qwen36-mtp-matrix/35b-a3b-6bit/python_modules_long/lightning_mlx.json",
+      "bits": 6,
+      "engine": "lightning_mlx",
+      "metric_contract": {
+        "accept_rate": "measured_if_server_exposes_request_telemetry",
+        "decode_tok_s": "measured",
+        "prefill_tok_s": "approx_prompt_tokens_over_client_ttft_s",
+        "ttft_ms": "client_stream_ttft_s"
+      },
+      "metrics": {
+        "status": "unsupported"
+      },
+      "model": "35b-a3b",
+      "model_label": "Qwen3.6 35B-A3B 6-bit",
+      "reason": "lightning-mlx 6-bit aliases do not map to a verified pure Qwen3.6 MTP head.",
+      "status": "unsupported",
+      "suite": "python_modules_long",
+      "target": "35b-a3b-6bit"
+    },
+    {
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-29-qwen36-mtp-matrix/35b-a3b-6bit/python_modules_long/rapid_mlx.json",
+      "bits": 6,
+      "engine": "rapid_mlx",
+      "metric_contract": {
+        "accept_rate": "unavailable",
+        "decode_tok_s": "unavailable",
+        "prefill_tok_s": "unavailable",
+        "ttft_ms": "unavailable"
+      },
+      "metrics": {
+        "status": "unsupported"
+      },
+      "model": "35b-a3b",
+      "model_label": "Qwen3.6 35B-A3B 6-bit",
+      "reason": "Rapid-MLX Qwen3.6 aliases advertise supports_spec_decode=false; MTP is not a supported Qwen3.6 benchmark lane.",
+      "status": "unsupported",
+      "suite": "python_modules_long",
+      "target": "35b-a3b-6bit"
+    },
+    {
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-29-qwen36-mtp-matrix/35b-a3b-6bit/python_modules_long/omlx.json",
+      "bits": 6,
+      "engine": "omlx",
+      "metric_contract": {
+        "accept_rate": "unavailable",
+        "decode_tok_s": "unavailable",
+        "prefill_tok_s": "unavailable",
+        "ttft_ms": "unavailable"
+      },
+      "metrics": {
+        "status": "unsupported"
+      },
+      "model": "35b-a3b",
+      "model_label": "Qwen3.6 35B-A3B 6-bit",
+      "reason": "oMLX has no repo-owned Qwen3.6 MTP prompt-suite adapter yet; native MTP needs prepared MTP weights and a dedicated runner.",
+      "status": "unsupported",
+      "suite": "python_modules_long",
+      "target": "35b-a3b-6bit"
+    }
+  ],
+  "schema": "ax.qwen36_mtp_matrix.summary.v1"
+}

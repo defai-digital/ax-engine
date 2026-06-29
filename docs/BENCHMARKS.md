@@ -96,57 +96,49 @@ use a larger corpus with a published prompt-mix table. See
 
 ## MTP Matrix
 
-Use the MTP benchmark when the question is how AX Engine MTP throughput and
-acceptance behaves on the supported local-agent targets. The current benchmark
-design is AX-owned and has two labeled lanes: the recommended 6-bit
-`download-mtp` matrix for practical AX Engine usage, and 4-bit comparison rows
-for alignment with peer MTP engines that publish 4-bit results.
+Use the MTP benchmark when the question is how Qwen3.6 MTP throughput,
+prefill, TTFT, and acceptance behave across AX Engine and comparable peer MTP
+lanes. The current benchmark design is intentionally Qwen-only: Qwen3.6 27B and
+Qwen3.6 35B-A3B, each at 4-bit and 6-bit.
 
-| Target | Preparation command | Benchmark mode |
+| Target | AX preparation / source | Benchmark mode |
 |---|---|---|
+| `qwen3.6-27b-4bit` | prepared Qwen fused sidecar | MTP |
 | `qwen3.6-27b-6bit` | `ax-engine download-mtp qwen3.6-27b-6bit` | MTP |
+| `qwen3.6-35b-a3b-4bit` | prepared Qwen fused sidecar | MTP |
 | `qwen3.6-35b-a3b` | `ax-engine download-mtp qwen3.6-35b-a3b` | MTP |
-| `gemma-4-12b` | `ax-engine download-mtp gemma-4-12b` | assistant-MTP |
-| `gemma-4-26b` | `ax-engine download-mtp gemma-4-26b` | assistant-MTP |
-| `gemma-4-31b` | `ax-engine download-mtp gemma-4-31b` | assistant-MTP |
-| `glm-4.7-flash` | `ax-engine download-mtp glm-4.7-flash` | GLM built-in MTP sidecar |
 
 Rules for the current matrix:
 
-- Use 6-bit artifacts for the recommended AX Engine practice lane.
-- Use 4-bit artifacts only as clearly labeled comparison rows for peer-engine
-  alignment.
-- Use MTP mode for promoted runtime rows; direct rows are allowed only as
-  same-package denominators for AX MTP acceleration charts.
+- Use MTP mode for all promoted runtime rows.
+- Report decode tok/s, prefill tok/s, TTFT ms, and MTP accept rate for every
+  supported lane.
+- Include peer lanes only when the reference project has a matching Qwen3.6 MTP
+  runner/artifact. Unsupported lanes stay in the plan with their support reason.
 - Do not run, render, or promote `mtp-ngram` rows.
-- Do not include Qwen3-Coder-Next, 5-bit, 8-bit, FFN-only, or GGUF variants in
-  the recommended 6-bit MTP matrix.
+- Do not include Qwen3-Coder-Next, 5-bit, 8-bit, FFN-only, GGUF, Gemma, or GLM
+  variants in the current MTP benchmark matrix.
 - Direct rows are not cross-model speed evidence.
 
-```text
-ax-engine download-mtp qwen3.6-27b-6bit
-ax-engine download-mtp qwen3.6-35b-a3b
-ax-engine download-mtp gemma-4-12b
-ax-engine download-mtp gemma-4-26b
-ax-engine download-mtp gemma-4-31b
-ax-engine download-mtp glm-4.7-flash
+Plan the matrix without running inference:
+
+```bash
+python3 scripts/bench_qwen36_mtp_matrix.py
 ```
 
-Recommended 6-bit artifacts should live under `benchmarks/results/mtp-6bit/`;
-4-bit comparison artifacts must stay in clearly labeled comparison directories.
-Every artifact must record the prepared model path returned by `download-mtp`
-where applicable. A preparation run must return an MTP-ready package before it
-can be promoted into the recommended matrix or comparison lane.
+Run the supported lanes:
 
-> **Note on Lightning-MLX**: Lightning rows were removed from this matrix on
-> 2026-06-03 after discovery of a silent-thinking pathology that produced
-> inflated `completion_tokens` (and hence inflated decode rates) while emitting
-> only a few characters of visible text per 1000 generated tokens. Reference
-> source remains under `.internal/reference/lightning-mlx` and the
-> `bench_rapid_mlx_prompt_suites.py` runner is preserved for ad-hoc probes.
+```bash
+python3 scripts/bench_qwen36_mtp_matrix.py --execute
+```
 
-To generate prefill rate and TTFT tables and charts from an existing fair benchmark
-output directory:
+The runner writes `plan.json`, `plan.md`, and, after execution,
+`summary.json` / `summary.md` under `benchmarks/results/mtp-qwen36-matrix/`.
+Unsupported Rapid-MLX and oMLX Qwen3.6 MTP lanes remain listed in `plan.md`
+with the current support reason instead of silently disappearing.
+
+To generate prefill rate and TTFT tables and charts from an older fair
+benchmark output directory:
 
 ```bash
 python3 scripts/bench_mtp_prefill_ttft_report.py \

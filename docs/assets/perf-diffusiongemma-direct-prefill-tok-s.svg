@@ -4,7 +4,7 @@
 <rect width="800" height="430" fill="#f8fafc"/>
 <text id="title" x="64" y="24" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="16" font-weight="700" fill="#111827">DiffusionGemma 4-bit - Prefill</text>
 <text x="64" y="46" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#4b5563">median over reps | grouped by prompt tokens | first committed block</text>
-<text id="desc" x="64" y="62" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">AX-only DiffusionGemma direct telemetry; peer runtime blockers are documented in the README table</text>
+<text id="desc" x="64" y="62" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">AX-only DiffusionGemma direct telemetry; peer runtime blockers are documented in docs</text>
 <text x="64" y="76" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="9" fill="#9ca3af">Prefill uses AX runner wall time from the same first-block runs.</text>
 <rect x="707" y="13" width="59" height="22" rx="11" fill="#eef2ff" stroke="#c7d2fe"/>
 <text x="736.5" y="28" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#3730a3">tok/s</text>

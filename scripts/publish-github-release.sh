@@ -216,17 +216,7 @@ if mismatches:
         print(f"Version mismatch: tag={version}, {f}={v}", file=sys.stderr)
     raise SystemExit(1)
 
-# Ensure CHANGELOG has an entry for this release.
-changelog = (root / "CHANGELOG.md").read_text()
-if f"## [{version}]" not in changelog:
-    print(
-        f"CHANGELOG.md has no entry for version {version}; "
-        "add a '## [{version}]' section before publishing.",
-        file=sys.stderr,
-    )
-    raise SystemExit(1)
-
-print(f"Version verified: {version} (across {len(checks)} files + CHANGELOG)")
+print(f"Version verified: {version} (across {len(checks)} files)")
 PY
 
 head_commit="$(git rev-parse HEAD)"

@@ -6,7 +6,7 @@ can be cited as which kind of claim follow directly from which tool produced the
 
 ## Two-Tool Split
 
-```
+```text
 bench_mlx_inference_stack.py       ←  MLX throughput comparison
   Produces: tok/s ratios vs mlx_lm.benchmark baseline
   Answers:  "How fast is AX vs upstream MLX?"
@@ -26,20 +26,20 @@ unauditable.
 
 A third benchmark class handles MTP comparison on real prompt suites:
 
-```
-MTP matrix                            ←  recommended 6-bit targets plus 4-bit comparison rows
-  Produces: MTP-only artifacts (tok/s + accept rates per model per suite)
-  Answers:  "How does AX Engine MTP perform on the recommended targets and peer-aligned 4-bit comparisons?"
+```text
+MTP matrix                            ←  Qwen3.6 27B/35B-A3B at 4-bit and 6-bit
+  Produces: MTP-only artifacts (decode, prefill, TTFT, accept rate per model per suite)
+  Answers:  "How does AX Engine MTP perform on Qwen3.6 against comparable peer MTP lanes?"
 ```
 
 The current MTP benchmark design is intentionally narrow:
 
-- Models: `qwen3.6-27b-6bit`, `qwen3.6-35b-a3b`, `gemma-4-12b`,
-  `gemma-4-26b`, `gemma-4-31b`, and `glm-4.7-flash`.
-- Setup: every model must be prepared through `ax-engine download-mtp <model>`.
-- Quantization: 6-bit is the recommended practical lane. 4-bit rows are allowed
-  only as clearly labeled peer-alignment comparisons; do not mix 5-bit, 8-bit,
-  FFN-only, or GGUF variants into the MTP benchmark matrix.
+- Models: Qwen3.6 27B and Qwen3.6 35B-A3B only.
+- Quantization: 4-bit and 6-bit only. Do not mix 5-bit, 8-bit, FFN-only,
+  GGUF, Gemma, GLM, or Qwen3-Coder variants into the MTP benchmark matrix.
+- Setup: AX 6-bit rows must start from `ax-engine download-mtp`; 4-bit rows
+  use the prepared Qwen fused MTP sidecars. Peer rows are included only when
+  the reference project exposes a matching Qwen3.6 MTP artifact/runner.
 - Mode: MTP only. Do not run or report `mtp-ngram` rows in the MTP matrix.
 - Baselines: direct rows may be run only as same-artifact diagnostic baselines;
   they are not part of the headline MTP matrix.
@@ -246,7 +246,7 @@ A matrix manifest is a separate file that references multiple scenario manifests
 Every successful `scenario` or `replay` run writes a timestamped directory
 under `--output-root` named `{timestamp}-{manifest-id}/`:
 
-```
+```text
 manifest.json       — copy of the input manifest
 environment.json    — run ID, host, timing, runtime identity, gate results
 metrics.json        — per-request and aggregate throughput metrics
@@ -269,7 +269,7 @@ execution plan, KV mode, and prefix cache path each request used.
 When the manifest contract check fails before or during execution, artifacts
 are still written — under `{timestamp}-{manifest-id}-contract-failure/`:
 
-```
+```text
 manifest.json           — copy of the input manifest
 contract_failure.json   — run ID, timing, failure message
 summary.md              — human-readable failure summary

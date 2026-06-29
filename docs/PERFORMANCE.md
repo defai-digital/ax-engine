@@ -200,48 +200,41 @@ should not be read as a complete inference-serving proof. In particular:
 
 ## MTP Mode
 
-The current MTP publication contract has two labeled lanes. The recommended
-AX Engine practice lane is the 6-bit local-agent matrix, and those rows must
-start from `ax-engine download-mtp` output. A 4-bit comparison lane may be
-published when it aligns with peer MTP-engine benchmark results. Promoted
-runtime rows run MTP; same-package direct rows may be reported only as
-denominators for AX MTP acceleration charts.
+The current MTP publication contract is Qwen-only: Qwen3.6 27B and Qwen3.6
+35B-A3B, each at 4-bit and 6-bit, with promoted rows running MTP only. Same-
+package direct rows may be kept as diagnostic denominators for AX MTP
+acceleration, but they are not headline MTP matrix rows.
 
-| Target | Required preparation | Promoted MTP mode |
+| Target | Required preparation / source | Promoted MTP mode |
 | --- | --- | --- |
+| `qwen3.6-27b-4bit` | prepared Qwen fused sidecar | Qwen fused sidecar MTP |
 | `qwen3.6-27b-6bit` | `ax-engine download-mtp qwen3.6-27b-6bit` | Qwen fused sidecar MTP |
+| `qwen3.6-35b-a3b-4bit` | prepared Qwen fused sidecar | Qwen fused sidecar MTP |
 | `qwen3.6-35b-a3b` | `ax-engine download-mtp qwen3.6-35b-a3b` | Qwen fused sidecar MTP |
-| `gemma-4-12b` | `ax-engine download-mtp gemma-4-12b` | Gemma assistant-MTP |
-| `gemma-4-26b` | `ax-engine download-mtp gemma-4-26b` | Gemma assistant-MTP |
-| `gemma-4-31b` | `ax-engine download-mtp gemma-4-31b` | Gemma assistant-MTP |
-| `glm-4.7-flash` | `ax-engine download-mtp glm-4.7-flash` | GLM built-in MTP sidecar |
 
 Rules:
 
-- Quantization is 6-bit for the recommended practical lane.
-- 4-bit rows are comparison evidence only; use 6-bit packages for practical
-  AX Engine deployments.
+- Quantization is 4-bit or 6-bit only.
+- Report decode tok/s, prefill tok/s, TTFT ms, and MTP accept rate.
 - `mtp-ngram` is out of scope for MTP publication and must not be run in the
   MTP matrix.
 - Historical MTP+n-gram artifacts remain diagnostic only. Do not use them for
   current README/PERFORMANCE claims.
+- Do not include Qwen3-Coder-Next, 5-bit, 8-bit, FFN-only, GGUF, Gemma, or GLM
+  variants in the current MTP benchmark matrix.
 - Direct rows may be reported only as same-artifact denominators for
   `AX MTP / AX direct` acceleration, not as a cross-model speed leaderboard.
-- Recommended 6-bit artifacts should live under
-  `benchmarks/results/mtp-6bit/<run-dir>/`; 4-bit comparison artifacts must stay
-  clearly labeled. Every artifact records the exact `download-mtp` output path
-  where applicable, model snapshot, sidecar or assistant package provenance,
-  route identity, sampler, prompt suite, repetitions, and cooldown.
+- Matrix artifacts should live under
+  `benchmarks/results/mtp-qwen36-matrix/<run-dir>/`. Every artifact records the
+  exact model path or peer model id, route identity, sampler, prompt suite,
+  repetitions, cooldown, and metric provenance.
 
 Prepare the matrix:
 
 ```bash
 ax-engine download-mtp qwen3.6-27b-6bit
 ax-engine download-mtp qwen3.6-35b-a3b
-ax-engine download-mtp gemma-4-12b
-ax-engine download-mtp gemma-4-26b
-ax-engine download-mtp gemma-4-31b
-ax-engine download-mtp glm-4.7-flash
+python3 scripts/bench_qwen36_mtp_matrix.py --execute
 ```
 
 Benchmark rows use the existing MTP prompt suites

@@ -11,13 +11,13 @@ It is intentionally thin:
 
 ## Module
 
-```
+```text
 module github.com/ax-engine/ax-engine-go
 ```
 
 Located at `sdk/go/axengine/`. For local development use a `replace` directive:
 
-```
+```text
 require github.com/ax-engine/ax-engine-go v0.0.0
 replace github.com/ax-engine/ax-engine-go => ../../sdk/go/axengine
 ```

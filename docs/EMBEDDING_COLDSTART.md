@@ -33,9 +33,11 @@ directly to the destination via the unified-memory page cache.
 2. **Drop the OS page cache for the model file.**
 
    macOS:
+
    ```bash
    sudo purge
    ```
+
    `sudo purge` drops the entire disk cache. It takes ~1–3 seconds and
    does not affect anything other than I/O latency for the next read.
 

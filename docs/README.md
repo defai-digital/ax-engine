@@ -93,6 +93,8 @@ diagnostic history, or out of scope for a claim.
   summaries, MTP mode, and interpretation
 - [Benchmarks](BENCHMARKS.md): benchmark methodology, commands, evidence
   contracts, and reproduction details
+- [DiffusionGemma](DIFFUSIONGEMMA.md): experimental block-diffusion support,
+  first-block telemetry, and non-autoregressive benchmark boundaries
 - [Benchmark Design](BENCH-DESIGN.md): workload-contract CLI and artifact
   design
 - [Serving Benchmarks](SERVING-BENCHMARKS.md): online serving prompt-mix,

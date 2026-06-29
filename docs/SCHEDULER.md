@@ -7,7 +7,7 @@ decisions deterministic and easy to test.
 
 ## Data Types
 
-```
+```text
 SchedulerInput
 ├── step_id          StepId
 ├── request_snapshots  Vec<RequestSnapshot>  (Runnable requests only)
@@ -28,7 +28,7 @@ states are filtered out before `plan()` is called.
 
 ## Selection Algorithm
 
-```
+```text
 1. Filter: keep only Runnable snapshots
 2. Filter: keep only snapshots whose model_id matches the first request
            (multi-model batches are not supported; extras are deferred)
@@ -191,7 +191,7 @@ reuse decision has already been made.
 
 `engine.rs` may call `scheduler.plan()` up to three times per step:
 
-```
+```text
 Phase 1 — Initial plan
   scheduler.plan(all Runnable requests)
   → SchedulePlan
@@ -223,7 +223,7 @@ re-plan runs only when preemption has no eligible candidate.
 Requests move through states managed by `RequestManager` in
 `crates/ax-engine-core/src/request_manager.rs`.
 
-```
+```text
             admit()
 Waiting ──────────────→ Runnable
                             │

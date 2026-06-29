@@ -17,6 +17,7 @@ asserted in prose.
 - **Telemetry**: `foreground_ttft`, `foreground_itl` latency channels on
   the `ax.serving_workload.report.v1` artifact.
 - **Reproducer**:
+
   ```bash
   cargo run -p ax-engine-bench --bin ax-engine-bench -- serving-stress \
     --workload long_prefill_vs_decode \

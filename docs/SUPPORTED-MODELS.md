@@ -198,6 +198,12 @@ Current direct-support LLM families:
 | GLM 4.7 Flash | `glm4_moe_lite` / `glm4.7-flash-4bit` | Repo-owned MLX runtime; MLX affine 4-bit weights | Flash MLA attention, sigmoid-routed MoE with dense+MoE layer split, shared expert; post-attention RMS norm |
 | GPT-OSS | `gpt-oss-20b`, `gpt-oss-120b` | Repo-owned MLX runtime; MXFP4 MoE weights dequantized to BF16 at load time | MoE decoder with 128 experts (top-4), SwiGLU, alternating full/sliding-128 attention, per-head learned attention sinks, YaRN RoPE (128K), GQA (64q/8k heads) |
 
+Experimental direct-support model families:
+
+| Family | Model ID | Current scope | Notes |
+| --- | --- | --- | --- |
+| DiffusionGemma | `mlx-community/diffusiongemma-26B-A4B-it-4bit` | Experimental repo-owned MLX block-diffusion path | Not part of the README performance tables; benchmark boundary is first committed 256-token diffusion block, not autoregressive TTFT/decode. See [DiffusionGemma experimental support](DIFFUSIONGEMMA.md). |
+
 All direct-support models use MLX safetensors format with the AX
 `model-manifest.json` descriptor. Adding a new direct-support architecture
 means implementing the model graph, not wiring up a generic loader.

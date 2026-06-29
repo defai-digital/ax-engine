@@ -23,6 +23,7 @@ primitive, `mtp::mtp_head_step`, that returns the per-depth head logits so a cal
 can branch (top-k), which `mtp_draft_tokens` (argmax chain only) cannot.
 
 Run:
+
 ```bash
 # tokenize a real prompt with the model chat template into comma-sep ids first
 AX_TREE_PROMPT_FILE=/tmp/flappy_ids.txt \
