@@ -601,7 +601,7 @@ At these prompt lengths, the first-block path uses roughly 15-16% of theoretical
 
 **Denoise loop optimization — GPU-native sampling:**
 
-`crates/ax-engine-mlx/src/diffusion.rs` keeps denoise state, entropy-bound acceptance, and self-conditioning on the GPU. Convergence checks materialize only scalar counters and run every `convergence_check_interval` steps (default 4), reducing per-block GPU/CPU syncs from 48 to about 12. The CPU no longer round-trips 256 token positions on every denoise step; sampling and acceptance stay in lazy MLX graph nodes that can fuse with the forward evaluation.
+`crates/ax-engine-mlx/src/diffusion.rs` keeps denoise state, entropy-bound acceptance, and self-conditioning on the GPU. Convergence checks materialize only scalar counters and run every `convergence_check_interval` steps (default 2), so a block that converges in ~17 steps performs roughly 9 scalar syncs rather than one per step. The CPU no longer round-trips 256 token positions on every denoise step; sampling and acceptance stay in lazy MLX graph nodes that can fuse with the forward evaluation.
 
 **Adaptive convergence detection:**
 
@@ -615,30 +615,33 @@ The denoise loop can stop early when any configured convergence signal fires:
 
 The benchmark rows above report the measured adaptive-convergence run as recorded in the artifact. On realistic prompts the denoiser converges in 13 / 17 / 13 denoise steps at 128 / 512 / 2,048 prompt tokens — far short of the 48-step cap — which is why time to first block is now 2.4–3.3 s rather than the 7–10 s seen when synthetic prompts forced the loop to run to the cap.
 
-**Denoise performance optimizations (enabled by default):**
+**Denoise performance optimizations:**
 
-The following optimizations are enabled by default for DiffusionGemma to maximize memory bandwidth utilization and reduce per-step overhead. Each can be individually disabled via opt-out environment variables.
+The default decode path is the **full-pipeline compiled closure**: it compiles the entire denoise step (forward + softmax + entropy + argmax + sampling + acceptance) into one `MlxClosure`, collapsing ~280 per-step MLX C-API calls into a single dispatched graph. Because it is a single pure compiled graph, it *bypasses* the per-layer embedding cache and KV concat buffer (it passes `None` for both); those apply only to the non-compiled imperative fallback.
 
-| Optimization | What it does | Opt-out |
-| --- | --- | --- |
-| KV concat buffer | Pre-allocates per-layer KV concatenation buffers on the first denoise step and updates only the canvas slice on subsequent steps via `slice_update`, avoiding re-copying the cached prompt prefix. Also caches the bidirectional attention mask per layer. | `AX_DIFFUSION_NO_KV_CONCAT_BUFFER=1` |
-| Embedding cache | Caches per-layer embedding inputs across denoise steps when token IDs are unchanged, using a GPU-side sum fingerprint to detect changes. | `AX_DIFFUSION_NO_EMBEDDING_CACHE=1` |
-| Compiled forward | Compiles the bidirectional denoise forward pass into an `MlxClosure` per block (when self-conditioning is off), collapsing ~250 per-step MLX C-API calls into one dispatched graph. | `AX_DIFFUSION_NO_COMPILED_FORWARD=1` |
-| Commit skip on converge | Skips the causal commit forward pass (~40 ms) when the denoise loop converges with near-perfect acceptance (≥ 99%). | `AX_DIFFUSION_NO_SKIP_COMMIT=1` |
+| Optimization | Default | Status | Toggle |
+| --- | --- | --- | --- |
+| Full pipeline (fused denoise step) | **ON** | Active in the default path | opt-out `AX_DIFFUSION_NO_FULL_PIPELINE=1` |
+| Commit skip on converge | **ON** | Active — skips the ~40 ms causal commit when the block converges with ≥ 99% acceptance | opt-out `AX_DIFFUSION_NO_SKIP_COMMIT=1` |
+| Compiled forward (forward-only) | ON when full pipeline is off | Fallback only — superseded by the full pipeline | opt-out `AX_DIFFUSION_NO_COMPILED_FORWARD=1` |
+| Embedding cache | OFF | Opt-in; output-neutral but reachable only on the imperative fallback | opt-in `AX_DIFFUSION_EMBEDDING_CACHE=1` |
+| KV concat buffer | OFF | Opt-in; **known-divergent** — see note | opt-in `AX_DIFFUSION_KV_CONCAT_BUFFER=1` |
 
-**Experimental opt-in optimizations:**
+> **KV concat buffer is gated off by default.** Its `slice_update` reuse path is
+> not bit-equivalent to the canonical `concatenate` path: on a 512-token block it
+> diverges in ~237/256 committed tokens, which perturbs convergence (15 vs 17
+> denoise steps) and can introduce decode artifacts. It yields no throughput gain
+> in any bit-exact configuration, so the default path — and the imperative
+> fallback — use the canonical concatenate path. The flag is retained only for
+> benchmarking a future bit-exact reimplementation.
 
-| Environment variable | What it does | Status |
-| --- | --- | --- |
-| `AX_DIFFUSION_FULL_PIPELINE=1` | Compiles the entire denoise step (forward + softmax + entropy + argmax + sampling + acceptance) into a single `MlxClosure`. Supersedes the forward-only compiled closure when both are set. | Experimental / benchmarking |
-
-Example usage for a single benchmark run with all optimizations:
+Run the benchmark with the default (production) configuration:
 
 ```bash
 python3 scripts/bench_diffusion_gemma_direct.py --bench-bin target/release/ax-engine-bench
 ```
 
-These flags are read once per process. The default-on optimizations have been validated for token equivalence against the imperative path.
+Env flags are read once per process. The default path is the reference for committed-token output; note that the fused-compiled and imperative forward paths are not bit-identical (iterative denoising amplifies floating-point differences across the two), so they may converge to different but equally valid samples.
 
 Artifacts: AX direct rows are [`2026-06-27-realistic-prompts/summary.json`](benchmarks/results/diffusion-gemma-direct/2026-06-27-realistic-prompts/summary.json), with the human summary in [`summary.md`](benchmarks/results/diffusion-gemma-direct/2026-06-27-realistic-prompts/summary.md). Peer runtime blockers are recorded as load failures, so there are no llama.cpp or `mlx_lm` result artifacts for this model family.
 

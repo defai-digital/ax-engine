@@ -862,9 +862,13 @@ env_flag!(
 
 env_flag!(
     /// `AX_DIFFUSION_KV_CONCAT_BUFFER` — pre-allocate KV concatenation
-    /// buffers on the first denoise step and use `slice_update` for
-    /// subsequent steps, avoiding re-copying the cached prompt prefix.
-    /// Saves memory bandwidth per layer per step. Default OFF; opt-in.
+    /// buffers on the first denoise step and update the canvas slice via
+    /// `slice_update` on subsequent steps, avoiding re-`concatenate`-ing the
+    /// prompt prefix. **Known issue:** this `slice_update` path is not
+    /// bit-equivalent to the canonical `concatenate` path (≈237/256 token
+    /// divergence on a 512-token block, perturbing convergence) and shows no
+    /// throughput gain in a bit-exact configuration. Default OFF; opt-in only
+    /// for benchmarking a future bit-exact reimplementation.
     diffusion_kv_concat_buffer_enabled,
     "AX_DIFFUSION_KV_CONCAT_BUFFER"
 );
@@ -876,22 +880,6 @@ env_flag!(
     /// forward-only compiled closure. **Default ON** for best performance.
     diffusion_no_full_pipeline,
     "AX_DIFFUSION_NO_FULL_PIPELINE"
-);
-
-env_flag!(
-    /// `AX_DIFFUSION_NO_KV_CONCAT_BUFFER` — opt-out of the KV concat
-    /// buffer that is enabled by default. When set to `1`, per-layer KV
-    /// concatenation is rebuilt from scratch on every denoise step.
-    diffusion_no_kv_concat_buffer,
-    "AX_DIFFUSION_NO_KV_CONCAT_BUFFER"
-);
-
-env_flag!(
-    /// `AX_DIFFUSION_NO_EMBEDDING_CACHE` — opt-out of the per-layer
-    /// embedding cache that is enabled by default. When set to `1`,
-    /// per-layer embeddings are recomputed on every denoise step.
-    diffusion_no_embedding_cache,
-    "AX_DIFFUSION_NO_EMBEDDING_CACHE"
 );
 
 env_flag!(
