@@ -6,6 +6,30 @@ tracked via Git tags and GitHub Releases.
 
 ## [Unreleased]
 
+### Fixed
+
+- **DiffusionGemma KV concat buffer correctness** — the per-layer KV concat
+  buffer's `slice_update` reuse path was not bit-equivalent to the canonical
+  `concatenate` path (≈237/256 committed-token divergence on a 512-token block,
+  perturbing convergence — 15 vs 17 denoise steps — and risking decode
+  artifacts). It is now gated off by default (opt-in
+  `AX_DIFFUSION_KV_CONCAT_BUFFER=1`), so the default decode path and the
+  imperative fallback both use the canonical concatenate path. The per-layer
+  embedding cache is likewise opt-in (`AX_DIFFUSION_EMBEDDING_CACHE=1`); it is
+  output-neutral but reachable only on the imperative fallback, which the default
+  full-pipeline path bypasses. Default decode throughput is unchanged (the
+  default path already bypassed both caches).
+
+### Changed
+
+- **DiffusionGemma docs accuracy** — corrected the README to reflect that the
+  full-pipeline compiled closure is the default decode path (not an experimental
+  opt-in) and that it bypasses the embedding/KV caches; fixed the
+  `convergence_check_interval` default (2, not 4); and removed the inaccurate
+  "validated for token equivalence" claim for the fused-compiled vs imperative
+  forward paths (iterative denoising amplifies floating-point differences, so the
+  two converge to different but equally valid samples).
+
 ## [6.6.0] - 2026-06-29
 
 ### Added
