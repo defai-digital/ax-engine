@@ -6,6 +6,20 @@ tracked via Git tags and GitHub Releases.
 
 ## [Unreleased]
 
+### Performance
+
+- **DiffusionGemma first-block decode +5–10%** — the denoise loop checked
+  convergence every `convergence_check_interval` steps (default 2), which
+  *overshoots* the true convergence step to the next multiple and wastes a full
+  ~179 ms denoise pass. The per-step scalar sync is negligible (same-session A/B:
+  intervals of 4–8 are within noise of 2), so the default is now 1 (check every
+  step), stopping exactly at convergence. Same-session A/B: 512-token 17→16 steps
+  (+5–6%), 2048-token 13→12 steps (+7%); 128-token unchanged (already
+  grid-aligned). Refreshed official artifact (`2026-06-29-check-interval-1`):
+  block decode 83.2→89.4 tok/s (512) and 103.9→114.7 tok/s (2048). Output is
+  byte-identical (128/2048) or one token (512, at the convergence boundary).
+  Tunable via `AX_DIFFUSION_CHECK_INTERVAL`.
+
 ### Fixed
 
 - **DiffusionGemma KV concat buffer correctness** — the per-layer KV concat

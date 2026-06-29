@@ -529,7 +529,7 @@ MLX snapshot (`Model type diffusion_gemma not supported.`).
 > throughput depends on the prompt being real, in-distribution text. These rows
 > use prefixes of a coherent technical document tokenized with the model's own
 > tokenizer (`DIFFUSION_PROMPT_TEXT` in `scripts/bench_diffusion_gemma_direct.py`),
-> which converge in **13–17 denoise steps**. Earlier revisions of this benchmark
+> which converge in **12–16 denoise steps**. Earlier revisions of this benchmark
 > fed synthetic random token ids; those never converge, hit the denoise-step cap,
 > and measured the failure mode (~25–35 tok/s at 41–48 steps) rather than realistic
 > throughput. Decode throughput is input-dependent, so it does not scale cleanly
@@ -557,17 +557,17 @@ MLX snapshot (`Model type diffusion_gemma not supported.`).
 
 | Prompt tokens | AX first-block decode | Denoise steps | Committed block |
 | ---: | ---: | ---: | ---: |
-| 128 | 109.8 tok/s | 13 | 256 tokens |
-| 512 | 83.2 tok/s | 17 | 256 tokens |
-| 2048 | 103.9 tok/s | 13 | 256 tokens |
+| 128 | 111.9 tok/s | 13 | 256 tokens |
+| 512 | 89.4 tok/s | 16 | 256 tokens |
+| 2048 | 114.7 tok/s | 12 | 256 tokens |
 
 **Prefill and first-block latency:**
 
 | Prompt tokens | AX direct prefill | AX time to first block | llama.cpp Metal 9650 | `mlx_lm` 0.31.3 |
 | ---: | ---: | ---: | --- | --- |
-| 128 | 1,142.8 tok/s | 2,445 ms | load blocked | load blocked |
-| 512 | 2,707.9 tok/s | 3,266 ms | load blocked | load blocked |
-| 2048 | 3,834.4 tok/s | 2,999 ms | load blocked | load blocked |
+| 128 | 1,080.2 tok/s | 2,407 ms | load blocked | load blocked |
+| 512 | 2,608.4 tok/s | 3,063 ms | load blocked | load blocked |
+| 2048 | 3,699.4 tok/s | 2,784 ms | load blocked | load blocked |
 
 `time to first block` is prefill wall time plus the first 256-token denoise-and-commit
 block. `first-block decode` is computed as `256 / ax_mlx_diffusion_block_wall_us`.
@@ -584,7 +584,7 @@ ordinary autoregressive TTFT or fixed-token decode throughput.
 
 The bandwidth chart is an implementation-efficiency view, not a peer comparison. It estimates
 first-block traffic at block granularity from the measured denoise-step count plus one causal
-commit over the 16.54 GB MLX safetensors artifact. This run used **13 / 17 / 13** denoise
+commit over the 16.54 GB MLX safetensors artifact. This run used **13 / 16 / 12** denoise
 steps at 128 / 512 / 2,048 prompt tokens on realistic prompts. The chart shows estimated
 bandwidth used versus the M5 Max theoretical ceiling; the table keeps the effective GB/s values.
 
@@ -593,15 +593,15 @@ bandwidth used versus the M5 Max theoretical ceiling; the table keeps the effect
 
 | Prompt tokens | Estimated effective bandwidth | % of 614.4 GB/s M5 Max theoretical bandwidth |
 | ---: | ---: | ---: |
-| 128 | 99.4 GB/s | 16.2% |
-| 512 | 96.8 GB/s | 15.7% |
-| 2,048 | 94.0 GB/s | 15.3% |
+| 128 | 101.2 GB/s | 16.5% |
+| 512 | 98.2 GB/s | 16.0% |
+| 2,048 | 96.4 GB/s | 15.7% |
 
-At these prompt lengths, the first-block path uses roughly 15-16% of theoretical M5 Max bandwidth. The bottleneck is therefore not raw memory bandwidth alone: per-step cost is broadly distributed across attention, the MoE and dense FFN blocks, the router, and the vocab-projection LM head (no single component dominates), so it is dispatch- and occupancy-bound rather than saturated. Further per-step gains require kernel-level MoE/attention work; the practical wins are realistic prompts that converge quickly (above) and the block-diffusion structure itself.
+At these prompt lengths, the first-block path uses roughly 16% of theoretical M5 Max bandwidth. The bottleneck is therefore not raw memory bandwidth alone: per-step cost is broadly distributed across attention, the MoE and dense FFN blocks, the router, and the vocab-projection LM head (no single component dominates), so it is dispatch- and occupancy-bound rather than saturated. Further per-step gains require kernel-level MoE/attention work; the practical wins are realistic prompts that converge quickly (above), stopping exactly at convergence (the per-step `convergence_check_interval`, above), and the block-diffusion structure itself.
 
 **Denoise loop optimization — GPU-native sampling:**
 
-`crates/ax-engine-mlx/src/diffusion.rs` keeps denoise state, entropy-bound acceptance, and self-conditioning on the GPU. Convergence checks materialize only scalar counters and run every `convergence_check_interval` steps (default 2), so a block that converges in ~17 steps performs roughly 9 scalar syncs rather than one per step. The CPU no longer round-trips 256 token positions on every denoise step; sampling and acceptance stay in lazy MLX graph nodes that can fuse with the forward evaluation.
+`crates/ax-engine-mlx/src/diffusion.rs` keeps denoise state, entropy-bound acceptance, and self-conditioning on the GPU. Convergence is checked every step (`convergence_check_interval`, default 1): the per-step scalar sync is negligible (A/B: intervals of 4–8 are within noise of 2), but a coarser grid *overshoots* the true convergence step to the next multiple, wasting a full denoise pass. Checking every step stops exactly at convergence — measured **+5% (512-token) / +7% (2048-token)** first-block decode with byte-identical or one-token output versus the previous default of 2. The CPU no longer round-trips 256 token positions on every denoise step; sampling and acceptance stay in lazy MLX graph nodes that fuse with the forward evaluation.
 
 **Adaptive convergence detection:**
 
@@ -613,7 +613,7 @@ The denoise loop can stop early when any configured convergence signal fires:
 
 3. **Entropy plateau:** mean entropy stops decreasing materially after the early denoise phase, indicating diminishing returns from additional passes.
 
-The benchmark rows above report the measured adaptive-convergence run as recorded in the artifact. On realistic prompts the denoiser converges in 13 / 17 / 13 denoise steps at 128 / 512 / 2,048 prompt tokens — far short of the 48-step cap — which is why time to first block is now 2.4–3.3 s rather than the 7–10 s seen when synthetic prompts forced the loop to run to the cap.
+The benchmark rows above report the measured adaptive-convergence run as recorded in the artifact. On realistic prompts the denoiser converges in 13 / 16 / 12 denoise steps at 128 / 512 / 2,048 prompt tokens — far short of the 48-step cap — which is why time to first block is now 2.4–3.1 s rather than the 7–10 s seen when synthetic prompts forced the loop to run to the cap.
 
 **Denoise performance optimizations:**
 
@@ -643,7 +643,7 @@ python3 scripts/bench_diffusion_gemma_direct.py --bench-bin target/release/ax-en
 
 Env flags are read once per process. The default path is the reference for committed-token output; note that the fused-compiled and imperative forward paths are not bit-identical (iterative denoising amplifies floating-point differences across the two), so they may converge to different but equally valid samples.
 
-Artifacts: AX direct rows are [`2026-06-27-realistic-prompts/summary.json`](benchmarks/results/diffusion-gemma-direct/2026-06-27-realistic-prompts/summary.json), with the human summary in [`summary.md`](benchmarks/results/diffusion-gemma-direct/2026-06-27-realistic-prompts/summary.md). Peer runtime blockers are recorded as load failures, so there are no llama.cpp or `mlx_lm` result artifacts for this model family.
+Artifacts: AX direct rows are [`2026-06-29-check-interval-1/summary.json`](benchmarks/results/diffusion-gemma-direct/2026-06-29-check-interval-1/summary.json), with the human summary in [`summary.md`](benchmarks/results/diffusion-gemma-direct/2026-06-29-check-interval-1/summary.md). Peer runtime blockers are recorded as load failures, so there are no llama.cpp or `mlx_lm` result artifacts for this model family.
 
 Render charts with:
 
