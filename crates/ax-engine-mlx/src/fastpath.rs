@@ -956,6 +956,15 @@ pub fn diffusion_max_steps() -> Option<usize> {
     *CACHED.get_or_init(|| parse_positive_usize_env("AX_DIFFUSION_MAX_STEPS"))
 }
 
+/// Diffusion: steps between convergence checks. Defaults to 1 (check every
+/// step). Larger values reduce per-step scalar evals (negligible — see A/B) but
+/// detect convergence on a coarser grid, overshooting the true convergence step
+/// and wasting denoise passes. Kept as an override for benchmarking only.
+pub fn diffusion_check_interval() -> Option<usize> {
+    static CACHED: OnceLock<Option<usize>> = OnceLock::new();
+    *CACHED.get_or_init(|| parse_positive_usize_env("AX_DIFFUSION_CHECK_INTERVAL"))
+}
+
 /// Diffusion sampler strategy override. Returns the raw env-var string when
 /// `AX_DIFFUSION_SAMPLER` is set (e.g. `"confidence_threshold"` or
 /// `"entropy_bound"`). The caller maps the string to `DiffusionSampler`.

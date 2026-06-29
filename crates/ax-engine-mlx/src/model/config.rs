@@ -252,7 +252,14 @@ impl DiffusionConfig {
         }
         // Reject convergence_check_interval=0 — used as divisor in
         // `step.is_multiple_of(convergence_check_interval)` which panics on 0.
-        let convergence_check_interval = cfg.convergence_check_interval.unwrap_or(2) as usize;
+        //
+        // Default 1 (check every step): the per-step scalar eval is negligible
+        // (A/B: intervals 4/8 are within noise of 2), but a coarser grid
+        // *overshoots* the true convergence step to the next multiple, wasting a
+        // full ~179 ms denoise pass. Checking every step stops exactly at
+        // convergence — measured +5% (512-token) / +7% (2048-token) first-block
+        // decode with byte-identical or 1-token output.
+        let convergence_check_interval = cfg.convergence_check_interval.unwrap_or(1) as usize;
         if convergence_check_interval == 0 {
             return None;
         }
@@ -313,6 +320,9 @@ impl DiffusionConfig {
         }
         if let Some(v) = crate::fastpath::diffusion_confidence_threshold() {
             dc.confidence_threshold = v;
+        }
+        if let Some(v) = crate::fastpath::diffusion_check_interval() {
+            dc.convergence_check_interval = v;
         }
         Some(dc)
     }
