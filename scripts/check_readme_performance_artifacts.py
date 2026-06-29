@@ -1475,9 +1475,17 @@ def assert_display_delta_matches(
 
 def resolve_repo_path(repo_root: Path, path_value: str) -> Path:
     path = Path(path_value)
-    if path.is_absolute():
+    if not path.is_absolute():
+        return repo_root / path
+    if path.exists():
         return path
-    return repo_root / path
+    for marker in ("benchmarks", "docs", "scripts"):
+        if marker in path.parts:
+            marker_index = path.parts.index(marker)
+            candidate = repo_root.joinpath(*path.parts[marker_index:])
+            if candidate.exists():
+                return candidate
+    return path
 
 
 def validate_prompt_artifact(

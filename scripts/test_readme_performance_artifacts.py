@@ -327,6 +327,49 @@ class ReadmePerformanceArtifactTests(unittest.TestCase):
                 key="prefill_s",
             )
 
+    def test_repo_internal_absolute_prompt_path_resolves_to_checkout(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            prompt_path = (
+                root
+                / "benchmarks/results/mlx-inference/local/model-prompts/"
+                "prompt-4-gen-2.json"
+            )
+            prompt_path.parent.mkdir(parents=True)
+            prompt_hash = checker.token_sha256([1, 2, 3, 4])
+            prompt_path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": "ax.mlx_reference_prompt.v1",
+                        "prompt_tokens": 4,
+                        "generation_tokens": 2,
+                        "sha256": prompt_hash,
+                        "token_ids": [1, 2, 3, 4],
+                    },
+                    indent=2,
+                )
+                + "\n"
+            )
+            old_absolute_path = (
+                Path("/Users/akiralam/code/ax-engine")
+                / prompt_path.relative_to(root)
+            )
+
+            resolved_hash = checker.validate_prompt_artifact(
+                repo_root=root,
+                artifact_path=root / "benchmarks/results/mlx-inference/local/model.json",
+                prompt_doc={
+                    "token_ids_path": str(old_absolute_path),
+                    "token_ids_sha256": prompt_hash,
+                    "prompt_tokens": 4,
+                    "generation_tokens": 2,
+                },
+                prompt_tokens=4,
+                generation_tokens=2,
+            )
+
+        self.assertEqual(resolved_hash, prompt_hash)
+
     def test_llama_cpp_rows_accept_current_metadata_key(self) -> None:
         checker.validate_delegated_metrics_if_present(
             artifact_path=Path("artifact.json"),
