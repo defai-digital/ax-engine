@@ -41,7 +41,7 @@ jobs:
           cache-on-failure: true
 
       - name: Install native build dependencies
-        run: brew install mlx protobuf
+        run: bash scripts/install-native-build-deps.sh
 
       - name: Verify version consistency
         run: |
@@ -102,7 +102,7 @@ jobs:
           cache-on-failure: true
 
       - name: Install native build dependencies
-        run: brew install mlx protobuf
+        run: bash scripts/install-native-build-deps.sh
 
       - name: Install Python script dependencies
         run: pip install httpx
@@ -166,7 +166,7 @@ jobs:
           cache-on-failure: true
 
       - name: Install native build dependencies
-        run: brew install mlx protobuf
+        run: bash scripts/install-native-build-deps.sh
 
       - name: Prepare CI log directory
         run: mkdir -p "$AX_CI_LOG_DIR"
@@ -286,7 +286,7 @@ jobs:
 
       - name: Install native build dependencies
         if: steps.mlx-artifacts.outputs.available == 'true'
-        run: brew install mlx protobuf
+        run: bash scripts/install-native-build-deps.sh
 
       - name: Prepare CI log directory
         if: steps.mlx-artifacts.outputs.available == 'true'

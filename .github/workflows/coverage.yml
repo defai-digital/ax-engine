@@ -41,7 +41,7 @@ jobs:
           cache-directories: "~/.cargo/bin"
 
       - name: Install native build dependencies
-        run: brew install mlx protobuf
+        run: bash scripts/install-native-build-deps.sh
 
       - name: Install Rust coverage tool
         run: cargo install cargo-llvm-cov --locked

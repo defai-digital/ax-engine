@@ -49,7 +49,7 @@ jobs:
           cache-on-failure: true
 
       - name: Install native build dependencies
-        run: brew install mlx protobuf
+        run: bash scripts/install-native-build-deps.sh
 
       - name: Install Python build dependencies
         run: |

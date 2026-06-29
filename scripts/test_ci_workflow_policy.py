@@ -8,6 +8,8 @@ import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 CI_WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
+WORKFLOWS_DIR = ROOT / ".github" / "workflows"
+NATIVE_DEPS_SCRIPT = ROOT / "scripts" / "install-native-build-deps.sh"
 
 
 class CiWorkflowPolicyTests(unittest.TestCase):
@@ -58,6 +60,29 @@ class CiWorkflowPolicyTests(unittest.TestCase):
             "One or more CI gates failed, were cancelled, or were skipped.",
             workflow,
         )
+
+    def test_native_dependency_installs_cleanup_untrusted_runner_taps(self) -> None:
+        helper = NATIVE_DEPS_SCRIPT.read_text()
+
+        self.assertIn("brew untap --force aws/tap azure/bicep", helper)
+        self.assertIn("brew install mlx protobuf", helper)
+
+        workflow_texts = {
+            path.name: path.read_text()
+            for path in WORKFLOWS_DIR.glob("*.yml")
+        }
+        direct_install_workflows = [
+            name
+            for name, text in workflow_texts.items()
+            if "brew install mlx protobuf" in text
+        ]
+        self.assertEqual([], direct_install_workflows)
+
+        for workflow in ("ci.yml", "coverage.yml", "pypi.yml"):
+            self.assertIn(
+                "bash scripts/install-native-build-deps.sh",
+                workflow_texts[workflow],
+            )
 
 
 if __name__ == "__main__":
