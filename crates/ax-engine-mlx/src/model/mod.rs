@@ -1899,8 +1899,9 @@ pub fn build_embedding_batch_forward_closure(
             return vec![];
         }
         let hidden = inputs.get(0);
-        let out =
-            forward_for_embedding_batch_body(&cfg, &weights, hidden, target_positions.as_deref());
+        let out = crate::per_layer_compile::with_embed_batch_compile_trace(|| {
+            forward_for_embedding_batch_body(&cfg, &weights, hidden, target_positions.as_deref())
+        });
         vec![out]
     });
     body_closure.compile(false)

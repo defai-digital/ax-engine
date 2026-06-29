@@ -252,8 +252,8 @@ EMBEDDING_SCALE_ARTIFACT = Path(
     "2026-06-28-184450/embedding_ingest_scale.json"
 )
 EMBEDDING_SCALE_AX_REFRESH_ARTIFACT = Path(
-    "benchmarks/results/embedding-scale/2026-06-28-qwen-ingest-scale-ax-only-fixed-rerun/"
-    "2026-06-28-213404/embedding_ingest_scale.json"
+    "benchmarks/results/embedding-scale/2026-06-29-qwen-ingest-current-rerun/"
+    "2026-06-28-225327/embedding_ingest_scale.json"
 )
 EMBEDDINGGEMMA_SCALE_ARTIFACT = Path(
     "benchmarks/results/embedding-scale/2026-06-28-embeddinggemma-ingest-scale/"
@@ -2163,7 +2163,7 @@ def main() -> int:
         load_embedding_scale_delta_rows(args.readme.parent),
         title="Embedding ingest scale: AX vs mlx-lm",
         subtitle="512 chunks per trial, repeated batches, contiguous CPU float32 [B,H] output.",
-        source_label="Sources: embedding-scale Qwen3-Embedding 0.6B baseline and AX-only artifacts from 2026-06-28",
+        source_label="Sources: embedding-scale Qwen3-Embedding 0.6B baseline from 2026-06-28 and AX-only artifact from 2026-06-29",
     )
     if not write_chart(embedding_scale_output_path, embedding_scale_content, args.check):
         mismatches.append(embedding_scale_output_path)

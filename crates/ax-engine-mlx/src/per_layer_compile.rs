@@ -28,12 +28,35 @@
 //! caller is responsible for updating the cache state with the returned arrays.
 //! This avoids aliasing issues with compiled graphs.
 
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::panic::AssertUnwindSafe;
 use std::sync::{Mutex, OnceLock};
 use std::thread::ThreadId;
 
 use mlx_sys::{MlxArray, MlxClosure, MlxVectorArray};
+
+thread_local! {
+    static EMBED_BATCH_COMPILE_TRACE_DEPTH: Cell<usize> = const { Cell::new(0) };
+}
+
+pub(crate) fn with_embed_batch_compile_trace<T>(f: impl FnOnce() -> T) -> T {
+    EMBED_BATCH_COMPILE_TRACE_DEPTH.with(|depth| {
+        depth.set(depth.get() + 1);
+        struct Reset<'a>(&'a Cell<usize>);
+        impl Drop for Reset<'_> {
+            fn drop(&mut self) {
+                self.0.set(self.0.get().saturating_sub(1));
+            }
+        }
+        let _reset = Reset(depth);
+        f()
+    })
+}
+
+fn embed_batch_compile_trace_active() -> bool {
+    EMBED_BATCH_COMPILE_TRACE_DEPTH.with(|depth| depth.get() > 0)
+}
 
 /// Try applying a compiled closure, returning `Some(outputs)` on success.
 ///
@@ -320,6 +343,9 @@ pub fn apply_layer_dense_ffn_prefill(
     inputs: &[&MlxArray],
     ffn_fn: impl Fn(&MlxVectorArray) -> Vec<MlxArray> + Send + 'static,
 ) -> Option<Vec<MlxArray>> {
+    if embed_batch_compile_trace_active() {
+        return None;
+    }
     if !crate::fastpath::embed_ffn_compile_enabled() {
         return None;
     }
@@ -451,5 +477,18 @@ mod tests {
     #[test]
     fn test_clear_gemma4_dual_path_cache_does_not_panic() {
         clear_layer_gemma4_dual_path_cache();
+    }
+
+    #[test]
+    fn embed_batch_compile_trace_guard_resets() {
+        assert!(!embed_batch_compile_trace_active());
+        with_embed_batch_compile_trace(|| {
+            assert!(embed_batch_compile_trace_active());
+            with_embed_batch_compile_trace(|| {
+                assert!(embed_batch_compile_trace_active());
+            });
+            assert!(embed_batch_compile_trace_active());
+        });
+        assert!(!embed_batch_compile_trace_active());
     }
 }

@@ -1112,9 +1112,9 @@ fn ffn_swiglu_inner(
         let packed_dim = packed
             .weight
             .shape()
-            .last()
+            .first()
             .copied()
-            .expect("packed FFN weight must have a last dimension");
+            .expect("packed FFN weight must have an output dimension");
         let half_dim = packed_dim / 2;
         let down_qw = w.down_proj.as_ref();
         let (inputs, schema) = flatten_dense_ffn_inputs(x, Some(packed), down_qw, post_norm);
@@ -1159,9 +1159,9 @@ fn ffn_swiglu_inner(
         let packed_dim = packed
             .weight
             .shape()
-            .last()
+            .first()
             .copied()
-            .expect("packed FFN weight must have a last dimension");
+            .expect("packed FFN weight must have an output dimension");
         let half_dim = packed_dim / 2;
         let down_qw = w.down_proj.as_ref();
         let (inputs, schema) = flatten_dense_ffn_inputs(x, Some(packed), down_qw, post_norm);

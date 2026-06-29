@@ -918,9 +918,9 @@ For larger RAG ingest jobs, use the sustained scale harness instead of
 extrapolating from one isolated batch. The scale harness keeps the same
 contiguous CPU `float32 [B,H]` output layout but embeds a fixed
 corpus of 512 chunks per trial, divided into batches. For
-Qwen3-Embedding 0.6B, AX trails the retained `mlx-lm` baseline on every listed
-sustained row in the current AX-only refresh: 7.8-16.4% behind on 256-token
-chunks and 7.4-11.1% behind on 512-token chunks. p95 batch latency is shown
+Qwen3-Embedding 0.6B, the current AX-only refresh is near parity with the
+retained `mlx-lm` baseline: 2.6-4.0% behind on two 256-token rows, 0.7% ahead
+at batch 32, and 2.1-5.6% behind on 512-token rows. p95 batch latency is shown
 because larger batches increase per-flush latency even when throughput (tok/s)
 is comparable.
 
@@ -928,12 +928,12 @@ is comparable.
 
 | Model | Workload | Batch | Batches/trial | `mlx-lm` tok/s | AX tok/s | AX vs | AX chunks/s | AX p95 batch ms |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| Qwen3-Embedding 0.6B 8-bit | 512 x 256-token chunks | 8 | 64 | 46,093.9 | 38,512.7 | -16.4% | 150.4 | 56.5 |
-|  |  | 32 | 16 | 41,387.5 | 37,204.9 | -10.1% | 145.3 | 222.8 |
-|  |  | 64 | 8 | 40,593.9 | 37,428.4 | -7.8% | 146.2 | 443.7 |
-| Qwen3-Embedding 0.6B 8-bit | 512 x 512-token chunks | 8 | 64 | 39,830.5 | 36,086.2 | -9.4% | 70.5 | 118.0 |
-|  |  | 32 | 16 | 41,792.9 | 37,151.7 | -11.1% | 72.6 | 467.1 |
-|  |  | 64 | 8 | 40,959.8 | 37,918.0 | -7.4% | 74.1 | 909.7 |
+| Qwen3-Embedding 0.6B 8-bit | 512 x 256-token chunks | 8 | 64 | 46,093.9 | 44,232.5 | -4.0% | 172.8 | 47.6 |
+|  |  | 32 | 16 | 41,387.5 | 41,677.8 | +0.7% | 162.8 | 201.4 |
+|  |  | 64 | 8 | 40,593.9 | 39,527.5 | -2.6% | 154.4 | 417.2 |
+| Qwen3-Embedding 0.6B 8-bit | 512 x 512-token chunks | 8 | 64 | 39,830.5 | 38,143.7 | -4.2% | 74.5 | 111.3 |
+|  |  | 32 | 16 | 41,792.9 | 39,447.0 | -5.6% | 77.0 | 418.9 |
+|  |  | 64 | 8 | 40,959.8 | 40,103.5 | -2.1% | 78.3 | 853.7 |
 
 EmbeddingGemma uses `mlx-embeddings` as the sustained reference because its
 full sentence-transformers route includes mean pooling, the Dense projection
@@ -961,7 +961,7 @@ current AX-only refresh from
 and
 `benchmarks/results/embedding-fair/2026-06-28-embeddinggemma-ax-only-fixed-rerun/2026-06-28-213354/`.
 Scale artifact from
-`benchmarks/results/embedding-scale/2026-06-28-qwen-ingest-scale-ax-only-fixed-rerun/2026-06-28-213404/`,
+`benchmarks/results/embedding-scale/2026-06-29-qwen-ingest-current-rerun/2026-06-28-225327/`,
 with the `mlx-lm` baseline retained from
 `benchmarks/results/embedding-scale/2026-06-28-qwen-ingest-scale/2026-06-28-184450/`;
 EmbeddingGemma scale artifact from
