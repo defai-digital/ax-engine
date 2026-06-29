@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::app_state::{AppState, LiveState};
-use crate::embeddings::parse_embedding_pooling;
+use crate::embeddings::{parse_embedding_pooling, parse_embedding_timeout_ms};
 use crate::errors::{ErrorResponse, error_response, map_session_error};
 use crate::openai::validation::validate_model;
 
@@ -131,10 +131,10 @@ pub(crate) async fn embedding_records(
         .collect::<Vec<_>>();
     let token_count = chunks.iter().map(|chunk| chunk.token_count).sum();
     let session = live.request_session.clone();
-    let timeout_ms = std::env::var("AX_ENGINE_EMBED_TIMEOUT_MS")
-        .ok()
-        .and_then(|raw| raw.parse::<u64>().ok())
-        .unwrap_or(DEFAULT_EMBED_RECORDS_TIMEOUT_MS);
+    let timeout_ms = parse_embedding_timeout_ms(
+        std::env::var("AX_ENGINE_EMBED_TIMEOUT_MS").ok(),
+        DEFAULT_EMBED_RECORDS_TIMEOUT_MS,
+    );
     let timeout = Duration::from_millis(timeout_ms);
 
     let matrix = tokio::time::timeout(

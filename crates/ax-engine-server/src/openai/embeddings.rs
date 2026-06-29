@@ -5,7 +5,9 @@ use axum::extract::State;
 use axum::http::StatusCode;
 
 use crate::app_state::AppState;
-use crate::embeddings::parse_embedding_pooling;
+use crate::embeddings::{
+    parse_embedding_max_tokens, parse_embedding_pooling, parse_embedding_timeout_ms,
+};
 use crate::errors::{ErrorResponse, error_response, map_session_error};
 use crate::openai::schema::{
     OpenAiEmbeddingObject, OpenAiEmbeddingRequest, OpenAiEmbeddingResponse, OpenAiEmbeddingUsage,
@@ -48,10 +50,10 @@ pub(crate) async fn openai_embeddings(
             ));
         }
     }
-    let max_tokens = std::env::var("AX_ENGINE_EMBED_MAX_TOKENS")
-        .ok()
-        .and_then(|raw| raw.parse::<usize>().ok())
-        .unwrap_or(DEFAULT_EMBED_MAX_TOKENS);
+    let max_tokens = parse_embedding_max_tokens(
+        std::env::var("AX_ENGINE_EMBED_MAX_TOKENS").ok(),
+        DEFAULT_EMBED_MAX_TOKENS,
+    );
     let token_count: usize = batch.iter().map(Vec::len).sum();
     if token_count > max_tokens {
         return Err(error_response(
@@ -63,10 +65,10 @@ pub(crate) async fn openai_embeddings(
             ),
         ));
     }
-    let embed_timeout = std::env::var("AX_ENGINE_EMBED_TIMEOUT_MS")
-        .ok()
-        .and_then(|raw| raw.parse::<u64>().ok())
-        .unwrap_or(DEFAULT_EMBED_TIMEOUT_MS);
+    let embed_timeout = parse_embedding_timeout_ms(
+        std::env::var("AX_ENGINE_EMBED_TIMEOUT_MS").ok(),
+        DEFAULT_EMBED_TIMEOUT_MS,
+    );
     let timeout = Duration::from_millis(embed_timeout);
 
     // Single input -> microbatcher (lets concurrent callers coalesce into
