@@ -6,6 +6,25 @@ tracked via Git tags and GitHub Releases.
 
 ## [Unreleased]
 
+## [6.6.0] - 2026-06-29
+
+### Added
+
+- **EmbeddingGemma direct embedding support** — added the Gemma3 bidirectional
+  encoder path, pooled batch embeddings, and a per-layer depth probe for
+  reference drift analysis.
+- **Embedding benchmark evidence** — added Qwen and EmbeddingGemma fair
+  benchmark artifacts, ingest-scale artifacts, and AX-only reruns for the
+  embedding documentation.
+
+### Changed
+
+- **Embedding throughput path** — optimized Qwen and EmbeddingGemma batched
+  embeddings with packed projection, FFN compile, padding-mask, and pooled-batch
+  improvements.
+- **Release and CI hardening** — tightened model-smoke and aggregate CI gates
+  and cleaned up Homebrew tap handling in release automation.
+
 ## [6.5.2] - 2026-06-19
 
 ### Added

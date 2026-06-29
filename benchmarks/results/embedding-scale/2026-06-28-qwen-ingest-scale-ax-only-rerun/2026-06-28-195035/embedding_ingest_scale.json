@@ -1,0 +1,383 @@
+{
+  "schema_version": "ax.embedding_ingest_scale.v1",
+  "timestamp": "2026-06-28T19:50:35.036498",
+  "output_contract": "contiguous_cpu_f32_batch_hidden",
+  "warmup": 1,
+  "trials": 3,
+  "cooldown_s": 0.0,
+  "batch_sizes": [
+    8,
+    32,
+    64
+  ],
+  "chunk_tokens": [
+    256,
+    512
+  ],
+  "total_chunks": 512,
+  "reference": "mlx_lm",
+  "pooling": "last",
+  "ax_only": true,
+  "models": [
+    {
+      "model_label": "qwen3-embedding-0.6b-8bit",
+      "model_dir": "/Volumes/Ext4T/models/hub/models--mlx-community--Qwen3-Embedding-0.6B-8bit/snapshots/b8d7100604f51da6d14eab4dd1805f596fa1ce3f",
+      "rows": [
+        {
+          "workload": "scale_512x256_b8",
+          "total_chunks": 512,
+          "chunk_tokens": 256,
+          "batch_size": 8,
+          "batches_per_trial": 64,
+          "total_tokens": 131072,
+          "results": {
+            "ax_engine_py": {
+              "engine": "ax-engine-py",
+              "median_wall_ms": 3031.2403748976067,
+              "median_tokens_per_sec": 43240.38472350696,
+              "median_chunks_per_sec": 168.90775282619907,
+              "median_output_mb_per_sec": 0.6597959094773401,
+              "median_batch_p50_ms": 47.25558345671743,
+              "median_batch_p95_ms": 48.14986251294613,
+              "median_batch_max_ms": 48.31229196861386,
+              "trials": [
+                {
+                  "wall_ms": 2725.230999989435,
+                  "tokens_per_sec": 48095.739407231216,
+                  "chunks_per_sec": 187.87398205949694,
+                  "output_mb_per_sec": 0.7338827424199099,
+                  "batch_p50_ms": 42.10581199731678,
+                  "batch_p95_ms": 44.57828926388174,
+                  "batch_max_ms": 44.89079106133431,
+                  "batches": 64,
+                  "hidden_size": 1024,
+                  "output_bytes": 2097152
+                },
+                {
+                  "wall_ms": 3051.432583015412,
+                  "tokens_per_sec": 42954.250645929475,
+                  "chunks_per_sec": 167.790041585662,
+                  "output_mb_per_sec": 0.6554298499439922,
+                  "batch_p50_ms": 48.22152096312493,
+                  "batch_p95_ms": 48.695729475002736,
+                  "batch_max_ms": 48.85216697584838,
+                  "batches": 64,
+                  "hidden_size": 1024,
+                  "output_bytes": 2097152
+                },
+                {
+                  "wall_ms": 3031.2403748976067,
+                  "tokens_per_sec": 43240.38472350696,
+                  "chunks_per_sec": 168.90775282619907,
+                  "output_mb_per_sec": 0.6597959094773401,
+                  "batch_p50_ms": 47.25558345671743,
+                  "batch_p95_ms": 48.14986251294613,
+                  "batch_max_ms": 48.31229196861386,
+                  "batches": 64,
+                  "hidden_size": 1024,
+                  "output_bytes": 2097152
+                }
+              ]
+            }
+          },
+          "comparison": {}
+        },
+        {
+          "workload": "scale_512x256_b32",
+          "total_chunks": 512,
+          "chunk_tokens": 256,
+          "batch_size": 32,
+          "batches_per_trial": 16,
+          "total_tokens": 131072,
+          "results": {
+            "ax_engine_py": {
+              "engine": "ax-engine-py",
+              "median_wall_ms": 3254.7591250622645,
+              "median_tokens_per_sec": 40270.875651202776,
+              "median_chunks_per_sec": 157.30810801251084,
+              "median_output_mb_per_sec": 0.6144847969238705,
+              "median_batch_p50_ms": 204.07681254437193,
+              "median_batch_p95_ms": 208.04930228041485,
+              "median_batch_max_ms": 208.24320800602436,
+              "trials": [
+                {
+                  "wall_ms": 3197.2496249945834,
+                  "tokens_per_sec": 40995.235084349115,
+                  "chunks_per_sec": 160.13763704823873,
+                  "output_mb_per_sec": 0.6255376447196825,
+                  "batch_p50_ms": 197.23724998766556,
+                  "batch_p95_ms": 217.10065656225197,
+                  "batch_max_ms": 230.7671250309795,
+                  "batches": 16,
+                  "hidden_size": 1024,
+                  "output_bytes": 2097152
+                },
+                {
+                  "wall_ms": 3254.7591250622645,
+                  "tokens_per_sec": 40270.875651202776,
+                  "chunks_per_sec": 157.30810801251084,
+                  "output_mb_per_sec": 0.6144847969238705,
+                  "batch_p50_ms": 204.07681254437193,
+                  "batch_p95_ms": 206.68527123052627,
+                  "batch_max_ms": 206.9944579852745,
+                  "batches": 16,
+                  "hidden_size": 1024,
+                  "output_bytes": 2097152
+                },
+                {
+                  "wall_ms": 3310.853083967231,
+                  "tokens_per_sec": 39588.588401797315,
+                  "chunks_per_sec": 154.64292344452076,
+                  "output_mb_per_sec": 0.6040739197051592,
+                  "batch_p50_ms": 207.29258301435038,
+                  "batch_p95_ms": 208.04930228041485,
+                  "batch_max_ms": 208.24320800602436,
+                  "batches": 16,
+                  "hidden_size": 1024,
+                  "output_bytes": 2097152
+                }
+              ]
+            }
+          },
+          "comparison": {}
+        },
+        {
+          "workload": "scale_512x256_b64",
+          "total_chunks": 512,
+          "chunk_tokens": 256,
+          "batch_size": 64,
+          "batches_per_trial": 8,
+          "total_tokens": 131072,
+          "results": {
+            "ax_engine_py": {
+              "engine": "ax-engine-py",
+              "median_wall_ms": 3367.0181670458987,
+              "median_tokens_per_sec": 38928.212886655696,
+              "median_chunks_per_sec": 152.0633315884988,
+              "median_output_mb_per_sec": 0.5939973890175735,
+              "median_batch_p50_ms": 420.3727705171332,
+              "median_batch_p95_ms": 426.5444811375346,
+              "median_batch_max_ms": 428.07495791930705,
+              "trials": [
+                {
+                  "wall_ms": 3374.5787909720093,
+                  "tokens_per_sec": 38840.99560829818,
+                  "chunks_per_sec": 151.72263909491477,
+                  "output_mb_per_sec": 0.5926665589645108,
+                  "batch_p50_ms": 422.6721875020303,
+                  "batch_p95_ms": 427.19199576531537,
+                  "batch_max_ms": 428.07495791930705,
+                  "batches": 8,
+                  "hidden_size": 1024,
+                  "output_bytes": 2097152
+                },
+                {
+                  "wall_ms": 3367.0181670458987,
+                  "tokens_per_sec": 38928.212886655696,
+                  "chunks_per_sec": 152.0633315884988,
+                  "output_mb_per_sec": 0.5939973890175735,
+                  "batch_p50_ms": 420.3727705171332,
+                  "batch_p95_ms": 426.5444811375346,
+                  "batch_max_ms": 428.6988329840824,
+                  "batches": 8,
+                  "hidden_size": 1024,
+                  "output_bytes": 2097152
+                },
+                {
+                  "wall_ms": 3340.2501250384375,
+                  "tokens_per_sec": 39240.17516457445,
+                  "chunks_per_sec": 153.28193423661895,
+                  "output_mb_per_sec": 0.5987575556117928,
+                  "batch_p50_ms": 417.933874996379,
+                  "batch_p95_ms": 422.2244920092635,
+                  "batch_max_ms": 423.15741698257625,
+                  "batches": 8,
+                  "hidden_size": 1024,
+                  "output_bytes": 2097152
+                }
+              ]
+            }
+          },
+          "comparison": {}
+        },
+        {
+          "workload": "scale_512x512_b8",
+          "total_chunks": 512,
+          "chunk_tokens": 512,
+          "batch_size": 8,
+          "batches_per_trial": 64,
+          "total_tokens": 262144,
+          "results": {
+            "ax_engine_py": {
+              "engine": "ax-engine-py",
+              "median_wall_ms": 6836.592291016132,
+              "median_tokens_per_sec": 38344.249421525354,
+              "median_chunks_per_sec": 74.8911121514167,
+              "median_output_mb_per_sec": 0.2925434068414715,
+              "median_batch_p50_ms": 106.74283298430964,
+              "median_batch_p95_ms": 108.05861065164208,
+              "median_batch_max_ms": 108.53666602633893,
+              "trials": [
+                {
+                  "wall_ms": 6571.435666992329,
+                  "tokens_per_sec": 39891.435187705385,
+                  "chunks_per_sec": 77.91295935098708,
+                  "output_mb_per_sec": 0.3043474974647933,
+                  "batch_p50_ms": 102.49156295321882,
+                  "batch_p95_ms": 105.18956881132908,
+                  "batch_max_ms": 106.62529210094362,
+                  "batches": 64,
+                  "hidden_size": 1024,
+                  "output_bytes": 2097152
+                },
+                {
+                  "wall_ms": 6912.589082960039,
+                  "tokens_per_sec": 37922.69392176098,
+                  "chunks_per_sec": 74.06776156593942,
+                  "output_mb_per_sec": 0.28932719361695086,
+                  "batch_p50_ms": 108.4923124872148,
+                  "batch_p95_ms": 111.11342939548194,
+                  "batch_max_ms": 112.55537497345358,
+                  "batches": 64,
+                  "hidden_size": 1024,
+                  "output_bytes": 2097152
+                },
+                {
+                  "wall_ms": 6836.592291016132,
+                  "tokens_per_sec": 38344.249421525354,
+                  "chunks_per_sec": 74.8911121514167,
+                  "output_mb_per_sec": 0.2925434068414715,
+                  "batch_p50_ms": 106.74283298430964,
+                  "batch_p95_ms": 108.05861065164208,
+                  "batch_max_ms": 108.53666602633893,
+                  "batches": 64,
+                  "hidden_size": 1024,
+                  "output_bytes": 2097152
+                }
+              ]
+            }
+          },
+          "comparison": {}
+        },
+        {
+          "workload": "scale_512x512_b32",
+          "total_chunks": 512,
+          "chunk_tokens": 512,
+          "batch_size": 32,
+          "batches_per_trial": 16,
+          "total_tokens": 262144,
+          "results": {
+            "ax_engine_py": {
+              "engine": "ax-engine-py",
+              "median_wall_ms": 6663.58962492086,
+              "median_tokens_per_sec": 39339.757511419884,
+              "median_chunks_per_sec": 76.83546388949196,
+              "median_output_mb_per_sec": 0.300138530818328,
+              "median_batch_p50_ms": 416.81581252487376,
+              "median_batch_p95_ms": 418.3831350237597,
+              "median_batch_max_ms": 419.9541660491377,
+              "trials": [
+                {
+                  "wall_ms": 6713.204833911732,
+                  "tokens_per_sec": 39049.00959907859,
+                  "chunks_per_sec": 76.26759687320038,
+                  "output_mb_per_sec": 0.29792030028593897,
+                  "batch_p50_ms": 419.4792295456864,
+                  "batch_p95_ms": 420.7541355281137,
+                  "batch_max_ms": 420.8437920315191,
+                  "batches": 16,
+                  "hidden_size": 1024,
+                  "output_bytes": 2097152
+                },
+                {
+                  "wall_ms": 6663.58962492086,
+                  "tokens_per_sec": 39339.757511419884,
+                  "chunks_per_sec": 76.83546388949196,
+                  "output_mb_per_sec": 0.300138530818328,
+                  "batch_p50_ms": 416.81581252487376,
+                  "batch_p95_ms": 418.3831350237597,
+                  "batch_max_ms": 419.9541660491377,
+                  "batches": 16,
+                  "hidden_size": 1024,
+                  "output_bytes": 2097152
+                },
+                {
+                  "wall_ms": 6602.037417003885,
+                  "tokens_per_sec": 39706.530490850404,
+                  "chunks_per_sec": 77.5518173649422,
+                  "output_mb_per_sec": 0.30293678658180545,
+                  "batch_p50_ms": 412.57741645677015,
+                  "batch_p95_ms": 415.02041698549874,
+                  "batch_max_ms": 416.08679108321667,
+                  "batches": 16,
+                  "hidden_size": 1024,
+                  "output_bytes": 2097152
+                }
+              ]
+            }
+          },
+          "comparison": {}
+        },
+        {
+          "workload": "scale_512x512_b64",
+          "total_chunks": 512,
+          "chunk_tokens": 512,
+          "batch_size": 64,
+          "batches_per_trial": 8,
+          "total_tokens": 262144,
+          "results": {
+            "ax_engine_py": {
+              "engine": "ax-engine-py",
+              "median_wall_ms": 6459.246209007688,
+              "median_tokens_per_sec": 40584.3021797852,
+              "median_chunks_per_sec": 79.26621519489296,
+              "median_output_mb_per_sec": 0.30963365310505064,
+              "median_batch_p50_ms": 807.2839789674617,
+              "median_batch_p95_ms": 809.2165652895346,
+              "median_batch_max_ms": 809.4882090808824,
+              "trials": [
+                {
+                  "wall_ms": 6473.387875012122,
+                  "tokens_per_sec": 40495.642322299296,
+                  "chunks_per_sec": 79.09305141074081,
+                  "output_mb_per_sec": 0.3089572320732063,
+                  "batch_p50_ms": 808.958875015378,
+                  "batch_p95_ms": 810.46722906176,
+                  "batch_max_ms": 810.4840000160038,
+                  "batches": 8,
+                  "hidden_size": 1024,
+                  "output_bytes": 2097152
+                },
+                {
+                  "wall_ms": 6459.246209007688,
+                  "tokens_per_sec": 40584.3021797852,
+                  "chunks_per_sec": 79.26621519489296,
+                  "output_mb_per_sec": 0.30963365310505064,
+                  "batch_p50_ms": 807.2839789674617,
+                  "batch_p95_ms": 809.2165652895346,
+                  "batch_max_ms": 809.4882090808824,
+                  "batches": 8,
+                  "hidden_size": 1024,
+                  "output_bytes": 2097152
+                },
+                {
+                  "wall_ms": 6417.285082978196,
+                  "tokens_per_sec": 40849.673438279235,
+                  "chunks_per_sec": 79.78451843413913,
+                  "output_mb_per_sec": 0.311658275133356,
+                  "batch_p50_ms": 802.2165209404193,
+                  "batch_p95_ms": 804.4357708771713,
+                  "batch_max_ms": 804.6281249262393,
+                  "batches": 8,
+                  "hidden_size": 1024,
+                  "output_bytes": 2097152
+                }
+              ]
+            }
+          },
+          "comparison": {}
+        }
+      ]
+    }
+  ]
+}
