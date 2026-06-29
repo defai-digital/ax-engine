@@ -1134,7 +1134,7 @@ fn layer_forward_dense_embed(
     if let Some(started) = profile.then(Instant::now) {
         embed_profile_eval_elapsed(profile, EmbedProfileStage::FfnNorm, started, &[&normed2]);
     }
-    let ffn_out = ffn_swiglu_embed(cfg, w, &normed2, None, layer_idx);
+    let ffn_out = ffn_swiglu(cfg, w, &normed2, None, layer_idx);
     // Defer the FFN residual add: the caller (layer loop) will fuse it with
     // the next layer's pre-attention RMSNorm via `add_rms_norm_pair`, saving
     // one GPU kernel dispatch per layer boundary.
@@ -1899,9 +1899,8 @@ pub fn build_embedding_batch_forward_closure(
             return vec![];
         }
         let hidden = inputs.get(0);
-        let out = crate::per_layer_compile::with_embed_batch_compile_trace(|| {
-            forward_for_embedding_batch_body(&cfg, &weights, hidden, target_positions.as_deref())
-        });
+        let out =
+            forward_for_embedding_batch_body(&cfg, &weights, hidden, target_positions.as_deref());
         vec![out]
     });
     body_closure.compile(false)

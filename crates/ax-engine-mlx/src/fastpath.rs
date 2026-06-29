@@ -612,47 +612,6 @@ env_flag!(
 );
 
 env_flag!(
-    /// `AX_MLX_EMBED_PACKED_QKV` — force packed QKV projection for the
-    /// batched embedding forward path.
-    ///
-    /// **Default: OFF** (opt-in via `AX_MLX_EMBED_PACKED_QKV=1`).
-    /// When the embedding forward runs with batch > 1, the standard
-    /// `qkv_project` prefers separate Q/K/V quantized matmuls (3 dispatches).
-    /// This flag forces the packed-QKV single-matmul path (1 dispatch +
-    /// 3 zero-copy slices). This is opt-in because packed quantized matmuls
-    /// are not uniformly faster across embedding model shapes.
-    embed_packed_qkv_enabled,
-    "AX_MLX_EMBED_PACKED_QKV"
-);
-
-env_flag!(
-    /// `AX_MLX_EMBED_PACKED_FFN` — force packed gate_up projection for the
-    /// batched embedding forward path.
-    ///
-    /// **Default: OFF** (opt-in via `AX_MLX_EMBED_PACKED_FFN=1`).
-    /// When the embedding forward runs with batch > 1, `ffn_swiglu` prefers
-    /// separate gate/up quantized matmuls (2 dispatches). This flag forces
-    /// the packed gate_up single-matmul path (1 dispatch + 2 zero-copy
-    /// slices). This is opt-in because the packed path has shown mixed
-    /// throughput on batch-prefill embedding workloads.
-    embed_packed_ffn_enabled,
-    "AX_MLX_EMBED_PACKED_FFN"
-);
-
-env_flag!(
-    /// `AX_MLX_EMBED_FFN_COMPILE` — enable per-layer compiled dense FFN
-    /// closure for the batched embedding prefill path (seq > 1).
-    ///
-    /// **Default: OFF** (opt-in via `AX_MLX_EMBED_FFN_COMPILE=1`).
-    /// Collapses the packed gate_up + split + SiLU + down projection chain
-    /// into a single compiled graph per (layer, seq_len) shape. Uses
-    /// `compile(false)` (per-shape) because seq_len varies across embedding
-    /// batches. Falls back to the imperative path on compilation failure.
-    embed_ffn_compile_enabled,
-    "AX_MLX_EMBED_FFN_COMPILE"
-);
-
-env_flag!(
     /// `AX_MLX_MOE_ROUTER_FUSED_METAL` — enable fused MoE router Metal
     /// kernel for decode.
     ///

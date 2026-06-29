@@ -9,7 +9,7 @@ use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 
 use crate::fastpath;
-use crate::per_layer_compile::{apply_layer_dense_ffn_decode, apply_layer_dense_ffn_prefill};
+use crate::per_layer_compile::apply_layer_dense_ffn_decode;
 use crate::weights::{LayerWeights, QuantizedWeight};
 
 use super::super::config::{GlmRouterConfig, ModelConfig};
@@ -65,8 +65,9 @@ pub(crate) fn qkv_project(
     qkv_project_inner(cfg, w, x, head_dim, false)
 }
 
-/// Embedding variant of `qkv_project`: can force the packed-QKV single-matmul
-/// path when `AX_MLX_EMBED_PACKED_QKV` is enabled.
+/// Embedding variant of `qkv_project`: forces the packed-QKV single-matmul
+/// path for short batched Qwen embedding inputs (batch > 1, seq <= 16), where
+/// one quantized matmul + 3 zero-copy slices beats 3 separate Q/K/V matmuls.
 pub(crate) fn qkv_project_embed(
     cfg: &ModelConfig,
     w: &LayerWeights,
@@ -76,8 +77,7 @@ pub(crate) fn qkv_project_embed(
     let batch = x.shape().first().copied().unwrap_or(1);
     let seq = x.shape().get(1).copied().unwrap_or(1);
     let auto_short_qwen = cfg.model_family.starts_with("qwen") && batch > 1 && seq > 0 && seq <= 16;
-    let force_packed = fastpath::embed_packed_qkv_enabled() || auto_short_qwen;
-    qkv_project_inner(cfg, w, x, head_dim, force_packed)
+    qkv_project_inner(cfg, w, x, head_dim, auto_short_qwen)
 }
 
 fn qkv_project_inner(
@@ -1053,31 +1053,6 @@ pub(crate) fn ffn_swiglu(
     post_norm: Option<&MlxArray>,
     layer_idx: usize,
 ) -> MlxArray {
-    ffn_swiglu_inner(cfg, w, x, post_norm, layer_idx, false)
-}
-
-/// Embedding variant of `ffn_swiglu`: forces packed gate_up and optionally
-/// enables per-shape FFN compilation for batched prefill (seq > 1).
-/// Gated by `AX_MLX_EMBED_PACKED_FFN` and `AX_MLX_EMBED_FFN_COMPILE`.
-pub(crate) fn ffn_swiglu_embed(
-    cfg: &ModelConfig,
-    w: &LayerWeights,
-    x: &MlxArray,
-    post_norm: Option<&MlxArray>,
-    layer_idx: usize,
-) -> MlxArray {
-    let force_packed = fastpath::embed_packed_ffn_enabled();
-    ffn_swiglu_inner(cfg, w, x, post_norm, layer_idx, force_packed)
-}
-
-fn ffn_swiglu_inner(
-    cfg: &ModelConfig,
-    w: &LayerWeights,
-    x: &MlxArray,
-    post_norm: Option<&MlxArray>,
-    layer_idx: usize,
-    force_packed: bool,
-) -> MlxArray {
     let seq = x.shape().get(1).copied().unwrap_or(1);
     let profile_decode = seq == 1 && decode_profile_enabled();
     let profile_prefill = seq > 1 && prefill_profile_enabled();
@@ -1146,64 +1121,11 @@ fn ffn_swiglu_inner(
         }
     }
 
-    // Compiled dense FFN prefill closure (embedding path, gated by
-    // AX_MLX_EMBED_FFN_COMPILE). Per-shape compilation (shapeless=false)
-    // keyed on the input shape since batch and sequence length vary across
-    // embedding batches. Same closure body as the decode path above.
-    if seq > 1
-        && !cfg.uses_geglu
-        && force_packed
-        && fastpath::embed_ffn_compile_enabled()
-        && let Some(packed) = &w.gate_up_packed
-    {
-        let packed_dim = packed
-            .weight
-            .shape()
-            .first()
-            .copied()
-            .expect("packed FFN weight must have an output dimension");
-        let half_dim = packed_dim / 2;
-        let down_qw = w.down_proj.as_ref();
-        let (inputs, schema) = flatten_dense_ffn_inputs(x, Some(packed), down_qw, post_norm);
-        let input_refs: Vec<&MlxArray> = inputs.iter().collect();
-        let eps = cfg.rms_norm_eps;
-        let compiled_result = apply_layer_dense_ffn_prefill(
-            layer_idx,
-            &x.shape(),
-            &input_refs,
-            move |inputs: &MlxVectorArray| {
-                let x = inputs.get(0);
-                let (gate_up_qw, down_qw, post_norm) = schema.rebuild(inputs);
-                let gate_up = gate_up_qw
-                    .as_ref()
-                    .expect("dense FFN prefill compile: gate_up weight required");
-                let gate_up_out = qw(&x, gate_up);
-                let gate = slice_last_dim(&gate_up_out, 0, half_dim, None);
-                let up = slice_last_dim(&gate_up_out, half_dim, half_dim * 2, None);
-                let ffn_hidden = silu_mul(&gate, &up, None);
-                let down = down_qw
-                    .as_ref()
-                    .expect("dense FFN prefill compile: down weight required");
-                let out = qw(&ffn_hidden, down);
-                if let Some(norm_w) = post_norm {
-                    vec![rms_norm(&out, Some(&norm_w), eps, None)]
-                } else {
-                    vec![out]
-                }
-            },
-        );
-        if let Some(result) = compiled_result.and_then(|r| r.into_iter().next()) {
-            return result;
-        }
-    }
-
     let gate_up_started = Instant::now();
     let packed_gate_up: Option<MlxArray>;
     let mut gate_up_profile_recorded = false;
-    let prefer_split_gate_up = !force_packed
-        && x.shape().first().copied().unwrap_or(1) > 1
-        && w.gate_proj.is_some()
-        && w.up_proj.is_some();
+    let prefer_split_gate_up =
+        x.shape().first().copied().unwrap_or(1) > 1 && w.gate_proj.is_some() && w.up_proj.is_some();
     let (gate_out, up_out) = if !prefer_split_gate_up && let Some(packed) = &w.gate_up_packed {
         let out = qw(x, packed);
         let packed_dim = out

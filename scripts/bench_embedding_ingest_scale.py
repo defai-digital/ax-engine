@@ -15,7 +15,9 @@ import gc
 import importlib.util
 import json
 import math
+import os
 import statistics
+import subprocess
 import sys
 import time
 from dataclasses import dataclass
@@ -172,30 +174,46 @@ def trial_stats(trials: list[dict[str, Any]], engine: str) -> dict[str, Any]:
     }
 
 
-def run_trials(
-    engine: str,
+@dataclass(frozen=True)
+class EngineRunner:
+    key: str
+    label: str
+    step_fn: Callable[[list[list[int]]], tuple[bytes, int, int]]
+
+
+def run_trials_interleaved(
+    engines: list[EngineRunner],
     workload: ScaleWorkload,
-    step_fn: Callable[[list[list[int]]], tuple[bytes, int, int]],
     warmup: int,
     trials: int,
     cooldown: float,
-) -> dict[str, Any]:
-    print(f"    [{engine}] warmup x {warmup}", file=sys.stderr)
-    for _ in range(warmup):
-        run_one_pass(step_fn, workload)
-    rows = []
+) -> dict[str, dict[str, Any]]:
+    """Run each engine's measured trials interleaved within a single trial loop.
+
+    For paired runs (reference + AX), each measured trial runs the reference
+    pass and the AX pass back-to-back so both engines see the same thermal and
+    GPU-clock state. This is the same-session interleaved A/B methodology;
+    running all reference trials and then all AX trials (separate blocks) lets
+    GPU clocks and thermals drift between the blocks and biases the comparison.
+    """
+    for runner in engines:
+        print(f"    [{runner.label}] warmup x {warmup}", file=sys.stderr)
+        for _ in range(warmup):
+            run_one_pass(runner.step_fn, workload)
+    rows_by_engine: dict[str, list[dict[str, Any]]] = {r.key: [] for r in engines}
     for idx in range(1, trials + 1):
-        if cooldown > 0:
-            time.sleep(cooldown)
-        row = run_one_pass(step_fn, workload)
-        rows.append(row)
-        print(
-            f"    [{engine}] trial {idx}: "
-            f"{row['chunks_per_sec']:.1f} chunks/s  "
-            f"{row['tokens_per_sec']:.1f} tok/s  p95={row['batch_p95_ms']:.1f} ms",
-            file=sys.stderr,
-        )
-    return trial_stats(rows, engine)
+        for runner in engines:
+            if cooldown > 0:
+                time.sleep(cooldown)
+            row = run_one_pass(runner.step_fn, workload)
+            rows_by_engine[runner.key].append(row)
+            print(
+                f"    [{runner.label}] trial {idx}: "
+                f"{row['chunks_per_sec']:.1f} chunks/s  "
+                f"{row['tokens_per_sec']:.1f} tok/s  p95={row['batch_p95_ms']:.1f} ms",
+                file=sys.stderr,
+            )
+    return {r.key: trial_stats(rows_by_engine[r.key], r.label) for r in engines}
 
 
 def compare_results(results: dict[str, Any], reference_key: str) -> dict[str, float]:
@@ -250,13 +268,12 @@ def run_model(
                 f"chunk_tokens={workload.chunk_tokens} batch={workload.batch_size}",
                 file=sys.stderr,
             )
-            results = {}
+            engines = []
             if ref_step is not None:
-                results[ref_key] = run_trials(
-                    ref_label, workload, ref_step, warmup, trials, cooldown
-                )
-            results["ax_engine_py"] = run_trials(
-                "ax-engine-py", workload, ax_step, warmup, trials, cooldown
+                engines.append(EngineRunner(ref_key, ref_label, ref_step))
+            engines.append(EngineRunner("ax_engine_py", "ax-engine-py", ax_step))
+            results = run_trials_interleaved(
+                engines, workload, warmup, trials, cooldown
             )
             rows.append(
                 {
@@ -333,6 +350,39 @@ def render_summary(artifact: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def git_commit() -> str | None:
+    """Best-effort current commit so an artifact records the binary it measured."""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    commit = result.stdout.strip()
+    return commit or None
+
+
+def embed_env_flags() -> dict[str, str]:
+    """Capture the embedding-path env flags that change AX forward behavior.
+
+    Recorded in the artifact so a reader can tell which knobs were set: an
+    ax_only artifact with `AX_MLX_EMBED_FFN_COMPILE=1` is not the shipped
+    default path, and a delta computed from it would not describe defaults.
+    """
+    tracked = ("AX_MLX_DENSE_FFN_COMPILE",)
+    keys = sorted(
+        key
+        for key in os.environ
+        if key.startswith("AX_MLX_EMBED") or key in tracked
+    )
+    return {key: os.environ[key] for key in keys}
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model", action="append", required=True)
@@ -345,8 +395,8 @@ def build_parser() -> argparse.ArgumentParser:
         default="mlx_lm",
     )
     parser.add_argument("--pooling", choices=["last", "cls", "mean"], default="last")
-    parser.add_argument("--warmup", type=int, default=1)
-    parser.add_argument("--trials", type=int, default=3)
+    parser.add_argument("--warmup", type=int, default=2)
+    parser.add_argument("--trials", type=int, default=5)
     parser.add_argument("--cooldown", type=float, default=0.0)
     parser.add_argument("--ax-only", action="store_true")
     parser.add_argument(
@@ -374,6 +424,8 @@ def main() -> int:
     artifact = {
         "schema_version": "ax.embedding_ingest_scale.v1",
         "timestamp": datetime.now().isoformat(),
+        "git_commit": git_commit(),
+        "embed_env_flags": embed_env_flags(),
         "output_contract": OUTPUT_CONTRACT,
         "warmup": args.warmup,
         "trials": args.trials,

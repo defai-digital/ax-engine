@@ -238,31 +238,28 @@ EMBEDDING_FAIR_ARTIFACTS = (
 )
 EMBEDDING_AX_REFRESH_ARTIFACTS = (
     Path(
-        "benchmarks/results/embedding-fair/2026-06-28-qwen-auto-short-qkv-rerun/"
-        "2026-06-28-222210/embedding_fair.json"
+        "benchmarks/results/embedding-fair/2026-06-29-qwen-refresh/"
+        "2026-06-29-003717/embedding_fair.json"
     ),
     Path(
         "benchmarks/results/embedding-fair/"
-        "2026-06-28-embeddinggemma-ax-only-fixed-rerun/"
-        "2026-06-28-213354/embedding_fair.json"
+        "2026-06-29-embeddinggemma-refresh/"
+        "2026-06-29-003743/embedding_fair.json"
     ),
 )
+# Same-session paired ingest artifacts: the reference (mlx-lm / mlx-embeddings)
+# and AX series are measured interleaved in one process. These are the only
+# artifacts the ingest-scale charts draw from — an `--ax-only` run divided by a
+# *different* run's frozen reference is rejected (see
+# load_embedding_paired_scale_delta_rows), because AX throughput alone drifts
+# run-to-run by more than the reported delta.
 EMBEDDING_SCALE_ARTIFACT = Path(
-    "benchmarks/results/embedding-scale/2026-06-28-qwen-ingest-scale/"
-    "2026-06-28-184450/embedding_ingest_scale.json"
-)
-EMBEDDING_SCALE_AX_REFRESH_ARTIFACT = Path(
-    "benchmarks/results/embedding-scale/2026-06-29-qwen-ingest-current-rerun/"
-    "2026-06-28-225327/embedding_ingest_scale.json"
+    "benchmarks/results/embedding-scale/2026-06-29-qwen-paired-refresh/"
+    "2026-06-29-003753/embedding_ingest_scale.json"
 )
 EMBEDDINGGEMMA_SCALE_ARTIFACT = Path(
-    "benchmarks/results/embedding-scale/2026-06-28-embeddinggemma-ingest-scale/"
-    "2026-06-28-205210/embedding_ingest_scale.json"
-)
-EMBEDDINGGEMMA_SCALE_AX_REFRESH_ARTIFACT = Path(
-    "benchmarks/results/embedding-scale/"
-    "2026-06-28-embeddinggemma-ingest-scale-ax-only-fixed-rerun/"
-    "2026-06-28-213619/embedding_ingest_scale.json"
+    "benchmarks/results/embedding-scale/2026-06-29-embeddinggemma-paired-refresh/"
+    "2026-06-29-004503/embedding_ingest_scale.json"
 )
 EMBEDDING_FAIR_CHART_OUTPUT = "perf-embedding-fair-ax-vs-reference.svg"
 EMBEDDING_SCALE_CHART_OUTPUT = "perf-embedding-ingest-scale-ax-vs-mlx-lm.svg"
@@ -1934,42 +1931,43 @@ def load_embedding_fair_delta_rows(repo_root: Path) -> list[EmbeddingDeltaRow]:
     return rows
 
 
-def load_embedding_merged_scale_delta_rows(
-    repo_root: Path, ref_relative_path: Path, ax_relative_path: Path
+def load_embedding_paired_scale_delta_rows(
+    repo_root: Path, artifact_relative_path: Path
 ) -> list[EmbeddingDeltaRow]:
-    ref_path = repo_root / ref_relative_path
-    ax_path = repo_root / ax_relative_path
-    if not ref_path.exists():
-        raise ChartError(f"missing embedding scale artifact: {ref_path}")
-    if not ax_path.exists():
-        raise ChartError(f"missing embedding scale AX refresh artifact: {ax_path}")
-    artifact = json.loads(ref_path.read_text())
-    ax_artifact = json.loads(ax_path.read_text())
+    """Load AX-vs-reference deltas from one *same-session* paired ingest artifact.
+
+    Both the reference (mlx-lm / mlx-embeddings) and the AX series are read from
+    the same artifact, so they were measured interleaved in a single process —
+    the only methodology that controls for thermal and run-to-run drift.
+
+    Artifacts produced with ``--ax-only`` carry no reference series and are
+    rejected: dividing a fresh AX run by a *different* run's frozen reference is
+    a cross-run comparison, and the same default binary drifts in AX throughput
+    alone by more than the deltas these charts report.
+    """
+    artifact_path = repo_root / artifact_relative_path
+    if not artifact_path.exists():
+        raise ChartError(f"missing embedding scale artifact: {artifact_path}")
+    artifact = json.loads(artifact_path.read_text())
+    if artifact.get("ax_only"):
+        raise ChartError(
+            f"{artifact_path} is an ax_only artifact; ingest-scale charts require a "
+            "same-session paired run (omit --ax-only) so the reference is measured "
+            "in the same process as AX"
+        )
     ref_key, ref_label = embedding_reference_key(artifact)
     rows: list[EmbeddingDeltaRow] = []
-    ax_by_model = {
-        str(model.get("model_label")): {
-            str(row.get("workload")): row for row in model.get("rows", [])
-        }
-        for model in ax_artifact.get("models", [])
-    }
     for model in artifact.get("models", []):
-        raw_model_label = str(model.get("model_label", ""))
-        model_label = embedding_model_label(raw_model_label)
-        ax_model_rows = ax_by_model.get(raw_model_label)
-        if ax_model_rows is None:
-            raise ChartError(f"{ax_path} missing model {raw_model_label}")
+        model_label = embedding_model_label(str(model.get("model_label", "")))
         for row in model.get("rows", []):
-            workload = str(row.get("workload"))
-            ax_row = ax_model_rows.get(workload)
-            if ax_row is None:
-                raise ChartError(f"{ax_path} missing workload {workload}")
             results = row.get("results", {})
-            ax_results = ax_row.get("results", {})
             ref = results.get(ref_key)
-            ax = ax_results.get("ax_engine_py")
+            ax = results.get("ax_engine_py")
             if not isinstance(ref, dict) or not isinstance(ax, dict):
-                raise ChartError(f"missing scale results for {raw_model_label} {workload}")
+                raise ChartError(
+                    f"{artifact_path} {row.get('workload')} lacks paired "
+                    f"{ref_key}/ax_engine_py results"
+                )
             ref_tps = float(ref["median_tokens_per_sec"])
             ax_tps = float(ax["median_tokens_per_sec"])
             delta = ((ax_tps - ref_tps) / ref_tps * 100.0) if ref_tps else 0.0
@@ -1990,9 +1988,7 @@ def load_embedding_merged_scale_delta_rows(
 
 
 def load_embedding_scale_delta_rows(repo_root: Path) -> list[EmbeddingDeltaRow]:
-    return load_embedding_merged_scale_delta_rows(
-        repo_root, EMBEDDING_SCALE_ARTIFACT, EMBEDDING_SCALE_AX_REFRESH_ARTIFACT
-    )
+    return load_embedding_paired_scale_delta_rows(repo_root, EMBEDDING_SCALE_ARTIFACT)
 
 
 def render_embedding_delta_chart(
@@ -2153,7 +2149,7 @@ def main() -> int:
         load_embedding_fair_delta_rows(args.readme.parent),
         title="Embedding throughput: AX vs reference",
         subtitle="Batch=8, contiguous CPU float32 [B,H] output; higher delta means AX is faster.",
-        source_label="Sources: embedding-fair Qwen and EmbeddingGemma artifacts from 2026-06-28",
+        source_label="Sources: embedding-fair reference baselines from 2026-06-28 and AX refresh artifacts from 2026-06-29",
     )
     if not write_chart(embedding_fair_output_path, embedding_fair_content, args.check):
         mismatches.append(embedding_fair_output_path)
@@ -2163,21 +2159,19 @@ def main() -> int:
         load_embedding_scale_delta_rows(args.readme.parent),
         title="Embedding ingest scale: AX vs mlx-lm",
         subtitle="512 chunks per trial, repeated batches, contiguous CPU float32 [B,H] output.",
-        source_label="Sources: embedding-scale Qwen3-Embedding 0.6B baseline from 2026-06-28 and AX-only artifact from 2026-06-29",
+        source_label="Sources: embedding-scale Qwen3-Embedding 0.6B same-session paired artifact from 2026-06-29",
     )
     if not write_chart(embedding_scale_output_path, embedding_scale_content, args.check):
         mismatches.append(embedding_scale_output_path)
 
     embeddinggemma_scale_output_path = args.output_dir / EMBEDDINGGEMMA_SCALE_CHART_OUTPUT
     embeddinggemma_scale_content = render_embedding_delta_chart(
-        load_embedding_merged_scale_delta_rows(
-            args.readme.parent,
-            EMBEDDINGGEMMA_SCALE_ARTIFACT,
-            EMBEDDINGGEMMA_SCALE_AX_REFRESH_ARTIFACT,
+        load_embedding_paired_scale_delta_rows(
+            args.readme.parent, EMBEDDINGGEMMA_SCALE_ARTIFACT
         ),
         title="EmbeddingGemma ingest scale: AX vs mlx-embeddings",
         subtitle="512 chunks per trial, repeated batches, contiguous CPU float32 [B,H] output.",
-        source_label="Sources: embedding-scale EmbeddingGemma 300M 8-bit baseline and AX-only artifacts from 2026-06-28",
+        source_label="Sources: embedding-scale EmbeddingGemma 300M 8-bit same-session paired artifact from 2026-06-29",
     )
     if not write_chart(
         embeddinggemma_scale_output_path, embeddinggemma_scale_content, args.check

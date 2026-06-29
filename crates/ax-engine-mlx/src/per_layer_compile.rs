@@ -28,35 +28,12 @@
 //! caller is responsible for updating the cache state with the returned arrays.
 //! This avoids aliasing issues with compiled graphs.
 
-use std::cell::Cell;
 use std::collections::HashMap;
 use std::panic::AssertUnwindSafe;
 use std::sync::{Mutex, OnceLock};
 use std::thread::ThreadId;
 
 use mlx_sys::{MlxArray, MlxClosure, MlxVectorArray};
-
-thread_local! {
-    static EMBED_BATCH_COMPILE_TRACE_DEPTH: Cell<usize> = const { Cell::new(0) };
-}
-
-pub(crate) fn with_embed_batch_compile_trace<T>(f: impl FnOnce() -> T) -> T {
-    EMBED_BATCH_COMPILE_TRACE_DEPTH.with(|depth| {
-        depth.set(depth.get() + 1);
-        struct Reset<'a>(&'a Cell<usize>);
-        impl Drop for Reset<'_> {
-            fn drop(&mut self) {
-                self.0.set(self.0.get().saturating_sub(1));
-            }
-        }
-        let _reset = Reset(depth);
-        f()
-    })
-}
-
-fn embed_batch_compile_trace_active() -> bool {
-    EMBED_BATCH_COMPILE_TRACE_DEPTH.with(|depth| depth.get() > 0)
-}
 
 /// Try applying a compiled closure, returning `Some(outputs)` on success.
 ///
@@ -118,18 +95,6 @@ static LAYER_MOE_DECODE_CACHE: MoeDecodeCache = OnceLock::new();
 /// inputs to satisfy MLX's no-uncaptured-inputs contract.
 static LAYER_DENSE_FFN_DECODE_CACHE: OnceLock<Mutex<HashMap<(usize, ThreadId), MlxClosure>>> =
     OnceLock::new();
-
-/// Per-layer dense FFN prefill closure cache (embedding path).
-///
-/// Maps `(layer_index, thread_id, input_shape)` to a compiled closure that
-/// performs a single dense FFN layer's prefill step. Unlike the decode cache
-/// which uses `shapeless=true`, this cache is keyed on the full input shape and
-/// uses per-shape compilation (`shapeless=false`) since batch and sequence
-/// length vary across embedding workloads.
-#[allow(clippy::type_complexity)]
-static LAYER_DENSE_FFN_PREFILL_CACHE: OnceLock<
-    Mutex<HashMap<(usize, ThreadId, Vec<i32>), MlxClosure>>,
-> = OnceLock::new();
 
 /// Per-layer Gemma4 dual-path (dense + expert) decode closure cache.
 ///
@@ -327,51 +292,6 @@ pub fn apply_layer_dense_ffn_decode(
     None
 }
 
-/// Apply a compiled dense FFN prefill closure for a single layer (embedding path).
-///
-/// Unlike the decode variant which uses `shapeless=true`, this function uses
-/// per-shape compilation (`shapeless=false`) keyed on `(layer_index, thread_id,
-/// input_shape)` since batch and sequence length vary across embedding batches. The
-/// closure performs the same FFN computation as the decode variant: packed
-/// gate_up -> split -> activation -> down -> optional post-norm.
-///
-/// Gated by `AX_MLX_EMBED_FFN_COMPILE` (default OFF, opt-in). Returns `None`
-/// when the flag is off, compilation fails, or the closure cannot be applied.
-pub fn apply_layer_dense_ffn_prefill(
-    layer_index: usize,
-    input_shape: &[i32],
-    inputs: &[&MlxArray],
-    ffn_fn: impl Fn(&MlxVectorArray) -> Vec<MlxArray> + Send + 'static,
-) -> Option<Vec<MlxArray>> {
-    if embed_batch_compile_trace_active() {
-        return None;
-    }
-    if !crate::fastpath::embed_ffn_compile_enabled() {
-        return None;
-    }
-    let cache = LAYER_DENSE_FFN_PREFILL_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-    let tid = std::thread::current().id();
-    let key = (layer_index, tid, input_shape.to_vec());
-
-    let guard = cache.lock().ok()?;
-    if let Some(closure) = guard.get(&key) {
-        return try_apply_with_abort_safety(closure, inputs);
-    }
-    drop(guard);
-
-    let mut guard = cache.lock().ok()?;
-    if let std::collections::hash_map::Entry::Vacant(slot) = guard.entry(key) {
-        let closure = MlxClosure::new_dyn(ffn_fn);
-        if let Ok(compiled) = closure.compile(false) {
-            let result = try_apply_with_abort_safety(&compiled, inputs);
-            slot.insert(compiled);
-            return result;
-        }
-    }
-
-    None
-}
-
 /// Clear the per-layer dense FFN decode closure cache.
 pub fn clear_layer_dense_ffn_decode_cache() {
     if let Some(cache) = LAYER_DENSE_FFN_DECODE_CACHE.get()
@@ -466,29 +386,7 @@ mod tests {
     }
 
     #[test]
-    fn test_clear_dense_ffn_prefill_cache_does_not_panic() {
-        if let Some(cache) = LAYER_DENSE_FFN_PREFILL_CACHE.get()
-            && let Ok(mut guard) = cache.lock()
-        {
-            guard.clear();
-        }
-    }
-
-    #[test]
     fn test_clear_gemma4_dual_path_cache_does_not_panic() {
         clear_layer_gemma4_dual_path_cache();
-    }
-
-    #[test]
-    fn embed_batch_compile_trace_guard_resets() {
-        assert!(!embed_batch_compile_trace_active());
-        with_embed_batch_compile_trace(|| {
-            assert!(embed_batch_compile_trace_active());
-            with_embed_batch_compile_trace(|| {
-                assert!(embed_batch_compile_trace_active());
-            });
-            assert!(embed_batch_compile_trace_active());
-        });
-        assert!(!embed_batch_compile_trace_active());
     }
 }
