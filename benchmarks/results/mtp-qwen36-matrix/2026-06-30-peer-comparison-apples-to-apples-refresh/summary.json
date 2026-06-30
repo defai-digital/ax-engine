@@ -36,13 +36,14 @@
   },
   "created_at": "2026-06-30",
   "notes": [
-    "AX Engine rows are refreshed from the 2026-06-30 full AX-only flappy rerun.",
-    "27B 4-bit flappy MTPLX and lightning-mlx rows are from the 2026-06-30 same-session peer rerun.",
+    "27B 4-bit AX Engine row is refreshed from the 2026-06-30 targeted AX-only flappy rerun.",
+    "Other AX Engine rows remain from the 2026-06-30 full AX-only flappy rerun.",
+    "27B 4-bit MTPLX and lightning-mlx rows are from the 2026-06-30 same-session peer rerun.",
     "Other peer rows remain from the 2026-06-29 apples-to-apples run."
   ],
   "rows": [
     {
-      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-30-peer-comparison-ax-only-rerun/27b-4bit/flappy/ax_engine.json",
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-30-peer-comparison-27b4-ax-only-rerun/27b-4bit/flappy/ax_engine.json",
       "bits": 4,
       "engine": "ax_engine",
       "metric_contract": {
@@ -55,16 +56,16 @@
         "accept_rate": 1.0,
         "accept_source": "ax_engine_mtp_telemetry",
         "case_count": 4,
-        "decode_tok_s": 62.18144726988274,
+        "decode_tok_s": 60.52967253267927,
         "prefill_source": "ax_engine_runner_prefill_time",
-        "prefill_tok_s": 673.277444668239,
+        "prefill_tok_s": 668.2187775715354,
         "status": "ok",
-        "ttft_ms": 477.568,
+        "ttft_ms": 483.462,
         "ttft_source": "ax_engine_runner_prefill_time"
       },
       "model": "27b",
       "model_label": "Qwen3.6 27B 4-bit",
-      "reason": "2026-06-30 full AX-only flappy rerun replacing the previous AX row",
+      "reason": "2026-06-30 targeted AX-only 27B 4-bit flappy rerun replacing the previous AX row",
       "status": "supported",
       "suite": "flappy",
       "target": "27b-4bit"
@@ -526,6 +527,7 @@
   "source_summaries": [
     "benchmarks/results/mtp-qwen36-matrix/2026-06-29-peer-comparison-apples-to-apples/summary.json",
     "benchmarks/results/mtp-qwen36-matrix/2026-06-30-27b4-flappy-rerun/summary.json",
-    "benchmarks/results/mtp-qwen36-matrix/2026-06-30-peer-comparison-ax-only-rerun/summary.json"
+    "benchmarks/results/mtp-qwen36-matrix/2026-06-30-peer-comparison-ax-only-rerun/summary.json",
+    "benchmarks/results/mtp-qwen36-matrix/2026-06-30-peer-comparison-27b4-ax-only-rerun/summary.json"
   ]
 }

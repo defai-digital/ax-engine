@@ -356,7 +356,7 @@ matrix below.
 
 | Target | Engine | Decode | Prefill | TTFT | Accept | Status |
 | --- | --- | ---: | ---: | ---: | ---: | --- |
-| Qwen3.6 27B 4-bit | AX Engine | 62.2 tok/s | 673.3 tok/s | 478 ms | 100.0% | ok |
+| Qwen3.6 27B 4-bit | AX Engine | 60.5 tok/s | 668.2 tok/s | 483 ms | 100.0% | ok |
 | Qwen3.6 27B 4-bit | MTPLX | 63.2 tok/s | 694.6 tok/s | 490 ms | 100.0% | ok |
 | Qwen3.6 27B 4-bit | lightning-mlx | 59.4 tok/s | 861.2 tok/s | 400 ms | 94.5% | ok |
 | Qwen3.6 27B 6-bit | AX Engine | 41.4 tok/s | 637.1 tok/s | 507 ms | 100.0% | ok |
@@ -369,13 +369,16 @@ matrix below.
 | Qwen3.6 35B-A3B 6-bit | MTPLX | 115.6 tok/s | 1,349.5 tok/s | 246 ms | 96.7% | ok |
 | Qwen3.6 35B-A3B 6-bit | lightning-mlx | 96.3 tok/s | 1,215.8 tok/s | 272 ms | 100.0% | ok |
 
-**Reading the rows.** The refreshed AX-only pass keeps AX ahead on the
-35B-A3B rows: **166.3 tok/s** (4-bit) and **141.8 tok/s** (6-bit), still ahead
-of MTPLX by +21% and +23% respectively, and ahead of lightning-mlx by +43% and
-+47%. The 27B 4-bit row now lands at **62.2 tok/s**, slightly behind MTPLX
-(**63.2 tok/s**) and ahead of lightning-mlx (**59.4 tok/s**), with a 100.0%
-accept rate. The 27B 6-bit AX row is **41.4 tok/s**; peer engines remain blank
-because there is no official comparable 27B 6-bit MTP artifact. Source artifact:
+**Reading the rows.** The targeted 27B 4-bit AX-only rerun lands at
+**60.5 tok/s**, with **668.2 tok/s** prefill, **483 ms** TTFT, and a 100.0%
+accept rate. That keeps AX slightly behind MTPLX (**63.2 tok/s**, -4.2%) and
+ahead of lightning-mlx (**59.4 tok/s**, +2.0%) on this dense 27B 4-bit lane.
+The 35B-A3B rows remain from the full AX-only refresh: AX is still ahead of
+MTPLX by +21% (4-bit) and +23% (6-bit), and ahead of lightning-mlx by +43% and
++47%. The 27B 6-bit peer cells remain blank because there is no official
+comparable 27B 6-bit MTP artifact. Source artifacts:
+[`2026-06-30-peer-comparison-27b4-ax-only-rerun`](benchmarks/results/mtp-qwen36-matrix/2026-06-30-peer-comparison-27b4-ax-only-rerun/summary.md)
+and
 [`2026-06-30-peer-comparison-ax-only-rerun`](benchmarks/results/mtp-qwen36-matrix/2026-06-30-peer-comparison-ax-only-rerun/summary.md).
 
 Rapid-MLX is intentionally not promoted in this table: it starts with the

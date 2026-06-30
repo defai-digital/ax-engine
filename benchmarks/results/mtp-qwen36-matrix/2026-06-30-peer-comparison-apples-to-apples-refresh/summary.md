@@ -2,7 +2,7 @@
 
 | Target | Suite | Engine | Decode | Prefill | TTFT | Accept | Status |
 |---|---|---|---:|---:|---:|---:|---|
-| Qwen3.6 27B 4-bit | `flappy` | `ax_engine` | 62.2 tok/s | 673.3 tok/s | 478 ms | 100.0% | ok |
+| Qwen3.6 27B 4-bit | `flappy` | `ax_engine` | 60.5 tok/s | 668.2 tok/s | 483 ms | 100.0% | ok |
 | Qwen3.6 27B 4-bit | `flappy` | `mtplx` | 63.2 tok/s | 694.6 tok/s | 490 ms | 100.0% | ok |
 | Qwen3.6 27B 4-bit | `flappy` | `lightning_mlx` | 59.4 tok/s | 861.2 tok/s | 400 ms | 94.5% | ok |
 | Qwen3.6 27B 4-bit | `flappy` | `rapid_mlx` | - tok/s | - tok/s | - ms | - | unsupported |
@@ -25,7 +25,8 @@
 
 Notes:
 
-- AX Engine rows are refreshed from the 2026-06-30 full AX-only flappy rerun.
-- 27B 4-bit flappy MTPLX and lightning-mlx rows are from the 2026-06-30 same-session peer rerun.
+- 27B 4-bit AX Engine row is refreshed from the 2026-06-30 targeted AX-only flappy rerun.
+- Other AX Engine rows remain from the 2026-06-30 full AX-only flappy rerun.
+- 27B 4-bit MTPLX and lightning-mlx rows are from the 2026-06-30 same-session peer rerun.
 - Other peer rows remain from the 2026-06-29 apples-to-apples run.
 - AX rows are pure MTP and fail summary generation if n-gram telemetry is non-zero.
