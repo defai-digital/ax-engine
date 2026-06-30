@@ -1196,6 +1196,16 @@ MTP_PEER_LABELS = {
     "mtplx": "MTPLX",
     "lightning_mlx": "lightning-mlx",
 }
+# Engine versions behind the peer-comparison artifacts, surfaced on each chart so the
+# run is reproducible. Update alongside any re-benchmark. Provenance:
+#   AX Engine     = [workspace.package] version in Cargo.toml
+#   MTPLX         = /opt/homebrew/var/mtplx/venv-0.3.7 (pip: mtplx 0.3.7)
+#   lightning-mlx = .internal/reference/lightning-mlx 0.6.10 (git rev ec19b3d)
+MTP_PEER_VERSIONS = {
+    "ax_engine": "6.6.1",
+    "mtplx": "0.3.7",
+    "lightning_mlx": "0.6.10",
+}
 MTP_PEER_METRICS = {
     "decode": {
         "field": "decode_tok_s",
@@ -1301,17 +1311,21 @@ def render_mtp_peer_comparison_chart(
             by_target_engine[(str(row["model_label"]), str(row["engine"]))] = (
                 value * 100.0 if metric_key == "accept" else value
             )
-    direction = "Higher is better" if metric_config["higher_is_better"] else "Lower is better"
+    higher_is_better = bool(metric_config["higher_is_better"])
+    direction = "Higher is better" if higher_is_better else "Lower is better"
+    # Mark the winning engine per target for every metric, respecting direction:
+    # the max for higher-is-better (decode/prefill/accept), the min for ttft.
     best_by_target: dict[str, float] = {}
-    if metric_key == "ttft":
-        for target in targets:
-            target_values = [
-                value
-                for (row_target, _engine), value in by_target_engine.items()
-                if row_target == target
-            ]
-            if len(target_values) > 1:
-                best_by_target[target] = min(target_values)
+    for target in targets:
+        target_values = [
+            value
+            for (row_target, _engine), value in by_target_engine.items()
+            if row_target == target
+        ]
+        if len(target_values) > 1:
+            best_by_target[target] = (
+                max(target_values) if higher_is_better else min(target_values)
+            )
     lines = [
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{MTP_PEER_WIDTH}" height="{height}" viewBox="0 0 {MTP_PEER_WIDTH} {height}" role="img" aria-labelledby="title desc">',
         f'<title id="title">{escape(str(metric_config["title"]))} apples-to-apples</title>',
@@ -1368,22 +1382,24 @@ def render_mtp_peer_comparison_chart(
                 )
                 continue
             width = x_scale(value)
-            is_best_ttft = (
-                metric_key == "ttft"
-                and target in best_by_target
-                and value == best_by_target[target]
-            )
-            value_fill = "#dc2626" if is_best_ttft else "#111827"
-            value_suffix = " · lowest" if is_best_ttft else ""
+            is_best = target in best_by_target and value == best_by_target[target]
+            value_fill = "#dc2626" if is_best else "#111827"
+            value_suffix = ""
+            if is_best:
+                value_suffix = " · highest" if higher_is_better else " · lowest"
             lines.extend(
                 [
                     f'<rect x="{MTP_PEER_LEFT:.1f}" y="{y:.1f}" width="{width:.1f}" height="{MTP_PEER_BAR_H:.1f}" rx="3" fill="{MTP_PEER_COLORS[engine]}"/>',
                     f'<text x="{MTP_PEER_LEFT + width + 8:.1f}" y="{y + 15:.1f}" font-family="{FONT}" font-size="12" font-weight="700" fill="{value_fill}">{value:.1f}{escape(str(metric_config["suffix"]))}{escape(value_suffix)}</text>',
                 ]
             )
+    versions_text = " · ".join(
+        f"{MTP_PEER_LABELS[engine]} {version}"
+        for engine, version in MTP_PEER_VERSIONS.items()
+    )
     source_label = (
-        "Source: "
-        f"{summary_path.parent.name}/summary.json"
+        f"Source: {summary_path.parent.name}/summary.json"
+        f"   ·   Versions: {versions_text}"
     )
     lines.append(
         f'<text x="32" y="{height - 18}" font-family="{FONT}" font-size="11" fill="#6b7280">{escape(source_label)}</text>'
