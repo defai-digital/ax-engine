@@ -311,10 +311,11 @@ pub fn chunked_prefill_with_sampling_buffers(
             clear_cache();
             return tok;
         } else {
-            // Drain GPU queue asynchronously. logits depends on the KV cache
-            // transitively (via SDPA), so evaluating logits materialises the
-            // appended KV slice_update nodes and prevents O(N²) graph growth.
-            async_eval(&[&logits]);
+            // Drain GPU queue. hidden depends on all transformer layers
+            // (KV cache writes via attention); eval_with_kv_refs explicitly
+            // materialises the KV cache arrays alongside the hidden state to
+            // prevent O(N²) lazy-graph growth across chunks.
+            eval_with_kv_refs(&logits, cache);
         }
     }
 }
@@ -573,11 +574,12 @@ pub fn chunked_prefill_with_mtp_history_and_sampling_buffers(
             return (tok, post_norm_all, history_tokens);
         } else {
             // Non-final chunk: skip lm_head projection (hidden×vocab_size);
-            // async_eval forces the transformer-layer graph (KV cache writes).
+            // eval_with_kv_refs forces the transformer-layer graph and
+            // explicitly materialises the KV cache arrays.
             let hidden = forward_cache_only(cfg, weights, chunk, cache, chunk_offset);
             cache.seq_len += chunk.len();
             offset = end;
-            async_eval(&[&hidden]);
+            eval_with_kv_refs(&hidden, cache);
         }
     }
 }
