@@ -3125,11 +3125,12 @@ struct RequestState {
     /// threshold with sufficient samples, MTP is disabled for the rest of the
     /// request and all decode steps use the direct single-token path.
     mtp_bypassed: bool,
-    /// Per-request latch: once auto-optimistic activates (stochastic EWMA ≥ 0.99),
-    /// it stays latched until the argmax-based EWMA drops below 0.95.  This
-    /// prevents oscillation because argmax acceptance is strictly stricter than
-    /// stochastic acceptance (draft tokens that pass p_target/p_draft rejection
-    /// may not be the argmax token), so the EWMA shifts metric upon activation.
+    /// Per-request latch: once auto-optimistic activates (EWMA ≥ 0.99),
+    /// it stays latched until the argmax-based EWMA drops below 0.85.
+    /// Hysteresis prevents oscillation because argmax acceptance is strictly
+    /// stricter than stochastic acceptance (draft tokens that pass
+    /// p_target/p_draft rejection sampling may not be the argmax token),
+    /// so the EWMA shifts metric upon activation.
     auto_optimistic_active: bool,
     /// Post-norm hidden rows from the final prefill chunk.
     /// Set by `chunked_prefill_with_mtp_history` and consumed by
@@ -6511,15 +6512,16 @@ impl MlxRunner {
         // + rejection sampling + rollback overhead when the model is clearly
         // producing highly accurate drafts (e.g. 27B flappy at 99.5% accept).
         //
-        // Hysteresis: activate at ≥0.99 (stochastic acceptance), deactivate at
-        // <0.95.  Once active, the EWMA tracks argmax-based truth which is
-        // strictly stricter than stochastic acceptance (a draft token can pass
-        // p_target/p_draft rejection sampling but not be the argmax token).
-        // Without hysteresis, the EWMA oscillates: stochastic ≥0.99 activates,
-        // argmax tracking shows ~0.96, deactivates, stochastic ≥0.99, repeat.
-        let can_auto_optimistic = model_acceptance_mode
-            == MtpModelAcceptanceMode::RejectionSampling
-            && !pending.is_empty()
+        // Hysteresis: activate at ≥0.99, deactivate at <0.85.  Once active,
+        // the EWMA tracks argmax-based truth which is strictly stricter than
+        // stochastic acceptance (a draft token can pass p_target/p_draft
+        // rejection sampling but not be the argmax token).  Without hysteresis,
+        // the EWMA oscillates: stochastic ≥0.99 activates, argmax tracking
+        // shows ~0.96, deactivates, stochastic ≥0.99, repeat.
+        // The gate engages in both Greedy and RejectionSampling modes: in
+        // Greedy mode the EWMA tracks argmax match rate directly, which is
+        // already the stricter metric — if it reaches 0.99, optimistic is safe.
+        let can_auto_optimistic = !pending.is_empty()
             && state.mtp_telemetry.mtp_only_accept_rate_ewma_samples
                 >= mtp_auto_optimistic_min_samples();
         let ewma = state.mtp_telemetry.mtp_only_accept_rate_ewma;
@@ -6584,7 +6586,7 @@ impl MlxRunner {
             verify_cache.seq_len += verify_len;
 
             if optimistic {
-                // ── Optimistic shortcut (AX_MLX_MTP_OPTIMISTIC=1) ──
+                // ── Optimistic shortcut (default ON; kill-switch AX_MLX_MTP_OPTIMISTIC=0) ──
                 // Accept all drafts without rejection sampling.
                 let ac = pending.len();
                 let predicted_arr = argmax(&logits_all, None);
@@ -6732,7 +6734,7 @@ impl MlxRunner {
             state.cache.seq_len += verify_len;
 
             if optimistic {
-                // ── Optimistic shortcut (AX_MLX_MTP_OPTIMISTIC=1) ──
+                // ── Optimistic shortcut (default ON; kill-switch AX_MLX_MTP_OPTIMISTIC=0) ──
                 let ac = pending.len();
                 let predicted_arr = argmax(&logits_all, None);
                 let kv_refs = state.cache.collect_eval_refs();
@@ -9367,18 +9369,21 @@ fn mtp_disable_ngram_stacking_from_env() -> bool {
     })
 }
 
-/// When set to `1`, MTP verify always accepts all draft tokens without computing
-/// the rejection-sampling acceptance ratio.  Eliminates full-vocab softmax for
+/// **Default: ON** (kill-switch via `AX_MLX_MTP_OPTIMISTIC=0`).
+///
+/// MTP verify always accepts all draft tokens without computing the
+/// rejection-sampling acceptance ratio.  Eliminates full-vocab softmax for
 /// target distribution, the accept/reject loop, and cache rollback on rejection.
-/// Safe for native MTP heads with >85% acceptance (Qwen3.6).
+/// Safe for native MTP heads with >85% acceptance (Qwen3.6 27B achieves 99%+).
+/// The verify forward still computes argmax for the correction/bonus token and
+/// EWMA tracking, so the rare mismatch between draft and target argmax is
+/// handled correctly.  Set to `0` to restore the full rejection-sampling path.
 fn mtp_optimistic_from_env() -> bool {
     static CACHED: OnceLock<bool> = OnceLock::new();
     *CACHED.get_or_init(|| {
-        matches!(
-            std::env::var("AX_MLX_MTP_OPTIMISTIC")
-                .unwrap_or_default()
-                .as_str(),
-            "1" | "true" | "TRUE"
+        !matches!(
+            std::env::var("AX_MLX_MTP_OPTIMISTIC").as_deref(),
+            Ok("0") | Ok("false") | Ok("FALSE")
         )
     })
 }
