@@ -35,16 +35,16 @@
 <text x="1015.8" y="219.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" font-weight="700" fill="#111827">94.5%</text>
 <text x="32" y="248.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="15" font-weight="700" fill="#111827">27B 6-bit</text>
 <text x="234.0" y="277.0" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" fill="#374151">AX Engine</text>
-<rect x="248.0" y="262.0" width="799.3" height="20.0" rx="3" fill="#2eaf5f"/>
-<text x="1055.3" y="277.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" font-weight="700" fill="#111827">99.4%</text>
+<rect x="248.0" y="262.0" width="804.0" height="20.0" rx="3" fill="#2eaf5f"/>
+<text x="1060.0" y="277.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" font-weight="700" fill="#111827">100.0%</text>
 <text x="234.0" y="307.0" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" fill="#374151">MTPLX</text>
 <text x="248.0" y="307.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" fill="#9ca3af">unsupported</text>
 <text x="234.0" y="337.0" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" fill="#374151">lightning-mlx</text>
 <text x="248.0" y="337.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" fill="#9ca3af">unsupported</text>
 <text x="32" y="366.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="15" font-weight="700" fill="#111827">35B-A3B 4-bit</text>
 <text x="234.0" y="395.0" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" fill="#374151">AX Engine</text>
-<rect x="248.0" y="380.0" width="802.8" height="20.0" rx="3" fill="#2eaf5f"/>
-<text x="1058.8" y="395.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" font-weight="700" fill="#111827">99.8%</text>
+<rect x="248.0" y="380.0" width="804.0" height="20.0" rx="3" fill="#2eaf5f"/>
+<text x="1060.0" y="395.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" font-weight="700" fill="#dc2626">100.0%</text>
 <text x="234.0" y="425.0" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" fill="#374151">MTPLX</text>
 <rect x="248.0" y="410.0" width="769.5" height="20.0" rx="3" fill="#f2b705"/>
 <text x="1025.5" y="425.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" font-weight="700" fill="#111827">95.7%</text>
@@ -53,8 +53,8 @@
 <text x="1060.0" y="455.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" font-weight="700" fill="#dc2626">100.0%</text>
 <text x="32" y="484.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="15" font-weight="700" fill="#111827">35B-A3B 6-bit</text>
 <text x="234.0" y="513.0" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" fill="#374151">AX Engine</text>
-<rect x="248.0" y="498.0" width="802.8" height="20.0" rx="3" fill="#2eaf5f"/>
-<text x="1058.8" y="513.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" font-weight="700" fill="#111827">99.8%</text>
+<rect x="248.0" y="498.0" width="804.0" height="20.0" rx="3" fill="#2eaf5f"/>
+<text x="1060.0" y="513.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" font-weight="700" fill="#dc2626">100.0%</text>
 <text x="234.0" y="543.0" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" fill="#374151">MTPLX</text>
 <rect x="248.0" y="528.0" width="777.3" height="20.0" rx="3" fill="#f2b705"/>
 <text x="1033.3" y="543.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" font-weight="700" fill="#111827">96.7%</text>

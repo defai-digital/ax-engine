@@ -36,13 +36,13 @@
   },
   "created_at": "2026-06-30",
   "notes": [
-    "27B 4-bit flappy AX Engine row is refreshed from the 2026-06-30 current-code AX-only rerun.",
+    "AX Engine rows are refreshed from the 2026-06-30 full AX-only flappy rerun.",
     "27B 4-bit flappy MTPLX and lightning-mlx rows are from the 2026-06-30 same-session peer rerun.",
-    "Other peer comparison rows remain from the 2026-06-29 apples-to-apples run."
+    "Other peer rows remain from the 2026-06-29 apples-to-apples run."
   ],
   "rows": [
     {
-      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-30-27b4-ax-current-r2/27b-4bit/flappy/ax_engine.json",
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-30-peer-comparison-ax-only-rerun/27b-4bit/flappy/ax_engine.json",
       "bits": 4,
       "engine": "ax_engine",
       "metric_contract": {
@@ -55,16 +55,16 @@
         "accept_rate": 1.0,
         "accept_source": "ax_engine_mtp_telemetry",
         "case_count": 4,
-        "decode_tok_s": 59.70843343478975,
+        "decode_tok_s": 62.18144726988274,
         "prefill_source": "ax_engine_runner_prefill_time",
-        "prefill_tok_s": 657.3982900504693,
+        "prefill_tok_s": 673.277444668239,
         "status": "ok",
-        "ttft_ms": 489.07800000000003,
+        "ttft_ms": 477.568,
         "ttft_source": "ax_engine_runner_prefill_time"
       },
       "model": "27b",
       "model_label": "Qwen3.6 27B 4-bit",
-      "reason": "2026-06-30 AX-only current-code 27B 4-bit flappy rerun replacing the previous AX row",
+      "reason": "2026-06-30 full AX-only flappy rerun replacing the previous AX row",
       "status": "supported",
       "suite": "flappy",
       "target": "27b-4bit"
@@ -166,7 +166,7 @@
       "target": "27b-4bit"
     },
     {
-      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-29-peer-comparison-apples-to-apples/27b-6bit/flappy/ax_engine.json",
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-30-peer-comparison-ax-only-rerun/27b-6bit/flappy/ax_engine.json",
       "bits": 6,
       "engine": "ax_engine",
       "metric_contract": {
@@ -176,19 +176,19 @@
         "ttft_ms": "measured"
       },
       "metrics": {
-        "accept_rate": 0.9942038868053188,
+        "accept_rate": 1.0,
         "accept_source": "ax_engine_mtp_telemetry",
         "case_count": 4,
-        "decode_tok_s": 41.865534058453704,
+        "decode_tok_s": 41.427734543409684,
         "prefill_source": "ax_engine_runner_prefill_time",
-        "prefill_tok_s": 644.6718643697754,
+        "prefill_tok_s": 637.1229530787317,
         "status": "ok",
-        "ttft_ms": 499.7025,
+        "ttft_ms": 506.9430000000001,
         "ttft_source": "ax_engine_runner_prefill_time"
       },
       "model": "27b",
       "model_label": "Qwen3.6 27B 6-bit",
-      "reason": null,
+      "reason": "2026-06-30 full AX-only flappy rerun replacing the previous AX row",
       "status": "supported",
       "suite": "flappy",
       "target": "27b-6bit"
@@ -274,7 +274,7 @@
       "target": "27b-6bit"
     },
     {
-      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-29-peer-comparison-apples-to-apples/35b-a3b-4bit/flappy/ax_engine.json",
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-30-peer-comparison-ax-only-rerun/35b-a3b-4bit/flappy/ax_engine.json",
       "bits": 4,
       "engine": "ax_engine",
       "metric_contract": {
@@ -284,19 +284,19 @@
         "ttft_ms": "measured"
       },
       "metrics": {
-        "accept_rate": 0.9984825493171472,
+        "accept_rate": 1.0,
         "accept_source": "ax_engine_mtp_telemetry",
         "case_count": 4,
-        "decode_tok_s": 172.45783265537943,
+        "decode_tok_s": 166.33104107215976,
         "prefill_source": "ax_engine_runner_prefill_time",
-        "prefill_tok_s": 1819.7607050339075,
+        "prefill_tok_s": 1755.29758165338,
         "status": "ok",
-        "ttft_ms": 176.942,
+        "ttft_ms": 184.01299999999998,
         "ttft_source": "ax_engine_runner_prefill_time"
       },
       "model": "35b-a3b",
       "model_label": "Qwen3.6 35B-A3B 4-bit",
-      "reason": null,
+      "reason": "2026-06-30 full AX-only flappy rerun replacing the previous AX row",
       "status": "supported",
       "suite": "flappy",
       "target": "35b-a3b-4bit"
@@ -398,7 +398,7 @@
       "target": "35b-a3b-4bit"
     },
     {
-      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-29-peer-comparison-apples-to-apples/35b-a3b-6bit/flappy/ax_engine.json",
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-30-peer-comparison-ax-only-rerun/35b-a3b-6bit/flappy/ax_engine.json",
       "bits": 6,
       "engine": "ax_engine",
       "metric_contract": {
@@ -408,19 +408,19 @@
         "ttft_ms": "measured"
       },
       "metrics": {
-        "accept_rate": 0.9984810126582279,
+        "accept_rate": 1.0,
         "accept_source": "ax_engine_mtp_telemetry",
         "case_count": 4,
-        "decode_tok_s": 139.38317489391136,
+        "decode_tok_s": 141.75188592782408,
         "prefill_source": "ax_engine_runner_prefill_time",
-        "prefill_tok_s": 1530.2191708787016,
+        "prefill_tok_s": 1536.018468935195,
         "status": "ok",
-        "ttft_ms": 210.34500000000003,
+        "ttft_ms": 209.38549999999998,
         "ttft_source": "ax_engine_runner_prefill_time"
       },
       "model": "35b-a3b",
       "model_label": "Qwen3.6 35B-A3B 6-bit",
-      "reason": null,
+      "reason": "2026-06-30 full AX-only flappy rerun replacing the previous AX row",
       "status": "supported",
       "suite": "flappy",
       "target": "35b-a3b-6bit"
@@ -526,6 +526,6 @@
   "source_summaries": [
     "benchmarks/results/mtp-qwen36-matrix/2026-06-29-peer-comparison-apples-to-apples/summary.json",
     "benchmarks/results/mtp-qwen36-matrix/2026-06-30-27b4-flappy-rerun/summary.json",
-    "benchmarks/results/mtp-qwen36-matrix/2026-06-30-27b4-ax-current-r2/summary.json"
+    "benchmarks/results/mtp-qwen36-matrix/2026-06-30-peer-comparison-ax-only-rerun/summary.json"
   ]
 }
