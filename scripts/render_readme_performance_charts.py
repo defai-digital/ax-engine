@@ -210,7 +210,12 @@ MTP_CHART_OUTPUTS = {
 }
 
 MTP_6BIT_CHART_OUTPUT = "perf-mtp-6bit-ax-acceleration.svg"
-MTP_PEER_CHART_OUTPUT = "perf-mtp-peer-comparison-apples-to-apples.svg"
+MTP_PEER_CHART_OUTPUTS = {
+    "decode": "perf-mtp-peer-comparison-apples-to-apples.svg",
+    "prefill": "perf-mtp-peer-comparison-prefill-apples-to-apples.svg",
+    "ttft": "perf-mtp-peer-comparison-ttft-apples-to-apples.svg",
+    "accept": "perf-mtp-peer-comparison-accept-rate-apples-to-apples.svg",
+}
 MTP_6BIT_WIDTH = 1080
 MTP_6BIT_HEIGHT = 844
 MTP_6BIT_LEFT = 210.0
@@ -1191,6 +1196,40 @@ MTP_PEER_LABELS = {
     "mtplx": "MTPLX",
     "lightning_mlx": "lightning-mlx",
 }
+MTP_PEER_METRICS = {
+    "decode": {
+        "field": "decode_tok_s",
+        "title": "Qwen3.6 MTP peer comparison decode",
+        "desc": "Decode throughput, tokens per second. Higher is better.",
+        "unit": "tok/s",
+        "suffix": "",
+        "higher_is_better": True,
+    },
+    "prefill": {
+        "field": "prefill_tok_s",
+        "title": "Qwen3.6 MTP peer comparison prefill",
+        "desc": "Prefill throughput, tokens per second. Higher is better.",
+        "unit": "tok/s",
+        "suffix": "",
+        "higher_is_better": True,
+    },
+    "ttft": {
+        "field": "ttft_ms",
+        "title": "Qwen3.6 MTP peer comparison TTFT",
+        "desc": "Time to first token, milliseconds. Lower is better.",
+        "unit": "ms",
+        "suffix": "",
+        "higher_is_better": False,
+    },
+    "accept": {
+        "field": "accept_rate",
+        "title": "Qwen3.6 MTP peer comparison accept rate",
+        "desc": "MTP draft-token acceptance rate. Higher is better.",
+        "unit": "%",
+        "suffix": "%",
+        "higher_is_better": True,
+    },
+}
 
 
 def find_mtp_peer_summary(readme: Path) -> Path | None:
@@ -1231,38 +1270,50 @@ def load_mtp_peer_rows(summary_path: Path) -> list[dict[str, Any]]:
 
 
 def render_mtp_peer_comparison_chart(
-    rows: list[dict[str, Any]], summary_path: Path
+    rows: list[dict[str, Any]], summary_path: Path, metric_key: str
 ) -> str:
+    metric_config = MTP_PEER_METRICS[metric_key]
+    metric_field = str(metric_config["field"])
     targets = []
     for row in rows:
         label = str(row["model_label"])
         if label not in targets:
             targets.append(label)
     height = int(MTP_PEER_TOP + len(targets) * MTP_PEER_ROW_GAP + 88)
-    max_decode = max(float(row["metrics"]["decode_tok_s"]) for row in rows)
-    axis_max = nice_axis_ceiling(max_decode * 1.15)
+    values: list[float] = []
+    for row in rows:
+        metric_value = row["metrics"].get(metric_field)
+        if isinstance(metric_value, int | float):
+            value = float(metric_value)
+            values.append(value * 100.0 if metric_key == "accept" else value)
+    if not values:
+        raise ChartError(f"MTP peer summary has no {metric_key} values")
+    axis_max = 100.0 if metric_key == "accept" else nice_axis_ceiling(max(values) * 1.15)
 
     def x_scale(value: float) -> float:
         return (max(0.0, value) / axis_max) * (MTP_PEER_RIGHT - MTP_PEER_LEFT)
 
-    by_target_engine = {
-        (str(row["model_label"]), str(row["engine"])): float(
-            row["metrics"]["decode_tok_s"]
-        )
-        for row in rows
-    }
+    by_target_engine = {}
+    for row in rows:
+        metric_value = row["metrics"].get(metric_field)
+        if isinstance(metric_value, int | float):
+            value = float(metric_value)
+            by_target_engine[(str(row["model_label"]), str(row["engine"]))] = (
+                value * 100.0 if metric_key == "accept" else value
+            )
+    direction = "Higher is better" if metric_config["higher_is_better"] else "Lower is better"
     lines = [
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{MTP_PEER_WIDTH}" height="{height}" viewBox="0 0 {MTP_PEER_WIDTH} {height}" role="img" aria-labelledby="title desc">',
-        '<title id="title">Qwen3.6 MTP peer comparison apples-to-apples decode throughput</title>',
+        f'<title id="title">{escape(str(metric_config["title"]))} apples-to-apples</title>',
         (
             '<desc id="desc">Grouped horizontal bar chart comparing AX Engine, '
-            "MTPLX, and lightning-mlx decode tokens per second on the flappy "
-            "prompt suite.</desc>"
+            f'MTPLX, and lightning-mlx {escape(str(metric_config["unit"]))} on '
+            "the flappy prompt suite.</desc>"
         ),
         f'<rect width="{MTP_PEER_WIDTH}" height="{height}" fill="#f8fafc"/>',
-        f'<text x="32" y="34" font-family="{FONT}" font-size="22" font-weight="700" fill="#111827">Qwen3.6 MTP peer comparison apples-to-apples</text>',
+        f'<text x="32" y="34" font-family="{FONT}" font-size="22" font-weight="700" fill="#111827">{escape(str(metric_config["title"]))}</text>',
         f'<text x="32" y="60" font-family="{FONT}" font-size="14" fill="#374151">flappy suite · 1000 generated tokens · 5 measured reps · 2 warmups · 30s cooldown</text>',
-        f'<text x="32" y="80" font-family="{FONT}" font-size="13" fill="#6b7280">Decode throughput, tokens per second. Higher is better.</text>',
+        f'<text x="32" y="80" font-family="{FONT}" font-size="13" fill="#6b7280">{escape(str(metric_config["desc"]))}</text>',
     ]
     for tick_index in range(5):
         tick = axis_max * tick_index / 4.0
@@ -1274,6 +1325,9 @@ def render_mtp_peer_comparison_chart(
                 f'<text x="{x:.1f}" y="{height - 43}" text-anchor="middle" font-family="{FONT}" font-size="12" fill="#4b5563">{short_number(tick)}</text>',
             ]
         )
+    lines.append(
+        f'<text x="{MTP_PEER_RIGHT:.1f}" y="{height - 43}" text-anchor="end" font-family="{FONT}" font-size="12" fill="#4b5563">{escape(str(metric_config["unit"]))}</text>'
+    )
     legend_x = 648.0
     for engine, label in MTP_PEER_LABELS.items():
         lines.extend(
@@ -1304,12 +1358,12 @@ def render_mtp_peer_comparison_chart(
             lines.extend(
                 [
                     f'<rect x="{MTP_PEER_LEFT:.1f}" y="{y:.1f}" width="{width:.1f}" height="{MTP_PEER_BAR_H:.1f}" rx="3" fill="{MTP_PEER_COLORS[engine]}"/>',
-                    f'<text x="{MTP_PEER_LEFT + width + 8:.1f}" y="{y + 15:.1f}" font-family="{FONT}" font-size="12" font-weight="700" fill="#111827">{value:.1f}</text>',
+                    f'<text x="{MTP_PEER_LEFT + width + 8:.1f}" y="{y + 15:.1f}" font-family="{FONT}" font-size="12" font-weight="700" fill="#111827">{value:.1f}{escape(str(metric_config["suffix"]))}</text>',
                 ]
             )
     source_label = (
         "Source: "
-        f"{summary_path.parent.name}/summary.json · generated from README artifacts"
+        f"{summary_path.parent.name}/summary.json · {direction}"
     )
     lines.append(
         f'<text x="32" y="{height - 18}" font-family="{FONT}" font-size="11" fill="#6b7280">{escape(source_label)}</text>'
@@ -2290,12 +2344,14 @@ def main() -> int:
 
     mtp_peer_summary_path = find_mtp_peer_summary(args.readme)
     if mtp_peer_summary_path is not None:
-        mtp_peer_output_path = args.output_dir / MTP_PEER_CHART_OUTPUT
-        mtp_peer_content = render_mtp_peer_comparison_chart(
-            load_mtp_peer_rows(mtp_peer_summary_path), mtp_peer_summary_path
-        )
-        if not write_chart(mtp_peer_output_path, mtp_peer_content, args.check):
-            mismatches.append(mtp_peer_output_path)
+        mtp_peer_rows = load_mtp_peer_rows(mtp_peer_summary_path)
+        for metric_key, output_name in MTP_PEER_CHART_OUTPUTS.items():
+            mtp_peer_output_path = args.output_dir / output_name
+            mtp_peer_content = render_mtp_peer_comparison_chart(
+                mtp_peer_rows, mtp_peer_summary_path, metric_key
+            )
+            if not write_chart(mtp_peer_output_path, mtp_peer_content, args.check):
+                mismatches.append(mtp_peer_output_path)
 
     embedding_fair_output_path = args.output_dir / EMBEDDING_FAIR_CHART_OUTPUT
     embedding_fair_content = render_embedding_delta_chart(

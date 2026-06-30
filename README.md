@@ -341,6 +341,12 @@ matrix above.
 
 <img src="docs/assets/perf-mtp-peer-comparison-apples-to-apples.svg" alt="Qwen3.6 MTP peer comparison apples-to-apples chart showing decode throughput for AX Engine, MTPLX, and lightning-mlx across 27B and 35B 4-bit and 6-bit rows">
 
+<img src="docs/assets/perf-mtp-peer-comparison-prefill-apples-to-apples.svg" alt="Qwen3.6 MTP peer comparison apples-to-apples chart showing prefill throughput for AX Engine, MTPLX, and lightning-mlx across 27B and 35B 4-bit and 6-bit rows">
+
+<img src="docs/assets/perf-mtp-peer-comparison-ttft-apples-to-apples.svg" alt="Qwen3.6 MTP peer comparison apples-to-apples chart showing time to first token for AX Engine, MTPLX, and lightning-mlx across 27B and 35B 4-bit and 6-bit rows">
+
+<img src="docs/assets/perf-mtp-peer-comparison-accept-rate-apples-to-apples.svg" alt="Qwen3.6 MTP peer comparison apples-to-apples chart showing MTP accept rate for AX Engine, MTPLX, and lightning-mlx across 27B and 35B 4-bit and 6-bit rows">
+
 | Target | Engine | Decode | Prefill | TTFT | Accept | Status |
 | --- | --- | ---: | ---: | ---: | ---: | --- |
 | Qwen3.6 27B 4-bit | AX Engine | 50.8 tok/s | 669.0 tok/s | 485 ms | 99.5% | ok |
