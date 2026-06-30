@@ -323,12 +323,6 @@ fn mtp_head_forward_inner(
     rope_offset_override: Option<usize>,
     rope_offset_arr: Option<&MlxArray>,
 ) -> MlxArray {
-    // Use the explicit RoPE offset when provided (e.g. during capped warmup
-    // where KV entries start at buffer position 0 but represent prompt tokens
-    // at higher positions).  Otherwise use the MTP KV-cache seq_len + rope_offset
-    // as the RoPE offset (matches mlx-lm cache.offset, with rope_offset accounting
-    // for physical-vs-logical position differences after capped warmup).
-    let token_offset = rope_offset_override.unwrap_or_else(|| kv.rope_base_offset());
     // 1. Embed prev_token → [1, 1, hidden_size] in bf16.
     let embed = embed_tokens_arr(prev_token_arr, &weights.token_embedding, cfg.hidden_size);
     let embed = astype(&embed, MlxDtype::Bfloat16, None);
@@ -451,6 +445,11 @@ fn mtp_head_forward_inner(
             (q_r, k_r)
         } else {
             // Static RoPE: offset baked as a scalar constant.
+            // Use the explicit RoPE offset when provided (e.g. during capped
+            // warmup where KV entries start at buffer position 0 but represent
+            // prompt tokens at higher positions).  Otherwise use the MTP
+            // KV-cache seq_len + rope_offset (matches mlx-lm cache.offset).
+            let token_offset = rope_offset_override.unwrap_or_else(|| kv.rope_base_offset());
             let q_r = qk_norm_rope_bhsd_from_proj(
                 &q_raw,
                 head.q_norm.as_ref(),
@@ -627,10 +626,11 @@ pub fn mtp_head_step(
 /// no cache write).  This satisfies `mlx_compile`'s pure-function contract; the
 /// earlier impure version aborted decode with `[eval] Attempting to eval an
 /// array without a primitive` because the captured lazy KV entered the trace as
-/// an un-passed constant.  `base_offset` (the cache's `seq_len + rope_offset` at
-/// call time) is baked per-depth as the RoPE position.
+/// an un-passed constant.  The RoPE base offset is passed as an array input
+/// (input 4) and flows through the computation graph via `rope_dynamic`, so
+/// the compiled closure is reused across decode steps without recompilation.
 ///
-/// Inputs:  `[first_hidden, first_token, init_k, init_v]`.
+/// Inputs:  `[first_hidden, first_token, init_k, init_v, base_offset_arr]`.
 /// Outputs: `[hidden_0, logits_0, tok_0, …, hidden_{D-1}, logits_{D-1},
 /// tok_{D-1}, final_k, final_v]` — 3 arrays per depth plus the final threaded
 /// K/V (so the caller can commit it to the cache).  Callers use the `tok`
