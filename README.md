@@ -41,13 +41,14 @@ peer rows and model-specific boundaries kept visible.
 - [Typical Hardware](#typical-hardware)
 - [What AX Engine Does](#what-ax-engine-does)
 - [Performance](#performance)
-  - [Speculative Decoding (MTP)](#speculative-decoding-mtp)
-    - [Qwen3.6 MTP matrix refresh (2026-06-29)](#qwen36-mtp-matrix-refresh-2026-06-29)
+  - [Session: Speculative Decoding (MTP)](#session-speculative-decoding-mtp)
     - [Qwen3.6 MTP peer comparison apples-to-apples (2026-06-29)](#qwen36-mtp-peer-comparison-apples-to-apples-2026-06-29)
-  - [Direct Decode · Prefill · TTFT](#direct-decode--prefill--ttft)
+    - [Qwen3.6 MTP matrix refresh (2026-06-29)](#qwen36-mtp-matrix-refresh-2026-06-29)
+    - [Gemma 4 assistant-MTP (depth-2)](#gemma-4-assistant-mtp-depth-2)
+  - [Session: Direct Mode (Decode · Prefill · TTFT)](#session-direct-mode-decode--prefill--ttft)
     - [Gemma 4 12B](#gemma-4-12b)
     - [Gemma 4 and Qwen 3.6](#gemma-4-and-qwen-36)
-  - [Embedding Models](#embedding-models)
+  - [Session: Embedding Models](#session-embedding-models)
     - [Fair embedding throughput (tok/s)](#fair-embedding-throughput-toks)
     - [Large-corpus ingest scale](#large-corpus-ingest-scale)
 - [SDKs](#sdks)
@@ -228,14 +229,19 @@ Full result tables and interpretation live in
 methodology, test setup, and reproduction details live in
 [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md).
 
-### Speculative Decoding (MTP)
+Results are grouped by Session mode: speculative decoding (MTP), direct decode,
+and embeddings.
+
+### Session: Speculative Decoding (MTP)
 
 AX Engine supports three MTP packaging contracts in the repo-owned runtime: Qwen
 fused sidecars, Gemma assistant drafters, and GLM built-in MTP sidecars. The
-current benchmark publication is narrower than runtime support: Qwen3.6 27B and
-Qwen3.6 35B-A3B only, each at 4-bit and 6-bit, running MTP-only rows. Same-
-package direct baselines may be kept as AX diagnostics, but they are not
-headline MTP matrix rows.
+cross-engine peer comparison is Qwen-only — Qwen3.6 27B and Qwen3.6 35B-A3B,
+each at 4-bit and 6-bit, MTP-only rows — because MTPLX and lightning-mlx ship
+comparable Qwen MTP packages but no comparable Gemma or GLM one. Gemma 4
+assistant-MTP is published separately below as an AX-only depth result, since no
+peer engine ships the same package. Same-package direct baselines may be kept as
+AX diagnostics, but they are not headline MTP matrix rows.
 
 | Target | Preparation / source | Benchmark mode |
 | --- | --- | --- |
@@ -251,8 +257,9 @@ Rules for current MTP benchmark artifacts:
 - Keep unsupported MTPLX, lightning-mlx, Rapid-MLX, or oMLX lanes visible in
   the plan with their support reason.
 - Do not run or promote `mtp-ngram` rows.
-- Do not include Qwen3-Coder-Next, 5-bit, 8-bit, FFN-only, GGUF, Gemma, or GLM
-  variants in the current MTP benchmark matrix.
+- Keep the Qwen3.6 peer matrix free of Qwen3-Coder-Next, 5-bit, 8-bit, FFN-only,
+  GGUF, and GLM variants; Gemma 4 assistant-MTP is published as a separate
+  AX-only subsection, not mixed into the cross-engine matrix.
 - Direct rows are same-artifact denominators for `AX MTP / AX direct` decode
   acceleration, not a cross-model speed leaderboard.
 
@@ -282,12 +289,73 @@ published to make comparison with other MTP engines easier because many peer
 benchmarks use 4-bit models. Historical MTP+n-gram artifacts remain useful for
 debugging regressions, but they are not current README/PERFORMANCE MTP evidence.
 
+#### Qwen3.6 MTP peer comparison apples-to-apples (2026-06-29)
+
+This same-session apples-to-apples comparison runs AX Engine, MTPLX, and
+lightning-mlx on the `flappy` suite with `1000` generated tokens, `5` measured
+repetitions after `2` warmups, 30 s cooldown, 10 s inter-case cooldown, sampled
+decode (`temperature=0.6`, `top_p=0.95`, `top_k=20`), and pure MTP. It replaces
+the earlier 64-token smoke as the peer-engine comparison artifact, while still
+remaining a flappy-only peer comparison rather than the promoted three-suite AX
+matrix below.
+
+<img src="docs/assets/perf-mtp-peer-comparison-apples-to-apples.svg" alt="Qwen3.6 MTP peer comparison apples-to-apples chart showing decode throughput for AX Engine, MTPLX, and lightning-mlx across 27B and 35B 4-bit and 6-bit rows">
+
+<img src="docs/assets/perf-mtp-peer-comparison-prefill-apples-to-apples.svg" alt="Qwen3.6 MTP peer comparison apples-to-apples chart showing prefill throughput for AX Engine, MTPLX, and lightning-mlx across 27B and 35B 4-bit and 6-bit rows">
+
+<img src="docs/assets/perf-mtp-peer-comparison-ttft-apples-to-apples.svg" alt="Qwen3.6 MTP peer comparison apples-to-apples chart showing time to first token for AX Engine, MTPLX, and lightning-mlx across 27B and 35B 4-bit and 6-bit rows">
+
+<img src="docs/assets/perf-mtp-peer-comparison-accept-rate-apples-to-apples.svg" alt="Qwen3.6 MTP peer comparison apples-to-apples chart showing MTP accept rate for AX Engine, MTPLX, and lightning-mlx across 27B and 35B 4-bit and 6-bit rows">
+
+| Target | Engine | Decode | Prefill | TTFT | Accept | Status |
+| --- | --- | ---: | ---: | ---: | ---: | --- |
+| Qwen3.6 27B 4-bit | AX Engine | 59.7 tok/s | 657.4 tok/s | 489 ms | 100.0% | ok |
+| Qwen3.6 27B 4-bit | MTPLX | 63.2 tok/s | 694.6 tok/s | 490 ms | 100.0% | ok |
+| Qwen3.6 27B 4-bit | lightning-mlx | 59.4 tok/s | 861.2 tok/s | 400 ms | 94.5% | ok |
+| Qwen3.6 27B 6-bit | AX Engine | 41.9 tok/s | 644.7 tok/s | 500 ms | 99.4% | ok |
+| Qwen3.6 27B 6-bit | MTPLX | - | - | - | - | no official 27B 6-bit MTP artifact |
+| Qwen3.6 27B 6-bit | lightning-mlx | - | - | - | - | no official 27B 6-bit MTP artifact |
+| Qwen3.6 35B-A3B 4-bit | AX Engine | 172.5 tok/s | 1,819.8 tok/s | 177 ms | 99.8% | ok |
+| Qwen3.6 35B-A3B 4-bit | MTPLX | 137.2 tok/s | 1,678.7 tok/s | 197 ms | 95.7% | ok |
+| Qwen3.6 35B-A3B 4-bit | lightning-mlx | 116.2 tok/s | 1,466.5 tok/s | 215 ms | 100.0% | ok |
+| Qwen3.6 35B-A3B 6-bit | AX Engine | 139.4 tok/s | 1,530.2 tok/s | 210 ms | 99.8% | ok |
+| Qwen3.6 35B-A3B 6-bit | MTPLX | 115.6 tok/s | 1,349.5 tok/s | 246 ms | 96.7% | ok |
+| Qwen3.6 35B-A3B 6-bit | lightning-mlx | 96.3 tok/s | 1,215.8 tok/s | 272 ms | 100.0% | ok |
+
+**Reading the rows.** On the 35B-A3B flagship AX Engine leads decode in every lane —
++26% (4-bit) and +21% (6-bit) over MTPLX, and +48% / +45% over lightning-mlx — at the
+highest accept rate of the three engines (99.8%). The 27B 4-bit row is the one lane
+where AX is slightly behind MTPLX and effectively tied with lightning-mlx on decode.
+The 27B 4-bit AX chart/table row is refreshed from the current-code AX-only re-run
+(2026-06-30, commit `61483636` plus the tagged-handle closure fix, 2 warmup +
+5 measure × 1,000 tok): AX **59.7 tok/s** vs MTPLX **63.2** (−5.5%) and
+lightning-mlx **59.4** (AX +0.6%), with AX matching MTPLX on TTFT (489 ms vs 490)
+and retaining a 100.0% accept rate. The original 2026-06-29 peer pass recorded AX at
+50.8 tok/s while the single-engine matrix recorded the same accepted-token work at
+60.3 tok/s, so the refresh replaces that pressure-skewed 27B row rather than treating
+it as a structural decode deficit. Source artifacts:
+[`2026-06-30-27b4-ax-current-r2`](benchmarks/results/mtp-qwen36-matrix/2026-06-30-27b4-ax-current-r2/summary.md)
+and
+[`2026-06-30-27b4-flappy-rerun`](benchmarks/results/mtp-qwen36-matrix/2026-06-30-27b4-flappy-rerun/summary.md).
+
+Rapid-MLX is intentionally not promoted in this table: it starts with the
+shared Qwen3.6 artifacts but skips MTP installation for this generation flow, so
+including it would measure non-MTP decode. oMLX remains unmeasured because this
+repo does not yet have an oMLX Qwen3.6 MTP prompt-suite adapter.
+
+Peer comparison artifacts:
+[`summary.md`](benchmarks/results/mtp-qwen36-matrix/2026-06-30-peer-comparison-apples-to-apples-refresh/summary.md)
+and
+[`summary.json`](benchmarks/results/mtp-qwen36-matrix/2026-06-30-peer-comparison-apples-to-apples-refresh/summary.json).
+Detailed MTP notes, including the GLM-4.7 Flash smoke validation session, live in
+[`docs/mtp/`](docs/mtp/).
+
 #### Qwen3.6 MTP matrix refresh (2026-06-29)
 
 The current promoted README MTP matrix keeps AX Engine pure-MTP rows separate
 from peer-engine rows. Use the table below for AX Engine's current Qwen3.6
-MTP throughput, and the next section for a same-session flappy-only peer
-comparison with the same generated-token and repetition contract.
+MTP throughput, and the peer comparison above for a same-session flappy-only
+cross-engine view with the same generated-token and repetition contract.
 
 | Target | Suite | Depth | AX MTP decode | AX MTP prefill | AX MTP TTFT | AX accept |
 | --- | --- | ---: | ---: | ---: | ---: | ---: |
@@ -329,65 +397,41 @@ unsupported for these Qwen3.6 MTP rows because its scheduler starts with the
 shared artifacts but skips MTP installation for this generation flow, so running
 it would measure non-MTP decode.
 
-#### Qwen3.6 MTP peer comparison apples-to-apples (2026-06-29)
+#### Gemma 4 assistant-MTP (depth-2)
 
-This same-session apples-to-apples comparison runs AX Engine, MTPLX, and
-lightning-mlx on the `flappy` suite with `1000` generated tokens, `5` measured
-repetitions after `2` warmups, 30 s cooldown, 10 s inter-case cooldown, sampled
-decode (`temperature=0.6`, `top_p=0.95`, `top_k=20`), and pure MTP. It replaces
-the earlier 64-token smoke as the peer-engine comparison artifact, while still
-remaining a flappy-only peer comparison rather than the promoted three-suite AX
-matrix above.
+Gemma 4 speculates with an **assistant-drafter** package, not a Qwen-style fused
+sidecar, so no peer engine ships the same Gemma MTP package — MTPLX and
+lightning-mlx have no comparable Gemma assistant-MTP route. The result below is
+therefore an AX-only depth comparison (the drafter's own depth-1 single-token
+baseline versus depth-2 recurrent drafting), not a cross-engine leaderboard. The
+assistant is stateless per decode step — it re-reads the target's frozen KV
+cache each forward — so depth-2 drafting needs no cache surgery and stays
+correctness-preserving: a gate miss simply verifies fewer speculative positions,
+never a changed committed token.
 
-<img src="docs/assets/perf-mtp-peer-comparison-apples-to-apples.svg" alt="Qwen3.6 MTP peer comparison apples-to-apples chart showing decode throughput for AX Engine, MTPLX, and lightning-mlx across 27B and 35B 4-bit and 6-bit rows">
+Canonical 26B benchmark (M5 Max, `temperature=0.6`, `top_p=0.95`, `top_k=20`,
+chat-templated `flappy` / `long_code` / `python_modules_long`, n-gram stacking
+off, depth-2 at a uniform `0.999` deep-position confidence gate):
 
-<img src="docs/assets/perf-mtp-peer-comparison-prefill-apples-to-apples.svg" alt="Qwen3.6 MTP peer comparison apples-to-apples chart showing prefill throughput for AX Engine, MTPLX, and lightning-mlx across 27B and 35B 4-bit and 6-bit rows">
+| Suite | Depth-1 accept | Depth-2 accept | Depth-1 decode | Depth-2 decode | Speedup |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `flappy` | 98.7% | 98.3% | 136.9 tok/s | 151.3 tok/s | 1.10x |
+| `long_code` | 98.1% | 97.7% | 125.8 tok/s | 139.3 tok/s | 1.11x |
+| `python_modules_long` | 99.0% | 98.2% | 128.4 tok/s | 154.5 tok/s | 1.20x |
 
-<img src="docs/assets/perf-mtp-peer-comparison-ttft-apples-to-apples.svg" alt="Qwen3.6 MTP peer comparison apples-to-apples chart showing time to first token for AX Engine, MTPLX, and lightning-mlx across 27B and 35B 4-bit and 6-bit rows">
+All three suites hold assistant accept **>97%** at **1.10-1.20x** decode, and
+depth-2 is accept-neutral versus depth-1 (the second token only fires in
+confident contexts). Depth-2 at `0.999` is the constrained optimum under "raise
+decode while holding >97% accept": depth-3 breaks the accept floor
+(`python_modules_long` falls to about 0.937), and a looser gate lowers accept
+for no extra speed. Depth-2 is the shipped default; set
+`AX_MLX_GEMMA4_ASSISTANT_MTP_MAX_DEPTH=1` to restore single-token drafting.
+Method, gate sweep, and per-suite detail:
+[`docs/mtp/gemma4-assistant-multi-depth.md`](docs/mtp/gemma4-assistant-multi-depth.md);
+result artifacts under
+[`benchmarks/results/gemma4-assistant-mtp/`](benchmarks/results/gemma4-assistant-mtp/).
 
-<img src="docs/assets/perf-mtp-peer-comparison-accept-rate-apples-to-apples.svg" alt="Qwen3.6 MTP peer comparison apples-to-apples chart showing MTP accept rate for AX Engine, MTPLX, and lightning-mlx across 27B and 35B 4-bit and 6-bit rows">
-
-| Target | Engine | Decode | Prefill | TTFT | Accept | Status |
-| --- | --- | ---: | ---: | ---: | ---: | --- |
-| Qwen3.6 27B 4-bit | AX Engine | 62.9 tok/s | 682.5 tok/s | 477 ms | 99.5% | ok |
-| Qwen3.6 27B 4-bit | MTPLX | 63.2 tok/s | 694.6 tok/s | 490 ms | 100.0% | ok |
-| Qwen3.6 27B 4-bit | lightning-mlx | 59.4 tok/s | 861.2 tok/s | 400 ms | 94.5% | ok |
-| Qwen3.6 27B 6-bit | AX Engine | 41.9 tok/s | 644.7 tok/s | 500 ms | 99.4% | ok |
-| Qwen3.6 27B 6-bit | MTPLX | - | - | - | - | no official 27B 6-bit MTP artifact |
-| Qwen3.6 27B 6-bit | lightning-mlx | - | - | - | - | no official 27B 6-bit MTP artifact |
-| Qwen3.6 35B-A3B 4-bit | AX Engine | 172.5 tok/s | 1,819.8 tok/s | 177 ms | 99.8% | ok |
-| Qwen3.6 35B-A3B 4-bit | MTPLX | 137.2 tok/s | 1,678.7 tok/s | 197 ms | 95.7% | ok |
-| Qwen3.6 35B-A3B 4-bit | lightning-mlx | 116.2 tok/s | 1,466.5 tok/s | 215 ms | 100.0% | ok |
-| Qwen3.6 35B-A3B 6-bit | AX Engine | 139.4 tok/s | 1,530.2 tok/s | 210 ms | 99.8% | ok |
-| Qwen3.6 35B-A3B 6-bit | MTPLX | 115.6 tok/s | 1,349.5 tok/s | 246 ms | 96.7% | ok |
-| Qwen3.6 35B-A3B 6-bit | lightning-mlx | 96.3 tok/s | 1,215.8 tok/s | 272 ms | 100.0% | ok |
-
-**Reading the rows.** On the 35B-A3B flagship AX Engine leads decode in every lane —
-+26% (4-bit) and +21% (6-bit) over MTPLX, and +48% / +45% over lightning-mlx — at the
-highest accept rate of the three engines (99.8%). The 27B 4-bit row is the one lane
-where AX is effectively tied with MTPLX and ahead of lightning-mlx. The 27B 4-bit
-chart/table row is refreshed from a same-session interleaved re-run (2026-06-30,
-2 warmup + 5 measure × 1,000 tok): AX **62.9 tok/s** vs MTPLX **63.2** (−0.4%)
-and lightning-mlx **59.4** (AX +6%), with AX leading MTPLX on TTFT (477 ms vs 490)
-and tied on prefill. The original 2026-06-29 peer pass recorded AX at 50.8 tok/s while
-the single-engine matrix recorded the same accepted-token work at 60.3 tok/s, so the
-refresh replaces that pressure-skewed 27B row rather than treating it as a structural
-decode deficit — see
-[`2026-06-30-27b4-flappy-rerun`](benchmarks/results/mtp-qwen36-matrix/2026-06-30-27b4-flappy-rerun/summary.md).
-
-Rapid-MLX is intentionally not promoted in this table: it starts with the
-shared Qwen3.6 artifacts but skips MTP installation for this generation flow, so
-including it would measure non-MTP decode. oMLX remains unmeasured because this
-repo does not yet have an oMLX Qwen3.6 MTP prompt-suite adapter.
-
-Peer comparison artifacts:
-[`summary.md`](benchmarks/results/mtp-qwen36-matrix/2026-06-30-peer-comparison-apples-to-apples-refresh/summary.md)
-and
-[`summary.json`](benchmarks/results/mtp-qwen36-matrix/2026-06-30-peer-comparison-apples-to-apples-refresh/summary.json).
-Detailed MTP notes, including the GLM-4.7 Flash smoke validation session, live in
-[`docs/mtp/`](docs/mtp/).
-
-### Direct Decode · Prefill · TTFT
+### Session: Direct Mode (Decode · Prefill · TTFT)
 
 #### Gemma 4 12B
 
@@ -491,7 +535,7 @@ contract. llama.cpp decode is shown both at depth 0 (`tg`) and at matched contex
 (`-d {prompt}`). Host/runtime for the latest direct llama.cpp peer rerun: Apple M5 Max ·
 llama.cpp b9820 / ggml 0.15.3 (Metal, flash-attn) · `mlx_lm` 0.31.3 has no `gemma4_unified`
 support. MTP methodology and artifacts live with
-[Speculative Decoding (MTP)](#speculative-decoding-mtp).
+[Session: Speculative Decoding (MTP)](#session-speculative-decoding-mtp).
 
 The llama.cpp peer columns are measured on llama.cpp b9820 / ggml 0.15.3; full per-prompt
 llama.cpp data is in the verification artifact
@@ -688,7 +732,7 @@ Qwen 3.6 direct-mode verdict: AX is faster overall against `mlx_lm` across the r
 |  |  | 512 | 242.7 | 367.2 | **213.6 (-41.8%)** |
 |  |  | 2048 | 798.6 | 821.1 | **587.3 (-28.5%)** |
 
-### Embedding Models
+### Session: Embedding Models
 
 Embedding models use a separate pooling route from text generation. The fair
 in-process benchmark compares AX against the nearest MLX reference path and
