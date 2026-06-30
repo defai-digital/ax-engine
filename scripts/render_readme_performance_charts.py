@@ -1302,6 +1302,16 @@ def render_mtp_peer_comparison_chart(
                 value * 100.0 if metric_key == "accept" else value
             )
     direction = "Higher is better" if metric_config["higher_is_better"] else "Lower is better"
+    best_by_target: dict[str, float] = {}
+    if metric_key == "ttft":
+        for target in targets:
+            target_values = [
+                value
+                for (row_target, _engine), value in by_target_engine.items()
+                if row_target == target
+            ]
+            if len(target_values) > 1:
+                best_by_target[target] = min(target_values)
     lines = [
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{MTP_PEER_WIDTH}" height="{height}" viewBox="0 0 {MTP_PEER_WIDTH} {height}" role="img" aria-labelledby="title desc">',
         f'<title id="title">{escape(str(metric_config["title"]))} apples-to-apples</title>',
@@ -1315,6 +1325,10 @@ def render_mtp_peer_comparison_chart(
         f'<text x="32" y="60" font-family="{FONT}" font-size="14" fill="#374151">flappy suite · 1000 generated tokens · 5 measured reps · 2 warmups · 30s cooldown</text>',
         f'<text x="32" y="80" font-family="{FONT}" font-size="13" fill="#6b7280">{escape(str(metric_config["desc"]))}</text>',
     ]
+    if not bool(metric_config["higher_is_better"]):
+        lines.append(
+            f'<text x="{MTP_PEER_RIGHT:.1f}" y="80" text-anchor="end" font-family="{FONT}" font-size="13" font-weight="700" fill="#dc2626">{escape(direction)}</text>'
+        )
     for tick_index in range(5):
         tick = axis_max * tick_index / 4.0
         x = MTP_PEER_LEFT + x_scale(tick)
@@ -1355,10 +1369,17 @@ def render_mtp_peer_comparison_chart(
                 )
                 continue
             width = x_scale(value)
+            is_best_ttft = (
+                metric_key == "ttft"
+                and target in best_by_target
+                and value == best_by_target[target]
+            )
+            value_fill = "#dc2626" if is_best_ttft else "#111827"
+            value_suffix = " · lowest" if is_best_ttft else ""
             lines.extend(
                 [
                     f'<rect x="{MTP_PEER_LEFT:.1f}" y="{y:.1f}" width="{width:.1f}" height="{MTP_PEER_BAR_H:.1f}" rx="3" fill="{MTP_PEER_COLORS[engine]}"/>',
-                    f'<text x="{MTP_PEER_LEFT + width + 8:.1f}" y="{y + 15:.1f}" font-family="{FONT}" font-size="12" font-weight="700" fill="#111827">{value:.1f}{escape(str(metric_config["suffix"]))}</text>',
+                    f'<text x="{MTP_PEER_LEFT + width + 8:.1f}" y="{y + 15:.1f}" font-family="{FONT}" font-size="12" font-weight="700" fill="{value_fill}">{value:.1f}{escape(str(metric_config["suffix"]))}{escape(value_suffix)}</text>',
                 ]
             )
     source_label = (
