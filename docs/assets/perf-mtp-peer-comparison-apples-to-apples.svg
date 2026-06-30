@@ -16,7 +16,6 @@
 <text x="851.0" y="629" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" fill="#4b5563">150</text>
 <line x1="1052.0" y1="86.0" x2="1052.0" y2="606" stroke="#e5e7eb" stroke-width="1"/>
 <text x="1052.0" y="629" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" fill="#4b5563">200</text>
-<text x="1052.0" y="629" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" fill="#4b5563">tok/s</text>
 <rect x="648.0" y="25" width="13" height="13" rx="2" fill="#2eaf5f"/>
 <text x="667.0" y="37" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="13" fill="#374151">AX Engine</text>
 <rect x="784.0" y="25" width="13" height="13" rx="2" fill="#f2b705"/>

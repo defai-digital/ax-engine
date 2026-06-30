@@ -1352,9 +1352,8 @@ def render_mtp_peer_comparison_chart(
                 f'<text x="{x:.1f}" y="{height - 43}" text-anchor="middle" font-family="{FONT}" font-size="12" fill="#4b5563">{short_number(tick)}</text>',
             ]
         )
-    lines.append(
-        f'<text x="{MTP_PEER_RIGHT:.1f}" y="{height - 43}" text-anchor="end" font-family="{FONT}" font-size="12" fill="#4b5563">{escape(str(metric_config["unit"]))}</text>'
-    )
+    # No standalone axis unit label: it collided with the last (rightmost) tick,
+    # and the unit is already stated in the description line above the plot.
     legend_x = 648.0
     for engine, label in MTP_PEER_LABELS.items():
         lines.extend(
