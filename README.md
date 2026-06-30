@@ -41,16 +41,16 @@ peer rows and model-specific boundaries kept visible.
 - [Typical Hardware](#typical-hardware)
 - [What AX Engine Does](#what-ax-engine-does)
 - [Performance](#performance)
-  - [Session: Speculative Decoding (MTP)](#session-speculative-decoding-mtp)
+  - [Speculative Decoding (MTP)](#speculative-decoding-mtp)
     - [Supported MTP packages](#supported-mtp-packages)
     - [Download and serve an MTP package](#download-and-serve-an-mtp-package)
     - [Qwen3.6 MTP peer comparison apples-to-apples (2026-06-29)](#qwen36-mtp-peer-comparison-apples-to-apples-2026-06-29)
     - [Qwen3.6 MTP matrix refresh (2026-06-29)](#qwen36-mtp-matrix-refresh-2026-06-29)
     - [Gemma 4 assistant-MTP (depth-2)](#gemma-4-assistant-mtp-depth-2)
-  - [Session: Direct Mode (Decode · Prefill · TTFT)](#session-direct-mode-decode--prefill--ttft)
+  - [Direct Mode (Decode · Prefill · TTFT)](#direct-mode-decode--prefill--ttft)
     - [Gemma 4 12B](#gemma-4-12b)
     - [Gemma 4 and Qwen 3.6](#gemma-4-and-qwen-36)
-  - [Session: Embedding Models](#session-embedding-models)
+  - [Embedding Models](#embedding-models)
     - [Fair embedding throughput (tok/s)](#fair-embedding-throughput-toks)
     - [Large-corpus ingest scale](#large-corpus-ingest-scale)
 - [SDKs](#sdks)
@@ -234,7 +234,7 @@ methodology, test setup, and reproduction details live in
 Results are grouped by Session mode: speculative decoding (MTP), direct decode,
 and embeddings.
 
-### Session: Speculative Decoding (MTP)
+### Speculative Decoding (MTP)
 
 AX Engine supports three MTP packaging contracts in the repo-owned runtime: Qwen
 fused sidecars, Gemma assistant drafters, and GLM built-in MTP sidecars. The
@@ -478,7 +478,7 @@ Method, gate sweep, and per-suite detail:
 result artifacts under
 [`benchmarks/results/gemma4-assistant-mtp/`](benchmarks/results/gemma4-assistant-mtp/).
 
-### Session: Direct Mode (Decode · Prefill · TTFT)
+### Direct Mode (Decode · Prefill · TTFT)
 
 #### Gemma 4 12B
 
@@ -582,7 +582,7 @@ contract. llama.cpp decode is shown both at depth 0 (`tg`) and at matched contex
 (`-d {prompt}`). Host/runtime for the latest direct llama.cpp peer rerun: Apple M5 Max ·
 llama.cpp b9820 / ggml 0.15.3 (Metal, flash-attn) · `mlx_lm` 0.31.3 has no `gemma4_unified`
 support. MTP methodology and artifacts live with
-[Session: Speculative Decoding (MTP)](#session-speculative-decoding-mtp).
+[Speculative Decoding (MTP)](#speculative-decoding-mtp).
 
 The llama.cpp peer columns are measured on llama.cpp b9820 / ggml 0.15.3; full per-prompt
 llama.cpp data is in the verification artifact
@@ -779,7 +779,7 @@ Qwen 3.6 direct-mode verdict: AX is faster overall against `mlx_lm` across the r
 |  |  | 512 | 242.7 | 367.2 | **213.6 (-41.8%)** |
 |  |  | 2048 | 798.6 | 821.1 | **587.3 (-28.5%)** |
 
-### Session: Embedding Models
+### Embedding Models
 
 Embedding models use a separate pooling route from text generation. The fair
 in-process benchmark compares AX against the nearest MLX reference path and
