@@ -86,6 +86,50 @@ pub fn rope(
     }
 }
 
+/// Rotary position embedding with a dynamic (array-valued) offset.
+///
+/// Unlike [`rope`] which bakes `offset` as a scalar constant, this variant
+/// passes the offset as an `MlxArray` node in the computation graph.  This
+/// is required inside `mx.compile`-traced closures where the RoPE position
+/// changes across calls without changing graph structure.
+#[allow(clippy::too_many_arguments)]
+pub fn rope_dynamic(
+    x: &MlxArray,
+    dims: i32,
+    traditional: bool,
+    base: Option<f32>,
+    scale: f32,
+    offset: &MlxArray,
+    freqs: Option<&MlxArray>,
+    s: Option<&MlxStream>,
+) -> MlxArray {
+    crate::op_count::bump();
+    unsafe {
+        let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
+        let base_opt = ffi::mlx_optional_float_ {
+            has_value: base.is_some(),
+            value: base.unwrap_or(10000.0),
+        };
+        let freqs_raw = freqs.map(|f| f.inner).unwrap_or_else(null_ffi_array);
+        let mut res = MlxArray::empty();
+        checked_ffi!(
+            "mlx_fast_rope_dynamic",
+            ffi::mlx_fast_rope_dynamic(
+                &mut res.inner,
+                x.inner,
+                dims,
+                traditional,
+                base_opt,
+                scale,
+                offset.inner,
+                freqs_raw,
+                stream,
+            )
+        );
+        res
+    }
+}
+
 /// Scaled dot-product attention (flash attention).
 ///
 /// `causal`: when true applies a causal (lower-triangular) mask; required for

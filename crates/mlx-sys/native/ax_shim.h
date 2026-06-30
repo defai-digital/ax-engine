@@ -237,6 +237,7 @@ int mlx_from_fp8(mlx_array* res, const mlx_array x, mlx_dtype dtype, const mlx_s
 
 int mlx_fast_rms_norm(mlx_array* res, const mlx_array x, const mlx_array weight, float eps, const mlx_stream s);
 int mlx_fast_rope(mlx_array* res, const mlx_array x, int dims, bool traditional, mlx_optional_float base, float scale, int offset, const mlx_array freqs, const mlx_stream s);
+int mlx_fast_rope_dynamic(mlx_array* res, const mlx_array x, int dims, bool traditional, mlx_optional_float base, float scale, const mlx_array offset, const mlx_array freqs, const mlx_stream s);
 int mlx_fast_scaled_dot_product_attention(mlx_array* res, const mlx_array queries, const mlx_array keys, const mlx_array values, float scale, const char* mask_mode, const mlx_array mask_arr, const mlx_array sinks, const mlx_stream s);
 int mlx_fast_layer_norm(mlx_array* res, const mlx_array x, const mlx_array weight, const mlx_array bias, float eps, const mlx_stream s);
 

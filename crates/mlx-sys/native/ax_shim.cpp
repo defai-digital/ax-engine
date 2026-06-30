@@ -451,6 +451,14 @@ extern "C" int mlx_fast_rope(mlx_array* r, const mlx_array x, int dims, bool tra
     return 0;
   } AX_CATCH
 }
+extern "C" int mlx_fast_rope_dynamic(mlx_array* r, const mlx_array x, int dims, bool trad,
+    mlx_optional_float base, float scale, const mlx_array offset, const mlx_array freqs, const mlx_stream s) {
+  AX_TRY {
+    auto b = base.has_value ? std::make_optional<float>(base.value) : std::nullopt;
+    aset(r, mx::fast::rope(aref(x), dims, trad, b, scale, aref(offset), opt_arr(freqs), sd(s)));
+    return 0;
+  } AX_CATCH
+}
 extern "C" int mlx_fast_scaled_dot_product_attention(mlx_array* r,
     const mlx_array q, const mlx_array k, const mlx_array v,
     float scale, const char* mask_mode, const mlx_array mask_arr, const mlx_array sinks, const mlx_stream s) {

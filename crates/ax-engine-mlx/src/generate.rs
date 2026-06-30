@@ -10,7 +10,7 @@ use crate::kv_cache::MlxKVCache;
 use crate::linear_attention_ops::GATED_DELTA_THREADGROUP_CACHE_CAPACITY;
 use crate::model::{
     FinalLogitsMode, ModelConfig, TurboQuantModelDecodeContext, forward,
-    forward_all_positions_with_final_hidden, forward_all_positions_with_post_norm,
+    forward_all_positions_post_norm_last_lm_head, forward_all_positions_with_final_hidden,
     forward_argmax_with_turboquant_context, forward_cache_only,
     forward_lazy_single_argmax_with_turboquant_context,
     forward_with_initial_hidden_and_media_ranges, forward_with_turboquant_context,
@@ -512,39 +512,29 @@ pub fn chunked_prefill_with_mtp_history_and_sampling_buffers(
         let chunk_offset = cache.seq_len;
 
         if is_final_chunk {
-            // Always use forward_all_positions_with_final_hidden for the last chunk
-            // so we get the hidden even for greedy sampling.
-            let (logits_all, post_norm_all) =
-                forward_all_positions_with_post_norm(cfg, weights, chunk, cache, chunk_offset);
+            // Use last-position-only lm_head to avoid seq×vocab matmul on
+            // all positions; returns logits as [vocab] directly.
+            let (last_logits, post_norm_all) = forward_all_positions_post_norm_last_lm_head(
+                cfg,
+                weights,
+                chunk,
+                cache,
+                chunk_offset,
+            );
             cache.seq_len += chunk.len();
 
             let tok = if sampling.temperature > 0.0 || sampling.uses_repetition_penalty() {
-                eval_with_kv_refs(&logits_all, cache);
-                // Extract last-row logits [vocab].
-                let seq = chunk.len() as i32;
-                let vocab = cfg.vocab_size as i32;
-                let last_logits = {
-                    use mlx_sys::slice;
-                    slice(&logits_all, &[seq - 1, 0], &[seq, vocab], &[1, 1], None)
-                };
-                let last_logits = {
-                    use mlx_sys::reshape;
-                    reshape(&last_logits, &[vocab], None)
-                };
-                let last_logits_f32 = {
-                    use mlx_sys::astype;
-                    astype(&last_logits, MlxDtype::Float32, None)
-                };
+                eval_with_kv_refs(&last_logits, cache);
                 if let Some(tok) = sample_categorical_with_topk_gpu(
-                    &last_logits_f32,
+                    &last_logits,
                     sampling,
                     sampling_request.repetition_tokens,
                     rng,
                 ) {
                     tok
                 } else {
-                    eval(&[&last_logits_f32]);
-                    let logits_data = last_logits_f32.data_f32();
+                    eval(&[&last_logits]);
+                    let logits_data = last_logits.data_f32();
                     sample_categorical_into(
                         logits_data,
                         sampling,
@@ -556,14 +546,12 @@ pub fn chunked_prefill_with_mtp_history_and_sampling_buffers(
                     )
                 }
             } else {
-                let token_arr = argmax(&logits_all, None);
+                let token_arr = argmax(&last_logits, None);
                 eval_with_kv_refs(&token_arr, cache);
                 token_arr.data_u32()[0]
             };
-            // Materialize post_norm_all before clear_cache(): its computation graph
-            // shares intermediate buffers with logits_all; those buffers may be
-            // returned to the pool by clear_cache() before the warmup consumer
-            // gets a chance to evaluate the lazy slice.
+            // Materialize post_norm_all before clear_cache() so the MTP warmup
+            // consumer can safely slice into it after the pool is cleared.
             let mut history_tokens = Vec::with_capacity(chunk.len());
             if chunk.len() > 1 {
                 history_tokens.extend_from_slice(&chunk[1..]);

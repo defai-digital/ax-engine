@@ -51,7 +51,7 @@ pub use array::{MlxArray, MlxDtype};
 pub use closure::{MlxClosure, MlxVectorArray};
 pub use error::{install_recoverable_error_handler, take_last_error};
 pub use fast::{
-    ScaledDotProductAttentionMask, rms_norm, rope, scaled_dot_product_attention,
+    ScaledDotProductAttentionMask, rms_norm, rope, rope_dynamic, scaled_dot_product_attention,
     scaled_dot_product_attention_with_mask,
 };
 pub use io::{load_safetensors, load_safetensors_mmap};

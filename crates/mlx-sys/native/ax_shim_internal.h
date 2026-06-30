@@ -13,10 +13,8 @@
 #include "ax_shim.h"
 
 #include <array>
-#include <climits>
 #include <cstdint>
 #include <cstring>
-#include <new>
 #include <optional>
 #include <stdexcept>
 #include <string>

@@ -890,11 +890,11 @@ env_flag!(
     "AX_DIFFUSION_NO_COMPILED_FORWARD"
 );
 
-env_flag!(
+env_flag_default_on!(
     /// `AX_MTP_COMPILED_HEAD` — compile the multi-depth MTP draft chain
     /// into a single `mlx_compile`-fused closure dispatch.
     ///
-    /// **Default: OFF** (opt-in via `AX_MTP_COMPILED_HEAD=1`).
+    /// **Default: ON** (kill switch via `AX_MTP_COMPILED_HEAD=0`).
     ///
     /// Wraps the full multi-depth Qwen MTP head recurrence (forward + post-norm
     /// + logits across all D draft depths) in one `MlxClosure::compile` call to
@@ -905,18 +905,13 @@ env_flag!(
     /// outputs for the caller to commit.  This satisfies `mlx_compile`'s
     /// pure-function contract (see `MlxClosure::new_dyn`).
     ///
-    /// On `Qwen3.6-27B-6bit-MTP` (greedy, depth 3) the output is byte-identical
-    /// to the imperative path, but throughput is within noise of it
-    /// (-1.0%..+0.4%): the closure is recompiled every draft step because the
-    /// per-step RoPE offset bakes into the trace, and decode on such models is
-    /// memory-bandwidth bound, so fusing the small MTP head wins nothing.  Kept
-    /// default-off until cross-step compile caching lands (needs the RoPE offset
-    /// as a runtime input rather than a baked constant) and shows a measured
-    /// gain.  Applies to the Qwen MTP head only.  GLM (MLA latent cache)
-    /// deliberately stays on the imperative path — a pure MLA variant is real
-    /// complexity for the same ~0% bandwidth-bound payoff, so it is not
-    /// implemented by design, not pending.  Gemma assistant-MTP is a separate
-    /// path and also ignores this flag.
+    /// The RoPE offset is passed as an `MlxArray` runtime input (via
+    /// `mlx_fast_rope_dynamic`) rather than baked as a constant, so the
+    /// compiled closure is reused across decode steps without recompilation.
+    ///
+    /// Applies to the Qwen MTP head only.  GLM (MLA latent cache)
+    /// deliberately stays on the imperative path.  Gemma assistant-MTP is a
+    /// separate path and also ignores this flag.
     mtp_compiled_head_enabled,
     "AX_MTP_COMPILED_HEAD"
 );

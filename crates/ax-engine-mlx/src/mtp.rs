@@ -1,6 +1,6 @@
 use mlx_sys::{
     MlxArray, MlxClosure, MlxDtype, MlxVectorArray, ScaledDotProductAttentionMask, add, argmax,
-    astype, concatenate, eval, multiply, random_categorical, reshape, rms_norm,
+    astype, concatenate, eval, multiply, random_categorical, reshape, rms_norm, rope_dynamic,
     scaled_dot_product_attention_with_mask, sigmoid, slice, softmax, take,
 };
 
@@ -9,8 +9,8 @@ use crate::kv_cache::MlxKVCache;
 use crate::model::shared::{
     apply_final_logit_softcap, ffn_swiglu, flatten_attention_output_bhsd,
     glm_mla_attention_forward, moe_experts_forward, moe_router_deepseek_v3, moe_router_glm,
-    moe_router_qwen3, prepare_value_bhsd_from_proj, qk_norm_rope_bhsd_from_proj, qw, rms_norm_opt,
-    shared_expert_forward,
+    moe_router_qwen3, prepare_value_bhsd_from_proj, qk_norm_bhsd_from_proj,
+    qk_norm_rope_bhsd_from_proj, qw, rms_norm_opt, shared_expert_forward,
 };
 use crate::model::{ModelConfig, embed_tokens_arr};
 use crate::sampling::{TokenDistribution, Xorshift64};
@@ -308,9 +308,11 @@ pub fn mtp_head_forward(
         &mut kv,
         cfg,
         rope_offset_override,
+        None,
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn mtp_head_forward_inner(
     head: &MtpWeights,
     main_hidden: &MlxArray,
@@ -319,6 +321,7 @@ fn mtp_head_forward_inner(
     kv: &mut MtpKvStep,
     cfg: &ModelConfig,
     rope_offset_override: Option<usize>,
+    rope_offset_arr: Option<&MlxArray>,
 ) -> MlxArray {
     // Use the explicit RoPE offset when provided (e.g. during capped warmup
     // where KV entries start at buffer position 0 but represent prompt tokens
@@ -406,30 +409,74 @@ fn mtp_head_forward_inner(
             (Some(cfg.rope_theta), None)
         };
 
-        let q_rope = qk_norm_rope_bhsd_from_proj(
-            &q_raw,
-            head.q_norm.as_ref(),
-            head.n_heads,
-            head.head_dim,
-            1,
-            cfg.rms_norm_eps,
-            cfg.rope_dims,
-            rope_base,
-            token_offset,
-            rope_freqs_ref,
-        );
-        let k_rope = qk_norm_rope_bhsd_from_proj(
-            &k_raw,
-            head.k_norm.as_ref(),
-            head.n_kv_heads,
-            head.head_dim,
-            1,
-            cfg.rms_norm_eps,
-            cfg.rope_dims,
-            rope_base,
-            token_offset,
-            rope_freqs_ref,
-        );
+        let (q_rope, k_rope) = if let Some(offset_arr) = rope_offset_arr {
+            // Dynamic RoPE: offset flows through the computation graph as an
+            // array node, enabling mx.compile closure reuse across steps.
+            let q_normed = qk_norm_bhsd_from_proj(
+                &q_raw,
+                head.q_norm.as_ref(),
+                head.n_heads,
+                head.head_dim,
+                1,
+                cfg.rms_norm_eps,
+            );
+            let k_normed = qk_norm_bhsd_from_proj(
+                &k_raw,
+                head.k_norm.as_ref(),
+                head.n_kv_heads,
+                head.head_dim,
+                1,
+                cfg.rms_norm_eps,
+            );
+            let q_r = rope_dynamic(
+                &q_normed,
+                cfg.rope_dims as i32,
+                false,
+                rope_base,
+                1.0,
+                offset_arr,
+                rope_freqs_ref,
+                None,
+            );
+            let k_r = rope_dynamic(
+                &k_normed,
+                cfg.rope_dims as i32,
+                false,
+                rope_base,
+                1.0,
+                offset_arr,
+                rope_freqs_ref,
+                None,
+            );
+            (q_r, k_r)
+        } else {
+            // Static RoPE: offset baked as a scalar constant.
+            let q_r = qk_norm_rope_bhsd_from_proj(
+                &q_raw,
+                head.q_norm.as_ref(),
+                head.n_heads,
+                head.head_dim,
+                1,
+                cfg.rms_norm_eps,
+                cfg.rope_dims,
+                rope_base,
+                token_offset,
+                rope_freqs_ref,
+            );
+            let k_r = qk_norm_rope_bhsd_from_proj(
+                &k_raw,
+                head.k_norm.as_ref(),
+                head.n_kv_heads,
+                head.head_dim,
+                1,
+                cfg.rms_norm_eps,
+                cfg.rope_dims,
+                rope_base,
+                token_offset,
+                rope_freqs_ref,
+            );
+            (q_r, k_r)
+        };
 
         let (cached_k, cached_v) = kv.append(k_rope, v);
 
@@ -596,7 +643,6 @@ fn build_compiled_mtp_draft(
     head: &MtpWeights,
     weights: &ModelWeights,
     cfg: &ModelConfig,
-    base_offset: usize,
     max_depth: usize,
     temperature: f32,
 ) -> Option<MlxClosure> {
@@ -619,9 +665,25 @@ fn build_compiled_mtp_draft(
             k: inputs.get(2),
             v: inputs.get(3),
         };
+        // Input 4: RoPE base offset as an array scalar (int32).  Flows through
+        // the computation graph so the compiled closure is reusable across decode
+        // steps with different positions (eliminates per-step recompilation).
+        let base_offset_arr = inputs.get(4);
 
         let mut outputs: Vec<MlxArray> = Vec::with_capacity(max_depth * 3 + 2);
         for d in 0..max_depth {
+            let depth_offset = if d == 0 {
+                base_offset_arr.clone()
+            } else {
+                let d_val = d as i32;
+                let d_arr = MlxArray::from_raw_data(
+                    &d_val as *const i32 as *const u8,
+                    4,
+                    &[1_i32],
+                    MlxDtype::Int32,
+                );
+                add(&base_offset_arr, &d_arr, None)
+            };
             let new_hidden = mtp_head_forward_inner(
                 head_ref,
                 &prev_hidden,
@@ -629,7 +691,8 @@ fn build_compiled_mtp_draft(
                 weights_ref,
                 &mut kv,
                 cfg_ref,
-                Some(base_offset + d),
+                None,
+                Some(&depth_offset),
             );
             let post_norm = mtp_hidden_post_norm(&new_hidden, head_ref, cfg_ref);
             let logits = mtp_post_norm_to_logits(&post_norm, weights_ref, cfg_ref);
@@ -700,14 +763,7 @@ fn run_compiled_mtp_draft(
     let (init_k, init_v) = cache.logical_layer_kv(0)?;
     let seq_len_before = cache.seq_len;
     let base_offset = seq_len_before + cache.rope_offset;
-    let compiled = build_compiled_mtp_draft(
-        head,
-        weights,
-        cfg,
-        base_offset,
-        max_depth,
-        sample_temperature,
-    )?;
+    let compiled = build_compiled_mtp_draft(head, weights, cfg, max_depth, sample_temperature)?;
 
     let first_token_data = [first_token];
     let first_token_arr = MlxArray::from_raw_data(
@@ -716,8 +772,23 @@ fn run_compiled_mtp_draft(
         &[1_i32],
         MlxDtype::Uint32,
     );
+    // RoPE base offset as an array scalar so the compiled closure is reusable
+    // across decode steps without recompilation.
+    let offset_val = base_offset as i32;
+    let offset_arr = MlxArray::from_raw_data(
+        &offset_val as *const i32 as *const u8,
+        4,
+        &[1_i32],
+        MlxDtype::Int32,
+    );
     let outputs = compiled
-        .try_apply(&[first_hidden, &first_token_arr, &init_k, &init_v])
+        .try_apply(&[
+            first_hidden,
+            &first_token_arr,
+            &init_k,
+            &init_v,
+            &offset_arr,
+        ])
         .ok()?;
 
     // outputs = [hidden_d, logits_d, tok_d, ...]*D, final_k, final_v.
