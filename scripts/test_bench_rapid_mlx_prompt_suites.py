@@ -74,6 +74,8 @@ class RapidMlxPromptSuiteTests(unittest.TestCase):
             self.assertTrue(sitecustomize.is_file())
             text = sitecustomize.read_text()
             self.assertIn("AX_RAPID_MLX_QWEN3_NEXT_MTP_PATCH", text)
+            self.assertIn("AX_RAPID_MLX_IGNORE_EOS", text)
+            self.assertIn("_ax_empty_stop_tokens", text)
             self.assertIn("vllm_mlx.patches.qwen3_next_mtp", text)
             self.assertIn("vllm_mlx.share.cli", text)
 
@@ -85,7 +87,7 @@ class RapidMlxPromptSuiteTests(unittest.TestCase):
                 mode="none",
             )
 
-        self.assertEqual(compat, {"mode": "none"})
+        self.assertEqual(compat, {"mode": "none", "ignore_eos": False})
 
     def test_lightning_mode_uses_benchmark_serve_preset_and_ngram_flags(self) -> None:
         class FakeProcess:
@@ -120,10 +122,13 @@ class RapidMlxPromptSuiteTests(unittest.TestCase):
                     enable_ngram=True,
                     mtp_optimistic=False,
                     mtp_draft_temperature=0.5,
+                    ignore_eos=True,
                 )
 
         cmd = popen.call_args.args[0]
+        env = popen.call_args.kwargs["env"]
         self.assertEqual(cmd[cmd.index("--served-model-name") + 1], "local")
+        self.assertEqual(env["AX_RAPID_MLX_IGNORE_EOS"], "1")
         self.assertNotIn("--disable-prefix-cache", cmd)
         self.assertNotIn("--no-memory-aware-cache", cmd)
         self.assertNotIn("--prefill-step-size", cmd)
@@ -262,6 +267,35 @@ class RunCaseStreamHandlingTests(unittest.TestCase):
         self.assertEqual(run["visible_text_chars"], 0)
         self.assertEqual(run["reasoning_text_chars"], 0)
         self.assertEqual(run["generated_tokens"], 500)
+
+    def test_rejects_short_fixed_token_run_when_required(self) -> None:
+        sse = [
+            self._make_chunk(content="short"),
+            self._make_chunk(usage={"completion_tokens": 42, "prompt_tokens": 10}),
+            "data: [DONE]",
+        ]
+        case = rapid.PromptCase(
+            id="t", category="c", prompt="hi", max_tokens=100
+        )
+        with self._patch_stream(sse):
+            run = rapid.run_case(
+                handle=self._make_handle(),
+                case=case,
+                max_tokens=100,
+                sampling={"temperature": 0.6, "top_p": 0.95, "top_k": 20},
+                seed=0,
+                measured=True,
+                repetition=0,
+                require_full_output_tokens=True,
+            )
+
+        self.assertFalse(run["fixed_token_complete"])
+        self.assertEqual(run["requested_tokens"], 100)
+        self.assertEqual(run["generated_tokens"], 42)
+        self.assertIsNone(run["decode_tok_s"])
+        self.assertEqual(
+            run["rejected_reason"], "generated_tokens_lt_requested_tokens"
+        )
 
 
 class CaptureLightningIdentityTests(unittest.TestCase):

@@ -32,7 +32,7 @@ def make_args(root: Path) -> Namespace:
         hf_cache=root / "hf",
         max_tokens=1000,
         repetitions=5,
-        warmup_repetitions=1,
+        warmup_repetitions=2,
         cooldown=30.0,
         inter_case_cooldown=10.0,
         sampling={"temperature": 0.6, "top_p": 0.95, "top_k": 20},
@@ -79,6 +79,7 @@ class Qwen36MtpMatrixTests(unittest.TestCase):
         self.assertIn("--ax-mtp-disable-ngram-stacking", cmd)
         self.assertIn("--ax-mtp-max-depth", cmd)
         self.assertEqual(cmd[cmd.index("--ax-mtp-max-depth") + 1], "3")
+        self.assertEqual(cmd[cmd.index("--warmup-repetitions") + 1], "2")
         self.assertNotIn("--ax-direct", cmd)
 
     def test_mtplx_command_allows_official_artifact_inspection_bypass(self) -> None:
@@ -94,6 +95,7 @@ class Qwen36MtpMatrixTests(unittest.TestCase):
 
         assert cmd is not None
         self.assertIn("--allow-unverified-model", cmd)
+        self.assertIn("--ignore-eos", cmd)
         self.assertEqual(cmd[cmd.index("--mtp-quant-mode") + 1], "cyankiwi")
         self.assertEqual(cmd[cmd.index("--mtp-quant-policy") + 1], "prequantized-int4")
 
@@ -127,6 +129,8 @@ class Qwen36MtpMatrixTests(unittest.TestCase):
         self.assertEqual(cmd[cmd.index("--rapid-source") + 1], str(args.rapid_source))
         self.assertEqual(cmd[cmd.index("--lightning-source") + 1], str(args.lightning_source))
         self.assertEqual(cmd[cmd.index("--rapid-mtp-patch") + 1], "lightning")
+        self.assertIn("--ignore-eos", cmd)
+        self.assertIn("--require-full-output-tokens", cmd)
         self.assertNotIn("--lightning-mode", cmd)
 
     def test_lightning_summary_flags_mtp_disabled_logs(self) -> None:

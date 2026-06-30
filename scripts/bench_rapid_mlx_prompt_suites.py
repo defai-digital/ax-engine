@@ -95,9 +95,10 @@ def prepare_rapid_mtp_compat_site(
     output_dir: Path,
     lightning_source: Path,
     mode: str,
+    ignore_eos: bool = False,
 ) -> dict[str, Any]:
     if mode == "none":
-        return {"mode": "none"}
+        return {"mode": "none", "ignore_eos": bool(ignore_eos)}
     if mode != "lightning":
         raise ValueError(f"unsupported Rapid-MLX MTP compatibility patch: {mode}")
 
@@ -231,10 +232,55 @@ class _AXPatchingLoader:
 
 
 sys.meta_path.insert(0, _AXTokenizerPatcher())
+
+
+class _AXSchedulerPatcher:
+    _TARGET = 'vllm_mlx.scheduler'
+
+    def find_spec(self, fullname, path, target=None):
+        if fullname != self._TARGET:
+            return None
+        for finder in sys.meta_path:
+            if finder is self:
+                continue
+            fn = getattr(finder, 'find_spec', None)
+            if fn is None:
+                continue
+            spec = fn(fullname, path, target)
+            if spec is not None:
+                spec.loader = _AXSchedulerLoader(spec.loader)
+                return spec
+        return None
+
+
+class _AXSchedulerLoader:
+    def __init__(self, real_loader):
+        self._real = real_loader
+
+    def create_module(self, spec):
+        return self._real.create_module(spec)
+
+    def exec_module(self, module):
+        self._real.exec_module(module)
+        if os.environ.get('AX_RAPID_MLX_IGNORE_EOS') not in {'1', 'true', 'yes'}:
+            return
+        scheduler = getattr(module, 'Scheduler', None)
+        if scheduler is None or getattr(scheduler, '_ax_ignore_eos_patched', False):
+            return
+
+        def _ax_empty_stop_tokens(self):
+            return set()
+
+        scheduler._get_stop_tokens = _ax_empty_stop_tokens
+        scheduler._ax_ignore_eos_patched = True
+
+
+sys.meta_path.insert(0, _AXSchedulerPatcher())
 """
     )
     return {
         "mode": mode,
+        "ignore_eos": bool(ignore_eos),
         "site_dir": str(site_dir),
         "sitecustomize": str(sitecustomize),
         "patch_path": str(patch_path),
@@ -333,6 +379,7 @@ def start_server(
     mtp_optimistic: bool = False,
     mtp_draft_temperature: float | None = None,
     enable_thinking: bool = False,
+    ignore_eos: bool = False,
     ngram_auto_disable_mtp_threshold: float = 0.85,
     ngram_auto_disable_min_ngram: float = 0.50,
     log_tag: str | None = None,
@@ -349,6 +396,7 @@ def start_server(
         output_dir=output_dir,
         lightning_source=lightning_source,
         mode=rapid_mtp_patch,
+        ignore_eos=ignore_eos,
     )
     if lightning_mode:
         cmd = [
@@ -436,6 +484,8 @@ def start_server(
         env["AX_RAPID_MLX_QWEN3_NEXT_MTP_PATCH"] = str(
             Path(str(compat_patch["patch_path"])).resolve()
         )
+    if ignore_eos:
+        env["AX_RAPID_MLX_IGNORE_EOS"] = "1"
     python_path_parts.append(str(rapid_source.resolve()))
     if env.get("PYTHONPATH"):
         python_path_parts.append(env["PYTHONPATH"])
@@ -495,11 +545,13 @@ def run_case(
     measured: bool,
     repetition: int,
     enable_thinking: bool = False,
+    require_full_output_tokens: bool = False,
 ) -> dict[str, Any]:
+    requested_tokens = min(max_tokens, case.max_tokens)
     payload = {
         "model": handle.model,
         "messages": [{"role": "user", "content": case.prompt}],
-        "max_tokens": min(max_tokens, case.max_tokens),
+        "max_tokens": requested_tokens,
         "stream": True,
         "stream_options": {"include_usage": True},
         "temperature": sampling["temperature"],
@@ -575,6 +627,12 @@ def run_case(
     ttft: float | None = min(ttft_candidates) if ttft_candidates else None
     decode_time = max(total - (ttft or 0.0), 0.0)
     gate = classify_run(completion_tokens, decode_time)
+    fixed_token_complete = completion_tokens == requested_tokens
+    if require_full_output_tokens and not fixed_token_complete:
+        gate = {
+            "decode_tok_s": None,
+            "rejected_reason": "generated_tokens_lt_requested_tokens",
+        }
     decode_tok_s = gate["decode_tok_s"]
     full_content = "".join(content_parts)
     full_reasoning = "".join(reasoning_parts)
@@ -596,6 +654,8 @@ def run_case(
         "started_at": started,
         "ended_at": time.time(),
         "prompt_tokens": prompt_tokens,
+        "requested_tokens": requested_tokens,
+        "fixed_token_complete": fixed_token_complete,
         "generated_tokens": completion_tokens,
         "elapsed_s": total,
         "decode_elapsed_s": decode_time,
@@ -856,6 +916,7 @@ def run_suite(args: argparse.Namespace) -> dict[str, Any]:
         mtp_optimistic=mtp_optimistic,
         mtp_draft_temperature=getattr(args, "mtp_draft_temperature", None),
         enable_thinking=enable_thinking,
+        ignore_eos=bool(args.ignore_eos),
         ngram_auto_disable_mtp_threshold=args.ngram_auto_disable_mtp_threshold,
         ngram_auto_disable_min_ngram=args.ngram_auto_disable_min_ngram,
         log_tag=log_tag,
@@ -871,6 +932,7 @@ def run_suite(args: argparse.Namespace) -> dict[str, Any]:
                 measured=False,
                 repetition=-1,
                 enable_thinking=enable_thinking,
+                require_full_output_tokens=False,
             )
 
         case_results = []
@@ -888,11 +950,13 @@ def run_suite(args: argparse.Namespace) -> dict[str, Any]:
                     measured=measured,
                     repetition=rep,
                     enable_thinking=enable_thinking,
+                    require_full_output_tokens=bool(args.require_full_output_tokens),
                 )
                 print(
                     f"{case.id} rep {rep + 1}/{all_runs}: "
                     f"decode={run['decode_tok_s'] if run['decode_tok_s'] is not None else 'NA'} "
-                    f"out={run['generated_tokens']} reject={run['rejected_reason']}",
+                    f"out={run['generated_tokens']}/{run['requested_tokens']} "
+                    f"reject={run['rejected_reason']}",
                     file=sys.stderr,
                     flush=True,
                 )
@@ -977,6 +1041,8 @@ def run_suite(args: argparse.Namespace) -> dict[str, Any]:
         "repetitions": args.repetitions,
         "warmup_repetitions": args.warmup_repetitions,
         "cooldown_s": args.cooldown,
+        "ignore_eos": bool(args.ignore_eos),
+        "require_full_output_tokens": bool(args.require_full_output_tokens),
         "disable_thinking": not enable_thinking,
         "lightning_settings": {
             "source_profile": "lightning-mlx serve qwen3.6 MTPLX preset",
@@ -1060,6 +1126,16 @@ def main() -> int:
     )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--limit", type=int)
+    parser.add_argument(
+        "--ignore-eos",
+        action="store_true",
+        help="Patch the benchmark server to ignore tokenizer EOS for fixed-token throughput runs.",
+    )
+    parser.add_argument(
+        "--require-full-output-tokens",
+        action="store_true",
+        help="Reject measured runs that return fewer than the requested output tokens.",
+    )
     parser.add_argument(
         "--lightning-mode",
         action="store_true",

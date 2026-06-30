@@ -55,13 +55,18 @@ def percentile(values: list[float], pct: float) -> float | None:
 
 
 def summarize_runs(runs: list[dict[str, Any]]) -> dict[str, Any]:
-    decode = [float(run["decode_tok_s"]) for run in runs]
-    end_to_end = [float(run["end_to_end_tok_s"]) for run in runs]
+    complete_runs = [
+        run for run in runs if bool(run.get("fixed_token_complete", True))
+    ]
+    decode = [float(run["decode_tok_s"]) for run in complete_runs]
+    end_to_end = [float(run["end_to_end_tok_s"]) for run in complete_runs]
     generated = sum(int(run["generated_tokens"]) for run in runs)
     drafted = sum(int(run["drafted_tokens"]) for run in runs)
     accepted = sum(int(run["accepted_drafts"]) for run in runs)
     return {
         "runs": len(runs),
+        "complete_runs": len(complete_runs),
+        "incomplete_runs": len(runs) - len(complete_runs),
         "generated_tokens": generated,
         "decode_tok_s": {
             "median": median(decode),
@@ -206,13 +211,16 @@ def run_suite(args: argparse.Namespace) -> dict[str, Any]:
                 min_speculative_depth=1,
                 verify_strategy="capture_commit",
                 verify_core="linear-gdn-from-conv-tape",
+                stop_token_ids=set() if args.ignore_eos else None,
             )
             run_ended = time.time()
             stats = output.stats
+            requested_tokens = min(args.max_tokens, case.max_tokens)
+            fixed_token_complete = int(stats.generated_tokens) == requested_tokens
             print(
                 f"{case.id} rep {rep + 1}/{all_runs}: "
                 f"decode={stats.decode_tok_s:.1f} tok/s "
-                f"out={stats.generated_tokens} "
+                f"out={stats.generated_tokens}/{requested_tokens} "
                 f"accept={stats.accepted_drafts}/{stats.drafted_tokens}",
                 file=sys.stderr,
                 flush=True,
@@ -223,6 +231,11 @@ def run_suite(args: argparse.Namespace) -> dict[str, Any]:
                 "seed": args.seed + case_index * 1000 + rep,
                 "started_at": run_started,
                 "ended_at": run_ended,
+                "requested_tokens": requested_tokens,
+                "fixed_token_complete": fixed_token_complete,
+                "fixed_token_rejected_reason": None
+                if fixed_token_complete
+                else "generated_tokens_lt_requested_tokens",
                 "generated_tokens": stats.generated_tokens,
                 "elapsed_s": stats.elapsed_s,
                 "decode_elapsed_s": stats.decode_elapsed_s,
@@ -295,6 +308,7 @@ def run_suite(args: argparse.Namespace) -> dict[str, Any]:
         "repetitions": args.repetitions,
         "warmup_repetitions": args.warmup_repetitions,
         "cooldown_s": args.cooldown,
+        "ignore_eos": bool(args.ignore_eos),
         "disable_thinking": bool(args.disable_thinking),
         "allow_unverified_model": bool(args.allow_unverified_model),
         "draft_lm_head": draft_lm_head_report,
@@ -337,6 +351,11 @@ def main() -> int:
     )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--limit", type=int)
+    parser.add_argument(
+        "--ignore-eos",
+        action="store_true",
+        help="Use an empty stop-token set so fixed-token throughput runs stop only at max_tokens.",
+    )
     parser.add_argument("--disable-thinking", action="store_true")
     parser.add_argument(
         "--allow-unverified-model",

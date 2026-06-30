@@ -210,6 +210,7 @@ MTP_CHART_OUTPUTS = {
 }
 
 MTP_6BIT_CHART_OUTPUT = "perf-mtp-6bit-ax-acceleration.svg"
+MTP_PEER_CHART_OUTPUT = "perf-mtp-peer-comparison-apples-to-apples.svg"
 MTP_6BIT_WIDTH = 1080
 MTP_6BIT_HEIGHT = 844
 MTP_6BIT_LEFT = 210.0
@@ -1169,6 +1170,142 @@ def render_mtp_6bit_ax_acceleration_chart(
     )
     lines.append(
         f'<text x="{MTP_6BIT_LABEL_X}" y="820" font-family="{FONT}" font-size="10" fill="#6b7280">{escape(source_label)}</text>'
+    )
+    lines.append("</svg>")
+    return "\n".join(lines) + "\n"
+
+
+MTP_PEER_WIDTH = 920
+MTP_PEER_LEFT = 170.0
+MTP_PEER_RIGHT = 860.0
+MTP_PEER_TOP = 78.0
+MTP_PEER_ROW_GAP = 72.0
+MTP_PEER_BAR_H = 13.0
+MTP_PEER_COLORS = {
+    "ax_engine": "#2eaf5f",
+    "mtplx": "#f2b705",
+    "lightning_mlx": "#2563eb",
+}
+MTP_PEER_LABELS = {
+    "ax_engine": "AX Engine",
+    "mtplx": "MTPLX",
+    "lightning_mlx": "lightning-mlx",
+}
+
+
+def find_mtp_peer_summary(readme: Path) -> Path | None:
+    text = readme.read_text()
+    match = re.search(
+        r"\]\((benchmarks/results/mtp-qwen36-matrix/[^)]+peer-comparison-apples-to-apples/summary\.json)\)",
+        text,
+    )
+    if match is None:
+        return None
+    summary_path = readme.parent / match.group(1)
+    if not summary_path.exists():
+        raise ChartError(f"README references missing MTP peer summary: {summary_path}")
+    return summary_path
+
+
+def load_mtp_peer_rows(summary_path: Path) -> list[dict[str, Any]]:
+    summary = json.loads(summary_path.read_text())
+    rows = []
+    for row in summary.get("rows", []):
+        if not isinstance(row, dict):
+            continue
+        engine = row.get("engine")
+        metrics = row.get("metrics")
+        if (
+            engine not in MTP_PEER_LABELS
+            or not isinstance(metrics, dict)
+            or metrics.get("status") != "ok"
+        ):
+            continue
+        decode = metrics.get("decode_tok_s")
+        if not isinstance(decode, int | float):
+            continue
+        rows.append(row)
+    if not rows:
+        raise ChartError(f"MTP peer summary has no chartable rows: {summary_path}")
+    return rows
+
+
+def render_mtp_peer_comparison_chart(
+    rows: list[dict[str, Any]], summary_path: Path
+) -> str:
+    targets = []
+    for row in rows:
+        label = str(row["model_label"])
+        if label not in targets:
+            targets.append(label)
+    height = int(MTP_PEER_TOP + len(targets) * MTP_PEER_ROW_GAP + 78)
+    max_decode = max(float(row["metrics"]["decode_tok_s"]) for row in rows)
+    axis_max = nice_axis_ceiling(max_decode * 1.15)
+
+    def x_scale(value: float) -> float:
+        return (max(0.0, value) / axis_max) * (MTP_PEER_RIGHT - MTP_PEER_LEFT)
+
+    by_target_engine = {
+        (str(row["model_label"]), str(row["engine"])): float(
+            row["metrics"]["decode_tok_s"]
+        )
+        for row in rows
+    }
+    lines = [
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{MTP_PEER_WIDTH}" height="{height}" viewBox="0 0 {MTP_PEER_WIDTH} {height}" role="img" aria-labelledby="title desc">',
+        '<title id="title">Qwen3.6 MTP peer comparison apples-to-apples decode throughput</title>',
+        (
+            '<desc id="desc">Grouped horizontal bar chart comparing AX Engine, '
+            "MTPLX, and lightning-mlx decode tokens per second on the flappy "
+            "prompt suite.</desc>"
+        ),
+        f'<rect width="{MTP_PEER_WIDTH}" height="{height}" fill="#f8fafc"/>',
+        f'<text x="32" y="30" font-family="{FONT}" font-size="18" font-weight="700" fill="#111827">Qwen3.6 MTP peer comparison apples-to-apples</text>',
+        f'<text x="32" y="52" font-family="{FONT}" font-size="12" fill="#4b5563">flappy suite · 1000 generated tokens · 5 measured reps · 2 warmups · 30s cooldown · decode tok/s</text>',
+    ]
+    for tick_index in range(5):
+        tick = axis_max * tick_index / 4.0
+        x = MTP_PEER_LEFT + x_scale(tick)
+        stroke = "#cbd5e1" if tick_index == 0 else "#e5e7eb"
+        lines.extend(
+            [
+                f'<line x1="{x:.1f}" y1="{MTP_PEER_TOP - 18:.1f}" x2="{x:.1f}" y2="{height - 54}" stroke="{stroke}" stroke-width="1"/>',
+                f'<text x="{x:.1f}" y="{height - 34}" text-anchor="middle" font-family="{FONT}" font-size="10" fill="#6b7280">{short_number(tick)}</text>',
+            ]
+        )
+    legend_x = MTP_PEER_LEFT
+    for engine, label in MTP_PEER_LABELS.items():
+        lines.extend(
+            [
+                f'<rect x="{legend_x:.1f}" y="27" width="10" height="10" rx="2" fill="{MTP_PEER_COLORS[engine]}"/>',
+                f'<text x="{legend_x + 16:.1f}" y="36" font-family="{FONT}" font-size="11" fill="#374151">{escape(label)}</text>',
+            ]
+        )
+        legend_x += 110.0
+    for index, target in enumerate(targets):
+        base_y = MTP_PEER_TOP + index * MTP_PEER_ROW_GAP
+        short_target = target.replace("Qwen3.6 ", "")
+        lines.append(
+            f'<text x="32" y="{base_y + 16:.1f}" font-family="{FONT}" font-size="12" font-weight="700" fill="#111827">{escape(short_target)}</text>'
+        )
+        for engine_index, engine in enumerate(MTP_PEER_LABELS):
+            value = by_target_engine.get((target, engine))
+            y = base_y + engine_index * (MTP_PEER_BAR_H + 5.0)
+            if value is None:
+                lines.append(
+                    f'<text x="{MTP_PEER_LEFT:.1f}" y="{y + 10:.1f}" font-family="{FONT}" font-size="10" fill="#9ca3af">unsupported</text>'
+                )
+                continue
+            width = x_scale(value)
+            lines.extend(
+                [
+                    f'<rect x="{MTP_PEER_LEFT:.1f}" y="{y:.1f}" width="{width:.1f}" height="{MTP_PEER_BAR_H:.1f}" rx="3" fill="{MTP_PEER_COLORS[engine]}"/>',
+                    f'<text x="{MTP_PEER_LEFT + width + 6:.1f}" y="{y + 10:.1f}" font-family="{FONT}" font-size="10" font-weight="700" fill="#111827">{value:.1f}</text>',
+                ]
+            )
+    source_label = f"Source: {summary_path.parent.as_posix()} / summary.json"
+    lines.append(
+        f'<text x="{MTP_PEER_LEFT:.1f}" y="{height - 14}" font-family="{FONT}" font-size="10" fill="#6b7280">{escape(source_label)}</text>'
     )
     lines.append("</svg>")
     return "\n".join(lines) + "\n"
@@ -2143,6 +2280,15 @@ def main() -> int:
         )
         if not write_chart(mtp_6bit_output_path, mtp_6bit_content, args.check):
             mismatches.append(mtp_6bit_output_path)
+
+    mtp_peer_summary_path = find_mtp_peer_summary(args.readme)
+    if mtp_peer_summary_path is not None:
+        mtp_peer_output_path = args.output_dir / MTP_PEER_CHART_OUTPUT
+        mtp_peer_content = render_mtp_peer_comparison_chart(
+            load_mtp_peer_rows(mtp_peer_summary_path), mtp_peer_summary_path
+        )
+        if not write_chart(mtp_peer_output_path, mtp_peer_content, args.check):
+            mismatches.append(mtp_peer_output_path)
 
     embedding_fair_output_path = args.output_dir / EMBEDDING_FAIR_CHART_OUTPUT
     embedding_fair_content = render_embedding_delta_chart(

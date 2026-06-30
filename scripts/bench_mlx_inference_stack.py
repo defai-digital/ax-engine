@@ -3222,6 +3222,7 @@ def bench_axengine(
     tokens: list[int],
     generation_tokens: int,
     repetitions: int,
+    warmup_repetitions: int,
     cooldown: float,
     *,
     model_metadata: dict[str, Any],
@@ -3250,11 +3251,16 @@ def bench_axengine(
         f"kv_compression={kv_compression}",
         file=sys.stderr,
     )
-    axengine_one_run(
-        port, tokens, generation_tokens, server_pid=server_pid, sampler=sampler
-    )
-    if cooldown > 0:
-        time.sleep(cooldown)
+    for warmup_index in range(warmup_repetitions):
+        axengine_one_run(
+            port, tokens, generation_tokens, server_pid=server_pid, sampler=sampler
+        )
+        print(
+            f"    warmup {warmup_index + 1}/{warmup_repetitions}",
+            file=sys.stderr,
+        )
+        if cooldown > 0:
+            time.sleep(cooldown)
 
     runs = []
     for index in range(repetitions):
@@ -4145,6 +4151,7 @@ def main() -> None:
         "--generation-tokens", type=int, default=DEFAULT_GENERATION_TOKENS
     )
     parser.add_argument("--repetitions", type=int, default=DEFAULT_REPETITIONS)
+    parser.add_argument("--warmup-repetitions", type=int, default=1)
     parser.add_argument("--cooldown", type=float, default=DEFAULT_COOLDOWN)
     parser.add_argument(
         "--inter-case-cooldown",
@@ -4674,7 +4681,10 @@ def main() -> None:
     print(f"  model_dir: {args.model_dir}", file=sys.stderr)
     print(f"  prompt_tokens: {prompt_lengths}", file=sys.stderr)
     print(f"  generation_tokens: {args.generation_tokens}", file=sys.stderr)
-    print(f"  repetitions: {args.repetitions} + 1 warmup for AX", file=sys.stderr)
+    print(
+        f"  repetitions: {args.repetitions} + {args.warmup_repetitions} warmup for AX",
+        file=sys.stderr,
+    )
     print(
         "  ax_prefix_cache: "
         + (
@@ -4995,6 +5005,7 @@ def main() -> None:
                             prompt_doc["token_ids"],
                             args.generation_tokens,
                             args.repetitions,
+                            args.warmup_repetitions,
                             args.cooldown,
                             model_metadata=model_metadata,
                             direct_mode=direct_mode,
@@ -5128,6 +5139,7 @@ def main() -> None:
         "prompt_tokens": prompt_lengths,
         "generation_tokens": args.generation_tokens,
         "repetitions": args.repetitions,
+        "warmup_repetitions": args.warmup_repetitions,
         "cooldown": args.cooldown,
         "prefill_step_size": args.prefill_step_size,
         "ax_mtp_max_depth": args.ax_mtp_max_depth,
