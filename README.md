@@ -42,6 +42,8 @@ peer rows and model-specific boundaries kept visible.
 - [What AX Engine Does](#what-ax-engine-does)
 - [Performance](#performance)
   - [Session: Speculative Decoding (MTP)](#session-speculative-decoding-mtp)
+    - [Supported MTP packages](#supported-mtp-packages)
+    - [Download and serve an MTP package](#download-and-serve-an-mtp-package)
     - [Qwen3.6 MTP peer comparison apples-to-apples (2026-06-29)](#qwen36-mtp-peer-comparison-apples-to-apples-2026-06-29)
     - [Qwen3.6 MTP matrix refresh (2026-06-29)](#qwen36-mtp-matrix-refresh-2026-06-29)
     - [Gemma 4 assistant-MTP (depth-2)](#gemma-4-assistant-mtp-depth-2)
@@ -242,6 +244,51 @@ comparable Qwen MTP packages but no comparable Gemma or GLM one. Gemma 4
 assistant-MTP is published separately below as an AX-only depth result, since no
 peer engine ships the same package. Same-package direct baselines may be kept as
 AX diagnostics, but they are not headline MTP matrix rows.
+
+#### Supported MTP packages
+
+Use `ax-engine download-mtp <target>` for the packages below. These targets are
+the supported repo-owned MTP preparation paths; direct-model aliases are listed
+separately in [Getting a Model](#getting-a-model).
+
+| Target | Base model | MTP package |
+| --- | --- | --- |
+| `gemma-4-12b-4bit` | `mlx-community/gemma-4-12B-it-4bit` | Quick-start Gemma assistant-MTP package with `mlx-community/gemma-4-12B-it-assistant-4bit` |
+| `qwen3.6-27b-6bit` | `mlx-community/Qwen3.6-27B-6bit` | Qwen fused sidecar from `Qwen/Qwen3.6-27B` |
+| `qwen3.6-35b-a3b` | `mlx-community/Qwen3.6-35B-A3B-6bit` | Qwen fused sidecar from `Qwen/Qwen3.6-35B-A3B` |
+| `gemma-4-12b` | `mlx-community/gemma-4-12B-it-6bit` | Gemma assistant-MTP package with `mlx-community/gemma-4-12B-it-assistant-6bit` |
+| `gemma-4-26b` | `mlx-community/gemma-4-26b-a4b-it-6bit` | Gemma assistant-MTP package with `google/gemma-4-26b-a4b-it-assistant` |
+| `gemma-4-31b` | `mlx-community/gemma-4-31b-it-6bit` | Gemma assistant-MTP package with `google/gemma-4-31b-it-assistant` |
+| `glm-4.7-flash` | `mlx-community/GLM-4.7-Flash-6bit` | GLM built-in MTP layer extracted from `zai-org/GLM-4.7-Flash` |
+
+The practical AX Engine benchmark lane is the 6-bit `download-mtp` set. The
+`gemma-4-12b-4bit` target is kept as the Quick Start path, and Qwen 4-bit
+packages are comparison artifacts for peer MTP engines rather than normal
+`download-mtp` targets.
+
+#### Download and serve an MTP package
+
+Install with the download extra, prepare a target, then run the serve command
+printed by the CLI:
+
+```bash
+python3 -m pip install -U "ax-engine[download]>=6.6.1,<7"
+
+ax-engine download-mtp gemma-4-12b-4bit
+# or: ax-engine download-mtp qwen3.6-27b-6bit
+# or: ax-engine download-mtp glm-4.7-flash
+
+# The command prints the prepared package path and a matching:
+# ax-engine serve <prepared-mtp-package> --port 8080
+```
+
+By default, packages are written as synthetic Hugging Face cache snapshots under
+the active HF cache root. Use `--output <dir>` when you need an explicit
+destination, `--force` to rebuild an existing package, and `--json` for scripts.
+See [Supported Models](docs/SUPPORTED-MODELS.md#mtp-downloads) and the
+[CLI reference](docs/CLI.md#ax-engine) for aliases and advanced options.
+
+#### Benchmark scope
 
 | Target | Preparation / source | Benchmark mode |
 | --- | --- | --- |
