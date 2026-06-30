@@ -18,6 +18,11 @@ npm-debug.log*
 compile_commands.json
 .cache/
 
+# Scratch (paper downloads, vendored pip pkgs) and peer-engine benchmark
+# scaffolding (symlinked model layouts, rapid-compat server logs) — never tracked
+/tmp/
+rapid-server/
+
 # Local environment and credential files
 .env
 .env.*
