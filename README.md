@@ -62,6 +62,7 @@ peer rows and model-specific boundaries kept visible.
 - [Limitations](#limitations)
 - [Contributing](#contributing)
 - [Community](#community)
+- [Acknowledgments](#acknowledgments)
 - [License](#license)
 
 ## Quick Start
@@ -1107,6 +1108,14 @@ Performance tuning is tightly coupled: a local speedup can regress correctness, 
 - Email: [enquiry@defai.digital](mailto:enquiry@defai.digital)
 
 [ref-json]: benchmarks/results/mlx-inference/2026-06-26-gemma4-12b-4bit-ax-direct-only/gemma-4-12b-it-4bit-with-llama-reference.json
+
+## Acknowledgments
+
+Special thanks to **[Samuel Faj](https://www.samuelfaj.com/en/)** — author of
+[lightning-mlx](https://github.com/samuelfaj/lightning-mlx) — for his generous
+support during AX Engine's MTP peer-comparison work. If you build LLM tooling on
+Apple Silicon, we warmly recommend checking out his project,
+**[Remote Code](https://www.remotecode.io/)**.
 
 ## License
 
