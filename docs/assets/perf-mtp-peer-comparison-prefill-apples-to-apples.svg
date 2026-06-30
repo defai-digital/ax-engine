@@ -32,7 +32,7 @@
 <text x="479.4" y="189.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" font-weight="700" fill="#111827">694.6</text>
 <text x="234.0" y="219.0" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" fill="#374151">lightning-mlx</text>
 <rect x="248.0" y="204.0" width="277.0" height="20.0" rx="3" fill="#2563eb"/>
-<text x="533.0" y="219.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" font-weight="700" fill="#dc2626">861.2 · highest</text>
+<text x="533.0" y="219.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" font-weight="700" fill="#dc2626">861.2</text>
 <text x="32" y="248.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="15" font-weight="700" fill="#111827">27B 6-bit</text>
 <text x="234.0" y="277.0" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" fill="#374151">AX Engine</text>
 <rect x="248.0" y="262.0" width="207.3" height="20.0" rx="3" fill="#2eaf5f"/>
@@ -44,7 +44,7 @@
 <text x="32" y="366.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="15" font-weight="700" fill="#111827">35B-A3B 4-bit</text>
 <text x="234.0" y="395.0" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" fill="#374151">AX Engine</text>
 <rect x="248.0" y="380.0" width="585.2" height="20.0" rx="3" fill="#2eaf5f"/>
-<text x="841.2" y="395.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" font-weight="700" fill="#dc2626">1819.8 · highest</text>
+<text x="841.2" y="395.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" font-weight="700" fill="#dc2626">1819.8</text>
 <text x="234.0" y="425.0" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" fill="#374151">MTPLX</text>
 <rect x="248.0" y="410.0" width="539.9" height="20.0" rx="3" fill="#f2b705"/>
 <text x="795.9" y="425.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" font-weight="700" fill="#111827">1678.7</text>
@@ -54,7 +54,7 @@
 <text x="32" y="484.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="15" font-weight="700" fill="#111827">35B-A3B 6-bit</text>
 <text x="234.0" y="513.0" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" fill="#374151">AX Engine</text>
 <rect x="248.0" y="498.0" width="492.1" height="20.0" rx="3" fill="#2eaf5f"/>
-<text x="748.1" y="513.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" font-weight="700" fill="#dc2626">1530.2 · highest</text>
+<text x="748.1" y="513.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" font-weight="700" fill="#dc2626">1530.2</text>
 <text x="234.0" y="543.0" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" fill="#374151">MTPLX</text>
 <rect x="248.0" y="528.0" width="434.0" height="20.0" rx="3" fill="#f2b705"/>
 <text x="690.0" y="543.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" font-weight="700" fill="#111827">1349.5</text>

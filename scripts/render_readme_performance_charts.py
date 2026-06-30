@@ -1382,15 +1382,13 @@ def render_mtp_peer_comparison_chart(
                 )
                 continue
             width = x_scale(value)
+            # Best value per target is highlighted in red; no text suffix.
             is_best = target in best_by_target and value == best_by_target[target]
             value_fill = "#dc2626" if is_best else "#111827"
-            value_suffix = ""
-            if is_best:
-                value_suffix = " · highest" if higher_is_better else " · lowest"
             lines.extend(
                 [
                     f'<rect x="{MTP_PEER_LEFT:.1f}" y="{y:.1f}" width="{width:.1f}" height="{MTP_PEER_BAR_H:.1f}" rx="3" fill="{MTP_PEER_COLORS[engine]}"/>',
-                    f'<text x="{MTP_PEER_LEFT + width + 8:.1f}" y="{y + 15:.1f}" font-family="{FONT}" font-size="12" font-weight="700" fill="{value_fill}">{value:.1f}{escape(str(metric_config["suffix"]))}{escape(value_suffix)}</text>',
+                    f'<text x="{MTP_PEER_LEFT + width + 8:.1f}" y="{y + 15:.1f}" font-family="{FONT}" font-size="12" font-weight="700" fill="{value_fill}">{value:.1f}{escape(str(metric_config["suffix"]))}</text>',
                 ]
             )
     versions_text = " · ".join(
