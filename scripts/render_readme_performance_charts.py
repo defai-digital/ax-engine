@@ -1175,12 +1175,12 @@ def render_mtp_6bit_ax_acceleration_chart(
     return "\n".join(lines) + "\n"
 
 
-MTP_PEER_WIDTH = 920
-MTP_PEER_LEFT = 170.0
-MTP_PEER_RIGHT = 860.0
-MTP_PEER_TOP = 78.0
-MTP_PEER_ROW_GAP = 72.0
-MTP_PEER_BAR_H = 13.0
+MTP_PEER_WIDTH = 1120
+MTP_PEER_LEFT = 248.0
+MTP_PEER_RIGHT = 1052.0
+MTP_PEER_TOP = 112.0
+MTP_PEER_ROW_GAP = 118.0
+MTP_PEER_BAR_H = 20.0
 MTP_PEER_COLORS = {
     "ax_engine": "#2eaf5f",
     "mtplx": "#f2b705",
@@ -1238,7 +1238,7 @@ def render_mtp_peer_comparison_chart(
         label = str(row["model_label"])
         if label not in targets:
             targets.append(label)
-    height = int(MTP_PEER_TOP + len(targets) * MTP_PEER_ROW_GAP + 78)
+    height = int(MTP_PEER_TOP + len(targets) * MTP_PEER_ROW_GAP + 88)
     max_decode = max(float(row["metrics"]["decode_tok_s"]) for row in rows)
     axis_max = nice_axis_ceiling(max_decode * 1.15)
 
@@ -1260,8 +1260,9 @@ def render_mtp_peer_comparison_chart(
             "prompt suite.</desc>"
         ),
         f'<rect width="{MTP_PEER_WIDTH}" height="{height}" fill="#f8fafc"/>',
-        f'<text x="32" y="30" font-family="{FONT}" font-size="18" font-weight="700" fill="#111827">Qwen3.6 MTP peer comparison apples-to-apples</text>',
-        f'<text x="32" y="52" font-family="{FONT}" font-size="12" fill="#4b5563">flappy suite · 1000 generated tokens · 5 measured reps · 2 warmups · 30s cooldown · decode tok/s</text>',
+        f'<text x="32" y="34" font-family="{FONT}" font-size="22" font-weight="700" fill="#111827">Qwen3.6 MTP peer comparison apples-to-apples</text>',
+        f'<text x="32" y="60" font-family="{FONT}" font-size="14" fill="#374151">flappy suite · 1000 generated tokens · 5 measured reps · 2 warmups · 30s cooldown</text>',
+        f'<text x="32" y="80" font-family="{FONT}" font-size="13" fill="#6b7280">Decode throughput, tokens per second. Higher is better.</text>',
     ]
     for tick_index in range(5):
         tick = axis_max * tick_index / 4.0
@@ -1269,43 +1270,49 @@ def render_mtp_peer_comparison_chart(
         stroke = "#cbd5e1" if tick_index == 0 else "#e5e7eb"
         lines.extend(
             [
-                f'<line x1="{x:.1f}" y1="{MTP_PEER_TOP - 18:.1f}" x2="{x:.1f}" y2="{height - 54}" stroke="{stroke}" stroke-width="1"/>',
-                f'<text x="{x:.1f}" y="{height - 34}" text-anchor="middle" font-family="{FONT}" font-size="10" fill="#6b7280">{short_number(tick)}</text>',
+                f'<line x1="{x:.1f}" y1="{MTP_PEER_TOP - 26:.1f}" x2="{x:.1f}" y2="{height - 66}" stroke="{stroke}" stroke-width="1"/>',
+                f'<text x="{x:.1f}" y="{height - 43}" text-anchor="middle" font-family="{FONT}" font-size="12" fill="#4b5563">{short_number(tick)}</text>',
             ]
         )
-    legend_x = MTP_PEER_LEFT
+    legend_x = 648.0
     for engine, label in MTP_PEER_LABELS.items():
         lines.extend(
             [
-                f'<rect x="{legend_x:.1f}" y="27" width="10" height="10" rx="2" fill="{MTP_PEER_COLORS[engine]}"/>',
-                f'<text x="{legend_x + 16:.1f}" y="36" font-family="{FONT}" font-size="11" fill="#374151">{escape(label)}</text>',
+                f'<rect x="{legend_x:.1f}" y="25" width="13" height="13" rx="2" fill="{MTP_PEER_COLORS[engine]}"/>',
+                f'<text x="{legend_x + 19:.1f}" y="37" font-family="{FONT}" font-size="13" fill="#374151">{escape(label)}</text>',
             ]
         )
-        legend_x += 110.0
+        legend_x += 136.0
     for index, target in enumerate(targets):
         base_y = MTP_PEER_TOP + index * MTP_PEER_ROW_GAP
         short_target = target.replace("Qwen3.6 ", "")
         lines.append(
-            f'<text x="32" y="{base_y + 16:.1f}" font-family="{FONT}" font-size="12" font-weight="700" fill="#111827">{escape(short_target)}</text>'
+            f'<text x="32" y="{base_y + 18:.1f}" font-family="{FONT}" font-size="15" font-weight="700" fill="#111827">{escape(short_target)}</text>'
         )
         for engine_index, engine in enumerate(MTP_PEER_LABELS):
             value = by_target_engine.get((target, engine))
-            y = base_y + engine_index * (MTP_PEER_BAR_H + 5.0)
+            y = base_y + 32.0 + engine_index * (MTP_PEER_BAR_H + 10.0)
+            lines.append(
+                f'<text x="{MTP_PEER_LEFT - 14:.1f}" y="{y + 15:.1f}" text-anchor="end" font-family="{FONT}" font-size="12" fill="#374151">{escape(MTP_PEER_LABELS[engine])}</text>'
+            )
             if value is None:
                 lines.append(
-                    f'<text x="{MTP_PEER_LEFT:.1f}" y="{y + 10:.1f}" font-family="{FONT}" font-size="10" fill="#9ca3af">unsupported</text>'
+                    f'<text x="{MTP_PEER_LEFT:.1f}" y="{y + 15:.1f}" font-family="{FONT}" font-size="12" fill="#9ca3af">unsupported</text>'
                 )
                 continue
             width = x_scale(value)
             lines.extend(
                 [
                     f'<rect x="{MTP_PEER_LEFT:.1f}" y="{y:.1f}" width="{width:.1f}" height="{MTP_PEER_BAR_H:.1f}" rx="3" fill="{MTP_PEER_COLORS[engine]}"/>',
-                    f'<text x="{MTP_PEER_LEFT + width + 6:.1f}" y="{y + 10:.1f}" font-family="{FONT}" font-size="10" font-weight="700" fill="#111827">{value:.1f}</text>',
+                    f'<text x="{MTP_PEER_LEFT + width + 8:.1f}" y="{y + 15:.1f}" font-family="{FONT}" font-size="12" font-weight="700" fill="#111827">{value:.1f}</text>',
                 ]
             )
-    source_label = f"Source: {summary_path.parent.as_posix()} / summary.json"
+    source_label = (
+        "Source: "
+        f"{summary_path.parent.name}/summary.json · generated from README artifacts"
+    )
     lines.append(
-        f'<text x="{MTP_PEER_LEFT:.1f}" y="{height - 14}" font-family="{FONT}" font-size="10" fill="#6b7280">{escape(source_label)}</text>'
+        f'<text x="32" y="{height - 18}" font-family="{FONT}" font-size="11" fill="#6b7280">{escape(source_label)}</text>'
     )
     lines.append("</svg>")
     return "\n".join(lines) + "\n"
