@@ -1,0 +1,56 @@
+{
+  "contract": {
+    "bits": [
+      4
+    ],
+    "engines": [
+      "ax_engine"
+    ],
+    "max_tokens": 1000,
+    "metrics": [
+      "decode_tok_s",
+      "prefill_tok_s",
+      "ttft_ms",
+      "accept_rate"
+    ],
+    "mode": "mtp",
+    "models": [
+      "27b"
+    ],
+    "repetitions": 5,
+    "sampling": {
+      "temperature": 0.6,
+      "top_k": 20,
+      "top_p": 0.95
+    },
+    "suites": [
+      "flappy"
+    ],
+    "warmup_repetitions": 2
+  },
+  "created_at": "2026-06-30",
+  "rows": [
+    {
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-30-27b4-ax-current/27b-4bit/flappy/ax_engine.json",
+      "bits": 4,
+      "engine": "ax_engine",
+      "metric_contract": {
+        "accept_rate": "measured",
+        "decode_tok_s": "measured",
+        "prefill_tok_s": "measured",
+        "ttft_ms": "measured"
+      },
+      "metrics": {
+        "error": "command failed; see benchmarks/results/mtp-qwen36-matrix/2026-06-30-27b4-ax-current/27b-4bit/flappy/ax_engine.log\n$ /opt/homebrew/opt/python@3.14/bin/python3.14 /Users/akiralam/code/ax-engine/scripts/bench_mlx_inference_stack.py --model-dir /Users/akiralam/.cache/huggingface/hub/models--ax-local--Qwen3.6-27B-MTP/snapshots/v1 --prompt-source real --real-prompt-suite /Users/akiralam/code/ax-engine/benchmarks/prompts/mtp-suites/flappy.jsonl --generation-tokens 1000 --repetitions 5 --warmup-repetitions 2 --cooldown 30.0 --inter-case-cooldown 10.0 --ax-sampling '{\"temperature\":0.6,\"top_p\":0.95,\"top_k\":20}' --skip-mlx-lm --no-thinking --capture-output-token-ids --ax-ngram-accel --ax-mtp-disable-ngram-stacking --ax-mtp-max-depth 3 --output benchmarks/results/mtp-qwen36-matrix/2026-06-30-27b4-ax-current/27b-4bit/flappy/ax_engine.json\n\n\n=== AX Engine MLX inference stack ===\n  model: /Users/akiralam/.cache/huggingface/hub/models--ax-local--Qwen3.6-27B-MTP/snapshots/v1\n  model_repo_id: ax-local/Qwen3.6-27B-MTP\n  model_dir: /Users/akiralam/.cache/huggingface/hub/models--ax-local--Qwen3.6-27B-MTP/snapshots/v1\n  prompt_tokens: [128, 512, 2048]\n  generation_tokens: 1000\n  repetitions: 5 + 2 warmup for AX\n  ax_prefix_cache: disabled_for_cold_prefill_benchmark\n  prompt_artifact_root: benchmarks/results/mtp-qwen36-matrix/2026-06-30-27b4-ax-current/27b-4bit/flappy/ax_engine-prompts\n  [build] cargo build -p ax-engine-server --release\n    Finished `release` profile [optimized] target(s) in 0.09s\n  [prompt] real suite=flappy case=flappy_pipes tokens=273 text_sha256=88a801ae3723 path=benchmarks/results/mtp-qwen36-matrix/2026-06-30-27b4-ax-current/27b-4bit/flappy/ax_engine-prompts/real-flappy-flappy_pipes-gen-1000-fc913ab80026.json\n  [prompt] real suite=flappy case=flappy_score_gates tokens=374 text_sha256=d30afc995170 path=benchmarks/results/mtp-qwen36-matrix/2026-06-30-27b4-ax-current/27b-4bit/flappy/ax_engine-prompts/real-flappy-flappy_score_gates-gen-1000-45ce81d30d46.json\n  [prompt] real suite=flappy case=flappy_collision_checks tokens=432 text_sha256=dc95f5553973 path=benchmarks/results/mtp-qwen36-matrix/2026-06-30-27b4-ax-current/27b-4bit/flappy/ax_engine-prompts/real-flappy-flappy_collision_checks-gen-1000-75a7041d3bb7.json\n  [prompt] real suite=flappy case=flappy_sound_channels tokens=264 text_sha256=3510857fe86b path=benchmarks/results/mtp-qwen36-matrix/2026-06-30-27b4-ax-current/27b-4bit/flappy/ax_engine-prompts/real-flappy-flappy_sound_channels-gen-1000-baa042e581ac.json\n  [ax-engine] /Users/akiralam/code/ax-engine/target/release/ax-engine-server --mlx --mlx-model-artifacts-dir /Users/akiralam/.cache/huggingface/hub/models--ax-local--Qwen3.6-27B-MTP/snapshots/v1 --model-id /Users/akiralam/.cache/huggingface/hub/models--ax-local--Qwen3.6-27B-MTP/snapshots/v1 --port 62536 --mlx-mtp-disable-ngram-stacking --prefill-chunk 2048 --max-batch-tokens 2048\n  [ax-engine] AX_MLX_MTP_MAX_DEPTH=3\n  [ax-engine] MTP n-gram stacking disabled\n  [ax-engine] prefix cache disabled for cold prefill/TTFT measurement\nTraceback (most recent call last):\n  File \"/Users/akiralam/code/ax-engine/scripts/bench_mlx_inference_stack.py\", line 5272, in <module>\n    main()\n    ~~~~^^\n  File \"/Users/akiralam/code/ax-engine/scripts/bench_mlx_inference_stack.py\", line 4993, in main\n    raise RuntimeError(\n        f\"ax-engine-server did not become ready:\\n{stderr}\"\n    )\nRuntimeError: ax-engine-server did not become ready:\nmlx error: handle type mismatch: wrong magic number\n\nthread 'main' (39133335) panicked at crates/mlx-sys/src/error.rs:102:9:\nmlx_vector_array_get failed: handle type mismatch: wrong magic number\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n\n\n[exit 1 after 9.0s]",
+        "status": "error"
+      },
+      "model": "27b",
+      "model_label": "Qwen3.6 27B 4-bit",
+      "reason": null,
+      "status": "supported",
+      "suite": "flappy",
+      "target": "27b-4bit"
+    }
+  ],
+  "schema": "ax.qwen36_mtp_matrix.summary.v1"
+}

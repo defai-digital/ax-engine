@@ -1,0 +1,42 @@
+PYTHONPATH=/Users/akiralam/code/ax-engine/.internal/reference/MTPLX
+$ /opt/homebrew/var/mtplx/venv-0.3.7/bin/python /Users/akiralam/code/ax-engine/scripts/bench_mtplx_prompt_suites.py --model /Users/akiralam/.cache/huggingface/hub/models--Youssofal--Qwen3.6-35B-A3B-MTPLX-Optimized-Speed/snapshots/f02bdf7908b6120a48a137e6a08d50f076a94101 --suite flappy --prompts /Users/akiralam/code/ax-engine/benchmarks/prompts/mtp-suites/flappy.jsonl --output benchmarks/results/mtp-qwen36-matrix/2026-06-29-peer-comparison-smoke/35b-a3b-4bit/flappy/mtplx.json --depth 1 --temperature 0.6 --top-p 0.95 --top-k 20 --max-tokens 64 --repetitions 1 --warmup-repetitions 0 --cooldown 0.0 --inter-case-cooldown 0.0 --profile stable --mtp-quant-mode cyankiwi --disable-thinking --allow-unverified-model
+
+flappy_pipes rep 1/1: decode=132.3 tok/s out=64 accept=32/32
+flappy_score_gates rep 1/1: decode=131.3 tok/s out=64 accept=29/34
+flappy_collision_checks rep 1/1: decode=131.9 tok/s out=64 accept=29/34
+flappy_sound_channels rep 1/1: decode=136.2 tok/s out=64 accept=31/33
+Saved to benchmarks/results/mtp-qwen36-matrix/2026-06-29-peer-comparison-smoke/35b-a3b-4bit/flappy/mtplx.json
+{
+  "accept_rate": 0.9097744360902256,
+  "accepted_drafts": 121,
+  "case_count": 4,
+  "decode_tok_s": {
+    "median": 132.12090765181324,
+    "p10": 131.2635287126056,
+    "p90": 136.19903423803618,
+    "values": [
+      132.30931434254583,
+      131.2635287126056,
+      131.93250096108062,
+      136.19903423803618
+    ]
+  },
+  "drafted_tokens": 133,
+  "end_to_end_tok_s": {
+    "median": 96.91540379839927,
+    "p10": 95.84945040933515,
+    "p90": 103.21670556820759,
+    "values": [
+      96.41547844943946,
+      97.41532914735907,
+      95.84945040933515,
+      103.21670556820759
+    ]
+  },
+  "generated_tokens": 256,
+  "runs": 4,
+  "validations_passed": 4,
+  "validations_total": 4
+}
+
+[exit 0 after 11.5s]

@@ -11,7 +11,7 @@
       "rapid_mlx",
       "omlx"
     ],
-    "max_tokens": 1000,
+    "max_tokens": 64,
     "metrics": [
       "decode_tok_s",
       "prefill_tok_s",
@@ -23,7 +23,7 @@
       "27b",
       "35b-a3b"
     ],
-    "repetitions": 5,
+    "repetitions": 1,
     "sampling": {
       "temperature": 0.6,
       "top_k": 20,
@@ -32,17 +32,12 @@
     "suites": [
       "flappy"
     ],
-    "warmup_repetitions": 2
+    "warmup_repetitions": 0
   },
-  "created_at": "2026-06-30",
-  "notes": [
-    "27B 4-bit flappy AX Engine row is refreshed from the 2026-06-30 current-code AX-only rerun.",
-    "27B 4-bit flappy MTPLX and lightning-mlx rows are from the 2026-06-30 same-session peer rerun.",
-    "Other peer comparison rows remain from the 2026-06-29 apples-to-apples run."
-  ],
+  "created_at": "2026-06-29",
   "rows": [
     {
-      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-30-27b4-ax-current-r2/27b-4bit/flappy/ax_engine.json",
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-29-peer-comparison-smoke/27b-4bit/flappy/ax_engine.json",
       "bits": 4,
       "engine": "ax_engine",
       "metric_contract": {
@@ -55,22 +50,22 @@
         "accept_rate": 1.0,
         "accept_source": "ax_engine_mtp_telemetry",
         "case_count": 4,
-        "decode_tok_s": 59.70843343478975,
+        "decode_tok_s": 62.08679695295831,
         "prefill_source": "ax_engine_runner_prefill_time",
-        "prefill_tok_s": 657.3982900504693,
+        "prefill_tok_s": 672.6918231565269,
         "status": "ok",
-        "ttft_ms": 489.07800000000003,
+        "ttft_ms": 475.53999999999996,
         "ttft_source": "ax_engine_runner_prefill_time"
       },
       "model": "27b",
       "model_label": "Qwen3.6 27B 4-bit",
-      "reason": "2026-06-30 AX-only current-code 27B 4-bit flappy rerun replacing the previous AX row",
+      "reason": null,
       "status": "supported",
       "suite": "flappy",
       "target": "27b-4bit"
     },
     {
-      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-30-27b4-flappy-rerun/27b-4bit/flappy/mtplx.json",
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-29-peer-comparison-smoke/27b-4bit/flappy/mtplx.json",
       "bits": 4,
       "engine": "mtplx",
       "metric_contract": {
@@ -80,25 +75,25 @@
         "ttft_ms": "prompt_eval_time_s"
       },
       "metrics": {
-        "accept_rate": 0.9998666666666667,
+        "accept_rate": 1.0,
         "accept_source": "mtplx_draft_stats",
         "case_count": 4,
-        "decode_tok_s": 63.16955696262749,
+        "decode_tok_s": 64.11067847444266,
         "prefill_source": "prompt_tokens_over_prompt_eval_time_s",
-        "prefill_tok_s": 694.5831867874086,
+        "prefill_tok_s": 732.263190028398,
         "status": "ok",
-        "ttft_ms": 489.64483302552253,
+        "ttft_ms": 436.66933302301913,
         "ttft_source": "prompt_eval_time_s"
       },
       "model": "27b",
       "model_label": "Qwen3.6 27B 4-bit",
-      "reason": "2026-06-30 same-session 27B 4-bit flappy peer rerun replacing the 2026-06-29 pressure-skewed row",
+      "reason": null,
       "status": "supported",
       "suite": "flappy",
       "target": "27b-4bit"
     },
     {
-      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-30-27b4-flappy-rerun/27b-4bit/flappy/lightning_mlx.json",
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-29-peer-comparison-smoke/27b-4bit/flappy/lightning_mlx.json",
       "bits": 4,
       "engine": "lightning_mlx",
       "metric_contract": {
@@ -108,25 +103,25 @@
         "ttft_ms": "client_stream_ttft_s"
       },
       "metrics": {
-        "accept_rate": 0.944974525243168,
+        "accept_rate": 0.55,
         "accept_source": "lightning_request_telemetry",
         "case_count": 4,
-        "decode_tok_s": 59.35292227249474,
+        "decode_tok_s": 41.8278374036424,
         "prefill_source": "prompt_tokens_over_client_ttft_s",
-        "prefill_tok_s": 861.1973769775889,
+        "prefill_tok_s": 497.7593734035871,
         "status": "ok",
-        "ttft_ms": 399.6638334938325,
+        "ttft_ms": 719.7282499982975,
         "ttft_source": "client_stream_ttft_s"
       },
       "model": "27b",
       "model_label": "Qwen3.6 27B 4-bit",
-      "reason": "2026-06-30 same-session 27B 4-bit flappy peer rerun replacing the 2026-06-29 pressure-skewed row",
+      "reason": null,
       "status": "supported",
       "suite": "flappy",
       "target": "27b-4bit"
     },
     {
-      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-29-peer-comparison-apples-to-apples/27b-4bit/flappy/rapid_mlx.json",
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-29-peer-comparison-smoke/27b-4bit/flappy/rapid_mlx.json",
       "bits": 4,
       "engine": "rapid_mlx",
       "metric_contract": {
@@ -146,7 +141,7 @@
       "target": "27b-4bit"
     },
     {
-      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-29-peer-comparison-apples-to-apples/27b-4bit/flappy/omlx.json",
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-29-peer-comparison-smoke/27b-4bit/flappy/omlx.json",
       "bits": 4,
       "engine": "omlx",
       "metric_contract": {
@@ -166,7 +161,7 @@
       "target": "27b-4bit"
     },
     {
-      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-29-peer-comparison-apples-to-apples/27b-6bit/flappy/ax_engine.json",
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-29-peer-comparison-smoke/27b-6bit/flappy/ax_engine.json",
       "bits": 6,
       "engine": "ax_engine",
       "metric_contract": {
@@ -176,14 +171,14 @@
         "ttft_ms": "measured"
       },
       "metrics": {
-        "accept_rate": 0.9942038868053188,
+        "accept_rate": 0.9836065573770492,
         "accept_source": "ax_engine_mtp_telemetry",
         "case_count": 4,
-        "decode_tok_s": 41.865534058453704,
+        "decode_tok_s": 39.965172302410146,
         "prefill_source": "ax_engine_runner_prefill_time",
-        "prefill_tok_s": 644.6718643697754,
+        "prefill_tok_s": 617.0765506653497,
         "status": "ok",
-        "ttft_ms": 499.7025,
+        "ttft_ms": 543.1310000000001,
         "ttft_source": "ax_engine_runner_prefill_time"
       },
       "model": "27b",
@@ -194,7 +189,7 @@
       "target": "27b-6bit"
     },
     {
-      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-29-peer-comparison-apples-to-apples/27b-6bit/flappy/mtplx.json",
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-29-peer-comparison-smoke/27b-6bit/flappy/mtplx.json",
       "bits": 6,
       "engine": "mtplx",
       "metric_contract": {
@@ -214,7 +209,7 @@
       "target": "27b-6bit"
     },
     {
-      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-29-peer-comparison-apples-to-apples/27b-6bit/flappy/lightning_mlx.json",
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-29-peer-comparison-smoke/27b-6bit/flappy/lightning_mlx.json",
       "bits": 6,
       "engine": "lightning_mlx",
       "metric_contract": {
@@ -234,7 +229,7 @@
       "target": "27b-6bit"
     },
     {
-      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-29-peer-comparison-apples-to-apples/27b-6bit/flappy/rapid_mlx.json",
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-29-peer-comparison-smoke/27b-6bit/flappy/rapid_mlx.json",
       "bits": 6,
       "engine": "rapid_mlx",
       "metric_contract": {
@@ -254,7 +249,7 @@
       "target": "27b-6bit"
     },
     {
-      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-29-peer-comparison-apples-to-apples/27b-6bit/flappy/omlx.json",
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-29-peer-comparison-smoke/27b-6bit/flappy/omlx.json",
       "bits": 6,
       "engine": "omlx",
       "metric_contract": {
@@ -274,7 +269,7 @@
       "target": "27b-6bit"
     },
     {
-      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-29-peer-comparison-apples-to-apples/35b-a3b-4bit/flappy/ax_engine.json",
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-29-peer-comparison-smoke/35b-a3b-4bit/flappy/ax_engine.json",
       "bits": 4,
       "engine": "ax_engine",
       "metric_contract": {
@@ -284,14 +279,14 @@
         "ttft_ms": "measured"
       },
       "metrics": {
-        "accept_rate": 0.9984825493171472,
+        "accept_rate": 0.991869918699187,
         "accept_source": "ax_engine_mtp_telemetry",
         "case_count": 4,
-        "decode_tok_s": 172.45783265537943,
+        "decode_tok_s": 167.01905470099854,
         "prefill_source": "ax_engine_runner_prefill_time",
-        "prefill_tok_s": 1819.7607050339075,
+        "prefill_tok_s": 1755.2491916365589,
         "status": "ok",
-        "ttft_ms": 176.942,
+        "ttft_ms": 188.0675,
         "ttft_source": "ax_engine_runner_prefill_time"
       },
       "model": "35b-a3b",
@@ -302,7 +297,7 @@
       "target": "35b-a3b-4bit"
     },
     {
-      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-29-peer-comparison-apples-to-apples/35b-a3b-4bit/flappy/mtplx.json",
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-29-peer-comparison-smoke/35b-a3b-4bit/flappy/mtplx.json",
       "bits": 4,
       "engine": "mtplx",
       "metric_contract": {
@@ -312,14 +307,14 @@
         "ttft_ms": "prompt_eval_time_s"
       },
       "metrics": {
-        "accept_rate": 0.9570335389416255,
+        "accept_rate": 0.8961675579322639,
         "accept_source": "mtplx_draft_stats",
         "case_count": 4,
-        "decode_tok_s": 137.21856976540974,
+        "decode_tok_s": 132.12090765181324,
         "prefill_source": "prompt_tokens_over_prompt_eval_time_s",
-        "prefill_tok_s": 1678.6677539106709,
+        "prefill_tok_s": 1982.9146391897373,
         "status": "ok",
-        "ttft_ms": 196.94989651907235,
+        "ttft_ms": 174.7454164433293,
         "ttft_source": "prompt_eval_time_s"
       },
       "model": "35b-a3b",
@@ -330,7 +325,7 @@
       "target": "35b-a3b-4bit"
     },
     {
-      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-29-peer-comparison-apples-to-apples/35b-a3b-4bit/flappy/lightning_mlx.json",
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-29-peer-comparison-smoke/35b-a3b-4bit/flappy/lightning_mlx.json",
       "bits": 4,
       "engine": "lightning_mlx",
       "metric_contract": {
@@ -343,11 +338,11 @@
         "accept_rate": 1.0,
         "accept_source": "lightning_request_telemetry",
         "case_count": 4,
-        "decode_tok_s": 116.16575766586892,
+        "decode_tok_s": 113.32503457100245,
         "prefill_source": "prompt_tokens_over_client_ttft_s",
-        "prefill_tok_s": 1466.4582254845263,
+        "prefill_tok_s": 3591.3889777511417,
         "status": "ok",
-        "ttft_ms": 214.81239603599533,
+        "ttft_ms": 89.29333294508979,
         "ttft_source": "client_stream_ttft_s"
       },
       "model": "35b-a3b",
@@ -358,7 +353,7 @@
       "target": "35b-a3b-4bit"
     },
     {
-      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-29-peer-comparison-apples-to-apples/35b-a3b-4bit/flappy/rapid_mlx.json",
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-29-peer-comparison-smoke/35b-a3b-4bit/flappy/rapid_mlx.json",
       "bits": 4,
       "engine": "rapid_mlx",
       "metric_contract": {
@@ -378,7 +373,7 @@
       "target": "35b-a3b-4bit"
     },
     {
-      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-29-peer-comparison-apples-to-apples/35b-a3b-4bit/flappy/omlx.json",
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-29-peer-comparison-smoke/35b-a3b-4bit/flappy/omlx.json",
       "bits": 4,
       "engine": "omlx",
       "metric_contract": {
@@ -398,7 +393,7 @@
       "target": "35b-a3b-4bit"
     },
     {
-      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-29-peer-comparison-apples-to-apples/35b-a3b-6bit/flappy/ax_engine.json",
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-29-peer-comparison-smoke/35b-a3b-6bit/flappy/ax_engine.json",
       "bits": 6,
       "engine": "ax_engine",
       "metric_contract": {
@@ -408,14 +403,14 @@
         "ttft_ms": "measured"
       },
       "metrics": {
-        "accept_rate": 0.9984810126582279,
+        "accept_rate": 1.0,
         "accept_source": "ax_engine_mtp_telemetry",
         "case_count": 4,
-        "decode_tok_s": 139.38317489391136,
+        "decode_tok_s": 141.12717327347735,
         "prefill_source": "ax_engine_runner_prefill_time",
-        "prefill_tok_s": 1530.2191708787016,
+        "prefill_tok_s": 1548.0106660816568,
         "status": "ok",
-        "ttft_ms": 210.34500000000003,
+        "ttft_ms": 208.5845,
         "ttft_source": "ax_engine_runner_prefill_time"
       },
       "model": "35b-a3b",
@@ -426,7 +421,7 @@
       "target": "35b-a3b-6bit"
     },
     {
-      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-29-peer-comparison-apples-to-apples/35b-a3b-6bit/flappy/mtplx.json",
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-29-peer-comparison-smoke/35b-a3b-6bit/flappy/mtplx.json",
       "bits": 6,
       "engine": "mtplx",
       "metric_contract": {
@@ -436,14 +431,14 @@
         "ttft_ms": "prompt_eval_time_s"
       },
       "metrics": {
-        "accept_rate": 0.9668221190519521,
+        "accept_rate": 0.9540719696969697,
         "accept_source": "mtplx_draft_stats",
         "case_count": 4,
-        "decode_tok_s": 115.6282371615197,
+        "decode_tok_s": 116.21728595650993,
         "prefill_source": "prompt_tokens_over_prompt_eval_time_s",
-        "prefill_tok_s": 1349.4781379551703,
+        "prefill_tok_s": 1713.1789971456908,
         "status": "ok",
-        "ttft_ms": 245.52333349129185,
+        "ttft_ms": 203.09443806763738,
         "ttft_source": "prompt_eval_time_s"
       },
       "model": "35b-a3b",
@@ -454,7 +449,7 @@
       "target": "35b-a3b-6bit"
     },
     {
-      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-29-peer-comparison-apples-to-apples/35b-a3b-6bit/flappy/lightning_mlx.json",
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-29-peer-comparison-smoke/35b-a3b-6bit/flappy/lightning_mlx.json",
       "bits": 6,
       "engine": "lightning_mlx",
       "metric_contract": {
@@ -467,11 +462,11 @@
         "accept_rate": 1.0,
         "accept_source": "lightning_request_telemetry",
         "case_count": 4,
-        "decode_tok_s": 96.27735376186848,
+        "decode_tok_s": 100.89325010299117,
         "prefill_source": "prompt_tokens_over_client_ttft_s",
-        "prefill_tok_s": 1215.7629468415112,
+        "prefill_tok_s": 3473.7314435250264,
         "status": "ok",
-        "ttft_ms": 271.8337705009617,
+        "ttft_ms": 93.81756250513718,
         "ttft_source": "client_stream_ttft_s"
       },
       "model": "35b-a3b",
@@ -482,7 +477,7 @@
       "target": "35b-a3b-6bit"
     },
     {
-      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-29-peer-comparison-apples-to-apples/35b-a3b-6bit/flappy/rapid_mlx.json",
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-29-peer-comparison-smoke/35b-a3b-6bit/flappy/rapid_mlx.json",
       "bits": 6,
       "engine": "rapid_mlx",
       "metric_contract": {
@@ -502,7 +497,7 @@
       "target": "35b-a3b-6bit"
     },
     {
-      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-29-peer-comparison-apples-to-apples/35b-a3b-6bit/flappy/omlx.json",
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-29-peer-comparison-smoke/35b-a3b-6bit/flappy/omlx.json",
       "bits": 6,
       "engine": "omlx",
       "metric_contract": {
@@ -522,10 +517,5 @@
       "target": "35b-a3b-6bit"
     }
   ],
-  "schema": "ax.qwen36_mtp_matrix.summary.v1",
-  "source_summaries": [
-    "benchmarks/results/mtp-qwen36-matrix/2026-06-29-peer-comparison-apples-to-apples/summary.json",
-    "benchmarks/results/mtp-qwen36-matrix/2026-06-30-27b4-flappy-rerun/summary.json",
-    "benchmarks/results/mtp-qwen36-matrix/2026-06-30-27b4-ax-current-r2/summary.json"
-  ]
+  "schema": "ax.qwen36_mtp_matrix.summary.v1"
 }

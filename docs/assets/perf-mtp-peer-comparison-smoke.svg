@@ -1,0 +1,50 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="920" height="444" viewBox="0 0 920 444" role="img" aria-labelledby="title desc">
+<title id="title">Qwen3.6 MTP peer comparison smoke decode throughput</title>
+<desc id="desc">Grouped horizontal bar chart comparing AX Engine, MTPLX, and lightning-mlx decode tokens per second on the flappy prompt suite.</desc>
+<rect width="920" height="444" fill="#f8fafc"/>
+<text x="32" y="30" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="18" font-weight="700" fill="#111827">Qwen3.6 MTP peer comparison smoke</text>
+<text x="32" y="52" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" fill="#4b5563">flappy suite · 64 generated tokens · 1 measured repetition · no cooldown · decode tok/s, higher is better</text>
+<line x1="170.0" y1="60.0" x2="170.0" y2="390" stroke="#cbd5e1" stroke-width="1"/>
+<text x="170.0" y="410" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">0</text>
+<line x1="342.5" y1="60.0" x2="342.5" y2="390" stroke="#e5e7eb" stroke-width="1"/>
+<text x="342.5" y="410" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">50</text>
+<line x1="515.0" y1="60.0" x2="515.0" y2="390" stroke="#e5e7eb" stroke-width="1"/>
+<text x="515.0" y="410" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">100</text>
+<line x1="687.5" y1="60.0" x2="687.5" y2="390" stroke="#e5e7eb" stroke-width="1"/>
+<text x="687.5" y="410" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">150</text>
+<line x1="860.0" y1="60.0" x2="860.0" y2="390" stroke="#e5e7eb" stroke-width="1"/>
+<text x="860.0" y="410" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">200</text>
+<rect x="170.0" y="27" width="10" height="10" rx="2" fill="#2eaf5f"/>
+<text x="186.0" y="36" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#374151">AX Engine</text>
+<rect x="280.0" y="27" width="10" height="10" rx="2" fill="#f2b705"/>
+<text x="296.0" y="36" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#374151">MTPLX</text>
+<rect x="390.0" y="27" width="10" height="10" rx="2" fill="#2563eb"/>
+<text x="406.0" y="36" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#374151">lightning-mlx</text>
+<text x="32" y="94.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" font-weight="700" fill="#111827">27B 4-bit</text>
+<rect x="170.0" y="78.0" width="214.2" height="13.0" rx="3" fill="#2eaf5f"/>
+<text x="390.2" y="88.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">62.1</text>
+<rect x="170.0" y="96.0" width="221.2" height="13.0" rx="3" fill="#f2b705"/>
+<text x="397.2" y="106.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">64.1</text>
+<rect x="170.0" y="114.0" width="144.3" height="13.0" rx="3" fill="#2563eb"/>
+<text x="320.3" y="124.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">41.8</text>
+<text x="32" y="166.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" font-weight="700" fill="#111827">27B 6-bit</text>
+<rect x="170.0" y="150.0" width="137.9" height="13.0" rx="3" fill="#2eaf5f"/>
+<text x="313.9" y="160.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">40.0</text>
+<text x="170.0" y="178.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#9ca3af">unsupported</text>
+<text x="170.0" y="196.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#9ca3af">unsupported</text>
+<text x="32" y="238.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" font-weight="700" fill="#111827">35B-A3B 4-bit</text>
+<rect x="170.0" y="222.0" width="576.2" height="13.0" rx="3" fill="#2eaf5f"/>
+<text x="752.2" y="232.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">167.0</text>
+<rect x="170.0" y="240.0" width="455.8" height="13.0" rx="3" fill="#f2b705"/>
+<text x="631.8" y="250.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">132.1</text>
+<rect x="170.0" y="258.0" width="391.0" height="13.0" rx="3" fill="#2563eb"/>
+<text x="567.0" y="268.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">113.3</text>
+<text x="32" y="310.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" font-weight="700" fill="#111827">35B-A3B 6-bit</text>
+<rect x="170.0" y="294.0" width="486.9" height="13.0" rx="3" fill="#2eaf5f"/>
+<text x="662.9" y="304.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">141.1</text>
+<rect x="170.0" y="312.0" width="400.9" height="13.0" rx="3" fill="#f2b705"/>
+<text x="576.9" y="322.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">116.2</text>
+<rect x="170.0" y="330.0" width="348.1" height="13.0" rx="3" fill="#2563eb"/>
+<text x="524.1" y="340.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#111827">100.9</text>
+<text x="170.0" y="430" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">Source: benchmarks/results/mtp-qwen36-matrix/2026-06-29-peer-comparison-smoke / summary.json</text>
+</svg>
