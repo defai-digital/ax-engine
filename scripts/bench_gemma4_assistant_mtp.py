@@ -1155,7 +1155,7 @@ def main() -> None:
     parser.add_argument("--python", type=Path, default=Path(sys.executable))
     parser.add_argument("--max-tokens", type=int, default=1000)
     parser.add_argument("--repetitions", type=int, default=5)
-    parser.add_argument("--cooldown", type=float, default=30.0)
+    parser.add_argument("--cooldown", type=float, default=15.0)
     parser.add_argument("--inter-case-cooldown", type=float, default=10.0)
     parser.add_argument(
         "--sampling",

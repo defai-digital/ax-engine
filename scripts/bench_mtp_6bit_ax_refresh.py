@@ -22,7 +22,7 @@ README_PATH = REPO_ROOT / "README.md"
 
 GENERATED_TOKENS = 1000
 REPETITIONS = 5
-COOLDOWN_S = 30.0
+COOLDOWN_S = 15.0
 INTER_CASE_COOLDOWN_S = 10.0
 MTP_SAMPLING = {"temperature": 0.6, "top_p": 0.95, "top_k": 20}
 SUITES = ("flappy", "long_code", "python_modules_long")

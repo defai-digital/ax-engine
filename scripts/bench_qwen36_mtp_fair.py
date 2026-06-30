@@ -2269,7 +2269,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-tokens", type=int, default=1000)
     parser.add_argument("--repetitions", type=int, default=5)
     parser.add_argument("--warmup-repetitions", type=int, default=1)
-    parser.add_argument("--cooldown", type=float, default=30.0)
+    parser.add_argument("--cooldown", type=float, default=15.0)
     parser.add_argument("--tune-max-tokens", type=int, default=192)
     parser.add_argument("--tune-repetitions", type=int, default=1)
     parser.add_argument("--tune-warmup-repetitions", type=int, default=0)
