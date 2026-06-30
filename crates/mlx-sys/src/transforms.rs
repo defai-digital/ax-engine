@@ -7,9 +7,9 @@ use crate::ffi;
 
 fn make_vector_array(arrays: &[&MlxArray]) -> ffi::mlx_vector_array {
     unsafe {
+        prepare_error_capture();
         let vec = ffi::mlx_vector_array_new();
         for arr in arrays {
-            prepare_error_capture();
             let rc = ffi::mlx_vector_array_append_value(vec, arr.inner);
             panic_on_status("mlx_vector_array_append_value", rc);
         }

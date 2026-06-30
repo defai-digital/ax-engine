@@ -17,6 +17,17 @@ struct gelu_constants {
 };
 static thread_local std::optional<gelu_constants> gelu_cache;
 
+// Cached q/k scale scalars for qwen linear-attention post-input.  Avoids two
+// mx::array heap allocations per call per layer.  Keyed by (q_scale, k_scale,
+// dtype) so the cache is invalidated when any of these change (e.g. a
+// temperature adjustment or a dtype switch between prefill/decode).
+struct linear_attn_scale_cache {
+  mx::array q_scale_arr, k_scale_arr;
+  float q_scale, k_scale;
+  mx::Dtype dtype;
+};
+static thread_local std::optional<linear_attn_scale_cache> la_scale_cache;
+
 // Static string avoids per-call std::string("affine") construction in every
 // quantized matmul dispatch.
 static const std::string kAffineMode("affine");
@@ -309,10 +320,18 @@ qwen_linear_attention_post_input_impl(
   // 7. Scale by precomputed (q_scale, k_scale) constants. These are derived
   //    from `linear_attention_qk_scale(key_head_dim)` in Rust; passing them in
   //    avoids replicating that derivation here.
-  auto q_scale_arr = mx::array(q_scale, q.dtype());
-  auto k_scale_arr = mx::array(k_scale, k.dtype());
-  q = mx::multiply(q_normed, q_scale_arr, stream);
-  k = mx::multiply(k_normed, k_scale_arr, stream);
+  if (!la_scale_cache || la_scale_cache->q_scale != q_scale ||
+      la_scale_cache->k_scale != k_scale ||
+      la_scale_cache->dtype != q.dtype()) {
+    la_scale_cache = linear_attn_scale_cache{
+        mx::array(q_scale, q.dtype()),
+        mx::array(k_scale, k.dtype()),
+        q_scale,
+        k_scale,
+        q.dtype()};
+  }
+  q = mx::multiply(q_normed, la_scale_cache->q_scale_arr, stream);
+  k = mx::multiply(k_normed, la_scale_cache->k_scale_arr, stream);
 
   return {q, k, v, new_conv_state};
 }

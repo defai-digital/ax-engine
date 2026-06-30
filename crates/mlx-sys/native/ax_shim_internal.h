@@ -14,7 +14,9 @@
 
 #include <array>
 #include <climits>
+#include <cstdint>
 #include <cstring>
+#include <new>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -35,59 +37,142 @@ namespace mx = mlx::core;
 void ax_set_current_error();
 
 /* ================================================================
- * Handle-casting helpers
+ * Type-tagged handles
  *
- * Every helper that dereferences a handle performs a null check and
- * throws on a null ctx, so a programming error surfaces as a caught
- * exception instead of undefined behaviour.
+ * Every handle's ctx points to an ax_tagged<T> wrapper that stores a
+ * magic number before the wrapped object.  Accessor helpers verify the
+ * tag at runtime, turning wrong-handle-type bugs (passing a stream
+ * where an array is expected) into caught exceptions instead of
+ * silent type-punning UB.  The C ABI struct layout ({ void* ctx; })
+ * is unchanged — only the internal allocation format differs.
+ * ================================================================ */
+
+// Forward declaration for error reporting in typed_delete.
+void ax_set_error(const char* msg);
+
+enum ax_magic : uint32_t {
+  AX_MAGIC_ARRAY       = 0xA11A0001,
+  AX_MAGIC_STREAM      = 0xA11A0002,
+  AX_MAGIC_VEC_ARRAY   = 0xA11A0003,
+  AX_MAGIC_VEC_STRING  = 0xA11A0004,
+  AX_MAGIC_DEVICE      = 0xA11A0005,
+  AX_MAGIC_DEVICE_INFO = 0xA11A0006,
+  AX_MAGIC_CLOSURE     = 0xA11A0007,
+  AX_MAGIC_MAP_SA      = 0xA11A0008,
+  AX_MAGIC_MAP_SS      = 0xA11A0009,
+  AX_MAGIC_METAL_KERN  = 0xA11A000A,
+  AX_MAGIC_METAL_CFG   = 0xA11A000B,
+  AX_MAGIC_ITER_SA     = 0xA11A000C,
+};
+
+/// Wraps a C++ object with a leading magic-number tag.  The trivial
+/// destructor is safe because typed_delete calls obj.~T() explicitly
+/// before freeing the memory.
+template<typename T>
+struct ax_tagged {
+  uint32_t magic;
+  T obj;
+  ~ax_tagged() = default;
+};
+
+/// Unwrap a handle, verifying the magic tag matches the expected type.
+/// Returns a pointer to the wrapped object, or nullptr for a null handle.
+template<uint32_t Magic, typename T>
+inline T* unwrap(void* ctx) {
+  if (!ctx) return nullptr;
+  auto* h = static_cast<ax_tagged<T>*>(ctx);
+  if (h->magic != Magic) {
+    throw std::runtime_error("handle type mismatch: wrong magic number");
+  }
+  return &h->obj;
+}
+
+/// Same as unwrap but returns a reference, throwing on null.
+template<uint32_t Magic, typename T>
+inline T& unwrap_ref(void* ctx, const char* type_name) {
+  T* p = unwrap<Magic, T>(ctx);
+  if (!p) throw std::runtime_error(
+      std::string("expected a non-empty ") + type_name);
+  return *p;
+}
+
+/// Allocate a new tagged handle wrapping the given object.
+template<uint32_t Magic, typename T, typename... Args>
+inline void* make_handle(Args&&... args) {
+  void* mem = ::operator new(sizeof(ax_tagged<T>));
+  auto* h = static_cast<ax_tagged<T>*>(mem);
+  h->magic = Magic;
+  std::construct_at(&h->obj, std::forward<Args>(args)...);
+  return h;
+}
+
+/// Free a tagged handle, verifying the magic tag before destructing.
+/// Reports (but does not throw on) tag mismatches — free functions
+/// should not throw across the C ABI.
+template<uint32_t Magic, typename T>
+inline void typed_delete(void* ctx) {
+  if (!ctx) return;
+  auto* h = static_cast<ax_tagged<T>*>(ctx);
+  if (h->magic != Magic) {
+    ax_set_error("handle type mismatch in free: wrong magic number");
+    return;
+  }
+  h->obj.~T();
+  ::operator delete(h);
+}
+
+/* ================================================================
+ * Handle-casting helpers (now type-tagged)
  * ================================================================ */
 
 inline mx::array& aref(mlx_array a) {
-  if (!a.ctx) throw std::runtime_error("expected a non-empty mlx_array");
-  return *static_cast<mx::array*>(a.ctx);
+  return unwrap_ref<AX_MAGIC_ARRAY, mx::array>(a.ctx, "mlx_array");
 }
 
 inline mx::Stream& sref(mlx_stream s) {
-  if (!s.ctx) throw std::runtime_error("expected a non-empty mlx_stream");
-  return *static_cast<mx::Stream*>(s.ctx);
+  return unwrap_ref<AX_MAGIC_STREAM, mx::Stream>(s.ctx, "mlx_stream");
 }
 
 inline mx::StreamOrDevice sd(mlx_stream s) {
-  return s.ctx ? mx::StreamOrDevice(*static_cast<mx::Stream*>(s.ctx))
-               : mx::StreamOrDevice{};
+  auto* p = unwrap<AX_MAGIC_STREAM, mx::Stream>(s.ctx);
+  return p ? mx::StreamOrDevice(*p) : mx::StreamOrDevice{};
 }
 
 inline void aset(mlx_array* dst, mx::array&& v) {
   if (!dst) throw std::runtime_error("expected a non-null mlx_array output");
-  if (dst->ctx) *static_cast<mx::array*>(dst->ctx) = std::move(v);
-  else dst->ctx = new mx::array(std::move(v));
+  auto* p = unwrap<AX_MAGIC_ARRAY, mx::array>(dst->ctx);
+  if (p) *p = std::move(v);
+  else dst->ctx = make_handle<AX_MAGIC_ARRAY, mx::array>(std::move(v));
 }
 
 inline void aset(mlx_array* dst, const mx::array& v) {
   if (!dst) throw std::runtime_error("expected a non-null mlx_array output");
-  if (dst->ctx) *static_cast<mx::array*>(dst->ctx) = v;
-  else dst->ctx = new mx::array(v);
+  auto* p = unwrap<AX_MAGIC_ARRAY, mx::array>(dst->ctx);
+  if (p) *p = v;
+  else dst->ctx = make_handle<AX_MAGIC_ARRAY, mx::array>(v);
 }
 
 inline std::vector<mx::array>& varef(mlx_vector_array v) {
-  if (!v.ctx) throw std::runtime_error("expected a non-empty mlx_vector_array");
-  return *static_cast<std::vector<mx::array>*>(v.ctx);
+  return unwrap_ref<AX_MAGIC_VEC_ARRAY, std::vector<mx::array>>(
+      v.ctx, "mlx_vector_array");
 }
 
 inline void vaset(mlx_vector_array* dst, std::vector<mx::array>&& v) {
-  if (!dst) throw std::runtime_error("expected a non-null mlx_vector_array output");
-  if (dst->ctx) *static_cast<std::vector<mx::array>*>(dst->ctx) = std::move(v);
-  else dst->ctx = new std::vector<mx::array>(std::move(v));
+  if (!dst) throw std::runtime_error(
+      "expected a non-null mlx_vector_array output");
+  auto* p = unwrap<AX_MAGIC_VEC_ARRAY, std::vector<mx::array>>(dst->ctx);
+  if (p) *p = std::move(v);
+  else dst->ctx = make_handle<AX_MAGIC_VEC_ARRAY, std::vector<mx::array>>(
+      std::move(v));
 }
 
 inline std::vector<std::string>& vsref(mlx_vector_string v) {
-  if (!v.ctx) throw std::runtime_error("expected a non-empty mlx_vector_string");
-  return *static_cast<std::vector<std::string>*>(v.ctx);
+  return unwrap_ref<AX_MAGIC_VEC_STRING, std::vector<std::string>>(
+      v.ctx, "mlx_vector_string");
 }
 
 inline mx::Device& dref(mlx_device d) {
-  if (!d.ctx) throw std::runtime_error("expected a non-empty mlx_device");
-  return *static_cast<mx::Device*>(d.ctx);
+  return unwrap_ref<AX_MAGIC_DEVICE, mx::Device>(d.ctx, "mlx_device");
 }
 
 inline std::optional<mx::array> opt_arr(mlx_array a) {
@@ -136,6 +221,17 @@ inline std::vector<int> make_small_vec(const int* p, size_t n) {
     return std::vector<int>(buf.data(), buf.data() + n);
   }
   return std::vector<int>(p, p + n);
+}
+
+/// Build an mx::Strides (SmallVector<int64_t>) from a raw int64 pointer +
+/// count.  Mirrors make_shape's null guard: constructing a SmallVector from
+/// a null iterator is undefined behaviour, so we return an empty strides
+/// vector instead, letting the downstream MLX API surface a caught exception.
+inline mx::Strides make_strides(const int64_t* p, size_t n) {
+  if (n == 0 || !p) {
+    return mx::Strides{};
+  }
+  return mx::Strides(p, p + n);
 }
 
 /* ================================================================
