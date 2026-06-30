@@ -49,6 +49,14 @@ pub(crate) use families::standard::layer_forward_bidirectional;
 pub(crate) enum FinalLogitsMode {
     Full,
     ArgmaxOnly,
+    /// Non-final prefill chunks: skip the lm_head projection entirely.
+    /// The returned array is the post-norm hidden (not logits) — callers
+    /// must only use it to force-eval the transformer-layer graph (KV cache
+    /// writes). This avoids a `hidden × vocab_size` matrix multiply on every
+    /// chunk that would be discarded (Qwen3.6 27B: 3584 × 151 936 ≈ 543M
+    /// multiply-adds saved per non-final chunk). Reference: MTPLX
+    /// `emit_logits=False`.
+    Skip,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -384,6 +392,30 @@ pub fn forward_argmax_with_turboquant_context(
     )
 }
 
+/// Cache-only forward: runs all transformer layers (writing KV cache) plus
+/// the final RMSNorm, but **skips the lm_head projection**. Returns the
+/// post-norm hidden (not logits) — use only to force-eval the layer graph.
+///
+/// Intended for non-final prefill chunks where the lm_head result is
+/// discarded. On Qwen3.6 27B this saves ~543M multiply-adds per chunk.
+pub fn forward_cache_only(
+    cfg: &ModelConfig,
+    weights: &ModelWeights,
+    token_ids: &[u32],
+    cache: &mut MlxKVCache,
+    token_offset: usize,
+) -> MlxArray {
+    forward_with_turboquant_context_and_logits_mode(
+        cfg,
+        weights,
+        token_ids,
+        cache,
+        token_offset,
+        None,
+        FinalLogitsMode::Skip,
+    )
+}
+
 fn forward_with_turboquant_context_and_logits_mode(
     cfg: &ModelConfig,
     weights: &ModelWeights,
@@ -490,6 +522,25 @@ fn forward_with_turboquant_context_and_logits_mode(
         cfg.rms_norm_eps,
         None,
     );
+    // Cache-only forward (non-final prefill chunks): skip the lm_head
+    // projection entirely. The rms_norm forces the full transformer-layer
+    // chain (KV cache writes) while avoiding a hidden×vocab_size matmul
+    // whose result is discarded.
+    if matches!(logits_mode, FinalLogitsMode::Skip) {
+        if let Some(started) = lm_head_started {
+            forward_profile_eval_elapsed(
+                false,
+                profile_prefill,
+                DecodeProfileStage::LmHead,
+                started,
+                &[&normed],
+            );
+        }
+        if profile_prefill {
+            record_prefill_profile_step(weights.layers.len() as u32, seq as u32);
+        }
+        return normed;
+    }
     let logits = qw(&normed, &weights.lm_head);
     let logits = finalize_lm_head_logits(cfg, &logits, logits_mode);
     let logits = reshape(&logits, &[cfg.vocab_size as i32], None);
@@ -2104,6 +2155,9 @@ pub(crate) fn finalize_lm_head_logits(
         // casting bf16/f16 logits to f32 cannot recover precision, so preserving
         // the lm_head dtype avoids one vocab-wide cast per decode token.
         FinalLogitsMode::ArgmaxOnly => logits.clone(),
+        // Caller discards the result; this arm is unreachable when the
+        // forward function short-circuits before lm_head.
+        FinalLogitsMode::Skip => logits.clone(),
     }
 }
 

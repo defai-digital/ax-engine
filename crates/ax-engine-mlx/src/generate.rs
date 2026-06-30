@@ -11,7 +11,8 @@ use crate::linear_attention_ops::GATED_DELTA_THREADGROUP_CACHE_CAPACITY;
 use crate::model::{
     FinalLogitsMode, ModelConfig, TurboQuantModelDecodeContext, forward,
     forward_all_positions_with_final_hidden, forward_all_positions_with_post_norm,
-    forward_argmax_with_turboquant_context, forward_lazy_single_argmax_with_turboquant_context,
+    forward_argmax_with_turboquant_context, forward_cache_only,
+    forward_lazy_single_argmax_with_turboquant_context,
     forward_with_initial_hidden_and_media_ranges, forward_with_turboquant_context,
 };
 use crate::sampling::{
@@ -233,14 +234,9 @@ pub fn chunked_prefill_with_sampling_buffers(
         while offset < cache_only_prefix_len {
             let end = (offset + chunk_size).min(cache_only_prefix_len);
             let chunk = &prompt_tokens[offset..end];
-            let _logits = forward_argmax_with_turboquant_context(
-                cfg,
-                weights,
-                chunk,
-                cache,
-                cache.seq_len,
-                None,
-            );
+            // Cache-only: skip lm_head projection (hidden×vocab_size);
+            // the eval_kv_refs below forces the layer graph.
+            let _hidden = forward_cache_only(cfg, weights, chunk, cache, cache.seq_len);
             cache.seq_len += chunk.len();
             eval_kv_refs(cache);
             clear_cache();
@@ -271,8 +267,12 @@ pub fn chunked_prefill_with_sampling_buffers(
             is_final_chunk && (sampling.temperature > 0.0 || sampling.uses_repetition_penalty());
         let logits = if needs_full_logits {
             forward(cfg, weights, chunk, cache, cache.seq_len)
-        } else {
+        } else if is_final_chunk {
+            // Final chunk, greedy: need argmax but not full f32 logits.
             forward_argmax_with_turboquant_context(cfg, weights, chunk, cache, cache.seq_len, None)
+        } else {
+            // Non-final chunk: skip lm_head projection entirely.
+            forward_cache_only(cfg, weights, chunk, cache, cache.seq_len)
         };
         cache.seq_len += chunk.len();
         offset = end;
@@ -468,14 +468,9 @@ pub fn chunked_prefill_with_mtp_history_and_sampling_buffers(
         while offset < cache_only_prefix_len {
             let end = (offset + chunk_size).min(cache_only_prefix_len);
             let chunk = &prompt_tokens[offset..end];
-            let _logits = forward_argmax_with_turboquant_context(
-                cfg,
-                weights,
-                chunk,
-                cache,
-                cache.seq_len,
-                None,
-            );
+            // Cache-only: skip lm_head projection (hidden×vocab_size);
+            // the eval_kv_refs below forces the layer graph.
+            let _hidden = forward_cache_only(cfg, weights, chunk, cache, cache.seq_len);
             cache.seq_len += chunk.len();
             eval_kv_refs(cache);
             clear_cache();
@@ -577,17 +572,12 @@ pub fn chunked_prefill_with_mtp_history_and_sampling_buffers(
             clear_cache();
             return (tok, post_norm_all, history_tokens);
         } else {
-            let logits = forward_argmax_with_turboquant_context(
-                cfg,
-                weights,
-                chunk,
-                cache,
-                chunk_offset,
-                None,
-            );
+            // Non-final chunk: skip lm_head projection (hidden×vocab_size);
+            // async_eval forces the transformer-layer graph (KV cache writes).
+            let hidden = forward_cache_only(cfg, weights, chunk, cache, chunk_offset);
             cache.seq_len += chunk.len();
             offset = end;
-            async_eval(&[&logits]);
+            async_eval(&[&hidden]);
         }
     }
 }
