@@ -22,8 +22,8 @@ MTPLX_BENCH_SCRIPT = REPO_ROOT / "scripts" / "bench_mtplx_prompt_suites.py"
 RAPID_BENCH_SCRIPT = REPO_ROOT / "scripts" / "bench_rapid_mlx_prompt_suites.py"
 DEFAULT_OUTPUT_BASE = REPO_ROOT / "benchmarks" / "results" / "mtp-qwen36-matrix"
 DEFAULT_SUITES_DIR = REPO_ROOT / "benchmarks" / "prompts" / "mtp-suites"
-DEFAULT_MTPLX_PYTHON = Path("/opt/homebrew/var/mtplx/venv-0.3.7/bin/python")
-DEFAULT_RAPID_PYTHON = Path("/opt/homebrew/var/mtplx/venv-0.3.7/bin/python")
+DEFAULT_MTPLX_PYTHON = Path("/opt/homebrew/var/mtplx/venv-1.0.4/bin/python")
+DEFAULT_RAPID_PYTHON = Path("/opt/homebrew/var/mtplx/venv-1.0.4/bin/python")
 DEFAULT_RAPID_SOURCE = REPO_ROOT / ".internal" / "reference" / "Rapid-MLX"
 DEFAULT_LIGHTNING_SOURCE = REPO_ROOT / ".internal" / "reference" / "lightning-mlx"
 DEFAULT_MTPLX_SOURCE = REPO_ROOT / ".internal" / "reference" / "MTPLX"
@@ -42,6 +42,13 @@ DEFAULT_SUITES = ("flappy", "long_code", "python_modules_long")
 ENGINES = ("ax_engine", "mtplx", "lightning_mlx", "rapid_mlx", "omlx")
 MODELS = ("27b", "35b-a3b")
 BITS = (4, 6)
+BENCHMARK_CONTRACTS = ("apples-to-apples", "peer-optimized", "lightning-optimized")
+PEER_OPTIMIZED_DEFAULTS = {
+    "max_tokens": 512,
+    "prompt_limit": 3,
+    "prefill_step_size": 8192,
+    "mtplx_profile": "performance-cold",
+}
 AX_MTP_ENGINES = {"ax_engine_mlx_ngram_accel", "ax_engine_mlx_pure_mtp"}
 NGRAM_ZERO_KEYS = (
     "ax_ngram_accepted_tokens",
@@ -313,6 +320,21 @@ def suite_path(args: argparse.Namespace, suite: str) -> Path:
     return args.suites_dir / f"{suite}.jsonl"
 
 
+def prompt_suite_path(args: argparse.Namespace, suite: str) -> Path:
+    source = suite_path(args, suite)
+    if args.prompt_limit is None:
+        return source
+    lines = [line for line in source.read_text().splitlines() if line.strip()]
+    if len(lines) < args.prompt_limit:
+        raise ValueError(
+            f"{source} contains {len(lines)} prompts, fewer than --prompt-limit {args.prompt_limit}"
+        )
+    subset = args.output_dir / "prompt-subsets" / f"{suite}-first{args.prompt_limit}.jsonl"
+    subset.parent.mkdir(parents=True, exist_ok=True)
+    subset.write_text("\n".join(lines[: args.prompt_limit]) + "\n")
+    return subset
+
+
 def output_path(args: argparse.Namespace, target: Target, engine: str, suite: str) -> Path:
     return args.output_dir / target.key / suite / f"{engine}.json"
 
@@ -326,7 +348,7 @@ def ax_command(args: argparse.Namespace, target: Target, suite: str, output: Pat
         "--prompt-source",
         "real",
         "--real-prompt-suite",
-        str(suite_path(args, suite)),
+        str(prompt_suite_path(args, suite)),
         "--generation-tokens",
         str(args.max_tokens),
         "--repetitions",
@@ -349,6 +371,8 @@ def ax_command(args: argparse.Namespace, target: Target, suite: str, output: Pat
         "--output",
         str(output),
     ]
+    if args.prefill_step_size is not None:
+        cmd.extend(["--prefill-step-size", str(args.prefill_step_size)])
     if args.no_build_ax_engine:
         cmd.append("--no-build-ax-engine")
     return cmd
@@ -368,7 +392,7 @@ def mtplx_command(args: argparse.Namespace, target: Target, suite: str, output: 
         "--suite",
         suite,
         "--prompts",
-        str(suite_path(args, suite)),
+        str(prompt_suite_path(args, suite)),
         "--output",
         str(output),
         "--depth",
@@ -408,7 +432,7 @@ def lightning_command(args: argparse.Namespace, target: Target, suite: str, outp
         return None
     model_path = resolve_hf_snapshot(model, args.peer_caches)
     model_arg = str(model_path or model)
-    return [
+    cmd = [
         str(args.rapid_python),
         str(RAPID_BENCH_SCRIPT),
         "--model",
@@ -416,7 +440,7 @@ def lightning_command(args: argparse.Namespace, target: Target, suite: str, outp
         "--suite",
         suite,
         "--prompts",
-        str(suite_path(args, suite)),
+        str(prompt_suite_path(args, suite)),
         "--output",
         str(output),
         "--rapid-source",
@@ -448,10 +472,17 @@ def lightning_command(args: argparse.Namespace, target: Target, suite: str, outp
         "--require-full-output-tokens",
         "--port",
         str(args.base_port),
-        "--mtp-draft-temperature",
-        str(args.lightning_mtp_draft_temperature),
         "--disable-thinking",
     ]
+    if args.lightning_mtp_draft_temperature is not None:
+        cmd.extend(["--mtp-draft-temperature", str(args.lightning_mtp_draft_temperature)])
+    if args.lightning_mtp_optimistic:
+        cmd.append("--mtp-optimistic")
+    if args.lightning_disable_prefix_cache:
+        cmd.append("--disable-prefix-cache")
+    if args.prefill_step_size is not None:
+        cmd.extend(["--prefill-step-size", str(args.prefill_step_size)])
+    return cmd
 
 
 def rapid_command(args: argparse.Namespace, target: Target, suite: str, output: Path) -> list[str] | None:
@@ -468,7 +499,7 @@ def rapid_command(args: argparse.Namespace, target: Target, suite: str, output: 
         "--suite",
         suite,
         "--prompts",
-        str(suite_path(args, suite)),
+        str(prompt_suite_path(args, suite)),
         "--output",
         str(output),
         "--rapid-source",
@@ -614,15 +645,22 @@ def write_plan(args: argparse.Namespace, lanes: list[Lane]) -> None:
             "bits": args.bits,
             "engines": args.engines,
             "suites": args.suites,
+            "benchmark_contract": args.benchmark_contract,
             "mode": "mtp",
             "forbidden_modes": ["direct", "mtp-ngram", "ngram"],
             "metrics": ["decode_tok_s", "prefill_tok_s", "ttft_ms", "accept_rate"],
             "sampling": args.sampling,
             "max_tokens": args.max_tokens,
+            "prompt_limit": args.prompt_limit,
             "repetitions": args.repetitions,
             "warmup_repetitions": args.warmup_repetitions,
             "cooldown_s": args.cooldown,
             "inter_case_cooldown_s": args.inter_case_cooldown,
+            "prefill_step_size": args.prefill_step_size,
+            "mtplx_profile": args.mtplx_profile,
+            "lightning_mtp_optimistic": args.lightning_mtp_optimistic,
+            "lightning_disable_prefix_cache": args.lightning_disable_prefix_cache,
+            "lightning_mtp_draft_temperature": args.lightning_mtp_draft_temperature,
         },
         "lanes": [lane_to_dict(lane) for lane in lanes],
     }
@@ -766,12 +804,21 @@ def build_summary(args: argparse.Namespace, lanes: list[Lane]) -> dict[str, Any]
             "bits": args.bits,
             "engines": args.engines,
             "suites": args.suites,
+            "benchmark_contract": args.benchmark_contract,
             "mode": "mtp",
             "metrics": ["decode_tok_s", "prefill_tok_s", "ttft_ms", "accept_rate"],
             "sampling": args.sampling,
             "max_tokens": args.max_tokens,
+            "prompt_limit": args.prompt_limit,
             "repetitions": args.repetitions,
             "warmup_repetitions": args.warmup_repetitions,
+            "cooldown_s": args.cooldown,
+            "inter_case_cooldown_s": args.inter_case_cooldown,
+            "prefill_step_size": args.prefill_step_size,
+            "mtplx_profile": args.mtplx_profile,
+            "lightning_mtp_optimistic": args.lightning_mtp_optimistic,
+            "lightning_disable_prefix_cache": args.lightning_disable_prefix_cache,
+            "lightning_mtp_draft_temperature": args.lightning_mtp_draft_temperature,
         },
         "rows": rows,
     }
@@ -826,8 +873,34 @@ def positive_ints(values: list[str]) -> list[int]:
     return parsed
 
 
+def arg_was_provided(argv: list[str], flag: str) -> bool:
+    return any(value == flag or value.startswith(f"{flag}=") for value in argv)
+
+
+def apply_benchmark_contract(args: argparse.Namespace, argv: list[str]) -> None:
+    if args.benchmark_contract == "lightning-optimized":
+        args.benchmark_contract = "peer-optimized"
+    if args.benchmark_contract != "peer-optimized":
+        return
+    if not arg_was_provided(argv, "--max-tokens"):
+        args.max_tokens = PEER_OPTIMIZED_DEFAULTS["max_tokens"]
+    if not arg_was_provided(argv, "--prompt-limit"):
+        args.prompt_limit = PEER_OPTIMIZED_DEFAULTS["prompt_limit"]
+    if not arg_was_provided(argv, "--prefill-step-size"):
+        args.prefill_step_size = PEER_OPTIMIZED_DEFAULTS["prefill_step_size"]
+    if not arg_was_provided(argv, "--mtplx-profile"):
+        args.mtplx_profile = PEER_OPTIMIZED_DEFAULTS["mtplx_profile"]
+    if not arg_was_provided(argv, "--lightning-mtp-draft-temperature"):
+        args.lightning_mtp_draft_temperature = None
+    if not arg_was_provided(argv, "--lightning-mtp-optimistic"):
+        args.lightning_mtp_optimistic = True
+    if not arg_was_provided(argv, "--lightning-disable-prefix-cache"):
+        args.lightning_disable_prefix_cache = True
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
+    raw_argv = sys.argv[1:]
     parser.add_argument("--models", nargs="+", choices=MODELS, default=list(MODELS))
     parser.add_argument("--bits", nargs="+", type=int, choices=BITS, default=list(BITS))
     parser.add_argument("--engines", nargs="+", choices=ENGINES, default=list(ENGINES))
@@ -842,11 +915,30 @@ def parse_args() -> argparse.Namespace:
         default=list(DEFAULT_PEER_CACHES),
         help="HF cache roots used to resolve peer model ids to local snapshots.",
     )
+    parser.add_argument(
+        "--benchmark-contract",
+        choices=BENCHMARK_CONTRACTS,
+        default="apples-to-apples",
+        help=(
+            "`apples-to-apples` preserves the README prompt-suite contract. "
+            "`peer-optimized` applies the peer maintainer short-benchmark profile: "
+            "3 prompts, 512 max tokens, no prefix cache, prefill step 8192, "
+            "single sequence/batches, MTPLX performance-cold, and lightning optimistic MTP. "
+            "`lightning-optimized` is accepted as a backward-compatible alias."
+        ),
+    )
+    parser.add_argument(
+        "--prompt-limit",
+        type=int,
+        default=None,
+        help="Limit each prompt suite to the first N prompts for benchmark profiles.",
+    )
     parser.add_argument("--max-tokens", type=int, default=1000)
     parser.add_argument("--repetitions", type=int, default=5)
     parser.add_argument("--warmup-repetitions", type=int, default=1)
     parser.add_argument("--cooldown", type=float, default=15.0)
     parser.add_argument("--inter-case-cooldown", type=float, default=10.0)
+    parser.add_argument("--prefill-step-size", type=int, default=None)
     parser.add_argument("--temperature", type=float, default=DEFAULT_SAMPLING["temperature"])
     parser.add_argument("--top-p", type=float, default=DEFAULT_SAMPLING["top_p"])
     parser.add_argument("--top-k", type=int, default=DEFAULT_SAMPLING["top_k"])
@@ -866,6 +958,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--mtplx-source", type=Path, default=DEFAULT_MTPLX_SOURCE)
     parser.add_argument("--mtplx-profile", default="stable")
     parser.add_argument("--lightning-mtp-draft-temperature", type=float, default=0.5)
+    parser.add_argument("--lightning-mtp-optimistic", action="store_true")
+    parser.add_argument("--lightning-disable-prefix-cache", action="store_true")
     parser.add_argument("--base-port", type=int, default=18765)
     parser.add_argument("--skip-existing", action="store_true")
     parser.add_argument("--no-build-ax-engine", action="store_true")
@@ -884,6 +978,11 @@ def parse_args() -> argparse.Namespace:
         args.output_dir
         or DEFAULT_OUTPUT_BASE / f"{date.today().isoformat()}-qwen36-mtp-matrix"
     )
+    apply_benchmark_contract(args, raw_argv)
+    if args.prompt_limit is not None and args.prompt_limit <= 0:
+        parser.error("--prompt-limit must be positive")
+    if args.prefill_step_size is not None and args.prefill_step_size <= 0:
+        parser.error("--prefill-step-size must be positive")
     args.sampling = {
         "temperature": args.temperature,
         "top_p": args.top_p,

@@ -148,6 +148,46 @@ class RapidMlxPromptSuiteTests(unittest.TestCase):
             cmd[cmd.index("--ngram-auto-disable-min-ngram") + 1], "0.5"
         )
 
+    def test_lightning_mode_can_forward_optimized_cache_and_prefill_flags(self) -> None:
+        class FakeProcess:
+            def poll(self) -> None:
+                return None
+
+            def terminate(self) -> None:
+                return None
+
+            def wait(self, timeout: float | None = None) -> int:
+                return 0
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with (
+                patch.object(rapid, "wait_until_ready"),
+                patch.object(
+                    rapid.subprocess, "Popen", return_value=FakeProcess()
+                ) as popen,
+            ):
+                rapid.start_server(
+                    model="/model",
+                    rapid_python=Path("python"),
+                    rapid_source=root,
+                    lightning_source=root / "lightning",
+                    rapid_mtp_patch="none",
+                    port=18765,
+                    depth=3,
+                    startup_timeout=1.0,
+                    output_dir=root / "out",
+                    lightning_mode=True,
+                    mtp_optimistic=True,
+                    disable_prefix_cache=True,
+                    prefill_step_size=8192,
+                )
+
+        cmd = popen.call_args.args[0]
+        self.assertIn("--mtp-optimistic", cmd)
+        self.assertIn("--disable-prefix-cache", cmd)
+        self.assertEqual(cmd[cmd.index("--prefill-step-size") + 1], "8192")
+
 
 class RunCaseStreamHandlingTests(unittest.TestCase):
     """Verify run_case correctly separates content vs reasoning_content

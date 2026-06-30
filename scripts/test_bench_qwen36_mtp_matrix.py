@@ -44,7 +44,12 @@ def make_args(root: Path) -> Namespace:
         mtplx_source=root / "MTPLX",
         peer_caches=[root / "hf"],
         mtplx_profile="stable",
+        benchmark_contract="apples-to-apples",
+        prompt_limit=None,
+        prefill_step_size=None,
         lightning_mtp_draft_temperature=0.5,
+        lightning_mtp_optimistic=False,
+        lightning_disable_prefix_cache=False,
         base_port=18765,
         no_build_ax_engine=True,
         skip_existing=False,
@@ -132,6 +137,64 @@ class Qwen36MtpMatrixTests(unittest.TestCase):
         self.assertIn("--ignore-eos", cmd)
         self.assertIn("--require-full-output-tokens", cmd)
         self.assertNotIn("--lightning-mode", cmd)
+
+    def test_peer_optimized_contract_applies_mtplx_and_lightning_knobs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            suite_dir = root / "suites"
+            suite_dir.mkdir()
+            suite_dir.joinpath("flappy.jsonl").write_text(
+                "\n".join(
+                    json.dumps(
+                        {
+                            "id": f"case-{idx}",
+                            "category": "c",
+                            "prompt": "hello",
+                            "max_tokens": 512,
+                        }
+                    )
+                    for idx in range(4)
+                )
+                + "\n"
+            )
+            args = make_args(root)
+            args.benchmark_contract = "peer-optimized"
+            args.max_tokens = 512
+            args.prompt_limit = 3
+            args.prefill_step_size = 8192
+            args.mtplx_profile = "performance-cold"
+            args.lightning_mtp_draft_temperature = None
+            args.lightning_mtp_optimistic = True
+            args.lightning_disable_prefix_cache = True
+            target = matrix.TARGETS["27b-4bit"]
+            lightning_cmd = matrix.lightning_command(
+                args,
+                target,
+                "flappy",
+                args.output_dir / "lightning.json",
+            )
+            mtplx_cmd = matrix.mtplx_command(
+                args,
+                target,
+                "flappy",
+                args.output_dir / "mtplx.json",
+            )
+            prompt_path = Path(lightning_cmd[lightning_cmd.index("--prompts") + 1])
+            prompt_line_count = len(prompt_path.read_text().splitlines())
+
+        assert lightning_cmd is not None
+        assert mtplx_cmd is not None
+        self.assertEqual(lightning_cmd[lightning_cmd.index("--max-tokens") + 1], "512")
+        self.assertEqual(
+            lightning_cmd[lightning_cmd.index("--prefill-step-size") + 1], "8192"
+        )
+        self.assertIn("--mtp-optimistic", lightning_cmd)
+        self.assertIn("--disable-prefix-cache", lightning_cmd)
+        self.assertNotIn("--mtp-draft-temperature", lightning_cmd)
+        self.assertEqual(mtplx_cmd[mtplx_cmd.index("--max-tokens") + 1], "512")
+        self.assertEqual(mtplx_cmd[mtplx_cmd.index("--profile") + 1], "performance-cold")
+        self.assertEqual(prompt_line_count, 3)
+        self.assertEqual(mtplx_cmd[mtplx_cmd.index("--prompts") + 1], str(prompt_path))
 
     def test_lightning_summary_flags_mtp_disabled_logs(self) -> None:
         artifact = {

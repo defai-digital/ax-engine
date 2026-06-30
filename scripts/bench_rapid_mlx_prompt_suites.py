@@ -378,6 +378,8 @@ def start_server(
     enable_ngram: bool = False,
     mtp_optimistic: bool = False,
     mtp_draft_temperature: float | None = None,
+    disable_prefix_cache: bool = False,
+    prefill_step_size: int | None = None,
     enable_thinking: bool = False,
     ignore_eos: bool = False,
     ngram_auto_disable_mtp_threshold: float = 0.85,
@@ -429,6 +431,10 @@ def start_server(
         ]
         if not enable_thinking:
             cmd.append("--no-thinking")
+        if disable_prefix_cache:
+            cmd.append("--disable-prefix-cache")
+        if prefill_step_size is not None:
+            cmd += ["--prefill-step-size", str(prefill_step_size)]
         if mtp_draft_temperature is not None:
             cmd += ["--mtp-draft-temperature", str(mtp_draft_temperature)]
         if mtp_optimistic:
@@ -915,6 +921,8 @@ def run_suite(args: argparse.Namespace) -> dict[str, Any]:
         enable_ngram=enable_ngram,
         mtp_optimistic=mtp_optimistic,
         mtp_draft_temperature=getattr(args, "mtp_draft_temperature", None),
+        disable_prefix_cache=bool(getattr(args, "disable_prefix_cache", False)),
+        prefill_step_size=getattr(args, "prefill_step_size", None),
         enable_thinking=enable_thinking,
         ignore_eos=bool(args.ignore_eos),
         ngram_auto_disable_mtp_threshold=args.ngram_auto_disable_mtp_threshold,
@@ -1046,10 +1054,11 @@ def run_suite(args: argparse.Namespace) -> dict[str, Any]:
         "disable_thinking": not enable_thinking,
         "lightning_settings": {
             "source_profile": "lightning-mlx serve qwen3.6 MTPLX preset",
-            "prefix_cache": "enabled",
+            "prefix_cache": "disabled" if args.disable_prefix_cache else "enabled",
             "max_num_seqs": 1,
             "prefill_batch_size": 1,
             "completion_batch_size": 1,
+            "prefill_step_size": args.prefill_step_size,
             "stream_interval": 1,
             "mtp_optimistic": mtp_optimistic,
             "mtp_draft_temperature": args.mtp_draft_temperature,
@@ -1172,6 +1181,24 @@ def main() -> int:
         default=None,
         help=(
             "Pass --mtp-draft-temperature to lightning-mlx serve in --lightning-mode. "
+            "Only effective with --lightning-mode; ignored for Rapid-MLX."
+        ),
+    )
+    parser.add_argument(
+        "--disable-prefix-cache",
+        action="store_true",
+        default=False,
+        help=(
+            "Pass --disable-prefix-cache to lightning-mlx serve in --lightning-mode. "
+            "Only effective with --lightning-mode; ignored for Rapid-MLX."
+        ),
+    )
+    parser.add_argument(
+        "--prefill-step-size",
+        type=int,
+        default=None,
+        help=(
+            "Pass --prefill-step-size to lightning-mlx serve in --lightning-mode. "
             "Only effective with --lightning-mode; ignored for Rapid-MLX."
         ),
     )
