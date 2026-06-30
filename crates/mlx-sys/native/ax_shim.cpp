@@ -591,25 +591,21 @@ extern "C" mlx_closure mlx_closure_new_func_payload(
       ? std::shared_ptr<void>(payload, dtor)
       : std::shared_ptr<void>(payload, [](void*) {});
     auto fn = [fun, payload_holder](const std::vector<mx::array>& inputs) -> std::vector<mx::array> {
-      // Ownership contract with the Rust trampoline (closure_trampoline in
-      // mlx-sys/src/closure.rs): it *borrows* the input vector (from_borrowed,
-      // never frees it) and *overwrites* `out.ctx` with a freshly heap-allocated
-      // output vector that it does not own either (into_raw). So this side owns
-      // both allocations and must free them on every exit path. Note the real
-      // outputs live at `out.ctx` after the call, not in any vector we passed in
-      // — earlier versions read/moved the wrong (empty) vector and/or leaked the
-      // output vector, pinning every output mx::array handle in unified memory.
-      auto in_vec = std::make_unique<std::vector<mx::array>>(inputs);
-      mlx_vector_array in{in_vec.get()};
+      struct vec_array_guard {
+        mlx_vector_array handle;
+        ~vec_array_guard() {
+          if (handle.ctx) mlx_vector_array_free(handle);
+        }
+      };
+      mlx_vector_array in{
+          make_handle<AX_MAGIC_VEC_ARRAY, std::vector<mx::array>>(inputs)};
+      vec_array_guard in_guard{in};
       mlx_vector_array out{nullptr};
       int rc = fun(&out, in, payload_holder.get());
-      // Adopt the callback's output vector so it is freed even on the error
-      // paths below.
-      std::unique_ptr<std::vector<mx::array>> out_vec(
-          static_cast<std::vector<mx::array>*>(out.ctx));
+      vec_array_guard out_guard{out};
       if (rc != 0) throw std::runtime_error("closure callback failed");
-      if (!out_vec) throw std::runtime_error("closure callback produced no output vector");
-      return std::move(*out_vec);
+      if (!out.ctx) throw std::runtime_error("closure callback produced no output vector");
+      return std::move(varef(out));
     };
     return mlx_closure{make_handle<AX_MAGIC_CLOSURE, closure_fn>(std::move(fn))};
   } AX_CATCH_NULL
