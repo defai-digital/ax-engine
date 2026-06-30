@@ -1235,7 +1235,7 @@ MTP_PEER_METRICS = {
 def find_mtp_peer_summary(readme: Path) -> Path | None:
     text = readme.read_text()
     match = re.search(
-        r"\]\((benchmarks/results/mtp-qwen36-matrix/[^)]+peer-comparison-apples-to-apples/summary\.json)\)",
+        r"\]\((benchmarks/results/mtp-qwen36-matrix/[^)]+peer-comparison-apples-to-apples(?:-refresh)?/summary\.json)\)",
         text,
     )
     if match is None:
