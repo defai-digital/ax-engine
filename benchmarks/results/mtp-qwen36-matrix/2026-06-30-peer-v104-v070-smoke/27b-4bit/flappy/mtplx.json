@@ -1,0 +1,981 @@
+{
+  "allow_unverified_model": true,
+  "build": {
+    "git_commit": "385c1e4a756174f6923661ad28fc918298f823a7",
+    "git_tracked_dirty": true,
+    "host": "AKMBPM5MAX.local",
+    "platform": "macOS-26.5.1-arm64-arm-64bit-Mach-O"
+  },
+  "cooldown_s": 0.0,
+  "depth": 3,
+  "disable_thinking": true,
+  "draft_lm_head": {
+    "draft_only": {
+      "bits": 3,
+      "group_size": 64,
+      "mode": "affine",
+      "scales_shape": [
+        248320,
+        80
+      ],
+      "weight_shape": [
+        248320,
+        480
+      ]
+    },
+    "elapsed_s": 0.1327648329315707,
+    "original": {
+      "bits": 4,
+      "group_size": 64,
+      "mode": "affine",
+      "scales_shape": [
+        248320,
+        80
+      ],
+      "weight_shape": [
+        248320,
+        640
+      ]
+    }
+  },
+  "draft_sampling": {
+    "temperature": 0.7,
+    "top_k": 20,
+    "top_p": 0.95
+  },
+  "engine": "mtplx",
+  "ignore_eos": true,
+  "max_tokens": 32,
+  "model": "/Users/akiralam/.cache/huggingface/hub/models--Youssofal--Qwen3.6-27B-MTPLX-Optimized-Speed/snapshots/be5190f2349594ec941753efc90a4ca5641af174",
+  "model_inspection": {
+    "architecture": "Qwen3_5ForConditionalGeneration",
+    "architecture_recognized": true,
+    "assistant_model": null,
+    "backend_artifact": null,
+    "backend_status": null,
+    "compatibility": {
+      "arch_id": "qwen3-next-mtp",
+      "can_run": true,
+      "exit_code": 0,
+      "message": "Verified MTPLX runtime contract found.",
+      "mtp_supported": "yes",
+      "recognized": true,
+      "recommended_backend": "qwen3_next",
+      "recommended_profile": "sustained",
+      "runtime_compatibility": "native",
+      "runtime_contract": {
+        "arch_id": "qwen3-next-mtp",
+        "exactness_baseline": {
+          "attention_impl": "mlx_vector_paged",
+          "context": 64,
+          "gate": "phase0h-paged-verifier-exactness",
+          "max_abs_diff": 0.0,
+          "mode": "decode-from-stock-prefix",
+          "sample_agreement": 1.0,
+          "status": "passed",
+          "topk_overlap_ratio": 1.0,
+          "total_variation": 0.0,
+          "verify_tokens": 4
+        },
+        "mtp_depth_max": 3,
+        "mtplx_version": "0.1.0-preview",
+        "recommended_draft_lm_head": {
+          "bits": 3,
+          "group_size": 64,
+          "mode": "affine"
+        },
+        "recommended_draft_sampler": {
+          "temperature": 0.7,
+          "top_k": 20,
+          "top_p": 0.95
+        },
+        "recommended_profile": "sustained",
+        "verified_on": {
+          "hardware": "Apple M5 Max, 128 GB unified memory",
+          "machine_arch": "arm64",
+          "model": "Qwen3.6-27B-MTPLX-Flat4-calibratedMTP",
+          "timestamp": "2026-05-03T17:49:00+0100"
+        }
+      },
+      "runtime_contract_error": null,
+      "runtime_contract_path": "/Users/akiralam/.cache/huggingface/hub/models--Youssofal--Qwen3.6-27B-MTPLX-Optimized-Speed/snapshots/be5190f2349594ec941753efc90a4ca5641af174/mtplx_runtime.json",
+      "support_level": "verified-native",
+      "support_notes": "Product-verified default backend; this remains the only promoted shipping runtime.",
+      "supported": true,
+      "tier": "verified",
+      "unsafe_force_required": false,
+      "unverified_model": false
+    },
+    "config_exists": true,
+    "gemma4_pair": null,
+    "hidden_size": 5120,
+    "model_dir": "/Users/akiralam/.cache/huggingface/hub/models--Youssofal--Qwen3.6-27B-MTPLX-Optimized-Speed/snapshots/be5190f2349594ec941753efc90a4ca5641af174",
+    "model_files": [
+      "model-00001-of-00003.safetensors",
+      "model-00002-of-00003.safetensors",
+      "model-00003-of-00003.safetensors"
+    ],
+    "model_type": "qwen3_5_text",
+    "mtp": {
+      "exists": true,
+      "expected_tensor_count": 29,
+      "extra_keys": [],
+      "metadata_only": true,
+      "missing_expected_keys": [],
+      "mtp_file": "/Users/akiralam/.cache/huggingface/hub/models--Youssofal--Qwen3.6-27B-MTPLX-Optimized-Speed/snapshots/be5190f2349594ec941753efc90a4ca5641af174/mtp/weights.safetensors",
+      "passes_tensor_gate": true,
+      "sidecar_format": "prequantized-mlx-affine",
+      "tensor_count": 29,
+      "tensors": [
+        {
+          "dtype": "BF16",
+          "elements": 52428800,
+          "key": "mtp.fc.weight",
+          "shape": [
+            5120,
+            10240
+          ]
+        },
+        {
+          "dtype": "BF16",
+          "elements": 5120,
+          "key": "mtp.layers.0.input_layernorm.weight",
+          "shape": [
+            5120
+          ]
+        },
+        {
+          "dtype": "BF16",
+          "elements": 2785280,
+          "key": "mtp.layers.0.mlp.down_proj.biases",
+          "shape": [
+            5120,
+            544
+          ]
+        },
+        {
+          "dtype": "BF16",
+          "elements": 2785280,
+          "key": "mtp.layers.0.mlp.down_proj.scales",
+          "shape": [
+            5120,
+            544
+          ]
+        },
+        {
+          "dtype": "U32",
+          "elements": 11141120,
+          "key": "mtp.layers.0.mlp.down_proj.weight",
+          "shape": [
+            5120,
+            2176
+          ]
+        },
+        {
+          "dtype": "BF16",
+          "elements": 2785280,
+          "key": "mtp.layers.0.mlp.gate_proj.biases",
+          "shape": [
+            17408,
+            160
+          ]
+        },
+        {
+          "dtype": "BF16",
+          "elements": 2785280,
+          "key": "mtp.layers.0.mlp.gate_proj.scales",
+          "shape": [
+            17408,
+            160
+          ]
+        },
+        {
+          "dtype": "U32",
+          "elements": 11141120,
+          "key": "mtp.layers.0.mlp.gate_proj.weight",
+          "shape": [
+            17408,
+            640
+          ]
+        },
+        {
+          "dtype": "BF16",
+          "elements": 2785280,
+          "key": "mtp.layers.0.mlp.up_proj.biases",
+          "shape": [
+            17408,
+            160
+          ]
+        },
+        {
+          "dtype": "BF16",
+          "elements": 2785280,
+          "key": "mtp.layers.0.mlp.up_proj.scales",
+          "shape": [
+            17408,
+            160
+          ]
+        },
+        {
+          "dtype": "U32",
+          "elements": 11141120,
+          "key": "mtp.layers.0.mlp.up_proj.weight",
+          "shape": [
+            17408,
+            640
+          ]
+        },
+        {
+          "dtype": "BF16",
+          "elements": 5120,
+          "key": "mtp.layers.0.post_attention_layernorm.weight",
+          "shape": [
+            5120
+          ]
+        },
+        {
+          "dtype": "BF16",
+          "elements": 256,
+          "key": "mtp.layers.0.self_attn.k_norm.weight",
+          "shape": [
+            256
+          ]
+        },
+        {
+          "dtype": "BF16",
+          "elements": 163840,
+          "key": "mtp.layers.0.self_attn.k_proj.biases",
+          "shape": [
+            1024,
+            160
+          ]
+        },
+        {
+          "dtype": "BF16",
+          "elements": 163840,
+          "key": "mtp.layers.0.self_attn.k_proj.scales",
+          "shape": [
+            1024,
+            160
+          ]
+        },
+        {
+          "dtype": "U32",
+          "elements": 655360,
+          "key": "mtp.layers.0.self_attn.k_proj.weight",
+          "shape": [
+            1024,
+            640
+          ]
+        },
+        {
+          "dtype": "BF16",
+          "elements": 983040,
+          "key": "mtp.layers.0.self_attn.o_proj.biases",
+          "shape": [
+            5120,
+            192
+          ]
+        },
+        {
+          "dtype": "BF16",
+          "elements": 983040,
+          "key": "mtp.layers.0.self_attn.o_proj.scales",
+          "shape": [
+            5120,
+            192
+          ]
+        },
+        {
+          "dtype": "U32",
+          "elements": 3932160,
+          "key": "mtp.layers.0.self_attn.o_proj.weight",
+          "shape": [
+            5120,
+            768
+          ]
+        },
+        {
+          "dtype": "BF16",
+          "elements": 256,
+          "key": "mtp.layers.0.self_attn.q_norm.weight",
+          "shape": [
+            256
+          ]
+        },
+        {
+          "dtype": "BF16",
+          "elements": 1966080,
+          "key": "mtp.layers.0.self_attn.q_proj.biases",
+          "shape": [
+            12288,
+            160
+          ]
+        },
+        {
+          "dtype": "BF16",
+          "elements": 1966080,
+          "key": "mtp.layers.0.self_attn.q_proj.scales",
+          "shape": [
+            12288,
+            160
+          ]
+        },
+        {
+          "dtype": "U32",
+          "elements": 7864320,
+          "key": "mtp.layers.0.self_attn.q_proj.weight",
+          "shape": [
+            12288,
+            640
+          ]
+        },
+        {
+          "dtype": "BF16",
+          "elements": 163840,
+          "key": "mtp.layers.0.self_attn.v_proj.biases",
+          "shape": [
+            1024,
+            160
+          ]
+        },
+        {
+          "dtype": "BF16",
+          "elements": 163840,
+          "key": "mtp.layers.0.self_attn.v_proj.scales",
+          "shape": [
+            1024,
+            160
+          ]
+        },
+        {
+          "dtype": "U32",
+          "elements": 655360,
+          "key": "mtp.layers.0.self_attn.v_proj.weight",
+          "shape": [
+            1024,
+            640
+          ]
+        },
+        {
+          "dtype": "BF16",
+          "elements": 5120,
+          "key": "mtp.norm.weight",
+          "shape": [
+            5120
+          ]
+        },
+        {
+          "dtype": "BF16",
+          "elements": 5120,
+          "key": "mtp.pre_fc_norm_embedding.weight",
+          "shape": [
+            5120
+          ]
+        },
+        {
+          "dtype": "BF16",
+          "elements": 5120,
+          "key": "mtp.pre_fc_norm_hidden.weight",
+          "shape": [
+            5120
+          ]
+        }
+      ]
+    },
+    "mtp_arch": "qwen3-next-mtp",
+    "mtp_num_hidden_layers": 1,
+    "mtp_pattern": null,
+    "mtp_supported": "yes",
+    "num_hidden_layers": 64,
+    "passes_primary_gate": true,
+    "quantization": {
+      "bits": 4,
+      "group_size": 64,
+      "mode": "affine"
+    },
+    "recommended_backend": "qwen3_next",
+    "recommended_profile": "sustained",
+    "recommended_sampler": null,
+    "runtime_compatibility": "native",
+    "runtime_contract_path": "/Users/akiralam/.cache/huggingface/hub/models--Youssofal--Qwen3.6-27B-MTPLX-Optimized-Speed/snapshots/be5190f2349594ec941753efc90a4ca5641af174/mtplx_runtime.json",
+    "runtime_model": null,
+    "sidecars": {
+      "preprocessor_config.json": true,
+      "processor_config.json": true,
+      "video_preprocessor_config.json": true
+    },
+    "source": "local",
+    "support_level": "verified-native",
+    "support_notes": "Product-verified default backend; this remains the only promoted shipping runtime.",
+    "unverified_model": false,
+    "vocab_size": 248320
+  },
+  "mtplx_version": "1.0.4",
+  "profile": {
+    "benchmark_ids": [
+      "gdn8-flappy-nofan-directhttp-seed42-cli-fix-20260501",
+      "phase0j-gdn8-speed4-target-layer-sched-state-root-mlx-vector-paged-flappy-uncapped-modelswap-20260501"
+    ],
+    "caveats": [
+      "Lower peak throughput than the fan-backed Burst lane.",
+      "Selected for repeatable long replies while the v0.2 decay work continues."
+    ],
+    "clock_anchor_allowed": false,
+    "draft_lm_head": null,
+    "draft_sampler": null,
+    "env": {
+      "MTPLX_DROP_EVENTS": "1",
+      "MTPLX_EVAL_STATE_ROOTS_INCLUDE_LIVE": "1",
+      "MTPLX_EVAL_STATE_ROOTS_INCLUDE_MTP": "1",
+      "MTPLX_EVAL_STATE_ROOTS_ON_COMMIT": "1",
+      "MTPLX_TARGET_LAYER_EVAL_CONTEXT_THRESHOLD": "0",
+      "MTPLX_TARGET_LAYER_EVAL_MAX_Q": "8",
+      "MTPLX_TARGET_LAYER_EVAL_SCHEDULE": "2048:16,8192:8",
+      "MTPLX_VLLM_METAL_PAGED_ATTN": "1",
+      "MTPLX_VLLM_METAL_PAGED_ATTN_IMPL": "mlx_vector_paged",
+      "MTPLX_VLLM_METAL_PAGED_BLOCK_SIZE": "16",
+      "MTPLX_VLLM_METAL_PAGED_NUM_BLOCKS": "1024",
+      "MTPLX_VLLM_METAL_PAGED_PARTITIONED_ATTN": "1",
+      "MTPLX_VLLM_METAL_PAGED_PARTITION_SIZE": "512",
+      "MTPLX_VLLM_METAL_PAGED_PARTITION_THRESHOLD": "2048"
+    },
+    "fan_control_allowed": false,
+    "model_id": "Youssofal/Qwen3.6-27B-MTPLX-Optimized-Speed",
+    "name": "stable",
+    "product_claim_eligible": true,
+    "qa_only": false,
+    "required_mlx_fork_commit": null,
+    "required_mlx_fork_fragment": null,
+    "runtime_profile": "long_response_exact_staged",
+    "sampler": {
+      "temperature": 0.6,
+      "top_k": 20,
+      "top_p": 0.95
+    },
+    "summary": "Stable Mode: exact/staged long-reply path with no fan control. Hidden from first-run onboarding, but available by flag for compatibility."
+  },
+  "prompt_suite": "/Users/akiralam/code/ax-engine/benchmarks/prompts/mtp-suites/flappy.jsonl",
+  "prompt_suite_sha256": "97e53df42f0b2b456d38164264a674bb2c657e59d68833e42d2c60312d7fd669",
+  "repetitions": 1,
+  "results": [
+    {
+      "category": "game_code",
+      "max_tokens": 32,
+      "prompt_id": "flappy_pipes",
+      "prompt_sha256": "88a801ae372338af36ba5effaf538f6158d0e95fa72ad929dd9673bc5c286325",
+      "prompt_tokens": 273,
+      "runs": [
+        {
+          "acceptance_by_depth": [
+            1.0,
+            1.0,
+            1.0
+          ],
+          "accepted_by_depth": [
+            8,
+            8,
+            8
+          ],
+          "accepted_drafts": 24,
+          "decode_elapsed_s": 0.550747956847772,
+          "decode_tok_s": 58.102802928499784,
+          "draft_time_s": 0.07937533291988075,
+          "drafted_by_depth": [
+            8,
+            8,
+            8
+          ],
+          "drafted_tokens": 24,
+          "elapsed_s": 0.9758120409678668,
+          "end_to_end_tok_s": 32.79320059246302,
+          "ended_at": 1782849374.14077,
+          "fixed_token_complete": true,
+          "fixed_token_rejected_reason": null,
+          "generated_tokens": 32,
+          "measured": true,
+          "peak_memory_bytes": 18570184712,
+          "prompt_eval_time_s": 0.4250640841200948,
+          "rejected_drafts": 0,
+          "repetition": 0,
+          "requested_tokens": 32,
+          "seed": 42,
+          "started_at": 1782849372.051348,
+          "target_forward_time_s": 0.8429082512157038,
+          "text": "def spawn_pipe_3(self):\n    self.pipes[3] = Pipe(x=self.spawn_x, gap_y=random.randint(80, 3",
+          "tok_s": 58.102802928499784,
+          "tokens": [
+            727,
+            17503,
+            40481,
+            62,
+            18,
+            1153,
+            1590,
+            198,
+            262,
+            638,
+            541,
+            8653,
+            58,
+            18,
+            60,
+            283,
+            26902,
+            2007,
+            7424,
+            57292,
+            3109,
+            11,
+            12558,
+            4040,
+            77068,
+            22556,
+            7,
+            23,
+            15,
+            11,
+            220,
+            18
+          ],
+          "verify_time_s": 0.42703658412210643
+        }
+      ],
+      "summary": {
+        "accept_rate": 1.0,
+        "accepted_drafts": 24,
+        "complete_runs": 1,
+        "decode_tok_s": {
+          "median": 58.102802928499784,
+          "p10": 58.102802928499784,
+          "p90": 58.102802928499784,
+          "values": [
+            58.102802928499784
+          ]
+        },
+        "drafted_tokens": 24,
+        "end_to_end_tok_s": {
+          "median": 32.79320059246302,
+          "p10": 32.79320059246302,
+          "p90": 32.79320059246302,
+          "values": [
+            32.79320059246302
+          ]
+        },
+        "generated_tokens": 32,
+        "incomplete_runs": 0,
+        "runs": 1
+      },
+      "validations": [
+        {
+          "detail": "",
+          "name": "no_degenerate_loop",
+          "passed": true
+        }
+      ]
+    },
+    {
+      "category": "game_code",
+      "max_tokens": 32,
+      "prompt_id": "flappy_score_gates",
+      "prompt_sha256": "d30afc995170ca11cb9891f5006aae5aae46e5eb0bcdc192fb0abae884e9777a",
+      "prompt_tokens": 374,
+      "runs": [
+        {
+          "acceptance_by_depth": [
+            1.0,
+            1.0,
+            1.0
+          ],
+          "accepted_by_depth": [
+            8,
+            8,
+            8
+          ],
+          "accepted_drafts": 24,
+          "decode_elapsed_s": 0.4868712500901893,
+          "decode_tok_s": 65.72579505171488,
+          "draft_time_s": 0.06939971109386533,
+          "drafted_by_depth": [
+            8,
+            8,
+            8
+          ],
+          "drafted_tokens": 24,
+          "elapsed_s": 0.9427274580812082,
+          "end_to_end_tok_s": 33.944062757153155,
+          "ended_at": 1782849375.0842519,
+          "fixed_token_complete": true,
+          "fixed_token_rejected_reason": null,
+          "generated_tokens": 32,
+          "measured": true,
+          "peak_memory_bytes": 18570184712,
+          "prompt_eval_time_s": 0.4558562079910189,
+          "rejected_drafts": 0,
+          "repetition": 0,
+          "requested_tokens": 32,
+          "seed": 1042,
+          "started_at": 1782849374.1410382,
+          "target_forward_time_s": 0.8621393307112157,
+          "text": "def validate_gate_750(score: int) -> dict:\n    if score >= 750:\n        return {\"gate\": 7",
+          "tok_s": 65.72579505171488,
+          "tokens": [
+            727,
+            9307,
+            52954,
+            62,
+            22,
+            20,
+            15,
+            33336,
+            25,
+            514,
+            8,
+            1411,
+            6249,
+            25,
+            198,
+            262,
+            413,
+            5284,
+            2518,
+            220,
+            22,
+            20,
+            15,
+            25,
+            198,
+            285,
+            460,
+            5046,
+            23825,
+            763,
+            220,
+            22
+          ],
+          "verify_time_s": 0.41372837277594954
+        }
+      ],
+      "summary": {
+        "accept_rate": 1.0,
+        "accepted_drafts": 24,
+        "complete_runs": 1,
+        "decode_tok_s": {
+          "median": 65.72579505171488,
+          "p10": 65.72579505171488,
+          "p90": 65.72579505171488,
+          "values": [
+            65.72579505171488
+          ]
+        },
+        "drafted_tokens": 24,
+        "end_to_end_tok_s": {
+          "median": 33.944062757153155,
+          "p10": 33.944062757153155,
+          "p90": 33.944062757153155,
+          "values": [
+            33.944062757153155
+          ]
+        },
+        "generated_tokens": 32,
+        "incomplete_runs": 0,
+        "runs": 1
+      },
+      "validations": [
+        {
+          "detail": "",
+          "name": "no_degenerate_loop",
+          "passed": true
+        }
+      ]
+    },
+    {
+      "category": "game_code",
+      "max_tokens": 32,
+      "prompt_id": "flappy_collision_checks",
+      "prompt_sha256": "dc95f55539735dcc41f9b07a7ccb764207a474ec0e3876a88203cbf79232ae0e",
+      "prompt_tokens": 432,
+      "runs": [
+        {
+          "acceptance_by_depth": [
+            1.0,
+            1.0,
+            0.875
+          ],
+          "accepted_by_depth": [
+            8,
+            8,
+            7
+          ],
+          "accepted_drafts": 23,
+          "decode_elapsed_s": 0.4980197089025751,
+          "decode_tok_s": 64.25448516990316,
+          "draft_time_s": 0.07176904228981584,
+          "drafted_by_depth": [
+            8,
+            8,
+            8
+          ],
+          "drafted_tokens": 24,
+          "elapsed_s": 1.0149152500089258,
+          "end_to_end_tok_s": 31.529726250264318,
+          "ended_at": 1782849376.0998158,
+          "fixed_token_complete": true,
+          "fixed_token_rejected_reason": null,
+          "generated_tokens": 32,
+          "measured": true,
+          "peak_memory_bytes": 18570184712,
+          "prompt_eval_time_s": 0.5168955411063507,
+          "rejected_drafts": 1,
+          "repetition": 0,
+          "requested_tokens": 32,
+          "seed": 2042,
+          "started_at": 1782849375.084329,
+          "target_forward_time_s": 0.9247954572783783,
+          "text": "def check_collision_pipe_3(self, bird_rect: pygame.Rect) -> bool:\n    if not self.active[3]:\n        return False\n   ",
+          "tok_s": 64.25448516990316,
+          "tokens": [
+            727,
+            1716,
+            67994,
+            40481,
+            62,
+            18,
+            1153,
+            11,
+            11619,
+            16481,
+            25,
+            14275,
+            31094,
+            8,
+            1411,
+            1744,
+            25,
+            198,
+            262,
+            413,
+            524,
+            638,
+            13223,
+            58,
+            18,
+            5491,
+            198,
+            285,
+            460,
+            3439,
+            198,
+            262
+          ],
+          "verify_time_s": 0.416397332213819
+        }
+      ],
+      "summary": {
+        "accept_rate": 0.9583333333333334,
+        "accepted_drafts": 23,
+        "complete_runs": 1,
+        "decode_tok_s": {
+          "median": 64.25448516990316,
+          "p10": 64.25448516990316,
+          "p90": 64.25448516990316,
+          "values": [
+            64.25448516990316
+          ]
+        },
+        "drafted_tokens": 24,
+        "end_to_end_tok_s": {
+          "median": 31.529726250264318,
+          "p10": 31.529726250264318,
+          "p90": 31.529726250264318,
+          "values": [
+            31.529726250264318
+          ]
+        },
+        "generated_tokens": 32,
+        "incomplete_runs": 0,
+        "runs": 1
+      },
+      "validations": [
+        {
+          "detail": "",
+          "name": "no_degenerate_loop",
+          "passed": true
+        }
+      ]
+    },
+    {
+      "category": "game_code",
+      "max_tokens": 32,
+      "prompt_id": "flappy_sound_channels",
+      "prompt_sha256": "3510857fe86b1075ac5ef71629c9f75a407e891faf4911c91cfc69c73e6cccfa",
+      "prompt_tokens": 264,
+      "runs": [
+        {
+          "acceptance_by_depth": [
+            1.0,
+            1.0,
+            1.0
+          ],
+          "accepted_by_depth": [
+            8,
+            8,
+            8
+          ],
+          "accepted_drafts": 24,
+          "decode_elapsed_s": 0.4911153329303488,
+          "decode_tok_s": 65.15781091391483,
+          "draft_time_s": 0.07001766690518707,
+          "drafted_by_depth": [
+            8,
+            8,
+            8
+          ],
+          "drafted_tokens": 24,
+          "elapsed_s": 0.8708684999728575,
+          "end_to_end_tok_s": 36.74492762224991,
+          "ended_at": 1782849376.9712682,
+          "fixed_token_complete": true,
+          "fixed_token_rejected_reason": null,
+          "generated_tokens": 32,
+          "measured": true,
+          "peak_memory_bytes": 18570184712,
+          "prompt_eval_time_s": 0.3797531670425087,
+          "rejected_drafts": 0,
+          "repetition": 0,
+          "requested_tokens": 32,
+          "seed": 3042,
+          "started_at": 1782849376.099898,
+          "target_forward_time_s": 0.7882281647762284,
+          "text": "def setup_channel_3(self) -> None:\n    self.channels[3] = pygame.mixer.Channel(3)\n    self.channels[3].set",
+          "tok_s": 65.15781091391483,
+          "tokens": [
+            727,
+            6302,
+            14152,
+            62,
+            18,
+            1153,
+            8,
+            1411,
+            2168,
+            25,
+            198,
+            262,
+            638,
+            38572,
+            58,
+            18,
+            60,
+            283,
+            14275,
+            85262,
+            37434,
+            7,
+            18,
+            8,
+            198,
+            262,
+            638,
+            38572,
+            58,
+            18,
+            906,
+            723
+          ],
+          "verify_time_s": 0.41525966476183385
+        }
+      ],
+      "summary": {
+        "accept_rate": 1.0,
+        "accepted_drafts": 24,
+        "complete_runs": 1,
+        "decode_tok_s": {
+          "median": 65.15781091391483,
+          "p10": 65.15781091391483,
+          "p90": 65.15781091391483,
+          "values": [
+            65.15781091391483
+          ]
+        },
+        "drafted_tokens": 24,
+        "end_to_end_tok_s": {
+          "median": 36.74492762224991,
+          "p10": 36.74492762224991,
+          "p90": 36.74492762224991,
+          "values": [
+            36.74492762224991
+          ]
+        },
+        "generated_tokens": 32,
+        "incomplete_runs": 0,
+        "runs": 1
+      },
+      "validations": [
+        {
+          "detail": "",
+          "name": "no_degenerate_loop",
+          "passed": true
+        }
+      ]
+    }
+  ],
+  "runtime_env": {
+    "MTPLX_DROP_EVENTS": "1",
+    "MTPLX_EVAL_STATE_ROOTS_INCLUDE_LIVE": "1",
+    "MTPLX_EVAL_STATE_ROOTS_INCLUDE_MTP": "1",
+    "MTPLX_EVAL_STATE_ROOTS_ON_COMMIT": "1",
+    "MTPLX_TARGET_LAYER_EVAL_CONTEXT_THRESHOLD": "0",
+    "MTPLX_TARGET_LAYER_EVAL_MAX_Q": "8",
+    "MTPLX_TARGET_LAYER_EVAL_SCHEDULE": "2048:16,8192:8",
+    "MTPLX_VLLM_METAL_PAGED_ATTN": "1",
+    "MTPLX_VLLM_METAL_PAGED_ATTN_IMPL": "mlx_vector_paged",
+    "MTPLX_VLLM_METAL_PAGED_BLOCK_SIZE": "16",
+    "MTPLX_VLLM_METAL_PAGED_NUM_BLOCKS": "1024",
+    "MTPLX_VLLM_METAL_PAGED_PARTITIONED_ATTN": "1",
+    "MTPLX_VLLM_METAL_PAGED_PARTITION_SIZE": "512",
+    "MTPLX_VLLM_METAL_PAGED_PARTITION_THRESHOLD": "2048"
+  },
+  "sampling": {
+    "temperature": 0.6,
+    "top_k": 20,
+    "top_p": 0.95
+  },
+  "schema": "ax.mtplx.prompt_suite_mtp.v1",
+  "suite": "flappy",
+  "summary": {
+    "accept_rate": 0.9895833333333334,
+    "accepted_drafts": 95,
+    "case_count": 4,
+    "complete_runs": 4,
+    "decode_tok_s": {
+      "median": 64.70614804190899,
+      "p10": 58.102802928499784,
+      "p90": 65.72579505171488,
+      "values": [
+        58.102802928499784,
+        65.72579505171488,
+        64.25448516990316,
+        65.15781091391483
+      ]
+    },
+    "drafted_tokens": 96,
+    "end_to_end_tok_s": {
+      "median": 33.368631674808086,
+      "p10": 31.529726250264318,
+      "p90": 36.74492762224991,
+      "values": [
+        32.79320059246302,
+        33.944062757153155,
+        31.529726250264318,
+        36.74492762224991
+      ]
+    },
+    "generated_tokens": 128,
+    "incomplete_runs": 0,
+    "runs": 4,
+    "validations_passed": 4,
+    "validations_total": 4
+  },
+  "warmup_repetitions": 0
+}

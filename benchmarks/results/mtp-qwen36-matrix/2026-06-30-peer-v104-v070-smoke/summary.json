@@ -1,0 +1,92 @@
+{
+  "contract": {
+    "bits": [
+      4
+    ],
+    "engines": [
+      "mtplx",
+      "lightning_mlx"
+    ],
+    "max_tokens": 32,
+    "metrics": [
+      "decode_tok_s",
+      "prefill_tok_s",
+      "ttft_ms",
+      "accept_rate"
+    ],
+    "mode": "mtp",
+    "models": [
+      "27b"
+    ],
+    "repetitions": 1,
+    "sampling": {
+      "temperature": 0.6,
+      "top_k": 20,
+      "top_p": 0.95
+    },
+    "suites": [
+      "flappy"
+    ],
+    "warmup_repetitions": 0
+  },
+  "created_at": "2026-06-30",
+  "rows": [
+    {
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-30-peer-v104-v070-smoke/27b-4bit/flappy/mtplx.json",
+      "bits": 4,
+      "engine": "mtplx",
+      "metric_contract": {
+        "accept_rate": "measured",
+        "decode_tok_s": "measured",
+        "prefill_tok_s": "derived_from_prompt_eval_time_s",
+        "ttft_ms": "prompt_eval_time_s"
+      },
+      "metrics": {
+        "accept_rate": 1.0,
+        "accept_source": "mtplx_draft_stats",
+        "case_count": 4,
+        "decode_tok_s": 64.70614804190899,
+        "prefill_source": "prompt_tokens_over_prompt_eval_time_s",
+        "prefill_tok_s": 757.8112789119529,
+        "status": "ok",
+        "ttft_ms": 440.46014605555683,
+        "ttft_source": "prompt_eval_time_s"
+      },
+      "model": "27b",
+      "model_label": "Qwen3.6 27B 4-bit",
+      "reason": null,
+      "status": "supported",
+      "suite": "flappy",
+      "target": "27b-4bit"
+    },
+    {
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-30-peer-v104-v070-smoke/27b-4bit/flappy/lightning_mlx.json",
+      "bits": 4,
+      "engine": "lightning_mlx",
+      "metric_contract": {
+        "accept_rate": "measured_if_server_exposes_request_telemetry",
+        "decode_tok_s": "measured",
+        "prefill_tok_s": "approx_prompt_tokens_over_client_ttft_s",
+        "ttft_ms": "client_stream_ttft_s"
+      },
+      "metrics": {
+        "accept_rate": 0.4321511821511822,
+        "accept_source": "lightning_request_telemetry",
+        "case_count": 4,
+        "decode_tok_s": 3.853417802353179,
+        "prefill_source": "prompt_tokens_over_client_ttft_s",
+        "prefill_tok_s": 222.81733359941077,
+        "status": "ok",
+        "ttft_ms": 1500.3882290329784,
+        "ttft_source": "client_stream_ttft_s"
+      },
+      "model": "27b",
+      "model_label": "Qwen3.6 27B 4-bit",
+      "reason": null,
+      "status": "supported",
+      "suite": "flappy",
+      "target": "27b-4bit"
+    }
+  ],
+  "schema": "ax.qwen36_mtp_matrix.summary.v1"
+}
