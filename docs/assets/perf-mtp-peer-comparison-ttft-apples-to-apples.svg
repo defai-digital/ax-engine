@@ -4,7 +4,7 @@
 <rect width="1120" height="672" fill="#f8fafc"/>
 <text x="32" y="34" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="22" font-weight="700" fill="#111827">Qwen3.6 MTP peer comparison TTFT</text>
 <text x="32" y="60" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="14" fill="#374151">flappy suite · 1000 generated tokens · 5 measured reps · 2 warmups · 30s cooldown</text>
-<text x="32" y="80" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="13" fill="#6b7280">Time to first token, milliseconds. Lower is better.</text>
+<text x="32" y="80" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="13" fill="#6b7280">Time to first token, milliseconds.</text>
 <text x="1052.0" y="80" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="13" font-weight="700" fill="#dc2626">Lower is better</text>
 <line x1="248.0" y1="86.0" x2="248.0" y2="606" stroke="#cbd5e1" stroke-width="1"/>
 <text x="248.0" y="629" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" fill="#4b5563">0</text>
@@ -61,5 +61,5 @@
 <text x="234.0" y="573.0" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" fill="#374151">lightning-mlx</text>
 <rect x="248.0" y="558.0" width="291.4" height="20.0" rx="3" fill="#2563eb"/>
 <text x="547.4" y="573.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" font-weight="700" fill="#111827">271.8</text>
-<text x="32" y="654" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#6b7280">Source: 2026-06-29-peer-comparison-apples-to-apples/summary.json · Lower is better</text>
+<text x="32" y="654" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#6b7280">Source: 2026-06-29-peer-comparison-apples-to-apples/summary.json</text>
 </svg>

@@ -1200,7 +1200,7 @@ MTP_PEER_METRICS = {
     "decode": {
         "field": "decode_tok_s",
         "title": "Qwen3.6 MTP peer comparison decode",
-        "desc": "Decode throughput, tokens per second. Higher is better.",
+        "desc": "Decode throughput, tokens per second.",
         "unit": "tok/s",
         "suffix": "",
         "higher_is_better": True,
@@ -1208,7 +1208,7 @@ MTP_PEER_METRICS = {
     "prefill": {
         "field": "prefill_tok_s",
         "title": "Qwen3.6 MTP peer comparison prefill",
-        "desc": "Prefill throughput, tokens per second. Higher is better.",
+        "desc": "Prefill throughput, tokens per second.",
         "unit": "tok/s",
         "suffix": "",
         "higher_is_better": True,
@@ -1216,7 +1216,7 @@ MTP_PEER_METRICS = {
     "ttft": {
         "field": "ttft_ms",
         "title": "Qwen3.6 MTP peer comparison TTFT",
-        "desc": "Time to first token, milliseconds. Lower is better.",
+        "desc": "Time to first token, milliseconds.",
         "unit": "ms",
         "suffix": "",
         "higher_is_better": False,
@@ -1224,7 +1224,7 @@ MTP_PEER_METRICS = {
     "accept": {
         "field": "accept_rate",
         "title": "Qwen3.6 MTP peer comparison accept rate",
-        "desc": "MTP draft-token acceptance rate. Higher is better.",
+        "desc": "MTP draft-token acceptance rate.",
         "unit": "%",
         "suffix": "%",
         "higher_is_better": True,
@@ -1325,10 +1325,9 @@ def render_mtp_peer_comparison_chart(
         f'<text x="32" y="60" font-family="{FONT}" font-size="14" fill="#374151">flappy suite · 1000 generated tokens · 5 measured reps · 2 warmups · 30s cooldown</text>',
         f'<text x="32" y="80" font-family="{FONT}" font-size="13" fill="#6b7280">{escape(str(metric_config["desc"]))}</text>',
     ]
-    if not bool(metric_config["higher_is_better"]):
-        lines.append(
-            f'<text x="{MTP_PEER_RIGHT:.1f}" y="80" text-anchor="end" font-family="{FONT}" font-size="13" font-weight="700" fill="#dc2626">{escape(direction)}</text>'
-        )
+    lines.append(
+        f'<text x="{MTP_PEER_RIGHT:.1f}" y="80" text-anchor="end" font-family="{FONT}" font-size="13" font-weight="700" fill="#dc2626">{escape(direction)}</text>'
+    )
     for tick_index in range(5):
         tick = axis_max * tick_index / 4.0
         x = MTP_PEER_LEFT + x_scale(tick)
@@ -1384,7 +1383,7 @@ def render_mtp_peer_comparison_chart(
             )
     source_label = (
         "Source: "
-        f"{summary_path.parent.name}/summary.json · {direction}"
+        f"{summary_path.parent.name}/summary.json"
     )
     lines.append(
         f'<text x="32" y="{height - 18}" font-family="{FONT}" font-size="11" fill="#6b7280">{escape(source_label)}</text>'
