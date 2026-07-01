@@ -3,7 +3,7 @@
 <desc id="desc">Grouped horizontal bar chart comparing AX Engine, MTPLX, and lightning-mlx % on the flappy prompt suite.</desc>
 <rect width="1120" height="672" fill="#f8fafc"/>
 <text x="32" y="34" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="22" font-weight="700" fill="#111827">Qwen3.6 MTP peer comparison accept rate</text>
-<text x="32" y="60" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="14" fill="#374151">flappy suite · 1000 generated tokens · 5 measured reps · 2 warmups · 15s cooldown</text>
+<text x="32" y="60" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="14" fill="#374151">flappy suite · 1000 generated tokens · 5 measured reps · 2 warmups · 30s cooldown</text>
 <text x="32" y="80" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="13" fill="#6b7280">MTP draft-token acceptance rate.</text>
 <text x="1052.0" y="80" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="13" font-weight="700" fill="#dc2626">Higher is better</text>
 <line x1="248.0" y1="86.0" x2="248.0" y2="606" stroke="#cbd5e1" stroke-width="1"/>
@@ -30,8 +30,8 @@
 <rect x="248.0" y="174.0" width="803.9" height="20.0" rx="3" fill="#f2b705"/>
 <text x="1059.9" y="189.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" font-weight="700" fill="#111827">100.0%</text>
 <text x="234.0" y="219.0" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" fill="#374151">lightning-mlx</text>
-<rect x="248.0" y="204.0" width="750.1" height="20.0" rx="3" fill="#2563eb"/>
-<text x="1006.1" y="219.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" font-weight="700" fill="#111827">93.3%</text>
+<rect x="248.0" y="204.0" width="759.8" height="20.0" rx="3" fill="#2563eb"/>
+<text x="1015.8" y="219.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" font-weight="700" fill="#111827">94.5%</text>
 <text x="32" y="248.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="15" font-weight="700" fill="#111827">27B 6-bit</text>
 <text x="234.0" y="277.0" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" fill="#374151">AX Engine</text>
 <rect x="248.0" y="262.0" width="804.0" height="20.0" rx="3" fill="#2eaf5f"/>
@@ -60,5 +60,5 @@
 <text x="234.0" y="573.0" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" fill="#374151">lightning-mlx</text>
 <rect x="248.0" y="558.0" width="804.0" height="20.0" rx="3" fill="#2563eb"/>
 <text x="1060.0" y="573.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" font-weight="700" fill="#dc2626">100.0%</text>
-<text x="32" y="654" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#6b7280">Source: 2026-06-30-peer-comparison-apples-to-apples-15s/summary.json   ·   Versions: AX Engine 6.6.1 · MTPLX 0.3.7 · lightning-mlx 0.6.10</text>
+<text x="32" y="654" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#6b7280">Source: 2026-06-30-peer-comparison-apples-to-apples-refresh/summary.json   ·   Versions: AX Engine 6.6.1 · MTPLX 0.3.7 · lightning-mlx 0.6.10</text>
 </svg>
