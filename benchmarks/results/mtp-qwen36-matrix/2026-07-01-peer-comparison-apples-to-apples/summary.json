@@ -1,6 +1,6 @@
 {
   "contract": {
-    "ax_mtp_optimistic": true,
+    "ax_mtp_optimistic": false,
     "benchmark_contract": "production-configuration",
     "bits": [
       4,
@@ -73,7 +73,7 @@
   },
   "created_at": "2026-07-01",
   "notes": [
-    "27B 4-bit AX Engine row is refreshed from the 2026-07-01 AX-only strict full flappy rerun with seed 44 and AX optimistic verify disabled.",
+    "AX Engine rows are refreshed from strict full flappy reruns with seed 44 and AX optimistic verify disabled.",
     "Other AX Engine rows remain from the 2026-06-30 full AX-only flappy rerun.",
     "Other peer rows remain from the 2026-06-29 apples-to-apples run.",
     "MTPLX rows refreshed from the 2026-07-01 MTPLX v1.0.4 rerun (/opt/homebrew/var/mtplx/venv-1.0.4).",
@@ -367,7 +367,7 @@
       "target": "27b-4bit"
     },
     {
-      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-30-peer-comparison-ax-only-rerun/27b-6bit/flappy/ax_engine.json",
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-07-01-27b6-ax-strict-full-rerun-seed44-r1/27b-6bit/flappy/ax_engine.json",
       "bits": 6,
       "engine": "ax_engine",
       "metric_contract": {
@@ -379,12 +379,12 @@
         "ttft_scope": "runner_internal"
       },
       "metrics": {
-        "accept_rate": 1.0,
+        "accept_rate": 0.99896229678312,
         "accept_source": "ax_engine_mtp_telemetry",
         "case_count": 4,
         "client_ttft_scope": "client_http_wall",
-        "client_wall_ttft_ms": 2398.064874985721,
-        "decode_tok_s": 41.427734543409684,
+        "client_wall_ttft_ms": 2358.1468125339597,
+        "decode_tok_s": 40.69508834073752,
         "degeneracy_gate": {
           "cases": [
             {
@@ -535,15 +535,17 @@
           "threshold": 0.5
         },
         "prefill_source": "ax_engine_runner_prefill_time",
-        "prefill_tok_s": 637.1229530787317,
+        "prefill_tok_s": 757.449269360127,
+        "random_seed": 44,
+        "seed": 44,
         "status": "ok",
-        "ttft_ms": 506.9430000000001,
+        "ttft_ms": 424.8985,
         "ttft_scope": "runner_internal",
         "ttft_source": "ax_engine_runner_prefill_time"
       },
       "model": "27b",
       "model_label": "Qwen3.6 27B 6-bit",
-      "reason": "2026-06-30 full AX-only flappy rerun replacing the previous AX row",
+      "reason": null,
       "status": "supported",
       "suite": "flappy",
       "target": "27b-6bit"
@@ -629,7 +631,7 @@
       "target": "27b-6bit"
     },
     {
-      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-30-peer-comparison-ax-only-rerun/35b-a3b-4bit/flappy/ax_engine.json",
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-07-01-35b-a3b-ax-strict-full-rerun-seed44-r1/35b-a3b-4bit/flappy/ax_engine.json",
       "bits": 4,
       "engine": "ax_engine",
       "metric_contract": {
@@ -645,8 +647,8 @@
         "accept_source": "ax_engine_mtp_telemetry",
         "case_count": 4,
         "client_ttft_scope": "client_http_wall",
-        "client_wall_ttft_ms": 1395.135874976404,
-        "decode_tok_s": 166.33104107215976,
+        "client_wall_ttft_ms": 1503.2384165097028,
+        "decode_tok_s": 169.9468096169894,
         "degeneracy_gate": {
           "cases": [
             {
@@ -797,15 +799,17 @@
           "threshold": 0.5
         },
         "prefill_source": "ax_engine_runner_prefill_time",
-        "prefill_tok_s": 1755.29758165338,
+        "prefill_tok_s": 2121.147317454821,
+        "random_seed": 44,
+        "seed": 44,
         "status": "ok",
-        "ttft_ms": 184.01299999999998,
+        "ttft_ms": 151.6055,
         "ttft_scope": "runner_internal",
         "ttft_source": "ax_engine_runner_prefill_time"
       },
       "model": "35b-a3b",
       "model_label": "Qwen3.6 35B-A3B 4-bit",
-      "reason": "2026-06-30 full AX-only flappy rerun replacing the previous AX row",
+      "reason": null,
       "status": "supported",
       "suite": "flappy",
       "target": "35b-a3b-4bit"
@@ -911,7 +915,7 @@
       "target": "35b-a3b-4bit"
     },
     {
-      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-30-peer-comparison-ax-only-rerun/35b-a3b-6bit/flappy/ax_engine.json",
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-07-01-35b-a3b-ax-strict-full-rerun-seed44-r1/35b-a3b-6bit/flappy/ax_engine.json",
       "bits": 6,
       "engine": "ax_engine",
       "metric_contract": {
@@ -927,8 +931,8 @@
         "accept_source": "ax_engine_mtp_telemetry",
         "case_count": 4,
         "client_ttft_scope": "client_http_wall",
-        "client_wall_ttft_ms": 17996.63739593234,
-        "decode_tok_s": 141.75188592782408,
+        "client_wall_ttft_ms": 17969.38477101503,
+        "decode_tok_s": 139.99853206523275,
         "degeneracy_gate": {
           "cases": [
             {
@@ -1079,15 +1083,17 @@
           "threshold": 0.5
         },
         "prefill_source": "ax_engine_runner_prefill_time",
-        "prefill_tok_s": 1536.018468935195,
+        "prefill_tok_s": 1810.837953128827,
+        "random_seed": 44,
+        "seed": 44,
         "status": "ok",
-        "ttft_ms": 209.38549999999998,
+        "ttft_ms": 178.6085,
         "ttft_scope": "runner_internal",
         "ttft_source": "ax_engine_runner_prefill_time"
       },
       "model": "35b-a3b",
       "model_label": "Qwen3.6 35B-A3B 6-bit",
-      "reason": "2026-06-30 full AX-only flappy rerun replacing the previous AX row",
+      "reason": null,
       "status": "supported",
       "suite": "flappy",
       "target": "35b-a3b-6bit"
@@ -1200,6 +1206,8 @@
     "benchmarks/results/mtp-qwen36-matrix/2026-06-30-peer-comparison-ax-only-rerun/summary.json",
     "benchmarks/results/mtp-qwen36-matrix/2026-06-30-peer-comparison-27b4-ax-only-rerun/summary.json",
     "benchmarks/results/mtp-qwen36-matrix/2026-07-01-mtplx-v104-rerun/summary.json",
-    "benchmarks/results/mtp-qwen36-matrix/2026-07-01-27b4-ax-strict-full-rerun-seed44-r1/summary.json"
+    "benchmarks/results/mtp-qwen36-matrix/2026-07-01-27b4-ax-strict-full-rerun-seed44-r1/summary.json",
+    "benchmarks/results/mtp-qwen36-matrix/2026-07-01-27b6-ax-strict-full-rerun-seed44-r1/summary.json",
+    "benchmarks/results/mtp-qwen36-matrix/2026-07-01-35b-a3b-ax-strict-full-rerun-seed44-r1/summary.json"
   ]
 }

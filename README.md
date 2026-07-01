@@ -359,9 +359,9 @@ remain useful only as audit/debug evidence.
 | Target | AX Engine decode | MTPLX decode | lightning-mlx decode | Readout |
 | --- | ---: | ---: | ---: | --- |
 | Qwen3.6 27B 4-bit | 61.0 tok/s | 64.3 tok/s | 59.4 tok/s | AX strict row is clean; MTPLX leads this 27B 4-bit peer row |
-| Qwen3.6 27B 6-bit | 41.4 tok/s | - | - | No official comparable peer 27B 6-bit MTP artifact |
-| Qwen3.6 35B-A3B 4-bit | 166.3 tok/s | 138.1 tok/s | 116.2 tok/s | AX leads this production-config row |
-| Qwen3.6 35B-A3B 6-bit | 141.8 tok/s | 117.6 tok/s | 96.3 tok/s | AX leads this production-config row |
+| Qwen3.6 27B 6-bit | 40.7 tok/s | - | - | No official comparable peer 27B 6-bit MTP artifact |
+| Qwen3.6 35B-A3B 4-bit | 169.9 tok/s | 138.1 tok/s | 116.2 tok/s | AX leads this production-config row |
+| Qwen3.6 35B-A3B 6-bit | 140.0 tok/s | 117.6 tok/s | 96.3 tok/s | AX leads this production-config row |
 
 Full results, charts, artifact links, and fairness limitations:
 [`docs/mtp/qwen36-peer-comparison.md`](docs/mtp/qwen36-peer-comparison.md).
