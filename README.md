@@ -44,7 +44,7 @@ peer rows and model-specific boundaries kept visible.
   - [Speculative Decoding (MTP)](#speculative-decoding-mtp)
     - [Supported MTP packages](#supported-mtp-packages)
     - [Download and serve an MTP package](#download-and-serve-an-mtp-package)
-    - [Qwen3.6 MTP peer comparison apples-to-apples (2026-06-29)](#qwen36-mtp-peer-comparison-apples-to-apples-2026-06-29)
+    - [Qwen3.6 MTP peer comparison apples-to-apples (2026-06-30)](#qwen36-mtp-peer-comparison-apples-to-apples-2026-06-30)
     - [Qwen3.6 MTP matrix refresh (2026-06-29)](#qwen36-mtp-matrix-refresh-2026-06-29)
     - [Gemma 4 assistant-MTP (depth-2)](#gemma-4-assistant-mtp-depth-2)
   - [Direct Mode (Decode · Prefill · TTFT)](#direct-mode-decode--prefill--ttft)
@@ -337,7 +337,7 @@ published to make comparison with other MTP engines easier because many peer
 benchmarks use 4-bit models. Historical MTP+n-gram artifacts remain useful for
 debugging regressions, but they are not current README/PERFORMANCE MTP evidence.
 
-#### Qwen3.6 MTP peer comparison apples-to-apples (2026-06-29)
+#### Qwen3.6 MTP peer comparison apples-to-apples (2026-06-30)
 
 This same-session apples-to-apples comparison runs AX Engine, MTPLX, and
 lightning-mlx on the `flappy` suite with `1000` generated tokens, `5` measured
@@ -357,30 +357,27 @@ matrix below.
 
 | Target | Engine | Decode | Prefill | TTFT | Accept | Status |
 | --- | --- | ---: | ---: | ---: | ---: | --- |
-| Qwen3.6 27B 4-bit | AX Engine | 60.5 tok/s | 668.2 tok/s | 483 ms | 100.0% | ok |
-| Qwen3.6 27B 4-bit | MTPLX | 63.2 tok/s | 694.6 tok/s | 490 ms | 100.0% | ok |
-| Qwen3.6 27B 4-bit | lightning-mlx | 59.4 tok/s | 861.2 tok/s | 400 ms | 94.5% | ok |
-| Qwen3.6 27B 6-bit | AX Engine | 41.4 tok/s | 637.1 tok/s | 507 ms | 100.0% | ok |
+| Qwen3.6 27B 4-bit | AX Engine | 58.9 tok/s | 682.1 tok/s | 471 ms | 100.0% | ok |
+| Qwen3.6 27B 4-bit | MTPLX | 63.6 tok/s | 691.8 tok/s | 484 ms | 100.0% | ok |
+| Qwen3.6 27B 4-bit | lightning-mlx | 9.0 tok/s | 17.9 tok/s | 17,788 ms | 93.3% | ok |
+| Qwen3.6 27B 6-bit | AX Engine | 40.9 tok/s | 656.4 tok/s | 490 ms | 100.0% | ok |
 | Qwen3.6 27B 6-bit | MTPLX | - | - | - | - | no official 27B 6-bit MTP artifact |
 | Qwen3.6 27B 6-bit | lightning-mlx | - | - | - | - | no official 27B 6-bit MTP artifact |
-| Qwen3.6 35B-A3B 4-bit | AX Engine | 166.3 tok/s | 1,755.3 tok/s | 184 ms | 100.0% | ok |
-| Qwen3.6 35B-A3B 4-bit | MTPLX | 137.2 tok/s | 1,678.7 tok/s | 197 ms | 95.7% | ok |
-| Qwen3.6 35B-A3B 4-bit | lightning-mlx | 116.2 tok/s | 1,466.5 tok/s | 215 ms | 100.0% | ok |
-| Qwen3.6 35B-A3B 6-bit | AX Engine | 141.8 tok/s | 1,536.0 tok/s | 209 ms | 100.0% | ok |
-| Qwen3.6 35B-A3B 6-bit | MTPLX | 115.6 tok/s | 1,349.5 tok/s | 246 ms | 96.7% | ok |
-| Qwen3.6 35B-A3B 6-bit | lightning-mlx | 96.3 tok/s | 1,215.8 tok/s | 272 ms | 100.0% | ok |
+| Qwen3.6 35B-A3B 4-bit | AX Engine | 169.4 tok/s | 1,873.8 tok/s | 172 ms | 100.0% | ok |
+| Qwen3.6 35B-A3B 4-bit | MTPLX | 133.8 tok/s | 1,653.0 tok/s | 195 ms | 95.7% | ok |
+| Qwen3.6 35B-A3B 4-bit | lightning-mlx | 19.6 tok/s | 37.3 tok/s | 8,570 ms | 100.0% | ok |
+| Qwen3.6 35B-A3B 6-bit | AX Engine | 137.5 tok/s | 1,618.0 tok/s | 204 ms | 100.0% | ok |
+| Qwen3.6 35B-A3B 6-bit | MTPLX | 119.0 tok/s | 1,394.4 tok/s | 244 ms | 96.7% | ok |
+| Qwen3.6 35B-A3B 6-bit | lightning-mlx | 16.0 tok/s | 26.2 tok/s | 10,639 ms | 100.0% | ok |
 
-**Reading the rows.** The targeted 27B 4-bit AX-only rerun lands at
-**60.5 tok/s**, with **668.2 tok/s** prefill, **483 ms** TTFT, and a 100.0%
-accept rate. That keeps AX slightly behind MTPLX (**63.2 tok/s**, -4.2%) and
-ahead of lightning-mlx (**59.4 tok/s**, +2.0%) on this dense 27B 4-bit lane.
-The 35B-A3B rows remain from the full AX-only refresh: AX is still ahead of
-MTPLX by +21% (4-bit) and +23% (6-bit), and ahead of lightning-mlx by +43% and
-+47%. The 27B 6-bit peer cells remain blank because there is no official
-comparable 27B 6-bit MTP artifact. Source artifacts:
-[`2026-06-30-peer-comparison-27b4-ax-only-rerun`](benchmarks/results/mtp-qwen36-matrix/2026-06-30-peer-comparison-27b4-ax-only-rerun/summary.md)
-and
-[`2026-06-30-peer-comparison-ax-only-rerun`](benchmarks/results/mtp-qwen36-matrix/2026-06-30-peer-comparison-ax-only-rerun/summary.md).
+**Reading the rows.** The 15 s cooldown refresh lands 27B 4-bit AX at
+**58.9 tok/s**, with **682.1 tok/s** prefill, **471 ms** TTFT, and a 100.0%
+accept rate. That keeps AX behind MTPLX (**63.6 tok/s**, -7.4%) and ahead of
+the current lightning-mlx full-output run (**9.0 tok/s**, +554%) on this dense
+27B 4-bit lane. On 35B-A3B, AX is ahead of MTPLX by +27% (4-bit) and +16%
+(6-bit), and ahead of lightning-mlx by +764% and +759%. The 27B 6-bit peer
+cells remain blank because there is no official comparable 27B 6-bit MTP
+artifact.
 
 Rapid-MLX is intentionally not promoted in this table: it starts with the
 shared Qwen3.6 artifacts but skips MTP installation for this generation flow, so
@@ -388,9 +385,9 @@ including it would measure non-MTP decode. oMLX remains unmeasured because this
 repo does not yet have an oMLX Qwen3.6 MTP prompt-suite adapter.
 
 Peer comparison artifacts:
-[`summary.md`](benchmarks/results/mtp-qwen36-matrix/2026-06-30-peer-comparison-apples-to-apples-refresh/summary.md)
+[`summary.md`](benchmarks/results/mtp-qwen36-matrix/2026-06-30-peer-comparison-apples-to-apples-15s/summary.md)
 and
-[`summary.json`](benchmarks/results/mtp-qwen36-matrix/2026-06-30-peer-comparison-apples-to-apples-refresh/summary.json).
+[`summary.json`](benchmarks/results/mtp-qwen36-matrix/2026-06-30-peer-comparison-apples-to-apples-15s/summary.json).
 Detailed MTP notes, including the GLM-4.7 Flash smoke validation session, live in
 [`docs/mtp/`](docs/mtp/).
 
