@@ -17,7 +17,7 @@ benchmarking, or writing claims:
 | --- | --- | --- |
 | Install AX Engine and run the first request | [Getting Started](GETTING-STARTED.md) | [CLI](CLI.md), [Server](SERVER.md) |
 | Choose, download, or prepare a model | [Supported Models](SUPPORTED-MODELS.md) | [CLI](CLI.md#ax-engine) |
-| Use MTP or understand 4-bit vs 6-bit MTP results | [MTP Docs](mtp/README.md) | [Performance](PERFORMANCE.md#mtp-mode), [Benchmarks](BENCHMARKS.md#mtp-matrix) |
+| Use MTP or understand 4-bit vs 6-bit MTP results | [MTP Docs](mtp/README.md) | [Qwen3.6 MTP Peer Benchmark](mtp/qwen36-peer-comparison.md), [Performance](PERFORMANCE.md#mtp-mode), [Benchmarks](BENCHMARKS.md#mtp-matrix) |
 | Interpret public performance numbers | [Performance Docs Map](performance/README.md) | [Performance](PERFORMANCE.md), [Benchmarks](BENCHMARKS.md) |
 | Run or review benchmarks | [Benchmarks](BENCHMARKS.md) | [Benchmark Design](BENCH-DESIGN.md), [Serving Benchmarks](SERVING-BENCHMARKS.md) |
 | Serve OpenAI-compatible or Ollama-shaped APIs | [Server](SERVER.md) | [API Compatibility](API-COMPATIBILITY.md) |
@@ -103,6 +103,8 @@ diagnostic history, or out of scope for a claim.
   boundaries, and current cold-prefill/concurrency limits
 - [MTP Docs](mtp/README.md): MTP-specific navigation, validation notes, and
   tuning reports
+- [Qwen3.6 MTP Peer Benchmark](mtp/qwen36-peer-comparison.md): full AX Engine,
+  MTPLX, and lightning-mlx peer result table with fairness limitations
 - [N-gram Acceleration](NGRAM-ACCELERATION.md): n-gram acceleration claim
   taxonomy and evidence rules
 
