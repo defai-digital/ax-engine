@@ -27,8 +27,8 @@
 <rect x="248.0" y="144.0" width="518.3" height="20.0" rx="3" fill="#2eaf5f"/>
 <text x="774.3" y="159.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" font-weight="700" fill="#111827">483.5</text>
 <text x="234.0" y="189.0" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" fill="#374151">MTPLX</text>
-<rect x="248.0" y="174.0" width="524.9" height="20.0" rx="3" fill="#f2b705"/>
-<text x="780.9" y="189.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" font-weight="700" fill="#111827">489.6</text>
+<rect x="248.0" y="174.0" width="504.0" height="20.0" rx="3" fill="#f2b705"/>
+<text x="760.0" y="189.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" font-weight="700" fill="#111827">470.1</text>
 <text x="234.0" y="219.0" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" fill="#374151">lightning-mlx</text>
 <rect x="248.0" y="204.0" width="428.4" height="20.0" rx="3" fill="#2563eb"/>
 <text x="684.4" y="219.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" font-weight="700" fill="#dc2626">399.7</text>
@@ -45,8 +45,8 @@
 <rect x="248.0" y="380.0" width="197.3" height="20.0" rx="3" fill="#2eaf5f"/>
 <text x="453.3" y="395.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" font-weight="700" fill="#dc2626">184.0</text>
 <text x="234.0" y="425.0" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" fill="#374151">MTPLX</text>
-<rect x="248.0" y="410.0" width="211.1" height="20.0" rx="3" fill="#f2b705"/>
-<text x="467.1" y="425.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" font-weight="700" fill="#111827">196.9</text>
+<rect x="248.0" y="410.0" width="206.4" height="20.0" rx="3" fill="#f2b705"/>
+<text x="462.4" y="425.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" font-weight="700" fill="#111827">192.5</text>
 <text x="234.0" y="455.0" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" fill="#374151">lightning-mlx</text>
 <rect x="248.0" y="440.0" width="230.3" height="20.0" rx="3" fill="#2563eb"/>
 <text x="486.3" y="455.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" font-weight="700" fill="#111827">214.8</text>
@@ -55,10 +55,10 @@
 <rect x="248.0" y="498.0" width="224.5" height="20.0" rx="3" fill="#2eaf5f"/>
 <text x="480.5" y="513.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" font-weight="700" fill="#dc2626">209.4</text>
 <text x="234.0" y="543.0" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" fill="#374151">MTPLX</text>
-<rect x="248.0" y="528.0" width="263.2" height="20.0" rx="3" fill="#f2b705"/>
-<text x="519.2" y="543.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" font-weight="700" fill="#111827">245.5</text>
+<rect x="248.0" y="528.0" width="252.0" height="20.0" rx="3" fill="#f2b705"/>
+<text x="508.0" y="543.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" font-weight="700" fill="#111827">235.0</text>
 <text x="234.0" y="573.0" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" fill="#374151">lightning-mlx</text>
 <rect x="248.0" y="558.0" width="291.4" height="20.0" rx="3" fill="#2563eb"/>
 <text x="547.4" y="573.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" font-weight="700" fill="#111827">271.8</text>
-<text x="32" y="654" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#6b7280">Source: 2026-06-30-peer-comparison-apples-to-apples-refresh/summary.json   ·   Versions: AX Engine 6.6.1 · MTPLX 0.3.7 · lightning-mlx 0.7.0</text>
+<text x="32" y="654" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#6b7280">Source: 2026-07-01-peer-comparison-apples-to-apples-refresh/summary.json   ·   Versions: AX Engine 6.6.1 · MTPLX 1.0.4 · lightning-mlx 0.7.0</text>
 </svg>

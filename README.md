@@ -358,24 +358,24 @@ matrix below.
 | Target | Engine | Decode | Prefill | TTFT | Accept | Status |
 | --- | --- | ---: | ---: | ---: | ---: | --- |
 | Qwen3.6 27B 4-bit | AX Engine | 60.5 tok/s | 668.2 tok/s | 483 ms | 100.0% | ok |
-| Qwen3.6 27B 4-bit | MTPLX | 63.2 tok/s | 694.6 tok/s | 490 ms | 100.0% | ok |
+| Qwen3.6 27B 4-bit | MTPLX | 64.3 tok/s | 681.4 tok/s | 470 ms | 100.0% | ok |
 | Qwen3.6 27B 4-bit | lightning-mlx | 59.4 tok/s | 861.2 tok/s | 400 ms | 94.5% | ok |
 | Qwen3.6 27B 6-bit | AX Engine | 41.4 tok/s | 637.1 tok/s | 507 ms | 100.0% | ok |
 | Qwen3.6 27B 6-bit | MTPLX | - | - | - | - | no official 27B 6-bit MTP artifact |
 | Qwen3.6 27B 6-bit | lightning-mlx | - | - | - | - | no official 27B 6-bit MTP artifact |
 | Qwen3.6 35B-A3B 4-bit | AX Engine | 166.3 tok/s | 1,755.3 tok/s | 184 ms | 100.0% | ok |
-| Qwen3.6 35B-A3B 4-bit | MTPLX | 137.2 tok/s | 1,678.7 tok/s | 197 ms | 95.7% | ok |
+| Qwen3.6 35B-A3B 4-bit | MTPLX | 138.1 tok/s | 1,637.0 tok/s | 193 ms | 95.7% | ok |
 | Qwen3.6 35B-A3B 4-bit | lightning-mlx | 116.2 tok/s | 1,466.5 tok/s | 215 ms | 100.0% | ok |
 | Qwen3.6 35B-A3B 6-bit | AX Engine | 141.8 tok/s | 1,536.0 tok/s | 209 ms | 100.0% | ok |
-| Qwen3.6 35B-A3B 6-bit | MTPLX | 115.6 tok/s | 1,349.5 tok/s | 246 ms | 96.7% | ok |
+| Qwen3.6 35B-A3B 6-bit | MTPLX | 117.6 tok/s | 1,383.9 tok/s | 235 ms | 96.7% | ok |
 | Qwen3.6 35B-A3B 6-bit | lightning-mlx | 96.3 tok/s | 1,215.8 tok/s | 272 ms | 100.0% | ok |
 
 **Reading the rows.** The targeted 27B 4-bit AX-only rerun lands at
 **60.5 tok/s**, with **668.2 tok/s** prefill, **483 ms** TTFT, and a 100.0%
-accept rate. That keeps AX slightly behind MTPLX (**63.2 tok/s**, -4.2%) and
+accept rate. That keeps AX slightly behind MTPLX (**64.3 tok/s**, -5.9%) and
 ahead of lightning-mlx (**59.4 tok/s**, +2.0%) on this dense 27B 4-bit lane.
 The 35B-A3B rows remain from the full AX-only refresh: AX is still ahead of
-MTPLX by +21% (4-bit) and +23% (6-bit), and ahead of lightning-mlx by +43% and
+MTPLX by +20% (4-bit) and +21% (6-bit), and ahead of lightning-mlx by +43% and
 +47%. The 27B 6-bit peer cells remain blank because there is no official
 comparable 27B 6-bit MTP artifact. Source artifacts:
 [`2026-06-30-peer-comparison-27b4-ax-only-rerun`](benchmarks/results/mtp-qwen36-matrix/2026-06-30-peer-comparison-27b4-ax-only-rerun/summary.md)
@@ -388,15 +388,16 @@ including it would measure non-MTP decode. oMLX remains unmeasured because this
 repo does not yet have an oMLX Qwen3.6 MTP prompt-suite adapter.
 
 Peer comparison artifacts:
-[`summary.md`](benchmarks/results/mtp-qwen36-matrix/2026-06-30-peer-comparison-apples-to-apples-refresh/summary.md)
+[`summary.md`](benchmarks/results/mtp-qwen36-matrix/2026-07-01-peer-comparison-apples-to-apples-refresh/summary.md)
 and
-[`summary.json`](benchmarks/results/mtp-qwen36-matrix/2026-06-30-peer-comparison-apples-to-apples-refresh/summary.json).
-Engine versions are stamped on each chart: AX Engine 6.6.1, MTPLX 0.3.7, and
+[`summary.json`](benchmarks/results/mtp-qwen36-matrix/2026-07-01-peer-comparison-apples-to-apples-refresh/summary.json).
+Engine versions are stamped on each chart: AX Engine 6.6.1, MTPLX 1.0.4, and
 lightning-mlx v0.7.0 (git rev `ec19b3d` — the v0.7.0 release plus its merged
-post-tag streaming-content fix). The lightning-mlx rows were re-confirmed on
-2026-07-01 against that pinned v0.7.0 checkout
-([`summary.md`](benchmarks/results/mtp-qwen36-matrix/2026-07-01-lightning-rerun-fixed/summary.md))
-and match the promoted values within run-to-run variance.
+post-tag streaming-content fix). The MTPLX rows are from the 2026-07-01 MTPLX
+v1.0.4 rerun ([`summary.md`](benchmarks/results/mtp-qwen36-matrix/2026-07-01-mtplx-v104-rerun/summary.md));
+the lightning-mlx rows were re-confirmed the same day against the pinned v0.7.0
+checkout ([`summary.md`](benchmarks/results/mtp-qwen36-matrix/2026-07-01-lightning-rerun-fixed/summary.md)).
+Both match the prior promoted values within run-to-run variance.
 Detailed MTP notes, including the GLM-4.7 Flash smoke validation session, live in
 [`docs/mtp/`](docs/mtp/).
 

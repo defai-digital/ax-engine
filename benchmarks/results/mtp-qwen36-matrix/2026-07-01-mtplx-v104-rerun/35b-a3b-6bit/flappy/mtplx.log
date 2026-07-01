@@ -1,0 +1,103 @@
+PYTHONPATH=/Users/akiralam/code/ax-engine/.internal/reference/MTPLX
+$ /opt/homebrew/var/mtplx/venv-1.0.4/bin/python /Users/akiralam/code/ax-engine/scripts/bench_mtplx_prompt_suites.py --model /Users/akiralam/.cache/huggingface/hub/models--Youssofal--Qwen3.6-35B-A3B-MTPLX-Optimized-Balance/snapshots/59d30340bb031b11259fb94009b4027ade66a654 --suite flappy --prompts /Users/akiralam/code/ax-engine/benchmarks/prompts/mtp-suites/flappy.jsonl --output benchmarks/results/mtp-qwen36-matrix/2026-07-01-mtplx-v104-rerun/35b-a3b-6bit/flappy/mtplx.json --depth 1 --temperature 0.6 --top-p 0.95 --top-k 20 --max-tokens 1000 --repetitions 5 --warmup-repetitions 2 --cooldown 15.0 --inter-case-cooldown 10.0 --ignore-eos --profile stable --mtp-quant-mode cyankiwi --disable-thinking --allow-unverified-model
+
+flappy_pipes rep 1/7: decode=118.7 tok/s out=1000/1000 accept=495/505
+flappy_pipes rep 2/7: decode=119.5 tok/s out=1000/1000 accept=497/503
+flappy_pipes rep 3/7: decode=119.4 tok/s out=1000/1000 accept=494/505
+flappy_pipes rep 4/7: decode=119.4 tok/s out=1000/1000 accept=495/504
+flappy_pipes rep 5/7: decode=117.7 tok/s out=1000/1000 accept=494/506
+flappy_pipes rep 6/7: decode=118.6 tok/s out=1000/1000 accept=495/505
+flappy_pipes rep 7/7: decode=118.6 tok/s out=1000/1000 accept=494/505
+  [mtplx] inter-case cooldown 10s
+flappy_score_gates rep 1/7: decode=114.3 tok/s out=1000/1000 accept=476/523
+flappy_score_gates rep 2/7: decode=115.1 tok/s out=1000/1000 accept=479/521
+flappy_score_gates rep 3/7: decode=110.0 tok/s out=1000/1000 accept=453/546
+flappy_score_gates rep 4/7: decode=116.5 tok/s out=1000/1000 accept=484/516
+flappy_score_gates rep 5/7: decode=113.8 tok/s out=1000/1000 accept=474/525
+flappy_score_gates rep 6/7: decode=116.1 tok/s out=1000/1000 accept=481/518
+flappy_score_gates rep 7/7: decode=115.3 tok/s out=1000/1000 accept=483/517
+  [mtplx] inter-case cooldown 10s
+flappy_collision_checks rep 1/7: decode=117.8 tok/s out=1000/1000 accept=490/510
+flappy_collision_checks rep 2/7: decode=116.9 tok/s out=1000/1000 accept=489/510
+flappy_collision_checks rep 3/7: decode=116.3 tok/s out=1000/1000 accept=487/513
+flappy_collision_checks rep 4/7: decode=116.9 tok/s out=1000/1000 accept=487/512
+flappy_collision_checks rep 5/7: decode=118.2 tok/s out=1000/1000 accept=492/508
+flappy_collision_checks rep 6/7: decode=113.6 tok/s out=1000/1000 accept=487/513
+flappy_collision_checks rep 7/7: decode=117.4 tok/s out=1000/1000 accept=488/511
+  [mtplx] inter-case cooldown 10s
+flappy_sound_channels rep 1/7: decode=118.9 tok/s out=1000/1000 accept=496/504
+flappy_sound_channels rep 2/7: decode=119.2 tok/s out=1000/1000 accept=497/503
+flappy_sound_channels rep 3/7: decode=119.0 tok/s out=1000/1000 accept=498/502
+flappy_sound_channels rep 4/7: decode=118.1 tok/s out=1000/1000 accept=494/505
+flappy_sound_channels rep 5/7: decode=118.4 tok/s out=1000/1000 accept=495/505
+flappy_sound_channels rep 6/7: decode=119.2 tok/s out=1000/1000 accept=497/502
+flappy_sound_channels rep 7/7: decode=101.3 tok/s out=1000/1000 accept=498/501
+Saved to benchmarks/results/mtp-qwen36-matrix/2026-07-01-mtplx-v104-rerun/35b-a3b-6bit/flappy/mtplx.json
+{
+  "accept_rate": 0.9560622370094921,
+  "accepted_drafts": 9770,
+  "case_count": 4,
+  "complete_runs": 20,
+  "decode_tok_s": {
+    "median": 117.56501799254511,
+    "p10": 113.62139756870522,
+    "p90": 119.1763496095156,
+    "values": [
+      119.41599727094528,
+      119.39949635796677,
+      117.73433171140186,
+      118.58734016015433,
+      118.60569573531653,
+      109.95851324488426,
+      116.49988444604475,
+      113.76303328155458,
+      116.11153441980944,
+      115.346707336947,
+      116.32884881605611,
+      116.91511633153067,
+      118.19065298301419,
+      113.62139756870522,
+      117.39570427368834,
+      119.01137607314918,
+      118.11310940563881,
+      118.35938796319775,
+      119.1763496095156,
+      101.31264674045306
+    ]
+  },
+  "drafted_tokens": 10219,
+  "end_to_end_tok_s": {
+    "median": 114.33278090434399,
+    "p10": 110.49432564677743,
+    "p90": 116.02887744108573,
+    "values": [
+      116.15991919058922,
+      116.24350793225366,
+      114.5807367676729,
+      115.6691631898464,
+      115.47009544817111,
+      106.99454789203872,
+      113.2425610214423,
+      110.77872621436732,
+      112.84594086117994,
+      112.32014753068465,
+      112.90725541202582,
+      113.43620942750782,
+      114.61020360622362,
+      110.49432564677743,
+      114.0848250410151,
+      116.02887744108573,
+      115.12313752730621,
+      115.15163318115208,
+      115.95844242299114,
+      99.1597959064131
+    ]
+  },
+  "generated_tokens": 20000,
+  "incomplete_runs": 0,
+  "runs": 20,
+  "validations_passed": 4,
+  "validations_total": 4
+}
+
+[exit 0 after 640.3s]

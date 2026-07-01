@@ -1199,11 +1199,11 @@ MTP_PEER_LABELS = {
 # Engine versions behind the peer-comparison artifacts, surfaced on each chart so the
 # run is reproducible. Update alongside any re-benchmark. Provenance:
 #   AX Engine     = [workspace.package] version in Cargo.toml
-#   MTPLX         = /opt/homebrew/var/mtplx/venv-0.3.7 (pip: mtplx 0.3.7)
+#   MTPLX         = /opt/homebrew/var/mtplx/venv-1.0.4 (pip: mtplx 1.0.4)
 #   lightning-mlx = .internal/reference/lightning-mlx v0.7.0 (git rev ec19b3d, incl. post-tag streaming fix #3)
 MTP_PEER_VERSIONS = {
     "ax_engine": "6.6.1",
-    "mtplx": "0.3.7",
+    "mtplx": "1.0.4",
     "lightning_mlx": "0.7.0",
 }
 MTP_PEER_METRICS = {
