@@ -19,7 +19,7 @@ single definitive peer-engine ranking.
   `Youssofal/Qwen3.6-27B-MTPLX-Optimized-Speed`. The tensors derive from
   Qwen's official weights, but quantization and draft-head precision differ.
 - **AX 27B 4-bit output degeneracy.** The AX row enters a periodic whitespace
-  token cycle, so its 100.0% accept rate and 64.6 tok/s decode result are
+  token cycle, so its 100.0% accept rate and 64.3 tok/s decode result are
   inflated. It is retained for auditability and must not be promoted as a clean
   win.
 - **Prefill and TTFT scopes differ.** AX reports runner-internal timing, MTPLX
@@ -53,7 +53,7 @@ Decode tok/s is the closest comparable metric in this peer set, but the AX 27B
 
 | Target | AX Engine | MTPLX | lightning-mlx | Readout |
 | --- | ---: | ---: | ---: | --- |
-| Qwen3.6 27B 4-bit | 64.6 tok/s | 64.3 tok/s | 59.4 tok/s | AX row is degenerate; MTPLX and lightning are the cleaner peer read |
+| Qwen3.6 27B 4-bit | 64.3 tok/s | 64.3 tok/s | 59.4 tok/s | AX row is degenerate; MTPLX and lightning are the cleaner peer read |
 | Qwen3.6 27B 6-bit | 41.4 tok/s | - | - | No official comparable peer 27B 6-bit MTP artifact |
 | Qwen3.6 35B-A3B 4-bit | 166.3 tok/s | 138.1 tok/s | 116.2 tok/s | AX leads this production-config row |
 | Qwen3.6 35B-A3B 6-bit | 141.8 tok/s | 117.6 tok/s | 96.3 tok/s | AX leads this production-config row |
@@ -64,7 +64,7 @@ Decode tok/s is the closest comparable metric in this peer set, but the AX 27B
 
 | Target | Engine | Decode | Prefill | TTFT | Accept | Status |
 | --- | --- | ---: | ---: | ---: | ---: | --- |
-| Qwen3.6 27B 4-bit | AX Engine | 64.6 tok/s | 809.0 tok/s | 398 ms | 100.0% | Degenerate output; do not promote |
+| Qwen3.6 27B 4-bit | AX Engine | 64.3 tok/s | 812.6 tok/s | 402 ms | 100.0% | Degenerate output; do not promote |
 | Qwen3.6 27B 4-bit | MTPLX | 64.3 tok/s | 681.4 tok/s | 470 ms | 100.0% | ok |
 | Qwen3.6 27B 4-bit | lightning-mlx | 59.4 tok/s | 426.0 tok/s | 784 ms | 95.9% | ok |
 | Qwen3.6 27B 6-bit | AX Engine | 41.4 tok/s | 637.1 tok/s | 507 ms | 100.0% | ok |
@@ -94,7 +94,7 @@ accept rate need the limitations above to be interpreted correctly.
   [`summary.md`](../../benchmarks/results/mtp-qwen36-matrix/2026-07-01-peer-comparison-apples-to-apples/summary.md),
   [`summary.json`](../../benchmarks/results/mtp-qwen36-matrix/2026-07-01-peer-comparison-apples-to-apples/summary.json)
 - AX 27B 4-bit rerun:
-  [`summary.md`](../../benchmarks/results/mtp-qwen36-matrix/2026-07-01-27b4-ax-optimistic-gate0-full-r1/summary.md)
+  [`summary.md`](../../benchmarks/results/mtp-qwen36-matrix/2026-07-01-27b4-ax-only-full-rerun-seed44-r1/summary.md)
 - MTPLX 1.0.4 rerun:
   [`summary.md`](../../benchmarks/results/mtp-qwen36-matrix/2026-07-01-mtplx-v104-rerun/summary.md)
 - lightning-mlx prefix-cache-disabled rerun:

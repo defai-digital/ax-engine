@@ -73,7 +73,7 @@
   },
   "created_at": "2026-07-01",
   "notes": [
-    "27B 4-bit AX Engine row is refreshed from the 2026-06-30 targeted AX-only flappy rerun.",
+    "27B 4-bit AX Engine row is refreshed from the 2026-07-01 AX-only full flappy rerun with seed 44.",
     "Other AX Engine rows remain from the 2026-06-30 full AX-only flappy rerun.",
     "Other peer rows remain from the 2026-06-29 apples-to-apples run.",
     "MTPLX rows refreshed from the 2026-07-01 MTPLX v1.0.4 rerun (/opt/homebrew/var/mtplx/venv-1.0.4).",
@@ -84,7 +84,7 @@
   ],
   "rows": [
     {
-      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-07-01-27b4-ax-optimistic-gate0-full-r1/27b-4bit/flappy/ax_engine.json",
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-07-01-27b4-ax-only-full-rerun-seed44-r1/27b-4bit/flappy/ax_engine.json",
       "bits": 4,
       "engine": "ax_engine",
       "metric_contract": {
@@ -100,8 +100,8 @@
         "accept_source": "ax_engine_mtp_telemetry",
         "case_count": 4,
         "client_ttft_scope": "client_http_wall",
-        "client_wall_ttft_ms": 1545.7374169491231,
-        "decode_tok_s": 64.57924518942363,
+        "client_wall_ttft_ms": 1553.8131455541588,
+        "decode_tok_s": 64.31935585208186,
         "degeneracy_gate": {
           "cases": [
             {
@@ -287,9 +287,11 @@
           "threshold": 0.5
         },
         "prefill_source": "ax_engine_runner_prefill_time",
-        "prefill_tok_s": 809.0364094011835,
+        "prefill_tok_s": 812.6364071826058,
+        "random_seed": 44,
+        "seed": 44,
         "status": "ok",
-        "ttft_ms": 397.89599999999996,
+        "ttft_ms": 401.842,
         "ttft_scope": "runner_internal",
         "ttft_source": "ax_engine_runner_prefill_time"
       },

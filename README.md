@@ -357,7 +357,7 @@ auditability but is degenerate and must not be promoted as a clean win.
 
 | Target | AX Engine decode | MTPLX decode | lightning-mlx decode | Readout |
 | --- | ---: | ---: | ---: | --- |
-| Qwen3.6 27B 4-bit | 64.6 tok/s | 64.3 tok/s | 59.4 tok/s | AX row is degenerate; MTPLX and lightning are the cleaner peer read |
+| Qwen3.6 27B 4-bit | 64.3 tok/s | 64.3 tok/s | 59.4 tok/s | AX row is degenerate; MTPLX and lightning are the cleaner peer read |
 | Qwen3.6 27B 6-bit | 41.4 tok/s | - | - | No official comparable peer 27B 6-bit MTP artifact |
 | Qwen3.6 35B-A3B 4-bit | 166.3 tok/s | 138.1 tok/s | 116.2 tok/s | AX leads this production-config row |
 | Qwen3.6 35B-A3B 6-bit | 141.8 tok/s | 117.6 tok/s | 96.3 tok/s | AX leads this production-config row |
