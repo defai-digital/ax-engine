@@ -24,11 +24,11 @@
 <text x="939.0" y="37" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="13" fill="#374151">lightning-mlx</text>
 <text x="32" y="130.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="15" font-weight="700" fill="#111827">27B 4-bit</text>
 <text x="234.0" y="159.0" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" fill="#374151">AX Engine</text>
-<rect x="248.0" y="144.0" width="323.1" height="20.0" rx="3" fill="#2eaf5f" opacity="0.38"/>
-<text x="579.1" y="159.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" font-weight="700" fill="#111827">401.8 degenerate</text>
+<rect x="248.0" y="144.0" width="318.3" height="20.0" rx="3" fill="#2eaf5f" opacity="1"/>
+<text x="574.3" y="159.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" font-weight="700" fill="#dc2626">395.9</text>
 <text x="234.0" y="189.0" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" fill="#374151">MTPLX</text>
 <rect x="248.0" y="174.0" width="378.0" height="20.0" rx="3" fill="#f2b705" opacity="1"/>
-<text x="634.0" y="189.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" font-weight="700" fill="#dc2626">470.1</text>
+<text x="634.0" y="189.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" font-weight="700" fill="#111827">470.1</text>
 <text x="234.0" y="219.0" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" fill="#374151">lightning-mlx</text>
 <rect x="248.0" y="204.0" width="630.1" height="20.0" rx="3" fill="#2563eb" opacity="1"/>
 <text x="886.1" y="219.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" font-weight="700" fill="#111827">783.7</text>

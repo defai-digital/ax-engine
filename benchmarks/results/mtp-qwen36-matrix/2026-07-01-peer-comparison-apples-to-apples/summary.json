@@ -73,18 +73,17 @@
   },
   "created_at": "2026-07-01",
   "notes": [
-    "27B 4-bit AX Engine row is refreshed from the 2026-07-01 AX-only full flappy rerun with seed 44.",
+    "27B 4-bit AX Engine row is refreshed from the 2026-07-01 AX-only strict full flappy rerun with seed 44 and AX optimistic verify disabled.",
     "Other AX Engine rows remain from the 2026-06-30 full AX-only flappy rerun.",
     "Other peer rows remain from the 2026-06-29 apples-to-apples run.",
     "MTPLX rows refreshed from the 2026-07-01 MTPLX v1.0.4 rerun (/opt/homebrew/var/mtplx/venv-1.0.4).",
     "AX Engine and lightning-mlx rows are unchanged from the 2026-06-30 refresh.",
     "This is a production-configuration comparison, not an identical-MTP-weight apples-to-apples artifact.",
-    "AX 27B 4-bit is flagged by the output-degeneracy gate and must not be promoted for accept-rate or decode-throughput claims.",
     "Prefill and TTFT scopes differ by engine; only decode_tok_s has the same timing scope across all engines."
   ],
   "rows": [
     {
-      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-07-01-27b4-ax-only-full-rerun-seed44-r1/27b-4bit/flappy/ax_engine.json",
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-07-01-27b4-ax-strict-full-rerun-seed44-r1/27b-4bit/flappy/ax_engine.json",
       "bits": 4,
       "engine": "ax_engine",
       "metric_contract": {
@@ -100,77 +99,42 @@
         "accept_source": "ax_engine_mtp_telemetry",
         "case_count": 4,
         "client_ttft_scope": "client_http_wall",
-        "client_wall_ttft_ms": 1553.8131455541588,
-        "decode_tok_s": 64.31935585208186,
+        "client_wall_ttft_ms": 1551.7643335042521,
+        "decode_tok_s": 61.00198178366256,
         "degeneracy_gate": {
           "cases": [
             {
-              "coverage": 0.469,
-              "cycle": [
-                248046,
-                198,
-                248045,
-                554
-              ],
-              "cycle_length": 4,
-              "is_degenerate": true,
-              "method": "periodic_cycle",
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
               "prompt_case_id": "flappy_pipes",
               "token_count": 1000
             },
             {
-              "coverage": 0.469,
-              "cycle": [
-                248046,
-                198,
-                248045,
-                554
-              ],
-              "cycle_length": 4,
-              "is_degenerate": true,
-              "method": "periodic_cycle",
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
               "prompt_case_id": "flappy_pipes",
               "token_count": 1000
             },
             {
-              "coverage": 0.469,
-              "cycle": [
-                248046,
-                198,
-                248045,
-                554
-              ],
-              "cycle_length": 4,
-              "is_degenerate": true,
-              "method": "periodic_cycle",
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
               "prompt_case_id": "flappy_pipes",
               "token_count": 1000
             },
             {
-              "coverage": 0.469,
-              "cycle": [
-                248046,
-                198,
-                248045,
-                554
-              ],
-              "cycle_length": 4,
-              "is_degenerate": true,
-              "method": "periodic_cycle",
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
               "prompt_case_id": "flappy_pipes",
               "token_count": 1000
             },
             {
-              "coverage": 0.469,
-              "cycle": [
-                248046,
-                198,
-                248045,
-                554
-              ],
-              "cycle_length": 4,
-              "is_degenerate": true,
-              "method": "periodic_cycle",
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
               "prompt_case_id": "flappy_pipes",
               "token_count": 1000
             },
@@ -280,18 +244,18 @@
               "token_count": 1000
             }
           ],
-          "degenerate": true,
+          "degenerate": false,
           "gate": "output_entropy_cycle_coverage",
           "max_cycle_len": 8,
           "periodic_threshold": 0.45,
           "threshold": 0.5
         },
         "prefill_source": "ax_engine_runner_prefill_time",
-        "prefill_tok_s": 812.6364071826058,
+        "prefill_tok_s": 812.3401427398655,
         "random_seed": 44,
         "seed": 44,
         "status": "ok",
-        "ttft_ms": 401.842,
+        "ttft_ms": 395.902,
         "ttft_scope": "runner_internal",
         "ttft_source": "ax_engine_runner_prefill_time"
       },
@@ -1235,6 +1199,7 @@
     "benchmarks/results/mtp-qwen36-matrix/2026-06-30-27b4-flappy-rerun/summary.json",
     "benchmarks/results/mtp-qwen36-matrix/2026-06-30-peer-comparison-ax-only-rerun/summary.json",
     "benchmarks/results/mtp-qwen36-matrix/2026-06-30-peer-comparison-27b4-ax-only-rerun/summary.json",
-    "benchmarks/results/mtp-qwen36-matrix/2026-07-01-mtplx-v104-rerun/summary.json"
+    "benchmarks/results/mtp-qwen36-matrix/2026-07-01-mtplx-v104-rerun/summary.json",
+    "benchmarks/results/mtp-qwen36-matrix/2026-07-01-27b4-ax-strict-full-rerun-seed44-r1/summary.json"
   ]
 }

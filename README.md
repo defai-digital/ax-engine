@@ -310,9 +310,9 @@ Rules for current MTP benchmark artifacts:
   AX-only subsection, not mixed into the cross-engine matrix.
 - Direct rows are same-artifact denominators for `AX MTP / AX direct` decode
   acceleration, not a cross-model speed leaderboard.
-- Explicitly stamp `ax_mtp_optimistic` in plan and summary metadata so the
-  AX optimistic-verify mode choice is auditable; use `--no-ax-mtp-optimistic`
-  for strict rejection-sampling parity with peer engines.
+- Keep promoted peer rows on strict AX MTP verification
+  (`AX_MLX_MTP_OPTIMISTIC=0`). Optimistic verify is useful for AX-only
+  throughput experiments, but it is not a clean peer-comparison default.
 
 The benchmark prompt suites remain `flappy`, `long_code`, and
 `python_modules_long`, with sampled decode (`temperature=0.6`, `top_p=0.95`,
@@ -350,14 +350,15 @@ need separate interpretation:
 [`docs/mtp/qwen36-peer-comparison.md`](docs/mtp/qwen36-peer-comparison.md).
 
 This is a production-configuration comparison, not a strict identical-weight
-apples-to-apples benchmark. In particular, the AX 27B 4-bit row is retained for
-auditability but is degenerate and must not be promoted as a clean win.
+apples-to-apples benchmark. The AX 27B 4-bit row now uses strict MTP
+verification and passes the output-degeneracy gate; older optimistic artifacts
+remain useful only as audit/debug evidence.
 
-<img src="docs/assets/perf-mtp-peer-comparison-apples-to-apples.svg" alt="Qwen3.6 MTP peer comparison production-configuration chart showing decode throughput for AX Engine, MTPLX, and lightning-mlx across 27B and 35B 4-bit and 6-bit rows; degenerate rows are muted">
+<img src="docs/assets/perf-mtp-peer-comparison-apples-to-apples.svg" alt="Qwen3.6 MTP peer comparison production-configuration chart showing decode throughput for AX Engine, MTPLX, and lightning-mlx across 27B and 35B 4-bit and 6-bit rows">
 
 | Target | AX Engine decode | MTPLX decode | lightning-mlx decode | Readout |
 | --- | ---: | ---: | ---: | --- |
-| Qwen3.6 27B 4-bit | 64.3 tok/s | 64.3 tok/s | 59.4 tok/s | AX row is degenerate; MTPLX and lightning are the cleaner peer read |
+| Qwen3.6 27B 4-bit | 61.0 tok/s | 64.3 tok/s | 59.4 tok/s | AX strict row is clean; MTPLX leads this 27B 4-bit peer row |
 | Qwen3.6 27B 6-bit | 41.4 tok/s | - | - | No official comparable peer 27B 6-bit MTP artifact |
 | Qwen3.6 35B-A3B 4-bit | 166.3 tok/s | 138.1 tok/s | 116.2 tok/s | AX leads this production-config row |
 | Qwen3.6 35B-A3B 6-bit | 141.8 tok/s | 117.6 tok/s | 96.3 tok/s | AX leads this production-config row |

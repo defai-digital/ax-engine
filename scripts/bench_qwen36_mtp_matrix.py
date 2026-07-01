@@ -1197,7 +1197,8 @@ def parse_args() -> argparse.Namespace:
             "cross-request prefix cache for cold-prefill parity. "
             "`peer-optimized` applies the peer maintainer short-benchmark profile: "
             "3 prompts, 512 max tokens, no prefix cache, prefill step 8192, "
-            "single sequence/batches, MTPLX performance-cold, and lightning optimistic MTP. "
+            "single sequence/batches, AX strict MTP verify, MTPLX performance-cold, "
+            "and lightning optimistic MTP. "
             "`lightning-optimized` is accepted as a backward-compatible alias."
         ),
     )
@@ -1246,13 +1247,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--ax-mtp-optimistic",
         action=argparse.BooleanOptionalAction,
-        default=True,
+        default=False,
         help=(
             "Control AX Engine MTP optimistic verify mode. "
-            "Default ON matches AX runtime default (skip full-vocab softmax and "
-            "rejection sampling when drafts are accepted). "
-            "Use --no-ax-mtp-optimistic for strict rejection-sampling parity with "
-            "peer engines that always compute full softmax."
+            "Default OFF keeps promoted peer benchmarks on strict rejection "
+            "sampling so output-quality gates are meaningful. Use "
+            "--ax-mtp-optimistic for an AX-only throughput experiment."
         ),
     )
     lightning_prefix_cache = parser.add_mutually_exclusive_group()

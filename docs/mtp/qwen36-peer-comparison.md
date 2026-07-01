@@ -18,20 +18,22 @@ single definitive peer-engine ranking.
   `ax-local/Qwen3.6-27B-MTP`; MTPLX and lightning-mlx use
   `Youssofal/Qwen3.6-27B-MTPLX-Optimized-Speed`. The tensors derive from
   Qwen's official weights, but quantization and draft-head precision differ.
-- **AX 27B 4-bit output degeneracy.** The AX row enters a periodic whitespace
-  token cycle, so its 100.0% accept rate and 64.3 tok/s decode result are
-  inflated. It is retained for auditability and must not be promoted as a clean
-  win.
+- **AX optimistic verify is not a promoted peer default.** The earlier AX 27B
+  4-bit optimistic row entered a periodic whitespace token cycle and inflated
+  accept/decode. The current AX 27B 4-bit row reruns the same benchmark with
+  strict MTP verification (`AX_MLX_MTP_OPTIMISTIC=0`) and passes the
+  output-degeneracy gate.
 - **Prefill and TTFT scopes differ.** AX reports runner-internal timing, MTPLX
   derives from server-side `prompt_eval_time_s`, and lightning-mlx reports
   client-observed HTTP stream TTFT. These columns are shown for provenance but
   should not be read as a clean cross-engine prefill/TTFT leaderboard.
-- **Seeds differ.** AX uses fixed seed 0 for this artifact; MTPLX and
-  lightning-mlx use incrementing seeds per repetition.
+- **Seeds differ.** The refreshed AX 27B 4-bit row uses seed 44; older stitched
+  rows keep their source-run seed policy.
 - **Composite artifact.** Rows are stitched from multiple runs from
   2026-06-29 through 2026-07-01, not one physical same-session measurement.
-- **Dirty builds.** The promoted raw artifacts were produced from local dirty
-  checkouts. Reproducible publication should be rerun from clean tagged commits.
+- **Dirty builds.** Some stitched raw artifacts were produced from local dirty
+  checkouts. Reproducible publication should rerun every engine from clean
+  tagged commits.
 
 ## Benchmark Contract
 
@@ -44,16 +46,16 @@ single definitive peer-engine ranking.
 | Sampling | `temperature=0.6`, `top_p=0.95`, `top_k=20` |
 | Mode | Pure MTP |
 | Prefix cache | Cross-request prefix cache disabled for cold-prefill parity |
-| AX optimistic verify | Enabled (`AX_MLX_MTP_OPTIMISTIC=1`) |
+| AX optimistic verify | Disabled for the refreshed 27B 4-bit peer row (`AX_MLX_MTP_OPTIMISTIC=0`) |
 
 ## Decode Summary
 
-Decode tok/s is the closest comparable metric in this peer set, but the AX 27B
-4-bit row is still disqualified for promotion because of output degeneracy.
+Decode tok/s is the closest comparable metric in this peer set. The refreshed
+AX 27B 4-bit row is strict and passes the output-degeneracy gate.
 
 | Target | AX Engine | MTPLX | lightning-mlx | Readout |
 | --- | ---: | ---: | ---: | --- |
-| Qwen3.6 27B 4-bit | 64.3 tok/s | 64.3 tok/s | 59.4 tok/s | AX row is degenerate; MTPLX and lightning are the cleaner peer read |
+| Qwen3.6 27B 4-bit | 61.0 tok/s | 64.3 tok/s | 59.4 tok/s | AX strict row is clean; MTPLX leads this 27B 4-bit peer row |
 | Qwen3.6 27B 6-bit | 41.4 tok/s | - | - | No official comparable peer 27B 6-bit MTP artifact |
 | Qwen3.6 35B-A3B 4-bit | 166.3 tok/s | 138.1 tok/s | 116.2 tok/s | AX leads this production-config row |
 | Qwen3.6 35B-A3B 6-bit | 141.8 tok/s | 117.6 tok/s | 96.3 tok/s | AX leads this production-config row |
@@ -64,7 +66,7 @@ Decode tok/s is the closest comparable metric in this peer set, but the AX 27B
 
 | Target | Engine | Decode | Prefill | TTFT | Accept | Status |
 | --- | --- | ---: | ---: | ---: | ---: | --- |
-| Qwen3.6 27B 4-bit | AX Engine | 64.3 tok/s | 812.6 tok/s | 402 ms | 100.0% | Degenerate output; do not promote |
+| Qwen3.6 27B 4-bit | AX Engine | 61.0 tok/s | 812.3 tok/s | 396 ms | 100.0% | ok; strict verify |
 | Qwen3.6 27B 4-bit | MTPLX | 64.3 tok/s | 681.4 tok/s | 470 ms | 100.0% | ok |
 | Qwen3.6 27B 4-bit | lightning-mlx | 59.4 tok/s | 426.0 tok/s | 784 ms | 95.9% | ok |
 | Qwen3.6 27B 6-bit | AX Engine | 41.4 tok/s | 637.1 tok/s | 507 ms | 100.0% | ok |
@@ -94,7 +96,7 @@ accept rate need the limitations above to be interpreted correctly.
   [`summary.md`](../../benchmarks/results/mtp-qwen36-matrix/2026-07-01-peer-comparison-apples-to-apples/summary.md),
   [`summary.json`](../../benchmarks/results/mtp-qwen36-matrix/2026-07-01-peer-comparison-apples-to-apples/summary.json)
 - AX 27B 4-bit rerun:
-  [`summary.md`](../../benchmarks/results/mtp-qwen36-matrix/2026-07-01-27b4-ax-only-full-rerun-seed44-r1/summary.md)
+  [`summary.md`](../../benchmarks/results/mtp-qwen36-matrix/2026-07-01-27b4-ax-strict-full-rerun-seed44-r1/summary.md)
 - MTPLX 1.0.4 rerun:
   [`summary.md`](../../benchmarks/results/mtp-qwen36-matrix/2026-07-01-mtplx-v104-rerun/summary.md)
 - lightning-mlx prefix-cache-disabled rerun:

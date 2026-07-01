@@ -50,7 +50,7 @@ def make_args(root: Path) -> Namespace:
         prefill_step_size=None,
         lightning_mtp_draft_temperature=0.5,
         lightning_mtp_optimistic=False,
-        ax_mtp_optimistic=True,
+        ax_mtp_optimistic=False,
         lightning_disable_prefix_cache=False,
         lightning_enable_prefix_cache=False,
         base_port=18765,
@@ -77,20 +77,20 @@ class Qwen36MtpMatrixTests(unittest.TestCase):
         self.assertEqual(by_key[("27b-6bit", "rapid_mlx")], "unsupported")
         self.assertEqual(by_key[("27b-4bit", "omlx")], "unsupported")
 
-    def test_ax_env_sets_optimistic_on_by_default(self) -> None:
+    def test_ax_env_disables_optimistic_by_default(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             args = make_args(Path(tmp))
-            env = matrix.ax_env(args)
-
-        self.assertEqual(env["AX_MLX_MTP_OPTIMISTIC"], "1")
-
-    def test_ax_env_disables_optimistic_when_flag_is_false(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            args = make_args(Path(tmp))
-            args.ax_mtp_optimistic = False
             env = matrix.ax_env(args)
 
         self.assertEqual(env["AX_MLX_MTP_OPTIMISTIC"], "0")
+
+    def test_ax_env_enables_optimistic_when_flag_is_true(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            args = make_args(Path(tmp))
+            args.ax_mtp_optimistic = True
+            env = matrix.ax_env(args)
+
+        self.assertEqual(env["AX_MLX_MTP_OPTIMISTIC"], "1")
 
     def test_ax_command_is_mtp_only_and_disables_ngram_stacking(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

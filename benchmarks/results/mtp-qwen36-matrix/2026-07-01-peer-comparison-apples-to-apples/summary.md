@@ -2,7 +2,7 @@
 
 | Target | Suite | Engine | Decode | Prefill | TTFT | Accept | Status |
 |---|---|---|---:|---:|---:|---:|---|
-| Qwen3.6 27B 4-bit | `flappy` | `ax_engine` | 64.3 tok/s | 812.6 tok/s | 402 ms | 100.0% | ok [DEGENERATE OUTPUT] |
+| Qwen3.6 27B 4-bit | `flappy` | `ax_engine` | 61.0 tok/s | 812.3 tok/s | 396 ms | 100.0% | ok |
 | Qwen3.6 27B 4-bit | `flappy` | `mtplx` | 64.3 tok/s | 681.4 tok/s | 470 ms | 100.0% | ok |
 | Qwen3.6 27B 4-bit | `flappy` | `lightning_mlx` | 59.4 tok/s | 426.0 tok/s | 784 ms | 95.9% | ok |
 | Qwen3.6 27B 4-bit | `flappy` | `rapid_mlx` | - tok/s | - tok/s | - ms | - | unsupported |
@@ -28,8 +28,8 @@ Notes:
 - AX rows are pure MTP and fail summary generation if n-gram telemetry is non-zero.
 - MTPLX prefill and TTFT are derived from `prompt_eval_time_s` in the MTPLX runner.
 - Lightning prefill is approximate (`prompt_tokens / client TTFT`) and includes local HTTP overhead.
-- AX MTP optimistic verify: ON (skip full softmax on accepted drafts).
-- Seed: `engine defaults` (AX defaults to seed 0; MTPLX/lightning use their runner defaults).
+- AX 27B 4-bit row uses strict MTP verify (`AX_MLX_MTP_OPTIMISTIC=0`); older stitched AX rows keep their source-run mode.
+- AX 27B 4-bit seed: `44`; other stitched rows keep their source-run seed policy.
 
 **Measurement scope (TTFT / prefill):**
 
