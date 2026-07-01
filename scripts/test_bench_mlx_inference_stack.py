@@ -411,6 +411,37 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         self.assertEqual(row["peak_memory_gb"]["max"], 13.0)
         self.assertEqual(row["memory_source"], "server_process_rss_after_stream")
 
+    def test_bench_axengine_records_configured_seed(self) -> None:
+        run = {
+            "prefill_s": 0.3,
+            "decode_s": 0.1,
+            "ttft_ms": 300.0,
+            "client_wall_total_ms": 420.0,
+            "prefill_tok_s": 10.0,
+            "decode_tok_s": 20.0,
+            "output_tokens": 3.0,
+        }
+        with patch.object(bench, "axengine_one_run", side_effect=[dict(run), dict(run)]):
+            row = bench.bench_axengine(
+                19091,
+                [1, 2, 3],
+                3,
+                1,
+                1,
+                0.0,
+                model_metadata={},
+                direct_mode=True,
+                seed=44,
+                prompt_source="real",
+            )
+
+        self.assertEqual(row["random_seed"], 44)
+        self.assertEqual(row["seed"], 44)
+        self.assertEqual(row["prompt_contract"], "real_prompt_tokenized")
+        self.assertEqual(row["ax_decode_row_identity"]["seed"], 44)
+        self.assertEqual(row["trials"][0]["random_seed"], 44)
+        self.assertEqual(row["trials"][0]["seed"], 44)
+
     def test_ax_prefill_work_contract_labels_long_greedy_cache_only_boundary(
         self,
     ) -> None:
@@ -473,6 +504,51 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         self.assertAlmostEqual(run["client_wall_ttft_ms"], 123.0, places=6)
         self.assertAlmostEqual(run["client_wall_total_ms"], 456.0, places=6)
         self.assertEqual(run["ttft_ms"], 100.0)
+
+    def test_axengine_one_run_sends_configured_sampling_seed(self) -> None:
+        captured: dict[str, object] = {}
+
+        class FakeResponse:
+            status = 200
+
+            def __iter__(self):
+                frame = {
+                    "response": {
+                        "output_tokens": [42],
+                    },
+                }
+                yield b"event: response\n"
+                yield b"data: " + json.dumps(frame).encode() + b"\n"
+                yield b"\n"
+
+        class FakeConnection:
+            def __init__(self, *_args, **_kwargs) -> None:
+                pass
+
+            def request(self, *_args, **kwargs) -> None:
+                captured["body"] = kwargs["body"]
+
+            def getresponse(self) -> FakeResponse:
+                return FakeResponse()
+
+            def close(self) -> None:
+                pass
+
+        with patch.object(bench.http.client, "HTTPConnection", FakeConnection):
+            with patch.object(
+                bench.time, "perf_counter", side_effect=[10.0, 10.1, 10.456]
+            ):
+                bench.axengine_one_run(
+                    19091,
+                    [1, 2, 3, 4],
+                    1,
+                    sampler={"temperature": 0.6, "seed": 999},
+                    seed=44,
+                )
+
+        body = json.loads(captured["body"])
+        self.assertEqual(body["sampling"]["temperature"], 0.6)
+        self.assertEqual(body["sampling"]["seed"], 44)
 
     def test_axengine_one_run_decode_rate_matches_mlx_lm_generation_contract(
         self,

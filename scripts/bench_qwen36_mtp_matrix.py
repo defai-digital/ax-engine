@@ -306,6 +306,15 @@ def metric_median(row: dict[str, Any], metric: str) -> float | None:
     return median(numeric_samples(row.get(metric)))
 
 
+def shared_int_value(rows: list[dict[str, Any]], key: str) -> int | None:
+    values = {
+        int(value)
+        for row in rows
+        if isinstance((value := row.get(key)), int | float)
+    }
+    return next(iter(values)) if len(values) == 1 else None
+
+
 def telemetry_sum(artifact: dict[str, Any], key: str) -> int:
     total = 0
     for row in artifact.get("results", []):
@@ -362,6 +371,8 @@ def summarize_ax_artifact(artifact: dict[str, Any], artifact_path: Path) -> dict
         ),
         "client_wall_ttft_ms": median(client_ttft_values),
         "accept_rate": ax_accept_rate(artifact),
+        "random_seed": shared_int_value(rows, "random_seed"),
+        "seed": shared_int_value(rows, "seed"),
         "case_count": len(rows),
         "prefill_source": "ax_engine_runner_prefill_time",
         "ttft_source": "ax_engine_runner_prefill_time",
@@ -533,6 +544,8 @@ def ax_command(args: argparse.Namespace, target: Target, suite: str, output: Pat
     ]
     if args.prefill_step_size is not None:
         cmd.extend(["--prefill-step-size", str(args.prefill_step_size)])
+    if args.seed is not None:
+        cmd.extend(["--seed", str(args.seed)])
     if args.no_build_ax_engine:
         cmd.append("--no-build-ax-engine")
     return cmd
@@ -583,6 +596,8 @@ def mtplx_command(args: argparse.Namespace, target: Target, suite: str, output: 
     ]
     if policy := MTPLX_QUANT_POLICIES.get(target.key):
         cmd.extend(["--mtp-quant-policy", policy])
+    if args.seed is not None:
+        cmd.extend(["--seed", str(args.seed)])
     return cmd
 
 
@@ -642,6 +657,8 @@ def lightning_command(args: argparse.Namespace, target: Target, suite: str, outp
         cmd.append("--disable-prefix-cache")
     if args.prefill_step_size is not None:
         cmd.extend(["--prefill-step-size", str(args.prefill_step_size)])
+    if args.seed is not None:
+        cmd.extend(["--seed", str(args.seed)])
     return cmd
 
 
@@ -1083,6 +1100,11 @@ def write_summary_markdown(path: Path, summary: dict[str, Any]) -> None:
     provenance = summary.get("contract", {}).get("mtp_head_provenance", {})
     seed = summary["contract"].get("seed")
     seed_label = str(seed) if seed is not None else "engine defaults"
+    seed_note = (
+        f"- Seed: `{seed_label}` (forwarded to AX, MTPLX, and lightning runner commands)."
+        if seed is not None
+        else "- Seed: `engine defaults` (AX defaults to seed 0; MTPLX/lightning use their runner defaults)."
+    )
     lines += [
         "",
         "Notes:",
@@ -1091,7 +1113,7 @@ def write_summary_markdown(path: Path, summary: dict[str, Any]) -> None:
         "- MTPLX prefill and TTFT are derived from `prompt_eval_time_s` in the MTPLX runner.",
         "- Lightning prefill is approximate (`prompt_tokens / client TTFT`) and includes local HTTP overhead.",
         f"- AX MTP optimistic verify: {'ON (skip full softmax on accepted drafts)' if summary['contract'].get('ax_mtp_optimistic', True) else 'OFF (full rejection sampling)'}.",
-        f"- Seed: `{seed_label}` (AX uses mlx_lm-style fixed seed; lightning uses incrementing seeds per repetition).",
+        seed_note,
         "",
         "**Measurement scope (TTFT / prefill):**",
         "",

@@ -2992,12 +2992,14 @@ def axengine_one_run(
     capture_output_token_ids: bool = False,
     server_pid: int | None = None,
     sampler: dict[str, Any] | None = None,
+    seed: int = MLX_LM_RANDOM_SEED,
 ) -> dict[str, Any]:
     request_started = time.perf_counter()
     first_output_wall_s: float | None = None
-    sampling_dict: dict[str, Any] = {"ignore_eos": True}
+    sampling_dict: dict[str, Any] = {"ignore_eos": True, "seed": seed}
     if sampler:
         sampling_dict.update(sampler)
+    sampling_dict["seed"] = seed
     payload = json.dumps(
         {
             "input_tokens": tokens,
@@ -3222,8 +3224,8 @@ def bench_axengine(
     tokens: list[int],
     generation_tokens: int,
     repetitions: int,
-    warmup_repetitions: int,
-    cooldown: float,
+    warmup_repetitions: int | float = 1,
+    cooldown: float | None = None,
     *,
     model_metadata: dict[str, Any],
     direct_mode: bool = False,
@@ -3235,7 +3237,13 @@ def bench_axengine(
     sampler: dict[str, Any] | None = None,
     mtp_disable_ngram_stacking: bool = False,
     gemma4_assistant_mtp: bool = False,
+    seed: int = MLX_LM_RANDOM_SEED,
+    prompt_source: str = "random",
 ) -> dict[str, Any]:
+    if cooldown is None:
+        cooldown = float(warmup_repetitions)
+        warmup_repetitions = 1
+    warmup_repetitions = int(warmup_repetitions)
     engine_key = engine_key_override or (
         AX_ENGINE_DIRECT_KEY if direct_mode else AX_ENGINE_NGRAM_ACCEL_KEY
     )
@@ -3253,7 +3261,12 @@ def bench_axengine(
     )
     for warmup_index in range(warmup_repetitions):
         axengine_one_run(
-            port, tokens, generation_tokens, server_pid=server_pid, sampler=sampler
+            port,
+            tokens,
+            generation_tokens,
+            server_pid=server_pid,
+            sampler=sampler,
+            seed=seed,
         )
         print(
             f"    warmup {warmup_index + 1}/{warmup_repetitions}",
@@ -3271,8 +3284,11 @@ def bench_axengine(
             capture_output_token_ids=capture_output_token_ids,
             server_pid=server_pid,
             sampler=sampler,
+            seed=seed,
         )
         runs.append(run)
+        run["random_seed"] = seed
+        run["seed"] = seed
         prefill_label = (
             f"{run['prefill_tok_s']:.1f} tok/s"
             if run.get("prefill_tok_s") is not None
@@ -3349,8 +3365,13 @@ def bench_axengine(
                 )
             )
         ),
-        "prompt_contract": "mlx_lm_random_tokens_seed_0",
-        "random_seed": MLX_LM_RANDOM_SEED,
+        "prompt_contract": (
+            "real_prompt_tokenized"
+            if prompt_source == "real"
+            else "mlx_lm_random_tokens_seed_0"
+        ),
+        "random_seed": seed,
+        "seed": seed,
         "batch_size": 1,
         "prompt_tokens": len(tokens),
         "generation_tokens": generation_tokens,
@@ -3379,7 +3400,7 @@ def bench_axengine(
                 or "unknown"
             ),
             tokens=tokens,
-            seed=MLX_LM_RANDOM_SEED,
+            seed=seed,
             max_output_tokens=generation_tokens,
             sampler=sampler,
         ),
@@ -3390,7 +3411,7 @@ def bench_axengine(
                 or "unknown"
             ),
             tokens=tokens,
-            seed=MLX_LM_RANDOM_SEED,
+            seed=seed,
             max_output_tokens=generation_tokens,
             sampler=sampler,
         ),
@@ -4149,6 +4170,15 @@ def main() -> None:
     )
     parser.add_argument(
         "--generation-tokens", type=int, default=DEFAULT_GENERATION_TOKENS
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=MLX_LM_RANDOM_SEED,
+        help=(
+            "Sampling seed sent to AX generation requests. The default preserves "
+            "the historical mlx_lm.benchmark-compatible seed 0 contract."
+        ),
     )
     parser.add_argument("--repetitions", type=int, default=DEFAULT_REPETITIONS)
     parser.add_argument("--warmup-repetitions", type=int, default=1)
@@ -5017,6 +5047,8 @@ def main() -> None:
                             sampler=args.ax_sampling,
                             mtp_disable_ngram_stacking=mtp_disable_ngram_stacking,
                             gemma4_assistant_mtp=gemma4_assistant_mtp,
+                            seed=args.seed,
+                            prompt_source=prompt_doc.get("prompt_source", "random"),
                         )
                     )
                     results[-1]["prefill_step_size"] = args.prefill_step_size
@@ -5138,6 +5170,7 @@ def main() -> None:
         },
         "prompt_tokens": prompt_lengths,
         "generation_tokens": args.generation_tokens,
+        "seed": args.seed,
         "repetitions": args.repetitions,
         "warmup_repetitions": args.warmup_repetitions,
         "cooldown": args.cooldown,

@@ -105,6 +105,36 @@ class Qwen36MtpMatrixTests(unittest.TestCase):
         self.assertEqual(cmd[cmd.index("--warmup-repetitions") + 1], "2")
         self.assertNotIn("--ax-direct", cmd)
 
+    def test_commands_forward_seed_when_configured(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            args = make_args(Path(tmp))
+            args.seed = 44
+            target = matrix.TARGETS["27b-4bit"]
+            ax_cmd = matrix.ax_command(
+                args,
+                target,
+                "flappy",
+                args.output_dir / "ax.json",
+            )
+            mtplx_cmd = matrix.mtplx_command(
+                args,
+                target,
+                "flappy",
+                args.output_dir / "mtplx.json",
+            )
+            lightning_cmd = matrix.lightning_command(
+                args,
+                target,
+                "flappy",
+                args.output_dir / "lightning.json",
+            )
+
+        assert mtplx_cmd is not None
+        assert lightning_cmd is not None
+        for cmd in (ax_cmd, mtplx_cmd, lightning_cmd):
+            self.assertIn("--seed", cmd)
+            self.assertEqual(cmd[cmd.index("--seed") + 1], "44")
+
     def test_mtplx_command_allows_official_artifact_inspection_bypass(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             args = make_args(Path(tmp))
