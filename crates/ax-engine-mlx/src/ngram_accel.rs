@@ -1407,6 +1407,21 @@ pub(crate) fn sample_logit_row(
     if sampling.temperature <= 0.0 {
         return argmax_tok;
     }
+    if logits_all.shape().len() == 1 {
+        if let Some(tok) = sample_categorical_with_topk_gpu(logits_all, sampling, &[], rng) {
+            return tok;
+        }
+        eval(&[logits_all]);
+        return sample_categorical_into(
+            logits_all.data_f32(),
+            sampling,
+            &[],
+            rng,
+            sampling_probs_buf,
+            sampling_logits_buf,
+            sampling_candidates_buf,
+        );
+    }
     let p = pos as i32;
     let row = slice(logits_all, &[p, 0], &[p + 1, vocab], &[1, 1], None);
     if let Some(tok) = sample_categorical_with_topk_gpu(&row, sampling, &[], rng) {

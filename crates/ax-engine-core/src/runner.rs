@@ -90,8 +90,16 @@ pub struct RequestExecutionUpdate {
     pub request_id: RequestId,
     pub tokens_executed: u32,
     pub output_token: Option<u32>,
+    pub output_tokens: Vec<u32>,
     pub stop_reason: Option<StopReason>,
     pub error: Option<String>,
+}
+
+impl RequestExecutionUpdate {
+    #[inline]
+    pub fn has_output_tokens(&self) -> bool {
+        self.output_token.is_some() || !self.output_tokens.is_empty()
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -464,6 +472,7 @@ pub(crate) fn successful_runner_output_from_input(input: &RunnerInput) -> Runner
             request_id: item.request_id,
             tokens_executed: item.scheduled_token_count,
             output_token: None,
+            output_tokens: Vec::new(),
             stop_reason: None,
             error: None,
         });

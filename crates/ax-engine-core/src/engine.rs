@@ -807,13 +807,30 @@ impl EngineCore {
                 continue;
             }
 
-            if let Some(token_id) = update.output_token {
-                runner_tokens.push(SampledToken {
-                    request_id,
-                    token_id,
-                    stop_reason: update.stop_reason,
-                    logprob: None,
-                });
+            if update.has_output_tokens() {
+                if let Some(token_id) = update.output_token {
+                    runner_tokens.push(SampledToken {
+                        request_id,
+                        token_id,
+                        stop_reason: if update.output_tokens.is_empty() {
+                            update.stop_reason
+                        } else {
+                            None
+                        },
+                        logprob: None,
+                    });
+                }
+                let last_index = update.output_tokens.len().saturating_sub(1);
+                for (index, &token_id) in update.output_tokens.iter().enumerate() {
+                    runner_tokens.push(SampledToken {
+                        request_id,
+                        token_id,
+                        stop_reason: (index == last_index)
+                            .then_some(update.stop_reason)
+                            .flatten(),
+                        logprob: None,
+                    });
+                }
                 continue;
             }
 
@@ -931,7 +948,7 @@ impl EngineCore {
             )?;
 
             if item.mode == ExecutionMode::Prefill
-                && update.output_token.is_some()
+                && update.has_output_tokens()
                 && !prefill_completion_request_ids.contains(&update.request_id)
             {
                 return Err(EngineCoreError::RunnerContractViolation {
@@ -1021,7 +1038,7 @@ impl EngineCore {
             }
 
             for update in &runner_output.request_updates {
-                if update.output_token.is_some()
+                if update.has_output_tokens()
                     || (update.error.is_none()
                         && !matches!(update.stop_reason, Some(crate::sampling::StopReason::Error)))
                 {
@@ -1043,7 +1060,7 @@ impl EngineCore {
             )?;
             let failed = update.error.is_some()
                 || matches!(update.stop_reason, Some(crate::sampling::StopReason::Error));
-            let decode_result_sources = u32::from(update.output_token.is_some())
+            let decode_result_sources = u32::from(update.has_output_tokens())
                 + u32::from(seen_logits.contains(&request_id))
                 + u32::from(seen_logits_outputs.contains(&request_id));
             if failed && decode_result_sources > 0 {
@@ -1415,6 +1432,7 @@ mod tests {
                     request_id: item.request_id,
                     tokens_executed: item.scheduled_token_count,
                     output_token: None,
+                    output_tokens: Vec::new(),
                     stop_reason: None,
                     error: None,
                 })
@@ -1458,6 +1476,7 @@ mod tests {
                     request_id: item.request_id,
                     tokens_executed: item.scheduled_token_count,
                     output_token: None,
+                    output_tokens: Vec::new(),
                     stop_reason: None,
                     error: None,
                 })
@@ -1534,6 +1553,7 @@ mod tests {
                     request_id: item.request_id,
                     tokens_executed: 0,
                     output_token: None,
+                    output_tokens: Vec::new(),
                     stop_reason: Some(crate::sampling::StopReason::Error),
                     error: Some("simulated batch failure".into()),
                 })
@@ -1567,6 +1587,7 @@ mod tests {
                     request_id: item.request_id,
                     tokens_executed: item.scheduled_token_count,
                     output_token: Some(42),
+                    output_tokens: Vec::new(),
                     stop_reason: None,
                     error: None,
                 })
@@ -1600,6 +1621,7 @@ mod tests {
                     request_id: item.request_id,
                     tokens_executed: item.scheduled_token_count.saturating_sub(1),
                     output_token: None,
+                    output_tokens: Vec::new(),
                     stop_reason: None,
                     error: None,
                 })
@@ -1636,6 +1658,7 @@ mod tests {
                     request_id: item.request_id,
                     tokens_executed: item.scheduled_token_count,
                     output_token: (item.mode == ExecutionMode::Decode).then_some(self.token_id),
+                    output_tokens: Vec::new(),
                     stop_reason: (item.mode == ExecutionMode::Decode)
                         .then_some(self.stop_reason)
                         .flatten(),

@@ -99,6 +99,9 @@ pub struct MtpWeights {
     pub fc: QuantizedWeight,
     /// Final RMSNorm before applying the shared lm_head (mtp.norm.weight).
     pub mtp_norm: MlxArray,
+    /// Optional draft-only LM head, re-quantized from the main `lm_head` using
+    /// the MTPLX runtime recommendation or an explicit AX override.
+    pub draft_lm_head: Option<QuantizedWeight>,
     /// Pre-FC RMSNorm applied to the embedded token (mtp.pre_fc_norm_embedding.weight).
     pub pre_fc_norm_embedding: MlxArray,
     /// Pre-FC RMSNorm applied to the main model hidden state (mtp.pre_fc_norm_hidden.weight).
@@ -957,13 +960,15 @@ pub fn load_weights(artifacts: &NativeModelArtifacts) -> Result<ModelWeights, We
     crate::weight_rotation::shadow_log_rotation_candidates(specs);
 
     // Load MTP sidecar if present (e.g. `mtp.safetensors` alongside the main files).
-    let (mtp_max_depth, mtp_draft_sampling, mtp_sidecar_bits) =
+    let (mtp_max_depth, mtp_draft_sampling, mtp_sidecar_bits, mtp_draft_lm_head_spec) =
         load_mtp_sidecar(&root, &mut name_map);
     let mtp = load_mtp(
         &mut name_map,
+        &lm_head,
         mtp_max_depth,
         mtp_draft_sampling,
         mtp_sidecar_bits,
+        mtp_draft_lm_head_spec,
     );
     let gemma4_assistant_mtp = load_gemma4_assistant_mtp_status(&root, artifacts.manifest());
     let glm_mtp = load_glm_mtp_sidecar(&root, &mut name_map, artifacts.manifest());
@@ -1197,6 +1202,103 @@ fn mtp_take_weight(
     })
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct DraftLmHeadSpec {
+    bits: i32,
+    group_size: i32,
+}
+
+fn draft_lm_head_spec_from_runtime(v: &serde_json::Value) -> Option<DraftLmHeadSpec> {
+    let spec = v.get("recommended_draft_lm_head")?;
+    let mode = spec
+        .get("mode")
+        .and_then(|x| x.as_str())
+        .unwrap_or("affine");
+    if mode != "affine" {
+        return None;
+    }
+    let bits = spec.get("bits").and_then(|x| x.as_i64())? as i32;
+    let group_size = spec
+        .get("group_size")
+        .and_then(|x| x.as_i64())
+        .unwrap_or(64) as i32;
+    valid_draft_lm_head_spec(bits, group_size)
+}
+
+fn draft_lm_head_spec_from_env() -> Option<DraftLmHeadSpec> {
+    let bits = std::env::var("AX_MLX_MTP_DRAFT_LM_HEAD_BITS")
+        .ok()
+        .and_then(|v| v.parse::<i32>().ok())?;
+    let group_size = std::env::var("AX_MLX_MTP_DRAFT_LM_HEAD_GROUP_SIZE")
+        .ok()
+        .and_then(|v| v.parse::<i32>().ok())
+        .unwrap_or(64);
+    valid_draft_lm_head_spec(bits, group_size)
+}
+
+fn runtime_draft_lm_head_spec_enabled() -> bool {
+    std::env::var("AX_MLX_MTP_USE_RUNTIME_DRAFT_LM_HEAD")
+        .map(|v| v != "0")
+        .unwrap_or(false)
+}
+
+fn valid_draft_lm_head_spec(bits: i32, group_size: i32) -> Option<DraftLmHeadSpec> {
+    if (2..=8).contains(&bits) && group_size > 0 {
+        Some(DraftLmHeadSpec { bits, group_size })
+    } else {
+        None
+    }
+}
+
+fn build_draft_lm_head(
+    lm_head: &QuantizedWeight,
+    spec: DraftLmHeadSpec,
+) -> Option<QuantizedWeight> {
+    if lm_head.is_quantized() && lm_head.bits == spec.bits && lm_head.group_size == spec.group_size
+    {
+        return Some(lm_head.clone());
+    }
+    let dense = if let Some(scales) = &lm_head.scales {
+        dequantize_with_mode(
+            &lm_head.weight,
+            scales,
+            lm_head.biases.as_ref(),
+            Some(lm_head.group_size),
+            Some(lm_head.bits),
+            MlxQuantizationMode::Affine,
+            None,
+            Some(MlxDtype::Bfloat16),
+            None,
+        )
+    } else {
+        lm_head.weight.clone()
+    };
+    let dense = astype(&dense, MlxDtype::Bfloat16, None);
+    eval(&[&dense]);
+    let mut quantized = quantize(
+        &dense,
+        Some(spec.group_size),
+        Some(spec.bits),
+        MlxQuantizationMode::Affine,
+        None,
+        None,
+    );
+    if quantized.len() < 3 {
+        return None;
+    }
+    let weight = quantized.remove(0);
+    let scales = quantized.remove(0);
+    let biases = quantized.remove(0);
+    eval(&[&weight, &scales, &biases]);
+    Some(QuantizedWeight {
+        weight,
+        scales: Some(scales),
+        biases: Some(biases),
+        group_size: spec.group_size,
+        bits: spec.bits,
+    })
+}
+
 /// Load the MTP sidecar file (`mtp.safetensors`) if present alongside the main model.
 ///
 /// Adds sidecar tensors into `name_map` and returns
@@ -1210,7 +1312,12 @@ fn mtp_take_weight(
 fn load_mtp_sidecar(
     root: &std::path::Path,
     name_map: &mut HashMap<String, MlxArray>,
-) -> (usize, MlxSamplingParams, Option<i32>) {
+) -> (
+    usize,
+    MlxSamplingParams,
+    Option<i32>,
+    Option<DraftLmHeadSpec>,
+) {
     // MTPLX default draft sampler: temperature slightly above target (0.6) to
     // ensure rejection-sampling acceptance rates ≥97%.
     // AX_MLX_MTP_DRAFT_TEMPERATURE overrides the draft temperature from the
@@ -1220,11 +1327,11 @@ fn load_mtp_sidecar(
 
     let sidecar = root.join("mtp.safetensors");
     if !sidecar.exists() {
-        return (0, default_draft, None);
+        return (0, default_draft, None, None);
     }
     let tensors = match load_safetensors(&sidecar, None) {
         Ok(t) => t,
-        Err(_) => return (0, default_draft, None),
+        Err(_) => return (0, default_draft, None, None),
     };
     if !tensors.is_empty() {
         let refs: Vec<&MlxArray> = tensors.values().collect();
@@ -1264,12 +1371,18 @@ fn load_mtp_sidecar(
             depth,
             apply_draft_temperature_override(draft_sampling),
             sidecar_bits,
+            if runtime_draft_lm_head_spec_enabled() {
+                draft_lm_head_spec_from_runtime(&v).or_else(draft_lm_head_spec_from_env)
+            } else {
+                draft_lm_head_spec_from_env()
+            },
         );
     }
     (
         apply_mtp_max_depth_cap(1),
         apply_draft_temperature_override(default_draft),
         None,
+        draft_lm_head_spec_from_env(),
     )
 }
 
@@ -1597,9 +1710,11 @@ fn sanitize_mtp_norm(w: MlxArray, key: &str, any_corrected: &mut bool) -> MlxArr
 /// n-gram speculative decoding.
 fn load_mtp(
     name_map: &mut HashMap<String, MlxArray>,
+    lm_head: &QuantizedWeight,
     max_depth: usize,
     draft_sampling: MlxSamplingParams,
     sidecar_bits: Option<i32>,
+    draft_lm_head_spec: Option<DraftLmHeadSpec>,
 ) -> Option<MtpWeights> {
     if max_depth == 0 {
         return None;
@@ -1781,6 +1896,7 @@ fn load_mtp(
     Some(MtpWeights {
         fc,
         mtp_norm,
+        draft_lm_head: draft_lm_head_spec.and_then(|spec| build_draft_lm_head(lm_head, spec)),
         pre_fc_norm_embedding,
         pre_fc_norm_hidden,
         attn_norm,

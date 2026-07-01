@@ -3238,6 +3238,7 @@ fn failed_runner_output_from_input(
                 request_id: item.request_id,
                 tokens_executed: 0,
                 output_token: None,
+                output_tokens: Vec::new(),
                 stop_reason: Some(StopReason::Error),
                 error: Some(error_message.clone()),
             })
@@ -6581,8 +6582,7 @@ fn completed_real_model_forward_step(
         !prefill_completion_request_ids.contains(request_id)
             && updates_by_request_id
                 .get(request_id)
-                .and_then(|update| update.output_token)
-                .is_some()
+                .is_some_and(|update| update.has_output_tokens())
     }) {
         return false;
     }
@@ -6601,13 +6601,12 @@ fn completed_real_model_forward_step(
     decode_request_ids.iter().all(|request_id| {
         updates_by_request_id
             .get(request_id)
-            .and_then(|update| update.output_token)
-            .is_some()
+            .is_some_and(|update| update.has_output_tokens())
             || logits_output_request_ids.contains(request_id)
     }) && prefill_completion_request_ids.iter().all(|request_id| {
         updates_by_request_id
             .get(request_id)
-            .is_some_and(|update| update.output_token.is_some())
+            .is_some_and(|update| update.has_output_tokens())
             || logits_output_request_ids.contains(request_id)
     })
 }

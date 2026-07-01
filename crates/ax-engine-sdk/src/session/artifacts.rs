@@ -120,6 +120,7 @@ mod tests {
                     request_id: item.request_id,
                     tokens_executed: item.scheduled_token_count,
                     output_token: None,
+                    output_tokens: Vec::new(),
                     stop_reason: None,
                     error: None,
                 })

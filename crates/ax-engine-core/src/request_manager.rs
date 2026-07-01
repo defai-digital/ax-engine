@@ -297,16 +297,12 @@ impl RequestManager {
         sampled_tokens: &[SampledToken],
         sampled_request_ids: &[RequestId],
     ) -> Result<RunnerApplySummary, RequestManagerError> {
-        let mut sampled_by_request = BTreeMap::new();
+        let mut sampled_by_request: BTreeMap<_, Vec<_>> = BTreeMap::new();
         for sampled_token in sampled_tokens {
-            if sampled_by_request
-                .insert(sampled_token.request_id, sampled_token.clone())
-                .is_some()
-            {
-                return Err(RequestManagerError::DuplicateSampledToken(
-                    sampled_token.request_id,
-                ));
-            }
+            sampled_by_request
+                .entry(sampled_token.request_id)
+                .or_default()
+                .push(sampled_token.clone());
         }
 
         let sampled_requests = sampled_request_ids.iter().copied().collect::<BTreeSet<_>>();
@@ -354,13 +350,16 @@ impl RequestManager {
             }
 
             let sampled_stop_reason = if sampled_requests.contains(&update.request_id) {
-                let sampled_token = sampled_by_request.remove(&update.request_id).ok_or(
+                let sampled_tokens = sampled_by_request.remove(&update.request_id).ok_or(
                     RequestManagerError::ProgressInvariantViolation {
                         request_id: update.request_id,
                         message: "sampleable update missing sampled token",
                     },
                 )?;
-                if matches!(sampled_token.stop_reason, Some(StopReason::Error)) {
+                if sampled_tokens
+                    .iter()
+                    .any(|token| matches!(token.stop_reason, Some(StopReason::Error)))
+                {
                     record
                         .fail("sampler reported stop_reason=Error")
                         .map_err(|source| RequestManagerError::InvalidStateTransition {
@@ -396,10 +395,22 @@ impl RequestManager {
                 if record.generated_tokens.is_empty() {
                     summary.ttft_events += 1;
                 }
-                let stop = sampled_token.stop_reason;
-                if !matches!(stop, Some(StopReason::EosToken)) {
-                    record.generated_tokens.push(sampled_token.token_id);
-                    record.generated_token_logprobs.push(sampled_token.logprob);
+                let mut stop = None;
+                for sampled_token in sampled_tokens {
+                    stop = sampled_token.stop_reason;
+                    if !matches!(stop, Some(StopReason::EosToken)) {
+                        if record.generated_tokens.len() as u32 >= record.max_output_tokens {
+                            return Err(RequestManagerError::ProgressInvariantViolation {
+                                request_id: update.request_id,
+                                message: "sampled output exceeded max_output_tokens",
+                            });
+                        }
+                        record.generated_tokens.push(sampled_token.token_id);
+                        record.generated_token_logprobs.push(sampled_token.logprob);
+                    }
+                    if stop.is_some() {
+                        break;
+                    }
                 }
                 stop
             } else {
@@ -770,6 +781,7 @@ mod tests {
                         request_id: RequestId(1),
                         tokens_executed: 3,
                         output_token: None,
+                        output_tokens: Vec::new(),
                         stop_reason: None,
                         error: None,
                     }],
@@ -814,6 +826,7 @@ mod tests {
                         request_id: RequestId(1),
                         tokens_executed: 1,
                         output_token: None,
+                        output_tokens: Vec::new(),
                         stop_reason: None,
                         error: None,
                     }],
@@ -844,6 +857,71 @@ mod tests {
     }
 
     #[test]
+    fn applies_decode_runner_token_batch_and_counts_one_ttft() {
+        let mut manager = RequestManager::new(CacheGroupId(7));
+
+        manager.submit(make_submission(1, 1, "qwen3")).unwrap();
+        manager.admit_waiting().unwrap();
+        {
+            let record = manager.records.get_mut(&RequestId(1)).unwrap();
+            record.processed_prompt_tokens = 3;
+            record.mark_runnable().unwrap();
+            record.start_running().unwrap();
+        }
+
+        let summary = manager
+            .apply_execution_results(
+                &RunnerOutput {
+                    step_id: StepId(2),
+                    request_updates: vec![crate::runner::RequestExecutionUpdate {
+                        request_id: RequestId(1),
+                        tokens_executed: 1,
+                        output_token: Some(99),
+                        output_tokens: vec![100, 101],
+                        stop_reason: None,
+                        error: None,
+                    }],
+                    logits_handles: vec![],
+                    logits_outputs: vec![],
+                    kv_write_summary: KvWriteSummary {
+                        tokens_written: 1,
+                        blocks_touched: 1,
+                    },
+                    route_metadata: crate::scheduler::RouteMetadata::empty(),
+                    execution_status: ExecutionStatus::Success,
+                },
+                &[
+                    crate::sampling::SampledToken {
+                        request_id: RequestId(1),
+                        token_id: 99,
+                        stop_reason: None,
+                        logprob: None,
+                    },
+                    crate::sampling::SampledToken {
+                        request_id: RequestId(1),
+                        token_id: 100,
+                        stop_reason: None,
+                        logprob: None,
+                    },
+                    crate::sampling::SampledToken {
+                        request_id: RequestId(1),
+                        token_id: 101,
+                        stop_reason: None,
+                        logprob: None,
+                    },
+                ],
+                &[RequestId(1), RequestId(1), RequestId(1)],
+            )
+            .unwrap();
+
+        assert_eq!(summary.ttft_events, 1);
+        let snapshot = manager.snapshot(RequestId(1)).unwrap();
+        assert_eq!(snapshot.state, RequestState::Runnable);
+        assert_eq!(snapshot.generated_tokens, vec![99, 100, 101]);
+        assert_eq!(snapshot.generated_token_logprobs, vec![None, None, None]);
+    }
+
+    #[test]
     fn sampler_error_transitions_request_to_failed_without_fake_token() {
         let mut manager = RequestManager::new(CacheGroupId(7));
 
@@ -864,6 +942,7 @@ mod tests {
                         request_id: RequestId(1),
                         tokens_executed: 1,
                         output_token: None,
+                        output_tokens: Vec::new(),
                         stop_reason: None,
                         error: None,
                     }],
@@ -1016,6 +1095,7 @@ mod tests {
                         request_id: RequestId(1),
                         tokens_executed: 3,
                         output_token: None,
+                        output_tokens: Vec::new(),
                         stop_reason: None,
                         error: None,
                     }],
@@ -1141,6 +1221,7 @@ mod tests {
                         request_id: RequestId(1),
                         tokens_executed: 0,
                         output_token: None,
+                        output_tokens: Vec::new(),
                         stop_reason: None,
                         error: Some("simulated runner failure".into()),
                     }],

@@ -87,9 +87,10 @@ use crate::kv_cache::{MlxKVCache, MlxKVCacheUsage};
 use crate::model::{
     DecodeProfileSnapshot, Gemma4MoeProfileSnapshot, LinearAttentionProfileSnapshot, ModelConfig,
     MoeProfileSnapshot, PrefillProfileSnapshot, TurboQuantModelDecodeContext,
-    forward_all_positions_with_post_norm, take_decode_profile_snapshot,
-    take_gemma4_moe_profile_snapshot, take_linear_attention_profile_snapshot,
-    take_moe_profile_snapshot, take_prefill_profile_snapshot,
+    forward_all_positions_post_norm_last_lm_head, forward_all_positions_with_post_norm,
+    take_decode_profile_snapshot, take_gemma4_moe_profile_snapshot,
+    take_linear_attention_profile_snapshot, take_moe_profile_snapshot,
+    take_prefill_profile_snapshot,
 };
 use crate::mtp::{glm_mtp_draft_tokens, mtp_draft_tokens, mtp_draft_tokens_after_forced_prefix};
 use crate::ngram_accel::{
@@ -4774,6 +4775,7 @@ impl MlxRunner {
                     request_id: item.request_id,
                     tokens_executed: 0,
                     output_token: None,
+                    output_tokens: Vec::new(),
                     stop_reason: None,
                     error: Some("empty token slice".into()),
                 },
@@ -4861,10 +4863,10 @@ impl MlxRunner {
         let mut kv_compression_shadow_sync_wall_us = None;
 
         // GPU work — mutex is NOT held during prefill, decode, or n-gram acceleration steps.
-        let sampled_token = match item.mode {
+        let sampled_tokens = match item.mode {
             ExecutionMode::Prefill => {
                 let prefill_started = Instant::now();
-                if let Some(inputs) = gemma4_unified_inputs {
+                let sampled_token = if let Some(inputs) = gemma4_unified_inputs {
                     if !prefill_completes_prompt {
                         return errored_item_run(
                             item.request_id,
@@ -5120,12 +5122,13 @@ impl MlxRunner {
                     } else {
                         prefill_completes_prompt.then_some(tok)
                     }
-                }
+                };
+                sampled_token.into_iter().collect()
             }
             ExecutionMode::Decode => {
                 let decode_started = Instant::now();
                 let final_by_max_output = generated_len.saturating_add(1) >= max_output;
-                let tok = if generated_len == 0 {
+                let tokens = if generated_len == 0 {
                     if let Some(tok) = state.cached_prefill_output_token.take() {
                         kv_compression_shadow_sync_wall_us = self.initialize_generation_state(
                             &mut state,
@@ -5134,7 +5137,7 @@ impl MlxRunner {
                             Some(tok),
                             is_greedy,
                         );
-                        tok
+                        vec![tok]
                     } else {
                         self.decode_one(
                             &mut state,
@@ -5164,21 +5167,21 @@ impl MlxRunner {
                 state
                     .decode_telemetry
                     .record_decode(elapsed_us(decode_started));
-                Some(tok)
+                tokens
             }
         };
 
-        let stop_reason = sampled_token.and_then(|sampled_token| {
-            stop_reason_for_sampled_token(
-                sampled_token,
-                generated_len,
-                max_output,
-                terminal_token_ids,
-            )
-        });
-        if let Some(sampled_token) = sampled_token {
-            state.generated_tokens.push(sampled_token);
-            update_ngram_think_state(&self.cfg, &mut state.ngram_in_think, sampled_token);
+        let (sampled_tokens, stop_reason) = truncate_sampled_tokens_for_stop(
+            sampled_tokens,
+            generated_len,
+            max_output,
+            terminal_token_ids,
+        );
+        if stop_reason.is_none() {
+            for &sampled_token in &sampled_tokens {
+                state.generated_tokens.push(sampled_token);
+                update_ngram_think_state(&self.cfg, &mut state.ngram_in_think, sampled_token);
+            }
         }
 
         // Re-insert state only if the request continues — lock held briefly.
@@ -5231,11 +5234,16 @@ impl MlxRunner {
             clear_cache();
         }
 
+        let mut sampled_tokens = sampled_tokens.into_iter();
+        let output_token = sampled_tokens.next();
+        let output_tokens = sampled_tokens.collect();
+
         MlxItemRun {
             update: RequestExecutionUpdate {
                 request_id: item.request_id,
                 tokens_executed: item.scheduled_token_count,
-                output_token: sampled_token,
+                output_token,
+                output_tokens,
                 stop_reason,
                 error: None,
             },
@@ -5805,20 +5813,20 @@ impl MlxRunner {
         sampling: MlxSamplingParams,
         is_greedy: bool,
         options: DecodeOneOptions<'_>,
-    ) -> u32 {
+    ) -> Vec<u32> {
         // Serve pre-verified bonus tokens without re-running the model.
         // (Bonus tokens only exist on the n-gram acceleration path; the direct pipeline
         // never populates the bonus queue.)
         if let Some(tok) = state.bonus_queue.pop_front() {
             state.decode_telemetry.record_bonus_token();
-            return tok;
+            return vec![tok];
         }
 
         // Serve buffered diffusion block tokens. DiffusionGemma generates
         // canvas_size tokens per block via bidirectional denoising; the runner
         // drains them one at a time through the standard decode path.
         if let Some(tok) = state.diffusion_block_queue.pop_front() {
-            return tok;
+            return vec![tok];
         }
 
         // Diffusion path: when the diffusion queue is exhausted, generate a
@@ -5848,7 +5856,7 @@ impl MlxRunner {
             }
             let tok = queue.pop_front().unwrap_or(0);
             state.diffusion_block_queue = queue;
-            return tok;
+            return vec![tok];
         }
 
         // Double-buffer direct pipeline: materialise the pending lazy token while
@@ -5865,12 +5873,12 @@ impl MlxRunner {
                 .next_model_last_token
                 .or_else(|| input_tokens.last().copied())
                 .unwrap_or(0);
-            return self.run_direct_pipeline_decode(
+            return vec![self.run_direct_pipeline_decode(
                 state,
                 last_token,
                 options.final_by_max_output,
                 false,
-            );
+            )];
         }
 
         let last_token = state
@@ -5889,12 +5897,12 @@ impl MlxRunner {
             state
                 .ngram_acceleration
                 .record_request_disabled_reason(state.ngram_request_disable_reason);
-            return self.run_direct_pipeline_decode(
+            return vec![self.run_direct_pipeline_decode(
                 state,
                 last_token,
                 options.final_by_max_output,
                 false,
-            );
+            )];
         }
 
         let result = self.run_model_decode(
@@ -6573,27 +6581,43 @@ impl MlxRunner {
             // speculative token. Verify on a clone; adopt it only when the full
             // draft is accepted, otherwise recompute the committed prefix on the
             // original cache.
+            let clone_started = Instant::now();
             let mut verify_cache = state.cache.clone();
-            let verify_forward_started = Instant::now();
-            let (logits_all, post_norm_all) = forward_all_positions_with_post_norm(
-                &self.cfg,
-                &self.weights,
-                &verify_input,
-                &mut verify_cache,
-                token_offset,
-            );
-            mtp_timings.verify_forward_wall_us = elapsed_us(verify_forward_started);
-            verify_cache.seq_len += verify_len;
-
+            mtp_timings.cache_clone_wall_us = elapsed_us(clone_started);
             if optimistic {
                 // ── Optimistic shortcut (default ON; kill-switch AX_MLX_MTP_OPTIMISTIC=0) ──
                 // Accept all drafts without rejection sampling.
                 let ac = pending.len();
-                let predicted_arr = argmax(&logits_all, None);
+                let needs_predicted =
+                    sampling.temperature <= 0.0 || (auto_optimistic && !self.mtp_optimistic);
+                let verify_forward_started = Instant::now();
+                let (logits_all, post_norm_all) = if needs_predicted {
+                    forward_all_positions_with_post_norm(
+                        &self.cfg,
+                        &self.weights,
+                        &verify_input,
+                        &mut verify_cache,
+                        token_offset,
+                    )
+                } else {
+                    forward_all_positions_post_norm_last_lm_head(
+                        &self.cfg,
+                        &self.weights,
+                        &verify_input,
+                        &mut verify_cache,
+                        token_offset,
+                    )
+                };
+                mtp_timings.verify_forward_wall_us = elapsed_us(verify_forward_started);
+                verify_cache.seq_len += verify_len;
+                let predicted_arr = needs_predicted.then(|| argmax(&logits_all, None));
+                let draft_hidden = slice_post_norm_hidden(&post_norm_all, ac, self.cfg.hidden_size);
                 let kv_refs = verify_cache.collect_eval_refs();
                 let mut targets: Vec<&MlxArray> = Vec::with_capacity(2 + kv_refs.len());
-                targets.push(&predicted_arr);
-                targets.push(&post_norm_all);
+                if let Some(ref predicted_arr) = predicted_arr {
+                    targets.push(predicted_arr);
+                }
+                targets.push(&draft_hidden);
                 targets.extend(kv_refs);
                 let verify_eval_started = Instant::now();
                 eval(&targets);
@@ -6602,8 +6626,10 @@ impl MlxRunner {
                 let _ = verify_cache.trim_to(token_offset + 1 + ac);
                 state.cache = verify_cache;
                 mtp_timings.rollback_wall_us = elapsed_us(rollback_started);
-                let draft_hidden = slice_post_norm_hidden(&post_norm_all, ac, self.cfg.hidden_size);
-                let predicted: Vec<u32> = predicted_arr.data_u32().to_vec();
+                let predicted: Vec<u32> = predicted_arr
+                    .as_ref()
+                    .map(|arr| arr.data_u32().to_vec())
+                    .unwrap_or_default();
                 let correction_argmax_tok = predicted.get(ac).copied().unwrap_or(0);
                 // Track true acceptance for EWMA so auto-optimistic can
                 // deactivate if draft quality drops.
@@ -6625,6 +6651,16 @@ impl MlxRunner {
                     predicted,
                 )
             } else {
+                let verify_forward_started = Instant::now();
+                let (logits_all, post_norm_all) = forward_all_positions_with_post_norm(
+                    &self.cfg,
+                    &self.weights,
+                    &verify_input,
+                    &mut verify_cache,
+                    token_offset,
+                );
+                mtp_timings.verify_forward_wall_us = elapsed_us(verify_forward_started);
+                verify_cache.seq_len += verify_len;
                 // Target probabilities for rejection-sampling acceptance.
                 // Full-vocab softmax by default; top-k approximation when
                 // AX_MLX_MTP_TARGET_SOFTMAX_MODE is set (e.g. topk_128).
@@ -6722,25 +6758,39 @@ impl MlxRunner {
             }
         } else {
             // Non-linear-attention: run directly, trim on rejection.
-            let verify_forward_started = Instant::now();
-            let (logits_all, post_norm_all) = forward_all_positions_with_post_norm(
-                &self.cfg,
-                &self.weights,
-                &verify_input,
-                &mut state.cache,
-                token_offset,
-            );
-            mtp_timings.verify_forward_wall_us = elapsed_us(verify_forward_started);
-            state.cache.seq_len += verify_len;
-
             if optimistic {
                 // ── Optimistic shortcut (default ON; kill-switch AX_MLX_MTP_OPTIMISTIC=0) ──
                 let ac = pending.len();
-                let predicted_arr = argmax(&logits_all, None);
+                let needs_predicted =
+                    sampling.temperature <= 0.0 || (auto_optimistic && !self.mtp_optimistic);
+                let verify_forward_started = Instant::now();
+                let (logits_all, post_norm_all) = if needs_predicted {
+                    forward_all_positions_with_post_norm(
+                        &self.cfg,
+                        &self.weights,
+                        &verify_input,
+                        &mut state.cache,
+                        token_offset,
+                    )
+                } else {
+                    forward_all_positions_post_norm_last_lm_head(
+                        &self.cfg,
+                        &self.weights,
+                        &verify_input,
+                        &mut state.cache,
+                        token_offset,
+                    )
+                };
+                mtp_timings.verify_forward_wall_us = elapsed_us(verify_forward_started);
+                state.cache.seq_len += verify_len;
+                let predicted_arr = needs_predicted.then(|| argmax(&logits_all, None));
+                let draft_hidden = slice_post_norm_hidden(&post_norm_all, ac, self.cfg.hidden_size);
                 let kv_refs = state.cache.collect_eval_refs();
                 let mut targets: Vec<&MlxArray> = Vec::with_capacity(2 + kv_refs.len());
-                targets.push(&predicted_arr);
-                targets.push(&post_norm_all);
+                if let Some(ref predicted_arr) = predicted_arr {
+                    targets.push(predicted_arr);
+                }
+                targets.push(&draft_hidden);
                 targets.extend(kv_refs);
                 let verify_eval_started = Instant::now();
                 eval(&targets);
@@ -6750,8 +6800,10 @@ impl MlxRunner {
                 let trimmed = state.cache.trim_to(committed_len);
                 debug_assert!(trimmed, "MTP committed_len must not exceed cache seq_len");
                 mtp_timings.rollback_wall_us = elapsed_us(rollback_started);
-                let draft_hidden = slice_post_norm_hidden(&post_norm_all, ac, self.cfg.hidden_size);
-                let predicted: Vec<u32> = predicted_arr.data_u32().to_vec();
+                let predicted: Vec<u32> = predicted_arr
+                    .as_ref()
+                    .map(|arr| arr.data_u32().to_vec())
+                    .unwrap_or_default();
                 let correction_argmax_tok = predicted.get(ac).copied().unwrap_or(0);
                 // Track true acceptance for EWMA so auto-optimistic can
                 // deactivate if draft quality drops.
@@ -6773,6 +6825,16 @@ impl MlxRunner {
                     predicted,
                 )
             } else {
+                let verify_forward_started = Instant::now();
+                let (logits_all, post_norm_all) = forward_all_positions_with_post_norm(
+                    &self.cfg,
+                    &self.weights,
+                    &verify_input,
+                    &mut state.cache,
+                    token_offset,
+                );
+                mtp_timings.verify_forward_wall_us = elapsed_us(verify_forward_started);
+                state.cache.seq_len += verify_len;
                 // Target probabilities for rejection-sampling acceptance.
                 let mut local_target_prob_workspace = MtpTargetProbWorkspace::default();
                 let target_prob_workspace =
@@ -6921,15 +6983,24 @@ impl MlxRunner {
             //   accepted MTP tokens for the true acceptance rate that drives the
             //   n-gram saturation gate and auto-optimistic activation.
             let mtp_ewma_numerator = if optimistic {
-                state
-                    .mtp_pending_draft_sources
-                    .iter()
-                    .zip(pending.iter())
-                    .zip(predicted.iter())
-                    .take(accept_count)
-                    .filter(|((s, _d), _p)| s.is_model_draft())
-                    .filter(|((_s, d), p)| d == p)
-                    .count()
+                if predicted.is_empty() {
+                    state
+                        .mtp_pending_draft_sources
+                        .iter()
+                        .take(accept_count)
+                        .filter(|s| s.is_model_draft())
+                        .count()
+                } else {
+                    state
+                        .mtp_pending_draft_sources
+                        .iter()
+                        .zip(pending.iter())
+                        .zip(predicted.iter())
+                        .take(accept_count)
+                        .filter(|((s, _d), _p)| s.is_model_draft())
+                        .filter(|((_s, d), p)| d == p)
+                        .count()
+                }
             } else {
                 state
                     .mtp_pending_draft_sources
@@ -7400,13 +7471,17 @@ impl MlxRunner {
                 && (self.weights.mtp.is_some() || self.weights.glm_mtp.is_some())
                 && state.mtp_pending_draft.is_empty()
             {
-                let sl = slice(
-                    &logits_all,
-                    &[accept_count as i32, 0],
-                    &[(accept_count + 1) as i32, vocab],
-                    &[1, 1],
-                    None,
-                );
+                let sl = if logits_all.shape().len() == 1 {
+                    logits_all.clone()
+                } else {
+                    slice(
+                        &logits_all,
+                        &[accept_count as i32, 0],
+                        &[(accept_count + 1) as i32, vocab],
+                        &[1, 1],
+                        None,
+                    )
+                };
                 mlx_sys::async_eval(&[&sl, &draft_hidden]);
                 state.mtp_skip_logits = Some(sl);
                 state.mtp_skip_hidden = Some(draft_hidden);
@@ -7520,39 +7595,25 @@ impl MlxRunner {
             let cap = mtp_warmup_cap();
             let warmup_len = if cap > 0 { total.min(cap) } else { total };
             let start_offset = total.saturating_sub(warmup_len);
-            let mut warmup_hidden: Option<MlxArray> = None;
-            // The warmup loop writes KV entries starting at buffer position 0
-            // (cache.seq_len starts at 0 for correct append layout), but passes
-            // the actual prompt position as the RoPE offset so positional
-            // encoding is correct.  This avoids allocating a zero-padded KV
-            // buffer with start_offset empty rows, which would dilute attention.
-            for i in 0..warmup_len {
-                let pos = start_offset + i;
-                let row = slice_post_norm_hidden(&prefill_hidden, pos, self.cfg.hidden_size);
-                let token = history_tokens[pos];
-                let tok_data = [token];
-                let tok_arr = MlxArray::from_raw_data(
-                    tok_data.as_ptr() as *const u8,
-                    4,
-                    &[1_i32],
-                    mlx_sys::MlxDtype::Uint32,
+            if warmup_len > 0 {
+                let warmup_hidden = slice(
+                    &prefill_hidden,
+                    &[0, start_offset as i32, 0],
+                    &[1, total as i32, self.cfg.hidden_size as i32],
+                    &[1, 1, 1],
+                    None,
                 );
-                warmup_hidden = Some(crate::mtp::mtp_head_forward(
+                crate::mtp::mtp_warmup_cache_kv_batched(
                     head,
-                    &row,
-                    &tok_arr,
+                    &warmup_hidden,
+                    &history_tokens[start_offset..total],
                     &self.weights,
                     cache,
                     &self.cfg,
-                    Some(pos),
-                ));
-            }
-            if let Some(ref hidden) = warmup_hidden {
+                    start_offset,
+                );
                 let kv_refs = cache.collect_eval_refs();
-                let mut targets: Vec<&MlxArray> = Vec::with_capacity(1 + kv_refs.len());
-                targets.push(hidden);
-                targets.extend(kv_refs);
-                mlx_sys::eval(&targets);
+                mlx_sys::eval(&kv_refs);
                 clear_cache();
                 state.mtp_decode_count = warmup_len;
                 // After warmup, cache.seq_len == warmup_len (physical entries).
@@ -8766,44 +8827,48 @@ fn apply_decode_result(
     state: &mut RequestState,
     result: &[u32],
     terminal_token_ids: &[u32],
-) -> u32 {
+) -> Vec<u32> {
     debug_assert!(
         !result.is_empty(),
         "MLX decode path must return at least one token"
     );
 
-    // result[0] is the output for this step.
-    // result[1..] are already verified output tokens to emit before the next
-    // model run.  The last token also drives that next model run, but it still
-    // belongs in the user-visible output stream; dropping it corrupts generation.
-    let output = result[0];
-    for &token in result.get(1..).unwrap_or(&[]) {
-        state.bonus_queue.push_back(token);
+    let mut output = Vec::with_capacity(result.len());
+    for &token in result {
+        output.push(token);
         if token_is_terminal(token, terminal_token_ids) {
             break;
         }
     }
-    state.next_model_last_token = state
-        .bonus_queue
-        .back()
-        .copied()
-        .or_else(|| result.last().copied());
+    state.next_model_last_token = output.last().copied();
     output
 }
 
-fn stop_reason_for_sampled_token(
-    sampled_token: u32,
+fn truncate_sampled_tokens_for_stop(
+    mut sampled_tokens: Vec<u32>,
     generated_len: u32,
     max_output: u32,
     terminal_token_ids: &[u32],
-) -> Option<StopReason> {
-    if token_is_terminal(sampled_token, terminal_token_ids) {
-        Some(StopReason::EosToken)
-    } else if generated_len.saturating_add(1) >= max_output {
-        Some(StopReason::MaxOutputTokens)
-    } else {
-        None
+) -> (Vec<u32>, Option<StopReason>) {
+    if sampled_tokens.is_empty() {
+        return (sampled_tokens, None);
     }
+
+    let remaining = max_output.saturating_sub(generated_len).max(1) as usize;
+    let limit = sampled_tokens.len().min(remaining);
+    for index in 0..limit {
+        let sampled_token = sampled_tokens[index];
+        if token_is_terminal(sampled_token, terminal_token_ids) {
+            sampled_tokens.truncate(index + 1);
+            return (sampled_tokens, Some(StopReason::EosToken));
+        }
+        if index + 1 == remaining {
+            sampled_tokens.truncate(index + 1);
+            return (sampled_tokens, Some(StopReason::MaxOutputTokens));
+        }
+    }
+    sampled_tokens.truncate(limit);
+    (sampled_tokens, None)
 }
 
 fn token_is_terminal(token: u32, terminal_token_ids: &[u32]) -> bool {
@@ -8916,6 +8981,7 @@ fn errored_item_run(request_id: RequestId, error: impl Into<String>) -> MlxItemR
             request_id,
             tokens_executed: 0,
             output_token: None,
+            output_tokens: Vec::new(),
             stop_reason: None,
             error: Some(error.into()),
         },
@@ -11613,11 +11679,11 @@ mod tests {
 
         let output = apply_decode_result(&mut state, &[11, 12], &[]);
 
-        assert_eq!(output, 11);
+        assert_eq!(output, vec![11, 12]);
         assert_eq!(
             state.bonus_queue.iter().copied().collect::<Vec<_>>(),
-            vec![12],
-            "correction token must be emitted before the next model run"
+            Vec::<u32>::new(),
+            "verified tokens should be returned in the current runner update"
         );
         assert_eq!(state.next_model_last_token, Some(12));
     }
@@ -11628,11 +11694,11 @@ mod tests {
 
         let output = apply_decode_result(&mut state, &[21, 22, 23, 24], &[]);
 
-        assert_eq!(output, 21);
+        assert_eq!(output, vec![21, 22, 23, 24]);
         assert_eq!(
             state.bonus_queue.iter().copied().collect::<Vec<_>>(),
-            vec![22, 23, 24],
-            "accepted drafts and final bonus token are all user-visible output"
+            Vec::<u32>::new(),
+            "accepted drafts and final token should be emitted in one runner update"
         );
         assert_eq!(state.next_model_last_token, Some(24));
     }
@@ -11640,22 +11706,44 @@ mod tests {
     #[test]
     fn stop_reason_prefers_eos_before_max_output() {
         assert_eq!(
-            stop_reason_for_sampled_token(151645, 1, 32, &[151645]),
-            Some(StopReason::EosToken)
+            truncate_sampled_tokens_for_stop(vec![151645], 1, 32, &[151645]),
+            (vec![151645], Some(StopReason::EosToken))
         );
         assert_eq!(
-            stop_reason_for_sampled_token(7, 31, 32, &[151645]),
-            Some(StopReason::MaxOutputTokens)
+            truncate_sampled_tokens_for_stop(vec![7], 31, 32, &[151645]),
+            (vec![7], Some(StopReason::MaxOutputTokens))
         );
-        assert_eq!(stop_reason_for_sampled_token(7, 1, 32, &[151645]), None);
+        assert_eq!(
+            truncate_sampled_tokens_for_stop(vec![7], 1, 32, &[151645]),
+            (vec![7], None)
+        );
     }
 
     #[test]
     fn empty_terminal_token_slice_ignores_eos_until_limit() {
-        assert_eq!(stop_reason_for_sampled_token(151645, 1, 32, &[]), None);
         assert_eq!(
-            stop_reason_for_sampled_token(151645, 31, 32, &[]),
-            Some(StopReason::MaxOutputTokens)
+            truncate_sampled_tokens_for_stop(vec![151645], 1, 32, &[]),
+            (vec![151645], None)
+        );
+        assert_eq!(
+            truncate_sampled_tokens_for_stop(vec![151645], 31, 32, &[]),
+            (vec![151645], Some(StopReason::MaxOutputTokens))
+        );
+    }
+
+    #[test]
+    fn sampled_token_batch_truncates_at_eos_before_max_output() {
+        assert_eq!(
+            truncate_sampled_tokens_for_stop(vec![31, 151645, 33], 30, 32, &[151645]),
+            (vec![31, 151645], Some(StopReason::EosToken))
+        );
+    }
+
+    #[test]
+    fn sampled_token_batch_truncates_at_max_output() {
+        assert_eq!(
+            truncate_sampled_tokens_for_stop(vec![31, 32, 33], 30, 32, &[]),
+            (vec![31, 32], Some(StopReason::MaxOutputTokens))
         );
     }
 
@@ -11665,11 +11753,11 @@ mod tests {
 
         let output = apply_decode_result(&mut state, &[31, 32, 151645, 33], &[151645]);
 
-        assert_eq!(output, 31);
+        assert_eq!(output, vec![31, 32, 151645]);
         assert_eq!(
             state.bonus_queue.iter().copied().collect::<Vec<_>>(),
-            vec![32, 151645],
-            "verified bonus tokens after EOS must not be emitted"
+            Vec::<u32>::new(),
+            "verified tokens after EOS must not be emitted"
         );
         assert_eq!(state.next_model_last_token, Some(151645));
     }

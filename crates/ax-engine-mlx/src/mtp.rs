@@ -312,6 +312,74 @@ pub fn mtp_head_forward(
     )
 }
 
+pub fn mtp_warmup_cache_kv_batched(
+    head: &MtpWeights,
+    main_hidden: &MlxArray,
+    prev_tokens: &[u32],
+    weights: &ModelWeights,
+    cache: &mut MlxKVCache,
+    cfg: &ModelConfig,
+    rope_offset: usize,
+) {
+    if prev_tokens.is_empty() {
+        return;
+    }
+    let seq_len = prev_tokens.len();
+    let prev_token_arr = MlxArray::from_raw_data(
+        prev_tokens.as_ptr() as *const u8,
+        std::mem::size_of_val(prev_tokens),
+        &[seq_len as i32],
+        MlxDtype::Uint32,
+    );
+    let embed = embed_tokens_arr(&prev_token_arr, &weights.token_embedding, cfg.hidden_size);
+    let embed = astype(&embed, MlxDtype::Bfloat16, None);
+    let enormed = rms_norm(
+        &embed,
+        Some(&head.pre_fc_norm_embedding),
+        cfg.rms_norm_eps,
+        None,
+    );
+    let hnormed = rms_norm(
+        main_hidden,
+        Some(&head.pre_fc_norm_hidden),
+        cfg.rms_norm_eps,
+        None,
+    );
+    let combined = concatenate(&[&enormed, &hnormed], -1, None);
+    let h = qw(&combined, &head.fc);
+    let normed = rms_norm(&h, Some(&head.attn_norm), cfg.rms_norm_eps, None);
+
+    let k_raw = qw(&normed, &head.k_proj);
+    let v_raw = qw(&normed, &head.v_proj);
+    let v = prepare_value_bhsd_from_proj(
+        &v_raw,
+        false,
+        head.n_kv_heads,
+        head.head_dim,
+        seq_len,
+        cfg.rms_norm_eps,
+    );
+
+    let (rope_base, rope_freqs_ref) = if let Some(freqs) = cfg.rope_freqs.as_ref() {
+        (None, Some(freqs))
+    } else {
+        (Some(cfg.rope_theta), None)
+    };
+    let k_rope = qk_norm_rope_bhsd_from_proj(
+        &k_raw,
+        head.k_norm.as_ref(),
+        head.n_kv_heads,
+        head.head_dim,
+        seq_len,
+        cfg.rms_norm_eps,
+        cfg.rope_dims,
+        rope_base,
+        rope_offset,
+        rope_freqs_ref,
+    );
+    cache.set_layer_kv_logical(0, k_rope, v, seq_len);
+}
+
 #[allow(clippy::too_many_arguments)]
 fn mtp_head_forward_inner(
     head: &MtpWeights,
@@ -537,7 +605,7 @@ fn mtp_head_forward_inner(
     h
 }
 
-/// Apply `rms_norm(hidden, mtp_norm) @ main_model.lm_head` to produce draft logits.
+/// Apply `rms_norm(hidden, mtp_norm) @ draft_lm_head` to produce draft logits.
 ///
 /// Returns f32 logits `[vocab_size]` ready for argmax / sampling.
 pub fn mtp_hidden_to_logits(
@@ -547,7 +615,7 @@ pub fn mtp_hidden_to_logits(
     cfg: &ModelConfig,
 ) -> MlxArray {
     let normed = mtp_hidden_post_norm(hidden, head, cfg);
-    mtp_post_norm_to_logits(&normed, weights, cfg)
+    mtp_post_norm_to_logits(&normed, head, weights, cfg)
 }
 
 fn mtp_hidden_post_norm(hidden: &MlxArray, head: &MtpWeights, cfg: &ModelConfig) -> MlxArray {
@@ -556,11 +624,13 @@ fn mtp_hidden_post_norm(hidden: &MlxArray, head: &MtpWeights, cfg: &ModelConfig)
 
 fn mtp_post_norm_to_logits(
     post_norm_hidden: &MlxArray,
+    head: &MtpWeights,
     weights: &ModelWeights,
     cfg: &ModelConfig,
 ) -> MlxArray {
     use mlx_sys::reshape as mlx_reshape;
-    let logits = qw(post_norm_hidden, &weights.lm_head);
+    let lm_head = head.draft_lm_head.as_ref().unwrap_or(&weights.lm_head);
+    let logits = qw(post_norm_hidden, lm_head);
     let logits_f32 = astype(&logits, MlxDtype::Float32, None);
     let logits_f32 = apply_final_logit_softcap(cfg, &logits_f32);
     // [1, 1, vocab] → [vocab]
@@ -600,7 +670,7 @@ pub fn mtp_head_step(
         None,
     );
     let post_norm_hidden = mtp_hidden_post_norm(&new_hidden, head, cfg);
-    let logits = mtp_post_norm_to_logits(&post_norm_hidden, weights, cfg);
+    let logits = mtp_post_norm_to_logits(&post_norm_hidden, head, weights, cfg);
     Some((post_norm_hidden, logits))
 }
 
@@ -695,7 +765,7 @@ fn build_compiled_mtp_draft(
                 Some(&depth_offset),
             );
             let post_norm = mtp_hidden_post_norm(&new_hidden, head_ref, cfg_ref);
-            let logits = mtp_post_norm_to_logits(&post_norm, weights_ref, cfg_ref);
+            let logits = mtp_post_norm_to_logits(&post_norm, head_ref, weights_ref, cfg_ref);
 
             let tok = if temperature > 0.0 {
                 let logits_2d = reshape(&logits, &[1_i32, vocab], None);
@@ -900,7 +970,6 @@ pub fn mtp_draft_tokens_gated(
 
     let vocab = cfg.vocab_size as i32;
     let draft_mode = mtp_draft_mode_from_env();
-
     // The confidence gate keys off the head's true (temperature 1.0) probability
     // of each drafted token. The greedy draft path computes exactly that, while
     // the sampled path's temperature-scaled log-probs saturate near 1.0 and lose
@@ -1134,7 +1203,7 @@ fn mtp_draft_tokens_greedy(
             None,
         );
         let post_norm_hidden = mtp_hidden_post_norm(&new_hidden, head, cfg);
-        let logits = mtp_post_norm_to_logits(&post_norm_hidden, weights, cfg);
+        let logits = mtp_post_norm_to_logits(&post_norm_hidden, head, weights, cfg);
 
         // Lazy argmax — NOT evaluated yet.
         let lazy_tok = lazy_argmax_logits(&logits);
@@ -1239,7 +1308,7 @@ fn mtp_draft_tokens_sampled(
             None,
         );
         let post_norm_hidden = mtp_hidden_post_norm(&new_hidden, head, cfg);
-        let logits = mtp_post_norm_to_logits(&post_norm_hidden, weights, cfg);
+        let logits = mtp_post_norm_to_logits(&post_norm_hidden, head, weights, cfg);
 
         let lazy_tok = lazy_argmax_logits(&logits);
         lazy_tokens.push(lazy_tok.clone());
@@ -1339,7 +1408,7 @@ fn mtp_draft_tokens_stochastic(
             None,
         );
         let post_norm_hidden = mtp_hidden_post_norm(&new_hidden, head, cfg);
-        let logits = mtp_post_norm_to_logits(&post_norm_hidden, weights, cfg);
+        let logits = mtp_post_norm_to_logits(&post_norm_hidden, head, weights, cfg);
 
         // GPU-side stochastic sampling (lazy — no CPU sync).
         let lazy_tok = if temperature > 0.0 {
