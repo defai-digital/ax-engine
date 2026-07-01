@@ -391,6 +391,12 @@ Peer comparison artifacts:
 [`summary.md`](benchmarks/results/mtp-qwen36-matrix/2026-06-30-peer-comparison-apples-to-apples-refresh/summary.md)
 and
 [`summary.json`](benchmarks/results/mtp-qwen36-matrix/2026-06-30-peer-comparison-apples-to-apples-refresh/summary.json).
+Engine versions are stamped on each chart: AX Engine 6.6.1, MTPLX 0.3.7, and
+lightning-mlx v0.7.0 (git rev `ec19b3d` — the v0.7.0 release plus its merged
+post-tag streaming-content fix). The lightning-mlx rows were re-confirmed on
+2026-07-01 against that pinned v0.7.0 checkout
+([`summary.md`](benchmarks/results/mtp-qwen36-matrix/2026-07-01-lightning-rerun-fixed/summary.md))
+and match the promoted values within run-to-run variance.
 Detailed MTP notes, including the GLM-4.7 Flash smoke validation session, live in
 [`docs/mtp/`](docs/mtp/).
 
