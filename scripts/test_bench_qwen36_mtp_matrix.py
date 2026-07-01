@@ -50,6 +50,7 @@ def make_args(root: Path) -> Namespace:
         lightning_mtp_draft_temperature=0.5,
         lightning_mtp_optimistic=False,
         lightning_disable_prefix_cache=False,
+        lightning_enable_prefix_cache=False,
         base_port=18765,
         no_build_ax_engine=True,
         skip_existing=False,
@@ -195,6 +196,23 @@ class Qwen36MtpMatrixTests(unittest.TestCase):
         self.assertEqual(mtplx_cmd[mtplx_cmd.index("--profile") + 1], "performance-cold")
         self.assertEqual(prompt_line_count, 3)
         self.assertEqual(mtplx_cmd[mtplx_cmd.index("--prompts") + 1], str(prompt_path))
+
+    def test_apples_to_apples_contract_disables_lightning_prefix_cache_by_default(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            args = make_args(Path(tmp))
+
+            matrix.apply_benchmark_contract(args, [])
+
+        self.assertTrue(args.lightning_disable_prefix_cache)
+
+    def test_lightning_prefix_cache_can_be_enabled_explicitly(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            args = make_args(Path(tmp))
+            args.lightning_enable_prefix_cache = True
+
+            matrix.apply_benchmark_contract(args, ["--lightning-enable-prefix-cache"])
+
+        self.assertFalse(args.lightning_disable_prefix_cache)
 
     def test_lightning_summary_flags_mtp_disabled_logs(self) -> None:
         artifact = {

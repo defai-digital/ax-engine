@@ -1336,7 +1336,7 @@ def render_mtp_peer_comparison_chart(
         ),
         f'<rect width="{MTP_PEER_WIDTH}" height="{height}" fill="#f8fafc"/>',
         f'<text x="32" y="34" font-family="{FONT}" font-size="22" font-weight="700" fill="#111827">{escape(str(metric_config["title"]))}</text>',
-        f'<text x="32" y="60" font-family="{FONT}" font-size="14" fill="#374151">flappy suite · 1000 generated tokens · 5 measured reps · 2 warmups · 30s cooldown</text>',
+        f'<text x="32" y="60" font-family="{FONT}" font-size="14" fill="#374151">flappy suite · 1000 generated tokens · 5 measured reps · 2 warmups · 15s cooldown · cold-prefill parity</text>',
         f'<text x="32" y="80" font-family="{FONT}" font-size="13" fill="#6b7280">{escape(str(metric_config["desc"]))}</text>',
     ]
     lines.append(

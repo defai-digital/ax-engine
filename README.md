@@ -44,7 +44,7 @@ peer rows and model-specific boundaries kept visible.
   - [Speculative Decoding (MTP)](#speculative-decoding-mtp)
     - [Supported MTP packages](#supported-mtp-packages)
     - [Download and serve an MTP package](#download-and-serve-an-mtp-package)
-    - [Qwen3.6 MTP peer comparison apples-to-apples (2026-06-29)](#qwen36-mtp-peer-comparison-apples-to-apples-2026-06-29)
+    - [Qwen3.6 MTP peer comparison apples-to-apples (2026-07-01)](#qwen36-mtp-peer-comparison-apples-to-apples-2026-07-01)
     - [Qwen3.6 MTP matrix refresh (2026-06-29)](#qwen36-mtp-matrix-refresh-2026-06-29)
     - [Gemma 4 assistant-MTP (depth-2)](#gemma-4-assistant-mtp-depth-2)
   - [Direct Mode (Decode · Prefill · TTFT)](#direct-mode-decode--prefill--ttft)
@@ -337,13 +337,14 @@ published to make comparison with other MTP engines easier because many peer
 benchmarks use 4-bit models. Historical MTP+n-gram artifacts remain useful for
 debugging regressions, but they are not current README/PERFORMANCE MTP evidence.
 
-#### Qwen3.6 MTP peer comparison apples-to-apples (2026-06-29)
+#### Qwen3.6 MTP peer comparison apples-to-apples (2026-07-01)
 
 This same-session apples-to-apples comparison runs AX Engine, MTPLX, and
 lightning-mlx on the `flappy` suite with `1000` generated tokens, `5` measured
 repetitions after `2` warmups, 15 s cooldown, 10 s inter-case cooldown, sampled
-decode (`temperature=0.6`, `top_p=0.95`, `top_k=20`), and pure MTP. It replaces
-the earlier 64-token smoke as the peer-engine comparison artifact, while still
+decode (`temperature=0.6`, `top_p=0.95`, `top_k=20`), pure MTP, and
+cross-request prefix cache disabled for cold-prefill parity. It replaces the
+earlier 64-token smoke as the peer-engine comparison artifact, while still
 remaining a flappy-only peer comparison rather than the promoted three-suite AX
 matrix below.
 
@@ -357,9 +358,9 @@ matrix below.
 
 | Target | Engine | Decode | Prefill | TTFT | Accept | Status |
 | --- | --- | ---: | ---: | ---: | ---: | --- |
-| Qwen3.6 27B 4-bit | AX Engine | 60.5 tok/s | 668.2 tok/s | 483 ms | 100.0% | ok |
+| Qwen3.6 27B 4-bit | AX Engine | 64.6 tok/s | 809.0 tok/s | 398 ms | 100.0% | ok |
 | Qwen3.6 27B 4-bit | MTPLX | 64.3 tok/s | 681.4 tok/s | 470 ms | 100.0% | ok |
-| Qwen3.6 27B 4-bit | lightning-mlx | 59.4 tok/s | 861.2 tok/s | 400 ms | 94.5% | ok |
+| Qwen3.6 27B 4-bit | lightning-mlx | 59.4 tok/s | 426.0 tok/s | 784 ms | 95.9% | ok |
 | Qwen3.6 27B 6-bit | AX Engine | 41.4 tok/s | 637.1 tok/s | 507 ms | 100.0% | ok |
 | Qwen3.6 27B 6-bit | MTPLX | - | - | - | - | no official 27B 6-bit MTP artifact |
 | Qwen3.6 27B 6-bit | lightning-mlx | - | - | - | - | no official 27B 6-bit MTP artifact |
@@ -371,15 +372,19 @@ matrix below.
 | Qwen3.6 35B-A3B 6-bit | lightning-mlx | 96.3 tok/s | 1,215.8 tok/s | 272 ms | 100.0% | ok |
 
 **Reading the rows.** The targeted 27B 4-bit AX-only rerun lands at
-**60.5 tok/s**, with **668.2 tok/s** prefill, **483 ms** TTFT, and a 100.0%
-accept rate. That keeps AX slightly behind MTPLX (**64.3 tok/s**, -5.9%) and
-ahead of lightning-mlx (**59.4 tok/s**, +2.0%) on this dense 27B 4-bit lane.
+**64.6 tok/s**, with **809.0 tok/s** prefill, **398 ms** TTFT, and a 100.0%
+accept rate. That puts AX slightly ahead of MTPLX (**64.3 tok/s**, +0.4%) and
+ahead of lightning-mlx (**59.4 tok/s**, +8.7%) on this dense 27B 4-bit lane.
+The earlier lightning prefill-only lead was a benchmark-contract mismatch:
+lightning was allowed to use cross-request prefix cache while AX reported
+cold-prefill runner time. The current peer comparison disables lightning prefix
+cache to match AX's cold-prefill contract.
 The 35B-A3B rows remain from the full AX-only refresh: AX is still ahead of
 MTPLX by +20% (4-bit) and +21% (6-bit), and ahead of lightning-mlx by +43% and
 +47%. The 27B 6-bit peer cells remain blank because there is no official
 comparable 27B 6-bit MTP artifact. Source artifacts:
-[`2026-06-30-peer-comparison-27b4-ax-only-rerun`](benchmarks/results/mtp-qwen36-matrix/2026-06-30-peer-comparison-27b4-ax-only-rerun/summary.md)
-and
+[`2026-07-01-27b4-ax-optimistic-gate0-full-r1`](benchmarks/results/mtp-qwen36-matrix/2026-07-01-27b4-ax-optimistic-gate0-full-r1/summary.md),
+[`2026-07-01-lightning-prefix-disabled-r1`](benchmarks/results/mtp-qwen36-matrix/2026-07-01-lightning-prefix-disabled-r1/summary.md), and
 [`2026-06-30-peer-comparison-ax-only-rerun`](benchmarks/results/mtp-qwen36-matrix/2026-06-30-peer-comparison-ax-only-rerun/summary.md).
 
 Rapid-MLX is intentionally not promoted in this table: it starts with the
@@ -388,16 +393,16 @@ including it would measure non-MTP decode. oMLX remains unmeasured because this
 repo does not yet have an oMLX Qwen3.6 MTP prompt-suite adapter.
 
 Peer comparison artifacts:
-[`summary.md`](benchmarks/results/mtp-qwen36-matrix/2026-07-01-peer-comparison-apples-to-apples-refresh/summary.md)
+[`summary.md`](benchmarks/results/mtp-qwen36-matrix/2026-07-01-peer-comparison-apples-to-apples/summary.md)
 and
-[`summary.json`](benchmarks/results/mtp-qwen36-matrix/2026-07-01-peer-comparison-apples-to-apples-refresh/summary.json).
+[`summary.json`](benchmarks/results/mtp-qwen36-matrix/2026-07-01-peer-comparison-apples-to-apples/summary.json).
 Engine versions are stamped on each chart: AX Engine 6.6.1, MTPLX 1.0.4, and
 lightning-mlx v0.7.0 (git rev `ec19b3d` — the v0.7.0 release plus its merged
 post-tag streaming-content fix). The MTPLX rows are from the 2026-07-01 MTPLX
 v1.0.4 rerun ([`summary.md`](benchmarks/results/mtp-qwen36-matrix/2026-07-01-mtplx-v104-rerun/summary.md));
-the lightning-mlx rows were re-confirmed the same day against the pinned v0.7.0
-checkout ([`summary.md`](benchmarks/results/mtp-qwen36-matrix/2026-07-01-lightning-rerun-fixed/summary.md)).
-Both match the prior promoted values within run-to-run variance.
+the lightning-mlx 27B 4-bit row was re-run the same day with prefix cache
+disabled against the pinned v0.7.0 checkout
+([`summary.md`](benchmarks/results/mtp-qwen36-matrix/2026-07-01-lightning-prefix-disabled-r1/summary.md)).
 Detailed MTP notes, including the GLM-4.7 Flash smoke validation session, live in
 [`docs/mtp/`](docs/mtp/).
 

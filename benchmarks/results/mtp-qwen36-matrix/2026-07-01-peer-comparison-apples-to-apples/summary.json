@@ -1,0 +1,540 @@
+{
+  "contract": {
+    "benchmark_contract": "apples-to-apples",
+    "bits": [
+      4,
+      6
+    ],
+    "cooldown_s": 15.0,
+    "engines": [
+      "ax_engine",
+      "mtplx",
+      "lightning_mlx",
+      "rapid_mlx",
+      "omlx"
+    ],
+    "inter_case_cooldown_s": 10.0,
+    "lightning_disable_prefix_cache": true,
+    "lightning_prefix_cache_policy": "disabled_for_cold_prefill",
+    "max_tokens": 1000,
+    "metrics": [
+      "decode_tok_s",
+      "prefill_tok_s",
+      "ttft_ms",
+      "accept_rate"
+    ],
+    "mode": "mtp",
+    "models": [
+      "27b",
+      "35b-a3b"
+    ],
+    "repetitions": 5,
+    "sampling": {
+      "temperature": 0.6,
+      "top_k": 20,
+      "top_p": 0.95
+    },
+    "suites": [
+      "flappy"
+    ],
+    "warmup_repetitions": 2
+  },
+  "created_at": "2026-07-01",
+  "notes": [
+    "27B 4-bit AX Engine row is refreshed from the 2026-06-30 targeted AX-only flappy rerun.",
+    "Other AX Engine rows remain from the 2026-06-30 full AX-only flappy rerun.",
+    "Other peer rows remain from the 2026-06-29 apples-to-apples run.",
+    "MTPLX rows refreshed from the 2026-07-01 MTPLX v1.0.4 rerun (/opt/homebrew/var/mtplx/venv-1.0.4).",
+    "AX Engine and lightning-mlx rows are unchanged from the 2026-06-30 refresh."
+  ],
+  "rows": [
+    {
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-07-01-27b4-ax-optimistic-gate0-full-r1/27b-4bit/flappy/ax_engine.json",
+      "bits": 4,
+      "engine": "ax_engine",
+      "metric_contract": {
+        "accept_rate": "measured",
+        "decode_tok_s": "measured",
+        "prefill_tok_s": "measured",
+        "ttft_ms": "measured"
+      },
+      "metrics": {
+        "accept_rate": 1.0,
+        "accept_source": "ax_engine_mtp_telemetry",
+        "case_count": 4,
+        "decode_tok_s": 64.57924518942363,
+        "prefill_source": "ax_engine_runner_prefill_time",
+        "prefill_tok_s": 809.0364094011835,
+        "status": "ok",
+        "ttft_ms": 397.89599999999996,
+        "ttft_source": "ax_engine_runner_prefill_time"
+      },
+      "model": "27b",
+      "model_label": "Qwen3.6 27B 4-bit",
+      "reason": null,
+      "status": "supported",
+      "suite": "flappy",
+      "target": "27b-4bit"
+    },
+    {
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-07-01-mtplx-v104-rerun/27b-4bit/flappy/mtplx.json",
+      "bits": 4,
+      "engine": "mtplx",
+      "metric_contract": {
+        "accept_rate": "measured",
+        "decode_tok_s": "measured",
+        "prefill_tok_s": "derived_from_prompt_eval_time_s",
+        "ttft_ms": "prompt_eval_time_s"
+      },
+      "metrics": {
+        "accept_rate": 0.9998666666666667,
+        "accept_source": "mtplx_draft_stats",
+        "case_count": 4,
+        "decode_tok_s": 64.29418024251572,
+        "prefill_source": "prompt_tokens_over_prompt_eval_time_s",
+        "prefill_tok_s": 681.4197080072549,
+        "status": "ok",
+        "ttft_ms": 470.1439790078439,
+        "ttft_source": "prompt_eval_time_s"
+      },
+      "model": "27b",
+      "model_label": "Qwen3.6 27B 4-bit",
+      "reason": null,
+      "status": "supported",
+      "suite": "flappy",
+      "target": "27b-4bit"
+    },
+    {
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-07-01-lightning-prefix-disabled-r1/27b-4bit/flappy/lightning_mlx.json",
+      "bits": 4,
+      "engine": "lightning_mlx",
+      "metric_contract": {
+        "accept_rate": "measured_if_server_exposes_request_telemetry",
+        "decode_tok_s": "measured",
+        "prefill_tok_s": "approx_prompt_tokens_over_client_ttft_s",
+        "ttft_ms": "client_stream_ttft_s"
+      },
+      "metrics": {
+        "accept_rate": 0.958769492048788,
+        "accept_source": "lightning_request_telemetry",
+        "case_count": 4,
+        "decode_tok_s": 59.43006328819689,
+        "prefill_source": "prompt_tokens_over_client_ttft_s",
+        "prefill_tok_s": 426.0407870119272,
+        "status": "ok",
+        "ttft_ms": 783.714895544108,
+        "ttft_source": "client_stream_ttft_s"
+      },
+      "model": "27b",
+      "model_label": "Qwen3.6 27B 4-bit",
+      "reason": null,
+      "status": "supported",
+      "suite": "flappy",
+      "target": "27b-4bit"
+    },
+    {
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-29-peer-comparison-apples-to-apples/27b-4bit/flappy/rapid_mlx.json",
+      "bits": 4,
+      "engine": "rapid_mlx",
+      "metric_contract": {
+        "accept_rate": "measured_if_server_exposes_request_telemetry",
+        "decode_tok_s": "measured",
+        "prefill_tok_s": "approx_prompt_tokens_over_client_ttft_s",
+        "ttft_ms": "client_stream_ttft_s"
+      },
+      "metrics": {
+        "status": "unsupported"
+      },
+      "model": "27b",
+      "model_label": "Qwen3.6 27B 4-bit",
+      "reason": "Rapid-MLX starts with the shared Qwen3.6 artifacts, but its scheduler skips MTP install for this generation flow; running it would measure non-MTP decode.",
+      "status": "unsupported",
+      "suite": "flappy",
+      "target": "27b-4bit"
+    },
+    {
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-29-peer-comparison-apples-to-apples/27b-4bit/flappy/omlx.json",
+      "bits": 4,
+      "engine": "omlx",
+      "metric_contract": {
+        "accept_rate": "unavailable",
+        "decode_tok_s": "unavailable",
+        "prefill_tok_s": "unavailable",
+        "ttft_ms": "unavailable"
+      },
+      "metrics": {
+        "status": "unsupported"
+      },
+      "model": "27b",
+      "model_label": "Qwen3.6 27B 4-bit",
+      "reason": "oMLX has no repo-owned Qwen3.6 MTP prompt-suite adapter yet; native MTP needs prepared MTP weights and a dedicated runner.",
+      "status": "unsupported",
+      "suite": "flappy",
+      "target": "27b-4bit"
+    },
+    {
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-30-peer-comparison-ax-only-rerun/27b-6bit/flappy/ax_engine.json",
+      "bits": 6,
+      "engine": "ax_engine",
+      "metric_contract": {
+        "accept_rate": "measured",
+        "decode_tok_s": "measured",
+        "prefill_tok_s": "measured",
+        "ttft_ms": "measured"
+      },
+      "metrics": {
+        "accept_rate": 1.0,
+        "accept_source": "ax_engine_mtp_telemetry",
+        "case_count": 4,
+        "decode_tok_s": 41.427734543409684,
+        "prefill_source": "ax_engine_runner_prefill_time",
+        "prefill_tok_s": 637.1229530787317,
+        "status": "ok",
+        "ttft_ms": 506.9430000000001,
+        "ttft_source": "ax_engine_runner_prefill_time"
+      },
+      "model": "27b",
+      "model_label": "Qwen3.6 27B 6-bit",
+      "reason": "2026-06-30 full AX-only flappy rerun replacing the previous AX row",
+      "status": "supported",
+      "suite": "flappy",
+      "target": "27b-6bit"
+    },
+    {
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-29-peer-comparison-apples-to-apples/27b-6bit/flappy/mtplx.json",
+      "bits": 6,
+      "engine": "mtplx",
+      "metric_contract": {
+        "accept_rate": "measured",
+        "decode_tok_s": "measured",
+        "prefill_tok_s": "derived_from_prompt_eval_time_s",
+        "ttft_ms": "prompt_eval_time_s"
+      },
+      "metrics": {
+        "status": "unsupported"
+      },
+      "model": "27b",
+      "model_label": "Qwen3.6 27B 6-bit",
+      "reason": "mtplx catalog has no official Qwen3.6 27B 6-bit MTP artifact.",
+      "status": "unsupported",
+      "suite": "flappy",
+      "target": "27b-6bit"
+    },
+    {
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-29-peer-comparison-apples-to-apples/27b-6bit/flappy/lightning_mlx.json",
+      "bits": 6,
+      "engine": "lightning_mlx",
+      "metric_contract": {
+        "accept_rate": "measured_if_server_exposes_request_telemetry",
+        "decode_tok_s": "measured",
+        "prefill_tok_s": "approx_prompt_tokens_over_client_ttft_s",
+        "ttft_ms": "client_stream_ttft_s"
+      },
+      "metrics": {
+        "status": "unsupported"
+      },
+      "model": "27b",
+      "model_label": "Qwen3.6 27B 6-bit",
+      "reason": "lightning_mlx catalog has no official Qwen3.6 27B 6-bit MTP artifact.",
+      "status": "unsupported",
+      "suite": "flappy",
+      "target": "27b-6bit"
+    },
+    {
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-29-peer-comparison-apples-to-apples/27b-6bit/flappy/rapid_mlx.json",
+      "bits": 6,
+      "engine": "rapid_mlx",
+      "metric_contract": {
+        "accept_rate": "measured_if_server_exposes_request_telemetry",
+        "decode_tok_s": "measured",
+        "prefill_tok_s": "approx_prompt_tokens_over_client_ttft_s",
+        "ttft_ms": "client_stream_ttft_s"
+      },
+      "metrics": {
+        "status": "unsupported"
+      },
+      "model": "27b",
+      "model_label": "Qwen3.6 27B 6-bit",
+      "reason": "rapid_mlx catalog has no official Qwen3.6 27B 6-bit MTP artifact.",
+      "status": "unsupported",
+      "suite": "flappy",
+      "target": "27b-6bit"
+    },
+    {
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-29-peer-comparison-apples-to-apples/27b-6bit/flappy/omlx.json",
+      "bits": 6,
+      "engine": "omlx",
+      "metric_contract": {
+        "accept_rate": "unavailable",
+        "decode_tok_s": "unavailable",
+        "prefill_tok_s": "unavailable",
+        "ttft_ms": "unavailable"
+      },
+      "metrics": {
+        "status": "unsupported"
+      },
+      "model": "27b",
+      "model_label": "Qwen3.6 27B 6-bit",
+      "reason": "oMLX has no repo-owned Qwen3.6 MTP prompt-suite adapter yet; native MTP needs prepared MTP weights and a dedicated runner.",
+      "status": "unsupported",
+      "suite": "flappy",
+      "target": "27b-6bit"
+    },
+    {
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-30-peer-comparison-ax-only-rerun/35b-a3b-4bit/flappy/ax_engine.json",
+      "bits": 4,
+      "engine": "ax_engine",
+      "metric_contract": {
+        "accept_rate": "measured",
+        "decode_tok_s": "measured",
+        "prefill_tok_s": "measured",
+        "ttft_ms": "measured"
+      },
+      "metrics": {
+        "accept_rate": 1.0,
+        "accept_source": "ax_engine_mtp_telemetry",
+        "case_count": 4,
+        "decode_tok_s": 166.33104107215976,
+        "prefill_source": "ax_engine_runner_prefill_time",
+        "prefill_tok_s": 1755.29758165338,
+        "status": "ok",
+        "ttft_ms": 184.01299999999998,
+        "ttft_source": "ax_engine_runner_prefill_time"
+      },
+      "model": "35b-a3b",
+      "model_label": "Qwen3.6 35B-A3B 4-bit",
+      "reason": "2026-06-30 full AX-only flappy rerun replacing the previous AX row",
+      "status": "supported",
+      "suite": "flappy",
+      "target": "35b-a3b-4bit"
+    },
+    {
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-07-01-mtplx-v104-rerun/35b-a3b-4bit/flappy/mtplx.json",
+      "bits": 4,
+      "engine": "mtplx",
+      "metric_contract": {
+        "accept_rate": "measured",
+        "decode_tok_s": "measured",
+        "prefill_tok_s": "derived_from_prompt_eval_time_s",
+        "ttft_ms": "prompt_eval_time_s"
+      },
+      "metrics": {
+        "accept_rate": 0.9570335389416255,
+        "accept_source": "mtplx_draft_stats",
+        "case_count": 4,
+        "decode_tok_s": 138.0673274125777,
+        "prefill_source": "prompt_tokens_over_prompt_eval_time_s",
+        "prefill_tok_s": 1637.01229697903,
+        "status": "ok",
+        "ttft_ms": 192.5290830549784,
+        "ttft_source": "prompt_eval_time_s"
+      },
+      "model": "35b-a3b",
+      "model_label": "Qwen3.6 35B-A3B 4-bit",
+      "reason": null,
+      "status": "supported",
+      "suite": "flappy",
+      "target": "35b-a3b-4bit"
+    },
+    {
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-29-peer-comparison-apples-to-apples/35b-a3b-4bit/flappy/lightning_mlx.json",
+      "bits": 4,
+      "engine": "lightning_mlx",
+      "metric_contract": {
+        "accept_rate": "measured_if_server_exposes_request_telemetry",
+        "decode_tok_s": "measured",
+        "prefill_tok_s": "approx_prompt_tokens_over_client_ttft_s",
+        "ttft_ms": "client_stream_ttft_s"
+      },
+      "metrics": {
+        "accept_rate": 1.0,
+        "accept_source": "lightning_request_telemetry",
+        "case_count": 4,
+        "decode_tok_s": 116.16575766586892,
+        "prefill_source": "prompt_tokens_over_client_ttft_s",
+        "prefill_tok_s": 1466.4582254845263,
+        "status": "ok",
+        "ttft_ms": 214.81239603599533,
+        "ttft_source": "client_stream_ttft_s"
+      },
+      "model": "35b-a3b",
+      "model_label": "Qwen3.6 35B-A3B 4-bit",
+      "reason": null,
+      "status": "supported",
+      "suite": "flappy",
+      "target": "35b-a3b-4bit"
+    },
+    {
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-29-peer-comparison-apples-to-apples/35b-a3b-4bit/flappy/rapid_mlx.json",
+      "bits": 4,
+      "engine": "rapid_mlx",
+      "metric_contract": {
+        "accept_rate": "measured_if_server_exposes_request_telemetry",
+        "decode_tok_s": "measured",
+        "prefill_tok_s": "approx_prompt_tokens_over_client_ttft_s",
+        "ttft_ms": "client_stream_ttft_s"
+      },
+      "metrics": {
+        "status": "unsupported"
+      },
+      "model": "35b-a3b",
+      "model_label": "Qwen3.6 35B-A3B 4-bit",
+      "reason": "Rapid-MLX starts with the shared Qwen3.6 artifacts, but its scheduler skips MTP install for this generation flow; running it would measure non-MTP decode.",
+      "status": "unsupported",
+      "suite": "flappy",
+      "target": "35b-a3b-4bit"
+    },
+    {
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-29-peer-comparison-apples-to-apples/35b-a3b-4bit/flappy/omlx.json",
+      "bits": 4,
+      "engine": "omlx",
+      "metric_contract": {
+        "accept_rate": "unavailable",
+        "decode_tok_s": "unavailable",
+        "prefill_tok_s": "unavailable",
+        "ttft_ms": "unavailable"
+      },
+      "metrics": {
+        "status": "unsupported"
+      },
+      "model": "35b-a3b",
+      "model_label": "Qwen3.6 35B-A3B 4-bit",
+      "reason": "oMLX has no repo-owned Qwen3.6 MTP prompt-suite adapter yet; native MTP needs prepared MTP weights and a dedicated runner.",
+      "status": "unsupported",
+      "suite": "flappy",
+      "target": "35b-a3b-4bit"
+    },
+    {
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-30-peer-comparison-ax-only-rerun/35b-a3b-6bit/flappy/ax_engine.json",
+      "bits": 6,
+      "engine": "ax_engine",
+      "metric_contract": {
+        "accept_rate": "measured",
+        "decode_tok_s": "measured",
+        "prefill_tok_s": "measured",
+        "ttft_ms": "measured"
+      },
+      "metrics": {
+        "accept_rate": 1.0,
+        "accept_source": "ax_engine_mtp_telemetry",
+        "case_count": 4,
+        "decode_tok_s": 141.75188592782408,
+        "prefill_source": "ax_engine_runner_prefill_time",
+        "prefill_tok_s": 1536.018468935195,
+        "status": "ok",
+        "ttft_ms": 209.38549999999998,
+        "ttft_source": "ax_engine_runner_prefill_time"
+      },
+      "model": "35b-a3b",
+      "model_label": "Qwen3.6 35B-A3B 6-bit",
+      "reason": "2026-06-30 full AX-only flappy rerun replacing the previous AX row",
+      "status": "supported",
+      "suite": "flappy",
+      "target": "35b-a3b-6bit"
+    },
+    {
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-07-01-mtplx-v104-rerun/35b-a3b-6bit/flappy/mtplx.json",
+      "bits": 6,
+      "engine": "mtplx",
+      "metric_contract": {
+        "accept_rate": "measured",
+        "decode_tok_s": "measured",
+        "prefill_tok_s": "derived_from_prompt_eval_time_s",
+        "ttft_ms": "prompt_eval_time_s"
+      },
+      "metrics": {
+        "accept_rate": 0.9668221190519521,
+        "accept_source": "mtplx_draft_stats",
+        "case_count": 4,
+        "decode_tok_s": 117.56501799254511,
+        "prefill_source": "prompt_tokens_over_prompt_eval_time_s",
+        "prefill_tok_s": 1383.8836172068932,
+        "status": "ok",
+        "ttft_ms": 235.04583298927173,
+        "ttft_source": "prompt_eval_time_s"
+      },
+      "model": "35b-a3b",
+      "model_label": "Qwen3.6 35B-A3B 6-bit",
+      "reason": null,
+      "status": "supported",
+      "suite": "flappy",
+      "target": "35b-a3b-6bit"
+    },
+    {
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-29-peer-comparison-apples-to-apples/35b-a3b-6bit/flappy/lightning_mlx.json",
+      "bits": 6,
+      "engine": "lightning_mlx",
+      "metric_contract": {
+        "accept_rate": "measured_if_server_exposes_request_telemetry",
+        "decode_tok_s": "measured",
+        "prefill_tok_s": "approx_prompt_tokens_over_client_ttft_s",
+        "ttft_ms": "client_stream_ttft_s"
+      },
+      "metrics": {
+        "accept_rate": 1.0,
+        "accept_source": "lightning_request_telemetry",
+        "case_count": 4,
+        "decode_tok_s": 96.27735376186848,
+        "prefill_source": "prompt_tokens_over_client_ttft_s",
+        "prefill_tok_s": 1215.7629468415112,
+        "status": "ok",
+        "ttft_ms": 271.8337705009617,
+        "ttft_source": "client_stream_ttft_s"
+      },
+      "model": "35b-a3b",
+      "model_label": "Qwen3.6 35B-A3B 6-bit",
+      "reason": null,
+      "status": "supported",
+      "suite": "flappy",
+      "target": "35b-a3b-6bit"
+    },
+    {
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-29-peer-comparison-apples-to-apples/35b-a3b-6bit/flappy/rapid_mlx.json",
+      "bits": 6,
+      "engine": "rapid_mlx",
+      "metric_contract": {
+        "accept_rate": "measured_if_server_exposes_request_telemetry",
+        "decode_tok_s": "measured",
+        "prefill_tok_s": "approx_prompt_tokens_over_client_ttft_s",
+        "ttft_ms": "client_stream_ttft_s"
+      },
+      "metrics": {
+        "status": "unsupported"
+      },
+      "model": "35b-a3b",
+      "model_label": "Qwen3.6 35B-A3B 6-bit",
+      "reason": "Rapid-MLX starts with the shared Qwen3.6 artifacts, but its scheduler skips MTP install for this generation flow; running it would measure non-MTP decode.",
+      "status": "unsupported",
+      "suite": "flappy",
+      "target": "35b-a3b-6bit"
+    },
+    {
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-06-29-peer-comparison-apples-to-apples/35b-a3b-6bit/flappy/omlx.json",
+      "bits": 6,
+      "engine": "omlx",
+      "metric_contract": {
+        "accept_rate": "unavailable",
+        "decode_tok_s": "unavailable",
+        "prefill_tok_s": "unavailable",
+        "ttft_ms": "unavailable"
+      },
+      "metrics": {
+        "status": "unsupported"
+      },
+      "model": "35b-a3b",
+      "model_label": "Qwen3.6 35B-A3B 6-bit",
+      "reason": "oMLX has no repo-owned Qwen3.6 MTP prompt-suite adapter yet; native MTP needs prepared MTP weights and a dedicated runner.",
+      "status": "unsupported",
+      "suite": "flappy",
+      "target": "35b-a3b-6bit"
+    }
+  ],
+  "schema": "ax.qwen36_mtp_matrix.summary.v1",
+  "source_summaries": [
+    "benchmarks/results/mtp-qwen36-matrix/2026-06-29-peer-comparison-apples-to-apples/summary.json",
+    "benchmarks/results/mtp-qwen36-matrix/2026-06-30-27b4-flappy-rerun/summary.json",
+    "benchmarks/results/mtp-qwen36-matrix/2026-06-30-peer-comparison-ax-only-rerun/summary.json",
+    "benchmarks/results/mtp-qwen36-matrix/2026-06-30-peer-comparison-27b4-ax-only-rerun/summary.json",
+    "benchmarks/results/mtp-qwen36-matrix/2026-07-01-mtplx-v104-rerun/summary.json"
+  ]
+}

@@ -92,7 +92,10 @@ use crate::model::{
     take_linear_attention_profile_snapshot, take_moe_profile_snapshot,
     take_prefill_profile_snapshot,
 };
-use crate::mtp::{glm_mtp_draft_tokens, mtp_draft_tokens, mtp_draft_tokens_after_forced_prefix};
+use crate::mtp::{
+    glm_mtp_draft_tokens, mtp_draft_tokens, mtp_draft_tokens_after_forced_prefix,
+    mtp_draft_tokens_gated,
+};
 use crate::ngram_accel::{
     DEFAULT_DRAFT_LEN, LINEAR_MIN_NGRAM_SUPPORT, MAX_DRAFT_LEN, NgramDraftOutcome,
     NgramDraftPolicy, NgramDraftRejection, NgramPolicyVariant, NgramTable, classify_prompt_class,
@@ -6488,15 +6491,29 @@ impl MlxRunner {
             // Draft new MTP tokens from skip hidden.
             let cache = state.mtp_cache.get_or_insert_with(|| MlxKVCache::new(1));
             let mtp_draft_started = Instant::now();
-            let (draft, log_probs, _dist, added, _m) = mtp_draft_tokens(
-                &self.weights,
-                &self.cfg,
-                &sh,
-                primary_tok,
-                cache,
-                Some(state.mtp_adaptive_max_depth),
-                &mut state.rng,
-            );
+            let (draft, log_probs, _dist, added, _m) =
+                if let Some(min_confidence) = mtp_optimistic_draft_min_confidence_override() {
+                    mtp_draft_tokens_gated(
+                        &self.weights,
+                        &self.cfg,
+                        &sh,
+                        primary_tok,
+                        cache,
+                        Some(state.mtp_adaptive_max_depth),
+                        &mut state.rng,
+                        min_confidence,
+                    )
+                } else {
+                    mtp_draft_tokens(
+                        &self.weights,
+                        &self.cfg,
+                        &sh,
+                        primary_tok,
+                        cache,
+                        Some(state.mtp_adaptive_max_depth),
+                        &mut state.rng,
+                    )
+                };
             mtp_timings.mtp_draft_wall_us = mtp_timings
                 .mtp_draft_wall_us
                 .saturating_add(elapsed_us(mtp_draft_started));
@@ -6617,7 +6634,6 @@ impl MlxRunner {
                 if let Some(ref predicted_arr) = predicted_arr {
                     targets.push(predicted_arr);
                 }
-                targets.push(&draft_hidden);
                 targets.extend(kv_refs);
                 let verify_eval_started = Instant::now();
                 eval(&targets);
@@ -6790,7 +6806,6 @@ impl MlxRunner {
                 if let Some(ref predicted_arr) = predicted_arr {
                     targets.push(predicted_arr);
                 }
-                targets.push(&draft_hidden);
                 targets.extend(kv_refs);
                 let verify_eval_started = Instant::now();
                 eval(&targets);
@@ -7406,15 +7421,32 @@ impl MlxRunner {
                     // MTP head forward path (RoPE managed internally via cache.seq_len).
                     let cache = state.mtp_cache.get_or_insert_with(|| MlxKVCache::new(1));
                     let mtp_draft_started = Instant::now();
-                    let (draft, log_probs, distributions, added, _top2_margins) = mtp_draft_tokens(
-                        &self.weights,
-                        &self.cfg,
-                        &draft_hidden,
-                        tail_tok,
-                        cache,
-                        Some(state.mtp_adaptive_max_depth),
-                        &mut state.rng,
-                    );
+                    let (draft, log_probs, distributions, added, _top2_margins) = if let Some(
+                        min_confidence,
+                    ) =
+                        mtp_optimistic_draft_min_confidence_override()
+                    {
+                        mtp_draft_tokens_gated(
+                            &self.weights,
+                            &self.cfg,
+                            &draft_hidden,
+                            tail_tok,
+                            cache,
+                            Some(state.mtp_adaptive_max_depth),
+                            &mut state.rng,
+                            min_confidence,
+                        )
+                    } else {
+                        mtp_draft_tokens(
+                            &self.weights,
+                            &self.cfg,
+                            &draft_hidden,
+                            tail_tok,
+                            cache,
+                            Some(state.mtp_adaptive_max_depth),
+                            &mut state.rng,
+                        )
+                    };
                     mtp_timings.mtp_draft_wall_us = mtp_timings
                         .mtp_draft_wall_us
                         .saturating_add(elapsed_us(mtp_draft_started));
@@ -9451,6 +9483,19 @@ fn mtp_optimistic_from_env() -> bool {
             std::env::var("AX_MLX_MTP_OPTIMISTIC").as_deref(),
             Ok("0") | Ok("false") | Ok("FALSE")
         )
+    })
+}
+
+fn mtp_optimistic_draft_min_confidence_override() -> Option<f32> {
+    static CACHED: OnceLock<Option<f32>> = OnceLock::new();
+    *CACHED.get_or_init(|| {
+        if std::env::var("AX_MLX_MTP_DRAFT_MIN_CONFIDENCE").is_ok() {
+            None
+        } else if mtp_optimistic_from_env() {
+            Some(0.0)
+        } else {
+            None
+        }
     })
 }
 
