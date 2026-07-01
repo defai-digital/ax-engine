@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import collections
 import json
 import os
 import shlex
@@ -50,6 +51,33 @@ PEER_OPTIMIZED_DEFAULTS = {
     "mtplx_profile": "performance-cold",
 }
 AX_MTP_ENGINES = {"ax_engine_mlx_ngram_accel", "ax_engine_mlx_pure_mtp"}
+
+# Degeneracy gate: reject runs where a short repeating cycle dominates output.
+DEGENERACY_MAX_CYCLE_LEN = 8
+DEGENERACY_COVERAGE_THRESHOLD = 0.50  # 50% of tokens in a repeating cycle = degenerate
+DEGENERACY_PERIODIC_COVERAGE_THRESHOLD = 0.45
+
+# MTP head provenance — tracks which artifact each engine loads.
+MTP_HEAD_PROVENANCE: dict[str, dict[str, str]] = {
+    "ax_engine": {
+        "source": "Qwen/Qwen3.6-27B (official BF16 mtp.* tensors)",
+        "packaging": "ax-local/Qwen3.6-27B-MTP sidecar",
+        "mtp_precision": "bf16 (extracted with RMSNorm +1.0 delta correction)",
+        "draft_lm_head": "bf16 (matching base)",
+    },
+    "mtplx": {
+        "source": "Qwen/Qwen3.6-27B (re-quantized by Youssofal)",
+        "packaging": "Youssofal/Qwen3.6-27B-MTPLX-Optimized-Speed",
+        "mtp_precision": "INT4 prequantized sidecar (mtp/weights.safetensors)",
+        "draft_lm_head": "3-bit affine, group_size=64",
+    },
+    "lightning_mlx": {
+        "source": "Qwen/Qwen3.6-27B (re-quantized by Youssofal)",
+        "packaging": "Youssofal/Qwen3.6-27B-MTPLX-Optimized-Speed",
+        "mtp_precision": "INT4 prequantized sidecar (mtp/weights.safetensors)",
+        "draft_lm_head": "3-bit affine, group_size=64",
+    },
+}
 NGRAM_ZERO_KEYS = (
     "ax_ngram_accepted_tokens",
     "ax_ngram_draft_tokens",
@@ -71,6 +99,7 @@ class Target:
     bits: int
     ax_model_dir: Path
     mtp_depth: int
+    mtp_head_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -93,6 +122,7 @@ TARGETS: dict[str, Target] = {
         bits=4,
         ax_model_dir=HF_CACHE / "models--ax-local--Qwen3.6-27B-MTP" / "snapshots" / "v1",
         mtp_depth=3,
+        mtp_head_id="ax-local/Qwen3.6-27B-MTP (BF16 from Qwen/Qwen3.6-27B)",
     ),
     "27b-6bit": Target(
         key="27b-6bit",
@@ -104,6 +134,7 @@ TARGETS: dict[str, Target] = {
         / "snapshots"
         / "v1",
         mtp_depth=3,
+        mtp_head_id="ax-local/Qwen3.6-27B-6bit-MTP",
     ),
     "35b-a3b-4bit": Target(
         key="35b-a3b-4bit",
@@ -112,6 +143,7 @@ TARGETS: dict[str, Target] = {
         bits=4,
         ax_model_dir=HF_CACHE / "models--ax-local--Qwen3.6-35B-MTP" / "snapshots" / "v1",
         mtp_depth=1,
+        mtp_head_id="ax-local/Qwen3.6-35B-MTP (BF16 from Qwen/Qwen3.6-35B-A3B)",
     ),
     "35b-a3b-6bit": Target(
         key="35b-a3b-6bit",
@@ -123,6 +155,7 @@ TARGETS: dict[str, Target] = {
         / "snapshots"
         / "v1",
         mtp_depth=1,
+        mtp_head_id="ax-local/Qwen3.6-35B-A3B-6bit-MTP",
     ),
 }
 
@@ -138,6 +171,119 @@ MTPLX_QUANT_POLICIES = {
 
 LIGHTNING_MODELS = dict(MTPLX_MODEL_IDS)
 RAPID_MODELS: dict[str, str] = {}
+
+
+def detect_degenerate_output(
+    token_ids: list[int],
+    max_cycle_len: int = DEGENERACY_MAX_CYCLE_LEN,
+    coverage_threshold: float = DEGENERACY_COVERAGE_THRESHOLD,
+) -> dict[str, Any]:
+    """Check whether output collapses into a short repeating token cycle.
+
+    Scans cycle lengths 1..max_cycle_len and tries to find a repeating pattern
+    that covers >= coverage_threshold of the output.  Works by sliding a window
+    across the sequence and counting consecutive cycle matches.  A run with
+    750+ consecutive whitespace tokens (e.g. ``248045, 554, 248046, 198``) will
+    be flagged.
+    """
+    n = len(token_ids)
+    if n < max_cycle_len * 2:
+        return {"is_degenerate": False, "cycle": None, "coverage": 0.0}
+    for cycle_len in range(1, max_cycle_len + 1):
+        best_coverage = 0.0
+        best_cycle: list[int] | None = None
+        # Try every candidate window across the full sequence.
+        for start in range(n - cycle_len):
+            candidate = token_ids[start : start + cycle_len]
+            # Count consecutive forward matches from this position.
+            matches = 0
+            pos = start
+            while pos + cycle_len <= n:
+                if token_ids[pos : pos + cycle_len] == candidate:
+                    matches += 1
+                    pos += cycle_len
+                else:
+                    break
+            coverage = (matches * cycle_len) / n
+            if coverage > best_coverage:
+                best_coverage = coverage
+                best_cycle = candidate
+            if best_coverage >= coverage_threshold:
+                return {
+                    "is_degenerate": True,
+                    "cycle": best_cycle,
+                    "cycle_length": cycle_len,
+                    "method": "consecutive_cycle",
+                    "coverage": round(best_coverage, 4),
+                }
+    periodic = detect_periodic_degenerate_output(token_ids, max_cycle_len=max_cycle_len)
+    if periodic["is_degenerate"]:
+        return periodic
+    return {"is_degenerate": False, "cycle": None, "coverage": 0.0}
+
+
+def detect_periodic_degenerate_output(
+    token_ids: list[int],
+    max_cycle_len: int = DEGENERACY_MAX_CYCLE_LEN,
+    coverage_threshold: float = DEGENERACY_PERIODIC_COVERAGE_THRESHOLD,
+) -> dict[str, Any]:
+    n = len(token_ids)
+    if n < max_cycle_len * 2:
+        return {"is_degenerate": False, "cycle": None, "coverage": 0.0}
+    best: tuple[float, int, list[int]] = (0.0, 0, [])
+    for cycle_len in range(1, max_cycle_len + 1):
+        cycle: list[int] = []
+        covered = 0
+        for phase in range(cycle_len):
+            phase_tokens = token_ids[phase:n:cycle_len]
+            if not phase_tokens:
+                continue
+            token, count = collections.Counter(phase_tokens).most_common(1)[0]
+            cycle.append(int(token))
+            covered += int(count)
+        coverage = covered / n
+        if coverage > best[0]:
+            best = (coverage, cycle_len, cycle)
+    if best[0] >= coverage_threshold:
+        return {
+            "is_degenerate": True,
+            "cycle": best[2],
+            "cycle_length": best[1],
+            "method": "periodic_cycle",
+            "coverage": round(best[0], 4),
+        }
+    return {"is_degenerate": False, "cycle": None, "coverage": 0.0}
+
+
+def check_ax_output_degeneracy(artifact: dict[str, Any]) -> dict[str, Any]:
+    """Run the degeneracy gate on all AX output trials.
+
+    Returns a summary dict with per-case degeneracy results and an overall
+    ``degenerate`` flag that is True if any case fails the gate.
+    """
+    cases: list[dict[str, Any]] = []
+    any_degenerate = False
+    for row in artifact.get("results", []):
+        if row.get("engine") not in AX_MTP_ENGINES:
+            continue
+        for trial in row.get("trials", []):
+            token_ids = trial.get("output_token_ids")
+            if not isinstance(token_ids, list) or not token_ids:
+                continue
+            result = detect_degenerate_output(token_ids)
+            result["prompt_case_id"] = row.get("prompt_case_id")
+            result["token_count"] = len(token_ids)
+            cases.append(result)
+            if result["is_degenerate"]:
+                any_degenerate = True
+    return {
+        "degenerate": any_degenerate,
+        "gate": "output_entropy_cycle_coverage",
+        "threshold": DEGENERACY_COVERAGE_THRESHOLD,
+        "periodic_threshold": DEGENERACY_PERIODIC_COVERAGE_THRESHOLD,
+        "max_cycle_len": DEGENERACY_MAX_CYCLE_LEN,
+        "cases": cases,
+    }
 
 
 def median(values: list[float]) -> float | None:
@@ -195,6 +341,14 @@ def summarize_ax_artifact(artifact: dict[str, Any], artifact_path: Path) -> dict
         for row in artifact.get("results", [])
         if row.get("engine") in AX_MTP_ENGINES and row.get("prompt_case_id")
     ]
+    degeneracy = check_ax_output_degeneracy(artifact)
+    # Collect client-observed TTFT for cross-engine comparability.
+    client_ttft_values: list[float] = []
+    for row in rows:
+        for trial in row.get("trials", []):
+            v = trial.get("client_wall_ttft_ms")
+            if isinstance(v, int | float) and v > 0:
+                client_ttft_values.append(float(v))
     return {
         "status": "ok" if rows else "no_data",
         "decode_tok_s": median(
@@ -206,11 +360,15 @@ def summarize_ax_artifact(artifact: dict[str, Any], artifact_path: Path) -> dict
         "ttft_ms": median(
             [v for row in rows if (v := metric_median(row, "ttft_ms")) is not None]
         ),
+        "client_wall_ttft_ms": median(client_ttft_values),
         "accept_rate": ax_accept_rate(artifact),
         "case_count": len(rows),
         "prefill_source": "ax_engine_runner_prefill_time",
         "ttft_source": "ax_engine_runner_prefill_time",
+        "ttft_scope": "runner_internal",
+        "client_ttft_scope": "client_http_wall",
         "accept_source": "ax_engine_mtp_telemetry",
+        "degeneracy_gate": degeneracy,
     }
 
 
@@ -249,6 +407,7 @@ def summarize_mtplx_artifact(artifact: dict[str, Any]) -> dict[str, Any]:
         "case_count": len(cases),
         "prefill_source": "prompt_tokens_over_prompt_eval_time_s",
         "ttft_source": "prompt_eval_time_s",
+        "ttft_scope": "server_prompt_eval",
         "accept_source": "mtplx_draft_stats",
     }
 
@@ -286,6 +445,7 @@ def summarize_lightning_artifact(artifact: dict[str, Any]) -> dict[str, Any]:
         "case_count": len(cases),
         "prefill_source": "prompt_tokens_over_client_ttft_s",
         "ttft_source": "client_stream_ttft_s",
+        "ttft_scope": "client_http_wall",
         "accept_source": "lightning_request_telemetry",
     }
 
@@ -576,6 +736,8 @@ def metric_contract(engine: str) -> dict[str, str]:
             "prefill_tok_s": "measured",
             "ttft_ms": "measured",
             "accept_rate": "measured",
+            "ttft_scope": "runner_internal",
+            "client_ttft_scope": "client_http_wall",
         }
     if engine == "mtplx":
         return {
@@ -583,6 +745,7 @@ def metric_contract(engine: str) -> dict[str, str]:
             "prefill_tok_s": "derived_from_prompt_eval_time_s",
             "ttft_ms": "prompt_eval_time_s",
             "accept_rate": "measured",
+            "ttft_scope": "server_prompt_eval",
         }
     if engine in {"lightning_mlx", "rapid_mlx"}:
         return {
@@ -590,12 +753,14 @@ def metric_contract(engine: str) -> dict[str, str]:
             "prefill_tok_s": "approx_prompt_tokens_over_client_ttft_s",
             "ttft_ms": "client_stream_ttft_s",
             "accept_rate": "measured_if_server_exposes_request_telemetry",
+            "ttft_scope": "client_http_wall",
         }
     return {
         "decode_tok_s": "unavailable",
         "prefill_tok_s": "unavailable",
         "ttft_ms": "unavailable",
         "accept_rate": "unavailable",
+        "ttft_scope": "unavailable",
     }
 
 
@@ -632,6 +797,7 @@ def lane_to_dict(lane: Lane) -> dict[str, Any]:
         "command": lane.command,
         "reason": lane.reason,
         "metric_contract": lane.metric_contract,
+        "mtp_head": MTP_HEAD_PROVENANCE.get(lane.engine),
     }
 
 
@@ -650,6 +816,7 @@ def write_plan(args: argparse.Namespace, lanes: list[Lane]) -> None:
             "forbidden_modes": ["direct", "mtp-ngram", "ngram"],
             "metrics": ["decode_tok_s", "prefill_tok_s", "ttft_ms", "accept_rate"],
             "sampling": args.sampling,
+            "seed": args.seed,
             "max_tokens": args.max_tokens,
             "prompt_limit": args.prompt_limit,
             "repetitions": args.repetitions,
@@ -668,6 +835,17 @@ def write_plan(args: argparse.Namespace, lanes: list[Lane]) -> None:
                 else "enabled_default"
             ),
             "lightning_mtp_draft_temperature": args.lightning_mtp_draft_temperature,
+            "ax_mtp_optimistic": args.ax_mtp_optimistic,
+            "degeneracy_gate": {
+                "max_cycle_len": DEGENERACY_MAX_CYCLE_LEN,
+                "coverage_threshold": DEGENERACY_COVERAGE_THRESHOLD,
+                "periodic_coverage_threshold": DEGENERACY_PERIODIC_COVERAGE_THRESHOLD,
+            },
+            "mtp_head_provenance": {
+                engine: prov
+                for engine in args.engines
+                if (prov := MTP_HEAD_PROVENANCE.get(engine))
+            },
         },
         "lanes": [lane_to_dict(lane) for lane in lanes],
     }
@@ -713,6 +891,19 @@ def mtplx_env(args: argparse.Namespace) -> dict[str, str] | None:
         if not existing
         else str(args.mtplx_source) + os.pathsep + existing
     )
+    return env
+
+
+def ax_env(args: argparse.Namespace) -> dict[str, str]:
+    """Build an environment dict that explicitly sets AX_MLX_MTP_OPTIMISTIC.
+
+    This makes the AX optimistic mode choice visible and reproducible in the
+    benchmark plan/summary metadata rather than relying on the compiled-in
+    default.  When ``args.ax_mtp_optimistic`` is False, the env var is set to
+    ``"0"`` which forces the full rejection-sampling path.
+    """
+    env = os.environ.copy()
+    env["AX_MLX_MTP_OPTIMISTIC"] = "1" if args.ax_mtp_optimistic else "0"
     return env
 
 
@@ -771,7 +962,12 @@ def execute_lanes(args: argparse.Namespace, lanes: list[Lane]) -> None:
         print(f"[run] {lane.target.key} {lane.suite} {lane.engine}", flush=True)
         log_path = lane.output_path.with_suffix(".log")
         try:
-            env = mtplx_env(args) if lane.engine == "mtplx" else None
+            if lane.engine == "ax_engine":
+                env = ax_env(args)
+            elif lane.engine == "mtplx":
+                env = mtplx_env(args)
+            else:
+                env = None
             run_logged(lane.command, log_path, env=env)
         except Exception as exc:
             write_error_artifact(
@@ -815,6 +1011,7 @@ def build_summary(args: argparse.Namespace, lanes: list[Lane]) -> dict[str, Any]
             "mode": "mtp",
             "metrics": ["decode_tok_s", "prefill_tok_s", "ttft_ms", "accept_rate"],
             "sampling": args.sampling,
+            "seed": args.seed,
             "max_tokens": args.max_tokens,
             "prompt_limit": args.prompt_limit,
             "repetitions": args.repetitions,
@@ -833,6 +1030,17 @@ def build_summary(args: argparse.Namespace, lanes: list[Lane]) -> dict[str, Any]
                 else "enabled_default"
             ),
             "lightning_mtp_draft_temperature": args.lightning_mtp_draft_temperature,
+            "ax_mtp_optimistic": args.ax_mtp_optimistic,
+            "degeneracy_gate": {
+                "max_cycle_len": DEGENERACY_MAX_CYCLE_LEN,
+                "coverage_threshold": DEGENERACY_COVERAGE_THRESHOLD,
+                "periodic_coverage_threshold": DEGENERACY_PERIODIC_COVERAGE_THRESHOLD,
+            },
+            "mtp_head_provenance": {
+                engine: prov
+                for engine in args.engines
+                if (prov := MTP_HEAD_PROVENANCE.get(engine))
+            },
         },
         "rows": rows,
     }
@@ -855,6 +1063,11 @@ def write_summary_markdown(path: Path, summary: dict[str, Any]) -> None:
     ]
     for row in summary["rows"]:
         metrics = row["metrics"]
+        status = metrics.get("status") or row["status"]
+        # Flag degenerate rows.
+        degen = metrics.get("degeneracy_gate", {})
+        if degen.get("degenerate"):
+            status += " [DEGENERATE OUTPUT]"
         lines.append(
             "| {target} | `{suite}` | `{engine}` | {decode} tok/s | {prefill} tok/s | {ttft} ms | {accept} | {status} |".format(
                 target=row["model_label"],
@@ -864,9 +1077,12 @@ def write_summary_markdown(path: Path, summary: dict[str, Any]) -> None:
                 prefill=fmt_number(metrics.get("prefill_tok_s")),
                 ttft=fmt_number(metrics.get("ttft_ms"), 0),
                 accept=fmt_percent(metrics.get("accept_rate")),
-                status=metrics.get("status") or row["status"],
+                status=status,
             )
         )
+    provenance = summary.get("contract", {}).get("mtp_head_provenance", {})
+    seed = summary["contract"].get("seed")
+    seed_label = str(seed) if seed is not None else "engine defaults"
     lines += [
         "",
         "Notes:",
@@ -874,6 +1090,25 @@ def write_summary_markdown(path: Path, summary: dict[str, Any]) -> None:
         "- AX rows are pure MTP and fail summary generation if n-gram telemetry is non-zero.",
         "- MTPLX prefill and TTFT are derived from `prompt_eval_time_s` in the MTPLX runner.",
         "- Lightning prefill is approximate (`prompt_tokens / client TTFT`) and includes local HTTP overhead.",
+        f"- AX MTP optimistic verify: {'ON (skip full softmax on accepted drafts)' if summary['contract'].get('ax_mtp_optimistic', True) else 'OFF (full rejection sampling)'}.",
+        f"- Seed: `{seed_label}` (AX uses mlx_lm-style fixed seed; lightning uses incrementing seeds per repetition).",
+        "",
+        "**Measurement scope (TTFT / prefill):**",
+        "",
+        "- AX `ttft_ms` / `prefill_tok_s`: measured inside the MLX runner (excludes HTTP/SSE overhead). `client_wall_ttft_ms` is also recorded for cross-engine parity.",
+        "- MTPLX: derived from server-side `prompt_eval_time_s`.",
+        "- Lightning: client-observed HTTP stream TTFT (includes local HTTP overhead).",
+        "- **Only `decode_tok_s` is measured at the same scope across all engines.** Cross-engine prefill/TTFT comparisons should use `client_wall_ttft_ms` where available.",
+        "",
+        "**MTP head provenance:**",
+        "",
+    ]
+    for engine, prov in provenance.items():
+        lines.append(f"- `{engine}`: {prov.get('packaging', 'unknown')} (MTP precision: {prov.get('mtp_precision', 'unknown')}, draft LM head: {prov.get('draft_lm_head', 'unknown')})")
+    lines += [
+        "",
+        "- Different MTP head artifacts across engines means this is a **production-configuration comparison**, not an apples-to-apples MTP weight test.",
+        f"- Degeneracy gate: rejects runs where a consecutive repeating token cycle (length \u2264{DEGENERACY_MAX_CYCLE_LEN}) covers \u2265{DEGENERACY_COVERAGE_THRESHOLD*100:.0f}% of output tokens, or a phase-aligned periodic cycle covers \u2265{DEGENERACY_PERIODIC_COVERAGE_THRESHOLD*100:.0f}%.",
         "- Unsupported peer lanes are listed in `plan.md` with the exact support reason.",
     ]
     path.write_text("\n".join(lines) + "\n")
@@ -951,8 +1186,18 @@ def parse_args() -> argparse.Namespace:
         help="Limit each prompt suite to the first N prompts for benchmark profiles.",
     )
     parser.add_argument("--max-tokens", type=int, default=1000)
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help=(
+            "Random seed for all engines. When unset, each engine uses its own "
+            "default (AX: fixed seed 0; lightning: incrementing per repetition). "
+            "Set this to force seed parity for cross-engine reproducibility."
+        ),
+    )
     parser.add_argument("--repetitions", type=int, default=5)
-    parser.add_argument("--warmup-repetitions", type=int, default=1)
+    parser.add_argument("--warmup-repetitions", type=int, default=2)
     parser.add_argument("--cooldown", type=float, default=15.0)
     parser.add_argument("--inter-case-cooldown", type=float, default=10.0)
     parser.add_argument("--prefill-step-size", type=int, default=None)
@@ -976,6 +1221,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--mtplx-profile", default="stable")
     parser.add_argument("--lightning-mtp-draft-temperature", type=float, default=0.5)
     parser.add_argument("--lightning-mtp-optimistic", action="store_true")
+    parser.add_argument(
+        "--ax-mtp-optimistic",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Control AX Engine MTP optimistic verify mode. "
+            "Default ON matches AX runtime default (skip full-vocab softmax and "
+            "rejection sampling when drafts are accepted). "
+            "Use --no-ax-mtp-optimistic for strict rejection-sampling parity with "
+            "peer engines that always compute full softmax."
+        ),
+    )
     lightning_prefix_cache = parser.add_mutually_exclusive_group()
     lightning_prefix_cache.add_argument("--lightning-disable-prefix-cache", action="store_true")
     lightning_prefix_cache.add_argument(

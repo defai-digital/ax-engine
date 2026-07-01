@@ -1282,6 +1282,10 @@ def load_mtp_peer_rows(summary_path: Path) -> list[dict[str, Any]]:
 def render_mtp_peer_comparison_chart(
     rows: list[dict[str, Any]], summary_path: Path, metric_key: str
 ) -> str:
+    summary = json.loads(summary_path.read_text())
+    contract_label = str(
+        summary.get("contract", {}).get("benchmark_contract", "production-configuration")
+    ).replace("-", " ")
     metric_config = MTP_PEER_METRICS[metric_key]
     metric_field = str(metric_config["field"])
     targets = []
@@ -1304,12 +1308,17 @@ def render_mtp_peer_comparison_chart(
         return (max(0.0, value) / axis_max) * (MTP_PEER_RIGHT - MTP_PEER_LEFT)
 
     by_target_engine = {}
+    degenerate_by_target_engine = {}
     for row in rows:
         metric_value = row["metrics"].get(metric_field)
         if isinstance(metric_value, int | float):
             value = float(metric_value)
-            by_target_engine[(str(row["model_label"]), str(row["engine"]))] = (
+            key = (str(row["model_label"]), str(row["engine"]))
+            by_target_engine[key] = (
                 value * 100.0 if metric_key == "accept" else value
+            )
+            degenerate_by_target_engine[key] = bool(
+                row["metrics"].get("degeneracy_gate", {}).get("degenerate")
             )
     higher_is_better = bool(metric_config["higher_is_better"])
     direction = "Higher is better" if higher_is_better else "Lower is better"
@@ -1321,6 +1330,7 @@ def render_mtp_peer_comparison_chart(
             value
             for (row_target, _engine), value in by_target_engine.items()
             if row_target == target
+            and not degenerate_by_target_engine.get((row_target, _engine), False)
         ]
         if len(target_values) > 1:
             best_by_target[target] = (
@@ -1328,15 +1338,16 @@ def render_mtp_peer_comparison_chart(
             )
     lines = [
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{MTP_PEER_WIDTH}" height="{height}" viewBox="0 0 {MTP_PEER_WIDTH} {height}" role="img" aria-labelledby="title desc">',
-        f'<title id="title">{escape(str(metric_config["title"]))} apples-to-apples</title>',
+        f'<title id="title">{escape(str(metric_config["title"]))} {escape(contract_label)}</title>',
         (
             '<desc id="desc">Grouped horizontal bar chart comparing AX Engine, '
             f'MTPLX, and lightning-mlx {escape(str(metric_config["unit"]))} on '
-            "the flappy prompt suite.</desc>"
+            "the flappy prompt suite. Degenerate rows are shown muted and are "
+            "not eligible for best-row highlighting.</desc>"
         ),
         f'<rect width="{MTP_PEER_WIDTH}" height="{height}" fill="#f8fafc"/>',
         f'<text x="32" y="34" font-family="{FONT}" font-size="22" font-weight="700" fill="#111827">{escape(str(metric_config["title"]))}</text>',
-        f'<text x="32" y="60" font-family="{FONT}" font-size="14" fill="#374151">flappy suite · 1000 generated tokens · 5 measured reps · 2 warmups · 15s cooldown · cold-prefill parity</text>',
+        f'<text x="32" y="60" font-family="{FONT}" font-size="14" fill="#374151">flappy suite · 1000 generated tokens · 5 measured reps · 2 warmups · 15s cooldown · {escape(contract_label)}</text>',
         f'<text x="32" y="80" font-family="{FONT}" font-size="13" fill="#6b7280">{escape(str(metric_config["desc"]))}</text>',
     ]
     lines.append(
@@ -1382,12 +1393,19 @@ def render_mtp_peer_comparison_chart(
                 continue
             width = x_scale(value)
             # Best value per target is highlighted in red; no text suffix.
-            is_best = target in best_by_target and value == best_by_target[target]
+            is_degenerate = degenerate_by_target_engine.get((target, engine), False)
+            is_best = (
+                target in best_by_target
+                and value == best_by_target[target]
+                and not is_degenerate
+            )
             value_fill = "#dc2626" if is_best else "#111827"
+            opacity = "0.38" if is_degenerate else "1"
+            label_suffix = " degenerate" if is_degenerate else ""
             lines.extend(
                 [
-                    f'<rect x="{MTP_PEER_LEFT:.1f}" y="{y:.1f}" width="{width:.1f}" height="{MTP_PEER_BAR_H:.1f}" rx="3" fill="{MTP_PEER_COLORS[engine]}"/>',
-                    f'<text x="{MTP_PEER_LEFT + width + 8:.1f}" y="{y + 15:.1f}" font-family="{FONT}" font-size="12" font-weight="700" fill="{value_fill}">{value:.1f}{escape(str(metric_config["suffix"]))}</text>',
+                    f'<rect x="{MTP_PEER_LEFT:.1f}" y="{y:.1f}" width="{width:.1f}" height="{MTP_PEER_BAR_H:.1f}" rx="3" fill="{MTP_PEER_COLORS[engine]}" opacity="{opacity}"/>',
+                    f'<text x="{MTP_PEER_LEFT + width + 8:.1f}" y="{y + 15:.1f}" font-family="{FONT}" font-size="12" font-weight="700" fill="{value_fill}">{value:.1f}{escape(str(metric_config["suffix"]))}{escape(label_suffix)}</text>',
                 ]
             )
     versions_text = " · ".join(

@@ -36,6 +36,7 @@ def make_args(root: Path) -> Namespace:
         cooldown=30.0,
         inter_case_cooldown=10.0,
         sampling={"temperature": 0.6, "top_p": 0.95, "top_k": 20},
+        seed=None,
         ax_python=Path("python3"),
         mtplx_python=Path("python3"),
         rapid_python=Path("python3"),
@@ -49,6 +50,7 @@ def make_args(root: Path) -> Namespace:
         prefill_step_size=None,
         lightning_mtp_draft_temperature=0.5,
         lightning_mtp_optimistic=False,
+        ax_mtp_optimistic=True,
         lightning_disable_prefix_cache=False,
         lightning_enable_prefix_cache=False,
         base_port=18765,
@@ -74,6 +76,21 @@ class Qwen36MtpMatrixTests(unittest.TestCase):
         self.assertEqual(by_key[("27b-4bit", "rapid_mlx")], "unsupported")
         self.assertEqual(by_key[("27b-6bit", "rapid_mlx")], "unsupported")
         self.assertEqual(by_key[("27b-4bit", "omlx")], "unsupported")
+
+    def test_ax_env_sets_optimistic_on_by_default(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            args = make_args(Path(tmp))
+            env = matrix.ax_env(args)
+
+        self.assertEqual(env["AX_MLX_MTP_OPTIMISTIC"], "1")
+
+    def test_ax_env_disables_optimistic_when_flag_is_false(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            args = make_args(Path(tmp))
+            args.ax_mtp_optimistic = False
+            env = matrix.ax_env(args)
+
+        self.assertEqual(env["AX_MLX_MTP_OPTIMISTIC"], "0")
 
     def test_ax_command_is_mtp_only_and_disables_ngram_stacking(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -239,6 +256,12 @@ class Qwen36MtpMatrixTests(unittest.TestCase):
                         "ax_mtp_accepted_tokens": 90,
                         "ax_mtp_draft_tokens": 100,
                     },
+                    "trials": [
+                        {
+                            "output_token_ids": list(range(1000, 2000)),
+                            "client_wall_ttft_ms": 500.0,
+                        }
+                    ],
                 }
             ]
         }
@@ -299,6 +322,166 @@ class Qwen36MtpMatrixTests(unittest.TestCase):
         self.assertEqual(summary["prefill_tok_s"], 1000.0)
         self.assertEqual(summary["ttft_ms"], 200.0)
         self.assertEqual(summary["accept_rate"], 0.75)
+
+    def test_detect_degenerate_output_flags_whitespace_cycle(self) -> None:
+        # 100 tokens of diverse content followed by 900 tokens of repeating 4-cycle.
+        # The cycle covers 90% of output — well above the 50% threshold.
+        diverse = list(range(1000, 1100))  # 100 unique tokens
+        cycle = [248045, 554, 248046, 198] * 225  # 900 tokens
+        token_ids = diverse + cycle
+
+        result = matrix.detect_degenerate_output(token_ids)
+
+        self.assertTrue(result["is_degenerate"])
+        self.assertEqual(result["cycle_length"], 4)
+        self.assertGreater(result["coverage"], 0.5)
+
+    def test_detect_degenerate_output_flags_periodic_whitespace_cycle(self) -> None:
+        token_ids = []
+        cycle = [248046, 198, 248045, 554]
+        for index in range(1000):
+            if index % 2 == 0:
+                token_ids.append(cycle[index % len(cycle)])
+            else:
+                token_ids.append(1000 + index)
+
+        result = matrix.detect_degenerate_output(token_ids)
+
+        self.assertTrue(result["is_degenerate"])
+        self.assertEqual(result["method"], "periodic_cycle")
+        self.assertLessEqual(result["cycle_length"], matrix.DEGENERACY_MAX_CYCLE_LEN)
+        self.assertGreaterEqual(
+            result["coverage"],
+            matrix.DEGENERACY_PERIODIC_COVERAGE_THRESHOLD,
+        )
+
+    def test_detect_degenerate_output_passes_diverse_output(self) -> None:
+        # 1000 diverse tokens — no repeating cycle.
+        token_ids = list(range(1000, 2000))
+
+        result = matrix.detect_degenerate_output(token_ids)
+
+        self.assertFalse(result["is_degenerate"])
+
+    def test_detect_degenerate_output_short_sequence_is_not_degenerate(self) -> None:
+        token_ids = [1, 2, 3, 4, 5]
+
+        result = matrix.detect_degenerate_output(token_ids)
+
+        self.assertFalse(result["is_degenerate"])
+
+    def test_check_ax_output_degeneracy_reports_per_case(self) -> None:
+        artifact = {
+            "results": [
+                {
+                    "engine": "ax_engine_mlx_pure_mtp",
+                    "prompt_case_id": "case-1",
+                    "trials": [
+                        {
+                            "output_token_ids": [248045, 554, 248046, 198] * 250,
+                        }
+                    ],
+                }
+            ]
+        }
+
+        result = matrix.check_ax_output_degeneracy(artifact)
+
+        self.assertTrue(result["degenerate"])
+        self.assertEqual(len(result["cases"]), 1)
+        self.assertTrue(result["cases"][0]["is_degenerate"])
+
+    def test_mtp_head_provenance_in_plan_contract(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            args = make_args(Path(tmp))
+            args.engines = ["ax_engine", "mtplx"]
+            lanes = matrix.build_lanes(args)
+            matrix.write_plan(args, lanes)
+            plan = json.loads((args.output_dir / "plan.json").read_text())
+
+        provenance = plan["contract"]["mtp_head_provenance"]
+        self.assertIn("ax_engine", provenance)
+        self.assertIn("mtplx", provenance)
+        self.assertIn("packaging", provenance["ax_engine"])
+        self.assertIn("mtp_precision", provenance["mtplx"])
+
+    def test_degeneracy_gate_config_in_plan_contract(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            args = make_args(Path(tmp))
+            lanes = matrix.build_lanes(args)
+            matrix.write_plan(args, lanes)
+            plan = json.loads((args.output_dir / "plan.json").read_text())
+
+        gate = plan["contract"]["degeneracy_gate"]
+        self.assertEqual(gate["max_cycle_len"], matrix.DEGENERACY_MAX_CYCLE_LEN)
+        self.assertEqual(gate["coverage_threshold"], matrix.DEGENERACY_COVERAGE_THRESHOLD)
+        self.assertEqual(
+            gate["periodic_coverage_threshold"],
+            matrix.DEGENERACY_PERIODIC_COVERAGE_THRESHOLD,
+        )
+
+    def test_seed_in_plan_contract(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            args = make_args(Path(tmp))
+            args.seed = 42
+            lanes = matrix.build_lanes(args)
+            matrix.write_plan(args, lanes)
+            plan = json.loads((args.output_dir / "plan.json").read_text())
+
+        self.assertEqual(plan["contract"]["seed"], 42)
+
+    def test_lane_dict_includes_mtp_head_provenance(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            args = make_args(Path(tmp))
+            lanes = matrix.build_lanes(args)
+
+        ax_lane = next(l for l in lanes if l.engine == "ax_engine")
+        lane_dict = matrix.lane_to_dict(ax_lane)
+        self.assertIn("mtp_head", lane_dict)
+        self.assertIsNotNone(lane_dict["mtp_head"])
+        self.assertIn("packaging", lane_dict["mtp_head"])
+
+    def test_summarize_ax_artifact_reports_client_wall_ttft(self) -> None:
+        artifact = {
+            "results": [
+                {
+                    "engine": "ax_engine_mlx_pure_mtp",
+                    "prompt_case_id": "case-1",
+                    "decode_tok_s": {"median": 10.0, "values": [9.0, 11.0]},
+                    "prefill_tok_s": {"median": 1000.0, "values": [900.0, 1100.0]},
+                    "ttft_ms": {"median": 123.0, "values": [120.0, 126.0]},
+                    "ngram_acceleration_telemetry": {
+                        "ax_mtp_accepted_tokens": 90,
+                        "ax_mtp_draft_tokens": 100,
+                    },
+                    "trials": [
+                        {
+                            "output_token_ids": list(range(1000, 2000)),
+                            "client_wall_ttft_ms": 1503.0,
+                        }
+                    ],
+                }
+            ]
+        }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "ax.json"
+            path.write_text(json.dumps(artifact))
+            summary = matrix.summarize_ax_artifact(artifact, path)
+
+        self.assertEqual(summary["client_wall_ttft_ms"], 1503.0)
+        self.assertEqual(summary["ttft_scope"], "runner_internal")
+        self.assertEqual(summary["client_ttft_scope"], "client_http_wall")
+        self.assertFalse(summary["degeneracy_gate"]["degenerate"])
+
+    def test_metric_contract_includes_ttft_scope(self) -> None:
+        ax_contract = matrix.metric_contract("ax_engine")
+        self.assertIn("ttft_scope", ax_contract)
+        self.assertEqual(ax_contract["ttft_scope"], "runner_internal")
+        self.assertIn("client_ttft_scope", ax_contract)
+
+        lightning_contract = matrix.metric_contract("lightning_mlx")
+        self.assertEqual(lightning_contract["ttft_scope"], "client_http_wall")
 
     def test_resolve_hf_snapshot_finds_cached_config(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

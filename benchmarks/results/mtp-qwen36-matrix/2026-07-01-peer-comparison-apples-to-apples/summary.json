@@ -1,11 +1,17 @@
 {
   "contract": {
-    "benchmark_contract": "apples-to-apples",
+    "ax_mtp_optimistic": true,
+    "benchmark_contract": "production-configuration",
     "bits": [
       4,
       6
     ],
     "cooldown_s": 15.0,
+    "degeneracy_gate": {
+      "coverage_threshold": 0.5,
+      "max_cycle_len": 8,
+      "periodic_coverage_threshold": 0.45
+    },
     "engines": [
       "ax_engine",
       "mtplx",
@@ -15,6 +21,8 @@
     ],
     "inter_case_cooldown_s": 10.0,
     "lightning_disable_prefix_cache": true,
+    "lightning_mtp_draft_temperature": null,
+    "lightning_mtp_optimistic": true,
     "lightning_prefix_cache_policy": "disabled_for_cold_prefill",
     "max_tokens": 1000,
     "metrics": [
@@ -28,12 +36,36 @@
       "27b",
       "35b-a3b"
     ],
+    "mtp_head_provenance": {
+      "ax_engine": {
+        "draft_lm_head": "bf16 (matching base)",
+        "mtp_precision": "bf16 (extracted with RMSNorm +1.0 delta correction)",
+        "packaging": "ax-local/Qwen3.6-27B-MTP sidecar",
+        "source": "Qwen/Qwen3.6-27B (official BF16 mtp.* tensors)"
+      },
+      "lightning_mlx": {
+        "draft_lm_head": "3-bit affine, group_size=64",
+        "mtp_precision": "INT4 prequantized sidecar (mtp/weights.safetensors)",
+        "packaging": "Youssofal/Qwen3.6-27B-MTPLX-Optimized-Speed",
+        "source": "Qwen/Qwen3.6-27B (re-quantized by Youssofal)"
+      },
+      "mtplx": {
+        "draft_lm_head": "3-bit affine, group_size=64",
+        "mtp_precision": "INT4 prequantized sidecar (mtp/weights.safetensors)",
+        "packaging": "Youssofal/Qwen3.6-27B-MTPLX-Optimized-Speed",
+        "source": "Qwen/Qwen3.6-27B (re-quantized by Youssofal)"
+      }
+    },
+    "mtplx_profile": "default",
+    "prefill_step_size": null,
+    "prompt_limit": 4,
     "repetitions": 5,
     "sampling": {
       "temperature": 0.6,
       "top_k": 20,
       "top_p": 0.95
     },
+    "seed": null,
     "suites": [
       "flappy"
     ],
@@ -45,7 +77,10 @@
     "Other AX Engine rows remain from the 2026-06-30 full AX-only flappy rerun.",
     "Other peer rows remain from the 2026-06-29 apples-to-apples run.",
     "MTPLX rows refreshed from the 2026-07-01 MTPLX v1.0.4 rerun (/opt/homebrew/var/mtplx/venv-1.0.4).",
-    "AX Engine and lightning-mlx rows are unchanged from the 2026-06-30 refresh."
+    "AX Engine and lightning-mlx rows are unchanged from the 2026-06-30 refresh.",
+    "This is a production-configuration comparison, not an identical-MTP-weight apples-to-apples artifact.",
+    "AX 27B 4-bit is flagged by the output-degeneracy gate and must not be promoted for accept-rate or decode-throughput claims.",
+    "Prefill and TTFT scopes differ by engine; only decode_tok_s has the same timing scope across all engines."
   ],
   "rows": [
     {
@@ -54,19 +89,208 @@
       "engine": "ax_engine",
       "metric_contract": {
         "accept_rate": "measured",
+        "client_ttft_scope": "client_http_wall",
         "decode_tok_s": "measured",
         "prefill_tok_s": "measured",
-        "ttft_ms": "measured"
+        "ttft_ms": "measured",
+        "ttft_scope": "runner_internal"
       },
       "metrics": {
         "accept_rate": 1.0,
         "accept_source": "ax_engine_mtp_telemetry",
         "case_count": 4,
+        "client_ttft_scope": "client_http_wall",
+        "client_wall_ttft_ms": 1545.7374169491231,
         "decode_tok_s": 64.57924518942363,
+        "degeneracy_gate": {
+          "cases": [
+            {
+              "coverage": 0.469,
+              "cycle": [
+                248046,
+                198,
+                248045,
+                554
+              ],
+              "cycle_length": 4,
+              "is_degenerate": true,
+              "method": "periodic_cycle",
+              "prompt_case_id": "flappy_pipes",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.469,
+              "cycle": [
+                248046,
+                198,
+                248045,
+                554
+              ],
+              "cycle_length": 4,
+              "is_degenerate": true,
+              "method": "periodic_cycle",
+              "prompt_case_id": "flappy_pipes",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.469,
+              "cycle": [
+                248046,
+                198,
+                248045,
+                554
+              ],
+              "cycle_length": 4,
+              "is_degenerate": true,
+              "method": "periodic_cycle",
+              "prompt_case_id": "flappy_pipes",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.469,
+              "cycle": [
+                248046,
+                198,
+                248045,
+                554
+              ],
+              "cycle_length": 4,
+              "is_degenerate": true,
+              "method": "periodic_cycle",
+              "prompt_case_id": "flappy_pipes",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.469,
+              "cycle": [
+                248046,
+                198,
+                248045,
+                554
+              ],
+              "cycle_length": 4,
+              "is_degenerate": true,
+              "method": "periodic_cycle",
+              "prompt_case_id": "flappy_pipes",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_score_gates",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_score_gates",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_score_gates",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_score_gates",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_score_gates",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_collision_checks",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_collision_checks",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_collision_checks",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_collision_checks",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_collision_checks",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_sound_channels",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_sound_channels",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_sound_channels",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_sound_channels",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_sound_channels",
+              "token_count": 1000
+            }
+          ],
+          "degenerate": true,
+          "gate": "output_entropy_cycle_coverage",
+          "max_cycle_len": 8,
+          "periodic_threshold": 0.45,
+          "threshold": 0.5
+        },
         "prefill_source": "ax_engine_runner_prefill_time",
         "prefill_tok_s": 809.0364094011835,
         "status": "ok",
         "ttft_ms": 397.89599999999996,
+        "ttft_scope": "runner_internal",
         "ttft_source": "ax_engine_runner_prefill_time"
       },
       "model": "27b",
@@ -84,7 +308,8 @@
         "accept_rate": "measured",
         "decode_tok_s": "measured",
         "prefill_tok_s": "derived_from_prompt_eval_time_s",
-        "ttft_ms": "prompt_eval_time_s"
+        "ttft_ms": "prompt_eval_time_s",
+        "ttft_scope": "server_prompt_eval"
       },
       "metrics": {
         "accept_rate": 0.9998666666666667,
@@ -95,6 +320,7 @@
         "prefill_tok_s": 681.4197080072549,
         "status": "ok",
         "ttft_ms": 470.1439790078439,
+        "ttft_scope": "server_prompt_eval",
         "ttft_source": "prompt_eval_time_s"
       },
       "model": "27b",
@@ -112,7 +338,8 @@
         "accept_rate": "measured_if_server_exposes_request_telemetry",
         "decode_tok_s": "measured",
         "prefill_tok_s": "approx_prompt_tokens_over_client_ttft_s",
-        "ttft_ms": "client_stream_ttft_s"
+        "ttft_ms": "client_stream_ttft_s",
+        "ttft_scope": "client_http_wall"
       },
       "metrics": {
         "accept_rate": 0.958769492048788,
@@ -123,6 +350,7 @@
         "prefill_tok_s": 426.0407870119272,
         "status": "ok",
         "ttft_ms": 783.714895544108,
+        "ttft_scope": "client_http_wall",
         "ttft_source": "client_stream_ttft_s"
       },
       "model": "27b",
@@ -178,19 +406,173 @@
       "engine": "ax_engine",
       "metric_contract": {
         "accept_rate": "measured",
+        "client_ttft_scope": "client_http_wall",
         "decode_tok_s": "measured",
         "prefill_tok_s": "measured",
-        "ttft_ms": "measured"
+        "ttft_ms": "measured",
+        "ttft_scope": "runner_internal"
       },
       "metrics": {
         "accept_rate": 1.0,
         "accept_source": "ax_engine_mtp_telemetry",
         "case_count": 4,
+        "client_ttft_scope": "client_http_wall",
+        "client_wall_ttft_ms": 2398.064874985721,
         "decode_tok_s": 41.427734543409684,
+        "degeneracy_gate": {
+          "cases": [
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_pipes",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_pipes",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_pipes",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_pipes",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_pipes",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_score_gates",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_score_gates",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_score_gates",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_score_gates",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_score_gates",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_collision_checks",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_collision_checks",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_collision_checks",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_collision_checks",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_collision_checks",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_sound_channels",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_sound_channels",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_sound_channels",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_sound_channels",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_sound_channels",
+              "token_count": 1000
+            }
+          ],
+          "degenerate": false,
+          "gate": "output_entropy_cycle_coverage",
+          "max_cycle_len": 8,
+          "periodic_threshold": 0.45,
+          "threshold": 0.5
+        },
         "prefill_source": "ax_engine_runner_prefill_time",
         "prefill_tok_s": 637.1229530787317,
         "status": "ok",
         "ttft_ms": 506.9430000000001,
+        "ttft_scope": "runner_internal",
         "ttft_source": "ax_engine_runner_prefill_time"
       },
       "model": "27b",
@@ -286,19 +668,173 @@
       "engine": "ax_engine",
       "metric_contract": {
         "accept_rate": "measured",
+        "client_ttft_scope": "client_http_wall",
         "decode_tok_s": "measured",
         "prefill_tok_s": "measured",
-        "ttft_ms": "measured"
+        "ttft_ms": "measured",
+        "ttft_scope": "runner_internal"
       },
       "metrics": {
         "accept_rate": 1.0,
         "accept_source": "ax_engine_mtp_telemetry",
         "case_count": 4,
+        "client_ttft_scope": "client_http_wall",
+        "client_wall_ttft_ms": 1395.135874976404,
         "decode_tok_s": 166.33104107215976,
+        "degeneracy_gate": {
+          "cases": [
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_pipes",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_pipes",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_pipes",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_pipes",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_pipes",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_score_gates",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_score_gates",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_score_gates",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_score_gates",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_score_gates",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_collision_checks",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_collision_checks",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_collision_checks",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_collision_checks",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_collision_checks",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_sound_channels",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_sound_channels",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_sound_channels",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_sound_channels",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_sound_channels",
+              "token_count": 1000
+            }
+          ],
+          "degenerate": false,
+          "gate": "output_entropy_cycle_coverage",
+          "max_cycle_len": 8,
+          "periodic_threshold": 0.45,
+          "threshold": 0.5
+        },
         "prefill_source": "ax_engine_runner_prefill_time",
         "prefill_tok_s": 1755.29758165338,
         "status": "ok",
         "ttft_ms": 184.01299999999998,
+        "ttft_scope": "runner_internal",
         "ttft_source": "ax_engine_runner_prefill_time"
       },
       "model": "35b-a3b",
@@ -316,7 +852,8 @@
         "accept_rate": "measured",
         "decode_tok_s": "measured",
         "prefill_tok_s": "derived_from_prompt_eval_time_s",
-        "ttft_ms": "prompt_eval_time_s"
+        "ttft_ms": "prompt_eval_time_s",
+        "ttft_scope": "server_prompt_eval"
       },
       "metrics": {
         "accept_rate": 0.9570335389416255,
@@ -327,6 +864,7 @@
         "prefill_tok_s": 1637.01229697903,
         "status": "ok",
         "ttft_ms": 192.5290830549784,
+        "ttft_scope": "server_prompt_eval",
         "ttft_source": "prompt_eval_time_s"
       },
       "model": "35b-a3b",
@@ -344,7 +882,8 @@
         "accept_rate": "measured_if_server_exposes_request_telemetry",
         "decode_tok_s": "measured",
         "prefill_tok_s": "approx_prompt_tokens_over_client_ttft_s",
-        "ttft_ms": "client_stream_ttft_s"
+        "ttft_ms": "client_stream_ttft_s",
+        "ttft_scope": "client_http_wall"
       },
       "metrics": {
         "accept_rate": 1.0,
@@ -355,6 +894,7 @@
         "prefill_tok_s": 1466.4582254845263,
         "status": "ok",
         "ttft_ms": 214.81239603599533,
+        "ttft_scope": "client_http_wall",
         "ttft_source": "client_stream_ttft_s"
       },
       "model": "35b-a3b",
@@ -410,19 +950,173 @@
       "engine": "ax_engine",
       "metric_contract": {
         "accept_rate": "measured",
+        "client_ttft_scope": "client_http_wall",
         "decode_tok_s": "measured",
         "prefill_tok_s": "measured",
-        "ttft_ms": "measured"
+        "ttft_ms": "measured",
+        "ttft_scope": "runner_internal"
       },
       "metrics": {
         "accept_rate": 1.0,
         "accept_source": "ax_engine_mtp_telemetry",
         "case_count": 4,
+        "client_ttft_scope": "client_http_wall",
+        "client_wall_ttft_ms": 17996.63739593234,
         "decode_tok_s": 141.75188592782408,
+        "degeneracy_gate": {
+          "cases": [
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_pipes",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_pipes",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_pipes",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_pipes",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_pipes",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_score_gates",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_score_gates",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_score_gates",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_score_gates",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_score_gates",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_collision_checks",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_collision_checks",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_collision_checks",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_collision_checks",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_collision_checks",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_sound_channels",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_sound_channels",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_sound_channels",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_sound_channels",
+              "token_count": 1000
+            },
+            {
+              "coverage": 0.0,
+              "cycle": null,
+              "is_degenerate": false,
+              "prompt_case_id": "flappy_sound_channels",
+              "token_count": 1000
+            }
+          ],
+          "degenerate": false,
+          "gate": "output_entropy_cycle_coverage",
+          "max_cycle_len": 8,
+          "periodic_threshold": 0.45,
+          "threshold": 0.5
+        },
         "prefill_source": "ax_engine_runner_prefill_time",
         "prefill_tok_s": 1536.018468935195,
         "status": "ok",
         "ttft_ms": 209.38549999999998,
+        "ttft_scope": "runner_internal",
         "ttft_source": "ax_engine_runner_prefill_time"
       },
       "model": "35b-a3b",
@@ -440,7 +1134,8 @@
         "accept_rate": "measured",
         "decode_tok_s": "measured",
         "prefill_tok_s": "derived_from_prompt_eval_time_s",
-        "ttft_ms": "prompt_eval_time_s"
+        "ttft_ms": "prompt_eval_time_s",
+        "ttft_scope": "server_prompt_eval"
       },
       "metrics": {
         "accept_rate": 0.9668221190519521,
@@ -451,6 +1146,7 @@
         "prefill_tok_s": 1383.8836172068932,
         "status": "ok",
         "ttft_ms": 235.04583298927173,
+        "ttft_scope": "server_prompt_eval",
         "ttft_source": "prompt_eval_time_s"
       },
       "model": "35b-a3b",
@@ -468,7 +1164,8 @@
         "accept_rate": "measured_if_server_exposes_request_telemetry",
         "decode_tok_s": "measured",
         "prefill_tok_s": "approx_prompt_tokens_over_client_ttft_s",
-        "ttft_ms": "client_stream_ttft_s"
+        "ttft_ms": "client_stream_ttft_s",
+        "ttft_scope": "client_http_wall"
       },
       "metrics": {
         "accept_rate": 1.0,
@@ -479,6 +1176,7 @@
         "prefill_tok_s": 1215.7629468415112,
         "status": "ok",
         "ttft_ms": 271.8337705009617,
+        "ttft_scope": "client_http_wall",
         "ttft_source": "client_stream_ttft_s"
       },
       "model": "35b-a3b",

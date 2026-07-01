@@ -44,7 +44,7 @@ peer rows and model-specific boundaries kept visible.
   - [Speculative Decoding (MTP)](#speculative-decoding-mtp)
     - [Supported MTP packages](#supported-mtp-packages)
     - [Download and serve an MTP package](#download-and-serve-an-mtp-package)
-    - [Qwen3.6 MTP peer comparison apples-to-apples (2026-07-01)](#qwen36-mtp-peer-comparison-apples-to-apples-2026-07-01)
+    - [Qwen3.6 MTP peer comparison — production-configuration (2026-07-01)](#qwen36-mtp-peer-comparison--production-configuration-2026-07-01)
     - [Qwen3.6 MTP matrix refresh (2026-06-29)](#qwen36-mtp-matrix-refresh-2026-06-29)
     - [Gemma 4 assistant-MTP (depth-2)](#gemma-4-assistant-mtp-depth-2)
   - [Direct Mode (Decode · Prefill · TTFT)](#direct-mode-decode--prefill--ttft)
@@ -310,6 +310,9 @@ Rules for current MTP benchmark artifacts:
   AX-only subsection, not mixed into the cross-engine matrix.
 - Direct rows are same-artifact denominators for `AX MTP / AX direct` decode
   acceleration, not a cross-model speed leaderboard.
+- Explicitly stamp `ax_mtp_optimistic` in plan and summary metadata so the
+  AX optimistic-verify mode choice is auditable; use `--no-ax-mtp-optimistic`
+  for strict rejection-sampling parity with peer engines.
 
 The benchmark prompt suites remain `flappy`, `long_code`, and
 `python_modules_long`, with sampled decode (`temperature=0.6`, `top_p=0.95`,
@@ -337,28 +340,76 @@ published to make comparison with other MTP engines easier because many peer
 benchmarks use 4-bit models. Historical MTP+n-gram artifacts remain useful for
 debugging regressions, but they are not current README/PERFORMANCE MTP evidence.
 
-#### Qwen3.6 MTP peer comparison apples-to-apples (2026-07-01)
+#### Qwen3.6 MTP peer comparison — production-configuration (2026-07-01)
 
-This same-session apples-to-apples comparison runs AX Engine, MTPLX, and
-lightning-mlx on the `flappy` suite with `1000` generated tokens, `5` measured
-repetitions after `2` warmups, 15 s cooldown, 10 s inter-case cooldown, sampled
-decode (`temperature=0.6`, `top_p=0.95`, `top_k=20`), pure MTP, and
-cross-request prefix cache disabled for cold-prefill parity. It replaces the
-earlier 64-token smoke as the peer-engine comparison artifact, while still
-remaining a flappy-only peer comparison rather than the promoted three-suite AX
-matrix below.
+This peer comparison runs AX Engine, MTPLX, and lightning-mlx on the `flappy`
+suite with `1000` generated tokens, `5` measured repetitions after `2` warmups,
+15 s cooldown, 10 s inter-case cooldown, sampled decode
+(`temperature=0.6`, `top_p=0.95`, `top_k=20`), pure MTP, and cross-request
+prefix cache disabled for cold-prefill parity.
 
-<img src="docs/assets/perf-mtp-peer-comparison-apples-to-apples.svg" alt="Qwen3.6 MTP peer comparison apples-to-apples chart showing decode throughput for AX Engine, MTPLX, and lightning-mlx across 27B and 35B 4-bit and 6-bit rows">
+**Fairness disclosures and known limitations.** This is a *production-configuration*
+comparison — each engine runs with the MTP artifact and settings its ecosystem
+provides, not with identical weights. The following differences affect
+interpretation:
 
-<img src="docs/assets/perf-mtp-peer-comparison-prefill-apples-to-apples.svg" alt="Qwen3.6 MTP peer comparison apples-to-apples chart showing prefill throughput for AX Engine, MTPLX, and lightning-mlx across 27B and 35B 4-bit and 6-bit rows">
+- **Different MTP head artifacts.** AX Engine loads `ax-local/Qwen3.6-27B-MTP`
+  (MTP tensors extracted from the official `Qwen/Qwen3.6-27B` BF16 source with
+  RMSNorm +1.0 delta correction). MTPLX and lightning-mlx load
+  `Youssofal/Qwen3.6-27B-MTPLX-Optimized-Speed` (a third-party INT4 prequantized
+  MTP sidecar with a 3-bit draft-only LM head). The underlying MTP tensors are
+  mathematically the same (both derive from Qwen’s official weights), but the
+  quantization and draft-head precision differ. This means accept-rate and
+  decode-throughput comparisons conflate engine efficiency with MTP-head
+  quantization.
+- **Output degeneracy gate.** The AX 27B 4-bit row exhibits output that
+  collapses into a repeating whitespace-token cycle (`248045, 554, 248046, 198`
+  repeated hundreds of times), inflating accept rate to 100% and boosting
+  decode tok/s. The benchmark runner now includes an output-degeneracy gate
+  that flags runs where a repeating token cycle (length ≤8) covers ≥50% of
+  emitted tokens. Degenerate rows should not be used for accept-rate or
+  decode-throughput claims. Lightning-mlx produces diverse code output on the
+  same prompts (accept rate ~95.9%). The root cause is AX’s fixed seed 0
+  landing in a low-entropy basin at 4-bit quantization with thinking disabled.
+- **Prefill/TTFT measurement scope.** Prefill and TTFT metric definitions differ
+  across engines: AX measures runner-internal timing (excludes HTTP/SSE
+  overhead); MTPLX derives from server-side `prompt_eval_time_s`; lightning
+  measures client-observed HTTP stream TTFT (includes local HTTP overhead). The
+  ~2× TTFT gap between AX (398 ms) and lightning (784 ms) is largely a
+  measurement-scope mismatch. AX also records `client_wall_ttft_ms` (1503 ms
+  for 27B 4-bit) for cross-engine parity. **Only `decode_tok_s` is measured at
+  the same scope across all engines.**
+- **RNG seed mismatch.** AX uses a fixed seed (0); lightning uses incrementing
+  seeds per repetition. The degenerate output above is a seed-0 artifact. Use
+  `--seed` in the benchmark runner to force parity.
+- **Composite artifact.** The summary table is stitched from multiple separate
+  runs across different dates (2026-06-29 through 2026-07-01), not a single
+  same-session measurement. Thermal state and background load may drift.
+- **Dirty build.** The promoted 27B 4-bit AX row was produced from a
+  locally-modified build (`crates/ax-engine-mlx/src/runner/mod.rs` had
+  uncommitted changes). Reproducibility requires a clean checkout.
 
-<img src="docs/assets/perf-mtp-peer-comparison-ttft-apples-to-apples.svg" alt="Qwen3.6 MTP peer comparison apples-to-apples chart showing time to first token for AX Engine, MTPLX, and lightning-mlx across 27B and 35B 4-bit and 6-bit rows">
+AX Engine runs with its default **optimistic MTP verify** mode enabled
+(`AX_MLX_MTP_OPTIMISTIC=1`), which skips the full-vocabulary softmax and
+rejection-sampling loop on accepted drafts — MTPLX and lightning-mlx compute
+full softmax on every verify step. The benchmark runner explicitly stamps
+`ax_mtp_optimistic` and `mtp_head_provenance` in the plan and summary metadata
+so the mode choice is auditable. For strict rejection-sampling parity, re-run
+with `--no-ax-mtp-optimistic`. This artifact replaces the earlier 64-token smoke
+as the peer-engine comparison, while still remaining a flappy-only peer
+comparison rather than the promoted three-suite AX matrix below.
 
-<img src="docs/assets/perf-mtp-peer-comparison-accept-rate-apples-to-apples.svg" alt="Qwen3.6 MTP peer comparison apples-to-apples chart showing MTP accept rate for AX Engine, MTPLX, and lightning-mlx across 27B and 35B 4-bit and 6-bit rows">
+<img src="docs/assets/perf-mtp-peer-comparison-apples-to-apples.svg" alt="Qwen3.6 MTP peer comparison production-configuration chart showing decode throughput for AX Engine, MTPLX, and lightning-mlx across 27B and 35B 4-bit and 6-bit rows; degenerate rows are muted">
+
+<img src="docs/assets/perf-mtp-peer-comparison-prefill-apples-to-apples.svg" alt="Qwen3.6 MTP peer comparison production-configuration chart showing mixed-scope prefill throughput for AX Engine, MTPLX, and lightning-mlx across 27B and 35B 4-bit and 6-bit rows; degenerate rows are muted">
+
+<img src="docs/assets/perf-mtp-peer-comparison-ttft-apples-to-apples.svg" alt="Qwen3.6 MTP peer comparison production-configuration chart showing mixed-scope time to first token for AX Engine, MTPLX, and lightning-mlx across 27B and 35B 4-bit and 6-bit rows; degenerate rows are muted">
+
+<img src="docs/assets/perf-mtp-peer-comparison-accept-rate-apples-to-apples.svg" alt="Qwen3.6 MTP peer comparison production-configuration chart showing MTP accept rate for AX Engine, MTPLX, and lightning-mlx across 27B and 35B 4-bit and 6-bit rows; degenerate rows are muted">
 
 | Target | Engine | Decode | Prefill | TTFT | Accept | Status |
 | --- | --- | ---: | ---: | ---: | ---: | --- |
-| Qwen3.6 27B 4-bit | AX Engine | 64.6 tok/s | 809.0 tok/s | 398 ms | 100.0% | ok |
+| Qwen3.6 27B 4-bit | AX Engine | 64.6 tok/s | 809.0 tok/s | 398 ms | 100.0% | degenerate; do not promote |
 | Qwen3.6 27B 4-bit | MTPLX | 64.3 tok/s | 681.4 tok/s | 470 ms | 100.0% | ok |
 | Qwen3.6 27B 4-bit | lightning-mlx | 59.4 tok/s | 426.0 tok/s | 784 ms | 95.9% | ok |
 | Qwen3.6 27B 6-bit | AX Engine | 41.4 tok/s | 637.1 tok/s | 507 ms | 100.0% | ok |
@@ -371,18 +422,21 @@ matrix below.
 | Qwen3.6 35B-A3B 6-bit | MTPLX | 117.6 tok/s | 1,383.9 tok/s | 235 ms | 96.7% | ok |
 | Qwen3.6 35B-A3B 6-bit | lightning-mlx | 96.3 tok/s | 1,215.8 tok/s | 272 ms | 100.0% | ok |
 
-**Reading the rows.** The targeted 27B 4-bit AX-only rerun lands at
-**64.6 tok/s**, with **809.0 tok/s** prefill, **398 ms** TTFT, and a 100.0%
-accept rate. That puts AX slightly ahead of MTPLX (**64.3 tok/s**, +0.4%) and
-ahead of lightning-mlx (**59.4 tok/s**, +8.7%) on this dense 27B 4-bit lane.
-The earlier lightning prefill-only lead was a benchmark-contract mismatch:
-lightning was allowed to use cross-request prefix cache while AX reported
-cold-prefill runner time. The current peer comparison disables lightning prefix
-cache to match AX's cold-prefill contract.
-The 35B-A3B rows remain from the full AX-only refresh: AX is still ahead of
-MTPLX by +20% (4-bit) and +21% (6-bit), and ahead of lightning-mlx by +43% and
-+47%. The 27B 6-bit peer cells remain blank because there is no official
-comparable 27B 6-bit MTP artifact. Source artifacts:
+**Reading the rows.** The raw decode gap between AX (**64.6 tok/s**) and MTPLX
+(**64.3 tok/s**) is negligible (+0.4%), essentially tied, but the AX 27B 4-bit
+row is degenerate and should not be promoted as a clean engine win. The
+non-degenerate peer rows put MTPLX at **64.3 tok/s** and lightning-mlx at
+**59.4 tok/s** for this lane. The earlier lightning prefill-only lead was a benchmark-contract
+mismatch: lightning was allowed to use cross-request prefix cache while AX
+reported cold-prefill runner time. The current peer comparison disables
+lightning prefix cache to match AX’s cold-prefill contract.
+**Caution**: the AX 27B 4-bit row has degenerate output (whitespace-token loop)
+and a dirty build — its 100% accept rate and decode tok/s are inflated. The
+MTPLX 27B 4-bit accept rate (100.0%) is the more trustworthy available peer
+figure for this model size. The 35B-A3B rows remain from the full AX-only refresh: AX is still
+ahead of MTPLX by +20% (4-bit) and +21% (6-bit), and ahead of lightning-mlx by
++43% and +47%. The 27B 6-bit peer cells remain blank because there is no
+official comparable 27B 6-bit MTP artifact. Source artifacts:
 [`2026-07-01-27b4-ax-optimistic-gate0-full-r1`](benchmarks/results/mtp-qwen36-matrix/2026-07-01-27b4-ax-optimistic-gate0-full-r1/summary.md),
 [`2026-07-01-lightning-prefix-disabled-r1`](benchmarks/results/mtp-qwen36-matrix/2026-07-01-lightning-prefix-disabled-r1/summary.md), and
 [`2026-06-30-peer-comparison-ax-only-rerun`](benchmarks/results/mtp-qwen36-matrix/2026-06-30-peer-comparison-ax-only-rerun/summary.md).
@@ -410,7 +464,7 @@ Detailed MTP notes, including the GLM-4.7 Flash smoke validation session, live i
 
 The current promoted README MTP matrix keeps AX Engine pure-MTP rows separate
 from peer-engine rows. Use the table below for AX Engine's current Qwen3.6
-MTP throughput, and the peer comparison above for a same-session flappy-only
+MTP throughput, and the peer comparison above for a production-configuration flappy-only
 cross-engine view with the same generated-token and repetition contract.
 
 | Target | Suite | Depth | AX MTP decode | AX MTP prefill | AX MTP TTFT | AX accept |
