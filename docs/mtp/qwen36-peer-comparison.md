@@ -7,17 +7,20 @@ full result set belongs here because prefill, TTFT, accept rate, model artifact
 identity, seed policy, and output-quality gates all need more context than the
 README should carry.
 
-This is a **production-configuration comparison**, not an identical-weight
-apples-to-apples benchmark. Each engine runs the package and settings used by
-its ecosystem. Treat the rows as audit evidence and trend guidance, not as a
-single definitive peer-engine ranking.
+This is a stitched peer comparison, not one interleaved physical-session
+benchmark. The 27B 4-bit rows now load the same
+`ax-local/Qwen3.6-27B-MTP` sidecar across AX Engine, MTPLX, and lightning-mlx.
+The 35B-A3B peer rows remain production-configuration rows using the peer
+engines' Youssofal MTPLX-optimized packages. Treat the rows as audit evidence
+and trend guidance, not as a single definitive peer-engine ranking.
 
 ## Limitations
 
-- **Different MTP artifacts.** AX Engine uses
-  `ax-local/Qwen3.6-27B-MTP`; MTPLX and lightning-mlx use
-  `Youssofal/Qwen3.6-27B-MTPLX-Optimized-Speed`. The tensors derive from
-  Qwen's official weights, but quantization and draft-head precision differ.
+- **Model artifact identity is target-specific.** The refreshed 27B 4-bit
+  MTPLX and lightning-mlx rows use the same `ax-local/Qwen3.6-27B-MTP`
+  sidecar as AX Engine. The 35B-A3B peer rows still use Youssofal
+  MTPLX-optimized packages, so those remain production-configuration rows
+  rather than identical-weight engine-only comparisons.
 - **AX optimistic verify is not a promoted peer default.** The earlier AX 27B
   4-bit optimistic row entered a periodic whitespace token cycle and inflated
   accept/decode. The current AX rows rerun the same benchmark with strict MTP
@@ -26,8 +29,9 @@ single definitive peer-engine ranking.
   derives from server-side `prompt_eval_time_s`, and lightning-mlx reports
   client-observed HTTP stream TTFT. These columns are shown for provenance but
   should not be read as a clean cross-engine prefill/TTFT leaderboard.
-- **Seeds differ.** The refreshed AX rows use seed 44; older stitched
-  rows keep their source-run seed policy.
+- **Seeds differ outside the refreshed rows.** The refreshed AX rows and the
+  refreshed 27B 4-bit MTPLX/lightning rows use seed 44; older stitched rows
+  keep their source-run seed policy.
 - **Composite artifact.** Rows are stitched from multiple runs from
   2026-06-29 through 2026-07-01, not one physical same-session measurement.
 - **Dirty builds.** Some stitched raw artifacts were produced from local dirty
@@ -54,7 +58,7 @@ AX rows are strict and pass the output-degeneracy gate.
 
 | Target | AX Engine | MTPLX | lightning-mlx | Readout |
 | --- | ---: | ---: | ---: | --- |
-| Qwen3.6 27B 4-bit | 61.0 tok/s | 64.3 tok/s | 59.4 tok/s | AX strict row is clean; MTPLX leads this 27B 4-bit peer row |
+| Qwen3.6 27B 4-bit | 61.0 tok/s | 58.5 tok/s | 55.7 tok/s | Same AX sidecar across all three engines; AX leads this row |
 | Qwen3.6 27B 6-bit | 40.7 tok/s | - | - | No official comparable peer 27B 6-bit MTP artifact |
 | Qwen3.6 35B-A3B 4-bit | 169.9 tok/s | 138.1 tok/s | 116.2 tok/s | AX leads this production-config row |
 | Qwen3.6 35B-A3B 6-bit | 140.0 tok/s | 117.6 tok/s | 96.3 tok/s | AX leads this production-config row |
@@ -66,8 +70,8 @@ AX rows are strict and pass the output-degeneracy gate.
 | Target | Engine | Decode | Prefill | TTFT | Accept | Status |
 | --- | --- | ---: | ---: | ---: | ---: | --- |
 | Qwen3.6 27B 4-bit | AX Engine | 61.0 tok/s | 812.3 tok/s | 396 ms | 100.0% | ok; strict verify |
-| Qwen3.6 27B 4-bit | MTPLX | 64.3 tok/s | 681.4 tok/s | 470 ms | 100.0% | ok |
-| Qwen3.6 27B 4-bit | lightning-mlx | 59.4 tok/s | 426.0 tok/s | 784 ms | 95.9% | ok |
+| Qwen3.6 27B 4-bit | MTPLX | 58.5 tok/s | 653.4 tok/s | 485 ms | 98.4% | ok; same AX sidecar |
+| Qwen3.6 27B 4-bit | lightning-mlx | 55.7 tok/s | 414.9 tok/s | 801 ms | 96.6% | ok; same AX sidecar |
 | Qwen3.6 27B 6-bit | AX Engine | 40.7 tok/s | 757.4 tok/s | 425 ms | 99.9% | ok; strict verify |
 | Qwen3.6 27B 6-bit | MTPLX | - | - | - | - | No official 27B 6-bit MTP artifact |
 | Qwen3.6 27B 6-bit | lightning-mlx | - | - | - | - | No official 27B 6-bit MTP artifact |
@@ -100,6 +104,8 @@ accept rate need the limitations above to be interpreted correctly.
   [`summary.md`](../../benchmarks/results/mtp-qwen36-matrix/2026-07-01-27b6-ax-strict-full-rerun-seed44-r1/summary.md)
 - AX 35B-A3B 4-bit / 6-bit rerun:
   [`summary.md`](../../benchmarks/results/mtp-qwen36-matrix/2026-07-01-35b-a3b-ax-strict-full-rerun-seed44-r1/summary.md)
+- 27B 4-bit MTPLX/lightning same-sidecar rerun:
+  [`summary.md`](../../benchmarks/results/mtp-qwen36-matrix/2026-07-01-27b4-peer-axmodel-rerun-seed44-r1/summary.md)
 - MTPLX 1.0.4 rerun:
   [`summary.md`](../../benchmarks/results/mtp-qwen36-matrix/2026-07-01-mtplx-v104-rerun/summary.md)
 - lightning-mlx prefix-cache-disabled rerun:
@@ -107,9 +113,10 @@ accept rate need the limitations above to be interpreted correctly.
 
 ## What Would Make This Fully Fair
 
-To promote this as a strict peer-engine benchmark, rerun all engines with:
+To promote the whole matrix as a strict peer-engine benchmark, rerun every
+target and engine with:
 
-- the same target weights and the same draft-head weights;
+- the same target weights and the same draft-head weights for every target;
 - the same per-repetition seed sequence;
 - output-degeneracy gate passing on every promoted row;
 - one clean tagged build per engine;

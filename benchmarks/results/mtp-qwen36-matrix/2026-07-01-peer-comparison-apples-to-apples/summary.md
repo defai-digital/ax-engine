@@ -3,8 +3,8 @@
 | Target | Suite | Engine | Decode | Prefill | TTFT | Accept | Status |
 |---|---|---|---:|---:|---:|---:|---|
 | Qwen3.6 27B 4-bit | `flappy` | `ax_engine` | 61.0 tok/s | 812.3 tok/s | 396 ms | 100.0% | ok |
-| Qwen3.6 27B 4-bit | `flappy` | `mtplx` | 64.3 tok/s | 681.4 tok/s | 470 ms | 100.0% | ok |
-| Qwen3.6 27B 4-bit | `flappy` | `lightning_mlx` | 59.4 tok/s | 426.0 tok/s | 784 ms | 95.9% | ok |
+| Qwen3.6 27B 4-bit | `flappy` | `mtplx` | 58.5 tok/s | 653.4 tok/s | 485 ms | 98.4% | ok |
+| Qwen3.6 27B 4-bit | `flappy` | `lightning_mlx` | 55.7 tok/s | 414.9 tok/s | 801 ms | 96.6% | ok |
 | Qwen3.6 27B 4-bit | `flappy` | `rapid_mlx` | - tok/s | - tok/s | - ms | - | unsupported |
 | Qwen3.6 27B 4-bit | `flappy` | `omlx` | - tok/s | - tok/s | - ms | - | unsupported |
 | Qwen3.6 27B 6-bit | `flappy` | `ax_engine` | 40.7 tok/s | 757.4 tok/s | 425 ms | 99.9% | ok |
@@ -29,7 +29,7 @@ Notes:
 - MTPLX prefill and TTFT are derived from `prompt_eval_time_s` in the MTPLX runner.
 - Lightning prefill is approximate (`prompt_tokens / client TTFT`) and includes local HTTP overhead.
 - AX MTP optimistic verify: OFF (full rejection sampling).
-- Refreshed AX rows use seed `44`; peer rows keep their source-run seed policy.
+- Seed: `engine defaults` (AX defaults to seed 0; MTPLX/lightning use their runner defaults).
 
 **Measurement scope (TTFT / prefill):**
 
@@ -40,10 +40,17 @@ Notes:
 
 **MTP head provenance:**
 
-- `ax_engine`: ax-local/Qwen3.6-27B-MTP sidecar (MTP precision: bf16 (extracted with RMSNorm +1.0 delta correction), draft LM head: bf16 (matching base))
-- `lightning_mlx`: Youssofal/Qwen3.6-27B-MTPLX-Optimized-Speed (MTP precision: INT4 prequantized sidecar (mtp/weights.safetensors), draft LM head: 3-bit affine, group_size=64)
-- `mtplx`: Youssofal/Qwen3.6-27B-MTPLX-Optimized-Speed (MTP precision: INT4 prequantized sidecar (mtp/weights.safetensors), draft LM head: 3-bit affine, group_size=64)
+- `27b-4bit` / `ax_engine`: ax-local/Qwen3.6-27B-MTP sidecar (MTP precision: bf16 (extracted with RMSNorm +1.0 delta correction), draft LM head: bf16 (matching base))
+- `27b-4bit` / `lightning_mlx`: ax-local/Qwen3.6-27B-MTP sidecar (MTP precision: bf16 (extracted with RMSNorm +1.0 delta correction), draft LM head: bf16 (matching base))
+- `27b-4bit` / `mtplx`: ax-local/Qwen3.6-27B-MTP sidecar (MTP precision: bf16 (extracted with RMSNorm +1.0 delta correction), draft LM head: bf16 (matching base))
+- `27b-6bit` / `ax_engine`: ax-local/Qwen3.6-27B-6bit-MTP sidecar (MTP precision: bf16 (extracted with RMSNorm +1.0 delta correction), draft LM head: bf16 (matching base))
+- `35b-a3b-4bit` / `ax_engine`: ax-local/Qwen3.6-35B-MTP sidecar (MTP precision: bf16 (extracted with RMSNorm +1.0 delta correction), draft LM head: bf16 (matching base))
+- `35b-a3b-4bit` / `lightning_mlx`: Youssofal/Qwen3.6-35B-A3B-MTPLX-Optimized-Speed (MTP precision: INT4 prequantized sidecar (mtp/weights.safetensors), draft LM head: 3-bit affine, group_size=64)
+- `35b-a3b-4bit` / `mtplx`: Youssofal/Qwen3.6-35B-A3B-MTPLX-Optimized-Speed (MTP precision: INT4 prequantized sidecar (mtp/weights.safetensors), draft LM head: 3-bit affine, group_size=64)
+- `35b-a3b-6bit` / `ax_engine`: ax-local/Qwen3.6-35B-MTP sidecar (MTP precision: bf16 (extracted with RMSNorm +1.0 delta correction), draft LM head: bf16 (matching base))
+- `35b-a3b-6bit` / `lightning_mlx`: Youssofal/Qwen3.6-35B-A3B-MTPLX-Optimized-Balance (MTP precision: INT4 prequantized sidecar (mtp/weights.safetensors), draft LM head: 3-bit affine, group_size=64)
+- `35b-a3b-6bit` / `mtplx`: Youssofal/Qwen3.6-35B-A3B-MTPLX-Optimized-Balance (MTP precision: INT4 prequantized sidecar (mtp/weights.safetensors), draft LM head: 3-bit affine, group_size=64)
 
-- Different MTP head artifacts across engines means this is a **production-configuration comparison**, not an apples-to-apples MTP weight test.
+- Rows with different MTP head artifacts across engines are **production-configuration comparisons**, not apples-to-apples MTP weight tests.
 - Degeneracy gate: rejects runs where a consecutive repeating token cycle (length ≤8) covers ≥50% of output tokens, or a phase-aligned periodic cycle covers ≥45%.
 - Unsupported peer lanes are listed in `plan.md` with the exact support reason.

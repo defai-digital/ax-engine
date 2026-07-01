@@ -57,27 +57,83 @@ DEGENERACY_MAX_CYCLE_LEN = 8
 DEGENERACY_COVERAGE_THRESHOLD = 0.50  # 50% of tokens in a repeating cycle = degenerate
 DEGENERACY_PERIODIC_COVERAGE_THRESHOLD = 0.45
 
-# MTP head provenance — tracks which artifact each engine loads.
-MTP_HEAD_PROVENANCE: dict[str, dict[str, str]] = {
-    "ax_engine": {
-        "source": "Qwen/Qwen3.6-27B (official BF16 mtp.* tensors)",
-        "packaging": "ax-local/Qwen3.6-27B-MTP sidecar",
-        "mtp_precision": "bf16 (extracted with RMSNorm +1.0 delta correction)",
-        "draft_lm_head": "bf16 (matching base)",
-    },
-    "mtplx": {
-        "source": "Qwen/Qwen3.6-27B (re-quantized by Youssofal)",
-        "packaging": "Youssofal/Qwen3.6-27B-MTPLX-Optimized-Speed",
+AX_27B_MTP_PROVENANCE = {
+    "source": "Qwen/Qwen3.6-27B (official BF16 mtp.* tensors)",
+    "packaging": "ax-local/Qwen3.6-27B-MTP sidecar",
+    "mtp_precision": "bf16 (extracted with RMSNorm +1.0 delta correction)",
+    "draft_lm_head": "bf16 (matching base)",
+}
+AX_27B_6BIT_MTP_PROVENANCE = {
+    "source": "Qwen/Qwen3.6-27B (official BF16 mtp.* tensors)",
+    "packaging": "ax-local/Qwen3.6-27B-6bit-MTP sidecar",
+    "mtp_precision": "bf16 (extracted with RMSNorm +1.0 delta correction)",
+    "draft_lm_head": "bf16 (matching base)",
+}
+AX_35B_MTP_PROVENANCE = {
+    "source": "Qwen/Qwen3.6-35B-A3B (official BF16 mtp.* tensors)",
+    "packaging": "ax-local/Qwen3.6-35B-MTP sidecar",
+    "mtp_precision": "bf16 (extracted with RMSNorm +1.0 delta correction)",
+    "draft_lm_head": "bf16 (matching base)",
+}
+
+
+def youssofal_mtp_provenance(package: str) -> dict[str, str]:
+    return {
+        "source": "Qwen/Qwen3.6-35B-A3B (re-quantized by Youssofal)",
+        "packaging": package,
         "mtp_precision": "INT4 prequantized sidecar (mtp/weights.safetensors)",
         "draft_lm_head": "3-bit affine, group_size=64",
+    }
+
+
+# MTP head provenance — target-specific because 27B 4-bit now uses the AX
+# sidecar for peer rows while 35B peer rows still use Youssofal packages.
+MTP_HEAD_PROVENANCE_BY_TARGET: dict[str, dict[str, dict[str, str]]] = {
+    "27b-4bit": {
+        "ax_engine": AX_27B_MTP_PROVENANCE,
+        "mtplx": AX_27B_MTP_PROVENANCE,
+        "lightning_mlx": AX_27B_MTP_PROVENANCE,
     },
-    "lightning_mlx": {
-        "source": "Qwen/Qwen3.6-27B (re-quantized by Youssofal)",
-        "packaging": "Youssofal/Qwen3.6-27B-MTPLX-Optimized-Speed",
-        "mtp_precision": "INT4 prequantized sidecar (mtp/weights.safetensors)",
-        "draft_lm_head": "3-bit affine, group_size=64",
+    "27b-6bit": {
+        "ax_engine": AX_27B_6BIT_MTP_PROVENANCE,
+    },
+    "35b-a3b-4bit": {
+        "ax_engine": AX_35B_MTP_PROVENANCE,
+        "mtplx": youssofal_mtp_provenance("Youssofal/Qwen3.6-35B-A3B-MTPLX-Optimized-Speed"),
+        "lightning_mlx": youssofal_mtp_provenance("Youssofal/Qwen3.6-35B-A3B-MTPLX-Optimized-Speed"),
+    },
+    "35b-a3b-6bit": {
+        "ax_engine": AX_35B_MTP_PROVENANCE,
+        "mtplx": youssofal_mtp_provenance("Youssofal/Qwen3.6-35B-A3B-MTPLX-Optimized-Balance"),
+        "lightning_mlx": youssofal_mtp_provenance("Youssofal/Qwen3.6-35B-A3B-MTPLX-Optimized-Balance"),
     },
 }
+
+# Legacy summary-level provenance for callers that run only one 27B 4-bit target.
+MTP_HEAD_PROVENANCE: dict[str, dict[str, str]] = {
+    "ax_engine": AX_27B_MTP_PROVENANCE,
+    "mtplx": AX_27B_MTP_PROVENANCE,
+    "lightning_mlx": AX_27B_MTP_PROVENANCE,
+}
+
+
+def mtp_head_provenance(target: "Target", engine: str) -> dict[str, str] | None:
+    return MTP_HEAD_PROVENANCE_BY_TARGET.get(target.key, {}).get(engine)
+
+
+def mtp_head_provenance_for_targets(
+    target_keys_: list[str],
+    engines: list[str],
+) -> dict[str, dict[str, dict[str, str]]]:
+    return {
+        key: {
+            engine: prov
+            for engine in engines
+            if (prov := MTP_HEAD_PROVENANCE_BY_TARGET.get(key, {}).get(engine))
+        }
+        for key in target_keys_
+        if any(engine in MTP_HEAD_PROVENANCE_BY_TARGET.get(key, {}) for engine in engines)
+    }
 NGRAM_ZERO_KEYS = (
     "ax_ngram_accepted_tokens",
     "ax_ngram_draft_tokens",
@@ -160,14 +216,12 @@ TARGETS: dict[str, Target] = {
 }
 
 MTPLX_MODEL_IDS = {
-    "27b-4bit": "Youssofal/Qwen3.6-27B-MTPLX-Optimized-Speed",
+    "27b-4bit": "ax-local/Qwen3.6-27B-MTP",
     "35b-a3b-4bit": "Youssofal/Qwen3.6-35B-A3B-MTPLX-Optimized-Speed",
     "35b-a3b-6bit": "Youssofal/Qwen3.6-35B-A3B-MTPLX-Optimized-Balance",
 }
 
-MTPLX_QUANT_POLICIES = {
-    "27b-4bit": "prequantized-int4",
-}
+MTPLX_QUANT_POLICIES: dict[str, str] = {}
 
 LIGHTNING_MODELS = dict(MTPLX_MODEL_IDS)
 RAPID_MODELS: dict[str, str] = {}
@@ -306,6 +360,13 @@ def metric_median(row: dict[str, Any], metric: str) -> float | None:
     return median(numeric_samples(row.get(metric)))
 
 
+def top_level_metric(artifact: dict[str, Any], metric: str) -> float | None:
+    summary = artifact.get("summary")
+    if not isinstance(summary, dict):
+        return None
+    return metric_median(summary, metric)
+
+
 def shared_int_value(rows: list[dict[str, Any]], key: str) -> int | None:
     values = {
         int(value)
@@ -397,6 +458,7 @@ def summarize_mtplx_artifact(artifact: dict[str, Any]) -> dict[str, Any]:
     accept_values: list[float] = []
     prefill_values: list[float] = []
     ttft_values: list[float] = []
+    aggregate_accept_rate = top_level_metric(artifact, "accept_rate")
     for case in cases:
         summary = case.get("summary") or {}
         decode_values.extend(numeric_samples(summary.get("decode_tok_s")))
@@ -414,7 +476,7 @@ def summarize_mtplx_artifact(artifact: dict[str, Any]) -> dict[str, Any]:
         "decode_tok_s": median(decode_values),
         "prefill_tok_s": median(prefill_values),
         "ttft_ms": median(ttft_values),
-        "accept_rate": median(accept_values),
+        "accept_rate": aggregate_accept_rate if aggregate_accept_rate is not None else median(accept_values),
         "case_count": len(cases),
         "prefill_source": "prompt_tokens_over_prompt_eval_time_s",
         "ttft_source": "prompt_eval_time_s",
@@ -436,6 +498,7 @@ def summarize_lightning_artifact(artifact: dict[str, Any]) -> dict[str, Any]:
     accept_values: list[float] = []
     prefill_values: list[float] = []
     ttft_values: list[float] = []
+    aggregate_accept_rate = top_level_metric(artifact, "accept_rate")
     for case in cases:
         summary = case.get("summary") or {}
         decode_values.extend(numeric_samples(summary.get("decode_tok_s")))
@@ -452,7 +515,7 @@ def summarize_lightning_artifact(artifact: dict[str, Any]) -> dict[str, Any]:
         "decode_tok_s": median(decode_values),
         "prefill_tok_s": median(prefill_values),
         "ttft_ms": median(ttft_values),
-        "accept_rate": median(accept_values),
+        "accept_rate": aggregate_accept_rate if aggregate_accept_rate is not None else median(accept_values),
         "case_count": len(cases),
         "prefill_source": "prompt_tokens_over_client_ttft_s",
         "ttft_source": "client_stream_ttft_s",
@@ -814,7 +877,7 @@ def lane_to_dict(lane: Lane) -> dict[str, Any]:
         "command": lane.command,
         "reason": lane.reason,
         "metric_contract": lane.metric_contract,
-        "mtp_head": MTP_HEAD_PROVENANCE.get(lane.engine),
+        "mtp_head": mtp_head_provenance(lane.target, lane.engine),
     }
 
 
@@ -858,11 +921,7 @@ def write_plan(args: argparse.Namespace, lanes: list[Lane]) -> None:
                 "coverage_threshold": DEGENERACY_COVERAGE_THRESHOLD,
                 "periodic_coverage_threshold": DEGENERACY_PERIODIC_COVERAGE_THRESHOLD,
             },
-            "mtp_head_provenance": {
-                engine: prov
-                for engine in args.engines
-                if (prov := MTP_HEAD_PROVENANCE.get(engine))
-            },
+            "mtp_head_provenance": mtp_head_provenance_for_targets(target_keys(args.models, args.bits), args.engines),
         },
         "lanes": [lane_to_dict(lane) for lane in lanes],
     }
@@ -1014,6 +1073,7 @@ def build_summary(args: argparse.Namespace, lanes: list[Lane]) -> dict[str, Any]
                 "artifact": str(lane.output_path),
                 "metrics": metrics,
                 "metric_contract": lane.metric_contract,
+                "mtp_head": mtp_head_provenance(lane.target, lane.engine),
             }
         )
     return {
@@ -1053,11 +1113,7 @@ def build_summary(args: argparse.Namespace, lanes: list[Lane]) -> dict[str, Any]
                 "coverage_threshold": DEGENERACY_COVERAGE_THRESHOLD,
                 "periodic_coverage_threshold": DEGENERACY_PERIODIC_COVERAGE_THRESHOLD,
             },
-            "mtp_head_provenance": {
-                engine: prov
-                for engine in args.engines
-                if (prov := MTP_HEAD_PROVENANCE.get(engine))
-            },
+            "mtp_head_provenance": mtp_head_provenance_for_targets(target_keys(args.models, args.bits), args.engines),
         },
         "rows": rows,
     }
@@ -1125,11 +1181,16 @@ def write_summary_markdown(path: Path, summary: dict[str, Any]) -> None:
         "**MTP head provenance:**",
         "",
     ]
-    for engine, prov in provenance.items():
-        lines.append(f"- `{engine}`: {prov.get('packaging', 'unknown')} (MTP precision: {prov.get('mtp_precision', 'unknown')}, draft LM head: {prov.get('draft_lm_head', 'unknown')})")
+    for target_key, by_engine in provenance.items():
+        for engine, prov in by_engine.items():
+            lines.append(
+                f"- `{target_key}` / `{engine}`: {prov.get('packaging', 'unknown')} "
+                f"(MTP precision: {prov.get('mtp_precision', 'unknown')}, "
+                f"draft LM head: {prov.get('draft_lm_head', 'unknown')})"
+            )
     lines += [
         "",
-        "- Different MTP head artifacts across engines means this is a **production-configuration comparison**, not an apples-to-apples MTP weight test.",
+        "- Rows with different MTP head artifacts across engines are **production-configuration comparisons**, not apples-to-apples MTP weight tests.",
         f"- Degeneracy gate: rejects runs where a consecutive repeating token cycle (length \u2264{DEGENERACY_MAX_CYCLE_LEN}) covers \u2265{DEGENERACY_COVERAGE_THRESHOLD*100:.0f}% of output tokens, or a phase-aligned periodic cycle covers \u2265{DEGENERACY_PERIODIC_COVERAGE_THRESHOLD*100:.0f}%.",
         "- Unsupported peer lanes are listed in `plan.md` with the exact support reason.",
     ]

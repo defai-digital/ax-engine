@@ -27,11 +27,11 @@
 <rect x="248.0" y="144.0" width="261.2" height="20.0" rx="3" fill="#2eaf5f" opacity="1"/>
 <text x="517.2" y="159.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" font-weight="700" fill="#dc2626">812.3</text>
 <text x="234.0" y="189.0" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" fill="#374151">MTPLX</text>
-<rect x="248.0" y="174.0" width="219.1" height="20.0" rx="3" fill="#f2b705" opacity="1"/>
-<text x="475.1" y="189.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" font-weight="700" fill="#111827">681.4</text>
+<rect x="248.0" y="174.0" width="210.1" height="20.0" rx="3" fill="#f2b705" opacity="1"/>
+<text x="466.1" y="189.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" font-weight="700" fill="#111827">653.4</text>
 <text x="234.0" y="219.0" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" fill="#374151">lightning-mlx</text>
-<rect x="248.0" y="204.0" width="137.0" height="20.0" rx="3" fill="#2563eb" opacity="1"/>
-<text x="393.0" y="219.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" font-weight="700" fill="#111827">426.0</text>
+<rect x="248.0" y="204.0" width="133.4" height="20.0" rx="3" fill="#2563eb" opacity="1"/>
+<text x="389.4" y="219.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" font-weight="700" fill="#111827">414.9</text>
 <text x="32" y="248.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="15" font-weight="700" fill="#111827">27B 6-bit</text>
 <text x="234.0" y="277.0" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" fill="#374151">AX Engine</text>
 <rect x="248.0" y="262.0" width="243.6" height="20.0" rx="3" fill="#2eaf5f" opacity="1"/>

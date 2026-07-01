@@ -349,16 +349,19 @@ accept rate, seed policy, model-artifact identity, and output-degeneracy checks
 need separate interpretation:
 [`docs/mtp/qwen36-peer-comparison.md`](docs/mtp/qwen36-peer-comparison.md).
 
-This is a production-configuration comparison, not a strict identical-weight
-apples-to-apples benchmark. The AX 27B 4-bit row now uses strict MTP
-verification and passes the output-degeneracy gate; older optimistic artifacts
-remain useful only as audit/debug evidence.
+This is a stitched peer comparison, not one interleaved physical-session
+benchmark. The 27B 4-bit rows now load the same
+`ax-local/Qwen3.6-27B-MTP` sidecar across AX Engine, MTPLX, and lightning-mlx;
+the 35B-A3B peer rows remain production-configuration rows with the peer
+engines' Youssofal MTPLX-optimized packages. The AX 27B 4-bit row uses strict
+MTP verification and passes the output-degeneracy gate; older optimistic
+artifacts remain useful only as audit/debug evidence.
 
 <img src="docs/assets/perf-mtp-peer-comparison-apples-to-apples.svg" alt="Qwen3.6 MTP peer comparison production-configuration chart showing decode throughput for AX Engine, MTPLX, and lightning-mlx across 27B and 35B 4-bit and 6-bit rows">
 
 | Target | AX Engine decode | MTPLX decode | lightning-mlx decode | Readout |
 | --- | ---: | ---: | ---: | --- |
-| Qwen3.6 27B 4-bit | 61.0 tok/s | 64.3 tok/s | 59.4 tok/s | AX strict row is clean; MTPLX leads this 27B 4-bit peer row |
+| Qwen3.6 27B 4-bit | 61.0 tok/s | 58.5 tok/s | 55.7 tok/s | Same AX sidecar across all three engines; AX leads this row |
 | Qwen3.6 27B 6-bit | 40.7 tok/s | - | - | No official comparable peer 27B 6-bit MTP artifact |
 | Qwen3.6 35B-A3B 4-bit | 169.9 tok/s | 138.1 tok/s | 116.2 tok/s | AX leads this production-config row |
 | Qwen3.6 35B-A3B 6-bit | 140.0 tok/s | 117.6 tok/s | 96.3 tok/s | AX leads this production-config row |
@@ -373,50 +376,11 @@ repo does not yet have an oMLX Qwen3.6 MTP prompt-suite adapter.
 
 #### Qwen3.6 MTP matrix refresh (2026-06-29)
 
-The current promoted README MTP matrix keeps AX Engine pure-MTP rows separate
-from peer-engine rows. Use the table below for AX Engine's current Qwen3.6
-MTP throughput, and the peer comparison above for a production-configuration flappy-only
-cross-engine view with the same generated-token and repetition contract.
-
-| Target | Suite | Depth | AX MTP decode | AX MTP prefill | AX MTP TTFT | AX accept |
-| --- | --- | ---: | ---: | ---: | ---: | ---: |
-| Qwen3.6 27B 4-bit | `flappy` | 3 | 60.3 tok/s | 649.2 tok/s | 495 ms | 99.5% |
-| Qwen3.6 27B 4-bit | `long_code` | 3 | 60.3 tok/s | 782.5 tok/s | 917 ms | 99.4% |
-| Qwen3.6 27B 4-bit | `python_modules_long` | 3 | 49.4 tok/s | 660.7 tok/s | 522 ms | 97.2% |
-| Qwen3.6 27B 6-bit | `flappy` | 3 | 40.5 tok/s | 621.5 tok/s | 521 ms | 99.4% |
-| Qwen3.6 27B 6-bit | `long_code` | 3 | 38.9 tok/s | 718.4 tok/s | 999 ms | 99.5% |
-| Qwen3.6 27B 6-bit | `python_modules_long` | 3 | 33.3 tok/s | 623.8 tok/s | 560 ms | 96.7% |
-| Qwen3.6 35B-A3B 4-bit | `flappy` | 1 | 168.2 tok/s | 1,731.4 tok/s | 185 ms | 99.8% |
-| Qwen3.6 35B-A3B 4-bit | `long_code` | 1 | 167.5 tok/s | 2,558.8 tok/s | 280 ms | 99.8% |
-| Qwen3.6 35B-A3B 4-bit | `python_modules_long` | 1 | 160.8 tok/s | 1,843.2 tok/s | 185 ms | 98.3% |
-| Qwen3.6 35B-A3B 6-bit | `flappy` | 1 | 134.9 tok/s | 1,491.8 tok/s | 216 ms | 99.8% |
-| Qwen3.6 35B-A3B 6-bit | `long_code` | 1 | 133.6 tok/s | 2,281.8 tok/s | 314 ms | 99.8% |
-| Qwen3.6 35B-A3B 6-bit | `python_modules_long` | 1 | 135.5 tok/s | 1,631.2 tok/s | 210 ms | 98.4% |
-
-Methodology: `1000` generated tokens, `5` measured repetitions per prompt case
-after the AX warmup pass, 15 s cooldown, 10 s inter-case cooldown, sampled
-decode (`temperature=0.6`, `top_p=0.95`, `top_k=20`), pure MTP, and no
-MTP+n-gram stacking. Pure-MTP verification is enforced by the summary builder:
-AX MTP artifacts with non-zero n-gram accepted, proposed, submitted, or hit-step
-telemetry fail summary generation. Summary artifacts:
-[`summary.md`](benchmarks/results/mtp-qwen36-matrix/2026-06-29-qwen36-mtp-matrix/summary.md)
-and
-[`summary.json`](benchmarks/results/mtp-qwen36-matrix/2026-06-29-qwen36-mtp-matrix/summary.json).
-Follow-up MTPLX enablement smoke:
-[`summary.md`](benchmarks/results/mtp-qwen36-matrix/2026-06-29-mtplx-enabled-smoke/summary.md)
-verifies that the local reference MTPLX loader can attach and run the Qwen3.6
-27B 4-bit, 35B-A3B 4-bit, and 35B-A3B 6-bit MTP heads after loading the
-reference checkout and complete safetensor artifacts. That smoke uses 16
-generated tokens, one measured repetition, and no cooldown, so it is a loader
-validation artifact rather than a promoted throughput row.
-Peer enablement smoke:
-[`summary.md`](benchmarks/results/mtp-qwen36-matrix/2026-06-29-peer-mtp-enable-smoke/summary.md)
-verifies lightning-mlx on the same 27B 4-bit, 35B-A3B 4-bit, and 35B-A3B
-6-bit MTP artifacts after normalizing the local MTP sidecar layout and 6-bit
-MTP group-size inference in the benchmark adapter. Rapid-MLX is still listed as
-unsupported for these Qwen3.6 MTP rows because its scheduler starts with the
-shared artifacts but skips MTP installation for this generation flow, so running
-it would measure non-MTP decode.
+The full AX Engine pure-MTP matrix table, methodology, and enablement-smoke
+artifact notes moved to
+[`docs/mtp/qwen36-matrix-refresh.md`](docs/mtp/qwen36-matrix-refresh.md).
+README keeps the peer decode view above and links out for the longer
+multi-suite AX-only matrix details.
 
 #### Gemma 4 assistant-MTP (depth-2)
 

@@ -135,7 +135,7 @@ class Qwen36MtpMatrixTests(unittest.TestCase):
             self.assertIn("--seed", cmd)
             self.assertEqual(cmd[cmd.index("--seed") + 1], "44")
 
-    def test_mtplx_command_allows_official_artifact_inspection_bypass(self) -> None:
+    def test_mtplx_command_uses_ax_sidecar_for_27b_4bit(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             args = make_args(Path(tmp))
             target = matrix.TARGETS["27b-4bit"]
@@ -147,10 +147,25 @@ class Qwen36MtpMatrixTests(unittest.TestCase):
             )
 
         assert cmd is not None
+        self.assertEqual(cmd[cmd.index("--model") + 1], "ax-local/Qwen3.6-27B-MTP")
         self.assertIn("--allow-unverified-model", cmd)
         self.assertIn("--ignore-eos", cmd)
         self.assertEqual(cmd[cmd.index("--mtp-quant-mode") + 1], "cyankiwi")
-        self.assertEqual(cmd[cmd.index("--mtp-quant-policy") + 1], "prequantized-int4")
+        self.assertNotIn("--mtp-quant-policy", cmd)
+
+    def test_lightning_command_uses_ax_sidecar_for_27b_4bit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            args = make_args(Path(tmp))
+            target = matrix.TARGETS["27b-4bit"]
+            cmd = matrix.lightning_command(
+                args,
+                target,
+                "flappy",
+                args.output_dir / "lightning.json",
+            )
+
+        assert cmd is not None
+        self.assertEqual(cmd[cmd.index("--model") + 1], "ax-local/Qwen3.6-27B-MTP")
 
     def test_mtplx_env_prefers_reference_checkout(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -328,6 +343,7 @@ class Qwen36MtpMatrixTests(unittest.TestCase):
 
     def test_mtplx_summary_derives_prefill_ttft_and_accept_rate(self) -> None:
         artifact = {
+            "summary": {"accept_rate": 0.625},
             "results": [
                 {
                     "prompt_id": "case-1",
@@ -351,7 +367,7 @@ class Qwen36MtpMatrixTests(unittest.TestCase):
         self.assertEqual(summary["decode_tok_s"], 20.0)
         self.assertEqual(summary["prefill_tok_s"], 1000.0)
         self.assertEqual(summary["ttft_ms"], 200.0)
-        self.assertEqual(summary["accept_rate"], 0.75)
+        self.assertEqual(summary["accept_rate"], 0.625)
 
     def test_detect_degenerate_output_flags_whitespace_cycle(self) -> None:
         # 100 tokens of diverse content followed by 900 tokens of repeating 4-cycle.
@@ -430,10 +446,18 @@ class Qwen36MtpMatrixTests(unittest.TestCase):
             plan = json.loads((args.output_dir / "plan.json").read_text())
 
         provenance = plan["contract"]["mtp_head_provenance"]
-        self.assertIn("ax_engine", provenance)
-        self.assertIn("mtplx", provenance)
-        self.assertIn("packaging", provenance["ax_engine"])
-        self.assertIn("mtp_precision", provenance["mtplx"])
+        self.assertIn("27b-4bit", provenance)
+        self.assertIn("35b-a3b-4bit", provenance)
+        self.assertIn("ax_engine", provenance["27b-4bit"])
+        self.assertIn("mtplx", provenance["27b-4bit"])
+        self.assertEqual(
+            provenance["27b-4bit"]["mtplx"]["packaging"],
+            "ax-local/Qwen3.6-27B-MTP sidecar",
+        )
+        self.assertEqual(
+            provenance["35b-a3b-4bit"]["mtplx"]["packaging"],
+            "Youssofal/Qwen3.6-35B-A3B-MTPLX-Optimized-Speed",
+        )
 
     def test_degeneracy_gate_config_in_plan_contract(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
