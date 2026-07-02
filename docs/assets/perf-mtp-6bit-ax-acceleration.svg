@@ -1,138 +1,66 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="844" viewBox="0 0 1080 844" role="img" aria-labelledby="title desc">
+<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="492" viewBox="0 0 1080 492" role="img" aria-labelledby="title desc">
 <title id="title">AX MTP decode throughput with and without MTP</title>
-<desc id="desc">Horizontal grouped bar chart comparing AX direct decode throughput with MTP off against AX MTP decode throughput with MTP on for each supported 6-bit MTP model and prompt suite. Labels show the resulting same-package speedup.</desc>
-<rect width="1080" height="844" fill="#ffffff"/>
+<desc id="desc">Horizontal grouped bar chart comparing AX direct decode throughput with MTP off against AX MTP decode throughput with MTP on for each supported 6-bit AX MTP package and prompt suite. Labels show the resulting same-package speedup.</desc>
+<rect width="1080" height="492" fill="#ffffff"/>
 <text x="72" y="32" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="20" font-weight="700" fill="#111827">AX MTP decode: MTP off vs MTP on</text>
-<text x="72" y="54" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" fill="#4b5563">Each row compares the same 6-bit package and prompt suite: AX direct has MTP off; AX MTP has MTP on.</text>
+<text x="72" y="54" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" fill="#4b5563">Each row compares the same prepared 6-bit package and prompt suite: AX direct has MTP off; AX MTP has MTP on.</text>
 <text x="1008" y="54" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#374151">Decode throughput, tok/s</text>
-<line x1="210.0" y1="68" x2="210.0" y2="768" stroke="#9ca3af" stroke-width="1.4"/>
-<text x="210.0" y="786" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#4b5563">0</text>
-<line x1="409.5" y1="68" x2="409.5" y2="768" stroke="#d1d5db" stroke-width="1.2"/>
-<text x="409.5" y="786" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#4b5563">40</text>
-<line x1="609.0" y1="68" x2="609.0" y2="768" stroke="#d1d5db" stroke-width="1.2"/>
-<text x="609.0" y="786" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#4b5563">80</text>
-<line x1="808.5" y1="68" x2="808.5" y2="768" stroke="#d1d5db" stroke-width="1.2"/>
-<text x="808.5" y="786" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#4b5563">120</text>
-<line x1="1008.0" y1="68" x2="1008.0" y2="768" stroke="#d1d5db" stroke-width="1.2"/>
-<text x="1008.0" y="786" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#4b5563">160</text>
-<text x="609.0" y="808" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#6b7280">Higher is better</text>
+<line x1="210.0" y1="68" x2="210.0" y2="404.0" stroke="#9ca3af" stroke-width="1.4"/>
+<text x="210.0" y="422.0" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#4b5563">0</text>
+<line x1="409.5" y1="68" x2="409.5" y2="404.0" stroke="#d1d5db" stroke-width="1.2"/>
+<text x="409.5" y="422.0" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#4b5563">40</text>
+<line x1="609.0" y1="68" x2="609.0" y2="404.0" stroke="#d1d5db" stroke-width="1.2"/>
+<text x="609.0" y="422.0" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#4b5563">80</text>
+<line x1="808.5" y1="68" x2="808.5" y2="404.0" stroke="#d1d5db" stroke-width="1.2"/>
+<text x="808.5" y="422.0" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#4b5563">120</text>
+<line x1="1008.0" y1="68" x2="1008.0" y2="404.0" stroke="#d1d5db" stroke-width="1.2"/>
+<text x="1008.0" y="422.0" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#4b5563">160</text>
+<text x="609.0" y="444.0" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#6b7280">Higher is better</text>
 <rect x="72" y="70" width="12" height="12" rx="2" fill="#2eaf5f"/>
 <text x="90" y="80" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" fill="#374151">MTP off / AX direct</text>
 <rect x="232" y="70" width="12" height="12" rx="2" fill="#dc2626"/>
 <text x="250" y="80" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" fill="#374151">MTP on / AX MTP</text>
 <text x="414" y="80" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" fill="#6b7280">Speedup label = MTP on / MTP off</text>
 <text x="72" y="100.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#111827"><tspan x="72" y="100.0" font-weight="700">Qwen3.6 27B</tspan><tspan x="72" y="114.0" font-size="10" fill="#4b5563">flappy</tspan></text>
-<rect x="210" y="91.0" width="88.0" height="10" rx="2" fill="#2eaf5f"/>
-<rect x="210" y="104.0" width="197.6" height="10" rx="2" fill="#dc2626"/>
-<text x="303.0" y="99.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#176c37">17.6</text>
-<text x="412.6" y="112.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#991b1b">39.6</text>
-<text x="459.6" y="106.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">2.25x</text>
-<text x="72" y="132.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#111827"><tspan x="72" y="132.0" font-weight="700">Qwen3.6 27B</tspan><tspan x="72" y="146.0" font-size="10" fill="#4b5563">long_code</tspan></text>
-<rect x="210" y="123.0" width="87.3" height="10" rx="2" fill="#2eaf5f"/>
-<rect x="210" y="136.0" width="190.5" height="10" rx="2" fill="#dc2626"/>
-<text x="302.3" y="131.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#176c37">17.5</text>
-<text x="405.5" y="144.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#991b1b">38.2</text>
-<text x="452.5" y="138.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">2.18x</text>
-<text x="72" y="164.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#111827"><tspan x="72" y="164.0" font-weight="700">Qwen3.6 27B</tspan><tspan x="72" y="178.0" font-size="10" fill="#4b5563">python_modules</tspan></text>
-<rect x="210" y="155.0" width="86.7" height="10" rx="2" fill="#2eaf5f"/>
-<rect x="210" y="168.0" width="165.7" height="10" rx="2" fill="#dc2626"/>
-<text x="301.7" y="163.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#176c37">17.4</text>
-<text x="380.7" y="176.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#991b1b">33.2</text>
-<text x="427.7" y="170.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">1.91x</text>
-<line x1="72" y1="190.0" x2="1008" y2="190.0" stroke="#eef2f7" stroke-width="1"/>
-<text x="72" y="214.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#111827"><tspan x="72" y="214.0" font-weight="700">Qwen3.6 35B-A3B</tspan><tspan x="72" y="228.0" font-size="10" fill="#4b5563">flappy</tspan></text>
-<rect x="210" y="205.0" width="191.5" height="10" rx="2" fill="#2eaf5f"/>
-<rect x="210" y="218.0" width="589.4" height="10" rx="2" fill="#dc2626"/>
-<text x="406.5" y="213.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#176c37">38.4</text>
-<text x="804.4" y="226.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#991b1b">118.2</text>
-<text x="851.4" y="220.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">3.08x</text>
-<text x="72" y="246.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#111827"><tspan x="72" y="246.0" font-weight="700">Qwen3.6 35B-A3B</tspan><tspan x="72" y="260.0" font-size="10" fill="#4b5563">long_code</tspan></text>
-<rect x="210" y="237.0" width="190.0" height="10" rx="2" fill="#2eaf5f"/>
-<rect x="210" y="250.0" width="589.1" height="10" rx="2" fill="#dc2626"/>
-<text x="405.0" y="245.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#176c37">38.1</text>
-<text x="804.1" y="258.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#991b1b">118.1</text>
-<text x="851.1" y="252.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">3.10x</text>
-<text x="72" y="278.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#111827"><tspan x="72" y="278.0" font-weight="700">Qwen3.6 35B-A3B</tspan><tspan x="72" y="292.0" font-size="10" fill="#4b5563">python_modules</tspan></text>
-<rect x="210" y="269.0" width="189.3" height="10" rx="2" fill="#2eaf5f"/>
-<rect x="210" y="282.0" width="592.9" height="10" rx="2" fill="#dc2626"/>
-<text x="404.3" y="277.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#176c37">38.0</text>
-<text x="807.9" y="290.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#991b1b">118.9</text>
-<text x="854.9" y="284.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">3.13x</text>
-<line x1="72" y1="304.0" x2="1008" y2="304.0" stroke="#eef2f7" stroke-width="1"/>
-<text x="72" y="328.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#111827"><tspan x="72" y="328.0" font-weight="700">Gemma 4 12B</tspan><tspan x="72" y="342.0" font-size="10" fill="#4b5563">flappy</tspan></text>
-<rect x="210" y="319.0" width="133.1" height="10" rx="2" fill="#2eaf5f"/>
-<rect x="210" y="332.0" width="310.1" height="10" rx="2" fill="#dc2626"/>
-<text x="348.1" y="327.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#176c37">26.7</text>
-<text x="525.1" y="340.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#991b1b">62.2</text>
-<text x="572.1" y="334.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">2.33x</text>
-<text x="72" y="360.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#111827"><tspan x="72" y="360.0" font-weight="700">Gemma 4 12B</tspan><tspan x="72" y="374.0" font-size="10" fill="#4b5563">long_code</tspan></text>
-<rect x="210" y="351.0" width="132.7" height="10" rx="2" fill="#2eaf5f"/>
-<rect x="210" y="364.0" width="351.6" height="10" rx="2" fill="#dc2626"/>
-<text x="347.7" y="359.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#176c37">26.6</text>
-<text x="566.6" y="372.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#991b1b">70.5</text>
-<text x="613.6" y="366.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">2.65x</text>
-<text x="72" y="392.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#111827"><tspan x="72" y="392.0" font-weight="700">Gemma 4 12B</tspan><tspan x="72" y="406.0" font-size="10" fill="#4b5563">python_modules</tspan></text>
-<rect x="210" y="383.0" width="135.3" height="10" rx="2" fill="#2eaf5f"/>
-<rect x="210" y="396.0" width="315.0" height="10" rx="2" fill="#dc2626"/>
-<text x="350.3" y="391.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#176c37">27.1</text>
-<text x="530.0" y="404.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#991b1b">63.2</text>
-<text x="577.0" y="398.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">2.33x</text>
-<line x1="72" y1="418.0" x2="1008" y2="418.0" stroke="#eef2f7" stroke-width="1"/>
-<text x="72" y="442.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#111827"><tspan x="72" y="442.0" font-weight="700">Gemma 4 26B</tspan><tspan x="72" y="456.0" font-size="10" fill="#4b5563">flappy</tspan></text>
-<rect x="210" y="433.0" width="227.8" height="10" rx="2" fill="#2eaf5f"/>
-<rect x="210" y="446.0" width="563.3" height="10" rx="2" fill="#dc2626"/>
-<text x="442.8" y="441.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#176c37">45.7</text>
-<text x="778.3" y="454.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#991b1b">112.9</text>
-<text x="825.3" y="448.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">2.47x</text>
-<text x="72" y="474.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#111827"><tspan x="72" y="474.0" font-weight="700">Gemma 4 26B</tspan><tspan x="72" y="488.0" font-size="10" fill="#4b5563">long_code</tspan></text>
-<rect x="210" y="465.0" width="233.5" height="10" rx="2" fill="#2eaf5f"/>
-<rect x="210" y="478.0" width="566.5" height="10" rx="2" fill="#dc2626"/>
-<text x="448.5" y="473.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#176c37">46.8</text>
-<text x="781.5" y="486.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#991b1b">113.6</text>
-<text x="828.5" y="480.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">2.43x</text>
-<text x="72" y="506.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#111827"><tspan x="72" y="506.0" font-weight="700">Gemma 4 26B</tspan><tspan x="72" y="520.0" font-size="10" fill="#4b5563">python_modules</tspan></text>
-<rect x="210" y="497.0" width="228.9" height="10" rx="2" fill="#2eaf5f"/>
-<rect x="210" y="510.0" width="534.8" height="10" rx="2" fill="#dc2626"/>
-<text x="443.9" y="505.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#176c37">45.9</text>
-<text x="749.8" y="518.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#991b1b">107.2</text>
-<text x="796.8" y="512.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">2.34x</text>
-<line x1="72" y1="532.0" x2="1008" y2="532.0" stroke="#eef2f7" stroke-width="1"/>
-<text x="72" y="556.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#111827"><tspan x="72" y="556.0" font-weight="700">Gemma 4 31B</tspan><tspan x="72" y="570.0" font-size="10" fill="#4b5563">flappy</tspan></text>
-<rect x="210" y="547.0" width="76.9" height="10" rx="2" fill="#2eaf5f"/>
-<rect x="210" y="560.0" width="140.3" height="10" rx="2" fill="#dc2626"/>
-<text x="291.9" y="555.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#176c37">15.4</text>
-<text x="355.3" y="568.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#991b1b">28.1</text>
-<text x="402.3" y="562.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">1.82x</text>
-<text x="72" y="588.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#111827"><tspan x="72" y="588.0" font-weight="700">Gemma 4 31B</tspan><tspan x="72" y="602.0" font-size="10" fill="#4b5563">long_code</tspan></text>
-<rect x="210" y="579.0" width="76.2" height="10" rx="2" fill="#2eaf5f"/>
-<rect x="210" y="592.0" width="135.9" height="10" rx="2" fill="#dc2626"/>
-<text x="291.2" y="587.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#176c37">15.3</text>
-<text x="350.9" y="600.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#991b1b">27.3</text>
-<text x="397.9" y="594.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">1.78x</text>
-<text x="72" y="620.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#111827"><tspan x="72" y="620.0" font-weight="700">Gemma 4 31B</tspan><tspan x="72" y="634.0" font-size="10" fill="#4b5563">python_modules</tspan></text>
-<rect x="210" y="611.0" width="74.6" height="10" rx="2" fill="#2eaf5f"/>
-<rect x="210" y="624.0" width="127.2" height="10" rx="2" fill="#dc2626"/>
-<text x="289.6" y="619.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#176c37">15.0</text>
-<text x="342.2" y="632.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#991b1b">25.5</text>
-<text x="389.2" y="626.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">1.70x</text>
-<line x1="72" y1="646.0" x2="1008" y2="646.0" stroke="#eef2f7" stroke-width="1"/>
-<text x="72" y="670.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#111827"><tspan x="72" y="670.0" font-weight="700">GLM-4.7 Flash</tspan><tspan x="72" y="684.0" font-size="10" fill="#4b5563">flappy</tspan></text>
-<rect x="210" y="661.0" width="262.2" height="10" rx="2" fill="#2eaf5f"/>
-<rect x="210" y="674.0" width="456.2" height="10" rx="2" fill="#dc2626"/>
-<text x="477.2" y="669.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#176c37">52.6</text>
-<text x="671.2" y="682.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#991b1b">91.5</text>
-<text x="718.2" y="676.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">1.74x</text>
-<text x="72" y="702.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#111827"><tspan x="72" y="702.0" font-weight="700">GLM-4.7 Flash</tspan><tspan x="72" y="716.0" font-size="10" fill="#4b5563">long_code</tspan></text>
-<rect x="210" y="693.0" width="258.8" height="10" rx="2" fill="#2eaf5f"/>
-<rect x="210" y="706.0" width="388.7" height="10" rx="2" fill="#dc2626"/>
-<text x="473.8" y="701.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#176c37">51.9</text>
-<text x="603.7" y="714.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#991b1b">77.9</text>
-<text x="650.7" y="708.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">1.50x</text>
-<text x="72" y="734.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#111827"><tspan x="72" y="734.0" font-weight="700">GLM-4.7 Flash</tspan><tspan x="72" y="748.0" font-size="10" fill="#4b5563">python_modules</tspan></text>
-<rect x="210" y="725.0" width="261.1" height="10" rx="2" fill="#2eaf5f"/>
-<rect x="210" y="738.0" width="363.6" height="10" rx="2" fill="#dc2626"/>
-<text x="476.1" y="733.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#176c37">52.4</text>
-<text x="578.6" y="746.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#991b1b">72.9</text>
-<text x="625.6" y="740.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">1.39x</text>
-<text x="72" y="820" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">Source: benchmarks/results/mtp-6bit/2026-06-26-qwen-mtp-ax-only-rerun-2 / summary.json. Pure MTP; no MTP+n-gram stacking.</text>
+<rect x="210" y="91.0" width="93.0" height="10" rx="2" fill="#2eaf5f"/>
+<rect x="210" y="104.0" width="217.5" height="10" rx="2" fill="#dc2626"/>
+<text x="308.0" y="99.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#176c37">18.6</text>
+<text x="432.5" y="112.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#991b1b">43.6</text>
+<text x="479.5" y="106.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">2.34x</text>
+<line x1="72" y1="129.0" x2="1008" y2="129.0" stroke="#eef2f7" stroke-width="1"/>
+<text x="72" y="150.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#111827"><tspan x="72" y="150.0" font-weight="700">Qwen3.6 35B-A3B</tspan><tspan x="72" y="164.0" font-size="10" fill="#4b5563">flappy</tspan></text>
+<rect x="210" y="141.0" width="206.2" height="10" rx="2" fill="#2eaf5f"/>
+<rect x="210" y="154.0" width="711.8" height="10" rx="2" fill="#dc2626"/>
+<text x="421.2" y="149.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#176c37">41.3</text>
+<text x="926.8" y="162.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#991b1b">142.7</text>
+<text x="973.8" y="156.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">3.45x</text>
+<line x1="72" y1="179.0" x2="1008" y2="179.0" stroke="#eef2f7" stroke-width="1"/>
+<text x="72" y="200.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#111827"><tspan x="72" y="200.0" font-weight="700">Gemma 4 12B</tspan><tspan x="72" y="214.0" font-size="10" fill="#4b5563">flappy</tspan></text>
+<rect x="210" y="191.0" width="139.2" height="10" rx="2" fill="#2eaf5f"/>
+<rect x="210" y="204.0" width="395.7" height="10" rx="2" fill="#dc2626"/>
+<text x="354.2" y="199.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#176c37">27.9</text>
+<text x="610.7" y="212.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#991b1b">79.3</text>
+<text x="657.7" y="206.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">2.84x</text>
+<line x1="72" y1="229.0" x2="1008" y2="229.0" stroke="#eef2f7" stroke-width="1"/>
+<text x="72" y="250.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#111827"><tspan x="72" y="250.0" font-weight="700">Gemma 4 26B</tspan><tspan x="72" y="264.0" font-size="10" fill="#4b5563">flappy</tspan></text>
+<rect x="210" y="241.0" width="230.4" height="10" rx="2" fill="#2eaf5f"/>
+<rect x="210" y="254.0" width="598.4" height="10" rx="2" fill="#dc2626"/>
+<text x="445.4" y="249.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#176c37">46.2</text>
+<text x="813.4" y="262.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#991b1b">120.0</text>
+<text x="860.4" y="256.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">2.60x</text>
+<line x1="72" y1="279.0" x2="1008" y2="279.0" stroke="#eef2f7" stroke-width="1"/>
+<text x="72" y="300.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#111827"><tspan x="72" y="300.0" font-weight="700">Gemma 4 31B</tspan><tspan x="72" y="314.0" font-size="10" fill="#4b5563">flappy</tspan></text>
+<rect x="210" y="291.0" width="75.6" height="10" rx="2" fill="#2eaf5f"/>
+<rect x="210" y="304.0" width="141.3" height="10" rx="2" fill="#dc2626"/>
+<text x="290.6" y="299.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#176c37">15.2</text>
+<text x="356.3" y="312.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#991b1b">28.3</text>
+<text x="403.3" y="306.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">1.87x</text>
+<line x1="72" y1="329.0" x2="1008" y2="329.0" stroke="#eef2f7" stroke-width="1"/>
+<text x="72" y="350.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#111827"><tspan x="72" y="350.0" font-weight="700">GLM-4.7 Flash</tspan><tspan x="72" y="364.0" font-size="10" fill="#4b5563">flappy</tspan></text>
+<rect x="210" y="341.0" width="255.6" height="10" rx="2" fill="#2eaf5f"/>
+<rect x="210" y="354.0" width="486.3" height="10" rx="2" fill="#dc2626"/>
+<text x="470.6" y="349.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#176c37">51.2</text>
+<text x="701.3" y="362.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#991b1b">97.5</text>
+<text x="748.3" y="356.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">1.90x</text>
+<text x="72" y="468.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">Source: benchmarks/results/mtp-6bit/2026-07-01-six-model-flappy-ax-mtp-vs-direct-clean-r2 / summary.json. Pure MTP; no MTP+n-gram stacking.</text>
 </svg>
