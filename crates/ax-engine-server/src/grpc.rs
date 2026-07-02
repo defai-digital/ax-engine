@@ -30,7 +30,8 @@ use requests::{
 };
 use streams::{
     ChatChunkStream, CompletionChunkStream, GenerateEventStream, build_grpc_stream_state,
-    run_blocking, spawn_grpc_chat_stream, spawn_grpc_completion_stream, spawn_grpc_generate_stream,
+    native_grpc_stream_tokenizer, run_blocking, spawn_grpc_chat_stream,
+    spawn_grpc_completion_stream, spawn_grpc_generate_stream,
 };
 
 const GRPC_CHANNEL_CAPACITY: usize = 128;
@@ -175,9 +176,10 @@ impl AxEngine for AxEngineGrpcService {
         let req = request.into_inner();
         let model_id = live.model_id.to_string();
         let generate_req = build_chat_generate_request(&live, &req)?;
+        let tokenizer = native_grpc_stream_tokenizer(&live)?;
         let (ss, ctx) = build_grpc_stream_state(&self.state, &live, generate_req).await?;
         let (tx, rx) = mpsc::channel(GRPC_CHANNEL_CAPACITY);
-        spawn_grpc_chat_stream(ss, model_id, tx, ctx);
+        spawn_grpc_chat_stream(ss, model_id, tx, ctx, tokenizer);
         Ok(Response::new(ReceiverStream::new(rx)))
     }
 
@@ -224,9 +226,10 @@ impl AxEngine for AxEngineGrpcService {
         let req = request.into_inner();
         let model_id = live.model_id.to_string();
         let generate_req = build_completion_generate_request(&live, &req);
+        let tokenizer = native_grpc_stream_tokenizer(&live)?;
         let (ss, ctx) = build_grpc_stream_state(&self.state, &live, generate_req).await?;
         let (tx, rx) = mpsc::channel(GRPC_CHANNEL_CAPACITY);
-        spawn_grpc_completion_stream(ss, model_id, tx, ctx);
+        spawn_grpc_completion_stream(ss, model_id, tx, ctx, tokenizer);
         Ok(Response::new(ReceiverStream::new(rx)))
     }
 

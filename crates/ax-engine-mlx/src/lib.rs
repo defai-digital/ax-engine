@@ -27,4 +27,4 @@ pub mod diagnostics {
     };
 }
 
-pub use runner::{EmbedCompileCacheStats, MlxPrefixCacheStore, MlxRunner};
+pub use runner::{EmbedCompileCacheStats, MlxPrefixCacheStore, MlxRunner, MlxSharedWeightsCell};

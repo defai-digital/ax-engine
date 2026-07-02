@@ -40,6 +40,18 @@ block = { path = "vendor/block-0.1.6" }
 [workspace.lints.rust]
 unsafe_code = "forbid"
 
+[workspace.lints.clippy]
+# Restriction lints: surface high-risk panic patterns.
+# Set to "warn" workspace-wide; escalate to "deny" in core hot paths
+# (kv.rs, engine.rs, request_manager.rs) after audit.
+# Test modules use #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))].
+# See ax-internal/ADR-001-clippy-restriction-lints.md for rationale.
+unwrap_used = "warn"
+expect_used = "warn"
+panic = "warn"
+dbg_macro = "warn"
+large_enum_variant = "warn"
+
 [profile.release]
 lto = "fat"           # full cross-crate LTO for maximum runtime performance
 codegen-units = 1     # single codegen unit lets the optimizer see the full crate graph

@@ -246,6 +246,48 @@ const COMMON_EOT_TOKEN_STRINGS: &[&str] = &[
     "<｜end▁of▁sentence｜>",
 ];
 
+/// Opaque cross-session share cell for loaded model weights (Option A of the
+/// session/weight-reuse design, `.internal/tech-spec/server-session-weight-reuse.md`).
+///
+/// A long-lived owner (e.g. the server's `StatelessGenerateContext`) holds one
+/// cell per model; every per-request `MlxRunner` build receives it via
+/// `from_artifacts_with_runtime_shares`. The first build loads the weights and
+/// publishes the `Arc`; later builds reuse it and skip both the safetensors
+/// read/GPU eval and the JIT warmup. All clones share the same cell. Sharing
+/// is sound because weight arrays are fully evaluated before publication and
+/// immutable afterwards (`MlxArray` is atomically refcounted `Send + Sync`).
+#[derive(Clone, Default)]
+pub struct MlxSharedWeightsCell(Arc<OnceLock<Arc<ModelWeights>>>);
+
+impl MlxSharedWeightsCell {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// True once a build has published loaded weights into this cell.
+    pub fn is_loaded(&self) -> bool {
+        self.0.get().is_some()
+    }
+
+    fn get(&self) -> Option<Arc<ModelWeights>> {
+        self.0.get().cloned()
+    }
+
+    fn publish(&self, weights: Arc<ModelWeights>) {
+        // Two concurrent first builds may race here; the loser keeps its own
+        // copy for its session lifetime and the winner's stays shared.
+        let _ = self.0.set(weights);
+    }
+}
+
+impl fmt::Debug for MlxSharedWeightsCell {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("MlxSharedWeightsCell")
+            .field("loaded", &self.is_loaded())
+            .finish()
+    }
+}
+
 #[derive(Clone)]
 struct Gemma4AssistantMtpRuntime {
     status: Gemma4AssistantMtpStatus,
@@ -3537,6 +3579,33 @@ impl MlxRunner {
         &self.gemma4_assistant_mtp_status
     }
 
+    /// Build with every cross-session share available: an optional prefix
+    /// snapshot store and an optional shared-weights cell (Option A of the
+    /// session/weight-reuse design). The first build through an empty cell
+    /// loads the weights and publishes them; later builds reuse the loaded
+    /// `Arc<ModelWeights>` and skip both the safetensors read and the JIT
+    /// warmup forwards.
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_artifacts_with_runtime_shares(
+        artifacts: &NativeModelArtifacts,
+        prefill_chunk: usize,
+        disable_ngram_acceleration: bool,
+        disable_mtp_ngram_stacking: bool,
+        kv_compression: KvCompressionConfig,
+        prefix_cache_store: Option<MlxPrefixCacheStore>,
+        shared_weights: Option<&MlxSharedWeightsCell>,
+    ) -> Result<Self, MlxRunnerError> {
+        Self::from_artifacts_inner(
+            artifacts,
+            prefill_chunk,
+            disable_ngram_acceleration,
+            disable_mtp_ngram_stacking,
+            kv_compression,
+            prefix_cache_store,
+            shared_weights,
+        )
+    }
+
     pub fn from_artifacts(
         artifacts: &NativeModelArtifacts,
         prefill_chunk: usize,
@@ -3565,6 +3634,7 @@ impl MlxRunner {
             disable_ngram_acceleration,
             disable_mtp_ngram_stacking,
             kv_compression,
+            None,
             None,
         )
     }
@@ -3601,9 +3671,11 @@ impl MlxRunner {
             disable_mtp_ngram_stacking,
             kv_compression,
             Some(prefix_cache_store),
+            None,
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn from_artifacts_inner(
         artifacts: &NativeModelArtifacts,
         prefill_chunk: usize,
@@ -3611,6 +3683,7 @@ impl MlxRunner {
         disable_mtp_ngram_stacking: bool,
         kv_compression: KvCompressionConfig,
         prefix_cache_store: Option<MlxPrefixCacheStore>,
+        shared_weights: Option<&MlxSharedWeightsCell>,
     ) -> Result<Self, MlxRunnerError> {
         // AX_NO_SPEC is the CLAUDE.md-documented kill switch. Honor it at
         // the runner boundary so server and SDK paths behave the same as
@@ -3712,14 +3785,26 @@ impl MlxRunner {
         } else {
             Vec::new()
         };
-        let weights = load_weights(artifacts).map_err(MlxRunnerError::Weights)?;
+        // Weight arrays are immutable once loaded (Arc-shared, evaluated
+        // leaves), so a populated share cell lets this build skip the full
+        // safetensors read + GPU eval entirely.
+        let preloaded_weights = shared_weights.and_then(MlxSharedWeightsCell::get);
+        let reused_shared_weights = preloaded_weights.is_some();
+        let weights = match preloaded_weights {
+            Some(weights) => weights,
+            None => {
+                let loaded = Arc::new(load_weights(artifacts).map_err(MlxRunnerError::Weights)?);
+                if let Some(cell) = shared_weights {
+                    cell.publish(Arc::clone(&loaded));
+                }
+                loaded
+            }
+        };
         let (gemma4_assistant_mtp_status, gemma4_assistant_mtp) =
             load_gemma4_assistant_mtp_runtime(&cfg, &weights.gemma4_assistant_mtp);
 
         let binding_summary = binding_summary_from_specs(artifacts.tensor_specs());
         let affine_quant_telemetry = AffineQuantBitsTelemetry::from_specs(artifacts.tensor_specs());
-
-        let weights = Arc::new(weights);
 
         // MLA models default to a smaller `prefill_chunk` for warm-extend
         // (snapshot restore + suffix) so chunked_prefill produces the same
@@ -3767,7 +3852,11 @@ impl MlxRunner {
         // EmbeddingGemma is an embedding-only encoder with no generation (decode/
         // prefill) path — skip the generation warmup (it would panic in the
         // family dispatch); the bidirectional embed forward JITs on first embed.
-        if cfg.model_family != "embeddinggemma" {
+        // Skipped when the weights came out of the share cell: warmup exists to
+        // populate process-wide JIT caches (Metal shader + mlx compile), which
+        // the first build through the cell already did — re-running it would
+        // re-impose the per-request forward-pass tax Option A removes.
+        if cfg.model_family != "embeddinggemma" && !reused_shared_weights {
             let mut dummy_cache = MlxKVCache::new(cfg.layer_count);
             let mut dummy_rng = Xorshift64::new(0);
             decode_step(

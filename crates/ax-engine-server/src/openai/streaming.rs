@@ -280,7 +280,7 @@ fn send_openai_stream_event(
 /// filter suppresses from the start only when the very first token is the
 /// channel-name word — answers that start with anything else stream with zero
 /// added latency.
-struct Gemma4ChannelStreamFilter {
+pub(crate) struct Gemma4ChannelStreamFilter {
     ids: Gemma4ChannelIds,
     /// Token id of the bare channel-name word (`thought`), when the tokenizer
     /// has it as a single piece.
@@ -289,7 +289,7 @@ struct Gemma4ChannelStreamFilter {
     in_channel: bool,
     last_channel_body: Vec<u32>,
     /// True once a non-empty outside-channel chunk has been sent.
-    kept_output: bool,
+    pub(crate) kept_output: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -304,7 +304,7 @@ enum Gemma4ChannelStreamState {
 }
 
 impl Gemma4ChannelStreamFilter {
-    fn new(ids: Gemma4ChannelIds, thought_lead: Option<u32>) -> Self {
+    pub(crate) fn new(ids: Gemma4ChannelIds, thought_lead: Option<u32>) -> Self {
         Self {
             ids,
             thought_lead,
@@ -317,7 +317,7 @@ impl Gemma4ChannelStreamFilter {
 
     /// Partition a delta: returns the tokens to stream; tokens inside channel
     /// spans accumulate as the candidate fallback body.
-    fn filter(&mut self, delta_tokens: &[u32]) -> Vec<u32> {
+    pub(crate) fn filter(&mut self, delta_tokens: &[u32]) -> Vec<u32> {
         let mut kept = Vec::with_capacity(delta_tokens.len());
         for &token in delta_tokens {
             if self.in_channel {
@@ -369,7 +369,7 @@ impl Gemma4ChannelStreamFilter {
 
     /// At end of stream: the channel body to serve when no outside-channel
     /// content was emitted.
-    fn take_fallback_tokens(&mut self) -> Option<Vec<u32>> {
+    pub(crate) fn take_fallback_tokens(&mut self) -> Option<Vec<u32>> {
         if self.kept_output || self.last_channel_body.is_empty() {
             return None;
         }
@@ -438,7 +438,7 @@ fn stream_delta_text(
 /// (O(1) amortized — the same prefix-offset/read-offset scheme production
 /// inference servers use) and emits only the newly completed text, holding back
 /// a partial trailing codepoint until later tokens finish it.
-struct IncrementalDecoder {
+pub(crate) struct IncrementalDecoder {
     tokenizer: EngineTokenizer,
     tokens: Vec<u32>,
     /// Start of the decode window; everything before it is already emitted.
@@ -449,7 +449,7 @@ struct IncrementalDecoder {
 }
 
 impl IncrementalDecoder {
-    fn new(tokenizer: EngineTokenizer) -> Self {
+    pub(crate) fn new(tokenizer: EngineTokenizer) -> Self {
         Self {
             tokenizer,
             tokens: Vec::new(),
@@ -458,7 +458,7 @@ impl IncrementalDecoder {
         }
     }
 
-    fn push(&mut self, delta_tokens: &[u32]) -> Result<String, EngineTokenizerError> {
+    pub(crate) fn push(&mut self, delta_tokens: &[u32]) -> Result<String, EngineTokenizerError> {
         self.tokens.extend_from_slice(delta_tokens);
         // `prefix` is the already-emitted, codepoint-complete head of the window;
         // `whole` extends it with the newly appended tokens.

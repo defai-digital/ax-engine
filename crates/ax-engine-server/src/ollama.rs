@@ -1,7 +1,12 @@
 use std::collections::BTreeMap;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use ax_engine_sdk::{GenerateResponse, SelectedBackend};
+use ax_engine_sdk::{
+    EngineSessionError, EngineTokenizer, GenerateResponse, GenerateStreamEvent,
+    GenerateStreamState, SelectedBackend,
+};
 use axum::Json;
 use axum::body::Body;
 use axum::extract::State;
@@ -9,12 +14,15 @@ use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use tokio::sync::mpsc;
+use tokio_stream::wrappers::ReceiverStream;
 
 use crate::app_state::{AppState, LiveState};
 use crate::backends::{llama_cpp, mlx_lm};
-use crate::chat::ChatPromptTemplate;
+use crate::chat::{ChatPromptTemplate, Gemma4ChannelIds, strip_gemma4_channel_name_header};
 use crate::errors::{ErrorResponse, error_response, map_session_error};
 use crate::generation::native::run_stateless_generate_request;
+use crate::generation::streaming::{StreamStateSource, build_stream_state};
 use crate::metadata::{MODEL_OWNER, context_length};
 use crate::openai::generation::{
     populate_native_mlx_output_text, validate_openai_json_object_response,
@@ -30,6 +38,7 @@ use crate::openai::schema::{
     OpenAiChatMessage, OpenAiCompletionHttpRequest, OpenAiPromptInput, OpenAiStopInput,
     OpenAiStreamKind, OpenAiToolCall,
 };
+use crate::openai::streaming::{Gemma4ChannelStreamFilter, IncrementalDecoder};
 use crate::openai::validation::validate_openai_request;
 use crate::tasks::run_blocking_session_task;
 
@@ -313,7 +322,23 @@ pub(crate) async fn ollama_chat(
     validate_openai_request(&live, request.model.as_deref())?;
     reject_ollama_tools_without_support(&live, request.tools.as_ref())?;
     let stream = request.stream;
+    // True per-token NDJSON streaming for the native MLX backend. Tool and
+    // format requests keep the buffered two-chunk emulation because their
+    // responses require whole-output post-processing (tool-call extraction,
+    // JSON-object validation); delegated backends keep it because their
+    // Ollama adapters run through blocking chat completion.
+    let can_true_stream = stream
+        && live.runtime_report.selected_backend == SelectedBackend::Mlx
+        && request.tools.is_none()
+        && request.format.is_none();
     let openai_request = ollama_chat_to_openai_request(request)?;
+    if can_true_stream {
+        let OpenAiBuiltRequest {
+            generate_request, ..
+        } = build_openai_chat_request_offloading_media(&live, openai_request).await?;
+        return stream_ollama_native(state, live, generate_request, OllamaNativeStreamKind::Chat)
+            .await;
+    }
     let response = run_ollama_chat_completion(state, live, openai_request).await?;
     let ollama = ollama_chat_response_from_openai(response)?;
     if stream {
@@ -335,7 +360,22 @@ pub(crate) async fn ollama_generate(
         return Ok(Json(response).into_response());
     }
     let stream = request.stream;
+    let can_true_stream = stream
+        && live.runtime_report.selected_backend == SelectedBackend::Mlx
+        && request.format.is_none();
     let openai_request = ollama_generate_to_openai_request(request)?;
+    if can_true_stream {
+        let OpenAiBuiltRequest {
+            generate_request, ..
+        } = build_openai_completion_request(&live, openai_request)?;
+        return stream_ollama_native(
+            state,
+            live,
+            generate_request,
+            OllamaNativeStreamKind::Generate,
+        )
+        .await;
+    }
     let ollama = run_ollama_completion(state, live, openai_request).await?;
     if stream {
         return ollama_ndjson_response(vec![
@@ -344,6 +384,226 @@ pub(crate) async fn ollama_generate(
         ]);
     }
     Ok(Json(ollama).into_response())
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum OllamaNativeStreamKind {
+    Chat,
+    Generate,
+}
+
+/// Drive a native MLX generation as a true per-token NDJSON stream.
+///
+/// Client disconnect flips the cancel flag (channel closed), which stops the
+/// drive loop between events; dropping the per-request session then frees its
+/// KV state — the buffered emulation could not abort a running generation.
+async fn stream_ollama_native(
+    state: AppState,
+    live: LiveState,
+    generate_request: ax_engine_sdk::GenerateRequest,
+    kind: OllamaNativeStreamKind,
+) -> Result<Response, (StatusCode, Json<ErrorResponse>)> {
+    let Some(model_dir) = live.session_config.mlx_model_artifacts_dir() else {
+        return Err(server_error(
+            "native MLX Ollama streaming requires mlx_model_artifacts_dir with tokenizer.json"
+                .to_string(),
+        ));
+    };
+    let tokenizer = EngineTokenizer::from_model_dir_cached(model_dir).map_err(|error| {
+        server_error(format!(
+            "failed to load tokenizer for native MLX Ollama stream decode: {error}"
+        ))
+    })?;
+    let (stream_state, stream_context) =
+        build_stream_state(&state, &live, generate_request).await?;
+
+    let (tx, rx) = mpsc::channel::<Result<String, std::io::Error>>(128);
+    let cancel = Arc::new(AtomicBool::new(false));
+    let cancel_monitor = Arc::clone(&cancel);
+    let monitor_tx = tx.clone();
+    tokio::spawn(async move {
+        monitor_tx.closed().await;
+        cancel_monitor.store(true, Ordering::Relaxed);
+    });
+    tokio::task::spawn_blocking(move || {
+        let mut stream_state = stream_state;
+        match stream_context {
+            StreamStateSource::Stateless(context) => drive_ollama_native_events(
+                &mut stream_state,
+                kind,
+                &tx,
+                &cancel,
+                tokenizer,
+                |state| context.next_stream_event(state),
+            ),
+            StreamStateSource::Stateful(mut session) => drive_ollama_native_events(
+                &mut stream_state,
+                kind,
+                &tx,
+                &cancel,
+                tokenizer,
+                |state| session.next_stream_event(state),
+            ),
+        }
+    });
+
+    Ok((
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, "application/x-ndjson")],
+        Body::from_stream(ReceiverStream::new(rx)),
+    )
+        .into_response())
+}
+
+fn drive_ollama_native_events<N>(
+    state: &mut GenerateStreamState,
+    kind: OllamaNativeStreamKind,
+    tx: &mpsc::Sender<Result<String, std::io::Error>>,
+    cancel: &AtomicBool,
+    tokenizer: EngineTokenizer,
+    mut next: N,
+) where
+    N: FnMut(&mut GenerateStreamState) -> Result<Option<GenerateStreamEvent>, EngineSessionError>,
+{
+    // Chat streams strip Gemma 4 thinking-channel framing (mirrors the OpenAI
+    // SSE chat path); raw generate streams keep the verbatim decode.
+    let mut channel_filter = match kind {
+        OllamaNativeStreamKind::Chat => Gemma4ChannelIds::from_tokenizer(&tokenizer)
+            .map(|ids| Gemma4ChannelStreamFilter::new(ids, tokenizer.token_to_id("thought"))),
+        OllamaNativeStreamKind::Generate => None,
+    };
+    let mut decoder = IncrementalDecoder::new(tokenizer);
+    loop {
+        if cancel.load(Ordering::Relaxed) {
+            tracing::debug!("Ollama stream cancelled: client disconnected");
+            return;
+        }
+        match next(state) {
+            Ok(None) => return,
+            Err(error) => {
+                // Ollama surfaces mid-stream failures as an NDJSON error line.
+                let _ = send_ollama_ndjson_line(tx, &json!({ "error": error.to_string() }));
+                return;
+            }
+            Ok(Some(GenerateStreamEvent::Request(_))) => {}
+            Ok(Some(GenerateStreamEvent::Step(payload))) => {
+                let filtered;
+                let delta_tokens = if payload.delta_text.is_none()
+                    && let Some(filter) = channel_filter.as_mut()
+                {
+                    filtered = filter.filter(&payload.delta_tokens);
+                    if filtered.is_empty() {
+                        continue;
+                    }
+                    filtered.as_slice()
+                } else {
+                    payload.delta_tokens.as_slice()
+                };
+                let delta_text = if let Some(delta_text) = payload.delta_text {
+                    delta_text
+                } else if delta_tokens.is_empty() {
+                    continue;
+                } else {
+                    match decoder.push(delta_tokens) {
+                        Ok(text) => text,
+                        Err(error) => {
+                            let _ = send_ollama_ndjson_line(
+                                tx,
+                                &json!({ "error": format!(
+                                    "failed to decode native MLX Ollama stream tokens: {error}"
+                                ) }),
+                            );
+                            return;
+                        }
+                    }
+                };
+                if delta_text.is_empty() {
+                    continue;
+                }
+                if let Some(filter) = channel_filter.as_mut() {
+                    filter.kept_output = true;
+                }
+                let chunk = ollama_native_delta_chunk(kind, &payload.request.model_id, delta_text);
+                if send_ollama_ndjson_line(tx, &chunk).is_err() {
+                    return;
+                }
+            }
+            Ok(Some(GenerateStreamEvent::Response(payload))) => {
+                // The model can leave its entire answer inside an unclosed
+                // thinking channel; serve that body before the final chunk.
+                if let Some(filter) = channel_filter.as_mut()
+                    && let Some(body_tokens) = filter.take_fallback_tokens()
+                    && let Ok(body_text) = decoder.push(&body_tokens)
+                {
+                    let body_text = strip_gemma4_channel_name_header(&body_text);
+                    if !body_text.is_empty() {
+                        let chunk = ollama_native_delta_chunk(
+                            kind,
+                            &payload.response.model_id,
+                            body_text.to_string(),
+                        );
+                        if send_ollama_ndjson_line(tx, &chunk).is_err() {
+                            return;
+                        }
+                    }
+                }
+                let summary = ollama_generate_response_from_generate(payload.response);
+                let final_chunk = match kind {
+                    OllamaNativeStreamKind::Chat => json!({
+                        "model": summary.model,
+                        "created_at": summary.created_at,
+                        "done": true,
+                        "done_reason": summary.done_reason,
+                        "total_duration": summary.total_duration,
+                        "load_duration": summary.load_duration,
+                        "prompt_eval_count": summary.prompt_eval_count,
+                        "prompt_eval_duration": summary.prompt_eval_duration,
+                        "eval_count": summary.eval_count,
+                        "eval_duration": summary.eval_duration,
+                    }),
+                    OllamaNativeStreamKind::Generate => {
+                        let mut summary = summary;
+                        summary.response = String::new();
+                        ollama_generate_final_chunk(&summary)
+                    }
+                };
+                let _ = send_ollama_ndjson_line(tx, &final_chunk);
+                return;
+            }
+        }
+    }
+}
+
+fn ollama_native_delta_chunk(
+    kind: OllamaNativeStreamKind,
+    model: &str,
+    delta_text: String,
+) -> Value {
+    match kind {
+        OllamaNativeStreamKind::Chat => json!({
+            "model": model,
+            "created_at": rfc3339_now(),
+            "message": { "role": "assistant", "content": delta_text },
+            "done": false,
+        }),
+        OllamaNativeStreamKind::Generate => json!({
+            "model": model,
+            "created_at": rfc3339_now(),
+            "response": delta_text,
+            "done": false,
+        }),
+    }
+}
+
+fn send_ollama_ndjson_line(
+    tx: &mpsc::Sender<Result<String, std::io::Error>>,
+    chunk: &Value,
+) -> Result<(), ()> {
+    let Ok(mut line) = serde_json::to_string(chunk) else {
+        return Err(());
+    };
+    line.push('\n');
+    tx.blocking_send(Ok(line)).map_err(|_| ())
 }
 
 fn ollama_chat_to_openai_request(

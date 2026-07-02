@@ -38,7 +38,7 @@ pub use errors::EngineSessionError;
 use llama_lifecycle::{LlamaCppLifecycleRequest, LlamaCppLifecycleRequestSlot};
 use native::build_native_core;
 #[cfg(feature = "mlx-native")]
-use native::build_native_core_with_mlx_prefix_cache;
+use native::build_native_core_with_mlx_shares;
 use routes::{apply_native_step_route_to_report, llama_cpp_stream_route, merge_native_route_into};
 pub use stream::{GenerateStream, GenerateStreamState};
 use stream::{
@@ -66,6 +66,25 @@ pub struct StatelessGenerateContext {
     delegated_runtime: Option<RuntimeReport>,
     #[cfg(feature = "mlx-native")]
     native_mlx_prefix_cache: Option<ax_engine_mlx::MlxPrefixCacheStore>,
+    /// Cross-request shared weights cell (Option A of the session/weight-reuse
+    /// design), populated by the first per-request session build. `Some` only
+    /// when `AX_ENGINE_SHARED_WEIGHTS` is truthy; clones share the same cell,
+    /// and the weights drop with this context when a model hot-swap replaces
+    /// it.
+    #[cfg(feature = "mlx-native")]
+    native_mlx_shared_weights: Option<ax_engine_mlx::MlxSharedWeightsCell>,
+}
+
+/// `AX_ENGINE_SHARED_WEIGHTS` opt-in: share loaded model weights across the
+/// per-request native sessions built from one `StatelessGenerateContext`.
+/// Default OFF (fully request-local weights). Opt-in semantics: empty, `0`,
+/// and `false` all leave it disabled.
+#[cfg(feature = "mlx-native")]
+fn shared_weights_enabled_from_env() -> bool {
+    std::env::var("AX_ENGINE_SHARED_WEIGHTS").is_ok_and(|raw| {
+        let trimmed = raw.trim();
+        !trimmed.is_empty() && trimmed != "0" && !trimmed.eq_ignore_ascii_case("false")
+    })
 }
 
 impl StatelessGenerateContext {
@@ -84,11 +103,18 @@ impl StatelessGenerateContext {
             .is_mlx()
             .then(ax_engine_mlx::MlxPrefixCacheStore::from_env);
 
+        #[cfg(feature = "mlx-native")]
+        let native_mlx_shared_weights = (config.resolved_backend.selected_backend.is_mlx()
+            && shared_weights_enabled_from_env())
+        .then(ax_engine_mlx::MlxSharedWeightsCell::new);
+
         Ok(Self {
             config,
             delegated_runtime,
             #[cfg(feature = "mlx-native")]
             native_mlx_prefix_cache,
+            #[cfg(feature = "mlx-native")]
+            native_mlx_shared_weights,
         })
     }
 
@@ -134,10 +160,11 @@ impl StatelessGenerateContext {
     pub fn build_stateful_session(&self) -> Result<EngineSession, EngineSessionError> {
         if self.config.resolved_backend.selected_backend.is_mlx() {
             #[cfg(feature = "mlx-native")]
-            if let Some(prefix_cache) = self.native_mlx_prefix_cache.clone() {
-                return EngineSession::new_with_shared_mlx_prefix_cache(
+            if self.native_mlx_prefix_cache.is_some() || self.native_mlx_shared_weights.is_some() {
+                return EngineSession::new_with_shared_mlx_runtime(
                     self.config.clone(),
-                    prefix_cache,
+                    self.native_mlx_prefix_cache.clone(),
+                    self.native_mlx_shared_weights.as_ref(),
                 );
             }
         }
@@ -441,8 +468,21 @@ impl EngineSession {
         config: EngineSessionConfig,
         prefix_cache_store: ax_engine_mlx::MlxPrefixCacheStore,
     ) -> Result<Self, EngineSessionError> {
+        Self::new_with_shared_mlx_runtime(config, Some(prefix_cache_store), None)
+    }
+
+    /// Build a session that reuses cross-session native-MLX state: an optional
+    /// prefix snapshot store and an optional shared-weights cell (see
+    /// `MlxSharedWeightsCell`). Request KV state remains private to the
+    /// session either way.
+    #[cfg(feature = "mlx-native")]
+    pub fn new_with_shared_mlx_runtime(
+        config: EngineSessionConfig,
+        prefix_cache_store: Option<ax_engine_mlx::MlxPrefixCacheStore>,
+        shared_weights: Option<&ax_engine_mlx::MlxSharedWeightsCell>,
+    ) -> Result<Self, EngineSessionError> {
         config.validate()?;
-        let core = build_native_core_with_mlx_prefix_cache(&config, Some(prefix_cache_store))?;
+        let core = build_native_core_with_mlx_shares(&config, prefix_cache_store, shared_weights)?;
         Self::from_validated_config_and_core(config, core)
     }
 
@@ -943,10 +983,14 @@ impl EngineSession {
                     delta_tokens.len(),
                 )?;
                 state.emitted_output_len = next_report.output_tokens.len();
-                state.current_report = next_report.clone();
+                // Move the fresh report into the stream state and clone once
+                // for the event: the report embeds the full prompt/output
+                // token history, so an extra deep clone here is O(context)
+                // per generated token.
+                state.current_report = next_report;
 
                 Ok(Some(GenerateStreamEvent::Step(GenerateStreamStepEvent {
-                    request: next_report,
+                    request: state.current_report.clone(),
                     step,
                     delta_tokens,
                     delta_token_logprobs,
