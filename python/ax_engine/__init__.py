@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
 
 # Pre-embedded SHA256 of bundled metal artifacts (updated each release).
 _BUNDLED_METALLIB_SHA256 = "51ea9ded8a3944f02e9869dd4e6fcbe45a2fc62e0dec261d7f481c74c82f23ea"
@@ -18,7 +19,6 @@ def _setup_bundled_metal() -> None:
     so the Rust engine can locate the pre-compiled metallib without a source checkout.
     No-ops if AX_ENGINE_METAL_BUILD_DIR is already set or the bundled assets are absent.
     """
-    import hashlib
     import json
 
     if "AX_ENGINE_METAL_BUILD_DIR" in os.environ:
@@ -101,6 +101,8 @@ from ._ax_engine import (
     EngineError,
     EngineInferenceError,
     EngineStateError,
+)
+from ._ax_engine import (
     Session as _Session,
 )
 from .gemma4_unified import (
@@ -114,9 +116,7 @@ from .gemma4_unified import (
     prepare_gemma4_unified_video_request,
 )
 
-_QWEN_CHATML_ASSISTANT_GENERATION_PROMPT = (
-    "<|im_start|>assistant\n<think>\n\n</think>\n\n"
-)
+_QWEN_CHATML_ASSISTANT_GENERATION_PROMPT = "<|im_start|>assistant\n<think>\n\n</think>\n\n"
 _QWEN_CHATML_ASSISTANT_GENERATION_PROMPT_NO_THINK = "<|im_start|>assistant\n"
 
 
@@ -271,7 +271,7 @@ class StepReport:
     cpu_time_us: int
     runner_time_us: int
     route: GenerateRoute | None = None
-    metal_dispatch: "MetalDispatchInfo | None" = None
+    metal_dispatch: MetalDispatchInfo | None = None
 
 
 @dataclass(frozen=True)
@@ -819,9 +819,7 @@ class Session:
         """Like :meth:`embed_batch` but returns one raw f32-bytes blob per
         sequence.  See :meth:`embed_bytes` for the rationale and usage.
         """
-        return self._inner.embed_batch_bytes(
-            batch_token_ids, pooling=pooling, normalize=normalize
-        )
+        return self._inner.embed_batch_bytes(batch_token_ids, pooling=pooling, normalize=normalize)
 
     def embed_batch_flat_bytes(
         self,
@@ -881,7 +879,9 @@ class Session:
     def __enter__(self) -> Session:
         return self
 
-    def __exit__(self, exc_type: object | None, exc: object | None, traceback: object | None) -> None:
+    def __exit__(
+        self, exc_type: object | None, exc: object | None, traceback: object | None
+    ) -> None:
         try:
             self.close()
         except Exception:
@@ -904,9 +904,7 @@ def _runtime_from_dict(value: dict[str, Any]) -> RuntimeInfo:
             else None
         ),
         mlx_model=(
-            _mlx_model_from_dict(value["mlx_model"])
-            if value.get("mlx_model") is not None
-            else None
+            _mlx_model_from_dict(value["mlx_model"]) if value.get("mlx_model") is not None else None
         ),
     )
 
@@ -917,9 +915,7 @@ def _host_from_dict(value: dict[str, Any]) -> HostInfo:
         arch=str(value.get("arch", "")),
         detected_soc=value.get("detected_soc"),
         supported_mlx_runtime=bool(value.get("supported_mlx_runtime", False)),
-        unsupported_host_override_active=bool(
-            value.get("unsupported_host_override_active", False)
-        ),
+        unsupported_host_override_active=bool(value.get("unsupported_host_override_active", False)),
     )
 
 
@@ -966,9 +962,7 @@ def _mlx_model_from_dict(value: dict[str, Any]) -> MlxModelInfo:
             else None
         ),
         mla_kv_latent_dim=(
-            int(value["mla_kv_latent_dim"])
-            if value.get("mla_kv_latent_dim") is not None
-            else None
+            int(value["mla_kv_latent_dim"]) if value.get("mla_kv_latent_dim") is not None else None
         ),
         moe_active_experts=(
             int(value["moe_active_experts"])
@@ -991,8 +985,7 @@ def _source_quantization_from_dict(value: dict[str, Any]) -> SourceQuantizationI
     return SourceQuantizationInfo(
         format=str(value.get("format", "")),
         tensor_type_counts={
-            str(key): int(count)
-            for key, count in dict(value.get("tensor_type_counts", {})).items()
+            str(key): int(count) for key, count in dict(value.get("tensor_type_counts", {})).items()
         },
         quantized_tensor_count=int(value.get("quantized_tensor_count", 0)),
         contains_quantized_tensors=bool(value.get("contains_quantized_tensors", False)),
@@ -1084,18 +1077,12 @@ def _metal_dispatch_from_dict(value: dict[str, Any]) -> MetalDispatchInfo:
         runtime_device_name=str(value["runtime_device_name"]),
         runtime_required_pipeline_count=int(value["runtime_required_pipeline_count"]),
         runtime_max_thread_execution_width=int(value["runtime_max_thread_execution_width"]),
-        runtime_model_conditioned_inputs=bool(
-            value.get("runtime_model_conditioned_inputs", False)
-        ),
-        runtime_real_model_tensor_inputs=bool(
-            value.get("runtime_real_model_tensor_inputs", False)
-        ),
+        runtime_model_conditioned_inputs=bool(value.get("runtime_model_conditioned_inputs", False)),
+        runtime_real_model_tensor_inputs=bool(value.get("runtime_real_model_tensor_inputs", False)),
         runtime_complete_model_forward_supported=bool(
             value.get("runtime_complete_model_forward_supported", False)
         ),
-        runtime_model_bindings_prepared=bool(
-            value.get("runtime_model_bindings_prepared", False)
-        ),
+        runtime_model_bindings_prepared=bool(value.get("runtime_model_bindings_prepared", False)),
         runtime_model_buffers_bound=bool(value.get("runtime_model_buffers_bound", False)),
         runtime_model_buffer_count=int(value.get("runtime_model_buffer_count", 0)),
         runtime_model_buffer_bytes=int(value.get("runtime_model_buffer_bytes", 0)),
@@ -1114,9 +1101,7 @@ def _metal_dispatch_from_dict(value: dict[str, Any]) -> MetalDispatchInfo:
         execution_remaining_logits_handle_count=int(
             value.get("execution_remaining_logits_handle_count", 0)
         ),
-        execution_model_bound_ffn_decode=bool(
-            value.get("execution_model_bound_ffn_decode", False)
-        ),
+        execution_model_bound_ffn_decode=bool(value.get("execution_model_bound_ffn_decode", False)),
         execution_real_model_forward_completed=bool(
             value.get("execution_real_model_forward_completed", False)
         ),
@@ -1139,9 +1124,7 @@ def _metal_dispatch_from_dict(value: dict[str, Any]) -> MetalDispatchInfo:
             value.get("execution_logits_vocab_scan_row_count", 0)
         ),
         binary_archive_state=str(value["binary_archive_state"]),
-        binary_archive_attached_pipeline_count=int(
-            value["binary_archive_attached_pipeline_count"]
-        ),
+        binary_archive_attached_pipeline_count=int(value["binary_archive_attached_pipeline_count"]),
         binary_archive_serialized=bool(value["binary_archive_serialized"]),
         arena_token_capacity=int(value["arena_token_capacity"]),
         arena_slot_capacity=int(value["arena_slot_capacity"]),
@@ -1173,24 +1156,16 @@ def _metal_dispatch_from_dict(value: dict[str, Any]) -> MetalDispatchInfo:
                             value["numeric"]["validation"]["expected_key_cache_checksum"]
                         ),
                         expected_attention_output_checksum=int(
-                            value["numeric"]["validation"][
-                                "expected_attention_output_checksum"
-                            ]
+                            value["numeric"]["validation"]["expected_attention_output_checksum"]
                         ),
                         expected_gather_output_checksum=int(
-                            value["numeric"]["validation"][
-                                "expected_gather_output_checksum"
-                            ]
+                            value["numeric"]["validation"]["expected_gather_output_checksum"]
                         ),
                         expected_copy_output_checksum=int(
-                            value["numeric"]["validation"][
-                                "expected_copy_output_checksum"
-                            ]
+                            value["numeric"]["validation"]["expected_copy_output_checksum"]
                         ),
                         attention_max_abs_diff_microunits=int(
-                            value["numeric"]["validation"][
-                                "attention_max_abs_diff_microunits"
-                            ]
+                            value["numeric"]["validation"]["attention_max_abs_diff_microunits"]
                         ),
                     )
                     if value["numeric"].get("validation") is not None
@@ -1536,10 +1511,15 @@ def _try_generate_manifest(dest: Path) -> bool:
         if repo_root:
             result = subprocess.run(
                 [
-                    "cargo", "run", "-q",
-                    "-p", "ax-engine-core",
-                    "--bin", "generate-manifest",
-                    "--", str(dest),
+                    "cargo",
+                    "run",
+                    "-q",
+                    "-p",
+                    "ax-engine-core",
+                    "--bin",
+                    "generate-manifest",
+                    "--",
+                    str(dest),
                 ],
                 cwd=str(repo_root),
                 capture_output=True,

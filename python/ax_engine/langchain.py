@@ -23,19 +23,21 @@ Example::
 from __future__ import annotations
 
 import json
-import urllib.request
 import urllib.error
-from typing import Any, AsyncIterator, Dict, Iterator, List, Optional, Union
+import urllib.request
+from collections.abc import Iterator
+from typing import Any
 
 try:
+    from langchain_core.callbacks.manager import CallbackManagerForLLMRun
     from langchain_core.language_models.chat_models import BaseChatModel
     from langchain_core.language_models.llms import LLM
     from langchain_core.messages import (
         AIMessage,
         AIMessageChunk,
         BaseMessage,
-        SystemMessage,
         HumanMessage,
+        SystemMessage,
     )
     from langchain_core.outputs import (
         ChatGeneration,
@@ -43,11 +45,9 @@ try:
         ChatResult,
         GenerationChunk,
     )
-    from langchain_core.callbacks.manager import CallbackManagerForLLMRun
 except ImportError as _e:
     raise ImportError(
-        "ax_engine.langchain requires langchain-core. "
-        "Install it with: pip install langchain-core"
+        "ax_engine.langchain requires langchain-core. Install it with: pip install langchain-core"
     ) from _e
 
 _DEFAULT_BASE_URL = "http://127.0.0.1:8080"
@@ -82,9 +82,7 @@ def _post_json(url: str, payload: dict, timeout: int) -> dict:
             detail = json.loads(body).get("error", {}).get("message", "")
         except Exception:
             detail = body.decode(errors="replace")
-        raise RuntimeError(
-            f"ax-engine HTTP {exc.code}: {detail or exc.reason}"
-        ) from exc
+        raise RuntimeError(f"ax-engine HTTP {exc.code}: {detail or exc.reason}") from exc
 
 
 def _stream_sse(url: str, payload: dict, timeout: int) -> Iterator[dict]:
@@ -137,15 +135,15 @@ def _stream_sse(url: str, payload: dict, timeout: int) -> Iterator[dict]:
                             message = (
                                 err.get("message", "")
                                 if isinstance(err, dict)
-                                else str(err) if err else ""
+                                else str(err)
+                                if err
+                                else ""
                             )
                         else:
                             message = str(error_data)
                     except (json.JSONDecodeError, AttributeError):
                         message = raw_data
-                    raise RuntimeError(
-                        f"ax-engine stream error: {message or 'unknown error'}"
-                    )
+                    raise RuntimeError(f"ax-engine stream error: {message or 'unknown error'}")
                 try:
                     yield json.loads(raw_data)
                 except json.JSONDecodeError:
@@ -176,24 +174,22 @@ class AXEngineChatModel(BaseChatModel):
     """
 
     base_url: str = _DEFAULT_BASE_URL
-    model: Optional[str] = None
-    max_tokens: Optional[int] = None
-    temperature: Optional[float] = None
-    top_p: Optional[float] = None
-    top_k: Optional[int] = None
-    min_p: Optional[float] = None
-    repetition_penalty: Optional[float] = None
-    stop: Optional[Union[str, List[str]]] = None
-    seed: Optional[int] = None
+    model: str | None = None
+    max_tokens: int | None = None
+    temperature: float | None = None
+    top_p: float | None = None
+    top_k: int | None = None
+    min_p: float | None = None
+    repetition_penalty: float | None = None
+    stop: str | list[str] | None = None
+    seed: int | None = None
     timeout: int = 300
 
     @property
     def _llm_type(self) -> str:
         return "ax-engine"
 
-    def _build_request(
-        self, messages: List[BaseMessage], stop: Optional[List[str]] = None
-    ) -> dict:
+    def _build_request(self, messages: list[BaseMessage], stop: list[str] | None = None) -> dict:
         req: dict = {"messages": [_message_to_openai(m) for m in messages]}
         if self.model is not None:
             req["model"] = self.model
@@ -218,9 +214,9 @@ class AXEngineChatModel(BaseChatModel):
 
     def _generate(
         self,
-        messages: List[BaseMessage],
-        stop: Optional[List[str]] = None,
-        run_manager: Optional[CallbackManagerForLLMRun] = None,
+        messages: list[BaseMessage],
+        stop: list[str] | None = None,
+        run_manager: CallbackManagerForLLMRun | None = None,
         **kwargs: Any,
     ) -> ChatResult:
         url = self.base_url.rstrip("/") + "/v1/chat/completions"
@@ -242,9 +238,9 @@ class AXEngineChatModel(BaseChatModel):
 
     def _stream(
         self,
-        messages: List[BaseMessage],
-        stop: Optional[List[str]] = None,
-        run_manager: Optional[CallbackManagerForLLMRun] = None,
+        messages: list[BaseMessage],
+        stop: list[str] | None = None,
+        run_manager: CallbackManagerForLLMRun | None = None,
         **kwargs: Any,
     ) -> Iterator[ChatGenerationChunk]:
         url = self.base_url.rstrip("/") + "/v1/chat/completions"
@@ -284,22 +280,22 @@ class AXEngineLLM(LLM):
     """
 
     base_url: str = _DEFAULT_BASE_URL
-    model: Optional[str] = None
-    max_tokens: Optional[int] = None
-    temperature: Optional[float] = None
-    top_p: Optional[float] = None
-    top_k: Optional[int] = None
-    min_p: Optional[float] = None
-    repetition_penalty: Optional[float] = None
-    stop: Optional[Union[str, List[str]]] = None
-    seed: Optional[int] = None
+    model: str | None = None
+    max_tokens: int | None = None
+    temperature: float | None = None
+    top_p: float | None = None
+    top_k: int | None = None
+    min_p: float | None = None
+    repetition_penalty: float | None = None
+    stop: str | list[str] | None = None
+    seed: int | None = None
     timeout: int = 300
 
     @property
     def _llm_type(self) -> str:
         return "ax-engine"
 
-    def _build_request(self, prompt: str, stop: Optional[List[str]] = None) -> dict:
+    def _build_request(self, prompt: str, stop: list[str] | None = None) -> dict:
         req: dict = {"prompt": prompt}
         if self.model is not None:
             req["model"] = self.model
@@ -325,8 +321,8 @@ class AXEngineLLM(LLM):
     def _call(
         self,
         prompt: str,
-        stop: Optional[List[str]] = None,
-        run_manager: Optional[CallbackManagerForLLMRun] = None,
+        stop: list[str] | None = None,
+        run_manager: CallbackManagerForLLMRun | None = None,
         **kwargs: Any,
     ) -> str:
         url = self.base_url.rstrip("/") + "/v1/completions"
@@ -339,8 +335,8 @@ class AXEngineLLM(LLM):
     def _stream(
         self,
         prompt: str,
-        stop: Optional[List[str]] = None,
-        run_manager: Optional[CallbackManagerForLLMRun] = None,
+        stop: list[str] | None = None,
+        run_manager: CallbackManagerForLLMRun | None = None,
         **kwargs: Any,
     ) -> Iterator[GenerationChunk]:
         url = self.base_url.rstrip("/") + "/v1/completions"

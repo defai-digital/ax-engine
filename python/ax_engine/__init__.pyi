@@ -1,19 +1,12 @@
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterator
-
+from typing import Any
 
 class EngineError(RuntimeError): ...
-
-
 class EngineBackendError(EngineError): ...
-
-
 class EngineInferenceError(EngineError): ...
-
-
 class EngineStateError(EngineError): ...
-
 
 @dataclass(frozen=True)
 class Gemma4UnifiedMultimodalRequest:
@@ -24,13 +17,11 @@ class Gemma4UnifiedMultimodalRequest:
     video_soft_token_counts: list[int]
     video_frame_counts: list[int]
 
-
 @dataclass(frozen=True)
 class Gemma4UnifiedImageRequest:
     input_tokens: list[int]
     multimodal_inputs: dict[str, Any]
     soft_token_counts: list[int]
-
 
 @dataclass(frozen=True)
 class Gemma4UnifiedAudioRequest:
@@ -38,14 +29,12 @@ class Gemma4UnifiedAudioRequest:
     multimodal_inputs: dict[str, Any]
     soft_token_counts: list[int]
 
-
 @dataclass(frozen=True)
 class Gemma4UnifiedVideoRequest:
     input_tokens: list[int]
     multimodal_inputs: dict[str, Any]
     soft_token_counts: list[int]
     frame_counts: list[int]
-
 
 def prepare_gemma4_unified_multimodal_request(
     model_dir: str | Path,
@@ -57,15 +46,11 @@ def prepare_gemma4_unified_multimodal_request(
     videos: list[Any] | None = None,
     video_timestamp_token_ids: list[list[list[int]]] | None = None,
 ) -> Gemma4UnifiedMultimodalRequest: ...
-
-
 def prepare_gemma4_unified_image_request(
     model_dir: str | Path,
     input_tokens: list[int],
     images: list[Any],
 ) -> Gemma4UnifiedImageRequest: ...
-
-
 def prepare_gemma4_unified_audio_request(
     model_dir: str | Path,
     input_tokens: list[int],
@@ -73,8 +58,6 @@ def prepare_gemma4_unified_audio_request(
     *,
     sampling_rates: list[int] | None = None,
 ) -> Gemma4UnifiedAudioRequest: ...
-
-
 def prepare_gemma4_unified_video_request(
     model_dir: str | Path,
     input_tokens: list[int],
@@ -82,7 +65,6 @@ def prepare_gemma4_unified_video_request(
     *,
     timestamp_token_ids: list[list[list[int]]] | None = None,
 ) -> Gemma4UnifiedVideoRequest: ...
-
 
 @dataclass(frozen=True)
 class CapabilityReport:
@@ -93,7 +75,6 @@ class CapabilityReport:
     long_context_validation: str
     benchmark_metrics: str
 
-
 @dataclass(frozen=True)
 class HostInfo:
     os: str
@@ -102,12 +83,10 @@ class HostInfo:
     supported_mlx_runtime: bool
     unsupported_host_override_active: bool
 
-
 @dataclass(frozen=True)
 class ToolStatusInfo:
     available: bool
     version: str | None
-
 
 @dataclass(frozen=True)
 class MetalToolchainInfo:
@@ -116,12 +95,10 @@ class MetalToolchainInfo:
     metallib: ToolStatusInfo
     metal_ar: ToolStatusInfo
 
-
 @dataclass(frozen=True)
 class MlxRuntimeInfo:
     runner: str
     artifacts_source: str | None
-
 
 @dataclass(frozen=True)
 class SourceQuantizationInfo:
@@ -130,13 +107,11 @@ class SourceQuantizationInfo:
     quantized_tensor_count: int
     contains_quantized_tensors: bool
 
-
 @dataclass(frozen=True)
 class RuntimeStatusInfo:
     ready: bool
     blockers: list[str]
     notes: list[str]
-
 
 @dataclass(frozen=True)
 class MlxModelInfo:
@@ -163,7 +138,6 @@ class MlxModelInfo:
     source_q6_k_binding_count: int
     source_q8_0_binding_count: int
 
-
 @dataclass(frozen=True)
 class RuntimeInfo:
     selected_backend: str
@@ -176,7 +150,6 @@ class RuntimeInfo:
     mlx_runtime: MlxRuntimeInfo | None = None
     mlx_model: MlxModelInfo | None = None
 
-
 @dataclass(frozen=True)
 class GenerateRoute:
     execution_plan: str | None = None
@@ -185,7 +158,6 @@ class GenerateRoute:
     prefix_cache_path: str | None = None
     barrier_mode: str | None = None
     crossover_decisions: dict[str, int] | None = None
-
 
 @dataclass(frozen=True)
 class GenerateResult:
@@ -202,7 +174,6 @@ class GenerateResult:
     route: GenerateRoute
     runtime: RuntimeInfo
     output_token_logprobs: list[float | None] = ...
-
 
 @dataclass(frozen=True)
 class RequestReport:
@@ -222,7 +193,6 @@ class RequestReport:
     terminal_stop_reason: str | None = None
     output_token_logprobs: list[float | None] = ...
 
-
 @dataclass(frozen=True)
 class StepReport:
     step_id: int | None
@@ -237,7 +207,6 @@ class StepReport:
     route: GenerateRoute | None = None
     metal_dispatch: MetalDispatchInfo | None = None
 
-
 @dataclass(frozen=True)
 class MetalDispatchValidationInfo:
     expected_key_cache_checksum: int
@@ -245,7 +214,6 @@ class MetalDispatchValidationInfo:
     expected_gather_output_checksum: int
     expected_copy_output_checksum: int
     attention_max_abs_diff_microunits: int
-
 
 @dataclass(frozen=True)
 class MetalDispatchNumericInfo:
@@ -255,14 +223,12 @@ class MetalDispatchNumericInfo:
     copy_output_checksum: int
     validation: MetalDispatchValidationInfo | None = None
 
-
 @dataclass(frozen=True)
 class MetalDispatchKernelInfo:
     function_name: str
     element_count: int
     threads_per_grid_width: int
     threads_per_threadgroup_width: int
-
 
 @dataclass(frozen=True)
 class MetalDispatchInfo:
@@ -307,7 +273,6 @@ class MetalDispatchInfo:
     kernels: list[MetalDispatchKernelInfo] = field(default_factory=list)
     numeric: MetalDispatchNumericInfo | None = None
 
-
 @dataclass(frozen=True)
 class GenerateStreamEvent:
     event: str
@@ -319,12 +284,10 @@ class GenerateStreamEvent:
     delta_text: str | None = None
     response: GenerateResult | None = None
 
-
 @dataclass(frozen=True)
 class ChatMessage:
     role: str
     content: str
-
 
 class Session:
     def __init__(
@@ -545,9 +508,10 @@ class Session:
         avoid forcing a numpy import on callers that do not use the
         helper."""
         ...
-    def __enter__(self) -> "Session": ...
-    def __exit__(self, exc_type: object | None, exc: object | None, traceback: object | None) -> None: ...
-
+    def __enter__(self) -> Session: ...
+    def __exit__(
+        self, exc_type: object | None, exc: object | None, traceback: object | None
+    ) -> None: ...
 
 def download_model(
     repo_id: str,

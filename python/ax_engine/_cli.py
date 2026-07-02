@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass
 import importlib.metadata
 import json
 import os
@@ -11,7 +10,8 @@ import re
 import shutil
 import subprocess
 import sys
-from typing import Sequence
+from collections.abc import Sequence
+from dataclasses import dataclass
 
 from . import _bundled_binary
 
@@ -301,7 +301,7 @@ def _model_families() -> list[ModelFamily]:
         groups[key].append(profile)
     families: list[ModelFamily] = []
     for key in order:
-        variants = sorted(groups[key], key=lambda p: (_profile_quant_bits(p) or 99))
+        variants = sorted(groups[key], key=lambda p: _profile_quant_bits(p) or 99)
         families.append(ModelFamily(key=key, variants=tuple(variants)))
     return families
 
@@ -444,7 +444,8 @@ def _download_summary(
     download_script = _find_repo_script("download_model.py")
     if download_script is None:
         raise SystemExit(
-            "cannot locate scripts/download_model.py. Reinstall ax-engine or run from a source checkout."
+            "cannot locate scripts/download_model.py. "
+            "Reinstall ax-engine or run from a source checkout."
         )
 
     command = [sys.executable, str(download_script), repo_id, "--json"]
@@ -584,9 +585,7 @@ def _run_interactive_direct_download(profile: ModelProfile, force: bool) -> int:
         return 130
 
     print()
-    code, summary, stderr = _download_summary(
-        profile.label, dest=dest, force=force, progress=True
-    )
+    code, summary, stderr = _download_summary(profile.label, dest=dest, force=force, progress=True)
     if stderr:
         sys.stderr.write(stderr)
     if summary is None:
@@ -597,8 +596,7 @@ def _run_interactive_direct_download(profile: ModelProfile, force: bool) -> int:
 
 def _run_interactive_mtp_download(profile: ModelProfile, force: bool) -> int:
     if not _confirm_interactive(
-        f"\nPrepare MTP package for {profile.label} "
-        f"(ax-engine download-mtp {profile.mtp_target})?"
+        f"\nPrepare MTP package for {profile.label} (ax-engine download-mtp {profile.mtp_target})?"
     ):
         print("Cancelled.")
         return 130
@@ -634,8 +632,7 @@ def _run_interactive_download(force: bool) -> int:
 def _cmd_ui_downloader(args: argparse.Namespace) -> int:
     if not _supports_interactive():
         raise SystemExit(
-            "ax-engine ui-downloader needs an interactive terminal. "
-            "Use: ax-engine download <model>"
+            "ax-engine ui-downloader needs an interactive terminal. Use: ax-engine download <model>"
         )
     return _run_interactive_download(args.force)
 
@@ -696,11 +693,7 @@ def _serve_argv(args: argparse.Namespace) -> tuple[list[str], dict]:
                 argv.extend(["--preset", preset])
             argv.extend(["--mlx-model-artifacts-dir", model_dir])
         elif preset is None:
-            download_hint = (
-                f" or run: ax-engine serve {target} --download"
-                if "/" in target
-                else ""
-            )
+            download_hint = f" or run: ax-engine serve {target} --download" if "/" in target else ""
             raise SystemExit(
                 "unknown model alias or missing local directory: "
                 f"{target!r}; pass a model directory or one of "
@@ -765,10 +758,7 @@ def _cmd_download(args: argparse.Namespace) -> int:
         return 0
 
     interactive = args.interactive or (
-        not args.model
-        and not args.no_interactive
-        and not args.json
-        and _supports_interactive()
+        not args.model and not args.no_interactive and not args.json and _supports_interactive()
     )
     if interactive:
         return _run_interactive_download(args.force)
@@ -1130,7 +1120,11 @@ def _user_doctor_report(bench_report: dict) -> dict:
     model_path = _value_at(bench_report, ("model_artifacts", "path"))
     model_path = model_path if isinstance(model_path, str) else None
 
-    if server_check["status"] != "pass" or bench_check["status"] != "pass" or bench_status == "not_ready":
+    if (
+        server_check["status"] != "pass"
+        or bench_check["status"] != "pass"
+        or bench_status == "not_ready"
+    ):
         result = "not_ready"
     elif bench_status == "bringup_only":
         result = "degraded"
@@ -1389,14 +1383,21 @@ def build_parser() -> argparse.ArgumentParser:
         "download",
         help="Download an MLX model and generate its AX manifest",
     )
-    download_parser.add_argument("model", nargs="?", help="Server preset alias or Hugging Face repo id")
+    download_parser.add_argument(
+        "model", nargs="?", help="Server preset alias or Hugging Face repo id"
+    )
     download_parser.add_argument(
         "--dest",
         default=None,
-        help="Copy the resolved HF cache snapshot to this directory; default uses the shared Hugging Face Hub cache",
+        help=(
+            "Copy the resolved HF cache snapshot to this directory;"
+            " default uses the shared Hugging Face Hub cache"
+        ),
     )
     download_parser.add_argument("--force", action="store_true")
-    download_parser.add_argument("--list", action="store_true", help="Show supported download targets")
+    download_parser.add_argument(
+        "--list", action="store_true", help="Show supported download targets"
+    )
     download_parser.add_argument(
         "--interactive",
         action="store_true",
@@ -1465,7 +1466,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="Package a base MLX model with standard HF MTP tensors",
     )
     convert_parser.add_argument("base_model", help="Base MLX model dir or repo id")
-    convert_parser.add_argument("--mtp-source", required=True, help="HF repo that ships mtp.* tensors")
+    convert_parser.add_argument(
+        "--mtp-source", required=True, help="HF repo that ships mtp.* tensors"
+    )
     convert_parser.add_argument("--output", default=None)
     convert_parser.add_argument("--quantize", type=int, choices=[4, 8], default=None)
     convert_parser.add_argument(

@@ -12,7 +12,6 @@ from io import BytesIO
 from pathlib import Path
 from typing import Any
 
-
 _REMOTE_MEDIA_TIMEOUT_SECONDS = 10
 _MAX_REMOTE_MEDIA_BYTES = 64 * 1024 * 1024
 # Smallest positive normal f32; image_std channels below this would overflow
@@ -145,7 +144,7 @@ def prepare_gemma4_unified_multimodal_request(
             "pixel_values": image["pixel_values"],
             "pixel_position_ids": image["pixel_position_ids"],
         }
-        for span, image in zip(image_spans, processed_images)
+        for span, image in zip(image_spans, processed_images, strict=False)
     ]
     runtime_audios = [
         {
@@ -154,18 +153,16 @@ def prepare_gemma4_unified_multimodal_request(
             "frame_count": audio["frame_count"],
             "feature_count": audio["feature_count"],
         }
-        for span, audio in zip(audio_spans, processed_audios)
+        for span, audio in zip(audio_spans, processed_audios, strict=False)
     ]
     runtime_videos = []
-    for span, video in zip(video_spans, processed_videos):
+    for span, video in zip(video_spans, processed_videos, strict=False):
         runtime_videos.append(
             {
                 "span": span["span"],
                 "soft_token_ranges": span["soft_token_ranges"],
                 "pixel_values": [
-                    value
-                    for frame in video["frames"]
-                    for value in frame["pixel_values"]
+                    value for frame in video["frames"] for value in frame["pixel_values"]
                 ],
                 "pixel_position_ids": [
                     position
@@ -188,8 +185,7 @@ def prepare_gemma4_unified_multimodal_request(
         image_soft_token_counts=[item["soft_token_count"] for item in processed_images],
         audio_soft_token_counts=[item["frame_count"] for item in processed_audios],
         video_soft_token_counts=[
-            sum(frame["soft_token_count"] for frame in item["frames"])
-            for item in processed_videos
+            sum(frame["soft_token_count"] for frame in item["frames"]) for item in processed_videos
         ],
         video_frame_counts=[item["frame_count"] for item in processed_videos],
     )
@@ -291,24 +287,19 @@ def _load_config(model_dir: Path) -> _Gemma4UnifiedConfig:
         None,
         "Gemma4UnifiedImageProcessor",
     ):
-        raise ValueError(
-            "Gemma4 unified image preprocessing requires Gemma4UnifiedImageProcessor"
-        )
+        raise ValueError("Gemma4 unified image preprocessing requires Gemma4UnifiedImageProcessor")
     if feature_config.get("feature_extractor_type") not in (
         None,
         "Gemma4UnifiedAudioFeatureExtractor",
     ):
         raise ValueError(
-            "Gemma4 unified audio preprocessing requires "
-            "Gemma4UnifiedAudioFeatureExtractor"
+            "Gemma4 unified audio preprocessing requires Gemma4UnifiedAudioFeatureExtractor"
         )
     if video_config.get("video_processor_type") not in (
         None,
         "Gemma4UnifiedVideoProcessor",
     ):
-        raise ValueError(
-            "Gemma4 unified video preprocessing requires Gemma4UnifiedVideoProcessor"
-        )
+        raise ValueError("Gemma4 unified video preprocessing requires Gemma4UnifiedVideoProcessor")
 
     sampling_rate = _optional_int_or_default(feature_config, "sampling_rate", 16000)
     computed_audio_samples_per_token = int(
@@ -335,9 +326,7 @@ def _load_config(model_dir: Path) -> _Gemma4UnifiedConfig:
     do_normalize = bool(image_config.get("do_normalize", False))
     image_std_raw = image_config.get("image_std")
     image_std = _triple(image_std_raw if image_std_raw is not None else [0.5, 0.5, 0.5])
-    if do_normalize and not all(
-        _is_positive_normal_f32(channel) for channel in image_std
-    ):
+    if do_normalize and not all(_is_positive_normal_f32(channel) for channel in image_std):
         # A std channel that is not a positive normal f32 would corrupt every
         # pixel (inf/NaN, overflow, or sign-flipped values) once values land
         # in f32 tensors: a subnormal like 1e-40 passes a naive > 0 check but
@@ -357,9 +346,7 @@ def _load_config(model_dir: Path) -> _Gemma4UnifiedConfig:
         boi_token_id=_required_int(model_config, "boi_token_id"),
         eoi_token_id=_required_int(model_config, "eoi_token_id"),
         boa_token_id=_required_int(model_config, "boa_token_id"),
-        eoa_token_id=_optional_int_or_required(
-            model_config, "eoa_token_index", "eoa_token_id"
-        ),
+        eoa_token_id=_optional_int_or_required(model_config, "eoa_token_index", "eoa_token_id"),
         do_convert_rgb=bool(image_config.get("do_convert_rgb", True)),
         do_resize=bool(image_config.get("do_resize", True)),
         do_rescale=bool(image_config.get("do_rescale", True)),
@@ -400,12 +387,8 @@ def _load_config(model_dir: Path) -> _Gemma4UnifiedConfig:
         ),
         sampling_rate=sampling_rate,
         audio_samples_per_token=audio_samples_per_token,
-        audio_seq_length=_optional_int_or_default(
-            processor_config, "audio_seq_length", 750
-        ),
-        video_max_soft_tokens=_optional_int_or_default(
-            video_config, "max_soft_tokens", 70
-        ),
+        audio_seq_length=_optional_int_or_default(processor_config, "audio_seq_length", 750),
+        video_max_soft_tokens=_optional_int_or_default(video_config, "max_soft_tokens", 70),
         video_num_frames=_optional_int_or_default(video_config, "num_frames", 32),
     )
 
@@ -430,9 +413,7 @@ def _process_image(
     if config.do_convert_rgb:
         pil_image = pil_image.convert("RGB")
     elif pil_image.mode != "RGB":
-        raise ValueError(
-            "Gemma4 unified image preprocessing currently requires RGB images"
-        )
+        raise ValueError("Gemma4 unified image preprocessing currently requires RGB images")
 
     if config.do_resize:
         target_width, target_height = _resized_dimensions(
@@ -462,9 +443,7 @@ def _process_image(
         )
 
     pixels = _rgb_pixels(pil_image, config)
-    patch_values, position_ids = _patchify_rgb(
-        pixels, pil_image.width, pil_image.height, config
-    )
+    patch_values, position_ids = _patchify_rgb(pixels, pil_image.width, pil_image.height, config)
     soft_token_count = len(position_ids)
     if soft_token_count > max_soft_tokens:
         patch_values = patch_values[:max_soft_tokens]
@@ -472,9 +451,7 @@ def _process_image(
         soft_token_count = max_soft_tokens
 
     while len(position_ids) < max_soft_tokens:
-        patch_values.append(
-            [0.0] * (config.model_patch_size * config.model_patch_size * 3)
-        )
+        patch_values.append([0.0] * (config.model_patch_size * config.model_patch_size * 3))
         position_ids.append([-1, -1])
 
     return {
@@ -490,9 +467,7 @@ def _process_audios(
     config: _Gemma4UnifiedConfig,
 ) -> list[dict[str, Any]]:
     if sampling_rates is not None and len(sampling_rates) != len(audios):
-        raise ValueError(
-            "Gemma4 unified audio sampling_rates length must match audio count"
-        )
+        raise ValueError("Gemma4 unified audio sampling_rates length must match audio count")
     processed = []
     for idx, audio in enumerate(audios):
         waveform, sampling_rate = _load_audio_waveform(audio, config.sampling_rate)
@@ -525,8 +500,7 @@ def _process_audio_waveform(
     if pad_len:
         values.extend([0.0] * pad_len)
     frames = [
-        values[start : start + feature_count]
-        for start in range(0, len(values), feature_count)
+        values[start : start + feature_count] for start in range(0, len(values), feature_count)
     ]
     if config.audio_seq_length is not None:
         frames = frames[: config.audio_seq_length]
@@ -553,13 +527,8 @@ def _process_video(video: Any, config: _Gemma4UnifiedConfig) -> dict[str, Any]:
         for frame in frames
     ]
     first_soft_token_count = processed_frames[0]["soft_token_count"]
-    if any(
-        frame["soft_token_count"] != first_soft_token_count
-        for frame in processed_frames
-    ):
-        raise ValueError(
-            "Gemma4 unified video frames must produce a consistent soft-token count"
-        )
+    if any(frame["soft_token_count"] != first_soft_token_count for frame in processed_frames):
+        raise ValueError("Gemma4 unified video frames must produce a consistent soft-token count")
     return {
         "frames": processed_frames,
         "frame_count": len(processed_frames),
@@ -591,9 +560,7 @@ def _load_pil_image(image: Any):
     return Image.open(image)
 
 
-def _load_audio_waveform(
-    audio: Any, default_sampling_rate: int
-) -> tuple[list[float], int]:
+def _load_audio_waveform(audio: Any, default_sampling_rate: int) -> tuple[list[float], int]:
     if isinstance(audio, dict):
         audio = _audio_source_from_dict(audio)
     if isinstance(audio, tuple) and len(audio) == 2:
@@ -603,14 +570,12 @@ def _load_audio_waveform(
         return _load_wav(BytesIO(audio))
     if isinstance(audio, str):
         if audio.startswith("data:"):
-            return _load_wav(
-                BytesIO(_decode_data_uri(audio, ("audio/", "application/")))
-            )
+            return _load_wav(BytesIO(_decode_data_uri(audio, ("audio/", "application/"))))
         if _is_remote_url(audio):
             return _load_wav(BytesIO(_fetch_url_bytes(audio)))
         if audio.startswith("file://"):
             audio = _file_url_to_path(audio)
-    if isinstance(audio, Path) or isinstance(audio, str):
+    if isinstance(audio, (Path, str)):
         with Path(audio).open("rb") as handle:
             return _load_wav(handle)
     return _flatten_audio_values(audio), default_sampling_rate
@@ -692,8 +657,7 @@ def _load_video_frames(video: Any) -> list[Any]:
         frames = list(video)
     except TypeError as exc:
         raise ValueError(
-            "Gemma4 unified video input must be a sequence of Pillow images, paths, "
-            "or image bytes"
+            "Gemma4 unified video input must be a sequence of Pillow images, paths, or image bytes"
         ) from exc
     if not frames:
         raise ValueError("Gemma4 unified video input must contain at least one frame")
@@ -717,9 +681,7 @@ def _audio_source_from_dict(source: dict[str, Any]) -> Any:
     if "data" in source:
         audio_format = str(source.get("format", "wav")).lower()
         if audio_format not in {"wav", "wave"}:
-            raise ValueError(
-                "Gemma4 unified input_audio data currently supports WAV format only"
-            )
+            raise ValueError("Gemma4 unified input_audio data currently supports WAV format only")
         return base64.b64decode(str(source["data"]), validate=True)
     if "input_audio" in source and isinstance(source["input_audio"], dict):
         return _audio_source_from_dict(source["input_audio"])
@@ -731,8 +693,7 @@ def _audio_source_from_dict(source: dict[str, Any]) -> Any:
     if isinstance(audio_url, str):
         return audio_url
     raise ValueError(
-        "Gemma4 unified audio source dict must contain data, input_audio, url, "
-        "or audio_url.url"
+        "Gemma4 unified audio source dict must contain data, input_audio, url, or audio_url.url"
     )
 
 
@@ -761,9 +722,7 @@ def _is_remote_url(source: str) -> bool:
 
 def _fetch_url_bytes(url: str) -> bytes:
     try:
-        with urllib.request.urlopen(
-            url, timeout=_REMOTE_MEDIA_TIMEOUT_SECONDS
-        ) as response:
+        with urllib.request.urlopen(url, timeout=_REMOTE_MEDIA_TIMEOUT_SECONDS) as response:
             # Read at most the limit, then probe a single byte to detect overflow
             # rather than pulling the whole oversized body into memory first.
             data = response.read(_MAX_REMOTE_MEDIA_BYTES)
@@ -772,8 +731,7 @@ def _fetch_url_bytes(url: str) -> bytes:
         raise ValueError(f"Gemma4 unified media URL fetch failed: {url}") from exc
     if overflowed:
         raise ValueError(
-            "Gemma4 unified media URL response exceeded "
-            f"{_MAX_REMOTE_MEDIA_BYTES} bytes"
+            f"Gemma4 unified media URL response exceeded {_MAX_REMOTE_MEDIA_BYTES} bytes"
         )
     return data
 
@@ -842,16 +800,12 @@ def _normalize_video_timestamp_ids(
     if timestamp_ids is None:
         return [[[] for _ in range(frame_count)] for frame_count in frame_counts]
     if not isinstance(timestamp_ids, list):
-        raise ValueError(
-            "Gemma4 unified video timestamp_token_ids must be a list of videos"
-        )
+        raise ValueError("Gemma4 unified video timestamp_token_ids must be a list of videos")
     if len(timestamp_ids) != len(frame_counts):
-        raise ValueError(
-            "Gemma4 unified video timestamp_token_ids length must match video count"
-        )
+        raise ValueError("Gemma4 unified video timestamp_token_ids length must match video count")
     normalized = []
     for idx, (video_timestamps, frame_count) in enumerate(
-        zip(timestamp_ids, frame_counts)
+        zip(timestamp_ids, frame_counts, strict=False)
     ):
         if not isinstance(video_timestamps, list):
             raise ValueError(
@@ -886,13 +840,16 @@ def _normalize_video_timestamp_ids(
                     ) from exc
                 if isinstance(token, float) and not token.is_integer():
                     raise ValueError(
-                        "Gemma4 unified video timestamp_token_ids must contain integer token ids; "
-                        f"found non-integer {token!r} at video {idx}, frame {frame_idx}, index {token_idx}"
+                        "Gemma4 unified video timestamp_token_ids must contain integer token ids;"
+                        f" found non-integer {token!r} at video {idx}, frame {frame_idx},"
+                        f" index {token_idx}"
                     )
                 if int_token < 0:
                     raise ValueError(
-                        "Gemma4 unified video timestamp_token_ids must contain non-negative token ids; "
-                        f"found {int_token} at video {idx}, frame {frame_idx}, index {token_idx}"
+                        "Gemma4 unified video timestamp_token_ids must contain"
+                        " non-negative token ids;"
+                        f" found {int_token} at video {idx}, frame {frame_idx},"
+                        f" index {token_idx}"
                     )
                 normalized_tokens.append(int_token)
             normalized_frame_tokens.append(normalized_tokens)
@@ -908,15 +865,9 @@ def _expand_multimodal_placeholders(
     video_timestamp_ids: list[list[list[int]]],
     config: _Gemma4UnifiedConfig,
 ) -> tuple[list[int], list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
-    _validate_placeholder_count(
-        "image", input_tokens, config.image_token_id, len(images)
-    )
-    _validate_placeholder_count(
-        "audio", input_tokens, config.audio_token_id, len(audios)
-    )
-    _validate_placeholder_count(
-        "video", input_tokens, config.video_token_id, len(videos)
-    )
+    _validate_placeholder_count("image", input_tokens, config.image_token_id, len(images))
+    _validate_placeholder_count("audio", input_tokens, config.audio_token_id, len(audios))
+    _validate_placeholder_count("video", input_tokens, config.video_token_id, len(videos))
 
     output: list[int] = []
     image_spans: list[dict[str, Any]] = []
@@ -966,7 +917,7 @@ def _expand_multimodal_placeholders(
             replacement_start = len(output)
             soft_token_ranges = []
             soft_token_count = 0
-            for frame, timestamp_tokens in zip(video["frames"], timestamps):
+            for frame, timestamp_tokens in zip(video["frames"], timestamps, strict=False):
                 output.extend(timestamp_tokens)
                 output.append(config.boi_token_id)
                 range_start = len(output)
@@ -1008,8 +959,7 @@ def _validate_placeholder_count(
     actual = sum(1 for token in input_tokens if token == token_id)
     if actual != expected:
         raise ValueError(
-            f"Gemma4 unified {name} placeholder count mismatch: "
-            f"expected {expected}, found {actual}"
+            f"Gemma4 unified {name} placeholder count mismatch: expected {expected}, found {actual}"
         )
 
 
@@ -1055,14 +1005,10 @@ def _resized_dimensions(
     # on that reachability argument.
     if target_height == 0:
         target_height = side_mult
-        target_width = min(
-            max(math.floor(width / height) * side_mult, side_mult), max_side_length
-        )
+        target_width = min(max(math.floor(width / height) * side_mult, side_mult), max_side_length)
     elif target_width == 0:
         target_width = side_mult
-        target_height = min(
-            max(math.floor(height / width) * side_mult, side_mult), max_side_length
-        )
+        target_height = min(max(math.floor(height / width) * side_mult, side_mult), max_side_length)
     return int(target_width), int(target_height)
 
 
@@ -1082,7 +1028,7 @@ def _rgb_pixels(
             pixel = [
                 (channel - mean) / std
                 for channel, mean, std in zip(
-                    pixel, config.image_mean, config.image_std
+                    pixel, config.image_mean, config.image_std, strict=False
                 )
             ]
         values.append((pixel[0], pixel[1], pixel[2]))
@@ -1121,9 +1067,7 @@ def _required_int(config: dict[str, Any], key: str) -> int:
     return value
 
 
-def _optional_int_or_required(
-    config: dict[str, Any], optional_key: str, required_key: str
-) -> int:
+def _optional_int_or_required(config: dict[str, Any], optional_key: str, required_key: str) -> int:
     value = _optional_int(config, optional_key)
     if value is not None:
         return value

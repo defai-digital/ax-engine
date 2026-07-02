@@ -5,11 +5,8 @@ from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
 
-
 ALLOWED_CHAT_ROLES = {"system", "user", "assistant", "tool", "function"}
-QWEN_CHATML_ASSISTANT_GENERATION_PROMPT = (
-    "<|im_start|>assistant\n<think>\n\n</think>\n\n"
-)
+QWEN_CHATML_ASSISTANT_GENERATION_PROMPT = "<|im_start|>assistant\n<think>\n\n</think>\n\n"
 QWEN_CHATML_ASSISTANT_GENERATION_PROMPT_NO_THINK = "<|im_start|>assistant\n"
 MODEL_OWNER = "ax-engine"
 
@@ -51,18 +48,12 @@ def render_chat_prompt(
             )
             if rendered_tool_calls:
                 if content.strip():
-                    content += (
-                        "\n\n"
-                        if qwen_tool_style in {"function_xml", "coder_xml"}
-                        else "\n"
-                    )
+                    content += "\n\n" if qwen_tool_style in {"function_xml", "coder_xml"} else "\n"
                 content += rendered_tool_calls
         rendered_messages.append((role, content))
 
     if template == "qwen_chatml":
-        tool_contract = render_tool_contract_system_message(
-            tools, tool_choice, qwen_tool_style
-        )
+        tool_contract = render_tool_contract_system_message(tools, tool_choice, qwen_tool_style)
         if tool_contract is not None:
             if rendered_messages and rendered_messages[0][0] == "system":
                 role, content = rendered_messages[0]
@@ -211,7 +202,7 @@ def render_json_tool_contract_system_message(tools: Any, tool_choice: Any) -> st
         [
             "</tools>",
             "",
-            "For each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:",
+            "For each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:",  # noqa: E501
             "<tool_call>",
             '{"name": <function-name>, "arguments": <args-json-object>}',
             "</tool_call>",
@@ -224,9 +215,7 @@ def render_json_tool_contract_system_message(tools: Any, tool_choice: Any) -> st
     return "\n".join(lines)
 
 
-def render_qwen_function_tool_contract_system_message(
-    tools: Any, tool_choice: Any
-) -> str:
+def render_qwen_function_tool_contract_system_message(tools: Any, tool_choice: Any) -> str:
     lines = [
         "# Tools",
         "",
@@ -259,10 +248,10 @@ def render_qwen_function_tool_contract_system_message(
             "",
             "<IMPORTANT>",
             "Reminder:",
-            "- Function calls MUST follow the specified format: an inner <function=...></function> block must be nested within <tool_call></tool_call> XML tags",
+            "- Function calls MUST follow the specified format: an inner <function=...></function> block must be nested within <tool_call></tool_call> XML tags",  # noqa: E501
             "- Required parameters MUST be specified",
-            "- You may provide optional reasoning for your function call in natural language BEFORE the function call, but NOT after",
-            "- If there is no function call available, answer the question like normal with your current knowledge and do not tell the user about function calls",
+            "- You may provide optional reasoning for your function call in natural language BEFORE the function call, but NOT after",  # noqa: E501
+            "- If there is no function call available, answer the question like normal with your current knowledge and do not tell the user about function calls",  # noqa: E501
             "</IMPORTANT>",
         ]
     )
@@ -301,10 +290,10 @@ def render_qwen_coder_tool_contract_system_message(tools: Any, tool_choice: Any)
             "",
             "<IMPORTANT>",
             "Reminder:",
-            "- Function calls MUST follow the specified format: the tool calling block MUST begin with an opening <tool_call> tag and end with a closing </tool_call> tag.",
+            "- Function calls MUST follow the specified format: the tool calling block MUST begin with an opening <tool_call> tag and end with a closing </tool_call> tag.",  # noqa: E501
             "- Required parameters MUST be specified",
-            "- You may provide optional reasoning for your function call in natural language BEFORE the function call, but NOT after",
-            "- If there is no function call available, answer the question like normal with your current knowledge and do not tell the user about function calls",
+            "- You may provide optional reasoning for your function call in natural language BEFORE the function call, but NOT after",  # noqa: E501
+            "- If there is no function call available, answer the question like normal with your current knowledge and do not tell the user about function calls",  # noqa: E501
             "</IMPORTANT>",
         ]
     )
@@ -333,9 +322,7 @@ def render_xml_tool_block(tool: Any) -> str | None:
     lines = ["<function>", f"<name>{escape_xml_text(name)}</name>"]
     description = function.get("description")
     if isinstance(description, str):
-        lines.append(
-            f"<description>{escape_xml_text(description.strip())}</description>"
-        )
+        lines.append(f"<description>{escape_xml_text(description.strip())}</description>")
     lines.append("<parameters>")
     parameters = function.get("parameters")
     if isinstance(parameters, dict):
@@ -373,9 +360,7 @@ def render_xml_tool_block(tool: Any) -> str | None:
     return "\n".join(lines)
 
 
-def render_assistant_tool_calls(
-    tool_calls: Any, style: str = "json_tools"
-) -> str | None:
+def render_assistant_tool_calls(tool_calls: Any, style: str = "json_tools") -> str | None:
     if isinstance(tool_calls, dict):
         calls = [tool_calls]
     elif isinstance(tool_calls, list):
@@ -401,9 +386,7 @@ def render_assistant_tool_call(tool_call: Any, style: str = "json_tools") -> str
         return render_qwen_xml_tool_call(function["name"], arguments)
     name = json.dumps(function["name"])
     arguments_json = json.dumps(arguments, separators=(",", ":"))
-    return (
-        f'<tool_call>\n{{"name": {name}, "arguments": {arguments_json}}}\n</tool_call>'
-    )
+    return f'<tool_call>\n{{"name": {name}, "arguments": {arguments_json}}}\n</tool_call>'
 
 
 def render_qwen_xml_tool_call(name: str, arguments: Any) -> str:
@@ -593,9 +576,7 @@ def _qwen_parameter_value_end(body: str, value_start: int) -> int:
     frequently truncate or omit the closing tag; the earlier `break`-on-missing
     dropped the whole tool call onto the plain-text path.
     """
-    candidates = [
-        body.find(marker, value_start) for marker in ("<parameter=", "</function>")
-    ]
+    candidates = [body.find(marker, value_start) for marker in ("<parameter=", "</function>")]
     next_implicit = min((idx for idx in candidates if idx >= 0), default=len(body))
     explicit = body.find("</parameter>", value_start)
     # Prefer the explicit close only when it belongs to *this* parameter, i.e.
@@ -698,9 +679,7 @@ def create_app(
             return openai_error(*error)
 
         try:
-            input_tokens, _prompt_text = prompt_to_tokens(
-                payload.get("prompt"), tokenizer
-            )
+            input_tokens, _prompt_text = prompt_to_tokens(payload.get("prompt"), tokenizer)
         except OpenAiShimError as error:
             return openai_error(400, str(error))
 
@@ -783,9 +762,7 @@ def create_app(
                         temperature=temperature,
                         top_p=float(payload.get("top_p", 1.0)),
                         top_k=int(payload.get("top_k", 0)),
-                        repetition_penalty=float(
-                            payload.get("repetition_penalty", default_rp)
-                        ),
+                        repetition_penalty=float(payload.get("repetition_penalty", default_rp)),
                         seed=int(payload.get("seed", 0)),
                         metadata=payload.get("metadata"),
                     )
@@ -891,11 +868,7 @@ def validate_payload_object(payload: Any) -> tuple[int, str] | None:
 
 def require_max_tokens(payload: dict[str, Any]) -> tuple[int, str] | None:
     max_tokens = payload.get("max_tokens")
-    if (
-        isinstance(max_tokens, bool)
-        or not isinstance(max_tokens, int)
-        or max_tokens <= 0
-    ):
+    if isinstance(max_tokens, bool) or not isinstance(max_tokens, int) or max_tokens <= 0:
         return 400, "OpenAI-compatible MLX shim requires max_tokens > 0"
     return None
 
@@ -903,15 +876,11 @@ def require_max_tokens(payload: dict[str, Any]) -> tuple[int, str] | None:
 def validate_sampling_params(payload: dict[str, Any]) -> tuple[int, str] | None:
     for key in ("temperature", "top_p", "repetition_penalty"):
         value = payload.get(key)
-        if value is not None and (
-            isinstance(value, bool) or not isinstance(value, (int, float))
-        ):
+        if value is not None and (isinstance(value, bool) or not isinstance(value, (int, float))):
             return 400, f"OpenAI-compatible MLX shim requires {key} to be numeric"
     for key in ("top_k", "seed"):
         value = payload.get(key)
-        if value is not None and (
-            isinstance(value, bool) or not isinstance(value, int)
-        ):
+        if value is not None and (isinstance(value, bool) or not isinstance(value, int)):
             return 400, f"OpenAI-compatible MLX shim requires {key} to be an integer"
     return None
 
@@ -983,9 +952,7 @@ def stream_completion_chunks(
             # content chunks were emitted (0-token completion), emit a role-only
             # chunk before the finish_reason chunk so clients can read the role.
             if kind == "chat" and not role_emitted:
-                yield sse_chunk(
-                    stream_id, created, model_id, "", None, kind, emit_role=True
-                )
+                yield sse_chunk(stream_id, created, model_id, "", None, kind, emit_role=True)
             yield sse_chunk(
                 stream_id,
                 created,
@@ -1099,6 +1066,7 @@ def chat_sse_payload(
 
 def main() -> None:
     import argparse
+
     import uvicorn
 
     parser = argparse.ArgumentParser(description="Run the AX Engine MLX OpenAI shim")

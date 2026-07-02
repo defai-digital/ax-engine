@@ -70,3 +70,33 @@ exclude = [
     "AGENTS.md",
     "ax-code.json",
 ]
+
+# ---------------------------------------------------------------------------
+# Lint/type-check config — scoped to the user-facing runtime package only.
+# scripts/ is dev-only benchmark tooling and intentionally NOT linted.
+# ---------------------------------------------------------------------------
+
+[tool.ruff]
+line-length = 100
+extend-exclude = ["scripts", "python/tests", "python/ax_engine/_ax_engine"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM"]
+# __init__.py runs _setup_bundled_metal() before its first-party imports on
+# purpose (Metal env must be set before the native extension loads); E402 is
+# noise there. _cli.py execs helper scripts that aren't importable as modules.
+[tool.ruff.lint.per-file-ignores]
+"python/ax_engine/__init__.py" = ["E402", "SIM102"]
+
+[tool.mypy]
+python_version = "3.10"
+# Scope: runtime package only. Scripts/tests are out of scope.
+files = ["python/ax_engine"]
+exclude = ['python/ax_engine/_ax_engine/|python/ax_engine/_metal/build/']
+strict_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+# The native extension (_ax_engine) has no type stubs; the hand-written
+# __init__.pyi provides the public surface. Third-party optional deps
+# (tokenizers, fastapi) ship without py.typed markers.
+ignore_missing_imports = true
