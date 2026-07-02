@@ -113,7 +113,16 @@ def render_chart(
     if not all_vals:
         raise ValueError("no data to chart")
     axis_max = nice_axis_ceiling(max(all_vals) * 1.12)
-    best = min(all_vals) if lower_is_better else max(all_vals)
+    best_by_prompt_tokens: dict[int, float] = {}
+    for prompt_tokens in PROMPT_TOKENS:
+        prompt_values = [
+            series[prompt_tokens]
+            for series in data.values()
+            if prompt_tokens in series
+        ]
+        best_by_prompt_tokens[prompt_tokens] = (
+            min(prompt_values) if lower_is_better else max(prompt_values)
+        )
 
     def fy(v: float) -> float:
         clamped = max(0.0, min(v, axis_max))
@@ -186,7 +195,8 @@ def render_chart(
                 continue
             y = fy(val)
             bh = top + plot_h - y
-            label_fill = RED if math.isclose(val, best) else "#111827"
+            prompt_best = best_by_prompt_tokens[pt]
+            label_fill = RED if math.isclose(val, prompt_best) else "#111827"
             parts.extend(
                 [
                     f'<rect x="{bl:.1f}" y="{y:.1f}" width="{bar_w:.1f}" height="{bh:.1f}" rx="3" '

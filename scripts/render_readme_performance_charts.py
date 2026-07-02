@@ -651,9 +651,18 @@ def render_family_chart(spec: ChartSpec, engine_groups: list[EngineGroupStats]) 
     all_maxima = [cs.stats.maximum for eg in engine_groups for cs in eg.context_stats]
     axis_max = nice_axis_ceiling(max(all_maxima) * 1.05)
 
-    all_medians = [cs.stats.median for eg in engine_groups for cs in eg.context_stats]
     lower_is_better = spec.metric == "ttft"
-    best_med = min(all_medians) if lower_is_better else max(all_medians)
+    best_by_prompt_tokens: dict[int, float] = {}
+    for prompt_tokens in PROMPT_TOKENS:
+        prompt_medians = [
+            cs.stats.median
+            for eg in engine_groups
+            for cs in eg.context_stats
+            if cs.prompt_tokens == prompt_tokens
+        ]
+        best_by_prompt_tokens[prompt_tokens] = (
+            min(prompt_medians) if lower_is_better else max(prompt_medians)
+        )
 
     n_engines = len(engine_groups)
     plot_width = FAMILY_RIGHT - FAMILY_LEFT
@@ -683,7 +692,7 @@ def render_family_chart(spec: ChartSpec, engine_groups: list[EngineGroupStats]) 
         f"<title>{escape(spec.title)}</title>",
         f"<desc>Grouped box-and-whisker plot comparing {escape(engine_desc)}"
         f" at {escape(ctx_desc)} prompt tokens for {escape(family_label)} models."
-        f" The best median value label is red.</desc>",
+        f" Within each prompt-token group, the best median value label is red.</desc>",
         # Background
         f'<rect width="{FAMILY_CHART_WIDTH}" height="{FAMILY_CHART_HEIGHT}" fill="#f8fafc"/>',
         # Title
@@ -750,7 +759,8 @@ def render_family_chart(spec: ChartSpec, engine_groups: list[EngineGroupStats]) 
             cap_right = sub_x + sub_bar_w * 0.36
             box_left = sub_x - sub_bar_w / 2
             label_x = box_left + sub_bar_w + 4
-            label_fill = RED if math.isclose(s.median, best_med) else "#111827"
+            prompt_best = best_by_prompt_tokens[cs.prompt_tokens]
+            label_fill = RED if math.isclose(s.median, prompt_best) else "#111827"
 
             sa = f'stroke="{eg.color}" stroke-opacity="{stroke_op}"'
             lines.extend(
