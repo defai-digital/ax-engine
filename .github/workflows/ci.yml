@@ -72,7 +72,15 @@ jobs:
         run: cargo test --quiet --no-fail-fast
 
       - name: Run workspace clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
+        # ADR-001 restriction lints are warn-first: --force-warn keeps them
+        # visible without letting -D warnings escalate them to errors.
+        run: >-
+          cargo clippy --all-targets --all-features -- -D warnings
+          --force-warn clippy::unwrap-used
+          --force-warn clippy::expect-used
+          --force-warn clippy::panic
+          --force-warn clippy::dbg-macro
+          --force-warn clippy::large-enum-variant
 
   scripts:
     name: Scripts and Bench Smoke
