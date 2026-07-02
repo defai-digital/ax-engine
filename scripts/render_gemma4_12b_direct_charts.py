@@ -33,6 +33,7 @@ from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 FONT = "Inter,Segoe UI,Arial,sans-serif"
+RED = "#dc2626"
 PROMPT_TOKENS = (128, 512, 2048)
 AX_ENGINE_VERSION = "v6.5.2"
 LLAMA_CPP_VERSION = "b9700"
@@ -170,17 +171,6 @@ def render_chart(
             f'font-size="11" fill="#6b7280">{short_number(grid_val)}</text>'
         )
 
-    best_y = fy(best)
-    parts.append(
-        f'<line x1="{left}" y1="{best_y:.1f}" x2="{left + plot_w}" y2="{best_y:.1f}" '
-        f'stroke="#dc2626" stroke-width="1.2" stroke-dasharray="1 4" stroke-linecap="round"/>'
-    )
-    parts.append(
-        f'<text x="{left + plot_w + 8}" y="{max(top + 11, best_y - 5):.1f}" text-anchor="start" '
-        f'font-family="{FONT}" font-size="11" font-weight="700" fill="#dc2626">'
-        f"{'lowest' if lower_is_better else 'highest'}: {short_number(best)}</text>"
-    )
-
     for gi, pt in enumerate(PROMPT_TOKENS):
         group_center = left + (gi + 0.5) * group_step
         bar0 = group_center - block / 2
@@ -196,6 +186,7 @@ def render_chart(
                 continue
             y = fy(val)
             bh = top + plot_h - y
+            label_fill = RED if math.isclose(val, best) else "#111827"
             parts.extend(
                 [
                     f'<rect x="{bl:.1f}" y="{y:.1f}" width="{bar_w:.1f}" height="{bh:.1f}" rx="3" '
@@ -203,7 +194,7 @@ def render_chart(
                     f'<line x1="{bl:.1f}" y1="{y:.1f}" x2="{bl + bar_w:.1f}" y2="{y:.1f}" '
                     f'stroke="{stroke}" stroke-width="2.6"/>',
                     f'<text x="{cx:.1f}" y="{y - 6:.1f}" text-anchor="middle" font-family="{FONT}" '
-                    f'font-size="11" font-weight="700" fill="#111827">{short_number(val)}</text>',
+                    f'font-size="11" font-weight="700" fill="{label_fill}">{short_number(val)}</text>',
                 ]
             )
         parts.append(

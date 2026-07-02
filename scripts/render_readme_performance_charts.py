@@ -654,8 +654,6 @@ def render_family_chart(spec: ChartSpec, engine_groups: list[EngineGroupStats]) 
     all_medians = [cs.stats.median for eg in engine_groups for cs in eg.context_stats]
     lower_is_better = spec.metric == "ttft"
     best_med = min(all_medians) if lower_is_better else max(all_medians)
-    best_line_label = "lowest median" if lower_is_better else "highest median"
-    best_side = "lowest" if lower_is_better else "highest"
 
     n_engines = len(engine_groups)
     plot_width = FAMILY_RIGHT - FAMILY_LEFT
@@ -685,7 +683,7 @@ def render_family_chart(spec: ChartSpec, engine_groups: list[EngineGroupStats]) 
         f"<title>{escape(spec.title)}</title>",
         f"<desc>Grouped box-and-whisker plot comparing {escape(engine_desc)}"
         f" at {escape(ctx_desc)} prompt tokens for {escape(family_label)} models."
-        f" A red dotted line marks the {best_line_label}.</desc>",
+        f" The best median value label is red.</desc>",
         # Background
         f'<rect width="{FAMILY_CHART_WIDTH}" height="{FAMILY_CHART_HEIGHT}" fill="#f8fafc"/>',
         # Title
@@ -728,22 +726,6 @@ def render_family_chart(spec: ChartSpec, engine_groups: list[EngineGroupStats]) 
             f"{short_number(grid_val)}</text>"
         )
 
-    # Best median reference line + right-side label
-    best_y = fy(best_med)
-    best_label_str = f"{best_side}: {short_number(best_med)}"
-    lines.append(
-        f'<line x1="{FAMILY_LEFT}" y1="{best_y:.1f}"'
-        f' x2="{FAMILY_RIGHT}" y2="{best_y:.1f}"'
-        f' stroke="{RED}" stroke-width="1.2" stroke-dasharray="1 4" stroke-linecap="round"/>'
-    )
-    lines.append(
-        f'<text x="{FAMILY_RIGHT + 8}" y="{max(FAMILY_TOP + 11, best_y - 5):.1f}"'
-        f' text-anchor="start" font-family="{FONT}"'
-        f' font-size="11" font-weight="700" fill="{RED}"'
-        f' data-label="{escape(best_line_label)}">'
-        f"{escape(best_label_str)}</text>"
-    )
-
     dot_jitter = (-3.0, -1.5, 0.0, 1.5, 3.0)
     y_ctx = FAMILY_BOTTOM + 15
     y_eng = FAMILY_BOTTOM + 32
@@ -768,6 +750,7 @@ def render_family_chart(spec: ChartSpec, engine_groups: list[EngineGroupStats]) 
             cap_right = sub_x + sub_bar_w * 0.36
             box_left = sub_x - sub_bar_w / 2
             label_x = box_left + sub_bar_w + 4
+            label_fill = RED if math.isclose(s.median, best_med) else "#111827"
 
             sa = f'stroke="{eg.color}" stroke-opacity="{stroke_op}"'
             lines.extend(
@@ -785,7 +768,7 @@ def render_family_chart(spec: ChartSpec, engine_groups: list[EngineGroupStats]) 
                     f' x2="{box_left + sub_bar_w:g}" y2="{y_med:.1f}" {sa} stroke-width="2.4"/>',
                     f'<text x="{label_x:g}" y="{y_med + 3.5:.1f}" text-anchor="start"'
                     f' font-family="{FONT}" font-size="9" font-weight="700"'
-                    f' fill="#111827" stroke="#ffffff" stroke-width="3"'
+                    f' fill="{label_fill}" stroke="#ffffff" stroke-width="3"'
                     f' paint-order="stroke">{escape(short_number(s.median))}</text>',
                     f'<text x="{sub_x:g}" y="{y_ctx}"'
                     f' text-anchor="middle" font-family="{FONT}"'
