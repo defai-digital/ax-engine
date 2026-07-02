@@ -4188,7 +4188,13 @@ impl ExecutionRunner for MlxRunner {
             && let Some(pooled) = self.embedding_gemma_batch_pooled_compiled_forward(batch)
         {
             let hidden_size = pooled.shape()[pooled.shape().len() - 1] as usize;
-            let pooled_f32 = astype(&pooled, MlxDtype::Float32, None);
+            // The pooled compiled closure now outputs f32 directly (astype is
+            // folded into the compiled graph), so skip the separate astype.
+            let pooled_f32 = if pooled.dtype() == MlxDtype::Float32 {
+                pooled
+            } else {
+                astype(&pooled, MlxDtype::Float32, None)
+            };
             let cpu_normalize = normalize
                 && std::env::var("AX_EMBED_GPU_NORMALIZE")
                     .map(|v| v == "0" || v.is_empty())
@@ -4330,7 +4336,13 @@ impl ExecutionRunner for MlxRunner {
             && let Some(pooled) = self.embedding_gemma_batch_pooled_compiled_forward(batch)
         {
             let hidden_size = pooled.shape()[pooled.shape().len() - 1] as usize;
-            let pooled_f32 = astype(&pooled, MlxDtype::Float32, None);
+            // The pooled compiled closure now outputs f32 directly (astype is
+            // folded into the compiled graph), so skip the separate astype.
+            let pooled_f32 = if pooled.dtype() == MlxDtype::Float32 {
+                pooled
+            } else {
+                astype(&pooled, MlxDtype::Float32, None)
+            };
             let cpu_normalize = normalize
                 && std::env::var("AX_EMBED_GPU_NORMALIZE")
                     .map(|v| v == "0" || v.is_empty())
@@ -4395,7 +4407,14 @@ impl ExecutionRunner for MlxRunner {
         // dense.1) to the pooled vector before L2 normalization. No-op for other
         // models (head weights absent).
         let pooled = crate::model::apply_embedding_dense_head(&self.weights, &pooled);
-        let pooled_f32 = astype(&pooled, MlxDtype::Float32, None);
+        // The compiled closures (both Qwen and EmbeddingGemma) now fold the
+        // astype(f32) into the compiled graph, so skip the separate dispatch
+        // when the output is already f32.
+        let pooled_f32 = if pooled.dtype() == MlxDtype::Float32 {
+            pooled
+        } else {
+            astype(&pooled, MlxDtype::Float32, None)
+        };
         // R3: when CPU normalize is enabled (default), skip the GPU
         // sqrt + sum + divide ops and l2-normalize the result on the host
         // after read-back. The data is being read back to a CPU `Vec<f32>`

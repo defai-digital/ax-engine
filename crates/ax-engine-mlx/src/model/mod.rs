@@ -1788,7 +1788,8 @@ pub fn build_embedding_gemma3_batch_forward_closure(
         }
         let hidden = inputs.get(0);
         let out = forward_for_embedding_gemma3_batch_body(&cfg, &weights, hidden, &bidir_mask);
-        vec![out]
+        // Fold the f32 cast into the compiled graph.
+        vec![astype(&out, MlxDtype::Float32, None)]
     });
     body_closure.compile(false)
 }
@@ -1813,7 +1814,9 @@ pub fn build_embedding_gemma3_pooled_batch_forward_closure(
         let sums = sum_axis(&masked, 1, false, None);
         let pooled = multiply(&sums, &pool_scale, None);
         let pooled = apply_embedding_dense_head(&weights, &pooled);
-        vec![pooled]
+        // Fold the f32 cast into the compiled graph so the runner can skip
+        // the separate astype dispatch, saving one MLX op + eval per call.
+        vec![astype(&pooled, MlxDtype::Float32, None)]
     });
     body_closure.compile(false)
 }
@@ -1993,7 +1996,9 @@ fn forward_for_embedding_batch_body(
     if let Some(started) = final_started {
         embed_profile_eval_elapsed(profile, EmbedProfileStage::FinalNormPool, started, &[&out]);
     }
-    out
+    // Fold the f32 cast into the compiled graph so the runner can skip the
+    // separate astype dispatch, saving one MLX op + eval per call.
+    astype(&out, MlxDtype::Float32, None)
 }
 
 /// Build an `mlx_compile`-wrapped closure for the batched embedding forward.

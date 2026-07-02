@@ -10,7 +10,7 @@ use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyBytes, PyDict};
 
 use crate::dicts::{generate_response_dict, request_report_dict, runtime_dict, step_report_dict};
-use crate::embedding::{floats_to_pybytes, parse_pooling};
+use crate::embedding::{embedding_matrix_to_pybytes, floats_to_pybytes, parse_pooling};
 use crate::errors::{py_engine_state_error, to_py_runtime_error};
 use crate::request::{
     build_generate_request, delegated_http_timeouts_from_secs, multimodal_inputs_from_py,
@@ -463,7 +463,10 @@ impl Session {
                 .embed_batch_flat(&batch_token_ids, pooling_mode, normalize)
                 .map_err(to_py_runtime_error)
         })?;
-        let blob = floats_to_pybytes(py, &matrix.data)?;
+        // Normalization is already applied inside the runner, so pass
+        // normalize=false here — this just does the efficient bulk copy
+        // from the matrix data into the PyBytes buffer.
+        let blob = embedding_matrix_to_pybytes(py, &matrix.data, matrix.hidden_size, false)?;
         Ok((blob, matrix.batch_size, matrix.hidden_size))
     }
 

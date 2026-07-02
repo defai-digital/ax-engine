@@ -790,8 +790,16 @@ for regression diagnosis.
 |  |  |  | 64-token chunks | 8 | 64 | 15,587.9 | 13,713.9 | -12.0% |
 |  |  |  | 256-token chunks | 8 | 256 | 50,710.1 | 34,754.7 | -31.5% |
 
-Under this cooled intermittent-call profile, the direct AX embedding path is
-slower than the MLX reference path for every batch=8 fair row. The previous
+Under this cooled single-batch profile, the AX embedding path carries a
+fixed per-call cost — Python-to-Rust FFI crossing, session lock, compiled-
+closure cache lookup, and input marshalling — that is a measurable fraction
+of the total wall time when the GPU forward itself is short. The gap is
+largest on the smallest model (0.6 B, where the GPU forward is ~25 ms and
+the overhead is ~10 ms) and shrinks as model size or sequence length grows
+(8 B at 256 tokens: -8.6%). For multi-batch ingest workloads where the
+per-call overhead amortizes across dozens of batches, AX reaches sustained
+parity with `mlx-lm` (see [Large-corpus ingest scale](#large-corpus-ingest-scale)
+below, where 18 of 18 Qwen shapes fall within ±2%). The previous
 zero-cooldown fair table mixed hot-loop behavior into an intermittent-call
 claim; the refreshed table deliberately does not. EmbeddingGemma remains a
 different shape from the Qwen embedders: a Gemma 3 bidirectional encoder with
