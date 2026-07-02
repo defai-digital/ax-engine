@@ -34,7 +34,9 @@ FAMILY_SLUGS: dict[str, list[str]] = {
         "gemma-4-e2b-it-6bit",
         "gemma-4-e4b-it-4bit",
         "gemma-4-26b-a4b-it-4bit",
+        "gemma-4-26b-a4b-it-6bit",
         "gemma-4-31b-it-4bit",
+        "gemma-4-31b-it-6bit",
     ],
     "qwen": [
         "qwen3_6-27b-4bit",

@@ -447,8 +447,15 @@ End-to-end API latency should be labeled separately from raw runner throughput.
 
 ## Gemma Direct-Decode Follow-Ups
 
-The current 2026-05-13 README artifact keeps Gemma 4 direct decode below
-`mlx_lm` on every public Gemma row, while n-gram acceleration is strongly
+> **Resolved (2026-07-02):** the direct-decode gaps below are historical. The
+> 2026-07-01 4-bit refresh and the 2026-07-02 same-session paired 6-bit rerun
+> (`benchmarks/results/mlx-inference/2026-07-02-gemma4-6bit-direct-refresh/`)
+> show AX leading `mlx_lm` direct decode on every public Gemma 4 row, including
+> 26B A4B 6-bit (+5.0% to +7.4%) and 31B 6-bit (+3.4% to +3.8%). The remaining
+> table records the state that motivated the optimization passes.
+
+The historical 2026-05-13 README artifact kept Gemma 4 direct decode below
+`mlx_lm` on every public Gemma row, while n-gram acceleration was strongly
 positive:
 
 | Model family | Direct AX vs `mlx_lm` | AX n-gram vs `mlx_lm` | Interpretation |
