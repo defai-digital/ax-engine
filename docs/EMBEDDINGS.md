@@ -121,17 +121,14 @@ Why the loop is slow:
   sync; per-sentence wall time is divided by B.
 
 The current README reference-comparison snapshot for Qwen is
-`benchmarks/results/embedding-fair/2026-06-28-qwen-after-batch-fix/2026-06-28-051508/`.
+`benchmarks/results/embedding-fair/2026-07-02-qwen-paired-refresh/2026-07-02-131412/`.
 The current README reference-comparison snapshot for EmbeddingGemma is
-`benchmarks/results/embedding-fair/2026-06-28-embeddinggemma-after-batch-fix/2026-06-28-051549/`.
-The current README AX-only refresh snapshots are
-`benchmarks/results/embedding-fair/2026-07-02-qwen-ax-only-refresh/2026-07-02-124957/`
-and
-`benchmarks/results/embedding-fair/2026-07-02-embeddinggemma-ax-only-refresh/2026-07-02-125026/`.
+`benchmarks/results/embedding-fair/2026-07-02-embeddinggemma-paired-refresh/2026-07-02-131521/`.
 The README ingest-scale charts are narrower on purpose: they only include
 models with same-session paired reference+AX scale artifacts. The Qwen 4B/8B
-DWQ fair rows above come from AX-only refreshes, so they should not be divided
-by an older reference-only run for the sustained-scale delta chart.
+DWQ fair rows above now come from paired fair artifacts, but they still should
+not appear in the sustained-scale delta chart until paired scale artifacts
+exist.
 All use 2 warmup + 5 measured trials, report medians, and keep the complete
 short-query plus 16/64/256-token matrix in `summary.md`. The Qwen reference
 comparison uses `mlx-lm` as the baseline backend. EmbeddingGemma uses
@@ -289,7 +286,6 @@ Use the fair in-process harness for README throughput claims:
 
 ```bash
 .venv/bin/python scripts/bench_embedding_fair.py \
-  --ax-only \
   --model qwen3-embedding-0.6b-8bit=/path/to/Qwen3-Embedding-0.6B-8bit/snapshots/<sha> \
   --model qwen3-embedding-4b-4bit-dwq=/path/to/Qwen3-Embedding-4B-4bit-DWQ/snapshots/<sha> \
   --model qwen3-embedding-8b-4bit-dwq=/path/to/Qwen3-Embedding-8B-4bit-DWQ/snapshots/<sha> \
@@ -304,7 +300,6 @@ For EmbeddingGemma, use the same output contract with the embeddinggemma route:
 
 ```bash
 .venv/bin/python scripts/bench_embedding_fair.py \
-  --ax-only \
   --reference mlx_embeddings --pooling mean \
   --model embeddinggemma-300m-8bit=/path/to/embeddinggemma-300m-8bit/snapshots/<sha> \
   --batch-sizes 1,8 \

@@ -235,24 +235,13 @@ MTP_6BIT_GROUP_SIZE = 3
 
 EMBEDDING_FAIR_ARTIFACTS = (
     Path(
-        "benchmarks/results/embedding-fair/2026-06-28-qwen-after-batch-fix/"
-        "2026-06-28-051508/embedding_fair.json"
+        "benchmarks/results/embedding-fair/2026-07-02-qwen-paired-refresh/"
+        "2026-07-02-131412/embedding_fair.json"
     ),
     Path(
         "benchmarks/results/embedding-fair/"
-        "2026-06-28-embeddinggemma-after-batch-fix/"
-        "2026-06-28-051549/embedding_fair.json"
-    ),
-)
-EMBEDDING_AX_REFRESH_ARTIFACTS = (
-    Path(
-        "benchmarks/results/embedding-fair/2026-07-02-qwen-ax-only-refresh/"
-        "2026-07-02-124957/embedding_fair.json"
-    ),
-    Path(
-        "benchmarks/results/embedding-fair/"
-        "2026-07-02-embeddinggemma-ax-only-refresh/"
-        "2026-07-02-125026/embedding_fair.json"
+        "2026-07-02-embeddinggemma-paired-refresh/"
+        "2026-07-02-131521/embedding_fair.json"
     ),
 )
 # Same-session paired ingest artifacts: the reference (mlx-lm / mlx-embeddings)
@@ -2111,44 +2100,27 @@ def embedding_workload_label(workload: str) -> str:
 def load_embedding_fair_delta_rows(repo_root: Path) -> list[EmbeddingDeltaRow]:
     rows: list[EmbeddingDeltaRow] = []
     wanted_workloads = ("short_query_b8", "fixed_64_b8", "fixed_256_b8")
-    for ref_relative_path, ax_relative_path in zip(
-        EMBEDDING_FAIR_ARTIFACTS, EMBEDDING_AX_REFRESH_ARTIFACTS, strict=True
-    ):
-        ref_path = repo_root / ref_relative_path
-        ax_path = repo_root / ax_relative_path
-        if not ref_path.exists():
-            raise ChartError(f"missing embedding fair artifact: {ref_path}")
-        if not ax_path.exists():
-            raise ChartError(f"missing embedding AX refresh artifact: {ax_path}")
-        ref_artifact = json.loads(ref_path.read_text())
-        ax_artifact = json.loads(ax_path.read_text())
-        ref_key, ref_label = embedding_reference_key(ref_artifact)
-        ax_by_model = {
-            str(model.get("model_label")): {
-                str(row.get("workload")): row for row in model.get("rows", [])
-            }
-            for model in ax_artifact.get("models", [])
-        }
-        for model in ref_artifact.get("models", []):
+    for relative_path in EMBEDDING_FAIR_ARTIFACTS:
+        artifact_path = repo_root / relative_path
+        if not artifact_path.exists():
+            raise ChartError(f"missing embedding fair artifact: {artifact_path}")
+        artifact = json.loads(artifact_path.read_text())
+        if artifact.get("ax_only"):
+            raise ChartError(f"{artifact_path} is AX-only; expected paired artifact")
+        ref_key, ref_label = embedding_reference_key(artifact)
+        for model in artifact.get("models", []):
             raw_model_label = str(model.get("model_label", ""))
             model_label = embedding_model_label(raw_model_label)
-            ref_by_workload = {
+            rows_by_workload = {
                 str(row.get("workload")): row for row in model.get("rows", [])
             }
-            ax_model_rows = ax_by_model.get(raw_model_label)
-            if ax_model_rows is None:
-                raise ChartError(f"{ax_path} missing model {raw_model_label}")
             for workload in wanted_workloads:
-                ref_row = ref_by_workload.get(workload)
-                ax_row = ax_model_rows.get(workload)
-                if ref_row is None:
-                    raise ChartError(f"{ref_path} missing workload {workload}")
-                if ax_row is None:
-                    raise ChartError(f"{ax_path} missing workload {workload}")
-                ref_results = ref_row.get("results", {})
-                ax_results = ax_row.get("results", {})
-                ref = ref_results.get(ref_key)
-                ax = ax_results.get("ax_engine_py")
+                row = rows_by_workload.get(workload)
+                if row is None:
+                    raise ChartError(f"{artifact_path} missing workload {workload}")
+                results = row.get("results", {})
+                ref = results.get(ref_key)
+                ax = results.get("ax_engine_py")
                 if not isinstance(ref, dict) or not isinstance(ax, dict):
                     raise ChartError(
                         f"missing embedding results for {raw_model_label} {workload}"
@@ -2398,7 +2370,7 @@ def main() -> int:
         load_embedding_fair_delta_rows(args.readme.parent),
         title="Embedding throughput: AX vs reference",
         subtitle="Batch=8, contiguous CPU float32 [B,H] output; higher delta means AX is faster.",
-        source_label="Sources: embedding-fair reference baselines from 2026-06-28 and AX refresh artifacts from 2026-07-02",
+        source_label="Sources: embedding-fair same-session paired artifacts from 2026-07-02",
     )
     if not write_chart(embedding_fair_output_path, embedding_fair_content, args.check):
         mismatches.append(embedding_fair_output_path)

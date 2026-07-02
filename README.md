@@ -773,26 +773,25 @@ diagnosis.
 
 | Model | Reference | Pooling | Workload | Batch | Max tokens | Reference tok/s | AX tok/s | AX vs |
 | --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: |
-| Qwen3-Embedding 0.6B 8-bit | `mlx-lm` | last | short query | 8 | 15 | 8,343.2 | 10,523.2 | +26.1% |
-|  |  |  | 64-token chunks | 8 | 64 | 40,390.9 | 37,495.3 | -7.2% |
-|  |  |  | 256-token chunks | 8 | 256 | 47,269.0 | 48,748.8 | +3.1% |
-| Qwen3-Embedding 4B 4-bit DWQ | `mlx-lm` | last | short query | 8 | 15 | 2,227.1 | 2,454.3 | +10.2% |
-|  |  |  | 64-token chunks | 8 | 64 | 6,484.7 | 6,498.5 | +0.2% |
-|  |  |  | 256-token chunks | 8 | 256 | 6,719.9 | 7,015.8 | +4.4% |
-| Qwen3-Embedding 8B 4-bit DWQ | `mlx-lm` | last | short query | 8 | 15 | 1,394.6 | 1,486.3 | +6.6% |
-|  |  |  | 64-token chunks | 8 | 64 | 3,057.3 | 3,513.0 | +14.9% |
-|  |  |  | 256-token chunks | 8 | 256 | 2,850.1 | 3,560.2 | +24.9% |
-| EmbeddingGemma 300M 8-bit | `mlx-embeddings` | mean + Dense | short query | 8 | 15 | 9,373.9 | 14,518.6 | +54.9% |
-|  |  |  | 64-token chunks | 8 | 64 | 49,857.6 | 55,440.0 | +11.2% |
-|  |  |  | 256-token chunks | 8 | 256 | 122,935.6 | 121,188.5 | -1.4% |
+| Qwen3-Embedding 0.6B 8-bit | `mlx-lm` | last | short query | 8 | 15 | 8,703.3 | 10,419.2 | +19.7% |
+|  |  |  | 64-token chunks | 8 | 64 | 40,873.9 | 40,341.0 | -1.3% |
+|  |  |  | 256-token chunks | 8 | 256 | 49,104.1 | 47,311.8 | -3.6% |
+| Qwen3-Embedding 4B 4-bit DWQ | `mlx-lm` | last | short query | 8 | 15 | 2,277.8 | 2,478.4 | +8.8% |
+|  |  |  | 64-token chunks | 8 | 64 | 6,537.0 | 6,405.2 | -2.0% |
+|  |  |  | 256-token chunks | 8 | 256 | 7,046.6 | 6,990.6 | -0.8% |
+| Qwen3-Embedding 8B 4-bit DWQ | `mlx-lm` | last | short query | 8 | 15 | 1,380.8 | 1,459.0 | +5.7% |
+|  |  |  | 64-token chunks | 8 | 64 | 3,537.7 | 3,545.0 | +0.2% |
+|  |  |  | 256-token chunks | 8 | 256 | 3,777.9 | 3,373.2 | -10.7% |
+| EmbeddingGemma 300M 8-bit | `mlx-embeddings` | mean + Dense | short query | 8 | 15 | 11,526.9 | 8,938.8 | -22.5% |
+|  |  |  | 64-token chunks | 8 | 64 | 56,461.5 | 63,373.9 | +12.2% |
+|  |  |  | 256-token chunks | 8 | 256 | 135,292.8 | 143,592.1 | +6.1% |
 
-The 2026-07-02 AX-only refresh is workload-dependent rather than one-sided. Qwen
-short-query fan-out remains faster than the retained `mlx-lm` reference across
-the listed model sizes, while 64-token and 256-token chunk rows range from
-7.2% behind to 24.9% ahead. EmbeddingGemma is faster than the retained
-`mlx-embeddings` batch=8 baseline for short-query and 64-token chunks in this
-refresh, while the 256-token chunk row is 1.4% below that retained baseline. It
-remains a
+The 2026-07-02 same-session paired refresh is workload-dependent rather than
+one-sided. Qwen short-query fan-out remains faster than `mlx-lm` across the
+listed model sizes, while 64-token and 256-token chunk rows range from 10.7%
+behind to 0.2% ahead. EmbeddingGemma is slower than `mlx-embeddings` on the
+short-query batch=8 row in this refresh, but faster on the 64-token and
+256-token chunk rows. It remains a
 different shape from the Qwen embedders: a Gemma 3 bidirectional encoder with
 mean pooling, a two-layer Dense projection head, and L2 normalization
 (`model_family: embeddinggemma`). Its reference row uses `mlx-embeddings`
@@ -805,9 +804,10 @@ For larger RAG ingest jobs, use the sustained scale harness instead of
 extrapolating from one isolated batch. The scale harness keeps the same
 contiguous CPU `float32 [B,H]` output layout but embeds a fixed
 corpus of 512 chunks per trial, divided into batches. The ingest-scale charts
-only include models with same-session paired reference+AX artifacts; the 4B/8B
-DWQ embedders are therefore covered in the fair batch=8 table above, but are not
-shown in the ingest-scale delta chart until they have paired scale runs. For
+only include models with same-session paired reference+AX scale artifacts; the
+4B/8B DWQ embedders are therefore covered in the fair batch=8 table above, but
+are not shown in the ingest-scale delta chart until they have paired scale runs.
+For
 Qwen3-Embedding 0.6B, AX is at parity to slightly ahead of `mlx-lm` in a
 same-session paired run where both engines are measured interleaved in one
 process: between 0.2% behind and 3.4% ahead across the six shapes (mean about
@@ -846,14 +846,10 @@ every listed row, by 4.5-8.2%.
 |  |  | 64 | 8 | 114,877.3 | 120,037.7 | +4.5% | 234.4 | 295.1 |
 
 Sources:
-reference baselines from
-`benchmarks/results/embedding-fair/2026-06-28-qwen-after-batch-fix/2026-06-28-051508/`
+fair embedding rows from the same-session paired artifacts
+`benchmarks/results/embedding-fair/2026-07-02-qwen-paired-refresh/2026-07-02-131412/`
 and
-`benchmarks/results/embedding-fair/2026-06-28-embeddinggemma-after-batch-fix/2026-06-28-051549/`;
-current AX-only refresh from
-`benchmarks/results/embedding-fair/2026-07-02-qwen-ax-only-refresh/2026-07-02-124957/`
-and
-`benchmarks/results/embedding-fair/2026-07-02-embeddinggemma-ax-only-refresh/2026-07-02-125026/`.
+`benchmarks/results/embedding-fair/2026-07-02-embeddinggemma-paired-refresh/2026-07-02-131521/`.
 Qwen sustained-scale rows from the same-session paired artifact
 `benchmarks/results/embedding-scale/2026-06-29-qwen-paired-refresh/2026-06-29-003753/`,
 and EmbeddingGemma sustained-scale rows from the same-session paired artifact
@@ -862,9 +858,9 @@ In both, `mlx-lm`/`mlx-embeddings` and AX are measured interleaved in one
 process so the reference and AX share thermal and GPU-clock state; the delta is
 each artifact's own paired measurement, not a fresh AX run divided by a
 different run's frozen reference.
-Method: `scripts/bench_embedding_fair.py --ax-only` for the fair rows,
-`scripts/bench_embedding_ingest_scale.py` (paired, no `--ax-only`) for Qwen
-sustained rows, and
+Method: `scripts/bench_embedding_fair.py` (paired, no `--ax-only`) for the fair
+rows, `scripts/bench_embedding_ingest_scale.py` (paired, no `--ax-only`) for
+Qwen sustained rows, and
 `scripts/bench_embedding_ingest_scale.py --reference mlx_embeddings --pooling mean`
 for EmbeddingGemma sustained rows.
 All runs use Hugging Face snapshot paths, median tok/s, batch sizes 1/8 for fair
