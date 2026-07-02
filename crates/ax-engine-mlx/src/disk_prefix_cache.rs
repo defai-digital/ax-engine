@@ -268,6 +268,13 @@ impl DiskPrefixCache {
             });
         }
         let cache = Self { dir, policy };
+        // Reclaim `.tmp.<pid>` files leaked by crashed processes before
+        // applying budgets: the `.axkv`-only eviction sweep never matches
+        // them, so without this they accumulate without bound. Safe under
+        // the exclusive lock — inserts hold the same lock across their
+        // create→rename window, so any temp file visible here belongs to a
+        // process that died mid-write.
+        let _ = cache.sweep_stale_temp_files();
         // Apply the configured budgets to whatever already exists in
         // the directory. Operators who shrink AX_MLX_PREFIX_CACHE_DISK_*
         // budgets between runs should see the trim happen at startup
@@ -275,6 +282,31 @@ impl DiskPrefixCache {
         // best-effort and never propagates errors here.
         let _ = cache.evict_until_within_policy();
         Ok(cache)
+    }
+
+    fn sweep_stale_temp_files(&self) -> Result<u32, DiskPrefixCacheError> {
+        let _lock = self.lock_exclusive()?;
+        let mut removed = 0u32;
+        for entry in fs::read_dir(&self.dir)? {
+            let Ok(entry) = entry else { continue };
+            let path = entry.path();
+            let is_temp = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.contains(".tmp."));
+            if is_temp && fs::remove_file(&path).is_ok() {
+                removed += 1;
+            }
+        }
+        if removed > 0 {
+            tracing::info!(
+                target: "ax_engine_mlx::prefix_cache",
+                dir = %self.dir.display(),
+                removed,
+                "removed stale disk prefix-cache temp files from a previous process",
+            );
+        }
+        Ok(removed)
     }
 
     /// Active eviction policy for this cache instance.
@@ -616,6 +648,28 @@ mod tests {
             got.prefill_output_token, None,
             "no prefill token written → reads back as None",
         );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn open_sweeps_stale_temp_files_but_keeps_entries() {
+        let dir = unique_tempdir("stale-tmp-sweep");
+        // First open seeds the directory with one live entry.
+        let cache = DiskPrefixCache::open(&dir).expect("open");
+        let key_bytes =
+            canonical_key_bytes("model-a", "policy-a", "layout-a", 16, 1024, 0xdead_beef);
+        cache
+            .insert(&key_bytes, &payload_only(b"PAYLOAD"))
+            .expect("insert");
+        // Simulate a crash mid-insert from a previous process.
+        let stale_tmp = dir.join(format!("{}.tmp.99999", key_sha256_hex(b"other-key")));
+        fs::write(&stale_tmp, b"partial").expect("write stale tmp");
+        drop(cache);
+
+        let cache = DiskPrefixCache::open(&dir).expect("reopen");
+        assert!(!stale_tmp.exists(), "stale temp file must be swept at open");
+        let got = cache.get(&key_bytes).expect("get").expect("hit");
+        assert_eq!(got.payload, b"PAYLOAD".to_vec());
         let _ = fs::remove_dir_all(&dir);
     }
 

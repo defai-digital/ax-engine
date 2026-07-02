@@ -9,7 +9,7 @@ use crate::kv::{
     AllocationStatus, FreeResult, KvManager, KvManagerConfig, KvManagerError, PrefixLookupResult,
 };
 use crate::metal::{MetalBringupRunner, MetalBringupSampler, MetalRuntimeError};
-use crate::request::RequestSnapshot;
+use crate::request::RequestRecord;
 use crate::request::RequestSubmission;
 use crate::request_manager::{RequestManager, RequestManagerError, RunnerApplySummary};
 #[cfg(test)]
@@ -419,11 +419,14 @@ impl EngineCore {
                 AllocationStatus::Allocated => {
                     self.sync_request_block_table(rid)?;
                     selected_requests.push(rid);
-                    let request_snapshot = self.request_manager.snapshot(rid);
+                    // Borrow the record instead of snapshotting: `snapshot()`
+                    // deep-clones the full prompt/output history per item per
+                    // step just to source the warmup slice below.
+                    let record = self.request_manager.record(rid);
                     allocated_items.push(Self::annotate_prefix_reuse(
                         item,
                         prefix_reuse.get(&rid),
-                        request_snapshot.as_ref(),
+                        record,
                     ));
                 }
                 AllocationStatus::InsufficientCapacity | AllocationStatus::Deferred => {
@@ -526,7 +529,7 @@ impl EngineCore {
     /// Ranking among eligible candidates is by arrival sequence (newest first),
     /// with request id as a deterministic tiebreaker.
     fn find_preemption_candidate(
-        &mut self,
+        &self,
         requester: RequestId,
         already_preempted: &BTreeSet<RequestId>,
     ) -> Option<RequestId> {
@@ -535,30 +538,34 @@ impl EngineCore {
             .record(requester)
             .map(|record| record.arrival_sequence)?;
         let mut best: Option<(crate::ids::SequenceNo, RequestId)> = None;
-        for snapshot in self.request_manager.snapshots() {
-            let rid = snapshot.request_id;
+        // Iterate borrowed records rather than `snapshots()`: this probe runs
+        // once per preemption retry (up to once per queued request) exactly
+        // when the engine is memory-pressured, and only needs scalar fields —
+        // snapshot cloning here made the retry loop O(n² × context).
+        for record in self.request_manager.records_iter() {
+            let rid = record.request_id;
             if rid == requester || already_preempted.contains(&rid) {
                 continue;
             }
-            if snapshot.arrival_sequence <= requester_arrival {
+            if record.arrival_sequence <= requester_arrival {
                 continue;
             }
-            if !snapshot.generated_tokens.is_empty() {
+            if !record.generated_tokens.is_empty() {
                 continue;
             }
-            if snapshot.processed_prompt_tokens == 0 {
+            if record.processed_prompt_tokens == 0 {
                 continue;
             }
             if self.kv_manager.block_count_for(rid) == 0 {
                 continue;
             }
             match best {
-                None => best = Some((snapshot.arrival_sequence, rid)),
+                None => best = Some((record.arrival_sequence, rid)),
                 Some((current_seq, current_rid))
-                    if snapshot.arrival_sequence > current_seq
-                        || (snapshot.arrival_sequence == current_seq && rid > current_rid) =>
+                    if record.arrival_sequence > current_seq
+                        || (record.arrival_sequence == current_seq && rid > current_rid) =>
                 {
-                    best = Some((snapshot.arrival_sequence, rid));
+                    best = Some((record.arrival_sequence, rid));
                 }
                 _ => {}
             }
@@ -1157,10 +1164,10 @@ impl EngineCore {
     fn annotate_prefix_reuse(
         mut item: ExecutionItem,
         lookup: Option<&PrefixLookupResult>,
-        snapshot: Option<&RequestSnapshot>,
+        record: Option<&RequestRecord>,
     ) -> ExecutionItem {
         item.reused_prefix_token_slice =
-            Self::native_prefix_warmup_token_slice(&item, lookup, snapshot);
+            Self::native_prefix_warmup_token_slice(&item, lookup, record);
         if let Some(lookup) = lookup {
             item.prefix_tokens_reused = lookup.matched_token_count;
             item.prefix_blocks_reused = lookup.matched_blocks.len() as u32;
@@ -1171,17 +1178,17 @@ impl EngineCore {
     fn native_prefix_warmup_token_slice(
         item: &ExecutionItem,
         lookup: Option<&PrefixLookupResult>,
-        snapshot: Option<&RequestSnapshot>,
+        record: Option<&RequestRecord>,
     ) -> Vec<u32> {
-        let Some(snapshot) = snapshot else {
+        let Some(record) = record else {
             return Vec::new();
         };
 
         if let Some(lookup) = lookup {
-            return snapshot
+            return record
                 .prompt_tokens
                 .get(..lookup.matched_token_count as usize)
-                .unwrap_or(snapshot.prompt_tokens.as_slice())
+                .unwrap_or(record.prompt_tokens.as_slice())
                 .to_vec();
         }
 
@@ -1190,9 +1197,9 @@ impl EngineCore {
         }
 
         let processed_prompt_tokens =
-            (snapshot.processed_prompt_tokens as usize).min(snapshot.prompt_tokens.len());
-        let mut warmup_tokens = snapshot.prompt_tokens[..processed_prompt_tokens].to_vec();
-        warmup_tokens.extend(snapshot.generated_tokens.iter().copied());
+            (record.processed_prompt_tokens as usize).min(record.prompt_tokens.len());
+        let mut warmup_tokens = record.prompt_tokens[..processed_prompt_tokens].to_vec();
+        warmup_tokens.extend(record.generated_tokens.iter().copied());
         warmup_tokens
     }
 

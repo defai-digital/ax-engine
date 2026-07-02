@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the six-target 6-bit AX-only MTP refresh and update README data."""
+"""Run AX-only MTP-vs-direct benchmarks for supported 6-bit MTP packages."""
 
 from __future__ import annotations
 
@@ -25,7 +25,7 @@ REPETITIONS = 5
 COOLDOWN_S = 15.0
 INTER_CASE_COOLDOWN_S = 10.0
 MTP_SAMPLING = {"temperature": 0.6, "top_p": 0.95, "top_k": 20}
-SUITES = ("flappy", "long_code", "python_modules_long")
+DEFAULT_SUITES = ("flappy", "long_code", "python_modules_long")
 NGRAM_ZERO_KEYS = (
     "ax_ngram_accepted_tokens",
     "ax_ngram_draft_tokens",
@@ -49,7 +49,7 @@ class Target:
     assistant_mtp: bool = False
 
 
-TARGETS = (
+SUPPORTED_TARGETS = (
     Target(
         key="qwen3.6-27b-6bit",
         label="Qwen3.6 27B",
@@ -108,6 +108,7 @@ TARGETS = (
         mtp_depth=1,
     ),
 )
+TARGETS_BY_KEY = {target.key: target for target in SUPPORTED_TARGETS}
 
 
 def existing_artifact_ok(path: Path) -> bool:
@@ -281,10 +282,15 @@ def load_artifact(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text())
 
 
-def build_summary(output_dir: Path, args: argparse.Namespace) -> dict[str, Any]:
+def build_summary(
+    output_dir: Path,
+    args: argparse.Namespace,
+    targets: tuple[Target, ...],
+    suites: tuple[str, ...],
+) -> dict[str, Any]:
     rows: list[dict[str, Any]] = []
-    for target in TARGETS:
-        for suite in SUITES:
+    for target in targets:
+        for suite in suites:
             direct_path = output_dir / target.key / suite / "ax_direct.json"
             mtp_path = output_dir / target.key / suite / "ax_mtp.json"
             direct = load_artifact(direct_path)
@@ -311,11 +317,11 @@ def build_summary(output_dir: Path, args: argparse.Namespace) -> dict[str, Any]:
             }
             rows.append(row)
     return {
-        "schema": "ax.mtp_6bit_ax_acceleration_summary.v1",
+        "schema": "ax.mtp_6bit_ax_acceleration_summary.v2",
         "run_dir": str(output_dir.relative_to(REPO_ROOT)),
         "methodology": {
-            "targets": [target.key for target in TARGETS],
-            "suites": list(SUITES),
+            "targets": [target.key for target in targets],
+            "suites": list(suites),
             "generated_tokens": args.generated_tokens,
             "repetitions": args.repetitions,
             "warmup": "1 AX warmup per prompt case from bench_mlx_inference_stack.py",
@@ -329,12 +335,12 @@ def build_summary(output_dir: Path, args: argparse.Namespace) -> dict[str, Any]:
             "mtplx": {
                 "value": None,
                 "label": "N/A",
-                "reason": "No comparable runner for the prepared 6-bit download-mtp package; local MTPLX 0.3.7 probe rejects the Qwen dense runtime contract and does not provide Gemma assistant-MTP or GLM built-in sidecar runners.",
+                "reason": "Not run: this artifact is AX Engine only and compares each prepared 6-bit download-mtp package against the same package with MTP disabled.",
             },
             "lightning_mlx": {
                 "value": None,
                 "label": "N/A",
-                "reason": "Not promoted as comparable evidence: Lightning rows are diagnostic-only under current policy after the silent-thinking pathology, and the raw optimized package path is not the same prepared download-mtp artifact.",
+                "reason": "Not run: this artifact is AX Engine only and compares each prepared 6-bit download-mtp package against the same package with MTP disabled.",
             },
         },
         "rows": rows,
@@ -355,12 +361,12 @@ def fmt_pct(value: float) -> str:
 
 def table_lines(rows: list[dict[str, Any]]) -> list[str]:
     lines = [
-        "| Target | Suite | AX direct decode | AX MTP decode | AX speedup | AX MTP prefill | AX MTP TTFT | AX accept | MTPLX | lightning-mlx |",
-        "|---|---|---:|---:|---:|---:|---:|---:|---|---|",
+        "| Target | Suite | AX direct decode | AX MTP decode | AX speedup | AX MTP prefill | AX MTP TTFT | AX accept |",
+        "|---|---|---:|---:|---:|---:|---:|---:|",
     ]
     for row in rows:
         lines.append(
-            "| `{model_id}` | `{suite_id}` | {direct} | {mtp} | {speedup:.2f}x | {prefill} | {ttft} | {accept} | N/A | N/A |".format(
+            "| `{model_id}` | `{suite_id}` | {direct} | {mtp} | {speedup:.2f}x | {prefill} | {ttft} | {accept} |".format(
                 model_id=row["model_id"],
                 suite_id=row["suite_id"],
                 direct=fmt_tok(float(row["ax_direct_decode_tok_s"])),
@@ -384,7 +390,7 @@ def write_summary_files(output_dir: Path, summary: dict[str, Any]) -> None:
         "",
         *table_lines(summary["rows"]),
         "",
-        "Peer rows are `N/A` when the peer cannot run the same prepared 6-bit `download-mtp` package under a comparable prompt-suite contract. MTPLX 0.3.7 rejects the Qwen dense runtime contract and has no Gemma assistant-MTP or GLM built-in sidecar runner. Lightning-MLX remains diagnostic-only under current policy after the silent-thinking pathology and does not provide a comparable promoted row for these prepared packages.",
+        "This is an AX Engine only artifact. Peer engines are intentionally not run here; each row compares the prepared AX 6-bit `download-mtp` package against the same package with MTP disabled.",
         "",
         "Pure-MTP verification: all AX MTP rows have zero n-gram accepted, proposed, submitted, and hit-step telemetry.",
         "",
@@ -416,15 +422,32 @@ def update_readme(readme: Path, summary: dict[str, Any]) -> None:
     readme.write_text(text)
 
 
+def parse_csv(value: str) -> tuple[str, ...]:
+    entries = tuple(entry.strip() for entry in value.split(",") if entry.strip())
+    if not entries:
+        raise ValueError("comma-separated argument must not be empty")
+    return entries
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--output-dir",
         type=Path,
         default=DEFAULT_OUTPUT_BASE
-        / f"{date.today().isoformat()}-six-model-mtp-ax-only-refresh",
+        / f"{date.today().isoformat()}-supported-mtp-ax-only-refresh",
     )
     parser.add_argument("--suites-dir", type=Path, default=DEFAULT_SUITES_DIR)
+    parser.add_argument(
+        "--targets",
+        default=",".join(target.key for target in SUPPORTED_TARGETS),
+        help="Comma-separated target keys to run.",
+    )
+    parser.add_argument(
+        "--suites",
+        default=",".join(DEFAULT_SUITES),
+        help="Comma-separated prompt-suite ids to run.",
+    )
     parser.add_argument("--generated-tokens", type=int, default=GENERATED_TOKENS)
     parser.add_argument("--repetitions", type=int, default=REPETITIONS)
     parser.add_argument("--cooldown", type=float, default=COOLDOWN_S)
@@ -440,16 +463,23 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     args.output_dir = args.output_dir.resolve()
-    for target in TARGETS:
+    target_keys = parse_csv(args.targets)
+    unknown_targets = [key for key in target_keys if key not in TARGETS_BY_KEY]
+    if unknown_targets:
+        known = ", ".join(TARGETS_BY_KEY)
+        raise ValueError(f"unknown target(s): {', '.join(unknown_targets)}; known: {known}")
+    targets = tuple(TARGETS_BY_KEY[key] for key in target_keys)
+    suites = parse_csv(args.suites)
+    for target in targets:
         validate_model_dir(target.model_dir)
-    for suite in SUITES:
+    for suite in suites:
         path = args.suites_dir / f"{suite}.jsonl"
         if not path.is_file():
             raise FileNotFoundError(path)
     if not args.no_build_ax_engine:
         build_server()
-    for target in TARGETS:
-        for suite in SUITES:
+    for target in targets:
+        for suite in suites:
             suite_dir = args.output_dir / target.key / suite
             maybe_run_case(
                 target=target,
@@ -465,7 +495,7 @@ def main() -> int:
                 output_path=suite_dir / "ax_mtp.json",
                 args=args,
             )
-    summary = build_summary(args.output_dir, args)
+    summary = build_summary(args.output_dir, args, targets, suites)
     write_summary_files(args.output_dir, summary)
     print(f"[summary] {args.output_dir / 'summary.json'}", flush=True)
     print(f"[summary] {args.output_dir / 'summary.md'}", flush=True)

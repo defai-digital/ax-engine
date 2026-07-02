@@ -1470,6 +1470,10 @@ static MOE_ROUTER_FUSED_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
 const MOE_ROUTER_FUSED_KERNEL_SOURCE: &str = r#"
     uint tid = thread_position_in_threadgroup.x;
 
+    threadgroup float logits_shared[ThreadgroupSize];
+    threadgroup float float_reduce[ThreadgroupSize];
+    threadgroup uint idx_reduce[ThreadgroupSize];
+
     // Load logits into threadgroup memory.
     if (tid < NumExperts) {
         logits_shared[tid] = logits_in[tid];
@@ -1489,7 +1493,7 @@ const MOE_ROUTER_FUSED_KERNEL_SOURCE: &str = r#"
 
         // Threadgroup-wide max reduction via shared memory.
         float_reduce[tid] = local_max;
-        uint idx_reduce[tid] = local_max_idx;
+        idx_reduce[tid] = local_max_idx;
         threadgroup_barrier(mem_flags::mem_threadgroup);
 
         for (uint stride = ThreadgroupSize / 2; stride > 0; stride >>= 1) {
@@ -1542,26 +1546,36 @@ const MOE_ROUTER_FUSED_KERNEL_SOURCE: &str = r#"
     }
     sum_exp = float_reduce[0];
 
-    // Write outputs.
+    // Write outputs. The weights are always the softmax over the selected
+    // top-k logits: the MLX fallback (`top_k_by_argpartition` with
+    // `resoftmax=true`) normalizes over the subset regardless of
+    // `moe_norm_topk_prob`, so emitting raw exponentials here would scale
+    // every expert output by sum_exp.
     if (tid < TopK) {
         indices_out[tid] = selected_idx[tid];
-        weights_out[tid] = (NormTopK == 1) ? (exp_val / sum_exp) : exp_val;
+        weights_out[tid] = exp_val / sum_exp;
     }
 "#;
+
+/// One-time kernel-source validation result. MLX evaluation is lazy, so a
+/// compile error in the kernel source would otherwise surface only when the
+/// decode graph is evaluated — mid-step, as a process-level MLX error rather
+/// than a graceful fallback. The first dispatch is `try_eval`ed eagerly; on
+/// failure the fused path is disabled for the process lifetime.
+static MOE_ROUTER_FUSED_KERNEL_VALIDATED: OnceLock<bool> = OnceLock::new();
 
 /// Fused MoE router post-matmul kernel: argpartition + softmax + renormalize
 /// in one Metal dispatch.
 ///
 /// Takes f32 router logits `[1, 1, num_experts]` and returns:
 /// - `top_k_indices`: `[1, 1, top_k]` (uint32)
-/// - `top_k_weights`: `[1, 1, top_k]` (f32)
+/// - `top_k_weights`: `[1, 1, top_k]` (f32, softmax over the selected top-k)
 ///
 /// Decode-only (seq==1). Returns `None` if the kernel is ineligible.
 fn moe_router_fused_metal(
     logits_f32: &MlxArray,
     num_experts: usize,
     top_k: usize,
-    norm_topk: bool,
 ) -> Option<(MlxArray, MlxArray)> {
     if !fastpath::moe_router_fused_metal_enabled() {
         return None;
@@ -1573,6 +1587,34 @@ fn moe_router_fused_metal(
     if shape.len() < 2 || shape[0] != 1 || shape[1] != 1 {
         return None;
     }
+
+    let (indices, weights) = moe_router_fused_metal_apply(logits_f32, num_experts, top_k)?;
+
+    let validated = *MOE_ROUTER_FUSED_KERNEL_VALIDATED.get_or_init(|| {
+        match mlx_sys::transforms::try_eval(&[&indices, &weights]) {
+            Ok(()) => true,
+            Err(message) => {
+                tracing::warn!(
+                    %message,
+                    "fused MoE router kernel failed validation; using MLX op fallback"
+                );
+                false
+            }
+        }
+    });
+    if !validated {
+        return None;
+    }
+    Some((indices, weights))
+}
+
+/// Dispatch the fused router kernel without the fastpath gate or the one-time
+/// validation. Split out so tests can exercise the kernel directly.
+fn moe_router_fused_metal_apply(
+    logits_f32: &MlxArray,
+    num_experts: usize,
+    top_k: usize,
+) -> Option<(MlxArray, MlxArray)> {
     if num_experts == 0 || top_k == 0 || top_k > num_experts {
         return None;
     }
@@ -1596,7 +1638,7 @@ fn moe_router_fused_metal(
 
     let kernel = MOE_ROUTER_FUSED_KERNEL.get_or_init(|| {
         MlxMetalKernel::new(
-            "ax_qwen3_moe_router_fused_v1",
+            "ax_qwen3_moe_router_fused_v2",
             &["logits_in"],
             &["indices_out", "weights_out"],
             MOE_ROUTER_FUSED_KERNEL_SOURCE,
@@ -1631,10 +1673,6 @@ fn moe_router_fused_metal(
                 KernelTemplateArg::Int {
                     name: "ThreadgroupSize",
                     value: tg_size,
-                },
-                KernelTemplateArg::Int {
-                    name: "NormTopK",
-                    value: if norm_topk { 1 } else { 0 },
                 },
             ],
             (tg_size, 1, 1),
@@ -1683,12 +1721,9 @@ pub(crate) fn moe_router_qwen3(
         } else {
             astype(&logits, MlxDtype::Float32, None)
         };
-        if let Some((indices, weights)) = moe_router_fused_metal(
-            &logits_f32,
-            cfg.moe_expert_count,
-            cfg.moe_experts_per_token,
-            cfg.moe_norm_topk_prob,
-        ) {
+        if let Some((indices, weights)) =
+            moe_router_fused_metal(&logits_f32, cfg.moe_expert_count, cfg.moe_experts_per_token)
+        {
             return (indices, weights);
         }
 
@@ -2507,8 +2542,15 @@ impl CompiledGemma4DualPathSchema {
         // Dense sub-block
         let dense_gate_up = self.dense_gate_up.rebuild(inputs);
         let gate_up_out = qw(&normed2, &dense_gate_up);
-        let h1_hidden = packed_geglu_metal_impl(&gate_up_out, self.packed_dim / 2)
-            .expect("dual-path compile: packed_geglu_metal required");
+        // Fall back to slice + geglu when the packed Metal kernel is
+        // ineligible (unsupported dtype or packed width): a panic here fires
+        // inside the compile trace and aborts the process (panic=abort).
+        let hidden_dim = self.packed_dim / 2;
+        let h1_hidden = packed_geglu_metal_impl(&gate_up_out, hidden_dim).unwrap_or_else(|| {
+            let gate = slice_last_dim(&gate_up_out, 0, hidden_dim, None);
+            let up = slice_last_dim(&gate_up_out, hidden_dim, self.packed_dim, None);
+            geglu(&gate, &up)
+        });
         let dense_down = self.dense_down.rebuild(inputs);
         let h1 = qw(&h1_hidden, &dense_down);
         let h1 = crate::model::shared::rms_norm_opt(
@@ -3164,6 +3206,57 @@ mod tests {
         assert!(
             max_abs_diff <= tolerance,
             "max_abs_diff {max_abs_diff} exceeds tolerance {tolerance}"
+        );
+    }
+
+    #[test]
+    fn moe_router_fused_metal_kernel_compiles_and_matches_fallback() {
+        let logits_data: Vec<f32> = vec![0.1, 2.0, -1.0, 0.5, 3.0, 0.0, -2.0, 1.5];
+        let num_experts = logits_data.len();
+        let top_k = 3usize;
+        let logits = array_f32(&logits_data, &[1, 1, num_experts as i32]);
+
+        let (indices, weights) = moe_router_fused_metal_apply(&logits, num_experts, top_k)
+            .expect("fused router kernel dispatch should be eligible");
+        // try_eval (not eval) so a kernel-source compile error fails the test
+        // with the Metal diagnostic instead of aborting the process.
+        mlx_sys::transforms::try_eval(&[&indices, &weights])
+            .expect("fused router kernel must compile and evaluate");
+
+        let (ref_indices, ref_weights) = top_k_by_argpartition(&logits, num_experts, top_k, true);
+        eval(&[&ref_indices, &ref_weights]);
+
+        let mut fused: Vec<(u32, f32)> = indices
+            .data_u32()
+            .iter()
+            .copied()
+            .zip(weights.data_f32().iter().copied())
+            .collect();
+        let mut reference: Vec<(u32, f32)> = ref_indices
+            .data_u32()
+            .iter()
+            .copied()
+            .zip(ref_weights.data_f32().iter().copied())
+            .collect();
+        // argpartition returns the top-k unordered; the kernel returns them
+        // max-first. Compare as (index, weight) pairs sorted by expert index.
+        fused.sort_by_key(|(index, _)| *index);
+        reference.sort_by_key(|(index, _)| *index);
+
+        assert_eq!(
+            fused.iter().map(|(index, _)| *index).collect::<Vec<_>>(),
+            reference
+                .iter()
+                .map(|(index, _)| *index)
+                .collect::<Vec<_>>()
+        );
+        let fused_weights: Vec<f32> = fused.iter().map(|(_, weight)| *weight).collect();
+        let reference_weights: Vec<f32> = reference.iter().map(|(_, weight)| *weight).collect();
+        assert_close(&fused_weights, &reference_weights, 1.0e-5);
+        let weight_sum: f32 = fused_weights.iter().sum();
+        assert!(
+            (weight_sum - 1.0).abs() < 1.0e-5,
+            "weights must be a softmax"
         );
     }
 

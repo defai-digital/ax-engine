@@ -1152,6 +1152,30 @@ impl MlxKVCache {
         })
     }
 
+    /// Serialize only the logical token prefix of a `[B, H, tokens, D]`
+    /// tensor (token axis 2). The backing buffer is capacity-sized, so
+    /// serializing it whole makes every snapshot cost O(capacity) bytes —
+    /// and the prefix-snapshot store serializes one snapshot per
+    /// block-aligned prefix, turning that into O(prefixes × capacity)
+    /// memcpy per prefill. The wire format is unchanged: the deserializer
+    /// derives capacity from the stored shape and regrows on append.
+    fn serialize_tensor_logical(out: &mut Vec<u8>, arr: &MlxArray, logical_tokens: Option<usize>) {
+        let shape = arr.shape();
+        if let Some(tokens) = logical_tokens
+            && shape.len() == 4
+            && (shape[2] as usize) > tokens
+        {
+            let stop = [shape[0], shape[1], tokens as i32, shape[3]];
+            let trimmed = slice(arr, &[0, 0, 0, 0], &stop, &[1, 1, 1, 1], None);
+            // The slice is a strided view over the capacity buffer;
+            // materialize it so `data_raw` reads row-contiguous bytes.
+            let trimmed = contiguous(&trimmed, None);
+            Self::serialize_tensor(out, &trimmed);
+        } else {
+            Self::serialize_tensor(out, arr);
+        }
+    }
+
     fn serialize_tensor(out: &mut Vec<u8>, arr: &MlxArray) {
         // Materialise before reading bytes; data_raw is only valid post-eval.
         eval(&[arr]);
@@ -1409,13 +1433,20 @@ impl MlxKVCache {
             if let Some(fa) = &self.layers[idx] {
                 out.push(Self::LAYER_KIND_FA);
                 out.extend_from_slice(&[0u8; 7]);
-                Self::serialize_tensor(&mut out, &fa.k);
-                Self::serialize_tensor(&mut out, &fa.v);
+                // Rotating-window layers store slots, not token order — the
+                // full buffer is the logical state and must not be trimmed.
+                let logical_tokens = if fa.rotating_window.is_none() {
+                    Some(self.seq_len)
+                } else {
+                    None
+                };
+                Self::serialize_tensor_logical(&mut out, &fa.k, logical_tokens);
+                Self::serialize_tensor_logical(&mut out, &fa.v, logical_tokens);
             } else if let Some(mla) = &self.glm_mla_layers[idx] {
                 out.push(Self::LAYER_KIND_MLA);
                 out.extend_from_slice(&[0u8; 7]);
-                Self::serialize_tensor(&mut out, &mla.kv_latent);
-                Self::serialize_tensor(&mut out, &mla.k_pe);
+                Self::serialize_tensor_logical(&mut out, &mla.kv_latent, Some(self.seq_len));
+                Self::serialize_tensor_logical(&mut out, &mla.k_pe, Some(self.seq_len));
             } else if self.linear_layers[idx].conv_state.is_some()
                 || self.linear_layers[idx].recurrent_state.is_some()
             {
@@ -2025,7 +2056,18 @@ impl MlxKVCache {
             return false;
         }
         let valid = prefix_len <= self.seq_len;
+        let trimmed = prefix_len < self.seq_len;
         self.seq_len = prefix_len.min(self.seq_len);
+        if trimmed {
+            // The retained fast-path views still span the pre-trim write end,
+            // including the rejected draft positions.  Drop them so any
+            // consumer between this trim and the next append re-slices from
+            // the logical boundary instead of attending over trimmed tokens.
+            for lkv in self.layers.iter_mut().flatten() {
+                lkv.last_k_view = None;
+                lkv.last_v_view = None;
+            }
+        }
         for storage in self.turboquant_shadow_layers.iter_mut().flatten() {
             let compressed_tokens = storage.compressed_tokens.min(self.seq_len);
             if compressed_tokens < storage.compressed_tokens {
@@ -4612,6 +4654,69 @@ mod tests {
         assert!(
             matches!(err, MlxKVCacheSerializeError::BadShape(0)),
             "expected BadShape(0), got {err:?}"
+        );
+    }
+
+    #[test]
+    fn serialize_trims_fa_capacity_to_logical_seq_len() {
+        // The backing buffer holds `capacity` tokens but only `seq_len`
+        // are logical; the payload must carry the logical prefix only.
+        let capacity = 8usize;
+        let seq_len = 3usize;
+        let head_dim = 4;
+        let n_kv_heads = 2;
+        let mut cache = MlxKVCache::new(1);
+        let k = build_fa_array_f32(capacity, n_kv_heads, head_dim);
+        let v = build_fa_array_f32(capacity, n_kv_heads, head_dim);
+        // The slice is a strided view; materialize it before reading host
+        // bytes (data_f32 on a strided view walks the backing buffer
+        // linearly — the same hazard serialize_tensor_logical guards).
+        let expected_k = host_f32(&contiguous(
+            &slice(
+                &k,
+                &[0, 0, 0, 0],
+                &[1, n_kv_heads, seq_len as i32, head_dim],
+                &[1, 1, 1, 1],
+                None,
+            ),
+            None,
+        ));
+        cache.layers[0] = Some(LayerKV {
+            last_k_view: None,
+            last_v_view: None,
+            n_kv_heads,
+            head_dim,
+            capacity,
+            rotating_window: None,
+            dtype: MlxDtype::Float32,
+            k,
+            v,
+        });
+        cache.seq_len = seq_len;
+
+        let trimmed_bytes = cache.serialize_to_bytes();
+        let restored = MlxKVCache::try_deserialize_from_bytes(&trimmed_bytes).expect("round-trip");
+        assert_eq!(restored.seq_len, seq_len);
+        let restored_layer = restored.layers[0].as_ref().expect("layer restored");
+        assert_eq!(
+            restored_layer.capacity, seq_len,
+            "restored capacity must equal the logical length, not the source capacity"
+        );
+        assert_eq!(
+            host_f32(&restored_layer.k),
+            expected_k,
+            "restored K must match the logical prefix of the source buffer"
+        );
+
+        // Payload must scale with seq_len, not capacity: the same cache
+        // reporting full capacity as logical length serializes strictly more.
+        cache.seq_len = capacity;
+        let full_bytes = cache.serialize_to_bytes();
+        assert!(
+            trimmed_bytes.len() < full_bytes.len(),
+            "trimmed payload ({}) must be smaller than full-capacity payload ({})",
+            trimmed_bytes.len(),
+            full_bytes.len()
         );
     }
 

@@ -354,17 +354,30 @@ impl KvManager {
             ));
         }
 
+        // Validate every block before mutating anything: erroring out
+        // mid-loop would leave already-visited blocks decremented while the
+        // request's table still lists them, corrupting the refcount ledger
+        // on the error path (mirrors share_prefix's validate-first order).
+        for block_id in lookup.matched_blocks.iter() {
+            let ref_count =
+                self.block_ref_counts
+                    .get(block_id)
+                    .ok_or(KvManagerError::InvariantViolation(
+                        "shared prefix block missing refcount",
+                    ))?;
+            if *ref_count == 1 {
+                return Err(KvManagerError::InvariantViolation(
+                    "shared prefix rollback would release sole block owner",
+                ));
+            }
+        }
+
         self.remove_live_prefix_index(request_id)?;
 
         for block_id in lookup.matched_blocks.iter().rev() {
             let ref_count = self.block_ref_counts.get_mut(block_id).ok_or(
                 KvManagerError::InvariantViolation("shared prefix block missing refcount"),
             )?;
-            if *ref_count == 1 {
-                return Err(KvManagerError::InvariantViolation(
-                    "shared prefix rollback would release sole block owner",
-                ));
-            }
             *ref_count -= 1;
         }
 

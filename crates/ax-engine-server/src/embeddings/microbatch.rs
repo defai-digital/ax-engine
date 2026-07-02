@@ -22,16 +22,16 @@ impl EmbeddingMicroBatcher {
         let (sender, receiver) = mpsc::channel(capacity);
         let batch_window = embedding_microbatch_window();
         let max_batch = embedding_microbatch_max_batch();
-        // The worker holds a sender clone so the channel never closes,
-        // preventing permanent worker exit even if all external senders
-        // are dropped (e.g. during a hot-reload or state swap).
-        let worker_sender = sender.clone();
+        // The worker must NOT hold a sender clone: the channel closing when
+        // the last external sender drops is what lets the worker drain any
+        // queued items and exit after a model hot-swap replaces LiveState.
+        // A keepalive here pins the old EngineSession (and its weights)
+        // forever on every swap.
         tokio::spawn(run_embedding_microbatch_worker(
             receiver,
             request_session,
             batch_window,
             max_batch,
-            worker_sender,
         ));
         Arc::new(Self { sender })
     }
@@ -68,7 +68,6 @@ async fn run_embedding_microbatch_worker(
     request_session: Arc<Mutex<EngineSession>>,
     batch_window: Duration,
     max_batch: usize,
-    _keepalive: mpsc::Sender<EmbeddingBatchItem>,
 ) {
     while let Some(first) = receiver.recv().await {
         let batch =

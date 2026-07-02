@@ -1073,18 +1073,26 @@ def render_mtp_6bit_ax_acceleration_chart(
 ) -> str:
     axis_max = mtp_6bit_axis_max(rows)
     tick_step = axis_max / 4.0
+    model_order = tuple(dict.fromkeys(str(row["model"]) for row in rows))
+    axis_bottom = (
+        106.0
+        + len(rows) * MTP_6BIT_ROW_GAP
+        + max(0, len(model_order) - 1) * MTP_6BIT_GROUP_GAP
+        + 16.0
+    )
+    height = int(axis_bottom + 88.0)
     lines = [
-        f'<svg xmlns="http://www.w3.org/2000/svg" width="{MTP_6BIT_WIDTH}" height="{MTP_6BIT_HEIGHT}" viewBox="0 0 {MTP_6BIT_WIDTH} {MTP_6BIT_HEIGHT}" role="img" aria-labelledby="title desc">',
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{MTP_6BIT_WIDTH}" height="{height}" viewBox="0 0 {MTP_6BIT_WIDTH} {height}" role="img" aria-labelledby="title desc">',
         '<title id="title">AX MTP decode throughput with and without MTP</title>',
         (
             '<desc id="desc">Horizontal grouped bar chart comparing AX direct '
             "decode throughput with MTP off against AX MTP decode throughput "
-            "with MTP on for each supported 6-bit MTP model and prompt suite. "
+            "with MTP on for each supported 6-bit AX MTP package and prompt suite. "
             "Labels show the resulting same-package speedup.</desc>"
         ),
-        f'<rect width="{MTP_6BIT_WIDTH}" height="{MTP_6BIT_HEIGHT}" fill="#ffffff"/>',
+        f'<rect width="{MTP_6BIT_WIDTH}" height="{height}" fill="#ffffff"/>',
         f'<text x="{MTP_6BIT_LABEL_X}" y="32" font-family="{FONT}" font-size="20" font-weight="700" fill="#111827">AX MTP decode: MTP off vs MTP on</text>',
-        f'<text x="{MTP_6BIT_LABEL_X}" y="54" font-family="{FONT}" font-size="12" fill="#4b5563">Each row compares the same 6-bit package and prompt suite: AX direct has MTP off; AX MTP has MTP on.</text>',
+        f'<text x="{MTP_6BIT_LABEL_X}" y="54" font-family="{FONT}" font-size="12" fill="#4b5563">Each row compares the same prepared 6-bit package and prompt suite: AX direct has MTP off; AX MTP has MTP on.</text>',
         f'<text x="{MTP_6BIT_RIGHT:.0f}" y="54" text-anchor="end" font-family="{FONT}" font-size="11" font-weight="700" fill="#374151">Decode throughput, tok/s</text>',
     ]
 
@@ -1095,13 +1103,13 @@ def render_mtp_6bit_ax_acceleration_chart(
         width = "1.4" if tick_index == 0 else "1.2"
         lines.extend(
             [
-                f'<line x1="{x:.1f}" y1="{MTP_6BIT_TOP:.0f}" x2="{x:.1f}" y2="{MTP_6BIT_BOTTOM:.0f}" stroke="{stroke}" stroke-width="{width}"/>',
-                f'<text x="{x:.1f}" y="786" text-anchor="middle" font-family="{FONT}" font-size="11" fill="#4b5563">{short_number(value)}</text>',
+                f'<line x1="{x:.1f}" y1="{MTP_6BIT_TOP:.0f}" x2="{x:.1f}" y2="{axis_bottom:.1f}" stroke="{stroke}" stroke-width="{width}"/>',
+                f'<text x="{x:.1f}" y="{axis_bottom + 18.0:.1f}" text-anchor="middle" font-family="{FONT}" font-size="11" fill="#4b5563">{short_number(value)}</text>',
             ]
         )
     lines.extend(
         [
-            f'<text x="{(MTP_6BIT_LEFT + MTP_6BIT_RIGHT) / 2:.1f}" y="808" text-anchor="middle" font-family="{FONT}" font-size="11" fill="#6b7280">Higher is better</text>',
+            f'<text x="{(MTP_6BIT_LEFT + MTP_6BIT_RIGHT) / 2:.1f}" y="{axis_bottom + 40.0:.1f}" text-anchor="middle" font-family="{FONT}" font-size="11" fill="#6b7280">Higher is better</text>',
             f'<rect x="{MTP_6BIT_LABEL_X}" y="70" width="12" height="12" rx="2" fill="{MTP_6BIT_DIRECT_COLOR}"/>',
             f'<text x="90" y="80" font-family="{FONT}" font-size="12" fill="#374151">MTP off / AX direct</text>',
             f'<rect x="232" y="70" width="12" height="12" rx="2" fill="{MTP_6BIT_MTP_COLOR}"/>',
@@ -1111,36 +1119,17 @@ def render_mtp_6bit_ax_acceleration_chart(
     )
 
     previous_model: str | None = None
-    group_index = -1
-    row_in_group = 0
+    label_y = 106.0
     for row in rows:
         model = str(row["model"])
         if model != previous_model:
             if previous_model is not None:
-                separator_y = (
-                    106.0
-                    + group_index
-                    * (
-                        MTP_6BIT_GROUP_SIZE * MTP_6BIT_ROW_GAP
-                        + MTP_6BIT_GROUP_GAP
-                    )
-                    + (MTP_6BIT_GROUP_SIZE - 1) * MTP_6BIT_ROW_GAP
-                    + 20.0
-                )
+                separator_y = label_y - MTP_6BIT_GROUP_GAP / 2.0
                 lines.append(
                     f'<line x1="{MTP_6BIT_LABEL_X}" y1="{separator_y:.1f}" x2="{MTP_6BIT_RIGHT:.0f}" y2="{separator_y:.1f}" stroke="#eef2f7" stroke-width="1"/>'
                 )
+                label_y += MTP_6BIT_GROUP_GAP
             previous_model = model
-            group_index += 1
-            row_in_group = 0
-
-        label_y = (
-            106.0
-            + group_index
-            * (MTP_6BIT_GROUP_SIZE * MTP_6BIT_ROW_GAP + MTP_6BIT_GROUP_GAP)
-            + row_in_group * MTP_6BIT_ROW_GAP
-        )
-        row_in_group += 1
 
         suite = mtp_6bit_suite_label(str(row["suite_id"]))
         direct = float(row["ax_direct_decode_tok_s"])
@@ -1168,13 +1157,14 @@ def render_mtp_6bit_ax_acceleration_chart(
                 f'<text x="{mtp_end + 52.0:.1f}" y="{label_y:.1f}" font-family="{FONT}" font-size="11" font-weight="700" fill="#111827">{speedup:.2f}x</text>',
             ]
         )
+        label_y += MTP_6BIT_ROW_GAP
 
     source_label = (
         f"Source: {summary_path.parent.as_posix()} / summary.json. "
         "Pure MTP; no MTP+n-gram stacking."
     )
     lines.append(
-        f'<text x="{MTP_6BIT_LABEL_X}" y="820" font-family="{FONT}" font-size="10" fill="#6b7280">{escape(source_label)}</text>'
+        f'<text x="{MTP_6BIT_LABEL_X}" y="{axis_bottom + 64.0:.1f}" font-family="{FONT}" font-size="10" fill="#6b7280">{escape(source_label)}</text>'
     )
     lines.append("</svg>")
     return "\n".join(lines) + "\n"

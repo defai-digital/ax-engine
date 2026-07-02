@@ -116,7 +116,7 @@ fn tokenizer_for_live_op(live: &LiveState, op: &str) -> Result<EngineTokenizer, 
             format!("{op} requires mlx_model_artifacts_dir with tokenizer.json"),
         ));
     };
-    EngineTokenizer::from_model_dir(model_dir).map_err(|error| {
+    EngineTokenizer::from_model_dir_cached(model_dir).map_err(|error| {
         error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             "server_error",

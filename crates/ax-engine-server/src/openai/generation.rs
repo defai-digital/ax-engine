@@ -296,7 +296,7 @@ pub(crate) fn populate_native_mlx_output_text(
                 .to_string(),
         ));
     };
-    let tokenizer = EngineTokenizer::from_model_dir(model_dir).map_err(|error| {
+    let tokenizer = EngineTokenizer::from_model_dir_cached(model_dir).map_err(|error| {
         error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             "server_error",

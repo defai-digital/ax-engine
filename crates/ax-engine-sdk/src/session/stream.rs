@@ -191,7 +191,10 @@ impl GenerateStreamState {
         }))
     }
 
-    fn request_id(&self) -> u64 {
+    /// Request id of the in-flight generation this stream tracks. Public so
+    /// bindings that abandon a stream mid-generation (e.g. the Python
+    /// iterator's Drop) can cancel the underlying request.
+    pub fn request_id(&self) -> u64 {
         match self {
             Self::Native(state) => state.request_id,
             Self::LlamaCpp(state) => state.request_id,

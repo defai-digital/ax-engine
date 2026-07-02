@@ -13,6 +13,12 @@ use crate::sampling::{SampledToken, StopReason};
 use crate::scheduler::SchedulePlan;
 
 const MAX_TERMINAL_SNAPSHOT_RETENTION: usize = 1024;
+/// Byte budget for retained terminal snapshots. Each snapshot keeps the full
+/// prompt/output token payload so post-terminal `request_report` queries work,
+/// which at long context can pin ~130KB per request; without a byte cap the
+/// count limit alone allows >100MB of dead request data on unified memory.
+/// The most recent snapshot is always retained regardless of size.
+const MAX_TERMINAL_SNAPSHOT_BYTES: usize = 32 * 1024 * 1024;
 
 #[derive(Debug)]
 pub struct RequestManager {
@@ -20,6 +26,7 @@ pub struct RequestManager {
     records: BTreeMap<RequestId, RequestRecord>,
     terminal_snapshots: BTreeMap<RequestId, RequestSnapshot>,
     terminal_snapshot_order: VecDeque<RequestId>,
+    terminal_snapshot_bytes: usize,
     /// Cached sorted request IDs, valid when `snapshot_order_dirty == false`.
     cached_snapshot_ids: Vec<RequestId>,
     /// Set to true whenever records are added or removed.  The sort is O(n log n)
@@ -34,6 +41,7 @@ impl RequestManager {
             records: BTreeMap::new(),
             terminal_snapshots: BTreeMap::new(),
             terminal_snapshot_order: VecDeque::new(),
+            terminal_snapshot_bytes: 0,
             cached_snapshot_ids: Vec::new(),
             snapshot_order_dirty: true,
         }
@@ -88,6 +96,14 @@ impl RequestManager {
 
     pub fn record(&self, request_id: RequestId) -> Option<&RequestRecord> {
         self.records.get(&request_id)
+    }
+
+    /// Borrowing iterator over live request records, in no particular order.
+    /// Use instead of `snapshots()` when only cheap scalar fields are needed:
+    /// `snapshots()` deep-clones every request's full token history, which is
+    /// O(total context) per call.
+    pub fn records_iter(&self) -> impl Iterator<Item = &RequestRecord> {
+        self.records.values()
     }
 
     pub fn snapshot(&self, request_id: RequestId) -> Option<RequestSnapshot> {
@@ -284,8 +300,9 @@ impl RequestManager {
             .remove(&request_id)
             .ok_or(RequestManagerError::UnknownRequest(request_id))?;
         self.snapshot_order_dirty = true;
-        self.terminal_snapshots
-            .insert(request_id, record.snapshot());
+        let snapshot = record.snapshot();
+        self.terminal_snapshot_bytes += Self::terminal_snapshot_payload_bytes(&snapshot);
+        self.terminal_snapshots.insert(request_id, snapshot);
         self.terminal_snapshot_order.push_back(request_id);
         self.prune_terminal_snapshots();
         Ok(())
@@ -526,12 +543,25 @@ impl RequestManager {
     }
 
     fn prune_terminal_snapshots(&mut self) {
-        while self.terminal_snapshot_order.len() > MAX_TERMINAL_SNAPSHOT_RETENTION {
+        while self.terminal_snapshot_order.len() > MAX_TERMINAL_SNAPSHOT_RETENTION
+            || (self.terminal_snapshot_bytes > MAX_TERMINAL_SNAPSHOT_BYTES
+                && self.terminal_snapshot_order.len() > 1)
+        {
             let Some(evicted_request_id) = self.terminal_snapshot_order.pop_front() else {
                 break;
             };
-            self.terminal_snapshots.remove(&evicted_request_id);
+            if let Some(evicted) = self.terminal_snapshots.remove(&evicted_request_id) {
+                self.terminal_snapshot_bytes = self
+                    .terminal_snapshot_bytes
+                    .saturating_sub(Self::terminal_snapshot_payload_bytes(&evicted));
+            }
         }
+    }
+
+    fn terminal_snapshot_payload_bytes(snapshot: &RequestSnapshot) -> usize {
+        snapshot.prompt_tokens.len() * size_of::<u32>()
+            + snapshot.generated_tokens.len() * size_of::<u32>()
+            + snapshot.generated_token_logprobs.len() * size_of::<f32>()
     }
 
     fn transition_request(
@@ -716,6 +746,49 @@ mod tests {
             manager.terminal_snapshot_order.len(),
             MAX_TERMINAL_SNAPSHOT_RETENTION
         );
+    }
+
+    #[test]
+    fn retained_terminal_snapshots_are_pruned_by_byte_budget() {
+        let mut manager = RequestManager::new(CacheGroupId(7));
+
+        // Each submission carries a prompt large enough that a handful of
+        // retained snapshots exceed MAX_TERMINAL_SNAPSHOT_BYTES long before
+        // the count limit is reached.
+        let prompt_tokens_per_request = MAX_TERMINAL_SNAPSHOT_BYTES / size_of::<u32>() / 4;
+        let request_count = 8u64;
+        for request_id in 1..=request_count {
+            let mut submission = make_submission(request_id, request_id, "qwen3");
+            submission.input_tokens = vec![0u32; prompt_tokens_per_request];
+            manager.submit(submission).unwrap();
+            manager.cancel(RequestId(request_id)).unwrap();
+            manager
+                .mark_terminal_cleaned(RequestId(request_id))
+                .unwrap();
+        }
+
+        assert!(manager.terminal_snapshot_bytes <= MAX_TERMINAL_SNAPSHOT_BYTES);
+        assert!(manager.terminal_snapshot_order.len() < request_count as usize);
+        // The most recent terminal request must always remain queryable.
+        assert_eq!(
+            manager.snapshot(RequestId(request_count)).unwrap().state,
+            RequestState::Cancelled
+        );
+        assert!(manager.snapshot(RequestId(1)).is_none());
+    }
+
+    #[test]
+    fn oversized_terminal_snapshot_is_still_retained_when_most_recent() {
+        let mut manager = RequestManager::new(CacheGroupId(7));
+
+        let mut submission = make_submission(1, 1, "qwen3");
+        submission.input_tokens = vec![0u32; MAX_TERMINAL_SNAPSHOT_BYTES / size_of::<u32>() + 1];
+        manager.submit(submission).unwrap();
+        manager.cancel(RequestId(1)).unwrap();
+        manager.mark_terminal_cleaned(RequestId(1)).unwrap();
+
+        assert!(manager.snapshot(RequestId(1)).is_some());
+        assert_eq!(manager.terminal_snapshot_order.len(), 1);
     }
 
     #[test]

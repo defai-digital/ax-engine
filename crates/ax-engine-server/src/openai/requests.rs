@@ -641,7 +641,7 @@ fn tokenize_native_mlx_text_input(
             "OpenAI-compatible text endpoints on native MLX require mlx_model_artifacts_dir with tokenizer.json".to_string(),
         ));
     };
-    let tokenizer = EngineTokenizer::from_model_dir(model_dir).map_err(|error| {
+    let tokenizer = EngineTokenizer::from_model_dir_cached(model_dir).map_err(|error| {
         error_response(
             StatusCode::BAD_REQUEST,
             "invalid_request",

@@ -239,6 +239,25 @@ fn validate_fused_decode_launch_for_query_count(
     validate_query_head_mapping(descriptor, n_query_heads)
 }
 
+/// The device-array fused-decode variants index `compressed` with
+/// `COLD_TOKENS`/`BLOCK_BYTES` template constants derived from the
+/// descriptor; a stale or short device buffer would be a silent GPU
+/// out-of-bounds read. The host-buffer variants get the equivalent check via
+/// slot/layout validation, so mirror it here.
+fn validate_compressed_device_buffer(
+    descriptor: TurboQuantFusedDecodeLaunchDescriptor,
+    compressed: &MlxArray,
+) -> Result<(), TurboQuantCodecError> {
+    let actual = compressed.nbytes();
+    if actual < descriptor.compressed_buffer_bytes {
+        return Err(TurboQuantCodecError::CompressedDeviceBufferTooShort {
+            expected: descriptor.compressed_buffer_bytes,
+            actual,
+        });
+    }
+    Ok(())
+}
+
 fn rotated_query_values_from_flat(
     descriptor: TurboQuantFusedDecodeLaunchDescriptor,
     query_values: &[f32],
@@ -707,6 +726,7 @@ fn turboquant_fused_cold_decode_metal_two_stage_stats_with_rotated_queries(
     compressed: &MlxArray,
     rotated_queries: &[f32],
 ) -> Result<Vec<TurboQuantAttentionPartitionStats>, TurboQuantCodecError> {
+    validate_compressed_device_buffer(descriptor, compressed)?;
     let batch = turboquant_fused_cold_decode_metal_two_stage_stats_batch_with_rotated_queries(
         descriptor,
         compressed,
@@ -736,6 +756,7 @@ fn turboquant_fused_cold_decode_metal_two_stage_stats_batch_with_rotated_queries
     rotated_queries: &[f32],
     sparse_value_threshold: f32,
 ) -> Result<TurboQuantAttentionPartitionStatsBatch, TurboQuantCodecError> {
+    validate_compressed_device_buffer(descriptor, compressed)?;
     let query = MlxArray::from_raw_data(
         rotated_queries.as_ptr().cast(),
         std::mem::size_of_val(rotated_queries),

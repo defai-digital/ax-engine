@@ -3,6 +3,7 @@ use std::sync::Arc;
 use ax_engine_sdk::{
     EngineSessionError, GenerateRequest, GenerateStreamEvent, GenerateStreamState,
 };
+use axum::http::StatusCode;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::Status;
@@ -16,16 +17,29 @@ pub(super) type GenerateEventStream = ReceiverStream<Result<proto::GenerateStrea
 pub(super) type ChatChunkStream = ReceiverStream<Result<proto::ChatCompletionChunk, Status>>;
 pub(super) type CompletionChunkStream = ReceiverStream<Result<proto::CompletionChunk, Status>>;
 
-pub(super) async fn run_blocking<F, T, E>(f: F) -> Result<T, Status>
+pub(super) async fn run_blocking<F, T>(f: F) -> Result<T, Status>
 where
-    F: FnOnce() -> Result<T, E> + Send + 'static,
+    F: FnOnce() -> Result<T, EngineSessionError> + Send + 'static,
     T: Send + 'static,
-    E: std::fmt::Display + Send + 'static,
 {
     tokio::task::spawn_blocking(f)
         .await
         .map_err(|e| Status::internal(e.to_string()))?
-        .map_err(|e| Status::internal(e.to_string()))
+        .map_err(session_error_status)
+}
+
+/// Map an `EngineSessionError` onto a tonic `Status` with the same
+/// classification the HTTP surface uses, so client validation errors surface
+/// as INVALID_ARGUMENT (retryable-by-fixing) instead of INTERNAL.
+pub(super) fn session_error_status(error: EngineSessionError) -> Status {
+    let (status_code, body) = crate::errors::map_session_error(error);
+    let message = body.0.error.message;
+    match status_code {
+        StatusCode::BAD_REQUEST => Status::invalid_argument(message),
+        StatusCode::NOT_FOUND => Status::not_found(message),
+        StatusCode::SERVICE_UNAVAILABLE | StatusCode::BAD_GATEWAY => Status::unavailable(message),
+        _ => Status::internal(message),
+    }
 }
 
 fn spawn_grpc_blocking_stream_task<T, F>(
@@ -73,13 +87,9 @@ pub(super) async fn build_grpc_stream_state(
 
     let stateful_context = Arc::clone(&live.stateless_generate_context);
     let (session, ss) = run_blocking(move || {
-        let mut session = stateful_context
-            .build_stateful_session()
-            .map_err(|e| e.to_string())?;
-        let ss = session
-            .stream_generate_state_with_request_id(request_id, request)
-            .map_err(|e| e.to_string())?;
-        Ok::<_, String>((session, ss))
+        let mut session = stateful_context.build_stateful_session()?;
+        let ss = session.stream_generate_state_with_request_id(request_id, request)?;
+        Ok((session, ss))
     })
     .await?;
 
@@ -126,7 +136,7 @@ where
                 }
             }
             Ok(None) => return Ok(()),
-            Err(e) => return Err(Status::internal(e.to_string())),
+            Err(e) => return Err(session_error_status(e)),
         }
     }
 }
@@ -171,7 +181,7 @@ where
     loop {
         match next(state) {
             Ok(None) => return Ok(()),
-            Err(e) => return Err(Status::internal(e.to_string())),
+            Err(e) => return Err(session_error_status(e)),
             Ok(Some(GenerateStreamEvent::Request(_) | GenerateStreamEvent::Response(_))) => {}
             Ok(Some(GenerateStreamEvent::Step(payload))) => {
                 let Some(delta_text) = payload.delta_text else {
@@ -244,7 +254,7 @@ where
     loop {
         match next(state) {
             Ok(None) => return Ok(()),
-            Err(e) => return Err(Status::internal(e.to_string())),
+            Err(e) => return Err(session_error_status(e)),
             Ok(Some(GenerateStreamEvent::Request(_) | GenerateStreamEvent::Response(_))) => {}
             Ok(Some(GenerateStreamEvent::Step(payload))) => {
                 let Some(delta_text) = payload.delta_text else {

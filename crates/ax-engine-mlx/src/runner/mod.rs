@@ -5718,6 +5718,45 @@ impl MlxRunner {
         for prefix_len in (snapshot_start_tokens..=full_block_tokens).step_by(block_size) {
             let tokens = &state.prompt_prefix_tokens[..prefix_len];
             let key = self.prefix_cache_key(model_id, block_size_tokens, tokens);
+            let is_largest = prefix_len == full_block_tokens;
+            let snapshot_prefill_output_token = (prefix_len == available_tokens)
+                .then_some(greedy_prefill_output_token)
+                .flatten();
+
+            // Skip prefixes that are already resident: the clone + serialize
+            // below costs O(prefix KV bytes) per iteration, so warm
+            // same-prompt traffic would otherwise re-pay the full store cost
+            // on every prefill. The largest prefix still goes through when
+            // the disk layer is open but does not have the entry yet.
+            let l1_superseding = {
+                let cache = self.prefix_cache.lock();
+                let superseding = cache.contains_superseding_snapshot(
+                    &key,
+                    tokens,
+                    snapshot_prefill_output_token,
+                );
+                if superseding {
+                    telemetry.record_stats(cache.stats());
+                }
+                superseding
+            };
+            if l1_superseding {
+                let disk_store_needed = is_largest
+                    && self.disk_prefix_cache.as_ref().is_some_and(|disk| {
+                        !disk.contains(&crate::disk_prefix_cache::canonical_key_bytes(
+                            &key.model_id,
+                            &key.route_policy,
+                            &key.layer_layout,
+                            key.block_size_tokens,
+                            key.token_count,
+                            key.token_hash,
+                        ))
+                    });
+                if !disk_store_needed {
+                    continue;
+                }
+            }
+
             let mut snapshot_cache = state.cache.clone();
             if !snapshot_cache.trim_to(prefix_len) {
                 telemetry.record_blocked_trim_failure();
@@ -5731,7 +5770,6 @@ impl MlxRunner {
             // prefill. The largest snapshot is also the most useful for
             // future hits because shorter prefixes always derive from
             // it.
-            let is_largest = prefix_len == full_block_tokens;
             let payload = snapshot_cache.serialize_to_bytes();
             let disk_payload = if is_largest && self.disk_prefix_cache.is_some() {
                 Some(payload.clone())
@@ -5743,9 +5781,6 @@ impl MlxRunner {
             // configuration the original `key` moves cleanly into
             // `cache.insert`, no extra allocation.
             let key_for_disk = disk_payload.as_ref().map(|_| key.clone());
-            let snapshot_prefill_output_token = (prefix_len == available_tokens)
-                .then_some(greedy_prefill_output_token)
-                .flatten();
             let outcome = {
                 let mut cache = self.prefix_cache.lock();
                 let outcome = cache.insert(

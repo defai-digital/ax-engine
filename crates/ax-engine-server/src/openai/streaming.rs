@@ -391,7 +391,7 @@ fn native_mlx_openai_stream_tokenizer(
                 .to_string(),
         ));
     };
-    EngineTokenizer::from_model_dir(model_dir)
+    EngineTokenizer::from_model_dir_cached(model_dir)
         .map(Some)
         .map_err(|error| {
             error_response(

@@ -26,6 +26,10 @@ pub enum TurboQuantCodecError {
     },
     #[error("packed buffer is too short for {index_count} indices at {bit_width} bits")]
     PackedBufferTooShort { bit_width: u32, index_count: usize },
+    #[error(
+        "compressed device buffer holds {actual} bytes but the launch descriptor requires {expected}"
+    )]
+    CompressedDeviceBufferTooShort { expected: usize, actual: usize },
     #[error("KV prototype requires matching K/V vector lengths, got K={key_len}, V={value_len}")]
     MismatchedKvVectorLengths { key_len: usize, value_len: usize },
     #[error("KV prototype expected vector dimension {expected}, got {actual}")]

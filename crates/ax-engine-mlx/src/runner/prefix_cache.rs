@@ -130,6 +130,26 @@ impl MlxPrefixCache {
                 .is_some_and(|entry| entry.snapshot.tokens == tokens)
     }
 
+    /// True when an entry for `key` already holds exactly `tokens` and would
+    /// lose nothing if a fresh store were skipped: either the new snapshot
+    /// carries no prefill-output token, or the stored one already has one.
+    /// Used by the snapshot store to avoid re-cloning and re-serializing the
+    /// KV cache for prefixes that are already resident (warm same-prompt
+    /// traffic would otherwise pay the full serialize cost every prefill).
+    pub(crate) fn contains_superseding_snapshot(
+        &self,
+        key: &MlxPrefixCacheKey,
+        tokens: &[u32],
+        prefill_output_token: Option<u32>,
+    ) -> bool {
+        self.policy.enabled()
+            && self.entries.get(key).is_some_and(|entry| {
+                entry.snapshot.tokens == tokens
+                    && (prefill_output_token.is_none()
+                        || entry.snapshot.greedy_prefill_output_token.is_some())
+            })
+    }
+
     pub(crate) fn insert(
         &mut self,
         key: MlxPrefixCacheKey,

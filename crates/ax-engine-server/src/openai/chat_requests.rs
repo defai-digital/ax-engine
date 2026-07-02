@@ -1304,7 +1304,7 @@ pub(crate) fn render_gemma4_unified_chat_with_media(
         return Err(empty_chat_messages_error());
     }
 
-    let tokenizer = EngineTokenizer::from_model_dir(model_dir).map_err(|error| {
+    let tokenizer = EngineTokenizer::from_model_dir_cached(model_dir).map_err(|error| {
         error_response(
             StatusCode::BAD_REQUEST,
             "invalid_request",

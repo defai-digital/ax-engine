@@ -201,7 +201,7 @@ fn tokenizer_for_live(live: &LiveState) -> Result<EngineTokenizer, HttpErrorResp
                 .into(),
         ));
     };
-    EngineTokenizer::from_model_dir(model_dir).map_err(|error| {
+    EngineTokenizer::from_model_dir_cached(model_dir).map_err(|error| {
         error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             "server_error",

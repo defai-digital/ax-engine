@@ -104,7 +104,12 @@ impl Session {
             mlx_prefill_chunk: None,
         })
         .map_err(|error| PyValueError::new_err(error.to_string()))?;
-        let inner = EngineSession::new(config).map_err(to_py_runtime_error)?;
+        // Model load + JIT warmup can take tens of seconds for large models;
+        // release the GIL so other Python threads keep running meanwhile
+        // (matches the detach discipline of every inference entry point).
+        // `attach` yields the current token when the GIL is already held.
+        let inner = Python::attach(|py| py.detach(|| EngineSession::new(config)))
+            .map_err(to_py_runtime_error)?;
 
         Ok(Self {
             model_id,

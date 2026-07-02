@@ -7,7 +7,10 @@
 //! that want to overlap tokenize + embed can run them on separate threads
 //! or `tokio` tasks (see `crates/ax-engine-bench/examples/embed_rust_bench.rs`).
 
-use std::path::Path;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+use std::time::SystemTime;
 
 use thiserror::Error;
 use tokenizers::Tokenizer;
@@ -69,6 +72,46 @@ impl EngineTokenizer {
             inner,
             eos_token_id,
         })
+    }
+
+    /// Like [`Self::from_model_dir`], but backed by a process-level cache
+    /// keyed by the model directory and the `tokenizer.json` modification
+    /// time. Parsing a large `tokenizer.json` costs tens to hundreds of
+    /// milliseconds; request-scoped callers (the HTTP server loads a
+    /// tokenizer per request at several sites) should use this so only the
+    /// first request per model pays the parse. The returned value is a cheap
+    /// clone (the inner tokenizer is `Arc`-shared).
+    pub fn from_model_dir_cached(model_dir: &Path) -> Result<Self, EngineTokenizerError> {
+        type CacheKey = (PathBuf, Option<SystemTime>);
+        static CACHE: Mutex<Option<HashMap<CacheKey, EngineTokenizer>>> = Mutex::new(None);
+
+        let canonical = model_dir
+            .canonicalize()
+            .unwrap_or_else(|_| model_dir.to_path_buf());
+        let mtime = std::fs::metadata(canonical.join("tokenizer.json"))
+            .and_then(|m| m.modified())
+            .ok();
+        let cache_key = (canonical, mtime);
+
+        if let Some(hit) = CACHE
+            .lock()
+            .expect("tokenizer cache mutex poisoned")
+            .get_or_insert_with(HashMap::new)
+            .get(&cache_key)
+        {
+            return Ok(hit.clone());
+        }
+
+        // Parse outside the lock so concurrent requests for other models
+        // are not serialized behind a slow load.
+        let loaded = Self::from_model_dir(model_dir)?;
+        let mut guard = CACHE.lock().expect("tokenizer cache mutex poisoned");
+        let cache = guard.get_or_insert_with(HashMap::new);
+        // Stale entries for the same directory (older mtime) are dropped so
+        // a hot-swapped model directory does not grow the map unboundedly.
+        cache.retain(|(path, _), _| path != &cache_key.0);
+        cache.insert(cache_key, loaded.clone());
+        Ok(loaded)
     }
 
     /// The model's EOS token id if known, taken from `config.json`.

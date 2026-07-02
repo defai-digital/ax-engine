@@ -62,9 +62,20 @@ impl GenerateStreamIterator {
     }
 
     fn restore_session(&mut self) {
-        let Some(session) = self.session.take() else {
+        let Some(mut session) = self.session.take() else {
             return;
         };
+
+        // A state still present here means the stream was abandoned before
+        // reaching a terminal event (e.g. the Python iterator was dropped
+        // mid-generation). Cancel the in-flight native request so it does not
+        // keep co-decoding (and holding KV blocks) alongside every subsequent
+        // generate/stream call on this session.
+        if let Some(state) = self.state.take()
+            && matches!(state, GenerateStreamState::Native(_))
+        {
+            let _ = session.cancel_request(state.request_id());
+        }
 
         let Ok(mut owner) = self.owner.lock() else {
             return;
