@@ -1,13 +1,15 @@
-# Qwen3.6 MTP Matrix Refresh
+# Qwen3.6 AX-only Multi-Suite MTP Results
 
-This page holds the 2026-06-29 AX Engine Qwen3.6 pure-MTP matrix refresh that
-used to live in the README. The README now keeps only the current peer decode
-view and a link here so the front page stays focused.
+This page keeps the 2026-06-29 AX Engine-only Qwen3.6 pure-MTP result table
+that used to live in the README. It is an artifact archive for comparing AX
+Engine across prompt suites, not a front-page session or cross-engine
+leaderboard. The README keeps only the current peer decode view and links here
+for regression review.
 
-The promoted MTP matrix keeps AX Engine pure-MTP rows separate from peer-engine
-rows. Use this table for AX Engine's Qwen3.6 MTP throughput across prompt
-suites, and use the peer comparison for the flappy-only cross-engine view with
-the same generated-token and repetition contract.
+These rows keep AX Engine pure-MTP measurements separate from peer-engine rows.
+Use this table for AX Engine's Qwen3.6 MTP throughput across prompt suites, and
+use the peer comparison for the `flappy`-only cross-engine view with the same
+generated-token and repetition contract.
 
 ## Result Table
 

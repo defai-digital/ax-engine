@@ -43,9 +43,8 @@ model-specific boundaries are kept visible.
   - [Speculative Decoding (MTP)](#speculative-decoding-mtp)
     - [Supported MTP packages](#supported-mtp-packages)
     - [Download and serve an MTP package](#download-and-serve-an-mtp-package)
-    - [AX-only supported 6-bit MTP acceleration (2026-07-01)](#ax-only-supported-6-bit-mtp-acceleration-2026-07-01)
+    - [AX Engine 6-bit MTP package acceleration (2026-07-01)](#ax-engine-6-bit-mtp-package-acceleration-2026-07-01)
     - [Qwen3.6 MTP peer decode comparison (2026-07-01)](#qwen36-mtp-peer-decode-comparison-2026-07-01)
-    - [Qwen3.6 MTP matrix refresh (2026-06-29)](#qwen36-mtp-matrix-refresh-2026-06-29)
     - [Gemma 4 assistant-MTP (depth-2)](#gemma-4-assistant-mtp-depth-2)
   - [Direct Mode (Decode · Prefill · TTFT)](#direct-mode-decode--prefill--ttft)
     - [Gemma 4 12B](#gemma-4-12b)
@@ -344,17 +343,19 @@ published to make comparison with other MTP engines easier because many peer
 benchmarks use 4-bit models. Historical MTP+n-gram artifacts remain useful for
 debugging regressions, but they are not current README/PERFORMANCE MTP evidence.
 
-#### AX-only supported 6-bit MTP acceleration (2026-07-01)
+#### AX Engine 6-bit MTP package acceleration (2026-07-01)
 
-The supported-model MTP refresh below is **AX Engine only**. It exists to show
-how much MTP accelerates each repo-owned 6-bit `download-mtp` package against
-the same package with MTP disabled; it is not a cross-engine leaderboard and it
-should not be mixed with the Qwen peer comparison below. Every row uses the
-`flappy` suite, sampled decode (`temperature=0.6`, `top_p=0.95`, `top_k=20`),
-1000 generated tokens, 5 measured repetitions, 1 warmup, 15 s cooldown, and a
-clean `d4c59ffc` build.
+This refresh is an AX Engine-only benchmark of the practical 6-bit
+`download-mtp` lane. "AX Engine-only" describes the measurement scope, not an
+MTP support boundary: AX Engine also documents the Gemma 4 12B 4-bit quick-start
+target and Qwen 4-bit peer-comparison lanes above. The table shows how much MTP
+accelerates each repo-owned 6-bit package against the same package with MTP
+disabled; it is not a cross-engine leaderboard and should not be mixed with the
+Qwen peer comparison below. Every row uses the `flappy` suite, sampled decode
+(`temperature=0.6`, `top_p=0.95`, `top_k=20`), 1000 generated tokens, 5
+measured repetitions, 1 warmup, 15 s cooldown, and a clean `d4c59ffc` build.
 
-<img src="docs/assets/perf-mtp-6bit-ax-acceleration.svg" alt="AX-only supported 6-bit MTP acceleration chart showing direct decode, MTP decode, and speedup for Qwen3.6, Gemma 4, and GLM-4.7 Flash">
+<img src="docs/assets/perf-mtp-6bit-ax-acceleration.svg" alt="AX Engine 6-bit MTP package acceleration chart showing direct decode, MTP decode, and speedup for Qwen3.6, Gemma 4, and GLM-4.7 Flash">
 
 | Target | AX direct decode | AX MTP decode | AX speedup | AX MTP prefill | AX MTP TTFT | AX accept |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -397,19 +398,16 @@ artifacts remain useful only as audit/debug evidence.
 
 Full results, charts, artifact links, and fairness limitations:
 [`docs/mtp/qwen36-peer-comparison.md`](docs/mtp/qwen36-peer-comparison.md).
+For the older AX-only Qwen3.6 table across `flappy`, `long_code`, and
+`python_modules_long`, see
+[`docs/mtp/qwen36-matrix-refresh.md`](docs/mtp/qwen36-matrix-refresh.md). That
+table is useful for prompt-suite regression review, but it is not a separate
+README headline result.
 
 Rapid-MLX is intentionally not promoted in this table: it starts with the
 shared Qwen3.6 artifacts but skips MTP installation for this generation flow, so
 including it would measure non-MTP decode. oMLX remains unmeasured because this
 repo does not yet have an oMLX Qwen3.6 MTP prompt-suite adapter.
-
-#### Qwen3.6 MTP matrix refresh (2026-06-29)
-
-The full AX Engine pure-MTP matrix table, methodology, and enablement-smoke
-artifact notes moved to
-[`docs/mtp/qwen36-matrix-refresh.md`](docs/mtp/qwen36-matrix-refresh.md).
-README keeps the peer decode view above and links out for the longer
-multi-suite AX-only matrix details.
 
 #### Gemma 4 assistant-MTP (depth-2)
 
@@ -477,25 +475,26 @@ AX direct rows use the 4-bit-FFN MLX artifact and random-token prompts. `mlx_lm`
 because it has no `gemma4_unified` graph. The llama.cpp rows are shape-compatible external
 GGUF references, not prompt-hash-parity MLX rows.
 
-<table>
-<tr>
-<td>
+<p>
+<strong>Decode rate</strong><br>
 <img width="100%"
   src="docs/assets/perf-gemma4-12b-direct-decode-tok-s.svg"
   alt="Gemma 4 12B direct decode throughput: AX MLX vs llama.cpp Metal">
-</td>
-<td>
+</p>
+
+<p>
+<strong>Prefill rate</strong><br>
 <img width="100%"
   src="docs/assets/perf-gemma4-12b-direct-prefill-tok-s.svg"
   alt="Gemma 4 12B direct prefill throughput: AX MLX vs llama.cpp Metal">
-</td>
-<td>
+</p>
+
+<p>
+<strong>TTFT</strong><br>
 <img width="100%"
   src="docs/assets/perf-gemma4-12b-direct-ttft-ms.svg"
   alt="Gemma 4 12B direct time to first token: AX MLX vs llama.cpp Metal">
-</td>
-</tr>
-</table>
+</p>
 
 | Prompt tokens | AX decode | llama.cpp decode (depth 0) | llama.cpp decode (matched depth) | AX prefill | llama.cpp prefill | AX TTFT (ms) | llama.cpp TTFT (ms) |
 | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -576,32 +575,39 @@ Gemma assistant-MTP package layout and cache-location details live in
 
 #### Gemma 4 and Qwen 3.6
 
-The family tables below compare **direct (non-speculative) decode** across llama.cpp Metal, mlx_lm, and ax engine, covering Gemma 4 and Qwen 3.6 at 128/512/2048 prompt tokens. `ax direct baseline` disables n-gram acceleration, MTP, and assistant drafting to measure the repo-owned direct decode path. Bench prompts are `mlx_lm.benchmark` seed-0 random tokens, which keeps prompt-hash parity across MLX rows.
+The family comparison below covers **direct (non-speculative) decode** across llama.cpp Metal, mlx_lm, and ax engine, covering Gemma 4 and Qwen 3.6 at 128/512/2048 prompt tokens. `ax direct baseline` disables n-gram acceleration, MTP, and assistant drafting to measure the repo-owned direct decode path. Bench prompts are `mlx_lm.benchmark` seed-0 random tokens, which keeps prompt-hash parity across MLX rows.
 
 The prefill and TTFT advantage is the practical direct-mode story. The refreshed 4-bit rows come from `benchmarks/results/mlx-inference/2026-07-01-ax-direct-4bit-refresh-clean-r2/` and record clean build commit `d4c59ffc`; AX leads `mlx_lm` on prefill, TTFT, and decode for every refreshed Gemma 4 and Qwen 3.6 4-bit row. The Gemma 4 26B A4B and 31B 6-bit rows were re-measured on 2026-07-02 as same-session paired `mlx_lm` + AX runs (`benchmarks/results/mlx-inference/2026-07-02-gemma4-6bit-direct-refresh/`, clean build `4c0a8358`); AX now leads those rows on prefill, TTFT, and decode as well — the earlier 6-bit decode deficit was a stale measurement from the older `01976818` build, predating the decode-path improvements the 4-bit refresh already captured. That means the repo-owned MLX route is especially valuable for interactive requests where prompt ingestion dominates perceived latency: AX keeps prompt prefill, first-token timing, model-specific graph paths, and route metadata in one measured runtime path. These are cold-prefix rows, not prompt-cache, continuous-batching, or speculative-decoding claims.
 
-<table>
-<tr>
-<td></td>
-<td align="center"><strong>Gemma 4</strong></td>
-<td align="center"><strong>Qwen 3.6</strong></td>
-</tr>
-<tr>
-<td align="center"><strong>Decode rate</strong></td>
-<td><img src="docs/assets/perf-gemma4-decode-box-whisker.svg" alt="Grouped box-and-whisker plot comparing llama.cpp Metal, mlx_lm, and ax_engine direct decode rates for Gemma 4 models at 128/512/2048 prompt tokens with a red highest-median reference line"></td>
-<td><img src="docs/assets/perf-qwen-decode-box-whisker.svg" alt="Grouped box-and-whisker plot comparing llama.cpp Metal, mlx_lm, and ax_engine direct decode rates for Qwen 3.6 models at 128/512/2048 prompt tokens with a red highest-median reference line"></td>
-</tr>
-<tr>
-<td align="center"><strong>Prefill rate</strong></td>
-<td><img src="docs/assets/perf-gemma4-prefill-box-whisker.svg" alt="Grouped box-and-whisker plot comparing llama.cpp Metal, mlx_lm, and ax_engine prefill rates for Gemma 4 models at 128/512/2048 prompt tokens with a red highest-median reference line"></td>
-<td><img src="docs/assets/perf-qwen-prefill-box-whisker.svg" alt="Grouped box-and-whisker plot comparing llama.cpp Metal, mlx_lm, and ax_engine prefill rates for Qwen 3.6 models at 128/512/2048 prompt tokens with a red highest-median reference line"></td>
-</tr>
-<tr>
-<td align="center"><strong>TTFT</strong></td>
-<td><img src="docs/assets/perf-gemma4-ttft-box-whisker.svg" alt="Grouped box-and-whisker plot comparing llama.cpp Metal, mlx_lm, and ax_engine TTFT for Gemma 4 models at 128/512/2048 prompt tokens with a red lowest-median reference line"></td>
-<td><img src="docs/assets/perf-qwen-ttft-box-whisker.svg" alt="Grouped box-and-whisker plot comparing llama.cpp Metal, mlx_lm, and ax_engine TTFT for Qwen 3.6 models at 128/512/2048 prompt tokens with a red lowest-median reference line"></td>
-</tr>
-</table>
+<p>
+<strong>Gemma 4 decode rate</strong><br>
+<img width="100%" src="docs/assets/perf-gemma4-decode-box-whisker.svg" alt="Grouped box-and-whisker plot comparing llama.cpp Metal, mlx_lm, and ax_engine direct decode rates for Gemma 4 models at 128/512/2048 prompt tokens with a red highest-median reference line">
+</p>
+
+<p>
+<strong>Qwen 3.6 decode rate</strong><br>
+<img width="100%" src="docs/assets/perf-qwen-decode-box-whisker.svg" alt="Grouped box-and-whisker plot comparing llama.cpp Metal, mlx_lm, and ax_engine direct decode rates for Qwen 3.6 models at 128/512/2048 prompt tokens with a red highest-median reference line">
+</p>
+
+<p>
+<strong>Gemma 4 prefill rate</strong><br>
+<img width="100%" src="docs/assets/perf-gemma4-prefill-box-whisker.svg" alt="Grouped box-and-whisker plot comparing llama.cpp Metal, mlx_lm, and ax_engine prefill rates for Gemma 4 models at 128/512/2048 prompt tokens with a red highest-median reference line">
+</p>
+
+<p>
+<strong>Qwen 3.6 prefill rate</strong><br>
+<img width="100%" src="docs/assets/perf-qwen-prefill-box-whisker.svg" alt="Grouped box-and-whisker plot comparing llama.cpp Metal, mlx_lm, and ax_engine prefill rates for Qwen 3.6 models at 128/512/2048 prompt tokens with a red highest-median reference line">
+</p>
+
+<p>
+<strong>Gemma 4 TTFT</strong><br>
+<img width="100%" src="docs/assets/perf-gemma4-ttft-box-whisker.svg" alt="Grouped box-and-whisker plot comparing llama.cpp Metal, mlx_lm, and ax_engine TTFT for Gemma 4 models at 128/512/2048 prompt tokens with a red lowest-median reference line">
+</p>
+
+<p>
+<strong>Qwen 3.6 TTFT</strong><br>
+<img width="100%" src="docs/assets/perf-qwen-ttft-box-whisker.svg" alt="Grouped box-and-whisker plot comparing llama.cpp Metal, mlx_lm, and ax_engine TTFT for Qwen 3.6 models at 128/512/2048 prompt tokens with a red lowest-median reference line">
+</p>
 
 > **`llama.cpp Metal*` column** — Shape-compatible reference produced by Metal-enabled `llama-bench`. `llama-bench` generates its own internal synthetic prompt tokens and does not consume the harness prompt JSON, so these numbers are **not** prompt-hash parity with the other columns. No percentage delta is shown. MLX bit-widths are mapped to the nearest Unsloth GGUF quant (4→Q4_K_M, 6→Q6_K), with explicit UD-* Unsloth Dynamic rows only when no standard root-level K-quant is published. Source: `benchmarks/manifests/llama_cpp_metal/inventory.json`, `scripts/bench_llama_cpp_metal_sweep.py`.
 
