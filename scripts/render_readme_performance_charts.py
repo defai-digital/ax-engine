@@ -58,9 +58,9 @@ FAMILY_RIGHT = 640
 FAMILY_TOP = 86
 FAMILY_BOTTOM = 316
 
-# fill-opacity and stroke-opacity per context length (lighter = shorter prompt)
-CTX_FILL_OPACITY = {128: 0.08, 512: 0.17, 2048: 0.30}
-CTX_STROKE_OPACITY = {128: 0.55, 512: 0.78, 2048: 1.0}
+BOX_FILL_OPACITY = 0.26
+BOX_STROKE_OPACITY = 0.9
+DOT_FILL_OPACITY = 0.82
 
 FONT = "Inter,Segoe UI,Arial,sans-serif"
 RED = "#dc2626"
@@ -227,8 +227,8 @@ MTP_6BIT_BOTTOM = 768.0
 MTP_6BIT_LABEL_X = 72
 MTP_6BIT_DIRECT_COLOR = "#2eaf5f"
 MTP_6BIT_DIRECT_TEXT = "#176c37"
-MTP_6BIT_MTP_COLOR = RED
-MTP_6BIT_MTP_TEXT = "#991b1b"
+MTP_6BIT_MTP_COLOR = "#c084fc"
+MTP_6BIT_MTP_TEXT = "#7e22ce"
 MTP_6BIT_ROW_GAP = 32.0
 MTP_6BIT_GROUP_GAP = 18.0
 MTP_6BIT_GROUP_SIZE = 3
@@ -246,13 +246,13 @@ EMBEDDING_FAIR_ARTIFACTS = (
 )
 EMBEDDING_AX_REFRESH_ARTIFACTS = (
     Path(
-        "benchmarks/results/embedding-fair/2026-06-29-qwen-refresh/"
-        "2026-06-29-003717/embedding_fair.json"
+        "benchmarks/results/embedding-fair/2026-07-02-qwen-ax-only-refresh/"
+        "2026-07-02-124957/embedding_fair.json"
     ),
     Path(
         "benchmarks/results/embedding-fair/"
-        "2026-06-29-embeddinggemma-refresh/"
-        "2026-06-29-003743/embedding_fair.json"
+        "2026-07-02-embeddinggemma-ax-only-refresh/"
+        "2026-07-02-125026/embedding_fair.json"
     ),
 )
 # Same-session paired ingest artifacts: the reference (mlx-lm / mlx-embeddings)
@@ -665,12 +665,19 @@ def render_family_chart(spec: ChartSpec, engine_groups: list[EngineGroupStats]) 
         )
 
     n_engines = len(engine_groups)
+    n_prompt_groups = len(PROMPT_TOKENS)
     plot_width = FAMILY_RIGHT - FAMILY_LEFT
     plot_height = FAMILY_BOTTOM - FAMILY_TOP
-    group_step = plot_width / n_engines
-    sub_spacing = 30.0
-    sub_bar_w = 16.0
-    sub_offsets = [-sub_spacing, 0.0, sub_spacing]
+    group_step = plot_width / n_prompt_groups
+    sub_spacing = 54.0
+    sub_bar_w = 18.0
+    sub_offsets = [
+        (idx - (n_engines - 1) / 2) * sub_spacing for idx in range(n_engines)
+    ]
+    stats_by_engine_prompt = {
+        eg.engine: {cs.prompt_tokens: cs for cs in eg.context_stats}
+        for eg in engine_groups
+    }
 
     def fy(v: float) -> float:
         clamped = max(0.0, min(v, axis_max))
@@ -679,7 +686,7 @@ def render_family_chart(spec: ChartSpec, engine_groups: list[EngineGroupStats]) 
     engine_desc = ", ".join(eg.label for eg in engine_groups)
     ctx_desc = "/".join(str(pt) for pt in PROMPT_TOKENS)
     family_label = FAMILY_LABELS.get(spec.family, spec.family)
-    direction_fill = RED if lower_is_better else "#374151"
+    direction_fill = RED
 
     header_right = FAMILY_CHART_WIDTH - 34
     unit_w = max(48, len(spec.unit) * 7 + 24)
@@ -692,6 +699,7 @@ def render_family_chart(spec: ChartSpec, engine_groups: list[EngineGroupStats]) 
         f"<title>{escape(spec.title)}</title>",
         f"<desc>Grouped box-and-whisker plot comparing {escape(engine_desc)}"
         f" at {escape(ctx_desc)} prompt tokens for {escape(family_label)} models."
+        f" The x-axis is grouped by prompt-token count, with engines nested inside each group."
         f" Within each prompt-token group, the best median value label is red.</desc>",
         # Background
         f'<rect width="{FAMILY_CHART_WIDTH}" height="{FAMILY_CHART_HEIGHT}" fill="#f8fafc"/>',
@@ -701,7 +709,7 @@ def render_family_chart(spec: ChartSpec, engine_groups: list[EngineGroupStats]) 
         # Subtitle
         f'<text x="{FAMILY_LEFT}" y="46" font-family="{FONT}"'
         f' font-size="11" fill="#4b5563">'
-        f'{escape(spec.subtitle) if spec.subtitle else "box=IQR | whiskers=min/max | dots=runs | opacity: 128/512/2048 tok"}'
+        f'{escape(spec.subtitle) if spec.subtitle else "grouped by prompt tokens | box=IQR | whiskers=min/max | dots=runs"}'
         f"</text>",
         # Footnote (versions)
         f'<text x="{FAMILY_LEFT}" y="62" font-family="{FONT}"'
@@ -736,16 +744,19 @@ def render_family_chart(spec: ChartSpec, engine_groups: list[EngineGroupStats]) 
         )
 
     dot_jitter = (-3.0, -1.5, 0.0, 1.5, 3.0)
-    y_ctx = FAMILY_BOTTOM + 15
-    y_eng = FAMILY_BOTTOM + 32
+    y_prompt = FAMILY_BOTTOM + 20
 
-    for i, eg in enumerate(engine_groups):
+    for i, prompt_tokens in enumerate(PROMPT_TOKENS):
         group_center = FAMILY_LEFT + (i + 0.5) * group_step
 
-        for j, cs in enumerate(eg.context_stats):
+        for j, eg in enumerate(engine_groups):
+            try:
+                cs = stats_by_engine_prompt[eg.engine][prompt_tokens]
+            except KeyError as exc:
+                raise ChartError(
+                    f"missing {eg.engine} stats for {prompt_tokens} tok in {spec.title}"
+                ) from exc
             sub_x = group_center + sub_offsets[j]
-            fill_op = CTX_FILL_OPACITY[cs.prompt_tokens]
-            stroke_op = CTX_STROKE_OPACITY[cs.prompt_tokens]
             s = cs.stats
 
             y_min = fy(s.minimum)
@@ -759,10 +770,10 @@ def render_family_chart(spec: ChartSpec, engine_groups: list[EngineGroupStats]) 
             cap_right = sub_x + sub_bar_w * 0.36
             box_left = sub_x - sub_bar_w / 2
             label_x = box_left + sub_bar_w + 4
-            prompt_best = best_by_prompt_tokens[cs.prompt_tokens]
+            prompt_best = best_by_prompt_tokens[prompt_tokens]
             label_fill = RED if math.isclose(s.median, prompt_best) else "#111827"
 
-            sa = f'stroke="{eg.color}" stroke-opacity="{stroke_op}"'
+            sa = f'stroke="{eg.color}" stroke-opacity="{BOX_STROKE_OPACITY}"'
             lines.extend(
                 [
                     f'<line x1="{sub_x:g}" y1="{y_max_v:.1f}"'
@@ -773,51 +784,44 @@ def render_family_chart(spec: ChartSpec, engine_groups: list[EngineGroupStats]) 
                     f' x2="{cap_right:g}" y2="{y_min:.1f}" {sa} stroke-width="1.7"/>',
                     f'<rect x="{box_left:g}" y="{box_y:.1f}"'
                     f' width="{sub_bar_w:g}" height="{box_h:.1f}" rx="2"'
-                    f' fill="{eg.color}" fill-opacity="{fill_op}" {sa} stroke-width="1.7"/>',
+                    f' fill="{eg.color}" fill-opacity="{BOX_FILL_OPACITY}" {sa} stroke-width="1.7"/>',
                     f'<line x1="{box_left:g}" y1="{y_med:.1f}"'
                     f' x2="{box_left + sub_bar_w:g}" y2="{y_med:.1f}" {sa} stroke-width="2.4"/>',
                     f'<text x="{label_x:g}" y="{y_med + 3.5:.1f}" text-anchor="start"'
                     f' font-family="{FONT}" font-size="9" font-weight="700"'
                     f' fill="{label_fill}" stroke="#ffffff" stroke-width="3"'
                     f' paint-order="stroke">{escape(short_number(s.median))}</text>',
-                    f'<text x="{sub_x:g}" y="{y_ctx}"'
-                    f' text-anchor="middle" font-family="{FONT}"'
-                    f' font-size="9" fill="#6b7280">{cs.prompt_tokens}</text>',
                 ]
             )
 
             for vi, val in enumerate(s.values):
                 dx = dot_jitter[vi % len(dot_jitter)]
                 dy = fy(val)
-                dot_op = round(stroke_op * 0.9, 2)
                 lines.append(
                     f'<circle cx="{sub_x + dx:g}" cy="{dy:.1f}" r="1.4"'
-                    f' fill="{eg.dot_color}" fill-opacity="{dot_op}"/>'
+                    f' fill="{eg.dot_color}" fill-opacity="{DOT_FILL_OPACITY}"/>'
                 )
 
         lines.append(
-            f'<text x="{group_center:g}" y="{y_eng}"'
+            f'<text x="{group_center:g}" y="{y_prompt}"'
             f' text-anchor="middle" font-family="{FONT}"'
-            f' font-size="10" font-weight="700" fill="#111827">{escape(eg.label)}</text>'
+            f' font-size="11" font-weight="700" fill="#111827">{prompt_tokens} tok</text>'
         )
 
-    # Context-length legend (opacity shading guide)
+    # Engine legend.
     legend_y = FAMILY_BOTTOM + 56
     legend_x = FAMILY_LEFT
-    legend_step = 120
-    for pt, label in ((128, "128 tok"), (512, "512 tok"), (2048, "2048 tok")):
-        fill_op = CTX_FILL_OPACITY[pt]
-        stroke_op = CTX_STROKE_OPACITY[pt]
+    for eg in engine_groups:
         lines.extend(
             [
                 f'<rect x="{legend_x}" y="{legend_y - 9}" width="10" height="10" rx="2"'
-                f' fill="#6b7280" fill-opacity="{fill_op}"'
-                f' stroke="#6b7280" stroke-opacity="{stroke_op}" stroke-width="1.4"/>',
+                f' fill="{eg.color}" fill-opacity="0.5"'
+                f' stroke="{eg.color}" stroke-width="1.4"/>',
                 f'<text x="{legend_x + 14}" y="{legend_y}"'
-                f' font-family="{FONT}" font-size="10" fill="#374151">{escape(label)}</text>',
+                f' font-family="{FONT}" font-size="10" fill="#374151">{escape(eg.label)}</text>',
             ]
         )
-        legend_x += legend_step
+        legend_x += max(170, len(eg.label) * 7 + 30)
 
     lines.append("</svg>")
     return "".join(lines) + "\n"
@@ -951,7 +955,7 @@ def render_mtp_metric_chart(rows: list[MtpBenchmarkRow], metric: str) -> str:
         ),
         f'<rect width="{MTP_WIDTH}" height="{MTP_HEIGHT}" fill="#ffffff"/>',
         f'<text x="{MTP_LEFT}" y="22" font-family="{FONT}" font-size="16" font-weight="700" fill="#111827">{escape(title)}</text>',
-        f'<text x="{MTP_RIGHT}" y="22" text-anchor="end" font-family="{FONT}" font-size="10" font-weight="700" fill="#374151">Higher is better</text>',
+        f'<text x="{MTP_RIGHT}" y="22" text-anchor="end" font-family="{FONT}" font-size="10" font-weight="700" fill="{RED}">Higher is better</text>',
     ]
 
     for value in (0.0, axis_max / 2, axis_max):
@@ -1083,7 +1087,7 @@ def render_mtp_6bit_ax_acceleration_chart(
             '<desc id="desc">Horizontal grouped bar chart comparing AX direct '
             "decode throughput with MTP off against AX MTP decode throughput "
             "with MTP on for each supported 6-bit AX MTP package and prompt suite. "
-            "Labels show the resulting same-package speedup.</desc>"
+            "The winning throughput label in each row is red.</desc>"
         ),
         f'<rect width="{MTP_6BIT_WIDTH}" height="{height}" fill="#ffffff"/>',
         f'<text x="{MTP_6BIT_LABEL_X}" y="32" font-family="{FONT}" font-size="20" font-weight="700" fill="#111827">AX MTP decode: MTP off vs MTP on</text>',
@@ -1104,12 +1108,11 @@ def render_mtp_6bit_ax_acceleration_chart(
         )
     lines.extend(
         [
-            f'<text x="{(MTP_6BIT_LEFT + MTP_6BIT_RIGHT) / 2:.1f}" y="{axis_bottom + 40.0:.1f}" text-anchor="middle" font-family="{FONT}" font-size="11" fill="#6b7280">Higher is better</text>',
+            f'<text x="{(MTP_6BIT_LEFT + MTP_6BIT_RIGHT) / 2:.1f}" y="{axis_bottom + 40.0:.1f}" text-anchor="middle" font-family="{FONT}" font-size="11" font-weight="700" fill="{RED}">Higher is better</text>',
             f'<rect x="{MTP_6BIT_LABEL_X}" y="70" width="12" height="12" rx="2" fill="{MTP_6BIT_DIRECT_COLOR}"/>',
             f'<text x="90" y="80" font-family="{FONT}" font-size="12" fill="#374151">MTP off / AX direct</text>',
             f'<rect x="232" y="70" width="12" height="12" rx="2" fill="{MTP_6BIT_MTP_COLOR}"/>',
             f'<text x="250" y="80" font-family="{FONT}" font-size="12" fill="#374151">MTP on / AX MTP</text>',
-            f'<text x="414" y="80" font-family="{FONT}" font-size="12" fill="#6b7280">Speedup label = MTP on / MTP off</text>',
         ]
     )
 
@@ -1129,11 +1132,13 @@ def render_mtp_6bit_ax_acceleration_chart(
         suite = mtp_6bit_suite_label(str(row["suite_id"]))
         direct = float(row["ax_direct_decode_tok_s"])
         mtp = float(row["ax_mtp_decode_tok_s"])
-        speedup = float(row["ax_mtp_speedup_x"])
         direct_width = mtp_6bit_x_scale(direct, axis_max)
         mtp_width = mtp_6bit_x_scale(mtp, axis_max)
         direct_end = MTP_6BIT_LEFT + direct_width
         mtp_end = MTP_6BIT_LEFT + mtp_width
+        row_best = max(direct, mtp)
+        direct_text = RED if math.isclose(direct, row_best) else MTP_6BIT_DIRECT_TEXT
+        mtp_text = RED if math.isclose(mtp, row_best) else MTP_6BIT_MTP_TEXT
 
         lines.extend(
             [
@@ -1147,9 +1152,8 @@ def render_mtp_6bit_ax_acceleration_chart(
                 ),
                 f'<rect x="{MTP_6BIT_LEFT:.0f}" y="{label_y - 15.0:.1f}" width="{direct_width:.1f}" height="10" rx="2" fill="{MTP_6BIT_DIRECT_COLOR}"/>',
                 f'<rect x="{MTP_6BIT_LEFT:.0f}" y="{label_y - 2.0:.1f}" width="{mtp_width:.1f}" height="10" rx="2" fill="{MTP_6BIT_MTP_COLOR}"/>',
-                f'<text x="{direct_end + 5.0:.1f}" y="{label_y - 7.0:.1f}" font-family="{FONT}" font-size="10" font-weight="700" fill="{MTP_6BIT_DIRECT_TEXT}">{direct:.1f}</text>',
-                f'<text x="{mtp_end + 5.0:.1f}" y="{label_y + 6.0:.1f}" font-family="{FONT}" font-size="10" font-weight="700" fill="{MTP_6BIT_MTP_TEXT}">{mtp:.1f}</text>',
-                f'<text x="{mtp_end + 52.0:.1f}" y="{label_y:.1f}" font-family="{FONT}" font-size="11" font-weight="700" fill="#111827">{speedup:.2f}x</text>',
+                f'<text x="{direct_end + 5.0:.1f}" y="{label_y - 7.0:.1f}" font-family="{FONT}" font-size="10" font-weight="700" fill="{direct_text}">{direct:.1f}</text>',
+                f'<text x="{mtp_end + 5.0:.1f}" y="{label_y + 6.0:.1f}" font-family="{FONT}" font-size="10" font-weight="700" fill="{mtp_text}">{mtp:.1f}</text>',
             ]
         )
         label_y += MTP_6BIT_ROW_GAP
@@ -1520,7 +1524,7 @@ def render_ngram_opportunity_chart(artifact: dict) -> str:
         f'<text x="{NGRAM_RIGHT}" y="22" text-anchor="end" font-family="{FONT}"'
         f' font-size="10" fill="#6b7280">tok/s</text>',
         f'<text x="{NGRAM_RIGHT}" y="38" text-anchor="end" font-family="{FONT}"'
-        f' font-size="10" font-weight="700" fill="#374151">Higher is better</text>',
+        f' font-size="10" font-weight="700" fill="{RED}">Higher is better</text>',
     ]
 
     # Grid lines and Y axis labels
@@ -1639,7 +1643,7 @@ def _render_ngram_grouped_bars(
         f'<text x="{NGRAM_RIGHT}" y="22" text-anchor="end" font-family="{FONT}"'
         f' font-size="10" fill="#6b7280">{escape(y_label)}</text>',
         f'<text x="{NGRAM_RIGHT}" y="38" text-anchor="end" font-family="{FONT}"'
-        f' font-size="10" font-weight="700" fill="#374151">Higher is better</text>',
+        f' font-size="10" font-weight="700" fill="{RED}">Higher is better</text>',
     ]
 
     for grid_val in (0.0, axis_max * 0.5, axis_max):
@@ -1897,7 +1901,7 @@ def render_ngram_models_speedup_chart(artifacts: dict[str, dict]) -> str:
         f'<text x="{LEFT}" y="22" font-family="{FONT}" font-size="13" font-weight="700" fill="#111827">{escape(title)}</text>',
         f'<text x="{LEFT}" y="36" font-family="{FONT}" font-size="9" fill="#6b7280">{escape(subtitle)}</text>',
         f'<text x="{RIGHT}" y="22" text-anchor="end" font-family="{FONT}" font-size="10" fill="#6b7280">tok/s</text>',
-        f'<text x="{RIGHT}" y="36" text-anchor="end" font-family="{FONT}" font-size="10" font-weight="700" fill="#374151">Higher is better</text>',
+        f'<text x="{RIGHT}" y="36" text-anchor="end" font-family="{FONT}" font-size="10" font-weight="700" fill="{RED}">Higher is better</text>',
     ]
     for grid_val in (0.0, axis_max * 0.5, axis_max):
         gy = fy(grid_val)
@@ -2022,7 +2026,7 @@ def render_ngram_models_accept_chart(artifacts: dict[str, dict]) -> str:
         f'<text x="{LEFT}" y="22" font-family="{FONT}" font-size="13" font-weight="700" fill="#111827">{escape(title)}</text>',
         f'<text x="{LEFT}" y="36" font-family="{FONT}" font-size="9" fill="#6b7280">{escape(subtitle)}</text>',
         f'<text x="{RIGHT}" y="22" text-anchor="end" font-family="{FONT}" font-size="10" fill="#6b7280">accept %</text>',
-        f'<text x="{RIGHT}" y="36" text-anchor="end" font-family="{FONT}" font-size="10" font-weight="700" fill="#374151">Higher is better</text>',
+        f'<text x="{RIGHT}" y="36" text-anchor="end" font-family="{FONT}" font-size="10" font-weight="700" fill="{RED}">Higher is better</text>',
     ]
     for grid_val in (0.0, axis_max * 0.5, axis_max):
         gy = fy(grid_val)
@@ -2394,7 +2398,7 @@ def main() -> int:
         load_embedding_fair_delta_rows(args.readme.parent),
         title="Embedding throughput: AX vs reference",
         subtitle="Batch=8, contiguous CPU float32 [B,H] output; higher delta means AX is faster.",
-        source_label="Sources: embedding-fair reference baselines from 2026-06-28 and AX refresh artifacts from 2026-06-29",
+        source_label="Sources: embedding-fair reference baselines from 2026-06-28 and AX refresh artifacts from 2026-07-02",
     )
     if not write_chart(embedding_fair_output_path, embedding_fair_content, args.check):
         mismatches.append(embedding_fair_output_path)

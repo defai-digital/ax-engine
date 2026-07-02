@@ -194,7 +194,7 @@ def write_box_whisker_svg(
         step = span / (count - 1) if count > 1 else 0.0
         return [start_x + step * i for i in range(count)]
 
-    direction_fill = "#dc2626" if lower_is_better else "#374151"
+    direction_fill = "#dc2626"
     best_line_label = "lowest median" if lower_is_better else "highest median"
     best_side_label = "lowest" if lower_is_better else "highest"
     best_label = f"{best_side_label}: {point_label(best_value, unit)}"

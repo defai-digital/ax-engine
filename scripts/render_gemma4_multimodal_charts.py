@@ -335,7 +335,7 @@ def render_bar_chart(
         return top + plot_h - (max(0.0, min(value, axis_max)) / axis_max) * plot_h
 
     direction = "Lower is better" if lower_is_better else "Higher is better"
-    direction_fill = "#dc2626" if lower_is_better else "#374151"
+    direction_fill = "#dc2626"
     bar_gap = 12
     bar_width = min(56, max(18, (plot_w - bar_gap * (len(series) + 1)) / max(1, len(series))))
 

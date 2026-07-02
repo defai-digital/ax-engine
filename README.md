@@ -355,7 +355,7 @@ Qwen peer comparison below. Every row uses the `flappy` suite, sampled decode
 (`temperature=0.6`, `top_p=0.95`, `top_k=20`), 1000 generated tokens, 5
 measured repetitions, 1 warmup, 15 s cooldown, and a clean `d4c59ffc` build.
 
-<img src="docs/assets/perf-mtp-6bit-ax-acceleration.svg" alt="AX Engine 6-bit MTP package acceleration chart showing direct decode, MTP decode, and speedup for Qwen3.6, Gemma 4, and GLM-4.7 Flash">
+<img src="docs/assets/perf-mtp-6bit-ax-acceleration.svg" alt="AX Engine 6-bit MTP package acceleration chart comparing direct decode and MTP decode for Qwen3.6, Gemma 4, and GLM-4.7 Flash">
 
 | Target | AX direct decode | AX MTP decode | AX speedup | AX MTP prefill | AX MTP TTFT | AX accept |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -581,32 +581,32 @@ The prefill and TTFT advantage is the practical direct-mode story. The refreshed
 
 <p>
 <strong>Gemma 4 decode rate</strong><br>
-<img width="100%" src="docs/assets/perf-gemma4-decode-box-whisker.svg" alt="Grouped box-and-whisker plot comparing llama.cpp Metal, mlx_lm, and ax_engine direct decode rates for Gemma 4 models at 128/512/2048 prompt tokens with the best median label in each prompt-token group shown in red">
+<img width="100%" src="docs/assets/perf-gemma4-decode-box-whisker.svg" alt="Grouped box-and-whisker plot comparing llama.cpp Metal, mlx_lm, and ax_engine direct decode rates for Gemma 4 models, grouped into 128, 512, and 2048 prompt-token buckets with the best median label in each bucket shown in red">
 </p>
 
 <p>
 <strong>Qwen 3.6 decode rate</strong><br>
-<img width="100%" src="docs/assets/perf-qwen-decode-box-whisker.svg" alt="Grouped box-and-whisker plot comparing llama.cpp Metal, mlx_lm, and ax_engine direct decode rates for Qwen 3.6 models at 128/512/2048 prompt tokens with the best median label in each prompt-token group shown in red">
+<img width="100%" src="docs/assets/perf-qwen-decode-box-whisker.svg" alt="Grouped box-and-whisker plot comparing llama.cpp Metal, mlx_lm, and ax_engine direct decode rates for Qwen 3.6 models, grouped into 128, 512, and 2048 prompt-token buckets with the best median label in each bucket shown in red">
 </p>
 
 <p>
 <strong>Gemma 4 prefill rate</strong><br>
-<img width="100%" src="docs/assets/perf-gemma4-prefill-box-whisker.svg" alt="Grouped box-and-whisker plot comparing llama.cpp Metal, mlx_lm, and ax_engine prefill rates for Gemma 4 models at 128/512/2048 prompt tokens with the best median label in each prompt-token group shown in red">
+<img width="100%" src="docs/assets/perf-gemma4-prefill-box-whisker.svg" alt="Grouped box-and-whisker plot comparing llama.cpp Metal, mlx_lm, and ax_engine prefill rates for Gemma 4 models, grouped into 128, 512, and 2048 prompt-token buckets with the best median label in each bucket shown in red">
 </p>
 
 <p>
 <strong>Qwen 3.6 prefill rate</strong><br>
-<img width="100%" src="docs/assets/perf-qwen-prefill-box-whisker.svg" alt="Grouped box-and-whisker plot comparing llama.cpp Metal, mlx_lm, and ax_engine prefill rates for Qwen 3.6 models at 128/512/2048 prompt tokens with the best median label in each prompt-token group shown in red">
+<img width="100%" src="docs/assets/perf-qwen-prefill-box-whisker.svg" alt="Grouped box-and-whisker plot comparing llama.cpp Metal, mlx_lm, and ax_engine prefill rates for Qwen 3.6 models, grouped into 128, 512, and 2048 prompt-token buckets with the best median label in each bucket shown in red">
 </p>
 
 <p>
 <strong>Gemma 4 TTFT</strong><br>
-<img width="100%" src="docs/assets/perf-gemma4-ttft-box-whisker.svg" alt="Grouped box-and-whisker plot comparing llama.cpp Metal, mlx_lm, and ax_engine TTFT for Gemma 4 models at 128/512/2048 prompt tokens with the best median label in each prompt-token group shown in red">
+<img width="100%" src="docs/assets/perf-gemma4-ttft-box-whisker.svg" alt="Grouped box-and-whisker plot comparing llama.cpp Metal, mlx_lm, and ax_engine TTFT for Gemma 4 models, grouped into 128, 512, and 2048 prompt-token buckets with the best median label in each bucket shown in red">
 </p>
 
 <p>
 <strong>Qwen 3.6 TTFT</strong><br>
-<img width="100%" src="docs/assets/perf-qwen-ttft-box-whisker.svg" alt="Grouped box-and-whisker plot comparing llama.cpp Metal, mlx_lm, and ax_engine TTFT for Qwen 3.6 models at 128/512/2048 prompt tokens with the best median label in each prompt-token group shown in red">
+<img width="100%" src="docs/assets/perf-qwen-ttft-box-whisker.svg" alt="Grouped box-and-whisker plot comparing llama.cpp Metal, mlx_lm, and ax_engine TTFT for Qwen 3.6 models, grouped into 128, 512, and 2048 prompt-token buckets with the best median label in each bucket shown in red">
 </p>
 
 > **`llama.cpp Metal*` column** — Shape-compatible reference produced by Metal-enabled `llama-bench`. `llama-bench` generates its own internal synthetic prompt tokens and does not consume the harness prompt JSON, so these numbers are **not** prompt-hash parity with the other columns. No percentage delta is shown. MLX bit-widths are mapped to the nearest Unsloth GGUF quant (4→Q4_K_M, 6→Q6_K), with explicit UD-* Unsloth Dynamic rows only when no standard root-level K-quant is published. Source: `benchmarks/manifests/llama_cpp_metal/inventory.json`, `scripts/bench_llama_cpp_metal_sweep.py`.
@@ -773,24 +773,26 @@ diagnosis.
 
 | Model | Reference | Pooling | Workload | Batch | Max tokens | Reference tok/s | AX tok/s | AX vs |
 | --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: |
-| Qwen3-Embedding 0.6B 8-bit | `mlx-lm` | last | short query | 8 | 15 | 8,343.2 | 9,294.5 | +11.4% |
-|  |  |  | 64-token chunks | 8 | 64 | 40,390.9 | 39,788.5 | -1.5% |
-|  |  |  | 256-token chunks | 8 | 256 | 47,269.0 | 47,487.2 | +0.5% |
-| Qwen3-Embedding 4B 4-bit DWQ | `mlx-lm` | last | short query | 8 | 15 | 2,227.1 | 2,455.4 | +10.3% |
-|  |  |  | 64-token chunks | 8 | 64 | 6,484.7 | 6,455.2 | -0.5% |
-|  |  |  | 256-token chunks | 8 | 256 | 6,719.9 | 6,822.9 | +1.5% |
-| Qwen3-Embedding 8B 4-bit DWQ | `mlx-lm` | last | short query | 8 | 15 | 1,394.6 | 1,530.9 | +9.8% |
-|  |  |  | 64-token chunks | 8 | 64 | 3,057.3 | 3,439.5 | +12.5% |
-|  |  |  | 256-token chunks | 8 | 256 | 2,850.1 | 2,852.9 | +0.1% |
-| EmbeddingGemma 300M 8-bit | `mlx-embeddings` | mean + Dense | short query | 8 | 15 | 9,373.9 | 14,158.6 | +51.0% |
-|  |  |  | 64-token chunks | 8 | 64 | 49,857.6 | 79,181.9 | +58.8% |
-|  |  |  | 256-token chunks | 8 | 256 | 122,935.6 | 140,586.5 | +14.4% |
+| Qwen3-Embedding 0.6B 8-bit | `mlx-lm` | last | short query | 8 | 15 | 8,343.2 | 10,523.2 | +26.1% |
+|  |  |  | 64-token chunks | 8 | 64 | 40,390.9 | 37,495.3 | -7.2% |
+|  |  |  | 256-token chunks | 8 | 256 | 47,269.0 | 48,748.8 | +3.1% |
+| Qwen3-Embedding 4B 4-bit DWQ | `mlx-lm` | last | short query | 8 | 15 | 2,227.1 | 2,454.3 | +10.2% |
+|  |  |  | 64-token chunks | 8 | 64 | 6,484.7 | 6,498.5 | +0.2% |
+|  |  |  | 256-token chunks | 8 | 256 | 6,719.9 | 7,015.8 | +4.4% |
+| Qwen3-Embedding 8B 4-bit DWQ | `mlx-lm` | last | short query | 8 | 15 | 1,394.6 | 1,486.3 | +6.6% |
+|  |  |  | 64-token chunks | 8 | 64 | 3,057.3 | 3,513.0 | +14.9% |
+|  |  |  | 256-token chunks | 8 | 256 | 2,850.1 | 3,560.2 | +24.9% |
+| EmbeddingGemma 300M 8-bit | `mlx-embeddings` | mean + Dense | short query | 8 | 15 | 9,373.9 | 14,518.6 | +54.9% |
+|  |  |  | 64-token chunks | 8 | 64 | 49,857.6 | 55,440.0 | +11.2% |
+|  |  |  | 256-token chunks | 8 | 256 | 122,935.6 | 121,188.5 | -1.4% |
 
-The current AX-only refresh is workload-dependent rather than one-sided. Qwen
+The 2026-07-02 AX-only refresh is workload-dependent rather than one-sided. Qwen
 short-query fan-out remains faster than the retained `mlx-lm` reference across
 the listed model sizes, while 64-token and 256-token chunk rows range from
-1.5% behind to 12.5% ahead. EmbeddingGemma is faster than the retained
-`mlx-embeddings` batch=8 baseline in this refresh, though it remains a
+7.2% behind to 24.9% ahead. EmbeddingGemma is faster than the retained
+`mlx-embeddings` batch=8 baseline for short-query and 64-token chunks in this
+refresh, while the 256-token chunk row is 1.4% below that retained baseline. It
+remains a
 different shape from the Qwen embedders: a Gemma 3 bidirectional encoder with
 mean pooling, a two-layer Dense projection head, and L2 normalization
 (`model_family: embeddinggemma`). Its reference row uses `mlx-embeddings`
@@ -802,7 +804,10 @@ this harness.
 For larger RAG ingest jobs, use the sustained scale harness instead of
 extrapolating from one isolated batch. The scale harness keeps the same
 contiguous CPU `float32 [B,H]` output layout but embeds a fixed
-corpus of 512 chunks per trial, divided into batches. For
+corpus of 512 chunks per trial, divided into batches. The ingest-scale charts
+only include models with same-session paired reference+AX artifacts; the 4B/8B
+DWQ embedders are therefore covered in the fair batch=8 table above, but are not
+shown in the ingest-scale delta chart until they have paired scale runs. For
 Qwen3-Embedding 0.6B, AX is at parity to slightly ahead of `mlx-lm` in a
 same-session paired run where both engines are measured interleaved in one
 process: between 0.2% behind and 3.4% ahead across the six shapes (mean about
@@ -846,9 +851,9 @@ reference baselines from
 and
 `benchmarks/results/embedding-fair/2026-06-28-embeddinggemma-after-batch-fix/2026-06-28-051549/`;
 current AX-only refresh from
-`benchmarks/results/embedding-fair/2026-06-29-qwen-refresh/2026-06-29-003717/`
+`benchmarks/results/embedding-fair/2026-07-02-qwen-ax-only-refresh/2026-07-02-124957/`
 and
-`benchmarks/results/embedding-fair/2026-06-29-embeddinggemma-refresh/2026-06-29-003743/`.
+`benchmarks/results/embedding-fair/2026-07-02-embeddinggemma-ax-only-refresh/2026-07-02-125026/`.
 Qwen sustained-scale rows from the same-session paired artifact
 `benchmarks/results/embedding-scale/2026-06-29-qwen-paired-refresh/2026-06-29-003753/`,
 and EmbeddingGemma sustained-scale rows from the same-session paired artifact

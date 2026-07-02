@@ -136,7 +136,7 @@ def render_chart(
     block = n_bars * bar_w + (n_bars - 1) * gap
 
     direction = "Lower is better" if lower_is_better else "Higher is better"
-    direction_fill = "#dc2626" if lower_is_better else "#374151"
+    direction_fill = "#dc2626"
     engine_desc = ", ".join(label for _e, label, *_ in SERIES)
     unit_w = max(48, len(unit) * 7 + 24)
 

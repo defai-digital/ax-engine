@@ -483,7 +483,7 @@ def render_chart(
     unit_w = max(48, len(unit) * 7 + 24)
     best = min(values) if lower_is_better else max(values)
     direction = direction_label or ("Lower is better" if lower_is_better else "Higher is better")
-    direction_fill = RED if lower_is_better else "#374151"
+    direction_fill = RED
 
     def fy(value: float) -> float:
         return BOTTOM - (max(0.0, min(value, axis_max)) / axis_max) * plot_height

@@ -125,9 +125,13 @@ The current README reference-comparison snapshot for Qwen is
 The current README reference-comparison snapshot for EmbeddingGemma is
 `benchmarks/results/embedding-fair/2026-06-28-embeddinggemma-after-batch-fix/2026-06-28-051549/`.
 The current README AX-only refresh snapshots are
-`benchmarks/results/embedding-fair/2026-06-28-qwen-ax-only-refresh/2026-06-28-152458/`
+`benchmarks/results/embedding-fair/2026-07-02-qwen-ax-only-refresh/2026-07-02-124957/`
 and
-`benchmarks/results/embedding-fair/2026-06-28-embeddinggemma-ax-only-mask-refresh/2026-06-28-155600/`.
+`benchmarks/results/embedding-fair/2026-07-02-embeddinggemma-ax-only-refresh/2026-07-02-125026/`.
+The README ingest-scale charts are narrower on purpose: they only include
+models with same-session paired reference+AX scale artifacts. The Qwen 4B/8B
+DWQ fair rows above come from AX-only refreshes, so they should not be divided
+by an older reference-only run for the sustained-scale delta chart.
 All use 2 warmup + 5 measured trials, report medians, and keep the complete
 short-query plus 16/64/256-token matrix in `summary.md`. The Qwen reference
 comparison uses `mlx-lm` as the baseline backend. EmbeddingGemma uses

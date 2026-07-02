@@ -199,7 +199,7 @@ def render_chart(
     header_right = WIDTH - 34
     unit_w = max(48, len(unit) * 7 + 24)
     direction = "Lower is better" if lower_is_better else "Higher is better"
-    direction_fill = RED if lower_is_better else "#374151"
+    direction_fill = RED
 
     def fy(value: float) -> float:
         clamped = max(0.0, min(value, axis_max))

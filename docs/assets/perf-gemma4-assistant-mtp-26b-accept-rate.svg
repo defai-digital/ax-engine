@@ -7,7 +7,7 @@
 <text x="24" y="62" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">Apple M5 Max · gate 0.90 first / 0.999 deep · GPU exact · T=0.6/top_p=0.95/top_k=20</text>
 <rect x="678" y="13" width="48" height="22" rx="11" fill="#eef2ff" stroke="#c7d2fe"/>
 <text x="702.0" y="28" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#3730a3">%</text>
-<text x="726" y="52" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#374151">Higher is better</text>
+<text x="726" y="52" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#dc2626">Higher is better</text>
 <rect x="64" y="86" width="496" height="268" rx="6" fill="#ffffff" stroke="#dbe3ef"/>
 <line x1="64" y1="354.0" x2="560" y2="354.0" stroke="#e5e7eb" stroke-width="1"/>
 <text x="56" y="357.0" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#6b7280">90%</text>
