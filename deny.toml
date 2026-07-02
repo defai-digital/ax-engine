@@ -1,0 +1,43 @@
+# cargo-deny configuration
+# See: https://embarkstudios.github.io/cargo-deny/
+# Rationale: ax-internal/ADR-002-supply-chain-security.md
+
+[advisories]
+version = 2
+ignore = [
+    # Add RUSTSEC IDs here with justification, e.g.:
+    # { id = "RUSTSEC-2023-0001", reason = "Not applicable: we don't use the affected feature" },
+]
+
+[licenses]
+version = 2
+allow = [
+    "Apache-2.0",
+    "MIT",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "MPL-2.0",
+]
+# Block copyleft licenses (GPL-3.0, AGPL-3.0) that are incompatible with Apache-2.0
+confidence-threshold = 0.8
+
+[bans]
+version = 2
+multiple-versions = "warn"
+wildcards = "deny"
+# Highlight specific crates that should not be in the dependency tree
+deny = [
+    # Example: { name = "openssl", reason = "Use rustls instead for pure-Rust TLS" },
+]
+
+[sources]
+version = 2
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+# Allow the vendored block crate (see [patch.crates-io] in Cargo.toml)
+allow-git = []

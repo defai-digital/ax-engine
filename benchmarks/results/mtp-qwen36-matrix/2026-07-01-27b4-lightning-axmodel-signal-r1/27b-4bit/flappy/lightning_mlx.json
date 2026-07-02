@@ -1,0 +1,242 @@
+{
+  "build": {
+    "git_commit": "75132a414bea857efe671c794f29b985b83fcbdf",
+    "git_tracked_dirty": true,
+    "host": "AKMBPM5MAX.local",
+    "platform": "macOS-26.5.1-arm64-arm-64bit-Mach-O"
+  },
+  "cooldown_s": 0.0,
+  "depth_effective_note": "Rapid-MLX reference MTP path is single-draft; requested depth may be capped by runtime.",
+  "depth_requested": 3,
+  "disable_thinking": true,
+  "engine": "rapid_mlx",
+  "ignore_eos": true,
+  "lightning_settings": {
+    "completion_batch_size": 1,
+    "enable_thinking": false,
+    "max_num_seqs": 1,
+    "mtp_draft_temperature": null,
+    "mtp_optimistic": true,
+    "ngram_acceptance_mode": null,
+    "ngram_auto_disable_min_ngram": 0.5,
+    "ngram_auto_disable_mtp_threshold": 0.85,
+    "ngram_enabled": false,
+    "ngram_hybrid_verify": null,
+    "ngram_min_occurrences": null,
+    "ngram_num_draft_tokens": null,
+    "ngram_only_in_think": null,
+    "ngram_self_tune": null,
+    "ngram_skip_tool_calls": null,
+    "prefill_batch_size": 1,
+    "prefill_step_size": null,
+    "prefix_cache": "disabled",
+    "source_profile": "lightning-mlx serve qwen3.6 MTPLX preset",
+    "stream_interval": 1
+  },
+  "lightning_source_identity": {
+    "diff_sha256": null,
+    "git_commit": "ec19b3d8b97ee002d706e06249163bf4347eb5df",
+    "git_describe": "v0.7.0-1-gec19b3d",
+    "is_dirty": false,
+    "modified_files": [],
+    "pyproject_version": "0.6.10",
+    "source_path": ".internal/reference/lightning-mlx"
+  },
+  "max_tokens": 64,
+  "measurement_gates": {
+    "min_decode_time_s": 0.5,
+    "tps_ceiling": 500.0
+  },
+  "model": "/Users/akiralam/.cache/huggingface/hub/models--ax-local--Qwen3.6-27B-MTP/snapshots/v1",
+  "prompt_suite": "/Users/akiralam/code/ax-engine/benchmarks/prompts/mtp-suites/flappy.jsonl",
+  "prompt_suite_sha256": "97e53df42f0b2b456d38164264a674bb2c657e59d68833e42d2c60312d7fd669",
+  "rapid_mtp_patch": {
+    "ignore_eos": true,
+    "mode": "lightning",
+    "patch_path": ".internal/reference/lightning-mlx/vllm_mlx/patches/qwen3_next_mtp.py",
+    "site_dir": "benchmarks/results/mtp-qwen36-matrix/2026-07-01-27b4-lightning-axmodel-signal-r1/27b-4bit/flappy/rapid-server/rapid-compat-site",
+    "sitecustomize": "benchmarks/results/mtp-qwen36-matrix/2026-07-01-27b4-lightning-axmodel-signal-r1/27b-4bit/flappy/rapid-server/rapid-compat-site/sitecustomize.py"
+  },
+  "rapid_python": "/opt/homebrew/var/mtplx/venv-0.3.7/bin/python",
+  "rapid_source": ".internal/reference/lightning-mlx",
+  "repetitions": 1,
+  "require_full_output_tokens": true,
+  "results": [
+    {
+      "category": "game_code",
+      "max_tokens": 64,
+      "prompt_id": "flappy_pipes",
+      "prompt_sha256": "88a801ae372338af36ba5effaf538f6158d0e95fa72ad929dd9673bc5c286325",
+      "runs": [
+        {
+          "content_head": "def\n    def spawn(self, spawn_pipe:\n        self,\n        self.spawn_pipe:\n    self.spawn_pipe:\n        self.spawn_pipe:\n    self.spawn_pipe:\n        self.spawn_pipe:\n    self.spawn_pipe:\n        self.spawn_pipe:\n    self.spawn_pipe:\n       ",
+          "content_tail": "",
+          "decode_elapsed_s": 0.8671746659092605,
+          "decode_tok_s": 73.80289406044162,
+          "elapsed_s": 1.4378968329401687,
+          "end_to_end_tok_s": 44.5094519536111,
+          "ended_at": 1782943301.404396,
+          "fixed_token_complete": true,
+          "generated_tokens": 64,
+          "measured": true,
+          "mtp_acceptance_ratio": 1.0,
+          "prompt_tokens": 273,
+          "reasoning_head": "",
+          "reasoning_tail": "",
+          "reasoning_text_chars": 0,
+          "rejected_reason": null,
+          "repetition": 0,
+          "requested_tokens": 64,
+          "seed": 44,
+          "silent_thinking_suspected": false,
+          "started_at": 1782943299.9664798,
+          "stream_chunk_stats": {
+            "empty_delta": 1,
+            "total": 17,
+            "with_content": 16,
+            "with_reasoning_content": 0,
+            "with_tool_calls": 0
+          },
+          "text": "def\n    def spawn(self, spawn_pipe:\n        self,\n        self.spawn_pipe:\n    self.spawn_pipe:\n        self.spawn_pipe:\n    self.spawn_pipe:\n        self.spawn_pipe:\n    self.spawn_pipe:\n        self.spawn_pipe:\n    self.spawn_pipe:\n       ",
+          "ttft_content_s": 0.5707221670309082,
+          "ttft_reasoning_s": null,
+          "ttft_s": 0.5707221670309082,
+          "visible_text_chars": 241
+        }
+      ],
+      "summary": {
+        "accept_rate": 1.0,
+        "accepted_drafts": null,
+        "decode_tok_s": {
+          "median": 73.80289406044162,
+          "p10": 73.80289406044162,
+          "p90": 73.80289406044162,
+          "values": [
+            73.80289406044162
+          ]
+        },
+        "drafted_tokens": null,
+        "end_to_end_tok_s": {
+          "median": 44.5094519536111,
+          "p10": 44.5094519536111,
+          "p90": 44.5094519536111,
+          "values": [
+            44.5094519536111
+          ]
+        },
+        "generated_tokens": 64,
+        "ngram_accept_rate": null,
+        "runs": 1,
+        "valid_runs": 1
+      }
+    }
+  ],
+  "runtime_model_layout": {
+    "mode": "unchanged",
+    "model": "/Volumes/Ext4T/models/hub/models--ax-local--Qwen3.6-27B-MTP/snapshots/v1"
+  },
+  "sampling": {
+    "temperature": 0.6,
+    "top_k": 20,
+    "top_p": 0.95
+  },
+  "schema": "ax.rapid_mlx.prompt_suite_mtp.v2",
+  "server_command": [
+    "/opt/homebrew/var/mtplx/venv-0.3.7/bin/python",
+    "-m",
+    "vllm_mlx.cli",
+    "serve",
+    "/Volumes/Ext4T/models/hub/models--ax-local--Qwen3.6-27B-MTP/snapshots/v1",
+    "--served-model-name",
+    "local",
+    "--port",
+    "18766",
+    "--max-num-seqs",
+    "1",
+    "--prefill-batch-size",
+    "1",
+    "--completion-batch-size",
+    "1",
+    "--default-temperature",
+    "0.6",
+    "--default-top-p",
+    "0.95",
+    "--stream-interval",
+    "1",
+    "--enable-mtp",
+    "--mtp-num-draft-tokens",
+    "3",
+    "--log-level",
+    "WARNING",
+    "--no-thinking",
+    "--disable-prefix-cache",
+    "--mtp-optimistic"
+  ],
+  "server_header_info": {
+    "alias_line": null,
+    "effective_mtp_depth": null,
+    "features_line": "Features: tools: qwen3_coder_xml, reasoning: qwen3, max-concurrent: 1, gc-control, idle-unload: 60s",
+    "model_line": "Model: /Volumes/Ext4T/models/hub/models--ax-local--Qwen3.6-27B-MTP/snapshots/v1",
+    "mtp_depth_cap_warnings": 0,
+    "mtp_line": "MTP: enabled, draft_tokens=3, draft_temp=0.5",
+    "ngram_line": null
+  },
+  "server_log": "benchmarks/results/mtp-qwen36-matrix/2026-07-01-27b4-lightning-axmodel-signal-r1/27b-4bit/flappy/rapid-server/rapid-mlx-server-lightning_mlx-18766.log",
+  "server_log_head": [
+    "",
+    "  lightning-mlx",
+    "  \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500",
+    "  Features: tools: qwen3_coder_xml, reasoning: qwen3, max-concurrent: 1, gc-control, idle-unload: 60s",
+    "  Model: /Volumes/Ext4T/models/hub/models--ax-local--Qwen3.6-27B-MTP/snapshots/v1",
+    "Mode: Continuous batching (for multiple concurrent users)",
+    "MTP: enabled, draft_tokens=3, draft_temp=0.5",
+    "Stream interval: 1 tokens",
+    "",
+    "  Ready: http://localhost:18766/v1",
+    "  Docs:  http://localhost:18766/docs",
+    ""
+  ],
+  "server_log_tail": [
+    "",
+    "  lightning-mlx",
+    "  \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500",
+    "  Features: tools: qwen3_coder_xml, reasoning: qwen3, max-concurrent: 1, gc-control, idle-unload: 60s",
+    "  Model: /Volumes/Ext4T/models/hub/models--ax-local--Qwen3.6-27B-MTP/snapshots/v1",
+    "Mode: Continuous batching (for multiple concurrent users)",
+    "MTP: enabled, draft_tokens=3, draft_temp=0.5",
+    "Stream interval: 1 tokens",
+    "",
+    "  Ready: http://localhost:18766/v1",
+    "  Docs:  http://localhost:18766/docs",
+    ""
+  ],
+  "server_profile": "lightning_serve_preset",
+  "suite": "flappy",
+  "summary": {
+    "accept_rate": 1.0,
+    "accepted_drafts": null,
+    "case_count": 1,
+    "decode_tok_s": {
+      "median": 73.80289406044162,
+      "p10": 73.80289406044162,
+      "p90": 73.80289406044162,
+      "values": [
+        73.80289406044162
+      ]
+    },
+    "drafted_tokens": null,
+    "end_to_end_tok_s": {
+      "median": 44.5094519536111,
+      "p10": 44.5094519536111,
+      "p90": 44.5094519536111,
+      "values": [
+        44.5094519536111
+      ]
+    },
+    "generated_tokens": 64,
+    "ngram_accept_rate": null,
+    "runs": 1,
+    "valid_runs": 1
+  },
+  "warmup_repetitions": 0
+}

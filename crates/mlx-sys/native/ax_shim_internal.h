@@ -15,9 +15,12 @@
 #include <array>
 #include <cstdint>
 #include <cstring>
+#include <memory>
+#include <new>
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -95,12 +98,24 @@ inline T& unwrap_ref(void* ctx, const char* type_name) {
 }
 
 /// Allocate a new tagged handle wrapping the given object.
+/// Aggregates are brace-initialized: std::construct_at's parenthesized
+/// aggregate init needs P0960, which Apple Clang < 16 (Xcode 15.x, still
+/// used in CI) does not implement.
 template<uint32_t Magic, typename T, typename... Args>
 inline void* make_handle(Args&&... args) {
   void* mem = ::operator new(sizeof(ax_tagged<T>));
   auto* h = static_cast<ax_tagged<T>*>(mem);
   h->magic = Magic;
-  std::construct_at(&h->obj, std::forward<Args>(args)...);
+  try {
+    if constexpr (std::is_aggregate_v<T>) {
+      ::new (static_cast<void*>(&h->obj)) T{std::forward<Args>(args)...};
+    } else {
+      std::construct_at(&h->obj, std::forward<Args>(args)...);
+    }
+  } catch (...) {
+    ::operator delete(mem);
+    throw;
+  }
   return h;
 }
 

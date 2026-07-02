@@ -1,0 +1,102 @@
+{
+  "contract": {
+    "benchmark_contract": "apples-to-apples",
+    "bits": [
+      4
+    ],
+    "cooldown_s": 0.0,
+    "engines": [
+      "ax_engine"
+    ],
+    "forbidden_modes": [
+      "direct",
+      "mtp-ngram",
+      "ngram"
+    ],
+    "inter_case_cooldown_s": 0.0,
+    "lightning_disable_prefix_cache": false,
+    "lightning_mtp_draft_temperature": 0.5,
+    "lightning_mtp_optimistic": false,
+    "max_tokens": 64,
+    "metrics": [
+      "decode_tok_s",
+      "prefill_tok_s",
+      "ttft_ms",
+      "accept_rate"
+    ],
+    "mode": "mtp",
+    "models": [
+      "27b"
+    ],
+    "mtplx_profile": "stable",
+    "prefill_step_size": null,
+    "prompt_limit": 1,
+    "repetitions": 1,
+    "sampling": {
+      "temperature": 0.6,
+      "top_k": 20,
+      "top_p": 0.95
+    },
+    "suites": [
+      "flappy"
+    ],
+    "warmup_repetitions": 0
+  },
+  "created_at": "2026-07-01",
+  "lanes": [
+    {
+      "command": [
+        "/opt/homebrew/opt/python@3.14/bin/python3.14",
+        "/Users/akiralam/code/ax-engine/scripts/bench_mlx_inference_stack.py",
+        "--model-dir",
+        "/Users/akiralam/.cache/huggingface/hub/models--ax-local--Qwen3.6-27B-MTP/snapshots/v1",
+        "--prompt-source",
+        "real",
+        "--real-prompt-suite",
+        "benchmarks/results/mtp-qwen36-matrix/2026-07-01-27b4-ax-prefill-profile-signal-r1/prompt-subsets/flappy-first1.jsonl",
+        "--generation-tokens",
+        "64",
+        "--repetitions",
+        "1",
+        "--warmup-repetitions",
+        "0",
+        "--cooldown",
+        "0.0",
+        "--inter-case-cooldown",
+        "0.0",
+        "--ax-sampling",
+        "{\"temperature\":0.6,\"top_p\":0.95,\"top_k\":20}",
+        "--skip-mlx-lm",
+        "--no-thinking",
+        "--capture-output-token-ids",
+        "--ax-ngram-accel",
+        "--ax-mtp-disable-ngram-stacking",
+        "--ax-mtp-max-depth",
+        "3",
+        "--output",
+        "benchmarks/results/mtp-qwen36-matrix/2026-07-01-27b4-ax-prefill-profile-signal-r1/27b-4bit/flappy/ax_engine.json",
+        "--no-build-ax-engine"
+      ],
+      "engine": "ax_engine",
+      "metric_contract": {
+        "accept_rate": "measured",
+        "decode_tok_s": "measured",
+        "prefill_tok_s": "measured",
+        "ttft_ms": "measured"
+      },
+      "output_path": "benchmarks/results/mtp-qwen36-matrix/2026-07-01-27b4-ax-prefill-profile-signal-r1/27b-4bit/flappy/ax_engine.json",
+      "reason": null,
+      "status": "supported",
+      "suite": "flappy",
+      "target": {
+        "ax_model_dir": "/Users/akiralam/.cache/huggingface/hub/models--ax-local--Qwen3.6-27B-MTP/snapshots/v1",
+        "bits": 4,
+        "key": "27b-4bit",
+        "label": "Qwen3.6 27B 4-bit",
+        "model": "27b",
+        "mtp_depth": 3
+      }
+    }
+  ],
+  "schema": "ax.qwen36_mtp_matrix.plan.v1"
+}

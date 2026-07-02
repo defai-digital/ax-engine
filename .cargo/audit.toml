@@ -1,0 +1,12 @@
+# cargo-audit configuration
+# See: https://github.com/rustsec/rustsec/tree/main/cargo-audit
+# Rationale: ax-internal/ADR-002-supply-chain-security.md
+
+[advisories]
+ignore = [
+    # Add RUSTSEC IDs here with justification, e.g.:
+    # "RUSTSEC-2023-0001",  # Not applicable: we don't use the affected feature
+]
+
+[output]
+deny = ["warnings"]

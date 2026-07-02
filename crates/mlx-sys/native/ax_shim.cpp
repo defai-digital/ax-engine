@@ -200,7 +200,13 @@ extern "C" mlx_dtype mlx_array_dtype(const mlx_array a) {
     MLX_BOOL, MLX_UINT8, MLX_UINT16, MLX_UINT32, MLX_UINT64,
     MLX_INT8, MLX_INT16, MLX_INT32, MLX_INT64,
     MLX_FLOAT16, MLX_FLOAT32, MLX_FLOAT64, MLX_BFLOAT16, MLX_COMPLEX64};
-  AX_TRY { return m[(int)aref(a).dtype().val()]; }
+  AX_TRY {
+    int idx = (int)aref(a).dtype().val();
+    if (idx < 0 || idx >= (int)(sizeof(m) / sizeof(m[0]))) {
+      throw std::runtime_error("array has a dtype with no mlx_dtype mapping");
+    }
+    return m[idx];
+  }
   catch (const std::exception&) { ax_set_current_error(); return MLX_BOOL; }
   catch (...) { ax_set_current_error(); return MLX_BOOL; }
 }
@@ -233,7 +239,9 @@ extern "C" int mlx_stream_free(mlx_stream s) { typed_delete<AX_MAGIC_STREAM, mx:
 extern "C" bool mlx_stream_equal(mlx_stream a, mlx_stream b) {
   if (!a.ctx && !b.ctx) return true;
   if (!a.ctx || !b.ctx) return false;
-  return sref(a) == sref(b);
+  AX_TRY { return sref(a) == sref(b); }
+  catch (const std::exception&) { ax_set_current_error(); return false; }
+  catch (...) { ax_set_current_error(); return false; }
 }
 extern "C" int mlx_set_default_stream(mlx_stream s) {
   AX_TRY { mx::set_default_stream(s.ctx ? sref(s) : mx::default_stream(mx::default_device())); return 0; } AX_CATCH
@@ -529,14 +537,18 @@ extern "C" int mlx_load_safetensors(mlx_map_string_to_array* r0, mlx_map_string_
   } AX_CATCH
 }
 
-extern "C" mlx_map_string_to_array mlx_map_string_to_array_new(void) { return {make_handle<AX_MAGIC_MAP_SA, str_arr_map>()}; }
+extern "C" mlx_map_string_to_array mlx_map_string_to_array_new(void) {
+  AX_TRY { return {make_handle<AX_MAGIC_MAP_SA, str_arr_map>()}; } AX_CATCH_NULL
+}
 extern "C" int mlx_map_string_to_array_free(mlx_map_string_to_array m) { typed_delete<AX_MAGIC_MAP_SA, str_arr_map>(m.ctx); return 0; }
 
 extern "C" mlx_map_string_to_array_iterator mlx_map_string_to_array_iterator_new(mlx_map_string_to_array m) {
-  auto& map = unwrap_ref<AX_MAGIC_MAP_SA, str_arr_map>(m.ctx, "mlx_map_string_to_array");
-  return mlx_map_string_to_array_iterator{
-      make_handle<AX_MAGIC_ITER_SA, ax_map_iter>(str_arr_map::iterator(map.begin()), &map),
-      m.ctx};
+  AX_TRY {
+    auto& map = unwrap_ref<AX_MAGIC_MAP_SA, str_arr_map>(m.ctx, "mlx_map_string_to_array");
+    return mlx_map_string_to_array_iterator{
+        make_handle<AX_MAGIC_ITER_SA, ax_map_iter>(str_arr_map::iterator(map.begin()), &map),
+        m.ctx};
+  } AX_CATCH_NULL
 }
 extern "C" int mlx_map_string_to_array_iterator_free(mlx_map_string_to_array_iterator it) {
   typed_delete<AX_MAGIC_ITER_SA, ax_map_iter>(it.ctx); return 0;
@@ -570,10 +582,14 @@ extern "C" int mlx_map_string_to_array_iterator_next(
   }
 }
 
-extern "C" mlx_map_string_to_string mlx_map_string_to_string_new(void) { return {make_handle<AX_MAGIC_MAP_SS, str_str_map>()}; }
+extern "C" mlx_map_string_to_string mlx_map_string_to_string_new(void) {
+  AX_TRY { return {make_handle<AX_MAGIC_MAP_SS, str_str_map>()}; } AX_CATCH_NULL
+}
 extern "C" int mlx_map_string_to_string_free(mlx_map_string_to_string m) { typed_delete<AX_MAGIC_MAP_SS, str_str_map>(m.ctx); return 0; }
 
-extern "C" mlx_vector_array mlx_vector_array_new(void) { return {make_handle<AX_MAGIC_VEC_ARRAY, std::vector<mx::array>>()}; }
+extern "C" mlx_vector_array mlx_vector_array_new(void) {
+  AX_TRY { return {make_handle<AX_MAGIC_VEC_ARRAY, std::vector<mx::array>>()}; } AX_CATCH_NULL
+}
 extern "C" int mlx_vector_array_free(mlx_vector_array v) { typed_delete<AX_MAGIC_VEC_ARRAY, std::vector<mx::array>>(v.ctx); return 0; }
 extern "C" int mlx_vector_array_append_value(mlx_vector_array v, const mlx_array a) {
   AX_TRY { varef(v).push_back(aref(a)); return 0; } AX_CATCH }
@@ -583,7 +599,9 @@ extern "C" size_t mlx_vector_array_size(mlx_vector_array v) {
 extern "C" int mlx_vector_array_get(mlx_array* r, const mlx_vector_array v, size_t idx) {
   AX_TRY { aset(r, varef(v).at(idx)); return 0; } AX_CATCH }
 
-extern "C" mlx_vector_string mlx_vector_string_new(void) { return {make_handle<AX_MAGIC_VEC_STRING, std::vector<std::string>>()}; }
+extern "C" mlx_vector_string mlx_vector_string_new(void) {
+  AX_TRY { return {make_handle<AX_MAGIC_VEC_STRING, std::vector<std::string>>()}; } AX_CATCH_NULL
+}
 extern "C" int mlx_vector_string_free(mlx_vector_string v) { typed_delete<AX_MAGIC_VEC_STRING, std::vector<std::string>>(v.ctx); return 0; }
 extern "C" int mlx_vector_string_append_value(mlx_vector_string v, const char* val) {
   AX_TRY { vsref(v).push_back(safe_str(val)); return 0; } AX_CATCH }

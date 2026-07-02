@@ -1,0 +1,24 @@
+$ /opt/homebrew/opt/python@3.14/bin/python3.14 /Users/akiralam/code/ax-engine/scripts/bench_mlx_inference_stack.py --model-dir /Users/akiralam/.cache/huggingface/hub/models--ax-local--Qwen3.6-27B-MTP/snapshots/v1 --prompt-source real --real-prompt-suite /Users/akiralam/code/ax-engine/benchmarks/prompts/mtp-suites/flappy.jsonl --generation-tokens 1000 --repetitions 1 --warmup-repetitions 1 --cooldown 0.0 --inter-case-cooldown 0.0 --ax-sampling '{"temperature":0.6,"top_p":0.95,"top_k":20}' --skip-mlx-lm --no-thinking --capture-output-token-ids --ax-ngram-accel --ax-mtp-disable-ngram-stacking --ax-mtp-max-depth 3 --output benchmarks/results/mtp-qwen36-matrix/2026-07-01-27b4-ax-shapeless-cache-default-signal-r1/27b-4bit/flappy/ax_engine.json --no-build-ax-engine
+
+
+=== AX Engine MLX inference stack ===
+  model: /Users/akiralam/.cache/huggingface/hub/models--ax-local--Qwen3.6-27B-MTP/snapshots/v1
+  model_repo_id: ax-local/Qwen3.6-27B-MTP
+  model_dir: /Users/akiralam/.cache/huggingface/hub/models--ax-local--Qwen3.6-27B-MTP/snapshots/v1
+  prompt_tokens: [128, 512, 2048]
+  generation_tokens: 1000
+  repetitions: 1 + 1 warmup for AX
+  ax_prefix_cache: disabled_for_cold_prefill_benchmark
+  prompt_artifact_root: benchmarks/results/mtp-qwen36-matrix/2026-07-01-27b4-ax-shapeless-cache-default-signal-r1/27b-4bit/flappy/ax_engine-prompts
+  [prompt] real suite=flappy case=flappy_pipes tokens=273 text_sha256=88a801ae3723 path=benchmarks/results/mtp-qwen36-matrix/2026-07-01-27b4-ax-shapeless-cache-default-signal-r1/27b-4bit/flappy/ax_engine-prompts/real-flappy-flappy_pipes-gen-1000-fc913ab80026.json
+  [prompt] real suite=flappy case=flappy_score_gates tokens=374 text_sha256=d30afc995170 path=benchmarks/results/mtp-qwen36-matrix/2026-07-01-27b4-ax-shapeless-cache-default-signal-r1/27b-4bit/flappy/ax_engine-prompts/real-flappy-flappy_score_gates-gen-1000-45ce81d30d46.json
+  [prompt] real suite=flappy case=flappy_collision_checks tokens=432 text_sha256=dc95f5553973 path=benchmarks/results/mtp-qwen36-matrix/2026-07-01-27b4-ax-shapeless-cache-default-signal-r1/27b-4bit/flappy/ax_engine-prompts/real-flappy-flappy_collision_checks-gen-1000-75a7041d3bb7.json
+  [prompt] real suite=flappy case=flappy_sound_channels tokens=264 text_sha256=3510857fe86b path=benchmarks/results/mtp-qwen36-matrix/2026-07-01-27b4-ax-shapeless-cache-default-signal-r1/27b-4bit/flappy/ax_engine-prompts/real-flappy-flappy_sound_channels-gen-1000-baa042e581ac.json
+  [ax-engine] /Users/akiralam/code/ax-engine/target/release/ax-engine-server --mlx --mlx-model-artifacts-dir /Users/akiralam/.cache/huggingface/hub/models--ax-local--Qwen3.6-27B-MTP/snapshots/v1 --model-id /Users/akiralam/.cache/huggingface/hub/models--ax-local--Qwen3.6-27B-MTP/snapshots/v1 --port 51368 --mlx-mtp-disable-ngram-stacking --prefill-chunk 2048 --max-batch-tokens 2048
+  [ax-engine] AX_MLX_MTP_MAX_DEPTH=3
+  [ax-engine] MTP n-gram stacking disabled
+  [ax-engine] prefix cache disabled for cold prefill/TTFT measurement
+  [ax-engine/ax_engine_mlx_pure_mtp] prompt=273 generation=1000 policy=mtp_head_only_no_ngram_stacking kv_compression=disabled
+    warmup 1/1
+    rep 1: prefill=644.7 tok/s decode=61.1 tok/s out=1000
+  [ax-engine/ax_engine_mlx_pure_mtp] prompt=374 generation=1000 policy=mtp_head_only_no_ngram_stacking kv_compression=disabled

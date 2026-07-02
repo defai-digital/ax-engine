@@ -1,0 +1,100 @@
+$ /opt/homebrew/var/mtplx/venv-1.0.4/bin/python /Users/akiralam/code/ax-engine/scripts/bench_rapid_mlx_prompt_suites.py --model /Users/akiralam/.cache/huggingface/hub/models--Youssofal--Qwen3.6-27B-MTPLX-Optimized-Speed/snapshots/be5190f2349594ec941753efc90a4ca5641af174 --suite flappy --prompts benchmarks/results/mtp-qwen36-matrix/2026-07-01-lightning-prefix-disabled-r1/prompt-subsets/flappy-first4.jsonl --output benchmarks/results/mtp-qwen36-matrix/2026-07-01-lightning-prefix-disabled-r1/27b-4bit/flappy/lightning_mlx.json --rapid-source /Users/akiralam/code/ax-engine/.internal/reference/lightning-mlx --lightning-source /Users/akiralam/code/ax-engine/.internal/reference/lightning-mlx --rapid-mtp-patch lightning --lightning-mode --depth 3 --temperature 0.6 --top-p 0.95 --top-k 20 --max-tokens 1000 --repetitions 5 --warmup-repetitions 2 --cooldown 15.0 --inter-case-cooldown 10.0 --ignore-eos --require-full-output-tokens --port 18765 --disable-thinking --mtp-draft-temperature 0.5 --disable-prefix-cache
+
+flappy_pipes rep 1/7: decode=60.04829609423736 out=1000/1000 reject=None
+flappy_pipes rep 2/7: decode=60.21776777184657 out=1000/1000 reject=None
+flappy_pipes rep 3/7: decode=59.280618724939956 out=1000/1000 reject=None
+flappy_pipes rep 4/7: decode=60.05083318288441 out=1000/1000 reject=None
+flappy_pipes rep 5/7: decode=59.72144752330773 out=1000/1000 reject=None
+flappy_pipes rep 6/7: decode=60.5491189010362 out=1000/1000 reject=None
+flappy_pipes rep 7/7: decode=60.48492747131164 out=1000/1000 reject=None
+  [rapid-mlx] inter-case cooldown 10s
+flappy_score_gates rep 1/7: decode=47.53702003936695 out=1000/1000 reject=None
+flappy_score_gates rep 2/7: decode=58.11540657325679 out=1000/1000 reject=None
+flappy_score_gates rep 3/7: decode=56.56368033905328 out=1000/1000 reject=None
+flappy_score_gates rep 4/7: decode=51.779737204836536 out=1000/1000 reject=None
+flappy_score_gates rep 5/7: decode=56.80833315762908 out=1000/1000 reject=None
+flappy_score_gates rep 6/7: decode=57.175874851409695 out=1000/1000 reject=None
+flappy_score_gates rep 7/7: decode=54.203755424468504 out=1000/1000 reject=None
+  [rapid-mlx] inter-case cooldown 10s
+flappy_collision_checks rep 1/7: decode=58.39009259986535 out=1000/1000 reject=None
+flappy_collision_checks rep 2/7: decode=58.80774457610403 out=1000/1000 reject=None
+flappy_collision_checks rep 3/7: decode=59.51069148993413 out=1000/1000 reject=None
+flappy_collision_checks rep 4/7: decode=59.0100416415767 out=1000/1000 reject=None
+flappy_collision_checks rep 5/7: decode=58.811726994752185 out=1000/1000 reject=None
+flappy_collision_checks rep 6/7: decode=58.941419761147046 out=1000/1000 reject=None
+flappy_collision_checks rep 7/7: decode=59.34943508645964 out=1000/1000 reject=None
+  [rapid-mlx] inter-case cooldown 10s
+flappy_sound_channels rep 1/7: decode=60.50012519131272 out=1000/1000 reject=None
+flappy_sound_channels rep 2/7: decode=61.00057303198655 out=1000/1000 reject=None
+flappy_sound_channels rep 3/7: decode=60.78021310423942 out=1000/1000 reject=None
+flappy_sound_channels rep 4/7: decode=60.66179454883945 out=1000/1000 reject=None
+flappy_sound_channels rep 5/7: decode=60.767933180693646 out=1000/1000 reject=None
+flappy_sound_channels rep 6/7: decode=60.592027892994544 out=1000/1000 reject=None
+flappy_sound_channels rep 7/7: decode=60.909207578069385 out=1000/1000 reject=None
+Saved to benchmarks/results/mtp-qwen36-matrix/2026-07-01-lightning-prefix-disabled-r1/27b-4bit/flappy/lightning_mlx.json
+{
+  "accept_rate": 0.9605598954280912,
+  "accepted_drafts": null,
+  "case_count": 4,
+  "decode_tok_s": {
+    "median": 59.43006328819689,
+    "p10": 56.56368033905328,
+    "p90": 60.767933180693646,
+    "values": [
+      59.280618724939956,
+      60.05083318288441,
+      59.72144752330773,
+      60.5491189010362,
+      60.48492747131164,
+      56.56368033905328,
+      51.779737204836536,
+      56.80833315762908,
+      57.175874851409695,
+      54.203755424468504,
+      59.51069148993413,
+      59.0100416415767,
+      58.811726994752185,
+      58.941419761147046,
+      59.34943508645964,
+      60.78021310423942,
+      60.66179454883945,
+      60.767933180693646,
+      60.592027892994544,
+      60.909207578069385
+    ]
+  },
+  "drafted_tokens": null,
+  "end_to_end_tok_s": {
+    "median": 56.710987470247815,
+    "p10": 54.080535976889855,
+    "p90": 58.19345334430584,
+    "values": [
+      56.900594732140654,
+      57.57126963350821,
+      57.366968031859095,
+      57.93014351733428,
+      57.80436506792546,
+      54.080535976889855,
+      49.69064714935919,
+      54.27312053759293,
+      54.672781740137346,
+      51.9001316127998,
+      56.521380208354984,
+      56.129295310771965,
+      55.834297300928625,
+      55.93762676598964,
+      56.4410057123265,
+      58.19345334430584,
+      58.1549701829748,
+      58.2143319775739,
+      58.04278622188633,
+      58.36884313145018
+    ]
+  },
+  "generated_tokens": 20000,
+  "ngram_accept_rate": null,
+  "runs": 20,
+  "valid_runs": 20
+}
+
+[exit 0 after 902.2s]

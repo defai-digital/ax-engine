@@ -1,0 +1,65 @@
+{
+  "contract": {
+    "benchmark_contract": "apples-to-apples",
+    "bits": [
+      4
+    ],
+    "cooldown_s": 0.0,
+    "engines": [
+      "ax_engine"
+    ],
+    "inter_case_cooldown_s": 0.0,
+    "lightning_disable_prefix_cache": false,
+    "lightning_mtp_draft_temperature": 0.5,
+    "lightning_mtp_optimistic": false,
+    "max_tokens": 300,
+    "metrics": [
+      "decode_tok_s",
+      "prefill_tok_s",
+      "ttft_ms",
+      "accept_rate"
+    ],
+    "mode": "mtp",
+    "models": [
+      "27b"
+    ],
+    "mtplx_profile": "stable",
+    "prefill_step_size": null,
+    "prompt_limit": 1,
+    "repetitions": 2,
+    "sampling": {
+      "temperature": 0.6,
+      "top_k": 20,
+      "top_p": 0.95
+    },
+    "suites": [
+      "flappy"
+    ],
+    "warmup_repetitions": 1
+  },
+  "created_at": "2026-07-01",
+  "rows": [
+    {
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-07-01-27b4-ax-optimistic-last-lm-signal-r2/27b-4bit/flappy/ax_engine.json",
+      "bits": 4,
+      "engine": "ax_engine",
+      "metric_contract": {
+        "accept_rate": "measured",
+        "decode_tok_s": "measured",
+        "prefill_tok_s": "measured",
+        "ttft_ms": "measured"
+      },
+      "metrics": {
+        "error": "command failed; see benchmarks/results/mtp-qwen36-matrix/2026-07-01-27b4-ax-optimistic-last-lm-signal-r2/27b-4bit/flappy/ax_engine.log\n$ /opt/homebrew/opt/python@3.14/bin/python3.14 /Users/akiralam/code/ax-engine/scripts/bench_mlx_inference_stack.py --model-dir /Users/akiralam/.cache/huggingface/hub/models--ax-local--Qwen3.6-27B-MTP/snapshots/v1 --prompt-source real --real-prompt-suite benchmarks/results/mtp-qwen36-matrix/2026-07-01-27b4-ax-optimistic-last-lm-signal-r2/prompt-subsets/flappy-first1.jsonl --generation-tokens 300 --repetitions 2 --warmup-repetitions 1 --cooldown 0.0 --inter-case-cooldown 0.0 --ax-sampling '{\"temperature\":0.6,\"top_p\":0.95,\"top_k\":20}' --skip-mlx-lm --no-thinking --capture-output-token-ids --ax-ngram-accel --ax-mtp-disable-ngram-stacking --ax-mtp-max-depth 3 --output benchmarks/results/mtp-qwen36-matrix/2026-07-01-27b4-ax-optimistic-last-lm-signal-r2/27b-4bit/flappy/ax_engine.json --no-build-ax-engine\n\n\n=== AX Engine MLX inference stack ===\n  model: /Users/akiralam/.cache/huggingface/hub/models--ax-local--Qwen3.6-27B-MTP/snapshots/v1\n  model_repo_id: ax-local/Qwen3.6-27B-MTP\n  model_dir: /Users/akiralam/.cache/huggingface/hub/models--ax-local--Qwen3.6-27B-MTP/snapshots/v1\n  prompt_tokens: [128, 512, 2048]\n  generation_tokens: 300\n  repetitions: 2 + 1 warmup for AX\n  ax_prefix_cache: disabled_for_cold_prefill_benchmark\n  prompt_artifact_root: benchmarks/results/mtp-qwen36-matrix/2026-07-01-27b4-ax-optimistic-last-lm-signal-r2/27b-4bit/flappy/ax_engine-prompts\n  [prompt] real suite=flappy-first1 case=flappy_pipes tokens=273 text_sha256=88a801ae3723 path=benchmarks/results/mtp-qwen36-matrix/2026-07-01-27b4-ax-optimistic-last-lm-signal-r2/27b-4bit/flappy/ax_engine-prompts/real-flappy-first1-flappy_pipes-gen-300-fc913ab80026.json\n  [ax-engine] /Users/akiralam/code/ax-engine/target/release/ax-engine-server --mlx --mlx-model-artifacts-dir /Users/akiralam/.cache/huggingface/hub/models--ax-local--Qwen3.6-27B-MTP/snapshots/v1 --model-id /Users/akiralam/.cache/huggingface/hub/models--ax-local--Qwen3.6-27B-MTP/snapshots/v1 --port 59771 --mlx-mtp-disable-ngram-stacking --prefill-chunk 2048 --max-batch-tokens 2048\n  [ax-engine] AX_MLX_MTP_MAX_DEPTH=3\n  [ax-engine] MTP n-gram stacking disabled\n  [ax-engine] prefix cache disabled for cold prefill/TTFT measurement\n  [ax-engine/ax_engine_mlx_pure_mtp] prompt=273 generation=300 policy=mtp_head_only_no_ngram_stacking kv_compression=disabled\n    warmup 1/1\nTraceback (most recent call last):\n  File \"/Users/akiralam/code/ax-engine/scripts/bench_mlx_inference_stack.py\", line 5272, in <module>\n    main()\n    ~~~~^^\n  File \"/Users/akiralam/code/ax-engine/scripts/bench_mlx_inference_stack.py\", line 5003, in main\n    bench_axengine(\n    ~~~~~~~~~~~~~~^\n        args.axengine_port,\n        ^^^^^^^^^^^^^^^^^^^\n    ...<14 lines>...\n        gemma4_assistant_mtp=gemma4_assistant_mtp,\n        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n    )\n    ^\n  File \"/Users/akiralam/code/ax-engine/scripts/bench_mlx_inference_stack.py\", line 3267, in bench_axengine\n    run = axengine_one_run(\n        port,\n    ...<4 lines>...\n        sampler=sampler,\n    )\n  File \"/Users/akiralam/code/ax-engine/scripts/bench_mlx_inference_stack.py\", line 3010, in axengine_one_run\n    conn.request(\n    ~~~~~~~~~~~~^\n        \"POST\",\n        ^^^^^^^\n    ...<5 lines>...\n        },\n        ^^\n    )\n    ^\n  File \"/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/lib/python3.14/http/client.py\", line 1367, in request\n    self._send_request(method, url, body, headers, encode_chunked)\n    ~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/lib/python3.14/http/client.py\", line 1413, in _send_request\n    self.endheaders(body, encode_chunked=encode_chunked)\n    ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/lib/python3.14/http/client.py\", line 1362, in endheaders\n    self._send_output(message_body, encode_chunked=encode_chunked)\n    ~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/lib/python3.14/http/client.py\", line 1122, in _send_output\n    self.send(msg)\n    ~~~~~~~~~^^^^^\n  File \"/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/lib/python3.14/http/client.py\", line 1066, in send\n    self.connect()\n    ~~~~~~~~~~~~^^\n  File \"/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/lib/python3.14/http/client.py\", line 1032, in connect\n    self.sock = self._create_connection(\n                ~~~~~~~~~~~~~~~~~~~~~~~^\n        (self.host,self.port), self.timeout, self.source_address)\n        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/lib/python3.14/socket.py\", line 874, in create_connection\n    raise exceptions[0]\n  File \"/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/lib/python3.14/socket.py\", line 859, in create_connection\n    sock.connect(sa)\n    ~~~~~~~~~~~~^^^^\nConnectionRefusedError: [Errno 61] Connection refused\n\n[exit 1 after 7.4s]",
+        "status": "error"
+      },
+      "model": "27b",
+      "model_label": "Qwen3.6 27B 4-bit",
+      "reason": null,
+      "status": "supported",
+      "suite": "flappy",
+      "target": "27b-4bit"
+    }
+  ],
+  "schema": "ax.qwen36_mtp_matrix.summary.v1"
+}
