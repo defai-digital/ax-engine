@@ -88,6 +88,18 @@ typedef struct mlx_optional_dtype_ {
 } mlx_optional_dtype;
 
 /* ================================================================
+ * Build sanity
+ * ================================================================ */
+
+/* Compare the MLX version the shim was compiled against (MLX_VERSION_* from
+ * mlx/version.h) with the version reported by the loaded libmlx at runtime.
+ * The shim binds to the mlx::core C++ ABI, so version skew — e.g. a Homebrew
+ * `mlx` upgrade without a shim rebuild — can fail as silent memory
+ * corruption. Returns 0 on match; on mismatch stores a diagnostic in the
+ * error slot (and invokes the error handler) and returns 1. */
+int ax_shim_check_mlx_version(void);
+
+/* ================================================================
  * Error handling
  * ================================================================ */
 

@@ -5,6 +5,7 @@
 #include "ax_shim_internal.h"
 
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <exception>
 #include <functional>
@@ -21,6 +22,7 @@
 #include "mlx/random.h"
 #include "mlx/transforms.h"
 #include "mlx/compile.h"
+#include "mlx/version.h"
 
 /* ================================================================
  * Process-global error handler (replaces mlx-c's global handler)
@@ -63,6 +65,39 @@ extern "C" void mlx_set_error_handler(
   } else {
     ax_error_handler_data = nullptr;
   }
+}
+
+extern "C" int ax_shim_check_mlx_version(void) {
+  AX_TRY {
+    const char* runtime = mx::version();
+    if (!runtime) {
+      ax_set_error("libmlx returned a null version string");
+      return 1;
+    }
+    int major = -1, minor = -1, patch = -1;
+    if (std::sscanf(runtime, "%d.%d.%d", &major, &minor, &patch) != 3) {
+      std::string msg =
+          std::string("could not parse runtime MLX version '") + runtime + "'";
+      ax_set_error(msg.c_str());
+      return 1;
+    }
+    if (major != MLX_VERSION_MAJOR || minor != MLX_VERSION_MINOR ||
+        patch != MLX_VERSION_PATCH) {
+      std::string msg =
+          std::string("MLX version mismatch: mlx-sys was compiled against MLX ") +
+          std::to_string(MLX_VERSION_MAJOR) + "." +
+          std::to_string(MLX_VERSION_MINOR) + "." +
+          std::to_string(MLX_VERSION_PATCH) +
+          " headers but the loaded libmlx reports " + runtime +
+          ". The shim calls the MLX C++ ABI directly, so version skew can"
+          " crash or silently corrupt memory. Rebuild against the installed"
+          " MLX (`cargo clean -p mlx-sys && cargo build`) or point"
+          " MLX_LIB_DIR/MLX_INCLUDE_DIR at a matching MLX.";
+      ax_set_error(msg.c_str());
+      return 1;
+    }
+    return 0;
+  } AX_CATCH
 }
 
 /* ================================================================

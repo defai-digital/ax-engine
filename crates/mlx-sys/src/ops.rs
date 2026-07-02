@@ -271,15 +271,16 @@ pub fn gelu_approx(x: &MlxArray, s: Option<&MlxStream>) -> MlxArray {
 /// If the direct shim reports an error, fall back to the portable wrapper
 /// composition rather than surfacing a hard runtime failure.
 pub fn gelu_approx_mul(gate: &MlxArray, x: &MlxArray, s: Option<&MlxStream>) -> MlxArray {
-    crate::op_count::bump();
     unsafe {
         let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
         let mut res = MlxArray::empty();
         let rc = ax_mlx_gelu_approx_mul(&mut res.inner, gate.inner, x.inner, stream);
         if rc == 0 {
+            crate::op_count::bump();
             return res;
         }
     }
+    crate::error::clear_stale_error();
     multiply(&gelu_approx(gate, s), x, s)
 }
 
@@ -289,15 +290,16 @@ pub fn gelu_approx_mul(gate: &MlxArray, x: &MlxArray, s: Option<&MlxStream>) -> 
 /// `sigmoid + multiply + multiply` wrapper chain behind one FFI call. If the
 /// direct shim reports an error, fall back to the portable wrapper composition.
 pub fn silu_mul(gate: &MlxArray, x: &MlxArray, s: Option<&MlxStream>) -> MlxArray {
-    crate::op_count::bump();
     unsafe {
         let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
         let mut res = MlxArray::empty();
         let rc = ax_mlx_silu_mul(&mut res.inner, gate.inner, x.inner, stream);
         if rc == 0 {
+            crate::op_count::bump();
             return res;
         }
     }
+    crate::error::clear_stale_error();
     multiply(&silu(gate, s), x, s)
 }
 
@@ -313,7 +315,6 @@ pub fn gelu_approx_mul_matmul(
     weight: &MlxArray,
     s: Option<&MlxStream>,
 ) -> MlxArray {
-    crate::op_count::bump();
     unsafe {
         let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
         let mut res = MlxArray::empty();
@@ -325,9 +326,11 @@ pub fn gelu_approx_mul_matmul(
             stream,
         );
         if rc == 0 {
+            crate::op_count::bump();
             return res;
         }
     }
+    crate::error::clear_stale_error();
     matmul(&multiply(&gelu_approx(gate, s), x, s), weight, s)
 }
 
@@ -343,7 +346,6 @@ pub fn gelu_approx_mul_quantized_matmul(
     bits: i32,
     s: Option<&MlxStream>,
 ) -> MlxArray {
-    crate::op_count::bump();
     unsafe {
         let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
         let biases = biases.map(|b| b.inner).unwrap_or_else(null_ffi_array);
@@ -360,9 +362,11 @@ pub fn gelu_approx_mul_quantized_matmul(
             stream,
         );
         if rc == 0 {
+            crate::op_count::bump();
             return res;
         }
     }
+    crate::error::clear_stale_error();
     let hidden = gelu_approx_mul(gate, x, s);
     quantized_matmul(
         &hidden,
@@ -403,7 +407,6 @@ pub fn gelu_approx_quantized_ffn(
     bits: i32,
     s: Option<&MlxStream>,
 ) -> MlxArray {
-    crate::op_count::bump();
     unsafe {
         let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
         let gate_up_biases = gate_up_biases
@@ -427,9 +430,11 @@ pub fn gelu_approx_quantized_ffn(
             stream,
         );
         if rc == 0 {
+            crate::op_count::bump();
             return res;
         }
     }
+    crate::error::clear_stale_error();
     let gate_up = quantized_matmul(
         x,
         gate_up_weight,
@@ -486,7 +491,6 @@ pub fn qk_norm_rope_bhsd_from_proj(
     freqs: Option<&MlxArray>,
     s: Option<&MlxStream>,
 ) -> MlxArray {
-    crate::op_count::bump();
     unsafe {
         let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
         let mut res = MlxArray::empty();
@@ -506,9 +510,11 @@ pub fn qk_norm_rope_bhsd_from_proj(
             stream,
         );
         if rc == 0 {
+            crate::op_count::bump();
             return res;
         }
     }
+    crate::error::clear_stale_error();
 
     let shape = proj.shape();
     let batch = shape.first().copied().unwrap_or(1);
@@ -559,7 +565,6 @@ pub fn gemma4_post_attn_ffn_block(
     eps: f32,
     s: Option<&MlxStream>,
 ) -> MlxArray {
-    crate::op_count::bump();
     unsafe {
         let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
         let mut res = MlxArray::empty();
@@ -590,9 +595,11 @@ pub fn gemma4_post_attn_ffn_block(
             stream,
         );
         if rc == 0 {
+            crate::op_count::bump();
             return res;
         }
     }
+    crate::error::clear_stale_error();
 
     let residual = add(hidden, attn_out, s);
     let normed = crate::fast::rms_norm(&residual, Some(ffn_norm), eps, s);
@@ -659,7 +666,6 @@ pub fn qwen_linear_attention_inputs_packed(
     bits: i32,
     s: Option<&MlxStream>,
 ) -> Option<(MlxArray, MlxArray, MlxArray, MlxArray)> {
-    crate::op_count::bump();
     unsafe {
         let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
         let mut qkv = MlxArray::empty();
@@ -695,9 +701,11 @@ pub fn qwen_linear_attention_inputs_packed(
             stream,
         );
         if rc == 0 {
+            crate::op_count::bump();
             return Some((qkv, z, a, b));
         }
     }
+    crate::error::clear_stale_error();
     None
 }
 
@@ -729,7 +737,6 @@ pub fn qwen_linear_attention_post_input(
     rms_norm_eps: f32,
     s: Option<&MlxStream>,
 ) -> Option<(MlxArray, MlxArray, MlxArray, MlxArray)> {
-    crate::op_count::bump();
     unsafe {
         let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
         let mut q = MlxArray::empty();
@@ -757,9 +764,11 @@ pub fn qwen_linear_attention_post_input(
             stream,
         );
         if rc == 0 {
+            crate::op_count::bump();
             return Some((q, k, v, new_conv_state));
         }
     }
+    crate::error::clear_stale_error();
     None
 }
 
@@ -808,8 +817,6 @@ pub fn add_rms_norm_pair(
     eps: f32,
     s: Option<&MlxStream>,
 ) -> (MlxArray, MlxArray) {
-    crate::op_count::bump();
-    crate::op_count::bump();
     unsafe {
         let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
         let mut residual = MlxArray::empty();
@@ -824,9 +831,12 @@ pub fn add_rms_norm_pair(
             stream,
         );
         if rc == 0 {
+            crate::op_count::bump();
+            crate::op_count::bump();
             return (residual, normed);
         }
     }
+    crate::error::clear_stale_error();
     let residual = add(x, y, s);
     let normed = crate::fast::rms_norm(&residual, Some(norm_weight), eps, s);
     (residual, normed)
@@ -851,8 +861,6 @@ pub fn quantized_matmul_rms_norm(
     eps: f32,
     s: Option<&MlxStream>,
 ) -> MlxArray {
-    crate::op_count::bump();
-    crate::op_count::bump();
     unsafe {
         let stream = s.map(|s| s.inner).unwrap_or_else(default_gpu_raw);
         let biases_raw = biases.map(|b| b.inner).unwrap_or_else(null_ffi_array);
@@ -870,9 +878,11 @@ pub fn quantized_matmul_rms_norm(
             stream,
         );
         if rc == 0 {
+            crate::op_count::bump();
             return res;
         }
     }
+    crate::error::clear_stale_error();
     let projected = quantized_matmul(
         x,
         weight,
@@ -1675,6 +1685,13 @@ pub fn quantize(
             )
         );
         let len = ffi::mlx_vector_array_size(raw);
+        if len == usize::MAX {
+            ffi::mlx_vector_array_free(raw);
+            panic!(
+                "{}",
+                crate::error::last_error_message("mlx_vector_array_size")
+            );
+        }
         let mut result = Vec::with_capacity(len);
         for idx in 0..len {
             let mut arr = null_ffi_array();

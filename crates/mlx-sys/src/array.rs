@@ -199,6 +199,12 @@ impl MlxArray {
             }
             let ptr = ffi::mlx_array_shape(self.inner);
             if ptr.is_null() || ndim == 0 {
+                // A null pointer with ndim > 0 means mlx_array_shape errored
+                // and the handler wrote the slot; drain it so the message is
+                // not misattributed to a later call on this thread.
+                if ptr.is_null() && ndim > 0 {
+                    crate::error::clear_stale_error();
+                }
                 return vec![];
             }
             std::slice::from_raw_parts(ptr, ndim).to_vec()

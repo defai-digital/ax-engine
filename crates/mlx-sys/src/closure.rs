@@ -325,10 +325,13 @@ impl Drop for MlxClosure {
 }
 
 // SAFETY: MlxClosure holds a refcounted C handle. The trampoline and
-// payload boxes are managed via Send-bounded closures. MLX itself is
-// thread-safe for closure invocation.
+// payload boxes are managed via Send-bounded closures, so moving the
+// closure across threads is sound. It is deliberately NOT Sync: applying
+// an uncompiled closure runs `closure_trampoline`, which materializes a
+// `&mut` to the `FnMut` payload — two threads applying through a shared
+// `&MlxClosure` would alias that `&mut` (a data race). Callers that need
+// cross-thread sharing must wrap the closure in a `Mutex`.
 unsafe impl Send for MlxClosure {}
-unsafe impl Sync for MlxClosure {}
 unsafe impl Send for MlxVectorArray {}
 unsafe impl Sync for MlxVectorArray {}
 

@@ -95,6 +95,16 @@ fn main() {
     println!("cargo:rerun-if-changed=native/activation.cpp");
     println!("cargo:rerun-if-env-changed=MLX_LIB_DIR");
     println!("cargo:rerun-if-env-changed=MLX_INCLUDE_DIR");
+    // A Homebrew `mlx` upgrade swaps the dylib and headers under the
+    // version-stable `/opt/homebrew/opt/mlx` symlink without touching any
+    // tracked file, which would leave a stale shim object running against a
+    // new C++ ABI. Track the MLX version header so the shim recompiles when
+    // the installed MLX changes. (Guarded: registering a missing path would
+    // force a rebuild on every run.)
+    let mlx_version_header = PathBuf::from(&dirs.mlx_include_dir).join("mlx/version.h");
+    if mlx_version_header.exists() {
+        println!("cargo:rerun-if-changed={}", mlx_version_header.display());
+    }
 
     // --- Generate bindgen FFI bindings from ax_shim.h ---
     let bindings = bindgen::Builder::default()

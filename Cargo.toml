@@ -52,6 +52,12 @@ panic = "warn"
 dbg_macro = "warn"
 large_enum_variant = "warn"
 
+# Dev builds (including `maturin develop`) otherwise compile the C++ shim at
+# -O0, making any perf observation from a dev build unrepresentative. The cc
+# crate picks this up through the per-package OPT_LEVEL cargo sets.
+[profile.dev.package.mlx-sys]
+opt-level = 2
+
 [profile.release]
 lto = "fat"           # full cross-crate LTO for maximum runtime performance
 codegen-units = 1     # single codegen unit lets the optimizer see the full crate graph

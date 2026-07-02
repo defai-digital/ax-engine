@@ -26,7 +26,10 @@ thread_local! {
 }
 
 unsafe extern "C" fn recording_error_handler(msg: *const c_char, _data: *mut c_void) {
-    // This callback runs inside C++ frames; it must never unwind.
+    // This callback runs inside C++ frames; it must never unwind (unwinding
+    // out of an `extern "C"` fn aborts the process). `eprintln!` panics on a
+    // broken stderr and `LocalKey::with` panics during thread teardown, so
+    // both use the non-panicking variants.
     let message = if msg.is_null() {
         String::from("unknown MLX error")
     } else {
@@ -35,14 +38,25 @@ unsafe extern "C" fn recording_error_handler(msg: *const c_char, _data: *mut c_v
             .into_owned()
     };
     // Keep the message visible like the default handler did, minus the exit.
-    eprintln!("mlx error: {message}");
-    LAST_ERROR.with(|slot| *slot.borrow_mut() = Some(message));
+    use std::io::Write;
+    let _ = writeln!(std::io::stderr(), "mlx error: {message}");
+    let _ = LAST_ERROR.try_with(|slot| *slot.borrow_mut() = Some(message));
 }
 
 /// Install the recording error handler. Idempotent.
 pub fn install_recoverable_error_handler() {
     INSTALL.call_once(|| unsafe {
         ffi::mlx_set_error_handler(Some(recording_error_handler), std::ptr::null_mut(), None);
+        // The shim binds to the mlx::core C++ ABI directly; running against a
+        // different libmlx than the headers it was compiled with can fail as
+        // silent memory corruption. Fail fast with one clear diagnostic
+        // instead (the check compares compile-time MLX_VERSION_* against the
+        // runtime mx::version()).
+        if ffi::ax_shim_check_mlx_version() != 0 {
+            let msg = take_last_error()
+                .unwrap_or_else(|| String::from("MLX version check failed with no detail"));
+            panic!("{msg}");
+        }
     });
 }
 
@@ -68,6 +82,16 @@ pub(crate) fn ensure_error_handler() {
 /// worth the thread-local clear. Hot per-op paths use [`ensure_error_handler`].
 pub(crate) fn prepare_error_capture() {
     install_recoverable_error_handler();
+    let _ = take_last_error();
+}
+
+/// Drain any message the handler recorded for an error the caller is
+/// deliberately swallowing (a fused-shim attempt falling back to the portable
+/// composition, or a probe returning `None`). Leaving the slot populated
+/// would misattribute the stale message to the next failing call on this
+/// thread — or panic a later `dtype()` on a genuine Bool array, which uses
+/// the slot to disambiguate the MLX_BOOL error sentinel.
+pub(crate) fn clear_stale_error() {
     let _ = take_last_error();
 }
 

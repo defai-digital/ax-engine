@@ -70,6 +70,9 @@ pub fn device_active_bytes() -> Option<u64> {
     let mut bytes: usize = 0;
     let rc = unsafe { ffi::mlx_get_active_memory(&mut bytes as *mut usize) };
     if rc != 0 {
+        // Swallowed probe failure: drain the handler slot so the message is
+        // not misattributed to a later failing call on this thread.
+        crate::error::clear_stale_error();
         return None;
     }
     Some(bytes as u64)
@@ -82,6 +85,9 @@ pub fn device_peak_bytes() -> Option<u64> {
     let mut bytes: usize = 0;
     let rc = unsafe { ffi::mlx_get_peak_memory(&mut bytes as *mut usize) };
     if rc != 0 {
+        // Swallowed probe failure: drain the handler slot so the message is
+        // not misattributed to a later failing call on this thread.
+        crate::error::clear_stale_error();
         return None;
     }
     Some(bytes as u64)
@@ -94,6 +100,9 @@ pub fn device_cache_bytes() -> Option<u64> {
     let mut bytes: usize = 0;
     let rc = unsafe { ffi::mlx_get_cache_memory(&mut bytes as *mut usize) };
     if rc != 0 {
+        // Swallowed probe failure: drain the handler slot so the message is
+        // not misattributed to a later failing call on this thread.
+        crate::error::clear_stale_error();
         return None;
     }
     Some(bytes as u64)

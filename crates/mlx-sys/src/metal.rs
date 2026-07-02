@@ -243,6 +243,13 @@ impl MlxMetalKernel {
 
             // Collect outputs.
             let n = ffi::mlx_vector_array_size(out_vec);
+            if n == usize::MAX {
+                ffi::mlx_vector_array_free(out_vec);
+                return Err(last_error_message(&format!(
+                    "MLX Metal kernel '{}' output size",
+                    self.name
+                )));
+            }
             let mut result = Vec::with_capacity(n);
             for i in 0..n {
                 let mut arr = MlxArray::empty();
