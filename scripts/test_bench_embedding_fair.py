@@ -88,6 +88,53 @@ class FairEmbeddingBenchmarkTests(unittest.TestCase):
         self.assertAlmostEqual(comparison["ax_vs_reference_tokens_pct"], 25.0)
         self.assertAlmostEqual(comparison["ax_vs_reference_items_pct"], -10.0)
 
+    def test_interleaved_trials_alternate_engine_order(self) -> None:
+        calls = []
+        workload = bench.Workload(
+            name="fixed_1_b1",
+            input_kind="synthetic_token_ids",
+            batch_size=1,
+            token_ids=[[1]],
+        )
+
+        def make_step(name: str):
+            def step(_batch):
+                calls.append(name)
+                return (b"\x00\x00\x00\x00", 1, 1)
+
+            return step
+
+        results = bench.run_trials_interleaved(
+            [
+                bench.EngineRunner("ref", "reference", make_step("ref")),
+                bench.EngineRunner("ax_engine_py", "ax-engine-py", make_step("ax")),
+            ],
+            workload,
+            warmup=1,
+            trials=3,
+            cooldown=0.0,
+        )
+
+        self.assertEqual(
+            calls,
+            [
+                "ref",
+                "ax",
+                "ref",
+                "ax",
+                "ax",
+                "ref",
+                "ref",
+                "ax",
+            ],
+        )
+        self.assertEqual(set(results), {"ref", "ax_engine_py"})
+
+    def test_parser_defaults_to_publication_cooldown(self) -> None:
+        args = bench.build_parser().parse_args(["--model", "qwen=/tmp/model"])
+
+        self.assertEqual(args.cooldown, 15.0)
+
     def test_render_summary_includes_contract_and_delta(self) -> None:
         summary = bench.render_summary(
             {

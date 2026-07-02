@@ -42,6 +42,54 @@ class EmbeddingIngestScaleBenchmarkTests(unittest.TestCase):
         self.assertEqual([len(row) for row in corpus], [4, 4, 4])
         self.assertTrue(all(1 <= token < 20 for row in corpus for token in row))
 
+    def test_interleaved_trials_alternate_engine_order(self) -> None:
+        calls = []
+        workload = bench.ScaleWorkload(
+            name="scale_1x1_b1",
+            chunk_tokens=1,
+            batch_size=1,
+            total_chunks=1,
+            batches=[[[1]]],
+        )
+
+        def make_step(name: str):
+            def step(_batch):
+                calls.append(name)
+                return (b"\x00\x00\x00\x00", 1, 1)
+
+            return step
+
+        results = bench.run_trials_interleaved(
+            [
+                bench.EngineRunner("ref", "reference", make_step("ref")),
+                bench.EngineRunner("ax_engine_py", "ax-engine-py", make_step("ax")),
+            ],
+            workload,
+            warmup=1,
+            trials=3,
+            cooldown=0.0,
+        )
+
+        self.assertEqual(
+            calls,
+            [
+                "ref",
+                "ax",
+                "ref",
+                "ax",
+                "ax",
+                "ref",
+                "ref",
+                "ax",
+            ],
+        )
+        self.assertEqual(set(results), {"ref", "ax_engine_py"})
+
+    def test_parser_defaults_to_publication_cooldown(self) -> None:
+        args = bench.build_parser().parse_args(["--model", "qwen=/tmp/model"])
+
+        self.assertEqual(args.cooldown, 15.0)
+
     def test_render_summary_includes_scale_metrics(self) -> None:
         summary = bench.render_summary(
             {

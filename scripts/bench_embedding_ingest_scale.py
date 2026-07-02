@@ -202,7 +202,10 @@ def run_trials_interleaved(
             run_one_pass(runner.step_fn, workload)
     rows_by_engine: dict[str, list[dict[str, Any]]] = {r.key: [] for r in engines}
     for idx in range(1, trials + 1):
-        for runner in engines:
+        trial_engines = (
+            engines if idx % 2 == 1 or len(engines) == 1 else list(reversed(engines))
+        )
+        for runner in trial_engines:
             if cooldown > 0:
                 time.sleep(cooldown)
             row = run_one_pass(runner.step_fn, workload)
@@ -397,7 +400,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--pooling", choices=["last", "cls", "mean"], default="last")
     parser.add_argument("--warmup", type=int, default=2)
     parser.add_argument("--trials", type=int, default=5)
-    parser.add_argument("--cooldown", type=float, default=0.0)
+    parser.add_argument("--cooldown", type=float, default=15.0)
     parser.add_argument("--ax-only", action="store_true")
     parser.add_argument(
         "--output-dir",
@@ -427,6 +430,7 @@ def main() -> int:
         "git_commit": git_commit(),
         "embed_env_flags": embed_env_flags(),
         "output_contract": OUTPUT_CONTRACT,
+        "trial_order": "interleaved_alternating",
         "warmup": args.warmup,
         "trials": args.trials,
         "cooldown_s": args.cooldown,

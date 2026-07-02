@@ -235,13 +235,13 @@ MTP_6BIT_GROUP_SIZE = 3
 
 EMBEDDING_FAIR_ARTIFACTS = (
     Path(
-        "benchmarks/results/embedding-fair/2026-07-02-qwen-paired-refresh/"
-        "2026-07-02-131412/embedding_fair.json"
+        "benchmarks/results/embedding-fair/2026-07-02-qwen-paired-cooldown15-refresh/"
+        "2026-07-02-133329/embedding_fair.json"
     ),
     Path(
         "benchmarks/results/embedding-fair/"
-        "2026-07-02-embeddinggemma-paired-refresh/"
-        "2026-07-02-131521/embedding_fair.json"
+        "2026-07-02-embeddinggemma-paired-cooldown15-refresh/"
+        "2026-07-02-143425/embedding_fair.json"
     ),
 )
 # Same-session paired ingest artifacts: the reference (mlx-lm / mlx-embeddings)
@@ -251,12 +251,13 @@ EMBEDDING_FAIR_ARTIFACTS = (
 # load_embedding_paired_scale_delta_rows), because AX throughput alone drifts
 # run-to-run by more than the reported delta.
 EMBEDDING_SCALE_ARTIFACT = Path(
-    "benchmarks/results/embedding-scale/2026-06-29-qwen-paired-refresh/"
-    "2026-06-29-003753/embedding_ingest_scale.json"
+    "benchmarks/results/embedding-scale/2026-07-02-qwen-paired-cooldown15-refresh/"
+    "2026-07-02-145458/embedding_ingest_scale.json"
 )
 EMBEDDINGGEMMA_SCALE_ARTIFACT = Path(
-    "benchmarks/results/embedding-scale/2026-06-29-embeddinggemma-paired-refresh/"
-    "2026-06-29-004503/embedding_ingest_scale.json"
+    "benchmarks/results/embedding-scale/"
+    "2026-07-02-embeddinggemma-paired-cooldown15-refresh/"
+    "2026-07-02-175206/embedding_ingest_scale.json"
 )
 EMBEDDING_FAIR_CHART_OUTPUT = "perf-embedding-fair-ax-vs-reference.svg"
 EMBEDDING_SCALE_CHART_OUTPUT = "perf-embedding-ingest-scale-ax-vs-mlx-lm.svg"
@@ -2369,8 +2370,11 @@ def main() -> int:
     embedding_fair_content = render_embedding_delta_chart(
         load_embedding_fair_delta_rows(args.readme.parent),
         title="Embedding throughput: AX vs reference",
-        subtitle="Batch=8, contiguous CPU float32 [B,H] output; higher delta means AX is faster.",
-        source_label="Sources: embedding-fair same-session paired artifacts from 2026-07-02",
+        subtitle=(
+            "Batch=8, 15s cooldown, alternating paired order, contiguous CPU "
+            "float32 [B,H] output."
+        ),
+        source_label="Sources: embedding-fair cooled paired artifacts from 2026-07-02",
     )
     if not write_chart(embedding_fair_output_path, embedding_fair_content, args.check):
         mismatches.append(embedding_fair_output_path)
@@ -2379,8 +2383,11 @@ def main() -> int:
     embedding_scale_content = render_embedding_delta_chart(
         load_embedding_scale_delta_rows(args.readme.parent),
         title="Embedding ingest scale: AX vs mlx-lm",
-        subtitle="512 chunks per trial, repeated batches, contiguous CPU float32 [B,H] output.",
-        source_label="Sources: embedding-scale Qwen3-Embedding 0.6B same-session paired artifact from 2026-06-29",
+        subtitle=(
+            "512 chunks per trial, 15s cooldown, alternating paired order, "
+            "contiguous CPU float32 [B,H] output."
+        ),
+        source_label="Sources: embedding-scale Qwen3 cooled paired artifact from 2026-07-02",
     )
     if not write_chart(embedding_scale_output_path, embedding_scale_content, args.check):
         mismatches.append(embedding_scale_output_path)
@@ -2391,8 +2398,14 @@ def main() -> int:
             args.readme.parent, EMBEDDINGGEMMA_SCALE_ARTIFACT
         ),
         title="EmbeddingGemma ingest scale: AX vs mlx-embeddings",
-        subtitle="512 chunks per trial, repeated batches, contiguous CPU float32 [B,H] output.",
-        source_label="Sources: embedding-scale EmbeddingGemma 300M 8-bit same-session paired artifact from 2026-06-29",
+        subtitle=(
+            "512 chunks per trial, 15s cooldown, alternating paired order, "
+            "contiguous CPU float32 [B,H] output."
+        ),
+        source_label=(
+            "Sources: embedding-scale EmbeddingGemma 300M 8-bit cooled paired "
+            "artifact from 2026-07-02"
+        ),
     )
     if not write_chart(
         embeddinggemma_scale_output_path, embeddinggemma_scale_content, args.check

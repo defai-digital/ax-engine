@@ -121,64 +121,83 @@ Why the loop is slow:
   sync; per-sentence wall time is divided by B.
 
 The current README reference-comparison snapshot for Qwen is
-`benchmarks/results/embedding-fair/2026-07-02-qwen-paired-refresh/2026-07-02-131412/`.
+`benchmarks/results/embedding-fair/2026-07-02-qwen-paired-cooldown15-refresh/2026-07-02-133329/`.
 The current README reference-comparison snapshot for EmbeddingGemma is
-`benchmarks/results/embedding-fair/2026-07-02-embeddinggemma-paired-refresh/2026-07-02-131521/`.
-The README ingest-scale charts are narrower on purpose: they only include
-models with same-session paired reference+AX scale artifacts. The Qwen 4B/8B
-DWQ fair rows above now come from paired fair artifacts, but they still should
-not appear in the sustained-scale delta chart until paired scale artifacts
-exist.
-All use 2 warmup + 5 measured trials, report medians, and keep the complete
-short-query plus 16/64/256-token matrix in `summary.md`. The Qwen reference
-comparison uses `mlx-lm` as the baseline backend. EmbeddingGemma uses
-`mlx-embeddings` with mean pooling because `mlx-lm` does not provide the
-comparable EmbeddingGemma route used by this harness.
+`benchmarks/results/embedding-fair/2026-07-02-embeddinggemma-paired-cooldown15-refresh/2026-07-02-143425/`.
+The current README Qwen ingest-scale snapshot is
+`benchmarks/results/embedding-scale/2026-07-02-qwen-paired-cooldown15-refresh/2026-07-02-145458/`;
+it includes 0.6B plus the 4B/8B DWQ embedders. The current EmbeddingGemma
+ingest-scale snapshot is
+`benchmarks/results/embedding-scale/2026-07-02-embeddinggemma-paired-cooldown15-refresh/2026-07-02-175206/`.
+All four artifacts use 2 warmups, 5 measured trials, 15-second cooldowns before
+measured engine passes, alternating paired order, and median tok/s. The fair
+artifacts keep the complete short-query plus 16/64/256-token matrix in
+`summary.md`. The Qwen reference comparison uses `mlx-lm` as the baseline
+backend. EmbeddingGemma uses `mlx-embeddings` with mean pooling because
+`mlx-lm` does not provide the comparable EmbeddingGemma route used by this
+harness.
 
 ## Sustained vs intermittent profiles
 
-The README's main throughput table is sustained: back-to-back batched calls
-with no cooldown. That matches workloads like vector-DB ingest, batch
-evaluation, or async worker pools running at steady state.
+The README's fair throughput table now models intermittent calls: every
+measured reference or AX pass follows a 15-second cooldown, and the paired
+order alternates between trials. This avoids presenting a hot-loop run as a
+general embedding result.
 
-Use a non-zero `--cooldown` in `bench_embedding_fair.py` to model intermittent
-calls such as interactive search queries. Those numbers can be lower because
-each trial follows a GPU idle period.
-
-Both profiles are valid; choose the one that matches your workload's
-arrival pattern.
+Use `--cooldown 0` only when the workload is truly sustained, such as a
+vector-DB ingest worker or batch evaluation loop that keeps the GPU hot. Both
+profiles are valid; choose the one that matches your workload's arrival
+pattern, and do not mix cooled and hot-loop artifacts in one comparison.
 
 ## Large-corpus ingest scale
 
 The current README scale snapshot is:
 
-`benchmarks/results/embedding-scale/2026-06-28-qwen-ingest-scale/2026-06-28-184450/`
+`benchmarks/results/embedding-scale/2026-07-02-qwen-paired-cooldown15-refresh/2026-07-02-145458/`
 
-It runs Qwen3-Embedding 0.6B 8-bit against `mlx-lm`, using last-token pooling
-and l2-normalized contiguous CPU `float32 [B,H]` output for both backends.
-Each trial embeds 512 deterministic chunks, with chunk lengths 256 and 512 and
-batch sizes 8, 32, and 64. The harness reports median tok/s, chunks/s,
-output MB/s, and per-batch p50/p95/max latency.
+It runs Qwen3-Embedding 0.6B 8-bit plus Qwen3-Embedding 4B/8B 4-bit DWQ against
+`mlx-lm`, using last-token pooling and l2-normalized contiguous CPU
+`float32 [B,H]` output for both backends. Each trial embeds 512 deterministic
+chunks, with chunk lengths 256 and 512 and batch sizes 8, 32, and 64. The
+harness reports median tok/s, chunks/s, output MB/s, and per-batch
+p50/p95/max latency.
 
 Read the scale table differently from the fair table. The fair table answers
 "how fast is this batch shape when both engines return a caller-consumable
 matrix?" The scale table answers "does that rate hold when a RAG worker keeps
 feeding many batches, and what flush latency does the chosen batch size create?"
-For the current 0.6B snapshot, AX is behind `mlx-lm` by 2.4-6.5% on 256-token
-chunks, ahead by 3.5% at 512-token batch=8, behind by 3.9% at 512-token
-batch=32, and effectively tied at 512-token batch=64.
+For the current Qwen snapshot, AX ranges from 2.0% behind to 0.3% ahead across
+the 18 shapes, so read those rows as sustained ingest parity.
 
 Reproduce the scale snapshot with:
 
 ```bash
 .venv/bin/python scripts/bench_embedding_ingest_scale.py \
   --model qwen3-embedding-0.6b-8bit=/path/to/Qwen3-Embedding-0.6B-8bit/snapshots/<sha> \
+  --model qwen3-embedding-4b-4bit-dwq=/path/to/Qwen3-Embedding-4B-4bit-DWQ/snapshots/<sha> \
+  --model qwen3-embedding-8b-4bit-dwq=/path/to/Qwen3-Embedding-8B-4bit-DWQ/snapshots/<sha> \
   --batch-sizes 8,32,64 \
   --chunk-tokens 256,512 \
   --total-chunks 512 \
-  --warmup 1 \
-  --trials 3 \
+  --warmup 2 \
+  --trials 5 \
+  --cooldown 15 \
   --output-dir benchmarks/results/embedding-scale/$(date +%Y-%m-%d)-qwen-ingest-scale
+```
+
+Reproduce the EmbeddingGemma scale snapshot with:
+
+```bash
+.venv/bin/python scripts/bench_embedding_ingest_scale.py \
+  --reference mlx_embeddings --pooling mean \
+  --model embeddinggemma-300m-8bit=/path/to/embeddinggemma-300m-8bit/snapshots/<sha> \
+  --batch-sizes 8,32,64 \
+  --chunk-tokens 256,512 \
+  --total-chunks 512 \
+  --warmup 2 \
+  --trials 5 \
+  --cooldown 15 \
+  --output-dir benchmarks/results/embedding-scale/$(date +%Y-%m-%d)-embeddinggemma-scale
 ```
 
 ## HTTP serving paths
@@ -293,6 +312,7 @@ Use the fair in-process harness for README throughput claims:
   --lengths 16,64,256 \
   --warmup 2 \
   --trials 5 \
+  --cooldown 15 \
   --output-dir benchmarks/results/embedding-fair/$(date +%Y-%m-%d)-qwen
 ```
 
@@ -306,6 +326,7 @@ For EmbeddingGemma, use the same output contract with the embeddinggemma route:
   --lengths 16,64,256 \
   --warmup 2 \
   --trials 5 \
+  --cooldown 15 \
   --output-dir benchmarks/results/embedding-fair/$(date +%Y-%m-%d)-embeddinggemma
 ```
 

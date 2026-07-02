@@ -16,7 +16,9 @@ import argparse
 import gc
 import json
 import math
+import os
 import statistics
+import subprocess
 import sys
 import time
 from dataclasses import dataclass
@@ -66,6 +68,13 @@ class Workload:
     @property
     def max_tokens(self) -> int:
         return max(self.token_counts) if self.token_ids else 0
+
+
+@dataclass(frozen=True)
+class EngineRunner:
+    key: str
+    label: str
+    step_fn: Any
 
 
 def parse_csv_ints(value: str, *, name: str) -> list[int]:
@@ -252,6 +261,41 @@ def run_trials(
     return trial_stats(rows, engine)
 
 
+def run_trials_interleaved(
+    engines: list[EngineRunner],
+    workload: Workload,
+    warmup: int,
+    trials: int,
+    cooldown: float,
+) -> dict[str, dict[str, Any]]:
+    for runner in engines:
+        print(f"    [{runner.label}] warmup x {warmup}", file=sys.stderr)
+        for _ in range(warmup):
+            benchmark_step(runner.step_fn, workload)
+
+    rows_by_engine: dict[str, list[dict[str, float]]] = {
+        runner.key: [] for runner in engines
+    }
+    for idx in range(1, trials + 1):
+        trial_engines = (
+            engines if idx % 2 == 1 or len(engines) == 1 else list(reversed(engines))
+        )
+        for runner in trial_engines:
+            if cooldown > 0:
+                time.sleep(cooldown)
+            row = benchmark_step(runner.step_fn, workload)
+            rows_by_engine[runner.key].append(row)
+            print(
+                f"    [{runner.label}] trial {idx}: "
+                f"{row['ms_per_item']:.2f} ms/item  {row['tokens_per_sec']:.1f} tok/s",
+                file=sys.stderr,
+            )
+    return {
+        runner.key: trial_stats(rows_by_engine[runner.key], runner.label)
+        for runner in engines
+    }
+
+
 def make_mlx_lm_step(model_dir: Path):
     print(f"  [mlx-lm] loading {model_dir}", file=sys.stderr)
     from mlx_lm import load
@@ -385,13 +429,12 @@ def run_model(
                 f"  [workload] {workload.name} tokens={workload.token_counts}",
                 file=sys.stderr,
             )
-            results = {}
+            engines = []
             if ref_step is not None:
-                results[reference] = run_trials(
-                    ref_label, workload, ref_step, warmup, trials, cooldown
-                )
-            results["ax_engine_py"] = run_trials(
-                "ax-engine-py", workload, ax_step, warmup, trials, cooldown
+                engines.append(EngineRunner(reference, ref_label, ref_step))
+            engines.append(EngineRunner("ax_engine_py", "ax-engine-py", ax_step))
+            results = run_trials_interleaved(
+                engines, workload, warmup, trials, cooldown
             )
             rows.append(
                 {
@@ -421,6 +464,32 @@ def fmt(value: float, digits: int = 1) -> str:
     if value == 0 or math.isfinite(value):
         return f"{value:,.{digits}f}"
     return "nan"
+
+
+def git_commit() -> str | None:
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    commit = result.stdout.strip()
+    return commit or None
+
+
+def embed_env_flags() -> dict[str, str]:
+    tracked = ("AX_MLX_DENSE_FFN_COMPILE",)
+    keys = sorted(
+        key
+        for key in os.environ
+        if key.startswith("AX_MLX_EMBED") or key in tracked
+    )
+    return {key: os.environ[key] for key in keys}
 
 
 def render_summary(artifact: dict[str, Any]) -> str:
@@ -503,7 +572,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--warmup", type=int, default=2)
     parser.add_argument("--trials", type=int, default=5)
-    parser.add_argument("--cooldown", type=float, default=0.0)
+    parser.add_argument("--cooldown", type=float, default=15.0)
     parser.add_argument(
         "--ax-only",
         action="store_true",
@@ -532,7 +601,10 @@ def main() -> int:
     artifact = {
         "schema_version": "ax.embedding_fair.v1",
         "timestamp": datetime.now().isoformat(),
+        "git_commit": git_commit(),
+        "embed_env_flags": embed_env_flags(),
         "output_contract": OUTPUT_CONTRACT,
+        "trial_order": "interleaved_alternating",
         "warmup": args.warmup,
         "trials": args.trials,
         "cooldown_s": args.cooldown,
