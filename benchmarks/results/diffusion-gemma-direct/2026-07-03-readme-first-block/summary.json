@@ -1,0 +1,566 @@
+{
+  "schema_version": "ax.diffusion_gemma_direct_first_block.v1",
+  "model": {
+    "id": "mlx-community/diffusiongemma-26B-A4B-it-4bit",
+    "family": "diffusion_gemma",
+    "quant": "4bit",
+    "canvas_size": 256,
+    "model_dir": "/Users/akiralam/.cache/huggingface/hub/models--mlx-community--diffusiongemma-26B-A4B-it-4bit/snapshots/252183330817f96e9cba0b20cc400b2947a575cf",
+    "safetensors_weight_bytes": 16543055405
+  },
+  "runtime": {
+    "engine": "ax_engine_native_mlx",
+    "bench_bin": "target/release/ax-engine-bench",
+    "benchmark_contract": "first_committed_diffusion_block",
+    "fixed_token_ignore_eos": "not_used"
+  },
+  "methodology": {
+    "warmup_iters": 1,
+    "measure_iters": 5,
+    "cooldown_s": 15.0,
+    "reported_stat": "median",
+    "frequency_contract": "direct-mode standard: measured repetitions separated by cooldown",
+    "max_output_tokens": 1,
+    "prompt_source": "realistic in-distribution prompt: prefixes of a coherent technical document tokenized with the model tokenizer (DIFFUSION_PROMPT_TEXT). Diffusion decode is convergence-gated, so realistic prompts converge and measure real throughput; the prior synthetic random-id generator never converged and measured the failure mode."
+  },
+  "bandwidth_model": {
+    "schema": "ax.estimated_weight_bandwidth.v1",
+    "model_weight_bytes": 16543055405,
+    "theoretical_peak_gb_s": 614.4,
+    "estimated_bytes_per_block": "model_weight_bytes * (diffusion_denoise_steps + 1 commit)",
+    "effective_bandwidth_gb_s": "estimated_bytes_per_block / measured_diffusion_block_wall_s"
+  },
+  "rows": [
+    {
+      "prompt_tokens": 128,
+      "measure_runs": 5,
+      "prefill_tok_s": {
+        "median": 1073.1592803125577,
+        "mean": 1078.7935311193337,
+        "stdev": 14.70280361180376
+      },
+      "block_decode_tok_s": {
+        "median": 115.44209361451901,
+        "mean": 115.51431368867884,
+        "stdev": 0.2550655191725765
+      },
+      "time_to_first_block_ms": {
+        "median": 2336.836,
+        "mean": 2334.8527999999997,
+        "stdev": 6.134436706006429
+      },
+      "diffusion_denoise_steps": {
+        "median": 13.0,
+        "min": 13,
+        "max": 13
+      },
+      "diffusion_commit_ms": {
+        "median": 0.0,
+        "mean": 0.0
+      },
+      "output_tokens": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "prompt_sha256": "8742e2a881aa3afa6a29cea3883d4ae1eaf5ba36aebec5a38028b8507d07f0bb",
+      "warmup_runs": 1,
+      "estimated_weight_bytes": {
+        "model_weight_bytes": 16543055405,
+        "model_weight_gb": 16.543055405,
+        "passes_per_block": 14.0,
+        "estimated_gb_per_block": 231.60277567
+      },
+      "effective_bandwidth_gb_s": {
+        "median": 104.44027074327572,
+        "theoretical_peak_gb_s": 614.4
+      },
+      "memory_bandwidth_utilization_pct": {
+        "median": 16.998741982955032,
+        "theoretical_peak_gb_s": 614.4
+      }
+    },
+    {
+      "prompt_tokens": 512,
+      "measure_runs": 5,
+      "prefill_tok_s": {
+        "median": 2743.23433757856,
+        "mean": 2743.397986443876,
+        "stdev": 18.396676406842886
+      },
+      "block_decode_tok_s": {
+        "median": 92.1351161478308,
+        "mean": 92.43961944600275,
+        "stdev": 0.9215568923434256
+      },
+      "time_to_first_block_ms": {
+        "median": 2963.73,
+        "mean": 2956.2316,
+        "stdev": 26.652247471836237
+      },
+      "diffusion_denoise_steps": {
+        "median": 16.0,
+        "min": 16,
+        "max": 16
+      },
+      "diffusion_commit_ms": {
+        "median": 0.0,
+        "mean": 0.0
+      },
+      "output_tokens": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "prompt_sha256": "b2ac54c2fd1fd36ba9c6d176bcbf7230726973013dd12a58820fd28145b10ceb",
+      "warmup_runs": 1,
+      "estimated_weight_bytes": {
+        "model_weight_bytes": 16543055405,
+        "model_weight_gb": 16.543055405,
+        "passes_per_block": 17.0,
+        "estimated_gb_per_block": 281.231941885
+      },
+      "effective_bandwidth_gb_s": {
+        "median": 101.21616261740031,
+        "theoretical_peak_gb_s": 614.4
+      },
+      "memory_bandwidth_utilization_pct": {
+        "median": 16.473984801009166,
+        "theoretical_peak_gb_s": 614.4
+      }
+    },
+    {
+      "prompt_tokens": 2048,
+      "measure_runs": 5,
+      "prefill_tok_s": {
+        "median": 3959.0485911354426,
+        "mean": 3872.979056351437,
+        "stdev": 149.50659274048658
+      },
+      "block_decode_tok_s": {
+        "median": 118.09839441542218,
+        "mean": 118.0895695539637,
+        "stdev": 0.47990319751754507
+      },
+      "time_to_first_block_ms": {
+        "median": 2689.748,
+        "mean": 2697.3088,
+        "stdev": 25.52172425013643
+      },
+      "diffusion_denoise_steps": {
+        "median": 12.0,
+        "min": 12,
+        "max": 12
+      },
+      "diffusion_commit_ms": {
+        "median": 0.0,
+        "mean": 0.0
+      },
+      "output_tokens": {
+        "median": 1.0,
+        "min": 1,
+        "max": 1
+      },
+      "prompt_sha256": "70f1ea534f2ab027142c8199cbcd975342076cb5d21ff23b23966f4f6cd07962",
+      "warmup_runs": 1,
+      "estimated_weight_bytes": {
+        "model_weight_bytes": 16543055405,
+        "model_weight_gb": 16.543055405,
+        "passes_per_block": 13.0,
+        "estimated_gb_per_block": 215.059720265
+      },
+      "effective_bandwidth_gb_s": {
+        "median": 99.21174869814973,
+        "theoretical_peak_gb_s": 614.4
+      },
+      "memory_bandwidth_utilization_pct": {
+        "median": 16.147745556339476,
+        "theoretical_peak_gb_s": 614.4
+      }
+    }
+  ],
+  "trials": [
+    {
+      "phase": "warmup",
+      "index": 1,
+      "prompt_tokens": 128,
+      "output_tokens": 1,
+      "prefill_wall_us": 124125,
+      "prefill_forward_wall_us": 109740,
+      "decode_wall_us": 2225872,
+      "diffusion_block_wall_us": 2224845,
+      "diffusion_denoise_wall_us": 2224716,
+      "diffusion_commit_wall_us": 0,
+      "diffusion_denoise_steps": 13,
+      "diffusion_converged_blocks": 1,
+      "diffusion_blocks": 1,
+      "step_count": 2,
+      "ttft_step": 2,
+      "finish_reason": "max_output_tokens",
+      "prefill_tok_s": 1031.2185297079557,
+      "block_decode_tok_s": 115.06419548328086,
+      "time_to_first_block_ms": 2348.97
+    },
+    {
+      "phase": "measure",
+      "index": 1,
+      "prompt_tokens": 128,
+      "output_tokens": 1,
+      "prefill_wall_us": 119274,
+      "prefill_forward_wall_us": 105441,
+      "decode_wall_us": 2219695,
+      "diffusion_block_wall_us": 2217562,
+      "diffusion_denoise_wall_us": 2217435,
+      "diffusion_commit_wall_us": 0,
+      "diffusion_denoise_steps": 13,
+      "diffusion_converged_blocks": 1,
+      "diffusion_blocks": 1,
+      "step_count": 2,
+      "ttft_step": 2,
+      "finish_reason": "max_output_tokens",
+      "prefill_tok_s": 1073.1592803125577,
+      "block_decode_tok_s": 115.44209361451901,
+      "time_to_first_block_ms": 2336.836
+    },
+    {
+      "phase": "measure",
+      "index": 2,
+      "prompt_tokens": 128,
+      "output_tokens": 1,
+      "prefill_wall_us": 117669,
+      "prefill_forward_wall_us": 103869,
+      "decode_wall_us": 2222471,
+      "diffusion_block_wall_us": 2219212,
+      "diffusion_denoise_wall_us": 2219092,
+      "diffusion_commit_wall_us": 0,
+      "diffusion_denoise_steps": 13,
+      "diffusion_converged_blocks": 1,
+      "diffusion_blocks": 1,
+      "step_count": 2,
+      "ttft_step": 2,
+      "finish_reason": "max_output_tokens",
+      "prefill_tok_s": 1087.7971258360317,
+      "block_decode_tok_s": 115.35626159195246,
+      "time_to_first_block_ms": 2336.881
+    },
+    {
+      "phase": "measure",
+      "index": 3,
+      "prompt_tokens": 128,
+      "output_tokens": 1,
+      "prefill_wall_us": 120377,
+      "prefill_forward_wall_us": 106452,
+      "decode_wall_us": 2223195,
+      "diffusion_block_wall_us": 2220829,
+      "diffusion_denoise_wall_us": 2220719,
+      "diffusion_commit_wall_us": 0,
+      "diffusion_denoise_steps": 13,
+      "diffusion_converged_blocks": 1,
+      "diffusion_blocks": 1,
+      "step_count": 2,
+      "ttft_step": 2,
+      "finish_reason": "max_output_tokens",
+      "prefill_tok_s": 1063.3260506575177,
+      "block_decode_tok_s": 115.27226994964494,
+      "time_to_first_block_ms": 2341.206
+    },
+    {
+      "phase": "measure",
+      "index": 4,
+      "prompt_tokens": 128,
+      "output_tokens": 1,
+      "prefill_wall_us": 116399,
+      "prefill_forward_wall_us": 102679,
+      "decode_wall_us": 2210290,
+      "diffusion_block_wall_us": 2208352,
+      "diffusion_denoise_wall_us": 2208232,
+      "diffusion_commit_wall_us": 0,
+      "diffusion_denoise_steps": 13,
+      "diffusion_converged_blocks": 1,
+      "diffusion_blocks": 1,
+      "step_count": 2,
+      "ttft_step": 2,
+      "finish_reason": "max_output_tokens",
+      "prefill_tok_s": 1099.6658046890436,
+      "block_decode_tok_s": 115.92354841981712,
+      "time_to_first_block_ms": 2324.751
+    },
+    {
+      "phase": "measure",
+      "index": 5,
+      "prompt_tokens": 128,
+      "output_tokens": 1,
+      "prefill_wall_us": 119624,
+      "prefill_forward_wall_us": 105500,
+      "decode_wall_us": 2216235,
+      "diffusion_block_wall_us": 2214966,
+      "diffusion_denoise_wall_us": 2214861,
+      "diffusion_commit_wall_us": 0,
+      "diffusion_denoise_steps": 13,
+      "diffusion_converged_blocks": 1,
+      "diffusion_blocks": 1,
+      "step_count": 2,
+      "ttft_step": 2,
+      "finish_reason": "max_output_tokens",
+      "prefill_tok_s": 1070.0193941015182,
+      "block_decode_tok_s": 115.57739486746073,
+      "time_to_first_block_ms": 2334.59
+    },
+    {
+      "phase": "warmup",
+      "index": 1,
+      "prompt_tokens": 512,
+      "output_tokens": 1,
+      "prefill_wall_us": 192957,
+      "prefill_forward_wall_us": 171298,
+      "decode_wall_us": 2787497,
+      "diffusion_block_wall_us": 2784984,
+      "diffusion_denoise_wall_us": 2784598,
+      "diffusion_commit_wall_us": 0,
+      "diffusion_denoise_steps": 16,
+      "diffusion_converged_blocks": 1,
+      "diffusion_blocks": 1,
+      "step_count": 2,
+      "ttft_step": 2,
+      "finish_reason": "max_output_tokens",
+      "prefill_tok_s": 2653.4409220707203,
+      "block_decode_tok_s": 91.92153348098229,
+      "time_to_first_block_ms": 2977.941
+    },
+    {
+      "phase": "measure",
+      "index": 1,
+      "prompt_tokens": 512,
+      "output_tokens": 1,
+      "prefill_wall_us": 188534,
+      "prefill_forward_wall_us": 169731,
+      "decode_wall_us": 2738846,
+      "diffusion_block_wall_us": 2737928,
+      "diffusion_denoise_wall_us": 2737600,
+      "diffusion_commit_wall_us": 0,
+      "diffusion_denoise_steps": 16,
+      "diffusion_converged_blocks": 1,
+      "diffusion_blocks": 1,
+      "step_count": 2,
+      "ttft_step": 2,
+      "finish_reason": "max_output_tokens",
+      "prefill_tok_s": 2715.6905385765963,
+      "block_decode_tok_s": 93.50136307455857,
+      "time_to_first_block_ms": 2926.462
+    },
+    {
+      "phase": "measure",
+      "index": 2,
+      "prompt_tokens": 512,
+      "output_tokens": 1,
+      "prefill_wall_us": 185886,
+      "prefill_forward_wall_us": 167855,
+      "decode_wall_us": 2798096,
+      "diffusion_block_wall_us": 2795704,
+      "diffusion_denoise_wall_us": 2795343,
+      "diffusion_commit_wall_us": 0,
+      "diffusion_denoise_steps": 16,
+      "diffusion_converged_blocks": 1,
+      "diffusion_blocks": 1,
+      "step_count": 2,
+      "ttft_step": 2,
+      "finish_reason": "max_output_tokens",
+      "prefill_tok_s": 2754.37633818577,
+      "block_decode_tok_s": 91.56906453615977,
+      "time_to_first_block_ms": 2981.59
+    },
+    {
+      "phase": "measure",
+      "index": 3,
+      "prompt_tokens": 512,
+      "output_tokens": 1,
+      "prefill_wall_us": 186641,
+      "prefill_forward_wall_us": 167952,
+      "decode_wall_us": 2795598,
+      "diffusion_block_wall_us": 2793058,
+      "diffusion_denoise_wall_us": 2792688,
+      "diffusion_commit_wall_us": 0,
+      "diffusion_denoise_steps": 16,
+      "diffusion_converged_blocks": 1,
+      "diffusion_blocks": 1,
+      "step_count": 2,
+      "ttft_step": 2,
+      "finish_reason": "max_output_tokens",
+      "prefill_tok_s": 2743.23433757856,
+      "block_decode_tok_s": 91.65581237482358,
+      "time_to_first_block_ms": 2979.699
+    },
+    {
+      "phase": "measure",
+      "index": 4,
+      "prompt_tokens": 512,
+      "output_tokens": 1,
+      "prefill_wall_us": 185202,
+      "prefill_forward_wall_us": 167162,
+      "decode_wall_us": 2780386,
+      "diffusion_block_wall_us": 2778528,
+      "diffusion_denoise_wall_us": 2778216,
+      "diffusion_commit_wall_us": 0,
+      "diffusion_denoise_steps": 16,
+      "diffusion_converged_blocks": 1,
+      "diffusion_blocks": 1,
+      "step_count": 2,
+      "ttft_step": 2,
+      "finish_reason": "max_output_tokens",
+      "prefill_tok_s": 2764.548978952711,
+      "block_decode_tok_s": 92.1351161478308,
+      "time_to_first_block_ms": 2963.73
+    },
+    {
+      "phase": "measure",
+      "index": 5,
+      "prompt_tokens": 512,
+      "output_tokens": 1,
+      "prefill_wall_us": 186920,
+      "prefill_forward_wall_us": 168461,
+      "decode_wall_us": 2743704,
+      "diffusion_block_wall_us": 2742757,
+      "diffusion_denoise_wall_us": 2742513,
+      "diffusion_commit_wall_us": 0,
+      "diffusion_denoise_steps": 16,
+      "diffusion_converged_blocks": 1,
+      "diffusion_blocks": 1,
+      "step_count": 2,
+      "ttft_step": 2,
+      "finish_reason": "max_output_tokens",
+      "prefill_tok_s": 2739.1397389257436,
+      "block_decode_tok_s": 93.33674109664108,
+      "time_to_first_block_ms": 2929.677
+    },
+    {
+      "phase": "warmup",
+      "index": 1,
+      "prompt_tokens": 2048,
+      "output_tokens": 1,
+      "prefill_wall_us": 551058,
+      "prefill_forward_wall_us": 459276,
+      "decode_wall_us": 2153923,
+      "diffusion_block_wall_us": 2150855,
+      "diffusion_denoise_wall_us": 2150481,
+      "diffusion_commit_wall_us": 0,
+      "diffusion_denoise_steps": 12,
+      "diffusion_converged_blocks": 1,
+      "diffusion_blocks": 1,
+      "step_count": 2,
+      "ttft_step": 2,
+      "finish_reason": "max_output_tokens",
+      "prefill_tok_s": 3716.4871937255243,
+      "block_decode_tok_s": 119.0224352641159,
+      "time_to_first_block_ms": 2701.913
+    },
+    {
+      "phase": "measure",
+      "index": 1,
+      "prompt_tokens": 2048,
+      "output_tokens": 1,
+      "prefill_wall_us": 511363,
+      "prefill_forward_wall_us": 443101,
+      "decode_wall_us": 2155929,
+      "diffusion_block_wall_us": 2155004,
+      "diffusion_denoise_wall_us": 2154695,
+      "diffusion_commit_wall_us": 0,
+      "diffusion_denoise_steps": 12,
+      "diffusion_converged_blocks": 1,
+      "diffusion_blocks": 1,
+      "step_count": 2,
+      "ttft_step": 2,
+      "finish_reason": "max_output_tokens",
+      "prefill_tok_s": 4004.9827617563255,
+      "block_decode_tok_s": 118.79328298230537,
+      "time_to_first_block_ms": 2666.367
+    },
+    {
+      "phase": "measure",
+      "index": 2,
+      "prompt_tokens": 2048,
+      "output_tokens": 1,
+      "prefill_wall_us": 545122,
+      "prefill_forward_wall_us": 459752,
+      "decode_wall_us": 2180415,
+      "diffusion_block_wall_us": 2178716,
+      "diffusion_denoise_wall_us": 2178372,
+      "diffusion_commit_wall_us": 0,
+      "diffusion_denoise_steps": 12,
+      "diffusion_converged_blocks": 1,
+      "diffusion_blocks": 1,
+      "step_count": 2,
+      "ttft_step": 2,
+      "finish_reason": "max_output_tokens",
+      "prefill_tok_s": 3756.9571582141243,
+      "block_decode_tok_s": 117.50039931776331,
+      "time_to_first_block_ms": 2723.838
+    },
+    {
+      "phase": "measure",
+      "index": 3,
+      "prompt_tokens": 2048,
+      "output_tokens": 1,
+      "prefill_wall_us": 557970,
+      "prefill_forward_wall_us": 457525,
+      "decode_wall_us": 2167876,
+      "diffusion_block_wall_us": 2165517,
+      "diffusion_denoise_wall_us": 2165180,
+      "diffusion_commit_wall_us": 0,
+      "diffusion_denoise_steps": 12,
+      "diffusion_converged_blocks": 1,
+      "diffusion_blocks": 1,
+      "step_count": 2,
+      "ttft_step": 2,
+      "finish_reason": "max_output_tokens",
+      "prefill_tok_s": 3670.4482319837985,
+      "block_decode_tok_s": 118.21657368656076,
+      "time_to_first_block_ms": 2723.487
+    },
+    {
+      "phase": "measure",
+      "index": 4,
+      "prompt_tokens": 2048,
+      "output_tokens": 1,
+      "prefill_wall_us": 517296,
+      "prefill_forward_wall_us": 450533,
+      "decode_wall_us": 2175229,
+      "diffusion_block_wall_us": 2172452,
+      "diffusion_denoise_wall_us": 2172161,
+      "diffusion_commit_wall_us": 0,
+      "diffusion_denoise_steps": 12,
+      "diffusion_converged_blocks": 1,
+      "diffusion_blocks": 1,
+      "step_count": 2,
+      "ttft_step": 2,
+      "finish_reason": "max_output_tokens",
+      "prefill_tok_s": 3959.0485911354426,
+      "block_decode_tok_s": 117.83919736776693,
+      "time_to_first_block_ms": 2689.748
+    },
+    {
+      "phase": "measure",
+      "index": 5,
+      "prompt_tokens": 2048,
+      "output_tokens": 1,
+      "prefill_wall_us": 515420,
+      "prefill_forward_wall_us": 447760,
+      "decode_wall_us": 2169930,
+      "diffusion_block_wall_us": 2167684,
+      "diffusion_denoise_wall_us": 2167369,
+      "diffusion_commit_wall_us": 0,
+      "diffusion_denoise_steps": 12,
+      "diffusion_converged_blocks": 1,
+      "diffusion_blocks": 1,
+      "step_count": 2,
+      "ttft_step": 2,
+      "finish_reason": "max_output_tokens",
+      "prefill_tok_s": 3973.4585386674944,
+      "block_decode_tok_s": 118.09839441542218,
+      "time_to_first_block_ms": 2683.104
+    }
+  ],
+  "peer_runtime_status": {
+    "llama_cpp_metal": "N/A: GGUF load fails with unknown model architecture diffusion-gemma",
+    "mlx_lm": "N/A: mlx-lm 0.31.3 does not support model type diffusion_gemma"
+  }
+}

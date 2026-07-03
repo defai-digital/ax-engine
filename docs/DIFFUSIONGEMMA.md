@@ -62,17 +62,17 @@ load the MLX snapshot (`Model type diffusion_gemma not supported.`).
 
 | Prompt tokens | AX first-block decode | Denoise steps | Committed block |
 | ---: | ---: | ---: | ---: |
-| 128 | 111.9 tok/s | 13 | 256 tokens |
-| 512 | 89.4 tok/s | 16 | 256 tokens |
-| 2048 | 114.7 tok/s | 12 | 256 tokens |
+| 128 | 115.4 tok/s | 13 | 256 tokens |
+| 512 | 92.1 tok/s | 16 | 256 tokens |
+| 2048 | 118.1 tok/s | 12 | 256 tokens |
 
 ## Prefill And First-Block Latency
 
 | Prompt tokens | AX direct prefill | AX time to first block | llama.cpp Metal 9650 | `mlx_lm` 0.31.3 |
 | ---: | ---: | ---: | --- | --- |
-| 128 | 1,080.2 tok/s | 2,407 ms | load blocked | load blocked |
-| 512 | 2,608.4 tok/s | 3,063 ms | load blocked | load blocked |
-| 2048 | 3,699.4 tok/s | 2,784 ms | load blocked | load blocked |
+| 128 | 1,073.2 tok/s | 2,337 ms | load blocked | load blocked |
+| 512 | 2,743.2 tok/s | 2,964 ms | load blocked | load blocked |
+| 2048 | 3,959.0 tok/s | 2,690 ms | load blocked | load blocked |
 
 `time to first block` is prefill wall time plus the first 256-token
 denoise-and-commit block. `first-block decode` is computed as
@@ -101,9 +101,9 @@ keeps the effective GB/s values.
 
 | Prompt tokens | Estimated effective bandwidth | % of 614.4 GB/s M5 Max theoretical bandwidth |
 | ---: | ---: | ---: |
-| 128 | 101.2 GB/s | 16.5% |
-| 512 | 98.2 GB/s | 16.0% |
-| 2,048 | 96.4 GB/s | 15.7% |
+| 128 | 104.4 GB/s | 17.0% |
+| 512 | 101.2 GB/s | 16.5% |
+| 2,048 | 99.2 GB/s | 16.1% |
 
 At these prompt lengths, the first-block path reaches roughly 16% of
 theoretical M5 Max bandwidth under this estimate. That should be read as "not
@@ -185,9 +185,9 @@ wall time, plus `diffusion` decode-route classification in
 `bench_mlx_inference_stack.py`.
 
 Artifacts: AX direct rows are
-[`2026-06-29-check-interval-1/summary.json`](../benchmarks/results/diffusion-gemma-direct/2026-06-29-check-interval-1/summary.json),
+[`2026-07-03-readme-first-block/summary.json`](../benchmarks/results/diffusion-gemma-direct/2026-07-03-readme-first-block/summary.json),
 with the human summary in
-[`summary.md`](../benchmarks/results/diffusion-gemma-direct/2026-06-29-check-interval-1/summary.md).
+[`summary.md`](../benchmarks/results/diffusion-gemma-direct/2026-07-03-readme-first-block/summary.md).
 Peer runtime blockers are recorded as load failures, so there are no llama.cpp
 or `mlx_lm` result artifacts for this model family.
 

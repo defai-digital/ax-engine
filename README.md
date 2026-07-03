@@ -48,6 +48,7 @@ model-specific boundaries are kept visible.
     - [Gemma 4 assistant-MTP (depth-2)](#gemma-4-assistant-mtp-depth-2)
   - [Direct Mode (Decode · Prefill · TTFT)](#direct-mode-decode--prefill--ttft)
     - [Gemma 4 12B](#gemma-4-12b)
+    - [DiffusionGemma (block diffusion)](#diffusiongemma-block-diffusion)
     - [Gemma 4 and Qwen 3.6](#gemma-4-and-qwen-36)
   - [Embedding Models](#embedding-models)
     - [Large-corpus ingest scale](#large-corpus-ingest-scale)
@@ -569,6 +570,75 @@ Gemma 4 12B multimodal benchmark details now live in
 
 Gemma assistant-MTP package layout and cache-location details live in
 [Supported Models](docs/SUPPORTED-MODELS.md#mtp-downloads).
+
+#### DiffusionGemma (block diffusion)
+
+DiffusionGemma (`mlx-community/diffusiongemma-26B-A4B-it-4bit`, `model_type:
+diffusion_gemma`) is an **experimental** repo-owned MLX path. It is a
+26B-A4B MoE Gemma 4 checkpoint that generates by **block diffusion** rather than
+autoregressive next-token decoding: each visible output comes from a 256-token
+canvas that is denoised bidirectionally and then committed with a causal pass.
+
+> [!IMPORTANT]
+> These are **not** the same metric as the autoregressive rows above. For a
+> next-token decoder, `decode tok/s` is the steady token-by-token loop and
+> `TTFT` is prefill plus one token. DiffusionGemma has neither, so the columns
+> below report **first-block decode** (`256 / block wall time`) and **time to
+> first committed block** (prefill wall plus the first denoise-and-commit
+> block). Do not read them as directly comparable to the Gemma 4 12B or
+> Gemma 4 / Qwen 3.6 AR throughput.
+
+The rows are **AX Engine only**. No peer engine loads this architecture in a
+released build: `mlx_lm` 0.31.3 rejects `Model type diffusion_gemma not
+supported`, and stable `llama.cpp` Metal fails with `unknown model
+architecture: 'diffusion-gemma'`. An unmerged llama.cpp draft PR adds the
+architecture, but a draft branch is not a stable baseline, so no peer row is
+published here.
+
+<p>
+<strong>First-block decode rate</strong><br>
+<img width="100%"
+  src="docs/assets/perf-diffusiongemma-direct-decode-tok-s.svg"
+  alt="AX direct DiffusionGemma first-block decode throughput at 128/512/2048 prompt tokens">
+</p>
+
+<p>
+<strong>Prefill rate</strong><br>
+<img width="100%"
+  src="docs/assets/perf-diffusiongemma-direct-prefill-tok-s.svg"
+  alt="AX direct DiffusionGemma prefill throughput at 128/512/2048 prompt tokens">
+</p>
+
+<p>
+<strong>Time to first block</strong><br>
+<img width="100%"
+  src="docs/assets/perf-diffusiongemma-direct-ttft-ms.svg"
+  alt="AX direct DiffusionGemma time to first committed block at 128/512/2048 prompt tokens">
+</p>
+
+| Prompt tokens | AX first-block decode | AX prefill | AX time to first block | Denoise steps | Committed block |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 128 | 115.4 tok/s | 1,073.2 tok/s | 2,337 ms | 13 | 256 tokens |
+| 512 | 92.1 tok/s | 2,743.2 tok/s | 2,964 ms | 16 | 256 tokens |
+| 2048 | 118.1 tok/s | 3,959.0 tok/s | 2,690 ms | 12 | 256 tokens |
+
+First-block decode does not scale cleanly with prompt length because the
+denoiser is **convergence-gated**: it iterates until the 256-token canvas
+stabilises (12-16 steps here on realistic in-distribution prompts), so
+throughput tracks how many denoise passes convergence needs, not prompt size.
+Random-token prompts never converge, hit the step cap, and measure the failure
+mode instead — these rows use prefixes of a coherent technical document
+tokenized with the model's own tokenizer.
+
+A block-granularity weight-traffic estimate puts this path at roughly
+**16-17% of the M5 Max ~614 GB/s theoretical bandwidth**, i.e. it is **not**
+memory-bandwidth-saturated: the diffusion denoise step is a parallel
+whole-canvas matmul, so it is dispatch-, occupancy-, and kernel-mix-bound rather
+than weight-streaming-bound. Method, convergence signals, optimization toggles,
+and the bandwidth diagnostic live in
+[`docs/DIFFUSIONGEMMA.md`](docs/DIFFUSIONGEMMA.md); full artifact:
+[`2026-07-03-readme-first-block/summary.json`](benchmarks/results/diffusion-gemma-direct/2026-07-03-readme-first-block/summary.json)
+(release build, 1 warmup + 5 measured repetitions, 15 s cooldown, medians).
 
 <!-- readme-performance-artifacts: reference=benchmarks/results/mlx-inference/2026-05-26-direct-mode-clean-refresh/; reference=benchmarks/results/mlx-inference/2026-06-26-qwen36-direct-refresh/; reference=benchmarks/results/mlx-inference/2026-06-26-gemma4-6bit-mlx-lm-only/; ax-base=benchmarks/results/mlx-inference/2026-06-27-ax-direct-only/; ax-overlay=benchmarks/results/mlx-inference/2026-07-01-ax-direct-4bit-refresh-clean-r2/; reference=benchmarks/results/mlx-inference/2026-07-02-gemma4-6bit-direct-refresh/; ax-overlay=benchmarks/results/mlx-inference/2026-07-02-gemma4-6bit-direct-refresh/ -->
 
