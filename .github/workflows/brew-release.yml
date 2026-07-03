@@ -15,7 +15,7 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: false
 
-# Only needs to read the release assets; the tap push uses HOMEBREW_TAP_TOKEN.
+# Only needs to read the release assets; the tap push uses TAP_PUSH_TOKEN.
 permissions:
   contents: read
 
@@ -52,7 +52,7 @@ jobs:
         with:
           ref: ${{ steps.tag.outputs.tag }}
           # Don't install a global github.com credential helper: it would override the
-          # HOMEBREW_TAP_TOKEN embedded in the tap clone URL and make the tap push
+          # TAP_PUSH_TOKEN embedded in the tap clone URL and make the tap push
           # authenticate as the default Actions identity (403 to the tap repo).
           persist-credentials: false
 
@@ -113,11 +113,12 @@ jobs:
           gh release download "$TAG" --repo "$MAIN_REPO" \
             --pattern "$MANIFEST" --dir /tmp --clobber
 
-          echo "archive=$ARCHIVE"           >> "$GITHUB_OUTPUT"
-          echo "manifest=$MANIFEST"         >> "$GITHUB_OUTPUT"
-          echo "sha256=$SHA256"             >> "$GITHUB_OUTPUT"
-          echo "download_url=$DOWNLOAD_URL" >> "$GITHUB_OUTPUT"
-          python3 - "/tmp/${MANIFEST}" >> "$GITHUB_OUTPUT" <<'PY'
+          {
+            echo "archive=$ARCHIVE"
+            echo "manifest=$MANIFEST"
+            echo "sha256=$SHA256"
+            echo "download_url=$DOWNLOAD_URL"
+            python3 - "/tmp/${MANIFEST}" <<'PY'
           from __future__ import annotations
 
           import json
@@ -131,6 +132,7 @@ jobs:
           print(f"apple_signed={str(apple_signed).lower()}")
           print(f"apple_notarized={str(apple_notarized).lower()}")
           PY
+          } >> "$GITHUB_OUTPUT"
           echo "Resolved checksum from signed release asset: $SHA256"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -150,7 +152,7 @@ jobs:
           trap 'rm -rf "$TAP_DIR"' EXIT
 
           git clone \
-            "https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/${TAP_REPO}.git" \
+            "https://x-access-token:${TAP_PUSH_TOKEN}@github.com/${TAP_REPO}.git" \
             --depth=1 --quiet \
             "$TAP_DIR"
 
@@ -179,7 +181,8 @@ jobs:
             fi
           done
 
-          python3 - "$FORMULA_PATH" ${RELEASE_PAYLOADS} <<'PY'
+          read -r -a release_payloads <<< "$RELEASE_PAYLOADS"
+          python3 - "$FORMULA_PATH" "${release_payloads[@]}" <<'PY'
           from __future__ import annotations
 
           import re
@@ -270,7 +273,7 @@ jobs:
           formula_path.write_text(text, encoding="utf-8")
           PY
 
-          EXPECTED_BIN_LINE="bin.install $(printf '"%s", ' ${RELEASE_PAYLOADS} | sed 's/, $//')"
+          EXPECTED_BIN_LINE="bin.install $(printf '"%s", ' "${release_payloads[@]}" | sed 's/, $//')"
           if ! grep -qF "$EXPECTED_BIN_LINE" "$FORMULA_PATH"; then
             echo "error: formula does not contain canonical line: $EXPECTED_BIN_LINE" >&2
             exit 1
@@ -292,7 +295,7 @@ jobs:
           git push origin main
           echo "Tap updated: ${TAP_REPO}"
         env:
-          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          TAP_PUSH_TOKEN: ${{ secrets.TAP_TOKEN || secrets.HOMEBREW_TAP_TOKEN }}
 
       - name: Step summary
         if: always()
