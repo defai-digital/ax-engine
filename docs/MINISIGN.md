@@ -144,4 +144,4 @@ AX_MINISIGN_PINNED_PUBLIC_KEY   expected public key (fail-closed pin)
 This minisign signature is separate from platform code signing and notarization.
 It proves artifact integrity against the published minisign public key; it does
 not replace Apple Developer ID signing/notarization. See `scripts/README.md` for
-the `brew-release.sh` codesign/notarize path (`--sign-identity`).
+the `publish-github-release.sh --sign-identity` release path.

@@ -23,7 +23,7 @@ env:
   MAIN_REPO: defai-digital/ax-engine
   TAP_REPO: defai-digital/homebrew-ax-engine
   TAP_FORMULA: Formula/ax-engine.rb
-  RELEASE_PAYLOADS: ax-engine ax-engine-server ax-engine-bench ax-engine-download-model.py ax-engine-prepare-mtp-sidecar.py ax-engine-check-mtp-sidecar-provenance.py
+  RELEASE_PAYLOADS: ax-engine ax-engine-server ax-engine-bench ax-engine-download-model.py ax-engine-prepare-mtp-sidecar.py ax-engine-prepare-gemma4-assistant-mtp.py ax-engine-prepare-glm-mtp-sidecar.py ax-engine-check-mtp-sidecar-provenance.py
 
 jobs:
   update-tap:
@@ -80,6 +80,7 @@ jobs:
 
           TAG="${{ steps.tag.outputs.tag }}"
           ARCHIVE="ax-engine-${TAG}-macos-arm64.tar.gz"
+          MANIFEST="ax-engine-${TAG}-macos-arm64.manifest.json"
           DOWNLOAD_URL="https://github.com/${MAIN_REPO}/releases/download/${TAG}/${ARCHIVE}"
 
           # The signed binary release is produced by scripts/publish-github-release.sh,
@@ -109,9 +110,27 @@ jobs:
             exit 1
           fi
 
+          gh release download "$TAG" --repo "$MAIN_REPO" \
+            --pattern "$MANIFEST" --dir /tmp --clobber
+
           echo "archive=$ARCHIVE"           >> "$GITHUB_OUTPUT"
+          echo "manifest=$MANIFEST"         >> "$GITHUB_OUTPUT"
           echo "sha256=$SHA256"             >> "$GITHUB_OUTPUT"
           echo "download_url=$DOWNLOAD_URL" >> "$GITHUB_OUTPUT"
+          python3 - "/tmp/${MANIFEST}" >> "$GITHUB_OUTPUT" <<'PY'
+          from __future__ import annotations
+
+          import json
+          import sys
+          from pathlib import Path
+
+          manifest = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+          code_signing = manifest.get("code_signing") or {}
+          apple_signed = bool(code_signing.get("apple_developer_id"))
+          apple_notarized = bool(code_signing.get("notarized"))
+          print(f"apple_signed={str(apple_signed).lower()}")
+          print(f"apple_notarized={str(apple_notarized).lower()}")
+          PY
           echo "Resolved checksum from signed release asset: $SHA256"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -124,6 +143,8 @@ jobs:
           VERSION="${{ steps.tag.outputs.version }}"
           SHA256="${{ steps.asset.outputs.sha256 }}"
           DOWNLOAD_URL="${{ steps.asset.outputs.download_url }}"
+          APPLE_SIGNED="${{ steps.asset.outputs.apple_signed }}"
+          APPLE_NOTARIZED="${{ steps.asset.outputs.apple_notarized }}"
 
           TAP_DIR="$(mktemp -d /tmp/ax-engine-tap.XXXXXX)"
           trap 'rm -rf "$TAP_DIR"' EXIT
@@ -186,6 +207,69 @@ jobs:
           formula_path.write_text(text, encoding="utf-8")
           PY
 
+          python3 - "$FORMULA_PATH" "$APPLE_SIGNED" "$APPLE_NOTARIZED" <<'PY'
+          from __future__ import annotations
+
+          import re
+          import sys
+          from pathlib import Path
+          from textwrap import dedent, indent
+
+          formula_path = Path(sys.argv[1])
+          apple_signed = sys.argv[2] == "true"
+          apple_notarized = sys.argv[3] == "true"
+          text = formula_path.read_text(encoding="utf-8")
+
+          if apple_notarized:
+              caveats = indent(dedent("""\
+                def caveats
+                  <<~EOS
+                    ax-engine binaries for this release are Developer ID signed and notarized.
+                  EOS
+                end"""), "  ")
+          elif apple_signed:
+              caveats = indent(dedent("""\
+                def caveats
+                  <<~EOS
+                    ax-engine binaries for this release are Developer ID signed but not notarized by Apple.
+
+                    If macOS shows "cannot be opened because Apple cannot verify it":
+                      1. Open System Settings → Privacy & Security
+                      2. Scroll to the Security section
+                      3. Click "Allow Anyway" next to the ax-engine entry
+                      4. Run the command again and click "Open" in the dialog
+                  EOS
+                end"""), "  ")
+          else:
+              caveats = indent(dedent("""\
+                def caveats
+                  <<~EOS
+                    ax-engine binaries for this release are ad-hoc signed (not notarized by Apple).
+
+                    If macOS shows "cannot be opened because Apple cannot verify it":
+                      1. Open System Settings → Privacy & Security
+                      2. Scroll to the Security section
+                      3. Click "Allow Anyway" next to the ax-engine entry
+                      4. Run the command again and click "Open" in the dialog
+
+                    Or clear the quarantine flag from the terminal (one-time):
+                      sudo xattr -dr com.apple.quarantine "$(which ax-engine)"
+                      sudo xattr -dr com.apple.quarantine "$(which ax-engine-server)"
+                      sudo xattr -dr com.apple.quarantine "$(which ax-engine-bench)"
+
+                    The mlx-c dependency installs from a pre-built Homebrew bottle.
+                    Xcode and an Apple Developer account are not required.
+                  EOS
+                end"""), "  ")
+
+          pattern = re.compile(r"^  def caveats\n    <<~EOS\n.*?^  end\n", re.MULTILINE | re.DOTALL)
+          if pattern.search(text):
+              text = pattern.sub(caveats + "\n", text, count=1)
+          else:
+              text = text.replace("\n  test do\n", "\n" + caveats + "\n\n  test do\n", 1)
+          formula_path.write_text(text, encoding="utf-8")
+          PY
+
           EXPECTED_BIN_LINE="bin.install $(printf '"%s", ' ${RELEASE_PAYLOADS} | sed 's/, $//')"
           if ! grep -qF "$EXPECTED_BIN_LINE" "$FORMULA_PATH"; then
             echo "error: formula does not contain canonical line: $EXPECTED_BIN_LINE" >&2
@@ -216,7 +300,10 @@ jobs:
           TAG="${{ steps.tag.outputs.tag }}"
           SHA256="${{ steps.asset.outputs.sha256 }}"
           ARCHIVE="${{ steps.asset.outputs.archive }}"
+          MANIFEST="${{ steps.asset.outputs.manifest }}"
           DOWNLOAD_URL="${{ steps.asset.outputs.download_url }}"
+          APPLE_SIGNED="${{ steps.asset.outputs.apple_signed }}"
+          APPLE_NOTARIZED="${{ steps.asset.outputs.apple_notarized }}"
 
           {
             echo "## Brew Release: ${TAG}"
@@ -226,7 +313,10 @@ jobs:
             echo "| | |"
             echo "|---|---|"
             echo "| Archive | \`${ARCHIVE}\` |"
+            echo "| Manifest | \`${MANIFEST}\` |"
             echo "| SHA256 | \`${SHA256}\` |"
+            echo "| Apple signed | \`${APPLE_SIGNED}\` |"
+            echo "| Apple notarized | \`${APPLE_NOTARIZED}\` |"
             echo "| Download | ${DOWNLOAD_URL} |"
             echo "| Tap | \`${TAP_FORMULA}\` in \`${TAP_REPO}\` |"
             echo

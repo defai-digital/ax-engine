@@ -79,13 +79,14 @@ throughput baselines.
   mode runs `cargo test --workspace --no-run` first, then crate-by-crate tests
   with timeout and `AX_CARGO_JOBS=1` by default so a stuck full workspace run
   does not leave orphaned compiler processes.
-- `brew-release.sh`: local Homebrew release publisher. It packages
+- `brew-release.sh`: legacy local Homebrew release publisher. It packages
   `ax-engine-server` and `ax-engine-bench`; with `--sign-identity`, it
   codesigns and notarizes all packaged binaries before upload. With
   `--minisign`, it signs the release tarball with the shared ax-code signing
   key (`~/signkey/ax-code.sec`), verifies it with `~/signkey/ax-code.pub`, and
-  uploads the matching `.minisig` beside the archive. Without
-  `--sign-identity`, binaries are intentionally left unsigned.
+  uploads the matching `.minisig` beside the archive. Prefer
+  `publish-github-release.sh` for current releases so GitHub, PyPI, and
+  Homebrew tag-triggered follow-through stay on the same artifact.
 - `minisign-keygen.sh`: generates the minisign keypair for signing release
   artifacts. Defaults to the shared ax-code key paths (`~/signkey/ax-code.sec`
   / `~/signkey/ax-code.pub`), sets a private `700` directory and `600` secret
@@ -107,11 +108,18 @@ throughput baselines.
 - `publish-github-release.sh`: full local GitHub Release publisher for the
   macOS arm64 CLI assets. It verifies tag/version consistency, requires a clean
   tree by default, runs release gates, builds `ax-engine-server` and
-  `ax-engine-bench`, writes a tarball, SHA256 file, and manifest under
+  `ax-engine-bench`, optionally signs and notarizes the three release binaries
+  with `--sign-identity`, writes a tarball, SHA256 file, and manifest under
   `target/release-artifacts/<tag>/`, signs those artifacts with minisign by
   default, pushes the tag, creates the GitHub release, uploads the assets, and
-  verifies the uploaded asset names. Use `--dry-run` to exercise local steps
-  without pushing or uploading.
+  verifies the uploaded asset names. Notarization can use the local
+  `AX_NOTARY_PROFILE` / `--notary-profile` Keychain profile or the same
+  App Store Connect API env shape used by ax-code Desktop:
+  `APPLE_API_KEY`, `APPLE_API_KEY_B64`, `APPLE_API_KEY_ID`, and
+  `APPLE_API_ISSUER`. When `APPLE_API_KEY_B64` is set and `APPLE_API_KEY` is
+  not, the script decodes the key into a temporary `.p8` file with `0600`
+  permissions before calling `notarytool`. Use `--dry-run` to exercise local
+  steps without pushing, uploading, or submitting to Apple notarization.
 - `download_model.py`: MLX LLM download helper. It delegates acquisition to
   `mlx-lm`, resolves the resulting cache snapshot, validates local model files,
   and generates the AX model manifest when `ax-engine-bench` or Cargo is

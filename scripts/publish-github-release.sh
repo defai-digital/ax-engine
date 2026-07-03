@@ -26,12 +26,28 @@ MINISIGN=true
 MINISIGN_SECRET_KEY="${AX_MINISIGN_SECRET_KEY:-$HOME/signkey/ax-code.sec}"
 MINISIGN_PUBLIC_KEY="${AX_MINISIGN_PUBLIC_KEY:-$HOME/signkey/ax-code.pub}"
 MINISIGN_PUBLIC_KEY_STRING="${AX_MINISIGN_PUBLIC_KEY_STRING:-}"
+SIGN_IDENTITY="${AX_CODESIGN_IDENTITY:-}"
+NOTARY_PROFILE="${AX_NOTARY_PROFILE:-ax-engine-notary}"
+APPLE_API_KEY="${APPLE_API_KEY:-}"
+APPLE_API_KEY_B64="${APPLE_API_KEY_B64:-}"
+APPLE_API_KEY_ID="${APPLE_API_KEY_ID:-}"
+APPLE_API_ISSUER="${APPLE_API_ISSUER:-}"
+SKIP_NOTARIZATION=false
 ARTIFACT_DIR=""
 TITLE=""
 NOTES_FILE=""
 DRAFT=false
 PRERELEASE=false
 CLOBBER_ASSETS=false
+APPLE_API_KEY_TEMP=""
+
+cleanup() {
+    if [[ -n "$APPLE_API_KEY_TEMP" ]]; then
+        rm -f "$APPLE_API_KEY_TEMP"
+    fi
+}
+
+trap cleanup EXIT
 
 usage() {
     cat <<'EOF'
@@ -41,9 +57,10 @@ Publishes the macOS arm64 GitHub release assets for AX Engine:
   1. validate clean checkout and tag/version consistency
   2. run release gates
   3. build release binaries
-  4. package tarball, sha256, and release manifest
-  5. minisign artifacts by default
-  6. push the tag, create/update the GitHub release, upload assets, verify assets
+  4. optionally Apple Developer ID sign and notarize binaries
+  5. package tarball, sha256, and release manifest
+  6. minisign artifacts by default
+  7. push the tag, create/update the GitHub release, upload assets, verify assets
 
 Options:
   --dry-run                  Run local checks/build/package/sign, but do not push or upload.
@@ -62,6 +79,19 @@ Options:
   --minisign-key <path>      Secret key path. Default: ~/signkey/ax-code.sec
   --minisign-pubkey <path>   Public key file path. Default: ~/signkey/ax-code.pub
   --minisign-public-key <k>  Public key string for verification.
+  --sign-identity <id>       Developer ID Application identity for codesign.
+                             Can also be set with AX_CODESIGN_IDENTITY.
+  --notary-profile <name>    notarytool Keychain profile. Default: ax-engine-notary.
+                             Ignored when Apple API key flags/env are provided.
+  --apple-api-key <path>     App Store Connect API key path for notarytool.
+                             Defaults to APPLE_API_KEY when set.
+                             If unset, APPLE_API_KEY_B64 is decoded to a
+                             temporary .p8 file, matching ax-code CI.
+  --apple-api-key-id <id>    App Store Connect API key id for notarytool.
+                             Defaults to APPLE_API_KEY_ID when set.
+  --apple-api-issuer <uuid>  App Store Connect API issuer for notarytool.
+                             Defaults to APPLE_API_ISSUER when set.
+  --skip-notarization        Codesign only; do not submit to Apple notary service.
   -h, --help                 Show this help.
 EOF
 }
@@ -80,6 +110,75 @@ check_cmd() {
 run() {
     echo ">> $*"
     "$@"
+}
+
+NOTARY_ARGS=()
+
+resolve_notary_args() {
+    NOTARY_ARGS=()
+    if [[ "$SKIP_NOTARIZATION" = true || -z "$SIGN_IDENTITY" ]]; then
+        return
+    fi
+
+    if [[ -n "$APPLE_API_KEY_B64" && -z "$APPLE_API_KEY" ]]; then
+        APPLE_API_KEY_TEMP="$(mktemp "${TMPDIR:-/tmp}/ax-engine-apple-api-key.XXXXXX.p8")"
+        printf '%s' "$APPLE_API_KEY_B64" | base64 --decode > "$APPLE_API_KEY_TEMP"
+        chmod 600 "$APPLE_API_KEY_TEMP"
+        APPLE_API_KEY="$APPLE_API_KEY_TEMP"
+    fi
+
+    if [[ -n "$APPLE_API_KEY" || -n "$APPLE_API_KEY_B64" || -n "$APPLE_API_KEY_ID" || -n "$APPLE_API_ISSUER" ]]; then
+        [[ -n "$APPLE_API_KEY" ]] || die "--apple-api-key, APPLE_API_KEY, or APPLE_API_KEY_B64 is required when using App Store Connect notarization"
+        [[ -n "$APPLE_API_KEY_ID" ]] || die "--apple-api-key-id or APPLE_API_KEY_ID is required when using App Store Connect notarization"
+        [[ -n "$APPLE_API_ISSUER" ]] || die "--apple-api-issuer or APPLE_API_ISSUER is required when using App Store Connect notarization"
+        [[ -f "$APPLE_API_KEY" ]] || die "Apple API key file not found: $APPLE_API_KEY"
+        NOTARY_ARGS=(--key "$APPLE_API_KEY" --key-id "$APPLE_API_KEY_ID" --issuer "$APPLE_API_ISSUER")
+    else
+        [[ -n "$NOTARY_PROFILE" ]] || die "--notary-profile must not be empty"
+        NOTARY_ARGS=(--keychain-profile "$NOTARY_PROFILE")
+    fi
+}
+
+codesign_release_binaries() {
+    if [[ -z "$SIGN_IDENTITY" ]]; then
+        echo "warning: no --sign-identity provided; release binaries will not be Apple Developer ID signed" >&2
+        return
+    fi
+
+    echo "Codesigning release binaries with identity: $SIGN_IDENTITY"
+    for bin in "${RELEASE_BINS[@]}"; do
+        run codesign \
+            --sign "$SIGN_IDENTITY" \
+            --options runtime \
+            --timestamp \
+            --force \
+            "target/release/$bin"
+    done
+
+    echo "Verifying codesignatures"
+    for bin in "${RELEASE_BINS[@]}"; do
+        run codesign --verify --strict --verbose=2 "target/release/$bin"
+    done
+}
+
+notarize_release_binaries() {
+    if [[ -z "$SIGN_IDENTITY" ]]; then
+        return
+    fi
+    if [[ "$SKIP_NOTARIZATION" = true ]]; then
+        echo "warning: skipping notarization (--skip-notarization)" >&2
+        return
+    fi
+    if [[ "$DRY_RUN" = true ]]; then
+        echo "dry-run: skipping Apple notarization submit"
+        return
+    fi
+
+    local notarize_zip="$ARTIFACT_DIR/ax-engine-${TAG}-notarize.zip"
+    rm -f "$notarize_zip"
+    run zip -j "$notarize_zip" "${RELEASE_BINS[@]/#/target/release/}"
+    run xcrun notarytool submit "$notarize_zip" "${NOTARY_ARGS[@]}" --wait
+    rm -f "$notarize_zip"
 }
 
 while [[ $# -gt 0 ]]; do
@@ -128,6 +227,32 @@ while [[ $# -gt 0 ]]; do
             [[ -n "${1:-}" ]] || die "--minisign-public-key requires an argument"
             MINISIGN_PUBLIC_KEY_STRING="$1"
             ;;
+        --sign-identity)
+            shift
+            [[ -n "${1:-}" ]] || die "--sign-identity requires an argument"
+            SIGN_IDENTITY="$1"
+            ;;
+        --notary-profile)
+            shift
+            [[ -n "${1:-}" ]] || die "--notary-profile requires an argument"
+            NOTARY_PROFILE="$1"
+            ;;
+        --apple-api-key)
+            shift
+            [[ -n "${1:-}" ]] || die "--apple-api-key requires an argument"
+            APPLE_API_KEY="$1"
+            ;;
+        --apple-api-key-id)
+            shift
+            [[ -n "${1:-}" ]] || die "--apple-api-key-id requires an argument"
+            APPLE_API_KEY_ID="$1"
+            ;;
+        --apple-api-issuer)
+            shift
+            [[ -n "${1:-}" ]] || die "--apple-api-issuer requires an argument"
+            APPLE_API_ISSUER="$1"
+            ;;
+        --skip-notarization) SKIP_NOTARIZATION=true ;;
         -h|--help)
             usage
             exit 0
@@ -164,6 +289,17 @@ check_cmd tar "tar is required for release packaging"
 if [[ "$MINISIGN" = true ]]; then
     check_cmd minisign "install minisign: brew install minisign"
 fi
+if [[ -n "$SIGN_IDENTITY" ]]; then
+    check_cmd codesign "codesign is required for Apple Developer ID signing"
+    if [[ "$SKIP_NOTARIZATION" = false ]]; then
+        check_cmd xcrun "xcrun notarytool is required for notarization"
+        check_cmd zip "zip is required for notarization submission"
+        if ! xcrun notarytool --help &>/dev/null; then
+            die "xcrun notarytool is not available - install current Xcode Command Line Tools"
+        fi
+    fi
+fi
+resolve_notary_args
 
 if [[ "$DRY_RUN" = false ]]; then
     gh auth status >/dev/null || die "gh is not authenticated - run: gh auth login"
@@ -256,10 +392,14 @@ for bin in "${RELEASE_BINS[@]}"; do
     [[ -x "target/release/$bin" ]] || die "missing executable target/release/$bin"
 done
 
+codesign_release_binaries
+
 mkdir -p "$ARTIFACT_DIR"
 STAGING_DIR="$ARTIFACT_DIR/payload"
 rm -rf "$STAGING_DIR"
 mkdir -p "$STAGING_DIR"
+
+notarize_release_binaries
 
 release_payload=()
 for bin in "${RELEASE_BINS[@]}"; do
@@ -286,10 +426,13 @@ run tar -czf "$ARCHIVE_PATH" -C "$STAGING_DIR" "${release_payload[@]}"
 SHA256="$(shasum -a 256 "$ARCHIVE_PATH" | awk '{print $1}')"
 printf '%s  %s\n' "$SHA256" "$ARCHIVE" > "$SHA256_PATH"
 
+AX_RELEASE_CODESIGN_IDENTITY="$SIGN_IDENTITY" \
+AX_RELEASE_NOTARIZED="$([[ -n "$SIGN_IDENTITY" && "$SKIP_NOTARIZATION" = false && "$DRY_RUN" = false ]] && echo true || echo false)" \
 python3 - "$TAG" "$VERSION" "$MAIN_REPO" "$head_commit" "$ARCHIVE" "$SHA256" "$DOWNLOAD_URL" "$MANIFEST_PATH" "${RELEASE_BINS[@]}" "--" "${release_payload[@]}" <<'PY'
 from __future__ import annotations
 
 import json
+import os
 import pathlib
 import sys
 from datetime import datetime, timezone
@@ -314,6 +457,11 @@ manifest = {
     },
     "binaries": bins,
     "payload": payload,
+    "code_signing": {
+        "apple_developer_id": bool(os.environ.get("AX_RELEASE_CODESIGN_IDENTITY")),
+        "identity": os.environ.get("AX_RELEASE_CODESIGN_IDENTITY") or None,
+        "notarized": os.environ.get("AX_RELEASE_NOTARIZED") == "true",
+    },
 }
 path = pathlib.Path(manifest_path)
 path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
