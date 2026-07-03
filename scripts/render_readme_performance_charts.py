@@ -129,6 +129,13 @@ class EmbeddingDeltaRow:
     delta_pct: float
 
 
+@dataclass(frozen=True)
+class EmbeddingBoxRow:
+    label: str
+    reference_label: str
+    stats: SeriesStats
+
+
 CHARTS = [
     ChartSpec(
         title="Gemma 4 — Prefill rate",
@@ -260,6 +267,11 @@ EMBEDDING_CHART_POSITIVE = "#2eaf5f"
 EMBEDDING_CHART_POSITIVE_TEXT = "#176c37"
 EMBEDDING_CHART_NEGATIVE = "#dc2626"
 EMBEDDING_CHART_NEGATIVE_TEXT = "#991b1b"
+EMBEDDING_BOX_MODEL_STYLES = {
+    "Qwen3 0.6B 8-bit": ("qwen3-embedding-0.6b", "#f97316", "#c2410c"),
+    "Qwen3 4B 4-bit DWQ": ("qwen3-embedding-4b", "#f2b705", "#9a6a00"),
+    "Qwen3 8B 4-bit DWQ": ("qwen3-embedding-8b", "#2eaf5f", "#176c37"),
+}
 
 # ---------------------------------------------------------------------------
 # N-gram chart constants (shared by all three ngram charts)
@@ -2190,6 +2202,212 @@ def format_embedding_delta_pct(delta_pct: float) -> str:
     return f"{delta_pct:+.1f}%"
 
 
+def format_embedding_axis_pct(delta_pct: float) -> str:
+    if abs(delta_pct) < 0.05:
+        return "0%"
+    if math.isclose(delta_pct, round(delta_pct), abs_tol=0.05):
+        return f"{delta_pct:+.0f}%"
+    return f"{delta_pct:+.1f}%"
+
+
+def sign_text_color(delta_pct: float) -> str:
+    if delta_pct > 0.05:
+        return EMBEDDING_CHART_POSITIVE_TEXT
+    if delta_pct < -0.05:
+        return EMBEDDING_CHART_NEGATIVE_TEXT
+    return "#374151"
+
+
+def embedding_box_rows(rows: list[EmbeddingDeltaRow]) -> list[EmbeddingBoxRow]:
+    grouped: dict[str, list[EmbeddingDeltaRow]] = {}
+    order: list[str] = []
+    for row in rows:
+        if row.label not in grouped:
+            grouped[row.label] = []
+            order.append(row.label)
+        grouped[row.label].append(row)
+
+    box_rows: list[EmbeddingBoxRow] = []
+    for idx, label in enumerate(order):
+        model_rows = grouped[label]
+        references = {row.reference_label for row in model_rows}
+        if len(references) != 1:
+            raise ChartError(f"{label} mixes embedding reference backends")
+        engine, color, dot_color = EMBEDDING_BOX_MODEL_STYLES.get(
+            label, (f"embedding-model-{idx}", "#64748b", "#334155")
+        )
+        box_rows.append(
+            EmbeddingBoxRow(
+                label=label,
+                reference_label=next(iter(references)),
+                stats=summarize(
+                    [row.delta_pct for row in model_rows],
+                    engine,
+                    label,
+                    color,
+                    dot_color,
+                ),
+            )
+        )
+    return box_rows
+
+
+def embedding_box_label_lines(label: str) -> tuple[str, str]:
+    return {
+        "Qwen3 0.6B 8-bit": ("Qwen3 0.6B", "8-bit"),
+        "Qwen3 4B 4-bit DWQ": ("Qwen3 4B", "4-bit DWQ"),
+        "Qwen3 8B 4-bit DWQ": ("Qwen3 8B", "4-bit DWQ"),
+    }.get(label, (label, ""))
+
+
+def render_embedding_box_chart(
+    rows: list[EmbeddingDeltaRow],
+    *,
+    title: str,
+    subtitle: str,
+    source_label: str,
+) -> str:
+    box_rows = embedding_box_rows(rows)
+    if not box_rows:
+        raise ChartError(f"{title} has no rows")
+    all_extrema = [
+        value
+        for row in box_rows
+        for value in (row.stats.minimum, row.stats.maximum)
+    ]
+    max_abs = max(abs(value) for value in all_extrema)
+    axis_abs = max(3.0, math.ceil(max_abs + 0.25))
+    plot_width = FAMILY_RIGHT - FAMILY_LEFT
+    plot_height = FAMILY_BOTTOM - FAMILY_TOP
+    group_step = plot_width / len(box_rows)
+    box_w = 28.0
+    dot_jitter = (-5.0, -3.0, -1.0, 1.0, 3.0, 5.0)
+    zero_y = FAMILY_TOP + plot_height / 2.0
+    reference_label = box_rows[0].reference_label
+
+    def fy(delta_pct: float) -> float:
+        clamped = max(-axis_abs, min(delta_pct, axis_abs))
+        scaled = (clamped + axis_abs) / (2.0 * axis_abs)
+        return FAMILY_BOTTOM - scaled * plot_height
+
+    unit_w = 48
+    header_right = FAMILY_CHART_WIDTH - 34
+
+    lines = [
+        f'<svg xmlns="http://www.w3.org/2000/svg"'
+        f' width="{FAMILY_CHART_WIDTH}" height="{FAMILY_CHART_HEIGHT}"'
+        f' viewBox="0 0 {FAMILY_CHART_WIDTH} {FAMILY_CHART_HEIGHT}"'
+        f' role="img" aria-labelledby="title desc">',
+        f"<title>{escape(title)}</title>",
+        f"<desc>{escape(subtitle)} Box plots show AX Engine throughput "
+        f"percentage difference versus {escape(reference_label)}; zero means "
+        f"reference parity.</desc>",
+        f'<rect width="{FAMILY_CHART_WIDTH}" height="{FAMILY_CHART_HEIGHT}" fill="#f8fafc"/>',
+        f'<text x="{FAMILY_LEFT}" y="24" font-family="{FONT}"'
+        f' font-size="16" font-weight="700" fill="#111827">{escape(title)}</text>',
+        f'<text x="{FAMILY_LEFT}" y="46" font-family="{FONT}"'
+        f' font-size="11" fill="#4b5563">{escape(subtitle)}</text>',
+        f'<text x="{FAMILY_LEFT}" y="62" font-family="{FONT}"'
+        f' font-size="10" fill="#6b7280">{escape(source_label)}</text>',
+        f'<rect x="{header_right - unit_w}" y="13" width="{unit_w}" height="22"'
+        f' rx="11" fill="#eef2ff" stroke="#c7d2fe"/>',
+        f'<text x="{header_right - unit_w / 2:.1f}" y="28" text-anchor="middle"'
+        f' font-family="{FONT}" font-size="10" font-weight="700"'
+        f' fill="#3730a3">%</text>',
+        f'<text x="{header_right}" y="52" text-anchor="end" font-family="{FONT}"'
+        f' font-size="10" font-weight="700" fill="{RED}">'
+        f"Higher AX delta is better</text>",
+        f'<rect x="{FAMILY_LEFT}" y="{FAMILY_TOP}" width="{plot_width}"'
+        f' height="{plot_height}" rx="6" fill="#ffffff" stroke="#dbe3ef"/>',
+    ]
+
+    for tick in (-axis_abs, -axis_abs / 2.0, 0.0, axis_abs / 2.0, axis_abs):
+        gy = fy(tick)
+        stroke = "#94a3b8" if math.isclose(tick, 0.0) else "#e5e7eb"
+        width = "1.6" if math.isclose(tick, 0.0) else "1"
+        lines.append(
+            f'<line x1="{FAMILY_LEFT}" y1="{gy:.1f}"'
+            f' x2="{FAMILY_RIGHT}" y2="{gy:.1f}"'
+            f' stroke="{stroke}" stroke-width="{width}"/>'
+        )
+        lines.append(
+            f'<text x="{FAMILY_LEFT - 8}" y="{gy + 3:.1f}" text-anchor="end"'
+            f' font-family="{FONT}" font-size="11" fill="#6b7280">'
+            f"{format_embedding_axis_pct(tick)}</text>"
+        )
+
+    lines.append(
+        f'<text x="{FAMILY_RIGHT + 10}" y="{zero_y + 3:.1f}"'
+        f' font-family="{FONT}" font-size="10" font-weight="700" fill="#64748b">'
+        f"0% parity</text>"
+    )
+
+    for idx, row in enumerate(box_rows):
+        group_center = FAMILY_LEFT + (idx + 0.5) * group_step
+        s = row.stats
+        y_min = fy(s.minimum)
+        y_q1 = fy(s.q1)
+        y_med = fy(s.median)
+        y_q3 = fy(s.q3)
+        y_max = fy(s.maximum)
+        box_y = min(y_q1, y_q3)
+        box_h = max(abs(y_q3 - y_q1), 1.0)
+        cap_left = group_center - box_w * 0.36
+        cap_right = group_center + box_w * 0.36
+        box_left = group_center - box_w / 2.0
+        label_fill = sign_text_color(s.median)
+        median_label = format_embedding_delta_pct(s.median)
+        sa = f'stroke="{s.color}" stroke-opacity="{BOX_STROKE_OPACITY}"'
+        lines.extend(
+            [
+                f'<line x1="{group_center:g}" y1="{y_max:.1f}"'
+                f' x2="{group_center:g}" y2="{y_min:.1f}" {sa} stroke-width="1.7"/>',
+                f'<line x1="{cap_left:g}" y1="{y_max:.1f}"'
+                f' x2="{cap_right:g}" y2="{y_max:.1f}" {sa} stroke-width="1.7"/>',
+                f'<line x1="{cap_left:g}" y1="{y_min:.1f}"'
+                f' x2="{cap_right:g}" y2="{y_min:.1f}" {sa} stroke-width="1.7"/>',
+                f'<rect x="{box_left:g}" y="{box_y:.1f}" width="{box_w:g}"'
+                f' height="{box_h:.1f}" rx="2" fill="{s.color}"'
+                f' fill-opacity="{BOX_FILL_OPACITY}" {sa} stroke-width="1.7"/>',
+                f'<line x1="{box_left:g}" y1="{y_med:.1f}"'
+                f' x2="{box_left + box_w:g}" y2="{y_med:.1f}"'
+                f' {sa} stroke-width="2.4"/>',
+                f'<text x="{box_left + box_w + 6:g}" y="{y_med + 3.5:.1f}"'
+                f' text-anchor="start" font-family="{FONT}" font-size="10"'
+                f' font-weight="700" fill="{label_fill}" stroke="#ffffff"'
+                f' stroke-width="3" paint-order="stroke">{escape(median_label)}</text>',
+            ]
+        )
+        for vi, value in enumerate(s.values):
+            dx = dot_jitter[vi % len(dot_jitter)]
+            lines.append(
+                f'<circle cx="{group_center + dx:g}" cy="{fy(value):.1f}" r="1.6"'
+                f' fill="{s.dot_color}" fill-opacity="{DOT_FILL_OPACITY}"/>'
+            )
+
+        label_line_1, label_line_2 = embedding_box_label_lines(row.label)
+        lines.append(
+            f'<text x="{group_center:g}" y="{FAMILY_BOTTOM + 23}"'
+            f' text-anchor="middle" font-family="{FONT}" font-size="11"'
+            f' font-weight="700" fill="#111827">{escape(label_line_1)}</text>'
+        )
+        if label_line_2:
+            lines.append(
+                f'<text x="{group_center:g}" y="{FAMILY_BOTTOM + 37}"'
+                f' text-anchor="middle" font-family="{FONT}" font-size="10"'
+                f' fill="#6b7280">{escape(label_line_2)}</text>'
+            )
+
+    lines.append(
+        f'<text x="{FAMILY_LEFT}" y="{FAMILY_BOTTOM + 66}" font-family="{FONT}"'
+        f' font-size="10" fill="#6b7280">'
+        f"box=IQR | whiskers=min/max | dots=six chunk/batch shapes | "
+        f"labels show medians</text>"
+    )
+    lines.append("</svg>")
+    return "".join(lines) + "\n"
+
+
 def render_embedding_delta_chart(
     rows: list[EmbeddingDeltaRow],
     *,
@@ -2355,12 +2573,12 @@ def main() -> int:
                 mismatches.append(mtp_peer_output_path)
 
     embedding_scale_output_path = args.output_dir / EMBEDDING_SCALE_CHART_OUTPUT
-    embedding_scale_content = render_embedding_delta_chart(
+    embedding_scale_content = render_embedding_box_chart(
         load_embedding_scale_delta_rows(args.readme.parent),
-        title="Embedding ingest scale: AX vs mlx-lm",
+        title="Qwen3 embedding ingest scale",
         subtitle=(
-            "512 chunks per trial, same-session paired, 15s cooldown, contiguous CPU "
-            "float32 [B,H] output."
+            "Grouped by model | box=IQR | whiskers=min/max | dots=six "
+            "chunk/batch shapes."
         ),
         source_label="Source: 2026-07-03 Qwen same-session paired refresh",
     )

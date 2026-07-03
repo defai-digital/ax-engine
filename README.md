@@ -770,14 +770,15 @@ contiguous CPU `float32 [B,H]` output layout but embeds a fixed corpus of 512
 chunks per trial, divided into batches. The 2026-07-03 Qwen scale refresh is a
 same-session paired run: both `mlx-lm` and AX use the same 2 warmups, 5 measured
 trials, and 15-second cooldown. Each measured pass is a multi-batch ingest run.
-The Qwen scale chart includes 0.6B plus the 4B/8B DWQ embedders. Across those
-18 Qwen scale shapes, AX ranges from 1.1% behind to 2.4% ahead of `mlx-lm`
+The Qwen scale chart groups the 0.6B, 4B, and 8B embedders as box plots, with
+each box summarizing the six chunk/batch shapes listed below. Across those 18
+Qwen scale shapes, AX ranges from 1.1% behind to 2.4% ahead of `mlx-lm`
 (average +0.1%); read that as sustained ingest parity, not a fixed per-shape
 ranking.
 p95 batch latency is shown because larger batches increase per-flush latency
 even when throughput (tok/s) is comparable.
 
-<img src="docs/assets/perf-embedding-ingest-scale-ax-vs-mlx-lm.svg" alt="Embedding ingest-scale chart showing AX Engine percentage delta versus mlx-lm for Qwen3-Embedding 0.6B, 4B DWQ, and 8B DWQ 512-chunk workloads">
+<img src="docs/assets/perf-embedding-ingest-scale-ax-vs-mlx-lm.svg" alt="Grouped box-and-whisker plot showing AX Engine percentage delta versus mlx-lm for Qwen3-Embedding 0.6B, 4B DWQ, and 8B DWQ ingest-scale workloads">
 
 | Model | Workload | Batch | Batches/trial | `mlx-lm` tok/s | AX tok/s | AX vs | AX chunks/s | AX p95 batch ms |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
