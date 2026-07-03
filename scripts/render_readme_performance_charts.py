@@ -233,32 +233,6 @@ MTP_6BIT_ROW_GAP = 32.0
 MTP_6BIT_GROUP_GAP = 18.0
 MTP_6BIT_GROUP_SIZE = 3
 
-EMBEDDING_FAIR_ARTIFACTS = (
-    (
-        Path(
-            "benchmarks/results/embedding-fair/"
-            "2026-07-02-qwen-paired-cooldown15-refresh/"
-            "2026-07-02-133329/embedding_fair.json"
-        ),
-        Path(
-            "benchmarks/results/embedding-fair/"
-            "2026-07-02-qwen-ax-only-refresh-r2/"
-            "2026-07-02-190327/embedding_fair.json"
-        ),
-    ),
-    (
-        Path(
-            "benchmarks/results/embedding-fair/"
-            "2026-07-02-embeddinggemma-paired-cooldown15-refresh/"
-            "2026-07-02-143425/embedding_fair.json"
-        ),
-        Path(
-            "benchmarks/results/embedding-fair/"
-            "2026-07-02-embeddinggemma-ax-only-refresh-r2/"
-            "2026-07-02-191506/embedding_fair.json"
-        ),
-    ),
-)
 EMBEDDING_SCALE_REFERENCE_ARTIFACT = Path(
     "benchmarks/results/embedding-scale/2026-07-02-qwen-paired-cooldown15-refresh/"
     "2026-07-02-145458/embedding_ingest_scale.json"
@@ -277,7 +251,6 @@ EMBEDDINGGEMMA_SCALE_AX_ARTIFACT = Path(
     "2026-07-02-embeddinggemma-ax-only-refresh-r2/"
     "2026-07-02-204750/embedding_ingest_scale.json"
 )
-EMBEDDING_FAIR_CHART_OUTPUT = "perf-embedding-fair-ax-vs-reference.svg"
 EMBEDDING_SCALE_CHART_OUTPUT = "perf-embedding-ingest-scale-ax-vs-mlx-lm.svg"
 EMBEDDINGGEMMA_SCALE_CHART_OUTPUT = (
     "perf-embeddinggemma-ingest-scale-ax-vs-mlx-embeddings.svg"
@@ -2108,76 +2081,6 @@ def embedding_model_label(label: str) -> str:
     }.get(label, label)
 
 
-def embedding_workload_label(workload: str) -> str:
-    return {
-        "short_query_b8": "short query",
-        "fixed_64_b8": "64-token chunks",
-        "fixed_256_b8": "256-token chunks",
-    }.get(workload, workload)
-
-
-def load_embedding_fair_delta_rows(repo_root: Path) -> list[EmbeddingDeltaRow]:
-    rows: list[EmbeddingDeltaRow] = []
-    wanted_workloads = ("short_query_b8", "fixed_64_b8", "fixed_256_b8")
-    for reference_relative_path, ax_relative_path in EMBEDDING_FAIR_ARTIFACTS:
-        reference_path = repo_root / reference_relative_path
-        ax_path = repo_root / ax_relative_path
-        if not reference_path.exists():
-            raise ChartError(f"missing embedding fair artifact: {reference_path}")
-        if not ax_path.exists():
-            raise ChartError(f"missing embedding fair AX artifact: {ax_path}")
-        reference_artifact = json.loads(reference_path.read_text())
-        ax_artifact = json.loads(ax_path.read_text())
-        if reference_artifact.get("ax_only"):
-            raise ChartError(f"{reference_path} is AX-only; expected reference artifact")
-        if not ax_artifact.get("ax_only"):
-            raise ChartError(f"{ax_path} is not AX-only")
-        ref_key, ref_label = embedding_reference_key(reference_artifact)
-        ax_models = {
-            str(model.get("model_label", "")): model
-            for model in ax_artifact.get("models", [])
-        }
-        for model in reference_artifact.get("models", []):
-            raw_model_label = str(model.get("model_label", ""))
-            ax_model = ax_models.get(raw_model_label)
-            if ax_model is None:
-                raise ChartError(f"{ax_path} missing model {raw_model_label}")
-            model_label = embedding_model_label(raw_model_label)
-            reference_rows_by_workload = {
-                str(row.get("workload")): row for row in model.get("rows", [])
-            }
-            ax_rows_by_workload = {
-                str(row.get("workload")): row for row in ax_model.get("rows", [])
-            }
-            for workload in wanted_workloads:
-                reference_row = reference_rows_by_workload.get(workload)
-                ax_row = ax_rows_by_workload.get(workload)
-                if reference_row is None:
-                    raise ChartError(f"{reference_path} missing workload {workload}")
-                if ax_row is None:
-                    raise ChartError(f"{ax_path} missing workload {workload}")
-                ref = reference_row.get("results", {}).get(ref_key)
-                ax = ax_row.get("results", {}).get("ax_engine_py")
-                if not isinstance(ref, dict) or not isinstance(ax, dict):
-                    raise ChartError(
-                        f"missing embedding results for {raw_model_label} {workload}"
-                    )
-                ref_tps = float(ref["median_tokens_per_sec"])
-                ax_tps = float(ax["median_tokens_per_sec"])
-                delta = ((ax_tps - ref_tps) / ref_tps * 100.0) if ref_tps else 0.0
-                rows.append(
-                    EmbeddingDeltaRow(
-                        label=model_label,
-                        detail=embedding_workload_label(workload),
-                        reference_label=ref_label,
-                        reference_tok_s=ref_tps,
-                        ax_tok_s=ax_tps,
-                        delta_pct=delta,
-                    )
-                )
-    return rows
-
-
 def load_embedding_overlay_scale_delta_rows(
     repo_root: Path, reference_relative_path: Path, ax_relative_path: Path
 ) -> list[EmbeddingDeltaRow]:
@@ -2407,19 +2310,6 @@ def main() -> int:
             )
             if not write_chart(mtp_peer_output_path, mtp_peer_content, args.check):
                 mismatches.append(mtp_peer_output_path)
-
-    embedding_fair_output_path = args.output_dir / EMBEDDING_FAIR_CHART_OUTPUT
-    embedding_fair_content = render_embedding_delta_chart(
-        load_embedding_fair_delta_rows(args.readme.parent),
-        title="Embedding throughput: AX vs reference",
-        subtitle=(
-            "Batch=8, 15s cooldown, retained reference plus fresh AX-only, contiguous CPU "
-            "float32 [B,H] output."
-        ),
-        source_label="Sources: 2026-07-02 paired reference artifacts + AX-only refresh",
-    )
-    if not write_chart(embedding_fair_output_path, embedding_fair_content, args.check):
-        mismatches.append(embedding_fair_output_path)
 
     embedding_scale_output_path = args.output_dir / EMBEDDING_SCALE_CHART_OUTPUT
     embedding_scale_content = render_embedding_delta_chart(

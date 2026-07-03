@@ -50,7 +50,6 @@ model-specific boundaries are kept visible.
     - [Gemma 4 12B](#gemma-4-12b)
     - [Gemma 4 and Qwen 3.6](#gemma-4-and-qwen-36)
   - [Embedding Models](#embedding-models)
-    - [Fair embedding throughput (tok/s)](#fair-embedding-throughput-toks)
     - [Large-corpus ingest scale](#large-corpus-ingest-scale)
 - [SDKs](#sdks)
 - [Server Usage](#server-usage)
@@ -754,56 +753,14 @@ Qwen 3.6 direct-mode verdict: AX is faster against `mlx_lm` in every refreshed 2
 
 ### Embedding Models
 
-Embedding models use a separate pooling route from text generation. The fair
-in-process benchmark compares AX against the nearest MLX reference path and
-forces both backends to materialize the caller-consumable contiguous CPU
-`float32 [B,H]` matrix. That keeps the number focused on real embedding
-ingestion work: model forward, pooling, normalization, GPU-to-CPU read-back,
-and output-buffer creation.
-
-#### Fair embedding throughput (tok/s)
-
-Read the rows by workload shape. `short query` matches intermittent
-search/query fan-out. `64-token chunks` is a light passage-ingestion shape.
-`256-token chunks` is closer to document chunk indexing. The reference columns
-are retained from the cooled 2026-07-02 paired artifacts. The AX columns are a
-fresh AX-only refresh using the same 2 warmups, 5 measured trials, and
-15-second cooldown contract. The README table and chart show batch=8
-throughput only; the older paired reference artifacts still include batch=1 and
-16-token rows for regression diagnosis.
-
-<img src="docs/assets/perf-embedding-fair-ax-vs-reference.svg" alt="Embedding throughput chart showing AX Engine percentage delta versus mlx-lm or mlx-embeddings references across Qwen3 and EmbeddingGemma batch=8 workloads">
-
-| Model | Reference | Pooling | Workload | Batch | Max tokens | Reference tok/s | AX tok/s | AX vs |
-| --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: |
-| Qwen3-Embedding 0.6B 8-bit | `mlx-lm` | last | short query | 8 | 15 | 2,383.2 | 2,297.0 | -3.6% |
-|  |  |  | 64-token chunks | 8 | 64 | 13,707.4 | 12,284.1 | -10.4% |
-|  |  |  | 256-token chunks | 8 | 256 | 31,773.8 | 27,655.5 | -13.0% |
-| Qwen3-Embedding 4B 4-bit DWQ | `mlx-lm` | last | short query | 8 | 15 | 1,196.2 | 937.5 | -21.6% |
-|  |  |  | 64-token chunks | 8 | 64 | 4,940.1 | 4,503.3 | -8.8% |
-|  |  |  | 256-token chunks | 8 | 256 | 6,584.1 | 6,158.9 | -6.5% |
-| Qwen3-Embedding 8B 4-bit DWQ | `mlx-lm` | last | short query | 8 | 15 | 937.2 | 733.6 | -21.7% |
-|  |  |  | 64-token chunks | 8 | 64 | 3,011.2 | 2,399.5 | -20.3% |
-|  |  |  | 256-token chunks | 8 | 256 | 3,668.1 | 3,471.5 | -5.4% |
-| EmbeddingGemma 300M 8-bit | `mlx-embeddings` | mean + Dense | short query | 8 | 15 | 2,562.5 | 2,489.2 | -2.9% |
-|  |  |  | 64-token chunks | 8 | 64 | 15,587.9 | 15,376.6 | -1.4% |
-|  |  |  | 256-token chunks | 8 | 256 | 50,710.1 | 48,130.2 | -5.1% |
-
-Under this cooled single-batch profile, the AX embedding path still carries
-fixed per-call cost from Python-to-Rust FFI crossing, session locking,
-compiled-closure cache lookup, and input marshalling, but the refreshed AX-only
-run narrows the published batch=8 gap substantially. Fair-row deltas now range
-from -1.4% to -21.7%. For multi-batch ingest workloads where that per-call
-cost amortizes across dozens of batches, AX is near sustained `mlx-lm` parity
-(see [Large-corpus ingest scale](#large-corpus-ingest-scale) below, where Qwen
-shapes range from -2.6% to +2.4%). The previous zero-cooldown fair table mixed
-hot-loop behavior into an intermittent-call claim; this table deliberately does
-not. EmbeddingGemma remains a different shape from the Qwen embedders: a Gemma
-3 bidirectional encoder with mean pooling, a two-layer Dense projection head,
-and L2 normalization
-(`model_family: embeddinggemma`). Its reference row uses `mlx-embeddings`
-because `mlx-lm` does not provide the comparable EmbeddingGemma route used by
-this harness.
+Embedding models use a separate pooling route from text generation. Public
+README rows focus on sustained ingest workloads, where callers embed many chunks
+and the fixed per-call cost can be amortized. Single-batch, cooled short-query
+comparisons are useful diagnostics for query-serving latency, but they are not
+published here as headline throughput because tok/s can overstate or obscure
+per-call latency behavior. The current Qwen short-query diagnostic still shows
+an AX native-graph latency gap versus `mlx-lm`; treat that as a performance
+investigation target rather than a sustained-ingest claim.
 
 #### Large-corpus ingest scale
 
@@ -861,14 +818,6 @@ than the retained `mlx-embeddings` reference on every listed row, by 2.5-8.9%.
 |  |  | 64 | 8 | 132,121.8 | 141,292.5 | +6.9% | 276.0 | 263.6 |
 
 Sources:
-fair embedding reference rows from the cooled same-session paired artifacts
-`benchmarks/results/embedding-fair/2026-07-02-qwen-paired-cooldown15-refresh/2026-07-02-133329/`
-and
-`benchmarks/results/embedding-fair/2026-07-02-embeddinggemma-paired-cooldown15-refresh/2026-07-02-143425/`;
-fresh AX fair rows from
-`benchmarks/results/embedding-fair/2026-07-02-qwen-ax-only-refresh-r2/2026-07-02-190327/`
-and
-`benchmarks/results/embedding-fair/2026-07-02-embeddinggemma-ax-only-refresh-r2/2026-07-02-191506/`.
 Qwen sustained-scale reference rows come from
 `benchmarks/results/embedding-scale/2026-07-02-qwen-paired-cooldown15-refresh/2026-07-02-145458/`
 and fresh AX rows from
@@ -878,34 +827,15 @@ EmbeddingGemma sustained-scale reference rows come from
 and fresh AX rows from
 `benchmarks/results/embedding-scale/2026-07-02-embeddinggemma-ax-only-refresh-r2/2026-07-02-204750/`.
 Because this refresh reran AX only, the deltas compare fresh AX medians against
-retained reference medians rather than same-session paired medians. All fresh
-AX runs use Hugging Face snapshot paths, median tok/s, batch size 8 for fair
-rows and 8/32/64 for ingest-scale, short-query plus 64/256 token synthetic
-chunks for fair rows, l2-normalized output, 2 warmups, 5 measured trials, and a
-15-second cooldown. Qwen uses AX last-token pooling; EmbeddingGemma uses AX
-mean pooling + Dense head. API semantics, pooling modes, micro-batching
-behavior, and cooldown profiles are
-documented in
-[`docs/EMBEDDINGS.md`](docs/EMBEDDINGS.md). Reproduce the Qwen table with:
-
-```bash
-python scripts/bench_embedding_fair.py \
-  --model qwen3-embedding-0.6b-8bit=/path/to/Qwen3-Embedding-0.6B-8bit/snapshots/<sha> \
-  --model qwen3-embedding-4b-4bit-dwq=/path/to/Qwen3-Embedding-4B-4bit-DWQ/snapshots/<sha> \
-  --model qwen3-embedding-8b-4bit-dwq=/path/to/Qwen3-Embedding-8B-4bit-DWQ/snapshots/<sha> \
-  --batch-sizes 8 --lengths 64,256 --warmup 2 --trials 5 --cooldown 15 \
-  --ax-only
-```
-
-Reproduce the EmbeddingGemma table with:
-
-```bash
-python scripts/bench_embedding_fair.py \
-  --model embeddinggemma-300m-8bit=/path/to/embeddinggemma-300m-8bit/snapshots/<sha> \
-  --reference mlx_embeddings --pooling mean \
-  --batch-sizes 8 --lengths 64,256 --warmup 2 --trials 5 --cooldown 15 \
-  --ax-only
-```
+retained reference medians rather than same-session paired medians. All fresh AX
+scale runs use Hugging Face snapshot paths, median tok/s, batch sizes 8/32/64,
+512 chunks per trial, l2-normalized output, 2 warmups, 5 measured trials, and a
+15-second cooldown between measured passes. Qwen uses AX last-token pooling;
+EmbeddingGemma uses AX mean pooling + Dense head. Single-batch cooled artifacts
+remain under `benchmarks/results/embedding-fair/` for latency diagnostics, but
+they are intentionally not published here as headline throughput. API semantics,
+pooling modes, micro-batching behavior, and cooldown profiles are documented in
+[`docs/EMBEDDINGS.md`](docs/EMBEDDINGS.md).
 
 Reproduce the sustained Qwen AX rows with:
 

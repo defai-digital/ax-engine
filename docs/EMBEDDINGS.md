@@ -120,9 +120,9 @@ Why the loop is slow:
   itself runs over a right-padded `[B, max_seq, H]` tensor and one GPU
   sync; per-sentence wall time is divided by B.
 
-The current README reference-comparison snapshot for Qwen is
+The current single-batch diagnostic snapshot for Qwen is
 `benchmarks/results/embedding-fair/2026-07-02-qwen-paired-cooldown15-refresh/2026-07-02-133329/`.
-The current README reference-comparison snapshot for EmbeddingGemma is
+The current single-batch diagnostic snapshot for EmbeddingGemma is
 `benchmarks/results/embedding-fair/2026-07-02-embeddinggemma-paired-cooldown15-refresh/2026-07-02-143425/`.
 The current README Qwen ingest-scale snapshot is
 `benchmarks/results/embedding-scale/2026-07-02-qwen-paired-cooldown15-refresh/2026-07-02-145458/`;
@@ -139,10 +139,12 @@ harness.
 
 ## Sustained vs intermittent profiles
 
-The README's fair throughput table now models intermittent calls: every
-measured reference or AX pass follows a 15-second cooldown, and the paired
-order alternates between trials. This avoids presenting a hot-loop run as a
-general embedding result.
+The single-batch diagnostic harness models intermittent calls: every measured
+reference or AX pass follows a 15-second cooldown, and the paired order
+alternates between trials. The README intentionally does not publish those
+latency-bound rows as headline throughput; it keeps public embedding rows
+focused on sustained ingest and leaves the cooled single-batch artifacts for
+query-latency investigation.
 
 Use `--cooldown 0` only when the workload is truly sustained, such as a
 vector-DB ingest worker or batch evaluation loop that keeps the GPU hot. Both
@@ -162,12 +164,13 @@ chunks, with chunk lengths 256 and 512 and batch sizes 8, 32, and 64. The
 harness reports median tok/s, chunks/s, output MB/s, and per-batch
 p50/p95/max latency.
 
-Read the scale table differently from the fair table. The fair table answers
-"how fast is this batch shape when both engines return a caller-consumable
-matrix?" The scale table answers "does that rate hold when a RAG worker keeps
-feeding many batches, and what flush latency does the chosen batch size create?"
-For the current Qwen snapshot, AX ranges from 2.0% behind to 0.3% ahead across
-the 18 shapes, so read those rows as sustained ingest parity.
+Read the scale table differently from the single-batch diagnostic artifacts.
+The diagnostic artifacts answer "how fast is this isolated batch shape when both
+engines return a caller-consumable matrix?" The scale table answers "does that
+rate hold when a RAG worker keeps feeding many batches, and what flush latency
+does the chosen batch size create?" For the current Qwen snapshot, AX ranges
+from 2.0% behind to 0.3% ahead across the 18 shapes, so read those rows as
+sustained ingest parity.
 
 Reproduce the scale snapshot with:
 
