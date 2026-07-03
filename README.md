@@ -51,7 +51,8 @@ model-specific boundaries are kept visible.
     - [DiffusionGemma](#diffusiongemma)
     - [Gemma 4 and Qwen 3.6](#gemma-4-and-qwen-36)
   - [Embedding Models](#embedding-models)
-    - [Large-corpus ingest scale](#large-corpus-ingest-scale)
+    - [Qwen3-Embedding ingest scale](#qwen3-embedding-ingest-scale)
+    - [EmbeddingGemma ingest scale](#embeddinggemma-ingest-scale)
 - [SDKs](#sdks)
 - [Server Usage](#server-usage)
 - [Documentation](#documentation)
@@ -832,7 +833,11 @@ per-call latency behavior. The current Qwen short-query diagnostic still shows
 an AX native-graph latency gap versus `mlx-lm`; treat that as a performance
 investigation target rather than a sustained-ingest claim.
 
-#### Large-corpus ingest scale
+#### Qwen3-Embedding ingest scale
+
+**AX holds sustained-ingest parity with `mlx-lm`: average +0.1% across the 18
+Qwen shapes below, ranging from 1.1% behind to 2.4% ahead** — read that as
+parity, not a fixed per-shape ranking.
 
 For larger RAG ingest jobs, use the sustained scale harness instead of
 extrapolating from one isolated batch. The scale harness keeps the same
@@ -840,14 +845,11 @@ contiguous CPU `float32 [B,H]` output layout but embeds a fixed corpus of 512
 chunks per trial, divided into batches. The 2026-07-03 Qwen scale refresh is a
 same-session paired run: both `mlx-lm` and AX use the same 2 warmups, 5 measured
 trials, and 15-second cooldown. Each measured pass is a multi-batch ingest run.
-The Qwen scale chart groups the 0.6B, 4B, and 8B embedders on the x-axis and
-nests `mlx-lm` (yellow) and AX Engine (green) box plots inside each group. Each
-engine box summarizes the six chunk/batch shapes listed below. Across those 18
-Qwen scale shapes, AX ranges from 1.1% behind to 2.4% ahead of `mlx-lm`
-(average +0.1%); read that as sustained ingest parity, not a fixed per-shape
-ranking.
-p95 batch latency is shown because larger batches increase per-flush latency
-even when throughput (tok/s) is comparable.
+The chart groups the 0.6B, 4B, and 8B embedders on the x-axis and nests `mlx-lm`
+(yellow) and AX Engine (green) box plots inside each group; each engine box
+summarizes the six chunk/batch shapes listed below. p95 batch latency is shown
+because larger batches increase per-flush latency even when throughput (tok/s)
+is comparable.
 
 <img src="docs/assets/perf-embedding-ingest-scale-ax-vs-mlx-lm.svg" alt="Grouped box-and-whisker plot comparing mlx-lm and AX Engine ingest throughput for Qwen3-Embedding 0.6B, 4B DWQ, and 8B DWQ workloads">
 
@@ -872,13 +874,18 @@ even when throughput (tok/s) is comparable.
 |  |  | 32 | 16 | 3,322.2 | 3,314.8 | -0.2% | 6.5 | 5,058.9 |
 |  |  | 64 | 8 | 3,323.7 | 3,322.5 | 0.0% | 6.5 | 10,145.6 |
 
+#### EmbeddingGemma ingest scale
+
+**AX leads the retained `mlx-embeddings` reference by 2.5-8.9% on every
+EmbeddingGemma shape below** — but note this is a fresh AX-only refresh compared
+against retained reference medians, not a same-session paired run like the Qwen
+rows above, so read it as a directional lead rather than a locked delta.
+
 EmbeddingGemma uses `mlx-embeddings` as the sustained reference because its
 full sentence-transformers route includes mean pooling, the Dense projection
-head, and L2 normalization. In the refreshed AX-only scale run, AX is faster
-than the retained `mlx-embeddings` reference on every listed row, by 2.5-8.9%.
-The chart uses one `EmbeddingGemma 300M` group and nests `mlx-embeddings`
-(yellow) plus AX Engine (green) inside it; each engine box summarizes the six
-chunk/batch shapes listed below.
+head, and L2 normalization. The chart uses one `EmbeddingGemma 300M` group and
+nests `mlx-embeddings` (yellow) plus AX Engine (green) inside it; each engine
+box summarizes the six chunk/batch shapes listed below.
 
 <img src="docs/assets/perf-embeddinggemma-ingest-scale-ax-vs-mlx-embeddings.svg" alt="Grouped box-and-whisker plot comparing mlx-embeddings and AX Engine ingest throughput for EmbeddingGemma 300M workloads">
 
