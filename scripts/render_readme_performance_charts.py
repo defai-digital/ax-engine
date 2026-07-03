@@ -2301,7 +2301,8 @@ def render_embedding_box_chart(
         f"<title>{escape(title)}</title>",
         f"<desc>{escape(subtitle)} Grouped box-and-whisker plot comparing "
         f"{escape(reference_label)} and AX Engine throughput across the "
-        f"displayed embedding model group(s).</desc>",
+        f"displayed embedding model group(s). Within each group, the best "
+        f"median label is red.</desc>",
         f'<rect width="{FAMILY_CHART_WIDTH}" height="{FAMILY_CHART_HEIGHT}" fill="#f8fafc"/>',
         f'<text x="{FAMILY_LEFT}" y="24" font-family="{FONT}"'
         f' font-size="16" font-weight="700" fill="#111827">{escape(title)}</text>',
@@ -2337,6 +2338,9 @@ def render_embedding_box_chart(
 
     for idx, group in enumerate(box_groups):
         group_center = FAMILY_LEFT + (idx + 0.5) * group_step
+        group_best_median = max(
+            engine_row.stats.median for engine_row in group.engine_rows
+        )
         for engine_idx, engine_row in enumerate(group.engine_rows):
             sub_x = group_center + (engine_idx - 0.5) * sub_spacing
             s = engine_row.stats
@@ -2353,6 +2357,9 @@ def render_embedding_box_chart(
             label_anchor = "end" if engine_idx == 0 else "start"
             label_x = box_left - 5 if engine_idx == 0 else box_left + box_w + 5
             label = short_number(s.median)
+            label_fill = (
+                RED if math.isclose(s.median, group_best_median) else s.dot_color
+            )
             sa = f'stroke="{s.color}" stroke-opacity="{BOX_STROKE_OPACITY}"'
             lines.extend(
                 [
@@ -2370,7 +2377,7 @@ def render_embedding_box_chart(
                     f' {sa} stroke-width="2.4"/>',
                     f'<text x="{label_x:g}" y="{y_med + 3.5:.1f}"'
                     f' text-anchor="{label_anchor}" font-family="{FONT}"'
-                    f' font-size="9" font-weight="700" fill="{s.dot_color}"'
+                    f' font-size="9" font-weight="700" fill="{label_fill}"'
                     f' stroke="#ffffff" stroke-width="3" paint-order="stroke">'
                     f"{escape(label)}</text>",
                 ]
@@ -2420,7 +2427,7 @@ def render_embedding_box_chart(
         f'<text x="{FAMILY_LEFT}" y="{FAMILY_BOTTOM + 90}" font-family="{FONT}"'
         f' font-size="10" fill="#6b7280">'
         f"box=IQR | whiskers=min/max | dots=six chunk/batch shapes | "
-        f"labels show medians</text>"
+        f"best median label is red</text>"
     )
     lines.append("</svg>")
     return "".join(lines) + "\n"
