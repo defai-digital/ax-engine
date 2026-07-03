@@ -2493,7 +2493,7 @@ def summarize_attempted_fastpath(
     profile_blocked = (
         int(telemetry.get(profile_blocked_key, 0)) if profile_blocked_key else 0
     )
-    accounted = hits + fallbacks
+    accounted = hits + fallbacks + profile_blocked
     if accounted < attempts:
         classification = "incomplete_accounting"
     elif profile_blocked > 0 and hits > 0:

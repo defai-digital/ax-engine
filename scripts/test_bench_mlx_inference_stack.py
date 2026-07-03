@@ -2574,6 +2574,37 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         self.assertEqual(summary["ax_mlx_prefix_cache_blocked_policy_disabled"], 2)
         self.assertEqual(summary["ax_mlx_prefix_cache_reused_tokens"], 16)
 
+    def test_attempted_fastpath_summary_counts_profile_blocked_attempts(self) -> None:
+        telemetry = {
+            "ax_mlx_direct_cpp_linear_attention_inputs_attempts": 3,
+            "ax_mlx_direct_cpp_linear_attention_inputs_hits": 0,
+            "ax_mlx_direct_cpp_linear_attention_inputs_fallbacks": 0,
+            "ax_mlx_direct_cpp_linear_attention_inputs_profile_blocked": 3,
+            "ax_mlx_qwen_linear_attention_decode_post_input_metal_attempts": 4,
+            "ax_mlx_qwen_linear_attention_decode_post_input_metal_hits": 1,
+            "ax_mlx_qwen_linear_attention_decode_post_input_metal_fallbacks": 0,
+            "ax_mlx_qwen_linear_attention_decode_post_input_metal_profile_blocked": 3,
+        }
+
+        direct_cpp_summary = bench.summarize_ax_mlx_direct_cpp_linear_attention_inputs(
+            telemetry
+        )
+        self.assertEqual(
+            direct_cpp_summary["classification"], "profile_blocked_fallback"
+        )
+        self.assertEqual(direct_cpp_summary["profile_blocked"], 3)
+
+        qwen_post_input_summary = (
+            bench.summarize_ax_mlx_qwen_linear_attention_decode_post_input_metal(
+                telemetry
+            )
+        )
+        self.assertEqual(
+            qwen_post_input_summary["classification"],
+            "mixed_hit_profile_blocked",
+        )
+        self.assertEqual(qwen_post_input_summary["profile_blocked"], 3)
+
     def test_ax_mlx_decode_route_summary_classifies_pipeline_and_mixed_rows(
         self,
     ) -> None:
