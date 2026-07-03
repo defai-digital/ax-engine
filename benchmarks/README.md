@@ -5,12 +5,23 @@ outputs for AX Engine v4.
 
 ```text
 benchmarks/
-  corpora/
-  manifests/
-    matrix/
-    replay/
-    scenario/
-  results/
+  community-results/     # Community benchmark submissions
+  corpora/               # Input corpora for serving benchmarks
+  datasets/              # Benchmark datasets (e.g., ax-chat-v1)
+  manifests/             # Workload contracts
+    llama_cpp_metal/     # llama.cpp delegation manifests
+    matrix/              # Frozen matrix benchmarks
+    real_prompts/        # Real-world prompt manifests
+    replay/              # Replay/contract validation manifests
+    scenario/            # Scenario-based manifests
+  prompts/               # Prompt files for benchmarks
+    mtp-suites/          # Multi-token prediction prompt suites
+  results/               # Benchmark results (organized by type)
+    inference/           # Model inference throughput
+    speculative/         # MTP, n-gram, speculative decoding
+    embedding/           # Embedding model benchmarks
+    profiling/           # Performance profiling and diagnostics
+    archive/             # Archived/experimental results
 ```
 
 The manifests are workload contracts. They are not the MLX reference-inference
@@ -198,6 +209,18 @@ corpus pass, and validate the artifact with
 `--require-route-decision-min ax_mlx_prefix_cache_disk_hits=1`. The route gate
 is required because a long-prompt serving artifact alone does not prove the
 disk-cache path was exercised.
+
+## Results Organization
+
+Benchmark results are organized by type under `benchmarks/results/`:
+
+- **inference/** — Model inference throughput (MLX, llama.cpp, diffusion models)
+- **speculative/** — Multi-token prediction, n-gram acceleration, speculative decoding
+- **embedding/** — Embedding model benchmarks
+- **profiling/** — Performance profiling, diagnostics, and validation runs
+- **archive/** — Archived or experimental results
+
+Each result directory should include a date prefix (e.g., `2026-07-01-`) for chronological ordering.
 
 ## Generated Outputs
 
