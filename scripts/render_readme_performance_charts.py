@@ -130,10 +130,15 @@ class EmbeddingDeltaRow:
 
 
 @dataclass(frozen=True)
-class EmbeddingBoxRow:
+class EmbeddingEngineBoxRow:
     label: str
-    reference_label: str
     stats: SeriesStats
+
+
+@dataclass(frozen=True)
+class EmbeddingModelBoxGroup:
+    label: str
+    engine_rows: tuple[EmbeddingEngineBoxRow, ...]
 
 
 CHARTS = [
@@ -267,11 +272,10 @@ EMBEDDING_CHART_POSITIVE = "#2eaf5f"
 EMBEDDING_CHART_POSITIVE_TEXT = "#176c37"
 EMBEDDING_CHART_NEGATIVE = "#dc2626"
 EMBEDDING_CHART_NEGATIVE_TEXT = "#991b1b"
-EMBEDDING_BOX_MODEL_STYLES = {
-    "Qwen3 0.6B 8-bit": ("qwen3-embedding-0.6b", "#f97316", "#c2410c"),
-    "Qwen3 4B 4-bit DWQ": ("qwen3-embedding-4b", "#f2b705", "#9a6a00"),
-    "Qwen3 8B 4-bit DWQ": ("qwen3-embedding-8b", "#2eaf5f", "#176c37"),
-}
+EMBEDDING_BOX_REFERENCE_COLOR = "#f2b705"
+EMBEDDING_BOX_REFERENCE_DOT_COLOR = "#9a6a00"
+EMBEDDING_BOX_AX_COLOR = "#2eaf5f"
+EMBEDDING_BOX_AX_DOT_COLOR = "#176c37"
 
 # ---------------------------------------------------------------------------
 # N-gram chart constants (shared by all three ngram charts)
@@ -2202,23 +2206,7 @@ def format_embedding_delta_pct(delta_pct: float) -> str:
     return f"{delta_pct:+.1f}%"
 
 
-def format_embedding_axis_pct(delta_pct: float) -> str:
-    if abs(delta_pct) < 0.05:
-        return "0%"
-    if math.isclose(delta_pct, round(delta_pct), abs_tol=0.05):
-        return f"{delta_pct:+.0f}%"
-    return f"{delta_pct:+.1f}%"
-
-
-def sign_text_color(delta_pct: float) -> str:
-    if delta_pct > 0.05:
-        return EMBEDDING_CHART_POSITIVE_TEXT
-    if delta_pct < -0.05:
-        return EMBEDDING_CHART_NEGATIVE_TEXT
-    return "#374151"
-
-
-def embedding_box_rows(rows: list[EmbeddingDeltaRow]) -> list[EmbeddingBoxRow]:
+def embedding_box_groups(rows: list[EmbeddingDeltaRow]) -> list[EmbeddingModelBoxGroup]:
     grouped: dict[str, list[EmbeddingDeltaRow]] = {}
     order: list[str] = []
     for row in rows:
@@ -2227,29 +2215,41 @@ def embedding_box_rows(rows: list[EmbeddingDeltaRow]) -> list[EmbeddingBoxRow]:
             order.append(row.label)
         grouped[row.label].append(row)
 
-    box_rows: list[EmbeddingBoxRow] = []
-    for idx, label in enumerate(order):
+    box_groups: list[EmbeddingModelBoxGroup] = []
+    for label in order:
         model_rows = grouped[label]
         references = {row.reference_label for row in model_rows}
         if len(references) != 1:
             raise ChartError(f"{label} mixes embedding reference backends")
-        engine, color, dot_color = EMBEDDING_BOX_MODEL_STYLES.get(
-            label, (f"embedding-model-{idx}", "#64748b", "#334155")
-        )
-        box_rows.append(
-            EmbeddingBoxRow(
+        reference_label = next(iter(references))
+        box_groups.append(
+            EmbeddingModelBoxGroup(
                 label=label,
-                reference_label=next(iter(references)),
-                stats=summarize(
-                    [row.delta_pct for row in model_rows],
-                    engine,
-                    label,
-                    color,
-                    dot_color,
+                engine_rows=(
+                    EmbeddingEngineBoxRow(
+                        label=reference_label,
+                        stats=summarize(
+                            [row.reference_tok_s for row in model_rows],
+                            "embedding_reference",
+                            reference_label,
+                            EMBEDDING_BOX_REFERENCE_COLOR,
+                            EMBEDDING_BOX_REFERENCE_DOT_COLOR,
+                        ),
+                    ),
+                    EmbeddingEngineBoxRow(
+                        label="AX Engine",
+                        stats=summarize(
+                            [row.ax_tok_s for row in model_rows],
+                            "ax_engine_py",
+                            "AX Engine",
+                            EMBEDDING_BOX_AX_COLOR,
+                            EMBEDDING_BOX_AX_DOT_COLOR,
+                        ),
+                    ),
                 ),
             )
         )
-    return box_rows
+    return box_groups
 
 
 def embedding_box_label_lines(label: str) -> tuple[str, str]:
@@ -2267,30 +2267,29 @@ def render_embedding_box_chart(
     subtitle: str,
     source_label: str,
 ) -> str:
-    box_rows = embedding_box_rows(rows)
-    if not box_rows:
+    box_groups = embedding_box_groups(rows)
+    if not box_groups:
         raise ChartError(f"{title} has no rows")
-    all_extrema = [
-        value
-        for row in box_rows
-        for value in (row.stats.minimum, row.stats.maximum)
+    all_maxima = [
+        engine_row.stats.maximum
+        for group in box_groups
+        for engine_row in group.engine_rows
     ]
-    max_abs = max(abs(value) for value in all_extrema)
-    axis_abs = max(3.0, math.ceil(max_abs + 0.25))
+    max_value = max(all_maxima)
+    axis_max = max(1.0, math.ceil(max_value * 1.08 / 10000.0) * 10000.0)
     plot_width = FAMILY_RIGHT - FAMILY_LEFT
     plot_height = FAMILY_BOTTOM - FAMILY_TOP
-    group_step = plot_width / len(box_rows)
-    box_w = 28.0
-    dot_jitter = (-5.0, -3.0, -1.0, 1.0, 3.0, 5.0)
-    zero_y = FAMILY_TOP + plot_height / 2.0
-    reference_label = box_rows[0].reference_label
+    group_step = plot_width / len(box_groups)
+    sub_spacing = 44.0
+    box_w = 20.0
+    dot_jitter = (-3.0, -1.8, -0.6, 0.6, 1.8, 3.0)
+    reference_label = box_groups[0].engine_rows[0].label
 
-    def fy(delta_pct: float) -> float:
-        clamped = max(-axis_abs, min(delta_pct, axis_abs))
-        scaled = (clamped + axis_abs) / (2.0 * axis_abs)
-        return FAMILY_BOTTOM - scaled * plot_height
+    def fy(value: float) -> float:
+        clamped = max(0.0, min(value, axis_max))
+        return FAMILY_BOTTOM - (clamped / axis_max) * plot_height
 
-    unit_w = 48
+    unit_w = 59
     header_right = FAMILY_CHART_WIDTH - 34
 
     lines = [
@@ -2299,9 +2298,9 @@ def render_embedding_box_chart(
         f' viewBox="0 0 {FAMILY_CHART_WIDTH} {FAMILY_CHART_HEIGHT}"'
         f' role="img" aria-labelledby="title desc">',
         f"<title>{escape(title)}</title>",
-        f"<desc>{escape(subtitle)} Box plots show AX Engine throughput "
-        f"percentage difference versus {escape(reference_label)}; zero means "
-        f"reference parity.</desc>",
+        f"<desc>{escape(subtitle)} Grouped box-and-whisker plot comparing "
+        f"{escape(reference_label)} and AX Engine throughput across Qwen3 "
+        f"embedding models.</desc>",
         f'<rect width="{FAMILY_CHART_WIDTH}" height="{FAMILY_CHART_HEIGHT}" fill="#f8fafc"/>',
         f'<text x="{FAMILY_LEFT}" y="24" font-family="{FONT}"'
         f' font-size="16" font-weight="700" fill="#111827">{escape(title)}</text>',
@@ -2313,79 +2312,76 @@ def render_embedding_box_chart(
         f' rx="11" fill="#eef2ff" stroke="#c7d2fe"/>',
         f'<text x="{header_right - unit_w / 2:.1f}" y="28" text-anchor="middle"'
         f' font-family="{FONT}" font-size="10" font-weight="700"'
-        f' fill="#3730a3">%</text>',
+        f' fill="#3730a3">tok/s</text>',
         f'<text x="{header_right}" y="52" text-anchor="end" font-family="{FONT}"'
         f' font-size="10" font-weight="700" fill="{RED}">'
-        f"Higher AX delta is better</text>",
+        f"Higher is better</text>",
         f'<rect x="{FAMILY_LEFT}" y="{FAMILY_TOP}" width="{plot_width}"'
         f' height="{plot_height}" rx="6" fill="#ffffff" stroke="#dbe3ef"/>',
     ]
 
-    for tick in (-axis_abs, -axis_abs / 2.0, 0.0, axis_abs / 2.0, axis_abs):
+    for i in range(5):
+        tick = axis_max * i / 4.0
         gy = fy(tick)
-        stroke = "#94a3b8" if math.isclose(tick, 0.0) else "#e5e7eb"
-        width = "1.6" if math.isclose(tick, 0.0) else "1"
         lines.append(
             f'<line x1="{FAMILY_LEFT}" y1="{gy:.1f}"'
             f' x2="{FAMILY_RIGHT}" y2="{gy:.1f}"'
-            f' stroke="{stroke}" stroke-width="{width}"/>'
+            f' stroke="#e5e7eb" stroke-width="1"/>'
         )
         lines.append(
             f'<text x="{FAMILY_LEFT - 8}" y="{gy + 3:.1f}" text-anchor="end"'
             f' font-family="{FONT}" font-size="11" fill="#6b7280">'
-            f"{format_embedding_axis_pct(tick)}</text>"
+            f"{short_number(tick)}</text>"
         )
 
-    lines.append(
-        f'<text x="{FAMILY_RIGHT + 10}" y="{zero_y + 3:.1f}"'
-        f' font-family="{FONT}" font-size="10" font-weight="700" fill="#64748b">'
-        f"0% parity</text>"
-    )
-
-    for idx, row in enumerate(box_rows):
+    for idx, group in enumerate(box_groups):
         group_center = FAMILY_LEFT + (idx + 0.5) * group_step
-        s = row.stats
-        y_min = fy(s.minimum)
-        y_q1 = fy(s.q1)
-        y_med = fy(s.median)
-        y_q3 = fy(s.q3)
-        y_max = fy(s.maximum)
-        box_y = min(y_q1, y_q3)
-        box_h = max(abs(y_q3 - y_q1), 1.0)
-        cap_left = group_center - box_w * 0.36
-        cap_right = group_center + box_w * 0.36
-        box_left = group_center - box_w / 2.0
-        label_fill = sign_text_color(s.median)
-        median_label = format_embedding_delta_pct(s.median)
-        sa = f'stroke="{s.color}" stroke-opacity="{BOX_STROKE_OPACITY}"'
-        lines.extend(
-            [
-                f'<line x1="{group_center:g}" y1="{y_max:.1f}"'
-                f' x2="{group_center:g}" y2="{y_min:.1f}" {sa} stroke-width="1.7"/>',
-                f'<line x1="{cap_left:g}" y1="{y_max:.1f}"'
-                f' x2="{cap_right:g}" y2="{y_max:.1f}" {sa} stroke-width="1.7"/>',
-                f'<line x1="{cap_left:g}" y1="{y_min:.1f}"'
-                f' x2="{cap_right:g}" y2="{y_min:.1f}" {sa} stroke-width="1.7"/>',
-                f'<rect x="{box_left:g}" y="{box_y:.1f}" width="{box_w:g}"'
-                f' height="{box_h:.1f}" rx="2" fill="{s.color}"'
-                f' fill-opacity="{BOX_FILL_OPACITY}" {sa} stroke-width="1.7"/>',
-                f'<line x1="{box_left:g}" y1="{y_med:.1f}"'
-                f' x2="{box_left + box_w:g}" y2="{y_med:.1f}"'
-                f' {sa} stroke-width="2.4"/>',
-                f'<text x="{box_left + box_w + 6:g}" y="{y_med + 3.5:.1f}"'
-                f' text-anchor="start" font-family="{FONT}" font-size="10"'
-                f' font-weight="700" fill="{label_fill}" stroke="#ffffff"'
-                f' stroke-width="3" paint-order="stroke">{escape(median_label)}</text>',
-            ]
-        )
-        for vi, value in enumerate(s.values):
-            dx = dot_jitter[vi % len(dot_jitter)]
-            lines.append(
-                f'<circle cx="{group_center + dx:g}" cy="{fy(value):.1f}" r="1.6"'
-                f' fill="{s.dot_color}" fill-opacity="{DOT_FILL_OPACITY}"/>'
+        for engine_idx, engine_row in enumerate(group.engine_rows):
+            sub_x = group_center + (engine_idx - 0.5) * sub_spacing
+            s = engine_row.stats
+            y_min = fy(s.minimum)
+            y_q1 = fy(s.q1)
+            y_med = fy(s.median)
+            y_q3 = fy(s.q3)
+            y_max = fy(s.maximum)
+            box_y = min(y_q1, y_q3)
+            box_h = max(abs(y_q3 - y_q1), 1.0)
+            cap_left = sub_x - box_w * 0.36
+            cap_right = sub_x + box_w * 0.36
+            box_left = sub_x - box_w / 2.0
+            label_anchor = "end" if engine_idx == 0 else "start"
+            label_x = box_left - 5 if engine_idx == 0 else box_left + box_w + 5
+            label = short_number(s.median)
+            sa = f'stroke="{s.color}" stroke-opacity="{BOX_STROKE_OPACITY}"'
+            lines.extend(
+                [
+                    f'<line x1="{sub_x:g}" y1="{y_max:.1f}"'
+                    f' x2="{sub_x:g}" y2="{y_min:.1f}" {sa} stroke-width="1.7"/>',
+                    f'<line x1="{cap_left:g}" y1="{y_max:.1f}"'
+                    f' x2="{cap_right:g}" y2="{y_max:.1f}" {sa} stroke-width="1.7"/>',
+                    f'<line x1="{cap_left:g}" y1="{y_min:.1f}"'
+                    f' x2="{cap_right:g}" y2="{y_min:.1f}" {sa} stroke-width="1.7"/>',
+                    f'<rect x="{box_left:g}" y="{box_y:.1f}" width="{box_w:g}"'
+                    f' height="{box_h:.1f}" rx="2" fill="{s.color}"'
+                    f' fill-opacity="{BOX_FILL_OPACITY}" {sa} stroke-width="1.7"/>',
+                    f'<line x1="{box_left:g}" y1="{y_med:.1f}"'
+                    f' x2="{box_left + box_w:g}" y2="{y_med:.1f}"'
+                    f' {sa} stroke-width="2.4"/>',
+                    f'<text x="{label_x:g}" y="{y_med + 3.5:.1f}"'
+                    f' text-anchor="{label_anchor}" font-family="{FONT}"'
+                    f' font-size="9" font-weight="700" fill="{s.dot_color}"'
+                    f' stroke="#ffffff" stroke-width="3" paint-order="stroke">'
+                    f"{escape(label)}</text>",
+                ]
             )
+            for vi, value in enumerate(s.values):
+                dx = dot_jitter[vi % len(dot_jitter)]
+                lines.append(
+                    f'<circle cx="{sub_x + dx:g}" cy="{fy(value):.1f}" r="1.4"'
+                    f' fill="{s.dot_color}" fill-opacity="{DOT_FILL_OPACITY}"/>'
+                )
 
-        label_line_1, label_line_2 = embedding_box_label_lines(row.label)
+        label_line_1, label_line_2 = embedding_box_label_lines(group.label)
         lines.append(
             f'<text x="{group_center:g}" y="{FAMILY_BOTTOM + 23}"'
             f' text-anchor="middle" font-family="{FONT}" font-size="11"'
@@ -2398,8 +2394,29 @@ def render_embedding_box_chart(
                 f' fill="#6b7280">{escape(label_line_2)}</text>'
             )
 
+    legend_y = FAMILY_BOTTOM + 62
+    legend_items = [
+        (
+            reference_label,
+            EMBEDDING_BOX_REFERENCE_COLOR,
+            EMBEDDING_BOX_REFERENCE_DOT_COLOR,
+        ),
+        ("AX Engine", EMBEDDING_BOX_AX_COLOR, EMBEDDING_BOX_AX_DOT_COLOR),
+    ]
+    legend_x = FAMILY_LEFT
+    for label, color, stroke in legend_items:
+        lines.append(
+            f'<rect x="{legend_x}" y="{legend_y}" width="10" height="10" rx="2"'
+            f' fill="{color}" fill-opacity="0.5" stroke="{stroke}" stroke-width="1.4"/>'
+        )
+        lines.append(
+            f'<text x="{legend_x + 14}" y="{legend_y + 9}" font-family="{FONT}"'
+            f' font-size="10" fill="#374151">{escape(label)}</text>'
+        )
+        legend_x += 128
+
     lines.append(
-        f'<text x="{FAMILY_LEFT}" y="{FAMILY_BOTTOM + 66}" font-family="{FONT}"'
+        f'<text x="{FAMILY_LEFT}" y="{FAMILY_BOTTOM + 90}" font-family="{FONT}"'
         f' font-size="10" fill="#6b7280">'
         f"box=IQR | whiskers=min/max | dots=six chunk/batch shapes | "
         f"labels show medians</text>"
