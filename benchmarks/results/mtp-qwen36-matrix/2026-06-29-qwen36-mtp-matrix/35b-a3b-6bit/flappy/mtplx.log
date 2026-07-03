@@ -1,5 +1,0 @@
-$ /opt/homebrew/var/mtplx/venv-0.3.7/bin/python /Users/akiralam/code/ax-engine/scripts/bench_mtplx_prompt_suites.py --model Youssofal/Qwen3.6-35B-A3B-MTPLX-Optimized-Balance --suite flappy --prompts /Users/akiralam/code/ax-engine/benchmarks/prompts/mtp-suites/flappy.jsonl --output benchmarks/results/mtp-qwen36-matrix/2026-06-29-qwen36-mtp-matrix/35b-a3b-6bit/flappy/mtplx.json --depth 1 --temperature 0.6 --top-p 0.95 --top-k 20 --max-tokens 1000 --repetitions 5 --warmup-repetitions 1 --cooldown 30.0 --inter-case-cooldown 10.0 --profile stable --mtp-quant-mode cyankiwi --disable-thinking --allow-unverified-model
-
-ERROR: Missing config.json in Youssofal/Qwen3.6-35B-A3B-MTPLX-Optimized-Balance
-
-[exit 1 after 1.8s]
