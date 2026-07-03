@@ -326,6 +326,12 @@ AX_MLX_QWEN_LINEAR_ATTENTION_DECODE_POST_INPUT_METAL_KEYS = [
     "ax_mlx_qwen_linear_attention_decode_post_input_metal_profile_blocked",
 ]
 
+AX_MLX_QWEN_DENSE_FFN_GATE_UP_MATVEC_METAL_KEYS = [
+    "ax_mlx_qwen_dense_ffn_gate_up_matvec_metal_attempts",
+    "ax_mlx_qwen_dense_ffn_gate_up_matvec_metal_hits",
+    "ax_mlx_qwen_dense_ffn_gate_up_matvec_metal_fallbacks",
+]
+
 AX_MLX_TELEMETRY_KEYS = [
     # Resolved speculation profile (ADR-022): 0=auto, 1=coding, 2=agentic, 3=chatbot.
     "ax_mlx_speculation_profile",
@@ -387,6 +393,7 @@ AX_MLX_TELEMETRY_KEYS = [
     *AX_MLX_DIRECT_CPP_LINEAR_ATTENTION_INPUT_KEYS,
     *AX_MLX_DIRECT_CPP_LINEAR_ATTENTION_POST_INPUT_KEYS,
     *AX_MLX_QWEN_LINEAR_ATTENTION_DECODE_POST_INPUT_METAL_KEYS,
+    *AX_MLX_QWEN_DENSE_FFN_GATE_UP_MATVEC_METAL_KEYS,
     # Affine quantization bit summary — constant per model load, max-merged across trials.
     "ax_mlx_affine_tensor_count",
     "ax_mlx_affine_min_bits",
@@ -1863,6 +1870,7 @@ def start_axengine(
     decode_profile: bool = False,
     pack_linear_attention_projections: bool = False,
     pack_dense_ffn_gate_up: bool = False,
+    qwen_dense_ffn_gate_up_matvec_metal: bool = False,
     direct_linear_attention_inputs_route: bool = False,
     direct_linear_attention_post_input_route: bool = False,
     gemma4_assistant_mtp: bool = False,
@@ -1923,6 +1931,8 @@ def start_axengine(
         env["AX_MLX_PACK_LINEAR_ATTENTION_PROJECTIONS"] = "1"
     if pack_dense_ffn_gate_up:
         env["AX_MLX_PACK_DENSE_FFN_GATE_UP"] = "1"
+    if qwen_dense_ffn_gate_up_matvec_metal:
+        env["AX_MLX_QWEN_DENSE_FFN_GATE_UP_MATVEC_METAL"] = "1"
     if direct_linear_attention_inputs_route:
         env["AX_MLX_DIRECT_CPP_LINEAR_ATTENTION_INPUTS"] = "1"
     if direct_linear_attention_post_input_route:
@@ -2466,20 +2476,22 @@ def summarize_ax_mlx_decode_route(telemetry: dict[str, int]) -> dict[str, Any]:
     }
 
 
-def summarize_ax_mlx_direct_cpp_linear_attention_inputs(
+def summarize_attempted_fastpath(
     telemetry: dict[str, int],
+    *,
+    schema_version: str,
+    attempts_key: str,
+    hits_key: str,
+    fallbacks_key: str,
+    profile_blocked_key: str | None,
 ) -> dict[str, Any]:
-    attempts = int(
-        telemetry.get("ax_mlx_direct_cpp_linear_attention_inputs_attempts", 0)
-    )
+    attempts = int(telemetry.get(attempts_key, 0))
     if attempts <= 0:
         return {}
-    hits = int(telemetry.get("ax_mlx_direct_cpp_linear_attention_inputs_hits", 0))
-    fallbacks = int(
-        telemetry.get("ax_mlx_direct_cpp_linear_attention_inputs_fallbacks", 0)
-    )
-    profile_blocked = int(
-        telemetry.get("ax_mlx_direct_cpp_linear_attention_inputs_profile_blocked", 0)
+    hits = int(telemetry.get(hits_key, 0))
+    fallbacks = int(telemetry.get(fallbacks_key, 0))
+    profile_blocked = (
+        int(telemetry.get(profile_blocked_key, 0)) if profile_blocked_key else 0
     )
     accounted = hits + fallbacks
     if accounted < attempts:
@@ -2497,7 +2509,7 @@ def summarize_ax_mlx_direct_cpp_linear_attention_inputs(
     else:
         classification = "incomplete_accounting"
     return {
-        "schema_version": "ax.mlx_direct_cpp_linear_attention_inputs.v1",
+        "schema_version": schema_version,
         "classification": classification,
         "attempts": attempts,
         "hits": hits,
@@ -2507,46 +2519,181 @@ def summarize_ax_mlx_direct_cpp_linear_attention_inputs(
     }
 
 
+def summarize_ax_mlx_direct_cpp_linear_attention_inputs(
+    telemetry: dict[str, int],
+) -> dict[str, Any]:
+    return summarize_attempted_fastpath(
+        telemetry,
+        schema_version="ax.mlx_direct_cpp_linear_attention_inputs.v1",
+        attempts_key="ax_mlx_direct_cpp_linear_attention_inputs_attempts",
+        hits_key="ax_mlx_direct_cpp_linear_attention_inputs_hits",
+        fallbacks_key="ax_mlx_direct_cpp_linear_attention_inputs_fallbacks",
+        profile_blocked_key=(
+            "ax_mlx_direct_cpp_linear_attention_inputs_profile_blocked"
+        ),
+    )
+
+
 def summarize_ax_mlx_direct_cpp_linear_attention_post_input(
     telemetry: dict[str, int],
 ) -> dict[str, Any]:
-    attempts = int(
-        telemetry.get("ax_mlx_direct_cpp_linear_attention_post_input_attempts", 0)
+    return summarize_attempted_fastpath(
+        telemetry,
+        schema_version="ax.mlx_direct_cpp_linear_attention_post_input.v1",
+        attempts_key="ax_mlx_direct_cpp_linear_attention_post_input_attempts",
+        hits_key="ax_mlx_direct_cpp_linear_attention_post_input_hits",
+        fallbacks_key="ax_mlx_direct_cpp_linear_attention_post_input_fallbacks",
+        profile_blocked_key=(
+            "ax_mlx_direct_cpp_linear_attention_post_input_profile_blocked"
+        ),
     )
-    if attempts <= 0:
+
+
+def summarize_ax_mlx_qwen_linear_attention_decode_post_input_metal(
+    telemetry: dict[str, int],
+) -> dict[str, Any]:
+    return summarize_attempted_fastpath(
+        telemetry,
+        schema_version="ax.mlx_qwen_linear_attention_decode_post_input_metal.v1",
+        attempts_key=(
+            "ax_mlx_qwen_linear_attention_decode_post_input_metal_attempts"
+        ),
+        hits_key="ax_mlx_qwen_linear_attention_decode_post_input_metal_hits",
+        fallbacks_key=(
+            "ax_mlx_qwen_linear_attention_decode_post_input_metal_fallbacks"
+        ),
+        profile_blocked_key=(
+            "ax_mlx_qwen_linear_attention_decode_post_input_metal_profile_blocked"
+        ),
+    )
+
+
+def summarize_ax_mlx_qwen_dense_ffn_gate_up_matvec_metal(
+    telemetry: dict[str, int],
+) -> dict[str, Any]:
+    return summarize_attempted_fastpath(
+        telemetry,
+        schema_version="ax.mlx_qwen_dense_ffn_gate_up_matvec_metal.v1",
+        attempts_key="ax_mlx_qwen_dense_ffn_gate_up_matvec_metal_attempts",
+        hits_key="ax_mlx_qwen_dense_ffn_gate_up_matvec_metal_hits",
+        fallbacks_key="ax_mlx_qwen_dense_ffn_gate_up_matvec_metal_fallbacks",
+        profile_blocked_key=None,
+    )
+
+
+def summarize_counted_layout(
+    *,
+    packed_count: int,
+    split_count: int,
+) -> str:
+    if packed_count > 0 and split_count == 0:
+        return "packed"
+    if split_count > 0 and packed_count == 0:
+        return "split"
+    if packed_count > 0 and split_count > 0:
+        return "mixed"
+    return "absent"
+
+
+def summarize_ax_mlx_effective_routes(telemetry: dict[str, int]) -> dict[str, Any]:
+    if not telemetry:
         return {}
-    hits = int(telemetry.get("ax_mlx_direct_cpp_linear_attention_post_input_hits", 0))
-    fallbacks = int(
-        telemetry.get("ax_mlx_direct_cpp_linear_attention_post_input_fallbacks", 0)
+    dense_attention_qkv_packed = int(
+        telemetry.get("ax_mlx_dense_attention_qkv_packed_layers", 0)
     )
-    profile_blocked = int(
-        telemetry.get(
-            "ax_mlx_direct_cpp_linear_attention_post_input_profile_blocked", 0
-        )
+    dense_attention_qkv_split = int(
+        telemetry.get("ax_mlx_dense_attention_split_qkv_layers", 0)
     )
-    accounted = hits + fallbacks
-    if accounted < attempts:
-        classification = "incomplete_accounting"
-    elif profile_blocked > 0 and hits > 0:
-        classification = "mixed_hit_profile_blocked"
-    elif profile_blocked > 0:
-        classification = "profile_blocked_fallback"
-    elif hits == attempts and fallbacks == 0:
-        classification = "all_hits"
-    elif hits > 0 and fallbacks > 0:
-        classification = "mixed_hit_fallback"
-    elif fallbacks >= attempts:
-        classification = "all_fallback"
-    else:
-        classification = "incomplete_accounting"
+    dense_ffn_gate_up_packed = int(
+        telemetry.get("ax_mlx_dense_ffn_gate_up_packed_layers", 0)
+    )
+    dense_ffn_gate_up_split = int(
+        telemetry.get("ax_mlx_dense_ffn_split_gate_up_layers", 0)
+    )
+    linear_attention_qkvz_ba_packed = int(
+        telemetry.get("ax_mlx_linear_attention_qkvz_ba_packed_layers", 0)
+    )
+    linear_attention_qkvz_ba_split = int(
+        telemetry.get("ax_mlx_linear_attention_split_qkvba_layers", 0)
+    )
     return {
-        "schema_version": "ax.mlx_direct_cpp_linear_attention_post_input.v1",
-        "classification": classification,
-        "attempts": attempts,
-        "hits": hits,
-        "fallbacks": fallbacks,
-        "profile_blocked": profile_blocked,
-        "hit_rate_micros": int(round(hits * 1_000_000 / attempts)),
+        "schema_version": "ax.mlx_effective_routes.v1",
+        "dense_attention_qkv": {
+            "status": summarize_counted_layout(
+                packed_count=dense_attention_qkv_packed,
+                split_count=dense_attention_qkv_split,
+            ),
+            "packed_layers": dense_attention_qkv_packed,
+            "split_layers": dense_attention_qkv_split,
+        },
+        "dense_ffn_gate_up": {
+            "status": summarize_counted_layout(
+                packed_count=dense_ffn_gate_up_packed,
+                split_count=dense_ffn_gate_up_split,
+            ),
+            "packed_layers": dense_ffn_gate_up_packed,
+            "split_layers": dense_ffn_gate_up_split,
+            "qwen_gate_up_matvec_metal": (
+                summarize_ax_mlx_qwen_dense_ffn_gate_up_matvec_metal(telemetry)
+                or {
+                    "schema_version": (
+                        "ax.mlx_qwen_dense_ffn_gate_up_matvec_metal.v1"
+                    ),
+                    "classification": "not_attempted",
+                    "attempts": 0,
+                    "hits": 0,
+                    "fallbacks": 0,
+                    "profile_blocked": 0,
+                    "hit_rate_micros": 0,
+                }
+            ),
+        },
+        "linear_attention_qkvz_ba": {
+            "status": summarize_counted_layout(
+                packed_count=linear_attention_qkvz_ba_packed,
+                split_count=linear_attention_qkvz_ba_split,
+            ),
+            "packed_layers": linear_attention_qkvz_ba_packed,
+            "split_layers": linear_attention_qkvz_ba_split,
+        },
+        "linear_attention_direct_cpp_inputs": (
+            summarize_ax_mlx_direct_cpp_linear_attention_inputs(telemetry)
+            or {
+                "schema_version": "ax.mlx_direct_cpp_linear_attention_inputs.v1",
+                "classification": "not_attempted",
+                "attempts": 0,
+                "hits": 0,
+                "fallbacks": 0,
+                "profile_blocked": 0,
+                "hit_rate_micros": 0,
+            }
+        ),
+        "linear_attention_direct_cpp_post_input": (
+            summarize_ax_mlx_direct_cpp_linear_attention_post_input(telemetry)
+            or {
+                "schema_version": "ax.mlx_direct_cpp_linear_attention_post_input.v1",
+                "classification": "not_attempted",
+                "attempts": 0,
+                "hits": 0,
+                "fallbacks": 0,
+                "profile_blocked": 0,
+                "hit_rate_micros": 0,
+            }
+        ),
+        "qwen_linear_attention_decode_post_input_metal": (
+            summarize_ax_mlx_qwen_linear_attention_decode_post_input_metal(telemetry)
+            or {
+                "schema_version": (
+                    "ax.mlx_qwen_linear_attention_decode_post_input_metal.v1"
+                ),
+                "classification": "not_attempted",
+                "attempts": 0,
+                "hits": 0,
+                "fallbacks": 0,
+                "profile_blocked": 0,
+                "hit_rate_micros": 0,
+            }
+        ),
     }
 
 
@@ -3439,6 +3586,9 @@ def bench_axengine(
         row["ax_mlx_direct_cpp_linear_attention_post_input"] = (
             direct_cpp_linear_post_input
         )
+    effective_routes = summarize_ax_mlx_effective_routes(ax_mlx_telemetry)
+    if effective_routes:
+        row["ax_mlx_effective_routes"] = effective_routes
     cache_warm_trials = sum(1 for run in runs if run.get("prefill_cache_warm"))
     if cache_warm_trials > 0:
         # Document at row level so README updaters and aggregators can detect
@@ -4366,6 +4516,15 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--ax-qwen-dense-ffn-gate-up-matvec-metal",
+        action="store_true",
+        help=(
+            "Set AX_MLX_QWEN_DENSE_FFN_GATE_UP_MATVEC_METAL=1 for AX rows. "
+            "This enables the decode-only Qwen split gate/up custom Metal matvec "
+            "without loader-time row-concatenating the weights."
+        ),
+    )
+    parser.add_argument(
         "--ax-compare-linear-attention-projection-pack",
         action="store_true",
         help=(
@@ -4996,6 +5155,9 @@ def main() -> None:
                     decode_profile=args.ax_decode_profile,
                     pack_linear_attention_projections=pack_linear_attention_projections,
                     pack_dense_ffn_gate_up=pack_dense_ffn_gate_up,
+                    qwen_dense_ffn_gate_up_matvec_metal=(
+                        args.ax_qwen_dense_ffn_gate_up_matvec_metal
+                    ),
                     direct_linear_attention_inputs_route=(
                         direct_linear_attention_inputs_route
                     ),
@@ -5217,6 +5379,9 @@ def main() -> None:
         ),
         "ax_dense_ffn_gate_up_pack_compare": bool(
             args.ax_compare_dense_ffn_gate_up_pack
+        ),
+        "ax_qwen_dense_ffn_gate_up_matvec_metal": bool(
+            args.ax_qwen_dense_ffn_gate_up_matvec_metal
         ),
         "ax_direct_linear_attention_post_input_route_compare": bool(
             args.ax_compare_direct_linear_attention_post_input_route

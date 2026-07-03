@@ -278,6 +278,20 @@ env_flag_default_on!(
     "AX_MLX_DENSE_SWIGLU_PACKED_METAL"
 );
 
+env_flag!(
+    /// `AX_MLX_QWEN_DENSE_FFN_GATE_UP_MATVEC_METAL` — opt in to AX's
+    /// decode-only Qwen dense FFN gate/up affine-quantized matvec kernel.
+    ///
+    /// **Default: OFF**. This is deliberately separate from loader-time
+    /// `AX_MLX_PACK_DENSE_FFN_GATE_UP`: Qwen3.6 27B 4-bit split gate/up weights
+    /// previously failed MLX `quantized_matmul` shape validation after row
+    /// concatenation. This route keeps the artifact split, validates the exact
+    /// 4-bit affine sidecar shape at runtime, and falls back to the existing two
+    /// MLX quantized matmuls when unsupported.
+    qwen_dense_ffn_gate_up_matvec_metal_enabled,
+    "AX_MLX_QWEN_DENSE_FFN_GATE_UP_MATVEC_METAL"
+);
+
 env_flag_default_on!(
     /// `AX_MLX_GEMMA4_PER_LAYER_GELU_MUL_METAL` — fuse Gemma4 per-layer input
     /// `gelu_approx(gate) * per_layer_input` into one custom MLX Metal
@@ -1207,6 +1221,21 @@ mod tests {
         ));
         assert!(probe_default_on(
             "AX_FASTPATH_TEST_DENSE_SWIGLU_PACKED_METAL_ENABLED",
+            "1"
+        ));
+    }
+
+    #[test]
+    fn qwen_dense_ffn_gate_up_matvec_metal_uses_opt_in_contract() {
+        assert!(!parse_bool_env(
+            "AX_FASTPATH_TEST_QWEN_DENSE_FFN_GATE_UP_MATVEC_METAL_UNSET"
+        ));
+        assert!(!probe(
+            "AX_FASTPATH_TEST_QWEN_DENSE_FFN_GATE_UP_MATVEC_METAL_DISABLED",
+            "0"
+        ));
+        assert!(probe(
+            "AX_FASTPATH_TEST_QWEN_DENSE_FFN_GATE_UP_MATVEC_METAL_ENABLED",
             "1"
         ));
     }

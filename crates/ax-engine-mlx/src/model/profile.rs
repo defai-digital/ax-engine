@@ -47,6 +47,13 @@ pub struct LinearAttentionProfileSnapshot {
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct DenseFfnFastpathSnapshot {
+    pub qwen_gate_up_matvec_metal_attempts: u32,
+    pub qwen_gate_up_matvec_metal_hits: u32,
+    pub qwen_gate_up_matvec_metal_fallbacks: u32,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct PrefillProfileSnapshot {
     pub enabled: u32,
     pub prefill_steps: u32,
@@ -230,6 +237,7 @@ pub(crate) enum DecodeProfileStage {
 
 static GEMMA4_MOE_PROFILE: OnceLock<Mutex<Gemma4MoeProfileSnapshot>> = OnceLock::new();
 static LINEAR_ATTENTION_PROFILE: OnceLock<Mutex<LinearAttentionProfileSnapshot>> = OnceLock::new();
+static DENSE_FFN_FASTPATH_PROFILE: OnceLock<Mutex<DenseFfnFastpathSnapshot>> = OnceLock::new();
 static PREFILL_PROFILE: OnceLock<Mutex<PrefillProfileSnapshot>> = OnceLock::new();
 static DECODE_PROFILE: OnceLock<Mutex<DecodeProfileSnapshot>> = OnceLock::new();
 static MOE_PROFILE: OnceLock<Mutex<MoeProfileSnapshot>> = OnceLock::new();
@@ -277,6 +285,10 @@ fn gemma4_moe_profile() -> &'static Mutex<Gemma4MoeProfileSnapshot> {
 
 fn linear_attention_profile() -> &'static Mutex<LinearAttentionProfileSnapshot> {
     LINEAR_ATTENTION_PROFILE.get_or_init(|| Mutex::new(LinearAttentionProfileSnapshot::default()))
+}
+
+fn dense_ffn_fastpath_profile() -> &'static Mutex<DenseFfnFastpathSnapshot> {
+    DENSE_FFN_FASTPATH_PROFILE.get_or_init(|| Mutex::new(DenseFfnFastpathSnapshot::default()))
 }
 
 fn prefill_profile() -> &'static Mutex<PrefillProfileSnapshot> {
@@ -395,6 +407,25 @@ pub(super) fn record_linear_attention_decode_post_input_metal_profile_blocked() 
     let mut profile = linear_attention_profile().lock().unwrap();
     profile.decode_post_input_metal_profile_blocked = profile
         .decode_post_input_metal_profile_blocked
+        .saturating_add(1);
+}
+
+pub(crate) fn record_qwen_dense_ffn_gate_up_matvec_metal_attempt() {
+    let mut profile = dense_ffn_fastpath_profile().lock().unwrap();
+    profile.qwen_gate_up_matvec_metal_attempts =
+        profile.qwen_gate_up_matvec_metal_attempts.saturating_add(1);
+}
+
+pub(crate) fn record_qwen_dense_ffn_gate_up_matvec_metal_hit() {
+    let mut profile = dense_ffn_fastpath_profile().lock().unwrap();
+    profile.qwen_gate_up_matvec_metal_hits =
+        profile.qwen_gate_up_matvec_metal_hits.saturating_add(1);
+}
+
+pub(crate) fn record_qwen_dense_ffn_gate_up_matvec_metal_fallback() {
+    let mut profile = dense_ffn_fastpath_profile().lock().unwrap();
+    profile.qwen_gate_up_matvec_metal_fallbacks = profile
+        .qwen_gate_up_matvec_metal_fallbacks
         .saturating_add(1);
 }
 
@@ -604,6 +635,13 @@ pub fn take_linear_attention_profile_snapshot() -> LinearAttentionProfileSnapsho
     let mut profile = linear_attention_profile().lock().unwrap();
     let snapshot = *profile;
     *profile = LinearAttentionProfileSnapshot::default();
+    snapshot
+}
+
+pub fn take_dense_ffn_fastpath_snapshot() -> DenseFfnFastpathSnapshot {
+    let mut profile = dense_ffn_fastpath_profile().lock().unwrap();
+    let snapshot = *profile;
+    *profile = DenseFfnFastpathSnapshot::default();
     snapshot
 }
 

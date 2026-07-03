@@ -2337,6 +2337,10 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
                     "ax_mlx_prefix_cache_hits": 1,
                     "ax_mlx_prefix_cache_blocked_policy_disabled": 2,
                     "ax_mlx_prefix_cache_reused_tokens": 16,
+                    "ax_mlx_dense_attention_qkv_packed_layers": 16,
+                    "ax_mlx_dense_attention_split_qkv_layers": 0,
+                    "ax_mlx_dense_ffn_gate_up_packed_layers": 0,
+                    "ax_mlx_dense_ffn_split_gate_up_layers": 64,
                     "ax_mlx_linear_attention_qkvz_ba_packed_layers": 48,
                     "ax_mlx_linear_attention_split_qkvba_layers": 0,
                     "ax_mlx_direct_cpp_linear_attention_inputs_attempts": 4,
@@ -2347,6 +2351,13 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
                     "ax_mlx_direct_cpp_linear_attention_post_input_hits": 2,
                     "ax_mlx_direct_cpp_linear_attention_post_input_fallbacks": 0,
                     "ax_mlx_direct_cpp_linear_attention_post_input_profile_blocked": 0,
+                    "ax_mlx_qwen_linear_attention_decode_post_input_metal_attempts": 2,
+                    "ax_mlx_qwen_linear_attention_decode_post_input_metal_hits": 2,
+                    "ax_mlx_qwen_linear_attention_decode_post_input_metal_fallbacks": 0,
+                    "ax_mlx_qwen_linear_attention_decode_post_input_metal_profile_blocked": 0,
+                    "ax_mlx_qwen_dense_ffn_gate_up_matvec_metal_attempts": 64,
+                    "ax_mlx_qwen_dense_ffn_gate_up_matvec_metal_hits": 64,
+                    "ax_mlx_qwen_dense_ffn_gate_up_matvec_metal_fallbacks": 0,
                     "unrelated": 99,
                 }
             }
@@ -2389,6 +2400,10 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         self.assertEqual(telemetry["ax_mlx_prefix_cache_hits"], 1)
         self.assertEqual(telemetry["ax_mlx_prefix_cache_blocked_policy_disabled"], 2)
         self.assertEqual(telemetry["ax_mlx_prefix_cache_reused_tokens"], 16)
+        self.assertEqual(telemetry["ax_mlx_dense_attention_qkv_packed_layers"], 16)
+        self.assertEqual(telemetry["ax_mlx_dense_attention_split_qkv_layers"], 0)
+        self.assertEqual(telemetry["ax_mlx_dense_ffn_gate_up_packed_layers"], 0)
+        self.assertEqual(telemetry["ax_mlx_dense_ffn_split_gate_up_layers"], 64)
         self.assertEqual(telemetry["ax_mlx_linear_attention_qkvz_ba_packed_layers"], 48)
         self.assertEqual(telemetry["ax_mlx_linear_attention_split_qkvba_layers"], 0)
         self.assertEqual(telemetry["ax_mlx_prefix_cache_evictions"], 0)
@@ -2405,6 +2420,15 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         )
         self.assertEqual(
             telemetry["ax_mlx_direct_cpp_linear_attention_post_input_hits"], 2
+        )
+        self.assertEqual(
+            telemetry["ax_mlx_qwen_linear_attention_decode_post_input_metal_hits"], 2
+        )
+        self.assertEqual(
+            telemetry["ax_mlx_qwen_dense_ffn_gate_up_matvec_metal_attempts"], 64
+        )
+        self.assertEqual(
+            telemetry["ax_mlx_qwen_dense_ffn_gate_up_matvec_metal_hits"], 64
         )
         self.assertEqual(telemetry["ax_mlx_single_decode_steps"], 0)
         self.assertEqual(telemetry["ax_mlx_bonus_tokens"], 0)
@@ -2448,6 +2472,16 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
             summary["ax_mlx_direct_cpp_linear_attention_post_input_attempts"],
             2,
         )
+        self.assertEqual(summary["ax_mlx_dense_attention_qkv_packed_layers"], 16)
+        self.assertEqual(summary["ax_mlx_dense_attention_split_qkv_layers"], 0)
+        self.assertEqual(summary["ax_mlx_dense_ffn_gate_up_packed_layers"], 0)
+        self.assertEqual(summary["ax_mlx_dense_ffn_split_gate_up_layers"], 64)
+        self.assertEqual(
+            summary["ax_mlx_qwen_dense_ffn_gate_up_matvec_metal_attempts"], 64
+        )
+        self.assertEqual(
+            summary["ax_mlx_qwen_dense_ffn_gate_up_matvec_metal_hits"], 64
+        )
         self.assertEqual(summary["ax_mlx_linear_attention_qkvz_ba_packed_layers"], 48)
         self.assertEqual(summary["ax_mlx_linear_attention_split_qkvba_layers"], 0)
 
@@ -2461,6 +2495,59 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         )
         self.assertEqual(direct_cpp_post_input_summary["classification"], "all_hits")
         self.assertEqual(direct_cpp_post_input_summary["hit_rate_micros"], 1_000_000)
+        qwen_post_input_metal_summary = (
+            bench.summarize_ax_mlx_qwen_linear_attention_decode_post_input_metal(
+                telemetry
+            )
+        )
+        self.assertEqual(qwen_post_input_metal_summary["classification"], "all_hits")
+        self.assertEqual(
+            qwen_post_input_metal_summary["hit_rate_micros"], 1_000_000
+        )
+        qwen_dense_ffn_matvec_summary = (
+            bench.summarize_ax_mlx_qwen_dense_ffn_gate_up_matvec_metal(
+                telemetry
+            )
+        )
+        self.assertEqual(qwen_dense_ffn_matvec_summary["classification"], "all_hits")
+        self.assertEqual(
+            qwen_dense_ffn_matvec_summary["hit_rate_micros"], 1_000_000
+        )
+        effective_routes = bench.summarize_ax_mlx_effective_routes(telemetry)
+        self.assertEqual(
+            effective_routes["dense_attention_qkv"]["status"],
+            "packed",
+        )
+        self.assertEqual(
+            effective_routes["dense_ffn_gate_up"]["status"],
+            "split",
+        )
+        self.assertEqual(
+            effective_routes["dense_ffn_gate_up"]["qwen_gate_up_matvec_metal"][
+                "classification"
+            ],
+            "all_hits",
+        )
+        self.assertEqual(
+            effective_routes["linear_attention_qkvz_ba"]["status"],
+            "packed",
+        )
+        self.assertEqual(
+            effective_routes["linear_attention_direct_cpp_inputs"]["classification"],
+            "all_hits",
+        )
+        self.assertEqual(
+            effective_routes["linear_attention_direct_cpp_post_input"][
+                "classification"
+            ],
+            "all_hits",
+        )
+        self.assertEqual(
+            effective_routes["qwen_linear_attention_decode_post_input_metal"][
+                "classification"
+            ],
+            "all_hits",
+        )
         self.assertEqual(summary["ax_mlx_decode_wall_us"], 200)
         self.assertEqual(summary["ax_mlx_direct_pipeline_forward_wall_us"], 40)
         self.assertEqual(
@@ -3349,6 +3436,23 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
 
         env = popen.call_args.kwargs["env"]
         self.assertEqual(env["AX_MLX_PACK_LINEAR_ATTENTION_PROJECTIONS"], "1")
+
+    def test_axengine_command_can_enable_qwen_dense_ffn_matvec_metal(self) -> None:
+        with (
+            patch.object(bench, "ensure_port_available"),
+            patch.object(bench.subprocess, "Popen") as popen,
+        ):
+            bench.start_axengine(
+                Path("/tmp/ax-engine-server"),
+                Path("/tmp/model"),
+                19091,
+                model_id="test-model",
+                direct_mode=True,
+                qwen_dense_ffn_gate_up_matvec_metal=True,
+            )
+
+        env = popen.call_args.kwargs["env"]
+        self.assertEqual(env["AX_MLX_QWEN_DENSE_FFN_GATE_UP_MATVEC_METAL"], "1")
 
     def test_axengine_command_can_enable_gemma4_assistant_mtp(self) -> None:
         with (

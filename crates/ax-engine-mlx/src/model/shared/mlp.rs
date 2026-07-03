@@ -16,7 +16,10 @@ use super::super::config::{GlmRouterConfig, ModelConfig};
 use super::super::profile::{
     DecodeProfileStage, MoeProfileStage, decode_profile_enabled, forward_profile_eval_elapsed,
     moe_profile_enabled, prefill_profile_enabled, record_moe_profile_layer,
-    record_moe_profile_stage, record_moe_profile_total, saturating_profile_us,
+    record_moe_profile_stage, record_moe_profile_total,
+    record_qwen_dense_ffn_gate_up_matvec_metal_attempt,
+    record_qwen_dense_ffn_gate_up_matvec_metal_fallback,
+    record_qwen_dense_ffn_gate_up_matvec_metal_hit, saturating_profile_us,
 };
 use super::utils::{
     mlx_slice_last_dim, qkv_slices, qw, qw_gather, scalar_like, scale_hidden, shape_element_count,
@@ -355,6 +358,7 @@ fn packed_ffn_activation(
 
 static PACKED_GEGLU_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
 static PACKED_SWIGLU_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
+static QWEN_DENSE_FFN_GATE_UP_MATVEC_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
 static GEMMA4_MOE_WEIGHTED_SUM_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
 static GEMMA4_MOE_WEIGHTED_SCALED_SUM_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
 static QWEN3_MOE_WEIGHTED_SUM_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
@@ -394,6 +398,39 @@ const PACKED_SWIGLU_KERNEL_SOURCE: &str = r#"
     float up_v = static_cast<float>(gate_up[up_idx]);
     float activated = gate_v / (1.0f + exp(-gate_v));
     out[idx] = static_cast<T>(activated * up_v);
+"#;
+
+const QWEN_DENSE_FFN_GATE_UP_MATVEC_KERNEL_SOURCE: &str = r#"
+    uint idx = thread_position_in_grid.x;
+    if (idx >= ElementCount) {
+        return;
+    }
+
+    bool is_up = idx >= OutDim;
+    uint row = is_up ? idx - OutDim : idx;
+
+    float acc = 0.0f;
+    for (uint packed_col = 0; packed_col < PackedCols; ++packed_col) {
+        uint packed = is_up ? up_weight[row * PackedCols + packed_col]
+                            : gate_weight[row * PackedCols + packed_col];
+        for (uint lane = 0; lane < PackFactor; ++lane) {
+            uint input_col = packed_col * PackFactor + lane;
+            if (input_col >= InputDim) {
+                continue;
+            }
+            uint q = (packed >> (lane * Bits)) & QuantMask;
+            uint group = input_col / GroupSize;
+            uint scale_idx = row * GroupCount + group;
+            float scale = static_cast<float>(is_up ? up_scales[scale_idx]
+                                                   : gate_scales[scale_idx]);
+            float bias = static_cast<float>(is_up ? up_biases[scale_idx]
+                                                  : gate_biases[scale_idx]);
+            float x_v = static_cast<float>(x[input_col]);
+            acc += x_v * (static_cast<float>(q) * scale + bias);
+        }
+    }
+
+    out[idx] = static_cast<OutT>(acc);
 "#;
 
 const GEMMA4_MOE_WEIGHTED_SUM_KERNEL_SOURCE: &str = r#"
@@ -747,6 +784,183 @@ fn packed_glu_metal_impl(
         (256, 1, 1),
         None,
     );
+    outputs.pop()
+}
+
+fn qwen_dense_ffn_gate_up_matvec_metal(
+    cfg: &ModelConfig,
+    x: &MlxArray,
+    gate: &QuantizedWeight,
+    up: &QuantizedWeight,
+) -> Option<MlxArray> {
+    if !fastpath::qwen_dense_ffn_gate_up_matvec_metal_enabled()
+        || cfg.uses_geglu
+        || !cfg.model_family.starts_with("qwen")
+    {
+        return None;
+    }
+    record_qwen_dense_ffn_gate_up_matvec_metal_attempt();
+    let out = qwen_dense_ffn_gate_up_matvec_metal_impl(x, gate, up);
+    if out.is_some() {
+        record_qwen_dense_ffn_gate_up_matvec_metal_hit();
+    } else {
+        record_qwen_dense_ffn_gate_up_matvec_metal_fallback();
+    }
+    out
+}
+
+fn qwen_dense_ffn_gate_up_matvec_metal_impl(
+    x: &MlxArray,
+    gate: &QuantizedWeight,
+    up: &QuantizedWeight,
+) -> Option<MlxArray> {
+    if !matches!(
+        x.dtype(),
+        MlxDtype::Bfloat16 | MlxDtype::Float16 | MlxDtype::Float32
+    ) {
+        return None;
+    }
+
+    let x_shape = x.shape();
+    let input_dim = *x_shape.last()?;
+    if input_dim <= 0 {
+        return None;
+    }
+    let leading_elements = x_shape[..x_shape.len().saturating_sub(1)]
+        .iter()
+        .try_fold(1_i64, |acc, &dim| acc.checked_mul(i64::from(dim)))?;
+    if leading_elements != 1 {
+        return None;
+    }
+
+    let (Some(gate_scales), Some(gate_biases), Some(up_scales), Some(up_biases)) = (
+        gate.scales.as_ref(),
+        gate.biases.as_ref(),
+        up.scales.as_ref(),
+        up.biases.as_ref(),
+    ) else {
+        return None;
+    };
+    if gate.bits != up.bits || gate.group_size != up.group_size {
+        return None;
+    }
+    if gate.bits != 4 || gate.group_size <= 0 {
+        return None;
+    }
+
+    let gate_weight_shape = gate.weight.shape();
+    let up_weight_shape = up.weight.shape();
+    if gate_weight_shape.len() != 2 || gate_weight_shape != up_weight_shape {
+        return None;
+    }
+    let out_dim = gate_weight_shape[0];
+    let packed_cols = gate_weight_shape[1];
+    if out_dim <= 0 || packed_cols <= 0 {
+        return None;
+    }
+
+    let pack_factor = 32 / gate.bits;
+    if packed_cols.checked_mul(pack_factor)? != input_dim {
+        return None;
+    }
+    if input_dim % gate.group_size != 0 {
+        return None;
+    }
+    let group_count = input_dim / gate.group_size;
+    let expected_sidecar_shape = vec![out_dim, group_count];
+    if gate_scales.shape() != expected_sidecar_shape
+        || gate_biases.shape() != expected_sidecar_shape
+        || up_scales.shape() != expected_sidecar_shape
+        || up_biases.shape() != expected_sidecar_shape
+    {
+        return None;
+    }
+
+    let output_dim = out_dim.checked_mul(2)?;
+    let mut out_shape = x_shape;
+    *out_shape.last_mut()? = output_dim;
+    let element_count = output_dim;
+    let quant_mask = (1_i32 << gate.bits) - 1;
+    let kernel = QWEN_DENSE_FFN_GATE_UP_MATVEC_KERNEL.get_or_init(|| {
+        MlxMetalKernel::new(
+            "ax_qwen_dense_ffn_gate_up_matvec_v1",
+            &[
+                "x",
+                "gate_weight",
+                "gate_scales",
+                "gate_biases",
+                "up_weight",
+                "up_scales",
+                "up_biases",
+            ],
+            &["out"],
+            QWEN_DENSE_FFN_GATE_UP_MATVEC_KERNEL_SOURCE,
+            "",
+            true,
+        )
+    });
+    let mut outputs = kernel
+        .try_apply_with_template(
+            &[
+                x,
+                &gate.weight,
+                gate_scales,
+                gate_biases,
+                &up.weight,
+                up_scales,
+                up_biases,
+            ],
+            &[KernelOutputSpec {
+                shape: out_shape,
+                dtype: x.dtype(),
+            }],
+            &[
+                KernelTemplateArg::Dtype {
+                    name: "OutT",
+                    dtype: x.dtype(),
+                },
+                KernelTemplateArg::Int {
+                    name: "InputDim",
+                    value: input_dim,
+                },
+                KernelTemplateArg::Int {
+                    name: "OutDim",
+                    value: out_dim,
+                },
+                KernelTemplateArg::Int {
+                    name: "PackedCols",
+                    value: packed_cols,
+                },
+                KernelTemplateArg::Int {
+                    name: "GroupSize",
+                    value: gate.group_size,
+                },
+                KernelTemplateArg::Int {
+                    name: "GroupCount",
+                    value: group_count,
+                },
+                KernelTemplateArg::Int {
+                    name: "Bits",
+                    value: gate.bits,
+                },
+                KernelTemplateArg::Int {
+                    name: "PackFactor",
+                    value: pack_factor,
+                },
+                KernelTemplateArg::Int {
+                    name: "QuantMask",
+                    value: quant_mask,
+                },
+                KernelTemplateArg::Int {
+                    name: "ElementCount",
+                    value: element_count,
+                },
+            ],
+            (element_count, 1, 1),
+            (256, 1, 1),
+            None,
+        )
+        .ok()?;
     outputs.pop()
 }
 
@@ -1289,10 +1503,31 @@ pub(crate) fn ffn_swiglu(
         let up = mlx_slice_last_dim(&out, half, half * 2);
         (gate, up)
     } else {
-        packed_gate_up = None;
-        let gate = qw(x, w.gate_proj.as_ref().unwrap());
-        let up = qw(x, w.up_proj.as_ref().unwrap());
-        (gate, up)
+        let gate_w = w.gate_proj.as_ref().unwrap();
+        let up_w = w.up_proj.as_ref().unwrap();
+        if !prefer_split_gate_up
+            && let Some(out) = qwen_dense_ffn_gate_up_matvec_metal(cfg, x, gate_w, up_w)
+        {
+            let maybe_half = out.shape().last().copied().and_then(|packed_dim| {
+                (packed_dim > 0 && packed_dim % 2 == 0).then_some(packed_dim / 2)
+            });
+            if let Some(half) = maybe_half {
+                packed_gate_up = Some(out.clone());
+                let gate = mlx_slice_last_dim(&out, 0, half);
+                let up = mlx_slice_last_dim(&out, half, half * 2);
+                (gate, up)
+            } else {
+                packed_gate_up = None;
+                let gate = qw(x, gate_w);
+                let up = qw(x, up_w);
+                (gate, up)
+            }
+        } else {
+            packed_gate_up = None;
+            let gate = qw(x, gate_w);
+            let up = qw(x, up_w);
+            (gate, up)
+        }
     };
     if (profile_decode || profile_prefill) && !gate_up_profile_recorded {
         let gate_up_profile_storage;
@@ -3185,7 +3420,9 @@ pub(crate) fn switch_gather_inputs(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mlx_sys::{concatenate, eval, slice_last_dim};
+    use mlx_sys::{
+        MlxQuantizationMode, concatenate, eval, quantize, quantized_matmul, slice_last_dim,
+    };
 
     fn array_f32(data: &[f32], shape: &[i32]) -> MlxArray {
         MlxArray::from_raw_data(
@@ -3298,6 +3535,92 @@ mod tests {
 
         assert_eq!(metal.shape(), vec![1, 3, 8]);
         assert_close(metal.data_f32(), direct.data_f32(), 2.0e-2);
+    }
+
+    #[test]
+    fn qwen_dense_ffn_gate_up_matvec_metal_matches_split_quantized_matmuls() {
+        let x_data: Vec<f32> = (0..32).map(|i| ((i as f32) - 16.0) * 0.03125).collect();
+        let gate_weight_data: Vec<f32> = (0..512).map(|i| ((i as f32) - 180.0) * 0.0025).collect();
+        let up_weight_data: Vec<f32> = (0..512).map(|i| ((i as f32) - 96.0) * -0.001875).collect();
+        let x = array_f32(&x_data, &[1, 1, 32]);
+        let gate_weight = array_f32(&gate_weight_data, &[16, 32]);
+        let up_weight = array_f32(&up_weight_data, &[16, 32]);
+        let gate_q = quantize(
+            &gate_weight,
+            Some(32),
+            Some(4),
+            MlxQuantizationMode::Affine,
+            None,
+            None,
+        );
+        let up_q = quantize(
+            &up_weight,
+            Some(32),
+            Some(4),
+            MlxQuantizationMode::Affine,
+            None,
+            None,
+        );
+        assert_eq!(gate_q.len(), 3);
+        assert_eq!(up_q.len(), 3);
+        let gate = QuantizedWeight {
+            weight: gate_q[0].clone(),
+            scales: Some(gate_q[1].clone()),
+            biases: Some(gate_q[2].clone()),
+            group_size: 32,
+            bits: 4,
+        };
+        let up = QuantizedWeight {
+            weight: up_q[0].clone(),
+            scales: Some(up_q[1].clone()),
+            biases: Some(up_q[2].clone()),
+            group_size: 32,
+            bits: 4,
+        };
+
+        let metal = qwen_dense_ffn_gate_up_matvec_metal_impl(&x, &gate, &up)
+            .expect("4-bit affine gate/up matvec should be eligible");
+        let gate_ref = quantized_matmul(
+            &x,
+            &gate_q[0],
+            &gate_q[1],
+            Some(&gate_q[2]),
+            true,
+            Some(32),
+            Some(4),
+            None,
+        );
+        let up_ref = quantized_matmul(
+            &x,
+            &up_q[0],
+            &up_q[1],
+            Some(&up_q[2]),
+            true,
+            Some(32),
+            Some(4),
+            None,
+        );
+        let reference = concatenate(&[&gate_ref, &up_ref], -1, None);
+        eval(&[&metal, &reference]);
+
+        assert_eq!(metal.shape(), vec![1, 1, 32]);
+        assert_close(metal.data_f32(), reference.data_f32(), 1.0e-4);
+    }
+
+    #[test]
+    fn qwen_dense_ffn_gate_up_matvec_metal_rejects_non_decode_shapes() {
+        let weight = QuantizedWeight {
+            weight: mlx_sys::zeros(&[16, 4], MlxDtype::Uint32, None),
+            scales: Some(mlx_sys::zeros(&[16, 1], MlxDtype::Bfloat16, None)),
+            biases: Some(mlx_sys::zeros(&[16, 1], MlxDtype::Bfloat16, None)),
+            group_size: 32,
+            bits: 4,
+        };
+        let batched = mlx_sys::zeros(&[2, 1, 32], MlxDtype::Float32, None);
+        let prefill = mlx_sys::zeros(&[1, 2, 32], MlxDtype::Float32, None);
+
+        assert!(qwen_dense_ffn_gate_up_matvec_metal_impl(&batched, &weight, &weight).is_none());
+        assert!(qwen_dense_ffn_gate_up_matvec_metal_impl(&prefill, &weight, &weight).is_none());
     }
 
     #[test]

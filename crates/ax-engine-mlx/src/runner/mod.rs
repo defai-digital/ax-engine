@@ -85,10 +85,11 @@ use crate::generate::{
 };
 use crate::kv_cache::{MlxKVCache, MlxKVCacheUsage};
 use crate::model::{
-    DecodeProfileSnapshot, Gemma4MoeProfileSnapshot, LinearAttentionProfileSnapshot, ModelConfig,
-    MoeProfileSnapshot, PrefillProfileSnapshot, TurboQuantModelDecodeContext,
-    forward_all_positions_post_norm_last_lm_head, forward_all_positions_with_post_norm,
-    take_decode_profile_snapshot, take_gemma4_moe_profile_snapshot,
+    DecodeProfileSnapshot, DenseFfnFastpathSnapshot, Gemma4MoeProfileSnapshot,
+    LinearAttentionProfileSnapshot, ModelConfig, MoeProfileSnapshot, PrefillProfileSnapshot,
+    TurboQuantModelDecodeContext, forward_all_positions_post_norm_last_lm_head,
+    forward_all_positions_with_post_norm, take_decode_profile_snapshot,
+    take_dense_ffn_fastpath_snapshot, take_gemma4_moe_profile_snapshot,
     take_linear_attention_profile_snapshot, take_moe_profile_snapshot,
     take_prefill_profile_snapshot,
 };
@@ -2205,6 +2206,43 @@ impl LinearAttentionProfileSnapshot {
     }
 }
 
+impl DenseFfnFastpathSnapshot {
+    fn merge_from(&mut self, other: Self) {
+        self.qwen_gate_up_matvec_metal_attempts = self
+            .qwen_gate_up_matvec_metal_attempts
+            .saturating_add(other.qwen_gate_up_matvec_metal_attempts);
+        self.qwen_gate_up_matvec_metal_hits = self
+            .qwen_gate_up_matvec_metal_hits
+            .saturating_add(other.qwen_gate_up_matvec_metal_hits);
+        self.qwen_gate_up_matvec_metal_fallbacks = self
+            .qwen_gate_up_matvec_metal_fallbacks
+            .saturating_add(other.qwen_gate_up_matvec_metal_fallbacks);
+    }
+
+    fn append_route_decisions(&self, decisions: &mut impl RouteDecisionSink) {
+        if *self == Self::default() {
+            return;
+        }
+        let entries = [
+            (
+                "ax_mlx_qwen_dense_ffn_gate_up_matvec_metal_attempts",
+                self.qwen_gate_up_matvec_metal_attempts,
+            ),
+            (
+                "ax_mlx_qwen_dense_ffn_gate_up_matvec_metal_hits",
+                self.qwen_gate_up_matvec_metal_hits,
+            ),
+            (
+                "ax_mlx_qwen_dense_ffn_gate_up_matvec_metal_fallbacks",
+                self.qwen_gate_up_matvec_metal_fallbacks,
+            ),
+        ];
+        for (key, value) in entries {
+            decisions.upsert_route_decision(key, value);
+        }
+    }
+}
+
 impl PrefillProfileSnapshot {
     fn merge_from(&mut self, other: Self) {
         self.enabled = self.enabled.max(other.enabled);
@@ -3919,6 +3957,7 @@ impl MlxRunner {
         let _ = take_gemma4_moe_profile_snapshot();
         let _ = take_moe_profile_snapshot();
         let _ = take_linear_attention_profile_snapshot();
+        let _ = take_dense_ffn_fastpath_snapshot();
         let _ = take_prefill_profile_snapshot();
         let _ = take_decode_profile_snapshot();
 
@@ -4020,6 +4059,7 @@ impl ExecutionRunner for MlxRunner {
         let mut gemma4_moe_profile = Gemma4MoeProfileSnapshot::default();
         let mut moe_profile = MoeProfileSnapshot::default();
         let mut linear_attention_profile = LinearAttentionProfileSnapshot::default();
+        let mut dense_ffn_fastpath = DenseFfnFastpathSnapshot::default();
         let mut prefill_profile = PrefillProfileSnapshot::default();
         let mut decode_profile = DecodeProfileSnapshot::default();
         let mut kv_cache = KvCacheTelemetry::default();
@@ -4047,6 +4087,7 @@ impl ExecutionRunner for MlxRunner {
             gemma4_moe_profile.merge_from(result.gemma4_moe_profile);
             moe_profile.merge_from(result.moe_profile);
             linear_attention_profile.merge_from(result.linear_attention_profile);
+            dense_ffn_fastpath.merge_from(result.dense_ffn_fastpath);
             prefill_profile.merge_from(result.prefill_profile);
             decode_profile.merge_from(result.decode_profile);
             kv_cache.merge_from(result.kv_usage);
@@ -4065,6 +4106,7 @@ impl ExecutionRunner for MlxRunner {
             gemma4_moe_profile.append_route_decisions(&mut route_decisions);
             moe_profile.append_route_decisions(&mut route_decisions);
             linear_attention_profile.append_route_decisions(&mut route_decisions);
+            dense_ffn_fastpath.append_route_decisions(&mut route_decisions);
             prefill_profile.append_route_decisions(&mut route_decisions);
             decode_profile.append_route_decisions(&mut route_decisions);
             self.weight_layout_telemetry
@@ -4790,6 +4832,7 @@ impl MlxRunner {
                 gemma4_moe_profile: Gemma4MoeProfileSnapshot::default(),
                 moe_profile: MoeProfileSnapshot::default(),
                 linear_attention_profile: LinearAttentionProfileSnapshot::default(),
+                dense_ffn_fastpath: DenseFfnFastpathSnapshot::default(),
                 prefill_profile: PrefillProfileSnapshot::default(),
                 decode_profile: DecodeProfileSnapshot::default(),
                 kv_usage: MlxKVCacheUsage::default(),
@@ -5195,6 +5238,7 @@ impl MlxRunner {
         let gemma4_moe_profile = take_gemma4_moe_profile_snapshot();
         let moe_profile = take_moe_profile_snapshot();
         let linear_attention_profile = take_linear_attention_profile_snapshot();
+        let dense_ffn_fastpath = take_dense_ffn_fastpath_snapshot();
         state
             .prefill_profile
             .merge_from(take_prefill_profile_snapshot());
@@ -5258,6 +5302,7 @@ impl MlxRunner {
             gemma4_moe_profile,
             moe_profile,
             linear_attention_profile,
+            dense_ffn_fastpath,
             prefill_profile,
             decode_profile,
             kv_usage,
@@ -9035,6 +9080,7 @@ struct MlxItemRun {
     gemma4_moe_profile: Gemma4MoeProfileSnapshot,
     moe_profile: MoeProfileSnapshot,
     linear_attention_profile: LinearAttentionProfileSnapshot,
+    dense_ffn_fastpath: DenseFfnFastpathSnapshot,
     prefill_profile: PrefillProfileSnapshot,
     decode_profile: DecodeProfileSnapshot,
     kv_usage: MlxKVCacheUsage,
@@ -9060,6 +9106,7 @@ fn errored_item_run(request_id: RequestId, error: impl Into<String>) -> MlxItemR
         gemma4_moe_profile: Gemma4MoeProfileSnapshot::default(),
         moe_profile: MoeProfileSnapshot::default(),
         linear_attention_profile: LinearAttentionProfileSnapshot::default(),
+        dense_ffn_fastpath: DenseFfnFastpathSnapshot::default(),
         prefill_profile: PrefillProfileSnapshot::default(),
         decode_profile: DecodeProfileSnapshot::default(),
         kv_usage: MlxKVCacheUsage::default(),
@@ -13546,6 +13593,39 @@ mod tests {
             Some(&1)
         );
         assert!(!decisions.contains_key("ax_mlx_linear_attention_profile_enabled"));
+    }
+
+    #[test]
+    fn dense_ffn_fastpath_route_decisions_emit_when_attempted() {
+        let mut profile = DenseFfnFastpathSnapshot {
+            qwen_gate_up_matvec_metal_attempts: 2,
+            qwen_gate_up_matvec_metal_hits: 1,
+            qwen_gate_up_matvec_metal_fallbacks: 1,
+        };
+        profile.merge_from(DenseFfnFastpathSnapshot {
+            qwen_gate_up_matvec_metal_attempts: 3,
+            qwen_gate_up_matvec_metal_hits: 2,
+            qwen_gate_up_matvec_metal_fallbacks: 1,
+        });
+
+        let mut decisions = Vec::new();
+        profile.append_route_decisions(&mut decisions);
+        let decisions = decisions
+            .into_iter()
+            .collect::<std::collections::BTreeMap<_, _>>();
+
+        assert_eq!(
+            decisions.get("ax_mlx_qwen_dense_ffn_gate_up_matvec_metal_attempts"),
+            Some(&5)
+        );
+        assert_eq!(
+            decisions.get("ax_mlx_qwen_dense_ffn_gate_up_matvec_metal_hits"),
+            Some(&3)
+        );
+        assert_eq!(
+            decisions.get("ax_mlx_qwen_dense_ffn_gate_up_matvec_metal_fallbacks"),
+            Some(&2)
+        );
     }
 
     #[test]

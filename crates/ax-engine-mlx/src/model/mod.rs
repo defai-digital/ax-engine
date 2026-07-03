@@ -11,9 +11,10 @@ use crate::weights::{LayerWeights, ModelWeights, QuantizedWeight};
 
 pub(crate) mod profile;
 pub use profile::{
-    DecodeProfileSnapshot, EmbedProfileSnapshot, Gemma4MoeProfileSnapshot,
-    LinearAttentionProfileSnapshot, MoeProfileSnapshot, PrefillProfileSnapshot,
-    take_decode_profile_snapshot, take_embed_profile_snapshot, take_gemma4_moe_profile_snapshot,
+    DecodeProfileSnapshot, DenseFfnFastpathSnapshot, EmbedProfileSnapshot,
+    Gemma4MoeProfileSnapshot, LinearAttentionProfileSnapshot, MoeProfileSnapshot,
+    PrefillProfileSnapshot, take_decode_profile_snapshot, take_dense_ffn_fastpath_snapshot,
+    take_embed_profile_snapshot, take_gemma4_moe_profile_snapshot,
     take_linear_attention_profile_snapshot, take_moe_profile_snapshot,
     take_prefill_profile_snapshot,
 };
