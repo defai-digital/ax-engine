@@ -1,7 +1,7 @@
 use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::fmt;
 use std::fs;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, LazyLock, OnceLock};
 
 use parking_lot::Mutex;
 use std::thread::{self, ThreadId};
@@ -3480,6 +3480,19 @@ struct EmbedCompileStats {
 /// memory growth under workloads with many distinct input shapes.
 const EMBED_COMPILE_CACHE_MAX_ENTRIES: usize = 256;
 
+/// Cached flag: when `AX_EMBED_GPU_NORMALIZE=1`, L2 normalization runs on
+/// the GPU instead of the default CPU read-back path.
+static EMBED_GPU_NORMALIZE: LazyLock<bool> = LazyLock::new(|| {
+    std::env::var("AX_EMBED_GPU_NORMALIZE")
+        .map(|v| !(v == "0" || v.is_empty()))
+        .unwrap_or(false)
+});
+
+/// Cached flag: when set, disables compiled embedding closures for A/B
+/// benchmarking against the imperative forward path.
+static EMBED_NO_COMPILE: LazyLock<bool> =
+    LazyLock::new(|| std::env::var("AX_EMBED_NO_COMPILE").is_ok());
+
 impl fmt::Debug for MlxRunner {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("MlxRunner")
@@ -4126,37 +4139,17 @@ impl ExecutionRunner for MlxRunner {
         let pooled = crate::model::apply_embedding_dense_head(&self.weights, &pooled);
         let pool_us = elapsed_us(pool_started);
 
-        let normalize_started = Instant::now();
-        let pooled_f32 = astype(&pooled, MlxDtype::Float32, None);
-        let cpu_normalize = normalize
-            && std::env::var("AX_EMBED_GPU_NORMALIZE")
-                .map(|v| v == "0" || v.is_empty())
-                .unwrap_or(true);
-        let result = if normalize && !cpu_normalize {
-            l2_normalize_last_dim(&pooled_f32)
-        } else {
-            pooled_f32
-        };
-        let normalize_us = elapsed_us(normalize_started);
-
-        let eval_started = Instant::now();
-        mlx_sys::eval(&[&result]);
-        let eval_us = elapsed_us(eval_started);
+        let post_started = Instant::now();
+        let (data, _hidden_size) = post_pool_to_flat(&pooled, normalize);
+        let post_us = elapsed_us(post_started);
 
         tracing::debug!(
             seq_len = token_ids.len(),
             encode_us,
             pool_us,
-            normalize_us,
-            eval_us,
+            post_us,
             "embed_single stage timing"
         );
-        let mut data = result.data_f32().to_vec();
-        if cpu_normalize {
-            // Single sentence → one row of length hidden_size.
-            let hs = data.len();
-            l2_normalize_rows_in_place(&mut data, hs);
-        }
         Ok(data)
     }
 
@@ -4187,28 +4180,7 @@ impl ExecutionRunner for MlxRunner {
             && pooling == EmbeddingPooling::Mean
             && let Some(pooled) = self.embedding_gemma_batch_pooled_compiled_forward(batch)
         {
-            let hidden_size = pooled.shape()[pooled.shape().len() - 1] as usize;
-            // The pooled compiled closure now outputs f32 directly (astype is
-            // folded into the compiled graph), so skip the separate astype.
-            let pooled_f32 = if pooled.dtype() == MlxDtype::Float32 {
-                pooled
-            } else {
-                astype(&pooled, MlxDtype::Float32, None)
-            };
-            let cpu_normalize = normalize
-                && std::env::var("AX_EMBED_GPU_NORMALIZE")
-                    .map(|v| v == "0" || v.is_empty())
-                    .unwrap_or(true);
-            let result = if normalize && !cpu_normalize {
-                l2_normalize_last_dim(&pooled_f32)
-            } else {
-                pooled_f32
-            };
-            mlx_sys::eval(&[&result]);
-            let mut flat = result.data_f32().to_vec();
-            if cpu_normalize {
-                l2_normalize_rows_in_place(&mut flat, hidden_size);
-            }
+            let (flat, hidden_size) = post_pool_to_flat(&pooled, normalize);
             let data: &[f32] = &flat;
             let vecs = (0..batch.len())
                 .map(|i| data[i * hidden_size..(i + 1) * hidden_size].to_vec())
@@ -4224,81 +4196,26 @@ impl ExecutionRunner for MlxRunner {
         // Mean:     hidden is [B, max_seq, H]; pool across sequence here.
         let pool_started = Instant::now();
         let batch_size = batch.len() as i32;
-        let hidden_size = hidden.shape()[hidden.shape().len() - 1] as usize;
 
         let pooled = match pooling {
-            EmbeddingPooling::Mean => {
-                let max_seq = hidden.shape()[1] as usize;
-                // Build the mask directly in bf16 (upper 16 bits of f32)
-                // to avoid an f32→bf16 `astype` dispatch.
-                let one_bf16: u16 = (1.0f32.to_bits() >> 16) as u16;
-                let zero_bf16: u16 = 0u16;
-                let mut mask_data = vec![zero_bf16; batch.len() * max_seq];
-                for (i, &l) in actual_lens.iter().enumerate() {
-                    for j in 0..l {
-                        mask_data[i * max_seq + j] = one_bf16;
-                    }
-                }
-                let mask_arr = MlxArray::from_raw_data(
-                    mask_data.as_ptr() as *const u8,
-                    mask_data.len() * std::mem::size_of::<u16>(),
-                    &[batch_size, max_seq as i32, 1_i32],
-                    MlxDtype::Bfloat16,
-                );
-                let masked = multiply(&hidden, &mask_arr, None);
-                let sums = sum_axis(&masked, 1, false, None);
-                let mut scale_data = vec![zero_bf16; batch.len()];
-                for (i, &l) in actual_lens.iter().enumerate() {
-                    scale_data[i] = ((1.0f32 / l as f32).to_bits() >> 16) as u16;
-                }
-                let scale_arr = MlxArray::from_raw_data(
-                    scale_data.as_ptr() as *const u8,
-                    scale_data.len() * std::mem::size_of::<u16>(),
-                    &[batch_size, 1_i32],
-                    MlxDtype::Bfloat16,
-                );
-                multiply(&sums, &scale_arr, None)
-            }
+            EmbeddingPooling::Mean => bf16_mean_pool(&hidden, &actual_lens, batch_size),
             EmbeddingPooling::Last | EmbeddingPooling::Cls => hidden,
         };
         let pooled = crate::model::apply_embedding_dense_head(&self.weights, &pooled);
         let pool_us = elapsed_us(pool_started);
 
-        let normalize_started = Instant::now();
-        let pooled_f32 = astype(&pooled, MlxDtype::Float32, None);
-        let cpu_normalize = normalize
-            && std::env::var("AX_EMBED_GPU_NORMALIZE")
-                .map(|v| v == "0" || v.is_empty())
-                .unwrap_or(true);
-        let result = if normalize && !cpu_normalize {
-            l2_normalize_last_dim(&pooled_f32)
-        } else {
-            pooled_f32
-        };
-        let normalize_us = elapsed_us(normalize_started);
-
-        let eval_started = Instant::now();
-        mlx_sys::eval(&[&result]);
-        let eval_us = elapsed_us(eval_started);
+        let post_started = Instant::now();
+        let (flat, hidden_size) = post_pool_to_flat(&pooled, normalize);
+        let post_us = elapsed_us(post_started);
 
         tracing::debug!(
             batch_size = batch.len(),
             encode_us,
             pool_us,
-            normalize_us,
-            eval_us,
+            post_us,
             "embed_batch stage timing"
         );
 
-        let data_slice_ref = result.data_f32();
-        // Read once into a flat buffer; legacy API wants Vec<Vec<f32>> so we
-        // split-collect after optional CPU normalize. The B*H read itself is
-        // unavoidable in this legacy path; new callers should prefer
-        // embed_batch_flat which keeps the buffer contiguous.
-        let mut flat: Vec<f32> = data_slice_ref.to_vec();
-        if cpu_normalize {
-            l2_normalize_rows_in_place(&mut flat, hidden_size);
-        }
         // Re-establish original Vec<Vec<f32>> output shape.
         let data: &[f32] = &flat;
         let vecs = (0..batch.len())
@@ -4335,28 +4252,7 @@ impl ExecutionRunner for MlxRunner {
             && pooling == EmbeddingPooling::Mean
             && let Some(pooled) = self.embedding_gemma_batch_pooled_compiled_forward(batch)
         {
-            let hidden_size = pooled.shape()[pooled.shape().len() - 1] as usize;
-            // The pooled compiled closure now outputs f32 directly (astype is
-            // folded into the compiled graph), so skip the separate astype.
-            let pooled_f32 = if pooled.dtype() == MlxDtype::Float32 {
-                pooled
-            } else {
-                astype(&pooled, MlxDtype::Float32, None)
-            };
-            let cpu_normalize = normalize
-                && std::env::var("AX_EMBED_GPU_NORMALIZE")
-                    .map(|v| v == "0" || v.is_empty())
-                    .unwrap_or(true);
-            let result = if normalize && !cpu_normalize {
-                l2_normalize_last_dim(&pooled_f32)
-            } else {
-                pooled_f32
-            };
-            mlx_sys::eval(&[&result]);
-            let mut data = result.data_f32().to_vec();
-            if cpu_normalize {
-                l2_normalize_rows_in_place(&mut data, hidden_size);
-            }
+            let (data, hidden_size) = post_pool_to_flat(&pooled, normalize);
             return Ok(ax_engine_core::EmbeddingMatrix {
                 data,
                 batch_size: batch.len(),
@@ -4366,75 +4262,12 @@ impl ExecutionRunner for MlxRunner {
         let (hidden, actual_lens) =
             self.embedding_batch_forward(batch, target_positions.as_deref());
         let batch_size = batch.len() as i32;
-        let hidden_size = hidden.shape()[hidden.shape().len() - 1] as usize;
         let pooled = match pooling {
-            EmbeddingPooling::Mean => {
-                let max_seq = hidden.shape()[1] as usize;
-                // Build the mask directly in bf16 (upper 16 bits of f32)
-                // to avoid an f32→bf16 `astype` dispatch.
-                let one_bf16: u16 = (1.0f32.to_bits() >> 16) as u16;
-                let zero_bf16: u16 = 0u16;
-                let mut mask_data = vec![zero_bf16; batch.len() * max_seq];
-                for (i, &l) in actual_lens.iter().enumerate() {
-                    for j in 0..l {
-                        mask_data[i * max_seq + j] = one_bf16;
-                    }
-                }
-                let mask_arr = MlxArray::from_raw_data(
-                    mask_data.as_ptr() as *const u8,
-                    mask_data.len() * std::mem::size_of::<u16>(),
-                    &[batch_size, max_seq as i32, 1_i32],
-                    MlxDtype::Bfloat16,
-                );
-                let masked = multiply(&hidden, &mask_arr, None);
-                let sums = sum_axis(&masked, 1, false, None);
-                // Build the length-scale directly in bf16 too.
-                let mut scale_data = vec![zero_bf16; batch.len()];
-                for (i, &l) in actual_lens.iter().enumerate() {
-                    scale_data[i] = ((1.0f32 / l as f32).to_bits() >> 16) as u16;
-                }
-                let scale_arr = MlxArray::from_raw_data(
-                    scale_data.as_ptr() as *const u8,
-                    scale_data.len() * std::mem::size_of::<u16>(),
-                    &[batch_size, 1_i32],
-                    MlxDtype::Bfloat16,
-                );
-                multiply(&sums, &scale_arr, None)
-            }
+            EmbeddingPooling::Mean => bf16_mean_pool(&hidden, &actual_lens, batch_size),
             EmbeddingPooling::Last | EmbeddingPooling::Cls => hidden,
         };
-        // EmbeddingGemma: apply the sentence-transformers Dense head (dense.0 →
-        // dense.1) to the pooled vector before L2 normalization. No-op for other
-        // models (head weights absent).
         let pooled = crate::model::apply_embedding_dense_head(&self.weights, &pooled);
-        // The compiled closures (both Qwen and EmbeddingGemma) now fold the
-        // astype(f32) into the compiled graph, so skip the separate dispatch
-        // when the output is already f32.
-        let pooled_f32 = if pooled.dtype() == MlxDtype::Float32 {
-            pooled
-        } else {
-            astype(&pooled, MlxDtype::Float32, None)
-        };
-        // R3: when CPU normalize is enabled (default), skip the GPU
-        // sqrt + sum + divide ops and l2-normalize the result on the host
-        // after read-back. The data is being read back to a CPU `Vec<f32>`
-        // anyway, so doing the normalize on the same CPU side amortises a
-        // few MLX op dispatches. AX_EMBED_GPU_NORMALIZE=1 reverts.
-        let cpu_normalize = normalize
-            && std::env::var("AX_EMBED_GPU_NORMALIZE")
-                .map(|v| v == "0" || v.is_empty())
-                .unwrap_or(true);
-        let result = if normalize && !cpu_normalize {
-            l2_normalize_last_dim(&pooled_f32)
-        } else {
-            pooled_f32
-        };
-        mlx_sys::eval(&[&result]);
-        // Single contiguous read-back: B * H floats in one allocation.
-        let mut data = result.data_f32().to_vec();
-        if cpu_normalize {
-            l2_normalize_rows_in_place(&mut data, hidden_size);
-        }
+        let (data, hidden_size) = post_pool_to_flat(&pooled, normalize);
         Ok(ax_engine_core::EmbeddingMatrix {
             data,
             batch_size: batch.len(),
@@ -4489,6 +4322,68 @@ fn mlx_scalar_f32(value: f32) -> MlxArray {
     )
 }
 
+/// Masked mean-pool along the sequence dimension using bf16 masks to avoid
+/// an extra f32→bf16 `astype` dispatch. `hidden` is `[B, max_seq, H]`;
+/// `actual_lens` holds the real (un-padded) length of each sequence.
+/// Returns `[B, H]`.
+fn bf16_mean_pool(hidden: &MlxArray, actual_lens: &[usize], batch_size: i32) -> MlxArray {
+    let max_seq = hidden.shape()[1] as usize;
+    let one_bf16: u16 = (1.0f32.to_bits() >> 16) as u16;
+    let zero_bf16: u16 = 0u16;
+    let mut mask_data = vec![zero_bf16; actual_lens.len() * max_seq];
+    for (i, &l) in actual_lens.iter().enumerate() {
+        for j in 0..l {
+            mask_data[i * max_seq + j] = one_bf16;
+        }
+    }
+    let mask_arr = MlxArray::from_raw_data(
+        mask_data.as_ptr() as *const u8,
+        mask_data.len() * std::mem::size_of::<u16>(),
+        &[batch_size, max_seq as i32, 1_i32],
+        MlxDtype::Bfloat16,
+    );
+    let masked = multiply(hidden, &mask_arr, None);
+    let sums = sum_axis(&masked, 1, false, None);
+    let mut scale_data = vec![zero_bf16; actual_lens.len()];
+    for (i, &l) in actual_lens.iter().enumerate() {
+        scale_data[i] = ((1.0f32 / l as f32).to_bits() >> 16) as u16;
+    }
+    let scale_arr = MlxArray::from_raw_data(
+        scale_data.as_ptr() as *const u8,
+        scale_data.len() * std::mem::size_of::<u16>(),
+        &[batch_size, 1_i32],
+        MlxDtype::Bfloat16,
+    );
+    multiply(&sums, &scale_arr, None)
+}
+
+/// Shared post-pooling processing: astype(f32) → optional L2 normalize
+/// (GPU or CPU) → eval → read-back as flat `Vec<f32>`.
+///
+/// Returns `(flat_data, hidden_size)`. Used by `embed`, `embed_batch`,
+/// and `embed_batch_flat` to avoid duplicating the normalize/eval/readback
+/// dispatch across the standard and EmbeddingGemma pooled paths.
+fn post_pool_to_flat(pooled: &MlxArray, normalize: bool) -> (Vec<f32>, usize) {
+    let hidden_size = pooled.shape()[pooled.shape().len() - 1] as usize;
+    let pooled_f32 = if pooled.dtype() == MlxDtype::Float32 {
+        pooled.clone()
+    } else {
+        astype(pooled, MlxDtype::Float32, None)
+    };
+    let cpu_normalize = normalize && !*EMBED_GPU_NORMALIZE;
+    let result = if normalize && !cpu_normalize {
+        l2_normalize_last_dim(&pooled_f32)
+    } else {
+        pooled_f32
+    };
+    mlx_sys::eval(&[&result]);
+    let mut flat = result.data_f32().to_vec();
+    if cpu_normalize {
+        l2_normalize_rows_in_place(&mut flat, hidden_size);
+    }
+    (flat, hidden_size)
+}
+
 impl MlxRunner {
     /// Run the embedding forward pass, preferring the compiled-closure path
     /// when caching is permitted. Falls back to imperative
@@ -4500,8 +4395,7 @@ impl MlxRunner {
     /// `target_position`) — first call at a new shape pays the trace cost
     /// once, subsequent calls hit the cache.
     fn embedding_forward(&self, token_ids: &[u32], target_position: Option<usize>) -> MlxArray {
-        let disable_compile = std::env::var("AX_EMBED_NO_COMPILE").is_ok();
-        if disable_compile {
+        if *EMBED_NO_COMPILE {
             return crate::model::forward_for_embedding(
                 &self.cfg,
                 &self.weights,
@@ -4602,13 +4496,12 @@ impl MlxRunner {
         batch_token_ids: &[Vec<u32>],
         target_positions: Option<&[usize]>,
     ) -> (MlxArray, Vec<usize>) {
-        let disable_compile = std::env::var("AX_EMBED_NO_COMPILE").is_ok();
         let profile = crate::model::profile::embed_profile_enabled();
 
         // EmbeddingGemma: bidirectional encoder with mean pooling — uses a
         // dedicated compile cache keyed on (batch, max_len, actual_lens).
         if self.cfg.model_family == "embeddinggemma" {
-            if disable_compile || profile {
+            if *EMBED_NO_COMPILE || profile {
                 return crate::model::forward_for_embedding_batch(
                     &self.cfg,
                     &self.weights,
@@ -4624,7 +4517,7 @@ impl MlxRunner {
         // barriers cannot live inside a single traced compiled closure, and
         // compile on/off is throughput-neutral for this path, so the imperative
         // breakdown is representative.
-        if disable_compile || target_positions.is_none() || profile {
+        if *EMBED_NO_COMPILE || target_positions.is_none() || profile {
             // Mean pooling needs the full [B, max_seq, H] hidden; the closure
             // body is only built for the Last/Cls (extract-then-norm) shape.
             return crate::model::forward_for_embedding_batch(
@@ -4805,9 +4698,8 @@ impl MlxRunner {
         &self,
         batch_token_ids: &[Vec<u32>],
     ) -> Option<MlxArray> {
-        let disable_compile = std::env::var("AX_EMBED_NO_COMPILE").is_ok();
         let profile = crate::model::profile::embed_profile_enabled();
-        if disable_compile || profile {
+        if *EMBED_NO_COMPILE || profile {
             return None;
         }
 

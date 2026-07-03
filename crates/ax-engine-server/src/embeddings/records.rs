@@ -329,22 +329,35 @@ fn render_template_fields(
     fields: &BTreeMap<String, Value>,
     record_index: usize,
 ) -> Result<String, HttpErrorResponse> {
-    let mut rendered = template.to_string();
-    for (key, value) in fields {
-        rendered = rendered.replace(&format!("{{{key}}}"), &render_field_value(value));
+    // Single-pass replacement: each `{key}` in the template is resolved
+    // exactly once against the field map. Field values are inserted verbatim
+    // and never re-scanned for placeholders, preventing second-order
+    // injection (e.g. a field value of `{other_key}` cannot cause a
+    // subsequent replacement).
+    let mut rendered = String::with_capacity(template.len());
+    let mut rest = template;
+    while let Some(start) = rest.find('{') {
+        rendered.push_str(&rest[..start]);
+        let after_open = &rest[start + 1..];
+        if let Some(end) = after_open.find('}') {
+            let key = &after_open[..end];
+            match fields.get(key) {
+                Some(value) => rendered.push_str(&render_field_value(value)),
+                None => {
+                    return Err(invalid_request(format!(
+                        "records[{record_index}] render_template references missing field {key:?}"
+                    )));
+                }
+            }
+            rest = &after_open[end + 1..];
+        } else {
+            // No closing brace — keep the literal `{` and continue.
+            rendered.push('{');
+            rest = after_open;
+        }
     }
-    if let Some(missing) = first_template_placeholder(&rendered) {
-        return Err(invalid_request(format!(
-            "records[{record_index}] render_template references missing field {missing:?}"
-        )));
-    }
+    rendered.push_str(rest);
     Ok(rendered)
-}
-
-fn first_template_placeholder(text: &str) -> Option<String> {
-    let start = text.find('{')?;
-    let end = text[start + 1..].find('}')?;
-    Some(text[start + 1..start + 1 + end].to_string())
 }
 
 fn render_default_fields(fields: &BTreeMap<String, Value>) -> String {
