@@ -233,13 +233,9 @@ MTP_6BIT_ROW_GAP = 32.0
 MTP_6BIT_GROUP_GAP = 18.0
 MTP_6BIT_GROUP_SIZE = 3
 
-EMBEDDING_SCALE_REFERENCE_ARTIFACT = Path(
-    "benchmarks/results/embedding-scale/2026-07-02-qwen-paired-cooldown15-refresh/"
-    "2026-07-02-145458/embedding_ingest_scale.json"
-)
-EMBEDDING_SCALE_AX_ARTIFACT = Path(
-    "benchmarks/results/embedding-scale/2026-07-02-qwen-ax-only-refresh-r2/"
-    "2026-07-02-191907/embedding_ingest_scale.json"
+EMBEDDING_SCALE_PAIRED_ARTIFACT = Path(
+    "benchmarks/results/embedding-scale/2026-07-03-qwen-paired-refresh/"
+    "2026-07-02-215823/embedding_ingest_scale.json"
 )
 EMBEDDINGGEMMA_SCALE_REFERENCE_ARTIFACT = Path(
     "benchmarks/results/embedding-scale/"
@@ -2141,10 +2137,57 @@ def load_embedding_overlay_scale_delta_rows(
     return rows
 
 
+def load_embedding_paired_scale_delta_rows(
+    repo_root: Path, artifact_relative_path: Path
+) -> list[EmbeddingDeltaRow]:
+    artifact_path = repo_root / artifact_relative_path
+    if not artifact_path.exists():
+        raise ChartError(f"missing embedding scale paired artifact: {artifact_path}")
+    artifact = json.loads(artifact_path.read_text())
+    if artifact.get("ax_only"):
+        raise ChartError(f"{artifact_path} is AX-only; expected paired artifact")
+    ref_key, ref_label = embedding_reference_key(artifact)
+    rows: list[EmbeddingDeltaRow] = []
+    for model in artifact.get("models", []):
+        raw_model_label = str(model.get("model_label", ""))
+        model_label = embedding_model_label(raw_model_label)
+        for row in model.get("rows", []):
+            ref = row.get("results", {}).get(ref_key)
+            ax = row.get("results", {}).get("ax_engine_py")
+            if not isinstance(ref, dict) or not isinstance(ax, dict):
+                raise ChartError(
+                    f"{artifact_path} lacks {ref_key}/ax_engine_py results for "
+                    f"{raw_model_label} {row.get('workload')}"
+                )
+            ref_tps = float(ref["median_tokens_per_sec"])
+            ax_tps = float(ax["median_tokens_per_sec"])
+            delta = ((ax_tps - ref_tps) / ref_tps * 100.0) if ref_tps else 0.0
+            rows.append(
+                EmbeddingDeltaRow(
+                    label=model_label,
+                    detail=(
+                        f"{row['total_chunks']} x {row['chunk_tokens']} tok, "
+                        f"batch {row['batch_size']}"
+                    ),
+                    reference_label=ref_label,
+                    reference_tok_s=ref_tps,
+                    ax_tok_s=ax_tps,
+                    delta_pct=delta,
+                )
+            )
+    return rows
+
+
 def load_embedding_scale_delta_rows(repo_root: Path) -> list[EmbeddingDeltaRow]:
-    return load_embedding_overlay_scale_delta_rows(
-        repo_root, EMBEDDING_SCALE_REFERENCE_ARTIFACT, EMBEDDING_SCALE_AX_ARTIFACT
+    return load_embedding_paired_scale_delta_rows(
+        repo_root, EMBEDDING_SCALE_PAIRED_ARTIFACT
     )
+
+
+def format_embedding_delta_pct(delta_pct: float) -> str:
+    if abs(delta_pct) < 0.05:
+        return "0.0%"
+    return f"{delta_pct:+.1f}%"
 
 
 def render_embedding_delta_chart(
@@ -2221,7 +2264,7 @@ def render_embedding_delta_chart(
                 f'<text x="44" y="{y + 4:.1f}" font-family="{FONT}" font-size="11" font-weight="700" fill="#111827">{escape(row.label)}</text>',
                 f'<text x="44" y="{y + 18:.1f}" font-family="{FONT}" font-size="10" fill="#6b7280">{escape(row.detail)} · ref {escape(row.reference_label)}</text>',
                 f'<rect x="{bar_x:.1f}" y="{y - 8:.1f}" width="{bar_w:.1f}" height="14" rx="3" fill="{color}"/>',
-                f'<text x="{label_x:.1f}" y="{y + 3.7:.1f}" text-anchor="{anchor}" font-family="{FONT}" font-size="10" font-weight="700" fill="{text_color}" stroke="{label_stroke}" stroke-width="3" paint-order="stroke">{row.delta_pct:+.1f}%</text>',
+                f'<text x="{label_x:.1f}" y="{y + 3.7:.1f}" text-anchor="{anchor}" font-family="{FONT}" font-size="10" font-weight="700" fill="{text_color}" stroke="{label_stroke}" stroke-width="3" paint-order="stroke">{format_embedding_delta_pct(row.delta_pct)}</text>',
                 f'<text x="{EMBEDDING_CHART_RIGHT + 12:.1f}" y="{y + 3.7:.1f}" font-family="{FONT}" font-size="10" fill="#374151">{short_number(row.ax_tok_s)} tok/s</text>',
             ]
         )
@@ -2316,10 +2359,10 @@ def main() -> int:
         load_embedding_scale_delta_rows(args.readme.parent),
         title="Embedding ingest scale: AX vs mlx-lm",
         subtitle=(
-            "512 chunks per trial, 15s cooldown, retained reference plus fresh AX-only, "
-            "contiguous CPU float32 [B,H] output."
+            "512 chunks per trial, same-session paired, 15s cooldown, contiguous CPU "
+            "float32 [B,H] output."
         ),
-        source_label="Sources: 2026-07-02 Qwen paired reference + AX-only refresh",
+        source_label="Source: 2026-07-03 Qwen same-session paired refresh",
     )
     if not write_chart(embedding_scale_output_path, embedding_scale_content, args.check):
         mismatches.append(embedding_scale_output_path)
