@@ -2257,6 +2257,7 @@ def embedding_box_label_lines(label: str) -> tuple[str, str]:
         "Qwen3 0.6B 8-bit": ("Qwen3 0.6B", "8-bit"),
         "Qwen3 4B 4-bit DWQ": ("Qwen3 4B", "4-bit DWQ"),
         "Qwen3 8B 4-bit DWQ": ("Qwen3 8B", "4-bit DWQ"),
+        "EmbeddingGemma 300M 8-bit": ("EmbeddingGemma 300M", "8-bit"),
     }.get(label, (label, ""))
 
 
@@ -2299,8 +2300,8 @@ def render_embedding_box_chart(
         f' role="img" aria-labelledby="title desc">',
         f"<title>{escape(title)}</title>",
         f"<desc>{escape(subtitle)} Grouped box-and-whisker plot comparing "
-        f"{escape(reference_label)} and AX Engine throughput across Qwen3 "
-        f"embedding models.</desc>",
+        f"{escape(reference_label)} and AX Engine throughput across the "
+        f"displayed embedding model group(s).</desc>",
         f'<rect width="{FAMILY_CHART_WIDTH}" height="{FAMILY_CHART_HEIGHT}" fill="#f8fafc"/>',
         f'<text x="{FAMILY_LEFT}" y="24" font-family="{FONT}"'
         f' font-size="16" font-weight="700" fill="#111827">{escape(title)}</text>',
@@ -2603,16 +2604,16 @@ def main() -> int:
         mismatches.append(embedding_scale_output_path)
 
     embeddinggemma_scale_output_path = args.output_dir / EMBEDDINGGEMMA_SCALE_CHART_OUTPUT
-    embeddinggemma_scale_content = render_embedding_delta_chart(
+    embeddinggemma_scale_content = render_embedding_box_chart(
         load_embedding_overlay_scale_delta_rows(
             args.readme.parent,
             EMBEDDINGGEMMA_SCALE_REFERENCE_ARTIFACT,
             EMBEDDINGGEMMA_SCALE_AX_ARTIFACT,
         ),
-        title="EmbeddingGemma ingest scale: AX vs mlx-embeddings",
+        title="EmbeddingGemma ingest scale",
         subtitle=(
-            "512 chunks per trial, 15s cooldown, retained reference plus fresh AX-only, "
-            "contiguous CPU float32 [B,H] output."
+            "One model group | box=IQR | whiskers=min/max | dots=six "
+            "chunk/batch shapes."
         ),
         source_label=(
             "Sources: 2026-07-02 EmbeddingGemma paired reference + AX-only refresh"

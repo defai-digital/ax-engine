@@ -806,8 +806,11 @@ EmbeddingGemma uses `mlx-embeddings` as the sustained reference because its
 full sentence-transformers route includes mean pooling, the Dense projection
 head, and L2 normalization. In the refreshed AX-only scale run, AX is faster
 than the retained `mlx-embeddings` reference on every listed row, by 2.5-8.9%.
+The chart uses one `EmbeddingGemma 300M` group and nests `mlx-embeddings`
+(yellow) plus AX Engine (green) inside it; each engine box summarizes the six
+chunk/batch shapes listed below.
 
-<img src="docs/assets/perf-embeddinggemma-ingest-scale-ax-vs-mlx-embeddings.svg" alt="EmbeddingGemma ingest-scale chart showing AX Engine percentage delta versus mlx-embeddings for 512-chunk workloads">
+<img src="docs/assets/perf-embeddinggemma-ingest-scale-ax-vs-mlx-embeddings.svg" alt="Grouped box-and-whisker plot comparing mlx-embeddings and AX Engine ingest throughput for EmbeddingGemma 300M workloads">
 
 | Model | Workload | Batch | Batches/trial | `mlx-embeddings` tok/s | AX tok/s | AX vs | AX chunks/s | AX p95 batch ms |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
