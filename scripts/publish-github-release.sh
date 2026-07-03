@@ -373,7 +373,13 @@ fi
 if [[ "$SKIP_CHECKS" = false ]]; then
     run cargo fmt --check
     run cargo test --quiet --no-fail-fast
-    run cargo clippy --all-targets --all-features -- -D warnings
+    run cargo clippy --all-targets --all-features -- \
+        -D warnings \
+        --force-warn clippy::unwrap-used \
+        --force-warn clippy::expect-used \
+        --force-warn clippy::panic \
+        --force-warn clippy::dbg-macro \
+        --force-warn clippy::large-enum-variant
     run bash scripts/check-scripts.sh
     run bash scripts/check-bench-doctor.sh
     run bash scripts/check-metal-kernel-contract.sh
