@@ -48,7 +48,7 @@ model-specific boundaries are kept visible.
     - [Gemma 4 assistant-MTP (depth-2)](#gemma-4-assistant-mtp-depth-2)
   - [Direct Mode (Decode · Prefill · TTFT)](#direct-mode-decode--prefill--ttft)
     - [Gemma 4 12B](#gemma-4-12b)
-    - [DiffusionGemma (block diffusion)](#diffusiongemma-block-diffusion)
+    - [DiffusionGemma](#diffusiongemma)
     - [Gemma 4 and Qwen 3.6](#gemma-4-and-qwen-36)
   - [Embedding Models](#embedding-models)
     - [Large-corpus ingest scale](#large-corpus-ingest-scale)
@@ -571,7 +571,7 @@ Gemma 4 12B multimodal benchmark details now live in
 Gemma assistant-MTP package layout and cache-location details live in
 [Supported Models](docs/SUPPORTED-MODELS.md#mtp-downloads).
 
-#### DiffusionGemma (block diffusion)
+#### DiffusionGemma
 
 DiffusionGemma (`mlx-community/diffusiongemma-26B-A4B-it-4bit`, `model_type:
 diffusion_gemma`) is an **experimental** repo-owned MLX path. It is a
