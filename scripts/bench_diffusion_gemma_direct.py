@@ -481,7 +481,6 @@ def render_chart(
     bar_w = 34.0
     header_right = WIDTH - 34
     unit_w = max(48, len(unit) * 7 + 24)
-    best = min(values) if lower_is_better else max(values)
     direction = direction_label or ("Lower is better" if lower_is_better else "Higher is better")
     direction_fill = RED
 
@@ -523,17 +522,6 @@ def render_chart(
             f'<text x="{LEFT - 8}" y="{gy + 3:.1f}" text-anchor="end" '
             f'font-family="{FONT}" font-size="11" fill="#6b7280">{short_number(value)}</text>'
         )
-
-    best_y = fy(best)
-    parts.append(
-        f'<line x1="{LEFT}" y1="{best_y:.1f}" x2="{RIGHT}" y2="{best_y:.1f}" '
-        f'stroke="{RED}" stroke-width="1.2" stroke-dasharray="1 4" stroke-linecap="round"/>'
-    )
-    parts.append(
-        f'<text x="{RIGHT + 8}" y="{max(TOP + 11, best_y - 5):.1f}" '
-        f'text-anchor="start" font-family="{FONT}" font-size="11" font-weight="700" '
-        f'fill="{RED}">{"lowest" if lower_is_better else "highest"}: {short_number(best)}</text>'
-    )
 
     for group_index, row in enumerate(rows):
         prompt = int(row["prompt_tokens"])
