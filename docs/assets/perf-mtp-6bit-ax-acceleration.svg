@@ -55,5 +55,5 @@
 <rect x="210" y="354.0" width="486.3" height="10" rx="2" fill="#c084fc"/>
 <text x="470.6" y="349.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#176c37">51.2</text>
 <text x="701.3" y="362.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#dc2626">97.5</text>
-<text x="72" y="468.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">Source: benchmarks/results/mtp-6bit/2026-07-01-six-model-flappy-ax-mtp-vs-direct-clean-r2 / summary.json. Pure MTP; no MTP+n-gram stacking.</text>
+<text x="72" y="468.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">Source: benchmarks/results/speculative/mtp-6bit/2026-07-01-six-model-flappy-ax-mtp-vs-direct-clean-r2 / summary.json. Pure MTP; no MTP+n-gram stacking.</text>
 </svg>

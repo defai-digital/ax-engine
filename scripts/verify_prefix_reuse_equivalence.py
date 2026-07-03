@@ -31,7 +31,7 @@ Usage:
     python scripts/verify_prefix_reuse_equivalence.py \\
         --model-id qwen3-5-9b \\
         --mlx-artifacts-dir .internal/models/Qwen3.5-9B-MLX-4bit \\
-        --output benchmarks/results/prefix-reuse-equivalence/
+        --output benchmarks/results/profiling/prefix-reuse-equivalence/
 
 Artifact schema: ax.prefix_reuse_equivalence.v1
 """
@@ -116,7 +116,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--output",
         type=Path,
-        default=Path("benchmarks/results/prefix-reuse-equivalence"),
+        default=Path("benchmarks/results/profiling/prefix-reuse-equivalence"),
         help="Output JSON path or directory.",
     )
     p.add_argument("--max-output-tokens", type=int, default=32)

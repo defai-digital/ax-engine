@@ -159,14 +159,14 @@ class TurboQuantKvPolicySearchTests(unittest.TestCase):
 
         path = search.artifact_output_path(
             explicit_output=None,
-            output_root=Path("benchmarks/results/offline-policy-search"),
+            output_root=Path("benchmarks/results/profiling/offline-policy-search"),
             artifact=artifact,
         )
 
         self.assertEqual(
             path,
             Path(
-                "benchmarks/results/offline-policy-search/2026-05-14/"
+                "benchmarks/results/profiling/offline-policy-search/2026-05-14/"
                 "turboquant_kv_policy-gemma-4-e2b-it-4bit.json"
             ),
         )

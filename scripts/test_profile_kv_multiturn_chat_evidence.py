@@ -15,7 +15,7 @@ SCRIPT_PATH = Path(__file__).with_name("profile_kv_multiturn_chat_evidence.py")
 REPO_ROOT = SCRIPT_PATH.resolve().parents[1]
 GLM_MLA_FIXED_ARTIFACT = (
     REPO_ROOT
-    / "benchmarks/results/kv-long-context/"
+    / "benchmarks/results/profiling/kv-long-context/"
     / "glm47-flash-4bit-multiturn-mla-fixed-2026-05-14.json"
 )
 MODULE_SPEC = importlib.util.spec_from_file_location(

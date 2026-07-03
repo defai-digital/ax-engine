@@ -14,7 +14,7 @@ from typing import Any, Sequence
 SCHEMA_VERSION = "ax.prefix_reuse_equivalence.v1"
 DEFAULT_ARTIFACTS = (
     Path(
-        "benchmarks/results/prefix-reuse-equivalence/"
+        "benchmarks/results/profiling/prefix-reuse-equivalence/"
         "glm47-warm-extend-default-mla-chunk16-2026-05-14.json"
     ),
 )

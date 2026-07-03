@@ -294,7 +294,7 @@ python3 scripts/search_turboquant_kv_policy.py \
 ```
 
 This writes an `ax.offline_policy_search.v1` artifact to
-`benchmarks/results/offline-policy-search/<date>/` when `--output` is omitted.
+`benchmarks/results/profiling/offline-policy-search/<date>/` when `--output` is omitted.
 It enumerates candidate policies only; it does not run inference, benchmarks,
 or promote TurboQuant support. Validate checked-in artifacts with
 `bash scripts/check-offline-policy-search-artifacts.sh`.

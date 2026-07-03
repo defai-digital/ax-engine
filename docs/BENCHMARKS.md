@@ -142,7 +142,7 @@ benchmark output directory:
 
 ```bash
 python3 scripts/bench_mtp_prefill_ttft_report.py \
-  --result-dir benchmarks/results/mtp-6bit/<run-dir>
+  --result-dir benchmarks/results/speculative/mtp-6bit/<run-dir>
 ```
 
 This reads the existing per-engine artifact JSON files (no new inference required) and
@@ -706,7 +706,7 @@ Offline policy search is the diagnostic planning layer for TurboQuant KV policy
 choices. It enumerates candidate policies such as `kv_preset`,
 `hot_window_tokens`, eligible-layer mask, fallback policy, and quality profile,
 then writes an `ax.offline_policy_search.v1` artifact under
-`benchmarks/results/offline-policy-search/<date>/`. This does not run a model,
+`benchmarks/results/profiling/offline-policy-search/<date>/`. This does not run a model,
 benchmark, or fused kernel. Candidate rows must remain
 `measurement_status=not_run` until a separate measurement harness supplies real
 evidence.

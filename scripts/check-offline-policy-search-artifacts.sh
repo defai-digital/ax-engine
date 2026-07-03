@@ -7,7 +7,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/lib/common.sh"
 ROOT_DIR="$AX_REPO_ROOT"
 PYTHON_BIN="$AX_PYTHON_BIN"
-ARTIFACT_ROOT="${AX_OFFLINE_POLICY_SEARCH_ARTIFACT_ROOT:-benchmarks/results/offline-policy-search}"
+ARTIFACT_ROOT="${AX_OFFLINE_POLICY_SEARCH_ARTIFACT_ROOT:-benchmarks/results/profiling/offline-policy-search}"
 
 cd "$ROOT_DIR"
 

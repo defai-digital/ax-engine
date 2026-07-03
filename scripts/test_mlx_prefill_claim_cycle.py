@@ -40,6 +40,9 @@ class MlxPrefillClaimCycleTests(unittest.TestCase):
         commands = [" ".join(check.command) for check in checks]
         self.assertIn("check_readme_performance_artifacts.py", commands[0])
         self.assertIn("check_mlx_prefill_scaling_artifact.py", commands[1])
+        self.assertIn("benchmarks/results/inference/mlx-inference", commands[1])
+        self.assertIn("benchmarks/results/inference/mlx-inference", commands[2])
+        self.assertIn("benchmarks/results/inference/mlx-inference", commands[3])
         self.assertIn("check_mlx_concurrent_prefill_artifact.py", commands[2])
         self.assertIn("--allow-missing-scheduler-evidence", commands[2])
         self.assertIn("check_mlx_forward_profile_artifact.py", commands[3])

@@ -27,6 +27,15 @@ bench = load_script("bench_embedding_fair", "bench_embedding_fair.py")
 
 
 class FairEmbeddingBenchmarkTests(unittest.TestCase):
+    def test_default_output_dir_uses_embedding_results_tree(self) -> None:
+        args = bench.build_parser().parse_args(["--model", "qwen=/tmp/model"])
+
+        self.assertTrue(
+            args.output_dir.as_posix().endswith(
+                "/benchmarks/results/embedding/embedding-fair"
+            )
+        )
+
     def test_parse_model_spec_accepts_label_equals_path(self) -> None:
         spec = bench.parse_model_spec("qwen=/tmp/model")
         self.assertEqual(spec.label, "qwen")

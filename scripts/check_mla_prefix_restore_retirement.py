@@ -23,7 +23,7 @@ MODULE_SPEC.loader.exec_module(evidence_checker)
 
 DEFAULT_ARTIFACTS = (
     ROOT_DIR
-    / "benchmarks/results/prefix-reuse-equivalence/"
+    / "benchmarks/results/profiling/prefix-reuse-equivalence/"
     / "glm47-warm-extend-default-mla-chunk16-2026-05-14.json",
 )
 DEFAULT_REQUIRED_FAMILIES = ("glm", "deepseek")

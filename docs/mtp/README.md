@@ -44,7 +44,7 @@ ax-engine download-mtp gemma-4-31b
 ax-engine download-mtp glm-4.7-flash
 ```
 
-Artifacts should live under `benchmarks/results/mtp-6bit/` and record the exact
+Artifacts should live under `benchmarks/results/speculative/mtp-6bit/` and record the exact
 prepared model path, model snapshot, sidecar or assistant provenance, route
 identity, sampler, prompt suite, repetitions, cooldown, prefill, decode, TTFT,
 and MTP accept rate.

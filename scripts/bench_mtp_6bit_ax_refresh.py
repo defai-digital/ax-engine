@@ -16,7 +16,9 @@ from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 BENCH_SCRIPT = REPO_ROOT / "scripts" / "bench_mlx_inference_stack.py"
-DEFAULT_OUTPUT_BASE = REPO_ROOT / "benchmarks" / "results" / "mtp-6bit"
+DEFAULT_OUTPUT_BASE = (
+    REPO_ROOT / "benchmarks" / "results" / "speculative" / "mtp-6bit"
+)
 DEFAULT_SUITES_DIR = REPO_ROOT / "benchmarks" / "prompts" / "mtp-suites"
 README_PATH = REPO_ROOT / "README.md"
 

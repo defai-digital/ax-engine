@@ -45,7 +45,7 @@ DEFAULT_HOT_WINDOW_TOKENS = [128, 256, 512, 1024]
 DEFAULT_ELIGIBLE_LAYER_MASKS = ["full_attention_only"]
 DEFAULT_FALLBACK_POLICIES = ["fail_closed", "fallback_with_accounting"]
 DEFAULT_QUALITY_PROFILES = ["reference_k8v4"]
-DEFAULT_OUTPUT_ROOT = Path("benchmarks/results/offline-policy-search")
+DEFAULT_OUTPUT_ROOT = Path("benchmarks/results/profiling/offline-policy-search")
 DATE_PREFIX_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})")
 SAFE_PATH_COMPONENT_RE = re.compile(r"[^A-Za-z0-9._-]+")
 
@@ -343,7 +343,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=DEFAULT_OUTPUT_ROOT,
         help=(
             "Root for the canonical artifact path when --output is omitted "
-            "(default: benchmarks/results/offline-policy-search)."
+            "(default: benchmarks/results/profiling/offline-policy-search)."
         ),
     )
     parser.add_argument("--kv-presets", type=parse_csv, default=DEFAULT_KV_PRESETS)

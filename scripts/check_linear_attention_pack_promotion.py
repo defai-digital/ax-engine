@@ -23,7 +23,7 @@ MODULE_SPEC.loader.exec_module(forward_checker)
 
 DEFAULT_ARTIFACTS = (
     ROOT_DIR
-    / "benchmarks/results/mlx-inference/2026-05-14-qwen36-linear-pack-ab/"
+    / "benchmarks/results/inference/mlx-inference/2026-05-14-qwen36-linear-pack-ab/"
     / "qwen3_6-35b-a3b-8bit-linear-pack-ab.json",
 )
 NOT_PROMOTED = "not_promoted"

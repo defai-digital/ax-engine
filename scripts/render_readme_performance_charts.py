@@ -246,16 +246,16 @@ MTP_6BIT_GROUP_GAP = 18.0
 MTP_6BIT_GROUP_SIZE = 3
 
 EMBEDDING_SCALE_PAIRED_ARTIFACT = Path(
-    "benchmarks/results/embedding-scale/2026-07-03-qwen-paired-refresh/"
+    "benchmarks/results/embedding/embedding-scale/2026-07-03-qwen-paired-refresh/"
     "2026-07-02-215823/embedding_ingest_scale.json"
 )
 EMBEDDINGGEMMA_SCALE_REFERENCE_ARTIFACT = Path(
-    "benchmarks/results/embedding-scale/"
+    "benchmarks/results/embedding/embedding-scale/"
     "2026-07-02-embeddinggemma-paired-cooldown15-refresh/"
     "2026-07-02-175206/embedding_ingest_scale.json"
 )
 EMBEDDINGGEMMA_SCALE_AX_ARTIFACT = Path(
-    "benchmarks/results/embedding-scale/"
+    "benchmarks/results/embedding/embedding-scale/"
     "2026-07-02-embeddinggemma-ax-only-refresh-r2/"
     "2026-07-02-204750/embedding_ingest_scale.json"
 )
@@ -1008,7 +1008,8 @@ def render_mtp_metric_chart(rows: list[MtpBenchmarkRow], metric: str) -> str:
 def find_mtp_6bit_summary(readme: Path) -> Path | None:
     text = readme.read_text()
     match = re.search(
-        r"\]\((benchmarks/results/mtp-6bit/[^)]+/summary\.json)\)", text
+        r"\]\((benchmarks/results/(?:speculative/)?mtp-6bit/[^)]+/summary\.json)\)",
+        text,
     )
     if match is None:
         return None

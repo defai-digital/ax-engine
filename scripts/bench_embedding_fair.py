@@ -581,7 +581,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--output-dir",
         type=Path,
-        default=REPO_ROOT / "benchmarks" / "results" / "embedding-fair",
+        default=REPO_ROOT
+        / "benchmarks"
+        / "results"
+        / "embedding"
+        / "embedding-fair",
     )
     return parser
 

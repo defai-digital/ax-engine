@@ -15,12 +15,12 @@ SCRIPT_PATH = Path(__file__).with_name("verify_prefix_reuse_equivalence.py")
 REPO_ROOT = SCRIPT_PATH.resolve().parents[1]
 GLM_CHUNK16_ARTIFACT = (
     REPO_ROOT
-    / "benchmarks/results/prefix-reuse-equivalence/"
+    / "benchmarks/results/profiling/prefix-reuse-equivalence/"
     / "glm47-warm-extend-chunk16-provenance-2026-05-14.json"
 )
 GLM_DEFAULT_MLA_CHUNK16_ARTIFACT = (
     REPO_ROOT
-    / "benchmarks/results/prefix-reuse-equivalence/"
+    / "benchmarks/results/profiling/prefix-reuse-equivalence/"
     / "glm47-warm-extend-default-mla-chunk16-2026-05-14.json"
 )
 MODULE_SPEC = importlib.util.spec_from_file_location(

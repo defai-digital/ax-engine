@@ -22,6 +22,6 @@ on median decode throughput. Treat this as path validation and a same-artifact
 diagnostic comparison until the full 6-bit MTP matrix is rerun with 1,000
 generated tokens, 5 measured repetitions, and recorded cooldown.
 
-Artifacts: [`flappy-after-activation-fix.json`](../../benchmarks/results/mtp-6bit/2026-06-22-glm47-flash-mtp-smoke/flappy-after-activation-fix.json)
-(MTP) and [`flappy-direct-baseline.json`](../../benchmarks/results/mtp-6bit/2026-06-22-glm47-flash-mtp-smoke/flappy-direct-baseline.json)
+Artifacts: [`flappy-after-activation-fix.json`](../../benchmarks/results/speculative/mtp-6bit/2026-06-22-glm47-flash-mtp-smoke/flappy-after-activation-fix.json)
+(MTP) and [`flappy-direct-baseline.json`](../../benchmarks/results/speculative/mtp-6bit/2026-06-22-glm47-flash-mtp-smoke/flappy-direct-baseline.json)
 (direct baseline).

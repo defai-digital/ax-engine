@@ -24,6 +24,15 @@ bench = load_script("bench_embedding_ingest_scale", "bench_embedding_ingest_scal
 
 
 class EmbeddingIngestScaleBenchmarkTests(unittest.TestCase):
+    def test_default_output_dir_uses_embedding_results_tree(self) -> None:
+        args = bench.build_parser().parse_args(["--model", "qwen=/tmp/model"])
+
+        self.assertTrue(
+            args.output_dir.as_posix().endswith(
+                "/benchmarks/results/embedding/embedding-scale"
+            )
+        )
+
     def test_split_batches_keeps_partial_tail(self) -> None:
         corpus = [[1], [2], [3], [4], [5]]
 

@@ -11,15 +11,15 @@ from pathlib import Path
 
 
 DEFAULT_P1_PREFILL_SCALING = Path(
-    "benchmarks/results/mlx-inference/2026-05-07-real-p1/"
+    "benchmarks/results/inference/mlx-inference/2026-05-07-real-p1/"
     "qwen3-4b-4bit-prefill-scaling/prefill-scaling.json"
 )
 DEFAULT_P2_CONCURRENT_PREFILL = Path(
-    "benchmarks/results/mlx-inference/2026-05-07-real-p2/"
+    "benchmarks/results/inference/mlx-inference/2026-05-07-real-p2/"
     "qwen3-4b-4bit-p2-latency/concurrent-prefill.json"
 )
 DEFAULT_W4_FORWARD_PROFILE = Path(
-    "benchmarks/results/mlx-inference/2026-05-13-ttft-breakdown/"
+    "benchmarks/results/inference/mlx-inference/2026-05-13-ttft-breakdown/"
     "qwen3_6-35b-a3b-8bit-linear-profile-prefill.json"
 )
 

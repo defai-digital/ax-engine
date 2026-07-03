@@ -21,7 +21,7 @@ Usage:
         --model-id gemma4 \\
         --mlx-artifacts-dir .internal/models/gemma-4-e2b-it-4bit \\
         --turns 10 \\
-        --output benchmarks/results/kv-long-context/gemma4-multiturn-2026-05-14.json
+        --output benchmarks/results/profiling/kv-long-context/gemma4-multiturn-2026-05-14.json
 """
 
 from __future__ import annotations
@@ -153,7 +153,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--output",
         type=Path,
-        default=Path("benchmarks/results/kv-long-context"),
+        default=Path("benchmarks/results/profiling/kv-long-context"),
         help="Output JSON path or directory. If a directory, the filename "
         "is auto-generated as <model_id_safe>-multiturn-<date>.json.",
     )

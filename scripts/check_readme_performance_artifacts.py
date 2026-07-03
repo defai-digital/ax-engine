@@ -58,6 +58,13 @@ HISTORICAL_PREFILL_WORK_CONTRACT = "historical_full_logits_prefill_or_sampler_re
 LONG_CONTEXT_CAMPAIGN_BOUNDARY_SNIPPET = (
     "single-model long-context boundary, not a Gemma/Qwen/GLM-wide campaign"
 )
+LEGACY_MLX_INFERENCE_PATH_PREFIX = ("benchmarks", "results", "mlx-inference")
+CATEGORIZED_MLX_INFERENCE_PATH_PREFIX = (
+    "benchmarks",
+    "results",
+    "inference",
+    "mlx-inference",
+)
 
 AX_NGRAM_TELEMETRY_COUNTERS = {
     "ax_ngram_draft_attempts",
@@ -459,12 +466,12 @@ def default_artifact_sources(readme_path: Path) -> list[ArtifactSource]:
         return sources
 
     match = re.search(
-        r"`(benchmarks/results/mlx-inference/[^`]+/)`",
+        r"`(benchmarks/results/(?:inference/)?mlx-inference/[^`]+/)`",
         text,
     )
     if not match:
         raise ArtifactCheckError(
-            "README does not name a benchmarks/results/mlx-inference artifact directory"
+            "README does not name a benchmarks/results/inference/mlx-inference artifact directory"
         )
     return [ArtifactSource((readme_path.parent / match.group(1)).resolve())]
 
@@ -1473,10 +1480,28 @@ def assert_display_delta_matches(
         )
 
 
+def remap_legacy_mlx_inference_path(repo_root: Path, path: Path) -> Path | None:
+    parts = path.parts
+    prefix_len = len(LEGACY_MLX_INFERENCE_PATH_PREFIX)
+    for start in range(0, len(parts) - prefix_len + 1):
+        if parts[start : start + prefix_len] != LEGACY_MLX_INFERENCE_PATH_PREFIX:
+            continue
+        candidate = repo_root.joinpath(
+            *CATEGORIZED_MLX_INFERENCE_PATH_PREFIX,
+            *parts[start + prefix_len :],
+        )
+        if candidate.exists():
+            return candidate
+    return None
+
+
 def resolve_repo_path(repo_root: Path, path_value: str) -> Path:
     path = Path(path_value)
     if not path.is_absolute():
-        return repo_root / path
+        candidate = repo_root / path
+        if candidate.exists():
+            return candidate
+        return remap_legacy_mlx_inference_path(repo_root, path) or candidate
     if path.exists():
         return path
     for marker in ("benchmarks", "docs", "scripts"):
@@ -1485,7 +1510,10 @@ def resolve_repo_path(repo_root: Path, path_value: str) -> Path:
             candidate = repo_root.joinpath(*path.parts[marker_index:])
             if candidate.exists():
                 return candidate
-    return path
+            remapped = remap_legacy_mlx_inference_path(repo_root, candidate)
+            if remapped is not None:
+                return remapped
+    return remap_legacy_mlx_inference_path(repo_root, path) or path
 
 
 def validate_prompt_artifact(

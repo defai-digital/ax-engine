@@ -22,7 +22,7 @@ Usage:
     python scripts/profile_kv_long_context_evidence.py \\
         --model-id gemma4 \\
         --mlx-artifacts-dir .internal/models/gemma-4-e2b-it-4bit \\
-        --output benchmarks/results/kv-long-context/gemma4-2026-05-11.json
+        --output benchmarks/results/profiling/kv-long-context/gemma4-2026-05-11.json
 """
 
 from __future__ import annotations
@@ -50,7 +50,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--output",
         type=Path,
-        default=Path("benchmarks/results/kv-long-context"),
+        default=Path("benchmarks/results/profiling/kv-long-context"),
         help="Output JSON path or directory. If a directory, file name is "
         "auto-generated as <model_id_safe>-<date>.json.",
     )

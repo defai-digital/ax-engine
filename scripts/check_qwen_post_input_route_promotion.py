@@ -14,7 +14,7 @@ from typing import Any
 ROOT_DIR = Path(__file__).parent.parent
 DEFAULT_ARTIFACTS = (
     ROOT_DIR
-    / "benchmarks/results/mlx-inference/2026-05-21-qwen35-post-input-ab/"
+    / "benchmarks/results/inference/mlx-inference/2026-05-21-qwen35-post-input-ab/"
     / "qwen3_6-35b-a3b-4bit.json",
 )
 SCHEMA_VERSION = "ax.mlx_inference_stack.v2"

@@ -121,14 +121,14 @@ Why the loop is slow:
   sync; per-sentence wall time is divided by B.
 
 The current single-batch diagnostic snapshot for Qwen is
-`benchmarks/results/embedding-fair/2026-07-02-qwen-paired-cooldown15-refresh/2026-07-02-133329/`.
+`benchmarks/results/embedding/embedding-fair/2026-07-02-qwen-paired-cooldown15-refresh/2026-07-02-133329/`.
 The current single-batch diagnostic snapshot for EmbeddingGemma is
-`benchmarks/results/embedding-fair/2026-07-02-embeddinggemma-paired-cooldown15-refresh/2026-07-02-143425/`.
+`benchmarks/results/embedding/embedding-fair/2026-07-02-embeddinggemma-paired-cooldown15-refresh/2026-07-02-143425/`.
 The current README Qwen ingest-scale snapshot is
-`benchmarks/results/embedding-scale/2026-07-03-qwen-paired-refresh/2026-07-02-215823/`;
+`benchmarks/results/embedding/embedding-scale/2026-07-03-qwen-paired-refresh/2026-07-02-215823/`;
 it includes 0.6B plus the 4B/8B DWQ embedders. The current EmbeddingGemma
 ingest-scale snapshot is
-`benchmarks/results/embedding-scale/2026-07-02-embeddinggemma-paired-cooldown15-refresh/2026-07-02-175206/`.
+`benchmarks/results/embedding/embedding-scale/2026-07-02-embeddinggemma-paired-cooldown15-refresh/2026-07-02-175206/`.
 The Qwen paired artifacts use 2 warmups, 5 measured trials, 15-second cooldowns
 before measured engine passes, alternating paired order, and median tok/s. The
 fair artifacts keep the complete short-query plus 16/64/256-token matrix in
@@ -155,7 +155,7 @@ pattern, and do not mix cooled and hot-loop artifacts in one comparison.
 
 The current README scale snapshot is:
 
-`benchmarks/results/embedding-scale/2026-07-03-qwen-paired-refresh/2026-07-02-215823/`
+`benchmarks/results/embedding/embedding-scale/2026-07-03-qwen-paired-refresh/2026-07-02-215823/`
 
 It runs Qwen3-Embedding 0.6B 8-bit plus Qwen3-Embedding 4B/8B 4-bit DWQ against
 `mlx-lm`, using last-token pooling and l2-normalized contiguous CPU
@@ -185,7 +185,7 @@ Reproduce the scale snapshot with:
   --warmup 2 \
   --trials 5 \
   --cooldown 15 \
-  --output-dir benchmarks/results/embedding-scale/$(date +%Y-%m-%d)-qwen-paired-refresh
+  --output-dir benchmarks/results/embedding/embedding-scale/$(date +%Y-%m-%d)-qwen-paired-refresh
 ```
 
 Reproduce the EmbeddingGemma scale snapshot with:
@@ -200,7 +200,7 @@ Reproduce the EmbeddingGemma scale snapshot with:
   --warmup 2 \
   --trials 5 \
   --cooldown 15 \
-  --output-dir benchmarks/results/embedding-scale/$(date +%Y-%m-%d)-embeddinggemma-scale
+  --output-dir benchmarks/results/embedding/embedding-scale/$(date +%Y-%m-%d)-embeddinggemma-scale
 ```
 
 ## HTTP serving paths
@@ -316,7 +316,7 @@ Use the fair in-process harness for README throughput claims:
   --warmup 2 \
   --trials 5 \
   --cooldown 15 \
-  --output-dir benchmarks/results/embedding-fair/$(date +%Y-%m-%d)-qwen
+  --output-dir benchmarks/results/embedding/embedding-fair/$(date +%Y-%m-%d)-qwen
 ```
 
 For EmbeddingGemma, use the same output contract with the embeddinggemma route:
@@ -330,7 +330,7 @@ For EmbeddingGemma, use the same output contract with the embeddinggemma route:
   --warmup 2 \
   --trials 5 \
   --cooldown 15 \
-  --output-dir benchmarks/results/embedding-fair/$(date +%Y-%m-%d)-embeddinggemma
+  --output-dir benchmarks/results/embedding/embedding-fair/$(date +%Y-%m-%d)-embeddinggemma
 ```
 
 Pass `--ax-only` when you want to refresh only the AX path without loading the
