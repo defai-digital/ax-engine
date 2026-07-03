@@ -318,6 +318,15 @@ throughput baselines.
   report. It joins quality/promotion readiness, fused microbench evidence, and
   short-decode speedup artifacts so the PRD is not marked complete from code
   presence alone.
+- `check_decode_hot_path_kernel_admission.py`: fail-closed validator for
+  `.internal/analysis/decode-hot-path-kernels/*/candidate.json` manifests. It
+  implements the decode hot-path PRD admission checklist for promoted/default-on
+  kernel or graph-fusion routes: profile source, mechanism statement,
+  correctness oracle, 2 warmup + 5 measure microbench evidence, real-graph A/B,
+  route counters, rollback, kill switch, and promotion threshold. Empty
+  candidate roots pass so the checker can live in CI before a candidate exists.
+- `test_check_decode_hot_path_kernel_admission.py`: unit tests for the decode
+  hot-path admission validator.
 - `build_turboquant_quality_artifact.py`: compiles a TurboQuant quality artifact
   from MLX inference-stack benchmark output and a quality-metrics JSON file,
   then validates it through the same fail-closed gate. Full-precision shadow

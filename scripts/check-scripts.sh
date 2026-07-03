@@ -141,6 +141,7 @@ bash -n scripts/*.sh scripts/lib/common.sh
   scripts/check_turboquant_quality_artifact.py \
   scripts/check_turboquant_microbench_artifact.py \
   scripts/check_turboquant_prd_completion.py \
+  scripts/check_decode_hot_path_kernel_admission.py \
   scripts/check_direct_mlx_hotpath_probe_artifact.py \
   scripts/check_direct_mlx_no_production_route.py \
   scripts/check_mlx_fastpath_env_controls.py \
@@ -149,6 +150,7 @@ bash -n scripts/*.sh scripts/lib/common.sh
   scripts/check_turboquant_public_docs.py \
   scripts/check_turboquant_promotion_readiness.py \
   scripts/test_turboquant_quality_artifact.py \
+  scripts/test_check_decode_hot_path_kernel_admission.py \
   scripts/test_run_turboquant_quality_artifact.py \
   scripts/test_turboquant_microbench_artifact.py \
   scripts/test_turboquant_prd_completion.py \
@@ -239,6 +241,7 @@ bash scripts/check-turboquant-quality-gate.sh
 bash scripts/check-turboquant-microbench-gate.sh
 bash scripts/check-offline-policy-search-artifacts.sh
 "$PYTHON_BIN" scripts/check_turboquant_public_docs.py
+"$PYTHON_BIN" scripts/check_decode_hot_path_kernel_admission.py
 "$PYTHON_BIN" scripts/check_direct_mlx_no_production_route.py
 "$PYTHON_BIN" scripts/check_mlx_fastpath_env_controls.py
 "$PYTHON_BIN" scripts/check_linear_attention_pack_promotion.py

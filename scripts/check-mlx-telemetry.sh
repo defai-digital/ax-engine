@@ -104,6 +104,7 @@ cd "$ROOT_DIR"
 run_timed "$TARGET_TIMEOUT_SECS" cargo clippy -p ax-engine-mlx --all-targets -- -D warnings
 run_timed "$TARGET_TIMEOUT_SECS" cargo test -p ax-engine-mlx --quiet
 run_timed "$TARGET_TIMEOUT_SECS" bash scripts/check-bench-inference-stack.sh
+run_timed "$TARGET_TIMEOUT_SECS" "$AX_PYTHON_BIN" scripts/check_decode_hot_path_kernel_admission.py
 run_timed "$TARGET_TIMEOUT_SECS" bash scripts/check-scripts.sh
 
 # Serving-invariant probe gates (ADR-007 / PRD §10): the invariant probes are
