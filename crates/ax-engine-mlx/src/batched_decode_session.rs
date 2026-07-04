@@ -13,11 +13,63 @@
 //! the same as [`crate::model::decode_batched_forward`]: full-attention dense
 //! families, ragged positions supported.
 
+use std::sync::OnceLock;
+
 use crate::batched_kv_cache::BatchedKvCache;
 use crate::batched_sampling::argmax_batched;
 use crate::kv_cache::MlxKVCache;
 use crate::model::{ModelConfig, decode_batched_forward};
-use crate::weights::ModelWeights;
+use crate::weights::{LayerWeights, ModelWeights};
+
+/// `AX_MLX_BATCHED_DECODE` — opt in to routing eligible greedy dense-decode
+/// requests through a shared batched forward. **Default: OFF.** Experimental:
+/// the batched path holds KV in the session rather than each request's
+/// `MlxKVCache`, so it is not yet reconciled with the core's KV block
+/// accounting and does not handle preemption of session-resident requests.
+pub fn batched_decode_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        matches!(
+            std::env::var("AX_MLX_BATCHED_DECODE").as_deref(),
+            Ok("1") | Ok("true") | Ok("yes")
+        )
+    })
+}
+
+/// Whether a model can use the batched dense-decode path. Pure so it is
+/// unit-testable. Conservative: only dense full-attention `qwen3` with no
+/// speculative/compression/sliding features (the layers
+/// [`crate::model::families::standard::layer_forward_batched`] supports).
+#[allow(clippy::too_many_arguments)]
+pub fn model_batched_eligible(
+    model_family: &str,
+    has_mtp: bool,
+    is_diffusion: bool,
+    kv_compression_on: bool,
+    layer_windows: &[Option<usize>],
+    layers: &[LayerWeights],
+) -> bool {
+    if has_mtp || is_diffusion || kv_compression_on {
+        return false;
+    }
+    if model_family != "qwen3" {
+        return false;
+    }
+    if layer_windows.iter().any(|w| w.is_some()) {
+        return false;
+    }
+    layers.iter().all(|w| {
+        w.router_proj.is_none()
+            && w.linear_attn.is_none()
+            && w.glm_mla_attn.is_none()
+            && w.per_layer_gate.is_none()
+            && w.layer_scalar.is_none()
+            && w.q_proj.is_some()
+            && w.k_proj.is_some()
+            && w.v_proj.is_some()
+            && w.o_proj.is_some()
+    })
+}
 
 /// A batched decode cohort with continuous join/leave.
 pub struct BatchedDecodeSession {
@@ -94,6 +146,19 @@ impl BatchedDecodeSession {
         true
     }
 
+    /// Override the token that will be fed for request `id` on the next
+    /// [`Self::step`] — the engine's scheduler is the source of truth for which
+    /// token each request decodes. Returns `false` if `id` is not active.
+    pub fn set_current(&mut self, id: u64, token: u32) -> bool {
+        match self.slot_req.iter().position(|&x| x == id) {
+            Some(slot) => {
+                self.cur[slot] = token;
+                true
+            }
+            None => false,
+        }
+    }
+
     /// Decode one token for every active request (greedy). Returns `(id, token)`
     /// per active request, in slot order, and updates each slot's current token.
     /// Empty when the cohort is empty.
@@ -109,5 +174,65 @@ impl BatchedDecodeSession {
             .zip(&toks)
             .map(|(&id, &t)| (id, t))
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn model_eligibility_guards() {
+        let no_windows: [Option<usize>; 0] = [];
+        // Dense qwen3 with no special features and no layers → eligible (vacuous).
+        assert!(model_batched_eligible(
+            "qwen3",
+            false,
+            false,
+            false,
+            &no_windows,
+            &[]
+        ));
+        // Each disqualifier flips it off, independent of the layer set.
+        assert!(!model_batched_eligible(
+            "qwen3",
+            true,
+            false,
+            false,
+            &no_windows,
+            &[]
+        )); // MTP
+        assert!(!model_batched_eligible(
+            "qwen3",
+            false,
+            true,
+            false,
+            &no_windows,
+            &[]
+        )); // diffusion
+        assert!(!model_batched_eligible(
+            "qwen3",
+            false,
+            false,
+            true,
+            &no_windows,
+            &[]
+        )); // kv compression
+        assert!(!model_batched_eligible(
+            "gemma4",
+            false,
+            false,
+            false,
+            &no_windows,
+            &[]
+        )); // wrong family
+        assert!(!model_batched_eligible(
+            "qwen3",
+            false,
+            false,
+            false,
+            &[Some(4096)],
+            &[]
+        )); // sliding window
     }
 }
