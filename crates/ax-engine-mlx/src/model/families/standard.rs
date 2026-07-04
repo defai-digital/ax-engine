@@ -754,11 +754,12 @@ pub(crate) fn layer_forward(
 /// `[B, H, key_len, D]` view) and passes the batched validity `mask`
 /// (`[B, 1, 1, key_len]`) to attention.
 ///
-/// **2a scope (asserted).** Normal (non-KV-shared) full-attention dense layers,
-/// no sliding window, no MoE, no per-layer-input gating, no layer scalar, and a
-/// uniform `token_offset` across rows (equal-length batch — ragged RoPE
-/// positions are 2b). Unsupported layers panic; the batched runner (2b) routes
-/// only eligible requests here.
+/// Supports **ragged** rows: `offsets[r]` is row `r`'s current decode position,
+/// so a continuously-batched cohort at different sequence positions decodes
+/// together. Scope (asserted): normal (non-KV-shared) full-attention dense
+/// layers, no sliding window, no MoE, no per-layer-input gating, no layer
+/// scalar. Unsupported layers panic; the batched runner routes only eligible
+/// requests here.
 #[allow(clippy::too_many_arguments)]
 pub fn layer_forward_batched(
     cfg: &ModelConfig,
@@ -766,9 +767,14 @@ pub fn layer_forward_batched(
     hidden: &MlxArray,
     cache: &mut BatchedKvCache,
     layer_idx: usize,
-    token_offset: usize,
+    offsets: &[usize],
     mask: &Option<MlxArray>,
 ) -> MlxArray {
+    debug_assert_eq!(
+        offsets.len(),
+        cache.batch(),
+        "one RoPE offset per batch row"
+    );
     let (
         head_dim,
         rope_theta,
@@ -819,9 +825,11 @@ pub fn layer_forward_batched(
     // The single path's fused `qk_norm_rope_bhsd_from_proj_with_route` (and MLX
     // `rope` itself) mis-rotate every batch row > 0 for a `[B, H, 1, D]` decode
     // input — row 0 is correct, rows ≥1 are wrong. So the batched path applies
-    // QK-norm (batch-safe) and then RoPE ONE ROW AT A TIME (each `[1, H, 1, D]`
-    // slice matches the single-sequence rotation exactly). A batched-rope kernel
-    // is a perf follow-up; correctness first.
+    // QK-norm (batch-safe) and then RoPE ONE ROW AT A TIME, each at its own
+    // position `offsets[r]` (ragged rows sit at different sequence positions —
+    // this is what lets a continuously-batched cohort decode together). Each
+    // `[1, H, 1, D]` slice matches the single-sequence rotation exactly. A
+    // batched-rope kernel is a perf follow-up; correctness first.
     let rope_freqs = layer_rope_freqs.or(cfg.rope_freqs.as_ref());
     let (rope_base, rope_freqs_ref) = rope_freqs
         .map(|f| (None, Some(f)))
@@ -859,7 +867,7 @@ pub fn layer_forward_batched(
                     false,
                     rope_base,
                     1.0,
-                    token_offset as i32,
+                    offsets[r as usize] as i32,
                     rope_freqs_ref,
                     None,
                 )

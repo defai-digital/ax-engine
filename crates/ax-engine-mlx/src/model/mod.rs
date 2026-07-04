@@ -395,25 +395,25 @@ pub fn embed_decode_tokens_batched(
 }
 
 /// Batched decode forward for full-attention **dense** families (Qwen3, Llama,
-/// Mistral) — milestone 2a of batched MLX decode.
+/// Mistral) — batched MLX decode.
 ///
 /// Embeds the B current tokens (`[B,1,hidden]`), builds the per-row validity
 /// mask once, runs the batched layer loop
 /// ([`families::standard::layer_forward_batched`]), and returns logits
-/// `[B, 1, vocab]`. `token_offset` is the **uniform** decode position (equal-
-/// length batch — 2a scope). The caller supplies the [`BatchedKvCache`] (seeded
-/// from per-request prefill) and turns logits into tokens via
-/// [`crate::batched_sampling::argmax_batched`] / `sample_batched_host`.
+/// `[B, 1, vocab]`. Rows may be **ragged** — each row's decode position and KV
+/// length are read from the cache (`row_len(r)`), so a continuously-batched
+/// cohort at different sequence positions decodes together. The caller supplies
+/// the [`BatchedKvCache`] (seeded from per-request prefill) and turns logits into
+/// tokens via [`crate::batched_sampling::argmax_batched`] / `sample_batched_host`.
 ///
 /// Mirrors the single-sequence `forward_with_turboquant_context` embed prologue
 /// (bf16 cast + optional `hidden_states_scale`) and final norm + lm_head, so a
-/// row's logits match a batch=1 decode of that row.
+/// row's logits match a batch=1 decode of that row at the same position.
 pub fn decode_batched_forward(
     cfg: &ModelConfig,
     weights: &ModelWeights,
     tokens: &[u32],
     cache: &mut crate::batched_kv_cache::BatchedKvCache,
-    token_offset: usize,
 ) -> MlxArray {
     assert_eq!(
         tokens.len(),
@@ -426,10 +426,11 @@ pub fn decode_batched_forward(
         hidden = scale_hidden(&hidden, scale);
     }
 
-    // Per-row validity mask, built once and shared across layers. Each row's
-    // current token was just written at `row_len`, so it has `row_len + 1` valid
-    // keys; the batched view spans `max_len + 1`.
-    let valid_lengths: Vec<usize> = (0..cache.batch()).map(|r| cache.row_len(r) + 1).collect();
+    // Per-row decode position (`offsets[r]`) and validity length. Each row's
+    // current token is written at `row_len(r)` (its RoPE position), giving it
+    // `row_len(r) + 1` valid keys; the batched view spans `max_len + 1`.
+    let offsets: Vec<usize> = (0..cache.batch()).map(|r| cache.row_len(r)).collect();
+    let valid_lengths: Vec<usize> = offsets.iter().map(|&o| o + 1).collect();
     let key_len = cache.max_len() + 1;
     let mask = Some(crate::attention_mask::batched_decode_validity_mask(
         &valid_lengths,
@@ -438,13 +439,7 @@ pub fn decode_batched_forward(
 
     for (li, layer_w) in weights.layers.iter().enumerate() {
         hidden = families::standard::layer_forward_batched(
-            cfg,
-            layer_w,
-            &hidden,
-            cache,
-            li,
-            token_offset,
-            &mask,
+            cfg, layer_w, &hidden, cache, li, &offsets, &mask,
         );
     }
     cache.advance_all(1);

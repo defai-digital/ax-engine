@@ -45,9 +45,17 @@ fn build_prompts(batch: usize, len: usize, vocab: usize) -> Vec<Vec<u32>> {
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(0);
+    // AX_RAGGED: give each row a different prompt length (row r → len - 3*r,
+    // floored at len/2) so the cohort decodes at ragged sequence positions.
+    let ragged = env::var("AX_RAGGED").is_ok();
     (0..batch)
         .map(|r| {
-            (0..len)
+            let row_len = if ragged {
+                (len.saturating_sub(3 * r)).max(len / 2).max(1)
+            } else {
+                len
+            };
+            (0..row_len)
                 .map(|i| (((base + r) * 17 + i * 5 + 3) % (vocab - 1)) as u32 + 1)
                 .collect()
         })
@@ -154,8 +162,7 @@ fn main() {
     let (mut bcache, mut cur) = seed_batched(&cfg, &weights, &prompts, layers);
     let mut batched_streams: Vec<Vec<u32>> = cur.iter().map(|&t| vec![t]).collect();
     for _ in 0..gen_len {
-        let offset = bcache.row_len(0); // uniform across rows (equal length)
-        let logits = decode_batched_forward(&cfg, &weights, &cur, &mut bcache, offset);
+        let logits = decode_batched_forward(&cfg, &weights, &cur, &mut bcache);
         let toks = argmax_batched(&logits);
         for r in 0..batch {
             batched_streams[r].push(toks[r]);
@@ -199,8 +206,7 @@ fn main() {
         clear_cache();
         let t0 = Instant::now();
         for _ in 0..gen_len {
-            let offset = bc.row_len(0);
-            let logits = decode_batched_forward(&cfg, &weights, &cur, &mut bc, offset);
+            let logits = decode_batched_forward(&cfg, &weights, &cur, &mut bc);
             cur.copy_from_slice(&argmax_batched(&logits));
         }
         t0.elapsed().as_secs_f64()
