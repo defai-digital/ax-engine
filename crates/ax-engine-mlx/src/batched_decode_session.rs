@@ -15,6 +15,8 @@
 
 use std::sync::OnceLock;
 
+use mlx_sys::slice;
+
 use crate::batched_kv_cache::BatchedKvCache;
 use crate::batched_sampling::argmax_batched;
 use crate::kv_cache::MlxKVCache;
@@ -115,6 +117,26 @@ impl BatchedDecodeSession {
     /// produced by prefill, to be fed on the next `step`). Panics if full or if
     /// `id` is already present.
     pub fn add(&mut self, id: u64, prefill: &MlxKVCache, first_token: u32) {
+        self.add_with_seed_len(id, prefill, first_token, None);
+    }
+
+    /// Like [`Self::add`], but seed only the first `seed_len` KV tokens of each
+    /// layer (default: the whole cache).
+    ///
+    /// The runner's per-request `MlxKVCache` is **warmed**: its last token is
+    /// `first_token`'s KV, already appended by generation-state init. Re-feeding
+    /// `first_token` would double it, so the runner passes `seed_len =
+    /// cache.seq_len - 1` — seed everything but that last token, then the first
+    /// `step` re-appends it, reproducing the state exactly. Callers whose
+    /// `first_token` is NOT yet in the cache (a fresh prefill, e.g. the probes)
+    /// pass `None` and seed the whole cache.
+    pub fn add_with_seed_len(
+        &mut self,
+        id: u64,
+        prefill: &MlxKVCache,
+        first_token: u32,
+        seed_len: Option<usize>,
+    ) {
         assert!(
             !self.slot_req.contains(&id),
             "request {id} already in session"
@@ -124,6 +146,21 @@ impl BatchedDecodeSession {
             let (k, v) = prefill
                 .peek_layer_kv(layer)
                 .expect("prefilled full-attention layer KV");
+            let full = k.shape()[2];
+            let keep = seed_len
+                .map(|n| n.min(full as usize) as i32)
+                .unwrap_or(full);
+            let (k, v) = if keep < full {
+                let heads = k.shape()[1];
+                let dim = k.shape()[3];
+                let ones = [1, 1, 1, 1];
+                (
+                    slice(&k, &[0, 0, 0, 0], &[1, heads, keep, dim], &ones, None),
+                    slice(&v, &[0, 0, 0, 0], &[1, heads, keep, dim], &ones, None),
+                )
+            } else {
+                (k, v)
+            };
             self.cache.seed_row_layer(layer, slot, &k, &v);
         }
         self.slot_req.push(id);

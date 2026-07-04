@@ -72,6 +72,9 @@ use ax_engine_core::{
     RequestMultimodalInputs, RunnerInput, RunnerOutput, StopReason, upsert_route_decision,
 };
 
+use crate::batched_decode_session::{
+    BatchedDecodeSession, batched_decode_enabled, model_batched_eligible,
+};
 use crate::gemma4_assistant_mtp::{
     Gemma4AssistantMtpConfig, Gemma4AssistantMtpDisableReason, Gemma4AssistantMtpStatus,
     gemma4_assistant_mtp_debug_enabled, gemma4_assistant_mtp_max_depth_cap,
@@ -3425,6 +3428,13 @@ pub struct MlxRunner {
     binding_summary: NativeModelBindingSummary,
     terminal_token_ids: Vec<u32>,
     states: Mutex<HashMap<RequestId, RequestState>>,
+    /// Whether this model can use the experimental batched dense-decode path
+    /// (computed once via `model_batched_eligible`). Gates the `run()`
+    /// interception together with `batched_decode_enabled()`.
+    batched_decode_model_eligible: bool,
+    /// Shared cohort for the batched dense-decode path (`AX_MLX_BATCHED_DECODE`).
+    /// Empty and untouched unless the flag is on and the model is eligible.
+    batched_session: Mutex<BatchedDecodeSession>,
     /// Dedicated GPU stream kept alive for the runner's lifetime.
     _stream: MlxStream,
     /// When true, disable n-gram acceleration and use the direct decode path.
@@ -3970,6 +3980,24 @@ impl MlxRunner {
 
         let cfg_arc = Arc::new(cfg.clone());
         let weight_layout_telemetry = WeightLayoutTelemetry::from_weights(&weights);
+        let has_mtp =
+            weights.mtp.is_some() || weights.glm_mtp.is_some() || gemma4_assistant_mtp.is_some();
+        let batched_decode_model_eligible = model_batched_eligible(
+            cfg.model_family.as_str(),
+            has_mtp,
+            cfg.diffusion.is_some(),
+            kv_compression.mode != ax_engine_core::KvCompressionMode::Disabled,
+            &kv_layer_windows,
+            &weights.layers,
+        );
+        // Capacity for the batched cohort; small (Phase 0 sweet spot is B≈2-4,
+        // amortization plateaus past ~8). Override with AX_MLX_BATCHED_DECODE_MAX.
+        let batched_cap = std::env::var("AX_MLX_BATCHED_DECODE_MAX")
+            .ok()
+            .and_then(|s| s.parse::<usize>().ok())
+            .filter(|&c| c >= 1)
+            .unwrap_or(8);
+        let batched_session = Mutex::new(BatchedDecodeSession::new(cfg.layer_count, batched_cap));
         Ok(Self {
             cfg,
             cfg_arc,
@@ -3980,6 +4008,8 @@ impl MlxRunner {
             binding_summary,
             terminal_token_ids,
             states: Mutex::new(HashMap::new()),
+            batched_decode_model_eligible,
+            batched_session,
             _stream: stream,
             disable_ngram_acceleration,
             disable_mtp_ngram_stacking,
@@ -4043,6 +4073,107 @@ fn effective_embedding_pooling(model_family: &str, pooling: EmbeddingPooling) ->
     }
 }
 
+impl MlxRunner {
+    /// Whether a single item can join the batched dense-decode group this step:
+    /// steady-state (`generated_len >= 1`) single-token greedy decode with no
+    /// repetition penalty. The `generated_len == 0` prefill-token step and any
+    /// sampling / penalized request stay on the per-item path.
+    fn batched_item_eligible(
+        &self,
+        item: &ax_engine_core::ExecutionItem,
+        ctx: Option<&RunnerRequestContext>,
+    ) -> bool {
+        if !matches!(item.mode, ExecutionMode::Decode) || item.input_token_slice.len() != 1 {
+            return false;
+        }
+        let Some(ctx) = ctx else {
+            return false;
+        };
+        let is_greedy = ctx.deterministic_argmax_sampling
+            || (ctx.temperature == 0.0 && ctx.top_k == 0 && ctx.top_p >= 1.0);
+        is_greedy && ctx.generated_len >= 1 && ctx.repetition_penalty == 1.0
+    }
+
+    /// Run one decode step for a group of eligible requests through the shared
+    /// [`BatchedDecodeSession`] (one batched forward for the whole group),
+    /// producing one `RequestExecutionUpdate` per request. Mirrors `run_item`'s
+    /// decode tail (stop detection, `generated_tokens`, state removal on stop).
+    /// The caller holds the session lock.
+    ///
+    /// Experimental: a session-resident request's KV lives in the session, so
+    /// its `state.cache` is dormant — this path does not reconcile with the
+    /// core's KV block accounting or handle preemption of session members.
+    fn run_batched_decode_group(
+        &self,
+        session: &mut BatchedDecodeSession,
+        group: &[&ax_engine_core::ExecutionItem],
+        contexts: &[RunnerRequestContext],
+    ) -> Vec<RequestExecutionUpdate> {
+        // 1. Seed joiners from their prefilled state.cache; set the feed token
+        //    (the scheduler is the source of truth) for every group member.
+        for item in group {
+            let id = item.request_id.0;
+            let feed = item.input_token_slice[0];
+            if session.active_ids().contains(&id) {
+                session.set_current(id, feed);
+            } else {
+                let states = self.states.lock();
+                if let Some(state) = states.get(&item.request_id) {
+                    // The runner's cache is warmed: its last token is `feed`'s KV
+                    // (appended by generation-state init). Seed all but that last
+                    // token so the first step re-appends it without doubling.
+                    let seed_len = state.cache.seq_len.saturating_sub(1);
+                    session.add_with_seed_len(id, &state.cache, feed, Some(seed_len));
+                }
+            }
+        }
+        // 2. One batched forward → one token per active request.
+        let outs = session.step(&self.cfg, &self.weights);
+        // 3. Per request: stop detection + update, mirroring the decode tail.
+        let mut updates = Vec::with_capacity(outs.len());
+        for (id, tok) in outs {
+            let request_id = RequestId(id);
+            let ctx = contexts.iter().find(|c| c.request_id == request_id);
+            let generated_len = ctx.map(|c| c.generated_len).unwrap_or(0);
+            let max_output = ctx.map(|c| c.max_output_tokens).unwrap_or(1);
+            let terminal: &[u32] = if ctx.map(|c| c.ignore_eos).unwrap_or(false) {
+                &[]
+            } else {
+                &self.terminal_token_ids
+            };
+            let (sampled, stop_reason) =
+                truncate_sampled_tokens_for_stop(vec![tok], generated_len, max_output, terminal);
+            {
+                let mut states = self.states.lock();
+                if stop_reason.is_none() {
+                    if let Some(state) = states.get_mut(&request_id) {
+                        for &t in &sampled {
+                            state.generated_tokens.push(t);
+                        }
+                    }
+                } else {
+                    states.remove(&request_id);
+                }
+            }
+            if stop_reason.is_some() {
+                session.remove(id);
+            }
+            let mut iter = sampled.into_iter();
+            let output_token = iter.next();
+            let output_tokens = iter.collect();
+            updates.push(RequestExecutionUpdate {
+                request_id,
+                tokens_executed: 1,
+                output_token,
+                output_tokens,
+                stop_reason,
+                error: None,
+            });
+        }
+        updates
+    }
+}
+
 impl ExecutionRunner for MlxRunner {
     fn run(&self, input: RunnerInput) -> RunnerOutput {
         let step_id = input.execution_batch.step_id;
@@ -4065,7 +4196,63 @@ impl ExecutionRunner for MlxRunner {
         let mut kv_cache = KvCacheTelemetry::default();
         let mut prefix_cache = MlxPrefixCacheTelemetry::default();
 
-        for item in &input.execution_batch.items {
+        // ── Batched dense-decode interception (AX_MLX_BATCHED_DECODE, default
+        // off). Eligible greedy decode items run through one shared batched
+        // forward; every other item — and the whole thing when the flag is off
+        // or the model is ineligible — stays byte-for-byte on the per-item path.
+        let mut batched_idx: std::collections::HashSet<usize> = std::collections::HashSet::new();
+        if batched_decode_enabled() && self.batched_decode_model_eligible {
+            let mut session = self.batched_session.lock();
+            let resident: std::collections::HashSet<u64> =
+                session.active_ids().iter().copied().collect();
+            let room = session.capacity().saturating_sub(session.len());
+            let mut resident_items: Vec<usize> = Vec::new();
+            let mut joiner_items: Vec<usize> = Vec::new();
+            for (i, item) in input.execution_batch.items.iter().enumerate() {
+                let ctx = input
+                    .request_contexts
+                    .iter()
+                    .find(|c| c.request_id == item.request_id);
+                if !self.batched_item_eligible(item, ctx) {
+                    continue;
+                }
+                if resident.contains(&item.request_id.0) {
+                    resident_items.push(i);
+                } else {
+                    joiner_items.push(i);
+                }
+            }
+            joiner_items.truncate(room);
+            // Session-resident requests MUST batch (their state.cache is dormant);
+            // otherwise start only once >= 2 eligible requests are present.
+            let should_batch =
+                !resident_items.is_empty() || resident_items.len() + joiner_items.len() >= 2;
+            if should_batch {
+                let group: Vec<usize> = resident_items.into_iter().chain(joiner_items).collect();
+                let group_items: Vec<&ax_engine_core::ExecutionItem> = group
+                    .iter()
+                    .map(|&i| &input.execution_batch.items[i])
+                    .collect();
+                let updates = self.run_batched_decode_group(
+                    &mut session,
+                    &group_items,
+                    &input.request_contexts,
+                );
+                request_updates.extend(updates);
+                batched_idx = group.into_iter().collect();
+            }
+        }
+        if !batched_idx.is_empty() {
+            route_metadata.crossover_decisions.push((
+                "ax_mlx_batched_decode_rows".into(),
+                batched_idx.len() as u32,
+            ));
+        }
+
+        for (item_idx, item) in input.execution_batch.items.iter().enumerate() {
+            if batched_idx.contains(&item_idx) {
+                continue;
+            }
             let ctx = input
                 .request_contexts
                 .iter()
