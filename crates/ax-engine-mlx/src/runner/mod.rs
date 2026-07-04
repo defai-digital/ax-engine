@@ -73,8 +73,10 @@ use ax_engine_core::{
 };
 
 use crate::batched_decode_session::{
-    BatchedDecodeSession, batched_decode_enabled, model_batched_eligible,
+    BatchedDecodeSession, batched_decode_enabled, batched_decode_sampling_enabled,
+    model_batched_eligible,
 };
+use crate::batched_sampling::{BatchedSamplingClass, argmax_batched, batched_sampling_class};
 use crate::gemma4_assistant_mtp::{
     Gemma4AssistantMtpConfig, Gemma4AssistantMtpDisableReason, Gemma4AssistantMtpStatus,
     gemma4_assistant_mtp_debug_enabled, gemma4_assistant_mtp_max_depth_cap,
@@ -107,7 +109,7 @@ use crate::ngram_accel::{
     ngram_feedback_policy, recompute_committed_prefix, single_decode_with_turboquant_context,
 };
 use crate::sampling::{
-    MlxSamplingParams, MlxSamplingRequest, TokenDistribution, Xorshift64,
+    MlxSamplingParams, MlxSamplingRequest, TokenDistribution, Xorshift64, sample_categorical_into,
     sample_categorical_with_logprob_and_distribution, sample_residual_token_distribution,
 };
 use crate::speculation_profile::speculation_profile_from_env;
@@ -4073,11 +4075,24 @@ fn effective_embedding_pooling(model_family: &str, pooling: EmbeddingPooling) ->
     }
 }
 
+/// Build the sampling parameters for a request exactly as the per-item decode
+/// path does (see `run_item`), so the batched path classifies and samples each
+/// request identically to its single-sequence decode.
+fn sampling_params_from_context(ctx: &RunnerRequestContext) -> MlxSamplingParams {
+    MlxSamplingParams::new(ctx.temperature, ctx.top_p, ctx.top_k)
+        .with_repetition_penalty(ctx.repetition_penalty, ctx.repetition_context_size)
+}
+
 impl MlxRunner {
     /// Whether a single item can join the batched dense-decode group this step:
-    /// steady-state (`generated_len >= 1`) single-token greedy decode with no
-    /// repetition penalty. The `generated_len == 0` prefill-token step and any
-    /// sampling / penalized request stay on the per-item path.
+    /// a steady-state (`generated_len >= 1`) single-token decode whose sampling
+    /// class is batchable token-exact. Greedy rows (GPU `argmax`) are always
+    /// eligible; host-sampled rows (temperature with top-k/top-p, or a
+    /// repetition penalty) require the opt-in `AX_MLX_BATCHED_DECODE_SAMPLING`
+    /// sub-flag, since their token-exactness against the per-item path is not
+    /// yet hardware-verified. The `generated_len == 0` prefill-token step and the
+    /// pure-temperature branch (GPU `random_categorical`, non-reproducible) stay
+    /// on the per-item path.
     fn batched_item_eligible(
         &self,
         item: &ax_engine_core::ExecutionItem,
@@ -4089,9 +4104,17 @@ impl MlxRunner {
         let Some(ctx) = ctx else {
             return false;
         };
-        let is_greedy = ctx.deterministic_argmax_sampling
-            || (ctx.temperature == 0.0 && ctx.top_k == 0 && ctx.top_p >= 1.0);
-        is_greedy && ctx.generated_len >= 1 && ctx.repetition_penalty == 1.0
+        if ctx.generated_len < 1 {
+            return false;
+        }
+        match batched_sampling_class(
+            sampling_params_from_context(ctx),
+            ctx.deterministic_argmax_sampling,
+        ) {
+            Some(BatchedSamplingClass::Greedy) => true,
+            Some(BatchedSamplingClass::HostSampled) => batched_decode_sampling_enabled(),
+            None => false,
+        }
     }
 
     /// Run one decode step for a group of eligible requests through the shared
@@ -4127,8 +4150,10 @@ impl MlxRunner {
                 }
             }
         }
-        // 2. One batched forward → one token per active request.
-        let outs = session.step(&self.cfg, &self.weights);
+        // 2. One batched forward for the whole cohort (the amortized weight
+        //    read), then per-row token resolution matching each request's
+        //    single-sequence sampler.
+        let outs = self.resolve_batched_group_tokens(session, contexts);
         // 3. Per request: stop detection + update, mirroring the decode tail.
         let mut updates = Vec::with_capacity(outs.len());
         for (id, tok) in outs {
@@ -4171,6 +4196,99 @@ impl MlxRunner {
             });
         }
         updates
+    }
+
+    /// Run one batched forward and resolve one token per active session row,
+    /// each identical to that request's single-sequence decode.
+    ///
+    /// The forward (the amortized weight read) is shared by the whole cohort;
+    /// the sampler is not. An all-greedy cohort takes [`BatchedDecodeSession::
+    /// step`] (GPU `argmax`, only B indices leave the GPU). A cohort with any
+    /// host-sampled row runs [`BatchedDecodeSession::step_logits`] and resolves
+    /// per row: greedy rows keep the GPU `argmax` token (first-max tie-break,
+    /// identical to single greedy decode); host-sampled rows read their logits
+    /// back and run the request's own `sample_categorical_into` with its RNG and
+    /// repetition history (identical to single sampled decode). Greedy and
+    /// sampled rows are never mixed in one reduction, so neither tie-break nor
+    /// RNG consumption diverges from the per-item path.
+    fn resolve_batched_group_tokens(
+        &self,
+        session: &mut BatchedDecodeSession,
+        contexts: &[RunnerRequestContext],
+    ) -> Vec<(u64, u32)> {
+        // Per active row (slot order): its batched sampling class + params. A
+        // resident row always carries a context and a Some class (it passed
+        // `batched_item_eligible` to join); the defaults are defensive.
+        let plan: Vec<(Option<BatchedSamplingClass>, MlxSamplingParams)> = session
+            .active_ids()
+            .iter()
+            .map(|&id| {
+                let ctx = contexts.iter().find(|c| c.request_id.0 == id);
+                let sampling = ctx
+                    .map(sampling_params_from_context)
+                    .unwrap_or_else(MlxSamplingParams::greedy);
+                let class = ctx.and_then(|c| {
+                    batched_sampling_class(sampling, c.deterministic_argmax_sampling)
+                });
+                (class, sampling)
+            })
+            .collect();
+        let any_sampled = plan
+            .iter()
+            .any(|(class, _)| matches!(class, Some(BatchedSamplingClass::HostSampled)));
+        if !any_sampled {
+            // Fast path: greedy cohort, GPU argmax only (no full-logits readback).
+            return session.step(&self.cfg, &self.weights);
+        }
+
+        let Some((ids, logits)) = session.step_logits(&self.cfg, &self.weights) else {
+            return Vec::new();
+        };
+        debug_assert_eq!(
+            ids.len(),
+            plan.len(),
+            "step_logits row count must match plan"
+        );
+        // Greedy tokens for every row (GPU argmax, validates the logits shape);
+        // used only for greedy rows.
+        let greedy_toks = argmax_batched(&logits);
+        // Full logits to host for the sampled rows. Read back once, as f32,
+        // before taking the state lock — the readback forces a GPU sync.
+        let shape = logits.shape();
+        let vocab = shape.last().copied().unwrap_or(1);
+        let batch = ids.len() as i32;
+        let logits_f32 = astype(&logits, MlxDtype::Float32, None);
+        let logits_bv = reshape(&logits_f32, &[batch, vocab], None);
+        eval(&[&logits_bv]);
+        let flat = logits_bv.data_f32();
+        let vocab = vocab as usize;
+
+        let mut toks = vec![0u32; ids.len()];
+        let mut states = self.states.lock();
+        for (row, &id) in ids.iter().enumerate() {
+            let (class, sampling) = &plan[row];
+            if matches!(class, Some(BatchedSamplingClass::HostSampled))
+                && let Some(state) = states.get_mut(&RequestId(id))
+            {
+                let repetition_history = state.repetition_history(&[], *sampling);
+                let row_logits = &flat[row * vocab..(row + 1) * vocab];
+                toks[row] = sample_categorical_into(
+                    row_logits,
+                    *sampling,
+                    &repetition_history,
+                    &mut state.rng,
+                    &mut state.sampling_probs_buf,
+                    &mut state.sampling_logits_buf,
+                    &mut state.sampling_candidates_buf,
+                );
+            } else {
+                // Greedy row (or a host-sampled row whose state unexpectedly
+                // vanished): the GPU argmax token.
+                toks[row] = greedy_toks[row];
+            }
+        }
+        drop(states);
+        ids.into_iter().zip(toks).collect()
     }
 }
 

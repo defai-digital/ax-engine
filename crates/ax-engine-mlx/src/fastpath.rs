@@ -280,14 +280,13 @@ env_flag_default_on!(
 
 env_flag!(
     /// `AX_MLX_QWEN_DENSE_FFN_GATE_UP_MATVEC_METAL` — opt in to AX's
-    /// decode-only Qwen dense FFN gate/up affine-quantized matvec kernel.
+    /// decode-only Qwen dense FFN gate/up affine-quantized SwiGLU kernel.
     ///
     /// **Default: OFF**. This is deliberately separate from loader-time
-    /// `AX_MLX_PACK_DENSE_FFN_GATE_UP`: Qwen3.6 27B 4-bit split gate/up weights
-    /// previously failed MLX `quantized_matmul` shape validation after row
-    /// concatenation. This route keeps the artifact split, validates the exact
-    /// 4-bit affine sidecar shape at runtime, and falls back to the existing two
-    /// MLX quantized matmuls when unsupported.
+    /// `AX_MLX_PACK_DENSE_FFN_GATE_UP`: Qwen3.6 dense FFNs stay on split
+    /// gate/up weights, while decode may fuse both split projections and the
+    /// SwiGLU activation behind a custom Metal kernel. Unsupported shapes fall
+    /// back to the existing two MLX quantized matmuls plus activation.
     qwen_dense_ffn_gate_up_matvec_metal_enabled,
     "AX_MLX_QWEN_DENSE_FFN_GATE_UP_MATVEC_METAL"
 );

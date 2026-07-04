@@ -8,14 +8,16 @@
 //! `slot → current-token` vectors are swap-removed in lockstep with the cache's
 //! swap-remove, so the bookkeeping always mirrors the cache.
 //!
-//! Greedy only for now (the batched decode's proven path); per-request sampling
-//! via [`crate::batched_sampling::sample_batched_host`] is a follow-up. Scope is
+//! [`BatchedDecodeSession::step`] decodes the whole cohort greedily (GPU
+//! `argmax`). For mixed greedy/sampled cohorts the runner drives
+//! [`BatchedDecodeSession::step_logits`] instead and resolves each row's token
+//! itself with the request's own RNG (see [`crate::batched_sampling`]). Scope is
 //! the same as [`crate::model::decode_batched_forward`]: full-attention dense
 //! families, ragged positions supported.
 
 use std::sync::OnceLock;
 
-use mlx_sys::slice;
+use mlx_sys::{MlxArray, slice};
 
 use crate::batched_kv_cache::BatchedKvCache;
 use crate::batched_sampling::argmax_batched;
@@ -33,6 +35,30 @@ pub fn batched_decode_enabled() -> bool {
     *ENABLED.get_or_init(|| {
         matches!(
             std::env::var("AX_MLX_BATCHED_DECODE").as_deref(),
+            Ok("1") | Ok("true") | Ok("yes")
+        )
+    })
+}
+
+/// `AX_MLX_BATCHED_DECODE_SAMPLING` — additionally admit **host-sampled**
+/// requests (temperature with top-k/top-p, or a repetition penalty) into the
+/// batched cohort. **Default: OFF**, and only meaningful when
+/// [`batched_decode_enabled`] is on.
+///
+/// Kept separate from the master switch because sampled token-exactness is not
+/// guaranteed by construction the way greedy's is: greedy only needs the batched
+/// forward's per-row `argmax` to match the single forward, but sampling reads the
+/// full logit tail (softmax / top-k / top-p), so a last-bit difference between
+/// the batched GEMM's reduction order and the single-row path could flip a
+/// sample. That parity is an empirical question only the sequential-oracle probe
+/// (`batched_decode_e2e_probe` with `AX_SAMPLING`) can answer on real weights.
+/// Until it does, sampled batching stays opt-in so it cannot perturb the proven
+/// greedy path.
+pub fn batched_decode_sampling_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        matches!(
+            std::env::var("AX_MLX_BATCHED_DECODE_SAMPLING").as_deref(),
             Ok("1") | Ok("true") | Ok("yes")
         )
     })
@@ -211,6 +237,28 @@ impl BatchedDecodeSession {
             .zip(&toks)
             .map(|(&id, &t)| (id, t))
             .collect()
+    }
+
+    /// Run one batched forward and return the raw logits without sampling, for
+    /// the runner's mixed greedy/sampled path: the caller resolves each row's
+    /// token itself (GPU `argmax` for greedy rows, host `sample_categorical` for
+    /// sampled rows, using the request's own RNG). Returns `(id-per-slot,
+    /// logits[B, 1, vocab])` in slot order, or `None` when the cohort is empty.
+    ///
+    /// Unlike [`Self::step`] this does **not** advance `self.cur` — the runner is
+    /// the source of truth for each request's next fed token and calls
+    /// [`Self::set_current`] before the next step. Feeding the cohort therefore
+    /// stays identical whether a step goes through `step` or `step_logits`.
+    pub fn step_logits(
+        &mut self,
+        cfg: &ModelConfig,
+        weights: &ModelWeights,
+    ) -> Option<(Vec<u64>, MlxArray)> {
+        if self.cache.batch() == 0 {
+            return None;
+        }
+        let logits = decode_batched_forward(cfg, weights, &self.cur, &mut self.cache);
+        Some((self.slot_req.clone(), logits))
     }
 }
 

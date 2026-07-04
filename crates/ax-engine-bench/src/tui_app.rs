@@ -162,6 +162,34 @@ fn repo_cache_dir(repo_id: &str) -> PathBuf {
     crate::default_hf_cache_root().join(format!("models--{}", repo_id.replace('/', "--")))
 }
 
+/// The actual on-disk snapshot directory for a downloaded repo (containing
+/// `config.json`/`*.safetensors`), not just the top-level HF cache wrapper.
+/// Picks the most recently modified snapshot when a repo has more than one
+/// cached revision. This is what the server needs for `--mlx-model-artifacts-dir`
+/// — passing the wrapper dir directly would miss the actual model files, which
+/// live one level down under `snapshots/<hash>/`.
+fn repo_snapshot_dir(repo_id: &str) -> Option<PathBuf> {
+    most_recent_subdir(&repo_cache_dir(repo_id).join("snapshots"))
+}
+
+/// The most recently modified immediate subdirectory of `dir`, if any.
+fn most_recent_subdir(dir: &Path) -> Option<PathBuf> {
+    let mut dirs: Vec<(PathBuf, std::time::SystemTime)> = std::fs::read_dir(dir)
+        .ok()?
+        .flatten()
+        .filter_map(|entry| {
+            let path = entry.path();
+            if !path.is_dir() {
+                return None;
+            }
+            let modified = entry.metadata().ok()?.modified().ok()?;
+            Some((path, modified))
+        })
+        .collect();
+    dirs.sort_by_key(|(_, modified)| *modified);
+    dirs.pop().map(|(path, _)| path)
+}
+
 fn dir_has_content(dir: &Path) -> bool {
     std::fs::read_dir(dir)
         .map(|mut it| it.next().is_some())
@@ -1177,11 +1205,12 @@ impl App {
             return;
         };
         let profile = self.families[fi].variants[vi].profile;
-        let artifacts_dir = if profile.preset.is_some() {
-            None
-        } else {
-            Some(repo_cache_dir(profile.repo_id))
-        };
+        // Prefer the exact snapshot directory over the preset+hf-cache scan: with
+        // more than one precision of a model family installed, the scan can't
+        // tell them apart (they share the preset's alias substring) and errors
+        // out with "multiple Hugging Face cache candidates". Knowing the repo id
+        // here means there's no ambiguity to resolve.
+        let artifacts_dir = repo_snapshot_dir(profile.repo_id);
         self.spawn_server(profile.preset, artifacts_dir);
     }
 
@@ -1200,7 +1229,7 @@ impl App {
         }
         let artifacts_dir = task.output_path().or_else(|| {
             if task.mode == DownloadMode::Direct && task.preset.is_none() {
-                Some(repo_cache_dir(task.repo_id))
+                repo_snapshot_dir(task.repo_id)
             } else {
                 None
             }
@@ -1233,13 +1262,18 @@ impl App {
             .arg("--port")
             .arg(&port)
             .arg("--mlx");
-        if let Some(preset) = preset {
+        // An explicit directory always wins: it's unambiguous by construction,
+        // whereas `--preset` + `--resolve-model-artifacts hf-cache` scans the
+        // whole HF cache by alias substring and errors out the moment more than
+        // one installed precision/snapshot matches. Only fall back to the scan
+        // when the exact directory genuinely couldn't be resolved.
+        if let Some(artifacts_dir) = artifacts_dir {
+            cmd.arg("--mlx-model-artifacts-dir").arg(artifacts_dir);
+        } else if let Some(preset) = preset {
             cmd.arg("--preset")
                 .arg(preset)
                 .arg("--resolve-model-artifacts")
                 .arg("hf-cache");
-        } else if let Some(artifacts_dir) = artifacts_dir {
-            cmd.arg("--mlx-model-artifacts-dir").arg(artifacts_dir);
         } else {
             self.server = Some(Job::failed(
                 "no server artifact path could be resolved for this download".into(),
@@ -2451,5 +2485,23 @@ mod tests {
         app.on_key_models(KeyCode::Enter);
         assert!(app.stage == Stage::Precision);
         assert_eq!(app.families[app.family_idx].key, "gemma4-12b");
+    }
+
+    #[test]
+    fn most_recent_subdir_is_none_for_missing_dir() {
+        assert_eq!(
+            most_recent_subdir(Path::new("/definitely/does/not/exist")),
+            None
+        );
+    }
+
+    #[test]
+    fn most_recent_subdir_picks_the_only_entry() {
+        let base = std::env::temp_dir().join(format!("ax-engine-tui-test-{}", process::id()));
+        let snapshots = base.join("snapshots");
+        let snapshot = snapshots.join("abc123");
+        std::fs::create_dir_all(&snapshot).unwrap();
+        assert_eq!(most_recent_subdir(&snapshots), Some(snapshot));
+        std::fs::remove_dir_all(&base).unwrap();
     }
 }

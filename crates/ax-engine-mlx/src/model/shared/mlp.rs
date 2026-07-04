@@ -401,36 +401,39 @@ const PACKED_SWIGLU_KERNEL_SOURCE: &str = r#"
 "#;
 
 const QWEN_DENSE_FFN_GATE_UP_MATVEC_KERNEL_SOURCE: &str = r#"
-    uint idx = thread_position_in_grid.x;
-    if (idx >= ElementCount) {
+    uint row = thread_position_in_grid.x / 32;
+    uint lane = thread_index_in_simdgroup;
+    if (row >= OutDim) {
         return;
     }
 
-    bool is_up = idx >= OutDim;
-    uint row = is_up ? idx - OutDim : idx;
-
-    float acc = 0.0f;
-    for (uint packed_col = 0; packed_col < PackedCols; ++packed_col) {
-        uint packed = is_up ? up_weight[row * PackedCols + packed_col]
-                            : gate_weight[row * PackedCols + packed_col];
-        for (uint lane = 0; lane < PackFactor; ++lane) {
-            uint input_col = packed_col * PackFactor + lane;
-            if (input_col >= InputDim) {
-                continue;
-            }
-            uint q = (packed >> (lane * Bits)) & QuantMask;
+    float gate_acc = 0.0f;
+    float up_acc = 0.0f;
+    for (uint packed_col = lane; packed_col < PackedCols; packed_col += 32) {
+        uint gate_packed = gate_weight[row * PackedCols + packed_col];
+        uint up_packed = up_weight[row * PackedCols + packed_col];
+        for (uint packed_lane = 0; packed_lane < PackFactor; ++packed_lane) {
+            uint input_col = packed_col * PackFactor + packed_lane;
+            uint gate_q = (gate_packed >> (packed_lane * Bits)) & QuantMask;
+            uint up_q = (up_packed >> (packed_lane * Bits)) & QuantMask;
             uint group = input_col / GroupSize;
             uint scale_idx = row * GroupCount + group;
-            float scale = static_cast<float>(is_up ? up_scales[scale_idx]
-                                                   : gate_scales[scale_idx]);
-            float bias = static_cast<float>(is_up ? up_biases[scale_idx]
-                                                  : gate_biases[scale_idx]);
             float x_v = static_cast<float>(x[input_col]);
-            acc += x_v * (static_cast<float>(q) * scale + bias);
+            float gate_scale = static_cast<float>(gate_scales[scale_idx]);
+            float gate_bias = static_cast<float>(gate_biases[scale_idx]);
+            float up_scale = static_cast<float>(up_scales[scale_idx]);
+            float up_bias = static_cast<float>(up_biases[scale_idx]);
+            gate_acc = fma(x_v, static_cast<float>(gate_q) * gate_scale + gate_bias, gate_acc);
+            up_acc = fma(x_v, static_cast<float>(up_q) * up_scale + up_bias, up_acc);
         }
     }
 
-    out[idx] = static_cast<OutT>(acc);
+    float gate_sum = simd_sum(gate_acc);
+    float up_sum = simd_sum(up_acc);
+    if (lane == 0) {
+        float activated = gate_sum / (1.0f + exp(-gate_sum));
+        out[row] = static_cast<OutT>(activated * up_sum);
+    }
 "#;
 
 const GEMMA4_MOE_WEIGHTED_SUM_KERNEL_SOURCE: &str = r#"
@@ -787,7 +790,7 @@ fn packed_glu_metal_impl(
     outputs.pop()
 }
 
-fn qwen_dense_ffn_gate_up_matvec_metal(
+fn qwen_dense_ffn_gate_up_swiglu_metal(
     cfg: &ModelConfig,
     x: &MlxArray,
     gate: &QuantizedWeight,
@@ -799,8 +802,15 @@ fn qwen_dense_ffn_gate_up_matvec_metal(
     {
         return None;
     }
+    let x_shape = x.shape();
+    let leading_elements = x_shape[..x_shape.len().saturating_sub(1)]
+        .iter()
+        .try_fold(1_i64, |acc, &dim| acc.checked_mul(i64::from(dim)))?;
+    if leading_elements != 1 {
+        return None;
+    }
     record_qwen_dense_ffn_gate_up_matvec_metal_attempt();
-    let out = qwen_dense_ffn_gate_up_matvec_metal_impl(x, gate, up);
+    let out = qwen_dense_ffn_gate_up_swiglu_metal_impl(x, gate, up);
     if out.is_some() {
         record_qwen_dense_ffn_gate_up_matvec_metal_hit();
     } else {
@@ -809,7 +819,7 @@ fn qwen_dense_ffn_gate_up_matvec_metal(
     out
 }
 
-fn qwen_dense_ffn_gate_up_matvec_metal_impl(
+fn qwen_dense_ffn_gate_up_swiglu_metal_impl(
     x: &MlxArray,
     gate: &QuantizedWeight,
     up: &QuantizedWeight,
@@ -876,14 +886,13 @@ fn qwen_dense_ffn_gate_up_matvec_metal_impl(
         return None;
     }
 
-    let output_dim = out_dim.checked_mul(2)?;
     let mut out_shape = x_shape;
-    *out_shape.last_mut()? = output_dim;
-    let element_count = output_dim;
+    *out_shape.last_mut()? = out_dim;
+    let element_count = out_dim;
     let quant_mask = (1_i32 << gate.bits) - 1;
     let kernel = QWEN_DENSE_FFN_GATE_UP_MATVEC_KERNEL.get_or_init(|| {
         MlxMetalKernel::new(
-            "ax_qwen_dense_ffn_gate_up_matvec_v1",
+            "ax_qwen_dense_ffn_gate_up_swiglu_simd_v1",
             &[
                 "x",
                 "gate_weight",
@@ -920,10 +929,6 @@ fn qwen_dense_ffn_gate_up_matvec_metal_impl(
                     dtype: x.dtype(),
                 },
                 KernelTemplateArg::Int {
-                    name: "InputDim",
-                    value: input_dim,
-                },
-                KernelTemplateArg::Int {
                     name: "OutDim",
                     value: out_dim,
                 },
@@ -951,13 +956,9 @@ fn qwen_dense_ffn_gate_up_matvec_metal_impl(
                     name: "QuantMask",
                     value: quant_mask,
                 },
-                KernelTemplateArg::Int {
-                    name: "ElementCount",
-                    value: element_count,
-                },
             ],
-            (element_count, 1, 1),
-            (256, 1, 1),
+            (element_count.saturating_mul(32), 1, 1),
+            (32, 1, 1),
             None,
         )
         .ok()?;
@@ -1338,8 +1339,8 @@ pub(crate) fn ffn_swiglu(
     let gate_up_started = Instant::now();
     let packed_gate_up: Option<MlxArray>;
     let mut gate_up_profile_recorded = false;
-    let prefer_split_gate_up =
-        x.shape().first().copied().unwrap_or(1) > 1 && w.gate_proj.is_some() && w.up_proj.is_some();
+    let qwen_dense_ffn = !cfg.uses_geglu && cfg.model_family.starts_with("qwen");
+    let prefer_split_gate_up = qwen_dense_ffn && w.gate_proj.is_some() && w.up_proj.is_some();
     let (gate_out, up_out) = if !prefer_split_gate_up && let Some(packed) = &w.gate_up_packed {
         let out = qw(x, packed);
         let packed_dim = out
@@ -1505,29 +1506,77 @@ pub(crate) fn ffn_swiglu(
     } else {
         let gate_w = w.gate_proj.as_ref().unwrap();
         let up_w = w.up_proj.as_ref().unwrap();
-        if !prefer_split_gate_up
-            && let Some(out) = qwen_dense_ffn_gate_up_matvec_metal(cfg, x, gate_w, up_w)
-        {
-            let maybe_half = out.shape().last().copied().and_then(|packed_dim| {
-                (packed_dim > 0 && packed_dim % 2 == 0).then_some(packed_dim / 2)
-            });
-            if let Some(half) = maybe_half {
-                packed_gate_up = Some(out.clone());
-                let gate = mlx_slice_last_dim(&out, 0, half);
-                let up = mlx_slice_last_dim(&out, half, half * 2);
-                (gate, up)
-            } else {
-                packed_gate_up = None;
-                let gate = qw(x, gate_w);
-                let up = qw(x, up_w);
-                (gate, up)
+        if let Some(ffn_hidden) = qwen_dense_ffn_gate_up_swiglu_metal(cfg, x, gate_w, up_w) {
+            forward_profile_eval_elapsed(
+                profile_decode,
+                profile_prefill,
+                DecodeProfileStage::PostAttnFfnGateUp,
+                gate_up_started,
+                &[&ffn_hidden],
+            );
+            let activation_started = Instant::now();
+            forward_profile_eval_elapsed(
+                profile_decode,
+                profile_prefill,
+                DecodeProfileStage::PostAttnFfnActivation,
+                activation_started,
+                &[&ffn_hidden],
+            );
+            let down_started = Instant::now();
+            let down = w
+                .down_proj
+                .as_ref()
+                .expect("dense FFN layer must have down_proj");
+            if let Some(norm_w) = post_norm {
+                if !profile_decode
+                    && !profile_prefill
+                    && fastpath::dense_qmatmul_rms_norm_enabled()
+                    && let Some(scales) = down.scales.as_ref()
+                {
+                    let out = quantized_matmul_rms_norm(
+                        &ffn_hidden,
+                        &down.weight,
+                        scales,
+                        down.biases.as_ref(),
+                        down.group_size,
+                        down.bits,
+                        norm_w,
+                        cfg.rms_norm_eps,
+                        None,
+                    );
+                    forward_profile_eval_elapsed(
+                        profile_decode,
+                        profile_prefill,
+                        DecodeProfileStage::PostAttnFfnDown,
+                        down_started,
+                        &[&out],
+                    );
+                    return out;
+                }
+                let out = qw(&ffn_hidden, down);
+                forward_profile_eval_elapsed(
+                    profile_decode,
+                    profile_prefill,
+                    DecodeProfileStage::PostAttnFfnDown,
+                    down_started,
+                    &[&out],
+                );
+                return rms_norm(&out, Some(norm_w), cfg.rms_norm_eps, None);
             }
-        } else {
-            packed_gate_up = None;
-            let gate = qw(x, gate_w);
-            let up = qw(x, up_w);
-            (gate, up)
+            let out = qw(&ffn_hidden, down);
+            forward_profile_eval_elapsed(
+                profile_decode,
+                profile_prefill,
+                DecodeProfileStage::PostAttnFfnDown,
+                down_started,
+                &[&out],
+            );
+            return out;
         }
+        packed_gate_up = None;
+        let gate = qw(x, gate_w);
+        let up = qw(x, up_w);
+        (gate, up)
     };
     if (profile_decode || profile_prefill) && !gate_up_profile_recorded {
         let gate_up_profile_storage;
@@ -3538,7 +3587,7 @@ mod tests {
     }
 
     #[test]
-    fn qwen_dense_ffn_gate_up_matvec_metal_matches_split_quantized_matmuls() {
+    fn qwen_dense_ffn_gate_up_swiglu_metal_matches_split_quantized_matmuls() {
         let x_data: Vec<f32> = (0..32).map(|i| ((i as f32) - 16.0) * 0.03125).collect();
         let gate_weight_data: Vec<f32> = (0..512).map(|i| ((i as f32) - 180.0) * 0.0025).collect();
         let up_weight_data: Vec<f32> = (0..512).map(|i| ((i as f32) - 96.0) * -0.001875).collect();
@@ -3578,8 +3627,8 @@ mod tests {
             bits: 4,
         };
 
-        let metal = qwen_dense_ffn_gate_up_matvec_metal_impl(&x, &gate, &up)
-            .expect("4-bit affine gate/up matvec should be eligible");
+        let metal = qwen_dense_ffn_gate_up_swiglu_metal_impl(&x, &gate, &up)
+            .expect("4-bit affine gate/up SwiGLU matvec should be eligible");
         let gate_ref = quantized_matmul(
             &x,
             &gate_q[0],
@@ -3600,15 +3649,16 @@ mod tests {
             Some(4),
             None,
         );
-        let reference = concatenate(&[&gate_ref, &up_ref], -1, None);
-        eval(&[&metal, &reference]);
+        let reference = silu_mul(&gate_ref, &up_ref, None);
+        mlx_sys::transforms::try_eval(&[&metal, &reference])
+            .expect("Qwen dense FFN SwiGLU matvec Metal kernel must compile and evaluate");
 
-        assert_eq!(metal.shape(), vec![1, 1, 32]);
+        assert_eq!(metal.shape(), vec![1, 1, 16]);
         assert_close(metal.data_f32(), reference.data_f32(), 1.0e-4);
     }
 
     #[test]
-    fn qwen_dense_ffn_gate_up_matvec_metal_rejects_non_decode_shapes() {
+    fn qwen_dense_ffn_gate_up_swiglu_metal_rejects_non_decode_shapes() {
         let weight = QuantizedWeight {
             weight: mlx_sys::zeros(&[16, 4], MlxDtype::Uint32, None),
             scales: Some(mlx_sys::zeros(&[16, 1], MlxDtype::Bfloat16, None)),
@@ -3619,8 +3669,8 @@ mod tests {
         let batched = mlx_sys::zeros(&[2, 1, 32], MlxDtype::Float32, None);
         let prefill = mlx_sys::zeros(&[1, 2, 32], MlxDtype::Float32, None);
 
-        assert!(qwen_dense_ffn_gate_up_matvec_metal_impl(&batched, &weight, &weight).is_none());
-        assert!(qwen_dense_ffn_gate_up_matvec_metal_impl(&prefill, &weight, &weight).is_none());
+        assert!(qwen_dense_ffn_gate_up_swiglu_metal_impl(&batched, &weight, &weight).is_none());
+        assert!(qwen_dense_ffn_gate_up_swiglu_metal_impl(&prefill, &weight, &weight).is_none());
     }
 
     #[test]

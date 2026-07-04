@@ -2857,9 +2857,8 @@ fn dense_ffn_gate_up_packing_supported(
 ) -> bool {
     // Keep these families/encodings on split projections until their packed
     // gate/up path is token-exact against mlx_lm across correctness prompts.
-    // Qwen3.6 dense FFNs currently fail MLX quantized_matmul shape validation
-    // after row-concatenating gate/up projections; MoE expert packing uses a
-    // separate path and is not affected by this guard.
+    // Qwen3.6 dense FFNs also stay split so the opt-in decode matvec route can
+    // consume the original gate/up weights without changing prefill behavior.
     if matches!(model_family, "glm4_moe_lite" | "qwen3_5") {
         return false;
     }
@@ -4276,7 +4275,7 @@ mod tests {
         assert!(!dense_ffn_gate_up_packing_supported(
             "glm4_moe_lite",
             &q4_gate,
-            &q4_up
+            &q4_up,
         ));
         assert!(!dense_ffn_gate_up_packing_supported(
             "qwen3_5", &q5_gate, &q5_up

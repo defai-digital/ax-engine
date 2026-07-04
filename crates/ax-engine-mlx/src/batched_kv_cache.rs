@@ -44,7 +44,9 @@
 //! lockstep (`advance_all`); ragged lengths come only from differing seed
 //! lengths.
 
-use mlx_sys::{MlxArray, MlxDtype, slice, slice_update, zeros};
+use mlx_sys::{MlxArray, MlxDtype, contiguous, eval, slice, slice_update, zeros};
+
+use crate::kv_cache::MlxKVCache;
 
 /// Pre-allocated chunk size (tokens); mirrors `kv_cache::KV_CHUNK_TOKENS`.
 const KV_CHUNK_TOKENS: usize = 256;
@@ -457,6 +459,42 @@ impl BatchedKvCache {
             slice(&layer_kv.v, &start, &stop, &ones, None),
         ))
     }
+
+    /// Extract row `row`'s valid KV into a fresh single-sequence [`MlxKVCache`],
+    /// byte-identical to the cache a per-request decode of that row would hold —
+    /// the inverse of seeding a row from a single cache
+    /// ([`crate::batched_decode_session::BatchedDecodeSession::add_with_seed_len`]).
+    ///
+    /// This is the mechanism a **preempted** session member needs to resume on
+    /// the per-item decode path (Gate 2 of the batched-decode promotion): its KV
+    /// lives in the session, so evicting it requires writing that KV back into
+    /// its own `MlxKVCache`. Each layer's `[1, n_kv_heads, row_len, head_dim]`
+    /// view is materialized contiguous and stored logically; `seq_len` is set to
+    /// the row length. An empty row yields an empty cache (`seq_len == 0`).
+    ///
+    /// NOTE: the KV copy is exact (unit-tested), but the runner still owns the
+    /// resume convention — which `seq_len`/feed-token to restore so the per-item
+    /// path does not double the current token. That wiring is validated by the
+    /// preemption harness on real weights, not here.
+    // Not yet wired into the runner (Gate 2). Exercised only by the writeback
+    // unit test, mirroring how the validity mask was proven before Phase 2.
+    #[allow(dead_code)]
+    pub fn writeback_row(&self, row: usize) -> MlxKVCache {
+        let mut cache = MlxKVCache::new(self.num_layers());
+        let len = self.row_len(row);
+        if len == 0 {
+            return cache;
+        }
+        for layer in 0..self.num_layers() {
+            if let Some((k, v)) = self.row_view(layer, row) {
+                let k = contiguous(&k, None);
+                let v = contiguous(&v, None);
+                eval(&[&k, &v]);
+                cache.set_layer_kv_logical(layer, k, v, len);
+            }
+        }
+        cache
+    }
 }
 
 #[cfg(test)]
@@ -577,8 +615,8 @@ mod tests {
             for layer in 0..layers {
                 // Batched input [batch, heads, 1, dim].
                 let mut batched_data = Vec::with_capacity(batch * heads * dim);
-                for row in 0..batch {
-                    let tok = prefill[row] + step; // this row's current length
+                for (row, &prefill_len) in prefill.iter().enumerate().take(batch) {
+                    let tok = prefill_len + step; // this row's current length
                     for h in 0..heads {
                         for d in 0..dim {
                             batched_data.push(val(row, tok, h, d));
@@ -631,6 +669,107 @@ mod tests {
                 let (rk, rv) = refs[row].peek_layer_kv(layer).expect("ref has data");
                 assert_arrays_eq(&bk, &rk);
                 assert_arrays_eq(&bv, &rv);
+            }
+        }
+    }
+
+    /// `writeback_row` reconstructs a single-sequence `MlxKVCache` byte-identical
+    /// to the per-request cache — the inverse of seeding, and the KV half of
+    /// Gate-2 eviction (a preempted session member resuming per-item). Seeds
+    /// ragged rows + lockstep decode, then writes each row back and compares its
+    /// logical layer KV and `seq_len` to the reference single-sequence cache.
+    #[test]
+    fn writeback_row_reconstructs_single_sequence_cache() {
+        let (heads, dim, layers) = (2usize, 4usize, 2usize);
+        let prefill = [3usize, 6usize];
+        let batch = prefill.len();
+        let mut keep: Vec<Vec<f32>> = Vec::new();
+        let mut batched = BatchedKvCache::new(layers, batch);
+        let mut refs: Vec<MlxKVCache> = (0..batch).map(|_| MlxKVCache::new(layers)).collect();
+
+        // Seed each row from its own single-sequence prefill KV.
+        for (row, &len) in prefill.iter().enumerate() {
+            for layer in 0..layers {
+                let kd = seq_block(row, 0, len, heads, dim);
+                let vd: Vec<f32> = kd.iter().map(|x| x + 0.5).collect();
+                keep.push(kd);
+                keep.push(vd);
+                let k = arr(
+                    keep[keep.len() - 2].as_slice(),
+                    heads as i32,
+                    len as i32,
+                    dim as i32,
+                );
+                let v = arr(
+                    keep[keep.len() - 1].as_slice(),
+                    heads as i32,
+                    len as i32,
+                    dim as i32,
+                );
+                batched.seed_row_layer(layer, row, &k, &v);
+                refs[row].append(layer, k, v);
+            }
+            refs[row].seq_len = len;
+        }
+
+        // Two lockstep decode steps.
+        let steps = 2usize;
+        for step in 0..steps {
+            for layer in 0..layers {
+                let mut bd = Vec::with_capacity(batch * heads * dim);
+                for (row, &plen) in prefill.iter().enumerate().take(batch) {
+                    let tok = plen + step;
+                    for h in 0..heads {
+                        for d in 0..dim {
+                            bd.push(val(row, tok, h, d));
+                        }
+                    }
+                }
+                keep.push(bd);
+                let bk_slice = keep.last().unwrap().as_slice();
+                let bk = MlxArray::from_raw_data(
+                    bk_slice.as_ptr().cast(),
+                    std::mem::size_of_val(bk_slice),
+                    &[batch as i32, heads as i32, 1, dim as i32],
+                    MlxDtype::Float32,
+                );
+                let bv_data: Vec<f32> = bk_slice.iter().map(|x| x + 0.5).collect();
+                keep.push(bv_data);
+                let bv_slice = keep.last().unwrap().as_slice();
+                let bv = MlxArray::from_raw_data(
+                    bv_slice.as_ptr().cast(),
+                    std::mem::size_of_val(bv_slice),
+                    &[batch as i32, heads as i32, 1, dim as i32],
+                    MlxDtype::Float32,
+                );
+                batched.append_decode_layer(layer, &bk, &bv);
+                for row in 0..batch {
+                    let tok = prefill[row] + step;
+                    let rk = seq_block(row, tok, 1, heads, dim);
+                    let rv: Vec<f32> = rk.iter().map(|x| x + 0.5).collect();
+                    keep.push(rk);
+                    keep.push(rv);
+                    let k = arr(keep[keep.len() - 2].as_slice(), heads as i32, 1, dim as i32);
+                    let v = arr(keep[keep.len() - 1].as_slice(), heads as i32, 1, dim as i32);
+                    refs[row].append(layer, k, v);
+                }
+            }
+            batched.advance_all(1);
+            for row in 0..batch {
+                refs[row].seq_len = prefill[row] + step + 1;
+            }
+        }
+
+        // Writeback each row and compare to its single-sequence reference.
+        for row in 0..batch {
+            let expected_len = prefill[row] + steps;
+            let wb = batched.writeback_row(row);
+            assert_eq!(wb.seq_len, expected_len, "row {row} writeback seq_len");
+            for layer in 0..layers {
+                let (wk, wv) = wb.peek_layer_kv(layer).expect("writeback has data");
+                let (rk, rv) = refs[row].peek_layer_kv(layer).expect("ref has data");
+                assert_arrays_eq(&wk, &rk);
+                assert_arrays_eq(&wv, &rv);
             }
         }
     }

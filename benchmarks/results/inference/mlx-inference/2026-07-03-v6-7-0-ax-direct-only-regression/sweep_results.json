@@ -1,0 +1,549 @@
+{
+  "schema_version": "ax.v670_direct_regression_sweep.v1",
+  "worktree": "/Users/akiralam/code/ax-engine/.tmp/worktrees/v6.7.0-bench-20260703",
+  "output_dir": "/Users/akiralam/code/ax-engine/benchmarks/results/inference/mlx-inference/2026-07-03-v6-7-0-ax-direct-only-regression",
+  "contract": {
+    "engine": "ax_engine_only",
+    "mode": "direct",
+    "prompt_tokens": [
+      128,
+      512,
+      2048
+    ],
+    "generation_tokens": 128,
+    "warmup_repetitions": 1,
+    "repetitions": 5,
+    "cooldown_s": 15.0,
+    "skip_mlx_lm": true
+  },
+  "rows": [
+    {
+      "slug": "gemma-4-e2b-it-4bit",
+      "model_repo_id": "mlx-community/gemma-4-e2b-it-4bit",
+      "status": "ok",
+      "exit_code": 0,
+      "elapsed_seconds": 247.0,
+      "output_path": "/Users/akiralam/code/ax-engine/benchmarks/results/inference/mlx-inference/2026-07-03-v6-7-0-ax-direct-only-regression/gemma-4-e2b-it-4bit.json",
+      "log_path": "/Users/akiralam/code/ax-engine/benchmarks/results/inference/mlx-inference/2026-07-03-v6-7-0-ax-direct-only-regression/logs/gemma-4-e2b-it-4bit.log",
+      "build": {
+        "commit": "984eaf5bbf6f16798fc6f0f0d0b087a1daec5e06",
+        "build_profile": "release",
+        "server_binary": "/Users/akiralam/code/ax-engine/.tmp/worktrees/v6.7.0-bench-20260703/target/release/ax-engine-server",
+        "git_tracked_dirty": false,
+        "git_tracked_status": []
+      },
+      "prompt_tokens": [
+        128,
+        512,
+        2048
+      ],
+      "results": [
+        {
+          "prompt_tokens": 128,
+          "engine": "ax_engine_mlx",
+          "decode_tok_s_median": 224.48303136273475,
+          "prefill_tok_s_median": 5840.748345881816,
+          "ttft_ms_median": 21.915
+        },
+        {
+          "prompt_tokens": 512,
+          "engine": "ax_engine_mlx",
+          "decode_tok_s_median": 215.20670772407138,
+          "prefill_tok_s_median": 16577.626679617937,
+          "ttft_ms_median": 30.884999999999998
+        },
+        {
+          "prompt_tokens": 2048,
+          "engine": "ax_engine_mlx",
+          "decode_tok_s_median": 206.6222428844465,
+          "prefill_tok_s_median": 23524.54685382159,
+          "ttft_ms_median": 87.05799999999999
+        }
+      ]
+    },
+    {
+      "slug": "gemma-4-e2b-it-6bit",
+      "model_repo_id": "mlx-community/gemma-4-e2b-it-6bit",
+      "status": "ok",
+      "exit_code": 0,
+      "elapsed_seconds": 249.7,
+      "output_path": "/Users/akiralam/code/ax-engine/benchmarks/results/inference/mlx-inference/2026-07-03-v6-7-0-ax-direct-only-regression/gemma-4-e2b-it-6bit.json",
+      "log_path": "/Users/akiralam/code/ax-engine/benchmarks/results/inference/mlx-inference/2026-07-03-v6-7-0-ax-direct-only-regression/logs/gemma-4-e2b-it-6bit.log",
+      "build": {
+        "commit": "984eaf5bbf6f16798fc6f0f0d0b087a1daec5e06",
+        "build_profile": "release",
+        "server_binary": "/Users/akiralam/code/ax-engine/.tmp/worktrees/v6.7.0-bench-20260703/target/release/ax-engine-server",
+        "git_tracked_dirty": false,
+        "git_tracked_status": []
+      },
+      "prompt_tokens": [
+        128,
+        512,
+        2048
+      ],
+      "results": [
+        {
+          "prompt_tokens": 128,
+          "engine": "ax_engine_mlx",
+          "decode_tok_s_median": 176.92216254170802,
+          "prefill_tok_s_median": 5412.948788429821,
+          "ttft_ms_median": 23.647000000000002
+        },
+        {
+          "prompt_tokens": 512,
+          "engine": "ax_engine_mlx",
+          "decode_tok_s_median": 171.62225940704508,
+          "prefill_tok_s_median": 15237.641736853071,
+          "ttft_ms_median": 33.601
+        },
+        {
+          "prompt_tokens": 2048,
+          "engine": "ax_engine_mlx",
+          "decode_tok_s_median": 167.65403541953458,
+          "prefill_tok_s_median": 22383.492174521292,
+          "ttft_ms_median": 91.496
+        }
+      ]
+    },
+    {
+      "slug": "gemma-4-e4b-it-4bit",
+      "model_repo_id": "mlx-community/gemma-4-e4b-it-4bit",
+      "status": "ok",
+      "exit_code": 0,
+      "elapsed_seconds": 255.3,
+      "output_path": "/Users/akiralam/code/ax-engine/benchmarks/results/inference/mlx-inference/2026-07-03-v6-7-0-ax-direct-only-regression/gemma-4-e4b-it-4bit.json",
+      "log_path": "/Users/akiralam/code/ax-engine/benchmarks/results/inference/mlx-inference/2026-07-03-v6-7-0-ax-direct-only-regression/logs/gemma-4-e4b-it-4bit.log",
+      "build": {
+        "commit": "984eaf5bbf6f16798fc6f0f0d0b087a1daec5e06",
+        "build_profile": "release",
+        "server_binary": "/Users/akiralam/code/ax-engine/.tmp/worktrees/v6.7.0-bench-20260703/target/release/ax-engine-server",
+        "git_tracked_dirty": false,
+        "git_tracked_status": []
+      },
+      "prompt_tokens": [
+        128,
+        512,
+        2048
+      ],
+      "results": [
+        {
+          "prompt_tokens": 128,
+          "engine": "ax_engine_mlx",
+          "decode_tok_s_median": 137.6469892409521,
+          "prefill_tok_s_median": 3324.761682121614,
+          "ttft_ms_median": 38.498999999999995
+        },
+        {
+          "prompt_tokens": 512,
+          "engine": "ax_engine_mlx",
+          "decode_tok_s_median": 135.23150471461398,
+          "prefill_tok_s_median": 6765.774694416914,
+          "ttft_ms_median": 75.67500000000001
+        },
+        {
+          "prompt_tokens": 2048,
+          "engine": "ax_engine_mlx",
+          "decode_tok_s_median": 132.8189366598943,
+          "prefill_tok_s_median": 8102.291429294848,
+          "ttft_ms_median": 252.768
+        }
+      ]
+    },
+    {
+      "slug": "gemma-4-e4b-it-6bit",
+      "model_repo_id": "mlx-community/gemma-4-e4b-it-6bit",
+      "status": "ok",
+      "exit_code": 0,
+      "elapsed_seconds": 261.7,
+      "output_path": "/Users/akiralam/code/ax-engine/benchmarks/results/inference/mlx-inference/2026-07-03-v6-7-0-ax-direct-only-regression/gemma-4-e4b-it-6bit.json",
+      "log_path": "/Users/akiralam/code/ax-engine/benchmarks/results/inference/mlx-inference/2026-07-03-v6-7-0-ax-direct-only-regression/logs/gemma-4-e4b-it-6bit.log",
+      "build": {
+        "commit": "984eaf5bbf6f16798fc6f0f0d0b087a1daec5e06",
+        "build_profile": "release",
+        "server_binary": "/Users/akiralam/code/ax-engine/.tmp/worktrees/v6.7.0-bench-20260703/target/release/ax-engine-server",
+        "git_tracked_dirty": false,
+        "git_tracked_status": []
+      },
+      "prompt_tokens": [
+        128,
+        512,
+        2048
+      ],
+      "results": [
+        {
+          "prompt_tokens": 128,
+          "engine": "ax_engine_mlx",
+          "decode_tok_s_median": 106.6269481284888,
+          "prefill_tok_s_median": 3021.718602455146,
+          "ttft_ms_median": 42.36
+        },
+        {
+          "prompt_tokens": 512,
+          "engine": "ax_engine_mlx",
+          "decode_tok_s_median": 105.19939806219422,
+          "prefill_tok_s_median": 6290.389955033541,
+          "ttft_ms_median": 81.39399999999999
+        },
+        {
+          "prompt_tokens": 2048,
+          "engine": "ax_engine_mlx",
+          "decode_tok_s_median": 103.16482272978956,
+          "prefill_tok_s_median": 7764.811149783511,
+          "ttft_ms_median": 263.75399999999996
+        }
+      ]
+    },
+    {
+      "slug": "gemma-4-26b-a4b-it-4bit",
+      "model_repo_id": "mlx-community/gemma-4-26b-a4b-it-4bit",
+      "status": "ok",
+      "exit_code": 0,
+      "elapsed_seconds": 266.6,
+      "output_path": "/Users/akiralam/code/ax-engine/benchmarks/results/inference/mlx-inference/2026-07-03-v6-7-0-ax-direct-only-regression/gemma-4-26b-a4b-it-4bit.json",
+      "log_path": "/Users/akiralam/code/ax-engine/benchmarks/results/inference/mlx-inference/2026-07-03-v6-7-0-ax-direct-only-regression/logs/gemma-4-26b-a4b-it-4bit.log",
+      "build": {
+        "commit": "984eaf5bbf6f16798fc6f0f0d0b087a1daec5e06",
+        "build_profile": "release",
+        "server_binary": "/Users/akiralam/code/ax-engine/.tmp/worktrees/v6.7.0-bench-20260703/target/release/ax-engine-server",
+        "git_tracked_dirty": false,
+        "git_tracked_status": []
+      },
+      "prompt_tokens": [
+        128,
+        512,
+        2048
+      ],
+      "results": [
+        {
+          "prompt_tokens": 128,
+          "engine": "ax_engine_mlx",
+          "decode_tok_s_median": 129.6781651350122,
+          "prefill_tok_s_median": 1304.724529840477,
+          "ttft_ms_median": 98.105
+        },
+        {
+          "prompt_tokens": 512,
+          "engine": "ax_engine_mlx",
+          "decode_tok_s_median": 128.80360569593694,
+          "prefill_tok_s_median": 2925.597261823813,
+          "ttft_ms_median": 175.007
+        },
+        {
+          "prompt_tokens": 2048,
+          "engine": "ax_engine_mlx",
+          "decode_tok_s_median": 123.82595101716247,
+          "prefill_tok_s_median": 4338.817587464885,
+          "ttft_ms_median": 472.018
+        }
+      ]
+    },
+    {
+      "slug": "gemma-4-26b-a4b-it-6bit",
+      "model_repo_id": "mlx-community/gemma-4-26b-a4b-it-6bit",
+      "status": "ok",
+      "exit_code": 0,
+      "elapsed_seconds": 279.2,
+      "output_path": "/Users/akiralam/code/ax-engine/benchmarks/results/inference/mlx-inference/2026-07-03-v6-7-0-ax-direct-only-regression/gemma-4-26b-a4b-it-6bit.json",
+      "log_path": "/Users/akiralam/code/ax-engine/benchmarks/results/inference/mlx-inference/2026-07-03-v6-7-0-ax-direct-only-regression/logs/gemma-4-26b-a4b-it-6bit.log",
+      "build": {
+        "commit": "984eaf5bbf6f16798fc6f0f0d0b087a1daec5e06",
+        "build_profile": "release",
+        "server_binary": "/Users/akiralam/code/ax-engine/.tmp/worktrees/v6.7.0-bench-20260703/target/release/ax-engine-server",
+        "git_tracked_dirty": false,
+        "git_tracked_status": []
+      },
+      "prompt_tokens": [
+        128,
+        512,
+        2048
+      ],
+      "results": [
+        {
+          "prompt_tokens": 128,
+          "engine": "ax_engine_mlx",
+          "decode_tok_s_median": 106.59222975955124,
+          "prefill_tok_s_median": 1149.5801338183126,
+          "ttft_ms_median": 111.345
+        },
+        {
+          "prompt_tokens": 512,
+          "engine": "ax_engine_mlx",
+          "decode_tok_s_median": 104.12048692596464,
+          "prefill_tok_s_median": 2731.0308041072144,
+          "ttft_ms_median": 187.475
+        },
+        {
+          "prompt_tokens": 2048,
+          "engine": "ax_engine_mlx",
+          "decode_tok_s_median": 100.25188285567489,
+          "prefill_tok_s_median": 4176.395615600306,
+          "ttft_ms_median": 490.375
+        }
+      ]
+    },
+    {
+      "slug": "gemma-4-31b-it-4bit",
+      "model_repo_id": "mlx-community/gemma-4-31b-it-4bit",
+      "status": "ok",
+      "exit_code": 0,
+      "elapsed_seconds": 367.5,
+      "output_path": "/Users/akiralam/code/ax-engine/benchmarks/results/inference/mlx-inference/2026-07-03-v6-7-0-ax-direct-only-regression/gemma-4-31b-it-4bit.json",
+      "log_path": "/Users/akiralam/code/ax-engine/benchmarks/results/inference/mlx-inference/2026-07-03-v6-7-0-ax-direct-only-regression/logs/gemma-4-31b-it-4bit.log",
+      "build": {
+        "commit": "984eaf5bbf6f16798fc6f0f0d0b087a1daec5e06",
+        "build_profile": "release",
+        "server_binary": "/Users/akiralam/code/ax-engine/.tmp/worktrees/v6.7.0-bench-20260703/target/release/ax-engine-server",
+        "git_tracked_dirty": false,
+        "git_tracked_status": []
+      },
+      "prompt_tokens": [
+        128,
+        512,
+        2048
+      ],
+      "results": [
+        {
+          "prompt_tokens": 128,
+          "engine": "ax_engine_mlx",
+          "decode_tok_s_median": 28.078537424083752,
+          "prefill_tok_s_median": 492.5046941853664,
+          "ttft_ms_median": 259.896
+        },
+        {
+          "prompt_tokens": 512,
+          "engine": "ax_engine_mlx",
+          "decode_tok_s_median": 27.083670556770443,
+          "prefill_tok_s_median": 707.6671310732214,
+          "ttft_ms_median": 723.504
+        },
+        {
+          "prompt_tokens": 2048,
+          "engine": "ax_engine_mlx",
+          "decode_tok_s_median": 25.75901037102031,
+          "prefill_tok_s_median": 726.4972121378954,
+          "ttft_ms_median": 2819.006
+        }
+      ]
+    },
+    {
+      "slug": "gemma-4-31b-it-6bit",
+      "model_repo_id": "mlx-community/gemma-4-31b-it-6bit",
+      "status": "ok",
+      "exit_code": 0,
+      "elapsed_seconds": 741.5,
+      "output_path": "/Users/akiralam/code/ax-engine/benchmarks/results/inference/mlx-inference/2026-07-03-v6-7-0-ax-direct-only-regression/gemma-4-31b-it-6bit.json",
+      "log_path": "/Users/akiralam/code/ax-engine/benchmarks/results/inference/mlx-inference/2026-07-03-v6-7-0-ax-direct-only-regression/logs/gemma-4-31b-it-6bit.log",
+      "build": {
+        "commit": "984eaf5bbf6f16798fc6f0f0d0b087a1daec5e06",
+        "build_profile": "release",
+        "server_binary": "/Users/akiralam/code/ax-engine/.tmp/worktrees/v6.7.0-bench-20260703/target/release/ax-engine-server",
+        "git_tracked_dirty": false,
+        "git_tracked_status": []
+      },
+      "prompt_tokens": [
+        128,
+        512,
+        2048
+      ],
+      "results": [
+        {
+          "prompt_tokens": 128,
+          "engine": "ax_engine_mlx",
+          "decode_tok_s_median": 18.88067399285986,
+          "prefill_tok_s_median": 406.6383714133225,
+          "ttft_ms_median": 314.776
+        },
+        {
+          "prompt_tokens": 512,
+          "engine": "ax_engine_mlx",
+          "decode_tok_s_median": 18.607948123366626,
+          "prefill_tok_s_median": 628.882922143803,
+          "ttft_ms_median": 814.142
+        },
+        {
+          "prompt_tokens": 2048,
+          "engine": "ax_engine_mlx",
+          "decode_tok_s_median": 18.429801103570732,
+          "prefill_tok_s_median": 690.5145952127917,
+          "ttft_ms_median": 2965.904
+        }
+      ]
+    },
+    {
+      "slug": "qwen3_6-27b-4bit",
+      "model_repo_id": "mlx-community/Qwen3.6-27B-4bit",
+      "status": "ok",
+      "exit_code": 0,
+      "elapsed_seconds": 339.3,
+      "output_path": "/Users/akiralam/code/ax-engine/benchmarks/results/inference/mlx-inference/2026-07-03-v6-7-0-ax-direct-only-regression/qwen3_6-27b-4bit.json",
+      "log_path": "/Users/akiralam/code/ax-engine/benchmarks/results/inference/mlx-inference/2026-07-03-v6-7-0-ax-direct-only-regression/logs/qwen3_6-27b-4bit.log",
+      "build": {
+        "commit": "984eaf5bbf6f16798fc6f0f0d0b087a1daec5e06",
+        "build_profile": "release",
+        "server_binary": "/Users/akiralam/code/ax-engine/.tmp/worktrees/v6.7.0-bench-20260703/target/release/ax-engine-server",
+        "git_tracked_dirty": false,
+        "git_tracked_status": []
+      },
+      "prompt_tokens": [
+        128,
+        512,
+        2048
+      ],
+      "results": [
+        {
+          "prompt_tokens": 128,
+          "engine": "ax_engine_mlx",
+          "decode_tok_s_median": 33.52648605494624,
+          "prefill_tok_s_median": 564.7498996245296,
+          "ttft_ms_median": 226.649
+        },
+        {
+          "prompt_tokens": 512,
+          "engine": "ax_engine_mlx",
+          "decode_tok_s_median": 32.35706833838112,
+          "prefill_tok_s_median": 801.0802065910752,
+          "ttft_ms_median": 639.137
+        },
+        {
+          "prompt_tokens": 2048,
+          "engine": "ax_engine_mlx",
+          "decode_tok_s_median": 32.31654867339306,
+          "prefill_tok_s_median": 891.242713503328,
+          "ttft_ms_median": 2297.915
+        }
+      ]
+    },
+    {
+      "slug": "qwen3_6-27b-6bit",
+      "model_repo_id": "mlx-community/Qwen3.6-27B-6bit",
+      "status": "ok",
+      "exit_code": 0,
+      "elapsed_seconds": 375.9,
+      "output_path": "/Users/akiralam/code/ax-engine/benchmarks/results/inference/mlx-inference/2026-07-03-v6-7-0-ax-direct-only-regression/qwen3_6-27b-6bit.json",
+      "log_path": "/Users/akiralam/code/ax-engine/benchmarks/results/inference/mlx-inference/2026-07-03-v6-7-0-ax-direct-only-regression/logs/qwen3_6-27b-6bit.log",
+      "build": {
+        "commit": "984eaf5bbf6f16798fc6f0f0d0b087a1daec5e06",
+        "build_profile": "release",
+        "server_binary": "/Users/akiralam/code/ax-engine/.tmp/worktrees/v6.7.0-bench-20260703/target/release/ax-engine-server",
+        "git_tracked_dirty": false,
+        "git_tracked_status": []
+      },
+      "prompt_tokens": [
+        128,
+        512,
+        2048
+      ],
+      "results": [
+        {
+          "prompt_tokens": 128,
+          "engine": "ax_engine_mlx",
+          "decode_tok_s_median": 23.739352297737472,
+          "prefill_tok_s_median": 478.2329293261399,
+          "ttft_ms_median": 267.652
+        },
+        {
+          "prompt_tokens": 512,
+          "engine": "ax_engine_mlx",
+          "decode_tok_s_median": 23.582246400575407,
+          "prefill_tok_s_median": 715.1776909259037,
+          "ttft_ms_median": 715.9060000000001
+        },
+        {
+          "prompt_tokens": 2048,
+          "engine": "ax_engine_mlx",
+          "decode_tok_s_median": 23.40120413821044,
+          "prefill_tok_s_median": 819.4668183960698,
+          "ttft_ms_median": 2499.1859999999997
+        }
+      ]
+    },
+    {
+      "slug": "qwen3_6-35b-a3b-4bit",
+      "model_repo_id": "mlx-community/Qwen3.6-35B-A3B-4bit",
+      "status": "ok",
+      "exit_code": 0,
+      "elapsed_seconds": 270.4,
+      "output_path": "/Users/akiralam/code/ax-engine/benchmarks/results/inference/mlx-inference/2026-07-03-v6-7-0-ax-direct-only-regression/qwen3_6-35b-a3b-4bit.json",
+      "log_path": "/Users/akiralam/code/ax-engine/benchmarks/results/inference/mlx-inference/2026-07-03-v6-7-0-ax-direct-only-regression/logs/qwen3_6-35b-a3b-4bit.log",
+      "build": {
+        "commit": "984eaf5bbf6f16798fc6f0f0d0b087a1daec5e06",
+        "build_profile": "release",
+        "server_binary": "/Users/akiralam/code/ax-engine/.tmp/worktrees/v6.7.0-bench-20260703/target/release/ax-engine-server",
+        "git_tracked_dirty": false,
+        "git_tracked_status": []
+      },
+      "prompt_tokens": [
+        128,
+        512,
+        2048
+      ],
+      "results": [
+        {
+          "prompt_tokens": 128,
+          "engine": "ax_engine_mlx",
+          "decode_tok_s_median": 146.17061536687112,
+          "prefill_tok_s_median": 1075.7658528385932,
+          "ttft_ms_median": 118.985
+        },
+        {
+          "prompt_tokens": 512,
+          "engine": "ax_engine_mlx",
+          "decode_tok_s_median": 150.11229103020423,
+          "prefill_tok_s_median": 2428.301090364103,
+          "ttft_ms_median": 210.847
+        },
+        {
+          "prompt_tokens": 2048,
+          "engine": "ax_engine_mlx",
+          "decode_tok_s_median": 147.23830404479725,
+          "prefill_tok_s_median": 3623.8679836218153,
+          "ttft_ms_median": 565.142
+        }
+      ]
+    },
+    {
+      "slug": "qwen3_6-35b-a3b-6bit",
+      "model_repo_id": "mlx-community/Qwen3.6-35B-A3B-6bit",
+      "status": "ok",
+      "exit_code": 0,
+      "elapsed_seconds": 286.9,
+      "output_path": "/Users/akiralam/code/ax-engine/benchmarks/results/inference/mlx-inference/2026-07-03-v6-7-0-ax-direct-only-regression/qwen3_6-35b-a3b-6bit.json",
+      "log_path": "/Users/akiralam/code/ax-engine/benchmarks/results/inference/mlx-inference/2026-07-03-v6-7-0-ax-direct-only-regression/logs/qwen3_6-35b-a3b-6bit.log",
+      "build": {
+        "commit": "984eaf5bbf6f16798fc6f0f0d0b087a1daec5e06",
+        "build_profile": "release",
+        "server_binary": "/Users/akiralam/code/ax-engine/.tmp/worktrees/v6.7.0-bench-20260703/target/release/ax-engine-server",
+        "git_tracked_dirty": false,
+        "git_tracked_status": []
+      },
+      "prompt_tokens": [
+        128,
+        512,
+        2048
+      ],
+      "results": [
+        {
+          "prompt_tokens": 128,
+          "engine": "ax_engine_mlx",
+          "decode_tok_s_median": 123.7889475811833,
+          "prefill_tok_s_median": 860.5215567372788,
+          "ttft_ms_median": 148.74699999999999
+        },
+        {
+          "prompt_tokens": 512,
+          "engine": "ax_engine_mlx",
+          "decode_tok_s_median": 121.68538054726099,
+          "prefill_tok_s_median": 2087.4783913369647,
+          "ttft_ms_median": 245.272
+        },
+        {
+          "prompt_tokens": 2048,
+          "engine": "ax_engine_mlx",
+          "decode_tok_s_median": 121.3646315018968,
+          "prefill_tok_s_median": 3396.3121489468617,
+          "ttft_ms_median": 603.007
+        }
+      ]
+    }
+  ]
+}

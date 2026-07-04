@@ -4520,8 +4520,8 @@ def main() -> None:
         action="store_true",
         help=(
             "Set AX_MLX_QWEN_DENSE_FFN_GATE_UP_MATVEC_METAL=1 for AX rows. "
-            "This enables the decode-only Qwen split gate/up custom Metal matvec "
-            "without loader-time row-concatenating the weights."
+            "This enables the decode-only Qwen split gate/up custom Metal "
+            "matvec+SwiGLU route without loader-time row-concatenating the weights."
         ),
     )
     parser.add_argument(

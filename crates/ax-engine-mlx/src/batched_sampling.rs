@@ -28,6 +28,60 @@ use mlx_sys::{MlxArray, MlxDtype, argmax, astype, eval, reshape};
 
 use crate::sampling::{MlxSamplingParams, Xorshift64, sample_categorical};
 
+/// How a request's next token must be produced in the batched path so it is
+/// byte-identical to the single-sequence decode of that request.
+///
+/// The batched forward is shared across the whole cohort (the amortized weight
+/// read), but the *sampler* is not: greedy and host-sampled rows read the same
+/// `[B, vocab]` logits yet resolve their token through different reductions.
+/// Mixing them in one reduction would break token-exactness (GPU `argmax`
+/// first-max tie-break vs. host `sample_categorical` last-max), so the runner
+/// dispatches per row by this class.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BatchedSamplingClass {
+    /// `temperature == 0` and no repetition penalty → GPU `argmax` (identical
+    /// to the single decode's greedy branch and to [`argmax_batched`]).
+    Greedy,
+    /// `temperature > 0` with top-k/top-p filtering, or a repetition penalty →
+    /// host [`crate::sampling::sample_categorical_into`] with the request's own
+    /// `rng` (identical to the single decode's host-sampled branch).
+    HostSampled,
+}
+
+/// Classify how request with these sampling params must produce its next token
+/// in the batched path, mirroring `single_decode_with_turboquant_context`'s
+/// branch order exactly so the batched token equals the single-sequence token.
+///
+/// Returns `None` for the **pure-temperature** branch (`temperature > 0`, no
+/// top-k/top-p, no repetition penalty), which the single decode routes through
+/// `sample_categorical_gpu` → `random_categorical`. That uses MLX's global RNG,
+/// not the request's `Xorshift64`, so it is neither reproducible per request nor
+/// batchable token-exact; such requests must stay on the per-item path.
+///
+/// `deterministic_argmax_sampling` forces [`BatchedSamplingClass::Greedy`],
+/// matching how the runner derives `is_greedy` for the single path.
+pub fn batched_sampling_class(
+    sampling: MlxSamplingParams,
+    deterministic_argmax_sampling: bool,
+) -> Option<BatchedSamplingClass> {
+    if deterministic_argmax_sampling {
+        return Some(BatchedSamplingClass::Greedy);
+    }
+    let temp_positive = sampling.temperature > 0.0;
+    let uses_rep = sampling.uses_repetition_penalty();
+    // Branch 1 (single decode): pure temperature → GPU `random_categorical`.
+    // Non-reproducible / not batchable token-exact → ineligible.
+    if temp_positive && !uses_rep && sampling.top_k == 0 && sampling.top_p >= 1.0 {
+        return None;
+    }
+    // Branch 2 (single decode): host `sample_categorical_into`.
+    if temp_positive || uses_rep {
+        return Some(BatchedSamplingClass::HostSampled);
+    }
+    // Branch 3 (single decode): greedy `argmax`.
+    Some(BatchedSamplingClass::Greedy)
+}
+
 /// `(batch, vocab)` for a logits tensor that is `[B, vocab]` or `[B, 1, vocab]`.
 fn batched_logits_dims(logits: &MlxArray) -> (i32, i32) {
     let shape = logits.shape();
@@ -205,5 +259,54 @@ mod tests {
         let mut ref_rng = Xorshift64::new(1);
         let want = sample_categorical(&data, params[0], &[], &mut ref_rng);
         assert_eq!(got[0], want);
+    }
+
+    /// The classifier mirrors `single_decode_with_turboquant_context`'s branch
+    /// order: greedy → `Greedy`, host-sampled → `HostSampled`, pure-temperature
+    /// → `None` (ineligible, GPU `random_categorical`).
+    #[test]
+    fn classify_matches_single_decode_branches() {
+        // Branch 3: plain greedy.
+        assert_eq!(
+            batched_sampling_class(MlxSamplingParams::greedy(), false),
+            Some(BatchedSamplingClass::Greedy)
+        );
+        // deterministic_argmax_sampling forces greedy regardless of params.
+        assert_eq!(
+            batched_sampling_class(MlxSamplingParams::new(0.7, 0.9, 40), true),
+            Some(BatchedSamplingClass::Greedy)
+        );
+        // Branch 2a: temperature + top-p filtering → host sampler.
+        assert_eq!(
+            batched_sampling_class(MlxSamplingParams::new(0.7, 0.9, 0), false),
+            Some(BatchedSamplingClass::HostSampled)
+        );
+        // Branch 2b: temperature + top-k filtering → host sampler.
+        assert_eq!(
+            batched_sampling_class(MlxSamplingParams::new(0.7, 1.0, 40), false),
+            Some(BatchedSamplingClass::HostSampled)
+        );
+        // Branch 2c: repetition penalty at temperature 0 → host sampler.
+        assert_eq!(
+            batched_sampling_class(
+                MlxSamplingParams::greedy().with_repetition_penalty(1.2, None),
+                false
+            ),
+            Some(BatchedSamplingClass::HostSampled)
+        );
+        // Branch 1: pure temperature (no top-k/top-p/rep) → ineligible.
+        assert_eq!(
+            batched_sampling_class(MlxSamplingParams::new(0.8, 1.0, 0), false),
+            None
+        );
+        // A repetition penalty of exactly 1.0 is a no-op, so temperature-only
+        // with rep==1.0 is still the pure-temperature (ineligible) branch.
+        assert_eq!(
+            batched_sampling_class(
+                MlxSamplingParams::new(0.8, 1.0, 0).with_repetition_penalty(1.0, None),
+                false
+            ),
+            None
+        );
     }
 }

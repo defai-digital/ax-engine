@@ -190,6 +190,7 @@ bash -n scripts/*.sh scripts/lib/common.sh
   scripts/test_bench_direct_telemetry_pass.py \
   scripts/bench_diffusion_gemma_direct.py \
   scripts/test_ci_workflow_policy.py \
+  scripts/test_release_signing.py \
   scripts/test_minisign_artifact.py
 "$PYTHON_BIN" -m unittest \
   scripts/test_bench_ax_serving.py \
@@ -237,6 +238,7 @@ bash -n scripts/*.sh scripts/lib/common.sh
   scripts/test_bench_direct_telemetry_pass.py \
   scripts/test_render_readme_performance_charts.py \
   scripts/test_ci_workflow_policy.py \
+  scripts/test_release_signing.py \
   scripts/test_minisign_artifact.py
 bash scripts/check-bench-inference-stack.sh
 bash scripts/check-turboquant-quality-gate.sh

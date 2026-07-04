@@ -190,9 +190,7 @@ mod tests {
 
         // Distinct values per (row, kind, token, dim); row 0's key/value slot at
         // position 2 (>= valid_len 0) is deliberate garbage that must be ignored.
-        let q_data: Vec<f32> = (0..(b * h * 1 * d))
-            .map(|i| (i as f32) * 0.03 - 0.2)
-            .collect();
+        let q_data: Vec<f32> = (0..(b * h * d)).map(|i| (i as f32) * 0.03 - 0.2).collect();
         let mut k_data = Vec::new();
         let mut v_data = Vec::new();
         for row in 0..b {

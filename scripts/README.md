@@ -109,10 +109,12 @@ throughput baselines.
   macOS arm64 CLI assets. It verifies tag/version consistency, requires a clean
   tree by default, runs release gates, builds `ax-engine-server` and
   `ax-engine-bench`, optionally signs and notarizes the three release binaries
-  with `--sign-identity`, writes a tarball, SHA256 file, and manifest under
-  `target/release-artifacts/<tag>/`, signs those artifacts with minisign by
-  default, pushes the tag, creates the GitHub release, uploads the assets, and
-  verifies the uploaded asset names. Notarization can use the local
+  with `--sign-identity`, including the release entitlements required for
+  hardened-runtime binaries to load Homebrew's ad-hoc signed MLX dylibs, writes
+  a tarball, SHA256 file, and manifest under `target/release-artifacts/<tag>/`,
+  signs those artifacts with minisign by default, pushes the tag, creates the
+  GitHub release, uploads the assets, and verifies the uploaded asset names.
+  Notarization can use the local
   `AX_NOTARY_PROFILE` / `--notary-profile` Keychain profile or the same
   App Store Connect API env shape used by ax-code Desktop:
   `APPLE_API_KEY`, `APPLE_API_KEY_B64`, `APPLE_API_KEY_ID`, and

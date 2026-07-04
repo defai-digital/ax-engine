@@ -8,6 +8,7 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 MAIN_REPO="${AX_RELEASE_REPO:-defai-digital/ax-engine}"
 RELEASE_BINS=(ax-engine ax-engine-server ax-engine-bench)
+MACOS_RELEASE_ENTITLEMENTS="$ROOT_DIR/scripts/macos-release.entitlements.plist"
 RELEASE_HELPER_SOURCES=(
     "scripts/download_model.py:ax-engine-download-model.py"
     "scripts/prepare_mtp_sidecar.py:ax-engine-prepare-mtp-sidecar.py"
@@ -146,10 +147,12 @@ codesign_release_binaries() {
     fi
 
     echo "Codesigning release binaries with identity: $SIGN_IDENTITY"
+    [[ -f "$MACOS_RELEASE_ENTITLEMENTS" ]] || die "macOS release entitlements not found: $MACOS_RELEASE_ENTITLEMENTS"
     for bin in "${RELEASE_BINS[@]}"; do
         run codesign \
             --sign "$SIGN_IDENTITY" \
             --options runtime \
+            --entitlements "$MACOS_RELEASE_ENTITLEMENTS" \
             --timestamp \
             --force \
             "target/release/$bin"
@@ -467,6 +470,7 @@ manifest = {
         "apple_developer_id": bool(os.environ.get("AX_RELEASE_CODESIGN_IDENTITY")),
         "identity": os.environ.get("AX_RELEASE_CODESIGN_IDENTITY") or None,
         "notarized": os.environ.get("AX_RELEASE_NOTARIZED") == "true",
+        "disable_library_validation": bool(os.environ.get("AX_RELEASE_CODESIGN_IDENTITY")),
     },
 }
 path = pathlib.Path(manifest_path)

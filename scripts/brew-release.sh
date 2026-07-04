@@ -54,6 +54,7 @@ MAIN_REPO="defai-digital/ax-engine"
 TAP_REPO="defai-digital/homebrew-ax-engine"
 TAP_FORMULA="Formula/ax-engine.rb"
 RELEASE_BINS=(ax-engine ax-engine-server ax-engine-bench)
+MACOS_RELEASE_ENTITLEMENTS="$ROOT_DIR/scripts/macos-release.entitlements.plist"
 RELEASE_HELPER_SOURCES=(
     "scripts/download_model.py:ax-engine-download-model.py"
     "scripts/prepare_mtp_sidecar.py:ax-engine-prepare-mtp-sidecar.py"
@@ -208,10 +209,15 @@ fi
 
 if [[ -n "$SIGN_IDENTITY" ]]; then
     echo "▶ codesigning binaries with identity: $SIGN_IDENTITY"
+    if [[ ! -f "$MACOS_RELEASE_ENTITLEMENTS" ]]; then
+        echo "error: macOS release entitlements not found: $MACOS_RELEASE_ENTITLEMENTS" >&2
+        exit 1
+    fi
     for bin in "${RELEASE_BINS[@]}"; do
         codesign \
             --sign "$SIGN_IDENTITY" \
             --options runtime \
+            --entitlements "$MACOS_RELEASE_ENTITLEMENTS" \
             --timestamp \
             --force \
             "target/release/$bin"

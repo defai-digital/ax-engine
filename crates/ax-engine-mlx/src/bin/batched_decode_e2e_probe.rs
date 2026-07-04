@@ -21,6 +21,20 @@
 //! Usage:
 //!   cargo run --release --bin batched_decode_e2e_probe -- <dense_model_dir>
 //! Env: AX_BATCH (default 3), AX_PROMPT_LEN (default 24), AX_GEN (default 16).
+//!
+//! Sampling (gate 3): `AX_SAMPLING` selects the per-request sampler — `greedy`
+//! (default), `topp` (temp 0.7, top-p 0.9), `topk` (temp 0.7, top-k 40), or
+//! `rep` (temp 0, repetition penalty 1.3). Sampled batching is gated behind BOTH
+//! `AX_MLX_BATCHED_DECODE=1` AND `AX_MLX_BATCHED_DECODE_SAMPLING=1` (the sampled
+//! sub-flag), so a sampled run needs both set or the batched runner will decode
+//! sampled requests per-item and the check becomes vacuous — the harness warns
+//! when it detects this. For any non-greedy sampler the model::forward greedy
+//! oracle does not apply, so the harness instead decodes every request ALONE on
+//! a second runner (each single-item step stays on the per-item path even with
+//! the flags on) and checks the batched streams are token-exact with that
+//! per-item oracle — the promotion gate for mixed greedy/sampled cohorts.
+//! Per-request seeds come from `AX_SEED_BASE` (default 1) so the two runners
+//! advance identical RNGs.
 
 use std::env;
 use std::path::Path;
@@ -42,11 +56,82 @@ use mlx_sys::{argmax, eval};
 
 const MODEL_ID: &str = "harness";
 
+/// Per-request sampler applied to every request in a run (the harness keeps the
+/// cohort homogeneous in *kind* but each request seeds its own RNG).
+#[derive(Clone, Copy)]
+struct SamplingCfg {
+    deterministic: bool,
+    temperature: f32,
+    top_p: f32,
+    top_k: u32,
+    repetition_penalty: f32,
+    seed_base: u64,
+    label: &'static str,
+}
+
+impl SamplingCfg {
+    fn from_env() -> Self {
+        let seed_base = env::var("AX_SEED_BASE")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(1);
+        match env::var("AX_SAMPLING").as_deref() {
+            Ok("topp") => Self {
+                deterministic: false,
+                temperature: 0.7,
+                top_p: 0.9,
+                top_k: 0,
+                repetition_penalty: 1.0,
+                seed_base,
+                label: "topp(temp0.7,p0.9)",
+            },
+            Ok("topk") => Self {
+                deterministic: false,
+                temperature: 0.7,
+                top_p: 1.0,
+                top_k: 40,
+                repetition_penalty: 1.0,
+                seed_base,
+                label: "topk(temp0.7,k40)",
+            },
+            Ok("rep") => Self {
+                deterministic: false,
+                temperature: 0.0,
+                top_p: 1.0,
+                top_k: 0,
+                repetition_penalty: 1.3,
+                seed_base,
+                label: "rep(penalty1.3)",
+            },
+            _ => Self {
+                deterministic: true,
+                temperature: 0.0,
+                top_p: 1.0,
+                top_k: 0,
+                repetition_penalty: 1.0,
+                seed_base,
+                label: "greedy",
+            },
+        }
+    }
+
+    /// Greedy scenarios can be checked against the model::forward oracle; any
+    /// non-greedy sampler must use the per-item sequential oracle instead.
+    fn is_greedy(&self) -> bool {
+        self.deterministic
+            || (self.temperature == 0.0
+                && self.top_k == 0
+                && self.top_p >= 1.0
+                && self.repetition_penalty == 1.0)
+    }
+}
+
 fn ctx(
     req: u64,
     prompt_len: usize,
     generated_len: usize,
     max_output: usize,
+    sampling: &SamplingCfg,
 ) -> RunnerRequestContext {
     RunnerRequestContext {
         request_id: RequestId(req),
@@ -54,12 +139,14 @@ fn ctx(
         processed_prompt_tokens: prompt_len as u32,
         generated_len: generated_len as u32,
         max_output_tokens: max_output as u32,
-        seed: 0,
-        deterministic_argmax_sampling: true,
-        temperature: 0.0,
-        top_p: 1.0,
-        top_k: 0,
-        repetition_penalty: 1.0,
+        // Distinct per-request seed so both runners advance identical RNGs and
+        // the batched stream can be compared token-exact against the per-item one.
+        seed: sampling.seed_base.wrapping_add(req),
+        deterministic_argmax_sampling: sampling.deterministic,
+        temperature: sampling.temperature,
+        top_p: sampling.top_p,
+        top_k: sampling.top_k,
+        repetition_penalty: sampling.repetition_penalty,
         repetition_context_size: None,
         ignore_eos: true, // fixed-length streams for comparison
         tool_call_mode: false,
@@ -148,6 +235,54 @@ fn model_reference(
     stream
 }
 
+/// Per-item oracle: decode every request ALONE (one request's items per `run()`
+/// call). A single-item decode step never satisfies the batched interception's
+/// `>= 2 eligible` condition, so it stays on the per-item path even with
+/// `AX_MLX_BATCHED_DECODE=1` — giving the canonical single-sequence stream for
+/// each request under the exact same sampler and seed the batched runner uses.
+fn decode_sequential(
+    runner: &MlxRunner,
+    prompts: &[Vec<u32>],
+    sampling: &SamplingCfg,
+    prompt_len: usize,
+    gen_len: usize,
+) -> Vec<Vec<u32>> {
+    let mut streams = Vec::with_capacity(prompts.len());
+    let mut step_id = 1_000_000u64; // distinct step-id space from the batched run
+    for (r, prompt) in prompts.iter().enumerate() {
+        let req = r as u64;
+        let prefill = runner_input(
+            step_id,
+            vec![item(req, ExecutionMode::Prefill, prompt.clone(), 0)],
+            vec![ctx(req, prompt.len(), 0, gen_len + 4, sampling)],
+        );
+        step_id += 1;
+        let mut tok = run_outputs(runner, prefill)
+            .iter()
+            .find(|(id, _)| *id == req)
+            .map(|(_, t)| *t)
+            .expect("sequential prefill token");
+        let mut stream = vec![tok];
+        for s in 0..gen_len {
+            let generated_len = s + 1;
+            let input = runner_input(
+                step_id,
+                vec![item(req, ExecutionMode::Decode, vec![tok], prompt_len + s)],
+                vec![ctx(req, prompt_len, generated_len, gen_len + 4, sampling)],
+            );
+            step_id += 1;
+            tok = run_outputs(runner, input)
+                .iter()
+                .find(|(id, _)| *id == req)
+                .map(|(_, t)| *t)
+                .expect("sequential decode token");
+            stream.push(tok);
+        }
+        streams.push(stream);
+    }
+    streams
+}
+
 fn build_prompts(batch: usize, len: usize, vocab: usize) -> Vec<Vec<u32>> {
     (0..batch)
         .map(|r| {
@@ -176,23 +311,36 @@ fn main() {
         .and_then(|s| s.parse().ok())
         .unwrap_or(16);
 
+    let sampling = SamplingCfg::from_env();
+
     let artifacts = NativeModelArtifacts::from_dir(Path::new(&model_dir)).expect("artifacts");
     let cfg = ModelConfig::from_manifest(artifacts.manifest());
     let weights = load_weights(&artifacts).expect("weights");
     let prompts = build_prompts(batch, prompt_len, cfg.vocab_size);
 
+    let batched_flag = ax_engine_mlx::batched_decode_session::batched_decode_enabled();
+    let sampling_flag = ax_engine_mlx::batched_decode_session::batched_decode_sampling_enabled();
     println!("# batched decode E2E serving harness");
     println!(
-        "model_family {}  batch {batch}  prompt_len {prompt_len}  gen_len {gen_len}  batched_flag {}",
-        cfg.model_family,
-        ax_engine_mlx::batched_decode_session::batched_decode_enabled()
+        "model_family {}  batch {batch}  prompt_len {prompt_len}  gen_len {gen_len}  sampling {}  batched_flag {batched_flag}  sampling_flag {sampling_flag}",
+        cfg.model_family, sampling.label,
     );
+    if !sampling.is_greedy() && batched_flag && !sampling_flag {
+        eprintln!(
+            "  WARNING: AX_SAMPLING={} but AX_MLX_BATCHED_DECODE_SAMPLING is off — sampled \
+             requests decode per-item in BOTH runners, so BATCHED==SEQUENTIAL is vacuous. \
+             Set AX_MLX_BATCHED_DECODE_SAMPLING=1 to exercise the batched sampler.",
+            sampling.label
+        );
+    }
 
-    // Reference streams via model::forward.
-    let refs: Vec<Vec<u32>> = prompts
-        .iter()
-        .map(|p| model_reference(&cfg, &weights, p, gen_len))
-        .collect();
+    // Greedy model::forward oracle (only valid for the greedy sampler).
+    let refs: Option<Vec<Vec<u32>>> = sampling.is_greedy().then(|| {
+        prompts
+            .iter()
+            .map(|p| model_reference(&cfg, &weights, p, gen_len))
+            .collect()
+    });
 
     // Build a runner. run() uses interior mutability, so one runner drives all.
     let runner = MlxRunner::from_artifacts(
@@ -211,7 +359,7 @@ fn main() {
         let input = runner_input(
             step_id,
             vec![item(r as u64, ExecutionMode::Prefill, prompt.clone(), 0)],
-            vec![ctx(r as u64, prompt.len(), 0, gen_len + 4)],
+            vec![ctx(r as u64, prompt.len(), 0, gen_len + 4, &sampling)],
         );
         step_id += 1;
         let outs = run_outputs(&runner, input);
@@ -242,7 +390,7 @@ fn main() {
             })
             .collect();
         let contexts: Vec<RunnerRequestContext> = (0..batch)
-            .map(|r| ctx(r as u64, prompt_len, generated_len, gen_len + 4))
+            .map(|r| ctx(r as u64, prompt_len, generated_len, gen_len + 4, &sampling))
             .collect();
         let outs = run_outputs(&runner, runner_input(step_id, items, contexts));
         step_id += 1;
@@ -260,28 +408,69 @@ fn main() {
         ax_engine_mlx::batched_decode_session::batched_decode_enabled()
     );
 
-    // Verdict 1: harness fidelity — runner streams == model::forward reference.
+    let mut failed = false;
+
+    // Verdict 1 (greedy only): harness fidelity vs the model::forward oracle.
+    if let Some(refs) = &refs {
+        let mut ok = true;
+        for r in 0..batch {
+            if streams[r] != refs[r] {
+                ok = false;
+                let first = (0..streams[r].len().max(refs[r].len()))
+                    .find(|&i| streams[r].get(i) != refs[r].get(i));
+                eprintln!(
+                    "  req {r} MISMATCH at {first:?}:\n    runner {:?}\n    ref    {:?}",
+                    streams[r], refs[r]
+                );
+            }
+        }
+        if ok {
+            println!(
+                "HARNESS-FIDELITY: PASS ({batch}/{batch} runner streams == model::forward reference)"
+            );
+        } else {
+            println!("HARNESS-FIDELITY: FAIL");
+            failed = true;
+        }
+    } else {
+        println!("HARNESS-FIDELITY: SKIP (non-greedy sampler has no model::forward oracle)");
+    }
+
+    // Verdict 2 (all samplers): batched streams == per-item sequential oracle.
+    // This is the gate-3 promotion check — for sampled cohorts it proves the
+    // batched sampler is token-exact with the single-sequence sampler, RNG and
+    // tie-break included. A second runner keeps its own per-request KV/RNG state.
+    let seq_runner = MlxRunner::from_artifacts(
+        &artifacts,
+        DEFAULT_PREFILL_CHUNK,
+        true,
+        KvCompressionConfig::disabled(),
+    )
+    .expect("sequential runner");
+    let seq_streams = decode_sequential(&seq_runner, &prompts, &sampling, prompt_len, gen_len);
     let mut ok = true;
     for r in 0..batch {
-        if streams[r] != refs[r] {
+        if streams[r] != seq_streams[r] {
             ok = false;
-            let first = (0..streams[r].len().max(refs[r].len()))
-                .find(|&i| streams[r].get(i) != refs[r].get(i));
+            let first = (0..streams[r].len().max(seq_streams[r].len()))
+                .find(|&i| streams[r].get(i) != seq_streams[r].get(i));
             eprintln!(
-                "  req {r} MISMATCH at {first:?}:\n    runner {:?}\n    ref    {:?}",
-                streams[r], refs[r]
+                "  req {r} MISMATCH at {first:?}:\n    batched    {:?}\n    sequential {:?}",
+                streams[r], seq_streams[r]
             );
         }
     }
     if ok {
         println!(
-            "HARNESS-FIDELITY: PASS ({batch}/{batch} runner streams == model::forward reference)"
-        );
-        println!(
-            "(with AX_MLX_BATCHED_DECODE=1 this same batched-step path exercises the run() interception)"
+            "BATCHED==SEQUENTIAL: PASS ({batch}/{batch} batched streams == per-item oracle, sampling {})",
+            sampling.label
         );
     } else {
-        println!("HARNESS-FIDELITY: FAIL");
+        println!("BATCHED==SEQUENTIAL: FAIL");
+        failed = true;
+    }
+
+    if failed {
         std::process::exit(1);
     }
 }
