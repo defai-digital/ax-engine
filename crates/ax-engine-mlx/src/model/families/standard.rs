@@ -22,6 +22,7 @@ use super::super::turboquant_context::{
     TurboQuantModelDecodeCandidate, TurboQuantModelDecodeCandidateStatus,
     TurboQuantModelDecodeContext,
 };
+use crate::batched_kv_cache::BatchedKvCache;
 use crate::fastpath;
 use crate::kv_cache::{MlxKVCache, MlxKvCompressionDecodeOutcome};
 use crate::per_layer_compile::{apply_layer_gemma4_dual_path_decode, apply_layer_moe_decode};
@@ -739,6 +740,164 @@ pub(crate) fn layer_forward(
         );
     }
     out
+}
+
+/// Batched-decode analog of [`layer_forward`] for full-attention **dense**
+/// families (Qwen3, Llama, Mistral) — milestone 2a of batched MLX decode.
+///
+/// Runs one decode token for each of B rows (`hidden` is `[B, 1, hidden]`)
+/// through the SAME per-layer graph as `layer_forward`, reusing the identical
+/// `qkv_project` / `qk_norm` / `rope` / `full_precision_attention` /
+/// `attention_output_projection` / `ffn_swiglu` helpers — all batch-aware. It
+/// differs only where the design requires: it appends to a [`BatchedKvCache`]
+/// (whose `append_decode_layer` returns the current-token-inclusive
+/// `[B, H, key_len, D]` view) and passes the batched validity `mask`
+/// (`[B, 1, 1, key_len]`) to attention.
+///
+/// **2a scope (asserted).** Normal (non-KV-shared) full-attention dense layers,
+/// no sliding window, no MoE, no per-layer-input gating, no layer scalar, and a
+/// uniform `token_offset` across rows (equal-length batch — ragged RoPE
+/// positions are 2b). Unsupported layers panic; the batched runner (2b) routes
+/// only eligible requests here.
+#[allow(clippy::too_many_arguments)]
+pub fn layer_forward_batched(
+    cfg: &ModelConfig,
+    w: &LayerWeights,
+    hidden: &MlxArray,
+    cache: &mut BatchedKvCache,
+    layer_idx: usize,
+    token_offset: usize,
+    mask: &Option<MlxArray>,
+) -> MlxArray {
+    let (
+        head_dim,
+        rope_theta,
+        rope_dims,
+        layer_rope_freqs,
+        sliding_window,
+        kv_source,
+        v_norm_no_scale,
+    ) = layer_params(cfg, layer_idx);
+    assert!(
+        kv_source.is_none(),
+        "batched decode (2a): KV-shared layers unsupported"
+    );
+    assert!(
+        sliding_window.is_none(),
+        "batched decode (2a): sliding-window layers unsupported"
+    );
+    assert!(
+        w.router_proj.is_none(),
+        "batched decode (2a): MoE layers unsupported"
+    );
+    assert!(
+        w.per_layer_gate.is_none() && w.layer_scalar.is_none(),
+        "batched decode (2a): per-layer-input gating / layer scalar unsupported"
+    );
+
+    let seq = 1usize;
+
+    // 1. Attention norm.
+    let normed = rms_norm(hidden, Some(&w.attn_norm), cfg.rms_norm_eps, None);
+
+    // 2. QKV projections (batch-aware).
+    let (q_raw, k_raw, v_raw, attn_gate) = qkv_project(cfg, w, &normed, head_dim);
+    let kv_heads = (k_raw.shape()[2] as usize)
+        .checked_div(head_dim)
+        .expect("k projection output must divide by head_dim");
+    let v = prepare_value_bhsd_from_proj(
+        &v_raw,
+        v_norm_no_scale,
+        kv_heads,
+        head_dim,
+        seq,
+        cfg.rms_norm_eps,
+    );
+
+    // 3. QK norm, then per-row RoPE.
+    //
+    // The single path's fused `qk_norm_rope_bhsd_from_proj_with_route` (and MLX
+    // `rope` itself) mis-rotate every batch row > 0 for a `[B, H, 1, D]` decode
+    // input — row 0 is correct, rows ≥1 are wrong. So the batched path applies
+    // QK-norm (batch-safe) and then RoPE ONE ROW AT A TIME (each `[1, H, 1, D]`
+    // slice matches the single-sequence rotation exactly). A batched-rope kernel
+    // is a perf follow-up; correctness first.
+    let rope_freqs = layer_rope_freqs.or(cfg.rope_freqs.as_ref());
+    let (rope_base, rope_freqs_ref) = rope_freqs
+        .map(|f| (None, Some(f)))
+        .unwrap_or((Some(rope_theta), None));
+    let q = qk_norm_bhsd_from_proj(
+        &q_raw,
+        w.q_norm.as_ref(),
+        cfg.n_heads,
+        head_dim,
+        seq,
+        cfg.rms_norm_eps,
+    );
+    let k = qk_norm_bhsd_from_proj(
+        &k_raw,
+        w.k_norm.as_ref(),
+        kv_heads,
+        head_dim,
+        seq,
+        cfg.rms_norm_eps,
+    );
+    let rope_row = |x: &MlxArray, heads: i32| -> MlxArray {
+        let batch = x.shape()[0];
+        let rows: Vec<MlxArray> = (0..batch)
+            .map(|r| {
+                let row = slice(
+                    x,
+                    &[r, 0, 0, 0],
+                    &[r + 1, heads, seq as i32, head_dim as i32],
+                    &[1, 1, 1, 1],
+                    None,
+                );
+                rope(
+                    &row,
+                    rope_dims as i32,
+                    false,
+                    rope_base,
+                    1.0,
+                    token_offset as i32,
+                    rope_freqs_ref,
+                    None,
+                )
+            })
+            .collect();
+        let refs: Vec<&MlxArray> = rows.iter().collect();
+        mlx_sys::concatenate(&refs, 0, None)
+    };
+    let q_rope = rope_row(&q, cfg.n_heads as i32);
+    let k_rope = rope_row(&k, kv_heads as i32);
+
+    // 4. Append to the batched cache; the returned view includes this token.
+    let (cached_k, cached_v) = cache.append_decode_layer(layer_idx, &k_rope, &v);
+
+    // 5. Batched SDPA with the per-row validity mask.
+    let attn_sdpa =
+        full_precision_attention(&q_rope, &cached_k, &cached_v, cfg.query_scale, seq, mask);
+
+    // 6. Output projection (optional Qwen3.5 gate passes through as None here).
+    let attn_flat = flatten_attention_output_bhsd(&attn_sdpa, seq, cfg.n_heads, head_dim);
+    let attn_proj = attention_output_projection(
+        &attn_flat,
+        attn_gate.as_ref(),
+        w.o_proj
+            .as_ref()
+            .expect("full-attention layer must have o_proj"),
+    );
+    let attn_proj = if let Some(post_norm) = &w.attn_post_norm {
+        rms_norm(&attn_proj, Some(post_norm), cfg.rms_norm_eps, None)
+    } else {
+        attn_proj
+    };
+
+    // 7. Residual, pre-FFN norm, dense FFN, residual.
+    let hidden = add(hidden, &attn_proj, None);
+    let normed2 = rms_norm(&hidden, Some(&w.ffn_norm), cfg.rms_norm_eps, None);
+    let ffn_out = ffn_swiglu(cfg, w, &normed2, w.ffn_post_norm.as_ref(), layer_idx);
+    add(&hidden, &ffn_out, None)
 }
 
 /// Bidirectional layer forward for DiffusionGemma denoiser.

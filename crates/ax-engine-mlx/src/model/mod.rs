@@ -394,6 +394,66 @@ pub fn embed_decode_tokens_batched(
     reshape(&flat, &[batch, 1, hidden_size as i32], None)
 }
 
+/// Batched decode forward for full-attention **dense** families (Qwen3, Llama,
+/// Mistral) — milestone 2a of batched MLX decode.
+///
+/// Embeds the B current tokens (`[B,1,hidden]`), builds the per-row validity
+/// mask once, runs the batched layer loop
+/// ([`families::standard::layer_forward_batched`]), and returns logits
+/// `[B, 1, vocab]`. `token_offset` is the **uniform** decode position (equal-
+/// length batch — 2a scope). The caller supplies the [`BatchedKvCache`] (seeded
+/// from per-request prefill) and turns logits into tokens via
+/// [`crate::batched_sampling::argmax_batched`] / `sample_batched_host`.
+///
+/// Mirrors the single-sequence `forward_with_turboquant_context` embed prologue
+/// (bf16 cast + optional `hidden_states_scale`) and final norm + lm_head, so a
+/// row's logits match a batch=1 decode of that row.
+pub fn decode_batched_forward(
+    cfg: &ModelConfig,
+    weights: &ModelWeights,
+    tokens: &[u32],
+    cache: &mut crate::batched_kv_cache::BatchedKvCache,
+    token_offset: usize,
+) -> MlxArray {
+    assert_eq!(
+        tokens.len(),
+        cache.batch(),
+        "decode_batched_forward: one token per cache row"
+    );
+    let mut hidden = embed_decode_tokens_batched(tokens, &weights.token_embedding, cfg.hidden_size);
+    hidden = astype(&hidden, MlxDtype::Bfloat16, None);
+    if let Some(scale) = cfg.hidden_states_scale {
+        hidden = scale_hidden(&hidden, scale);
+    }
+
+    // Per-row validity mask, built once and shared across layers. Each row's
+    // current token was just written at `row_len`, so it has `row_len + 1` valid
+    // keys; the batched view spans `max_len + 1`.
+    let valid_lengths: Vec<usize> = (0..cache.batch()).map(|r| cache.row_len(r) + 1).collect();
+    let key_len = cache.max_len() + 1;
+    let mask = Some(crate::attention_mask::batched_decode_validity_mask(
+        &valid_lengths,
+        key_len,
+    ));
+
+    for (li, layer_w) in weights.layers.iter().enumerate() {
+        hidden = families::standard::layer_forward_batched(
+            cfg,
+            layer_w,
+            &hidden,
+            cache,
+            li,
+            token_offset,
+            &mask,
+        );
+    }
+    cache.advance_all(1);
+
+    let normed = rms_norm(&hidden, Some(&weights.final_norm), cfg.rms_norm_eps, None);
+    let logits = qw(&normed, &weights.lm_head);
+    finalize_lm_head_logits(cfg, &logits, FinalLogitsMode::Full)
+}
+
 /// Full forward pass: returns logits for the LAST token only — `[vocab_size]` f32.
 pub fn forward(
     cfg: &ModelConfig,

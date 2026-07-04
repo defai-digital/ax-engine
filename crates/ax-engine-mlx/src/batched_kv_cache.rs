@@ -263,20 +263,33 @@ impl BatchedKvCache {
         self.lengths[row] = len;
     }
 
-    /// Append one decode token per row to `layer`. `new_k`/`new_v` are
-    /// `[batch, n_kv_heads, 1, head_dim]`; row `r`'s token is written at its
-    /// current logical length. Does NOT advance lengths — call `advance_all(1)`
-    /// once after all layers, mirroring the single cache's per-step `seq_len`
-    /// bump.
-    pub fn append_decode_layer(&mut self, layer: usize, new_k: &MlxArray, new_v: &MlxArray) {
+    /// Append one decode token per row to `layer` and return the attention view
+    /// `[batch, n_kv_heads, max_len + 1, head_dim]` spanning through the
+    /// just-written positions — mirroring the single-sequence `MlxKVCache::append`,
+    /// whose returned view already includes the current token.
+    ///
+    /// `new_k`/`new_v` are `[batch, n_kv_heads, 1, head_dim]`; row `r`'s token is
+    /// written at its current logical length `lengths[r]`. The view's key axis is
+    /// `max(lengths) + 1`, so a row shorter than the max has stale/padding slots
+    /// in `[lengths[r] + 1 .. max_len + 1]` that the caller MUST mask (build the
+    /// mask with `valid_lengths[r] = lengths[r] + 1`, `key_len = max_len + 1`).
+    ///
+    /// Does NOT advance lengths — call [`Self::advance_all`]`(1)` once after all
+    /// layers, mirroring the single cache's per-step `seq_len` bump.
+    pub fn append_decode_layer(
+        &mut self,
+        layer: usize,
+        new_k: &MlxArray,
+        new_v: &MlxArray,
+    ) -> (MlxArray, MlxArray) {
         let (n_kv_heads, head_dim, dtype) = self.validate_kv(new_k, new_v, self.batch as i32);
         assert_eq!(
             new_k.shape()[2],
             1,
             "append_decode_layer writes exactly one token per row"
         );
-        let need = self.max_len() + 1;
-        self.ensure_layer(layer, n_kv_heads, head_dim, dtype, need);
+        let view_len = self.max_len() + 1;
+        self.ensure_layer(layer, n_kv_heads, head_dim, dtype, view_len);
         let ones = [1, 1, 1, 1];
         // Per-row write, because rows may sit at different logical lengths. A
         // fused scatter is a Phase 2 perf follow-up; correctness first.
@@ -302,6 +315,14 @@ impl BatchedKvCache {
                 .expect("layer allocated by ensure_layer");
             Self::write_row_block(layer_kv, row, pos, 1, &row_k, &row_v);
         }
+        let layer_kv = self.layers[layer]
+            .as_ref()
+            .expect("layer allocated by ensure_layer");
+        let stop = [self.batch as i32, n_kv_heads, view_len as i32, head_dim];
+        (
+            slice(&layer_kv.k, &[0, 0, 0, 0], &stop, &ones, None),
+            slice(&layer_kv.v, &[0, 0, 0, 0], &stop, &ones, None),
+        )
     }
 
     /// The batched attention view of `layer`: `[batch, n_kv_heads, max_len,
@@ -657,5 +678,61 @@ mod tests {
         let (k, _v) = cache.layer_view(0).expect("view");
         eval(&[&k]);
         assert_eq!(k.shape(), vec![2, heads as i32, 7, dim as i32]);
+    }
+
+    /// `append_decode_layer` returns a view `[B, H, max_len+1, D]` that includes
+    /// the token it just wrote (mirroring single-cache `append`), so attention in
+    /// the same layer can see the current token before `advance_all`.
+    #[test]
+    fn append_returns_view_including_current_token() {
+        let (heads, dim, batch) = (1usize, 2usize, 2usize);
+        let mut keep: Vec<Vec<f32>> = Vec::new();
+        let mut cache = BatchedKvCache::new(1, batch);
+        // Seed both rows to equal length 2.
+        for row in 0..batch {
+            let kd = seq_block(row, 0, 2, heads, dim);
+            keep.push(kd);
+            let k = arr(keep.last().unwrap().as_slice(), heads as i32, 2, dim as i32);
+            cache.seed_row_layer(0, row, &k, &k);
+        }
+        // Append one token per row at position 2 (distinct "token 2" values).
+        let mut bd = Vec::new();
+        for row in 0..batch {
+            for h in 0..heads {
+                for d in 0..dim {
+                    bd.push(val(row, 2, h, d));
+                }
+            }
+        }
+        keep.push(bd);
+        let s = keep.last().unwrap().as_slice();
+        let bk = MlxArray::from_raw_data(
+            s.as_ptr().cast(),
+            std::mem::size_of_val(s),
+            &[batch as i32, heads as i32, 1, dim as i32],
+            MlxDtype::Float32,
+        );
+        let (view_k, _view_v) = cache.append_decode_layer(0, &bk, &bk);
+        let view_k = dense(&view_k);
+        eval(&[&view_k]);
+        // View spans max_len(=2) + 1 = 3 keys.
+        assert_eq!(
+            view_k.shape(),
+            vec![batch as i32, heads as i32, 3, dim as i32]
+        );
+        // Position 2 of each row is the just-appended token.
+        let data = view_k.data_f32();
+        for row in 0..batch {
+            for h in 0..heads {
+                for d in 0..dim {
+                    let idx = ((row * heads + h) * 3 + 2) * dim + d;
+                    assert_eq!(
+                        data[idx],
+                        val(row, 2, h, d),
+                        "row {row} current token missing"
+                    );
+                }
+            }
+        }
     }
 }
