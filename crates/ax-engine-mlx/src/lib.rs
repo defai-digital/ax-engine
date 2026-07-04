@@ -1,4 +1,5 @@
 pub(crate) mod attention_mask;
+pub mod batched_kv_cache;
 pub(crate) mod diffusion;
 pub mod disk_prefix_cache;
 pub mod fastpath;
