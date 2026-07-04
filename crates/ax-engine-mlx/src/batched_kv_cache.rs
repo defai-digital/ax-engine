@@ -72,22 +72,41 @@ struct BatchedLayerKv {
 /// need to know `n_kv_heads`/`head_dim`/`dtype` up front.
 pub struct BatchedKvCache {
     num_layers: usize,
-    batch: usize,
+    /// Allocated buffer width (rows). The KV buffers are `[allocated, ...]`.
+    allocated: usize,
+    /// Logically active rows — always the contiguous prefix `[0..active)`, so a
+    /// batch slice is contiguous. Decode operates on these rows only.
+    active: usize,
     layers: Vec<Option<BatchedLayerKv>>,
-    /// Logical token count per row; `lengths.len() == batch`.
+    /// Logical token count per row; `lengths.len() == allocated`.
     lengths: Vec<usize>,
 }
 
 impl BatchedKvCache {
-    /// A cache for `batch` sequences across `num_layers` layers. All rows start
-    /// empty (length 0); buffers are allocated on the first seed/append.
+    /// A cache with all `batch` rows active from the start (fixed cohort). Rows
+    /// start empty (length 0); buffers are allocated on the first seed/append.
     pub fn new(num_layers: usize, batch: usize) -> Self {
         assert!(batch > 0, "BatchedKvCache requires batch >= 1");
         Self {
             num_layers,
-            batch,
+            allocated: batch,
+            active: batch,
             layers: (0..num_layers).map(|_| None).collect(),
             lengths: vec![0; batch],
+        }
+    }
+
+    /// A cache that can hold up to `max_batch` rows but starts with **none**
+    /// active — for continuous batching, where requests join via
+    /// [`Self::add_active_row`] and leave via [`Self::remove_active_row`].
+    pub fn with_capacity(num_layers: usize, max_batch: usize) -> Self {
+        assert!(max_batch > 0, "BatchedKvCache requires max_batch >= 1");
+        Self {
+            num_layers,
+            allocated: max_batch,
+            active: 0,
+            layers: (0..num_layers).map(|_| None).collect(),
+            lengths: vec![0; max_batch],
         }
     }
 
@@ -95,8 +114,75 @@ impl BatchedKvCache {
         self.num_layers
     }
 
+    /// Number of active rows (the batch width decode runs over).
     pub fn batch(&self) -> usize {
-        self.batch
+        self.active
+    }
+
+    /// Maximum rows this cache can hold.
+    pub fn capacity(&self) -> usize {
+        self.allocated
+    }
+
+    /// Reserve a fresh active row (the contiguous next slot) and return its
+    /// index; the caller then seeds it via [`Self::seed_row_layer`]. Panics if
+    /// the cache is already at capacity.
+    pub fn add_active_row(&mut self) -> usize {
+        assert!(
+            self.active < self.allocated,
+            "BatchedKvCache at capacity {}",
+            self.allocated
+        );
+        let slot = self.active;
+        self.lengths[slot] = 0;
+        self.active += 1;
+        slot
+    }
+
+    /// Remove active row `slot`, keeping the active set a contiguous prefix by
+    /// moving the last active row into `slot` (its KV is copied for every
+    /// allocated layer). Returns the previous index of the row now living at
+    /// `slot` (`Some(old_last)` when a move happened, `None` when `slot` was
+    /// already the last active row) so the caller can update its slot→request
+    /// map.
+    pub fn remove_active_row(&mut self, slot: usize) -> Option<usize> {
+        assert!(slot < self.active, "remove_active_row: slot out of range");
+        let last = self.active - 1;
+        let moved = if slot != last {
+            let len = self.lengths[last];
+            for layer in self.layers.iter_mut().flatten() {
+                Self::copy_row(layer, last, slot, len);
+            }
+            self.lengths[slot] = len;
+            Some(last)
+        } else {
+            None
+        };
+        self.lengths[last] = 0;
+        self.active = last;
+        moved
+    }
+
+    /// Copy row `src`'s first `len` tokens into row `dst` (same layer buffer).
+    fn copy_row(layer: &mut BatchedLayerKv, src: usize, dst: usize, len: usize) {
+        if len == 0 {
+            return;
+        }
+        let ones = [1, 1, 1, 1];
+        let (src, dst) = (src as i32, dst as i32);
+        let take = |buf: &MlxArray| {
+            slice(
+                buf,
+                &[src, 0, 0, 0],
+                &[src + 1, layer.n_kv_heads, len as i32, layer.head_dim],
+                &ones,
+                None,
+            )
+        };
+        let (k_row, v_row) = (take(&layer.k), take(&layer.v));
+        let stop = [dst + 1, layer.n_kv_heads, len as i32, layer.head_dim];
+        layer.k = slice_update(&layer.k, &k_row, &[dst, 0, 0, 0], &stop, &ones, None);
+        layer.v = slice_update(&layer.v, &v_row, &[dst, 0, 0, 0], &stop, &ones, None);
     }
 
     /// Logical token count of row `r`.
@@ -104,15 +190,19 @@ impl BatchedKvCache {
         self.lengths[row]
     }
 
-    /// Per-row logical lengths — the input a batched attention mask is built
-    /// from. `lengths().len() == batch`.
+    /// Per-row logical lengths for the active rows — the input a batched
+    /// attention mask is built from. `lengths().len() == batch()`.
     pub fn lengths(&self) -> &[usize] {
-        &self.lengths
+        &self.lengths[..self.active]
     }
 
-    /// Max logical length across rows (the token extent of `layer_view`).
+    /// Max logical length across active rows (the token extent of `layer_view`).
     pub fn max_len(&self) -> usize {
-        self.lengths.iter().copied().max().unwrap_or(0)
+        self.lengths[..self.active]
+            .iter()
+            .copied()
+            .max()
+            .unwrap_or(0)
     }
 
     /// Clear row `r`'s logical length so its slot can be reused. The backing
@@ -128,7 +218,7 @@ impl BatchedKvCache {
     /// after all layers have been appended, mirroring the single-sequence
     /// cache's `seq_len += 1`.
     pub fn advance_all(&mut self, n: usize) {
-        for len in &mut self.lengths {
+        for len in &mut self.lengths[..self.active] {
             *len += n;
         }
     }
@@ -166,7 +256,7 @@ impl BatchedKvCache {
         min_capacity: usize,
     ) {
         assert!(layer < self.num_layers, "layer {layer} out of bounds");
-        let batch = self.batch as i32;
+        let batch = self.allocated as i32;
         match &mut self.layers[layer] {
             None => {
                 let capacity = chunk_ceiling(min_capacity.max(1));
@@ -248,9 +338,9 @@ impl BatchedKvCache {
     /// was already seeded to a different length by another layer this step.
     pub fn seed_row_layer(&mut self, layer: usize, row: usize, new_k: &MlxArray, new_v: &MlxArray) {
         assert!(
-            row < self.batch,
+            row < self.allocated,
             "row {row} out of bounds for batch {}",
-            self.batch
+            self.allocated
         );
         let (n_kv_heads, head_dim, dtype) = self.validate_kv(new_k, new_v, 1);
         let len = new_k.shape()[2] as usize;
@@ -282,7 +372,7 @@ impl BatchedKvCache {
         new_k: &MlxArray,
         new_v: &MlxArray,
     ) -> (MlxArray, MlxArray) {
-        let (n_kv_heads, head_dim, dtype) = self.validate_kv(new_k, new_v, self.batch as i32);
+        let (n_kv_heads, head_dim, dtype) = self.validate_kv(new_k, new_v, self.active as i32);
         assert_eq!(
             new_k.shape()[2],
             1,
@@ -293,7 +383,7 @@ impl BatchedKvCache {
         let ones = [1, 1, 1, 1];
         // Per-row write, because rows may sit at different logical lengths. A
         // fused scatter is a Phase 2 perf follow-up; correctness first.
-        for row in 0..self.batch {
+        for row in 0..self.active {
             let pos = self.lengths[row];
             let r = row as i32;
             let row_k = slice(
@@ -318,7 +408,7 @@ impl BatchedKvCache {
         let layer_kv = self.layers[layer]
             .as_ref()
             .expect("layer allocated by ensure_layer");
-        let stop = [self.batch as i32, n_kv_heads, view_len as i32, head_dim];
+        let stop = [self.active as i32, n_kv_heads, view_len as i32, head_dim];
         (
             slice(&layer_kv.k, &[0, 0, 0, 0], &stop, &ones, None),
             slice(&layer_kv.v, &[0, 0, 0, 0], &stop, &ones, None),
@@ -337,7 +427,7 @@ impl BatchedKvCache {
         }
         let start = [0, 0, 0, 0];
         let stop = [
-            self.batch as i32,
+            self.active as i32,
             layer_kv.n_kv_heads,
             max_len as i32,
             layer_kv.head_dim,
@@ -380,6 +470,13 @@ mod tests {
     /// before `data_raw`.
     fn dense(a: &MlxArray) -> MlxArray {
         contiguous(a, None)
+    }
+
+    /// Row-major f32 contents of a (row) view.
+    fn view_data(a: &MlxArray) -> Vec<f32> {
+        let a = dense(a);
+        eval(&[&a]);
+        a.data_f32().to_vec()
     }
 
     /// Build a `[1, heads, tokens, dim]` f32 array from `data`. The caller must
@@ -731,6 +828,95 @@ mod tests {
                         val(row, 2, h, d),
                         "row {row} current token missing"
                     );
+                }
+            }
+        }
+    }
+
+    /// Continuous composition: `with_capacity` starts empty; `add_active_row`
+    /// grows the active prefix; `remove_active_row` swaps the last active row
+    /// into the freed slot (copying its KV), keeping the prefix contiguous.
+    #[test]
+    fn continuous_composition_add_remove_swaps_rows() {
+        let (heads, dim) = (2usize, 4usize);
+        let mut keep: Vec<Vec<f32>> = Vec::new();
+        let mut cache = BatchedKvCache::with_capacity(1, 4);
+        assert_eq!(cache.batch(), 0);
+        assert_eq!(cache.capacity(), 4);
+
+        // Add 3 rows with distinct "row ids" 10,11,12, length 3.
+        for id in [10usize, 11, 12] {
+            let slot = cache.add_active_row();
+            let kd = seq_block(id, 0, 3, heads, dim);
+            keep.push(kd);
+            let k = arr(keep.last().unwrap(), heads as i32, 3, dim as i32);
+            cache.seed_row_layer(0, slot, &k, &k);
+        }
+        assert_eq!(cache.batch(), 3);
+        assert_eq!(cache.lengths(), &[3, 3, 3]);
+        let row2_before = view_data(&cache.row_view(0, 2).expect("row2").0); // id 12
+
+        // Remove the MIDDLE row (slot 1, id 11): last row (slot 2, id 12) moves
+        // into slot 1.
+        let moved = cache.remove_active_row(1);
+        assert_eq!(moved, Some(2));
+        assert_eq!(cache.batch(), 2);
+        // Slot 1 now byte-identical to the old last row (id 12).
+        assert_eq!(
+            view_data(&cache.row_view(0, 1).expect("new slot1").0),
+            row2_before
+        );
+        // Slot 0 (id 10) untouched.
+        let (r0, _) = cache.row_view(0, 0).expect("row0");
+        let r0 = view_data(&r0);
+        for h in 0..heads {
+            for t in 0..3 {
+                for d in 0..dim {
+                    assert_eq!(
+                        r0[(h * 3 + t) * dim + d],
+                        val(10, t, h, d),
+                        "row0 disturbed"
+                    );
+                }
+            }
+        }
+
+        // Add a new row (id 20) — reuses freed slot 2.
+        let slot = cache.add_active_row();
+        assert_eq!(slot, 2);
+        let kd = seq_block(20, 0, 3, heads, dim);
+        keep.push(kd);
+        let k = arr(keep.last().unwrap(), heads as i32, 3, dim as i32);
+        cache.seed_row_layer(0, slot, &k, &k);
+        assert_eq!(cache.batch(), 3);
+
+        // Decode one token into all active rows; view spans max_len+1 = 4.
+        let mut bd = Vec::new();
+        for row in 0..3usize {
+            for h in 0..heads {
+                for d in 0..dim {
+                    bd.push(val(100 + row, 3, h, d));
+                }
+            }
+        }
+        keep.push(bd);
+        let s = keep.last().unwrap().as_slice();
+        let bk = MlxArray::from_raw_data(
+            s.as_ptr().cast(),
+            std::mem::size_of_val(s),
+            &[3, heads as i32, 1, dim as i32],
+            MlxDtype::Float32,
+        );
+        let (view_k, _) = cache.append_decode_layer(0, &bk, &bk);
+        cache.advance_all(1);
+        assert_eq!(cache.lengths(), &[4, 4, 4]);
+        let vd = view_data(&view_k);
+        // Each active row's freshly-appended token sits at position 3.
+        for row in 0..3usize {
+            for h in 0..heads {
+                for d in 0..dim {
+                    let idx = ((row * heads + h) * 4 + 3) * dim + d;
+                    assert_eq!(vd[idx], val(100 + row, 3, h, d), "row {row} decode token");
                 }
             }
         }

@@ -27,6 +27,7 @@ use std::time::Instant;
 
 use ax_engine_core::NativeModelArtifacts;
 use ax_engine_mlx::{
+    batched_decode_session::BatchedDecodeSession,
     batched_kv_cache::BatchedKvCache,
     batched_sampling::argmax_batched,
     generate::{DEFAULT_PREFILL_CHUNK, chunked_prefill_with_final_hidden},
@@ -121,6 +122,89 @@ fn seed_batched(
     (bcache, cur)
 }
 
+/// Continuous-batching oracle: requests of ragged length join and leave a
+/// `BatchedDecodeSession` at different times; each request's produced stream
+/// must equal a standalone single-sequence decode of the same length. Proves
+/// join/leave/slot-swap don't perturb any request's output.
+fn continuous_oracle(
+    cfg: &ModelConfig,
+    weights: &ModelWeights,
+    layers: usize,
+    max_batch: usize,
+    gen_len: usize,
+) -> bool {
+    let n_requests = max_batch + 2;
+    let vocab = cfg.vocab_size;
+    let prompts: Vec<Vec<u32>> = (0..n_requests)
+        .map(|r| {
+            let len = 16 + (r % 3) * 5; // ragged lengths
+            (0..len)
+                .map(|i| ((r * 29 + i * 7 + 5) % (vocab - 1)) as u32 + 1)
+                .collect()
+        })
+        .collect();
+
+    // Reference: each request decoded alone for `gen_len` steps.
+    let refs: Vec<Vec<u32>> = prompts
+        .iter()
+        .map(|p| {
+            let (mut c, t0) = prefill(cfg, weights, p);
+            single_decode(cfg, weights, &mut c, t0, gen_len)
+        })
+        .collect();
+    clear_cache();
+
+    // Prefill all up front; keep the caches alive for seeding.
+    let prefills: Vec<(MlxKVCache, u32)> =
+        prompts.iter().map(|p| prefill(cfg, weights, p)).collect();
+
+    let mut session = BatchedDecodeSession::new(layers, max_batch);
+    let mut produced: Vec<Vec<u32>> = vec![Vec::new(); n_requests];
+    let mut steps = vec![0usize; n_requests];
+    let mut next_pending = 0usize;
+
+    loop {
+        // Admit pending requests into any free slots.
+        while session.len() < max_batch && next_pending < n_requests {
+            let (cache, tok0) = &prefills[next_pending];
+            session.add(next_pending as u64, cache, *tok0);
+            produced[next_pending].push(*tok0);
+            next_pending += 1;
+        }
+        if session.is_empty() {
+            break;
+        }
+        let outs = session.step(cfg, weights);
+        let mut finished = Vec::new();
+        for (id, tok) in outs {
+            let r = id as usize;
+            produced[r].push(tok);
+            steps[r] += 1;
+            if steps[r] >= gen_len {
+                finished.push(id);
+            }
+        }
+        for id in finished {
+            session.remove(id);
+        }
+    }
+    clear_cache();
+
+    let mut ok = true;
+    for r in 0..n_requests {
+        if produced[r] != refs[r] {
+            ok = false;
+            let first = (0..produced[r].len().max(refs[r].len()))
+                .find(|&i| produced[r].get(i) != refs[r].get(i));
+            eprintln!(
+                "  CONTINUOUS req {r} MISMATCH at {first:?}: produced {:?} ref {:?}",
+                produced[r], refs[r]
+            );
+        }
+    }
+    ok
+}
+
 fn main() {
     let model_dir = env::args().nth(1).unwrap_or_else(|| {
         eprintln!("usage: batched_decode_2a_probe <dense_model_dir>");
@@ -188,6 +272,20 @@ fn main() {
     } else {
         println!("TOKEN-EXACT: FAIL ({mismatches}/{batch} rows differ)");
         std::process::exit(1);
+    }
+
+    // Continuous batching: dynamic join/leave over a BatchedDecodeSession.
+    if env::var("AX_CONTINUOUS").is_ok() {
+        let ok = continuous_oracle(&cfg, &weights, layers, batch, gen_len);
+        if ok {
+            println!(
+                "CONTINUOUS: PASS ({} reqs join/leave a max-{batch} session, all token-exact)",
+                batch + 2
+            );
+        } else {
+            println!("CONTINUOUS: FAIL");
+            std::process::exit(1);
+        }
     }
 
     // ── Perf: aggregate tok/s, batched vs B× single-stream (interleaved) ──
