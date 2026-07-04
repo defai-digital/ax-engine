@@ -1234,12 +1234,7 @@ impl App {
                 None
             }
         });
-        let preset = if task.mode == DownloadMode::Direct && artifacts_dir.is_none() {
-            task.preset
-        } else {
-            None
-        };
-        self.spawn_server(preset, artifacts_dir);
+        self.spawn_server(task.preset, artifacts_dir);
     }
 
     fn spawn_server(&mut self, preset: Option<&str>, artifacts_dir: Option<PathBuf>) {
