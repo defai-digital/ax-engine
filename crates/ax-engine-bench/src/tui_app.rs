@@ -1262,24 +1262,30 @@ impl App {
             .arg("--port")
             .arg(&port)
             .arg("--mlx");
-        // An explicit directory always wins: it's unambiguous by construction,
-        // whereas `--preset` + `--resolve-model-artifacts hf-cache` scans the
-        // whole HF cache by alias substring and errors out the moment more than
-        // one installed precision/snapshot matches. Only fall back to the scan
-        // when the exact directory genuinely couldn't be resolved.
-        if let Some(artifacts_dir) = artifacts_dir {
-            cmd.arg("--mlx-model-artifacts-dir").arg(artifacts_dir);
-        } else if let Some(preset) = preset {
-            cmd.arg("--preset")
-                .arg(preset)
-                .arg("--resolve-model-artifacts")
-                .arg("hf-cache");
-        } else {
-            self.server = Some(Job::failed(
-                "no server artifact path could be resolved for this download".into(),
-            ));
-            self.server_url = None;
-            return;
+        // `--preset` (when known) carries model_id/support_tier metadata and is
+        // not mutually exclusive with an explicit artifacts dir. The dir always
+        // wins for *locating* the weights: it's unambiguous by construction,
+        // whereas `--resolve-model-artifacts hf-cache` scans the whole HF cache
+        // by alias substring and errors out the moment more than one installed
+        // precision/snapshot matches. Only fall back to that scan when the exact
+        // directory genuinely couldn't be resolved.
+        if let Some(preset) = preset {
+            cmd.arg("--preset").arg(preset);
+        }
+        match &artifacts_dir {
+            Some(dir) => {
+                cmd.arg("--mlx-model-artifacts-dir").arg(dir);
+            }
+            None if preset.is_some() => {
+                cmd.arg("--resolve-model-artifacts").arg("hf-cache");
+            }
+            None => {
+                self.server = Some(Job::failed(
+                    "no server artifact path could be resolved for this download".into(),
+                ));
+                self.server_url = None;
+                return;
+            }
         }
         match Job::spawn(cmd, None) {
             Ok(job) => {
