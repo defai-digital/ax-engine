@@ -31,7 +31,7 @@ use ratatui::crossterm::event::{
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Sparkline, Wrap};
 
 // ---------------------------------------------------------------------------
 // Entry point
@@ -44,7 +44,7 @@ pub(crate) fn cmd_tui(args: &[OsString]) -> Result<u8, String> {
              Sidebar: Models · Downloads · Serve.  Pick a model family,\n\
              precision (4/5/6/8-bit), optional MTP accelerator, and destination;\n\
              long downloads run in the Downloads queue while you keep browsing.\n\
-             Keys: ↑↓ move · → enter · ← back · d default cache · s select dir · ? help · q quit."
+             Keys: ↑↓ move · → enter · ← back · / filter · d default cache · s select dir · ? help · q quit."
         );
         return Ok(0);
     }
@@ -246,9 +246,13 @@ struct Job {
     watch_dir: Option<PathBuf>,
     bytes: u64,
     speed: f64,
+    /// Recent `speed` samples (downloads only), newest last, capped at `SPEED_HISTORY_CAP`.
+    speed_history: Vec<u64>,
     last_poll: Option<(Instant, u64)>,
     spinner: usize,
 }
+
+const SPEED_HISTORY_CAP: usize = 120;
 
 impl Job {
     fn spawn(mut cmd: Command, watch_dir: Option<PathBuf>) -> io::Result<Job> {
@@ -285,6 +289,7 @@ impl Job {
             watch_dir,
             bytes: 0,
             speed: 0.0,
+            speed_history: Vec::new(),
             last_poll: None,
             spinner: 0,
         })
@@ -301,6 +306,25 @@ impl Job {
             watch_dir: None,
             bytes: 0,
             speed: 0.0,
+            speed_history: Vec::new(),
+            last_poll: None,
+            spinner: 0,
+        }
+    }
+
+    /// A still-running, processless job carrying a fixed log (test-only).
+    #[cfg(test)]
+    fn running_with_log(log: Vec<String>) -> Job {
+        let (_tx, rx) = mpsc::channel();
+        Job {
+            rx,
+            child: None,
+            log,
+            done: None,
+            watch_dir: None,
+            bytes: 0,
+            speed: 0.0,
+            speed_history: Vec::new(),
             last_poll: None,
             spinner: 0,
         }
@@ -336,6 +360,11 @@ impl Job {
             }
             self.last_poll = Some((now, bytes));
             self.bytes = bytes;
+            self.speed_history.push(self.speed as u64);
+            if self.speed_history.len() > SPEED_HISTORY_CAP {
+                let overflow = self.speed_history.len() - SPEED_HISTORY_CAP;
+                self.speed_history.drain(0..overflow);
+            }
         }
         self.spinner = (self.spinner + 1) % SPINNER.len();
     }
@@ -600,6 +629,9 @@ struct App {
     mtp_idx: usize, // 0 = yes, 1 = no
     pending_download: Option<PendingDownload>,
     directory_picker: DirectoryPicker,
+    /// Case-insensitive substring filter over the family list (Families stage, `/` to edit).
+    filter: String,
+    filtering: bool,
 
     // Downloads
     downloads: Vec<DownloadTask>,
@@ -613,6 +645,8 @@ struct App {
     port: String,
     server: Option<Job>,
     server_url: Option<String>,
+    /// Set once the server job's log confirms it actually bound (not just spawned).
+    server_ready: bool,
 
     // Click-target rects recorded during the last draw (immediate-mode hit-testing).
     sidebar_rect: Cell<Rect>,
@@ -647,6 +681,8 @@ impl App {
             mtp_idx: 0,
             pending_download: None,
             directory_picker: DirectoryPicker::new(),
+            filter: String::new(),
+            filtering: false,
             downloads: Vec::new(),
             download_idx: 0,
             next_download_id: 1,
@@ -656,6 +692,7 @@ impl App {
             port: "8080".into(),
             server: None,
             server_url: None,
+            server_ready: false,
             sidebar_rect: Cell::new(Rect::default()),
             content_list_rect: Cell::new(Rect::default()),
             show_help: false,
@@ -664,6 +701,48 @@ impl App {
 
     fn reload_families(&mut self) {
         self.families = build_families();
+    }
+
+    /// Indices into `self.families` matching the active filter (all of them if empty).
+    fn filtered_family_indices(&self) -> Vec<usize> {
+        if self.filter.is_empty() {
+            return (0..self.families.len()).collect();
+        }
+        let needle = self.filter.to_ascii_lowercase();
+        self.families
+            .iter()
+            .enumerate()
+            .filter(|(_, f)| f.key.to_ascii_lowercase().contains(&needle))
+            .map(|(i, _)| i)
+            .collect()
+    }
+
+    /// Move `family_idx` to the previous/next entry within the filtered list.
+    fn move_family_selection(&mut self, delta: i32) {
+        let indices = self.filtered_family_indices();
+        if indices.is_empty() {
+            return;
+        }
+        let pos = indices
+            .iter()
+            .position(|&i| i == self.family_idx)
+            .unwrap_or(0);
+        let new_pos = if delta < 0 {
+            pos.saturating_sub(1)
+        } else {
+            (pos + 1).min(indices.len() - 1)
+        };
+        self.family_idx = indices[new_pos];
+    }
+
+    /// After the filter text changes, snap `family_idx` back into the filtered set if needed.
+    fn clamp_family_idx_to_filter(&mut self) {
+        let indices = self.filtered_family_indices();
+        if let Some(&first) = indices.first()
+            && !indices.contains(&self.family_idx)
+        {
+            self.family_idx = first;
+        }
     }
 
     fn run(&mut self, terminal: &mut DefaultTerminal) -> io::Result<()> {
@@ -689,6 +768,7 @@ impl App {
             if let Some(job) = &mut self.server {
                 job.tick();
             }
+            self.update_server_ready();
         }
         for task in &mut self.downloads {
             task.cancel();
@@ -708,14 +788,18 @@ impl App {
             }
             return;
         }
-        if matches!(key.code, KeyCode::Char('?')) {
+        // Ignored while typing into a serve text field or the family filter.
+        let typing = (self.tab == Tab::Serve
+            && self.focus == Focus::Content
+            && matches!(self.serve_focus, ServeFocus::Host | ServeFocus::Port))
+            || (self.tab == Tab::Models
+                && self.focus == Focus::Content
+                && self.stage == Stage::Families
+                && self.filtering);
+        if !typing && matches!(key.code, KeyCode::Char('?')) {
             self.show_help = true;
             return;
         }
-        // Global quit (ignored while typing into a serve text field).
-        let typing = self.tab == Tab::Serve
-            && self.focus == Focus::Content
-            && matches!(self.serve_focus, ServeFocus::Host | ServeFocus::Port);
         if !typing && matches!(key.code, KeyCode::Char('q')) {
             self.quit = true;
             return;
@@ -765,9 +849,11 @@ impl App {
             self.focus = Focus::Content;
             match self.tab {
                 Tab::Models => match self.stage {
-                    Stage::Families if idx < self.families.len() => {
-                        self.family_idx = idx;
-                        self.on_key_models(KeyCode::Enter);
+                    Stage::Families => {
+                        if let Some(&real) = self.filtered_family_indices().get(idx) {
+                            self.family_idx = real;
+                            self.on_key_models(KeyCode::Enter);
+                        }
                     }
                     Stage::Precision if idx < self.families[self.family_idx].variants.len() => {
                         self.precision_idx = idx;
@@ -812,20 +898,33 @@ impl App {
 
     fn on_key_models(&mut self, code: KeyCode) {
         match self.stage {
+            Stage::Families if self.filtering => match code {
+                KeyCode::Char(c) => {
+                    self.filter.push(c);
+                    self.clamp_family_idx_to_filter();
+                }
+                KeyCode::Backspace => {
+                    self.filter.pop();
+                    self.clamp_family_idx_to_filter();
+                }
+                KeyCode::Enter | KeyCode::Esc => self.filtering = false,
+                _ => {}
+            },
             Stage::Families => match code {
-                KeyCode::Up | KeyCode::Char('k') => {
-                    self.family_idx = self.family_idx.saturating_sub(1)
-                }
-                KeyCode::Down | KeyCode::Char('j') => {
-                    if self.family_idx + 1 < self.families.len() {
-                        self.family_idx += 1;
-                    }
-                }
+                KeyCode::Up | KeyCode::Char('k') => self.move_family_selection(-1),
+                KeyCode::Down | KeyCode::Char('j') => self.move_family_selection(1),
                 KeyCode::Enter | KeyCode::Right | KeyCode::Char('l') => {
                     self.precision_idx = 0;
                     self.stage = Stage::Precision;
                 }
-                KeyCode::Left | KeyCode::Char('h') | KeyCode::Esc => self.focus = Focus::Sidebar,
+                KeyCode::Char('/') => self.filtering = true,
+                KeyCode::Left | KeyCode::Char('h') | KeyCode::Esc => {
+                    if self.filter.is_empty() {
+                        self.focus = Focus::Sidebar;
+                    } else {
+                        self.filter.clear();
+                    }
+                }
                 _ => {}
             },
             Stage::Precision => match code {
@@ -1054,7 +1153,22 @@ impl App {
         }
     }
 
+    /// Validation message for the port field, if it holds non-empty, non-numeric, or out-of-range text.
+    fn port_error(&self) -> Option<&'static str> {
+        let trimmed = self.port.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+        match trimmed.parse::<u16>() {
+            Ok(0) | Err(_) => Some("port must be 1-65535"),
+            Ok(_) => None,
+        }
+    }
+
     fn start_server(&mut self) {
+        if self.port_error().is_some() {
+            return;
+        }
         if self.server.as_ref().is_some_and(|j| j.done.is_none()) {
             return;
         }
@@ -1072,6 +1186,9 @@ impl App {
     }
 
     fn start_server_for_download(&mut self) {
+        if self.port_error().is_some() {
+            return;
+        }
         if self.server.as_ref().is_some_and(|j| j.done.is_none()) {
             return;
         }
@@ -1097,6 +1214,7 @@ impl App {
     }
 
     fn spawn_server(&mut self, preset: Option<&str>, artifacts_dir: Option<PathBuf>) {
+        self.server_ready = false;
         let host = if self.host.trim().is_empty() {
             "127.0.0.1".to_string()
         } else {
@@ -1141,12 +1259,28 @@ impl App {
         }
     }
 
+    /// Flip `server_ready` once the server job's log confirms it actually bound.
+    fn update_server_ready(&mut self) {
+        if self.server_ready {
+            return;
+        }
+        if let Some(job) = &self.server
+            && job
+                .log
+                .iter()
+                .any(|line| line.contains("listening on http://"))
+        {
+            self.server_ready = true;
+        }
+    }
+
     fn stop_server(&mut self) {
         if let Some(job) = &mut self.server {
             job.cancel();
         }
         self.server = None;
         self.server_url = None;
+        self.server_ready = false;
     }
 
     // -- rendering ------------------------------------------------------------
@@ -1199,19 +1333,73 @@ impl App {
     }
 
     fn draw_models(&self, frame: &mut Frame, area: Rect) {
+        let chunks = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(area);
+        self.draw_breadcrumb(frame, chunks[0]);
         match self.stage {
-            Stage::Families => self.draw_families(frame, area),
-            Stage::Precision => self.draw_precision(frame, area),
-            Stage::Mtp => self.draw_mtp(frame, area),
-            Stage::Destination => self.draw_destination(frame, area),
+            Stage::Families => self.draw_families(frame, chunks[1]),
+            Stage::Precision => self.draw_precision(frame, chunks[1]),
+            Stage::Mtp => self.draw_mtp(frame, chunks[1]),
+            Stage::Destination => self.draw_destination(frame, chunks[1]),
         }
     }
 
+    fn draw_breadcrumb(&self, frame: &mut Frame, area: Rect) {
+        let dim = Style::default().fg(Color::DarkGray);
+        let past = Style::default().fg(Color::Gray);
+        let current = Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD);
+        let stage_style = |target: Stage| {
+            if self.stage == target {
+                current
+            } else if stage_index(self.stage) > stage_index(target) {
+                past
+            } else {
+                dim
+            }
+        };
+
+        let mut spans = vec![Span::styled("Family", stage_style(Stage::Families))];
+        let Some(family) = self.families.get(self.family_idx) else {
+            frame.render_widget(Paragraph::new(Line::from(spans)), area);
+            return;
+        };
+        spans.push(Span::styled(
+            format!(": {}", family.key),
+            stage_style(Stage::Families),
+        ));
+        spans.push(Span::styled("  ›  ", dim));
+
+        let variant = family.variants.get(self.precision_idx);
+        let precision_text = match (self.stage, variant) {
+            (Stage::Families, _) => "Precision".to_string(),
+            (_, Some(v)) => format!("Precision: {}", v.precision()),
+            (_, None) => "Precision".to_string(),
+        };
+        spans.push(Span::styled(precision_text, stage_style(Stage::Precision)));
+
+        if variant.is_some_and(|v| v.mtp_alias.is_some()) {
+            spans.push(Span::styled("  ›  ", dim));
+            let mtp_text = if matches!(self.stage, Stage::Mtp | Stage::Destination) {
+                format!("MTP: {}", if self.mtp_idx == 0 { "yes" } else { "no" })
+            } else {
+                "MTP".to_string()
+            };
+            spans.push(Span::styled(mtp_text, stage_style(Stage::Mtp)));
+        }
+
+        spans.push(Span::styled("  ›  ", dim));
+        spans.push(Span::styled("Destination", stage_style(Stage::Destination)));
+
+        frame.render_widget(Paragraph::new(Line::from(spans)), area);
+    }
+
     fn draw_families(&self, frame: &mut Frame, area: Rect) {
-        let rows: Vec<ListItem> = self
-            .families
+        let indices = self.filtered_family_indices();
+        let rows: Vec<ListItem> = indices
             .iter()
-            .map(|family| {
+            .map(|&i| {
+                let family = &self.families[i];
                 let installed = family.variants.iter().filter(|v| v.installed).count();
                 let status = if installed == family.variants.len() {
                     Span::styled("installed", Style::default().fg(Color::Green))
@@ -1224,7 +1412,7 @@ impl App {
                     Span::styled("--", Style::default().fg(Color::DarkGray))
                 };
                 let mtp = if family.has_mtp() {
-                    Span::styled("  ⚡MTP", Style::default().fg(Color::Yellow))
+                    Span::styled("  ⚡MTP", Style::default().fg(Color::Magenta))
                 } else {
                     Span::raw("")
                 };
@@ -1242,12 +1430,31 @@ impl App {
                 ]))
             })
             .collect();
+        let rows = if rows.is_empty() {
+            vec![ListItem::new(Line::from(Span::styled(
+                "No families match the filter.",
+                Style::default().fg(Color::Yellow),
+            )))]
+        } else {
+            rows
+        };
+        let selected = indices
+            .iter()
+            .position(|&i| i == self.family_idx)
+            .unwrap_or(0);
+        let title = if self.filtering {
+            format!(" Models — filter: {}_ ", self.filter)
+        } else if !self.filter.is_empty() {
+            format!(" Models — filter: {} (Esc clears) ", self.filter)
+        } else {
+            " Models — / to filter ".to_string()
+        };
         self.render_list(
             frame,
             area,
-            " Models ",
+            &title,
             rows,
-            self.family_idx,
+            selected,
             self.focus == Focus::Content,
         );
     }
@@ -1275,7 +1482,7 @@ impl App {
                     )
                 };
                 let mtp = if v.mtp_alias.is_some() {
-                    Span::styled("⚡MTP  ", Style::default().fg(Color::Yellow))
+                    Span::styled("⚡MTP  ", Style::default().fg(Color::Magenta))
                 } else {
                     Span::raw("      ")
                 };
@@ -1433,7 +1640,7 @@ impl App {
     fn draw_downloads(&self, frame: &mut Frame, area: Rect) {
         let chunks = Layout::vertical([
             Constraint::Min(6),
-            Constraint::Length(5),
+            Constraint::Length(6),
             Constraint::Min(5),
         ])
         .split(area);
@@ -1506,13 +1713,23 @@ impl App {
                 ]
             })
             .unwrap_or_else(|| vec![Line::raw("")]);
+        let details_block = Block::default()
+            .borders(Borders::ALL)
+            .title(" Selected download (Enter serve ready · x cancel) ");
+        let details_inner = details_block.inner(chunks[1]);
+        frame.render_widget(details_block, chunks[1]);
+        let inner_chunks =
+            Layout::vertical([Constraint::Length(3), Constraint::Length(1)]).split(details_inner);
+        frame.render_widget(Paragraph::new(details), inner_chunks[0]);
+        let history: &[u64] = selected
+            .and_then(|task| task.job.as_ref())
+            .map(|job| job.speed_history.as_slice())
+            .unwrap_or(&[]);
         frame.render_widget(
-            Paragraph::new(details).block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title(" Selected download (Enter serve ready · x cancel) "),
-            ),
-            chunks[1],
+            Sparkline::default()
+                .data(history)
+                .style(Style::default().fg(Color::Cyan)),
+            inner_chunks[1],
         );
         self.draw_log(
             frame,
@@ -1525,7 +1742,7 @@ impl App {
     fn draw_serve(&self, frame: &mut Frame, area: Rect) {
         let chunks = Layout::vertical([
             Constraint::Min(3),
-            Constraint::Length(4),
+            Constraint::Length(6),
             Constraint::Length(1),
             Constraint::Min(3),
         ])
@@ -1574,20 +1791,32 @@ impl App {
             &self.port,
             self.focus == Focus::Content && self.serve_focus == ServeFocus::Port,
         );
-        let url = match &self.server_url {
-            Some(url) if self.server.as_ref().is_some_and(|j| j.done.is_none()) => {
+        let status = match (&self.server_url, &self.server) {
+            (Some(url), Some(job)) if job.done.is_none() && self.server_ready => {
                 Line::from(Span::styled(
                     format!("running at {url}"),
                     Style::default().fg(Color::Green),
                 ))
             }
+            (Some(_), Some(job)) if job.done.is_none() => Line::from(Span::styled(
+                "starting…",
+                Style::default().fg(Color::Yellow),
+            )),
+            (_, Some(job)) if job.done.is_some() => Line::from(Span::styled(
+                "failed to start (see log)",
+                Style::default().fg(Color::Red),
+            )),
             _ => Line::from(Span::styled(
                 "stopped",
                 Style::default().fg(Color::DarkGray),
             )),
         };
+        let error_line = match self.port_error() {
+            Some(err) => Line::from(Span::styled(err, Style::default().fg(Color::Red))),
+            None => Line::raw(""),
+        };
         frame.render_widget(
-            Paragraph::new(vec![host_line, port_line, url]).block(
+            Paragraph::new(vec![host_line, port_line, error_line, status]).block(
                 Block::default()
                     .borders(Borders::ALL)
                     .title(" Server (Enter start · x stop · Tab fields) "),
@@ -1657,8 +1886,11 @@ impl App {
         let help = match self.focus {
             Focus::Sidebar => "↑↓ pick · → enter · ? help · q quit",
             Focus::Content => match (self.tab, self.stage) {
+                (Tab::Models, Stage::Families) if self.filtering => {
+                    "type to filter · Enter/Esc apply"
+                }
                 (Tab::Models, Stage::Families) => {
-                    "↑↓ move · → choose precision · ← sidebar · ? help · q quit"
+                    "↑↓ move · → choose precision · / filter · ← sidebar · ? help · q quit"
                 }
                 (Tab::Models, Stage::Precision) => "↑↓ move · → destination · ← back · ? help",
                 (Tab::Models, Stage::Mtp) => "y/n or ↑↓+Enter · Esc back",
@@ -1677,7 +1909,7 @@ impl App {
     }
 
     fn draw_help(&self, frame: &mut Frame, area: Rect) {
-        let popup = centered_rect(68, 18, area);
+        let popup = centered_rect(72, 20, area);
         let lines = vec![
             Line::from(Span::styled(
                 "AX Engine TUI",
@@ -1686,7 +1918,10 @@ impl App {
             Line::raw(""),
             Line::raw("Models"),
             Line::raw("  Enter/Right selects model, precision, and accelerator."),
-            Line::raw("  Destination: d uses the shared HF cache; s uses the current directory."),
+            Line::raw("  / filters the family list by name; Enter/Esc closes the filter,"),
+            Line::raw("  Esc again (or ← with an empty filter) clears it."),
+            Line::raw("  Destination: d uses the shared HF cache; s uses the current directory;"),
+            Line::raw("  ~ jumps to your home directory; r jumps to /."),
             Line::raw(""),
             Line::raw("Downloads"),
             Line::raw("  Downloads keep running while you browse other models."),
@@ -1694,6 +1929,7 @@ impl App {
             Line::raw(""),
             Line::raw("Serve"),
             Line::raw("  Enter starts the selected installed model; x stops the server."),
+            Line::raw("  Tab moves between the list and the host/port fields."),
             Line::raw(""),
             Line::from(Span::styled(
                 "Esc or ? closes help. q exits and stops child jobs.",
@@ -1707,6 +1943,15 @@ impl App {
                 .wrap(Wrap { trim: false }),
             popup,
         );
+    }
+}
+
+fn stage_index(stage: Stage) -> usize {
+    match stage {
+        Stage::Families => 0,
+        Stage::Precision => 1,
+        Stage::Mtp => 2,
+        Stage::Destination => 3,
     }
 }
 
@@ -2108,5 +2353,103 @@ mod tests {
         assert_eq!(app.family_idx, 1);
         app.on_mouse(mouse(MouseEventKind::ScrollUp, 0, 0));
         assert_eq!(app.family_idx, 0);
+    }
+
+    #[test]
+    fn breadcrumb_reflects_wizard_depth() {
+        let mut app = App::new();
+        app.family_idx = family_index(&app, "gemma4-12b");
+        assert!(render(&app).contains("Family: gemma4-12b"));
+
+        app.on_key_models(KeyCode::Enter); // -> Precision (4-bit is variant 0)
+        assert!(render(&app).contains("Precision: 4-bit"));
+
+        app.on_key_models(KeyCode::Enter); // -> Mtp (gemma4-12b 4-bit has MTP)
+        assert!(app.stage == Stage::Mtp);
+        assert!(render(&app).contains("MTP: yes"));
+    }
+
+    #[test]
+    fn mtp_badge_is_magenta_not_yellow() {
+        // Leave the default selection (family_idx 0) alone: the selected row's
+        // own highlight style overrides span colors, so check the *other* MTP
+        // families' badges instead — several exist in the catalog.
+        let app = App::new();
+        let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        terminal.draw(|frame| app.draw(frame)).unwrap();
+        let colors: Vec<Color> = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .filter(|cell| cell.symbol() == "⚡")
+            .map(|cell| cell.fg)
+            .collect();
+        assert!(!colors.is_empty(), "MTP badge glyph should render");
+        assert!(
+            colors.contains(&Color::Magenta),
+            "at least one non-selected MTP badge should be magenta: {colors:?}"
+        );
+        assert!(
+            !colors.contains(&Color::Yellow),
+            "MTP badge must not reuse the queued-status yellow: {colors:?}"
+        );
+    }
+
+    #[test]
+    fn port_validation_rejects_bad_values_only() {
+        let mut app = App::new();
+        assert!(app.port_error().is_none(), "default port is valid");
+        app.port = "".into();
+        assert!(app.port_error().is_none(), "empty falls back to default");
+        app.port = "abc".into();
+        assert_eq!(app.port_error(), Some("port must be 1-65535"));
+        app.port = "99999".into();
+        assert_eq!(app.port_error(), Some("port must be 1-65535"));
+        app.port = "0".into();
+        assert_eq!(app.port_error(), Some("port must be 1-65535"));
+        app.port = "8080".into();
+        assert!(app.port_error().is_none());
+    }
+
+    #[test]
+    fn server_status_waits_for_listening_line_before_going_green() {
+        let mut app = App::new();
+        app.server = Some(Job::running_with_log(vec!["booting model...".to_string()]));
+        app.server_url = Some("http://127.0.0.1:8080".to_string());
+        app.tab = Tab::Serve;
+        assert!(!app.server_ready);
+        assert!(render(&app).contains("starting"));
+
+        app.server
+            .as_mut()
+            .unwrap()
+            .log
+            .push("ax-engine-server preview listening on http://127.0.0.1:8080".to_string());
+        app.update_server_ready();
+        assert!(app.server_ready);
+        assert!(render(&app).contains("running at http://127.0.0.1:8080"));
+    }
+
+    #[test]
+    fn filter_narrows_family_list_and_drill_in_maps_back() {
+        let mut app = App::new();
+        app.filter = "gemma4-12b".to_string();
+        app.clamp_family_idx_to_filter();
+        let indices = app.filtered_family_indices();
+        assert_eq!(indices.len(), 1);
+        assert_eq!(app.families[indices[0]].key, "gemma4-12b");
+        assert_eq!(app.family_idx, indices[0]);
+
+        let text = render(&app);
+        assert!(text.contains("filter: gemma4-12b"));
+        assert!(
+            !text.contains("gemma4-e2b"),
+            "non-matching family should be hidden"
+        );
+
+        app.on_key_models(KeyCode::Enter);
+        assert!(app.stage == Stage::Precision);
+        assert_eq!(app.families[app.family_idx].key, "gemma4-12b");
     }
 }
