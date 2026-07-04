@@ -344,6 +344,56 @@ pub fn embed_tokens(
     embed_tokens_arr(&ids_1d, embedding, hidden_size)
 }
 
+/// Embed one decode token per row for **batched decode**, returning hidden
+/// states of shape `[B, 1, hidden]` where `B == token_ids.len()`.
+///
+/// This is the batched-decode analog of [`embed_tokens`] (which returns
+/// `[1, seq, hidden]` for one sequence): the row gather + dequantize is
+/// identical — only the final reshape differs. `embed_tokens` stacks `seq`
+/// tokens of one sequence on the sequence axis (`[1, seq, hidden]`); this stacks
+/// `B` independent sequences' current tokens on the batch axis
+/// (`[B, 1, hidden]`), the input shape a batched decode forward expects. The
+/// single-sequence path in [`embed_tokens_arr`] is left untouched.
+///
+/// Like [`embed_tokens`], `from_raw_data` borrows `token_ids`, so the caller
+/// must keep it alive until the returned (lazy) hidden states are evaluated.
+///
+/// # Panics
+/// If `token_ids` is empty.
+pub fn embed_decode_tokens_batched(
+    token_ids: &[u32],
+    embedding: &QuantizedWeight,
+    hidden_size: usize,
+) -> MlxArray {
+    assert!(
+        !token_ids.is_empty(),
+        "batched decode embed requires at least one token"
+    );
+    let batch = token_ids.len() as i32;
+    let ids = MlxArray::from_raw_data(
+        token_ids.as_ptr() as *const u8,
+        std::mem::size_of_val(token_ids),
+        &[batch],
+        MlxDtype::Uint32,
+    );
+    let flat = if let Some(scales) = &embedding.scales {
+        let row_w = take(&embedding.weight, &ids, 0, None);
+        let row_s = take(scales, &ids, 0, None);
+        let row_b = embedding.biases.as_ref().map(|b| take(b, &ids, 0, None));
+        dequantize(
+            &row_w,
+            &row_s,
+            row_b.as_ref(),
+            Some(embedding.group_size),
+            Some(embedding.bits),
+            None,
+        )
+    } else {
+        take(&embedding.weight, &ids, 0, None)
+    };
+    reshape(&flat, &[batch, 1, hidden_size as i32], None)
+}
+
 /// Full forward pass: returns logits for the LAST token only — `[vocab_size]` f32.
 pub fn forward(
     cfg: &ModelConfig,
@@ -5445,5 +5495,89 @@ mod tests {
             compiled_again_f32.data_f32().to_vec(),
             "cached compiled swiglu must remain stable across invocations"
         );
+    }
+
+    // ── Batched decode token assembly ──
+
+    fn plain_f32(data: &[f32], shape: &[i32]) -> MlxArray {
+        MlxArray::from_raw_data(
+            data.as_ptr().cast(),
+            std::mem::size_of_val(data),
+            shape,
+            MlxDtype::Float32,
+        )
+    }
+
+    /// The oracle: `embed_decode_tokens_batched([id0,id1,..])` row `r` is
+    /// byte-identical to the single-sequence `embed_tokens([id_r])` — proving the
+    /// `[B, 1, hidden]` batch assembly stacks the same per-token embeddings the
+    /// batch=1 path produces, just on the batch axis. Covers both the quantized
+    /// (production) and non-quantized embedding paths.
+    #[test]
+    fn batched_decode_embed_rows_match_single_token_embed() {
+        use mlx_sys::{MlxQuantizationMode, contiguous, quantize, slice};
+
+        let (vocab, hidden) = (8usize, 64usize);
+        // Distinct row values so a wrong gather index would be caught.
+        let table: Vec<f32> = (0..vocab * hidden)
+            .map(|i| ((i % 97) as f32) * 0.013 - 0.5)
+            .collect();
+        let weight = plain_f32(&table, &[vocab as i32, hidden as i32]);
+
+        // Token ids include repeats and out-of-order rows.
+        let ids: Vec<u32> = vec![3, 0, 7, 3, 5];
+
+        // Quantized (production) embedding and a non-quantized one.
+        let q = quantize(
+            &weight,
+            Some(64),
+            Some(4),
+            MlxQuantizationMode::Affine,
+            None,
+            None,
+        );
+        let quantized = QuantizedWeight {
+            weight: q[0].clone(),
+            scales: Some(q[1].clone()),
+            biases: Some(q[2].clone()),
+            group_size: 64,
+            bits: 4,
+        };
+        let plain = QuantizedWeight {
+            weight: weight.clone(),
+            scales: None,
+            biases: None,
+            group_size: 0,
+            bits: 0,
+        };
+
+        for embedding in [&quantized, &plain] {
+            let batched = embed_decode_tokens_batched(&ids, embedding, hidden);
+            assert_eq!(batched.shape(), vec![ids.len() as i32, 1, hidden as i32]);
+            for (row, &id) in ids.iter().enumerate() {
+                let r = row as i32;
+                let batched_row = contiguous(
+                    &slice(
+                        &batched,
+                        &[r, 0, 0],
+                        &[r + 1, 1, hidden as i32],
+                        &[1, 1, 1],
+                        None,
+                    ),
+                    None,
+                );
+                // Bind the id array to a named local: `embed_tokens` borrows it
+                // via `from_raw_data`, and it must outlive the eval below.
+                let single_ids = [id];
+                let single = embed_tokens(&single_ids, embedding, hidden);
+                eval(&[&batched_row, &single]);
+                assert_eq!(single.shape(), vec![1, 1, hidden as i32]);
+                assert_eq!(
+                    batched_row.data_f32(),
+                    single.data_f32(),
+                    "row {row} (id {id}) differs from single-token embed"
+                );
+            }
+        }
     }
 }
