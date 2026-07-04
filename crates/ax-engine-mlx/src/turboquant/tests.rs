@@ -231,6 +231,114 @@ fn support_report_excludes_linear_attention_layers() {
 }
 
 #[test]
+fn open_tq_metal_report_marks_dense_full_attention_as_best_fit() {
+    let mut cfg = support_test_model(4, 128);
+    cfg.n_heads = 32;
+    cfg.n_kv_heads = 8;
+
+    let report = open_tq_metal_support_report(&cfg).expect("open-tq support report");
+
+    assert_eq!(report.preset, TurboQuantPreset::K4V4);
+    assert_eq!(report.fit, OpenTqMetalModelFit::DenseFullAttention);
+    assert!(report.has_candidate_layers());
+    assert_eq!(report.eligible_layers, 4);
+    assert_eq!(report.eligible_layer_ratio_milli(), 1000);
+    assert!(report.estimated_compressed_bytes_per_token > 0);
+    assert!(
+        report.estimated_compressed_bytes_per_token
+            < report.estimated_full_precision_bytes_per_token
+    );
+}
+
+#[test]
+fn open_tq_metal_report_marks_gemma_style_mixed_layers_as_partial_fit() {
+    let mut cfg = support_test_model(4, 128);
+    cfg.model_family = "gemma4".to_string();
+    cfg.n_heads = 8;
+    cfg.n_kv_heads = 4;
+
+    let mut sliding = test_layer(128);
+    sliding.sliding_window = Some(1024);
+    let full = test_layer(128);
+    let mut shared = test_layer(128);
+    shared.kv_source_layer = Some(1);
+    let second_full = test_layer(128);
+    cfg.layer_configs = vec![sliding, full, shared, second_full];
+
+    let report = open_tq_metal_support_report(&cfg).expect("open-tq support report");
+
+    assert_eq!(report.fit, OpenTqMetalModelFit::PartialHybridAttention);
+    assert!(report.has_candidate_layers());
+    assert_eq!(report.eligible_layers, 2);
+    assert_eq!(report.sliding_window_layers, 1);
+    assert_eq!(report.kv_shared_layers, 1);
+    assert_eq!(report.eligible_layer_ratio_milli(), 500);
+}
+
+#[test]
+fn open_tq_metal_report_blocks_linear_attention_only_shapes() {
+    let mut cfg = support_test_model(3, 128);
+    cfg.n_heads = 16;
+    cfg.n_kv_heads = 4;
+    cfg.linear_attention = Some({
+        let (q_scale, k_scale) = crate::linear_attention_ops::linear_attention_qk_scale(64);
+        LinearAttentionConfig {
+            full_attention_interval: 8,
+            num_value_heads: 4,
+            num_key_heads: 4,
+            key_head_dim: 64,
+            value_head_dim: 64,
+            conv_kernel_dim: 4,
+            q_scale,
+            k_scale,
+        }
+    });
+
+    let report = open_tq_metal_support_report(&cfg).expect("open-tq support report");
+
+    assert_eq!(report.fit, OpenTqMetalModelFit::NoEligibleLayers);
+    assert!(!report.has_candidate_layers());
+    assert_eq!(report.eligible_layers, 0);
+    assert_eq!(report.linear_attention_layers, 3);
+}
+
+#[test]
+fn open_tq_metal_report_fails_closed_for_irregular_gqa() {
+    let mut cfg = support_test_model(3, 128);
+    cfg.n_heads = 10;
+    cfg.n_kv_heads = 4;
+
+    let report = open_tq_metal_support_report(&cfg).expect("open-tq support report");
+
+    assert_eq!(
+        report.fit,
+        OpenTqMetalModelFit::InvalidGroupedQueryAttention
+    );
+    assert!(!report.has_candidate_layers());
+    assert_eq!(report.eligible_layers, 3);
+}
+
+#[test]
+fn open_tq_metal_report_clamps_value_group_size_for_small_head_dim() {
+    // head_dim (8) < OPEN_TQ_METAL_VALUE_GROUP_SIZE (32): the layout must clamp
+    // value_group_size to head_dim so the compressed estimate matches the runtime
+    // shadow layout produced by turboquant_shadow_layout_for_layer.
+    let mut cfg = support_test_model(2, 8);
+    cfg.n_heads = 4;
+    cfg.n_kv_heads = 4;
+
+    let report = open_tq_metal_support_report(&cfg).expect("open-tq support report");
+
+    assert_eq!(report.fit, OpenTqMetalModelFit::DenseFullAttention);
+    assert!(report.has_candidate_layers());
+    assert_eq!(report.eligible_layers, 2);
+    assert!(report.estimated_compressed_bytes_per_token > 0);
+    assert!(report.estimated_full_precision_bytes_per_token > 0);
+    // Note: at head_dim=8 the compressed overhead (norms, metadata, alignment)
+    // can exceed quantization savings, so we do not assert compressed < full.
+}
+
+#[test]
 fn block_layout_computes_aligned_slot_and_block_sizes() {
     let layout = TurboQuantBlockLayout::new(TurboQuantBlockLayoutConfig {
         preset: TurboQuantPreset::K8V4,

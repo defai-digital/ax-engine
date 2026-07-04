@@ -4,7 +4,7 @@ This is the consolidated PRD rollup for AX Engine. It lives beside the per-featu
 
 - **Scope:** this directory only. ADRs (`../adr/`) and implementation plans (`../plan/`) are governed separately.
 - **Maintenance:** update the index table when a PRD lands, is superseded, or is newly proposed. Use the **status legend** below.
-- **Last consolidated:** 2026-07-03. Version baseline: **6.6.1**.
+- **Last consolidated:** 2026-07-04. Version baseline: **6.6.1**.
 
 ## Status legend
 
@@ -31,6 +31,7 @@ Architecture and the UX surface are landed; remaining work is gating/promotion a
 
 - **Authoritative — promotion:** `TURBOQUANT-PROMOTION-PRD.md` — Phases 0/1 done; 2 blocking phases remain (correctness/quality/perf gates).
 - **Authoritative — search:** `QUANTUM-OP-PRD.md` — `ax.offline_policy_search.v1` guardrails landed; TurboQuant runtime promotion blocked on 4 milestones.
+- **Open:** `PRD-2026-07-04-open-tq-metal-int4-kv-attention.md` — separate Open-TQ-Metal K4/V4 compressed-domain attention track; phase-0 support classification landed.
 - **Open:** `PRD-2026-06-01-turboquant-codec-kernel-improvements.md` — code implemented; model/short-decode/promotion evidence + clippy pending.
 - **Open:** `PRD-2026-05-27-experimental-low-bit-mlx-quantization.md` — gated experimental 3-bit/2-bit path; direct vs n-gram audit incomplete.
 
@@ -91,7 +92,7 @@ Architecture and the UX surface are landed; remaining work is gating/promotion a
 
 > **Never written:** a `PRD-2026-06-16-decode-prefill-speed-phase2.md` (linear-attention last-position-only, MoE narrow router softmax, MoE fusion relaxation to prefill) was listed as "approved" in the 2026-06-20 rollup but the file was never created. Its MoE scope is now tracked under `PRD-2026-06-19-qwen3-coder-next-moe-decode-prefill-phase2.md` and `PRD-2026-06-23-graph-level-moe-decode-compilation.md`. The dangling index entry was removed on 2026-06-24.
 
-## Full index (all 41 PRDs)
+## Full index (all 42 PRDs)
 
 ### Speculative decoding — MTP / n-gram (14)
 | File | Date | Status |
@@ -111,9 +112,10 @@ Architecture and the UX surface are landed; remaining work is gating/promotion a
 | `MTP-ACCEPT-RATE-PRD.md` | — | shipped |
 | `GEMMA4-MTP-PRD.md` | — | shipped (opt-in) |
 
-### Quantization / TurboQuant (4)
+### Quantization / TurboQuant (5)
 | File | Date | Status |
 |---|---|---|
+| `PRD-2026-07-04-open-tq-metal-int4-kv-attention.md` | 2026-07-04 | active (draft; phase-0 contract landed) |
 | `TURBOQUANT-PROMOTION-PRD.md` | 2026-05-09 | active (blocking phases) |
 | `QUANTUM-OP-PRD.md` | 2026-05-14 | active (partially implemented) |
 | `PRD-2026-06-01-turboquant-codec-kernel-improvements.md` | 2026-06-01 | active (evidence pending) |
@@ -163,4 +165,4 @@ Architecture and the UX surface are landed; remaining work is gating/promotion a
 | `INTERACTIVE-DOWNLOADER-PRD.md` | — | shipped (core) |
 
 ## Tally
-active: 27 · shipped: 13 · superseded: 1 · expired: 0 · unfit: 0 (41 total)
+active: 28 · shipped: 13 · superseded: 1 · expired: 0 · unfit: 0 (42 total)

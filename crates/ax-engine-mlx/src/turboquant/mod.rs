@@ -22,8 +22,10 @@ mod quality;
 mod tests;
 
 mod codec;
+mod open_tq_metal;
 
 pub use codec::*;
 pub use layer_support::*;
+pub use open_tq_metal::*;
 pub use production::*;
 pub use quality::*;
