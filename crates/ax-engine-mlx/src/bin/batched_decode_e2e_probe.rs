@@ -225,6 +225,10 @@ fn main() {
     }
 
     // Batched decode: ALL requests' decode items in ONE run() call per step.
+    // Timed: with the flag on the group runs one shared forward; with it off the
+    // runner processes them per item (B sequential forwards) — the runner-level
+    // A/B (run the harness once per flag value, same batch, and compare).
+    let decode_started = std::time::Instant::now();
     for s in 0..gen_len {
         let generated_len = s + 1; // prefill produced token #1
         let items: Vec<ExecutionItem> = (0..batch)
@@ -248,6 +252,13 @@ fn main() {
             cur[r] = tok;
         }
     }
+    let decode_s = decode_started.elapsed().as_secs_f64();
+    println!(
+        "decode: {decode_s:.3}s for {} tokens = {:.1} agg tok/s (batched_flag {})",
+        batch * gen_len,
+        (batch * gen_len) as f64 / decode_s,
+        ax_engine_mlx::batched_decode_session::batched_decode_enabled()
+    );
 
     // Verdict 1: harness fidelity — runner streams == model::forward reference.
     let mut ok = true;
