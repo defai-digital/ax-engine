@@ -3128,6 +3128,12 @@ struct RequestState {
     prompt_prefix_tokens: Vec<u32>,
     generated_tokens: Vec<u32>,
     cached_prefill_output_token: Option<u32>,
+    /// Lazy cache clone captured mid-prefill at the largest block-aligned
+    /// boundary of an unaligned prompt on a linear-attention model, where
+    /// store-time `trim_to` cannot produce a prefix snapshot (conv/recurrent
+    /// state does not roll back). `(boundary_token_len, cache_at_boundary)`;
+    /// consumed by `store_prompt_prefix_snapshots` after the prefill item.
+    prefill_boundary_snapshot: Option<(usize, MlxKVCache)>,
     ngram: NgramTable,
     /// Per-request PRNG for sampling-capable paths. Seeded from the request's
     /// sampling seed so repeated deterministic requests are reproducible.
@@ -3281,6 +3287,7 @@ impl RequestState {
             prompt_prefix_tokens: Vec::new(),
             generated_tokens: Vec::new(),
             cached_prefill_output_token: None,
+            prefill_boundary_snapshot: None,
             ngram: NgramTable::new(),
             rng: Xorshift64::new(seed),
             sampling_probs_buf: Vec::new(),
@@ -5368,6 +5375,45 @@ impl MlxRunner {
                     } else {
                         self.prefill_chunk
                     };
+                    // Linear-attention conv/recurrent state cannot be trimmed
+                    // at snapshot-store time, so an unaligned prompt can only
+                    // get a prefix snapshot if the cache is captured
+                    // mid-prefill exactly at the largest block-aligned
+                    // boundary. Split the prefill there: run the aligned head
+                    // with a throwaway greedy sampler (greedy consumes no RNG
+                    // state, so downstream sampling is unchanged; the head's
+                    // sampled token is discarded), stash a lazy cache clone
+                    // for `store_prompt_prefix_snapshots`, and let the normal
+                    // path below prefill the remainder. The clone is
+                    // handle-only; its one real cost is a single non-donated
+                    // full-attention K/V append on the following chunk.
+                    let prefill_tokens = if self.cfg.linear_attention.is_some()
+                        && self.prefix_cache.lock().enabled()
+                        && let Some(head) = Self::linear_boundary_capture_head_len(
+                            block_size_tokens as usize,
+                            state.cache.seq_len,
+                            prefill_tokens.len(),
+                        ) {
+                        let head_tokens = &prefill_tokens[..head];
+                        let mut head_rng = Xorshift64::new(0);
+                        let _ = chunked_prefill_with_sampling_buffers(
+                            &self.cfg,
+                            &self.weights,
+                            head_tokens,
+                            &mut state.cache,
+                            prefill_chunk_for_request,
+                            MlxSamplingRequest::new(MlxSamplingParams::greedy(), head_tokens),
+                            &mut head_rng,
+                            &mut state.sampling_probs_buf,
+                            &mut state.sampling_logits_buf,
+                            &mut state.sampling_candidates_buf,
+                        );
+                        state.prefill_boundary_snapshot =
+                            Some((state.cache.seq_len, state.cache.clone()));
+                        &prefill_tokens[head..]
+                    } else {
+                        prefill_tokens
+                    };
                     let tok = if prefill_tokens.is_empty() {
                         if let Some(tok) = state.cached_prefill_output_token.take() {
                             tok
@@ -5454,11 +5500,13 @@ impl MlxRunner {
                         extend_prompt_prefix_tokens(&mut state, item, token_ids);
                     }
                     let prefix_cache_started = Instant::now();
+                    let linear_boundary_snapshot = state.prefill_boundary_snapshot.take();
                     prefix_cache.merge_from(
                         self.store_prompt_prefix_snapshots(
                             model_id,
                             block_size_tokens,
                             &state,
+                            linear_boundary_snapshot.as_ref(),
                             prefill_completes_prompt
                                 .then_some(tok)
                                 .filter(|_| prefill_output_token_cacheable(ctx, sampling)),
@@ -5702,6 +5750,29 @@ impl MlxRunner {
             token_count: saturating_u32(tokens.len()),
             token_hash: hash_prefix_tokens(tokens),
         }
+    }
+
+    /// Relative length of the aligned "head" of a prefill item that must be
+    /// prefilled separately so the cache can be captured at the largest
+    /// block-aligned boundary — the only sound snapshot point for
+    /// linear-attention models, whose conv/recurrent state cannot be trimmed
+    /// back at store time. `None` when the prompt end is already aligned
+    /// (the exact-alignment store path handles it), when the boundary falls
+    /// inside already-cached context, or when there is nothing to prefill.
+    fn linear_boundary_capture_head_len(
+        block_size: usize,
+        prior_seq_len: usize,
+        item_len: usize,
+    ) -> Option<usize> {
+        if block_size == 0 || item_len == 0 {
+            return None;
+        }
+        let total = prior_seq_len + item_len;
+        if total.is_multiple_of(block_size) {
+            return None;
+        }
+        let boundary = total - (total % block_size);
+        (boundary > prior_seq_len).then(|| boundary - prior_seq_len)
     }
 
     fn longest_block_aligned_prefix_by_probe<F>(
@@ -6050,11 +6121,56 @@ impl MlxRunner {
         state.prompt_prefix_tokens = tokens.to_vec();
     }
 
+    /// Store a single L1 snapshot from a mid-prefill boundary capture on a
+    /// linear-attention model. The capture's cache is already exactly at
+    /// `prefix_len`, so unlike the trim-based store loop no `trim_to` runs.
+    /// L1-only: the disk layer's contract today persists the trim path's
+    /// largest snapshot; wiring boundary payloads into it is follow-up work.
+    fn store_linear_boundary_snapshot(
+        &self,
+        model_id: &str,
+        block_size_tokens: u32,
+        state: &RequestState,
+        prefix_len: usize,
+        snapshot_cache: &MlxKVCache,
+    ) -> MlxPrefixCacheTelemetry {
+        let mut telemetry = MlxPrefixCacheTelemetry::default();
+        let tokens = &state.prompt_prefix_tokens[..prefix_len];
+        let key = self.prefix_cache_key(model_id, block_size_tokens, tokens);
+        {
+            let cache = self.prefix_cache.lock();
+            if cache.contains_superseding_snapshot(&key, tokens, None) {
+                telemetry.record_stats(cache.stats());
+                return telemetry;
+            }
+        }
+        let payload = snapshot_cache.serialize_to_bytes();
+        let outcome = {
+            let mut cache = self.prefix_cache.lock();
+            let outcome = cache.insert(
+                key,
+                MlxPrefixSnapshot::from_serialized_cache(
+                    payload,
+                    tokens.to_vec(),
+                    prefix_len,
+                    None,
+                ),
+            );
+            telemetry.record_stats(cache.stats());
+            outcome
+        };
+        if outcome.stored {
+            telemetry.stores = telemetry.stores.saturating_add(1);
+        }
+        telemetry
+    }
+
     fn store_prompt_prefix_snapshots(
         &self,
         model_id: &str,
         block_size_tokens: u32,
         state: &RequestState,
+        linear_boundary_snapshot: Option<&(usize, MlxKVCache)>,
         greedy_prefill_output_token: Option<u32>,
     ) -> MlxPrefixCacheTelemetry {
         let mut telemetry = MlxPrefixCacheTelemetry::default();
@@ -6110,6 +6226,26 @@ impl MlxRunner {
         let alignment_restricted = linear_attention || sliding_window || mla_attention;
         let exact_alignment_required = linear_attention || mla_attention;
         if exact_alignment_required && full_block_tokens != available_tokens {
+            // Unaligned linear prompts can still store the snapshot captured
+            // mid-prefill at the largest block-aligned boundary (see
+            // `linear_boundary_capture_head_len`); the capture's cache state
+            // is exact at that boundary, so no trim is needed. MLA stays
+            // exact-alignment-only.
+            if let Some((boundary_len, boundary_cache)) = linear_boundary_snapshot
+                && linear_attention
+                && *boundary_len == full_block_tokens
+                && boundary_cache.seq_len == *boundary_len
+                && *boundary_len <= state.prompt_prefix_tokens.len()
+            {
+                telemetry.merge_from(self.store_linear_boundary_snapshot(
+                    model_id,
+                    block_size_tokens,
+                    state,
+                    *boundary_len,
+                    boundary_cache,
+                ));
+                return telemetry;
+            }
             telemetry.record_blocked_trim_failure();
             return telemetry;
         }
@@ -11949,6 +12085,25 @@ mod tests {
             1,
             "read-only membership probe must not touch LRU state"
         );
+    }
+
+    #[test]
+    fn linear_boundary_capture_head_len_covers_alignment_cases() {
+        let head = MlxRunner::linear_boundary_capture_head_len;
+        // Single-item unaligned prompt: capture at floor16.
+        assert_eq!(head(16, 0, 61), Some(48));
+        // Aligned prompt end: exact-alignment store path handles it.
+        assert_eq!(head(16, 0, 64), None);
+        // Prompt shorter than one block: no boundary exists.
+        assert_eq!(head(16, 0, 9), None);
+        // Continuation item: boundary is absolute, not item-relative.
+        assert_eq!(head(16, 2048, 61), Some(48));
+        assert_eq!(head(16, 2040, 61), Some(56)); // 2040+56 = 2096 = 131*16
+        // Boundary inside already-cached context: nothing to capture.
+        assert_eq!(head(16, 2050, 9), None); // total 2059, boundary 2048 <= prior
+        // Degenerate inputs.
+        assert_eq!(head(0, 0, 61), None);
+        assert_eq!(head(16, 0, 0), None);
     }
 
     #[test]
