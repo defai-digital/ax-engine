@@ -9,6 +9,8 @@ ALLOWED_CHAT_ROLES = {"system", "user", "assistant", "tool", "function"}
 QWEN_CHATML_ASSISTANT_GENERATION_PROMPT = "<|im_start|>assistant\n<think>\n\n</think>\n\n"
 QWEN_CHATML_ASSISTANT_GENERATION_PROMPT_NO_THINK = "<|im_start|>assistant\n"
 MODEL_OWNER = "ax-engine"
+COMPLETION_REQUEST_ERROR = "invalid completion request"
+CHAT_COMPLETION_REQUEST_ERROR = "invalid chat completion request"
 
 
 class OpenAiShimError(ValueError):
@@ -680,8 +682,8 @@ def create_app(
 
         try:
             input_tokens, _prompt_text = prompt_to_tokens(payload.get("prompt"), tokenizer)
-        except OpenAiShimError as error:
-            return openai_error(400, str(error))
+        except OpenAiShimError:
+            return openai_error(400, COMPLETION_REQUEST_ERROR)
 
         if bool(payload.get("stream", False)):
             events = stream_completion_chunks(
@@ -745,8 +747,8 @@ def create_app(
                 payload.get("tool_choice"),
             )
             input_tokens, _prompt_text = prompt_to_tokens(prompt, tokenizer)
-        except OpenAiShimError as error:
-            return openai_error(400, str(error))
+        except OpenAiShimError:
+            return openai_error(400, CHAT_COMPLETION_REQUEST_ERROR)
 
         parse_tool_calls = openai_tools_are_enabled(
             payload.get("tools"), payload.get("tool_choice")

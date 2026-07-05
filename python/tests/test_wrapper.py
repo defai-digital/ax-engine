@@ -1218,6 +1218,49 @@ class WrapperContractTests(unittest.TestCase):
         with self.assertRaisesRegex(openai_server.OpenAiShimError, "token id array"):
             openai_server.prompt_to_tokens([1, False], FakeTokenizer())
 
+    def test_openai_mlx_shim_http_errors_do_not_expose_exception_details(self) -> None:
+        openai_server = importlib.import_module("ax_engine.openai_server")
+
+        class FakeTokenizer:
+            def encode(self, text: str) -> object:
+                return types.SimpleNamespace(ids=[ord(ch) for ch in text])
+
+        from fastapi.testclient import TestClient
+
+        with patch("tokenizers.Tokenizer.from_file", return_value=FakeTokenizer()):
+            app = openai_server.create_app(
+                model_id="qwen3_dense",
+                tokenizer_path="/tmp/tokenizer.json",
+                session_factory=FakeNativeSession,
+            )
+
+        client = TestClient(app)
+        completion_response = client.post(
+            "/v1/completions",
+            json={
+                "model": "qwen3_dense",
+                "prompt": [True],
+                "max_tokens": 1,
+            },
+        )
+        chat_response = client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "qwen3_dense",
+                "messages": "not-a-list",
+                "max_tokens": 1,
+            },
+        )
+
+        self.assertEqual(completion_response.status_code, 400)
+        self.assertEqual(chat_response.status_code, 400)
+        completion_message = completion_response.json()["error"]["message"]
+        chat_message = chat_response.json()["error"]["message"]
+        self.assertEqual(completion_message, openai_server.COMPLETION_REQUEST_ERROR)
+        self.assertEqual(chat_message, openai_server.CHAT_COMPLETION_REQUEST_ERROR)
+        self.assertNotIn("token id array", completion_message)
+        self.assertNotIn("messages must be a list", chat_message)
+
     def test_openai_mlx_shim_rejects_malformed_chat_messages(self) -> None:
         openai_server = importlib.import_module("ax_engine.openai_server")
 
