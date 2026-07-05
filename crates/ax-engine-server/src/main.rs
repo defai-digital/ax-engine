@@ -58,7 +58,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
     let bind_address = args.bind_address();
-    let model_id = args.effective_model_id().to_string();
+    let model_id = args
+        .effective_model_id()
+        .map_err(|message| std::io::Error::new(std::io::ErrorKind::InvalidInput, message))?;
     let support_tier = args.effective_support_tier();
     let session_config = args
         .session_config()

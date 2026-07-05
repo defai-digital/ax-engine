@@ -34,6 +34,7 @@ use ax_engine_core::{
     ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_BLOCKED_LINEAR_ATTENTION,
     ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_BLOCKED_MISSING_STORAGE,
     ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_BLOCKED_PREFILL_ONLY,
+    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_BLOCKED_SHORT_CONTEXT,
     ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_BLOCKED_SLIDING_WINDOW,
     ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_BLOCKED_UNSUPPORTED_HEAD_DIM,
     ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_BLOCKED_UNSUPPORTED_PRESET,
@@ -2628,6 +2629,7 @@ struct KvCacheTelemetry {
     compression_fused_decode_blocked_unsupported_head_dim: u64,
     compression_fused_decode_blocked_gqa: u64,
     compression_fused_decode_blocked_missing_storage: u64,
+    compression_fused_decode_blocked_short_context: u64,
     compression_fused_decode_query_readback_wall_us: u64,
     compression_fused_decode_cold_metal_wall_us: u64,
     compression_fused_decode_hot_tail_merge_wall_us: u64,
@@ -2679,6 +2681,9 @@ impl KvCacheTelemetry {
         self.compression_fused_decode_blocked_missing_storage = self
             .compression_fused_decode_blocked_missing_storage
             .saturating_add(compression.fused_decode_blocked_missing_storage);
+        self.compression_fused_decode_blocked_short_context = self
+            .compression_fused_decode_blocked_short_context
+            .saturating_add(compression.fused_decode_blocked_short_context);
     }
 
     fn merge_from(&mut self, usage: MlxKVCacheUsage) {
@@ -3074,6 +3079,10 @@ impl KvCacheTelemetry {
                     saturating_u32_from_u64(self.compression_fused_decode_blocked_missing_storage),
                 ),
                 (
+                    ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_BLOCKED_SHORT_CONTEXT,
+                    saturating_u32_from_u64(self.compression_fused_decode_blocked_short_context),
+                ),
+                (
                     ROUTE_DECISION_AX_MLX_KV_COMPRESSION_FUSED_DECODE_QUERY_READBACK_WALL_US,
                     saturating_u32_from_u64(self.compression_fused_decode_query_readback_wall_us),
                 ),
@@ -3191,6 +3200,12 @@ struct RequestState {
     /// Source for each pending draft token. N-gram prefix tokens and MTP tail
     /// tokens need separate counters and feedback in the hybrid path.
     mtp_pending_draft_sources: Vec<MtpDraftSource>,
+    /// The exact policy used to draft the n-gram prefix of `mtp_pending_draft`,
+    /// when that prefix is non-empty. Verification happens on the *next* step,
+    /// so this must be carried on `state` (not a local) to be replayed byte-for-byte
+    /// in `record_draft_feedback` — see that function's doc comment for why a
+    /// mismatched policy silently drops or misattributes feedback.
+    ngram_draft_policy: Option<NgramDraftPolicy>,
     mtp_target_prob_workspace: MtpTargetProbWorkspace,
     /// Request-local MTP draft depth cap.  Adapted from the last accept/reject
     /// outcome so low-acceptance prompts stop paying for deeper draft chains.
@@ -3285,6 +3300,7 @@ impl RequestState {
             mtp_pending_draft_log_probs: Vec::new(),
             mtp_pending_draft_distributions: Vec::new(),
             mtp_pending_draft_sources: Vec::new(),
+            ngram_draft_policy: None,
             mtp_target_prob_workspace: MtpTargetProbWorkspace::default(),
             mtp_adaptive_max_depth: 0,
             mtp_skip_logits: None,
@@ -7446,12 +7462,20 @@ impl MlxRunner {
                 // in the output, so n-gram should see 100% acceptance.  The
                 // argmax-based ewma_ac is only for EWMA tracking.
                 let ngram_accept_count = accept_count.min(ngram_prefix_len);
-                let (feedback_min_support, feedback_confidence) = ngram_feedback_policy(&self.cfg);
+                // Replay the policy that actually produced this n-gram prefix
+                // (stored at draft time), not a reconstructed approximation —
+                // see `NgramTable::record_draft_feedback`'s doc comment. Falls
+                // back to the (min_support, conf_threshold)-only reconstruction
+                // only if the invariant that this is always `Some` when
+                // `ngram_prefix_len > 0` was somehow violated.
+                let feedback_policy = state.ngram_draft_policy.unwrap_or_else(|| {
+                    let (min_support, confidence_threshold) = ngram_feedback_policy(&self.cfg);
+                    NgramDraftPolicy::majority(ngram_prefix_len, min_support, confidence_threshold)
+                });
                 state.ngram.record_draft_feedback(
                     &pending[..ngram_prefix_len],
                     ngram_accept_count,
-                    feedback_min_support,
-                    feedback_confidence,
+                    feedback_policy,
                 );
                 record_ngram_beta_feedback(state, ngram_prefix_len, ngram_accept_count);
                 state
@@ -7674,21 +7698,22 @@ impl MlxRunner {
                     .ngram_self_tune_disabled_steps
                     .saturating_add(1);
             }
+            let ngram_policy = NgramDraftPolicy {
+                variant: mtp_ngram_policy_variant(),
+                max_len: ngram_max,
+                min_support: mtp_ngram_min_support().max(if mtp_post_think_guarded {
+                    POST_THINK_MIN_NGRAM_SUPPORT
+                } else {
+                    1
+                }),
+                confidence_threshold: mtp_ngram_confidence_threshold(),
+                adaptive_match_len: true,
+                bypass_prompt_min_support: true,
+                min_context_len: mtp_ngram_min_context_len(),
+            };
             let ngram_outcome = if ngram_max > 0 {
                 let ngram_lookup_started = Instant::now();
-                let outcome = state.ngram.predict_with_policy(NgramDraftPolicy {
-                    variant: mtp_ngram_policy_variant(),
-                    max_len: ngram_max,
-                    min_support: mtp_ngram_min_support().max(if mtp_post_think_guarded {
-                        POST_THINK_MIN_NGRAM_SUPPORT
-                    } else {
-                        1
-                    }),
-                    confidence_threshold: mtp_ngram_confidence_threshold(),
-                    adaptive_match_len: true,
-                    bypass_prompt_min_support: true,
-                    min_context_len: mtp_ngram_min_context_len(),
-                });
+                let outcome = state.ngram.predict_with_policy(ngram_policy);
                 mtp_timings.ngram_lookup_wall_us = mtp_timings
                     .ngram_lookup_wall_us
                     .saturating_add(elapsed_us(ngram_lookup_started));
@@ -7715,11 +7740,18 @@ impl MlxRunner {
             if ngram_cycle_guarded {
                 state.mtp_telemetry.record_ngram_cycle_guard();
             }
+            // Reset unconditionally; only the n-gram-nonempty branch below sets
+            // this back to `Some`. Otherwise the next verification step would
+            // see `ngram_prefix_len == 0` anyway (no Ngram entries in
+            // `new_sources`) and never read this, but keep it precise rather
+            // than relying on that.
+            state.ngram_draft_policy = None;
             let (new_draft, new_log_probs, new_sources) = if !ngram_outcome.draft.is_empty()
                 && !ngram_cycle_guarded
             {
                 let mut draft = ngram_outcome.draft;
                 let ngram_len = draft.len();
+                state.ngram_draft_policy = Some(ngram_policy);
                 state.ngram_self_tune.record_submitted(ngram_len);
                 state.mtp_telemetry.record_ngram_submitted(ngram_len);
                 let mtp_tail_cap = state.mtp_adaptive_max_depth.saturating_sub(ngram_len);
@@ -8139,13 +8171,13 @@ impl MlxRunner {
         // (SQL keywords, JSON structure, code syntax) still pass min_support=2.
         let post_think_guarded = self.cfg.think_start_token_id.is_some() && !state.ngram_in_think;
 
-        let draft_outcome = ngram_acceleration_draft(
-            &state.ngram,
+        let draft_policy = ngram_acceleration_policy(
             has_linear_attention,
             state.ngram_posterior_mean(),
             self.ngram_policy_variant,
             post_think_guarded,
         );
+        let draft_outcome = state.ngram.predict_with_policy(draft_policy);
         state
             .ngram_acceleration
             .record_policy(self.ngram_policy_variant, draft_outcome.requested_max_len);
@@ -8179,6 +8211,7 @@ impl MlxRunner {
             &mut state.ngram,
             last_token,
             &draft,
+            draft_policy,
             sampling,
             &repetition_history,
             &mut state.rng,
@@ -9950,9 +9983,28 @@ fn ngram_acceleration_draft(
     variant: NgramPolicyVariant,
     post_think_guarded: bool,
 ) -> NgramDraftOutcome {
+    let policy = ngram_acceleration_policy(
+        has_linear_attention,
+        posterior_mean,
+        variant,
+        post_think_guarded,
+    );
+    ngram.predict_with_policy(policy)
+}
+
+/// The exact policy `ngram_acceleration_draft` uses to draft, exposed so
+/// callers that need to record verifier feedback afterward (see
+/// `NgramTable::record_draft_feedback`) can recompute the identical policy
+/// from the same inputs rather than reconstructing an approximation.
+fn ngram_acceleration_policy(
+    has_linear_attention: bool,
+    posterior_mean: f32,
+    variant: NgramPolicyVariant,
+    post_think_guarded: bool,
+) -> NgramDraftPolicy {
     let max_len = adaptive_ngram_draft_len(has_linear_attention, posterior_mean);
     let confidence_threshold = effective_draft_confidence_threshold();
-    let policy = if has_linear_attention {
+    if has_linear_attention {
         // Dense rollback is O(1); linear-attention partial-reject pays
         // branch/recompute, so cap at DEFAULT_DRAFT_LEN to bound recompute cost.
         // bypass_prompt_min_support=true: prompt-seeded bigrams draft with a
@@ -9998,8 +10050,7 @@ fn ngram_acceleration_draft(
             bypass_prompt_min_support: false,
             min_context_len: 2,
         }
-    };
-    ngram.predict_with_policy(policy)
+    }
 }
 
 fn adaptive_ngram_draft_len(has_linear_attention: bool, posterior_mean: f32) -> usize {

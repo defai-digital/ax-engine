@@ -592,6 +592,7 @@ pub struct MlxKvCompressionUsage {
     pub fused_decode_blocked_unsupported_head_dim: u64,
     pub fused_decode_blocked_gqa: u64,
     pub fused_decode_blocked_missing_storage: u64,
+    pub fused_decode_blocked_short_context: u64,
     pub fused_decode_query_readback_wall_us: u64,
     pub fused_decode_cold_metal_wall_us: u64,
     pub fused_decode_hot_tail_merge_wall_us: u64,
@@ -631,6 +632,7 @@ pub struct MlxKvCompressionDecodeUsage {
     pub fused_decode_blocked_unsupported_head_dim: u64,
     pub fused_decode_blocked_gqa: u64,
     pub fused_decode_blocked_missing_storage: u64,
+    pub fused_decode_blocked_short_context: u64,
     pub fused_decode_query_readback_wall_us: u64,
     pub fused_decode_cold_metal_wall_us: u64,
     pub fused_decode_hot_tail_merge_wall_us: u64,
@@ -684,6 +686,9 @@ impl MlxKvCompressionUsage {
         self.fused_decode_blocked_missing_storage = self
             .fused_decode_blocked_missing_storage
             .saturating_add(usage.fused_decode_blocked_missing_storage);
+        self.fused_decode_blocked_short_context = self
+            .fused_decode_blocked_short_context
+            .saturating_add(usage.fused_decode_blocked_short_context);
         self.fused_decode_query_readback_wall_us = self
             .fused_decode_query_readback_wall_us
             .saturating_add(usage.fused_decode_query_readback_wall_us);
@@ -739,6 +744,7 @@ pub enum MlxKvCompressionDecodeCandidate {
     UnsupportedHeadDim,
     GroupedQueryAttention,
     MissingRuntimeStorage,
+    ShortContext,
     Ready,
 }
 
@@ -1027,6 +1033,9 @@ impl MlxKVCache {
             }
             MlxKvCompressionDecodeCandidate::MissingRuntimeStorage => {
                 Some(&mut usage.fused_decode_blocked_missing_storage)
+            }
+            MlxKvCompressionDecodeCandidate::ShortContext => {
+                Some(&mut usage.fused_decode_blocked_short_context)
             }
         }
     }
@@ -3356,6 +3365,7 @@ mod tests {
             fused_decode_blocked_unsupported_head_dim: 15,
             fused_decode_blocked_gqa: 16,
             fused_decode_blocked_missing_storage: 17,
+            fused_decode_blocked_short_context: 22,
             fused_decode_query_readback_wall_us: 18,
             fused_decode_cold_metal_wall_us: 19,
             fused_decode_hot_tail_merge_wall_us: 20,
@@ -3377,6 +3387,7 @@ mod tests {
         assert_eq!(usage.fused_decode_blocked_unsupported_head_dim, 15);
         assert_eq!(usage.fused_decode_blocked_gqa, 16);
         assert_eq!(usage.fused_decode_blocked_missing_storage, 17);
+        assert_eq!(usage.fused_decode_blocked_short_context, 22);
         assert_eq!(usage.fused_decode_query_readback_wall_us, 18);
         assert_eq!(usage.fused_decode_cold_metal_wall_us, 19);
         assert_eq!(usage.fused_decode_hot_tail_merge_wall_us, 20);

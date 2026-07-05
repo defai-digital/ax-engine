@@ -6,6 +6,8 @@ use std::path::{Path, PathBuf};
 use super::presets::PresetDefinition;
 
 pub(super) const MODEL_MANIFEST_FILE: &str = "model-manifest.json";
+const GEMMA4_ASSISTANT_MTP_CONTRACT_FILE: &str = "ax_gemma4_assistant_mtp.json";
+const GLM_MTP_MANIFEST_FILE: &str = "ax_glm_mtp_manifest.json";
 
 pub(super) fn hf_cache_roots(explicit_root: Option<PathBuf>) -> Vec<PathBuf> {
     if let Some(root) = explicit_root {
@@ -83,6 +85,83 @@ pub(super) fn resolve_hf_cache_model_artifacts(
                 .join(", ")
         )),
     }
+}
+
+pub(super) fn infer_model_id_from_artifacts(path: &Path) -> Result<Option<String>, String> {
+    if path.join(GEMMA4_ASSISTANT_MTP_CONTRACT_FILE).is_file() {
+        let contract = load_json(&path.join(GEMMA4_ASSISTANT_MTP_CONTRACT_FILE))?;
+        if let Some(target_model_id) = contract.get("target_model_id").and_then(Value::as_str)
+            && !target_model_id.trim().is_empty()
+        {
+            return Ok(Some(format!("{}-assistant-mtp", target_model_id.trim())));
+        }
+        return Ok(Some("gemma4-assistant-mtp".to_string()));
+    }
+
+    if path.join(GLM_MTP_MANIFEST_FILE).is_file() {
+        return Ok(Some("glm4_moe_lite".to_string()));
+    }
+
+    let config_path = path.join("config.json");
+    if !config_path.is_file() {
+        return Ok(None);
+    }
+    let config = load_json(&config_path)?;
+    let Some(model_type) = config_model_type(&config) else {
+        return Ok(None);
+    };
+    let path_label = normalize_model_label(&path.display().to_string());
+
+    Ok(match model_type {
+        "glm4_moe_lite" => Some("glm4_moe_lite".to_string()),
+        "gemma4" | "gemma4_unified" | "gemma4_unified_text" | "gemma4_assistant" => {
+            Some(infer_gemma4_model_id(&path_label))
+        }
+        "diffusion_gemma" => Some("diffusiongemma".to_string()),
+        value if value.starts_with("qwen3") => Some(infer_qwen_model_id(&path_label, value)),
+        _ => None,
+    })
+}
+
+fn infer_gemma4_model_id(path_label: &str) -> String {
+    if path_label.contains("gemma-4-31b") {
+        "gemma-4-31b-it".to_string()
+    } else if path_label.contains("gemma-4-26b") {
+        "gemma-4-26b-a4b-it".to_string()
+    } else if path_label.contains("gemma-4-12b") {
+        "gemma-4-12b-it".to_string()
+    } else if path_label.contains("gemma-4-e4b") {
+        "gemma-4-e4b-it".to_string()
+    } else if path_label.contains("gemma-4-e2b") {
+        "gemma-4-e2b-it".to_string()
+    } else {
+        "gemma4".to_string()
+    }
+}
+
+fn infer_qwen_model_id(path_label: &str, model_type: &str) -> String {
+    let mut model_id = if path_label.contains("qwen3-coder-next") {
+        "qwen3-coder-next".to_string()
+    } else if path_label.contains("qwen3-6-35b") || path_label.contains("qwen36-35b") {
+        "qwen3.6-35b".to_string()
+    } else if path_label.contains("qwen3-6-27b") || path_label.contains("qwen36-27b") {
+        "qwen3.6-27b".to_string()
+    } else if path_label.contains("qwen3-5-9b") || path_label.contains("qwen35-9b") {
+        "qwen3.5-9b".to_string()
+    } else if matches!(model_type, "qwen3_5_moe" | "qwen3_5_text") {
+        "qwen3.6".to_string()
+    } else if matches!(model_type, "qwen3_next" | "qwen3_6" | "qwen3.6") {
+        "qwen3.6".to_string()
+    } else if matches!(model_type, "qwen3_5" | "qwen3.5") {
+        "qwen3.5".to_string()
+    } else {
+        "qwen3".to_string()
+    };
+
+    if path_label.contains("mtp") && !model_id.contains("mtp") {
+        model_id.push_str("-mtp");
+    }
+    model_id
 }
 
 fn hf_cache_candidate_dirs(root: &Path, preset: &PresetDefinition) -> Vec<PathBuf> {

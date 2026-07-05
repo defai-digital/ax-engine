@@ -1,6 +1,7 @@
 use ax_engine_core::{KvCompressionConfig, TurboQuantPreset};
 
 use crate::fastpath;
+use crate::fastpath::turboquant_fused_decode_min_context_tokens;
 use crate::kv_cache::{MlxKVCache, MlxKvCompressionDecodeCandidate};
 use crate::turboquant::turboquant_fused_decode_head_dim_supported;
 
@@ -18,6 +19,7 @@ pub enum TurboQuantModelDecodeCandidateStatus {
     UnsupportedHeadDim,
     GroupedQueryAttention,
     MissingRuntimeStorage,
+    ShortContext,
     Ready,
 }
 
@@ -75,6 +77,9 @@ impl TurboQuantModelDecodeCandidate {
             TurboQuantModelDecodeCandidateStatus::MissingRuntimeStorage => {
                 MlxKvCompressionDecodeCandidate::MissingRuntimeStorage
             }
+            TurboQuantModelDecodeCandidateStatus::ShortContext => {
+                MlxKvCompressionDecodeCandidate::ShortContext
+            }
             TurboQuantModelDecodeCandidateStatus::Ready => MlxKvCompressionDecodeCandidate::Ready,
         }
     }
@@ -119,6 +124,8 @@ impl<'a> TurboQuantModelDecodeContext<'a> {
             == 0
         {
             TurboQuantModelDecodeCandidateStatus::MissingRuntimeStorage
+        } else if cache.seq_len.saturating_add(seq) < turboquant_fused_decode_min_context_tokens() {
+            TurboQuantModelDecodeCandidateStatus::ShortContext
         } else {
             TurboQuantModelDecodeCandidateStatus::Ready
         };

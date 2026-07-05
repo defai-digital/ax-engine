@@ -10,6 +10,7 @@ pub use presets::{ServerPreset, render_presets};
 
 pub const API_KEY_ENV: &str = "AX_ENGINE_API_KEY";
 const MODEL_ARTIFACTS_ENV: &str = "AX_ENGINE_MLX_MODEL_ARTIFACTS_DIR";
+const DEFAULT_MODEL_ID: &str = "qwen3";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
 pub enum PreviewSupportTier {
@@ -66,7 +67,7 @@ pub struct ServerArgs {
     #[arg(long = "port", default_value_t = 8080)]
     pub port: u16,
 
-    #[arg(long = "model-id", default_value = "qwen3")]
+    #[arg(long = "model-id", default_value = "", hide_default_value = true)]
     pub model_id: String,
 
     /// Require `Authorization: Bearer <key>` on HTTP API routes. If unset, the

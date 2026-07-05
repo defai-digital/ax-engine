@@ -659,12 +659,21 @@ impl NgramTable {
     /// position only. Later draft tokens were verified under an already-wrong
     /// speculative context, so treating them as rejected would over-penalize
     /// unrelated continuations.
+    ///
+    /// `policy` MUST be the exact policy that produced `draft` (typically via
+    /// `predict_with_policy`). Replaying a *different* policy here — e.g. a
+    /// reconstructed `NgramDraftPolicy::majority(..)` when the draft was
+    /// actually produced with `bypass_prompt_min_support: true`, a non-default
+    /// `variant`, or a different `min_context_len` — makes `select_draft_step`
+    /// walk a different context/candidate than the one that actually produced
+    /// `token`. That silently drops feedback (the `step.token == token` check
+    /// fails and `record_feedback_for_context` is never called) or, worse,
+    /// attributes feedback to the wrong context key entirely.
     pub(crate) fn record_draft_feedback(
         &mut self,
         draft: &[u32],
         accept_count: usize,
-        min_support: u32,
-        conf_threshold: f32,
+        policy: NgramDraftPolicy,
     ) {
         if draft.is_empty() {
             return;
@@ -684,11 +693,8 @@ impl NgramTable {
 
         for (index, &token) in draft.iter().take(feedback_len).enumerate() {
             let accepted = index < accept_count;
-            if let DraftStepSelection::Selected(step) = self.select_draft_step(
-                &buf,
-                len,
-                NgramDraftPolicy::majority(draft.len(), min_support, conf_threshold),
-            ) && step.token == token
+            if let DraftStepSelection::Selected(step) = self.select_draft_step(&buf, len, policy)
+                && step.token == token
             {
                 self.record_feedback_for_context(step.source, token, accepted);
             }
@@ -1020,6 +1026,7 @@ pub fn ngram_accel_decode_step(
     ngram: &mut NgramTable,
     last_token: u32,
     draft: &[u32],
+    draft_policy: NgramDraftPolicy,
     sampling: MlxSamplingParams,
     repetition_tokens: &[u32],
     rng: &mut Xorshift64,
@@ -1034,6 +1041,7 @@ pub fn ngram_accel_decode_step(
         ngram,
         last_token,
         draft,
+        draft_policy,
         sampling,
         repetition_tokens,
         rng,
@@ -1043,6 +1051,9 @@ pub fn ngram_accel_decode_step(
     )
 }
 
+/// `draft_policy` MUST be the exact policy that produced `draft` (see
+/// `NgramTable::record_draft_feedback`); it is replayed verbatim to attribute
+/// verifier feedback to the same context/candidate that was actually drafted.
 #[allow(clippy::too_many_arguments)]
 pub fn ngram_accel_decode_step_with_sampling_buffers(
     cfg: &ModelConfig,
@@ -1051,6 +1062,7 @@ pub fn ngram_accel_decode_step_with_sampling_buffers(
     ngram: &mut NgramTable,
     last_token: u32,
     draft: &[u32],
+    draft_policy: NgramDraftPolicy,
     sampling: MlxSamplingParams,
     repetition_tokens: &[u32],
     rng: &mut Xorshift64,
@@ -1083,6 +1095,7 @@ pub fn ngram_accel_decode_step_with_sampling_buffers(
             ngram,
             last_token,
             draft,
+            draft_policy,
             sampling,
             rng,
             sampling_probs_buf,
@@ -1117,13 +1130,7 @@ pub fn ngram_accel_decode_step_with_sampling_buffers(
     );
 
     // Update n-gram table.
-    let (feedback_min_support, feedback_confidence) = ngram_feedback_policy(cfg);
-    ngram.record_draft_feedback(
-        draft,
-        verification.accept_count,
-        feedback_min_support,
-        feedback_confidence,
-    );
+    ngram.record_draft_feedback(draft, verification.accept_count, draft_policy);
     ngram.feed(&draft[..verification.accept_count]);
     ngram.feed(&verification.result[verification.accept_count..]); // correction or bonus
 
@@ -1138,6 +1145,7 @@ fn ngram_accel_decode_step_linear_safe(
     ngram: &mut NgramTable,
     last_token: u32,
     draft: &[u32],
+    draft_policy: NgramDraftPolicy,
     sampling: MlxSamplingParams,
     rng: &mut Xorshift64,
     sampling_probs_buf: &mut Vec<f32>,
@@ -1181,13 +1189,7 @@ fn ngram_accel_decode_step_linear_safe(
         );
     }
 
-    let (feedback_min_support, feedback_confidence) = ngram_feedback_policy(cfg);
-    ngram.record_draft_feedback(
-        draft,
-        verification.accept_count,
-        feedback_min_support,
-        feedback_confidence,
-    );
+    ngram.record_draft_feedback(draft, verification.accept_count, draft_policy);
     ngram.feed(&draft[..verification.accept_count]);
     ngram.feed(&verification.result[verification.accept_count..]); // correction or bonus
 
@@ -2048,12 +2050,12 @@ mod tests {
         let mut t = NgramTable::new();
         t.feed(&[1, 2, 3, 9, 1, 2]);
 
-        t.record_draft_feedback(&[3], 0, 1, 0.4);
+        t.record_draft_feedback(&[3], 0, NgramDraftPolicy::majority(4, 1, 0.4));
         let rejected = t.stats();
         assert_eq!(rejected.accepted_feedback, 0);
         assert_eq!(rejected.rejected_feedback, 1);
 
-        t.record_draft_feedback(&[3], 1, 1, 0.0);
+        t.record_draft_feedback(&[3], 1, NgramDraftPolicy::majority(4, 1, 0.0));
         let accepted = t.stats();
         assert_eq!(accepted.accepted_feedback, 1);
         assert_eq!(accepted.rejected_feedback, 1);
@@ -2131,7 +2133,7 @@ mod tests {
         t.feed(&[1, 2, 3, 9, 1, 2]);
 
         assert_eq!(t.predict_with_confidence(1, 1, 0.4), vec![3]);
-        t.record_draft_feedback(&[3], 0, 1, 0.4);
+        t.record_draft_feedback(&[3], 0, NgramDraftPolicy::majority(1, 1, 0.4));
 
         assert!(
             t.predict_with_confidence(1, 1, 0.4).is_empty(),
@@ -2149,7 +2151,7 @@ mod tests {
         let mut t = NgramTable::new();
         t.feed(&[1, 2, 3, 9, 1, 2]);
 
-        t.record_draft_feedback(&[3], 1, 1, 0.4);
+        t.record_draft_feedback(&[3], 1, NgramDraftPolicy::majority(1, 1, 0.4));
 
         assert_eq!(
             t.predict_with_confidence(1, 1, 0.4),
@@ -2166,7 +2168,7 @@ mod tests {
         let draft = t.predict_with_confidence(2, 1, 0.4);
         assert_eq!(draft, vec![3, 4]);
 
-        t.record_draft_feedback(&draft, 1, 1, 0.4);
+        t.record_draft_feedback(&draft, 1, NgramDraftPolicy::majority(2, 1, 0.4));
 
         let first = t
             .bigrams
@@ -2202,7 +2204,7 @@ mod tests {
             "fourgram confidence is too low, so the predictor should fall back to the trigram"
         );
 
-        t.record_draft_feedback(&[99], 0, 1, 0.4);
+        t.record_draft_feedback(&[99], 0, NgramDraftPolicy::majority(1, 1, 0.4));
 
         let fourgram = t
             .fourgrams

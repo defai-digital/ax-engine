@@ -33,6 +33,16 @@ fn write_hf_snapshot(root: &Path, repo_dir: &str, snapshot_id: &str, model_type:
     snapshot
 }
 
+fn write_artifact_dir(root: &Path, model_type: &str) -> PathBuf {
+    fs::create_dir_all(root).expect("artifact dir should create");
+    fs::write(
+        root.join("config.json"),
+        format!(r#"{{"model_type":"{model_type}"}}"#),
+    )
+    .expect("config should write");
+    root.to_path_buf()
+}
+
 fn base_args() -> ServerArgs {
     ServerArgs {
         host: "127.0.0.1".to_string(),
@@ -387,6 +397,92 @@ fn session_config_preserves_explicit_mlx_model_artifacts_dir() {
 }
 
 #[test]
+fn explicit_gemma4_assistant_mtp_artifacts_infer_model_id_when_omitted() {
+    let root = unique_test_dir("infer-gemma4-assistant-mtp");
+    let artifact_dir = write_artifact_dir(&root, "gemma4_unified");
+    fs::write(
+        artifact_dir.join("ax_gemma4_assistant_mtp.json"),
+        r#"{
+            "schema_version": "ax.gemma4_assistant_mtp.v1",
+            "target_model_id": "gemma-4-12b-it",
+            "assistant_model_id": "gemma-4-12b-it-assistant"
+        }"#,
+    )
+    .expect("assistant MTP contract should write");
+    let args = ServerArgs {
+        model_id: String::new(),
+        mlx: true,
+        mlx_model_artifacts_dir: Some(artifact_dir.clone()),
+        ..base_args()
+    };
+
+    assert_eq!(
+        args.effective_model_id()
+            .expect("model id should infer from Gemma assistant-MTP contract"),
+        "gemma-4-12b-it-assistant-mtp"
+    );
+    fs::remove_dir_all(root).expect("test dir should clean up");
+}
+
+#[test]
+fn explicit_glm_mtp_artifacts_infer_model_id_when_omitted() {
+    let root = unique_test_dir("infer-glm-mtp");
+    let artifact_dir = write_artifact_dir(&root, "glm4_moe_lite");
+    fs::write(artifact_dir.join("ax_glm_mtp_manifest.json"), "{}")
+        .expect("GLM MTP manifest should write");
+    let args = ServerArgs {
+        model_id: String::new(),
+        mlx: true,
+        mlx_model_artifacts_dir: Some(artifact_dir.clone()),
+        ..base_args()
+    };
+
+    assert_eq!(
+        args.effective_model_id()
+            .expect("model id should infer from GLM MTP manifest"),
+        "glm4_moe_lite"
+    );
+    fs::remove_dir_all(root).expect("test dir should clean up");
+}
+
+#[test]
+fn explicit_qwen36_mtp_artifacts_infer_model_id_when_omitted() {
+    let root = unique_test_dir("infer-qwen36-mtp");
+    let artifact_dir = root
+        .join("models--ax-local--Qwen3.6-27B-MTP")
+        .join("snapshots")
+        .join("v1");
+    write_artifact_dir(&artifact_dir, "qwen3_5");
+    let args = ServerArgs {
+        model_id: String::new(),
+        mlx: true,
+        mlx_model_artifacts_dir: Some(artifact_dir.clone()),
+        ..base_args()
+    };
+
+    assert_eq!(
+        args.effective_model_id()
+            .expect("model id should infer from Qwen MTP path"),
+        "qwen3.6-27b-mtp"
+    );
+    fs::remove_dir_all(root).expect("test dir should clean up");
+}
+
+#[test]
+fn omitted_model_id_without_explicit_artifacts_keeps_qwen_default() {
+    let args = ServerArgs {
+        model_id: String::new(),
+        ..base_args()
+    };
+
+    assert_eq!(
+        args.effective_model_id()
+            .expect("default model id should be available without artifacts"),
+        "qwen3"
+    );
+}
+
+#[test]
 fn preset_selects_mlx_preview_defaults() {
     let mlx_model_artifacts_dir = PathBuf::from("/tmp/gemma-4-e2b-it-4bit");
     let args = ServerArgs {
@@ -397,7 +493,7 @@ fn preset_selects_mlx_preview_defaults() {
 
     let actual = args.session_config().expect("session config should build");
 
-    assert_eq!(args.effective_model_id(), "gemma4-e2b");
+    assert_eq!(args.effective_model_id().unwrap(), "gemma4-e2b");
     assert_eq!(
         args.effective_support_tier(),
         PreviewSupportTier::MlxPreview
@@ -424,7 +520,7 @@ fn gemma4_12b_preset_selects_mlx_preview_defaults() {
 
     let actual = args.session_config().expect("session config should build");
 
-    assert_eq!(args.effective_model_id(), "gemma4-12b");
+    assert_eq!(args.effective_model_id().unwrap(), "gemma4-12b");
     assert_eq!(
         args.effective_support_tier(),
         PreviewSupportTier::MlxPreview
@@ -451,7 +547,7 @@ fn qwen35_9b_preset_selects_mlx_preview_defaults() {
 
     let actual = args.session_config().expect("session config should build");
 
-    assert_eq!(args.effective_model_id(), "qwen3.5-9b");
+    assert_eq!(args.effective_model_id().unwrap(), "qwen3.5-9b");
     assert_eq!(
         args.effective_support_tier(),
         PreviewSupportTier::MlxPreview
@@ -478,7 +574,7 @@ fn qwen36_27b_preset_selects_mlx_preview_defaults() {
 
     let actual = args.session_config().expect("session config should build");
 
-    assert_eq!(args.effective_model_id(), "qwen36-27b");
+    assert_eq!(args.effective_model_id().unwrap(), "qwen36-27b");
     assert_eq!(
         args.effective_support_tier(),
         PreviewSupportTier::MlxPreview
@@ -505,7 +601,7 @@ fn qwen36_35b_preset_selects_mlx_preview_defaults() {
 
     let actual = args.session_config().expect("session config should build");
 
-    assert_eq!(args.effective_model_id(), "qwen3.6-35b");
+    assert_eq!(args.effective_model_id().unwrap(), "qwen3.6-35b");
     assert_eq!(
         args.effective_support_tier(),
         PreviewSupportTier::MlxPreview
@@ -532,7 +628,7 @@ fn glm_preset_selects_native_mlx_by_default() {
 
     let actual = args.session_config().expect("session config should build");
 
-    assert_eq!(args.effective_model_id(), "glm4_moe_lite");
+    assert_eq!(args.effective_model_id().unwrap(), "glm4_moe_lite");
     assert_eq!(
         args.effective_support_tier(),
         PreviewSupportTier::MlxPreview

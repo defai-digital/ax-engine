@@ -15,6 +15,19 @@ fn metal_kernel_error(message: String) -> TurboQuantCodecError {
     TurboQuantCodecError::MetalKernelFailed { message }
 }
 
+/// Extracts the next kernel output from the iterator, mapping a missing
+/// element to a `MetalKernelFailed` error instead of panicking.
+fn take_kernel_output(
+    outputs: &mut impl Iterator<Item = MlxArray>,
+    label: &str,
+) -> Result<MlxArray, TurboQuantCodecError> {
+    outputs
+        .next()
+        .ok_or_else(|| TurboQuantCodecError::MetalKernelFailed {
+            message: format!("missing expected kernel output: {label}"),
+        })
+}
+
 static TURBOQUANT_FUSED_KEY_ENCODE_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
 static TURBOQUANT_FUSED_COLD_DECODE_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
 static TURBOQUANT_FUSED_COLD_DECODE_HEAD_SERIAL_KERNEL: OnceLock<MlxMetalKernel> = OnceLock::new();
@@ -141,12 +154,8 @@ pub fn turboquant_fused_key_encode_metal_k8(
         )
         .map_err(metal_kernel_error)?;
     let mut outputs = outputs.into_iter();
-    let packed = outputs
-        .next()
-        .expect("TurboQuant fused key encode packed output");
-    let norms = outputs
-        .next()
-        .expect("TurboQuant fused key encode norm output");
+    let packed = take_kernel_output(&mut outputs, "fused_key_encode packed")?;
+    let norms = take_kernel_output(&mut outputs, "fused_key_encode norms")?;
     try_eval(&[&packed, &norms]).map_err(metal_kernel_error)?;
     let packed_key_bytes =
         unsafe { std::slice::from_raw_parts(packed.data_raw(), packed.nbytes()).to_vec() };
@@ -410,10 +419,7 @@ pub fn turboquant_fused_cold_decode_metal(
         )
         .map_err(metal_kernel_error)?;
 
-    let output = outputs
-        .into_iter()
-        .next()
-        .expect("TurboQuant fused decode output");
+    let output = take_kernel_output(&mut outputs.into_iter(), "fused_cold_decode")?;
     try_eval(&[&output]).map_err(metal_kernel_error)?;
     Ok(output
         .data_f32()
@@ -538,10 +544,7 @@ pub fn turboquant_fused_cold_decode_metal_head_serial(
         )
         .map_err(metal_kernel_error)?;
 
-    let output = outputs
-        .into_iter()
-        .next()
-        .expect("TurboQuant fused decode output");
+    let output = take_kernel_output(&mut outputs.into_iter(), "fused_cold_decode_head_serial")?;
     try_eval(&[&output]).map_err(metal_kernel_error)?;
     Ok(output
         .data_f32()
@@ -835,10 +838,7 @@ fn turboquant_fused_cold_decode_metal_two_stage_stats_batch_with_rotated_queries
             None,
         )
         .map_err(metal_kernel_error)?;
-    let scores = score_outputs
-        .into_iter()
-        .next()
-        .expect("TurboQuant score output");
+    let scores = take_kernel_output(&mut score_outputs.into_iter(), "fused_cold_decode scores")?;
 
     let stats_kernel = TURBOQUANT_FUSED_COLD_DECODE_HEAD_STATS_KERNEL.get_or_init(|| {
         MlxMetalKernel::new(
@@ -879,12 +879,8 @@ fn turboquant_fused_cold_decode_metal_two_stage_stats_batch_with_rotated_queries
         )
         .map_err(metal_kernel_error)?;
     let mut stats_outputs = stats_outputs.into_iter();
-    let max_scores = stats_outputs
-        .next()
-        .expect("TurboQuant partition max-score output");
-    let exp_sums = stats_outputs
-        .next()
-        .expect("TurboQuant partition exp-sum output");
+    let max_scores = take_kernel_output(&mut stats_outputs, "fused_cold_decode max_scores")?;
+    let exp_sums = take_kernel_output(&mut stats_outputs, "fused_cold_decode exp_sums")?;
 
     let value_sum_kernel = TURBOQUANT_FUSED_COLD_DECODE_VALUE_SUM_KERNEL.get_or_init(|| {
         MlxMetalKernel::new(
@@ -982,10 +978,10 @@ fn turboquant_fused_cold_decode_metal_two_stage_stats_batch_with_rotated_queries
         )
         .map_err(metal_kernel_error)?;
 
-    let weighted_value_sum = value_outputs
-        .into_iter()
-        .next()
-        .expect("TurboQuant partition weighted-value output");
+    let weighted_value_sum = take_kernel_output(
+        &mut value_outputs.into_iter(),
+        "fused_cold_decode weighted_value_sum",
+    )?;
     try_eval(&[&max_scores, &exp_sums, &weighted_value_sum]).map_err(metal_kernel_error)?;
 
     let max_scores = max_scores.data_f32();
@@ -1073,6 +1069,10 @@ const TURBOQUANT_FUSED_COLD_DECODE_KERNEL_HEADER: &str = r#"
     }
 "#;
 
+// Two-pass design: first pass finds max score, second computes weighted sum.
+// Both passes decompress keys from the compressed buffer. For long contexts
+// (COLD_TOKENS >> 128), prefer the two-stage kernel path which materializes
+// scores in an intermediate buffer to avoid redundant key decompression.
 const TURBOQUANT_FUSED_COLD_DECODE_KERNEL_SOURCE: &str = r#"
     const int lane = (int)thread_position_in_threadgroup.x;
     const int dim = (int)thread_position_in_grid.x / 32;
@@ -1139,6 +1139,9 @@ const TURBOQUANT_FUSED_COLD_DECODE_KERNEL_SOURCE: &str = r#"
     }
 "#;
 
+// Hardcoded for HEAD_DIM == 128. The serial loop and fixed-size weighted[128]
+// array assume this dimension. Use the dim-parallel or two-stage kernels for
+// other head dimensions.
 const TURBOQUANT_FUSED_COLD_DECODE_HEAD_SERIAL_KERNEL_SOURCE: &str = r#"
     const int head = thread_position_in_grid.x;
     if (head >= HEADS || HEAD_DIM != 128) {

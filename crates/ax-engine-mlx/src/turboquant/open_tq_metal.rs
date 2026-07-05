@@ -8,6 +8,9 @@ use crate::turboquant::{
 
 pub const OPEN_TQ_METAL_PRESET: TurboQuantPreset = TurboQuantPreset::K4V4;
 pub const OPEN_TQ_METAL_VALUE_GROUP_SIZE: usize = 32;
+/// Bytes per KV element at full precision (f16 = 2 bytes).
+/// If the full-precision path supports f32 in the future, derive this from
+/// the actual dtype size instead of using this constant.
 pub const OPEN_TQ_METAL_FULL_PRECISION_KV_BYTES_PER_ELEMENT: usize = 2;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -34,23 +37,24 @@ pub struct OpenTqMetalSupportReport {
 
 impl OpenTqMetalSupportReport {
     pub fn has_candidate_layers(&self) -> bool {
-        self.eligible_layers > 0
-            && self.fit != OpenTqMetalModelFit::InvalidGroupedQueryAttention
+        self.eligible_layers > 0 && self.fit != OpenTqMetalModelFit::InvalidGroupedQueryAttention
     }
 
     pub fn eligible_layer_ratio_milli(&self) -> u32 {
         if self.total_layers == 0 {
             return 0;
         }
-        (self.eligible_layers.saturating_mul(1000) / self.total_layers)
-            .min(u32::MAX as usize) as u32
+        // eligible_layers <= total_layers, so the ratio never exceeds 1000.
+        u32::try_from(self.eligible_layers * 1000 / self.total_layers).unwrap_or(u32::MAX)
     }
 
     pub fn estimated_compression_ratio_milli(&self) -> u32 {
         if self.estimated_full_precision_bytes_per_token == 0 {
             return 0;
         }
-        (self.estimated_compressed_bytes_per_token.saturating_mul(1000)
+        (self
+            .estimated_compressed_bytes_per_token
+            .saturating_mul(1000)
             / self.estimated_full_precision_bytes_per_token)
             .min(u32::MAX as usize) as u32
     }
@@ -92,9 +96,7 @@ pub fn open_tq_metal_support_report(
             block_tokens: 1,
             n_kv_heads: cfg.n_kv_heads,
             head_dim: layer.head_dim,
-            value_group_size: OPEN_TQ_METAL_VALUE_GROUP_SIZE
-                .min(layer.head_dim)
-                .max(1),
+            value_group_size: OPEN_TQ_METAL_VALUE_GROUP_SIZE.min(layer.head_dim).max(1),
         })?;
         estimated_compressed_bytes_per_token =
             estimated_compressed_bytes_per_token.saturating_add(layout.token_stride_bytes);

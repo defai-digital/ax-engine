@@ -14,7 +14,7 @@ use ax_engine_mlx::{
     generate::{DEFAULT_PREFILL_CHUNK, chunked_prefill, decode_step},
     kv_cache::MlxKVCache,
     model::ModelConfig,
-    ngram_accel::{DEFAULT_DRAFT_LEN, NgramTable, ngram_accel_decode_step},
+    ngram_accel::{DEFAULT_DRAFT_LEN, NgramDraftPolicy, NgramTable, ngram_accel_decode_step},
     sampling::{MlxSamplingParams, MlxSamplingRequest, Xorshift64},
     weights::load_weights,
 };
@@ -170,6 +170,10 @@ fn main() {
         // Run until we have generated at least DECODE_STEPS effective tokens.
         while tokens_generated < DECODE_STEPS {
             let draft = ngram.predict(DEFAULT_DRAFT_LEN);
+            // Must match the policy `NgramTable::predict` builds internally
+            // (`predict_with_confidence(max_len, 1, 0.0)`) so verifier feedback
+            // replays against the same context that actually produced `draft`.
+            let draft_policy = NgramDraftPolicy::majority(DEFAULT_DRAFT_LEN, 1, 0.0);
             let emitted = ngram_accel_decode_step(
                 &cfg,
                 &weights,
@@ -177,6 +181,7 @@ fn main() {
                 &mut ngram,
                 tok,
                 &draft,
+                draft_policy,
                 MlxSamplingParams::greedy(),
                 &[],
                 &mut rng,

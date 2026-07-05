@@ -120,6 +120,18 @@ env_flag_default_on!(
     "AX_TURBOQUANT_INCREMENTAL_UPLOAD"
 );
 
+/// Minimum total context tokens before the TurboQuant fused compressed-decode
+/// path engages. Below this threshold every layer routes through full-precision
+/// SDPA because the per-step CPU sync overhead (query readback + hot-tail
+/// merge) dominates at short contexts. Defaults to 4096; configurable via
+/// `AX_TURBOQUANT_FUSED_DECODE_MIN_CONTEXT`.
+pub fn turboquant_fused_decode_min_context_tokens() -> usize {
+    static CACHED: OnceLock<usize> = OnceLock::new();
+    *CACHED.get_or_init(|| {
+        parse_positive_usize_env("AX_TURBOQUANT_FUSED_DECODE_MIN_CONTEXT").unwrap_or(4096)
+    })
+}
+
 /// Sparse-V minimum normalized attention weight for the TurboQuant two-stage
 /// value-sum kernel. Defaults to the PRD value (`1e-5`) and treats invalid or
 /// negative input as the default.

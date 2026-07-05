@@ -5,11 +5,13 @@ use ax_engine_sdk::{
 use std::env;
 use std::path::PathBuf;
 
-use super::artifacts::{hf_cache_roots, resolve_hf_cache_model_artifacts};
+use super::artifacts::{
+    hf_cache_roots, infer_model_id_from_artifacts, resolve_hf_cache_model_artifacts,
+};
 use super::presets::PresetDefinition;
 use super::{
-    MODEL_ARTIFACTS_ENV, ModelArtifactResolution, PreviewMlxKvCompression, PreviewSupportTier,
-    ServerArgs, ServerPreset,
+    DEFAULT_MODEL_ID, MODEL_ARTIFACTS_ENV, ModelArtifactResolution, PreviewMlxKvCompression,
+    PreviewSupportTier, ServerArgs, ServerPreset,
 };
 
 impl PreviewMlxKvCompression {
@@ -52,10 +54,23 @@ impl ServerArgs {
         format!("{}:{}", self.host, self.port)
     }
 
-    pub fn effective_model_id(&self) -> &str {
-        self.preset
-            .map(|preset| preset.definition().model_id)
-            .unwrap_or(self.model_id.as_str())
+    pub fn effective_model_id(&self) -> Result<String, String> {
+        if let Some(preset) = self.preset {
+            return Ok(preset.definition().model_id.to_string());
+        }
+        if !self.model_id.trim().is_empty() {
+            return Ok(self.model_id.trim().to_string());
+        }
+        if let Some(artifacts_dir) = self.model_id_inference_artifacts_dir()? {
+            if let Some(model_id) = infer_model_id_from_artifacts(&artifacts_dir)? {
+                return Ok(model_id);
+            }
+            return Err(format!(
+                "could not infer --model-id from {}; pass --model-id explicitly",
+                artifacts_dir.display()
+            ));
+        }
+        Ok(DEFAULT_MODEL_ID.to_string())
     }
 
     pub fn effective_support_tier(&self) -> PreviewSupportTier {
@@ -179,5 +194,43 @@ impl ServerArgs {
         }
 
         Ok(self.mlx_model_artifacts_dir.clone())
+    }
+
+    fn model_id_inference_artifacts_dir(&self) -> Result<Option<PathBuf>, String> {
+        let preset = self.preset.map(ServerPreset::definition);
+        let effective_mlx = match preset {
+            Some(definition) => matches!(
+                definition.support_tier,
+                PreviewSupportTier::MlxPreview | PreviewSupportTier::MlxCertified
+            ),
+            None => self.mlx,
+        };
+        if !effective_mlx {
+            return Ok(None);
+        }
+        if let Some(path) = self
+            .mlx_model_artifacts_dir
+            .clone()
+            .or_else(|| self.llama_model_path.clone())
+        {
+            return Ok(Some(path));
+        }
+        if let Some(path) = env::var_os(MODEL_ARTIFACTS_ENV)
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from)
+        {
+            return Ok(Some(path));
+        }
+        if self.resolve_model_artifacts == ModelArtifactResolution::HfCache {
+            let Some(preset) = preset else {
+                return Ok(None);
+            };
+            return resolve_hf_cache_model_artifacts(
+                &preset,
+                hf_cache_roots(self.hf_cache_root.clone()),
+            )
+            .map(Some);
+        }
+        Ok(None)
     }
 }

@@ -2627,7 +2627,11 @@ mod tests {
     #[test]
     fn turboquant_model_decode_context_marks_runtime_storage_ready() {
         let cfg = turboquant_dense_cfg();
-        let cache = turboquant_cache_with_runtime_storage();
+        let mut cache = turboquant_cache_with_runtime_storage();
+        // The fused decode path requires context >= min_context_tokens
+        // (default 4096); set seq_len above the threshold to exercise the
+        // Ready path.
+        cache.seq_len = 4096;
         let context = TurboQuantModelDecodeContext {
             config: turboquant_decode_config(),
             layer_eligible: &[true],
@@ -2640,7 +2644,27 @@ mod tests {
             TurboQuantModelDecodeCandidateStatus::Ready
         );
         assert_eq!(candidate.cold_tokens, 4);
-        assert_eq!(candidate.hot_tokens, 3);
+        assert_eq!(candidate.hot_tokens, 4093);
+    }
+
+    #[test]
+    fn turboquant_model_decode_context_blocks_short_context() {
+        let cfg = turboquant_dense_cfg();
+        let cache = turboquant_cache_with_runtime_storage();
+        // seq_len=6 with seq=1 yields total context=7, below the default
+        // 4096 threshold.  Fused decode must be blocked as ShortContext.
+        let context = TurboQuantModelDecodeContext {
+            config: turboquant_decode_config(),
+            layer_eligible: &[true],
+        };
+
+        let candidate = context.decode_candidate(&cfg, &cache, 0, 1, 128, 2, None, None);
+
+        assert_eq!(
+            candidate.status,
+            TurboQuantModelDecodeCandidateStatus::ShortContext
+        );
+        assert_eq!(candidate.cold_tokens, 0);
     }
 
     #[test]

@@ -144,6 +144,10 @@ struct LinearAttentionConvParams {
     uint conv_kernel_dim;
 };
 
+// Safe-divide floor for attention denominator. Larger than FLT_MIN to suppress
+// noise from degenerate all-zero value accumulations.
+static constant float ATTENTION_DENOM_FLOOR = 1.0e-6f;
+
 kernel void reshape_and_cache(
     device const float* key [[buffer(0)]],
     device const float* value [[buffer(1)]],
@@ -239,7 +243,7 @@ kernel void paged_decode_attention(
     }
 
     if (lid < params.head_dim) {
-        output[q_base + lid] = acc / max(d, 0.000001f);
+        output[q_base + lid] = acc / max(d, ATTENTION_DENOM_FLOOR);
     }
 }
 
@@ -292,20 +296,22 @@ kernel void copy_blocks(
     uint pair_index = gid / elements_per_pair;
     uint block_offset = gid % elements_per_pair;
     uint2 pair = block_base_mapping[pair_index];
-    uint source_key_base = pair.x * params.head_size;
-    uint target_key_base = pair.y * params.head_size;
+    uint source_block_base = pair.x * params.head_size;
+    uint target_block_base = pair.y * params.head_size;
     if (block_offset < params.numel_per_block_key) {
-        key_target[target_key_base + block_offset] = key_source[source_key_base + block_offset];
+        key_target[target_block_base + block_offset] = key_source[source_block_base + block_offset];
     }
     if (block_offset < params.numel_per_block_value) {
-        value_target[target_key_base + block_offset] =
-            value_source[source_key_base + block_offset];
+        value_target[target_block_base + block_offset] =
+            value_source[source_block_base + block_offset];
     }
 }
 
 // Deferred for Phase 1 runtime dispatch, but kept explicit in the checked-in
 // manifest so future remap / offload work does not silently invent a new
 // entry-point name later.
+// Constraint: block_mapping pairs must be non-overlapping. If two pairs
+// share a slot index the swap is non-deterministic across threads.
 kernel void swap_blocks(
     device float* src [[buffer(0)]],
     device float* dst [[buffer(1)]],
@@ -420,6 +426,9 @@ kernel void linear_attention_conv1d_f32(
         * conv_weight[channel * params.conv_kernel_dim + (params.conv_kernel_dim - 1)];
     output[gid] = acc / (1.0f + exp(-acc));
 
+    // State shift: copy tap+1 -> tap in forward order. Forward iteration is
+    // correct even when state_in and state_out alias the same buffer because
+    // each source element (tap+1) is read before it is overwritten.
     if (params.conv_kernel_dim > 1) {
         for (uint tap = 0; tap + 2 < params.conv_kernel_dim; ++tap) {
             uint dst_index = state_batch_base + tap * params.conv_dim + channel;
@@ -458,6 +467,9 @@ kernel void linear_attention_conv1d_f16(
         * float(conv_weight[channel * params.conv_kernel_dim + (params.conv_kernel_dim - 1)]);
     output[gid] = acc / (1.0f + exp(-acc));
 
+    // State shift: copy tap+1 -> tap in forward order. Forward iteration is
+    // correct even when state_in and state_out alias the same buffer because
+    // each source element (tap+1) is read before it is overwritten.
     if (params.conv_kernel_dim > 1) {
         for (uint tap = 0; tap + 2 < params.conv_kernel_dim; ++tap) {
             uint dst_index = state_batch_base + tap * params.conv_dim + channel;
@@ -496,6 +508,9 @@ kernel void linear_attention_conv1d_bf16(
         * float(conv_weight[channel * params.conv_kernel_dim + (params.conv_kernel_dim - 1)]);
     output[gid] = acc / (1.0f + exp(-acc));
 
+    // State shift: copy tap+1 -> tap in forward order. Forward iteration is
+    // correct even when state_in and state_out alias the same buffer because
+    // each source element (tap+1) is read before it is overwritten.
     if (params.conv_kernel_dim > 1) {
         for (uint tap = 0; tap + 2 < params.conv_kernel_dim; ++tap) {
             uint dst_index = state_batch_base + tap * params.conv_dim + channel;
@@ -1692,6 +1707,11 @@ kernel void apply_rope_f32(
     }
 }
 
+// Note: each thread handles one token serially across all heads and rotary
+// dimensions. This trades parallelism for reduced position-table memory
+// traffic (positions[] is read once per thread instead of per (head,dim)).
+// For very high head counts, consider dispatching one thread per (token,
+// head, rotary-pair) like the non-batched apply_rope_f32.
 kernel void apply_rope_batched_f32(
     device float* query [[buffer(0)]],
     device float* key [[buffer(1)]],
