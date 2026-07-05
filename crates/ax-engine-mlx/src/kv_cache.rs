@@ -3283,6 +3283,13 @@ impl MlxKVCache {
         let lkv = self.layers[source_layer]
             .as_ref()
             .expect("KV-shared source layer has no cached KV — source layer must appear earlier");
+        if lkv.rotating_window.is_some() {
+            // Rotated ring: the backing store IS the full ring view (the
+            // storing layer's append returned exactly this), and the ordered
+            // `[0, seq_len)` fallback below would slice past the ring's
+            // capacity. Consumers mask via the hoisted ring validity mask.
+            return (lkv.k.clone(), lkv.v.clone());
+        }
         let (k_view, v_view) = match (&lkv.last_k_view, &lkv.last_v_view) {
             (Some(k), Some(v)) => (k.clone(), v.clone()),
             _ => {
@@ -3315,6 +3322,14 @@ impl MlxKVCache {
     /// not assert that the layer was written during the current forward call.
     pub fn peek_layer_kv(&self, layer: usize) -> Option<(MlxArray, MlxArray)> {
         let lkv = self.layers.get(layer)?.as_ref()?;
+        if lkv.rotating_window.is_some() {
+            // Rotated ring: return the full ring — valid at any time,
+            // including right after a `trim_to` rollback cleared the cached
+            // views (when the ordered `[0, seq_len)` fallback below would
+            // slice past the ring's capacity). Consumers must apply the
+            // slot-validity mask derived from [`Self::layer_sliding_ring`].
+            return Some((lkv.k.clone(), lkv.v.clone()));
+        }
         let (k_view, v_view) = match (&lkv.last_k_view, &lkv.last_v_view) {
             (Some(k), Some(v)) => (k.clone(), v.clone()),
             _ => {
@@ -3337,6 +3352,26 @@ impl MlxKVCache {
             }
         };
         Some((k_view, v_view))
+    }
+
+    /// The current ring geometry of `layer` if it has converted to a
+    /// rotating ring, for consumers that read ring K/V outside a forward
+    /// (e.g. the Gemma4 assistant drafter attending target KV between
+    /// appends). `write_start` is set to the cache's current `seq_len`:
+    /// a reader whose query logically sits at the *end* of the context
+    /// builds its mask as `create_ring_sliding_mask(1, window, capacity,
+    /// seq_len - 1)`, which keeps exactly the last `window` live tokens
+    /// and automatically excludes slots holding rolled-back drafts (their
+    /// resident-token index decodes below `seq_len - window` under the
+    /// post-trim end).
+    pub fn layer_sliding_ring(&self, layer: usize) -> Option<SlidingRingLayout> {
+        let lkv = self.layers.get(layer)?.as_ref()?;
+        let window = lkv.rotating_window?;
+        Some(SlidingRingLayout {
+            window,
+            capacity: lkv.capacity,
+            write_start: self.seq_len,
+        })
     }
 
     /// Read a fresh full-prefix K/V view for `layer`.
@@ -4613,6 +4648,52 @@ mod tests {
         assert_eq!(cache.seq_len, 7);
         // Pure rings (slack 0 on another cache) still refuse any real trim —
         // covered by trim_to_rejects_rollback_after_rotating_sliding_decode.
+    }
+
+    /// The Gemma4 assistant drafter reads target KV between appends via
+    /// `peek_layer_kv` — including right after a verify rollback, when the
+    /// cached views are cleared and the ordered `[0, seq_len)` fallback
+    /// would slice past a ring's capacity. Rotated layers must return the
+    /// full ring plus geometry for the slot-validity mask.
+    #[test]
+    fn peek_layer_kv_returns_full_ring_after_rollback() {
+        const HD: usize = 4;
+        let mut cache = MlxKVCache::new(1);
+        cache.set_rotating_sliding_decode(true);
+        cache.set_rotating_sliding_slack(3); // window 4 → capacity 7
+        let k = tokens_f32(&[1.0, 2.0, 3.0, 4.0], HD);
+        let v = tokens_f32(&[1.0, 2.0, 3.0, 4.0], HD);
+        cache.append(0, k, v);
+        cache.seq_len = 4;
+        let k = tokens_f32(&[5.0, 6.0, 7.0], HD);
+        let v = tokens_f32(&[5.0, 6.0, 7.0], HD);
+        cache.append_with_retained_window(0, k, v, Some(4));
+        cache.seq_len = 7;
+        // Partial reject: views are cleared, seq_len (5) < ring capacity (7).
+        assert!(cache.trim_to(5));
+
+        let (k, _v) = cache.peek_layer_kv(0).expect("layer peek");
+        assert_eq!(k.shape(), vec![1, 1, 7, HD as i32]);
+        let ring = cache.layer_sliding_ring(0).expect("ring geometry");
+        assert_eq!((ring.window, ring.capacity, ring.write_start), (4, 7, 5));
+
+        // The end-anchored drafter mask keeps exactly the last `window` live
+        // tokens (1..=4) and excludes the rolled-back slots (tokens 5, 6 at
+        // slots 5, 6) and token 0's never-copied slot 0.
+        let mask = crate::attention_mask::create_ring_sliding_mask(
+            1,
+            ring.window,
+            ring.capacity,
+            ring.write_start - 1,
+        );
+        eval(&[&mask]);
+        let bits: Vec<u8> =
+            unsafe { std::slice::from_raw_parts(mask.data_raw(), mask.nbytes()).to_vec() };
+        assert_eq!(bits, vec![0, 1, 1, 1, 1, 0, 0]);
+
+        // Un-rotated layers keep the ordered peek contract.
+        let plain = MlxKVCache::new(1);
+        assert!(plain.layer_sliding_ring(0).is_none());
     }
 
     /// End-to-end oracle: masked SDPA over the ring (unordered slots + slot-

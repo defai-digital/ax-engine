@@ -375,6 +375,27 @@ env_flag_default_on!(
 );
 
 env_flag_default_on!(
+    /// `AX_MLX_ROTATING_BOUNDED_MTP` — allow Gemma4 assistant-MTP requests
+    /// onto bounded-rollback rotating rings.
+    ///
+    /// **Default: ON** (kill-switch via `AX_MLX_ROTATING_BOUNDED_MTP=0`);
+    /// nested under `AX_MLX_ROTATING_BOUNDED_ROLLBACK` and
+    /// `AX_MLX_ROTATING_SLIDING_DECODE`.
+    ///
+    /// The assistant's verify rollback is a `state.cache.trim_to` bounded by
+    /// the pending draft (assistant depth + any stacked n-gram tokens), so
+    /// the request latches a widened slack of
+    /// `max(8, mtp_max_depth + MAX_DRAFT_LEN + 1)`. The drafter reads target
+    /// sliding K/V through `peek_layer_kv`, which returns the full ring with
+    /// a slot-validity mask once rotated. With this OFF, assistant-MTP
+    /// requests keep O(context) sliding buffers (the pre-extension
+    /// behavior); qwen/GLM MTP heads remain ring-excluded regardless (their
+    /// models have no sliding windows).
+    rotating_bounded_mtp_enabled,
+    "AX_MLX_ROTATING_BOUNDED_MTP"
+);
+
+env_flag_default_on!(
     /// `AX_MLX_MULTI_TOKEN_WINDOW_VIEWS` — present sliding-window layers with a
     /// `window + seq - 1` retained K/V view on multi-token forwards (chunked
     /// prefill continuation chunks, n-gram verify, assistant-MTP verify)

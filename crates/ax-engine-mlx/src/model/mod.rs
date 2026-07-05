@@ -1113,7 +1113,20 @@ fn gemma4_assistant_layer_forward(
 
     let seq = hidden.shape()[1] as usize;
     let key_len = cached_k.shape()[2] as usize;
-    let mask = attention_mask_array(seq, key_len, sliding_window);
+    let mask = match target_cache.layer_sliding_ring(shared_layer) {
+        // Rotated target ring: `peek_layer_kv` returned the full unordered
+        // ring, so ordered-position masks are meaningless. The drafter's
+        // query logically sits at the end of the committed context; the
+        // slot-validity mask keeps exactly the last `window` live tokens
+        // and excludes rolled-back draft slots and dead slack slots.
+        Some(ring) => Some(crate::attention_mask::create_ring_sliding_mask(
+            seq,
+            ring.window,
+            ring.capacity,
+            ring.write_start.saturating_sub(seq),
+        )),
+        None => attention_mask_array(seq, key_len, sliding_window),
+    };
     let attn_sdpa =
         full_precision_attention(&q_rope, &cached_k, &cached_v, cfg.query_scale, seq, &mask);
     let attn_flat = flatten_attention_output_bhsd(&attn_sdpa, seq, cfg.n_heads, head_dim);
