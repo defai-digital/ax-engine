@@ -353,7 +353,8 @@ env_flag_default_on!(
 
 env_flag_default_on!(
     /// `AX_MLX_ROTATING_BOUNDED_ROLLBACK` — extend rotating sliding-window
-    /// KV to n-gram-active requests via bounded-rollback rings.
+    /// KV to n-gram-active and sampled (non-greedy) requests via
+    /// bounded-rollback rings.
     ///
     /// **Default: ON** (kill-switch via
     /// `AX_MLX_ROTATING_BOUNDED_ROLLBACK=0`); has no effect when

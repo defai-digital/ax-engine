@@ -8389,16 +8389,18 @@ impl MlxRunner {
         // the top of every subsequent step, so the per-run session default
         // can never clobber it after a ring has converted. Three classes:
         //
-        //  - Direct sessions (session-level flag): pure window-sized rings,
-        //    mask-free single-token SDPA — nothing can roll the cache back.
-        //  - Requests with n-gram disabled under a sticky reason and no MTP:
-        //    same pure rings (the 38d8c70c class).
-        //  - n-gram-ACTIVE requests without MTP on standard-family sliding
-        //    models: bounded-rollback rings (`window + slack` slots plus a
+        //  - Greedy direct sessions (session-level flag): pure window-sized
+        //    rings, mask-free single-token SDPA — nothing can roll the cache
+        //    back.
+        //  - Greedy requests with n-gram disabled under a sticky reason and
+        //    no MTP: same pure rings (the 38d8c70c class).
+        //  - Every other non-MTP request on standard-family sliding models
+        //    (n-gram active, and sampled requests regardless of their n-gram
+        //    gate): bounded-rollback rings (`window + slack` slots plus a
         //    slot-validity mask). Every rollback source for this class is an
-        //    n-gram verify `trim_to`, bounded by `MAX_DRAFT_LEN`, which the
-        //    slack absorbs — rolled-back tokens rewrite into their own
-        //    `t % capacity` slots.
+        //    n-gram verify `trim_to`, bounded by `MAX_DRAFT_LEN` under both
+        //    greedy accept and rejection sampling, which the slack absorbs —
+        //    rolled-back tokens rewrite into their own `t % capacity` slots.
         //
         // MTP stays excluded (assistant/fused verify rollback; its own depth
         // could be covered by slack later but is unverified). Rotation bounds
@@ -8416,8 +8418,8 @@ impl MlxRunner {
             state.ngram_acceleration_disabled_for_request,
             state.ngram_request_disable_reason,
             has_mtp,
-        )
-        .filter(|_| is_greedy);
+            is_greedy,
+        );
         state.rotating_sliding_latch =
             Some((rotating_latch.is_some(), rotating_latch.unwrap_or(0)));
         state
@@ -9914,6 +9916,7 @@ fn rotating_bounded_family_eligible(cfg: &crate::model::ModelConfig) -> bool {
 /// output` can re-enable n-gram mid-request for that reason (moot in
 /// practice: it only arises on linear-attention models, which have no
 /// sliding windows to rotate). MTP stays excluded from both arms.
+#[allow(clippy::too_many_arguments)]
 fn request_rotating_sliding_slack(
     session_rotating: bool,
     rotating_flag_enabled: bool,
@@ -9922,14 +9925,25 @@ fn request_rotating_sliding_slack(
     request_ngram_disabled: bool,
     disable_reason: NgramRequestDisableReason,
     has_mtp: bool,
+    is_greedy: bool,
 ) -> Option<usize> {
-    if session_rotating {
+    // Pure rings (slack 0) tolerate zero rollback ever, so both pure
+    // classes keep the historical greedy requirement. Bounded rings only
+    // require every rollback to fit inside the slack — and a sampled
+    // non-MTP request has exactly the same rollback sources as a greedy
+    // one (n-gram verify trims, bounded by MAX_DRAFT_LEN under rejection
+    // sampling too: at least the correction token always commits), so
+    // sampled requests are bounded-eligible. They always take the slack
+    // ring, never a pure one, even when their own n-gram is disabled.
+    if session_rotating && is_greedy {
         return Some(0);
     }
     if !rotating_flag_enabled || has_mtp {
         return None;
     }
-    if request_ngram_disabled && !matches!(disable_reason, NgramRequestDisableReason::LinearNoDraft)
+    if is_greedy
+        && request_ngram_disabled
+        && !matches!(disable_reason, NgramRequestDisableReason::LinearNoDraft)
     {
         return Some(0);
     }
@@ -14891,13 +14905,27 @@ mod tests {
     fn request_rotating_sliding_slack_covers_rollback_sources() {
         use NgramRequestDisableReason as R;
         const SLACK: usize = ROTATING_BOUNDED_ROLLBACK_SLACK;
+        const G: bool = true; // greedy
+        const S: bool = false; // sampled
         let slack = request_rotating_sliding_slack;
         // Session-level direct policy always rotates with a pure ring.
-        assert_eq!(slack(true, true, true, true, false, R::None, true), Some(0));
+        assert_eq!(
+            slack(true, true, true, true, false, R::None, true, G),
+            Some(0)
+        );
         // ngram-ON session: sticky per-request disable without MTP rotates
         // with a pure ring (the 38d8c70c class, unchanged).
         assert_eq!(
-            slack(false, true, true, true, true, R::ShortOutputBudget, false),
+            slack(
+                false,
+                true,
+                true,
+                true,
+                true,
+                R::ShortOutputBudget,
+                false,
+                G
+            ),
             Some(0)
         );
         assert_eq!(
@@ -14908,40 +14936,109 @@ mod tests {
                 true,
                 true,
                 R::LinearInitialNoDraft,
-                false
+                false,
+                G
             ),
             Some(0)
         );
         // n-gram ACTIVE without MTP on an eligible family: bounded ring.
         assert_eq!(
-            slack(false, true, true, true, false, R::None, false),
+            slack(false, true, true, true, false, R::None, false, G),
             Some(SLACK)
         );
         // LinearNoDraft can re-enable n-gram mid-request: bounded, not pure.
         assert_eq!(
-            slack(false, true, true, true, true, R::LinearNoDraft, false),
+            slack(false, true, true, true, true, R::LinearNoDraft, false, G),
             Some(SLACK)
         );
-        // MTP verify uses deeper trim_to rollback: never rotate with MTP.
-        assert_eq!(slack(false, true, true, true, false, R::None, true), None);
+        // Sampled requests are never pure but stay bounded-eligible: the
+        // rejection-sampling verify trims are bounded by MAX_DRAFT_LEN just
+        // like greedy accepts. Sticky-disable and direct-session sampled
+        // requests land on the bounded arm instead of pure.
         assert_eq!(
-            slack(false, true, true, true, true, R::ShortOutputBudget, true),
+            slack(false, true, true, true, false, R::None, false, S),
+            Some(SLACK)
+        );
+        assert_eq!(
+            slack(
+                false,
+                true,
+                true,
+                true,
+                true,
+                R::ShortOutputBudget,
+                false,
+                S
+            ),
+            Some(SLACK)
+        );
+        assert_eq!(
+            slack(true, true, true, true, false, R::None, false, S),
+            Some(SLACK)
+        );
+        // Sampled with the bounded kill-switch off: no rotation at all (no
+        // pure fallback — pure rings stay greedy-only).
+        assert_eq!(
+            slack(
+                false,
+                true,
+                false,
+                true,
+                true,
+                R::ShortOutputBudget,
+                false,
+                S
+            ),
+            None
+        );
+        // MTP verify uses deeper trim_to rollback: never rotate with MTP.
+        assert_eq!(
+            slack(false, true, true, true, false, R::None, true, G),
+            None
+        );
+        assert_eq!(
+            slack(false, true, true, true, true, R::ShortOutputBudget, true, G),
             None
         );
         // Family whose sliding attention bypasses the ring-aware seam
         // (llama4 / gpt_oss / diffusion): no bounded ring, and n-gram-active
         // means no pure ring either.
-        assert_eq!(slack(false, true, true, false, false, R::None, false), None);
-        // Bounded-rollback kill-switch off: n-gram-active requests keep the
-        // pre-bounded behavior (no rotation); sticky-disable still pure.
-        assert_eq!(slack(false, true, false, true, false, R::None, false), None);
         assert_eq!(
-            slack(false, true, false, true, true, R::ShortOutputBudget, false),
+            slack(false, true, true, false, false, R::None, false, G),
+            None
+        );
+        // Bounded-rollback kill-switch off: n-gram-active requests keep the
+        // pre-bounded behavior (no rotation); greedy sticky-disable still
+        // pure.
+        assert_eq!(
+            slack(false, true, false, true, false, R::None, false, G),
+            None
+        );
+        assert_eq!(
+            slack(
+                false,
+                true,
+                false,
+                true,
+                true,
+                R::ShortOutputBudget,
+                false,
+                G
+            ),
             Some(0)
         );
         // Rotation kill-switch off: only the session-level path may rotate.
         assert_eq!(
-            slack(false, false, true, true, true, R::ShortOutputBudget, false),
+            slack(
+                false,
+                false,
+                true,
+                true,
+                true,
+                R::ShortOutputBudget,
+                false,
+                G
+            ),
             None
         );
     }
