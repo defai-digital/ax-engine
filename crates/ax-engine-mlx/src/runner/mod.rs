@@ -6947,7 +6947,9 @@ impl MlxRunner {
         // The gate engages in both Greedy and RejectionSampling modes: in
         // Greedy mode the EWMA tracks argmax match rate directly, which is
         // already the stricter metric — if it reaches 0.99, optimistic is safe.
-        let can_auto_optimistic = !pending.is_empty()
+        let optimistic_allowed = mtp_optimistic_allowed(self.weights.glm_mtp.is_some());
+        let can_auto_optimistic = optimistic_allowed
+            && !pending.is_empty()
             && state.mtp_telemetry.mtp_only_accept_rate_ewma_samples
                 >= mtp_auto_optimistic_min_samples();
         let ewma = state.mtp_telemetry.mtp_only_accept_rate_ewma;
@@ -6958,7 +6960,8 @@ impl MlxRunner {
             state.auto_optimistic_active = false;
         }
         let auto_optimistic = can_auto_optimistic && state.auto_optimistic_active;
-        let optimistic = (self.mtp_optimistic || auto_optimistic) && !pending.is_empty();
+        let optimistic =
+            optimistic_allowed && (self.mtp_optimistic || auto_optimistic) && !pending.is_empty();
         if auto_optimistic && !self.mtp_optimistic {
             state.mtp_telemetry.auto_optimistic_steps =
                 state.mtp_telemetry.auto_optimistic_steps.saturating_add(1);
@@ -9904,6 +9907,12 @@ fn mtp_optimistic_from_env() -> bool {
             Ok("0") | Ok("false") | Ok("FALSE")
         )
     })
+}
+
+fn mtp_optimistic_allowed(has_glm_mtp: bool) -> bool {
+    // GLM's sidecar can draft plausible but target-mismatched code tokens; keep
+    // verifier acceptance on for correctness instead of unconditional accept.
+    !has_glm_mtp
 }
 
 fn mtp_optimistic_draft_min_confidence_override() -> Option<f32> {
@@ -16044,6 +16053,12 @@ mod tests {
         // verify the type is constructible and defaults to Greedy.
         let mode = crate::mtp::MtpDraftMode::default();
         assert_eq!(mode, crate::mtp::MtpDraftMode::Greedy);
+    }
+
+    #[test]
+    fn mtp_optimistic_is_disabled_for_glm_sidecar() {
+        assert!(mtp_optimistic_allowed(false));
+        assert!(!mtp_optimistic_allowed(true));
     }
 
     // ── MtpDraftFilter identity test ────────────────────────────────────
