@@ -55,6 +55,7 @@ of truth for carrying forward those experiments, including no-go decisions.
 | Qwen dense FFN standalone gate/up matvec | `mlx_sidecar` | `no_go` |
 | Qwen dense FFN fused gate/up+SwiGLU | `mlx_sidecar` | `not_promoted` |
 | Per-layer / sub-layer decode compile on E2B | `graph_compile` | `no_go` |
+| Fused MoE router Metal default-ON (Qwen3.6 35B-A3B) | `phase1_metal` | `no_go` |
 
 ## NO-GO Carry-Forward
 
@@ -69,3 +70,7 @@ of truth for carrying forward those experiments, including no-go decisions.
   default without a new mechanism: the 2026-07-04 E2B thermal-bracketed A/B shows
   them within the ~2% same-config noise floor (whole-layer compile is already
   default-on and captures the fusable dispatch overhead).
+- Do not default-ON `AX_MLX_MOE_ROUTER_FUSED_METAL` without a new mechanism: the
+  2026-07-05 double-bracketed 35B-A3B A/B shows the ON cell inside the same-config
+  drift band (an initial +3.0% did not replicate; drift −3.6%..−8% per bracket).
+  Token-exact vs the fallback, so the opt-in stays available.
