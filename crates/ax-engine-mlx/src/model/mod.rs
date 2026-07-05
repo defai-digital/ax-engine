@@ -548,11 +548,15 @@ fn forward_with_turboquant_context_and_logits_mode(
     }
 
     let seq = token_ids.len();
-    // Single-token decode never needs explicit SDPA masks. Keep the decode
-    // path on one borrowed `None` instead of allocating a per-layer mask vec.
+    // Single-token decode never needs explicit SDPA masks — except in
+    // bounded-rollback rotating mode, where a converted sliding layer
+    // presents its full `window + slack` ring and needs the slot-validity
+    // mask even for one query. Keep the common decode path on one borrowed
+    // `None` instead of allocating a per-layer mask vec.
     let decode_mask: Option<MlxArray> = None;
-    let masks =
-        (seq > 1).then(|| build_layer_masks(cfg, weights.layers.len(), seq, token_offset + seq));
+    let masks = (seq > 1 || cache.rotating_sliding_slack() > 0).then(|| {
+        build_layer_masks_for_forward(cfg, weights.layers.len(), seq, token_offset + seq, cache)
+    });
     let per_layer_started = profile_prefill.then(Instant::now);
     let per_layer_inputs = compute_per_layer_inputs_arr(cfg, weights, &ids_1d, &hidden);
     if let (Some(started), Some(inputs)) = (per_layer_started, per_layer_inputs.as_ref()) {
@@ -797,7 +801,8 @@ pub fn forward_all_positions_update_cache(
     }
 
     let seq = token_ids.len();
-    let masks = build_layer_masks(cfg, weights.layers.len(), seq, token_offset + seq);
+    let masks =
+        build_layer_masks_for_forward(cfg, weights.layers.len(), seq, token_offset + seq, cache);
     let per_layer_inputs = compute_per_layer_inputs_arr(cfg, weights, &ids_1d, &hidden);
     for (li, layer_w) in weights.layers.iter().enumerate() {
         let pli = per_layer_inputs.as_ref().map(|v| &v[li]);
@@ -836,7 +841,8 @@ pub fn forward_all_positions_with_turboquant_context(
     }
 
     let seq = token_ids.len();
-    let masks = build_layer_masks(cfg, weights.layers.len(), seq, token_offset + seq);
+    let masks =
+        build_layer_masks_for_forward(cfg, weights.layers.len(), seq, token_offset + seq, cache);
     let per_layer_inputs = compute_per_layer_inputs_arr(cfg, weights, &ids_1d, &hidden);
     for (li, layer_w) in weights.layers.iter().enumerate() {
         let pli = per_layer_inputs.as_ref().map(|v| &v[li]);
@@ -886,7 +892,8 @@ pub fn forward_all_positions_with_post_norm(
     }
 
     let seq = token_ids.len();
-    let masks = build_layer_masks(cfg, weights.layers.len(), seq, token_offset + seq);
+    let masks =
+        build_layer_masks_for_forward(cfg, weights.layers.len(), seq, token_offset + seq, cache);
     let per_layer_inputs = compute_per_layer_inputs_arr(cfg, weights, &ids_1d, &hidden);
     for (li, layer_w) in weights.layers.iter().enumerate() {
         let pli = per_layer_inputs.as_ref().map(|v| &v[li]);
@@ -941,7 +948,8 @@ pub fn forward_all_positions_post_norm_last_lm_head(
     }
 
     let seq = token_ids.len();
-    let masks = build_layer_masks(cfg, weights.layers.len(), seq, token_offset + seq);
+    let masks =
+        build_layer_masks_for_forward(cfg, weights.layers.len(), seq, token_offset + seq, cache);
     let per_layer_inputs = compute_per_layer_inputs_arr(cfg, weights, &ids_1d, &hidden);
     for (li, layer_w) in weights.layers.iter().enumerate() {
         let pli = per_layer_inputs.as_ref().map(|v| &v[li]);

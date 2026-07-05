@@ -65,7 +65,8 @@ use ax_engine_core::{
     ROUTE_DECISION_AX_MLX_KV_FULL_ATTENTION_LAYERS, ROUTE_DECISION_AX_MLX_KV_GROWTH_COUNT,
     ROUTE_DECISION_AX_MLX_KV_LINEAR_STATE_KIB, ROUTE_DECISION_AX_MLX_KV_LINEAR_STATE_LAYERS,
     ROUTE_DECISION_AX_MLX_KV_LOGICAL_KIB, ROUTE_DECISION_AX_MLX_KV_LOGICAL_TOKENS,
-    ROUTE_DECISION_AX_MLX_KV_REQUEST_SNAPSHOTS,
+    ROUTE_DECISION_AX_MLX_KV_REQUEST_SNAPSHOTS, ROUTE_DECISION_AX_MLX_KV_ROTATED_RING_LAYERS,
+    ROUTE_DECISION_AX_MLX_KV_ROTATING_RING_SLACK,
     ROUTE_DECISION_AX_MLX_KV_SLIDING_RECLAIMABLE_CAPACITY_KIB,
     ROUTE_DECISION_AX_MLX_KV_SLIDING_RECLAIMABLE_CAPACITY_TOKENS,
     ROUTE_DECISION_AX_MLX_KV_SLIDING_RETAINED_TOKENS,
@@ -2596,6 +2597,11 @@ struct KvCacheTelemetry {
     sliding_window_retained_tokens: u64,
     sliding_window_reclaimable_capacity_tokens: u64,
     sliding_window_reclaimable_capacity_bytes: u64,
+    /// Peak rotated-ring layer count across this step's request snapshots
+    /// (gauge, max-merged — layer counts are per-request, not additive).
+    rotated_ring_layers_max: u64,
+    /// Bounded-rollback ring slack observed on rotating requests (gauge).
+    rotating_ring_slack: u64,
     linear_state_layers: u64,
     linear_state_bytes: u64,
     growth_count: u64,
@@ -2720,6 +2726,12 @@ impl KvCacheTelemetry {
         self.sliding_window_reclaimable_capacity_bytes = self
             .sliding_window_reclaimable_capacity_bytes
             .saturating_add(usage.sliding_window_reclaimable_capacity_bytes);
+        self.rotated_ring_layers_max = self
+            .rotated_ring_layers_max
+            .max(usage.rotated_ring_layers as u64);
+        if usage.rotated_ring_layers > 0 {
+            self.rotating_ring_slack = usage.rotating_ring_slack as u64;
+        }
         self.linear_state_layers = self
             .linear_state_layers
             .saturating_add(usage.linear_state_layers as u64);
@@ -2906,6 +2918,14 @@ impl KvCacheTelemetry {
             (
                 ROUTE_DECISION_AX_MLX_KV_SLIDING_RECLAIMABLE_CAPACITY_KIB,
                 kib_ceil(self.sliding_window_reclaimable_capacity_bytes),
+            ),
+            (
+                ROUTE_DECISION_AX_MLX_KV_ROTATED_RING_LAYERS,
+                saturating_u32_from_u64(self.rotated_ring_layers_max),
+            ),
+            (
+                ROUTE_DECISION_AX_MLX_KV_ROTATING_RING_SLACK,
+                saturating_u32_from_u64(self.rotating_ring_slack),
             ),
             (
                 ROUTE_DECISION_AX_MLX_KV_LINEAR_STATE_LAYERS,
@@ -3160,6 +3180,14 @@ struct RequestState {
     /// useful n-gram support, finish it on the direct pipeline.
     ngram_acceleration_disabled_for_request: bool,
     ngram_request_disable_reason: NgramRequestDisableReason,
+    /// Per-request rotating sliding-KV decision `(rotate, slack)`, latched
+    /// once by `initialize_generation_state` at the prefill→decode boundary.
+    /// `run()` re-applies it to the cache at the top of **every** subsequent
+    /// step: rotation is irreversible for a request (a converted ring cannot
+    /// grow back through the ordered path without scrambling token order),
+    /// so the per-run session default must never clobber a latched decision.
+    /// `None` until the first latch (prefill runs use the session default).
+    rotating_sliding_latch: Option<(bool, usize)>,
     /// Pre-verified bonus tokens ready to serve without a model run.
     bonus_queue: VecDeque<u32>,
     /// Buffered tokens from the most recent diffusion block commit.
@@ -3300,6 +3328,7 @@ impl RequestState {
             linear_ngram_reenable_probe_countdown: 0,
             ngram_acceleration_disabled_for_request: false,
             ngram_request_disable_reason: NgramRequestDisableReason::None,
+            rotating_sliding_latch: None,
             bonus_queue: VecDeque::new(),
             diffusion_block_queue: VecDeque::new(),
             diffusion_embed_table: None,
@@ -5249,9 +5278,18 @@ impl MlxRunner {
         } else {
             None
         };
-        state
-            .cache
-            .set_rotating_sliding_decode(self.rotating_sliding_decode && is_greedy);
+        // Apply the request's rotating sliding-KV decision. Before
+        // `initialize_generation_state` latches one (i.e. during prefill
+        // runs), fall back to the session default. The latch must win on
+        // every later run: rotation is irreversible per request — if a
+        // decode step ran with the flag reset to the session default after
+        // a ring conversion, the next append would grow the ring through
+        // the ordered path and scramble token order.
+        let (rotate_sliding, rotate_slack) = state
+            .rotating_sliding_latch
+            .unwrap_or((self.rotating_sliding_decode && is_greedy, 0));
+        state.cache.set_rotating_sliding_decode(rotate_sliding);
+        state.cache.set_rotating_sliding_slack(rotate_slack);
         let mut kv_compression_shadow_sync_wall_us = None;
 
         // GPU work — mutex is NOT held during prefill, decode, or n-gram acceleration steps.
@@ -8291,30 +8329,48 @@ impl MlxRunner {
             NgramRequestDisableReason::None
         };
 
-        // Refine the rotating-sliding-KV decision now that the per-request
-        // n-gram gate is known. The session-level flag (set before prefill)
-        // covers direct sessions; a request inside an ngram-ON session may
-        // additionally rotate when nothing can roll its cache back for the
-        // request's whole lifetime: n-gram disabled under a sticky reason
-        // (LinearNoDraft can re-enable mid-request, but it only applies to
-        // linear-attention models, which have no sliding windows) and no MTP
-        // drafting (assistant/fused MTP verify uses `trim_to` rollback).
-        // Rotation bounds every sliding layer's backing store to the window —
-        // the first rotating decode append replaces the O(context) prefill
-        // buffer with a window-sized ring — which is the dominant KV memory
-        // for long-prompt/short-answer requests. Prefill appends are always
-        // multi-token and never rotate, so latching here (before the first
-        // decode append) is race-free, and the predicate is deterministic per
-        // request, so chunked-prefill re-runs of this init are idempotent.
-        state.cache.set_rotating_sliding_decode(
-            request_rotating_sliding_eligible(
-                self.rotating_sliding_decode,
-                crate::fastpath::rotating_sliding_decode_enabled(),
-                state.ngram_acceleration_disabled_for_request,
-                state.ngram_request_disable_reason,
-                has_mtp,
-            ) && is_greedy,
-        );
+        // Latch the rotating-sliding-KV decision now that the per-request
+        // n-gram gate is known; `run()` re-applies the latch to the cache at
+        // the top of every subsequent step, so the per-run session default
+        // can never clobber it after a ring has converted. Three classes:
+        //
+        //  - Direct sessions (session-level flag): pure window-sized rings,
+        //    mask-free single-token SDPA — nothing can roll the cache back.
+        //  - Requests with n-gram disabled under a sticky reason and no MTP:
+        //    same pure rings (the 38d8c70c class).
+        //  - n-gram-ACTIVE requests without MTP on standard-family sliding
+        //    models: bounded-rollback rings (`window + slack` slots plus a
+        //    slot-validity mask). Every rollback source for this class is an
+        //    n-gram verify `trim_to`, bounded by `MAX_DRAFT_LEN`, which the
+        //    slack absorbs — rolled-back tokens rewrite into their own
+        //    `t % capacity` slots.
+        //
+        // MTP stays excluded (assistant/fused verify rollback; its own depth
+        // could be covered by slack later but is unverified). Rotation bounds
+        // every sliding layer's backing store — the dominant KV memory for
+        // long-context requests on ~5:1 sliding:global models. This init runs
+        // only once the full prompt is prefilled (`prefill_completes_prompt`
+        // gates every call site), so all post-latch appends are decode-sized
+        // (1 for direct steps, ≤ 1 + MAX_DRAFT_LEN for n-gram verify) and the
+        // predicate is deterministic per request, making re-runs idempotent.
+        let rotating_latch = request_rotating_sliding_slack(
+            self.rotating_sliding_decode,
+            crate::fastpath::rotating_sliding_decode_enabled(),
+            crate::fastpath::rotating_bounded_rollback_enabled(),
+            rotating_bounded_family_eligible(&self.cfg),
+            state.ngram_acceleration_disabled_for_request,
+            state.ngram_request_disable_reason,
+            has_mtp,
+        )
+        .filter(|_| is_greedy);
+        state.rotating_sliding_latch =
+            Some((rotating_latch.is_some(), rotating_latch.unwrap_or(0)));
+        state
+            .cache
+            .set_rotating_sliding_decode(rotating_latch.is_some());
+        state
+            .cache
+            .set_rotating_sliding_slack(rotating_latch.unwrap_or(0));
 
         let kv_compression_shadow_sync_wall_us =
             self.sync_turboquant_shadow_storage_if_needed(state, true, layer_eligible);
@@ -9759,30 +9815,73 @@ fn ngram_request_disabled_fallback_should_feed_output(reason: NgramRequestDisabl
     matches!(reason, NgramRequestDisableReason::LinearNoDraft)
 }
 
-/// Whether a request may use a rotating (window-bounded) backing store for
-/// sliding-window KV layers. Rotation is irreversible for a request —
-/// `trim_to` refuses any real trim once a layer has rotated — so it is only
-/// sound when no speculative source can roll the cache back for the request's
-/// entire lifetime: either the whole session is on the rollback-free direct
-/// policy, or this request has n-gram acceleration disabled under a sticky
-/// reason and the model has no MTP drafting. `LinearNoDraft` is excluded
-/// because `maybe_reenable_linear_ngram_from_fallback_output` can re-enable
-/// n-gram mid-request for that reason (it only arises on linear-attention
-/// models, which have no sliding windows to rotate).
-fn request_rotating_sliding_eligible(
+/// Extra ring slots for bounded-rollback rotating sliding KV. Must absorb
+/// the widest speculative forward a covered request can roll back: an
+/// n-gram verify of `1 + MAX_DRAFT_LEN` tokens (the verify input is
+/// `[last_token, draft...]` and at least one token always commits, so the
+/// deepest `trim_to` is `MAX_DRAFT_LEN`; the ring additionally needs the
+/// whole verify batch resident, hence `+ 1`).
+const ROTATING_BOUNDED_ROLLBACK_SLACK: usize = 8;
+const _: () = assert!(
+    crate::ngram_accel::MAX_DRAFT_LEN < ROTATING_BOUNDED_ROLLBACK_SLACK,
+    "bounded-rollback ring slack must cover the widest n-gram verify forward (MAX_DRAFT_LEN + 1)"
+);
+
+/// Whether this model routes sliding-window attention through
+/// `families::standard::layer_forward` — the only append/mask seam that
+/// understands bounded-rollback rings. `llama4` and `gpt_oss` pass raw
+/// windows to `append_with_retained_window` but build family-local masks
+/// with no ring awareness, and DiffusionGemma's block decode reads KV
+/// through its own machinery, so bounded rings must never engage for them.
+/// Families without sliding windows are harmlessly included: the ring
+/// predicate never fires without a window.
+fn rotating_bounded_family_eligible(cfg: &crate::model::ModelConfig) -> bool {
+    cfg.diffusion.is_none()
+        && matches!(
+            cfg.model_family.as_str(),
+            "gemma4" | "gemma3" | "qwen3" | "llama3" | "qwen3_5" | "qwen3_next"
+        )
+}
+
+/// The rotating sliding-KV mode for a request: `None` = no rotation,
+/// `Some(0)` = pure window-sized ring (mask-free single-token SDPA, no
+/// rollback ever), `Some(slack)` = bounded-rollback ring (`window + slack`
+/// slots, slot-validity masks, `trim_to` up to `slack` deep).
+///
+/// Pure rings require that no speculative source can roll the cache back
+/// for the request's entire lifetime: the whole session on the rollback-free
+/// direct policy, or n-gram disabled under a sticky reason with no MTP
+/// drafting. Bounded rings extend rotation to n-gram-ACTIVE requests — every
+/// rollback source there is an n-gram verify `trim_to` bounded by
+/// `MAX_DRAFT_LEN` — but only for families whose sliding attention flows
+/// through the ring-aware `families::standard` seam. `LinearNoDraft` lands
+/// in the bounded arm because `maybe_reenable_linear_ngram_from_fallback_
+/// output` can re-enable n-gram mid-request for that reason (moot in
+/// practice: it only arises on linear-attention models, which have no
+/// sliding windows to rotate). MTP stays excluded from both arms.
+fn request_rotating_sliding_slack(
     session_rotating: bool,
     rotating_flag_enabled: bool,
+    bounded_rollback_enabled: bool,
+    bounded_family_eligible: bool,
     request_ngram_disabled: bool,
     disable_reason: NgramRequestDisableReason,
     has_mtp: bool,
-) -> bool {
+) -> Option<usize> {
     if session_rotating {
-        return true;
+        return Some(0);
     }
-    rotating_flag_enabled
-        && !has_mtp
-        && request_ngram_disabled
-        && !matches!(disable_reason, NgramRequestDisableReason::LinearNoDraft)
+    if !rotating_flag_enabled || has_mtp {
+        return None;
+    }
+    if request_ngram_disabled && !matches!(disable_reason, NgramRequestDisableReason::LinearNoDraft)
+    {
+        return Some(0);
+    }
+    if bounded_rollback_enabled && bounded_family_eligible {
+        return Some(ROTATING_BOUNDED_ROLLBACK_SLACK);
+    }
+    None
 }
 
 fn ngram_request_disabled_direct_fast_path(
@@ -14734,22 +14833,62 @@ mod tests {
     }
 
     #[test]
-    fn request_rotating_sliding_eligibility_covers_rollback_sources() {
+    fn request_rotating_sliding_slack_covers_rollback_sources() {
         use NgramRequestDisableReason as R;
-        let eligible = request_rotating_sliding_eligible;
-        // Session-level direct policy always rotates (existing behavior).
-        assert!(eligible(true, true, false, R::None, true));
-        // ngram-ON session: sticky per-request disable without MTP rotates.
-        assert!(eligible(false, true, true, R::ShortOutputBudget, false));
-        assert!(eligible(false, true, true, R::LinearInitialNoDraft, false));
-        // LinearNoDraft can re-enable n-gram mid-request: never rotate on it.
-        assert!(!eligible(false, true, true, R::LinearNoDraft, false));
-        // MTP verify uses trim_to rollback: never rotate with MTP present.
-        assert!(!eligible(false, true, true, R::ShortOutputBudget, true));
-        // n-gram active for the request: rollbacks possible.
-        assert!(!eligible(false, true, false, R::None, false));
-        // Kill-switch off: only the session-level path may rotate.
-        assert!(!eligible(false, false, true, R::ShortOutputBudget, false));
+        const SLACK: usize = ROTATING_BOUNDED_ROLLBACK_SLACK;
+        let slack = request_rotating_sliding_slack;
+        // Session-level direct policy always rotates with a pure ring.
+        assert_eq!(slack(true, true, true, true, false, R::None, true), Some(0));
+        // ngram-ON session: sticky per-request disable without MTP rotates
+        // with a pure ring (the 38d8c70c class, unchanged).
+        assert_eq!(
+            slack(false, true, true, true, true, R::ShortOutputBudget, false),
+            Some(0)
+        );
+        assert_eq!(
+            slack(
+                false,
+                true,
+                true,
+                true,
+                true,
+                R::LinearInitialNoDraft,
+                false
+            ),
+            Some(0)
+        );
+        // n-gram ACTIVE without MTP on an eligible family: bounded ring.
+        assert_eq!(
+            slack(false, true, true, true, false, R::None, false),
+            Some(SLACK)
+        );
+        // LinearNoDraft can re-enable n-gram mid-request: bounded, not pure.
+        assert_eq!(
+            slack(false, true, true, true, true, R::LinearNoDraft, false),
+            Some(SLACK)
+        );
+        // MTP verify uses deeper trim_to rollback: never rotate with MTP.
+        assert_eq!(slack(false, true, true, true, false, R::None, true), None);
+        assert_eq!(
+            slack(false, true, true, true, true, R::ShortOutputBudget, true),
+            None
+        );
+        // Family whose sliding attention bypasses the ring-aware seam
+        // (llama4 / gpt_oss / diffusion): no bounded ring, and n-gram-active
+        // means no pure ring either.
+        assert_eq!(slack(false, true, true, false, false, R::None, false), None);
+        // Bounded-rollback kill-switch off: n-gram-active requests keep the
+        // pre-bounded behavior (no rotation); sticky-disable still pure.
+        assert_eq!(slack(false, true, false, true, false, R::None, false), None);
+        assert_eq!(
+            slack(false, true, false, true, true, R::ShortOutputBudget, false),
+            Some(0)
+        );
+        // Rotation kill-switch off: only the session-level path may rotate.
+        assert_eq!(
+            slack(false, false, true, true, true, R::ShortOutputBudget, false),
+            None
+        );
     }
 
     #[test]

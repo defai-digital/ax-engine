@@ -95,6 +95,63 @@ pub fn batched_decode_validity_mask(valid_lengths: &[usize], key_len: usize) -> 
     mask
 }
 
+/// Boolean SDPA validity mask for a **bounded-rollback rotating ring**
+/// ([`crate::kv_cache::SlidingRingLayout`]).
+///
+/// The ring stores token `t` at slot `t % capacity` with
+/// `capacity = window + slack`, so the newest resident token in slot `s`
+/// after this forward appends `seq_len` tokens (`write_end = write_start +
+/// seq_len`) is `t(s) = (write_end - 1) - ((write_end - 1 - s) mod capacity)`.
+/// Query `i` (absolute position `p = write_start + i`) may attend slot `s`
+/// iff that token is inside its sliding window and not in its causal future:
+///
+/// `t(s) >= 0 && t(s) > p - window && t(s) <= p`
+///
+/// The `t(s) >= 0` term is load-bearing: right after ring conversion the
+/// `slack` newest slots may be zero-filled and never written, and a zero key
+/// still contributes `exp(0)` softmax mass if left unmasked. Slots holding
+/// expired tokens (older than any query's window) and slots holding tokens
+/// rolled back by `trim_to` (their `t(s)` maps below `write_end - capacity`
+/// under the post-trim `write_end`) fail the window term automatically.
+///
+/// Shape `[seq_len, capacity]`, `true` = attend — the same convention as
+/// [`create_causal_mask`], broadcasting over batch and heads in SDPA. Built
+/// on the host (`seq_len <= slack + 1`, so at most a few KB) and evaluated
+/// before return so the array owns its data.
+pub fn create_ring_sliding_mask(
+    seq_len: usize,
+    window: usize,
+    capacity: usize,
+    write_start: usize,
+) -> MlxArray {
+    assert!(seq_len > 0, "ring mask requires at least one query");
+    assert!(
+        capacity >= window && window > 0,
+        "ring capacity {capacity} must contain the sliding window {window}"
+    );
+    let write_end = (write_start + seq_len) as i64;
+    let capacity_i = capacity as i64;
+    let mut data = vec![0u8; seq_len * capacity];
+    for i in 0..seq_len {
+        let p = (write_start + i) as i64;
+        let row = &mut data[i * capacity..(i + 1) * capacity];
+        for (s, keep) in row.iter_mut().enumerate() {
+            let newest = write_end - 1;
+            let t = newest - (newest - s as i64).rem_euclid(capacity_i);
+            *keep = (t >= 0 && t > p - window as i64 && t <= p) as u8;
+        }
+    }
+    let mask = MlxArray::from_raw_data(
+        data.as_ptr(),
+        data.len(),
+        &[seq_len as i32, capacity as i32],
+        MlxDtype::Bool,
+    );
+    // Materialize while `data` is alive so the mask owns its bytes.
+    eval(&[&mask]);
+    mask
+}
+
 pub(crate) fn scalar_i32(value: i32) -> MlxArray {
     MlxArray::from_raw_data(
         &value as *const i32 as *const u8,
@@ -144,6 +201,85 @@ mod tests {
 
         assert_eq!(mask.shape(), vec![2, 5]);
         assert_eq!(mask_data(&mask), vec![1, 1, 1, 1, 0, 1, 1, 1, 1, 1]);
+    }
+
+    // ── Ring sliding mask ──
+
+    /// Reference semantics: query at absolute position `p` attends exactly
+    /// the tokens in `(p - window, p]` that exist (`>= 0`) and are still
+    /// resident in the ring under end `write_start + seq`.
+    fn ring_mask_reference(
+        seq: usize,
+        window: usize,
+        capacity: usize,
+        write_start: usize,
+    ) -> Vec<u8> {
+        let write_end = write_start + seq;
+        let mut want = vec![0u8; seq * capacity];
+        for i in 0..seq {
+            let p = write_start + i;
+            for t in p.saturating_sub(window - 1)..=p {
+                // Token t is resident iff no newer token < write_end shares
+                // its slot, i.e. t + capacity >= write_end.
+                if t + capacity >= write_end {
+                    want[i * capacity + t % capacity] = 1;
+                }
+            }
+        }
+        want
+    }
+
+    #[test]
+    fn ring_mask_matches_ordered_sliding_semantics() {
+        // (window, slack, write_start, seq): steady-state single-token,
+        // steady-state verify, crossing forwards, wrap-around ends, and a
+        // post-rollback re-forward (write_start rewound below a prior end).
+        let cases = [
+            (8usize, 4usize, 20usize, 1usize),
+            (8, 4, 20, 4),
+            (8, 4, 6, 3),    // crossing: write_start < window < write_end
+            (8, 4, 11, 1),   // write_end == capacity boundary
+            (8, 4, 12, 3),   // wraps past capacity
+            (8, 4, 23, 2),   // arbitrary wrap phase
+            (4, 3, 3, 2),    // small ring, crossing
+            (16, 8, 100, 7), // gemma-shaped slack with max verify width
+        ];
+        for (window, slack, write_start, seq) in cases {
+            let capacity = window + slack;
+            let mask = create_ring_sliding_mask(seq, window, capacity, write_start);
+            assert_eq!(mask.shape(), vec![seq as i32, capacity as i32]);
+            assert_eq!(
+                mask_data(&mask),
+                ring_mask_reference(seq, window, capacity, write_start),
+                "window={window} slack={slack} write_start={write_start} seq={seq}"
+            );
+        }
+    }
+
+    #[test]
+    fn ring_mask_excludes_never_written_slots_at_crossing() {
+        // First ring forward: window 8, slack 4, prompt of 8 tokens, one new
+        // token at position 8. Slots for tokens 1..=8 are live; the three
+        // remaining slots (which would decode to t < 0) must be masked even
+        // though they sit "within" a naive window span — they hold zeros the
+        // conversion never wrote, and an unmasked zero key still receives
+        // exp(0) softmax mass.
+        let mask = create_ring_sliding_mask(1, 8, 12, 8);
+        let data = mask_data(&mask);
+        let live: usize = data.iter().map(|&b| b as usize).sum();
+        assert_eq!(live, 8, "exactly the window's tokens are attendable");
+        for t in 1..=8usize {
+            assert_eq!(data[t % 12], 1, "token {t} must be attendable");
+        }
+    }
+
+    #[test]
+    fn ring_mask_full_pure_ring_is_all_true() {
+        // Pure ring (capacity == window) deep in decode: every slot holds a
+        // live window token, so the mask is all-true — the geometry that
+        // justifies pure rings running mask-free.
+        let mask = create_ring_sliding_mask(1, 8, 8, 100);
+        assert_eq!(mask_data(&mask), vec![1u8; 8]);
     }
 
     // ── Batched decode validity mask ──

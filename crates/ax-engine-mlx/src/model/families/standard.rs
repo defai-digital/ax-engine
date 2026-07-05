@@ -22,6 +22,7 @@ use super::super::turboquant_context::{
     TurboQuantModelDecodeCandidate, TurboQuantModelDecodeCandidateStatus,
     TurboQuantModelDecodeContext,
 };
+use crate::attention_mask::create_ring_sliding_mask;
 use crate::batched_kv_cache::BatchedKvCache;
 use crate::fastpath;
 use crate::kv_cache::{MlxKVCache, MlxKvCompressionDecodeOutcome};
@@ -78,6 +79,12 @@ pub(crate) fn layer_forward(
     let normed = rms_norm(hidden, Some(&w.attn_norm), cfg.rms_norm_eps, None);
 
     let seq = hidden.shape()[1] as usize;
+    // Bounded-rollback rotating ring geometry for this layer's window, if the
+    // append below (or the KV-shared source layer's append) presents the ring
+    // to SDPA this forward. Needed outside the projection block: the local
+    // mask fallback must stay in lockstep with the ring view for both storing
+    // and KV-shared layers.
+    let ring_layout = cache.sliding_ring_layout(sliding_window, seq);
     let profile_gemma4_moe_decode =
         cfg.gemma4_moe_router && seq == 1 && gemma4_moe_profile_enabled();
     let attention_started = profile_gemma4_moe_decode.then(Instant::now);
@@ -313,7 +320,11 @@ pub(crate) fn layer_forward(
             };
 
             let rope_kv_started = profile_forward_layer.then(Instant::now);
-            let retained_window = if seq == 1 {
+            let retained_window = if seq == 1 || ring_layout.is_some() {
+                // Single-token decode and bounded-ring forwards both pass the
+                // raw window: the append derives ring geometry (capacity =
+                // window + slack) from `sliding_ring_layout` itself, and any
+                // ring mask's width is the ring capacity, not a view width.
                 sliding_window
             } else if sliding_window.is_some() && fastpath::multi_token_window_views_enabled() {
                 match shared_mask {
@@ -381,7 +392,19 @@ pub(crate) fn layer_forward(
         let mask_opt: &Option<MlxArray> = if let Some(m) = shared_mask {
             m
         } else {
-            local_mask = attention_mask_array(seq, key_len, sliding_window);
+            local_mask = match ring_layout {
+                // Bounded ring: SDPA sees the full `window + slack` ring, so
+                // the mask must be the slot-validity mask even for seq == 1.
+                Some(ring) if ring.needs_mask(seq) => Some(create_ring_sliding_mask(
+                    seq,
+                    ring.window,
+                    ring.capacity,
+                    ring.write_start,
+                )),
+                // Pure ring: single query over an exactly-full window ring.
+                Some(_) => None,
+                None => attention_mask_array(seq, key_len, sliding_window),
+            };
             &local_mask
         };
         let sdpa_started = profile_forward_layer.then(Instant::now);

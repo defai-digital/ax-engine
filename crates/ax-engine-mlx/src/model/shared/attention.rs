@@ -6,7 +6,7 @@ use mlx_sys::{
 };
 use std::time::Instant;
 
-use crate::attention_mask::create_causal_mask;
+use crate::attention_mask::{create_causal_mask, create_ring_sliding_mask};
 use crate::fastpath;
 use crate::kv_cache::{
     MlxKVCache, MlxKvCompressionDecodeOutcome, MlxKvCompressionFusedDecodeTiming,
@@ -815,6 +815,91 @@ pub(crate) fn build_layer_masks(
             })
             .collect()
     }
+}
+
+/// Ring-aware variant of [`build_layer_masks`] for the bounded-rollback
+/// rotating sliding KV path.
+///
+/// When the cache is in bounded-rollback rotating mode (`rotating_slack >
+/// 0`) and this forward crosses a layer's sliding window, that layer's
+/// append presents the **full ring** (`window + slack` slots, unordered) to
+/// SDPA, so its mask must be a slot-validity mask
+/// ([`create_ring_sliding_mask`]) instead of an ordered causal-window mask —
+/// including for single-token decode, where the `slack` non-live slots would
+/// otherwise receive softmax mass. Global layers and windows this forward
+/// has not crossed keep the ordered logic unchanged.
+///
+/// Both this builder and the append site
+/// (`families::standard::layer_forward`) derive their decisions from
+/// [`MlxKVCache::sliding_ring_layout`], so mask and KV view cannot disagree.
+pub(crate) fn build_layer_masks_for_forward(
+    cfg: &ModelConfig,
+    n_layers: usize,
+    seq: usize,
+    key_len: usize,
+    cache: &MlxKVCache,
+) -> Vec<Option<MlxArray>> {
+    // Pure-mode rings (slack 0) stay mask-free on their single-token decode
+    // path and never take multi-token ring appends; every other mode is the
+    // ordered logic. Only bounded mode needs ring masks.
+    if cache.rotating_sliding_slack() == 0 {
+        return build_layer_masks(cfg, n_layers, seq, key_len);
+    }
+
+    if cfg.layer_configs.is_empty() {
+        return match cache.sliding_ring_layout(cfg.global_sliding_window, seq) {
+            Some(ring) if ring.needs_mask(seq) => {
+                let m = Some(create_ring_sliding_mask(
+                    seq,
+                    ring.window,
+                    ring.capacity,
+                    ring.write_start,
+                ));
+                (0..n_layers).map(|_| m.clone()).collect()
+            }
+            Some(_) => vec![None; n_layers],
+            None => build_layer_masks(cfg, n_layers, seq, key_len),
+        };
+    }
+
+    let any_ring = cfg
+        .layer_configs
+        .iter()
+        .any(|lc| cache.sliding_ring_layout(lc.sliding_window, seq).is_some());
+    if !any_ring {
+        return build_layer_masks(cfg, n_layers, seq, key_len);
+    }
+
+    let mut memo: std::collections::HashMap<Option<usize>, Option<MlxArray>> =
+        std::collections::HashMap::with_capacity(2);
+    cfg.layer_configs
+        .iter()
+        .map(|lc| {
+            memo.entry(lc.sliding_window)
+                .or_insert_with(|| {
+                    match cache.sliding_ring_layout(lc.sliding_window, seq) {
+                        Some(ring) if ring.needs_mask(seq) => Some(create_ring_sliding_mask(
+                            seq,
+                            ring.window,
+                            ring.capacity,
+                            ring.write_start,
+                        )),
+                        Some(_) => None,
+                        None => {
+                            // Ordered path for this window: mirror
+                            // `build_layer_masks`'s per-layer logic.
+                            if seq == 1 {
+                                return None;
+                            }
+                            let mask_key_len =
+                                attention_mask_key_len(seq, key_len, lc.sliding_window);
+                            attention_mask_array(seq, mask_key_len, lc.sliding_window)
+                        }
+                    }
+                })
+                .clone()
+        })
+        .collect()
 }
 
 /// Build Gemma4 multimodal PrefixLM masks.

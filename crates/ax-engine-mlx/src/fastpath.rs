@@ -352,6 +352,28 @@ env_flag_default_on!(
 );
 
 env_flag_default_on!(
+    /// `AX_MLX_ROTATING_BOUNDED_ROLLBACK` — extend rotating sliding-window
+    /// KV to n-gram-active requests via bounded-rollback rings.
+    ///
+    /// **Default: ON** (kill-switch via
+    /// `AX_MLX_ROTATING_BOUNDED_ROLLBACK=0`); has no effect when
+    /// `AX_MLX_ROTATING_SLIDING_DECODE=0` disables rotation entirely.
+    ///
+    /// Bounded rings allocate `window + slack` slots (slack covers the
+    /// deepest n-gram verify forward, `MAX_DRAFT_LEN + 1`) so `trim_to` can
+    /// roll back rejected draft tokens without reordering: a rolled-back
+    /// token's successor rewrites the same `t % capacity` slot. SDPA over a
+    /// bounded ring always carries a slot-validity mask
+    /// (`create_ring_sliding_mask`). With this OFF, n-gram-active requests
+    /// keep the pre-6.6.2 behavior: O(context) sliding-layer buffers with
+    /// ordered window views; the rollback-free classes (direct sessions,
+    /// sticky per-request n-gram disable) still rotate with pure
+    /// window-sized rings.
+    rotating_bounded_rollback_enabled,
+    "AX_MLX_ROTATING_BOUNDED_ROLLBACK"
+);
+
+env_flag_default_on!(
     /// `AX_MLX_MULTI_TOKEN_WINDOW_VIEWS` — present sliding-window layers with a
     /// `window + seq - 1` retained K/V view on multi-token forwards (chunked
     /// prefill continuation chunks, n-gram verify, assistant-MTP verify)

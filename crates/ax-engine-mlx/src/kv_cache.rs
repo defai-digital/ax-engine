@@ -567,6 +567,12 @@ pub struct MlxKVCacheUsage {
     pub sliding_window_retained_tokens: usize,
     pub sliding_window_reclaimable_capacity_tokens: usize,
     pub sliding_window_reclaimable_capacity_bytes: u64,
+    /// Sliding-window layers currently stored as rotating rings (backing
+    /// store bounded to `window + slack` instead of O(context)).
+    pub rotated_ring_layers: usize,
+    /// Bounded-rollback slack configured for this cache's rings (0 = pure
+    /// window-sized rings).
+    pub rotating_ring_slack: usize,
     pub linear_state_layers: usize,
     pub linear_state_bytes: u64,
     pub growth_count: u64,
@@ -972,6 +978,40 @@ pub struct MlxKVCache {
     growth_count: u64,
     turboquant_decode_usage: MlxKvCompressionDecodeUsage,
     use_rotating_sliding_decode: bool,
+    /// Extra ring slots beyond the sliding window that keep speculative
+    /// rollback (`trim_to`) sound after rotation. `0` = pure ring: exactly
+    /// window-sized, mask-free single-token SDPA, no rollback permitted
+    /// (the pre-bounded-rollback behavior). `> 0` = bounded ring: capacity
+    /// `window + slack`, every SDPA over the ring needs a validity mask
+    /// ([`SlidingRingLayout`]), and `trim_to` accepts rollbacks up to
+    /// `slack` tokens deep.
+    rotating_slack: usize,
+}
+
+/// Ring geometry a forward presents to SDPA for a sliding-window layer when
+/// the rotating decode path engages. `capacity == window + slack`; the ring
+/// stores token `t` at slot `t % capacity`, so SDPA must mask slots whose
+/// resident token falls outside a query's `(pos - window, pos]` range (or
+/// was never written / rolled back). Produced by
+/// [`MlxKVCache::sliding_ring_layout`]; the append site and every mask
+/// builder must derive their decisions from this one predicate so view and
+/// mask can never disagree.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SlidingRingLayout {
+    pub window: usize,
+    pub capacity: usize,
+    /// Logical index of the first token this forward appends (`cache.seq_len`
+    /// at forward entry).
+    pub write_start: usize,
+}
+
+impl SlidingRingLayout {
+    /// Whether SDPA needs an explicit slot-validity mask over the ring.
+    /// Pure rings (`capacity == window`) are exactly full for single-token
+    /// decode, so every slot is live and mask-free SDPA is correct.
+    pub fn needs_mask(&self, seq: usize) -> bool {
+        self.capacity > self.window || seq > 1
+    }
 }
 
 impl Clone for MlxKVCache {
@@ -986,6 +1026,7 @@ impl Clone for MlxKVCache {
             growth_count: self.growth_count,
             turboquant_decode_usage: self.turboquant_decode_usage,
             use_rotating_sliding_decode: self.use_rotating_sliding_decode,
+            rotating_slack: self.rotating_slack,
         }
     }
 }
@@ -1068,11 +1109,56 @@ impl MlxKVCache {
             growth_count: 0,
             turboquant_decode_usage: MlxKvCompressionDecodeUsage::default(),
             use_rotating_sliding_decode: false,
+            rotating_slack: 0,
         }
     }
 
     pub fn set_rotating_sliding_decode(&mut self, enabled: bool) {
         self.use_rotating_sliding_decode = enabled;
+    }
+
+    /// Set the bounded-rollback slack for rotating sliding-window layers.
+    /// Must be latched before the first rotating append of a request and
+    /// never changed afterwards — converted rings keep their capacity.
+    pub fn set_rotating_sliding_slack(&mut self, slack: usize) {
+        self.rotating_slack = slack;
+    }
+
+    pub fn rotating_sliding_slack(&self) -> usize {
+        self.rotating_slack
+    }
+
+    /// The ring geometry an `append_with_retained_window` call on a sliding
+    /// layer will use for a forward of `seq` new tokens, or `None` when the
+    /// forward stays on the ordered (non-rotating) path for that window.
+    ///
+    /// This is the single source of truth shared by the append site and the
+    /// SDPA mask builders: a multi-token forward may enter the ring only in
+    /// bounded mode (`rotating_slack > 0`) and only when it fits inside the
+    /// slack, which also bounds the deepest `trim_to` rollback the ring can
+    /// absorb (rolled-back tokens rewrite into their own `t % capacity`
+    /// slots, so rollback itself is free).
+    pub fn sliding_ring_layout(
+        &self,
+        window: Option<usize>,
+        seq: usize,
+    ) -> Option<SlidingRingLayout> {
+        if !self.use_rotating_sliding_decode || seq == 0 {
+            return None;
+        }
+        let window = window.filter(|window| *window > 0)?;
+        if self.seq_len + seq <= window {
+            return None;
+        }
+        let eligible = seq == 1 || (self.rotating_slack > 0 && seq <= self.rotating_slack);
+        if !eligible {
+            return None;
+        }
+        Some(SlidingRingLayout {
+            window,
+            capacity: window + self.rotating_slack,
+            write_start: self.seq_len,
+        })
     }
 
     // ── F3 M1: serialization for the disk-prefix-cache disk format ──
@@ -1708,13 +1794,10 @@ impl MlxKVCache {
         let head_dim = append.head_dim;
         let dtype = append.dtype;
 
-        if self.use_rotating_sliding_decode
-            && new_tokens == 1
-            && let Some(window) = window.filter(|window| *window > 0)
-            && write_end > window
+        if let Some(ring) = self.sliding_ring_layout(window, new_tokens)
             && self.layers[layer].is_some()
         {
-            return self.append_rotating_retained_window(layer, new_k, new_v, window, write_start);
+            return self.append_rotating_retained_window(layer, new_k, new_v, ring);
         }
 
         let entry = &mut self.layers[layer];
@@ -1860,38 +1943,64 @@ impl MlxKVCache {
         layer: usize,
         new_k: MlxArray,
         new_v: MlxArray,
-        window: usize,
-        write_start: usize,
+        ring: SlidingRingLayout,
     ) -> (MlxArray, MlxArray) {
+        let SlidingRingLayout {
+            window,
+            capacity,
+            write_start,
+        } = ring;
+        let new_tokens = new_k.shape()[2] as usize;
         let lkv = self.layers[layer]
             .as_mut()
             .expect("rotating sliding decode requires an existing prefill cache");
-        if lkv.rotating_window != Some(window) || lkv.capacity != window {
+        if lkv.rotating_window != Some(window) || lkv.capacity != capacity {
             let k_old = lkv.k.clone();
             let v_old = lkv.v.clone();
-            let buf_shape = [1i32, lkv.n_kv_heads, window as i32, lkv.head_dim];
+            let buf_shape = [1i32, lkv.n_kv_heads, capacity as i32, lkv.head_dim];
             let k_new = zeros(&buf_shape, lkv.dtype, None);
             let v_new = zeros(&buf_shape, lkv.dtype, None);
             let old_start = write_start.saturating_add(1).saturating_sub(window);
             let old_end = write_start;
             let k_new =
-                copy_token_range_to_rotating(&k_old, &k_new, lkv, old_start, old_end, window);
+                copy_token_range_to_rotating(&k_old, &k_new, lkv, old_start, old_end, capacity);
             let v_new =
-                copy_token_range_to_rotating(&v_old, &v_new, lkv, old_start, old_end, window);
+                copy_token_range_to_rotating(&v_old, &v_new, lkv, old_start, old_end, capacity);
             lkv.k = k_new;
             lkv.v = v_new;
-            lkv.capacity = window;
+            lkv.capacity = capacity;
             lkv.rotating_window = Some(window);
             lkv.last_k_view = None;
             lkv.last_v_view = None;
         }
 
-        let write_pos = (write_start % window) as i32;
-        let start = [0i32, 0, write_pos, 0];
-        let stop = [1i32, lkv.n_kv_heads, write_pos + 1, lkv.head_dim];
-        let strides = [1i32, 1, 1, 1];
-        lkv.k = slice_update(&lkv.k, &new_k, &start, &stop, &strides, None);
-        lkv.v = slice_update(&lkv.v, &new_v, &start, &stop, &strides, None);
+        // Write the new tokens at their `t % capacity` slots. A multi-token
+        // append (bounded rings only; `new_tokens <= slack < capacity`) wraps
+        // at most once, so this loop issues one or two slice_updates; the
+        // single-token common case keeps today's exact one-node graph.
+        let mut src_start = 0usize;
+        while src_start < new_tokens {
+            let dst_start = (write_start + src_start) % capacity;
+            let len = (new_tokens - src_start).min(capacity - dst_start);
+            let (seg_k, seg_v) = if src_start == 0 && len == new_tokens {
+                (new_k.clone(), new_v.clone())
+            } else {
+                let src_stop = (src_start + len) as i32;
+                let seg_start = [0i32, 0, src_start as i32, 0];
+                let seg_stop = [1i32, lkv.n_kv_heads, src_stop, lkv.head_dim];
+                let ones = [1i32, 1, 1, 1];
+                (
+                    slice(&new_k, &seg_start, &seg_stop, &ones, None),
+                    slice(&new_v, &seg_start, &seg_stop, &ones, None),
+                )
+            };
+            let start = [0i32, 0, dst_start as i32, 0];
+            let stop = [1i32, lkv.n_kv_heads, (dst_start + len) as i32, lkv.head_dim];
+            let strides = [1i32, 1, 1, 1];
+            lkv.k = slice_update(&lkv.k, &seg_k, &start, &stop, &strides, None);
+            lkv.v = slice_update(&lkv.v, &seg_v, &start, &stop, &strides, None);
+            src_start += len;
+        }
         lkv.last_k_view = Some(lkv.k.clone());
         lkv.last_v_view = Some(lkv.v.clone());
         (lkv.k.clone(), lkv.v.clone())
@@ -2055,14 +2164,22 @@ impl MlxKVCache {
     /// the cache and make SDPA attend to unwritten positions.
     #[must_use]
     pub fn trim_to(&mut self, prefix_len: usize) -> bool {
-        if prefix_len < self.seq_len
-            && self
-                .layers
-                .iter()
-                .flatten()
-                .any(|lkv| lkv.rotating_window.is_some())
-        {
-            return false;
+        if prefix_len < self.seq_len {
+            // Rotated layers can absorb a rollback only within their slack:
+            // token `t` lives at slot `t % capacity`, so a token is still
+            // resident iff nothing more than `capacity` positions newer has
+            // overwritten it. After trimming to `L` with pre-trim end `E`,
+            // the next forward reads keys back to `L - window + 1`; those
+            // are intact iff `E - L <= capacity - window`. Pure rings
+            // (`capacity == window`) therefore refuse every real trim, and
+            // bounded rings refuse trims deeper than their slack.
+            let rollback = self.seq_len - prefix_len;
+            if self.layers.iter().flatten().any(|lkv| {
+                lkv.rotating_window
+                    .is_some_and(|window| rollback > lkv.capacity.saturating_sub(window))
+            }) {
+                return false;
+            }
         }
         let valid = prefix_len <= self.seq_len;
         let trimmed = prefix_len < self.seq_len;
@@ -2101,6 +2218,11 @@ impl MlxKVCache {
     /// with "Attempting to eval an array without a primitive").
     pub fn logical_layer_kv(&self, layer: usize) -> Option<(MlxArray, MlxArray)> {
         let lkv = self.layers.get(layer)?.as_ref()?;
+        debug_assert!(
+            lkv.rotating_window.is_none(),
+            "logical_layer_kv reads a [0, seq_len) prefix slice, which is meaningless \
+             on a rotated ring (MTP draft seeding never coexists with rotation)"
+        );
         let end = self.seq_len as i32;
         let stop = [1, lkv.n_kv_heads, end, lkv.head_dim];
         let k = slice(&lkv.k, &[0, 0, 0, 0], &stop, &[1, 1, 1, 1], None);
@@ -2927,6 +3049,7 @@ impl MlxKVCache {
         let mut usage = MlxKVCacheUsage {
             logical_tokens: self.seq_len,
             growth_count: self.growth_count,
+            rotating_ring_slack: self.rotating_slack,
             ..MlxKVCacheUsage::default()
         };
 
@@ -2934,6 +3057,9 @@ impl MlxKVCache {
             let Some(lkv) = lkv else {
                 continue;
             };
+            if lkv.rotating_window.is_some() {
+                usage.rotated_ring_layers = usage.rotated_ring_layers.saturating_add(1);
+            }
             let elements_per_token = (lkv.n_kv_heads as u64).saturating_mul(lkv.head_dim as u64);
             let bytes_per_element = lkv.dtype.size_bytes() as u64;
             let bytes_per_token = elements_per_token
@@ -4356,6 +4482,271 @@ mod tests {
 
         assert!(!cache.trim_to(4));
         assert_eq!(cache.seq_len, 5);
+    }
+
+    // ── Bounded-rollback rotating ring tests ──
+
+    /// `[1, 1, len, head_dim]` f32 array where token row `i` is filled with
+    /// `values[i]`, so slot contents are identifiable after ring writes.
+    fn tokens_f32(values: &[f32], head_dim: usize) -> MlxArray {
+        let data: Vec<f32> = values
+            .iter()
+            .flat_map(|&value| std::iter::repeat_n(value, head_dim))
+            .collect();
+        MlxArray::from_raw_data(
+            data.as_ptr().cast(),
+            std::mem::size_of_val(data.as_slice()),
+            &[1, 1, values.len() as i32, head_dim as i32],
+            MlxDtype::Float32,
+        )
+    }
+
+    /// First element of each token row of a `[1, 1, len, head_dim]` array.
+    fn token_row_values(arr: &MlxArray, head_dim: usize) -> Vec<f32> {
+        eval(&[arr]);
+        arr.data_f32().chunks(head_dim).map(|row| row[0]).collect()
+    }
+
+    #[test]
+    fn sliding_ring_layout_gates_by_mode_seq_and_crossing() {
+        let mut cache = MlxKVCache::new(1);
+        cache.seq_len = 10;
+        // Rotation disabled: never a ring.
+        assert_eq!(cache.sliding_ring_layout(Some(4), 1), None);
+        cache.set_rotating_sliding_decode(true);
+        // Pure mode: single-token only.
+        let pure = cache.sliding_ring_layout(Some(4), 1).expect("pure ring");
+        assert_eq!((pure.window, pure.capacity, pure.write_start), (4, 4, 10));
+        assert!(!pure.needs_mask(1));
+        assert_eq!(cache.sliding_ring_layout(Some(4), 2), None);
+        // Bounded mode: multi-token up to the slack, always masked.
+        cache.set_rotating_sliding_slack(3);
+        let ring = cache.sliding_ring_layout(Some(4), 3).expect("bounded ring");
+        assert_eq!((ring.window, ring.capacity, ring.write_start), (4, 7, 10));
+        assert!(ring.needs_mask(1));
+        assert_eq!(cache.sliding_ring_layout(Some(4), 4), None);
+        // Not yet crossing the window, and no window at all: ordered path.
+        cache.seq_len = 2;
+        assert_eq!(cache.sliding_ring_layout(Some(4), 2), None);
+        cache.seq_len = 10;
+        assert_eq!(cache.sliding_ring_layout(None, 1), None);
+    }
+
+    #[test]
+    fn bounded_ring_multi_token_append_places_tokens_by_slot_and_wraps() {
+        const HD: usize = 4;
+        let mut cache = MlxKVCache::new(1);
+        cache.set_rotating_sliding_decode(true);
+        cache.set_rotating_sliding_slack(3); // window 4 → capacity 7
+        // Prefill 4 tokens (values 1..=4 for tokens 0..=3).
+        let k = tokens_f32(&[1.0, 2.0, 3.0, 4.0], HD);
+        let v = tokens_f32(&[1.0, 2.0, 3.0, 4.0], HD);
+        cache.append(0, k, v);
+        cache.seq_len = 4;
+
+        // 3-token verify-style append crosses the window: tokens 4, 5, 6.
+        let k = tokens_f32(&[5.0, 6.0, 7.0], HD);
+        let v = tokens_f32(&[5.0, 6.0, 7.0], HD);
+        let (ck, _) = cache.append_with_retained_window(0, k, v, Some(4));
+        cache.seq_len = 7;
+
+        let lkv = cache.layers[0].as_ref().expect("layer exists");
+        assert_eq!(lkv.rotating_window, Some(4));
+        assert_eq!(lkv.capacity, 7);
+        assert_eq!(ck.shape(), vec![1, 1, 7, HD as i32]);
+        // Conversion copies tokens 1..=3 (window - 1 back from write_start 4)
+        // to slots 1..=3; new tokens 4..=6 land at slots 4..=6; slot 0 (token
+        // 0's slot) was outside the copy range and stays zero.
+        assert_eq!(
+            token_row_values(&lkv.k, HD),
+            vec![0.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0]
+        );
+
+        // Two single-token appends wrap: token 7 → slot 0, token 8 → slot 1.
+        for (t, value) in [(7usize, 8.0f32), (8, 9.0)] {
+            let k = tokens_f32(&[value], HD);
+            let v = tokens_f32(&[value], HD);
+            cache.append_with_retained_window(0, k, v, Some(4));
+            cache.seq_len = t + 1;
+        }
+        let lkv = cache.layers[0].as_ref().expect("layer exists");
+        assert_eq!(
+            token_row_values(&lkv.k, HD),
+            vec![8.0, 9.0, 3.0, 4.0, 5.0, 6.0, 7.0]
+        );
+    }
+
+    #[test]
+    fn bounded_ring_trim_within_slack_rewrites_same_slots() {
+        const HD: usize = 4;
+        let mut cache = MlxKVCache::new(1);
+        cache.set_rotating_sliding_decode(true);
+        cache.set_rotating_sliding_slack(3);
+        let k = tokens_f32(&[1.0, 2.0, 3.0, 4.0], HD);
+        let v = tokens_f32(&[1.0, 2.0, 3.0, 4.0], HD);
+        cache.append(0, k, v);
+        cache.seq_len = 4;
+        // Verify forward: draft tokens 4, 5, 6 (values 5, 6, 7).
+        let k = tokens_f32(&[5.0, 6.0, 7.0], HD);
+        let v = tokens_f32(&[5.0, 6.0, 7.0], HD);
+        cache.append_with_retained_window(0, k, v, Some(4));
+        cache.seq_len = 7;
+
+        // Reject the last two draft tokens (rollback depth 2 <= slack 3).
+        assert!(cache.trim_to(5));
+        assert_eq!(cache.seq_len, 5);
+
+        // The corrected continuation rewrites tokens 5 and 6 with new values;
+        // they land in the same slots the rejected tokens occupied.
+        let k = tokens_f32(&[60.0, 70.0], HD);
+        let v = tokens_f32(&[60.0, 70.0], HD);
+        cache.append_with_retained_window(0, k, v, Some(4));
+        cache.seq_len = 7;
+        let lkv = cache.layers[0].as_ref().expect("layer exists");
+        assert_eq!(
+            token_row_values(&lkv.k, HD),
+            vec![0.0, 2.0, 3.0, 4.0, 5.0, 60.0, 70.0]
+        );
+
+        // Rollback deeper than the slack is refused (fail-closed).
+        assert!(!cache.trim_to(3));
+        assert_eq!(cache.seq_len, 7);
+        // Pure rings (slack 0 on another cache) still refuse any real trim —
+        // covered by trim_to_rejects_rollback_after_rotating_sliding_decode.
+    }
+
+    /// End-to-end oracle: masked SDPA over the ring (unordered slots + slot-
+    /// validity mask) must equal unmasked SDPA over the ordered sliding
+    /// window from a plain cache, through a conversion → wrap → rollback →
+    /// rewrite trajectory. This is the property that makes bounded rings a
+    /// drop-in for ordered window views.
+    #[test]
+    fn bounded_ring_sdpa_matches_ordered_window_reference() {
+        use crate::attention_mask::create_ring_sliding_mask;
+        use mlx_sys::{ScaledDotProductAttentionMask, scaled_dot_product_attention_with_mask};
+        const HD: usize = 4;
+        const WINDOW: usize = 4;
+        const SLACK: usize = 3;
+        let scale = 1.0 / (HD as f32).sqrt();
+
+        let mut ring_cache = MlxKVCache::new(1);
+        ring_cache.set_rotating_sliding_decode(true);
+        ring_cache.set_rotating_sliding_slack(SLACK);
+        let mut plain_cache = MlxKVCache::new(1);
+
+        // Distinct K/V rows per token so misplaced slots change the output.
+        let tok = |t: usize| ((t + 1) as f32) * 0.25;
+        let prefill: Vec<f32> = (0..WINDOW).map(tok).collect();
+        for cache in [&mut ring_cache, &mut plain_cache] {
+            let k = tokens_f32(&prefill, HD);
+            let v = tokens_f32(&prefill, HD);
+            cache.append(0, k, v);
+            cache.seq_len = WINDOW;
+        }
+
+        // Trajectory: 3-token verify (tokens 4-6), reject 2 (trim to 5),
+        // 2-token re-verify (tokens 5-6 with new values), then a single-token
+        // step (token 7) that wraps the ring.
+        struct Step {
+            values: Vec<f32>,
+            trim_to: Option<usize>,
+        }
+        let steps = [
+            Step {
+                values: vec![tok(4), tok(5), tok(6)],
+                trim_to: Some(5),
+            },
+            Step {
+                values: vec![9.5, 10.5],
+                trim_to: None,
+            },
+            Step {
+                values: vec![11.5],
+                trim_to: None,
+            },
+        ];
+
+        for step in steps {
+            let seq = step.values.len();
+            let write_start = ring_cache.seq_len;
+            assert_eq!(write_start, plain_cache.seq_len, "caches stay in sync");
+            let q = tokens_f32(&step.values, HD); // queries; values arbitrary
+
+            // Ring side: append with the raw window, mask over the ring.
+            let ring = ring_cache
+                .sliding_ring_layout(Some(WINDOW), seq)
+                .expect("trajectory stays on the ring past the window");
+            let k = tokens_f32(&step.values, HD);
+            let v = tokens_f32(&step.values, HD);
+            let (ring_k, ring_v) = ring_cache.append_with_retained_window(0, k, v, Some(WINDOW));
+            let ring_mask =
+                create_ring_sliding_mask(seq, ring.window, ring.capacity, ring.write_start);
+            let ring_out = scaled_dot_product_attention_with_mask(
+                &q,
+                &ring_k,
+                &ring_v,
+                scale,
+                ScaledDotProductAttentionMask::Array(&ring_mask),
+                None,
+            );
+
+            // Plain side: ordered append; reference is the ordered full view
+            // with the standard causal sliding-window mask, so both sides run
+            // the same masked-SDPA kernel and the comparison isolates ring
+            // slot/mask placement (kernel-level masked-vs-unmasked numeric
+            // drift is ~1e-3 in f32 and not what this test is about).
+            let k = tokens_f32(&step.values, HD);
+            let v = tokens_f32(&step.values, HD);
+            plain_cache.append_with_retained_window(0, k, v, None);
+            let plain = plain_cache.layers[0].as_ref().expect("layer exists");
+            let write_end = (write_start + seq) as i32;
+            let ones = [1i32, 1, 1, 1];
+            let ordered_k = slice(
+                &plain.k,
+                &[0, 0, 0, 0],
+                &[1, 1, write_end, HD as i32],
+                &ones,
+                None,
+            );
+            let ordered_v = slice(
+                &plain.v,
+                &[0, 0, 0, 0],
+                &[1, 1, write_end, HD as i32],
+                &ones,
+                None,
+            );
+            let ordered_mask =
+                crate::attention_mask::create_causal_mask(seq, write_start, Some(WINDOW));
+            let want = scaled_dot_product_attention_with_mask(
+                &q,
+                &ordered_k,
+                &ordered_v,
+                scale,
+                ScaledDotProductAttentionMask::Array(&ordered_mask),
+                None,
+            );
+            eval(&[&ring_out, &want]);
+            let got = ring_out.data_f32().to_vec();
+            let want = want.data_f32().to_vec();
+            for i in 0..seq {
+                for d in 0..HD {
+                    let g = got[i * HD + d];
+                    let w = want[i * HD + d];
+                    assert!(
+                        (g - w).abs() < 1e-5,
+                        "step query {i} dim {d}: ring {g} vs ordered {w}"
+                    );
+                }
+            }
+
+            let new_len = write_start + seq;
+            ring_cache.seq_len = new_len;
+            plain_cache.seq_len = new_len;
+            if let Some(target) = step.trim_to {
+                assert!(ring_cache.trim_to(target), "trim within slack");
+                assert!(plain_cache.trim_to(target));
+            }
+        }
     }
 
     // ── F3 M1 serialize / deserialize round-trip tests ──
