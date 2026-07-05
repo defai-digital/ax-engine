@@ -4466,6 +4466,15 @@ impl ExecutionRunner for MlxRunner {
         Some(self.binding_summary)
     }
 
+    fn release_request_state(&self, request_id: RequestId) {
+        // Terminal cleanup for requests that never reach a runner-observed stop
+        // (cancelled while waiting/blocked, or cancelled by the engine after a
+        // step reinserted state). Without this the per-request KV cache, MTP,
+        // and n-gram state stay resident for the life of the process.
+        self.states.lock().remove(&request_id);
+        self.batched_session.lock().remove(request_id.0);
+    }
+
     fn embed(
         &self,
         token_ids: &[u32],
@@ -6960,8 +6969,18 @@ impl MlxRunner {
             state.auto_optimistic_active = false;
         }
         let auto_optimistic = can_auto_optimistic && state.auto_optimistic_active;
-        let optimistic =
-            optimistic_allowed && (self.mtp_optimistic || auto_optimistic) && !pending.is_empty();
+        // Optimistic accept-all is justified by the MTP head's measured (or
+        // operator-asserted, via AX_MLX_MTP_OPTIMISTIC=1) draft accuracy; that
+        // evidence says nothing about n-gram-sourced drafts stacked into the
+        // window, so any ngram draft forces the full verify path for this step.
+        let all_drafts_model_sourced = state
+            .mtp_pending_draft_sources
+            .iter()
+            .all(|source| source.is_model_draft());
+        let optimistic = optimistic_allowed
+            && (self.mtp_optimistic || auto_optimistic)
+            && !pending.is_empty()
+            && all_drafts_model_sourced;
         if auto_optimistic && !self.mtp_optimistic {
             state.mtp_telemetry.auto_optimistic_steps =
                 state.mtp_telemetry.auto_optimistic_steps.saturating_add(1);

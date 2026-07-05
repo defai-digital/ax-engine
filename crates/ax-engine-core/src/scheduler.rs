@@ -402,6 +402,12 @@ impl Scheduler {
         let mut items = Vec::new();
         let mut candidates = Vec::new();
         let mut route_seed_anchor: Option<BatchRouteSeed> = None;
+        // First-seen seed per execution mode. Checking candidates only against
+        // the batch anchor lets two same-mode requests with different execution
+        // plans share a mixed batch (each passing the looser cross-mode check);
+        // every candidate must also pass the strict same-mode check against its
+        // own mode's seed.
+        let mut mode_route_seeds: Vec<BatchRouteSeed> = Vec::new();
         let mut batch_mixes_prefill_decode = false;
         let mut token_budget = TokenBudgetTelemetry::default();
         let mut pressure_prefill_budget =
@@ -458,9 +464,9 @@ impl Scheduler {
                 execution_plan_ref: snapshot.execution_plan_ref.clone(),
                 route_metadata: route_seed(&snapshot),
             };
-            let can_join = route_seed_anchor
-                .as_ref()
-                .is_none_or(|anchor| route_seed_can_join_batch(anchor, &candidate_route));
+            let can_join = mode_route_seeds
+                .iter()
+                .all(|seed| route_seed_can_join_batch(seed, &candidate_route));
             if !can_join {
                 deferred_requests.push(snapshot.request_id);
                 continue;
@@ -471,7 +477,10 @@ impl Scheduler {
                     batch_mixes_prefill_decode = true;
                 }
             } else {
-                route_seed_anchor = Some(candidate_route);
+                route_seed_anchor = Some(candidate_route.clone());
+            }
+            if !mode_route_seeds.iter().any(|seed| seed.mode == mode) {
+                mode_route_seeds.push(candidate_route);
             }
 
             remaining_budget -= item.scheduled_token_count;
@@ -1306,6 +1315,47 @@ mod tests {
                 .and_then(|batch| batch.route_metadata.attention_route.as_deref()),
             Some("qwen3_prefill")
         );
+    }
+
+    #[test]
+    fn does_not_mix_different_prefill_plans_behind_a_decode_anchor() {
+        let scheduler = Scheduler::new();
+        let mixed_compatible_kv = |execution_plan: &str, attention_route: &str| RouteMetadata {
+            execution_plan: Some(execution_plan.into()),
+            attention_route: Some(attention_route.into()),
+            kv_mode: Some("paged_metadata".into()),
+            prefix_cache_path: None,
+            barrier_mode: Some("serial".into()),
+            crossover_decisions: Vec::new(),
+        };
+
+        let mut decode = make_snapshot(1, 1, "qwen3", &[20, 21, 22, 23], 4, &[99], 16);
+        decode.execution_plan_ref = Some("phase1.qwen3.paged_decode".into());
+        decode.route_metadata_hint =
+            mixed_compatible_kv("phase1.qwen3.paged_decode", "qwen3_paged_decode");
+        let mut first_prefill = make_snapshot(2, 2, "qwen3", &[10, 11], 0, &[], 16);
+        first_prefill.execution_plan_ref = Some("phase1.qwen3.dense_prefill".into());
+        first_prefill.route_metadata_hint =
+            mixed_compatible_kv("phase1.qwen3.dense_prefill", "qwen3_prefill");
+        let mut second_prefill = make_snapshot(3, 3, "qwen3", &[30, 31], 0, &[], 16);
+        second_prefill.execution_plan_ref = Some("phase1.qwen3.special_prefill".into());
+        second_prefill.route_metadata_hint =
+            mixed_compatible_kv("phase1.qwen3.special_prefill", "qwen3_prefill_alt");
+
+        let schedule_plan = scheduler.plan(&SchedulerInput {
+            step_id: StepId(14),
+            request_snapshots: vec![decode, first_prefill, second_prefill],
+            memory_pressure: None,
+            global_token_budget: 8,
+        });
+
+        // Both prefills are mixed-compatible with the decode anchor, but they
+        // carry different execution plans, so only the first may join.
+        assert_eq!(
+            schedule_plan.selected_requests,
+            vec![RequestId(1), RequestId(2)]
+        );
+        assert_eq!(schedule_plan.deferred_requests, vec![RequestId(3)]);
     }
 
     #[test]

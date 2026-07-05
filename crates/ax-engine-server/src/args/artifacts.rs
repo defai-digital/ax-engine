@@ -148,9 +148,10 @@ fn infer_qwen_model_id(path_label: &str, model_type: &str) -> String {
         "qwen3.6-27b".to_string()
     } else if path_label.contains("qwen3-5-9b") || path_label.contains("qwen35-9b") {
         "qwen3.5-9b".to_string()
-    } else if matches!(model_type, "qwen3_5_moe" | "qwen3_5_text") {
-        "qwen3.6".to_string()
-    } else if matches!(model_type, "qwen3_next" | "qwen3_6" | "qwen3.6") {
+    } else if matches!(
+        model_type,
+        "qwen3_5_moe" | "qwen3_5_text" | "qwen3_next" | "qwen3_6" | "qwen3.6"
+    ) {
         "qwen3.6".to_string()
     } else if matches!(model_type, "qwen3_5" | "qwen3.5") {
         "qwen3.5".to_string()

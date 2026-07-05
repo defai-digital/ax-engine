@@ -102,6 +102,20 @@ pub(crate) const DEFAULT_VIDEO_FPS: f32 = 2.0;
 const FFMPEG_VIDEO_MAX_FRAME_SIDE: u32 = 1600;
 const FFMPEG_VIDEO_MAX_OUTPUT_BYTES: u64 = 512 * 1024 * 1024;
 
+/// Strict decode bounds for client-supplied still images and GIF frames. The
+/// patchify resize target is far below this side length, so quality is
+/// unaffected; without a strict dimension cap a small highly-compressed file
+/// can decode to an arbitrarily large buffer (`Limits::default()` only sets a
+/// non-strict 512 MiB alloc cap that decoders may ignore).
+const IMAGE_MAX_DECODE_SIDE: u32 = 8192;
+
+fn image_decode_limits() -> image::Limits {
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(IMAGE_MAX_DECODE_SIDE);
+    limits.max_image_height = Some(IMAGE_MAX_DECODE_SIDE);
+    limits
+}
+
 /// One decoded video frame with its timestamp (seconds from the start).
 #[derive(Debug)]
 pub(crate) struct VideoFrame {
@@ -292,7 +306,12 @@ pub(crate) fn preprocess_image(
     vision: &Gemma4UnifiedVisionProcessor,
     normalization: &ImageNormalization,
 ) -> Result<PreprocessedImage, MediaError> {
-    let decoded = image::load_from_memory(bytes)
+    let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes))
+        .with_guessed_format()
+        .map_err(|error| MediaError::Decode(format!("failed to probe image format: {error}")))?;
+    reader.limits(image_decode_limits());
+    let decoded = reader
+        .decode()
         .map_err(|error| MediaError::Decode(format!("failed to decode image: {error}")))?
         .to_rgb8();
     let (width, height) = (decoded.width(), decoded.height());
@@ -394,17 +413,32 @@ pub(crate) fn decode_video_frames(
 }
 
 fn decode_gif_video_frames(bytes: &[u8], max_frames: usize) -> Result<Vec<VideoFrame>, MediaError> {
-    use image::AnimationDecoder;
+    use image::{AnimationDecoder, ImageDecoder};
 
-    let decoder = image::codecs::gif::GifDecoder::new(std::io::Cursor::new(bytes)).map_err(|_| {
-        MediaError::Unsupported(
-            "inline GIF video could not be decoded; MP4/WebM require ffmpeg on PATH, or send pre-extracted frame tensors via /v1/generate".to_string(),
-        )
-    })?;
-    let frames = decoder
-        .into_frames()
-        .collect_frames()
+    let mut decoder =
+        image::codecs::gif::GifDecoder::new(std::io::Cursor::new(bytes)).map_err(|_| {
+            MediaError::Unsupported(
+                "inline GIF video could not be decoded; MP4/WebM require ffmpeg on PATH, or send pre-extracted frame tensors via /v1/generate".to_string(),
+            )
+        })?;
+    decoder
+        .set_limits(image_decode_limits())
         .map_err(|error| MediaError::Decode(format!("failed to decode video frames: {error}")))?;
+    // Bound cumulative decoded bytes with the same budget as the ffmpeg path;
+    // oversize GIFs are sampled from the decoded prefix instead of buffering
+    // every frame.
+    let mut frames = Vec::new();
+    let mut decoded_bytes: u64 = 0;
+    for frame in decoder.into_frames() {
+        let frame = frame.map_err(|error| {
+            MediaError::Decode(format!("failed to decode video frames: {error}"))
+        })?;
+        decoded_bytes += frame.buffer().as_raw().len() as u64;
+        frames.push(frame);
+        if decoded_bytes > FFMPEG_VIDEO_MAX_OUTPUT_BYTES {
+            break;
+        }
+    }
     if frames.is_empty() {
         return Err(MediaError::Decode("video has no frames".to_string()));
     }

@@ -35,6 +35,14 @@ use super::openai::embeddings::openai_embeddings;
 const MAX_CONCURRENT_REQUESTS_ENV: &str = "AX_ENGINE_MAX_CONCURRENT_REQUESTS";
 const MAX_REQUEST_BODY_BYTES_ENV: &str = "AX_ENGINE_MAX_REQUEST_BODY_BYTES";
 
+/// Opt-in per-request timeout in seconds, applied to both the HTTP router and
+/// the gRPC server. Unset (or non-positive) means no timeout, preserving the
+/// default behavior. The timeout bounds the time to produce a response; for
+/// streaming endpoints that is the time to the first byte of the stream, so
+/// long generations that are actively streaming are not cut off — only hung
+/// handlers and stuck non-streaming generations are.
+const REQUEST_TIMEOUT_SECS_ENV: &str = "AX_ENGINE_REQUEST_TIMEOUT_SECS";
+
 pub(crate) fn build_router(state: AppState) -> Router {
     let router = Router::new()
         .route("/health", get(health))
@@ -116,6 +124,23 @@ pub(crate) fn build_router(state: AppState) -> Router {
         None => router,
     };
 
+    // Inside the metrics layer so timed-out requests are recorded as 408s.
+    let router = match request_timeout_from_env() {
+        Some(timeout) => router.layer(middleware::from_fn(
+            move |request: Request, next: Next| async move {
+                match tokio::time::timeout(timeout, next.run(request)).await {
+                    Ok(response) => response,
+                    Err(_) => (
+                        StatusCode::REQUEST_TIMEOUT,
+                        "request exceeded the configured server timeout",
+                    )
+                        .into_response(),
+                }
+            },
+        )),
+        None => router,
+    };
+
     let metrics = state.metrics.clone();
     let router = router.layer(middleware::from_fn(move |request: Request, next: Next| {
         let metrics = metrics.clone();
@@ -170,6 +195,11 @@ fn max_request_body_bytes_from_env() -> usize {
         .unwrap_or(DEFAULT_MAX_REQUEST_BODY_BYTES)
 }
 
+pub(crate) fn request_timeout_from_env() -> Option<std::time::Duration> {
+    parse_request_timeout_secs(std::env::var(REQUEST_TIMEOUT_SECS_ENV).ok())
+        .map(std::time::Duration::from_secs)
+}
+
 /// Parse the concurrency cap: a positive integer enables the limit; anything else
 /// (unset, empty, zero, negative, non-numeric) disables it.
 fn parse_max_concurrent_requests(value: Option<String>) -> Option<usize> {
@@ -179,6 +209,17 @@ fn parse_max_concurrent_requests(value: Option<String>) -> Option<usize> {
         .filter(|raw| !raw.is_empty())
         .and_then(|raw| raw.parse::<usize>().ok())
         .filter(|&limit| limit > 0)
+}
+
+/// Parse the request timeout: a positive integer (seconds) enables the timeout;
+/// anything else (unset, empty, zero, negative, non-numeric) disables it.
+fn parse_request_timeout_secs(value: Option<String>) -> Option<u64> {
+    value
+        .as_deref()
+        .map(str::trim)
+        .filter(|raw| !raw.is_empty())
+        .and_then(|raw| raw.parse::<u64>().ok())
+        .filter(|&secs| secs > 0)
 }
 
 /// Parse the request body byte cap: a positive integer overrides the default;
@@ -199,7 +240,7 @@ mod tests {
 
     use super::{
         constant_time_str_eq, parse_max_concurrent_requests, parse_max_request_body_bytes,
-        request_has_valid_bearer_token,
+        parse_request_timeout_secs, request_has_valid_bearer_token,
     };
 
     #[test]
@@ -258,6 +299,24 @@ mod tests {
             parse_max_request_body_bytes(Some("256MiB".to_string())),
             None
         );
+    }
+
+    #[test]
+    fn parses_positive_request_timeout() {
+        assert_eq!(parse_request_timeout_secs(Some("30".to_string())), Some(30));
+        assert_eq!(
+            parse_request_timeout_secs(Some(" 600 ".to_string())),
+            Some(600)
+        );
+    }
+
+    #[test]
+    fn rejects_disabled_or_invalid_request_timeout() {
+        assert_eq!(parse_request_timeout_secs(None), None);
+        assert_eq!(parse_request_timeout_secs(Some(String::new())), None);
+        assert_eq!(parse_request_timeout_secs(Some("0".to_string())), None);
+        assert_eq!(parse_request_timeout_secs(Some("-30".to_string())), None);
+        assert_eq!(parse_request_timeout_secs(Some("30s".to_string())), None);
     }
 
     #[test]

@@ -101,7 +101,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             )
         })?;
         let grpc_service = grpc::AxEngineGrpcService::new(state).into_server();
-        let grpc_server = tonic::transport::Server::builder()
+        let mut grpc_builder = tonic::transport::Server::builder();
+        if let Some(timeout) = routes::request_timeout_from_env() {
+            grpc_builder = grpc_builder.timeout(timeout);
+        }
+        let grpc_server = grpc_builder
             .add_service(grpc_service)
             .serve_with_shutdown(parsed, shutdown_signal());
         let http_handle = tokio::spawn(http_server.into_future());
