@@ -39,8 +39,9 @@ DEFAULT_OUTPUT_ROOT = (
     REPO_ROOT
     / "benchmarks"
     / "results"
+    / "inference"
     / "diffusion-gemma-direct"
-    / "2026-06-18-direct-first-block"
+    / "2026-07-05-readme-first-block-refresh"
 )
 DEFAULT_ASSETS_DIR = REPO_ROOT / "docs" / "assets"
 DEFAULT_WARMUP_ITERS = 1
@@ -716,7 +717,7 @@ def write_summary(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--bench-bin", type=Path, default=REPO_ROOT / "target" / "debug" / "ax-engine-bench")
+    parser.add_argument("--bench-bin", type=Path, default=REPO_ROOT / "target" / "release" / "ax-engine-bench")
     parser.add_argument("--model-dir", type=Path, default=DEFAULT_MODEL_DIR)
     parser.add_argument("--output-root", type=Path, default=DEFAULT_OUTPUT_ROOT)
     parser.add_argument("--assets-dir", type=Path, default=DEFAULT_ASSETS_DIR)

@@ -34,7 +34,7 @@ load the MLX snapshot (`Model type diffusion_gemma not supported.`).
 > use prefixes of a coherent technical document tokenized with the model's own
 > tokenizer (`DIFFUSION_PROMPT_TEXT` in
 > [`scripts/bench_diffusion_gemma_direct.py`](../scripts/bench_diffusion_gemma_direct.py)),
-> which converge in 12-16 denoise steps. Earlier revisions of this benchmark
+> which converge in 13-18 denoise steps. Earlier revisions of this benchmark
 > fed synthetic random token ids; those never converge, hit the denoise-step
 > cap, and measured the failure mode (~25-35 tok/s at 41-48 steps) rather than
 > realistic throughput. Decode throughput is input-dependent, so it does not
@@ -62,17 +62,17 @@ load the MLX snapshot (`Model type diffusion_gemma not supported.`).
 
 | Prompt tokens | AX first-block decode | Denoise steps | Committed block |
 | ---: | ---: | ---: | ---: |
-| 128 | 115.4 tok/s | 13 | 256 tokens |
-| 512 | 92.1 tok/s | 16 | 256 tokens |
-| 2048 | 118.1 tok/s | 12 | 256 tokens |
+| 128 | 147.8 tok/s | 13 | 256 tokens |
+| 512 | 104.3 tok/s | 18 | 256 tokens |
+| 2048 | 140.1 tok/s | 13 | 256 tokens |
 
 ## Prefill And First-Block Latency
 
 | Prompt tokens | AX direct prefill | AX time to first block | llama.cpp Metal 9650 | `mlx_lm` 0.31.3 |
 | ---: | ---: | ---: | --- | --- |
-| 128 | 1,073.2 tok/s | 2,337 ms | load blocked | load blocked |
-| 512 | 2,743.2 tok/s | 2,964 ms | load blocked | load blocked |
-| 2048 | 3,959.0 tok/s | 2,690 ms | load blocked | load blocked |
+| 128 | 1,064.8 tok/s | 1,852 ms | load blocked | load blocked |
+| 512 | 2,649.7 tok/s | 2,647 ms | load blocked | load blocked |
+| 2048 | 3,874.4 tok/s | 2,357 ms | load blocked | load blocked |
 
 `time to first block` is prefill wall time plus the first 256-token
 denoise-and-commit block. `first-block decode` is computed as
@@ -82,7 +82,7 @@ TTFT or fixed-token decode throughput.
 
 | Runtime path | Model artifact | Benchmark status |
 | --- | --- | --- |
-| AX direct MLX | `mlx-community/diffusiongemma-26B-A4B-it-4bit` | Measured: 2 warmup + 5 measured repetitions, 15 s cooldown, medians reported |
+| AX direct MLX | `mlx-community/diffusiongemma-26B-A4B-it-4bit` | Measured: 1 warmup + 5 measured repetitions, 15 s cooldown, medians reported |
 | llama.cpp Metal 9650 | 4-bit GGUF | Blocked at load: `unknown model architecture: 'diffusion-gemma'` |
 | `mlx_lm` 0.31.3 | 4-bit MLX snapshot | Blocked at load: `Model type diffusion_gemma not supported.` |
 
@@ -91,7 +91,7 @@ TTFT or fixed-token decode throughput.
 This is a secondary diagnostic, not a headline performance metric and not a
 measured GPU utilization counter. It estimates first-block weight traffic at
 block granularity from the measured denoise-step count plus one causal commit
-over the 16.54 GB MLX safetensors artifact. This run used 13 / 16 / 12 denoise
+over the 16.54 GB MLX safetensors artifact. This run used 13 / 18 / 13 denoise
 steps at 128 / 512 / 2,048 prompt tokens on realistic prompts. The chart shows
 estimated weight bandwidth versus the M5 Max theoretical ceiling; the table
 keeps the effective GB/s values.
@@ -101,13 +101,13 @@ keeps the effective GB/s values.
 
 | Prompt tokens | Estimated effective bandwidth | % of 614.4 GB/s M5 Max theoretical bandwidth |
 | ---: | ---: | ---: |
-| 128 | 104.4 GB/s | 17.0% |
-| 512 | 101.2 GB/s | 16.5% |
-| 2,048 | 99.2 GB/s | 16.1% |
+| 128 | 133.7 GB/s | 21.8% |
+| 512 | 128.1 GB/s | 20.8% |
+| 2,048 | 126.7 GB/s | 20.6% |
 
-At these prompt lengths, the first-block path reaches roughly 16% of
+At these prompt lengths, the first-block path reaches roughly 21% of
 theoretical M5 Max bandwidth under this estimate. That should be read as "not
-raw-memory-bandwidth saturated," not as "the GPU is only 16% utilized."
+raw-memory-bandwidth saturated," not as "the GPU is only 21% utilized."
 Per-step cost is broadly distributed across attention, the MoE and dense FFN
 blocks, the router, and the vocab-projection LM head, so this path is dispatch-,
 occupancy-, and kernel-mix-bound rather than saturated on a single
@@ -185,16 +185,16 @@ wall time, plus `diffusion` decode-route classification in
 `bench_mlx_inference_stack.py`.
 
 Artifacts: AX direct rows are
-[`2026-07-03-readme-first-block/summary.json`](../benchmarks/results/diffusion-gemma-direct/2026-07-03-readme-first-block/summary.json),
+[`2026-07-05-readme-first-block-refresh/summary.json`](../benchmarks/results/inference/diffusion-gemma-direct/2026-07-05-readme-first-block-refresh/summary.json),
 with the human summary in
-[`summary.md`](../benchmarks/results/diffusion-gemma-direct/2026-07-03-readme-first-block/summary.md).
+[`summary.md`](../benchmarks/results/inference/diffusion-gemma-direct/2026-07-05-readme-first-block-refresh/summary.md).
 Peer runtime blockers are recorded as load failures, so there are no llama.cpp
 or `mlx_lm` result artifacts for this model family.
 
 Run the full direct benchmark and regenerate the charts:
 
 ```bash
-cargo build -p ax-engine-bench --bin ax-engine-bench
+cargo build --release -p ax-engine-bench --bin ax-engine-bench
 python3 scripts/bench_diffusion_gemma_direct.py
 ```
 
