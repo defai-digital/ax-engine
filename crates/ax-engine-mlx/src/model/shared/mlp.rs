@@ -1995,20 +1995,27 @@ pub(crate) fn moe_router_qwen3(
     // Narrow softmax: argpartition on raw logits, then softmax only on the
     // top-k subset. Matches the Gemma4 router pattern. Default ON after
     // validation confirmed token-for-token equivalence with mlx-lm's
-    // precise=True reference.
-    if fastpath::qwen3_moe_narrow_softmax_enabled() {
+    // precise=True reference. Subset softmax equals the reference's full
+    // softmax + top-k renormalize ONLY under norm_topk_prob; a config without
+    // it needs the un-renormalized full-width probabilities (sum < 1), so it
+    // must take the reference path below.
+    if cfg.moe_norm_topk_prob && fastpath::qwen3_moe_narrow_softmax_enabled() {
         // Try fused Metal router (Tier 1C): collapses argpartition +
         // take_along_axis + softmax + renormalize into one dispatch.
-        // Decode-only (seq==1); falls back to the MLX op path below.
-        let logits_f32 = if logits.dtype() == MlxDtype::Float32 {
-            logits.clone()
-        } else {
-            astype(&logits, MlxDtype::Float32, None)
-        };
-        if let Some((indices, weights)) =
-            moe_router_fused_metal(&logits_f32, cfg.moe_expert_count, cfg.moe_experts_per_token)
-        {
-            return (indices, weights);
+        // Decode-only (seq==1); falls back to the MLX op path below. The f32
+        // cast feeds only the fused kernel, so build it only when that route
+        // is enabled — otherwise it is a dead graph node per router call.
+        if fastpath::moe_router_fused_metal_enabled() {
+            let logits_f32 = if logits.dtype() == MlxDtype::Float32 {
+                logits.clone()
+            } else {
+                astype(&logits, MlxDtype::Float32, None)
+            };
+            if let Some((indices, weights)) =
+                moe_router_fused_metal(&logits_f32, cfg.moe_expert_count, cfg.moe_experts_per_token)
+            {
+                return (indices, weights);
+            }
         }
 
         let (top_k_indices, top_k_weights) = top_k_by_argpartition(

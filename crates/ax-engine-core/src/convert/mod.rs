@@ -95,6 +95,12 @@ pub fn convert_hf_model_dir(model_dir: &Path) -> Result<NativeModelManifest, Con
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
 
+    // Record the tokenizer's <think>/</think> special-token ids in the
+    // manifest so the runtime never has to guess them from the model family:
+    // Qwen's two tokenizer generations place them at different ids
+    // (151668/151669 for the ~151k vocab, 248068/248069 for the 248k one).
+    let think_token_ids = parse_think_token_ids(model_dir);
+
     let (rope_theta, rope_theta_swa, partial_rotary_factor) =
         parse_rope_params(&config, &model_type);
 
@@ -221,8 +227,8 @@ pub fn convert_hf_model_dir(model_dir: &Path) -> Result<NativeModelManifest, Con
         } else {
             WeightSanitize::None
         },
-        think_start_token_id: None,
-        think_end_token_id: None,
+        think_start_token_id: think_token_ids.0,
+        think_end_token_id: think_token_ids.1,
         diffusion: parse_diffusion_config(&config, &model_type),
         tensors: mapped_tensors,
     };
@@ -230,6 +236,37 @@ pub fn convert_hf_model_dir(model_dir: &Path) -> Result<NativeModelManifest, Con
     validate_converted_model_contract(&config, &model_type, &manifest)?;
 
     Ok(manifest)
+}
+
+/// Read `<think>` / `</think>` special-token ids from the model directory's
+/// `tokenizer.json` `added_tokens` list.
+///
+/// Returns `(None, None)` when the file is absent, unparsable, or carries no
+/// think tokens — families without think blocks simply never define them, and
+/// the runtime falls back to family defaults for manifests converted before
+/// this field was recorded.
+fn parse_think_token_ids(model_dir: &Path) -> (Option<u32>, Option<u32>) {
+    let path = model_dir.join("tokenizer.json");
+    let Ok(bytes) = std::fs::read(&path) else {
+        return (None, None);
+    };
+    let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+        return (None, None);
+    };
+    let Some(added) = value.get("added_tokens").and_then(|v| v.as_array()) else {
+        return (None, None);
+    };
+    let mut start = None;
+    let mut end = None;
+    for token in added {
+        let id = token.get("id").and_then(|i| i.as_u64()).map(|i| i as u32);
+        match token.get("content").and_then(|c| c.as_str()) {
+            Some("<think>") => start = id,
+            Some("</think>") => end = id,
+            _ => {}
+        }
+    }
+    (start, end)
 }
 
 /// Write a `model-manifest.json` file in the given directory.

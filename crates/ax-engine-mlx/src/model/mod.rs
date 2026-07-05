@@ -2953,6 +2953,33 @@ mod tests {
         }
     }
 
+    #[test]
+    fn think_token_ids_follow_qwen_tokenizer_generation() {
+        // Explicit manifest ids always win.
+        let mut m = qwen35_linear_manifest();
+        m.think_start_token_id = Some(7);
+        m.think_end_token_id = Some(8);
+        let cfg = ModelConfig::from_manifest(&m);
+        assert_eq!(
+            (cfg.think_start_token_id, cfg.think_end_token_id),
+            (Some(7), Some(8))
+        );
+        // Original ~151k Qwen3 tokenizer generation (fixture vocab is small).
+        let cfg = ModelConfig::from_manifest(&qwen35_linear_manifest());
+        assert_eq!(
+            (cfg.think_start_token_id, cfg.think_end_token_id),
+            (Some(151_668), Some(151_669))
+        );
+        // Qwen3.6 248k tokenizer generation moved the think special tokens.
+        let mut m = qwen35_linear_manifest();
+        m.vocab_size = 248_320;
+        let cfg = ModelConfig::from_manifest(&m);
+        assert_eq!(
+            (cfg.think_start_token_id, cfg.think_end_token_id),
+            (Some(248_068), Some(248_069))
+        );
+    }
+
     fn glm4_moe_lite_manifest() -> NativeModelManifest {
         NativeModelManifest {
             schema_version: ax_engine_core::AX_NATIVE_MODEL_MANIFEST_SCHEMA_VERSION.to_string(),

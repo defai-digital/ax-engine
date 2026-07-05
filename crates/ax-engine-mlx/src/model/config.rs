@@ -574,11 +574,23 @@ fn think_token_ids_from_manifest(m: &NativeModelManifest) -> (Option<u32>, Optio
     if m.think_start_token_id.is_some() || m.think_end_token_id.is_some() {
         return (m.think_start_token_id, m.think_end_token_id);
     }
-    // Qwen3 family uses fixed special token IDs from the Qwen3 tokenizer.
-    // qwen3_next is reserved for future variants. qwen3_5 linear-attention
-    // models also emit <think> when reasoning mode is enabled.
+    // Qwen ships two tokenizer generations with different <think> special
+    // token ids: the original Qwen3 tokenizer (vocab ~151k) uses
+    // 151668/151669, while the Qwen3.6 248k tokenizer moved them to
+    // 248068/248069 (verified against the mlx-community Qwen3.6-27B and
+    // 35B-A3B `tokenizer.json` added_tokens). Manifests converted before the
+    // converter learned to record these ids carry `None`, so pick the
+    // generation by vocab width. qwen3_next is reserved for future variants.
+    // qwen3_5 linear-attention models also emit <think> when reasoning mode
+    // is enabled.
     match m.model_family.as_str() {
-        "qwen3" | "qwen3_5" | "qwen3_next" => (Some(151668), Some(151669)),
+        "qwen3" | "qwen3_5" | "qwen3_next" => {
+            if m.vocab_size >= 200_000 {
+                (Some(248_068), Some(248_069))
+            } else {
+                (Some(151_668), Some(151_669))
+            }
+        }
         _ => (None, None),
     }
 }

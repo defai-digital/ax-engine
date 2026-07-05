@@ -7045,16 +7045,14 @@ impl MlxRunner {
             correction_argmax_tok,
             predicted,
         ) = if has_linear_attention {
-            // Linear-attention recurrent state cannot be trimmed after a rejected
-            // speculative token. Verify on a clone; adopt it only when the full
-            // draft is accepted, otherwise recompute the committed prefix on the
-            // original cache.
-            let clone_started = Instant::now();
-            let mut verify_cache = state.cache.clone();
-            mtp_timings.cache_clone_wall_us = elapsed_us(clone_started);
             if optimistic {
                 // ── Optimistic shortcut (default ON; kill-switch AX_MLX_MTP_OPTIMISTIC=0) ──
-                // Accept all drafts without rejection sampling.
+                // Accept all drafts without rejection sampling. The full draft
+                // commits, so no rollback can occur — verify directly on the
+                // request cache. Cloning here (as the rejection path below must)
+                // would defeat MLX buffer donation and copy every full-attention
+                // layer's capacity-sized K/V per MTP cycle, an O(context) tax on
+                // the steady-state greedy path.
                 let ac = pending.len();
                 let needs_predicted =
                     sampling.temperature <= 0.0 || (auto_optimistic && !self.mtp_optimistic);
@@ -7064,7 +7062,7 @@ impl MlxRunner {
                         &self.cfg,
                         &self.weights,
                         &verify_input,
-                        &mut verify_cache,
+                        &mut state.cache,
                         token_offset,
                     )
                 } else {
@@ -7072,15 +7070,15 @@ impl MlxRunner {
                         &self.cfg,
                         &self.weights,
                         &verify_input,
-                        &mut verify_cache,
+                        &mut state.cache,
                         token_offset,
                     )
                 };
                 mtp_timings.verify_forward_wall_us = elapsed_us(verify_forward_started);
-                verify_cache.seq_len += verify_len;
+                state.cache.seq_len += verify_len;
                 let predicted_arr = needs_predicted.then(|| argmax(&logits_all, None));
                 let draft_hidden = slice_post_norm_hidden(&post_norm_all, ac, self.cfg.hidden_size);
-                let kv_refs = verify_cache.collect_eval_refs();
+                let kv_refs = state.cache.collect_eval_refs();
                 let mut targets: Vec<&MlxArray> = Vec::with_capacity(2 + kv_refs.len());
                 if let Some(ref predicted_arr) = predicted_arr {
                     targets.push(predicted_arr);
@@ -7090,8 +7088,7 @@ impl MlxRunner {
                 eval(&targets);
                 mtp_timings.verify_eval_wall_us = elapsed_us(verify_eval_started);
                 let rollback_started = Instant::now();
-                let _ = verify_cache.trim_to(token_offset + 1 + ac);
-                state.cache = verify_cache;
+                let _ = state.cache.trim_to(token_offset + 1 + ac);
                 mtp_timings.rollback_wall_us = elapsed_us(rollback_started);
                 let predicted: Vec<u32> = predicted_arr
                     .as_ref()
@@ -7118,6 +7115,13 @@ impl MlxRunner {
                     predicted,
                 )
             } else {
+                // Linear-attention recurrent state cannot be trimmed after a
+                // rejected speculative token. Verify on a clone; adopt it only
+                // when the full draft is accepted, otherwise recompute the
+                // committed prefix on the original cache.
+                let clone_started = Instant::now();
+                let mut verify_cache = state.cache.clone();
+                mtp_timings.cache_clone_wall_us = elapsed_us(clone_started);
                 let verify_forward_started = Instant::now();
                 let (logits_all, post_norm_all) = forward_all_positions_with_post_norm(
                     &self.cfg,

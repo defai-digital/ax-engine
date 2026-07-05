@@ -3084,3 +3084,29 @@ fn converts_real_qwen3_5_bf16_model() {
         let _ = fs::remove_file(model_dir.join(crate::model::AX_NATIVE_MODEL_MANIFEST_FILE));
     });
 }
+
+#[test]
+fn parse_think_token_ids_reads_added_tokens() {
+    let dir = unique_test_dir("think-token-ids");
+    fs::write(
+        dir.join("tokenizer.json"),
+        serde_json::json!({
+            "added_tokens": [
+                {"id": 248068, "content": "<think>"},
+                {"id": 248069, "content": "</think>"},
+                {"id": 5, "content": "<pad>"}
+            ]
+        })
+        .to_string(),
+    )
+    .unwrap();
+    assert_eq!(
+        super::parse_think_token_ids(&dir),
+        (Some(248068), Some(248069))
+    );
+
+    // Absent tokenizer.json (or no think tokens) → None: runtime family
+    // defaults stay in charge for such models.
+    let empty = unique_test_dir("think-token-ids-none");
+    assert_eq!(super::parse_think_token_ids(&empty), (None, None));
+}
