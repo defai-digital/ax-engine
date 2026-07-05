@@ -39,6 +39,7 @@ Architecture and the UX surface are landed; remaining work is gating/promotion a
 
 - **Open (MoE):** `PRD-2026-06-19-qwen3-coder-next-moe-decode-prefill-phase2.md` — Qwen3-Coder-Next decode/prefill throughput and MoE dispatch/bandwidth work.
 - **Open (MoE graph compile):** `PRD-2026-06-23-graph-level-moe-decode-compilation.md` — graph-level MoE decode compilation for standard attention families (GLM/Qwen3 MoE); ADR-032.
+- **Open (deferred):** `PRD-2026-07-05-batched-mlx-decode-hybrid-models.md` — batched decode for Qwen 3.6 hybrids (qwen3_5 / qwen3_5_moe); probe-first phases, MoE-amortization and MTP-crossover gates; ADR-037. Deliberately parked until a concurrent-serving workload exists.
 - **Open (kernel strategy):** `PRD-2026-07-03-decode-hot-path-kernel-strategy.md` — evidence-gated decode hot-path kernel admission gate landed; first runtime promotion still candidate-specific; ADR-034.
 - **Open (proposed):** `PRD-2026-06-01-decode-speed-optimization.md` — CPU hot-path elimination (37 opportunities).
 - **Open (proposed):** `PRD-2026-06-11-direct-mode-bandwidth-speed.md` — prioritize bytes/token reductions over host fusions.
@@ -116,6 +117,7 @@ Architecture and the UX surface are landed; remaining work is gating/promotion a
 | File | Date | Status |
 |---|---|---|
 | `PRD-2026-07-04-open-tq-metal-int4-kv-attention.md` | 2026-07-04 | active (draft; phase-0 contract landed) |
+| `PRD-2026-07-05-batched-mlx-decode-hybrid-models.md` | 2026-07-05 | active (proposed; deferred) |
 | `TURBOQUANT-PROMOTION-PRD.md` | 2026-05-09 | active (blocking phases) |
 | `QUANTUM-OP-PRD.md` | 2026-05-14 | active (partially implemented) |
 | `PRD-2026-06-01-turboquant-codec-kernel-improvements.md` | 2026-06-01 | active (evidence pending) |
@@ -165,4 +167,4 @@ Architecture and the UX surface are landed; remaining work is gating/promotion a
 | `INTERACTIVE-DOWNLOADER-PRD.md` | — | shipped (core) |
 
 ## Tally
-active: 28 · shipped: 13 · superseded: 1 · expired: 0 · unfit: 0 (42 total)
+active: 29 · shipped: 13 · superseded: 1 · expired: 0 · unfit: 0 (43 total)
