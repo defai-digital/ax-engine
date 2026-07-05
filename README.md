@@ -535,12 +535,12 @@ reduction over a 6 GB array).
 | Engine / quantization | Weights/token | Decode tok/s | Effective BW | % of 577 GB/s peak |
 | --- | ---: | ---: | ---: | ---: |
 | AX upstream artifact — 8-bit FFN diagnostic | 10.98 GB | 45.4 | 498 GB/s | 86% |
-| AX re-quantized artifact — 4-bit FFN | 6.74 GB | 67.3 | 454 GB/s | 79% |
+| AX re-quantized artifact — 4-bit FFN | 6.74 GB | 67.5 | 455 GB/s | 79% |
 | llama.cpp Q4_K_M — decode @ depth 512 | 7.38 GB | 58.7 | 433 GB/s | 75% |
 | llama.cpp Q4_K_M — decode @ depth 0 (`tg`) | 7.38 GB | 57.1 | 421 GB/s | 73% |
 
 The bandwidth view is the key explanation: AX is not under-utilizing memory. The re-quantized
-AX row sustains **454 GB/s**, in the same band as llama.cpp's **433 GB/s** at matched depth.
+AX row sustains **455 GB/s**, in the same band as llama.cpp's **433 GB/s** at matched depth.
 The remaining direct-decode difference is bytes read per token: uniform 4-bit group-64 reduces
 AX to **6.74 GB/token**, while Q4_K_M reads **7.38 GB/token**. The upstream artifact
 has higher bus utilization (86%) but worse speed because its FFN tensors read far more data.

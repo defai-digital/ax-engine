@@ -1,8 +1,8 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="800" height="430" viewBox="0 0 800 430" role="img" aria-labelledby="title desc">
-<title>Gemma 4 12B - Decode bandwidth diagnostic · AX Engine v6.5.2</title>
+<title>Gemma 4 12B - Decode bandwidth diagnostic · AX Engine v6.7.1</title>
 <desc>Diagnostic bandwidth chart for Gemma 4 12B decode. The gray upstream-artifact row is not a recommended runtime tier; it explains the public 4bit snapshot handicap because FFN tensors remain 8-bit. AX re-quantized FFN uses 79%, llama.cpp depth 0 uses 73%, and llama.cpp depth 512 uses 75% of the 577 GB/s M5 Max peak.</desc>
 <rect width="800" height="430" fill="#f8fafc"/>
-<text id="title" x="64" y="24" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="16" font-weight="700" fill="#111827">Gemma 4 12B - Decode bandwidth diagnostic · AX Engine v6.5.2</text>
+<text id="title" x="64" y="24" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="16" font-weight="700" fill="#111827">Gemma 4 12B - Decode bandwidth diagnostic · AX Engine v6.7.1</text>
 <text x="64" y="46" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#4b5563">Why the upstream 4bit snapshot was slower: bytes read per decoded token</text>
 <text id="desc" x="64" y="62" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">100% = 577 GB/s M5 Max peak; each generated token reads model weights once.</text>
 <text x="64" y="76" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="9" fill="#9ca3af">Gray row is diagnostic only: upstream 4bit snapshot keeps FFN tensors at 8-bit</text>
@@ -28,7 +28,7 @@
 <rect x="222" y="162.2" width="330.2" height="24" rx="5" fill="#2eaf5f" fill-opacity="0.76"/>
 <line x1="552.2" y1="162.2" x2="552.2" y2="186.2" stroke="#176c37" stroke-width="1.4"/>
 <text x="544.2" y="178.2" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#ffffff">79%</text>
-<text x="652" y="178.2" text-anchor="start" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">454 GB/s · 67.3 tok/s</text>
+<text x="652" y="178.2" text-anchor="start" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">455 GB/s · 67.5 tok/s</text>
 <text x="210" y="235.8" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">llama.cpp depth 512</text>
 <rect x="222" y="219.8" width="418.0" height="24" rx="5" fill="#e5e7eb" stroke="#cbd5e1" stroke-width="1.2"/>
 <rect x="222" y="219.8" width="313.5" height="24" rx="5" fill="#f97316" fill-opacity="0.76"/>

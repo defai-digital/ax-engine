@@ -22,7 +22,7 @@ PEAK_GBS = 577.0
 # (label, weights_gb, decode_tok_s, effective_bw_gbs, pct_peak, fill, stroke)
 ROWS = [
     ("AX upstream artifact", 10.98, 45.4, 498, 86, "#64748b", "#334155"),
-    ("AX re-quantized FFN", 6.74, 67.3, 454, 79, "#2eaf5f", "#176c37"),
+    ("AX re-quantized FFN", 6.74, 67.5, 455, 79, "#2eaf5f", "#176c37"),
     ("llama.cpp depth 512", 7.38, 58.7, 433, 75, "#f97316", "#c2410c"),
     ("llama.cpp depth 0", 7.38, 57.1, 421, 73, "#f97316", "#c2410c"),
 ]
@@ -50,7 +50,7 @@ BAR_PAD = (BAR_STEP - BAR_H) / 2
 HEADROOM_COLOR = "#e5e7eb"
 HEADROOM_STROKE = "#cbd5e1"
 SUBTITLE = "Why the upstream 4bit snapshot was slower: bytes read per decoded token"
-TITLE = "Gemma 4 12B - Decode bandwidth diagnostic · AX Engine v6.5.2"
+TITLE = "Gemma 4 12B - Decode bandwidth diagnostic · AX Engine v6.7.1"
 FOOTNOTE = "Gray row is diagnostic only: upstream 4bit snapshot keeps FFN tensors at 8-bit"
 
 
