@@ -90,7 +90,7 @@ pub fn linear_attention_conv1d(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn linear_attention_decode_post_input_metal(
+pub fn linear_attention_decode_post_input_metal(
     cfg: &LinearAttentionConfig,
     qkv: &MlxArray,
     conv_weight: &MlxArray,

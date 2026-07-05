@@ -80,6 +80,20 @@ keeping the projected MTP-adjusted crossover at B≈3-4 as this ADR assumed.
 The eligibility predicate stays unchanged — P1 (batched gated-delta oracle)
 and the dense-2c prerequisite still gate any integration work.
 
+## P1 result (2026-07-05): PASS — gated-delta op chain is batch-row-exact
+
+`gated_delta_batch_oracle_probe` on real Qwen3.5-9B weights, B=4 distinct
+rows vs per-row batch-1 calls (evidence in `.internal/analysis/
+batched-decode/2026-07-05-p1-gated-delta-oracle/`): portable conv1d+SiLU+
+window, the fused decode post-input Metal kernel, the gated-delta
+recurrence (decode kernel AND seq-loop kernel), and both gated-RMSNorm
+paths are all **bit-exact (max diff 0.0)** per row. Batched hybrid linear
+layers therefore need no kernel changes in P3 — only `[B, ...]` state
+plumbing. The `mlx_fast_rope` hazard reproduced worse than the Phase-2a
+record: `[B, H, 1, D]` inputs are broken even for identical rows
+(~3.4e38 garbage on rows > 0), so the full-attention layers must rope
+per row / pre-stack, as the dense 2b session code already does.
+
 ## Consequences
 
 - Concurrent Qwen 3.6 serving keeps paying N× weight reads for now; this is a
