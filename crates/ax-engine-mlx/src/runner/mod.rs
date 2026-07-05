@@ -6159,11 +6159,14 @@ impl MlxRunner {
         state.prompt_prefix_tokens = tokens.to_vec();
     }
 
-    /// Store a single L1 snapshot from a mid-prefill boundary capture on a
+    /// Store a snapshot from a mid-prefill boundary capture on a
     /// linear-attention model. The capture's cache is already exactly at
     /// `prefix_len`, so unlike the trim-based store loop no `trim_to` runs.
-    /// L1-only: the disk layer's contract today persists the trim path's
-    /// largest snapshot; wiring boundary payloads into it is follow-up work.
+    /// The snapshot goes to L1 and — since the boundary is by construction
+    /// the largest aligned prefix — mirrors to the L2 disk layer when one is
+    /// open, matching `store_prompt_prefix_snapshots`' largest-snapshot disk
+    /// policy (restore is architecture-agnostic: the serialized payload
+    /// carries the linear conv/recurrent state).
     fn store_linear_boundary_snapshot(
         &self,
         model_id: &str,
@@ -6175,14 +6178,38 @@ impl MlxRunner {
         let mut telemetry = MlxPrefixCacheTelemetry::default();
         let tokens = &state.prompt_prefix_tokens[..prefix_len];
         let key = self.prefix_cache_key(model_id, block_size_tokens, tokens);
+        // The boundary snapshot is by construction the largest aligned
+        // prefix, so it follows the main store path's disk policy: mirror it
+        // to the L2 disk layer when one is open. Compute the disk key up
+        // front — it also decides whether an L1-superseding snapshot may
+        // early-return (an L1-resident entry still needs a disk write when
+        // the disk layer is open but does not have it yet, e.g. after disk
+        // eviction).
+        let disk_key_bytes = self.disk_prefix_cache.as_ref().map(|_| {
+            crate::disk_prefix_cache::canonical_key_bytes(
+                &key.model_id,
+                &key.route_policy,
+                &key.layer_layout,
+                key.block_size_tokens,
+                key.token_count,
+                key.token_hash,
+            )
+        });
         {
             let cache = self.prefix_cache.lock();
             if cache.contains_superseding_snapshot(&key, tokens, None) {
-                telemetry.record_stats(cache.stats());
-                return telemetry;
+                let disk_store_needed = match (self.disk_prefix_cache.as_ref(), &disk_key_bytes) {
+                    (Some(disk), Some(key_bytes)) => !disk.contains(key_bytes),
+                    _ => false,
+                };
+                if !disk_store_needed {
+                    telemetry.record_stats(cache.stats());
+                    return telemetry;
+                }
             }
         }
         let payload = snapshot_cache.serialize_to_bytes();
+        let disk_payload = disk_key_bytes.as_ref().map(|_| payload.clone());
         let outcome = {
             let mut cache = self.prefix_cache.lock();
             let outcome = cache.insert(
@@ -6199,6 +6226,34 @@ impl MlxRunner {
         };
         if outcome.stored {
             telemetry.stores = telemetry.stores.saturating_add(1);
+
+            // Boundary snapshots carry no greedy prefill output token: the
+            // aligned boundary is mid-prompt, so decode step 0 always
+            // recomputes. A disk-write failure does not back out the L1
+            // store (disk is strictly additive, matching
+            // `store_prompt_prefix_snapshots`).
+            if let (Some(disk), Some(key_bytes), Some(payload)) = (
+                self.disk_prefix_cache.as_ref(),
+                disk_key_bytes,
+                disk_payload,
+            ) {
+                let entry = crate::disk_prefix_cache::DiskPrefixCacheEntry {
+                    payload,
+                    prefill_output_token: None,
+                };
+                let payload_bytes = entry.payload.len() as u64;
+                match disk.insert(&key_bytes, &entry) {
+                    Ok(outcome) => telemetry.record_disk_insert(payload_bytes, outcome.evictions),
+                    Err(e) => {
+                        tracing::warn!(
+                            target: "ax_engine_mlx::prefix_cache",
+                            error = %e,
+                            "disk prefix-cache insert failed for linear boundary snapshot; \
+                             L1 store still active",
+                        );
+                    }
+                }
+            }
         }
         telemetry
     }
