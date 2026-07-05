@@ -6078,18 +6078,29 @@ impl MlxRunner {
         }
 
         // Non-standard-FA architectures (linear attention, sliding window, MLA)
-        // share the same store constraint: only the full-prompt snapshot is
-        // sound, and only when the prompt is exactly block-aligned (so
-        // `trim_to(full_block_tokens) == seq_len` is a no-op).
-        //   - Linear: `trim_to` does not roll back recurrent state.
-        //   - Sliding-window: `trim_to` returns false once any rotating-window
-        //     layer has rotated past `prefix_len`.
+        // store at most the largest block-aligned prefix snapshot (standard FA
+        // stores every block-aligned prefix).
+        //   - Linear: `trim_to` does not roll back conv/recurrent state, so a
+        //     snapshot is only sound when the trim is a no-op — the prompt must
+        //     be exactly block-aligned and only the full-prompt snapshot may be
+        //     stored.
         //   - MLA: trim_to itself is sound for MLA buffers, but the warmup
         //     re-prefill path has observed fp-drift on this architecture
         //     (slice 6 baseline harness: GLM-4.7 warm_repeat 3/5 PASS through
         //     warmup), so routing through the bit-exact snapshot path for
         //     aligned prompts both delivers TTFT speedup AND sidesteps that
         //     pre-existing warmup correctness issue for the same-prompt case.
+        //     Keep MLA exact-alignment-only until a partial-prefix restore is
+        //     validated on that architecture.
+        //   - Sliding-window: KV storage is append-only until a rotating
+        //     backing store engages, so trimming to any block-aligned prefix
+        //     is as sound as for standard FA on the default (non-rotating)
+        //     serving path; unaligned prompts therefore still store their
+        //     largest aligned prefix — the one a follow-up turn extends. On
+        //     rollback-free direct sessions where a layer HAS rotated,
+        //     `trim_to` returns false for any real trim and the per-prefix
+        //     check below fail-closes the store (a no-op full-prompt trim
+        //     still passes, preserving the aligned same-prompt snapshot).
         // The `verify_prefix_reuse_equivalence.py` harness fails-closed on
         // any resulting token drift; any future change here must keep that
         // harness green on every model in the supported tier.
@@ -6097,7 +6108,8 @@ impl MlxRunner {
         let sliding_window = self.kv_layer_windows.iter().any(Option::is_some);
         let mla_attention = self.cfg.mla_attention.is_some();
         let alignment_restricted = linear_attention || sliding_window || mla_attention;
-        if alignment_restricted && full_block_tokens != available_tokens {
+        let exact_alignment_required = linear_attention || mla_attention;
+        if exact_alignment_required && full_block_tokens != available_tokens {
             telemetry.record_blocked_trim_failure();
             return telemetry;
         }
