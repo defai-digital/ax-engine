@@ -5504,6 +5504,14 @@ impl MlxRunner {
             ExecutionMode::Decode => {
                 let decode_started = Instant::now();
                 let final_by_max_output = generated_len.saturating_add(1) >= max_output;
+                // Diffusion models never emit a prefill-sampled token (the
+                // first block's canvas owns that position), but a prefix-cache
+                // partial hit can still stash the *prefix's* greedy AR token in
+                // `cached_prefill_output_token`; consuming it would inject a
+                // foreign token at stream start. Drop it before the first step.
+                if self.cfg.diffusion.is_some() {
+                    state.cached_prefill_output_token = None;
+                }
                 let tokens = if generated_len == 0 {
                     if let Some(tok) = state.cached_prefill_output_token.take() {
                         kv_compression_shadow_sync_wall_us = self.initialize_generation_state(
@@ -6247,6 +6255,9 @@ impl MlxRunner {
         // the standard AR decode step for DiffusionGemma models.
         if let Some(diff_cfg) = self.cfg.diffusion.as_ref() {
             let token_offset = state.cache.seq_len;
+            let remaining_output_budget = options
+                .request_context
+                .map(|ctx| ctx.max_output_tokens.saturating_sub(ctx.generated_len));
             let result = crate::diffusion::generate_diffusion_block(
                 &self.cfg,
                 diff_cfg,
@@ -6255,6 +6266,11 @@ impl MlxRunner {
                 &mut state.rng,
                 token_offset,
                 &mut state.diffusion_embed_table,
+                crate::diffusion::DiffusionCommitPolicy {
+                    truncation_terminal_ids: &self.terminal_token_ids,
+                    request_terminal_ids: options.terminal_token_ids,
+                    remaining_output_budget,
+                },
             );
             state.decode_telemetry.record_diffusion_block(&result);
             let mut queue: VecDeque<u32> = result.tokens.into();

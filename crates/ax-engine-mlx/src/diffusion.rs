@@ -389,7 +389,17 @@ fn denoise_step(
                     && !canvas.converged
                     && let Some(embed) = embed_table
                 {
-                    canvas.prev_self_cond_embed = Some(matmul(&prob, embed, None));
+                    // Cast back to bf16: `prob` is f32 (finalized logits), so
+                    // the matmul result would otherwise propagate f32 through
+                    // every layer of the next step's forward — including a
+                    // per-layer re-upcast of the cached prompt KV at the
+                    // attention concat — and retrace the compiled pipeline
+                    // (the step-0 zero signal is bf16).
+                    canvas.prev_self_cond_embed = Some(astype(
+                        &matmul(&prob, embed, None),
+                        MlxDtype::Bfloat16,
+                        None,
+                    ));
                 }
                 return;
             }
@@ -620,7 +630,14 @@ fn denoise_step(
         && !canvas.converged
         && let Some(embed) = embed_table
     {
-        canvas.prev_self_cond_embed = Some(matmul(&prob, embed, None));
+        // Cast back to bf16 — see the compiled-pipeline site above: an f32
+        // signal propagates f32 activations through the whole next forward
+        // and re-upcasts the cached prompt KV per layer per step.
+        canvas.prev_self_cond_embed = Some(astype(
+            &matmul(&prob, embed, None),
+            MlxDtype::Bfloat16,
+            None,
+        ));
     }
 }
 
@@ -660,10 +677,51 @@ fn commit_block(
     tokens
 }
 
+/// Runner-supplied policy for deciding whether a converged block may skip the
+/// causal commit pass.
+///
+/// `commit_block` is the only path that appends the canvas K/V to the cache
+/// and advances `cache.seq_len`, so the commit may only be skipped when the
+/// block terminates the request — a skipped commit on a non-final block would
+/// generate the next block with no memory of this one, at the same absolute
+/// positions.
+pub(crate) struct DiffusionCommitPolicy<'a> {
+    /// Token ids at which the runner truncates the served block queue
+    /// (dInfer-style EOS early termination; the runner-global terminal set).
+    pub truncation_terminal_ids: &'a [u32],
+    /// Token ids that actually terminate this request (empty when the request
+    /// sets `ignore_eos`).
+    pub request_terminal_ids: &'a [u32],
+    /// Remaining output-token budget for the request, when known. `None`
+    /// conservatively forces the commit pass.
+    pub remaining_output_budget: Option<u32>,
+}
+
+impl DiffusionCommitPolicy<'_> {
+    /// Whether serving this block's tokens ends the request — i.e. no further
+    /// block will be generated, so this block's KV is never read again.
+    fn block_terminates_request(&self, tokens: &[u32]) -> bool {
+        let served_len = tokens
+            .iter()
+            .position(|tok| self.truncation_terminal_ids.contains(tok))
+            .map(|pos| pos + 1)
+            .unwrap_or(tokens.len());
+        if tokens[..served_len]
+            .iter()
+            .any(|tok| self.request_terminal_ids.contains(tok))
+        {
+            return true;
+        }
+        self.remaining_output_budget
+            .is_some_and(|budget| budget as usize <= served_len)
+    }
+}
+
 /// Generate one diffusion block: denoise → commit.
 ///
 /// The prompt is assumed to be already prefilled into the cache.
 /// Returns telemetry along with the committed tokens.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn generate_diffusion_block(
     cfg: &ModelConfig,
     diff_cfg: &DiffusionConfig,
@@ -672,6 +730,7 @@ pub(crate) fn generate_diffusion_block(
     rng: &mut Xorshift64,
     token_offset: usize,
     embed_table_cache: &mut Option<MlxArray>,
+    commit_policy: DiffusionCommitPolicy<'_>,
 ) -> DiffusionBlockResult {
     let block_start = Instant::now();
     let mut effective_diff_cfg = diff_cfg.clone();
@@ -892,24 +951,33 @@ pub(crate) fn generate_diffusion_block(
 
     // Conditional commit skip: when the denoise loop converged with
     // near-perfect acceptance, the canvas tokens are already the model's
-    // output — the causal commit pass (~40 ms) is redundant. Enabled by
-    // default; opt-out via `AX_DIFFUSION_NO_SKIP_COMMIT=1`.
+    // output — the causal commit pass (~40 ms) is redundant *for tokens*.
+    // Enabled by default; opt-out via `AX_DIFFUSION_NO_SKIP_COMMIT=1`.
     //
-    // Previously restricted to step-1 convergence only; now fires on any
-    // convergence with high acceptance, since the argmax canvas is always
-    // the model's best prediction regardless of step count.
-    let commit_skipped =
+    // The commit pass is still load-bearing for the KV cache: it is the only
+    // path that appends this block's K/V and advances `cache.seq_len`. The
+    // skip is therefore restricted to blocks that terminate the request
+    // (EOS in the served tokens, or the remaining output budget is exhausted);
+    // otherwise the next block would be generated with no memory of this one,
+    // at the same absolute positions.
+    let commit_skip_eligible =
         !fastpath::diffusion_no_skip_commit() && canvas.converged && canvas.acceptance_rate >= 0.99;
 
-    let (tokens, commit_wall_us) = if commit_skipped {
+    let (tokens, commit_wall_us, commit_skipped) = if commit_skip_eligible {
         let output_tokens = canvas.argmax_canvas.as_ref().unwrap_or(&canvas.tokens_gpu);
         eval(&[output_tokens]);
         let tokens: Vec<u32> = output_tokens.data_u32().to_vec();
-        (tokens, 0)
+        if commit_policy.block_terminates_request(&tokens) {
+            (tokens, 0, true)
+        } else {
+            let start = Instant::now();
+            let tokens = commit_block(cfg, weights, cache, &canvas, token_offset);
+            (tokens, elapsed_us(start), false)
+        }
     } else {
         let start = Instant::now();
         let tokens = commit_block(cfg, weights, cache, &canvas, token_offset);
-        (tokens, elapsed_us(start))
+        (tokens, elapsed_us(start), false)
     };
     let block_wall_us = elapsed_us(block_start);
 
@@ -1286,8 +1354,11 @@ mod tests {
     // These verify the pure predicate logic used in `generate_diffusion_block`
     // without requiring model weights or MLX runtime.
 
-    /// Simulate the commit-skip predicate from `generate_diffusion_block`.
-    /// Skip fires on any convergence (not just step 1) with high acceptance.
+    /// Simulate the commit-skip *eligibility* predicate from
+    /// `generate_diffusion_block`. Eligibility fires on any convergence (not
+    /// just step 1) with high acceptance; the actual skip additionally
+    /// requires `DiffusionCommitPolicy::block_terminates_request` (tested
+    /// separately below), because skipping the commit drops the block's KV.
     fn should_skip_commit(
         flag_enabled: bool,
         converged: bool,
@@ -1326,6 +1397,50 @@ mod tests {
     fn commit_no_skip_when_flag_disabled() {
         // Flag disabled prevents skip regardless of other conditions.
         assert!(!should_skip_commit(false, true, 1, 1.0));
+    }
+
+    // ── Commit-policy termination tests ──────────────────────────────
+
+    const EOS: u32 = 106;
+
+    fn policy(request_terminal: bool, budget: Option<u32>) -> DiffusionCommitPolicy<'static> {
+        DiffusionCommitPolicy {
+            truncation_terminal_ids: &[EOS],
+            request_terminal_ids: if request_terminal { &[EOS] } else { &[] },
+            remaining_output_budget: budget,
+        }
+    }
+
+    #[test]
+    fn non_final_block_requires_commit() {
+        // No EOS, plenty of budget left: another block follows, so the KV
+        // append must not be skipped.
+        assert!(!policy(true, Some(1000)).block_terminates_request(&[1, 2, 3, 4]));
+        // Unknown budget is conservative: commit.
+        assert!(!policy(true, None).block_terminates_request(&[1, 2, 3, 4]));
+    }
+
+    #[test]
+    fn eos_in_block_terminates_request() {
+        assert!(policy(true, Some(1000)).block_terminates_request(&[1, 2, EOS, 4]));
+        // EOS as the very first served token still terminates.
+        assert!(policy(true, Some(1000)).block_terminates_request(&[EOS, 2, 3, 4]));
+    }
+
+    #[test]
+    fn budget_exhaustion_terminates_request() {
+        assert!(policy(true, Some(4)).block_terminates_request(&[1, 2, 3, 4]));
+        assert!(policy(true, Some(2)).block_terminates_request(&[1, 2, 3, 4]));
+        assert!(!policy(true, Some(5)).block_terminates_request(&[1, 2, 3, 4]));
+    }
+
+    #[test]
+    fn ignore_eos_truncated_block_can_still_continue() {
+        // ignore_eos: the runner truncates the served queue at EOS (position 2,
+        // served_len 3) but the request does not terminate there — the request
+        // continues iff budget outlasts the served tokens.
+        assert!(!policy(false, Some(10)).block_terminates_request(&[1, 2, EOS, 4]));
+        assert!(policy(false, Some(3)).block_terminates_request(&[1, 2, EOS, 4]));
     }
 
     // ── EmbeddingCache tests ─────────────────────────────────────────
