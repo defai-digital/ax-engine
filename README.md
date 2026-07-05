@@ -415,34 +415,38 @@ repo does not yet have an oMLX Qwen3.6 MTP prompt-suite adapter.
 Gemma 4 speculates with an **assistant-drafter** package, not a Qwen-style fused
 sidecar, so no peer engine ships the same Gemma MTP package — MTPLX and
 lightning-mlx have no comparable Gemma assistant-MTP route. The result below is
-therefore an AX-only depth comparison (the drafter's own depth-1 single-token
-baseline versus depth-2 recurrent drafting), not a cross-engine leaderboard. The
+therefore an AX-only comparison (same-artifact direct decode versus depth-2
+assistant drafting), not a cross-engine leaderboard. The
 assistant is stateless per decode step — it re-reads the target's frozen KV
 cache each forward — so depth-2 drafting needs no cache surgery and stays
 correctness-preserving: a gate miss simply verifies fewer speculative positions,
 never a changed committed token.
 
-Canonical 26B benchmark (M5 Max, `temperature=0.6`, `top_p=0.95`, `top_k=20`,
-chat-templated `flappy` / `long_code` / `python_modules_long`, n-gram stacking
-off, depth-2 at a uniform `0.999` deep-position confidence gate):
+Current 12B benchmark (M5 Max, clean `672b7a7b` release build,
+`temperature=0.6`, `top_p=0.95`, `top_k=20`, chat-templated `flappy` /
+`long_code` / `python_modules_long`, n-gram stacking off, depth-2 assistant
+drafting):
 
-| Suite | Depth-1 accept | Depth-2 accept | Depth-1 decode | Depth-2 decode | Speedup |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| `flappy` | 98.7% | 98.3% | 136.9 tok/s | 151.3 tok/s | 1.10x |
-| `long_code` | 98.1% | 97.7% | 125.8 tok/s | 139.3 tok/s | 1.11x |
-| `python_modules_long` | 99.0% | 98.2% | 128.4 tok/s | 154.5 tok/s | 1.20x |
+<p>
+<strong>Gemma 4 12B assistant-MTP decode</strong><br>
+<img width="100%" src="docs/assets/perf-gemma4-assistant-mtp-12b-decode-tok-s.svg" alt="Gemma 4 12B assistant-MTP decode throughput chart comparing AX direct and AX assistant MTP across flappy, long_code, and python_modules_long suites">
+</p>
 
-All three suites hold assistant accept **>97%** at **1.10-1.20x** decode, and
-depth-2 is accept-neutral versus depth-1 (the second token only fires in
-confident contexts). Depth-2 at `0.999` is the constrained optimum under "raise
-decode while holding >97% accept": depth-3 breaks the accept floor
-(`python_modules_long` falls to about 0.937), and a looser gate lowers accept
-for no extra speed. Depth-2 is the shipped default; set
+| Suite | Assistant accept | AX direct decode | AX MTP decode | Speedup | AX MTP prefill | AX MTP TTFT |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `flappy` | 98.5% | 58.7 tok/s | 94.5 tok/s | 1.61x | 1,778.5 tok/s | 200 ms |
+| `long_code` | 99.1% | 56.0 tok/s | 93.7 tok/s | 1.68x | 2,017.6 tok/s | 398 ms |
+| `python_modules_long` | 97.8% | 56.8 tok/s | 88.4 tok/s | 1.56x | 1,889.9 tok/s | 190 ms |
+
+All three 12B suites hold assistant accept **>97%** and depth-2 MTP is faster
+than same-artifact direct decode by **1.56-1.68x**. The aggregate comparison in
+the artifact reports **+65.0%** decode versus direct, with the worst suite still
+up **+55.6%**. Depth-2 is the shipped default; set
 `AX_MLX_GEMMA4_ASSISTANT_MTP_MAX_DEPTH=1` to restore single-token drafting.
-Method, gate sweep, and per-suite detail:
+Method and per-suite artifacts:
 [`docs/mtp/gemma4-assistant-multi-depth.md`](docs/mtp/gemma4-assistant-multi-depth.md);
-result artifacts under
-[`benchmarks/results/gemma4-assistant-mtp/`](benchmarks/results/gemma4-assistant-mtp/).
+current 12B result artifacts under
+[`benchmarks/results/gemma4-assistant-mtp/2026-07-04-gemma4-12b-ax-only-direct-mtp-refresh/`](benchmarks/results/gemma4-assistant-mtp/2026-07-04-gemma4-12b-ax-only-direct-mtp-refresh/).
 
 ### Direct Mode (Decode · Prefill · TTFT)
 
@@ -461,11 +465,11 @@ and benchmark boundary. **Upstream `mlx_lm` 0.31.3 cannot load it**
 
 **At a glance:**
 
-- **Direct decode:** AX native MLX reaches **65.3-69.1 tok/s** on the bit-comparable
+- **Direct decode:** AX native MLX reaches **65.2-69.2 tok/s** on the bit-comparable
   4-bit-FFN artifact versus llama.cpp Metal's **56.9-58.7 tok/s** depth-matched range.
 - **Context depth:** AX's direct margin is **+21% / +15% / +14%** versus llama.cpp matched-depth decode at 128 / 512 / 2,048 prompt tokens.
-- **Assistant-MTP:** Gemma assistant-MTP remains a supported runtime package,
-  but it is outside the current Qwen-only MTP benchmark publication scope.
+- **Assistant-MTP:** On 12B real prompt suites, depth-2 assistant-MTP reaches
+  **88.4-94.5 tok/s**, a **1.56-1.68x** speedup over same-artifact direct decode.
 - **Why the earlier result flipped:** the upstream MLX snapshot keeps FFN weights at
   8-bit, so it reads about **1.65x** the bytes of the re-quantized 4-bit-FFN artifact.
   Decode is bandwidth-bound; matching quantization closes the gap.
@@ -499,9 +503,9 @@ GGUF references, not prompt-hash-parity MLX rows.
 
 | Prompt tokens | AX decode | llama.cpp decode (depth 0) | llama.cpp decode (matched depth) | AX prefill | llama.cpp prefill | AX TTFT (ms) | llama.cpp TTFT (ms) |
 | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| 128 | 69.1 | 57.1 | 56.9 | 1,180 | 1,245 | 108 | 103 |
-| 512 | 67.5 | 57.3 | 58.7 | 1,883 | 1,740 | 272 | 294 |
-| 2048 | 65.3 | 56.0 | 57.5 | 2,062 | 1,544 | 993 | 1,327 |
+| 128 | 69.2 | 57.1 | 56.9 | 1,184 | 1,245 | 108 | 103 |
+| 512 | 67.5 | 57.3 | 58.7 | 1,867 | 1,740 | 274 | 294 |
+| 2048 | 65.2 | 56.0 | 57.5 | 2,049 | 1,544 | 999 | 1,327 |
 
 Read the two llama.cpp decode columns carefully:
 
@@ -554,13 +558,14 @@ support. MTP methodology and artifacts live with
 The llama.cpp peer columns are measured on llama.cpp b9820 / ggml 0.15.3; full per-prompt
 llama.cpp data is in the verification artifact
 [`gemma-4-12b-it-4bit-b9820-verify.json`](benchmarks/results/llama-cpp-metal/2026-06-27-llama-only-rerun/gemma-4-12b-it-4bit-b9820-verify.json).
-The AX rows come from the direct-only AX artifact below, so these columns are a shape-compatible
-cross-run comparison, not a single-session A/B.
+The AX rows come from the current direct-only AX artifact below. The llama.cpp rows are retained
+from the earlier peer rerun, so these columns are a shape-compatible cross-run comparison, not a
+single-session A/B.
 
 Full artifacts:
-[`2026-06-26-gemma4-12b-4bit-ax-direct-only`](benchmarks/results/inference/mlx-inference/2026-06-26-gemma4-12b-4bit-ax-direct-only/gemma-4-12b-it-4bit.json)
+[`2026-07-04-gemma4-12b-ax-direct-mtp-refresh`](benchmarks/results/inference/mlx-inference/2026-07-04-gemma4-12b-ax-direct-mtp-refresh/gemma-4-12b-it-4bit-direct.json)
 (AX direct rerun; chart artifact with retained llama.cpp reference rows in
-[`gemma-4-12b-it-4bit-with-llama-reference.json`][ref-json];
+[`gemma-4-12b-it-4bit-with-llama-reference.json`](benchmarks/results/inference/mlx-inference/2026-07-04-gemma4-12b-ax-direct-mtp-refresh/gemma-4-12b-it-4bit-with-llama-reference.json);
 llama.cpp GGUF provenance in
 [`llama_cpp_gguf_provenance.json`](benchmarks/results/inference/mlx-inference/2026-06-26-gemma4-12b-4bit-ax-direct-only/llama_cpp_gguf_provenance.json)).
 The upstream 8-bit-FFN bandwidth row is backed by
@@ -1115,8 +1120,6 @@ Performance tuning is tightly coupled: a local speedup can regress correctness, 
 - Website: [automatosx.com](https://automatosx.com)
 - Discord: [Join us](https://discord.gg/aDhhburqJg)
 - Email: [enquiry@defai.digital](mailto:enquiry@defai.digital)
-
-[ref-json]: benchmarks/results/inference/mlx-inference/2026-06-26-gemma4-12b-4bit-ax-direct-only/gemma-4-12b-it-4bit-with-llama-reference.json
 
 ## Acknowledgments
 

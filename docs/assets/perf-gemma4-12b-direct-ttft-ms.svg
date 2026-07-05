@@ -24,21 +24,21 @@
 <text x="110.9" y="286.2" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#dc2626">102.9</text>
 <rect x="140.6" y="291.4" width="43.6" height="16.6" rx="3" fill="#2eaf5f" fill-opacity="0.26" stroke="#176c37" stroke-width="1.8"/>
 <line x1="140.6" y1="291.4" x2="184.2" y2="291.4" stroke="#176c37" stroke-width="2.6"/>
-<text x="162.4" y="285.4" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">108.5</text>
+<text x="162.4" y="285.4" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">108.1</text>
 <text x="136.7" y="328.0" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">128 tok</text>
 <rect x="234.5" y="262.9" width="43.6" height="45.1" rx="3" fill="#f97316" fill-opacity="0.26" stroke="#c2410c" stroke-width="1.8"/>
 <line x1="234.5" y1="262.9" x2="278.1" y2="262.9" stroke="#c2410c" stroke-width="2.6"/>
 <text x="256.3" y="256.9" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">294.3</text>
-<rect x="285.9" y="266.3" width="43.6" height="41.7" rx="3" fill="#2eaf5f" fill-opacity="0.26" stroke="#176c37" stroke-width="1.8"/>
-<line x1="285.9" y1="266.3" x2="329.5" y2="266.3" stroke="#176c37" stroke-width="2.6"/>
-<text x="307.7" y="260.3" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#dc2626">272.0</text>
+<rect x="285.9" y="266.0" width="43.6" height="42.0" rx="3" fill="#2eaf5f" fill-opacity="0.26" stroke="#176c37" stroke-width="1.8"/>
+<line x1="285.9" y1="266.0" x2="329.5" y2="266.0" stroke="#176c37" stroke-width="2.6"/>
+<text x="307.7" y="260.0" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#dc2626">274.2</text>
 <text x="282.0" y="328.0" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">512 tok</text>
 <rect x="379.8" y="104.6" width="43.6" height="203.4" rx="3" fill="#f97316" fill-opacity="0.26" stroke="#c2410c" stroke-width="1.8"/>
 <line x1="379.8" y1="104.6" x2="423.4" y2="104.6" stroke="#c2410c" stroke-width="2.6"/>
 <text x="401.6" y="98.6" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">1.3k</text>
-<rect x="431.3" y="155.7" width="43.6" height="152.3" rx="3" fill="#2eaf5f" fill-opacity="0.26" stroke="#176c37" stroke-width="1.8"/>
-<line x1="431.3" y1="155.7" x2="474.9" y2="155.7" stroke="#176c37" stroke-width="2.6"/>
-<text x="453.1" y="149.7" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#dc2626">993.1</text>
+<rect x="431.3" y="154.7" width="43.6" height="153.3" rx="3" fill="#2eaf5f" fill-opacity="0.26" stroke="#176c37" stroke-width="1.8"/>
+<line x1="431.3" y1="154.7" x2="474.9" y2="154.7" stroke="#176c37" stroke-width="2.6"/>
+<text x="453.1" y="148.7" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#dc2626">999.5</text>
 <text x="427.3" y="328.0" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">2048 tok</text>
 <rect x="64.0" y="369" width="10" height="10" rx="2" fill="#f97316" fill-opacity="0.5" stroke="#c2410c" stroke-width="1.4"/>
 <text x="78.0" y="378" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#374151">llama.cpp Metal</text>

@@ -333,7 +333,7 @@ def write_box_whisker_svg(
 # result trees alike.
 MODE_FILE_CANDIDATES = {
     "direct": ("direct",),
-    "mtp": ("assistant_mtp_default", "mtp"),
+    "mtp": ("assistant_mtp_depth2", "assistant_mtp_default", "mtp"),
     "mtp-ngram": ("assistant_mtp_ngram_default", "mtp-ngram"),
 }
 
@@ -393,13 +393,36 @@ def build_groups(results_dir: Path, model_key: str, metric: str, engines: list[s
 
 def engines_for_metric(results_dir: Path, model_key: str, metric: str) -> list[str]:
     if metric != "decode":
-        return DEFAULT_ENGINES
+        return [
+            engine
+            for engine in DEFAULT_ENGINES
+            if all(
+                mode_artifact_path(results_dir, model_key, suite_key, {
+                    ENGINE_MTP: "mtp",
+                    ENGINE_NGRAM: "mtp-ngram",
+                }[engine])
+                is not None
+                for suite_key, _suite_label in SUITES
+            )
+        ]
+    mtp_engines = [
+        engine
+        for engine in DEFAULT_ENGINES
+        if all(
+            mode_artifact_path(results_dir, model_key, suite_key, {
+                ENGINE_MTP: "mtp",
+                ENGINE_NGRAM: "mtp-ngram",
+            }[engine])
+            is not None
+            for suite_key, _suite_label in SUITES
+        )
+    ]
     direct_present = [
         mode_artifact_path(results_dir, model_key, suite_key, "direct") is not None
         for suite_key, _suite_label in SUITES
     ]
     if all(direct_present):
-        return DECODE_ENGINES
+        return [ENGINE_DIRECT, *mtp_engines]
     if any(direct_present):
         missing = [
             suite_key

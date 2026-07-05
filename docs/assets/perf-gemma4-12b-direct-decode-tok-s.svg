@@ -22,23 +22,23 @@
 <rect x="89.1" y="177.2" width="43.6" height="130.8" rx="3" fill="#f97316" fill-opacity="0.26" stroke="#c2410c" stroke-width="1.8"/>
 <line x1="89.1" y1="177.2" x2="132.7" y2="177.2" stroke="#c2410c" stroke-width="2.6"/>
 <text x="110.9" y="171.2" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">56.9</text>
-<rect x="140.6" y="149.0" width="43.6" height="159.0" rx="3" fill="#2eaf5f" fill-opacity="0.26" stroke="#176c37" stroke-width="1.8"/>
-<line x1="140.6" y1="149.0" x2="184.2" y2="149.0" stroke="#176c37" stroke-width="2.6"/>
-<text x="162.4" y="143.0" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#dc2626">69.1</text>
+<rect x="140.6" y="148.9" width="43.6" height="159.1" rx="3" fill="#2eaf5f" fill-opacity="0.26" stroke="#176c37" stroke-width="1.8"/>
+<line x1="140.6" y1="148.9" x2="184.2" y2="148.9" stroke="#176c37" stroke-width="2.6"/>
+<text x="162.4" y="142.9" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#dc2626">69.2</text>
 <text x="136.7" y="328.0" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">128 tok</text>
 <rect x="234.5" y="172.9" width="43.6" height="135.1" rx="3" fill="#f97316" fill-opacity="0.26" stroke="#c2410c" stroke-width="1.8"/>
 <line x1="234.5" y1="172.9" x2="278.1" y2="172.9" stroke="#c2410c" stroke-width="2.6"/>
 <text x="256.3" y="166.9" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">58.7</text>
-<rect x="285.9" y="152.7" width="43.6" height="155.3" rx="3" fill="#2eaf5f" fill-opacity="0.26" stroke="#176c37" stroke-width="1.8"/>
-<line x1="285.9" y1="152.7" x2="329.5" y2="152.7" stroke="#176c37" stroke-width="2.6"/>
-<text x="307.7" y="146.7" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#dc2626">67.5</text>
+<rect x="285.9" y="152.8" width="43.6" height="155.2" rx="3" fill="#2eaf5f" fill-opacity="0.26" stroke="#176c37" stroke-width="1.8"/>
+<line x1="285.9" y1="152.8" x2="329.5" y2="152.8" stroke="#176c37" stroke-width="2.6"/>
+<text x="307.7" y="146.8" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#dc2626">67.5</text>
 <text x="282.0" y="328.0" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">512 tok</text>
 <rect x="379.8" y="175.8" width="43.6" height="132.2" rx="3" fill="#f97316" fill-opacity="0.26" stroke="#c2410c" stroke-width="1.8"/>
 <line x1="379.8" y1="175.8" x2="423.4" y2="175.8" stroke="#c2410c" stroke-width="2.6"/>
 <text x="401.6" y="169.8" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">57.5</text>
-<rect x="431.3" y="157.9" width="43.6" height="150.1" rx="3" fill="#2eaf5f" fill-opacity="0.26" stroke="#176c37" stroke-width="1.8"/>
-<line x1="431.3" y1="157.9" x2="474.9" y2="157.9" stroke="#176c37" stroke-width="2.6"/>
-<text x="453.1" y="151.9" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#dc2626">65.3</text>
+<rect x="431.3" y="158.1" width="43.6" height="149.9" rx="3" fill="#2eaf5f" fill-opacity="0.26" stroke="#176c37" stroke-width="1.8"/>
+<line x1="431.3" y1="158.1" x2="474.9" y2="158.1" stroke="#176c37" stroke-width="2.6"/>
+<text x="453.1" y="152.1" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#dc2626">65.2</text>
 <text x="427.3" y="328.0" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">2048 tok</text>
 <rect x="64.0" y="369" width="10" height="10" rx="2" fill="#f97316" fill-opacity="0.5" stroke="#c2410c" stroke-width="1.4"/>
 <text x="78.0" y="378" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#374151">llama.cpp Metal</text>
