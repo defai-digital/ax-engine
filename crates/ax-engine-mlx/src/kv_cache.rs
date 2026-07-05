@@ -3572,6 +3572,60 @@ mod tests {
     }
 
     #[test]
+    fn multi_token_append_retains_window_plus_seq_view() {
+        // Prefill 8 tokens (full view), then append a 4-token chunk with the
+        // multi-token retained bound window + seq - 1 = 3 + 4 - 1 = 6: the
+        // returned view must be the last 6 tokens of the 12-token history,
+        // contents intact, while full storage stays available for rollback
+        // and prefix-cache snapshots.
+        let head_dim = 2usize;
+        let fill = |start: usize, tokens: usize| -> MlxArray {
+            let data: Vec<f32> = (start..start + tokens * head_dim)
+                .map(|i| i as f32)
+                .collect();
+            let flat = MlxArray::from_f32_slice(&data);
+            mlx_sys::reshape(&flat, &[1, 1, tokens as i32, head_dim as i32], None)
+        };
+        let read_f32 = |arr: &MlxArray| -> Vec<f32> {
+            let arr = astype(arr, MlxDtype::Float32, None);
+            eval(&[&arr]);
+            let len = arr.nbytes() / std::mem::size_of::<f32>();
+            let ptr = arr.data_raw() as *const f32;
+            unsafe { std::slice::from_raw_parts(ptr, len).to_vec() }
+        };
+
+        let mut cache = MlxKVCache::new(1);
+        cache.append(0, fill(0, 8), fill(100, 8));
+        cache.seq_len = 8;
+
+        let (k_view, v_view) =
+            cache.append_with_retained_window(0, fill(16, 4), fill(116, 4), Some(6));
+        cache.seq_len = 12;
+
+        assert_eq!(k_view.shape(), vec![1, 1, 6, head_dim as i32]);
+        assert_eq!(v_view.shape(), vec![1, 1, 6, head_dim as i32]);
+        // Last 6 tokens = prompt tokens 6..8 (values 12..16) + the 4 new
+        // tokens (values 16..24).
+        let expected_k: Vec<f32> = (12..24).map(|i| i as f32).collect();
+        let expected_v: Vec<f32> = (112..124).map(|i| i as f32).collect();
+        assert_eq!(read_f32(&k_view), expected_k);
+        assert_eq!(read_f32(&v_view), expected_v);
+
+        let (full_k, full_v) = cache.peek_layer_full_kv(0).expect("full view");
+        assert_eq!(full_k.shape(), vec![1, 1, 12, head_dim as i32]);
+        let full_k_data = read_f32(&full_k);
+        assert_eq!(
+            &full_k_data[..16],
+            (0..16).map(|i| i as f32).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            &full_k_data[16..],
+            (16..24).map(|i| i as f32).collect::<Vec<_>>()
+        );
+        assert_eq!(read_f32(&full_v).len(), 24);
+    }
+
+    #[test]
     fn usage_snapshot_tracks_sliding_window_trim_opportunity() {
         let mut cache = MlxKVCache::new(1);
         let k = zeros(&[1, 2, 300, 4], MlxDtype::Bfloat16, None);

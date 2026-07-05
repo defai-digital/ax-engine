@@ -337,10 +337,18 @@ pub(crate) fn attention_mask_key_len(
     key_len: usize,
     sliding_window: Option<usize>,
 ) -> usize {
-    if seq_len == 1
-        && let Some(window) = sliding_window.filter(|window| *window > 0)
-    {
-        return key_len.min(window);
+    if let Some(window) = sliding_window.filter(|window| *window > 0) {
+        if seq_len == 1 {
+            return key_len.min(window);
+        }
+        // Multi-token forwards: each query attends at most the `window` keys
+        // ending at its own position, so the chunk needs only the last
+        // `window + seq_len - 1` cached tokens. Must stay in lockstep with the
+        // retained-view width chosen at the KV append site
+        // (`families::standard::layer_forward`), hence the shared flag.
+        if seq_len > 1 && crate::fastpath::multi_token_window_views_enabled() {
+            return key_len.min(window + seq_len - 1);
+        }
     }
     key_len
 }
@@ -759,7 +767,10 @@ pub(crate) fn build_layer_masks(
     if cfg.layer_configs.is_empty() {
         // For uniform-SWA models (Mistral3, Mixtral) cfg.global_sliding_window is set.
         // Pass it so prefill masks correctly limit attention to the window.
-        let m = attention_mask_array(seq, key_len, cfg.global_sliding_window);
+        // Key length follows the retained-view trim so mask and KV view widths
+        // stay in lockstep (see `attention_mask_key_len`).
+        let mask_key_len = attention_mask_key_len(seq, key_len, cfg.global_sliding_window);
+        let m = attention_mask_array(seq, mask_key_len, cfg.global_sliding_window);
         if m.is_none() {
             return vec![None; n_layers];
         }
@@ -899,6 +910,81 @@ mod tests {
         let len = mask.nbytes();
         let ptr = mask.data_raw();
         unsafe { std::slice::from_raw_parts(ptr, len).to_vec() }
+    }
+
+    #[test]
+    fn multi_token_windowed_view_matches_full_view_sliding_attention() {
+        // Oracle for the multi-token retained-window views: trimming sliding
+        // K/V to the last `window + seq - 1` tokens (with the matching
+        // trimmed mask) must produce the same attention output as the full
+        // history plus the full-width sliding mask. GQA shape (2 query heads,
+        // 1 KV head) to also cover the broadcast path.
+        use super::{attention_mask_array, attention_mask_key_len, full_precision_attention};
+        use mlx_sys::{astype, reshape, slice};
+
+        let (n_heads, kv_heads, head_dim) = (2usize, 1usize, 4usize);
+        let seq = 3usize;
+        let window = 4usize;
+        let key_len = 12usize;
+        let retained = attention_mask_key_len(seq, key_len, Some(window));
+        assert_eq!(retained, window + seq - 1);
+
+        let fill = |n: usize, seed: f32| -> Vec<f32> {
+            (0..n).map(|i| (i as f32 * 0.37 + seed).sin()).collect()
+        };
+        let q = reshape(
+            &MlxArray::from_f32_slice(&fill(n_heads * seq * head_dim, 0.1)),
+            &[1, n_heads as i32, seq as i32, head_dim as i32],
+            None,
+        );
+        let k = reshape(
+            &MlxArray::from_f32_slice(&fill(kv_heads * key_len * head_dim, 0.5)),
+            &[1, kv_heads as i32, key_len as i32, head_dim as i32],
+            None,
+        );
+        let v = reshape(
+            &MlxArray::from_f32_slice(&fill(kv_heads * key_len * head_dim, 0.9)),
+            &[1, kv_heads as i32, key_len as i32, head_dim as i32],
+            None,
+        );
+
+        let full_mask = attention_mask_array(seq, key_len, Some(window));
+        assert!(full_mask.is_some(), "offset sliding prefill needs a mask");
+        let out_full = full_precision_attention(&q, &k, &v, 1.0, seq, &full_mask);
+
+        let start = (key_len - retained) as i32;
+        let trim = |arr: &MlxArray| {
+            slice(
+                arr,
+                &[0, 0, start, 0],
+                &[1, kv_heads as i32, key_len as i32, head_dim as i32],
+                &[1, 1, 1, 1],
+                None,
+            )
+        };
+        let trim_mask = attention_mask_array(seq, retained, Some(window));
+        assert!(trim_mask.is_some(), "trimmed view still needs a mask");
+        let out_trim = full_precision_attention(&q, &trim(&k), &trim(&v), 1.0, seq, &trim_mask);
+
+        let read_f32 = |arr: &MlxArray| -> Vec<f32> {
+            let arr = astype(arr, mlx_sys::MlxDtype::Float32, None);
+            eval(&[&arr]);
+            let len = arr.nbytes() / std::mem::size_of::<f32>();
+            let ptr = arr.data_raw() as *const f32;
+            unsafe { std::slice::from_raw_parts(ptr, len).to_vec() }
+        };
+        let a = read_f32(&out_full);
+        let b = read_f32(&out_trim);
+        assert_eq!(a.len(), b.len());
+        let max_diff = a
+            .iter()
+            .zip(&b)
+            .map(|(x, y)| (x - y).abs())
+            .fold(0.0f32, f32::max);
+        assert!(
+            max_diff < 1e-5,
+            "windowed view diverged from full view: max diff {max_diff}"
+        );
     }
 
     #[test]

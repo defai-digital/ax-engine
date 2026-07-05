@@ -101,7 +101,10 @@ PY
 
 cd "$ROOT_DIR"
 
-run_timed "$TARGET_TIMEOUT_SECS" cargo clippy -p ax-engine-mlx --all-targets -- -D warnings
+# Match the CI clippy gate: ADR-001 restriction lints stay warnings, otherwise
+# a cold clippy cache re-lints workspace deps (ax-engine-core test code) and
+# `-D warnings` alone fails on their allowlisted unwrap/expect/panic usage.
+run_timed "$TARGET_TIMEOUT_SECS" cargo clippy -p ax-engine-mlx --all-targets -- -D warnings --force-warn clippy::unwrap-used --force-warn clippy::expect-used --force-warn clippy::panic --force-warn clippy::dbg-macro --force-warn clippy::large-enum-variant
 run_timed "$TARGET_TIMEOUT_SECS" cargo test -p ax-engine-mlx --quiet
 run_timed "$TARGET_TIMEOUT_SECS" bash scripts/check-bench-inference-stack.sh
 run_timed "$TARGET_TIMEOUT_SECS" "$AX_PYTHON_BIN" scripts/check_decode_hot_path_kernel_admission.py

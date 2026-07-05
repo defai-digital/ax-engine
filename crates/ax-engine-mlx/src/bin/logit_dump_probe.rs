@@ -66,8 +66,35 @@ fn main() {
     let weights: Arc<ModelWeights> = Arc::new(load_weights(&artifacts).expect("load weights"));
 
     // Prefill the whole prompt; `forward` returns the last token's logits [vocab].
+    // `AX_PROBE_CHUNKED=1` routes the prefix through production chunked prefill
+    // (default chunk size) and only the last token through `forward`, matching
+    // the numeric path a served request takes instead of one giant forward.
     let mut cache = MlxKVCache::new(cfg.layer_count);
-    let logits = forward(&cfg, &weights, &ids, &mut cache, 0);
+    let chunked = std::env::var("AX_PROBE_CHUNKED").is_ok_and(|v| v == "1");
+    let logits = if chunked && ids.len() > 1 {
+        use ax_engine_mlx::generate::{DEFAULT_PREFILL_CHUNK, chunked_prefill};
+        use ax_engine_mlx::sampling::{MlxSamplingParams, MlxSamplingRequest, Xorshift64};
+        let prefix = &ids[..ids.len() - 1];
+        let mut rng = Xorshift64::new(0);
+        let _ = chunked_prefill(
+            &cfg,
+            &weights,
+            prefix,
+            &mut cache,
+            DEFAULT_PREFILL_CHUNK,
+            MlxSamplingRequest::new(MlxSamplingParams::greedy(), prefix),
+            &mut rng,
+        );
+        forward(
+            &cfg,
+            &weights,
+            &ids[ids.len() - 1..],
+            &mut cache,
+            prefix.len(),
+        )
+    } else {
+        forward(&cfg, &weights, &ids, &mut cache, 0)
+    };
     eval(&[&logits]);
     let lg = logits.data_f32();
 

@@ -2743,7 +2743,6 @@ pub(crate) struct CompiledGemma4DualPathSchema {
     ffn_post_norm: Option<usize>,
     // Scalars
     packed_dim: i32,
-    _expert_packed_dim: i32,
     pub(crate) moe_expert_count: usize,
     pub(crate) moe_experts_per_token: usize,
 }
@@ -2751,49 +2750,40 @@ pub(crate) struct CompiledGemma4DualPathSchema {
 /// Flatten every MLX array the Gemma4 dual-path forward depends on into an
 /// explicit input vector, returning the vector plus a
 /// [`CompiledGemma4DualPathSchema`] that records where each tensor landed.
+///
+/// Returns `None` when a weight the compiled forward needs is absent (e.g.
+/// checkpoints whose dense gate/up tensors are not row-packed, or expert
+/// tensors shipped neither packed nor split) — the caller falls back to the
+/// imperative dual-path. A panic here would fire inside the compile trace and
+/// abort the process under `panic = "abort"`, so absence must be a graceful
+/// decline, not an `expect`.
 pub(crate) fn flatten_gemma4_dual_path_inputs(
     normed2: &MlxArray,
     hidden: &MlxArray,
     w: &LayerWeights,
-) -> (Vec<MlxArray>, CompiledGemma4DualPathSchema) {
+) -> Option<(Vec<MlxArray>, CompiledGemma4DualPathSchema)> {
+    // Quantized packed dense weight is `[2 * intermediate, packed_in]`: the
+    // GeGLU split in `forward` slices the matmul *output*, so measure the
+    // output axis (axis 0), not the packed input axis.
+    let packed_dim = w.gate_up_packed.as_ref()?.weight.shape().first().copied()?;
     let mut inputs: Vec<MlxArray> = vec![normed2.clone(), hidden.clone()];
-    let dense_gate_up = push_quant_inputs(&mut inputs, w.gate_up_packed.as_ref())
-        .expect("dual-path: dense gate_up_packed required");
-    let dense_down = push_quant_inputs(&mut inputs, w.down_proj.as_ref())
-        .expect("dual-path: dense down_proj required");
+    let dense_gate_up = push_quant_inputs(&mut inputs, w.gate_up_packed.as_ref())?;
+    let dense_down = push_quant_inputs(&mut inputs, w.down_proj.as_ref())?;
     let dense_post_norm1 = push_optional_input(&mut inputs, w.ffn_post_norm1.as_ref());
-    let h2_norm = push_optional_input(&mut inputs, w.ffn_norm2.as_ref())
-        .expect("dual-path: ffn_norm2 required");
-    let router_proj = push_quant_inputs(&mut inputs, w.router_proj.as_ref())
-        .expect("dual-path: router_proj required");
-    let router_combined_scale = push_optional_input(&mut inputs, w.router_combined_scale.as_ref())
-        .expect("dual-path: router_combined_scale required");
+    let h2_norm = push_optional_input(&mut inputs, w.ffn_norm2.as_ref())?;
+    let router_proj = push_quant_inputs(&mut inputs, w.router_proj.as_ref())?;
+    let router_combined_scale = push_optional_input(&mut inputs, w.router_combined_scale.as_ref())?;
     let router_expert_scale = push_optional_input(&mut inputs, w.router_expert_scale.as_ref());
     let expert_gate_up = push_quant_inputs(&mut inputs, w.gate_up_exps_packed.as_ref());
     let expert_gate = push_quant_inputs(&mut inputs, w.gate_exps.as_ref());
     let expert_up = push_quant_inputs(&mut inputs, w.up_exps.as_ref());
-    let expert_down = push_quant_inputs(&mut inputs, w.down_exps.as_ref())
-        .expect("dual-path: expert down_exps required");
+    // The expert forward needs packed gate-up or the split pair.
+    if expert_gate_up.is_none() && (expert_gate.is_none() || expert_up.is_none()) {
+        return None;
+    }
+    let expert_down = push_quant_inputs(&mut inputs, w.down_exps.as_ref())?;
     let expert_post_norm2 = push_optional_input(&mut inputs, w.ffn_post_norm2.as_ref());
     let ffn_post_norm = push_optional_input(&mut inputs, w.ffn_post_norm.as_ref());
-    let packed_dim = w
-        .gate_up_packed
-        .as_ref()
-        .expect("dual-path: dense gate_up_packed required")
-        .weight
-        .shape()
-        .last()
-        .copied()
-        .expect("packed weight must have last dim");
-    let expert_packed_dim = w
-        .gate_up_exps_packed
-        .as_ref()
-        .expect("dual-path: expert gate_up_exps_packed required")
-        .weight
-        .shape()
-        .last()
-        .copied()
-        .expect("expert packed weight must have last dim");
     let schema = CompiledGemma4DualPathSchema {
         dense_gate_up,
         dense_down,
@@ -2809,11 +2799,10 @@ pub(crate) fn flatten_gemma4_dual_path_inputs(
         expert_post_norm2,
         ffn_post_norm,
         packed_dim,
-        _expert_packed_dim: expert_packed_dim,
         moe_expert_count: 0,
         moe_experts_per_token: 0,
     };
-    (inputs, schema)
+    Some((inputs, schema))
 }
 
 impl CompiledGemma4DualPathSchema {

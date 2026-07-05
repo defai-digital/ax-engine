@@ -313,11 +313,26 @@ pub(crate) fn layer_forward(
             };
 
             let rope_kv_started = profile_forward_layer.then(Instant::now);
-            let (ck, cv) = if seq == 1 {
-                cache.append_with_retained_window(layer_idx, k_rope, v, sliding_window)
+            let retained_window = if seq == 1 {
+                sliding_window
+            } else if sliding_window.is_some() && fastpath::multi_token_window_views_enabled() {
+                match shared_mask {
+                    // A hoisted mask fixes the key width SDPA must see, so the
+                    // view follows it: `build_layer_masks` masks are
+                    // window-trimmed, while multimodal media-overlay masks
+                    // span the full context (media blocks may legitimately
+                    // attend beyond the sliding window) and keep full views.
+                    Some(Some(mask)) => mask.shape().last().map(|&len| len as usize),
+                    // No hoisted mask: retain `window + seq - 1` so every
+                    // query keeps its full window; the local mask below is
+                    // derived from the returned view width, so mask and view
+                    // stay consistent.
+                    _ => sliding_window.map(|window| window + seq - 1),
+                }
             } else {
-                cache.append(layer_idx, k_rope, v)
+                None
             };
+            let (ck, cv) = cache.append_with_retained_window(layer_idx, k_rope, v, retained_window);
             if let Some(started) = rope_kv_started {
                 forward_profile_eval_elapsed(
                     profile_decode_layer,
@@ -517,16 +532,21 @@ pub(crate) fn layer_forward(
     let ffn_out = if w.router_proj.is_some() {
         if cfg.gemma4_moe_router {
             // Try compiled dual-path decode closure (gated by AX_MLX_MOE_LAYER_COMPILE).
+            // `flatten` declines (→ imperative fallback) when a needed weight is
+            // absent, e.g. checkpoints shipping split instead of packed tensors.
             let compiled_result = if seq == 1 && fastpath::moe_layer_compile_enabled() {
-                let cfg_clone = cfg.clone();
-                let (inputs, mut schema) = flatten_gemma4_dual_path_inputs(&normed2, &hidden, w);
-                schema.moe_expert_count = cfg.moe_expert_count;
-                schema.moe_experts_per_token = cfg.moe_experts_per_token;
-                let input_refs: Vec<&MlxArray> = inputs.iter().collect();
-                apply_layer_gemma4_dual_path_decode(
-                    layer_idx,
-                    &input_refs,
-                    move |inputs: &MlxVectorArray| vec![schema.forward(inputs, &cfg_clone)],
+                flatten_gemma4_dual_path_inputs(&normed2, &hidden, w).and_then(
+                    |(inputs, mut schema)| {
+                        let cfg_clone = cfg.clone();
+                        schema.moe_expert_count = cfg.moe_expert_count;
+                        schema.moe_experts_per_token = cfg.moe_experts_per_token;
+                        let input_refs: Vec<&MlxArray> = inputs.iter().collect();
+                        apply_layer_gemma4_dual_path_decode(
+                            layer_idx,
+                            &input_refs,
+                            move |inputs: &MlxVectorArray| vec![schema.forward(inputs, &cfg_clone)],
+                        )
+                    },
                 )
             } else {
                 None

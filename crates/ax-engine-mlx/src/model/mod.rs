@@ -5016,7 +5016,13 @@ mod tests {
     fn attention_mask_key_len_matches_decode_windowed_kv_views() {
         assert_eq!(attention_mask_key_len(1, 6, Some(4)), 4);
         assert_eq!(attention_mask_key_len(1, 6, None), 6);
-        assert_eq!(attention_mask_key_len(2, 6, Some(4)), 6);
+        // Multi-token forwards retain `window + seq - 1` keys: the oldest
+        // query still sees its full window, newer keys cover the rest.
+        assert_eq!(attention_mask_key_len(2, 6, Some(4)), 5);
+        assert_eq!(attention_mask_key_len(3, 100, Some(8)), 10);
+        // No trim when the cache holds fewer keys than the retained bound.
+        assert_eq!(attention_mask_key_len(4, 6, Some(4)), 6);
+        assert_eq!(attention_mask_key_len(4, 6, None), 6);
     }
 
     #[test]

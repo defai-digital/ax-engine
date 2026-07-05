@@ -351,6 +351,31 @@ env_flag_default_on!(
     "AX_MLX_ROTATING_SLIDING_DECODE"
 );
 
+env_flag_default_on!(
+    /// `AX_MLX_MULTI_TOKEN_WINDOW_VIEWS` — present sliding-window layers with a
+    /// `window + seq - 1` retained K/V view on multi-token forwards (chunked
+    /// prefill continuation chunks, n-gram verify, assistant-MTP verify)
+    /// instead of the full-context view.
+    ///
+    /// **Default: ON** (kill-switch via `AX_MLX_MULTI_TOKEN_WINDOW_VIEWS=0`).
+    ///
+    /// Each query in a multi-token forward attends at most the `window` keys
+    /// ending at its own position, so the chunk as a whole needs only the last
+    /// `window + seq - 1` cached tokens. MLX masked SDPA does not skip
+    /// masked-out K/V blocks, so the previous full-context view paid
+    /// O(context) reads and scores per sliding layer per chunk — the dominant
+    /// sliding-layer cost for long-context prefill and every speculative
+    /// verify forward. `mlx_lm` gets the same bound from its
+    /// `RotatingKVCache` prefill trim. Storage is unaffected (rollback and
+    /// prefix-cache snapshots still see full backing buffers); only the view
+    /// handed to SDPA and the matching mask width shrink. Multimodal
+    /// media-overlay masks span the full context (media blocks may attend
+    /// beyond the window), and the view width follows the hoisted mask, so
+    /// those forwards keep full views.
+    multi_token_window_views_enabled,
+    "AX_MLX_MULTI_TOKEN_WINDOW_VIEWS"
+);
+
 env_flag!(
     /// `AX_MLX_DIRECT_CPP_GEMMA4_POST_ATTN_FFN` — opt-in direct C++ route for
     /// Gemma4 dense post-attention residual + FFN + layer-scalar orchestration.
