@@ -1973,6 +1973,59 @@ fn moe_router_fused_metal_apply(
     Some((indices, weights))
 }
 
+/// Env-gated MoE routing trace capture (`AX_MLX_MOE_ROUTER_TRACE=<path>`):
+/// appends one line per router call — `<seq>;<i0>,<i1>,...` over all tokens'
+/// top-k expert indices in call order — for the ADR-037 P2 expert-overlap
+/// amortization probe (`moe_gather_amortization_probe`). Capture-only
+/// diagnostic: it forces an eval of the indices on every router call, so it
+/// must never be enabled in serving. Unset (the default) costs one cached
+/// `OnceLock` read per call.
+fn maybe_trace_moe_router(indices: &MlxArray, seq: usize) {
+    use std::io::Write;
+    use std::sync::{Mutex, OnceLock};
+    static SINK: OnceLock<Option<Mutex<std::fs::File>>> = OnceLock::new();
+    let Some(sink) = SINK.get_or_init(|| {
+        let path = std::env::var("AX_MLX_MOE_ROUTER_TRACE").ok()?;
+        let path = path.trim();
+        if path.is_empty() {
+            return None;
+        }
+        match std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+        {
+            Ok(file) => Some(Mutex::new(file)),
+            Err(error) => {
+                eprintln!("AX_MLX_MOE_ROUTER_TRACE: cannot open {path}: {error}");
+                None
+            }
+        }
+    }) else {
+        return;
+    };
+    let indices = if indices.dtype() == MlxDtype::Uint32 {
+        indices.clone()
+    } else {
+        astype(indices, MlxDtype::Uint32, None)
+    };
+    mlx_sys::eval(&[&indices]);
+    let values = indices.data_u32();
+    let mut line = String::with_capacity(values.len() * 4 + 8);
+    line.push_str(&seq.to_string());
+    line.push(';');
+    for (i, value) in values.iter().enumerate() {
+        if i > 0 {
+            line.push(',');
+        }
+        line.push_str(&value.to_string());
+    }
+    line.push('\n');
+    if let Ok(mut file) = sink.lock() {
+        let _ = file.write_all(line.as_bytes());
+    }
+}
+
 /// Qwen3 MoE router: proj → softmax → pick top-k by weight value (no rms_norm).
 ///
 /// By default (kill-switch via `AX_MLX_QWEN3_MOE_NARROW_SOFTMAX=0`), uses the
@@ -1981,6 +2034,19 @@ fn moe_router_fused_metal_apply(
 /// softmax only on the selected top-k subset. This eliminates the full-width
 /// `softmax_precise` over all 128–256 experts.
 pub(crate) fn moe_router_qwen3(
+    cfg: &ModelConfig,
+    w: &LayerWeights,
+    normed: &MlxArray,
+) -> (MlxArray, MlxArray) {
+    let (indices, weights) = moe_router_qwen3_impl(cfg, w, normed);
+    maybe_trace_moe_router(
+        &indices,
+        normed.shape().get(1).copied().unwrap_or(1) as usize,
+    );
+    (indices, weights)
+}
+
+fn moe_router_qwen3_impl(
     cfg: &ModelConfig,
     w: &LayerWeights,
     normed: &MlxArray,

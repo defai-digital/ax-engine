@@ -55,6 +55,31 @@ Three facts shape the boundary:
   prerequisite: shared serving mechanics land on the simple architecture
   first.
 
+## P2 result (2026-07-05): GO — the 35B passes the MoE amortization gate
+
+Measured with `moe_gather_amortization_probe` on real 6-bit 35B expert
+weights, replaying per-request routing traces captured via
+`AX_MLX_MOE_ROUTER_TRACE` (8 independent generations, 8 prompt domains;
+evidence in `.internal/analysis/batched-decode/2026-07-05-p2-gather-qmm-
+overlap/`):
+
+| B | agg tok/s | amort | distinct experts/layer | eff GB/s |
+|---|-----------|-------|------------------------|----------|
+| 1 | 406.5 | 1.00 | 8.00 | 332.5 |
+| 2 | 551.7 | 1.36 | 15.35 | 433.1 |
+| 4 | 640.3 | **1.58** | 28.16 | 460.9 |
+| 8 | 706.5 | 1.74 | 51.13 | 461.6 |
+
+Expert byte-sharing across requests is negligible (B4 touches 28.2 of a
+max 32 distinct experts); the amortization instead comes from memory-system
+utilization — the B=1 gather runs at 332 GB/s because top-8 512-dim expert
+matmuls are tiny, and batching saturates ~461 GB/s by B4. 1.58×@B4 clears
+the ~1.3× kill threshold, so the 35B **stays in scope**; Amdahl-combining
+with Phase 0 dense amortization sketches ~2.0× full-step aggregate at B4,
+keeping the projected MTP-adjusted crossover at B≈3-4 as this ADR assumed.
+The eligibility predicate stays unchanged — P1 (batched gated-delta oracle)
+and the dense-2c prerequisite still gate any integration work.
+
 ## Consequences
 
 - Concurrent Qwen 3.6 serving keeps paying N× weight reads for now; this is a
