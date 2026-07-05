@@ -275,12 +275,112 @@ pub fn sample_categorical_with_topk_gpu(
         return None;
     }
 
+    let (top_indices, top_probs) =
+        gpu_top_candidates(logits, sampling.temperature, sampling.top_k as i32)?;
+    sample_indexed_full_probability_categorical(
+        top_indices.data_u32(),
+        top_probs.data_f32(),
+        sampling,
+        rng,
+    )
+}
+
+/// Number of GPU-selected candidates for top-p-only sampling. At sane
+/// temperatures the top-p nucleus of a peaked LLM distribution is far smaller
+/// than this; the mass guard below falls back to the exact full-vocab CPU
+/// path whenever it is not.
+const GPU_TOPP_CANDIDATE_COUNT: i32 = 512;
+
+/// GPU-assisted top-p-only sampling (`top_k == 0`, `top_p < 1.0`).
+///
+/// Selects the `GPU_TOPP_CANDIDATE_COUNT` highest-probability tokens on GPU
+/// and transfers only that candidate set, instead of reading back the full
+/// vocab (1 MB of f32 at Gemma's 262k vocab) and scanning it on CPU per
+/// token. Distribution-exact w.r.t. the CPU path: probabilities come from the
+/// full-vocab softmax and the nucleus cutoff is the absolute `top_p` mass, so
+/// as long as the candidate set covers the nucleus (guarded below) the kept
+/// prefix is identical to the CPU path's. Returns `None` (caller falls back
+/// to the exact CPU path) when the nucleus may extend beyond the candidates.
+pub fn sample_categorical_with_topp_gpu(
+    logits: &MlxArray,
+    sampling: MlxSamplingParams,
+    repetition_tokens: &[u32],
+    rng: &mut Xorshift64,
+) -> Option<u32> {
+    if !fastpath::decode_sampling_gpu_topk_enabled()
+        || sampling.temperature <= 0.0
+        || sampling.top_k != 0
+        || !(sampling.top_p > 0.0 && sampling.top_p < 1.0)
+        || (sampling.uses_repetition_penalty() && !repetition_tokens.is_empty())
+    {
+        return None;
+    }
+
+    let (top_indices, top_probs) =
+        gpu_top_candidates(logits, sampling.temperature, GPU_TOPP_CANDIDATE_COUNT)?;
+    let indices = top_indices.data_u32();
+    let probs = top_probs.data_f32();
+
+    // Sort candidates by descending probability, keep the smallest prefix
+    // whose *absolute* cumulative mass reaches top_p (probs are full-vocab
+    // normalized), then sample within it proportionally — the same nucleus
+    // the CPU path selects over the full vocab.
+    let mut candidates: Vec<(usize, f32)> = probs
+        .iter()
+        .zip(indices.iter())
+        .map(|(&prob, &idx)| (idx as usize, if prob.is_finite() { prob } else { 0.0 }))
+        .collect();
+    candidates.sort_by(|(left_idx, left_prob), (right_idx, right_prob)| {
+        right_prob
+            .partial_cmp(left_prob)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| left_idx.cmp(right_idx))
+    });
+    let mut cumulative = 0.0f32;
+    let mut keep = 0usize;
+    for (_, prob) in candidates.iter() {
+        cumulative += *prob;
+        keep += 1;
+        if cumulative >= sampling.top_p {
+            break;
+        }
+    }
+    if cumulative < sampling.top_p || !cumulative.is_finite() {
+        // Nucleus extends beyond the candidate set (flat distribution / very
+        // high temperature): let the caller take the exact full-vocab path.
+        return None;
+    }
+    candidates.truncate(keep.max(1));
+
+    let filtered_sum: f32 = candidates.iter().map(|(_, p)| *p).sum();
+    if filtered_sum <= 0.0 || !filtered_sum.is_finite() {
+        return None;
+    }
+    let threshold = rng.next_f32() * filtered_sum;
+    let mut cumsum = 0.0f32;
+    for (idx, prob) in candidates.iter() {
+        cumsum += *prob;
+        if cumsum >= threshold {
+            return Some(*idx as u32);
+        }
+    }
+    candidates.first().map(|(idx, _)| *idx as u32)
+}
+
+/// Select the `count` highest-probability tokens on GPU and return their
+/// `(indices, full-vocab-softmax probabilities)`, both evaluated. Shared by
+/// the GPU top-k and top-p samplers.
+fn gpu_top_candidates(
+    logits: &MlxArray,
+    temperature: f32,
+    count: i32,
+) -> Option<(MlxArray, MlxArray)> {
     let shape = logits.shape();
     let vocab = shape.last().copied()?;
     if vocab <= 0 {
         return None;
     }
-    let k = (sampling.top_k as i32).min(vocab);
+    let k = count.min(vocab);
     if k <= 0 {
         return None;
     }
@@ -290,20 +390,14 @@ pub fn sample_categorical_with_topk_gpu(
     } else {
         logits.clone()
     };
-    let inv_temp = MlxArray::from_f32(1.0 / sampling.temperature);
+    let inv_temp = MlxArray::from_f32(1.0 / temperature);
     let scaled = multiply(&logits_2d, &inv_temp, None);
     let part_indices = argpartition_axis(&scaled, -k, -1, None);
     let top_indices = slice(&part_indices, &[0, vocab - k], &[1, vocab], &[1, 1], None);
     let top_probs = take_along_axis(&softmax(&scaled, -1, None), &top_indices, -1, None);
     let top_indices = astype(&top_indices, MlxDtype::Uint32, None);
     eval(&[&top_indices, &top_probs]);
-
-    sample_indexed_full_probability_categorical(
-        top_indices.data_u32(),
-        top_probs.data_f32(),
-        sampling,
-        rng,
-    )
+    Some((top_indices, top_probs))
 }
 
 /// Sample from a pre-filtered set of `(token_id, logit)` candidates.
@@ -855,6 +949,71 @@ mod tests {
             let tok = sample_categorical(&logits, sampling, &[], &mut rng);
             assert!(tok < 3, "top_p=0.5 should exclude token {tok}");
         }
+    }
+
+    #[test]
+    fn topp_gpu_samples_within_cpu_nucleus() {
+        // Peaked distribution over a 1000-token vocab: tokens 10..14 carry
+        // nearly all mass; top_p=0.9 nucleus is a strict subset of them.
+        let mut logits = vec![-20.0_f32; 1000];
+        for (rank, idx) in [10usize, 11, 12, 13, 14].iter().enumerate() {
+            logits[*idx] = 8.0 - rank as f32;
+        }
+        let arr = MlxArray::from_f32_slice(&logits);
+        let sampling = MlxSamplingParams::new(1.0, 0.9, 0);
+        let mut rng = Xorshift64::new(3);
+        for _ in 0..100 {
+            let tok = sample_categorical_with_topp_gpu(&arr, sampling, &[], &mut rng)
+                .expect("peaked distribution must take the GPU top-p path");
+            assert!(
+                (10..=14).contains(&(tok as usize)),
+                "top_p=0.9 sampled outside the nucleus: {tok}"
+            );
+        }
+    }
+
+    #[test]
+    fn topp_gpu_falls_back_when_nucleus_exceeds_candidates() {
+        // Uniform distribution over 2048 tokens: the top_p=0.99 nucleus
+        // (~2028 tokens) cannot fit in the 512-candidate set, so the GPU
+        // path must decline rather than sample from a truncated nucleus.
+        let logits = vec![1.0_f32; 2048];
+        let arr = MlxArray::from_f32_slice(&logits);
+        let sampling = MlxSamplingParams::new(1.0, 0.99, 0);
+        let mut rng = Xorshift64::new(5);
+        assert!(sample_categorical_with_topp_gpu(&arr, sampling, &[], &mut rng).is_none());
+    }
+
+    #[test]
+    fn topp_gpu_declines_ineligible_configs() {
+        let logits = vec![1.0_f32; 8];
+        let arr = MlxArray::from_f32_slice(&logits);
+        let mut rng = Xorshift64::new(9);
+        // top_k set → the top-k sampler owns this config.
+        assert!(
+            sample_categorical_with_topp_gpu(
+                &arr,
+                MlxSamplingParams::new(1.0, 0.9, 40),
+                &[],
+                &mut rng
+            )
+            .is_none()
+        );
+        // top_p disabled → plain categorical path owns it.
+        assert!(
+            sample_categorical_with_topp_gpu(
+                &arr,
+                MlxSamplingParams::new(1.0, 1.0, 0),
+                &[],
+                &mut rng
+            )
+            .is_none()
+        );
+        // greedy → argmax path owns it.
+        assert!(
+            sample_categorical_with_topp_gpu(&arr, MlxSamplingParams::greedy(), &[], &mut rng)
+                .is_none()
+        );
     }
 
     #[test]

@@ -4,7 +4,7 @@ use mlx_sys::{MlxArray, MlxDtype, argmax, eval, multiply, reshape, slice, softma
 
 use crate::sampling::{
     MlxSamplingParams, MlxSamplingRequest, Xorshift64, sample_categorical_gpu,
-    sample_categorical_into, sample_categorical_with_topk_gpu,
+    sample_categorical_into, sample_categorical_with_topk_gpu, sample_categorical_with_topp_gpu,
 };
 
 use crate::kv_cache::MlxKVCache;
@@ -1410,7 +1410,9 @@ pub(crate) fn sample_logit_row(
         return argmax_tok;
     }
     if logits_all.shape().len() == 1 {
-        if let Some(tok) = sample_categorical_with_topk_gpu(logits_all, sampling, &[], rng) {
+        if let Some(tok) = sample_categorical_with_topk_gpu(logits_all, sampling, &[], rng)
+            .or_else(|| sample_categorical_with_topp_gpu(logits_all, sampling, &[], rng))
+        {
             return tok;
         }
         eval(&[logits_all]);
@@ -1426,7 +1428,9 @@ pub(crate) fn sample_logit_row(
     }
     let p = pos as i32;
     let row = slice(logits_all, &[p, 0], &[p + 1, vocab], &[1, 1], None);
-    if let Some(tok) = sample_categorical_with_topk_gpu(&row, sampling, &[], rng) {
+    if let Some(tok) = sample_categorical_with_topk_gpu(&row, sampling, &[], rng)
+        .or_else(|| sample_categorical_with_topp_gpu(&row, sampling, &[], rng))
+    {
         return tok;
     }
     eval(&[&row]);
@@ -1507,6 +1511,13 @@ pub fn single_decode_with_turboquant_context(
         // The forward pass already updated the KV cache (it's in logits' graph);
         // sample_categorical_gpu evals the token internally.
         sample_categorical_gpu(&logits, sampling.temperature)
+    } else if let Some(tok) =
+        sample_categorical_with_topk_gpu(&logits, sampling, repetition_tokens, rng)
+            .or_else(|| sample_categorical_with_topp_gpu(&logits, sampling, repetition_tokens, rng))
+    {
+        // GPU-selected candidate set: transfers a few hundred (index, prob)
+        // pairs instead of the full vocab (1 MB of f32 at 262k) per token.
+        tok
     } else if sampling.temperature > 0.0 || sampling.uses_repetition_penalty() {
         let kv_refs = cache.collect_eval_refs();
         let mut targets: Vec<&MlxArray> = Vec::with_capacity(1 + kv_refs.len());

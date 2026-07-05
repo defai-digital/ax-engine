@@ -64,17 +64,6 @@ fn try_apply_with_abort_safety(
     result.filter(|_| mlx_sys::take_last_error().is_none())
 }
 
-/// Per-layer decode closure cache.
-///
-/// Maps `(layer_index, thread_id)` to a compiled closure that performs
-/// a single transformer layer's decode step including KV-cache update.
-/// Value is `Option<MlxClosure>`: `Some` is a working compiled closure reused
-/// across decode steps; `None` records a layer whose compiled closure failed
-/// to compile or apply, so we fall back to the imperative path permanently
-/// instead of retrying on every step.
-type LayerDecodeCache = OnceLock<Mutex<HashMap<(usize, ThreadId), Option<MlxClosure>>>>;
-static LAYER_DECODE_CACHE: LayerDecodeCache = OnceLock::new();
-
 /// Per-layer MoE decode closure cache.
 ///
 /// Maps `(layer_index, thread_id)` to a compiled closure that performs
@@ -104,75 +93,6 @@ static LAYER_DENSE_FFN_DECODE_CACHE: OnceLock<Mutex<HashMap<(usize, ThreadId), M
 static LAYER_GEMMA4_DUAL_PATH_CACHE: OnceLock<
     Mutex<HashMap<(usize, ThreadId), Option<MlxClosure>>>,
 > = OnceLock::new();
-
-/// Apply a whole-layer decode closure, compiling it on first use.
-///
-/// `inputs` is the full positional input vector the compiled function depends
-/// on. By convention `inputs[0]` is the post-norm hidden state
-/// `[1, 1, hidden_dim]`, `inputs[1]` is the cached key
-/// `[1, n_kv_heads, seq_len, head_dim]`, `inputs[2]` is the cached value
-/// (same shape), and the remaining entries are weight tensors passed as
-/// explicit inputs. Passing every dependency explicitly is required: MLX-C
-/// rejects compiling a function that references arrays captured from the
-/// closure environment.
-///
-/// The compiled closure should return:
-/// - `outputs[0]`: attention output `[1, 1, hidden_dim]`
-/// - `outputs[1]`: updated full key `[1, n_kv_heads, seq_len+1, head_dim]`
-/// - `outputs[2]`: updated full value `[1, n_kv_heads, seq_len+1, head_dim]`
-///
-/// The compiled closure is cached per `(layer_index, thread_id)` and reused
-/// across decode steps. `shapeless=true` allows the closure to accept
-/// different sequence lengths without recompilation.
-///
-/// Gated by `AX_MLX_WHOLE_LAYER_DECODE_COMPILE` (default ON, kill-switch).
-/// Panics from the compiled closure are caught via `catch_unwind` and
-/// treated as a fallback to the imperative path. Failed layers are recorded
-/// as `None` so subsequent decode steps skip the compiled path permanently.
-pub fn apply_layer_decode(
-    layer_index: usize,
-    inputs: &[&MlxArray],
-    layer_fn: impl Fn(&MlxVectorArray) -> Vec<MlxArray> + Send + 'static,
-) -> Option<Vec<MlxArray>> {
-    if !crate::fastpath::whole_layer_decode_compile_enabled() {
-        return None;
-    }
-    let cache = LAYER_DECODE_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-    let tid = std::thread::current().id();
-
-    let guard = cache.lock().ok()?;
-    if let Some(entry) = guard.get(&(layer_index, tid)) {
-        return match entry {
-            Some(closure) => try_apply_with_abort_safety(closure, inputs),
-            None => None,
-        };
-    }
-    drop(guard);
-
-    let mut guard = cache.lock().ok()?;
-    if let std::collections::hash_map::Entry::Vacant(slot) = guard.entry((layer_index, tid)) {
-        let closure = MlxClosure::new_dyn(layer_fn);
-        if let Ok(compiled) = closure.compile(true) {
-            let result = try_apply_with_abort_safety(&compiled, inputs);
-            slot.insert(result.is_some().then_some(compiled));
-            return result;
-        }
-        slot.insert(None);
-    }
-
-    None
-}
-
-/// Clear the per-layer decode closure cache.
-///
-/// This is useful for testing or when switching models.
-pub fn clear_layer_decode_cache() {
-    if let Some(cache) = LAYER_DECODE_CACHE.get()
-        && let Ok(mut guard) = cache.lock()
-    {
-        guard.clear();
-    }
-}
 
 /// Apply a compiled MoE decode closure for a single layer.
 ///
@@ -369,11 +289,6 @@ pub fn clear_layer_gemma4_dual_path_cache() {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_clear_cache_does_not_panic() {
-        clear_layer_decode_cache();
-    }
 
     #[test]
     fn test_clear_moe_cache_does_not_panic() {

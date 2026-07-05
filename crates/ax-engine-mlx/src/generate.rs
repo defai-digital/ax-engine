@@ -17,7 +17,7 @@ use crate::model::{
 };
 use crate::sampling::{
     MlxSamplingParams, MlxSamplingRequest, Xorshift64, sample_categorical_gpu,
-    sample_categorical_into, sample_categorical_with_topk_gpu,
+    sample_categorical_into, sample_categorical_with_topk_gpu, sample_categorical_with_topp_gpu,
 };
 use crate::weights::ModelWeights;
 
@@ -284,7 +284,15 @@ pub fn chunked_prefill_with_sampling_buffers(
                     sampling,
                     sampling_request.repetition_tokens,
                     rng,
-                ) {
+                )
+                .or_else(|| {
+                    sample_categorical_with_topp_gpu(
+                        &logits,
+                        sampling,
+                        sampling_request.repetition_tokens,
+                        rng,
+                    )
+                }) {
                     tok
                 } else {
                     eval_with_kv_refs(&logits, cache);
@@ -358,7 +366,15 @@ pub fn chunked_prefill_gemma4_unified_with_sampling_buffers(
             sampling,
             sampling_request.repetition_tokens,
             rng,
-        ) {
+        )
+        .or_else(|| {
+            sample_categorical_with_topp_gpu(
+                &logits,
+                sampling,
+                sampling_request.repetition_tokens,
+                rng,
+            )
+        }) {
             tok
         } else {
             eval_with_kv_refs(&logits, cache);
@@ -530,7 +546,15 @@ pub fn chunked_prefill_with_mtp_history_and_sampling_buffers(
                     sampling,
                     sampling_request.repetition_tokens,
                     rng,
-                ) {
+                )
+                .or_else(|| {
+                    sample_categorical_with_topp_gpu(
+                        &last_logits,
+                        sampling,
+                        sampling_request.repetition_tokens,
+                        rng,
+                    )
+                }) {
                     tok
                 } else {
                     eval(&[&last_logits]);
@@ -889,7 +913,15 @@ pub fn decode_step_with_sampling_buffers_and_turboquant_context(
             sampling,
             sampling_request.repetition_tokens,
             rng,
-        ) {
+        )
+        .or_else(|| {
+            sample_categorical_with_topp_gpu(
+                &logits,
+                sampling,
+                sampling_request.repetition_tokens,
+                rng,
+            )
+        }) {
             tok
         } else {
             eval_with_kv_refs(&logits, cache);

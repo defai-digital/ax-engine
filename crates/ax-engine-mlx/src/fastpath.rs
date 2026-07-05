@@ -599,22 +599,6 @@ env_flag!(
     "AX_MLX_MOE_LAYER_COMPILE"
 );
 
-env_flag_default_on!(
-    /// `AX_MLX_WHOLE_LAYER_DECODE_COMPILE` — enable whole-layer compiled
-    /// decode closure for standard-attention layers.
-    ///
-    /// **Default: ON** (kill-switch via `AX_MLX_WHOLE_LAYER_DECODE_COMPILE=0`).
-    /// When eligible (seq==1, standard attention, no TurboQuant context, no
-    /// profiling, no linear attention, no per-layer input), the entire layer
-    /// forward (QKV + SDPA + FFN + residual) is wrapped in a compiled
-    /// closure, collapsing the full layer dispatch into one graph. The
-    /// compiled closure takes `(hidden, kv_key, kv_value)` and returns
-    /// updated arrays. Falls back to the imperative path on compilation
-    /// failure. Set to 0 to disable.
-    whole_layer_decode_compile_enabled,
-    "AX_MLX_WHOLE_LAYER_DECODE_COMPILE"
-);
-
 env_flag!(
     /// `AX_MLX_DENSE_FFN_COMPILE` — enable per-layer compiled dense FFN
     /// decode closure.
@@ -1262,21 +1246,6 @@ mod tests {
         ));
         assert!(probe_default_on(
             "AX_FASTPATH_TEST_DENSE_FFN_COMPILE_ENABLED",
-            "1"
-        ));
-    }
-
-    #[test]
-    fn whole_layer_decode_compile_uses_default_on_kill_switch_contract() {
-        assert!(parse_bool_env_default_on(
-            "AX_FASTPATH_TEST_WHOLE_LAYER_DECODE_COMPILE_UNSET"
-        ));
-        assert!(!probe_default_on(
-            "AX_FASTPATH_TEST_WHOLE_LAYER_DECODE_COMPILE_DISABLED",
-            "0"
-        ));
-        assert!(probe_default_on(
-            "AX_FASTPATH_TEST_WHOLE_LAYER_DECODE_COMPILE_ENABLED",
             "1"
         ));
     }

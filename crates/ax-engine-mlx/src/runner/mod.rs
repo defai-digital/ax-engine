@@ -321,6 +321,15 @@ impl MtpDraftSource {
         )
     }
 
+    /// Whether optimistic accept-all may skip verification for this draft.
+    /// Only the target model's own MTP head qualifies — its acceptance EWMA is
+    /// what the optimistic gate measures. Sidecar drafters (Gemma4 assistant;
+    /// GLM is excluded earlier via `mtp_optimistic_allowed`) and n-gram drafts
+    /// can propose plausible but target-mismatched tokens and must be verified.
+    fn optimistic_accept_eligible(self) -> bool {
+        matches!(self, MtpDraftSource::Mtp | MtpDraftSource::HybridMtp)
+    }
+
     fn utility_family(self) -> DraftSourceFamily {
         match self {
             MtpDraftSource::Gemma4Assistant => DraftSourceFamily::Assistant,
@@ -6988,15 +6997,18 @@ impl MlxRunner {
         // Optimistic accept-all is justified by the MTP head's measured (or
         // operator-asserted, via AX_MLX_MTP_OPTIMISTIC=1) draft accuracy; that
         // evidence says nothing about n-gram-sourced drafts stacked into the
-        // window, so any ngram draft forces the full verify path for this step.
-        let all_drafts_model_sourced = state
+        // window, nor about sidecar drafters like the Gemma4 assistant (whose
+        // measured accuracy is 93-98%, i.e. wrong drafts exist and must be
+        // rejected — the same reason the GLM sidecar is excluded via
+        // mtp_optimistic_allowed). Any such draft forces the full verify path.
+        let all_drafts_optimistic_eligible = state
             .mtp_pending_draft_sources
             .iter()
-            .all(|source| source.is_model_draft());
+            .all(|source| source.optimistic_accept_eligible());
         let optimistic = optimistic_allowed
             && (self.mtp_optimistic || auto_optimistic)
             && !pending.is_empty()
-            && all_drafts_model_sourced;
+            && all_drafts_optimistic_eligible;
         if auto_optimistic && !self.mtp_optimistic {
             state.mtp_telemetry.auto_optimistic_steps =
                 state.mtp_telemetry.auto_optimistic_steps.saturating_add(1);
