@@ -8291,6 +8291,31 @@ impl MlxRunner {
             NgramRequestDisableReason::None
         };
 
+        // Refine the rotating-sliding-KV decision now that the per-request
+        // n-gram gate is known. The session-level flag (set before prefill)
+        // covers direct sessions; a request inside an ngram-ON session may
+        // additionally rotate when nothing can roll its cache back for the
+        // request's whole lifetime: n-gram disabled under a sticky reason
+        // (LinearNoDraft can re-enable mid-request, but it only applies to
+        // linear-attention models, which have no sliding windows) and no MTP
+        // drafting (assistant/fused MTP verify uses `trim_to` rollback).
+        // Rotation bounds every sliding layer's backing store to the window —
+        // the first rotating decode append replaces the O(context) prefill
+        // buffer with a window-sized ring — which is the dominant KV memory
+        // for long-prompt/short-answer requests. Prefill appends are always
+        // multi-token and never rotate, so latching here (before the first
+        // decode append) is race-free, and the predicate is deterministic per
+        // request, so chunked-prefill re-runs of this init are idempotent.
+        state.cache.set_rotating_sliding_decode(
+            request_rotating_sliding_eligible(
+                self.rotating_sliding_decode,
+                crate::fastpath::rotating_sliding_decode_enabled(),
+                state.ngram_acceleration_disabled_for_request,
+                state.ngram_request_disable_reason,
+                has_mtp,
+            ) && is_greedy,
+        );
+
         let kv_compression_shadow_sync_wall_us =
             self.sync_turboquant_shadow_storage_if_needed(state, true, layer_eligible);
 
@@ -9732,6 +9757,32 @@ fn linear_ngram_initial_prompt_should_disable_request(
 
 fn ngram_request_disabled_fallback_should_feed_output(reason: NgramRequestDisableReason) -> bool {
     matches!(reason, NgramRequestDisableReason::LinearNoDraft)
+}
+
+/// Whether a request may use a rotating (window-bounded) backing store for
+/// sliding-window KV layers. Rotation is irreversible for a request —
+/// `trim_to` refuses any real trim once a layer has rotated — so it is only
+/// sound when no speculative source can roll the cache back for the request's
+/// entire lifetime: either the whole session is on the rollback-free direct
+/// policy, or this request has n-gram acceleration disabled under a sticky
+/// reason and the model has no MTP drafting. `LinearNoDraft` is excluded
+/// because `maybe_reenable_linear_ngram_from_fallback_output` can re-enable
+/// n-gram mid-request for that reason (it only arises on linear-attention
+/// models, which have no sliding windows to rotate).
+fn request_rotating_sliding_eligible(
+    session_rotating: bool,
+    rotating_flag_enabled: bool,
+    request_ngram_disabled: bool,
+    disable_reason: NgramRequestDisableReason,
+    has_mtp: bool,
+) -> bool {
+    if session_rotating {
+        return true;
+    }
+    rotating_flag_enabled
+        && !has_mtp
+        && request_ngram_disabled
+        && !matches!(disable_reason, NgramRequestDisableReason::LinearNoDraft)
 }
 
 fn ngram_request_disabled_direct_fast_path(
@@ -14680,6 +14731,25 @@ mod tests {
         assert!(!ngram_request_disabled_fallback_should_feed_output(
             NgramRequestDisableReason::ShortOutputBudget
         ));
+    }
+
+    #[test]
+    fn request_rotating_sliding_eligibility_covers_rollback_sources() {
+        use NgramRequestDisableReason as R;
+        let eligible = request_rotating_sliding_eligible;
+        // Session-level direct policy always rotates (existing behavior).
+        assert!(eligible(true, true, false, R::None, true));
+        // ngram-ON session: sticky per-request disable without MTP rotates.
+        assert!(eligible(false, true, true, R::ShortOutputBudget, false));
+        assert!(eligible(false, true, true, R::LinearInitialNoDraft, false));
+        // LinearNoDraft can re-enable n-gram mid-request: never rotate on it.
+        assert!(!eligible(false, true, true, R::LinearNoDraft, false));
+        // MTP verify uses trim_to rollback: never rotate with MTP present.
+        assert!(!eligible(false, true, true, R::ShortOutputBudget, true));
+        // n-gram active for the request: rollbacks possible.
+        assert!(!eligible(false, true, false, R::None, false));
+        // Kill-switch off: only the session-level path may rotate.
+        assert!(!eligible(false, false, true, R::ShortOutputBudget, false));
     }
 
     #[test]
