@@ -344,7 +344,7 @@ published to make comparison with other MTP engines easier because many peer
 benchmarks use 4-bit models. Historical MTP+n-gram artifacts remain useful for
 debugging regressions, but they are not current README/PERFORMANCE MTP evidence.
 
-#### AX Engine 6-bit MTP package acceleration (2026-07-01)
+#### AX Engine 6-bit MTP package acceleration (2026-07-05)
 
 This refresh is an AX Engine-only benchmark of the practical 6-bit
 `download-mtp` lane. "AX Engine-only" describes the measurement scope, not an
@@ -354,7 +354,9 @@ accelerates each repo-owned 6-bit package against the same package with MTP
 disabled; it is not a cross-engine leaderboard and should not be mixed with the
 Qwen peer comparison below. Every row uses the `flappy` suite, sampled decode
 (`temperature=0.6`, `top_p=0.95`, `top_k=20`), 1000 generated tokens, 5
-measured repetitions, 1 warmup, 15 s cooldown, and a clean `d4c59ffc` build.
+measured repetitions, 1 warmup, and 15 s cooldown. The Gemma 4 12B row was
+rerun on a clean `6b813b35` build; the other rows are retained from the
+2026-07-01 clean `d4c59ffc` rerun.
 
 <img src="docs/assets/perf-mtp-6bit-ax-acceleration.svg" alt="AX Engine 6-bit MTP package acceleration chart comparing direct decode and MTP decode for Qwen3.6, Gemma 4, and GLM-4.7 Flash">
 
@@ -362,14 +364,16 @@ measured repetitions, 1 warmup, 15 s cooldown, and a clean `d4c59ffc` build.
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | `qwen3.6-27b-6bit` | 18.6 tok/s | 43.6 tok/s | 2.34x | 766.6 tok/s | 420 ms | 100.0% |
 | `qwen3.6-35b-a3b` | 41.3 tok/s | 142.7 tok/s | 3.45x | 1,818.4 tok/s | 178 ms | 100.0% |
-| `gemma-4-12b` | 27.9 tok/s | 79.3 tok/s | 2.84x | 1,827.2 tok/s | 189 ms | 100.0% |
+| `gemma-4-12b` | 37.8 tok/s | 75.1 tok/s | 1.99x | 1,780.3 tok/s | 195 ms | 100.0% |
 | `gemma-4-26b` | 46.2 tok/s | 120.0 tok/s | 2.60x | 2,411.1 tok/s | 144 ms | 100.0% |
 | `gemma-4-31b` | 15.2 tok/s | 28.3 tok/s | 1.87x | 699.8 tok/s | 478 ms | 100.0% |
 | `glm-4.7-flash` | 51.2 tok/s | 97.5 tok/s | 1.90x | 1,694.3 tok/s | 163 ms | 100.0% |
 
 All rows are pure MTP verification rows with zero n-gram accepted/proposed/
-submitted/hit-step telemetry. Full artifacts:
-[`benchmarks/results/speculative/mtp-6bit/2026-07-01-six-model-flappy-ax-mtp-vs-direct-clean-r2/summary.json`](benchmarks/results/speculative/mtp-6bit/2026-07-01-six-model-flappy-ax-mtp-vs-direct-clean-r2/summary.json).
+submitted/hit-step telemetry. Publication summary:
+[`benchmarks/results/speculative/mtp-6bit/2026-07-05-six-model-flappy-ax-mtp-vs-direct-gemma12b-refresh/summary.json`](benchmarks/results/speculative/mtp-6bit/2026-07-05-six-model-flappy-ax-mtp-vs-direct-gemma12b-refresh/summary.json).
+Gemma 4 12B refresh artifacts:
+[`benchmarks/results/speculative/mtp-6bit/2026-07-05-gemma4-12b-6bit-flappy-ax-mtp-vs-direct-refresh/summary.json`](benchmarks/results/speculative/mtp-6bit/2026-07-05-gemma4-12b-6bit-flappy-ax-mtp-vs-direct-refresh/summary.json).
 
 #### Qwen3.6 MTP peer decode comparison (2026-07-01)
 
