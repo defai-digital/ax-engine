@@ -1928,6 +1928,17 @@ def collect_artifact_rows(
             )
             engine = row.get("engine")
             if engine not in AX_OWNED_MLX_ROW_ENGINE_KEYS:
+                if (
+                    isinstance(engine, str)
+                    and engine.startswith("ax_engine")
+                    and (
+                        phase0_claim_gate_enabled(artifact)
+                        or "run_stability_summary" in artifact
+                    )
+                ):
+                    raise ArtifactCheckError(
+                        f"{path} has unvalidated AX row engine: {engine}"
+                    )
                 continue
             if engine == "mlx_lm":
                 seen_reference_shapes.add(
