@@ -4350,9 +4350,11 @@ def summarize_ax_only_refresh_regression(
         "row_count": 0,
         "matched_count": 0,
         "missing_reference_count": 0,
+        "duplicate_reference_count": 0,
         "decode_regression_count": 0,
         "classification_counts": {},
         "missing_reference_rows": [],
+        "duplicate_reference_rows": [],
         "rows": [],
         "publication_candidate": True,
     }
@@ -4363,7 +4365,24 @@ def summarize_ax_only_refresh_regression(
                 continue
             if not str(row.get("engine", "")).startswith("ax_engine"):
                 continue
-            reference_rows[ax_row_key(row)] = row
+            key = ax_row_key(row)
+            if key in reference_rows:
+                summary["duplicate_reference_count"] += 1
+                counts = summary["classification_counts"]
+                counts["duplicate_reference"] = (
+                    int(counts.get("duplicate_reference", 0)) + 1
+                )
+                summary["duplicate_reference_rows"].append(
+                    {
+                        "engine": key[0],
+                        "prompt_tokens": key[1],
+                        "generation_tokens": key[2],
+                        "classification": "duplicate_reference",
+                    }
+                )
+                summary["publication_candidate"] = False
+                continue
+            reference_rows[key] = row
 
     for row in results:
         if not str(row.get("engine", "")).startswith("ax_engine"):

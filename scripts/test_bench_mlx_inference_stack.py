@@ -3106,6 +3106,36 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         )
         self.assertFalse(summary["publication_candidate"])
 
+    def test_ax_only_refresh_regression_blocks_duplicate_reference_rows(self) -> None:
+        row = {
+            "engine": "ax_engine_mlx",
+            "prompt_tokens": 128,
+            "generation_tokens": 128,
+            "decode_tok_s": {"median": 20.0},
+        }
+        summary = bench.summarize_ax_only_refresh_regression(
+            results=[row],
+            reference_doc={"results": [row, dict(row)]},
+        )
+
+        self.assertEqual(summary["duplicate_reference_count"], 1)
+        self.assertEqual(
+            summary["classification_counts"],
+            {"duplicate_reference": 1, "within_tolerance": 1},
+        )
+        self.assertEqual(
+            summary["duplicate_reference_rows"],
+            [
+                {
+                    "engine": "ax_engine_mlx",
+                    "prompt_tokens": 128,
+                    "generation_tokens": 128,
+                    "classification": "duplicate_reference",
+                }
+            ],
+        )
+        self.assertFalse(summary["publication_candidate"])
+
     def test_prefix_reuse_evidence_classifies_absent_and_partial_coverage(self) -> None:
         self.assertEqual(
             bench.summarize_prefix_reuse_evidence([])["physical_snapshot_coverage"],

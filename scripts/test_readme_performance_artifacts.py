@@ -1388,6 +1388,60 @@ class ReadmePerformanceArtifactTests(unittest.TestCase):
                     expected_metric_count=6,
                 )
 
+    def test_ax_only_refresh_regression_summary_rejects_duplicate_reference(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.write_fixture(root)
+            artifact_path = (
+                root / "benchmarks/results/mlx-inference/local/gemma-4-e2b-it-4bit.json"
+            )
+            artifact = json.loads(artifact_path.read_text())
+            reference = copy.deepcopy(artifact)
+            duplicate = next(
+                row for row in reference["results"] if row["engine"] == "ax_engine_mlx"
+            )
+            reference["results"].append(copy.deepcopy(duplicate))
+            reference_path = (
+                root
+                / "benchmarks/results/mlx-inference/reference/gemma-4-e2b-it-4bit.json"
+            )
+            reference_path.parent.mkdir(parents=True)
+            reference_path.write_text(json.dumps(reference, indent=2) + "\n")
+            artifact["ax_only_refresh"] = {
+                "schema_version": checker.AX_ONLY_REFRESH_SCHEMA_VERSION,
+                "method": "reuse_existing_reference_rows_and_rerun_ax_engine_rows",
+                "reference_results_source": str(reference_path.relative_to(root)),
+            }
+            regression_summary = checker.expected_ax_only_refresh_regression_summary(
+                artifact=artifact,
+                reference_artifact=reference,
+            )
+            self.assertEqual(
+                regression_summary["duplicate_reference_rows"],
+                [
+                    {
+                        "engine": "ax_engine_mlx",
+                        "prompt_tokens": 4,
+                        "generation_tokens": 2,
+                        "classification": "duplicate_reference",
+                    }
+                ],
+            )
+            artifact["ax_only_refresh"]["ax_reference_regression_summary"] = (
+                regression_summary
+            )
+            artifact_path.write_text(json.dumps(artifact, indent=2) + "\n")
+
+            with self.assertRaisesRegex(
+                checker.ArtifactCheckError,
+                "ax_reference_regression_summary is not a publication candidate",
+            ):
+                checker.check_readme_performance(
+                    repo_root=root,
+                    readme_path=root / "README.md",
+                    expected_metric_count=6,
+                )
+
     def test_phase0_artifact_rejects_unvalidated_ax_engine_row(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
