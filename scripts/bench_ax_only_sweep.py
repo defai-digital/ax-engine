@@ -192,6 +192,32 @@ def run_row(
     }
 
 
+def status_counts(rows: list[dict[str, Any]]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for row in rows:
+        status = str(row.get("status", "unknown"))
+        counts[status] = counts.get(status, 0) + 1
+    return dict(sorted(counts.items()))
+
+
+def failed_sweep_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [row for row in rows if row.get("status") != "ok"]
+
+
+def fail_if_sweep_incomplete(rows: list[dict[str, Any]]) -> None:
+    failed = failed_sweep_rows(rows)
+    if not failed:
+        return
+    counts = status_counts(rows)
+    counts_text = ", ".join(f"{status}={count}" for status, count in counts.items())
+    print(
+        "ERROR: AX-only sweep did not complete cleanly; "
+        f"{len(failed)} row(s) were not ok: {counts_text}",
+        file=sys.stderr,
+    )
+    sys.exit(2)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST)
@@ -273,6 +299,7 @@ def main() -> None:
         "cooldown": args.cooldown,
         "started_at": time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(started)),
         "elapsed_seconds": round(elapsed, 1),
+        "status_counts": status_counts(summary_rows),
         "rows": summary_rows,
     }
     (args.output_root / "sweep_results.json").write_text(json.dumps(sweep_doc, indent=2))
@@ -284,6 +311,7 @@ def main() -> None:
         md.append(f"| {r['slug']} | {r.get('status','?')} | {r.get('note') or r.get('error') or ''} |")
     (args.output_root / "sweep_summary.md").write_text("\n".join(md) + "\n")
     log(f"wrote {args.output_root / 'sweep_summary.md'}")
+    fail_if_sweep_incomplete(summary_rows)
 
 
 if __name__ == "__main__":

@@ -103,6 +103,78 @@ class BenchAxOnlySweepTests(unittest.TestCase):
             self.assertEqual(caught.exception.code, 1)
             self.assertFalse(out_dir.exists())
 
+    def test_fail_if_sweep_incomplete_reports_status_counts(self) -> None:
+        stderr = io.StringIO()
+        rows = [
+            {"slug": "a", "status": "ok"},
+            {"slug": "b", "status": "bench_failed", "exit_code": 2},
+            {"slug": "c", "status": "model_dir_missing"},
+        ]
+
+        self.assertEqual(
+            sweep.status_counts(rows),
+            {"bench_failed": 1, "model_dir_missing": 1, "ok": 1},
+        )
+        with patch.object(sys, "stderr", stderr):
+            with self.assertRaises(SystemExit) as caught:
+                sweep.fail_if_sweep_incomplete(rows)
+
+        self.assertEqual(caught.exception.code, 2)
+        self.assertIn("bench_failed=1", stderr.getvalue())
+        self.assertIn("model_dir_missing=1", stderr.getvalue())
+
+    def test_main_writes_summary_then_fails_on_failed_row(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest = root / "manifest.json"
+            manifest.write_text(
+                json.dumps(
+                    {
+                        "rows": [
+                            {
+                                "slug": "a",
+                                "readme_model": "Gemma",
+                                "readme_quant": "4-bit",
+                            }
+                        ]
+                    }
+                )
+                + "\n"
+            )
+            out_dir = root / "out"
+            argv = [
+                "bench_ax_only_sweep.py",
+                "--manifest",
+                str(manifest),
+                "--output-root",
+                str(out_dir),
+                "--reuse-reference-root",
+                str(root / "reference"),
+            ]
+
+            with (
+                patch.object(sys, "argv", argv),
+                patch.object(
+                    sweep,
+                    "resolve_model_args",
+                    return_value=(["--model-dir", str(root / "model")], None),
+                ),
+                patch.object(
+                    sweep,
+                    "run_row",
+                    return_value={"status": "bench_failed", "exit_code": 2},
+                ),
+                patch("sys.stderr", io.StringIO()),
+            ):
+                with self.assertRaises(SystemExit) as caught:
+                    sweep.main()
+
+            self.assertEqual(caught.exception.code, 2)
+            sweep_results = json.loads((out_dir / "sweep_results.json").read_text())
+            self.assertEqual(sweep_results["status_counts"], {"bench_failed": 1})
+            self.assertEqual(sweep_results["rows"][0]["status"], "bench_failed")
+            self.assertTrue((out_dir / "sweep_summary.md").is_file())
+
 
 if __name__ == "__main__":
     unittest.main()
