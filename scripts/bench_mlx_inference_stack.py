@@ -1715,6 +1715,50 @@ def summarize_values(values: list[float]) -> dict[str, float]:
     }
 
 
+def summarize_run_stability(
+    runs: list[dict[str, Any]],
+    metric: str,
+) -> dict[str, Any]:
+    values = [float(run[metric]) for run in runs if run.get(metric) is not None]
+    if len(values) < 2:
+        return {
+            "schema_version": "ax.benchmark_run_stability.v1",
+            "metric": metric,
+            "classification": "insufficient_repetitions",
+            "trial_count": len(values),
+        }
+
+    first = values[0]
+    last = values[-1]
+    minimum = min(values)
+    maximum = max(values)
+    median = statistics.median(values)
+    relative_spread_pct = (
+        ((maximum - minimum) / median * 100.0) if median > 0.0 else 0.0
+    )
+    last_vs_first_pct = ((last / first - 1.0) * 100.0) if first > 0.0 else 0.0
+    if last_vs_first_pct <= -5.0:
+        classification = "tail_regression"
+    elif relative_spread_pct >= 8.0:
+        classification = "high_variance"
+    else:
+        classification = "stable_enough"
+
+    return {
+        "schema_version": "ax.benchmark_run_stability.v1",
+        "metric": metric,
+        "classification": classification,
+        "trial_count": len(values),
+        "first": first,
+        "last": last,
+        "min": minimum,
+        "max": maximum,
+        "median": median,
+        "relative_spread_pct": relative_spread_pct,
+        "last_vs_first_pct": last_vs_first_pct,
+    }
+
+
 def format_axengine_interim_summary(runs: list[dict[str, Any]]) -> str:
     decode = summarize_values([float(run["decode_tok_s"]) for run in runs])
     output = summarize_values([float(run["output_tokens"]) for run in runs])
@@ -1729,11 +1773,19 @@ def format_axengine_interim_summary(runs: list[dict[str, Any]]) -> str:
         if prefill is not None
         else "cache_warm"
     )
+    stability = summarize_run_stability(runs, "decode_tok_s")
+    stability_label = ""
+    if stability["classification"] != "insufficient_repetitions":
+        stability_label = (
+            f" drift={stability['last_vs_first_pct']:+.1f}%"
+            f"/{stability['classification']}"
+        )
     return (
         f"median prefill={prefill_label} "
         f"decode={decode['median']:.1f} tok/s "
         f"range={decode['min']:.1f}-{decode['max']:.1f} "
         f"out_median={output['median']:.0f}"
+        f"{stability_label}"
     )
 
 
@@ -3559,6 +3611,7 @@ def bench_axengine(
         "client_wall_total_ms": summarize_runs(runs, "client_wall_total_ms"),
         "prefill_s": summarize_runs(runs, "prefill_s"),
         "decode_s": summarize_runs(runs, "decode_s"),
+        "run_stability": summarize_run_stability(runs, "decode_tok_s"),
         "ngram_acceleration_telemetry": ngram_summary,
         "ngram_accept_at_depth": summarize_ngram_accept_at_depth(ngram_summary),
         # Sampler config (PRD §7.1 release-claim artifact requirement).

@@ -488,6 +488,52 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         self.assertIn("range=20.0-20.0", output)
         self.assertIn("cooldown 5s", output)
 
+    def test_bench_axengine_records_tail_regression_stability(self) -> None:
+        runs = [
+            {
+                "prefill_s": 0.3,
+                "decode_s": 0.1,
+                "ttft_ms": 300.0,
+                "prefill_tok_s": 10.0,
+                "decode_tok_s": 20.0,
+                "output_tokens": 3.0,
+            },
+            {
+                "prefill_s": 0.3,
+                "decode_s": 0.1,
+                "ttft_ms": 300.0,
+                "prefill_tok_s": 10.0,
+                "decode_tok_s": 17.0,
+                "output_tokens": 3.0,
+            },
+        ]
+        stderr = io.StringIO()
+        with (
+            patch.object(bench, "axengine_one_run", side_effect=runs),
+            patch.object(sys, "stderr", stderr),
+        ):
+            row = bench.bench_axengine(
+                19091,
+                [1, 2, 3],
+                3,
+                2,
+                0,
+                0.0,
+                model_metadata={},
+                direct_mode=True,
+            )
+
+        self.assertEqual(
+            row["run_stability"]["schema_version"],
+            "ax.benchmark_run_stability.v1",
+        )
+        self.assertEqual(row["run_stability"]["metric"], "decode_tok_s")
+        self.assertEqual(row["run_stability"]["classification"], "tail_regression")
+        self.assertEqual(row["run_stability"]["trial_count"], 2)
+        self.assertEqual(row["run_stability"]["first"], 20.0)
+        self.assertEqual(row["run_stability"]["last"], 17.0)
+        self.assertAlmostEqual(row["run_stability"]["last_vs_first_pct"], -15.0)
+
     def test_ax_prefill_work_contract_labels_long_greedy_cache_only_boundary(
         self,
     ) -> None:
