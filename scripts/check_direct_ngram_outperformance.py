@@ -280,6 +280,8 @@ def check_sweep_results(artifact_dir: Path) -> list[str]:
         raise GateError(f"{sweep_path} has no rows list")
     failures: list[str] = []
     status_counts: dict[str, int] = {}
+    if not rows:
+        failures.append("sweep_results.json has empty rows list")
     for index, row in enumerate(rows):
         if not isinstance(row, dict):
             failures.append(f"row[{index}]: malformed_non_object")
