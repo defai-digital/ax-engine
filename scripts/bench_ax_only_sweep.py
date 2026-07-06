@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -39,6 +40,55 @@ class SweepInterrupted(RuntimeError):
 
 def log(msg: str) -> None:
     print(f"[ax-sweep] {msg}", flush=True)
+
+
+def _command_output_lines(cmd: list[str]) -> list[str]:
+    try:
+        output = subprocess.check_output(
+            cmd,
+            text=True,
+            stderr=subprocess.DEVNULL,
+        )
+    except Exception:
+        return []
+    return [line.strip() for line in output.splitlines() if line.strip()]
+
+
+def collect_performance_condition_metadata() -> dict[str, Any]:
+    metadata: dict[str, Any] = {}
+    try:
+        load_1m, load_5m, load_15m = os.getloadavg()
+        metadata["load_average"] = {
+            "one_minute": round(load_1m, 3),
+            "five_minutes": round(load_5m, 3),
+            "fifteen_minutes": round(load_15m, 3),
+        }
+    except Exception:
+        pass
+
+    battery_lines = _command_output_lines(["pmset", "-g", "batt"])
+    if battery_lines:
+        match = re.search(r"Now drawing from '([^']+)'", battery_lines[0])
+        metadata["power_source"] = match.group(1) if match else battery_lines[0]
+        if len(battery_lines) > 1:
+            metadata["battery_status"] = battery_lines[1]
+
+    thermal_lines = _command_output_lines(["pmset", "-g", "therm"])
+    if thermal_lines:
+        metadata["thermal_status_lines"] = thermal_lines[:10]
+        metadata["thermal_warning_recorded"] = not any(
+            "No thermal warning level has been recorded" in line
+            for line in thermal_lines
+        )
+        metadata["performance_warning_recorded"] = not any(
+            "No performance warning level has been recorded" in line
+            for line in thermal_lines
+        )
+        metadata["cpu_power_status_recorded"] = not any(
+            "No CPU power status has been recorded" in line for line in thermal_lines
+        )
+
+    return metadata
 
 
 def _slug_repo_id(repo_id: str) -> str:
@@ -265,8 +315,11 @@ def build_sweep_doc(
     summary_rows: list[dict[str, Any]],
     started: float,
     planned_row_count: int,
+    performance_conditions_start: dict[str, Any],
 ) -> dict[str, Any]:
     elapsed = time.time() - started
+    finished_at = time.strftime("%Y-%m-%dT%H:%M:%S%z")
+    performance_conditions_end = collect_performance_condition_metadata()
     failed_rows = failed_sweep_rows(summary_rows)
     return {
         "schema_version": "ax.ax_only_sweep.v1",
@@ -278,6 +331,16 @@ def build_sweep_doc(
         "cooldown": args.cooldown,
         "started_at": time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(started)),
         "elapsed_seconds": round(elapsed, 1),
+        "benchmark_window": {
+            "started_at": time.strftime(
+                "%Y-%m-%dT%H:%M:%S%z",
+                time.localtime(started),
+            ),
+            "finished_at": finished_at,
+            "elapsed_seconds": round(elapsed, 1),
+            "performance_conditions_start": performance_conditions_start,
+            "performance_conditions_end": performance_conditions_end,
+        },
         "planned_row_count": planned_row_count,
         "completed_row_count": len(
             [
@@ -317,12 +380,14 @@ def write_sweep_outputs(
     summary_rows: list[dict[str, Any]],
     started: float,
     planned_row_count: int,
+    performance_conditions_start: dict[str, Any],
 ) -> dict[str, Any]:
     sweep_doc = build_sweep_doc(
         args=args,
         summary_rows=summary_rows,
         started=started,
         planned_row_count=planned_row_count,
+        performance_conditions_start=performance_conditions_start,
     )
     args.output_root.mkdir(parents=True, exist_ok=True)
     (args.output_root / "logs").mkdir(parents=True, exist_ok=True)
@@ -415,6 +480,7 @@ def main() -> None:
 
     summary_rows: list[dict[str, Any]] = []
     started = time.time()
+    performance_conditions_start = collect_performance_condition_metadata()
     handlers = install_interrupt_handlers()
 
     try:
@@ -434,6 +500,7 @@ def main() -> None:
                 summary_rows=summary_rows,
                 started=started,
                 planned_row_count=len(rows),
+                performance_conditions_start=performance_conditions_start,
             )
             model_args, err = resolve_model_args(row, args.cache_dir)
             if model_args is None:
@@ -445,6 +512,7 @@ def main() -> None:
                     summary_rows=summary_rows,
                     started=started,
                     planned_row_count=len(rows),
+                    performance_conditions_start=performance_conditions_start,
                 )
                 continue
             result = run_row(
@@ -465,6 +533,7 @@ def main() -> None:
                 summary_rows=summary_rows,
                 started=started,
                 planned_row_count=len(rows),
+                performance_conditions_start=performance_conditions_start,
             )
     except SweepInterrupted as error:
         for record in reversed(summary_rows):
@@ -488,6 +557,7 @@ def main() -> None:
             summary_rows=summary_rows,
             started=started,
             planned_row_count=len(rows),
+            performance_conditions_start=performance_conditions_start,
         )
     finally:
         restore_interrupt_handlers(handlers)

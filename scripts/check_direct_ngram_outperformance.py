@@ -64,6 +64,69 @@ class GateError(RuntimeError):
     pass
 
 
+def _is_number(value: object) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def validate_performance_conditions_shape(
+    conditions: object,
+    *,
+    label: str,
+) -> list[str]:
+    failures: list[str] = []
+    if not isinstance(conditions, dict):
+        return [f"{label} must be an object"]
+    for key in (
+        "thermal_warning_recorded",
+        "performance_warning_recorded",
+        "cpu_power_status_recorded",
+    ):
+        if key in conditions and not isinstance(conditions[key], bool):
+            failures.append(f"{label}.{key} must be boolean")
+    lines = conditions.get("thermal_status_lines")
+    if lines is not None and (
+        not isinstance(lines, list) or not all(isinstance(line, str) for line in lines)
+    ):
+        failures.append(f"{label}.thermal_status_lines must be a string list")
+    load_average = conditions.get("load_average")
+    if load_average is not None:
+        if not isinstance(load_average, dict):
+            failures.append(f"{label}.load_average must be an object")
+        else:
+            for key in ("one_minute", "five_minutes", "fifteen_minutes"):
+                if not _is_number(load_average.get(key)):
+                    failures.append(f"{label}.load_average.{key} must be numeric")
+    return failures
+
+
+def validate_sweep_benchmark_window_shape(payload: dict[str, object]) -> list[str]:
+    window = payload.get("benchmark_window")
+    if window is None:
+        return []
+    if not isinstance(window, dict):
+        return ["benchmark_window must be an object"]
+    failures: list[str] = []
+    for key in ("started_at", "finished_at"):
+        value = window.get(key)
+        if not isinstance(value, str) or not value:
+            failures.append(f"benchmark_window.{key} must be a non-empty string")
+    elapsed = window.get("elapsed_seconds")
+    if not _is_number(elapsed):
+        failures.append("benchmark_window.elapsed_seconds must be numeric")
+    elif elapsed < 0:
+        failures.append("benchmark_window.elapsed_seconds must be non-negative")
+    for key in ("performance_conditions_start", "performance_conditions_end"):
+        conditions = window.get(key)
+        if conditions is not None:
+            failures.extend(
+                validate_performance_conditions_shape(
+                    conditions,
+                    label=f"benchmark_window.{key}",
+                )
+            )
+    return failures
+
+
 def ngram_outcome_tier(
     *,
     status: str,
@@ -312,6 +375,7 @@ def check_sweep_results(artifact_dir: Path) -> list[str]:
             failures.append(f"{label}: {reason}")
             row_failure_count += 1
     if isinstance(payload, dict):
+        failures.extend(validate_sweep_benchmark_window_shape(payload))
         schema_version = payload.get("schema_version")
         if (
             schema_version is not None

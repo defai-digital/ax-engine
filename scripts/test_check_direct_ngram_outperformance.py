@@ -705,6 +705,108 @@ class DirectNgramOutperformanceTests(unittest.TestCase):
                     require_sweep_ok=True,
                 )
 
+    def test_sweep_rejects_malformed_benchmark_window(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_artifact(
+                root,
+                rows=[
+                    row("mlx_lm", 100.0),
+                    row("ax_engine_mlx", 105.0),
+                    row(
+                        "ax_engine_mlx_ngram_accel",
+                        140.0,
+                        status=checker.NGRAM_EFFECTIVE_STATUS,
+                        route=checker.NGRAM_EFFECTIVE_ROUTE,
+                    ),
+                ],
+            )
+            (root / "sweep_results.json").write_text(
+                json.dumps(
+                    {
+                        "publication_candidate": True,
+                        "failed_row_count": 0,
+                        "planned_row_count": 1,
+                        "completed_row_count": 1,
+                        "status_counts": {"ok": 1},
+                        "benchmark_window": {
+                            "started_at": "2026-07-06T10:00:00-0400",
+                            "finished_at": "2026-07-06T10:01:00-0400",
+                            "elapsed_seconds": "60",
+                            "performance_conditions_start": {
+                                "load_average": {
+                                    "one_minute": 1.0,
+                                    "five_minutes": 1.5,
+                                    "fifteen_minutes": 2.0,
+                                }
+                            },
+                        },
+                        "rows": [{"slug": "ok-row", "status": "ok"}],
+                    }
+                )
+            )
+
+            with self.assertRaisesRegex(
+                checker.GateError, "benchmark_window.elapsed_seconds must be numeric"
+            ):
+                checker.check_artifact_dir(
+                    root,
+                    min_delta_pct=0.0,
+                    require_effective_ngram=True,
+                    require_sweep_ok=True,
+                )
+
+    def test_sweep_rejects_malformed_benchmark_window_conditions(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_artifact(
+                root,
+                rows=[
+                    row("mlx_lm", 100.0),
+                    row("ax_engine_mlx", 105.0),
+                    row(
+                        "ax_engine_mlx_ngram_accel",
+                        140.0,
+                        status=checker.NGRAM_EFFECTIVE_STATUS,
+                        route=checker.NGRAM_EFFECTIVE_ROUTE,
+                    ),
+                ],
+            )
+            (root / "sweep_results.json").write_text(
+                json.dumps(
+                    {
+                        "publication_candidate": True,
+                        "failed_row_count": 0,
+                        "planned_row_count": 1,
+                        "completed_row_count": 1,
+                        "status_counts": {"ok": 1},
+                        "benchmark_window": {
+                            "started_at": "2026-07-06T10:00:00-0400",
+                            "finished_at": "2026-07-06T10:01:00-0400",
+                            "elapsed_seconds": 60.0,
+                            "performance_conditions_end": {
+                                "load_average": {
+                                    "one_minute": "1",
+                                    "five_minutes": 1.5,
+                                    "fifteen_minutes": 2.0,
+                                }
+                            },
+                        },
+                        "rows": [{"slug": "ok-row", "status": "ok"}],
+                    }
+                )
+            )
+
+            with self.assertRaisesRegex(
+                checker.GateError, "load_average.one_minute must be numeric"
+            ):
+                checker.check_artifact_dir(
+                    root,
+                    min_delta_pct=0.0,
+                    require_effective_ngram=True,
+                    require_sweep_ok=True,
+                )
+
     def test_sweep_empty_rows_fails_completion_gate(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

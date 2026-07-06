@@ -179,6 +179,43 @@ class BenchAxOnlySweepTests(unittest.TestCase):
             self.assertEqual(proc.send_signal.call_count, 0)
             self.assertEqual(proc.kill.call_count, 0)
 
+    def test_collect_performance_condition_metadata_parses_pmset(self) -> None:
+        def fake_check_output(
+            cmd: list[str],
+            *,
+            text: bool,
+            stderr: int | None = None,
+        ) -> str:
+            del text, stderr
+            if cmd == ["pmset", "-g", "batt"]:
+                return (
+                    "Now drawing from 'AC Power'\n"
+                    " -InternalBattery-0\t80%; AC attached; not charging present: true\n"
+                )
+            if cmd == ["pmset", "-g", "therm"]:
+                return (
+                    "Note: No thermal warning level has been recorded\n"
+                    "Note: Performance warning level: 1\n"
+                    "Note: No CPU power status has been recorded\n"
+                )
+            raise AssertionError(cmd)
+
+        with (
+            patch.object(sweep.subprocess, "check_output", side_effect=fake_check_output),
+            patch.object(sweep.os, "getloadavg", return_value=(1.0, 2.0, 3.0)),
+        ):
+            metadata = sweep.collect_performance_condition_metadata()
+
+        self.assertEqual(
+            metadata["load_average"],
+            {"one_minute": 1.0, "five_minutes": 2.0, "fifteen_minutes": 3.0},
+        )
+        self.assertEqual(metadata["power_source"], "AC Power")
+        self.assertIn("80%", metadata["battery_status"])
+        self.assertFalse(metadata["thermal_warning_recorded"])
+        self.assertTrue(metadata["performance_warning_recorded"])
+        self.assertFalse(metadata["cpu_power_status_recorded"])
+
     def test_main_writes_summary_then_fails_on_failed_row(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -225,6 +262,11 @@ class BenchAxOnlySweepTests(unittest.TestCase):
                         "output_path": str(out_dir / "a.json"),
                     },
                 ),
+                patch.object(
+                    sweep,
+                    "collect_performance_condition_metadata",
+                    return_value={"load_average": {"one_minute": 1.0}},
+                ),
                 patch("sys.stderr", io.StringIO()),
             ):
                 with self.assertRaises(SystemExit) as caught:
@@ -236,6 +278,11 @@ class BenchAxOnlySweepTests(unittest.TestCase):
             self.assertEqual(sweep_results["failed_row_count"], 1)
             self.assertEqual(sweep_results["status_counts"], {"bench_failed": 1})
             self.assertEqual(sweep_results["rows"][0]["status"], "bench_failed")
+            self.assertIn("benchmark_window", sweep_results)
+            self.assertEqual(
+                sweep_results["benchmark_window"]["performance_conditions_start"],
+                {"load_average": {"one_minute": 1.0}},
+            )
             markdown = (out_dir / "sweep_summary.md").read_text()
             self.assertIn("publication_candidate: false", markdown)
             self.assertIn("failed_row_count: 1", markdown)
@@ -285,6 +332,11 @@ class BenchAxOnlySweepTests(unittest.TestCase):
                     "run_row",
                     side_effect=sweep.SweepInterrupted("received SIGTERM"),
                 ),
+                patch.object(
+                    sweep,
+                    "collect_performance_condition_metadata",
+                    return_value={"load_average": {"one_minute": 1.0}},
+                ),
                 patch("sys.stderr", io.StringIO()),
             ):
                 with self.assertRaises(SystemExit) as caught:
@@ -299,6 +351,7 @@ class BenchAxOnlySweepTests(unittest.TestCase):
             self.assertEqual(sweep_results["completed_row_count"], 0)
             self.assertEqual(sweep_results["rows"][0]["status"], "interrupted")
             self.assertIn("received SIGTERM", sweep_results["rows"][0]["note"])
+            self.assertIn("benchmark_window", sweep_results)
             markdown = (out_dir / "sweep_summary.md").read_text()
             self.assertIn("publication_candidate: false", markdown)
             self.assertIn("completed_row_count: 0/1", markdown)
