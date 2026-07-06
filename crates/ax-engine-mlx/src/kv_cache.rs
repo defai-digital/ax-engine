@@ -1974,10 +1974,21 @@ impl MlxKVCache {
             lkv.last_v_view = None;
         }
 
+        if new_tokens == 1 {
+            let write_pos = (write_start % capacity) as i32;
+            let start = [0i32, 0, write_pos, 0];
+            let stop = [1i32, lkv.n_kv_heads, write_pos + 1, lkv.head_dim];
+            let strides = [1i32, 1, 1, 1];
+            lkv.k = slice_update(&lkv.k, &new_k, &start, &stop, &strides, None);
+            lkv.v = slice_update(&lkv.v, &new_v, &start, &stop, &strides, None);
+            lkv.last_k_view = Some(lkv.k.clone());
+            lkv.last_v_view = Some(lkv.v.clone());
+            return (lkv.k.clone(), lkv.v.clone());
+        }
+
         // Write the new tokens at their `t % capacity` slots. A multi-token
         // append (bounded rings only; `new_tokens <= slack < capacity`) wraps
-        // at most once, so this loop issues one or two slice_updates; the
-        // single-token common case keeps today's exact one-node graph.
+        // at most once, so this loop issues one or two slice_updates.
         let mut src_start = 0usize;
         while src_start < new_tokens {
             let dst_start = (write_start + src_start) % capacity;
