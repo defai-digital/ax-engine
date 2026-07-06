@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import io
 import importlib.util
 import json
 import os
@@ -441,6 +442,51 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         self.assertEqual(row["ax_decode_row_identity"]["seed"], 44)
         self.assertEqual(row["trials"][0]["random_seed"], 44)
         self.assertEqual(row["trials"][0]["seed"], 44)
+
+    def test_bench_axengine_reports_interim_summary_before_cooldown(self) -> None:
+        runs = [
+            {
+                "prefill_s": 0.3,
+                "decode_s": 0.1,
+                "ttft_ms": 300.0,
+                "prefill_tok_s": 10.0,
+                "decode_tok_s": 20.0,
+                "output_tokens": 3.0,
+            },
+            {
+                "prefill_s": 0.2,
+                "decode_s": 0.1,
+                "ttft_ms": 200.0,
+                "prefill_tok_s": 15.0,
+                "decode_tok_s": 30.0,
+                "output_tokens": 3.0,
+            },
+        ]
+        stderr = io.StringIO()
+        with (
+            patch.object(bench, "axengine_one_run", side_effect=runs),
+            patch.object(bench.time, "sleep") as sleep,
+            patch.object(sys, "stderr", stderr),
+        ):
+            row = bench.bench_axengine(
+                19091,
+                [1, 2, 3],
+                3,
+                2,
+                0,
+                5.0,
+                model_metadata={},
+                direct_mode=True,
+            )
+
+        sleep.assert_called_once_with(5.0)
+        self.assertEqual(row["decode_tok_s"]["median"], 25.0)
+        output = stderr.getvalue()
+        self.assertIn("interim after 1/2:", output)
+        self.assertIn("median prefill=10.0 tok/s", output)
+        self.assertIn("decode=20.0 tok/s", output)
+        self.assertIn("range=20.0-20.0", output)
+        self.assertIn("cooldown 5s", output)
 
     def test_ax_prefill_work_contract_labels_long_greedy_cache_only_boundary(
         self,

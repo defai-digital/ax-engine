@@ -1715,6 +1715,28 @@ def summarize_values(values: list[float]) -> dict[str, float]:
     }
 
 
+def format_axengine_interim_summary(runs: list[dict[str, Any]]) -> str:
+    decode = summarize_values([float(run["decode_tok_s"]) for run in runs])
+    output = summarize_values([float(run["output_tokens"]) for run in runs])
+    prefill_values = [
+        float(run["prefill_tok_s"])
+        for run in runs
+        if run.get("prefill_tok_s") is not None
+    ]
+    prefill = summarize_values(prefill_values) if prefill_values else None
+    prefill_label = (
+        f"{prefill['median']:.1f} tok/s"
+        if prefill is not None
+        else "cache_warm"
+    )
+    return (
+        f"median prefill={prefill_label} "
+        f"decode={decode['median']:.1f} tok/s "
+        f"range={decode['min']:.1f}-{decode['max']:.1f} "
+        f"out_median={output['median']:.0f}"
+    )
+
+
 def attach_derived_ttft_ms(
     cell: dict[str, Any],
     *,
@@ -3447,6 +3469,12 @@ def bench_axengine(
             file=sys.stderr,
         )
         if cooldown > 0 and index < repetitions - 1:
+            print(
+                f"    interim after {index + 1}/{repetitions}: "
+                f"{format_axengine_interim_summary(runs)}; "
+                f"cooldown {cooldown:.0f}s",
+                file=sys.stderr,
+            )
             time.sleep(cooldown)
 
     ngram_summary = summarize_telemetry(runs)
