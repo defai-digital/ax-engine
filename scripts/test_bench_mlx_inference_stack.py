@@ -3092,6 +3092,18 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         self.assertEqual(summary["row_count"], 1)
         self.assertEqual(summary["matched_count"], 0)
         self.assertEqual(summary["missing_reference_count"], 1)
+        self.assertEqual(summary["classification_counts"], {"missing_reference": 1})
+        self.assertEqual(
+            summary["missing_reference_rows"],
+            [
+                {
+                    "engine": "ax_engine_mlx",
+                    "prompt_tokens": 128,
+                    "generation_tokens": 128,
+                    "classification": "missing_reference",
+                }
+            ],
+        )
         self.assertFalse(summary["publication_candidate"])
 
     def test_prefix_reuse_evidence_classifies_absent_and_partial_coverage(self) -> None:

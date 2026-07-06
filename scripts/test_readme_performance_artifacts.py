@@ -1280,11 +1280,12 @@ class ReadmePerformanceArtifactTests(unittest.TestCase):
                 "method": "reuse_existing_reference_rows_and_rerun_ax_engine_rows",
                 "reference_results_source": str(reference_path.relative_to(root)),
             }
+            regression_summary = checker.expected_ax_only_refresh_regression_summary(
+                artifact=artifact,
+                reference_artifact=reference,
+            )
             artifact["ax_only_refresh"]["ax_reference_regression_summary"] = (
-                checker.expected_ax_only_refresh_regression_summary(
-                    artifact=artifact,
-                    reference_artifact=reference,
-                )
+                regression_summary
             )
             artifact_path.write_text(json.dumps(artifact, indent=2) + "\n")
 
@@ -1320,11 +1321,29 @@ class ReadmePerformanceArtifactTests(unittest.TestCase):
                 "method": "reuse_existing_reference_rows_and_rerun_ax_engine_rows",
                 "reference_results_source": str(reference_path.relative_to(root)),
             }
+            regression_summary = checker.expected_ax_only_refresh_regression_summary(
+                artifact=artifact,
+                reference_artifact=reference,
+            )
+            self.assertEqual(
+                regression_summary["missing_reference_rows"],
+                [
+                    {
+                        "engine": "ax_engine_mlx",
+                        "prompt_tokens": 4,
+                        "generation_tokens": 2,
+                        "classification": "missing_reference",
+                    },
+                    {
+                        "engine": "ax_engine_mlx_ngram_accel",
+                        "prompt_tokens": 4,
+                        "generation_tokens": 2,
+                        "classification": "missing_reference",
+                    },
+                ],
+            )
             artifact["ax_only_refresh"]["ax_reference_regression_summary"] = (
-                checker.expected_ax_only_refresh_regression_summary(
-                    artifact=artifact,
-                    reference_artifact=reference,
-                )
+                regression_summary
             )
             artifact_path.write_text(json.dumps(artifact, indent=2) + "\n")
 

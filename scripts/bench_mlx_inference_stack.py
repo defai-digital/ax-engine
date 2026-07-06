@@ -4351,6 +4351,7 @@ def summarize_ax_only_refresh_regression(
         "missing_reference_count": 0,
         "decode_regression_count": 0,
         "classification_counts": {},
+        "missing_reference_rows": [],
         "rows": [],
         "publication_candidate": True,
     }
@@ -4371,6 +4372,16 @@ def summarize_ax_only_refresh_regression(
         reference_row = reference_rows.get(key)
         if reference_row is None:
             summary["missing_reference_count"] += 1
+            counts = summary["classification_counts"]
+            counts["missing_reference"] = int(counts.get("missing_reference", 0)) + 1
+            summary["missing_reference_rows"].append(
+                {
+                    "engine": key[0],
+                    "prompt_tokens": key[1],
+                    "generation_tokens": key[2],
+                    "classification": "missing_reference",
+                }
+            )
             summary["publication_candidate"] = False
             continue
         reference_decode = metric_value(reference_row, "decode_tok_s")
