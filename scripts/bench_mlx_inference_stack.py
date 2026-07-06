@@ -2894,7 +2894,7 @@ def summarize_prefix_reuse_evidence(results: list[dict[str, Any]]) -> dict[str, 
     return evidence
 
 
-def summarize_artifact_run_stability(results: list[dict[str, Any]]) -> dict[str, Any]:
+def summarize_artifact_run_stability(results: list[Any]) -> dict[str, Any]:
     summary: dict[str, Any] = {
         "schema_version": "ax.benchmark_run_stability_summary.v1",
         "scope": "ax_engine_rows",
@@ -2907,6 +2907,8 @@ def summarize_artifact_run_stability(results: list[dict[str, Any]]) -> dict[str,
         "publication_candidate": True,
     }
     for row in results:
+        if not isinstance(row, dict):
+            continue
         engine = str(row.get("engine", ""))
         if not engine.startswith("ax_engine"):
             continue

@@ -2986,6 +2986,12 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         self.assertEqual(summary["row_count"], 0)
         self.assertFalse(summary["publication_candidate"])
 
+    def test_artifact_run_stability_ignores_non_object_rows(self) -> None:
+        summary = bench.summarize_artifact_run_stability([None, "bad-row"])
+
+        self.assertEqual(summary["row_count"], 0)
+        self.assertFalse(summary["publication_candidate"])
+
     def test_prefix_reuse_evidence_classifies_absent_and_partial_coverage(self) -> None:
         self.assertEqual(
             bench.summarize_prefix_reuse_evidence([])["physical_snapshot_coverage"],
