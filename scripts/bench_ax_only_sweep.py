@@ -200,6 +200,12 @@ def status_counts(rows: list[dict[str, Any]]) -> dict[str, int]:
     return dict(sorted(counts.items()))
 
 
+def status_counts_text(counts: dict[str, int]) -> str:
+    if not counts:
+        return "none"
+    return ", ".join(f"{status}={count}" for status, count in counts.items())
+
+
 def failed_sweep_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [row for row in rows if row.get("status") != "ok"]
 
@@ -209,10 +215,9 @@ def fail_if_sweep_incomplete(rows: list[dict[str, Any]]) -> None:
     if not failed:
         return
     counts = status_counts(rows)
-    counts_text = ", ".join(f"{status}={count}" for status, count in counts.items())
     print(
         "ERROR: AX-only sweep did not complete cleanly; "
-        f"{len(failed)} row(s) were not ok: {counts_text}",
+        f"{len(failed)} row(s) were not ok: {status_counts_text(counts)}",
         file=sys.stderr,
     )
     sys.exit(2)
@@ -308,6 +313,7 @@ def main() -> None:
 
     elapsed = time.time() - started
     failed_rows = failed_sweep_rows(summary_rows)
+    counts = status_counts(summary_rows)
     sweep_doc = {
         "schema_version": "ax.ax_only_sweep.v1",
         "manifest_path": str(args.manifest),
@@ -320,14 +326,23 @@ def main() -> None:
         "elapsed_seconds": round(elapsed, 1),
         "publication_candidate": not failed_rows,
         "failed_row_count": len(failed_rows),
-        "status_counts": status_counts(summary_rows),
+        "status_counts": counts,
         "rows": summary_rows,
     }
     (args.output_root / "sweep_results.json").write_text(json.dumps(sweep_doc, indent=2))
     log(f"wrote {args.output_root / 'sweep_results.json'}")
 
-    md = ["# AX-only sweep summary", "", f"- elapsed: {elapsed:.0f}s", "",
-          "| slug | status | notes |", "|---|---|---|"]
+    md = [
+        "# AX-only sweep summary",
+        "",
+        f"- publication_candidate: {str(not failed_rows).lower()}",
+        f"- failed_row_count: {len(failed_rows)}",
+        f"- status_counts: {status_counts_text(counts)}",
+        f"- elapsed: {elapsed:.0f}s",
+        "",
+        "| slug | status | notes |",
+        "|---|---|---|",
+    ]
     for r in summary_rows:
         md.append(
             "| "

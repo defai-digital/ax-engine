@@ -115,6 +115,10 @@ class BenchAxOnlySweepTests(unittest.TestCase):
             sweep.status_counts(rows),
             {"bench_failed": 1, "model_dir_missing": 1, "ok": 1},
         )
+        self.assertEqual(
+            sweep.status_counts_text(sweep.status_counts(rows)),
+            "bench_failed=1, model_dir_missing=1, ok=1",
+        )
         with patch.object(sys, "stderr", stderr):
             with self.assertRaises(SystemExit) as caught:
                 sweep.fail_if_sweep_incomplete(rows)
@@ -195,6 +199,9 @@ class BenchAxOnlySweepTests(unittest.TestCase):
             self.assertEqual(sweep_results["status_counts"], {"bench_failed": 1})
             self.assertEqual(sweep_results["rows"][0]["status"], "bench_failed")
             markdown = (out_dir / "sweep_summary.md").read_text()
+            self.assertIn("publication_candidate: false", markdown)
+            self.assertIn("failed_row_count: 1", markdown)
+            self.assertIn("status_counts: bench_failed=1", markdown)
             self.assertIn("exit_code=2", markdown)
             self.assertIn("logs/a.log", markdown)
             self.assertIn("a.json", markdown)
