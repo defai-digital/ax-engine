@@ -280,8 +280,12 @@ def check_sweep_results(artifact_dir: Path) -> list[str]:
         raise GateError(f"{sweep_path} has no rows list")
     failures: list[str] = []
     status_counts: dict[str, int] = {}
-    for row in rows:
+    for index, row in enumerate(rows):
         if not isinstance(row, dict):
+            failures.append(f"row[{index}]: malformed_non_object")
+            status_counts["malformed_non_object"] = (
+                status_counts.get("malformed_non_object", 0) + 1
+            )
             continue
         status = str(row.get("status", "unknown"))
         status_counts[status] = status_counts.get(status, 0) + 1
