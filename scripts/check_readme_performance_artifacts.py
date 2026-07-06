@@ -1220,6 +1220,7 @@ def expected_ax_only_refresh_regression_summary(
         reference_row = reference_rows.get(key)
         if reference_row is None:
             summary["missing_reference_count"] += 1
+            summary["publication_candidate"] = False
             continue
         current_decode = metric_summary_median_or_zero(row, "decode_tok_s")
         reference_decode = metric_summary_median_or_zero(reference_row, "decode_tok_s")

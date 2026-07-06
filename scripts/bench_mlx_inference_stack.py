@@ -4371,6 +4371,7 @@ def summarize_ax_only_refresh_regression(
         reference_row = reference_rows.get(key)
         if reference_row is None:
             summary["missing_reference_count"] += 1
+            summary["publication_candidate"] = False
             continue
         reference_decode = metric_value(reference_row, "decode_tok_s")
         current_decode = metric_value(row, "decode_tok_s")

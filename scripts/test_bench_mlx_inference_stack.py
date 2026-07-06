@@ -3076,6 +3076,24 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
             18.8 / 20.2,
         )
 
+    def test_ax_only_refresh_regression_blocks_missing_reference_rows(self) -> None:
+        summary = bench.summarize_ax_only_refresh_regression(
+            results=[
+                {
+                    "engine": "ax_engine_mlx",
+                    "prompt_tokens": 128,
+                    "generation_tokens": 128,
+                    "decode_tok_s": {"median": 20.0},
+                }
+            ],
+            reference_doc={"results": []},
+        )
+
+        self.assertEqual(summary["row_count"], 1)
+        self.assertEqual(summary["matched_count"], 0)
+        self.assertEqual(summary["missing_reference_count"], 1)
+        self.assertFalse(summary["publication_candidate"])
+
     def test_prefix_reuse_evidence_classifies_absent_and_partial_coverage(self) -> None:
         self.assertEqual(
             bench.summarize_prefix_reuse_evidence([])["physical_snapshot_coverage"],
