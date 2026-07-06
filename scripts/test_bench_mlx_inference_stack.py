@@ -2919,6 +2919,59 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         self.assertEqual(evidence["blocked_reason_count"], 4)
         self.assertEqual(evidence["blocked_reason_accounting_gap_count"], 0)
 
+    def test_artifact_run_stability_summarizes_ax_rows(self) -> None:
+        summary = bench.summarize_artifact_run_stability(
+            [
+                {"engine": "mlx_lm"},
+                {
+                    "engine": "ax_engine_mlx",
+                    "prompt_tokens": 128,
+                    "generation_tokens": 128,
+                    "run_stability": {
+                        "classification": "stable_enough",
+                    },
+                },
+                {
+                    "engine": "ax_engine_mlx_ngram_accel",
+                    "prompt_tokens": 512,
+                    "generation_tokens": 128,
+                    "run_stability": {
+                        "classification": "tail_regression",
+                        "last_vs_first_pct": -12.5,
+                    },
+                },
+                {
+                    "engine": "ax_engine_gemma4_assistant_mtp",
+                    "prompt_tokens": 2048,
+                    "generation_tokens": 128,
+                },
+            ]
+        )
+
+        self.assertEqual(
+            summary["schema_version"], "ax.benchmark_run_stability_summary.v1"
+        )
+        self.assertEqual(summary["scope"], "ax_engine_rows")
+        self.assertEqual(summary["row_count"], 3)
+        self.assertEqual(summary["stable_enough_count"], 1)
+        self.assertEqual(summary["unstable_count"], 1)
+        self.assertEqual(summary["missing_count"], 1)
+        self.assertFalse(summary["publication_candidate"])
+        self.assertEqual(summary["classification_counts"]["stable_enough"], 1)
+        self.assertEqual(summary["classification_counts"]["tail_regression"], 1)
+        self.assertEqual(
+            summary["unstable_rows"],
+            [
+                {
+                    "engine": "ax_engine_mlx_ngram_accel",
+                    "prompt_tokens": 512,
+                    "generation_tokens": 128,
+                    "classification": "tail_regression",
+                    "last_vs_first_pct": -12.5,
+                }
+            ],
+        )
+
     def test_prefix_reuse_evidence_classifies_absent_and_partial_coverage(self) -> None:
         self.assertEqual(
             bench.summarize_prefix_reuse_evidence([])["physical_snapshot_coverage"],

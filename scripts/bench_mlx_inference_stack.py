@@ -2894,6 +2894,49 @@ def summarize_prefix_reuse_evidence(results: list[dict[str, Any]]) -> dict[str, 
     return evidence
 
 
+def summarize_artifact_run_stability(results: list[dict[str, Any]]) -> dict[str, Any]:
+    summary: dict[str, Any] = {
+        "schema_version": "ax.benchmark_run_stability_summary.v1",
+        "scope": "ax_engine_rows",
+        "row_count": 0,
+        "stable_enough_count": 0,
+        "unstable_count": 0,
+        "missing_count": 0,
+        "classification_counts": {},
+        "unstable_rows": [],
+        "publication_candidate": True,
+    }
+    for row in results:
+        engine = str(row.get("engine", ""))
+        if not engine.startswith("ax_engine"):
+            continue
+        summary["row_count"] += 1
+        stability = row.get("run_stability")
+        if not isinstance(stability, dict):
+            summary["missing_count"] += 1
+            summary["publication_candidate"] = False
+            continue
+        classification = str(stability.get("classification", "unknown"))
+        counts = summary["classification_counts"]
+        counts[classification] = int(counts.get(classification, 0)) + 1
+        if classification == "stable_enough":
+            summary["stable_enough_count"] += 1
+            continue
+        summary["unstable_count"] += 1
+        summary["publication_candidate"] = False
+        unstable_row = {
+            "engine": engine,
+            "prompt_tokens": row.get("prompt_tokens"),
+            "generation_tokens": row.get("generation_tokens"),
+            "classification": classification,
+        }
+        drift = stability.get("last_vs_first_pct")
+        if isinstance(drift, (int, float)):
+            unstable_row["last_vs_first_pct"] = float(drift)
+        summary["unstable_rows"].append(unstable_row)
+    return summary
+
+
 def _sum_safetensor_bytes(model_dir: Path) -> int:
     total = 0
     for path in model_dir.rglob("*.safetensors"):
@@ -5468,6 +5511,7 @@ def main() -> None:
             "concurrency": 1,
         },
         "prefix_reuse_evidence": summarize_prefix_reuse_evidence(results),
+        "run_stability_summary": summarize_artifact_run_stability(results),
         "ax_gemma4_moe_profile": bool(args.ax_gemma4_moe_profile),
         "ax_linear_attention_profile": ax_linear_attention_profile_enabled(args),
         "ax_linear_attention_projection_pack": bool(
