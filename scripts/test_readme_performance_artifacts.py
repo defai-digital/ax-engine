@@ -1061,6 +1061,45 @@ class ReadmePerformanceArtifactTests(unittest.TestCase):
                     expected_metric_count=6,
                 )
 
+    def test_run_stability_summary_rejects_stale_row_schema_without_phase0(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.write_fixture(root, claim_gate=False)
+            artifact_path = (
+                root / "benchmarks/results/mlx-inference/local/gemma-4-e2b-it-4bit.json"
+            )
+            artifact = json.loads(artifact_path.read_text())
+            for row in artifact["results"]:
+                if str(row["engine"]).startswith("ax_engine"):
+                    row["run_stability"] = {
+                        "schema_version": "ax.benchmark_run_stability.v0",
+                        "metric": "decode_tok_s",
+                        "classification": "stable_enough",
+                        "trial_count": 3,
+                    }
+            artifact["run_stability_summary"] = {
+                "schema_version": checker.RUN_STABILITY_SUMMARY_SCHEMA_VERSION,
+                "scope": "ax_engine_rows",
+                "row_count": 2,
+                "stable_enough_count": 2,
+                "unstable_count": 0,
+                "missing_count": 0,
+                "classification_counts": {"stable_enough": 2},
+                "unstable_rows": [],
+                "publication_candidate": True,
+            }
+            artifact_path.write_text(json.dumps(artifact, indent=2) + "\n")
+
+            with self.assertRaisesRegex(
+                checker.ArtifactCheckError,
+                "has stale run_stability schema",
+            ):
+                checker.check_readme_performance(
+                    repo_root=root,
+                    readme_path=root / "README.md",
+                    expected_metric_count=6,
+                )
+
     def test_run_stability_summary_rejects_publication_candidate_drift(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

@@ -1097,6 +1097,14 @@ def validate_run_stability_summary_if_present(
         raise ArtifactCheckError(
             f"{artifact_path} run_stability_summary requires results list"
         )
+    for row in results:
+        if not isinstance(row, dict):
+            continue
+        engine = str(row.get("engine", ""))
+        if not engine.startswith("ax_engine"):
+            continue
+        if isinstance(row.get("run_stability"), dict):
+            validate_run_stability_shape(artifact_path=artifact_path, row=row)
     expected = expected_run_stability_summary(results)
     for key, expected_value in expected.items():
         if summary.get(key) != expected_value:
@@ -1159,14 +1167,10 @@ def validate_positive_metric_summary(
         )
 
 
-def validate_run_stability_if_present(
-    *, artifact_path: Path, row: dict[str, Any], require_phase0: bool
-) -> None:
-    if not require_phase0:
-        return
+def validate_run_stability_shape(
+    *, artifact_path: Path, row: dict[str, Any]
+) -> dict[str, Any]:
     stability = row.get("run_stability")
-    if stability is None:
-        return
     if not isinstance(stability, dict):
         raise ArtifactCheckError(
             f"{artifact_path} {row.get('engine')} run_stability must be an object"
@@ -1179,6 +1183,18 @@ def validate_run_stability_if_present(
         raise ArtifactCheckError(
             f"{artifact_path} {row.get('engine')} run_stability must track decode_tok_s"
         )
+    return stability
+
+
+def validate_run_stability_if_present(
+    *, artifact_path: Path, row: dict[str, Any], require_phase0: bool
+) -> None:
+    if not require_phase0:
+        return
+    stability = row.get("run_stability")
+    if stability is None:
+        return
+    stability = validate_run_stability_shape(artifact_path=artifact_path, row=row)
     classification = stability.get("classification")
     if classification != "stable_enough":
         raise ArtifactCheckError(
