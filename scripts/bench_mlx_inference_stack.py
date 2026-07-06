@@ -65,6 +65,7 @@ DEFAULT_GENERATION_TOKENS = 128
 DEFAULT_REPETITIONS = 5
 DEFAULT_COOLDOWN = 15.0
 AX_ONLY_REFRESH_DECODE_MIN_RATIO_TO_REFERENCE = 0.97
+AX_ONLY_REFRESH_SCHEMA_VERSION = "ax.ax_only_refresh.v1"
 AXENGINE_PORT = 0
 MLX_LM_RANDOM_SEED = 0
 GATEDDELTA_PREFILL_PROFILE_PROMPT_TOKENS = [512, 2048, 8192, 32768]
@@ -5669,6 +5670,7 @@ def main() -> None:
         doc["gateddelta_prefill_profile"] = gateddelta_prefill_profile_contract
     if args.reuse_reference_results_from:
         doc["ax_only_refresh"] = {
+            "schema_version": AX_ONLY_REFRESH_SCHEMA_VERSION,
             "method": "reuse_existing_reference_rows_and_rerun_ax_engine_rows",
             "reference_results_source": str(args.reuse_reference_results_from),
             "ax_reference_regression_summary": summarize_ax_only_refresh_regression(

@@ -49,6 +49,7 @@ TTFT_TABLE_COLUMNS = PREFILL_TABLE_COLUMNS
 PHASE0_CLAIM_GATE_SCHEMA_VERSION = "ax.phase0_claim_gate.v1"
 RUN_STABILITY_SCHEMA_VERSION = "ax.benchmark_run_stability.v1"
 RUN_STABILITY_SUMMARY_SCHEMA_VERSION = "ax.benchmark_run_stability_summary.v1"
+AX_ONLY_REFRESH_SCHEMA_VERSION = "ax.ax_only_refresh.v1"
 AX_ONLY_REFRESH_REGRESSION_SCHEMA_VERSION = "ax.ax_only_refresh_regression.v1"
 AX_ONLY_REFRESH_DECODE_MIN_RATIO_TO_REFERENCE = 0.97
 PREFIX_REUSE_EQUIVALENCE_SCHEMA_VERSION = "ax.prefix_reuse_equivalence.v1"
@@ -1295,6 +1296,10 @@ def validate_ax_only_refresh_regression_summary_if_present(
         return
     summary = ax_only_refresh.get("ax_reference_regression_summary")
     if summary is None:
+        if ax_only_refresh.get("schema_version") == AX_ONLY_REFRESH_SCHEMA_VERSION:
+            raise ArtifactCheckError(
+                f"{artifact_path} ax_only_refresh lacks ax_reference_regression_summary"
+            )
         return
     if not isinstance(summary, dict):
         raise ArtifactCheckError(

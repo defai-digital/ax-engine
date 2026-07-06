@@ -1258,6 +1258,37 @@ class ReadmePerformanceArtifactTests(unittest.TestCase):
 
             self.assertEqual(len(checked), 6)
 
+    def test_ax_only_refresh_schema_requires_regression_summary(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.write_fixture(root)
+            artifact_path = (
+                root / "benchmarks/results/mlx-inference/local/gemma-4-e2b-it-4bit.json"
+            )
+            artifact = json.loads(artifact_path.read_text())
+            reference_path = (
+                root
+                / "benchmarks/results/mlx-inference/reference/gemma-4-e2b-it-4bit.json"
+            )
+            reference_path.parent.mkdir(parents=True)
+            reference_path.write_text(json.dumps(artifact, indent=2) + "\n")
+            artifact["ax_only_refresh"] = {
+                "schema_version": checker.AX_ONLY_REFRESH_SCHEMA_VERSION,
+                "method": "reuse_existing_reference_rows_and_rerun_ax_engine_rows",
+                "reference_results_source": str(reference_path.relative_to(root)),
+            }
+            artifact_path.write_text(json.dumps(artifact, indent=2) + "\n")
+
+            with self.assertRaisesRegex(
+                checker.ArtifactCheckError,
+                "ax_only_refresh lacks ax_reference_regression_summary",
+            ):
+                checker.check_readme_performance(
+                    repo_root=root,
+                    readme_path=root / "README.md",
+                    expected_metric_count=6,
+                )
+
     def test_ax_only_refresh_regression_summary_rejects_decode_regression(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
