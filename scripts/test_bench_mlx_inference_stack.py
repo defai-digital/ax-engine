@@ -95,6 +95,36 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
             ],
         )
 
+    def test_collect_performance_condition_metadata_parses_pmset(self) -> None:
+        def fake_check_output(
+            cmd: list[str],
+            *,
+            text: bool,
+            stderr: int | None = None,
+        ) -> str:
+            del text, stderr
+            if cmd == ["pmset", "-g", "batt"]:
+                return (
+                    "Now drawing from 'AC Power'\n"
+                    " -InternalBattery-0\t80%; AC attached; not charging present: true\n"
+                )
+            if cmd == ["pmset", "-g", "therm"]:
+                return (
+                    "Note: No thermal warning level has been recorded\n"
+                    "Note: Performance warning level: 1\n"
+                    "Note: No CPU power status has been recorded\n"
+                )
+            raise AssertionError(cmd)
+
+        with patch.object(subprocess, "check_output", side_effect=fake_check_output):
+            metadata = bench.collect_performance_condition_metadata()
+
+        self.assertEqual(metadata["power_source"], "AC Power")
+        self.assertIn("80%", metadata["battery_status"])
+        self.assertFalse(metadata["thermal_warning_recorded"])
+        self.assertTrue(metadata["performance_warning_recorded"])
+        self.assertFalse(metadata["cpu_power_status_recorded"])
+
     def test_resolve_model_dir_uses_hugging_face_cache_snapshot(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

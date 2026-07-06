@@ -602,6 +602,45 @@ def _sysctl(key: str) -> str:
         return "unknown"
 
 
+def _command_output_lines(cmd: list[str]) -> list[str]:
+    try:
+        output = subprocess.check_output(
+            cmd,
+            text=True,
+            stderr=subprocess.DEVNULL,
+        )
+    except Exception:
+        return []
+    return [line.strip() for line in output.splitlines() if line.strip()]
+
+
+def collect_performance_condition_metadata() -> dict[str, Any]:
+    metadata: dict[str, Any] = {}
+    battery_lines = _command_output_lines(["pmset", "-g", "batt"])
+    if battery_lines:
+        match = re.search(r"Now drawing from '([^']+)'", battery_lines[0])
+        metadata["power_source"] = match.group(1) if match else battery_lines[0]
+        if len(battery_lines) > 1:
+            metadata["battery_status"] = battery_lines[1]
+
+    thermal_lines = _command_output_lines(["pmset", "-g", "therm"])
+    if thermal_lines:
+        metadata["thermal_status_lines"] = thermal_lines[:10]
+        metadata["thermal_warning_recorded"] = not any(
+            "No thermal warning level has been recorded" in line
+            for line in thermal_lines
+        )
+        metadata["performance_warning_recorded"] = not any(
+            "No performance warning level has been recorded" in line
+            for line in thermal_lines
+        )
+        metadata["cpu_power_status_recorded"] = not any(
+            "No CPU power status has been recorded" in line for line in thermal_lines
+        )
+
+    return metadata
+
+
 def collect_host_metadata() -> dict[str, Any]:
     """Gather Apple Silicon host provenance for benchmark artifact labelling."""
     chip = _sysctl("machdep.cpu.brand_string") or _sysctl("hw.model")
@@ -619,12 +658,16 @@ def collect_host_metadata() -> dict[str, Any]:
     except Exception:
         pass
 
-    return {
+    metadata: dict[str, Any] = {
         "chip": chip,
         "memory_gb": memory_gb,
         "os_version": os_version,
         "platform": sys.platform,
     }
+    performance_conditions = collect_performance_condition_metadata()
+    if performance_conditions:
+        metadata["performance_conditions"] = performance_conditions
+    return metadata
 
 
 def collect_build_metadata() -> dict[str, Any]:

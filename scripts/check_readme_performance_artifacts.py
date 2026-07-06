@@ -630,6 +630,39 @@ def validate_build_provenance(*, artifact_path: Path, artifact: dict[str, Any]) 
         )
 
 
+def validate_host_performance_conditions(
+    *, artifact_path: Path, artifact: dict[str, Any]
+) -> None:
+    host = artifact.get("host")
+    if not isinstance(host, dict):
+        return
+    conditions = host.get("performance_conditions")
+    if conditions is None:
+        return
+    if not isinstance(conditions, dict):
+        raise ArtifactCheckError(
+            f"{artifact_path} host.performance_conditions must be an object"
+        )
+    for key in (
+        "thermal_warning_recorded",
+        "performance_warning_recorded",
+        "cpu_power_status_recorded",
+    ):
+        if key in conditions and not isinstance(conditions[key], bool):
+            raise ArtifactCheckError(
+                f"{artifact_path} host.performance_conditions.{key} must be boolean"
+            )
+    if "thermal_status_lines" in conditions:
+        lines = conditions["thermal_status_lines"]
+        if not isinstance(lines, list) or not all(
+            isinstance(line, str) for line in lines
+        ):
+            raise ArtifactCheckError(
+                f"{artifact_path} host.performance_conditions.thermal_status_lines "
+                "must be a string list"
+            )
+
+
 def tracked_dirty_is_benchmark_doc_only(status: Any) -> bool:
     if not isinstance(status, list) or not status:
         return False
@@ -2144,6 +2177,7 @@ def collect_artifact_rows(
         if artifact.get("schema_version") != MLX_INFERENCE_STACK_SCHEMA_VERSION:
             raise ArtifactCheckError(f"{path} has unexpected schema_version")
         validate_build_provenance(artifact_path=path, artifact=artifact)
+        validate_host_performance_conditions(artifact_path=path, artifact=artifact)
         validate_public_claim_evidence(artifact_path=path, artifact=artifact)
         validate_run_stability_summary_if_present(
             artifact_path=path,

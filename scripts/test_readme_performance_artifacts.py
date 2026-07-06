@@ -870,6 +870,45 @@ class ReadmePerformanceArtifactTests(unittest.TestCase):
             artifact={"build": {"commit": "abc123"}},
         )
 
+    def test_host_performance_conditions_validate_optional_shape(self) -> None:
+        checker.validate_host_performance_conditions(
+            artifact_path=Path("artifact.json"),
+            artifact={
+                "host": {
+                    "performance_conditions": {
+                        "power_source": "AC Power",
+                        "battery_status": "80%; AC attached",
+                        "thermal_status_lines": [
+                            "Note: No thermal warning level has been recorded"
+                        ],
+                        "thermal_warning_recorded": False,
+                        "performance_warning_recorded": True,
+                        "cpu_power_status_recorded": False,
+                    }
+                }
+            },
+        )
+        checker.validate_host_performance_conditions(
+            artifact_path=Path("legacy.json"),
+            artifact={"host": {"chip": "Apple M5 Max"}},
+        )
+
+    def test_host_performance_conditions_rejects_malformed_shape(self) -> None:
+        with self.assertRaisesRegex(
+            checker.ArtifactCheckError,
+            "performance_warning_recorded must be boolean",
+        ):
+            checker.validate_host_performance_conditions(
+                artifact_path=Path("artifact.json"),
+                artifact={
+                    "host": {
+                        "performance_conditions": {
+                            "performance_warning_recorded": "no"
+                        }
+                    }
+                },
+            )
+
     def test_build_provenance_allows_benchmark_doc_only_dirty_artifact(self) -> None:
         checker.validate_build_provenance(
             artifact_path=Path("artifact.json"),
