@@ -1759,6 +1759,27 @@ def summarize_run_stability(
     }
 
 
+def format_run_stability_label(cell: dict[str, Any]) -> str:
+    stability = cell.get("run_stability")
+    if not isinstance(stability, dict):
+        return "n/a"
+
+    classification = str(stability.get("classification", "unknown"))
+    if classification == "stable_enough":
+        return "stable"
+    if classification == "insufficient_repetitions":
+        return "insufficient"
+
+    drift = stability.get("last_vs_first_pct")
+    if isinstance(drift, (int, float)):
+        if classification == "tail_regression":
+            return f"tail {drift:+.1f}%"
+        if classification == "high_variance":
+            return f"var {drift:+.1f}%"
+        return f"{classification} {drift:+.1f}%"
+    return classification
+
+
 def format_axengine_interim_summary(runs: list[dict[str, Any]]) -> str:
     decode = summarize_values([float(run["decode_tok_s"]) for run in runs])
     output = summarize_values([float(run["output_tokens"]) for run in runs])
@@ -4275,14 +4296,14 @@ def validate_reused_reference_prompt_hashes(
 
 
 def print_summary(doc: dict[str, Any]) -> None:
-    print("\n" + "=" * 88)
+    print("\n" + "=" * 102)
     print("AX Engine MLX inference stack benchmark")
-    print("=" * 88)
+    print("=" * 102)
     print(
         f"{'Engine':<18} {'Prompt tok':>10} {'Prefill tok/s':>14} "
-        f"{'Decode tok/s':>13} {'Decode vs mlx_lm':>16}  Method"
+        f"{'Decode tok/s':>13} {'Decode vs mlx_lm':>16} {'Stability':>12}  Method"
     )
-    print("-" * 88)
+    print("-" * 102)
     for cell in doc["results"]:
         baseline = cell.get("baseline", {})
         decode_ratio = baseline.get("decode_ratio_to_mlx_lm")
@@ -4297,7 +4318,8 @@ def print_summary(doc: dict[str, Any]) -> None:
             f"{cell['engine']:<18} {cell['prompt_tokens']:>10} "
             f"{metric_value(cell, 'prefill_tok_s'):>14.1f} "
             f"{metric_value(cell, 'decode_tok_s'):>13.1f} "
-            f"{ratio_text:>16}  {cell['method']}"
+            f"{ratio_text:>16} {format_run_stability_label(cell):>12}  "
+            f"{cell['method']}"
         )
     print()
 

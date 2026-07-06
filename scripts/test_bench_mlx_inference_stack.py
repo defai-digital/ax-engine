@@ -534,6 +534,32 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         self.assertEqual(row["run_stability"]["last"], 17.0)
         self.assertAlmostEqual(row["run_stability"]["last_vs_first_pct"], -15.0)
 
+    def test_print_summary_includes_run_stability(self) -> None:
+        stdout = io.StringIO()
+        with patch.object(sys, "stdout", stdout):
+            bench.print_summary(
+                {
+                    "results": [
+                        {
+                            "engine": "ax_engine_mlx",
+                            "prompt_tokens": 128,
+                            "prefill_tok_s": {"median": 100.0},
+                            "decode_tok_s": {"median": 17.0},
+                            "baseline": {"decode_ratio_to_mlx_lm": 0.9},
+                            "method": "server_sse_runner_time_us",
+                            "run_stability": {
+                                "classification": "tail_regression",
+                                "last_vs_first_pct": -15.0,
+                            },
+                        }
+                    ]
+                }
+            )
+
+        output = stdout.getvalue()
+        self.assertIn("Stability", output)
+        self.assertIn("tail -15.0%", output)
+
     def test_ax_prefill_work_contract_labels_long_greedy_cache_only_boundary(
         self,
     ) -> None:
