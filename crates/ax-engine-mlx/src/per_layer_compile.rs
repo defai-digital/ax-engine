@@ -149,29 +149,35 @@ pub fn apply_layer_moe_decode(
     let cache = LAYER_MOE_DECODE_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
     let tid = std::thread::current().id();
 
-    let guard = cache.lock().ok()?;
-    if let Some(entry) = guard.get(&(layer_index, tid)) {
-        return match entry {
-            // Use catch_unwind to handle panics from the compiled closure
-            // gracefully. MLX's thread-local stream registry can become
-            // invalid in long-running processes, causing abort inside
-            // mlx_closure_apply.
-            Some(closure) => {
-                let result = try_apply_with_abort_safety(closure, inputs);
-                if result.is_none() {
-                    tracing::warn!(
-                        target = "ax_engine_mlx",
-                        path = "moe_decode",
-                        layer = layer_index,
-                        "compiled_closure_fallback"
-                    );
-                }
-                result
+    let mut guard = cache.lock().ok()?;
+    // Scope the read so the immutable borrow is released before
+    // we potentially call `guard.remove()`.
+    let apply_result: Option<Option<Vec<MlxArray>>> =
+        if let Some(entry) = guard.get(&(layer_index, tid)) {
+            let closure_ref: Option<&MlxClosure> = match entry {
+                Some(c) => Some(c),
+                None => None,
+            };
+            if let Some(c) = closure_ref {
+                Some(try_apply_with_abort_safety(c, inputs))
+            } else {
+                // Known-incompatible: return None directly.
+                return None;
             }
-            // Known-incompatible for this layer: skip straight to the
-            // imperative fallback instead of re-attempting every decode step.
-            None => None,
+        } else {
+            None
         };
+    if let Some(result) = apply_result {
+        if result.is_none() {
+            tracing::warn!(
+                target = "ax_engine_mlx",
+                path = "moe_decode",
+                layer = layer_index,
+                "compiled_closure_apply_failed; removing entry for recompilation"
+            );
+            guard.remove(&(layer_index, tid));
+        }
+        return result;
     }
     drop(guard);
 
@@ -243,29 +249,41 @@ pub fn apply_layer_dense_ffn_decode(
     let tid = std::thread::current().id();
     let threshold = *COMPILE_CACHE_REFRESH_THRESHOLD;
 
-    let guard = cache.lock().ok()?;
-    if let Some((entry, generation)) = guard.get(&(layer_index, tid)) {
-        return match entry {
-            // Working compiled closure: reuse it.
-            Some(closure) => {
-                let result = try_apply_with_abort_safety(closure, inputs);
-                if result.is_none() {
-                    tracing::warn!(
-                        target = "ax_engine_mlx",
-                        path = "dense_ffn_decode",
-                        layer = layer_index,
-                        "compiled_closure_fallback"
-                    );
-                }
-                result
-            }
-            // Known-incompatible for this layer: skip straight to the
-            // imperative fallback instead of re-attempting every decode step.
-            None => {
-                let _ = generation;
-                None
-            }
+    let mut guard = cache.lock().ok()?;
+    if let Some((entry, generation)) = guard.get_mut(&(layer_index, tid)) {
+        // Extract closure ref via explicit pattern match so the immutable
+        // borrow of `entry` is released before we write back to it.
+        let closure_ref: Option<&MlxClosure> = match &*entry {
+            Some(c) => Some(c),
+            None => None,
         };
+        if let Some(c) = closure_ref {
+            let result = try_apply_with_abort_safety(c, inputs);
+            if result.is_some() {
+                let new_generation = generation.wrapping_add(1);
+                if new_generation.is_multiple_of(threshold) {
+                    // Threshold reached — clear closure so next call recompiles.
+                    *entry = None;
+                    *generation = 0;
+                } else {
+                    *generation = new_generation;
+                }
+            } else {
+                // Failed apply — invalidate so next call recompiles
+                tracing::warn!(
+                    target = "ax_engine_mlx",
+                    path = "dense_ffn_decode",
+                    layer = layer_index,
+                    "compiled_closure_apply_failed; invalidating entry for recompilation"
+                );
+                *entry = None;
+                *generation = 0;
+            }
+            return result;
+        }
+        // Known-incompatible for this layer: skip straight to the
+        // imperative fallback instead of re-attempting every decode step.
+        return None;
     }
     drop(guard);
 
@@ -353,23 +371,34 @@ pub fn apply_layer_gemma4_dual_path_decode(
     let cache = LAYER_GEMMA4_DUAL_PATH_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
     let tid = std::thread::current().id();
 
-    let guard = cache.lock().ok()?;
-    if let Some(entry) = guard.get(&(layer_index, tid)) {
-        return match entry {
-            Some(closure) => {
-                let result = try_apply_with_abort_safety(closure, inputs);
-                if result.is_none() {
-                    tracing::warn!(
-                        target = "ax_engine_mlx",
-                        path = "gemma4_dual_path",
-                        layer = layer_index,
-                        "compiled_closure_fallback"
-                    );
-                }
-                result
+    let mut guard = cache.lock().ok()?;
+    // Scope the read so the immutable borrow is released before
+    // we potentially call `guard.remove()`.
+    let apply_result: Option<Option<Vec<MlxArray>>> =
+        if let Some(entry) = guard.get(&(layer_index, tid)) {
+            let closure_ref: Option<&MlxClosure> = match entry {
+                Some(c) => Some(c),
+                None => None,
+            };
+            if let Some(c) = closure_ref {
+                Some(try_apply_with_abort_safety(c, inputs))
+            } else {
+                return None;
             }
-            None => None,
+        } else {
+            None
         };
+    if let Some(result) = apply_result {
+        if result.is_none() {
+            tracing::warn!(
+                target = "ax_engine_mlx",
+                path = "gemma4_dual_path",
+                layer = layer_index,
+                "compiled_closure_apply_failed; removing entry for recompilation"
+            );
+            guard.remove(&(layer_index, tid));
+        }
+        return result;
     }
     drop(guard);
 

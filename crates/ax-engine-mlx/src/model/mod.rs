@@ -1587,9 +1587,15 @@ thread_local! {
     static BIDIR_MASK_CACHE: RefCell<HashMap<usize, MlxArray>> = RefCell::new(HashMap::new());
 }
 
+/// Maximum number of entries retained in the bidirectional mask cache before
+/// eviction. 256 covers the realistic `seq_len` range for embedding forwards
+/// without allowing unbounded growth in long-running processes.
+const BIDIR_MASK_CACHE_MAX_ENTRIES: usize = 256;
+
 /// Construct a bidirectional (all-attend) mask for embedding forward passes.
 /// Returns `[1, 1, seq_len, seq_len]` zeros tensor in the target dtype.
 /// Uses thread-local caching keyed by `seq_len` to avoid repeated allocations.
+/// Evicts all entries when the cache reaches `BIDIR_MASK_CACHE_MAX_ENTRIES`.
 fn build_bidirectional_embed_mask(seq_len: usize, dtype: MlxDtype) -> MlxArray {
     BIDIR_MASK_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
@@ -1599,6 +1605,9 @@ fn build_bidirectional_embed_mask(seq_len: usize, dtype: MlxDtype) -> MlxArray {
             return mask.clone();
         }
         let mask = zeros(&[1, 1, seq_len as i32, seq_len as i32], dtype, None);
+        if cache.len() >= BIDIR_MASK_CACHE_MAX_ENTRIES {
+            cache.clear();
+        }
         cache.insert(seq_len, mask.clone());
         mask
     })

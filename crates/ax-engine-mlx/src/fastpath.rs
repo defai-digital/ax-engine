@@ -684,13 +684,15 @@ env_flag!(
 pub fn dense_ffn_compile_enabled() -> bool {
     static CACHED: OnceLock<bool> = OnceLock::new();
     static LOGGED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    let value = *CACHED.get_or_init(|| parse_bool_env_default_on("AX_MLX_DENSE_FFN_COMPILE"));
     if !LOGGED.swap(true, std::sync::atomic::Ordering::Relaxed) {
         tracing::info!(
             target = "ax_engine_mlx",
-            "AX_MLX_DENSE_FFN_COMPILE active (set =0 to disable)"
+            enabled = value,
+            "AX_MLX_DENSE_FFN_COMPILE resolved (set =0 to disable)"
         );
     }
-    *CACHED.get_or_init(|| parse_bool_env_default_on("AX_MLX_DENSE_FFN_COMPILE"))
+    value
 }
 
 env_flag!(
