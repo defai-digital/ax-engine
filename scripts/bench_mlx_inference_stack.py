@@ -64,6 +64,7 @@ DEFAULT_PROMPT_TOKENS = "128,512,2048"
 DEFAULT_GENERATION_TOKENS = 128
 DEFAULT_REPETITIONS = 5
 DEFAULT_COOLDOWN = 15.0
+MLX_INFERENCE_STACK_SCHEMA_VERSION = "ax.mlx_inference_stack.v2"
 AX_ONLY_REFRESH_DECODE_MIN_RATIO_TO_REFERENCE = 0.97
 AX_ONLY_REFRESH_SCHEMA_VERSION = "ax.ax_only_refresh.v1"
 AXENGINE_PORT = 0
@@ -4302,11 +4303,22 @@ def load_reused_reference_rows(
     generation_tokens: int,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     doc = json.loads(path.read_text())
+    if not isinstance(doc, dict):
+        raise RuntimeError(f"{path} reused reference artifact must be an object")
+    if doc.get("schema_version") != MLX_INFERENCE_STACK_SCHEMA_VERSION:
+        raise RuntimeError(
+            f"{path} reused reference artifact has unexpected schema_version"
+        )
+    results = doc.get("results")
+    if not isinstance(results, list):
+        raise RuntimeError(f"{path} reused reference artifact lacks results list")
     wanted = {(prompt_tokens, generation_tokens) for prompt_tokens in prompt_lengths}
     rows: list[dict[str, Any]] = []
     seen_mlx_lm: set[tuple[int, int]] = set()
 
-    for cell in doc.get("results", []):
+    for cell in results:
+        if not isinstance(cell, dict):
+            continue
         engine = cell.get("engine")
         if engine != "mlx_lm":
             continue
@@ -5587,7 +5599,7 @@ def main() -> None:
     )
 
     doc = {
-        "schema_version": "ax.mlx_inference_stack.v2",
+        "schema_version": MLX_INFERENCE_STACK_SCHEMA_VERSION,
         "claim_gate": {
             "schema_version": PHASE0_CLAIM_GATE_SCHEMA_VERSION,
             "scope": "mlx_inference_stack_public_readme",

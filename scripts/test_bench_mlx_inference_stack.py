@@ -2052,7 +2052,7 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
                 }
             )
         artifact = {
-            "schema_version": "ax.mlx_inference_stack.v2",
+            "schema_version": bench.MLX_INFERENCE_STACK_SCHEMA_VERSION,
             "model_config": {"linear_attention_enabled": True},
             "prompt_tokens": [512, 2048, 8192, 32768],
             "generation_tokens": generation_tokens,
@@ -2136,7 +2136,7 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
                 }
             )
         artifact = {
-            "schema_version": "ax.mlx_inference_stack.v2",
+            "schema_version": bench.MLX_INFERENCE_STACK_SCHEMA_VERSION,
             "model_config": {"linear_attention_enabled": True},
             "prompt_tokens": [512, 2048, 8192, 32768],
             "generation_tokens": generation_tokens,
@@ -4266,7 +4266,7 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
             path.write_text(
                 json.dumps(
                     {
-                        "schema_version": "test",
+                        "schema_version": bench.MLX_INFERENCE_STACK_SCHEMA_VERSION,
                         "results": [
                             {
                                 "engine": "mlx_lm",
@@ -4291,7 +4291,9 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
                 generation_tokens=2,
             )
 
-            self.assertEqual(doc["schema_version"], "test")
+            self.assertEqual(
+                doc["schema_version"], bench.MLX_INFERENCE_STACK_SCHEMA_VERSION
+            )
             self.assertEqual([row["engine"] for row in rows], ["mlx_lm"])
 
             with self.assertRaisesRegex(RuntimeError, "missing mlx_lm reference rows"):
@@ -4307,7 +4309,7 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
             path.write_text(
                 json.dumps(
                     {
-                        "schema_version": "test",
+                        "schema_version": bench.MLX_INFERENCE_STACK_SCHEMA_VERSION,
                         "results": [
                             {
                                 "engine": "mlx_lm",
@@ -4330,6 +4332,38 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
 
             with self.assertRaisesRegex(
                 RuntimeError, "duplicate mlx_lm reference rows"
+            ):
+                bench.load_reused_reference_rows(
+                    path,
+                    prompt_lengths=[4],
+                    generation_tokens=2,
+                )
+
+    def test_load_reused_reference_rows_rejects_wrong_schema(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "artifact.json"
+            path.write_text(json.dumps({"schema_version": "wrong", "results": []}))
+
+            with self.assertRaisesRegex(
+                RuntimeError, "reused reference artifact has unexpected schema_version"
+            ):
+                bench.load_reused_reference_rows(
+                    path,
+                    prompt_lengths=[4],
+                    generation_tokens=2,
+                )
+
+    def test_load_reused_reference_rows_rejects_missing_results(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "artifact.json"
+            path.write_text(
+                json.dumps(
+                    {"schema_version": bench.MLX_INFERENCE_STACK_SCHEMA_VERSION}
+                )
+            )
+
+            with self.assertRaisesRegex(
+                RuntimeError, "reused reference artifact lacks results list"
             ):
                 bench.load_reused_reference_rows(
                     path,

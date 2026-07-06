@@ -575,7 +575,7 @@ class ReadmePerformanceArtifactTests(unittest.TestCase):
             return payload
 
         artifact = {
-            "schema_version": "ax.mlx_inference_stack.v2",
+            "schema_version": checker.MLX_INFERENCE_STACK_SCHEMA_VERSION,
             "concurrent_prefill_overlap_classification": {
                 "classification": "single_request_no_overlap",
                 "continuous_batching_claim": False,
@@ -1338,7 +1338,10 @@ class ReadmePerformanceArtifactTests(unittest.TestCase):
             )
             reference_path.parent.mkdir(parents=True)
             reference_path.write_text(
-                json.dumps({"schema_version": "ax.mlx_inference_stack.v2"}, indent=2)
+                json.dumps(
+                    {"schema_version": checker.MLX_INFERENCE_STACK_SCHEMA_VERSION},
+                    indent=2,
+                )
                 + "\n"
             )
             artifact["ax_only_refresh"] = {

@@ -49,6 +49,7 @@ TTFT_TABLE_COLUMNS = PREFILL_TABLE_COLUMNS
 PHASE0_CLAIM_GATE_SCHEMA_VERSION = "ax.phase0_claim_gate.v1"
 RUN_STABILITY_SCHEMA_VERSION = "ax.benchmark_run_stability.v1"
 RUN_STABILITY_SUMMARY_SCHEMA_VERSION = "ax.benchmark_run_stability_summary.v1"
+MLX_INFERENCE_STACK_SCHEMA_VERSION = "ax.mlx_inference_stack.v2"
 AX_ONLY_REFRESH_SCHEMA_VERSION = "ax.ax_only_refresh.v1"
 AX_ONLY_REFRESH_REGRESSION_SCHEMA_VERSION = "ax.ax_only_refresh_regression.v1"
 AX_ONLY_REFRESH_DECODE_MIN_RATIO_TO_REFERENCE = 0.97
@@ -1357,7 +1358,7 @@ def validate_ax_only_refresh_regression_summary_if_present(
         raise ArtifactCheckError(
             f"{artifact_path} ax_only_refresh reference must be an object"
         )
-    if reference_artifact.get("schema_version") != "ax.mlx_inference_stack.v2":
+    if reference_artifact.get("schema_version") != MLX_INFERENCE_STACK_SCHEMA_VERSION:
         raise ArtifactCheckError(
             f"{artifact_path} ax_only_refresh reference has unexpected schema_version"
         )
@@ -2140,7 +2141,7 @@ def collect_artifact_rows(
         if needed_labels is not None and label not in needed_labels:
             continue
         artifact = json.loads(path.read_text())
-        if artifact.get("schema_version") != "ax.mlx_inference_stack.v2":
+        if artifact.get("schema_version") != MLX_INFERENCE_STACK_SCHEMA_VERSION:
             raise ArtifactCheckError(f"{path} has unexpected schema_version")
         validate_build_provenance(artifact_path=path, artifact=artifact)
         validate_public_claim_evidence(artifact_path=path, artifact=artifact)
