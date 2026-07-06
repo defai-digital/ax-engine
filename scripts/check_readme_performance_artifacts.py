@@ -104,10 +104,23 @@ AX_DIRECT_ENGINE_KEYS = {
     "ax_engine_mlx_direct_linear_attention_post_input",
 }
 
+AX_MTP_ENGINE_KEYS = {
+    "ax_engine_mlx_pure_mtp",
+    "ax_engine_gemma4_assistant_mtp",
+}
+
+AX_MTP_CLAIM_STATUSES = {
+    "mtp_head_only_effective",
+}
+
+AX_MTP_EFFECTIVE_ROUTES = {
+    "mtp_head_only_verify_loop",
+}
+
 AX_OWNED_MLX_ROW_ENGINE_KEYS = AX_DIRECT_ENGINE_KEYS | {
     "mlx_lm",
     "ax_engine_mlx_ngram_accel",
-}
+} | AX_MTP_ENGINE_KEYS
 
 AX_NGRAM_CLAIM_STATUSES = {
     "ngram_acceleration_effective_throughput",
@@ -1170,6 +1183,36 @@ def validate_run_stability_if_present(
         )
 
 
+def validate_mtp_row_contract(
+    *, artifact_path: Path, row: dict[str, Any], require_phase0: bool
+) -> None:
+    engine = row.get("engine")
+    expected_policy = (
+        "gemma4_assistant_mtp_no_ngram_stacking"
+        if engine == "ax_engine_gemma4_assistant_mtp"
+        else "mtp_head_only_no_ngram_stacking"
+    )
+    if row.get("ax_decode_policy") != expected_policy:
+        raise ArtifactCheckError(f"{artifact_path} MTP AX row lacks MTP-only policy")
+    if not require_phase0:
+        return
+    if row.get("ax_decode_claim_status") not in AX_MTP_CLAIM_STATUSES:
+        raise ArtifactCheckError(f"{artifact_path} MTP AX row lacks effective MTP claim")
+    if row.get("ax_decode_effective_route") not in AX_MTP_EFFECTIVE_ROUTES:
+        raise ArtifactCheckError(
+            f"{artifact_path} MTP AX row lacks MTP verify-loop route"
+        )
+    telemetry = row.get("ngram_acceleration_telemetry")
+    if not isinstance(telemetry, dict):
+        raise ArtifactCheckError(f"{artifact_path} MTP AX row lacks MTP telemetry")
+    if int(telemetry.get("ax_mtp_ngram_hit_steps", 0)) != 0:
+        raise ArtifactCheckError(
+            f"{artifact_path} MTP AX row has n-gram stacking hits"
+        )
+    if int(telemetry.get("ax_mtp_draft_tokens", 0)) <= 0:
+        raise ArtifactCheckError(f"{artifact_path} MTP AX row has no draft tokens")
+
+
 def validate_phase0_runtime_identity(
     *, artifact_path: Path, row: dict[str, Any]
 ) -> None:
@@ -1782,6 +1825,23 @@ def validate_artifact_row(
             require_phase0=require_phase0,
         )
         validate_ngram_claim_telemetry(
+            artifact_path=artifact_path,
+            row=row,
+            require_phase0=require_phase0,
+        )
+    elif engine in AX_MTP_ENGINE_KEYS:
+        validate_phase0_runtime_identity(artifact_path=artifact_path, row=row)
+        validate_ax_prefill_decode_split(
+            artifact_path=artifact_path,
+            row=row,
+            require_phase0=require_phase0,
+        )
+        validate_run_stability_if_present(
+            artifact_path=artifact_path,
+            row=row,
+            require_phase0=require_phase0,
+        )
+        validate_mtp_row_contract(
             artifact_path=artifact_path,
             row=row,
             require_phase0=require_phase0,

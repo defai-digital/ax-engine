@@ -24,7 +24,14 @@ def metric(value: float) -> dict[str, float]:
     return {"median": value, "mean": value, "min": value, "max": value}
 
 
-def ngram_telemetry(*, attempts: int, accepted: int, fallback_steps: int = 0) -> dict[str, int]:
+def ngram_telemetry(
+    *,
+    attempts: int,
+    accepted: int,
+    fallback_steps: int = 0,
+    mtp_draft_tokens: int = 0,
+    mtp_ngram_hit_steps: int = 0,
+) -> dict[str, int]:
     return {
         "ax_ngram_draft_attempts": attempts,
         "ax_ngram_draft_tokens": accepted,
@@ -46,6 +53,8 @@ def ngram_telemetry(*, attempts: int, accepted: int, fallback_steps: int = 0) ->
         "ax_ngram_policy_variant": 1,
         "ax_ngram_adaptive_draft_len_steps": attempts,
         "ax_ngram_adaptive_draft_len_total": accepted,
+        "ax_mtp_draft_tokens": mtp_draft_tokens,
+        "ax_mtp_ngram_hit_steps": mtp_ngram_hit_steps,
     }
 
 
@@ -719,6 +728,119 @@ class ReadmePerformanceArtifactTests(unittest.TestCase):
             artifact_path=Path("artifact.json"),
             row=row,
         )
+
+    def test_phase0_pure_mtp_row_accepts_mtp_only_contract(self) -> None:
+        prompt_hash = checker.token_sha256([1, 2, 3, 4])
+        row = {
+            "engine": "ax_engine_mlx_pure_mtp",
+            "method": "server_sse_runner_time_us",
+            "timing_scope": "ax_engine_runner_time_us",
+            "runtime_identity": {
+                "selected_backend": "mlx",
+                "route_identity": "repo_owned_mlx",
+            },
+            "batch_size": 1,
+            "prefill_step_size": 2048,
+            "prompt_tokens": 4,
+            "generation_tokens": 2,
+            "prompt_token_ids_sha256": prompt_hash,
+            "prefill_tok_s": metric(80.0),
+            "decode_tok_s": metric(11.0),
+            "ttft_ms": metric(30.0),
+            "prefill_s": metric(0.1),
+            "decode_s": metric(0.2),
+            "trials": [{}, {}, {}],
+            "ttft_source": "ax_engine_runner_prefill_time",
+            "ax_mlx_telemetry": ax_mlx_telemetry(),
+            "ax_decode_policy": "mtp_head_only_no_ngram_stacking",
+            "ax_decode_claim_status": "mtp_head_only_effective",
+            "ax_decode_effective_route": "mtp_head_only_verify_loop",
+            "run_stability": {
+                "schema_version": checker.RUN_STABILITY_SCHEMA_VERSION,
+                "metric": "decode_tok_s",
+                "classification": "stable_enough",
+                "trial_count": 3,
+            },
+            "ngram_acceleration_telemetry": ngram_telemetry(
+                attempts=0,
+                accepted=0,
+                mtp_draft_tokens=2,
+            ),
+        }
+
+        checker.validate_artifact_row(
+            artifact_path=Path("artifact.json"),
+            artifact={
+                "prefill_step_size": 2048,
+                "repetitions": 3,
+                "claim_gate": {
+                    "schema_version": checker.PHASE0_CLAIM_GATE_SCHEMA_VERSION,
+                },
+            },
+            row=row,
+            prompt_hashes={(4, 2): prompt_hash},
+        )
+
+    def test_phase0_mtp_row_rejects_ngram_stacking_hits(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.write_fixture(root)
+            artifact_path = (
+                root / "benchmarks/results/mlx-inference/local/gemma-4-e2b-it-4bit.json"
+            )
+            artifact = json.loads(artifact_path.read_text())
+            direct = next(
+                row for row in artifact["results"] if row["engine"] == "ax_engine_mlx"
+            )
+            mtp_row = dict(direct)
+            mtp_row.update(
+                {
+                    "engine": "ax_engine_mlx_pure_mtp",
+                    "ax_decode_policy": "mtp_head_only_no_ngram_stacking",
+                    "ax_decode_claim_status": "mtp_head_only_effective",
+                    "ax_decode_effective_route": "mtp_head_only_verify_loop",
+                    "ngram_acceleration_telemetry": ngram_telemetry(
+                        attempts=0,
+                        accepted=0,
+                        mtp_draft_tokens=2,
+                        mtp_ngram_hit_steps=1,
+                    ),
+                }
+            )
+            artifact["results"].append(mtp_row)
+            artifact_path.write_text(json.dumps(artifact, indent=2) + "\n")
+
+            with self.assertRaisesRegex(
+                checker.ArtifactCheckError,
+                "MTP AX row has n-gram stacking hits",
+            ):
+                checker.check_readme_performance(
+                    repo_root=root,
+                    readme_path=root / "README.md",
+                    expected_metric_count=6,
+                )
+
+    def test_phase0_mtp_row_rejects_missing_effective_claim(self) -> None:
+        row = {
+            "engine": "ax_engine_gemma4_assistant_mtp",
+            "ax_decode_policy": "gemma4_assistant_mtp_no_ngram_stacking",
+            "ax_decode_claim_status": "mtp_head_only_no_observed_draft_path",
+            "ax_decode_effective_route": "mtp_head_only_not_observed",
+            "ngram_acceleration_telemetry": ngram_telemetry(
+                attempts=0,
+                accepted=0,
+            ),
+        }
+
+        with self.assertRaisesRegex(
+            checker.ArtifactCheckError,
+            "MTP AX row lacks effective MTP claim",
+        ):
+            checker.validate_mtp_row_contract(
+                artifact_path=Path("artifact.json"),
+                row=row,
+                require_phase0=True,
+            )
 
     def test_build_provenance_rejects_tracked_dirty_artifact(self) -> None:
         with self.assertRaisesRegex(
