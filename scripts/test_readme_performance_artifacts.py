@@ -738,14 +738,15 @@ class ReadmePerformanceArtifactTests(unittest.TestCase):
             }
             artifact_path.write_text(json.dumps(artifact, indent=2) + "\n")
 
-            checked = checker.check_readme_performance(
+            summary = checker.check_readme_performance_summary(
                 repo_root=root,
                 readme_path=root / "README.md",
                 expected_metric_count=6,
                 require_condition_metadata=True,
             )
 
-        self.assertEqual(len(checked), 6)
+        self.assertEqual(len(summary.metric_checks), 6)
+        self.assertEqual(len(summary.condition_metadata_checks), 1)
 
     def test_ax_overlay_allows_ax_only_artifact_without_mlx_lm_rows(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

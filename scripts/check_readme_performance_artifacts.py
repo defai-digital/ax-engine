@@ -755,6 +755,19 @@ def collect_condition_metadata_gaps(
     artifact_sources: list[ArtifactSource],
     needed_labels: frozenset[tuple[str, str]] | None = None,
 ) -> list[ConditionMetadataGap]:
+    _, gaps = collect_condition_metadata_checks(
+        artifact_sources=artifact_sources,
+        needed_labels=needed_labels,
+    )
+    return gaps
+
+
+def collect_condition_metadata_checks(
+    *,
+    artifact_sources: list[ArtifactSource],
+    needed_labels: frozenset[tuple[str, str]] | None = None,
+) -> tuple[list[str], list[ConditionMetadataGap]]:
+    checks: list[str] = []
     gaps: list[ConditionMetadataGap] = []
     for source in artifact_sources:
         if not source.artifact_dir.exists():
@@ -768,13 +781,14 @@ def collect_condition_metadata_gaps(
             artifact = json.loads(path.read_text())
             if artifact.get("schema_version") != MLX_INFERENCE_STACK_SCHEMA_VERSION:
                 continue
-            gaps.extend(
-                artifact_condition_metadata_gaps(
-                    artifact_path=path,
-                    artifact=artifact,
-                )
+            artifact_gaps = artifact_condition_metadata_gaps(
+                artifact_path=path,
+                artifact=artifact,
             )
-    return gaps
+            gaps.extend(artifact_gaps)
+            if not artifact_gaps:
+                checks.append(f"{source.artifact_dir}:{path.name}")
+    return checks, gaps
 
 
 def assert_condition_metadata_complete(gaps: list[ConditionMetadataGap]) -> None:
@@ -2503,9 +2517,11 @@ def check_readme_performance_summary(
     )
     metrics = parse_readme_metrics(resolved_readme)
     needed_labels = frozenset((metric.model, metric.quantization) for metric in metrics)
-    condition_metadata_gaps = collect_condition_metadata_gaps(
-        artifact_sources=artifact_sources,
-        needed_labels=needed_labels,
+    condition_metadata_checks, condition_metadata_gaps = (
+        collect_condition_metadata_checks(
+            artifact_sources=artifact_sources,
+            needed_labels=needed_labels,
+        )
     )
     if require_condition_metadata:
         assert_condition_metadata_complete(condition_metadata_gaps)
@@ -2554,14 +2570,7 @@ def check_readme_performance_summary(
     return ReadmeCheckResult(
         metric_checks=checked,
         narrative_claim_checks=narrative_claim_checks,
-        condition_metadata_checks=[
-            f"{source.artifact_dir}:{path.name}"
-            for source in artifact_sources
-            for path in sorted(source.artifact_dir.glob("*.json"))
-            if path.exists()
-            and ARTIFACT_LABELS.get(path.stem) in needed_labels
-            and not any(gap.artifact_path == path for gap in condition_metadata_gaps)
-        ],
+        condition_metadata_checks=condition_metadata_checks,
     )
 
 
