@@ -512,6 +512,41 @@ class DirectNgramOutperformanceTests(unittest.TestCase):
                     require_sweep_ok=True,
                 )
 
+    def test_sweep_missing_status_fails_completion_gate(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_artifact(
+                root,
+                rows=[
+                    row("mlx_lm", 100.0),
+                    row("ax_engine_mlx", 105.0),
+                    row(
+                        "ax_engine_mlx_ngram_accel",
+                        140.0,
+                        status=checker.NGRAM_EFFECTIVE_STATUS,
+                        route=checker.NGRAM_EFFECTIVE_ROUTE,
+                    ),
+                ],
+            )
+            (root / "sweep_results.json").write_text(
+                json.dumps(
+                    {
+                        "publication_candidate": False,
+                        "failed_row_count": 1,
+                        "status_counts": {"malformed_status": 1},
+                        "rows": [{"slug": "missing-status"}],
+                    }
+                )
+            )
+
+            with self.assertRaisesRegex(checker.GateError, "malformed_status"):
+                checker.check_artifact_dir(
+                    root,
+                    min_delta_pct=0.0,
+                    require_effective_ngram=True,
+                    require_sweep_ok=True,
+                )
+
     def test_sweep_failed_row_count_drift_fails_completion_gate(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

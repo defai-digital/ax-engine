@@ -289,11 +289,18 @@ def check_sweep_results(artifact_dir: Path) -> list[str]:
                 status_counts.get("malformed_non_object", 0) + 1
             )
             continue
-        status = str(row.get("status", "unknown"))
+        label = row.get("slug") or row.get("label") or f"row[{index}]"
+        raw_status = row.get("status")
+        if not isinstance(raw_status, str) or not raw_status:
+            failures.append(f"{label}: malformed_status")
+            status_counts["malformed_status"] = (
+                status_counts.get("malformed_status", 0) + 1
+            )
+            continue
+        status = raw_status
         status_counts[status] = status_counts.get(status, 0) + 1
-        if row.get("status") != "ok":
-            label = row.get("slug") or row.get("label") or "<unknown>"
-            reason = row.get("reason") or row.get("error") or row.get("status")
+        if status != "ok":
+            reason = row.get("reason") or row.get("error") or status
             failures.append(f"{label}: {reason}")
     if isinstance(payload, dict):
         expected_failed_count = len(failures)
