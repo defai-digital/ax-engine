@@ -478,6 +478,44 @@ class DirectNgramOutperformanceTests(unittest.TestCase):
                     require_sweep_ok=True,
                 )
 
+    def test_sweep_metadata_failure_does_not_change_failed_row_count(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_artifact(
+                root,
+                rows=[
+                    row("mlx_lm", 100.0),
+                    row("ax_engine_mlx", 105.0),
+                    row(
+                        "ax_engine_mlx_ngram_accel",
+                        140.0,
+                        status=checker.NGRAM_EFFECTIVE_STATUS,
+                        route=checker.NGRAM_EFFECTIVE_ROUTE,
+                    ),
+                ],
+            )
+            (root / "sweep_results.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": "wrong",
+                        "publication_candidate": False,
+                        "failed_row_count": 0,
+                        "status_counts": {"ok": 1},
+                        "rows": [{"slug": "ok-row", "status": "ok"}],
+                    }
+                )
+            )
+
+            failures = checker.check_sweep_results(root)
+
+        self.assertIn(
+            "sweep_results.json has unsupported schema_version='wrong'",
+            failures,
+        )
+        self.assertFalse(
+            any(failure.startswith("failed_row_count=") for failure in failures)
+        )
+
     def test_sweep_empty_rows_fails_completion_gate(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

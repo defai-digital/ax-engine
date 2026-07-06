@@ -280,12 +280,15 @@ def check_sweep_results(artifact_dir: Path) -> list[str]:
     if not isinstance(rows, list):
         raise GateError(f"{sweep_path} has no rows list")
     failures: list[str] = []
+    row_failure_count = 0
     status_counts: dict[str, int] = {}
     if not rows:
         failures.append("sweep_results.json has empty rows list")
+        row_failure_count += 1
     for index, row in enumerate(rows):
         if not isinstance(row, dict):
             failures.append(f"row[{index}]: malformed_non_object")
+            row_failure_count += 1
             status_counts["malformed_non_object"] = (
                 status_counts.get("malformed_non_object", 0) + 1
             )
@@ -294,6 +297,7 @@ def check_sweep_results(artifact_dir: Path) -> list[str]:
         raw_status = row.get("status")
         if not isinstance(raw_status, str) or not raw_status:
             failures.append(f"{label}: malformed_status")
+            row_failure_count += 1
             status_counts["malformed_status"] = (
                 status_counts.get("malformed_status", 0) + 1
             )
@@ -303,6 +307,7 @@ def check_sweep_results(artifact_dir: Path) -> list[str]:
         if status != "ok":
             reason = row.get("reason") or row.get("error") or status
             failures.append(f"{label}: {reason}")
+            row_failure_count += 1
     if isinstance(payload, dict):
         schema_version = payload.get("schema_version")
         if (
@@ -312,15 +317,14 @@ def check_sweep_results(artifact_dir: Path) -> list[str]:
             failures.append(
                 f"sweep_results.json has unsupported schema_version={schema_version!r}"
             )
-        expected_failed_count = len(failures)
-        if payload.get("publication_candidate") is False and expected_failed_count == 0:
+        if payload.get("publication_candidate") is False and not failures:
             failures.append("publication_candidate=false but all rows are ok")
-        if payload.get("publication_candidate") is True and expected_failed_count:
+        if payload.get("publication_candidate") is True and failures:
             failures.append("publication_candidate=true with non-ok rows")
         failed_row_count = payload.get("failed_row_count")
-        if failed_row_count is not None and failed_row_count != expected_failed_count:
+        if failed_row_count is not None and failed_row_count != row_failure_count:
             failures.append(
-                f"failed_row_count={failed_row_count} but found {expected_failed_count}"
+                f"failed_row_count={failed_row_count} but found {row_failure_count}"
             )
         recorded_status_counts = payload.get("status_counts")
         if (
