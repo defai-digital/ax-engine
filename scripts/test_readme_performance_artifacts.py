@@ -881,6 +881,11 @@ class ReadmePerformanceArtifactTests(unittest.TestCase):
                         "thermal_status_lines": [
                             "Note: No thermal warning level has been recorded"
                         ],
+                        "load_average": {
+                            "one_minute": 1.0,
+                            "five_minutes": 1.5,
+                            "fifteen_minutes": 2.0,
+                        },
                         "thermal_warning_recorded": False,
                         "performance_warning_recorded": True,
                         "cpu_power_status_recorded": False,
@@ -904,6 +909,25 @@ class ReadmePerformanceArtifactTests(unittest.TestCase):
                     "host": {
                         "performance_conditions": {
                             "performance_warning_recorded": "no"
+                        }
+                    }
+                },
+            )
+
+        with self.assertRaisesRegex(
+            checker.ArtifactCheckError,
+            r"load_average.one_minute must be numeric",
+        ):
+            checker.validate_host_performance_conditions(
+                artifact_path=Path("artifact.json"),
+                artifact={
+                    "host": {
+                        "performance_conditions": {
+                            "load_average": {
+                                "one_minute": "1",
+                                "five_minutes": 1.5,
+                                "fifteen_minutes": 2.0,
+                            }
                         }
                     }
                 },

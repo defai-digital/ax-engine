@@ -116,9 +116,16 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
                 )
             raise AssertionError(cmd)
 
-        with patch.object(subprocess, "check_output", side_effect=fake_check_output):
+        with (
+            patch.object(subprocess, "check_output", side_effect=fake_check_output),
+            patch.object(bench.os, "getloadavg", return_value=(1.23456, 2.0, 3.0)),
+        ):
             metadata = bench.collect_performance_condition_metadata()
 
+        self.assertEqual(
+            metadata["load_average"],
+            {"one_minute": 1.235, "five_minutes": 2.0, "fifteen_minutes": 3.0},
+        )
         self.assertEqual(metadata["power_source"], "AC Power")
         self.assertIn("80%", metadata["battery_status"])
         self.assertFalse(metadata["thermal_warning_recorded"])

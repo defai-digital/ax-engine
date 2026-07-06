@@ -661,6 +661,20 @@ def validate_host_performance_conditions(
                 f"{artifact_path} host.performance_conditions.thermal_status_lines "
                 "must be a string list"
             )
+    if "load_average" in conditions:
+        load_average = conditions["load_average"]
+        if not isinstance(load_average, dict):
+            raise ArtifactCheckError(
+                f"{artifact_path} host.performance_conditions.load_average "
+                "must be an object"
+            )
+        for key in ("one_minute", "five_minutes", "fifteen_minutes"):
+            value = load_average.get(key)
+            if not isinstance(value, (int, float)) or isinstance(value, bool):
+                raise ArtifactCheckError(
+                    f"{artifact_path} host.performance_conditions.load_average."
+                    f"{key} must be numeric"
+                )
 
 
 def tracked_dirty_is_benchmark_doc_only(status: Any) -> bool:

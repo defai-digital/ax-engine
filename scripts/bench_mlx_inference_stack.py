@@ -616,6 +616,16 @@ def _command_output_lines(cmd: list[str]) -> list[str]:
 
 def collect_performance_condition_metadata() -> dict[str, Any]:
     metadata: dict[str, Any] = {}
+    try:
+        load_1m, load_5m, load_15m = os.getloadavg()
+        metadata["load_average"] = {
+            "one_minute": round(load_1m, 3),
+            "five_minutes": round(load_5m, 3),
+            "fifteen_minutes": round(load_15m, 3),
+        }
+    except Exception:
+        pass
+
     battery_lines = _command_output_lines(["pmset", "-g", "batt"])
     if battery_lines:
         match = re.search(r"Now drawing from '([^']+)'", battery_lines[0])
