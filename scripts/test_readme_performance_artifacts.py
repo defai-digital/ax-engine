@@ -1249,6 +1249,27 @@ class ReadmePerformanceArtifactTests(unittest.TestCase):
                     expected_metric_count=6,
                 )
 
+    def test_phase0_artifact_rejects_non_object_result_row(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.write_fixture(root)
+            artifact_path = (
+                root / "benchmarks/results/mlx-inference/local/gemma-4-e2b-it-4bit.json"
+            )
+            artifact = json.loads(artifact_path.read_text())
+            artifact["results"].append("bad-row")
+            artifact_path.write_text(json.dumps(artifact, indent=2) + "\n")
+
+            with self.assertRaisesRegex(
+                checker.ArtifactCheckError,
+                "has non-object result row",
+            ):
+                checker.check_readme_performance(
+                    repo_root=root,
+                    readme_path=root / "README.md",
+                    expected_metric_count=6,
+                )
+
     def test_direct_ax_row_rejects_hidden_hotpath_fallback_counters(self) -> None:
         fallback_keys = [
             "ax_mlx_single_decode_steps",

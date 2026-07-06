@@ -1938,6 +1938,11 @@ def collect_artifact_rows(
         seen_reference_shapes: set[tuple[int, int]] = set()
         for row in artifact.get("results", []):
             if not isinstance(row, dict):
+                if (
+                    phase0_claim_gate_enabled(artifact)
+                    or "run_stability_summary" in artifact
+                ):
+                    raise ArtifactCheckError(f"{path} has non-object result row")
                 continue
             validate_delegated_metrics_if_present(
                 artifact_path=path,
