@@ -279,13 +279,35 @@ def check_sweep_results(artifact_dir: Path) -> list[str]:
     if not isinstance(rows, list):
         raise GateError(f"{sweep_path} has no rows list")
     failures: list[str] = []
+    status_counts: dict[str, int] = {}
     for row in rows:
         if not isinstance(row, dict):
             continue
+        status = str(row.get("status", "unknown"))
+        status_counts[status] = status_counts.get(status, 0) + 1
         if row.get("status") != "ok":
             label = row.get("slug") or row.get("label") or "<unknown>"
             reason = row.get("reason") or row.get("error") or row.get("status")
             failures.append(f"{label}: {reason}")
+    if isinstance(payload, dict):
+        expected_failed_count = len(failures)
+        if payload.get("publication_candidate") is False and expected_failed_count == 0:
+            failures.append("publication_candidate=false but all rows are ok")
+        if payload.get("publication_candidate") is True and expected_failed_count:
+            failures.append("publication_candidate=true with non-ok rows")
+        failed_row_count = payload.get("failed_row_count")
+        if failed_row_count is not None and failed_row_count != expected_failed_count:
+            failures.append(
+                f"failed_row_count={failed_row_count} but found {expected_failed_count}"
+            )
+        recorded_status_counts = payload.get("status_counts")
+        if (
+            recorded_status_counts is not None
+            and recorded_status_counts != status_counts
+        ):
+            failures.append(
+                f"status_counts={recorded_status_counts!r} but found {status_counts!r}"
+            )
     return failures
 
 

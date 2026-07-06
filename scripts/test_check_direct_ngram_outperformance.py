@@ -405,6 +405,113 @@ class DirectNgramOutperformanceTests(unittest.TestCase):
                     require_sweep_ok=True,
                 )
 
+    def test_sweep_publication_candidate_drift_fails_completion_gate(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_artifact(
+                root,
+                rows=[
+                    row("mlx_lm", 100.0),
+                    row("ax_engine_mlx", 105.0),
+                    row(
+                        "ax_engine_mlx_ngram_accel",
+                        140.0,
+                        status=checker.NGRAM_EFFECTIVE_STATUS,
+                        route=checker.NGRAM_EFFECTIVE_ROUTE,
+                    ),
+                ],
+            )
+            (root / "sweep_results.json").write_text(
+                json.dumps(
+                    {
+                        "publication_candidate": False,
+                        "failed_row_count": 0,
+                        "status_counts": {"ok": 1},
+                        "rows": [{"slug": "ok-row", "status": "ok"}],
+                    }
+                )
+            )
+
+            with self.assertRaisesRegex(
+                checker.GateError, "publication_candidate=false"
+            ):
+                checker.check_artifact_dir(
+                    root,
+                    min_delta_pct=0.0,
+                    require_effective_ngram=True,
+                    require_sweep_ok=True,
+                )
+
+    def test_sweep_failed_row_count_drift_fails_completion_gate(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_artifact(
+                root,
+                rows=[
+                    row("mlx_lm", 100.0),
+                    row("ax_engine_mlx", 105.0),
+                    row(
+                        "ax_engine_mlx_ngram_accel",
+                        140.0,
+                        status=checker.NGRAM_EFFECTIVE_STATUS,
+                        route=checker.NGRAM_EFFECTIVE_ROUTE,
+                    ),
+                ],
+            )
+            (root / "sweep_results.json").write_text(
+                json.dumps(
+                    {
+                        "publication_candidate": True,
+                        "failed_row_count": 1,
+                        "status_counts": {"ok": 1},
+                        "rows": [{"slug": "ok-row", "status": "ok"}],
+                    }
+                )
+            )
+
+            with self.assertRaisesRegex(checker.GateError, "failed_row_count=1"):
+                checker.check_artifact_dir(
+                    root,
+                    min_delta_pct=0.0,
+                    require_effective_ngram=True,
+                    require_sweep_ok=True,
+                )
+
+    def test_sweep_status_counts_drift_fails_completion_gate(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_artifact(
+                root,
+                rows=[
+                    row("mlx_lm", 100.0),
+                    row("ax_engine_mlx", 105.0),
+                    row(
+                        "ax_engine_mlx_ngram_accel",
+                        140.0,
+                        status=checker.NGRAM_EFFECTIVE_STATUS,
+                        route=checker.NGRAM_EFFECTIVE_ROUTE,
+                    ),
+                ],
+            )
+            (root / "sweep_results.json").write_text(
+                json.dumps(
+                    {
+                        "publication_candidate": True,
+                        "failed_row_count": 0,
+                        "status_counts": {"bench_failed": 1},
+                        "rows": [{"slug": "ok-row", "status": "ok"}],
+                    }
+                )
+            )
+
+            with self.assertRaisesRegex(checker.GateError, "status_counts"):
+                checker.check_artifact_dir(
+                    root,
+                    min_delta_pct=0.0,
+                    require_effective_ngram=True,
+                    require_sweep_ok=True,
+                )
+
 
 if __name__ == "__main__":
     unittest.main()
