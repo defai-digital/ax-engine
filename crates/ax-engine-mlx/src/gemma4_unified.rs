@@ -7,9 +7,45 @@ use mlx_sys::{
     take,
 };
 
+use thiserror::Error;
+
 use crate::model::{ModelConfig, embed_tokens};
 use crate::model::{scale_hidden_pub, shared::qw};
 use crate::weights::{Gemma4UnifiedAudioWeights, Gemma4UnifiedVisionWeights, ModelWeights};
+
+#[derive(Debug, Error)]
+pub enum Gemma4UnifiedError {
+    #[error("Gemma4 unified image input requires vision weights")]
+    MissingVisionWeights,
+    #[error("Gemma4 unified video input requires vision weights")]
+    MissingVideoVisionWeights,
+    #[error("Gemma4 unified audio input requires audio weights")]
+    MissingAudioWeights,
+    #[error("Gemma4 unified video input frame_count must be greater than zero")]
+    ZeroVideoFrameCount,
+    #[error("Gemma4 unified image/video input has no patches")]
+    NoPatches,
+    #[error("Gemma4 unified image/video pixel_values length must divide by patch count")]
+    PixelValuesNotDivisible,
+    #[error(
+        "Gemma4 unified image/video soft-token count mismatch: span expects {expected}, processor tensors contain {actual} valid patches"
+    )]
+    SoftTokenMismatch { expected: usize, actual: usize },
+    #[error("Gemma4 unified audio input frame_count and feature_count must be greater than zero")]
+    ZeroAudioFrameOrFeatureCount,
+    #[error("Gemma4 unified audio feature length mismatch: got {got}, expected {expected}")]
+    AudioFeatureLengthMismatch { got: usize, expected: usize },
+    #[error(
+        "Gemma4 unified audio soft-token count mismatch: span expects {expected}, features contain {actual} frames"
+    )]
+    AudioSoftTokenMismatch { expected: u32, actual: usize },
+    #[error("Gemma4 unified video soft-token range overflow")]
+    VideoSoftTokenRangeOverflow,
+    #[error(
+        "Gemma4 unified video soft-token range mismatch: ranges expect {expected}, embeddings contain {actual}"
+    )]
+    VideoSoftTokenRangeCountMismatch { expected: usize, actual: usize },
+}
 
 const GEMMA4_UNIFIED_LAYER_NORM_EPS: f32 = 1.0e-5;
 
@@ -31,7 +67,7 @@ pub(crate) fn build_chunk_embeddings(
     token_ids: &[u32],
     chunk_start: usize,
     inputs: &Gemma4UnifiedRuntimeInputs,
-) -> Result<Gemma4UnifiedChunkEmbeddings, String> {
+) -> Result<Gemma4UnifiedChunkEmbeddings, Gemma4UnifiedError> {
     let mut hidden = embed_tokens(token_ids, &weights.token_embedding, cfg.hidden_size);
     hidden = astype(&hidden, MlxDtype::Bfloat16, None);
     if let Some(scale) = cfg.hidden_states_scale {
@@ -76,11 +112,11 @@ fn image_embeddings(
     cfg: &ModelConfig,
     weights: &ModelWeights,
     image: &Gemma4UnifiedImageRuntimeInput,
-) -> Result<MlxArray, String> {
+) -> Result<MlxArray, Gemma4UnifiedError> {
     let vision = weights
         .gemma4_unified_vision
         .as_ref()
-        .ok_or_else(|| "Gemma4 unified image input requires vision weights".to_string())?;
+        .ok_or(Gemma4UnifiedError::MissingVisionWeights)?;
     embed_vision_patch_values(
         cfg,
         vision,
@@ -94,13 +130,13 @@ fn video_embeddings(
     cfg: &ModelConfig,
     weights: &ModelWeights,
     video: &Gemma4UnifiedVideoRuntimeInput,
-) -> Result<MlxArray, String> {
+) -> Result<MlxArray, Gemma4UnifiedError> {
     let vision = weights
         .gemma4_unified_vision
         .as_ref()
-        .ok_or_else(|| "Gemma4 unified video input requires vision weights".to_string())?;
+        .ok_or(Gemma4UnifiedError::MissingVideoVisionWeights)?;
     if video.frame_count == 0 {
-        return Err("Gemma4 unified video input frame_count must be greater than zero".to_string());
+        return Err(Gemma4UnifiedError::ZeroVideoFrameCount);
     }
     embed_vision_patch_values(
         cfg,
@@ -115,11 +151,11 @@ fn audio_embeddings(
     cfg: &ModelConfig,
     weights: &ModelWeights,
     audio: &Gemma4UnifiedAudioRuntimeInput,
-) -> Result<MlxArray, String> {
+) -> Result<MlxArray, Gemma4UnifiedError> {
     let audio_weights = weights
         .gemma4_unified_audio
         .as_ref()
-        .ok_or_else(|| "Gemma4 unified audio input requires audio weights".to_string())?;
+        .ok_or(Gemma4UnifiedError::MissingAudioWeights)?;
     embed_audio_features(cfg, audio_weights, audio)
 }
 
@@ -129,18 +165,16 @@ fn embed_vision_patch_values(
     pixel_values: &[f32],
     pixel_position_ids: &[[i32; 2]],
     expected_soft_tokens: usize,
-) -> Result<MlxArray, String> {
+) -> Result<MlxArray, Gemma4UnifiedError> {
     let patch_count = pixel_position_ids.len();
     if patch_count == 0 {
-        return Err("Gemma4 unified image/video input has no patches".to_string());
+        return Err(Gemma4UnifiedError::NoPatches);
     }
     let patch_dim = pixel_values
         .len()
         .checked_div(patch_count)
         .filter(|dim| *dim > 0 && *dim * patch_count == pixel_values.len())
-        .ok_or_else(|| {
-            "Gemma4 unified image/video pixel_values length must divide by patch count".to_string()
-        })?;
+        .ok_or(Gemma4UnifiedError::PixelValuesNotDivisible)?;
 
     let pixel = MlxArray::from_raw_data(
         pixel_values.as_ptr().cast(),
@@ -186,10 +220,10 @@ fn embed_vision_patch_values(
     );
     let valid_indices = valid_patch_indices(pixel_position_ids);
     if valid_indices.len() != expected_soft_tokens {
-        return Err(format!(
-            "Gemma4 unified image/video soft-token count mismatch: span expects {expected_soft_tokens}, processor tensors contain {} valid patches",
-            valid_indices.len()
-        ));
+        return Err(Gemma4UnifiedError::SoftTokenMismatch {
+            expected: expected_soft_tokens,
+            actual: valid_indices.len(),
+        });
     }
     if valid_indices.len() == patch_count {
         Ok(projected)
@@ -252,27 +286,23 @@ fn embed_audio_features(
     cfg: &ModelConfig,
     weights: &Gemma4UnifiedAudioWeights,
     audio: &Gemma4UnifiedAudioRuntimeInput,
-) -> Result<MlxArray, String> {
+) -> Result<MlxArray, Gemma4UnifiedError> {
     let frame_count = audio.frame_count as usize;
     let feature_count = audio.feature_count as usize;
     if frame_count == 0 || feature_count == 0 {
-        return Err(
-            "Gemma4 unified audio input frame_count and feature_count must be greater than zero"
-                .to_string(),
-        );
+        return Err(Gemma4UnifiedError::ZeroAudioFrameOrFeatureCount);
     }
     if audio.input_features.len() != frame_count * feature_count {
-        return Err(format!(
-            "Gemma4 unified audio feature length mismatch: got {}, expected {}",
-            audio.input_features.len(),
-            frame_count * feature_count
-        ));
+        return Err(Gemma4UnifiedError::AudioFeatureLengthMismatch {
+            got: audio.input_features.len(),
+            expected: frame_count * feature_count,
+        });
     }
     if audio.span.soft_token_count as usize != frame_count {
-        return Err(format!(
-            "Gemma4 unified audio soft-token count mismatch: span expects {}, features contain {frame_count} frames",
-            audio.span.soft_token_count
-        ));
+        return Err(Gemma4UnifiedError::AudioSoftTokenMismatch {
+            expected: audio.span.soft_token_count,
+            actual: frame_count,
+        });
     }
     let features = MlxArray::from_raw_data(
         audio.input_features.as_ptr().cast(),
@@ -296,7 +326,7 @@ fn overwrite_span(
     span: &Gemma4UnifiedTokenSpan,
     chunk_start: usize,
     hidden_size: usize,
-) -> Result<MlxArray, String> {
+) -> Result<MlxArray, Gemma4UnifiedError> {
     let soft_start = span.replacement_start.saturating_add(1);
     let soft_end = soft_start.saturating_add(span.soft_token_count as usize);
     let chunk_end =
@@ -339,7 +369,7 @@ fn overwrite_video_spans(
     video: &Gemma4UnifiedVideoRuntimeInput,
     chunk_start: usize,
     hidden_size: usize,
-) -> Result<MlxArray, String> {
+) -> Result<MlxArray, Gemma4UnifiedError> {
     if video.soft_token_ranges.is_empty() {
         return overwrite_span(hidden, embeddings, &video.span, chunk_start, hidden_size);
     }
@@ -358,16 +388,17 @@ fn overwrite_soft_token_ranges(
     ranges: &[Gemma4UnifiedSoftTokenRange],
     chunk_start: usize,
     hidden_size: usize,
-) -> Result<MlxArray, String> {
+) -> Result<MlxArray, Gemma4UnifiedError> {
     let expected_tokens = ranges.iter().try_fold(0usize, |acc, range| {
         acc.checked_add(range.soft_token_count as usize)
-            .ok_or_else(|| "Gemma4 unified video soft-token range overflow".to_string())
+            .ok_or(Gemma4UnifiedError::VideoSoftTokenRangeOverflow)
     })?;
     let actual_tokens = embeddings.shape().first().copied().unwrap_or(0) as usize;
     if expected_tokens != actual_tokens {
-        return Err(format!(
-            "Gemma4 unified video soft-token range mismatch: ranges expect {expected_tokens}, embeddings contain {actual_tokens}"
-        ));
+        return Err(Gemma4UnifiedError::VideoSoftTokenRangeCountMismatch {
+            expected: expected_tokens,
+            actual: actual_tokens,
+        });
     }
 
     let chunk_end =
@@ -588,14 +619,14 @@ mod tests {
     fn image_input_rejected_when_vision_weights_absent() {
         let err =
             image_embeddings(&text_only_config(), &text_only_weights(), &stub_image()).unwrap_err();
-        assert_eq!(err, "Gemma4 unified image input requires vision weights");
+        assert!(matches!(err, Gemma4UnifiedError::MissingVisionWeights));
     }
 
     #[test]
     fn audio_input_rejected_when_audio_weights_absent() {
         let err =
             audio_embeddings(&text_only_config(), &text_only_weights(), &stub_audio()).unwrap_err();
-        assert_eq!(err, "Gemma4 unified audio input requires audio weights");
+        assert!(matches!(err, Gemma4UnifiedError::MissingAudioWeights));
     }
 
     #[test]
@@ -605,7 +636,7 @@ mod tests {
             soft_token_count: 1,
         }]);
         let err = video_embeddings(&text_only_config(), &text_only_weights(), &video).unwrap_err();
-        assert_eq!(err, "Gemma4 unified video input requires vision weights");
+        assert!(matches!(err, Gemma4UnifiedError::MissingVideoVisionWeights));
     }
 
     fn video_with_ranges(

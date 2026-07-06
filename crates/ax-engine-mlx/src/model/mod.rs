@@ -1,15 +1,37 @@
 use mlx_sys::{
     MlxArray, MlxClosure, MlxDtype, MlxVectorArray, add, astype, broadcast_to, concatenate,
     dequantize, divide, multiply, power, reshape, rms_norm, slice, split, stack, sum_axis, take,
-    take_along_axis, transpose, zeros,
+    take_along_axis, transpose,
 };
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
+use thiserror::Error;
 
 use crate::kv_cache::MlxKVCache;
 use crate::weights::{LayerWeights, ModelWeights, QuantizedWeight};
+
+/// Typed error for Gemma4 assistant MTP forward-path failures.
+#[derive(Debug, Error)]
+pub enum Gemma4AssistantForwardError {
+    #[error("Gemma4 Assistant MTP requires gemma4_assistant draft and gemma4 target")]
+    ModelFamilyMismatch,
+    #[error("Gemma4 assistant missing pre_projection")]
+    MissingPreProjection,
+    #[error("Gemma4 assistant missing post_projection")]
+    MissingPostProjection,
+    #[error("Gemma4 assistant missing target shared KV layer")]
+    MissingSharedKvLayer,
+    #[error("Gemma4 assistant target shared KV layer has no cache")]
+    MissingSharedKvCache,
+    #[error("Gemma4 assistant layer missing q_proj")]
+    MissingQProj,
+    #[error("Gemma4 assistant layer missing o_proj")]
+    MissingOProj,
+    #[error("compiled assistant forward failed")]
+    CompiledForwardFailed,
+}
 
 pub(crate) mod profile;
 pub use profile::{
@@ -1017,18 +1039,19 @@ pub fn gemma4_assistant_forward_one(
     last_token: u32,
     last_backbone_hidden: &MlxArray,
     constant_position: usize,
-) -> Result<(MlxArray, MlxArray), &'static str> {
+) -> Result<(MlxArray, MlxArray), Gemma4AssistantForwardError> {
+    use Gemma4AssistantForwardError as E;
     if assistant_cfg.model_family != "gemma4_assistant" || target_cfg.model_family != "gemma4" {
-        return Err("Gemma4 Assistant MTP requires gemma4_assistant draft and gemma4 target");
+        return Err(E::ModelFamilyMismatch);
     }
     let pre_projection = assistant_weights
         .assistant_pre_projection
         .as_ref()
-        .ok_or("Gemma4 assistant missing pre_projection")?;
+        .ok_or(E::MissingPreProjection)?;
     let post_projection = assistant_weights
         .assistant_post_projection
         .as_ref()
-        .ok_or("Gemma4 assistant missing post_projection")?;
+        .ok_or(E::MissingPostProjection)?;
 
     let mut token_embedding = embed_tokens(
         &[last_token],
@@ -1076,7 +1099,8 @@ fn gemma4_assistant_layer_forward(
     target_shared_layers: Gemma4AssistantSharedKvLayers,
     layer_idx: usize,
     constant_position: usize,
-) -> Result<MlxArray, &'static str> {
+) -> Result<MlxArray, Gemma4AssistantForwardError> {
+    use Gemma4AssistantForwardError as E;
     let (head_dim, rope_theta, rope_dims, layer_rope_freqs, sliding_window, _, _) =
         layer_params(cfg, layer_idx);
     let shared_layer = if sliding_window.is_some() {
@@ -1084,18 +1108,13 @@ fn gemma4_assistant_layer_forward(
     } else {
         target_shared_layers.full_attention_layer
     }
-    .ok_or("Gemma4 assistant missing target shared KV layer")?;
+    .ok_or(E::MissingSharedKvLayer)?;
     let (cached_k, cached_v) = target_cache
         .peek_layer_kv(shared_layer)
-        .ok_or("Gemma4 assistant target shared KV layer has no cache")?;
+        .ok_or(E::MissingSharedKvCache)?;
 
     let normed = rms_norm(hidden, Some(&w.attn_norm), cfg.rms_norm_eps, None);
-    let q_raw = qw(
-        &normed,
-        w.q_proj
-            .as_ref()
-            .ok_or("Gemma4 assistant layer missing q_proj")?,
-    );
+    let q_raw = qw(&normed, w.q_proj.as_ref().ok_or(E::MissingQProj)?);
     let rope_freqs = layer_rope_freqs.or(cfg.rope_freqs.as_ref());
     let (rope_base, rope_freqs_ref) = rope_freqs
         .map(|f| (None, Some(f)))
@@ -1132,13 +1151,8 @@ fn gemma4_assistant_layer_forward(
     let attn_sdpa =
         full_precision_attention(&q_rope, &cached_k, &cached_v, cfg.query_scale, seq, &mask);
     let attn_flat = flatten_attention_output_bhsd(&attn_sdpa, seq, cfg.n_heads, head_dim);
-    let attn_proj = attention_output_projection(
-        &attn_flat,
-        None,
-        w.o_proj
-            .as_ref()
-            .ok_or("Gemma4 assistant layer missing o_proj")?,
-    );
+    let attn_proj =
+        attention_output_projection(&attn_flat, None, w.o_proj.as_ref().ok_or(E::MissingOProj)?);
     let attn_proj = if let Some(post_norm) = &w.attn_post_norm {
         rms_norm(&attn_proj, Some(post_norm), cfg.rms_norm_eps, None)
     } else {
@@ -1160,6 +1174,186 @@ fn gemma4_assistant_layer_forward(
     } else {
         add(&hidden, &ffn, None)
     })
+}
+
+// ── Gemma4 assistant MTP compiled closure infrastructure ─────────────────────
+//
+// Phase 4 of the Gemma model family improvement initiative: scaffolding for a
+// compiled closure that wraps `gemma4_assistant_forward_one`'s layer loop in a
+// single `MlxClosure` dispatched graph. The full `.compile()` integration is
+// deferred to Phase 5 because the assistant reads from the target's frozen KV
+// cache (which changes between decode steps) and uses a dynamic RoPE position
+// (advancing per draft depth) — both require careful input-design to satisfy
+// `mlx_compile`'s pure-function contract.
+//
+// The closure body below captures cfg/weights/cache addresses (the same raw
+// pointer pattern used by `build_compiled_mtp_draft` in `mtp.rs` and the
+// diffusion compiled forward in `diffusion.rs`). The closure is consumed
+// synchronously within the same request scope, so the referenced objects
+// outlive the closure's execution.
+
+use std::sync::Mutex;
+
+/// Compiled closure cache key: `(assistant_hidden_size, assistant_num_layers)`.
+type AssistantClosureKey = (usize, usize);
+
+/// Process-wide cache for the compiled Gemma4 assistant MTP closure.
+/// Keyed by `(assistant_hidden_size, assistant_num_layers)` to handle
+/// different assistant depths. `None` value indicates compilation was
+/// attempted but failed (prevents retry storms).
+///
+/// Phase 4: stores the key for duplicate-compile detection. Phase 5 will
+/// store the actual compiled closure once the pure-input design is complete.
+static GEMMA4_ASSISTANT_CLOSURE_KEY: Mutex<Option<AssistantClosureKey>> = Mutex::new(None);
+
+/// Build an `MlxClosure` wrapping the Gemma4 assistant MTP forward.
+///
+/// The closure captures `assistant_cfg`, `assistant_weights`, `target_cfg`,
+/// `target_weights`, and `target_cache` by raw address (`usize`) because
+/// `MlxClosure::new_dyn()` requires `'static` captures. `target_shared_layers`
+/// is `Copy` and captured directly.
+///
+/// # Safety contract
+///
+/// The returned closure is consumed synchronously (via `.apply()`) within
+/// the same function scope that borrows `assistant_cfg`, `assistant_weights`,
+/// `target_cfg`, `target_weights`, and `target_cache`. Those references
+/// outlive the closure's execution — the closure is never stored or leaked
+/// beyond the calling scope.
+///
+/// # TODO (Phase 5)
+///
+/// Convert to a pure compiled closure:
+/// 1. Pass target KV arrays at shared layers as explicit `MlxArray` inputs.
+/// 2. Pass RoPE position as an `MlxArray` input and route through
+///    `mlx_fast_rope_dynamic` so the compiled graph is position-agnostic.
+/// 3. Pass ring state (window, capacity, write_start) as array inputs for
+///    sliding-window mask construction.
+/// 4. Call `.compile(true)` (shapeless=true) on the closure.
+fn build_gemma4_assistant_closure(
+    assistant_cfg: &ModelConfig,
+    assistant_weights: &ModelWeights,
+    target_cfg: &ModelConfig,
+    target_weights: &ModelWeights,
+    target_cache: &MlxKVCache,
+    target_shared_layers: Gemma4AssistantSharedKvLayers,
+) -> MlxClosure {
+    let assistant_cfg_addr = assistant_cfg as *const ModelConfig as usize;
+    let assistant_weights_addr = assistant_weights as *const ModelWeights as usize;
+    let target_cfg_addr = target_cfg as *const ModelConfig as usize;
+    let target_weights_addr = target_weights as *const ModelWeights as usize;
+    let target_cache_addr = target_cache as *const MlxKVCache as usize;
+
+    MlxClosure::new_dyn(move |inputs: &MlxVectorArray| -> Vec<MlxArray> {
+        // SAFETY: The closure is consumed synchronously within the same request
+        // scope that owns the referenced objects. The addresses remain valid for
+        // the closure's execution lifetime.
+        let assistant_cfg_ref = unsafe { &*(assistant_cfg_addr as *const ModelConfig) };
+        let assistant_weights_ref = unsafe { &*(assistant_weights_addr as *const ModelWeights) };
+        let target_cfg_ref = unsafe { &*(target_cfg_addr as *const ModelConfig) };
+        let target_weights_ref = unsafe { &*(target_weights_addr as *const ModelWeights) };
+        let target_cache_ref = unsafe { &*(target_cache_addr as *const MlxKVCache) };
+
+        // Extract scalar inputs from the MlxVectorArray.
+        let last_token_arr = inputs.get(0); // u32 scalar [1]
+        let last_backbone_hidden = inputs.get(1); // bf16 [1, 1, backbone_hidden]
+        let position_arr = inputs.get(2); // u32 scalar [1]
+
+        // Read scalar values from arrays for the imperative forward.
+        let last_token = last_token_arr.data_u32()[0];
+        let constant_position = position_arr.data_u32()[0] as usize;
+        debug_assert!(constant_position <= u32::MAX as usize, "position overflow");
+
+        // Delegate to the imperative forward path. This produces the same
+        // result as calling `gemma4_assistant_forward_one` directly, but
+        // routes through the MlxClosure interface so Phase 5 can add
+        // `.compile()` without changing the dispatch site.
+        match gemma4_assistant_forward_one(
+            assistant_cfg_ref,
+            assistant_weights_ref,
+            target_cfg_ref,
+            target_weights_ref,
+            target_cache_ref,
+            target_shared_layers,
+            last_token,
+            &last_backbone_hidden,
+            constant_position,
+        ) {
+            Ok((logits, projected_hidden)) => vec![logits, projected_hidden],
+            Err(_) => vec![],
+        }
+    })
+}
+
+/// Record that a closure was compiled for the given key, enabling
+/// duplicate-compile detection in Phase 5.
+fn record_assistant_closure_key(key: AssistantClosureKey) {
+    if let Ok(mut cache) = GEMMA4_ASSISTANT_CLOSURE_KEY.lock() {
+        *cache = Some(key);
+    }
+}
+
+/// Apply the Gemma4 assistant MTP forward through the compiled closure path.
+///
+/// Returns `None` when the compiled path is disabled or fails, signaling
+/// the caller to fall back to the imperative `gemma4_assistant_forward_one`.
+///
+/// Phase 4: builds a fresh closure per call (address captures are
+/// request-scoped). Phase 5 will cache the compiled closure and reuse it
+/// across decode steps within the same request.
+#[allow(clippy::too_many_arguments)]
+pub fn gemma4_assistant_forward_one_compiled(
+    assistant_cfg: &ModelConfig,
+    assistant_weights: &ModelWeights,
+    target_cfg: &ModelConfig,
+    target_weights: &ModelWeights,
+    target_cache: &MlxKVCache,
+    target_shared_layers: Gemma4AssistantSharedKvLayers,
+    last_token: u32,
+    last_backbone_hidden: &MlxArray,
+    constant_position: usize,
+) -> Option<Result<(MlxArray, MlxArray), Gemma4AssistantForwardError>> {
+    if !crate::fastpath::gemma4_assistant_compile_enabled() {
+        return None;
+    }
+
+    let key = (assistant_cfg.hidden_size, assistant_weights.layers.len());
+    record_assistant_closure_key(key);
+
+    // Build a fresh closure with address captures for this request scope.
+    let closure = build_gemma4_assistant_closure(
+        assistant_cfg,
+        assistant_weights,
+        target_cfg,
+        target_weights,
+        target_cache,
+        target_shared_layers,
+    );
+
+    // TODO (Phase 5): Call closure.compile(true) here for shapeless
+    // compilation, then cache the compiled closure by `key`.
+
+    // Build closure inputs: [token_id, backbone_hidden, position].
+    let token_arr = MlxArray::from_raw_data(
+        &last_token as *const u32 as *const u8,
+        4,
+        &[1_i32],
+        MlxDtype::Uint32,
+    );
+    debug_assert!(constant_position <= u32::MAX as usize, "position overflow");
+    let position_u32 = constant_position as u32;
+    let position_arr = MlxArray::from_raw_data(
+        &position_u32 as *const u32 as *const u8,
+        4,
+        &[1_i32],
+        MlxDtype::Uint32,
+    );
+
+    let results = closure.apply(&[&token_arr, last_backbone_hidden, &position_arr]);
+    if results.len() < 2 {
+        return Some(Err(Gemma4AssistantForwardError::CompiledForwardFailed));
+    }
+    Some(Ok((results[0].clone(), results[1].clone())))
 }
 
 /// Cache-free single transformer layer for dense embedding models.
@@ -1231,14 +1425,7 @@ fn layer_forward_dense_embed(
     }
     let kv_heads = (k_raw.shape()[2] as usize)
         .checked_div(head_dim)
-        .unwrap_or_else(|| {
-            tracing::warn!(
-                k_shape_dim = k_raw.shape()[2],
-                head_dim,
-                "k projection output does not divide evenly by head_dim; defaulting to 1 kv head"
-            );
-            1
-        });
+        .expect("k projection output must divide by head_dim");
 
     let value_prep_started = profile.then(Instant::now);
     let v = if flat_attention_shape {
@@ -1332,10 +1519,16 @@ fn layer_forward_dense_embed(
         );
     }
 
-    // 8. SDPA — k_rope/v used directly, no KV-cache writes.
-    let mask_opt: Option<MlxArray> = mask.cloned();
+    // 8. SDPA — k_rope/v used directly, no KV-cache writes. Dense embedding
+    // is bidirectional, so the no-mask case must use MLX's unmasked mode
+    // rather than `full_precision_attention`'s generation-default causal mode.
     let sdpa_started = profile.then(Instant::now);
-    let attn_sdpa = full_precision_attention(&q_rope, &k_rope, &v, cfg.query_scale, seq, &mask_opt);
+    let attn_sdpa = if let Some(mask) = mask {
+        let mask_opt = Some(mask.clone());
+        full_precision_attention(&q_rope, &k_rope, &v, cfg.query_scale, seq, &mask_opt)
+    } else {
+        bidirectional_full_precision_attention(&q_rope, &k_rope, &v, cfg.query_scale)
+    };
     if let Some(started) = sdpa_started {
         embed_profile_eval_elapsed(profile, EmbedProfileStage::Sdpa, started, &[&attn_sdpa]);
     }
@@ -1416,17 +1609,10 @@ fn forward_for_embedding_body(
     mut hidden: MlxArray,
     target_position: Option<usize>,
 ) -> MlxArray {
-    let bidir_mask = build_bidirectional_embed_mask(hidden.shape()[1] as usize, hidden.dtype());
     let mut pending_ffn: Option<MlxArray> = None;
     for (li, layer_w) in weights.layers.iter().enumerate() {
-        let (h, ffn_out) = layer_forward_dense_embed(
-            cfg,
-            layer_w,
-            &hidden,
-            li,
-            pending_ffn.as_ref(),
-            Some(&bidir_mask),
-        );
+        let (h, ffn_out) =
+            layer_forward_dense_embed(cfg, layer_w, &hidden, li, pending_ffn.as_ref(), None);
         hidden = h;
         pending_ffn = Some(ffn_out);
     }
@@ -1511,6 +1697,20 @@ fn embed_tokens_batched(
     )
 }
 
+/// Key type for the padding-mask thread-local cache, extracted to satisfy
+/// `clippy::type_complexity`.
+type PaddingMaskKey = (MlxDtype, usize, Vec<usize>);
+
+thread_local! {
+    static PADDING_MASK_CACHE: RefCell<HashMap<PaddingMaskKey, MlxArray>> =
+        RefCell::new(HashMap::new());
+}
+
+/// Maximum number of entries retained in the padding mask cache before
+/// eviction. 64 covers realistic batch/shape combinations for embedding
+/// forwards without allowing unbounded growth in long-running processes.
+const PADDING_MASK_CACHE_MAX_ENTRIES: usize = 64;
+
 /// Build a bidirectional key-padding mask for the EmbeddingGemma encoder.
 ///
 /// Shape `[batch, 1, max_len, max_len]`, additive: `0.0` where key `j` is a real
@@ -1522,94 +1722,80 @@ fn embed_tokens_batched(
 /// Always returns `Some` (all-zeros when there is no padding): `full_precision_
 /// attention` interprets a `None` mask as **causal** for seq>1, so an explicit
 /// mask is required to get bidirectional (full) attention.
+///
+/// Uses a thread-local cache keyed by `(dtype, max_len, actual_lens)` to avoid
+/// rebuilding identical masks across consecutive embedding forward passes.
 pub(crate) fn build_bidirectional_padding_mask(
     batch: usize,
     max_len: usize,
     actual_lens: &[usize],
     dtype: MlxDtype,
 ) -> Option<MlxArray> {
-    let n = batch * max_len * max_len;
+    let cache_key = (dtype, max_len, actual_lens.to_vec());
+    PADDING_MASK_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if let Some(mask) = cache.get(&cache_key) {
+            return Some(mask.clone());
+        }
 
-    // Build the mask directly in the target dtype to skip the f32→dtype astype
-    // dispatch and its eval() barrier. For bf16 (the common embedding dtype),
-    // this halves host memory usage and eliminates one GPU kernel dispatch.
-    let mask = if dtype == MlxDtype::Bfloat16 {
-        let neg_inf_bf16: u16 = (f32::NEG_INFINITY.to_bits() >> 16) as u16;
-        let mut data = vec![0u16; n];
-        for (b, &len) in actual_lens.iter().enumerate() {
-            for i in 0..max_len {
-                let row = (b * max_len + i) * max_len;
-                for cell in data[row + len..row + max_len].iter_mut() {
-                    *cell = neg_inf_bf16;
+        let n = batch * max_len * max_len;
+
+        // Build the mask directly in the target dtype to skip the f32→dtype astype
+        // dispatch and its eval() barrier. For bf16 (the common embedding dtype),
+        // this halves host memory usage and eliminates one GPU kernel dispatch.
+        let mask = if dtype == MlxDtype::Bfloat16 {
+            let neg_inf_bf16: u16 = (f32::NEG_INFINITY.to_bits() >> 16) as u16;
+            let mut data = vec![0u16; n];
+            for (b, &len) in actual_lens.iter().enumerate() {
+                for i in 0..max_len {
+                    let row = (b * max_len + i) * max_len;
+                    for cell in data[row + len..row + max_len].iter_mut() {
+                        *cell = neg_inf_bf16;
+                    }
                 }
             }
-        }
-        let arr = MlxArray::from_raw_data(
-            data.as_ptr() as *const u8,
-            data.len() * std::mem::size_of::<u16>(),
-            &[batch as i32, 1, max_len as i32, max_len as i32],
-            MlxDtype::Bfloat16,
-        );
-        mlx_sys::eval(&[&arr]);
-        arr
-    } else {
-        let neg_inf = f32::NEG_INFINITY;
-        let mut data = vec![0.0f32; n];
-        for (b, &len) in actual_lens.iter().enumerate() {
-            for i in 0..max_len {
-                let row = (b * max_len + i) * max_len;
-                for cell in data[row + len..row + max_len].iter_mut() {
-                    *cell = neg_inf;
-                }
-            }
-        }
-        let arr = MlxArray::from_raw_data(
-            data.as_ptr() as *const u8,
-            data.len() * std::mem::size_of::<f32>(),
-            &[batch as i32, 1, max_len as i32, max_len as i32],
-            MlxDtype::Float32,
-        );
-        let arr = if dtype == MlxDtype::Float32 {
+            let arr = MlxArray::from_raw_data(
+                data.as_ptr() as *const u8,
+                data.len() * std::mem::size_of::<u16>(),
+                &[batch as i32, 1, max_len as i32, max_len as i32],
+                MlxDtype::Bfloat16,
+            );
+            mlx_sys::eval(&[&arr]);
             arr
         } else {
-            astype(&arr, dtype, None)
+            let neg_inf = f32::NEG_INFINITY;
+            let mut data = vec![0.0f32; n];
+            for (b, &len) in actual_lens.iter().enumerate() {
+                for i in 0..max_len {
+                    let row = (b * max_len + i) * max_len;
+                    for cell in data[row + len..row + max_len].iter_mut() {
+                        *cell = neg_inf;
+                    }
+                }
+            }
+            let arr = MlxArray::from_raw_data(
+                data.as_ptr() as *const u8,
+                data.len() * std::mem::size_of::<f32>(),
+                &[batch as i32, 1, max_len as i32, max_len as i32],
+                MlxDtype::Float32,
+            );
+            let arr = if dtype == MlxDtype::Float32 {
+                arr
+            } else {
+                astype(&arr, dtype, None)
+            };
+            mlx_sys::eval(&[&arr]);
+            arr
         };
-        mlx_sys::eval(&[&arr]);
-        arr
-    };
-    // `mask` is consumed lazily across every layer's SDPA but the host buffer
-    // is freed when this function returns. Force materialization above (eval),
-    // so the deferred graph never reads freed memory.
-    Some(mask)
-}
+        // `mask` is consumed lazily across every layer's SDPA but the host buffer
+        // is freed when this function returns. Force materialization above (eval),
+        // so the deferred graph never reads freed memory.
 
-thread_local! {
-    static BIDIR_MASK_CACHE: RefCell<HashMap<usize, MlxArray>> = RefCell::new(HashMap::new());
-}
-
-/// Maximum number of entries retained in the bidirectional mask cache before
-/// eviction. 256 covers the realistic `seq_len` range for embedding forwards
-/// without allowing unbounded growth in long-running processes.
-const BIDIR_MASK_CACHE_MAX_ENTRIES: usize = 256;
-
-/// Construct a bidirectional (all-attend) mask for embedding forward passes.
-/// Returns `[1, 1, seq_len, seq_len]` zeros tensor in the target dtype.
-/// Uses thread-local caching keyed by `seq_len` to avoid repeated allocations.
-/// Evicts all entries when the cache reaches `BIDIR_MASK_CACHE_MAX_ENTRIES`.
-fn build_bidirectional_embed_mask(seq_len: usize, dtype: MlxDtype) -> MlxArray {
-    BIDIR_MASK_CACHE.with(|cache| {
-        let mut cache = cache.borrow_mut();
-        if let Some(mask) = cache.get(&seq_len)
-            && mask.dtype() == dtype
-        {
-            return mask.clone();
-        }
-        let mask = zeros(&[1, 1, seq_len as i32, seq_len as i32], dtype, None);
-        if cache.len() >= BIDIR_MASK_CACHE_MAX_ENTRIES {
+        if cache.len() >= PADDING_MASK_CACHE_MAX_ENTRIES {
             cache.clear();
         }
-        cache.insert(seq_len, mask.clone());
-        mask
+        cache.insert(cache_key, mask.clone());
+        Some(mask)
     })
 }
 
@@ -1727,7 +1913,7 @@ fn layer_forward_embed_gemma3(
     let (q_raw, k_raw, v_raw, _attn_gate) = qkv_project(cfg, w, &normed, head_dim);
     let kv_heads = (k_raw.shape()[2] as usize)
         .checked_div(head_dim)
-        .unwrap_or(1);
+        .expect("k projection output must divide by head_dim");
     let v = prepare_value_bhsd_from_proj(
         &v_raw,
         v_norm_no_scale,
@@ -2118,17 +2304,10 @@ fn forward_for_embedding_batch_body(
     // Under profiling the runner forces the imperative path, so the per-stage
     // eval barriers below only fire on a real imperative forward.
     let profile = embed_profile_enabled() && hidden.shape()[1] > 1;
-    let bidir_mask = build_bidirectional_embed_mask(hidden.shape()[1] as usize, hidden.dtype());
     let mut pending_ffn: Option<MlxArray> = None;
     for (li, layer_w) in weights.layers.iter().enumerate() {
-        let (h, ffn_out) = layer_forward_dense_embed(
-            cfg,
-            layer_w,
-            &hidden,
-            li,
-            pending_ffn.as_ref(),
-            Some(&bidir_mask),
-        );
+        let (h, ffn_out) =
+            layer_forward_dense_embed(cfg, layer_w, &hidden, li, pending_ffn.as_ref(), None);
         hidden = h;
         pending_ffn = Some(ffn_out);
     }
@@ -2230,17 +2409,10 @@ fn forward_for_embedding_mean_pool_body(
     weights: &ModelWeights,
     mut hidden: MlxArray,
 ) -> MlxArray {
-    let bidir_mask = build_bidirectional_embed_mask(hidden.shape()[1] as usize, hidden.dtype());
     let mut pending_ffn: Option<MlxArray> = None;
     for (li, layer_w) in weights.layers.iter().enumerate() {
-        let (h, ffn_out) = layer_forward_dense_embed(
-            cfg,
-            layer_w,
-            &hidden,
-            li,
-            pending_ffn.as_ref(),
-            Some(&bidir_mask),
-        );
+        let (h, ffn_out) =
+            layer_forward_dense_embed(cfg, layer_w, &hidden, li, pending_ffn.as_ref(), None);
         hidden = h;
         pending_ffn = Some(ffn_out);
     }
@@ -3281,14 +3453,35 @@ mod tests {
     }
 
     #[test]
-    fn embed_bidirectional_mask_construction() {
-        let mask = build_bidirectional_embed_mask(128, MlxDtype::Bfloat16);
-        assert_eq!(mask.shape(), vec![1, 1, 128, 128]);
-        assert_eq!(mask.dtype(), MlxDtype::Bfloat16);
+    fn embed_bidirectional_attention_uses_unmasked_sdpa() {
+        let q_data = [0.0_f32, 0.0];
+        let k_data = [0.0_f32, 0.0];
+        let v_data = [1.0_f32, 3.0];
+        let q = MlxArray::from_raw_data(
+            q_data.as_ptr().cast(),
+            std::mem::size_of_val(&q_data),
+            &[1, 1, 2, 1],
+            MlxDtype::Float32,
+        );
+        let k = MlxArray::from_raw_data(
+            k_data.as_ptr().cast(),
+            std::mem::size_of_val(&k_data),
+            &[1, 1, 2, 1],
+            MlxDtype::Float32,
+        );
+        let v = MlxArray::from_raw_data(
+            v_data.as_ptr().cast(),
+            std::mem::size_of_val(&v_data),
+            &[1, 1, 2, 1],
+            MlxDtype::Float32,
+        );
+        let bidirectional = bidirectional_full_precision_attention(&q, &k, &v, 1.0);
+        let causal_mask = None;
+        let causal = full_precision_attention(&q, &k, &v, 1.0, 2, &causal_mask);
+        eval(&[&bidirectional, &causal]);
 
-        let mask_f32 = build_bidirectional_embed_mask(64, MlxDtype::Float32);
-        assert_eq!(mask_f32.shape(), vec![1, 1, 64, 64]);
-        assert_eq!(mask_f32.dtype(), MlxDtype::Float32);
+        assert_close(bidirectional.data_f32(), &[2.0, 2.0], 1.0e-6);
+        assert_close(causal.data_f32(), &[1.0, 2.0], 1.0e-6);
     }
 
     #[test]

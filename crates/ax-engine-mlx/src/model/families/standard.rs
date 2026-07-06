@@ -32,6 +32,299 @@ use crate::weights::LayerWeights;
 /// Minimum top-k selection count above which the sort path is taken in Gemma4 MoE.
 const SWITCH_GLU_SORT_THRESHOLD: usize = 64;
 
+// ---------------------------------------------------------------------------
+// Post-attention shared pipeline
+// ---------------------------------------------------------------------------
+
+/// Shared post-attention pipeline: residual add, optional last-position-only
+/// slice, pre-FFN norm, FFN (MoE or dense), residual, and per-layer gating.
+///
+/// Called by both [`layer_forward`] (causal) and [`layer_forward_bidirectional`]
+/// after their respective attention mechanisms produce `attn_proj`.
+#[allow(clippy::too_many_arguments)]
+fn layer_shell_post_attention(
+    cfg: &ModelConfig,
+    w: &LayerWeights,
+    hidden: &MlxArray,
+    attn_proj: &MlxArray,
+    seq: usize,
+    layer_idx: usize,
+    per_layer_input: Option<&MlxArray>,
+    last_position_only_after_attention: bool,
+    profile_forward_layer: bool,
+    profile_decode_layer: bool,
+    profile_prefill_layer: bool,
+    profile_gemma4_moe_decode: bool,
+    post_attn_started: Option<Instant>,
+) -> MlxArray {
+    // 15. Residual.
+    let residual_norm_started = profile_forward_layer.then(Instant::now);
+    let last_only_active = last_position_only_after_attention && seq > 1;
+
+    let hidden = add(hidden, attn_proj, None);
+
+    // 15a. Optional last-position-only slice for the terminal prefill layer.
+    let (hidden, per_layer_input_owned) = if last_only_active {
+        let last = (seq - 1) as i32;
+        let hs = cfg.hidden_size as i32;
+        let sliced_hidden = slice(&hidden, &[0, last, 0], &[1, last + 1, hs], &[1, 1, 1], None);
+        let sliced_pli = per_layer_input.map(|pli| {
+            let dims = pli.shape();
+            let pli_last_dim = *dims.last().unwrap_or(&hs);
+            slice(
+                pli,
+                &[0, last, 0],
+                &[1, last + 1, pli_last_dim],
+                &[1, 1, 1],
+                None,
+            )
+        });
+        (sliced_hidden, sliced_pli)
+    } else {
+        (hidden, None)
+    };
+    let per_layer_input: Option<&MlxArray> = if last_only_active {
+        per_layer_input_owned.as_ref()
+    } else {
+        per_layer_input
+    };
+
+    // 16. Pre-FFN norm.
+    let normed2 = rms_norm(&hidden, Some(&w.ffn_norm), cfg.rms_norm_eps, None);
+    if let Some(started) = residual_norm_started {
+        forward_profile_eval_elapsed(
+            profile_decode_layer,
+            profile_prefill_layer,
+            DecodeProfileStage::PostAttnResidualNorm,
+            started,
+            &[&normed2],
+        );
+    }
+
+    // 17. FFN: MoE or dense.
+    let ffn_started = profile_forward_layer.then(Instant::now);
+    let ffn_out = if w.router_proj.is_some() {
+        if cfg.gemma4_moe_router {
+            // Try compiled dual-path decode closure.
+            let compiled_result = if seq == 1 && fastpath::moe_layer_compile_enabled() {
+                flatten_gemma4_dual_path_inputs(&normed2, &hidden, w).and_then(
+                    |(inputs, mut schema)| {
+                        let cfg_clone = cfg.clone();
+                        schema.moe_expert_count = cfg.moe_expert_count;
+                        schema.moe_experts_per_token = cfg.moe_experts_per_token;
+                        let input_refs: Vec<&MlxArray> = inputs.iter().collect();
+                        apply_layer_gemma4_dual_path_decode(
+                            layer_idx,
+                            &input_refs,
+                            move |inputs: &MlxVectorArray| vec![schema.forward(inputs, &cfg_clone)],
+                        )
+                    },
+                )
+            } else {
+                None
+            };
+            if let Some(result) = compiled_result.and_then(|r| r.into_iter().next()) {
+                result
+            } else {
+                // Gemma4 dual-path: dense sub-block + expert sub-block.
+                let dense_started = profile_gemma4_moe_decode.then(Instant::now);
+                let h1 = ffn_swiglu(cfg, w, &normed2, w.ffn_post_norm1.as_ref(), layer_idx);
+                if let Some(started) = dense_started {
+                    profile_eval_elapsed(
+                        profile_gemma4_moe_decode,
+                        Gemma4MoeProfileStage::Dense,
+                        started,
+                        &[&h1],
+                    );
+                }
+                let h2_norm = w
+                    .ffn_norm2
+                    .as_ref()
+                    .expect("validated Gemma4 MoE layer must include ffn_norm_2");
+                let h2_normed = rms_norm(&hidden, Some(h2_norm), cfg.rms_norm_eps, None);
+                let router_started = profile_gemma4_moe_decode.then(Instant::now);
+                let (top_k_indices, top_k_weights) = moe_router_gemma4(cfg, w, &hidden);
+                if let Some(started) = router_started {
+                    profile_eval_elapsed(
+                        profile_gemma4_moe_decode,
+                        Gemma4MoeProfileStage::Router,
+                        started,
+                        &[&top_k_indices, &top_k_weights],
+                    );
+                }
+                if profile_gemma4_moe_decode {
+                    let topk_selections = shape_element_count(&top_k_indices.shape());
+                    record_gemma4_moe_decode_layer(
+                        topk_selections,
+                        topk_selections >= SWITCH_GLU_SORT_THRESHOLD,
+                    );
+                }
+                let expert_started = profile_gemma4_moe_decode.then(Instant::now);
+                let h2 =
+                    moe_experts_forward_gemma4(cfg, w, &h2_normed, &top_k_indices, &top_k_weights);
+                if let Some(started) = expert_started {
+                    profile_eval_elapsed(
+                        profile_gemma4_moe_decode,
+                        Gemma4MoeProfileStage::Expert,
+                        started,
+                        &[&h2],
+                    );
+                }
+                let post_started = profile_gemma4_moe_decode.then(Instant::now);
+                let h2 = rms_norm_opt(&h2, w.ffn_post_norm2.as_ref(), cfg.rms_norm_eps);
+                let combined = add(&h1, &h2, None);
+                let out = rms_norm_opt(&combined, w.ffn_post_norm.as_ref(), cfg.rms_norm_eps);
+                if let Some(started) = post_started {
+                    profile_eval_elapsed(
+                        profile_gemma4_moe_decode,
+                        Gemma4MoeProfileStage::Post,
+                        started,
+                        &[&out],
+                    );
+                }
+                out
+            }
+        } else {
+            let router_started = profile_forward_layer.then(Instant::now);
+            let (top_k_indices, top_k_weights) = if cfg.glm_router.is_some() {
+                moe_router_glm(cfg, w, &normed2)
+            } else {
+                moe_router_qwen3(cfg, w, &normed2)
+            };
+            if let Some(started) = router_started {
+                forward_profile_eval_elapsed(
+                    profile_decode_layer,
+                    profile_prefill_layer,
+                    DecodeProfileStage::MoeRouter,
+                    started,
+                    &[&top_k_indices, &top_k_weights],
+                );
+            }
+            let shared_started = profile_forward_layer.then(Instant::now);
+            let shared_out = if w.shared_gate_proj.is_some() {
+                Some(shared_expert_forward(cfg, w, &normed2))
+            } else {
+                None
+            };
+            if let Some(started) = shared_started {
+                if let Some(shared) = &shared_out {
+                    forward_profile_eval_elapsed(
+                        profile_decode_layer,
+                        profile_prefill_layer,
+                        DecodeProfileStage::MoeSharedExpert,
+                        started,
+                        &[shared],
+                    );
+                } else {
+                    forward_profile_eval_elapsed(
+                        profile_decode_layer,
+                        profile_prefill_layer,
+                        DecodeProfileStage::MoeSharedExpert,
+                        started,
+                        &[],
+                    );
+                }
+            }
+            // Try compiled MoE decode closure.
+            let compiled_result = if seq == 1 && fastpath::moe_layer_compile_enabled() {
+                let cfg_clone = cfg.clone();
+                let (inputs, schema) = flatten_compiled_moe_inputs(
+                    &normed2,
+                    &top_k_indices,
+                    &top_k_weights,
+                    w.gate_up_exps_packed.as_ref(),
+                    w.gate_exps.as_ref(),
+                    w.up_exps.as_ref(),
+                    w.down_exps.as_ref(),
+                    shared_out.as_ref(),
+                );
+                let input_refs: Vec<&MlxArray> = inputs.iter().collect();
+                apply_layer_moe_decode(layer_idx, &input_refs, move |inputs: &MlxVectorArray| {
+                    let (x, indices, weights, gate_up, gate, up, down, shared) =
+                        schema.rebuild(inputs);
+                    vec![moe_experts_forward_with_cloned_weights(
+                        &cfg_clone, &x, &indices, &weights, gate_up, gate, up, down, shared, None,
+                    )]
+                })
+            } else {
+                None
+            };
+            let out = if let Some(result) = compiled_result.and_then(|r| r.into_iter().next()) {
+                result
+            } else if let Some(shared) = &shared_out {
+                moe_experts_forward_with_shared(
+                    cfg,
+                    w,
+                    &normed2,
+                    &top_k_indices,
+                    &top_k_weights,
+                    shared,
+                )
+            } else {
+                moe_experts_forward(cfg, w, &normed2, &top_k_indices, &top_k_weights)
+            };
+            rms_norm_opt(&out, w.ffn_post_norm.as_ref(), cfg.rms_norm_eps)
+        }
+    } else {
+        // Dense path (Qwen3, Gemma4 non-MoE layers).
+        ffn_swiglu(cfg, w, &normed2, w.ffn_post_norm.as_ref(), layer_idx)
+    };
+    if let Some(started) = ffn_started {
+        forward_profile_eval_elapsed(
+            profile_decode_layer,
+            profile_prefill_layer,
+            DecodeProfileStage::PostAttnFfn,
+            started,
+            &[&ffn_out],
+        );
+    }
+
+    // 18-19. Residual + per-layer input gating.
+    let residual_gate_started = profile_forward_layer.then(Instant::now);
+    let out = if let (Some(gate_w), Some(proj_w), Some(post_norm), Some(pli)) = (
+        w.per_layer_gate.as_ref(),
+        w.per_layer_proj_w.as_ref(),
+        w.per_layer_post_norm.as_ref(),
+        per_layer_input,
+    ) {
+        let residual = add(&hidden, &ffn_out, None);
+        let projected = per_layer_input_gate_project(&qw(&residual, gate_w), pli, proj_w);
+        let normed = rms_norm(&projected, Some(post_norm), cfg.rms_norm_eps, None);
+        if let Some(scalar) = &w.layer_scalar {
+            add_then_multiply_scalar(&residual, &normed, scalar)
+        } else {
+            add(&residual, &normed, None)
+        }
+    } else if let Some(scalar) = &w.layer_scalar {
+        add_then_multiply_scalar(&hidden, &ffn_out, scalar)
+    } else {
+        add(&hidden, &ffn_out, None)
+    };
+    if let Some(started) = residual_gate_started {
+        forward_profile_eval_elapsed(
+            profile_decode_layer,
+            profile_prefill_layer,
+            DecodeProfileStage::PostAttnResidualGate,
+            started,
+            &[&out],
+        );
+    }
+    if let Some(started) = post_attn_started {
+        forward_profile_eval_elapsed(
+            profile_decode_layer,
+            profile_prefill_layer,
+            DecodeProfileStage::PostAttn,
+            started,
+            &[&out],
+        );
+    }
+    out
+}
+
+// ---------------------------------------------------------------------------
+// Causal layer forward
+// ---------------------------------------------------------------------------
+
 /// Full layer forward for standard GQA attention families (Gemma4, Gemma3, Qwen3).
 ///
 /// Handles per-head QK norm, KV-sharing (Gemma4), sliding window attention,
@@ -79,11 +372,6 @@ pub(crate) fn layer_forward(
     let normed = rms_norm(hidden, Some(&w.attn_norm), cfg.rms_norm_eps, None);
 
     let seq = hidden.shape()[1] as usize;
-    // Bounded-rollback rotating ring geometry for this layer's window, if the
-    // append below (or the KV-shared source layer's append) presents the ring
-    // to SDPA this forward. Needed outside the projection block: the local
-    // mask fallback must stay in lockstep with the ring view for both storing
-    // and KV-shared layers.
     let ring_layout = cache.sliding_ring_layout(sliding_window, seq);
     let profile_gemma4_moe_decode =
         cfg.gemma4_moe_router && seq == 1 && gemma4_moe_profile_enabled();
@@ -91,10 +379,11 @@ pub(crate) fn layer_forward(
     let profile_decode_layer = seq == 1 && decode_profile_enabled();
     let profile_prefill_layer = seq > 1 && prefill_profile_enabled();
     let profile_forward_layer = profile_decode_layer || profile_prefill_layer;
+
+    // 2-7. QKV projections + RoPE + KV cache append + SDPA.
     let post_attn_started;
     let attn_proj = {
         let pre_sdpa_started = profile_forward_layer.then(Instant::now);
-        // 2-7. QKV projections + RoPE. KV-shared layers skip K/V and borrow from source.
         let (q_rope, cached_k, cached_v, attn_gate) = if let Some(src_layer) = kv_source {
             // KV-shared layer (Gemma4 layers 24-41): compute Q only.
             let q_raw = qw(
@@ -181,7 +470,6 @@ pub(crate) fn layer_forward(
             // Normal layer: compute Q, K, V from own projections.
             let qkv_proj_started = profile_forward_layer.then(Instant::now);
             let (q_raw, k_raw, v_raw, attn_gate_raw) = qkv_project(cfg, w, &normed, head_dim);
-
             let kv_heads = (k_raw.shape()[2] as usize)
                 .checked_div(head_dim)
                 .expect("k projection output must divide by head_dim");
@@ -321,23 +609,10 @@ pub(crate) fn layer_forward(
 
             let rope_kv_started = profile_forward_layer.then(Instant::now);
             let retained_window = if seq == 1 || ring_layout.is_some() {
-                // Single-token decode and bounded-ring forwards both pass the
-                // raw window: the append derives ring geometry (capacity =
-                // window + slack) from `sliding_ring_layout` itself, and any
-                // ring mask's width is the ring capacity, not a view width.
                 sliding_window
             } else if sliding_window.is_some() && fastpath::multi_token_window_views_enabled() {
                 match shared_mask {
-                    // A hoisted mask fixes the key width SDPA must see, so the
-                    // view follows it: `build_layer_masks` masks are
-                    // window-trimmed, while multimodal media-overlay masks
-                    // span the full context (media blocks may legitimately
-                    // attend beyond the sliding window) and keep full views.
                     Some(Some(mask)) => mask.shape().last().map(|&len| len as usize),
-                    // No hoisted mask: retain `window + seq - 1` so every
-                    // query keeps its full window; the local mask below is
-                    // derived from the returned view width, so mask and view
-                    // stay consistent.
                     _ => sliding_window.map(|window| window + seq - 1),
                 }
             } else {
@@ -384,24 +659,19 @@ pub(crate) fn layer_forward(
             .unwrap_or_else(TurboQuantModelDecodeCandidate::disabled);
         cache.record_turboquant_decode_candidate(turboquant_candidate.telemetry_status());
 
-        // 8. SDPA (GQA: MLX broadcasts KV heads internally). For decode, Gemma
-        // sliding-window layers present only the retained window to SDPA, matching
-        // mlx_lm/mlx-swift-lm rotating-cache behavior.
+        // 8. SDPA.
         let key_len = cached_k.shape()[2] as usize;
         let local_mask: Option<MlxArray>;
         let mask_opt: &Option<MlxArray> = if let Some(m) = shared_mask {
             m
         } else {
             local_mask = match ring_layout {
-                // Bounded ring: SDPA sees the full `window + slack` ring, so
-                // the mask must be the slot-validity mask even for seq == 1.
                 Some(ring) if ring.needs_mask(seq) => Some(create_ring_sliding_mask(
                     seq,
                     ring.window,
                     ring.capacity,
                     ring.write_start,
                 )),
-                // Pure ring: single query over an exactly-full window ring.
                 Some(_) => None,
                 None => attention_mask_array(seq, key_len, sliding_window),
             };
@@ -461,12 +731,8 @@ pub(crate) fn layer_forward(
         post_attn_started = profile_forward_layer.then(Instant::now);
         let output_proj_started = profile_forward_layer.then(Instant::now);
 
-        // 10-11. Convert [B, n_heads, seq, head_dim] to [B, seq, hidden].
-        // Single-token decode skips the transpose because seq=1 is already
-        // head-major in the flattened projection order.
+        // 10-11. Flatten + output projection.
         let attn_flat = flatten_attention_output_bhsd(&attn_sdpa, seq, cfg.n_heads, head_dim);
-
-        // 12-13. Optional Qwen3.5 output gate, then output projection.
         let attn_proj = attention_output_projection(
             &attn_flat,
             attn_gate.as_ref(),
@@ -474,8 +740,7 @@ pub(crate) fn layer_forward(
                 .as_ref()
                 .expect("full-attention layer must have o_proj"),
         );
-
-        // 14. Optional post-attention layernorm (Gemma4): applied BEFORE residual add.
+        // 14. Optional post-attention layernorm.
         let attn_proj = if let Some(post_norm) = &w.attn_post_norm {
             rms_norm(&attn_proj, Some(post_norm), cfg.rms_norm_eps, None)
         } else {
@@ -501,289 +766,27 @@ pub(crate) fn layer_forward(
         );
     }
 
-    // 15. Residual.
-    let residual_norm_started = profile_forward_layer.then(Instant::now);
-    let last_only_active = last_position_only_after_attention && seq > 1;
-
-    let hidden = add(hidden, &attn_proj, None);
-
-    // 15a. Optional last-position-only slice for the terminal prefill layer.
-    // KV cache writes happened inside attention; downstream consumers (final
-    // norm + lm_head + argmax) only need the last-position output. Slicing
-    // here lets the FFN run on `[1, 1, hidden]` instead of `[1, seq, hidden]`,
-    // which is the dominant cost on long prompts. See the function-level
-    // doc for the correctness contract.
-    let (hidden, per_layer_input_owned) = if last_only_active {
-        let last = (seq - 1) as i32;
-        let hs = cfg.hidden_size as i32;
-        let sliced_hidden = slice(&hidden, &[0, last, 0], &[1, last + 1, hs], &[1, 1, 1], None);
-        let sliced_pli = per_layer_input.map(|pli| {
-            let dims = pli.shape();
-            let pli_last_dim = *dims.last().unwrap_or(&hs);
-            slice(
-                pli,
-                &[0, last, 0],
-                &[1, last + 1, pli_last_dim],
-                &[1, 1, 1],
-                None,
-            )
-        });
-        (sliced_hidden, sliced_pli)
-    } else {
-        (hidden, None)
-    };
-    let per_layer_input: Option<&MlxArray> = if last_only_active {
-        per_layer_input_owned.as_ref()
-    } else {
-        per_layer_input
-    };
-
-    // 16. Pre-FFN norm.
-    let normed2 = rms_norm(&hidden, Some(&w.ffn_norm), cfg.rms_norm_eps, None);
-    if let Some(started) = residual_norm_started {
-        forward_profile_eval_elapsed(
-            profile_decode_layer,
-            profile_prefill_layer,
-            DecodeProfileStage::PostAttnResidualNorm,
-            started,
-            &[&normed2],
-        );
-    }
-
-    // 17. FFN: MoE or dense.
-    let ffn_started = profile_forward_layer.then(Instant::now);
-    let ffn_out = if w.router_proj.is_some() {
-        if cfg.gemma4_moe_router {
-            // Try compiled dual-path decode closure (gated by AX_MLX_MOE_LAYER_COMPILE).
-            // `flatten` declines (→ imperative fallback) when a needed weight is
-            // absent, e.g. checkpoints shipping split instead of packed tensors.
-            let compiled_result = if seq == 1 && fastpath::moe_layer_compile_enabled() {
-                flatten_gemma4_dual_path_inputs(&normed2, &hidden, w).and_then(
-                    |(inputs, mut schema)| {
-                        let cfg_clone = cfg.clone();
-                        schema.moe_expert_count = cfg.moe_expert_count;
-                        schema.moe_experts_per_token = cfg.moe_experts_per_token;
-                        let input_refs: Vec<&MlxArray> = inputs.iter().collect();
-                        apply_layer_gemma4_dual_path_decode(
-                            layer_idx,
-                            &input_refs,
-                            move |inputs: &MlxVectorArray| vec![schema.forward(inputs, &cfg_clone)],
-                        )
-                    },
-                )
-            } else {
-                None
-            };
-            if let Some(result) = compiled_result.and_then(|r| r.into_iter().next()) {
-                result
-            } else {
-                // Gemma4 dual-path: dense sub-block + expert sub-block.
-                let dense_started = profile_gemma4_moe_decode.then(Instant::now);
-                let h1 = ffn_swiglu(cfg, w, &normed2, w.ffn_post_norm1.as_ref(), layer_idx);
-                if let Some(started) = dense_started {
-                    profile_eval_elapsed(
-                        profile_gemma4_moe_decode,
-                        Gemma4MoeProfileStage::Dense,
-                        started,
-                        &[&h1],
-                    );
-                }
-                let h2_norm = w
-                    .ffn_norm2
-                    .as_ref()
-                    .expect("validated Gemma4 MoE layer must include ffn_norm_2");
-                let h2_normed = rms_norm(&hidden, Some(h2_norm), cfg.rms_norm_eps, None);
-                let router_started = profile_gemma4_moe_decode.then(Instant::now);
-                // Gemma4 intentionally routes from raw hidden through its own combined-scale
-                // RMSNorm, while experts consume the separately normalized h2 input.
-                let (top_k_indices, top_k_weights) = moe_router_gemma4(cfg, w, &hidden);
-                if let Some(started) = router_started {
-                    profile_eval_elapsed(
-                        profile_gemma4_moe_decode,
-                        Gemma4MoeProfileStage::Router,
-                        started,
-                        &[&top_k_indices, &top_k_weights],
-                    );
-                }
-                if profile_gemma4_moe_decode {
-                    let topk_selections = shape_element_count(&top_k_indices.shape());
-                    record_gemma4_moe_decode_layer(
-                        topk_selections,
-                        topk_selections >= SWITCH_GLU_SORT_THRESHOLD,
-                    );
-                }
-                let expert_started = profile_gemma4_moe_decode.then(Instant::now);
-                let h2 =
-                    moe_experts_forward_gemma4(cfg, w, &h2_normed, &top_k_indices, &top_k_weights);
-                if let Some(started) = expert_started {
-                    profile_eval_elapsed(
-                        profile_gemma4_moe_decode,
-                        Gemma4MoeProfileStage::Expert,
-                        started,
-                        &[&h2],
-                    );
-                }
-                let post_started = profile_gemma4_moe_decode.then(Instant::now);
-                let h2 = rms_norm_opt(&h2, w.ffn_post_norm2.as_ref(), cfg.rms_norm_eps);
-                let combined = add(&h1, &h2, None);
-                let out = rms_norm_opt(&combined, w.ffn_post_norm.as_ref(), cfg.rms_norm_eps);
-                if let Some(started) = post_started {
-                    profile_eval_elapsed(
-                        profile_gemma4_moe_decode,
-                        Gemma4MoeProfileStage::Post,
-                        started,
-                        &[&out],
-                    );
-                }
-                out
-            }
-        } else {
-            let router_started = profile_forward_layer.then(Instant::now);
-            let (top_k_indices, top_k_weights) = if cfg.glm_router.is_some() {
-                moe_router_glm(cfg, w, &normed2)
-            } else {
-                // Qwen3 MoE: router (proj → softmax → top-k) + expert forward.
-                moe_router_qwen3(cfg, w, &normed2)
-            };
-            if let Some(started) = router_started {
-                forward_profile_eval_elapsed(
-                    profile_decode_layer,
-                    profile_prefill_layer,
-                    DecodeProfileStage::MoeRouter,
-                    started,
-                    &[&top_k_indices, &top_k_weights],
-                );
-            }
-            // Compute shared expert before the expert forward so the weighted-sum
-            // kernel can optionally fuse the shared-expert add (Phase 1A).
-            let shared_started = profile_forward_layer.then(Instant::now);
-            let shared_out = if w.shared_gate_proj.is_some() {
-                Some(shared_expert_forward(cfg, w, &normed2))
-            } else {
-                None
-            };
-            if let Some(started) = shared_started {
-                if let Some(shared) = &shared_out {
-                    forward_profile_eval_elapsed(
-                        profile_decode_layer,
-                        profile_prefill_layer,
-                        DecodeProfileStage::MoeSharedExpert,
-                        started,
-                        &[shared],
-                    );
-                } else {
-                    forward_profile_eval_elapsed(
-                        profile_decode_layer,
-                        profile_prefill_layer,
-                        DecodeProfileStage::MoeSharedExpert,
-                        started,
-                        &[],
-                    );
-                }
-            }
-            // Try compiled MoE decode closure (gated by AX_MLX_MOE_LAYER_COMPILE).
-            // Mirrors the pattern in qwen3_linear.rs: flatten all weight tensors as
-            // explicit inputs, compile, and fall back to the uncompiled path on None.
-            let compiled_result = if seq == 1 && fastpath::moe_layer_compile_enabled() {
-                let cfg_clone = cfg.clone();
-                let (inputs, schema) = flatten_compiled_moe_inputs(
-                    &normed2,
-                    &top_k_indices,
-                    &top_k_weights,
-                    w.gate_up_exps_packed.as_ref(),
-                    w.gate_exps.as_ref(),
-                    w.up_exps.as_ref(),
-                    w.down_exps.as_ref(),
-                    shared_out.as_ref(),
-                );
-                let input_refs: Vec<&MlxArray> = inputs.iter().collect();
-                apply_layer_moe_decode(layer_idx, &input_refs, move |inputs: &MlxVectorArray| {
-                    let (x, indices, weights, gate_up, gate, up, down, shared) =
-                        schema.rebuild(inputs);
-                    vec![moe_experts_forward_with_cloned_weights(
-                        &cfg_clone, &x, &indices, &weights, gate_up, gate, up, down, shared, None,
-                    )]
-                })
-            } else {
-                None
-            };
-            let out = if let Some(result) = compiled_result.and_then(|r| r.into_iter().next()) {
-                result
-            } else if let Some(shared) = &shared_out {
-                moe_experts_forward_with_shared(
-                    cfg,
-                    w,
-                    &normed2,
-                    &top_k_indices,
-                    &top_k_weights,
-                    shared,
-                )
-            } else {
-                moe_experts_forward(cfg, w, &normed2, &top_k_indices, &top_k_weights)
-            };
-            rms_norm_opt(&out, w.ffn_post_norm.as_ref(), cfg.rms_norm_eps)
-        }
-    } else {
-        // Dense path (Qwen3, Gemma4 non-MoE layers).
-        ffn_swiglu(cfg, w, &normed2, w.ffn_post_norm.as_ref(), layer_idx)
-    };
-    if let Some(started) = ffn_started {
-        forward_profile_eval_elapsed(
-            profile_decode_layer,
-            profile_prefill_layer,
-            DecodeProfileStage::PostAttnFfn,
-            started,
-            &[&ffn_out],
-        );
-    }
-
-    // 18. Residual.
-    let residual_gate_started = profile_forward_layer.then(Instant::now);
-
-    // 19. Per-layer input gating (Gemma4 2B/4B): gate(h) * per_layer_embed → proj → norm + h.
-    //
-    // Match mlx_lm's Gemma4DecoderLayer per-layer input gate. The shared
-    // helper preserves the same `gelu_approx * per_layer_input` math through
-    // AX's direct MLX activation shim.
-    let out = if let (Some(gate_w), Some(proj_w), Some(post_norm), Some(pli)) = (
-        w.per_layer_gate.as_ref(),
-        w.per_layer_proj_w.as_ref(),
-        w.per_layer_post_norm.as_ref(),
+    // Delegate to shared post-attention pipeline.
+    layer_shell_post_attention(
+        cfg,
+        w,
+        hidden,
+        &attn_proj,
+        seq,
+        layer_idx,
         per_layer_input,
-    ) {
-        let residual = add(&hidden, &ffn_out, None);
-        let projected = per_layer_input_gate_project(&qw(&residual, gate_w), pli, proj_w);
-        let normed = rms_norm(&projected, Some(post_norm), cfg.rms_norm_eps, None);
-        if let Some(scalar) = &w.layer_scalar {
-            add_then_multiply_scalar(&residual, &normed, scalar)
-        } else {
-            add(&residual, &normed, None)
-        }
-    } else if let Some(scalar) = &w.layer_scalar {
-        add_then_multiply_scalar(&hidden, &ffn_out, scalar)
-    } else {
-        add(&hidden, &ffn_out, None)
-    };
-    if let Some(started) = residual_gate_started {
-        forward_profile_eval_elapsed(
-            profile_decode_layer,
-            profile_prefill_layer,
-            DecodeProfileStage::PostAttnResidualGate,
-            started,
-            &[&out],
-        );
-    }
-    if let Some(started) = post_attn_started {
-        forward_profile_eval_elapsed(
-            profile_decode_layer,
-            profile_prefill_layer,
-            DecodeProfileStage::PostAttn,
-            started,
-            &[&out],
-        );
-    }
-    out
+        last_position_only_after_attention,
+        profile_forward_layer,
+        profile_decode_layer,
+        profile_prefill_layer,
+        profile_gemma4_moe_decode,
+        post_attn_started,
+    )
 }
+
+// ---------------------------------------------------------------------------
+// Batched decode layer forward
+// ---------------------------------------------------------------------------
 
 /// Batched-decode analog of [`layer_forward`] for full-attention **dense**
 /// families (Qwen3, Llama, Mistral) — milestone 2a of batched MLX decode.
@@ -845,11 +848,7 @@ pub fn layer_forward_batched(
     );
 
     let seq = 1usize;
-
-    // 1. Attention norm.
     let normed = rms_norm(hidden, Some(&w.attn_norm), cfg.rms_norm_eps, None);
-
-    // 2. QKV projections (batch-aware).
     let (q_raw, k_raw, v_raw, attn_gate) = qkv_project(cfg, w, &normed, head_dim);
     let kv_heads = (k_raw.shape()[2] as usize)
         .checked_div(head_dim)
@@ -863,16 +862,6 @@ pub fn layer_forward_batched(
         cfg.rms_norm_eps,
     );
 
-    // 3. QK norm, then per-row RoPE.
-    //
-    // The single path's fused `qk_norm_rope_bhsd_from_proj_with_route` (and MLX
-    // `rope` itself) mis-rotate every batch row > 0 for a `[B, H, 1, D]` decode
-    // input — row 0 is correct, rows ≥1 are wrong. So the batched path applies
-    // QK-norm (batch-safe) and then RoPE ONE ROW AT A TIME, each at its own
-    // position `offsets[r]` (ragged rows sit at different sequence positions —
-    // this is what lets a continuously-batched cohort decode together). Each
-    // `[1, H, 1, D]` slice matches the single-sequence rotation exactly. A
-    // batched-rope kernel is a perf follow-up; correctness first.
     let rope_freqs = layer_rope_freqs.or(cfg.rope_freqs.as_ref());
     let (rope_base, rope_freqs_ref) = rope_freqs
         .map(|f| (None, Some(f)))
@@ -921,15 +910,9 @@ pub fn layer_forward_batched(
     };
     let q_rope = rope_row(&q, cfg.n_heads as i32);
     let k_rope = rope_row(&k, kv_heads as i32);
-
-    // 4. Append to the batched cache; the returned view includes this token.
     let (cached_k, cached_v) = cache.append_decode_layer(layer_idx, &k_rope, &v);
-
-    // 5. Batched SDPA with the per-row validity mask.
     let attn_sdpa =
         full_precision_attention(&q_rope, &cached_k, &cached_v, cfg.query_scale, seq, mask);
-
-    // 6. Output projection (optional Qwen3.5 gate passes through as None here).
     let attn_flat = flatten_attention_output_bhsd(&attn_sdpa, seq, cfg.n_heads, head_dim);
     let attn_proj = attention_output_projection(
         &attn_flat,
@@ -943,13 +926,15 @@ pub fn layer_forward_batched(
     } else {
         attn_proj
     };
-
-    // 7. Residual, pre-FFN norm, dense FFN, residual.
     let hidden = add(hidden, &attn_proj, None);
     let normed2 = rms_norm(&hidden, Some(&w.ffn_norm), cfg.rms_norm_eps, None);
     let ffn_out = ffn_swiglu(cfg, w, &normed2, w.ffn_post_norm.as_ref(), layer_idx);
     add(&hidden, &ffn_out, None)
 }
+
+// ---------------------------------------------------------------------------
+// Bidirectional layer forward (DiffusionGemma)
+// ---------------------------------------------------------------------------
 
 /// Bidirectional layer forward for DiffusionGemma denoiser.
 ///
@@ -958,6 +943,9 @@ pub fn layer_forward_batched(
 /// - **Bidirectional** (non-causal) attention over the canvas.
 /// - **Read-only** KV cache: attends to cached prompt KV without writing.
 /// - Canvas K/V are computed fresh from `hidden` each denoiser step.
+///
+/// Post-attention pipeline (residual, FFN, gating) is shared with
+/// [`layer_forward`] via [`layer_shell_post_attention`].
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn layer_forward_bidirectional(
     cfg: &ModelConfig,
@@ -989,7 +977,6 @@ pub(crate) fn layer_forward_bidirectional(
     let kv_heads = (k_raw.shape()[2] as usize)
         .checked_div(head_dim)
         .expect("k projection output must divide by head_dim");
-
     let v = prepare_value_bhsd_from_proj(
         &v_raw,
         v_norm_no_scale,
@@ -1048,16 +1035,11 @@ pub(crate) fn layer_forward_bidirectional(
         .peek_layer_full_kv(layer_idx)
         .expect("bidirectional layer requires cached prompt KV from prefill");
 
-    // Symmetric SWA for bidirectional attention (vLLM evidence: ~1.3x).
-    // For SWA layers, canvas tokens only need prompt KV within the sliding
-    // window. Slice cached prompt KV to [token_offset - W, token_offset],
-    // reducing attention from O(canvas × full_prompt) to O(canvas × W).
-    // Non-SWA layers (full attention) use the full cached prompt KV.
+    // Symmetric SWA for bidirectional attention.
     let (cached_k, cached_v, swa_sliced) = if let Some(window) = sliding_window {
         let cached_seq = cached_k_full.shape()[2] as usize;
         let prompt_start = token_offset.saturating_sub(window);
         if prompt_start > 0 && prompt_start < cached_seq {
-            // Slice the prompt KV along the sequence dimension (axis 2).
             let b = cached_k_full.shape()[0];
             let h = cached_k_full.shape()[1];
             let d = cached_k_full.shape()[3];
@@ -1077,7 +1059,6 @@ pub(crate) fn layer_forward_bidirectional(
             );
             (sliced_k, sliced_v, true)
         } else {
-            // No slicing needed: entire prompt is within window.
             (cached_k_full.clone(), cached_v_full.clone(), false)
         }
     } else {
@@ -1085,9 +1066,6 @@ pub(crate) fn layer_forward_bidirectional(
     };
 
     // Bidirectional attention: canvas Q attends to cached prompt KV + canvas KV.
-    // When SWA slicing is active, disable the KV buffer to avoid stale cached
-    // full KV across steps (the slice depends on token_offset which is constant
-    // within a block, but the buffer's cached_mask would be incorrect).
     let kv_buf_for_attn = if swa_sliced { None } else { kv_buffer };
     let attn_sdpa = bidirectional_attention(
         &q_rope,
@@ -1108,81 +1086,26 @@ pub(crate) fn layer_forward_bidirectional(
             .as_ref()
             .expect("bidirectional attention layer must have o_proj"),
     );
-
-    // Optional post-attention layernorm (Gemma4).
     let attn_proj = if let Some(post_norm) = &w.attn_post_norm {
         rms_norm(&attn_proj, Some(post_norm), cfg.rms_norm_eps, None)
     } else {
         attn_proj
     };
 
-    // Residual.
-    let hidden = add(hidden, &attn_proj, None);
-
-    // Pre-FFN norm.
-    let normed2 = rms_norm(&hidden, Some(&w.ffn_norm), cfg.rms_norm_eps, None);
-
-    // FFN: MoE or dense (identical to causal forward).
-    let ffn_out = if w.router_proj.is_some() {
-        if cfg.gemma4_moe_router {
-            let h1 = ffn_swiglu(cfg, w, &normed2, w.ffn_post_norm1.as_ref(), layer_idx);
-            let h2_norm = w
-                .ffn_norm2
-                .as_ref()
-                .expect("validated Gemma4 MoE layer must include ffn_norm_2");
-            let h2_normed = rms_norm(&hidden, Some(h2_norm), cfg.rms_norm_eps, None);
-            let (top_k_indices, top_k_weights) = moe_router_gemma4(cfg, w, &hidden);
-            let h2 = moe_experts_forward_gemma4(cfg, w, &h2_normed, &top_k_indices, &top_k_weights);
-            let h2 = rms_norm_opt(&h2, w.ffn_post_norm2.as_ref(), cfg.rms_norm_eps);
-            let combined = add(&h1, &h2, None);
-            rms_norm_opt(&combined, w.ffn_post_norm.as_ref(), cfg.rms_norm_eps)
-        } else {
-            let (top_k_indices, top_k_weights) = if cfg.glm_router.is_some() {
-                moe_router_glm(cfg, w, &normed2)
-            } else {
-                moe_router_qwen3(cfg, w, &normed2)
-            };
-            let shared_out = if w.shared_gate_proj.is_some() {
-                Some(shared_expert_forward(cfg, w, &normed2))
-            } else {
-                None
-            };
-            let out = if let Some(shared) = &shared_out {
-                moe_experts_forward_with_shared(
-                    cfg,
-                    w,
-                    &normed2,
-                    &top_k_indices,
-                    &top_k_weights,
-                    shared,
-                )
-            } else {
-                moe_experts_forward(cfg, w, &normed2, &top_k_indices, &top_k_weights)
-            };
-            rms_norm_opt(&out, w.ffn_post_norm.as_ref(), cfg.rms_norm_eps)
-        }
-    } else {
-        ffn_swiglu(cfg, w, &normed2, w.ffn_post_norm.as_ref(), layer_idx)
-    };
-
-    // Residual + per-layer input gating.
-    if let (Some(gate_w), Some(proj_w), Some(post_norm), Some(pli)) = (
-        w.per_layer_gate.as_ref(),
-        w.per_layer_proj_w.as_ref(),
-        w.per_layer_post_norm.as_ref(),
+    // Delegate to shared post-attention pipeline (residual, FFN, gating).
+    layer_shell_post_attention(
+        cfg,
+        w,
+        hidden,
+        &attn_proj,
+        seq,
+        layer_idx,
         per_layer_input,
-    ) {
-        let residual = add(&hidden, &ffn_out, None);
-        let projected = per_layer_input_gate_project(&qw(&residual, gate_w), pli, proj_w);
-        let normed = rms_norm(&projected, Some(post_norm), cfg.rms_norm_eps, None);
-        if let Some(scalar) = &w.layer_scalar {
-            add_then_multiply_scalar(&residual, &normed, scalar)
-        } else {
-            add(&residual, &normed, None)
-        }
-    } else if let Some(scalar) = &w.layer_scalar {
-        add_then_multiply_scalar(&hidden, &ffn_out, scalar)
-    } else {
-        add(&hidden, &ffn_out, None)
-    }
+        false, // last_position_only_after_attention
+        false,
+        false,
+        false,
+        false, // profiling flags (not used in bidirectional)
+        None,  // post_attn_started
+    )
 }

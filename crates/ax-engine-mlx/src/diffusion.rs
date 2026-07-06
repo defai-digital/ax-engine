@@ -74,6 +74,7 @@
 //!   - `[3]` entropy: `[1, canvas_size]` f32
 //!   - `[4]` prob: `[1, canvas_size, vocab_size]` f32
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 use mlx_sys::{
@@ -792,6 +793,11 @@ pub(crate) fn generate_diffusion_block(
         let entropy_bound = diff_cfg.entropy_bound;
         let confidence_threshold = diff_cfg.confidence_threshold;
 
+        // SAFETY: The closure captures raw pointers to `cfg`, `weights`, and `cache`
+        // because `MlxClosure::new_dyn()` requires `'static` captures. The referenced
+        // objects are stack-local to `generate_diffusion_block` and outlive the closure's
+        // execution — the closure is invoked synchronously within this function and
+        // never stored or leaked beyond this scope.
         let closure = MlxClosure::new_dyn(move |inputs: &MlxVectorArray| -> Vec<MlxArray> {
             let token_ids = inputs.get(0);
             let self_cond_signal = inputs.get(1);
@@ -895,6 +901,11 @@ pub(crate) fn generate_diffusion_block(
         let cache_addr = cache as *const MlxKVCache as usize;
         let embed_table_addr = embed_table.map(|e| e as *const MlxArray as usize);
         let has_self_cond = diff_cfg.self_conditioning;
+        // SAFETY: The closure captures raw pointers to `cfg`, `weights`, and `cache`
+        // because `MlxClosure::new_dyn()` requires `'static` captures. The referenced
+        // objects are stack-local to `generate_diffusion_block` and outlive the closure's
+        // execution — the closure is invoked synchronously within this function and
+        // never stored or leaked beyond this scope.
         let closure = MlxClosure::new_dyn(move |inputs: &MlxVectorArray| -> Vec<MlxArray> {
             let token_ids = inputs.get(0);
             let self_cond_signal = inputs.get(1);
@@ -1003,6 +1014,23 @@ fn elapsed_us(started: Instant) -> u32 {
     started.elapsed().as_micros().min(u32::MAX as u128) as u32
 }
 
+// ── Embedding cache telemetry ──────────────────────────────────────────────
+//
+// Global hit/miss counters for the per-layer embedding cache in the
+// bidirectional denoiser. Incremented from `forward_bidirectional` when
+// `EmbeddingCache::needs_refresh` is consulted.
+static EMBEDDING_CACHE_HITS: AtomicU64 = AtomicU64::new(0);
+static EMBEDDING_CACHE_MISSES: AtomicU64 = AtomicU64::new(0);
+
+/// Returns `(hits, misses)` for the DiffusionGemma embedding cache.
+#[allow(dead_code)]
+pub fn embedding_cache_counters() -> (u64, u64) {
+    (
+        EMBEDDING_CACHE_HITS.load(Ordering::Relaxed),
+        EMBEDDING_CACHE_MISSES.load(Ordering::Relaxed),
+    )
+}
+
 // Per-layer embedding cache for DiffusionGemma denoiser.
 //
 // Caches the output of `compute_per_layer_inputs_arr` across denoise steps.
@@ -1100,12 +1128,14 @@ fn forward_bidirectional(mut ctx: BidirectionalForward<'_>) -> MlxArray {
     // Use cache when available and tokens are unchanged.
     let per_layer_inputs = if let Some(cache_entry) = ctx.embed_cache {
         if cache_entry.needs_refresh(ctx.token_ids) {
+            EMBEDDING_CACHE_MISSES.fetch_add(1, Ordering::Relaxed);
             let pli = compute_per_layer_inputs_arr(cfg, weights, ctx.token_ids, &hidden);
             if let Some(ref inputs) = pli {
                 cache_entry.update(ctx.token_ids, inputs.clone());
             }
             pli
         } else {
+            EMBEDDING_CACHE_HITS.fetch_add(1, Ordering::Relaxed);
             cache_entry.per_layer_inputs.clone()
         }
     } else {
@@ -1113,6 +1143,7 @@ fn forward_bidirectional(mut ctx: BidirectionalForward<'_>) -> MlxArray {
     };
 
     // Run each layer with bidirectional attention.
+    let profile_enabled = fastpath::diffusion_profile_enabled();
     for (li, layer_w) in weights.layers.iter().enumerate() {
         let pli = per_layer_inputs.as_ref().map(|v| &v[li]);
         let kv_buf = ctx.kv_buffers.as_mut().map(|v| {
@@ -1122,6 +1153,7 @@ fn forward_bidirectional(mut ctx: BidirectionalForward<'_>) -> MlxArray {
             }
             &mut v[li]
         });
+        let layer_started = profile_enabled.then(Instant::now);
         hidden = layer_forward_bidirectional(
             cfg,
             layer_w,
@@ -1132,6 +1164,13 @@ fn forward_bidirectional(mut ctx: BidirectionalForward<'_>) -> MlxArray {
             pli,
             kv_buf,
         );
+        if let Some(started) = layer_started {
+            let elapsed = started.elapsed().as_micros();
+            eprintln!(
+                "[diffusion-profile] layer {li}/{num_layers} wall_us={elapsed}",
+                num_layers = weights.layers.len(),
+            );
+        }
     }
 
     // Final norm + LM head → logits [1, seq, vocab_size].

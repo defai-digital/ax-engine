@@ -11,12 +11,12 @@ pub(super) mod utils;
 pub(crate) use attention::build_layer_masks;
 pub(crate) use attention::{
     KVConcatBuffer, attention_mask_array, attention_with_sinks, bidirectional_attention,
-    build_layer_masks_for_forward, build_layer_masks_with_media_ranges,
-    direct_qk_norm_rope_route_enabled_for_family, flatten_attention_output_bhsd,
-    full_precision_attention, prepare_value_bhsd, prepare_value_bhsd_from_proj,
-    prepare_value_bhsd_from_proj_flat, qk_norm_bhsd_from_proj, qk_norm_rope_bhsd_from_proj,
-    qk_norm_rope_bhsd_from_proj_flat, qk_norm_rope_bhsd_from_proj_with_route,
-    turboquant_decode_attention_experimental,
+    bidirectional_full_precision_attention, build_layer_masks_for_forward,
+    build_layer_masks_with_media_ranges, direct_qk_norm_rope_route_enabled_for_family,
+    flatten_attention_output_bhsd, full_precision_attention, prepare_value_bhsd,
+    prepare_value_bhsd_from_proj, prepare_value_bhsd_from_proj_flat, qk_norm_bhsd_from_proj,
+    qk_norm_rope_bhsd_from_proj, qk_norm_rope_bhsd_from_proj_flat,
+    qk_norm_rope_bhsd_from_proj_with_route, turboquant_decode_attention_experimental,
 };
 pub(crate) use linear_attention::linear_attention_forward;
 pub(crate) use mla::glm_mla_attention_forward;

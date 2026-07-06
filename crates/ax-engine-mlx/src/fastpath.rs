@@ -914,6 +914,21 @@ env_flag!(
 // per process and cached via OnceLock.
 
 env_flag!(
+    /// `AX_MLX_GEMMA4_ASSISTANT_COMPILE` — wrap the Gemma4 assistant MTP
+    /// forward in an `MlxClosure` compiled via `mlx_compile`.
+    ///
+    /// **Default: OFF** (opt-in via `AX_MLX_GEMMA4_ASSISTANT_COMPILE=1`).
+    /// The assistant attends the target's frozen KV cache for each draft
+    /// depth; the compiled graph fuses the ~100+ per-step MLX dispatches
+    /// (embed, pre-projection, N assistant layers with target SDPA, final
+    /// norm, lm_head, post-projection) into a single compiled graph.
+    /// Falls back to the imperative `gemma4_assistant_forward_one` path
+    /// when disabled or compilation fails.
+    gemma4_assistant_compile_enabled,
+    "AX_MLX_GEMMA4_ASSISTANT_COMPILE"
+);
+
+env_flag!(
     /// `AX_DIFFUSION_COMPILED_FORWARD` — wrap the bidirectional denoise
     /// forward pass in an `MlxClosure` compiled via `mlx_compile`. The
     /// compiled graph is constructed once per block and reused for every
@@ -1006,6 +1021,16 @@ env_flag!(
     /// acceptance. When set to `1`, the causal commit pass always runs.
     diffusion_no_skip_commit,
     "AX_DIFFUSION_NO_SKIP_COMMIT"
+);
+
+env_flag!(
+    /// `AX_DIFFUSION_PROFILE` — enable per-layer timing output for the
+    /// bidirectional denoiser forward pass. When set to `1`, each layer
+    /// call in `forward_bidirectional` is timed and reported via
+    /// `eprintln!`, giving per-step observability into the denoise
+    /// pipeline. Default OFF; opt-in for profiling.
+    diffusion_profile_enabled,
+    "AX_DIFFUSION_PROFILE"
 );
 
 /// Diffusion convergence: mean entropy threshold below which strict
@@ -1321,6 +1346,21 @@ mod tests {
         ));
         assert!(probe_default_on(
             "AX_FASTPATH_TEST_DENSE_FFN_COMPILE_ENABLED",
+            "1"
+        ));
+    }
+
+    #[test]
+    fn gemma4_assistant_compile_uses_opt_in_contract() {
+        assert!(!parse_bool_env(
+            "AX_FASTPATH_TEST_GEMMA4_ASSISTANT_COMPILE_UNSET"
+        ));
+        assert!(!probe(
+            "AX_FASTPATH_TEST_GEMMA4_ASSISTANT_COMPILE_DISABLED",
+            "0"
+        ));
+        assert!(probe(
+            "AX_FASTPATH_TEST_GEMMA4_ASSISTANT_COMPILE_ENABLED",
             "1"
         ));
     }

@@ -7260,7 +7260,9 @@ impl MlxRunner {
         // Recurrent multi-depth drafting is the gated greedy path below; the
         // sampled path stays depth-1 (per-depth sampled log-probs are out of scope).
         if first_gate <= 0.0 {
-            let Ok((logits, _projected_hidden)) = crate::model::gemma4_assistant_forward_one(
+            let bf16_hidden = astype(last_backbone_hidden, MlxDtype::Bfloat16, None);
+            // Try compiled closure path first; fall back to imperative.
+            let forward_result = crate::model::gemma4_assistant_forward_one_compiled(
                 &runtime.cfg,
                 &runtime.weights,
                 &self.cfg,
@@ -7268,9 +7270,23 @@ impl MlxRunner {
                 &state.cache,
                 runtime.target_shared_layers,
                 last_token,
-                &astype(last_backbone_hidden, MlxDtype::Bfloat16, None),
+                &bf16_hidden,
                 base_position,
-            ) else {
+            )
+            .unwrap_or_else(|| {
+                crate::model::gemma4_assistant_forward_one(
+                    &runtime.cfg,
+                    &runtime.weights,
+                    &self.cfg,
+                    &self.weights,
+                    &state.cache,
+                    runtime.target_shared_layers,
+                    last_token,
+                    &bf16_hidden,
+                    base_position,
+                )
+            });
+            let Ok((logits, _projected_hidden)) = forward_result else {
                 return (vec![], vec![], vec![]);
             };
             eval(&[&logits]);
@@ -7309,7 +7325,8 @@ impl MlxRunner {
         let mut cur_token = last_token;
         let mut cur_hidden = astype(last_backbone_hidden, MlxDtype::Bfloat16, None);
         for d in 0..max_depth {
-            let Ok((logits, projected_hidden)) = crate::model::gemma4_assistant_forward_one(
+            // Try compiled closure path first; fall back to imperative.
+            let forward_result = crate::model::gemma4_assistant_forward_one_compiled(
                 &runtime.cfg,
                 &runtime.weights,
                 &self.cfg,
@@ -7319,7 +7336,21 @@ impl MlxRunner {
                 cur_token,
                 &cur_hidden,
                 base_position + d,
-            ) else {
+            )
+            .unwrap_or_else(|| {
+                crate::model::gemma4_assistant_forward_one(
+                    &runtime.cfg,
+                    &runtime.weights,
+                    &self.cfg,
+                    &self.weights,
+                    &state.cache,
+                    runtime.target_shared_layers,
+                    cur_token,
+                    &cur_hidden,
+                    base_position + d,
+                )
+            });
+            let Ok((logits, projected_hidden)) = forward_result else {
                 break;
             };
             let (token, confidence) =

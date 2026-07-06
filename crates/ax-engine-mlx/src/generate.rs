@@ -342,7 +342,8 @@ pub fn chunked_prefill_gemma4_unified_with_sampling_buffers(
     sampling_candidates_buf: &mut Vec<(usize, f32)>,
 ) -> Result<u32, String> {
     let sampling = sampling_request.params;
-    let chunk = build_chunk_embeddings(cfg, weights, prompt_tokens, 0, inputs)?;
+    let chunk = build_chunk_embeddings(cfg, weights, prompt_tokens, 0, inputs)
+        .map_err(|e| e.to_string())?;
     let media_ranges: Vec<(usize, usize)> = chunk
         .media_ranges
         .iter()
