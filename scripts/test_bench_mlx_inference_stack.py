@@ -3031,6 +3031,51 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         self.assertEqual(summary["row_count"], 0)
         self.assertFalse(summary["publication_candidate"])
 
+    def test_ax_only_refresh_regression_blocks_slower_ax_rows(self) -> None:
+        results = [
+            {
+                "engine": "ax_engine_mlx",
+                "prompt_tokens": 128,
+                "generation_tokens": 128,
+                "prefill_tok_s": {"median": 410.0},
+                "decode_tok_s": {"median": 18.8},
+                "ttft_ms": {"median": 312.0},
+            }
+        ]
+        reference_doc = {
+            "results": [
+                {
+                    "engine": "ax_engine_mlx",
+                    "prompt_tokens": 128,
+                    "generation_tokens": 128,
+                    "prefill_tok_s": {"median": 430.0},
+                    "decode_tok_s": {"median": 20.2},
+                    "ttft_ms": {"median": 297.0},
+                }
+            ]
+        }
+
+        summary = bench.summarize_ax_only_refresh_regression(
+            results=results,
+            reference_doc=reference_doc,
+        )
+
+        self.assertEqual(
+            summary["schema_version"], "ax.ax_only_refresh_regression.v1"
+        )
+        self.assertEqual(summary["matched_count"], 1)
+        self.assertEqual(summary["decode_regression_count"], 1)
+        self.assertFalse(summary["publication_candidate"])
+        self.assertEqual(
+            summary["classification_counts"],
+            {"decode_regression": 1},
+        )
+        self.assertEqual(summary["rows"][0]["classification"], "decode_regression")
+        self.assertAlmostEqual(
+            summary["rows"][0]["decode_ratio_to_reference"],
+            18.8 / 20.2,
+        )
+
     def test_prefix_reuse_evidence_classifies_absent_and_partial_coverage(self) -> None:
         self.assertEqual(
             bench.summarize_prefix_reuse_evidence([])["physical_snapshot_coverage"],

@@ -64,6 +64,7 @@ DEFAULT_PROMPT_TOKENS = "128,512,2048"
 DEFAULT_GENERATION_TOKENS = 128
 DEFAULT_REPETITIONS = 5
 DEFAULT_COOLDOWN = 15.0
+AX_ONLY_REFRESH_DECODE_MIN_RATIO_TO_REFERENCE = 0.97
 AXENGINE_PORT = 0
 MLX_LM_RANDOM_SEED = 0
 GATEDDELTA_PREFILL_PROFILE_PROMPT_TOKENS = [512, 2048, 8192, 32768]
@@ -4327,6 +4328,104 @@ def load_reused_reference_rows(
     return rows, doc
 
 
+def ax_row_key(cell: dict[str, Any]) -> tuple[str, int, int]:
+    return (
+        str(cell.get("engine", "")),
+        int(cell.get("prompt_tokens", -1)),
+        int(cell.get("generation_tokens", -1)),
+    )
+
+
+def summarize_ax_only_refresh_regression(
+    *,
+    results: list[dict[str, Any]],
+    reference_doc: dict[str, Any] | None,
+) -> dict[str, Any]:
+    summary: dict[str, Any] = {
+        "schema_version": "ax.ax_only_refresh_regression.v1",
+        "scope": "matching_ax_rows_from_reused_reference_artifact",
+        "metric": "decode_tok_s",
+        "decode_min_ratio_to_reference": AX_ONLY_REFRESH_DECODE_MIN_RATIO_TO_REFERENCE,
+        "row_count": 0,
+        "matched_count": 0,
+        "missing_reference_count": 0,
+        "decode_regression_count": 0,
+        "classification_counts": {},
+        "rows": [],
+        "publication_candidate": True,
+    }
+    reference_rows = {}
+    if isinstance(reference_doc, dict):
+        for row in reference_doc.get("results", []):
+            if not isinstance(row, dict):
+                continue
+            if not str(row.get("engine", "")).startswith("ax_engine"):
+                continue
+            reference_rows[ax_row_key(row)] = row
+
+    for row in results:
+        if not str(row.get("engine", "")).startswith("ax_engine"):
+            continue
+        summary["row_count"] += 1
+        key = ax_row_key(row)
+        reference_row = reference_rows.get(key)
+        if reference_row is None:
+            summary["missing_reference_count"] += 1
+            continue
+        reference_decode = metric_value(reference_row, "decode_tok_s")
+        current_decode = metric_value(row, "decode_tok_s")
+        if reference_decode <= 0.0 or current_decode <= 0.0:
+            classification = "missing_decode_metric"
+            decode_ratio = None
+        else:
+            decode_ratio = current_decode / reference_decode
+            classification = (
+                "decode_regression"
+                if decode_ratio < AX_ONLY_REFRESH_DECODE_MIN_RATIO_TO_REFERENCE
+                else "within_tolerance"
+            )
+        counts = summary["classification_counts"]
+        counts[classification] = int(counts.get(classification, 0)) + 1
+        if classification == "decode_regression":
+            summary["decode_regression_count"] += 1
+            summary["publication_candidate"] = False
+        elif classification == "missing_decode_metric":
+            summary["publication_candidate"] = False
+        summary["matched_count"] += 1
+        current_prefill = metric_value(row, "prefill_tok_s")
+        reference_prefill = metric_value(reference_row, "prefill_tok_s")
+        current_ttft = metric_value(row, "ttft_ms")
+        reference_ttft = metric_value(reference_row, "ttft_ms")
+        summary["rows"].append(
+            {
+                "engine": key[0],
+                "prompt_tokens": key[1],
+                "generation_tokens": key[2],
+                "classification": classification,
+                "current_decode_tok_s": current_decode,
+                "reference_decode_tok_s": reference_decode,
+                "decode_ratio_to_reference": decode_ratio,
+                "current_prefill_tok_s": current_prefill,
+                "reference_prefill_tok_s": reference_prefill,
+                "prefill_ratio_to_reference": (
+                    current_prefill / reference_prefill
+                    if reference_prefill > 0.0 and current_prefill > 0.0
+                    else None
+                ),
+                "current_ttft_ms": current_ttft,
+                "reference_ttft_ms": reference_ttft,
+                "ttft_ratio_to_reference": (
+                    current_ttft / reference_ttft
+                    if reference_ttft > 0.0 and current_ttft > 0.0
+                    else None
+                ),
+            }
+        )
+    if summary["row_count"] == 0:
+        summary["publication_candidate"] = False
+    return summary
+
+
 def validate_reused_reference_prompt_hashes(
     rows: list[dict[str, Any]],
     prompts: list[dict[str, Any]],
@@ -5560,6 +5659,10 @@ def main() -> None:
         doc["ax_only_refresh"] = {
             "method": "reuse_existing_reference_rows_and_rerun_ax_engine_rows",
             "reference_results_source": str(args.reuse_reference_results_from),
+            "ax_reference_regression_summary": summarize_ax_only_refresh_regression(
+                results=results,
+                reference_doc=reused_reference_doc,
+            ),
             "reference_rows_reused": len(
                 [cell for cell in results if cell.get("engine") == "mlx_lm"]
             ),

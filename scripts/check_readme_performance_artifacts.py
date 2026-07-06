@@ -49,6 +49,8 @@ TTFT_TABLE_COLUMNS = PREFILL_TABLE_COLUMNS
 PHASE0_CLAIM_GATE_SCHEMA_VERSION = "ax.phase0_claim_gate.v1"
 RUN_STABILITY_SCHEMA_VERSION = "ax.benchmark_run_stability.v1"
 RUN_STABILITY_SUMMARY_SCHEMA_VERSION = "ax.benchmark_run_stability_summary.v1"
+AX_ONLY_REFRESH_REGRESSION_SCHEMA_VERSION = "ax.ax_only_refresh_regression.v1"
+AX_ONLY_REFRESH_DECODE_MIN_RATIO_TO_REFERENCE = 0.97
 PREFIX_REUSE_EQUIVALENCE_SCHEMA_VERSION = "ax.prefix_reuse_equivalence.v1"
 PREFILL_SCALING_SCHEMA_VERSION = "ax.mlx_prefill_scaling.v1"
 CONCURRENT_PREFILL_SCHEMA_VERSION = "ax.mlx_concurrent_prefill.v1"
@@ -1166,6 +1168,151 @@ def metric_summary_median(row: dict[str, Any], key: str) -> float:
     return float(metric["median"])
 
 
+def metric_summary_median_or_zero(row: dict[str, Any], key: str) -> float:
+    metric = row.get(key)
+    if not isinstance(metric, dict):
+        return 0.0
+    if metric.get("median") is not None:
+        return float(metric["median"])
+    if metric.get("mean") is not None:
+        return float(metric["mean"])
+    return 0.0
+
+
+def ax_refresh_row_key(row: dict[str, Any]) -> tuple[str, int, int]:
+    return (
+        str(row.get("engine", "")),
+        int(row.get("prompt_tokens", -1)),
+        int(row.get("generation_tokens", -1)),
+    )
+
+
+def expected_ax_only_refresh_regression_summary(
+    *, artifact: dict[str, Any], reference_artifact: dict[str, Any]
+) -> dict[str, Any]:
+    summary: dict[str, Any] = {
+        "schema_version": AX_ONLY_REFRESH_REGRESSION_SCHEMA_VERSION,
+        "scope": "matching_ax_rows_from_reused_reference_artifact",
+        "metric": "decode_tok_s",
+        "decode_min_ratio_to_reference": AX_ONLY_REFRESH_DECODE_MIN_RATIO_TO_REFERENCE,
+        "row_count": 0,
+        "matched_count": 0,
+        "missing_reference_count": 0,
+        "decode_regression_count": 0,
+        "classification_counts": {},
+        "rows": [],
+        "publication_candidate": True,
+    }
+    reference_rows = {}
+    for row in reference_artifact.get("results", []):
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("engine", "")).startswith("ax_engine"):
+            reference_rows[ax_refresh_row_key(row)] = row
+
+    for row in artifact.get("results", []):
+        if not isinstance(row, dict):
+            continue
+        if not str(row.get("engine", "")).startswith("ax_engine"):
+            continue
+        summary["row_count"] += 1
+        key = ax_refresh_row_key(row)
+        reference_row = reference_rows.get(key)
+        if reference_row is None:
+            summary["missing_reference_count"] += 1
+            continue
+        current_decode = metric_summary_median_or_zero(row, "decode_tok_s")
+        reference_decode = metric_summary_median_or_zero(reference_row, "decode_tok_s")
+        if current_decode <= 0.0 or reference_decode <= 0.0:
+            classification = "missing_decode_metric"
+            decode_ratio = None
+        else:
+            decode_ratio = current_decode / reference_decode
+            classification = (
+                "decode_regression"
+                if decode_ratio < AX_ONLY_REFRESH_DECODE_MIN_RATIO_TO_REFERENCE
+                else "within_tolerance"
+            )
+        counts = summary["classification_counts"]
+        counts[classification] = int(counts.get(classification, 0)) + 1
+        if classification == "decode_regression":
+            summary["decode_regression_count"] += 1
+            summary["publication_candidate"] = False
+        elif classification == "missing_decode_metric":
+            summary["publication_candidate"] = False
+        summary["matched_count"] += 1
+        current_prefill = metric_summary_median_or_zero(row, "prefill_tok_s")
+        reference_prefill = metric_summary_median_or_zero(reference_row, "prefill_tok_s")
+        current_ttft = metric_summary_median_or_zero(row, "ttft_ms")
+        reference_ttft = metric_summary_median_or_zero(reference_row, "ttft_ms")
+        summary["rows"].append(
+            {
+                "engine": key[0],
+                "prompt_tokens": key[1],
+                "generation_tokens": key[2],
+                "classification": classification,
+                "current_decode_tok_s": current_decode,
+                "reference_decode_tok_s": reference_decode,
+                "decode_ratio_to_reference": decode_ratio,
+                "current_prefill_tok_s": current_prefill,
+                "reference_prefill_tok_s": reference_prefill,
+                "prefill_ratio_to_reference": (
+                    current_prefill / reference_prefill
+                    if current_prefill > 0.0 and reference_prefill > 0.0
+                    else None
+                ),
+                "current_ttft_ms": current_ttft,
+                "reference_ttft_ms": reference_ttft,
+                "ttft_ratio_to_reference": (
+                    current_ttft / reference_ttft
+                    if current_ttft > 0.0 and reference_ttft > 0.0
+                    else None
+                ),
+            }
+        )
+    if summary["row_count"] == 0:
+        summary["publication_candidate"] = False
+    return summary
+
+
+def validate_ax_only_refresh_regression_summary_if_present(
+    *, repo_root: Path, artifact_path: Path, artifact: dict[str, Any]
+) -> None:
+    ax_only_refresh = artifact.get("ax_only_refresh")
+    if not isinstance(ax_only_refresh, dict):
+        return
+    summary = ax_only_refresh.get("ax_reference_regression_summary")
+    if summary is None:
+        return
+    if not isinstance(summary, dict):
+        raise ArtifactCheckError(
+            f"{artifact_path} ax_reference_regression_summary must be an object"
+        )
+    reference_source = ax_only_refresh.get("reference_results_source")
+    if not isinstance(reference_source, str):
+        raise ArtifactCheckError(
+            f"{artifact_path} ax_only_refresh lacks reference_results_source"
+        )
+    reference_path = resolve_repo_path(repo_root, reference_source)
+    if not reference_path.exists():
+        raise ArtifactCheckError(
+            f"{artifact_path} ax_only_refresh reference does not exist: {reference_path}"
+        )
+    reference_artifact = json.loads(reference_path.read_text())
+    expected = expected_ax_only_refresh_regression_summary(
+        artifact=artifact,
+        reference_artifact=reference_artifact,
+    )
+    if summary != expected:
+        raise ArtifactCheckError(
+            f"{artifact_path} ax_reference_regression_summary is inconsistent"
+        )
+    if summary.get("publication_candidate") is not True:
+        raise ArtifactCheckError(
+            f"{artifact_path} ax_reference_regression_summary is not a publication candidate"
+        )
+
+
 def validate_positive_metric_summary(
     *, artifact_path: Path, row: dict[str, Any], key: str
 ) -> None:
@@ -1932,6 +2079,11 @@ def collect_artifact_rows(
         validate_build_provenance(artifact_path=path, artifact=artifact)
         validate_public_claim_evidence(artifact_path=path, artifact=artifact)
         validate_run_stability_summary_if_present(
+            artifact_path=path,
+            artifact=artifact,
+        )
+        validate_ax_only_refresh_regression_summary_if_present(
+            repo_root=repo_root,
             artifact_path=path,
             artifact=artifact,
         )
