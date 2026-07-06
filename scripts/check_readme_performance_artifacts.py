@@ -270,6 +270,13 @@ class ArtifactSource:
 class ReadmeCheckResult:
     metric_checks: list[str]
     narrative_claim_checks: list[str]
+    condition_metadata_checks: list[str]
+
+
+@dataclass(frozen=True)
+class ConditionMetadataGap:
+    artifact_path: Path
+    reason: str
 
 
 README_METRIC_TABLES = frozenset({"decode", "prefill", "ttft"})
@@ -706,6 +713,81 @@ def validate_benchmark_window(*, artifact_path: Path, artifact: dict[str, Any]) 
             artifact_path=artifact_path,
             artifact={"host": {"performance_conditions": conditions}},
         )
+
+
+def artifact_condition_metadata_gaps(
+    *, artifact_path: Path, artifact: dict[str, Any]
+) -> list[ConditionMetadataGap]:
+    gaps: list[ConditionMetadataGap] = []
+    host = artifact.get("host")
+    if not isinstance(host, dict) or not isinstance(
+        host.get("performance_conditions"),
+        dict,
+    ):
+        gaps.append(
+            ConditionMetadataGap(
+                artifact_path=artifact_path,
+                reason="missing host.performance_conditions",
+            )
+        )
+    window = artifact.get("benchmark_window")
+    if not isinstance(window, dict):
+        gaps.append(
+            ConditionMetadataGap(
+                artifact_path=artifact_path,
+                reason="missing benchmark_window",
+            )
+        )
+        return gaps
+    for key in ("performance_conditions_start", "performance_conditions_end"):
+        if not isinstance(window.get(key), dict):
+            gaps.append(
+                ConditionMetadataGap(
+                    artifact_path=artifact_path,
+                    reason=f"missing benchmark_window.{key}",
+                )
+            )
+    return gaps
+
+
+def collect_condition_metadata_gaps(
+    *,
+    artifact_sources: list[ArtifactSource],
+    needed_labels: frozenset[tuple[str, str]] | None = None,
+) -> list[ConditionMetadataGap]:
+    gaps: list[ConditionMetadataGap] = []
+    for source in artifact_sources:
+        if not source.artifact_dir.exists():
+            continue
+        for path in sorted(source.artifact_dir.glob("*.json")):
+            label = ARTIFACT_LABELS.get(path.stem)
+            if label is None:
+                continue
+            if needed_labels is not None and label not in needed_labels:
+                continue
+            artifact = json.loads(path.read_text())
+            if artifact.get("schema_version") != MLX_INFERENCE_STACK_SCHEMA_VERSION:
+                continue
+            gaps.extend(
+                artifact_condition_metadata_gaps(
+                    artifact_path=path,
+                    artifact=artifact,
+                )
+            )
+    return gaps
+
+
+def assert_condition_metadata_complete(gaps: list[ConditionMetadataGap]) -> None:
+    if not gaps:
+        return
+    sample = "; ".join(
+        f"{gap.artifact_path}: {gap.reason}" for gap in gaps[:5]
+    )
+    extra = "" if len(gaps) <= 5 else f"; and {len(gaps) - 5} more"
+    raise ArtifactCheckError(
+        "README performance artifacts lack condition metadata: "
+        f"{sample}{extra}"
+    )
 
 
 def tracked_dirty_is_benchmark_doc_only(status: Any) -> bool:
@@ -2387,12 +2469,14 @@ def check_readme_performance(
     readme_path: Path,
     artifact_dir: Path | None = None,
     expected_metric_count: int | None = 207,
+    require_condition_metadata: bool = False,
 ) -> list[str]:
     return check_readme_performance_summary(
         repo_root=repo_root,
         readme_path=readme_path,
         artifact_dir=artifact_dir,
         expected_metric_count=expected_metric_count,
+        require_condition_metadata=require_condition_metadata,
     ).metric_checks
 
 
@@ -2402,6 +2486,7 @@ def check_readme_performance_summary(
     readme_path: Path,
     artifact_dir: Path | None = None,
     expected_metric_count: int | None = 207,
+    require_condition_metadata: bool = False,
 ) -> ReadmeCheckResult:
     resolved_readme = readme_path.resolve()
     artifact_sources = (
@@ -2418,6 +2503,12 @@ def check_readme_performance_summary(
     )
     metrics = parse_readme_metrics(resolved_readme)
     needed_labels = frozenset((metric.model, metric.quantization) for metric in metrics)
+    condition_metadata_gaps = collect_condition_metadata_gaps(
+        artifact_sources=artifact_sources,
+        needed_labels=needed_labels,
+    )
+    if require_condition_metadata:
+        assert_condition_metadata_complete(condition_metadata_gaps)
     artifact_rows = collect_artifact_rows_from_sources(
         repo_root.resolve(),
         artifact_sources,
@@ -2463,6 +2554,14 @@ def check_readme_performance_summary(
     return ReadmeCheckResult(
         metric_checks=checked,
         narrative_claim_checks=narrative_claim_checks,
+        condition_metadata_checks=[
+            f"{source.artifact_dir}:{path.name}"
+            for source in artifact_sources
+            for path in sorted(source.artifact_dir.glob("*.json"))
+            if path.exists()
+            and ARTIFACT_LABELS.get(path.stem) in needed_labels
+            and not any(gap.artifact_path == path for gap in condition_metadata_gaps)
+        ],
     )
 
 
@@ -2474,6 +2573,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--repo-root", type=Path, default=repo_root)
     parser.add_argument("--readme", type=Path, default=repo_root / "README.md")
     parser.add_argument("--artifact-dir", type=Path)
+    parser.add_argument(
+        "--require-condition-metadata",
+        action="store_true",
+        help=(
+            "Fail when README MLX inference artifacts lack host performance "
+            "conditions or benchmark condition windows."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -2484,6 +2591,7 @@ def main() -> int:
             repo_root=args.repo_root,
             readme_path=args.readme,
             artifact_dir=args.artifact_dir,
+            require_condition_metadata=args.require_condition_metadata,
         )
     except ArtifactCheckError as error:
         print(f"README performance artifact check failed: {error}", file=sys.stderr)
@@ -2491,7 +2599,9 @@ def main() -> int:
     print(
         "README performance artifact check passed: "
         f"{len(checked.metric_checks)} metrics validated; "
-        f"{len(checked.narrative_claim_checks)} narrative claims validated"
+        f"{len(checked.narrative_claim_checks)} narrative claims validated; "
+        f"{len(checked.condition_metadata_checks)} condition metadata artifacts "
+        "validated"
     )
     return 0
 

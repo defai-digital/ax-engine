@@ -690,6 +690,63 @@ class ReadmePerformanceArtifactTests(unittest.TestCase):
                     expected_metric_count=6,
                 )
 
+    def test_readme_condition_metadata_requirement_rejects_missing_metadata(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.write_fixture(root)
+
+            with self.assertRaisesRegex(
+                checker.ArtifactCheckError,
+                "lack condition metadata",
+            ):
+                checker.check_readme_performance(
+                    repo_root=root,
+                    readme_path=root / "README.md",
+                    expected_metric_count=6,
+                    require_condition_metadata=True,
+                )
+
+    def test_readme_condition_metadata_requirement_accepts_complete_metadata(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.write_fixture(root)
+            artifact_path = (
+                root / "benchmarks/results/mlx-inference/local/gemma-4-e2b-it-4bit.json"
+            )
+            artifact = json.loads(artifact_path.read_text())
+            conditions = {
+                "load_average": {
+                    "one_minute": 1.0,
+                    "five_minutes": 1.5,
+                    "fifteen_minutes": 2.0,
+                },
+                "thermal_warning_recorded": False,
+                "performance_warning_recorded": False,
+                "cpu_power_status_recorded": False,
+            }
+            artifact["host"] = {"performance_conditions": dict(conditions)}
+            artifact["benchmark_window"] = {
+                "started_at": "2026-07-06T10:00:00-0400",
+                "finished_at": "2026-07-06T10:01:00-0400",
+                "elapsed_seconds": 60.0,
+                "performance_conditions_start": dict(conditions),
+                "performance_conditions_end": dict(conditions),
+            }
+            artifact_path.write_text(json.dumps(artifact, indent=2) + "\n")
+
+            checked = checker.check_readme_performance(
+                repo_root=root,
+                readme_path=root / "README.md",
+                expected_metric_count=6,
+                require_condition_metadata=True,
+            )
+
+        self.assertEqual(len(checked), 6)
+
     def test_ax_overlay_allows_ax_only_artifact_without_mlx_lm_rows(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
