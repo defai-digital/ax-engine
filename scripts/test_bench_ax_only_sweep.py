@@ -10,7 +10,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 SCRIPT_PATH = Path(__file__).with_name("bench_ax_only_sweep.py")
 MODULE_SPEC = importlib.util.spec_from_file_location("bench_ax_only_sweep", SCRIPT_PATH)
@@ -141,6 +141,44 @@ class BenchAxOnlySweepTests(unittest.TestCase):
         self.assertIn("log=/tmp/row.log", note)
         self.assertIn("output=/tmp/row.json", note)
 
+    def test_run_row_terminates_child_when_interrupted(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            reference = root / "reference"
+            reference.mkdir()
+            (reference / "a.json").write_text("{}\n")
+            proc = Mock()
+            proc.pid = 12345
+            proc.poll.return_value = None
+            proc.wait.side_effect = [
+                sweep.SweepInterrupted("received SIGTERM"),
+                0,
+            ]
+
+            with (
+                patch.object(sweep.subprocess, "Popen", return_value=proc) as popen,
+                patch.object(sweep.os, "killpg") as killpg,
+                self.assertRaises(sweep.SweepInterrupted),
+            ):
+                sweep.run_row(
+                    {
+                        "slug": "a",
+                    },
+                    output_dir=root / "out",
+                    bench_script=root / "bench.py",
+                    prompt_tokens="128",
+                    generation_tokens=128,
+                    repetitions=5,
+                    cooldown=15.0,
+                    model_args=["--model-dir", str(root / "model")],
+                    reuse_ref_root=reference,
+                )
+
+            self.assertTrue(popen.call_args.kwargs["start_new_session"])
+            killpg.assert_called_once_with(12345, sweep.signal.SIGTERM)
+            self.assertEqual(proc.send_signal.call_count, 0)
+            self.assertEqual(proc.kill.call_count, 0)
+
     def test_main_writes_summary_then_fails_on_failed_row(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -205,6 +243,66 @@ class BenchAxOnlySweepTests(unittest.TestCase):
             self.assertIn("exit_code=2", markdown)
             self.assertIn("logs/a.log", markdown)
             self.assertIn("a.json", markdown)
+
+    def test_main_writes_non_candidate_summary_when_interrupted(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest = root / "manifest.json"
+            manifest.write_text(
+                json.dumps(
+                    {
+                        "rows": [
+                            {
+                                "slug": "a",
+                                "readme_model": "Gemma",
+                                "readme_quant": "6-bit",
+                            }
+                        ]
+                    }
+                )
+                + "\n"
+            )
+            out_dir = root / "out"
+            argv = [
+                "bench_ax_only_sweep.py",
+                "--manifest",
+                str(manifest),
+                "--output-root",
+                str(out_dir),
+                "--reuse-reference-root",
+                str(root / "reference"),
+            ]
+
+            with (
+                patch.object(sys, "argv", argv),
+                patch.object(
+                    sweep,
+                    "resolve_model_args",
+                    return_value=(["--model-dir", str(root / "model")], None),
+                ),
+                patch.object(
+                    sweep,
+                    "run_row",
+                    side_effect=sweep.SweepInterrupted("received SIGTERM"),
+                ),
+                patch("sys.stderr", io.StringIO()),
+            ):
+                with self.assertRaises(SystemExit) as caught:
+                    sweep.main()
+
+            self.assertEqual(caught.exception.code, 2)
+            sweep_results = json.loads((out_dir / "sweep_results.json").read_text())
+            self.assertFalse(sweep_results["publication_candidate"])
+            self.assertEqual(sweep_results["failed_row_count"], 1)
+            self.assertEqual(sweep_results["status_counts"], {"interrupted": 1})
+            self.assertEqual(sweep_results["planned_row_count"], 1)
+            self.assertEqual(sweep_results["completed_row_count"], 0)
+            self.assertEqual(sweep_results["rows"][0]["status"], "interrupted")
+            self.assertIn("received SIGTERM", sweep_results["rows"][0]["note"])
+            markdown = (out_dir / "sweep_summary.md").read_text()
+            self.assertIn("publication_candidate: false", markdown)
+            self.assertIn("completed_row_count: 0/1", markdown)
+            self.assertIn("interrupted", markdown)
 
 
 if __name__ == "__main__":

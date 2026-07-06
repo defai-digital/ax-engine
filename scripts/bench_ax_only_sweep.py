@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import signal
 import subprocess
 import sys
 import time
@@ -29,6 +30,10 @@ DEFAULT_BENCH_SCRIPT = REPO_ROOT / "scripts" / "bench_mlx_inference_stack.py"
 
 
 class AxOnlySweepError(RuntimeError):
+    pass
+
+
+class SweepInterrupted(RuntimeError):
     pass
 
 
@@ -138,6 +143,27 @@ def filter_manifest_rows(
     return selected
 
 
+def terminate_process_tree(proc: subprocess.Popen[Any]) -> None:
+    if proc.poll() is not None:
+        return
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    except OSError:
+        proc.send_signal(signal.SIGTERM)
+    try:
+        proc.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        except OSError:
+            proc.kill()
+        proc.wait()
+
+
 def run_row(
     row: dict[str, Any],
     *,
@@ -174,11 +200,21 @@ def run_row(
     ]
     log(f"  invoke: {' '.join(cmd)}")
     with log_path.open("w") as fh:
-        result = subprocess.run(cmd, stdout=fh, stderr=subprocess.STDOUT)
-    if result.returncode != 0:
+        proc = subprocess.Popen(
+            cmd,
+            stdout=fh,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+        try:
+            returncode = proc.wait()
+        except (KeyboardInterrupt, SweepInterrupted):
+            terminate_process_tree(proc)
+            raise
+    if returncode != 0:
         return {
             "status": "bench_failed",
-            "exit_code": result.returncode,
+            "exit_code": returncode,
             "log_path": str(log_path),
             "output_path": str(out_json) if out_json.exists() else None,
         }
@@ -223,6 +259,40 @@ def fail_if_sweep_incomplete(rows: list[dict[str, Any]]) -> None:
     sys.exit(2)
 
 
+def build_sweep_doc(
+    *,
+    args: argparse.Namespace,
+    summary_rows: list[dict[str, Any]],
+    started: float,
+    planned_row_count: int,
+) -> dict[str, Any]:
+    elapsed = time.time() - started
+    failed_rows = failed_sweep_rows(summary_rows)
+    return {
+        "schema_version": "ax.ax_only_sweep.v1",
+        "manifest_path": str(args.manifest),
+        "reuse_reference_root": str(args.reuse_reference_root),
+        "prompt_tokens": args.prompt_tokens,
+        "generation_tokens": args.generation_tokens,
+        "repetitions": args.repetitions,
+        "cooldown": args.cooldown,
+        "started_at": time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(started)),
+        "elapsed_seconds": round(elapsed, 1),
+        "planned_row_count": planned_row_count,
+        "completed_row_count": len(
+            [
+                row
+                for row in summary_rows
+                if row.get("status") not in {"running", "interrupted"}
+            ]
+        ),
+        "publication_candidate": not failed_rows,
+        "failed_row_count": len(failed_rows),
+        "status_counts": status_counts(summary_rows),
+        "rows": summary_rows,
+    }
+
+
 def markdown_cell(value: Any) -> str:
     return str(value).replace("|", "\\|").replace("\n", " ")
 
@@ -239,6 +309,72 @@ def sweep_row_note(row: dict[str, Any]) -> str:
     if row.get("output_path"):
         parts.append(f"output={row['output_path']}")
     return "; ".join(parts)
+
+
+def write_sweep_outputs(
+    *,
+    args: argparse.Namespace,
+    summary_rows: list[dict[str, Any]],
+    started: float,
+    planned_row_count: int,
+) -> dict[str, Any]:
+    sweep_doc = build_sweep_doc(
+        args=args,
+        summary_rows=summary_rows,
+        started=started,
+        planned_row_count=planned_row_count,
+    )
+    args.output_root.mkdir(parents=True, exist_ok=True)
+    (args.output_root / "logs").mkdir(parents=True, exist_ok=True)
+    (args.output_root / "sweep_results.json").write_text(
+        json.dumps(sweep_doc, indent=2) + "\n"
+    )
+    log(f"wrote {args.output_root / 'sweep_results.json'}")
+
+    md = [
+        "# AX-only sweep summary",
+        "",
+        f"- publication_candidate: {str(sweep_doc['publication_candidate']).lower()}",
+        f"- failed_row_count: {sweep_doc['failed_row_count']}",
+        f"- status_counts: {status_counts_text(sweep_doc['status_counts'])}",
+        f"- completed_row_count: {sweep_doc['completed_row_count']}/{planned_row_count}",
+        f"- elapsed: {sweep_doc['elapsed_seconds']:.0f}s",
+        "",
+        "| slug | status | notes |",
+        "|---|---|---|",
+    ]
+    for row in summary_rows:
+        md.append(
+            "| "
+            + " | ".join(
+                [
+                    markdown_cell(row["slug"]),
+                    markdown_cell(row.get("status", "?")),
+                    markdown_cell(sweep_row_note(row)),
+                ]
+            )
+            + " |"
+        )
+    (args.output_root / "sweep_summary.md").write_text("\n".join(md) + "\n")
+    log(f"wrote {args.output_root / 'sweep_summary.md'}")
+    return sweep_doc
+
+
+def _raise_sweep_interrupted(signum: int, _frame: Any) -> None:
+    raise SweepInterrupted(f"received {signal.Signals(signum).name}")
+
+
+def install_interrupt_handlers() -> dict[int, Any]:
+    handlers: dict[int, Any] = {}
+    for signum in (signal.SIGINT, signal.SIGTERM):
+        handlers[signum] = signal.getsignal(signum)
+        signal.signal(signum, _raise_sweep_interrupted)
+    return handlers
+
+
+def restore_interrupt_handlers(handlers: dict[int, Any]) -> None:
+    for signum, handler in handlers.items():
+        signal.signal(signum, handler)
 
 
 def main() -> None:
@@ -279,84 +415,83 @@ def main() -> None:
 
     summary_rows: list[dict[str, Any]] = []
     started = time.time()
+    handlers = install_interrupt_handlers()
 
-    for index, row in enumerate(rows, start=1):
-        slug = row["slug"]
-        log(f"({index}/{len(rows)}) {slug}")
-        record: dict[str, Any] = {
-            "slug": slug,
-            "readme_model": row["readme_model"],
-            "readme_quant": row["readme_quant"],
-            "started_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
-        }
-        model_args, err = resolve_model_args(row, args.cache_dir)
-        if model_args is None:
-            record["status"] = "model_dir_missing"
-            record["note"] = err
+    try:
+        for index, row in enumerate(rows, start=1):
+            slug = row["slug"]
+            log(f"({index}/{len(rows)}) {slug}")
+            record: dict[str, Any] = {
+                "slug": slug,
+                "readme_model": row["readme_model"],
+                "readme_quant": row["readme_quant"],
+                "status": "running",
+                "started_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+            }
             summary_rows.append(record)
-            log(f"  -> skip: {err}")
-            continue
-        result = run_row(
-            row,
-            output_dir=args.output_root,
-            bench_script=args.bench_script,
-            prompt_tokens=args.prompt_tokens,
-            generation_tokens=args.generation_tokens,
-            repetitions=args.repetitions,
-            cooldown=args.cooldown,
-            model_args=model_args,
-            reuse_ref_root=args.reuse_reference_root,
-        )
-        record.update(result)
-        summary_rows.append(record)
-        log(f"  -> {record.get('status')}")
-
-    elapsed = time.time() - started
-    failed_rows = failed_sweep_rows(summary_rows)
-    counts = status_counts(summary_rows)
-    sweep_doc = {
-        "schema_version": "ax.ax_only_sweep.v1",
-        "manifest_path": str(args.manifest),
-        "reuse_reference_root": str(args.reuse_reference_root),
-        "prompt_tokens": args.prompt_tokens,
-        "generation_tokens": args.generation_tokens,
-        "repetitions": args.repetitions,
-        "cooldown": args.cooldown,
-        "started_at": time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(started)),
-        "elapsed_seconds": round(elapsed, 1),
-        "publication_candidate": not failed_rows,
-        "failed_row_count": len(failed_rows),
-        "status_counts": counts,
-        "rows": summary_rows,
-    }
-    (args.output_root / "sweep_results.json").write_text(json.dumps(sweep_doc, indent=2))
-    log(f"wrote {args.output_root / 'sweep_results.json'}")
-
-    md = [
-        "# AX-only sweep summary",
-        "",
-        f"- publication_candidate: {str(not failed_rows).lower()}",
-        f"- failed_row_count: {len(failed_rows)}",
-        f"- status_counts: {status_counts_text(counts)}",
-        f"- elapsed: {elapsed:.0f}s",
-        "",
-        "| slug | status | notes |",
-        "|---|---|---|",
-    ]
-    for r in summary_rows:
-        md.append(
-            "| "
-            + " | ".join(
-                [
-                    markdown_cell(r["slug"]),
-                    markdown_cell(r.get("status", "?")),
-                    markdown_cell(sweep_row_note(r)),
-                ]
+            write_sweep_outputs(
+                args=args,
+                summary_rows=summary_rows,
+                started=started,
+                planned_row_count=len(rows),
             )
-            + " |"
+            model_args, err = resolve_model_args(row, args.cache_dir)
+            if model_args is None:
+                record["status"] = "model_dir_missing"
+                record["note"] = err
+                log(f"  -> skip: {err}")
+                write_sweep_outputs(
+                    args=args,
+                    summary_rows=summary_rows,
+                    started=started,
+                    planned_row_count=len(rows),
+                )
+                continue
+            result = run_row(
+                row,
+                output_dir=args.output_root,
+                bench_script=args.bench_script,
+                prompt_tokens=args.prompt_tokens,
+                generation_tokens=args.generation_tokens,
+                repetitions=args.repetitions,
+                cooldown=args.cooldown,
+                model_args=model_args,
+                reuse_ref_root=args.reuse_reference_root,
+            )
+            record.update(result)
+            log(f"  -> {record.get('status')}")
+            write_sweep_outputs(
+                args=args,
+                summary_rows=summary_rows,
+                started=started,
+                planned_row_count=len(rows),
+            )
+    except SweepInterrupted as error:
+        for record in reversed(summary_rows):
+            if record.get("status") == "running":
+                record["status"] = "interrupted"
+                record["note"] = str(error)
+                break
+        else:
+            summary_rows.append(
+                {
+                    "slug": "sweep",
+                    "readme_model": "",
+                    "readme_quant": "",
+                    "status": "interrupted",
+                    "note": str(error),
+                    "started_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+                }
+            )
+        write_sweep_outputs(
+            args=args,
+            summary_rows=summary_rows,
+            started=started,
+            planned_row_count=len(rows),
         )
-    (args.output_root / "sweep_summary.md").write_text("\n".join(md) + "\n")
-    log(f"wrote {args.output_root / 'sweep_summary.md'}")
+    finally:
+        restore_interrupt_handlers(handlers)
+
     fail_if_sweep_incomplete(summary_rows)
 
 

@@ -281,6 +281,7 @@ def check_sweep_results(artifact_dir: Path) -> list[str]:
         raise GateError(f"{sweep_path} has no rows list")
     failures: list[str] = []
     row_failure_count = 0
+    completed_row_count = 0
     status_counts: dict[str, int] = {}
     if not rows:
         failures.append("sweep_results.json has empty rows list")
@@ -304,6 +305,8 @@ def check_sweep_results(artifact_dir: Path) -> list[str]:
             continue
         status = raw_status
         status_counts[status] = status_counts.get(status, 0) + 1
+        if status not in {"running", "interrupted"}:
+            completed_row_count += 1
         if status != "ok":
             reason = row.get("reason") or row.get("error") or status
             failures.append(f"{label}: {reason}")
@@ -338,6 +341,27 @@ def check_sweep_results(artifact_dir: Path) -> list[str]:
             elif failed_row_count != row_failure_count:
                 failures.append(
                     f"failed_row_count={failed_row_count} but found {row_failure_count}"
+                )
+        planned_row_count = payload.get("planned_row_count")
+        if planned_row_count is not None:
+            if not isinstance(planned_row_count, int) or isinstance(
+                planned_row_count, bool
+            ):
+                failures.append("planned_row_count must be an integer when present")
+            elif planned_row_count < len(rows):
+                failures.append(
+                    f"planned_row_count={planned_row_count} but found {len(rows)} row(s)"
+                )
+        completed_row_count_recorded = payload.get("completed_row_count")
+        if completed_row_count_recorded is not None:
+            if not isinstance(completed_row_count_recorded, int) or isinstance(
+                completed_row_count_recorded, bool
+            ):
+                failures.append("completed_row_count must be an integer when present")
+            elif completed_row_count_recorded != completed_row_count:
+                failures.append(
+                    "completed_row_count="
+                    f"{completed_row_count_recorded} but found {completed_row_count}"
                 )
         recorded_status_counts = payload.get("status_counts")
         if recorded_status_counts is not None:
