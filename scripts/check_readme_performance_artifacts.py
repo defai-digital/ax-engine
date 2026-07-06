@@ -47,6 +47,7 @@ PREFILL_TABLE_COLUMNS = {
 TTFT_TABLE_COLUMNS = PREFILL_TABLE_COLUMNS
 
 PHASE0_CLAIM_GATE_SCHEMA_VERSION = "ax.phase0_claim_gate.v1"
+RUN_STABILITY_SCHEMA_VERSION = "ax.benchmark_run_stability.v1"
 PREFIX_REUSE_EQUIVALENCE_SCHEMA_VERSION = "ax.prefix_reuse_equivalence.v1"
 PREFILL_SCALING_SCHEMA_VERSION = "ax.mlx_prefill_scaling.v1"
 CONCURRENT_PREFILL_SCHEMA_VERSION = "ax.mlx_concurrent_prefill.v1"
@@ -1072,6 +1073,34 @@ def validate_positive_metric_summary(
         )
 
 
+def validate_run_stability_if_present(
+    *, artifact_path: Path, row: dict[str, Any], require_phase0: bool
+) -> None:
+    if not require_phase0:
+        return
+    stability = row.get("run_stability")
+    if stability is None:
+        return
+    if not isinstance(stability, dict):
+        raise ArtifactCheckError(
+            f"{artifact_path} {row.get('engine')} run_stability must be an object"
+        )
+    if stability.get("schema_version") != RUN_STABILITY_SCHEMA_VERSION:
+        raise ArtifactCheckError(
+            f"{artifact_path} {row.get('engine')} has stale run_stability schema"
+        )
+    if stability.get("metric") != "decode_tok_s":
+        raise ArtifactCheckError(
+            f"{artifact_path} {row.get('engine')} run_stability must track decode_tok_s"
+        )
+    classification = stability.get("classification")
+    if classification != "stable_enough":
+        raise ArtifactCheckError(
+            f"{artifact_path} {row.get('engine')} unstable benchmark row: "
+            f"{classification}"
+        )
+
+
 def validate_phase0_runtime_identity(
     *, artifact_path: Path, row: dict[str, Any]
 ) -> None:
@@ -1634,6 +1663,11 @@ def validate_artifact_row(
             row=row,
             require_phase0=require_phase0,
         )
+        validate_run_stability_if_present(
+            artifact_path=artifact_path,
+            row=row,
+            require_phase0=require_phase0,
+        )
         validate_direct_hotpath_no_hidden_fallbacks(
             artifact_path=artifact_path,
             row=row,
@@ -1669,6 +1703,11 @@ def validate_artifact_row(
         ):
             raise ArtifactCheckError(f"{artifact_path} n-gram row lacks claim status")
         validate_ax_prefill_decode_split(
+            artifact_path=artifact_path,
+            row=row,
+            require_phase0=require_phase0,
+        )
+        validate_run_stability_if_present(
             artifact_path=artifact_path,
             row=row,
             require_phase0=require_phase0,

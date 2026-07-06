@@ -834,6 +834,35 @@ class ReadmePerformanceArtifactTests(unittest.TestCase):
                     expected_metric_count=6,
                 )
 
+    def test_direct_ax_row_rejects_unstable_run_stability(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.write_fixture(root)
+            artifact_path = (
+                root / "benchmarks/results/mlx-inference/local/gemma-4-e2b-it-4bit.json"
+            )
+            artifact = json.loads(artifact_path.read_text())
+            for row in artifact["results"]:
+                if row["engine"] == "ax_engine_mlx":
+                    row["run_stability"] = {
+                        "schema_version": checker.RUN_STABILITY_SCHEMA_VERSION,
+                        "metric": "decode_tok_s",
+                        "classification": "tail_regression",
+                        "trial_count": 3,
+                        "last_vs_first_pct": -12.5,
+                    }
+            artifact_path.write_text(json.dumps(artifact, indent=2) + "\n")
+
+            with self.assertRaisesRegex(
+                checker.ArtifactCheckError,
+                "unstable benchmark row: tail_regression",
+            ):
+                checker.check_readme_performance(
+                    repo_root=root,
+                    readme_path=root / "README.md",
+                    expected_metric_count=6,
+                )
+
     def test_direct_ax_row_rejects_hidden_hotpath_fallback_counters(self) -> None:
         fallback_keys = [
             "ax_mlx_single_decode_steps",
