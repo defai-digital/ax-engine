@@ -1103,6 +1103,10 @@ def validate_run_stability_summary_if_present(
             raise ArtifactCheckError(
                 f"{artifact_path} run_stability_summary {key} is inconsistent with result rows"
             )
+    if summary.get("publication_candidate") is not True:
+        raise ArtifactCheckError(
+            f"{artifact_path} run_stability_summary is not a publication candidate"
+        )
 
 
 def validate_phase0_artifact_gate(
