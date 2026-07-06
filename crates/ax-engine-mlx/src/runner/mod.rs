@@ -3443,13 +3443,21 @@ fn seed_generation_ngram_from_prefill_output(
 /// Cache key for the embedding-forward compiled closure: thread- and
 /// shape-specific. MLX compiled closures are stream-registry sensitive, so a
 /// closure compiled on one worker thread must not be applied on another.
-type EmbedCompileKey = (ThreadId, usize, Option<usize>);
+/// The final `bool` is `has_dense_head`: when true the Dense head projection
+/// is fused into the compiled graph, so the closure output shape differs
+/// from the raw hidden-state path and the two must not share a cache slot.
+type EmbedCompileKey = (ThreadId, usize, Option<usize>, bool);
 
 /// Cache key for the batched embedding-forward compiled closure.
 /// `target_positions` is baked into the trace, so two batches with the same
 /// `(thread_id, batch_size, max_len)` but different per-sequence target
-/// positions hit distinct keys.
-type EmbedBatchCompileKey = (ThreadId, usize, usize, Option<Vec<usize>>);
+/// positions hit distinct keys. The trailing `bool` is `has_dense_head`
+/// (same rationale as `EmbedCompileKey`).
+type EmbedBatchCompileKey = (ThreadId, usize, usize, Option<Vec<usize>>, bool);
+
+/// Cache key for mean-pool compiled embedding closures.
+/// (thread_id, batch_size, max_seq_len)
+type EmbedMeanPoolCompileKey = (ThreadId, usize, usize);
 
 /// EmbeddingGemma compiled batch closure output contract.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -3558,6 +3566,11 @@ pub struct MlxRunner {
     /// padding mask is captured at closure-build time and baked into the
     /// trace. Same kill switch (`AX_EMBED_NO_COMPILE`).
     embed_gemma_batch_compile_cache: Mutex<HashMap<EmbedGemmaBatchCompileKey, mlx_sys::MlxClosure>>,
+    /// Per-thread/per-shape compiled mean-pool embedding closures. Keyed
+    /// on `(thread_id, batch_size, max_seq_len)`; the layer loop + final
+    /// norm are fused, mean-pool masking is applied post-closure by the
+    /// caller. Same kill switch (`AX_EMBED_NO_COMPILE`).
+    embed_mean_pool_compile_cache: Mutex<HashMap<EmbedMeanPoolCompileKey, mlx_sys::MlxClosure>>,
     /// Cumulative hit / miss counters for the two embedding compile
     /// caches. Useful to confirm a workload is reusing compiled
     /// closures vs trashing the cache with shape variation. Exported
@@ -3569,6 +3582,7 @@ pub struct MlxRunner {
 /// current cache size (number of distinct compiled closures retained);
 /// `hits` / `misses` are cumulative since session creation.
 #[derive(Clone, Copy, Debug, Default)]
+#[non_exhaustive]
 pub struct EmbedCompileCacheStats {
     pub single_hits: u64,
     pub single_misses: u64,
@@ -3576,6 +3590,9 @@ pub struct EmbedCompileCacheStats {
     pub batched_hits: u64,
     pub batched_misses: u64,
     pub batched_len: usize,
+    pub mean_pool_hits: u64,
+    pub mean_pool_misses: u64,
+    pub mean_pool_len: usize,
 }
 
 #[derive(Default)]
@@ -3584,12 +3601,18 @@ struct EmbedCompileStats {
     single_misses: u64,
     batched_hits: u64,
     batched_misses: u64,
+    mean_pool_hits: u64,
+    mean_pool_misses: u64,
 }
 
 /// Maximum number of compiled closures retained per embed compile cache.
 /// When exceeded, the cache is cleared and rebuilt — prevents unbounded
 /// memory growth under workloads with many distinct input shapes.
 const EMBED_COMPILE_CACHE_MAX_ENTRIES: usize = 256;
+
+/// Default minimum `batch_size * max_seq_len` before the mean-pool compiled
+/// closure path is attempted. Override via `AX_EMBED_MEAN_COMPILE_THRESHOLD`.
+const EMBED_MEAN_COMPILE_DEFAULT_THRESHOLD: usize = 512;
 
 /// Cached flag: when `AX_EMBED_GPU_NORMALIZE=1`, L2 normalization runs on
 /// the GPU instead of the default CPU read-back path.
@@ -3603,6 +3626,28 @@ static EMBED_GPU_NORMALIZE: LazyLock<bool> = LazyLock::new(|| {
 /// benchmarking against the imperative forward path.
 static EMBED_NO_COMPILE: LazyLock<bool> =
     LazyLock::new(|| std::env::var("AX_EMBED_NO_COMPILE").is_ok());
+
+/// Global compiled-closure cache counters.
+static COMPILE_CACHE_HITS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static COMPILE_CACHE_MISSES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static COMPILE_FALLBACK_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Global compiled-closure telemetry counters.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct CompileCacheCounters {
+    pub hits: u64,
+    pub misses: u64,
+    pub fallbacks: u64,
+}
+
+/// Returns compiled-closure cache telemetry counters.
+pub fn compile_cache_counters() -> CompileCacheCounters {
+    CompileCacheCounters {
+        hits: COMPILE_CACHE_HITS.load(std::sync::atomic::Ordering::Relaxed),
+        misses: COMPILE_CACHE_MISSES.load(std::sync::atomic::Ordering::Relaxed),
+        fallbacks: COMPILE_FALLBACK_COUNT.load(std::sync::atomic::Ordering::Relaxed),
+    }
+}
 
 impl fmt::Debug for MlxRunner {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -4093,6 +4138,7 @@ impl MlxRunner {
             embed_compile_cache: Mutex::new(HashMap::new()),
             embed_batch_compile_cache: Mutex::new(HashMap::new()),
             embed_gemma_batch_compile_cache: Mutex::new(HashMap::new()),
+            embed_mean_pool_compile_cache: Mutex::new(HashMap::new()),
             embed_compile_stats: Mutex::new(EmbedCompileStats::default()),
         })
     }
@@ -4108,6 +4154,7 @@ impl MlxRunner {
         let single_len = self.embed_compile_cache.lock().len();
         let batched_len = self.embed_batch_compile_cache.lock().len()
             + self.embed_gemma_batch_compile_cache.lock().len();
+        let mean_pool_len = self.embed_mean_pool_compile_cache.lock().len();
         EmbedCompileCacheStats {
             single_hits: stats.single_hits,
             single_misses: stats.single_misses,
@@ -4115,6 +4162,9 @@ impl MlxRunner {
             batched_hits: stats.batched_hits,
             batched_misses: stats.batched_misses,
             batched_len,
+            mean_pool_hits: stats.mean_pool_hits,
+            mean_pool_misses: stats.mean_pool_misses,
+            mean_pool_len,
         }
     }
 
@@ -4538,7 +4588,7 @@ impl ExecutionRunner for MlxRunner {
             EmbeddingPooling::Mean => None,
         };
         let encode_started = Instant::now();
-        let hidden = self.embedding_forward(token_ids, target_position);
+        let (hidden, dense_head_fused) = self.embedding_forward(token_ids, target_position);
         let encode_us = elapsed_us(encode_started);
 
         // Last/Cls: hidden is [1, 1, H] (already at the target position).
@@ -4553,7 +4603,12 @@ impl ExecutionRunner for MlxRunner {
             }
             EmbeddingPooling::Last | EmbeddingPooling::Cls => hidden,
         };
-        let pooled = crate::model::apply_embedding_dense_head(&self.weights, &pooled);
+        // Compiled path fuses Dense head; imperative fallback needs it here.
+        let pooled = if dense_head_fused {
+            pooled
+        } else {
+            crate::model::apply_embedding_dense_head(&self.weights, &pooled)
+        };
         let pool_us = elapsed_us(pool_started);
 
         let post_started = Instant::now();
@@ -4605,7 +4660,7 @@ impl ExecutionRunner for MlxRunner {
             return Ok(vecs);
         }
         let encode_started = Instant::now();
-        let (hidden, actual_lens) =
+        let (hidden, actual_lens, dense_head_fused) =
             self.embedding_batch_forward(batch, target_positions.as_deref());
         let encode_us = elapsed_us(encode_started);
 
@@ -4618,7 +4673,12 @@ impl ExecutionRunner for MlxRunner {
             EmbeddingPooling::Mean => bf16_mean_pool(&hidden, &actual_lens, batch_size),
             EmbeddingPooling::Last | EmbeddingPooling::Cls => hidden,
         };
-        let pooled = crate::model::apply_embedding_dense_head(&self.weights, &pooled);
+        // Compiled path fuses Dense head; imperative fallback needs it here.
+        let pooled = if dense_head_fused {
+            pooled
+        } else {
+            crate::model::apply_embedding_dense_head(&self.weights, &pooled)
+        };
         let pool_us = elapsed_us(pool_started);
 
         let post_started = Instant::now();
@@ -4676,14 +4736,19 @@ impl ExecutionRunner for MlxRunner {
                 hidden_size,
             });
         }
-        let (hidden, actual_lens) =
+        let (hidden, actual_lens, dense_head_fused) =
             self.embedding_batch_forward(batch, target_positions.as_deref());
         let batch_size = batch.len() as i32;
         let pooled = match pooling {
             EmbeddingPooling::Mean => bf16_mean_pool(&hidden, &actual_lens, batch_size),
             EmbeddingPooling::Last | EmbeddingPooling::Cls => hidden,
         };
-        let pooled = crate::model::apply_embedding_dense_head(&self.weights, &pooled);
+        // Compiled path fuses Dense head; imperative fallback needs it here.
+        let pooled = if dense_head_fused {
+            pooled
+        } else {
+            crate::model::apply_embedding_dense_head(&self.weights, &pooled)
+        };
         let (data, hidden_size) = post_pool_to_flat(&pooled, normalize);
         Ok(ax_engine_core::EmbeddingMatrix {
             data,
@@ -4811,13 +4876,27 @@ impl MlxRunner {
     /// The compiled closure is shape-specific (per `seq_len`,
     /// `target_position`) — first call at a new shape pays the trace cost
     /// once, subsequent calls hit the cache.
-    fn embedding_forward(&self, token_ids: &[u32], target_position: Option<usize>) -> MlxArray {
+    ///
+    /// Returns `(output, dense_head_fused)`: when the compiled path was used
+    /// and the model has a Dense head, the head is fused into the closure and
+    /// the caller must NOT apply it again.
+    fn embedding_forward(
+        &self,
+        token_ids: &[u32],
+        target_position: Option<usize>,
+    ) -> (MlxArray, bool) {
+        // Fuse Dense head only for Last/Cls pooling (target_position.is_some());
+        // mean pooling applies Dense head after pooling (outside the closure).
+        let has_dense_head = self.weights.embedding_dense_0.is_some() && target_position.is_some();
         if *EMBED_NO_COMPILE {
-            return crate::model::forward_for_embedding(
-                &self.cfg,
-                &self.weights,
-                token_ids,
-                target_position,
+            return (
+                crate::model::forward_for_embedding(
+                    &self.cfg,
+                    &self.weights,
+                    token_ids,
+                    target_position,
+                ),
+                false,
             );
         }
         // The closure body operates on the pre-embedded bf16 hidden state.
@@ -4836,7 +4915,12 @@ impl MlxRunner {
             hidden = crate::model::scale_hidden_pub(&hidden, scale);
         }
 
-        let key: EmbedCompileKey = (thread::current().id(), token_ids.len(), target_position);
+        let key: EmbedCompileKey = (
+            thread::current().id(),
+            token_ids.len(),
+            target_position,
+            has_dense_head,
+        );
         let mut cache = self.embed_compile_cache.lock();
         let was_present = cache.contains_key(&key);
         if !was_present {
@@ -4844,6 +4928,7 @@ impl MlxRunner {
                 Arc::clone(&self.cfg_arc),
                 Arc::clone(&self.weights),
                 target_position,
+                has_dense_head,
             ) {
                 Ok(cls) => {
                     if cache.len() >= EMBED_COMPILE_CACHE_MAX_ENTRIES {
@@ -4851,13 +4936,23 @@ impl MlxRunner {
                     }
                     cache.insert(key, cls);
                 }
-                Err(_) => {
+                Err(err) => {
+                    tracing::warn!(
+                        target = "ax_engine_mlx",
+                        path = "embed_single",
+                        reason = %err,
+                        "compiled_closure_build_failed"
+                    );
+                    COMPILE_FALLBACK_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     drop(cache);
-                    return crate::model::forward_for_embedding(
-                        &self.cfg,
-                        &self.weights,
-                        token_ids,
-                        target_position,
+                    return (
+                        crate::model::forward_for_embedding(
+                            &self.cfg,
+                            &self.weights,
+                            token_ids,
+                            target_position,
+                        ),
+                        false,
                     );
                 }
             }
@@ -4866,34 +4961,56 @@ impl MlxRunner {
             let mut stats = self.embed_compile_stats.lock();
             if was_present {
                 stats.single_hits += 1;
+                COMPILE_CACHE_HITS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             } else {
                 stats.single_misses += 1;
+                COMPILE_CACHE_MISSES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             }
         }
         let cls = cache.get(&key).expect("just inserted");
         let outputs = match cls.try_apply(&[&hidden]) {
             Ok(outputs) => outputs,
-            Err(_) => {
+            Err(err) => {
+                tracing::warn!(
+                    target = "ax_engine_mlx",
+                    path = "embed_single",
+                    reason = %err,
+                    "compiled_closure_apply_failed"
+                );
+                COMPILE_FALLBACK_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 cache.remove(&key);
                 drop(cache);
-                return crate::model::forward_for_embedding(
-                    &self.cfg,
-                    &self.weights,
-                    token_ids,
-                    target_position,
+                return (
+                    crate::model::forward_for_embedding(
+                        &self.cfg,
+                        &self.weights,
+                        token_ids,
+                        target_position,
+                    ),
+                    false,
                 );
             }
         };
         match outputs.into_iter().next() {
-            Some(out) => out,
+            Some(out) => (out, has_dense_head),
             None => {
+                tracing::warn!(
+                    target = "ax_engine_mlx",
+                    path = "embed_single",
+                    reason = "empty_output",
+                    "compiled_closure_apply_failed"
+                );
+                COMPILE_FALLBACK_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 cache.remove(&key);
                 drop(cache);
-                crate::model::forward_for_embedding(
-                    &self.cfg,
-                    &self.weights,
-                    token_ids,
-                    target_position,
+                (
+                    crate::model::forward_for_embedding(
+                        &self.cfg,
+                        &self.weights,
+                        token_ids,
+                        target_position,
+                    ),
+                    false,
                 )
             }
         }
@@ -4908,25 +5025,32 @@ impl MlxRunner {
     /// dedicated compiled-closure path: the transformer layers + final norm
     /// are fused into one compiled graph; mean pooling + Dense head are
     /// applied post-closure by the caller.
+    ///
+    /// Returns `(output, actual_lens, dense_head_fused)`.
     fn embedding_batch_forward(
         &self,
         batch_token_ids: &[Vec<u32>],
         target_positions: Option<&[usize]>,
-    ) -> (MlxArray, Vec<usize>) {
+    ) -> (MlxArray, Vec<usize>, bool) {
         let profile = crate::model::profile::embed_profile_enabled();
+        // Fuse Dense head only for Last/Cls pooling (target_positions.is_some());
+        // mean pooling applies Dense head after pooling (outside the closure).
+        let has_dense_head = self.weights.embedding_dense_0.is_some() && target_positions.is_some();
 
         // EmbeddingGemma: bidirectional encoder with mean pooling — uses a
         // dedicated compile cache keyed on (batch, max_len, actual_lens).
         if self.cfg.model_family == "embeddinggemma" {
             if *EMBED_NO_COMPILE || profile {
-                return crate::model::forward_for_embedding_batch(
+                let (out, lens) = crate::model::forward_for_embedding_batch(
                     &self.cfg,
                     &self.weights,
                     batch_token_ids,
                     target_positions,
                 );
+                return (out, lens, false);
             }
-            return self.embedding_gemma_batch_compiled_forward(batch_token_ids);
+            let (out, lens) = self.embedding_gemma_batch_compiled_forward(batch_token_ids);
+            return (out, lens, false);
         }
 
         // Standard (Qwen3-style) embedding path.
@@ -4934,15 +5058,40 @@ impl MlxRunner {
         // barriers cannot live inside a single traced compiled closure, and
         // compile on/off is throughput-neutral for this path, so the imperative
         // breakdown is representative.
-        if *EMBED_NO_COMPILE || target_positions.is_none() || profile {
-            // Mean pooling needs the full [B, max_seq, H] hidden; the closure
-            // body is only built for the Last/Cls (extract-then-norm) shape.
-            return crate::model::forward_for_embedding_batch(
+        if profile {
+            let (out, lens) = crate::model::forward_for_embedding_batch(
                 &self.cfg,
                 &self.weights,
                 batch_token_ids,
                 target_positions,
             );
+            return (out, lens, false);
+        }
+
+        // Mean-pool compiled closure path: the layer loop + final norm are
+        // fused; mean-pool masking is applied post-closure by the caller.
+        if target_positions.is_none() {
+            if let Some((out, lens)) = self.embedding_mean_pool_compiled_forward(batch_token_ids) {
+                return (out, lens, false);
+            }
+            // Fall through to imperative mean-pool path.
+            let (out, lens) = crate::model::forward_for_embedding_batch(
+                &self.cfg,
+                &self.weights,
+                batch_token_ids,
+                target_positions,
+            );
+            return (out, lens, false);
+        }
+
+        if *EMBED_NO_COMPILE {
+            let (out, lens) = crate::model::forward_for_embedding_batch(
+                &self.cfg,
+                &self.weights,
+                batch_token_ids,
+                target_positions,
+            );
+            return (out, lens, false);
         }
         let (hidden, batch, max_len, actual_lens) = crate::model::build_embedding_batch_hidden_pub(
             &self.cfg,
@@ -4955,6 +5104,7 @@ impl MlxRunner {
             batch,
             max_len,
             Some(target_positions_vec.clone()),
+            has_dense_head,
         );
         let mut cache = self.embed_batch_compile_cache.lock();
         let was_present = cache.contains_key(&key);
@@ -4963,6 +5113,7 @@ impl MlxRunner {
                 Arc::clone(&self.cfg_arc),
                 Arc::clone(&self.weights),
                 Some(target_positions_vec.clone()),
+                has_dense_head,
             ) {
                 Ok(cls) => {
                     if cache.len() >= EMBED_COMPILE_CACHE_MAX_ENTRIES {
@@ -4970,14 +5121,22 @@ impl MlxRunner {
                     }
                     cache.insert(key.clone(), cls);
                 }
-                Err(_) => {
+                Err(err) => {
+                    tracing::warn!(
+                        target = "ax_engine_mlx",
+                        path = "embed_batch",
+                        reason = %err,
+                        "compiled_closure_build_failed"
+                    );
+                    COMPILE_FALLBACK_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     drop(cache);
-                    return crate::model::forward_for_embedding_batch(
+                    let (out, lens) = crate::model::forward_for_embedding_batch(
                         &self.cfg,
                         &self.weights,
                         batch_token_ids,
                         target_positions,
                     );
+                    return (out, lens, false);
                 }
             }
         }
@@ -4985,35 +5144,135 @@ impl MlxRunner {
             let mut stats = self.embed_compile_stats.lock();
             if was_present {
                 stats.batched_hits += 1;
+                COMPILE_CACHE_HITS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             } else {
                 stats.batched_misses += 1;
+                COMPILE_CACHE_MISSES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             }
         }
         let cls = cache.get(&key).expect("just inserted");
         let outputs = match cls.try_apply(&[&hidden]) {
             Ok(outputs) => outputs,
-            Err(_) => {
+            Err(err) => {
+                tracing::warn!(
+                    target = "ax_engine_mlx",
+                    path = "embed_batch",
+                    reason = %err,
+                    "compiled_closure_apply_failed"
+                );
+                COMPILE_FALLBACK_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 cache.remove(&key);
                 drop(cache);
-                return crate::model::forward_for_embedding_batch(
+                let (out, lens) = crate::model::forward_for_embedding_batch(
                     &self.cfg,
                     &self.weights,
                     batch_token_ids,
                     target_positions,
                 );
+                return (out, lens, false);
             }
         };
         match outputs.into_iter().next() {
-            Some(out) => (out, actual_lens),
+            Some(out) => (out, actual_lens, has_dense_head),
             None => {
+                tracing::warn!(
+                    target = "ax_engine_mlx",
+                    path = "embed_batch",
+                    reason = "empty_output",
+                    "compiled_closure_apply_failed"
+                );
+                COMPILE_FALLBACK_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 cache.remove(&key);
                 drop(cache);
-                crate::model::forward_for_embedding_batch(
+                let (out, lens) = crate::model::forward_for_embedding_batch(
                     &self.cfg,
                     &self.weights,
                     batch_token_ids,
                     target_positions,
-                )
+                );
+                (out, lens, false)
+            }
+        }
+    }
+
+    /// Compiled-closure forward for mean-pooled embedding batches. Builds the
+    /// pre-embedded hidden state, then applies a compiled closure fusing the
+    /// transformer layers + final norm. Returns the full `[B, max_seq, H]`
+    /// tensor along with `actual_lens` so the caller can masked-mean-pool.
+    /// Returns `None` when the compiled path is disabled or below threshold.
+    fn embedding_mean_pool_compiled_forward(
+        &self,
+        batch_token_ids: &[Vec<u32>],
+    ) -> Option<(MlxArray, Vec<usize>)> {
+        if *EMBED_NO_COMPILE {
+            return None;
+        }
+        let (hidden, batch, max_len, actual_lens) = crate::model::build_embedding_batch_hidden_pub(
+            &self.cfg,
+            &self.weights,
+            batch_token_ids,
+        );
+
+        // Size-gating: skip compilation for small batches.
+        let threshold: usize = std::env::var("AX_EMBED_MEAN_COMPILE_THRESHOLD")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(EMBED_MEAN_COMPILE_DEFAULT_THRESHOLD);
+        if batch * max_len < threshold {
+            return None;
+        }
+
+        let thread_id = thread::current().id();
+        let key: EmbedMeanPoolCompileKey = (thread_id, batch, max_len);
+
+        let mut cache = self.embed_mean_pool_compile_cache.lock();
+        let was_present = cache.contains_key(&key);
+        if !was_present {
+            match crate::model::build_embedding_mean_pool_forward_closure(
+                Arc::clone(&self.cfg_arc),
+                Arc::clone(&self.weights),
+            ) {
+                Ok(cls) => {
+                    if cache.len() >= EMBED_COMPILE_CACHE_MAX_ENTRIES {
+                        cache.clear();
+                    }
+                    cache.insert(key, cls);
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        target = "ax_engine_mlx",
+                        path = "embed_mean_pool",
+                        reason = %err,
+                        "compiled_closure_build_failed"
+                    );
+                    COMPILE_FALLBACK_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    return None;
+                }
+            }
+        }
+        {
+            let mut stats = self.embed_compile_stats.lock();
+            if was_present {
+                stats.mean_pool_hits += 1;
+                COMPILE_CACHE_HITS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            } else {
+                stats.mean_pool_misses += 1;
+                COMPILE_CACHE_MISSES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
+        let cls = cache.get(&key).expect("just inserted");
+        match cls.try_apply(&[&hidden]) {
+            Ok(outputs) => outputs.into_iter().next().map(|out| (out, actual_lens)),
+            Err(err) => {
+                tracing::warn!(
+                    target = "ax_engine_mlx",
+                    path = "embed_mean_pool",
+                    reason = %err,
+                    "compiled_closure_apply_failed"
+                );
+                COMPILE_FALLBACK_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                cache.remove(&key);
+                None
             }
         }
     }

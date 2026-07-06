@@ -668,26 +668,30 @@ env_flag!(
     "AX_MLX_MOE_LAYER_COMPILE"
 );
 
-env_flag!(
-    /// `AX_MLX_DENSE_FFN_COMPILE` — enable per-layer compiled dense FFN
-    /// decode closure.
-    ///
-    /// **Default: OFF** (opt-in via `AX_MLX_DENSE_FFN_COMPILE=1`).
-    /// Each dense FFN layer's decode forward is wrapped in an `MlxClosure`
-    /// compiled via `mlx_compile` with `shapeless=true`, collapsing the
-    /// gate_up projection + split + SwiGLU activation + down projection +
-    /// optional post-norm into a single compiled graph. Only engages for
-    /// `seq == 1` (decode) and SwiGLU activation families (GEGLU's
-    /// `gelu_approx` tree is known to abort under MLX compilation). Falls
-    /// back to the uncompiled path on compilation failure.
-    ///
-    /// Previously default-on; reverted to opt-in for stability. The compiled
-    /// closure can crash when MLX's internal stream registry is invalidated
-    /// in long-running processes, and `catch_unwind` is ineffective under
-    /// `panic = "abort"` (release profile).
-    dense_ffn_compile_enabled,
-    "AX_MLX_DENSE_FFN_COMPILE"
-);
+/// `AX_MLX_DENSE_FFN_COMPILE` — enable per-layer compiled dense FFN
+/// decode closure.
+///
+/// **Default: ON** (kill-switch via `AX_MLX_DENSE_FFN_COMPILE=0`).
+/// Default-on for Qwen 3.6 decode throughput. Set
+/// `AX_MLX_DENSE_FFN_COMPILE=0` to disable if stream-registry issues
+/// are observed. Each dense FFN layer's decode forward is wrapped in an
+/// `MlxClosure` compiled via `mlx_compile` with `shapeless=true`,
+/// collapsing the gate_up projection + split + SwiGLU activation + down
+/// projection + optional post-norm into a single compiled graph. Only
+/// engages for `seq == 1` (decode) and SwiGLU activation families
+/// (GEGLU's `gelu_approx` tree is known to abort under MLX compilation).
+/// Falls back to the uncompiled path on compilation failure.
+pub fn dense_ffn_compile_enabled() -> bool {
+    static CACHED: OnceLock<bool> = OnceLock::new();
+    static LOGGED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if !LOGGED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        tracing::info!(
+            target = "ax_engine_mlx",
+            "AX_MLX_DENSE_FFN_COMPILE active (set =0 to disable)"
+        );
+    }
+    *CACHED.get_or_init(|| parse_bool_env_default_on("AX_MLX_DENSE_FFN_COMPILE"))
+}
 
 env_flag!(
     /// `AX_MLX_MOE_ROUTER_FUSED_METAL` — enable fused MoE router Metal

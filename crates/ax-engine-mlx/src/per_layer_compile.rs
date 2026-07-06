@@ -30,7 +30,7 @@
 
 use std::collections::HashMap;
 use std::panic::AssertUnwindSafe;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{LazyLock, Mutex, OnceLock};
 use std::thread::ThreadId;
 
 use mlx_sys::{MlxArray, MlxClosure, MlxVectorArray};
@@ -82,8 +82,32 @@ static LAYER_MOE_DECODE_CACHE: MoeDecodeCache = OnceLock::new();
 /// a single dense FFN layer's decode step (gate_up → split → activation →
 /// down → optional post-norm). All weight tensors are passed as explicit
 /// inputs to satisfy MLX's no-uncaptured-inputs contract.
-static LAYER_DENSE_FFN_DECODE_CACHE: OnceLock<Mutex<HashMap<(usize, ThreadId), MlxClosure>>> =
-    OnceLock::new();
+// Value is `Option<MlxClosure>`: `Some` is a working compiled closure reused
+// across decode steps; `None` records a layer whose compiled dense FFN
+// closure failed to compile or apply, so we fall back to the imperative
+// path permanently instead of retrying (and re-flooding MLX errors) on
+// every step.
+/// Per-layer dense FFN compiled closure cache.
+///
+/// Maps `(layer_index, thread_id)` to an optional compiled closure. `Some`
+/// is a working closure; `None` marks a layer that permanently fell back
+/// to the imperative path.
+type DenseFfnCache = Mutex<HashMap<(usize, ThreadId), (Option<MlxClosure>, u64)>>;
+
+static LAYER_DENSE_FFN_DECODE_CACHE: OnceLock<DenseFfnCache> = OnceLock::new();
+
+/// Number of successful compilations before the cache entry is evicted and
+/// recompiled. Prevents stale MLX stream-registry references from
+/// accumulating in long-running processes.
+///
+/// Override via `AX_MLX_COMPILE_CACHE_REFRESH_THRESHOLD=<n>`.
+static COMPILE_CACHE_REFRESH_THRESHOLD: LazyLock<u64> = LazyLock::new(|| {
+    std::env::var("AX_MLX_COMPILE_CACHE_REFRESH_THRESHOLD")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .filter(|&v| v > 0)
+        .unwrap_or(10_000)
+});
 
 /// Per-layer Gemma4 dual-path (dense + expert) decode closure cache.
 ///
@@ -132,7 +156,18 @@ pub fn apply_layer_moe_decode(
             // gracefully. MLX's thread-local stream registry can become
             // invalid in long-running processes, causing abort inside
             // mlx_closure_apply.
-            Some(closure) => try_apply_with_abort_safety(closure, inputs),
+            Some(closure) => {
+                let result = try_apply_with_abort_safety(closure, inputs);
+                if result.is_none() {
+                    tracing::warn!(
+                        target = "ax_engine_mlx",
+                        path = "moe_decode",
+                        layer = layer_index,
+                        "compiled_closure_fallback"
+                    );
+                }
+                result
+            }
             // Known-incompatible for this layer: skip straight to the
             // imperative fallback instead of re-attempting every decode step.
             None => None,
@@ -151,11 +186,25 @@ pub fn apply_layer_moe_decode(
             // output. If it failed (e.g. a model whose MoE graph the compiled
             // path cannot shape-infer), record `None` so later steps fall back
             // to the imperative path without retrying and re-flooding errors.
+            if result.is_none() {
+                tracing::warn!(
+                    target = "ax_engine_mlx",
+                    path = "moe_decode",
+                    layer = layer_index,
+                    "compiled_closure_fallback"
+                );
+            }
             slot.insert(result.is_some().then_some(compiled));
             return result;
         }
         // Compilation itself failed: record incompatible so we do not recompile
         // on every decode step.
+        tracing::warn!(
+            target = "ax_engine_mlx",
+            path = "moe_decode",
+            layer = layer_index,
+            "compiled_closure_fallback"
+        );
         slot.insert(None);
     }
 
@@ -192,10 +241,31 @@ pub fn apply_layer_dense_ffn_decode(
     }
     let cache = LAYER_DENSE_FFN_DECODE_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
     let tid = std::thread::current().id();
+    let threshold = *COMPILE_CACHE_REFRESH_THRESHOLD;
 
     let guard = cache.lock().ok()?;
-    if let Some(closure) = guard.get(&(layer_index, tid)) {
-        return try_apply_with_abort_safety(closure, inputs);
+    if let Some((entry, generation)) = guard.get(&(layer_index, tid)) {
+        return match entry {
+            // Working compiled closure: reuse it.
+            Some(closure) => {
+                let result = try_apply_with_abort_safety(closure, inputs);
+                if result.is_none() {
+                    tracing::warn!(
+                        target = "ax_engine_mlx",
+                        path = "dense_ffn_decode",
+                        layer = layer_index,
+                        "compiled_closure_fallback"
+                    );
+                }
+                result
+            }
+            // Known-incompatible for this layer: skip straight to the
+            // imperative fallback instead of re-attempting every decode step.
+            None => {
+                let _ = generation;
+                None
+            }
+        };
     }
     drop(guard);
 
@@ -204,9 +274,38 @@ pub fn apply_layer_dense_ffn_decode(
         let closure = MlxClosure::new_dyn(ffn_fn);
         if let Ok(compiled) = closure.compile(true) {
             let result = try_apply_with_abort_safety(&compiled, inputs);
-            slot.insert(compiled);
+            if result.is_none() {
+                tracing::warn!(
+                    target = "ax_engine_mlx",
+                    path = "dense_ffn_decode",
+                    layer = layer_index,
+                    "compiled_closure_fallback"
+                );
+            }
+            if result.is_some() {
+                let generation: u64 = 1;
+                // Evict THIS key when the per-key generation threshold is
+                // reached to prevent MLX stream-registry references from
+                // accumulating in long-running processes.
+                if generation.is_multiple_of(threshold) {
+                    slot.insert((None, 0));
+                } else {
+                    slot.insert((Some(compiled), generation));
+                }
+            } else {
+                slot.insert((None, 0));
+            }
             return result;
         }
+        // Compilation itself failed: record incompatible so we do not
+        // recompile on every decode step.
+        tracing::warn!(
+            target = "ax_engine_mlx",
+            path = "dense_ffn_decode",
+            layer = layer_index,
+            "compiled_closure_fallback"
+        );
+        slot.insert((None, 0));
     }
 
     None
@@ -257,7 +356,18 @@ pub fn apply_layer_gemma4_dual_path_decode(
     let guard = cache.lock().ok()?;
     if let Some(entry) = guard.get(&(layer_index, tid)) {
         return match entry {
-            Some(closure) => try_apply_with_abort_safety(closure, inputs),
+            Some(closure) => {
+                let result = try_apply_with_abort_safety(closure, inputs);
+                if result.is_none() {
+                    tracing::warn!(
+                        target = "ax_engine_mlx",
+                        path = "gemma4_dual_path",
+                        layer = layer_index,
+                        "compiled_closure_fallback"
+                    );
+                }
+                result
+            }
             None => None,
         };
     }
@@ -268,9 +378,23 @@ pub fn apply_layer_gemma4_dual_path_decode(
         let closure = MlxClosure::new_dyn(dual_path_fn);
         if let Ok(compiled) = closure.compile(true) {
             let result = try_apply_with_abort_safety(&compiled, inputs);
+            if result.is_none() {
+                tracing::warn!(
+                    target = "ax_engine_mlx",
+                    path = "gemma4_dual_path",
+                    layer = layer_index,
+                    "compiled_closure_fallback"
+                );
+            }
             slot.insert(result.is_some().then_some(compiled));
             return result;
         }
+        tracing::warn!(
+            target = "ax_engine_mlx",
+            path = "gemma4_dual_path",
+            layer = layer_index,
+            "compiled_closure_fallback"
+        );
         slot.insert(None);
     }
 

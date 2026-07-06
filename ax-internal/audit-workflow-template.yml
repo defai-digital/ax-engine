@@ -1,0 +1,46 @@
+# GitHub Actions Workflow: Supply Chain Audit
+#
+# This file should be copied to: .github/workflows/audit.yml
+#
+# Rationale: Autonomous mode blocks writes to .github/workflows/** for safety.
+# This template provides the complete workflow for manual placement.
+#
+# See: ax-internal/ADR-002-supply-chain-security.md
+
+name: Supply Chain Audit
+
+on:
+  push:
+  pull_request:
+  schedule:
+    # Weekly on Sunday at midnight UTC to catch newly disclosed vulnerabilities
+    - cron: '0 0 * * 0'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  # Required for rustsec/audit-check to create issues for vulnerabilities
+  issues: write
+
+jobs:
+  audit:
+    name: Supply Chain Audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+
+      - name: Run cargo-audit
+        uses: rustsec/audit-check@v2.0.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Run cargo-deny
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check advisories bans licenses sources

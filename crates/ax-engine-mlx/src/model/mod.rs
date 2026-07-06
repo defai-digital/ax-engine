@@ -1,8 +1,10 @@
 use mlx_sys::{
     MlxArray, MlxClosure, MlxDtype, MlxVectorArray, add, astype, broadcast_to, concatenate,
     dequantize, divide, multiply, power, reshape, rms_norm, slice, split, stack, sum_axis, take,
-    take_along_axis, transpose,
+    take_along_axis, transpose, zeros,
 };
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -1179,6 +1181,7 @@ fn layer_forward_dense_embed(
     hidden: &MlxArray, // [batch, seq, hidden]
     layer_idx: usize,
     pending_ffn: Option<&MlxArray>,
+    mask: Option<&MlxArray>,
 ) -> (MlxArray, MlxArray) {
     let (
         head_dim,
@@ -1330,7 +1333,7 @@ fn layer_forward_dense_embed(
     }
 
     // 8. SDPA — k_rope/v used directly, no KV-cache writes.
-    let mask_opt: Option<MlxArray> = None; // resolves to Causal in full_precision_attention
+    let mask_opt: Option<MlxArray> = mask.cloned();
     let sdpa_started = profile.then(Instant::now);
     let attn_sdpa = full_precision_attention(&q_rope, &k_rope, &v, cfg.query_scale, seq, &mask_opt);
     if let Some(started) = sdpa_started {
@@ -1413,10 +1416,17 @@ fn forward_for_embedding_body(
     mut hidden: MlxArray,
     target_position: Option<usize>,
 ) -> MlxArray {
+    let bidir_mask = build_bidirectional_embed_mask(hidden.shape()[1] as usize, hidden.dtype());
     let mut pending_ffn: Option<MlxArray> = None;
     for (li, layer_w) in weights.layers.iter().enumerate() {
-        let (h, ffn_out) =
-            layer_forward_dense_embed(cfg, layer_w, &hidden, li, pending_ffn.as_ref());
+        let (h, ffn_out) = layer_forward_dense_embed(
+            cfg,
+            layer_w,
+            &hidden,
+            li,
+            pending_ffn.as_ref(),
+            Some(&bidir_mask),
+        );
         hidden = h;
         pending_ffn = Some(ffn_out);
     }
@@ -1444,6 +1454,10 @@ fn forward_for_embedding_body(
 /// Build an `mlx_compile`-wrapped closure that takes the pre-embedded hidden
 /// state and returns the final norm-output for Last/Cls pooling.
 ///
+/// When `has_dense_head` is true, the Dense head projection
+/// (`embedding_dense_0` → `embedding_dense_1`) is fused into the compiled
+/// graph so the runner can skip the separate post-closure dispatch.
+///
 /// The closure captures `Arc<ModelWeights>` and `ModelConfig` by value so the
 /// caller can drop them safely. The compiled graph is shape-specific (the
 /// `seq_len` and `target_position` are baked into the trace), so callers
@@ -1456,6 +1470,7 @@ pub fn build_embedding_forward_closure(
     cfg: Arc<ModelConfig>,
     weights: Arc<ModelWeights>,
     target_position: Option<usize>,
+    has_dense_head: bool,
 ) -> Result<MlxClosure, String> {
     let body_closure = MlxClosure::new_dyn(move |inputs: &MlxVectorArray| {
         if inputs.is_empty() {
@@ -1463,6 +1478,13 @@ pub fn build_embedding_forward_closure(
         }
         let hidden = inputs.get(0);
         let out = forward_for_embedding_body(&cfg, &weights, hidden, target_position);
+        // Fuse the Dense head projection into the compiled graph so the
+        // runner avoids a separate MLX dispatch after the closure returns.
+        let out = if has_dense_head {
+            apply_embedding_dense_head(&weights, &out)
+        } else {
+            out
+        };
         vec![out]
     });
     // shapeless=false → compile per concrete seq_len. The caller caches one
@@ -1559,6 +1581,27 @@ pub(crate) fn build_bidirectional_padding_mask(
     // is freed when this function returns. Force materialization above (eval),
     // so the deferred graph never reads freed memory.
     Some(mask)
+}
+
+thread_local! {
+    static BIDIR_MASK_CACHE: RefCell<HashMap<usize, MlxArray>> = RefCell::new(HashMap::new());
+}
+
+/// Construct a bidirectional (all-attend) mask for embedding forward passes.
+/// Returns `[1, 1, seq_len, seq_len]` zeros tensor in the target dtype.
+/// Uses thread-local caching keyed by `seq_len` to avoid repeated allocations.
+fn build_bidirectional_embed_mask(seq_len: usize, dtype: MlxDtype) -> MlxArray {
+    BIDIR_MASK_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if let Some(mask) = cache.get(&seq_len)
+            && mask.dtype() == dtype
+        {
+            return mask.clone();
+        }
+        let mask = zeros(&[1, 1, seq_len as i32, seq_len as i32], dtype, None);
+        cache.insert(seq_len, mask.clone());
+        mask
+    })
 }
 
 /// Build EmbeddingGemma mean-pooling tensors captured by the compiled batch
@@ -2066,10 +2109,17 @@ fn forward_for_embedding_batch_body(
     // Under profiling the runner forces the imperative path, so the per-stage
     // eval barriers below only fire on a real imperative forward.
     let profile = embed_profile_enabled() && hidden.shape()[1] > 1;
+    let bidir_mask = build_bidirectional_embed_mask(hidden.shape()[1] as usize, hidden.dtype());
     let mut pending_ffn: Option<MlxArray> = None;
     for (li, layer_w) in weights.layers.iter().enumerate() {
-        let (h, ffn_out) =
-            layer_forward_dense_embed(cfg, layer_w, &hidden, li, pending_ffn.as_ref());
+        let (h, ffn_out) = layer_forward_dense_embed(
+            cfg,
+            layer_w,
+            &hidden,
+            li,
+            pending_ffn.as_ref(),
+            Some(&bidir_mask),
+        );
         hidden = h;
         pending_ffn = Some(ffn_out);
     }
@@ -2133,10 +2183,15 @@ fn forward_for_embedding_batch_body(
 /// returns the final norm output. `target_positions` is baked into the trace,
 /// so callers must cache one closure per `(batch_size, max_seq,
 /// target_positions)` shape combination.
+///
+/// When `has_dense_head` is true, the Dense head projection is fused into
+/// the compiled graph so the runner can skip the separate post-closure
+/// dispatch (Last/Cls paths only — mean-pool keeps Dense head outside).
 pub fn build_embedding_batch_forward_closure(
     cfg: Arc<ModelConfig>,
     weights: Arc<ModelWeights>,
     target_positions: Option<Vec<usize>>,
+    has_dense_head: bool,
 ) -> Result<MlxClosure, String> {
     let body_closure = MlxClosure::new_dyn(move |inputs: &MlxVectorArray| {
         if inputs.is_empty() {
@@ -2145,6 +2200,64 @@ pub fn build_embedding_batch_forward_closure(
         let hidden = inputs.get(0);
         let out =
             forward_for_embedding_batch_body(&cfg, &weights, hidden, target_positions.as_deref());
+        // Fuse the Dense head projection into the compiled graph so the
+        // runner avoids a separate MLX dispatch after the closure returns.
+        let out = if has_dense_head {
+            apply_embedding_dense_head(&weights, &out)
+        } else {
+            out
+        };
+        vec![out]
+    });
+    body_closure.compile(false)
+}
+
+/// Run the embedding layer loop returning full hidden states for mean-pool
+/// masking. Same layer loop as `forward_for_embedding_batch_body` but without
+/// target-position extraction — returns the full `[B, max_seq, H]` tensor
+/// after final norm so the caller can apply masked mean-pooling.
+fn forward_for_embedding_mean_pool_body(
+    cfg: &ModelConfig,
+    weights: &ModelWeights,
+    mut hidden: MlxArray,
+) -> MlxArray {
+    let bidir_mask = build_bidirectional_embed_mask(hidden.shape()[1] as usize, hidden.dtype());
+    let mut pending_ffn: Option<MlxArray> = None;
+    for (li, layer_w) in weights.layers.iter().enumerate() {
+        let (h, ffn_out) = layer_forward_dense_embed(
+            cfg,
+            layer_w,
+            &hidden,
+            li,
+            pending_ffn.as_ref(),
+            Some(&bidir_mask),
+        );
+        hidden = h;
+        pending_ffn = Some(ffn_out);
+    }
+    // Final FFN residual: no next layer to fuse with, so add directly.
+    if let Some(ffn_out) = &pending_ffn {
+        hidden = add(&hidden, ffn_out, None);
+    }
+    // Apply final norm to the full [B, max_seq, H] tensor.
+    let out = rms_norm(&hidden, Some(&weights.final_norm), cfg.rms_norm_eps, None);
+    astype(&out, MlxDtype::Float32, None)
+}
+
+/// Build an `mlx_compile`-wrapped closure for the mean-pool embedding forward.
+/// The closure takes the pre-embedded `[B, max_seq, H]` hidden state and
+/// returns the final norm output `[B, max_seq, H]` (f32). The caller applies
+/// masked mean-pooling post-closure.
+pub fn build_embedding_mean_pool_forward_closure(
+    cfg: Arc<ModelConfig>,
+    weights: Arc<ModelWeights>,
+) -> Result<MlxClosure, String> {
+    let body_closure = MlxClosure::new_dyn(move |inputs: &MlxVectorArray| {
+        if inputs.is_empty() {
+            return vec![];
+        }
+        let hidden = inputs.get(0);
+        let out = forward_for_embedding_mean_pool_body(&cfg, &weights, hidden);
         vec![out]
     });
     body_closure.compile(false)
@@ -3156,6 +3269,17 @@ mod tests {
         assert_close(from_scalar.data_f32(), from_1d.data_f32(), 0.0);
         assert_close(from_1d.data_f32(), from_2d.data_f32(), 0.0);
         assert_close(from_2d.data_f32(), &[4.0, 5.0], 0.0);
+    }
+
+    #[test]
+    fn embed_bidirectional_mask_construction() {
+        let mask = build_bidirectional_embed_mask(128, MlxDtype::Bfloat16);
+        assert_eq!(mask.shape(), vec![1, 1, 128, 128]);
+        assert_eq!(mask.dtype(), MlxDtype::Bfloat16);
+
+        let mask_f32 = build_bidirectional_embed_mask(64, MlxDtype::Float32);
+        assert_eq!(mask_f32.shape(), vec![1, 1, 64, 64]);
+        assert_eq!(mask_f32.dtype(), MlxDtype::Float32);
     }
 
     #[test]
