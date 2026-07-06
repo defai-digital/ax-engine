@@ -699,7 +699,7 @@ class ReadmePerformanceArtifactTests(unittest.TestCase):
 
             with self.assertRaisesRegex(
                 checker.ArtifactCheckError,
-                "lack condition metadata",
+                "1 README performance artifact.*lack condition metadata",
             ):
                 checker.check_readme_performance(
                     repo_root=root,

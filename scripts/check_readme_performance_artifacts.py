@@ -794,12 +794,21 @@ def collect_condition_metadata_checks(
 def assert_condition_metadata_complete(gaps: list[ConditionMetadataGap]) -> None:
     if not gaps:
         return
+    reasons_by_path: dict[Path, list[str]] = {}
+    for gap in gaps:
+        reasons_by_path.setdefault(gap.artifact_path, []).append(gap.reason)
     sample = "; ".join(
-        f"{gap.artifact_path}: {gap.reason}" for gap in gaps[:5]
+        f"{path}: {', '.join(reasons)}"
+        for path, reasons in list(reasons_by_path.items())[:5]
     )
-    extra = "" if len(gaps) <= 5 else f"; and {len(gaps) - 5} more"
+    extra = (
+        ""
+        if len(reasons_by_path) <= 5
+        else f"; and {len(reasons_by_path) - 5} more artifact(s)"
+    )
     raise ArtifactCheckError(
-        "README performance artifacts lack condition metadata: "
+        f"{len(reasons_by_path)} README performance artifact(s) lack "
+        "condition metadata: "
         f"{sample}{extra}"
     )
 
