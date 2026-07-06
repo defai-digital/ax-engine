@@ -65,6 +65,7 @@ DEFAULT_GENERATION_TOKENS = 128
 DEFAULT_REPETITIONS = 5
 DEFAULT_COOLDOWN = 15.0
 MLX_INFERENCE_STACK_SCHEMA_VERSION = "ax.mlx_inference_stack.v2"
+MLX_INFERENCE_STACK_INCOMPLETE_SCHEMA_VERSION = "ax.mlx_inference_stack.incomplete.v1"
 AX_ONLY_REFRESH_DECODE_MIN_RATIO_TO_REFERENCE = 0.97
 AX_ONLY_REFRESH_SCHEMA_VERSION = "ax.ax_only_refresh.v1"
 AXENGINE_PORT = 0
@@ -719,6 +720,52 @@ def collect_build_metadata() -> dict[str, Any]:
         "git_tracked_dirty": bool(tracked_status),
         "git_tracked_status": tracked_status[:50],
     }
+
+
+def build_incomplete_output_marker(
+    *,
+    args: argparse.Namespace,
+    started_at: str,
+    performance_conditions_start: dict[str, Any],
+    reason: str,
+) -> dict[str, Any]:
+    return {
+        "schema_version": MLX_INFERENCE_STACK_INCOMPLETE_SCHEMA_VERSION,
+        "intended_schema_version": MLX_INFERENCE_STACK_SCHEMA_VERSION,
+        "publication_candidate": False,
+        "status": "incomplete",
+        "reason": reason,
+        "model": args.model,
+        "model_repo_id": args.model_repo_id,
+        "model_dir": str(args.model_dir),
+        "output_path": str(args.output) if args.output else None,
+        "benchmark_window": {
+            "started_at": started_at,
+            "finished_at": None,
+            "elapsed_seconds": None,
+            "performance_conditions_start": performance_conditions_start,
+        },
+    }
+
+
+def write_incomplete_output_marker(
+    *,
+    args: argparse.Namespace,
+    started_at: str,
+    performance_conditions_start: dict[str, Any],
+    reason: str,
+) -> None:
+    if not args.output:
+        return
+    marker = build_incomplete_output_marker(
+        args=args,
+        started_at=started_at,
+        performance_conditions_start=performance_conditions_start,
+        reason=reason,
+    )
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    args.output.write_text(json.dumps(marker, indent=2) + "\n")
+    print(f"  [output] wrote incomplete marker to {args.output}", file=sys.stderr)
 
 
 def collect_model_metadata(model_dir: Path) -> dict[str, Any]:
@@ -5305,6 +5352,12 @@ def main() -> None:
         time.localtime(benchmark_started),
     )
     performance_conditions_start = collect_performance_condition_metadata()
+    write_incomplete_output_marker(
+        args=args,
+        started_at=benchmark_started_at,
+        performance_conditions_start=performance_conditions_start,
+        reason="benchmark_started_output_pending",
+    )
     model_metadata = collect_model_metadata(args.model_dir)
     gateddelta_prefill_profile_contract: dict[str, Any] | None = None
     if args.gateddelta_prefill_profile:

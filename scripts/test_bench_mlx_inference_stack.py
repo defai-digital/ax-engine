@@ -144,6 +144,35 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
 
         self.assertIs(metadata["performance_conditions"], supplied)
 
+    def test_build_incomplete_output_marker_is_non_publication_candidate(self) -> None:
+        marker = bench.build_incomplete_output_marker(
+            args=argparse.Namespace(
+                model="model-id",
+                model_repo_id="org/model",
+                model_dir=Path("/tmp/model"),
+                output=Path("/tmp/out/model.json"),
+            ),
+            started_at="2026-07-06T10:00:00-0400",
+            performance_conditions_start={"load_average": {"one_minute": 1.0}},
+            reason="benchmark_started_output_pending",
+        )
+
+        self.assertEqual(
+            marker["schema_version"],
+            bench.MLX_INFERENCE_STACK_INCOMPLETE_SCHEMA_VERSION,
+        )
+        self.assertEqual(
+            marker["intended_schema_version"],
+            bench.MLX_INFERENCE_STACK_SCHEMA_VERSION,
+        )
+        self.assertFalse(marker["publication_candidate"])
+        self.assertEqual(marker["status"], "incomplete")
+        self.assertEqual(marker["output_path"], "/tmp/out/model.json")
+        self.assertEqual(
+            marker["benchmark_window"]["performance_conditions_start"],
+            {"load_average": {"one_minute": 1.0}},
+        )
+
     def test_resolve_model_dir_uses_hugging_face_cache_snapshot(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

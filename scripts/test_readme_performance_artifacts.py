@@ -667,6 +667,29 @@ class ReadmePerformanceArtifactTests(unittest.TestCase):
 
         self.assertEqual(len(checked), 6)
 
+    def test_readme_metrics_reject_incomplete_benchmark_marker(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.write_fixture(root)
+            artifact_path = (
+                root / "benchmarks/results/mlx-inference/local/gemma-4-e2b-it-4bit.json"
+            )
+            artifact = json.loads(artifact_path.read_text())
+            artifact["schema_version"] = "ax.mlx_inference_stack.incomplete.v1"
+            artifact["publication_candidate"] = False
+            artifact["status"] = "incomplete"
+            artifact_path.write_text(json.dumps(artifact, indent=2) + "\n")
+
+            with self.assertRaisesRegex(
+                checker.ArtifactCheckError,
+                "has unexpected schema_version",
+            ):
+                checker.check_readme_performance(
+                    repo_root=root,
+                    readme_path=root / "README.md",
+                    expected_metric_count=6,
+                )
+
     def test_ax_overlay_allows_ax_only_artifact_without_mlx_lm_rows(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
