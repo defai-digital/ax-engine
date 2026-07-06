@@ -2928,6 +2928,8 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
                     "prompt_tokens": 128,
                     "generation_tokens": 128,
                     "run_stability": {
+                        "schema_version": "ax.benchmark_run_stability.v1",
+                        "metric": "decode_tok_s",
                         "classification": "stable_enough",
                     },
                 },
@@ -2936,6 +2938,8 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
                     "prompt_tokens": 512,
                     "generation_tokens": 128,
                     "run_stability": {
+                        "schema_version": "ax.benchmark_run_stability.v1",
+                        "metric": "decode_tok_s",
                         "classification": "tail_regression",
                         "last_vs_first_pct": -12.5,
                     },
@@ -2985,6 +2989,41 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
 
         self.assertEqual(summary["row_count"], 0)
         self.assertFalse(summary["publication_candidate"])
+
+    def test_artifact_run_stability_rejects_stale_row_schema(self) -> None:
+        summary = bench.summarize_artifact_run_stability(
+            [
+                {
+                    "engine": "ax_engine_mlx",
+                    "prompt_tokens": 128,
+                    "generation_tokens": 128,
+                    "run_stability": {
+                        "schema_version": "ax.benchmark_run_stability.v0",
+                        "metric": "decode_tok_s",
+                        "classification": "stable_enough",
+                    },
+                }
+            ]
+        )
+
+        self.assertEqual(summary["stable_enough_count"], 0)
+        self.assertEqual(summary["unstable_count"], 1)
+        self.assertFalse(summary["publication_candidate"])
+        self.assertEqual(
+            summary["classification_counts"]["invalid_run_stability_schema"],
+            1,
+        )
+        self.assertEqual(
+            summary["unstable_rows"],
+            [
+                {
+                    "engine": "ax_engine_mlx",
+                    "prompt_tokens": 128,
+                    "generation_tokens": 128,
+                    "classification": "invalid_run_stability_schema",
+                }
+            ],
+        )
 
     def test_artifact_run_stability_ignores_non_object_rows(self) -> None:
         summary = bench.summarize_artifact_run_stability([None, "bad-row"])

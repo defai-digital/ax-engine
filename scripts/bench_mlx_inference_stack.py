@@ -2918,10 +2918,17 @@ def summarize_artifact_run_stability(results: list[Any]) -> dict[str, Any]:
             summary["missing_count"] += 1
             summary["publication_candidate"] = False
             continue
-        classification = str(stability.get("classification", "unknown"))
+        shape_problem = None
+        if stability.get("schema_version") != "ax.benchmark_run_stability.v1":
+            shape_problem = "invalid_run_stability_schema"
+        elif stability.get("metric") != "decode_tok_s":
+            shape_problem = "invalid_run_stability_metric"
+        classification = shape_problem or str(
+            stability.get("classification", "unknown")
+        )
         counts = summary["classification_counts"]
         counts[classification] = int(counts.get(classification, 0)) + 1
-        if classification == "stable_enough":
+        if shape_problem is None and classification == "stable_enough":
             summary["stable_enough_count"] += 1
             continue
         summary["unstable_count"] += 1
