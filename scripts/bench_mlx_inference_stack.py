@@ -4488,6 +4488,48 @@ def summarize_ax_only_refresh_regression(
     return summary
 
 
+def ax_only_refresh_failure_reasons(summary: dict[str, Any]) -> list[str]:
+    if summary.get("publication_candidate") is True:
+        return []
+    reasons: list[str] = []
+    keyed_counts = [
+        ("decode_regression_count", "decode_regression"),
+        ("missing_reference_count", "missing_reference"),
+        ("duplicate_current_count", "duplicate_current"),
+        ("duplicate_reference_count", "duplicate_reference"),
+    ]
+    for key, label in keyed_counts:
+        count = int(summary.get(key, 0) or 0)
+        if count:
+            reasons.append(f"{label}={count}")
+    classification_counts = summary.get("classification_counts", {})
+    if isinstance(classification_counts, dict):
+        missing_decode_metric = int(
+            classification_counts.get("missing_decode_metric", 0) or 0
+        )
+        if missing_decode_metric:
+            reasons.append(f"missing_decode_metric={missing_decode_metric}")
+    if int(summary.get("row_count", 0) or 0) == 0:
+        reasons.append("no_ax_rows=1")
+    if not reasons:
+        reasons.append("publication_candidate=false")
+    return reasons
+
+
+def fail_if_ax_only_refresh_not_publication_candidate(
+    summary: dict[str, Any],
+) -> None:
+    reasons = ax_only_refresh_failure_reasons(summary)
+    if not reasons:
+        return
+    print(
+        "ERROR: AX-only refresh regression check failed; artifact is not a "
+        f"publication candidate: {', '.join(reasons)}",
+        file=sys.stderr,
+    )
+    sys.exit(2)
+
+
 def validate_reused_reference_prompt_hashes(
     rows: list[dict[str, Any]],
     prompts: list[dict[str, Any]],
@@ -5718,14 +5760,15 @@ def main() -> None:
     if gateddelta_prefill_profile_contract:
         doc["gateddelta_prefill_profile"] = gateddelta_prefill_profile_contract
     if args.reuse_reference_results_from:
+        ax_refresh_regression_summary = summarize_ax_only_refresh_regression(
+            results=results,
+            reference_doc=reused_reference_doc,
+        )
         doc["ax_only_refresh"] = {
             "schema_version": AX_ONLY_REFRESH_SCHEMA_VERSION,
             "method": "reuse_existing_reference_rows_and_rerun_ax_engine_rows",
             "reference_results_source": str(args.reuse_reference_results_from),
-            "ax_reference_regression_summary": summarize_ax_only_refresh_regression(
-                results=results,
-                reference_doc=reused_reference_doc,
-            ),
+            "ax_reference_regression_summary": ax_refresh_regression_summary,
             "reference_rows_reused": len(
                 [cell for cell in results if cell.get("engine") == "mlx_lm"]
             ),
@@ -5768,6 +5811,10 @@ def main() -> None:
                     f"{args.gateddelta_prefill_profile_report_output}",
                     file=sys.stderr,
                 )
+    if args.reuse_reference_results_from:
+        fail_if_ax_only_refresh_not_publication_candidate(
+            doc["ax_only_refresh"]["ax_reference_regression_summary"]
+        )
     if args.prefill_scaling_output:
         from build_mlx_prefill_scaling_artifact import (
             build_prefill_scaling_artifact,

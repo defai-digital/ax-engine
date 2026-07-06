@@ -3075,6 +3075,45 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
             summary["rows"][0]["decode_ratio_to_reference"],
             18.8 / 20.2,
         )
+        self.assertEqual(
+            bench.ax_only_refresh_failure_reasons(summary),
+            ["decode_regression=1"],
+        )
+
+    def test_ax_only_refresh_passing_summary_has_no_failure_reasons(self) -> None:
+        row = {
+            "engine": "ax_engine_mlx",
+            "prompt_tokens": 128,
+            "generation_tokens": 128,
+            "decode_tok_s": {"median": 20.0},
+        }
+        summary = bench.summarize_ax_only_refresh_regression(
+            results=[row],
+            reference_doc={"results": [row]},
+        )
+
+        self.assertTrue(summary["publication_candidate"])
+        self.assertEqual(bench.ax_only_refresh_failure_reasons(summary), [])
+
+    def test_ax_only_refresh_non_publication_candidate_exits_nonzero(self) -> None:
+        summary = {
+            "publication_candidate": False,
+            "row_count": 1,
+            "decode_regression_count": 1,
+            "classification_counts": {"missing_decode_metric": 1},
+        }
+        stderr = io.StringIO()
+
+        with (
+            patch.object(sys, "stderr", stderr),
+            self.assertRaises(SystemExit) as raised,
+        ):
+            bench.fail_if_ax_only_refresh_not_publication_candidate(summary)
+
+        self.assertEqual(raised.exception.code, 2)
+        self.assertIn("not a publication candidate", stderr.getvalue())
+        self.assertIn("decode_regression=1", stderr.getvalue())
+        self.assertIn("missing_decode_metric=1", stderr.getvalue())
 
     def test_ax_only_refresh_regression_blocks_missing_reference_rows(self) -> None:
         summary = bench.summarize_ax_only_refresh_regression(
