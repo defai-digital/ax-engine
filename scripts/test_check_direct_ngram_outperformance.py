@@ -516,6 +516,117 @@ class DirectNgramOutperformanceTests(unittest.TestCase):
             any(failure.startswith("failed_row_count=") for failure in failures)
         )
 
+    def test_sweep_rejects_non_boolean_publication_candidate(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_artifact(
+                root,
+                rows=[
+                    row("mlx_lm", 100.0),
+                    row("ax_engine_mlx", 105.0),
+                    row(
+                        "ax_engine_mlx_ngram_accel",
+                        140.0,
+                        status=checker.NGRAM_EFFECTIVE_STATUS,
+                        route=checker.NGRAM_EFFECTIVE_ROUTE,
+                    ),
+                ],
+            )
+            (root / "sweep_results.json").write_text(
+                json.dumps(
+                    {
+                        "publication_candidate": "false",
+                        "failed_row_count": 0,
+                        "status_counts": {"ok": 1},
+                        "rows": [{"slug": "ok-row", "status": "ok"}],
+                    }
+                )
+            )
+
+            with self.assertRaisesRegex(
+                checker.GateError, "publication_candidate must be a boolean"
+            ):
+                checker.check_artifact_dir(
+                    root,
+                    min_delta_pct=0.0,
+                    require_effective_ngram=True,
+                    require_sweep_ok=True,
+                )
+
+    def test_sweep_rejects_non_integer_failed_row_count(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_artifact(
+                root,
+                rows=[
+                    row("mlx_lm", 100.0),
+                    row("ax_engine_mlx", 105.0),
+                    row(
+                        "ax_engine_mlx_ngram_accel",
+                        140.0,
+                        status=checker.NGRAM_EFFECTIVE_STATUS,
+                        route=checker.NGRAM_EFFECTIVE_ROUTE,
+                    ),
+                ],
+            )
+            (root / "sweep_results.json").write_text(
+                json.dumps(
+                    {
+                        "publication_candidate": True,
+                        "failed_row_count": True,
+                        "status_counts": {"ok": 1},
+                        "rows": [{"slug": "ok-row", "status": "ok"}],
+                    }
+                )
+            )
+
+            with self.assertRaisesRegex(
+                checker.GateError, "failed_row_count must be an integer"
+            ):
+                checker.check_artifact_dir(
+                    root,
+                    min_delta_pct=0.0,
+                    require_effective_ngram=True,
+                    require_sweep_ok=True,
+                )
+
+    def test_sweep_rejects_non_integer_status_count_value(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_artifact(
+                root,
+                rows=[
+                    row("mlx_lm", 100.0),
+                    row("ax_engine_mlx", 105.0),
+                    row(
+                        "ax_engine_mlx_ngram_accel",
+                        140.0,
+                        status=checker.NGRAM_EFFECTIVE_STATUS,
+                        route=checker.NGRAM_EFFECTIVE_ROUTE,
+                    ),
+                ],
+            )
+            (root / "sweep_results.json").write_text(
+                json.dumps(
+                    {
+                        "publication_candidate": True,
+                        "failed_row_count": 0,
+                        "status_counts": {"ok": "1"},
+                        "rows": [{"slug": "ok-row", "status": "ok"}],
+                    }
+                )
+            )
+
+            with self.assertRaisesRegex(
+                checker.GateError, "status_counts must map"
+            ):
+                checker.check_artifact_dir(
+                    root,
+                    min_delta_pct=0.0,
+                    require_effective_ngram=True,
+                    require_sweep_ok=True,
+                )
+
     def test_sweep_empty_rows_fails_completion_gate(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

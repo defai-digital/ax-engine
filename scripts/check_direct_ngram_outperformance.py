@@ -317,23 +317,43 @@ def check_sweep_results(artifact_dir: Path) -> list[str]:
             failures.append(
                 f"sweep_results.json has unsupported schema_version={schema_version!r}"
             )
-        if payload.get("publication_candidate") is False and not failures:
-            failures.append("publication_candidate=false but all rows are ok")
-        if payload.get("publication_candidate") is True and failures:
-            failures.append("publication_candidate=true with non-ok rows")
-        failed_row_count = payload.get("failed_row_count")
-        if failed_row_count is not None and failed_row_count != row_failure_count:
-            failures.append(
-                f"failed_row_count={failed_row_count} but found {row_failure_count}"
-            )
-        recorded_status_counts = payload.get("status_counts")
+        publication_candidate = payload.get("publication_candidate")
         if (
-            recorded_status_counts is not None
-            and recorded_status_counts != status_counts
+            publication_candidate is not None
+            and not isinstance(publication_candidate, bool)
         ):
             failures.append(
-                f"status_counts={recorded_status_counts!r} but found {status_counts!r}"
+                "publication_candidate must be a boolean when present"
             )
+        if publication_candidate is False and not failures:
+            failures.append("publication_candidate=false but all rows are ok")
+        if publication_candidate is True and failures:
+            failures.append("publication_candidate=true with non-ok rows")
+        failed_row_count = payload.get("failed_row_count")
+        if failed_row_count is not None:
+            if not isinstance(failed_row_count, int) or isinstance(
+                failed_row_count, bool
+            ):
+                failures.append("failed_row_count must be an integer when present")
+            elif failed_row_count != row_failure_count:
+                failures.append(
+                    f"failed_row_count={failed_row_count} but found {row_failure_count}"
+                )
+        recorded_status_counts = payload.get("status_counts")
+        if recorded_status_counts is not None:
+            if not isinstance(recorded_status_counts, dict):
+                failures.append("status_counts must be an object when present")
+            elif not all(
+                isinstance(key, str)
+                and isinstance(value, int)
+                and not isinstance(value, bool)
+                for key, value in recorded_status_counts.items()
+            ):
+                failures.append("status_counts must map string statuses to integers")
+            elif recorded_status_counts != status_counts:
+                failures.append(
+                    f"status_counts={recorded_status_counts!r} but found {status_counts!r}"
+                )
     return failures
 
 
