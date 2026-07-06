@@ -677,6 +677,37 @@ def validate_host_performance_conditions(
                 )
 
 
+def validate_benchmark_window(*, artifact_path: Path, artifact: dict[str, Any]) -> None:
+    window = artifact.get("benchmark_window")
+    if window is None:
+        return
+    if not isinstance(window, dict):
+        raise ArtifactCheckError(f"{artifact_path} benchmark_window must be an object")
+    for key in ("started_at", "finished_at"):
+        value = window.get(key)
+        if not isinstance(value, str) or not value:
+            raise ArtifactCheckError(
+                f"{artifact_path} benchmark_window.{key} must be a non-empty string"
+            )
+    elapsed = window.get("elapsed_seconds")
+    if not isinstance(elapsed, (int, float)) or isinstance(elapsed, bool):
+        raise ArtifactCheckError(
+            f"{artifact_path} benchmark_window.elapsed_seconds must be numeric"
+        )
+    if elapsed < 0:
+        raise ArtifactCheckError(
+            f"{artifact_path} benchmark_window.elapsed_seconds must be non-negative"
+        )
+    for key in ("performance_conditions_start", "performance_conditions_end"):
+        conditions = window.get(key)
+        if conditions is None:
+            continue
+        validate_host_performance_conditions(
+            artifact_path=artifact_path,
+            artifact={"host": {"performance_conditions": conditions}},
+        )
+
+
 def tracked_dirty_is_benchmark_doc_only(status: Any) -> bool:
     if not isinstance(status, list) or not status:
         return False
@@ -2192,6 +2223,7 @@ def collect_artifact_rows(
             raise ArtifactCheckError(f"{path} has unexpected schema_version")
         validate_build_provenance(artifact_path=path, artifact=artifact)
         validate_host_performance_conditions(artifact_path=path, artifact=artifact)
+        validate_benchmark_window(artifact_path=path, artifact=artifact)
         validate_public_claim_evidence(artifact_path=path, artifact=artifact)
         validate_run_stability_summary_if_present(
             artifact_path=path,

@@ -132,6 +132,18 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         self.assertTrue(metadata["performance_warning_recorded"])
         self.assertFalse(metadata["cpu_power_status_recorded"])
 
+    def test_collect_host_metadata_uses_supplied_performance_conditions(self) -> None:
+        supplied = {"load_average": {"one_minute": 1.0}}
+
+        with patch.object(
+            bench,
+            "collect_performance_condition_metadata",
+            side_effect=AssertionError("should not resample"),
+        ):
+            metadata = bench.collect_host_metadata(supplied)
+
+        self.assertIs(metadata["performance_conditions"], supplied)
+
     def test_resolve_model_dir_uses_hugging_face_cache_snapshot(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

@@ -651,7 +651,9 @@ def collect_performance_condition_metadata() -> dict[str, Any]:
     return metadata
 
 
-def collect_host_metadata() -> dict[str, Any]:
+def collect_host_metadata(
+    performance_conditions: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Gather Apple Silicon host provenance for benchmark artifact labelling."""
     chip = _sysctl("machdep.cpu.brand_string") or _sysctl("hw.model")
     memory_bytes = _sysctl("hw.memsize")
@@ -674,7 +676,8 @@ def collect_host_metadata() -> dict[str, Any]:
         "os_version": os_version,
         "platform": sys.platform,
     }
-    performance_conditions = collect_performance_condition_metadata()
+    if performance_conditions is None:
+        performance_conditions = collect_performance_condition_metadata()
     if performance_conditions:
         metadata["performance_conditions"] = performance_conditions
     return metadata
@@ -5296,6 +5299,12 @@ def main() -> None:
         ),
         file=sys.stderr,
     )
+    benchmark_started = time.time()
+    benchmark_started_at = time.strftime(
+        "%Y-%m-%dT%H:%M:%S%z",
+        time.localtime(benchmark_started),
+    )
+    performance_conditions_start = collect_performance_condition_metadata()
     model_metadata = collect_model_metadata(args.model_dir)
     gateddelta_prefill_profile_contract: dict[str, Any] | None = None
     if args.gateddelta_prefill_profile:
@@ -5693,6 +5702,13 @@ def main() -> None:
         cell.get("engine") == "llama_cpp_metal" for cell in results
     )
 
+    benchmark_finished = time.time()
+    benchmark_finished_at = time.strftime(
+        "%Y-%m-%dT%H:%M:%S%z",
+        time.localtime(benchmark_finished),
+    )
+    performance_conditions_end = collect_performance_condition_metadata()
+
     doc = {
         "schema_version": MLX_INFERENCE_STACK_SCHEMA_VERSION,
         "claim_gate": {
@@ -5706,7 +5722,14 @@ def main() -> None:
             "requires_prefill_decode_split": True,
             "forbidden_public_claims_without_artifacts": CLAIMS_REQUIRING_ARTIFACT_EVIDENCE,
         },
-        "host": collect_host_metadata(),
+        "host": collect_host_metadata(performance_conditions_end),
+        "benchmark_window": {
+            "started_at": benchmark_started_at,
+            "finished_at": benchmark_finished_at,
+            "elapsed_seconds": round(benchmark_finished - benchmark_started, 1),
+            "performance_conditions_start": performance_conditions_start,
+            "performance_conditions_end": performance_conditions_end,
+        },
         "build": collect_build_metadata(),
         "model": args.model,
         "model_repo_id": args.model_repo_id,

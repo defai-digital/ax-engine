@@ -933,6 +933,70 @@ class ReadmePerformanceArtifactTests(unittest.TestCase):
                 },
             )
 
+    def test_benchmark_window_validates_optional_shape(self) -> None:
+        checker.validate_benchmark_window(
+            artifact_path=Path("artifact.json"),
+            artifact={
+                "benchmark_window": {
+                    "started_at": "2026-07-06T10:00:00-0400",
+                    "finished_at": "2026-07-06T10:01:00-0400",
+                    "elapsed_seconds": 60.0,
+                    "performance_conditions_start": {
+                        "load_average": {
+                            "one_minute": 1.0,
+                            "five_minutes": 1.5,
+                            "fifteen_minutes": 2.0,
+                        }
+                    },
+                    "performance_conditions_end": {
+                        "thermal_warning_recorded": False
+                    },
+                }
+            },
+        )
+        checker.validate_benchmark_window(
+            artifact_path=Path("legacy.json"),
+            artifact={},
+        )
+
+    def test_benchmark_window_rejects_malformed_shape(self) -> None:
+        with self.assertRaisesRegex(
+            checker.ArtifactCheckError,
+            "benchmark_window.elapsed_seconds must be numeric",
+        ):
+            checker.validate_benchmark_window(
+                artifact_path=Path("artifact.json"),
+                artifact={
+                    "benchmark_window": {
+                        "started_at": "2026-07-06T10:00:00-0400",
+                        "finished_at": "2026-07-06T10:01:00-0400",
+                        "elapsed_seconds": "60",
+                    }
+                },
+            )
+
+        with self.assertRaisesRegex(
+            checker.ArtifactCheckError,
+            r"load_average.one_minute must be numeric",
+        ):
+            checker.validate_benchmark_window(
+                artifact_path=Path("artifact.json"),
+                artifact={
+                    "benchmark_window": {
+                        "started_at": "2026-07-06T10:00:00-0400",
+                        "finished_at": "2026-07-06T10:01:00-0400",
+                        "elapsed_seconds": 60.0,
+                        "performance_conditions_start": {
+                            "load_average": {
+                                "one_minute": "1",
+                                "five_minutes": 1.5,
+                                "fifteen_minutes": 2.0,
+                            }
+                        },
+                    }
+                },
+            )
+
     def test_build_provenance_allows_benchmark_doc_only_dirty_artifact(self) -> None:
         checker.validate_build_provenance(
             artifact_path=Path("artifact.json"),
