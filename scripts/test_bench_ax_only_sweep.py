@@ -123,6 +123,20 @@ class BenchAxOnlySweepTests(unittest.TestCase):
         self.assertIn("bench_failed=1", stderr.getvalue())
         self.assertIn("model_dir_missing=1", stderr.getvalue())
 
+    def test_sweep_row_note_includes_failure_diagnostics(self) -> None:
+        note = sweep.sweep_row_note(
+            {
+                "status": "bench_failed",
+                "exit_code": 2,
+                "log_path": "/tmp/row.log",
+                "output_path": "/tmp/row.json",
+            }
+        )
+
+        self.assertIn("exit_code=2", note)
+        self.assertIn("log=/tmp/row.log", note)
+        self.assertIn("output=/tmp/row.json", note)
+
     def test_main_writes_summary_then_fails_on_failed_row(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -162,7 +176,12 @@ class BenchAxOnlySweepTests(unittest.TestCase):
                 patch.object(
                     sweep,
                     "run_row",
-                    return_value={"status": "bench_failed", "exit_code": 2},
+                    return_value={
+                        "status": "bench_failed",
+                        "exit_code": 2,
+                        "log_path": str(out_dir / "logs" / "a.log"),
+                        "output_path": str(out_dir / "a.json"),
+                    },
                 ),
                 patch("sys.stderr", io.StringIO()),
             ):
@@ -171,9 +190,14 @@ class BenchAxOnlySweepTests(unittest.TestCase):
 
             self.assertEqual(caught.exception.code, 2)
             sweep_results = json.loads((out_dir / "sweep_results.json").read_text())
+            self.assertFalse(sweep_results["publication_candidate"])
+            self.assertEqual(sweep_results["failed_row_count"], 1)
             self.assertEqual(sweep_results["status_counts"], {"bench_failed": 1})
             self.assertEqual(sweep_results["rows"][0]["status"], "bench_failed")
-            self.assertTrue((out_dir / "sweep_summary.md").is_file())
+            markdown = (out_dir / "sweep_summary.md").read_text()
+            self.assertIn("exit_code=2", markdown)
+            self.assertIn("logs/a.log", markdown)
+            self.assertIn("a.json", markdown)
 
 
 if __name__ == "__main__":

@@ -218,6 +218,24 @@ def fail_if_sweep_incomplete(rows: list[dict[str, Any]]) -> None:
     sys.exit(2)
 
 
+def markdown_cell(value: Any) -> str:
+    return str(value).replace("|", "\\|").replace("\n", " ")
+
+
+def sweep_row_note(row: dict[str, Any]) -> str:
+    parts: list[str] = []
+    note = row.get("note") or row.get("error")
+    if note:
+        parts.append(str(note))
+    if row.get("exit_code") is not None:
+        parts.append(f"exit_code={row['exit_code']}")
+    if row.get("log_path"):
+        parts.append(f"log={row['log_path']}")
+    if row.get("output_path"):
+        parts.append(f"output={row['output_path']}")
+    return "; ".join(parts)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST)
@@ -289,6 +307,7 @@ def main() -> None:
         log(f"  -> {record.get('status')}")
 
     elapsed = time.time() - started
+    failed_rows = failed_sweep_rows(summary_rows)
     sweep_doc = {
         "schema_version": "ax.ax_only_sweep.v1",
         "manifest_path": str(args.manifest),
@@ -299,6 +318,8 @@ def main() -> None:
         "cooldown": args.cooldown,
         "started_at": time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(started)),
         "elapsed_seconds": round(elapsed, 1),
+        "publication_candidate": not failed_rows,
+        "failed_row_count": len(failed_rows),
         "status_counts": status_counts(summary_rows),
         "rows": summary_rows,
     }
@@ -308,7 +329,17 @@ def main() -> None:
     md = ["# AX-only sweep summary", "", f"- elapsed: {elapsed:.0f}s", "",
           "| slug | status | notes |", "|---|---|---|"]
     for r in summary_rows:
-        md.append(f"| {r['slug']} | {r.get('status','?')} | {r.get('note') or r.get('error') or ''} |")
+        md.append(
+            "| "
+            + " | ".join(
+                [
+                    markdown_cell(r["slug"]),
+                    markdown_cell(r.get("status", "?")),
+                    markdown_cell(sweep_row_note(r)),
+                ]
+            )
+            + " |"
+        )
     (args.output_root / "sweep_summary.md").write_text("\n".join(md) + "\n")
     log(f"wrote {args.output_root / 'sweep_summary.md'}")
     fail_if_sweep_incomplete(summary_rows)
