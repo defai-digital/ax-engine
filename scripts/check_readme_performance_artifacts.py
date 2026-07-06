@@ -48,6 +48,7 @@ TTFT_TABLE_COLUMNS = PREFILL_TABLE_COLUMNS
 
 PHASE0_CLAIM_GATE_SCHEMA_VERSION = "ax.phase0_claim_gate.v1"
 RUN_STABILITY_SCHEMA_VERSION = "ax.benchmark_run_stability.v1"
+RUN_STABILITY_SUMMARY_SCHEMA_VERSION = "ax.benchmark_run_stability_summary.v1"
 PREFIX_REUSE_EQUIVALENCE_SCHEMA_VERSION = "ax.prefix_reuse_equivalence.v1"
 PREFILL_SCALING_SCHEMA_VERSION = "ax.mlx_prefill_scaling.v1"
 CONCURRENT_PREFILL_SCHEMA_VERSION = "ax.mlx_concurrent_prefill.v1"
@@ -1023,6 +1024,74 @@ def expected_prefix_reuse_classification(evidence: dict[str, Any]) -> dict[str, 
     }
 
 
+def expected_run_stability_summary(results: list[Any]) -> dict[str, Any]:
+    summary: dict[str, Any] = {
+        "schema_version": RUN_STABILITY_SUMMARY_SCHEMA_VERSION,
+        "scope": "ax_engine_rows",
+        "row_count": 0,
+        "stable_enough_count": 0,
+        "unstable_count": 0,
+        "missing_count": 0,
+        "classification_counts": {},
+        "unstable_rows": [],
+        "publication_candidate": True,
+    }
+    for row in results:
+        if not isinstance(row, dict):
+            continue
+        engine = str(row.get("engine", ""))
+        if not engine.startswith("ax_engine"):
+            continue
+        summary["row_count"] += 1
+        stability = row.get("run_stability")
+        if not isinstance(stability, dict):
+            summary["missing_count"] += 1
+            summary["publication_candidate"] = False
+            continue
+        classification = str(stability.get("classification", "unknown"))
+        counts = summary["classification_counts"]
+        counts[classification] = int(counts.get(classification, 0)) + 1
+        if classification == "stable_enough":
+            summary["stable_enough_count"] += 1
+            continue
+        summary["unstable_count"] += 1
+        summary["publication_candidate"] = False
+        unstable_row = {
+            "engine": engine,
+            "prompt_tokens": row.get("prompt_tokens"),
+            "generation_tokens": row.get("generation_tokens"),
+            "classification": classification,
+        }
+        drift = stability.get("last_vs_first_pct")
+        if isinstance(drift, (int, float)):
+            unstable_row["last_vs_first_pct"] = float(drift)
+        summary["unstable_rows"].append(unstable_row)
+    return summary
+
+
+def validate_run_stability_summary_if_present(
+    *, artifact_path: Path, artifact: dict[str, Any]
+) -> None:
+    summary = artifact.get("run_stability_summary")
+    if summary is None:
+        return
+    if not isinstance(summary, dict):
+        raise ArtifactCheckError(
+            f"{artifact_path} run_stability_summary must be an object"
+        )
+    results = artifact.get("results")
+    if not isinstance(results, list):
+        raise ArtifactCheckError(
+            f"{artifact_path} run_stability_summary requires results list"
+        )
+    expected = expected_run_stability_summary(results)
+    for key, expected_value in expected.items():
+        if summary.get(key) != expected_value:
+            raise ArtifactCheckError(
+                f"{artifact_path} run_stability_summary {key} is inconsistent with result rows"
+            )
+
+
 def validate_phase0_artifact_gate(
     *, artifact_path: Path, artifact: dict[str, Any]
 ) -> None:
@@ -1773,6 +1842,10 @@ def collect_artifact_rows(
             raise ArtifactCheckError(f"{path} has unexpected schema_version")
         validate_build_provenance(artifact_path=path, artifact=artifact)
         validate_public_claim_evidence(artifact_path=path, artifact=artifact)
+        validate_run_stability_summary_if_present(
+            artifact_path=path,
+            artifact=artifact,
+        )
         validate_phase0_artifact_gate(artifact_path=path, artifact=artifact)
         model, quantization = label
         prompt_hashes = prompt_contract_by_shape(
