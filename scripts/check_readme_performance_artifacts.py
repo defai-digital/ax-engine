@@ -1353,6 +1353,18 @@ def validate_ax_only_refresh_regression_summary_if_present(
             f"{artifact_path} ax_only_refresh reference does not exist: {reference_path}"
         )
     reference_artifact = json.loads(reference_path.read_text())
+    if not isinstance(reference_artifact, dict):
+        raise ArtifactCheckError(
+            f"{artifact_path} ax_only_refresh reference must be an object"
+        )
+    if reference_artifact.get("schema_version") != "ax.mlx_inference_stack.v2":
+        raise ArtifactCheckError(
+            f"{artifact_path} ax_only_refresh reference has unexpected schema_version"
+        )
+    if not isinstance(reference_artifact.get("results"), list):
+        raise ArtifactCheckError(
+            f"{artifact_path} ax_only_refresh reference lacks results list"
+        )
     expected = expected_ax_only_refresh_regression_summary(
         artifact=artifact,
         reference_artifact=reference_artifact,
