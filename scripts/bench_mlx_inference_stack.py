@@ -2934,6 +2934,8 @@ def summarize_artifact_run_stability(results: list[dict[str, Any]]) -> dict[str,
         if isinstance(drift, (int, float)):
             unstable_row["last_vs_first_pct"] = float(drift)
         summary["unstable_rows"].append(unstable_row)
+    if summary["row_count"] == 0:
+        summary["publication_candidate"] = False
     return summary
 
 

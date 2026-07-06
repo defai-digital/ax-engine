@@ -2972,6 +2972,20 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
             ],
         )
 
+    def test_artifact_run_stability_rejects_empty_ax_scope(self) -> None:
+        summary = bench.summarize_artifact_run_stability(
+            [
+                {
+                    "engine": "mlx_lm",
+                    "prompt_tokens": 128,
+                    "generation_tokens": 128,
+                }
+            ]
+        )
+
+        self.assertEqual(summary["row_count"], 0)
+        self.assertFalse(summary["publication_candidate"])
+
     def test_prefix_reuse_evidence_classifies_absent_and_partial_coverage(self) -> None:
         self.assertEqual(
             bench.summarize_prefix_reuse_evidence([])["physical_snapshot_coverage"],

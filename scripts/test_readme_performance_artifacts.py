@@ -1189,6 +1189,40 @@ class ReadmePerformanceArtifactTests(unittest.TestCase):
                     expected_metric_count=6,
                 )
 
+    def test_run_stability_summary_rejects_empty_ax_scope(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.write_fixture(root)
+            artifact_path = (
+                root / "benchmarks/results/mlx-inference/local/gemma-4-e2b-it-4bit.json"
+            )
+            artifact = json.loads(artifact_path.read_text())
+            artifact["results"] = [
+                row for row in artifact["results"] if row["engine"] == "mlx_lm"
+            ]
+            artifact["run_stability_summary"] = {
+                "schema_version": checker.RUN_STABILITY_SUMMARY_SCHEMA_VERSION,
+                "scope": "ax_engine_rows",
+                "row_count": 0,
+                "stable_enough_count": 0,
+                "unstable_count": 0,
+                "missing_count": 0,
+                "classification_counts": {},
+                "unstable_rows": [],
+                "publication_candidate": False,
+            }
+            artifact_path.write_text(json.dumps(artifact, indent=2) + "\n")
+
+            with self.assertRaisesRegex(
+                checker.ArtifactCheckError,
+                "run_stability_summary is not a publication candidate",
+            ):
+                checker.check_readme_performance(
+                    repo_root=root,
+                    readme_path=root / "README.md",
+                    expected_metric_count=6,
+                )
+
     def test_phase0_artifact_rejects_unvalidated_ax_engine_row(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
