@@ -20,6 +20,7 @@ from typing import Any
 
 
 SCHEMA_VERSION = "ax.mlx_inference_stack.v2"
+AX_ONLY_SWEEP_SCHEMA_VERSION = "ax.ax_only_sweep.v1"
 MLX_LM_ENGINE = "mlx_lm"
 AX_DIRECT_ENGINE = "ax_engine_mlx"
 AX_NGRAM_ENGINE = "ax_engine_mlx_ngram_accel"
@@ -303,6 +304,14 @@ def check_sweep_results(artifact_dir: Path) -> list[str]:
             reason = row.get("reason") or row.get("error") or status
             failures.append(f"{label}: {reason}")
     if isinstance(payload, dict):
+        schema_version = payload.get("schema_version")
+        if (
+            schema_version is not None
+            and schema_version != AX_ONLY_SWEEP_SCHEMA_VERSION
+        ):
+            failures.append(
+                f"sweep_results.json has unsupported schema_version={schema_version!r}"
+            )
         expected_failed_count = len(failures)
         if payload.get("publication_candidate") is False and expected_failed_count == 0:
             failures.append("publication_candidate=false but all rows are ok")
