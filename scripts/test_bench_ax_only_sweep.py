@@ -227,6 +227,38 @@ class BenchAxOnlySweepTests(unittest.TestCase):
             self.assertIn("--load-average-poll-interval", cmd)
             self.assertIn("10.0", cmd)
 
+    def test_run_row_ax_direct_only_skips_reference_rows(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            output_dir = root / "out"
+            output_dir.mkdir()
+            (output_dir / "a.json").write_text(json.dumps({"ok": True}) + "\n")
+            proc = Mock()
+            proc.wait.return_value = 0
+
+            with patch.object(sweep.subprocess, "Popen", return_value=proc) as popen:
+                result = sweep.run_row(
+                    {
+                        "slug": "a",
+                    },
+                    output_dir=output_dir,
+                    bench_script=root / "bench.py",
+                    prompt_tokens="128",
+                    generation_tokens=128,
+                    repetitions=5,
+                    cooldown=15.0,
+                    model_args=["--model-dir", str(root / "model")],
+                    reuse_ref_root=None,
+                    ax_direct_only=True,
+                )
+
+            cmd = popen.call_args.args[0]
+            self.assertEqual(result["status"], "ok")
+            self.assertIn("--skip-mlx-lm", cmd)
+            self.assertIn("--ax-direct", cmd)
+            self.assertNotIn("--reuse-reference-results-from", cmd)
+            self.assertNotIn("--ax-compare-policies", cmd)
+
     def test_collect_performance_condition_metadata_parses_pmset(self) -> None:
         def fake_check_output(
             cmd: list[str],
@@ -427,6 +459,96 @@ class BenchAxOnlySweepTests(unittest.TestCase):
             self.assertEqual(
                 resolve_model_args.call_args.kwargs["reference_artifact"],
                 reference / "a.json",
+            )
+
+    def test_main_requires_reference_root_outside_direct_only(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest = root / "manifest.json"
+            manifest.write_text(json.dumps({"rows": [{"slug": "a"}]}) + "\n")
+            out_dir = root / "out"
+            argv = [
+                "bench_ax_only_sweep.py",
+                "--manifest",
+                str(manifest),
+                "--output-root",
+                str(out_dir),
+            ]
+
+            with patch.object(sys, "argv", argv), patch("sys.stderr", io.StringIO()):
+                with self.assertRaises(SystemExit) as caught:
+                    sweep.main()
+
+            self.assertEqual(caught.exception.code, 2)
+            self.assertFalse(out_dir.exists())
+
+    def test_main_direct_only_uses_model_snapshot_reference_root(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest = root / "manifest.json"
+            manifest.write_text(
+                json.dumps(
+                    {
+                        "rows": [
+                            {
+                                "slug": "a",
+                                "readme_model": "Gemma",
+                                "readme_quant": "4-bit",
+                            }
+                        ]
+                    }
+                )
+                + "\n"
+            )
+            snapshot_reference = root / "snapshot-reference"
+            snapshot_reference.mkdir()
+            out_dir = root / "out"
+            argv = [
+                "bench_ax_only_sweep.py",
+                "--manifest",
+                str(manifest),
+                "--output-root",
+                str(out_dir),
+                "--ax-direct-only",
+                "--model-snapshot-reference-root",
+                str(snapshot_reference),
+            ]
+
+            with (
+                patch.object(sys, "argv", argv),
+                patch.object(
+                    sweep,
+                    "resolve_model_args",
+                    return_value=(["--model-dir", str(root / "model")], None),
+                ) as resolve_model_args,
+                patch.object(
+                    sweep,
+                    "run_row",
+                    return_value={
+                        "status": "ok",
+                        "output_path": str(out_dir / "a.json"),
+                    },
+                ) as run_row,
+                patch.object(
+                    sweep,
+                    "collect_performance_condition_metadata",
+                    return_value={"load_average": {"one_minute": 1.0}},
+                ),
+            ):
+                sweep.main()
+
+            self.assertEqual(
+                resolve_model_args.call_args.kwargs["reference_artifact"],
+                snapshot_reference / "a.json",
+            )
+            self.assertIsNone(run_row.call_args.kwargs["reuse_ref_root"])
+            self.assertTrue(run_row.call_args.kwargs["ax_direct_only"])
+            sweep_results = json.loads((out_dir / "sweep_results.json").read_text())
+            self.assertTrue(sweep_results["ax_direct_only"])
+            self.assertIsNone(sweep_results["reuse_reference_root"])
+            self.assertEqual(
+                sweep_results["model_snapshot_reference_root"],
+                str(snapshot_reference),
             )
 
     def test_main_writes_summary_then_fails_on_failed_row(self) -> None:

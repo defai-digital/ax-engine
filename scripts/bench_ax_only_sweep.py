@@ -335,7 +335,8 @@ def run_row(
     repetitions: int,
     cooldown: float,
     model_args: list[str],
-    reuse_ref_root: Path,
+    reuse_ref_root: Path | None,
+    ax_direct_only: bool = False,
     max_load_average: float | None = None,
     max_top_process_cpu_percent: float | None = None,
     load_average_wait_timeout: float | None = None,
@@ -346,10 +347,6 @@ def run_row(
     log_path = output_dir / "logs" / f"{slug}.log"
     log_path.parent.mkdir(parents=True, exist_ok=True)
 
-    ref_json = reuse_ref_root / f"{slug}.json"
-    if not ref_json.is_file():
-        return {"status": "skipped_no_reference", "note": f"missing {ref_json}"}
-
     cmd = [
         sys.executable,
         str(bench_script),
@@ -358,11 +355,27 @@ def run_row(
         "--generation-tokens", str(generation_tokens),
         "--repetitions", str(repetitions),
         "--cooldown", str(cooldown),
-        "--ax-compare-policies",
-        "--reuse-reference-results-from", str(ref_json),
         "--no-build-ax-engine",
         "--output", str(out_json),
     ]
+    if ax_direct_only:
+        cmd.extend(["--skip-mlx-lm", "--ax-direct"])
+    else:
+        if reuse_ref_root is None:
+            return {
+                "status": "skipped_no_reference",
+                "note": "--reuse-reference-root is required outside --ax-direct-only",
+            }
+        ref_json = reuse_ref_root / f"{slug}.json"
+        if not ref_json.is_file():
+            return {"status": "skipped_no_reference", "note": f"missing {ref_json}"}
+        cmd.extend(
+            [
+                "--ax-compare-policies",
+                "--reuse-reference-results-from",
+                str(ref_json),
+            ]
+        )
     if max_load_average is not None:
         cmd.extend(["--max-load-average", str(max_load_average)])
     if max_top_process_cpu_percent is not None:
@@ -452,7 +465,15 @@ def build_sweep_doc(
     return {
         "schema_version": "ax.ax_only_sweep.v1",
         "manifest_path": str(args.manifest),
-        "reuse_reference_root": str(args.reuse_reference_root),
+        "reuse_reference_root": (
+            str(args.reuse_reference_root) if args.reuse_reference_root else None
+        ),
+        "model_snapshot_reference_root": (
+            str(args.model_snapshot_reference_root)
+            if args.model_snapshot_reference_root
+            else None
+        ),
+        "ax_direct_only": bool(args.ax_direct_only),
         "prompt_tokens": args.prompt_tokens,
         "generation_tokens": args.generation_tokens,
         "repetitions": args.repetitions,
@@ -582,8 +603,26 @@ def main() -> None:
     parser.add_argument(
         "--reuse-reference-root",
         type=Path,
-        required=True,
-        help="Directory containing per-row JSONs (<slug>.json) with mlx_lm baseline.",
+        help=(
+            "Directory containing per-row JSONs (<slug>.json) with mlx_lm "
+            "baseline rows. Required unless --ax-direct-only is set."
+        ),
+    )
+    parser.add_argument(
+        "--model-snapshot-reference-root",
+        type=Path,
+        help=(
+            "Directory containing per-row JSONs used only to resolve exact "
+            "model_dir provenance. Defaults to --reuse-reference-root."
+        ),
+    )
+    parser.add_argument(
+        "--ax-direct-only",
+        action="store_true",
+        help=(
+            "Run only the direct AX row for each model, without requiring or "
+            "reusing mlx_lm reference rows."
+        ),
     )
     parser.add_argument(
         "--cache-dir",
@@ -634,6 +673,8 @@ def main() -> None:
     )
     args = parser.parse_args()
 
+    if not args.ax_direct_only and args.reuse_reference_root is None:
+        parser.error("--reuse-reference-root is required unless --ax-direct-only")
     if args.no_load_gate:
         args.max_load_average = None
         args.max_top_process_cpu_percent = None
@@ -674,6 +715,9 @@ def main() -> None:
     handlers = install_interrupt_handlers()
 
     try:
+        model_snapshot_reference_root = (
+            args.model_snapshot_reference_root or args.reuse_reference_root
+        )
         for index, row in enumerate(rows, start=1):
             slug = row["slug"]
             log(f"({index}/{len(rows)}) {slug}")
@@ -692,7 +736,11 @@ def main() -> None:
                 planned_row_count=len(rows),
                 performance_conditions_start=performance_conditions_start,
             )
-            reference_artifact = args.reuse_reference_root / f"{slug}.json"
+            reference_artifact = (
+                model_snapshot_reference_root / f"{slug}.json"
+                if model_snapshot_reference_root is not None
+                else None
+            )
             model_args, err = resolve_model_args(
                 row,
                 args.cache_dir,
@@ -720,6 +768,7 @@ def main() -> None:
                 cooldown=args.cooldown,
                 model_args=model_args,
                 reuse_ref_root=args.reuse_reference_root,
+                ax_direct_only=args.ax_direct_only,
                 max_load_average=args.max_load_average,
                 max_top_process_cpu_percent=args.max_top_process_cpu_percent,
                 load_average_wait_timeout=args.load_average_wait_timeout,
