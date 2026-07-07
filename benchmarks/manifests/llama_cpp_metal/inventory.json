@@ -68,11 +68,11 @@
       "slug": "gemma-4-e4b-it-6bit",
       "readme_model": "Gemma 4 E4B",
       "readme_quant": "6-bit",
-      "mlx_local_dir": ".internal/models/gemma-4-e4b-it-4bit",
-      "mlx_repo_id": "mlx-community/gemma-4-e4b-it-4bit",
+      "mlx_local_dir": ".internal/models/gemma-4-e4b-it-6bit",
+      "mlx_repo_id": "mlx-community/gemma-4-e4b-it-6bit",
       "hf_arch": "Gemma4ForConditionalGeneration",
       "llama_cpp_arch": "gemma4",
-      "prompt_source_note": "Prompt-token source is mlx-community/gemma-4-e4b-it-4bit because the 6-bit MLX repo does not ship an AX manifest. GGUF side benches the standard root-level Q6_K file. Injected into the README '6-bit' row as a shape-compatible reference only.",
+      "prompt_source_note": "mlx_lm 0.31.3 cannot strict-load this shared-KV checkpoint, but the AX manifest is present and AX-only refreshes should use the 6-bit MLX snapshot directly. GGUF side benches the standard root-level Q6_K file.",
       "gguf_quant_target": "Q6_K",
       "gguf_candidates": [
         {"repo": "unsloth/gemma-4-E4B-it-GGUF", "filename_pattern": "gemma-4-E4B-it-Q6_K.gguf"}

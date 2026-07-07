@@ -32,6 +32,21 @@ class BenchAxOnlySweepTests(unittest.TestCase):
 
         self.assertEqual(sweep.filter_manifest_rows(rows, None), rows)
 
+    def test_default_manifest_uses_real_e4b_6bit_mlx_repo(self) -> None:
+        manifest = json.loads(sweep.DEFAULT_MANIFEST.read_text())
+        row = next(
+            row
+            for row in manifest["rows"]
+            if row.get("slug") == "gemma-4-e4b-it-6bit"
+        )
+
+        self.assertEqual(
+            row["mlx_repo_id"],
+            "mlx-community/gemma-4-e4b-it-6bit",
+        )
+        self.assertEqual(row["mlx_local_dir"], ".internal/models/gemma-4-e4b-it-6bit")
+        self.assertIn("AX manifest is present", row["prompt_source_note"])
+
     def test_filter_manifest_rows_keeps_manifest_order(self) -> None:
         rows = [{"slug": "a"}, {"slug": "b"}, {"slug": "c"}]
 
