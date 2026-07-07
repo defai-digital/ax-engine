@@ -21,6 +21,12 @@ MODULE_SPEC.loader.exec_module(sweep)
 
 
 class BenchAxOnlySweepTests(unittest.TestCase):
+    def write_ax_snapshot(self, path: Path) -> None:
+        path.mkdir(parents=True)
+        (path / "config.json").write_text("{}\n")
+        (path / "model-manifest.json").write_text("{}\n")
+        (path / "weights.safetensors").write_bytes(b"")
+
     def test_filter_manifest_rows_returns_all_rows_without_filter(self) -> None:
         rows = [{"slug": "a"}, {"slug": "b"}]
 
@@ -257,6 +263,171 @@ class BenchAxOnlySweepTests(unittest.TestCase):
         self.assertFalse(metadata["thermal_warning_recorded"])
         self.assertTrue(metadata["performance_warning_recorded"])
         self.assertFalse(metadata["cpu_power_status_recorded"])
+
+    def test_reference_model_dir_wins_over_moving_hf_cache_ref(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cache_dir = root / "hub"
+            repo_cache = cache_dir / "models--org--model"
+            old_snapshot = repo_cache / "snapshots" / "oldrev"
+            new_snapshot = repo_cache / "snapshots" / "newrev"
+            self.write_ax_snapshot(old_snapshot)
+            self.write_ax_snapshot(new_snapshot)
+            (repo_cache / "refs").mkdir()
+            (repo_cache / "refs" / "main").write_text("newrev\n")
+            reference = root / "reference.json"
+            reference.write_text(
+                json.dumps({"model_dir": str(old_snapshot)}) + "\n"
+            )
+
+            args, error = sweep.resolve_model_args(
+                {"slug": "row", "mlx_repo_id": "org/model"},
+                cache_dir,
+                reference_artifact=reference,
+            )
+
+            self.assertIsNone(error)
+            self.assertEqual(
+                args,
+                [
+                    "--model-repo-id",
+                    "org/model",
+                    "--model-dir",
+                    str(old_snapshot),
+                ],
+            )
+
+    def test_reference_home_cache_path_remaps_to_configured_cache_root(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cache_dir = root / "external-hub"
+            remapped_snapshot = (
+                cache_dir
+                / "models--org--model"
+                / "snapshots"
+                / "same-revision"
+            )
+            self.write_ax_snapshot(remapped_snapshot)
+            stale_reference_snapshot = (
+                root
+                / "stale-home"
+                / ".cache"
+                / "huggingface"
+                / "hub"
+                / "models--org--model"
+                / "snapshots"
+                / "same-revision"
+            )
+            reference = root / "reference.json"
+            reference.write_text(
+                json.dumps({"model_dir": str(stale_reference_snapshot)}) + "\n"
+            )
+
+            args, error = sweep.resolve_model_args(
+                {"slug": "row", "mlx_repo_id": "org/model"},
+                cache_dir,
+                reference_artifact=reference,
+            )
+
+            self.assertIsNone(error)
+            self.assertEqual(
+                args,
+                [
+                    "--model-repo-id",
+                    "org/model",
+                    "--model-dir",
+                    str(remapped_snapshot),
+                ],
+            )
+
+    def test_unusable_reference_model_dir_falls_back_to_latest_cache_snapshot(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cache_dir = root / "hub"
+            repo_cache = cache_dir / "models--org--model"
+            latest_snapshot = repo_cache / "snapshots" / "latest"
+            self.write_ax_snapshot(latest_snapshot)
+            (repo_cache / "refs").mkdir()
+            (repo_cache / "refs" / "main").write_text("latest\n")
+            reference = root / "reference.json"
+            reference.write_text(
+                json.dumps({"model_dir": str(root / "missing-snapshot")}) + "\n"
+            )
+
+            args, error = sweep.resolve_model_args(
+                {"slug": "row", "mlx_repo_id": "org/model"},
+                cache_dir,
+                reference_artifact=reference,
+            )
+
+            self.assertIsNone(error)
+            self.assertEqual(
+                args,
+                ["--model-repo-id", "org/model", "--hf-cache-root", str(cache_dir)],
+            )
+
+    def test_main_passes_row_reference_artifact_to_model_resolver(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest = root / "manifest.json"
+            manifest.write_text(
+                json.dumps(
+                    {
+                        "rows": [
+                            {
+                                "slug": "a",
+                                "readme_model": "Gemma",
+                                "readme_quant": "4-bit",
+                            }
+                        ]
+                    }
+                )
+                + "\n"
+            )
+            reference = root / "reference"
+            reference.mkdir()
+            out_dir = root / "out"
+            argv = [
+                "bench_ax_only_sweep.py",
+                "--manifest",
+                str(manifest),
+                "--output-root",
+                str(out_dir),
+                "--reuse-reference-root",
+                str(reference),
+            ]
+
+            with (
+                patch.object(sys, "argv", argv),
+                patch.object(
+                    sweep,
+                    "resolve_model_args",
+                    return_value=(["--model-dir", str(root / "model")], None),
+                ) as resolve_model_args,
+                patch.object(
+                    sweep,
+                    "run_row",
+                    return_value={
+                        "status": "ok",
+                        "output_path": str(out_dir / "a.json"),
+                    },
+                ),
+                patch.object(
+                    sweep,
+                    "collect_performance_condition_metadata",
+                    return_value={"load_average": {"one_minute": 1.0}},
+                ),
+            ):
+                sweep.main()
+
+            self.assertEqual(
+                resolve_model_args.call_args.args[1],
+                Path.home() / ".cache" / "huggingface" / "hub",
+            )
+            self.assertEqual(
+                resolve_model_args.call_args.kwargs["reference_artifact"],
+                reference / "a.json",
+            )
 
     def test_main_writes_summary_then_fails_on_failed_row(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

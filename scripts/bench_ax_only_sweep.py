@@ -112,29 +112,138 @@ def latest_hf_cache_snapshot(repo_id: str, cache_dir: Path) -> Path | None:
     return max(candidates, key=lambda p: p.stat().st_mtime, default=None)
 
 
-def resolve_model_args(row: dict[str, Any], cache_dir: Path) -> tuple[list[str] | None, str | None]:
+def missing_ax_model_artifacts(model_dir: Path) -> list[str]:
+    missing = []
+    if not (model_dir / "config.json").is_file():
+        missing.append("config.json")
+    if not (model_dir / "model-manifest.json").is_file():
+        missing.append("model-manifest.json")
+    if not any(model_dir.glob("*.safetensors")):
+        missing.append("*.safetensors")
+    return missing
+
+
+def _model_dir_args(model_dir: Path, repo_id: str | None) -> list[str]:
+    args: list[str] = []
+    if repo_id:
+        args.extend(["--model-repo-id", repo_id])
+    args.extend(["--model-dir", str(model_dir)])
+    return args
+
+
+def _hf_cache_snapshot_info(path: Path, repo_id: str | None) -> tuple[str, str] | None:
+    expected_repo_cache = f"models--{_slug_repo_id(repo_id)}" if repo_id else None
+    parts = path.expanduser().parts
+    for index, part in enumerate(parts):
+        if not part.startswith("models--"):
+            continue
+        if expected_repo_cache is not None and part != expected_repo_cache:
+            continue
+        if index + 2 >= len(parts) or parts[index + 1] != "snapshots":
+            continue
+        revision = parts[index + 2]
+        if revision:
+            return part, revision
+    return None
+
+
+def _resolve_reference_model_dir(
+    reference_model_dir: str,
+    *,
+    repo_id: str | None,
+    cache_dir: Path,
+) -> Path | None:
+    reference_path = Path(reference_model_dir).expanduser()
+    candidates = [reference_path]
+    snapshot_info = _hf_cache_snapshot_info(reference_path, repo_id)
+    if snapshot_info is not None:
+        repo_cache, revision = snapshot_info
+        remapped = cache_dir / repo_cache / "snapshots" / revision
+        if remapped not in candidates:
+            candidates.append(remapped)
+
+    for candidate in candidates:
+        if candidate.is_dir() and not missing_ax_model_artifacts(candidate):
+            return candidate
+    return None
+
+
+def _reference_model_dir_value(reference_artifact: Path) -> str | None:
+    try:
+        doc = json.loads(reference_artifact.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(doc, dict):
+        return None
+    value = doc.get("model_dir")
+    if isinstance(value, str) and value.strip():
+        return value
+    model = doc.get("model")
+    if isinstance(model, str) and model.startswith(("/", "~")):
+        return model
+    return None
+
+
+def reference_model_args(
+    row: dict[str, Any],
+    *,
+    cache_dir: Path,
+    reference_artifact: Path | None,
+) -> tuple[list[str] | None, str | None]:
+    if reference_artifact is None or not reference_artifact.is_file():
+        return None, None
+    repo_id = row.get("mlx_repo_id")
+    model_dir_value = _reference_model_dir_value(reference_artifact)
+    if model_dir_value is None:
+        return None, f"reference artifact has no reusable model_dir: {reference_artifact}"
+    model_dir = _resolve_reference_model_dir(
+        model_dir_value,
+        repo_id=repo_id if isinstance(repo_id, str) else None,
+        cache_dir=cache_dir,
+    )
+    if model_dir is None:
+        return None, f"reference model_dir is not AX-ready or not found: {model_dir_value}"
+    return _model_dir_args(model_dir, repo_id if isinstance(repo_id, str) else None), None
+
+
+def resolve_model_args(
+    row: dict[str, Any],
+    cache_dir: Path,
+    reference_artifact: Path | None = None,
+) -> tuple[list[str] | None, str | None]:
+    repo_id = row.get("mlx_repo_id")
+    repo_id_arg = repo_id if isinstance(repo_id, str) and repo_id else None
     local_dir_value = row.get("mlx_local_dir")
     if local_dir_value:
         model_dir = REPO_ROOT / local_dir_value
         if model_dir.exists():
-            return ["--model-dir", str(model_dir)], None
-    repo_id = row.get("mlx_repo_id")
-    if not repo_id:
+            missing = missing_ax_model_artifacts(model_dir)
+            if missing:
+                return (
+                    None,
+                    f"local MLX model dir for {row.get('slug')} missing "
+                    f"{', '.join(missing)}",
+                )
+            return _model_dir_args(model_dir, repo_id_arg), None
+
+    reference_args, _reference_error = reference_model_args(
+        row,
+        cache_dir=cache_dir,
+        reference_artifact=reference_artifact,
+    )
+    if reference_args is not None:
+        return reference_args, None
+
+    if not repo_id_arg:
         return None, f"No mlx_local_dir or mlx_repo_id for {row.get('slug')}"
-    snap = latest_hf_cache_snapshot(repo_id, cache_dir)
+    snap = latest_hf_cache_snapshot(repo_id_arg, cache_dir)
     if snap is None:
-        return None, f"No HF cache snapshot for {repo_id}"
+        return None, f"No HF cache snapshot for {repo_id_arg}"
     # AX requires config.json + model-manifest.json + *.safetensors in the snapshot.
-    missing = []
-    if not (snap / "config.json").is_file():
-        missing.append("config.json")
-    if not (snap / "model-manifest.json").is_file():
-        missing.append("model-manifest.json")
-    if not any(snap.glob("*.safetensors")):
-        missing.append("*.safetensors")
+    missing = missing_ax_model_artifacts(snap)
     if missing:
-        return None, f"MLX cache snapshot for {repo_id} missing {', '.join(missing)}"
-    return ["--model-repo-id", repo_id, "--hf-cache-root", str(cache_dir)], None
+        return None, f"MLX cache snapshot for {repo_id_arg} missing {', '.join(missing)}"
+    return ["--model-repo-id", repo_id_arg, "--hf-cache-root", str(cache_dir)], None
 
 
 def _row_slug(row: dict[str, Any]) -> str:
@@ -583,7 +692,12 @@ def main() -> None:
                 planned_row_count=len(rows),
                 performance_conditions_start=performance_conditions_start,
             )
-            model_args, err = resolve_model_args(row, args.cache_dir)
+            reference_artifact = args.reuse_reference_root / f"{slug}.json"
+            model_args, err = resolve_model_args(
+                row,
+                args.cache_dir,
+                reference_artifact=reference_artifact,
+            )
             if model_args is None:
                 record["status"] = "model_dir_missing"
                 record["note"] = err
