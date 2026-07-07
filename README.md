@@ -897,7 +897,7 @@ per model.
 
 #### EmbeddingGemma ingest scale
 
-**AX leads the retained `mlx-embeddings` reference by 2.5-8.9% on every
+**AX leads the retained `mlx-embeddings` reference by 1.3-8.6% on every
 EmbeddingGemma shape below** — but note this is a fresh AX-only refresh compared
 against retained reference medians, not a same-session paired run like the Qwen
 rows above, so read it as a directional lead rather than a locked delta.
@@ -912,12 +912,12 @@ box summarizes the six chunk/batch shapes listed below.
 
 | Model | Workload | Batch | Batches/trial | `mlx-embeddings` tok/s | AX tok/s | AX vs | AX chunks/s | AX p95 batch ms |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| EmbeddingGemma 300M 8-bit | 512 x 256-token chunks | 8 | 64 | 129,909.0 | 137,565.1 | +5.9% | 537.4 | 14.4 |
-|  |  | 32 | 16 | 148,284.8 | 156,466.7 | +5.5% | 611.2 | 63.7 |
-|  |  | 64 | 8 | 149,976.1 | 153,679.0 | +2.5% | 600.3 | 148.9 |
-|  | 512 x 512-token chunks | 8 | 64 | 127,604.8 | 138,909.2 | +8.9% | 271.3 | 28.9 |
-|  |  | 32 | 16 | 140,105.8 | 148,668.6 | +6.1% | 290.4 | 123.9 |
-|  |  | 64 | 8 | 132,121.8 | 141,292.5 | +6.9% | 276.0 | 263.6 |
+| EmbeddingGemma 300M 8-bit | 512 x 256-token chunks | 8 | 64 | 129,909.0 | 136,101.8 | +4.8% | 531.6 | 15.0 |
+|  |  | 32 | 16 | 148,284.8 | 154,307.2 | +4.1% | 602.8 | 60.1 |
+|  |  | 64 | 8 | 149,976.1 | 152,897.7 | +1.9% | 597.3 | 126.1 |
+|  | 512 x 512-token chunks | 8 | 64 | 127,604.8 | 138,617.4 | +8.6% | 270.7 | 29.5 |
+|  |  | 32 | 16 | 140,105.8 | 141,992.7 | +1.3% | 277.3 | 123.3 |
+|  |  | 64 | 8 | 132,121.8 | 135,667.0 | +2.7% | 265.0 | 263.1 |
 
 Sources:
 Qwen sustained-scale rows come from the AX-only artifact
@@ -925,7 +925,7 @@ Qwen sustained-scale rows come from the AX-only artifact
 EmbeddingGemma sustained-scale reference rows come from
 `benchmarks/results/embedding/embedding-scale/2026-07-02-embeddinggemma-paired-cooldown15-refresh/2026-07-02-175206/`
 and fresh AX rows from
-`benchmarks/results/embedding/embedding-scale/2026-07-02-embeddinggemma-ax-only-refresh-r2/2026-07-02-204750/`.
+`benchmarks/results/embedding/embedding-scale/2026-07-07-embeddinggemma-ax-only-refresh/2026-07-07-005538/`.
 Qwen rows are current AX-only medians. EmbeddingGemma still compares a fresh AX
 refresh against the retained reference medians. All scale runs use Hugging Face
 snapshot paths, median tok/s, batch sizes 8/32/64, 512 chunks per trial,

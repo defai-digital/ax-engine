@@ -261,8 +261,8 @@ EMBEDDINGGEMMA_SCALE_REFERENCE_ARTIFACT = Path(
 )
 EMBEDDINGGEMMA_SCALE_AX_ARTIFACT = Path(
     "benchmarks/results/embedding/embedding-scale/"
-    "2026-07-02-embeddinggemma-ax-only-refresh-r2/"
-    "2026-07-02-204750/embedding_ingest_scale.json"
+    "2026-07-07-embeddinggemma-ax-only-refresh/"
+    "2026-07-07-005538/embedding_ingest_scale.json"
 )
 EMBEDDING_SCALE_CHART_OUTPUT = "perf-embedding-ingest-scale-ax-vs-mlx-lm.svg"
 EMBEDDINGGEMMA_SCALE_CHART_OUTPUT = (
@@ -2632,7 +2632,8 @@ def main() -> int:
             "chunk/batch shapes."
         ),
         source_label=(
-            "Sources: 2026-07-02 EmbeddingGemma paired reference + AX-only refresh"
+            "Sources: 2026-07-02 EmbeddingGemma paired reference + "
+            "2026-07-07 AX-only refresh"
         ),
     )
     if not write_chart(
