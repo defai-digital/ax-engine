@@ -1375,7 +1375,7 @@ fn layer_forward_dense_embed(
     hidden: &MlxArray, // [batch, seq, hidden]
     layer_idx: usize,
     pending_ffn: Option<&MlxArray>,
-    mask: Option<&MlxArray>,
+    target_positions_for_ffn: Option<&[usize]>,
 ) -> (MlxArray, MlxArray) {
     let (
         head_dim,
@@ -1411,6 +1411,13 @@ fn layer_forward_dense_embed(
     if let Some(started) = attn_norm_started {
         embed_profile_eval_elapsed(profile, EmbedProfileStage::AttnNorm, started, &[&normed]);
     }
+
+    let common_last_target_position = target_positions_for_ffn.and_then(|positions| {
+        positions
+            .first()
+            .copied()
+            .filter(|&first| first + 1 == seq && positions.iter().all(|&p| p == first))
+    });
 
     // 2-7. QKV projections, reshape, QK-norm, transpose, RoPE.
     let qkv_proj_started = profile.then(Instant::now);
@@ -1519,16 +1526,26 @@ fn layer_forward_dense_embed(
         );
     }
 
-    // 8. SDPA — k_rope/v used directly, no KV-cache writes. Dense embedding
-    // is bidirectional, so the no-mask case must use MLX's unmasked mode
-    // rather than `full_precision_attention`'s generation-default causal mode.
-    let sdpa_started = profile.then(Instant::now);
-    let attn_sdpa = if let Some(mask) = mask {
-        let mask_opt = Some(mask.clone());
-        full_precision_attention(&q_rope, &k_rope, &v, cfg.query_scale, seq, &mask_opt)
+    let q_rope_for_attention;
+    let (q_rope_ref, attn_seq) = if let Some(target_position) = common_last_target_position {
+        q_rope_for_attention = select_attention_common_target_bhsd(&q_rope, target_position);
+        (&q_rope_for_attention, 1_usize)
     } else {
-        bidirectional_full_precision_attention(&q_rope, &k_rope, &v, cfg.query_scale)
+        (&q_rope, seq)
     };
+
+    // 8. SDPA — k_rope/v used directly, no KV-cache writes. Qwen3-Embedding is
+    // a causal-LM embedder with last-token pooling, matching the mlx-lm oracle.
+    let mask_opt: Option<MlxArray> = None;
+    let sdpa_started = profile.then(Instant::now);
+    let attn_sdpa = full_precision_attention(
+        q_rope_ref,
+        &k_rope,
+        &v,
+        cfg.query_scale,
+        attn_seq,
+        &mask_opt,
+    );
     if let Some(started) = sdpa_started {
         embed_profile_eval_elapsed(profile, EmbedProfileStage::Sdpa, started, &[&attn_sdpa]);
     }
@@ -1538,7 +1555,11 @@ fn layer_forward_dense_embed(
     let attn_out = transpose(&attn_sdpa, &[0, 2, 1, 3], None);
     let attn_flat = reshape(
         &attn_out,
-        &[batch as i32, seq as i32, (cfg.n_heads * head_dim) as i32],
+        &[
+            batch as i32,
+            attn_seq as i32,
+            (cfg.n_heads * head_dim) as i32,
+        ],
         None,
     );
     let attn_proj = attention_output_projection(
@@ -1554,8 +1575,22 @@ fn layer_forward_dense_embed(
     );
     // 14-17. Fuse residual-add and pre-FFN RMSNorm into one C++ call
     // (`add_rms_norm_pair`), saving one MLX graph dispatch per layer.
-    let (hidden, normed2) =
-        mlx_sys::add_rms_norm_pair(&hidden, &attn_proj, &w.ffn_norm, cfg.rms_norm_eps, None);
+    let hidden_for_residual;
+    let hidden_residual_ref = if common_last_target_position.is_some()
+        && let Some(positions) = target_positions_for_ffn
+    {
+        hidden_for_residual = select_embedding_targets(&hidden, positions);
+        &hidden_for_residual
+    } else {
+        &hidden
+    };
+    let (hidden, normed2) = mlx_sys::add_rms_norm_pair(
+        hidden_residual_ref,
+        &attn_proj,
+        &w.ffn_norm,
+        cfg.rms_norm_eps,
+        None,
+    );
     if let Some(started) = attn_out_proj_started {
         embed_profile_eval_elapsed(
             profile,
@@ -1568,6 +1603,21 @@ fn layer_forward_dense_embed(
     // as zero-cost so the profile snapshot ABI stays stable.
     if let Some(started) = profile.then(Instant::now) {
         embed_profile_eval_elapsed(profile, EmbedProfileStage::FfnNorm, started, &[&normed2]);
+    }
+    if let Some(positions) = target_positions_for_ffn {
+        let (hidden, normed2) = if common_last_target_position.is_some() {
+            (hidden, normed2)
+        } else {
+            (
+                select_embedding_targets(&hidden, positions),
+                select_embedding_targets(&normed2, positions),
+            )
+        };
+        let ffn_out = ffn_swiglu(cfg, w, &normed2, None, layer_idx);
+        if let Some(started) = profile.then(Instant::now) {
+            embed_profile_eval_elapsed(profile, EmbedProfileStage::Ffn, started, &[&ffn_out]);
+        }
+        return (hidden, ffn_out);
     }
     let ffn_out = ffn_swiglu(cfg, w, &normed2, None, layer_idx);
     // Defer the FFN residual add: the caller (layer loop) will fuse it with
@@ -2288,6 +2338,55 @@ fn build_embedding_batch_hidden(
     hidden
 }
 
+fn select_embedding_targets(hidden: &MlxArray, positions: &[usize]) -> MlxArray {
+    let shape = hidden.shape();
+    let batch_size = shape[0];
+    let hidden_size = shape[2] as usize;
+    let common_pos = positions
+        .first()
+        .copied()
+        .filter(|&first| positions.iter().all(|&p| p == first));
+    if let Some(pos) = common_pos {
+        let pos_i32 = pos as i32;
+        let sliced = slice(
+            hidden,
+            &[0, pos_i32, 0],
+            &[batch_size, pos_i32 + 1, hidden_size as i32],
+            &[1, 1, 1],
+            None,
+        );
+        return sliced;
+    }
+
+    let pos_u32: Vec<u32> = positions.iter().map(|&p| p as u32).collect();
+    let idx_b11 = MlxArray::from_raw_data(
+        pos_u32.as_ptr() as *const u8,
+        pos_u32.len() * std::mem::size_of::<u32>(),
+        &[batch_size, 1_i32, 1_i32],
+        MlxDtype::Uint32,
+    );
+    let idx_broadcast = broadcast_to(&idx_b11, &[batch_size, 1_i32, hidden_size as i32], None);
+    take_along_axis(hidden, &idx_broadcast, 1, None)
+}
+
+fn select_attention_common_target_bhsd(x: &MlxArray, position: usize) -> MlxArray {
+    let shape = x.shape();
+    let position = position as i32;
+    slice(
+        x,
+        &[0, 0, position, 0],
+        &[shape[0], shape[1], position + 1, shape[3]],
+        &[1, 1, 1, 1],
+        None,
+    )
+}
+
+fn pool_embedding_targets(hidden: &MlxArray, positions: &[usize]) -> MlxArray {
+    let selected = select_embedding_targets(hidden, positions);
+    let shape = selected.shape();
+    reshape(&selected, &[shape[0], shape[2]], None)
+}
+
 /// Body of `forward_for_embedding_batch` from the pre-embedded `[B, max_seq, H]`
 /// hidden state to the final norm output. Split out so the same logic can
 /// be wrapped in an `mlx_compile` closure that fuses the per-layer
@@ -2298,64 +2397,53 @@ fn forward_for_embedding_batch_body(
     mut hidden: MlxArray,
     target_positions: Option<&[usize]>,
 ) -> MlxArray {
-    let batch = hidden.shape()[0];
+    let seq = hidden.shape()[1] as usize;
     // AX_MLX_EMBED_PROFILE: guard on seq>1 so the closure-builder trace (which
     // invokes this body once at build time) and decode paths stay unprofiled.
     // Under profiling the runner forces the imperative path, so the per-stage
     // eval barriers below only fire on a real imperative forward.
-    let profile = embed_profile_enabled() && hidden.shape()[1] > 1;
+    let profile = embed_profile_enabled() && seq > 1;
     let mut pending_ffn: Option<MlxArray> = None;
+    let final_layer_idx = weights.layers.len().saturating_sub(1);
+    let mut pooled_for_final_ffn = false;
     for (li, layer_w) in weights.layers.iter().enumerate() {
-        let (h, ffn_out) =
-            layer_forward_dense_embed(cfg, layer_w, &hidden, li, pending_ffn.as_ref(), None);
+        let target_positions_for_ffn = if li == final_layer_idx && target_positions.is_some() {
+            pooled_for_final_ffn = true;
+            target_positions
+        } else {
+            None
+        };
+        let (h, ffn_out) = layer_forward_dense_embed(
+            cfg,
+            layer_w,
+            &hidden,
+            li,
+            pending_ffn.as_ref(),
+            target_positions_for_ffn,
+        );
         hidden = h;
         pending_ffn = Some(ffn_out);
     }
-    // Final FFN residual: no next layer to fuse with, so add directly.
-    if let Some(ffn_out) = &pending_ffn {
-        hidden = add(&hidden, ffn_out, None);
-    }
     let final_started = profile.then(Instant::now);
-    // Extract per-sequence positions before the final norm when the caller only
-    // needs one token per sequence (Last/Cls pooling). This avoids norming the
-    // full padded [B, max_seq, H] tensor.
+    let target_positions = if pooled_for_final_ffn {
+        None
+    } else {
+        target_positions
+    };
     let to_norm = match target_positions {
         Some(positions) => {
-            let batch_size = batch;
-            let hidden_size = hidden.shape()[2] as usize;
-            // Fast path: when all sequences extract at the same position
-            // (e.g. Cls pooling at index 0, or Last pooling on equal-length
-            // batches) we can replace the gather with a zero-copy strided
-            // slice — cheaper than take_along_axis(broadcast(...)).
-            let common_pos = positions
-                .first()
-                .copied()
-                .filter(|&first| positions.iter().all(|&p| p == first));
-            if let Some(pos) = common_pos {
-                let pos_i32 = pos as i32;
-                let sliced = slice(
-                    &hidden,
-                    &[0, pos_i32, 0],
-                    &[batch_size, pos_i32 + 1, hidden_size as i32],
-                    &[1, 1, 1],
-                    None,
-                );
-                reshape(&sliced, &[batch_size, hidden_size as i32], None) // [B, H]
+            let pooled = pool_embedding_targets(&hidden, positions);
+            if let Some(ffn_out) = &pending_ffn {
+                let pooled_ffn = pool_embedding_targets(ffn_out, positions);
+                add(&pooled, &pooled_ffn, None)
             } else {
-                let pos_u32: Vec<u32> = positions.iter().map(|&p| p as u32).collect();
-                let idx_b11 = MlxArray::from_raw_data(
-                    pos_u32.as_ptr() as *const u8,
-                    pos_u32.len() * std::mem::size_of::<u32>(),
-                    &[batch_size, 1_i32, 1_i32],
-                    MlxDtype::Uint32,
-                );
-                let idx_broadcast =
-                    broadcast_to(&idx_b11, &[batch_size, 1_i32, hidden_size as i32], None);
-                let gathered = take_along_axis(&hidden, &idx_broadcast, 1, None); // [B, 1, H]
-                reshape(&gathered, &[batch_size, hidden_size as i32], None) // [B, H]
+                pooled
             }
         }
-        None => hidden,
+        None => match pending_ffn {
+            Some(ffn_out) => add(&hidden, &ffn_out, None),
+            None => hidden,
+        },
     };
     let out = rms_norm(&to_norm, Some(&weights.final_norm), cfg.rms_norm_eps, None);
     if let Some(started) = final_started {
@@ -3453,7 +3541,7 @@ mod tests {
     }
 
     #[test]
-    fn embed_bidirectional_attention_uses_unmasked_sdpa() {
+    fn qwen_embedding_attention_keeps_causal_lm_semantics() {
         let q_data = [0.0_f32, 0.0];
         let k_data = [0.0_f32, 0.0];
         let v_data = [1.0_f32, 3.0];
@@ -3475,12 +3563,10 @@ mod tests {
             &[1, 1, 2, 1],
             MlxDtype::Float32,
         );
-        let bidirectional = bidirectional_full_precision_attention(&q, &k, &v, 1.0);
         let causal_mask = None;
         let causal = full_precision_attention(&q, &k, &v, 1.0, 2, &causal_mask);
-        eval(&[&bidirectional, &causal]);
+        eval(&[&causal]);
 
-        assert_close(bidirectional.data_f32(), &[2.0, 2.0], 1.0e-6);
         assert_close(causal.data_f32(), &[1.0, 2.0], 1.0e-6);
     }
 

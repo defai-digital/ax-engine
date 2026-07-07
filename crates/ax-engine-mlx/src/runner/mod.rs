@@ -3649,6 +3649,10 @@ pub fn compile_cache_counters() -> CompileCacheCounters {
     }
 }
 
+fn default_mlx_cache_limit(wired_cap: usize) -> usize {
+    wired_cap.saturating_add(wired_cap / 2)
+}
+
 impl fmt::Debug for MlxRunner {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("MlxRunner")
@@ -3894,9 +3898,9 @@ impl MlxRunner {
         // dense models but is badly wrong for high-allocation MoE decode:
         // disabling it regressed Qwen3.6-35B-A3B decode ~40% (169 -> 100 tok/s),
         // because each expert's transient buffers were re-allocated from IOGPU
-        // every step instead of recycled. Default the cache to the wired working
-        // set so recycling stays on while total memory remains bounded by the
-        // memory limit below. Override via AX_MLX_CACHE_LIMIT (bytes); set 0 to
+        // every step instead of recycled. Default the cache to MLX's own 1.5x
+        // working-set policy while keeping the active evaluation memory limit
+        // conservative below. Override via AX_MLX_CACHE_LIMIT (bytes); set 0 to
         // disable explicitly.
         match std::env::var("AX_MLX_CACHE_LIMIT")
             .ok()
@@ -3908,7 +3912,7 @@ impl MlxRunner {
             // Only set an explicit bound when the working set is known; otherwise
             // leave MLX's own default in place rather than risk disabling it.
             None if wired_cap > 0 => {
-                set_cache_limit(wired_cap);
+                set_cache_limit(default_mlx_cache_limit(wired_cap));
             }
             None => {}
         }
@@ -11486,6 +11490,13 @@ mod tests {
             tool_call_mode: false,
             structured_output_mode: false,
         }
+    }
+
+    #[test]
+    fn default_mlx_cache_limit_matches_mlx_working_set_policy() {
+        assert_eq!(default_mlx_cache_limit(0), 0);
+        assert_eq!(default_mlx_cache_limit(1024), 1536);
+        assert_eq!(default_mlx_cache_limit(usize::MAX), usize::MAX);
     }
 
     // A prefix-cache hit may only hand a request the producer's greedy prefill

@@ -369,22 +369,6 @@ pub(crate) fn full_precision_attention(
     scaled_dot_product_attention_with_mask(q_rope, cached_k, cached_v, query_scale, mask, None)
 }
 
-pub(crate) fn bidirectional_full_precision_attention(
-    q_rope: &MlxArray,
-    cached_k: &MlxArray,
-    cached_v: &MlxArray,
-    query_scale: f32,
-) -> MlxArray {
-    scaled_dot_product_attention_with_mask(
-        q_rope,
-        cached_k,
-        cached_v,
-        query_scale,
-        ScaledDotProductAttentionMask::None,
-        None,
-    )
-}
-
 /// Attention with per-head learned sinks (GPT-OSS).
 ///
 /// Computes standard scaled dot-product attention but appends a virtual "sink"

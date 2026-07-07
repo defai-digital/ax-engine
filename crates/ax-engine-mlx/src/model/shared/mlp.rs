@@ -1269,7 +1269,11 @@ pub(crate) fn ffn_swiglu(
     layer_idx: usize,
 ) -> MlxArray {
     let seq = x.shape().get(1).copied().unwrap_or(1);
-    let profile_decode = seq == 1 && decode_profile_enabled();
+    let leading_elements = x.shape()[..x.shape().len().saturating_sub(1)]
+        .iter()
+        .try_fold(1_i64, |acc, &dim| acc.checked_mul(i64::from(dim)))
+        .unwrap_or(0);
+    let profile_decode = seq == 1 && leading_elements == 1 && decode_profile_enabled();
     let profile_prefill = seq > 1 && prefill_profile_enabled();
     // Insert the rotation per `AX_MLX_EXPERIMENTAL_WEIGHT_ROTATION` mode:
     //   Enable mode (P1):  R(R(x)) ≈ x (identity sandwich)
@@ -1295,6 +1299,7 @@ pub(crate) fn ffn_swiglu(
     // single graph, collapsing ~6 dispatches per layer into one. Every MLX
     // array the graph depends on is threaded through as an explicit input.
     if seq == 1
+        && leading_elements == 1
         && !cfg.uses_geglu
         && fastpath::dense_ffn_compile_enabled()
         && let Some(packed) = &w.gate_up_packed
