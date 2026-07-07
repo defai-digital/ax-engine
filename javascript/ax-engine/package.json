@@ -1,6 +1,6 @@
 {
   "name": "@ax-engine/sdk",
-  "version": "6.7.1",
+  "version": "6.8.0",
   "description": "JavaScript / TypeScript SDK for AX Engine v6 — local HTTP inference server",
   "type": "module",
   "main": "./index.js",
