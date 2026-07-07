@@ -615,6 +615,17 @@ def _command_output_lines(cmd: list[str]) -> list[str]:
     return [line.strip() for line in output.splitlines() if line.strip()]
 
 
+def _command_output(cmd: list[str]) -> str | None:
+    lines = _command_output_lines(cmd)
+    if not lines:
+        return None
+    return "\n".join(lines)
+
+
+def _version_lines(cmd: list[str], *, limit: int = 20) -> list[str]:
+    return _command_output_lines(cmd)[:limit]
+
+
 def collect_performance_condition_metadata() -> dict[str, Any]:
     metadata: dict[str, Any] = {}
     try:
@@ -652,6 +663,49 @@ def collect_performance_condition_metadata() -> dict[str, Any]:
     return metadata
 
 
+def one_minute_load_average(metadata: dict[str, Any]) -> float | None:
+    load_average = metadata.get("load_average")
+    if not isinstance(load_average, dict):
+        return None
+    value = load_average.get("one_minute")
+    if not isinstance(value, int | float):
+        return None
+    return float(value)
+
+
+def wait_for_performance_load(
+    *,
+    max_one_minute: float,
+    timeout_seconds: float,
+    poll_interval_seconds: float,
+) -> dict[str, Any]:
+    deadline = time.monotonic() + timeout_seconds
+    while True:
+        metadata = collect_performance_condition_metadata()
+        current = one_minute_load_average(metadata)
+        if current is None:
+            raise RuntimeError(
+                "load_average.one_minute is unavailable; cannot enforce "
+                "--max-load-average"
+            )
+        if current <= max_one_minute:
+            return metadata
+        now = time.monotonic()
+        if now >= deadline:
+            raise RuntimeError(
+                f"one-minute load average {current:.3f} exceeds "
+                f"--max-load-average {max_one_minute:.3f} after waiting "
+                f"{timeout_seconds:.1f}s"
+            )
+        sleep_seconds = min(poll_interval_seconds, max(0.0, deadline - now))
+        print(
+            f"  [load-gate] one-minute load {current:.3f} exceeds "
+            f"{max_one_minute:.3f}; sleeping {sleep_seconds:.1f}s",
+            file=sys.stderr,
+        )
+        time.sleep(sleep_seconds)
+
+
 def collect_host_metadata(
     performance_conditions: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -670,6 +724,7 @@ def collect_host_metadata(
         ).strip()
     except Exception:
         pass
+    os_build = _command_output(["sw_vers", "-buildVersion"])
 
     metadata: dict[str, Any] = {
         "chip": chip,
@@ -677,6 +732,29 @@ def collect_host_metadata(
         "os_version": os_version,
         "platform": sys.platform,
     }
+    if os_build:
+        metadata["os_build"] = os_build
+    toolchain: dict[str, Any] = {}
+    sdk_version = _command_output(["xcrun", "--sdk", "macosx", "--show-sdk-version"])
+    if sdk_version:
+        toolchain["macos_sdk_version"] = sdk_version
+    xcode_version = _version_lines(["xcodebuild", "-version"], limit=5)
+    if xcode_version:
+        toolchain["xcodebuild_version"] = xcode_version
+    rustc_version = _version_lines(["rustc", "-Vv"], limit=20)
+    if rustc_version:
+        toolchain["rustc_version"] = rustc_version
+    cargo_version = _command_output(["cargo", "-V"])
+    if cargo_version:
+        toolchain["cargo_version"] = cargo_version
+    mlx_version = _command_output(["brew", "list", "--versions", "mlx"])
+    if mlx_version:
+        toolchain["homebrew_mlx"] = mlx_version
+    mlxc_version = _command_output(["brew", "list", "--versions", "mlx-c"])
+    if mlxc_version:
+        toolchain["homebrew_mlx_c"] = mlxc_version
+    if toolchain:
+        metadata["toolchain"] = toolchain
     if performance_conditions is None:
         performance_conditions = collect_performance_condition_metadata()
     if performance_conditions:
@@ -713,13 +791,21 @@ def collect_build_metadata() -> dict[str, Any]:
     except Exception:
         pass
 
-    return {
+    linked_libraries = [
+        line
+        for line in _command_output_lines(["otool", "-L", str(AX_ENGINE_SERVER)])
+        if any(token in line for token in ("libmlx", "libmlxc", "Metal.framework"))
+    ]
+    metadata: dict[str, Any] = {
         "commit": commit,
         "build_profile": "release",
         "server_binary": str(AX_ENGINE_SERVER),
         "git_tracked_dirty": bool(tracked_status),
         "git_tracked_status": tracked_status[:50],
     }
+    if linked_libraries:
+        metadata["linked_libraries"] = linked_libraries
+    return metadata
 
 
 def build_incomplete_output_marker(
@@ -4797,6 +4883,30 @@ def main() -> None:
     parser.add_argument("--warmup-repetitions", type=int, default=1)
     parser.add_argument("--cooldown", type=float, default=DEFAULT_COOLDOWN)
     parser.add_argument(
+        "--max-load-average",
+        type=float,
+        help=(
+            "Require the one-minute load average to be at or below this value "
+            "before starting benchmark timing. Use this for publication runs "
+            "so foreground app load does not silently become README evidence."
+        ),
+    )
+    parser.add_argument(
+        "--load-average-wait-timeout",
+        type=float,
+        default=0.0,
+        help=(
+            "Seconds to wait for --max-load-average before failing. The default "
+            "samples once and fails fast."
+        ),
+    )
+    parser.add_argument(
+        "--load-average-poll-interval",
+        type=float,
+        default=30.0,
+        help="Seconds between load checks while waiting for --max-load-average.",
+    )
+    parser.add_argument(
         "--inter-case-cooldown",
         type=float,
         default=0.0,
@@ -5308,6 +5418,12 @@ def main() -> None:
                 "prefill evidence is not mixed with compression experiments"
             )
         args.ax_direct = True
+    if args.max_load_average is not None and args.max_load_average < 0.0:
+        parser.error("--max-load-average must be non-negative")
+    if args.load_average_wait_timeout < 0.0:
+        parser.error("--load-average-wait-timeout must be non-negative")
+    if args.load_average_poll_interval <= 0.0:
+        parser.error("--load-average-poll-interval must be positive")
 
     try:
         if args.gateddelta_prefill_profile:
@@ -5346,12 +5462,19 @@ def main() -> None:
         ),
         file=sys.stderr,
     )
+    if args.max_load_average is None:
+        performance_conditions_start = collect_performance_condition_metadata()
+    else:
+        performance_conditions_start = wait_for_performance_load(
+            max_one_minute=args.max_load_average,
+            timeout_seconds=args.load_average_wait_timeout,
+            poll_interval_seconds=args.load_average_poll_interval,
+        )
     benchmark_started = time.time()
     benchmark_started_at = time.strftime(
         "%Y-%m-%dT%H:%M:%S%z",
         time.localtime(benchmark_started),
     )
-    performance_conditions_start = collect_performance_condition_metadata()
     write_incomplete_output_marker(
         args=args,
         started_at=benchmark_started_at,

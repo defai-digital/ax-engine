@@ -267,6 +267,13 @@ class ArtifactSource:
 
 
 @dataclass(frozen=True)
+class ArtifactMarkerEntry:
+    kind: str
+    artifact_dir: Path
+    include_prompt_tokens: frozenset[int] | None = None
+
+
+@dataclass(frozen=True)
 class ReadmeCheckResult:
     metric_checks: list[str]
     narrative_claim_checks: list[str]
@@ -281,6 +288,7 @@ class ConditionMetadataGap:
 
 README_METRIC_TABLES = frozenset({"decode", "prefill", "ttft"})
 AX_ENGINE_ROWS = frozenset({"ax_engine_mlx", "ax_engine_mlx_ngram_accel"})
+AX_DIRECT_ROW = frozenset({"ax_engine_mlx"})
 
 
 def token_sha256(tokens: list[int]) -> str:
@@ -424,14 +432,51 @@ def parse_readme_metrics(readme_path: Path) -> list[ReadmeMetric]:
     ]
 
 
-def default_artifact_sources(readme_path: Path) -> list[ArtifactSource]:
+def readme_performance_artifact_marker_entries(
+    readme_path: Path,
+) -> list[ArtifactMarkerEntry]:
     text = readme_path.read_text()
     sources_match = re.search(
         r"<!--\s*readme-performance-artifacts:\s*(?P<sources>.*?)\s*-->",
         text,
         flags=re.DOTALL,
     )
-    if sources_match:
+    if sources_match is None:
+        return []
+    entries: list[ArtifactMarkerEntry] = []
+    source_parts = [
+        part.strip() for part in sources_match.group("sources").split(";") if part.strip()
+    ]
+    for part in source_parts:
+        if "=" not in part:
+            raise ArtifactCheckError(
+                f"invalid readme-performance-artifacts entry: {part.strip()!r}"
+            )
+        raw_kind, path_value = [value.strip() for value in part.split("=", 1)]
+        kind_match = re.fullmatch(
+            r"(?P<kind>[a-z0-9-]+)(?:@p(?P<prompt>\d+))?",
+            raw_kind,
+        )
+        if not kind_match:
+            raise ArtifactCheckError(
+                f"invalid readme-performance-artifacts source kind: {raw_kind!r}"
+            )
+        include_prompt_tokens = None
+        if kind_match.group("prompt") is not None:
+            include_prompt_tokens = frozenset({int(kind_match.group("prompt"))})
+        entries.append(
+            ArtifactMarkerEntry(
+                kind=kind_match.group("kind"),
+                artifact_dir=(readme_path.parent / path_value).resolve(),
+                include_prompt_tokens=include_prompt_tokens,
+            )
+        )
+    return entries
+
+
+def default_artifact_sources(readme_path: Path) -> list[ArtifactSource]:
+    entries = readme_performance_artifact_marker_entries(readme_path)
+    if entries:
         sources: list[ArtifactSource] = []
         source_kinds = {
             "base": (None, None),
@@ -441,56 +486,34 @@ def default_artifact_sources(readme_path: Path) -> list[ArtifactSource]:
             "ax-overlay": (AX_ENGINE_ROWS, None),
             "ax-decode-overlay": (AX_ENGINE_ROWS, frozenset({"decode"})),
         }
-        source_parts = [
-            part.strip()
-            for part in sources_match.group("sources").split(";")
-            if part.strip()
-        ]
-        for part in source_parts:
-            if not part.strip():
-                continue
-            if "=" not in part:
-                raise ArtifactCheckError(
-                    f"invalid readme-performance-artifacts entry: {part.strip()!r}"
-                )
-            raw_kind, path_value = [value.strip() for value in part.split("=", 1)]
-            kind_match = re.fullmatch(
-                r"(?P<kind>[a-z0-9-]+)(?:@p(?P<prompt>\d+))?",
-                raw_kind,
-            )
-            if not kind_match:
-                raise ArtifactCheckError(
-                    f"invalid readme-performance-artifacts source kind: {raw_kind!r}"
-                )
-            kind = kind_match.group("kind")
+        for entry in entries:
+            kind = entry.kind
             if kind not in source_kinds:
                 raise ArtifactCheckError(
                     f"unknown readme-performance-artifacts source kind: {kind!r}"
                 )
-            if kind == "base" and len(source_parts) > 1:
+            if kind == "base" and len(entries) > 1:
                 raise ArtifactCheckError(
                     "readme-performance-artifacts base= is only allowed as a "
                     "single legacy source; composite markers must use scoped "
                     "reference=, ax-base=, ax-overlay=, or ax-decode-overlay= sources"
                 )
-            include_prompt_tokens = None
-            if kind_match.group("prompt") is not None:
-                include_prompt_tokens = frozenset({int(kind_match.group("prompt"))})
             include_engines, include_tables = source_kinds[kind]
             sources.append(
                 ArtifactSource(
-                    artifact_dir=(readme_path.parent / path_value).resolve(),
+                    artifact_dir=entry.artifact_dir,
                     include_engines=include_engines,
                     include_tables=include_tables,
-                    include_prompt_tokens=include_prompt_tokens,
+                    include_prompt_tokens=entry.include_prompt_tokens,
                 )
             )
         if not sources:
             raise ArtifactCheckError(
                 "readme-performance-artifacts comment has no sources"
-            )
+        )
         return sources
 
+    text = readme_path.read_text()
     match = re.search(
         r"`(benchmarks/results/(?:inference/)?mlx-inference/[^`]+/)`",
         text,
@@ -627,8 +650,6 @@ def validate_build_provenance(*, artifact_path: Path, artifact: dict[str, Any]) 
         if build.get("git_tracked_dirty_accepted") is True:
             return
         status = build.get("git_tracked_status")
-        if tracked_dirty_is_benchmark_doc_only(status):
-            return
         suffix = ""
         if isinstance(status, list) and status:
             suffix = f"; tracked changes include: {', '.join(map(str, status[:5]))}"
@@ -2486,6 +2507,96 @@ def find_artifact_row_for_metric(
     )
 
 
+def artifact_source_for_marker_entry(entry: ArtifactMarkerEntry) -> ArtifactSource:
+    include_tables = frozenset({"decode"}) if entry.kind == "ax-decode-overlay" else None
+    return ArtifactSource(
+        artifact_dir=entry.artifact_dir,
+        include_engines=AX_DIRECT_ROW,
+        include_tables=include_tables,
+        include_prompt_tokens=entry.include_prompt_tokens,
+    )
+
+
+def metric_is_regressed(table: str, current: float, previous: float) -> bool:
+    if table == "ttft":
+        return current > previous + 1.0e-9
+    return current + 1.0e-9 < previous
+
+
+def metric_improvement_ratio(table: str, current: float, previous: float) -> float:
+    if previous == 0:
+        return 0.0
+    if table == "ttft":
+        return (previous - current) / previous
+    return (current - previous) / previous
+
+
+def assert_latest_ax_overlay_not_below_prior_record(
+    *,
+    repo_root: Path,
+    readme_path: Path,
+    needed_labels: frozenset[tuple[str, str]],
+) -> None:
+    entries = readme_performance_artifact_marker_entries(readme_path)
+    ax_entries = [
+        entry
+        for entry in entries
+        if entry.kind in {"ax", "ax-base", "ax-overlay", "ax-decode-overlay"}
+    ]
+    if len(ax_entries) < 2:
+        return
+    latest = ax_entries[-1]
+    prior_entries = ax_entries[:-1]
+    prior_rows: dict[tuple[str, str, int, int, str, str], ArtifactRow] = {}
+    for entry in prior_entries:
+        rows = collect_artifact_rows_from_sources(
+            repo_root,
+            [artifact_source_for_marker_entry(entry)],
+            needed_labels=needed_labels,
+        )
+        for key, row in rows.items():
+            existing = prior_rows.get(key)
+            if existing is None:
+                prior_rows[key] = row
+                continue
+            candidate = metric_median(row.row, key[-1])
+            previous = metric_median(existing.row, key[-1])
+            if metric_is_regressed(key[-1], previous, candidate):
+                prior_rows[key] = row
+
+    current_rows = collect_artifact_rows_from_sources(
+        repo_root,
+        [artifact_source_for_marker_entry(latest)],
+        needed_labels=needed_labels,
+    )
+    regressions: list[str] = []
+    for key, current_row in sorted(current_rows.items()):
+        previous_row = prior_rows.get(key)
+        if previous_row is None:
+            continue
+        table = key[-1]
+        current = metric_median(current_row.row, table)
+        previous = metric_median(previous_row.row, table)
+        if not metric_is_regressed(table, current, previous):
+            continue
+        model, quantization, prompt_tokens, generation_tokens, _engine, _table = key
+        delta = metric_improvement_ratio(table, current, previous) * 100.0
+        unit = "ms" if table == "ttft" else "tok/s"
+        regressions.append(
+            f"{table} {model} {quantization} prompt={prompt_tokens} "
+            f"gen={generation_tokens}: current={current:.3f} {unit} "
+            f"previous={previous:.3f} {unit} ({delta:.2f}%) "
+            f"current={current_row.artifact_path} previous={previous_row.artifact_path}"
+        )
+    if regressions:
+        sample = "; ".join(regressions[:5])
+        extra = "" if len(regressions) <= 5 else f"; and {len(regressions) - 5} more"
+        raise ArtifactCheckError(
+            "latest AX overlay regresses prior README AX high-water records: "
+            f"{sample}{extra}"
+        )
+
+
 def check_readme_performance(
     *,
     repo_root: Path,
@@ -2539,6 +2650,12 @@ def check_readme_performance_summary(
         artifact_sources,
         needed_labels=needed_labels,
     )
+    if artifact_dir is None:
+        assert_latest_ax_overlay_not_below_prior_record(
+            repo_root=repo_root.resolve(),
+            readme_path=resolved_readme,
+            needed_labels=needed_labels,
+        )
     narrative_claim_checks = [
         *validate_readme_hot_prefix_claims(
             readme_path=resolved_readme,

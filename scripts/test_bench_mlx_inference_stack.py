@@ -132,6 +132,89 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         self.assertTrue(metadata["performance_warning_recorded"])
         self.assertFalse(metadata["cpu_power_status_recorded"])
 
+    def test_one_minute_load_average_reads_numeric_value(self) -> None:
+        self.assertEqual(
+            bench.one_minute_load_average(
+                {"load_average": {"one_minute": 1, "five_minutes": 2.0}}
+            ),
+            1.0,
+        )
+        self.assertIsNone(bench.one_minute_load_average({}))
+        self.assertIsNone(
+            bench.one_minute_load_average({"load_average": {"one_minute": "1.0"}})
+        )
+
+    def test_wait_for_performance_load_returns_when_under_threshold(self) -> None:
+        metadata = {"load_average": {"one_minute": 0.75}}
+
+        with patch.object(
+            bench,
+            "collect_performance_condition_metadata",
+            return_value=metadata,
+        ):
+            self.assertIs(
+                bench.wait_for_performance_load(
+                    max_one_minute=1.0,
+                    timeout_seconds=0.0,
+                    poll_interval_seconds=1.0,
+                ),
+                metadata,
+            )
+
+    def test_wait_for_performance_load_waits_until_threshold(self) -> None:
+        samples = [
+            {"load_average": {"one_minute": 2.0}},
+            {"load_average": {"one_minute": 0.9}},
+        ]
+        monotonic_values = iter([0.0, 0.0, 10.0])
+
+        with (
+            patch.object(
+                bench,
+                "collect_performance_condition_metadata",
+                side_effect=samples,
+            ),
+            patch.object(bench.time, "monotonic", side_effect=monotonic_values),
+            patch.object(bench.time, "sleep") as sleep,
+        ):
+            result = bench.wait_for_performance_load(
+                max_one_minute=1.0,
+                timeout_seconds=10.0,
+                poll_interval_seconds=2.0,
+            )
+
+        self.assertIs(result, samples[1])
+        sleep.assert_called_once_with(2.0)
+
+    def test_wait_for_performance_load_rejects_unavailable_load(self) -> None:
+        with patch.object(
+            bench,
+            "collect_performance_condition_metadata",
+            return_value={},
+        ):
+            with self.assertRaisesRegex(RuntimeError, "load_average.one_minute"):
+                bench.wait_for_performance_load(
+                    max_one_minute=1.0,
+                    timeout_seconds=0.0,
+                    poll_interval_seconds=1.0,
+                )
+
+    def test_wait_for_performance_load_times_out(self) -> None:
+        with (
+            patch.object(
+                bench,
+                "collect_performance_condition_metadata",
+                return_value={"load_average": {"one_minute": 2.0}},
+            ),
+            patch.object(bench.time, "monotonic", side_effect=[0.0, 5.0]),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "exceeds --max-load-average"):
+                bench.wait_for_performance_load(
+                    max_one_minute=1.0,
+                    timeout_seconds=5.0,
+                    poll_interval_seconds=1.0,
+                )
+
     def test_collect_host_metadata_uses_supplied_performance_conditions(self) -> None:
         supplied = {"load_average": {"one_minute": 1.0}}
 

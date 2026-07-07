@@ -781,6 +781,64 @@ class ReadmePerformanceArtifactTests(unittest.TestCase):
 
         self.assertEqual(len(checked), 6)
 
+    def test_ax_overlay_rejects_latest_below_prior_readme_record(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.write_fixture(root)
+            reference_path = root / "benchmarks/results/mlx-inference/local/gemma-4-e2b-it-4bit.json"
+            reference_artifact = json.loads(reference_path.read_text())
+
+            prior_path = (
+                root
+                / "benchmarks/results/mlx-inference/local-prior/gemma-4-e2b-it-4bit.json"
+            )
+            prior_path.parent.mkdir(parents=True)
+            prior_artifact = copy.deepcopy(reference_artifact)
+            prior_direct = next(
+                row
+                for row in prior_artifact["results"]
+                if row["engine"] == "ax_engine_mlx"
+            )
+            prior_direct["prefill_tok_s"] = metric(90.0)
+            prior_direct["decode_tok_s"] = metric(9.0)
+            prior_direct["ttft_ms"] = metric(25.0)
+            prior_artifact["results"] = [prior_direct]
+            prior_path.write_text(json.dumps(prior_artifact, indent=2) + "\n")
+
+            latest_path = (
+                root
+                / "benchmarks/results/mlx-inference/local-latest/gemma-4-e2b-it-4bit.json"
+            )
+            latest_path.parent.mkdir(parents=True)
+            latest_artifact = copy.deepcopy(reference_artifact)
+            latest_artifact["results"] = [
+                row
+                for row in latest_artifact["results"]
+                if row["engine"] == "ax_engine_mlx"
+            ]
+            latest_path.write_text(json.dumps(latest_artifact, indent=2) + "\n")
+
+            readme_path = root / "README.md"
+            readme_path.write_text(
+                readme_path.read_text().replace(
+                    "`benchmarks/results/mlx-inference/local/`",
+                    "<!-- readme-performance-artifacts: "
+                    "reference=benchmarks/results/mlx-inference/local/; "
+                    "ax-base=benchmarks/results/mlx-inference/local-prior/; "
+                    "ax-overlay=benchmarks/results/mlx-inference/local-latest/ -->",
+                )
+            )
+
+            with self.assertRaisesRegex(
+                checker.ArtifactCheckError,
+                "latest AX overlay regresses prior README AX high-water records",
+            ):
+                checker.check_readme_performance(
+                    repo_root=root,
+                    readme_path=readme_path,
+                    expected_metric_count=6,
+                )
+
     def test_phase0_ax_row_rejects_stale_long_prefill_work_contract(self) -> None:
         row = {
             "engine": "ax_engine_mlx",
@@ -1078,20 +1136,24 @@ class ReadmePerformanceArtifactTests(unittest.TestCase):
                 },
             )
 
-    def test_build_provenance_allows_benchmark_doc_only_dirty_artifact(self) -> None:
-        checker.validate_build_provenance(
-            artifact_path=Path("artifact.json"),
-            artifact={
-                "build": {
-                    "git_tracked_dirty": True,
-                    "git_tracked_status": [
-                        " M README.md",
-                        " M docs/assets/perf-gemma4-decode-box-whisker.svg",
-                        " M docs/assets/perf-qwen-prefill-box-whisker.svg",
-                    ],
-                }
-            },
-        )
+    def test_build_provenance_rejects_benchmark_doc_only_dirty_artifact(self) -> None:
+        with self.assertRaisesRegex(
+            checker.ArtifactCheckError,
+            "tracked-dirty source tree",
+        ):
+            checker.validate_build_provenance(
+                artifact_path=Path("artifact.json"),
+                artifact={
+                    "build": {
+                        "git_tracked_dirty": True,
+                        "git_tracked_status": [
+                            " M README.md",
+                            " M docs/assets/perf-gemma4-decode-box-whisker.svg",
+                            " M docs/assets/perf-qwen-prefill-box-whisker.svg",
+                        ],
+                    }
+                },
+            )
 
     def test_build_provenance_allows_dirty_artifact_with_accepted_flag(self) -> None:
         # git_tracked_dirty_accepted=True is an explicit author override for cases
