@@ -1225,7 +1225,10 @@ class WrapperContractTests(unittest.TestCase):
             def encode(self, text: str) -> object:
                 return types.SimpleNamespace(ids=[ord(ch) for ch in text])
 
-        from fastapi.testclient import TestClient
+        try:
+            from fastapi.testclient import TestClient
+        except ModuleNotFoundError as exc:
+            self.skipTest(f"FastAPI is required for OpenAI shim HTTP tests: {exc}")
 
         with patch("tokenizers.Tokenizer.from_file", return_value=FakeTokenizer()):
             app = openai_server.create_app(
