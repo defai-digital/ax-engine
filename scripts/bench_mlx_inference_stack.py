@@ -628,14 +628,16 @@ def _version_lines(cmd: list[str], *, limit: int = 20) -> list[str]:
 
 def collect_top_process_cpu_metadata(*, limit: int = 8) -> list[dict[str, Any]]:
     lines = _command_output_lines(
-        ["ps", "-arcwwwxo", "pid,pcpu,comm"],
+        ["ps", "-arcwwwxo", "pid,stat,pcpu,comm"],
     )
     processes: list[dict[str, Any]] = []
     for line in lines[1:]:
-        parts = line.split(None, 2)
-        if len(parts) != 3:
+        parts = line.split(None, 3)
+        if len(parts) != 4:
             continue
-        pid_raw, cpu_raw, command = parts
+        pid_raw, state, cpu_raw, command = parts
+        if "T" in state or "Z" in state:
+            continue
         try:
             pid = int(pid_raw)
             cpu_percent = float(cpu_raw)
@@ -644,6 +646,7 @@ def collect_top_process_cpu_metadata(*, limit: int = 8) -> list[dict[str, Any]]:
         processes.append(
             {
                 "pid": pid,
+                "state": state,
                 "cpu_percent": round(cpu_percent, 1),
                 "command": command,
             }

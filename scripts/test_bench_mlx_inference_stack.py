@@ -152,11 +152,11 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
             stderr: int | None = None,
         ) -> str:
             del text, stderr
-            self.assertEqual(cmd, ["ps", "-arcwwwxo", "pid,pcpu,comm"])
+            self.assertEqual(cmd, ["ps", "-arcwwwxo", "pid,stat,pcpu,comm"])
             return (
-                "  PID  %CPU COMM\n"
-                "54054  81.9 Code Helper (Renderer)\n"
-                "  615  15.8 WindowServer\n"
+                "  PID STAT  %CPU COMM\n"
+                "54054 R     81.9 Code Helper (Renderer)\n"
+                "  615 Ss    15.8 WindowServer\n"
             )
 
         with patch.object(subprocess, "check_output", side_effect=fake_check_output):
@@ -167,10 +167,48 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
             [
                 {
                     "pid": 54054,
+                    "state": "R",
                     "cpu_percent": 81.9,
                     "command": "Code Helper (Renderer)",
                 },
-                {"pid": 615, "cpu_percent": 15.8, "command": "WindowServer"},
+                {
+                    "pid": 615,
+                    "state": "Ss",
+                    "cpu_percent": 15.8,
+                    "command": "WindowServer",
+                },
+            ],
+        )
+
+    def test_collect_top_process_cpu_metadata_ignores_stopped_processes(
+        self,
+    ) -> None:
+        def fake_check_output(
+            cmd: list[str],
+            *,
+            text: bool,
+            stderr: int | None = None,
+        ) -> str:
+            del cmd, text, stderr
+            return (
+                "  PID STAT  %CPU COMM\n"
+                "54054 T     99.9 Qoder\n"
+                "54055 T+    88.8 Code Helper (Renderer)\n"
+                "  615 Ss    15.8 WindowServer\n"
+            )
+
+        with patch.object(subprocess, "check_output", side_effect=fake_check_output):
+            metadata = bench.collect_top_process_cpu_metadata()
+
+        self.assertEqual(
+            metadata,
+            [
+                {
+                    "pid": 615,
+                    "state": "Ss",
+                    "cpu_percent": 15.8,
+                    "command": "WindowServer",
+                }
             ],
         )
 
