@@ -58,7 +58,11 @@ class ReadmePerformanceChartTests(unittest.TestCase):
     def test_embedding_scale_charts_use_embedding_results_tree(self) -> None:
         self.assertIn(
             "benchmarks/results/embedding/embedding-scale/",
-            charts.EMBEDDING_SCALE_PAIRED_ARTIFACT.as_posix(),
+            charts.EMBEDDING_SCALE_REFERENCE_ARTIFACT.as_posix(),
+        )
+        self.assertIn(
+            "benchmarks/results/embedding/embedding-scale/",
+            charts.EMBEDDING_SCALE_AX_ARTIFACT.as_posix(),
         )
         self.assertIn(
             "benchmarks/results/embedding/embedding-scale/",

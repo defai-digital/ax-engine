@@ -868,6 +868,12 @@ for parity analysis, but the table below is intentionally AX-only.
 Compared with the retained 2026-07-03 Qwen AX high-water mark, this refresh is
 faster on all 18 matching chunk/batch shapes, with gains from +0.5% to +14.1%.
 
+The chart uses the retained same-session `mlx-lm` rows (yellow) plus the
+current AX-only refresh (green); each box summarizes the six chunk/batch shapes
+per model.
+
+<img src="docs/assets/perf-embedding-ingest-scale-ax-vs-mlx-lm.svg" alt="Grouped box-and-whisker plot comparing retained mlx-lm and current AX Engine ingest throughput for Qwen3-Embedding workloads">
+
 | Model | Workload | Batch | Batches/trial | AX tok/s | AX chunks/s | AX p95 batch ms |
 | --- | --- | ---: | ---: | ---: | ---: | ---: |
 | Qwen3-Embedding 0.6B 8-bit | 512 x 256-token chunks | 8 | 64 | 48,940.1 | 191.2 | 40.7 |

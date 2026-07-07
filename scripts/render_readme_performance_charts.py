@@ -245,9 +245,14 @@ MTP_6BIT_ROW_GAP = 32.0
 MTP_6BIT_GROUP_GAP = 18.0
 MTP_6BIT_GROUP_SIZE = 3
 
-EMBEDDING_SCALE_PAIRED_ARTIFACT = Path(
+EMBEDDING_SCALE_REFERENCE_ARTIFACT = Path(
     "benchmarks/results/embedding/embedding-scale/2026-07-03-qwen-paired-refresh/"
     "2026-07-02-215823/embedding_ingest_scale.json"
+)
+EMBEDDING_SCALE_AX_ARTIFACT = Path(
+    "benchmarks/results/embedding/embedding-scale/"
+    "2026-07-06-qwen-causal-final-attn-target-refresh/"
+    "2026-07-06-230340/embedding_ingest_scale.json"
 )
 EMBEDDINGGEMMA_SCALE_REFERENCE_ARTIFACT = Path(
     "benchmarks/results/embedding/embedding-scale/"
@@ -2196,8 +2201,8 @@ def load_embedding_paired_scale_delta_rows(
 
 
 def load_embedding_scale_delta_rows(repo_root: Path) -> list[EmbeddingDeltaRow]:
-    return load_embedding_paired_scale_delta_rows(
-        repo_root, EMBEDDING_SCALE_PAIRED_ARTIFACT
+    return load_embedding_overlay_scale_delta_rows(
+        repo_root, EMBEDDING_SCALE_REFERENCE_ARTIFACT, EMBEDDING_SCALE_AX_ARTIFACT
     )
 
 
@@ -2606,7 +2611,10 @@ def main() -> int:
             "Grouped by model | box=IQR | whiskers=min/max | dots=six "
             "chunk/batch shapes."
         ),
-        source_label="Source: 2026-07-03 Qwen same-session paired refresh",
+        source_label=(
+            "Sources: 2026-07-03 Qwen retained mlx-lm reference + "
+            "2026-07-06 AX-only refresh"
+        ),
     )
     if not write_chart(embedding_scale_output_path, embedding_scale_content, args.check):
         mismatches.append(embedding_scale_output_path)
