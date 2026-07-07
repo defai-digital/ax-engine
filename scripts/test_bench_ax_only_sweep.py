@@ -190,6 +190,7 @@ class BenchAxOnlySweepTests(unittest.TestCase):
                     prompt_tokens="128",
                     generation_tokens=128,
                     repetitions=5,
+                    warmup_repetitions=2,
                     cooldown=15.0,
                     model_args=["--model-dir", str(root / "model")],
                     reuse_ref_root=reference,
@@ -222,6 +223,7 @@ class BenchAxOnlySweepTests(unittest.TestCase):
                     prompt_tokens="128",
                     generation_tokens=128,
                     repetitions=5,
+                    warmup_repetitions=2,
                     cooldown=15.0,
                     model_args=["--model-dir", str(root / "model")],
                     reuse_ref_root=reference,
@@ -235,6 +237,8 @@ class BenchAxOnlySweepTests(unittest.TestCase):
             self.assertEqual(result["status"], "ok")
             self.assertIn("--max-load-average", cmd)
             self.assertIn("1.5", cmd)
+            self.assertIn("--warmup-repetitions", cmd)
+            self.assertIn("2", cmd)
             self.assertIn("--max-top-process-cpu-percent", cmd)
             self.assertIn("50.0", cmd)
             self.assertIn("--load-average-wait-timeout", cmd)
@@ -261,6 +265,7 @@ class BenchAxOnlySweepTests(unittest.TestCase):
                     prompt_tokens="128",
                     generation_tokens=128,
                     repetitions=5,
+                    warmup_repetitions=2,
                     cooldown=15.0,
                     model_args=["--model-dir", str(root / "model")],
                     reuse_ref_root=None,

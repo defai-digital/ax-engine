@@ -333,6 +333,7 @@ def run_row(
     prompt_tokens: str,
     generation_tokens: int,
     repetitions: int,
+    warmup_repetitions: int,
     cooldown: float,
     model_args: list[str],
     reuse_ref_root: Path | None,
@@ -354,6 +355,7 @@ def run_row(
         "--prompt-tokens", prompt_tokens,
         "--generation-tokens", str(generation_tokens),
         "--repetitions", str(repetitions),
+        "--warmup-repetitions", str(warmup_repetitions),
         "--cooldown", str(cooldown),
         "--no-build-ax-engine",
         "--output", str(out_json),
@@ -477,6 +479,7 @@ def build_sweep_doc(
         "prompt_tokens": args.prompt_tokens,
         "generation_tokens": args.generation_tokens,
         "repetitions": args.repetitions,
+        "warmup_repetitions": args.warmup_repetitions,
         "cooldown": args.cooldown,
         "max_load_average": args.max_load_average,
         "max_top_process_cpu_percent": args.max_top_process_cpu_percent,
@@ -633,6 +636,7 @@ def main() -> None:
     parser.add_argument("--prompt-tokens", default="128,512,2048")
     parser.add_argument("--generation-tokens", type=int, default=128)
     parser.add_argument("--repetitions", type=int, default=5)
+    parser.add_argument("--warmup-repetitions", type=int, default=2)
     parser.add_argument("--cooldown", type=float, default=15.0)
     parser.add_argument(
         "--max-load-average",
@@ -695,6 +699,8 @@ def main() -> None:
         and args.load_average_poll_interval <= 0.0
     ):
         parser.error("--load-average-poll-interval must be positive")
+    if args.warmup_repetitions < 0:
+        parser.error("--warmup-repetitions must be non-negative")
 
     try:
         manifest = json.loads(args.manifest.read_text())
@@ -765,6 +771,7 @@ def main() -> None:
                 prompt_tokens=args.prompt_tokens,
                 generation_tokens=args.generation_tokens,
                 repetitions=args.repetitions,
+                warmup_repetitions=args.warmup_repetitions,
                 cooldown=args.cooldown,
                 model_args=model_args,
                 reuse_ref_root=args.reuse_reference_root,
