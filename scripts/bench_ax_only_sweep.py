@@ -28,6 +28,8 @@ from typing import Any
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_MANIFEST = REPO_ROOT / "benchmarks" / "manifests" / "llama_cpp_metal" / "inventory.json"
 DEFAULT_BENCH_SCRIPT = REPO_ROOT / "scripts" / "bench_mlx_inference_stack.py"
+DEFAULT_MAX_LOAD_AVERAGE = 2.0
+DEFAULT_MAX_TOP_PROCESS_CPU_PERCENT = 50.0
 
 
 class AxOnlySweepError(RuntimeError):
@@ -225,6 +227,10 @@ def run_row(
     cooldown: float,
     model_args: list[str],
     reuse_ref_root: Path,
+    max_load_average: float | None = None,
+    max_top_process_cpu_percent: float | None = None,
+    load_average_wait_timeout: float | None = None,
+    load_average_poll_interval: float | None = None,
 ) -> dict[str, Any]:
     slug = row["slug"]
     out_json = output_dir / f"{slug}.json"
@@ -248,6 +254,19 @@ def run_row(
         "--no-build-ax-engine",
         "--output", str(out_json),
     ]
+    if max_load_average is not None:
+        cmd.extend(["--max-load-average", str(max_load_average)])
+    if max_top_process_cpu_percent is not None:
+        cmd.extend(
+            [
+                "--max-top-process-cpu-percent",
+                str(max_top_process_cpu_percent),
+            ]
+        )
+    if load_average_wait_timeout is not None:
+        cmd.extend(["--load-average-wait-timeout", str(load_average_wait_timeout)])
+    if load_average_poll_interval is not None:
+        cmd.extend(["--load-average-poll-interval", str(load_average_poll_interval)])
     log(f"  invoke: {' '.join(cmd)}")
     with log_path.open("w") as fh:
         proc = subprocess.Popen(
@@ -329,6 +348,10 @@ def build_sweep_doc(
         "generation_tokens": args.generation_tokens,
         "repetitions": args.repetitions,
         "cooldown": args.cooldown,
+        "max_load_average": args.max_load_average,
+        "max_top_process_cpu_percent": args.max_top_process_cpu_percent,
+        "load_average_wait_timeout": args.load_average_wait_timeout,
+        "load_average_poll_interval": args.load_average_poll_interval,
         "started_at": time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(started)),
         "elapsed_seconds": round(elapsed, 1),
         "benchmark_window": {
@@ -463,7 +486,65 @@ def main() -> None:
     parser.add_argument("--generation-tokens", type=int, default=128)
     parser.add_argument("--repetitions", type=int, default=5)
     parser.add_argument("--cooldown", type=float, default=15.0)
+    parser.add_argument(
+        "--max-load-average",
+        type=float,
+        default=DEFAULT_MAX_LOAD_AVERAGE,
+        help=(
+            "Forwarded to bench_mlx_inference_stack.py. Requires one-minute "
+            "load average at or below this value before each row and AX repetition. "
+            f"Default: {DEFAULT_MAX_LOAD_AVERAGE:.1f}."
+        ),
+    )
+    parser.add_argument(
+        "--no-load-gate",
+        action="store_true",
+        help="Disable the default publication performance gates for diagnostic sweeps.",
+    )
+    parser.add_argument(
+        "--max-top-process-cpu-percent",
+        type=float,
+        default=DEFAULT_MAX_TOP_PROCESS_CPU_PERCENT,
+        help=(
+            "Forwarded to bench_mlx_inference_stack.py. Requires the highest-CPU "
+            "process to be at or below this value before each row and AX repetition. "
+            f"Default: {DEFAULT_MAX_TOP_PROCESS_CPU_PERCENT:.1f}."
+        ),
+    )
+    parser.add_argument(
+        "--load-average-wait-timeout",
+        type=float,
+        default=None,
+        help="Forwarded to bench_mlx_inference_stack.py when --max-load-average is set.",
+    )
+    parser.add_argument(
+        "--load-average-poll-interval",
+        type=float,
+        default=None,
+        help="Forwarded to bench_mlx_inference_stack.py when --max-load-average is set.",
+    )
     args = parser.parse_args()
+
+    if args.no_load_gate:
+        args.max_load_average = None
+        args.max_top_process_cpu_percent = None
+    if args.max_load_average is not None and args.max_load_average < 0.0:
+        parser.error("--max-load-average must be non-negative")
+    if (
+        args.max_top_process_cpu_percent is not None
+        and args.max_top_process_cpu_percent < 0.0
+    ):
+        parser.error("--max-top-process-cpu-percent must be non-negative")
+    if (
+        args.load_average_wait_timeout is not None
+        and args.load_average_wait_timeout < 0.0
+    ):
+        parser.error("--load-average-wait-timeout must be non-negative")
+    if (
+        args.load_average_poll_interval is not None
+        and args.load_average_poll_interval <= 0.0
+    ):
+        parser.error("--load-average-poll-interval must be positive")
 
     try:
         manifest = json.loads(args.manifest.read_text())
@@ -525,6 +606,10 @@ def main() -> None:
                 cooldown=args.cooldown,
                 model_args=model_args,
                 reuse_ref_root=args.reuse_reference_root,
+                max_load_average=args.max_load_average,
+                max_top_process_cpu_percent=args.max_top_process_cpu_percent,
+                load_average_wait_timeout=args.load_average_wait_timeout,
+                load_average_poll_interval=args.load_average_poll_interval,
             )
             record.update(result)
             log(f"  -> {record.get('status')}")

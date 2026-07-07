@@ -53,6 +53,8 @@ MLX_INFERENCE_STACK_SCHEMA_VERSION = "ax.mlx_inference_stack.v2"
 AX_ONLY_REFRESH_SCHEMA_VERSION = "ax.ax_only_refresh.v1"
 AX_ONLY_REFRESH_REGRESSION_SCHEMA_VERSION = "ax.ax_only_refresh_regression.v1"
 AX_ONLY_REFRESH_DECODE_MIN_RATIO_TO_REFERENCE = 0.97
+README_MAX_PUBLICATION_LOAD_AVERAGE = 2.0
+README_MAX_PUBLICATION_TOP_PROCESS_CPU_PERCENT = 50.0
 PREFIX_REUSE_EQUIVALENCE_SCHEMA_VERSION = "ax.prefix_reuse_equivalence.v1"
 PREFILL_SCALING_SCHEMA_VERSION = "ax.mlx_prefill_scaling.v1"
 CONCURRENT_PREFILL_SCHEMA_VERSION = "ax.mlx_concurrent_prefill.v1"
@@ -702,6 +704,44 @@ def validate_host_performance_conditions(
                 raise ArtifactCheckError(
                     f"{artifact_path} host.performance_conditions.load_average."
                     f"{key} must be numeric"
+                )
+        one_minute = float(load_average["one_minute"])
+        if one_minute > README_MAX_PUBLICATION_LOAD_AVERAGE:
+            raise ArtifactCheckError(
+                f"{artifact_path} host.performance_conditions.load_average."
+                f"one_minute {one_minute:.3f} exceeds publication limit "
+                f"{README_MAX_PUBLICATION_LOAD_AVERAGE:.3f}"
+            )
+    if "top_processes_cpu" in conditions:
+        processes = conditions["top_processes_cpu"]
+        if not isinstance(processes, list):
+            raise ArtifactCheckError(
+                f"{artifact_path} host.performance_conditions.top_processes_cpu "
+                "must be a list"
+            )
+        for process in processes:
+            if not isinstance(process, dict):
+                raise ArtifactCheckError(
+                    f"{artifact_path} host.performance_conditions."
+                    "top_processes_cpu entries must be objects"
+                )
+            cpu_percent = process.get("cpu_percent")
+            if not isinstance(cpu_percent, (int, float)) or isinstance(
+                cpu_percent, bool
+            ):
+                raise ArtifactCheckError(
+                    f"{artifact_path} host.performance_conditions."
+                    "top_processes_cpu.cpu_percent must be numeric"
+                )
+            if cpu_percent > README_MAX_PUBLICATION_TOP_PROCESS_CPU_PERCENT:
+                command = process.get("command")
+                if not isinstance(command, str) or not command:
+                    command = "unknown process"
+                raise ArtifactCheckError(
+                    f"{artifact_path} host.performance_conditions."
+                    f"top_processes_cpu {command} at {cpu_percent:.1f}% exceeds "
+                    "publication limit "
+                    f"{README_MAX_PUBLICATION_TOP_PROCESS_CPU_PERCENT:.1f}%"
                 )
 
 
@@ -2460,8 +2500,30 @@ def collect_artifact_rows_from_sources(
             include_prompt_tokens=source.include_prompt_tokens,
             needed_labels=needed_labels,
         )
-        rows.update(source_rows)
+        for key, row in source_rows.items():
+            merge_artifact_row(rows, key, row)
     return rows
+
+
+def merge_artifact_row(
+    rows: dict[tuple[str, str, int, int, str, str], ArtifactRow],
+    key: tuple[str, str, int, int, str, str],
+    row: ArtifactRow,
+) -> None:
+    existing = rows.get(key)
+    if existing is None:
+        rows[key] = row
+        return
+
+    _model, _quantization, _prompt_tokens, _generation_tokens, engine, table = key
+    if engine not in AX_ENGINE_ROWS:
+        rows[key] = row
+        return
+
+    candidate = metric_median(row.row, table)
+    previous = metric_median(existing.row, table)
+    if not metric_is_regressed(table, candidate, previous):
+        rows[key] = row
 
 
 def find_artifact_row_for_metric(
@@ -2531,7 +2593,7 @@ def metric_improvement_ratio(table: str, current: float, previous: float) -> flo
     return (current - previous) / previous
 
 
-def assert_latest_ax_overlay_not_below_prior_record(
+def assert_published_ax_rows_not_below_prior_record(
     *,
     repo_root: Path,
     readme_path: Path,
@@ -2545,7 +2607,6 @@ def assert_latest_ax_overlay_not_below_prior_record(
     ]
     if len(ax_entries) < 2:
         return
-    latest = ax_entries[-1]
     prior_entries = ax_entries[:-1]
     prior_rows: dict[tuple[str, str, int, int, str, str], ArtifactRow] = {}
     for entry in prior_entries:
@@ -2564,13 +2625,13 @@ def assert_latest_ax_overlay_not_below_prior_record(
             if metric_is_regressed(key[-1], previous, candidate):
                 prior_rows[key] = row
 
-    current_rows = collect_artifact_rows_from_sources(
+    published_rows = collect_artifact_rows_from_sources(
         repo_root,
-        [artifact_source_for_marker_entry(latest)],
+        [artifact_source_for_marker_entry(entry) for entry in ax_entries],
         needed_labels=needed_labels,
     )
     regressions: list[str] = []
-    for key, current_row in sorted(current_rows.items()):
+    for key, current_row in sorted(published_rows.items()):
         previous_row = prior_rows.get(key)
         if previous_row is None:
             continue
@@ -2592,7 +2653,7 @@ def assert_latest_ax_overlay_not_below_prior_record(
         sample = "; ".join(regressions[:5])
         extra = "" if len(regressions) <= 5 else f"; and {len(regressions) - 5} more"
         raise ArtifactCheckError(
-            "latest AX overlay regresses prior README AX high-water records: "
+            "published AX rows regress prior README AX high-water records: "
             f"{sample}{extra}"
         )
 
@@ -2651,7 +2712,7 @@ def check_readme_performance_summary(
         needed_labels=needed_labels,
     )
     if artifact_dir is None:
-        assert_latest_ax_overlay_not_below_prior_record(
+        assert_published_ax_rows_not_below_prior_record(
             repo_root=repo_root.resolve(),
             readme_path=resolved_readme,
             needed_labels=needed_labels,

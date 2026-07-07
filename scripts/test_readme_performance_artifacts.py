@@ -727,6 +727,13 @@ class ReadmePerformanceArtifactTests(unittest.TestCase):
                 "thermal_warning_recorded": False,
                 "performance_warning_recorded": False,
                 "cpu_power_status_recorded": False,
+                "top_processes_cpu": [
+                    {
+                        "pid": 123,
+                        "cpu_percent": 12.5,
+                        "command": "WindowServer",
+                    }
+                ],
             }
             artifact["host"] = {"performance_conditions": dict(conditions)}
             artifact["benchmark_window"] = {
@@ -781,7 +788,7 @@ class ReadmePerformanceArtifactTests(unittest.TestCase):
 
         self.assertEqual(len(checked), 6)
 
-    def test_ax_overlay_rejects_latest_below_prior_readme_record(self) -> None:
+    def test_ax_overlay_publishes_prior_high_water_when_latest_regresses(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             self.write_fixture(root)
@@ -828,16 +835,20 @@ class ReadmePerformanceArtifactTests(unittest.TestCase):
                     "ax-overlay=benchmarks/results/mlx-inference/local-latest/ -->",
                 )
             )
+            readme_path.write_text(
+                readme_path.read_text()
+                .replace("8.0 (-20.0%)", "9.0 (-10.0%)")
+                .replace("80.0 (-20.0%)", "90.0 (-10.0%)")
+                .replace("**30.0 (-25.0%)**", "**25.0 (-37.5%)**")
+            )
 
-            with self.assertRaisesRegex(
-                checker.ArtifactCheckError,
-                "latest AX overlay regresses prior README AX high-water records",
-            ):
-                checker.check_readme_performance(
-                    repo_root=root,
-                    readme_path=readme_path,
-                    expected_metric_count=6,
-                )
+            checked = checker.check_readme_performance(
+                repo_root=root,
+                readme_path=readme_path,
+                expected_metric_count=6,
+            )
+
+        self.assertEqual(len(checked), 6)
 
     def test_phase0_ax_row_rejects_stale_long_prefill_work_contract(self) -> None:
         row = {
@@ -1028,6 +1039,13 @@ class ReadmePerformanceArtifactTests(unittest.TestCase):
                         "thermal_warning_recorded": False,
                         "performance_warning_recorded": True,
                         "cpu_power_status_recorded": False,
+                        "top_processes_cpu": [
+                            {
+                                "pid": 123,
+                                "cpu_percent": 12.5,
+                                "command": "WindowServer",
+                            }
+                        ],
                     }
                 }
             },
@@ -1036,6 +1054,48 @@ class ReadmePerformanceArtifactTests(unittest.TestCase):
             artifact_path=Path("legacy.json"),
             artifact={"host": {"chip": "Apple M5 Max"}},
         )
+
+    def test_host_performance_conditions_rejects_high_publication_load(self) -> None:
+        with self.assertRaisesRegex(
+            checker.ArtifactCheckError,
+            r"one_minute 2\.500 exceeds publication limit 2\.000",
+        ):
+            checker.validate_host_performance_conditions(
+                artifact_path=Path("artifact.json"),
+                artifact={
+                    "host": {
+                        "performance_conditions": {
+                            "load_average": {
+                                "one_minute": 2.5,
+                                "five_minutes": 1.5,
+                                "fifteen_minutes": 1.0,
+                            }
+                        }
+                    }
+                },
+            )
+
+    def test_host_performance_conditions_rejects_high_top_process_cpu(self) -> None:
+        with self.assertRaisesRegex(
+            checker.ArtifactCheckError,
+            r"Code Helper.*81\.9% exceeds publication limit 50\.0%",
+        ):
+            checker.validate_host_performance_conditions(
+                artifact_path=Path("artifact.json"),
+                artifact={
+                    "host": {
+                        "performance_conditions": {
+                            "top_processes_cpu": [
+                                {
+                                    "pid": 54054,
+                                    "cpu_percent": 81.9,
+                                    "command": "Code Helper (Renderer)",
+                                }
+                            ]
+                        }
+                    }
+                },
+            )
 
     def test_host_performance_conditions_rejects_malformed_shape(self) -> None:
         with self.assertRaisesRegex(
@@ -1097,6 +1157,29 @@ class ReadmePerformanceArtifactTests(unittest.TestCase):
             artifact_path=Path("legacy.json"),
             artifact={},
         )
+
+    def test_benchmark_window_rejects_high_publication_load(self) -> None:
+        with self.assertRaisesRegex(
+            checker.ArtifactCheckError,
+            r"one_minute 2\.500 exceeds publication limit 2\.000",
+        ):
+            checker.validate_benchmark_window(
+                artifact_path=Path("artifact.json"),
+                artifact={
+                    "benchmark_window": {
+                        "started_at": "2026-07-06T10:00:00-0400",
+                        "finished_at": "2026-07-06T10:01:00-0400",
+                        "elapsed_seconds": 60.0,
+                        "performance_conditions_end": {
+                            "load_average": {
+                                "one_minute": 2.5,
+                                "five_minutes": 1.5,
+                                "fifteen_minutes": 1.0,
+                            }
+                        },
+                    }
+                },
+            )
 
     def test_benchmark_window_rejects_malformed_shape(self) -> None:
         with self.assertRaisesRegex(

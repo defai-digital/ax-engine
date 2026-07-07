@@ -179,6 +179,48 @@ class BenchAxOnlySweepTests(unittest.TestCase):
             self.assertEqual(proc.send_signal.call_count, 0)
             self.assertEqual(proc.kill.call_count, 0)
 
+    def test_run_row_forwards_load_gate_options(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            reference = root / "reference"
+            reference.mkdir()
+            (reference / "a.json").write_text("{}\n")
+            output_dir = root / "out"
+            output_dir.mkdir()
+            (output_dir / "a.json").write_text(json.dumps({"ok": True}) + "\n")
+            proc = Mock()
+            proc.wait.return_value = 0
+
+            with patch.object(sweep.subprocess, "Popen", return_value=proc) as popen:
+                result = sweep.run_row(
+                    {
+                        "slug": "a",
+                    },
+                    output_dir=output_dir,
+                    bench_script=root / "bench.py",
+                    prompt_tokens="128",
+                    generation_tokens=128,
+                    repetitions=5,
+                    cooldown=15.0,
+                    model_args=["--model-dir", str(root / "model")],
+                    reuse_ref_root=reference,
+                    max_load_average=1.5,
+                    max_top_process_cpu_percent=50.0,
+                    load_average_wait_timeout=600.0,
+                    load_average_poll_interval=10.0,
+                )
+
+            cmd = popen.call_args.args[0]
+            self.assertEqual(result["status"], "ok")
+            self.assertIn("--max-load-average", cmd)
+            self.assertIn("1.5", cmd)
+            self.assertIn("--max-top-process-cpu-percent", cmd)
+            self.assertIn("50.0", cmd)
+            self.assertIn("--load-average-wait-timeout", cmd)
+            self.assertIn("600.0", cmd)
+            self.assertIn("--load-average-poll-interval", cmd)
+            self.assertIn("10.0", cmd)
+
     def test_collect_performance_condition_metadata_parses_pmset(self) -> None:
         def fake_check_output(
             cmd: list[str],
@@ -290,6 +332,135 @@ class BenchAxOnlySweepTests(unittest.TestCase):
             self.assertIn("exit_code=2", markdown)
             self.assertIn("logs/a.log", markdown)
             self.assertIn("a.json", markdown)
+
+    def test_main_forwards_default_publication_load_gate(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest = root / "manifest.json"
+            manifest.write_text(
+                json.dumps(
+                    {
+                        "rows": [
+                            {
+                                "slug": "a",
+                                "readme_model": "Gemma",
+                                "readme_quant": "4-bit",
+                            }
+                        ]
+                    }
+                )
+                + "\n"
+            )
+            out_dir = root / "out"
+            argv = [
+                "bench_ax_only_sweep.py",
+                "--manifest",
+                str(manifest),
+                "--output-root",
+                str(out_dir),
+                "--reuse-reference-root",
+                str(root / "reference"),
+            ]
+
+            with (
+                patch.object(sys, "argv", argv),
+                patch.object(
+                    sweep,
+                    "resolve_model_args",
+                    return_value=(["--model-dir", str(root / "model")], None),
+                ),
+                patch.object(
+                    sweep,
+                    "run_row",
+                    return_value={
+                        "status": "ok",
+                        "output_path": str(out_dir / "a.json"),
+                    },
+                ) as run_row,
+                patch.object(
+                    sweep,
+                    "collect_performance_condition_metadata",
+                    return_value={"load_average": {"one_minute": 1.0}},
+                ),
+            ):
+                sweep.main()
+
+            self.assertEqual(
+                run_row.call_args.kwargs["max_load_average"],
+                sweep.DEFAULT_MAX_LOAD_AVERAGE,
+            )
+            self.assertEqual(
+                run_row.call_args.kwargs["max_top_process_cpu_percent"],
+                sweep.DEFAULT_MAX_TOP_PROCESS_CPU_PERCENT,
+            )
+            sweep_results = json.loads((out_dir / "sweep_results.json").read_text())
+            self.assertEqual(
+                sweep_results["max_load_average"],
+                sweep.DEFAULT_MAX_LOAD_AVERAGE,
+            )
+            self.assertEqual(
+                sweep_results["max_top_process_cpu_percent"],
+                sweep.DEFAULT_MAX_TOP_PROCESS_CPU_PERCENT,
+            )
+
+    def test_main_can_disable_default_publication_load_gate(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest = root / "manifest.json"
+            manifest.write_text(
+                json.dumps(
+                    {
+                        "rows": [
+                            {
+                                "slug": "a",
+                                "readme_model": "Gemma",
+                                "readme_quant": "4-bit",
+                            }
+                        ]
+                    }
+                )
+                + "\n"
+            )
+            out_dir = root / "out"
+            argv = [
+                "bench_ax_only_sweep.py",
+                "--manifest",
+                str(manifest),
+                "--output-root",
+                str(out_dir),
+                "--reuse-reference-root",
+                str(root / "reference"),
+                "--no-load-gate",
+            ]
+
+            with (
+                patch.object(sys, "argv", argv),
+                patch.object(
+                    sweep,
+                    "resolve_model_args",
+                    return_value=(["--model-dir", str(root / "model")], None),
+                ),
+                patch.object(
+                    sweep,
+                    "run_row",
+                    return_value={
+                        "status": "ok",
+                        "output_path": str(out_dir / "a.json"),
+                    },
+                ) as run_row,
+                patch.object(
+                    sweep,
+                    "collect_performance_condition_metadata",
+                    return_value={"load_average": {"one_minute": 1.0}},
+                ),
+            ):
+                sweep.main()
+
+            self.assertIsNone(run_row.call_args.kwargs["max_load_average"])
+            self.assertIsNone(run_row.call_args.kwargs["max_top_process_cpu_percent"])
+            sweep_results = json.loads((out_dir / "sweep_results.json").read_text())
+            self.assertIsNone(sweep_results["max_load_average"])
+            self.assertIsNone(sweep_results["max_top_process_cpu_percent"])
 
     def test_main_writes_non_candidate_summary_when_interrupted(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

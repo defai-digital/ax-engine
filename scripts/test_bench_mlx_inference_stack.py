@@ -144,6 +144,50 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
             bench.one_minute_load_average({"load_average": {"one_minute": "1.0"}})
         )
 
+    def test_collect_top_process_cpu_metadata_parses_ps(self) -> None:
+        def fake_check_output(
+            cmd: list[str],
+            *,
+            text: bool,
+            stderr: int | None = None,
+        ) -> str:
+            del text, stderr
+            self.assertEqual(cmd, ["ps", "-arcwwwxo", "pid,pcpu,comm"])
+            return (
+                "  PID  %CPU COMM\n"
+                "54054  81.9 Code Helper (Renderer)\n"
+                "  615  15.8 WindowServer\n"
+            )
+
+        with patch.object(subprocess, "check_output", side_effect=fake_check_output):
+            metadata = bench.collect_top_process_cpu_metadata()
+
+        self.assertEqual(
+            metadata,
+            [
+                {
+                    "pid": 54054,
+                    "cpu_percent": 81.9,
+                    "command": "Code Helper (Renderer)",
+                },
+                {"pid": 615, "cpu_percent": 15.8, "command": "WindowServer"},
+            ],
+        )
+
+    def test_max_top_process_cpu_percent_reads_numeric_value(self) -> None:
+        self.assertEqual(
+            bench.max_top_process_cpu_percent(
+                {"top_processes_cpu": [{"cpu_percent": 12.5}, {"cpu_percent": 44}]}
+            ),
+            44.0,
+        )
+        self.assertIsNone(bench.max_top_process_cpu_percent({}))
+        self.assertIsNone(
+            bench.max_top_process_cpu_percent(
+                {"top_processes_cpu": [{"cpu_percent": "81.9"}]}
+            )
+        )
+
     def test_wait_for_performance_load_returns_when_under_threshold(self) -> None:
         metadata = {"load_average": {"one_minute": 0.75}}
 
@@ -186,6 +230,44 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         self.assertIs(result, samples[1])
         sleep.assert_called_once_with(2.0)
 
+    def test_wait_for_performance_load_waits_until_top_process_cpu_threshold(
+        self,
+    ) -> None:
+        samples = [
+            {
+                "load_average": {"one_minute": 0.9},
+                "top_processes_cpu": [
+                    {"pid": 101, "cpu_percent": 81.0, "command": "Code Helper"}
+                ],
+            },
+            {
+                "load_average": {"one_minute": 0.9},
+                "top_processes_cpu": [
+                    {"pid": 101, "cpu_percent": 12.0, "command": "Code Helper"}
+                ],
+            },
+        ]
+        monotonic_values = iter([0.0, 0.0, 10.0])
+
+        with (
+            patch.object(
+                bench,
+                "collect_performance_condition_metadata",
+                side_effect=samples,
+            ),
+            patch.object(bench.time, "monotonic", side_effect=monotonic_values),
+            patch.object(bench.time, "sleep") as sleep,
+        ):
+            result = bench.wait_for_performance_load(
+                max_one_minute=1.0,
+                max_top_process_cpu_percent_value=50.0,
+                timeout_seconds=10.0,
+                poll_interval_seconds=2.0,
+            )
+
+        self.assertIs(result, samples[1])
+        sleep.assert_called_once_with(2.0)
+
     def test_wait_for_performance_load_rejects_unavailable_load(self) -> None:
         with patch.object(
             bench,
@@ -195,6 +277,29 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "load_average.one_minute"):
                 bench.wait_for_performance_load(
                     max_one_minute=1.0,
+                    timeout_seconds=0.0,
+                    poll_interval_seconds=1.0,
+                )
+
+    def test_wait_for_performance_load_rejects_high_top_process_cpu(self) -> None:
+        with patch.object(
+            bench,
+            "collect_performance_condition_metadata",
+            return_value={
+                "load_average": {"one_minute": 0.75},
+                "top_processes_cpu": [
+                    {
+                        "pid": 54054,
+                        "cpu_percent": 81.9,
+                        "command": "Code Helper (Renderer)",
+                    }
+                ],
+            },
+        ):
+            with self.assertRaisesRegex(RuntimeError, "top process"):
+                bench.wait_for_performance_load(
+                    max_one_minute=1.0,
+                    max_top_process_cpu_percent_value=50.0,
                     timeout_seconds=0.0,
                     poll_interval_seconds=1.0,
                 )
@@ -648,6 +753,43 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         self.assertIn("decode=20.0 tok/s", output)
         self.assertIn("range=20.0-20.0", output)
         self.assertIn("cooldown 5s", output)
+
+    def test_bench_axengine_checks_load_gate_before_warmup_and_repetitions(self) -> None:
+        run = {
+            "prefill_s": 0.3,
+            "decode_s": 0.1,
+            "ttft_ms": 300.0,
+            "prefill_tok_s": 10.0,
+            "decode_tok_s": 20.0,
+            "output_tokens": 3.0,
+        }
+        labels: list[str] = []
+
+        with patch.object(
+            bench,
+            "axengine_one_run",
+            side_effect=[dict(run), dict(run), dict(run)],
+        ):
+            bench.bench_axengine(
+                19091,
+                [1, 2, 3],
+                3,
+                2,
+                1,
+                0.0,
+                model_metadata={},
+                direct_mode=True,
+                load_gate=lambda label: labels.append(label) or {},
+            )
+
+        self.assertEqual(
+            labels,
+            [
+                "ax_engine_mlx warmup 1/1",
+                "ax_engine_mlx measured rep 1/2",
+                "ax_engine_mlx measured rep 2/2",
+            ],
+        )
 
     def test_bench_axengine_records_tail_regression_stability(self) -> None:
         runs = [

@@ -481,11 +481,36 @@ def load_composite_rows(
             generation_tokens = row.get("generation_tokens")
             if not isinstance(generation_tokens, int):
                 raise ChartError(f"missing generation_tokens for {engine}")
-            merged[
-                (str(row["_slug"]), str(engine), int(prompt_tokens), generation_tokens)
-            ] = row
+            merge_chart_row(
+                merged,
+                (str(row["_slug"]), str(engine), int(prompt_tokens), generation_tokens),
+                row,
+                metric,
+            )
 
     return list(merged.values())
+
+
+def merge_chart_row(
+    rows: dict[tuple[str, str, int, int], dict[str, Any]],
+    key: tuple[str, str, int, int],
+    row: dict[str, Any],
+    metric: str,
+) -> None:
+    existing = rows.get(key)
+    if existing is None:
+        rows[key] = row
+        return
+
+    _slug, engine, _prompt_tokens, _generation_tokens = key
+    if engine not in readme_artifacts.AX_ENGINE_ROWS:
+        rows[key] = row
+        return
+
+    candidate = readme_artifacts.metric_median(row, metric)
+    previous = readme_artifacts.metric_median(existing, metric)
+    if not readme_artifacts.metric_is_regressed(metric, candidate, previous):
+        rows[key] = row
 
 
 def load_llama_rows_from_readme(readme: Path) -> list[dict[str, Any]]:

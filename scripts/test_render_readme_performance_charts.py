@@ -32,6 +32,52 @@ MTP_MODULE_SPEC.loader.exec_module(mtp_refresh)
 
 
 class ReadmePerformanceChartTests(unittest.TestCase):
+    def test_chart_merge_keeps_ax_high_water_row(self) -> None:
+        rows = {
+            ("gemma-4-e2b-it-4bit", "ax_engine_mlx", 128, 128): {
+                "engine": "ax_engine_mlx",
+                "prefill_tok_s": {"median": 100.0},
+                "decode_tok_s": {"median": 10.0},
+                "ttft_ms": {"median": 40.0},
+            }
+        }
+
+        charts.merge_chart_row(
+            rows,
+            ("gemma-4-e2b-it-4bit", "ax_engine_mlx", 128, 128),
+            {
+                "engine": "ax_engine_mlx",
+                "prefill_tok_s": {"median": 90.0},
+                "decode_tok_s": {"median": 9.0},
+                "ttft_ms": {"median": 30.0},
+            },
+            "prefill",
+        )
+        self.assertEqual(
+            rows[("gemma-4-e2b-it-4bit", "ax_engine_mlx", 128, 128)][
+                "prefill_tok_s"
+            ]["median"],
+            100.0,
+        )
+
+        charts.merge_chart_row(
+            rows,
+            ("gemma-4-e2b-it-4bit", "ax_engine_mlx", 128, 128),
+            {
+                "engine": "ax_engine_mlx",
+                "prefill_tok_s": {"median": 90.0},
+                "decode_tok_s": {"median": 9.0},
+                "ttft_ms": {"median": 30.0},
+            },
+            "ttft",
+        )
+        self.assertEqual(
+            rows[("gemma-4-e2b-it-4bit", "ax_engine_mlx", 128, 128)]["ttft_ms"][
+                "median"
+            ],
+            30.0,
+        )
+
     def test_mtp_6bit_summary_accepts_speculative_results_tree(self) -> None:
         with tempfile.TemporaryDirectory() as root_name:
             root = Path(root_name)

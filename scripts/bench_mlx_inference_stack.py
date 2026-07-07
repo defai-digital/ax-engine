@@ -54,7 +54,7 @@ import time
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable, Iterator
+from typing import Any, Callable, Iterable, Iterator
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 AX_ENGINE_SERVER = REPO_ROOT / "target/release/ax-engine-server"
@@ -626,6 +626,33 @@ def _version_lines(cmd: list[str], *, limit: int = 20) -> list[str]:
     return _command_output_lines(cmd)[:limit]
 
 
+def collect_top_process_cpu_metadata(*, limit: int = 8) -> list[dict[str, Any]]:
+    lines = _command_output_lines(
+        ["ps", "-arcwwwxo", "pid,pcpu,comm"],
+    )
+    processes: list[dict[str, Any]] = []
+    for line in lines[1:]:
+        parts = line.split(None, 2)
+        if len(parts) != 3:
+            continue
+        pid_raw, cpu_raw, command = parts
+        try:
+            pid = int(pid_raw)
+            cpu_percent = float(cpu_raw)
+        except ValueError:
+            continue
+        processes.append(
+            {
+                "pid": pid,
+                "cpu_percent": round(cpu_percent, 1),
+                "command": command,
+            }
+        )
+        if len(processes) >= limit:
+            break
+    return processes
+
+
 def collect_performance_condition_metadata() -> dict[str, Any]:
     metadata: dict[str, Any] = {}
     try:
@@ -660,6 +687,10 @@ def collect_performance_condition_metadata() -> dict[str, Any]:
             "No CPU power status has been recorded" in line for line in thermal_lines
         )
 
+    top_processes = collect_top_process_cpu_metadata()
+    if top_processes:
+        metadata["top_processes_cpu"] = top_processes
+
     return metadata
 
 
@@ -673,34 +704,125 @@ def one_minute_load_average(metadata: dict[str, Any]) -> float | None:
     return float(value)
 
 
+def max_top_process_cpu_percent(metadata: dict[str, Any]) -> float | None:
+    processes = metadata.get("top_processes_cpu")
+    if not isinstance(processes, list):
+        return None
+    max_cpu: float | None = None
+    for process in processes:
+        if not isinstance(process, dict):
+            continue
+        value = process.get("cpu_percent")
+        if isinstance(value, bool) or not isinstance(value, int | float):
+            continue
+        max_cpu = float(value) if max_cpu is None else max(max_cpu, float(value))
+    return max_cpu
+
+
+def top_process_cpu_label(metadata: dict[str, Any]) -> str:
+    processes = metadata.get("top_processes_cpu")
+    if not isinstance(processes, list):
+        return "unknown process"
+    for process in processes:
+        if not isinstance(process, dict):
+            continue
+        value = process.get("cpu_percent")
+        command = process.get("command")
+        if isinstance(value, bool) or not isinstance(value, int | float):
+            continue
+        if not isinstance(command, str) or not command:
+            command = "unknown process"
+        return f"{command} at {float(value):.1f}% CPU"
+    return "unknown process"
+
+
 def wait_for_performance_load(
     *,
-    max_one_minute: float,
+    max_one_minute: float | None,
+    max_top_process_cpu_percent_value: float | None = None,
     timeout_seconds: float,
     poll_interval_seconds: float,
+    context: str | None = None,
 ) -> dict[str, Any]:
     deadline = time.monotonic() + timeout_seconds
     while True:
         metadata = collect_performance_condition_metadata()
         current = one_minute_load_average(metadata)
-        if current is None:
+        top_cpu = max_top_process_cpu_percent(metadata)
+        if max_one_minute is not None and current is None:
             raise RuntimeError(
                 "load_average.one_minute is unavailable; cannot enforce "
                 "--max-load-average"
             )
-        if current <= max_one_minute:
+        if max_top_process_cpu_percent_value is not None and top_cpu is None:
+            top_process_ok = False
+        else:
+            top_process_ok = (
+                max_top_process_cpu_percent_value is None
+                or (
+                    top_cpu is not None
+                    and top_cpu <= max_top_process_cpu_percent_value
+                )
+            )
+        load_ok = max_one_minute is None or (
+            current is not None and current <= max_one_minute
+        )
+        if load_ok and top_process_ok:
             return metadata
         now = time.monotonic()
         if now >= deadline:
+            context_suffix = "" if context is None else f" before {context}"
+            reasons = []
+            if (
+                max_one_minute is not None
+                and current is not None
+                and current > max_one_minute
+            ):
+                reasons.append(
+                    f"one-minute load average {current:.3f} exceeds "
+                    f"--max-load-average {max_one_minute:.3f}"
+                )
+            if max_top_process_cpu_percent_value is not None:
+                if top_cpu is None:
+                    reasons.append(
+                        "top process CPU is unavailable; cannot enforce "
+                        "--max-top-process-cpu-percent"
+                    )
+                elif top_cpu > max_top_process_cpu_percent_value:
+                    reasons.append(
+                        f"top process {top_process_cpu_label(metadata)} exceeds "
+                        "--max-top-process-cpu-percent "
+                        f"{max_top_process_cpu_percent_value:.1f}"
+                    )
+            joined = "; ".join(reasons) if reasons else "performance gate failed"
             raise RuntimeError(
-                f"one-minute load average {current:.3f} exceeds "
-                f"--max-load-average {max_one_minute:.3f} after waiting "
-                f"{timeout_seconds:.1f}s"
+                f"{joined}{context_suffix} after waiting {timeout_seconds:.1f}s"
             )
         sleep_seconds = min(poll_interval_seconds, max(0.0, deadline - now))
+        context_prefix = "" if context is None else f" before {context}: "
+        reasons = []
+        if (
+            max_one_minute is not None
+            and current is not None
+            and current > max_one_minute
+        ):
+            reasons.append(
+                f"one-minute load {current:.3f} exceeds {max_one_minute:.3f}"
+            )
+        if (
+            max_top_process_cpu_percent_value is not None
+            and top_cpu is not None
+            and top_cpu > max_top_process_cpu_percent_value
+        ):
+            reasons.append(
+                f"top process {top_process_cpu_label(metadata)} exceeds "
+                f"{max_top_process_cpu_percent_value:.1f}%"
+            )
+        if max_top_process_cpu_percent_value is not None and top_cpu is None:
+            reasons.append("top process CPU is unavailable")
         print(
-            f"  [load-gate] one-minute load {current:.3f} exceeds "
-            f"{max_one_minute:.3f}; sleeping {sleep_seconds:.1f}s",
+            f"  [load-gate] {context_prefix}{'; '.join(reasons)}; "
+            f"sleeping {sleep_seconds:.1f}s",
             file=sys.stderr,
         )
         time.sleep(sleep_seconds)
@@ -3727,6 +3849,7 @@ def bench_axengine(
     gemma4_assistant_mtp: bool = False,
     seed: int = MLX_LM_RANDOM_SEED,
     prompt_source: str = "random",
+    load_gate: Callable[[str], dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     if cooldown is None:
         cooldown = float(warmup_repetitions)
@@ -3748,6 +3871,8 @@ def bench_axengine(
         file=sys.stderr,
     )
     for warmup_index in range(warmup_repetitions):
+        if load_gate is not None:
+            load_gate(f"{engine_key} warmup {warmup_index + 1}/{warmup_repetitions}")
         axengine_one_run(
             port,
             tokens,
@@ -3765,6 +3890,8 @@ def bench_axengine(
 
     runs = []
     for index in range(repetitions):
+        if load_gate is not None:
+            load_gate(f"{engine_key} measured rep {index + 1}/{repetitions}")
         run = axengine_one_run(
             port,
             tokens,
@@ -4887,8 +5014,19 @@ def main() -> None:
         type=float,
         help=(
             "Require the one-minute load average to be at or below this value "
-            "before starting benchmark timing. Use this for publication runs "
-            "so foreground app load does not silently become README evidence."
+            "before starting benchmark timing and before each AX warmup or "
+            "measured repetition. Use this for publication runs so foreground "
+            "app load does not silently become README evidence."
+        ),
+    )
+    parser.add_argument(
+        "--max-top-process-cpu-percent",
+        type=float,
+        help=(
+            "Require the highest-CPU process reported by ps to be at or below "
+            "this percent before starting benchmark timing and before each AX "
+            "warmup or measured repetition. This catches foreground app load "
+            "that a one-minute load average can admit too early."
         ),
     )
     parser.add_argument(
@@ -4896,15 +5034,16 @@ def main() -> None:
         type=float,
         default=0.0,
         help=(
-            "Seconds to wait for --max-load-average before failing. The default "
-            "samples once and fails fast."
+            "Seconds to wait for --max-load-average and "
+            "--max-top-process-cpu-percent before failing. The default samples "
+            "once and fails fast."
         ),
     )
     parser.add_argument(
         "--load-average-poll-interval",
         type=float,
         default=30.0,
-        help="Seconds between load checks while waiting for --max-load-average.",
+        help="Seconds between performance-gate checks while waiting.",
     )
     parser.add_argument(
         "--inter-case-cooldown",
@@ -5420,6 +5559,11 @@ def main() -> None:
         args.ax_direct = True
     if args.max_load_average is not None and args.max_load_average < 0.0:
         parser.error("--max-load-average must be non-negative")
+    if (
+        args.max_top_process_cpu_percent is not None
+        and args.max_top_process_cpu_percent < 0.0
+    ):
+        parser.error("--max-top-process-cpu-percent must be non-negative")
     if args.load_average_wait_timeout < 0.0:
         parser.error("--load-average-wait-timeout must be non-negative")
     if args.load_average_poll_interval <= 0.0:
@@ -5462,11 +5606,12 @@ def main() -> None:
         ),
         file=sys.stderr,
     )
-    if args.max_load_average is None:
+    if args.max_load_average is None and args.max_top_process_cpu_percent is None:
         performance_conditions_start = collect_performance_condition_metadata()
     else:
         performance_conditions_start = wait_for_performance_load(
             max_one_minute=args.max_load_average,
+            max_top_process_cpu_percent_value=args.max_top_process_cpu_percent,
             timeout_seconds=args.load_average_wait_timeout,
             poll_interval_seconds=args.load_average_poll_interval,
         )
@@ -5809,6 +5954,26 @@ def main() -> None:
                             gemma4_assistant_mtp=gemma4_assistant_mtp,
                             seed=args.seed,
                             prompt_source=prompt_doc.get("prompt_source", "random"),
+                            load_gate=(
+                                (
+                                    lambda label: wait_for_performance_load(
+                                        max_one_minute=args.max_load_average,
+                                        max_top_process_cpu_percent_value=(
+                                            args.max_top_process_cpu_percent
+                                        ),
+                                        timeout_seconds=args.load_average_wait_timeout,
+                                        poll_interval_seconds=(
+                                            args.load_average_poll_interval
+                                        ),
+                                        context=label,
+                                    )
+                                )
+                                if (
+                                    args.max_load_average is not None
+                                    or args.max_top_process_cpu_percent is not None
+                                )
+                                else None
+                            ),
                         )
                     )
                     results[-1]["prefill_step_size"] = args.prefill_step_size
