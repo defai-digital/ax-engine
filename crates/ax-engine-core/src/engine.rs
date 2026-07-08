@@ -350,6 +350,89 @@ impl EngineCore {
         schedule_plan: SchedulePlan,
         global_token_budget: u32,
     ) -> Result<(SchedulePlan, u32, PreemptionMetrics), EngineCoreError> {
+        let (mut resolved_plan, mut prefix_hits, mut preemption_metrics) =
+            self.resolve_kv_schedule_plan_level(schedule_plan, global_token_budget)?;
+
+        // When KV capacity blocks the entire batch, re-plan around the blocked
+        // requests. Blocked ids accumulate across retries so each retry plans
+        // a strictly smaller request set and the loop terminates; filtering
+        // only the latest retry's blocked set would re-admit requests blocked
+        // by an earlier retry, and with static KV state two alternating
+        // blocked sets can re-plan each other forever.
+        let mut blocked_request_ids: BTreeSet<RequestId> = BTreeSet::new();
+        while resolved_plan.execution_batch.is_none()
+            && !resolved_plan.memory_blocked_requests.is_empty()
+            && !resolved_plan.deferred_requests.is_empty()
+        {
+            let newly_blocked = resolved_plan
+                .memory_blocked_requests
+                .iter()
+                .filter(|request_id| blocked_request_ids.insert(**request_id))
+                .count();
+            if newly_blocked == 0 {
+                break;
+            }
+            debug!(
+                step_id = resolved_plan.step_id.0,
+                blocked_requests = resolved_plan.memory_blocked_requests.len(),
+                deferred_requests = resolved_plan.deferred_requests.len(),
+                "retrying scheduler after KV capacity blocked the initial batch"
+            );
+            let fallback_schedule_plan = self.scheduler.plan(&SchedulerInput {
+                step_id: resolved_plan.step_id,
+                request_snapshots: self
+                    .request_manager
+                    .snapshots()
+                    .into_iter()
+                    .filter(|snapshot| !blocked_request_ids.contains(&snapshot.request_id))
+                    .collect(),
+                memory_pressure: self.kv_manager.memory_pressure(),
+                global_token_budget,
+            });
+            let (fallback_plan, fallback_prefix_hits, fallback_preemption_metrics) =
+                self.resolve_kv_schedule_plan_level(fallback_schedule_plan, global_token_budget)?;
+
+            let selected_requests = fallback_plan.selected_requests;
+            let memory_blocked_requests = resolved_plan
+                .memory_blocked_requests
+                .iter()
+                .chain(fallback_plan.memory_blocked_requests.iter())
+                .copied()
+                .collect::<BTreeSet<_>>();
+            let deferred_requests = resolved_plan
+                .deferred_requests
+                .iter()
+                .chain(fallback_plan.deferred_requests.iter())
+                .copied()
+                .filter(|request_id| {
+                    !selected_requests.contains(request_id)
+                        && !memory_blocked_requests.contains(request_id)
+                })
+                .collect::<BTreeSet<_>>();
+
+            resolved_plan = SchedulePlan {
+                step_id: fallback_plan.step_id,
+                selected_requests,
+                deferred_requests: deferred_requests.into_iter().collect(),
+                memory_blocked_requests: memory_blocked_requests.into_iter().collect(),
+                execution_batch: fallback_plan.execution_batch,
+            };
+            prefix_hits += fallback_prefix_hits;
+            preemption_metrics = preemption_metrics.merge(fallback_preemption_metrics);
+        }
+
+        Ok((resolved_plan, prefix_hits, preemption_metrics))
+    }
+
+    /// Resolve one scheduler plan against KV state: prefix reuse, block
+    /// allocation, and preemption for a single planning attempt. Retry
+    /// orchestration across blocked requests lives in
+    /// [`Self::resolve_kv_schedule_plan`].
+    fn resolve_kv_schedule_plan_level(
+        &mut self,
+        schedule_plan: SchedulePlan,
+        global_token_budget: u32,
+    ) -> Result<(SchedulePlan, u32, PreemptionMetrics), EngineCoreError> {
         let (prefix_reuse, schedule_plan) =
             self.apply_prefix_reuse(schedule_plan, global_token_budget)?;
         let prefix_hits = prefix_reuse.len() as u32;
@@ -451,66 +534,6 @@ impl EngineCore {
             memory_blocked_requests,
             execution_batch,
         };
-
-        if resolved_plan.execution_batch.is_none()
-            && !resolved_plan.memory_blocked_requests.is_empty()
-            && !resolved_plan.deferred_requests.is_empty()
-        {
-            debug!(
-                step_id = resolved_plan.step_id.0,
-                blocked_requests = resolved_plan.memory_blocked_requests.len(),
-                deferred_requests = resolved_plan.deferred_requests.len(),
-                "retrying scheduler after KV capacity blocked the initial batch"
-            );
-            let blocked_request_ids = resolved_plan
-                .memory_blocked_requests
-                .iter()
-                .copied()
-                .collect::<BTreeSet<_>>();
-            let fallback_schedule_plan = self.scheduler.plan(&SchedulerInput {
-                step_id: resolved_plan.step_id,
-                request_snapshots: self
-                    .request_manager
-                    .snapshots()
-                    .into_iter()
-                    .filter(|snapshot| !blocked_request_ids.contains(&snapshot.request_id))
-                    .collect(),
-                memory_pressure: self.kv_manager.memory_pressure(),
-                global_token_budget,
-            });
-            let (fallback_plan, fallback_prefix_hits, fallback_preemption_metrics) =
-                self.resolve_kv_schedule_plan(fallback_schedule_plan, global_token_budget)?;
-
-            let selected_requests = fallback_plan.selected_requests;
-            let memory_blocked_requests = resolved_plan
-                .memory_blocked_requests
-                .iter()
-                .chain(fallback_plan.memory_blocked_requests.iter())
-                .copied()
-                .collect::<BTreeSet<_>>();
-            let deferred_requests = resolved_plan
-                .deferred_requests
-                .iter()
-                .chain(fallback_plan.deferred_requests.iter())
-                .copied()
-                .filter(|request_id| {
-                    !selected_requests.contains(request_id)
-                        && !memory_blocked_requests.contains(request_id)
-                })
-                .collect::<BTreeSet<_>>();
-
-            return Ok((
-                SchedulePlan {
-                    step_id: fallback_plan.step_id,
-                    selected_requests,
-                    deferred_requests: deferred_requests.into_iter().collect(),
-                    memory_blocked_requests: memory_blocked_requests.into_iter().collect(),
-                    execution_batch: fallback_plan.execution_batch,
-                },
-                prefix_hits + fallback_prefix_hits,
-                preemption_metrics.merge(fallback_preemption_metrics),
-            ));
-        }
 
         Ok((resolved_plan, prefix_hits, preemption_metrics))
     }
@@ -2211,6 +2234,48 @@ mod tests {
                 .state,
             RequestState::BlockedOnMemory
         );
+    }
+
+    #[test]
+    fn step_bounds_scheduler_retries_when_kv_blocks_every_model() {
+        // Three unallocatable prefills on three distinct models. Each scheduler
+        // retry batches one model's request (the other models defer), fails its
+        // KV allocation, and re-plans. Retries must exclude every request
+        // blocked so far: filtering only the latest retry's blocked set
+        // re-admits requests blocked earlier, and with static KV state the
+        // retry recursion ping-pongs between the same two plans until the
+        // stack overflows.
+        let mut engine =
+            EngineCore::with_kv_config(KvManagerConfig::validated(CacheGroupId(2), 1, 2));
+
+        for (id, model) in [(1, "model-a"), (2, "model-b"), (3, "model-c")] {
+            let mut submission = make_submission_with_prompt(id, id, vec![7; 8], 1);
+            submission.model_id = ModelId(model.into());
+            engine.submit(submission).unwrap();
+        }
+
+        let outcome = engine.step(4, true).unwrap();
+
+        assert!(outcome.schedule_plan.selected_requests.is_empty());
+        assert_eq!(
+            outcome
+                .schedule_plan
+                .memory_blocked_requests
+                .iter()
+                .copied()
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from([RequestId(1), RequestId(2), RequestId(3)])
+        );
+        for id in 1..=3 {
+            assert_eq!(
+                engine
+                    .request_manager()
+                    .snapshot(RequestId(id))
+                    .unwrap()
+                    .state,
+                RequestState::BlockedOnMemory
+            );
+        }
     }
 
     #[test]
