@@ -70,8 +70,8 @@ use crate::compare_json::{
 };
 use crate::determinism::deterministic_runtime_digest;
 use crate::doctor::{
-    build_doctor_report, build_doctor_report_for_model, metal_build_doctor_report,
-    parse_doctor_args, render_doctor_report,
+    build_doctor_report, build_doctor_report_for_model_and_runtime, detect_runtime_assets_report,
+    metal_build_doctor_report, parse_doctor_args, render_doctor_report,
 };
 use crate::doctor_workflow::detect_doctor_workflow_report;
 use crate::environment_probe::{
@@ -128,7 +128,10 @@ use crate::artifact_summary::render_benchmark_artifact_summary;
 #[cfg(test)]
 use crate::compare_json::inferred_tool_mode_from_runtime_json;
 #[cfg(test)]
-use crate::doctor::{DoctorAdviceSeverity, DoctorModelArtifactsStatus, DoctorStatus};
+use crate::doctor::{
+    DoctorAdviceSeverity, DoctorModelArtifactsStatus, DoctorRuntimeAssetsReport,
+    DoctorRuntimeAssetsStatus, DoctorStatus, build_doctor_report_for_model,
+};
 #[cfg(test)]
 use crate::doctor_workflow::command_text;
 #[cfg(test)]

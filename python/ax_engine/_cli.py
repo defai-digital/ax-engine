@@ -1154,11 +1154,14 @@ def _user_doctor_report(bench_report: dict) -> dict:
         f"{_value_str(bench_report, ('host', 'detected_soc'), 'unknown Apple Silicon')} "
         f"({_value_str(bench_report, ('host', 'os'))}/{_value_str(bench_report, ('host', 'arch'))})"
     )
-    metal_detail = (
-        "Metal compiler and metallib available"
-        if _value_bool(bench_report, ("metal_toolchain", "fully_available"))
-        else "Metal compiler or metallib missing"
-    )
+    runtime_assets_ready = _value_str(bench_report, ("runtime_assets", "status")) == "ready"
+    metal_toolchain_ready = _value_bool(bench_report, ("metal_toolchain", "fully_available"))
+    if metal_toolchain_ready:
+        metal_detail = "Metal compiler and metallib available"
+    elif runtime_assets_ready:
+        metal_detail = "Bundled runtime assets available; Metal compiler only needed for kernel rebuilds"
+    else:
+        metal_detail = "Metal compiler or metallib missing"
     return {
         "schema_version": "ax.engine.doctor.v1",
         "result": result,
@@ -1179,7 +1182,7 @@ def _user_doctor_report(bench_report: dict) -> dict:
             ),
             _doctor_check(
                 "metal_toolchain",
-                _value_bool(bench_report, ("metal_toolchain", "fully_available")),
+                metal_toolchain_ready or runtime_assets_ready,
                 metal_detail,
             ),
             _doctor_check("mlx_runtime", mlx_ready, bench_status),

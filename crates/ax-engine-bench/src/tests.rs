@@ -2545,6 +2545,59 @@ fn doctor_report_marks_missing_metal_toolchain_not_ready() {
 }
 
 #[test]
+fn doctor_report_accepts_runtime_assets_without_metal_toolchain() {
+    let host = doctor_host_fixture(true, false, Some("Apple M4 Max"));
+    let toolchain = doctor_metal_toolchain_fixture(false, false, false);
+    let runtime_assets = DoctorRuntimeAssetsReport {
+        status: DoctorRuntimeAssetsStatus::Ready,
+        path: Some("/wheel/ax_engine/_metal/build".to_string()),
+        source: Some("explicit_env".to_string()),
+        issue: None,
+    };
+
+    let report = build_doctor_report_for_model_and_runtime(host, toolchain, runtime_assets, None);
+
+    assert_eq!(report.status, DoctorStatus::Ready);
+    assert!(report.mlx_runtime_ready);
+    assert!(report.bringup_allowed);
+    assert!(
+        !report
+            .issues
+            .iter()
+            .any(|issue| issue.contains("xcrun metallib"))
+    );
+    assert!(
+        report
+            .notes
+            .iter()
+            .any(|note| note.contains("only blocks rebuilding Metal kernels"))
+    );
+}
+
+#[test]
+fn doctor_report_treats_stale_runtime_assets_as_note_when_toolchain_can_rebuild() {
+    let host = doctor_host_fixture(true, false, Some("Apple M4 Max"));
+    let toolchain = doctor_metal_toolchain_fixture(true, true, true);
+    let runtime_assets = DoctorRuntimeAssetsReport {
+        status: DoctorRuntimeAssetsStatus::NotReady,
+        path: Some("/repo/build/metal".to_string()),
+        source: Some("repo_auto_detect".to_string()),
+        issue: Some("source_sha256 mismatch".to_string()),
+    };
+
+    let report = build_doctor_report_for_model_and_runtime(host, toolchain, runtime_assets, None);
+
+    assert_eq!(report.status, DoctorStatus::Ready);
+    assert!(report.issues.is_empty());
+    assert!(
+        report
+            .notes
+            .iter()
+            .any(|note| note.contains("run ax-engine-bench metal-build"))
+    );
+}
+
+#[test]
 fn doctor_report_accepts_command_line_tools_without_metal_ar() {
     let host = doctor_host_fixture(true, false, Some("Apple M4 Max"));
     let toolchain = doctor_metal_toolchain_fixture(true, true, false);
@@ -2786,6 +2839,7 @@ fn render_doctor_report_includes_status_and_issue_sections() {
     assert!(text.contains("  - Host: Apple M3 Max (macos/aarch64)"));
     assert!(text.contains("Workflow:"));
     assert!(text.contains("  - Mode: unknown"));
+    assert!(text.contains("Runtime assets:"));
     assert!(text.contains("Model artifacts:"));
     assert!(text.contains("Issues:"));
     assert!(text.contains("Notes:"));

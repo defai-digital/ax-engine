@@ -361,9 +361,12 @@ pub(crate) fn handle_matrix(args: &[String]) -> Result<(), CliError> {
 
 pub(crate) fn handle_doctor(args: &[String]) -> Result<(), CliError> {
     let doctor_args = parse_doctor_args(args)?;
-    let mut report = build_doctor_report_for_model(
+    let current_dir = std::env::current_dir().ok();
+    let runtime_assets = detect_runtime_assets_report(current_dir.as_deref());
+    let mut report = build_doctor_report_for_model_and_runtime(
         current_host_report(),
         current_metal_toolchain_report(),
+        runtime_assets,
         doctor_args.mlx_model_artifacts_dir.as_deref(),
     );
     report.workflow = detect_doctor_workflow_report()?;

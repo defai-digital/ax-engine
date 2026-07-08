@@ -1,9 +1,11 @@
 use ax_engine_core::{
     MetalBuildDoctorReport, MetalBuildHostReport, MetalBuildToolStatus, MetalBuildToolchainReport,
+    MetalKernelAssets,
 };
 use ax_engine_sdk::{HostReport, MetalToolchainReport, ToolStatusReport};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -80,12 +82,57 @@ pub(crate) struct DoctorReport {
     pub(crate) mlx_runtime_ready: bool,
     pub(crate) bringup_allowed: bool,
     pub(crate) workflow: DoctorWorkflowReport,
+    pub(crate) runtime_assets: DoctorRuntimeAssetsReport,
     pub(crate) model_artifacts: DoctorModelArtifactsReport,
     pub(crate) host: HostReport,
     pub(crate) metal_toolchain: MetalToolchainReport,
     pub(crate) issues: Vec<String>,
     pub(crate) notes: Vec<String>,
     pub(crate) performance_advice: Vec<DoctorAdvice>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum DoctorRuntimeAssetsStatus {
+    NotFound,
+    Ready,
+    NotReady,
+}
+
+impl DoctorRuntimeAssetsStatus {
+    fn human_label(self) -> &'static str {
+        match self {
+            Self::NotFound => "not found",
+            Self::Ready => "ready",
+            Self::NotReady => "not ready",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub(crate) struct DoctorRuntimeAssetsReport {
+    pub(crate) status: DoctorRuntimeAssetsStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) source: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) issue: Option<String>,
+}
+
+impl DoctorRuntimeAssetsReport {
+    fn not_found() -> Self {
+        Self {
+            status: DoctorRuntimeAssetsStatus::NotFound,
+            path: None,
+            source: None,
+            issue: None,
+        }
+    }
+
+    fn is_ready(&self) -> bool {
+        self.status == DoctorRuntimeAssetsStatus::Ready
+    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -209,25 +256,52 @@ pub(crate) fn build_doctor_report(
     host: HostReport,
     metal_toolchain: MetalToolchainReport,
 ) -> DoctorReport {
-    build_doctor_report_with_mlx_model_artifacts(host, metal_toolchain, None)
+    build_doctor_report_with_runtime_assets(
+        host,
+        metal_toolchain,
+        DoctorRuntimeAssetsReport::not_found(),
+        None,
+    )
 }
 
+#[cfg(test)]
 pub(crate) fn build_doctor_report_for_model(
     host: HostReport,
     metal_toolchain: MetalToolchainReport,
     mlx_model_artifacts_dir: Option<&Path>,
 ) -> DoctorReport {
-    build_doctor_report_with_mlx_model_artifacts(host, metal_toolchain, mlx_model_artifacts_dir)
+    build_doctor_report_with_runtime_assets(
+        host,
+        metal_toolchain,
+        DoctorRuntimeAssetsReport::not_found(),
+        mlx_model_artifacts_dir,
+    )
 }
 
-fn build_doctor_report_with_mlx_model_artifacts(
+pub(crate) fn build_doctor_report_for_model_and_runtime(
     host: HostReport,
     metal_toolchain: MetalToolchainReport,
+    runtime_assets: DoctorRuntimeAssetsReport,
     mlx_model_artifacts_dir: Option<&Path>,
 ) -> DoctorReport {
-    let mlx_runtime_ready = host.supported_mlx_runtime && metal_toolchain.fully_available;
-    let bringup_allowed = metal_toolchain.fully_available
-        && (host.supported_mlx_runtime || host.unsupported_host_override_active);
+    build_doctor_report_with_runtime_assets(
+        host,
+        metal_toolchain,
+        runtime_assets,
+        mlx_model_artifacts_dir,
+    )
+}
+
+fn build_doctor_report_with_runtime_assets(
+    host: HostReport,
+    metal_toolchain: MetalToolchainReport,
+    runtime_assets: DoctorRuntimeAssetsReport,
+    mlx_model_artifacts_dir: Option<&Path>,
+) -> DoctorReport {
+    let runtime_available = runtime_assets.is_ready() || metal_toolchain.fully_available;
+    let mlx_runtime_ready = host.supported_mlx_runtime && runtime_available;
+    let bringup_allowed =
+        runtime_available && (host.supported_mlx_runtime || host.unsupported_host_override_active);
     let status = if mlx_runtime_ready {
         DoctorStatus::Ready
     } else if bringup_allowed {
@@ -243,16 +317,78 @@ fn build_doctor_report_with_mlx_model_artifacts(
         mlx_runtime_ready,
         bringup_allowed,
         workflow: DoctorWorkflowReport::unknown(),
+        runtime_assets: runtime_assets.clone(),
         model_artifacts: doctor_model_artifacts_report(mlx_model_artifacts_dir),
         host: host.clone(),
         metal_toolchain: metal_toolchain.clone(),
-        issues: doctor_issues(&host, &metal_toolchain),
-        notes: doctor_notes(&host),
+        issues: doctor_issues(&host, &metal_toolchain, &runtime_assets),
+        notes: doctor_notes(&host, &metal_toolchain, &runtime_assets),
         performance_advice: doctor_performance_advice(&host, mlx_model_artifacts_dir),
     }
 }
 
-fn doctor_issues(host: &HostReport, metal_toolchain: &MetalToolchainReport) -> Vec<String> {
+pub(crate) fn detect_runtime_assets_report(
+    current_dir: Option<&Path>,
+) -> DoctorRuntimeAssetsReport {
+    if let Some(path) = env::var_os("AX_ENGINE_METAL_BUILD_DIR").map(PathBuf::from) {
+        return runtime_assets_report_for_dir(&path, "explicit_env");
+    }
+
+    current_dir
+        .and_then(detect_repo_runtime_assets_from)
+        .unwrap_or_else(DoctorRuntimeAssetsReport::not_found)
+}
+
+fn detect_repo_runtime_assets_from(start_dir: &Path) -> Option<DoctorRuntimeAssetsReport> {
+    for candidate_root in start_dir.ancestors().take(20) {
+        let manifest_path = candidate_root.join("metal/phase1-kernels.json");
+        let build_dir = candidate_root.join("build/metal");
+        let build_report_path = build_dir.join("build_report.json");
+
+        if !manifest_path.is_file() && !build_report_path.is_file() {
+            continue;
+        }
+
+        if !build_report_path.is_file() {
+            return Some(DoctorRuntimeAssetsReport {
+                status: DoctorRuntimeAssetsStatus::NotFound,
+                path: Some(path_string(&build_dir)),
+                source: Some("repo_auto_detect".to_string()),
+                issue: Some("build/metal/build_report.json is missing".to_string()),
+            });
+        }
+
+        return Some(runtime_assets_report_for_dir(
+            &build_dir,
+            "repo_auto_detect",
+        ));
+    }
+
+    None
+}
+
+fn runtime_assets_report_for_dir(path: &Path, source: &str) -> DoctorRuntimeAssetsReport {
+    match MetalKernelAssets::from_build_dir(path) {
+        Ok(_) => DoctorRuntimeAssetsReport {
+            status: DoctorRuntimeAssetsStatus::Ready,
+            path: Some(path_string(path)),
+            source: Some(source.to_string()),
+            issue: None,
+        },
+        Err(error) => DoctorRuntimeAssetsReport {
+            status: DoctorRuntimeAssetsStatus::NotReady,
+            path: Some(path_string(path)),
+            source: Some(source.to_string()),
+            issue: Some(error.to_string()),
+        },
+    }
+}
+
+fn doctor_issues(
+    host: &HostReport,
+    metal_toolchain: &MetalToolchainReport,
+    runtime_assets: &DoctorRuntimeAssetsReport,
+) -> Vec<String> {
     let mut issues = Vec::new();
 
     if !host.supported_mlx_runtime {
@@ -276,23 +412,49 @@ fn doctor_issues(host: &HostReport, metal_toolchain: &MetalToolchainReport) -> V
     }
 
     let missing_tools = missing_metal_tools(metal_toolchain);
-    if !missing_tools.is_empty() {
+    if !runtime_assets.is_ready() && !missing_tools.is_empty() {
         issues.push(format!(
-            "Metal toolchain is incomplete; missing {}",
+            "Runtime assets are not ready and Metal toolchain is incomplete; missing {}",
             missing_tools.join(", ")
         ));
+    }
+    if runtime_assets.status == DoctorRuntimeAssetsStatus::NotReady
+        && !metal_toolchain.fully_available
+    {
+        let path = runtime_assets.path.as_deref().unwrap_or("unknown");
+        let issue = runtime_assets.issue.as_deref().unwrap_or("unknown error");
+        issues.push(format!("Runtime assets are not ready at {path}: {issue}"));
     }
 
     issues
 }
 
-fn doctor_notes(host: &HostReport) -> Vec<String> {
+fn doctor_notes(
+    host: &HostReport,
+    metal_toolchain: &MetalToolchainReport,
+    runtime_assets: &DoctorRuntimeAssetsReport,
+) -> Vec<String> {
     let mut notes = vec!["llama.cpp backends do not widen supported host scope".to_string()];
     if host.unsupported_host_override_active {
         notes.push(
             "AX_ALLOW_UNSUPPORTED_HOST only unlocks development or CI bring-up and does not make benchmark or runtime results supported"
                 .to_string(),
         );
+    }
+    let missing_tools = missing_metal_tools(metal_toolchain);
+    if runtime_assets.is_ready() && !missing_tools.is_empty() {
+        notes.push(format!(
+            "Developer Metal toolchain is incomplete; missing {}. Bundled runtime assets are ready, so this only blocks rebuilding Metal kernels.",
+            missing_tools.join(", ")
+        ));
+    }
+    if runtime_assets.status == DoctorRuntimeAssetsStatus::NotReady
+        && metal_toolchain.fully_available
+    {
+        let path = runtime_assets.path.as_deref().unwrap_or("unknown");
+        notes.push(format!(
+            "Runtime assets at {path} are stale or invalid, but the Metal toolchain is available; run ax-engine-bench metal-build before relying on repo-owned compiled kernel assets."
+        ));
     }
     notes
 }
@@ -676,6 +838,10 @@ pub(crate) fn render_doctor_report(report: &DoctorReport) -> String {
             "  - MLX runtime: {}",
             ready_not_ready(report.mlx_runtime_ready)
         ),
+        format!(
+            "  - Runtime assets: {}",
+            report.runtime_assets.status.human_label()
+        ),
         format!("  - Bring-up allowed: {}", yes_no(report.bringup_allowed)),
         format!("  - Target: {}", report.mlx_target),
         format!(
@@ -770,6 +936,21 @@ pub(crate) fn render_doctor_report(report: &DoctorReport) -> String {
         format!(
             "  - Unsupported-host override active: {}",
             yes_no(report.host.unsupported_host_override_active)
+        ),
+        String::new(),
+        "Runtime assets:".to_string(),
+        format!("  - Status: {}", report.runtime_assets.status.human_label()),
+        format!(
+            "  - Source: {}",
+            report.runtime_assets.source.as_deref().unwrap_or("none")
+        ),
+        format!(
+            "  - Path: {}",
+            report.runtime_assets.path.as_deref().unwrap_or("none")
+        ),
+        format!(
+            "  - Issue: {}",
+            report.runtime_assets.issue.as_deref().unwrap_or("none")
         ),
         String::new(),
         "Metal toolchain:".to_string(),

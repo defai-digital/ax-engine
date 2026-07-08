@@ -507,7 +507,7 @@ fn user_doctor_report(bench: &Value) -> Value {
             check("server_binary", server.available, server.detail),
             check("bench_binary", bench_bin.available, bench_bin.detail),
             check("host", value_bool(bench, &["host", "supported_mlx_runtime"]).unwrap_or(false), host_detail(bench)),
-            check("metal_toolchain", value_bool(bench, &["metal_toolchain", "fully_available"]).unwrap_or(false), metal_detail(bench)),
+            check("metal_toolchain", metal_check_pass(bench), metal_detail(bench)),
             check("mlx_runtime", mlx_ready, bench_status.to_string()),
             json!({
                 "id": "model",
@@ -775,9 +775,17 @@ fn host_detail(report: &Value) -> String {
 fn metal_detail(report: &Value) -> String {
     if value_bool(report, &["metal_toolchain", "fully_available"]).unwrap_or(false) {
         "Metal compiler and metallib available".to_string()
+    } else if value_str(report, &["runtime_assets", "status"]) == Some("ready") {
+        "Bundled runtime assets available; Metal compiler only needed for kernel rebuilds"
+            .to_string()
     } else {
         "Metal compiler or metallib missing".to_string()
     }
+}
+
+fn metal_check_pass(report: &Value) -> bool {
+    value_bool(report, &["metal_toolchain", "fully_available"]).unwrap_or(false)
+        || value_str(report, &["runtime_assets", "status"]) == Some("ready")
 }
 
 fn value_at<'a>(value: &'a Value, path: &[&str]) -> Option<&'a Value> {
@@ -2836,6 +2844,20 @@ mod tests {
         assert!(output.contains("model: not_selected"));
         assert!(output.contains("ax-engine serve qwen36-35b --download --port 8080"));
         assert!(output.contains("More details: ax-engine-bench doctor"));
+    }
+
+    #[test]
+    fn metal_check_accepts_bundled_runtime_assets_without_developer_toolchain() {
+        let report = json!({
+            "runtime_assets": {"status": "ready"},
+            "metal_toolchain": {"fully_available": false}
+        });
+
+        assert!(metal_check_pass(&report));
+        assert_eq!(
+            metal_detail(&report),
+            "Bundled runtime assets available; Metal compiler only needed for kernel rebuilds"
+        );
     }
 
     fn unique_temp_dir(label: &str) -> PathBuf {

@@ -70,20 +70,12 @@ model-specific boundaries are kept visible.
 **Install** (macOS 26 Tahoe or later, Apple Silicon only — see [Typical Hardware](#typical-hardware)):
 
 Upgrade pip first so pip 23+ can find the macOS wheel, and keep the package
-spec quoted for zsh.
+spec quoted for zsh. The wheel bundles AX and MLX runtime assets, so Xcode is
+not required for the normal runtime path.
 
 ```bash
 python3 -m pip install --upgrade pip
 python3 -m pip install -U "ax-engine[download]>=6.7.1,<7"
-ax-engine doctor
-```
-
-If `ax-engine doctor` reports `Metal toolchain is incomplete; missing xcrun
-metal, xcrun metallib`, install Apple's Metal Toolchain component and rerun the
-doctor:
-
-```bash
-xcodebuild -downloadComponent MetalToolchain
 ax-engine doctor
 ```
 
@@ -116,9 +108,8 @@ For platform requirements, troubleshooting, optional extras, Homebrew, source
 builds, and release-channel diagnostics, see the
 [Getting Started installation guide](docs/GETTING-STARTED.md#installation).
 The Python wheel is still the primary install path, but Apple's Metal compiler
-tools are installed outside pip; source builds, Metal kernel rebuilds, and
-doctor environments that report missing `xcrun metal` / `xcrun metallib` need
-`xcodebuild -downloadComponent MetalToolchain`.
+tools are installed outside pip and are only required for source builds,
+development diagnostics, or rebuilding AX Metal kernels.
 
 ## Getting a Model
 
