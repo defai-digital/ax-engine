@@ -21,39 +21,39 @@
 <rect x="232" y="70" width="12" height="12" rx="2" fill="#c084fc"/>
 <text x="250" y="80" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="12" fill="#374151">MTP on / AX MTP</text>
 <text x="72" y="100.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#111827"><tspan x="72" y="100.0" font-weight="700">Qwen3.6 27B</tspan><tspan x="72" y="114.0" font-size="10" fill="#4b5563">flappy</tspan></text>
-<rect x="210" y="91.0" width="93.0" height="10" rx="2" fill="#2eaf5f"/>
-<rect x="210" y="104.0" width="217.5" height="10" rx="2" fill="#c084fc"/>
-<text x="308.0" y="99.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#176c37">18.6</text>
-<text x="432.5" y="112.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#dc2626">43.6</text>
+<rect x="210" y="91.0" width="114.0" height="10" rx="2" fill="#2eaf5f"/>
+<rect x="210" y="104.0" width="219.3" height="10" rx="2" fill="#c084fc"/>
+<text x="329.0" y="99.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#176c37">22.9</text>
+<text x="434.3" y="112.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#dc2626">44.0</text>
 <line x1="72" y1="129.0" x2="1008" y2="129.0" stroke="#eef2f7" stroke-width="1"/>
 <text x="72" y="150.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#111827"><tspan x="72" y="150.0" font-weight="700">Qwen3.6 35B-A3B</tspan><tspan x="72" y="164.0" font-size="10" fill="#4b5563">flappy</tspan></text>
-<rect x="210" y="141.0" width="206.2" height="10" rx="2" fill="#2eaf5f"/>
-<rect x="210" y="154.0" width="711.8" height="10" rx="2" fill="#c084fc"/>
-<text x="421.2" y="149.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#176c37">41.3</text>
-<text x="926.8" y="162.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#dc2626">142.7</text>
+<rect x="210" y="141.0" width="397.4" height="10" rx="2" fill="#2eaf5f"/>
+<rect x="210" y="154.0" width="703.7" height="10" rx="2" fill="#c084fc"/>
+<text x="612.4" y="149.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#176c37">79.7</text>
+<text x="918.7" y="162.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#dc2626">141.1</text>
 <line x1="72" y1="179.0" x2="1008" y2="179.0" stroke="#eef2f7" stroke-width="1"/>
 <text x="72" y="200.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#111827"><tspan x="72" y="200.0" font-weight="700">Gemma 4 12B</tspan><tspan x="72" y="214.0" font-size="10" fill="#4b5563">flappy</tspan></text>
-<rect x="210" y="191.0" width="188.7" height="10" rx="2" fill="#2eaf5f"/>
-<rect x="210" y="204.0" width="374.7" height="10" rx="2" fill="#c084fc"/>
-<text x="403.7" y="199.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#176c37">37.8</text>
-<text x="589.7" y="212.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#dc2626">75.1</text>
+<rect x="210" y="191.0" width="189.5" height="10" rx="2" fill="#2eaf5f"/>
+<rect x="210" y="204.0" width="378.1" height="10" rx="2" fill="#c084fc"/>
+<text x="404.5" y="199.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#176c37">38.0</text>
+<text x="593.1" y="212.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#dc2626">75.8</text>
 <line x1="72" y1="229.0" x2="1008" y2="229.0" stroke="#eef2f7" stroke-width="1"/>
 <text x="72" y="250.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#111827"><tspan x="72" y="250.0" font-weight="700">Gemma 4 26B</tspan><tspan x="72" y="264.0" font-size="10" fill="#4b5563">flappy</tspan></text>
-<rect x="210" y="241.0" width="230.4" height="10" rx="2" fill="#2eaf5f"/>
-<rect x="210" y="254.0" width="598.4" height="10" rx="2" fill="#c084fc"/>
-<text x="445.4" y="249.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#176c37">46.2</text>
-<text x="813.4" y="262.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#dc2626">120.0</text>
+<rect x="210" y="241.0" width="417.1" height="10" rx="2" fill="#2eaf5f"/>
+<rect x="210" y="254.0" width="552.2" height="10" rx="2" fill="#c084fc"/>
+<text x="632.1" y="249.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#176c37">83.6</text>
+<text x="767.2" y="262.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#dc2626">110.7</text>
 <line x1="72" y1="279.0" x2="1008" y2="279.0" stroke="#eef2f7" stroke-width="1"/>
 <text x="72" y="300.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#111827"><tspan x="72" y="300.0" font-weight="700">Gemma 4 31B</tspan><tspan x="72" y="314.0" font-size="10" fill="#4b5563">flappy</tspan></text>
-<rect x="210" y="291.0" width="75.6" height="10" rx="2" fill="#2eaf5f"/>
-<rect x="210" y="304.0" width="141.3" height="10" rx="2" fill="#c084fc"/>
-<text x="290.6" y="299.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#176c37">15.2</text>
-<text x="356.3" y="312.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#dc2626">28.3</text>
+<rect x="210" y="291.0" width="87.4" height="10" rx="2" fill="#2eaf5f"/>
+<rect x="210" y="304.0" width="139.7" height="10" rx="2" fill="#c084fc"/>
+<text x="302.4" y="299.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#176c37">17.5</text>
+<text x="354.7" y="312.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#dc2626">28.0</text>
 <line x1="72" y1="329.0" x2="1008" y2="329.0" stroke="#eef2f7" stroke-width="1"/>
 <text x="72" y="350.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" fill="#111827"><tspan x="72" y="350.0" font-weight="700">GLM-4.7 Flash</tspan><tspan x="72" y="364.0" font-size="10" fill="#4b5563">flappy</tspan></text>
-<rect x="210" y="341.0" width="255.6" height="10" rx="2" fill="#2eaf5f"/>
-<rect x="210" y="354.0" width="486.3" height="10" rx="2" fill="#c084fc"/>
-<text x="470.6" y="349.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#176c37">51.2</text>
-<text x="701.3" y="362.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#dc2626">97.5</text>
-<text x="72" y="468.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">Source: benchmarks/results/speculative/mtp-6bit/2026-07-05-six-model-flappy-ax-mtp-vs-direct-gemma12b-refresh / summary.json. Pure MTP; no MTP+n-gram stacking.</text>
+<rect x="210" y="341.0" width="364.1" height="10" rx="2" fill="#2eaf5f"/>
+<rect x="210" y="354.0" width="561.5" height="10" rx="2" fill="#c084fc"/>
+<text x="579.1" y="349.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#176c37">73.0</text>
+<text x="776.5" y="362.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#dc2626">112.6</text>
+<text x="72" y="468.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">Source: benchmarks/results/speculative/mtp-6bit/2026-07-07-six-model-flappy-current-code-refresh / summary.json. Pure MTP; no MTP+n-gram stacking.</text>
 </svg>

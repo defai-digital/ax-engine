@@ -349,7 +349,7 @@ published to make comparison with other MTP engines easier because many peer
 benchmarks use 4-bit models. Historical MTP+n-gram artifacts remain useful for
 debugging regressions, but they are not current README/PERFORMANCE MTP evidence.
 
-#### AX Engine 6-bit MTP package acceleration (2026-07-05)
+#### AX Engine 6-bit MTP package acceleration (2026-07-08)
 
 This refresh is an AX Engine-only benchmark of the practical 6-bit
 `download-mtp` lane. "AX Engine-only" describes the measurement scope, not an
@@ -359,28 +359,25 @@ accelerates each repo-owned 6-bit package against the same package with MTP
 disabled; it is not a cross-engine leaderboard and should not be mixed with the
 Qwen peer comparison below. Every row uses the `flappy` suite, sampled decode
 (`temperature=0.6`, `top_p=0.95`, `top_k=20`), 1000 generated tokens, 5
-measured repetitions, 1 warmup, and 15 s cooldown. The Gemma 4 12B row was
-rerun on a clean `6b813b35` build; the other rows are retained from the
-2026-07-01 clean `d4c59ffc` rerun.
+measured repetitions, 1 warmup, and 15 s cooldown. All rows were refreshed on a
+clean `6ff19f66` build from the current code.
 
 <img src="docs/assets/perf-mtp-6bit-ax-acceleration.svg" alt="AX Engine 6-bit MTP package acceleration chart comparing direct decode and MTP decode for Qwen3.6, Gemma 4, and GLM-4.7 Flash">
 
 | Target | AX direct decode | AX MTP decode | AX speedup | AX MTP prefill | AX MTP TTFT | AX accept |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| `qwen3.6-27b-6bit` | 18.6 tok/s | 43.6 tok/s | 2.34x | 766.6 tok/s | 420 ms | 100.0% |
-| `qwen3.6-35b-a3b` | 41.3 tok/s | 142.7 tok/s | 3.45x | 1,818.4 tok/s | 178 ms | 100.0% |
-| `gemma-4-12b` | 37.8 tok/s | 75.1 tok/s | 1.99x | 1,780.3 tok/s | 195 ms | 100.0% |
-| `gemma-4-26b` | 46.2 tok/s | 120.0 tok/s | 2.60x | 2,411.1 tok/s | 144 ms | 100.0% |
-| `gemma-4-31b` | 15.2 tok/s | 28.3 tok/s | 1.87x | 699.8 tok/s | 478 ms | 100.0% |
-| `glm-4.7-flash` | 51.2 tok/s | 97.5 tok/s | 1.90x | 1,694.3 tok/s | 163 ms | 100.0% |
+| `qwen3.6-27b-6bit` | 22.9 tok/s | 44.0 tok/s | 1.92x | 754.8 tok/s | 426 ms | 100.0% |
+| `qwen3.6-35b-a3b` | 79.7 tok/s | 141.1 tok/s | 1.77x | 1,805.9 tok/s | 179 ms | 100.0% |
+| `gemma-4-12b` | 38.0 tok/s | 75.8 tok/s | 2.00x | 1,792.2 tok/s | 194 ms | 100.0% |
+| `gemma-4-26b` | 83.6 tok/s | 110.7 tok/s | 1.32x | 2,286.9 tok/s | 152 ms | 100.0% |
+| `gemma-4-31b` | 17.5 tok/s | 28.0 tok/s | 1.60x | 697.5 tok/s | 483 ms | 99.9% |
+| `glm-4.7-flash` | 73.0 tok/s | 112.6 tok/s | 1.54x | 1,635.5 tok/s | 171 ms | 98.0% |
 
 All rows are pure MTP verification rows with zero n-gram accepted/proposed/
 submitted/hit-step telemetry. Publication summary:
-[`benchmarks/results/speculative/mtp-6bit/2026-07-05-six-model-flappy-ax-mtp-vs-direct-gemma12b-refresh/summary.json`](benchmarks/results/speculative/mtp-6bit/2026-07-05-six-model-flappy-ax-mtp-vs-direct-gemma12b-refresh/summary.json).
-Gemma 4 12B refresh artifacts:
-[`benchmarks/results/speculative/mtp-6bit/2026-07-05-gemma4-12b-6bit-flappy-ax-mtp-vs-direct-refresh/summary.json`](benchmarks/results/speculative/mtp-6bit/2026-07-05-gemma4-12b-6bit-flappy-ax-mtp-vs-direct-refresh/summary.json).
+[`benchmarks/results/speculative/mtp-6bit/2026-07-07-six-model-flappy-current-code-refresh/summary.json`](benchmarks/results/speculative/mtp-6bit/2026-07-07-six-model-flappy-current-code-refresh/summary.json).
 
-#### Qwen3.6 MTP peer decode comparison (2026-07-01)
+#### Qwen3.6 MTP peer decode comparison (2026-07-08 AX refresh)
 
 README keeps only the decode-throughput view for the Qwen3.6 MTP peer
 comparison because decode is the closest comparable metric across AX Engine,
@@ -390,7 +387,9 @@ need separate interpretation:
 [`docs/mtp/qwen36-peer-comparison.md`](docs/mtp/qwen36-peer-comparison.md).
 
 This is a stitched peer comparison, not one interleaved physical-session
-benchmark. The 27B 4-bit rows now load the same
+benchmark. AX Engine rows were refreshed on the current code; MTPLX and
+lightning-mlx rows are retained from the prior peer artifacts. The 27B 4-bit
+rows load the same
 `ax-local/Qwen3.6-27B-MTP` sidecar across AX Engine, MTPLX, and lightning-mlx;
 the 35B-A3B peer rows remain production-configuration rows with the peer
 engines' Youssofal MTPLX-optimized packages. The AX 27B 4-bit row uses strict
@@ -401,13 +400,15 @@ artifacts remain useful only as audit/debug evidence.
 
 | Target | AX Engine decode | MTPLX decode | lightning-mlx decode | Readout |
 | --- | ---: | ---: | ---: | --- |
-| Qwen3.6 27B 4-bit | 61.0 tok/s | 58.5 tok/s | 55.7 tok/s | Same AX sidecar across all three engines; AX leads this row |
-| Qwen3.6 27B 6-bit | 40.7 tok/s | - | - | No official comparable peer 27B 6-bit MTP artifact |
-| Qwen3.6 35B-A3B 4-bit | 169.9 tok/s | 138.1 tok/s | 116.2 tok/s | AX leads this production-config row |
-| Qwen3.6 35B-A3B 6-bit | 140.0 tok/s | 117.6 tok/s | 96.3 tok/s | AX leads this production-config row |
+| Qwen3.6 27B 4-bit | 63.0 tok/s | 58.5 tok/s | 55.7 tok/s | Same AX sidecar across all three engines; AX leads this row |
+| Qwen3.6 27B 6-bit | 41.8 tok/s | - | - | No official comparable peer 27B 6-bit MTP artifact |
+| Qwen3.6 35B-A3B 4-bit | 172.4 tok/s | 138.1 tok/s | 116.2 tok/s | AX leads this production-config row |
+| Qwen3.6 35B-A3B 6-bit | 141.2 tok/s | 117.6 tok/s | 96.3 tok/s | AX leads this production-config row |
 
 Full results, charts, artifact links, and fairness limitations:
 [`docs/mtp/qwen36-peer-comparison.md`](docs/mtp/qwen36-peer-comparison.md).
+Stitched chart source:
+[`benchmarks/results/mtp-qwen36-matrix/2026-07-08-peer-comparison-apples-to-apples-refresh/summary.json`](benchmarks/results/mtp-qwen36-matrix/2026-07-08-peer-comparison-apples-to-apples-refresh/summary.json).
 For the older AX-only Qwen3.6 table across `flappy`, `long_code`, and
 `python_modules_long`, see
 [`docs/mtp/qwen36-matrix-refresh.md`](docs/mtp/qwen36-matrix-refresh.md). That
@@ -431,7 +432,7 @@ cache each forward — so depth-2 drafting needs no cache surgery and stays
 correctness-preserving: a gate miss simply verifies fewer speculative positions,
 never a changed committed token.
 
-Current 12B benchmark (M5 Max, clean `672b7a7b` release build,
+Current 12B benchmark (M5 Max, clean `6ff19f66` release build,
 `temperature=0.6`, `top_p=0.95`, `top_k=20`, chat-templated `flappy` /
 `long_code` / `python_modules_long`, n-gram stacking off, depth-2 assistant
 drafting):
@@ -443,19 +444,19 @@ drafting):
 
 | Suite | Assistant accept | AX direct decode | AX MTP decode | Speedup | AX MTP prefill | AX MTP TTFT |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| `flappy` | 98.5% | 58.7 tok/s | 94.5 tok/s | 1.61x | 1,778.5 tok/s | 200 ms |
-| `long_code` | 99.1% | 56.0 tok/s | 93.7 tok/s | 1.68x | 2,017.6 tok/s | 398 ms |
-| `python_modules_long` | 97.8% | 56.8 tok/s | 88.4 tok/s | 1.56x | 1,889.9 tok/s | 190 ms |
+| `flappy` | 98.4% | 58.9 tok/s | 97.9 tok/s | 1.66x | 1,860.5 tok/s | 194 ms |
+| `long_code` | 99.1% | 58.1 tok/s | 96.3 tok/s | 1.66x | 2,023.3 tok/s | 394 ms |
+| `python_modules_long` | 97.0% | 58.9 tok/s | 90.0 tok/s | 1.53x | 1,817.7 tok/s | 201 ms |
 
-All three 12B suites hold assistant accept **>97%** and depth-2 MTP is faster
-than same-artifact direct decode by **1.56-1.68x**. The aggregate comparison in
-the artifact reports **+65.0%** decode versus direct, with the worst suite still
-up **+55.6%**. Depth-2 is the shipped default; set
+All three 12B suites hold assistant accept **>=97%** and depth-2 MTP is faster
+than same-artifact direct decode by **1.53-1.66x**. The aggregate comparison in
+the artifact reports **+63.6%** decode versus direct, with the worst suite still
+up **+52.8%**. Depth-2 is the shipped default; set
 `AX_MLX_GEMMA4_ASSISTANT_MTP_MAX_DEPTH=1` to restore single-token drafting.
 Method and per-suite artifacts:
 [`docs/mtp/gemma4-assistant-multi-depth.md`](docs/mtp/gemma4-assistant-multi-depth.md);
 current 12B result artifacts under
-[`benchmarks/results/gemma4-assistant-mtp/2026-07-04-gemma4-12b-ax-only-direct-mtp-refresh/`](benchmarks/results/gemma4-assistant-mtp/2026-07-04-gemma4-12b-ax-only-direct-mtp-refresh/).
+[`benchmarks/results/gemma4-assistant-mtp/2026-07-08-gemma4-12b-ax-only-direct-mtp-current-code-refresh/`](benchmarks/results/gemma4-assistant-mtp/2026-07-08-gemma4-12b-ax-only-direct-mtp-current-code-refresh/).
 
 ### Direct Mode (Decode · Prefill · TTFT)
 
