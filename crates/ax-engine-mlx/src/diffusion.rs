@@ -237,10 +237,27 @@ fn check_convergence(canvas: &DiffusionCanvas, cfg: &DiffusionConfig) -> Converg
     }
 }
 
-// Linear temperature schedule from `temp_start` (step 0) to `temp_end` (max steps).
+// Temperature schedule from `temp_start` (step 0) to `temp_end` (max steps).
+//
+// Supports two schedules:
+// - **Linear**: `temp = start + (end - start) * t` — constant cooling rate.
+// - **Exponential**: `temp = start * (end / start)^t` — drops temperature faster
+//   in early steps, which can reduce denoise iterations on in-distribution
+//   prompts by reaching exploitation temperature sooner.
 fn temperature_at_step(step: usize, cfg: &DiffusionConfig) -> f32 {
     let t = step as f32 / cfg.max_denoise_steps.max(1) as f32;
-    cfg.temp_start + (cfg.temp_end - cfg.temp_start) * t
+    match cfg.temperature_schedule {
+        crate::model::DiffusionTemperatureSchedule::Linear => {
+            cfg.temp_start + (cfg.temp_end - cfg.temp_start) * t
+        }
+        crate::model::DiffusionTemperatureSchedule::Exponential => {
+            if cfg.temp_start <= 0.0 {
+                cfg.temp_end
+            } else {
+                cfg.temp_start * (cfg.temp_end / cfg.temp_start).powf(t)
+            }
+        }
+    }
 }
 
 fn mlx_scalar_u32(value: u32) -> MlxArray {
@@ -388,8 +405,15 @@ fn denoise_step(
                 // embedding is only needed for the next denoise step.
                 if diff_cfg.self_conditioning
                     && !canvas.converged
+                    && canvas.acceptance_rate < diff_cfg.sc_skip_acceptance_rate
                     && let Some(embed) = embed_table
                 {
+                    // Skip when acceptance_rate >= sc_skip_acceptance_rate:
+                    // the canvas is mostly stable (>95% positions accepted),
+                    // so the self-conditioning signal barely changes and the
+                    // expensive `prob × embed_table` matmul (~5% per step)
+                    // is wasted.
+                    //
                     // Cast back to bf16: `prob` is f32 (finalized logits), so
                     // the matmul result would otherwise propagate f32 through
                     // every layer of the next step's forward — including a
@@ -627,8 +651,13 @@ fn denoise_step(
     //
     // Skip when the block has already converged: the embedding is only needed
     // for a subsequent denoise step, and convergence means this is the last one.
+    //
+    // Also skip when acceptance_rate >= sc_skip_acceptance_rate: the canvas
+    // is mostly stable, so the self-conditioning signal barely changes and
+    // the expensive `prob × embed_table` matmul (~5% per step) is wasted.
     if diff_cfg.self_conditioning
         && !canvas.converged
+        && canvas.acceptance_rate < diff_cfg.sc_skip_acceptance_rate
         && let Some(embed) = embed_table
     {
         // Cast back to bf16 — see the compiled-pipeline site above: an f32
@@ -1225,6 +1254,8 @@ mod tests {
             entropy_plateau_delta: 0.005,
             sampler: crate::model::DiffusionSampler::EntropyBound,
             confidence_threshold: 0.9,
+            temperature_schedule: crate::model::DiffusionTemperatureSchedule::Linear,
+            sc_skip_acceptance_rate: 0.95,
         }
     }
 
@@ -1554,6 +1585,65 @@ mod tests {
     }
 
     // ── Full pipeline / KV buffer flag tests ──────────────────────────
+
+    // ── Temperature schedule tests ─────────────────────────────────────
+
+    #[test]
+    fn temperature_linear_schedule_midpoint() {
+        let mut cfg = default_diff_cfg();
+        cfg.max_denoise_steps = 48;
+        cfg.temp_start = 0.8;
+        cfg.temp_end = 0.4;
+        cfg.temperature_schedule = crate::model::DiffusionTemperatureSchedule::Linear;
+        // At step 24 (midpoint), t = 0.5 → temp = 0.8 + (0.4 - 0.8) * 0.5 = 0.6
+        let temp = temperature_at_step(24, &cfg);
+        assert!((temp - 0.6).abs() < 1e-6, "linear midpoint: got {temp}");
+    }
+
+    #[test]
+    fn temperature_exponential_schedule_midpoint() {
+        let mut cfg = default_diff_cfg();
+        cfg.max_denoise_steps = 48;
+        cfg.temp_start = 0.8;
+        cfg.temp_end = 0.4;
+        cfg.temperature_schedule = crate::model::DiffusionTemperatureSchedule::Exponential;
+        // At step 24 (midpoint), t = 0.5 → temp = 0.8 * (0.5)^0.5 ≈ 0.5657
+        let temp = temperature_at_step(24, &cfg);
+        let expected = 0.8_f32 * (0.5_f32).sqrt();
+        assert!(
+            (temp - expected).abs() < 1e-4,
+            "exponential midpoint: got {temp}, expected {expected}"
+        );
+        // Exponential drops faster early: at midpoint it should be below linear midpoint.
+        assert!(temp < 0.6, "exponential should drop faster than linear");
+    }
+
+    #[test]
+    fn temperature_exponential_endpoints() {
+        let mut cfg = default_diff_cfg();
+        cfg.max_denoise_steps = 48;
+        cfg.temp_start = 0.8;
+        cfg.temp_end = 0.4;
+        cfg.temperature_schedule = crate::model::DiffusionTemperatureSchedule::Exponential;
+        // At step 0, t = 0 → temp = 0.8 * (0.5)^0 = 0.8
+        let temp0 = temperature_at_step(0, &cfg);
+        assert!((temp0 - 0.8).abs() < 1e-6, "exp step 0: got {temp0}");
+        // At step max, t = 1 → temp = 0.8 * (0.5)^1 = 0.4
+        let temp48 = temperature_at_step(48, &cfg);
+        assert!((temp48 - 0.4).abs() < 1e-6, "exp step max: got {temp48}");
+    }
+
+    #[test]
+    fn temperature_exponential_zero_start() {
+        let mut cfg = default_diff_cfg();
+        cfg.max_denoise_steps = 48;
+        cfg.temp_start = 0.0;
+        cfg.temp_end = 0.4;
+        cfg.temperature_schedule = crate::model::DiffusionTemperatureSchedule::Exponential;
+        // temp_start = 0 → should return temp_end to avoid 0 * (inf)^t.
+        let temp = temperature_at_step(24, &cfg);
+        assert!((temp - 0.4).abs() < 1e-6, "exp zero start: got {temp}");
+    }
 
     #[test]
     fn diffusion_block_result_tracks_optimization_flags() {

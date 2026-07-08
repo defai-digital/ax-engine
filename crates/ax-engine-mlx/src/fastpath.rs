@@ -1090,6 +1090,29 @@ pub fn diffusion_confidence_threshold() -> Option<f32> {
     *CACHED.get_or_init(|| parse_nonnegative_f32_env("AX_DIFFUSION_CONFIDENCE_THRESHOLD"))
 }
 
+/// Diffusion temperature schedule override. Returns the raw env-var string
+/// when `AX_DIFFUSION_TEMPERATURE_SCHEDULE` is set (e.g. `"exponential"` or
+/// `"linear"`). `None` keeps the manifest default (Linear).
+pub fn diffusion_temperature_schedule() -> Option<String> {
+    static CACHED: OnceLock<Option<String>> = OnceLock::new();
+    CACHED
+        .get_or_init(|| {
+            std::env::var("AX_DIFFUSION_TEMPERATURE_SCHEDULE")
+                .ok()
+                .map(|s| s.trim().to_lowercase())
+        })
+        .clone()
+}
+
+/// Diffusion self-conditioning skip threshold. When the canvas acceptance
+/// rate exceeds this value, the expensive `prob × embed_table` matmul is
+/// skipped because the self-conditioning signal barely changes. Defaults to
+/// 0.95 when unset.
+pub fn diffusion_sc_skip_acceptance_rate() -> Option<f32> {
+    static CACHED: OnceLock<Option<f32>> = OnceLock::new();
+    *CACHED.get_or_init(|| parse_nonnegative_f32_env("AX_DIFFUSION_SC_SKIP_ACCEPTANCE_RATE"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

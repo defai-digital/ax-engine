@@ -201,6 +201,20 @@ pub enum DiffusionSampler {
     ConfidenceThreshold,
 }
 
+/// Temperature schedule shape for DiffusionGemma denoising.
+///
+/// Controls how quickly the sampler cools from exploration (`temp_start`)
+/// to exploitation (`temp_end`). Exponential decay drops temperature faster
+/// in early steps, which can reduce denoise iterations by 1–3 steps on
+/// in-distribution prompts.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum DiffusionTemperatureSchedule {
+    /// `temp = start + (end - start) * (step / max_steps)`
+    Linear,
+    /// `temp = start * (end / start) ^ (step / max_steps)`
+    Exponential,
+}
+
 /// Diffusion decoding hyperparameters for DiffusionGemma.
 #[derive(Clone, Debug)]
 pub struct DiffusionConfig {
@@ -235,6 +249,14 @@ pub struct DiffusionConfig {
     pub sampler: DiffusionSampler,
     /// Confidence threshold for ConfidenceThreshold sampler (default 0.9).
     pub confidence_threshold: f32,
+    /// Temperature schedule shape (default: Linear).
+    pub temperature_schedule: DiffusionTemperatureSchedule,
+    /// Acceptance rate above which self-conditioning matmul is skipped.
+    /// When the canvas is mostly stable (>95% positions accepted), the
+    /// self-conditioning signal barely changes and the expensive
+    /// `prob × embed_table` matmul can be skipped to save ~5% per step.
+    /// Default: 0.95.
+    pub sc_skip_acceptance_rate: f32,
 }
 
 impl DiffusionConfig {
@@ -297,6 +319,8 @@ impl DiffusionConfig {
             entropy_plateau_delta: 0.005,
             sampler,
             confidence_threshold: cfg.confidence_threshold.unwrap_or(0.9),
+            temperature_schedule: DiffusionTemperatureSchedule::Linear,
+            sc_skip_acceptance_rate: 0.95,
         };
         // Apply env-var overrides for benchmark sweep campaigns.
         if let Some(v) = crate::fastpath::diffusion_entropy_threshold() {
@@ -323,6 +347,16 @@ impl DiffusionConfig {
         }
         if let Some(v) = crate::fastpath::diffusion_check_interval() {
             dc.convergence_check_interval = v;
+        }
+        // Env-var temperature schedule override.
+        if let Some(v) = crate::fastpath::diffusion_temperature_schedule() {
+            dc.temperature_schedule = match v.as_str() {
+                "exponential" | "exp" => DiffusionTemperatureSchedule::Exponential,
+                _ => DiffusionTemperatureSchedule::Linear,
+            };
+        }
+        if let Some(v) = crate::fastpath::diffusion_sc_skip_acceptance_rate() {
+            dc.sc_skip_acceptance_rate = v;
         }
         Some(dc)
     }

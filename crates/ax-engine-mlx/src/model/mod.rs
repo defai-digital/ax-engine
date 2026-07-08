@@ -58,8 +58,8 @@ pub use turboquant_context::{
 mod config;
 use config::layer_params;
 pub use config::{
-    DiffusionConfig, DiffusionSampler, Gemma4AssistantSharedKvLayers, GlmRouterConfig, LayerConfig,
-    LinearAttentionConfig, MlaAttentionConfig, ModelConfig,
+    DiffusionConfig, DiffusionSampler, DiffusionTemperatureSchedule, Gemma4AssistantSharedKvLayers,
+    GlmRouterConfig, LayerConfig, LinearAttentionConfig, MlaAttentionConfig, ModelConfig,
 };
 
 pub(crate) mod shared;
