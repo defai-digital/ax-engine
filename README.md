@@ -75,6 +75,16 @@ spec quoted for zsh.
 ```bash
 python3 -m pip install --upgrade pip
 python3 -m pip install -U "ax-engine[download]>=6.7.1,<7"
+ax-engine doctor
+```
+
+If `ax-engine doctor` reports `Metal toolchain is incomplete; missing xcrun
+metal, xcrun metallib`, install Apple's Metal Toolchain component and rerun the
+doctor:
+
+```bash
+xcodebuild -downloadComponent MetalToolchain
+ax-engine doctor
 ```
 
 **Download a Gemma 4 12B MTP package:**
@@ -105,6 +115,10 @@ For model choices, SDK examples, Homebrew, and source builds, see the
 For platform requirements, troubleshooting, optional extras, Homebrew, source
 builds, and release-channel diagnostics, see the
 [Getting Started installation guide](docs/GETTING-STARTED.md#installation).
+The Python wheel is still the primary install path, but Apple's Metal compiler
+tools are installed outside pip; source builds, Metal kernel rebuilds, and
+doctor environments that report missing `xcrun metal` / `xcrun metallib` need
+`xcodebuild -downloadComponent MetalToolchain`.
 
 ## Getting a Model
 

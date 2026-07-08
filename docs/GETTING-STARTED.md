@@ -69,6 +69,14 @@ ax-engine doctor
 The current macOS arm64 wheel bundles `ax-engine-server` and `ax-engine-bench`
 behind the Python entrypoints. If pip cannot find `>=6.7.1` for your platform,
 use the source build below instead of silently accepting an older release.
+Apple's Metal compiler tools are not installed by pip. If `ax-engine doctor`
+reports `Metal toolchain is incomplete; missing xcrun metal, xcrun metallib`,
+install the Metal Toolchain component and rerun the doctor:
+
+```bash
+xcodebuild -downloadComponent MetalToolchain
+ax-engine doctor
+```
 
 ### Homebrew
 
@@ -144,6 +152,7 @@ that have not been tagged yet:
 
 ```text
 brew install mlx protobuf
+xcodebuild -downloadComponent MetalToolchain
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip maturin
