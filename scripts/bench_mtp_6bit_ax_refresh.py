@@ -87,7 +87,7 @@ SUPPORTED_TARGETS = (
         model_dir=Path(
             "/Volumes/Ext4T/models/hub/models--ax-local--gemma-4-26b-a4b-it-assistant-mtp/snapshots/v1"
         ),
-        mtp_depth=1,
+        mtp_depth=2,
         assistant_mtp=True,
     ),
     Target(
@@ -97,7 +97,7 @@ SUPPORTED_TARGETS = (
         model_dir=Path(
             "/Volumes/Ext4T/models/hub/models--ax-local--gemma-4-31b-it-assistant-mtp/snapshots/v1"
         ),
-        mtp_depth=1,
+        mtp_depth=2,
         assistant_mtp=True,
     ),
     Target(
