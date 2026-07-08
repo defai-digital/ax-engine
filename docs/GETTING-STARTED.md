@@ -443,7 +443,7 @@ cargo run -p ax-engine-server -- --model-id qwen3_dense --mlx --mlx-model-artifa
 To install the checked-in JavaScript client from this repository:
 
 ```text
-npm install ./javascript/ax-engine
+npm install ./sdk/javascript
 ```
 
 That package is intentionally thin: it targets the preview server's

@@ -2,7 +2,7 @@
  * Streaming examples for the AX Engine JavaScript SDK.
  *
  * Requires:
- *   npm install @ax-engine/sdk   (or: npm install ./javascript/ax-engine)
+ *   npm install @ax-engine/sdk   (or: npm install ./sdk/javascript)
  *   ax-engine-server running on http://127.0.0.1:8080
  *
  * Run:

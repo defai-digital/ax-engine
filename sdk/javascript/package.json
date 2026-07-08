@@ -23,7 +23,9 @@
     "README.md"
   ],
   "scripts": {
-    "test": "node --test"
+    "test": "node --test test/*.test.js",
+    "test:types": "tsc -p tsconfig.types.json",
+    "test:all": "npm run test && npm run test:types"
   },
   "engines": {
     "node": ">=24"
@@ -35,6 +37,9 @@
     "@langchain/core": {
       "optional": true
     }
+  },
+  "devDependencies": {
+    "typescript": "^7.0.2"
   },
   "keywords": ["llm", "inference", "mlx", "apple-silicon", "langchain"],
   "license": "Apache-2.0"

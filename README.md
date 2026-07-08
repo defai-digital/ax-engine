@@ -67,7 +67,12 @@ model-specific boundaries are kept visible.
 
 ## Quick Start
 
-**Install with pip** (macOS 26 Tahoe or later, Apple Silicon only — see [Typical Hardware](#typical-hardware)):
+**Requires macOS 26 (Tahoe) or later on Apple Silicon M2 Max or newer.**
+Earlier macOS releases are not supported — there is no wheel or binary for them.
+The Gemma 4 12B MTP path is intended for high-memory machines; use the memory
+tiers listed in [Typical Hardware](#typical-hardware).
+
+**Install with pip** (see [Typical Hardware](#typical-hardware) for machine sizing):
 
 Upgrade pip first so pip 23+ can find the macOS wheel, and keep the package
 spec quoted for zsh. The wheel bundles AX and MLX runtime assets, so Xcode is
@@ -97,11 +102,6 @@ curl http://127.0.0.1:8080/v1/chat/completions \
 
 For model choices, SDK examples, optional Homebrew installs, and source builds, see the
 [Getting Started guide](docs/GETTING-STARTED.md) and [SDK docs](docs/sdk/README.md).
-
-> Quick Start requires **macOS 26 (Tahoe) or later** on **Apple Silicon M2 Max or newer**.
-> The Gemma 4 12B MTP path is intended for high-memory machines; use the memory tiers
-> listed in [Typical Hardware](#typical-hardware). Earlier macOS releases are not supported —
-> there is no wheel or binary for them.
 
 ## Installation
 
@@ -608,6 +608,11 @@ diffusion_gemma`) is an **experimental** repo-owned MLX path. It is a
 autoregressive next-token decoding: each visible output comes from a 256-token
 canvas that is denoised bidirectionally and then committed with a causal pass.
 
+> [!WARNING]
+> DiffusionGemma is **not recommended for production use**. It is published as
+> an architecture preview and benchmarking curiosity. The autoregressive paths
+> above (Gemma 4, Qwen 3.6, GLM 4.7) are the supported production routes.
+
 > [!IMPORTANT]
 > These are **not** the same metric as the autoregressive rows above. For a
 > next-token decoder, `decode tok/s` is the steady token-by-token loop and
@@ -991,7 +996,7 @@ in-process session API.
 | --- | --- | --- |
 | **Rust** | [docs/sdk/rust.md](docs/sdk/rust.md) | `crates/ax-engine-sdk` |
 | **Python** | [docs/sdk/python.md](docs/sdk/python.md) | `python/ax_engine` |
-| **JavaScript / TypeScript** | [docs/sdk/javascript.md](docs/sdk/javascript.md) | `javascript/ax-engine` / `@ax-engine/sdk` |
+| **JavaScript / TypeScript** | [docs/sdk/javascript.md](docs/sdk/javascript.md) | `sdk/javascript` / `@ax-engine/sdk` |
 | **Go** | [docs/sdk/go.md](docs/sdk/go.md) | `sdk/go/axengine` |
 | **Ruby** | [docs/sdk/ruby.md](docs/sdk/ruby.md) | `sdk/ruby` / `ax-engine-sdk` |
 | **Mojo** | [docs/sdk/mojo.md](docs/sdk/mojo.md) | `sdk/mojo/ax_engine.mojo` |
@@ -1074,7 +1079,7 @@ crates/ax-engine-sdk     Session API, backend resolution (MLX, mlx-lm delegated,
 crates/ax-engine-server  Axum HTTP/SSE adapter (OpenAI-compatible routes)
 crates/ax-engine-bench   Manifest-driven workload-contract CLI
 crates/ax-engine-py      PyO3 extension (ABI3, Python 3.10+)
-javascript/ax-engine     TypeScript/JS HTTP SDK + LangChain adapter
+sdk/javascript           TypeScript/JS HTTP SDK + LangChain adapter
 sdk/go/axengine          Go HTTP SDK
 sdk/ruby/                Ruby HTTP SDK (ax-engine-sdk gem)
 sdk/mojo/                Mojo SDK (Python-interop)

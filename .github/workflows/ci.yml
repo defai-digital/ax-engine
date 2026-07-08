@@ -51,7 +51,7 @@ jobs:
           v = tomllib.loads((root / "Cargo.toml").read_text())["workspace"]["package"]["version"]
           checks = {
               "pyproject.toml": tomllib.loads((root / "pyproject.toml").read_text())["project"]["version"],
-              "javascript/ax-engine/package.json": json.loads((root / "javascript/ax-engine/package.json").read_text())["version"],
+              "sdk/javascript/package.json": json.loads((root / "sdk/javascript/package.json").read_text())["version"],
           }
           version_rb = (root / "sdk/ruby/lib/ax_engine/version.rb").read_text()
           m = re.search(r'VERSION\s*=\s*"([^"]+)"', version_rb)
@@ -213,8 +213,10 @@ jobs:
           cache-dependency-path: sdk/go/axengine/go.mod
 
       - name: Run JavaScript SDK tests
-        working-directory: javascript/ax-engine
-        run: npm test
+        working-directory: sdk/javascript
+        run: |
+          npm install --no-package-lock
+          npm run test:all
 
       - name: Run Go SDK tests
         working-directory: sdk/go/axengine

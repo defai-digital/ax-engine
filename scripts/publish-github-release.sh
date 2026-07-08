@@ -340,8 +340,8 @@ pyproject_version = tomllib.loads((root / "pyproject.toml").read_text())["projec
 checks: dict[str, str] = {
     "Cargo.toml": cargo_version,
     "pyproject.toml": pyproject_version,
-    "javascript/ax-engine/package.json": json.loads(
-        (root / "javascript/ax-engine/package.json").read_text()
+    "sdk/javascript/package.json": json.loads(
+        (root / "sdk/javascript/package.json").read_text()
     )["version"],
 }
 version_rb = (root / "sdk/ruby/lib/ax_engine/version.rb").read_text()

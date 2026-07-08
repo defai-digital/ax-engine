@@ -12,6 +12,11 @@ consistent across the workspace.
 
 - `ax-engine-core`: request lifecycle, scheduler, KV cache, runner integration,
   and deterministic bring-up loop
+- `ax-engine-mlx`: MLX model graphs, KV cache, n-gram acceleration, MTP,
+  TurboQuant, and runner dispatch (only crate where `unsafe` is permitted,
+  via `mlx-sys`)
+- `mlx-sys`: bindgen FFI over `ax_shim.h` to MLX C++; safe `MlxArray` RAII
+  wrappers and type-tagged handle system
 - `ax-engine-sdk`: backend resolution, session management, request lifecycle
   contract, and delegated backend bridges for `mlx_lm.server` and llama.cpp
 - `ax-engine-server`: local HTTP and SSE adapter over the SDK

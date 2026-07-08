@@ -62,7 +62,7 @@ path = download_model("mlx-community/Qwen3-4B-4bit")
 ```
 
 Install `mlx-lm` first, or install the current Python package with the download
-extra: `python3 -m pip install "ax-engine[download]>=6.7.1,<7"`.
+extra: `python3 -m pip install "ax-engine[download]>=6.8.2,<7"`.
 
 The source-tree script uses the same `mlx-lm` download path and can emit a
 machine-readable summary for automation:
@@ -86,16 +86,22 @@ ax-engine-bench generate-manifest /path/to/dest
 
 ## Install
 
+### pip (primary)
+
+```text
+python3 -m pip install "ax-engine>=6.8.2,<7"
+```
+
+The pip wheel bundles `ax-engine-server`, `ax-engine-bench`, and the Metal
+runtime assets. No Rust toolchain or Xcode is required.
+
+### From source
+
 From the repository root:
 
 ```text
 maturin develop
 ```
-
-The preview package requires a local Apple M2 Max-or-newer host running
-macOS 26 (Tahoe) or later with 32 GB RAM minimum.
-Constructing `Session(...)` on an M1 Mac or unsupported configuration now
-fails closed instead of pretending native or delegated support exists.
 
 This builds the Rust extension and installs the `ax_engine` package into the
 active Python environment.

@@ -1,12 +1,13 @@
 # JavaScript / TypeScript SDK
 
-`javascript/ax-engine` is the JavaScript and TypeScript SDK for AX Engine,
+`sdk/javascript` is the JavaScript and TypeScript SDK for AX Engine,
 published as `@ax-engine/sdk`.
 
 It is intentionally thin:
 
 - it speaks to `ax-engine-server`, not directly to `ax-engine-core`
 - zero runtime dependencies (uses standard `fetch`)
+- ships first-class TypeScript declarations without requiring TypeScript at runtime
 - targets the preview HTTP and OpenAI-compatible endpoints
 - keeps transport ownership with the server and SDK layers
 
@@ -31,12 +32,17 @@ It does not yet provide:
 - a published npm release workflow
 - tool/function calling helpers
 
+The package source is plain ESM JavaScript plus checked-in `.d.ts` files. This
+keeps the runtime dependency-free while still supporting TypeScript consumers.
+`npm run test:types` compiles a TypeScript consumer fixture against the public
+declarations.
+
 ## Install
 
 From the repository root:
 
 ```text
-npm install ./javascript/ax-engine
+npm install ./sdk/javascript
 ```
 
 For LangChain integration also install the peer dependency:
