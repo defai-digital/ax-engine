@@ -237,6 +237,13 @@ Full result tables and interpretation live in
 methodology, test setup, and reproduction details live in
 [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md).
 
+**Benchmarking session baseline (8-Jul-2026):** AX Engine benchmark rows use
+AX Engine `v6.8.2`. Direct-mode peer benchmarking is limited to the existing
+local `llama.cpp` and `mlx-lm` versions: `llama.cpp` `b9910` / `ggml` `0.15.3`
+for GGUF Metal reference rows and `mlx-lm` `0.31.3` for MLX reference rows.
+MTP peer benchmarking is limited to the existing local MTPLX version,
+`MTPLX 2.0.1`.
+
 Results are grouped by Session mode: speculative decoding (MTP), direct decode,
 and embeddings.
 
