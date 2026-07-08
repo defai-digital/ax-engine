@@ -155,7 +155,7 @@ artifact = {
     "prompt_tokens": [128, 512],
     "grid_dimensions": {
         "entropy_threshold": [0.005, 0.01],
-        "acceptance_rate_threshold": [0.01, 0.05],
+        "acceptance_rate_threshold": [0.01, 0.05, 0.075],
         "entropy_plateau_delta": [0.001, 0.005],
     },
     "warmup_runs": 2,

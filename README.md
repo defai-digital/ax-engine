@@ -637,19 +637,21 @@ published here.
 
 | Prompt tokens | AX first-block decode | AX prefill | AX time to first block | Denoise steps | Committed block |
 | ---: | ---: | ---: | ---: | ---: | ---: |
-| 128 | 147.8 tok/s | 1,064.8 tok/s | 1,852 ms | 13 | 256 tokens |
-| 512 | 104.3 tok/s | 2,649.7 tok/s | 2,647 ms | 18 | 256 tokens |
-| 2048 | 140.1 tok/s | 3,874.4 tok/s | 2,357 ms | 13 | 256 tokens |
+| 128 | 158.9 tok/s | 1,151.0 tok/s | 1,723 ms | 12 | 256 tokens |
+| 512 | 109.6 tok/s | 2,794.0 tok/s | 2,520 ms | 17 | 256 tokens |
+| 2048 | 163.5 tok/s | 3,922.3 tok/s | 2,089 ms | 11 | 256 tokens |
 
-The 2026-07-05 refresh is faster than the prior 2026-07-03 README artifact on
-the main DiffusionGemma user-visible metrics: first-block decode improved by
-**+28.0% / +13.2% / +18.6%** at 128 / 512 / 2048 prompt tokens, and time to
-first block dropped by **20.7% / 10.7% / 12.4%**. Prefill is slightly slower
-(-0.8% / -3.4% / -2.1%), but this path is dominated by the diffusion block.
+The 2026-07-08 refresh is faster than the prior 2026-07-05 README artifact on
+all published DiffusionGemma metrics: first-block decode improved by
+**+7.5% / +5.1% / +16.7%** at 128 / 512 / 2048 prompt tokens, time to first
+block dropped by **7.0% / 4.8% / 11.4%**, and prefill rose by
+**+8.1% / +5.4% / +1.2%**. The main decode win comes from stopping earlier
+under the 7.5% adaptive update-rate threshold, reducing denoise work by
+1 / 1 / 2 steps.
 
 First-block decode does not scale cleanly with prompt length because the
 denoiser is **convergence-gated**: it iterates until the 256-token canvas
-stabilises (12-16 steps here on realistic in-distribution prompts), so
+stabilises (11-17 steps here on realistic in-distribution prompts), so
 throughput tracks how many denoise passes convergence needs, not prompt size.
 Random-token prompts never converge, hit the step cap, and measure the failure
 mode instead — these rows use prefixes of a coherent technical document
@@ -662,7 +664,7 @@ whole-canvas matmul, so it is dispatch-, occupancy-, and kernel-mix-bound rather
 than weight-streaming-bound. Method, convergence signals, optimization toggles,
 and the bandwidth diagnostic live in
 [`docs/DIFFUSIONGEMMA.md`](docs/DIFFUSIONGEMMA.md); full artifact:
-[`2026-07-05-readme-first-block-refresh/summary.json`](benchmarks/results/inference/diffusion-gemma-direct/2026-07-05-readme-first-block-refresh/summary.json)
+[`2026-07-08-acceptance-075-first-block/summary.json`](benchmarks/results/inference/diffusion-gemma-direct/2026-07-08-acceptance-075-first-block/summary.json)
 (release build, 1 warmup + 5 measured repetitions, 15 s cooldown, medians).
 
 <!-- readme-performance-artifacts: reference=benchmarks/results/inference/mlx-inference/2026-05-26-direct-mode-clean-refresh/; reference=benchmarks/results/inference/mlx-inference/2026-06-26-qwen36-direct-refresh/; reference=benchmarks/results/inference/mlx-inference/2026-06-26-gemma4-6bit-mlx-lm-only/; ax-base=benchmarks/results/inference/mlx-inference/2026-06-27-ax-direct-only/; ax-overlay=benchmarks/results/inference/mlx-inference/2026-07-01-ax-direct-4bit-refresh-clean-r2/; reference=benchmarks/results/inference/mlx-inference/2026-07-02-gemma4-6bit-direct-refresh/; ax-overlay=benchmarks/results/inference/mlx-inference/2026-07-02-gemma4-6bit-direct-refresh/; ax-overlay=benchmarks/results/inference/mlx-inference/2026-07-05-gemma4-e2b-e4b-6bit-ax-refresh-r2/; ax-overlay=benchmarks/results/inference/mlx-inference/2026-07-07-ax-direct-only-record-refresh-qwen-publishable/; ax-overlay=benchmarks/results/inference/mlx-inference/2026-07-07-gemma4-26b-4bit-ax-direct-refresh-gen128/ -->

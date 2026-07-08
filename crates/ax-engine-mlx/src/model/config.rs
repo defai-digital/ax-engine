@@ -223,7 +223,7 @@ pub struct DiffusionConfig {
     /// Steps between convergence checks (default 2). Non-check steps skip
     /// argmax stability and mean-entropy materialisation to reduce GPU→CPU syncs.
     pub convergence_check_interval: usize,
-    /// Update-rate threshold for adaptive convergence (default 0.01 = 1%).
+    /// Update-rate threshold for adaptive convergence (default 0.075 = 7.5%).
     /// `acceptance_rate` tracks positions kept from the current canvas, so
     /// convergence fires when fewer than this fraction still update.
     pub acceptance_rate_threshold: f32,
@@ -293,7 +293,7 @@ impl DiffusionConfig {
             temp_end: cfg.temperature_end.unwrap_or(0.4),
             self_conditioning: cfg.self_conditioning.unwrap_or(true),
             convergence_check_interval,
-            acceptance_rate_threshold: cfg.acceptance_rate_threshold.unwrap_or(0.01),
+            acceptance_rate_threshold: cfg.acceptance_rate_threshold.unwrap_or(0.075),
             entropy_plateau_delta: 0.005,
             sampler,
             confidence_threshold: cfg.confidence_threshold.unwrap_or(0.9),

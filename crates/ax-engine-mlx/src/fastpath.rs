@@ -1040,8 +1040,8 @@ pub fn diffusion_entropy_threshold() -> Option<f32> {
     *CACHED.get_or_init(|| parse_nonnegative_f32_env("AX_DIFFUSION_ENTROPY_THRESHOLD"))
 }
 
-/// Diffusion convergence: acceptance rate threshold below which adaptive
-/// convergence triggers. Defaults to 0.01 (1%) when unset.
+/// Diffusion convergence: update-rate threshold below which adaptive
+/// convergence triggers. Defaults to 0.075 (7.5%) when unset.
 pub fn diffusion_acceptance_rate_threshold() -> Option<f32> {
     static CACHED: OnceLock<Option<f32>> = OnceLock::new();
     *CACHED.get_or_init(|| parse_nonnegative_f32_env("AX_DIFFUSION_ACCEPTANCE_RATE_THRESHOLD"))

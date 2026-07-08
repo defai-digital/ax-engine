@@ -22,14 +22,14 @@
 <text x="640.0" y="334" text-anchor="middle" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" fill="#6b7280">100%</text>
 <text x="72" y="134.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">128 tok</text>
 <rect x="142.0" y="118.0" width="498.0" height="24.0" rx="5" fill="#e5e7eb" stroke="#cbd5e1" stroke-width="1.2"/>
-<rect x="142.0" y="118.0" width="108.3" height="24.0" rx="5" fill="#2eaf5f" fill-opacity="0.76"/>
-<line x1="250.3" y1="118.0" x2="250.3" y2="142.0" stroke="#176c37" stroke-width="1.4"/>
-<text x="242.3" y="134.0" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#ffffff">21.8%</text>
+<rect x="142.0" y="118.0" width="108.2" height="24.0" rx="5" fill="#2eaf5f" fill-opacity="0.76"/>
+<line x1="250.2" y1="118.0" x2="250.2" y2="142.0" stroke="#176c37" stroke-width="1.4"/>
+<text x="242.2" y="134.0" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#ffffff">21.7%</text>
 <text x="72" y="192.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">512 tok</text>
 <rect x="142.0" y="176.0" width="498.0" height="24.0" rx="5" fill="#e5e7eb" stroke="#cbd5e1" stroke-width="1.2"/>
-<rect x="142.0" y="176.0" width="103.8" height="24.0" rx="5" fill="#2eaf5f" fill-opacity="0.76"/>
-<line x1="245.8" y1="176.0" x2="245.8" y2="200.0" stroke="#176c37" stroke-width="1.4"/>
-<text x="237.8" y="192.0" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#ffffff">20.8%</text>
+<rect x="142.0" y="176.0" width="103.3" height="24.0" rx="5" fill="#2eaf5f" fill-opacity="0.76"/>
+<line x1="245.3" y1="176.0" x2="245.3" y2="200.0" stroke="#176c37" stroke-width="1.4"/>
+<text x="237.3" y="192.0" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="10" font-weight="700" fill="#ffffff">20.8%</text>
 <text x="72" y="250.0" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="11" font-weight="700" fill="#111827">2048 tok</text>
 <rect x="142.0" y="234.0" width="498.0" height="24.0" rx="5" fill="#e5e7eb" stroke="#cbd5e1" stroke-width="1.2"/>
 <rect x="142.0" y="234.0" width="102.7" height="24.0" rx="5" fill="#2eaf5f" fill-opacity="0.76"/>

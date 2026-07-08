@@ -209,7 +209,7 @@ fn init_canvas(canvas_size: usize, vocab_size: usize, rng: &mut Xorshift64) -> D
 //    consecutive check steps AND mean entropy below `entropy_threshold`.
 //
 // 2. **Acceptance rate criteria** (adaptive): the update rate drops below
-//    `acceptance_rate_threshold` (default 1%). `acceptance_rate` measures
+//    `acceptance_rate_threshold` (default 7.5%). `acceptance_rate` measures
 //    positions kept from the current canvas, so convergence requires almost
 //    all positions to be accepted.
 //
@@ -1221,7 +1221,7 @@ mod tests {
             temp_end: 0.4,
             self_conditioning: true,
             convergence_check_interval: 2,
-            acceptance_rate_threshold: 0.01,
+            acceptance_rate_threshold: 0.075,
             entropy_plateau_delta: 0.005,
             sampler: crate::model::DiffusionSampler::EntropyBound,
             confidence_threshold: 0.9,
@@ -1271,7 +1271,7 @@ mod tests {
     #[test]
     fn convergence_signals_acceptance() {
         let cfg = default_diff_cfg();
-        // update_rate (1.0 - 0.995 = 0.005) < acceptance_rate_threshold (0.01).
+        // update_rate (1.0 - 0.995 = 0.005) < acceptance_rate_threshold (0.075).
         let canvas = test_canvas(0, 0.5, 0.995, 0.6, 4);
         let signals = check_convergence(&canvas, &cfg);
         assert!(

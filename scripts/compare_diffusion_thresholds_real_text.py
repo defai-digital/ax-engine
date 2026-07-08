@@ -44,7 +44,7 @@ PROMPTS: dict[str, list[int]] = {
 CONFIGS: dict[str, dict[str, str]] = {
     "default": {
         "AX_DIFFUSION_ENTROPY_THRESHOLD": "0.005",
-        "AX_DIFFUSION_ACCEPTANCE_RATE_THRESHOLD": "0.01",
+        "AX_DIFFUSION_ACCEPTANCE_RATE_THRESHOLD": "0.075",
         "AX_DIFFUSION_ENTROPY_PLATEAU_DELTA": "0.001",
     },
     "entropy_0.05": {

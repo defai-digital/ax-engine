@@ -557,8 +557,8 @@ pub struct NativeDiffusionConfig {
     /// argmax stability and mean-entropy materialisation to reduce GPU→CPU syncs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub convergence_check_interval: Option<u32>,
-    /// Acceptance rate threshold for adaptive convergence (default 0.01 = 1%).
-    /// When the fraction of accepted positions drops below this, the model
+    /// Update-rate threshold for adaptive convergence (default 0.075 = 7.5%).
+    /// When the fraction of positions still changing drops below this, the model
     /// has converged regardless of absolute entropy.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub acceptance_rate_threshold: Option<f32>,

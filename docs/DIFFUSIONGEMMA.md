@@ -34,7 +34,7 @@ load the MLX snapshot (`Model type diffusion_gemma not supported.`).
 > use prefixes of a coherent technical document tokenized with the model's own
 > tokenizer (`DIFFUSION_PROMPT_TEXT` in
 > [`scripts/bench_diffusion_gemma_direct.py`](../scripts/bench_diffusion_gemma_direct.py)),
-> which converge in 13-18 denoise steps. Earlier revisions of this benchmark
+> which converge in 11-17 denoise steps. Earlier revisions of this benchmark
 > fed synthetic random token ids; those never converge, hit the denoise-step
 > cap, and measured the failure mode (~25-35 tok/s at 41-48 steps) rather than
 > realistic throughput. Decode throughput is input-dependent, so it does not
@@ -62,17 +62,17 @@ load the MLX snapshot (`Model type diffusion_gemma not supported.`).
 
 | Prompt tokens | AX first-block decode | Denoise steps | Committed block |
 | ---: | ---: | ---: | ---: |
-| 128 | 147.8 tok/s | 13 | 256 tokens |
-| 512 | 104.3 tok/s | 18 | 256 tokens |
-| 2048 | 140.1 tok/s | 13 | 256 tokens |
+| 128 | 158.9 tok/s | 12 | 256 tokens |
+| 512 | 109.6 tok/s | 17 | 256 tokens |
+| 2048 | 163.5 tok/s | 11 | 256 tokens |
 
 ## Prefill And First-Block Latency
 
 | Prompt tokens | AX direct prefill | AX time to first block | llama.cpp Metal 9650 | `mlx_lm` 0.31.3 |
 | ---: | ---: | ---: | --- | --- |
-| 128 | 1,064.8 tok/s | 1,852 ms | load blocked | load blocked |
-| 512 | 2,649.7 tok/s | 2,647 ms | load blocked | load blocked |
-| 2048 | 3,874.4 tok/s | 2,357 ms | load blocked | load blocked |
+| 128 | 1,151.0 tok/s | 1,723 ms | load blocked | load blocked |
+| 512 | 2,794.0 tok/s | 2,520 ms | load blocked | load blocked |
+| 2048 | 3,922.3 tok/s | 2,089 ms | load blocked | load blocked |
 
 `time to first block` is prefill wall time plus the first 256-token
 denoise-and-commit block. `first-block decode` is computed as
@@ -91,7 +91,7 @@ TTFT or fixed-token decode throughput.
 This is a secondary diagnostic, not a headline performance metric and not a
 measured GPU utilization counter. It estimates first-block weight traffic at
 block granularity from the measured denoise-step count plus one causal commit
-over the 16.54 GB MLX safetensors artifact. This run used 13 / 18 / 13 denoise
+over the 16.54 GB MLX safetensors artifact. This run used 12 / 17 / 11 denoise
 steps at 128 / 512 / 2,048 prompt tokens on realistic prompts. The chart shows
 estimated weight bandwidth versus the M5 Max theoretical ceiling; the table
 keeps the effective GB/s values.
@@ -101,9 +101,9 @@ keeps the effective GB/s values.
 
 | Prompt tokens | Estimated effective bandwidth | % of 614.4 GB/s M5 Max theoretical bandwidth |
 | ---: | ---: | ---: |
-| 128 | 133.7 GB/s | 21.8% |
-| 512 | 128.1 GB/s | 20.8% |
-| 2,048 | 126.7 GB/s | 20.6% |
+| 128 | 133.5 GB/s | 21.7% |
+| 512 | 127.5 GB/s | 20.8% |
+| 2,048 | 126.8 GB/s | 20.6% |
 
 At these prompt lengths, the first-block path reaches roughly 21% of
 theoretical M5 Max bandwidth under this estimate. That should be read as "not
@@ -133,14 +133,14 @@ The denoise loop can stop early when any configured convergence signal fires:
    consecutive checks and mean entropy is below `entropy_threshold` (default
    0.005).
 2. **Low update rate:** the accepted-position update rate drops below
-   `acceptance_rate_threshold` (default 1%), so another denoise pass is unlikely
+   `acceptance_rate_threshold` (default 7.5%), so another denoise pass is unlikely
    to change the block materially.
 3. **Entropy plateau:** mean entropy stops decreasing materially after the early
    denoise phase, indicating diminishing returns from additional passes.
 
 The benchmark rows above report the measured adaptive-convergence run as
 recorded in the artifact. On realistic prompts the denoiser converges in
-13 / 16 / 12 denoise steps at 128 / 512 / 2,048 prompt tokens, far short of the
+12 / 17 / 11 denoise steps at 128 / 512 / 2,048 prompt tokens, far short of the
 48-step cap.
 
 ## Current Optimizations
@@ -185,9 +185,9 @@ wall time, plus `diffusion` decode-route classification in
 `bench_mlx_inference_stack.py`.
 
 Artifacts: AX direct rows are
-[`2026-07-05-readme-first-block-refresh/summary.json`](../benchmarks/results/inference/diffusion-gemma-direct/2026-07-05-readme-first-block-refresh/summary.json),
+[`2026-07-08-acceptance-075-first-block/summary.json`](../benchmarks/results/inference/diffusion-gemma-direct/2026-07-08-acceptance-075-first-block/summary.json),
 with the human summary in
-[`summary.md`](../benchmarks/results/inference/diffusion-gemma-direct/2026-07-05-readme-first-block-refresh/summary.md).
+[`summary.md`](../benchmarks/results/inference/diffusion-gemma-direct/2026-07-08-acceptance-075-first-block/summary.md).
 Peer runtime blockers are recorded as load failures, so there are no llama.cpp
 or `mlx_lm` result artifacts for this model family.
 

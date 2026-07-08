@@ -13,7 +13,7 @@ Usage:
 
 Grid dimensions:
   entropy_threshold:        [0.005, 0.01, 0.05, 0.1, 0.5]
-  acceptance_rate_threshold: [0.01, 0.05, 0.10, 0.20]
+  acceptance_rate_threshold: [0.01, 0.05, 0.075, 0.10, 0.20]
   entropy_plateau_delta:    [0.001, 0.005, 0.01, 0.05]
 """
 
@@ -50,7 +50,7 @@ DEFAULT_OUTPUT_DIR = (
 SWEEP_SCHEMA = "ax.diffusion_convergence_sweep.v1"
 
 ENTROPY_THRESHOLDS = [0.005, 0.01, 0.05, 0.1, 0.5]
-ACCEPTANCE_RATE_THRESHOLDS = [0.01, 0.05, 0.10, 0.20]
+ACCEPTANCE_RATE_THRESHOLDS = [0.01, 0.05, 0.075, 0.10, 0.20]
 ENTROPY_PLATEAU_DELTAS = [0.001, 0.005, 0.01, 0.05]
 
 WARMUP_RUNS = 2
