@@ -4,14 +4,15 @@ High-performance local inference engine for Apple Silicon — Python bindings.
 
 ## Installation
 
-This package README describes the current `6.6.x` Python package. If your
-package index only shows older `ax-engine` versions, those wheels may not expose
-the top-level `ax-engine` CLI commands shown below.
+This package README describes the current `6.8.x` Python package. Pip is the
+primary deployment path for end users. If your package index only shows older
+`ax-engine` versions, those wheels may not expose the top-level `ax-engine` CLI
+commands shown below.
 
 ### Python (pip)
 
 ```bash
-python3 -m pip install "ax-engine[download]>=6.7.1,<7"
+python3 -m pip install "ax-engine[download]>=6.8.2,<7"
 ```
 
 Requires macOS 26+, Apple Silicon (M2 Max or newer), Python 3.10+.
@@ -25,7 +26,7 @@ ax-engine doctor
 ax-engine-server --help
 ```
 
-Homebrew, source-build, and release-archive details are documented in the
+Optional Homebrew installs, source builds, and release-archive details are documented in the
 [Getting Started installation guide](https://github.com/defai-digital/ax-engine/blob/main/docs/GETTING-STARTED.md#installation).
 
 ## Quick start
@@ -55,8 +56,8 @@ Then point any OpenAI client at `http://127.0.0.1:8080`.
 Install the OpenAI shim or image/audio helpers with the matching extra:
 
 ```bash
-python3 -m pip install "ax-engine[openai]>=6.7.1,<7"
-python3 -m pip install "ax-engine[multimodal]>=6.7.1,<7"
+python3 -m pip install "ax-engine[openai]>=6.8.2,<7"
+python3 -m pip install "ax-engine[multimodal]>=6.8.2,<7"
 ```
 
 ## Requirements

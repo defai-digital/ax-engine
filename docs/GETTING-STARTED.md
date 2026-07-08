@@ -44,45 +44,49 @@ paths validate compatibility and route behavior.
 
 ### Match this guide
 
-This guide documents the current `6.5.x` command surface. Released install
-channels can lag behind the repository, so check the version before assuming the
-examples below apply:
+This guide documents the current `6.8.x` command surface. The Python wheel is
+the primary deployment path for end users. Released install channels can still
+lag behind the repository, so check the version before assuming the examples
+below apply:
 
 ```bash
 python3 -m pip index versions ax-engine
 brew info defai-digital/ax-engine/ax-engine
 ```
 
-If PyPI or Homebrew reports an older version, use the source build for this
-guide. Older packages may install successfully while missing the top-level
-`ax-engine` CLI subcommands used here.
+If PyPI reports an older version, use the source build for this guide. If
+Homebrew reports an older version, prefer pip unless you specifically need a
+package-manager-owned native CLI install. Older packages may install
+successfully while missing the top-level `ax-engine` CLI subcommands used here.
 
-### Python wheel
+### Python wheel (primary)
 
 For the Python SDK plus the top-level orchestration CLI:
 
 ```bash
-python3 -m pip install "ax-engine[download]>=6.7.1,<7"
+python3 -m pip install "ax-engine[download]>=6.8.2,<7"
 ax-engine doctor
 ```
 
 The current macOS arm64 wheel bundles `ax-engine-server` and `ax-engine-bench`
-behind the Python entrypoints. If pip cannot find `>=6.7.1` for your platform,
+behind the Python entrypoints. If pip cannot find `>=6.8.2` for your platform,
 use the source build below instead of silently accepting an older release.
 The wheel also bundles the AX and MLX Metal runtime assets used by normal
 serving. Xcode and Apple's Metal Toolchain are only required when you build from
 source, run developer diagnostics, or rebuild AX Metal kernels.
 
-### Homebrew
+### Homebrew (optional)
 
-For tagged macOS arm64 releases:
+Use Homebrew when you specifically want package-manager-owned macOS arm64 CLI
+binaries on `PATH`. The pip wheel is still the preferred install path for most
+users.
 
 ```bash
 brew info defai-digital/ax-engine/ax-engine
 brew install defai-digital/ax-engine/ax-engine
 ```
 
-Use Homebrew for this guide only when the formula reports `6.7.1` or newer.
+Use Homebrew for this guide only when the formula reports `6.8.2` or newer.
 The current formula should install `ax-engine`, `ax-engine-server`, and
 `ax-engine-bench`; older formulae may install only the lower-level tools. The
 formula also installs the `mlx` runtime dependency used by the released
@@ -104,8 +108,9 @@ brew reinstall defai-digital/ax-engine/ax-engine
 ```
 
 The GitHub release archive is the Homebrew formula payload, not a standalone
-installer with bundled dynamic libraries. Prefer Homebrew for released binaries
-so `mlx` is installed, upgraded, and linked by the package manager.
+installer with bundled dynamic libraries. Prefer pip for normal deployment, or
+Homebrew when you want `mlx` installed, upgraded, and linked by the package
+manager.
 
 #### Gatekeeper warning on older releases
 
@@ -142,9 +147,10 @@ Developer account at install time.
 
 ### Source
 
-Use source builds for development, Python bindings, local examples, or changes
-that have not been tagged yet. Install Xcode first, open it once to finish
-Apple's setup prompts, then install the Metal Toolchain component:
+Use source builds for development, local examples, or changes that have not
+been tagged yet. Source is the advanced fallback when pip does not have a
+matching wheel for the current guide. Install Xcode first, open it once to
+finish Apple's setup prompts, then install the Metal Toolchain component:
 
 ```text
 brew install mlx protobuf
@@ -216,7 +222,7 @@ path = download_model("mlx-community/Qwen3-4B-4bit")
 ```
 
 Install `mlx-lm` first, or install the current Python package with
-`python3 -m pip install "ax-engine[download]>=6.7.1,<7"`.
+`python3 -m pip install "ax-engine[download]>=6.8.2,<7"`.
 
 Or via the script (also uses `mlx-lm` and generates the manifest automatically):
 

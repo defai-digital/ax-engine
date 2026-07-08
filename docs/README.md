@@ -15,7 +15,7 @@ benchmarking, or writing claims:
 
 | Need | Start here | Then read |
 | --- | --- | --- |
-| Install AX Engine and run the first request | [Getting Started](GETTING-STARTED.md) | [CLI](CLI.md), [Server](SERVER.md) |
+| Install AX Engine with pip and run the first request | [Getting Started](GETTING-STARTED.md) | [CLI](CLI.md), [Server](SERVER.md) |
 | Choose, download, or prepare a model | [Supported Models](SUPPORTED-MODELS.md) | [CLI](CLI.md#ax-engine) |
 | Use MTP or understand 4-bit vs 6-bit MTP results | [MTP Docs](mtp/README.md) | [Qwen3.6 MTP Peer Benchmark](mtp/qwen36-peer-comparison.md), [Performance](PERFORMANCE.md#mtp-mode), [Benchmarks](BENCHMARKS.md#mtp-matrix) |
 | Interpret public performance numbers | [Performance Docs Map](performance/README.md) | [Performance](PERFORMANCE.md), [Benchmarks](BENCHMARKS.md) |
@@ -67,8 +67,8 @@ diagnostic history, or out of scope for a claim.
 
 ### Setup And Models
 
-- [Getting Started](GETTING-STARTED.md): installation, first commands, source
-  builds, and runtime-path choice
+- [Getting Started](GETTING-STARTED.md): pip-first installation, optional
+  Homebrew installs, source builds, first commands, and runtime-path choice
 - [Supported Models](SUPPORTED-MODELS.md): direct support, delegated paths,
   aliases, `download-mtp`, and unsupported requests
 - [FAQ](FAQ.md): hardware support, model-stack guidance, runtime paths,
