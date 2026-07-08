@@ -250,40 +250,52 @@ pub fn apply_layer_dense_ffn_decode(
     let threshold = *COMPILE_CACHE_REFRESH_THRESHOLD;
 
     let mut guard = cache.lock().ok()?;
-    if let Some((entry, generation)) = guard.get_mut(&(layer_index, tid)) {
-        // Extract closure ref via explicit pattern match so the immutable
-        // borrow of `entry` is released before we write back to it.
-        let closure_ref: Option<&MlxClosure> = match &*entry {
-            Some(c) => Some(c),
-            None => None,
-        };
-        if let Some(c) = closure_ref {
-            let result = try_apply_with_abort_safety(c, inputs);
-            if result.is_some() {
-                let new_generation = generation.wrapping_add(1);
-                if new_generation.is_multiple_of(threshold) {
-                    // Threshold reached — clear closure so next call recompiles.
-                    *entry = None;
-                    *generation = 0;
-                } else {
+    // Scope the mutable borrow so it is released before we potentially
+    // call `guard.remove()`. A present entry with a `None` closure means
+    // permanently incompatible and is never retried, so eviction for
+    // recompilation must remove the key rather than clear the closure
+    // in place.
+    let apply_result: Option<(Option<Vec<MlxArray>>, bool)> =
+        if let Some((entry, generation)) = guard.get_mut(&(layer_index, tid)) {
+            let closure_ref: Option<&MlxClosure> = match &*entry {
+                Some(c) => Some(c),
+                None => None,
+            };
+            if let Some(c) = closure_ref {
+                let result = try_apply_with_abort_safety(c, inputs);
+                let evict = if result.is_some() {
+                    let new_generation = generation.wrapping_add(1);
                     *generation = new_generation;
-                }
+                    // Threshold reached — evict the key so the next call
+                    // recompiles.
+                    new_generation.is_multiple_of(threshold)
+                } else {
+                    // Failed apply — evict the key so the next call recompiles.
+                    true
+                };
+                Some((result, evict))
             } else {
-                // Failed apply — invalidate so next call recompiles
-                tracing::warn!(
-                    target = "ax_engine_mlx",
-                    path = "dense_ffn_decode",
-                    layer = layer_index,
-                    "compiled_closure_apply_failed; invalidating entry for recompilation"
-                );
-                *entry = None;
-                *generation = 0;
+                // Known-incompatible for this layer: skip straight to the
+                // imperative fallback instead of re-attempting every decode
+                // step.
+                return None;
             }
-            return result;
+        } else {
+            None
+        };
+    if let Some((result, evict)) = apply_result {
+        if result.is_none() {
+            tracing::warn!(
+                target = "ax_engine_mlx",
+                path = "dense_ffn_decode",
+                layer = layer_index,
+                "compiled_closure_apply_failed; removing entry for recompilation"
+            );
         }
-        // Known-incompatible for this layer: skip straight to the
-        // imperative fallback instead of re-attempting every decode step.
-        return None;
+        if evict {
+            guard.remove(&(layer_index, tid));
+        }
+        return result;
     }
     drop(guard);
 
@@ -302,12 +314,11 @@ pub fn apply_layer_dense_ffn_decode(
             }
             if result.is_some() {
                 let generation: u64 = 1;
-                // Evict THIS key when the per-key generation threshold is
-                // reached to prevent MLX stream-registry references from
-                // accumulating in long-running processes.
-                if generation.is_multiple_of(threshold) {
-                    slot.insert((None, 0));
-                } else {
+                // Leave the key vacant when the per-key generation threshold
+                // is already reached so the next call recompiles; inserting a
+                // `None` closure would mark the layer permanently
+                // incompatible.
+                if !generation.is_multiple_of(threshold) {
                     slot.insert((Some(compiled), generation));
                 }
             } else {
@@ -456,5 +467,77 @@ mod tests {
     #[test]
     fn test_clear_gemma4_dual_path_cache_does_not_panic() {
         clear_layer_gemma4_dual_path_cache();
+    }
+
+    #[test]
+    fn dense_ffn_refresh_threshold_evicts_key_for_recompilation() {
+        use mlx_sys::MlxDtype;
+
+        // Layer index far above any real model's layer count so this test
+        // never collides with entries from other tests on the same thread.
+        const LAYER: usize = 900_001;
+        if !crate::fastpath::dense_ffn_compile_enabled() {
+            return;
+        }
+        let tid = std::thread::current().id();
+        let threshold = *COMPILE_CACHE_REFRESH_THRESHOLD;
+
+        let data: [f32; 4] = [1.0, 2.0, 3.0, 4.0];
+        let x = MlxArray::from_raw_data(
+            data.as_ptr() as *const u8,
+            std::mem::size_of_val(&data),
+            &[1, 1, 4],
+            MlxDtype::Float32,
+        );
+        let ffn =
+            |inputs: &MlxVectorArray| vec![mlx_sys::add(&inputs.get(0), &inputs.get(0), None)];
+
+        let first = apply_layer_dense_ffn_decode(LAYER, &[&x], ffn);
+        assert!(first.is_some(), "first apply should compile and succeed");
+
+        // Fast-forward the per-key generation to one below the refresh
+        // threshold so the next successful apply triggers the refresh.
+        {
+            let cache = LAYER_DENSE_FFN_DECODE_CACHE.get().expect("cache exists");
+            let mut guard = cache.lock().expect("cache lock");
+            let entry = guard
+                .get_mut(&(LAYER, tid))
+                .expect("entry cached after first apply");
+            assert!(entry.0.is_some(), "cached closure should be live");
+            entry.1 = threshold - 1;
+        }
+
+        let at_threshold = apply_layer_dense_ffn_decode(LAYER, &[&x], ffn);
+        assert!(
+            at_threshold.is_some(),
+            "apply at refresh threshold should still succeed"
+        );
+
+        // The refresh must REMOVE the key: a present entry whose closure is
+        // `None` means permanently incompatible and is never retried, which
+        // would silently disable the compiled path for the process lifetime.
+        {
+            let cache = LAYER_DENSE_FFN_DECODE_CACHE.get().expect("cache exists");
+            let guard = cache.lock().expect("cache lock");
+            assert!(
+                !guard.contains_key(&(LAYER, tid)),
+                "refresh threshold must evict the key so the next call recompiles"
+            );
+        }
+
+        let recompiled = apply_layer_dense_ffn_decode(LAYER, &[&x], ffn);
+        assert!(
+            recompiled.is_some(),
+            "post-refresh apply should recompile, not fall back permanently"
+        );
+        {
+            let cache = LAYER_DENSE_FFN_DECODE_CACHE.get().expect("cache exists");
+            let mut guard = cache.lock().expect("cache lock");
+            let entry = guard
+                .get(&(LAYER, tid))
+                .expect("recompiled entry should be cached");
+            assert!(entry.0.is_some(), "recompiled closure should be live");
+            guard.remove(&(LAYER, tid));
+        }
     }
 }
