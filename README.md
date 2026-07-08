@@ -359,8 +359,11 @@ accelerates each repo-owned 6-bit package against the same package with MTP
 disabled; it is not a cross-engine leaderboard and should not be mixed with the
 Qwen peer comparison below. Every row uses the `flappy` suite, sampled decode
 (`temperature=0.6`, `top_p=0.95`, `top_k=20`), 1000 generated tokens, 5
-measured repetitions, 1 warmup, and 15 s cooldown. All rows were refreshed on a
-clean `6ff19f66` build from the current code.
+measured repetitions, 1 warmup, and 15 s cooldown. The Gemma 4 26B and 31B rows
+were refreshed on clean `08df1a96` depth-2 assistant-MTP artifacts; other rows
+retain the prior 2026-07-07 six-model summary. A clean Qwen3.6 35B-A3B rerun
+reached 142.3 tok/s, but did not exceed the older 142.7 tok/s high-water record,
+so this overlay promotes only the Gemma depth-2 rows.
 
 <img src="docs/assets/perf-mtp-6bit-ax-acceleration.svg" alt="AX Engine 6-bit MTP package acceleration chart comparing direct decode and MTP decode for Qwen3.6, Gemma 4, and GLM-4.7 Flash">
 
@@ -369,13 +372,13 @@ clean `6ff19f66` build from the current code.
 | `qwen3.6-27b-6bit` | 22.9 tok/s | 44.0 tok/s | 1.92x | 754.8 tok/s | 426 ms | 100.0% |
 | `qwen3.6-35b-a3b` | 79.7 tok/s | 141.1 tok/s | 1.77x | 1,805.9 tok/s | 179 ms | 100.0% |
 | `gemma-4-12b` | 38.0 tok/s | 75.8 tok/s | 2.00x | 1,792.2 tok/s | 194 ms | 100.0% |
-| `gemma-4-26b` | 83.6 tok/s | 110.7 tok/s | 1.32x | 2,286.9 tok/s | 152 ms | 100.0% |
-| `gemma-4-31b` | 17.5 tok/s | 28.0 tok/s | 1.60x | 697.5 tok/s | 483 ms | 99.9% |
+| `gemma-4-26b` | 89.6 tok/s | 136.2 tok/s | 1.52x | 2,401.6 tok/s | 145 ms | 99.9% |
+| `gemma-4-31b` | 17.4 tok/s | 33.0 tok/s | 1.89x | 695.6 tok/s | 483 ms | 99.8% |
 | `glm-4.7-flash` | 73.0 tok/s | 112.6 tok/s | 1.54x | 1,635.5 tok/s | 171 ms | 98.0% |
 
 All rows are pure MTP verification rows with zero n-gram accepted/proposed/
 submitted/hit-step telemetry. Publication summary:
-[`benchmarks/results/speculative/mtp-6bit/2026-07-07-six-model-flappy-current-code-refresh/summary.json`](benchmarks/results/speculative/mtp-6bit/2026-07-07-six-model-flappy-current-code-refresh/summary.json).
+[`benchmarks/results/speculative/mtp-6bit/2026-07-08-six-model-flappy-gemma-depth2-overlay/summary.json`](benchmarks/results/speculative/mtp-6bit/2026-07-08-six-model-flappy-gemma-depth2-overlay/summary.json).
 
 #### Qwen3.6 MTP peer decode comparison (2026-07-08 AX refresh)
 

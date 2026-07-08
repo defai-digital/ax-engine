@@ -1,0 +1,95 @@
+{
+  "schema": "ax.mtp_6bit_ax_acceleration_summary.v2",
+  "run_dir": "benchmarks/results/speculative/mtp-6bit/2026-07-08-gemma-depth2-current-clean-r2",
+  "methodology": {
+    "targets": [
+      "gemma-4-26b",
+      "gemma-4-31b"
+    ],
+    "suites": [
+      "flappy"
+    ],
+    "generated_tokens": 1000,
+    "repetitions": 5,
+    "warmup": "1 AX warmup per prompt case from bench_mlx_inference_stack.py",
+    "cooldown_s": 15.0,
+    "inter_case_cooldown_s": 10.0,
+    "sampling": {
+      "temperature": 0.6,
+      "top_p": 0.95,
+      "top_k": 20
+    },
+    "comparison": "AX MTP decode median divided by AX direct decode median for the same model package and prompt suite.",
+    "mtp_ngram": "disabled; no MTP+n-gram rows are run or promoted"
+  },
+  "peer_support": {
+    "mtplx": {
+      "value": null,
+      "label": "N/A",
+      "reason": "Not run: this artifact is AX Engine only and compares each prepared 6-bit download-mtp package against the same package with MTP disabled."
+    },
+    "lightning_mlx": {
+      "value": null,
+      "label": "N/A",
+      "reason": "Not run: this artifact is AX Engine only and compares each prepared 6-bit download-mtp package against the same package with MTP disabled."
+    }
+  },
+  "rows": [
+    {
+      "model_id": "gemma-4-26b",
+      "model": "Gemma 4 26B",
+      "suite_id": "flappy",
+      "suite": "flappy",
+      "mode": "Gemma assistant-MTP",
+      "depth": 2,
+      "ax_direct_decode_tok_s": 89.62130675154015,
+      "ax_mtp_decode_tok_s": 136.19504175813492,
+      "ax_mtp_speedup_x": 1.519672572234553,
+      "ax_mtp_prefill_tok_s": 2401.5800486815224,
+      "ax_mtp_ttft_ms": 144.9955,
+      "ax_mtp_accept_rate_pct": 99.92461364493028,
+      "ax_mtp_ngram_telemetry": {
+        "ax_ngram_accepted_tokens": 0,
+        "ax_ngram_draft_tokens": 0,
+        "ax_ngram_rejected_tokens": 0,
+        "ax_mtp_ngram_accepted_tokens": 0,
+        "ax_mtp_ngram_proposed_tokens": 0,
+        "ax_mtp_ngram_submitted_tokens": 0,
+        "ax_mtp_ngram_submitted_accepted_tokens": 0,
+        "ax_mtp_ngram_hit_steps": 0,
+        "ax_mtp_ngram_attempt_steps": 0
+      },
+      "artifact": "benchmarks/results/speculative/mtp-6bit/2026-07-08-gemma-depth2-current-clean-r2/gemma-4-26b/flappy/ax_mtp.json",
+      "mtplx": "N/A",
+      "lightning_mlx": "N/A"
+    },
+    {
+      "model_id": "gemma-4-31b",
+      "model": "Gemma 4 31B",
+      "suite_id": "flappy",
+      "suite": "flappy",
+      "mode": "Gemma assistant-MTP",
+      "depth": 2,
+      "ax_direct_decode_tok_s": 17.405355745877344,
+      "ax_mtp_decode_tok_s": 32.966331253598284,
+      "ax_mtp_speedup_x": 1.894033752306771,
+      "ax_mtp_prefill_tok_s": 695.6006208674946,
+      "ax_mtp_ttft_ms": 483.089,
+      "ax_mtp_accept_rate_pct": 99.81089258698941,
+      "ax_mtp_ngram_telemetry": {
+        "ax_ngram_accepted_tokens": 0,
+        "ax_ngram_draft_tokens": 0,
+        "ax_ngram_rejected_tokens": 0,
+        "ax_mtp_ngram_accepted_tokens": 0,
+        "ax_mtp_ngram_proposed_tokens": 0,
+        "ax_mtp_ngram_submitted_tokens": 0,
+        "ax_mtp_ngram_submitted_accepted_tokens": 0,
+        "ax_mtp_ngram_hit_steps": 0,
+        "ax_mtp_ngram_attempt_steps": 0
+      },
+      "artifact": "benchmarks/results/speculative/mtp-6bit/2026-07-08-gemma-depth2-current-clean-r2/gemma-4-31b/flappy/ax_mtp.json",
+      "mtplx": "N/A",
+      "lightning_mlx": "N/A"
+    }
+  ]
+}
