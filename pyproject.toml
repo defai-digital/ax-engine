@@ -8,6 +8,26 @@ version = "6.8.2"
 description = "Python bindings for AX Engine"
 requires-python = ">=3.10"
 readme = "crates/ax-engine-py/README.md"
+license = "Apache-2.0"
+keywords = ["llm", "inference", "mlx", "apple-silicon", "local-ai"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: MacOS :: MacOS X",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Rust",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+[project.urls]
+Homepage = "https://github.com/defai-digital/ax-engine"
+Repository = "https://github.com/defai-digital/ax-engine"
+Changelog = "https://github.com/defai-digital/ax-engine/releases"
 
 [project.scripts]
 ax-engine = "ax_engine._cli:main"

@@ -63,5 +63,5 @@ benchmarks/results/**/rust_sustained.txt.err
 benchmarks/results/**/*.log
 python/ax_engine/_ax_engine*.so
 python/ax_engine.dylibs/mlx.metallib
-python/ax_engine.data/scripts/ax-engine-server
+python/ax_engine.data/
 python/ax_engine/_bin/
