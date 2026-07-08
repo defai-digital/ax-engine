@@ -3,13 +3,9 @@ from __future__ import annotations
 import os
 from collections.abc import Iterator
 from dataclasses import dataclass, field
+from hashlib import sha256
 from pathlib import Path
 from typing import Any
-
-# Pre-embedded SHA256 of bundled metal artifacts (updated each release).
-_BUNDLED_METALLIB_SHA256 = "51ea9ded8a3944f02e9869dd4e6fcbe45a2fc62e0dec261d7f481c74c82f23ea"
-_BUNDLED_AIR_SHA256 = "08bc5a48123de39c9b35036698ea8cd0c95e65e2083420ad31e932235972b000"
-_BUNDLED_SOURCE_SHA256 = "178e69d60a8707d76dbfc65cb9e3ec8b5cfc2793dd77ee4343403d892a2733cf"
 
 
 def _setup_bundled_metal() -> None:
@@ -34,6 +30,10 @@ def _setup_bundled_metal() -> None:
     if not all(p.is_file() for p in [_manifest_path, _source_path, _metallib_path, _air_path]):
         return
 
+    _source_sha256 = sha256(_source_path.read_bytes()).hexdigest()
+    _metallib_sha256 = sha256(_metallib_path.read_bytes()).hexdigest()
+    _air_sha256 = sha256(_air_path.read_bytes()).hexdigest()
+
     _cache_dir = Path.home() / ".cache" / "ax-engine" / "metal-build"
     _report_path = _cache_dir / "build_report.json"
 
@@ -44,7 +44,7 @@ def _setup_bundled_metal() -> None:
             if (
                 _cached.get("manifest_path") == str(_manifest_path)
                 and _cached.get("outputs", {}).get("metallib") == str(_metallib_path)
-                and _cached.get("outputs", {}).get("metallib_sha256") == _BUNDLED_METALLIB_SHA256
+                and _cached.get("outputs", {}).get("metallib_sha256") == _metallib_sha256
             ):
                 os.environ["AX_ENGINE_METAL_BUILD_DIR"] = str(_cache_dir)
                 return
@@ -72,14 +72,14 @@ def _setup_bundled_metal() -> None:
             "metal_toolchain": {},
         },
         "kernels": _manifest["kernels"],
-        "source_sha256": _BUNDLED_SOURCE_SHA256,
+        "source_sha256": _source_sha256,
         "outputs": {
             "air": str(_air_path),
             "metalar": None,
             "metallib": str(_metallib_path),
-            "air_sha256": _BUNDLED_AIR_SHA256,
+            "air_sha256": _air_sha256,
             "metalar_sha256": None,
-            "metallib_sha256": _BUNDLED_METALLIB_SHA256,
+            "metallib_sha256": _metallib_sha256,
         },
         "compile_commands": [],
         "status": "compiled",

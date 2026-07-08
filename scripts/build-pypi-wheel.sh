@@ -119,6 +119,22 @@ mkdir -p "$METALLIB_DIR"
 cp -f "$MLX_METALLIB" "$METALLIB_DIR/mlx.metallib"
 echo "    staged: $METALLIB_DIR/mlx.metallib ($(wc -c < "$METALLIB_DIR/mlx.metallib" | tr -d ' ') bytes)"
 
+# ── 3c. Stage AX Metal runtime assets into the wheel data dir. ─────────────
+# Keep the package-owned copy self-contained: _setup_bundled_metal() writes a
+# build_report.json that resolves paths under ax_engine/_metal after pip install.
+echo "==> Building bundled AX Metal runtime assets..."
+AX_METAL_PACKAGE_DIR="$REPO_ROOT/python/ax_engine/_metal"
+AX_METAL_PACKAGE_MANIFEST_DIR="$AX_METAL_PACKAGE_DIR/metal"
+AX_METAL_PACKAGE_KERNEL_DIR="$AX_METAL_PACKAGE_MANIFEST_DIR/kernels"
+AX_METAL_PACKAGE_BUILD_DIR="$AX_METAL_PACKAGE_DIR/build"
+mkdir -p "$AX_METAL_PACKAGE_KERNEL_DIR" "$AX_METAL_PACKAGE_BUILD_DIR"
+cp -f "$REPO_ROOT/metal/phase1-kernels.json" "$AX_METAL_PACKAGE_MANIFEST_DIR/phase1-kernels.json"
+cp -f "$REPO_ROOT/metal/kernels/phase1_dense_path.metal" "$AX_METAL_PACKAGE_KERNEL_DIR/phase1_dense_path.metal"
+"$BENCH_BIN" metal-build \
+    --manifest "$AX_METAL_PACKAGE_MANIFEST_DIR/phase1-kernels.json" \
+    --output-dir "$AX_METAL_PACKAGE_BUILD_DIR"
+echo "    staged: $AX_METAL_PACKAGE_BUILD_DIR/ax_phase1_dense_path.metallib ($(wc -c < "$AX_METAL_PACKAGE_BUILD_DIR/ax_phase1_dense_path.metallib" | tr -d ' ') bytes)"
+
 # ── 4. Build the wheel ─────────────────────────────────────────────────────
 echo "==> Building wheel (release, stripped, target $EXPECTED_PLAT_TAG)..."
 maturin build --release --strip --out "$WHEEL_OUT"
@@ -153,6 +169,14 @@ delocate-listdeps "$DELOCATED"
 # Keep this guard after delocate so a release cannot silently regress native pip inference.
 echo "==> Verifying bundled MLX runtime assets..."
 verify_wheel_member "$DELOCATED" "ax_engine.dylibs/mlx.metallib"
+
+echo "==> Verifying bundled AX Metal runtime assets..."
+verify_wheel_member "$DELOCATED" "ax_engine/_metal/build/ax_phase1_dense_path.metallib"
+verify_wheel_member "$DELOCATED" "ax_engine/_metal/build/ax_phase1_dense_path.air"
+verify_wheel_member "$DELOCATED" "ax_engine/_metal/metal/phase1-kernels.json"
+verify_wheel_member "$DELOCATED" "ax_engine/_metal/metal/kernels/phase1_dense_path.metal"
+
+echo "==> Verifying bundled command binaries..."
 verify_wheel_member "$DELOCATED" "ax_engine/_bin/ax-engine-server"
 verify_wheel_member "$DELOCATED" "ax_engine/_bin/ax-engine-bench"
 verify_wheel_member "$DELOCATED" "ax_engine/_bin/ax-engine"

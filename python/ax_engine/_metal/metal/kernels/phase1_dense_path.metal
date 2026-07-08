@@ -144,6 +144,10 @@ struct LinearAttentionConvParams {
     uint conv_kernel_dim;
 };
 
+// Safe-divide floor for attention denominator. Larger than FLT_MIN to suppress
+// noise from degenerate all-zero value accumulations.
+static constant float ATTENTION_DENOM_FLOOR = 1.0e-6f;
+
 kernel void reshape_and_cache(
     device const float* key [[buffer(0)]],
     device const float* value [[buffer(1)]],
@@ -239,7 +243,7 @@ kernel void paged_decode_attention(
     }
 
     if (lid < params.head_dim) {
-        output[q_base + lid] = acc / max(d, 0.000001f);
+        output[q_base + lid] = acc / max(d, ATTENTION_DENOM_FLOOR);
     }
 }
 
@@ -292,20 +296,22 @@ kernel void copy_blocks(
     uint pair_index = gid / elements_per_pair;
     uint block_offset = gid % elements_per_pair;
     uint2 pair = block_base_mapping[pair_index];
-    uint source_key_base = pair.x * params.head_size;
-    uint target_key_base = pair.y * params.head_size;
+    uint source_block_base = pair.x * params.head_size;
+    uint target_block_base = pair.y * params.head_size;
     if (block_offset < params.numel_per_block_key) {
-        key_target[target_key_base + block_offset] = key_source[source_key_base + block_offset];
+        key_target[target_block_base + block_offset] = key_source[source_block_base + block_offset];
     }
     if (block_offset < params.numel_per_block_value) {
-        value_target[target_key_base + block_offset] =
-            value_source[source_key_base + block_offset];
+        value_target[target_block_base + block_offset] =
+            value_source[source_block_base + block_offset];
     }
 }
 
 // Deferred for Phase 1 runtime dispatch, but kept explicit in the checked-in
 // manifest so future remap / offload work does not silently invent a new
 // entry-point name later.
+// Constraint: block_mapping pairs must be non-overlapping. If two pairs
+// share a slot index the swap is non-deterministic across threads.
 kernel void swap_blocks(
     device float* src [[buffer(0)]],
     device float* dst [[buffer(1)]],
@@ -420,6 +426,9 @@ kernel void linear_attention_conv1d_f32(
         * conv_weight[channel * params.conv_kernel_dim + (params.conv_kernel_dim - 1)];
     output[gid] = acc / (1.0f + exp(-acc));
 
+    // State shift: copy tap+1 -> tap in forward order. Forward iteration is
+    // correct even when state_in and state_out alias the same buffer because
+    // each source element (tap+1) is read before it is overwritten.
     if (params.conv_kernel_dim > 1) {
         for (uint tap = 0; tap + 2 < params.conv_kernel_dim; ++tap) {
             uint dst_index = state_batch_base + tap * params.conv_dim + channel;
@@ -458,6 +467,9 @@ kernel void linear_attention_conv1d_f16(
         * float(conv_weight[channel * params.conv_kernel_dim + (params.conv_kernel_dim - 1)]);
     output[gid] = acc / (1.0f + exp(-acc));
 
+    // State shift: copy tap+1 -> tap in forward order. Forward iteration is
+    // correct even when state_in and state_out alias the same buffer because
+    // each source element (tap+1) is read before it is overwritten.
     if (params.conv_kernel_dim > 1) {
         for (uint tap = 0; tap + 2 < params.conv_kernel_dim; ++tap) {
             uint dst_index = state_batch_base + tap * params.conv_dim + channel;
@@ -496,6 +508,9 @@ kernel void linear_attention_conv1d_bf16(
         * float(conv_weight[channel * params.conv_kernel_dim + (params.conv_kernel_dim - 1)]);
     output[gid] = acc / (1.0f + exp(-acc));
 
+    // State shift: copy tap+1 -> tap in forward order. Forward iteration is
+    // correct even when state_in and state_out alias the same buffer because
+    // each source element (tap+1) is read before it is overwritten.
     if (params.conv_kernel_dim > 1) {
         for (uint tap = 0; tap + 2 < params.conv_kernel_dim; ++tap) {
             uint dst_index = state_batch_base + tap * params.conv_dim + channel;
@@ -1692,6 +1707,11 @@ kernel void apply_rope_f32(
     }
 }
 
+// Note: each thread handles one token serially across all heads and rotary
+// dimensions. This trades parallelism for reduced position-table memory
+// traffic (positions[] is read once per thread instead of per (head,dim)).
+// For very high head counts, consider dispatching one thread per (token,
+// head, rotary-pair) like the non-batched apply_rope_f32.
 kernel void apply_rope_batched_f32(
     device float* query [[buffer(0)]],
     device float* key [[buffer(1)]],
@@ -1829,10 +1849,16 @@ kernel void decode_projection_q4km(
 
     float sumf = 0.f;
 
-    // Thread tiisg (0..31) processes 8 elements per block across 4 groups of 64:
-    //   group j: qs[j*32 + tiisg] → lo nibble: element j*64+tiisg (sub-block j*2)
-    //                              → hi nibble: element j*64+32+tiisg (sub-block j*2+1)
-    // After simd_sum, all 32 threads together cover all 256 elements of each block.
+    // Each lane owns one 64-element sub-block pair (sub-blocks 2*sb_pair and
+    // 2*sb_pair+1) and the 4 contiguous qs bytes at qs[tiisg*4 .. tiisg*4+3].
+    //   byte b = tiisg*4+n  →  lo nibble: element (b/32)*64 + (b%32)  (sub-block 2*(b/32))
+    //                          hi nibble: element (b/32)*64 + 32 + (b%32) (sub-block 2*(b/32)+1)
+    // Since the 4 bytes of a lane stay within one 32-byte group, b/32 == sb_pair
+    // for all of them, so each lane computes its scale/min pair exactly once per
+    // block and issues a single coalesced 32-bit qs load (lanes 0..31 cover the
+    // full 128-byte qs contiguously). simd_sum reduces the 32 lane partials.
+    const uint sb_pair = (uint)tiisg >> 3;          // 0..3
+    const uint pos4    = ((uint)tiisg & 7u) * 4u;   // 0,4,...,28 within the sub-block
     for (uint ib = 0; ib < n_blocks; ib++) {
         device const uint8_t* blk    = row_w + ib * 144u;
         device const uint8_t* scales = blk + 4u;
@@ -1841,21 +1867,21 @@ kernel void decode_projection_q4km(
         const float d    = float(((device const half*)blk)[0]);
         const float dmin = float(((device const half*)blk)[1]);
 
-        for (int j = 0; j < 4; j++) {
-            float sc_lo, mn_lo, sc_hi, mn_hi;
-            q4k_get_scale_min(j * 2,     scales, &sc_lo, &mn_lo, d, dmin);
-            q4k_get_scale_min(j * 2 + 1, scales, &sc_hi, &mn_hi, d, dmin);
+        float sc_lo, mn_lo, sc_hi, mn_hi;
+        q4k_get_scale_min(sb_pair * 2u,      scales, &sc_lo, &mn_lo, d, dmin);
+        q4k_get_scale_min(sb_pair * 2u + 1u, scales, &sc_hi, &mn_hi, d, dmin);
 
-            uint8_t byte = qs[(uint)j * 32u + (uint)tiisg];
+        const uint qword = *((device const uint*)(qs + (uint)tiisg * 4u));
+        const uint hbase = ib * 256u + sb_pair * 64u + pos4;
+
+        for (uint n = 0; n < 4u; n++) {
+            uint byte = (qword >> (n * 8u)) & 0xFFu;
             float qlo = float(byte & 0xFu);
             float qhi = float(byte >> 4u);
-
-            uint elem_base = ib * 256u + (uint)j * 64u;
-            float hlo = hidden[elem_base + (uint)tiisg];
-            float hhi = hidden[elem_base + (uint)tiisg + 32u];
-
-            sumf += sc_lo * hlo * qlo - mn_lo * hlo
-                  + sc_hi * hhi * qhi - mn_hi * hhi;
+            float hlo = hidden[hbase + n];
+            float hhi = hidden[hbase + n + 32u];
+            sumf = fma(sc_lo * qlo - mn_lo, hlo, sumf);
+            sumf = fma(sc_hi * qhi - mn_hi, hhi, sumf);
         }
     }
 
