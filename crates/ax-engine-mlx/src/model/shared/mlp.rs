@@ -40,23 +40,19 @@ const GELU_MUL_KERNEL_SOURCE: &str = r#"
         return;
     }
 
-    T gate_v = gate[idx];
-    T x_v = x[idx];
-    T half_v = static_cast<T>(0.5f);
-    T one_v = static_cast<T>(1.0f);
-    T sqrt_2_over_pi_v = static_cast<T>(0.7978846f);
-    T coeff_v = static_cast<T>(0.044715f);
-
-    T gate2 = static_cast<T>(static_cast<float>(gate_v) * static_cast<float>(gate_v));
-    T gate3 = static_cast<T>(static_cast<float>(gate2) * static_cast<float>(gate_v));
-    T cubic = static_cast<T>(static_cast<float>(coeff_v) * static_cast<float>(gate3));
-    T inner = static_cast<T>(static_cast<float>(gate_v) + static_cast<float>(cubic));
-    T scaled = static_cast<T>(static_cast<float>(sqrt_2_over_pi_v) * static_cast<float>(inner));
-    T t = static_cast<T>(tanh(static_cast<float>(scaled)));
-    T one_plus_t = static_cast<T>(static_cast<float>(one_v) + static_cast<float>(t));
-    T half_gate = static_cast<T>(static_cast<float>(half_v) * static_cast<float>(gate_v));
-    T activated = static_cast<T>(static_cast<float>(half_gate) * static_cast<float>(one_plus_t));
-    out[idx] = static_cast<T>(static_cast<float>(activated) * static_cast<float>(x_v));
+    float gate_v = static_cast<float>(gate[idx]);
+    float x_v = static_cast<float>(x[idx]);
+    float activated;
+    if (gate_v > 10.0f) {
+        activated = gate_v;
+    } else if (gate_v < -10.0f) {
+        activated = 0.0f;
+    } else {
+        float gate_sq = gate_v * gate_v;
+        float inner = 0.7978845608028654f * (gate_v + 0.044715f * gate_v * gate_sq);
+        activated = 0.5f * gate_v * (1.0f + tanh(inner));
+    }
+    out[idx] = static_cast<T>(activated * x_v);
 "#;
 
 pub(crate) fn qkv_project(
@@ -225,7 +221,7 @@ fn gelu_approx_mul_metal(gate: &MlxArray, x: &MlxArray, enabled: bool) -> Option
     let element_count = i32::try_from(element_count).ok()?;
     let kernel = GELU_MUL_KERNEL.get_or_init(|| {
         MlxMetalKernel::new(
-            "ax_gemma_gelu_mul_v1",
+            "ax_gemma_gelu_mul_v3",
             &["gate", "x"],
             &["out"],
             GELU_MUL_KERNEL_SOURCE,
@@ -377,9 +373,16 @@ const PACKED_GEGLU_KERNEL_SOURCE: &str = r#"
 
     float gate_v = static_cast<float>(gate_up[gate_idx]);
     float up_v = static_cast<float>(gate_up[up_idx]);
-    float gate_sq = gate_v * gate_v;
-    float inner = 0.7978845608028654f * (gate_v + 0.044715f * gate_v * gate_sq);
-    float activated = 0.5f * gate_v * (1.0f + tanh(inner));
+    float activated;
+    if (gate_v > 10.0f) {
+        activated = gate_v;
+    } else if (gate_v < -10.0f) {
+        activated = 0.0f;
+    } else {
+        float gate_sq = gate_v * gate_v;
+        float inner = 0.7978845608028654f * (gate_v + 0.044715f * gate_v * gate_sq);
+        activated = 0.5f * gate_v * (1.0f + tanh(inner));
+    }
     out[idx] = static_cast<T>(activated * up_v);
 "#;
 
@@ -717,7 +720,7 @@ fn packed_geglu_metal_impl(gate_up: &MlxArray, hidden_dim: i32) -> Option<MlxArr
         gate_up,
         hidden_dim,
         &PACKED_GEGLU_KERNEL,
-        "ax_gemma_packed_geglu_v1",
+        "ax_gemma_packed_geglu_v3",
         PACKED_GEGLU_KERNEL_SOURCE,
     )
 }
@@ -998,13 +1001,19 @@ const MOE_FUSED_ACTIVATION_UNSORT_KERNEL_SOURCE: &str = r#"
     float activated;
 #if USE_GEGLU
     // GeGLU: gelu_approx(gate) * up.
-    float gate2 = gate_v * gate_v;
-    float gate3 = gate2 * gate_v;
-    float cubic = 0.044715f * gate3;
-    float inner = gate_v + cubic;
-    float scaled = 0.7978846f * inner;
-    float t = tanh(scaled);
-    activated = (0.5f * gate_v * (1.0f + t)) * up_v;
+    if (gate_v > 10.0f) {
+        activated = gate_v * up_v;
+    } else if (gate_v < -10.0f) {
+        activated = 0.0f;
+    } else {
+        float gate2 = gate_v * gate_v;
+        float gate3 = gate2 * gate_v;
+        float cubic = 0.044715f * gate3;
+        float inner = gate_v + cubic;
+        float scaled = 0.7978846f * inner;
+        float t = tanh(scaled);
+        activated = (0.5f * gate_v * (1.0f + t)) * up_v;
+    }
 #else
     // SwiGLU: silu(gate) * up.
     float sigmoid = 1.0f / (1.0f + exp(-gate_v));
