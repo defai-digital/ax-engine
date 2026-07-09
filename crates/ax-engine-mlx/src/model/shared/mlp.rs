@@ -389,19 +389,36 @@ const PACKED_GEGLU_KERNEL_SOURCE: &str = r#"
     uint gate_idx = row * (HiddenDim * 2) + col;
     uint up_idx = gate_idx + HiddenDim;
 
-    float gate_v = static_cast<float>(gate_up[gate_idx]);
-    float up_v = static_cast<float>(gate_up[up_idx]);
-    float activated;
-    if (gate_v > 10.0f) {
-        activated = gate_v;
-    } else if (gate_v < -10.0f) {
-        activated = 0.0f;
-    } else {
-        float gate_sq = gate_v * gate_v;
-        float inner = 0.7978845608028654f * (gate_v + 0.044715f * gate_v * gate_sq);
-        activated = 0.5f * gate_v * (1.0f + tanh(inner));
+    T gate_v = gate_up[gate_idx];
+    T up_v = gate_up[up_idx];
+    float gate_f = static_cast<float>(gate_v);
+    // See GELU_MUL_KERNEL_SOURCE above: saturate to identity/zero outside
+    // [-10, 10] to avoid fast-math tanh(inf) = NaN, and round through T at
+    // every step in range to stay bit-identical with mlx-lm's imperative
+    // gelu_approx(gate) * up chain.
+    if (gate_f > 10.0f) {
+        out[idx] = static_cast<T>(gate_f * static_cast<float>(up_v));
+        return;
     }
-    out[idx] = static_cast<T>(activated * up_v);
+    if (gate_f < -10.0f) {
+        out[idx] = static_cast<T>(0.0f);
+        return;
+    }
+    T half_v = static_cast<T>(0.5f);
+    T one_v = static_cast<T>(1.0f);
+    T sqrt_2_over_pi_v = static_cast<T>(0.7978846f);
+    T coeff_v = static_cast<T>(0.044715f);
+
+    T gate2 = static_cast<T>(static_cast<float>(gate_v) * static_cast<float>(gate_v));
+    T gate3 = static_cast<T>(static_cast<float>(gate2) * static_cast<float>(gate_v));
+    T cubic = static_cast<T>(static_cast<float>(coeff_v) * static_cast<float>(gate3));
+    T inner = static_cast<T>(static_cast<float>(gate_v) + static_cast<float>(cubic));
+    T scaled = static_cast<T>(static_cast<float>(sqrt_2_over_pi_v) * static_cast<float>(inner));
+    T t = static_cast<T>(tanh(static_cast<float>(scaled)));
+    T one_plus_t = static_cast<T>(static_cast<float>(one_v) + static_cast<float>(t));
+    T half_gate = static_cast<T>(static_cast<float>(half_v) * static_cast<float>(gate_v));
+    T activated = static_cast<T>(static_cast<float>(half_gate) * static_cast<float>(one_plus_t));
+    out[idx] = static_cast<T>(static_cast<float>(activated) * static_cast<float>(up_v));
 "#;
 
 const PACKED_SWIGLU_KERNEL_SOURCE: &str = r#"
@@ -738,7 +755,7 @@ fn packed_geglu_metal_impl(gate_up: &MlxArray, hidden_dim: i32) -> Option<MlxArr
         gate_up,
         hidden_dim,
         &PACKED_GEGLU_KERNEL,
-        "ax_gemma_packed_geglu_v3",
+        "ax_gemma_packed_geglu_v4",
         PACKED_GEGLU_KERNEL_SOURCE,
     )
 }
@@ -1012,31 +1029,55 @@ const MOE_FUSED_ACTIVATION_UNSORT_KERNEL_SOURCE: &str = r#"
     uint sorted_k = inv_order[orig_k];
 
     // Read gate and up from the packed gate_up output at sorted position.
+    // `T` is the input dtype template (bf16/f16/f32), matching whichever
+    // dtype the gate_up array was passed in as.
     uint gate_up_base = sorted_k * TwoExpertSize;
-    float gate_v = static_cast<float>(gate_up[gate_up_base + hidden_idx]);
-    float up_v = static_cast<float>(gate_up[gate_up_base + HiddenDim + hidden_idx]);
+    T gate_v = gate_up[gate_up_base + hidden_idx];
+    T up_v = gate_up[gate_up_base + HiddenDim + hidden_idx];
 
     float activated;
-#if USE_GEGLU
-    // GeGLU: gelu_approx(gate) * up.
-    if (gate_v > 10.0f) {
-        activated = gate_v * up_v;
-    } else if (gate_v < -10.0f) {
-        activated = 0.0f;
+    // `USE_GEGLU` is a compile-time bool *template parameter* (bound via
+    // KernelTemplateArg::Bool), not a preprocessor macro — a preprocessor
+    // `#if USE_GEGLU` cannot see it (the preprocessor runs before template
+    // substitution, so an unset macro name is always 0), which silently
+    // always took the SwiGLU branch regardless of the configured activation.
+    // `if constexpr` on the template parameter is the correct, MLX-idiomatic
+    // way to specialize on it (see fp_quantized_nax.h in the vendored MLX
+    // kernels for the same pattern).
+    if constexpr (USE_GEGLU) {
+        // GeGLU: gelu_approx(gate) * up. Saturate outside [-10, 10] to avoid
+        // fast-math tanh(inf) = NaN, and round through T at every step in
+        // range to stay bit-identical with mlx-lm's imperative
+        // gelu_approx(gate) * up chain (see GELU_MUL_KERNEL_SOURCE above).
+        float gate_f = static_cast<float>(gate_v);
+        if (gate_f > 10.0f) {
+            activated = gate_f * static_cast<float>(up_v);
+        } else if (gate_f < -10.0f) {
+            activated = 0.0f;
+        } else {
+            T half_v = static_cast<T>(0.5f);
+            T one_v = static_cast<T>(1.0f);
+            T sqrt_2_over_pi_v = static_cast<T>(0.7978846f);
+            T coeff_v = static_cast<T>(0.044715f);
+
+            T gate2 = static_cast<T>(static_cast<float>(gate_v) * static_cast<float>(gate_v));
+            T gate3 = static_cast<T>(static_cast<float>(gate2) * static_cast<float>(gate_v));
+            T cubic = static_cast<T>(static_cast<float>(coeff_v) * static_cast<float>(gate3));
+            T inner = static_cast<T>(static_cast<float>(gate_v) + static_cast<float>(cubic));
+            T scaled = static_cast<T>(static_cast<float>(sqrt_2_over_pi_v) * static_cast<float>(inner));
+            T t = static_cast<T>(tanh(static_cast<float>(scaled)));
+            T one_plus_t = static_cast<T>(static_cast<float>(one_v) + static_cast<float>(t));
+            T half_gate = static_cast<T>(static_cast<float>(half_v) * static_cast<float>(gate_v));
+            T activated_t = static_cast<T>(static_cast<float>(half_gate) * static_cast<float>(one_plus_t));
+            activated = static_cast<float>(static_cast<T>(static_cast<float>(activated_t) * static_cast<float>(up_v)));
+        }
     } else {
-        float gate2 = gate_v * gate_v;
-        float gate3 = gate2 * gate_v;
-        float cubic = 0.044715f * gate3;
-        float inner = gate_v + cubic;
-        float scaled = 0.7978846f * inner;
-        float t = tanh(scaled);
-        activated = (0.5f * gate_v * (1.0f + t)) * up_v;
+        // SwiGLU: silu(gate) * up.
+        float gate_v_f = static_cast<float>(gate_v);
+        float up_v_f = static_cast<float>(up_v);
+        float sigmoid = 1.0f / (1.0f + exp(-gate_v_f));
+        activated = (gate_v_f * sigmoid) * up_v_f;
     }
-#else
-    // SwiGLU: silu(gate) * up.
-    float sigmoid = 1.0f / (1.0f + exp(-gate_v));
-    activated = (gate_v * sigmoid) * up_v;
-#endif
 
     out[idx] = static_cast<OutT>(activated);
 "#;
@@ -1073,7 +1114,7 @@ fn moe_fused_activation_unsort_metal(
 
     let kernel = MOE_FUSED_ACTIVATION_UNSORT_KERNEL.get_or_init(|| {
         MlxMetalKernel::new(
-            "ax_moe_fused_activation_unsort_v1",
+            "ax_moe_fused_activation_unsort_v4",
             &["gate_up", "inv_order"],
             &["out"],
             MOE_FUSED_ACTIVATION_UNSORT_KERNEL_SOURCE,
@@ -1088,6 +1129,10 @@ fn moe_fused_activation_unsort_metal(
             dtype: output_dtype,
         }],
         &[
+            KernelTemplateArg::Dtype {
+                name: "T",
+                dtype: gate_up_out.dtype(),
+            },
             KernelTemplateArg::Dtype {
                 name: "OutT",
                 dtype: output_dtype,
@@ -3655,7 +3700,11 @@ mod tests {
         eval(&[&direct, &metal]);
 
         assert_eq!(metal.shape(), vec![1, 3, 8]);
-        assert_close(metal.data_f32(), direct.data_f32(), 2.0e-2);
+        assert_eq!(
+            metal.data_f32(),
+            direct.data_f32(),
+            "packed GEGLU shim must produce bit-identical output to the imperative reference"
+        );
     }
 
     #[test]
@@ -3843,6 +3892,133 @@ mod tests {
 
         assert_eq!(metal.shape(), vec![1, 2, 4]);
         assert_close(metal.data_f32(), direct.data_f32(), 1.0e-5);
+    }
+
+    #[test]
+    fn moe_fused_activation_unsort_metal_matches_direct_geglu_for_bf16() {
+        let hidden_dim = 8;
+        let top_k = 3;
+        let gate_data: Vec<f32> = (0..hidden_dim * top_k)
+            .map(|i| ((i as f32) - 12.0) * 0.083)
+            .collect();
+        let up_data: Vec<f32> = (0..hidden_dim * top_k)
+            .map(|i| ((i as f32) + 1.0) * 0.037)
+            .collect();
+        // Sorted-order gate/up, shape [top_k, hidden_dim].
+        let gate = astype(
+            &array_f32(&gate_data, &[top_k, hidden_dim]),
+            MlxDtype::Bfloat16,
+            None,
+        );
+        let up = astype(
+            &array_f32(&up_data, &[top_k, hidden_dim]),
+            MlxDtype::Bfloat16,
+            None,
+        );
+        let packed_sorted = concatenate(&[&gate, &up], -1, None);
+        let packed = reshape(&packed_sorted, &[1, 1, top_k, hidden_dim * 2], None);
+
+        // original_k -> sorted_k: original position 0 reads sorted row 2, etc.
+        let inv_order_data: Vec<u32> = vec![2, 0, 1];
+        let inv_order = MlxArray::from_raw_data(
+            inv_order_data.as_ptr() as *const u8,
+            std::mem::size_of_val(inv_order_data.as_slice()),
+            &[top_k],
+            MlxDtype::Uint32,
+        );
+
+        // Reference: apply geglu in sorted order, then unsort via `take`
+        // (mirrors SwitchGatherInputs::unsort's flatten + take pattern).
+        let direct_sorted = geglu(&gate, &up);
+        let direct = astype(
+            &take(&direct_sorted, &inv_order, 0, None),
+            MlxDtype::Float32,
+            None,
+        );
+
+        let metal = moe_fused_activation_unsort_metal(
+            &packed,
+            &inv_order,
+            hidden_dim,
+            top_k,
+            MlxDtype::Bfloat16,
+            true,
+        )
+        .expect("MoE fused activation+unsort Metal kernel should support bf16 GEGLU inputs");
+        let metal = astype(
+            &reshape(&metal, &[top_k, hidden_dim], None),
+            MlxDtype::Float32,
+            None,
+        );
+        eval(&[&direct, &metal]);
+
+        assert_eq!(metal.shape(), vec![top_k, hidden_dim]);
+        assert_eq!(
+            metal.data_f32(),
+            direct.data_f32(),
+            "MoE fused activation+unsort GEGLU branch must be bit-identical to the imperative reference"
+        );
+    }
+
+    #[test]
+    fn moe_fused_activation_unsort_metal_matches_direct_swiglu_for_bf16() {
+        // Regression guard for the sibling `uses_geglu=false` branch: proves
+        // the `if constexpr (USE_GEGLU)` specialization still selects SwiGLU
+        // (not just that GEGLU no longer silently falls through to it).
+        let hidden_dim = 8;
+        let top_k = 3;
+        let gate_data: Vec<f32> = (0..hidden_dim * top_k)
+            .map(|i| ((i as f32) - 12.0) * 0.071)
+            .collect();
+        let up_data: Vec<f32> = (0..hidden_dim * top_k)
+            .map(|i| ((i as f32) + 1.0) * 0.041)
+            .collect();
+        let gate = astype(
+            &array_f32(&gate_data, &[top_k, hidden_dim]),
+            MlxDtype::Bfloat16,
+            None,
+        );
+        let up = astype(
+            &array_f32(&up_data, &[top_k, hidden_dim]),
+            MlxDtype::Bfloat16,
+            None,
+        );
+        let packed_sorted = concatenate(&[&gate, &up], -1, None);
+        let packed = reshape(&packed_sorted, &[1, 1, top_k, hidden_dim * 2], None);
+
+        let inv_order_data: Vec<u32> = vec![2, 0, 1];
+        let inv_order = MlxArray::from_raw_data(
+            inv_order_data.as_ptr() as *const u8,
+            std::mem::size_of_val(inv_order_data.as_slice()),
+            &[top_k],
+            MlxDtype::Uint32,
+        );
+
+        let direct_sorted = silu_mul(&gate, &up, None);
+        let direct = astype(
+            &take(&direct_sorted, &inv_order, 0, None),
+            MlxDtype::Float32,
+            None,
+        );
+
+        let metal = moe_fused_activation_unsort_metal(
+            &packed,
+            &inv_order,
+            hidden_dim,
+            top_k,
+            MlxDtype::Bfloat16,
+            false,
+        )
+        .expect("MoE fused activation+unsort Metal kernel should support bf16 SwiGLU inputs");
+        let metal = astype(
+            &reshape(&metal, &[top_k, hidden_dim], None),
+            MlxDtype::Float32,
+            None,
+        );
+        eval(&[&direct, &metal]);
+
+        assert_eq!(metal.shape(), vec![top_k, hidden_dim]);
+        assert_close(metal.data_f32(), direct.data_f32(), 1.0e-2);
     }
 
     #[test]

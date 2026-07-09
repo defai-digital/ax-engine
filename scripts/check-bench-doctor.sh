@@ -32,9 +32,13 @@ assert report["mlx_target"] == "apple_m2_or_newer_macos_aarch64"
 
 host = report["host"]
 toolchain = report["metal_toolchain"]
+runtime_assets_ready = report.get("runtime_assets", {}).get("status") == "ready"
 
-expected_ready = host["supported_mlx_runtime"] and toolchain["fully_available"]
-expected_bringup_allowed = toolchain["fully_available"] and (
+# Mirror build_doctor_report_with_runtime_assets in doctor.rs: bundled/repo
+# runtime assets satisfy the same gate as a fully available Metal toolchain.
+runtime_available = runtime_assets_ready or toolchain["fully_available"]
+expected_ready = host["supported_mlx_runtime"] and runtime_available
+expected_bringup_allowed = runtime_available and (
     host["supported_mlx_runtime"] or host["unsupported_host_override_active"]
 )
 expected_status = (

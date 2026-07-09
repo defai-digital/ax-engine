@@ -176,7 +176,7 @@ python -m unittest discover -s python/tests -v
 - `crates/ax-engine-bench`: workload-contract CLI and bring-up runtime harness
 - `crates/ax-engine-sdk`: SDK facade with backend resolution and session management
 - `crates/ax-engine-server`: local HTTP server adapter over the SDK
-- `javascript/`: repo-local JavaScript client package
+- `sdk/javascript/`: repo-local JavaScript client package
 - `crates/ax-engine-py`: Python extension crate (PyO3)
 - `benchmarks/`: canonical benchmark manifests
 - `python/`: Python package wrapper, type stubs, tests, examples

@@ -253,6 +253,15 @@ fn temperature_at_step(step: usize, cfg: &DiffusionConfig) -> f32 {
         crate::model::DiffusionTemperatureSchedule::Exponential => {
             if cfg.temp_start <= 0.0 {
                 cfg.temp_end
+            } else if cfg.temp_end <= 0.0 {
+                // Geometric interpolation is undefined for a non-positive end
+                // temperature: temp_end == 0.0 makes (end/start)^t collapse to
+                // 0.0 for every t > 0 (an instant cliff, not a gradual decay),
+                // and temp_end < 0.0 raises a negative ratio to a fractional
+                // power, producing NaN. Either poisons the softmax via
+                // divide-by-zero/NaN-propagation downstream. Fall back to
+                // linear interpolation, which stays finite for any temp_end.
+                cfg.temp_start + (cfg.temp_end - cfg.temp_start) * t
             } else {
                 cfg.temp_start * (cfg.temp_end / cfg.temp_start).powf(t)
             }
@@ -1643,6 +1652,50 @@ mod tests {
         // temp_start = 0 → should return temp_end to avoid 0 * (inf)^t.
         let temp = temperature_at_step(24, &cfg);
         assert!((temp - 0.4).abs() < 1e-6, "exp zero start: got {temp}");
+    }
+
+    #[test]
+    fn temperature_exponential_zero_end_falls_back_to_linear_and_stays_finite() {
+        let mut cfg = default_diff_cfg();
+        cfg.max_denoise_steps = 48;
+        cfg.temp_start = 0.8;
+        cfg.temp_end = 0.0;
+        cfg.temperature_schedule = crate::model::DiffusionTemperatureSchedule::Exponential;
+        // temp_end = 0 must not collapse to 0.0 immediately after step 0
+        // (0^t == 0 for any t > 0); linear fallback decays gradually instead.
+        let temp_step1 = temperature_at_step(1, &cfg);
+        assert!(
+            temp_step1 > 0.0 && temp_step1.is_finite(),
+            "exp zero end step 1 must stay finite and positive: got {temp_step1}"
+        );
+        let temp_mid = temperature_at_step(24, &cfg);
+        assert!(
+            (temp_mid - 0.4).abs() < 1e-6,
+            "exp zero end midpoint should match linear fallback: got {temp_mid}"
+        );
+        let temp_end = temperature_at_step(48, &cfg);
+        assert!(
+            (temp_end - 0.0).abs() < 1e-6,
+            "exp zero end step max: got {temp_end}"
+        );
+    }
+
+    #[test]
+    fn temperature_exponential_negative_end_stays_finite() {
+        let mut cfg = default_diff_cfg();
+        cfg.max_denoise_steps = 48;
+        cfg.temp_start = 0.8;
+        cfg.temp_end = -0.4;
+        cfg.temperature_schedule = crate::model::DiffusionTemperatureSchedule::Exponential;
+        // A negative ratio raised to a fractional power is NaN in the naive
+        // geometric formula; the linear fallback must stay finite everywhere.
+        for step in [0, 1, 24, 47, 48] {
+            let temp = temperature_at_step(step, &cfg);
+            assert!(
+                temp.is_finite(),
+                "exp negative end step {step} must stay finite: got {temp}"
+            );
+        }
     }
 
     #[test]

@@ -340,6 +340,13 @@ pub(crate) fn detect_runtime_assets_report(
 }
 
 fn detect_repo_runtime_assets_from(start_dir: &Path) -> Option<DoctorRuntimeAssetsReport> {
+    // Mirror ax-engine-sdk's `detect_repo_owned_mlx_runtime_artifacts_dir_from`:
+    // keep walking ancestors past a candidate that doesn't fully validate,
+    // since a nested checkout (e.g. a bundled wheel's asset dir) can have a
+    // partial match (manifest without a build report) below the real repo
+    // root that does validate. Only stop early on a `Ready` match; otherwise
+    // remember the first diagnostic to report if nothing up the chain works.
+    let mut first_diagnostic: Option<DoctorRuntimeAssetsReport> = None;
     for candidate_root in start_dir.ancestors().take(20) {
         let manifest_path = candidate_root.join("metal/phase1-kernels.json");
         let build_dir = candidate_root.join("build/metal");
@@ -350,21 +357,23 @@ fn detect_repo_runtime_assets_from(start_dir: &Path) -> Option<DoctorRuntimeAsse
         }
 
         if !build_report_path.is_file() {
-            return Some(DoctorRuntimeAssetsReport {
+            first_diagnostic.get_or_insert(DoctorRuntimeAssetsReport {
                 status: DoctorRuntimeAssetsStatus::NotFound,
                 path: Some(path_string(&build_dir)),
                 source: Some("repo_auto_detect".to_string()),
                 issue: Some("build/metal/build_report.json is missing".to_string()),
             });
+            continue;
         }
 
-        return Some(runtime_assets_report_for_dir(
-            &build_dir,
-            "repo_auto_detect",
-        ));
+        let report = runtime_assets_report_for_dir(&build_dir, "repo_auto_detect");
+        if report.status == DoctorRuntimeAssetsStatus::Ready {
+            return Some(report);
+        }
+        first_diagnostic.get_or_insert(report);
     }
 
-    None
+    first_diagnostic
 }
 
 fn runtime_assets_report_for_dir(path: &Path, source: &str) -> DoctorRuntimeAssetsReport {
