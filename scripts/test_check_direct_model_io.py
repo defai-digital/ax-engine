@@ -85,6 +85,49 @@ class DirectModelIoMatrixTests(unittest.TestCase):
 
         self.assertIsNone(equivalence)
 
+    def test_aggregate_status_preserves_near_tie_as_distinct_quality_state(self) -> None:
+        self.assertEqual(
+            check_direct_model_io.aggregate_status(
+                [
+                    check_direct_model_io.PASS_STATUS,
+                    check_direct_model_io.NEAR_TIE_PASS_STATUS,
+                ]
+            ),
+            check_direct_model_io.NEAR_TIE_PASS_STATUS,
+        )
+        self.assertEqual(
+            check_direct_model_io.aggregate_status(
+                [
+                    check_direct_model_io.NEAR_TIE_PASS_STATUS,
+                    check_direct_model_io.FAIL_STATUS,
+                ]
+            ),
+            check_direct_model_io.FAIL_STATUS,
+        )
+        self.assertEqual(
+            check_direct_model_io.aggregate_status(
+                [
+                    check_direct_model_io.FAIL_STATUS,
+                    check_direct_model_io.ERROR_STATUS,
+                ]
+            ),
+            check_direct_model_io.ERROR_STATUS,
+        )
+
+    def test_count_statuses_reports_exact_and_near_tie_separately(self) -> None:
+        counts = check_direct_model_io.count_statuses(
+            [
+                {"status": check_direct_model_io.PASS_STATUS},
+                {"status": check_direct_model_io.NEAR_TIE_PASS_STATUS},
+                {"status": check_direct_model_io.FAIL_STATUS},
+            ]
+        )
+
+        self.assertEqual(counts["pass"], 1)
+        self.assertEqual(counts["near_tie_pass"], 1)
+        self.assertEqual(counts["fail"], 1)
+        self.assertEqual(counts["accepted"], 2)
+
 
 if __name__ == "__main__":
     unittest.main()
