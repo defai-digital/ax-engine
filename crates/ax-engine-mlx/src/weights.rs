@@ -1992,9 +1992,13 @@ fn apply_rotated_checkpoint(
                 layer_idx, suffix
             );
             let Some(rotated_w) = rotated.get(&key) else {
-                if layer.gate_up_packed.is_none() {
-                    missing_layers.push(layer_idx);
-                }
+                // `target` (from `slot.as_mut()` above) is already `Some`,
+                // so this layer is rotation-eligible regardless of whether
+                // its gate/up got packed into `gate_up_packed` — track every
+                // eligible-but-missing layer, not just the unpacked case,
+                // or a partial checkpoint silently corrupts the packed
+                // (i.e. the common dense-FFN) layers instead of failing.
+                missing_layers.push(layer_idx);
                 continue;
             };
             // Rotated tensors are EITHER stored as f32 (P2a baseline) or
@@ -2065,6 +2069,24 @@ fn apply_rotated_checkpoint(
         return Err(WeightLoadError::RotatedCheckpointInvalid(format!(
             "{} contained 0 matching tensors for this model (key format mismatch?)",
             rotated_path.display()
+        )));
+    }
+    // Apply mode rotates every eligible layer's activations unconditionally
+    // (`maybe_apply_rotation_identity` in model/shared/mlp.rs has no
+    // per-layer knowledge of checkpoint completeness): a layer whose weight
+    // was NOT found above still gets `x @ R` applied to its input while
+    // keeping its original, un-rotated `W`, producing `(x @ R) @ W^T`
+    // instead of `x @ W^T` — not merely unrotated, but an actively wrong
+    // orthogonal transform baked into that layer's output. A partial
+    // checkpoint (e.g. `--max-tensors N` from a first-run validation pass)
+    // must fail closed here rather than silently corrupting those layers.
+    if !missing_layers.is_empty() {
+        return Err(WeightLoadError::RotatedCheckpointInvalid(format!(
+            "{} is missing rotated gate/up projections for layers {:?}; Apply mode requires \
+             every eligible layer to be present, or activation-side rotation will be applied \
+             against un-rotated weights for those layers",
+            rotated_path.display(),
+            missing_layers
         )));
     }
 

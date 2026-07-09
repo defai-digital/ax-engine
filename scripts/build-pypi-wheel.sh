@@ -136,8 +136,13 @@ cp -f "$REPO_ROOT/metal/kernels/phase1_dense_path.metal" "$AX_METAL_PACKAGE_KERN
 echo "    staged: $AX_METAL_PACKAGE_BUILD_DIR/ax_phase1_dense_path.metallib ($(wc -c < "$AX_METAL_PACKAGE_BUILD_DIR/ax_phase1_dense_path.metallib" | tr -d ' ') bytes)"
 
 # ── 4. Build the wheel ─────────────────────────────────────────────────────
-echo "==> Building wheel (release, stripped, target $EXPECTED_PLAT_TAG)..."
-maturin build --release --strip --out "$WHEEL_OUT"
+# Use the release-pyext profile (Cargo.toml), not --release: it inherits the
+# workspace release profile but keeps panic="unwind" instead of "abort", so
+# PyO3's catch_unwind can actually turn a Rust panic into a catchable Python
+# exception instead of aborting the whole embedding process. --release would
+# silently defeat that safety net for every wheel this script produces.
+echo "==> Building wheel (release-pyext, stripped, target $EXPECTED_PLAT_TAG)..."
+maturin build --profile release-pyext --strip --out "$WHEEL_OUT"
 
 # Use a glob expansion instead of ls+sort so we get exactly what was just built.
 # After the clean above there should be exactly one match.

@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use crate::app_state::{AppState, LiveState};
 use crate::errors::{ErrorResponse, error_response};
 use crate::metadata::context_length;
-use crate::openai::chat_requests::render_openai_chat_prompt;
+use crate::openai::chat_requests::render_openai_chat_prompt_with_tools;
 use crate::openai::schema::OpenAiChatCompletionHttpRequest;
 use crate::openai::validation::validate_model;
 
@@ -100,7 +100,17 @@ pub(crate) async fn apply_template(
 ) -> Result<Json<ApplyTemplateResponse>, HttpErrorResponse> {
     let live = state.snapshot();
     validate_model(&live, request.model.as_deref())?;
-    let prompt = render_openai_chat_prompt(live.model_id.as_ref(), &request.messages)?;
+    // Pass through tools/tool_choice: the real /v1/chat/completions path
+    // (openai/requests.rs) renders a tool-definition system block from
+    // them, so omitting them here made this "preview the exact prompt"
+    // endpoint silently render a materially different prompt than what
+    // generation would actually see whenever the request included tools.
+    let prompt = render_openai_chat_prompt_with_tools(
+        live.model_id.as_ref(),
+        &request.messages,
+        request.tools.as_ref(),
+        request.tool_choice.as_ref(),
+    )?;
     Ok(Json(ApplyTemplateResponse { prompt }))
 }
 

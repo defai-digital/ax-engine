@@ -673,6 +673,29 @@ impl EngineSession {
         Ok(report)
     }
 
+    /// True when this session has any stepwise (`submit_generate`/`step`)
+    /// request that has not yet reached a terminal state. Callers that are
+    /// about to discard this session (e.g. a model hot-swap) should check
+    /// this first: request state lives entirely inside the `EngineSession`
+    /// instance, with no cross-session registry, so replacing the session
+    /// while a request is non-terminal silently orphans it — the client's
+    /// next `/v1/requests/:id` or `/v1/step` call finds nothing and gets a
+    /// bare "not found" instead of a real terminal state, and the request's
+    /// GPU/KV resources are only reclaimed once the old session's last `Arc`
+    /// reference is dropped.
+    pub fn has_active_stepwise_requests(&self) -> bool {
+        if !self.uses_mlx_runtime() {
+            return self
+                .llama_requests
+                .values()
+                .any(|slot| matches!(slot, LlamaCppLifecycleRequestSlot::Active(_)));
+        }
+        self.core
+            .request_manager()
+            .records_iter()
+            .any(|record| !record.state.is_terminal())
+    }
+
     pub fn request_report(&self, request_id: u64) -> Option<SessionRequestReport> {
         if !self.uses_mlx_runtime() {
             return self

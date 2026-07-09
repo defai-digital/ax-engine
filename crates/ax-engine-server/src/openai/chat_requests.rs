@@ -33,6 +33,12 @@ pub(crate) struct Gemma4UnifiedChatPrompt {
     pub(crate) runtime_inputs: Gemma4UnifiedRuntimeInputs,
 }
 
+/// Tools-free convenience wrapper. Production callers all render tools when
+/// present (see `openai/requests.rs` and `apply_template` in
+/// `openai/compat.rs`, which forward `tools`/`tool_choice` into
+/// `render_openai_chat_prompt_with_tools` directly); this now exists only
+/// for tests that don't care about tool rendering.
+#[cfg(test)]
 pub(crate) fn render_openai_chat_prompt(
     model_id: &str,
     messages: &[OpenAiChatMessage],

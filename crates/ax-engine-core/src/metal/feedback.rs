@@ -461,8 +461,13 @@ pub(super) fn optional_kernel_allowed(
     bringup: &MetalRuntimeBringup,
     kernel_key: &MetalOptionalKernelFeedbackKey,
 ) -> bool {
+    // Fail closed on a poisoned lock: this feedback state exists to disable
+    // a kernel after repeated correctness/finite-value failures, so the
+    // safe default on an unreadable state is "not allowed," not "allowed" —
+    // the wrong direction would silently re-permit an already-disabled
+    // kernel for the rest of the process.
     let Ok(feedback) = bringup.state.optional_kernel_feedback.lock() else {
-        return true;
+        return false;
     };
     optional_kernel_allowed_in_feedback_state(&feedback, kernel_key)
 }

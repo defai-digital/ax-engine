@@ -67,3 +67,18 @@ strip = "debuginfo"   # strip DWARF; keep symbol table for Instruments / cargo-f
 [profile.release-native]
 inherits = "release"
 # Build with: RUSTFLAGS="-C target-cpu=native" cargo build --profile release-native
+
+[profile.release-pyext]
+inherits = "release"
+# `panic = "abort"` is the right choice for the standalone server/bench/CLI
+# binaries (fail-fast process, no embedding host to protect), but it is
+# actively wrong for the Python extension module: PyO3 unconditionally
+# wraps every #[pymethods]/#[pyfunction] call in catch_unwind and turns a
+# caught panic into a normal, catchable PanicException — that promise only
+# holds under unwind. Under abort, catch_unwind never runs, so any panic
+# reachable from Python (including any `.expect()`/`.unwrap()` anywhere in
+# the dependency graph this crate calls into) SIGABRTs the whole embedding
+# Python process instead of raising an exception. Build the wheel with
+# `maturin build --profile release-pyext` (see scripts/build-pypi-wheel.sh),
+# not `--release`.
+panic = "unwind"

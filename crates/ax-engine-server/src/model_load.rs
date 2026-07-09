@@ -62,6 +62,32 @@ pub(crate) async fn load_model(
         ));
     }
 
+    // Reject the swap while the current session has non-terminal stepwise
+    // (/v1/requests, /v1/step) work. Request state lives entirely inside the
+    // EngineSession instance with no cross-session registry, so replacing it
+    // mid-flight would silently orphan those requests: the client's next
+    // /v1/requests/:id or /v1/step call would find nothing (a bare "not
+    // found" instead of a real terminal state), and the request's GPU/KV
+    // resources would only be reclaimed once the old session's last Arc
+    // reference drops. Fail closed instead — mirrors the concurrent-load 409
+    // above.
+    if state
+        .snapshot()
+        .request_session
+        .lock()
+        .await
+        .has_active_stepwise_requests()
+    {
+        state.loading.store(false, Ordering::Release);
+        return Err(error_response(
+            StatusCode::CONFLICT,
+            "requests_in_flight",
+            "the current session has non-terminal /v1/requests work; drain or cancel it before \
+             loading a new model"
+                .to_string(),
+        ));
+    }
+
     // Clone the current config and swap in the new model artifacts dir.
     // All other KV / backend settings are inherited from the running config.
     // Only the MLX-native backend reads mlx_model_artifacts_dir — on a
