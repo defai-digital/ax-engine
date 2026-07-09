@@ -67,6 +67,42 @@ AX rows are strict and pass the output-degeneracy gate.
 
 ![Qwen3.6 MTP peer decode comparison](../assets/perf-mtp-peer-comparison-apples-to-apples.svg)
 
+## Effective Output-Bandwidth Diagnostic
+
+This diagnostic follows the Gemma 4 12B bandwidth-chart style, but the Qwen3.6
+MTP metric is **effective output bandwidth**, not physical GPU bandwidth:
+
+```text
+effective output bandwidth = decode tok/s * active target-weight bytes
+```
+
+This lets AX Engine, MTPLX, and lightning-mlx appear on the same chart even
+though only AX exposes verifier-cycle telemetry in the stitched artifact. The
+577 GB/s line is a physical-memory reference from the M5 Max MLX reduction
+probe; Qwen MTP output bars can exceed it because one target verifier cycle can
+commit multiple accepted draft tokens. Treat the chart as an output-efficiency
+diagnostic, not as an Instruments GPU-utilization chart.
+
+![Qwen3.6 MTP effective output-bandwidth diagnostic](../assets/perf-qwen36-mtp-bandwidth-diagnostic.svg)
+
+| Target | Engine | Active target bytes / output token | Decode | Effective output bandwidth | % of 577 GB/s reference | Byte estimate |
+| --- | --- | ---: | ---: | ---: | ---: | --- |
+| Qwen3.6 27B 4-bit | AX Engine | 16.90 GB | 63.0 tok/s | 1065 GB/s | 185% | Dense total, same sidecar |
+| Qwen3.6 27B 4-bit | MTPLX | 16.90 GB | 58.5 tok/s | 988 GB/s | 171% | Dense total, same sidecar |
+| Qwen3.6 27B 4-bit | lightning-mlx | 16.90 GB | 55.7 tok/s | 942 GB/s | 163% | Same-sidecar proxy |
+| Qwen3.6 35B-A3B 4-bit | AX Engine | 1.74 GB | 172.4 tok/s | 300 GB/s | 52% | AX MoE active estimate |
+| Qwen3.6 35B-A3B 4-bit | MTPLX | 2.94 GB | 137.9 tok/s | 406 GB/s | 70% | Peer package MoE active estimate |
+| Qwen3.6 35B-A3B 4-bit | lightning-mlx | 2.94 GB | 116.2 tok/s | 342 GB/s | 59% | Retained peer-package proxy |
+
+Readout: for 27B, all three engines use the same dense sidecar, so effective
+output bandwidth tracks decode throughput directly. For 35B-A3B, the rows are
+production-configuration package rows rather than identical-weight rows; AX has
+the fastest decode tok/s, while MTPLX shows higher effective output bandwidth
+because its optimized peer package has a larger active-byte estimate. The JSON
+artifact also keeps AX verifier-cycle bandwidth and MTPLX target-cycle estimates
+for audit, but those are not promoted as the cross-engine chart because
+lightning-mlx lacks retained raw cycle telemetry here.
+
 ## Full Result Table
 
 | Target | Engine | Decode | Prefill | TTFT | Accept | Status |
@@ -100,6 +136,8 @@ accept rate need the limitations above to be interpreted correctly.
 - Combined summary:
   [`summary.md`](../../benchmarks/results/mtp-qwen36-matrix/2026-07-09-peer-comparison-apples-to-apples-refresh/summary.md),
   [`summary.json`](../../benchmarks/results/mtp-qwen36-matrix/2026-07-09-peer-comparison-apples-to-apples-refresh/summary.json)
+- Effective output-bandwidth diagnostic:
+  [`bandwidth_diagnostic.json`](../../benchmarks/results/mtp-qwen36-matrix/2026-07-09-peer-comparison-apples-to-apples-refresh/bandwidth_diagnostic.json)
 - AX 2026-07-08 current-code rerun:
   [`summary.md`](../../benchmarks/results/mtp-qwen36-matrix/2026-07-08-qwen36-mtp-ax-current-code-refresh/summary.md)
 - MTPLX 2.0.1 rerun:

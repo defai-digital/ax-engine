@@ -1,0 +1,121 @@
+{
+  "bandwidth_scope": "effective_output_not_gpu_counter",
+  "caveat": "Effective output bandwidth multiplies committed-token decode throughput by active target-weight bytes. It is useful for peer readout but can exceed physical memory bandwidth when MTP accepts multiple tokens per target verifier cycle.",
+  "peak_bandwidth_gb_s": 577.0,
+  "peak_bandwidth_source": "M5 Max MLX reduction probe",
+  "rows": [
+    {
+      "active_target_bytes_per_output_token": 16903941980,
+      "active_target_gb_per_output_token": 16.904,
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-07-08-qwen36-mtp-ax-current-code-refresh/27b-4bit/flappy/ax_engine.json",
+      "byte_estimate_source": "dense_safetensor_total",
+      "cycle_summary": {
+        "bytes_per_verifier_cycle": 16903941980,
+        "effective_verifier_bandwidth_gb_s": 278.813,
+        "gb_per_verifier_cycle": 16.904,
+        "output_tokens_per_verifier_cycle": 3.794,
+        "percent_of_peak": 48.32,
+        "scope": "ax_verifier_cycle",
+        "verifier_cycles_per_s": 16.494
+      },
+      "decode_tok_s": 63.004,
+      "effective_output_bandwidth_gb_s": 1065.008,
+      "engine": "ax_engine",
+      "engine_label": "AX Engine",
+      "percent_of_peak_reference": 184.58,
+      "target": "Qwen3.6 27B 4-bit"
+    },
+    {
+      "active_target_bytes_per_output_token": 16903661024,
+      "active_target_gb_per_output_token": 16.904,
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-07-09-mtplx-v2-refresh/27b-4bit/flappy/mtplx.json",
+      "byte_estimate_source": "safetensors_header_dense_total",
+      "cycle_summary": {
+        "bytes_per_target_cycle": 16903661024,
+        "effective_target_cycle_bandwidth_gb_s": 247.98,
+        "gb_per_target_cycle": 16.904,
+        "output_tokens_per_target_cycle": 4.0,
+        "percent_of_peak": 42.98,
+        "scope": "mtplx_target_cycle_from_accepted_drafts",
+        "target_cycles_per_s": 14.67
+      },
+      "decode_tok_s": 58.478,
+      "effective_output_bandwidth_gb_s": 988.497,
+      "engine": "mtplx",
+      "engine_label": "MTPLX",
+      "percent_of_peak_reference": 171.32,
+      "target": "Qwen3.6 27B 4-bit"
+    },
+    {
+      "active_target_bytes_per_output_token": 16903941980,
+      "active_target_gb_per_output_token": 16.904,
+      "artifact": null,
+      "byte_estimate_source": "same_ax_sidecar_proxy",
+      "cycle_summary": null,
+      "decode_tok_s": 55.7,
+      "effective_output_bandwidth_gb_s": 941.55,
+      "engine": "lightning_mlx",
+      "engine_label": "lightning-mlx",
+      "percent_of_peak_reference": 163.18,
+      "target": "Qwen3.6 27B 4-bit"
+    },
+    {
+      "active_target_bytes_per_output_token": 1739760896,
+      "active_target_gb_per_output_token": 1.74,
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-07-08-qwen36-mtp-ax-current-code-refresh/35b-a3b-4bit/flappy/ax_engine.json",
+      "byte_estimate_source": "moe_active_estimate",
+      "cycle_summary": {
+        "bytes_per_verifier_cycle": 1739760896,
+        "effective_verifier_bandwidth_gb_s": 149.856,
+        "gb_per_verifier_cycle": 1.74,
+        "output_tokens_per_verifier_cycle": 2.008,
+        "percent_of_peak": 25.97,
+        "scope": "ax_verifier_cycle",
+        "verifier_cycles_per_s": 86.136
+      },
+      "decode_tok_s": 172.427,
+      "effective_output_bandwidth_gb_s": 299.982,
+      "engine": "ax_engine",
+      "engine_label": "AX Engine",
+      "percent_of_peak_reference": 51.99,
+      "target": "Qwen3.6 35B-A3B 4-bit"
+    },
+    {
+      "active_target_bytes_per_output_token": 2943165152,
+      "active_target_gb_per_output_token": 2.943,
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-07-09-mtplx-v2-refresh/35b-a3b-4bit/flappy/mtplx.json",
+      "byte_estimate_source": "safetensors_header_moe_active_8_of_256",
+      "cycle_summary": {
+        "bytes_per_target_cycle": 2943165152,
+        "effective_target_cycle_bandwidth_gb_s": 207.629,
+        "gb_per_target_cycle": 2.943,
+        "output_tokens_per_target_cycle": 1.953,
+        "percent_of_peak": 35.98,
+        "scope": "mtplx_target_cycle_from_accepted_drafts",
+        "target_cycles_per_s": 70.546
+      },
+      "decode_tok_s": 137.902,
+      "effective_output_bandwidth_gb_s": 405.867,
+      "engine": "mtplx",
+      "engine_label": "MTPLX",
+      "percent_of_peak_reference": 70.34,
+      "target": "Qwen3.6 35B-A3B 4-bit"
+    },
+    {
+      "active_target_bytes_per_output_token": 2943165152,
+      "active_target_gb_per_output_token": 2.943,
+      "artifact": null,
+      "byte_estimate_source": "retained_lightning_row_peer_package_proxy",
+      "cycle_summary": null,
+      "decode_tok_s": 116.2,
+      "effective_output_bandwidth_gb_s": 341.996,
+      "engine": "lightning_mlx",
+      "engine_label": "lightning-mlx",
+      "percent_of_peak_reference": 59.27,
+      "target": "Qwen3.6 35B-A3B 4-bit"
+    }
+  ],
+  "run_date": "2026-07-09",
+  "schema": "ax.qwen36_mtp_output_bandwidth_diagnostic.v1",
+  "source_summary": "benchmarks/results/mtp-qwen36-matrix/2026-07-09-peer-comparison-apples-to-apples-refresh/summary.json"
+}

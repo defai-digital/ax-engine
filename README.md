@@ -432,10 +432,26 @@ artifacts remain useful only as audit/debug evidence.
 | Qwen3.6 35B-A3B 4-bit | 172.4 tok/s | 137.9 tok/s | 116.2 tok/s | AX leads this production-config row |
 | Qwen3.6 35B-A3B 6-bit | 141.2 tok/s | 119.0 tok/s | 96.3 tok/s | AX leads this production-config row |
 
+**Effective output-bandwidth diagnostic:** This chart multiplies decode tok/s
+by active target-weight bytes to compare how much committed-token work each
+engine produces per second, using the same bandwidth-chart style as the Gemma 4
+12B diagnostic. It is not an Instruments GPU counter: MTP can emit multiple
+committed tokens per verifier cycle, so the effective output metric can exceed
+the 577 GB/s M5 Max physical-memory reference. On the identical 27B
+sidecar, AX / MTPLX / lightning-mlx land at about 1065 / 988 / 942 GB/s, which
+tracks the decode ranking. On 35B-A3B, the rows remain production-configuration
+package rows; the chart uses AX's active MoE estimate for AX and the peer
+optimized-package active-byte estimate for MTPLX and the retained lightning-mlx
+row.
+
+<img src="docs/assets/perf-qwen36-mtp-bandwidth-diagnostic.svg" alt="Qwen3.6 MTP effective output-bandwidth diagnostic comparing AX Engine, MTPLX, and lightning-mlx on 27B and 35B-A3B 4-bit rows">
+
 Full results, charts, artifact links, and fairness limitations:
 [`docs/mtp/qwen36-peer-comparison.md`](docs/mtp/qwen36-peer-comparison.md).
 Stitched chart source:
 [`benchmarks/results/mtp-qwen36-matrix/2026-07-09-peer-comparison-apples-to-apples-refresh/summary.json`](benchmarks/results/mtp-qwen36-matrix/2026-07-09-peer-comparison-apples-to-apples-refresh/summary.json).
+Bandwidth diagnostic source:
+[`benchmarks/results/mtp-qwen36-matrix/2026-07-09-peer-comparison-apples-to-apples-refresh/bandwidth_diagnostic.json`](benchmarks/results/mtp-qwen36-matrix/2026-07-09-peer-comparison-apples-to-apples-refresh/bandwidth_diagnostic.json).
 For the older AX-only Qwen3.6 table across `flappy`, `long_code`, and
 `python_modules_long`, see
 [`docs/mtp/qwen36-matrix-refresh.md`](docs/mtp/qwen36-matrix-refresh.md). That
