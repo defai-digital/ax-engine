@@ -4,12 +4,13 @@ This is the public documentation hub for AX Engine. The docs are organized by
 task first, then by runtime area, so readers do not have to know the repository
 layout before choosing the right page.
 
-AX Engine has three runtime paths. Keep the path explicit when reading,
-benchmarking, or writing claims:
+AX Engine is direct-first. Keep the path explicit when reading, benchmarking,
+or writing claims:
 
 - repo-owned MLX runtime for supported Apple Silicon model families
-- delegated `mlx_lm.server` compatibility for unsupported MLX text models
-- delegated `llama.cpp` compatibility for GGUF and non-MLX local inference
+- explicit delegated `mlx_lm.server` compatibility for migration and validation
+- explicit delegated `llama.cpp` compatibility for GGUF/non-MLX checks and
+  external reference rows
 
 ## Start By Task
 
@@ -17,6 +18,7 @@ benchmarking, or writing claims:
 | --- | --- | --- |
 | Install AX Engine with pip and run the first request | [Getting Started](GETTING-STARTED.md) | [CLI](CLI.md), [Server](SERVER.md) |
 | Choose, download, or prepare a model | [Supported Models](SUPPORTED-MODELS.md) | [CLI](CLI.md#ax-engine) |
+| Decide whether a model family should be supported | [Model Support Policy](MODEL-SUPPORT-POLICY.md) | [Supported Models](SUPPORTED-MODELS.md) |
 | Use MTP or understand 4-bit vs 6-bit MTP results | [MTP Docs](mtp/README.md) | [Qwen3.6 MTP Peer Benchmark](mtp/qwen36-peer-comparison.md), [Performance](PERFORMANCE.md#mtp-mode), [Benchmarks](BENCHMARKS.md#mtp-matrix) |
 | Interpret public performance numbers | [Performance Docs Map](performance/README.md) | [Performance](PERFORMANCE.md), [Benchmarks](BENCHMARKS.md) |
 | Run or review benchmarks | [Benchmarks](BENCHMARKS.md) | [Benchmark Design](BENCH-DESIGN.md), [Serving Benchmarks](SERVING-BENCHMARKS.md) |
@@ -71,6 +73,8 @@ diagnostic history, or out of scope for a claim.
   Homebrew installs, source builds, first commands, and runtime-path choice
 - [Supported Models](SUPPORTED-MODELS.md): direct support, delegated paths,
   aliases, `download-mtp`, and unsupported requests
+- [Model Support Policy](MODEL-SUPPORT-POLICY.md): direct-support promotion,
+  six-month activity rule, compatibility-adapter boundary, and EOL handling
 - [FAQ](FAQ.md): hardware support, model-stack guidance, runtime paths,
   limitations, and performance-boundary questions
 - [CLI](CLI.md): `ax-engine`, `ax-engine-server`, and `ax-engine-bench`

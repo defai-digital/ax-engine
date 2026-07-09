@@ -99,7 +99,7 @@ pub struct ServerArgs {
     #[arg(long = "mlx", default_value_t = false)]
     pub mlx: bool,
 
-    #[arg(long = "support-tier", value_enum, default_value_t = PreviewSupportTier::LlamaCpp)]
+    #[arg(long = "support-tier", value_enum, default_value_t = PreviewSupportTier::MlxPreview)]
     pub support_tier: PreviewSupportTier,
 
     #[arg(long = "llama-cli-path", default_value = "llama-cli")]

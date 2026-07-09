@@ -81,18 +81,24 @@ impl ServerArgs {
 
     pub fn session_config(&self) -> Result<EngineSessionConfig, String> {
         let preset = self.preset.map(ServerPreset::definition);
+        let effective_support_tier = self.effective_support_tier();
         // A preset fully specifies its backend tier (it conflicts with
-        // --model-id and --support-tier), so the preset's tier — not the --mlx
-        // flag — decides whether the native MLX path runs. Without a preset,
-        // --mlx selects native as before.
+        // --model-id and --support-tier). Without a preset, MLX support tiers
+        // are direct by default; --mlx remains a compatibility alias for the
+        // same native path.
         let effective_mlx = match preset {
             Some(definition) => matches!(
                 definition.support_tier,
                 PreviewSupportTier::MlxPreview | PreviewSupportTier::MlxCertified
             ),
-            None => self.mlx,
+            None => {
+                self.mlx
+                    || matches!(
+                        effective_support_tier,
+                        PreviewSupportTier::MlxPreview | PreviewSupportTier::MlxCertified
+                    )
+            }
         };
-        let effective_support_tier = self.effective_support_tier();
         let effective_max_batch_tokens = preset
             .map(|definition| definition.max_batch_tokens)
             .unwrap_or(self.max_batch_tokens);
@@ -198,12 +204,19 @@ impl ServerArgs {
 
     fn model_id_inference_artifacts_dir(&self) -> Result<Option<PathBuf>, String> {
         let preset = self.preset.map(ServerPreset::definition);
+        let effective_support_tier = self.effective_support_tier();
         let effective_mlx = match preset {
             Some(definition) => matches!(
                 definition.support_tier,
                 PreviewSupportTier::MlxPreview | PreviewSupportTier::MlxCertified
             ),
-            None => self.mlx,
+            None => {
+                self.mlx
+                    || matches!(
+                        effective_support_tier,
+                        PreviewSupportTier::MlxPreview | PreviewSupportTier::MlxCertified
+                    )
+            }
         };
         if !effective_mlx {
             return Ok(None);

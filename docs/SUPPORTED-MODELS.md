@@ -1,19 +1,27 @@
 # Supported LLM Models
 
-AX Engine supports LLMs through three explicit runtime paths. The path matters
+AX Engine supports LLMs through a direct-first runtime contract. Direct support
+is the default deployment path; delegated adapters are explicit compatibility
+paths for migration, validation, or external reference rows. The path matters
 because it defines who runs the model graph, which API features are available,
 and what benchmark claims are allowed.
 
 | Path | Use it for | Who runs the model | What the result means |
 | --- | --- | --- | --- |
 | Direct support | Model families with a repo-owned `ax-engine-mlx` graph | AX Engine on MLX | AX-owned token/KV/runtime behavior; performance claims still require benchmark artifacts |
-| `mlx_lm_delegated` | MLX text models that upstream `mlx-lm` supports before AX has a repo-owned graph | A user-provided `mlx_lm.server` | AX server/SDK compatibility over delegated text generation; not AX-owned MLX throughput |
-| `llama_cpp` | GGUF models and non-MLX local inference | llama.cpp server or CLI | Delegated route-contract evidence; not AX-owned MLX throughput |
-| Unsupported | Requests with no credible direct or delegated path | None | Fail closed |
+| `mlx_lm_delegated` | Explicit compatibility checks for MLX text models before AX direct support | A user-provided `mlx_lm.server` | AX server/SDK compatibility over delegated text generation; not AX-owned MLX throughput |
+| `llama_cpp` | Explicit GGUF/non-MLX compatibility checks or external reference rows | llama.cpp server or CLI | Delegated route-contract evidence; not AX-owned MLX throughput |
+| Unsupported | Requests with no direct repo-owned path and no explicitly selected adapter | None | Fail closed |
 
 Runtime metadata exposes the selected path through fields such as
 `selected_backend`, `support_tier`, and `resolution_policy`. Preserve those
 labels in benchmark artifacts and user-facing claims.
+
+Promotion, freeze, and end-of-life decisions follow the
+[model support policy](MODEL-SUPPORT-POLICY.md). In short, do not add new direct
+support work for a model family that has had no meaningful upstream release or
+artifact refresh within the last six months unless an owner records a specific
+exception.
 
 ## Getting Model Artifacts
 
@@ -210,9 +218,9 @@ means implementing the model graph, not wiring up a generic loader.
 
 Architecture code, tensor-role metadata, or comments are not public direct
 support claims by themselves. LLaMA, Mistral, Mixtral, DeepSeek, and unlisted
-Gemma/Qwen variants should use `mlx_lm_delegated` or `llama_cpp` when those
-backends can serve them, or stay unsupported until repo-owned manifest, smoke,
-and benchmark evidence are promoted here.
+Gemma/Qwen variants stay unsupported by default until repo-owned manifest,
+smoke, and benchmark evidence are promoted here. Use `mlx_lm_delegated` or
+`llama_cpp` only when the caller explicitly wants a compatibility adapter.
 
 Before promoting another architecture, run:
 
@@ -225,8 +233,9 @@ reference files, and runtime path are all present.
 
 ## `mlx_lm_delegated`
 
-Use `mlx_lm_delegated` when upstream `mlx-lm` can serve an MLX text model but
-AX does not yet have a repo-owned graph for that architecture.
+Use `mlx_lm_delegated` only when the caller explicitly opts into upstream
+`mlx-lm` serving for an MLX text model that AX does not yet own. This is a
+compatibility adapter, not an AX deployment default.
 
 This path requires a running `mlx_lm.server`:
 
@@ -238,21 +247,20 @@ ax-engine-server \
   --mlx-lm-server-url http://127.0.0.1:8090
 ```
 
-GLM 4.7 Flash is now directly supported through the repo-owned MLX graph
-and the `glm4.7-flash-4bit` preset selects the native MLX tier. It can still
-be served via the `mlx_lm_delegated` route if desired:
+GLM 4.7 Flash is directly supported through the repo-owned MLX graph and the
+`glm4.7-flash-4bit` preset selects the native MLX tier. It can still be served
+through `mlx_lm_delegated` only by selecting the delegated tier explicitly:
 
 ```text
 mlx_lm.server --model mlx-community/GLM-4.7-Flash-4bit --host 127.0.0.1 --port 8090
 
 ax-engine-server \
-  --preset glm4.7-flash-4bit \
+  --model-id glm4_moe_lite \
+  --support-tier mlx-lm-delegated \
   --mlx-lm-server-url http://127.0.0.1:8090
 ```
 
-When using the delegated route, the preset still accepts `--mlx-lm-server-url`
-to switch to passby mode. When omitted, GLM 4.7 Flash uses the native MLX
-graph directly.
+When omitted, GLM 4.7 Flash uses the native MLX graph directly.
 
 Supported delegated surfaces:
 
@@ -304,8 +312,9 @@ Boundaries:
 - performance numbers must not be merged into AX-owned MLX throughput tables
   without clear labeling
 
-Local `.gguf` paths resolve to `llama_cpp` rather than the repo-owned MLX
-runtime.
+Local `.gguf` paths require explicit `llama_cpp` selection. The default server
+route remains the repo-owned MLX runtime and will not silently turn GGUF inputs
+into AX-owned support claims.
 
 ## Choosing A Path
 

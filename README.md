@@ -21,8 +21,8 @@ prompt tokens. Peer rows and model-specific boundaries are kept visible.
   run the printed `ax-engine serve ...` command for OpenAI-compatible local
   endpoints.
 - **Repo-owned direct runtime:** direct-support Gemma, Qwen, and GLM paths run
-  in AX Engine's MLX runtime; delegated `mlx-lm`, delegated `llama.cpp`, and
-  experimental model paths stay explicit instead of hidden behind one label.
+  in AX Engine's MLX runtime by default; delegated `mlx-lm` and `llama.cpp`
+  adapters are explicit compatibility paths, not AX inference modes.
 - **Serious benchmarking:** public results are tied to checked-in artifacts that
   record route identity, model snapshot, prompt suite, sampler, cooldowns,
   repetitions, MTP accept rate, prefill, decode, TTFT, and dirty-state
@@ -173,8 +173,9 @@ Direct-support model families:
 | GLM 4.7 Flash | `glm4_moe_lite` / `glm4.7-flash-4bit` | Flash MLA + MoE graph |
 
 Direct support means AX owns the `ax-engine-mlx` graph and loads MLX safetensors
-through the AX manifest path. Other MLX text models can use
-`mlx_lm_delegated`; GGUF and non-MLX local inference can use `llama_cpp`.
+through the AX manifest path. Unsupported families fail closed by default.
+`mlx_lm_delegated` and `llama_cpp` remain explicit compatibility adapters for
+migration and validation, not default deployment paths.
 
 ## Typical Hardware
 
@@ -210,10 +211,12 @@ one explicit runtime contract:
   artifact provenance for public claims.
 
 [mlx_lm](https://github.com/ml-explore/mlx-lm) is the canonical MLX reference.
-AX Engine compares against `mlx_lm.benchmark` and uses `mlx_lm.server` only as
-an explicit delegated compatibility route when AX does not yet own the model
-graph. See the [FAQ](docs/FAQ.md#is-ax-faster-because-it-replaces-mlx-kernels)
-for the boundary between MLX kernels and AX-owned runtime behavior.
+AX Engine compares against `mlx_lm.benchmark` and treats `mlx_lm.server` only as
+an explicit compatibility adapter when a caller opts into delegation. See the
+[FAQ](docs/FAQ.md#is-ax-faster-because-it-replaces-mlx-kernels) for the
+boundary between MLX kernels and AX-owned runtime behavior, and the
+[model support policy](docs/MODEL-SUPPORT-POLICY.md) for promotion and EOL
+rules.
 
 Design details: [Architecture](docs/ARCHITECTURE.md) ·
 [Scheduler](docs/SCHEDULER.md) · [KV Cache](docs/KV-CACHE.md) ·
@@ -224,8 +227,8 @@ Design details: [Architecture](docs/ARCHITECTURE.md) ·
 | Path | Use it for | What AX owns |
 | --- | --- | --- |
 | Repo-owned MLX runtime | Direct-support model families and AX-owned performance claims | Model graph, token/KV runtime, scheduling, acceleration policy, server/SDK route behavior |
-| `mlx_lm_delegated` | MLX text models supported upstream before AX has a graph | AX route compatibility over a user-provided `mlx_lm.server`; not AX token/KV throughput |
-| `llama_cpp` | GGUF and non-MLX local inference | AX route compatibility over llama.cpp server/CLI behavior; not AX MLX throughput |
+| `mlx_lm_delegated` | Explicit migration or compatibility checks for MLX text models before direct support | AX route compatibility over a user-provided `mlx_lm.server`; not AX token/KV throughput |
+| `llama_cpp` | Explicit GGUF/non-MLX compatibility checks or external reference rows | AX route compatibility over llama.cpp server/CLI behavior; not AX MLX throughput |
 
 Runtime reports expose `selected_backend`, `support_tier`, and
 `resolution_policy` so callers and benchmark artifacts can distinguish direct

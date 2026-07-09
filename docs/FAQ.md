@@ -172,13 +172,15 @@ direct path and the N-gram path on the same prompt/decode shape.
 
 ## Which runtime path should I choose first?
 
-Use the repo-owned MLX runtime when you have a supported Qwen/Gemma MLX artifact
-and need AX-owned runtime behavior or performance evidence. Use
-`mlx_lm_delegated` when upstream `mlx-lm` can serve an MLX text model that AX
-does not yet own. Use `llama_cpp` for GGUF and non-MLX local inference.
+Use the repo-owned MLX runtime first when you have a supported Qwen/Gemma/GLM
+MLX artifact and need AX-owned runtime behavior or performance evidence. Use
+`mlx_lm_delegated` or `llama_cpp` only when you explicitly want a compatibility
+adapter or external reference path; unsupported model families fail closed by
+default.
 
 If you are not sure, start with `docs/GETTING-STARTED.md` and then check
-`docs/SUPPORTED-MODELS.md` before interpreting benchmark numbers.
+`docs/SUPPORTED-MODELS.md` and `docs/MODEL-SUPPORT-POLICY.md` before
+interpreting benchmark numbers.
 
 ## Does `mlx_lm_delegated` count as repo-owned MLX performance?
 

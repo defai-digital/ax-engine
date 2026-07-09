@@ -57,7 +57,7 @@ fn base_args() -> ServerArgs {
         block_size_tokens: 16,
         total_blocks: 1024,
         mlx: false,
-        support_tier: PreviewSupportTier::LlamaCpp,
+        support_tier: PreviewSupportTier::MlxPreview,
         llama_cli_path: "llama-cli".to_string(),
         llama_model_path: None,
         llama_server_url: None,
@@ -141,6 +141,15 @@ fn api_key_flag_trims_empty_values() {
 }
 
 #[test]
+fn cli_defaults_to_mlx_preview_support_tier() {
+    use clap::Parser;
+
+    let args = ServerArgs::try_parse_from(["ax-engine-server"]).expect("default args should parse");
+
+    assert_eq!(args.support_tier, PreviewSupportTier::MlxPreview);
+}
+
+#[test]
 fn session_config_matches_sdk_preview_factory_for_mlx_preview() {
     let args = ServerArgs {
         model_id: "qwen3".to_string(),
@@ -188,6 +197,7 @@ fn session_config_matches_sdk_preview_factory_for_llama_cpp_server() {
         max_batch_tokens: 1024,
         cache_group_id: 9,
         total_blocks: 512,
+        support_tier: PreviewSupportTier::LlamaCpp,
         llama_server_url: Some("http://127.0.0.1:8088".to_string()),
         ..base_args()
     };
@@ -230,6 +240,7 @@ fn session_config_matches_sdk_preview_factory_for_llama_cpp_server() {
 fn session_config_applies_delegated_http_timeouts_to_server_backends() {
     let timeouts = DelegatedHttpTimeouts::from_secs(2, 11, 13);
     let args = ServerArgs {
+        support_tier: PreviewSupportTier::LlamaCpp,
         llama_server_url: Some("http://127.0.0.1:8088".to_string()),
         delegated_http_connect_timeout_secs: 2,
         delegated_http_read_timeout_secs: 11,
@@ -268,6 +279,7 @@ fn session_config_applies_delegated_http_timeouts_to_server_backends() {
 #[test]
 fn session_config_rejects_zero_delegated_http_timeout() {
     let args = ServerArgs {
+        support_tier: PreviewSupportTier::LlamaCpp,
         llama_server_url: Some("http://127.0.0.1:8088".to_string()),
         delegated_http_read_timeout_secs: 0,
         ..base_args()
@@ -319,7 +331,7 @@ fn session_config_matches_sdk_preview_factory_for_mlx_lm_delegated_server() {
 }
 
 #[test]
-fn session_config_routes_default_local_model_to_llama_cpp() {
+fn session_config_routes_default_local_model_to_mlx_direct() {
     let model_path = PathBuf::from("/tmp/qwen3.5-mlx");
     let args = ServerArgs {
         llama_model_path: Some(model_path.clone()),
@@ -330,18 +342,20 @@ fn session_config_routes_default_local_model_to_llama_cpp() {
 
     assert_eq!(
         actual.resolved_backend.selected_backend,
-        SelectedBackend::LlamaCpp
+        SelectedBackend::Mlx
     );
     assert_eq!(
-        actual.llama_backend,
-        Some(LlamaCppConfig::new("llama-cli", model_path))
+        actual.mlx_model_artifacts_dir.as_deref(),
+        Some(model_path.as_path())
     );
+    assert!(actual.llama_backend.is_none());
 }
 
 #[test]
-fn session_config_routes_default_gguf_model_to_llama_cpp() {
+fn session_config_routes_explicit_gguf_model_to_llama_cpp() {
     let gguf_model_path = PathBuf::from("/tmp/qwen3.5-9b-q4.gguf");
     let args = ServerArgs {
+        support_tier: PreviewSupportTier::LlamaCpp,
         llama_model_path: Some(gguf_model_path.clone()),
         ..base_args()
     };
@@ -620,7 +634,7 @@ fn qwen36_35b_preset_selects_mlx_preview_defaults() {
 #[test]
 fn glm_preset_selects_native_mlx_by_default() {
     // GLM 4.7 Flash is a direct-support model: the preset selects the native
-    // MLX tier by default. It can still be routed to mlx-lm via --mlx-lm-server-url.
+    // MLX tier by default. Delegation requires an explicit delegated tier.
     let args = ServerArgs {
         preset: Some(ServerPreset::Glm47Flash4bit),
         ..base_args()
