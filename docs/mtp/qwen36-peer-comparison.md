@@ -71,9 +71,10 @@ AX rows are strict and pass the output-degeneracy gate.
 
 The chart is limited to the 27B rows because they use the same dense sidecar
 across engines, so active bytes match and output work can be shown as the bar
-metric. The 35B-A3B rows are production-configuration MoE package rows with
-different active-byte estimates, so they are kept in the table only and decode
-tok/s remains the fair speed metric.
+metric. The active-byte value is identical for every 27B row, so it is omitted
+from the chart. The 35B-A3B rows are production-configuration MoE package rows
+with different active-byte estimates, so they are kept in the table only and
+decode tok/s remains the fair speed metric.
 
 ```text
 effective output bandwidth = decode tok/s * active target-weight bytes
@@ -84,7 +85,7 @@ reduction probe. Qwen MTP output-work percentages can exceed it because one
 target verifier cycle can commit multiple accepted draft tokens. Treat output
 work as audit context, not as an Instruments GPU-utilization chart.
 
-![Qwen3.6 27B MTP same-sidecar output-work diagnostic](../assets/perf-qwen36-mtp-bandwidth-diagnostic.svg)
+![Qwen3.6 27B MTP effective output work same-sidecar chart](../assets/perf-qwen36-mtp-bandwidth-diagnostic.svg)
 
 Read output-work percentages above 100% as MTP output leverage, not impossible
 memory bandwidth. For the 27B 4-bit rows, each target verifier pass reads about

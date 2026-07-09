@@ -40,17 +40,17 @@ prompt tokens. Peer rows and model-specific boundaries are kept visible.
 - [Typical Hardware](#typical-hardware)
 - [What AX Engine Does](#what-ax-engine-does)
 - [Performance](#performance)
-  - [Speculative Decoding (MTP)](#speculative-decoding-mtp)
+  - [Session Mode: MTP Generation](#session-mode-mtp-generation)
     - [Supported MTP packages](#supported-mtp-packages)
     - [Download and serve an MTP package](#download-and-serve-an-mtp-package)
     - [AX Engine 6-bit MTP package acceleration (2026-07-09)](#ax-engine-6-bit-mtp-package-acceleration-2026-07-09)
     - [Qwen3.6 MTP peer decode comparison (2026-07-09)](#qwen36-mtp-peer-decode-comparison-2026-07-09)
     - [Gemma 4 assistant-MTP (depth-2)](#gemma-4-assistant-mtp-depth-2)
-  - [Direct Mode (Decode · Prefill · TTFT)](#direct-mode-decode--prefill--ttft)
+  - [Session Mode: Direct Generation](#session-mode-direct-generation)
     - [Gemma 4 12B](#gemma-4-12b)
     - [DiffusionGemma](#diffusiongemma)
     - [Gemma 4 and Qwen 3.6](#gemma-4-and-qwen-36)
-  - [Embedding Models](#embedding-models)
+  - [Session Mode: Embeddings](#session-mode-embeddings)
     - [Qwen3-Embedding ingest scale](#qwen3-embedding-ingest-scale)
     - [EmbeddingGemma ingest scale](#embeddinggemma-ingest-scale)
 - [SDKs](#sdks)
@@ -246,10 +246,18 @@ local `llama.cpp` and `mlx-lm` versions: `llama.cpp` `b9910` / `ggml` `0.15.3`
 for GGUF Metal reference rows and `mlx-lm` `0.31.3` for MLX reference rows.
 MTP peer benchmarking uses the current local MTPLX release, `MTPLX 2.0.1`.
 
-Results are grouped by Session mode: speculative decoding (MTP), direct decode,
-and embeddings.
+Performance results are grouped by **Session mode**. Read each mode as a
+separate benchmark session with its own route, workload shape, and headline
+metric; do not compare rows across modes unless the text explicitly says they
+share a same-artifact denominator.
 
-### Speculative Decoding (MTP)
+| Session mode | What it measures | Headline metric | Keep separate from |
+| --- | --- | --- | --- |
+| MTP generation | Speculative generation with a draft/MTP package plus target verification | MTP decode tok/s, speedup over same-package direct, accept rate | Direct-mode peer rows and embedding ingest rows |
+| Direct generation | Non-speculative autoregressive generation through AX, mlx-lm, or llama.cpp routes | Decode tok/s, prefill tok/s, TTFT | MTP speedup rows; diffusion rows call out their own non-AR metric |
+| Embeddings | Encoder-style embedding throughput and ingest scale | Chunks/s, tokens/s, latency at batch/chunk settings | Text generation decode/prefill/TTFT |
+
+### Session Mode: MTP Generation
 
 AX Engine supports three MTP packaging contracts in the repo-owned runtime: Qwen
 fused sidecars, Gemma assistant drafters, and GLM built-in MTP sidecars. The
@@ -432,11 +440,12 @@ artifacts remain useful only as audit/debug evidence.
 | Qwen3.6 35B-A3B 4-bit | 172.4 tok/s | 137.9 tok/s | 116.2 tok/s | AX leads this production-config row |
 | Qwen3.6 35B-A3B 6-bit | 141.2 tok/s | 119.0 tok/s | 96.3 tok/s | AX leads this production-config row |
 
-**27B same-sidecar output-work diagnostic:** On the identical 27B dense
+**27B effective output work (same sidecar):** On the identical 27B dense
 sidecar, active bytes match across engines, so output work tracks the decode
-ranking and is safe to show as the bar metric.
+ranking and is safe to show as the bar metric. The active-byte value is the
+same for every row, so the chart omits that column.
 
-<img src="docs/assets/perf-qwen36-mtp-bandwidth-diagnostic.svg" alt="Qwen3.6 27B MTP same-sidecar output-work diagnostic for AX Engine, MTPLX, and lightning-mlx">
+<img src="docs/assets/perf-qwen36-mtp-bandwidth-diagnostic.svg" alt="Qwen3.6 27B MTP effective output work same-sidecar chart for AX Engine, MTPLX, and lightning-mlx">
 
 Read output-work percentages above 100% as MTP output leverage, not impossible
 memory bandwidth. For the 27B 4-bit rows, each target verifier pass reads about
@@ -510,7 +519,11 @@ Method and per-suite artifacts:
 current 12B result artifacts under
 [`benchmarks/results/gemma4-assistant-mtp/2026-07-08-gemma4-12b-ax-only-direct-mtp-current-code-refresh/`](benchmarks/results/gemma4-assistant-mtp/2026-07-08-gemma4-12b-ax-only-direct-mtp-current-code-refresh/).
 
-### Direct Mode (Decode · Prefill · TTFT)
+### Session Mode: Direct Generation
+
+Direct generation disables speculative drafting and measures the base
+autoregressive route. The charts in this section use decode tok/s, prefill
+tok/s, and TTFT; these are not MTP accept-rate or speedup measurements.
 
 #### Gemma 4 12B
 
@@ -615,7 +628,7 @@ contract. llama.cpp decode is shown both at depth 0 (`tg`) and at matched contex
 (`-d {prompt}`). Host/runtime for the latest direct llama.cpp peer rerun: Apple M5 Max ·
 llama.cpp b9820 / ggml 0.15.3 (Metal, flash-attn) · `mlx_lm` 0.31.3 has no `gemma4_unified`
 support. MTP methodology and artifacts live with
-[Speculative Decoding (MTP)](#speculative-decoding-mtp).
+[Session Mode: MTP Generation](#session-mode-mtp-generation).
 
 The llama.cpp peer columns are measured on llama.cpp b9820 / ggml 0.15.3; full per-prompt
 llama.cpp data is in the verification artifact
@@ -939,16 +952,18 @@ Qwen 3.6 direct-mode verdict: AX is faster against `mlx_lm` in every refreshed 2
 |  |  | 512 | 175.3 | 367.2 | **213.6 (-41.8%)** |
 |  |  | 2048 | 611.7 | 821.1 | **587.3 (-28.5%)** |
 
-### Embedding Models
+### Session Mode: Embeddings
 
-Embedding models use a separate pooling route from text generation. Public
+Embedding sessions use a separate pooling route from text generation. Public
 README rows focus on sustained ingest workloads, where callers embed many chunks
-and the fixed per-call cost can be amortized. Single-batch, cooled short-query
-comparisons are useful diagnostics for query-serving latency, but they are not
-published here as headline throughput because tok/s can overstate or obscure
-per-call latency behavior. The current Qwen short-query diagnostic still shows
-an AX native-graph latency gap versus `mlx-lm`; treat that as a performance
-investigation target rather than a sustained-ingest claim.
+and the fixed per-call cost can be amortized. Treat these rows as embedding
+throughput and latency evidence, not as direct or MTP decode evidence.
+Single-batch, cooled short-query comparisons are useful diagnostics for
+query-serving latency, but they are not published here as headline throughput
+because tok/s can overstate or obscure per-call latency behavior. The current
+Qwen short-query diagnostic still shows an AX native-graph latency gap versus
+`mlx-lm`; treat that as a performance investigation target rather than a
+sustained-ingest claim.
 
 #### Qwen3-Embedding ingest scale
 

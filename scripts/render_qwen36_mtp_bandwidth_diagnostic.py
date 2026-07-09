@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Render the Qwen3.6 27B MTP same-sidecar output-work diagnostic.
+"""Render the Qwen3.6 27B MTP same-sidecar effective output-work diagnostic.
 
 The chart compares AX Engine, MTPLX, and lightning-mlx using a derived metric:
 
@@ -303,25 +303,23 @@ def render_27b_output_svg(diagnostic: dict[str, Any]) -> str:
     row_gap = 12
     footer_y = 308
     meta_output_x = 760
-    meta_decode_x = 882
-    meta_bytes_x = 982
+    meta_decode_x = 902
 
     parts = [
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{WIDTH}" height="{height}" viewBox="0 0 {WIDTH} {height}" role="img" aria-labelledby="title desc">',
-        "<title>Qwen3.6 27B MTP same-sidecar output-work diagnostic</title>",
+        "<title>Qwen3.6 27B MTP effective output work</title>",
         (
-            "<desc>Same-sidecar output-work diagnostic comparing AX Engine, MTPLX, "
+            "<desc>Same-sidecar effective output-work diagnostic comparing AX Engine, MTPLX, "
             "and lightning-mlx on Qwen3.6 27B 4-bit MTP.</desc>"
         ),
         f'<rect width="{WIDTH}" height="{height}" fill="#f8fafc"/>',
-        f'<text id="title" x="{LEFT}" y="28" font-family="{FONT}" font-size="17" font-weight="700" fill="#111827">Qwen3.6 27B MTP - Same-sidecar output work ({e(diagnostic["run_date"])})</text>',
+        f'<text id="title" x="{LEFT}" y="28" font-family="{FONT}" font-size="17" font-weight="700" fill="#111827">Qwen3.6 27B MTP - Effective output work (same sidecar, {e(diagnostic["run_date"])})</text>',
         f'<text id="desc" x="{LEFT}" y="50" font-family="{FONT}" font-size="11" fill="#4b5563">All engines use the same dense 27B sidecar, so active bytes match and output work tracks decode speed.</text>',
         f'<text x="{LEFT}" y="68" font-family="{FONT}" font-size="10" fill="#6b7280">Output work = decode tok/s × 16.90 GB/token; percentages are output-scaled against the {PEAK_GBS:.0f} GB/s reference.</text>',
         f'<rect x="{PLOT_LEFT}" y="{top - 28}" width="{PLOT_RIGHT - PLOT_LEFT}" height="142" rx="5" fill="#ffffff" stroke="#dbe3ef"/>',
         f'<text x="{PLOT_RIGHT}" y="{top - 45}" text-anchor="end" font-family="{FONT}" font-size="11" font-weight="700" fill="#dc2626">Higher output work is better here</text>',
         f'<text x="{meta_output_x}" y="{top - 11}" font-family="{FONT}" font-size="10" font-weight="700" fill="#374151">Output work</text>',
         f'<text x="{meta_decode_x}" y="{top - 11}" font-family="{FONT}" font-size="10" font-weight="700" fill="#374151">Decode</text>',
-        f'<text x="{meta_bytes_x}" y="{top - 11}" font-family="{FONT}" font-size="10" font-weight="700" fill="#374151">Active bytes</text>',
     ]
 
     for percent in (0.0, 50.0, 100.0, 150.0, 200.0):
@@ -359,7 +357,6 @@ def render_27b_output_svg(diagnostic: dict[str, Any]) -> str:
                 f'<text x="{percent_label_x:.1f}" y="{label_y}" text-anchor="end" font-family="{FONT}" font-size="10" font-weight="700" fill="#ffffff">{percent:.0f}%</text>',
                 f'<text x="{meta_output_x}" y="{label_y}" font-family="{FONT}" font-size="10" font-weight="{output_weight}" fill="{output_fill}">{value:.0f} GB/s</text>',
                 f'<text x="{meta_decode_x}" y="{label_y}" font-family="{FONT}" font-size="10" fill="#6b7280">{row["decode_tok_s"]:.1f} tok/s</text>',
-                f'<text x="{meta_bytes_x}" y="{label_y}" font-family="{FONT}" font-size="10" fill="#6b7280">{row["active_target_gb_per_output_token"]:.2f} GB/token</text>',
             ]
         )
         y += bar_h + row_gap
