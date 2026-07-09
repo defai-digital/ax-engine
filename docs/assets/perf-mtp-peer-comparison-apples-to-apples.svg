@@ -1,8 +1,8 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1120" height="672" viewBox="0 0 1120 672" role="img" aria-labelledby="title desc">
-<title id="title">Qwen3.6 MTP peer comparison decode apples to apples</title>
+<title id="title">Qwen3.6 MTP peer comparison decode (2026-07-09) apples to apples</title>
 <desc id="desc">Grouped horizontal bar chart comparing AX Engine, MTPLX, and lightning-mlx tok/s on the flappy prompt suite. Degenerate rows are shown muted and are not eligible for best-row highlighting.</desc>
 <rect width="1120" height="672" fill="#f8fafc"/>
-<text x="32" y="34" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="22" font-weight="700" fill="#111827">Qwen3.6 MTP peer comparison decode</text>
+<text x="32" y="34" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="22" font-weight="700" fill="#111827">Qwen3.6 MTP peer comparison decode (2026-07-09)</text>
 <text x="32" y="60" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="14" fill="#374151">flappy suite · 1000 generated tokens · 5 measured reps · 2 warmups · 15s cooldown · apples to apples</text>
 <text x="32" y="80" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="13" fill="#6b7280">Decode throughput, tokens per second.</text>
 <text x="1052.0" y="80" text-anchor="end" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="13" font-weight="700" fill="#dc2626">Higher is better</text>

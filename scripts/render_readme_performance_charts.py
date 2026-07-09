@@ -1303,7 +1303,10 @@ def render_mtp_peer_comparison_chart(
     contract_label = str(
         summary.get("contract", {}).get("benchmark_contract", "production-configuration")
     ).replace("-", " ")
+    run_date_match = re.match(r"(\d{4}-\d{2}-\d{2})", summary_path.parent.name)
+    run_date = run_date_match.group(1) if run_date_match else summary_path.parent.name
     metric_config = MTP_PEER_METRICS[metric_key]
+    chart_title = f'{metric_config["title"]} ({run_date})'
     metric_field = str(metric_config["field"])
     targets = []
     for row in rows:
@@ -1355,7 +1358,7 @@ def render_mtp_peer_comparison_chart(
             )
     lines = [
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{MTP_PEER_WIDTH}" height="{height}" viewBox="0 0 {MTP_PEER_WIDTH} {height}" role="img" aria-labelledby="title desc">',
-        f'<title id="title">{escape(str(metric_config["title"]))} {escape(contract_label)}</title>',
+        f'<title id="title">{escape(str(chart_title))} {escape(contract_label)}</title>',
         (
             '<desc id="desc">Grouped horizontal bar chart comparing AX Engine, '
             f'MTPLX, and lightning-mlx {escape(str(metric_config["unit"]))} on '
@@ -1363,7 +1366,7 @@ def render_mtp_peer_comparison_chart(
             "not eligible for best-row highlighting.</desc>"
         ),
         f'<rect width="{MTP_PEER_WIDTH}" height="{height}" fill="#f8fafc"/>',
-        f'<text x="32" y="34" font-family="{FONT}" font-size="22" font-weight="700" fill="#111827">{escape(str(metric_config["title"]))}</text>',
+        f'<text x="32" y="34" font-family="{FONT}" font-size="22" font-weight="700" fill="#111827">{escape(str(chart_title))}</text>',
         f'<text x="32" y="60" font-family="{FONT}" font-size="14" fill="#374151">flappy suite · 1000 generated tokens · 5 measured reps · 2 warmups · 15s cooldown · {escape(contract_label)}</text>',
         f'<text x="32" y="80" font-family="{FONT}" font-size="13" fill="#6b7280">{escape(str(metric_config["desc"]))}</text>',
     ]
