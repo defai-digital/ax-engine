@@ -39,6 +39,52 @@ class DirectModelIoMatrixTests(unittest.TestCase):
         self.assertIn("glm-4-7-flash-4bit", slugs)
         self.assertIn("mlx-community/GLM-4.7-Flash-4bit", model_ids)
 
+    def test_near_tie_equivalence_accepts_topk_token_inside_margin(self) -> None:
+        ref = {"top_logprobs": [[[10, -0.50], [20, -0.62], [30, -3.0]]]}
+
+        equivalence = check_direct_model_io.near_tie_prefix_equivalence(
+            ref,
+            [10, 11],
+            [20, 99],
+            prefix=0,
+            required=2,
+            margin=0.25,
+        )
+
+        self.assertIsNotNone(equivalence)
+        assert equivalence is not None
+        self.assertEqual(equivalence["ax_token"], 20)
+        self.assertEqual(equivalence["ax_rank"], 2)
+        self.assertAlmostEqual(equivalence["logprob_gap"], 0.12)
+
+    def test_near_tie_equivalence_rejects_token_outside_margin(self) -> None:
+        ref = {"top_logprobs": [[[10, -0.50], [20, -0.90]]]}
+
+        equivalence = check_direct_model_io.near_tie_prefix_equivalence(
+            ref,
+            [10],
+            [20],
+            prefix=0,
+            required=1,
+            margin=0.25,
+        )
+
+        self.assertIsNone(equivalence)
+
+    def test_near_tie_equivalence_rejects_token_absent_from_reference_topk(self) -> None:
+        ref = {"top_logprobs": [[[10, -0.50], [20, -0.62]]]}
+
+        equivalence = check_direct_model_io.near_tie_prefix_equivalence(
+            ref,
+            [10],
+            [99],
+            prefix=0,
+            required=1,
+            margin=0.25,
+        )
+
+        self.assertIsNone(equivalence)
+
 
 if __name__ == "__main__":
     unittest.main()

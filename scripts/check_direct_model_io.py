@@ -16,6 +16,8 @@ from typing import Any
 REPO_ROOT = Path(__file__).resolve().parents[1]
 HF_HUB = Path.home() / ".cache/huggingface/hub"
 BENCH_BIN = REPO_ROOT / "target/release/ax-engine-bench"
+DEFAULT_REF_TOP_LOGPROBS = 8
+DEFAULT_NEAR_TIE_LOGPROB_MARGIN = 0.25
 
 
 @dataclass(frozen=True)
@@ -204,7 +206,12 @@ def decode_tokens(model_dir: Path, tokens: list[int]) -> str:
     return tok.decode(tokens)
 
 
-def run_ref_child(model_dir: Path, prompt_tokens: list[int], max_tokens: int) -> dict[str, Any]:
+def run_ref_child(
+    model_dir: Path,
+    prompt_tokens: list[int],
+    max_tokens: int,
+    top_logprobs: int,
+) -> dict[str, Any]:
     code = r'''
 import json
 import sys
@@ -244,7 +251,7 @@ print(json.dumps(result))
                 "model_dir": str(model_dir),
                 "prompt_tokens": prompt_tokens,
                 "max_tokens": max_tokens,
-                "top_logprobs": int(os.environ.get("AX_REF_TOP_LOGPROBS", "0") or "0"),
+                "top_logprobs": top_logprobs,
             }
         ),
         text=True,
@@ -322,6 +329,55 @@ def whitespace_equivalent_prefix(
     return bool(ref_text) and ref_text == ax_text
 
 
+def near_tie_prefix_equivalence(
+    ref: dict[str, Any],
+    ref_tokens: list[int],
+    ax_tokens: list[int],
+    prefix: int,
+    required: int,
+    margin: float,
+) -> dict[str, Any] | None:
+    if prefix >= required or prefix >= len(ref_tokens) or prefix >= len(ax_tokens):
+        return None
+    top_logprobs = ref.get("top_logprobs")
+    if not isinstance(top_logprobs, list) or prefix >= len(top_logprobs):
+        return None
+    step_top = top_logprobs[prefix]
+    if not isinstance(step_top, list) or not step_top:
+        return None
+    normalized: list[tuple[int, float]] = []
+    for item in step_top:
+        if (
+            isinstance(item, (list, tuple))
+            and len(item) == 2
+            and isinstance(item[0], int)
+            and isinstance(item[1], (int, float))
+        ):
+            normalized.append((int(item[0]), float(item[1])))
+    if not normalized:
+        return None
+    normalized.sort(key=lambda item: item[1], reverse=True)
+    best_token, best_logprob = normalized[0]
+    ax_token = int(ax_tokens[prefix])
+    for rank, (token, logprob) in enumerate(normalized, start=1):
+        if token != ax_token:
+            continue
+        gap = best_logprob - logprob
+        if gap <= margin:
+            return {
+                "mismatch_index": prefix,
+                "reference_token": int(ref_tokens[prefix]),
+                "reference_best_token": int(best_token),
+                "ax_token": ax_token,
+                "ax_rank": rank,
+                "reference_best_logprob": best_logprob,
+                "ax_logprob": logprob,
+                "logprob_gap": gap,
+                "margin": margin,
+            }
+    return None
+
+
 def run_prompt_case(
     case: ModelCase,
     model_dir: Path,
@@ -329,9 +385,11 @@ def run_prompt_case(
     max_tokens: int,
     compare_tokens: int | None,
     ax_modes: list[AxMode],
+    ref_top_logprobs: int,
+    near_tie_logprob_margin: float,
 ) -> dict[str, Any]:
     prompt_tokens, prompt_text, stop_token_ids = tokenize_prompt(model_dir, prompt_case)
-    ref = run_ref_child(model_dir, prompt_tokens, max_tokens)
+    ref = run_ref_child(model_dir, prompt_tokens, max_tokens, ref_top_logprobs)
     result: dict[str, Any] = {
         "prompt_case": prompt_case.slug,
         "prompt_tokens": prompt_tokens,
@@ -366,6 +424,16 @@ def run_prompt_case(
             model_dir, ref_tokens, ax_tokens, required
         )
         mode_result["whitespace_prefix_equivalent"] = whitespace_prefix_equivalent
+        near_tie_equivalence = near_tie_prefix_equivalence(
+            ref,
+            ref_tokens,
+            ax_tokens,
+            prefix,
+            required,
+            near_tie_logprob_margin,
+        )
+        if near_tie_equivalence is not None:
+            mode_result["near_tie_prefix_equivalence"] = near_tie_equivalence
         stop_equivalent = (
             prefix == len(ax_tokens)
             and ax.get("finish_reason") == "stop"
@@ -374,7 +442,12 @@ def run_prompt_case(
         )
         mode_result["stop_equivalent"] = stop_equivalent
         mode_result["status"] = (
-            "pass" if prefix >= required or whitespace_prefix_equivalent or stop_equivalent else "fail"
+            "pass"
+            if prefix >= required
+            or whitespace_prefix_equivalent
+            or near_tie_equivalence is not None
+            or stop_equivalent
+            else "fail"
         )
         result["ax_modes"][mode.slug] = mode_result
         mode_statuses.append(mode_result["status"])
@@ -394,6 +467,8 @@ def run_case(
     compare_tokens: int | None,
     ax_modes: list[AxMode],
     stop_on_first_prompt_failure: bool,
+    ref_top_logprobs: int,
+    near_tie_logprob_margin: float,
 ) -> dict[str, Any]:
     model_dir = latest_snapshot(case.cache_name, require_manifest=True)
     if model_dir is None:
@@ -410,7 +485,16 @@ def run_case(
         "prompt_results": [],
     }
     for prompt_case in prompt_cases:
-        prompt_result = run_prompt_case(case, model_dir, prompt_case, max_tokens, compare_tokens, ax_modes)
+        prompt_result = run_prompt_case(
+            case,
+            model_dir,
+            prompt_case,
+            max_tokens,
+            compare_tokens,
+            ax_modes,
+            ref_top_logprobs,
+            near_tie_logprob_margin,
+        )
         result["prompt_results"].append(prompt_result)
         if prompt_result["status"] in {"fail", "error"} and stop_on_first_prompt_failure:
             break
@@ -450,6 +534,24 @@ def main() -> int:
         default="direct,ngram",
         help="Comma-separated AX modes to test: direct, ngram, or all.",
     )
+    parser.add_argument(
+        "--ref-top-logprobs",
+        type=int,
+        default=int(
+            os.environ.get("AX_REF_TOP_LOGPROBS", str(DEFAULT_REF_TOP_LOGPROBS))
+            or DEFAULT_REF_TOP_LOGPROBS
+        ),
+        help="Reference top-k logprobs to retain for near-tie diagnostics.",
+    )
+    parser.add_argument(
+        "--near-tie-logprob-margin",
+        type=float,
+        default=float(
+            os.environ.get("AX_NEAR_TIE_LOGPROB_MARGIN", str(DEFAULT_NEAR_TIE_LOGPROB_MARGIN))
+            or DEFAULT_NEAR_TIE_LOGPROB_MARGIN
+        ),
+        help="Treat a token mismatch as equivalent when AX chooses a reference top-k token within this logprob gap.",
+    )
     parser.add_argument("--continue-on-fail", action="store_true")
     parser.add_argument("--ref-child", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
@@ -487,6 +589,8 @@ def main() -> int:
             args.compare_tokens,
             selected_modes,
             stop_on_first_prompt_failure=not args.continue_on_fail,
+            ref_top_logprobs=max(args.ref_top_logprobs, 0),
+            near_tie_logprob_margin=max(args.near_tie_logprob_margin, 0.0),
         )
         results.append(result)
         status = result["status"]
@@ -515,6 +619,8 @@ def main() -> int:
         "ax_modes": [mode.slug for mode in selected_modes],
         "max_tokens": args.max_tokens,
         "compare_tokens_override": args.compare_tokens,
+        "ref_top_logprobs": max(args.ref_top_logprobs, 0),
+        "near_tie_logprob_margin": max(args.near_tie_logprob_margin, 0.0),
         "results": results,
         "counts": {
             "pass": sum(1 for r in results if r["status"] == "pass"),
