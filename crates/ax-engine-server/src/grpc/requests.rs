@@ -124,6 +124,18 @@ mod tests {
             "ax-engine-server",
             "--model-id",
             model_id,
+            // Explicit llama.cpp tier: support tiers are MLX-direct by
+            // default (see "Make server direct-first by default"), which
+            // makes construction eagerly require a real model-manifest.json
+            // in --mlx-model-artifacts-dir. This test's artifact_dir is
+            // deliberately manifest-less (it only wants to verify the
+            // chat_template.jinja-specific error surfaced later, inside
+            // build_chat_generate_request), so it must opt out of the
+            // direct-first default to keep EngineSession::new lazy about
+            // that directory's contents — matching the delegated
+            // --llama-server-url this test also configures.
+            "--support-tier",
+            "llama-cpp",
             "--llama-server-url",
             "http://127.0.0.1:1",
             "--mlx-model-artifacts-dir",
