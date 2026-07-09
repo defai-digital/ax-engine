@@ -28,9 +28,9 @@ separate (and largely closed) 1–6% dense-decode gap to `mlx_lm`.
 | mlx-lm — MLX 4-bit | 1.96 GB | 99.2 | 195 GB/s | 34% |
 | llama.cpp — Q4_K_M | 2.83 GB | 86.2 | 244 GB/s | 42% |
 
-Source (AX): `benchmarks/results/mlx-inference/2026-06-14-qwen3-coder-next-29af647f-ax-direct/`;
-mlx-lm: `benchmarks/results/mlx-inference/2026-06-13-qwen3-coder-next-prefill-probe/`;
-llama.cpp: `benchmarks/results/llama-cpp-metal/2026-06-13-qwen3-coder-next-9620-fa/`.
+Source (AX): `benchmarks/results/inference/mlx-inference/2026-06-14-qwen3-coder-next-29af647f-ax-direct/`;
+mlx-lm: `benchmarks/results/inference/mlx-inference/2026-06-13-qwen3-coder-next-prefill-probe/`;
+llama.cpp: `benchmarks/results/inference/llama-cpp-metal/2026-06-13-qwen3-coder-next-9620-fa/`.
 The 577 GB/s peak is an MLX reduction probe over a 6 GB array (same probe
 used for the Gemma 4 dense-model bandwidth table).
 

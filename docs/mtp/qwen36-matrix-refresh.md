@@ -43,12 +43,12 @@ summary generation.
 ## Artifacts
 
 - Matrix summary:
-  [`summary.md`](../../benchmarks/results/mtp-qwen36-matrix/2026-06-29-qwen36-mtp-matrix/summary.md),
-  [`summary.json`](../../benchmarks/results/mtp-qwen36-matrix/2026-06-29-qwen36-mtp-matrix/summary.json)
+  [`summary.md`](../../benchmarks/results/speculative/mtp-qwen36-matrix/2026-06-29-qwen36-mtp-matrix/summary.md),
+  [`summary.json`](../../benchmarks/results/speculative/mtp-qwen36-matrix/2026-06-29-qwen36-mtp-matrix/summary.json)
 - Follow-up MTPLX enablement smoke:
-  [`summary.md`](../../benchmarks/results/mtp-qwen36-matrix/2026-06-29-mtplx-enabled-smoke/summary.md)
+  [`summary.md`](../../benchmarks/results/speculative/mtp-qwen36-matrix/2026-06-29-mtplx-enabled-smoke/summary.md)
 - Peer enablement smoke:
-  [`summary.md`](../../benchmarks/results/mtp-qwen36-matrix/2026-06-29-peer-mtp-enable-smoke/summary.md)
+  [`summary.md`](../../benchmarks/results/speculative/mtp-qwen36-matrix/2026-06-29-peer-mtp-enable-smoke/summary.md)
 
 ## Smoke Notes
 

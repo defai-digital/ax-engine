@@ -10,7 +10,7 @@ investigators do not relitigate the same experiments.
 
 ## Measured gap
 
-From `benchmarks/results/mlx-inference/2026-05-20-qwen-1024-tier-sweep/`:
+From `benchmarks/results/inference/mlx-inference/2026-05-20-qwen-1024-tier-sweep/`:
 
 | family | decode rate | Δ vs mlx_lm | per-step extra µs |
 | --- | --- | --- | --- |
@@ -34,7 +34,7 @@ evidence:
 - **QKVZ projection fastpath** (`AX_MLX_DIRECT_CPP_LINEAR_ATTENTION_INPUTS`).
   Fusing the packed QKVZ + reshape + slice + concat into one FFI call.
   Result: neutral within ±0.3% — confirmed at
-  `benchmarks/results/mlx-inference/ab-direct-cpp-linear-inputs/`
+  `benchmarks/results/inference/mlx-inference/ab-direct-cpp-linear-inputs/`
   (commits `7ddd0ca` → `9a054da`). The flag stays opt-in.
 - **Linear-attention post-input fastpath**
   (`AX_MLX_DIRECT_CPP_LINEAR_ATTENTION_POST_INPUT`). Fuses the chain
@@ -47,7 +47,7 @@ evidence:
   warmed trace was throughput-neutral/noisy (`157.59` vs `154.30` tok/s),
   so that smoke was **not** promotion evidence. A later real inference-stack
   A/B on the same model
-  (`benchmarks/results/mlx-inference/2026-05-21-qwen35-post-input-ab/`)
+  (`benchmarks/results/inference/mlx-inference/2026-05-21-qwen35-post-input-ab/`)
   proved full route coverage (`150/150` post-input hits at each prompt length,
   zero fallbacks) and small positive decode medians at p128/p512/p2048
   (+0.42%, +0.62%, +0.51%). The flag still stays opt-in because this is a
@@ -68,7 +68,7 @@ evidence:
   prefill 0.91–0.93x; Gemma 4 12B 4-bit decode 0.97x and prefill
   0.91–0.98x. `check_direct_gemma4_ffn_route_promotion.py` decision:
   `not_promoted` on both. Stays opt-in/OFF; raw artifacts at
-  `benchmarks/results/mlx-inference/2026-06-11-gemma4-ffn-route-ab/`.
+  `benchmarks/results/inference/mlx-inference/2026-06-11-gemma4-ffn-route-ab/`.
   **Update:** the `AX_MLX_DIRECT_CPP_GEMMA4_POST_ATTN_FFN` flag, its
   `try_direct_gemma4_post_attn_ffn` route, the `DirectMlxHotpathProfileSnapshot`
   telemetry channel, the bench `--ax-compare-direct-gemma4-ffn-route` mode, and
@@ -82,7 +82,7 @@ evidence:
   was correctness-equivalent (4 round-trip tests vs split path) but
   **slower than MLX's stand-alone `rms_norm`**: decode regressed 1.5–3%,
   prefill@2048 regressed 1.2%. Reverted; raw artifacts at
-  `benchmarks/results/mlx-inference/ab-rmsnorm-add/` (commit `ec5dda1`).
+  `benchmarks/results/inference/mlx-inference/ab-rmsnorm-add/` (commit `ec5dda1`).
 - **Single-FFI scalar token readback** (`MlxArray::item_u32`
   wrapping `mlx_array_item_uint32`, mirroring mlx_lm's `y.item()`).
   Collapses the `mlx_eval([&pending]) + mlx_array_data_uint32` pair
@@ -93,7 +93,7 @@ evidence:
   `eval()` path that has different (slower) scheduler semantics than
   the `mlx_eval(vector<array>)` used by `mlx-sys::transforms::eval`.
   Reverted; raw artifacts at
-  `benchmarks/results/mlx-inference/ab-item-u32/`.
+  `benchmarks/results/inference/mlx-inference/ab-item-u32/`.
 - **`WeightLayoutTelemetry::from_weights` per step** — moved to runner
   init in the same investigation. Tiny win (< 0.01%) but the loop was
   pure dead weight; kept for cleanliness.

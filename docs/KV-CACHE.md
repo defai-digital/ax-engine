@@ -401,7 +401,7 @@ The current positive physical-reuse artifact is the Qwen3.5 9B warm-repeat
 equivalence run:
 
 - Artifact:
-  `benchmarks/results/mlx-inference/2026-05-13-hot-prefix-w2/equivalence-gate/warm_repeat/qwen3-5-9b-2026-05-13.json`
+  `benchmarks/results/inference/mlx-inference/2026-05-13-hot-prefix-w2/equivalence-gate/warm_repeat/qwen3-5-9b-2026-05-13.json`
 - Schema: `ax.prefix_reuse_equivalence.v1`
 - Model: `Qwen3.5-9B-MLX-4bit`
 - Result: PASS, 5/5 prompts matched token-exactly.

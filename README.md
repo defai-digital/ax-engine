@@ -625,14 +625,16 @@ has higher bus utilization (86%) but worse speed because its FFN tensors read fa
 Direct rows use the 4-bit-FFN artifact, greedy-equivalent sampler, 128 generated tokens,
 5 repetitions, 15 s cooldown, and random-token prompts following the `mlx_lm.benchmark`
 contract. llama.cpp decode is shown both at depth 0 (`tg`) and at matched context depth
-(`-d {prompt}`). Host/runtime for the latest direct llama.cpp peer rerun: Apple M5 Max ·
-llama.cpp b9820 / ggml 0.15.3 (Metal, flash-attn) · `mlx_lm` 0.31.3 has no `gemma4_unified`
-support. MTP methodology and artifacts live with
+(`-d {prompt}`). Host/runtime for this retained Gemma 4 12B llama.cpp reference:
+Apple M5 Max · llama.cpp b9820 / ggml 0.15.3 (Metal, flash-attn) · `mlx_lm`
+0.31.3 has no `gemma4_unified` support. The current direct-mode high-water
+matrix uses the later b9910 llama.cpp sweep described in the provenance block
+below. MTP methodology and artifacts live with
 [Session Mode: MTP Generation](#session-mode-mtp-generation).
 
 The llama.cpp peer columns are measured on llama.cpp b9820 / ggml 0.15.3; full per-prompt
 llama.cpp data is in the verification artifact
-[`gemma-4-12b-it-4bit-b9820-verify.json`](benchmarks/results/llama-cpp-metal/2026-06-27-llama-only-rerun/gemma-4-12b-it-4bit-b9820-verify.json).
+[`gemma-4-12b-it-4bit-b9820-verify.json`](benchmarks/results/inference/llama-cpp-metal/2026-06-27-llama-only-rerun/gemma-4-12b-it-4bit-b9820-verify.json).
 The AX rows come from the current direct-only AX artifact below. The llama.cpp rows are retained
 from the earlier peer rerun, so these columns are a shape-compatible cross-run comparison, not a
 single-session A/B.

@@ -8,16 +8,16 @@ llama.cpp, serving, and workload-contract paths.
 For the performance docs map and public claim-boundary policy, start with
 [`performance/README.md`](performance/README.md).
 
-The root `README.md` summarizes the high-traffic Gemma 4 and Qwen 3.6 rows
-under the **Performance** section. The full public result tables and result
-interpretation live in `docs/PERFORMANCE.md`. The current README snapshot is
-backed by
-`benchmarks/results/mlx-inference/2026-05-26-direct-mode-clean-refresh/`
-(`mlx_lm` reference rows) plus
-`benchmarks/results/mlx-inference/2026-06-22-ax-direct-readme-direct-only/`
-(AX direct-only overlay rows). Older result sets, including n-gram overlay
-runs, remain useful diagnostic history, but they should not be described as the
-current public README table unless README is rolled back to those artifacts.
+The root `README.md` summarizes the high-traffic MTP, direct-generation, and
+embedding rows under the **Performance** section. The full public result
+boundaries and interpretation live in `docs/PERFORMANCE.md`. The current README
+generation snapshot is a provenance-tracked composite, not one same-session run:
+`mlx_lm` reference rows, AX direct overlays from the 2026-07 refreshes, the
+2026-07-08 llama.cpp Metal sweep, AX 6-bit MTP package rows, Qwen3.6 peer MTP
+rows, and embedding ingest-scale rows are each labeled by session mode in the
+README provenance text. Older result sets, including n-gram overlay runs, remain
+useful diagnostic history, but they should not be described as the current
+public README table unless README is rolled back to those artifacts.
 
 A result is useful only when the workload, runtime route, reference engine,
 host, model, sampling policy, and artifact schema are explicit.
@@ -292,10 +292,10 @@ contract:
 python3 scripts/build_mlx_prefix_warmup_artifact.py \
   --result-dir benchmarks/results/<ax-engine-bench-run> \
   --manifest-root benchmarks/manifests/replay \
-  --output benchmarks/results/mlx-inference/<date>/<model>-prefix-warmup.json
+  --output benchmarks/results/inference/mlx-inference/<date>/<model>-prefix-warmup.json
 
 python3 scripts/check_mlx_prefix_warmup_artifact.py \
-  benchmarks/results/mlx-inference/<date>/<model>-prefix-warmup.json
+  benchmarks/results/inference/mlx-inference/<date>/<model>-prefix-warmup.json
 ```
 
 Saved artifacts use schema `ax.mlx_prefix_warmup.v1`. The builder reads
@@ -329,22 +329,22 @@ them from an already completed MLX inference-stack run with:
 
 ```text
 python3 scripts/build_mlx_prefill_scaling_artifact.py \
-  benchmarks/results/mlx-inference/<date>/<model>.json \
-  --output benchmarks/results/mlx-inference/<date>/<model>-prefill-scaling.json
+  benchmarks/results/inference/mlx-inference/<date>/<model>.json \
+  --output benchmarks/results/inference/mlx-inference/<date>/<model>-prefill-scaling.json
 
 python3 scripts/check_mlx_prefill_scaling_artifact.py \
-  benchmarks/results/mlx-inference/<date>/<model>-prefill-scaling.json
+  benchmarks/results/inference/mlx-inference/<date>/<model>-prefill-scaling.json
 
 python3 scripts/render_mlx_prefill_scaling_report.py \
-  benchmarks/results/mlx-inference/<date>/<model>-prefill-scaling.json \
-  --output benchmarks/results/mlx-inference/<date>/<model>-prefill-scaling.md
+  benchmarks/results/inference/mlx-inference/<date>/<model>-prefill-scaling.json \
+  --output benchmarks/results/inference/mlx-inference/<date>/<model>-prefill-scaling.md
 
 python3 scripts/check_mlx_prefill_scaling_campaign.py \
-  benchmarks/results/mlx-inference/<date>/gemma-prefill-scaling.json \
-  benchmarks/results/mlx-inference/<date>/qwen-prefill-scaling.json \
-  benchmarks/results/mlx-inference/<date>/glm-prefill-scaling.json \
+  benchmarks/results/inference/mlx-inference/<date>/gemma-prefill-scaling.json \
+  benchmarks/results/inference/mlx-inference/<date>/qwen-prefill-scaling.json \
+  benchmarks/results/inference/mlx-inference/<date>/glm-prefill-scaling.json \
   --default-required-families \
-  --output benchmarks/results/mlx-inference/<date>/prefill-scaling-campaign.md
+  --output benchmarks/results/inference/mlx-inference/<date>/prefill-scaling-campaign.md
 ```
 
 New AX rows from `bench_mlx_inference_stack.py` include runner-derived
@@ -370,18 +370,18 @@ artifact:
 
 ```text
 python3 scripts/build_long_context_comparison_artifact.py \
-  benchmarks/results/mlx-inference/<date>/<model>.json \
-  --output benchmarks/results/mlx-inference/<date>/<model>-long-context-comparison.json \
+  benchmarks/results/inference/mlx-inference/<date>/<model>.json \
+  --output benchmarks/results/inference/mlx-inference/<date>/<model>-long-context-comparison.json \
   --require-llama-cpp
 
 python3 scripts/check_long_context_comparison_artifact.py \
   --require-llama-cpp \
-  benchmarks/results/mlx-inference/<date>/<model>-long-context-comparison.json
+  benchmarks/results/inference/mlx-inference/<date>/<model>-long-context-comparison.json
 
 python3 scripts/render_long_context_comparison_report.py \
   --require-llama-cpp \
-  benchmarks/results/mlx-inference/<date>/<model>-long-context-comparison.json \
-  --output benchmarks/results/mlx-inference/<date>/<model>-long-context-comparison.md
+  benchmarks/results/inference/mlx-inference/<date>/<model>-long-context-comparison.json \
+  --output benchmarks/results/inference/mlx-inference/<date>/<model>-long-context-comparison.md
 ```
 
 Saved artifacts use schema `ax.long_context_comparison.v1`. They enforce
@@ -394,15 +394,15 @@ Decode-at-depth claims use a second artifact:
 
 ```text
 python3 scripts/build_long_context_decode_at_depth_artifact.py \
-  benchmarks/results/mlx-inference/<date>/<model>.json \
-  --output benchmarks/results/mlx-inference/<date>/<model>-decode-at-depth.json
+  benchmarks/results/inference/mlx-inference/<date>/<model>.json \
+  --output benchmarks/results/inference/mlx-inference/<date>/<model>-decode-at-depth.json
 
 python3 scripts/check_long_context_decode_at_depth_artifact.py \
-  benchmarks/results/mlx-inference/<date>/<model>-decode-at-depth.json
+  benchmarks/results/inference/mlx-inference/<date>/<model>-decode-at-depth.json
 
 python3 scripts/render_long_context_decode_at_depth_report.py \
-  benchmarks/results/mlx-inference/<date>/<model>-decode-at-depth.json \
-  --output benchmarks/results/mlx-inference/<date>/<model>-decode-at-depth.md
+  benchmarks/results/inference/mlx-inference/<date>/<model>-decode-at-depth.json \
+  --output benchmarks/results/inference/mlx-inference/<date>/<model>-decode-at-depth.md
 ```
 
 Saved artifacts use schema `ax.long_context_decode_at_depth.v1`. They compare
@@ -433,7 +433,7 @@ python3 scripts/render_ax_serving_benchmark_report.py \
 
 The latest checked-in real-model P1 example is:
 
-- [Qwen3-4B-4bit prefill scaling, 2026-05-15](../benchmarks/results/mlx-inference/2026-05-15-long-context/qwen3-4b-4bit-prefill-scaling/prefill-scaling.md)
+- [Qwen3-4B-4bit prefill scaling, 2026-05-15](../benchmarks/results/inference/mlx-inference/2026-05-15-long-context/qwen3-4b-4bit-prefill-scaling/prefill-scaling.md)
 
 This example is intentionally scoped evidence: AX beats `mlx_lm` at every
 measured Qwen3-4B context in that run, including 1.154x at 8k. Do not cite it
@@ -441,7 +441,7 @@ as a broad family-wide or serving-concurrency win.
 
 The latest checked-in decode-at-depth example is:
 
-- [Qwen3-4B-4bit decode-at-depth, 2026-05-15](../benchmarks/results/mlx-inference/2026-05-15-long-context/qwen3-4b-4bit-decode-at-depth.md)
+- [Qwen3-4B-4bit decode-at-depth, 2026-05-15](../benchmarks/results/inference/mlx-inference/2026-05-15-long-context/qwen3-4b-4bit-decode-at-depth.md)
 
 It measures direct AX decode after 4k and 8k prompt depths with generation=128.
 AX was 1.067x vs `mlx_lm` at 4k depth and 1.232x at 8k depth. This is still not
@@ -449,7 +449,7 @@ an online serving, prefix-cache reuse, or n-gram acceleration claim.
 
 The latest checked-in n-gram depth diagnostic is:
 
-- [Qwen3-4B-4bit n-gram depth diagnostic, 2026-05-15](../benchmarks/results/mlx-inference/2026-05-15-long-context/qwen3-4b-4bit-ngram-depth.md)
+- [Qwen3-4B-4bit n-gram depth diagnostic, 2026-05-15](../benchmarks/results/inference/mlx-inference/2026-05-15-long-context/qwen3-4b-4bit-ngram-depth.md)
 
 It measures AX default n-gram decode after 4k and 8k prompt depths with
 generation=128. AX n-gram was 2.225x vs `mlx_lm` at 4k depth and 2.686x at 8k
@@ -461,7 +461,7 @@ artifact:
 
 ```text
 python3 scripts/check_mlx_startup_latency_artifact.py \
-  benchmarks/results/mlx-inference/<date>/<model>-startup-latency.json
+  benchmarks/results/inference/mlx-inference/<date>/<model>-startup-latency.json
 ```
 
 The repo-owned real-model runner can capture both P2 artifacts:
@@ -469,7 +469,7 @@ The repo-owned real-model runner can capture both P2 artifacts:
 ```text
 scripts/run-mlx-p2-latency-artifacts.sh \
   --model-dir /path/to/local/mlx-model \
-  --output-root benchmarks/results/mlx-inference/<date> \
+  --output-root benchmarks/results/inference/mlx-inference/<date> \
   --run-label <model>-p2-latency \
   --context-tokens 8192 \
   --startup-generation-tokens 128 \
@@ -486,9 +486,9 @@ regenerate the report from saved artifacts:
 
 ```text
 python3 scripts/render_mlx_p2_latency_report.py \
-  --startup-artifact benchmarks/results/mlx-inference/<date>/<model>-p2-latency/startup-latency.json \
-  --concurrent-artifact benchmarks/results/mlx-inference/<date>/<model>-p2-latency/concurrent-prefill.json \
-  --output benchmarks/results/mlx-inference/<date>/<model>-p2-latency/p2-latency.md
+  --startup-artifact benchmarks/results/inference/mlx-inference/<date>/<model>-p2-latency/startup-latency.json \
+  --concurrent-artifact benchmarks/results/inference/mlx-inference/<date>/<model>-p2-latency/concurrent-prefill.json \
+  --output benchmarks/results/inference/mlx-inference/<date>/<model>-p2-latency/p2-latency.md
 ```
 
 Saved artifacts use schema `ax.mlx_startup_latency.v1`. The checker requires
@@ -504,7 +504,7 @@ Concurrent prefill claims require a separate concurrency artifact:
 
 ```text
 python3 scripts/check_mlx_concurrent_prefill_artifact.py \
-  benchmarks/results/mlx-inference/<date>/<model>-concurrent-prefill.json
+  benchmarks/results/inference/mlx-inference/<date>/<model>-concurrent-prefill.json
 ```
 
 Saved artifacts use schema `ax.mlx_concurrent_prefill.v1`. The checker requires
@@ -518,7 +518,7 @@ throughput.
 
 The latest checked-in real-model P2 example is:
 
-- [Qwen3-4B-4bit startup and concurrent prefill, 2026-05-07](../benchmarks/results/mlx-inference/2026-05-07-real-p2/qwen3-4b-4bit-p2-latency/p2-latency.md)
+- [Qwen3-4B-4bit startup and concurrent prefill, 2026-05-07](../benchmarks/results/inference/mlx-inference/2026-05-07-real-p2/qwen3-4b-4bit-p2-latency/p2-latency.md)
 
 This report records the 8k cold/model-warm/benchmark-warm split and
 concurrency 1/2/4 behavior. The 4-request row is classified as serialized, so
@@ -570,7 +570,7 @@ packed direct AX rows only:
 
 ```text
 python3 scripts/check_mlx_forward_profile_artifact.py \
-  benchmarks/results/mlx-inference/<date>/<model>-linear-profile.json \
+  benchmarks/results/inference/mlx-inference/<date>/<model>-linear-profile.json \
   --require-pack-comparison
 ```
 
@@ -602,7 +602,7 @@ Validate saved GatedDelta profile artifacts with:
 
 ```text
 python3 scripts/check_gateddelta_prefill_profile_artifact.py \
-  benchmarks/results/mlx-inference/<date>/gateddelta-prefill-profile.json
+  benchmarks/results/inference/mlx-inference/<date>/gateddelta-prefill-profile.json
 ```
 
 When `--gateddelta-prefill-profile` is combined with `--output`, the benchmark
@@ -616,17 +616,17 @@ python3 scripts/bench_mlx_inference_stack.py \
   --model-dir /path/to/qwen-linear-attention-mlx-model \
   --gateddelta-prefill-profile \
   --generation-tokens 128 \
-  --output benchmarks/results/mlx-inference/<date>/gateddelta-prefill-profile.json \
+  --output benchmarks/results/inference/mlx-inference/<date>/gateddelta-prefill-profile.json \
   --gateddelta-prefill-profile-report-output \
-    benchmarks/results/mlx-inference/<date>/gateddelta-prefill-profile.md
+    benchmarks/results/inference/mlx-inference/<date>/gateddelta-prefill-profile.md
 ```
 
 If the report was not rendered during capture, render the validated profile with:
 
 ```text
 python3 scripts/render_gateddelta_prefill_profile_report.py \
-  benchmarks/results/mlx-inference/<date>/gateddelta-prefill-profile.json \
-  --output benchmarks/results/mlx-inference/<date>/gateddelta-prefill-profile.md
+  benchmarks/results/inference/mlx-inference/<date>/gateddelta-prefill-profile.json \
+  --output benchmarks/results/inference/mlx-inference/<date>/gateddelta-prefill-profile.md
 ```
 
 For Gemma 4 26B A4B direct-decode investigation, enable the opt-in MoE profile:
@@ -912,12 +912,12 @@ llama.cpp build, most peer text appears in `reasoning_content` rather than
 `message.content`, so the benchmark validates positive `response_chars`.
 
 Full artifact:
-[`2026-06-09-gemma4-12b-multimodal-cold-peer-matrix`](../benchmarks/results/gemma4-multimodal/2026-06-09-gemma4-12b-multimodal-cold-peer-matrix.json).
+[`2026-06-09-gemma4-12b-multimodal-cold-peer-matrix`](../benchmarks/results/inference/gemma4-multimodal/2026-06-09-gemma4-12b-multimodal-cold-peer-matrix.json).
 Render charts with:
 
 ```bash
 python3 scripts/render_gemma4_multimodal_charts.py \
-  --artifact benchmarks/results/gemma4-multimodal/2026-06-09-gemma4-12b-multimodal-cold-peer-matrix.json \
+  --artifact benchmarks/results/inference/gemma4-multimodal/2026-06-09-gemma4-12b-multimodal-cold-peer-matrix.json \
   --assets-dir docs/assets
 ```
 
@@ -942,10 +942,10 @@ python3 scripts/bench_gemma4_multimodal.py \
   --llama-gguf <path-to-gemma-4-12B-it-Q4_K_M.gguf> \
   --llama-mmproj <path-to-mmproj-gemma-4-12B-it-Q8_0.gguf> \
   --llama-cache-policy prompt_cache_disabled \
-  --output benchmarks/results/gemma4-multimodal/gemma4-12b-multimodal-cold-peer-matrix.json
+  --output benchmarks/results/inference/gemma4-multimodal/gemma4-12b-multimodal-cold-peer-matrix.json
 
 python3 scripts/check_gemma4_multimodal_benchmark_artifact.py \
-  benchmarks/results/gemma4-multimodal/gemma4-12b-multimodal-cold-peer-matrix.json \
+  benchmarks/results/inference/gemma4-multimodal/gemma4-12b-multimodal-cold-peer-matrix.json \
   --min-repetitions 3 \
   --require-modalities image,audio,video \
   --require-build-provenance \

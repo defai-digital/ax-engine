@@ -1,9 +1,9 @@
 # Performance
 
-This page is the public performance-results reference. It keeps the result
-tables, artifact summaries, and interpretation for the current public snapshot.
-The root `README.md` intentionally keeps only the common Gemma 4 and Qwen 3.6
-rows.
+This page is the public performance-results reference. It keeps claim
+boundaries, artifact summaries, and interpretation for the current public
+snapshot. The root `README.md` carries the reader-facing tables and charts for
+MTP generation, direct generation, and embeddings.
 
 For the public claim-boundary policy, see
 [`performance/README.md`](performance/README.md).
@@ -13,47 +13,44 @@ evidence classification, see [`docs/BENCHMARKS.md`](BENCHMARKS.md).
 
 ## Current Result Set
 
-The current README generation-model table is a provenance-tracked composite:
-`mlx_lm` reference rows were refreshed on 2026-05-26, and the AX direct-only
-overlay was refreshed on 2026-06-22 on:
+The current README performance section is split by session mode:
+
+| Session mode | Current public source |
+| --- | --- |
+| MTP generation | AX 6-bit MTP package refresh from 2026-07-09 plus Qwen3.6 peer MTP decode rows refreshed or retained through 2026-07-09 |
+| Direct generation | Gemma 4 and Qwen 3.6 high-water composite from `mlx_lm` reference rows, AX direct overlays through 2026-07-07, and the 2026-07-08 llama.cpp Metal sweep |
+| Embeddings | Qwen3-Embedding and EmbeddingGemma ingest-scale rows from the 2026-07-02 artifact family |
+
+These rows are a provenance-tracked composite, not one same-session benchmark.
+Every README section labels the route, artifact family, metric, and comparison
+boundary that is safe for that session mode.
+
+The shared host for the current headline local benchmark rows is:
 
 - Apple M5 Max
 - 128 GB memory
-- macOS 26.4.1
+- macOS 26.x
 
 Benchmark shape:
 
-- random-token prompts from the `mlx_lm.benchmark` seed-0 contract
-- batch size 1
-- `prefill_step_size=2048`
-- 128 generated tokens
-- temperature 0
-- 5 repetitions per engine/model/prompt row
-- 15-second cooldown between trials
+- Direct-generation rows use random-token prompts from the `mlx_lm.benchmark`
+  seed-0 contract, batch size 1, `prefill_step_size=2048`, 128 generated tokens,
+  temperature 0, median-of-measured repetitions, cooldown, AX prefix cache
+  disabled for cold prefill and TTFT measurement, and production-build server
+  binaries. README provenance records where historical rows used 1 warmup and
+  where newer overlays used 2 warmups.
+- MTP-generation rows use the `flappy`, `long_code`, and `python_modules_long`
+  prompt suites, sampled decode (`temperature=0.6`, `top_p=0.95`, `top_k=20`),
+  1000 generated tokens, measured medians, cooldown, and strict AX MTP
+  verification for promoted AX peer rows.
+- Embedding rows use batch/chunk ingest-scale harnesses with median tok/s,
+  chunks/s, l2-normalized outputs, 2 warmups, 5 measured trials, and 15-second
+  cooldown unless a section explicitly says otherwise.
 
-The current README generation-model snapshot is backed by:
-
-```text
-benchmarks/results/mlx-inference/2026-05-26-direct-mode-clean-refresh/
-benchmarks/results/mlx-inference/2026-06-22-ax-direct-readme-direct-only/
-```
-
-The reference directory supplies the 12 Gemma 4 and Qwen 3.6 `mlx_lm` rows in
-the README table. The AX overlay directory reruns the matching direct AX rows
-with generation=128, 5 measured repetitions, a 15-second
-cooldown, AX prefix cache disabled for cold prefill and TTFT measurement, and
-production-build server binaries. All MLX and AX rows use the same prompt-token
-contract and prompt SHA checks. The `llama.cpp Metal*` column is injected from
-the llama.cpp Metal manifest/artifact set documented in the README and remains
-shape-compatible external context, not prompt-hash parity evidence.
-
-`ax direct baseline` is the direct same-policy comparison against `mlx_lm`; the
-benchmark starts the AX server with n-gram acceleration disabled for this row.
+Direct AX rows are the same-policy comparison against `mlx_lm`; n-gram
+acceleration, MTP, and assistant drafting are disabled for that direct baseline.
 N-gram results remain documented as workload-dependent acceleration evidence,
-but they are not part of the current README Gemma 4 / Qwen 3.6 direct-mode
-snapshot. The README prefill table uses direct AX rows because n-gram
-acceleration is a decode policy and should not be credited as a prefill
-optimization.
+but they are not part of the current direct-generation headline table.
 
 ## Latest Long-Context Artifacts
 
@@ -62,8 +59,8 @@ checked-in heavy real-model validation is separate:
 
 | Artifact | Model | Shape | Key result | Interpretation |
 | --- | --- | --- | --- | --- |
-| [P1 prefill scaling](../benchmarks/results/mlx-inference/2026-05-15-long-context/qwen3-4b-4bit-prefill-scaling/prefill-scaling.md) | `mlx-community/Qwen3-4B-4bit` | 1k/2k/4k/8k context, generation=1, repetitions=3 | AX/MLX prefill ratio moves from 1.190x at 1k to 1.154x at 8k, with every measured context above `mlx_lm` | AX now has a positive Qwen3-4B cold-prefill boundary on this host; keep it separate from family-wide and serving-concurrency claims |
-| [P2 startup and concurrency](../benchmarks/results/mlx-inference/2026-05-07-real-p2/qwen3-4b-4bit-p2-latency/p2-latency.md) | `mlx-community/Qwen3-4B-4bit` | 8k context; startup generation=128; concurrent generation=1; concurrency 1/2/4 | 8k warm TTFT 2509.7 ms; 4-request concurrent prefill TTFT 8318.7 ms and overlap classified serialized | This does not support a continuous-batching or concurrent-prefill-overlap claim yet |
+| [P1 prefill scaling](../benchmarks/results/inference/mlx-inference/2026-05-15-long-context/qwen3-4b-4bit-prefill-scaling/prefill-scaling.md) | `mlx-community/Qwen3-4B-4bit` | 1k/2k/4k/8k context, generation=1, repetitions=3 | AX/MLX prefill ratio moves from 1.190x at 1k to 1.154x at 8k, with every measured context above `mlx_lm` | AX now has a positive Qwen3-4B cold-prefill boundary on this host; keep it separate from family-wide and serving-concurrency claims |
+| [P2 startup and concurrency](../benchmarks/results/inference/mlx-inference/2026-05-07-real-p2/qwen3-4b-4bit-p2-latency/p2-latency.md) | `mlx-community/Qwen3-4B-4bit` | 8k context; startup generation=128; concurrent generation=1; concurrency 1/2/4 | 8k warm TTFT 2509.7 ms; 4-request concurrent prefill TTFT 8318.7 ms and overlap classified serialized | This does not support a continuous-batching or concurrent-prefill-overlap claim yet |
 
 Both artifacts use direct AX MLX policy and are not evidence for n-gram decode
 acceleration. They are included to show that review covered TTFT, prefill
@@ -74,7 +71,7 @@ README throughput table.
 
 The 2026-05-13 short-prompt TTFT follow-up decomposes AX MLX prefill wall time
 for Qwen Coder Next, a retired Qwen 3.6 candidate, and GLM 4.7 Flash:
-[prefill breakdown](../benchmarks/results/mlx-inference/2026-05-13-ttft-breakdown/prefill-breakdown.md).
+[prefill breakdown](../benchmarks/results/inference/mlx-inference/2026-05-13-ttft-breakdown/prefill-breakdown.md).
 It separates model forward time from prefix-cache snapshot storage and
 generation-state initialization. Diagnostic profile artifacts in the same
 directory are intentionally excluded from the default rendered report unless
@@ -130,20 +127,17 @@ parity with CUDA server systems such as vLLM or TensorRT-LLM.
 
 ## Interpretation
 
-The current composite result set is not a universal direct-decode win.
-Direct AX is intentionally measured with n-gram acceleration disabled, and the
-direct column spans -14.4% to +22.9% versus `mlx_lm` across the full decode
-artifact set. In the README Gemma 4 / Qwen 3.6 snapshot, direct decode spans
--14.4% to +9.1%. Those rows are the same-policy baseline rather than the
-default AX user path.
+The current README direct-generation high-water composite reports AX ahead of
+`mlx_lm` on the published Gemma 4 and Qwen 3.6 direct cells that have a current
+comparable `mlx_lm` row. That does not make it a universal direct-decode claim:
+the table is a curated public snapshot for named model artifacts, prompt
+lengths, host class, and route policy. It is still a same-policy baseline rather
+than the default AX user path.
 
-N-gram acceleration is the default AX user/server path and is the better
-headline row for decode-throughput expectations when the workload produces
-draftable local repetition. It is intentionally separate from the current
-README direct-mode snapshot. Historical n-gram artifacts still report
-workload-dependent effective throughput and explicit fallback status, and
-public docs should keep direct baseline rows visible whenever an n-gram row is
-shown.
+N-gram acceleration is a separate AX user/server decode policy. Historical
+n-gram artifacts still report workload-dependent effective throughput and
+explicit fallback status, and public docs should keep direct baseline rows
+visible whenever an n-gram row is shown.
 
 The high end of the n-gram column is sensitive to a second regime worth
 naming explicitly: random-token benchmark prompts at greedy decode can
@@ -200,10 +194,13 @@ should not be read as a complete inference-serving proof. In particular:
 
 ## MTP Mode
 
-The current MTP publication contract is Qwen-only: Qwen3.6 27B and Qwen3.6
-35B-A3B, each at 4-bit and 6-bit, with promoted rows running MTP only. Same-
-package direct rows may be kept as diagnostic denominators for AX MTP
-acceleration, but they are not headline MTP matrix rows.
+The current MTP publication contract has two separate views. The AX Engine-only
+6-bit package acceleration view covers Qwen fused sidecars, Gemma assistant
+drafters, and GLM built-in MTP sidecars. The cross-engine peer comparison is
+Qwen-only: Qwen3.6 27B and Qwen3.6 35B-A3B, each at 4-bit and 6-bit, with
+promoted rows running MTP only. Same-package direct rows may be kept as
+diagnostic denominators for AX MTP acceleration, but they are not headline peer
+matrix rows.
 
 | Target | Required preparation / source | Promoted MTP mode |
 | --- | --- | --- |
@@ -221,7 +218,8 @@ Rules:
 - Historical MTP+n-gram artifacts remain diagnostic only. Do not use them for
   current README/PERFORMANCE claims.
 - Do not include Qwen3-Coder-Next, 5-bit, 8-bit, FFN-only, GGUF, Gemma, or GLM
-  variants in the current MTP benchmark matrix.
+  variants in the Qwen3.6 peer MTP benchmark matrix. Gemma and GLM stay in the
+  separate AX Engine-only 6-bit MTP package view.
 - Direct rows may be reported only as same-artifact denominators for
   `AX MTP / AX direct` acceleration, not as a cross-model speed leaderboard.
 - Matrix artifacts should live under
@@ -276,7 +274,7 @@ python3 scripts/check_readme_performance_artifacts.py
 ```
 
 It parses the README decode and prefill tables, resolves the referenced
-`benchmarks/results/mlx-inference/.../` artifact directory, and fails if any
+`benchmarks/results/inference/mlx-inference/.../` artifact directory, and fails if any
 public row lacks a matching median value, prompt-token hash, reference row,
 decode-policy label, or repetition metadata.
 
@@ -295,22 +293,22 @@ artifact directly:
 
 ```text
 python3 scripts/build_mlx_prefill_scaling_artifact.py \
-  benchmarks/results/mlx-inference/<date>/<model>.json \
-  --output benchmarks/results/mlx-inference/<date>/<model>-prefill-scaling.json
+  benchmarks/results/inference/mlx-inference/<date>/<model>.json \
+  --output benchmarks/results/inference/mlx-inference/<date>/<model>-prefill-scaling.json
 
 python3 scripts/check_mlx_prefill_scaling_artifact.py \
-  benchmarks/results/mlx-inference/<date>/<model>-prefill-scaling.json
+  benchmarks/results/inference/mlx-inference/<date>/<model>-prefill-scaling.json
 
 python3 scripts/render_mlx_prefill_scaling_report.py \
-  benchmarks/results/mlx-inference/<date>/<model>-prefill-scaling.json \
-  --output benchmarks/results/mlx-inference/<date>/<model>-prefill-scaling.md
+  benchmarks/results/inference/mlx-inference/<date>/<model>-prefill-scaling.json \
+  --output benchmarks/results/inference/mlx-inference/<date>/<model>-prefill-scaling.md
 
 python3 scripts/check_mlx_prefill_scaling_campaign.py \
-  benchmarks/results/mlx-inference/<date>/gemma-prefill-scaling.json \
-  benchmarks/results/mlx-inference/<date>/qwen-prefill-scaling.json \
-  benchmarks/results/mlx-inference/<date>/glm-prefill-scaling.json \
+  benchmarks/results/inference/mlx-inference/<date>/gemma-prefill-scaling.json \
+  benchmarks/results/inference/mlx-inference/<date>/qwen-prefill-scaling.json \
+  benchmarks/results/inference/mlx-inference/<date>/glm-prefill-scaling.json \
   --default-required-families \
-  --output benchmarks/results/mlx-inference/<date>/prefill-scaling-campaign.md
+  --output benchmarks/results/inference/mlx-inference/<date>/prefill-scaling-campaign.md
 ```
 
 The builder does not run the model; it converts a saved
@@ -339,14 +337,14 @@ prompt-hash-parity MLX scaling artifact:
 
 ```text
 python3 scripts/build_long_context_comparison_artifact.py \
-  benchmarks/results/mlx-inference/<date>/<model>.json \
-  --output benchmarks/results/mlx-inference/<date>/<model>-long-context-comparison.json \
+  benchmarks/results/inference/mlx-inference/<date>/<model>.json \
+  --output benchmarks/results/inference/mlx-inference/<date>/<model>-long-context-comparison.json \
   --require-llama-cpp
 
 python3 scripts/render_long_context_comparison_report.py \
   --require-llama-cpp \
-  benchmarks/results/mlx-inference/<date>/<model>-long-context-comparison.json \
-  --output benchmarks/results/mlx-inference/<date>/<model>-long-context-comparison.md
+  benchmarks/results/inference/mlx-inference/<date>/<model>-long-context-comparison.json \
+  --output benchmarks/results/inference/mlx-inference/<date>/<model>-long-context-comparison.md
 ```
 
 The resulting `ax.long_context_comparison.v1` artifact validates AX-vs-`mlx_lm`
@@ -360,12 +358,12 @@ For decode cost after an existing context depth, build the separate
 
 ```text
 python3 scripts/build_long_context_decode_at_depth_artifact.py \
-  benchmarks/results/mlx-inference/<date>/<model>.json \
-  --output benchmarks/results/mlx-inference/<date>/<model>-decode-at-depth.json
+  benchmarks/results/inference/mlx-inference/<date>/<model>.json \
+  --output benchmarks/results/inference/mlx-inference/<date>/<model>-decode-at-depth.json
 
 python3 scripts/render_long_context_decode_at_depth_report.py \
-  benchmarks/results/mlx-inference/<date>/<model>-decode-at-depth.json \
-  --output benchmarks/results/mlx-inference/<date>/<model>-decode-at-depth.md
+  benchmarks/results/inference/mlx-inference/<date>/<model>-decode-at-depth.json \
+  --output benchmarks/results/inference/mlx-inference/<date>/<model>-decode-at-depth.md
 ```
 
 Use `--require-llama-cpp` only for sources with explicit `llama-bench n_depth`
@@ -380,7 +378,7 @@ artifacts:
 
 ```text
 python3 scripts/check_mlx_startup_latency_artifact.py \
-  benchmarks/results/mlx-inference/<date>/<model>-startup-latency.json
+  benchmarks/results/inference/mlx-inference/<date>/<model>-startup-latency.json
 ```
 
 To capture startup and concurrent-prefill artifacts from a real local model,
@@ -389,7 +387,7 @@ run:
 ```text
 scripts/run-mlx-p2-latency-artifacts.sh \
   --model-dir /path/to/local/mlx-model \
-  --output-root benchmarks/results/mlx-inference/<date> \
+  --output-root benchmarks/results/inference/mlx-inference/<date> \
   --run-label <model>-p2-latency \
   --context-tokens 8192 \
   --startup-generation-tokens 128 \
@@ -407,9 +405,9 @@ regenerated directly:
 
 ```text
 python3 scripts/render_mlx_p2_latency_report.py \
-  --startup-artifact benchmarks/results/mlx-inference/<date>/<model>-p2-latency/startup-latency.json \
-  --concurrent-artifact benchmarks/results/mlx-inference/<date>/<model>-p2-latency/concurrent-prefill.json \
-  --output benchmarks/results/mlx-inference/<date>/<model>-p2-latency/p2-latency.md
+  --startup-artifact benchmarks/results/inference/mlx-inference/<date>/<model>-p2-latency/startup-latency.json \
+  --concurrent-artifact benchmarks/results/inference/mlx-inference/<date>/<model>-p2-latency/concurrent-prefill.json \
+  --output benchmarks/results/inference/mlx-inference/<date>/<model>-p2-latency/p2-latency.md
 ```
 
 Saved artifacts use schema `ax.mlx_startup_latency.v1`. The checker requires
@@ -427,7 +425,7 @@ artifacts:
 
 ```text
 python3 scripts/check_mlx_concurrent_prefill_artifact.py \
-  benchmarks/results/mlx-inference/<date>/<model>-concurrent-prefill.json
+  benchmarks/results/inference/mlx-inference/<date>/<model>-concurrent-prefill.json
 ```
 
 Saved artifacts use schema `ax.mlx_concurrent_prefill.v1`. The checker requires
@@ -449,7 +447,7 @@ End-to-end API latency should be labeled separately from raw runner throughput.
 
 > **Resolved (2026-07-02):** the direct-decode gaps below are historical. The
 > 2026-07-01 4-bit refresh and the 2026-07-02 same-session paired 6-bit rerun
-> (`benchmarks/results/mlx-inference/2026-07-02-gemma4-6bit-direct-refresh/`)
+> (`benchmarks/results/inference/mlx-inference/2026-07-02-gemma4-6bit-direct-refresh/`)
 > show AX leading `mlx_lm` direct decode on every public Gemma 4 row, including
 > 26B A4B 6-bit (+5.0% to +7.4%) and 31B 6-bit (+3.4% to +3.8%). The remaining
 > table records the state that motivated the optimization passes.
@@ -476,7 +474,7 @@ A follow-up Gemma 4 E2B 4-bit direct-decode refresh after the sliding-window
 decode KV view change is recorded in:
 
 ```text
-benchmarks/results/mlx-inference/2026-05-06/gemma-4-e2b-it-4bit-ax-engine-sliding-window-direct.json
+benchmarks/results/inference/mlx-inference/2026-05-06/gemma-4-e2b-it-4bit-ax-engine-sliding-window-direct.json
 ```
 
 It improves AX direct decode versus r4, but AX direct remains below `mlx_lm`.
@@ -484,7 +482,7 @@ It improves AX direct decode versus r4, but AX direct remains below `mlx_lm`.
 An opt-in true rotating-backing-store experiment is recorded in:
 
 ```text
-benchmarks/results/mlx-inference/2026-05-06/gemma-4-e2b-it-4bit-ax-engine-rotating-direct.json
+benchmarks/results/inference/mlx-inference/2026-05-06/gemma-4-e2b-it-4bit-ax-engine-rotating-direct.json
 ```
 
 It is not the default because it did not produce a consistent direct-decode win.
@@ -499,7 +497,7 @@ AX_MLX_DIRECT_CLEAR_CACHE_CADENCE=256
 The artifact is:
 
 ```text
-benchmarks/results/mlx-inference/2026-05-06/gemma-4-e2b-it-4bit-ax-engine-clear-cache-direct.json
+benchmarks/results/inference/mlx-inference/2026-05-06/gemma-4-e2b-it-4bit-ax-engine-clear-cache-direct.json
 ```
 
 It is also not the default because it did not improve the retained-window

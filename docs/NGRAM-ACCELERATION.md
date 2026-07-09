@@ -62,7 +62,7 @@ per row, greedy decode:
 Evidence directories:
 
 - 2026-05-18 legacy random-token output-loop review
-- `benchmarks/results/mlx-inference/2026-05-18-real-prompt-coding/` — real coding **generation** prompts (not editing); every AX row labeled `ngram_acceleration_effective_throughput` with healthy decode
+- `benchmarks/results/inference/mlx-inference/2026-05-18-real-prompt-coding/` — real coding **generation** prompts (not editing); every AX row labeled `ngram_acceleration_effective_throughput` with healthy decode
 
 The direct-decode column is stable (~190–205 tok/s) across both
 sources, so the model and the kernel are not the variable. The n-gram
@@ -108,7 +108,7 @@ input-output-overlap workloads benefit because the post-prefill decode
 context now has prompt-derived precedent in the table.
 
 Validation artifact:
-`benchmarks/results/mlx-inference/2026-05-18-ngram-real-prompt-validation/qwen3_6-27b-4bit.json`
+`benchmarks/results/inference/mlx-inference/2026-05-18-ngram-real-prompt-validation/qwen3_6-27b-4bit.json`
 runs the three-case input-output-overlap suite at
 `benchmarks/manifests/real_prompts/input_output_overlap.jsonl` on Qwen
 3.6 27B 4-bit (a model that produced zero draft attempts on every

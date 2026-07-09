@@ -8,12 +8,12 @@ later.
 | Machine | Minimum spec | Suggested spec |
 | --- | --- | --- |
 | Mac Mini | M4 Pro, 32 GB | M4 Pro, 64 GB |
-| MacBook Pro 14" / 16" | M2 Pro / M2 Max, 32 GB | M3 Max, 96 GB |
+| MacBook Pro 14" / 16" | M2 Max, 32 GB | M3 Max, 96 GB |
 | Mac Studio | M2 Max / M2 Ultra, 32 GB | M4 Max, 96 GB |
 
-M3, M4, and M5 chip variants are supported across all three lines. M1 is not
-supported. The M2 base chip, with a 24 GB maximum memory configuration, is
-below the 32 GB minimum.
+Later Pro, Max, and Ultra chip variants are supported when the machine has at
+least 32 GB unified memory. M1, base M2, and smaller-memory machines are outside
+the supported repo-owned MLX runtime contract.
 
 For a typical local model stack, start with one of these higher-memory
 configurations:

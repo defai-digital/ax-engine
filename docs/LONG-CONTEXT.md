@@ -37,11 +37,11 @@ The detailed implementation contract lives in [KV-CACHE.md](KV-CACHE.md).
 
 | Surface | Evidence | Current result | What it supports |
 |---|---|---|---|
-| Cold prefill scaling | [Qwen3-4B prefill scaling, 2026-05-15](../benchmarks/results/mlx-inference/2026-05-15-long-context/qwen3-4b-4bit-prefill-scaling/prefill-scaling.md) | AX/MLX prefill ratio was 1.190x at 1k, 1.028x at 2k, 1.045x at 4k, and 1.154x at 8k | AX has measured Qwen3-4B long-prefill wins on this host; this is still a single-model boundary, not a family-wide claim |
-| Decode at depth | [Qwen3-4B decode-at-depth, 2026-05-15](../benchmarks/results/mlx-inference/2026-05-15-long-context/qwen3-4b-4bit-decode-at-depth.md) | AX/MLX direct decode ratio was 1.067x at 4k depth and 1.232x at 8k depth | AX has measured Qwen3-4B direct decode wins after long context; this is not a serving or n-gram acceleration claim |
-| N-gram decode at depth | [Qwen3-4B n-gram depth diagnostic, 2026-05-15](../benchmarks/results/mlx-inference/2026-05-15-long-context/qwen3-4b-4bit-ngram-depth.md) | AX n-gram decode was 2.225x vs `mlx_lm` at 4k depth and 2.686x at 8k depth, with 100% draft acceptance in this run | N-gram remains a decode-policy result and should not be credited as prefill or serving-concurrency evidence |
-| Server startup and concurrency | [Qwen3-4B P2 startup/concurrency](../benchmarks/results/mlx-inference/2026-05-07-real-p2/qwen3-4b-4bit-p2-latency/p2-latency.md) | 8k benchmark-warm TTFT was 2509.7 ms; 4-request concurrent prefill was classified as serialized | This sets serving expectations; it does not prove continuous batching |
-| Hot-prefix correctness | [Qwen3.5 warm-repeat equivalence](../benchmarks/results/mlx-inference/2026-05-13-hot-prefix-w2/equivalence-gate/warm_repeat/qwen3-5-9b-2026-05-13.json) | 5/5 prompts matched token-exactly, with 5 physical snapshot hits, 176 reused tokens, and 0 warmup tokens on the claimed hit path | AX can restore physical MLX prefix snapshots on the validated Qwen warm-repeat path |
+| Cold prefill scaling | [Qwen3-4B prefill scaling, 2026-05-15](../benchmarks/results/inference/mlx-inference/2026-05-15-long-context/qwen3-4b-4bit-prefill-scaling/prefill-scaling.md) | AX/MLX prefill ratio was 1.190x at 1k, 1.028x at 2k, 1.045x at 4k, and 1.154x at 8k | AX has measured Qwen3-4B long-prefill wins on this host; this is still a single-model boundary, not a family-wide claim |
+| Decode at depth | [Qwen3-4B decode-at-depth, 2026-05-15](../benchmarks/results/inference/mlx-inference/2026-05-15-long-context/qwen3-4b-4bit-decode-at-depth.md) | AX/MLX direct decode ratio was 1.067x at 4k depth and 1.232x at 8k depth | AX has measured Qwen3-4B direct decode wins after long context; this is not a serving or n-gram acceleration claim |
+| N-gram decode at depth | [Qwen3-4B n-gram depth diagnostic, 2026-05-15](../benchmarks/results/inference/mlx-inference/2026-05-15-long-context/qwen3-4b-4bit-ngram-depth.md) | AX n-gram decode was 2.225x vs `mlx_lm` at 4k depth and 2.686x at 8k depth, with 100% draft acceptance in this run | N-gram remains a decode-policy result and should not be credited as prefill or serving-concurrency evidence |
+| Server startup and concurrency | [Qwen3-4B P2 startup/concurrency](../benchmarks/results/inference/mlx-inference/2026-05-07-real-p2/qwen3-4b-4bit-p2-latency/p2-latency.md) | 8k benchmark-warm TTFT was 2509.7 ms; 4-request concurrent prefill was classified as serialized | This sets serving expectations; it does not prove continuous batching |
+| Hot-prefix correctness | [Qwen3.5 warm-repeat equivalence](../benchmarks/results/inference/mlx-inference/2026-05-13-hot-prefix-w2/equivalence-gate/warm_repeat/qwen3-5-9b-2026-05-13.json) | 5/5 prompts matched token-exactly, with 5 physical snapshot hits, 176 reused tokens, and 0 warmup tokens on the claimed hit path | AX can restore physical MLX prefix snapshots on the validated Qwen warm-repeat path |
 | Multi-turn long session | `benchmarks/results/profiling/kv-long-context/*fix-final-2026-05-14.json` | Qwen3.5, Qwen3.6, and Gemma4 E2B show repeated physical prefix hits and reduced post-first-turn TTFT; GLM-4.7 still shows no prefix hits in this artifact family | Long-running session reuse is promising on supported cache layouts, but not uniform across every architecture |
 | Compressed KV | TurboQuant quality and microbench artifacts | Experimental and off by default | Not a production long-context support claim yet |
 
@@ -112,25 +112,25 @@ python3 scripts/bench_mlx_inference_stack.py \
   --llama-cpp-gguf /path/to/model.gguf \
   --llama-cpp-decode-at-depth \
   --llama-cpp-extra-args "-fa 1" \
-  --output benchmarks/results/mlx-inference/<date>/<model>-long-context-source.json
+  --output benchmarks/results/inference/mlx-inference/<date>/<model>-long-context-source.json
 ```
 
 Then build, validate, and render the comparison artifact:
 
 ```text
 python3 scripts/build_long_context_comparison_artifact.py \
-  benchmarks/results/mlx-inference/<date>/<model>-long-context-source.json \
-  --output benchmarks/results/mlx-inference/<date>/<model>-long-context-comparison.json \
+  benchmarks/results/inference/mlx-inference/<date>/<model>-long-context-source.json \
+  --output benchmarks/results/inference/mlx-inference/<date>/<model>-long-context-comparison.json \
   --require-llama-cpp
 
 python3 scripts/check_long_context_comparison_artifact.py \
   --require-llama-cpp \
-  benchmarks/results/mlx-inference/<date>/<model>-long-context-comparison.json
+  benchmarks/results/inference/mlx-inference/<date>/<model>-long-context-comparison.json
 
 python3 scripts/render_long_context_comparison_report.py \
   --require-llama-cpp \
-  benchmarks/results/mlx-inference/<date>/<model>-long-context-comparison.json \
-  --output benchmarks/results/mlx-inference/<date>/<model>-long-context-comparison.md
+  benchmarks/results/inference/mlx-inference/<date>/<model>-long-context-comparison.json \
+  --output benchmarks/results/inference/mlx-inference/<date>/<model>-long-context-comparison.md
 ```
 
 This gate deliberately does not prove prefix-cache reuse, decode-at-depth, or
@@ -143,15 +143,15 @@ source or comparison artifact:
 
 ```text
 python3 scripts/build_long_context_decode_at_depth_artifact.py \
-  benchmarks/results/mlx-inference/<date>/<model>-long-context-source.json \
-  --output benchmarks/results/mlx-inference/<date>/<model>-decode-at-depth.json
+  benchmarks/results/inference/mlx-inference/<date>/<model>-long-context-source.json \
+  --output benchmarks/results/inference/mlx-inference/<date>/<model>-decode-at-depth.json
 
 python3 scripts/check_long_context_decode_at_depth_artifact.py \
-  benchmarks/results/mlx-inference/<date>/<model>-decode-at-depth.json
+  benchmarks/results/inference/mlx-inference/<date>/<model>-decode-at-depth.json
 
 python3 scripts/render_long_context_decode_at_depth_report.py \
-  benchmarks/results/mlx-inference/<date>/<model>-decode-at-depth.json \
-  --output benchmarks/results/mlx-inference/<date>/<model>-decode-at-depth.md
+  benchmarks/results/inference/mlx-inference/<date>/<model>-decode-at-depth.json \
+  --output benchmarks/results/inference/mlx-inference/<date>/<model>-decode-at-depth.md
 ```
 
 Use `--require-llama-cpp` only when the source has `llama.cpp Metal` rows with
