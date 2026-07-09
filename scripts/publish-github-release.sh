@@ -349,6 +349,18 @@ m = re.search(r'VERSION\s*=\s*"([^"]+)"', version_rb)
 if m:
     checks["sdk/ruby/lib/ax_engine/version.rb"] = m.group(1)
 
+client_go = (root / "sdk/go/axengine/client.go").read_text()
+m = re.search(r'Version\s*=\s*"([^"]+)"', client_go)
+if m:
+    checks["sdk/go/axengine/client.go"] = m.group(1)
+
+axengine_client_swift = (
+    root / "sdk/swift/Sources/AxEngine/AxEngineClient.swift"
+).read_text()
+m = re.search(r'static let version = "([^"]+)"', axengine_client_swift)
+if m:
+    checks["sdk/swift/Sources/AxEngine/AxEngineClient.swift"] = m.group(1)
+
 mismatches = {f: v for f, v in checks.items() if v != version}
 if mismatches:
     for f, v in mismatches.items():
