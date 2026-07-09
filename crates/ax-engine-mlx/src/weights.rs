@@ -1356,16 +1356,7 @@ fn load_mtp_sidecar(
         } else {
             default_draft
         };
-        // Detect sidecar quantization bits from the free-text `mtp_sidecar` description.
-        // "INT8" → 8-bit; "INT4" / "4bit" → 4-bit; default → None (caller infers from shapes).
-        let sidecar_bits = v.get("mtp_sidecar").and_then(|s| s.as_str()).map(|s| {
-            let upper = s.to_ascii_uppercase();
-            if upper.contains("INT8") || upper.contains("8BIT") {
-                8
-            } else {
-                4
-            }
-        });
+        let sidecar_bits = parse_mtp_sidecar_bits_hint(&v);
         let depth = apply_mtp_depth_policy(raw_depth, sidecar_bits);
         return (
             depth,
@@ -1411,9 +1402,9 @@ fn load_glm_mtp_sidecar(
     }
     name_map.extend(tensors);
 
-    // Parse depth and draft sampling from runtime config.
+    // Parse depth, draft sampling, and sidecar quantization bits from runtime config.
     let runtime_path = root.join("glm_mtp_runtime.json");
-    let (max_depth, draft_sampling) = if let Ok(bytes) = std::fs::read(&runtime_path)
+    let (max_depth, draft_sampling, bits) = if let Ok(bytes) = std::fs::read(&runtime_path)
         && let Ok(v) = serde_json::from_slice::<serde_json::Value>(&bytes)
     {
         let raw_depth = v.get("mtp_depth_max").and_then(|x| x.as_u64()).unwrap_or(1) as usize;
@@ -1428,14 +1419,23 @@ fn load_glm_mtp_sidecar(
         } else {
             default_draft
         };
+        // Without this hint, every 2-D projection below fell back to
+        // `bits=4` in `mtp_take_weight`, silently mis-inferring `group_size`
+        // (~2x too large) for INT8 sidecars produced by
+        // `scripts/prepare_glm_mtp_sidecar.py --quantize 8` — the packed
+        // integers get unpacked as 8x4-bit values instead of 4x8-bit values,
+        // producing wrong dequantized weights with no validation error.
+        let sidecar_bits = parse_mtp_sidecar_bits_hint(&v);
         (
             apply_mtp_max_depth_cap(raw_depth),
             apply_draft_temperature_override(draft_sampling),
+            sidecar_bits,
         )
     } else {
         (
             apply_mtp_max_depth_cap(1),
             apply_draft_temperature_override(default_draft),
+            None,
         )
     };
 
@@ -1454,9 +1454,9 @@ fn load_glm_mtp_sidecar(
     let shared_head_norm = mtp_take_plain(name_map, &format!("{p}.shared_head.norm.weight"))?;
 
     // eh_proj: [2*hidden → hidden] linear.
-    let eh_proj = mtp_take_weight(name_map, &format!("{p}.eh_proj"), None)?;
+    let eh_proj = mtp_take_weight(name_map, &format!("{p}.eh_proj"), bits)?;
     // shared_head.head: [hidden → vocab] draft logit projection.
-    let shared_head = mtp_take_weight(name_map, &format!("{p}.shared_head.head"), None)?;
+    let shared_head = mtp_take_weight(name_map, &format!("{p}.shared_head.head"), bits)?;
 
     // Layer norms for the transformer block.
     let attn_norm = mtp_take_plain(name_map, &format!("{p}.layer.input_layernorm.weight"))?;
@@ -1466,13 +1466,13 @@ fn load_glm_mtp_sidecar(
     )?;
 
     // MLA attention projections.
-    let q_a_proj = mtp_take_weight(name_map, &format!("{p}.layer.self_attn.q_a_proj"), None)?;
-    let kv_a_proj = mtp_take_weight(name_map, &format!("{p}.layer.self_attn.kv_a_proj"), None)
+    let q_a_proj = mtp_take_weight(name_map, &format!("{p}.layer.self_attn.q_a_proj"), bits)?;
+    let kv_a_proj = mtp_take_weight(name_map, &format!("{p}.layer.self_attn.kv_a_proj"), bits)
         .or_else(|| {
             mtp_take_weight(
                 name_map,
                 &format!("{p}.layer.self_attn.kv_a_proj_with_mqa"),
-                None,
+                bits,
             )
         })?;
     let q_a_norm = mtp_take_plain(
@@ -1483,19 +1483,19 @@ fn load_glm_mtp_sidecar(
         name_map,
         &format!("{p}.layer.self_attn.kv_a_layernorm.weight"),
     )?;
-    let q_b_proj = mtp_take_weight(name_map, &format!("{p}.layer.self_attn.q_b_proj"), None)?;
+    let q_b_proj = mtp_take_weight(name_map, &format!("{p}.layer.self_attn.q_b_proj"), bits)?;
     let (embed_q, unembed_out) = if let Some(kv_b) =
-        mtp_take_weight(name_map, &format!("{p}.layer.self_attn.kv_b_proj"), None)
+        mtp_take_weight(name_map, &format!("{p}.layer.self_attn.kv_b_proj"), bits)
     {
         split_deepseek_kv_b_projection(kv_b, &manifest.mla_attention, manifest.attention_head_count)
             .ok()?
     } else {
         (
-            mtp_take_weight(name_map, &format!("{p}.layer.self_attn.embed_q"), None)?,
-            mtp_take_weight(name_map, &format!("{p}.layer.self_attn.unembed_out"), None)?,
+            mtp_take_weight(name_map, &format!("{p}.layer.self_attn.embed_q"), bits)?,
+            mtp_take_weight(name_map, &format!("{p}.layer.self_attn.unembed_out"), bits)?,
         )
     };
-    let o_proj = mtp_take_weight(name_map, &format!("{p}.layer.self_attn.o_proj"), None)?;
+    let o_proj = mtp_take_weight(name_map, &format!("{p}.layer.self_attn.o_proj"), bits)?;
 
     // Fuse q_a_proj + kv_a_proj into a single matmul weight.
     let qa_kva_fused = pack_glm_mla_qa_kva_projection(&q_a_proj, &kv_a_proj).ok()?;
@@ -1510,7 +1510,7 @@ fn load_glm_mtp_sidecar(
     });
 
     // MoE FFN: router + expert stacks.
-    let router_proj = mtp_take_weight(name_map, &format!("{p}.layer.mlp.gate"), None);
+    let router_proj = mtp_take_weight(name_map, &format!("{p}.layer.mlp.gate"), bits);
     let router_correction_bias = mtp_take_plain(
         name_map,
         &format!("{p}.layer.mlp.gate.e_score_correction_bias"),
@@ -1518,42 +1518,42 @@ fn load_glm_mtp_sidecar(
     let shared_gate_proj = mtp_take_weight(
         name_map,
         &format!("{p}.layer.mlp.shared_expert.gate_proj"),
-        None,
+        bits,
     )
     .or_else(|| {
         mtp_take_weight(
             name_map,
             &format!("{p}.layer.mlp.shared_experts.gate_proj"),
-            None,
+            bits,
         )
     });
     let shared_up_proj = mtp_take_weight(
         name_map,
         &format!("{p}.layer.mlp.shared_expert.up_proj"),
-        None,
+        bits,
     )
     .or_else(|| {
         mtp_take_weight(
             name_map,
             &format!("{p}.layer.mlp.shared_experts.up_proj"),
-            None,
+            bits,
         )
     });
     let shared_down_proj = mtp_take_weight(
         name_map,
         &format!("{p}.layer.mlp.shared_expert.down_proj"),
-        None,
+        bits,
     )
     .or_else(|| {
         mtp_take_weight(
             name_map,
             &format!("{p}.layer.mlp.shared_experts.down_proj"),
-            None,
+            bits,
         )
     });
-    let gate_exps = mtp_take_weight(name_map, &format!("{p}.layer.mlp.gate_proj"), None);
-    let up_exps = mtp_take_weight(name_map, &format!("{p}.layer.mlp.up_proj"), None);
-    let down_exps = mtp_take_weight(name_map, &format!("{p}.layer.mlp.down_proj"), None);
+    let gate_exps = mtp_take_weight(name_map, &format!("{p}.layer.mlp.gate_proj"), bits);
+    let up_exps = mtp_take_weight(name_map, &format!("{p}.layer.mlp.up_proj"), bits);
+    let down_exps = mtp_take_weight(name_map, &format!("{p}.layer.mlp.down_proj"), bits);
 
     let has_moe_ffn = router_proj.is_some();
     if has_moe_ffn
@@ -1648,6 +1648,25 @@ fn apply_draft_temperature_override(params: MlxSamplingParams) -> MlxSamplingPar
     } else {
         params
     }
+}
+
+/// Detect sidecar quantization bits from the free-text `mtp_sidecar`
+/// description in an MTP runtime JSON config (`mtplx_runtime.json` for Qwen,
+/// `glm_mtp_runtime.json` for GLM). `"INT8"`/`"8BIT"` → 8-bit; anything else
+/// present → 4-bit; the field absent entirely → `None` (caller infers from
+/// tensor shapes, defaulting to 4-bit in `mtp_take_weight`).
+fn parse_mtp_sidecar_bits_hint(runtime_config: &serde_json::Value) -> Option<i32> {
+    runtime_config
+        .get("mtp_sidecar")
+        .and_then(|s| s.as_str())
+        .map(|s| {
+            let upper = s.to_ascii_uppercase();
+            if upper.contains("INT8") || upper.contains("8BIT") {
+                8
+            } else {
+                4
+            }
+        })
 }
 
 fn apply_mtp_depth_policy(depth: usize, sidecar_bits: Option<i32>) -> usize {
@@ -4575,6 +4594,40 @@ mod tests {
 
         assert_eq!(weight.bits, 8);
         assert_eq!(weight.group_size, 128);
+    }
+
+    #[test]
+    fn parse_mtp_sidecar_bits_hint_detects_int8() {
+        assert_eq!(
+            parse_mtp_sidecar_bits_hint(
+                &serde_json::json!({"mtp_sidecar": "INT8 quantized projections, bf16 norms/router"})
+            ),
+            Some(8)
+        );
+        assert_eq!(
+            parse_mtp_sidecar_bits_hint(&serde_json::json!({"mtp_sidecar": "8bit"})),
+            Some(8)
+        );
+    }
+
+    #[test]
+    fn parse_mtp_sidecar_bits_hint_defaults_int4_for_other_text() {
+        assert_eq!(
+            parse_mtp_sidecar_bits_hint(&serde_json::json!({"mtp_sidecar": "INT4"})),
+            Some(4)
+        );
+        assert_eq!(
+            parse_mtp_sidecar_bits_hint(&serde_json::json!({"mtp_sidecar": "unquantized"})),
+            Some(4)
+        );
+    }
+
+    #[test]
+    fn parse_mtp_sidecar_bits_hint_none_when_field_absent() {
+        assert_eq!(
+            parse_mtp_sidecar_bits_hint(&serde_json::json!({"mtp_depth_max": 1})),
+            None
+        );
     }
 
     #[test]

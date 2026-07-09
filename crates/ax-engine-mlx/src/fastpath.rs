@@ -170,16 +170,6 @@ env_flag!(
     "AX_NO_SPEC"
 );
 
-env_flag!(
-    /// `AX_MLX_MTP_FAST_TAIL_TOPK_SAMPLING` — opt-in MTP/n-gram tail sampler
-    /// that samples from the top-k logits on GPU and reads back only scalar
-    /// indices instead of transferring a full vocabulary row to CPU. This is a
-    /// throughput diagnostic path: it intentionally ignores top-p filtering and
-    /// falls back unless `top_k > 0`.
-    mtp_fast_tail_topk_sampling_enabled,
-    "AX_MLX_MTP_FAST_TAIL_TOPK_SAMPLING"
-);
-
 env_flag_default_on!(
     /// `AX_MLX_DECODE_SAMPLING_GPU_TOPK` — route exact top-k sampling through
     /// MLX `argpartition_axis` and gather only the top-k full-domain
@@ -422,18 +412,6 @@ env_flag!(
     /// active weight rotation.
     direct_cpp_gemma4_post_attn_ffn_enabled,
     "AX_MLX_DIRECT_CPP_GEMMA4_POST_ATTN_FFN"
-);
-
-env_flag!(
-    /// `AX_MLX_DENSE_ADD_RMS_NORM_PAIR` — fuse the attention residual-add and
-    /// pre-FFN RMSNorm into one C++ call for dense-layer decode.
-    ///
-    /// **Default: OFF**. A/B on Gemma 4 31B showed this shim regresses by
-    /// ~0.1% on that model. The C++ function call overhead (2 output arrays,
-    /// extra parameter marshaling) exceeds the savings from one fewer Rust→C
-    /// FFI crossing. Left as opt-in for future re-evaluation.
-    dense_add_rms_norm_pair_enabled,
-    "AX_MLX_DENSE_ADD_RMS_NORM_PAIR"
 );
 
 env_flag!(
@@ -910,16 +888,6 @@ env_flag!(
     /// when disabled or compilation fails.
     gemma4_assistant_compile_enabled,
     "AX_MLX_GEMMA4_ASSISTANT_COMPILE"
-);
-
-env_flag!(
-    /// `AX_DIFFUSION_COMPILED_FORWARD` — wrap the bidirectional denoise
-    /// forward pass in an `MlxClosure` compiled via `mlx_compile`. The
-    /// compiled graph is constructed once per block and reused for every
-    /// denoise step, collapsing ~250 per-step MLX C-API calls into a
-    /// single dispatched graph. Default OFF; opt-in for benchmarking.
-    diffusion_compiled_forward_enabled,
-    "AX_DIFFUSION_COMPILED_FORWARD"
 );
 
 env_flag!(

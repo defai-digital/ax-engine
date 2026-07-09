@@ -108,6 +108,14 @@ impl ServerMetrics {
         }
     }
 
+    /// Decrement the in-flight gauge without recording a status bucket.
+    /// Used when a request's future is dropped before completion (client
+    /// disconnect, upstream cancellation) instead of running to a real
+    /// response — there is no status code to attribute in that case.
+    pub(crate) fn abandon_http_request(&self) {
+        self.http_requests_in_flight.fetch_sub(1, Ordering::Relaxed);
+    }
+
     pub(crate) fn record_step_report(&self, report: &EngineStepReport) {
         self.engine_step_scheduled_requests
             .store(report.scheduled_requests as u64, Ordering::Relaxed);

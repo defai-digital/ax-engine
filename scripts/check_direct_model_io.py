@@ -18,6 +18,12 @@ HF_HUB = Path.home() / ".cache/huggingface/hub"
 BENCH_BIN = REPO_ROOT / "target/release/ax-engine-bench"
 DEFAULT_REF_TOP_LOGPROBS = 8
 DEFAULT_NEAR_TIE_LOGPROB_MARGIN = 0.25
+PASS_STATUS = "pass"
+NEAR_TIE_PASS_STATUS = "near_tie_pass"
+FAIL_STATUS = "fail"
+ERROR_STATUS = "error"
+SKIPPED_STATUS = "skipped"
+ACCEPTED_STATUSES = {PASS_STATUS, NEAR_TIE_PASS_STATUS}
 
 
 @dataclass(frozen=True)
@@ -312,6 +318,27 @@ def common_prefix_len(a: list[int], b: list[int]) -> int:
     return count
 
 
+def aggregate_status(statuses: list[str]) -> str:
+    if any(status == ERROR_STATUS for status in statuses):
+        return ERROR_STATUS
+    if any(status == FAIL_STATUS for status in statuses):
+        return FAIL_STATUS
+    if any(status == NEAR_TIE_PASS_STATUS for status in statuses):
+        return NEAR_TIE_PASS_STATUS
+    return PASS_STATUS
+
+
+def count_statuses(items: list[dict[str, Any]]) -> dict[str, int]:
+    return {
+        PASS_STATUS: sum(1 for item in items if item.get("status") == PASS_STATUS),
+        NEAR_TIE_PASS_STATUS: sum(1 for item in items if item.get("status") == NEAR_TIE_PASS_STATUS),
+        FAIL_STATUS: sum(1 for item in items if item.get("status") == FAIL_STATUS),
+        ERROR_STATUS: sum(1 for item in items if item.get("status") == ERROR_STATUS),
+        SKIPPED_STATUS: sum(1 for item in items if item.get("status") == SKIPPED_STATUS),
+        "accepted": sum(1 for item in items if item.get("status") in ACCEPTED_STATUSES),
+    }
+
+
 def normalize_prefix_text(text: str) -> str:
     return " ".join(text.split())
 
@@ -401,7 +428,7 @@ def run_prompt_case(
         "ax_modes": {},
     }
     if "error" in ref:
-        result["status"] = "error"
+        result["status"] = ERROR_STATUS
         return result
     ref_tokens = [int(t) for t in ref["tokens"]]
     result["reference"]["text"] = decode_tokens(model_dir, ref_tokens)
@@ -411,9 +438,9 @@ def run_prompt_case(
         ax = run_ax(case.model_id, model_dir, prompt_tokens, max_tokens, mode)
         mode_result: dict[str, Any] = {"ax": ax}
         if "error" in ax:
-            mode_result["status"] = "error"
+            mode_result["status"] = ERROR_STATUS
             result["ax_modes"][mode.slug] = mode_result
-            mode_statuses.append("error")
+            mode_statuses.append(ERROR_STATUS)
             continue
         ax_tokens = [int(t) for t in ax["output_tokens"]]
         prefix = common_prefix_len(ref_tokens, ax_tokens)
@@ -441,22 +468,15 @@ def run_prompt_case(
             and int(ref_tokens[len(ax_tokens)]) in stop_token_ids
         )
         mode_result["stop_equivalent"] = stop_equivalent
-        mode_result["status"] = (
-            "pass"
-            if prefix >= required
-            or whitespace_prefix_equivalent
-            or near_tie_equivalence is not None
-            or stop_equivalent
-            else "fail"
-        )
+        if prefix >= required or whitespace_prefix_equivalent or stop_equivalent:
+            mode_result["status"] = PASS_STATUS
+        elif near_tie_equivalence is not None:
+            mode_result["status"] = NEAR_TIE_PASS_STATUS
+        else:
+            mode_result["status"] = FAIL_STATUS
         result["ax_modes"][mode.slug] = mode_result
         mode_statuses.append(mode_result["status"])
-    if any(status == "error" for status in mode_statuses):
-        result["status"] = "error"
-    elif any(status == "fail" for status in mode_statuses):
-        result["status"] = "fail"
-    else:
-        result["status"] = "pass"
+    result["status"] = aggregate_status(mode_statuses)
     return result
 
 
@@ -475,7 +495,7 @@ def run_case(
         return {
             "slug": case.slug,
             "model_id": case.model_id,
-            "status": "skipped",
+            "status": SKIPPED_STATUS,
             "reason": "missing_ax_ready_local_snapshot",
         }
     result: dict[str, Any] = {
@@ -496,15 +516,10 @@ def run_case(
             near_tie_logprob_margin,
         )
         result["prompt_results"].append(prompt_result)
-        if prompt_result["status"] in {"fail", "error"} and stop_on_first_prompt_failure:
+        if prompt_result["status"] in {FAIL_STATUS, ERROR_STATUS} and stop_on_first_prompt_failure:
             break
     statuses = [r["status"] for r in result["prompt_results"]]
-    if any(s == "error" for s in statuses):
-        result["status"] = "error"
-    elif any(s == "fail" for s in statuses):
-        result["status"] = "fail"
-    else:
-        result["status"] = "pass"
+    result["status"] = aggregate_status(statuses)
     return result
 
 
@@ -595,11 +610,11 @@ def main() -> int:
         results.append(result)
         status = result["status"]
         print(f"[io] {case.slug}: {status}", file=sys.stderr, flush=True)
-        if status == "fail":
+        if status == FAIL_STATUS:
             for prompt_result in result.get("prompt_results", []):
-                if prompt_result["status"] == "fail":
+                if prompt_result["status"] == FAIL_STATUS:
                     for mode_slug, mode_result in prompt_result.get("ax_modes", {}).items():
-                        if mode_result["status"] != "fail":
+                        if mode_result["status"] != FAIL_STATUS:
                             continue
                         print(
                             f"  {prompt_result['prompt_case']}[{mode_slug}]: "
@@ -610,8 +625,21 @@ def main() -> int:
                             file=sys.stderr,
                             flush=True,
                         )
-        if status in {"fail", "error"} and not args.continue_on_fail:
+        if status in {FAIL_STATUS, ERROR_STATUS} and not args.continue_on_fail:
             break
+
+    prompt_results = [
+        prompt_result
+        for result in results
+        for prompt_result in result.get("prompt_results", [])
+        if isinstance(prompt_result, dict)
+    ]
+    mode_results = [
+        mode_result
+        for prompt_result in prompt_results
+        for mode_result in prompt_result.get("ax_modes", {}).values()
+        if isinstance(mode_result, dict)
+    ]
 
     summary = {
         "schema_version": "ax.direct_model_io.v1",
@@ -622,19 +650,16 @@ def main() -> int:
         "ref_top_logprobs": max(args.ref_top_logprobs, 0),
         "near_tie_logprob_margin": max(args.near_tie_logprob_margin, 0.0),
         "results": results,
-        "counts": {
-            "pass": sum(1 for r in results if r["status"] == "pass"),
-            "fail": sum(1 for r in results if r["status"] == "fail"),
-            "error": sum(1 for r in results if r["status"] == "error"),
-            "skipped": sum(1 for r in results if r["status"] == "skipped"),
-        },
+        "counts": count_statuses(results),
+        "prompt_counts": count_statuses(prompt_results),
+        "mode_counts": count_statuses(mode_results),
     }
     text = json.dumps(summary, indent=2)
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(text + "\n")
     print(text)
-    return 0 if summary["counts"]["fail"] == 0 and summary["counts"]["error"] == 0 else 1
+    return 0 if summary["counts"][FAIL_STATUS] == 0 and summary["counts"][ERROR_STATUS] == 0 else 1
 
 
 if __name__ == "__main__":

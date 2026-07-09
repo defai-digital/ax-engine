@@ -10,7 +10,7 @@ use tokio::sync::Semaphore;
 
 use super::DEFAULT_MAX_REQUEST_BODY_BYTES;
 use super::anthropic::anthropic_messages;
-use super::app_state::AppState;
+use super::app_state::{AppState, ServerMetrics};
 use super::embeddings::records::embedding_records;
 use super::generation::lifecycle::{
     cancel_request, request_snapshot, step_request, submit_request,
@@ -145,9 +145,9 @@ pub(crate) fn build_router(state: AppState) -> Router {
     let router = router.layer(middleware::from_fn(move |request: Request, next: Next| {
         let metrics = metrics.clone();
         async move {
-            metrics.begin_http_request();
+            let guard = InFlightRequestGuard::new(metrics);
             let response = next.run(request).await;
-            metrics.finish_http_request(response.status());
+            guard.finish(response.status());
             response
         }
     }));
@@ -155,6 +155,42 @@ pub(crate) fn build_router(state: AppState) -> Router {
     router
         .layer(DefaultBodyLimit::max(max_request_body_bytes_from_env()))
         .with_state(state)
+}
+
+/// RAII pairing for [`ServerMetrics::begin_http_request`]. A plain
+/// begin/finish call pair leaks the `http_requests_in_flight` gauge forever
+/// whenever the request future is dropped before completion — e.g. a client
+/// disconnect or reverse-proxy timeout during a slow LLM generation, which
+/// cancels the in-flight `next.run(request).await` mid-poll and skips any
+/// code after it. `Drop` guarantees the gauge is always decremented exactly
+/// once, matching the cancel-safe `OwnedSemaphorePermit` pattern the
+/// concurrency-limiter layer above already relies on for the same reason.
+struct InFlightRequestGuard {
+    metrics: Arc<ServerMetrics>,
+    finished: bool,
+}
+
+impl InFlightRequestGuard {
+    fn new(metrics: Arc<ServerMetrics>) -> Self {
+        metrics.begin_http_request();
+        Self {
+            metrics,
+            finished: false,
+        }
+    }
+
+    fn finish(mut self, status: StatusCode) {
+        self.finished = true;
+        self.metrics.finish_http_request(status);
+    }
+}
+
+impl Drop for InFlightRequestGuard {
+    fn drop(&mut self) {
+        if !self.finished {
+            self.metrics.abandon_http_request();
+        }
+    }
 }
 
 fn is_health_probe(path: &str) -> bool {
