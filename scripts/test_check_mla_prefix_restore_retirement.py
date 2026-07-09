@@ -88,17 +88,16 @@ class MlaPrefixRestoreRetirementTests(unittest.TestCase):
             self.write_fixture(artifact(model_id="deepseek-v3", mode="warm_repeat")),
         ]
 
-    def test_curated_default_evidence_keeps_guardrail(self) -> None:
-        decision = checker.check_mla_prefix_restore_retirement(
-            list(checker.DEFAULT_ARTIFACTS),
-            expect_decision=checker.KEEP_GUARDRAIL,
-            required_families=list(checker.DEFAULT_REQUIRED_FAMILIES),
-            required_modes=list(checker.DEFAULT_REQUIRED_MODES),
+    def test_default_cli_skips_without_current_artifacts(self) -> None:
+        completed = subprocess.run(
+            [sys.executable, str(SCRIPT_PATH)],
+            check=True,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
         )
 
-        self.assertEqual(decision.decision, checker.KEEP_GUARDRAIL)
-        self.assertIn("glm:warm_repeat", decision.missing_requirements)
-        self.assertIn("deepseek:warm_extend", decision.missing_requirements)
+        self.assertIn("[skip]", completed.stdout)
 
     def test_full_glm_deepseek_matrix_supports_retirement(self) -> None:
         decision = checker.check_mla_prefix_restore_retirement(

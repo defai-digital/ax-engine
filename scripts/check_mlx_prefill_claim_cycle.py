@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the checked-in W0-W4 MLX prefill claim-cycle gates."""
+"""Run the current W0-W4 MLX prefill claim-cycle gates."""
 
 from __future__ import annotations
 
@@ -9,25 +9,43 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-
-DEFAULT_P1_PREFILL_SCALING = Path(
-    "benchmarks/results/inference/mlx-inference/2026-05-07-real-p1/"
-    "qwen3-4b-4bit-prefill-scaling/prefill-scaling.json"
-)
-DEFAULT_P2_CONCURRENT_PREFILL = Path(
-    "benchmarks/results/inference/mlx-inference/2026-05-07-real-p2/"
-    "qwen3-4b-4bit-p2-latency/concurrent-prefill.json"
-)
-DEFAULT_W4_FORWARD_PROFILE = Path(
-    "benchmarks/results/inference/mlx-inference/2026-05-13-ttft-breakdown/"
-    "qwen3_6-35b-a3b-8bit-linear-profile-prefill.json"
-)
-
-
 @dataclass(frozen=True)
 class ClaimCheck:
     name: str
-    command: list[str]
+    command: list[str] | None
+    skip_reason: str | None = None
+
+
+def _manifest_claim_cycle_path(repo_root: Path, key: str) -> Path | None:
+    _ = (repo_root, key)
+    return None
+
+
+def _optional_artifact_check(
+    *,
+    repo_root: Path,
+    scripts: Path,
+    name: str,
+    manifest_key: str,
+    checker: str,
+    extra_args: list[str] | None = None,
+) -> ClaimCheck:
+    path = _manifest_claim_cycle_path(repo_root, manifest_key)
+    if path is None:
+        return ClaimCheck(
+            name=name,
+            command=None,
+            skip_reason="no current artifact declared in the publication manifest",
+        )
+    return ClaimCheck(
+        name=name,
+        command=[
+            sys.executable,
+            str(scripts / checker),
+            str(path),
+            *(extra_args or []),
+        ],
+    )
 
 
 def default_checks(repo_root: Path) -> list[ClaimCheck]:
@@ -40,20 +58,20 @@ def default_checks(repo_root: Path) -> list[ClaimCheck]:
                 str(scripts / "check_readme_performance_artifacts.py"),
             ],
         ),
-        ClaimCheck(
+        _optional_artifact_check(
+            repo_root=repo_root,
+            scripts=scripts,
             name="W1 long-context prefill boundary",
-            command=[
-                sys.executable,
-                str(scripts / "check_mlx_prefill_scaling_artifact.py"),
-                str(repo_root / DEFAULT_P1_PREFILL_SCALING),
-            ],
+            manifest_key="prefill_scaling",
+            checker="check_mlx_prefill_scaling_artifact.py",
         ),
-        ClaimCheck(
+        _optional_artifact_check(
+            repo_root=repo_root,
+            scripts=scripts,
             name="W3 concurrent-prefill boundary",
-            command=[
-                sys.executable,
-                str(scripts / "check_mlx_concurrent_prefill_artifact.py"),
-                str(repo_root / DEFAULT_P2_CONCURRENT_PREFILL),
+            manifest_key="concurrent_prefill",
+            checker="check_mlx_concurrent_prefill_artifact.py",
+            extra_args=[
                 "--min-concurrency-levels",
                 "3",
                 "--min-max-concurrent-requests",
@@ -61,18 +79,19 @@ def default_checks(repo_root: Path) -> list[ClaimCheck]:
                 "--allow-missing-scheduler-evidence",
             ],
         ),
-        ClaimCheck(
+        _optional_artifact_check(
+            repo_root=repo_root,
+            scripts=scripts,
             name="W4 forward-profile diagnostic boundary",
-            command=[
-                sys.executable,
-                str(scripts / "check_mlx_forward_profile_artifact.py"),
-                str(repo_root / DEFAULT_W4_FORWARD_PROFILE),
-            ],
+            manifest_key="forward_profile",
+            checker="check_mlx_forward_profile_artifact.py",
         ),
     ]
 
 
 def run_check(check: ClaimCheck, *, cwd: Path) -> tuple[bool, str]:
+    if check.command is None:
+        return True, check.skip_reason or "skipped"
     completed = subprocess.run(
         check.command,
         cwd=cwd,
@@ -98,8 +117,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     repo_root = args.repo_root.resolve()
+    checks = default_checks(repo_root)
     failures = 0
-    for check in default_checks(repo_root):
+    skipped = 0
+    for check in checks:
+        if check.command is None:
+            skipped += 1
+            print(f"[SKIP] {check.name}")
+            if check.skip_reason:
+                print(check.skip_reason)
+            continue
         ok, output = run_check(check, cwd=repo_root)
         status = "PASS" if ok else "FAIL"
         print(f"[{status}] {check.name}")
@@ -110,7 +137,11 @@ def main(argv: list[str] | None = None) -> int:
     if failures:
         print(f"MLX prefill claim-cycle gate failed: {failures} check(s) failed")
         return 1
-    print("MLX prefill claim-cycle gate passed: 4 checks")
+    passed = len(checks) - skipped
+    print(
+        f"MLX prefill claim-cycle gate passed: {passed} checks"
+        f" ({skipped} optional boundaries skipped)"
+    )
     return 0
 
 

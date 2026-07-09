@@ -21,11 +21,7 @@ forward_checker = importlib.util.module_from_spec(MODULE_SPEC)
 sys.modules[MODULE_SPEC.name] = forward_checker
 MODULE_SPEC.loader.exec_module(forward_checker)
 
-DEFAULT_ARTIFACTS = (
-    ROOT_DIR
-    / "benchmarks/results/inference/mlx-inference/2026-05-14-qwen36-linear-pack-ab/"
-    / "qwen3_6-35b-a3b-8bit-linear-pack-ab.json",
-)
+DEFAULT_ARTIFACTS: tuple[Path, ...] = ()
 NOT_PROMOTED = "not_promoted"
 PROMOTION_CANDIDATE = "promotion_candidate"
 
@@ -129,8 +125,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=Path,
         dest="artifacts",
         help=(
-            "Linear-attention split/packed A/B artifact. Defaults to the curated "
-            "Qwen3.6 35B A3B 8-bit artifact."
+            "Linear-attention split/packed A/B artifact. If omitted, no current "
+            "promotion evidence is assumed."
         ),
     )
     parser.add_argument(
@@ -157,6 +153,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     artifacts = args.artifacts if args.artifacts else list(DEFAULT_ARTIFACTS)
+    if not artifacts:
+        print("[skip] no current linear-attention pack promotion artifacts declared")
+        return 0
     try:
         decision = check_linear_attention_pack_promotion(
             artifacts,

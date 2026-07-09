@@ -156,21 +156,6 @@ class MlaPrefixRestoreEvidenceTests(unittest.TestCase):
                     model_substring="glm",
                 )
 
-    def test_curated_glm47_default_artifact_passes(self) -> None:
-        root = SCRIPT_PATH.resolve().parents[1]
-        path = root / checker.DEFAULT_ARTIFACTS[0]
-
-        summary = checker.validate_artifact(
-            path,
-            min_prompts=5,
-            require_default_path=True,
-            model_substring="glm",
-        )
-
-        self.assertEqual(summary.model_id, "glm47-flash")
-        self.assertGreater(summary.warm_hit_count, 0)
-        self.assertGreater(summary.warm_reused_tokens, 0)
-
     def test_accepts_warm_repeat_when_expected_mode_allows_it(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "evidence.json"

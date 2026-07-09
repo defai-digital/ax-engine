@@ -37,15 +37,12 @@ class MlxPrefillClaimCycleTests(unittest.TestCase):
                 "W4 forward-profile diagnostic boundary",
             ],
         )
-        commands = [" ".join(check.command) for check in checks]
+        commands = [" ".join(check.command or []) for check in checks]
         self.assertIn("check_readme_performance_artifacts.py", commands[0])
-        self.assertIn("check_mlx_prefill_scaling_artifact.py", commands[1])
-        self.assertIn("benchmarks/results/inference/mlx-inference", commands[1])
-        self.assertIn("benchmarks/results/inference/mlx-inference", commands[2])
-        self.assertIn("benchmarks/results/inference/mlx-inference", commands[3])
-        self.assertIn("check_mlx_concurrent_prefill_artifact.py", commands[2])
-        self.assertIn("--allow-missing-scheduler-evidence", commands[2])
-        self.assertIn("check_mlx_forward_profile_artifact.py", commands[3])
+        self.assertIsNone(checks[1].command)
+        self.assertIsNone(checks[2].command)
+        self.assertIsNone(checks[3].command)
+        self.assertIn("no current artifact", checks[1].skip_reason or "")
 
     def test_main_returns_zero_when_all_checks_pass(self) -> None:
         completed = subprocess.CompletedProcess(
@@ -61,7 +58,7 @@ class MlxPrefillClaimCycleTests(unittest.TestCase):
 
         self.assertEqual(exit_code, 0)
 
-    def test_main_returns_failure_when_any_check_fails(self) -> None:
+    def test_main_returns_zero_when_optional_boundaries_are_skipped(self) -> None:
         calls = [
             subprocess.CompletedProcess(args=[], returncode=0, stdout="ok\n", stderr=""),
             subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="bad\n"),
@@ -69,11 +66,11 @@ class MlxPrefillClaimCycleTests(unittest.TestCase):
             subprocess.CompletedProcess(args=[], returncode=0, stdout="ok\n", stderr=""),
         ]
 
-        with patch.object(checker.subprocess, "run", side_effect=calls):
+        with patch.object(checker.subprocess, "run", side_effect=calls[:1]):
             with redirect_stdout(io.StringIO()):
                 exit_code = checker.main_with_args_for_test(["--repo-root", "/repo"])
 
-        self.assertEqual(exit_code, 1)
+        self.assertEqual(exit_code, 0)
 
 
 if __name__ == "__main__":

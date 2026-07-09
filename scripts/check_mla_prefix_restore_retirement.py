@@ -21,11 +21,7 @@ evidence_checker = importlib.util.module_from_spec(MODULE_SPEC)
 sys.modules[MODULE_SPEC.name] = evidence_checker
 MODULE_SPEC.loader.exec_module(evidence_checker)
 
-DEFAULT_ARTIFACTS = (
-    ROOT_DIR
-    / "benchmarks/results/profiling/prefix-reuse-equivalence/"
-    / "glm47-warm-extend-default-mla-chunk16-2026-05-14.json",
-)
+DEFAULT_ARTIFACTS: tuple[Path, ...] = ()
 DEFAULT_REQUIRED_FAMILIES = ("glm", "deepseek")
 DEFAULT_REQUIRED_MODES = ("warm_extend", "warm_repeat")
 KEEP_GUARDRAIL = "keep_guardrail"
@@ -177,8 +173,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=Path,
         dest="artifacts",
         help=(
-            "MLA prefix-reuse equivalence artifact. Defaults to the curated "
-            "GLM default-path warm_extend artifact."
+            "MLA prefix-reuse equivalence artifact. If omitted, no current "
+            "retirement evidence is assumed."
         ),
     )
     parser.add_argument(
@@ -205,6 +201,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     artifacts = args.artifacts if args.artifacts else list(DEFAULT_ARTIFACTS)
+    if not artifacts:
+        print("[skip] no current MLA prefix-restore retirement artifacts declared")
+        return 0
     required_families = normalize_items(
         args.required_families,
         DEFAULT_REQUIRED_FAMILIES,

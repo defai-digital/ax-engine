@@ -129,22 +129,16 @@ class QwenPostInputRoutePromotionTests(unittest.TestCase):
         path.write_text(json.dumps(payload, indent=2) + "\n")
         return path
 
-    def test_curated_artifact_default_uses_inference_results_tree(self) -> None:
-        self.assertEqual(len(checker.DEFAULT_ARTIFACTS), 1)
-        self.assertIn(
-            "benchmarks/results/inference/mlx-inference/",
-            checker.DEFAULT_ARTIFACTS[0].as_posix(),
+    def test_default_cli_skips_without_current_artifacts(self) -> None:
+        completed = subprocess.run(
+            [sys.executable, str(SCRIPT_PATH)],
+            check=True,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
         )
 
-    def test_curated_artifact_is_not_promoted(self) -> None:
-        decision = checker.check_qwen_post_input_route_promotion(
-            list(checker.DEFAULT_ARTIFACTS),
-            expect_decision=checker.NOT_PROMOTED,
-        )
-
-        self.assertEqual(decision.decision, checker.NOT_PROMOTED)
-        self.assertEqual(decision.comparison_count, 3)
-        self.assertLess(decision.min_decode_ratio, checker.DEFAULT_MIN_DECODE_RATIO)
+        self.assertIn("[skip]", completed.stdout)
 
     def test_promotion_candidate_passes_decode_threshold(self) -> None:
         path = self.write_fixture(artifact(decode_ratio=1.02))

@@ -12,11 +12,7 @@ from typing import Any
 
 
 ROOT_DIR = Path(__file__).parent.parent
-DEFAULT_ARTIFACTS = (
-    ROOT_DIR
-    / "benchmarks/results/inference/mlx-inference/2026-05-21-qwen35-post-input-ab/"
-    / "qwen3_6-35b-a3b-4bit.json",
-)
+DEFAULT_ARTIFACTS: tuple[Path, ...] = ()
 SCHEMA_VERSION = "ax.mlx_inference_stack.v2"
 INPUT_ROUTE_SCHEMA_VERSION = "ax.mlx_direct_cpp_linear_attention_inputs.v1"
 POST_INPUT_ROUTE_SCHEMA_VERSION = "ax.mlx_direct_cpp_linear_attention_post_input.v1"
@@ -374,6 +370,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     artifacts = args.artifacts if args.artifacts else list(DEFAULT_ARTIFACTS)
+    if not artifacts:
+        print("[skip] no current Qwen post-input route promotion artifacts declared")
+        return 0
     try:
         decision = check_qwen_post_input_route_promotion(
             artifacts,

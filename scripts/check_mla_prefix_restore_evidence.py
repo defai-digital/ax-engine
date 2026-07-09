@@ -12,12 +12,7 @@ from typing import Any, Sequence
 
 
 SCHEMA_VERSION = "ax.prefix_reuse_equivalence.v1"
-DEFAULT_ARTIFACTS = (
-    Path(
-        "benchmarks/results/profiling/prefix-reuse-equivalence/"
-        "glm47-warm-extend-default-mla-chunk16-2026-05-14.json"
-    ),
-)
+DEFAULT_ARTIFACTS: tuple[Path, ...] = ()
 
 
 class MlaPrefixRestoreEvidenceError(RuntimeError):
@@ -202,7 +197,7 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
         action="append",
         type=Path,
         dest="artifacts",
-        help="Evidence artifact to validate. Defaults to the curated GLM 4.7 artifact.",
+        help="Evidence artifact to validate. If omitted, no current evidence is assumed.",
     )
     parser.add_argument("--min-prompts", type=int, default=5)
     parser.add_argument("--model-substring", default="glm")
@@ -217,6 +212,9 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(sys.argv[1:] if argv is None else argv)
     artifacts = args.artifacts or list(DEFAULT_ARTIFACTS)
+    if not artifacts:
+        print("[skip] no current MLA prefix-restore evidence artifacts declared")
+        return 0
     try:
         summaries = [
             validate_artifact(

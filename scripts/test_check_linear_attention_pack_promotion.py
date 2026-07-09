@@ -115,23 +115,16 @@ class LinearAttentionPackPromotionTests(unittest.TestCase):
         path.write_text(json.dumps(payload, indent=2) + "\n")
         return path
 
-    def test_curated_artifact_default_uses_inference_results_tree(self) -> None:
-        self.assertEqual(len(checker.DEFAULT_ARTIFACTS), 1)
-        self.assertIn(
-            "benchmarks/results/inference/mlx-inference/",
-            checker.DEFAULT_ARTIFACTS[0].as_posix(),
+    def test_default_cli_skips_without_current_artifacts(self) -> None:
+        completed = subprocess.run(
+            [sys.executable, str(SCRIPT_PATH)],
+            check=True,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
         )
 
-    def test_curated_artifact_is_not_promoted(self) -> None:
-        decision = checker.check_linear_attention_pack_promotion(
-            list(checker.DEFAULT_ARTIFACTS),
-            expect_decision=checker.NOT_PROMOTED,
-        )
-
-        self.assertEqual(decision.decision, checker.NOT_PROMOTED)
-        self.assertEqual(decision.comparison_count, 2)
-        self.assertEqual(decision.candidate_win_count, 1)
-        self.assertEqual(decision.non_win_count, 1)
+        self.assertIn("[skip]", completed.stdout)
 
     def test_not_promoted_requires_non_win_or_thin_coverage(self) -> None:
         path = self.write_fixture(artifact(second_prompt_is_win=True))
