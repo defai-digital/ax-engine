@@ -9,6 +9,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+
 @dataclass(frozen=True)
 class ClaimCheck:
     name: str
@@ -16,39 +17,38 @@ class ClaimCheck:
     skip_reason: str | None = None
 
 
-def _manifest_claim_cycle_path(repo_root: Path, key: str) -> Path | None:
-    _ = (repo_root, key)
-    return None
-
-
 def _optional_artifact_check(
     *,
-    repo_root: Path,
     scripts: Path,
     name: str,
-    manifest_key: str,
+    artifact: Path | None,
     checker: str,
     extra_args: list[str] | None = None,
 ) -> ClaimCheck:
-    path = _manifest_claim_cycle_path(repo_root, manifest_key)
-    if path is None:
+    if artifact is None:
         return ClaimCheck(
             name=name,
             command=None,
-            skip_reason="no current artifact declared in the publication manifest",
+            skip_reason="no current artifact provided",
         )
     return ClaimCheck(
         name=name,
         command=[
             sys.executable,
             str(scripts / checker),
-            str(path),
+            str(artifact),
             *(extra_args or []),
         ],
     )
 
 
-def default_checks(repo_root: Path) -> list[ClaimCheck]:
+def default_checks(
+    repo_root: Path,
+    *,
+    prefill_scaling_artifact: Path | None = None,
+    concurrent_prefill_artifact: Path | None = None,
+    forward_profile_artifact: Path | None = None,
+) -> list[ClaimCheck]:
     scripts = repo_root / "scripts"
     return [
         ClaimCheck(
@@ -59,17 +59,15 @@ def default_checks(repo_root: Path) -> list[ClaimCheck]:
             ],
         ),
         _optional_artifact_check(
-            repo_root=repo_root,
             scripts=scripts,
             name="W1 long-context prefill boundary",
-            manifest_key="prefill_scaling",
+            artifact=prefill_scaling_artifact,
             checker="check_mlx_prefill_scaling_artifact.py",
         ),
         _optional_artifact_check(
-            repo_root=repo_root,
             scripts=scripts,
             name="W3 concurrent-prefill boundary",
-            manifest_key="concurrent_prefill",
+            artifact=concurrent_prefill_artifact,
             checker="check_mlx_concurrent_prefill_artifact.py",
             extra_args=[
                 "--min-concurrency-levels",
@@ -80,10 +78,9 @@ def default_checks(repo_root: Path) -> list[ClaimCheck]:
             ],
         ),
         _optional_artifact_check(
-            repo_root=repo_root,
             scripts=scripts,
             name="W4 forward-profile diagnostic boundary",
-            manifest_key="forward_profile",
+            artifact=forward_profile_artifact,
             checker="check_mlx_forward_profile_artifact.py",
         ),
     ]
@@ -111,13 +108,33 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     repo_root = Path(__file__).resolve().parents[1]
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo-root", type=Path, default=repo_root)
+    parser.add_argument(
+        "--prefill-scaling-artifact",
+        type=Path,
+        help="Current W1 prefill-scaling artifact to validate.",
+    )
+    parser.add_argument(
+        "--concurrent-prefill-artifact",
+        type=Path,
+        help="Current W3 concurrent-prefill artifact to validate.",
+    )
+    parser.add_argument(
+        "--forward-profile-artifact",
+        type=Path,
+        help="Current W4 forward-profile artifact to validate.",
+    )
     return parser.parse_args(argv)
 
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     repo_root = args.repo_root.resolve()
-    checks = default_checks(repo_root)
+    checks = default_checks(
+        repo_root,
+        prefill_scaling_artifact=args.prefill_scaling_artifact,
+        concurrent_prefill_artifact=args.concurrent_prefill_artifact,
+        forward_profile_artifact=args.forward_profile_artifact,
+    )
     failures = 0
     skipped = 0
     for check in checks:

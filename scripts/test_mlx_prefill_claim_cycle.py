@@ -44,6 +44,25 @@ class MlxPrefillClaimCycleTests(unittest.TestCase):
         self.assertIsNone(checks[3].command)
         self.assertIn("no current artifact", checks[1].skip_reason or "")
 
+    def test_current_artifact_arguments_enable_optional_boundaries(self) -> None:
+        repo_root = Path("/repo")
+
+        checks = checker.default_checks(
+            repo_root,
+            prefill_scaling_artifact=Path("/tmp/prefill.json"),
+            concurrent_prefill_artifact=Path("/tmp/concurrent.json"),
+            forward_profile_artifact=Path("/tmp/forward.json"),
+        )
+
+        commands = [" ".join(check.command or []) for check in checks]
+        self.assertIn("check_mlx_prefill_scaling_artifact.py", commands[1])
+        self.assertIn("/tmp/prefill.json", commands[1])
+        self.assertIn("check_mlx_concurrent_prefill_artifact.py", commands[2])
+        self.assertIn("/tmp/concurrent.json", commands[2])
+        self.assertIn("--allow-missing-scheduler-evidence", commands[2])
+        self.assertIn("check_mlx_forward_profile_artifact.py", commands[3])
+        self.assertIn("/tmp/forward.json", commands[3])
+
     def test_main_returns_zero_when_all_checks_pass(self) -> None:
         completed = subprocess.CompletedProcess(
             args=[],
