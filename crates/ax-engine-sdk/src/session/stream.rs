@@ -66,6 +66,7 @@ pub struct MlxLmGenerateStreamState {
     pub(super) output_token_count: Option<u32>,
     pub(super) step_count: u64,
     pub(super) ttft_step: Option<u64>,
+    pub(super) terminal_chunk_seen: bool,
     pub(super) stream: MlxLmStreamHandle,
     pub(super) phase: GenerateStreamPhase,
 }
@@ -301,6 +302,7 @@ impl MlxLmGenerateStreamState {
             output_token_count: None,
             step_count: 0,
             ttft_step: None,
+            terminal_chunk_seen: false,
             stream,
             phase: GenerateStreamPhase::Request,
         }
@@ -313,6 +315,9 @@ impl MlxLmGenerateStreamState {
         self.step_count += 1;
         let delta_text = chunk.text;
         let is_terminal = chunk.finish_reason.is_some();
+        if is_terminal {
+            self.terminal_chunk_seen = true;
+        }
 
         let ttft_events = if self.ttft_step.is_none() && !delta_text.is_empty() {
             self.ttft_step = Some(self.step_count);
@@ -386,7 +391,7 @@ pub(super) fn next_mlx_lm_stream_event(
         }
         GenerateStreamPhase::Step => match state.stream.next_chunk()? {
             Some(chunk) => Ok(Some(state.step_event_from_chunk(chunk))),
-            None => {
+            None if state.terminal_chunk_seen => {
                 state.phase = GenerateStreamPhase::Done;
                 Ok(Some(GenerateStreamEvent::Response(
                     GenerateStreamResponseEvent {
@@ -404,6 +409,15 @@ pub(super) fn next_mlx_lm_stream_event(
                     },
                 )))
             }
+            // `next_chunk()` returns `None` on both a clean `[DONE]`/
+            // finish_reason terminator and a raw EOF (the underlying reader
+            // hitting `bytes_read == 0`, e.g. the upstream process crashing
+            // or a proxy closing the connection). Without this guard, a
+            // premature disconnect was silently reported as a successful,
+            // complete generation instead of surfacing an error.
+            None => Err(EngineSessionError::MlxLmStreamEndedBeforeStop {
+                request_id: state.request_id,
+            }),
         },
         GenerateStreamPhase::Done => Ok(None),
     }
@@ -716,6 +730,87 @@ mod tests {
             error,
             EngineSessionError::RequestReportInvariantViolation { request_id: 41, .. }
         ));
+    }
+
+    fn mlx_lm_delegated_stream_state(body: &str) -> MlxLmGenerateStreamState {
+        let stream = crate::mlx_lm::MlxLmStreamHandle::new(
+            "http://127.0.0.1:0/v1/completions".to_string(),
+            Box::new(std::io::Cursor::new(body.as_bytes().to_vec())),
+        );
+        let runtime = RuntimeReport {
+            selected_backend: SelectedBackend::MlxLmDelegated,
+            support_tier: crate::SupportTier::MlxLmDelegated,
+            resolution_policy: crate::ResolutionPolicy::PreferMlx,
+            capabilities: Default::default(),
+            fallback_reason: None,
+            host: Default::default(),
+            metal_toolchain: Default::default(),
+            mlx_runtime: None,
+            mlx_model: None,
+        };
+        MlxLmGenerateStreamState::new(1, runtime, sample_finished_request_report(1), None, stream)
+    }
+
+    #[test]
+    fn mlx_lm_stream_premature_disconnect_surfaces_error_instead_of_finished() {
+        // A raw EOF (no `data: [DONE]` and no `finish_reason` chunk seen) must
+        // not be reported as a successful completion — see the
+        // `terminal_chunk_seen` guard in `next_mlx_lm_stream_event`.
+        let mut state = mlx_lm_delegated_stream_state(
+            "data: {\"choices\":[{\"index\":0,\"text\":\"partial\",\"finish_reason\":null}]}\n\n",
+        );
+
+        let request_event = next_mlx_lm_stream_event(&mut state)
+            .expect("request event should apply cleanly")
+            .expect("request event should be Some");
+        assert!(matches!(request_event, GenerateStreamEvent::Request(_)));
+
+        // First chunk call: consumes the one non-terminal chunk, stays in Step phase.
+        let first = next_mlx_lm_stream_event(&mut state)
+            .expect("first chunk should apply cleanly")
+            .expect("first event should be Some");
+        assert!(matches!(first, GenerateStreamEvent::Step(_)));
+
+        // Second call: the reader is now exhausted with no terminator ever
+        // seen — must error, not silently report Finished.
+        let second = next_mlx_lm_stream_event(&mut state);
+        assert!(
+            matches!(
+                second,
+                Err(EngineSessionError::MlxLmStreamEndedBeforeStop { request_id: 1 })
+            ),
+            "expected MlxLmStreamEndedBeforeStop, got {second:?}"
+        );
+    }
+
+    #[test]
+    fn mlx_lm_stream_clean_done_marker_reports_finished() {
+        // A finish_reason-carrying chunk (matching a real [DONE]-terminated
+        // stream) must still report a normal Finished completion.
+        let mut state = mlx_lm_delegated_stream_state(
+            "data: {\"choices\":[{\"index\":0,\"text\":\"done\",\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n",
+        );
+
+        let request_event = next_mlx_lm_stream_event(&mut state)
+            .expect("request event should apply cleanly")
+            .expect("request event should be Some");
+        assert!(matches!(request_event, GenerateStreamEvent::Request(_)));
+
+        let step = next_mlx_lm_stream_event(&mut state)
+            .expect("terminal chunk should apply cleanly")
+            .expect("step event should be Some");
+        assert!(matches!(step, GenerateStreamEvent::Step(_)));
+
+        let response = next_mlx_lm_stream_event(&mut state)
+            .expect("clean stream end should not error")
+            .expect("response event should be Some");
+        assert!(matches!(response, GenerateStreamEvent::Response(_)));
+
+        assert!(
+            next_mlx_lm_stream_event(&mut state)
+                .expect("phase Done returns Ok(None)")
+                .is_none()
+        );
     }
 
     #[test]

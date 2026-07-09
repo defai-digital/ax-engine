@@ -1560,6 +1560,98 @@ pub fn glm_mtp_draft_tokens(
     )
 }
 
+/// Like [`glm_mtp_draft_tokens`], but first threads the GLM MTP head through
+/// `forced_prefix` (real cache appends, correctly incrementing RoPE offsets)
+/// before drafting the tail. Mirrors [`mtp_draft_tokens_after_forced_prefix`]
+/// for the GLM MTP head: used in the hybrid n-gram+MTP path so the MTP tail's
+/// RoPE offset and `state.mtp_decode_count` correctly account for the
+/// n-gram-drafted prefix tokens, instead of drafting the tail as if the
+/// prefix never happened (which desyncs RoPE and causes `mtp_decode_count`
+/// under-accounting to over-trim `state.mtp_cache` on partial n-gram-prefix
+/// rejection).
+#[allow(clippy::too_many_arguments)]
+pub fn glm_mtp_draft_tokens_after_forced_prefix(
+    weights: &ModelWeights,
+    cfg: &ModelConfig,
+    first_hidden: &MlxArray,
+    first_token: u32,
+    forced_prefix: &[u32],
+    cache: &mut MlxKVCache,
+    max_tail_depth: usize,
+    rng: &mut Xorshift64,
+) -> (Vec<u32>, Vec<f32>, Vec<TokenDistribution>, usize, [f32; 3]) {
+    let Some(head) = weights.glm_mtp.as_ref() else {
+        return (vec![], vec![], vec![], 0, [0.0; 3]);
+    };
+    if forced_prefix.is_empty() {
+        return glm_mtp_draft_tokens(
+            weights,
+            cfg,
+            first_hidden,
+            first_token,
+            cache,
+            Some(max_tail_depth),
+            rng,
+        );
+    }
+
+    let mut prev_hidden = first_hidden.clone();
+    let first_token_data = [first_token];
+    let mut prev_token_arr = MlxArray::from_raw_data(
+        first_token_data.as_ptr() as *const u8,
+        4,
+        &[1_i32],
+        MlxDtype::Uint32,
+    );
+
+    for &forced_token in forced_prefix {
+        prev_hidden = glm_mtp_head_forward(
+            head,
+            &prev_hidden,
+            &prev_token_arr,
+            weights,
+            cache,
+            cfg,
+            None,
+        );
+        let tok_data = [forced_token];
+        prev_token_arr = MlxArray::from_raw_data(
+            tok_data.as_ptr() as *const u8,
+            4,
+            &[1_i32],
+            MlxDtype::Uint32,
+        );
+    }
+
+    if max_tail_depth == 0 {
+        let kv_refs = cache.collect_eval_refs();
+        let mut targets: Vec<&MlxArray> = Vec::with_capacity(1 + kv_refs.len());
+        targets.push(&prev_hidden);
+        targets.extend(kv_refs);
+        eval(&targets);
+        return (vec![], vec![], vec![], forced_prefix.len(), [0.0f32; 3]);
+    }
+
+    let last_forced = forced_prefix.last().copied().unwrap_or(first_token);
+    let (draft, log_probs, distributions, tail_added, top2_margins) = glm_mtp_draft_tokens(
+        weights,
+        cfg,
+        &prev_hidden,
+        last_forced,
+        cache,
+        Some(max_tail_depth),
+        rng,
+    );
+
+    (
+        draft,
+        log_probs,
+        distributions,
+        forced_prefix.len().saturating_add(tail_added),
+        top2_margins,
+    )
+}
+
 /// Like [`glm_mtp_draft_tokens`] but with an explicit draft-confidence gate.
 #[allow(clippy::too_many_arguments)]
 pub fn glm_mtp_draft_tokens_gated(
@@ -1585,6 +1677,17 @@ pub fn glm_mtp_draft_tokens_gated(
     let gate_forces_greedy = min_confidence > 0.0 && draft_mode != MtpDraftMode::Stochastic;
 
     let result = if gate_forces_greedy || draft_mode == MtpDraftMode::Greedy {
+        // Token selection is always argmax here (matching Qwen's naming),
+        // but the log-prob fed into rejection-sampling accept/reject math
+        // must still be computed at the configured draft-sampling
+        // temperature when one is set — mirrors Qwen's
+        // `mtp_draft_tokens_sampled` vs `mtp_draft_tokens_greedy` split
+        // (see `mtp_draft_tokens_gated`'s `use_temperature` check above).
+        let log_prob_temperature = if head.draft_sampling.temperature > 0.0 {
+            head.draft_sampling.temperature
+        } else {
+            1.0
+        };
         glm_mtp_draft_tokens_greedy(
             head,
             weights,
@@ -1594,6 +1697,7 @@ pub fn glm_mtp_draft_tokens_gated(
             cache,
             max_depth,
             vocab,
+            log_prob_temperature,
         )
     } else {
         // Stochastic path.
@@ -1630,6 +1734,7 @@ fn glm_mtp_draft_tokens_greedy(
     cache: &mut MlxKVCache,
     max_depth: usize,
     vocab: i32,
+    log_prob_temperature: f32,
 ) -> (Vec<u32>, Vec<f32>, Vec<TokenDistribution>, usize, [f32; 3]) {
     // GLM intentionally runs the imperative path (no compiled head).  GLM uses
     // the MLA latent KV cache (glm_mla_layers, two latent tensors), and the
@@ -1660,7 +1765,7 @@ fn glm_mtp_draft_tokens_greedy(
         );
         let logits = glm_mtp_hidden_to_logits(&new_hidden, head, cfg);
         let lazy_tok = lazy_argmax_logits(&logits);
-        let lazy_lp = gpu_draft_log_prob_lazy(&logits, &lazy_tok, 1.0, vocab);
+        let lazy_lp = gpu_draft_log_prob_lazy(&logits, &lazy_tok, log_prob_temperature, vocab);
         lazy_tokens.push(lazy_tok.clone());
         lazy_log_probs.push(lazy_lp);
         prev_hidden = new_hidden;

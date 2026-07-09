@@ -328,11 +328,28 @@ pub(crate) fn embed_tokens_arr(
     hidden_size: usize,
 ) -> MlxArray {
     let scalar_ids_storage;
-    let ids = if ids_1d.ndim() == 0 {
+    let ids_reshaped = if ids_1d.ndim() == 0 {
         scalar_ids_storage = reshape(ids_1d, &[1_i32], None);
         &scalar_ids_storage
     } else {
         ids_1d
+    };
+    // Clamp to the embedding table's row range before any gather. MLX's
+    // Metal `take`/gather kernel does no bounds checking for unsigned
+    // indices (see mlx/backend/metal/kernels/indexing/indexing.h
+    // offset_neg_idx, which returns unsigned indices unmodified) — an
+    // out-of-range client-supplied token id (e.g. a malformed
+    // POST /v1/embeddings or /v1/generate request) would otherwise read
+    // arbitrary GPU memory past the weight buffer instead of erroring.
+    let clamped_ids_storage;
+    let ids = if embedding.weight.shape().first().copied().unwrap_or(0) > 0 {
+        let vocab_rows = embedding.weight.shape()[0];
+        let min_id = shared::utils::scalar_like(0.0, MlxDtype::Uint32);
+        let max_id = shared::utils::scalar_like((vocab_rows - 1) as f32, MlxDtype::Uint32);
+        clamped_ids_storage = mlx_sys::clip(ids_reshaped, &min_id, &max_id, None);
+        &clamped_ids_storage
+    } else {
+        ids_reshaped
     };
     let seq = ids.shape()[0]; // shape metadata is available without eval
     if let Some(scales) = &embedding.scales {
@@ -6124,5 +6141,51 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn embed_tokens_clamps_out_of_range_ids_instead_of_reading_out_of_bounds() {
+        // MLX's Metal gather kernel does no bounds checking for unsigned
+        // indices (offset_neg_idx returns them unmodified), so a
+        // client-supplied token id at or beyond vocab_size must be clamped
+        // before it reaches `take()`, or it reads arbitrary GPU memory past
+        // the embedding weight buffer.
+        let vocab = 4;
+        let hidden = 3;
+        let weight_data: Vec<f32> = (0..(vocab * hidden)).map(|i| i as f32).collect();
+        let weight = MlxArray::from_raw_data(
+            weight_data.as_ptr() as *const u8,
+            std::mem::size_of_val(weight_data.as_slice()),
+            &[vocab as i32, hidden as i32],
+            MlxDtype::Float32,
+        );
+        let embedding = QuantizedWeight::new(weight, None, None);
+
+        // In-range ids must be unaffected by the clamp.
+        let in_range_ids = [0_u32, vocab as u32 - 1];
+        let in_range = embed_tokens(&in_range_ids, &embedding, hidden);
+        eval(&[&in_range]);
+        assert_eq!(
+            in_range.data_f32(),
+            &[0.0, 1.0, 2.0, 9.0, 10.0, 11.0],
+            "in-range ids must embed their real rows unchanged"
+        );
+
+        // Out-of-range ids (including u32::MAX) must clamp to the last valid
+        // row instead of reading past the weight buffer.
+        let out_of_range_ids = [vocab as u32, u32::MAX];
+        let clamped = embed_tokens(&out_of_range_ids, &embedding, hidden);
+        eval(&[&clamped]);
+        let last_row = &weight_data[(vocab - 1) * hidden..vocab * hidden];
+        assert_eq!(
+            &clamped.data_f32()[0..hidden],
+            last_row,
+            "id == vocab_size must clamp to the last valid row"
+        );
+        assert_eq!(
+            &clamped.data_f32()[hidden..2 * hidden],
+            last_row,
+            "u32::MAX must clamp to the last valid row"
+        );
     }
 }

@@ -81,6 +81,11 @@ pub enum EngineSessionError {
         request_id: u64,
         selected_backend: SelectedBackend,
     },
+    #[error(
+        "mlx-lm delegated stream for request {request_id} ended before a terminal finish_reason \
+         or [DONE] marker; the connection may have closed prematurely"
+    )]
+    MlxLmStreamEndedBeforeStop { request_id: u64 },
     #[error("request {request_id} is missing from session state")]
     MissingRequestSnapshot { request_id: u64 },
     #[error(

@@ -101,8 +101,8 @@ use crate::model::{
     take_prefill_profile_snapshot,
 };
 use crate::mtp::{
-    glm_mtp_draft_tokens, mtp_draft_tokens, mtp_draft_tokens_after_forced_prefix,
-    mtp_draft_tokens_gated,
+    glm_mtp_draft_tokens, glm_mtp_draft_tokens_after_forced_prefix, mtp_draft_tokens,
+    mtp_draft_tokens_after_forced_prefix, mtp_draft_tokens_gated,
 };
 use crate::ngram_accel::{
     DEFAULT_DRAFT_LEN, LINEAR_MIN_NGRAM_SUPPORT, MAX_DRAFT_LEN, NgramDraftOutcome,
@@ -3498,6 +3498,17 @@ pub struct MlxRunner {
     kv_layer_windows: Vec<Option<usize>>,
     binding_summary: NativeModelBindingSummary,
     terminal_token_ids: Vec<u32>,
+    /// Canonicalized model artifacts directory, folded into the disk
+    /// prefix-cache key (see `prefix_cache_layer_layout`). A hot-swap via
+    /// `POST /v1/model/load` can reuse the same caller-supplied `model_id`
+    /// label for a genuinely different checkpoint (e.g. a routine
+    /// re-quantization rollout); `model_id` alone is not a reliable cache
+    /// key because it carries no relationship to the actual model content,
+    /// and same-architecture checkpoints can share every shape field in
+    /// `ModelConfig` while their weights (and thus KV values) differ. This
+    /// closes that gap without a wire-format change, since `layer_layout`
+    /// is already a free-form bucket in the on-disk key.
+    model_artifacts_root: String,
     states: Mutex<HashMap<RequestId, RequestState>>,
     /// Whether this model can use the experimental batched dense-decode path
     /// (computed once via `model_batched_eligible`). Gates the `run()`
@@ -4119,6 +4130,7 @@ impl MlxRunner {
             kv_layer_windows,
             binding_summary,
             terminal_token_ids,
+            model_artifacts_root: artifacts.root_dir().to_string_lossy().into_owned(),
             states: Mutex::new(HashMap::new()),
             batched_decode_model_eligible,
             batched_session,
@@ -6034,7 +6046,17 @@ impl MlxRunner {
     }
 
     fn prefix_cache_layer_layout(&self) -> String {
-        format!("layers={};full_attention_only", self.cfg.layer_count)
+        // `model_artifacts_root` guards against a hot-swap that reuses the
+        // same `model_id` label for a different checkpoint (see the field
+        // doc comment on `MlxRunner::model_artifacts_root`): folding it in
+        // here means a swap to a different artifacts directory always
+        // misses stale L1/L2 entries instead of risking a wrong-checkpoint
+        // KV hit or a shape-mismatch panic on a coincidentally-matching
+        // architecture.
+        format!(
+            "layers={};full_attention_only;root={}",
+            self.cfg.layer_count, self.model_artifacts_root
+        )
     }
 
     fn prefix_cache_key(
@@ -7402,18 +7424,25 @@ impl MlxRunner {
         let vocab = self.cfg.vocab_size as i32;
         let mut mtp_timings = MtpStepTimings::default();
         // Draft log-probs are computed at T=1.0 (greedy path) or
-        // head.draft_sampling.temperature (sampled path).
-        let draft_log_prob_temperature = self
+        // head.draft_sampling.temperature (sampled path). Check both the
+        // Qwen MTP head and the GLM MTP head — a model can only have one of
+        // the two, but reading only `self.weights.mtp` for a GLM-only model
+        // silently fell back to `sampling.temperature`, which trivially
+        // equals the target temperature and defeats the mismatch-rescale
+        // check in `mtp_accept_count` below.
+        let draft_sampling_temperature = self
             .weights
             .mtp
             .as_ref()
-            .map(|h| {
-                if h.draft_sampling.temperature > 0.0 {
-                    h.draft_sampling.temperature
-                } else {
-                    1.0
-                }
-            })
+            .map(|h| h.draft_sampling.temperature)
+            .or_else(|| {
+                self.weights
+                    .glm_mtp
+                    .as_ref()
+                    .map(|h| h.draft_sampling.temperature)
+            });
+        let draft_log_prob_temperature = draft_sampling_temperature
+            .map(|t| if t > 0.0 { t } else { 1.0 })
             .unwrap_or_else(|| {
                 if sampling.temperature > 0.0 {
                     sampling.temperature
@@ -8359,13 +8388,14 @@ impl MlxRunner {
                     let mtp_draft_started = Instant::now();
                     let (tail, log_probs, distributions, added, _top2_margins) =
                         if self.weights.glm_mtp.is_some() {
-                            glm_mtp_draft_tokens(
+                            glm_mtp_draft_tokens_after_forced_prefix(
                                 &self.weights,
                                 &self.cfg,
                                 &draft_hidden,
                                 tail_tok,
+                                &draft,
                                 cache,
-                                Some(mtp_tail_cap),
+                                mtp_tail_cap,
                                 &mut state.rng,
                             )
                         } else {

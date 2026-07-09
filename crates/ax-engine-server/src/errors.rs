@@ -94,6 +94,7 @@ pub(crate) fn map_session_error(error: EngineSessionError) -> (StatusCode, Json<
         | EngineSessionError::MissingMlxLmConfig
         | EngineSessionError::MissingDelegatedRuntime { .. }
         | EngineSessionError::LlamaCppStreamEndedBeforeStop { .. }
+        | EngineSessionError::MlxLmStreamEndedBeforeStop { .. }
         | EngineSessionError::MlxRuntimeArtifactsRequired
         | EngineSessionError::LlamaCpp(LlamaCppBackendError::CommandLaunch { .. })
         | EngineSessionError::LlamaCpp(LlamaCppBackendError::CommandFailed { .. })

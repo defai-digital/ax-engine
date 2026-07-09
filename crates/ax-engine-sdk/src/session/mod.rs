@@ -609,10 +609,19 @@ impl EngineSession {
             }
             let selected_backend = self.config.resolved_backend.selected_backend;
             let mut aggregate = EngineStepReport::default();
-            let mut terminal_reports = Vec::new();
 
             for request_id in active_request_ids {
-                let step = {
+                // Persist a terminal transition immediately, in the same
+                // loop iteration that computed it, rather than deferring to
+                // a flush pass after the whole loop. A later request's
+                // `step_report` error (`?` below) used to abort the
+                // function before that deferred flush ran, leaving an
+                // already-finished request's slot stuck `Active` — on the
+                // next poll it would be re-queried, its stream already
+                // fully consumed, and `step_report` would raise
+                // `LlamaCppStreamEndedBeforeStop` for a request that had in
+                // fact already completed successfully, permanently.
+                let terminal = {
                     let slot = self
                         .llama_requests
                         .get_mut(&request_id)
@@ -621,17 +630,17 @@ impl EngineSession {
                         continue;
                     };
                     let step = request.step_report(selected_backend)?;
+                    aggregate.accumulate(step);
                     if is_terminal_request_state(request.current_report.state) {
                         request.drain_trailing_usage();
-                        terminal_reports.push((request_id, request.current_report.clone()));
+                        Some((request_id, request.current_report.clone()))
+                    } else {
+                        None
                     }
-                    step
                 };
-                aggregate.accumulate(step);
-            }
-
-            for (request_id, report) in terminal_reports {
-                self.store_terminal_llama_report(request_id, report);
+                if let Some((request_id, report)) = terminal {
+                    self.store_terminal_llama_report(request_id, report);
+                }
             }
 
             return Ok(aggregate);

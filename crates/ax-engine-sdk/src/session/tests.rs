@@ -1378,6 +1378,159 @@ fn llama_cpp_cancelled_request_does_not_block_other_active_requests() {
         .expect("llama.cpp server thread should finish");
 }
 
+/// Like `spawn_scripted_llama_cpp_completion_stream_server`, but each
+/// request can independently choose whether the server sends the `[DONE]`
+/// terminator or just closes the connection right after its chunks —
+/// simulating a premature disconnect (crash, OOM kill, proxy closing the
+/// connection) instead of a clean stream end.
+fn spawn_llama_cpp_completion_stream_server_with_disconnects(
+    expected_requests: usize,
+    response_for_request: impl Fn(usize, &Value) -> (Vec<Value>, bool) + Send + 'static,
+) -> (String, thread::JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("listener should bind");
+    let address = listener.local_addr().expect("listener should have address");
+    let handle = thread::spawn(move || {
+        for request_index in 0..expected_requests {
+            let (mut stream, _) = listener.accept().expect("request should arrive");
+            let request = read_http_request(&mut stream);
+            let header_end = request
+                .windows(4)
+                .position(|window| window == b"\r\n\r\n")
+                .map(|index| index + 4)
+                .expect("request should include header terminator");
+            let body =
+                String::from_utf8(request[header_end..].to_vec()).expect("body should be utf8");
+            let payload: Value = serde_json::from_str(&body).expect("request body should be json");
+
+            let (chunks, send_done) = response_for_request(request_index, &payload);
+            let mut body = String::new();
+            for chunk in &chunks {
+                body.push_str("data: ");
+                body.push_str(
+                    &serde_json::to_string(chunk).expect("chunk payload should serialize"),
+                );
+                body.push_str("\n\n");
+            }
+            if send_done {
+                body.push_str("data: [DONE]\n\n");
+            }
+
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream
+                .write_all(response.as_bytes())
+                .expect("response should write");
+            // Explicit close (in addition to `Connection: close` + drop) so the
+            // reader observes EOF deterministically rather than racing thread
+            // teardown, matching a server crash or proxy-closed connection.
+            let _ = stream.shutdown(std::net::Shutdown::Both);
+        }
+    });
+
+    (format!("http://{address}"), handle)
+}
+
+#[test]
+fn llama_cpp_premature_disconnect_does_not_poison_a_batch_sibling() {
+    // Request A (lower id, processed first by the BTreeMap-ordered batch
+    // loop) finishes cleanly this call. Request B (higher id, processed
+    // second in the SAME call) disconnects before a stop marker. Before the
+    // fix, B's error aborted the whole step_report() call via `?` before A's
+    // deferred terminal-slot flush ran, permanently stranding A: on every
+    // subsequent poll it would be re-queried, its stream already fully
+    // consumed, and spuriously raise `LlamaCppStreamEndedBeforeStop` for a
+    // request that had in fact already finished successfully.
+    let (server_url, server_handle) =
+        spawn_llama_cpp_completion_stream_server_with_disconnects(2, |request_index, _payload| {
+            if request_index == 0 {
+                (
+                    vec![serde_json::json!({
+                        "content": "hello",
+                        "tokens": [4],
+                        "stop": true,
+                        "stop_type": "limit"
+                    })],
+                    true,
+                )
+            } else {
+                // Zero chunks, no [DONE]: the very first read on B's stream
+                // observes EOF immediately, in the same poll call where A's
+                // chunk above completes A — reproducing the exact "A
+                // finishes, B errors, both in the same batch call" scenario.
+                (vec![], false)
+            }
+        });
+    let mut session = llama_cpp_server_session(server_url);
+
+    let first_request_id = session
+        .submit_generate(GenerateRequest {
+            model_id: "qwen3".to_string(),
+            input_tokens: vec![1, 2, 3],
+            input_text: None,
+            multimodal_inputs: Default::default(),
+            max_output_tokens: 2,
+            sampling: Default::default(),
+            stop_sequences: Vec::new(),
+            metadata: None,
+        })
+        .expect("first llama.cpp submit should succeed");
+    let second_request_id = session
+        .submit_generate(GenerateRequest {
+            model_id: "qwen3".to_string(),
+            input_tokens: vec![7, 8, 9],
+            input_text: None,
+            multimodal_inputs: Default::default(),
+            max_output_tokens: 2,
+            sampling: Default::default(),
+            stop_sequences: Vec::new(),
+            metadata: None,
+        })
+        .expect("second llama.cpp submit should succeed");
+    assert!(first_request_id < second_request_id);
+
+    // This call processes A (finishes cleanly) then B (errors on premature
+    // EOF); the whole call surfaces B's error, but A's terminal transition
+    // must already be durably persisted.
+    let step_result = session.step_report();
+    assert!(
+        matches!(
+            step_result,
+            Err(EngineSessionError::LlamaCppStreamEndedBeforeStop { request_id, .. })
+                if request_id == second_request_id
+        ),
+        "expected B's premature-disconnect error, got {step_result:?}"
+    );
+
+    let first_report = session
+        .request_report(first_request_id)
+        .expect("first llama.cpp request should exist");
+    assert_eq!(
+        first_report.state,
+        SessionRequestState::Finished,
+        "A must have been flushed to Finished despite B's error in the same batch call"
+    );
+    assert_eq!(first_report.output_tokens, vec![4]);
+
+    // A must not be re-queried on the next poll (it should no longer appear
+    // in the active set at all, having already been moved to Terminal).
+    let second_step_result = session.step_report();
+    assert!(
+        matches!(
+            second_step_result,
+            Err(EngineSessionError::LlamaCppStreamEndedBeforeStop { request_id, .. })
+                if request_id == second_request_id
+        ),
+        "A must not be re-polled and re-error; only B's already-reported error should repeat: {second_step_result:?}"
+    );
+
+    server_handle
+        .join()
+        .expect("llama.cpp server thread should finish");
+}
+
 #[test]
 fn native_step_report_surfaces_route_and_metal_dispatch_summary() {
     let core = EngineCore::with_runtime_components(

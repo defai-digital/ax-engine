@@ -86,6 +86,7 @@ pub(crate) fn to_py_runtime_error(error: EngineSessionError) -> PyErr {
             EngineBackendError::new_err(error.to_string())
         }
         EngineSessionError::LlamaCppStreamEndedBeforeStop { .. }
+        | EngineSessionError::MlxLmStreamEndedBeforeStop { .. }
         | EngineSessionError::MlxRuntimeArtifactsRequired
         | EngineSessionError::MlxRuntimeUnavailable
         | EngineSessionError::UnsupportedHostHardware { .. }

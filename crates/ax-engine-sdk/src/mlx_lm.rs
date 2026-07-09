@@ -118,7 +118,7 @@ pub struct MlxLmStreamHandle {
 }
 
 impl MlxLmStreamHandle {
-    fn new(endpoint: String, reader: Box<dyn Read + Send>) -> Self {
+    pub(crate) fn new(endpoint: String, reader: Box<dyn Read + Send>) -> Self {
         Self {
             endpoint,
             reader: BufReader::new(reader),
