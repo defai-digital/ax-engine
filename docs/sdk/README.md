@@ -15,7 +15,7 @@ for applications that connect to a running AX Engine server.
 | [JavaScript / TypeScript](javascript.md) | `sdk/javascript` / `@ax-engine/sdk` | You want HTTP, OpenAI-compatible, SSE, or LangChain clients from JS/TS |
 | [Go](go.md) | `sdk/go/axengine` | You want the stdlib-only Go HTTP client |
 | [Ruby](ruby.md) | `sdk/ruby` / `ax-engine-sdk` | You want the stdlib Ruby HTTP client or langchain-rb integration |
-| [Mojo](mojo.md) | `sdk/mojo/ax_engine.mojo` | You want Mojo bindings through Python interop |
+| [Mojo](mojo.md) *(experimental)* | `sdk/mojo/ax_engine.mojo` | You want a thin Mojo `PythonObject` wrapper over the Python SDK — not an independent client; no test suite, not run in CI |
 
 Most SDKs talk to a running AX Engine server at `http://127.0.0.1:8080`.
 Python can also run the SDK-owned in-process session directly.

@@ -85,16 +85,58 @@ every RPC must carry the same `authorization: Bearer <key>` metadata, except
 the `Health` RPC, which stays unauthenticated to mirror the HTTP probe
 exemption. Unauthenticated calls fail with gRPC status `UNAUTHENTICATED`.
 
+## Resource Limits & Rate Limiting
+
+All of the following are opt-in and disabled by default, preserving today's
+behavior exactly until an operator configures them. Each flag also accepts an
+env var fallback (CLI flag wins when both are set):
+
+| Flag | Env var | Default |
+|---|---|---|
+| `--max-concurrent-requests <N>` | `AX_ENGINE_MAX_CONCURRENT_REQUESTS` | unlimited |
+| `--max-request-body-bytes <N>` | `AX_ENGINE_MAX_REQUEST_BODY_BYTES` | 256 MiB (always enforced, even unset) |
+| `--request-timeout-secs <N>` | `AX_ENGINE_REQUEST_TIMEOUT_SECS` | no timeout |
+| `--grpc-request-timeout-secs <N>` | `AX_ENGINE_GRPC_REQUEST_TIMEOUT_SECS` | falls back to `--request-timeout-secs` |
+| `--rate-limit-rps <N>` | `AX_ENGINE_RATE_LIMIT_RPS` | disabled |
+| `--rate-limit-burst <N>` | `AX_ENGINE_RATE_LIMIT_BURST` | defaults to `--rate-limit-rps` when unset |
+| `--stream-idle-timeout-secs <N>` | `AX_ENGINE_STREAM_IDLE_TIMEOUT_SECS` | no idle deadline |
+| `--stream-max-duration-secs <N>` | `AX_ENGINE_STREAM_MAX_DURATION_SECS` | no hard cap |
+
+Notes:
+
+- The concurrency limit and rate limit shed load *before* engine work starts,
+  returning HTTP 429 with a distinct message per limiter so an operator can
+  tell them apart.
+- The rate limit is a single global token bucket, not per-client/per-IP —
+  the server binds to `127.0.0.1` by default, so this is meant to shed a
+  runaway local client rather than police a multi-tenant edge.
+- `--request-timeout-secs` bounds time-to-first-byte, not a whole streaming
+  response; use `--stream-idle-timeout-secs` / `--stream-max-duration-secs`
+  for stream-lifetime deadlines. An idle or over-duration stream ends with an
+  `error` SSE event followed by `[DONE]`, the same shape as any other
+  mid-stream failure.
+- `--grpc-request-timeout-secs` lets the gRPC server (its streaming RPCs can
+  legitimately run far longer than typical HTTP calls) diverge from the
+  shared HTTP timeout; leaving it unset keeps today's shared-timeout
+  behavior.
+
 ## Observability
 
 `GET /metrics` serves a Prometheus text exposition with HTTP request counters
-(total, in-flight, 2xx/4xx/5xx) and engine-step gauges (scheduled requests and
-tokens, KV block usage, accumulated prefix-cache hits). The endpoint is
-read-only: engine-step values are snapshots cached when generation endpoints
-drive real steps, never sampled by stepping the engine from the scrape path.
-Engine-step gauges appear only after at least one step has been observed via
-`POST /v1/step`. `/metrics` requires the API key when authentication is
-enabled and never exposes prompts, outputs, or credentials.
+(total, in-flight, 2xx/4xx/5xx), gRPC request counters (total, in-flight,
+ok/error), and engine-step gauges (scheduled requests and tokens, KV block
+usage, accumulated prefix-cache hits). The endpoint is read-only: engine-step
+values are snapshots cached when generation endpoints drive real steps, never
+sampled by stepping the engine from the scrape path. Engine-step gauges
+appear only after at least one step has been observed via `POST /v1/step`.
+`/metrics` requires the API key when authentication is enabled and never
+exposes prompts, outputs, or credentials.
+
+The gRPC ok/error counters have one known gap: `grpc-status` for a
+successful unary response and for *all* streaming RPCs lives in HTTP/2
+trailers, which are invisible to the tower layer that records these
+counters, so those responses are counted as "ok" by default. Request and
+in-flight counts are exact regardless.
 
 ## OpenAI Surface Extensions
 

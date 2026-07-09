@@ -39,6 +39,30 @@ pub(crate) async fn prometheus_metrics(State(state): State<AppState>) -> Respons
         "HTTP responses with 5xx status.",
         metrics.http_status_5xx_total.load(Ordering::Relaxed),
     );
+    append_counter(
+        &mut body,
+        "ax_engine_grpc_requests_total",
+        "Total gRPC requests observed by ax-engine-server.",
+        metrics.grpc_requests_total.load(Ordering::Relaxed),
+    );
+    append_gauge(
+        &mut body,
+        "ax_engine_grpc_requests_in_flight",
+        "gRPC requests currently executing inside ax-engine-server.",
+        metrics.grpc_requests_in_flight.load(Ordering::Relaxed),
+    );
+    append_counter(
+        &mut body,
+        "ax_engine_grpc_status_ok_total",
+        "gRPC responses observed with an OK status. Successful unary and all streaming responses carry their real status in HTTP/2 trailers, invisible at this layer, so those are counted here by default.",
+        metrics.grpc_status_ok_total.load(Ordering::Relaxed),
+    );
+    append_counter(
+        &mut body,
+        "ax_engine_grpc_status_error_total",
+        "gRPC responses observed with a non-OK grpc-status response header (e.g. auth rejections).",
+        metrics.grpc_status_error_total.load(Ordering::Relaxed),
+    );
 
     // Engine-step gauges come from the snapshot cached by the endpoints that
     // actually drive steps; scraping must never call `step_report` itself

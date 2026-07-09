@@ -1,11 +1,15 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::time::Duration;
 
 use ax_engine_sdk::{
     EmbeddingPooling, EngineSession, EngineSessionConfig, EngineSessionError, EngineStepReport,
     RuntimeReport, StatelessGenerateContext,
 };
 use tokio::sync::{Mutex, mpsc, oneshot};
+
+use crate::generation::streaming::StreamDeadlines;
+use crate::rate_limit::RateLimitConfig;
 
 /// All state that changes atomically when a new model is loaded.
 /// Wrapped behind `Arc<RwLock<>>` in `AppState` so every in-flight request
@@ -29,6 +33,7 @@ pub(crate) struct AppState {
     pub(crate) metrics: Arc<ServerMetrics>,
     /// Set to true while a model load is in progress; prevents concurrent loads.
     pub(crate) loading: Arc<AtomicBool>,
+    pub(crate) limits: Arc<ServerLimits>,
     next_request_id: Arc<AtomicU64>,
 }
 
@@ -39,6 +44,7 @@ impl AppState {
             api_key: None,
             metrics: Arc::new(ServerMetrics::default()),
             loading: Arc::new(AtomicBool::new(false)),
+            limits: Arc::new(ServerLimits::default()),
             next_request_id: Arc::new(AtomicU64::new(1)),
         }
     }
@@ -63,6 +69,38 @@ impl AppState {
         self.api_key = api_key.map(Arc::new);
         self
     }
+
+    pub(crate) fn with_limits(mut self, limits: ServerLimits) -> Self {
+        self.limits = Arc::new(limits);
+        self
+    }
+}
+
+/// Resource limits resolved from CLI flags / env vars at startup (see
+/// `ServerArgs::resolved_*` in `args.rs`). All fields default to "disabled"
+/// except `max_request_body_bytes`, which always enforces the built-in
+/// safe default — this preserves today's behavior exactly when no operator
+/// configuration is supplied.
+pub(crate) struct ServerLimits {
+    pub(crate) max_concurrent_requests: Option<usize>,
+    pub(crate) max_request_body_bytes: usize,
+    pub(crate) request_timeout: Option<Duration>,
+    pub(crate) grpc_request_timeout: Option<Duration>,
+    pub(crate) rate_limit: Option<RateLimitConfig>,
+    pub(crate) stream_deadlines: StreamDeadlines,
+}
+
+impl Default for ServerLimits {
+    fn default() -> Self {
+        Self {
+            max_concurrent_requests: None,
+            max_request_body_bytes: crate::DEFAULT_MAX_REQUEST_BODY_BYTES,
+            request_timeout: None,
+            grpc_request_timeout: None,
+            rate_limit: None,
+            stream_deadlines: StreamDeadlines::default(),
+        }
+    }
 }
 
 #[derive(Default)]
@@ -72,6 +110,10 @@ pub(crate) struct ServerMetrics {
     pub(crate) http_status_2xx_total: AtomicU64,
     pub(crate) http_status_4xx_total: AtomicU64,
     pub(crate) http_status_5xx_total: AtomicU64,
+    pub(crate) grpc_requests_total: AtomicU64,
+    pub(crate) grpc_requests_in_flight: AtomicU64,
+    pub(crate) grpc_status_ok_total: AtomicU64,
+    pub(crate) grpc_status_error_total: AtomicU64,
     engine_step_observed: AtomicBool,
     engine_step_scheduled_requests: AtomicU64,
     engine_step_scheduled_tokens: AtomicU64,
@@ -114,6 +156,31 @@ impl ServerMetrics {
     /// response — there is no status code to attribute in that case.
     pub(crate) fn abandon_http_request(&self) {
         self.http_requests_in_flight.fetch_sub(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn begin_grpc_request(&self) {
+        self.grpc_requests_total.fetch_add(1, Ordering::Relaxed);
+        self.grpc_requests_in_flight.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// `status` is the `grpc-status` response header value when present
+    /// ("0" is `tonic::Code::Ok`). It is absent for successful unary
+    /// responses and for all streaming RPCs, since their real status lives
+    /// in HTTP/2 trailers rather than headers at the tower layer that calls
+    /// this — those are counted as "ok" by default (see `grpc_metrics.rs`).
+    pub(crate) fn finish_grpc_request(&self, status: Option<&str>) {
+        self.grpc_requests_in_flight.fetch_sub(1, Ordering::Relaxed);
+        if matches!(status, None | Some("0")) {
+            self.grpc_status_ok_total.fetch_add(1, Ordering::Relaxed);
+        } else {
+            self.grpc_status_error_total.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    /// Mirrors [`Self::abandon_http_request`] for a cancelled/dropped gRPC
+    /// call future — decrement in-flight without attributing a status.
+    pub(crate) fn abandon_grpc_request(&self) {
+        self.grpc_requests_in_flight.fetch_sub(1, Ordering::Relaxed);
     }
 
     pub(crate) fn record_step_report(&self, report: &EngineStepReport) {

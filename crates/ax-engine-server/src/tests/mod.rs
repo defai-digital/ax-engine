@@ -6,6 +6,7 @@ mod embeddings;
 mod generation;
 mod grpc;
 mod lifecycle;
+mod limits;
 mod metadata;
 mod metrics;
 mod model_load;

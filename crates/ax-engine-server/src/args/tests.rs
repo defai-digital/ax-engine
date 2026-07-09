@@ -79,6 +79,14 @@ fn base_args() -> ServerArgs {
         experimental_mlx_kv_compression_min_context_tokens:
             KvCompressionConfig::DEFAULT_MIN_CONTEXT_TOKENS,
         grpc_bind_address: None,
+        max_concurrent_requests: None,
+        max_request_body_bytes: None,
+        request_timeout_secs: None,
+        grpc_request_timeout_secs: None,
+        rate_limit_rps: None,
+        rate_limit_burst: None,
+        stream_idle_timeout_secs: None,
+        stream_max_duration_secs: None,
     }
 }
 
@@ -1033,4 +1041,95 @@ fn speculation_profile_maps_into_session_config() {
     };
     let config = unset.session_config().expect("session config should build");
     assert_eq!(config.mlx_speculation_profile, None);
+}
+
+#[test]
+fn resolved_limits_default_to_unset_when_no_flags_given() {
+    let args = base_args();
+    assert_eq!(args.resolved_max_concurrent_requests(), None);
+    assert_eq!(
+        args.resolved_max_request_body_bytes(),
+        crate::DEFAULT_MAX_REQUEST_BODY_BYTES
+    );
+    assert_eq!(args.resolved_request_timeout(), None);
+    assert_eq!(args.resolved_grpc_request_timeout(), None);
+    assert_eq!(args.resolved_rate_limit(), None);
+    let deadlines = args.resolved_stream_deadlines();
+    assert_eq!(deadlines.idle_timeout, None);
+    assert_eq!(deadlines.max_duration, None);
+}
+
+#[test]
+fn resolved_limits_honor_explicit_flags() {
+    let args = ServerArgs {
+        max_concurrent_requests: Some(4),
+        max_request_body_bytes: Some(1024),
+        request_timeout_secs: Some(30),
+        ..base_args()
+    };
+    assert_eq!(args.resolved_max_concurrent_requests(), Some(4));
+    assert_eq!(args.resolved_max_request_body_bytes(), 1024);
+    assert_eq!(
+        args.resolved_request_timeout(),
+        Some(std::time::Duration::from_secs(30))
+    );
+    // Unset gRPC-specific timeout falls back to the shared HTTP timeout.
+    assert_eq!(
+        args.resolved_grpc_request_timeout(),
+        Some(std::time::Duration::from_secs(30))
+    );
+}
+
+#[test]
+fn grpc_request_timeout_overrides_shared_timeout_when_set() {
+    let args = ServerArgs {
+        request_timeout_secs: Some(30),
+        grpc_request_timeout_secs: Some(120),
+        ..base_args()
+    };
+    assert_eq!(
+        args.resolved_grpc_request_timeout(),
+        Some(std::time::Duration::from_secs(120))
+    );
+}
+
+#[test]
+fn rate_limit_burst_defaults_to_rps_when_unset() {
+    let args = ServerArgs {
+        rate_limit_rps: Some(5.0),
+        ..base_args()
+    };
+    let cfg = args
+        .resolved_rate_limit()
+        .expect("rate limit should be enabled");
+    assert_eq!(cfg.rps, 5.0);
+    assert_eq!(cfg.burst, 5.0);
+
+    let with_burst = ServerArgs {
+        rate_limit_rps: Some(5.0),
+        rate_limit_burst: Some(20.0),
+        ..base_args()
+    };
+    let cfg = with_burst
+        .resolved_rate_limit()
+        .expect("rate limit should be enabled");
+    assert_eq!(cfg.burst, 20.0);
+}
+
+#[test]
+fn stream_deadlines_reflect_explicit_flags() {
+    let args = ServerArgs {
+        stream_idle_timeout_secs: Some(15),
+        stream_max_duration_secs: Some(600),
+        ..base_args()
+    };
+    let deadlines = args.resolved_stream_deadlines();
+    assert_eq!(
+        deadlines.idle_timeout,
+        Some(std::time::Duration::from_secs(15))
+    );
+    assert_eq!(
+        deadlines.max_duration,
+        Some(std::time::Duration::from_secs(600))
+    );
 }

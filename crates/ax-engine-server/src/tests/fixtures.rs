@@ -294,6 +294,14 @@ pub(super) fn base_server_args() -> ServerArgs {
         experimental_mlx_kv_compression_min_context_tokens:
             ax_engine_sdk::KvCompressionConfig::DEFAULT_MIN_CONTEXT_TOKENS,
         grpc_bind_address: None,
+        max_concurrent_requests: None,
+        max_request_body_bytes: None,
+        request_timeout_secs: None,
+        grpc_request_timeout_secs: None,
+        rate_limit_rps: None,
+        rate_limit_burst: None,
+        stream_idle_timeout_secs: None,
+        stream_max_duration_secs: None,
     }
 }
 

@@ -93,9 +93,12 @@ impl EngineTokenizer {
             .ok();
         let cache_key = (canonical, mtime);
 
+        // A panic elsewhere while holding this lock must not permanently
+        // poison the shared tokenizer cache for every later request; recover
+        // the last-known-good map instead of propagating the poison.
         if let Some(hit) = CACHE
             .lock()
-            .expect("tokenizer cache mutex poisoned")
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .get_or_insert_with(HashMap::new)
             .get(&cache_key)
         {
@@ -105,7 +108,9 @@ impl EngineTokenizer {
         // Parse outside the lock so concurrent requests for other models
         // are not serialized behind a slow load.
         let loaded = Self::from_model_dir(model_dir)?;
-        let mut guard = CACHE.lock().expect("tokenizer cache mutex poisoned");
+        let mut guard = CACHE
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let cache = guard.get_or_insert_with(HashMap::new);
         // Stale entries for the same directory (older mtime) are dropped so
         // a hot-swapped model directory does not grow the map unboundedly.

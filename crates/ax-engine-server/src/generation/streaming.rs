@@ -1,7 +1,7 @@
 use std::convert::Infallible;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use ax_engine_sdk::{
     EngineSession, EngineSessionError, GenerateRequest, GenerateStreamEvent, GenerateStreamState,
@@ -57,7 +57,7 @@ pub(crate) async fn generate_stream(
         },
     );
 
-    Ok(build_keep_alive_stream(rx))
+    Ok(build_keep_alive_stream(rx, state.limits.stream_deadlines))
 }
 
 pub(crate) enum StreamStateSource {
@@ -248,12 +248,92 @@ fn send_stream_event<T: Serialize>(tx: &StreamEventSender, event_name: &str, pay
     }
 }
 
-pub(crate) fn build_keep_alive_stream(rx: StreamEventReceiver) -> Sse<ReceiverStream<StreamEvent>> {
+/// Idle-between-events and hard max-duration deadlines for a streaming
+/// response. Both default to disabled (`None`), which preserves the
+/// "only ends on client disconnect or producer completion" behavior exactly.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct StreamDeadlines {
+    pub(crate) idle_timeout: Option<Duration>,
+    pub(crate) max_duration: Option<Duration>,
+}
+
+pub(crate) fn build_keep_alive_stream(
+    rx: StreamEventReceiver,
+    deadlines: StreamDeadlines,
+) -> Sse<ReceiverStream<StreamEvent>> {
+    let rx = match (deadlines.idle_timeout, deadlines.max_duration) {
+        (None, None) => rx,
+        _ => spawn_deadline_relay(rx, deadlines),
+    };
     Sse::new(ReceiverStream::new(rx)).keep_alive(
         KeepAlive::new()
             .interval(Duration::from_secs(5))
             .text("keep-alive"),
     )
+}
+
+/// Relays events from `rx` to a fresh channel, enforcing `deadlines`. On
+/// expiry, sends one synthetic error event + `[DONE]` (matching
+/// `send_stream_error`'s shape) and returns, dropping the original `rx` —
+/// the producer's existing `tx.closed()` disconnect monitor (see
+/// `spawn_stream_task`) already watches that, so cancellation is reused for
+/// free with no changes needed on the producer side.
+fn spawn_deadline_relay(
+    mut rx: StreamEventReceiver,
+    deadlines: StreamDeadlines,
+) -> StreamEventReceiver {
+    let (relay_tx, relay_rx) = mpsc::channel(STREAM_CHANNEL_CAPACITY);
+    tokio::spawn(async move {
+        let start = Instant::now();
+        loop {
+            let max_duration_remaining = deadlines
+                .max_duration
+                .map(|max| max.saturating_sub(start.elapsed()));
+            if max_duration_remaining == Some(Duration::ZERO) {
+                send_stream_error_async(
+                    &relay_tx,
+                    ErrorResponse::server_error(
+                        "stream exceeded the configured maximum duration".to_string(),
+                    ),
+                )
+                .await;
+                return;
+            }
+            // At least one of idle_timeout/max_duration_remaining is Some
+            // here: the caller only spawns this relay when that holds.
+            let wait = match (deadlines.idle_timeout, max_duration_remaining) {
+                (Some(idle), Some(remaining)) => idle.min(remaining),
+                (Some(idle), None) => idle,
+                (None, Some(remaining)) => remaining,
+                (None, None) => return,
+            };
+            match tokio::time::timeout(wait, rx.recv()).await {
+                Ok(Some(event)) => {
+                    if relay_tx.send(event).await.is_err() {
+                        return; // downstream SSE response dropped
+                    }
+                }
+                Ok(None) => return, // producer finished normally
+                Err(_elapsed) => {
+                    let hit_max_duration = deadlines
+                        .max_duration
+                        .is_some_and(|max| start.elapsed() >= max);
+                    let message = if hit_max_duration {
+                        "stream exceeded the configured maximum duration"
+                    } else {
+                        "stream exceeded the configured idle timeout"
+                    };
+                    send_stream_error_async(
+                        &relay_tx,
+                        ErrorResponse::server_error(message.to_string()),
+                    )
+                    .await;
+                    return;
+                }
+            }
+        }
+    });
+    relay_rx
 }
 
 pub(crate) fn send_stream_error(tx: &StreamEventSender, error: ErrorResponse) {

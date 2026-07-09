@@ -37,9 +37,12 @@ impl DelegatedHttpTimeouts {
     }
 
     pub(crate) fn agent(self) -> ureq::Agent {
+        // A panic elsewhere while holding this lock must not permanently
+        // poison the shared agent cache for every later request; recover the
+        // last-known-good map instead of propagating the poison.
         let mut agents = delegated_http_agents()
             .lock()
-            .expect("delegated HTTP agent cache should not be poisoned");
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         agents
             .entry(self)
             .or_insert_with(|| self.build_agent())

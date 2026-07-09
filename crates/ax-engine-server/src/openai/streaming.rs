@@ -69,7 +69,7 @@ pub(crate) async fn stream_openai_request(
         },
     );
 
-    Ok(build_keep_alive_stream(rx).into_response())
+    Ok(build_keep_alive_stream(rx, state.limits.stream_deadlines).into_response())
 }
 
 pub(crate) async fn stream_openai_mlx_lm_chat_request(
@@ -91,7 +91,7 @@ pub(crate) async fn stream_openai_mlx_lm_chat_request(
         drive_openai_mlx_lm_chat_stream(tx, &cancel, request_id, model_id, stream);
     });
 
-    Ok(build_keep_alive_stream(rx).into_response())
+    Ok(build_keep_alive_stream(rx, state.limits.stream_deadlines).into_response())
 }
 
 pub(crate) async fn stream_openai_llama_cpp_chat_request(
@@ -113,7 +113,7 @@ pub(crate) async fn stream_openai_llama_cpp_chat_request(
         drive_openai_llama_cpp_chat_stream(tx, &cancel, request_id, model_id, stream);
     });
 
-    Ok(build_keep_alive_stream(rx).into_response())
+    Ok(build_keep_alive_stream(rx, state.limits.stream_deadlines).into_response())
 }
 
 fn drive_openai_stream_state<N>(

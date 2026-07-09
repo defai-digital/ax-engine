@@ -8,7 +8,6 @@ use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use tokio::sync::Semaphore;
 
-use super::DEFAULT_MAX_REQUEST_BODY_BYTES;
 use super::anthropic::anthropic_messages;
 use super::app_state::{AppState, ServerMetrics};
 use super::embeddings::records::embedding_records;
@@ -27,21 +26,7 @@ use super::openai::chat::openai_chat_completions;
 use super::openai::compat::{apply_template, detokenize, props, slots, tokenize};
 use super::openai::completions::openai_completions;
 use super::openai::embeddings::openai_embeddings;
-
-/// Opt-in cap on the number of in-flight HTTP requests. Unset (or non-positive)
-/// means no limit, preserving the default behavior. Operators running the server
-/// multi-tenant set this to bound concurrent GPU work and shed load with HTTP
-/// 429 instead of exhausting memory under a request flood.
-const MAX_CONCURRENT_REQUESTS_ENV: &str = "AX_ENGINE_MAX_CONCURRENT_REQUESTS";
-const MAX_REQUEST_BODY_BYTES_ENV: &str = "AX_ENGINE_MAX_REQUEST_BODY_BYTES";
-
-/// Opt-in per-request timeout in seconds, applied to both the HTTP router and
-/// the gRPC server. Unset (or non-positive) means no timeout, preserving the
-/// default behavior. The timeout bounds the time to produce a response; for
-/// streaming endpoints that is the time to the first byte of the stream, so
-/// long generations that are actively streaming are not cut off — only hung
-/// handlers and stuck non-streaming generations are.
-const REQUEST_TIMEOUT_SECS_ENV: &str = "AX_ENGINE_REQUEST_TIMEOUT_SECS";
+use crate::rate_limit::TokenBucket;
 
 pub(crate) fn build_router(state: AppState) -> Router {
     let router = Router::new()
@@ -80,7 +65,7 @@ pub(crate) fn build_router(state: AppState) -> Router {
     // Apply the concurrency limiter (when enabled) closest to the handlers, so a
     // rejected request never starts engine work. Requests beyond the limit get
     // an immediate 429 rather than queueing unboundedly.
-    let router = match max_concurrent_requests_from_env() {
+    let router = match state.limits.max_concurrent_requests {
         Some(limit) => {
             let semaphore = Arc::new(Semaphore::new(limit));
             router.layer(middleware::from_fn(move |request: Request, next: Next| {
@@ -97,6 +82,29 @@ pub(crate) fn build_router(state: AppState) -> Router {
                             "server is at its maximum concurrent request limit; retry shortly",
                         )
                             .into_response(),
+                    }
+                }
+            }))
+        }
+        None => router,
+    };
+
+    // Global rate limit (when enabled), applied just after the concurrency
+    // limiter so both shed load before any real handler work starts.
+    let router = match state.limits.rate_limit {
+        Some(cfg) => {
+            let bucket = Arc::new(TokenBucket::new(cfg.burst));
+            router.layer(middleware::from_fn(move |request: Request, next: Next| {
+                let bucket = Arc::clone(&bucket);
+                async move {
+                    if bucket.try_acquire(&cfg) {
+                        next.run(request).await
+                    } else {
+                        (
+                            StatusCode::TOO_MANY_REQUESTS,
+                            "server rate limit exceeded; retry shortly",
+                        )
+                            .into_response()
                     }
                 }
             }))
@@ -125,7 +133,7 @@ pub(crate) fn build_router(state: AppState) -> Router {
     };
 
     // Inside the metrics layer so timed-out requests are recorded as 408s.
-    let router = match request_timeout_from_env() {
+    let router = match state.limits.request_timeout {
         Some(timeout) => router.layer(middleware::from_fn(
             move |request: Request, next: Next| async move {
                 match tokio::time::timeout(timeout, next.run(request)).await {
@@ -152,8 +160,9 @@ pub(crate) fn build_router(state: AppState) -> Router {
         }
     }));
 
+    let max_request_body_bytes = state.limits.max_request_body_bytes;
     router
-        .layer(DefaultBodyLimit::max(max_request_body_bytes_from_env()))
+        .layer(DefaultBodyLimit::max(max_request_body_bytes))
         .with_state(state)
 }
 
@@ -225,23 +234,12 @@ fn constant_time_str_eq(a: &str, b: &str) -> bool {
     a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
-fn max_concurrent_requests_from_env() -> Option<usize> {
-    parse_max_concurrent_requests(std::env::var(MAX_CONCURRENT_REQUESTS_ENV).ok())
-}
-
-fn max_request_body_bytes_from_env() -> usize {
-    parse_max_request_body_bytes(std::env::var(MAX_REQUEST_BODY_BYTES_ENV).ok())
-        .unwrap_or(DEFAULT_MAX_REQUEST_BODY_BYTES)
-}
-
-pub(crate) fn request_timeout_from_env() -> Option<std::time::Duration> {
-    parse_request_timeout_secs(std::env::var(REQUEST_TIMEOUT_SECS_ENV).ok())
-        .map(std::time::Duration::from_secs)
-}
-
 /// Parse the concurrency cap: a positive integer enables the limit; anything else
 /// (unset, empty, zero, negative, non-numeric) disables it.
-fn parse_max_concurrent_requests(value: Option<String>) -> Option<usize> {
+///
+/// Shared by [`crate::args::ServerArgs::resolved_max_concurrent_requests`] to
+/// apply identical validation to both the CLI flag and its env-var fallback.
+pub(crate) fn parse_max_concurrent_requests(value: Option<String>) -> Option<usize> {
     value
         .as_deref()
         .map(str::trim)
@@ -252,7 +250,10 @@ fn parse_max_concurrent_requests(value: Option<String>) -> Option<usize> {
 
 /// Parse the request timeout: a positive integer (seconds) enables the timeout;
 /// anything else (unset, empty, zero, negative, non-numeric) disables it.
-fn parse_request_timeout_secs(value: Option<String>) -> Option<u64> {
+///
+/// Shared by [`crate::args::ServerArgs::resolved_request_timeout`] and
+/// [`crate::args::ServerArgs::resolved_grpc_request_timeout`].
+pub(crate) fn parse_request_timeout_secs(value: Option<String>) -> Option<u64> {
     value
         .as_deref()
         .map(str::trim)
@@ -263,7 +264,9 @@ fn parse_request_timeout_secs(value: Option<String>) -> Option<u64> {
 
 /// Parse the request body byte cap: a positive integer overrides the default;
 /// unset, empty, zero, negative, and non-numeric values keep the safe default.
-fn parse_max_request_body_bytes(value: Option<String>) -> Option<usize> {
+///
+/// Shared by [`crate::args::ServerArgs::resolved_max_request_body_bytes`].
+pub(crate) fn parse_max_request_body_bytes(value: Option<String>) -> Option<usize> {
     value
         .as_deref()
         .map(str::trim)

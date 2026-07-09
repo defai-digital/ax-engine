@@ -14,6 +14,10 @@ import Foundation
 /// print(resp.choices[0].message.content)
 /// ```
 public final class AxEngineClient: @unchecked Sendable {
+    /// The SDK version. Kept in lockstep with the workspace version in
+    /// Cargo.toml by the CI "Verify version consistency" check.
+    public static let version = "6.8.2"
+
     private let baseURL: URL
     private let session: URLSession
     private let encoder: JSONEncoder

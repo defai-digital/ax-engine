@@ -213,7 +213,7 @@ async fn stream_buffered_openai_tool_chat_response(
     let _ = tx.send(Ok(Event::default().data("[DONE]"))).await;
     drop(tx);
 
-    Ok(build_keep_alive_stream(rx).into_response())
+    Ok(build_keep_alive_stream(rx, state.limits.stream_deadlines).into_response())
 }
 
 async fn send_openai_chunk_async<T: Serialize>(

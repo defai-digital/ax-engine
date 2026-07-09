@@ -12,6 +12,15 @@ pub const API_KEY_ENV: &str = "AX_ENGINE_API_KEY";
 const MODEL_ARTIFACTS_ENV: &str = "AX_ENGINE_MLX_MODEL_ARTIFACTS_DIR";
 const DEFAULT_MODEL_ID: &str = "qwen3";
 
+const MAX_CONCURRENT_REQUESTS_ENV: &str = "AX_ENGINE_MAX_CONCURRENT_REQUESTS";
+const MAX_REQUEST_BODY_BYTES_ENV: &str = "AX_ENGINE_MAX_REQUEST_BODY_BYTES";
+const REQUEST_TIMEOUT_SECS_ENV: &str = "AX_ENGINE_REQUEST_TIMEOUT_SECS";
+const GRPC_REQUEST_TIMEOUT_SECS_ENV: &str = "AX_ENGINE_GRPC_REQUEST_TIMEOUT_SECS";
+const RATE_LIMIT_RPS_ENV: &str = "AX_ENGINE_RATE_LIMIT_RPS";
+const RATE_LIMIT_BURST_ENV: &str = "AX_ENGINE_RATE_LIMIT_BURST";
+const STREAM_IDLE_TIMEOUT_SECS_ENV: &str = "AX_ENGINE_STREAM_IDLE_TIMEOUT_SECS";
+const STREAM_MAX_DURATION_SECS_ENV: &str = "AX_ENGINE_STREAM_MAX_DURATION_SECS";
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
 pub enum PreviewSupportTier {
     MlxCertified,
@@ -193,6 +202,68 @@ pub struct ServerArgs {
     /// HTTP only. Format `host:port`, e.g. `127.0.0.1:50051`.
     #[arg(long = "grpc-bind-address")]
     pub grpc_bind_address: Option<String>,
+
+    /// Opt-in cap on the number of in-flight HTTP requests. Unset (or
+    /// non-positive) means no limit, preserving the default behavior. Falls
+    /// back to AX_ENGINE_MAX_CONCURRENT_REQUESTS. Operators running the
+    /// server multi-tenant set this to bound concurrent GPU work and shed
+    /// load with HTTP 429 instead of exhausting memory under a request
+    /// flood.
+    #[arg(long = "max-concurrent-requests")]
+    pub max_concurrent_requests: Option<usize>,
+
+    /// Cap on request body size, in bytes. Falls back to
+    /// AX_ENGINE_MAX_REQUEST_BODY_BYTES; unset (or non-positive) keeps the
+    /// built-in 256 MiB default (processed multimodal payloads can be
+    /// large).
+    #[arg(long = "max-request-body-bytes")]
+    pub max_request_body_bytes: Option<usize>,
+
+    /// Opt-in per-request timeout in seconds, applied to the HTTP router
+    /// and, by default, the gRPC server too (see
+    /// --grpc-request-timeout-secs to diverge). Unset (or non-positive)
+    /// means no timeout. Falls back to AX_ENGINE_REQUEST_TIMEOUT_SECS. For
+    /// streaming endpoints this bounds time to the first byte, not the
+    /// whole stream — see --stream-idle-timeout-secs and
+    /// --stream-max-duration-secs for stream-lifetime deadlines.
+    #[arg(long = "request-timeout-secs")]
+    pub request_timeout_secs: Option<u64>,
+
+    /// Per-request timeout, in seconds, for the gRPC server only. Unset
+    /// falls back to AX_ENGINE_GRPC_REQUEST_TIMEOUT_SECS, then to
+    /// --request-timeout-secs (today's shared-timeout behavior) — gRPC's
+    /// streaming RPCs can legitimately run far longer than typical HTTP
+    /// calls, so this lets an operator diverge them without losing the
+    /// shared default.
+    #[arg(long = "grpc-request-timeout-secs")]
+    pub grpc_request_timeout_secs: Option<u64>,
+
+    /// Global request-rate limit, in requests per second, shared across all
+    /// clients (this is not a per-client/per-IP limiter — the server binds
+    /// to 127.0.0.1 by default). Unset (or non-positive) disables rate
+    /// limiting. Falls back to AX_ENGINE_RATE_LIMIT_RPS.
+    #[arg(long = "rate-limit-rps")]
+    pub rate_limit_rps: Option<f64>,
+
+    /// Burst capacity for --rate-limit-rps, in requests. Falls back to
+    /// AX_ENGINE_RATE_LIMIT_BURST; when --rate-limit-rps is set but this is
+    /// not, burst defaults to the rate itself (one second of headroom).
+    #[arg(long = "rate-limit-burst")]
+    pub rate_limit_burst: Option<f64>,
+
+    /// Idle deadline for SSE/stream responses, in seconds: if no event is
+    /// produced for this long, the stream ends with an error event instead
+    /// of hanging indefinitely. Unset (or non-positive) disables it,
+    /// preserving today's behavior. Falls back to
+    /// AX_ENGINE_STREAM_IDLE_TIMEOUT_SECS.
+    #[arg(long = "stream-idle-timeout-secs")]
+    pub stream_idle_timeout_secs: Option<u64>,
+
+    /// Hard cap on total stream duration, in seconds, regardless of event
+    /// activity. Unset (or non-positive) disables it, preserving today's
+    /// behavior. Falls back to AX_ENGINE_STREAM_MAX_DURATION_SECS.
+    #[arg(long = "stream-max-duration-secs")]
+    pub stream_max_duration_secs: Option<u64>,
 }
 
 impl ServerArgs {
@@ -202,6 +273,95 @@ impl ServerArgs {
             .or_else(|| std::env::var(API_KEY_ENV).ok())
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty())
+    }
+
+    pub(crate) fn resolved_max_concurrent_requests(&self) -> Option<usize> {
+        super::routes::parse_max_concurrent_requests(
+            self.max_concurrent_requests
+                .map(|value| value.to_string())
+                .or_else(|| std::env::var(MAX_CONCURRENT_REQUESTS_ENV).ok()),
+        )
+    }
+
+    pub(crate) fn resolved_max_request_body_bytes(&self) -> usize {
+        super::routes::parse_max_request_body_bytes(
+            self.max_request_body_bytes
+                .map(|value| value.to_string())
+                .or_else(|| std::env::var(MAX_REQUEST_BODY_BYTES_ENV).ok()),
+        )
+        .unwrap_or(super::DEFAULT_MAX_REQUEST_BODY_BYTES)
+    }
+
+    pub(crate) fn resolved_request_timeout(&self) -> Option<std::time::Duration> {
+        super::routes::parse_request_timeout_secs(
+            self.request_timeout_secs
+                .map(|value| value.to_string())
+                .or_else(|| std::env::var(REQUEST_TIMEOUT_SECS_ENV).ok()),
+        )
+        .map(std::time::Duration::from_secs)
+    }
+
+    /// Falls back to [`Self::resolved_request_timeout`] when unset, so the
+    /// gRPC server keeps today's shared-timeout behavior by default.
+    pub(crate) fn resolved_grpc_request_timeout(&self) -> Option<std::time::Duration> {
+        super::routes::parse_request_timeout_secs(
+            self.grpc_request_timeout_secs
+                .map(|value| value.to_string())
+                .or_else(|| std::env::var(GRPC_REQUEST_TIMEOUT_SECS_ENV).ok()),
+        )
+        .map(std::time::Duration::from_secs)
+        .or_else(|| self.resolved_request_timeout())
+    }
+
+    pub(crate) fn resolved_rate_limit(&self) -> Option<crate::rate_limit::RateLimitConfig> {
+        fn parse_positive_f64(value: Option<String>) -> Option<f64> {
+            value
+                .as_deref()
+                .map(str::trim)
+                .filter(|raw| !raw.is_empty())
+                .and_then(|raw| raw.parse::<f64>().ok())
+                .filter(|rate| *rate > 0.0)
+        }
+
+        let rps = parse_positive_f64(
+            self.rate_limit_rps
+                .map(|value| value.to_string())
+                .or_else(|| std::env::var(RATE_LIMIT_RPS_ENV).ok()),
+        )?;
+        let burst = parse_positive_f64(
+            self.rate_limit_burst
+                .map(|value| value.to_string())
+                .or_else(|| std::env::var(RATE_LIMIT_BURST_ENV).ok()),
+        )
+        .unwrap_or(rps);
+        Some(crate::rate_limit::RateLimitConfig { rps, burst })
+    }
+
+    pub(crate) fn resolved_stream_deadlines(
+        &self,
+    ) -> crate::generation::streaming::StreamDeadlines {
+        fn parse_positive_secs(value: Option<String>) -> Option<std::time::Duration> {
+            value
+                .as_deref()
+                .map(str::trim)
+                .filter(|raw| !raw.is_empty())
+                .and_then(|raw| raw.parse::<u64>().ok())
+                .filter(|secs| *secs > 0)
+                .map(std::time::Duration::from_secs)
+        }
+
+        crate::generation::streaming::StreamDeadlines {
+            idle_timeout: parse_positive_secs(
+                self.stream_idle_timeout_secs
+                    .map(|value| value.to_string())
+                    .or_else(|| std::env::var(STREAM_IDLE_TIMEOUT_SECS_ENV).ok()),
+            ),
+            max_duration: parse_positive_secs(
+                self.stream_max_duration_secs
+                    .map(|value| value.to_string())
+                    .or_else(|| std::env::var(STREAM_MAX_DURATION_SECS_ENV).ok()),
+            ),
+        }
     }
 }
 
