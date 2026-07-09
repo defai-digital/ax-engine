@@ -1,0 +1,218 @@
+# Changelog
+
+All notable changes to this project will be documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project adheres to Semantic Versioning.
+
+## [Unreleased]
+
+## [6.8.2] - 2026-07-09
+
+### Added
+
+- gRPC bearer-token authentication reusing `--api-key`.
+- DiffusionGemma exponential temperature schedule and self-conditioning skip.
+- Server: opt-in CLI flags (with env-var fallbacks) for concurrency, request
+  body size, and request-timeout limits; a global request-rate limiter;
+  idle-SSE and max-stream-duration deadlines; and gRPC request metrics on
+  `/metrics`. All default to today's behavior when unset — see
+  `docs/SERVER.md`'s "Resource Limits & Rate Limiting" section.
+- `SECURITY.md`, `CODE_OF_CONDUCT.md`, and GitHub issue/PR templates.
+
+### Changed
+
+- OpenAI-compatible endpoints now reject unsupported non-default sampling
+  params (`n`, `frequency_penalty`, `presence_penalty`, `logit_bias`) instead
+  of silently ignoring them.
+- Malformed `AX_NGRAM_CONFIDENCE_THRESHOLD`, `AX_NGRAM_SPECULATIVE_ACCEPT_THRESHOLD`,
+  and `AX_MLX_EXPERIMENTAL_WEIGHT_ROTATION` values now warn and fall back to
+  defaults instead of panicking.
+- pip is now the primary documented install path; PyPI metadata enriched and
+  stale packaging artifacts removed.
+- JavaScript SDK moved to `sdk/javascript`.
+- `sdk/go` and `sdk/swift` now carry an explicit version marker, checked by
+  CI's version-consistency gate alongside the other SDK/package manifests.
+- The Mojo SDK is now labeled experimental in `docs/sdk/README.md` (a thin
+  Python-interop shim with no test suite, not run in CI) rather than
+  presented as a peer of the other client SDKs.
+
+### Fixed
+
+- GEGLU Metal kernel bit-exactness vs the imperative `gelu_approx` reference
+  (restores per-step bf16/f16 rounding while keeping saturation clamps that
+  prevent fast-math tanh NaN).
+- Dense-FFN compile cache refresh no longer permanently disables the decode
+  fast path.
+- Unbounded scheduler retry recursion on KV-blocked batches.
+- A poisoned mutex in the tokenizer cache or delegated-HTTP-agent cache no
+  longer permanently cascade-fails subsequent requests; both now recover the
+  last-known-good state instead of propagating the poison.
+
+## [6.8.1] - 2026-07-08
+
+### Fixed
+
+- Metal runtime assets are now bundled in the PyPI wheel, and `doctor`
+  accepts the bundled assets, so pip installs work without a local Metal
+  toolchain (documented fallback for toolchain installs).
+
+## [6.8.0] - 2026-07-07
+
+### Added
+
+- Linear-attention prefix snapshots captured at aligned prefill boundaries
+  for Qwen 3.6 hybrids, mirrored to the disk prefix-cache tier.
+- Largest-aligned-prefix snapshot store for sliding-window models.
+- GPU top-p sampling; Gemma 4 assistant-MTP drafts are now verified.
+
+### Changed
+
+- OpenAI shim no longer exposes internal exception details in error responses.
+- Benchmark publication is gated on recorded run conditions (load averages,
+  stability summaries, condition metadata) with strict artifact validation.
+
+### Fixed
+
+- DiffusionGemma multi-block KV drop and self-conditioning dtype leak.
+- Prefix-cache generation-counter eviction bug and unbounded mask cache growth.
+- Qwen 3.6 decode compile, Qwen 3 embedding correctness, and Qwen 3.6
+  think-token ids in MTP paths.
+- n-gram-ON sessions no longer scrambled sliding KV for rollback-free
+  requests (run()-latch bug found and fixed during ring rollout).
+
+### Performance
+
+- Bounded-rollback rotating KV rings extended to all serving classes on
+  sliding-window models: n-gram-ON, sampled, and Gemma 4 assistant-MTP.
+- Sliding-layer KV views trimmed on multi-token forwards (+23% Gemma E2B
+  8k-token prefill).
+- MTP verify-cache clone skipped on optimistic accept.
+- Faster Qwen embedding ingest.
+
+## [6.7.1] - 2026-07-04
+
+### Added
+
+- Batched dense decode plumbing wired end-to-end into the MLX runner
+  (batched KV cache, attention mask, token assembly, ragged positions,
+  continuous batched-decode session) with an E2E serving harness.
+- Qwen dense FFN matvec fastpath and decode hot-path admission gate.
+- Open-TQ-Metal K4/V4 TurboQuant support classifier.
+- TUI usability: colors, breadcrumbs, validation, filtering; presets pass
+  through to server launch.
+
+### Fixed
+
+- GLM MTP drafts are verified before accept.
+- MTP runtime model resolution.
+- Embedding post-processing deduplicated; template-injection hole closed.
+- Hardened server and MTP routing paths.
+
+## [6.7.0] - 2026-07-03
+
+### Added
+
+- Apples-to-apples Qwen 3.6 MTP peer benchmark vs MTPLX with degeneracy
+  gate, MTP provenance, and fairness disclosures.
+- Native runtime sharing and stream decoding in the Python runtime.
+
+### Changed
+
+- Optimistic MTP verify promoted to default-ON.
+- Internal planning files and build artifacts removed from the repository.
+
+### Fixed
+
+- mlx-sys shim hardened: error-slot hygiene, closure `Sync` soundness, MLX
+  version guard, RAII-guarded closure trampoline vectors, and fixes for UB
+  and missing error handling in the C++ shim layer.
+- Compiled MTP draft panic (token_offset deferred to the static RoPE branch).
+- DiffusionGemma KV concat buffer output divergence.
+
+### Performance
+
+- DiffusionGemma denoise stops exactly at convergence (+5-10% first-block
+  decode).
+- lm_head projection skipped on non-final prefill chunks; KV cache arrays
+  materialised alongside cache-only hidden eval.
+- Dynamic-RoPE binding enables compiled-closure reuse across MTP decode steps.
+- f32 cast folded into compiled embedding closures; faster embedding output
+  construction.
+
+## [6.6.0] - 2026-06-29
+
+### Added
+
+- GLM 4.7 Flash promoted to direct support, with native GLM 4.x tool calling
+  and built-in MTP-head speculative decoding.
+- GPT-OSS model family with per-head attention sinks.
+- EmbeddingGemma-300m embedding support (Gemma3 bidirectional encoder) with
+  batched-embedding profiler and fair benchmarks.
+- Interactive model downloader and serve launcher (`ax-engine tui`,
+  Textual-based) with live download progress.
+- Qwen3.5-9B 4-bit downloadable preset and Qwen 3.6 27B server preset.
+
+### Changed
+
+- Gemma 4 MTP gate lowered to 0.85; n-gram stacking enabled by default.
+- Unsupported MLX model families and delegated chat tool requests are
+  rejected explicitly.
+- Dropped Qwen-AgentWorld-35B-A3B support.
+
+### Fixed
+
+- Removed the 512-token OpenAI output cap that truncated chat/coding
+  responses.
+- Qwen MoE decode regression from an unguarded compile path.
+- OpenAI tool-call parser ordering and invalid tool-name handling; bare
+  Gemma tool calls and GLM tool calls with no arguments now parse.
+- DiffusionGemma denoise cache alignment, restored self-conditioning, and
+  per-request RNG seeding.
+- mlx-sys closure-callback vector leaks and missing null-ctx guards.
+
+### Performance
+
+- MoE decode +40%: MLX buffer cache is no longer disabled by default.
+- Gemma 4 and Qwen direct-mode decode optimizations (compile promotion,
+  Metal kernel scaffolds); embedding-path packed projection and FFN compile
+  optimizations.
+
+## [6.5.2] - 2026-06-19
+
+### Performance
+
+- DiffusionGemma Phase 2 denoise optimizations, including skipping the
+  self-conditioning matmul on converged steps; multi-block fix.
+
+## [6.5.1] - 2026-06-18
+
+### Changed
+
+- DiffusionGemma GPU-sampling benchmark added; README benchmark section
+  clarified.
+
+## [6.5.0] - 2026-06-18
+
+### Added
+
+- DiffusionGemma direct decode support: manifest generation, Gemma4
+  turn-based chat template routing, decode telemetry, and benchmark
+  integration.
+- Packed GEGLU Metal kernel for Gemma 4 MoE expert decode.
+
+### Changed
+
+- Qwen MTP gate lowered per workload with sticky auto-optimistic; adaptive
+  MTP depth initialization for qwen3_next.
+
+### Performance
+
+- DiffusionGemma denoise optimizations: GPU matmul self-conditioning, cached
+  embed table, argmax rejection; stochastic MTP draft fused into a
+  single-eval lazy GPU graph.
+
+---
+
+Earlier history (v0.5 through v6.4.6) is tracked in git tags and commit
+history.
