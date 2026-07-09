@@ -39,6 +39,7 @@ REPORT="${AX_MTP_E2E_REPORT:-$(ax_tmp_file ax-mtp-e2e .json)}"
 
 AX_PORT="$(ax_allocate_port)"
 AX_BASE_URL="http://127.0.0.1:${AX_PORT}"
+export AX_BASE_URL
 AX_PID=""
 AX_LOG="$(ax_tmp_file ax-mtp-e2e-server .log)"
 
