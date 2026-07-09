@@ -432,25 +432,32 @@ artifacts remain useful only as audit/debug evidence.
 | Qwen3.6 35B-A3B 4-bit | 172.4 tok/s | 137.9 tok/s | 116.2 tok/s | AX leads this production-config row |
 | Qwen3.6 35B-A3B 6-bit | 141.2 tok/s | 119.0 tok/s | 96.3 tok/s | AX leads this production-config row |
 
-**Effective output-bandwidth diagnostic:** This chart multiplies decode tok/s
-by active target-weight bytes to compare how much committed-token work each
-engine produces per second, using the same bandwidth-chart style as the Gemma 4
-12B diagnostic. It is not an Instruments GPU counter: MTP can emit multiple
-committed tokens per verifier cycle, so the effective output metric can exceed
-the 577 GB/s M5 Max physical-memory reference. On the identical 27B
-sidecar, AX / MTPLX / lightning-mlx land at about 1065 / 988 / 942 GB/s, which
-tracks the decode ranking. On 35B-A3B, the rows remain production-configuration
-package rows; the chart uses AX's active MoE estimate for AX and the peer
-optimized-package active-byte estimate for MTPLX and the retained lightning-mlx
-row.
+**27B same-sidecar output-work diagnostic:** On the identical 27B dense
+sidecar, active bytes match across engines, so output work tracks the decode
+ranking and is safe to show as the bar metric.
 
-<img src="docs/assets/perf-qwen36-mtp-bandwidth-diagnostic.svg" alt="Qwen3.6 MTP effective output-bandwidth diagnostic comparing AX Engine, MTPLX, and lightning-mlx on 27B and 35B-A3B 4-bit rows">
+<img src="docs/assets/perf-qwen36-mtp-bandwidth-diagnostic.svg" alt="Qwen3.6 27B MTP same-sidecar output-work diagnostic for AX Engine, MTPLX, and lightning-mlx">
+
+Read output-work percentages above 100% as MTP output leverage, not impossible
+memory bandwidth. For the 27B 4-bit rows, each target verifier pass reads about
+16.9 GB of weights, but a successful MTP pass can commit several accepted draft
+tokens. AX, for example, runs about 16.5 verifier passes/s and emits about
+3.8 output tokens/pass, so the physical target-cycle estimate is about
+279 GB/s while the output-scaled diagnostic is about 1065 GB/s. The latter is
+useful for explaining committed-token work per second, but it is not a claim
+that the GPU exceeded the 577 GB/s physical-memory reference.
+
+35B-A3B is intentionally not charted as an output-work diagnostic because the
+peer rows are production-configuration MoE package rows with different
+active-byte estimates. AX leads that row on the fair speed metric, decode
+tok/s; active bytes and output work are retained in the detailed table only as
+audit context.
 
 Full results, charts, artifact links, and fairness limitations:
 [`docs/mtp/qwen36-peer-comparison.md`](docs/mtp/qwen36-peer-comparison.md).
 Stitched chart source:
 [`benchmarks/results/mtp-qwen36-matrix/2026-07-09-peer-comparison-apples-to-apples-refresh/summary.json`](benchmarks/results/mtp-qwen36-matrix/2026-07-09-peer-comparison-apples-to-apples-refresh/summary.json).
-Bandwidth diagnostic source:
+Decode and output-work diagnostic source:
 [`benchmarks/results/mtp-qwen36-matrix/2026-07-09-peer-comparison-apples-to-apples-refresh/bandwidth_diagnostic.json`](benchmarks/results/mtp-qwen36-matrix/2026-07-09-peer-comparison-apples-to-apples-refresh/bandwidth_diagnostic.json).
 For the older AX-only Qwen3.6 table across `flappy`, `long_code`, and
 `python_modules_long`, see

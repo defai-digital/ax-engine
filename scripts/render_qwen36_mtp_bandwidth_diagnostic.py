@@ -1,14 +1,13 @@
 #!/usr/bin/env python3
-"""Render the Qwen3.6 MTP effective output-bandwidth diagnostic.
+"""Render the Qwen3.6 27B MTP same-sidecar output-work diagnostic.
 
-The chart compares AX Engine, MTPLX, and lightning-mlx using a common derived
-metric:
+The chart compares AX Engine, MTPLX, and lightning-mlx using a derived metric:
 
     effective output bandwidth = decode tok/s * active target-weight bytes
 
-This is an output-efficiency diagnostic, not a GPU counter. MTP can emit
-multiple committed tokens per target verifier cycle, so the effective output
-rate can exceed the measured 577 GB/s M5 Max memory-bandwidth reference.
+This chart is limited to the 27B dense same-sidecar rows, where active bytes
+match across engines. The derived value is not a GPU counter; MTP can emit
+multiple committed tokens per target verifier cycle.
 """
 
 from __future__ import annotations
@@ -57,17 +56,10 @@ ENGINE_COLORS = {
     "lightning_mlx": ("#2563eb", "#1d4ed8"),
 }
 
-WIDTH = 980
-HEIGHT = 540
+WIDTH = 1280
 LEFT = 44
-LABEL_X = 58
-PLOT_LEFT = 246
-PLOT_RIGHT = 760
-TOP = 106
-BAR_H = 17
-ENGINE_GAP = 8
-GROUP_GAP = 42
-FOOTER_Y = 506
+PLOT_LEFT = 260
+PLOT_RIGHT = 720
 
 
 def metric_median(cell: dict[str, Any], key: str) -> float:
@@ -289,96 +281,110 @@ def build_output_row(
     }
 
 
-def render_svg(diagnostic: dict[str, Any]) -> str:
-    rows = diagnostic["rows"]
+def render_27b_output_svg(diagnostic: dict[str, Any]) -> str:
+    target = "Qwen3.6 27B 4-bit"
+    rows = [row for row in diagnostic["rows"] if row["target"] == target]
+    rows.sort(key=lambda row: ENGINE_ORDER.index(str(row["engine"])))
     axis_max = max(
         200.0,
         ((int(max(row["percent_of_peak_reference"] for row in rows)) + 24) // 25)
         * 25.0,
     )
-
     def e(value: object) -> str:
         return html.escape(str(value))
 
     def fx(percent: float) -> float:
         return PLOT_LEFT + max(0.0, percent) / axis_max * (PLOT_RIGHT - PLOT_LEFT)
 
+    best_output = max(float(row["effective_output_bandwidth_gb_s"]) for row in rows)
+    height = 345
+    top = 124
+    bar_h = 22
+    row_gap = 12
+    footer_y = 308
+    meta_output_x = 760
+    meta_decode_x = 882
+    meta_bytes_x = 982
+
     parts = [
-        f'<svg xmlns="http://www.w3.org/2000/svg" width="{WIDTH}" height="{HEIGHT}" viewBox="0 0 {WIDTH} {HEIGHT}" role="img" aria-labelledby="title desc">',
-        "<title>Qwen3.6 MTP effective output bandwidth</title>",
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{WIDTH}" height="{height}" viewBox="0 0 {WIDTH} {height}" role="img" aria-labelledby="title desc">',
+        "<title>Qwen3.6 27B MTP same-sidecar output-work diagnostic</title>",
         (
-            "<desc>Effective output-bandwidth diagnostic comparing AX Engine, MTPLX, "
-            "and lightning-mlx on Qwen3.6 27B and 35B-A3B 4-bit MTP rows.</desc>"
+            "<desc>Same-sidecar output-work diagnostic comparing AX Engine, MTPLX, "
+            "and lightning-mlx on Qwen3.6 27B 4-bit MTP.</desc>"
         ),
-        f'<rect width="{WIDTH}" height="{HEIGHT}" fill="#f8fafc"/>',
-        f'<text id="title" x="{LEFT}" y="28" font-family="{FONT}" font-size="17" font-weight="700" fill="#111827">Qwen3.6 MTP - Effective output bandwidth ({e(diagnostic["run_date"])})</text>',
-        f'<text id="desc" x="{LEFT}" y="50" font-family="{FONT}" font-size="11" fill="#4b5563">100% = {PEAK_GBS:.0f} GB/s M5 Max reference; bars can exceed 100% because this is committed-token output work</text>',
-        f'<text x="{LEFT}" y="68" font-family="{FONT}" font-size="10" fill="#6b7280">Same bandwidth-diagnostic style as Gemma 4 12B, but Qwen MTP is an effective output metric, not measured GPU utilization.</text>',
-        f'<rect x="{PLOT_LEFT}" y="{TOP - 28}" width="{PLOT_RIGHT - PLOT_LEFT}" height="356" rx="5" fill="#ffffff" stroke="#dbe3ef"/>',
+        f'<rect width="{WIDTH}" height="{height}" fill="#f8fafc"/>',
+        f'<text id="title" x="{LEFT}" y="28" font-family="{FONT}" font-size="17" font-weight="700" fill="#111827">Qwen3.6 27B MTP - Same-sidecar output work ({e(diagnostic["run_date"])})</text>',
+        f'<text id="desc" x="{LEFT}" y="50" font-family="{FONT}" font-size="11" fill="#4b5563">All engines use the same dense 27B sidecar, so active bytes match and output work tracks decode speed.</text>',
+        f'<text x="{LEFT}" y="68" font-family="{FONT}" font-size="10" fill="#6b7280">Output work = decode tok/s × 16.90 GB/token; percentages are output-scaled against the {PEAK_GBS:.0f} GB/s reference.</text>',
+        f'<rect x="{PLOT_LEFT}" y="{top - 28}" width="{PLOT_RIGHT - PLOT_LEFT}" height="142" rx="5" fill="#ffffff" stroke="#dbe3ef"/>',
+        f'<text x="{PLOT_RIGHT}" y="{top - 45}" text-anchor="end" font-family="{FONT}" font-size="11" font-weight="700" fill="#dc2626">Higher output work is better here</text>',
+        f'<text x="{meta_output_x}" y="{top - 11}" font-family="{FONT}" font-size="10" font-weight="700" fill="#374151">Output work</text>',
+        f'<text x="{meta_decode_x}" y="{top - 11}" font-family="{FONT}" font-size="10" font-weight="700" fill="#374151">Decode</text>',
+        f'<text x="{meta_bytes_x}" y="{top - 11}" font-family="{FONT}" font-size="10" font-weight="700" fill="#374151">Active bytes</text>',
     ]
 
-    tick_count = int(axis_max // 25)
-    for tick_index in range(tick_count + 1):
-        percent = 25.0 * tick_index
+    for percent in (0.0, 50.0, 100.0, 150.0, 200.0):
         x = fx(percent)
         parts.append(
-            f'<line x1="{x:.1f}" y1="{TOP - 28}" x2="{x:.1f}" y2="{TOP + 328}" stroke="#e5e7eb" stroke-width="1"/>'
+            f'<line x1="{x:.1f}" y1="{top - 28}" x2="{x:.1f}" y2="{top + 114}" stroke="#e5e7eb" stroke-width="1"/>'
         )
         parts.append(
-            f'<text x="{x:.1f}" y="{TOP + 348}" text-anchor="middle" font-family="{FONT}" font-size="10" fill="#6b7280">{percent:.0f}%</text>'
+            f'<text x="{x:.1f}" y="{top + 134}" text-anchor="middle" font-family="{FONT}" font-size="10" fill="#6b7280">{percent:.0f}%</text>'
         )
-
     peak_x = fx(100.0)
     parts.append(
-        f'<line x1="{peak_x:.1f}" y1="{TOP - 28}" x2="{peak_x:.1f}" y2="{TOP + 328}" stroke="#dc2626" stroke-width="1.4" stroke-dasharray="5 4"/>'
+        f'<line x1="{peak_x:.1f}" y1="{top - 28}" x2="{peak_x:.1f}" y2="{top + 114}" stroke="#dc2626" stroke-width="1.2" stroke-dasharray="5 4"/>'
     )
     parts.append(
-        f'<text x="{peak_x + 5:.1f}" y="{TOP - 9}" font-family="{FONT}" font-size="9" font-weight="700" fill="#dc2626">100% physical reference</text>'
+        f'<text x="{peak_x + 5:.1f}" y="{top - 8}" font-family="{FONT}" font-size="9" font-weight="700" fill="#dc2626">100% physical reference</text>'
     )
 
-    y = TOP
-    for target in TARGET_ORDER:
-        parts.append(
-            f'<text x="{LABEL_X}" y="{y - 13}" font-family="{FONT}" font-size="12" font-weight="700" fill="#111827">{e(target)}</text>'
+    y = top
+    for row in rows:
+        fill, stroke = ENGINE_COLORS[str(row["engine"])]
+        value = float(row["effective_output_bandwidth_gb_s"])
+        percent = float(row["percent_of_peak_reference"])
+        width = fx(percent) - PLOT_LEFT
+        label_y = y + bar_h - 6
+        percent_label_x = max(PLOT_LEFT + 42.0, PLOT_LEFT + width - 8.0)
+        is_best = value == best_output
+        output_fill = "#dc2626" if is_best else "#374151"
+        output_weight = "700" if is_best else "400"
+        parts.extend(
+            [
+                f'<text x="{PLOT_LEFT - 12}" y="{label_y}" text-anchor="end" font-family="{FONT}" font-size="10" fill="#374151">{e(row["engine_label"])}</text>',
+                f'<rect x="{PLOT_LEFT}" y="{y}" width="{width:.1f}" height="{bar_h}" rx="4" fill="{fill}" fill-opacity="0.82"/>',
+                f'<line x1="{PLOT_LEFT + width:.1f}" y1="{y}" x2="{PLOT_LEFT + width:.1f}" y2="{y + bar_h}" stroke="{stroke}" stroke-width="1.4"/>',
+                f'<text x="{percent_label_x:.1f}" y="{label_y}" text-anchor="end" font-family="{FONT}" font-size="10" font-weight="700" fill="#ffffff">{percent:.0f}%</text>',
+                f'<text x="{meta_output_x}" y="{label_y}" font-family="{FONT}" font-size="10" font-weight="{output_weight}" fill="{output_fill}">{value:.0f} GB/s</text>',
+                f'<text x="{meta_decode_x}" y="{label_y}" font-family="{FONT}" font-size="10" fill="#6b7280">{row["decode_tok_s"]:.1f} tok/s</text>',
+                f'<text x="{meta_bytes_x}" y="{label_y}" font-family="{FONT}" font-size="10" fill="#6b7280">{row["active_target_gb_per_output_token"]:.2f} GB/token</text>',
+            ]
         )
-        for engine in ENGINE_ORDER:
-            row = next(r for r in rows if r["target"] == target and r["engine"] == engine)
-            fill, stroke = ENGINE_COLORS[engine]
-            value = float(row["effective_output_bandwidth_gb_s"])
-            percent = float(row["percent_of_peak_reference"])
-            width = fx(percent) - PLOT_LEFT
-            label_y = y + BAR_H - 4
-            parts.extend(
-                [
-                    f'<text x="{PLOT_LEFT - 12}" y="{label_y}" text-anchor="end" font-family="{FONT}" font-size="10" fill="#374151">{e(row["engine_label"])}</text>',
-                    f'<rect x="{PLOT_LEFT}" y="{y}" width="{width:.1f}" height="{BAR_H}" rx="4" fill="{fill}" fill-opacity="0.82"/>',
-                    f'<line x1="{PLOT_LEFT + width:.1f}" y1="{y}" x2="{PLOT_LEFT + width:.1f}" y2="{y + BAR_H}" stroke="{stroke}" stroke-width="1.4"/>',
-                    f'<text x="{PLOT_LEFT + width + 7:.1f}" y="{label_y}" font-family="{FONT}" font-size="10" font-weight="700" fill="#111827">{percent:.0f}%</text>',
-                    f'<text x="{PLOT_RIGHT + 86}" y="{label_y}" text-anchor="end" font-family="{FONT}" font-size="10" fill="#6b7280">{row["decode_tok_s"]:.1f} tok/s · {row["active_target_gb_per_output_token"]:.2f} GB/token</text>',
-                ]
-            )
-            y += BAR_H + ENGINE_GAP
-        y += GROUP_GAP
+        y += bar_h + row_gap
 
-    legend_y = FOOTER_Y - 28
+    parts.extend(render_legend(footer_y - 26))
+    parts.append(
+        f'<text x="{LEFT}" y="{footer_y}" font-family="{FONT}" font-size="9" fill="#9ca3af">Percentages can exceed 100% because MTP can commit multiple output tokens per target verifier pass.</text>'
+    )
+    parts.append("</svg>")
+    return "\n".join(parts) + "\n"
+
+
+def render_legend(legend_y: int) -> list[str]:
+    parts: list[str] = []
     legend_x = LEFT
     for engine in ENGINE_ORDER:
         fill, stroke = ENGINE_COLORS[engine]
         parts.extend(
             [
                 f'<rect x="{legend_x}" y="{legend_y - 9}" width="10" height="10" rx="2" fill="{fill}" fill-opacity="0.82" stroke="{stroke}"/>',
-                f'<text x="{legend_x + 14}" y="{legend_y}" font-family="{FONT}" font-size="10" fill="#374151">{e(ENGINE_LABELS[engine])}</text>',
+                f'<text x="{legend_x + 14}" y="{legend_y}" font-family="{FONT}" font-size="10" fill="#374151">{html.escape(ENGINE_LABELS[engine])}</text>',
             ]
         )
         legend_x += 130
-    parts.extend(
-        [
-            f'<text x="{LEFT}" y="{FOOTER_Y}" font-family="{FONT}" font-size="9" fill="#9ca3af">35B lightning-mlx is retained; active bytes use the peer optimized-package proxy.</text>',
-            f'<text x="{LEFT}" y="{FOOTER_Y + 16}" font-family="{FONT}" font-size="9" fill="#9ca3af">Right labels show decode tok/s and active GB/token; JSON includes effective GB/s and AX verifier-cycle counters.</text>',
-        ]
-    )
-    parts.append("</svg>")
-    return "\n".join(parts) + "\n"
+    return parts
 
 
 def main() -> None:
@@ -392,7 +398,7 @@ def main() -> None:
     args.json_output.parent.mkdir(parents=True, exist_ok=True)
     args.svg_output.parent.mkdir(parents=True, exist_ok=True)
     args.json_output.write_text(json.dumps(diagnostic, indent=2, sort_keys=True) + "\n")
-    args.svg_output.write_text(render_svg(diagnostic))
+    args.svg_output.write_text(render_27b_output_svg(diagnostic))
     print(f"Wrote {args.json_output}")
     print(f"Wrote {args.svg_output}")
 

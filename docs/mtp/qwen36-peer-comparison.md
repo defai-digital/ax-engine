@@ -69,21 +69,35 @@ AX rows are strict and pass the output-degeneracy gate.
 
 ## Effective Output-Bandwidth Diagnostic
 
-This diagnostic follows the Gemma 4 12B bandwidth-chart style, but the Qwen3.6
-MTP metric is **effective output bandwidth**, not physical GPU bandwidth:
+The chart is limited to the 27B rows because they use the same dense sidecar
+across engines, so active bytes match and output work can be shown as the bar
+metric. The 35B-A3B rows are production-configuration MoE package rows with
+different active-byte estimates, so they are kept in the table only and decode
+tok/s remains the fair speed metric.
 
 ```text
 effective output bandwidth = decode tok/s * active target-weight bytes
 ```
 
-This lets AX Engine, MTPLX, and lightning-mlx appear on the same chart even
-though only AX exposes verifier-cycle telemetry in the stitched artifact. The
-577 GB/s line is a physical-memory reference from the M5 Max MLX reduction
-probe; Qwen MTP output bars can exceed it because one target verifier cycle can
-commit multiple accepted draft tokens. Treat the chart as an output-efficiency
-diagnostic, not as an Instruments GPU-utilization chart.
+The 577 GB/s reference is a physical-memory reference from the M5 Max MLX
+reduction probe. Qwen MTP output-work percentages can exceed it because one
+target verifier cycle can commit multiple accepted draft tokens. Treat output
+work as audit context, not as an Instruments GPU-utilization chart.
 
-![Qwen3.6 MTP effective output-bandwidth diagnostic](../assets/perf-qwen36-mtp-bandwidth-diagnostic.svg)
+![Qwen3.6 27B MTP same-sidecar output-work diagnostic](../assets/perf-qwen36-mtp-bandwidth-diagnostic.svg)
+
+Read output-work percentages above 100% as MTP output leverage, not impossible
+memory bandwidth. For the 27B 4-bit rows, each target verifier pass reads about
+16.9 GB of weights, but a successful MTP pass can commit several accepted draft
+tokens. AX, for example, runs about 16.5 verifier passes/s and emits about
+3.8 output tokens/pass, so the physical target-cycle estimate is about
+279 GB/s while the output-scaled diagnostic is about 1065 GB/s. The latter is
+useful for explaining committed-token work per second, but it is not a claim
+that the GPU exceeded the 577 GB/s physical-memory reference.
+
+For 35B-A3B, decode tok/s is the winner metric. Active bytes and output work
+are table-only audit fields because a larger active-byte estimate can raise
+GB/s even when decode speed is lower.
 
 | Target | Engine | Active target bytes / output token | Decode | Effective output bandwidth | % of 577 GB/s reference | Byte estimate |
 | --- | --- | ---: | ---: | ---: | ---: | --- |
@@ -94,11 +108,12 @@ diagnostic, not as an Instruments GPU-utilization chart.
 | Qwen3.6 35B-A3B 4-bit | MTPLX | 2.94 GB | 137.9 tok/s | 406 GB/s | 70% | Peer package MoE active estimate |
 | Qwen3.6 35B-A3B 4-bit | lightning-mlx | 2.94 GB | 116.2 tok/s | 342 GB/s | 59% | Retained peer-package proxy |
 
-Readout: for 27B, all three engines use the same dense sidecar, so effective
-output bandwidth tracks decode throughput directly. For 35B-A3B, the rows are
+Readout: for 27B, all three engines use the same dense sidecar, so output work
+tracks decode throughput directly. For 35B-A3B, the rows are
 production-configuration package rows rather than identical-weight rows; AX has
-the fastest decode tok/s, while MTPLX shows higher effective output bandwidth
-because its optimized peer package has a larger active-byte estimate. The JSON
+the fastest decode tok/s, while MTPLX shows higher output work because its
+optimized peer package has a larger active-byte estimate. Output work is a
+diagnostic when active bytes differ, not the 35B-A3B speed ranking. The JSON
 artifact also keeps AX verifier-cycle bandwidth and MTPLX target-cycle estimates
 for audit, but those are not promoted as the cross-engine chart because
 lightning-mlx lacks retained raw cycle telemetry here.
@@ -136,7 +151,7 @@ accept rate need the limitations above to be interpreted correctly.
 - Combined summary:
   [`summary.md`](../../benchmarks/results/mtp-qwen36-matrix/2026-07-09-peer-comparison-apples-to-apples-refresh/summary.md),
   [`summary.json`](../../benchmarks/results/mtp-qwen36-matrix/2026-07-09-peer-comparison-apples-to-apples-refresh/summary.json)
-- Effective output-bandwidth diagnostic:
+- Decode and output-work diagnostic:
   [`bandwidth_diagnostic.json`](../../benchmarks/results/mtp-qwen36-matrix/2026-07-09-peer-comparison-apples-to-apples-refresh/bandwidth_diagnostic.json)
 - AX 2026-07-08 current-code rerun:
   [`summary.md`](../../benchmarks/results/mtp-qwen36-matrix/2026-07-08-qwen36-mtp-ax-current-code-refresh/summary.md)
