@@ -158,12 +158,9 @@ pub fn apply_layer_moe_decode(
                 Some(c) => Some(c),
                 None => None,
             };
-            if let Some(c) = closure_ref {
-                Some(try_apply_with_abort_safety(c, inputs))
-            } else {
-                // Known-incompatible: return None directly.
-                return None;
-            }
+            // Known-incompatible: `?` returns None directly.
+            let c = closure_ref?;
+            Some(try_apply_with_abort_safety(c, inputs))
         } else {
             None
         };
@@ -261,25 +258,21 @@ pub fn apply_layer_dense_ffn_decode(
                 Some(c) => Some(c),
                 None => None,
             };
-            if let Some(c) = closure_ref {
-                let result = try_apply_with_abort_safety(c, inputs);
-                let evict = if result.is_some() {
-                    let new_generation = generation.wrapping_add(1);
-                    *generation = new_generation;
-                    // Threshold reached — evict the key so the next call
-                    // recompiles.
-                    new_generation.is_multiple_of(threshold)
-                } else {
-                    // Failed apply — evict the key so the next call recompiles.
-                    true
-                };
-                Some((result, evict))
+            // Known-incompatible for this layer: `?` skips straight to the
+            // imperative fallback instead of re-attempting every decode step.
+            let c = closure_ref?;
+            let result = try_apply_with_abort_safety(c, inputs);
+            let evict = if result.is_some() {
+                let new_generation = generation.wrapping_add(1);
+                *generation = new_generation;
+                // Threshold reached — evict the key so the next call
+                // recompiles.
+                new_generation.is_multiple_of(threshold)
             } else {
-                // Known-incompatible for this layer: skip straight to the
-                // imperative fallback instead of re-attempting every decode
-                // step.
-                return None;
-            }
+                // Failed apply — evict the key so the next call recompiles.
+                true
+            };
+            Some((result, evict))
         } else {
             None
         };
@@ -391,11 +384,8 @@ pub fn apply_layer_gemma4_dual_path_decode(
                 Some(c) => Some(c),
                 None => None,
             };
-            if let Some(c) = closure_ref {
-                Some(try_apply_with_abort_safety(c, inputs))
-            } else {
-                return None;
-            }
+            let c = closure_ref?;
+            Some(try_apply_with_abort_safety(c, inputs))
         } else {
             None
         };
