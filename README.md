@@ -44,7 +44,7 @@ prompt tokens. Peer rows and model-specific boundaries are kept visible.
     - [Supported MTP packages](#supported-mtp-packages)
     - [Download and serve an MTP package](#download-and-serve-an-mtp-package)
     - [AX Engine 6-bit MTP package acceleration (2026-07-09)](#ax-engine-6-bit-mtp-package-acceleration-2026-07-09)
-    - [Qwen3.6 MTP peer decode comparison (2026-07-01)](#qwen36-mtp-peer-decode-comparison-2026-07-01)
+    - [Qwen3.6 MTP peer decode comparison (2026-07-09)](#qwen36-mtp-peer-decode-comparison-2026-07-09)
     - [Gemma 4 assistant-MTP (depth-2)](#gemma-4-assistant-mtp-depth-2)
   - [Direct Mode (Decode · Prefill · TTFT)](#direct-mode-decode--prefill--ttft)
     - [Gemma 4 12B](#gemma-4-12b)
@@ -403,7 +403,7 @@ All rows are pure MTP verification rows with zero n-gram accepted/proposed/
 submitted/hit-step telemetry. Publication summary:
 [`benchmarks/results/speculative/mtp-6bit/2026-07-09-mlx032-ax-mtp-refresh/summary.json`](benchmarks/results/speculative/mtp-6bit/2026-07-09-mlx032-ax-mtp-refresh/summary.json).
 
-#### Qwen3.6 MTP peer decode comparison (2026-07-08 AX refresh)
+#### Qwen3.6 MTP peer decode comparison (2026-07-09)
 
 README keeps only the decode-throughput view for the Qwen3.6 MTP peer
 comparison because decode is the closest comparable metric across AX Engine,
@@ -414,9 +414,9 @@ need separate interpretation:
 
 This is a stitched peer comparison, not one interleaved physical-session
 benchmark. AX Engine rows were refreshed on the current code; MTPLX rows were
-refreshed with MTPLX 2.0.1;
-lightning-mlx rows are retained from the prior peer artifacts. The 27B 4-bit
-rows load the same
+refreshed with MTPLX 2.0.1; lightning-mlx rows are retained from the prior
+peer artifacts and called out as retained rows in the stitched chart source.
+The 27B 4-bit rows load the same
 `ax-local/Qwen3.6-27B-MTP` sidecar across AX Engine, MTPLX, and lightning-mlx;
 the 35B-A3B peer rows remain production-configuration rows with the peer
 engines' Youssofal MTPLX-optimized packages. The AX 27B 4-bit row uses strict
@@ -459,10 +459,12 @@ cache each forward — so depth-2 drafting needs no cache surgery and stays
 correctness-preserving: a gate miss simply verifies fewer speculative positions,
 never a changed committed token.
 
-Current 12B benchmark (M5 Max, clean `6ff19f66` release build,
+Retained 12B benchmark (M5 Max, clean `6ff19f66` release build,
 `temperature=0.6`, `top_p=0.95`, `top_k=20`, chat-templated `flappy` /
 `long_code` / `python_modules_long` (`py_modules` in the table), n-gram
-stacking off, depth-2 assistant drafting):
+stacking off, depth-2 assistant drafting). This dedicated 12B chart is kept as
+a historical depth-2 assistant-MTP view; the newer six-model 6-bit MTP refresh
+above is the current README headline source for Gemma 4 12B:
 
 <p>
 <strong>Gemma 4 12B assistant-MTP decode</strong><br>
