@@ -2,12 +2,53 @@ use crate::routes::build_router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use serde_json::{Value, json};
+use std::sync::atomic::Ordering;
 
 use super::fixtures::{
     json_request_body, json_response, llama_cpp_server_state, normalize_measurement_fields,
     sample_http_request, sample_sdk_request, sdk_session_for_state,
     spawn_llama_cpp_completion_stream_server,
 };
+
+#[tokio::test]
+async fn submit_request_rejects_while_a_model_load_is_in_progress() {
+    // Regression test for the race this check closes: `load_model` only
+    // checks for in-flight requests once, before spawning a load that can
+    // take tens of seconds — it never re-checks or blocks new submissions
+    // during that window. Simulate being inside that window directly via
+    // `state.loading` rather than a real slow load.
+    let (llama_server_url, llama_cpp_server_handle) =
+        spawn_llama_cpp_completion_stream_server(0, vec![], |_payload| {});
+    let state = llama_cpp_server_state(llama_server_url);
+    state.loading.store(true, Ordering::Release);
+    let app = build_router(state);
+
+    let (status, body) = json_response(
+        &app,
+        Request::builder()
+            .method("POST")
+            .uri("/v1/requests")
+            .header("content-type", "application/json")
+            .body(Body::from(json_request_body(&sample_http_request(
+                &[1, 2, 3],
+                2,
+            ))))
+            .unwrap(),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(
+        body.get("error")
+            .and_then(|error| error.get("code"))
+            .and_then(|code| code.as_str()),
+        Some("model_loading")
+    );
+
+    llama_cpp_server_handle
+        .join()
+        .expect("llama.cpp server thread should finish");
+}
 
 #[tokio::test]
 async fn llama_cpp_stepwise_request_endpoints_share_sdk_lifecycle() {
