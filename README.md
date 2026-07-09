@@ -9,10 +9,10 @@ packaging, and benchmark contract.
 ## Why AX Engine
 
 AX Engine is built to win the full interactive local-model path, not just report
-one isolated kernel number. In the current public direct-mode matrix, AX Engine
-leads `mlx_lm` on prefill, TTFT, and direct decode for every listed model row
-with an `mlx_lm` reference, at 128, 512, and 2,048 prompt tokens. Peer rows and
-model-specific boundaries are kept visible.
+one isolated kernel number. In the current public direct-mode high-water
+matrix, AX Engine leads `mlx_lm` on prefill, runner-time TTFT, and direct decode
+for every listed model row with an `mlx_lm` reference, at 128, 512, and 2,048
+prompt tokens. Peer rows and model-specific boundaries are kept visible.
 
 - **First-class MTP:** one-command MTP package preparation through
   `ax-engine download-mtp`, including the Gemma 4 12B 4-bit quick-start target
@@ -367,34 +367,37 @@ target and Qwen 4-bit peer-comparison lanes above. The table shows how much MTP
 accelerates each repo-owned 6-bit package against the same package with MTP
 disabled; it is not a cross-engine leaderboard and should not be mixed with the
 Qwen peer comparison below. The 2026-07-09 refresh uses the `flappy`,
-`long_code`, and `python_modules_long` suites, sampled decode
+`long_code`, and `python_modules_long` suites (`py_modules` in the table),
+sampled decode
 (`temperature=0.6`, `top_p=0.95`, `top_k=20`), 1000 generated tokens, 5
 measured repetitions, 1 warmup, and 15 s cooldown. The run uses the local
 MLX 0.32.0 / mlx-lm 0.31.3 stack and the repo-owned AX MTP routes for Qwen
-fused sidecars, Gemma assistant drafters, and GLM built-in MTP.
+fused sidecars, Gemma assistant drafters, and GLM built-in MTP. `AX MTP runner
+TTFT` is server runner time for the prefill/first-token boundary; it is not
+end-to-end client-wall latency.
 
 <img src="docs/assets/perf-mtp-6bit-ax-acceleration.svg" alt="AX Engine 6-bit MTP package acceleration chart comparing direct decode and MTP decode for Qwen3.6, Gemma 4, and GLM-4.7 Flash">
 
-| Target | Suite | AX direct decode | AX MTP decode | AX speedup | AX MTP prefill | AX MTP TTFT | AX accept |
+| Target | Suite | AX direct decode | AX MTP decode | AX speedup | AX MTP prefill | AX MTP runner TTFT | AX accept |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | `qwen3.6-27b-6bit` | `flappy` | 22.8 tok/s | 65.7 tok/s | 2.89x | 242.2 tok/s | 1330 ms | 100.0% |
 | `qwen3.6-27b-6bit` | `long_code` | 22.8 tok/s | 65.3 tok/s | 2.86x | 252.7 tok/s | 2839 ms | 100.0% |
-| `qwen3.6-27b-6bit` | `python_modules_long` | 22.9 tok/s | 65.6 tok/s | 2.87x | 250.7 tok/s | 1396 ms | 100.0% |
+| `qwen3.6-27b-6bit` | `py_modules` | 22.9 tok/s | 65.6 tok/s | 2.87x | 250.7 tok/s | 1396 ms | 100.0% |
 | `qwen3.6-35b-a3b` | `flappy` | 96.6 tok/s | 148.0 tok/s | 1.53x | 1,294.4 tok/s | 249 ms | 100.0% |
 | `qwen3.6-35b-a3b` | `long_code` | 99.8 tok/s | 147.3 tok/s | 1.48x | 1,648.8 tok/s | 435 ms | 100.0% |
-| `qwen3.6-35b-a3b` | `python_modules_long` | 99.5 tok/s | 150.1 tok/s | 1.51x | 1,399.5 tok/s | 248 ms | 100.0% |
+| `qwen3.6-35b-a3b` | `py_modules` | 99.5 tok/s | 150.1 tok/s | 1.51x | 1,399.5 tok/s | 248 ms | 100.0% |
 | `gemma-4-12b` | `flappy` | 38.8 tok/s | 95.4 tok/s | 2.46x | 560.9 tok/s | 614 ms | 100.0% |
 | `gemma-4-12b` | `long_code` | 38.1 tok/s | 94.6 tok/s | 2.48x | 571.5 tok/s | 1413 ms | 100.0% |
-| `gemma-4-12b` | `python_modules_long` | 38.7 tok/s | 74.9 tok/s | 1.94x | 568.6 tok/s | 665 ms | 99.0% |
+| `gemma-4-12b` | `py_modules` | 38.7 tok/s | 74.9 tok/s | 1.94x | 568.6 tok/s | 665 ms | 99.0% |
 | `gemma-4-26b` | `flappy` | 89.3 tok/s | 148.2 tok/s | 1.66x | 1,376.5 tok/s | 253 ms | 100.0% |
 | `gemma-4-26b` | `long_code` | 89.2 tok/s | 144.5 tok/s | 1.62x | 1,605.7 tok/s | 507 ms | 100.0% |
-| `gemma-4-26b` | `python_modules_long` | 90.6 tok/s | 135.7 tok/s | 1.50x | 1,430.3 tok/s | 264 ms | 99.0% |
+| `gemma-4-26b` | `py_modules` | 90.6 tok/s | 135.7 tok/s | 1.50x | 1,430.3 tok/s | 264 ms | 99.0% |
 | `gemma-4-31b` | `flappy` | 17.7 tok/s | 45.6 tok/s | 2.57x | 211.6 tok/s | 1625 ms | 99.9% |
 | `gemma-4-31b` | `long_code` | 17.7 tok/s | 44.1 tok/s | 2.48x | 212.3 tok/s | 3802 ms | 100.0% |
-| `gemma-4-31b` | `python_modules_long` | 18.1 tok/s | 39.6 tok/s | 2.18x | 214.1 tok/s | 1766 ms | 98.7% |
+| `gemma-4-31b` | `py_modules` | 18.1 tok/s | 39.6 tok/s | 2.18x | 214.1 tok/s | 1766 ms | 98.7% |
 | `glm-4.7-flash` | `flappy` | 74.8 tok/s | 122.9 tok/s | 1.64x | 1,063.1 tok/s | 260 ms | 98.1% |
 | `glm-4.7-flash` | `long_code` | 74.5 tok/s | 100.9 tok/s | 1.35x | 1,268.6 tok/s | 538 ms | 98.6% |
-| `glm-4.7-flash` | `python_modules_long` | 76.4 tok/s | 91.2 tok/s | 1.19x | 1,134.4 tok/s | 300 ms | 94.3% |
+| `glm-4.7-flash` | `py_modules` | 76.4 tok/s | 91.2 tok/s | 1.19x | 1,134.4 tok/s | 300 ms | 94.3% |
 
 All rows are pure MTP verification rows with zero n-gram accepted/proposed/
 submitted/hit-step telemetry. Publication summary:
@@ -458,8 +461,8 @@ never a changed committed token.
 
 Current 12B benchmark (M5 Max, clean `6ff19f66` release build,
 `temperature=0.6`, `top_p=0.95`, `top_k=20`, chat-templated `flappy` /
-`long_code` / `python_modules_long`, n-gram stacking off, depth-2 assistant
-drafting):
+`long_code` / `python_modules_long` (`py_modules` in the table), n-gram
+stacking off, depth-2 assistant drafting):
 
 <p>
 <strong>Gemma 4 12B assistant-MTP decode</strong><br>
@@ -470,7 +473,7 @@ drafting):
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | `flappy` | 98.4% | 58.9 tok/s | 97.9 tok/s | 1.66x | 1,860.5 tok/s | 194 ms |
 | `long_code` | 99.1% | 58.1 tok/s | 96.3 tok/s | 1.66x | 2,023.3 tok/s | 394 ms |
-| `python_modules_long` | 97.0% | 58.9 tok/s | 90.0 tok/s | 1.53x | 1,817.7 tok/s | 201 ms |
+| `py_modules` | 97.0% | 58.9 tok/s | 90.0 tok/s | 1.53x | 1,817.7 tok/s | 201 ms |
 
 All three 12B suites hold assistant accept **>=97%** and depth-2 MTP is faster
 than same-artifact direct decode by **1.53-1.66x**. The aggregate comparison in
@@ -697,9 +700,40 @@ and the bandwidth diagnostic live in
 
 #### Gemma 4 and Qwen 3.6
 
-The family comparison below covers **direct (non-speculative) decode** across llama.cpp Metal, mlx_lm, and ax engine, covering Gemma 4 and Qwen 3.6 at 128/512/2048 prompt tokens. `ax direct baseline` disables n-gram acceleration, MTP, and assistant drafting to measure the repo-owned direct decode path. Bench prompts are `mlx_lm.benchmark` seed-0 random tokens, which keeps prompt-hash parity across MLX rows.
+The family comparison below is a **high-water composite** for direct
+(non-speculative) decode across llama.cpp Metal, mlx_lm, and ax engine, covering
+Gemma 4 and Qwen 3.6 at 128/512/2048 prompt tokens. It combines the best
+validated cells from the artifact sources listed in the provenance block below;
+it is not a single same-session rerun of every row. `ax direct baseline`
+disables n-gram acceleration, MTP, and assistant drafting to measure the
+repo-owned direct decode path. Bench prompts are `mlx_lm.benchmark` seed-0
+random tokens, which keeps prompt-hash parity across MLX rows.
 
-The prefill and TTFT advantage is the practical direct-mode story. The refreshed Gemma 4 and Qwen 3.6 4-bit high-water rows come from `benchmarks/results/inference/mlx-inference/2026-07-01-ax-direct-4bit-refresh-clean-r2/`; the 2026-07-07 Qwen 3.6 overlay in `benchmarks/results/inference/mlx-inference/2026-07-07-ax-direct-only-record-refresh-qwen-publishable/` updates the published 6-bit cells where it raises the existing high-water mark and records clean build commit `f73f1ac2`. The 2026-07-07 Gemma 4 26B A4B 4-bit AX-only overlay in `benchmarks/results/inference/mlx-inference/2026-07-07-gemma4-26b-4bit-ax-direct-refresh-gen128/` updates only decode cells that raise the existing high-water mark; its prefill and TTFT medians are retained as artifact evidence but are not published over faster earlier cells. AX leads `mlx_lm` on prefill, TTFT, and decode for every published Qwen 3.6 direct cell and every refreshed Gemma 4 4-bit row. The Gemma 4 26B A4B and 31B 6-bit rows were re-measured on 2026-07-02 as same-session paired `mlx_lm` + AX runs (`benchmarks/results/inference/mlx-inference/2026-07-02-gemma4-6bit-direct-refresh/`, clean build `4c0a8358`); AX now leads those rows on prefill, TTFT, and decode as well — the earlier 6-bit decode deficit was a stale measurement from the older `01976818` build, predating the decode-path improvements the 4-bit refresh already captured. That means the repo-owned MLX route is especially valuable for interactive requests where prompt ingestion dominates perceived latency: AX keeps prompt prefill, first-token timing, model-specific graph paths, and route metadata in one measured runtime path. These are cold-prefix rows, not prompt-cache, continuous-batching, or speculative-decoding claims.
+The prefill and runner-time TTFT advantage is the practical direct-mode story.
+The refreshed Gemma 4 and Qwen 3.6 4-bit high-water rows come from
+`benchmarks/results/inference/mlx-inference/2026-07-01-ax-direct-4bit-refresh-clean-r2/`;
+the 2026-07-07 Qwen 3.6 overlay in
+`benchmarks/results/inference/mlx-inference/2026-07-07-ax-direct-only-record-refresh-qwen-publishable/`
+updates the published 6-bit cells where it raises the existing high-water mark
+and records clean build commit `f73f1ac2`. The 2026-07-07 Gemma 4 26B A4B
+4-bit AX-only overlay in
+`benchmarks/results/inference/mlx-inference/2026-07-07-gemma4-26b-4bit-ax-direct-refresh-gen128/`
+updates only decode cells that raise the existing high-water mark; its prefill
+and TTFT medians are retained as artifact evidence but are not published over
+faster earlier cells. AX leads `mlx_lm` on prefill, runner-time TTFT, and decode
+for every published Qwen 3.6 direct cell and every refreshed Gemma 4 4-bit row.
+The Gemma 4 26B A4B and 31B 6-bit rows were re-measured on 2026-07-02 as
+same-session paired `mlx_lm` + AX runs
+(`benchmarks/results/inference/mlx-inference/2026-07-02-gemma4-6bit-direct-refresh/`,
+clean build `4c0a8358`); AX now leads those rows on prefill, runner-time TTFT,
+and decode as well — the earlier 6-bit decode deficit was a stale measurement
+from the older `01976818` build, predating the decode-path improvements the
+4-bit refresh already captured. That means the repo-owned MLX route is
+especially valuable for interactive requests where prompt ingestion dominates
+perceived latency: AX keeps prompt prefill, first-token timing, model-specific
+graph paths, and route metadata in one measured runtime path. These are
+cold-prefix rows, not prompt-cache, continuous-batching, or speculative-decoding
+claims.
 
 <p>
 <strong>Gemma 4 decode rate</strong><br>
@@ -740,7 +774,13 @@ The `mlx_lm` reference rows for the Gemma 4 rows shown below come from `benchmar
 
 Gemma 4 E4B 6-bit keeps the `mlx_lm` cells blank because `mlx_lm.benchmark` cannot load `mlx-community/gemma-4-e4b-it-6bit` with `mlx-lm` 0.31.3. The checkpoint config declares 42 language layers and `num_kv_shared_layers=18`, so the upstream Gemma4 text model builds K/V projections only for layers 0..23 and treats layers 24..41 as shared-KV layers. The MLX snapshot still contains 126 per-layer K/V tensors for layers 24..41 (`k_norm`, `k_proj`, and `v_proj` quantized weights), causing strict weight loading to fail with `Received 126 parameters not in model`. Source: `benchmarks/results/inference/mlx-inference/2026-06-26-gemma4-6bit-mlx-lm-only/summary.md`. The same strict-load failure now applies to `mlx-community/gemma-4-e2b-it-6bit` on `mlx-lm` 0.31.3 (140 extra tensors for shared-KV layers 15..34), which is why the 2026-07-05 E-series 6-bit refresh is AX-only and the E2B `mlx_lm` cells remain the retained 2026-05-26 measurements.
 
-Setup: generation=128, 5 measured repetitions, 15-second cooldown, AX prefix cache disabled for cold prefill and TTFT measurement, production-build binaries, matching prompt SHA checks. Long-greedy AX prefill rows are runner-time measurements of the cache-state prefix plus final prompt-token boundary — not full-logits prompt scoring throughput. Percentages are versus `mlx_lm`.
+Setup: generation=128, 5 measured repetitions, 15-second cooldown, AX prefix
+cache disabled for cold prefill and TTFT measurement, production-build binaries,
+matching prompt SHA checks. AX prefill and TTFT cells are runner-time
+measurements for the model work boundary, not end-to-end client-wall latency.
+Long-greedy AX prefill rows are runner-time measurements of the cache-state
+prefix plus final prompt-token boundary — not full-logits prompt scoring
+throughput. Percentages are versus `mlx_lm`.
 
 The 2K `llama.cpp Metal*` prefill rows are long-context, GGUF-runtime-reference rows, produced with llama.cpp b9910 (Metal offload, `-b/-ub` matched to prompt length up to 2048, flash attention enabled). This is our benchmark boundary, not an upstream llama.cpp official bug statement.
 </details>
