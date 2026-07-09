@@ -56,10 +56,10 @@ ENGINE_COLORS = {
     "lightning_mlx": ("#2563eb", "#1d4ed8"),
 }
 
-WIDTH = 1280
-LEFT = 44
-PLOT_LEFT = 260
-PLOT_RIGHT = 720
+WIDTH = 940
+LEFT = 36
+PLOT_LEFT = 210
+PLOT_RIGHT = 680
 
 
 def metric_median(cell: dict[str, Any], key: str) -> float:
@@ -302,8 +302,8 @@ def render_27b_output_svg(diagnostic: dict[str, Any]) -> str:
     bar_h = 22
     row_gap = 12
     footer_y = 308
-    meta_output_x = 760
-    meta_decode_x = 902
+    meta_output_x = 720
+    meta_decode_x = 840
 
     parts = [
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{WIDTH}" height="{height}" viewBox="0 0 {WIDTH} {height}" role="img" aria-labelledby="title desc">',

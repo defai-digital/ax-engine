@@ -207,15 +207,10 @@ pub(crate) fn geglu(gate: &MlxArray, x: &MlxArray) -> MlxArray {
 }
 
 pub(crate) fn per_layer_input_gate(gate: &MlxArray, per_layer_input: &MlxArray) -> MlxArray {
-    if let Some(out) = gelu_approx_mul_metal(
-        gate,
-        per_layer_input,
-        fastpath::gemma4_per_layer_gelu_mul_metal_enabled(),
-    ) {
-        return out;
-    }
-    // mlx-lm keeps this Gemma4DecoderLayer per-layer input gate imperative;
-    // the direct shim preserves the same math with one stable FFI call.
+    // Keep Gemma4 per-layer input gating on the exact MLX op chain. The
+    // Metal GELU approximation is close in isolation, but its small bf16
+    // activation error is applied at every layer and can flip first-token
+    // argmax on E4B pattern prompts.
     gelu_approx_mul(gate, per_layer_input, None)
 }
 
@@ -275,13 +270,6 @@ pub(crate) fn per_layer_input_gate_project(
     per_layer_input: &MlxArray,
     proj_w: &QuantizedWeight,
 ) -> MlxArray {
-    if let Some(gated) = gelu_approx_mul_metal(
-        gate,
-        per_layer_input,
-        fastpath::gemma4_per_layer_gelu_mul_metal_enabled(),
-    ) {
-        return qw(&gated, proj_w);
-    }
     if let Some(scales) = proj_w.scales.as_ref() {
         return gelu_approx_mul_quantized_matmul(
             gate,

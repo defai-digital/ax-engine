@@ -304,22 +304,6 @@ env_flag!(
 );
 
 env_flag_default_on!(
-    /// `AX_MLX_GEMMA4_PER_LAYER_GELU_MUL_METAL` — fuse Gemma4 per-layer input
-    /// `gelu_approx(gate) * per_layer_input` into one custom MLX Metal
-    /// elementwise node.
-    ///
-    /// **Default: ON** (kill-switch via
-    /// `AX_MLX_GEMMA4_PER_LAYER_GELU_MUL_METAL=0`).
-    ///
-    /// Gemma 4 E2B/4B apply this gate in every decoder layer. The unfused path
-    /// expands approximate GELU into a chain of scalar elementwise MLX ops before
-    /// the per-layer projection. Unsupported shapes and dtypes fall back to the
-    /// stable direct MLX shim.
-    gemma4_per_layer_gelu_mul_metal_enabled,
-    "AX_MLX_GEMMA4_PER_LAYER_GELU_MUL_METAL"
-);
-
-env_flag_default_on!(
     /// `AX_MLX_LAYER_SCALAR_FUSED_ADD` — fuse Gemma-family residual add plus
     /// scalar layer-scale multiply into one custom MLX Metal elementwise node.
     ///

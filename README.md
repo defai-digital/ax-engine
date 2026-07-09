@@ -445,7 +445,7 @@ sidecar, active bytes match across engines, so output work tracks the decode
 ranking and is safe to show as the bar metric. The active-byte value is the
 same for every row, so the chart omits that column.
 
-<img src="docs/assets/perf-qwen36-mtp-bandwidth-diagnostic.svg" alt="Qwen3.6 27B MTP effective output work same-sidecar chart for AX Engine, MTPLX, and lightning-mlx">
+<img width="100%" src="docs/assets/perf-qwen36-mtp-bandwidth-diagnostic.svg" alt="Qwen3.6 27B MTP effective output work same-sidecar chart for AX Engine, MTPLX, and lightning-mlx">
 
 Read output-work percentages above 100% as MTP output leverage, not impossible
 memory bandwidth. For the 27B 4-bit rows, each target verifier pass reads about

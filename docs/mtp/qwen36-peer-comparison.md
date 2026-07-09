@@ -85,7 +85,7 @@ reduction probe. Qwen MTP output-work percentages can exceed it because one
 target verifier cycle can commit multiple accepted draft tokens. Treat output
 work as audit context, not as an Instruments GPU-utilization chart.
 
-![Qwen3.6 27B MTP effective output work same-sidecar chart](../assets/perf-qwen36-mtp-bandwidth-diagnostic.svg)
+<img width="100%" src="../assets/perf-qwen36-mtp-bandwidth-diagnostic.svg" alt="Qwen3.6 27B MTP effective output work same-sidecar chart">
 
 Read output-work percentages above 100% as MTP output leverage, not impossible
 memory bandwidth. For the 27B 4-bit rows, each target verifier pass reads about
