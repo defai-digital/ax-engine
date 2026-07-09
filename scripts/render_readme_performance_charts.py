@@ -1096,7 +1096,7 @@ def render_mtp_6bit_ax_acceleration_chart(
 ) -> str:
     run_date_match = re.match(r"(\d{4}-\d{2}-\d{2})", summary_path.parent.name)
     run_date = run_date_match.group(1) if run_date_match else summary_path.parent.name
-    chart_title = f"AX Engine v6.8.2 MTP decode ({run_date}): MTP off vs MTP on"
+    chart_title = f"AX MTP decode ({run_date}): MTP off vs MTP on"
     axis_max = mtp_6bit_axis_max(rows)
     tick_step = axis_max / 4.0
     model_order = tuple(dict.fromkeys(str(row["model"]) for row in rows))
