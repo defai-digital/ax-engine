@@ -1,10 +1,4 @@
 {
-  "schema": "ax.qwen36_mtp_peer_comparison_stitched.v1",
-  "created_at": "2026-07-08",
-  "source": {
-    "ax_engine": "benchmarks/results/mtp-qwen36-matrix/2026-07-08-qwen36-mtp-ax-current-code-refresh/summary.json",
-    "peer_rows": "retained from README/doc peer records dated 2026-07-01 and 2026-07-02; third-party engines were not rerun in this refresh"
-  },
   "contract": {
     "ax_mtp_optimistic": false,
     "benchmark_contract": "apples-to-apples",
@@ -47,6 +41,12 @@
           "mtp_precision": "bf16 (extracted with RMSNorm +1.0 delta correction)",
           "packaging": "ax-local/Qwen3.6-27B-MTP sidecar",
           "source": "Qwen/Qwen3.6-27B (official BF16 mtp.* tensors)"
+        },
+        "mtplx": {
+          "draft_lm_head": "bf16 (matching base)",
+          "mtp_precision": "bf16 (extracted with RMSNorm +1.0 delta correction)",
+          "packaging": "ax-local/Qwen3.6-27B-MTP sidecar",
+          "source": "Qwen/Qwen3.6-27B (official BF16 mtp.* tensors)"
         }
       },
       "27b-6bit": {
@@ -63,6 +63,12 @@
           "mtp_precision": "bf16 (extracted with RMSNorm +1.0 delta correction)",
           "packaging": "ax-local/Qwen3.6-35B-MTP sidecar",
           "source": "Qwen/Qwen3.6-35B-A3B (official BF16 mtp.* tensors)"
+        },
+        "mtplx": {
+          "draft_lm_head": "3-bit affine, group_size=64",
+          "mtp_precision": "INT4 prequantized sidecar (mtp/weights.safetensors)",
+          "packaging": "Youssofal/Qwen3.6-35B-A3B-MTPLX-Optimized-Speed",
+          "source": "Qwen/Qwen3.6-35B-A3B (re-quantized by Youssofal)"
         }
       },
       "35b-a3b-6bit": {
@@ -71,6 +77,12 @@
           "mtp_precision": "bf16 (extracted with RMSNorm +1.0 delta correction)",
           "packaging": "ax-local/Qwen3.6-35B-MTP sidecar",
           "source": "Qwen/Qwen3.6-35B-A3B (official BF16 mtp.* tensors)"
+        },
+        "mtplx": {
+          "draft_lm_head": "3-bit affine, group_size=64",
+          "mtp_precision": "INT4 prequantized sidecar (mtp/weights.safetensors)",
+          "packaging": "Youssofal/Qwen3.6-35B-A3B-MTPLX-Optimized-Balance",
+          "source": "Qwen/Qwen3.6-35B-A3B (re-quantized by Youssofal)"
         }
       }
     },
@@ -89,6 +101,7 @@
     ],
     "warmup_repetitions": 2
   },
+  "created_at": "2026-07-08",
   "rows": [
     {
       "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-07-08-qwen36-mtp-ax-current-code-refresh/27b-4bit/flappy/ax_engine.json",
@@ -275,11 +288,11 @@
         "packaging": "ax-local/Qwen3.6-27B-MTP sidecar",
         "source": "Qwen/Qwen3.6-27B (official BF16 mtp.* tensors)"
       },
+      "note": "AX Engine current-code refresh, 2026-07-08",
       "reason": null,
       "status": "supported",
       "suite": "flappy",
-      "target": "27b-4bit",
-      "note": "AX Engine current-code refresh, 2026-07-08"
+      "target": "27b-4bit"
     },
     {
       "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-07-08-qwen36-mtp-ax-current-code-refresh/27b-6bit/flappy/ax_engine.json",
@@ -466,11 +479,33 @@
         "packaging": "ax-local/Qwen3.6-27B-6bit-MTP sidecar",
         "source": "Qwen/Qwen3.6-27B (official BF16 mtp.* tensors)"
       },
+      "note": "AX Engine current-code refresh, 2026-07-08",
       "reason": null,
       "status": "supported",
       "suite": "flappy",
-      "target": "27b-6bit",
-      "note": "AX Engine current-code refresh, 2026-07-08"
+      "target": "27b-6bit"
+    },
+    {
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-07-08-mtplx-only-refresh/27b-6bit/flappy/mtplx.json",
+      "bits": 6,
+      "engine": "mtplx",
+      "metric_contract": {
+        "accept_rate": "measured",
+        "decode_tok_s": "measured",
+        "prefill_tok_s": "derived_from_prompt_eval_time_s",
+        "ttft_ms": "prompt_eval_time_s",
+        "ttft_scope": "server_prompt_eval"
+      },
+      "metrics": {
+        "status": "unsupported"
+      },
+      "model": "27b",
+      "model_label": "Qwen3.6 27B 6-bit",
+      "mtp_head": null,
+      "reason": "mtplx catalog has no official Qwen3.6 27B 6-bit MTP artifact.",
+      "status": "unsupported",
+      "suite": "flappy",
+      "target": "27b-6bit"
     },
     {
       "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-07-08-qwen36-mtp-ax-current-code-refresh/35b-a3b-4bit/flappy/ax_engine.json",
@@ -657,11 +692,11 @@
         "packaging": "ax-local/Qwen3.6-35B-MTP sidecar",
         "source": "Qwen/Qwen3.6-35B-A3B (official BF16 mtp.* tensors)"
       },
+      "note": "AX Engine current-code refresh, 2026-07-08",
       "reason": null,
       "status": "supported",
       "suite": "flappy",
-      "target": "35b-a3b-4bit",
-      "note": "AX Engine current-code refresh, 2026-07-08"
+      "target": "35b-a3b-4bit"
     },
     {
       "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-07-08-qwen36-mtp-ax-current-code-refresh/35b-a3b-6bit/flappy/ax_engine.json",
@@ -848,143 +883,191 @@
         "packaging": "ax-local/Qwen3.6-35B-MTP sidecar",
         "source": "Qwen/Qwen3.6-35B-A3B (official BF16 mtp.* tensors)"
       },
+      "note": "AX Engine current-code refresh, 2026-07-08",
       "reason": null,
       "status": "supported",
       "suite": "flappy",
-      "target": "35b-a3b-6bit",
-      "note": "AX Engine current-code refresh, 2026-07-08"
+      "target": "35b-a3b-6bit"
     },
     {
-      "target": "27b-4bit",
-      "model": "27b",
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-07-08-mtplx-only-refresh/27b-4bit/flappy/mtplx.json",
       "bits": 4,
-      "model_label": "Qwen3.6 27B 4-bit",
-      "suite": "flappy",
       "engine": "mtplx",
-      "status": "supported",
-      "reason": null,
-      "artifact": null,
-      "note": "ok; 2026-07-01 same AX sidecar",
+      "metric_contract": {
+        "accept_rate": "measured",
+        "decode_tok_s": "measured",
+        "prefill_tok_s": "derived_from_prompt_eval_time_s",
+        "ttft_ms": "prompt_eval_time_s",
+        "ttft_scope": "server_prompt_eval"
+      },
       "metrics": {
-        "status": "ok",
-        "decode_tok_s": 58.5,
-        "prefill_tok_s": 653.4,
-        "ttft_ms": 485.0,
-        "accept_rate": 0.984,
+        "accept_rate": 0.9879748926329699,
+        "accept_source": "mtplx_draft_stats",
         "case_count": 4,
-        "ttft_scope": "runner_internal",
-        "accept_source": "retained_peer_record"
-      }
+        "decode_tok_s": 58.198293675118364,
+        "prefill_source": "prompt_tokens_over_prompt_eval_time_s",
+        "prefill_tok_s": 681.31714220804,
+        "status": "ok",
+        "ttft_ms": 474.5822069962742,
+        "ttft_scope": "server_prompt_eval",
+        "ttft_source": "prompt_eval_time_s"
+      },
+      "model": "27b",
+      "model_label": "Qwen3.6 27B 4-bit",
+      "mtp_head": {
+        "draft_lm_head": "bf16 (matching base)",
+        "mtp_precision": "bf16 (extracted with RMSNorm +1.0 delta correction)",
+        "packaging": "ax-local/Qwen3.6-27B-MTP sidecar",
+        "source": "Qwen/Qwen3.6-27B (official BF16 mtp.* tensors)"
+      },
+      "reason": null,
+      "status": "supported",
+      "suite": "flappy",
+      "target": "27b-4bit"
     },
     {
-      "target": "27b-4bit",
-      "model": "27b",
-      "bits": 4,
-      "model_label": "Qwen3.6 27B 4-bit",
-      "suite": "flappy",
-      "engine": "lightning_mlx",
-      "status": "supported",
-      "reason": null,
       "artifact": null,
-      "note": "ok; 2026-07-01 same AX sidecar",
+      "bits": 4,
+      "engine": "lightning_mlx",
       "metrics": {
-        "status": "ok",
+        "accept_rate": 0.966,
+        "accept_source": "retained_peer_record",
+        "case_count": 4,
         "decode_tok_s": 55.7,
         "prefill_tok_s": 414.9,
+        "status": "ok",
         "ttft_ms": 801.0,
-        "accept_rate": 0.966,
-        "case_count": 4,
-        "ttft_scope": "client_http_wall",
-        "accept_source": "retained_peer_record"
-      }
+        "ttft_scope": "client_http_wall"
+      },
+      "model": "27b",
+      "model_label": "Qwen3.6 27B 4-bit",
+      "note": "ok; 2026-07-01 same AX sidecar",
+      "reason": null,
+      "status": "supported",
+      "suite": "flappy",
+      "target": "27b-4bit"
     },
     {
-      "target": "35b-a3b-4bit",
-      "model": "35b-a3b",
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-07-08-mtplx-only-refresh/35b-a3b-4bit/flappy/mtplx.json",
       "bits": 4,
-      "model_label": "Qwen3.6 35B-A3B 4-bit",
-      "suite": "flappy",
       "engine": "mtplx",
-      "status": "supported",
-      "reason": null,
-      "artifact": null,
-      "note": "ok; 2026-07-01 production config",
+      "metric_contract": {
+        "accept_rate": "measured",
+        "decode_tok_s": "measured",
+        "prefill_tok_s": "derived_from_prompt_eval_time_s",
+        "ttft_ms": "prompt_eval_time_s",
+        "ttft_scope": "server_prompt_eval"
+      },
       "metrics": {
-        "status": "ok",
-        "decode_tok_s": 138.1,
-        "prefill_tok_s": 1637.0,
-        "ttft_ms": 193.0,
-        "accept_rate": 0.957,
+        "accept_rate": 0.9473889321901793,
+        "accept_source": "mtplx_draft_stats",
         "case_count": 4,
-        "ttft_scope": "runner_internal",
-        "accept_source": "retained_peer_record"
-      }
+        "decode_tok_s": 137.27898190233344,
+        "prefill_source": "prompt_tokens_over_prompt_eval_time_s",
+        "prefill_tok_s": 1662.8362521897811,
+        "status": "ok",
+        "ttft_ms": 198.17912500002421,
+        "ttft_scope": "server_prompt_eval",
+        "ttft_source": "prompt_eval_time_s"
+      },
+      "model": "35b-a3b",
+      "model_label": "Qwen3.6 35B-A3B 4-bit",
+      "mtp_head": {
+        "draft_lm_head": "3-bit affine, group_size=64",
+        "mtp_precision": "INT4 prequantized sidecar (mtp/weights.safetensors)",
+        "packaging": "Youssofal/Qwen3.6-35B-A3B-MTPLX-Optimized-Speed",
+        "source": "Qwen/Qwen3.6-35B-A3B (re-quantized by Youssofal)"
+      },
+      "reason": null,
+      "status": "supported",
+      "suite": "flappy",
+      "target": "35b-a3b-4bit"
     },
     {
-      "target": "35b-a3b-4bit",
-      "model": "35b-a3b",
-      "bits": 4,
-      "model_label": "Qwen3.6 35B-A3B 4-bit",
-      "suite": "flappy",
-      "engine": "lightning_mlx",
-      "status": "supported",
-      "reason": null,
       "artifact": null,
-      "note": "ok; 2026-07-01 production config",
+      "bits": 4,
+      "engine": "lightning_mlx",
       "metrics": {
-        "status": "ok",
+        "accept_rate": 1.0,
+        "accept_source": "retained_peer_record",
+        "case_count": 4,
         "decode_tok_s": 116.2,
         "prefill_tok_s": 1466.5,
+        "status": "ok",
         "ttft_ms": 215.0,
-        "accept_rate": 1.0,
-        "case_count": 4,
-        "ttft_scope": "client_http_wall",
-        "accept_source": "retained_peer_record"
-      }
+        "ttft_scope": "client_http_wall"
+      },
+      "model": "35b-a3b",
+      "model_label": "Qwen3.6 35B-A3B 4-bit",
+      "note": "ok; 2026-07-01 production config",
+      "reason": null,
+      "status": "supported",
+      "suite": "flappy",
+      "target": "35b-a3b-4bit"
     },
     {
-      "target": "35b-a3b-6bit",
-      "model": "35b-a3b",
+      "artifact": "benchmarks/results/mtp-qwen36-matrix/2026-07-08-mtplx-only-refresh/35b-a3b-6bit/flappy/mtplx.json",
       "bits": 6,
-      "model_label": "Qwen3.6 35B-A3B 6-bit",
-      "suite": "flappy",
       "engine": "mtplx",
-      "status": "supported",
-      "reason": null,
-      "artifact": null,
-      "note": "ok; 2026-07-01 production config",
+      "metric_contract": {
+        "accept_rate": "measured",
+        "decode_tok_s": "measured",
+        "prefill_tok_s": "derived_from_prompt_eval_time_s",
+        "ttft_ms": "prompt_eval_time_s",
+        "ttft_scope": "server_prompt_eval"
+      },
       "metrics": {
-        "status": "ok",
-        "decode_tok_s": 117.6,
-        "prefill_tok_s": 1383.9,
-        "ttft_ms": 235.0,
-        "accept_rate": 0.967,
+        "accept_rate": 0.9560622370094921,
+        "accept_source": "mtplx_draft_stats",
         "case_count": 4,
-        "ttft_scope": "runner_internal",
-        "accept_source": "retained_peer_record"
-      }
+        "decode_tok_s": 118.79507486427181,
+        "prefill_source": "prompt_tokens_over_prompt_eval_time_s",
+        "prefill_tok_s": 1453.6231661427723,
+        "status": "ok",
+        "ttft_ms": 218.07441649434622,
+        "ttft_scope": "server_prompt_eval",
+        "ttft_source": "prompt_eval_time_s"
+      },
+      "model": "35b-a3b",
+      "model_label": "Qwen3.6 35B-A3B 6-bit",
+      "mtp_head": {
+        "draft_lm_head": "3-bit affine, group_size=64",
+        "mtp_precision": "INT4 prequantized sidecar (mtp/weights.safetensors)",
+        "packaging": "Youssofal/Qwen3.6-35B-A3B-MTPLX-Optimized-Balance",
+        "source": "Qwen/Qwen3.6-35B-A3B (re-quantized by Youssofal)"
+      },
+      "reason": null,
+      "status": "supported",
+      "suite": "flappy",
+      "target": "35b-a3b-6bit"
     },
     {
-      "target": "35b-a3b-6bit",
-      "model": "35b-a3b",
-      "bits": 6,
-      "model_label": "Qwen3.6 35B-A3B 6-bit",
-      "suite": "flappy",
-      "engine": "lightning_mlx",
-      "status": "supported",
-      "reason": null,
       "artifact": null,
-      "note": "ok; 2026-07-01 production config",
+      "bits": 6,
+      "engine": "lightning_mlx",
       "metrics": {
-        "status": "ok",
+        "accept_rate": 1.0,
+        "accept_source": "retained_peer_record",
+        "case_count": 4,
         "decode_tok_s": 96.3,
         "prefill_tok_s": 1215.8,
+        "status": "ok",
         "ttft_ms": 272.0,
-        "accept_rate": 1.0,
-        "case_count": 4,
-        "ttft_scope": "client_http_wall",
-        "accept_source": "retained_peer_record"
-      }
+        "ttft_scope": "client_http_wall"
+      },
+      "model": "35b-a3b",
+      "model_label": "Qwen3.6 35B-A3B 6-bit",
+      "note": "ok; 2026-07-01 production config",
+      "reason": null,
+      "status": "supported",
+      "suite": "flappy",
+      "target": "35b-a3b-6bit"
     }
-  ]
+  ],
+  "schema": "ax.qwen36_mtp_peer_comparison_stitched.v1",
+  "source": {
+    "ax_engine": "benchmarks/results/mtp-qwen36-matrix/2026-07-08-qwen36-mtp-ax-current-code-refresh/summary.json",
+    "mtplx": "benchmarks/results/mtp-qwen36-matrix/2026-07-08-mtplx-only-refresh/summary.json",
+    "peer_rows": "MTPLX rerun on 2026-07-08; lightning-mlx rows retained from previous README/docs evidence"
+  }
 }

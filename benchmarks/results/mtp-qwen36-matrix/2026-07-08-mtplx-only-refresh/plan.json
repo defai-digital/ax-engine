@@ -1,0 +1,308 @@
+{
+  "contract": {
+    "ax_mtp_optimistic": false,
+    "benchmark_contract": "apples-to-apples",
+    "bits": [
+      4,
+      6
+    ],
+    "cooldown_s": 15.0,
+    "degeneracy_gate": {
+      "coverage_threshold": 0.5,
+      "max_cycle_len": 8,
+      "periodic_coverage_threshold": 0.45
+    },
+    "engines": [
+      "mtplx"
+    ],
+    "forbidden_modes": [
+      "direct",
+      "mtp-ngram",
+      "ngram"
+    ],
+    "inter_case_cooldown_s": 10.0,
+    "lightning_disable_prefix_cache": true,
+    "lightning_mtp_draft_temperature": 0.5,
+    "lightning_mtp_optimistic": false,
+    "lightning_prefix_cache_policy": "disabled_for_cold_prefill",
+    "max_tokens": 1000,
+    "metrics": [
+      "decode_tok_s",
+      "prefill_tok_s",
+      "ttft_ms",
+      "accept_rate"
+    ],
+    "mode": "mtp",
+    "models": [
+      "27b",
+      "35b-a3b"
+    ],
+    "mtp_head_provenance": {
+      "27b-4bit": {
+        "mtplx": {
+          "draft_lm_head": "bf16 (matching base)",
+          "mtp_precision": "bf16 (extracted with RMSNorm +1.0 delta correction)",
+          "packaging": "ax-local/Qwen3.6-27B-MTP sidecar",
+          "source": "Qwen/Qwen3.6-27B (official BF16 mtp.* tensors)"
+        }
+      },
+      "35b-a3b-4bit": {
+        "mtplx": {
+          "draft_lm_head": "3-bit affine, group_size=64",
+          "mtp_precision": "INT4 prequantized sidecar (mtp/weights.safetensors)",
+          "packaging": "Youssofal/Qwen3.6-35B-A3B-MTPLX-Optimized-Speed",
+          "source": "Qwen/Qwen3.6-35B-A3B (re-quantized by Youssofal)"
+        }
+      },
+      "35b-a3b-6bit": {
+        "mtplx": {
+          "draft_lm_head": "3-bit affine, group_size=64",
+          "mtp_precision": "INT4 prequantized sidecar (mtp/weights.safetensors)",
+          "packaging": "Youssofal/Qwen3.6-35B-A3B-MTPLX-Optimized-Balance",
+          "source": "Qwen/Qwen3.6-35B-A3B (re-quantized by Youssofal)"
+        }
+      }
+    },
+    "mtplx_profile": "stable",
+    "prefill_step_size": null,
+    "prompt_limit": null,
+    "repetitions": 5,
+    "sampling": {
+      "temperature": 0.6,
+      "top_k": 20,
+      "top_p": 0.95
+    },
+    "seed": null,
+    "suites": [
+      "flappy"
+    ],
+    "warmup_repetitions": 2
+  },
+  "created_at": "2026-07-08",
+  "lanes": [
+    {
+      "command": [
+        "/opt/homebrew/var/mtplx/venv-1.0.4/bin/python",
+        "/Users/akiralam/code/ax-engine/scripts/bench_mtplx_prompt_suites.py",
+        "--model",
+        "/Users/akiralam/.cache/huggingface/hub/models--ax-local--Qwen3.6-27B-MTP/snapshots/v1",
+        "--suite",
+        "flappy",
+        "--prompts",
+        "/Users/akiralam/code/ax-engine/benchmarks/prompts/mtp-suites/flappy.jsonl",
+        "--output",
+        "benchmarks/results/mtp-qwen36-matrix/2026-07-08-mtplx-only-refresh/27b-4bit/flappy/mtplx.json",
+        "--depth",
+        "3",
+        "--temperature",
+        "0.6",
+        "--top-p",
+        "0.95",
+        "--top-k",
+        "20",
+        "--max-tokens",
+        "1000",
+        "--repetitions",
+        "5",
+        "--warmup-repetitions",
+        "2",
+        "--cooldown",
+        "15.0",
+        "--inter-case-cooldown",
+        "10.0",
+        "--ignore-eos",
+        "--profile",
+        "stable",
+        "--mtp-quant-mode",
+        "cyankiwi",
+        "--disable-thinking",
+        "--allow-unverified-model"
+      ],
+      "engine": "mtplx",
+      "metric_contract": {
+        "accept_rate": "measured",
+        "decode_tok_s": "measured",
+        "prefill_tok_s": "derived_from_prompt_eval_time_s",
+        "ttft_ms": "prompt_eval_time_s",
+        "ttft_scope": "server_prompt_eval"
+      },
+      "mtp_head": {
+        "draft_lm_head": "bf16 (matching base)",
+        "mtp_precision": "bf16 (extracted with RMSNorm +1.0 delta correction)",
+        "packaging": "ax-local/Qwen3.6-27B-MTP sidecar",
+        "source": "Qwen/Qwen3.6-27B (official BF16 mtp.* tensors)"
+      },
+      "output_path": "benchmarks/results/mtp-qwen36-matrix/2026-07-08-mtplx-only-refresh/27b-4bit/flappy/mtplx.json",
+      "reason": null,
+      "status": "supported",
+      "suite": "flappy",
+      "target": {
+        "ax_model_dir": "/Users/akiralam/.cache/huggingface/hub/models--ax-local--Qwen3.6-27B-MTP/snapshots/v1",
+        "bits": 4,
+        "key": "27b-4bit",
+        "label": "Qwen3.6 27B 4-bit",
+        "model": "27b",
+        "mtp_depth": 3,
+        "mtp_head_id": "ax-local/Qwen3.6-27B-MTP (BF16 from Qwen/Qwen3.6-27B)"
+      }
+    },
+    {
+      "command": null,
+      "engine": "mtplx",
+      "metric_contract": {
+        "accept_rate": "measured",
+        "decode_tok_s": "measured",
+        "prefill_tok_s": "derived_from_prompt_eval_time_s",
+        "ttft_ms": "prompt_eval_time_s",
+        "ttft_scope": "server_prompt_eval"
+      },
+      "mtp_head": null,
+      "output_path": "benchmarks/results/mtp-qwen36-matrix/2026-07-08-mtplx-only-refresh/27b-6bit/flappy/mtplx.json",
+      "reason": "mtplx catalog has no official Qwen3.6 27B 6-bit MTP artifact.",
+      "status": "unsupported",
+      "suite": "flappy",
+      "target": {
+        "ax_model_dir": "/Users/akiralam/.cache/huggingface/hub/models--ax-local--mlx-community--Qwen3.6-27B-6bit-MTP/snapshots/v1",
+        "bits": 6,
+        "key": "27b-6bit",
+        "label": "Qwen3.6 27B 6-bit",
+        "model": "27b",
+        "mtp_depth": 3,
+        "mtp_head_id": "ax-local/Qwen3.6-27B-6bit-MTP"
+      }
+    },
+    {
+      "command": [
+        "/opt/homebrew/var/mtplx/venv-1.0.4/bin/python",
+        "/Users/akiralam/code/ax-engine/scripts/bench_mtplx_prompt_suites.py",
+        "--model",
+        "/Users/akiralam/.cache/huggingface/hub/models--Youssofal--Qwen3.6-35B-A3B-MTPLX-Optimized-Speed/snapshots/f02bdf7908b6120a48a137e6a08d50f076a94101",
+        "--suite",
+        "flappy",
+        "--prompts",
+        "/Users/akiralam/code/ax-engine/benchmarks/prompts/mtp-suites/flappy.jsonl",
+        "--output",
+        "benchmarks/results/mtp-qwen36-matrix/2026-07-08-mtplx-only-refresh/35b-a3b-4bit/flappy/mtplx.json",
+        "--depth",
+        "1",
+        "--temperature",
+        "0.6",
+        "--top-p",
+        "0.95",
+        "--top-k",
+        "20",
+        "--max-tokens",
+        "1000",
+        "--repetitions",
+        "5",
+        "--warmup-repetitions",
+        "2",
+        "--cooldown",
+        "15.0",
+        "--inter-case-cooldown",
+        "10.0",
+        "--ignore-eos",
+        "--profile",
+        "stable",
+        "--mtp-quant-mode",
+        "cyankiwi",
+        "--disable-thinking",
+        "--allow-unverified-model"
+      ],
+      "engine": "mtplx",
+      "metric_contract": {
+        "accept_rate": "measured",
+        "decode_tok_s": "measured",
+        "prefill_tok_s": "derived_from_prompt_eval_time_s",
+        "ttft_ms": "prompt_eval_time_s",
+        "ttft_scope": "server_prompt_eval"
+      },
+      "mtp_head": {
+        "draft_lm_head": "3-bit affine, group_size=64",
+        "mtp_precision": "INT4 prequantized sidecar (mtp/weights.safetensors)",
+        "packaging": "Youssofal/Qwen3.6-35B-A3B-MTPLX-Optimized-Speed",
+        "source": "Qwen/Qwen3.6-35B-A3B (re-quantized by Youssofal)"
+      },
+      "output_path": "benchmarks/results/mtp-qwen36-matrix/2026-07-08-mtplx-only-refresh/35b-a3b-4bit/flappy/mtplx.json",
+      "reason": null,
+      "status": "supported",
+      "suite": "flappy",
+      "target": {
+        "ax_model_dir": "/Users/akiralam/.cache/huggingface/hub/models--ax-local--Qwen3.6-35B-MTP/snapshots/v1",
+        "bits": 4,
+        "key": "35b-a3b-4bit",
+        "label": "Qwen3.6 35B-A3B 4-bit",
+        "model": "35b-a3b",
+        "mtp_depth": 1,
+        "mtp_head_id": "ax-local/Qwen3.6-35B-MTP (BF16 from Qwen/Qwen3.6-35B-A3B)"
+      }
+    },
+    {
+      "command": [
+        "/opt/homebrew/var/mtplx/venv-1.0.4/bin/python",
+        "/Users/akiralam/code/ax-engine/scripts/bench_mtplx_prompt_suites.py",
+        "--model",
+        "/Users/akiralam/.cache/huggingface/hub/models--Youssofal--Qwen3.6-35B-A3B-MTPLX-Optimized-Balance/snapshots/59d30340bb031b11259fb94009b4027ade66a654",
+        "--suite",
+        "flappy",
+        "--prompts",
+        "/Users/akiralam/code/ax-engine/benchmarks/prompts/mtp-suites/flappy.jsonl",
+        "--output",
+        "benchmarks/results/mtp-qwen36-matrix/2026-07-08-mtplx-only-refresh/35b-a3b-6bit/flappy/mtplx.json",
+        "--depth",
+        "1",
+        "--temperature",
+        "0.6",
+        "--top-p",
+        "0.95",
+        "--top-k",
+        "20",
+        "--max-tokens",
+        "1000",
+        "--repetitions",
+        "5",
+        "--warmup-repetitions",
+        "2",
+        "--cooldown",
+        "15.0",
+        "--inter-case-cooldown",
+        "10.0",
+        "--ignore-eos",
+        "--profile",
+        "stable",
+        "--mtp-quant-mode",
+        "cyankiwi",
+        "--disable-thinking",
+        "--allow-unverified-model"
+      ],
+      "engine": "mtplx",
+      "metric_contract": {
+        "accept_rate": "measured",
+        "decode_tok_s": "measured",
+        "prefill_tok_s": "derived_from_prompt_eval_time_s",
+        "ttft_ms": "prompt_eval_time_s",
+        "ttft_scope": "server_prompt_eval"
+      },
+      "mtp_head": {
+        "draft_lm_head": "3-bit affine, group_size=64",
+        "mtp_precision": "INT4 prequantized sidecar (mtp/weights.safetensors)",
+        "packaging": "Youssofal/Qwen3.6-35B-A3B-MTPLX-Optimized-Balance",
+        "source": "Qwen/Qwen3.6-35B-A3B (re-quantized by Youssofal)"
+      },
+      "output_path": "benchmarks/results/mtp-qwen36-matrix/2026-07-08-mtplx-only-refresh/35b-a3b-6bit/flappy/mtplx.json",
+      "reason": null,
+      "status": "supported",
+      "suite": "flappy",
+      "target": {
+        "ax_model_dir": "/Users/akiralam/.cache/huggingface/hub/models--ax-local--mlx-community--Qwen3.6-35B-A3B-6bit-MTP/snapshots/v1",
+        "bits": 6,
+        "key": "35b-a3b-6bit",
+        "label": "Qwen3.6 35B-A3B 6-bit",
+        "model": "35b-a3b",
+        "mtp_depth": 1,
+        "mtp_head_id": "ax-local/Qwen3.6-35B-A3B-6bit-MTP"
+      }
+    }
+  ],
+  "schema": "ax.qwen36_mtp_matrix.plan.v1"
+}
