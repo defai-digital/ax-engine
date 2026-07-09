@@ -1094,6 +1094,9 @@ def mtp_6bit_x_scale(value: float, axis_max: float) -> float:
 def render_mtp_6bit_ax_acceleration_chart(
     rows: list[dict[str, Any]], summary_path: Path
 ) -> str:
+    run_date_match = re.match(r"(\d{4}-\d{2}-\d{2})", summary_path.parent.name)
+    run_date = run_date_match.group(1) if run_date_match else summary_path.parent.name
+    chart_title = f"AX Engine v6.8.2 MTP decode ({run_date}): MTP off vs MTP on"
     axis_max = mtp_6bit_axis_max(rows)
     tick_step = axis_max / 4.0
     model_order = tuple(dict.fromkeys(str(row["model"]) for row in rows))
@@ -1106,7 +1109,7 @@ def render_mtp_6bit_ax_acceleration_chart(
     height = int(axis_bottom + 102.0)
     lines = [
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{MTP_6BIT_WIDTH}" height="{height}" viewBox="0 0 {MTP_6BIT_WIDTH} {height}" role="img" aria-labelledby="title desc">',
-        '<title id="title">AX MTP decode throughput with and without MTP</title>',
+        f'<title id="title">{escape(chart_title)}</title>',
         (
             '<desc id="desc">Horizontal grouped bar chart comparing AX direct '
             "decode throughput with MTP off against AX MTP decode throughput "
@@ -1114,7 +1117,7 @@ def render_mtp_6bit_ax_acceleration_chart(
             "The winning throughput label in each row is red.</desc>"
         ),
         f'<rect width="{MTP_6BIT_WIDTH}" height="{height}" fill="#ffffff"/>',
-        f'<text x="{MTP_6BIT_LABEL_X}" y="32" font-family="{FONT}" font-size="20" font-weight="700" fill="#111827">AX MTP decode: MTP off vs MTP on</text>',
+        f'<text x="{MTP_6BIT_LABEL_X}" y="32" font-family="{FONT}" font-size="20" font-weight="700" fill="#111827">{escape(chart_title)}</text>',
         f'<text x="{MTP_6BIT_LABEL_X}" y="54" font-family="{FONT}" font-size="12" fill="#4b5563">Each row compares the same prepared 6-bit package and prompt suite: AX direct has MTP off; AX MTP has MTP on.</text>',
         f'<text x="{MTP_6BIT_RIGHT:.0f}" y="54" text-anchor="end" font-family="{FONT}" font-size="11" font-weight="700" fill="#374151">Decode throughput, tok/s</text>',
     ]
