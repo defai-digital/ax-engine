@@ -43,7 +43,7 @@ model-specific boundaries are kept visible.
   - [Speculative Decoding (MTP)](#speculative-decoding-mtp)
     - [Supported MTP packages](#supported-mtp-packages)
     - [Download and serve an MTP package](#download-and-serve-an-mtp-package)
-    - [AX Engine 6-bit MTP package acceleration (2026-07-01)](#ax-engine-6-bit-mtp-package-acceleration-2026-07-01)
+    - [AX Engine 6-bit MTP package acceleration (2026-07-09)](#ax-engine-6-bit-mtp-package-acceleration-2026-07-09)
     - [Qwen3.6 MTP peer decode comparison (2026-07-01)](#qwen36-mtp-peer-decode-comparison-2026-07-01)
     - [Gemma 4 assistant-MTP (depth-2)](#gemma-4-assistant-mtp-depth-2)
   - [Direct Mode (Decode · Prefill · TTFT)](#direct-mode-decode--prefill--ttft)
@@ -358,7 +358,7 @@ published to make comparison with other MTP engines easier because many peer
 benchmarks use 4-bit models. Historical MTP+n-gram artifacts remain useful for
 debugging regressions, but they are not current README/PERFORMANCE MTP evidence.
 
-#### AX Engine 6-bit MTP package acceleration (2026-07-08)
+#### AX Engine 6-bit MTP package acceleration (2026-07-09)
 
 This refresh is an AX Engine-only benchmark of the practical 6-bit
 `download-mtp` lane. "AX Engine-only" describes the measurement scope, not an
@@ -366,28 +366,39 @@ MTP support boundary: AX Engine also documents the Gemma 4 12B 4-bit quick-start
 target and Qwen 4-bit peer-comparison lanes above. The table shows how much MTP
 accelerates each repo-owned 6-bit package against the same package with MTP
 disabled; it is not a cross-engine leaderboard and should not be mixed with the
-Qwen peer comparison below. Every row uses the `flappy` suite, sampled decode
+Qwen peer comparison below. The 2026-07-09 refresh uses the `flappy`,
+`long_code`, and `python_modules_long` suites, sampled decode
 (`temperature=0.6`, `top_p=0.95`, `top_k=20`), 1000 generated tokens, 5
-measured repetitions, 1 warmup, and 15 s cooldown. The Gemma 4 26B and 31B rows
-were refreshed on clean `08df1a96` depth-2 assistant-MTP artifacts; other rows
-retain the prior 2026-07-07 six-model summary. A clean Qwen3.6 35B-A3B rerun
-reached 142.3 tok/s, but did not exceed the older 142.7 tok/s high-water record,
-so this overlay promotes only the Gemma depth-2 rows.
+measured repetitions, 1 warmup, and 15 s cooldown. The run uses the local
+MLX 0.32.0 / mlx-lm 0.31.3 stack and the repo-owned AX MTP routes for Qwen
+fused sidecars, Gemma assistant drafters, and GLM built-in MTP.
 
 <img src="docs/assets/perf-mtp-6bit-ax-acceleration.svg" alt="AX Engine 6-bit MTP package acceleration chart comparing direct decode and MTP decode for Qwen3.6, Gemma 4, and GLM-4.7 Flash">
 
-| Target | AX direct decode | AX MTP decode | AX speedup | AX MTP prefill | AX MTP TTFT | AX accept |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| `qwen3.6-27b-6bit` | 22.9 tok/s | 44.0 tok/s | 1.92x | 754.8 tok/s | 426 ms | 100.0% |
-| `qwen3.6-35b-a3b` | 79.7 tok/s | 141.1 tok/s | 1.77x | 1,805.9 tok/s | 179 ms | 100.0% |
-| `gemma-4-12b` | 38.0 tok/s | 75.8 tok/s | 2.00x | 1,792.2 tok/s | 194 ms | 100.0% |
-| `gemma-4-26b` | 89.6 tok/s | 136.2 tok/s | 1.52x | 2,401.6 tok/s | 145 ms | 99.9% |
-| `gemma-4-31b` | 17.4 tok/s | 33.0 tok/s | 1.89x | 695.6 tok/s | 483 ms | 99.8% |
-| `glm-4.7-flash` | 73.0 tok/s | 112.6 tok/s | 1.54x | 1,635.5 tok/s | 171 ms | 98.0% |
+| Target | Suite | AX direct decode | AX MTP decode | AX speedup | AX MTP prefill | AX MTP TTFT | AX accept |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `qwen3.6-27b-6bit` | `flappy` | 22.8 tok/s | 65.7 tok/s | 2.89x | 242.2 tok/s | 1330 ms | 100.0% |
+| `qwen3.6-27b-6bit` | `long_code` | 22.8 tok/s | 65.3 tok/s | 2.86x | 252.7 tok/s | 2839 ms | 100.0% |
+| `qwen3.6-27b-6bit` | `python_modules_long` | 22.9 tok/s | 65.6 tok/s | 2.87x | 250.7 tok/s | 1396 ms | 100.0% |
+| `qwen3.6-35b-a3b` | `flappy` | 96.6 tok/s | 148.0 tok/s | 1.53x | 1,294.4 tok/s | 249 ms | 100.0% |
+| `qwen3.6-35b-a3b` | `long_code` | 99.8 tok/s | 147.3 tok/s | 1.48x | 1,648.8 tok/s | 435 ms | 100.0% |
+| `qwen3.6-35b-a3b` | `python_modules_long` | 99.5 tok/s | 150.1 tok/s | 1.51x | 1,399.5 tok/s | 248 ms | 100.0% |
+| `gemma-4-12b` | `flappy` | 38.8 tok/s | 95.4 tok/s | 2.46x | 560.9 tok/s | 614 ms | 100.0% |
+| `gemma-4-12b` | `long_code` | 38.1 tok/s | 94.6 tok/s | 2.48x | 571.5 tok/s | 1413 ms | 100.0% |
+| `gemma-4-12b` | `python_modules_long` | 38.7 tok/s | 74.9 tok/s | 1.94x | 568.6 tok/s | 665 ms | 99.0% |
+| `gemma-4-26b` | `flappy` | 89.3 tok/s | 148.2 tok/s | 1.66x | 1,376.5 tok/s | 253 ms | 100.0% |
+| `gemma-4-26b` | `long_code` | 89.2 tok/s | 144.5 tok/s | 1.62x | 1,605.7 tok/s | 507 ms | 100.0% |
+| `gemma-4-26b` | `python_modules_long` | 90.6 tok/s | 135.7 tok/s | 1.50x | 1,430.3 tok/s | 264 ms | 99.0% |
+| `gemma-4-31b` | `flappy` | 17.7 tok/s | 45.6 tok/s | 2.57x | 211.6 tok/s | 1625 ms | 99.9% |
+| `gemma-4-31b` | `long_code` | 17.7 tok/s | 44.1 tok/s | 2.48x | 212.3 tok/s | 3802 ms | 100.0% |
+| `gemma-4-31b` | `python_modules_long` | 18.1 tok/s | 39.6 tok/s | 2.18x | 214.1 tok/s | 1766 ms | 98.7% |
+| `glm-4.7-flash` | `flappy` | 74.8 tok/s | 122.9 tok/s | 1.64x | 1,063.1 tok/s | 260 ms | 98.1% |
+| `glm-4.7-flash` | `long_code` | 74.5 tok/s | 100.9 tok/s | 1.35x | 1,268.6 tok/s | 538 ms | 98.6% |
+| `glm-4.7-flash` | `python_modules_long` | 76.4 tok/s | 91.2 tok/s | 1.19x | 1,134.4 tok/s | 300 ms | 94.3% |
 
 All rows are pure MTP verification rows with zero n-gram accepted/proposed/
 submitted/hit-step telemetry. Publication summary:
-[`benchmarks/results/speculative/mtp-6bit/2026-07-08-six-model-flappy-gemma-depth2-overlay/summary.json`](benchmarks/results/speculative/mtp-6bit/2026-07-08-six-model-flappy-gemma-depth2-overlay/summary.json).
+[`benchmarks/results/speculative/mtp-6bit/2026-07-09-mlx032-ax-mtp-refresh/summary.json`](benchmarks/results/speculative/mtp-6bit/2026-07-09-mlx032-ax-mtp-refresh/summary.json).
 
 #### Qwen3.6 MTP peer decode comparison (2026-07-08 AX refresh)
 

@@ -1103,7 +1103,7 @@ def render_mtp_6bit_ax_acceleration_chart(
         + max(0, len(model_order) - 1) * MTP_6BIT_GROUP_GAP
         + 16.0
     )
-    height = int(axis_bottom + 88.0)
+    height = int(axis_bottom + 102.0)
     lines = [
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{MTP_6BIT_WIDTH}" height="{height}" viewBox="0 0 {MTP_6BIT_WIDTH} {height}" role="img" aria-labelledby="title desc">',
         '<title id="title">AX MTP decode throughput with and without MTP</title>',
@@ -1182,12 +1182,16 @@ def render_mtp_6bit_ax_acceleration_chart(
         )
         label_y += MTP_6BIT_ROW_GAP
 
+    version_label = "Runtime: AX Engine v6.8.2; MLX 0.32.0 / mlx-lm 0.31.3."
     source_label = (
         f"Source: {summary_path.parent.as_posix()} / summary.json. "
         "Pure MTP; no MTP+n-gram stacking."
     )
     lines.append(
-        f'<text x="{MTP_6BIT_LABEL_X}" y="{axis_bottom + 64.0:.1f}" font-family="{FONT}" font-size="10" fill="#6b7280">{escape(source_label)}</text>'
+        f'<text x="{MTP_6BIT_LABEL_X}" y="{axis_bottom + 60.0:.1f}" font-family="{FONT}" font-size="10" fill="#6b7280">{escape(version_label)}</text>'
+    )
+    lines.append(
+        f'<text x="{MTP_6BIT_LABEL_X}" y="{axis_bottom + 76.0:.1f}" font-family="{FONT}" font-size="10" fill="#6b7280">{escape(source_label)}</text>'
     )
     lines.append("</svg>")
     return "\n".join(lines) + "\n"
