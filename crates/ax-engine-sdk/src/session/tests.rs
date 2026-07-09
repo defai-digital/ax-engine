@@ -14,12 +14,12 @@ use ax_engine_core::metal::{
     MetalDispatchRuntimeInfo, MetalNumericValidationSummary,
 };
 use ax_engine_core::{
-    CacheGroupId, DeterministicSampler, ExecutionRunner, ExecutionStatus, KvCompressionConfig,
-    KvManagerConfig, KvWriteSummary, MetalBinaryArchiveInfo, MetalBinaryArchiveState,
-    MetalCommandBufferStatus, MetalDispatchArenaInfo, MetalDispatchKernelTrace, MetalDispatchTrace,
-    MetalDispatchWorkload, MetalThreadgroupSize, ModelId, NativeModelArtifactsSummary,
-    NativeTensorFormat, RequestExecutionUpdate, RequestMultimodalInputs, RunnerInput, RunnerOutput,
-    SamplingParams, SequenceNo,
+    CacheGroupId, DeterministicRunner, DeterministicSampler, ExecutionRunner, ExecutionStatus,
+    KvCompressionConfig, KvManagerConfig, KvWriteSummary, MetalBinaryArchiveInfo,
+    MetalBinaryArchiveState, MetalCommandBufferStatus, MetalDispatchArenaInfo,
+    MetalDispatchKernelTrace, MetalDispatchTrace, MetalDispatchWorkload, MetalThreadgroupSize,
+    ModelId, NativeModelArtifactsSummary, NativeTensorFormat, RequestExecutionUpdate,
+    RequestMultimodalInputs, RunnerInput, RunnerOutput, SamplingParams, SequenceNo,
 };
 use serde_json::Value;
 
@@ -1706,6 +1706,104 @@ fn native_step_report_surfaces_route_and_metal_dispatch_summary() {
             .map(|dispatch| dispatch.execution_logits_vocab_scan_row_count),
         Some(151936)
     );
+}
+
+#[test]
+fn has_active_stepwise_requests_reflects_native_terminal_state() {
+    // A caller about to discard this session (e.g. a model hot-swap) must be
+    // able to tell whether doing so would orphan a non-terminal stepwise
+    // request — request state lives entirely inside the EngineSession
+    // instance with no cross-session registry.
+    let core = EngineCore::with_runtime_components(
+        KvManagerConfig::validated(CacheGroupId(0), 16, 64),
+        DeterministicRunner,
+        DeterministicSampler,
+    );
+    let config = mlx_test_session_config();
+    let mut session = EngineSession {
+        core,
+        runtime: config.runtime_report(),
+        config,
+        next_request_id: 2,
+        native_request_routes: BTreeMap::new(),
+        native_route_report_order: VecDeque::new(),
+        llama_requests: BTreeMap::new(),
+        llama_terminal_request_order: VecDeque::new(),
+    };
+    assert!(
+        !session.has_active_stepwise_requests(),
+        "a session with nothing submitted has no active requests"
+    );
+
+    session
+        .submit(sample_submission())
+        .expect("submission should succeed");
+    assert!(
+        session.has_active_stepwise_requests(),
+        "a freshly-submitted request is non-terminal"
+    );
+
+    // Step until the request reaches a terminal state (the deterministic
+    // test runner/sampler advances it to completion within a bounded number
+    // of steps).
+    for _ in 0..8 {
+        session.step_report().expect("step should succeed");
+        if !session.has_active_stepwise_requests() {
+            break;
+        }
+    }
+    assert!(
+        !session.has_active_stepwise_requests(),
+        "a fully-stepped request must no longer count as active"
+    );
+}
+
+#[test]
+fn has_active_stepwise_requests_reflects_llama_cpp_terminal_state() {
+    let (server_url, server_handle) = spawn_llama_cpp_completion_stream_server(
+        1,
+        vec![serde_json::json!({
+            "content": "hello",
+            "tokens": [4],
+            "stop": true,
+            "stop_type": "limit"
+        })],
+        |_payload| {},
+    );
+    let mut session = llama_cpp_server_session(server_url);
+    assert!(
+        !session.has_active_stepwise_requests(),
+        "a session with nothing submitted has no active requests"
+    );
+
+    session
+        .submit_generate(GenerateRequest {
+            model_id: "qwen3".to_string(),
+            input_tokens: vec![1, 2, 3],
+            input_text: None,
+            multimodal_inputs: Default::default(),
+            max_output_tokens: 2,
+            sampling: Default::default(),
+            stop_sequences: Vec::new(),
+            metadata: None,
+        })
+        .expect("llama.cpp submit should succeed");
+    assert!(
+        session.has_active_stepwise_requests(),
+        "a freshly-submitted request is non-terminal"
+    );
+
+    session
+        .step_report()
+        .expect("step to the terminal chunk should succeed");
+    assert!(
+        !session.has_active_stepwise_requests(),
+        "a request that reached its terminal chunk must no longer count as active"
+    );
+
+    server_handle
+        .join()
+        .expect("llama.cpp server thread should finish");
 }
 
 #[test]

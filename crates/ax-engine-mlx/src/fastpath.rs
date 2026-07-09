@@ -891,17 +891,6 @@ env_flag!(
 );
 
 env_flag!(
-    /// `AX_DIFFUSION_SKIP_COMMIT_ON_CONVERGE` — skip the causal commit
-    /// pass when the denoise loop converges at step 1 with near-perfect
-    /// acceptance (>= 99%). The canvas tokens are already the model's
-    /// output in this case, so the ~40 ms causal forward pass is
-    /// redundant. Emits `ax_mlx_diffusion_commit_skipped` telemetry.
-    /// Default OFF; opt-in for benchmarking and first-block latency.
-    diffusion_skip_commit_on_converge,
-    "AX_DIFFUSION_SKIP_COMMIT_ON_CONVERGE"
-);
-
-env_flag!(
     /// `AX_DIFFUSION_EMBEDDING_CACHE` — cache per-layer embedding inputs
     /// across denoise steps when token IDs are unchanged. Uses a
     /// GPU-side sum fingerprint to detect changes (2 dispatches + 1
