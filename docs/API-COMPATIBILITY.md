@@ -39,7 +39,9 @@ These are not in the current compatibility contract:
   rendering
 - batch completion prompt arrays on `/v1/completions`
 - full OpenAI parameter parity such as penalties, logprobs, `n`, `stop`, or
-  response-format controls
+  response-format controls; non-default `n`, `best_of`, `frequency_penalty`,
+  `presence_penalty`, and `logit_bias` values fail closed with an
+  `unsupported_parameter` error instead of being silently ignored
 - full tokenizer ownership or arbitrary model chat-template discovery inside
   `ax-engine-server`
 - full Ollama daemon parity such as model pull/push/create/copy/delete,

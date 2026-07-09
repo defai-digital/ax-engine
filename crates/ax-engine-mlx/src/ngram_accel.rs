@@ -70,25 +70,29 @@ pub const DRAFT_CONFIDENCE_THRESHOLD: f32 = 0.4;
 pub const DRAFT_CONFIDENCE_THRESHOLD_ENV: &str = "AX_NGRAM_CONFIDENCE_THRESHOLD";
 
 /// Parse a candidate confidence threshold. Returns the default when `raw` is
-/// `None`; panics on invalid syntax or out-of-range values. Split out from
-/// the env-reading wrapper so the validation logic can be unit-tested without
-/// process-global env state.
+/// `None`; invalid syntax or out-of-range values warn and fall back to the
+/// default instead of crashing a serving process on first draft. Split out
+/// from the env-reading wrapper so the validation logic can be unit-tested
+/// without process-global env state.
 pub fn parse_confidence_threshold(raw: Option<&str>) -> f32 {
     let Some(value) = raw else {
         return DRAFT_CONFIDENCE_THRESHOLD;
     };
-    let parsed: f32 = value.parse().unwrap_or_else(|_| {
-        panic!("{DRAFT_CONFIDENCE_THRESHOLD_ENV} must be a float in [0.0, 1.0]; got {value:?}")
-    });
-    if parsed.is_nan() || !(0.0..=1.0).contains(&parsed) {
-        panic!("{DRAFT_CONFIDENCE_THRESHOLD_ENV} must be in [0.0, 1.0]; got {parsed}");
+    match value.parse::<f32>() {
+        Ok(parsed) if !parsed.is_nan() && (0.0..=1.0).contains(&parsed) => parsed,
+        _ => {
+            tracing::warn!(
+                "{DRAFT_CONFIDENCE_THRESHOLD_ENV} must be a float in [0.0, 1.0]; got {value:?}; \
+                 falling back to default {DRAFT_CONFIDENCE_THRESHOLD}"
+            );
+            DRAFT_CONFIDENCE_THRESHOLD
+        }
     }
-    parsed
 }
 
 /// Resolve the effective draft confidence threshold for the current process.
 /// Reads `AX_NGRAM_CONFIDENCE_THRESHOLD` once and caches the result. Invalid
-/// values fail fast on first call rather than silently clamping.
+/// values warn and fall back to the compiled default.
 pub fn effective_draft_confidence_threshold() -> f32 {
     use std::sync::OnceLock;
     static CACHED: OnceLock<f32> = OnceLock::new();
@@ -116,15 +120,16 @@ pub fn parse_speculative_accept_threshold(raw: Option<&str>) -> f32 {
     let Some(value) = raw else {
         return NGRAM_SPECULATIVE_ACCEPT_THRESHOLD;
     };
-    let parsed: f32 = value.parse().unwrap_or_else(|_| {
-        panic!(
-            "{NGRAM_SPECULATIVE_ACCEPT_THRESHOLD_ENV} must be a float in [0.0, 1.0]; got {value:?}"
-        )
-    });
-    if parsed.is_nan() || !(0.0..=1.0).contains(&parsed) {
-        panic!("{NGRAM_SPECULATIVE_ACCEPT_THRESHOLD_ENV} must be in [0.0, 1.0]; got {parsed}");
+    match value.parse::<f32>() {
+        Ok(parsed) if !parsed.is_nan() && (0.0..=1.0).contains(&parsed) => parsed,
+        _ => {
+            tracing::warn!(
+                "{NGRAM_SPECULATIVE_ACCEPT_THRESHOLD_ENV} must be a float in [0.0, 1.0]; \
+                 got {value:?}; falling back to default {NGRAM_SPECULATIVE_ACCEPT_THRESHOLD}"
+            );
+            NGRAM_SPECULATIVE_ACCEPT_THRESHOLD
+        }
     }
-    parsed
 }
 
 /// Resolve the effective speculative accept threshold for the current process.
@@ -1577,27 +1582,35 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "AX_NGRAM_CONFIDENCE_THRESHOLD")]
-    fn parse_confidence_threshold_rejects_above_one() {
-        let _ = parse_confidence_threshold(Some("1.5"));
+    fn parse_confidence_threshold_falls_back_on_above_one() {
+        assert_eq!(
+            parse_confidence_threshold(Some("1.5")),
+            DRAFT_CONFIDENCE_THRESHOLD
+        );
     }
 
     #[test]
-    #[should_panic(expected = "AX_NGRAM_CONFIDENCE_THRESHOLD")]
-    fn parse_confidence_threshold_rejects_negative() {
-        let _ = parse_confidence_threshold(Some("-0.1"));
+    fn parse_confidence_threshold_falls_back_on_negative() {
+        assert_eq!(
+            parse_confidence_threshold(Some("-0.1")),
+            DRAFT_CONFIDENCE_THRESHOLD
+        );
     }
 
     #[test]
-    #[should_panic(expected = "AX_NGRAM_CONFIDENCE_THRESHOLD")]
-    fn parse_confidence_threshold_rejects_nonsense() {
-        let _ = parse_confidence_threshold(Some("not-a-number"));
+    fn parse_confidence_threshold_falls_back_on_nonsense() {
+        assert_eq!(
+            parse_confidence_threshold(Some("not-a-number")),
+            DRAFT_CONFIDENCE_THRESHOLD
+        );
     }
 
     #[test]
-    #[should_panic(expected = "AX_NGRAM_CONFIDENCE_THRESHOLD")]
-    fn parse_confidence_threshold_rejects_nan() {
-        let _ = parse_confidence_threshold(Some("NaN"));
+    fn parse_confidence_threshold_falls_back_on_nan() {
+        assert_eq!(
+            parse_confidence_threshold(Some("NaN")),
+            DRAFT_CONFIDENCE_THRESHOLD
+        );
     }
 
     #[test]
@@ -2338,14 +2351,18 @@ mod tests {
     }
 
     #[test]
-    #[should_panic]
-    fn speculative_accept_threshold_parse_out_of_range() {
-        parse_speculative_accept_threshold(Some("1.5"));
+    fn speculative_accept_threshold_parse_out_of_range_falls_back() {
+        assert_eq!(
+            parse_speculative_accept_threshold(Some("1.5")),
+            NGRAM_SPECULATIVE_ACCEPT_THRESHOLD
+        );
     }
 
     #[test]
-    #[should_panic]
-    fn speculative_accept_threshold_parse_invalid_string() {
-        parse_speculative_accept_threshold(Some("not_a_float"));
+    fn speculative_accept_threshold_parse_invalid_string_falls_back() {
+        assert_eq!(
+            parse_speculative_accept_threshold(Some("not_a_float")),
+            NGRAM_SPECULATIVE_ACCEPT_THRESHOLD
+        );
     }
 }

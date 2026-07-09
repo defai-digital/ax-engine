@@ -165,6 +165,59 @@ async fn openai_completion_logprobs_follows_legacy_integer_shape() {
 }
 
 #[tokio::test]
+async fn openai_completion_request_rejects_unsupported_sampling_params() {
+    let artifact_dir = minimal_tokenizer_artifact("native-openai-completion-unsupported-params");
+    let state = native_mlx_openai_builder_state("qwen3", &artifact_dir);
+    let live = state.snapshot();
+
+    for (field, value) in [
+        ("n", json!(2)),
+        ("best_of", json!(2)),
+        ("frequency_penalty", json!(0.5)),
+        ("presence_penalty", json!(-0.2)),
+        ("logit_bias", json!({"50256": -100})),
+    ] {
+        let mut body = json!({
+            "model": "qwen3",
+            "prompt": "hello",
+            "max_tokens": 8
+        });
+        body.as_object_mut()
+            .expect("completion body is an object")
+            .insert(field.to_string(), value);
+        let request: OpenAiCompletionHttpRequest =
+            serde_json::from_value(body).expect("sample completion request should deserialize");
+        let error = match build_openai_completion_request(&live, request) {
+            Ok(_) => panic!("non-default {field} should fail closed instead of being ignored"),
+            Err(error) => error,
+        };
+        assert_eq!(error.0, StatusCode::BAD_REQUEST, "{field}");
+        assert_eq!(
+            error.1.0.error.code.as_deref(),
+            Some("unsupported_parameter"),
+            "{field}"
+        );
+    }
+
+    // OpenAI-default values stay accepted so standard clients keep working.
+    let request: OpenAiCompletionHttpRequest = serde_json::from_value(json!({
+        "model": "qwen3",
+        "prompt": "hello",
+        "max_tokens": 8,
+        "n": 1,
+        "best_of": 1,
+        "frequency_penalty": 0,
+        "presence_penalty": 0.0,
+        "logit_bias": {}
+    }))
+    .expect("sample completion request should deserialize");
+    build_openai_completion_request(&live, request)
+        .expect("default-valued unsupported params should still build");
+
+    std::fs::remove_dir_all(artifact_dir).expect("artifact dir should clean up");
+}
+
+#[tokio::test]
 async fn openai_completion_request_tokenizes_text_for_native_mlx_backend() {
     let artifact_dir = minimal_tokenizer_artifact("native-openai-completion-tokenizer");
     let state = native_mlx_openai_builder_state("qwen3", &artifact_dir);

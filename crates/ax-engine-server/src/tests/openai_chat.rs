@@ -847,6 +847,55 @@ async fn openai_chat_request_rejects_top_logprobs_until_top_n_is_supported() {
 }
 
 #[tokio::test]
+async fn openai_chat_request_rejects_unsupported_sampling_params() {
+    let state = test_app_state(|args| {
+        args.model_id = "gemma4-e2b".to_string();
+        args.llama_server_url = Some("http://127.0.0.1:1".to_string());
+    });
+    let live = state.snapshot();
+
+    for (field, value) in [
+        ("n", json!(2)),
+        ("frequency_penalty", json!(0.5)),
+        ("presence_penalty", json!(-0.2)),
+        ("logit_bias", json!({"50256": -100})),
+    ] {
+        let mut body = json!({
+            "messages": [{"role": "user", "content": "Hello"}],
+            "max_tokens": 8
+        });
+        body.as_object_mut()
+            .expect("chat body is an object")
+            .insert(field.to_string(), value);
+        let request: OpenAiChatCompletionHttpRequest =
+            serde_json::from_value(body).expect("sample chat request should deserialize");
+        let error = match build_openai_chat_request(&live, request) {
+            Ok(_) => panic!("non-default {field} should fail closed instead of being ignored"),
+            Err(error) => error,
+        };
+        assert_eq!(error.0, StatusCode::BAD_REQUEST, "{field}");
+        assert_eq!(
+            error.1.0.error.code.as_deref(),
+            Some("unsupported_parameter"),
+            "{field}"
+        );
+    }
+
+    // OpenAI-default values stay accepted so standard clients keep working.
+    let request: OpenAiChatCompletionHttpRequest = serde_json::from_value(json!({
+        "messages": [{"role": "user", "content": "Hello"}],
+        "max_tokens": 8,
+        "n": 1,
+        "frequency_penalty": 0.0,
+        "presence_penalty": 0,
+        "logit_bias": {}
+    }))
+    .expect("sample chat request should deserialize");
+    build_openai_chat_request(&live, request)
+        .expect("default-valued unsupported params should still build");
+}
+
+#[tokio::test]
 async fn openai_chat_request_rejects_streaming_json_object_validation() {
     let state = test_app_state(|args| {
         args.model_id = "gemma4-e2b".to_string();

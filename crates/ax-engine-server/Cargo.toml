@@ -19,6 +19,7 @@ symphonia.workspace = true
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
 tonic = "0.12"
+tower = "0.5"
 tracing.workspace = true
 tracing-subscriber.workspace = true
 

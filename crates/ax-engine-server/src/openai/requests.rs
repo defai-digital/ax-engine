@@ -187,6 +187,13 @@ impl OpenAiResponseOptions {
     fn from_completion_request(
         request: &OpenAiCompletionHttpRequest,
     ) -> Result<Self, (StatusCode, Json<ErrorResponse>)> {
+        reject_unsupported_sampling_params(
+            request.n,
+            request.best_of,
+            request.frequency_penalty,
+            request.presence_penalty,
+            request.logit_bias.as_ref(),
+        )?;
         reject_unsupported_top_logprobs(request.top_logprobs)?;
         reject_unsupported_completion_logprobs(request.logprobs)?;
         Ok(Self {
@@ -203,6 +210,13 @@ impl OpenAiResponseOptions {
     fn from_chat_request(
         request: &OpenAiChatCompletionHttpRequest,
     ) -> Result<Self, (StatusCode, Json<ErrorResponse>)> {
+        reject_unsupported_sampling_params(
+            request.n,
+            None,
+            request.frequency_penalty,
+            request.presence_penalty,
+            request.logit_bias.as_ref(),
+        )?;
         reject_unsupported_top_logprobs(request.top_logprobs)?;
         Ok(Self {
             include_logprobs: request.logprobs,
@@ -957,6 +971,52 @@ fn json_number_is_nonzero(value: &serde_json::Number) -> bool {
         .or_else(|| value.as_u64().map(|value| value != 0))
         .or_else(|| value.as_f64().map(|value| value != 0.0))
         .unwrap_or(true)
+}
+
+/// OpenAI sampling params AX does not implement. Non-default values fail
+/// closed instead of being silently dropped, so a caller relying on them
+/// learns immediately — same policy as the logprobs handling below.
+fn reject_unsupported_sampling_params(
+    n: Option<u32>,
+    best_of: Option<u32>,
+    frequency_penalty: Option<f32>,
+    presence_penalty: Option<f32>,
+    logit_bias: Option<&Value>,
+) -> Result<(), (StatusCode, Json<ErrorResponse>)> {
+    let unsupported = |message: &str| {
+        Err(error_response(
+            StatusCode::BAD_REQUEST,
+            "unsupported_parameter",
+            message.to_string(),
+        ))
+    };
+    if n.unwrap_or(1) != 1 {
+        return unsupported("n above 1 is not supported; AX generates one choice per request");
+    }
+    if best_of.unwrap_or(1) != 1 {
+        return unsupported(
+            "best_of above 1 is not supported; AX generates one choice per request",
+        );
+    }
+    if frequency_penalty.unwrap_or(0.0) != 0.0 {
+        return unsupported(
+            "frequency_penalty is not supported; use the repetition_penalty extension instead",
+        );
+    }
+    if presence_penalty.unwrap_or(0.0) != 0.0 {
+        return unsupported(
+            "presence_penalty is not supported; use the repetition_penalty extension instead",
+        );
+    }
+    let logit_bias_requested = logit_bias.is_some_and(|value| match value {
+        Value::Null => false,
+        Value::Object(map) => !map.is_empty(),
+        _ => true,
+    });
+    if logit_bias_requested {
+        return unsupported("logit_bias is not supported");
+    }
+    Ok(())
 }
 
 fn reject_unsupported_top_logprobs(

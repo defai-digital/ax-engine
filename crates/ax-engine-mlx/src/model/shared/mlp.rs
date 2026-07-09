@@ -40,19 +40,37 @@ const GELU_MUL_KERNEL_SOURCE: &str = r#"
         return;
     }
 
-    float gate_v = static_cast<float>(gate[idx]);
-    float x_v = static_cast<float>(x[idx]);
-    float activated;
-    if (gate_v > 10.0f) {
-        activated = gate_v;
-    } else if (gate_v < -10.0f) {
-        activated = 0.0f;
-    } else {
-        float gate_sq = gate_v * gate_v;
-        float inner = 0.7978845608028654f * (gate_v + 0.044715f * gate_v * gate_sq);
-        activated = 0.5f * gate_v * (1.0f + tanh(inner));
+    T gate_v = gate[idx];
+    T x_v = x[idx];
+    float gate_f = static_cast<float>(gate_v);
+    // gelu_approx(gate) saturates to identity (gate > 10) or zero (gate < -10)
+    // out here; skip tanh in that range because the cubic inner term overflows
+    // half/bfloat16 intermediates and fast-math tanh(inf) returns NaN.
+    if (gate_f > 10.0f) {
+        out[idx] = static_cast<T>(gate_f * static_cast<float>(x_v));
+        return;
     }
-    out[idx] = static_cast<T>(activated * x_v);
+    if (gate_f < -10.0f) {
+        out[idx] = static_cast<T>(0.0f);
+        return;
+    }
+    // In-range math rounds through T after every step to stay bit-identical
+    // with mlx-lm's imperative op-by-op gelu_approx(gate) * x chain.
+    T half_v = static_cast<T>(0.5f);
+    T one_v = static_cast<T>(1.0f);
+    T sqrt_2_over_pi_v = static_cast<T>(0.7978846f);
+    T coeff_v = static_cast<T>(0.044715f);
+
+    T gate2 = static_cast<T>(static_cast<float>(gate_v) * static_cast<float>(gate_v));
+    T gate3 = static_cast<T>(static_cast<float>(gate2) * static_cast<float>(gate_v));
+    T cubic = static_cast<T>(static_cast<float>(coeff_v) * static_cast<float>(gate3));
+    T inner = static_cast<T>(static_cast<float>(gate_v) + static_cast<float>(cubic));
+    T scaled = static_cast<T>(static_cast<float>(sqrt_2_over_pi_v) * static_cast<float>(inner));
+    T t = static_cast<T>(tanh(static_cast<float>(scaled)));
+    T one_plus_t = static_cast<T>(static_cast<float>(one_v) + static_cast<float>(t));
+    T half_gate = static_cast<T>(static_cast<float>(half_v) * static_cast<float>(gate_v));
+    T activated = static_cast<T>(static_cast<float>(half_gate) * static_cast<float>(one_plus_t));
+    out[idx] = static_cast<T>(static_cast<float>(activated) * static_cast<float>(x_v));
 "#;
 
 pub(crate) fn qkv_project(
@@ -221,7 +239,7 @@ fn gelu_approx_mul_metal(gate: &MlxArray, x: &MlxArray, enabled: bool) -> Option
     let element_count = i32::try_from(element_count).ok()?;
     let kernel = GELU_MUL_KERNEL.get_or_init(|| {
         MlxMetalKernel::new(
-            "ax_gemma_gelu_mul_v3",
+            "ax_gemma_gelu_mul_v4",
             &["gate", "x"],
             &["out"],
             GELU_MUL_KERNEL_SOURCE,

@@ -15,6 +15,7 @@ mod embeddings;
 mod errors;
 mod generation;
 mod grpc;
+mod grpc_auth;
 mod metadata;
 mod metrics;
 mod model_load;
@@ -100,8 +101,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 format!("invalid --grpc-bind-address {addr}: {e}"),
             )
         })?;
+        let grpc_api_key = state.api_key.clone();
         let grpc_service = grpc::AxEngineGrpcService::new(state).into_server();
-        let mut grpc_builder = tonic::transport::Server::builder();
+        let mut grpc_builder =
+            tonic::transport::Server::builder().layer(grpc_auth::GrpcAuthLayer::new(grpc_api_key));
         if let Some(timeout) = routes::request_timeout_from_env() {
             grpc_builder = grpc_builder.timeout(timeout);
         }

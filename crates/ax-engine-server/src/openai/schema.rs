@@ -107,6 +107,18 @@ pub(crate) struct OpenAiCompletionHttpRequest {
     pub(crate) seed: Option<u64>,
     #[serde(default)]
     pub(crate) stream: bool,
+    /// OpenAI params AX does not implement. Deserialized so non-default
+    /// values fail closed instead of being silently ignored.
+    #[serde(default)]
+    pub(crate) n: Option<u32>,
+    #[serde(default)]
+    pub(crate) best_of: Option<u32>,
+    #[serde(default)]
+    pub(crate) frequency_penalty: Option<f32>,
+    #[serde(default)]
+    pub(crate) presence_penalty: Option<f32>,
+    #[serde(default)]
+    pub(crate) logit_bias: Option<Value>,
     /// OpenAI legacy completions shape: an integer count of top alternatives
     /// to include. `0` requests sampled-token logprobs only; values above `0`
     /// are rejected until the runner emits top-N alternatives.
@@ -149,6 +161,16 @@ pub(crate) struct OpenAiChatCompletionHttpRequest {
     pub(crate) seed: Option<u64>,
     #[serde(default)]
     pub(crate) stream: bool,
+    /// OpenAI params AX does not implement. Deserialized so non-default
+    /// values fail closed instead of being silently ignored.
+    #[serde(default)]
+    pub(crate) n: Option<u32>,
+    #[serde(default)]
+    pub(crate) frequency_penalty: Option<f32>,
+    #[serde(default)]
+    pub(crate) presence_penalty: Option<f32>,
+    #[serde(default)]
+    pub(crate) logit_bias: Option<Value>,
     #[serde(default)]
     pub(crate) logprobs: bool,
     #[serde(default)]

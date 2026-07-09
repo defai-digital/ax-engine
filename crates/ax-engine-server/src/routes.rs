@@ -162,13 +162,16 @@ fn is_health_probe(path: &str) -> bool {
 }
 
 fn request_has_valid_bearer_token<B>(request: &axum::http::Request<B>, expected: &str) -> bool {
-    let Some(value) = request
+    request
         .headers()
         .get(header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
-    else {
-        return false;
-    };
+        .is_some_and(|value| bearer_value_matches(value, expected))
+}
+
+/// Validate a raw `authorization` header value against the configured key.
+/// Shared by the HTTP middleware and the gRPC auth layer.
+pub(crate) fn bearer_value_matches(value: &str, expected: &str) -> bool {
     let Some((scheme, token)) = value.split_once(' ') else {
         return false;
     };

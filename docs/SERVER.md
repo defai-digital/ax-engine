@@ -80,9 +80,10 @@ Authorization: Bearer <key>
 supervisors and benchmark harnesses can detect startup and liveness without
 holding inference credentials.
 
-`--api-key` covers HTTP routes only. The optional gRPC adapter
-(`--grpc-bind-address`) has no authentication yet; bind it to loopback or keep
-it disabled when the HTTP surface is key-protected.
+`--api-key` covers the optional gRPC adapter (`--grpc-bind-address`) as well:
+every RPC must carry the same `authorization: Bearer <key>` metadata, except
+the `Health` RPC, which stays unauthenticated to mirror the HTTP probe
+exemption. Unauthenticated calls fail with gRPC status `UNAUTHENTICATED`.
 
 ## Observability
 

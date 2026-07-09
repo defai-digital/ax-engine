@@ -52,8 +52,8 @@ pub enum WeightRotationMode {
 }
 
 /// Parse the env var value. Returns `Off` for `None`, `"off"`, `"0"`, `"false"`.
-/// Returns `Shadow` for `"shadow"`, `Enable` for `"enable"`. Anything else is
-/// fail-closed.
+/// Returns `Shadow` for `"shadow"`, `Enable` for `"enable"`. Anything else
+/// warns and stays fail-closed at `Off` rather than crashing the process.
 pub fn parse_weight_rotation_mode(raw: Option<&str>) -> WeightRotationMode {
     let Some(value) = raw else {
         return WeightRotationMode::Off;
@@ -64,13 +64,17 @@ pub fn parse_weight_rotation_mode(raw: Option<&str>) -> WeightRotationMode {
         "enable" => WeightRotationMode::Enable,
         "apply" => WeightRotationMode::Apply,
         other => {
-            panic!("{WEIGHT_ROTATION_ENV} must be one of off|shadow|enable|apply; got {other:?}")
+            tracing::warn!(
+                "{WEIGHT_ROTATION_ENV} must be one of off|shadow|enable|apply; got {other:?}; \
+                 falling back to off"
+            );
+            WeightRotationMode::Off
         }
     }
 }
 
 /// Resolve the active weight-rotation mode for this process. Cached on first
-/// call. Invalid env values panic on first call (fail-closed).
+/// call. Invalid env values warn and fall back to `Off` (fail-closed).
 pub fn weight_rotation_mode() -> WeightRotationMode {
     static CACHED: OnceLock<WeightRotationMode> = OnceLock::new();
     *CACHED.get_or_init(|| {
@@ -441,9 +445,11 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "AX_MLX_EXPERIMENTAL_WEIGHT_ROTATION")]
-    fn parse_mode_rejects_unknown_value() {
-        let _ = parse_weight_rotation_mode(Some("rotate"));
+    fn parse_mode_falls_back_to_off_on_unknown_value() {
+        assert_eq!(
+            parse_weight_rotation_mode(Some("rotate")),
+            WeightRotationMode::Off
+        );
     }
 
     #[test]
