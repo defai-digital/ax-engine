@@ -272,6 +272,16 @@ pub(crate) fn build_keep_alive_stream(
     )
 }
 
+/// Bound on a single send into the relay channel. This is independent of
+/// `StreamDeadlines` — it targets a *stalled consumer* (a client that has
+/// stopped reading without closing the connection: a network stall, a
+/// backgrounded mobile client, or a deliberately slow reader) rather than
+/// producer idleness. Without this bound, `relay_tx.send(event).await` on a
+/// full, undrained channel blocks indefinitely and the loop never returns
+/// to check `deadlines` at all — silently defeating both
+/// `--stream-idle-timeout-secs` and `--stream-max-duration-secs`.
+const RELAY_SEND_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// Relays events from `rx` to a fresh channel, enforcing `deadlines`. On
 /// expiry, sends one synthetic error event + `[DONE]` (matching
 /// `send_stream_error`'s shape) and returns, dropping the original `rx` —
@@ -290,10 +300,15 @@ fn spawn_deadline_relay(
                 .max_duration
                 .map(|max| max.saturating_sub(start.elapsed()));
             if max_duration_remaining == Some(Duration::ZERO) {
-                send_stream_error_async(
-                    &relay_tx,
-                    ErrorResponse::server_error(
-                        "stream exceeded the configured maximum duration".to_string(),
+                // Best-effort only: if the consumer is stalled this may also
+                // time out, in which case we just give up below regardless.
+                let _ = tokio::time::timeout(
+                    RELAY_SEND_TIMEOUT,
+                    send_stream_error_async(
+                        &relay_tx,
+                        ErrorResponse::server_error(
+                            "stream exceeded the configured maximum duration".to_string(),
+                        ),
                     ),
                 )
                 .await;
@@ -309,8 +324,10 @@ fn spawn_deadline_relay(
             };
             match tokio::time::timeout(wait, rx.recv()).await {
                 Ok(Some(event)) => {
-                    if relay_tx.send(event).await.is_err() {
-                        return; // downstream SSE response dropped
+                    match tokio::time::timeout(RELAY_SEND_TIMEOUT, relay_tx.send(event)).await {
+                        Ok(Ok(())) => {}
+                        Ok(Err(_)) => return, // downstream SSE response dropped
+                        Err(_elapsed) => return, // consumer stalled; stop waiting on it
                     }
                 }
                 Ok(None) => return, // producer finished normally
@@ -323,9 +340,12 @@ fn spawn_deadline_relay(
                     } else {
                         "stream exceeded the configured idle timeout"
                     };
-                    send_stream_error_async(
-                        &relay_tx,
-                        ErrorResponse::server_error(message.to_string()),
+                    let _ = tokio::time::timeout(
+                        RELAY_SEND_TIMEOUT,
+                        send_stream_error_async(
+                            &relay_tx,
+                            ErrorResponse::server_error(message.to_string()),
+                        ),
                     )
                     .await;
                     return;
@@ -352,4 +372,94 @@ async fn send_stream_error_async(tx: &StreamEventSender, error: ErrorResponse) {
         .send(Ok(Event::default().event("error").data(payload)))
         .await;
     let _ = tx.send(Ok(Event::default().data("[DONE]"))).await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A stalled consumer (never drains `relay_rx`) must not block the
+    /// relay loop forever — it must give up and drop its sender once a
+    /// single send exceeds `RELAY_SEND_TIMEOUT`, regardless of
+    /// `StreamDeadlines`. Without this, a client that stops reading
+    /// without closing the connection silently defeats both
+    /// `--stream-idle-timeout-secs` and `--stream-max-duration-secs`,
+    /// since the loop never returns to check them while blocked on send.
+    #[tokio::test(start_paused = true)]
+    async fn deadline_relay_gives_up_when_consumer_stalls_past_send_timeout() {
+        let (tx, rx) = mpsc::channel::<StreamEvent>(STREAM_CHANNEL_CAPACITY);
+        let deadlines = StreamDeadlines {
+            idle_timeout: None,
+            // Long enough that only RELAY_SEND_TIMEOUT is in play here.
+            max_duration: Some(Duration::from_secs(3600)),
+        };
+        let mut relay_rx = spawn_deadline_relay(rx, deadlines);
+
+        // Fill relay_rx's buffer to capacity with ordinary events (these
+        // all forward without blocking), then send one more "canary" event
+        // whose forward attempt blocks on the full, undrained relay_rx —
+        // the stalled-consumer condition this test exercises.
+        for _ in 0..STREAM_CHANNEL_CAPACITY {
+            tx.send(Ok(Event::default().data("filler")))
+                .await
+                .expect("filler send should succeed");
+        }
+        tx.send(Ok(Event::default().data("canary")))
+            .await
+            .expect("canary send should succeed");
+
+        // Wait past RELAY_SEND_TIMEOUT WITHOUT touching relay_rx at all —
+        // draining it here would itself free capacity and let the "stalled"
+        // send succeed, defeating the test. Paused-time auto-advance fires
+        // this sleep (and, along the way, the relay's own send-timeout
+        // timer) without a real-time wait.
+        tokio::time::sleep(RELAY_SEND_TIMEOUT + Duration::from_secs(1)).await;
+
+        // Now drain everything that arrived. The canary must NOT be among
+        // it: if it is, the relay never actually gave up on the stalled
+        // send, it just eventually delivered it late.
+        let mut received = Vec::new();
+        while let Ok(Some(event)) =
+            tokio::time::timeout(Duration::from_secs(1), relay_rx.recv()).await
+        {
+            received.push(event);
+        }
+        assert_eq!(
+            received.len(),
+            STREAM_CHANNEL_CAPACITY,
+            "only the pre-stall filler events should have been forwarded \
+             before the relay gave up"
+        );
+        assert!(
+            received
+                .iter()
+                .all(|event| !format!("{event:?}").contains("canary")),
+            "the canary send must have been abandoned once it timed out, \
+             not eventually delivered"
+        );
+    }
+
+    #[tokio::test]
+    async fn deadline_relay_forwards_events_normally_when_consumer_drains() {
+        let (tx, rx) = mpsc::channel::<StreamEvent>(STREAM_CHANNEL_CAPACITY);
+        let deadlines = StreamDeadlines {
+            idle_timeout: Some(Duration::from_secs(60)),
+            max_duration: Some(Duration::from_secs(60)),
+        };
+        let mut relay_rx = spawn_deadline_relay(rx, deadlines);
+
+        tx.send(Ok(Event::default().data("hello")))
+            .await
+            .expect("send should succeed");
+        drop(tx);
+
+        let forwarded = relay_rx.recv().await.expect("event should be forwarded");
+        let Ok(event) = forwarded;
+        assert!(format!("{event:?}").contains("hello"));
+
+        assert!(
+            relay_rx.recv().await.is_none(),
+            "relay should close its side once the producer finishes"
+        );
+    }
 }

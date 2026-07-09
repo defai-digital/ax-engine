@@ -28,6 +28,7 @@ tonic-build = "0.12"
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
+tokio = { version = "1", features = ["test-util"] }
 
 [lints]
 workspace = true
