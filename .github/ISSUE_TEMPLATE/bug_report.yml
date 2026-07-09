@@ -1,0 +1,66 @@
+name: Bug report
+description: A bug, regression, install problem, or compatibility gap
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        See [CONTRIBUTING.md](../../CONTRIBUTING.md) for what makes a bug
+        report actionable. Security vulnerabilities should go to
+        [SECURITY.md](../../SECURITY.md) instead of a public issue.
+
+  - type: input
+    id: version
+    attributes:
+      label: AX Engine version, commit, or release build
+      placeholder: e.g. 6.8.2, or a commit SHA
+    validations:
+      required: true
+
+  - type: textarea
+    id: host
+    attributes:
+      label: Host details
+      description: macOS version, chip, memory size, and whether the machine was plugged in or thermally constrained.
+      placeholder: e.g. macOS 26.1, M4 Max, 64 GB, plugged in
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Exact command / request payload
+      description: The exact command, request payload, model ID, model artifact path, and backend route used.
+      render: shell
+    validations:
+      required: true
+
+  - type: dropdown
+    id: backend
+    attributes:
+      label: Backend route
+      description: Whether the issue reproduces with direct AX mode, AX n-gram mode, delegated mlx_lm, or llama.cpp.
+      multiple: true
+      options:
+        - Direct AX mode
+        - AX n-gram mode
+        - Delegated mlx_lm
+        - llama.cpp
+        - Not sure
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: Logs, JSON responses, screenshots, or terminal output are welcome here.
+    validations:
+      required: true

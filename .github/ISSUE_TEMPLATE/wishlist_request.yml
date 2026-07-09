@@ -1,0 +1,39 @@
+name: Wishlist request
+description: A request for a model, route, SDK behavior, server behavior, tool, or documentation
+labels: ["wishlist"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        See [CONTRIBUTING.md](../../CONTRIBUTING.md) for the project's
+        evidence-first contribution policy. We generally do not accept
+        unsolicited code PRs — file the request here first.
+
+  - type: textarea
+    id: workflow
+    attributes:
+      label: User workflow you want to support
+    validations:
+      required: true
+
+  - type: textarea
+    id: target
+    attributes:
+      label: Model family, quantization, context length, and serving mode
+      placeholder: e.g. Qwen3.6-35B-A3B, 6-bit, 32k context, direct AX mode
+    validations:
+      required: true
+
+  - type: textarea
+    id: why
+    attributes:
+      label: Why this matters compared with the currently documented routes
+      description: See docs/SUPPORTED-MODELS.md and docs/API-COMPATIBILITY.md for what's already supported.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reference
+    attributes:
+      label: Reference behavior
+      description: Any reference behavior from mlx_lm, llama.cpp, a paper, or another runtime.

@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Benchmark results / methodology feedback
+    url: https://github.com/defai-digital/ax-engine/blob/main/CONTRIBUTING.md#benchmark-results
+    about: Reproducible performance benchmark reports don't fit the bug-report shape — see CONTRIBUTING.md for what to include.
+  - name: Security vulnerability
+    url: https://github.com/defai-digital/ax-engine/security/advisories/new
+    about: Please report security issues privately instead of opening a public issue — see SECURITY.md.
