@@ -303,6 +303,12 @@ async fn ollama_chat_defaults_to_ndjson_stream_shape() {
     assert_eq!(lines[1]["done"], json!(true));
     assert_eq!(lines[1]["done_reason"], json!("length"));
     assert_eq!(lines[1]["eval_count"], json!(5));
+    // Real Ollama always includes `message` on the terminal line so clients
+    // parsing every NDJSON line with a uniform schema don't fail on it.
+    assert_eq!(
+        lines[1]["message"],
+        json!({"role": "assistant", "content": ""})
+    );
 }
 
 #[tokio::test]
@@ -438,6 +444,9 @@ async fn ollama_generate_defaults_to_ndjson_stream_shape() {
     assert_eq!(lines[1]["done"], json!(true));
     assert_eq!(lines[1]["done_reason"], json!("length"));
     assert_eq!(lines[1]["eval_count"], json!(3));
+    // Real Ollama always includes `response` on the terminal line so clients
+    // parsing every NDJSON line with a uniform schema don't fail on it.
+    assert_eq!(lines[1]["response"], json!(""));
 }
 
 #[tokio::test]

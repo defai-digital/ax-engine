@@ -321,6 +321,14 @@ pub(crate) fn build_openai_completion_request(
         "OpenAI completions",
         &multimodal_inputs,
     )?;
+    let stop_sequences = request
+        .stop
+        .map(OpenAiStopInput::into_vec)
+        .unwrap_or_default();
+    reject_unsupported_stop_sequences_on_native_backend(
+        live.runtime_report.selected_backend,
+        &stop_sequences,
+    )?;
     let (input_tokens, input_text) = match request.prompt {
         OpenAiPromptInput::Text(text) => {
             reject_openai_multimodal_inputs_without_tokens(
@@ -353,10 +361,7 @@ pub(crate) fn build_openai_completion_request(
     let payload = OpenAiBuiltPayload {
         sampling: build_openai_sampling(live, sampling_params),
         multimodal_inputs,
-        stop_sequences: request
-            .stop
-            .map(OpenAiStopInput::into_vec)
-            .unwrap_or_default(),
+        stop_sequences,
         stream: request.stream,
         metadata,
     };
@@ -455,10 +460,19 @@ pub(crate) fn build_openai_chat_request(
     let structured_output = openai_response_format_is_structured(request.response_format.as_ref());
     let metadata = openai_workload_metadata(request.metadata, tool_call, structured_output);
 
+    let user_stop = request
+        .stop
+        .map(OpenAiStopInput::into_vec)
+        .unwrap_or_default();
+    reject_unsupported_stop_sequences_on_native_backend(
+        live.runtime_report.selected_backend,
+        &user_stop,
+    )?;
+
     let payload = OpenAiBuiltPayload {
         sampling: build_openai_sampling(live, sampling_params),
         multimodal_inputs,
-        stop_sequences: openai_chat_stop_sequences(live.model_id.as_ref(), request.stop),
+        stop_sequences: chat::stop_sequences(live.model_id.as_ref(), user_stop),
         stream: request.stream,
         metadata,
     };
@@ -971,6 +985,34 @@ fn json_number_is_nonzero(value: &serde_json::Number) -> bool {
         .or_else(|| value.as_u64().map(|value| value != 0))
         .or_else(|| value.as_f64().map(|value| value != 0.0))
         .unwrap_or(true)
+}
+
+/// Client-supplied stop sequences (`stop` / Anthropic `stop_sequences` /
+/// Ollama `options.stop`) are only enforced by the delegated llama.cpp and
+/// mlx_lm backends, which forward them to the upstream process/server. The
+/// native MLX backend's `RequestSubmission`/`SamplingParams` have no
+/// string-stop-sequence concept at all — the value used to reach
+/// `GenerateRequest.stop_sequences` and then get silently discarded, so the
+/// model kept generating straight through the stop string until EOS or
+/// `max_tokens`. Fail closed instead: this checks the RAW, caller-supplied
+/// stop list, not `chat::stop_sequences`'s merged output, so model-family
+/// default stops (e.g. Gemma4's `<end_of_turn>`, enforced separately via the
+/// tokenizer's own EOS token id) are never rejected — only an explicit,
+/// unsupported-on-native client `stop` value is.
+fn reject_unsupported_stop_sequences_on_native_backend(
+    selected_backend: SelectedBackend,
+    stop: &[String],
+) -> Result<(), (StatusCode, Json<ErrorResponse>)> {
+    if selected_backend != SelectedBackend::Mlx || stop.is_empty() {
+        return Ok(());
+    }
+    Err(error_response(
+        StatusCode::BAD_REQUEST,
+        "unsupported_parameter",
+        "stop sequences are not supported on the native MLX backend yet; the delegated \
+         llama.cpp and mlx_lm backends honor them"
+            .to_string(),
+    ))
 }
 
 /// OpenAI sampling params AX does not implement. Non-default values fail

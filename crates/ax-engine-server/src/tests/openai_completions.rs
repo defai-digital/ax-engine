@@ -218,6 +218,71 @@ async fn openai_completion_request_rejects_unsupported_sampling_params() {
 }
 
 #[tokio::test]
+async fn openai_completion_request_rejects_client_stop_on_native_backend() {
+    // The native MLX backend has no string-stop-sequence concept in its
+    // request submission at all; `GenerateRequest.stop_sequences` used to be
+    // silently discarded, so the model kept generating straight through the
+    // caller's stop string. Fail closed instead of doing that silently.
+    let artifact_dir = minimal_tokenizer_artifact("native-openai-completion-stop-rejected");
+    let state = native_mlx_openai_builder_state("qwen3", &artifact_dir);
+    let live = state.snapshot();
+
+    let request: OpenAiCompletionHttpRequest = serde_json::from_value(json!({
+        "model": "qwen3",
+        "prompt": "hello",
+        "max_tokens": 8,
+        "stop": ["###"]
+    }))
+    .expect("sample completion request should deserialize");
+
+    let error = match build_openai_completion_request(&live, request) {
+        Ok(_) => panic!("client-supplied stop must fail closed on the native backend"),
+        Err(error) => error,
+    };
+    assert_eq!(error.0, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        error.1.0.error.code.as_deref(),
+        Some("unsupported_parameter")
+    );
+
+    let request: OpenAiCompletionHttpRequest = serde_json::from_value(json!({
+        "model": "qwen3",
+        "prompt": "hello",
+        "max_tokens": 8
+    }))
+    .expect("sample completion request should deserialize");
+    build_openai_completion_request(&live, request)
+        .expect("request without a client stop should still build on the native backend");
+
+    std::fs::remove_dir_all(artifact_dir).expect("artifact dir should clean up");
+}
+
+#[tokio::test]
+async fn openai_completion_request_allows_client_stop_on_delegated_backend() {
+    // Delegated backends genuinely forward `stop` upstream — must not be
+    // rejected there.
+    let state = llama_cpp_server_state("http://127.0.0.1:1".to_string());
+    let live = state.snapshot();
+
+    let request: OpenAiCompletionHttpRequest = serde_json::from_value(json!({
+        "model": "qwen3",
+        "prompt": "hello",
+        "max_tokens": 8,
+        "stop": ["###"]
+    }))
+    .expect("sample completion request should deserialize");
+
+    let built = build_openai_completion_request(&live, request)
+        .expect("client stop should be accepted on the delegated llama.cpp backend");
+    assert!(
+        built
+            .generate_request
+            .stop_sequences
+            .contains(&"###".to_string())
+    );
+}
+
+#[tokio::test]
 async fn openai_completion_request_tokenizes_text_for_native_mlx_backend() {
     let artifact_dir = minimal_tokenizer_artifact("native-openai-completion-tokenizer");
     let state = native_mlx_openai_builder_state("qwen3", &artifact_dir);

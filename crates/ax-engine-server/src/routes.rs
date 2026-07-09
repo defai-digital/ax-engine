@@ -275,11 +275,14 @@ fn parse_max_request_body_bytes(value: Option<String>) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use axum::body::Body;
-    use axum::http::{Request, header};
+    use axum::http::{Request, StatusCode, header};
+
+    use std::sync::Arc;
+    use std::sync::atomic::Ordering;
 
     use super::{
-        constant_time_str_eq, parse_max_concurrent_requests, parse_max_request_body_bytes,
-        parse_request_timeout_secs, request_has_valid_bearer_token,
+        InFlightRequestGuard, ServerMetrics, constant_time_str_eq, parse_max_concurrent_requests,
+        parse_max_request_body_bytes, parse_request_timeout_secs, request_has_valid_bearer_token,
     };
 
     #[test]
@@ -380,5 +383,38 @@ mod tests {
 
         let missing = Request::builder().body(Body::empty()).unwrap();
         assert!(!request_has_valid_bearer_token(&missing, "secret"));
+    }
+
+    #[test]
+    fn in_flight_guard_decrements_on_normal_finish() {
+        let metrics = Arc::new(ServerMetrics::default());
+        let guard = InFlightRequestGuard::new(metrics.clone());
+        assert_eq!(metrics.http_requests_in_flight.load(Ordering::Relaxed), 1);
+
+        guard.finish(StatusCode::OK);
+        assert_eq!(metrics.http_requests_in_flight.load(Ordering::Relaxed), 0);
+        assert_eq!(metrics.http_status_2xx_total.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn in_flight_guard_decrements_on_drop_without_finish() {
+        // Reproduces a client disconnect / reverse-proxy timeout: the
+        // request future is dropped mid-poll, so `finish()` is never
+        // called. Before the fix, `http_requests_in_flight` leaked
+        // permanently in this case.
+        let metrics = Arc::new(ServerMetrics::default());
+        {
+            let _guard = InFlightRequestGuard::new(metrics.clone());
+            assert_eq!(metrics.http_requests_in_flight.load(Ordering::Relaxed), 1);
+        }
+        assert_eq!(
+            metrics.http_requests_in_flight.load(Ordering::Relaxed),
+            0,
+            "dropping the guard without finish() must still release the in-flight gauge"
+        );
+        // No status bucket should be attributed to an abandoned request.
+        assert_eq!(metrics.http_status_2xx_total.load(Ordering::Relaxed), 0);
+        assert_eq!(metrics.http_status_4xx_total.load(Ordering::Relaxed), 0);
+        assert_eq!(metrics.http_status_5xx_total.load(Ordering::Relaxed), 0);
     }
 }

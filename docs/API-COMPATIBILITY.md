@@ -42,6 +42,13 @@ These are not in the current compatibility contract:
   response-format controls; non-default `n`, `best_of`, `frequency_penalty`,
   `presence_penalty`, and `logit_bias` values fail closed with an
   `unsupported_parameter` error instead of being silently ignored
+- client-supplied stop sequences (`stop`, Anthropic `stop_sequences`, Ollama
+  `options.stop`) on the repo-owned native MLX backend: only the delegated
+  `llama_cpp`/`mlx_lm_delegated` backends forward and honor them today; a
+  non-empty stop list on native MLX fails closed with an
+  `unsupported_parameter` error instead of being silently ignored. Model-
+  family default stop tokens (e.g. Gemma 4's `<end_of_turn>`) are unaffected
+  — those are enforced natively via the tokenizer's own EOS token id
 - full tokenizer ownership or arbitrary model chat-template discovery inside
   `ax-engine-server`
 - full Ollama daemon parity such as model pull/push/create/copy/delete,

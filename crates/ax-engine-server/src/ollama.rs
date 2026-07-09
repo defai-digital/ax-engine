@@ -552,6 +552,7 @@ fn drive_ollama_native_events<N>(
                     OllamaNativeStreamKind::Chat => json!({
                         "model": summary.model,
                         "created_at": summary.created_at,
+                        "message": {"role": "assistant", "content": ""},
                         "done": true,
                         "done_reason": summary.done_reason,
                         "total_duration": summary.total_duration,
@@ -990,6 +991,10 @@ fn ollama_chat_final_chunk(response: &OllamaChatResponse) -> Value {
     json!({
         "model": response.model,
         "created_at": response.created_at,
+        // Real Ollama always includes `message` (with empty content) on the
+        // terminal `done: true` line; a client parsing every NDJSON line
+        // with a uniform schema would otherwise fail on the last line.
+        "message": {"role": "assistant", "content": ""},
         "done": true,
         "done_reason": response.done_reason,
         "total_duration": response.total_duration,
@@ -1014,6 +1019,10 @@ fn ollama_generate_final_chunk(response: &OllamaGenerateResponse) -> Value {
     json!({
         "model": response.model,
         "created_at": response.created_at,
+        // Real Ollama always includes `response` (empty string) on the
+        // terminal `done: true` line; a client parsing every NDJSON line
+        // with a uniform schema would otherwise fail on the last line.
+        "response": "",
         "done": true,
         "done_reason": response.done_reason,
         "total_duration": response.total_duration,
