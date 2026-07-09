@@ -1,0 +1,83 @@
+{
+  "schema_version": "ax.mlx_inference_stack.incomplete.v1",
+  "intended_schema_version": "ax.mlx_inference_stack.v2",
+  "publication_candidate": false,
+  "status": "incomplete",
+  "reason": "benchmark_started_output_pending",
+  "model": "/Volumes/Ext4T/models/hub/models--mlx-community--Qwen3.6-27B-4bit/snapshots/c000ac2c2057d94be3fa931000c31723aac53282",
+  "model_repo_id": "mlx-community/Qwen3.6-27B-4bit",
+  "model_dir": "/Volumes/Ext4T/models/hub/models--mlx-community--Qwen3.6-27B-4bit/snapshots/c000ac2c2057d94be3fa931000c31723aac53282",
+  "output_path": "benchmarks/results/inference/mlx-inference/2026-07-07-ax-direct-only-record-refresh-r2/qwen3_6-27b-4bit.json",
+  "benchmark_window": {
+    "started_at": "2026-07-07T15:36:52-0400",
+    "finished_at": null,
+    "elapsed_seconds": null,
+    "performance_conditions_start": {
+      "load_average": {
+        "one_minute": 1.978,
+        "five_minutes": 1.792,
+        "fifteen_minutes": 1.665
+      },
+      "power_source": "AC Power",
+      "battery_status": "-InternalBattery-0 (id=36372579)\t80%; AC attached; not charging present: true",
+      "thermal_status_lines": [
+        "Note: No thermal warning level has been recorded",
+        "Note: No performance warning level has been recorded",
+        "Note: No CPU power status has been recorded"
+      ],
+      "thermal_warning_recorded": false,
+      "performance_warning_recorded": false,
+      "cpu_power_status_recorded": false,
+      "top_processes_cpu": [
+        {
+          "pid": 24353,
+          "state": "Ss",
+          "cpu_percent": 18.0,
+          "command": "Python"
+        },
+        {
+          "pid": 16696,
+          "state": "S",
+          "cpu_percent": 4.2,
+          "command": "Python"
+        },
+        {
+          "pid": 615,
+          "state": "Ss",
+          "cpu_percent": 1.6,
+          "command": "WindowServer"
+        },
+        {
+          "pid": 608,
+          "state": "Ss",
+          "cpu_percent": 1.1,
+          "command": "notifyd"
+        },
+        {
+          "pid": 21709,
+          "state": "S",
+          "cpu_percent": 0.9,
+          "command": "Activity Monitor"
+        },
+        {
+          "pid": 1,
+          "state": "Ss",
+          "cpu_percent": 0.5,
+          "command": "launchd"
+        },
+        {
+          "pid": 541,
+          "state": "Ss",
+          "cpu_percent": 0.4,
+          "command": "logd"
+        },
+        {
+          "pid": 582,
+          "state": "Ss",
+          "cpu_percent": 0.3,
+          "command": "opendirectoryd"
+        }
+      ]
+    }
+  }
+}

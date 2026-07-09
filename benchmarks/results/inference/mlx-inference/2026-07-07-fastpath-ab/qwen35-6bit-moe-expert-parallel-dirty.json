@@ -1,0 +1,33 @@
+{
+  "schema_version": "ax.mlx_inference_stack.incomplete.v1",
+  "intended_schema_version": "ax.mlx_inference_stack.v2",
+  "publication_candidate": false,
+  "status": "incomplete",
+  "reason": "benchmark_started_output_pending",
+  "model": "mlx-community/Qwen3.6-35B-A3B-6bit",
+  "model_repo_id": "mlx-community/Qwen3.6-35B-A3B-6bit",
+  "model_dir": "/Users/akiralam/.cache/huggingface/hub/models--mlx-community--Qwen3.6-35B-A3B-6bit/snapshots/cb7e092ef8efe540bc3672c8929c4adbe5f4f759",
+  "output_path": "benchmarks/results/inference/mlx-inference/2026-07-07-fastpath-ab/qwen35-6bit-moe-expert-parallel-dirty.json",
+  "benchmark_window": {
+    "started_at": "2026-07-07T11:26:44-0400",
+    "finished_at": null,
+    "elapsed_seconds": null,
+    "performance_conditions_start": {
+      "load_average": {
+        "one_minute": 4.064,
+        "five_minutes": 4.05,
+        "fifteen_minutes": 4.204
+      },
+      "power_source": "AC Power",
+      "battery_status": "-InternalBattery-0 (id=36372579)\t80%; AC attached; not charging present: true",
+      "thermal_status_lines": [
+        "Note: No thermal warning level has been recorded",
+        "Note: No performance warning level has been recorded",
+        "Note: No CPU power status has been recorded"
+      ],
+      "thermal_warning_recorded": false,
+      "performance_warning_recorded": false,
+      "cpu_power_status_recorded": false
+    }
+  }
+}

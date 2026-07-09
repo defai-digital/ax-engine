@@ -1,0 +1,75 @@
+{
+  "schema_version": "ax.mlx_inference_stack.incomplete.v1",
+  "intended_schema_version": "ax.mlx_inference_stack.v2",
+  "publication_candidate": false,
+  "status": "incomplete",
+  "reason": "benchmark_started_output_pending",
+  "model": "mlx-community/gemma-4-e4b-it-4bit",
+  "model_repo_id": "mlx-community/gemma-4-e4b-it-4bit",
+  "model_dir": "/Volumes/Ext4T/models/hub/models--mlx-community--gemma-4-e4b-it-4bit/snapshots/deb1db712068b1c9f83fb1c97f08c1204b9459a1",
+  "output_path": "/Users/akiralam/code/ax-engine/benchmarks/results/inference/mlx-inference/2026-07-07-ax-direct-paused-code-refresh/gemma-4-e4b-it-6bit.json",
+  "benchmark_window": {
+    "started_at": "2026-07-07T13:18:05-0400",
+    "finished_at": null,
+    "elapsed_seconds": null,
+    "performance_conditions_start": {
+      "load_average": {
+        "one_minute": 1.276,
+        "five_minutes": 1.363,
+        "fifteen_minutes": 1.661
+      },
+      "power_source": "AC Power",
+      "battery_status": "-InternalBattery-0 (id=36372579)\t80%; AC attached; not charging present: true",
+      "thermal_status_lines": [
+        "Note: No thermal warning level has been recorded",
+        "Note: No performance warning level has been recorded",
+        "Note: No CPU power status has been recorded"
+      ],
+      "thermal_warning_recorded": false,
+      "performance_warning_recorded": false,
+      "cpu_power_status_recorded": false,
+      "top_processes_cpu": [
+        {
+          "pid": 664,
+          "cpu_percent": 10.1,
+          "command": "airportd"
+        },
+        {
+          "pid": 1191,
+          "cpu_percent": 6.1,
+          "command": "WiFiAgent"
+        },
+        {
+          "pid": 1275,
+          "cpu_percent": 1.2,
+          "command": "ControlCenter"
+        },
+        {
+          "pid": 582,
+          "cpu_percent": 0.8,
+          "command": "opendirectoryd"
+        },
+        {
+          "pid": 97703,
+          "cpu_percent": 0.6,
+          "command": "Python"
+        },
+        {
+          "pid": 1373,
+          "cpu_percent": 0.6,
+          "command": "Finder"
+        },
+        {
+          "pid": 541,
+          "cpu_percent": 0.5,
+          "command": "logd"
+        },
+        {
+          "pid": 608,
+          "cpu_percent": 0.4,
+          "command": "notifyd"
+        }
+      ]
+    }
+  }
+}

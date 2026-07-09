@@ -1,0 +1,108 @@
+{
+  "records": [
+    {
+      "slug": "gemma-4-e2b-it-4bit",
+      "index": 1,
+      "total": 12,
+      "started_at": "2026-07-07T12:53:53-0400",
+      "finished_at": "2026-07-07T13:00:47-0400",
+      "returncode": 0,
+      "log_path": "benchmarks/results/inference/mlx-inference/2026-07-07-ax-direct-paused-code-refresh/logs/gemma-4-e2b-it-4bit.log",
+      "output_path": "benchmarks/results/inference/mlx-inference/2026-07-07-ax-direct-paused-code-refresh/gemma-4-e2b-it-4bit.json",
+      "status": "ok",
+      "rows": [
+        {
+          "prompt_tokens": 128,
+          "decode_tok_s": 234.0472994964326,
+          "prefill_tok_s": 6152.958707878672,
+          "ttft_ms": 20.802999999999997
+        },
+        {
+          "prompt_tokens": 512,
+          "decode_tok_s": 219.2411515641486,
+          "prefill_tok_s": 11469.790989941532,
+          "ttft_ms": 44.638999999999996
+        },
+        {
+          "prompt_tokens": 2048,
+          "decode_tok_s": 213.83513311237036,
+          "prefill_tok_s": 17617.204301075268,
+          "ttft_ms": 116.25
+        }
+      ]
+    },
+    {
+      "slug": "gemma-4-e2b-it-6bit",
+      "index": 2,
+      "total": 12,
+      "started_at": "2026-07-07T13:00:47-0400",
+      "finished_at": "2026-07-07T13:13:17-0400",
+      "returncode": 0,
+      "log_path": "benchmarks/results/inference/mlx-inference/2026-07-07-ax-direct-paused-code-refresh/logs/gemma-4-e2b-it-6bit.log",
+      "output_path": "benchmarks/results/inference/mlx-inference/2026-07-07-ax-direct-paused-code-refresh/gemma-4-e2b-it-6bit.json",
+      "status": "ok",
+      "rows": [
+        {
+          "prompt_tokens": 128,
+          "decode_tok_s": 184.0624892150885,
+          "prefill_tok_s": 5532.5034578146615,
+          "ttft_ms": 23.136
+        },
+        {
+          "prompt_tokens": 512,
+          "decode_tok_s": 180.34646246187012,
+          "prefill_tok_s": 16172.847305578369,
+          "ttft_ms": 31.657999999999998
+        },
+        {
+          "prompt_tokens": 2048,
+          "decode_tok_s": 174.17620099933595,
+          "prefill_tok_s": 23287.81142330828,
+          "ttft_ms": 87.943
+        }
+      ]
+    },
+    {
+      "slug": "gemma-4-e4b-it-4bit",
+      "index": 3,
+      "total": 12,
+      "started_at": "2026-07-07T13:13:17-0400",
+      "finished_at": "2026-07-07T13:18:05-0400",
+      "returncode": 0,
+      "log_path": "benchmarks/results/inference/mlx-inference/2026-07-07-ax-direct-paused-code-refresh/logs/gemma-4-e4b-it-4bit.log",
+      "output_path": "benchmarks/results/inference/mlx-inference/2026-07-07-ax-direct-paused-code-refresh/gemma-4-e4b-it-4bit.json",
+      "status": "ok",
+      "rows": [
+        {
+          "prompt_tokens": 128,
+          "decode_tok_s": 144.0140773760635,
+          "prefill_tok_s": 3399.102424516026,
+          "ttft_ms": 37.657000000000004
+        },
+        {
+          "prompt_tokens": 512,
+          "decode_tok_s": 141.00658875318229,
+          "prefill_tok_s": 7012.353795162572,
+          "ttft_ms": 73.014
+        },
+        {
+          "prompt_tokens": 2048,
+          "decode_tok_s": 137.44449873024905,
+          "prefill_tok_s": 8803.074198567781,
+          "ttft_ms": 232.646
+        }
+      ]
+    },
+    {
+      "slug": "gemma-4-e4b-it-6bit",
+      "index": 4,
+      "total": 12,
+      "started_at": "2026-07-07T13:18:05-0400",
+      "finished_at": "2026-07-07T13:33:24-0400",
+      "returncode": 1,
+      "log_path": "benchmarks/results/inference/mlx-inference/2026-07-07-ax-direct-paused-code-refresh/logs/gemma-4-e4b-it-6bit.log",
+      "output_path": "benchmarks/results/inference/mlx-inference/2026-07-07-ax-direct-paused-code-refresh/gemma-4-e4b-it-6bit.json",
+      "status": "failed"
+    }
+  ]
+}

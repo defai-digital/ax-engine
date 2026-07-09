@@ -1,0 +1,75 @@
+{
+  "schema_version": "ax.mlx_inference_stack.incomplete.v1",
+  "intended_schema_version": "ax.mlx_inference_stack.v2",
+  "publication_candidate": false,
+  "status": "incomplete",
+  "reason": "benchmark_started_output_pending",
+  "model": "/Volumes/Ext4T/models/hub/models--mlx-community--gemma-4-e2b-it-4bit/snapshots/99d9a53ff828d365a8ecae538e45f80a08d612cd",
+  "model_repo_id": "mlx-community/gemma-4-e2b-it-4bit",
+  "model_dir": "/Volumes/Ext4T/models/hub/models--mlx-community--gemma-4-e2b-it-4bit/snapshots/99d9a53ff828d365a8ecae538e45f80a08d612cd",
+  "output_path": "benchmarks/results/inference/mlx-inference/2026-07-07-ax-direct-only-record-refresh-r1/gemma-4-e2b-it-4bit.json",
+  "benchmark_window": {
+    "started_at": "2026-07-07T13:56:36-0400",
+    "finished_at": null,
+    "elapsed_seconds": null,
+    "performance_conditions_start": {
+      "load_average": {
+        "one_minute": 1.868,
+        "five_minutes": 2.891,
+        "fifteen_minutes": 3.337
+      },
+      "power_source": "AC Power",
+      "battery_status": "-InternalBattery-0 (id=36372579)\t80%; AC attached; not charging present: true",
+      "thermal_status_lines": [
+        "Note: No thermal warning level has been recorded",
+        "Note: No performance warning level has been recorded",
+        "Note: No CPU power status has been recorded"
+      ],
+      "thermal_warning_recorded": false,
+      "performance_warning_recorded": false,
+      "cpu_power_status_recorded": false,
+      "top_processes_cpu": [
+        {
+          "pid": 615,
+          "cpu_percent": 39.9,
+          "command": "WindowServer"
+        },
+        {
+          "pid": 1437,
+          "cpu_percent": 22.8,
+          "command": "RustDesk"
+        },
+        {
+          "pid": 49154,
+          "cpu_percent": 22.4,
+          "command": "Code Helper (Renderer)"
+        },
+        {
+          "pid": 24687,
+          "cpu_percent": 12.6,
+          "command": "Code Helper (Renderer)"
+        },
+        {
+          "pid": 24684,
+          "cpu_percent": 10.0,
+          "command": "Code Helper"
+        },
+        {
+          "pid": 62700,
+          "cpu_percent": 3.8,
+          "command": "Qoder"
+        },
+        {
+          "pid": 24534,
+          "cpu_percent": 2.6,
+          "command": "VTEncoderXPCService"
+        },
+        {
+          "pid": 24710,
+          "cpu_percent": 2.5,
+          "command": "Code Helper"
+        }
+      ]
+    }
+  }
+}

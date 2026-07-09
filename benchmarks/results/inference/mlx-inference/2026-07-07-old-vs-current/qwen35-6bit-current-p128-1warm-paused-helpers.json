@@ -1,0 +1,75 @@
+{
+  "schema_version": "ax.mlx_inference_stack.incomplete.v1",
+  "intended_schema_version": "ax.mlx_inference_stack.v2",
+  "publication_candidate": false,
+  "status": "incomplete",
+  "reason": "benchmark_started_output_pending",
+  "model": "/Users/akiralam/.cache/huggingface/hub/models--mlx-community--Qwen3.6-35B-A3B-6bit/snapshots/cb7e092ef8efe540bc3672c8929c4adbe5f4f759",
+  "model_repo_id": "mlx-community/Qwen3.6-35B-A3B-6bit",
+  "model_dir": "/Users/akiralam/.cache/huggingface/hub/models--mlx-community--Qwen3.6-35B-A3B-6bit/snapshots/cb7e092ef8efe540bc3672c8929c4adbe5f4f759",
+  "output_path": "benchmarks/results/inference/mlx-inference/2026-07-07-old-vs-current/qwen35-6bit-current-p128-1warm-paused-helpers.json",
+  "benchmark_window": {
+    "started_at": "2026-07-07T14:31:23-0400",
+    "finished_at": null,
+    "elapsed_seconds": null,
+    "performance_conditions_start": {
+      "load_average": {
+        "one_minute": 1.892,
+        "five_minutes": 2.099,
+        "fifteen_minutes": 2.209
+      },
+      "power_source": "AC Power",
+      "battery_status": "-InternalBattery-0 (id=36372579)\t80%; AC attached; not charging present: true",
+      "thermal_status_lines": [
+        "Note: No thermal warning level has been recorded",
+        "Note: No performance warning level has been recorded",
+        "Note: No CPU power status has been recorded"
+      ],
+      "thermal_warning_recorded": false,
+      "performance_warning_recorded": false,
+      "cpu_power_status_recorded": false,
+      "top_processes_cpu": [
+        {
+          "pid": 49154,
+          "cpu_percent": 25.3,
+          "command": "Code Helper (Renderer)"
+        },
+        {
+          "pid": 615,
+          "cpu_percent": 18.2,
+          "command": "WindowServer"
+        },
+        {
+          "pid": 1437,
+          "cpu_percent": 9.2,
+          "command": "RustDesk"
+        },
+        {
+          "pid": 24684,
+          "cpu_percent": 5.6,
+          "command": "Code Helper"
+        },
+        {
+          "pid": 62700,
+          "cpu_percent": 3.0,
+          "command": "Qoder"
+        },
+        {
+          "pid": 1189,
+          "cpu_percent": 2.1,
+          "command": "identityservicesd"
+        },
+        {
+          "pid": 24534,
+          "cpu_percent": 1.3,
+          "command": "VTEncoderXPCService"
+        },
+        {
+          "pid": 24710,
+          "cpu_percent": 1.2,
+          "command": "Code Helper"
+        }
+      ]
+    }
+  }
+}
