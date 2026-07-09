@@ -9,8 +9,8 @@ README should carry.
 
 This is a stitched peer comparison, not one interleaved physical-session
 benchmark. AX Engine rows were refreshed on current code on 2026-07-08; MTPLX
-and lightning-mlx rows are retained from the prior peer artifacts. The 27B
-4-bit rows load the same
+rows were refreshed with MTPLX 2.0.1 on 2026-07-09; lightning-mlx rows are
+retained from the prior peer artifacts. The 27B 4-bit rows load the same
 `ax-local/Qwen3.6-27B-MTP` sidecar across AX Engine, MTPLX, and lightning-mlx.
 The 35B-A3B peer rows remain production-configuration rows using the peer
 engines' Youssofal MTPLX-optimized packages. Treat the rows as audit evidence
@@ -18,9 +18,9 @@ and trend guidance, not as a single definitive peer-engine ranking.
 
 ## Limitations
 
-- **Model artifact identity is target-specific.** The retained 27B 4-bit
-  MTPLX and lightning-mlx rows use the same `ax-local/Qwen3.6-27B-MTP`
-  sidecar as the refreshed AX Engine row. The 35B-A3B peer rows still use Youssofal
+- **Model artifact identity is target-specific.** The 27B 4-bit MTPLX and
+  lightning-mlx rows use the same `ax-local/Qwen3.6-27B-MTP` sidecar as the
+  refreshed AX Engine row. The 35B-A3B peer rows still use Youssofal
   MTPLX-optimized packages, so those remain production-configuration rows
   rather than identical-weight engine-only comparisons.
 - **AX optimistic verify is not a promoted peer default.** The earlier AX 27B
@@ -32,9 +32,10 @@ and trend guidance, not as a single definitive peer-engine ranking.
   client-observed HTTP stream TTFT. These columns are shown for provenance but
   should not be read as a clean cross-engine prefill/TTFT leaderboard.
 - **Seeds differ outside the refreshed rows.** The refreshed AX rows use AX's
-  default seed 0; retained peer rows keep their source-run seed policy.
+  default seed 0; the refreshed MTPLX rows and retained lightning-mlx rows keep
+  their source-run seed policy.
 - **Composite artifact.** Rows are stitched from multiple runs from
-  2026-06-29 through 2026-07-08, not one physical same-session measurement.
+  2026-06-29 through 2026-07-09, not one physical same-session measurement.
 - **Dirty builds.** Some stitched raw artifacts were produced from local dirty
   checkouts. Reproducible publication should rerun every engine from clean
   tagged commits.
@@ -61,8 +62,8 @@ AX rows are strict and pass the output-degeneracy gate.
 | --- | ---: | ---: | ---: | --- |
 | Qwen3.6 27B 4-bit | 63.0 tok/s | 58.5 tok/s | 55.7 tok/s | Same AX sidecar across all three engines; AX leads this row |
 | Qwen3.6 27B 6-bit | 41.8 tok/s | - | - | No official comparable peer 27B 6-bit MTP artifact |
-| Qwen3.6 35B-A3B 4-bit | 172.4 tok/s | 138.1 tok/s | 116.2 tok/s | AX leads this production-config row |
-| Qwen3.6 35B-A3B 6-bit | 141.2 tok/s | 117.6 tok/s | 96.3 tok/s | AX leads this production-config row |
+| Qwen3.6 35B-A3B 4-bit | 172.4 tok/s | 137.9 tok/s | 116.2 tok/s | AX leads this production-config row |
+| Qwen3.6 35B-A3B 6-bit | 141.2 tok/s | 119.0 tok/s | 96.3 tok/s | AX leads this production-config row |
 
 ![Qwen3.6 MTP peer decode comparison](../assets/perf-mtp-peer-comparison-apples-to-apples.svg)
 
@@ -71,16 +72,16 @@ AX rows are strict and pass the output-degeneracy gate.
 | Target | Engine | Decode | Prefill | TTFT | Accept | Status |
 | --- | --- | ---: | ---: | ---: | ---: | --- |
 | Qwen3.6 27B 4-bit | AX Engine | 63.0 tok/s | 812.2 tok/s | 396 ms | 100.0% | ok; strict verify; 2026-07-08 refresh |
-| Qwen3.6 27B 4-bit | MTPLX | 58.5 tok/s | 653.4 tok/s | 485 ms | 98.4% | ok; same AX sidecar |
+| Qwen3.6 27B 4-bit | MTPLX | 58.5 tok/s | 676.1 tok/s | 485 ms | 98.8% | ok; same AX sidecar; MTPLX 2.0.1 |
 | Qwen3.6 27B 4-bit | lightning-mlx | 55.7 tok/s | 414.9 tok/s | 801 ms | 96.6% | ok; same AX sidecar |
 | Qwen3.6 27B 6-bit | AX Engine | 41.8 tok/s | 757.3 tok/s | 426 ms | 99.9% | ok; strict verify; 2026-07-08 refresh |
 | Qwen3.6 27B 6-bit | MTPLX | - | - | - | - | No official 27B 6-bit MTP artifact |
 | Qwen3.6 27B 6-bit | lightning-mlx | - | - | - | - | No official 27B 6-bit MTP artifact |
 | Qwen3.6 35B-A3B 4-bit | AX Engine | 172.4 tok/s | 2,096.7 tok/s | 153 ms | 100.0% | ok; strict verify; 2026-07-08 refresh |
-| Qwen3.6 35B-A3B 4-bit | MTPLX | 138.1 tok/s | 1,637.0 tok/s | 193 ms | 95.7% | ok |
+| Qwen3.6 35B-A3B 4-bit | MTPLX | 137.9 tok/s | 1,639.7 tok/s | 191 ms | 94.7% | ok; MTPLX 2.0.1 |
 | Qwen3.6 35B-A3B 4-bit | lightning-mlx | 116.2 tok/s | 1,466.5 tok/s | 215 ms | 100.0% | ok |
 | Qwen3.6 35B-A3B 6-bit | AX Engine | 141.2 tok/s | 1,828.8 tok/s | 177 ms | 100.0% | ok; strict verify; 2026-07-08 refresh |
-| Qwen3.6 35B-A3B 6-bit | MTPLX | 117.6 tok/s | 1,383.9 tok/s | 235 ms | 96.7% | ok |
+| Qwen3.6 35B-A3B 6-bit | MTPLX | 119.0 tok/s | 1,480.6 tok/s | 221 ms | 95.6% | ok; MTPLX 2.0.1 |
 | Qwen3.6 35B-A3B 6-bit | lightning-mlx | 96.3 tok/s | 1,215.8 tok/s | 272 ms | 100.0% | ok |
 
 ## Full Charts
@@ -97,13 +98,14 @@ accept rate need the limitations above to be interpreted correctly.
 ## Artifacts
 
 - Combined summary:
-  [`summary.md`](../../benchmarks/results/mtp-qwen36-matrix/2026-07-08-peer-comparison-apples-to-apples-refresh/summary.md),
-  [`summary.json`](../../benchmarks/results/mtp-qwen36-matrix/2026-07-08-peer-comparison-apples-to-apples-refresh/summary.json)
+  [`summary.md`](../../benchmarks/results/mtp-qwen36-matrix/2026-07-09-peer-comparison-apples-to-apples-refresh/summary.md),
+  [`summary.json`](../../benchmarks/results/mtp-qwen36-matrix/2026-07-09-peer-comparison-apples-to-apples-refresh/summary.json)
 - AX 2026-07-08 current-code rerun:
   [`summary.md`](../../benchmarks/results/mtp-qwen36-matrix/2026-07-08-qwen36-mtp-ax-current-code-refresh/summary.md)
-- Retained MTPLX and lightning-mlx peer rows are carried inside the stitched
-  summary above; those third-party engines were not rerun in the 2026-07-08
-  refresh.
+- MTPLX 2.0.1 rerun:
+  [`summary.md`](../../benchmarks/results/mtp-qwen36-matrix/2026-07-09-mtplx-v2-refresh/summary.md)
+- Retained lightning-mlx peer rows are carried inside the stitched summary
+  above; lightning-mlx was not rerun in the 2026-07-09 MTPLX refresh.
 
 ## What Would Make This Fully Fair
 

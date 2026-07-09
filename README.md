@@ -244,8 +244,7 @@ methodology, test setup, and reproduction details live in
 AX Engine `v6.8.2`. Direct-mode peer benchmarking is limited to the existing
 local `llama.cpp` and `mlx-lm` versions: `llama.cpp` `b9910` / `ggml` `0.15.3`
 for GGUF Metal reference rows and `mlx-lm` `0.31.3` for MLX reference rows.
-MTP peer benchmarking is limited to the existing local MTPLX version,
-`MTPLX 1.0.4`.
+MTP peer benchmarking uses the current local MTPLX release, `MTPLX 2.0.1`.
 
 Results are grouped by Session mode: speculative decoding (MTP), direct decode,
 and embeddings.
@@ -400,7 +399,8 @@ need separate interpretation:
 [`docs/mtp/qwen36-peer-comparison.md`](docs/mtp/qwen36-peer-comparison.md).
 
 This is a stitched peer comparison, not one interleaved physical-session
-benchmark. AX Engine and MTPLX rows were refreshed on the current code;
+benchmark. AX Engine rows were refreshed on the current code; MTPLX rows were
+refreshed with MTPLX 2.0.1;
 lightning-mlx rows are retained from the prior peer artifacts. The 27B 4-bit
 rows load the same
 `ax-local/Qwen3.6-27B-MTP` sidecar across AX Engine, MTPLX, and lightning-mlx;
@@ -413,15 +413,15 @@ artifacts remain useful only as audit/debug evidence.
 
 | Target | AX Engine decode | MTPLX decode | lightning-mlx decode | Readout |
 | --- | ---: | ---: | ---: | --- |
-| Qwen3.6 27B 4-bit | 63.0 tok/s | 58.2 tok/s | 55.7 tok/s | Same AX sidecar across all three engines; AX leads this row |
+| Qwen3.6 27B 4-bit | 63.0 tok/s | 58.5 tok/s | 55.7 tok/s | Same AX sidecar across all three engines; AX leads this row |
 | Qwen3.6 27B 6-bit | 41.8 tok/s | - | - | No official comparable peer 27B 6-bit MTP artifact |
-| Qwen3.6 35B-A3B 4-bit | 172.4 tok/s | 137.3 tok/s | 116.2 tok/s | AX leads this production-config row |
-| Qwen3.6 35B-A3B 6-bit | 141.2 tok/s | 118.8 tok/s | 96.3 tok/s | AX leads this production-config row |
+| Qwen3.6 35B-A3B 4-bit | 172.4 tok/s | 137.9 tok/s | 116.2 tok/s | AX leads this production-config row |
+| Qwen3.6 35B-A3B 6-bit | 141.2 tok/s | 119.0 tok/s | 96.3 tok/s | AX leads this production-config row |
 
 Full results, charts, artifact links, and fairness limitations:
 [`docs/mtp/qwen36-peer-comparison.md`](docs/mtp/qwen36-peer-comparison.md).
 Stitched chart source:
-[`benchmarks/results/mtp-qwen36-matrix/2026-07-08-peer-comparison-apples-to-apples-refresh/summary.json`](benchmarks/results/mtp-qwen36-matrix/2026-07-08-peer-comparison-apples-to-apples-refresh/summary.json).
+[`benchmarks/results/mtp-qwen36-matrix/2026-07-09-peer-comparison-apples-to-apples-refresh/summary.json`](benchmarks/results/mtp-qwen36-matrix/2026-07-09-peer-comparison-apples-to-apples-refresh/summary.json).
 For the older AX-only Qwen3.6 table across `flappy`, `long_code`, and
 `python_modules_long`, see
 [`docs/mtp/qwen36-matrix-refresh.md`](docs/mtp/qwen36-matrix-refresh.md). That
