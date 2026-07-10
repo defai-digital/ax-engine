@@ -11,8 +11,8 @@ AX surface for broader model coverage.
 - `ax-engine-bench`: workload-contract, readiness, direct-generate, and
   benchmark-support CLI
 - `ax-engine-sdk`: backend resolution and session contract
-- Python bindings and a JavaScript client
-- repo-owned MLX inference for supported Qwen/Gemma model artifacts
+- Python bindings, and JavaScript, Go, Ruby, Swift, and Mojo clients
+- repo-owned MLX inference for supported Qwen, Gemma, GLM, and embedding model artifacts
 - explicit delegated compatibility for `mlx_lm.server` and `llama.cpp`
 
 ## Choose A Runtime Path
@@ -173,10 +173,14 @@ python -m unittest discover -s python/tests -v
 ## Repository Areas
 
 - `crates/ax-engine-core`: core runtime contracts and bring-up execution loop
+- `crates/ax-engine-mlx`: MLX model graphs, KV cache, n-gram acceleration, MTP, TurboQuant, and runner dispatch
+- `crates/mlx-sys`: bindgen FFI over `ax_shim.h` to MLX C++; safe `MlxArray` RAII wrappers
 - `crates/ax-engine-bench`: workload-contract CLI and bring-up runtime harness
+- `crates/ax-engine-microbench`: isolated microbenchmarks and kernel dispatch probes
 - `crates/ax-engine-sdk`: SDK facade with backend resolution and session management
 - `crates/ax-engine-server`: local HTTP server adapter over the SDK
 - `sdk/javascript/`: repo-local JavaScript client package
+- `sdk/swift/`: native Swift async/await client package
 - `crates/ax-engine-py`: Python extension crate (PyO3)
 - `benchmarks/`: canonical benchmark manifests
 - `python/`: Python package wrapper, type stubs, tests, examples

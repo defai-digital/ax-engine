@@ -34,6 +34,7 @@ but the better local setup is to match the model to the workflow.
 | Default chatbot | Gemma 4 26B-A4B / 31B | 4-bit or 6-bit, 16K-32K | [ax-studio](https://github.com/defai-digital/ax-studio) | General assistant path for reasoning, chat, JSON/function calling, and on-device agent workflows |
 | General agentic model | Qwen3.6-35B-A3B / Qwen3.6-27B | 35B A3B 4-bit; 27B 4/5/6-bit, 16K-32K | AX server / SDK | Strong general agent and coding balance; sparse MoE keeps active compute low |
 | Coding specialist | Qwen3-Coder-Next | 6-bit + 16K default; 4-bit/5-bit + 32K when needed | [ax-code](https://github.com/defai-digital/ax-code) | Dedicated local coding-agent path for repo editing, tool use, and long coding sessions |
+| Embedding / RAG ingest | Qwen3-Embedding or EmbeddingGemma | 0.6B / 4B / 8B (Qwen3); 300M (EmbeddingGemma) | AX server `/v1/embeddings` | Sustained ingest-scale throughput; AX last-token pooling (Qwen3) or mean pooling + Dense head (EmbeddingGemma) |
 
 Suggested default stack:
 

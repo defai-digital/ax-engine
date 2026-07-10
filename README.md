@@ -171,6 +171,7 @@ Direct-support model families:
 | Qwen 3.6 | `Qwen3.6-35B-A3B` 4/6-bit, `Qwen3.6-27B` 4/5/6-bit | `qwen3_next`; fused sidecar-MTP paths |
 | Qwen3-Coder-Next | `Qwen3-Coder-Next-4bit` | Direct coding-agent path |
 | GLM 4.7 Flash | `glm4_moe_lite` / `glm4.7-flash-4bit` | Flash MLA + MoE graph |
+| GPT-OSS | `gpt-oss-20b`, `gpt-oss-120b` | MXFP4 MoE (128 experts, top-4); SwiGLU; alternating full/sliding-128 attention |
 
 Direct support means AX owns the `ax-engine-mlx` graph and loads MLX safetensors
 through the AX manifest path. Unsupported families fail closed by default.
@@ -1199,6 +1200,7 @@ Start with the task-based docs hub at [`docs/README.md`](docs/README.md).
 crates/ax-engine-core    Engine state machine, scheduler, KV manager, sampler
 crates/ax-engine-mlx     MLX model graph, n-gram acceleration, KV cache, runner
 crates/mlx-sys           bindgen FFI over ax_shim.h to MLX C++; safe MlxArray RAII wrappers
+crates/ax-engine-microbench Isolated microbenchmarks and kernel dispatch probes
 crates/ax-engine-sdk     Session API, backend resolution (MLX, mlx-lm delegated, or llama.cpp)
 crates/ax-engine-server  Axum HTTP/SSE adapter (OpenAI-compatible routes)
 crates/ax-engine-bench   Manifest-driven workload-contract CLI
@@ -1206,6 +1208,7 @@ crates/ax-engine-py      PyO3 extension (ABI3, Python 3.10+)
 sdk/javascript           TypeScript/JS HTTP SDK + LangChain adapter
 sdk/go/axengine          Go HTTP SDK
 sdk/ruby/                Ruby HTTP SDK (ax-engine-sdk gem)
+sdk/swift/               Swift async/await SDK (AxEngine package)
 sdk/mojo/                Mojo SDK (Python-interop)
 ```
 
@@ -1216,7 +1219,7 @@ Common development gates:
 ```bash
 cargo build --workspace
 cargo test --quiet
-cargo clippy --all-targets --all-features -- -D warnings
+cargo clippy --all-targets --all-features -- -D warnings --force-warn clippy::unwrap-used --force-warn clippy::expect-used --force-warn clippy::panic --force-warn clippy::dbg-macro --force-warn clippy::large-enum-variant
 cargo fmt
 maturin develop
 python -m unittest discover -s python/tests -v

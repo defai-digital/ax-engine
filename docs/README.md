@@ -105,6 +105,8 @@ diagnostic history, or out of scope for a claim.
   concurrency, latency, throughput, and SLO-goodput evidence
 - [Long Context](LONG-CONTEXT.md): long-context evidence, prefix-reuse
   boundaries, and current cold-prefill/concurrency limits
+- [Embedding Cold-Start](EMBEDDING_COLDSTART.md): `AX_MMAP_WEIGHTS`
+  measurement guide and default-on criteria for the mmap weight loader
 - [MTP Docs](mtp/README.md): MTP-specific navigation, validation notes, and
   tuning reports
 - [Qwen3.6 MTP Peer Benchmark](mtp/qwen36-peer-comparison.md): full AX Engine,

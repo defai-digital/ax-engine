@@ -1,8 +1,7 @@
 # Embedding cold-start: AX_MMAP_WEIGHTS measurement guide
 
 `AX_MMAP_WEIGHTS=1` selects a Rust-side memory-mapped safetensors
-loader for the MLX runner. The warm-cache numbers in the README's
-"Cold start (serverless / scale-to-zero)" section are useful but
+loader for the MLX runner. The warm-cache numbers are useful but
 understate the win because the OS page cache supplies most of the
 bytes on the second-and-later runs.
 
@@ -107,16 +106,19 @@ runtime default):
 2. ✅ True-cold mmap loader is not slower than C loader on any model.
 3. ✅ Bit-exact embedding output preserved (the 2026-05-12 warm-cache
    measurement already confirmed this; re-verify on cold).
-4. ✅ Tested on at least two macOS versions (Sonoma 14.x, Sequoia 15.x).
+4. ✅ Tested on at least two macOS versions (macOS 26.x Tahoe and the
+   next macOS release).
 5. ✅ Server-mode smoke (set env var before `ax-engine-server` start;
    issue `/v1/embeddings` request; compare output to default loader).
    The runner code path is the same as the bench example's, but the
    server lifecycle (axum + tokio + microbatcher) is what users
    actually hit — verify the env var propagates through it.
 
-Until all five criteria are met, keep `AX_MMAP_WEIGHTS` opt-in and
-document it under "Cold start (serverless / scale-to-zero)" in the
-README. The current setup intentionally leaves the C loader as the
+Until all five criteria are met, keep `AX_MMAP_WEIGHTS` opt-in.
+Document the feature in this page until the default-on criteria are
+met and the README gains a dedicated cold-start section.
+
+The current setup intentionally leaves the C loader as the
 default to avoid an underspecified behaviour change in a Mac-first
 runtime that hasn't been stress-tested on every macOS minor version
 yet.
