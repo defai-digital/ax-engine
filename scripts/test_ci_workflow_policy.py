@@ -66,7 +66,7 @@ class CiWorkflowPolicyTests(unittest.TestCase):
             path.name: path.read_text() for path in WORKFLOWS_DIR.glob("*.yml")
         }
 
-        for workflow in ("ci.yml", "coverage.yml", "brew-release.yml"):
+        for workflow in ("coverage.yml", "brew-release.yml"):
             runner_lines = [
                 line.strip()
                 for line in workflow_texts[workflow].splitlines()
@@ -79,6 +79,25 @@ class CiWorkflowPolicyTests(unittest.TestCase):
                 f"{workflow} must not validate AX Engine on Linux or pre-26 macOS",
             )
 
+        ci = workflow_texts["ci.yml"]
+        for job_name in (
+            "Rust",
+            "Scripts and Bench Smoke",
+            "Python Package",
+            "SDK Clients",
+            "Model Smoke",
+        ):
+            self.assertIn(
+                f"name: {job_name}\n    runs-on: macos-26",
+                ci,
+                f"{job_name} must validate AX Engine on macOS 26",
+            )
+        self.assertIn(
+            "name: Supply Chain\n    runs-on: ubuntu-latest",
+            ci,
+        )
+        self.assertIn("name: CI\n    runs-on: ubuntu-latest", ci)
+
         pypi = workflow_texts["pypi.yml"]
         build_wheel, publish = pypi.split(
             "  publish:\n    name: Publish to PyPI\n", maxsplit=1
@@ -86,9 +105,10 @@ class CiWorkflowPolicyTests(unittest.TestCase):
         self.assertIn("runs-on: macos-26", build_wheel)
         self.assertIn("Artifact upload only", publish)
 
-    def test_supply_chain_checks_run_natively_on_macos(self) -> None:
+    def test_supply_chain_checks_run_on_linux(self) -> None:
         workflow = CI_WORKFLOW.read_text()
 
+        self.assertIn("name: Supply Chain\n    runs-on: ubuntu-latest", workflow)
         self.assertIn("tool: cargo-deny,cargo-audit", workflow)
         self.assertIn("run: cargo deny check advisories licenses bans sources", workflow)
         self.assertIn("run: cargo audit\n", workflow)

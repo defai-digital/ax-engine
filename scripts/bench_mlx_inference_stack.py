@@ -86,6 +86,8 @@ AX_ENGINE_DIRECT_LINEAR_ATTENTION_POST_INPUT_KEY = (
     "ax_engine_mlx_direct_linear_attention_post_input"
 )
 PHASE0_CLAIM_GATE_SCHEMA_VERSION = "ax.phase0_claim_gate.v1"
+PUBLICATION_MIN_MEASUREMENT_REPETITIONS = 5
+PUBLICATION_MIN_WARMUP_REPETITIONS = 2
 
 AX_MLX_RUNTIME_IDENTITY = {
     "selected_backend": "mlx",
@@ -101,6 +103,23 @@ AX_PREFIX_CACHE_DISABLED_ENV = {
 }
 AX_PREFIX_CACHE_DISABLED_MODE = "disabled_for_cold_prefill_benchmark"
 AX_PREFIX_CACHE_ENABLED_MODE = "enabled_by_cli_for_prefix_cache_experiment"
+
+
+def build_public_claim_gate() -> dict[str, Any]:
+    return {
+        "schema_version": PHASE0_CLAIM_GATE_SCHEMA_VERSION,
+        "scope": "mlx_inference_stack_public_readme",
+        "requires_prompt_hash_parity": True,
+        "prompt_hash_parity_scope": "mlx_lm_and_ax_engine_rows",
+        "shape_only_external_rows": ["llama_cpp_metal"],
+        "requires_runtime_identity": True,
+        "requires_decode_policy_identity": True,
+        "requires_prefill_decode_split": True,
+        "requires_clean_build_commit": True,
+        "minimum_warmup_repetitions": PUBLICATION_MIN_WARMUP_REPETITIONS,
+        "minimum_measurement_repetitions": PUBLICATION_MIN_MEASUREMENT_REPETITIONS,
+        "forbidden_public_claims_without_artifacts": CLAIMS_REQUIRING_ARTIFACT_EVIDENCE,
+    }
 
 LLAMA_CPP_METAL_RUNTIME_IDENTITY = {
     "selected_backend": "llama_cpp",
@@ -6329,17 +6348,7 @@ def main() -> None:
 
     doc = {
         "schema_version": MLX_INFERENCE_STACK_SCHEMA_VERSION,
-        "claim_gate": {
-            "schema_version": PHASE0_CLAIM_GATE_SCHEMA_VERSION,
-            "scope": "mlx_inference_stack_public_readme",
-            "requires_prompt_hash_parity": True,
-            "prompt_hash_parity_scope": "mlx_lm_and_ax_engine_rows",
-            "shape_only_external_rows": ["llama_cpp_metal"],
-            "requires_runtime_identity": True,
-            "requires_decode_policy_identity": True,
-            "requires_prefill_decode_split": True,
-            "forbidden_public_claims_without_artifacts": CLAIMS_REQUIRING_ARTIFACT_EVIDENCE,
-        },
+        "claim_gate": build_public_claim_gate(),
         "host": collect_host_metadata(performance_conditions_end),
         "benchmark_window": {
             "started_at": benchmark_started_at,

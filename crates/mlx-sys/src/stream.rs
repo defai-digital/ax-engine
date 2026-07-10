@@ -65,10 +65,11 @@
 //! The call-site inventory and `!Send` blast-radius estimate live in the
 //! "Audit and probe coverage" section of `docs/MLX-BACKEND.md`. In short:
 //! the only runtime owner is `MlxRunner`, which constructs exactly one
-//! stream (`crates/ax-engine-mlx/src/runner.rs`, `MlxStream::new_gpu()`
+//! stream (`crates/ax-engine-mlx/src/runner/mod.rs`, `MlxStream::new_gpu()`
 //! followed by `set_as_default()`) on its build thread, holds it as a
 //! liveness-only `_stream` field, and never re-dispatches or sends it
-//! across threads.
+//! across threads. The server builds the entire native session inside the
+//! generation worker that executes and drops it.
 
 use std::cell::RefCell;
 use std::ptr;

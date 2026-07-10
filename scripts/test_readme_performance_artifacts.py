@@ -2978,6 +2978,78 @@ class ReadmePerformanceArtifactTests(unittest.TestCase):
                     expected_metric_count=6,
                 )
 
+    def test_claim_gate_methodology_rejects_short_warmup(self) -> None:
+        artifact = {
+            "claim_gate": {
+                "schema_version": checker.PHASE0_CLAIM_GATE_SCHEMA_VERSION,
+                "minimum_warmup_repetitions": 2,
+                "minimum_measurement_repetitions": 5,
+                "requires_clean_build_commit": True,
+            },
+            "warmup_repetitions": 1,
+            "repetitions": 5,
+            "build": {
+                "commit": "abc123",
+                "git_tracked_dirty": False,
+            },
+        }
+
+        with self.assertRaisesRegex(
+            checker.ArtifactCheckError,
+            "warmup_repetitions must be at least 2",
+        ):
+            checker.validate_claim_gate_methodology(
+                artifact_path=Path("artifact.json"), artifact=artifact
+            )
+
+    def test_claim_gate_methodology_accepts_clean_two_plus_five_run(self) -> None:
+        artifact = {
+            "claim_gate": {
+                "schema_version": checker.PHASE0_CLAIM_GATE_SCHEMA_VERSION,
+                "minimum_warmup_repetitions": 2,
+                "minimum_measurement_repetitions": 5,
+                "requires_clean_build_commit": True,
+            },
+            "warmup_repetitions": 2,
+            "repetitions": 5,
+            "build": {
+                "commit": "abc123",
+                "git_tracked_dirty": False,
+            },
+        }
+
+        checker.validate_claim_gate_methodology(
+            artifact_path=Path("artifact.json"), artifact=artifact
+        )
+
+    def test_checked_in_historical_mtp_evidence_is_quarantined(self) -> None:
+        manifest = (
+            SCRIPT_PATH.parents[1]
+            / "benchmarks/results/speculative/mtp-6bit"
+            / "2026-07-09-current-code-ax-only-rerun/evidence-set.json"
+        )
+
+        checker.validate_evidence_set_manifest(manifest)
+
+    def test_superseded_evidence_manifest_cannot_be_publishable(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            manifest = Path(tmp) / "evidence-set.json"
+            manifest.write_text(
+                json.dumps(
+                    {
+                        "schema_version": checker.EVIDENCE_SET_SCHEMA_VERSION,
+                        "status": "superseded",
+                        "publication_candidate": True,
+                    }
+                )
+            )
+
+            with self.assertRaisesRegex(
+                checker.ArtifactCheckError,
+                "publication_candidate=false",
+            ):
+                checker.validate_evidence_set_manifest(manifest)
+
     def test_phase0_claim_gate_requires_prefix_coverage_classification(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

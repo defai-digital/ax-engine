@@ -5,14 +5,17 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use ax_engine_sdk::{
-    EngineSession, EngineSessionError, EngineStepReport, GenerateRequest, GenerateResponse,
-    GenerateStreamEvent, GenerateStreamState, SessionRequestReport, SessionRequestState,
+    EngineSession, EngineSessionConfig, EngineSessionError, EngineStepReport, GenerateRequest,
+    GenerateResponse, GenerateStreamEvent, GenerateStreamState, RuntimeReport,
+    SessionRequestReport, SessionRequestState,
 };
 use tokio::sync::{mpsc, oneshot};
 
 use crate::admission::AdmissionPermit;
 
 type SessionJob = Box<dyn FnOnce(&mut EngineSession) + Send + 'static>;
+type SessionFactory =
+    Box<dyn FnOnce() -> Result<EngineSession, EngineSessionError> + Send + 'static>;
 type NativeEvent = Result<GenerateStreamEvent, EngineSessionError>;
 type SessionResult<T> = Result<T, EngineSessionError>;
 type StepObserver = Arc<dyn Fn(&EngineStepReport) + Send + Sync + 'static>;
@@ -106,10 +109,31 @@ impl NativeEventReceiver {
 }
 
 impl NativeGenerationService {
-    pub(crate) fn spawn(session: EngineSession) -> Arc<Self> {
+    pub(crate) fn spawn(
+        config: EngineSessionConfig,
+    ) -> Result<(Arc<Self>, RuntimeReport), GenerationServiceStartError> {
+        Self::spawn_with_factory(move || EngineSession::new(config))
+    }
+
+    pub(crate) fn spawn_replacement(
+        config: EngineSessionConfig,
+    ) -> Result<(Arc<Self>, RuntimeReport), GenerationServiceStartError> {
+        Self::spawn_with_factory(move || {
+            EngineSession::clear_native_model_compile_caches();
+            EngineSession::new(config)
+        })
+    }
+
+    fn spawn_with_factory<F>(
+        factory: F,
+    ) -> Result<(Arc<Self>, RuntimeReport), GenerationServiceStartError>
+    where
+        F: FnOnce() -> Result<EngineSession, EngineSessionError> + Send + 'static,
+    {
         let (sender, receiver) = std::sync::mpsc::channel::<ServiceCommand>();
+        let (startup_sender, startup_receiver) = std::sync::mpsc::sync_channel(1);
         let state = Arc::new(ServiceState {
-            alive: AtomicBool::new(true),
+            alive: AtomicBool::new(false),
             pending_jobs: AtomicUsize::new(0),
             queued_commands: AtomicUsize::new(0),
             active_streams: AtomicUsize::new(0),
@@ -120,20 +144,29 @@ impl NativeGenerationService {
         let worker_state = Arc::clone(&state);
         let worker = std::thread::Builder::new()
             .name("ax-native-generation".to_string())
-            .spawn(move || run_worker(session, receiver, &worker_state));
-        match worker {
-            Ok(worker) => Arc::new(Self {
-                sender: parking_lot::Mutex::new(Some(sender)),
-                state,
-                worker: parking_lot::Mutex::new(Some(worker)),
-            }),
-            Err(error) => {
-                state.alive.store(false, Ordering::Release);
-                tracing::error!(%error, "failed to start native generation worker");
+            .spawn(move || run_worker(Box::new(factory), receiver, startup_sender, &worker_state))
+            .map_err(GenerationServiceStartError::ThreadStart)?;
+        match startup_receiver.recv() {
+            Ok(Ok(runtime_report)) => Ok((
                 Arc::new(Self {
-                    sender: parking_lot::Mutex::new(None),
+                    sender: parking_lot::Mutex::new(Some(sender)),
                     state,
-                    worker: parking_lot::Mutex::new(None),
+                    worker: parking_lot::Mutex::new(Some(worker)),
+                }),
+                runtime_report,
+            )),
+            Ok(Err(error)) => {
+                drop(sender);
+                let _ = worker.join();
+                Err(GenerationServiceStartError::Engine(error))
+            }
+            Err(_) => {
+                drop(sender);
+                let worker_panicked = worker.join().is_err();
+                Err(if worker_panicked {
+                    GenerationServiceStartError::WorkerPanicked
+                } else {
+                    GenerationServiceStartError::ReadinessChannelClosed
                 })
             }
         }
@@ -385,12 +418,61 @@ impl fmt::Display for GenerationServiceError {
 
 impl std::error::Error for GenerationServiceError {}
 
+#[derive(Debug)]
+pub(crate) enum GenerationServiceStartError {
+    Engine(EngineSessionError),
+    ReadinessChannelClosed,
+    ThreadStart(std::io::Error),
+    WorkerPanicked,
+}
+
+impl fmt::Display for GenerationServiceStartError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Engine(error) => error.fmt(formatter),
+            Self::ReadinessChannelClosed => {
+                formatter.write_str("native generation worker exited before reporting readiness")
+            }
+            Self::ThreadStart(error) => {
+                write!(
+                    formatter,
+                    "failed to start native generation worker: {error}"
+                )
+            }
+            Self::WorkerPanicked => {
+                formatter.write_str("native generation worker panicked during startup")
+            }
+        }
+    }
+}
+
+impl std::error::Error for GenerationServiceStartError {}
+
+impl From<EngineSessionError> for GenerationServiceStartError {
+    fn from(error: EngineSessionError) -> Self {
+        Self::Engine(error)
+    }
+}
+
 fn run_worker(
-    mut session: EngineSession,
+    factory: SessionFactory,
     receiver: std::sync::mpsc::Receiver<ServiceCommand>,
+    startup_sender: std::sync::mpsc::SyncSender<Result<RuntimeReport, EngineSessionError>>,
     state: &ServiceState,
 ) {
     let _exit_guard = WorkerExitGuard(state);
+    let mut session = match factory() {
+        Ok(session) => session,
+        Err(error) => {
+            let _ = startup_sender.send(Err(error));
+            return;
+        }
+    };
+    let runtime_report = session.runtime_report();
+    state.alive.store(true, Ordering::Release);
+    if startup_sender.send(Ok(runtime_report)).is_err() {
+        return;
+    }
     let mut active_streams: BTreeMap<u64, ActiveStream> = BTreeMap::new();
     let mut stepwise_permits: BTreeMap<u64, AdmissionPermit> = BTreeMap::new();
     let mut latency_commands = VecDeque::new();
@@ -1102,8 +1184,8 @@ mod tests {
 
     use super::*;
 
-    fn delegated_session() -> EngineSession {
-        let config = EngineSessionConfig::from_preview_request(PreviewSessionConfigRequest {
+    fn delegated_config() -> EngineSessionConfig {
+        EngineSessionConfig::from_preview_request(PreviewSessionConfigRequest {
             backend_request: PreviewBackendRequest {
                 support_tier: SupportTier::LlamaCpp,
                 llama_model_path: Some(PathBuf::from("fake-model.gguf")),
@@ -1111,13 +1193,18 @@ mod tests {
             },
             ..PreviewSessionConfigRequest::default()
         })
-        .expect("preview session config should build");
-        EngineSession::new(config).expect("session should build")
+        .expect("preview session config should build")
+    }
+
+    fn delegated_service() -> Arc<NativeGenerationService> {
+        NativeGenerationService::spawn(delegated_config())
+            .expect("service should start")
+            .0
     }
 
     #[tokio::test]
     async fn worker_retains_one_session_across_commands() {
-        let service = NativeGenerationService::spawn(delegated_session());
+        let service = delegated_service();
         let first = service
             .execute(|session| Ok(session.runtime_report().selected_backend))
             .await
@@ -1133,8 +1220,47 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn worker_constructs_and_executes_session_on_same_thread() {
+        let construction_thread = Arc::new(parking_lot::Mutex::new(None));
+        let recorded_thread = Arc::clone(&construction_thread);
+        let (service, _) = NativeGenerationService::spawn_with_factory(move || {
+            *recorded_thread.lock() = Some(std::thread::current().id());
+            EngineSession::new(delegated_config())
+        })
+        .expect("service should start");
+
+        let execution_thread = service
+            .execute(|_| Ok(std::thread::current().id()))
+            .await
+            .expect("worker command should run");
+
+        assert_eq!(
+            construction_thread
+                .lock()
+                .as_ref()
+                .expect("construction thread should be recorded"),
+            &execution_thread
+        );
+        service.shutdown().await.expect("worker should shut down");
+    }
+
+    #[test]
+    fn worker_startup_propagates_session_error() {
+        let result = NativeGenerationService::spawn_with_factory(|| {
+            Err(EngineSessionError::InvalidMaxBatchTokens)
+        });
+
+        assert!(matches!(
+            result,
+            Err(GenerationServiceStartError::Engine(
+                EngineSessionError::InvalidMaxBatchTokens
+            ))
+        ));
+    }
+
+    #[tokio::test]
     async fn worker_shutdown_closes_submission_and_joins() {
-        let service = NativeGenerationService::spawn(delegated_session());
+        let service = delegated_service();
 
         service.shutdown().await.expect("worker should shut down");
 
@@ -1183,7 +1309,7 @@ mod tests {
 
     #[tokio::test]
     async fn successful_engine_steps_notify_the_observer_once() {
-        let service = NativeGenerationService::spawn(delegated_session());
+        let service = delegated_service();
         let observed = Arc::new(AtomicUsize::new(0));
         let observer_count = Arc::clone(&observed);
         service.set_step_observer(move |_| {
@@ -1200,7 +1326,7 @@ mod tests {
 
     #[test]
     fn worker_command_queue_rejects_unbounded_growth() {
-        let service = NativeGenerationService::spawn(delegated_session());
+        let service = delegated_service();
         let saturated = Arc::new(AtomicUsize::new(0));
         let saturated_count = Arc::clone(&saturated);
         service.set_pressure_observer(move |event| {
@@ -1247,7 +1373,7 @@ mod tests {
 
     #[test]
     fn lifecycle_command_overtakes_queued_bulk_work() {
-        let service = NativeGenerationService::spawn(delegated_session());
+        let service = delegated_service();
         let (first_entered_tx, first_entered_rx) = std_mpsc::channel();
         let (release_first_tx, release_first_rx) = std_mpsc::channel();
         service

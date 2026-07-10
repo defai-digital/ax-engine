@@ -3,13 +3,12 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-use ax_engine_sdk::{EngineSession, EngineSessionConfig, EngineSessionError};
 use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
 use serde::{Deserialize, Serialize};
 
-use crate::app_state::{AppState, build_live_state};
+use crate::app_state::{AppState, build_replacement_live_state};
 use crate::errors::{ErrorResponse, error_response, map_generation_service_error};
 
 type HttpErrorResponse = (StatusCode, Json<ErrorResponse>);
@@ -119,10 +118,12 @@ pub(crate) async fn load_model(
                 .map_err(map_generation_service_error)?;
         }
 
-        // Load the session on the blocking thread pool — weight loading can take
-        // tens of seconds; blocking the async runtime would stall all other requests.
+        // Start the replacement from the blocking pool and wait for readiness there.
+        // The service constructs the session on its dedicated owner worker; weight
+        // loading can take tens of seconds and must not stall the async runtime.
         let result =
-            tokio::task::spawn_blocking(move || build_new_session(model_id, new_config)).await;
+            tokio::task::spawn_blocking(move || build_replacement_live_state(model_id, new_config))
+                .await;
         match result {
             Ok(Ok(live)) => {
                 let ctx_len = crate::metadata::context_length(&live);
@@ -207,15 +208,6 @@ impl Drop for LoadingFlagGuard {
     fn drop(&mut self) {
         self.0.loading.store(false, Ordering::Release);
     }
-}
-
-fn build_new_session(
-    model_id: String,
-    config: EngineSessionConfig,
-) -> Result<crate::app_state::LiveState, EngineSessionError> {
-    EngineSession::clear_native_model_compile_caches();
-    let session = EngineSession::new(config)?;
-    build_live_state(model_id, session)
 }
 
 #[cfg(test)]

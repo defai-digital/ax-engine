@@ -127,7 +127,7 @@ manifest commands live in
 [CLI reference](docs/CLI.md#ax-engine).
 
 ```bash
-# Browse models, queue downloads, choose destinations, and launch serving.
+# Guided flow: pick a model, download with live progress, serve, and chat.
 ax-engine tui
 
 # Serve a direct model in one command.
@@ -141,14 +141,17 @@ ax-engine download qwen36-35b --json
 ax-engine download-mtp gemma-4-12b-4bit
 ```
 
-`ax-engine tui` lists downloadable model families, groups precision variants,
-offers Direct-vs-MTP choices, and sends long downloads to a background queue so
-you can keep browsing other models. The destination picker defaults to the
-shared Hugging Face Hub cache and can also select a parent directory from a
-terminal directory tree; direct downloads use `--dest`, and MTP packages use
-`--output`. The Downloads tab shows live bytes/s and logs, and a ready item can
-be served directly from the TUI. Scripts and CI keep the non-interactive
-`download` behavior and JSON output.
+`ax-engine tui` opens on a Home screen with your hardware summary and a Quick
+start action, then walks a four-step wizard: model family → precision (with
+download-size estimates and a RAM-fit badge per variant) → an optional
+plain-language MTP speed-up step → a confirm summary showing total size, free
+disk, and the destination (the shared Hugging Face Hub cache by default; a
+custom folder is one keypress away). Downloads run in a background queue with
+a live progress bar, speed, and ETA; a ready item can be served in place, and
+the built-in Chat screen streams replies from the running server so you can
+verify the model end-to-end without leaving the terminal. Quitting while jobs
+are running asks first. Scripts and CI keep the non-interactive `download`
+behavior and JSON output.
 
 Common acquisition paths:
 

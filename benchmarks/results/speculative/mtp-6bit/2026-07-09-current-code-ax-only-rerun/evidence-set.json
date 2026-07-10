@@ -1,0 +1,30 @@
+{
+  "schema_version": "ax.benchmark_evidence_set.v1",
+  "status": "superseded",
+  "publication_candidate": false,
+  "source_build_commits": [
+    "44a2c6c7e9c62fa8da27ccfcf75bff9f03c8fe4a"
+  ],
+  "superseded_by_commits": [
+    "f5fd0606f6d9f9b53e5e7b6b8772fdf262b62d74",
+    "dbc64839bdfa489bc69b9f1d821993a3d95244b5"
+  ],
+  "expected_completed_aggregates": 24,
+  "expected_incomplete_aggregates": 1,
+  "methodology": {
+    "warmup_repetitions": 1,
+    "measurement_repetitions": 5
+  },
+  "replacement_requirements": {
+    "clean_build": true,
+    "minimum_warmup_repetitions": 2,
+    "minimum_measurement_repetitions": 5,
+    "current_native_generation_service": true
+  },
+  "reasons": [
+    "The artifacts predate the persistent native generation service and engine failure hardening commits.",
+    "The run used one warmup repetition instead of the current two-warmup publication contract.",
+    "The saved MTP claim semantics predate the current fail-closed routing contract.",
+    "The Gemma 4 31B aggregate is incomplete."
+  ]
+}

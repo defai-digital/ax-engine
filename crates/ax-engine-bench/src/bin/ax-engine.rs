@@ -5,7 +5,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
 
-#[path = "../tui_app.rs"]
+#[path = "../tui/mod.rs"]
 mod tui;
 
 #[derive(Clone, Copy)]
@@ -15,6 +15,10 @@ struct ModelProfile {
     repo_id: &'static str,
     aliases: &'static [&'static str],
     downloadable: bool,
+    /// Total repo download size summed from the Hugging Face API (`?blobs=true`)
+    /// on 2026-07-10. A point-in-time estimate for previews and progress totals,
+    /// not a contract — repos can republish with different shard sizes.
+    approx_size_bytes: Option<u64>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -44,6 +48,13 @@ struct MtpDownloadTarget {
     repo_id: &'static str,
     aliases: &'static [&'static str],
     kind: MtpDownloadKind,
+    /// Size of the base `repo_id` download plus the extra MTP package
+    /// (assistant repo or the source shards holding `mtp.*` tensors), both
+    /// summed from the Hugging Face API on 2026-07-10. `None` when the extra
+    /// source is gated or has no statically knowable size (e.g. GLM's sidecar
+    /// discovery). Estimates for previews only.
+    approx_base_bytes: Option<u64>,
+    approx_extra_bytes: Option<u64>,
 }
 
 const MODEL_PROFILES: &[ModelProfile] = &[
@@ -58,6 +69,7 @@ const MODEL_PROFILES: &[ModelProfile] = &[
             "gemma4-e2b-4bit",
         ],
         downloadable: true,
+        approx_size_bytes: Some(3_583_088_661),
     },
     ModelProfile {
         label: "gemma4-e2b-5bit",
@@ -65,6 +77,7 @@ const MODEL_PROFILES: &[ModelProfile] = &[
         repo_id: "mlx-community/gemma-4-e2b-it-5bit",
         aliases: &["gemma4-e2b-5bit", "gemma-4-e2b-5bit", "gemma-4-e2b-it-5bit"],
         downloadable: true,
+        approx_size_bytes: Some(4_162_066_564),
     },
     ModelProfile {
         label: "gemma4-e2b-6bit",
@@ -72,6 +85,7 @@ const MODEL_PROFILES: &[ModelProfile] = &[
         repo_id: "mlx-community/gemma-4-e2b-it-6bit",
         aliases: &["gemma4-e2b-6bit", "gemma-4-e2b-6bit", "gemma-4-e2b-it-6bit"],
         downloadable: true,
+        approx_size_bytes: Some(4_741_044_371),
     },
     ModelProfile {
         label: "gemma4-e2b-8bit",
@@ -79,6 +93,7 @@ const MODEL_PROFILES: &[ModelProfile] = &[
         repo_id: "mlx-community/gemma-4-e2b-it-8bit",
         aliases: &["gemma4-e2b-8bit", "gemma-4-e2b-8bit", "gemma-4-e2b-it-8bit"],
         downloadable: true,
+        approx_size_bytes: Some(5_899_036_930),
     },
     ModelProfile {
         label: "gemma4-12b",
@@ -91,6 +106,7 @@ const MODEL_PROFILES: &[ModelProfile] = &[
             "gemma4-12b-4bit",
         ],
         downloadable: true,
+        approx_size_bytes: Some(6_773_372_848),
     },
     ModelProfile {
         label: "gemma4-12b-6bit",
@@ -98,6 +114,7 @@ const MODEL_PROFILES: &[ModelProfile] = &[
         repo_id: "mlx-community/gemma-4-12B-it-6bit",
         aliases: &["gemma4-12b-6bit", "gemma-4-12b-6bit", "gemma-4-12b-it-6bit"],
         downloadable: true,
+        approx_size_bytes: Some(9_760_954_674),
     },
     ModelProfile {
         label: "gemma4-26b",
@@ -110,6 +127,7 @@ const MODEL_PROFILES: &[ModelProfile] = &[
             "gemma4-26b-4bit",
         ],
         downloadable: true,
+        approx_size_bytes: Some(15_373_588_575),
     },
     ModelProfile {
         label: "gemma4-31b",
@@ -122,6 +140,7 @@ const MODEL_PROFILES: &[ModelProfile] = &[
             "gemma4-31b-4bit",
         ],
         downloadable: true,
+        approx_size_bytes: Some(18_444_421_751),
     },
     ModelProfile {
         label: "glm4.7-flash-4bit",
@@ -136,6 +155,7 @@ const MODEL_PROFILES: &[ModelProfile] = &[
             "glm-4-7-flash-4bit",
         ],
         downloadable: false,
+        approx_size_bytes: None,
     },
     ModelProfile {
         label: "qwen3.6-27b",
@@ -149,6 +169,7 @@ const MODEL_PROFILES: &[ModelProfile] = &[
             "qwen36-27b-4bit",
         ],
         downloadable: true,
+        approx_size_bytes: Some(16_081_490_064),
     },
     ModelProfile {
         label: "qwen3.6-27b-5bit",
@@ -156,6 +177,7 @@ const MODEL_PROFILES: &[ModelProfile] = &[
         repo_id: "mlx-community/Qwen3.6-27B-5bit",
         aliases: &["qwen3.6-27b-5bit", "qwen36-27b-5bit", "qwen3-6-27b-5bit"],
         downloadable: true,
+        approx_size_bytes: Some(19_443_159_244),
     },
     ModelProfile {
         label: "qwen3.6-27b-6bit",
@@ -163,6 +185,7 @@ const MODEL_PROFILES: &[ModelProfile] = &[
         repo_id: "mlx-community/Qwen3.6-27B-6bit",
         aliases: &["qwen3.6-27b-6bit", "qwen36-27b-6bit", "qwen3-6-27b-6bit"],
         downloadable: true,
+        approx_size_bytes: Some(22_804_828_230),
     },
     ModelProfile {
         label: "qwen3.6-27b-8bit",
@@ -170,6 +193,7 @@ const MODEL_PROFILES: &[ModelProfile] = &[
         repo_id: "mlx-community/Qwen3.6-27B-8bit",
         aliases: &["qwen3.6-27b-8bit", "qwen36-27b-8bit", "qwen3-6-27b-8bit"],
         downloadable: true,
+        approx_size_bytes: Some(29_528_166_726),
     },
     ModelProfile {
         label: "qwen3.6-35b",
@@ -183,6 +207,7 @@ const MODEL_PROFILES: &[ModelProfile] = &[
             "qwen36-35b-a3b",
         ],
         downloadable: true,
+        approx_size_bytes: Some(20_429_169_263),
     },
 ];
 
@@ -200,6 +225,8 @@ const MTP_DOWNLOAD_TARGETS: &[MtpDownloadTarget] = &[
         kind: MtpDownloadKind::QwenSidecar {
             mtp_source: "Qwen/Qwen3.6-27B",
         },
+        approx_base_bytes: Some(22_804_828_230),
+        approx_extra_bytes: Some(4_503_752_416),
     },
     MtpDownloadTarget {
         label: "qwen3.6-35b-a3b",
@@ -214,6 +241,8 @@ const MTP_DOWNLOAD_TARGETS: &[MtpDownloadTarget] = &[
         kind: MtpDownloadKind::QwenSidecar {
             mtp_source: "Qwen/Qwen3.6-35B-A3B",
         },
+        approx_base_bytes: Some(29_088_768_041),
+        approx_extra_bytes: Some(6_064_305_104),
     },
     MtpDownloadTarget {
         label: "gemma-4-12b",
@@ -231,6 +260,8 @@ const MTP_DOWNLOAD_TARGETS: &[MtpDownloadTarget] = &[
             assistant_model_id: "gemma-4-12b-it-assistant",
             max_depth: 2,
         },
+        approx_base_bytes: Some(9_760_954_674),
+        approx_extra_bytes: Some(375_787_073),
     },
     MtpDownloadTarget {
         label: "gemma-4-12b-4bit",
@@ -242,6 +273,8 @@ const MTP_DOWNLOAD_TARGETS: &[MtpDownloadTarget] = &[
             assistant_model_id: "gemma-4-12b-it-assistant",
             max_depth: 2,
         },
+        approx_base_bytes: Some(6_773_372_848),
+        approx_extra_bytes: Some(270_077_496),
     },
     MtpDownloadTarget {
         label: "gemma-4-26b",
@@ -260,6 +293,8 @@ const MTP_DOWNLOAD_TARGETS: &[MtpDownloadTarget] = &[
             assistant_model_id: "gemma-4-26b-a4b-it-assistant",
             max_depth: 1,
         },
+        approx_base_bytes: Some(21_679_806_248),
+        approx_extra_bytes: None,
     },
     MtpDownloadTarget {
         label: "gemma-4-31b",
@@ -277,6 +312,8 @@ const MTP_DOWNLOAD_TARGETS: &[MtpDownloadTarget] = &[
             assistant_model_id: "gemma-4-31b-it-assistant",
             max_depth: 1,
         },
+        approx_base_bytes: Some(26_119_973_860),
+        approx_extra_bytes: None,
     },
     MtpDownloadTarget {
         label: "glm-4.7-flash",
@@ -291,6 +328,8 @@ const MTP_DOWNLOAD_TARGETS: &[MtpDownloadTarget] = &[
         kind: MtpDownloadKind::GlmSidecar {
             mtp_source: "zai-org/GLM-4.7-Flash",
         },
+        approx_base_bytes: Some(24_357_127_217),
+        approx_extra_bytes: None,
     },
 ];
 
@@ -325,7 +364,7 @@ fn run(args: Vec<OsString>) -> Result<u8, String> {
 
 fn print_usage() {
     println!(
-        "Usage:\n  ax-engine serve <model-dir-or-alias> [--host <host>] [--port <port>] [--download] [--dry-run] [--json] [-- <ax-engine-server args>]\n  ax-engine download [<alias-or-repo-id>] [--dest <path>] [--force] [--list] [--json]\n  ax-engine download-mtp <mtp-target> [--output <dir>] [--force] [--quantize 4|8] [--mtp-depth-max <n>] [--group-size <n>] [--fair-base-only] [--json]\n  ax-engine models list [--models-dir <path>] [--json]\n  ax-engine models info <alias-or-path> [--json]\n  ax-engine models rm <path> [--dry-run] [--yes] [--json]\n  ax-engine doctor [--json] [--verbose] [--mlx-model-artifacts-dir <path>]\n  ax-engine convert-mtplx <base-model> --mtp-source <repo> [--output <dir>] [--quantize 4|8] [--mtp-depth-max <n>] [--group-size <n>] [--fair-base-only] [--json]\n  ax-engine tui"
+        "Usage:\n  ax-engine serve <model-dir-or-alias> [--host <host>] [--port <port>] [--download] [--dry-run] [--json] [-- <ax-engine-server args>]\n  ax-engine download [<alias-or-repo-id>] [--dest <path>] [--force] [--list] [--json] [--progress-json]\n  ax-engine download-mtp <mtp-target> [--output <dir>] [--force] [--quantize 4|8] [--mtp-depth-max <n>] [--group-size <n>] [--fair-base-only] [--json] [--progress-json]\n  ax-engine models list [--models-dir <path>] [--json]\n  ax-engine models info <alias-or-path> [--json]\n  ax-engine models rm <path> [--dry-run] [--yes] [--json]\n  ax-engine doctor [--json] [--verbose] [--mlx-model-artifacts-dir <path>]\n  ax-engine convert-mtplx <base-model> --mtp-source <repo> [--output <dir>] [--quantize 4|8] [--mtp-depth-max <n>] [--group-size <n>] [--fair-base-only] [--json]\n  ax-engine tui"
     );
 }
 
@@ -981,7 +1020,8 @@ fn cmd_serve(args: &[OsString]) -> Result<u8, String> {
         let profile = profile_for_model(&target);
         let preset = profile.and_then(|profile| profile.preset);
         if args.download && !args.dry_run {
-            let (code, mut summary, stderr) = run_download_summary(&target, None, false, profile)?;
+            let (code, mut summary, stderr) =
+                run_download_summary(&target, None, false, profile, false)?;
             if code != 0 || summary.get("status").and_then(Value::as_str) != Some("ready") {
                 if !stderr.is_empty() {
                     eprint!("{stderr}");
@@ -1531,6 +1571,7 @@ struct DownloadArgs {
     force: bool,
     list: bool,
     json: bool,
+    progress: bool,
 }
 
 #[derive(Debug)]
@@ -1543,6 +1584,7 @@ struct DownloadMtpArgs {
     group_size: String,
     fair_base_only: bool,
     json: bool,
+    progress: bool,
 }
 
 fn cmd_download(args: &[OsString]) -> Result<u8, String> {
@@ -1566,8 +1608,13 @@ fn cmd_download(args: &[OsString]) -> Result<u8, String> {
     };
 
     let profile = profile_for_model(&model);
-    let (code, summary, stderr) =
-        run_download_summary(&model, args.dest.as_deref(), args.force, profile)?;
+    let (code, summary, stderr) = run_download_summary(
+        &model,
+        args.dest.as_deref(),
+        args.force,
+        profile,
+        args.progress,
+    )?;
     if args.json {
         if !summary.is_null() {
             print_json(&summary);
@@ -1592,7 +1639,7 @@ fn cmd_download_mtp(args: &[OsString]) -> Result<u8, String> {
     let target = mtp_download_target_for_model(&args.model)
         .ok_or_else(|| format_unknown_download_mtp_target(&args.model))?;
     let (download_code, download_summary, download_stderr) =
-        run_download_summary(target.repo_id, None, args.force, None)?;
+        run_download_summary(target.repo_id, None, args.force, None, args.progress)?;
     if !download_stderr.is_empty() {
         eprint!("{download_stderr}");
     }
@@ -1686,6 +1733,7 @@ fn parse_download_args(args: &[OsString]) -> Result<DownloadArgs, String> {
     let mut force = false;
     let mut list = false;
     let mut json = false;
+    let mut progress = false;
     let mut index = 0;
     while index < args.len() {
         let arg = args[index].to_string_lossy();
@@ -1697,6 +1745,7 @@ fn parse_download_args(args: &[OsString]) -> Result<DownloadArgs, String> {
             "--force" => force = true,
             "--list" => list = true,
             "--json" => json = true,
+            "--progress-json" => progress = true,
             flag if flag.starts_with('-') => {
                 return Err(format!("unknown download option: {flag}"));
             }
@@ -1714,6 +1763,7 @@ fn parse_download_args(args: &[OsString]) -> Result<DownloadArgs, String> {
         force,
         list,
         json,
+        progress,
     })
 }
 
@@ -1726,6 +1776,7 @@ fn parse_download_mtp_args(args: &[OsString]) -> Result<DownloadMtpArgs, String>
     let mut group_size = "64".to_string();
     let mut fair_base_only = false;
     let mut json = false;
+    let mut progress = false;
     let mut index = 0;
     while index < args.len() {
         let arg = args[index].to_string_lossy();
@@ -1753,6 +1804,7 @@ fn parse_download_mtp_args(args: &[OsString]) -> Result<DownloadMtpArgs, String>
             }
             "--fair-base-only" => fair_base_only = true,
             "--json" => json = true,
+            "--progress-json" => progress = true,
             flag if flag.starts_with('-') => {
                 return Err(format!("unknown download-mtp option: {flag}"));
             }
@@ -1773,6 +1825,7 @@ fn parse_download_mtp_args(args: &[OsString]) -> Result<DownloadMtpArgs, String>
         group_size,
         fair_base_only,
         json,
+        progress,
     })
 }
 
@@ -1781,6 +1834,7 @@ fn run_download_summary(
     dest: Option<&str>,
     force: bool,
     profile: Option<ModelProfile>,
+    progress: bool,
 ) -> Result<(u8, Value, String), String> {
     let (repo_id, profile) = download_repo_id(model, profile)?;
     let helper = find_helper(
@@ -1790,19 +1844,30 @@ fn run_download_summary(
     )?;
     let mut command = Command::new(python());
     command.arg(helper).arg(repo_id).arg("--json");
+    if progress {
+        command.arg("--progress-json");
+    }
     if let Some(dest) = dest {
         command.arg("--dest").arg(dest);
     }
     if force {
         command.arg("--force");
     }
-    let output = command
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .map_err(|err| format!("failed to run download helper: {err}"))?;
-    let mut summary =
-        parse_summary_json(&String::from_utf8_lossy(&output.stdout)).unwrap_or(Value::Null);
+    let (code, stdout, stderr) = if progress {
+        run_streaming_progress(command)?
+    } else {
+        let output = command
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .map_err(|err| format!("failed to run download helper: {err}"))?;
+        (
+            output.status.code().unwrap_or(1).try_into().unwrap_or(1),
+            String::from_utf8_lossy(&output.stdout).into_owned(),
+            String::from_utf8_lossy(&output.stderr).into_owned(),
+        )
+    };
+    let mut summary = parse_summary_json(&stdout).unwrap_or(Value::Null);
     if let Value::Object(map) = &mut summary {
         map.insert("input".into(), json!(model));
         if let Some(profile) = profile {
@@ -1812,10 +1877,55 @@ fn run_download_summary(
             }
         }
     }
+    Ok((code, summary, stderr))
+}
+
+/// Run the download helper forwarding `{"event":"progress",...}` stdout lines
+/// as they arrive (so a parent process observing our stdout sees live phase
+/// updates), while still buffering all stdout for final summary parsing.
+fn run_streaming_progress(mut command: Command) -> Result<(u8, String, String), String> {
+    use std::io::{BufRead, BufReader, Write};
+
+    let mut child = command
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|err| format!("failed to run download helper: {err}"))?;
+    let stderr_handle = child.stderr.take().map(|pipe| {
+        std::thread::spawn(move || {
+            let mut buf = String::new();
+            let mut reader = BufReader::new(pipe);
+            let _ = std::io::Read::read_to_string(&mut reader, &mut buf);
+            buf
+        })
+    });
+    let mut stdout_text = String::new();
+    if let Some(pipe) = child.stdout.take() {
+        for line in BufReader::new(pipe).lines().map_while(Result::ok) {
+            if line.contains("\"event\"")
+                && serde_json::from_str::<Value>(&line)
+                    .ok()
+                    .and_then(|v| v.get("event").and_then(Value::as_str).map(String::from))
+                    .as_deref()
+                    == Some("progress")
+            {
+                println!("{line}");
+                let _ = std::io::stdout().flush();
+            }
+            stdout_text.push_str(&line);
+            stdout_text.push('\n');
+        }
+    }
+    let status = child
+        .wait()
+        .map_err(|err| format!("failed to wait for download helper: {err}"))?;
+    let stderr_text = stderr_handle
+        .and_then(|handle| handle.join().ok())
+        .unwrap_or_default();
     Ok((
-        output.status.code().unwrap_or(1).try_into().unwrap_or(1),
-        summary,
-        String::from_utf8_lossy(&output.stderr).into_owned(),
+        status.code().unwrap_or(1).try_into().unwrap_or(1),
+        stdout_text,
+        stderr_text,
     ))
 }
 
@@ -1836,7 +1946,7 @@ fn run_download_gemma_assistant_mtp(
         return Err("internal error: expected Gemma assistant MTP target".into());
     };
     let (assistant_code, assistant_summary, assistant_stderr) =
-        run_download_summary(assistant_repo_id, None, args.force, None)?;
+        run_download_summary(assistant_repo_id, None, args.force, None, args.progress)?;
     if !assistant_stderr.is_empty() {
         eprint!("{assistant_stderr}");
     }

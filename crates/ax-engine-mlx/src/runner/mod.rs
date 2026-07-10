@@ -75,8 +75,8 @@ use ax_engine_core::{
 };
 
 use crate::batched_decode_session::{
-    BatchedDecodeSession, batched_decode_enabled, batched_decode_sampling_enabled,
-    model_batched_rejection_reasons,
+    BatchedDecodeCapabilities, BatchedDecodeSession, batched_decode_enabled,
+    batched_decode_sampling_enabled,
 };
 use crate::batched_sampling::{BatchedSamplingClass, argmax_batched, batched_sampling_class};
 use crate::gemma4_assistant_mtp::{
@@ -3662,7 +3662,7 @@ pub struct MlxRunner {
     model_artifacts_root: String,
     states: Mutex<HashMap<RequestId, RequestState>>,
     /// Whether this model can use the experimental batched dense-decode path
-    /// (computed once via `model_batched_eligible`). Gates the `run()`
+    /// (computed once from the loaded model capabilities). Gates the `run()`
     /// interception together with `batched_decode_enabled()`.
     batched_decode_model_eligible: bool,
     batched_decode_model_rejections: Vec<&'static str>,
@@ -4257,7 +4257,7 @@ impl MlxRunner {
         let weight_layout_telemetry = WeightLayoutTelemetry::from_weights(&weights);
         let has_mtp =
             weights.mtp.is_some() || weights.glm_mtp.is_some() || gemma4_assistant_mtp.is_some();
-        let batched_decode_model_rejections = model_batched_rejection_reasons(
+        let batched_decode_capabilities = BatchedDecodeCapabilities::from_loaded_model(
             cfg.model_family.as_str(),
             has_mtp,
             cfg.diffusion.is_some(),
@@ -4265,7 +4265,8 @@ impl MlxRunner {
             &kv_layer_windows,
             &weights.layers,
         );
-        let batched_decode_model_eligible = batched_decode_model_rejections.is_empty();
+        let batched_decode_model_eligible = batched_decode_capabilities.eligible();
+        let batched_decode_model_rejections = batched_decode_capabilities.rejection_reasons();
         // Capacity for the batched cohort; small (Phase 0 sweet spot is B≈2-4,
         // amortization plateaus past ~8). Override with AX_MLX_BATCHED_DECODE_MAX.
         let batched_cap = std::env::var("AX_MLX_BATCHED_DECODE_MAX")

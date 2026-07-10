@@ -399,6 +399,13 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
             {"load_average": {"one_minute": 1.0}},
         )
 
+    def test_public_claim_gate_requires_release_methodology(self) -> None:
+        gate = bench.build_public_claim_gate()
+
+        self.assertTrue(gate["requires_clean_build_commit"])
+        self.assertEqual(gate["minimum_warmup_repetitions"], 2)
+        self.assertEqual(gate["minimum_measurement_repetitions"], 5)
+
     def test_resolve_model_dir_uses_hugging_face_cache_snapshot(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

@@ -343,8 +343,7 @@ where
     customize(&mut args);
 
     let session_config = args.session_config().expect("session config should build");
-    let session = EngineSession::new(session_config.clone()).expect("session should build");
-    build_app_state(args.model_id.clone(), session).expect("app state should build")
+    build_app_state(args.model_id.clone(), session_config).expect("app state should build")
 }
 
 pub(super) fn llama_cpp_state() -> AppState {

@@ -97,6 +97,24 @@ Good fit:
 These dependencies should stay in the server shell instead of flowing inward
 into the execution core.
 
+## Runtime Ownership And Capability Gates
+
+MLX stream registration is thread-local. The native server therefore passes an
+`EngineSessionConfig` to its generation service and constructs, executes, and
+drops the resulting `EngineSession` on one dedicated worker thread. Model
+replacement follows the same rule: native caches are cleared and the
+replacement session is loaded on its eventual owner thread before the service
+becomes live. Transport and stateless request context may be prepared outside
+that worker, but native model and stream ownership may not cross it.
+
+Optimized execution routes must be enabled from typed capabilities derived
+from the loaded model structure plus an explicit certification, not from a
+model-family name alone. Unsupported or incomplete graphs fail closed to the
+existing sequential execution path. Continuous dense decode is currently
+certified only for dense, full-attention Qwen3; additional model families need
+equivalence, KV/preemption, and server-path performance evidence before their
+certification is promoted.
+
 ### `ax-engine-bench` and `ax-engine-py`
 
 Tooling and binding crates can use convenience dependencies when they help with

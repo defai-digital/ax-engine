@@ -56,20 +56,27 @@ ax-engine download mlx-community/Qwen3.6-35B-A3B-4bit --json
 ax-engine download qwen36-35b --dest /path/to/explicit-copy
 ```
 
-For an interactive flow, run `ax-engine tui`. The TUI lists downloadable model
-families, groups precision variants, and offers a Direct-vs-MTP choice for
-models with an acceleration package. Downloads are added to a background queue,
-so a long model transfer does not block browsing the catalog. The destination
-picker defaults to the shared Hugging Face Hub cache and can also select a
-parent directory from a terminal directory tree; direct downloads use `--dest`,
-and MTP packages use `--output`. The Downloads tab shows live bytes/s and logs,
-and a ready item can be served directly from the TUI.
+For an interactive flow, run `ax-engine tui`. The TUI has five screens
+(switch with `1`-`5` or the sidebar): Home shows the machine's chip, RAM, and
+free disk plus a Quick start action; Models is a four-step wizard — family →
+precision (size estimate and RAM-fit badge per variant) → optional MTP
+speed-up (explained in plain language, with the extra package size) → a
+confirm summary before anything downloads. The destination defaults to the
+shared Hugging Face Hub cache and can be changed on the confirm step; direct
+downloads use `--dest`, and MTP packages use `--output`. Downloads run in a
+background queue with a progress bar, speed, ETA, and phase labels (driven by
+`--progress-json`); Serve launches `ax-engine-server` and shows the URL with a
+copyable curl example; Chat streams replies from the running server over
+`/v1/chat/completions`. `Esc` steps back (never quits), and quitting with `q`
+asks for confirmation while downloads or the server are running. Installed
+precisions can be deleted from the wizard with `x` (typed confirmation).
 
 The older `ax-engine ui-downloader` and `ax-engine download --interactive`
 prompts remain available for compatibility. TTY-gated non-interactive behavior
 and machine-readable `download --json` output are unchanged. Power users can get
 a standalone progress bar on the helper directly with
-`scripts/download_model.py <repo> --progress-bar`.
+`scripts/download_model.py <repo> --progress-bar`, or newline-delimited progress
+events from the CLI with `ax-engine download <alias> --progress-json`.
 
 ```text
 ax-engine tui

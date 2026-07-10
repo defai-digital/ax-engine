@@ -110,7 +110,6 @@ mod tests {
     use super::*;
     use crate::app_state::{AppState, build_app_state};
     use crate::args::ServerArgs;
-    use ax_engine_sdk::EngineSession;
     use clap::Parser;
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -131,7 +130,7 @@ mod tests {
             // deliberately manifest-less (it only wants to verify the
             // chat_template.jinja-specific error surfaced later, inside
             // build_chat_generate_request), so it must opt out of the
-            // direct-first default to keep EngineSession::new lazy about
+            // direct-first default to keep session construction lazy about
             // that directory's contents — matching the delegated
             // --llama-server-url this test also configures.
             "--support-tier",
@@ -142,8 +141,7 @@ mod tests {
             artifact_dir.to_str().expect("artifact dir should be UTF-8"),
         ]);
         let session_config = args.session_config().expect("session config should build");
-        let session = EngineSession::new(session_config).expect("session should build");
-        build_app_state(args.model_id.clone(), session).expect("app state should build")
+        build_app_state(args.model_id.clone(), session_config).expect("app state should build")
     }
 
     #[test]

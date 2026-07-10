@@ -818,7 +818,8 @@ The response includes:
 
 Repo-owned MLX generation, streaming, stepwise lifecycle calls, and embeddings
 all use one persistent worker-owned `EngineSession`. The server loads native
-weights once at startup, submits every native request into that session, and
+weights once at startup by constructing the session inside that worker, submits
+every native request into that session, and
 keeps request KV/cancellation ownership on the same worker through terminal
 cleanup. Unary generation is collected from the same event stream used by SSE
 and gRPC; it does not construct a request-local model session. Delegated

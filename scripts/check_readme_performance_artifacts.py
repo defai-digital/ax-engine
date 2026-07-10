@@ -47,6 +47,7 @@ PREFILL_TABLE_COLUMNS = {
 TTFT_TABLE_COLUMNS = PREFILL_TABLE_COLUMNS
 
 PHASE0_CLAIM_GATE_SCHEMA_VERSION = "ax.phase0_claim_gate.v1"
+EVIDENCE_SET_SCHEMA_VERSION = "ax.benchmark_evidence_set.v1"
 RUN_STABILITY_SCHEMA_VERSION = "ax.benchmark_run_stability.v1"
 RUN_STABILITY_SUMMARY_SCHEMA_VERSION = "ax.benchmark_run_stability_summary.v1"
 MLX_INFERENCE_STACK_SCHEMA_VERSION = "ax.mlx_inference_stack.v2"
@@ -590,6 +591,125 @@ def phase0_claim_gate_enabled(artifact: dict[str, Any]) -> bool:
         isinstance(gate, dict)
         and gate.get("schema_version") == PHASE0_CLAIM_GATE_SCHEMA_VERSION
     )
+
+
+def validate_claim_gate_methodology(
+    *, artifact_path: Path, artifact: dict[str, Any]
+) -> None:
+    gate = artifact.get("claim_gate")
+    if not isinstance(gate, dict):
+        return
+    minimum_warmups = gate.get("minimum_warmup_repetitions")
+    minimum_measurements = gate.get("minimum_measurement_repetitions")
+    requirements = (
+        ("warmup_repetitions", "minimum_warmup_repetitions", minimum_warmups, 2),
+        (
+            "repetitions",
+            "minimum_measurement_repetitions",
+            minimum_measurements,
+            5,
+        ),
+    )
+    for artifact_key, gate_key, minimum, floor in requirements:
+        if minimum is None:
+            continue
+        if not isinstance(minimum, int) or isinstance(minimum, bool) or minimum < floor:
+            raise ArtifactCheckError(
+                f"{artifact_path} claim_gate.{gate_key} must be at least {floor}"
+            )
+        observed = artifact.get(artifact_key)
+        if (
+            not isinstance(observed, int)
+            or isinstance(observed, bool)
+            or observed < minimum
+        ):
+            raise ArtifactCheckError(
+                f"{artifact_path} {artifact_key} must be at least {minimum} for publication"
+            )
+    if gate.get("requires_clean_build_commit") is True:
+        build = artifact.get("build")
+        if not isinstance(build, dict):
+            raise ArtifactCheckError(
+                f"{artifact_path} requires build provenance for publication"
+            )
+        commit = build.get("commit")
+        if not isinstance(commit, str) or not commit.strip():
+            raise ArtifactCheckError(
+                f"{artifact_path} requires a non-empty build.commit for publication"
+            )
+        if build.get("git_tracked_dirty") is not False:
+            raise ArtifactCheckError(
+                f"{artifact_path} requires build.git_tracked_dirty=false for publication"
+            )
+
+
+def validate_evidence_set_manifest(manifest_path: Path) -> None:
+    manifest = json.loads(manifest_path.read_text())
+    if manifest.get("schema_version") != EVIDENCE_SET_SCHEMA_VERSION:
+        raise ArtifactCheckError(f"{manifest_path} has unexpected schema_version")
+    if manifest.get("status") != "superseded":
+        raise ArtifactCheckError(f"{manifest_path} must remain marked superseded")
+    if manifest.get("publication_candidate") is not False:
+        raise ArtifactCheckError(
+            f"{manifest_path} superseded evidence must set publication_candidate=false"
+        )
+    superseded_by = manifest.get("superseded_by_commits")
+    if not isinstance(superseded_by, list) or not all(
+        isinstance(commit, str) and commit for commit in superseded_by
+    ):
+        raise ArtifactCheckError(
+            f"{manifest_path} must identify the commits that superseded the evidence"
+        )
+
+    aggregate_paths = sorted(
+        path
+        for path in manifest_path.parent.rglob("ax_*.json")
+        if not any(part.endswith("-prompts") for part in path.parts)
+    )
+    completed: list[dict[str, Any]] = []
+    incomplete: list[dict[str, Any]] = []
+    for aggregate_path in aggregate_paths:
+        aggregate = json.loads(aggregate_path.read_text())
+        if aggregate.get("schema_version") == MLX_INFERENCE_STACK_SCHEMA_VERSION:
+            completed.append(aggregate)
+        elif aggregate.get("schema_version") == "ax.mlx_inference_stack.incomplete.v1":
+            if aggregate.get("publication_candidate") is not False:
+                raise ArtifactCheckError(
+                    f"{aggregate_path} incomplete evidence must not be publishable"
+                )
+            incomplete.append(aggregate)
+        else:
+            raise ArtifactCheckError(f"{aggregate_path} has unexpected schema_version")
+
+    expected_completed = manifest.get("expected_completed_aggregates")
+    expected_incomplete = manifest.get("expected_incomplete_aggregates")
+    if len(completed) != expected_completed or len(incomplete) != expected_incomplete:
+        raise ArtifactCheckError(
+            f"{manifest_path} aggregate counts do not match the evidence set"
+        )
+    source_commits = sorted(
+        {
+            str(aggregate.get("build", {}).get("commit", ""))
+            for aggregate in completed
+        }
+    )
+    if source_commits != sorted(manifest.get("source_build_commits") or []):
+        raise ArtifactCheckError(
+            f"{manifest_path} source_build_commits do not match completed aggregates"
+        )
+    methodology = manifest.get("methodology")
+    if not isinstance(methodology, dict):
+        raise ArtifactCheckError(f"{manifest_path} lacks methodology")
+    warmups = {aggregate.get("warmup_repetitions") for aggregate in completed}
+    repetitions = {aggregate.get("repetitions") for aggregate in completed}
+    if warmups != {methodology.get("warmup_repetitions")}:
+        raise ArtifactCheckError(
+            f"{manifest_path} warmup methodology does not match completed aggregates"
+        )
+    if repetitions != {methodology.get("measurement_repetitions")}:
+        raise ArtifactCheckError(
+            f"{manifest_path} measurement methodology does not match completed aggregates"
+        )
 
 
 def public_claim_names(artifact: dict[str, Any]) -> set[str]:
@@ -1379,6 +1499,7 @@ def validate_phase0_artifact_gate(
 ) -> None:
     if not phase0_claim_gate_enabled(artifact):
         return
+    validate_claim_gate_methodology(artifact_path=artifact_path, artifact=artifact)
     overlap = artifact.get("concurrent_prefill_overlap_classification")
     if not isinstance(overlap, dict):
         raise ArtifactCheckError(

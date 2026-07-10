@@ -1,6 +1,6 @@
 #![allow(clippy::collapsible_if)]
 
-use ax_engine_sdk::{EngineSession, EngineSessionConfig};
+use ax_engine_sdk::EngineSessionConfig;
 use clap::Parser;
 use std::env;
 use tracing::{info, warn};
@@ -70,7 +70,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .session_config()
         .map_err(|message| std::io::Error::new(std::io::ErrorKind::InvalidInput, message))?;
     log_host_detection_warnings(&session_config);
-    let session = EngineSession::new(session_config.clone())?;
     let limits = ServerLimits {
         max_concurrent_requests: args.resolved_max_concurrent_requests(),
         max_request_body_bytes: args.resolved_max_request_body_bytes(),
@@ -79,7 +78,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         rate_limit: args.resolved_rate_limit(),
         stream_deadlines: args.resolved_stream_deadlines(),
     };
-    let state = build_app_state(model_id.clone(), session)?
+    let state = build_app_state(model_id.clone(), session_config)?
         .with_api_key(args.resolved_api_key())
         .with_limits(limits);
     let app = build_router(state.clone());

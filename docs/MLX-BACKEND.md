@@ -129,11 +129,15 @@ or AX decode mode provenance.
 
 ### Batch contract
 
-The repo-owned MLX runtime is single-request optimised for the current
-milestone. `MlxRunner::run` processes batch items serially; the states mutex is
-released before GPU work so unrelated request-state access is never blocked by
-a long prefill. True multi-item MLX batching (shared K/V across requests) is
-deferred.
+The scheduler can submit multiple requests in one engine step. `MlxRunner`
+contains an opt-in continuous dense-decode path behind
+`AX_MLX_BATCHED_DECODE`; unsupported or uncertified rows remain on the per-item
+path. Eligibility is resolved once at model load into typed structural
+capabilities plus an explicit family certification. The current certification
+is limited to dense full-attention Qwen 3 without MTP, diffusion, sliding
+attention, MoE, MLA, layer gating, or KV compression. Broader production
+batching remains unpromoted until its sequential oracle, KV/preemption, and
+real-model throughput gates pass.
 
 ### Custom Metal kernels
 
@@ -295,12 +299,16 @@ for that stream's index.
   runtime. The probe is self-contained and runs without an MLX model.
 - **Call-site inventory.** The only runtime owner of a non-default stream
   is `MlxRunner`. It constructs exactly one stream at
-  `crates/ax-engine-mlx/src/runner.rs` (`MlxStream::new_gpu()` followed by
+  `crates/ax-engine-mlx/src/runner/mod.rs` (`MlxStream::new_gpu()` followed by
   `set_as_default()`) on the thread that builds the runner, stores it as a
   liveness-only `_stream` field, and never re-dispatches or sends it across
-  threads. No `thread::spawn`/tokio/rayon path touches the GPU stream — the
-  only spawned threads in `ax-engine-mlx` perform disk-prefix-cache I/O
-  (`disk_prefix_cache.rs`). The handle therefore never legitimately crosses
+  threads. The server passes `EngineSessionConfig` into
+  `NativeGenerationService`; the named generation worker constructs, executes,
+  and drops the `EngineSession` on that same OS thread. Replacement-model cache
+  clearing runs there before session construction. A service regression test
+  asserts that construction and command execution observe the same thread ID.
+  The only other spawned threads in `ax-engine-mlx` perform disk-prefix-cache
+  I/O (`disk_prefix_cache.rs`). The handle therefore never legitimately crosses
   a thread at runtime today.
 - **`!Send` blast radius.** With a single owner and a single construction
   site, a future `!Send`/owner-token migration touches just that one field

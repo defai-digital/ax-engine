@@ -1,0 +1,773 @@
+use super::catalog::{self, RamFit, build_families, family_key, most_recent_subdir, quant_bits};
+use super::hardware::{HardwareInfo, parse_df_available_kib};
+use super::jobs::{
+    DownloadMode, DownloadTask, Job, format_eta, parse_output_path_from_log, parse_progress_event,
+};
+use super::screens::chat::{SseEvent, parse_sse_line};
+use super::{App, Modal, Screen, WizardStage};
+
+use std::path::{Path, PathBuf};
+use std::process;
+
+use ratatui::Terminal;
+use ratatui::backend::TestBackend;
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use ratatui::crossterm::event::{MouseEvent, MouseEventKind};
+
+fn new_app() -> App {
+    App::with_hardware(HardwareInfo::for_tests())
+}
+
+fn key(code: KeyCode) -> KeyEvent {
+    KeyEvent {
+        code,
+        modifiers: KeyModifiers::empty(),
+        kind: KeyEventKind::Press,
+        state: ratatui::crossterm::event::KeyEventState::empty(),
+    }
+}
+
+fn mouse(kind: MouseEventKind, column: u16, row: u16) -> MouseEvent {
+    MouseEvent {
+        kind,
+        column,
+        row,
+        modifiers: KeyModifiers::empty(),
+    }
+}
+
+/// Render the app to an off-screen buffer and flatten it to text.
+fn render(app: &App) -> String {
+    let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+    terminal.draw(|frame| app.draw(frame)).unwrap();
+    terminal
+        .backend()
+        .buffer()
+        .content
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect()
+}
+
+fn family_index(app: &App, key: &str) -> usize {
+    app.families.iter().position(|f| f.key == key).unwrap()
+}
+
+fn test_task(job: Option<Job>) -> DownloadTask {
+    DownloadTask {
+        id: 1,
+        label: "gemma4-e2b 4-bit".into(),
+        repo_id: "mlx-community/gemma-4-e2b-it-4bit",
+        preset: Some("gemma4-e2b"),
+        mode: DownloadMode::Direct,
+        subcmd: "download",
+        target: "gemma4-e2b".into(),
+        dest: Some(PathBuf::from("/tmp/gemma4-e2b")),
+        watch_dir: PathBuf::from("/tmp/gemma4-e2b"),
+        total_bytes: Some(3_583_088_661),
+        phase: None,
+        job,
+        cancelled: false,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Catalog
+// ---------------------------------------------------------------------------
+
+#[test]
+fn grouping_collapses_variants_into_families() {
+    let families = build_families();
+    let keys: Vec<&str> = families.iter().map(|f| f.key.as_str()).collect();
+    let mut sorted = keys.clone();
+    sorted.sort_unstable();
+    sorted.dedup();
+    assert_eq!(
+        sorted.len(),
+        keys.len(),
+        "family keys must be unique: {keys:?}"
+    );
+    let flat = crate::MODEL_PROFILES
+        .iter()
+        .filter(|p| p.downloadable)
+        .count();
+    assert!(
+        families.len() < flat,
+        "{} families from {flat} profiles",
+        families.len()
+    );
+
+    let e2b = families.iter().find(|f| f.key == "gemma4-e2b").unwrap();
+    assert_eq!(e2b.variants.len(), 4); // 4/5/6/8-bit
+    assert!(!e2b.has_mtp());
+    let g12 = families.iter().find(|f| f.key == "gemma4-12b").unwrap();
+    assert!(g12.has_mtp());
+    // Recommended (first) variant is the lowest bit-width.
+    assert_eq!(g12.variants[0].bits, Some(4));
+}
+
+#[test]
+fn quant_and_family_parsing() {
+    assert_eq!(quant_bits("mlx-community/gemma-4-12B-it-4bit"), Some(4));
+    assert_eq!(quant_bits("mlx-community/Qwen3.6-27B-8bit"), Some(8));
+    assert_eq!(family_key("gemma4-e2b-8bit"), "gemma4-e2b");
+    assert_eq!(family_key("glm4.7-flash-4bit"), "glm4.7-flash");
+    assert_eq!(family_key("qwen3.6-35b"), "qwen3.6-35b");
+}
+
+#[test]
+fn every_downloadable_profile_has_a_size_estimate() {
+    for profile in crate::MODEL_PROFILES.iter().filter(|p| p.downloadable) {
+        assert!(
+            profile.approx_size_bytes.is_some(),
+            "{} is downloadable but has no approx_size_bytes",
+            profile.label
+        );
+    }
+}
+
+#[test]
+fn ram_fit_thresholds() {
+    let gib = 1024u64 * 1024 * 1024;
+    // 3 GB model on 64 GB RAM: comfortable.
+    assert_eq!(
+        catalog::ram_fit(Some(3 * gib), Some(64 * gib)),
+        RamFit::Fits
+    );
+    // 40 GB model on 64 GB RAM: footprint ~49.5/64 = 77% -> tight.
+    assert_eq!(
+        catalog::ram_fit(Some(40 * gib), Some(64 * gib)),
+        RamFit::Tight
+    );
+    // 60 GB model on 64 GB RAM: too large.
+    assert_eq!(
+        catalog::ram_fit(Some(60 * gib), Some(64 * gib)),
+        RamFit::TooLarge
+    );
+    assert_eq!(catalog::ram_fit(None, Some(64 * gib)), RamFit::Unknown);
+    assert_eq!(catalog::ram_fit(Some(gib), None), RamFit::Unknown);
+}
+
+#[test]
+fn most_recent_subdir_is_none_for_missing_dir() {
+    assert_eq!(
+        most_recent_subdir(Path::new("/definitely/does/not/exist")),
+        None
+    );
+}
+
+#[test]
+fn most_recent_subdir_picks_the_only_entry() {
+    let base = std::env::temp_dir().join(format!("ax-engine-tui-test-{}", process::id()));
+    let snapshots = base.join("snapshots");
+    let snapshot = snapshots.join("abc123");
+    std::fs::create_dir_all(&snapshot).unwrap();
+    assert_eq!(most_recent_subdir(&snapshots), Some(snapshot));
+    std::fs::remove_dir_all(&base).unwrap();
+}
+
+// ---------------------------------------------------------------------------
+// Hardware
+// ---------------------------------------------------------------------------
+
+#[test]
+fn df_available_column_parses() {
+    let output = "\
+Filesystem   1024-blocks       Used Available Capacity iused ifree %iused  Mounted on
+/dev/disk3s5  971350180  530692820 419382948    56%  915272 4193829480    0%   /System/Volumes/Data
+";
+    assert_eq!(parse_df_available_kib(output), Some(419_382_948));
+    assert_eq!(parse_df_available_kib("garbage"), None);
+}
+
+// ---------------------------------------------------------------------------
+// Jobs / downloads
+// ---------------------------------------------------------------------------
+
+#[test]
+fn progress_event_lines_parse() {
+    assert_eq!(
+        parse_progress_event(r#"{"event":"progress","done":85,"total":100,"file":"snapshot"}"#),
+        Some((85, 100, "snapshot".into()))
+    );
+    assert_eq!(parse_progress_event(r#"{"event":"other"}"#), None);
+    assert_eq!(parse_progress_event("plain text"), None);
+    assert_eq!(
+        parse_progress_event(r#"{"schema_version":"ax.download_model.v1"}"#),
+        None
+    );
+}
+
+#[test]
+fn eta_formatting() {
+    assert_eq!(format_eta(42), "42s");
+    assert_eq!(format_eta(90), "1m30s");
+    assert_eq!(format_eta(3720), "1h02m");
+}
+
+#[test]
+fn queued_download_can_be_cancelled_before_spawn() {
+    let mut task = test_task(None);
+    task.dest = None;
+    assert_eq!(task.status_label(), "queued");
+    assert!(task.is_queued());
+    task.cancel();
+    assert_eq!(task.status_label(), "cancelled");
+    assert!(!task.is_queued());
+}
+
+#[test]
+fn progress_ratio_and_eta_need_totals() {
+    let mut task = test_task(None);
+    task.total_bytes = None;
+    assert_eq!(task.progress_ratio(), None);
+    assert_eq!(task.eta_seconds(), None);
+    task.total_bytes = Some(100);
+    // No job yet: 0 bytes downloaded.
+    assert_eq!(task.progress_ratio(), Some(0.0));
+}
+
+#[test]
+fn log_parser_finds_download_output_paths() {
+    assert_eq!(
+        parse_output_path_from_log(&["Path: /tmp/direct".to_string()]).as_deref(),
+        Some(Path::new("/tmp/direct"))
+    );
+    assert_eq!(
+        parse_output_path_from_log(&["Output dir: /tmp/mtp".to_string()]).as_deref(),
+        Some(Path::new("/tmp/mtp"))
+    );
+    assert_eq!(
+        parse_output_path_from_log(&[
+            "Sidecar ready at:".to_string(),
+            "  /tmp/sidecar".to_string(),
+        ])
+        .as_deref(),
+        Some(Path::new("/tmp/sidecar"))
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Navigation and global keys
+// ---------------------------------------------------------------------------
+
+#[test]
+fn app_starts_on_home_with_hardware_summary() {
+    let app = new_app();
+    assert_eq!(app.screen, Screen::Home);
+    let text = render(&app);
+    assert!(text.contains("This machine"));
+    assert!(text.contains("Test Chip"));
+    assert!(text.contains("Quick start"));
+    assert!(text.contains("Browse all models"));
+}
+
+#[test]
+fn number_keys_switch_screens() {
+    let mut app = new_app();
+    app.on_key(key(KeyCode::Char('2')));
+    assert_eq!(app.screen, Screen::Models);
+    app.on_key(key(KeyCode::Char('3')));
+    assert_eq!(app.screen, Screen::Downloads);
+    app.on_key(key(KeyCode::Char('4')));
+    assert_eq!(app.screen, Screen::Serve);
+    app.on_key(key(KeyCode::Char('5')));
+    assert_eq!(app.screen, Screen::Chat);
+    // On Chat, digits are text — leave with Esc instead.
+    app.on_key(key(KeyCode::Char('1')));
+    assert_eq!(app.screen, Screen::Chat);
+    assert_eq!(app.chat.input, "1");
+    app.chat.input.clear();
+    app.chat.cursor = 0;
+    app.on_key(key(KeyCode::Esc));
+    assert_eq!(app.screen, Screen::Home);
+}
+
+#[test]
+fn esc_steps_back_and_never_quits() {
+    let mut app = new_app();
+    app.screen = Screen::Models;
+    app.stage = WizardStage::Precision;
+    app.on_key(key(KeyCode::Esc));
+    assert_eq!(app.stage, WizardStage::Families);
+    app.on_key(key(KeyCode::Esc));
+    assert_eq!(app.screen, Screen::Home);
+    app.on_key(key(KeyCode::Esc));
+    assert!(!app.quit, "Esc must never quit");
+}
+
+#[test]
+fn quit_is_immediate_when_idle_and_confirmed_when_busy() {
+    let mut app = new_app();
+    app.downloads.push(test_task(None)); // queued counts as busy
+    app.on_key(key(KeyCode::Char('q')));
+    assert!(!app.quit);
+    assert!(matches!(app.modal, Some(Modal::Quit { .. })));
+    app.on_key(key(KeyCode::Char('y')));
+    assert!(app.quit);
+
+    let mut idle = new_app();
+    idle.on_key(key(KeyCode::Char('q')));
+    assert!(idle.quit, "no jobs -> quit without a modal");
+}
+
+#[test]
+fn quit_modal_can_be_dismissed() {
+    let mut app = new_app();
+    app.downloads.push(test_task(None));
+    app.on_key(key(KeyCode::Char('q')));
+    assert!(matches!(app.modal, Some(Modal::Quit { .. })));
+    app.on_key(key(KeyCode::Esc));
+    assert!(app.modal.is_none());
+    assert!(!app.quit);
+}
+
+#[test]
+fn click_on_sidebar_switches_screen() {
+    let mut app = new_app();
+    let _ = render(&app); // records sidebar_rect
+    let rect = app.sidebar_rect.get();
+    // Inner row 1 == "Models", row 2 == "Downloads".
+    app.on_click(rect.x + 2, rect.y + 2);
+    assert_eq!(app.screen, Screen::Models);
+    app.on_click(rect.x + 2, rect.y + 3);
+    assert_eq!(app.screen, Screen::Downloads);
+}
+
+#[test]
+fn status_strip_reports_server_state() {
+    let app = new_app();
+    assert!(render(&app).contains("server stopped"));
+}
+
+#[test]
+fn toasts_render_and_expire() {
+    let mut app = new_app();
+    app.toast("hello toast");
+    assert!(render(&app).contains("hello toast"));
+    app.toasts[0].at = std::time::Instant::now() - std::time::Duration::from_secs(10);
+    super::widgets::expire_toasts(&mut app.toasts);
+    assert!(app.toasts.is_empty());
+}
+
+// ---------------------------------------------------------------------------
+// Home
+// ---------------------------------------------------------------------------
+
+#[test]
+fn quick_start_targets_smallest_fitting_model() {
+    let app = new_app();
+    let (fi, vi) = app.quick_start_target().expect("catalog is not empty");
+    let family = &app.families[fi];
+    assert_eq!(family.key, "gemma4-e2b");
+    assert_eq!(family.variants[vi].bits, Some(4));
+}
+
+// ---------------------------------------------------------------------------
+// Models wizard
+// ---------------------------------------------------------------------------
+
+#[test]
+fn family_list_renders_with_sizes_and_mtp_badge() {
+    let mut app = new_app();
+    app.screen = Screen::Models;
+    let text = render(&app);
+    assert!(text.contains("Choose a model"));
+    assert!(text.contains("gemma4-e2b"));
+    assert!(text.contains("qwen3.6-35b"));
+    assert!(text.contains("from ~"), "family rows show a size estimate");
+    assert!(text.contains('⚡'), "MTP badge should render");
+    assert!(text.contains("Step 1 of"), "step header present");
+}
+
+#[test]
+fn precision_screen_lists_quants_with_fit_badges() {
+    let mut app = new_app();
+    app.screen = Screen::Models;
+    app.family_idx = family_index(&app, "gemma4-12b");
+    app.on_key_models(KeyCode::Enter);
+    assert_eq!(app.stage, WizardStage::Precision);
+    let text = render(&app);
+    assert!(text.contains("choose a precision"));
+    assert!(text.contains("4-bit"));
+    assert!(text.contains("recommended"));
+    assert!(text.contains("6-bit"));
+    assert!(
+        text.contains("fits"),
+        "fit badge rendered for 64GB test RAM"
+    );
+    assert!(text.contains("Step 2 of 4"), "gemma4-12b has an MTP step");
+}
+
+#[test]
+fn mtp_options_step_appears_only_for_mtp_variants() {
+    let mut app = new_app();
+    app.screen = Screen::Models;
+    app.family_idx = family_index(&app, "gemma4-12b");
+    app.on_key_models(KeyCode::Enter); // -> Precision
+    app.precision_idx = 0; // 4-bit has an MTP accelerator
+    app.on_key_models(KeyCode::Enter); // -> Options
+    assert_eq!(app.stage, WizardStage::Options);
+    let text = render(&app);
+    assert!(text.contains("Optional speed-up"));
+    assert!(text.contains("Include the speed-up"));
+    assert!(text.contains("Step 3 of 4"));
+
+    let app2 = new_app();
+    let e2b = family_index(&app2, "gemma4-e2b");
+    assert!(app2.families[e2b].variants[0].mtp_alias.is_none());
+}
+
+#[test]
+fn confirm_step_shows_summary_and_default_destination() {
+    let mut app = new_app();
+    app.screen = Screen::Models;
+    app.family_idx = family_index(&app, "gemma4-e2b");
+    app.precision_idx = 0;
+    app.begin_confirm(false);
+    assert_eq!(app.stage, WizardStage::Confirm);
+    let text = render(&app);
+    assert!(text.contains("Confirm download"));
+    assert!(text.contains("gemma4-e2b"));
+    assert!(text.contains("shared HF cache"));
+    assert!(text.contains("Free disk"));
+    assert!(text.contains("Step 3 of 3"), "no MTP step for gemma4-e2b");
+}
+
+#[test]
+fn confirm_enqueues_and_jumps_to_downloads() {
+    let mut app = new_app();
+    app.screen = Screen::Models;
+    app.family_idx = family_index(&app, "gemma4-e2b");
+    app.precision_idx = 0;
+    app.begin_confirm(false);
+    app.on_key_models(KeyCode::Enter);
+    assert_eq!(app.screen, Screen::Downloads);
+    assert_eq!(app.downloads.len(), 1);
+    let task = &app.downloads[0];
+    assert_eq!(task.subcmd, "download");
+    assert!(task.dest.is_none(), "default destination is the HF cache");
+    assert!(!app.toasts.is_empty(), "queueing raises a toast");
+}
+
+#[test]
+fn mtp_confirm_uses_mtp_target_repo_and_combined_size() {
+    let mut app = new_app();
+    app.screen = Screen::Models;
+    // qwen3.6-27b 4-bit maps to the 6-bit MTP target — the plan must follow
+    // the target repo, not the selected variant's repo.
+    app.family_idx = family_index(&app, "qwen3.6-27b");
+    app.precision_idx = 0;
+    app.begin_confirm(true);
+    app.on_key_models(KeyCode::Enter);
+    let task = &app.downloads[0];
+    assert_eq!(task.subcmd, "download-mtp");
+    assert_eq!(task.repo_id, "mlx-community/Qwen3.6-27B-6bit");
+    assert_eq!(task.total_bytes, Some(22_804_828_230 + 4_503_752_416));
+}
+
+#[test]
+fn click_on_family_row_drills_into_precision() {
+    let mut app = new_app();
+    app.screen = Screen::Models;
+    let _ = render(&app); // records content_list_rect for the families list
+    let rect = app.content_list_rect.get();
+    assert!(rect.height >= 2, "list rect should be recorded");
+    app.on_click(rect.x + 2, rect.y + 2);
+    assert_eq!(app.stage, WizardStage::Precision);
+    assert_eq!(app.family_idx, 1);
+}
+
+#[test]
+fn scroll_moves_family_selection() {
+    let mut app = new_app();
+    app.screen = Screen::Models;
+    assert_eq!(app.family_idx, 0);
+    app.on_mouse(mouse(MouseEventKind::ScrollDown, 0, 0));
+    assert_eq!(app.family_idx, 1);
+    app.on_mouse(mouse(MouseEventKind::ScrollUp, 0, 0));
+    assert_eq!(app.family_idx, 0);
+}
+
+#[test]
+fn filter_narrows_family_list_and_drill_in_maps_back() {
+    let mut app = new_app();
+    app.screen = Screen::Models;
+    app.filter = "gemma4-12b".to_string();
+    app.clamp_family_idx_to_filter();
+    let indices = app.filtered_family_indices();
+    assert_eq!(indices.len(), 1);
+    assert_eq!(app.families[indices[0]].key, "gemma4-12b");
+    assert_eq!(app.family_idx, indices[0]);
+
+    let text = render(&app);
+    assert!(text.contains("filter: gemma4-12b"));
+    assert!(
+        !text.contains("gemma4-e2b"),
+        "non-matching family should be hidden"
+    );
+
+    app.on_key_models(KeyCode::Enter);
+    assert_eq!(app.stage, WizardStage::Precision);
+    assert_eq!(app.families[app.family_idx].key, "gemma4-12b");
+}
+
+#[test]
+fn mtp_badge_is_magenta_not_yellow() {
+    // Leave the default selection (family_idx 0) alone: the selected row's
+    // own highlight style overrides span colors, so check the *other* MTP
+    // families' badges instead — several exist in the catalog.
+    let mut app = new_app();
+    app.screen = Screen::Models;
+    let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+    terminal.draw(|frame| app.draw(frame)).unwrap();
+    let colors: Vec<ratatui::style::Color> = terminal
+        .backend()
+        .buffer()
+        .content
+        .iter()
+        .filter(|cell| cell.symbol() == "⚡")
+        .map(|cell| cell.fg)
+        .collect();
+    assert!(!colors.is_empty(), "MTP badge glyph should render");
+    assert!(
+        colors.contains(&ratatui::style::Color::Magenta),
+        "at least one non-selected MTP badge should be magenta: {colors:?}"
+    );
+    assert!(
+        !colors.contains(&ratatui::style::Color::Yellow),
+        "MTP badge must not reuse the queued-status yellow: {colors:?}"
+    );
+}
+
+#[test]
+fn delete_modal_requires_typed_word() {
+    let mut app = new_app();
+    app.modal = Some(Modal::DeleteModel {
+        family_idx: 0,
+        variant_idx: 0,
+        typed: String::new(),
+    });
+    // Enter with the wrong word keeps the modal open (and deletes nothing).
+    app.on_key(key(KeyCode::Char('n')));
+    app.on_key(key(KeyCode::Enter));
+    assert!(matches!(app.modal, Some(Modal::DeleteModel { .. })));
+    let text = render(&app);
+    assert!(text.contains("Type 'delete' to confirm"));
+    // Esc closes without deleting.
+    app.on_key(key(KeyCode::Esc));
+    assert!(app.modal.is_none());
+}
+
+// ---------------------------------------------------------------------------
+// Downloads
+// ---------------------------------------------------------------------------
+
+#[test]
+fn downloads_screen_renders_queue_and_gauge() {
+    let mut app = new_app();
+    app.screen = Screen::Downloads;
+    app.downloads
+        .push(test_task(Some(Job::failed("queued test".into()))));
+    let text = render(&app);
+    assert!(text.contains("Downloads"));
+    assert!(text.contains("gemma4-e2b"));
+    assert!(text.contains("/tmp/gemma4-e2b"));
+    assert!(text.contains("queued test"));
+    assert!(text.contains("phase:"));
+}
+
+#[test]
+fn enter_on_ready_download_asks_before_serving() {
+    let mut app = new_app();
+    app.screen = Screen::Downloads;
+    let mut task = test_task(Some(Job::failed("x".into())));
+    if let Some(job) = &mut task.job {
+        job.done = Some(0); // mark ready
+    }
+    app.downloads.push(task);
+    app.on_key(key(KeyCode::Enter));
+    assert!(matches!(app.modal, Some(Modal::ServeReady { .. })));
+    let text = render(&app);
+    assert!(text.contains("Start the server with"));
+}
+
+#[test]
+fn cancel_running_download_asks_first() {
+    let mut app = new_app();
+    app.screen = Screen::Downloads;
+    app.downloads
+        .push(test_task(Some(Job::running_with_log(vec![]))));
+    app.on_key(key(KeyCode::Char('x')));
+    assert!(matches!(app.modal, Some(Modal::CancelDownload { .. })));
+    // Backing out leaves it running.
+    app.on_key(key(KeyCode::Char('n')));
+    assert!(app.modal.is_none());
+    assert!(app.downloads[0].is_running());
+}
+
+// ---------------------------------------------------------------------------
+// Serve
+// ---------------------------------------------------------------------------
+
+#[test]
+fn serve_screen_renders_fields() {
+    let mut app = new_app();
+    app.screen = Screen::Serve;
+    let text = render(&app);
+    assert!(text.contains("Installed models"));
+    assert!(text.contains("Host"));
+    assert!(text.contains("Port"));
+}
+
+#[test]
+fn port_validation_rejects_bad_values_only() {
+    let mut app = new_app();
+    assert!(app.port_error().is_none(), "default port is valid");
+    app.port = "".into();
+    assert!(app.port_error().is_none(), "empty falls back to default");
+    app.port = "abc".into();
+    assert_eq!(app.port_error(), Some("port must be 1-65535"));
+    app.port = "99999".into();
+    assert_eq!(app.port_error(), Some("port must be 1-65535"));
+    app.port = "0".into();
+    assert_eq!(app.port_error(), Some("port must be 1-65535"));
+    app.port = "8080".into();
+    assert!(app.port_error().is_none());
+}
+
+#[test]
+fn server_status_waits_for_listening_line_before_going_green() {
+    let mut app = new_app();
+    app.server = Some(Job::running_with_log(vec!["booting model...".to_string()]));
+    app.server_url = Some("http://127.0.0.1:8080".to_string());
+    app.server_model = Some("gemma4-e2b".to_string());
+    app.screen = Screen::Serve;
+    assert!(!app.server_ready);
+    assert!(render(&app).contains("starting"));
+
+    app.server
+        .as_mut()
+        .unwrap()
+        .log
+        .push("ax-engine-server preview listening on http://127.0.0.1:8080".to_string());
+    app.update_server_ready();
+    assert!(app.server_ready);
+    let text = render(&app);
+    assert!(text.contains("running at"));
+    assert!(text.contains("http://127.0.0.1:8080"));
+    assert!(text.contains("curl"), "ready server shows a curl example");
+}
+
+#[test]
+fn failed_server_surfaces_last_log_line() {
+    let mut app = new_app();
+    app.server = Some(Job::failed("model weights not found at /nope".into()));
+    app.server_url = Some("http://127.0.0.1:8080".to_string());
+    app.screen = Screen::Serve;
+    let text = render(&app);
+    assert!(text.contains("failed:"));
+    assert!(text.contains("model weights not found"));
+}
+
+#[test]
+fn stopping_server_asks_first() {
+    let mut app = new_app();
+    app.server = Some(Job::running_with_log(vec![]));
+    app.screen = Screen::Serve;
+    app.on_key(key(KeyCode::Char('x')));
+    assert!(matches!(app.modal, Some(Modal::StopServer)));
+}
+
+// ---------------------------------------------------------------------------
+// Chat
+// ---------------------------------------------------------------------------
+
+#[test]
+fn sse_lines_parse() {
+    assert_eq!(
+        parse_sse_line(r#"data: {"choices":[{"delta":{"content":"Hi"}}]}"#),
+        SseEvent::Delta("Hi".into())
+    );
+    assert_eq!(parse_sse_line("data: [DONE]"), SseEvent::Done);
+    assert_eq!(parse_sse_line(""), SseEvent::Ignored);
+    assert_eq!(parse_sse_line(": keepalive"), SseEvent::Ignored);
+    assert_eq!(
+        parse_sse_line(r#"{"error":{"message":"boom"}}"#),
+        SseEvent::Error("boom".into())
+    );
+    assert_eq!(
+        parse_sse_line(r#"data: {"error":{"message":"bad request"}}"#),
+        SseEvent::Error("bad request".into())
+    );
+    assert_eq!(
+        parse_sse_line(r#"data: {"choices":[{"delta":{}}]}"#),
+        SseEvent::Ignored
+    );
+}
+
+#[test]
+fn chat_without_server_shows_hint_and_blocks_send() {
+    let mut app = new_app();
+    app.screen = Screen::Chat;
+    assert!(render(&app).contains("No server running"));
+    for c in "hello".chars() {
+        app.on_key(key(KeyCode::Char(c)));
+    }
+    app.on_key(key(KeyCode::Enter));
+    assert!(app.chat.messages.is_empty());
+    assert!(app.chat.error.is_some());
+    assert_eq!(app.chat.input, "hello", "input preserved on failure");
+}
+
+#[test]
+fn chat_input_edits_at_cursor_and_q_is_text() {
+    let mut app = new_app();
+    app.screen = Screen::Chat;
+    for c in "aq".chars() {
+        app.on_key(key(KeyCode::Char(c)));
+    }
+    assert!(!app.quit, "q in chat is text, not quit");
+    assert_eq!(app.chat.input, "aq");
+    app.on_key(key(KeyCode::Left));
+    app.on_key(key(KeyCode::Char('x')));
+    assert_eq!(app.chat.input, "axq");
+    app.on_key(key(KeyCode::Backspace));
+    assert_eq!(app.chat.input, "aq");
+    let mut clear = key(KeyCode::Char('u'));
+    clear.modifiers = KeyModifiers::CONTROL;
+    app.on_key(clear);
+    assert!(app.chat.input.is_empty());
+}
+
+#[test]
+fn chat_esc_leaves_screen_when_not_streaming() {
+    let mut app = new_app();
+    app.screen = Screen::Chat;
+    app.on_key(key(KeyCode::Esc));
+    assert_eq!(app.screen, Screen::Home);
+}
+
+#[test]
+fn chat_transcript_renders_when_server_ready() {
+    let mut app = new_app();
+    app.server = Some(Job::running_with_log(vec![]));
+    app.server_ready = true;
+    app.server_url = Some("http://127.0.0.1:8080".into());
+    app.server_model = Some("gemma4-e2b".into());
+    app.screen = Screen::Chat;
+    app.chat.messages.push(super::screens::chat::ChatMessage {
+        from_user: true,
+        content: "What is AX?".into(),
+    });
+    app.chat.messages.push(super::screens::chat::ChatMessage {
+        from_user: false,
+        content: "A local inference engine.".into(),
+    });
+    let text = render(&app);
+    assert!(text.contains("You:"));
+    assert!(text.contains("What is AX?"));
+    assert!(text.contains("gemma4-e2b:"));
+    assert!(text.contains("A local inference engine."));
+    assert!(text.contains("Message — Enter sends"));
+}

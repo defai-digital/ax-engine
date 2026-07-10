@@ -3,13 +3,15 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use ax_engine_sdk::{
-    EmbeddingPooling, EngineSession, EngineSessionConfig, EngineSessionError, EngineStepReport,
-    RuntimeReport, StatelessGenerateContext,
+    EmbeddingPooling, EngineSessionConfig, EngineSessionError, EngineStepReport, RuntimeReport,
+    StatelessGenerateContext,
 };
 use tokio::sync::{mpsc, oneshot};
 
 use crate::admission::{AdmissionController, AdmissionPermit};
-use crate::generation::service::{GenerationPressureEvent, NativeGenerationService};
+use crate::generation::service::{
+    GenerationPressureEvent, GenerationServiceStartError, NativeGenerationService,
+};
 use crate::generation::streaming::StreamDeadlines;
 use crate::rate_limit::RateLimitConfig;
 
@@ -276,17 +278,37 @@ impl ServerMetrics {
     }
 }
 
-/// Build a `LiveState` from a freshly created session. Used both at startup
-/// and by the load endpoint when swapping to a new model.
+/// Build an initial `LiveState`. The generation service constructs the session
+/// on its owning worker thread before this function returns.
 pub(crate) fn build_live_state(
     model_id: String,
-    session: EngineSession,
-) -> Result<LiveState, EngineSessionError> {
-    let session_config = session.config().clone();
+    session_config: EngineSessionConfig,
+) -> Result<LiveState, GenerationServiceStartError> {
+    build_live_state_inner(model_id, session_config, false)
+}
+
+/// Build a replacement `LiveState` after the current generation has drained.
+/// Process-global compiled closures and the MLX allocator cache are cleared on
+/// the replacement worker before it constructs the new session.
+pub(crate) fn build_replacement_live_state(
+    model_id: String,
+    session_config: EngineSessionConfig,
+) -> Result<LiveState, GenerationServiceStartError> {
+    build_live_state_inner(model_id, session_config, true)
+}
+
+fn build_live_state_inner(
+    model_id: String,
+    session_config: EngineSessionConfig,
+    replacement: bool,
+) -> Result<LiveState, GenerationServiceStartError> {
     let stateless_generate_context =
         StatelessGenerateContext::new(session_config.clone()).map(Arc::new)?;
-    let runtime_report = session.runtime_report();
-    let generation_service = NativeGenerationService::spawn(session);
+    let (generation_service, runtime_report) = if replacement {
+        NativeGenerationService::spawn_replacement(session_config.clone())?
+    } else {
+        NativeGenerationService::spawn(session_config.clone())?
+    };
     let embedding_batcher = EmbeddingMicroBatcher::spawn(generation_service.clone());
     Ok(LiveState {
         generation: 0,
@@ -301,9 +323,9 @@ pub(crate) fn build_live_state(
 
 pub(crate) fn build_app_state(
     model_id: String,
-    session: EngineSession,
-) -> Result<AppState, EngineSessionError> {
-    let live = build_live_state(model_id, session)?;
+    session_config: EngineSessionConfig,
+) -> Result<AppState, GenerationServiceStartError> {
+    let live = build_live_state(model_id, session_config)?;
     Ok(AppState::new(live))
 }
 
@@ -327,8 +349,7 @@ mod tests {
             ..PreviewSessionConfigRequest::default()
         })
         .expect("preview session config should build");
-        let session = EngineSession::new(config).expect("session should build");
-        build_app_state(model_id.to_string(), session).expect("app state should build")
+        build_app_state(model_id.to_string(), config).expect("app state should build")
     }
 
     fn trigger_command_saturation(service: &Arc<NativeGenerationService>) {

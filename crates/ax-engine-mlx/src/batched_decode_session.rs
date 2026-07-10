@@ -64,79 +64,104 @@ pub fn batched_decode_sampling_enabled() -> bool {
     })
 }
 
-/// Whether a model can use the batched dense-decode path. Pure so it is
-/// unit-testable. Conservative: only dense full-attention `qwen3` with no
-/// speculative/compression/sliding features (the layers
-/// [`crate::model::families::standard::layer_forward_batched`] supports).
-#[allow(clippy::too_many_arguments)]
-pub fn model_batched_eligible(
-    model_family: &str,
-    has_mtp: bool,
-    is_diffusion: bool,
-    kv_compression_on: bool,
-    layer_windows: &[Option<usize>],
-    layers: &[LayerWeights],
-) -> bool {
-    model_batched_rejection_reasons(
-        model_family,
-        has_mtp,
-        is_diffusion,
-        kv_compression_on,
-        layer_windows,
-        layers,
-    )
-    .is_empty()
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum BatchedDecodeCertification {
+    DenseQwen3,
+    Uncertified,
 }
 
-#[allow(clippy::too_many_arguments)]
-pub fn model_batched_rejection_reasons(
-    model_family: &str,
+impl BatchedDecodeCertification {
+    fn from_model_family(model_family: &str) -> Self {
+        if model_family == "qwen3" {
+            Self::DenseQwen3
+        } else {
+            Self::Uncertified
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct BatchedDecodeCapabilities {
+    certification: BatchedDecodeCertification,
     has_mtp: bool,
     is_diffusion: bool,
     kv_compression_on: bool,
-    layer_windows: &[Option<usize>],
-    layers: &[LayerWeights],
-) -> Vec<&'static str> {
-    let mut reasons = Vec::new();
-    if has_mtp {
-        reasons.push("mtp");
+    has_sliding_window: bool,
+    has_moe: bool,
+    has_linear_attention: bool,
+    has_mla: bool,
+    has_layer_gating: bool,
+    has_complete_attention_projections: bool,
+}
+
+impl BatchedDecodeCapabilities {
+    pub(crate) fn from_loaded_model(
+        model_family: &str,
+        has_mtp: bool,
+        is_diffusion: bool,
+        kv_compression_on: bool,
+        layer_windows: &[Option<usize>],
+        layers: &[LayerWeights],
+    ) -> Self {
+        Self {
+            certification: BatchedDecodeCertification::from_model_family(model_family),
+            has_mtp,
+            is_diffusion,
+            kv_compression_on,
+            has_sliding_window: layer_windows.iter().any(Option::is_some),
+            has_moe: layers.iter().any(|weights| weights.router_proj.is_some()),
+            has_linear_attention: layers.iter().any(|weights| weights.linear_attn.is_some()),
+            has_mla: layers.iter().any(|weights| weights.glm_mla_attn.is_some()),
+            has_layer_gating: layers
+                .iter()
+                .any(|weights| weights.per_layer_gate.is_some() || weights.layer_scalar.is_some()),
+            has_complete_attention_projections: layers.iter().all(|weights| {
+                weights.q_proj.is_some()
+                    && weights.k_proj.is_some()
+                    && weights.v_proj.is_some()
+                    && weights.o_proj.is_some()
+            }),
+        }
     }
-    if is_diffusion {
-        reasons.push("diffusion");
+
+    pub(crate) fn eligible(self) -> bool {
+        self.rejection_reasons().is_empty()
     }
-    if kv_compression_on {
-        reasons.push("kv_compression");
+
+    pub(crate) fn rejection_reasons(self) -> Vec<&'static str> {
+        let mut reasons = Vec::new();
+        if self.has_mtp {
+            reasons.push("mtp");
+        }
+        if self.is_diffusion {
+            reasons.push("diffusion");
+        }
+        if self.kv_compression_on {
+            reasons.push("kv_compression");
+        }
+        if self.certification == BatchedDecodeCertification::Uncertified {
+            reasons.push("model_family");
+        }
+        if self.has_sliding_window {
+            reasons.push("sliding_window");
+        }
+        if self.has_moe {
+            reasons.push("moe");
+        }
+        if self.has_linear_attention {
+            reasons.push("linear_attention");
+        }
+        if self.has_mla {
+            reasons.push("mla");
+        }
+        if self.has_layer_gating {
+            reasons.push("layer_gating");
+        }
+        if !self.has_complete_attention_projections {
+            reasons.push("missing_attention_projection");
+        }
+        reasons
     }
-    if model_family != "qwen3" {
-        reasons.push("model_family");
-    }
-    if layer_windows.iter().any(Option::is_some) {
-        reasons.push("sliding_window");
-    }
-    if layers.iter().any(|weights| weights.router_proj.is_some()) {
-        reasons.push("moe");
-    }
-    if layers.iter().any(|weights| weights.linear_attn.is_some()) {
-        reasons.push("linear_attention");
-    }
-    if layers.iter().any(|weights| weights.glm_mla_attn.is_some()) {
-        reasons.push("mla");
-    }
-    if layers
-        .iter()
-        .any(|weights| weights.per_layer_gate.is_some() || weights.layer_scalar.is_some())
-    {
-        reasons.push("layer_gating");
-    }
-    if layers.iter().any(|weights| {
-        weights.q_proj.is_none()
-            || weights.k_proj.is_none()
-            || weights.v_proj.is_none()
-            || weights.o_proj.is_none()
-    }) {
-        reasons.push("missing_attention_projection");
-    }
-    reasons
 }
 
 /// A batched decode cohort with continuous join/leave.
@@ -310,62 +335,85 @@ mod tests {
     #[test]
     fn model_eligibility_guards() {
         let no_windows: [Option<usize>; 0] = [];
-        // Dense qwen3 with no special features and no layers → eligible (vacuous).
-        assert!(model_batched_eligible(
-            "qwen3",
-            false,
-            false,
-            false,
-            &no_windows,
-            &[]
-        ));
-        // Each disqualifier flips it off, independent of the layer set.
-        assert!(!model_batched_eligible(
-            "qwen3",
-            true,
-            false,
-            false,
-            &no_windows,
-            &[]
-        )); // MTP
-        assert!(!model_batched_eligible(
-            "qwen3",
-            false,
-            true,
-            false,
-            &no_windows,
-            &[]
-        )); // diffusion
-        assert!(!model_batched_eligible(
-            "qwen3",
-            false,
-            false,
-            true,
-            &no_windows,
-            &[]
-        )); // kv compression
-        assert!(!model_batched_eligible(
-            "gemma4",
-            false,
-            false,
-            false,
-            &no_windows,
-            &[]
-        )); // wrong family
-        assert!(!model_batched_eligible(
-            "qwen3",
-            false,
-            false,
-            false,
-            &[Some(4096)],
-            &[]
-        )); // sliding window
+        assert!(
+            BatchedDecodeCapabilities::from_loaded_model(
+                "qwen3",
+                false,
+                false,
+                false,
+                &no_windows,
+                &[]
+            )
+            .eligible()
+        );
+        assert!(
+            !BatchedDecodeCapabilities::from_loaded_model(
+                "qwen3",
+                true,
+                false,
+                false,
+                &no_windows,
+                &[]
+            )
+            .eligible()
+        );
+        assert!(
+            !BatchedDecodeCapabilities::from_loaded_model(
+                "qwen3",
+                false,
+                true,
+                false,
+                &no_windows,
+                &[]
+            )
+            .eligible()
+        );
+        assert!(
+            !BatchedDecodeCapabilities::from_loaded_model(
+                "qwen3",
+                false,
+                false,
+                true,
+                &no_windows,
+                &[]
+            )
+            .eligible()
+        );
+        assert!(
+            !BatchedDecodeCapabilities::from_loaded_model(
+                "gemma4",
+                false,
+                false,
+                false,
+                &no_windows,
+                &[]
+            )
+            .eligible()
+        );
+        assert!(
+            !BatchedDecodeCapabilities::from_loaded_model(
+                "qwen3",
+                false,
+                false,
+                false,
+                &[Some(4096)],
+                &[]
+            )
+            .eligible()
+        );
     }
 
     #[test]
     fn model_rejection_reasons_preserve_all_independent_gates() {
-        let reasons =
-            model_batched_rejection_reasons("qwen3_linear", true, true, true, &[Some(4096)], &[]);
+        let reasons = BatchedDecodeCapabilities::from_loaded_model(
+            "qwen3_linear",
+            true,
+            true,
+            true,
+            &[Some(4096)],
+            &[],
+        )
+        .rejection_reasons();
 
         assert_eq!(
             reasons,
