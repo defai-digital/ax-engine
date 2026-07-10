@@ -24,18 +24,15 @@ pub(crate) async fn generate(
     Ok(Json(response))
 }
 
-/// Runs a generate request against the caller's `LiveState` snapshot, so the
-/// model that validated/tokenized the request is the one that executes it
-/// even if a hot-swap lands mid-request.
+/// Run a request against the caller's model generation.
+/// Admission keeps an admitted generation alive through completion and rejects
+/// a stale snapshot when a hot-swap finished while the request was prepared.
 pub(crate) async fn run_stateless_generate_request(
     state: &AppState,
     live: &LiveState,
     request: GenerateRequest,
 ) -> Result<(u64, GenerateResponse), (StatusCode, Json<ErrorResponse>)> {
-    let permit = state
-        .admission
-        .try_admit()
-        .map_err(admission_error_response)?;
+    let permit = state.try_admit(live).map_err(admission_error_response)?;
     let request_id = state.allocate_request_id();
     if live.runtime_report.selected_backend.is_mlx() {
         let generation_service = live.generation_service.clone();

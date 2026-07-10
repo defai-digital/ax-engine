@@ -870,6 +870,12 @@ layer closures, builds the replacement session, and only then atomically
 publishes the new `LiveState`. A disconnected load client does not cancel this
 cleanup sequence. Requests arriving during the drain receive HTTP 503 or gRPC
 `UNAVAILABLE` and can retry after the load finishes.
+The optional `load_policy` request field accepts `availability_first` (the
+default) or `memory_constrained`. Availability-first keeps the drained model
+resident until its replacement is ready, preserving rollback at the cost of a
+temporary two-model memory peak. Memory-constrained shuts down and joins the old
+generation worker before loading the replacement; this lowers peak memory but
+intentionally leaves the server unavailable if replacement loading fails.
 The `mlx_lm_delegated` backend supports blocking `/v1/generate` and SSE
 `/v1/generate/stream` through `mlx_lm.server` `/v1/completions`. It also
 supports streamed OpenAI-compatible completion/chat endpoints by forwarding

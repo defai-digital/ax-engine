@@ -71,10 +71,7 @@ pub(crate) async fn openai_embeddings(
         DEFAULT_EMBED_TIMEOUT_MS,
     );
     let timeout = Duration::from_millis(embed_timeout);
-    let permit = state
-        .admission
-        .try_admit()
-        .map_err(admission_error_response)?;
+    let permit = state.try_admit(&live).map_err(admission_error_response)?;
 
     // Single input -> microbatcher (lets concurrent callers coalesce into
     // one batched runner call). Multi-input -> direct `embed_batch_flat`

@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
@@ -10,16 +9,16 @@ use ax_engine_sdk::{
 use tokio::sync::{mpsc, oneshot};
 
 use crate::admission::{AdmissionController, AdmissionPermit};
-use crate::generation::service::NativeGenerationService;
+use crate::generation::service::{GenerationPressureEvent, NativeGenerationService};
 use crate::generation::streaming::StreamDeadlines;
 use crate::rate_limit::RateLimitConfig;
 
 /// All state that changes atomically when a new model is loaded.
-/// Wrapped behind `Arc<RwLock<>>` in `AppState` so every in-flight request
-/// that has already cloned its Arcs continues with the old model, while new
-/// requests immediately see the replacement.
+/// Wrapped behind `Arc<RwLock<>>` in `AppState`; handlers bind admission to
+/// `generation` so a stale snapshot cannot submit work after a replacement.
 #[derive(Clone)]
 pub(crate) struct LiveState {
+    pub(crate) generation: u64,
     pub(crate) model_id: Arc<String>,
     pub(crate) session_config: Arc<EngineSessionConfig>,
     pub(crate) stateless_generate_context: Arc<StatelessGenerateContext>,
@@ -38,20 +37,23 @@ pub(crate) struct AppState {
     pub(crate) loading: Arc<AtomicBool>,
     pub(crate) limits: Arc<ServerLimits>,
     pub(crate) admission: Arc<AdmissionController>,
-    pub(crate) stepwise_admission: Arc<parking_lot::Mutex<HashMap<u64, AdmissionPermit>>>,
+    next_live_generation: Arc<AtomicU64>,
     next_request_id: Arc<AtomicU64>,
 }
 
 impl AppState {
-    pub(crate) fn new(live: LiveState) -> Self {
+    pub(crate) fn new(mut live: LiveState) -> Self {
+        live.generation = 1;
+        let metrics = Arc::new(ServerMetrics::default());
+        attach_generation_metrics(&live, &metrics);
         Self {
             live: Arc::new(parking_lot::RwLock::new(live)),
             api_key: None,
-            metrics: Arc::new(ServerMetrics::default()),
+            metrics,
             loading: Arc::new(AtomicBool::new(false)),
             limits: Arc::new(ServerLimits::default()),
             admission: Arc::new(AdmissionController::new(None)),
-            stepwise_admission: Arc::new(parking_lot::Mutex::new(HashMap::new())),
+            next_live_generation: Arc::new(AtomicU64::new(2)),
             next_request_id: Arc::new(AtomicU64::new(1)),
         }
     }
@@ -64,8 +66,22 @@ impl AppState {
 
     /// Replace the live model state. Called by the load endpoint after
     /// successfully building a new session outside the lock.
-    pub(crate) fn swap_live(&self, new: LiveState) {
-        *self.live.write() = new;
+    pub(crate) fn swap_live(&self, mut new: LiveState) -> LiveState {
+        new.generation = self.next_live_generation.fetch_add(1, Ordering::AcqRel);
+        attach_generation_metrics(&new, &self.metrics);
+        std::mem::replace(&mut *self.live.write(), new)
+    }
+
+    pub(crate) fn try_admit(
+        &self,
+        live: &LiveState,
+    ) -> Result<AdmissionPermit, crate::admission::AdmissionError> {
+        let permit = self.admission.try_admit()?;
+        if self.live.read().generation != live.generation {
+            drop(permit);
+            return Err(crate::admission::AdmissionError::StaleGeneration);
+        }
+        Ok(permit)
     }
 
     pub(crate) fn allocate_request_id(&self) -> u64 {
@@ -82,6 +98,31 @@ impl AppState {
         self.limits = Arc::new(limits);
         self
     }
+}
+
+impl LiveState {
+    pub(crate) async fn retire(
+        self,
+    ) -> Result<(), crate::generation::service::GenerationServiceError> {
+        let generation_service = Arc::clone(&self.generation_service);
+        drop(self);
+        generation_service.shutdown().await
+    }
+}
+
+fn attach_generation_metrics(live: &LiveState, metrics: &Arc<ServerMetrics>) {
+    let step_metrics = Arc::downgrade(metrics);
+    live.generation_service.set_step_observer(move |report| {
+        if let Some(metrics) = step_metrics.upgrade() {
+            metrics.record_step_report(report);
+        }
+    });
+    let pressure_metrics = Arc::downgrade(metrics);
+    live.generation_service.set_pressure_observer(move |event| {
+        if let Some(metrics) = pressure_metrics.upgrade() {
+            metrics.record_generation_pressure(event);
+        }
+    });
 }
 
 /// Resource limits resolved from CLI flags / env vars at startup (see
@@ -122,7 +163,10 @@ pub(crate) struct ServerMetrics {
     pub(crate) grpc_requests_in_flight: AtomicU64,
     pub(crate) grpc_status_ok_total: AtomicU64,
     pub(crate) grpc_status_error_total: AtomicU64,
+    pub(crate) generation_saturated_commands_total: AtomicU64,
+    pub(crate) generation_stream_backlog_overflows_total: AtomicU64,
     engine_step_observed: AtomicBool,
+    engine_steps_total: AtomicU64,
     engine_step_scheduled_requests: AtomicU64,
     engine_step_scheduled_tokens: AtomicU64,
     engine_step_kv_usage_blocks: AtomicU64,
@@ -135,6 +179,7 @@ pub(crate) struct ServerMetrics {
 /// advances the engine (native) or consumes request stream chunks (llama.cpp).
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct EngineStepGauges {
+    pub(crate) steps_total: u64,
     pub(crate) scheduled_requests: u64,
     pub(crate) scheduled_tokens: u64,
     pub(crate) kv_usage_blocks: u64,
@@ -142,6 +187,19 @@ pub(crate) struct EngineStepGauges {
 }
 
 impl ServerMetrics {
+    pub(crate) fn record_generation_pressure(&self, event: GenerationPressureEvent) {
+        match event {
+            GenerationPressureEvent::CommandSaturated => {
+                self.generation_saturated_commands_total
+                    .fetch_add(1, Ordering::Relaxed);
+            }
+            GenerationPressureEvent::StreamBacklogOverflow => {
+                self.generation_stream_backlog_overflows_total
+                    .fetch_add(1, Ordering::Relaxed);
+            }
+        }
+    }
+
     pub(crate) fn begin_http_request(&self) {
         self.http_requests_total.fetch_add(1, Ordering::Relaxed);
         self.http_requests_in_flight.fetch_add(1, Ordering::Relaxed);
@@ -192,6 +250,7 @@ impl ServerMetrics {
     }
 
     pub(crate) fn record_step_report(&self, report: &EngineStepReport) {
+        self.engine_steps_total.fetch_add(1, Ordering::Relaxed);
         self.engine_step_scheduled_requests
             .store(report.scheduled_requests as u64, Ordering::Relaxed);
         self.engine_step_scheduled_tokens
@@ -208,6 +267,7 @@ impl ServerMetrics {
             return None;
         }
         Some(EngineStepGauges {
+            steps_total: self.engine_steps_total.load(Ordering::Relaxed),
             scheduled_requests: self.engine_step_scheduled_requests.load(Ordering::Relaxed),
             scheduled_tokens: self.engine_step_scheduled_tokens.load(Ordering::Relaxed),
             kv_usage_blocks: self.engine_step_kv_usage_blocks.load(Ordering::Relaxed),
@@ -229,6 +289,7 @@ pub(crate) fn build_live_state(
     let generation_service = NativeGenerationService::spawn(session);
     let embedding_batcher = EmbeddingMicroBatcher::spawn(generation_service.clone());
     Ok(LiveState {
+        generation: 0,
         model_id: Arc::new(model_id),
         session_config: Arc::new(session_config),
         stateless_generate_context,
@@ -249,6 +310,8 @@ pub(crate) fn build_app_state(
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
+    use std::sync::mpsc as std_mpsc;
+    use std::time::{Duration, Instant};
 
     use ax_engine_sdk::{PreviewBackendRequest, PreviewSessionConfigRequest, SupportTier};
 
@@ -268,20 +331,119 @@ mod tests {
         build_app_state(model_id.to_string(), session).expect("app state should build")
     }
 
+    fn trigger_command_saturation(service: &Arc<NativeGenerationService>) {
+        let (entered_tx, entered_rx) = std_mpsc::channel();
+        let (release_tx, release_rx) = std_mpsc::channel();
+        service
+            .submit(move |_| {
+                let _ = entered_tx.send(());
+                let _ = release_rx.recv();
+            })
+            .expect("blocking command should enqueue");
+        entered_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("worker should enter blocking command");
+        for _ in 0..service.command_queue_capacity() {
+            service
+                .submit(|_| {})
+                .expect("queue should accept commands up to capacity");
+        }
+        assert!(matches!(
+            service.submit(|_| {}),
+            Err(crate::generation::service::GenerationServiceError::Saturated)
+        ));
+        release_tx.send(()).expect("worker should be released");
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while service.is_busy() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(!service.is_busy());
+    }
+
     #[tokio::test]
     async fn snapshot_reads_live_state() {
         let state = test_state("first");
         let live = state.snapshot();
         assert_eq!(live.model_id.as_ref().as_str(), "first");
+        assert_eq!(live.generation, 1);
     }
 
     #[tokio::test]
     async fn swap_live_replaces_state() {
         let state = test_state("first");
+        let previous_service = state.snapshot().generation_service;
         let replacement = test_state("second").snapshot();
-        state.swap_live(replacement);
+        let previous = state.swap_live(replacement);
+        previous
+            .retire()
+            .await
+            .expect("previous generation should retire");
         let live = state.snapshot();
         assert_eq!(live.model_id.as_ref().as_str(), "second");
+        assert_eq!(live.generation, 2);
+        assert!(!previous_service.is_ready());
+    }
+
+    #[tokio::test]
+    async fn stale_live_snapshot_cannot_admit_after_swap() {
+        let state = test_state("first");
+        let stale = state.snapshot();
+        let replacement = test_state("second").snapshot();
+        state.swap_live(replacement);
+
+        assert!(matches!(
+            state.try_admit(&stale),
+            Err(crate::admission::AdmissionError::StaleGeneration)
+        ));
+        assert_eq!(state.admission.active_jobs(), 0);
+
+        let current = state.snapshot();
+        let permit = state
+            .try_admit(&current)
+            .expect("current generation should be admitted");
+        assert_eq!(state.admission.active_jobs(), 1);
+        drop(permit);
+    }
+
+    #[tokio::test]
+    async fn swapped_generation_records_steps_in_shared_metrics() {
+        let state = test_state("first");
+        let replacement = test_state("second").snapshot();
+        state.swap_live(replacement);
+
+        state
+            .snapshot()
+            .generation_service
+            .advance()
+            .await
+            .expect("delegated idle step should succeed");
+
+        assert!(state.metrics.engine_step_gauges().is_some());
+    }
+
+    #[tokio::test]
+    async fn pressure_counters_remain_monotonic_across_model_swap() {
+        let state = test_state("first");
+        trigger_command_saturation(&state.snapshot().generation_service);
+        assert_eq!(
+            state
+                .metrics
+                .generation_saturated_commands_total
+                .load(Ordering::Relaxed),
+            1
+        );
+
+        let replacement = test_state("second").snapshot();
+        state.swap_live(replacement);
+        trigger_command_saturation(&state.snapshot().generation_service);
+
+        assert_eq!(
+            state
+                .metrics
+                .generation_saturated_commands_total
+                .load(Ordering::Relaxed),
+            2
+        );
     }
 }
 

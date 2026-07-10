@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use std::time::Duration;
 
 use ax_engine_sdk::{EngineSession, EngineSessionConfig, EngineSessionError};
 use axum::Json;
@@ -19,6 +20,16 @@ pub(crate) struct LoadModelRequest {
     pub model_id: String,
     /// Path to the MLX model artifacts directory (must contain model-manifest.json).
     pub model_path: String,
+    #[serde(default)]
+    pub load_policy: LoadModelPolicy,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum LoadModelPolicy {
+    #[default]
+    AvailabilityFirst,
+    MemoryConstrained,
 }
 
 #[derive(Debug, Serialize)]
@@ -26,6 +37,7 @@ pub(crate) struct LoadModelResponse {
     pub model_id: String,
     pub state: &'static str,
     pub context_length: u32,
+    pub load_policy: LoadModelPolicy,
 }
 
 pub(crate) async fn load_model(
@@ -64,6 +76,7 @@ pub(crate) async fn load_model(
     let drain_guard = state.admission.begin_drain();
 
     let model_id = request.model_id.clone();
+    let load_policy = request.load_policy;
     let generation_service = state.snapshot().generation_service;
 
     // Run load + swap in a detached task: axum drops handler futures when the
@@ -73,18 +86,12 @@ pub(crate) async fn load_model(
     let load_task = tokio::spawn(async move {
         let _drain_guard = drain_guard;
         let _loading_guard = LoadingFlagGuard(state_clone.clone());
-        let has_active_stepwise_requests = generation_service
-            .execute(|session| Ok(session.has_active_stepwise_requests()))
+        if generation_service
+            .has_active_stepwise()
             .await
-            .map_err(map_generation_service_error)?;
-        if has_active_stepwise_requests {
-            return Err(error_response(
-                StatusCode::CONFLICT,
-                "requests_in_flight",
-                "the current session has non-terminal /v1/requests work; drain or cancel it \
-                 before loading a new model"
-                    .to_string(),
-            ));
+            .map_err(map_generation_service_error)?
+        {
+            return Err(active_stepwise_load_error());
         }
         // Clone the current config and swap in the new model artifacts dir.
         // Only MLX-native consumes this field; delegated backends would keep
@@ -104,7 +111,13 @@ pub(crate) async fn load_model(
         }
         let new_config =
             Arc::unwrap_or_clone(live.session_config).with_mlx_model_artifacts_dir(model_path);
-        state_clone.admission.wait_for_idle().await;
+        wait_for_idle_without_stepwise(&state_clone, &generation_service).await?;
+        if load_policy == LoadModelPolicy::MemoryConstrained {
+            generation_service
+                .shutdown()
+                .await
+                .map_err(map_generation_service_error)?;
+        }
 
         // Load the session on the blocking thread pool — weight loading can take
         // tens of seconds; blocking the async runtime would stall all other requests.
@@ -113,7 +126,16 @@ pub(crate) async fn load_model(
         match result {
             Ok(Ok(live)) => {
                 let ctx_len = crate::metadata::context_length(&live);
-                state_clone.swap_live(live);
+                let previous = state_clone.swap_live(live);
+                previous.retire().await.map_err(|error| {
+                    error_response(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "server_error",
+                        format!(
+                            "new model loaded but previous generation failed to retire: {error}"
+                        ),
+                    )
+                })?;
                 Ok(ctx_len)
             }
             Ok(Err(e)) => Err(error_response(
@@ -134,6 +156,7 @@ pub(crate) async fn load_model(
             model_id: request.model_id,
             state: "loaded",
             context_length: ctx_len,
+            load_policy,
         })),
         Ok(Err(e)) => Err(e),
         Err(e) => Err(error_response(
@@ -142,6 +165,40 @@ pub(crate) async fn load_model(
             format!("load task panicked: {e}"),
         )),
     }
+}
+
+async fn wait_for_idle_without_stepwise(
+    state: &AppState,
+    generation_service: &crate::generation::service::NativeGenerationService,
+) -> Result<(), HttpErrorResponse> {
+    loop {
+        let has_active_stepwise_requests = generation_service
+            .has_active_stepwise()
+            .await
+            .map_err(map_generation_service_error)?;
+        if has_active_stepwise_requests {
+            return Err(active_stepwise_load_error());
+        }
+        if state.admission.active_jobs() == 0 {
+            return Ok(());
+        }
+        if tokio::time::timeout(Duration::from_millis(10), state.admission.wait_for_idle())
+            .await
+            .is_ok()
+        {
+            return Ok(());
+        }
+    }
+}
+
+fn active_stepwise_load_error() -> HttpErrorResponse {
+    error_response(
+        StatusCode::CONFLICT,
+        "requests_in_flight",
+        "the current session has non-terminal /v1/requests work; drain or cancel it before \
+         loading a new model"
+            .to_string(),
+    )
 }
 
 struct LoadingFlagGuard(AppState);
@@ -159,4 +216,32 @@ fn build_new_session(
     EngineSession::clear_native_model_compile_caches();
     let session = EngineSession::new(config)?;
     build_live_state(model_id, session)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn load_policy_defaults_to_availability_first() {
+        let request: LoadModelRequest = serde_json::from_value(serde_json::json!({
+            "model_id": "next",
+            "model_path": "/tmp/model"
+        }))
+        .expect("request should parse");
+
+        assert_eq!(request.load_policy, LoadModelPolicy::AvailabilityFirst);
+    }
+
+    #[test]
+    fn memory_constrained_policy_is_explicit() {
+        let request: LoadModelRequest = serde_json::from_value(serde_json::json!({
+            "model_id": "next",
+            "model_path": "/tmp/model",
+            "load_policy": "memory_constrained"
+        }))
+        .expect("request should parse");
+
+        assert_eq!(request.load_policy, LoadModelPolicy::MemoryConstrained);
+    }
 }

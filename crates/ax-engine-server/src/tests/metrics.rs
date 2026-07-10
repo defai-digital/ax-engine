@@ -6,7 +6,7 @@ use super::fixtures::{llama_cpp_state, text_response};
 use crate::routes::build_router;
 
 /// `/metrics` must stay a passive read: engine-step gauges only reflect
-/// reports recorded by the endpoints that actually drive steps, and scraping
+/// reports recorded by the generation worker, and scraping
 /// before any step keeps them hidden entirely.
 #[tokio::test]
 async fn metrics_step_gauges_appear_only_after_recorded_steps() {
@@ -30,6 +30,13 @@ async fn metrics_step_gauges_appear_only_after_recorded_steps() {
     );
     assert!(body.contains("ax_engine_jobs_in_flight 0\n"));
     assert!(body.contains("ax_engine_generation_jobs_pending 0\n"));
+    assert!(body.contains("ax_engine_generation_commands_queued 0\n"));
+    assert!(body.contains("ax_engine_generation_command_queue_capacity 256\n"));
+    assert!(body.contains("ax_engine_generation_active_streams 0\n"));
+    assert!(body.contains("ax_engine_generation_buffered_stream_events 0\n"));
+    assert!(body.contains("ax_engine_generation_saturated_commands_total 0\n"));
+    assert!(body.contains("ax_engine_generation_stream_backlog_overflows_total 0\n"));
+    assert!(body.contains("ax_engine_generation_worker_ready 1\n"));
 
     metrics.record_step_report(&EngineStepReport {
         scheduled_requests: 3,
@@ -57,6 +64,7 @@ async fn metrics_step_gauges_appear_only_after_recorded_steps() {
     .await;
     assert_eq!(status, StatusCode::OK);
     // Gauges hold the latest step; prefix hits accumulate across steps.
+    assert!(body.contains("ax_engine_steps_total 2\n"));
     assert!(body.contains("ax_engine_step_scheduled_requests 1\n"));
     assert!(body.contains("ax_engine_step_scheduled_tokens 5\n"));
     assert!(body.contains("ax_engine_step_kv_usage_blocks 4\n"));

@@ -483,6 +483,9 @@ throughput baselines.
   logs, prompt artifacts, environment metadata, and raw JSON results.
 - `diagnose_server_rss.py`: long-lived RSS diagnostic for MLX and delegated
   llama.cpp server routes. It is not a throughput benchmark.
+- `run_native_generation_fault_soak.py`: fail-closed native MLX fault lane that
+  mixes normal, disconnected, and slow consumers while recording request
+  outcomes, RSS, queue/backlog counters, and final lifecycle quiescence.
 - `check-bench-*.sh`: smoke checks for `ax-engine-bench` workload-contract
   commands. `check-bench-preview.sh` covers the delegated llama.cpp preset and
   artifact contract, including safe preset metadata, processing/deferred

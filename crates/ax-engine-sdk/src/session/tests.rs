@@ -1709,6 +1709,116 @@ fn native_step_report_surfaces_route_and_metal_dispatch_summary() {
 }
 
 #[test]
+fn shared_native_step_advances_multiple_stream_states_once() {
+    let core = EngineCore::with_runtime_components(
+        KvManagerConfig::validated(CacheGroupId(0), 16, 64),
+        DeterministicRunner,
+        DeterministicSampler,
+    );
+    let config = mlx_test_session_config();
+    let mut session = EngineSession {
+        core,
+        runtime: config.runtime_report(),
+        config,
+        next_request_id: 1,
+        native_request_routes: BTreeMap::new(),
+        native_route_report_order: VecDeque::new(),
+        llama_requests: BTreeMap::new(),
+        llama_terminal_request_order: VecDeque::new(),
+    };
+    let request = |token| GenerateRequest {
+        model_id: "qwen3".to_string(),
+        input_tokens: vec![token, token + 1],
+        input_text: None,
+        multimodal_inputs: Default::default(),
+        max_output_tokens: 2,
+        sampling: Default::default(),
+        stop_sequences: Vec::new(),
+        metadata: None,
+    };
+    let mut first = session
+        .stream_generate_state_with_request_id(1, request(1))
+        .expect("first stream should start");
+    let mut second = session
+        .stream_generate_state_with_request_id(2, request(10))
+        .expect("second stream should start");
+    assert!(matches!(
+        session.next_stream_event(&mut first),
+        Ok(Some(GenerateStreamEvent::Request(_)))
+    ));
+    assert!(matches!(
+        session.next_stream_event(&mut second),
+        Ok(Some(GenerateStreamEvent::Request(_)))
+    ));
+
+    let (shared_step, request_ids) = session
+        .step_report_with_request_ids()
+        .expect("shared step should succeed");
+    assert_eq!(request_ids, vec![1, 2]);
+    let first_event = session
+        .next_native_stream_event_after_step(&mut first, shared_step.clone())
+        .expect("first stream should observe the shared step");
+    let second_event = session
+        .next_native_stream_event_after_step(&mut second, shared_step.clone())
+        .expect("second stream should observe the shared step");
+
+    let GenerateStreamEvent::Step(first_step) = first_event else {
+        panic!("first stream should emit a step event");
+    };
+    let GenerateStreamEvent::Step(second_step) = second_event else {
+        panic!("second stream should emit a step event");
+    };
+    assert_eq!(first_step.step.step_id, shared_step.step_id);
+    assert_eq!(second_step.step.step_id, shared_step.step_id);
+
+    let next_step = session
+        .step_report()
+        .expect("next engine step should succeed");
+    assert_eq!(
+        next_step.step_id,
+        shared_step
+            .step_id
+            .and_then(|step_id| step_id.checked_add(1))
+    );
+    let mut observed_step = next_step;
+    let mut terminal_event = None;
+    for _ in 0..8 {
+        let event = session
+            .next_native_stream_event_after_step(&mut first, observed_step)
+            .expect("first stream should observe the shared step");
+        if matches!(
+            event,
+            GenerateStreamEvent::Step(ref step)
+                if step.request.state == SessionRequestState::Finished
+        ) {
+            terminal_event = Some(event);
+            break;
+        }
+        observed_step = session
+            .step_report()
+            .expect("native stream should reach a terminal step");
+    }
+    let terminal_event = terminal_event.expect("first stream should terminate");
+    assert!(matches!(
+        terminal_event,
+        GenerateStreamEvent::Step(ref step)
+            if step.request.state == SessionRequestState::Finished
+                && step.request.prompt_tokens == vec![1, 2]
+                && step.request.output_tokens.len() == 2
+    ));
+    let response = session
+        .next_stream_event(&mut first)
+        .expect("terminal response should build")
+        .expect("terminal response should exist");
+    assert!(matches!(
+        response,
+        GenerateStreamEvent::Response(ref response)
+            if response.response.prompt_tokens == vec![1, 2]
+                && response.response.output_tokens.len() == 2
+    ));
+}
+
+#[test]
 fn has_active_stepwise_requests_reflects_native_terminal_state() {
     // A caller about to discard this session (e.g. a model hot-swap) must be
     // able to tell whether doing so would orphan a non-terminal stepwise

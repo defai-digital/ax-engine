@@ -265,7 +265,7 @@ impl EngineSession {
     /// current model has drained and before constructing a replacement model.
     pub fn clear_native_model_compile_caches() {
         #[cfg(feature = "mlx-native")]
-        ax_engine_mlx::per_layer_compile::clear_all_layer_decode_caches();
+        ax_engine_mlx::clear_process_caches();
     }
 
     fn uses_mlx_runtime(&self) -> bool {
@@ -609,13 +609,22 @@ impl EngineSession {
     }
 
     pub fn step_report(&mut self) -> Result<EngineStepReport, EngineSessionError> {
+        self.step_report_with_request_ids()
+            .map(|(report, _)| report)
+    }
+
+    /// Advance the session once and return the report with its selected request IDs.
+    pub fn step_report_with_request_ids(
+        &mut self,
+    ) -> Result<(EngineStepReport, Vec<u64>), EngineSessionError> {
         if !self.uses_mlx_runtime() {
             let active_request_ids = self.llama_active_request_ids();
             if active_request_ids.is_empty() {
-                return Ok(EngineStepReport::default());
+                return Ok((EngineStepReport::default(), Vec::new()));
             }
             let selected_backend = self.config.resolved_backend.selected_backend;
             let mut aggregate = EngineStepReport::default();
+            let mut selected_request_ids = Vec::new();
 
             for request_id in active_request_ids {
                 // Persist a terminal transition immediately, in the same
@@ -637,6 +646,9 @@ impl EngineSession {
                         continue;
                     };
                     let step = request.step_report(selected_backend)?;
+                    if step.scheduled_requests > 0 {
+                        selected_request_ids.push(request_id);
+                    }
                     aggregate.accumulate(step);
                     if is_terminal_request_state(request.current_report.state) {
                         request.drain_trailing_usage();
@@ -650,10 +662,16 @@ impl EngineSession {
                 }
             }
 
-            return Ok(aggregate);
+            return Ok((aggregate, selected_request_ids));
         }
 
         let outcome = self.step()?;
+        let selected_request_ids = outcome
+            .schedule_plan
+            .selected_requests
+            .iter()
+            .map(|request_id| request_id.0)
+            .collect();
         let metal_dispatch = outcome
             .runner_output
             .as_ref()
@@ -677,7 +695,7 @@ impl EngineSession {
                 self.store_native_request_route(request_id, route.clone());
             }
         }
-        Ok(report)
+        Ok((report, selected_request_ids))
     }
 
     /// True when this session has any stepwise (`submit_generate`/`step`)
@@ -960,6 +978,30 @@ impl EngineSession {
         }
     }
 
+    /// Advance a native stream with an engine step already executed by a shared worker.
+    pub fn next_native_stream_event_after_step(
+        &mut self,
+        state: &mut GenerateStreamState,
+        step: EngineStepReport,
+    ) -> Result<GenerateStreamEvent, EngineSessionError> {
+        let request_id = state.request_id();
+        let GenerateStreamState::Native(state) = state else {
+            return Err(EngineSessionError::RequestReportInvariantViolation {
+                request_id,
+                message: "externally stepped advancement requires a native MLX stream",
+            });
+        };
+        if state.phase != GenerateStreamPhase::Step
+            || is_terminal_request_state(state.current_report.state)
+        {
+            return Err(EngineSessionError::RequestReportInvariantViolation {
+                request_id: state.request_id,
+                message: "native stream cannot consume an engine step in its current phase",
+            });
+        }
+        self.apply_native_stream_step(state.as_mut(), step)
+    }
+
     fn next_native_stream_event(
         &mut self,
         state: &mut NativeGenerateStreamState,
@@ -977,10 +1019,15 @@ impl EngineSession {
             GenerateStreamPhase::Step => {
                 if is_terminal_request_state(state.current_report.state) {
                     state.phase = GenerateStreamPhase::Done;
+                    let final_report = self.request_report(state.request_id).ok_or(
+                        EngineSessionError::MissingRequestSnapshot {
+                            request_id: state.request_id,
+                        },
+                    )?;
                     return Ok(Some(GenerateStreamEvent::Response(
                         GenerateStreamResponseEvent {
                             response: GenerateResponse::from_report(
-                                state.current_report.clone(),
+                                final_report,
                                 state.step_count,
                                 state.ttft_step,
                                 state.runtime.clone(),
@@ -990,54 +1037,80 @@ impl EngineSession {
                 }
 
                 let step = self.step_report()?;
-                state.step_count += 1;
-
-                if state.ttft_step.is_none() && step.ttft_events > 0 {
-                    state.ttft_step = Some(state.step_count);
-                }
-
-                if state.step_count >= state.max_steps {
-                    return Err(EngineSessionError::RequestDidNotTerminate {
-                        request_id: state.request_id,
-                        max_steps: state.max_steps,
-                    });
-                }
-
-                let mut next_report = self.request_report(state.request_id).ok_or(
-                    EngineSessionError::MissingRequestSnapshot {
-                        request_id: state.request_id,
-                    },
-                )?;
-                apply_native_step_route_to_report(&mut next_report, &step);
-                if state.emitted_output_len > next_report.output_tokens.len() {
-                    return Err(EngineSessionError::RequestReportInvariantViolation {
-                        request_id: state.request_id,
-                        message: "output tokens shrunk between stream snapshots",
-                    });
-                }
-                let delta_tokens = next_report.output_tokens[state.emitted_output_len..].to_vec();
-                let delta_token_logprobs = slice_output_token_logprobs(
-                    &next_report,
-                    state.emitted_output_len,
-                    delta_tokens.len(),
-                )?;
-                state.emitted_output_len = next_report.output_tokens.len();
-                // Move the fresh report into the stream state and clone once
-                // for the event: the report embeds the full prompt/output
-                // token history, so an extra deep clone here is O(context)
-                // per generated token.
-                state.current_report = next_report;
-
-                Ok(Some(GenerateStreamEvent::Step(GenerateStreamStepEvent {
-                    request: state.current_report.clone(),
-                    step,
-                    delta_tokens,
-                    delta_token_logprobs,
-                    delta_text: None,
-                })))
+                self.apply_native_stream_step(state, step).map(Some)
             }
             GenerateStreamPhase::Done => Ok(None),
         }
+    }
+
+    fn apply_native_stream_step(
+        &self,
+        state: &mut NativeGenerateStreamState,
+        step: EngineStepReport,
+    ) -> Result<GenerateStreamEvent, EngineSessionError> {
+        state.step_count += 1;
+        if state.step_count >= state.max_steps {
+            return Err(EngineSessionError::RequestDidNotTerminate {
+                request_id: state.request_id,
+                max_steps: state.max_steps,
+            });
+        }
+
+        let mut next_report = self.request_report(state.request_id).ok_or(
+            EngineSessionError::MissingRequestSnapshot {
+                request_id: state.request_id,
+            },
+        )?;
+        apply_native_step_route_to_report(&mut next_report, &step);
+        if state.emitted_output_len > next_report.output_tokens.len() {
+            return Err(EngineSessionError::RequestReportInvariantViolation {
+                request_id: state.request_id,
+                message: "output tokens shrank between stream snapshots",
+            });
+        }
+        let delta_tokens = next_report.output_tokens[state.emitted_output_len..].to_vec();
+        let delta_token_logprobs = slice_output_token_logprobs(
+            &next_report,
+            state.emitted_output_len,
+            delta_tokens.len(),
+        )?;
+        if state.ttft_step.is_none()
+            && state.emitted_output_len == 0
+            && !next_report.output_tokens.is_empty()
+        {
+            state.ttft_step = Some(state.step_count);
+        }
+        state.emitted_output_len = next_report.output_tokens.len();
+        state.current_report = compact_stream_progress_report(&next_report);
+
+        Ok(GenerateStreamEvent::Step(GenerateStreamStepEvent {
+            request: next_report,
+            step,
+            delta_tokens,
+            delta_token_logprobs,
+            delta_text: None,
+        }))
+    }
+}
+
+fn compact_stream_progress_report(report: &SessionRequestReport) -> SessionRequestReport {
+    SessionRequestReport {
+        request_id: report.request_id,
+        model_id: report.model_id.clone(),
+        state: report.state,
+        prompt_tokens: Vec::new(),
+        processed_prompt_tokens: report.processed_prompt_tokens,
+        output_tokens: Vec::new(),
+        output_token_logprobs: Vec::new(),
+        prompt_len: report.prompt_len,
+        output_len: report.output_len,
+        max_output_tokens: report.max_output_tokens,
+        cancel_requested: report.cancel_requested,
+        execution_plan_ref: report.execution_plan_ref.clone(),
+        route: report.route.clone(),
+        finish_reason: report.finish_reason,
+        terminal_stop_reason: report.terminal_stop_reason,
+        last_error: report.last_error.clone(),
     }
 }
 

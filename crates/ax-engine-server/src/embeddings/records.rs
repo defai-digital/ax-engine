@@ -138,10 +138,7 @@ pub(crate) async fn embedding_records(
         DEFAULT_EMBED_RECORDS_TIMEOUT_MS,
     );
     let timeout = Duration::from_millis(timeout_ms);
-    let permit = state
-        .admission
-        .try_admit()
-        .map_err(admission_error_response)?;
+    let permit = state.try_admit(&live).map_err(admission_error_response)?;
 
     let matrix = tokio::time::timeout(
         timeout,

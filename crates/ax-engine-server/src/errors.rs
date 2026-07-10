@@ -64,6 +64,12 @@ pub(crate) fn admission_error_response(error: AdmissionError) -> (StatusCode, Js
             "concurrency_limit",
             "server is at its maximum concurrent engine-job limit; retry shortly".to_string(),
         ),
+        AdmissionError::StaleGeneration => error_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "model_changed",
+            "the model changed while this request was being prepared; retry against the current model"
+                .to_string(),
+        ),
     }
 }
 
@@ -158,6 +164,11 @@ pub(crate) fn map_generation_service_error(
 ) -> (StatusCode, Json<ErrorResponse>) {
     match error {
         GenerationServiceError::Engine(error) => map_session_error(error),
+        GenerationServiceError::Saturated => error_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "service_saturated",
+            "native generation command queue is saturated; retry shortly".to_string(),
+        ),
         GenerationServiceError::Unavailable => error_response(
             StatusCode::SERVICE_UNAVAILABLE,
             "service_unavailable",

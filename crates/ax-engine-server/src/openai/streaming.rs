@@ -53,10 +53,7 @@ pub(crate) async fn stream_openai_mlx_lm_chat_request(
     live: LiveState,
     request: MlxLmChatGenerateRequest,
 ) -> Result<axum::response::Response, (StatusCode, Json<ErrorResponse>)> {
-    let permit = state
-        .admission
-        .try_admit()
-        .map_err(admission_error_response)?;
+    let permit = state.try_admit(&live).map_err(admission_error_response)?;
     let request_id = state.allocate_request_id();
     let model_id = request.model_id.clone();
     let runtime = live.runtime_report.clone();
@@ -85,10 +82,7 @@ pub(crate) async fn stream_openai_llama_cpp_chat_request(
     live: LiveState,
     request: LlamaCppChatGenerateRequest,
 ) -> Result<axum::response::Response, (StatusCode, Json<ErrorResponse>)> {
-    let permit = state
-        .admission
-        .try_admit()
-        .map_err(admission_error_response)?;
+    let permit = state.try_admit(&live).map_err(admission_error_response)?;
     let request_id = state.allocate_request_id();
     let model_id = request.model_id.clone();
     let runtime = live.runtime_report.clone();

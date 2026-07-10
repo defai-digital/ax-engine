@@ -251,10 +251,7 @@ async fn run_anthropic_messages_generation(
         let request_id = state.allocate_request_id();
         let runtime = live.runtime_report.clone();
         let mlx_lm_backend = mlx_lm::config(&live).map_err(map_session_error)?;
-        let permit = state
-            .admission
-            .try_admit()
-            .map_err(admission_error_response)?;
+        let permit = state.try_admit(&live).map_err(admission_error_response)?;
         let response = run_blocking_session_task(move || {
             let _permit = permit;
             mlx_lm::run_chat_generate(request_id, &runtime, &mlx_lm_backend, &chat_request)
@@ -273,10 +270,7 @@ async fn run_anthropic_messages_generation(
         let request_id = state.allocate_request_id();
         let runtime = live.runtime_report.clone();
         let llama_backend = llama_cpp::config(&live).map_err(map_session_error)?;
-        let permit = state
-            .admission
-            .try_admit()
-            .map_err(admission_error_response)?;
+        let permit = state.try_admit(&live).map_err(admission_error_response)?;
         let response = run_blocking_session_task(move || {
             let _permit = permit;
             llama_cpp::run_chat_generate(request_id, &runtime, &llama_backend, &chat_request)

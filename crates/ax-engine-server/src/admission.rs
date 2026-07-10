@@ -65,6 +65,7 @@ impl AdmissionController {
 pub(crate) enum AdmissionError {
     Draining,
     Saturated,
+    StaleGeneration,
 }
 
 pub(crate) struct AdmissionPermit {

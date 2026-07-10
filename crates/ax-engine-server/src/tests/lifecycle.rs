@@ -12,11 +12,8 @@ use super::fixtures::{
 
 #[tokio::test]
 async fn submit_request_rejects_while_a_model_load_is_in_progress() {
-    // Regression test for the race this check closes: `load_model` only
-    // checks for in-flight requests once, before spawning a load that can
-    // take tens of seconds — it never re-checks or blocks new submissions
-    // during that window. Simulate being inside that window directly via
-    // `state.loading` rather than a real slow load.
+    // Preserve the lifecycle-specific conflict while generation-bound
+    // admission provides the final stale-snapshot race guard.
     let (llama_server_url, llama_cpp_server_handle) =
         spawn_llama_cpp_completion_stream_server(0, vec![], |_payload| {});
     let state = llama_cpp_server_state(llama_server_url);
@@ -103,6 +100,7 @@ async fn llama_cpp_stepwise_request_endpoints_share_sdk_lifecycle() {
     .expect("sdk llama.cpp submit report should serialize");
     assert_eq!(submit_json, expected_submit);
 
+    let mut observed_steps = 0_u64;
     for _ in 0..4 {
         let expected_snapshot = serde_json::to_value(
             sdk_session
@@ -145,6 +143,7 @@ async fn llama_cpp_stepwise_request_endpoints_share_sdk_lifecycle() {
         )
         .await;
         assert_eq!(step_status, StatusCode::OK);
+        observed_steps += 1;
         let mut step_json = step_json;
         let mut expected_step = expected_step;
         normalize_measurement_fields(&mut step_json);
@@ -169,6 +168,15 @@ async fn llama_cpp_stepwise_request_endpoints_share_sdk_lifecycle() {
     assert_eq!(terminal_status, StatusCode::OK);
     assert_eq!(terminal_json, expected_terminal);
     assert_eq!(state.admission.active_jobs(), 0);
+    assert_eq!(state.snapshot().generation_service.pending_jobs(), 0);
+    assert_eq!(
+        state
+            .metrics
+            .engine_step_gauges()
+            .expect("step metrics should be observed")
+            .steps_total,
+        observed_steps
+    );
 
     llama_cpp_server_handle
         .join()
@@ -298,6 +306,7 @@ async fn llama_cpp_stepwise_request_endpoints_aggregate_multiple_active_requests
         }
     }
     assert_eq!(state.admission.active_jobs(), 0);
+    assert_eq!(state.snapshot().generation_service.pending_jobs(), 0);
 
     llama_cpp_server_handle
         .join()
@@ -360,6 +369,7 @@ async fn llama_cpp_cancel_endpoint_surfaces_cancelled_snapshot() {
         Some(true)
     );
     assert_eq!(state.admission.active_jobs(), 0);
+    assert_eq!(state.snapshot().generation_service.pending_jobs(), 0);
 
     llama_cpp_server_handle
         .join()
@@ -367,7 +377,7 @@ async fn llama_cpp_cancel_endpoint_surfaces_cancelled_snapshot() {
 }
 
 #[tokio::test]
-async fn step_error_retains_admission_until_request_is_cancelled() {
+async fn step_error_cancels_request_and_releases_admission() {
     let (llama_server_url, llama_cpp_server_handle) =
         spawn_llama_cpp_completion_stream_server(1, vec![], |_| {});
     let state = llama_cpp_server_state(llama_server_url);
@@ -401,7 +411,8 @@ async fn step_error_retains_admission_until_request_is_cancelled() {
     )
     .await;
     assert_eq!(step_status, StatusCode::SERVICE_UNAVAILABLE);
-    assert_eq!(state.admission.active_jobs(), 1);
+    assert_eq!(state.admission.active_jobs(), 0);
+    assert_eq!(state.snapshot().generation_service.pending_jobs(), 0);
 
     let (cancel_status, cancel_json) = json_response(
         &app,

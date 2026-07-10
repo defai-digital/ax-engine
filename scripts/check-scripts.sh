@@ -106,6 +106,8 @@ bash -n scripts/*.sh scripts/lib/common.sh
   scripts/test_render_mlx_p2_latency_report.py \
   scripts/run_mlx_p2_latency_artifacts.py \
   scripts/test_run_mlx_p2_latency_artifacts.py \
+  scripts/run_native_generation_fault_soak.py \
+  scripts/test_run_native_generation_fault_soak.py \
   scripts/test_run_mlx_artifact_wrappers.py \
   scripts/check_gateddelta_prefill_profile_artifact.py \
   scripts/test_gateddelta_prefill_profile_artifact.py \
@@ -189,6 +191,8 @@ bash -n scripts/*.sh scripts/lib/common.sh
   scripts/bench_direct_telemetry_pass.py \
   scripts/test_bench_direct_telemetry_pass.py \
   scripts/bench_diffusion_gemma_direct.py \
+  scripts/check_version_sync.py \
+  scripts/test_check_version_sync.py \
   scripts/test_ci_workflow_policy.py \
   scripts/test_release_signing.py \
   scripts/test_minisign_artifact.py
@@ -226,6 +230,7 @@ bash -n scripts/*.sh scripts/lib/common.sh
   scripts/test_turboquant_prd_completion.py \
   scripts/test_long_context_comparison_artifact.py \
   scripts/test_long_context_decode_at_depth_artifact.py \
+  scripts/test_run_native_generation_fault_soak.py \
   scripts/test_run_mlx_artifact_wrappers.py \
   scripts/test_verify_prefix_reuse_equivalence.py \
   scripts/test_profile_kv_multiturn_chat_evidence.py \
@@ -237,6 +242,7 @@ bash -n scripts/*.sh scripts/lib/common.sh
   scripts/test_check_quantization_quality_gate.py \
   scripts/test_bench_direct_telemetry_pass.py \
   scripts/test_render_readme_performance_charts.py \
+  scripts/test_check_version_sync.py \
   scripts/test_ci_workflow_policy.py \
   scripts/test_release_signing.py \
   scripts/test_minisign_artifact.py

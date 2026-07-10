@@ -181,18 +181,15 @@ fn next_grpc_chat_role(chat_role_emitted: &mut bool) -> String {
     }
 }
 
-/// Builds gRPC stream state against the caller's `LiveState` snapshot, so the
-/// model that built the request is the one that streams it even if a hot-swap
-/// lands mid-request.
+/// Build gRPC stream state against the caller's model generation.
+/// Admission keeps an admitted generation alive through completion and rejects
+/// a stale snapshot when a hot-swap finished while the request was prepared.
 pub(super) async fn build_grpc_stream_state(
     state: &AppState,
     live: &LiveState,
     request: GenerateRequest,
 ) -> Result<StreamStateSource, Status> {
-    let permit = state
-        .admission
-        .try_admit()
-        .map_err(super::admission_status)?;
+    let permit = state.try_admit(live).map_err(super::admission_status)?;
     let request_id = state.allocate_request_id();
 
     if live.runtime_report.selected_backend.is_mlx() {

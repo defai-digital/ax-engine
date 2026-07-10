@@ -33,3 +33,9 @@ pub mod diagnostics {
 }
 
 pub use runner::{EmbedCompileCacheStats, MlxPrefixCacheStore, MlxRunner, MlxSharedWeightsCell};
+
+/// Clear process-global compiled graphs and MLX allocator caches.
+pub fn clear_process_caches() {
+    per_layer_compile::clear_all_layer_decode_caches();
+    mlx_sys::clear_cache();
+}

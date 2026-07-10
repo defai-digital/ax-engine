@@ -19,7 +19,7 @@ use crate::app_state::{AppState, LiveState};
 use crate::errors::map_generation_service_error;
 use crate::errors::{ErrorResponse, admission_error_response, map_session_error};
 use crate::generation::requests::{GenerateHttpRequest, build_generate_request};
-use crate::generation::service::GenerationServiceError;
+use crate::generation::service::{GenerationServiceError, NativeEventReceiver};
 use crate::openai::validation::validate_model;
 use crate::tasks::run_blocking_session_task;
 
@@ -62,21 +62,18 @@ pub(crate) enum StreamStateSource {
         session: Box<EngineSession>,
         permit: AdmissionPermit,
     },
-    Service(mpsc::Receiver<Result<GenerateStreamEvent, EngineSessionError>>),
+    Service(NativeEventReceiver),
 }
 
-/// Builds stream state against the caller's `LiveState` snapshot, so the
-/// model that validated/tokenized the request is the one that streams it
-/// even if a hot-swap lands mid-request.
+/// Build stream state against the caller's model generation.
+/// Admission keeps an admitted generation alive through completion and rejects
+/// a stale snapshot when a hot-swap finished while the request was prepared.
 pub(crate) async fn build_stream_state(
     state: &AppState,
     live: &LiveState,
     request: GenerateRequest,
 ) -> Result<StreamStateSource, (StatusCode, Json<ErrorResponse>)> {
-    let permit = state
-        .admission
-        .try_admit()
-        .map_err(admission_error_response)?;
+    let permit = state.try_admit(live).map_err(admission_error_response)?;
     let request_id = state.allocate_request_id();
     if live.runtime_report.selected_backend.is_mlx() {
         let generation_service = live.generation_service.clone();

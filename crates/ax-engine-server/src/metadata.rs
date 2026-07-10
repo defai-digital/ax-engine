@@ -104,8 +104,8 @@ pub(crate) async fn health(
     if !live.generation_service.is_ready() {
         return Err(error_response(
             StatusCode::SERVICE_UNAVAILABLE,
-            "session_busy",
-            "ax-engine-server has not finished initialising its inference session".into(),
+            "generation_worker_unavailable",
+            "the native generation worker is unavailable".into(),
         ));
     }
     Ok(Json(json!({

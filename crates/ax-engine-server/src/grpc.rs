@@ -61,7 +61,7 @@ async fn run_grpc_generate_request(
     request_id: u64,
     request: ax_engine_sdk::GenerateRequest,
 ) -> Result<ax_engine_sdk::GenerateResponse, Status> {
-    let permit = state.admission.try_admit().map_err(admission_status)?;
+    let permit = state.try_admit(live).map_err(admission_status)?;
     if live.runtime_report.selected_backend.is_mlx() {
         let generation_service = live.generation_service.clone();
         return generation_service
@@ -85,12 +85,18 @@ fn admission_status(error: AdmissionError) -> Status {
         AdmissionError::Saturated => Status::resource_exhausted(
             "server is at its maximum concurrent engine-job limit; retry shortly",
         ),
+        AdmissionError::StaleGeneration => Status::unavailable(
+            "the model changed while this request was being prepared; retry against the current model",
+        ),
     }
 }
 
 fn generation_service_status(error: GenerationServiceError) -> Status {
     match error {
         GenerationServiceError::Engine(error) => streams::session_error_status(error),
+        GenerationServiceError::Saturated => {
+            Status::resource_exhausted("native generation command queue is saturated")
+        }
         GenerationServiceError::Unavailable => {
             Status::unavailable("native generation worker is unavailable")
         }
@@ -108,7 +114,7 @@ impl AxEngine for AxEngineGrpcService {
         let live = self.state.snapshot();
         if !live.generation_service.is_ready() {
             return Err(Status::unavailable(
-                "ax-engine-server has not finished initialising its inference session",
+                "the native generation worker is unavailable",
             ));
         }
         Ok(Response::new(proto::HealthResponse {
@@ -294,7 +300,7 @@ impl AxEngine for AxEngineGrpcService {
                 "embedding input must not be empty",
             ));
         }
-        let permit = self.state.admission.try_admit().map_err(admission_status)?;
+        let permit = self.state.try_admit(&live).map_err(admission_status)?;
         let prompt_tokens = grpc_embedding_prompt_tokens(&batch);
         let embeddings = if batch.len() == 1 {
             let input = batch
