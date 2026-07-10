@@ -387,6 +387,13 @@ fused sidecars, Gemma assistant drafters, and GLM built-in MTP. `AX MTP runner
 TTFT` is server runner time for the prefill/first-token boundary; it is not
 end-to-end client-wall latency.
 
+> [!WARNING]
+> The Gemma 4 12B sampled-MTP rows in this historical 2026-07-09 table are
+> superseded by the current sampled-MTP correctness contract. They must not be
+> read as exact-distribution evidence. The current direct, safe-fallback, and
+> explicitly approximate optimistic measurements are recorded in the Gemma 4
+> assistant-MTP section below.
+
 <img src="docs/assets/perf-mtp-6bit-ax-acceleration.svg" alt="AX Engine 6-bit MTP package acceleration chart comparing direct decode and MTP decode for Qwen3.6, Gemma 4, and GLM-4.7 Flash">
 
 | Target | Suite | AX direct decode | AX MTP decode | AX speedup | AX MTP prefill | AX MTP runner TTFT | AX accept |
@@ -410,8 +417,10 @@ end-to-end client-wall latency.
 | `glm-4.7-flash` | `long_code` | 74.5 tok/s | 100.9 tok/s | 1.35x | 1,268.6 tok/s | 538 ms | 98.6% |
 | `glm-4.7-flash` | `py_modules` | 76.4 tok/s | 91.2 tok/s | 1.19x | 1,134.4 tok/s | 300 ms | 94.3% |
 
-All rows are pure MTP verification rows with zero n-gram accepted/proposed/
-submitted/hit-step telemetry. Publication summary:
+All rows record zero n-gram accepted/proposed/submitted/hit-step telemetry. That
+telemetry alone does not establish an exact sampled-MTP distribution; in
+particular, the Gemma 4 12B rows above are historical diagnostics rather than
+current sampled-MTP publication evidence. Historical summary:
 [`benchmarks/results/speculative/mtp-6bit/2026-07-09-mlx032-ax-mtp-refresh/summary.json`](benchmarks/results/speculative/mtp-6bit/2026-07-09-mlx032-ax-mtp-refresh/summary.json).
 
 #### Qwen3.6 MTP peer decode comparison (2026-07-09)
@@ -489,17 +498,38 @@ sidecar, so no peer engine ships the same Gemma MTP package — MTPLX and
 lightning-mlx have no comparable Gemma assistant-MTP route. The result below is
 therefore an AX-only comparison (same-artifact direct decode versus depth-2
 assistant drafting), not a cross-engine leaderboard. The
-assistant is stateless per decode step — it re-reads the target's frozen KV
-cache each forward — so depth-2 drafting needs no cache surgery and stays
-correctness-preserving: a gate miss simply verifies fewer speculative positions,
-never a changed committed token.
+assistant is stateless per decode step and re-reads the target's frozen KV cache
+each forward. Greedy MTP can use that route directly. For sampled decode, the
+current production-safe policy is direct fallback until exact speculative
+sampling is implemented; optimistic verification is an explicit approximate
+speed-ceiling experiment, not a correctness-preserving sampled route.
+
+**Current Gemma 4 12B 6-bit AX-only result (2026-07-10).** The `flappy` suite
+used 1000 generated tokens, `temperature=0.6`, `top_p=0.95`, `top_k=20`, two
+warmups, five measured repetitions, 15 s cooldown, depth-2 assistant drafting,
+and n-gram stacking disabled on an Apple M5 Max. The direct and MTP rows use the
+same prompt hashes and model snapshot.
+
+| Mode | Decode | Prefill | Runner TTFT | Speedup vs direct | Assistant accept | Contract |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| Direct | 37.9 tok/s | 466.1 tok/s | 763 ms | 1.00x | n/a | Exact sampled baseline |
+| MTP requested (safe) | 38.0 tok/s | — | 761 ms | 1.00x | n/a | Exact direct fallback; no speculative acceleration |
+| MTP requested (`AX_MLX_MTP_OPTIMISTIC=1`) | 94.9 tok/s | 442.6 tok/s | 787 ms | 2.50x | 99.96% | Approximate speed ceiling; not an exact sampled result |
+
+The optimistic run had zero direct-fallback steps and accepted 13,040 of 13,045
+assistant draft tokens. It is intentionally excluded from publication-quality
+sampled-MTP claims: all five `flappy_score_gates` runs emitted token IDs that
+differed from direct sampling. The safe route is the production result today;
+the optimistic row identifies the performance available after exact speculative
+sampling is completed. Full contract and per-case medians:
+[`2026-07-10 Gemma 4 12B AX-only summary`](benchmarks/results/speculative/mtp-6bit/2026-07-10-gemma4-12b-ax-only-optimistic/summary.md).
 
 Retained 12B benchmark (M5 Max, clean `6ff19f66` release build,
 `temperature=0.6`, `top_p=0.95`, `top_k=20`, chat-templated `flappy` /
 `long_code` / `python_modules_long` (`py_modules` in the table), n-gram
 stacking off, depth-2 assistant drafting). This dedicated 12B chart is kept as
-a historical depth-2 assistant-MTP view; the newer six-model 6-bit MTP refresh
-above is the current README headline source for Gemma 4 12B:
+a historical depth-2 assistant-MTP view; it is not current sampled-MTP
+publication evidence:
 
 <p>
 <strong>Gemma 4 12B assistant-MTP decode</strong><br>
@@ -512,14 +542,12 @@ above is the current README headline source for Gemma 4 12B:
 | `long_code` | 99.1% | 58.1 tok/s | 96.3 tok/s | 1.66x | 2,023.3 tok/s | 394 ms |
 | `py_modules` | 97.0% | 58.9 tok/s | 90.0 tok/s | 1.53x | 1,817.7 tok/s | 201 ms |
 
-All three 12B suites hold assistant accept **>=97%** and depth-2 MTP is faster
-than same-artifact direct decode by **1.53-1.66x**. The aggregate comparison in
-the artifact reports **+63.6%** decode versus direct, with the worst suite still
-up **+52.8%**. Depth-2 is the shipped default; set
-`AX_MLX_GEMMA4_ASSISTANT_MTP_MAX_DEPTH=1` to restore single-token drafting.
-Method and per-suite artifacts:
+The retained chart and table are historical depth-2 throughput diagnostics. They
+do not override the current sampled-MTP contract above. Depth-2 remains the
+assistant configuration; set `AX_MLX_GEMMA4_ASSISTANT_MTP_MAX_DEPTH=1` to
+restore single-token drafting. Historical method and per-suite artifacts:
 [`docs/mtp/gemma4-assistant-multi-depth.md`](docs/mtp/gemma4-assistant-multi-depth.md);
-current 12B result artifacts under
+retained 12B result artifacts under
 [`benchmarks/results/gemma4-assistant-mtp/2026-07-08-gemma4-12b-ax-only-direct-mtp-current-code-refresh/`](benchmarks/results/gemma4-assistant-mtp/2026-07-08-gemma4-12b-ax-only-direct-mtp-current-code-refresh/).
 
 ### Session Mode: Direct Generation
