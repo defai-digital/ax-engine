@@ -30,11 +30,6 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v5
 
-      - name: Ensure stable Rust toolchain
-        run: |
-          rustup toolchain install stable --profile minimal
-          rustup default stable
-
       - name: Cache Rust build artifacts
         uses: Swatinem/rust-cache@v2
         with:
@@ -44,36 +39,7 @@ jobs:
         run: bash scripts/install-native-build-deps.sh
 
       - name: Verify version consistency
-        run: |
-          python3 - <<'PY'
-          import pathlib, tomllib, json, re, sys
-          root = pathlib.Path.cwd()
-          v = tomllib.loads((root / "Cargo.toml").read_text())["workspace"]["package"]["version"]
-          checks = {
-              "pyproject.toml": tomllib.loads((root / "pyproject.toml").read_text())["project"]["version"],
-              "sdk/javascript/package.json": json.loads((root / "sdk/javascript/package.json").read_text())["version"],
-          }
-          version_rb = (root / "sdk/ruby/lib/ax_engine/version.rb").read_text()
-          m = re.search(r'VERSION\s*=\s*"([^"]+)"', version_rb)
-          if m:
-              checks["sdk/ruby/lib/ax_engine/version.rb"] = m.group(1)
-          client_go = (root / "sdk/go/axengine/client.go").read_text()
-          m = re.search(r'Version\s*=\s*"([^"]+)"', client_go)
-          if m:
-              checks["sdk/go/axengine/client.go"] = m.group(1)
-          axengine_client_swift = (
-              root / "sdk/swift/Sources/AxEngine/AxEngineClient.swift"
-          ).read_text()
-          m = re.search(r'static let version = "([^"]+)"', axengine_client_swift)
-          if m:
-              checks["sdk/swift/Sources/AxEngine/AxEngineClient.swift"] = m.group(1)
-          mismatches = {f: ver for f, ver in checks.items() if ver != v}
-          if mismatches:
-              for f, ver in mismatches.items():
-                  print(f"Version mismatch: Cargo.toml={v}, {f}={ver}", file=sys.stderr)
-              raise SystemExit(1)
-          print(f"All versions aligned: {v}")
-          PY
+        run: python3 scripts/check_version_sync.py
 
       - name: Check formatting
         run: cargo fmt --check
@@ -92,6 +58,17 @@ jobs:
           --force-warn clippy::dbg-macro
           --force-warn clippy::large-enum-variant
 
+      - name: Run cargo-deny supply chain audit
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check
+          arguments: advisories licenses bans sources
+
+      - name: Run cargo-audit advisory check
+        uses: rustsec/audit-check@v2.0.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
   scripts:
     name: Scripts and Bench Smoke
     runs-on: macos-14
@@ -108,11 +85,6 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-
-      - name: Ensure stable Rust toolchain
-        run: |
-          rustup toolchain install stable --profile minimal
-          rustup default stable
 
       - name: Cache Rust build artifacts
         uses: Swatinem/rust-cache@v2
@@ -173,11 +145,6 @@ jobs:
           python-version: "3.12"
           cache: pip
 
-      - name: Ensure stable Rust toolchain
-        run: |
-          rustup toolchain install stable --profile minimal
-          rustup default stable
-
       - name: Cache Rust build artifacts
         uses: Swatinem/rust-cache@v2
         with:
@@ -185,9 +152,6 @@ jobs:
 
       - name: Install native build dependencies
         run: bash scripts/install-native-build-deps.sh
-
-      - name: Install Python script dependencies
-        run: pip install httpx
 
       - name: Prepare CI log directory
         run: mkdir -p "$AX_CI_LOG_DIR"
@@ -295,14 +259,7 @@ jobs:
           python-version: "3.12"
           cache: pip
 
-      - name: Ensure stable Rust toolchain
-        if: steps.mlx-artifacts.outputs.available == 'true'
-        run: |
-          rustup toolchain install stable --profile minimal
-          rustup default stable
-
       - name: Cache Rust build artifacts
-        if: steps.mlx-artifacts.outputs.available == 'true'
         uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
@@ -371,11 +328,23 @@ jobs:
     if: always()
 
     steps:
-      - name: Fail if any CI gate failed
+      - name: Fail if any CI gate failed, cancelled, or skipped
         if: ${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') || contains(needs.*.result, 'skipped') }}
         run: |
           echo "One or more CI gates failed, were cancelled, or were skipped."
           exit 1
 
-      - name: Report CI gate success
-        run: echo "All CI gates passed."
+      - name: Report CI gate status
+        run: |
+          echo "All CI gates passed."
+          {
+            echo "## CI Summary"
+            echo
+            echo "| Job | Result |"
+            echo "|-----|--------|"
+            echo "| Rust | ${{ needs.rust.result }} |"
+            echo "| Scripts & Bench Smoke | ${{ needs.scripts.result }} |"
+            echo "| Python Package | ${{ needs.python-package.result }} |"
+            echo "| SDK Clients | ${{ needs.sdk-clients.result }} |"
+            echo "| Model Smoke | ${{ needs.model-smoke.result }} |"
+          } >> "$GITHUB_STEP_SUMMARY"

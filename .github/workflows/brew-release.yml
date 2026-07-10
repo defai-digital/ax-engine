@@ -23,7 +23,7 @@ env:
   MAIN_REPO: defai-digital/ax-engine
   TAP_REPO: defai-digital/homebrew-ax-engine
   TAP_FORMULA: Formula/ax-engine.rb
-  RELEASE_PAYLOADS: ax-engine ax-engine-server ax-engine-bench ax-engine-download-model.py ax-engine-prepare-mtp-sidecar.py ax-engine-prepare-gemma4-assistant-mtp.py ax-engine-prepare-glm-mtp-sidecar.py ax-engine-check-mtp-sidecar-provenance.py
+  RELEASE_PAYLOADS: ax-engine ax-engine-server ax-engine-bench ax-engine-download-model.py ax-engine-prepare-mtp-sidecar.py ax-engine-prepare-gemma4-assistant-mtp.py ax-engine-prepare-glm-mtp-sidecar.py ax-engine-prepare-qwen36-mtp-sidecar.py ax-engine-check-mtp-sidecar-provenance.py
 
 jobs:
   update-tap:
@@ -56,22 +56,8 @@ jobs:
           # authenticate as the default Actions identity (403 to the tap repo).
           persist-credentials: false
 
-      - name: Verify tag matches workspace version
-        run: |
-          python3 - <<'PY'
-          import os, pathlib, sys, tomllib
-
-          root = pathlib.Path.cwd()
-          tag_version = os.environ["TAG"].removeprefix("v")
-          cargo_version = tomllib.loads((root / "Cargo.toml").read_text())["workspace"]["package"]["version"]
-
-          if tag_version != cargo_version:
-              print(f"Version mismatch: tag={tag_version}, workspace={cargo_version}", file=sys.stderr)
-              raise SystemExit(1)
-          print(f"Version verified: {tag_version}")
-          PY
-        env:
-          TAG: ${{ steps.tag.outputs.tag }}
+      - name: Verify tag matches all SDK versions
+        run: python3 scripts/check_version_sync.py --expected "${{ steps.tag.outputs.tag }}"
 
       - name: Resolve checksum from the signed release asset
         id: asset

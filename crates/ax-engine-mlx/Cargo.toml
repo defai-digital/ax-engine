@@ -3,6 +3,7 @@ name = "ax-engine-mlx"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+publish = false
 
 [lints.rust]
 unsafe_code = "allow"

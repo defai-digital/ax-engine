@@ -2,6 +2,7 @@
 name = "ax-engine-py"
 edition.workspace = true
 license.workspace = true
+publish = false
 version.workspace = true
 description = "Preview Python bindings for AX Engine v6"
 build = "build.rs"

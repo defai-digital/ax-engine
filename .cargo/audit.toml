@@ -4,9 +4,9 @@
 
 [advisories]
 ignore = [
-    # Add RUSTSEC IDs here with justification, e.g.:
-    # "RUSTSEC-2023-0001",  # Not applicable: we don't use the affected feature
+    "RUSTSEC-2024-0436", # paste is transitive through metal/tokenizers and has no safe upgrade
 ]
 
 [output]
 deny = ["warnings"]
+quiet = false

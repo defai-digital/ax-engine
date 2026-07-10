@@ -3,6 +3,7 @@ name = "mlx-sys"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+publish = false
 
 [lints.rust]
 # Internal MLX boundary: raw bindgen FFI plus safe wrappers live here for now.

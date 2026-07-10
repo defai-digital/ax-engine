@@ -14,6 +14,7 @@ RELEASE_HELPER_SOURCES=(
     "scripts/prepare_mtp_sidecar.py:ax-engine-prepare-mtp-sidecar.py"
     "scripts/prepare_gemma4_assistant_mtp.py:ax-engine-prepare-gemma4-assistant-mtp.py"
     "scripts/prepare_glm_mtp_sidecar.py:ax-engine-prepare-glm-mtp-sidecar.py"
+    "scripts/prepare_qwen36_mtp_sidecar.py:ax-engine-prepare-qwen36-mtp-sidecar.py"
     "scripts/check_mtp_sidecar_provenance.py:ax-engine-check-mtp-sidecar-provenance.py"
 )
 
@@ -321,54 +322,7 @@ else
     echo "warning: publishing from a dirty working tree (--allow-dirty)" >&2
 fi
 
-python3 - "$TAG" <<'PY'
-from __future__ import annotations
-
-import json
-import pathlib
-import re
-import sys
-import tomllib
-
-tag = sys.argv[1]
-version = tag.removeprefix("v")
-root = pathlib.Path.cwd()
-cargo_version = tomllib.loads((root / "Cargo.toml").read_text())["workspace"]["package"]["version"]
-pyproject_version = tomllib.loads((root / "pyproject.toml").read_text())["project"]["version"]
-
-# Check all independently-versioned artifacts stay in sync.
-checks: dict[str, str] = {
-    "Cargo.toml": cargo_version,
-    "pyproject.toml": pyproject_version,
-    "sdk/javascript/package.json": json.loads(
-        (root / "sdk/javascript/package.json").read_text()
-    )["version"],
-}
-version_rb = (root / "sdk/ruby/lib/ax_engine/version.rb").read_text()
-m = re.search(r'VERSION\s*=\s*"([^"]+)"', version_rb)
-if m:
-    checks["sdk/ruby/lib/ax_engine/version.rb"] = m.group(1)
-
-client_go = (root / "sdk/go/axengine/client.go").read_text()
-m = re.search(r'Version\s*=\s*"([^"]+)"', client_go)
-if m:
-    checks["sdk/go/axengine/client.go"] = m.group(1)
-
-axengine_client_swift = (
-    root / "sdk/swift/Sources/AxEngine/AxEngineClient.swift"
-).read_text()
-m = re.search(r'static let version = "([^"]+)"', axengine_client_swift)
-if m:
-    checks["sdk/swift/Sources/AxEngine/AxEngineClient.swift"] = m.group(1)
-
-mismatches = {f: v for f, v in checks.items() if v != version}
-if mismatches:
-    for f, v in mismatches.items():
-        print(f"Version mismatch: tag={version}, {f}={v}", file=sys.stderr)
-    raise SystemExit(1)
-
-print(f"Version verified: {version} (across {len(checks)} files)")
-PY
+python3 scripts/check_version_sync.py --expected "$TAG"
 
 head_commit="$(git rev-parse HEAD)"
 if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then

@@ -29,11 +29,6 @@ jobs:
           python-version: "3.12"
           cache: pip
 
-      - name: Ensure stable Rust toolchain
-        run: |
-          rustup toolchain install stable --profile minimal
-          rustup default stable
-
       - name: Cache Rust build artifacts
         uses: Swatinem/rust-cache@v2
         with:
@@ -44,7 +39,10 @@ jobs:
         run: bash scripts/install-native-build-deps.sh
 
       - name: Install Rust coverage tool
-        run: cargo install cargo-llvm-cov --locked
+        run: |
+          if ! command -v cargo-llvm-cov &>/dev/null; then
+            cargo install cargo-llvm-cov --locked
+          fi
 
       - name: Collect Rust coverage
         run: |

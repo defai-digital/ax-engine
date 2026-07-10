@@ -78,6 +78,7 @@ include = [
     { path = "scripts/prepare_mtp_sidecar.py", format = ["wheel"] },
     { path = "scripts/prepare_gemma4_assistant_mtp.py", format = ["wheel"] },
     { path = "scripts/prepare_glm_mtp_sidecar.py", format = ["wheel"] },
+    { path = "scripts/prepare_qwen36_mtp_sidecar.py", format = ["wheel"] },
     { path = "scripts/check_mtp_sidecar_provenance.py", format = ["wheel"] },
 ]
 # Explicitly exclude internal and developer-only paths from both wheel and sdist.

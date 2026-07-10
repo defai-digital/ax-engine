@@ -60,6 +60,7 @@ RELEASE_HELPER_SOURCES=(
     "scripts/prepare_mtp_sidecar.py:ax-engine-prepare-mtp-sidecar.py"
     "scripts/prepare_gemma4_assistant_mtp.py:ax-engine-prepare-gemma4-assistant-mtp.py"
     "scripts/prepare_glm_mtp_sidecar.py:ax-engine-prepare-glm-mtp-sidecar.py"
+    "scripts/prepare_qwen36_mtp_sidecar.py:ax-engine-prepare-qwen36-mtp-sidecar.py"
     "scripts/check_mtp_sidecar_provenance.py:ax-engine-check-mtp-sidecar-provenance.py"
 )
 
@@ -134,7 +135,7 @@ fi
 
 VERSION="${TAG#v}"
 
-# ── prerequisite checks ───────────────────────────────────────────────────────
+# ── helper ────────────────────────────────────────────────────────────────────
 
 check_cmd() {
     if ! command -v "$1" &>/dev/null; then
@@ -142,6 +143,16 @@ check_cmd() {
         exit 1
     fi
 }
+
+# ── version consistency ────────────────────────────────────────────────────────
+# Verify all independently-versioned artifacts match the tag before doing any
+# build or upload work.
+
+check_cmd python3 "python3 is required for version consistency checks"
+
+python3 "$ROOT_DIR/scripts/check_version_sync.py" --root "$ROOT_DIR" --expected "$TAG"
+
+# ── prerequisite checks ───────────────────────────────────────────────────────
 
 check_cmd gh    "install the GitHub CLI: brew install gh"
 check_cmd cargo "install Rust: https://rustup.rs"
@@ -427,9 +438,10 @@ if not matches:
 
 indent = matches[0].group("indent")
 
-# RELEASE_BINS is the source of truth. Replace all bin.install lines with one
-# canonical line listing exactly RELEASE_BINS in order. This removes stale
-# entries from prior releases when a binary is dropped from the build.
+# The caller-supplied list (bins + helpers) is the source of truth. Replace
+# all bin.install lines with one canonical line listing exactly that payload.
+# This removes stale entries from prior releases when a binary or helper is
+# dropped from the build.
 combined = indent + "bin.install " + ", ".join(f'"{b}"' for b in bins)
 
 # Canonical already — single bin.install line, exact match
@@ -450,7 +462,7 @@ formula_path.write_text(new_text, encoding="utf-8")
 PY
 
 # Verify the canonical bin.install line landed and no stale binary entries remain.
-EXPECTED_BIN_LINE="bin.install $(printf '"%s", ' "${RELEASE_BINS[@]}" | sed 's/, $//')"
+EXPECTED_BIN_LINE="bin.install $(printf '"%s", ' "${release_payload[@]}" | sed 's/, $//')"
 if ! grep -qF "$EXPECTED_BIN_LINE" "$FORMULA_PATH"; then
     echo "error: formula does not contain canonical line: $EXPECTED_BIN_LINE" >&2
     echo "       check the formula manually: $FORMULA_PATH" >&2
@@ -490,7 +502,7 @@ fi
 
 echo "▶ pushing to ${TAP_REPO}…"
 # gh repo clone sets up the remote with gh auth; push directly
-git push origin main
+git push origin HEAD
 echo "  ✓ tap updated"
 
 echo ""

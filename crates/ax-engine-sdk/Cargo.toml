@@ -2,6 +2,7 @@
 name = "ax-engine-sdk"
 edition.workspace = true
 license.workspace = true
+publish = false
 version.workspace = true
 
 [features]
