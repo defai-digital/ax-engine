@@ -58,6 +58,15 @@ jobs:
           --force-warn clippy::dbg-macro
           --force-warn clippy::large-enum-variant
 
+  supply-chain:
+    name: Supply Chain
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+
       - name: Run cargo-deny supply chain audit
         uses: EmbarkStudios/cargo-deny-action@v2
         with:
@@ -321,6 +330,7 @@ jobs:
     runs-on: ubuntu-latest
     needs:
       - rust
+      - supply-chain
       - scripts
       - python-package
       - sdk-clients
@@ -343,6 +353,7 @@ jobs:
             echo "| Job | Result |"
             echo "|-----|--------|"
             echo "| Rust | ${{ needs.rust.result }} |"
+            echo "| Supply Chain | ${{ needs.supply-chain.result }} |"
             echo "| Scripts & Bench Smoke | ${{ needs.scripts.result }} |"
             echo "| Python Package | ${{ needs.python-package.result }} |"
             echo "| SDK Clients | ${{ needs.sdk-clients.result }} |"
