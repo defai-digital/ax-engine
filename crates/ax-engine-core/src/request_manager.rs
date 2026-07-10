@@ -267,6 +267,28 @@ impl RequestManager {
         Ok(())
     }
 
+    pub(crate) fn fail_nonterminal_requests(
+        &mut self,
+        request_ids: &[RequestId],
+        error: &str,
+    ) -> Result<(), RequestManagerError> {
+        for request_id in request_ids {
+            let record = self
+                .records
+                .get_mut(request_id)
+                .ok_or(RequestManagerError::UnknownRequest(*request_id))?;
+            if !record.state.is_terminal() {
+                record.fail(error.to_string()).map_err(|source| {
+                    RequestManagerError::InvalidStateTransition {
+                        request_id: *request_id,
+                        source,
+                    }
+                })?;
+            }
+        }
+        Ok(())
+    }
+
     pub fn collect_terminal_cleanup(&self) -> Vec<RequestId> {
         let request_ids = self.sorted_request_ids(|record| record.state.is_terminal());
         request_ids

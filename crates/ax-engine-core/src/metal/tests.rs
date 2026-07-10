@@ -783,6 +783,7 @@ fn prefix_attention_viability_partition_is_absent_for_uniform_native_viability()
 fn prefix_attention_group_predicate_partitions_disabled_batch_shape_before_retry() {
     let input = RunnerInput {
         block_size_tokens: 16,
+        memory_pressure: None,
         execution_batch: ExecutionBatch {
             step_id: StepId(12),
             model_id: "qwen3".into(),
@@ -5144,6 +5145,7 @@ fn copied_prefix_blocks_persist_into_layer_cache_for_future_native_decode() {
 
     let decode_input = RunnerInput {
         block_size_tokens: 16,
+        memory_pressure: None,
         execution_batch: ExecutionBatch {
             step_id: StepId(7),
             model_id: "qwen3".into(),
@@ -8870,6 +8872,7 @@ fn real_qwen3_5_first_decode_staging_survives_prefill_bridge() {
 
         let prefill_input = RunnerInput {
             block_size_tokens: 16,
+            memory_pressure: None,
             execution_batch: ExecutionBatch {
                 step_id: StepId(1),
                 model_id: "qwen3".into(),
@@ -8970,6 +8973,7 @@ fn real_qwen3_5_first_decode_staging_survives_prefill_bridge() {
 
         let decode_input = RunnerInput {
             block_size_tokens: 16,
+            memory_pressure: None,
             execution_batch: ExecutionBatch {
                 step_id: StepId(2),
                 model_id: "qwen3".into(),
@@ -9279,6 +9283,7 @@ fn real_qwen3_5_decode_continues_past_ten_tokens_without_state_corruption() {
 
         let prefill_input = RunnerInput {
             block_size_tokens,
+            memory_pressure: None,
             execution_batch: ExecutionBatch {
                 step_id: StepId(1),
                 model_id: "qwen3".into(),
@@ -9376,6 +9381,7 @@ fn real_qwen3_5_decode_continues_past_ten_tokens_without_state_corruption() {
                 .collect::<Vec<_>>();
             let decode_input = RunnerInput {
                 block_size_tokens,
+                memory_pressure: None,
                 execution_batch: ExecutionBatch {
                     step_id: StepId(u64::from(generated_len.saturating_add(1))),
                     model_id: "qwen3".into(),

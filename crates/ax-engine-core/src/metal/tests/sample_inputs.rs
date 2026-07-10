@@ -8,6 +8,7 @@ use crate::scheduler::{
 pub(super) fn sample_runner_input() -> RunnerInput {
     RunnerInput {
         block_size_tokens: 16,
+        memory_pressure: None,
         execution_batch: ExecutionBatch {
             step_id: StepId(3),
             model_id: "qwen3".into(),
@@ -111,6 +112,7 @@ pub(super) fn sample_runner_input() -> RunnerInput {
 pub(super) fn sample_decode_only_runner_input() -> RunnerInput {
     RunnerInput {
         block_size_tokens: 16,
+        memory_pressure: None,
         execution_batch: ExecutionBatch {
             step_id: StepId(4),
             model_id: "qwen3".into(),
@@ -214,6 +216,7 @@ pub(super) fn sample_decode_only_runner_input() -> RunnerInput {
 pub(super) fn sample_prefill_only_runner_input() -> RunnerInput {
     RunnerInput {
         block_size_tokens: 16,
+        memory_pressure: None,
         execution_batch: ExecutionBatch {
             step_id: StepId(5),
             model_id: "qwen3".into(),
@@ -273,6 +276,7 @@ pub(super) fn sample_prefill_only_runner_input() -> RunnerInput {
 pub(super) fn sample_decode_continuation_runner_input() -> RunnerInput {
     RunnerInput {
         block_size_tokens: 16,
+        memory_pressure: None,
         execution_batch: ExecutionBatch {
             step_id: StepId(6),
             model_id: "qwen3".into(),

@@ -18,6 +18,7 @@ pub struct ResolvedBlockTable {
 #[derive(Clone, Debug, PartialEq)]
 pub struct RunnerInput {
     pub block_size_tokens: u32,
+    pub memory_pressure: Option<String>,
     pub execution_batch: ExecutionBatch,
     pub block_tables: Vec<ResolvedBlockTable>,
     pub request_contexts: Vec<RunnerRequestContext>,
@@ -534,6 +535,7 @@ mod tests {
         };
         let output = runner.run(RunnerInput {
             block_size_tokens: 16,
+            memory_pressure: None,
             execution_batch: ExecutionBatch {
                 step_id: StepId(9),
                 model_id: "qwen3".into(),
@@ -642,6 +644,7 @@ mod tests {
         let runner = DeterministicRunner;
         let output = runner.run(RunnerInput {
             block_size_tokens: 16,
+            memory_pressure: None,
             execution_batch: ExecutionBatch {
                 step_id: StepId(9),
                 model_id: "qwen3".into(),
@@ -711,6 +714,7 @@ mod tests {
         let runner = DeterministicRunner;
         let output = runner.run(RunnerInput {
             block_size_tokens: 16,
+            memory_pressure: None,
             execution_batch: ExecutionBatch {
                 step_id: StepId(10),
                 model_id: "qwen3".into(),

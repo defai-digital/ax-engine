@@ -13874,6 +13874,7 @@ fn runner_input_for_execution_items(
 
     Some(RunnerInput {
         block_size_tokens: input.block_size_tokens,
+        memory_pressure: input.memory_pressure.clone(),
         execution_batch: crate::scheduler::ExecutionBatch {
             step_id: input.execution_batch.step_id,
             model_id: input.execution_batch.model_id.clone(),

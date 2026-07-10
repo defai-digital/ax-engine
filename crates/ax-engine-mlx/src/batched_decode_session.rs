@@ -28,8 +28,8 @@ use crate::weights::{LayerWeights, ModelWeights};
 /// `AX_MLX_BATCHED_DECODE` — opt in to routing eligible greedy dense-decode
 /// requests through a shared batched forward. **Default: OFF.** Experimental:
 /// the batched path holds KV in the session rather than each request's
-/// `MlxKVCache`, so it is not yet reconciled with the core's KV block
-/// accounting and does not handle preemption of session-resident requests.
+/// `MlxKVCache`; the core keeps its logical block ledger, while runner state is
+/// released whenever a request is preempted or reaches a terminal state.
 pub fn batched_decode_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
     *ENABLED.get_or_init(|| {
@@ -77,26 +77,66 @@ pub fn model_batched_eligible(
     layer_windows: &[Option<usize>],
     layers: &[LayerWeights],
 ) -> bool {
-    if has_mtp || is_diffusion || kv_compression_on {
-        return false;
+    model_batched_rejection_reasons(
+        model_family,
+        has_mtp,
+        is_diffusion,
+        kv_compression_on,
+        layer_windows,
+        layers,
+    )
+    .is_empty()
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn model_batched_rejection_reasons(
+    model_family: &str,
+    has_mtp: bool,
+    is_diffusion: bool,
+    kv_compression_on: bool,
+    layer_windows: &[Option<usize>],
+    layers: &[LayerWeights],
+) -> Vec<&'static str> {
+    let mut reasons = Vec::new();
+    if has_mtp {
+        reasons.push("mtp");
+    }
+    if is_diffusion {
+        reasons.push("diffusion");
+    }
+    if kv_compression_on {
+        reasons.push("kv_compression");
     }
     if model_family != "qwen3" {
-        return false;
+        reasons.push("model_family");
     }
-    if layer_windows.iter().any(|w| w.is_some()) {
-        return false;
+    if layer_windows.iter().any(Option::is_some) {
+        reasons.push("sliding_window");
     }
-    layers.iter().all(|w| {
-        w.router_proj.is_none()
-            && w.linear_attn.is_none()
-            && w.glm_mla_attn.is_none()
-            && w.per_layer_gate.is_none()
-            && w.layer_scalar.is_none()
-            && w.q_proj.is_some()
-            && w.k_proj.is_some()
-            && w.v_proj.is_some()
-            && w.o_proj.is_some()
-    })
+    if layers.iter().any(|weights| weights.router_proj.is_some()) {
+        reasons.push("moe");
+    }
+    if layers.iter().any(|weights| weights.linear_attn.is_some()) {
+        reasons.push("linear_attention");
+    }
+    if layers.iter().any(|weights| weights.glm_mla_attn.is_some()) {
+        reasons.push("mla");
+    }
+    if layers
+        .iter()
+        .any(|weights| weights.per_layer_gate.is_some() || weights.layer_scalar.is_some())
+    {
+        reasons.push("layer_gating");
+    }
+    if layers.iter().any(|weights| {
+        weights.q_proj.is_none()
+            || weights.k_proj.is_none()
+            || weights.v_proj.is_none()
+            || weights.o_proj.is_none()
+    }) {
+        reasons.push("missing_attention_projection");
+    }
+    reasons
 }
 
 /// A batched decode cohort with continuous join/leave.
@@ -189,6 +229,7 @@ impl BatchedDecodeSession {
             };
             self.cache.seed_row_layer(layer, slot, &k, &v);
         }
+        self.cache.materialize();
         self.slot_req.push(id);
         self.cur.push(first_token);
     }
@@ -319,5 +360,22 @@ mod tests {
             &[Some(4096)],
             &[]
         )); // sliding window
+    }
+
+    #[test]
+    fn model_rejection_reasons_preserve_all_independent_gates() {
+        let reasons =
+            model_batched_rejection_reasons("qwen3_linear", true, true, true, &[Some(4096)], &[]);
+
+        assert_eq!(
+            reasons,
+            vec![
+                "mtp",
+                "diffusion",
+                "kv_compression",
+                "model_family",
+                "sliding_window"
+            ]
+        );
     }
 }

@@ -46,18 +46,36 @@ fn build_prompts(batch: usize, len: usize, vocab: usize) -> Vec<Vec<u32>> {
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(0);
+    let row_stride: usize = env::var("AX_ROW_STRIDE")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(17);
+    let token_stride: usize = env::var("AX_TOKEN_STRIDE")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(5);
+    let prompt_bias: usize = env::var("AX_PROMPT_BIAS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(3);
     // AX_RAGGED: give each row a different prompt length (row r → len - 3*r,
     // floored at len/2) so the cohort decodes at ragged sequence positions.
     let ragged = env::var("AX_RAGGED").is_ok();
     (0..batch)
         .map(|r| {
-            let row_len = if ragged {
+            let row_len = if env::var("AX_RAGGED_ASCENDING").is_ok() {
+                len.saturating_sub(5 * (batch - 1 - r)).max(1)
+            } else if ragged {
                 (len.saturating_sub(3 * r)).max(len / 2).max(1)
             } else {
                 len
             };
             (0..row_len)
-                .map(|i| (((base + r) * 17 + i * 5 + 3) % (vocab - 1)) as u32 + 1)
+                .map(|i| {
+                    (((base + r) * row_stride + i * token_stride + prompt_bias) % (vocab - 1))
+                        as u32
+                        + 1
+                })
                 .collect()
         })
         .collect()

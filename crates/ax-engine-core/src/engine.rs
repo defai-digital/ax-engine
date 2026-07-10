@@ -26,7 +26,7 @@ use crate::scheduler::{
     ExecutionBatch, ExecutionItem, ExecutionMode, SchedulePlan, Scheduler, SchedulerInput,
 };
 use thiserror::Error;
-use tracing::{debug, debug_span, field, trace};
+use tracing::{debug, debug_span, error, field, trace};
 
 fn validation_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
@@ -287,7 +287,30 @@ impl EngineCore {
         self.request_manager.apply_schedule_plan(&schedule_plan)?;
 
         let (runner_output, sampled_tokens, runner_summary, runner_time_us) =
-            self.dispatch_runner(&mut schedule_plan)?;
+            match self.dispatch_runner(&mut schedule_plan) {
+                Ok(outcome) => outcome,
+                Err(step_error) => {
+                    let failure_message = format!("engine step failed: {step_error}");
+                    if let Err(fail_error) = self.request_manager.fail_nonterminal_requests(
+                        &schedule_plan.selected_requests,
+                        &failure_message,
+                    ) {
+                        error!(
+                            error = %fail_error,
+                            original_error = %step_error,
+                            "failed to mark scheduled requests failed after engine step error"
+                        );
+                    }
+                    if let Err(cleanup_error) = self.drain_terminal_cleanup() {
+                        error!(
+                            error = %cleanup_error,
+                            original_error = %step_error,
+                            "failed to complete terminal cleanup after engine step error"
+                        );
+                    }
+                    return Err(step_error);
+                }
+            };
         cleanup_results.extend(self.drain_terminal_cleanup()?);
 
         let scheduled_tokens = schedule_plan
@@ -611,6 +634,7 @@ impl EngineCore {
             .ok_or(EngineCoreError::RequestManager(
                 RequestManagerError::UnknownRequest(request_id),
             ))?;
+        self.runner.release_request_state(request_id);
         self.kv_manager.free(request_id)?;
         self.kv_manager
             .register_request(request_id, prompt_tokens)?;
@@ -790,6 +814,7 @@ impl EngineCore {
 
         Ok(RunnerInput {
             block_size_tokens: self.kv_manager.config().block_size_tokens,
+            memory_pressure: self.kv_manager.memory_pressure(),
             execution_batch: execution_batch.clone(),
             block_tables,
             request_contexts,
@@ -1402,6 +1427,7 @@ mod tests {
     use crate::ids::{ModelId, SequenceNo};
     use crate::runner::{RunnerInput, RunnerOutput};
     use crate::sampling::StopReason;
+    use std::sync::{Arc, Mutex};
     use std::thread;
     use std::time::Duration;
 
@@ -1414,6 +1440,24 @@ mod tests {
         fn run(&self, input: RunnerInput) -> RunnerOutput {
             thread::sleep(Duration::from_millis(self.delay_ms));
             DeterministicRunner.run(input)
+        }
+    }
+
+    #[derive(Debug)]
+    struct ReleaseTrackingRunner {
+        released: Arc<Mutex<Vec<RequestId>>>,
+    }
+
+    impl ExecutionRunner for ReleaseTrackingRunner {
+        fn run(&self, input: RunnerInput) -> RunnerOutput {
+            DeterministicRunner.run(input)
+        }
+
+        fn release_request_state(&self, request_id: RequestId) {
+            self.released
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .push(request_id);
         }
     }
 
@@ -2298,8 +2342,14 @@ mod tests {
         // two older requests decode (each needing a new block), KV exhausts,
         // and req 3's in-flight prefill is preempted so the older decode can
         // proceed. This is the REQ-P6 scenario from PRD-GROWTH §5.3.
-        let mut engine =
-            EngineCore::with_kv_config(KvManagerConfig::validated(CacheGroupId(2), 4, 4));
+        let released = Arc::new(Mutex::new(Vec::new()));
+        let mut engine = EngineCore::with_runtime_components(
+            KvManagerConfig::validated(CacheGroupId(2), 4, 4),
+            ReleaseTrackingRunner {
+                released: Arc::clone(&released),
+            },
+            DeterministicSampler,
+        );
 
         engine
             .submit(make_submission_with_prompt(1, 1, vec![1, 2, 3, 4], 4))
@@ -2359,6 +2409,13 @@ mod tests {
         assert_eq!(req3_after_step2.prompt_tokens.len(), 8);
         assert_eq!(req3_after_step2.arrival_sequence, SequenceNo(3));
         assert!(req3_after_step2.generated_tokens.is_empty());
+        assert!(
+            released
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .contains(&RequestId(3)),
+            "preemption must release runner-owned request state"
+        );
 
         // Step 3: req 3 should return to Runnable via retry_memory_blocked.
         // (KV is still full from req 1/2 decode progress, so req 3 cannot
@@ -2844,6 +2901,12 @@ mod tests {
             message,
             "runner output step_id does not match scheduled batch"
         );
+        let snapshot = engine
+            .request_manager()
+            .snapshot(RequestId(1))
+            .expect("failed request should remain queryable");
+        assert_eq!(snapshot.state, RequestState::Failed);
+        assert!(engine.kv_manager().block_table(RequestId(1)).is_err());
     }
 
     #[test]
@@ -2867,6 +2930,12 @@ mod tests {
             message,
             "prefill updates may only emit output tokens when completing the prompt"
         );
+        let snapshot = engine
+            .request_manager()
+            .snapshot(RequestId(1))
+            .expect("failed request should remain queryable");
+        assert_eq!(snapshot.state, RequestState::Failed);
+        assert!(engine.kv_manager().block_table(RequestId(1)).is_err());
     }
 
     #[test]

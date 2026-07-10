@@ -216,6 +216,19 @@ impl BatchedKvCache {
         self.lengths[row] = 0;
     }
 
+    /// Materialize all allocated K/V buffers so seed sources may be released.
+    pub fn materialize(&self) {
+        let arrays = self
+            .layers
+            .iter()
+            .flatten()
+            .flat_map(|layer| [&layer.k, &layer.v])
+            .collect::<Vec<_>>();
+        if !arrays.is_empty() {
+            eval(&arrays);
+        }
+    }
+
     /// Advance every row's logical length by `n`. Call once per decode step
     /// after all layers have been appended, mirroring the single-sequence
     /// cache's `seq_len += 1`.

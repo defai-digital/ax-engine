@@ -180,6 +180,7 @@ fn runner_input(
     let total: u32 = items.iter().map(|i| i.scheduled_token_count).sum();
     RunnerInput {
         block_size_tokens: 16,
+        memory_pressure: None,
         execution_batch: ExecutionBatch {
             step_id: StepId(step),
             model_id: MODEL_ID.into(),

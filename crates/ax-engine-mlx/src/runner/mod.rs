@@ -76,7 +76,7 @@ use ax_engine_core::{
 
 use crate::batched_decode_session::{
     BatchedDecodeSession, batched_decode_enabled, batched_decode_sampling_enabled,
-    model_batched_eligible,
+    model_batched_rejection_reasons,
 };
 use crate::batched_sampling::{BatchedSamplingClass, argmax_batched, batched_sampling_class};
 use crate::gemma4_assistant_mtp::{
@@ -426,9 +426,10 @@ const fn mtp_request_route(
     mtp_requested: bool,
     approximate_profile: bool,
     mtp_bypassed: bool,
+    uses_repetition_penalty: bool,
 ) -> MtpRequestRoute {
     if has_mtp && mtp_requested {
-        if approximate_profile && !mtp_bypassed {
+        if approximate_profile && !mtp_bypassed && !uses_repetition_penalty {
             MtpRequestRoute::StrictMtp
         } else {
             MtpRequestRoute::DirectFallback
@@ -436,6 +437,15 @@ const fn mtp_request_route(
     } else {
         MtpRequestRoute::Other
     }
+}
+
+const fn should_bootstrap_direct_pipeline(
+    session_direct: bool,
+    request_ngram_disabled: bool,
+    has_mtp: bool,
+    mtp_uses_direct_pipeline: bool,
+) -> bool {
+    session_direct || (request_ngram_disabled && !has_mtp) || mtp_uses_direct_pipeline
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -3655,6 +3665,7 @@ pub struct MlxRunner {
     /// (computed once via `model_batched_eligible`). Gates the `run()`
     /// interception together with `batched_decode_enabled()`.
     batched_decode_model_eligible: bool,
+    batched_decode_model_rejections: Vec<&'static str>,
     /// Shared cohort for the batched dense-decode path (`AX_MLX_BATCHED_DECODE`).
     /// Empty and untouched unless the flag is on and the model is eligible.
     batched_session: Mutex<BatchedDecodeSession>,
@@ -4246,7 +4257,7 @@ impl MlxRunner {
         let weight_layout_telemetry = WeightLayoutTelemetry::from_weights(&weights);
         let has_mtp =
             weights.mtp.is_some() || weights.glm_mtp.is_some() || gemma4_assistant_mtp.is_some();
-        let batched_decode_model_eligible = model_batched_eligible(
+        let batched_decode_model_rejections = model_batched_rejection_reasons(
             cfg.model_family.as_str(),
             has_mtp,
             cfg.diffusion.is_some(),
@@ -4254,6 +4265,7 @@ impl MlxRunner {
             &kv_layer_windows,
             &weights.layers,
         );
+        let batched_decode_model_eligible = batched_decode_model_rejections.is_empty();
         // Capacity for the batched cohort; small (Phase 0 sweet spot is B≈2-4,
         // amortization plateaus past ~8). Override with AX_MLX_BATCHED_DECODE_MAX.
         let batched_cap = std::env::var("AX_MLX_BATCHED_DECODE_MAX")
@@ -4274,6 +4286,7 @@ impl MlxRunner {
             model_artifacts_root: artifacts.root_dir().to_string_lossy().into_owned(),
             states: Mutex::new(HashMap::new()),
             batched_decode_model_eligible,
+            batched_decode_model_rejections,
             batched_session,
             _stream: stream,
             disable_ngram_acceleration,
@@ -4351,6 +4364,24 @@ fn sampling_params_from_context(ctx: &RunnerRequestContext) -> MlxSamplingParams
         .with_repetition_penalty(ctx.repetition_penalty, ctx.repetition_context_size)
 }
 
+fn seed_batched_session_and_reclaim_private_cache(
+    session: &mut BatchedDecodeSession,
+    request_id: u64,
+    cache: &mut MlxKVCache,
+    feed_token: u32,
+    seed_len: Option<usize>,
+) {
+    session.add_with_seed_len(request_id, cache, feed_token, seed_len);
+    cache.reset();
+}
+
+fn batched_admission_blocked_by_memory_pressure(memory_pressure: Option<&str>) -> bool {
+    matches!(
+        memory_pressure,
+        Some("kv_exhausted" | "kv_exhausted_reclaimable_cache")
+    )
+}
+
 impl MlxRunner {
     /// Whether a single item can join the batched dense-decode group this step:
     /// a steady-state (`generated_len >= 1`) single-token decode whose sampling
@@ -4391,9 +4422,9 @@ impl MlxRunner {
     /// decode tail (stop detection, `generated_tokens`, state removal on stop).
     /// The caller holds the session lock.
     ///
-    /// Experimental: a session-resident request's KV lives in the session, so
-    /// its `state.cache` is dormant — this path does not reconcile with the
-    /// core's KV block accounting or handle preemption of session members.
+    /// A session-resident request's KV lives in the session; its private cache
+    /// is reset immediately after the seed copy so the two representations do
+    /// not retain duplicate GPU storage.
     fn run_batched_decode_group(
         &self,
         session: &mut BatchedDecodeSession,
@@ -4408,13 +4439,19 @@ impl MlxRunner {
             if session.active_ids().contains(&id) {
                 session.set_current(id, feed);
             } else {
-                let states = self.states.lock();
-                if let Some(state) = states.get(&item.request_id) {
+                let mut states = self.states.lock();
+                if let Some(state) = states.get_mut(&item.request_id) {
                     // The runner's cache is warmed: its last token is `feed`'s KV
                     // (appended by generation-state init). Seed all but that last
                     // token so the first step re-appends it without doubling.
                     let seed_len = state.cache.seq_len.saturating_sub(1);
-                    session.add_with_seed_len(id, &state.cache, feed, Some(seed_len));
+                    seed_batched_session_and_reclaim_private_cache(
+                        session,
+                        id,
+                        &mut state.cache,
+                        feed,
+                        Some(seed_len),
+                    );
                 }
             }
         }
@@ -4459,6 +4496,59 @@ impl MlxRunner {
                 tokens_executed: 1,
                 output_token,
                 output_tokens,
+                stop_reason,
+                error: None,
+            });
+        }
+        updates
+    }
+
+    fn join_direct_pipeline_group(
+        &self,
+        session: &mut BatchedDecodeSession,
+        group: &[&ax_engine_core::ExecutionItem],
+        contexts: &[RunnerRequestContext],
+    ) -> Vec<RequestExecutionUpdate> {
+        let mut updates = Vec::with_capacity(group.len());
+        for item in group {
+            let request_id = item.request_id;
+            let ctx = contexts.iter().find(|ctx| ctx.request_id == request_id);
+            let generated_len = ctx.map(|ctx| ctx.generated_len).unwrap_or(0);
+            let max_output = ctx.map(|ctx| ctx.max_output_tokens).unwrap_or(1);
+            let terminal = if ctx.map(|ctx| ctx.ignore_eos).unwrap_or(false) {
+                &[][..]
+            } else {
+                self.terminal_token_ids.as_slice()
+            };
+            let mut states = self.states.lock();
+            let Some(state) = states.get_mut(&request_id) else {
+                continue;
+            };
+            let Some(pending) = state.pending_direct.take() else {
+                continue;
+            };
+            eval(&[&pending]);
+            let token = pending.first_u32_unchecked();
+            let (sampled, stop_reason) =
+                truncate_sampled_tokens_for_stop(vec![token], generated_len, max_output, terminal);
+            if stop_reason.is_none() {
+                seed_batched_session_and_reclaim_private_cache(
+                    session,
+                    request_id.0,
+                    &mut state.cache,
+                    token,
+                    None,
+                );
+                state.generated_tokens.extend_from_slice(&sampled);
+            } else {
+                states.remove(&request_id);
+            }
+            let mut sampled = sampled.into_iter();
+            updates.push(RequestExecutionUpdate {
+                request_id,
+                tokens_executed: 1,
+                output_token: sampled.next(),
+                output_tokens: sampled.collect(),
                 stop_reason,
                 error: None,
             });
@@ -4587,7 +4677,39 @@ impl ExecutionRunner for MlxRunner {
         // forward; every other item — and the whole thing when the flag is off
         // or the model is ineligible — stays byte-for-byte on the per-item path.
         let mut batched_idx: std::collections::HashSet<usize> = std::collections::HashSet::new();
-        if batched_decode_enabled() && self.batched_decode_model_eligible {
+        let batched_enabled = batched_decode_enabled();
+        let decode_candidate_count = input
+            .execution_batch
+            .items
+            .iter()
+            .filter(|item| {
+                matches!(item.mode, ExecutionMode::Decode) && item.input_token_slice.len() == 1
+            })
+            .count();
+        if decode_candidate_count >= 2 {
+            if !batched_enabled {
+                route_metadata.crossover_decisions.push((
+                    "ax_mlx_batched_decode_rejected_flag_disabled".to_string(),
+                    decode_candidate_count as u32,
+                ));
+            } else {
+                for reason in &self.batched_decode_model_rejections {
+                    route_metadata.crossover_decisions.push((
+                        format!("ax_mlx_batched_decode_rejected_{reason}"),
+                        decode_candidate_count as u32,
+                    ));
+                }
+            }
+        }
+        if batched_enabled && self.batched_decode_model_eligible {
+            let direct_pipeline_pending = self
+                .states
+                .lock()
+                .iter()
+                .filter_map(|(request_id, state)| {
+                    state.pending_direct.is_some().then_some(request_id.0)
+                })
+                .collect::<std::collections::HashSet<_>>();
             let mut session = self.batched_session.lock();
             let resident: std::collections::HashSet<u64> =
                 session.active_ids().iter().copied().collect();
@@ -4608,11 +4730,56 @@ impl ExecutionRunner for MlxRunner {
                     joiner_items.push(i);
                 }
             }
+            let admission_blocked =
+                batched_admission_blocked_by_memory_pressure(input.memory_pressure.as_deref());
+            if admission_blocked && !joiner_items.is_empty() {
+                route_metadata.crossover_decisions.push((
+                    "ax_mlx_batched_decode_admission_blocked_pressure".to_string(),
+                    joiner_items.len() as u32,
+                ));
+                joiner_items.clear();
+            } else if input
+                .memory_pressure
+                .as_deref()
+                .is_some_and(|pressure| pressure.starts_with("kv_low_free_blocks:"))
+            {
+                route_metadata.crossover_decisions.push((
+                    "ax_mlx_batched_decode_admission_low_pressure".to_string(),
+                    joiner_items.len() as u32,
+                ));
+            }
             joiner_items.truncate(room);
+            let bootstrap_joiners = joiner_items
+                .iter()
+                .copied()
+                .filter(|index| {
+                    direct_pipeline_pending
+                        .contains(&input.execution_batch.items[*index].request_id.0)
+                })
+                .collect::<Vec<_>>();
+            let bootstrap_transition = resident_items.is_empty() && bootstrap_joiners.len() >= 2;
+            if bootstrap_transition {
+                let group_items = bootstrap_joiners
+                    .iter()
+                    .map(|&index| &input.execution_batch.items[index])
+                    .collect::<Vec<_>>();
+                let updates = self.join_direct_pipeline_group(
+                    &mut session,
+                    &group_items,
+                    &input.request_contexts,
+                );
+                request_updates.extend(updates);
+                batched_idx.extend(bootstrap_joiners);
+            } else {
+                joiner_items.retain(|index| {
+                    !direct_pipeline_pending
+                        .contains(&input.execution_batch.items[*index].request_id.0)
+                });
+            }
             // Session-resident requests MUST batch (their state.cache is dormant);
             // otherwise start only once >= 2 eligible requests are present.
-            let should_batch =
-                !resident_items.is_empty() || resident_items.len() + joiner_items.len() >= 2;
+            let should_batch = !bootstrap_transition
+                && (!resident_items.is_empty() || resident_items.len() + joiner_items.len() >= 2);
             if should_batch {
                 let group: Vec<usize> = resident_items.into_iter().chain(joiner_items).collect();
                 let group_items: Vec<&ax_engine_core::ExecutionItem> = group
@@ -8933,6 +9100,18 @@ impl MlxRunner {
 
         let kv_compression_shadow_sync_wall_us =
             self.sync_turboquant_shadow_storage_if_needed(state, true, layer_eligible);
+        let approximate_profile = mtp_optimistic_allowed(self.weights.glm_mtp.is_some())
+            && (self.mtp_optimistic || mtp_auto_optimistic_enabled_from_env());
+        let mtp_uses_direct_pipeline = matches!(
+            mtp_request_route(
+                self.has_mtp(),
+                !self.disable_ngram_acceleration,
+                approximate_profile,
+                false,
+                false,
+            ),
+            MtpRequestRoute::DirectFallback
+        );
 
         // Mirror mlx_lm.generate_step's first-yield boundary for the direct
         // greedy baseline: before the first token is yielded, mlx_lm already
@@ -8940,8 +9119,12 @@ impl MlxRunner {
         // direct pipeline at the same prefill/first-token boundary so the
         // measured generation interval starts with a pending token instead of
         // paying one decode-step bootstrap.
-        if (self.disable_ngram_acceleration || state.ngram_acceleration_disabled_for_request)
-            && is_greedy
+        if should_bootstrap_direct_pipeline(
+            self.disable_ngram_acceleration,
+            state.ngram_acceleration_disabled_for_request,
+            self.has_mtp(),
+            mtp_uses_direct_pipeline,
+        ) && is_greedy
             && max_output > 1
             && let Some(prefill_tok) = prefill_output_token
         {
@@ -8998,9 +9181,18 @@ impl MlxRunner {
             !self.disable_ngram_acceleration,
             approximate_profile,
             state.mtp_bypassed,
+            sampling.uses_repetition_penalty(),
         ) {
             MtpRequestRoute::DirectFallback => {
                 state.mtp_telemetry.record_direct_fallback();
+                if is_greedy && !sampling.uses_repetition_penalty() {
+                    return vec![self.run_direct_pipeline_decode(
+                        state,
+                        last_token,
+                        final_by_max_output,
+                        false,
+                    )];
+                }
                 return self.run_single_decode(state, last_token, sampling);
             }
             MtpRequestRoute::StrictMtp => {
@@ -11682,6 +11874,33 @@ mod tests {
     use std::fs;
     use std::path::{Path, PathBuf};
 
+    #[test]
+    fn batched_session_join_reclaims_private_cache() {
+        let mut session = BatchedDecodeSession::new(0, 2);
+        let mut cache = MlxKVCache::new(0);
+        cache.seq_len = 4;
+
+        seed_batched_session_and_reclaim_private_cache(&mut session, 7, &mut cache, 11, Some(3));
+
+        assert_eq!(session.active_ids(), &[7]);
+        assert_eq!(cache.seq_len, 0);
+        assert_eq!(cache.usage_snapshot(), MlxKVCacheUsage::default());
+    }
+
+    #[test]
+    fn batched_admission_only_blocks_on_exhausted_pressure() {
+        assert!(!batched_admission_blocked_by_memory_pressure(None));
+        assert!(!batched_admission_blocked_by_memory_pressure(Some(
+            "kv_low_free_blocks:3/1024"
+        )));
+        assert!(batched_admission_blocked_by_memory_pressure(Some(
+            "kv_exhausted"
+        )));
+        assert!(batched_admission_blocked_by_memory_pressure(Some(
+            "kv_exhausted_reclaimable_cache"
+        )));
+    }
+
     fn ctx_with_argmax(deterministic_argmax_sampling: bool) -> RunnerRequestContext {
         RunnerRequestContext {
             request_id: RequestId(1),
@@ -11906,21 +12125,33 @@ mod tests {
     #[test]
     fn mtp_request_route_only_accelerates_explicit_approximate_profile() {
         assert_eq!(
-            mtp_request_route(true, true, true, false),
+            mtp_request_route(true, true, true, false, false),
             MtpRequestRoute::StrictMtp
         );
         assert_eq!(
-            mtp_request_route(true, true, false, false),
+            mtp_request_route(true, true, false, false, false),
             MtpRequestRoute::DirectFallback
         );
         assert_eq!(
-            mtp_request_route(true, false, false, false),
+            mtp_request_route(true, false, false, false, false),
             MtpRequestRoute::Other
         );
         assert_eq!(
-            mtp_request_route(true, true, true, true),
+            mtp_request_route(true, true, true, true, false),
             MtpRequestRoute::DirectFallback
         );
+        assert_eq!(
+            mtp_request_route(true, true, true, false, true),
+            MtpRequestRoute::DirectFallback
+        );
+    }
+
+    #[test]
+    fn direct_pipeline_bootstrap_does_not_overlap_strict_mtp() {
+        assert!(should_bootstrap_direct_pipeline(true, false, true, false));
+        assert!(should_bootstrap_direct_pipeline(false, true, false, false));
+        assert!(should_bootstrap_direct_pipeline(false, false, true, true));
+        assert!(!should_bootstrap_direct_pipeline(false, true, true, false));
     }
 
     #[test]
