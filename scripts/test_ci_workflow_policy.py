@@ -61,6 +61,39 @@ class CiWorkflowPolicyTests(unittest.TestCase):
             workflow,
         )
 
+    def test_runtime_validation_uses_macos_26_or_later(self) -> None:
+        workflow_texts = {
+            path.name: path.read_text() for path in WORKFLOWS_DIR.glob("*.yml")
+        }
+
+        for workflow in ("ci.yml", "coverage.yml", "brew-release.yml"):
+            runner_lines = [
+                line.strip()
+                for line in workflow_texts[workflow].splitlines()
+                if line.strip().startswith("runs-on:")
+            ]
+            self.assertTrue(runner_lines, f"{workflow} must declare a runner")
+            self.assertEqual(
+                ["runs-on: macos-26"] * len(runner_lines),
+                runner_lines,
+                f"{workflow} must not validate AX Engine on Linux or pre-26 macOS",
+            )
+
+        pypi = workflow_texts["pypi.yml"]
+        build_wheel, publish = pypi.split(
+            "  publish:\n    name: Publish to PyPI\n", maxsplit=1
+        )
+        self.assertIn("runs-on: macos-26", build_wheel)
+        self.assertIn("Artifact upload only", publish)
+
+    def test_supply_chain_checks_run_natively_on_macos(self) -> None:
+        workflow = CI_WORKFLOW.read_text()
+
+        self.assertIn("tool: cargo-deny,cargo-audit", workflow)
+        self.assertIn("run: cargo deny check advisories licenses bans sources", workflow)
+        self.assertIn("run: cargo audit audit", workflow)
+        self.assertNotIn("EmbarkStudios/cargo-deny-action", workflow)
+
     def test_native_dependency_installs_cleanup_untrusted_runner_taps(self) -> None:
         helper = NATIVE_DEPS_SCRIPT.read_text()
 

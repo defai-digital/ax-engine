@@ -23,7 +23,7 @@ env:
 jobs:
   rust:
     name: Rust
-    runs-on: macos-14
+    runs-on: macos-26
     timeout-minutes: 25
 
     steps:
@@ -60,27 +60,27 @@ jobs:
 
   supply-chain:
     name: Supply Chain
-    runs-on: ubuntu-latest
+    runs-on: macos-26
     timeout-minutes: 10
 
     steps:
       - name: Check out repository
         uses: actions/checkout@v5
 
-      - name: Run cargo-deny supply chain audit
-        uses: EmbarkStudios/cargo-deny-action@v2
+      - name: Install supply chain tools
+        uses: taiki-e/install-action@v2
         with:
-          command: check
-          arguments: advisories licenses bans sources
+          tool: cargo-deny,cargo-audit
+
+      - name: Run cargo-deny supply chain audit
+        run: cargo deny check advisories licenses bans sources
 
       - name: Run cargo-audit advisory check
-        uses: rustsec/audit-check@v2.0.0
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+        run: cargo audit audit
 
   scripts:
     name: Scripts and Bench Smoke
-    runs-on: macos-14
+    runs-on: macos-26
     timeout-minutes: 25
     env:
       AX_CI_LOG_DIR: ${{ github.workspace }}/ax-ci-logs
@@ -139,7 +139,7 @@ jobs:
 
   python-package:
     name: Python Package
-    runs-on: macos-14
+    runs-on: macos-26
     timeout-minutes: 20
     env:
       AX_CI_LOG_DIR: ${{ github.workspace }}/ax-ci-logs
@@ -180,7 +180,7 @@ jobs:
 
   sdk-clients:
     name: SDK Clients
-    runs-on: macos-14
+    runs-on: macos-26
     timeout-minutes: 15
 
     steps:
@@ -218,7 +218,7 @@ jobs:
 
   model-smoke:
     name: Model Smoke
-    runs-on: macos-14
+    runs-on: macos-26
     timeout-minutes: 45
     env:
       AX_CI_LOG_DIR: ${{ github.workspace }}/ax-ci-logs
@@ -327,7 +327,7 @@ jobs:
 
   ci:
     name: CI
-    runs-on: ubuntu-latest
+    runs-on: macos-26
     needs:
       - rust
       - supply-chain

@@ -28,7 +28,7 @@ env:
 jobs:
   update-tap:
     name: Update Homebrew tap formula
-    runs-on: ubuntu-latest
+    runs-on: macos-26
     timeout-minutes: 15
 
     steps:

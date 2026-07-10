@@ -14,7 +14,7 @@ permissions:
 
 jobs:
   coverage:
-    runs-on: macos-14
+    runs-on: macos-26
     timeout-minutes: 45
     env:
       AX_ALLOW_UNSUPPORTED_HOST: "1"
