@@ -76,7 +76,7 @@ jobs:
         run: cargo deny check advisories licenses bans sources
 
       - name: Run cargo-audit advisory check
-        run: cargo audit audit
+        run: cargo audit
 
   scripts:
     name: Scripts and Bench Smoke
@@ -195,8 +195,10 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
-          go-version: "1.22"
-          cache-dependency-path: sdk/go/axengine/go.mod
+          go-version: "1.25"
+          cache-dependency-path: |
+            sdk/go/axengine/go.mod
+            sdk/go/grpc/go.mod
 
       - name: Run JavaScript SDK tests
         working-directory: sdk/javascript
@@ -206,6 +208,10 @@ jobs:
 
       - name: Run Go SDK tests
         working-directory: sdk/go/axengine
+        run: go test ./...
+
+      - name: Run gRPC Go SDK tests
+        working-directory: sdk/go/grpc
         run: go test ./...
 
       - name: Run Ruby SDK tests

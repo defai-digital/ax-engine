@@ -91,8 +91,17 @@ class CiWorkflowPolicyTests(unittest.TestCase):
 
         self.assertIn("tool: cargo-deny,cargo-audit", workflow)
         self.assertIn("run: cargo deny check advisories licenses bans sources", workflow)
-        self.assertIn("run: cargo audit audit", workflow)
+        self.assertIn("run: cargo audit\n", workflow)
         self.assertNotIn("EmbarkStudios/cargo-deny-action", workflow)
+
+    def test_macos_sdk_gate_uses_supported_go_toolchain_and_all_modules(self) -> None:
+        workflow = CI_WORKFLOW.read_text()
+
+        self.assertIn('go-version: "1.25"', workflow)
+        self.assertIn("sdk/go/axengine/go.mod", workflow)
+        self.assertIn("sdk/go/grpc/go.mod", workflow)
+        self.assertIn("working-directory: sdk/go/axengine", workflow)
+        self.assertIn("working-directory: sdk/go/grpc", workflow)
 
     def test_native_dependency_installs_cleanup_untrusted_runner_taps(self) -> None:
         helper = NATIVE_DEPS_SCRIPT.read_text()
