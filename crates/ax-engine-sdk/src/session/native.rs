@@ -1,3 +1,5 @@
+use std::env;
+
 use ax_engine_core::EngineCore;
 
 use super::config::EngineSessionConfig;
@@ -5,6 +7,21 @@ use super::errors::EngineSessionError;
 
 #[cfg(feature = "mlx-native")]
 use ax_engine_mlx::{MlxPrefixCacheStore, MlxSharedWeightsCell};
+
+const PREFIX_REUSE_DISABLED_ENV: &str = "AX_ENGINE_PREFIX_REUSE_DISABLED";
+
+fn prefix_reuse_disabled_value(value: &str) -> bool {
+    matches!(value.trim(), "1")
+        || value.trim().eq_ignore_ascii_case("true")
+        || value.trim().eq_ignore_ascii_case("yes")
+}
+
+fn native_prefix_reuse_enabled() -> bool {
+    !env::var(PREFIX_REUSE_DISABLED_ENV)
+        .ok()
+        .as_deref()
+        .is_some_and(prefix_reuse_disabled_value)
+}
 
 #[cfg(feature = "mlx-native")]
 pub(super) fn build_native_core(
@@ -86,9 +103,23 @@ fn build_mlx_core(
         EngineSessionError::MetalRuntime(ax_engine_core::MetalRuntimeError::Generic(e.to_string()))
     })?;
 
-    Ok(EngineCore::with_runtime_components(
-        config.kv_config,
-        runner,
-        DeterministicSampler,
-    ))
+    let mut core =
+        EngineCore::with_runtime_components(config.kv_config, runner, DeterministicSampler);
+    core.set_prefix_reuse_enabled(native_prefix_reuse_enabled());
+    Ok(core)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn prefix_reuse_disable_values_are_explicit() {
+        for value in ["1", "true", "TRUE", "yes", " YES "] {
+            assert!(prefix_reuse_disabled_value(value));
+        }
+        for value in ["", "0", "false", "no", "enabled"] {
+            assert!(!prefix_reuse_disabled_value(value));
+        }
+    }
 }

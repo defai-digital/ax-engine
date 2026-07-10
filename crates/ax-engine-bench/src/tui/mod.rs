@@ -540,6 +540,15 @@ impl App {
             }
             return;
         }
+        // Step header click (breadcrumb navigation) on the Models screen.
+        if self.screen == Screen::Models {
+            let hdr = self.step_header_rect.get();
+            if hdr.height > 0 && row == hdr.y && col >= hdr.x && col < hdr.x + hdr.width {
+                let offset = (col - hdr.x) as usize;
+                self.on_step_header_click(offset);
+                return;
+            }
+        }
         // Content-list click selects the row (and drills in for the wizard).
         if let Some(idx) = widgets::row_in_rect(self.content_list_rect.get(), col, row) {
             match self.screen {

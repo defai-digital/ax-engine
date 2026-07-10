@@ -24,11 +24,12 @@
 //!
 //! Sampling (gate 3): `AX_SAMPLING` selects the per-request sampler — `greedy`
 //! (default), `topp` (temp 0.7, top-p 0.9), `topk` (temp 0.7, top-k 40), or
-//! `rep` (temp 0, repetition penalty 1.3). Sampled batching is gated behind BOTH
-//! `AX_MLX_BATCHED_DECODE=1` AND `AX_MLX_BATCHED_DECODE_SAMPLING=1` (the sampled
-//! sub-flag), so a sampled run needs both set or the batched runner will decode
-//! sampled requests per-item and the check becomes vacuous — the harness warns
-//! when it detects this. For any non-greedy sampler the model::forward greedy
+//! `rep` (temp 0, repetition penalty 1.3). Exercising the numerically uncertified
+//! batched forward requires both `AX_MLX_BATCHED_DECODE=1` and
+//! `AX_MLX_BATCHED_DECODE_ALLOW_UNCERTIFIED=1`. Sampled batching additionally
+//! requires `AX_MLX_BATCHED_DECODE_SAMPLING=1`; without every required flag the
+//! runner falls back to per-item decode and the comparison is vacuous. For any
+//! non-greedy sampler the model::forward greedy
 //! oracle does not apply, so the harness instead decodes every request ALONE on
 //! a second runner (each single-item step stays on the per-item path even with
 //! the flags on) and checks the batched streams are token-exact with that
@@ -320,12 +321,19 @@ fn main() {
     let prompts = build_prompts(batch, prompt_len, cfg.vocab_size);
 
     let batched_flag = ax_engine_mlx::batched_decode_session::batched_decode_enabled();
+    let uncertified_override =
+        ax_engine_mlx::batched_decode_session::batched_decode_allow_uncertified();
     let sampling_flag = ax_engine_mlx::batched_decode_session::batched_decode_sampling_enabled();
     println!("# batched decode E2E serving harness");
     println!(
-        "model_family {}  batch {batch}  prompt_len {prompt_len}  gen_len {gen_len}  sampling {}  batched_flag {batched_flag}  sampling_flag {sampling_flag}",
+        "model_family {}  batch {batch}  prompt_len {prompt_len}  gen_len {gen_len}  sampling {}  batched_flag {batched_flag}  uncertified_override {uncertified_override}  sampling_flag {sampling_flag}",
         cfg.model_family, sampling.label,
     );
+    if batched_flag && !uncertified_override {
+        eprintln!(
+            "  WARNING: AX_MLX_BATCHED_DECODE_ALLOW_UNCERTIFIED is off — the runner will use the per-item path, so BATCHED==SEQUENTIAL is vacuous."
+        );
+    }
     if !sampling.is_greedy() && batched_flag && !sampling_flag {
         eprintln!(
             "  WARNING: AX_SAMPLING={} but AX_MLX_BATCHED_DECODE_SAMPLING is off — sampled \

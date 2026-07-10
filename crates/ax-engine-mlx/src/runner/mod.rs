@@ -75,8 +75,8 @@ use ax_engine_core::{
 };
 
 use crate::batched_decode_session::{
-    BatchedDecodeCapabilities, BatchedDecodeSession, batched_decode_enabled,
-    batched_decode_sampling_enabled,
+    BatchedDecodeCapabilities, BatchedDecodeSession, batched_decode_allow_uncertified,
+    batched_decode_enabled, batched_decode_sampling_enabled,
 };
 use crate::batched_sampling::{BatchedSamplingClass, argmax_batched, batched_sampling_class};
 use crate::gemma4_assistant_mtp::{
@@ -4265,8 +4265,11 @@ impl MlxRunner {
             &kv_layer_windows,
             &weights.layers,
         );
-        let batched_decode_model_eligible = batched_decode_capabilities.eligible();
-        let batched_decode_model_rejections = batched_decode_capabilities.rejection_reasons();
+        let allow_uncertified_batched_decode = batched_decode_allow_uncertified();
+        let batched_decode_model_eligible =
+            batched_decode_capabilities.eligible(allow_uncertified_batched_decode);
+        let batched_decode_model_rejections =
+            batched_decode_capabilities.rejection_reasons(allow_uncertified_batched_decode);
         // Capacity for the batched cohort; small (Phase 0 sweet spot is B≈2-4,
         // amortization plateaus past ~8). Override with AX_MLX_BATCHED_DECODE_MAX.
         let batched_cap = std::env::var("AX_MLX_BATCHED_DECODE_MAX")
@@ -4385,14 +4388,13 @@ fn batched_admission_blocked_by_memory_pressure(memory_pressure: Option<&str>) -
 
 impl MlxRunner {
     /// Whether a single item can join the batched dense-decode group this step:
-    /// a steady-state (`generated_len >= 1`) single-token decode whose sampling
-    /// class is batchable token-exact. Greedy rows (GPU `argmax`) are always
-    /// eligible; host-sampled rows (temperature with top-k/top-p, or a
-    /// repetition penalty) require the opt-in `AX_MLX_BATCHED_DECODE_SAMPLING`
-    /// sub-flag, since their token-exactness against the per-item path is not
-    /// yet hardware-verified. The `generated_len == 0` prefill-token step and the
-    /// pure-temperature branch (GPU `random_categorical`, non-reproducible) stay
-    /// on the per-item path.
+    /// a steady-state (`generated_len >= 1`) single-token decode whose sampler
+    /// can be applied independently per row. Model-level numerical certification
+    /// is enforced before this item-level gate. Host-sampled rows (temperature
+    /// with top-k/top-p, or a repetition penalty) require the additional
+    /// `AX_MLX_BATCHED_DECODE_SAMPLING` opt-in. The `generated_len == 0`
+    /// prefill-token step and pure-temperature branch (GPU
+    /// `random_categorical`, non-reproducible) stay on the per-item path.
     fn batched_item_eligible(
         &self,
         item: &ax_engine_core::ExecutionItem,

@@ -503,6 +503,24 @@ fn click_on_family_row_drills_into_precision() {
 }
 
 #[test]
+fn click_on_completed_step_header_navigates_back() {
+    let mut app = new_app();
+    app.screen = Screen::Models;
+    app.family_idx = family_index(&app, "gemma4-12b");
+    app.on_key_models(KeyCode::Enter);
+    app.precision_idx = 0;
+    app.on_key_models(KeyCode::Enter);
+    assert_eq!(app.stage, WizardStage::Options);
+
+    let _ = render(&app);
+    let rect = app.step_header_rect.get();
+    let model_offset = "Step 3 of 4 — ".chars().count();
+    app.on_click(rect.x + model_offset as u16, rect.y);
+
+    assert_eq!(app.stage, WizardStage::Families);
+}
+
+#[test]
 fn scroll_moves_family_selection() {
     let mut app = new_app();
     app.screen = Screen::Models;

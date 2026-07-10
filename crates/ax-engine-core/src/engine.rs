@@ -83,6 +83,7 @@ pub struct EngineCore {
     execution_plan_resolver: Box<dyn ExecutionPlanResolver>,
     runner: Box<dyn ExecutionRunner>,
     sampler: Box<dyn TokenSampler>,
+    prefix_reuse_enabled: bool,
     next_step_id: u64,
     // Per-step scratch buffers — cleared and reused each step to avoid heap churn.
     scratch_seen_request_ids: HashSet<RequestId>,
@@ -155,6 +156,7 @@ impl EngineCore {
             execution_plan_resolver: Box::new(execution_plan_resolver),
             runner: Box::new(runner),
             sampler: Box::new(sampler),
+            prefix_reuse_enabled: true,
             next_step_id: 0,
             scratch_seen_request_ids: HashSet::with_capacity(32),
             scratch_update_index: HashMap::with_capacity(32),
@@ -170,6 +172,11 @@ impl EngineCore {
 
     pub fn kv_manager(&self) -> &KvManager {
         &self.kv_manager
+    }
+
+    /// Enables or disables logical KV prefix reuse for subsequent steps.
+    pub fn set_prefix_reuse_enabled(&mut self, enabled: bool) {
+        self.prefix_reuse_enabled = enabled;
     }
 
     pub fn last_metal_dispatch(&self) -> Option<crate::metal::MetalDispatchTrace> {
@@ -647,9 +654,18 @@ impl EngineCore {
 
     fn apply_prefix_reuse(
         &mut self,
-        schedule_plan: SchedulePlan,
+        mut schedule_plan: SchedulePlan,
         global_token_budget: u32,
     ) -> Result<(BTreeMap<RequestId, PrefixLookupResult>, SchedulePlan), EngineCoreError> {
+        if !self.prefix_reuse_enabled {
+            if let Some(execution_batch) = &mut schedule_plan.execution_batch {
+                execution_batch
+                    .route_metadata
+                    .crossover_decisions
+                    .push(("core_prefix_reuse_disabled".into(), 1));
+            }
+            return Ok((BTreeMap::new(), schedule_plan));
+        }
         let Some(execution_batch) = &schedule_plan.execution_batch else {
             return Ok((BTreeMap::new(), schedule_plan));
         };
@@ -2806,6 +2822,57 @@ mod tests {
                         .crossover_decisions
                         .iter()
                         .find(|(key, _)| key == "branch_decode_tokens")
+                        .map(|(_, value)| *value)
+                }),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn disabled_prefix_reuse_keeps_repeated_prompt_in_prefill() {
+        let mut engine =
+            EngineCore::with_kv_config(KvManagerConfig::validated(CacheGroupId(2), 4, 8));
+        let shared_prompt = vec![10, 11, 12, 13, 14, 15, 16, 17];
+
+        engine
+            .submit(make_submission_with_prompt(1, 1, shared_prompt.clone(), 1))
+            .unwrap();
+        engine.step(8, true).unwrap();
+        engine.set_prefix_reuse_enabled(false);
+
+        engine
+            .submit(make_submission_with_prompt(2, 2, shared_prompt, 1))
+            .unwrap();
+
+        let outcome = engine.step(8, true).unwrap();
+        let target_item = outcome
+            .schedule_plan
+            .execution_batch
+            .as_ref()
+            .and_then(|batch| {
+                batch
+                    .items
+                    .iter()
+                    .find(|item| item.request_id == RequestId(2))
+            })
+            .expect("repeated prompt should be scheduled without prefix reuse");
+
+        assert_eq!(outcome.metrics.prefix_hits, 0);
+        assert_eq!(target_item.mode, ExecutionMode::Prefill);
+        assert_eq!(target_item.prefix_tokens_reused, 0);
+        assert_eq!(target_item.prefix_blocks_reused, 0);
+        assert!(target_item.scheduled_token_count > 1);
+        assert_eq!(
+            outcome
+                .schedule_plan
+                .execution_batch
+                .as_ref()
+                .and_then(|batch| {
+                    batch
+                        .route_metadata
+                        .crossover_decisions
+                        .iter()
+                        .find(|(key, _)| key == "core_prefix_reuse_disabled")
                         .map(|(_, value)| *value)
                 }),
             Some(1)

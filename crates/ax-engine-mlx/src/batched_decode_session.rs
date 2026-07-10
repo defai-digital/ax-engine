@@ -45,15 +45,13 @@ pub fn batched_decode_enabled() -> bool {
 /// batched cohort. **Default: OFF**, and only meaningful when
 /// [`batched_decode_enabled`] is on.
 ///
-/// Kept separate from the master switch because sampled token-exactness is not
-/// guaranteed by construction the way greedy's is: greedy only needs the batched
-/// forward's per-row `argmax` to match the single forward, but sampling reads the
-/// full logit tail (softmax / top-k / top-p), so a last-bit difference between
-/// the batched GEMM's reduction order and the single-row path could flip a
-/// sample. That parity is an empirical question only the sequential-oracle probe
+/// Kept separate from the master switch because sampled equivalence is more
+/// sensitive than greedy equivalence: greedy compares only the winning logit,
+/// while sampling reads the full logit tail (softmax / top-k / top-p). Batched
+/// GEMM reduction order can perturb either result, so parity is an empirical
+/// question only the sequential-oracle probe
 /// (`batched_decode_e2e_probe` with `AX_SAMPLING`) can answer on real weights.
-/// Until it does, sampled batching stays opt-in so it cannot perturb the proven
-/// greedy path.
+/// Until it does, sampled batching stays behind an additional opt-in.
 pub fn batched_decode_sampling_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
     *ENABLED.get_or_init(|| {
@@ -64,25 +62,23 @@ pub fn batched_decode_sampling_enabled() -> bool {
     })
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum BatchedDecodeCertification {
-    DenseQwen3,
-    Uncertified,
-}
-
-impl BatchedDecodeCertification {
-    fn from_model_family(model_family: &str) -> Self {
-        if model_family == "qwen3" {
-            Self::DenseQwen3
-        } else {
-            Self::Uncertified
-        }
-    }
+/// `AX_MLX_BATCHED_DECODE_ALLOW_UNCERTIFIED` — permit the experimental
+/// batched forward even when its numerical-equivalence matrix has not passed.
+/// **Default: OFF.** This is a diagnostic override, not a production setting.
+pub fn batched_decode_allow_uncertified() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        matches!(
+            std::env::var("AX_MLX_BATCHED_DECODE_ALLOW_UNCERTIFIED").as_deref(),
+            Ok("1") | Ok("true") | Ok("yes")
+        )
+    })
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct BatchedDecodeCapabilities {
-    certification: BatchedDecodeCertification,
+    has_supported_family: bool,
+    numerically_certified: bool,
     has_mtp: bool,
     is_diffusion: bool,
     kv_compression_on: bool,
@@ -104,7 +100,12 @@ impl BatchedDecodeCapabilities {
         layers: &[LayerWeights],
     ) -> Self {
         Self {
-            certification: BatchedDecodeCertification::from_model_family(model_family),
+            has_supported_family: model_family == "qwen3",
+            // Family-only certification is unsound: batch invariance also
+            // depends on the artifact, quantization, MLX version, prompt
+            // shape, and active numerical fast paths. No current contract has
+            // passed that matrix, so production routing must fail closed.
+            numerically_certified: false,
             has_mtp,
             is_diffusion,
             kv_compression_on,
@@ -124,11 +125,11 @@ impl BatchedDecodeCapabilities {
         }
     }
 
-    pub(crate) fn eligible(self) -> bool {
-        self.rejection_reasons().is_empty()
+    pub(crate) fn eligible(self, allow_uncertified: bool) -> bool {
+        self.rejection_reasons(allow_uncertified).is_empty()
     }
 
-    pub(crate) fn rejection_reasons(self) -> Vec<&'static str> {
+    pub(crate) fn rejection_reasons(self, allow_uncertified: bool) -> Vec<&'static str> {
         let mut reasons = Vec::new();
         if self.has_mtp {
             reasons.push("mtp");
@@ -139,8 +140,11 @@ impl BatchedDecodeCapabilities {
         if self.kv_compression_on {
             reasons.push("kv_compression");
         }
-        if self.certification == BatchedDecodeCertification::Uncertified {
+        if !self.has_supported_family {
             reasons.push("model_family");
+        }
+        if self.has_supported_family && !self.numerically_certified && !allow_uncertified {
+            reasons.push("numerical_equivalence");
         }
         if self.has_sliding_window {
             reasons.push("sliding_window");
@@ -335,17 +339,17 @@ mod tests {
     #[test]
     fn model_eligibility_guards() {
         let no_windows: [Option<usize>; 0] = [];
-        assert!(
-            BatchedDecodeCapabilities::from_loaded_model(
-                "qwen3",
-                false,
-                false,
-                false,
-                &no_windows,
-                &[]
-            )
-            .eligible()
+        let qwen = BatchedDecodeCapabilities::from_loaded_model(
+            "qwen3",
+            false,
+            false,
+            false,
+            &no_windows,
+            &[],
         );
+        assert!(!qwen.eligible(false));
+        assert!(qwen.eligible(true));
+        assert_eq!(qwen.rejection_reasons(false), vec!["numerical_equivalence"]);
         assert!(
             !BatchedDecodeCapabilities::from_loaded_model(
                 "qwen3",
@@ -355,7 +359,7 @@ mod tests {
                 &no_windows,
                 &[]
             )
-            .eligible()
+            .eligible(true)
         );
         assert!(
             !BatchedDecodeCapabilities::from_loaded_model(
@@ -366,7 +370,7 @@ mod tests {
                 &no_windows,
                 &[]
             )
-            .eligible()
+            .eligible(true)
         );
         assert!(
             !BatchedDecodeCapabilities::from_loaded_model(
@@ -377,7 +381,7 @@ mod tests {
                 &no_windows,
                 &[]
             )
-            .eligible()
+            .eligible(true)
         );
         assert!(
             !BatchedDecodeCapabilities::from_loaded_model(
@@ -388,7 +392,7 @@ mod tests {
                 &no_windows,
                 &[]
             )
-            .eligible()
+            .eligible(true)
         );
         assert!(
             !BatchedDecodeCapabilities::from_loaded_model(
@@ -399,7 +403,7 @@ mod tests {
                 &[Some(4096)],
                 &[]
             )
-            .eligible()
+            .eligible(true)
         );
     }
 
@@ -413,7 +417,7 @@ mod tests {
             &[Some(4096)],
             &[],
         )
-        .rejection_reasons();
+        .rejection_reasons(false);
 
         assert_eq!(
             reasons,

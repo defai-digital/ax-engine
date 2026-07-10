@@ -36,9 +36,10 @@ Benchmark shape:
 - Direct-generation rows use random-token prompts from the `mlx_lm.benchmark`
   seed-0 contract, batch size 1, `prefill_step_size=2048`, 128 generated tokens,
   temperature 0, median-of-measured repetitions, cooldown, AX prefix cache
-  disabled for cold prefill and TTFT measurement, and production-build server
-  binaries. README provenance records where historical rows used 1 warmup and
-  where newer overlays used 2 warmups.
+  disabled for cold prefill and TTFT measurement at both the EngineCore logical
+  KV layer (`AX_ENGINE_PREFIX_REUSE_DISABLED=1`) and the MLX snapshot layer,
+  and production-build server binaries. README provenance records where
+  historical rows used 1 warmup and where newer overlays used 2 warmups.
 - MTP-generation rows use the `flappy`, `long_code`, and `python_modules_long`
   prompt suites, sampled decode (`temperature=0.6`, `top_p=0.95`, `top_k=20`),
   1000 generated tokens, measured medians, cooldown, and strict AX MTP

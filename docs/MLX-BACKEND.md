@@ -133,11 +133,16 @@ The scheduler can submit multiple requests in one engine step. `MlxRunner`
 contains an opt-in continuous dense-decode path behind
 `AX_MLX_BATCHED_DECODE`; unsupported or uncertified rows remain on the per-item
 path. Eligibility is resolved once at model load into typed structural
-capabilities plus an explicit family certification. The current certification
-is limited to dense full-attention Qwen 3 without MTP, diffusion, sliding
-attention, MoE, MLA, layer gating, or KV compression. Broader production
-batching remains unpromoted until its sequential oracle, KV/preemption, and
-real-model throughput gates pass.
+capabilities plus a separate numerical certification. Dense full-attention
+Qwen 3 without MTP, diffusion, sliding attention, MoE, MLA, layer gating, or KV
+compression is structurally supported, but it is not numerically certified:
+real-weight sequential-oracle probes diverge for some prompt lengths because
+MLX batched and single-row numerical paths can select different greedy tokens.
+Production routing therefore fails closed even when `AX_MLX_BATCHED_DECODE=1`.
+Diagnostics may additionally set
+`AX_MLX_BATCHED_DECODE_ALLOW_UNCERTIFIED=1`; this override is not a production
+setting. Promotion requires an artifact-, quantization-, MLX-version-, prompt-,
+and fastpath-aware equivalence matrix plus KV/preemption and throughput gates.
 
 ### Custom Metal kernels
 

@@ -97,6 +97,7 @@ AX_MLX_RUNTIME_IDENTITY = {
 }
 
 AX_PREFIX_CACHE_DISABLED_ENV = {
+    "AX_ENGINE_PREFIX_REUSE_DISABLED": "1",
     "AX_MLX_PREFIX_CACHE_MAX_BYTES": "0",
     "AX_MLX_PREFIX_CACHE_MAX_ENTRIES": "0",
     "AX_MLX_PREFIX_CACHE_DISK_DISABLED": "1",
@@ -491,6 +492,24 @@ AX_SCHEDULER_TELEMETRY_KEYS = [
     "ax_scheduler_skipped_decode_tokens",
     "ax_scheduler_mixed_prefill_decode_batches",
 ]
+
+AX_CORE_PREFIX_REUSE_SUM_KEYS = {
+    "prefix_reused_requests",
+    "prefix_reused_blocks",
+    "prefix_reused_tokens",
+    "blocked_prefix_reuse_requests",
+    "blocked_prefix_reuse_blocks",
+    "blocked_prefix_reuse_tokens",
+    "retained_cache_hits",
+    "live_share_hits",
+}
+AX_CORE_PREFIX_REUSE_MAX_KEYS = {
+    "max_prefix_blocks_reused_per_request",
+    "core_prefix_reuse_disabled",
+}
+AX_CORE_PREFIX_REUSE_KEYS = (
+    AX_CORE_PREFIX_REUSE_SUM_KEYS | AX_CORE_PREFIX_REUSE_MAX_KEYS
+)
 
 AX_MLX_GEMMA4_MOE_PROFILE_KEYS = [
     "ax_mlx_gemma4_moe_profile_enabled",
@@ -2679,6 +2698,17 @@ def extract_scheduler_telemetry(route: dict[str, Any] | None) -> dict[str, int]:
     return {key: int(decisions.get(key, 0)) for key in AX_SCHEDULER_TELEMETRY_KEYS}
 
 
+def extract_core_prefix_reuse_telemetry(
+    route: dict[str, Any] | None,
+) -> dict[str, int]:
+    if not route:
+        return {}
+    decisions = route.get("crossover_decisions") or {}
+    if not any(key in decisions for key in AX_CORE_PREFIX_REUSE_KEYS):
+        return {}
+    return {key: int(decisions.get(key, 0)) for key in AX_CORE_PREFIX_REUSE_KEYS}
+
+
 def extract_ax_mlx_gemma4_moe_profile(
     route: dict[str, Any] | None,
 ) -> dict[str, int]:
@@ -2800,7 +2830,11 @@ def merge_step_local_route_decisions(
         totals[key] = totals.get(key, 0) + int(decisions.get(key, 0))
     for key in AX_SCHEDULER_TELEMETRY_KEYS:
         totals[key] = totals.get(key, 0) + int(decisions.get(key, 0))
+    for key in AX_CORE_PREFIX_REUSE_SUM_KEYS:
+        totals[key] = totals.get(key, 0) + int(decisions.get(key, 0))
     for key in AX_MLX_PREFIX_CACHE_MAX_KEYS:
+        totals[key] = max(totals.get(key, 0), int(decisions.get(key, 0)))
+    for key in AX_CORE_PREFIX_REUSE_MAX_KEYS:
         totals[key] = max(totals.get(key, 0), int(decisions.get(key, 0)))
 
 
@@ -3359,6 +3393,19 @@ def summarize_scheduler_telemetry(runs: list[dict[str, Any]]) -> dict[str, int]:
     return totals
 
 
+def summarize_core_prefix_reuse_telemetry(
+    runs: list[dict[str, Any]],
+) -> dict[str, int]:
+    totals = {key: 0 for key in AX_CORE_PREFIX_REUSE_KEYS}
+    for run in runs:
+        telemetry = run.get("core_prefix_reuse_telemetry") or {}
+        for key in AX_CORE_PREFIX_REUSE_SUM_KEYS:
+            totals[key] += int(telemetry.get(key, 0))
+        for key in AX_CORE_PREFIX_REUSE_MAX_KEYS:
+            totals[key] = max(totals[key], int(telemetry.get(key, 0)))
+    return totals
+
+
 def classify_prefix_reuse_evidence(evidence: dict[str, Any]) -> dict[str, Any]:
     hit_observed = int(evidence.get("hit_count", 0)) > 0
     miss_warmup_observed = (
@@ -3801,6 +3848,18 @@ def is_ax_prefill_step(step: dict[str, Any], *, seen_prefill: bool) -> bool:
     return not seen_prefill or scheduled_tokens > 1
 
 
+def prefill_cache_warm_observed(
+    mlx_telemetry: dict[str, int],
+    core_prefix_reuse: dict[str, int],
+) -> bool:
+    physical_snapshot_reused = (
+        int(mlx_telemetry.get("ax_mlx_prefix_cache_hits", 0)) > 0
+        and int(mlx_telemetry.get("ax_mlx_prefix_cache_reused_tokens", 0)) > 0
+    )
+    logical_prefix_reused = int(core_prefix_reuse.get("prefix_reused_tokens", 0)) > 0
+    return physical_snapshot_reused or logical_prefix_reused
+
+
 def iter_sse_json_events_from_lines(lines: Iterable[str]) -> Iterator[tuple[str, Any]]:
     current_event = ""
     data_parts: list[str] = []
@@ -3960,9 +4019,10 @@ def axengine_one_run(
     # numbers. Decode metrics are unaffected (decode steps do not reuse a
     # cache shortcut) and stay valid.
     mlx_telemetry_probe = extract_ax_mlx_telemetry(final_route) or {}
-    prefill_cache_warm = (
-        int(mlx_telemetry_probe.get("ax_mlx_prefix_cache_hits", 0)) > 0
-        and int(mlx_telemetry_probe.get("ax_mlx_prefix_cache_reused_tokens", 0)) > 0
+    core_prefix_reuse = extract_core_prefix_reuse_telemetry(final_route)
+    prefill_cache_warm = prefill_cache_warm_observed(
+        mlx_telemetry_probe,
+        core_prefix_reuse,
     )
     if prefill_cache_warm:
         prefill_s_value: float | None = None
@@ -4000,6 +4060,8 @@ def axengine_one_run(
     scheduler_telemetry = extract_scheduler_telemetry(final_route)
     if scheduler_telemetry:
         run["scheduler_telemetry"] = scheduler_telemetry
+    if core_prefix_reuse:
+        run["core_prefix_reuse_telemetry"] = core_prefix_reuse
     if scheduler_step_telemetry:
         run["scheduler_step_telemetry"] = scheduler_step_telemetry
     gemma4_moe_profile = extract_ax_mlx_gemma4_moe_profile(final_route)
@@ -4312,6 +4374,7 @@ def bench_axengine(
         "ax_mlx_telemetry": ax_mlx_telemetry,
         "ax_mlx_decode_route": summarize_ax_mlx_decode_route(ax_mlx_telemetry),
         "scheduler_telemetry": summarize_scheduler_telemetry(runs),
+        "core_prefix_reuse_telemetry": summarize_core_prefix_reuse_telemetry(runs),
         "ax_mlx_gemma4_moe_profile": summarize_ax_mlx_gemma4_moe_profile(runs),
         "ax_mlx_gemma4_assistant_mtp": summarize_ax_mlx_gemma4_assistant_mtp(runs),
         "ax_mlx_linear_attention_profile": summarize_ax_mlx_linear_attention_profile(

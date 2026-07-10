@@ -65,7 +65,6 @@ impl App {
                 KeyCode::Enter | KeyCode::Right | KeyCode::Char('l') => {
                     let variant = &self.families[self.family_idx].variants[self.precision_idx];
                     if variant.mtp_alias.is_some() {
-                        // Even an installed base can still gain the MTP package.
                         self.mtp_idx = 0;
                         self.stage = WizardStage::Options;
                     } else if variant.installed {
@@ -98,14 +97,16 @@ impl App {
                 }
                 KeyCode::Char('y') => self.begin_confirm(true),
                 KeyCode::Char('n') => self.begin_confirm(false),
-                KeyCode::Enter => self.begin_confirm(self.mtp_idx == 0),
+                KeyCode::Enter | KeyCode::Right | KeyCode::Char('l') => {
+                    self.begin_confirm(self.mtp_idx == 0)
+                }
                 KeyCode::Left | KeyCode::Char('h') | KeyCode::Esc => {
                     self.stage = WizardStage::Precision
                 }
                 _ => {}
             },
             WizardStage::Confirm => match code {
-                KeyCode::Enter => self.confirm_download(),
+                KeyCode::Enter | KeyCode::Right => self.confirm_download(),
                 KeyCode::Char('c') => {
                     self.modal = Some(Modal::DestPicker(DirectoryPicker::new()));
                 }
@@ -141,7 +142,41 @@ impl App {
                 self.precision_idx = idx;
                 self.on_key_models(KeyCode::Enter);
             }
+            WizardStage::Options => {
+                // Row 0 = Yes (with MTP), Row 1 = No (base only).
+                if idx == 0 {
+                    self.mtp_idx = 0;
+                } else if idx == 1 {
+                    self.mtp_idx = 1;
+                }
+                // Clicking an option selects it and advances to Confirm.
+                self.on_key_models(KeyCode::Enter);
+            }
             _ => {}
+        }
+    }
+
+    pub(crate) fn on_step_header_click(&mut self, offset: usize) {
+        let steps = self.wizard_steps();
+        let current = steps
+            .iter()
+            .position(|(_, stage)| *stage == self.stage)
+            .unwrap_or(0);
+        let mut cursor = format!("Step {} of {} — ", current + 1, steps.len())
+            .chars()
+            .count();
+        for (index, (label, stage)) in steps.iter().enumerate() {
+            if index > 0 {
+                cursor += " › ".chars().count();
+            }
+            let end = cursor + label.chars().count();
+            if offset >= cursor && offset < end {
+                if index <= current {
+                    self.stage = *stage;
+                }
+                return;
+            }
+            cursor = end;
         }
     }
 
@@ -332,24 +367,36 @@ impl App {
         }
     }
 
-    /// `Step 2 of 4 — Precision   gemma4-12b · 4-bit` header line.
+    /// `Step 2 of 4 — Model › Precision › Options › Confirm` header line.
     fn draw_step_header(&self, frame: &mut Frame, area: Rect) {
+        self.step_header_rect.set(area);
         let steps = self.wizard_steps();
         let current = steps
             .iter()
             .position(|(_, stage)| *stage == self.stage)
             .unwrap_or(0);
         let mut spans = vec![Span::styled(
-            format!(
-                "Step {} of {} — {}   ",
-                current + 1,
-                steps.len(),
-                steps[current].0
-            ),
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
+            format!("Step {} of {} — ", current + 1, steps.len()),
+            Style::default().fg(Color::DarkGray),
         )];
+        for (index, (label, _)) in steps.iter().enumerate() {
+            if index > 0 {
+                spans.push(Span::styled(" › ", Style::default().fg(Color::DarkGray)));
+            }
+            let style = if index == current {
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD)
+            } else if index < current {
+                Style::default()
+                    .fg(Color::Blue)
+                    .add_modifier(Modifier::UNDERLINED)
+            } else {
+                Style::default().fg(Color::DarkGray)
+            };
+            spans.push(Span::styled(*label, style));
+        }
+        spans.push(Span::raw("   "));
         let mut selection = Vec::new();
         if self.stage != WizardStage::Families {
             selection.push(self.families[self.family_idx].key.clone());

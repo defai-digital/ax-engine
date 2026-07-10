@@ -3314,6 +3314,68 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         self.assertEqual(summary["ax_scheduler_scheduled_decode_tokens"], 3)
         self.assertEqual(summary["ax_scheduler_skipped_prefill_tokens"], 4096)
 
+    def test_core_prefix_reuse_telemetry_is_extracted_and_summarized(self) -> None:
+        telemetry = bench.extract_core_prefix_reuse_telemetry(
+            {
+                "crossover_decisions": {
+                    "prefix_reused_requests": 1,
+                    "prefix_reused_blocks": 8,
+                    "prefix_reused_tokens": 128,
+                    "retained_cache_hits": 1,
+                    "max_prefix_blocks_reused_per_request": 8,
+                    "core_prefix_reuse_disabled": 1,
+                    "unrelated": 99,
+                }
+            }
+        )
+
+        self.assertEqual(telemetry["prefix_reused_tokens"], 128)
+        self.assertEqual(telemetry["retained_cache_hits"], 1)
+        self.assertNotIn("unrelated", telemetry)
+
+        summary = bench.summarize_core_prefix_reuse_telemetry(
+            [
+                {"core_prefix_reuse_telemetry": telemetry},
+                {
+                    "core_prefix_reuse_telemetry": {
+                        "prefix_reused_requests": 1,
+                        "prefix_reused_tokens": 64,
+                        "live_share_hits": 1,
+                        "max_prefix_blocks_reused_per_request": 4,
+                    }
+                },
+            ]
+        )
+        self.assertEqual(summary["prefix_reused_requests"], 2)
+        self.assertEqual(summary["prefix_reused_tokens"], 192)
+        self.assertEqual(summary["retained_cache_hits"], 1)
+        self.assertEqual(summary["live_share_hits"], 1)
+        self.assertEqual(summary["max_prefix_blocks_reused_per_request"], 8)
+        self.assertEqual(summary["core_prefix_reuse_disabled"], 1)
+
+    def test_prefill_cache_warm_detects_physical_or_logical_reuse(self) -> None:
+        self.assertTrue(
+            bench.prefill_cache_warm_observed(
+                {
+                    "ax_mlx_prefix_cache_hits": 1,
+                    "ax_mlx_prefix_cache_reused_tokens": 128,
+                },
+                {},
+            )
+        )
+        self.assertTrue(
+            bench.prefill_cache_warm_observed(
+                {},
+                {"prefix_reused_tokens": 128, "retained_cache_hits": 1},
+            )
+        )
+        self.assertFalse(
+            bench.prefill_cache_warm_observed(
+                {"ax_mlx_prefix_cache_hits": 1},
+                {"prefix_reused_tokens": 0},
+            )
+        )
+
     def test_prefix_reuse_evidence_summarizes_ax_rows(self) -> None:
         evidence = bench.summarize_prefix_reuse_evidence(
             [
@@ -4471,6 +4533,7 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
             patch.dict(
                 os.environ,
                 {
+                    "AX_ENGINE_PREFIX_REUSE_DISABLED": "0",
                     "AX_MLX_PREFIX_CACHE_MAX_BYTES": "268435456",
                     "AX_MLX_PREFIX_CACHE_MAX_ENTRIES": "64",
                     "AX_MLX_PREFIX_CACHE_DISK_DISABLED": "0",
@@ -4490,6 +4553,7 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
 
         env = popen.call_args.kwargs["env"]
         self.assertEqual(env["AX_MLX_NATIVE_CONFIRM"], "1")
+        self.assertEqual(env["AX_ENGINE_PREFIX_REUSE_DISABLED"], "1")
         self.assertEqual(env["AX_MLX_PREFIX_CACHE_MAX_BYTES"], "0")
         self.assertEqual(env["AX_MLX_PREFIX_CACHE_MAX_ENTRIES"], "0")
         self.assertEqual(env["AX_MLX_PREFIX_CACHE_DISK_DISABLED"], "1")
@@ -4511,6 +4575,7 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
 
         env = popen.call_args.kwargs["env"]
         self.assertEqual(env["AX_MLX_NATIVE_CONFIRM"], "1")
+        self.assertNotIn("AX_ENGINE_PREFIX_REUSE_DISABLED", env)
         self.assertNotIn("AX_MLX_PREFIX_CACHE_MAX_BYTES", env)
         self.assertNotIn("AX_MLX_PREFIX_CACHE_MAX_ENTRIES", env)
         self.assertNotIn("AX_MLX_PREFIX_CACHE_DISK_DISABLED", env)
@@ -4617,6 +4682,12 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
                     "ax_mlx_prefix_cache_warmup_tokens": 128,
                     "ax_mlx_prefix_cache_entries": 2,
                     "ax_mlx_prefix_cache_bytes_kib": 64,
+                    "prefix_reused_requests": 1,
+                    "prefix_reused_blocks": 8,
+                    "prefix_reused_tokens": 128,
+                    "retained_cache_hits": 1,
+                    "max_prefix_blocks_reused_per_request": 8,
+                    "core_prefix_reuse_disabled": 1,
                     "ax_ngram_draft_attempts": 99,
                 }
             },
@@ -4654,6 +4725,12 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
         self.assertEqual(decisions["ax_mlx_prefix_cache_warmup_tokens"], 128)
         self.assertEqual(decisions["ax_mlx_prefix_cache_entries"], 2)
         self.assertEqual(decisions["ax_mlx_prefix_cache_bytes_kib"], 64)
+        self.assertEqual(decisions["prefix_reused_requests"], 1)
+        self.assertEqual(decisions["prefix_reused_blocks"], 8)
+        self.assertEqual(decisions["prefix_reused_tokens"], 128)
+        self.assertEqual(decisions["retained_cache_hits"], 1)
+        self.assertEqual(decisions["max_prefix_blocks_reused_per_request"], 8)
+        self.assertEqual(decisions["core_prefix_reuse_disabled"], 1)
 
     def test_linear_attention_profile_prefers_prefill_route(self) -> None:
         prefill_route = {
