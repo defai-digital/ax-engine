@@ -189,6 +189,7 @@ def run_one_request(port: int, prompt: PromptDoc, server_pid: int | None) -> dic
         port,
         prompt.token_ids,
         prompt.generation_tokens,
+        capture_scheduler_step_telemetry=True,
         server_pid=server_pid,
     )
     wall_ms = (time.perf_counter() - started) * 1000.0
@@ -202,6 +203,7 @@ def run_one_request(port: int, prompt: PromptDoc, server_pid: int | None) -> dic
         "wall_ms": wall_ms,
         "peak_memory_gb": float(run.get("peak_memory_gb", 0.0)),
         "scheduler_telemetry": run.get("scheduler_telemetry", {}),
+        "scheduler_step_telemetry": run.get("scheduler_step_telemetry", []),
     }
 
 
@@ -452,11 +454,60 @@ def summarize_scheduler_evidence(trials: list[dict[str, Any]]) -> dict[str, int]
         "ax_scheduler_mixed_prefill_decode_batches": "mixed_prefill_decode_batches",
     }
     for trial in trials:
-        for observation in trial.get("observations", []):
+        observations = trial.get("observations", [])
+        step_entries = [
+            entry
+            for observation in observations
+            for entry in observation.get("scheduler_step_telemetry", [])
+        ]
+        if step_entries:
+            seen_step_ids: set[int] = set()
+            for telemetry in step_entries:
+                step_id = int(telemetry["step_id"])
+                if step_id in seen_step_ids:
+                    continue
+                seen_step_ids.add(step_id)
+                for source_key, evidence_key in key_map.items():
+                    evidence[evidence_key] += int(telemetry.get(source_key, 0))
+            continue
+        for observation in observations:
             telemetry = observation.get("scheduler_telemetry") or {}
             for source_key, evidence_key in key_map.items():
                 evidence[evidence_key] += int(telemetry.get(source_key, 0))
     return evidence
+
+
+def summarize_shared_step_evidence(trials: list[dict[str, Any]]) -> dict[str, Any]:
+    trial_evidence: list[dict[str, int | float]] = []
+    for trial in trials:
+        step_fanout: dict[int, int] = {}
+        for observation in trial.get("observations", []):
+            for entry in observation.get("scheduler_step_telemetry", []):
+                step_id = int(entry["step_id"])
+                step_fanout[step_id] = step_fanout.get(step_id, 0) + 1
+        if not step_fanout:
+            continue
+        stream_step_records = sum(step_fanout.values())
+        unique_engine_steps = len(step_fanout)
+        trial_evidence.append(
+            {
+                "stream_step_records": stream_step_records,
+                "unique_engine_steps": unique_engine_steps,
+                "shared_engine_steps": sum(
+                    1 for fanout in step_fanout.values() if fanout > 1
+                ),
+                "max_step_fanout": max(step_fanout.values()),
+                "stream_records_per_engine_step": ratio(
+                    float(stream_step_records),
+                    float(unique_engine_steps),
+                ),
+            }
+        )
+    return {
+        "schema_version": "ax.native_shared_step_evidence.v1",
+        "available": bool(trial_evidence),
+        "trials": trial_evidence,
+    }
 
 
 def concurrent_row(
@@ -500,6 +551,7 @@ def concurrent_row(
             "overlap_efficiency": metric(overlap_values),
         },
         "scheduler_evidence": summarize_scheduler_evidence(trials),
+        "shared_step_evidence": summarize_shared_step_evidence(trials),
         "trials": trials,
     }
     if single_row is not None:
@@ -528,21 +580,25 @@ def capture_concurrent_artifact(
     host_label: str,
     port: int,
     prompt_groups: dict[int, list[PromptDoc]],
+    warmup_repetitions: int,
     repetitions: int,
     cooldown: float,
 ) -> dict[str, Any]:
     rows: list[dict[str, Any]] = []
     proc, _spawn_ms, _ready_ms = start_direct_server(model_dir, model_id, port)
     try:
-        baseline_prompt = prompt_groups[1][0]
-        bench.axengine_one_run(
-            port,
-            baseline_prompt.token_ids,
-            baseline_prompt.generation_tokens,
-            server_pid=proc.pid,
-        )
         single_row: dict[str, Any] | None = None
         for concurrency in sorted(prompt_groups):
+            for _ in range(warmup_repetitions):
+                warmup = run_concurrent_trial(
+                    port=port,
+                    prompts=prompt_groups[concurrency],
+                    server_pid=proc.pid,
+                )
+                if warmup["failure_count"]:
+                    raise RuntimeError(
+                        f"concurrency={concurrency} warmup request failed"
+                    )
             trials = []
             for index in range(repetitions):
                 trials.append(
@@ -582,6 +638,7 @@ def capture_concurrent_artifact(
             "This is AX server-path concurrent request evidence. Keep it separate "
             "from batch=1 runner throughput and from continuous-batching claims."
         ),
+        "warmup_repetitions": warmup_repetitions,
         "prompt_artifacts": [
             prompt.token_ids_path
             for prompts in prompt_groups.values()
@@ -618,6 +675,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--startup-generation-tokens", type=int, default=128)
     parser.add_argument("--concurrent-generation-tokens", type=int, default=1)
     parser.add_argument("--repetitions", type=int, default=5)
+    parser.add_argument("--warmup-repetitions", type=int, default=2)
     parser.add_argument("--cooldown", type=float, default=15.0)
     parser.add_argument(
         "--axengine-port",
@@ -637,6 +695,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.repetitions < 3:
         parser.error("--repetitions must be at least 3")
+    if args.warmup_repetitions < 1:
+        parser.error("--warmup-repetitions must be at least 1")
     if not args.model_dir.is_dir():
         parser.error(f"--model-dir does not exist: {args.model_dir}")
     if not bench.AX_ENGINE_SERVER.exists() and not args.dry_run:
@@ -708,6 +768,7 @@ def main(argv: list[str] | None = None) -> int:
             host_label=args.host_label,
             port=args.axengine_port,
             prompt_groups=prompt_groups,
+            warmup_repetitions=args.warmup_repetitions,
             repetitions=args.repetitions,
             cooldown=args.cooldown,
         )

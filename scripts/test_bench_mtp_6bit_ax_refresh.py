@@ -51,6 +51,43 @@ class BenchMtpRefreshTests(unittest.TestCase):
             {"mtp_correctness_summary": {"publication_candidate": True}},
         )
 
+    def test_approximate_flag_is_only_added_to_mtp_rows(self) -> None:
+        target = bench.Target(
+            key="test",
+            label="Test",
+            mode="MTP",
+            model_dir=Path("/models/test"),
+            mtp_depth=2,
+        )
+        args = argparse.Namespace(
+            suites_dir=Path("/prompts"),
+            generated_tokens=32,
+            repetitions=5,
+            warmup_repetitions=2,
+            cooldown=0.0,
+            inter_case_cooldown=0.0,
+            approximate_speed_ceiling=True,
+        )
+
+        direct_command = bench.bench_cmd(
+            target=target,
+            suite="sample",
+            mode="direct",
+            output_path=Path("/tmp/direct.json"),
+            args=args,
+        )
+        mtp_command = bench.bench_cmd(
+            target=target,
+            suite="sample",
+            mode="mtp",
+            output_path=Path("/tmp/mtp.json"),
+            args=args,
+        )
+
+        self.assertIn("--ax-direct", direct_command)
+        self.assertNotIn("--ax-mtp-approximate-optimistic", direct_command)
+        self.assertIn("--ax-mtp-approximate-optimistic", mtp_command)
+
     def test_approximate_artifact_is_explicit_and_non_publishable(self) -> None:
         artifact = {
             "results": [

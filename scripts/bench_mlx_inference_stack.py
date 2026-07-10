@@ -3826,6 +3826,7 @@ def axengine_one_run(
     generation_tokens: int,
     *,
     capture_output_token_ids: bool = False,
+    capture_scheduler_step_telemetry: bool = False,
     server_pid: int | None = None,
     sampler: dict[str, Any] | None = None,
     seed: int = MLX_LM_RANDOM_SEED,
@@ -3868,6 +3869,7 @@ def axengine_one_run(
         final_route: dict[str, Any] | None = None
         prefill_route: dict[str, Any] | None = None
         step_local_decisions: dict[str, int] = {}
+        scheduler_step_telemetry: list[dict[str, int]] = []
 
         decoded_lines = (raw.decode("utf-8", errors="replace") for raw in response)
         for current_event, obj in iter_sse_json_events_from_lines(decoded_lines):
@@ -3881,6 +3883,16 @@ def axengine_one_run(
                         first_output_wall_s = time.perf_counter() - request_started
                 step_route = step.get("route") or obj.get("request", {}).get("route")
                 merge_step_local_route_decisions(step_local_decisions, step_route)
+                step_id = step.get("step_id")
+                step_scheduler_telemetry = extract_scheduler_telemetry(step_route)
+                if (
+                    capture_scheduler_step_telemetry
+                    and isinstance(step_id, int)
+                    and step_scheduler_telemetry
+                ):
+                    scheduler_step_telemetry.append(
+                        {"step_id": step_id, **step_scheduler_telemetry}
+                    )
                 final_route = route_with_more_decisions(
                     step_route,
                     final_route,
@@ -3969,6 +3981,8 @@ def axengine_one_run(
     scheduler_telemetry = extract_scheduler_telemetry(final_route)
     if scheduler_telemetry:
         run["scheduler_telemetry"] = scheduler_telemetry
+    if scheduler_step_telemetry:
+        run["scheduler_step_telemetry"] = scheduler_step_telemetry
     gemma4_moe_profile = extract_ax_mlx_gemma4_moe_profile(final_route)
     if gemma4_moe_profile:
         run["ax_mlx_gemma4_moe_profile"] = gemma4_moe_profile

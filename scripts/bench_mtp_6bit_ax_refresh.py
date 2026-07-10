@@ -218,7 +218,7 @@ def bench_cmd(
                 str(target.mtp_depth),
             ]
         )
-    if getattr(args, "approximate_speed_ceiling", False):
+    if mode != "direct" and getattr(args, "approximate_speed_ceiling", False):
         cmd.append("--ax-mtp-approximate-optimistic")
     return cmd
 

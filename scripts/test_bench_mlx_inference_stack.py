@@ -924,7 +924,16 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
             def __iter__(self):
                 frames = [
                     {
-                        "step": {"runner_time_us": 100_000, "scheduled_tokens": 4},
+                        "step": {
+                            "step_id": 7,
+                            "runner_time_us": 100_000,
+                            "scheduled_tokens": 4,
+                            "route": {
+                                "crossover_decisions": {
+                                    "ax_scheduler_scheduled_decode_tokens": 1,
+                                }
+                            },
+                        },
                         "request": {"output_len": 1},
                     },
                     {
@@ -958,11 +967,29 @@ class MlxInferenceStackBenchTests(unittest.TestCase):
             with patch.object(
                 bench.time, "perf_counter", side_effect=[10.0, 10.123, 10.456]
             ):
-                run = bench.axengine_one_run(19091, [1, 2, 3, 4], 1)
+                run = bench.axengine_one_run(
+                    19091,
+                    [1, 2, 3, 4],
+                    1,
+                    capture_scheduler_step_telemetry=True,
+                )
 
         self.assertAlmostEqual(run["client_wall_ttft_ms"], 123.0, places=6)
         self.assertAlmostEqual(run["client_wall_total_ms"], 456.0, places=6)
         self.assertEqual(run["ttft_ms"], 100.0)
+        self.assertEqual(
+            run["scheduler_step_telemetry"],
+            [
+                {
+                    "step_id": 7,
+                    "ax_scheduler_scheduled_prefill_tokens": 0,
+                    "ax_scheduler_scheduled_decode_tokens": 1,
+                    "ax_scheduler_skipped_prefill_tokens": 0,
+                    "ax_scheduler_skipped_decode_tokens": 0,
+                    "ax_scheduler_mixed_prefill_decode_batches": 0,
+                }
+            ],
+        )
 
     def test_axengine_one_run_sends_configured_sampling_seed(self) -> None:
         captured: dict[str, object] = {}

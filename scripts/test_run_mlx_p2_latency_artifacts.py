@@ -43,11 +43,20 @@ class P2LatencyRunnerTests(unittest.TestCase):
             "client_wall_ttft_ms": 125.0,
             "decode_tok_s": 80.0,
         }
-        with mock.patch.object(runner.bench, "axengine_one_run", return_value=result):
+        with mock.patch.object(
+            runner.bench, "axengine_one_run", return_value=result
+        ) as one_run:
             observation = runner.run_one_request(19091, prompt(0), None)
 
         self.assertEqual(observation["ttft_ms"], 125.0)
         self.assertEqual(observation["ttft_source"], "client_wall_first_output")
+        one_run.assert_called_once_with(
+            19091,
+            prompt(0).token_ids,
+            prompt(0).generation_tokens,
+            capture_scheduler_step_telemetry=True,
+            server_pid=None,
+        )
 
     def test_start_direct_server_passes_model_identity(self) -> None:
         process = mock.Mock()
@@ -173,6 +182,68 @@ class P2LatencyRunnerTests(unittest.TestCase):
             1,
         )
 
+    def test_scheduler_evidence_deduplicates_shared_step_ids(self) -> None:
+        shared_step = {
+            "step_id": 10,
+            "ax_scheduler_scheduled_decode_tokens": 2,
+        }
+        evidence = runner.summarize_scheduler_evidence(
+            [
+                {
+                    "observations": [
+                        {
+                            "scheduler_telemetry": {
+                                "ax_scheduler_scheduled_decode_tokens": 2,
+                            },
+                            "scheduler_step_telemetry": [shared_step],
+                        },
+                        {
+                            "scheduler_telemetry": {
+                                "ax_scheduler_scheduled_decode_tokens": 3,
+                            },
+                            "scheduler_step_telemetry": [
+                                shared_step,
+                                {
+                                    "step_id": 11,
+                                    "ax_scheduler_scheduled_decode_tokens": 1,
+                                },
+                            ],
+                        },
+                    ]
+                }
+            ]
+        )
+
+        self.assertEqual(evidence["scheduled_decode_tokens"], 3)
+
+    def test_shared_step_evidence_reports_engine_step_fanout(self) -> None:
+        evidence = runner.summarize_shared_step_evidence(
+            [
+                {
+                    "observations": [
+                        {
+                            "scheduler_step_telemetry": [
+                                {"step_id": 10},
+                                {"step_id": 11},
+                            ]
+                        },
+                        {
+                            "scheduler_step_telemetry": [
+                                {"step_id": 10},
+                                {"step_id": 11},
+                            ]
+                        },
+                    ]
+                }
+            ]
+        )
+
+        self.assertTrue(evidence["available"])
+        self.assertEqual(evidence["trials"][0]["stream_step_records"], 4)
+        self.assertEqual(evidence["trials"][0]["unique_engine_steps"], 2)
+        self.assertEqual(evidence["trials"][0]["shared_engine_steps"], 2)
+        self.assertEqual(evidence["trials"][0]["max_step_fanout"], 2)
+
     def test_startup_rows_keep_warm_load_metrics_out_of_benchmark_warm(self) -> None:
         row = runner.startup_phase_row(
             phase="benchmark_warm",
@@ -189,6 +260,46 @@ class P2LatencyRunnerTests(unittest.TestCase):
 
         self.assertNotIn("model_load_ms", row)
         self.assertNotIn("server_ready_ms", row)
+
+    def test_concurrent_capture_warms_each_shape_before_measurement(self) -> None:
+        process = mock.Mock(pid=1234)
+        trial = {
+            "request_ttft_ms": 10.0,
+            "total_wall_ms": 20.0,
+            "queue_delay_ms": 10.0,
+            "failure_count": 0,
+            "peak_memory_gb": 1.0,
+            "observations": [],
+        }
+        prompt_groups = {1: [prompt(0)], 4: [prompt(index) for index in range(4)]}
+        with (
+            mock.patch.object(
+                runner,
+                "start_direct_server",
+                return_value=(process, 0.0, 0.0),
+            ),
+            mock.patch.object(
+                runner,
+                "run_concurrent_trial",
+                return_value=trial,
+            ) as run_trial,
+            mock.patch.object(runner.bench, "kill_proc"),
+        ):
+            artifact = runner.capture_concurrent_artifact(
+                model_dir=Path("/tmp/model"),
+                model_id="test-model",
+                model_metadata={},
+                host_label="test-host",
+                port=19091,
+                prompt_groups=prompt_groups,
+                warmup_repetitions=2,
+                repetitions=3,
+                cooldown=0.0,
+            )
+
+        self.assertEqual(run_trial.call_count, 10)
+        self.assertEqual(artifact["warmup_repetitions"], 2)
+        self.assertEqual([row["repetitions"] for row in artifact["rows"]], [3, 3])
 
     def test_dry_run_does_not_require_real_model_weights(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
